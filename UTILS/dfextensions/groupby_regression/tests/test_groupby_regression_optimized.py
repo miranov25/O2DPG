@@ -1161,6 +1161,7 @@ def test_numba_multicol_weighted_v4_matches_v2():
         d = np.abs(merged[f"y_slope_{c_name}_v2"] - merged[f"y_slope_{c_name}_v4"]).to_numpy()
         assert np.nanmax(d) < tol, f"slope {c_name} max diff {np.nanmax(d):.3e} exceeds {tol:.1e}"
 
+@pytest.mark.skip(reason="Old V4 format - Phase 2 V4 removed MAD diagnostic")
 def test_numba_diagnostics_v4():
     """
     Verify v4 (Numba) computes correct diagnostics (RMS, MAD) with diag=True,
@@ -1452,7 +1453,7 @@ def test_v3_fit_intercept_true():
         ])
     })
     
-    from groupby_regression_optimized import make_parallel_fit_v3
+    from ..groupby_regression_optimized import make_parallel_fit_v3
     
     _, dfGB = make_parallel_fit_v3(
         df=test_df,
@@ -1485,7 +1486,7 @@ def test_v3_fit_intercept_false():
         'y': 0.002 * np.linspace(80, 250, n) + np.random.normal(0, 0.01, n)
     })
     
-    from groupby_regression_optimized import make_parallel_fit_v3
+    from ..groupby_regression_optimized import make_parallel_fit_v3
     
     _, dfGB = make_parallel_fit_v3(
         df=test_df,
@@ -1524,7 +1525,7 @@ def test_v3_parameter_errors():
         'y': y
     })
     
-    from groupby_regression_optimized import make_parallel_fit_v3
+    from ..groupby_regression_optimized import make_parallel_fit_v3
     
     _, dfGB = make_parallel_fit_v3(
         df=test_df,
@@ -1584,7 +1585,7 @@ def test_v3_inf_nan_filtering():
     test_df.loc[150, 'x'] = np.nan
     test_df.loc[250, 'y'] = -np.inf
     
-    from groupby_regression_optimized import make_parallel_fit_v3
+    from ..groupby_regression_optimized import make_parallel_fit_v3
     
     _, dfGB = make_parallel_fit_v3(
         df=test_df,
@@ -1628,7 +1629,7 @@ def test_v3_multiple_predictors():
         'y': y
     })
     
-    from groupby_regression_optimized import make_parallel_fit_v3
+    from ..groupby_regression_optimized import make_parallel_fit_v3
     
     _, dfGB = make_parallel_fit_v3(
         df=test_df,
@@ -1674,7 +1675,7 @@ def test_v3_diagnostics_control():
         'y': 0.01 + 0.002 * np.linspace(80, 250, 100) + np.random.normal(0, 0.01, 100)
     })
     
-    from groupby_regression_optimized import make_parallel_fit_v3
+    from ..groupby_regression_optimized import make_parallel_fit_v3
     
     # With diagnostics
     _, dfGB_with = make_parallel_fit_v3(
@@ -1735,7 +1736,7 @@ def test_v3_weighted_fits():
         'w': weights
     })
     
-    from groupby_regression_optimized import make_parallel_fit_v3
+    from ..groupby_regression_optimized import make_parallel_fit_v3
     
     # Unweighted fit
     _, dfGB_unweighted = make_parallel_fit_v3(
@@ -1806,7 +1807,7 @@ def test_v3_singular_matrix_handling():
         'y': y
     })
     
-    from groupby_regression_optimized import make_parallel_fit_v3
+    from ..groupby_regression_optimized import make_parallel_fit_v3
     
     # Should not crash
     _, dfGB = make_parallel_fit_v3(
@@ -1833,6 +1834,472 @@ def test_v3_singular_matrix_handling():
         "Function should handle singularity gracefully"
     
     print("✅ test_v3_singular_matrix_handling passed")
+
+
+# ==============================================================================
+# V4 Enhanced Features Tests (Phase 2 - November 2025)
+# ==============================================================================
+
+def test_v4_fit_intercept_true():
+    """Test V4 fit_intercept=True (default) with multi-target"""
+    np.random.seed(42)
+    n = 300
+    test_df = pd.DataFrame({
+        'group': [1]*100 + [2]*100 + [3]*100,
+        'x': np.concatenate([
+            np.linspace(80, 250, 100),
+            np.linspace(80, 250, 100),
+            np.linspace(80, 250, 100)
+        ]),
+        'y1': np.concatenate([
+            0.01 + 0.002 * np.linspace(80, 250, 100) + np.random.normal(0, 0.01, 100),
+            0.02 + 0.003 * np.linspace(80, 250, 100) + np.random.normal(0, 0.01, 100),
+            0.03 + 0.001 * np.linspace(80, 250, 100) + np.random.normal(0, 0.01, 100)
+        ]),
+        'y2': np.concatenate([
+            0.05 + 0.001 * np.linspace(80, 250, 100) + np.random.normal(0, 0.01, 100),
+            0.04 + 0.002 * np.linspace(80, 250, 100) + np.random.normal(0, 0.01, 100),
+            0.06 + 0.003 * np.linspace(80, 250, 100) + np.random.normal(0, 0.01, 100)
+        ])
+    })
+    
+    from ..groupby_regression_optimized import make_parallel_fit_v4
+    
+    _, dfGB = make_parallel_fit_v4(
+        df=test_df,
+        gb_columns=['group'],
+        fit_columns=['y1', 'y2'],
+        linear_columns=['x'],
+        suffix='_test',
+        min_stat=10
+    )
+    
+    # Check intercept columns exist
+    assert 'y1_intercept_test' in dfGB.columns
+    assert 'y2_intercept_test' in dfGB.columns
+    assert 'y1_intercept_err_test' in dfGB.columns
+    assert 'y2_intercept_err_test' in dfGB.columns
+    
+    # Check all groups fitted
+    assert len(dfGB) == 3
+    
+    print("✅ test_v4_fit_intercept_true passed")
+
+
+def test_v4_fit_intercept_false():
+    """Test V4 fit_intercept=False (through origin)"""
+    np.random.seed(42)
+    n = 200
+    test_df = pd.DataFrame({
+        'group': [1] * n,
+        'x': np.linspace(80, 250, n),
+        'y': 0.002 * np.linspace(80, 250, n) + np.random.normal(0, 0.01, n)
+    })
+    
+    from ..groupby_regression_optimized import make_parallel_fit_v4
+    
+    _, dfGB = make_parallel_fit_v4(
+        df=test_df,
+        gb_columns=['group'],
+        fit_columns=['y'],
+        linear_columns=['x'],
+        suffix='_test',
+        fit_intercept=False,
+        min_stat=10
+    )
+    
+    # Check NO intercept columns
+    assert 'y_intercept_test' not in dfGB.columns
+    assert 'y_intercept_err_test' not in dfGB.columns
+    
+    # Check slope columns exist
+    assert 'y_slope_x_test' in dfGB.columns
+    assert 'y_slope_x_err_test' in dfGB.columns
+    
+    print("✅ test_v4_fit_intercept_false passed")
+
+
+def test_v4_parameter_errors():
+    """Test V4 parameter error estimates"""
+    np.random.seed(42)
+    n = 200
+    
+    # True model with known parameters
+    x = np.random.uniform(50, 150, n)
+    y_true = 1.0 + 0.5 * x
+    y = y_true + np.random.normal(0, 1.0, n)
+    
+    test_df = pd.DataFrame({
+        'group': [1] * n,
+        'x': x,
+        'y': y
+    })
+    
+    from ..groupby_regression_optimized import make_parallel_fit_v4
+    
+    _, dfGB = make_parallel_fit_v4(
+        df=test_df,
+        gb_columns=['group'],
+        fit_columns=['y'],
+        linear_columns=['x'],
+        suffix='_test',
+        min_stat=10
+    )
+    
+    # Check error columns exist
+    assert 'y_intercept_err_test' in dfGB.columns
+    assert 'y_slope_x_err_test' in dfGB.columns
+    
+    # Check errors are positive and finite
+    intercept_err = dfGB['y_intercept_err_test'].values[0]
+    slope_err = dfGB['y_slope_x_err_test'].values[0]
+    
+    assert intercept_err > 0
+    assert slope_err > 0
+    assert np.isfinite(intercept_err)
+    assert np.isfinite(slope_err)
+    
+    # Check parameters within 4σ of true values
+    intercept = dfGB['y_intercept_test'].values[0]
+    slope = dfGB['y_slope_x_test'].values[0]
+    
+    z_intercept = abs(intercept - 1.0) / intercept_err
+    z_slope = abs(slope - 0.5) / slope_err
+    
+    assert z_intercept < 4.0, f"V4 Intercept z-score {z_intercept} > 4σ"
+    assert z_slope < 4.0, f"V4 Slope z-score {z_slope} > 4σ"
+    
+    print("✅ test_v4_parameter_errors passed")
+
+
+def test_v4_inf_nan_filtering():
+    """Test V4 Inf/NaN filtering with diagnostics"""
+    np.random.seed(42)
+    n = 300
+    test_df = pd.DataFrame({
+        'group': [1]*100 + [2]*100 + [3]*100,
+        'x': np.concatenate([
+            np.linspace(80, 250, 100),
+            np.linspace(80, 250, 100),
+            np.linspace(80, 250, 100)
+        ]),
+        'y': np.concatenate([
+            0.01 + 0.002 * np.linspace(80, 250, 100) + np.random.normal(0, 0.01, 100),
+            0.02 + 0.003 * np.linspace(80, 250, 100) + np.random.normal(0, 0.01, 100),
+            0.03 + 0.001 * np.linspace(80, 250, 100) + np.random.normal(0, 0.01, 100)
+        ])
+    })
+    
+    # Inject Inf/NaN
+    test_df.loc[50, 'y'] = np.inf
+    test_df.loc[150, 'x'] = np.nan
+    test_df.loc[250, 'y'] = -np.inf
+    
+    from ..groupby_regression_optimized import make_parallel_fit_v4
+    
+    _, dfGB = make_parallel_fit_v4(
+        df=test_df,
+        gb_columns=['group'],
+        fit_columns=['y'],
+        linear_columns=['x'],
+        suffix='_test',
+        min_stat=10,
+        diag=True  # Need diag=True for diagnostic columns
+    )
+    
+    # Check diagnostics exist
+    assert 'diag_n_total' in dfGB.columns
+    assert 'diag_n_filtered' in dfGB.columns
+    
+    # Each group should have filtered 1 row
+    assert all(dfGB['diag_n_filtered'] == 1)
+    
+    # All should have status OK (enough data remains)
+    assert all(dfGB['diag_status'] == 'OK')
+    
+    print("✅ test_v4_inf_nan_filtering passed")
+
+
+def test_v4_multiple_predictors():
+    """Test V4 with multiple predictors (3 linear_columns)"""
+    np.random.seed(42)
+    n = 200
+    
+    # True model with 3 predictors
+    x1 = np.random.uniform(80, 250, n)
+    x2 = np.random.uniform(100, 300, n)
+    x3 = np.random.uniform(50, 150, n)
+    
+    y = 0.5 + 0.002*x1 + 0.001*x2 - 0.0005*x3 + np.random.normal(0, 0.01, n)
+    
+    test_df = pd.DataFrame({
+        'group': [1] * n,
+        'x1': x1,
+        'x2': x2,
+        'x3': x3,
+        'y': y
+    })
+    
+    from ..groupby_regression_optimized import make_parallel_fit_v4
+    
+    _, dfGB = make_parallel_fit_v4(
+        df=test_df,
+        gb_columns=['group'],
+        fit_columns=['y'],
+        linear_columns=['x1', 'x2', 'x3'],
+        suffix='_test',
+        min_stat=10
+    )
+    
+    # Check all slope columns exist
+    assert 'y_slope_x1_test' in dfGB.columns
+    assert 'y_slope_x2_test' in dfGB.columns
+    assert 'y_slope_x3_test' in dfGB.columns
+    
+    # Check all error columns exist
+    assert 'y_slope_x1_err_test' in dfGB.columns
+    assert 'y_slope_x2_err_test' in dfGB.columns
+    assert 'y_slope_x3_err_test' in dfGB.columns
+    
+    # Check parameters within 4σ of true values
+    result = dfGB.iloc[0]
+    checks = [
+        (result['y_intercept_test'], 0.5, result['y_intercept_err_test']),
+        (result['y_slope_x1_test'], 0.002, result['y_slope_x1_err_test']),
+        (result['y_slope_x2_test'], 0.001, result['y_slope_x2_err_test']),
+        (result['y_slope_x3_test'], -0.0005, result['y_slope_x3_err_test'])
+    ]
+    
+    for fitted, true, error in checks:
+        z_score = abs(fitted - true) / error
+        assert z_score < 4.0, f"V4 Parameter z-score {z_score} > 4σ"
+    
+    print("✅ test_v4_multiple_predictors passed")
+
+
+def test_v4_diagnostics_control():
+    """Test V4 diag parameter controls diagnostic output"""
+    np.random.seed(42)
+    test_df = pd.DataFrame({
+        'group': [1] * 100,
+        'x': np.linspace(80, 250, 100),
+        'y': 0.01 + 0.002 * np.linspace(80, 250, 100) + np.random.normal(0, 0.01, 100)
+    })
+    
+    from ..groupby_regression_optimized import make_parallel_fit_v4
+    
+    # With diagnostics
+    _, dfGB_with = make_parallel_fit_v4(
+        df=test_df,
+        gb_columns=['group'],
+        fit_columns=['y'],
+        linear_columns=['x'],
+        suffix='_test',
+        diag=True,
+        min_stat=10
+    )
+    
+    # Without diagnostics
+    _, dfGB_without = make_parallel_fit_v4(
+        df=test_df,
+        gb_columns=['group'],
+        fit_columns=['y'],
+        linear_columns=['x'],
+        suffix='_test',
+        diag=False,
+        min_stat=10
+    )
+    
+    # Check diag columns present/absent
+    diag_cols_with = [col for col in dfGB_with.columns if 'diag_' in col]
+    diag_cols_without = [col for col in dfGB_without.columns if 'diag_' in col]
+    
+    assert len(diag_cols_with) > 0, "V4 should have diag columns with diag=True"
+    assert len(diag_cols_without) == 0, "V4 should have NO diag columns with diag=False"
+    
+    # Check fit columns present in both
+    fit_cols = ['y_intercept_test', 'y_intercept_err_test', 
+                'y_slope_x_test', 'y_slope_x_err_test']
+    for col in fit_cols:
+        assert col in dfGB_without.columns
+    
+    print("✅ test_v4_diagnostics_control passed")
+
+
+def test_v4_weighted_fits():
+    """Test V4 weighted regression and error estimates"""
+    np.random.seed(42)
+    n = 200
+    
+    # True model
+    x = np.random.uniform(50, 150, n)
+    y_true = 1.0 + 0.5 * x
+    y = y_true + np.random.normal(0, 1.0, n)
+    
+    # Weights: upweight second half
+    weights = np.ones(n)
+    weights[n//2:] = 5.0
+    
+    test_df = pd.DataFrame({
+        'group': [1] * n,
+        'x': x,
+        'y': y,
+        'w': weights
+    })
+    
+    from ..groupby_regression_optimized import make_parallel_fit_v4
+    
+    # Unweighted fit
+    _, dfGB_unweighted = make_parallel_fit_v4(
+        df=test_df,
+        gb_columns=['group'],
+        fit_columns=['y'],
+        linear_columns=['x'],
+        weights=None,
+        suffix='_unweighted',
+        min_stat=10
+    )
+    
+    # Weighted fit
+    _, dfGB_weighted = make_parallel_fit_v4(
+        df=test_df,
+        gb_columns=['group'],
+        fit_columns=['y'],
+        linear_columns=['x'],
+        weights='w',
+        suffix='_weighted',
+        min_stat=10
+    )
+    
+    # Verify weighted and unweighted differ
+    intercept_diff = abs(dfGB_weighted['y_intercept_weighted'].values[0] - 
+                         dfGB_unweighted['y_intercept_unweighted'].values[0])
+    slope_diff = abs(dfGB_weighted['y_slope_x_weighted'].values[0] - 
+                     dfGB_unweighted['y_slope_x_unweighted'].values[0])
+    
+    # Check weights had effect
+    assert intercept_diff > 0.01 or slope_diff > 0.001, "V4 weights should affect fit"
+    
+    # Check errors are positive and finite
+    assert dfGB_weighted['y_intercept_err_weighted'].values[0] > 0
+    assert dfGB_weighted['y_slope_x_err_weighted'].values[0] > 0
+    assert np.isfinite(dfGB_weighted['y_intercept_err_weighted'].values[0])
+    assert np.isfinite(dfGB_weighted['y_slope_x_err_weighted'].values[0])
+    
+    # Check within 4σ of true values
+    w_intercept = dfGB_weighted['y_intercept_weighted'].values[0]
+    w_slope = dfGB_weighted['y_slope_x_weighted'].values[0]
+    w_intercept_err = dfGB_weighted['y_intercept_err_weighted'].values[0]
+    w_slope_err = dfGB_weighted['y_slope_x_err_weighted'].values[0]
+    
+    z_intercept = abs(w_intercept - 1.0) / w_intercept_err
+    z_slope = abs(w_slope - 0.5) / w_slope_err
+    
+    assert z_intercept < 4.0, f"V4 Weighted intercept z-score {z_intercept} > 4σ"
+    assert z_slope < 4.0, f"V4 Weighted slope z-score {z_slope} > 4σ"
+    
+    print("✅ test_v4_weighted_fits passed")
+
+
+def test_v4_singular_matrix_handling():
+    """Test V4 handling of singular/ill-conditioned matrices"""
+    np.random.seed(42)
+    n = 100
+    
+    # Create perfectly collinear predictors
+    x1 = np.random.uniform(50, 150, n)
+    x2 = 2.0 * x1  # Perfect collinearity!
+    y = 1.0 + 0.5 * x1 + np.random.normal(0, 0.1, n)
+    
+    test_df = pd.DataFrame({
+        'group': [1] * n,
+        'x1': x1,
+        'x2': x2,
+        'y': y
+    })
+    
+    from ..groupby_regression_optimized import make_parallel_fit_v4
+    
+    # Should not crash
+    _, dfGB = make_parallel_fit_v4(
+        df=test_df,
+        gb_columns=['group'],
+        fit_columns=['y'],
+        linear_columns=['x1', 'x2'],
+        suffix='_test',
+        min_stat=10,
+        diag=True  # Need diagnostics to check status
+    )
+    
+    # Check status indicates problem
+    status = dfGB['diag_status'].values[0]
+    assert status in ['ILL_CONDITIONED_RIDGED', 'SINGULAR_MATRIX'], \
+        f"V4: Expected ill-conditioned status, got {status}"
+    
+    # Check condition number is very high
+    cond = dfGB['diag_cond_xtx'].values[0]
+    assert cond > 1e10, f"V4: Expected high condition number, got {cond}"
+    
+    # Check function didn't crash (values are finite or NaN)
+    intercept = dfGB['y_intercept_test'].values[0]
+    assert np.isfinite(intercept) or np.isnan(intercept), \
+        "V4 should handle singularity gracefully"
+    
+    print("✅ test_v4_singular_matrix_handling passed")
+
+
+def test_v3_v4_parity():
+    """Test that V3 and V4 give consistent results"""
+    np.random.seed(42)
+    n = 200
+    
+    # Test data
+    test_df = pd.DataFrame({
+        'group': [1, 2] * (n // 2),
+        'x1': np.random.uniform(50, 150, n),
+        'x2': np.random.uniform(100, 300, n),
+        'y': np.random.uniform(0, 1, n)
+    })
+    
+    from ..groupby_regression_optimized import make_parallel_fit_v3, make_parallel_fit_v4
+    
+    # Run both V3 and V4
+    _, dfGB_v3 = make_parallel_fit_v3(
+        df=test_df,
+        gb_columns=['group'],
+        fit_columns=['y'],
+        linear_columns=['x1', 'x2'],
+        suffix='_test',
+        min_stat=10,
+        diag=False  # Disable diag for cleaner comparison
+    )
+    
+    _, dfGB_v4 = make_parallel_fit_v4(
+        df=test_df,
+        gb_columns=['group'],
+        fit_columns=['y'],
+        linear_columns=['x1', 'x2'],
+        suffix='_test',
+        min_stat=10,
+        diag=False
+    )
+    
+    # Check same columns
+    assert set(dfGB_v3.columns) == set(dfGB_v4.columns), "V3 and V4 should have same columns"
+    
+    # Check coefficients match within tolerance
+    for col in ['y_intercept_test', 'y_slope_x1_test', 'y_slope_x2_test']:
+        diff = np.abs(dfGB_v3[col] - dfGB_v4[col])
+        max_diff = diff.max()
+        assert max_diff < 1e-8, f"V3/V4 parity failed for {col}: max diff = {max_diff}"
+    
+    # Check error estimates match within tolerance
+    for col in ['y_intercept_err_test', 'y_slope_x1_err_test', 'y_slope_x2_err_test']:
+        diff = np.abs(dfGB_v3[col] - dfGB_v4[col])
+        max_diff = diff.max()
+        assert max_diff < 1e-8, f"V3/V4 parity failed for {col}: max diff = {max_diff}"
+    
+    print("✅ test_v3_v4_parity passed")
 
 
 if __name__ == '__main__':
