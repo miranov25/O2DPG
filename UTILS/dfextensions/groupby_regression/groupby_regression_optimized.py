@@ -83,11 +83,11 @@ def _make_nan_result_row(
     
     # Add diagnostics (if dict provided)
     if diag_dict:
-        row[f"{diag_prefix}n_total"] = diag_dict.get('n_total', 0)
-        row[f"{diag_prefix}n_valid"] = diag_dict.get('n_valid', 0)
-        row[f"{diag_prefix}n_filtered"] = diag_dict.get('n_filtered', 0)
-        row[f"{diag_prefix}cond_xtx"] = diag_dict.get('cond_xtx', np.inf)
-        row[f"{diag_prefix}status"] = diag_dict.get('status', 'UNKNOWN')
+        row[f"{diag_prefix}n_total{suffix}"] = diag_dict.get('n_total', 0)
+        row[f"{diag_prefix}n_valid{suffix}"] = diag_dict.get('n_valid', 0)
+        row[f"{diag_prefix}n_filtered{suffix}"] = diag_dict.get('n_filtered', 0)
+        row[f"{diag_prefix}cond_xtx{suffix}"] = diag_dict.get('cond_xtx', np.inf)
+        row[f"{diag_prefix}status{suffix}"] = diag_dict.get('status', 'UNKNOWN')
     
     return row
 
@@ -975,12 +975,12 @@ def make_parallel_fit_v3(
 
         # Add diagnostics (if enabled)
         if diag:
-            row[f"{diag_prefix}n_total"] = n_total
-            row[f"{diag_prefix}n_valid"] = n_valid
-            row[f"{diag_prefix}n_filtered"] = n_filtered
-            row[f"{diag_prefix}cond_xtx"] = cond
-            row[f"{diag_prefix}status"] = status
-            row[f"{diag_prefix}time_ms"] = (t1 - t0) * 1000
+            row[f"{diag_prefix}n_total{suffix}"] = n_total
+            row[f"{diag_prefix}n_valid{suffix}"] = n_valid
+            row[f"{diag_prefix}n_filtered{suffix}"] = n_filtered
+            row[f"{diag_prefix}cond_xtx{suffix}"] = cond
+            row[f"{diag_prefix}status{suffix}"] = status
+            row[f"{diag_prefix}time_ms{suffix}"] = (t1 - t0) * 1000
         
         res_rows.append(row)
     
@@ -993,7 +993,7 @@ def make_parallel_fit_v3(
     # Add wall time diagnostic
     if diag:
         t_end = time.perf_counter()
-        dfGB[f"{diag_prefix}wall_ms"] = (t_end - t_start) * 1000
+        dfGB[f"{diag_prefix}wall_ms{suffix}"] = (t_end - t_start) * 1000
     
     # ========================================================================
     # 5. HANDLE PREDICTIONS (IF REQUESTED)
@@ -1357,11 +1357,11 @@ def make_parallel_fit_v4(
             out_dict[f"{tname}_mad{suffix}"] = mad_arr[:, t_idx]
     # Diagnostics (if enabled)
     if diag:
-        out_dict[f"{diag_prefix}n_total"] = n_total_arr
-        out_dict[f"{diag_prefix}n_valid"] = n_valid_arr
-        out_dict[f"{diag_prefix}n_filtered"] = n_filtered_arr
-        out_dict[f"{diag_prefix}cond_xtx"] = cond_arr
-        out_dict[f"{diag_prefix}status"] = status_arr
+        out_dict[f"{diag_prefix}n_total{suffix}"] = n_total_arr
+        out_dict[f"{diag_prefix}n_valid{suffix}"] = n_valid_arr
+        out_dict[f"{diag_prefix}n_filtered{suffix}"] = n_filtered_arr
+        out_dict[f"{diag_prefix}cond_xtx{suffix}"] = cond_arr
+        out_dict[f"{diag_prefix}status{suffix}"] = status_arr
 
 
 

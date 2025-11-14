@@ -1597,14 +1597,14 @@ def test_v3_inf_nan_filtering():
     )
     
     # Check diagnostics
-    assert 'diag_n_total' in dfGB.columns
-    assert 'diag_n_filtered' in dfGB.columns
+    assert 'diag_n_total_test' in dfGB.columns
+    assert 'diag_n_filtered_test' in dfGB.columns
     
     # Each group should have filtered 1 row
-    assert all(dfGB['diag_n_filtered'] == 1)
+    assert all(dfGB['diag_n_filtered_test'] == 1)
     
     # All should have status OK (enough data remains)
-    assert all(dfGB['diag_status'] == 'OK')
+    assert all(dfGB['diag_status_test'] == 'OK')
     
     print("✅ test_v3_inf_nan_filtering passed")
 
@@ -1820,12 +1820,12 @@ def test_v3_singular_matrix_handling():
     )
     
     # Check status indicates problem
-    status = dfGB['diag_status'].values[0]
+    status = dfGB['diag_status_test'].values[0]
     assert status in ['ILL_CONDITIONED_RIDGED', 'SINGULAR_MATRIX'], \
         f"Expected ill-conditioned status, got {status}"
     
     # Check condition number is very high
-    cond = dfGB['diag_cond_xtx'].values[0]
+    cond = dfGB['diag_cond_xtx_test'].values[0]
     assert cond > 1e10, f"Expected high condition number, got {cond}"
     
     # Check function didn't crash (values are finite or NaN)
@@ -2008,14 +2008,14 @@ def test_v4_inf_nan_filtering():
     )
     
     # Check diagnostics exist
-    assert 'diag_n_total' in dfGB.columns
-    assert 'diag_n_filtered' in dfGB.columns
+    assert 'diag_n_total_test' in dfGB.columns
+    assert 'diag_n_filtered_test' in dfGB.columns
     
     # Each group should have filtered 1 row
-    assert all(dfGB['diag_n_filtered'] == 1)
+    assert all(dfGB['diag_n_filtered_test'] == 1)
     
     # All should have status OK (enough data remains)
-    assert all(dfGB['diag_status'] == 'OK')
+    assert all(dfGB['diag_status_test'] == 'OK')
     
     print("✅ test_v4_inf_nan_filtering passed")
 
@@ -2232,12 +2232,12 @@ def test_v4_singular_matrix_handling():
     )
     
     # Check status indicates problem
-    status = dfGB['diag_status'].values[0]
+    status = dfGB['diag_status_test'].values[0]
     assert status in ['ILL_CONDITIONED_RIDGED', 'SINGULAR_MATRIX'], \
         f"V4: Expected ill-conditioned status, got {status}"
     
     # Check condition number is very high
-    cond = dfGB['diag_cond_xtx'].values[0]
+    cond = dfGB['diag_cond_xtx_test'].values[0]
     assert cond > 1e10, f"V4: Expected high condition number, got {cond}"
     
     # Check function didn't crash (values are finite or NaN)
