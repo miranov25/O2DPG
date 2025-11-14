@@ -1351,7 +1351,10 @@ def make_parallel_fit_v4(
         for j, cname in enumerate(linear_cols):
             out_dict[f"{tname}_slope_{cname}{suffix}"] = beta[:, slope_start + j, t_idx]
             out_dict[f"{tname}_slope_{cname}_err{suffix}"] = errors[:, slope_start + j, t_idx]
-    
+        # Add RMS to diagnostics
+        for t_idx, tname in enumerate(fit_cols):
+            out_dict[f"{tname}_rms{suffix}"] = rms_arr[:, t_idx]
+            out_dict[f"{tname}_mad{suffix}"] = mad_arr[:, t_idx]
     # Diagnostics (if enabled)
     if diag:
         out_dict[f"{diag_prefix}n_total"] = n_total_arr
@@ -1360,10 +1363,7 @@ def make_parallel_fit_v4(
         out_dict[f"{diag_prefix}cond_xtx"] = cond_arr
         out_dict[f"{diag_prefix}status"] = status_arr
 
-        # Add RMS to diagnostics
-        for t_idx, tname in enumerate(fit_cols):
-            out_dict[f"{diag_prefix}{tname}_rms{suffix}"] = rms_arr[:, t_idx]
-            out_dict[f"{diag_prefix}{tname}_mad{suffix}"] = mad_arr[:, t_idx]
+
 
     dfGB = pd.DataFrame(out_dict)
 
