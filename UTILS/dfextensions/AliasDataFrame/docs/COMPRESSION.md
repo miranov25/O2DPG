@@ -9,6 +9,7 @@ AliasDataFrame supports bidirectional column compression to reduce memory usage 
 - Reversible compression (no data structure loss)
 - Sub-micrometer precision for spatial coordinates
 - Lazy decompression via aliases
+- Flexible missing column handling
 
 ---
 
@@ -32,13 +33,60 @@ spec = {
 
 # Compress column
 adf = AliasDataFrame(df)
-adf.compress_columns(spec)
+adf.compress_columns(spec)  # Warns and skips missing columns by default
 
 # Access decompressed values (via alias)
 dy_values = adf.dy  # Automatically decompressed
 
 # Save (aliases become ROOT TTree aliases)
 adf.export_tree("output.root", "tree")
+```
+
+---
+
+## NEW: Flexible Missing Column Handling
+
+Starting with v1.2.0, `compress_columns` provides flexible handling of missing columns through the `on_missing` parameter.
+
+### Default Behavior (on_missing='warn')
+
+```python
+# Spec includes columns that may not exist yet
+spec = {
+    'dy': {...},
+    'dz': {...},
+    'calibration_factor': {...}  # May not exist in all datasets
+}
+
+# Default: warns and continues with available columns
+adf.compress_columns(spec)
+# Warning: Skipping missing columns: ['calibration_factor']
+# Result: dy and dz compressed, calibration_factor skipped
+```
+
+### Strict Mode (on_missing='error')
+
+```python
+# Production workflows: fail if columns missing
+adf.compress_columns(spec, on_missing='error')
+# Raises: KeyError("Missing columns: ['calibration_factor']")
+```
+
+### Silent Mode (on_missing='ignore')
+
+```python
+# Automated scripts: no warnings
+adf.compress_columns(spec, on_missing='ignore')
+# Silently skips missing columns, no output
+```
+
+### Return Summary
+
+```python
+# Get detailed results
+result = adf.compress_columns(spec, return_summary=True)
+print(f"Compressed: {result['compressed']}")  # ['dy', 'dz']
+print(f"Skipped: {result['skipped']}")        # ['calibration_factor']
 ```
 
 ---
@@ -71,13 +119,53 @@ adf.compress_columns(spec, columns=['tgSlp'])     # Add tgSlp
 
 ---
 
-### Mode 3: Compress All
+### Mode 3: Compress All Available
 ```python
-# Compress all columns in spec
-adf.compress_columns(spec)
+# Compress all columns in spec that exist in DataFrame
+adf.compress_columns(spec)  # Default: warns on missing, compresses available
 ```
 
-**Use Case:** Compress entire dataset at once
+**Use Case:** Compress entire dataset, skip missing columns
+
+---
+
+### Mode 4: Strict Compression (NEW)
+```python
+# Fail if any column missing (production workflows)
+adf.compress_columns(spec, on_missing='error')
+```
+
+**Use Case:** Validation, ensuring data quality
+
+---
+
+## Progressive Workflow Example
+
+```python
+# Day 1: Initial data collection (only dy, dz available)
+spec = {
+    'dy': {...},
+    'dz': {...},
+    'calibration': {...},  # Not available yet
+    'temperature': {...}   # Not available yet
+}
+
+result = adf.compress_columns(spec, return_summary=True)
+# Compressed: ['dy', 'dz']
+# Skipped: ['calibration', 'temperature']
+
+# Day 2: Calibration data arrives
+adf_with_calib = AliasDataFrame(df_with_calibration)
+result = adf_with_calib.compress_columns(spec, return_summary=True)
+# Compressed: ['dy', 'dz', 'calibration']
+# Skipped: ['temperature']
+
+# Day 3: Temperature data arrives - compress all
+adf_complete = AliasDataFrame(df_complete)
+result = adf_complete.compress_columns(spec, return_summary=True)
+# Compressed: ['dy', 'dz', 'calibration', 'temperature']
+# Skipped: []
+```
 
 ---
 
@@ -93,7 +181,7 @@ Each column has one of these states:
 ### State Transitions
 
 ```
-None ──────────────► COMPRESSED
+None ──────────────────► COMPRESSED
   │                      │
   └──► SCHEMA_ONLY ──────┤
                          │
@@ -165,17 +253,40 @@ print(f"Max error: {info['dy']['precision']['max_error']}")
 
 ## Common Patterns
 
-### Pattern: Incremental Data Collection
+### Pattern: Incremental Data Collection with Flexible Handling
 
 ```python
-# Day 1: Define schema for all columns
-adf.define_compression_schema(full_spec)
+# Define schema for all expected columns
+full_spec = {
+    'dy': {...}, 'dz': {...},
+    'y': {...}, 'z': {...},
+    'tgSlp': {...}, 'mP3': {...}
+}
 
-# Day 2: Compress available columns
-adf.compress_columns(columns=['dy', 'dz'])
+# Day 1: Compress only available columns (default behavior)
+result = adf.compress_columns(full_spec, return_summary=True)
+print(f"Compressed {len(result['compressed'])} columns")
+print(f"Waiting for {len(result['skipped'])} columns")
 
-# Day 3: Compress more as data arrives
-adf.compress_columns(columns=['y', 'z', 'tgSlp'])
+# Day 2: Re-run same code - newly arrived columns compressed
+adf2 = AliasDataFrame(updated_df)
+result = adf2.compress_columns(full_spec, return_summary=True)
+# Automatically handles new columns
+```
+
+### Pattern: Validated Production Workflow
+
+```python
+# Production: ensure all required columns present
+required_columns = ['dy', 'dz', 'y', 'z']
+spec_required = {k: full_spec[k] for k in required_columns}
+
+try:
+    adf.compress_columns(spec_required, on_missing='error')
+    print("✓ All required columns compressed")
+except KeyError as e:
+    print(f"✗ Missing required columns: {e}")
+    # Fail fast - data quality issue
 ```
 
 ### Pattern: Schema Refinement
@@ -191,14 +302,19 @@ adf.decompress_columns(['dy'], keep_schema=False)
 adf.compress_columns(v2_spec, columns=['dy'])
 ```
 
-### Pattern: Selective Processing
+### Pattern: Debugging with Summary
 
 ```python
-# Compress only columns needed for analysis
-adf.compress_columns(spec, columns=['dy', 'dz', 'mP3'])
+# Development: track what's happening
+result = adf.compress_columns(spec, return_summary=True, on_missing='ignore')
 
-# Other columns remain uncompressed
-# (no compression overhead for unused data)
+print(f"Successfully compressed: {result['compressed']}")
+print(f"Skipped (missing): {result['skipped']}")
+
+# Verify expectations
+expected = ['dy', 'dz', 'y']
+if set(result['compressed']) != set(expected):
+    print(f"Warning: Expected {expected}, got {result['compressed']}")
 ```
 
 ---
@@ -207,19 +323,22 @@ adf.compress_columns(spec, columns=['dy', 'dz', 'mP3'])
 
 ### ✅ DO
 
-1. **Define schema once** - Centralize compression definitions
-2. **Measure precision** - Verify acceptable error for your use case
-3. **Use asinh for residuals** - Handles outliers well
-4. **Keep schema** - Enable recompression after modifications
-5. **Test round-trip** - Verify compress → decompress → recompress
+1. **Use default 'warn' mode for development** - Flexible, informative
+2. **Use 'error' mode for production** - Fail fast on missing data
+3. **Use 'ignore' mode for automation** - Clean logs
+4. **Use return_summary for debugging** - Track compression results
+5. **Define schema once** - Centralize compression definitions
+6. **Measure precision** - Verify acceptable error for your use case
+7. **Use asinh for residuals** - Handles outliers well
 
 ### ❌ DON'T
 
-1. **Don't compress categorical data** - Use original values
-2. **Don't change dtype mid-workflow** - Stick to schema
-3. **Don't compress derived columns** - Keep computation in aliases
-4. **Don't ignore precision metrics** - Verify acceptable error
-5. **Don't nest compression** - One level only
+1. **Don't ignore warnings in production** - They indicate data issues
+2. **Don't use 'ignore' mode without logging** - Silently skipping = debugging nightmare
+3. **Don't compress categorical data** - Use original values
+4. **Don't change dtype mid-workflow** - Stick to schema
+5. **Don't compress derived columns** - Keep computation in aliases
+6. **Don't nest compression** - One level only
 
 ---
 
@@ -255,9 +374,14 @@ dfResCompresion = {
     # ... more columns
 }
 
-# Compress dataset
+# Compress dataset (warns on missing, compresses available)
 adf = AliasDataFrame(df_residuals)
-adf.compress_columns(dfResCompresion, measure_precision=True)
+result = adf.compress_columns(dfResCompresion, 
+                               measure_precision=True,
+                               return_summary=True)
+
+print(f"Compressed: {result['compressed']}")
+print(f"Skipped: {result['skipped']}")
 
 # Export (508 MB → 330 MB, 35% reduction)
 adf.export_tree("residuals_compressed.root", "tree")
@@ -277,32 +401,40 @@ dy_values = adf_loaded.dy  # Decompressed on-the-fly
 
 ## Troubleshooting
 
-### Error: "Column already compressed"
+### Warning: "Skipping missing columns"
 
 ```python
-# Problem: Trying to compress COMPRESSED column
-# Solution: Decompress first or use selective mode (idempotent)
-adf.decompress_columns(['dy'])
-adf.compress_columns(spec, columns=['dy'])
+# This is normal in progressive workflows
+result = adf.compress_columns(spec, return_summary=True)
+print(f"Missing: {result['skipped']}")
+
+# If unexpected, use error mode to debug:
+adf.compress_columns(spec, on_missing='error')  # Will raise KeyError
 ```
 
-### Error: "Column not found in DataFrame"
+### Error: "Missing columns: [...]"
 
 ```python
-# Problem: Column doesn't exist yet
-# Solution: Define schema, compress later when data exists
+# Problem: Using error mode with incomplete data
+# Solution 1: Use default warn mode
+adf.compress_columns(spec)  # Warns, continues
+
+# Solution 2: Compress only subset
+adf.compress_columns(spec, columns=['dy', 'dz'])  # Only existing cols
+
+# Solution 3: Define schema, compress later
 adf.define_compression_schema(spec)  # Schema only
 # ... later when data exists ...
 adf.compress_columns(columns=['dy'])
 ```
 
-### Error: "Different schema"
+### Error: "Column already compressed"
 
 ```python
-# Problem: Trying to change schema of COMPRESSED column
-# Solution: Decompress first
-adf.decompress_columns(['dy'], keep_schema=False)
-adf.compress_columns(new_spec, columns=['dy'])
+# Problem: Trying to compress COMPRESSED column with different schema
+# Solution: Decompress first or use selective mode (idempotent if same schema)
+adf.decompress_columns(['dy'])
+adf.compress_columns(spec, columns=['dy'])
 ```
 
 ---
@@ -314,7 +446,9 @@ adf.compress_columns(new_spec, columns=['dy'])
 ```python
 # Compress columns
 adf.compress_columns(compression_spec=None, columns=None, 
-                     suffix='_c', drop_original=True, 
+                     suffix='_c', drop_original=True,
+                     on_missing='warn',          # NEW in v1.2.0
+                     return_summary=False,       # NEW in v1.2.0
                      measure_precision=False)
 
 # Decompress columns
@@ -324,6 +458,18 @@ adf.decompress_columns(columns=None, keep_compressed=True,
 # Define schema without compressing
 adf.define_compression_schema(compression_spec, suffix='_c')
 ```
+
+### New Parameters (v1.2.0)
+
+**on_missing**: `{'warn', 'error', 'ignore'}`, default='warn'
+- How to handle columns that don't exist in DataFrame
+- 'warn': Skip with warning (recommended for development)
+- 'error': Raise KeyError (recommended for production)
+- 'ignore': Skip silently (use for automation)
+
+**return_summary**: `bool`, default=False
+- If True, return dict with 'compressed' and 'skipped' column lists
+- If False, return self (backward compatible, method chaining)
 
 ### Introspection Methods
 
@@ -345,18 +491,66 @@ info = adf.get_compression_info('column_name')  # Returns dict
 
 ## Version History
 
-### v1.0 (Current)
+### v1.2.0 (Current)
+- **NEW:** Flexible missing column handling (`on_missing` parameter)
+- **NEW:** Compression summary (`return_summary` parameter)
+- **BREAKING CHANGE:** Default behavior now warns on missing columns (was: error)
+  - Migration: Use `on_missing='error'` for old strict behavior
+- Smart column availability checking (df.columns + aliases + compression_info)
+- Uniform filtering across all modes
+
+### v1.1.0
+- Selective compression mode (Pattern 2)
+- Idempotent compression
+- Schema updates
+- Enhanced validation
+
+### v1.0.0
 - Basic compression/decompression
 - State machine with 3 states
 - Precision measurement
 - Schema persistence
-- Selective compression (Pattern 2)
-- Idempotent compression
+
+---
+
+## Migration Guide (v1.1.0 → v1.2.0)
+
+### Breaking Change: Default Error Behavior
+
+**Old behavior (v1.1.0):**
+```python
+# Raised error on missing columns
+adf.compress_columns(spec)  # KeyError if column missing
+```
+
+**New behavior (v1.2.0):**
+```python
+# Warns and continues by default
+adf.compress_columns(spec)  # Warning, skips missing
+
+# Use error mode for old behavior:
+adf.compress_columns(spec, on_missing='error')  # Same as v1.1.0
+```
+
+### Recommended Migration
+
+```python
+# Development/Incremental workflows - use default
+adf.compress_columns(spec)  # Flexible, warns on missing
+
+# Production/Validation - use error mode
+adf.compress_columns(spec, on_missing='error')  # Strict validation
+
+# Automation - use ignore mode + summary
+result = adf.compress_columns(spec, on_missing='ignore', return_summary=True)
+if result['skipped']:
+    logging.info(f"Skipped columns: {result['skipped']}")
+```
 
 ---
 
 ## See Also
 
-- **API_REFERENCE.md** - Complete API documentation
-- **EXAMPLES.md** - More code examples
+- **USER_GUIDE.md** - Complete feature overview
 - **CHANGELOG.md** - Detailed version history
+- **API_REFERENCE.md** - Complete API documentation
