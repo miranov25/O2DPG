@@ -835,49 +835,46 @@ class AliasDataFrame:
             )
 
         # === NEW: Filter columns based on on_missing parameter ===
-        # Special handling for selective mode to preserve original validation behavior
-        if schema_mode != 'selective':
-            import warnings
+        import warnings
 
-            # Check which columns exist in DataFrame, aliases, OR are already tracked
-            existing_in_df = set(self.df.columns)
-            existing_in_aliases = set(self.aliases.keys())
-            tracked_in_schema = set(self.compression_info.keys()) - {'__meta__'}
+        # Check which columns exist in DataFrame, aliases, OR are already tracked
+        existing_in_df = set(self.df.columns)
+        existing_in_aliases = set(self.aliases.keys())
+        tracked_in_schema = set(self.compression_info.keys()) - {'__meta__'}
 
-            # A column is "available" if:
-            # 1. It exists physically in the DataFrame, OR
-            # 2. It exists as an alias (compressed columns become aliases), OR
-            # 3. It's already tracked in compression_info (for state validation)
-            available_cols = [col for col in cols_to_process
-                              if col in existing_in_df or
-                              col in existing_in_aliases or
-                              col in tracked_in_schema]
+        # A column is "available" if:
+        # 1. It exists physically in the DataFrame, OR
+        # 2. It exists as an alias (compressed columns become aliases), OR
+        # 3. It's already tracked in compression_info (for state validation)
+        available_cols = [col for col in cols_to_process
+                          if col in existing_in_df or
+                          col in existing_in_aliases or
+                          col in tracked_in_schema]
 
-            # A column is "missing" only if it's nowhere: not in df, not an alias, not tracked
-            missing_cols = [col for col in cols_to_process
-                            if col not in existing_in_df and
-                            col not in existing_in_aliases and
-                            col not in tracked_in_schema]
+        # A column is "missing" only if it's nowhere: not in df, not an alias, not tracked
+        missing_cols = [col for col in cols_to_process
+                        if col not in existing_in_df and
+                        col not in existing_in_aliases and
+                        col not in tracked_in_schema]
 
-            # Handle missing columns according to on_missing mode
-            if missing_cols:
-                if on_missing == 'error':
-                    raise KeyError(
-                        f"Missing columns: {missing_cols}\n"
-                        f"Available in DataFrame: {list(existing_in_df)[:20]}...\n"
-                        f"Available as aliases: {list(existing_in_aliases)[:20]}..."
-                    )
-                elif on_missing == 'warn':
-                    warnings.warn(
-                        f"Skipping missing columns: {missing_cols}\n"
-                        f"Hint: Use columns= to restrict, or on_missing='error' for strict mode."
-                    )
-                # else: on_missing == 'ignore', do nothing
+        # Handle missing columns according to on_missing mode
+        if missing_cols:
+            if on_missing == 'error':
+                raise KeyError(
+                    f"Missing columns: {missing_cols}\n"
+                    f"Available in DataFrame: {list(existing_in_df)[:20]}...\n"
+                    f"Available as aliases: {list(existing_in_aliases)[:20]}..."
+                )
+            elif on_missing == 'warn':
+                warnings.warn(
+                    f"Skipping missing columns: {missing_cols}\n"
+                    f"Hint: Use columns= to restrict, or on_missing='error' for strict mode."
+                )
+            # else: on_missing == 'ignore', do nothing
 
-            # Update cols_to_process to only include available columns
-            cols_to_process = available_cols
-            # else: In selective mode, don't filter - let existing validation handle it
-            # === END NEW CODE ===
+        # Update cols_to_process to only include available columns
+        cols_to_process = available_cols
+        # === END NEW CODE ===
 
         for orig_col in cols_to_process:
             # Get config (from spec or existing schema)
@@ -901,16 +898,7 @@ class AliasDataFrame:
                     )
                 compressed_col = f"{orig_col}{suffix}"
 
-            # For selective mode, validate column exists and handle schema updates
-            if schema_mode == 'selective':
-                # Validate column exists in DataFrame or aliases
-                if orig_col not in self.df.columns and orig_col not in self.aliases:
-                    available = list(self.df.columns)[:10]
-                    raise ValueError(
-                        f"Column '{orig_col}' not found in DataFrame or aliases. "
-                        f"Cannot compress non-existent column.\n"
-                        f"Available columns (first 10): {available}..."
-                    )
+            # For selective mode, nothing to be done
 
             # Check current state and validate transitions
             current_state = self.get_compression_state(orig_col)

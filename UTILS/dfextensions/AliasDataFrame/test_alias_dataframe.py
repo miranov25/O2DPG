@@ -1091,7 +1091,7 @@ class TestCompressionStateMachine(unittest.TestCase):
         self.assertIn('decompress first', str(cm.exception).lower())
 
     def test_selective_mode_validates_column_exists(self):
-        """Test that selective mode validates column exists in DataFrame"""
+        """Test that selective mode with on_missing='error' validates column exists"""
         spec = {
             'nonexistent': {
                 'compress': 'round(nonexistent*10)',
@@ -1101,12 +1101,11 @@ class TestCompressionStateMachine(unittest.TestCase):
             }
         }
 
-        with self.assertRaises(ValueError) as cm:
-            self.adf.compress_columns(spec, columns=['nonexistent'])
+        # Use on_missing='error' for strict validation
+        with self.assertRaises(KeyError) as cm:
+            self.adf.compress_columns(spec, columns=['nonexistent'], on_missing='error')
 
-        self.assertIn('not found in DataFrame', str(cm.exception))
-        self.assertIn('nonexistent', str(cm.exception))
-
+        self.assertIn("Missing columns", str(cm.exception))
     def test_selective_mode_validates_columns_in_spec(self):
         """Test that selective mode validates requested columns are in spec"""
         with self.assertRaises(ValueError) as cm:
@@ -1210,6 +1209,178 @@ class TestCompressionStateMachine(unittest.TestCase):
         # dz should still be SCHEMA_ONLY with original schema
         self.assertEqual(self.adf.get_compression_state('dz'), CompressionState.SCHEMA_ONLY)
         self.assertEqual(self.adf.compression_info['dz']['compress_expr'], self.spec['dz']['compress'])
+
+
+class TestCompressionOnMissing(unittest.TestCase):
+    """Test on_missing and return_summary parameters"""
+
+    def setUp(self):
+        """Create test DataFrame and compression spec"""
+        self.df = pd.DataFrame({
+            'dy': np.random.randn(10),
+            'dz': np.random.randn(10),
+            'y': np.random.randn(10) * 50,
+        })
+
+        # Spec with some columns that won't exist in df
+        self.spec = {
+            'dy': {
+                'compress': 'round(asinh(dy)*40)',
+                'decompress': 'sinh(dy_c/40.)',
+                'compressed_dtype': np.int16,
+                'decompressed_dtype': np.float16
+            },
+            'dz': {
+                'compress': 'round(asinh(dz)*40)',
+                'decompress': 'sinh(dz_c/40.)',
+                'compressed_dtype': np.int16,
+                'decompressed_dtype': np.float16
+            },
+            'y': {
+                'compress': 'round(y*(0x7fff/50.))',
+                'decompress': 'y_c*(50.0/(0x7fff))',
+                'compressed_dtype': np.int16,
+                'decompressed_dtype': np.float32
+            },
+            'dyC0': {  # This column doesn't exist in df
+                'compress': 'round(asinh(dyC0)*100)',
+                'decompress': 'sinh(dyC0_c/100.)',
+                'compressed_dtype': np.int16,
+                'decompressed_dtype': np.float16
+            }
+        }
+
+    def test_default_warn_mode(self):
+        """Test default on_missing='warn' behavior"""
+        adf = AliasDataFrame(self.df)
+
+        with self.assertWarns(UserWarning) as cm:
+            result = adf.compress_columns(self.spec, return_summary=True)
+
+        # Check warning message
+        self.assertIn("Skipping missing columns", str(cm.warning))
+        self.assertIn("dyC0", str(cm.warning))
+
+        # Check summary
+        self.assertEqual(set(result['compressed']), {'dy', 'dz', 'y'})
+        self.assertEqual(result['skipped'], ['dyC0'])
+
+        # Verify compression worked
+        self.assertIn('dy_c', adf.df.columns)
+        self.assertIn('dz_c', adf.df.columns)
+        self.assertIn('y_c', adf.df.columns)
+        self.assertNotIn('dyC0_c', adf.df.columns)
+
+    def test_strict_error_mode(self):
+        """Test on_missing='error' raises KeyError"""
+        adf = AliasDataFrame(self.df)
+
+        with self.assertRaises(KeyError) as cm:
+            adf.compress_columns(self.spec, on_missing='error')
+
+        # Check error message
+        self.assertIn("Missing columns", str(cm.exception))
+        self.assertIn("dyC0", str(cm.exception))
+
+    def test_silent_ignore_mode(self):
+        """Test on_missing='ignore' produces no warnings"""
+        adf = AliasDataFrame(self.df)
+
+        # Use warnings filter to catch any warnings
+        import warnings
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = adf.compress_columns(self.spec, on_missing='ignore', return_summary=True)
+
+        # No warnings should be raised
+        self.assertEqual(len(w), 0)
+
+        # But compression should still work
+        self.assertEqual(set(result['compressed']), {'dy', 'dz', 'y'})
+        self.assertEqual(result['skipped'], ['dyC0'])
+
+    def test_explicit_columns_subset(self):
+        """Test compression with explicit columns parameter"""
+        adf = AliasDataFrame(self.df)
+
+        # Only compress dy and dz
+        result = adf.compress_columns(
+            self.spec,
+            columns=['dy', 'dz'],
+            return_summary=True
+        )
+
+        self.assertEqual(set(result['compressed']), {'dy', 'dz'})
+        self.assertEqual(result['skipped'], [])  # All requested columns exist
+
+        # Verify only requested columns were compressed
+        self.assertIn('dy_c', adf.df.columns)
+        self.assertIn('dz_c', adf.df.columns)
+        self.assertNotIn('y_c', adf.df.columns)
+
+    def test_return_summary_default_false(self):
+        """Test that return_summary=False returns self (backward compatible)"""
+        adf = AliasDataFrame(self.df)
+
+        # Default should return self
+        result = adf.compress_columns({'dy': self.spec['dy']})
+        self.assertIs(result, adf)
+
+        # Explicit False should also return self
+        result = adf.compress_columns(
+            {'dz': self.spec['dz']},
+            return_summary=False
+        )
+        self.assertIs(result, adf)
+
+    def test_all_columns_missing_warn(self):
+        """Test behavior when all columns are missing"""
+        adf = AliasDataFrame(pd.DataFrame({'x': [1, 2, 3]}))
+
+        with self.assertWarns(UserWarning) as cm:
+            result = adf.compress_columns(self.spec, return_summary=True)
+
+        self.assertIn("Skipping missing columns", str(cm.warning))
+        self.assertEqual(result['compressed'], [])
+        self.assertEqual(set(result['skipped']), {'dy', 'dz', 'y', 'dyC0'})
+
+    def test_all_columns_missing_error(self):
+        """Test error mode when all columns are missing"""
+        adf = AliasDataFrame(pd.DataFrame({'x': [1, 2, 3]}))
+
+        with self.assertRaises(KeyError) as cm:
+            adf.compress_columns(self.spec, on_missing='error')
+
+        self.assertIn("Missing columns", str(cm.exception))
+
+    def test_partial_missing_with_columns_param(self):
+        """Test warning when some explicitly requested columns are missing"""
+        df = pd.DataFrame({'dy': np.random.randn(10)})
+        adf = AliasDataFrame(df)
+
+        with self.assertWarns(UserWarning) as cm:
+            result = adf.compress_columns(
+                self.spec,
+                columns=['dy', 'dyC0'],  # dyC0 doesn't exist
+                return_summary=True
+            )
+
+        self.assertEqual(result['compressed'], ['dy'])
+        self.assertEqual(result['skipped'], ['dyC0'])
+
+    def test_method_chaining_still_works(self):
+        """Test that method chaining still works with default parameters"""
+        adf = AliasDataFrame(self.df)
+
+        # Should be able to chain
+        result = (adf
+                  .compress_columns({'dy': self.spec['dy']})
+                  .compress_columns({'dz': self.spec['dz']}))
+
+        self.assertIs(result, adf)
+        self.assertIn('dy_c', adf.df.columns)
+        self.assertIn('dz_c', adf.df.columns)
+
 
 
 if __name__ == "__main__":
