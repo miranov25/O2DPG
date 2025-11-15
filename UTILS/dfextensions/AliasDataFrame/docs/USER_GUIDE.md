@@ -19,8 +19,43 @@ Define symbolic columns as expressions involving other columns or aliases:
 
 ```python
 adf.add_alias("pt", "sqrt(px**2 + py**2)")
-adf.materialize_alias("pt")
+adf.materialize_alias("pt")  # Adds 'pt' column to DataFrame
 ```
+
+**Evaluate aliases without storing:**
+
+```python
+# Get alias as pandas Series (doesn't add column)
+pt_series = adf.get_alias_series("pt")
+
+# Get alias as numpy array (doesn't add column) 
+pt_array = adf.get_alias_array("pt")
+```
+
+This is particularly useful for:
+- **Boolean selections** without polluting DataFrame with temporary mask columns
+- **Temporary computations** for analysis or visualization
+- **Progressive workflows** where you want clean DataFrames
+
+**Example: Selection masks**
+
+```python
+# Define selection as boolean alias
+adf.add_alias("highPt", "pt > 5.0", dtype=bool)
+
+# Get mask without adding column to DataFrame
+mask = adf.get_alias_array("highPt")
+selected_data = adf.df[mask]
+
+# DataFrame stays clean: 'highPt' is NOT a column
+assert 'highPt' not in adf.df.columns  # ✓ True
+```
+
+**Return types:**
+- `get_alias_series(name)` always returns a pandas Series aligned with the DataFrame index.
+- `get_alias_array(name)` always returns a NumPy array.
+
+**Important:** Only the *dependencies* of the alias may be materialized as columns; the alias itself is never added as a column unless `materialize_alias()` is explicitly called. This enables clean boolean selections ideal for SoA-style (Structure of Arrays) selection specifications.
 
 ### ✅ Subframe Support (Hierarchical Dependencies)
 
@@ -149,6 +184,7 @@ adf.validate_aliases()       # List broken/inconsistent aliases
 | Feature                       | AliasDataFrame | pandas    | Vaex     | Awkward Arrays | polars    | Dask      |
 | ----------------------------- | -------------- | --------- | -------- | -------------- | --------- | --------- |
 | Lazy alias columns            | ✅ Yes          | ⚠️ Manual | ✅ Yes    | ❌              | ✅ Partial | ✅ Partial |
+| Non-materializing evaluation  | ✅ Yes          | ⚠️ eval() | ⚠️ Partial | ❌            | ⚠️ Partial | ⚠️ Partial |
 | Dependency tracking           | ✅ Full graph   | ❌         | ⚠️ Basic | ❌              | ❌         | ❌         |
 | Subframe hierarchy (joins)    | ✅ Index-based  | ❌         | ❌        | ⚠️ Nested only | ❌         | ⚠️ Manual |
 | Constant alias support        | ✅ With dtype   | ❌         | ❌        | ❌              | ❌         | ❌         |
