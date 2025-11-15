@@ -705,6 +705,8 @@ class AliasDataFrame:
         return True
 
     def compress_columns(self, compression_spec=None, columns=None, suffix='_c', drop_original=True,
+                         on_missing='warn',       # NEW
+                         return_summary=False,     # NEW
                          measure_precision=False):
         """
         Compress columns using bidirectional transforms with state management.
@@ -738,18 +740,28 @@ class AliasDataFrame:
             Compressed column name suffix (default: '_c'). Ignored when reusing schema.
         drop_original : bool, optional
             Remove original column after compression (default: True)
+        on_missing : {'warn', 'error', 'ignore'}, optional
+            How to handle columns that don't exist in DataFrame (default: 'warn'):
+            - 'warn': Skip missing columns with warning
+            - 'error': Raise KeyError if any column missing
+            - 'ignore': Skip missing columns silently
+        return_summary : bool, optional
+            Return summary dict with compressed/skipped columns (default: False)
         measure_precision : bool, optional
             Compute and store compression precision loss (default: False)
 
         Returns
         -------
-        self : AliasDataFrame
-            For method chaining
+        dict or self
+            If return_summary=True: {'compressed': [...], 'skipped': [...]}
+            Otherwise: self (for method chaining)
 
         Raises
         ------
         ValueError
             If invalid state transition, name collision, or missing schema
+        KeyError
+            If on_missing='error' and columns don't exist in DataFrame
 
         Examples
         --------
@@ -765,6 +777,10 @@ class AliasDataFrame:
         >>> # Direct compression (all columns in spec)
         >>> adf.compress_columns(spec)  # Compress everything
 
+        >>> # Handle missing columns flexibly
+        >>> adf.compress_columns(spec, on_missing='ignore')  # Skip silently
+        >>> result = adf.compress_columns(spec, return_summary=True)  # Get summary
+
         Notes
         -----
         - State transitions: SCHEMA_ONLY → COMPRESSED, DECOMPRESSED → COMPRESSED
@@ -779,7 +795,7 @@ class AliasDataFrame:
             cols_to_process = [
                 col for col in self.compression_info
                 if col != "__meta__" and
-                self.compression_info[col].get('state') in (CompressionState.SCHEMA_ONLY, CompressionState.DECOMPRESSED)
+                   self.compression_info[col].get('state') in (CompressionState.SCHEMA_ONLY, CompressionState.DECOMPRESSED)
             ]
             if not cols_to_process:
                 return self  # Nothing to do
@@ -817,6 +833,51 @@ class AliasDataFrame:
                 "- compress_columns(spec) for direct compression\n"
                 "- compress_columns(spec, columns=[...]) for selective compression"
             )
+
+        # === NEW: Filter columns based on on_missing parameter ===
+        # Special handling for selective mode to preserve original validation behavior
+        if schema_mode != 'selective':
+            import warnings
+
+            # Check which columns exist in DataFrame, aliases, OR are already tracked
+            existing_in_df = set(self.df.columns)
+            existing_in_aliases = set(self.aliases.keys())
+            tracked_in_schema = set(self.compression_info.keys()) - {'__meta__'}
+
+            # A column is "available" if:
+            # 1. It exists physically in the DataFrame, OR
+            # 2. It exists as an alias (compressed columns become aliases), OR
+            # 3. It's already tracked in compression_info (for state validation)
+            available_cols = [col for col in cols_to_process
+                              if col in existing_in_df or
+                              col in existing_in_aliases or
+                              col in tracked_in_schema]
+
+            # A column is "missing" only if it's nowhere: not in df, not an alias, not tracked
+            missing_cols = [col for col in cols_to_process
+                            if col not in existing_in_df and
+                            col not in existing_in_aliases and
+                            col not in tracked_in_schema]
+
+            # Handle missing columns according to on_missing mode
+            if missing_cols:
+                if on_missing == 'error':
+                    raise KeyError(
+                        f"Missing columns: {missing_cols}\n"
+                        f"Available in DataFrame: {list(existing_in_df)[:20]}...\n"
+                        f"Available as aliases: {list(existing_in_aliases)[:20]}..."
+                    )
+                elif on_missing == 'warn':
+                    warnings.warn(
+                        f"Skipping missing columns: {missing_cols}\n"
+                        f"Hint: Use columns= to restrict, or on_missing='error' for strict mode."
+                    )
+                # else: on_missing == 'ignore', do nothing
+
+            # Update cols_to_process to only include available columns
+            cols_to_process = available_cols
+            # else: In selective mode, don't filter - let existing validation handle it
+            # === END NEW CODE ===
 
         for orig_col in cols_to_process:
             # Get config (from spec or existing schema)
@@ -995,8 +1056,19 @@ class AliasDataFrame:
             if precision_info is not None:
                 self.compression_info[orig_col]['precision'] = precision_info
 
-        return self
+        # === NEW: Return summary if requested ===
+        if return_summary:
+            compressed_cols = [col for col in available_cols
+                               if schema_mode != 'define' and
+                               col in self.compression_info and
+                               self.compression_info[col].get('state') == CompressionState.COMPRESSED]
+            return {
+                'compressed': compressed_cols,
+                'skipped': missing_cols
+            }
+        # === END NEW CODE ===
 
+        return self
     def _validate_compressed_col_name(self, orig_col, compressed_col):
         """
         Validate compressed column name doesn't conflict.
