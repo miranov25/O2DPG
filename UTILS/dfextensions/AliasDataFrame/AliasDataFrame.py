@@ -451,6 +451,146 @@ class AliasDataFrame:
                     self.df.drop(columns=[col], inplace=True)
         return added
 
+    def get_alias_series(self, name, dtype=None):
+        """
+        Evaluate an alias expression and return the result as a pandas Series,
+        without storing the alias itself as a column in self.df.
+
+        IMPORTANT:
+        - Alias *dependencies* may still be materialized as columns
+          (same behavior as materialize_alias). This is intentional for
+          consistency with the existing alias system.
+
+        Parameters
+        ----------
+        name : str
+            Alias name to evaluate. Must be present in self.aliases.
+        dtype : optional
+            Optional dtype override. If not provided, alias_dtypes[name]
+            is used if available.
+
+        Returns
+        -------
+        pandas.Series
+            Series aligned with self.df.index.
+
+        Raises
+        ------
+        KeyError
+            If the alias is not defined.
+        ValueError
+            If the evaluated result has incompatible length.
+        TypeError
+            If dtype conversion fails or evaluation returns unsupported type.
+
+        Examples
+        --------
+        >>> aDF.add_alias("isOK", "(row < 152) & (abs(dy) < 10)", dtype=bool)
+        >>> mask = aDF.get_alias_series("isOK")  # Returns Series, doesn't add column
+        >>> df_filtered = aDF.df[mask]
+        """
+        if name not in self.aliases:
+            raise KeyError(f"Alias '{name}' is not defined.")
+
+        # Ensure dependencies are materialized (side effect by design, consistent with materialize_alias)
+        expr = self.aliases[name]
+        tokens = re.findall(r'\b\w+\b|\w+\.\w+', expr)
+        for token in tokens:
+            if '.' in token:
+                sf_name, sf_attr = token.split('.', 1)
+                sf = self.get_subframe(sf_name)
+                if sf and sf_attr in sf.aliases and sf_attr not in sf.df.columns:
+                    sf.materialize_alias(sf_attr)
+            elif token in self.aliases and token not in self.df.columns and token != name:
+                self.materialize_alias(token)
+
+        # Evaluate the alias expression
+        result = self._eval_in_namespace(expr)
+        n_rows = len(self.df)
+
+        # Normalize result to a Series aligned with self.df.index
+        if isinstance(result, pd.Series):
+            # Already a Series, use as-is (should be aligned from _eval_in_namespace)
+            series = result
+        elif isinstance(result, pd.DataFrame):
+            # DataFrames are not valid for aliases
+            raise TypeError(
+                f"Alias '{name}' evaluated to a DataFrame; "
+                "aliases must be 1D (Series/array/scalar)."
+            )
+        elif np.isscalar(result):
+            # Broadcast scalar to full length
+            series = pd.Series([result] * n_rows, index=self.df.index)
+        else:
+            # Assume array-like
+            try:
+                length = len(result)
+            except TypeError as exc:
+                # Non-scalar, non-sequence → unsupported
+                raise TypeError(
+                    f"Alias '{name}' evaluated to unsupported type "
+                    f"{type(result).__name__}"
+                ) from exc
+
+            if length != n_rows:
+                raise ValueError(
+                    f"Alias '{name}' evaluated to {length} values, "
+                    f"but DataFrame has {n_rows} rows."
+                )
+            series = pd.Series(result, index=self.df.index)
+
+        # Apply dtype if requested or known
+        target_dtype = dtype or self.alias_dtypes.get(name)
+        if target_dtype is not None:
+            try:
+                if hasattr(series, "astype"):
+                    series = series.astype(target_dtype)
+                else:
+                    series = target_dtype(series)
+            except (ValueError, TypeError) as exc:
+                raise TypeError(
+                    f"Cannot convert alias '{name}' result to dtype "
+                    f"{target_dtype}: {exc}"
+                ) from exc
+
+        return series
+
+    def get_alias_array(self, name, dtype=None):
+        """
+        Evaluate an alias and return its values as a NumPy array.
+
+        This is particularly useful for selection aliases, e.g.:
+
+            aDF.add_alias("isOK", "row < 152", dtype=bool)
+            mask = aDF.get_alias_array("isOK")
+            df_sel = aDF.df[mask]
+
+        Behavior is identical to get_alias_series(), except for the
+        return type (numpy array instead of pandas Series).
+
+        Parameters
+        ----------
+        name : str
+            Alias name to evaluate.
+        dtype : optional
+            Optional dtype override.
+
+        Returns
+        -------
+        numpy.ndarray
+
+        Examples
+        --------
+        >>> aDF.add_alias("isOK", "(row < 152) & (abs(dy) < 10)", dtype=bool)
+        >>> mask = aDF.get_alias_array("isOK")  # Returns array, doesn't add column
+        >>> df_filtered = aDF.df[mask]
+        """
+        series = self.get_alias_series(name, dtype=dtype)
+        # to_numpy is preferred; fallback to np.asarray for safety
+        if hasattr(series, "to_numpy"):
+            return series.to_numpy()
+        return np.asarray(series)
+
     def materialize_all(self):
         self._check_for_cycles()
         for name in self.aliases:
