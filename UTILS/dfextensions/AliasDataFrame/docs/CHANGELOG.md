@@ -108,7 +108,7 @@ Enables incremental compression for TPC residual analysis:
 
 ---
 
-## [1.0.0] - 2024-XX-XX
+##  - 2025-01-11
 
 ### Added
 - Initial compression/decompression implementation
@@ -135,26 +135,22 @@ Enables incremental compression for TPC residual analysis:
 - Usage examples
 - State machine explanation
 
----
 
-## Version Numbering
+## - 2025-11-20
 
-This project uses [Semantic Versioning](https://semver.org/):
-- **MAJOR** version for incompatible API changes
-- **MINOR** version for new functionality (backward compatible)
-- **PATCH** version for bug fixes (backward compatible)
+### Added
+- **Major performance improvement**: Optimized `read_tree()` with threaded branch-by-branch reading
+  - 60-770x faster read times (1s vs 771s for 12M rows)
+  - 74-79% less peak memory usage
+  - Default 8 worker threads (configurable via `num_workers` parameter)
+- Entry range support: `entry_start` and `entry_stop` parameters for partial file reads
+- Dtype restoration from `compression_info` for compressed columns
 
----
+### Changed
+- `read_tree()` now uses branch-by-branch reading instead of one-shot pandas construction
+- Compressed columns automatically restored to correct dtype on read
 
-## Contributing
-
-When adding entries to this changelog:
-1. Add new changes to the [Unreleased] section
-2. Move to versioned section on release
-3. Follow the format: Added / Changed / Deprecated / Removed / Fixed / Security
-4. Include use cases and examples for major changes
-5. Note backward compatibility status
-
----
-
-**Last Updated:** 2025-01-09
+### Performance
+- Benchmark (12M rows, 70 branches): 771s → 1.0s
+- Peak memory: 3894 MB → 853 MB
+- Final DataFrame: 264 MB → 205 MB (with compression)

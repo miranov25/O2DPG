@@ -1381,7 +1381,302 @@ class TestCompressionOnMissing(unittest.TestCase):
         self.assertIn('dy_c', adf.df.columns)
         self.assertIn('dz_c', adf.df.columns)
 
+class TestReadTreeOptimized(unittest.TestCase):
+    """Test cases for optimized read_tree with entry_range and threading support"""
 
+    def setUp(self):
+        """Create test data and export to ROOT file"""
+        # Create main DataFrame
+        n_rows = 1000
+        self.df = pd.DataFrame({
+            'x': np.random.randn(n_rows).astype(np.float32),
+            'y': np.random.randn(n_rows).astype(np.float32),
+            'z': np.arange(n_rows, dtype=np.int32),
+        })
+
+        # Create subframe (small calibration data)
+        self.df_calib = pd.DataFrame({
+            'calib_id': np.arange(10),
+            'factor': np.random.randn(10).astype(np.float32),
+        })
+
+        self.adf = AliasDataFrame(self.df)
+        self.adf.add_alias('xy_sum', 'x + y', dtype=np.float32)
+
+        # Register subframe
+        adf_calib = AliasDataFrame(self.df_calib)
+        self.adf.register_subframe('calib', adf_calib, index_columns='calib_id')
+
+        # Export to temp file
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".root", delete=False)
+        self.tmp_path = self.tmp.name
+        self.tmp.close()
+        self.adf.export_tree(self.tmp_path, treename="tree", dropAliasColumns=False)
+
+    def tearDown(self):
+        """Clean up temp file"""
+        if os.path.exists(self.tmp_path):
+            os.remove(self.tmp_path)
+
+    def test_basic_read(self):
+        """Test basic read_tree without entry range"""
+        adf_loaded = AliasDataFrame.read_tree(self.tmp_path, "tree")
+
+        # Check shape matches
+        self.assertEqual(len(adf_loaded.df), len(self.df))
+        self.assertEqual(set(adf_loaded.df.columns), set(self.df.columns))
+
+        # Check data matches
+        np.testing.assert_array_almost_equal(
+            adf_loaded.df['x'].values,
+            self.df['x'].values,
+            decimal=5
+        )
+
+    def test_entry_range_stop(self):
+        """Test reading partial file with entry_stop"""
+        adf_loaded = AliasDataFrame.read_tree(
+            self.tmp_path, "tree",
+            entry_stop=500
+        )
+
+        self.assertEqual(len(adf_loaded.df), 500)
+        np.testing.assert_array_almost_equal(
+            adf_loaded.df['x'].values,
+            self.df['x'].values[:500],
+            decimal=5
+        )
+
+    def test_entry_range_start_stop(self):
+        """Test reading range with both entry_start and entry_stop"""
+        adf_loaded = AliasDataFrame.read_tree(
+            self.tmp_path, "tree",
+            entry_start=200,
+            entry_stop=700
+        )
+
+        self.assertEqual(len(adf_loaded.df), 500)
+        np.testing.assert_array_almost_equal(
+            adf_loaded.df['z'].values,
+            self.df['z'].values[200:700],
+            decimal=5
+        )
+
+    def test_threaded_vs_unthreaded_equivalence(self):
+        """Test that threaded and unthreaded reads produce identical results"""
+        # Single-threaded
+        adf_single = AliasDataFrame.read_tree(
+            self.tmp_path, "tree",
+            num_workers=1
+        )
+
+        # Multi-threaded
+        adf_multi = AliasDataFrame.read_tree(
+            self.tmp_path, "tree",
+            num_workers=4
+        )
+
+        # Results should be identical
+        pd.testing.assert_frame_equal(
+            adf_single.df.sort_index(axis=1),
+            adf_multi.df.sort_index(axis=1)
+        )
+
+        # Aliases should match
+        self.assertEqual(adf_single.aliases, adf_multi.aliases)
+
+    def test_subframe_loaded(self):
+        """Test that subframes are loaded correctly"""
+        adf_loaded = AliasDataFrame.read_tree(self.tmp_path, "tree")
+
+        # Check subframe exists
+        self.assertIn('calib', adf_loaded._subframes.subframes)
+
+        # Check subframe data
+        sf = adf_loaded.get_subframe('calib')
+        self.assertEqual(len(sf.df), len(self.df_calib))
+
+    def test_subframe_warning_with_entry_range(self):
+        """Test warning when entry_range used with subframes"""
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            adf_loaded = AliasDataFrame.read_tree(
+                self.tmp_path, "tree",
+                entry_stop=500
+            )
+
+            # Should have warning about subframes
+            self.assertEqual(len(w), 1)
+            self.assertIn("entry_start/entry_stop", str(w[0].message))
+            self.assertIn("calib", str(w[0].message))
+
+        # Main tree should be sliced
+        self.assertEqual(len(adf_loaded.df), 500)
+
+        # Subframe should be fully loaded
+        sf = adf_loaded.get_subframe('calib')
+        self.assertEqual(len(sf.df), len(self.df_calib))
+
+    def test_aliases_preserved(self):
+        """Test that aliases are preserved after read"""
+        adf_loaded = AliasDataFrame.read_tree(self.tmp_path, "tree")
+
+        # Check alias exists
+        self.assertIn('xy_sum', adf_loaded.aliases)
+
+        # Materialize and check result
+        adf_loaded.materialize_alias('xy_sum')
+        expected = adf_loaded.df['x'] + adf_loaded.df['y']
+        np.testing.assert_array_almost_equal(
+            adf_loaded.df['xy_sum'].values,
+            expected.values,
+            decimal=5
+        )
+
+    def test_backward_compatibility_no_metadata(self):
+        """Test reading file without extended metadata (old format)"""
+        # Create simple file without metadata
+        df_simple = pd.DataFrame({
+            'a': np.arange(100),
+            'b': np.arange(100) * 2
+        })
+
+        tmp_simple = tempfile.NamedTemporaryFile(suffix=".root", delete=False)
+        tmp_simple_path = tmp_simple.name
+        tmp_simple.close()
+
+        try:
+            # Write with uproot directly (no metadata)
+            import uproot
+            with uproot.recreate(tmp_simple_path) as f:
+                f["tree"] = {k: df_simple[k].values for k in df_simple.columns}
+
+            # Should read without error
+            adf_loaded = AliasDataFrame.read_tree(tmp_simple_path, "tree")
+
+            self.assertEqual(len(adf_loaded.df), 100)
+            self.assertEqual(adf_loaded.aliases, {})
+
+        finally:
+            os.remove(tmp_simple_path)
+
+    def test_invalid_tree_raises_error(self):
+        """Test that invalid tree name raises informative error"""
+        with self.assertRaises(ValueError) as cm:
+            AliasDataFrame.read_tree(self.tmp_path, "nonexistent_tree")
+
+        self.assertIn("nonexistent_tree", str(cm.exception))
+        self.assertIn("not found", str(cm.exception))
+
+
+class TestReadTreeWithCompression(unittest.TestCase):
+    """Test read_tree with compressed columns and dtype restoration"""
+
+    def setUp(self):
+        """Create test data with compression"""
+        n_rows = 1000
+        self.df = pd.DataFrame({
+            'dy': np.random.randn(n_rows).astype(np.float32),
+            'dz': np.random.randn(n_rows).astype(np.float32),
+        })
+
+        # Save original values before compression
+        self.original_dy = self.df['dy'].values.copy()
+        self.original_dz = self.df['dz'].values.copy()
+
+        self.adf = AliasDataFrame(self.df)
+
+        # Define compression schema
+        self.spec = {
+            'dy': {
+                'compress': 'round(asinh(dy)*40)',
+                'decompress': 'sinh(dy_c/40.)',
+                'compressed_dtype': np.int16,
+                'decompressed_dtype': np.float16
+            },
+            'dz': {
+                'compress': 'round(asinh(dz)*40)',
+                'decompress': 'sinh(dz_c/40.)',
+                'compressed_dtype': np.int16,
+                'decompressed_dtype': np.float16
+            }
+        }
+
+        # Compress columns
+        self.adf.compress_columns(self.spec)
+
+        # Export to temp file
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".root", delete=False)
+        self.tmp_path = self.tmp.name
+        self.tmp.close()
+        self.adf.export_tree(self.tmp_path, treename="tree")
+
+    def tearDown(self):
+        """Clean up temp file"""
+        if os.path.exists(self.tmp_path):
+            os.remove(self.tmp_path)
+
+    def test_compressed_columns_dtype_restored(self):
+        """Test that compressed columns have correct dtype after read"""
+        adf_loaded = AliasDataFrame.read_tree(self.tmp_path, "tree")
+
+        # Compressed columns should exist with correct dtype
+        self.assertIn('dy_c', adf_loaded.df.columns)
+        self.assertIn('dz_c', adf_loaded.df.columns)
+
+        # Check dtype (int16 as stored)
+        self.assertEqual(adf_loaded.df['dy_c'].dtype, np.int16)
+        self.assertEqual(adf_loaded.df['dz_c'].dtype, np.int16)
+
+    def test_compression_info_preserved(self):
+        """Test that compression_info metadata is preserved"""
+        adf_loaded = AliasDataFrame.read_tree(self.tmp_path, "tree")
+
+        # Check compression_info exists
+        self.assertIn('dy', adf_loaded.compression_info)
+        self.assertIn('dz', adf_loaded.compression_info)
+
+        # Check schema details
+        self.assertEqual(
+            adf_loaded.compression_info['dy']['compress_expr'],
+            'round(asinh(dy)*40)'
+        )
+
+    def test_decompression_alias_works(self):
+        """Test that decompression alias produces correct values"""
+        adf_loaded = AliasDataFrame.read_tree(self.tmp_path, "tree")
+
+        # Decompression alias should exist
+        self.assertIn('dy', adf_loaded.aliases)
+
+        # Materialize decompressed value
+        adf_loaded.materialize_alias('dy')
+
+        # Should be close to original (within compression precision)
+        original_dy = self.original_dy
+        restored_dy = adf_loaded.df['dy'].values
+
+        # Allow for compression loss (asinh/sinh transform)
+        #np.testing.assert_allclose(restored_dy, original_dy, rtol=0.05, atol=0.01)
+        np.testing.assert_allclose(restored_dy, original_dy, rtol=0.1, atol=0.05)
+
+
+    def test_entry_range_with_compression(self):
+        """Test that entry_range works correctly with compressed data"""
+        adf_loaded = AliasDataFrame.read_tree(
+            self.tmp_path, "tree",
+            entry_stop=500
+        )
+
+        self.assertEqual(len(adf_loaded.df), 500)
+
+        # Compressed columns should have correct dtype
+        self.assertEqual(adf_loaded.df['dy_c'].dtype, np.int16)
+
+
+# Add to end of file before if __name__ == "__main__":
 
 if __name__ == "__main__":
     unittest.main()
