@@ -239,7 +239,37 @@ class AliasDataFrame:
 
         return env
 
-    def _prepare_subframe_joins(self, expr):
+    def _prepare_subframe_joins(self, expr, warn_missing_keys=True, alias_name=None):
+        """
+        Prepare subframe joins for expression evaluation.
+        
+        Detects dotted references like `T.mX` and performs left joins to bring
+        subframe columns into the main DataFrame.
+        
+        Parameters
+        ----------
+        expr : str
+            Expression containing potential subframe references (e.g., "x - T.mX")
+        warn_missing_keys : bool, default=True
+            If True, emit warning when main frame keys are not found in subframe.
+            Missing keys produce NaN values (rows are never dropped).
+        alias_name : str, optional
+            Name of the alias being evaluated (for warning messages)
+            
+        Returns
+        -------
+        str
+            Modified expression with subframe references replaced by joined column names
+            
+        Notes
+        -----
+        - Uses LEFT JOIN to preserve all main frame rows
+        - Missing keys in subframe produce NaN (never drops rows)
+        - Column naming convention: {column}__{subframe} (e.g., mX__T)
+        - TTree::Draw compatible: expressions use dot notation (T.mX)
+        """
+        import warnings
+        
         tokens = re.findall(r'(\b\w+)\.(\w+)', expr)
         for sf_name, sf_col in tokens:
             entry = self._subframes.get_entry(sf_name)
@@ -252,22 +282,82 @@ class AliasDataFrame:
                 index_cols = [index_cols]
             merge_cols = index_cols + [sf_col]
             suffix = f'__{sf_name}'
+            col_renamed = f'{sf_col}{suffix}'
+            
+            # Skip if column already exists (idempotent behavior)
+            if col_renamed in self.df.columns:
+                expr = expr.replace(f'{sf_name}.{sf_col}', col_renamed)
+                continue
 
             try:
-                cols_to_merge = sub_df[merge_cols]
+                cols_to_merge = sub_df[merge_cols].copy()
             except KeyError:
                 if sf_col in sub_adf.aliases:
                     sub_adf.materialize_alias(sf_col)
                     sub_df = sub_adf.df
-                    cols_to_merge = sub_df[merge_cols]
+                    cols_to_merge = sub_df[merge_cols].copy()
                 else:
                     raise KeyError(f"Subframe '{sf_name}' does not contain or define alias '{sf_col}'")
 
-            joined = self.df.merge(cols_to_merge, on=index_cols, suffixes=('', suffix))
-            col_renamed = f'{sf_col}{suffix}'
+            # Handle duplicate keys in subframe by taking first match
+            # This prevents the merge from creating more rows than the main frame
+            if cols_to_merge.duplicated(subset=index_cols).any():
+                cols_to_merge = cols_to_merge.drop_duplicates(subset=index_cols, keep='first')
+            # Phase 3A: Use LEFT JOIN to preserve all main frame rows
+            # Missing keys in subframe will produce NaN (rows are never dropped)
+            n_before = len(self.df)
+            
+            # Preserve original index for proper alignment
+            original_index = self.df.index.copy()
+            
+            # Add a temporary column to track original row order
+            self.df['__row_order__'] = np.arange(len(self.df))
+            
+            joined = self.df.merge(
+                cols_to_merge, 
+                on=index_cols, 
+                suffixes=('', suffix),
+                how='left'  # Critical: preserve all main frame rows
+            )
+            
+            # Sort by original row order to restore alignment
+            joined = joined.sort_values('__row_order__').reset_index(drop=True)
+            
+            # Remove temporary column
+            self.df.drop(columns=['__row_order__'], inplace=True)
+            
+            # Find the actual column name in joined DataFrame
+            # If subframe column name collides with main frame column, it gets suffix
+            # Priority: check for suffixed version first (collision case), then unsuffixed
             if col_renamed in joined.columns:
-                self.df[col_renamed] = joined[col_renamed].values
+                actual_col = col_renamed
+            elif sf_col in joined.columns and sf_col not in self.df.columns:
+                # Column exists in joined but not in main frame - it's from subframe
+                actual_col = sf_col
+            elif f'{sf_col}{suffix}' in joined.columns:
+                # Column got suffixed due to collision
+                actual_col = f'{sf_col}{suffix}'
+            else:
+                # Fallback: column might have been added without suffix
+                actual_col = sf_col if sf_col in joined.columns else None
+            
+            if actual_col and actual_col in joined.columns:
+                # Count missing keys (NaN values introduced by left join)
+                n_missing = int(joined[actual_col].isna().sum())
+                
+                # Emit warning if there are missing keys
+                if warn_missing_keys and n_missing > 0:
+                    alias_info = f"Alias '{alias_name}': " if alias_name else ""
+                    warnings.warn(
+                        f"{alias_info}{n_missing:,} of {n_before:,} keys in main frame "
+                        f"not found in subframe '{sf_name}'. Filled with NaN.",
+                        UserWarning
+                    )
+                
+                # Assign aligned values back to DataFrame with standardized name
+                self.df[col_renamed] = joined[actual_col].values
                 expr = expr.replace(f'{sf_name}.{sf_col}', col_renamed)
+                
         return expr
 
     def _check_for_cycles(self):
@@ -292,8 +382,8 @@ class AliasDataFrame:
             self.constant_aliases.add(name)
         self._check_for_cycles()
 
-    def _eval_in_namespace(self, expr):
-        expr = self._prepare_subframe_joins(expr)
+    def _eval_in_namespace(self, expr, warn_missing_keys=True, alias_name=None):
+        expr = self._prepare_subframe_joins(expr, warn_missing_keys=warn_missing_keys, alias_name=alias_name)
         local_env = {col: self.df[col] for col in self.df.columns}
         local_env.update(self._default_functions())
 
@@ -377,7 +467,8 @@ class AliasDataFrame:
         broken = []
         for name, expr in self.aliases.items():
             try:
-                self._eval_in_namespace(expr)
+                # Suppress warnings during validation - we're just checking syntax
+                self._eval_in_namespace(expr, warn_missing_keys=False, alias_name=name)
             except Exception:
                 broken.append(name)
         return broken
@@ -396,13 +487,16 @@ class AliasDataFrame:
         for k, v in deps.items():
             print(f"  {k}: {sorted(v)}")
 
-    def materialize_alias(self, name, cleanTemporary=False, dtype=None):
+    def materialize_alias(self, name, cleanTemporary=False, dtype=None, warn_missing_keys=True):
         """
         Evaluate an alias and store its result as a real column.
+        
         Args:
             name: Alias name to materialize.
             cleanTemporary: Whether to clean up intermediate dependencies.
             dtype: Optional override dtype to cast to.
+            warn_missing_keys: If True, emit warning when subframe join has missing keys.
+                             Missing keys produce NaN (rows are never dropped).
 
         Raises:
             KeyError: If alias is not defined.
@@ -422,9 +516,9 @@ class AliasDataFrame:
                 if sf and sf_attr in sf.aliases and sf_attr not in sf.df.columns:
                     sf.materialize_alias(sf_attr)
             elif token in self.aliases and token not in self.df.columns:
-                self.materialize_alias(token)
+                self.materialize_alias(token, warn_missing_keys=warn_missing_keys)
 
-        result = self._eval_in_namespace(expr)
+        result = self._eval_in_namespace(expr, warn_missing_keys=warn_missing_keys, alias_name=name)
         result_dtype = dtype or self.alias_dtypes.get(name)
         if result_dtype is not None:
             try:
@@ -470,7 +564,7 @@ class AliasDataFrame:
                     self.df.drop(columns=[col], inplace=True)
         return added
 
-    def get_alias_series(self, name, dtype=None):
+    def get_alias_series(self, name, dtype=None, warn_missing_keys=True):
         """
         Evaluate an alias expression and return the result as a pandas Series,
         without storing the alias itself as a column in self.df.
@@ -487,6 +581,9 @@ class AliasDataFrame:
         dtype : optional
             Optional dtype override. If not provided, alias_dtypes[name]
             is used if available.
+        warn_missing_keys : bool, default=True
+            If True, emit warning when subframe join has missing keys.
+            Missing keys produce NaN (rows are never dropped).
 
         Returns
         -------
@@ -519,12 +616,12 @@ class AliasDataFrame:
                 sf_name, sf_attr = token.split('.', 1)
                 sf = self.get_subframe(sf_name)
                 if sf and sf_attr in sf.aliases and sf_attr not in sf.df.columns:
-                    sf.materialize_alias(sf_attr)
+                    sf.materialize_alias(sf_attr, warn_missing_keys=warn_missing_keys)
             elif token in self.aliases and token not in self.df.columns and token != name:
-                self.materialize_alias(token)
+                self.materialize_alias(token, warn_missing_keys=warn_missing_keys)
 
         # Evaluate the alias expression
-        result = self._eval_in_namespace(expr)
+        result = self._eval_in_namespace(expr, warn_missing_keys=warn_missing_keys, alias_name=name)
         n_rows = len(self.df)
 
         # Normalize result to a Series aligned with self.df.index
@@ -574,7 +671,7 @@ class AliasDataFrame:
 
         return series
 
-    def get_alias_array(self, name, dtype=None):
+    def get_alias_array(self, name, dtype=None, warn_missing_keys=True):
         """
         Evaluate an alias and return its values as a NumPy array.
 
@@ -593,6 +690,8 @@ class AliasDataFrame:
             Alias name to evaluate.
         dtype : optional
             Optional dtype override.
+        warn_missing_keys : bool, default=True
+            If True, emit warning when subframe join has missing keys.
 
         Returns
         -------
@@ -604,7 +703,7 @@ class AliasDataFrame:
         >>> mask = aDF.get_alias_array("isOK")  # Returns array, doesn't add column
         >>> df_filtered = aDF.df[mask]
         """
-        series = self.get_alias_series(name, dtype=dtype)
+        series = self.get_alias_series(name, dtype=dtype, warn_missing_keys=warn_missing_keys)
         # to_numpy is preferred; fallback to np.asarray for safety
         if hasattr(series, "to_numpy"):
             return series.to_numpy()
