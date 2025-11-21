@@ -14,6 +14,25 @@ import networkx as nx
 import re
 import ast
 
+# =============================================================================
+# Verbosity Bitmask Constants for describe_structure()
+# =============================================================================
+VERBOSITY_BASIC        = 0x01  # rows/columns/memory
+VERBOSITY_DTYPES       = 0x02  # columns grouped by dtype
+VERBOSITY_ALIASES      = 0x04  # list aliases (short)
+VERBOSITY_ALIASES_FULL = 0x08  # full alias definitions
+VERBOSITY_COMPRESSION  = 0x10  # compression summary
+VERBOSITY_COMP_FULL    = 0x20  # full compression info
+VERBOSITY_SUBFRAMES    = 0x40  # list subframes
+VERBOSITY_METADATA     = 0x80  # raw metadata dump
+
+# Presets
+VERBOSE_MINIMAL = VERBOSITY_BASIC
+VERBOSE_DEFAULT = (VERBOSITY_BASIC | VERBOSITY_DTYPES | VERBOSITY_ALIASES |
+                   VERBOSITY_COMPRESSION | VERBOSITY_SUBFRAMES)
+VERBOSE_FULL = 0xFF  # All flags
+
+
 class SubframeRegistry:
     """
     Registry to manage subframes (nested AliasDataFrame instances).
@@ -683,13 +702,22 @@ class AliasDataFrame:
             except Exception:
                 expr_str = convert_expr_to_root(expr)
             tree.SetAlias(alias, expr_str)
+        
+        # Phase 2: Capture all column dtypes BEFORE any casting
+        # This enables dtype restoration on read
+        column_dtypes = {
+            col: str(self.df[col].dtype)
+            for col in self.df.columns
+        }
+        
         metadata = {
             "aliases": self.aliases,
             "subframe_indices": {k: v["index"] for k, v in self._subframes.items()},
             "dtypes": {k: v.__name__ for k, v in self.alias_dtypes.items()},
             "constants": list(self.constant_aliases),
             "subframes": list(self._subframes.subframes.keys()),
-            "compression_info": self.compression_info  # NEW
+            "compression_info": self.compression_info,
+            "column_dtypes": column_dtypes  # Phase 2: store all column dtypes
         }
         jmeta = json.dumps(metadata)
         tree.GetUserInfo().Add(ROOT.TObjString(jmeta))
@@ -756,7 +784,8 @@ class AliasDataFrame:
             'constant_aliases': set(),
             'compression_info': {},
             'subframes': [],
-            'subframe_indices': {}
+            'subframe_indices': {},
+            'column_dtypes': {}  # Phase 2: all column dtypes
         }
 
         f_root = ROOT.TFile.Open(filename)
@@ -795,6 +824,7 @@ class AliasDataFrame:
                         metadata['compression_info'] = jmeta.get("compression_info", {})
                         metadata['subframes'] = jmeta.get("subframes", [])
                         metadata['subframe_indices'] = jmeta.get("subframe_indices", {})
+                        metadata['column_dtypes'] = jmeta.get("column_dtypes", {})  # Phase 2
                         break
 
                     except json.JSONDecodeError as e:
@@ -831,15 +861,27 @@ class AliasDataFrame:
 
             if compressed_col and compressed_dtype_str:
                 try:
-                    if isinstance(compressed_dtype_str, str):
-                        dtype_hints[compressed_col] = getattr(np, compressed_dtype_str)
-                    else:
-                        dtype_hints[compressed_col] = compressed_dtype_str
-                except AttributeError:
+                    dtype_hints[compressed_col] = np.dtype(compressed_dtype_str)
+                except TypeError:
                     warnings.warn(
                         f"Unknown dtype '{compressed_dtype_str}' for column '{compressed_col}'. "
                         f"Using default."
                     )
+
+        # =========================================================================
+        # Step 2b: Add column_dtypes from metadata (Phase 2)
+        # Priority: compression_info > column_dtypes
+        # =========================================================================
+        if 'column_dtypes' in metadata:
+            for col, dtype_str in metadata['column_dtypes'].items():
+                if col not in dtype_hints:  # Don't override compression_info
+                    try:
+                        dtype_hints[col] = np.dtype(dtype_str)
+                    except TypeError:
+                        warnings.warn(
+                            f"Unknown dtype '{dtype_str}' for column '{col}'. "
+                            f"Using default."
+                        )
 
         # =========================================================================
         # Step 3: Read branches with uproot (branch-by-branch for memory efficiency)
@@ -1753,3 +1795,242 @@ class AliasDataFrame:
                     frac_nonfinite = prec.get('fraction_nonfinite', 0.0)
                     #if frac_nonfinite >= 0:
                     print(f"  Samples: {n_samples:,}/{n_total:,}, "f"Non-finite: {frac_nonfinite*100:.2f}%")
+
+    def describe_structure(self, verbosity=None, return_dict=False):
+        """
+        Print or return comprehensive structure summary of the AliasDataFrame.
+        
+        Uses bitmask flags for fine-grained control over output sections.
+        
+        Parameters
+        ----------
+        verbosity : int, optional
+            Bitmask controlling which sections to display. Use VERBOSITY_* constants.
+            Default: VERBOSE_DEFAULT (basic + dtypes + aliases + compression + subframes)
+        return_dict : bool, optional
+            If True, return structured dict instead of printing (default: False)
+        
+        Returns
+        -------
+        dict or None
+            If return_dict=True, returns structure dict. Otherwise prints and returns None.
+        
+        Verbosity Flags
+        ---------------
+        VERBOSITY_BASIC        (0x01): rows/columns/memory
+        VERBOSITY_DTYPES       (0x02): columns grouped by dtype
+        VERBOSITY_ALIASES      (0x04): list aliases (short)
+        VERBOSITY_ALIASES_FULL (0x08): full alias definitions
+        VERBOSITY_COMPRESSION  (0x10): compression summary
+        VERBOSITY_COMP_FULL    (0x20): full compression info
+        VERBOSITY_SUBFRAMES    (0x40): list subframes
+        VERBOSITY_METADATA     (0x80): raw metadata dump
+        
+        Presets: VERBOSE_MINIMAL, VERBOSE_DEFAULT, VERBOSE_FULL
+        
+        Examples
+        --------
+        >>> adf.describe_structure()  # Default output
+        >>> adf.describe_structure(VERBOSE_FULL)  # Everything
+        >>> adf.describe_structure(VERBOSITY_ALIASES | VERBOSITY_COMPRESSION)  # Just these
+        >>> info = adf.describe_structure(return_dict=True)  # Programmatic access
+        """
+        if verbosity is None:
+            verbosity = VERBOSE_DEFAULT
+        
+        info = {}
+        lines = []
+        
+        # =====================================================================
+        # BASIC: rows/columns/memory
+        # =====================================================================
+        n_rows = len(self.df)
+        n_cols = len(self.df.columns)
+        total_memory_mb = self.df.memory_usage(deep=True).sum() / 1024 / 1024
+        
+        info['n_rows'] = n_rows
+        info['n_columns'] = n_cols
+        info['total_memory_mb'] = total_memory_mb
+        
+        if verbosity & VERBOSITY_BASIC:
+            lines.append("AliasDataFrame Structure")
+            lines.append("=" * 50)
+            lines.append("")
+            lines.append(f"DataFrame: {n_rows:,} rows × {n_cols} columns")
+            lines.append(f"Memory: {total_memory_mb:.1f} MB")
+            lines.append("")
+        
+        # =====================================================================
+        # DTYPES: columns grouped by dtype
+        # =====================================================================
+        dtype_groups = {}
+        dtype_memory = {}
+        for col in self.df.columns:
+            dtype_name = str(self.df[col].dtype)
+            if dtype_name not in dtype_groups:
+                dtype_groups[dtype_name] = []
+                dtype_memory[dtype_name] = 0
+            dtype_groups[dtype_name].append(col)
+            dtype_memory[dtype_name] += self.df[col].memory_usage(deep=True) / 1024 / 1024
+        
+        info['dtype_groups'] = dtype_groups
+        info['dtype_memory_mb'] = dtype_memory
+        
+        if verbosity & VERBOSITY_DTYPES:
+            lines.append("Columns by dtype:")
+            for dtype_name in sorted(dtype_groups.keys()):
+                cols = dtype_groups[dtype_name]
+                mem = dtype_memory[dtype_name]
+                lines.append(f"  {dtype_name}: {len(cols)} columns ({mem:.1f} MB)")
+            lines.append("")
+        
+        # =====================================================================
+        # ALIASES: list aliases
+        # =====================================================================
+        n_aliases = len(self.aliases)
+        decompression_aliases = []
+        regular_aliases = []
+        
+        for alias, expr in self.aliases.items():
+            # Check if this is a decompression alias
+            is_decompression = any(
+                info_item.get('decompress_expr') == expr 
+                for info_item in self.compression_info.values() 
+                if isinstance(info_item, dict)
+            )
+            dtype_obj = self.alias_dtypes.get(alias)
+            dtype_str = dtype_obj.__name__ if dtype_obj else 'unspecified'
+            
+            if is_decompression:
+                decompression_aliases.append((alias, expr, dtype_str))
+            else:
+                regular_aliases.append((alias, expr, dtype_str))
+        
+        info['n_aliases'] = n_aliases
+        info['aliases'] = {
+            'regular': regular_aliases,
+            'decompression': decompression_aliases
+        }
+        
+        if verbosity & VERBOSITY_ALIASES:
+            if n_aliases > 0:
+                lines.append(f"Aliases: {n_aliases} defined")
+                # Show short list
+                for alias, expr, dtype_str in regular_aliases[:5]:
+                    expr_short = expr[:40] + "..." if len(expr) > 40 else expr
+                    lines.append(f"  - {alias}: {expr_short} → {dtype_str}")
+                if len(regular_aliases) > 5:
+                    lines.append(f"  ... and {len(regular_aliases) - 5} more")
+                
+                if decompression_aliases:
+                    lines.append(f"  Decompression aliases: {len(decompression_aliases)}")
+                    for alias, expr, dtype_str in decompression_aliases[:3]:
+                        expr_short = expr[:30] + "..." if len(expr) > 30 else expr
+                        lines.append(f"    - {alias}: {expr_short} → {dtype_str}")
+                lines.append("")
+        
+        if verbosity & VERBOSITY_ALIASES_FULL:
+            if n_aliases > 0:
+                lines.append("Full Alias Definitions:")
+                for alias, expr, dtype_str in regular_aliases + decompression_aliases:
+                    lines.append(f"  {alias} = {expr}  [{dtype_str}]")
+                lines.append("")
+        
+        # =====================================================================
+        # COMPRESSION: compression summary
+        # =====================================================================
+        compressed_columns = []
+        for col_name, col_info in self.compression_info.items():
+            if col_name == "__meta__":
+                continue
+            if isinstance(col_info, dict) and 'compressed_col' in col_info:
+                compressed_col = col_info.get('compressed_col', f'{col_name}_c')
+                compressed_dtype = col_info.get('compressed_dtype', 'unknown')
+                decompressed_dtype = col_info.get('decompressed_dtype', 'unknown')
+                rmse = col_info.get('precision', {}).get('rmse')
+                compressed_columns.append({
+                    'name': col_name,
+                    'compressed_col': compressed_col,
+                    'compressed_dtype': compressed_dtype,
+                    'decompressed_dtype': decompressed_dtype,
+                    'rmse': rmse,
+                    'info': col_info
+                })
+        
+        info['compression'] = compressed_columns
+        
+        if verbosity & VERBOSITY_COMPRESSION:
+            if compressed_columns:
+                lines.append(f"Compression: {len(compressed_columns)} columns")
+                for comp in compressed_columns[:5]:
+                    rmse_str = f", RMSE={comp['rmse']:.4f}" if comp['rmse'] else ""
+                    lines.append(
+                        f"  - {comp['name']}: COMPRESSED "
+                        f"({comp['compressed_col']}, {comp['compressed_dtype']} → "
+                        f"{comp['decompressed_dtype']}{rmse_str})"
+                    )
+                if len(compressed_columns) > 5:
+                    lines.append(f"  ... and {len(compressed_columns) - 5} more")
+                lines.append("")
+        
+        if verbosity & VERBOSITY_COMP_FULL:
+            if compressed_columns:
+                lines.append("Full Compression Details:")
+                for comp in compressed_columns:
+                    col_info = comp['info']
+                    lines.append(f"  {comp['name']}:")
+                    lines.append(f"    Compressed as: {comp['compressed_col']} ({comp['compressed_dtype']})")
+                    lines.append(f"    Expression: {col_info.get('compress_expr', 'N/A')}")
+                    lines.append(f"    Decompression: {col_info.get('decompress_expr', 'N/A')} → {comp['decompressed_dtype']}")
+                    if 'precision' in col_info and 'rmse' in col_info['precision']:
+                        prec = col_info['precision']
+                        lines.append(f"    Precision: RMSE={prec['rmse']:.6f}, Max={prec.get('max_error', 0):.6f}")
+                lines.append("")
+        
+        # =====================================================================
+        # SUBFRAMES: list subframes
+        # =====================================================================
+        subframes_info = []
+        for sf_name, entry in self._subframes.items():
+            sf = entry['frame']
+            index_cols = entry['index']
+            subframes_info.append({
+                'name': sf_name,
+                'rows': len(sf.df),
+                'columns': len(sf.df.columns),
+                'index_columns': index_cols
+            })
+        
+        info['subframes'] = subframes_info
+        
+        if verbosity & VERBOSITY_SUBFRAMES:
+            if subframes_info:
+                lines.append(f"Subframes: {len(subframes_info)}")
+                for sf in subframes_info:
+                    index_str = sf['index_columns'] if isinstance(sf['index_columns'], str) else ', '.join(sf['index_columns'])
+                    lines.append(f"  - {sf['name']}: {sf['rows']:,} rows × {sf['columns']} cols, index={index_str}")
+                lines.append("")
+        
+        # =====================================================================
+        # METADATA: raw metadata dump
+        # =====================================================================
+        if verbosity & VERBOSITY_METADATA:
+            lines.append("Raw Metadata:")
+            lines.append(f"  Aliases: {len(self.aliases)}")
+            lines.append(f"  Alias dtypes: {len(self.alias_dtypes)}")
+            lines.append(f"  Constant aliases: {len(self.constant_aliases)}")
+            lines.append(f"  Compression entries: {len(self.compression_info) - 1}")  # -1 for __meta__
+            if "__meta__" in self.compression_info:
+                meta = self.compression_info["__meta__"]
+                lines.append(f"  Schema version: {meta.get('schema_version', 'unknown')}")
+            lines.append("")
+        
+        # =====================================================================
+        # Return or print
+        # =====================================================================
+        if return_dict:
+            return info
+        
+        if lines:
+            print("\n".join(lines))
+        return None

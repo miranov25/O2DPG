@@ -4,6 +4,7 @@ import numpy as np
 import os
 from dfextensions.AliasDataFrame import AliasDataFrame  # Adjust if needed
 import tempfile
+import uproot
 
 class TestAliasDataFrame(unittest.TestCase):
     def setUp(self):
@@ -1677,6 +1678,362 @@ class TestReadTreeWithCompression(unittest.TestCase):
 
 
 # Add to end of file before if __name__ == "__main__":
+"""
+Phase 2 Test Cases for AliasDataFrame
+=====================================
+
+Add these test classes to test_alias_dataframe.py
+BEFORE `if __name__ == "__main__":`
+
+Also add these imports at the top if not present:
+    from AliasDataFrame import (VERBOSITY_BASIC, VERBOSITY_DTYPES, VERBOSITY_ALIASES,
+                                 VERBOSITY_COMPRESSION, VERBOSITY_SUBFRAMES,
+                                 VERBOSE_DEFAULT, VERBOSE_FULL)
+"""
+
+
+class TestDtypeRestoration(unittest.TestCase):
+    """Test Phase 2 column_dtypes storage and restoration"""
+
+    def test_column_dtypes_stored_in_metadata(self):
+        """Test that column_dtypes is written to metadata"""
+        import json
+        import ROOT
+
+        # Create DataFrame with mixed dtypes
+        df = pd.DataFrame({
+            'x': np.random.randn(100).astype(np.float16),
+            'y': np.random.randn(100).astype(np.float32),
+            'z': np.arange(100, dtype=np.int32),
+            'w': np.arange(100, dtype=np.int64),
+        })
+
+        adf = AliasDataFrame(df)
+
+        with tempfile.NamedTemporaryFile(suffix=".root", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            adf.export_tree(tmp_path, treename="tree")
+
+            # Read metadata directly from ROOT
+            f = ROOT.TFile.Open(tmp_path)
+            tree = f.Get("tree")
+            user_info = tree.GetUserInfo()
+
+            metadata = None
+            for i in range(user_info.GetEntries()):
+                obj = user_info.At(i)
+                if hasattr(obj, 'GetString'):
+                    metadata = json.loads(obj.GetString().Data())
+                    break
+            f.Close()
+
+            # Verify column_dtypes exists
+            self.assertIn('column_dtypes', metadata)
+
+            # Verify dtypes are correct
+            self.assertEqual(metadata['column_dtypes']['x'], 'float16')
+            self.assertEqual(metadata['column_dtypes']['y'], 'float32')
+            self.assertEqual(metadata['column_dtypes']['z'], 'int32')
+            self.assertEqual(metadata['column_dtypes']['w'], 'int64')
+
+        finally:
+            os.remove(tmp_path)
+
+    def test_dtype_roundtrip_noncompressed(self):
+        """Test that non-compressed float16 columns are restored correctly"""
+        # Create DataFrame with float16 (not compressed)
+        df = pd.DataFrame({
+            'x': np.random.randn(100).astype(np.float16),
+            'y': np.random.randn(100).astype(np.float32),
+        })
+
+        adf = AliasDataFrame(df)
+
+        with tempfile.NamedTemporaryFile(suffix=".root", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            adf.export_tree(tmp_path, treename="tree")
+            adf_loaded = AliasDataFrame.read_tree(tmp_path, treename="tree")
+
+            # float16 should be restored (via column_dtypes)
+            self.assertEqual(adf_loaded.df['x'].dtype, np.float16)
+            self.assertEqual(adf_loaded.df['y'].dtype, np.float32)
+
+        finally:
+            os.remove(tmp_path)
+
+    def test_dtype_roundtrip_compressed_and_uncompressed(self):
+        """Test mixed compressed and non-compressed dtype restoration"""
+        # Create DataFrame with mixed dtypes
+        df = pd.DataFrame({
+            'x': np.random.randn(100).astype(np.float16),  # Non-compressed float16
+            'dy': np.random.randn(100).astype(np.float32),  # Will be compressed
+            'z': np.arange(100, dtype=np.int64),  # Non-compressed int64
+        })
+
+        adf = AliasDataFrame(df)
+
+        # Compress dy
+        spec = {
+            'dy': {
+                'compress': 'round(asinh(dy)*40)',
+                'decompress': 'sinh(dy_c/40.)',
+                'compressed_dtype': np.int16,
+                'decompressed_dtype': np.float16
+            }
+        }
+        adf.compress_columns(spec)
+
+        with tempfile.NamedTemporaryFile(suffix=".root", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            adf.export_tree(tmp_path, treename="tree")
+            adf_loaded = AliasDataFrame.read_tree(tmp_path, treename="tree")
+
+            # Non-compressed columns should keep their dtype
+            self.assertEqual(adf_loaded.df['x'].dtype, np.float16)
+            self.assertEqual(adf_loaded.df['z'].dtype, np.int64)
+
+            # Compressed column should have compressed dtype
+            self.assertEqual(adf_loaded.df['dy_c'].dtype, np.int16)
+
+        finally:
+            os.remove(tmp_path)
+
+    def test_compression_info_priority_over_column_dtypes(self):
+        """Test that compression_info takes priority over column_dtypes"""
+        df = pd.DataFrame({
+            'dy': np.random.randn(100).astype(np.float32),
+        })
+
+        adf = AliasDataFrame(df)
+
+        spec = {
+            'dy': {
+                'compress': 'round(asinh(dy)*40)',
+                'decompress': 'sinh(dy_c/40.)',
+                'compressed_dtype': np.int16,
+                'decompressed_dtype': np.float16
+            }
+        }
+        adf.compress_columns(spec)
+
+        with tempfile.NamedTemporaryFile(suffix=".root", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            adf.export_tree(tmp_path, treename="tree")
+            adf_loaded = AliasDataFrame.read_tree(tmp_path, treename="tree")
+
+            # compression_info specifies int16 for dy_c
+            # This should take priority even if column_dtypes says something else
+            self.assertEqual(adf_loaded.df['dy_c'].dtype, np.int16)
+
+        finally:
+            os.remove(tmp_path)
+
+    def test_backward_compat_no_column_dtypes(self):
+        """Test reading files without column_dtypes metadata (Phase 1 files)"""
+        # Create a simple file using uproot directly (no metadata)
+        df = pd.DataFrame({
+            'a': np.arange(100, dtype=np.float32),
+            'b': np.arange(100, dtype=np.float32),
+        })
+
+        with tempfile.NamedTemporaryFile(suffix=".root", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            # Write with uproot only (no AliasDataFrame metadata)
+            with uproot.recreate(tmp_path) as f:
+                f["tree"] = {col: df[col].values for col in df.columns}
+
+            # Should read without error
+            adf_loaded = AliasDataFrame.read_tree(tmp_path, treename="tree")
+
+            self.assertEqual(len(adf_loaded.df), 100)
+            # Without column_dtypes, dtypes default to uproot's choice (float32)
+            self.assertEqual(adf_loaded.df['a'].dtype, np.float32)
+
+        finally:
+            os.remove(tmp_path)
+
+
+class TestDescribeStructure(unittest.TestCase):
+    """Test describe_structure() method with bitmask verbosity"""
+
+    def setUp(self):
+        """Create test AliasDataFrame with various features"""
+        from dfextensions.AliasDataFrame import (VERBOSITY_BASIC, VERBOSITY_DTYPES,
+                                                 VERBOSITY_ALIASES, VERBOSITY_COMPRESSION,
+                                                 VERBOSITY_SUBFRAMES, VERBOSE_DEFAULT)
+
+        # Main DataFrame
+        n_rows = 1000
+        self.df = pd.DataFrame({
+            'x': np.random.randn(n_rows).astype(np.float32),
+            'y': np.random.randn(n_rows).astype(np.float16),
+            'z': np.arange(n_rows, dtype=np.int32),
+        })
+
+        self.adf = AliasDataFrame(self.df)
+
+        # Add alias
+        self.adf.add_alias('xy_sum', 'x + y', dtype=np.float32)
+
+        # Add compression
+        spec = {
+            'x': {
+                'compress': 'round(x*100)',
+                'decompress': 'x_c/100.',
+                'compressed_dtype': np.int16,
+                'decompressed_dtype': np.float32
+            }
+        }
+        self.adf.compress_columns(spec)
+
+        # Add subframe
+        df_sub = pd.DataFrame({
+            'sub_id': np.arange(10),
+            'value': np.random.randn(10).astype(np.float32),
+        })
+        adf_sub = AliasDataFrame(df_sub)
+        self.adf.register_subframe('sub', adf_sub, index_columns='sub_id')
+
+    def test_describe_structure_prints(self):
+        """Test that describe_structure() prints without error"""
+        import io
+        import sys
+
+        # Capture stdout
+        captured = io.StringIO()
+        sys.stdout = captured
+
+        try:
+            result = self.adf.describe_structure()
+            self.assertIsNone(result)  # Default returns None
+        finally:
+            sys.stdout = sys.__stdout__
+
+        output = captured.getvalue()
+
+        # Check key sections are present
+        self.assertIn("AliasDataFrame Structure", output)
+        self.assertIn("rows", output)
+        self.assertIn("columns", output)
+        self.assertIn("Memory", output)
+
+    def test_describe_structure_return_dict(self):
+        """Test that describe_structure(return_dict=True) returns dict"""
+        result = self.adf.describe_structure(return_dict=True)
+
+        self.assertIsInstance(result, dict)
+
+        # Check expected keys
+        self.assertIn('n_rows', result)
+        self.assertIn('n_columns', result)
+        self.assertIn('total_memory_mb', result)
+        self.assertIn('dtype_groups', result)
+        self.assertIn('n_aliases', result)
+        self.assertIn('compression', result)
+        self.assertIn('subframes', result)
+
+    def test_describe_structure_values(self):
+        """Test that describe_structure returns correct values"""
+        result = self.adf.describe_structure(return_dict=True)
+
+        self.assertEqual(result['n_rows'], 1000)
+        self.assertGreater(result['n_columns'], 0)
+        self.assertGreater(result['total_memory_mb'], 0)
+        self.assertGreater(result['n_aliases'], 0)
+
+        # Check subframes
+        self.assertEqual(len(result['subframes']), 1)
+        self.assertEqual(result['subframes'][0]['name'], 'sub')
+
+    def test_describe_structure_bitmask_basic_only(self):
+        """Test bitmask: VERBOSITY_BASIC only"""
+        from dfextensions.AliasDataFrame import VERBOSITY_BASIC
+
+        import io
+        import sys
+
+        captured = io.StringIO()
+        sys.stdout = captured
+
+        try:
+            self.adf.describe_structure(verbosity=VERBOSITY_BASIC)
+        finally:
+            sys.stdout = sys.__stdout__
+
+        output = captured.getvalue()
+
+        # Should have basic info
+        self.assertIn("rows", output)
+        self.assertIn("Memory", output)
+
+        # Should NOT have dtype groups or aliases
+        self.assertNotIn("Columns by dtype", output)
+        self.assertNotIn("Aliases:", output)
+
+    def test_describe_structure_bitmask_combined(self):
+        """Test bitmask: combine multiple flags"""
+        from dfextensions.AliasDataFrame import VERBOSITY_ALIASES, VERBOSITY_COMPRESSION
+
+        import io
+        import sys
+
+        captured = io.StringIO()
+        sys.stdout = captured
+
+        try:
+            self.adf.describe_structure(verbosity=VERBOSITY_ALIASES | VERBOSITY_COMPRESSION)
+        finally:
+            sys.stdout = sys.__stdout__
+
+        output = captured.getvalue()
+
+        # Should have aliases and compression
+        self.assertIn("Aliases:", output)
+        self.assertIn("Compression:", output)
+
+        # Should NOT have basic header (no VERBOSITY_BASIC)
+        self.assertNotIn("AliasDataFrame Structure", output)
+
+    def test_describe_structure_verbose_full(self):
+        """Test VERBOSE_FULL preset"""
+        import dfextensions.AliasDataFrame as adf_module
+        from dfextensions.AliasDataFrame import VERBOSE_FULL;
+        import io
+        import sys
+
+        captured = io.StringIO()
+        sys.stdout = captured
+
+        try:
+            self.adf.describe_structure(verbosity=VERBOSE_FULL)
+        finally:
+            sys.stdout = sys.__stdout__
+
+        output = captured.getvalue()
+
+        # Should have everything
+        self.assertIn("AliasDataFrame Structure", output)
+        self.assertIn("Columns by dtype", output)
+        self.assertIn("Aliases:", output)
+        self.assertIn("Full Alias Definitions:", output)
+        self.assertIn("Raw Metadata:", output)
+
+
+# Add these imports to the top of test_alias_dataframe.py if not present:
+# from dfextensions.AliasDataFrame import (VERBOSITY_BASIC, VERBOSITY_DTYPES,
+#                                           VERBOSITY_ALIASES, VERBOSITY_COMPRESSION,
+#                                           VERBOSITY_SUBFRAMES, VERBOSE_DEFAULT, VERBOSE_FULL)
+
 
 if __name__ == "__main__":
     unittest.main()
