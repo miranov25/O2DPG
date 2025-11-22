@@ -4,6 +4,8 @@ import pandas as pd
 import numpy as np
 import json
 import uproot
+import copy
+import warnings
 try:
     import ROOT  # type: ignore
 except ImportError as e:
@@ -53,6 +55,10 @@ class SubframeRegistry:
 
     def items(self):
         return self.subframes.items()
+
+    def has_subframe(self, name):
+        """Check if a subframe with given name is registered."""
+        return name in self.subframes
 
 
 def convert_expr_to_root(expr):
@@ -180,24 +186,271 @@ class AliasDataFrame:
     """
     AliasDataFrame allows for defining and evaluating lazy-evaluated column aliases
     on top of a pandas DataFrame, including nested subframes with hierarchical indexing.
+    
+    Phase 4: Uses unified _schema dict as single source of truth.
     """
+    
     def __init__(self, df):
+        """
+        Initialize AliasDataFrame with unified schema structure.
+        
+        The _schema dict is the single source of truth for:
+        - columns: physical column dtypes and aliases (expr + dtype + constant)
+        - compression: compression formulas per column
+        - subframes: registered subframes with index info
+        """
         if not isinstance(df, pd.DataFrame):
             raise TypeError(
                 f"AliasDataFrame must be initialized with a pandas.DataFrame. "
                 f"Received type: {type(df)}"
             )
         self.df = df
-        self.aliases = {}
-        self.alias_dtypes = {}
-        self.constant_aliases = set()
-        self.compression_info = {
-            "__meta__": {
-                "schema_version": 1,
-                "state_machine": "CompressionState.v1"
-            }
-        }  # Track compressed columns with state
+        
+        # Unified schema (Phase 4)
+        self._schema = {
+            "columns": {},      # {name: {"dtype": ..., "expr": ..., "constant": ...}}
+            "compression": {
+                "__meta__": {
+                    "schema_version": 1,
+                    "state_machine": "CompressionState.v1"
+                }
+            },
+            "subframes": {},    # {name: {"index": ...}}
+        }
+        
+        # Temporary: keep for Phase 4a backward compat, remove in Phase 4b
+        self._constant_aliases = set()
+        
+        # Subframe registry (keeps actual ADF objects)
         self._subframes = SubframeRegistry()
+
+    # =========================================================================
+    # Phase 4: Backward Compatibility Properties
+    # =========================================================================
+    
+    @property
+    def aliases(self):
+        """
+        Backward compatible: returns {name: expr} for all aliases.
+        Read-only view over _schema["columns"].
+        """
+        return {k: v["expr"] for k, v in self._schema["columns"].items() if "expr" in v}
+
+    @aliases.setter
+    def aliases(self, value):
+        """
+        Backward compatible setter for Phase 4a.
+        Converts old-style dict to new schema format.
+        """
+        if not isinstance(value, dict):
+            raise TypeError("aliases must be a dict")
+        # Clear existing aliases from schema
+        to_remove = [k for k, v in self._schema["columns"].items() if "expr" in v]
+        for k in to_remove:
+            del self._schema["columns"][k]
+        # Add new aliases
+        for name, expr in value.items():
+            if name not in self._schema["columns"]:
+                self._schema["columns"][name] = {}
+            self._schema["columns"][name]["expr"] = expr
+
+    @property
+    def alias_dtypes(self):
+        """
+        Backward compatible: returns {name: dtype} for aliases with dtype.
+        Read-only view over _schema["columns"].
+        """
+        return {k: v.get("dtype") for k, v in self._schema["columns"].items() 
+                if "expr" in v and "dtype" in v}
+
+    @alias_dtypes.setter
+    def alias_dtypes(self, value):
+        """
+        Backward compatible setter for Phase 4a.
+        """
+        if not isinstance(value, dict):
+            raise TypeError("alias_dtypes must be a dict")
+        for name, dtype in value.items():
+            if name not in self._schema["columns"]:
+                self._schema["columns"][name] = {}
+            self._schema["columns"][name]["dtype"] = dtype
+
+    @property
+    def constant_aliases(self):
+        """
+        Backward compatible: returns set of constant alias names.
+        Phase 4a: returns union of _constant_aliases and schema-derived constants.
+        """
+        schema_constants = {k for k, v in self._schema["columns"].items() 
+                           if v.get("constant", False)}
+        return self._constant_aliases | schema_constants
+
+    @constant_aliases.setter
+    def constant_aliases(self, value):
+        """
+        Backward compatible setter for Phase 4a.
+        """
+        self._constant_aliases = set(value) if value else set()
+        # Also update schema
+        for name in value:
+            if name in self._schema["columns"]:
+                self._schema["columns"][name]["constant"] = True
+
+    @property
+    def compression_info(self):
+        """
+        Backward compatible: returns compression dict.
+        Direct reference to _schema["compression"].
+        """
+        return self._schema["compression"]
+
+    @compression_info.setter
+    def compression_info(self, value):
+        """
+        Backward compatible setter for Phase 4a.
+        """
+        if not isinstance(value, dict):
+            raise TypeError("compression_info must be a dict")
+        self._schema["compression"] = value
+
+    # =========================================================================
+    # Phase 4: New Schema API
+    # =========================================================================
+
+    @property
+    def schema(self):
+        """
+        Read-only copy of current schema.
+        
+        Returns:
+            dict with keys: "columns", "compression", "subframes"
+        """
+        return copy.deepcopy(self._schema)
+
+    def update_schema(self, update, validate=True, apply=True, errors="raise"):
+        """
+        Partial update of schema. Only specified items are changed.
+        
+        Args:
+            update: dict with any of {"columns": {...}, "compression": {...}, "subframes": {...}}
+            validate: if True, validate before applying
+            apply: if True, apply dtypes to df immediately
+            errors: "raise" | "warn" | "ignore" for dtype conversion errors
+        """
+        if validate:
+            self._validate_schema_update(update)
+        
+        # Update columns section
+        if "columns" in update:
+            for name, spec in update["columns"].items():
+                if name not in self._schema["columns"]:
+                    self._schema["columns"][name] = {}
+                self._schema["columns"][name].update(spec)
+                
+                # Handle constant flag for legacy compatibility
+                if spec.get("constant"):
+                    self._constant_aliases.add(name)
+                
+                # Apply dtype immediately if requested (for physical columns only)
+                if apply and "dtype" in spec:
+                    if "expr" not in self._schema["columns"][name]:
+                        # Physical column - cast immediately
+                        if name in self.df.columns:
+                            try:
+                                self.df[name] = self.df[name].astype(spec["dtype"])
+                            except Exception as e:
+                                if errors == "raise":
+                                    raise
+                                elif errors == "warn":
+                                    warnings.warn(f"Failed to cast '{name}' to {spec['dtype']}: {e}")
+        
+        # Update compression section
+        if "compression" in update:
+            for name, spec in update["compression"].items():
+                if name == "__meta__":
+                    self._schema["compression"]["__meta__"].update(spec)
+                else:
+                    self._schema["compression"][name] = spec
+        
+        # Update subframes section
+        if "subframes" in update:
+            for name, spec in update["subframes"].items():
+                self._schema["subframes"][name] = spec
+
+    def _validate_schema_update(self, update):
+        """
+        Validate schema update before applying.
+        """
+        if "columns" in update:
+            for name, spec in update["columns"].items():
+                # Check dtype is valid
+                if "dtype" in spec:
+                    try:
+                        np.dtype(spec["dtype"])
+                    except TypeError as e:
+                        raise ValueError(f"Invalid dtype for column '{name}': {e}")
+                
+                # Check expr is string
+                if "expr" in spec and not isinstance(spec["expr"], str):
+                    raise ValueError(f"Expression for '{name}' must be a string")
+                
+                # Check subframe references exist (lightweight check)
+                if "expr" in spec and "." in spec["expr"]:
+                    subframe_refs = re.findall(r'([A-Z][A-Za-z0-9_]*)\.', spec["expr"])
+                    for sf_name in subframe_refs:
+                        if sf_name not in self._schema["subframes"] and \
+                           not self._subframes.has_subframe(sf_name):
+                            raise ValueError(
+                                f"Column '{name}' references undefined subframe '{sf_name}'"
+                            )
+        
+        if "subframes" in update:
+            for name, spec in update["subframes"].items():
+                if "index" not in spec:
+                    raise ValueError(f"Subframe '{name}' must specify 'index'")
+
+    def apply_aliases(self, aliases_spec):
+        """
+        Register multiple aliases from a spec dict.
+        
+        Args:
+            aliases_spec: {alias_name: {"expr": str, "dtype": type, "constant": bool}, ...}
+        """
+        for name, spec in aliases_spec.items():
+            expr = spec.get("expr")
+            if expr is None:
+                raise ValueError(f"Alias '{name}' missing 'expr'")
+            dtype = spec.get("dtype")
+            constant = spec.get("constant", False)
+            self.add_alias(name, expr, dtype=dtype, is_constant=constant)
+
+    def apply_dtypes(self, dtype_spec, errors="raise"):
+        """
+        Bulk dtype conversion for physical columns.
+        
+        Args:
+            dtype_spec: {col_name: dtype, ...}
+            errors: "raise" | "warn" | "ignore"
+        """
+        for col, dtype in dtype_spec.items():
+            if col not in self.df.columns:
+                if errors == "raise":
+                    raise ValueError(f"Column '{col}' not found in DataFrame")
+                elif errors == "warn":
+                    warnings.warn(f"Column '{col}' not found, skipping")
+                continue
+            
+            try:
+                self.df[col] = self.df[col].astype(dtype)
+                # Update schema
+                if col not in self._schema["columns"]:
+                    self._schema["columns"][col] = {}
+                self._schema["columns"][col]["dtype"] = dtype
+            except Exception as e:
+                if errors == "raise":
+                    raise
+                elif errors == "warn":
+                    warnings.warn(f"Failed to cast '{col}' to {dtype}: {e}")
 
     def __getattr__(self, item: str):
         if item in self.df.columns:
@@ -212,7 +465,16 @@ class AliasDataFrame:
 
 
     def register_subframe(self, name, adf, index_columns, pre_index=False):
+        """
+        Register a subframe (nested AliasDataFrame) for join operations.
+        
+        Phase 4: Also writes to _schema["subframes"] for metadata persistence.
+        """
+        # Add to runtime registry
         self._subframes.add_subframe(name, adf, index_columns, pre_index=pre_index)
+        
+        # Also write to schema for persistence
+        self._schema["subframes"][name] = {"index": index_columns}
 
     def get_subframe(self, name):
         return self._subframes.get(name)
@@ -368,18 +630,28 @@ class AliasDataFrame:
 
     def add_alias(self, name, expression, dtype=None, is_constant=False):
         """
-        Define a new alias.
+        Define a new alias (lazy computed column).
+        
         Args:
             name: Name of the alias.
             expression: Expression string using pandas or NumPy operations.
             dtype: Optional numpy dtype to enforce.
             is_constant: Whether the alias represents a scalar constant.
+            
+        Phase 4: Writes to _schema["columns"] as single source of truth.
         """
-        self.aliases[name] = expression
+        # Build spec for schema
+        spec = {"expr": expression}
         if dtype is not None:
-            self.alias_dtypes[name] = dtype
+            spec["dtype"] = dtype
         if is_constant:
-            self.constant_aliases.add(name)
+            spec["constant"] = True
+            self._constant_aliases.add(name)
+        
+        # Write to schema
+        self._schema["columns"][name] = spec
+        
+        # Check for cycles
         self._check_for_cycles()
 
     def _eval_in_namespace(self, expr, warn_missing_keys=True, alias_name=None):
@@ -1482,9 +1754,7 @@ class AliasDataFrame:
                 self.materialize_alias(compressed_col)
                 # Remove from aliases to avoid false cycle detection
                 if compressed_col in self.aliases:
-                    del self.aliases[compressed_col]
-                    if compressed_col in self.alias_dtypes:
-                        del self.alias_dtypes[compressed_col]
+                    del self._schema["columns"][compressed_col]
             except SyntaxError as e:
                 raise ValueError(
                     f"Compression failed for '{orig_col}': invalid compress expression.\n"
@@ -1515,9 +1785,7 @@ class AliasDataFrame:
 
             # Step 4: Remove old decompression alias if it exists (from DECOMPRESSED state)
             if orig_col in self.aliases:
-                del self.aliases[orig_col]
-                if orig_col in self.alias_dtypes:
-                    del self.alias_dtypes[orig_col]
+                del self._schema["columns"][orig_col]
 
             # Step 5: Add decompression alias (original name → decompressed expression)
             try:
@@ -1653,9 +1921,7 @@ class AliasDataFrame:
             # Clean up temporary column
             self.df.drop(columns=[temp_decompressed], inplace=True)
             if temp_decompressed in self.aliases:
-                del self.aliases[temp_decompressed]
-                if temp_decompressed in self.alias_dtypes:
-                    del self.alias_dtypes[temp_decompressed]
+                del self._schema["columns"][temp_decompressed]
 
             return precision_info
         except Exception as e:
@@ -1796,9 +2062,7 @@ class AliasDataFrame:
 
             # Step 3: Remove decompression alias (col is now physical)
             if col in self.aliases:
-                del self.aliases[col]
-                if col in self.alias_dtypes:
-                    del self.alias_dtypes[col]
+                del self._schema["columns"][col]
 
             # Step 4: Handle compressed column
             if not keep_compressed:
