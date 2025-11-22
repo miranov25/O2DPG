@@ -135,22 +135,21 @@ class TestAliasesProperty:
         assert 'direct' in simple_adf.aliases
         assert simple_adf.aliases['direct'] == 'x * 2'
 
-    def test_aliases_setter_updates_schema(self, simple_adf):
-        """Verify aliases setter updates _schema."""
-        simple_adf.aliases = {'new_alias': 'x + 1'}
+    def test_aliases_setter_raises_attribute_error(self, simple_adf):
+        """Verify aliases setter raises AttributeError (Phase 4b hardening)."""
+        with pytest.raises(AttributeError, match="no longer supported"):
+            simple_adf.aliases = {'new_alias': 'x + 1'}
+
+    def test_aliases_restore_method_updates_schema(self, simple_adf):
+        """Verify _restore_aliases_from_dict updates _schema."""
+        simple_adf._restore_aliases_from_dict({'new_alias': 'x + 1'})
         assert 'new_alias' in simple_adf._schema['columns']
         assert simple_adf._schema['columns']['new_alias']['expr'] == 'x + 1'
 
-    def test_aliases_setter_clears_old_aliases(self, adf_with_aliases):
-        """Verify aliases setter clears existing aliases."""
-        old_aliases = list(adf_with_aliases.aliases.keys())
-        assert len(old_aliases) > 0
-        
-        adf_with_aliases.aliases = {'replacement': 'z * 2'}
-        
-        for old in old_aliases:
-            assert old not in adf_with_aliases.aliases
-        assert 'replacement' in adf_with_aliases.aliases
+    def test_aliases_setter_raises_attribute_error_with_replacement(self, adf_with_aliases):
+        """Verify aliases setter raises even when trying to replace aliases."""
+        with pytest.raises(AttributeError, match="no longer supported"):
+            adf_with_aliases.aliases = {'replacement': 'z * 2'}
 
     def test_aliases_only_includes_columns_with_expr(self, simple_adf):
         """Verify aliases doesn't include columns without expr."""
@@ -187,10 +186,16 @@ class TestAliasDtypesProperty:
         assert 'untyped' not in simple_adf.alias_dtypes
         assert 'typed' in simple_adf.alias_dtypes
 
-    def test_alias_dtypes_setter_updates_schema(self, simple_adf):
-        """Verify alias_dtypes setter updates _schema."""
+    def test_alias_dtypes_setter_raises_attribute_error(self, simple_adf):
+        """Verify alias_dtypes setter raises AttributeError (Phase 4b hardening)."""
         simple_adf.add_alias('test', 'x + 1')
-        simple_adf.alias_dtypes = {'test': np.int32}
+        with pytest.raises(AttributeError, match="no longer supported"):
+            simple_adf.alias_dtypes = {'test': np.int32}
+
+    def test_alias_dtypes_restore_method_updates_schema(self, simple_adf):
+        """Verify _restore_alias_dtypes_from_dict updates _schema."""
+        simple_adf.add_alias('test', 'x + 1')
+        simple_adf._restore_alias_dtypes_from_dict({'test': np.int32})
         assert simple_adf._schema['columns']['test']['dtype'] == np.int32
 
 
@@ -214,10 +219,16 @@ class TestConstantAliasesProperty:
         simple_adf.add_alias('pi', '3.14159', is_constant=True)
         assert 'pi' in simple_adf.constant_aliases
 
-    def test_constant_aliases_setter_works(self, simple_adf):
-        """Verify constant_aliases setter updates internal state."""
+    def test_constant_aliases_setter_raises_attribute_error(self, simple_adf):
+        """Verify constant_aliases setter raises AttributeError (Phase 4b hardening)."""
         simple_adf.add_alias('test', '42')
-        simple_adf.constant_aliases = {'test'}
+        with pytest.raises(AttributeError, match="no longer supported"):
+            simple_adf.constant_aliases = {'test'}
+
+    def test_constant_aliases_restore_method_works(self, simple_adf):
+        """Verify _restore_constant_aliases updates _schema."""
+        simple_adf.add_alias('test', '42')
+        simple_adf._restore_constant_aliases(['test'])
         assert 'test' in simple_adf.constant_aliases
 
     def test_constant_aliases_includes_schema_constants(self, simple_adf):
@@ -251,13 +262,22 @@ class TestCompressionInfoProperty:
         # Should appear in _schema
         assert 'test_col' in simple_adf._schema['compression']
 
-    def test_compression_info_setter_updates_schema(self, simple_adf):
-        """Verify compression_info setter updates _schema."""
+    def test_compression_info_setter_raises_attribute_error(self, simple_adf):
+        """Verify compression_info setter raises AttributeError (Phase 4b hardening)."""
         new_info = {
             '__meta__': {'schema_version': 2},
             'col1': {'state': 'compressed'}
         }
-        simple_adf.compression_info = new_info
+        with pytest.raises(AttributeError, match="no longer supported"):
+            simple_adf.compression_info = new_info
+
+    def test_compression_info_restore_method_updates_schema(self, simple_adf):
+        """Verify _restore_compression_info updates _schema."""
+        new_info = {
+            '__meta__': {'schema_version': 1, 'state_machine': 'CompressionState.v1'},
+            'col1': {'state': 'compressed'}
+        }
+        simple_adf._restore_compression_info(new_info)
         assert simple_adf._schema['compression'] == new_info
 
 
@@ -609,17 +629,16 @@ class TestEdgeCases:
         schema_after = simple_adf.schema
         assert schema_before == schema_after
 
-    def test_aliases_setter_with_empty_dict(self, adf_with_aliases):
-        """Verify aliases setter with empty dict clears aliases."""
-        adf_with_aliases.aliases = {}
-        assert adf_with_aliases.aliases == {}
+    def test_aliases_setter_raises_with_empty_dict(self, adf_with_aliases):
+        """Verify aliases setter raises even with empty dict."""
+        with pytest.raises(AttributeError, match="no longer supported"):
+            adf_with_aliases.aliases = {}
 
-    def test_constant_aliases_setter_with_empty_set(self, simple_adf):
-        """Verify constant_aliases setter with empty set clears constants."""
+    def test_constant_aliases_setter_raises_with_empty_set(self, simple_adf):
+        """Verify constant_aliases setter raises even with empty set."""
         simple_adf.add_alias('const', '42', is_constant=True)
-        simple_adf.constant_aliases = set()
-        # Note: schema-derived constants might still exist
-        # This tests the _constant_aliases field specifically
+        with pytest.raises(AttributeError, match="no longer supported"):
+            simple_adf.constant_aliases = set()
 
 
 # =============================================================================
@@ -706,12 +725,12 @@ class TestMutationSafety:
 
     def test_compression_info_is_reference_by_design(self, simple_adf):
         """
-        Document that compression_info IS a reference (backward compat).
+        Document that compression_info getter IS a reference (backward compat).
         
-        This is intentional - existing code modifies compression_info directly.
-        Phase 4b may change this behavior.
+        This is intentional - existing code reads/modifies compression_info directly.
+        The property returns a direct reference to _schema["compression"].
         """
-        # Modify via property
+        # Modify via direct reference from getter
         simple_adf.compression_info['test_entry'] = {'state': 'test'}
         
         # Should appear in _schema (this is expected behavior)

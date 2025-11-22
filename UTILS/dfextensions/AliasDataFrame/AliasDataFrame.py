@@ -182,6 +182,123 @@ class CompressionState:
     DECOMPRESSED = "decompressed"
     SCHEMA_ONLY = "schema_only"
 
+
+# =============================================================================
+# Phase 4b: Schema Serialization Constants and Helpers
+# =============================================================================
+
+# Dedicated metadata key to avoid collisions
+SCHEMA_METADATA_KEY = "__alias_dataframe_schema__"
+SCHEMA_VERSION = 1
+
+
+def _serialize_schema(schema):
+    """
+    Serialize _schema dict to JSON-safe format.
+    
+    Handles:
+    - numpy dtype objects → string representation
+    - Sets → lists
+    - Ensures all values are JSON-serializable
+    
+    Parameters
+    ----------
+    schema : dict
+        The _schema dict with columns/compression/subframes
+        
+    Returns
+    -------
+    dict
+        JSON-serializable version of schema
+    """
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "columns": {},
+        "compression": schema.get("compression", {}),
+        "subframes": schema.get("subframes", {}),
+    }
+    
+    # Serialize columns section - convert dtypes to strings
+    for name, spec in schema.get("columns", {}).items():
+        serialized_spec = {}
+        for key, value in spec.items():
+            if key == "dtype":
+                # Convert numpy dtype to string
+                if hasattr(value, 'name'):
+                    serialized_spec[key] = value.name
+                elif hasattr(value, '__name__'):
+                    serialized_spec[key] = value.__name__
+                else:
+                    serialized_spec[key] = str(value)
+            else:
+                serialized_spec[key] = value
+        result["columns"][name] = serialized_spec
+    
+    return result
+
+
+def _deserialize_schema(serialized):
+    """
+    Deserialize JSON schema back to _schema format.
+    
+    Handles:
+    - String dtype names → numpy dtype types
+    - Schema version migration (future-proofing)
+    
+    Parameters
+    ----------
+    serialized : dict
+        JSON-parsed schema dict
+        
+    Returns
+    -------
+    dict
+        Restored _schema dict with proper types
+    """
+    version = serialized.get("schema_version", 1)
+    
+    # Future: Add migration logic here
+    if version > SCHEMA_VERSION:
+        warnings.warn(
+            f"Schema version {version} is newer than supported version {SCHEMA_VERSION}. "
+            f"Some features may not work correctly."
+        )
+    
+    result = {
+        "columns": {},
+        "compression": serialized.get("compression", {
+            "__meta__": {
+                "schema_version": 1,
+                "state_machine": "CompressionState.v1"
+            }
+        }),
+        "subframes": serialized.get("subframes", {}),
+    }
+    
+    # Ensure compression has __meta__
+    if "__meta__" not in result["compression"]:
+        result["compression"]["__meta__"] = {
+            "schema_version": 1,
+            "state_machine": "CompressionState.v1"
+        }
+    
+    # Deserialize columns section - convert dtype strings to numpy types
+    for name, spec in serialized.get("columns", {}).items():
+        deserialized_spec = {}
+        for key, value in spec.items():
+            if key == "dtype" and isinstance(value, str):
+                # Convert string back to numpy dtype type
+                try:
+                    deserialized_spec[key] = np.dtype(value).type
+                except TypeError:
+                    # Fallback: try getattr on np
+                    deserialized_spec[key] = getattr(np, value, None)
+            else:
+                deserialized_spec[key] = value
+        result["columns"][name] = deserialized_spec
+    
+    return result
+
 class AliasDataFrame:
     """
     AliasDataFrame allows for defining and evaluating lazy-evaluated column aliases
@@ -218,9 +335,6 @@ class AliasDataFrame:
             "subframes": {},    # {name: {"index": ...}}
         }
         
-        # Temporary: keep for Phase 4a backward compat, remove in Phase 4b
-        self._constant_aliases = set()
-        
         # Subframe registry (keeps actual ADF objects)
         self._subframes = SubframeRegistry()
 
@@ -239,17 +353,26 @@ class AliasDataFrame:
     @aliases.setter
     def aliases(self, value):
         """
-        Backward compatible setter for Phase 4a.
-        Converts old-style dict to new schema format.
+        Phase 4b: Raises AttributeError - use add_alias() or update_schema() instead.
+        
+        For bulk loading from serialized data, use _restore_aliases_from_serialized().
         """
-        if not isinstance(value, dict):
-            raise TypeError("aliases must be a dict")
-        # Clear existing aliases from schema
-        to_remove = [k for k, v in self._schema["columns"].items() if "expr" in v]
-        for k in to_remove:
-            del self._schema["columns"][k]
-        # Add new aliases
-        for name, expr in value.items():
+        raise AttributeError(
+            "Direct assignment to 'aliases' is no longer supported. "
+            "Use 'add_alias()' or 'update_schema({\"columns\": {...}})' instead."
+        )
+    
+    def _restore_aliases_from_dict(self, aliases_dict):
+        """
+        Internal method to restore aliases from serialized data.
+        Used by read_tree() and load() for deserialization.
+        
+        Parameters
+        ----------
+        aliases_dict : dict
+            {alias_name: expression_string, ...}
+        """
+        for name, expr in aliases_dict.items():
             if name not in self._schema["columns"]:
                 self._schema["columns"][name] = {}
             self._schema["columns"][name]["expr"] = expr
@@ -266,11 +389,24 @@ class AliasDataFrame:
     @alias_dtypes.setter
     def alias_dtypes(self, value):
         """
-        Backward compatible setter for Phase 4a.
+        Phase 4b: Raises AttributeError - use add_alias() with dtype parameter instead.
         """
-        if not isinstance(value, dict):
-            raise TypeError("alias_dtypes must be a dict")
-        for name, dtype in value.items():
+        raise AttributeError(
+            "Direct assignment to 'alias_dtypes' is no longer supported. "
+            "Use 'add_alias(name, expr, dtype=...)' or 'update_schema()' instead."
+        )
+    
+    def _restore_alias_dtypes_from_dict(self, dtypes_dict):
+        """
+        Internal method to restore alias dtypes from serialized data.
+        Used by read_tree() and load() for deserialization.
+        
+        Parameters
+        ----------
+        dtypes_dict : dict
+            {alias_name: dtype_type, ...}
+        """
+        for name, dtype in dtypes_dict.items():
             if name not in self._schema["columns"]:
                 self._schema["columns"][name] = {}
             self._schema["columns"][name]["dtype"] = dtype
@@ -279,20 +415,32 @@ class AliasDataFrame:
     def constant_aliases(self):
         """
         Backward compatible: returns set of constant alias names.
-        Phase 4a: returns union of _constant_aliases and schema-derived constants.
+        Phase 4b: derives only from _schema.
         """
-        schema_constants = {k for k, v in self._schema["columns"].items() 
-                           if v.get("constant", False)}
-        return self._constant_aliases | schema_constants
+        return {k for k, v in self._schema["columns"].items() 
+                if v.get("constant", False)}
 
     @constant_aliases.setter
     def constant_aliases(self, value):
         """
-        Backward compatible setter for Phase 4a.
+        Phase 4b: Raises AttributeError - use add_alias() instead.
         """
-        self._constant_aliases = set(value) if value else set()
-        # Also update schema
-        for name in value:
+        raise AttributeError(
+            "Direct assignment to 'constant_aliases' is no longer supported. "
+            "Use 'add_alias(name, expr, is_constant=True)' instead."
+        )
+    
+    def _restore_constant_aliases(self, constants_list):
+        """
+        Internal method to restore constant alias flags from serialized data.
+        Used by read_tree() and load() for deserialization.
+        
+        Parameters
+        ----------
+        constants_list : list
+            List of alias names that are constants
+        """
+        for name in constants_list:
             if name in self._schema["columns"]:
                 self._schema["columns"][name]["constant"] = True
 
@@ -307,11 +455,31 @@ class AliasDataFrame:
     @compression_info.setter
     def compression_info(self, value):
         """
-        Backward compatible setter for Phase 4a.
+        Phase 4b: Raises AttributeError - use update_schema() instead.
         """
-        if not isinstance(value, dict):
-            raise TypeError("compression_info must be a dict")
-        self._schema["compression"] = value
+        raise AttributeError(
+            "Direct assignment to 'compression_info' is no longer supported. "
+            "Use 'update_schema({\"compression\": {...}})' instead."
+        )
+    
+    def _restore_compression_info(self, compression_dict):
+        """
+        Internal method to restore compression info from serialized data.
+        Used by read_tree() and load() for deserialization.
+        
+        Parameters
+        ----------
+        compression_dict : dict
+            Compression metadata dict including __meta__
+        """
+        self._schema["compression"] = compression_dict
+        
+        # Ensure __meta__ exists
+        if "__meta__" not in self._schema["compression"]:
+            self._schema["compression"]["__meta__"] = {
+                "schema_version": 1,
+                "state_machine": "CompressionState.v1"
+            }
 
     # =========================================================================
     # Phase 4: New Schema API
@@ -326,6 +494,37 @@ class AliasDataFrame:
             dict with keys: "columns", "compression", "subframes"
         """
         return copy.deepcopy(self._schema)
+    
+    def _restore_schema(self, serialized_schema):
+        """
+        Internal method to restore full schema from serialized/deserialized data.
+        Used by read_tree() and load() for deserialization.
+        
+        Parameters
+        ----------
+        serialized_schema : dict
+            Deserialized schema dict (already processed by _deserialize_schema)
+        """
+        # Restore columns
+        self._schema["columns"] = serialized_schema.get("columns", {})
+        
+        # Restore compression
+        self._schema["compression"] = serialized_schema.get("compression", {
+            "__meta__": {
+                "schema_version": 1,
+                "state_machine": "CompressionState.v1"
+            }
+        })
+        
+        # Ensure __meta__ exists
+        if "__meta__" not in self._schema["compression"]:
+            self._schema["compression"]["__meta__"] = {
+                "schema_version": 1,
+                "state_machine": "CompressionState.v1"
+            }
+        
+        # Restore subframes metadata (not actual subframe objects)
+        self._schema["subframes"] = serialized_schema.get("subframes", {})
 
     def update_schema(self, update, validate=True, apply=True, errors="raise"):
         """
@@ -346,10 +545,6 @@ class AliasDataFrame:
                 if name not in self._schema["columns"]:
                     self._schema["columns"][name] = {}
                 self._schema["columns"][name].update(spec)
-                
-                # Handle constant flag for legacy compatibility
-                if spec.get("constant"):
-                    self._constant_aliases.add(name)
                 
                 # Apply dtype immediately if requested (for physical columns only)
                 if apply and "dtype" in spec:
@@ -646,7 +841,6 @@ class AliasDataFrame:
             spec["dtype"] = dtype
         if is_constant:
             spec["constant"] = True
-            self._constant_aliases.add(name)
         
         # Write to schema
         self._schema["columns"][name] = spec
@@ -986,51 +1180,177 @@ class AliasDataFrame:
         for name in self.aliases:
             self.materialize_alias(name)
 
-    def save(self, path_prefix, dropAliasColumns=True):
+    def save(self, path_prefix, dropAliasColumns=True, include_subframes=True):
+        """
+        Save AliasDataFrame to Parquet format with full schema metadata.
+        
+        Parameters
+        ----------
+        path_prefix : str
+            Base path for output files (without .parquet extension)
+        dropAliasColumns : bool, default=True
+            If True, exclude alias columns from saved data (they can be recomputed)
+        include_subframes : bool, default=True
+            If True, save subframes as separate .parquet files
+            
+        Notes
+        -----
+        - Main frame saved as {path_prefix}.parquet
+        - Subframes saved as {path_prefix}__subframe__{name}.parquet
+        - Full schema metadata stored under SCHEMA_METADATA_KEY
+        """
         import pyarrow as pa
         import pyarrow.parquet as pq
+        
         if dropAliasColumns:
             cols = [c for c in self.df.columns if c not in self.aliases]
         else:
             cols = list(self.df.columns)
-        table = pa.Table.from_pandas(self.df[cols])
+        
+        # Capture column dtypes BEFORE any casting (for restoration on load)
+        column_dtypes = {col: str(self.df[col].dtype) for col in self.df.columns}
+        
+        # PyArrow/Parquet does not support numpy.float16 (halffloat)
+        # Auto-cast to float32 on export. The column_dtypes metadata ensures
+        # correct restoration to float16 on load.
+        export_df = self.df[cols].copy()
+        for col in export_df.columns:
+            if export_df[col].dtype == np.float16:
+                export_df[col] = export_df[col].astype(np.float32)
+        
+        table = pa.Table.from_pandas(export_df)
+        
+        # Serialize schema with column_dtypes for dtype restoration
+        serialized_schema = _serialize_schema(self._schema)
+        serialized_schema["column_dtypes"] = column_dtypes
+        
+        # Store as single JSON blob under dedicated key
         metadata = {
-            "aliases": json.dumps(self.aliases),
-            "dtypes": json.dumps({k: v.__name__ for k, v in self.alias_dtypes.items()}),
-            "constants": json.dumps(list(self.constant_aliases)),
-            "compression_info": json.dumps(self.compression_info)  # NEW
+            SCHEMA_METADATA_KEY: json.dumps(serialized_schema)
         }
+        
         existing_meta = table.schema.metadata or {}
         combined_meta = existing_meta.copy()
         combined_meta.update({k.encode(): v.encode() for k, v in metadata.items()})
         table = table.replace_schema_metadata(combined_meta)
         pq.write_table(table, f"{path_prefix}.parquet", compression="zstd")
+        
+        # Save subframes recursively
+        if include_subframes:
+            for sf_name, entry in self._subframes.items():
+                sf = entry["frame"]
+                sf.save(f"{path_prefix}__subframe__{sf_name}", 
+                       dropAliasColumns=dropAliasColumns, 
+                       include_subframes=True)
 
     @staticmethod
-    def load(path_prefix):
+    def load(path_prefix, load_subframes=True):
+        """
+        Load AliasDataFrame from Parquet format with schema restoration.
+        
+        Parameters
+        ----------
+        path_prefix : str
+            Base path for input files (without .parquet extension)
+        load_subframes : bool, default=True
+            If True, load subframes from separate .parquet files
+            
+        Returns
+        -------
+        AliasDataFrame
+            Restored AliasDataFrame with aliases, compression, and subframes
+            
+        Raises
+        ------
+        IOError
+            If file cannot be read
+        ValueError
+            If schema metadata is corrupted
+        """
         import pyarrow.parquet as pq
-        table = pq.read_table(f"{path_prefix}.parquet")
+        import os
+        
+        parquet_path = f"{path_prefix}.parquet"
+        table = pq.read_table(parquet_path)
         df = table.to_pandas()
         adf = AliasDataFrame(df)
+        
         meta = table.schema.metadata or {}
-        if b"aliases" in meta and b"dtypes" in meta:
-            adf.aliases = json.loads(meta[b"aliases"].decode())
-            adf.alias_dtypes = {k: getattr(np, v) for k, v in json.loads(meta[b"dtypes"].decode()).items()}
-            if b"constants" in meta:
-                adf.constant_aliases = set(json.loads(meta[b"constants"].decode()))
-
-        # Load compression_info and ensure __meta__ is present
-        if b"compression_info" in meta:
-            adf.compression_info = json.loads(meta[b"compression_info"].decode())
-        else:
-            adf.compression_info = {}  # backward compat
-
-        if "__meta__" not in adf.compression_info:
-            adf.compression_info["__meta__"] = {
-                "schema_version": 1,
-                "state_machine": "CompressionState.v1"
-            }
-
+        
+        # Try new unified schema format first
+        if SCHEMA_METADATA_KEY.encode() in meta:
+            try:
+                serialized = json.loads(meta[SCHEMA_METADATA_KEY.encode()].decode())
+                restored_schema = _deserialize_schema(serialized)
+                adf._restore_schema(restored_schema)
+                
+                # Restore column dtypes
+                column_dtypes = serialized.get("column_dtypes", {})
+                for col, dtype_str in column_dtypes.items():
+                    if col in adf.df.columns:
+                        try:
+                            target_dtype = np.dtype(dtype_str)
+                            if adf.df[col].dtype != target_dtype:
+                                adf.df[col] = adf.df[col].astype(target_dtype)
+                        except (TypeError, ValueError):
+                            pass  # Skip if dtype conversion fails
+                            
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    f"Corrupted schema metadata in {parquet_path}: {e}\n"
+                    f"The file may be damaged or created by an incompatible version."
+                )
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to restore schema from {parquet_path}: {e}"
+                )
+        
+        # Fallback: try legacy format for backward compatibility
+        elif b"aliases" in meta:
+            try:
+                aliases_dict = json.loads(meta[b"aliases"].decode())
+                adf._restore_aliases_from_dict(aliases_dict)
+                
+                if b"dtypes" in meta:
+                    dtypes_dict = {k: getattr(np, v) for k, v in json.loads(meta[b"dtypes"].decode()).items()}
+                    adf._restore_alias_dtypes_from_dict(dtypes_dict)
+                
+                if b"constants" in meta:
+                    constants_list = json.loads(meta[b"constants"].decode())
+                    adf._restore_constant_aliases(constants_list)
+                
+                if b"compression_info" in meta:
+                    compression_dict = json.loads(meta[b"compression_info"].decode())
+                    adf._restore_compression_info(compression_dict)
+                    
+            except json.JSONDecodeError as e:
+                warnings.warn(
+                    f"Failed to parse legacy metadata in {parquet_path}: {e}. "
+                    f"Using defaults."
+                )
+        
+        # Load subframes
+        if load_subframes:
+            # Get subframe names from schema
+            subframe_names = list(adf._schema.get("subframes", {}).keys())
+            
+            # Also check for subframe files that match pattern
+            base_dir = os.path.dirname(path_prefix) or "."
+            base_name = os.path.basename(path_prefix)
+            
+            for sf_name in subframe_names:
+                sf_path = f"{path_prefix}__subframe__{sf_name}"
+                if os.path.exists(f"{sf_path}.parquet"):
+                    try:
+                        sf = AliasDataFrame.load(sf_path, load_subframes=True)
+                        index_columns = adf._schema["subframes"][sf_name].get("index")
+                        if index_columns:
+                            adf.register_subframe(sf_name, sf, index_columns)
+                    except Exception as e:
+                        warnings.warn(
+                            f"Failed to load subframe '{sf_name}' from {sf_path}: {e}"
+                        )
+        
         return adf
 
     def export_tree(self, filename_or_file, treename="tree", dropAliasColumns=True,compression=uproot.ZLIB(level=1)):
@@ -1064,8 +1384,16 @@ class AliasDataFrame:
             entry["frame"].export_tree(uproot_file, f"{treename}__subframe__{subframe_name}", dropAliasColumns)
 
     def _write_metadata_to_root(self, filename, treename):
+        """
+        Write schema metadata to ROOT file.
+        
+        Phase 4b: Uses unified schema serialization format.
+        Also sets TTree aliases for ROOT TTree::Draw compatibility.
+        """
         f = ROOT.TFile.Open(filename, "UPDATE")
         tree = f.Get(treename)
+        
+        # Set TTree aliases for ROOT compatibility
         for alias, expr in self.aliases.items():
             try:
                 val = float(expr)
@@ -1074,22 +1402,32 @@ class AliasDataFrame:
                 expr_str = convert_expr_to_root(expr)
             tree.SetAlias(alias, expr_str)
         
-        # Phase 2: Capture all column dtypes BEFORE any casting
-        # This enables dtype restoration on read
+        # Capture all column dtypes for restoration
         column_dtypes = {
             col: str(self.df[col].dtype)
             for col in self.df.columns
         }
         
+        # Phase 4b: Serialize full schema
+        serialized_schema = _serialize_schema(self._schema)
+        serialized_schema["column_dtypes"] = column_dtypes
+        
+        # Also include legacy fields for backward compatibility with older readers
+        # and ROOT macro compatibility
         metadata = {
+            # New unified schema format
+            SCHEMA_METADATA_KEY: serialized_schema,
+            # Legacy fields for backward compatibility
             "aliases": self.aliases,
             "subframe_indices": {k: v["index"] for k, v in self._subframes.items()},
-            "dtypes": {k: v.__name__ for k, v in self.alias_dtypes.items()},
+            "dtypes": {k: v.__name__ if hasattr(v, '__name__') else str(v) 
+                      for k, v in self.alias_dtypes.items()},
             "constants": list(self.constant_aliases),
             "subframes": list(self._subframes.subframes.keys()),
             "compression_info": self.compression_info,
-            "column_dtypes": column_dtypes  # Phase 2: store all column dtypes
+            "column_dtypes": column_dtypes
         }
+        
         jmeta = json.dumps(metadata)
         tree.GetUserInfo().Add(ROOT.TObjString(jmeta))
         tree.Write("", ROOT.TObject.kOverwrite)
@@ -1180,12 +1518,27 @@ class AliasDataFrame:
 
             # Read extended metadata from TObjString in UserInfo
             user_info = tree.GetUserInfo()
+            new_schema_found = False
+            
             for i in range(user_info.GetEntries()):
                 obj = user_info.At(i)
                 if isinstance(obj, ROOT.TObjString):
                     try:
                         jmeta = json.loads(obj.GetString().Data())
-
+                        
+                        # Phase 4b: Check for new unified schema format first
+                        if SCHEMA_METADATA_KEY in jmeta:
+                            serialized_schema = jmeta[SCHEMA_METADATA_KEY]
+                            metadata['restored_schema'] = _deserialize_schema(serialized_schema)
+                            metadata['column_dtypes'] = serialized_schema.get("column_dtypes", {})
+                            metadata['subframes'] = list(metadata['restored_schema'].get("subframes", {}).keys())
+                            metadata['subframe_indices'] = {
+                                k: v.get("index") 
+                                for k, v in metadata['restored_schema'].get("subframes", {}).items()
+                            }
+                            new_schema_found = True
+                        
+                        # Also read legacy fields for backward compatibility / fallback
                         metadata['aliases'].update(jmeta.get("aliases", {}))
                         metadata['alias_dtypes'] = {
                             k: np.dtype(v).type
@@ -1193,9 +1546,11 @@ class AliasDataFrame:
                         }
                         metadata['constant_aliases'] = set(jmeta.get("constants", []))
                         metadata['compression_info'] = jmeta.get("compression_info", {})
-                        metadata['subframes'] = jmeta.get("subframes", [])
-                        metadata['subframe_indices'] = jmeta.get("subframe_indices", {})
-                        metadata['column_dtypes'] = jmeta.get("column_dtypes", {})  # Phase 2
+                        if not new_schema_found:
+                            metadata['subframes'] = jmeta.get("subframes", [])
+                            metadata['subframe_indices'] = jmeta.get("subframe_indices", {})
+                        if 'column_dtypes' not in metadata or not metadata['column_dtypes']:
+                            metadata['column_dtypes'] = jmeta.get("column_dtypes", {})
                         break
 
                     except json.JSONDecodeError as e:
@@ -1334,10 +1689,16 @@ class AliasDataFrame:
         # Step 4: Create AliasDataFrame and populate metadata
         # =========================================================================
         adf = AliasDataFrame(df)
-        adf.aliases = metadata['aliases']
-        adf.alias_dtypes = metadata['alias_dtypes']
-        adf.constant_aliases = metadata['constant_aliases']
-        adf.compression_info = metadata['compression_info']
+        
+        # Phase 4b: Use unified schema if available, otherwise legacy restore
+        if 'restored_schema' in metadata:
+            adf._restore_schema(metadata['restored_schema'])
+        else:
+            # Legacy restore for backward compatibility
+            adf._restore_aliases_from_dict(metadata['aliases'])
+            adf._restore_alias_dtypes_from_dict(metadata['alias_dtypes'])
+            adf._restore_constant_aliases(list(metadata['constant_aliases']))
+            adf._restore_compression_info(metadata['compression_info'])
 
         # =========================================================================
         # Step 5: Load subframes recursively
