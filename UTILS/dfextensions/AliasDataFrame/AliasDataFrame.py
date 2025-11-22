@@ -930,28 +930,353 @@ class AliasDataFrame:
         return result
 
     def validate_aliases(self):
+        """
+        Validate that all aliases can be resolved.
+        
+        An alias is "broken" if it references variables that don't exist as:
+        - DataFrame columns
+        - Other defined aliases  
+        - Subframe columns (T.column syntax)
+        - Known functions/constants (np, pi, etc.)
+        
+        Returns
+        -------
+        list
+            Names of aliases that cannot be resolved
+        """
         broken = []
+        
+        # Known functions and constants that are always available
+        known_names = set(self._default_functions().keys())
+        known_names.update(['np', 'pi', 'abs', 'int', 'float', 'round', 'sqrt', 
+                           'sin', 'cos', 'tan', 'exp', 'log', 'log10', 'atan2',
+                           'sinh', 'cosh', 'tanh', 'arcsin', 'arccos', 'arctan'])
+        
+        # All resolvable names: columns + aliases + known functions
+        resolvable = set(self.df.columns) | set(self.aliases.keys()) | known_names
+        
         for name, expr in self.aliases.items():
-            try:
-                # Suppress warnings during validation - we're just checking syntax
-                self._eval_in_namespace(expr, warn_missing_keys=False, alias_name=name)
-            except Exception:
+            # Extract tokens from expression
+            tokens = re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b', expr)
+            
+            missing = []
+            for token in tokens:
+                # Skip numeric literals that might be partially matched
+                if token.isdigit():
+                    continue
+                    
+                # Check if it's a subframe reference (handled separately)
+                if '.' in expr:
+                    # Check for T.column pattern
+                    subframe_refs = re.findall(r'([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)', expr)
+                    for sf_name, sf_col in subframe_refs:
+                        if sf_name == token:
+                            # This token is a subframe name, check if it exists
+                            sf = self.get_subframe(sf_name)
+                            if sf is None:
+                                missing.append(f"{sf_name} (subframe)")
+                            elif sf_col not in sf.df.columns and sf_col not in sf.aliases:
+                                missing.append(f"{sf_name}.{sf_col}")
+                            continue
+                
+                # Check if token is resolvable
+                if token not in resolvable:
+                    # Check if it's part of a subframe reference
+                    if not any(token == sf_ref[0] for sf_ref in 
+                              re.findall(r'([A-Za-z_][A-Za-z0-9_]*)\.', expr)):
+                        missing.append(token)
+            
+            if missing:
                 broken.append(name)
+        
         return broken
 
-    def describe_aliases(self):
-        print("Aliases:")
-        for name, expr in self.aliases.items():
-            print(f"  {name}: {expr}")
-        broken = self.validate_aliases()
-        if broken:
-            print("\nBroken Aliases:")
-            for name in broken:
-                print(f"  {name}")
-        print("\nDependencies:")
+    # Verbosity flags for describe_aliases (bitmask)
+    ALIAS_SHOW_CORE   = 0x01  # name, kind, materialized, dtype, expr (always on)
+    ALIAS_SHOW_DEPS   = 0x02  # dependency list
+    ALIAS_SHOW_ERRORS = 0x04  # missing symbols, parse errors
+    ALIAS_SHOW_STATS  = 0x08  # stats if materialized (mean, std, n_nan)
+    ALIAS_SHOW_ALL    = 0x0F  # all flags
+
+    def select_aliases(self, pattern=None, names=None, only_broken=False,
+                       only_materialized=False, only_unmaterialized=False,
+                       with_dependencies=False):
+        """
+        Select aliases by pattern and/or names with optional filters.
+        
+        This is the core selection logic used by describe_aliases, 
+        materialize_aliases, etc.
+        
+        Parameters
+        ----------
+        pattern : str, optional
+            Regex pattern to match alias names
+        names : list, optional
+            Explicit list of alias names to include
+        only_broken : bool, default=False
+            If True, include only broken aliases
+        only_materialized : bool, default=False
+            If True, include only materialized aliases
+        only_unmaterialized : bool, default=False
+            If True, include only unmaterialized aliases
+        with_dependencies : bool, default=False
+            If True, expand selection to include all dependencies
+            
+        Returns
+        -------
+        list
+            List of alias names matching the criteria
+            
+        Examples
+        --------
+        >>> adf.select_aliases(pattern=r'is.*')  # Names starting with 'is'
+        >>> adf.select_aliases(names=['r', 'phi'])  # Specific names
+        >>> adf.select_aliases(only_broken=True)  # All broken aliases
+        >>> adf.select_aliases(pattern=r'dy.*', only_unmaterialized=True)
+        >>> adf.select_aliases(names=['cosPhi'], with_dependencies=True)  # includes 'phi'
+        """
+        import re as re_module
+        
+        # Validate mutually exclusive filters
+        exclusive_filters = [only_broken, only_materialized, only_unmaterialized]
+        if sum(bool(x) for x in exclusive_filters) > 1:
+            raise ValueError(
+                "Filters only_broken, only_materialized, only_unmaterialized are mutually exclusive"
+            )
+        
+        # Compile and validate pattern
+        regex = None
+        if pattern:
+            try:
+                regex = re_module.compile(pattern)
+            except re_module.error as e:
+                raise ValueError(f"Invalid regex pattern '{pattern}': {e}")
+        
+        # Get broken aliases for filtering
+        broken_aliases = set(self.validate_aliases()) if only_broken else None
+        
+        # Build result list
+        result = []
+        
+        for name in self.aliases:
+            # Filter by explicit names
+            if names is not None and name not in names:
+                continue
+                
+            # Filter by pattern
+            if regex and not regex.search(name):
+                continue
+            
+            # Filter by broken status
+            if only_broken:
+                if name not in broken_aliases:
+                    continue
+            
+            # Filter by materialized status
+            materialized = name in self.df.columns
+            if only_materialized and not materialized:
+                continue
+            if only_unmaterialized and materialized:
+                continue
+            
+            result.append(name)
+        
+        # Expand with dependencies if requested
+        if with_dependencies and result:
+            import networkx as nx
+            
+            def build_graph():
+                g = nx.DiGraph()
+                for alias, expr in self.aliases.items():
+                    g.add_node(alias)
+                    for token in re.findall(r'\b\w+\b', expr):
+                        if token in self.aliases:
+                            g.add_edge(token, alias)
+                return g
+            
+            g = build_graph()
+            expanded = set(result)
+            for name in result:
+                try:
+                    expanded |= nx.ancestors(g, name)
+                except nx.NetworkXError:
+                    pass
+            
+            # Return in topological order if possible
+            try:
+                ordered = list(nx.topological_sort(g.subgraph(expanded)))
+                result = [n for n in ordered if n in expanded]
+            except nx.NetworkXError:
+                result = list(expanded)
+        
+        return result
+
+    def describe_aliases(self, verbosity=0x05, pattern=None, names=None, as_dict=False,
+                         only_broken=False, only_materialized=False, 
+                         only_unmaterialized=False, with_dependencies=False, color=False):
+        """
+        Print summary of all aliases with name, type, materialized status, and expression.
+        
+        Parameters
+        ----------
+        verbosity : int, default=ALIAS_SHOW_CORE | ALIAS_SHOW_ERRORS (0x05)
+            Bitmask controlling output detail:
+            - ALIAS_SHOW_CORE (0x01): name, kind, materialized, dtype, expr (always on)
+            - ALIAS_SHOW_DEPS (0x02): show dependency list
+            - ALIAS_SHOW_ERRORS (0x04): show missing symbols for broken aliases
+            - ALIAS_SHOW_STATS (0x08): show stats for materialized aliases
+            - ALIAS_SHOW_ALL (0x0F): all flags
+        pattern : str, optional
+            Regex pattern to filter aliases by name
+        names : list, optional
+            Explicit list of alias names to include
+        as_dict : bool, default=False
+            If True, return dict instead of printing
+        only_broken : bool, default=False
+            If True, show only broken aliases
+        only_materialized : bool, default=False
+            If True, show only materialized aliases
+        only_unmaterialized : bool, default=False
+            If True, show only unmaterialized aliases
+        with_dependencies : bool, default=False
+            If True, expand selection to include all dependencies
+        color : bool, default=False
+            If True, use ANSI colors in output (green=OK, red=broken)
+            
+        Returns
+        -------
+        dict or None
+            If as_dict=True, returns structured dict of alias info
+        """
+        # Mask unknown verbosity bits
+        verbosity &= self.ALIAS_SHOW_ALL
+        
+        # Use select_aliases for filtering
+        selected = self.select_aliases(
+            pattern=pattern, names=names,
+            only_broken=only_broken, 
+            only_materialized=only_materialized,
+            only_unmaterialized=only_unmaterialized,
+            with_dependencies=with_dependencies
+        )
+        
+        # Gather validation info
+        broken_aliases = set(self.validate_aliases())
+        
+        # Build detailed info for broken aliases
+        resolvable = set(self.df.columns) | set(self.aliases.keys()) | set(self._default_functions().keys())
+        
+        # Compute dependencies once
         deps = self._resolve_dependencies()
-        for k, v in deps.items():
-            print(f"  {k}: {sorted(v)}")
+        
+        # Color codes (used if color=True)
+        if color:
+            C_RED = '\033[91m'
+            C_GREEN = '\033[92m'
+            C_YELLOW = '\033[93m'
+            C_RESET = '\033[0m'
+        else:
+            C_RED = C_GREEN = C_YELLOW = C_RESET = ''
+        
+        # Build result dict
+        result = {}
+        
+        for name in selected:
+            expr = self.aliases[name]
+            
+            # Determine kind
+            if name in self.constant_aliases:
+                kind = "constant"
+            else:
+                kind = "alias"
+            
+            # Check if materialized
+            materialized = name in self.df.columns
+            
+            # Get dtype
+            dtype = self.alias_dtypes.get(name)
+            dtype_str = dtype.__name__ if dtype and hasattr(dtype, '__name__') else str(dtype) if dtype else None
+            
+            # Check for broken
+            is_broken = name in broken_aliases
+            missing = []
+            if is_broken:
+                tokens = re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b', expr)
+                missing = [t for t in tokens if t not in resolvable and not t.isdigit()]
+            
+            # Get dependencies
+            alias_deps = sorted(deps.get(name, []))
+            
+            # Build entry
+            entry = {
+                'name': name,
+                'kind': kind,
+                'materialized': materialized,
+                'dtype': dtype_str,
+                'expr': expr,
+                'broken': is_broken,
+                'missing': missing if missing else None,
+                'deps': alias_deps if alias_deps else None,
+            }
+            
+            # Add stats if requested and materialized
+            if (verbosity & self.ALIAS_SHOW_STATS) and materialized:
+                col = self.df[name]
+                entry['stats'] = {
+                    'mean': float(col.mean()) if col.dtype.kind in 'iuf' else None,
+                    'std': float(col.std()) if col.dtype.kind in 'iuf' else None,
+                    'n_nan': int(col.isna().sum()),
+                    'n_total': len(col),
+                }
+            
+            result[name] = entry
+        
+        if as_dict:
+            return result
+        
+        # Print output
+        print("Aliases:")
+        print(f"  {'Name':<28} {'Kind':<10} {'Mat':<5} {'Dtype':<10} Expression")
+        print(f"  {'-'*28} {'-'*10} {'-'*5} {'-'*10} {'-'*40}")
+        
+        for name, info in result.items():
+            mat_str = "Yes" if info['materialized'] else "No"
+            dtype_str = info['dtype'] if info['dtype'] else "-"
+            kind_str = info['kind']
+            
+            # Mark broken in kind column with optional color
+            if info['broken']:
+                kind_str = f"{C_RED}BROKEN{C_RESET}" if color else "BROKEN"
+            elif info['materialized'] and color:
+                mat_str = f"{C_GREEN}Yes{C_RESET}"
+            
+            # Truncate long expressions
+            expr = info['expr']
+            expr_display = expr if len(expr) <= 45 else expr[:42] + "..."
+            
+            print(f"  {name:<28} {kind_str:<10} {mat_str:<5} {dtype_str:<10} {expr_display}")
+            
+            # Show errors if requested
+            if (verbosity & self.ALIAS_SHOW_ERRORS) and info['missing']:
+                missing_str = f"{C_RED}{info['missing']}{C_RESET}" if color else str(info['missing'])
+                print(f"  {'':<28} {'^ Missing:':<10} {missing_str}")
+            
+            # Show deps if requested
+            if (verbosity & self.ALIAS_SHOW_DEPS) and info['deps']:
+                print(f"  {'':<28} {'Deps:':<10} {info['deps']}")
+            
+            # Show stats if requested
+            if (verbosity & self.ALIAS_SHOW_STATS) and info.get('stats'):
+                stats = info['stats']
+                if stats['mean'] is not None:
+                    print(f"  {'':<28} {'Stats:':<10} mean={stats['mean']:.4g}, std={stats['std']:.4g}, nan={stats['n_nan']}/{stats['n_total']}")
+                else:
+                    print(f"  {'':<28} {'Stats:':<10} nan={stats['n_nan']}/{stats['n_total']}")
+        
+        # Summary
+        n_broken = sum(1 for info in result.values() if info['broken'])
+        n_materialized = sum(1 for info in result.values() if info['materialized'])
+        print(f"\nTotal: {len(result)} aliases, {n_materialized} materialized, {n_broken} broken")
 
     def materialize_alias(self, name, cleanTemporary=False, dtype=None, warn_missing_keys=True):
         """
@@ -993,42 +1318,117 @@ class AliasDataFrame:
                 result = result_dtype(result)
         self.df[name] = result
 
-    def materialize_aliases(self, targets, cleanTemporary=True, verbose=False):
-        import networkx as nx
-        def build_graph():
-            g = nx.DiGraph()
-            for alias, expr in self.aliases.items():
-                for token in re.findall(r'\b\w+\b', expr):
-                    if token in self.aliases:
-                        g.add_edge(token, alias)
-            return g
-        g = build_graph()
-        required = set()
-        for t in targets:
-            if t not in self.aliases:
-                if verbose:
-                    print(f"[materialize_aliases] Skipping non-alias target: {t}")
-                continue
-            if t not in g:
-                if verbose:
-                    print(f"[materialize_aliases] Alias '{t}' not in graph")
-                continue
-            try:
-                required |= nx.ancestors(g, t)
-            except nx.NetworkXError:
-                continue
-            required.add(t)
-        ordered = list(nx.topological_sort(g.subgraph(required)))
+    def materialize_aliases(self, pattern=None, names=None, with_dependencies=True,
+                            only_unmaterialized=True, cleanTemporary=True, verbose=False):
+        """
+        Materialize aliases matching pattern and/or names.
+        
+        Parameters
+        ----------
+        pattern : str, optional
+            Regex pattern to match alias names (e.g. r'^is' for aliases starting with 'is')
+        names : list, optional
+            Explicit list of alias names to materialize
+        with_dependencies : bool, default=True
+            If True, materialize dependencies in correct order
+        only_unmaterialized : bool, default=True
+            If True, skip aliases already materialized as columns
+        cleanTemporary : bool, default=True
+            If True, remove intermediate dependencies that weren't targets
+        verbose : bool, default=False
+            If True, print progress information
+            
+        Returns
+        -------
+        list
+            Names of aliases that were materialized
+            
+        Examples
+        --------
+        >>> adf.materialize_aliases(pattern=r'is.*')  # All 'is*' aliases
+        >>> adf.materialize_aliases(names=['r', 'phi', 'cosPhi'])  # Specific names
+        >>> adf.materialize_aliases(pattern=r'dy.*|dz.*')  # dy and dz aliases
+        """
+        # Get primary targets first (without dependencies)
+        targets = self.select_aliases(
+            pattern=pattern, 
+            names=names,
+            only_unmaterialized=only_unmaterialized,
+            with_dependencies=False
+        )
+        
+        if verbose:
+            print(f"[materialize_aliases] Selected {len(targets)} targets: {targets}")
+        
+        if not targets:
+            return []
+        
+        # Get full list with dependencies in topological order
+        if with_dependencies:
+            to_materialize = self.select_aliases(
+                names=targets,
+                only_unmaterialized=only_unmaterialized,
+                with_dependencies=True
+            )
+            if verbose:
+                print(f"[materialize_aliases] With dependencies: {to_materialize}")
+        else:
+            to_materialize = targets
+        
+        # Materialize in order
         added = []
-        for name in ordered:
+        for name in to_materialize:
             if name not in self.df.columns:
-                self.materialize_alias(name)
+                if verbose:
+                    print(f"[materialize_aliases] Materializing: {name}")
+                self.materialize_alias(name, cleanTemporary=False)
                 added.append(name)
-        if cleanTemporary:
+        
+        # Clean temporary dependencies if requested
+        if cleanTemporary and with_dependencies:
+            targets_set = set(targets)
             for col in added:
-                if col not in targets and col in self.df.columns:
+                if col not in targets_set and col in self.df.columns:
                     self.df.drop(columns=[col], inplace=True)
+                    if verbose:
+                        print(f"[materialize_aliases] Cleaned temporary: {col}")
+        
         return added
+
+    def materialize_pattern(self, pattern, cleanTemporary=True, verbose=False, 
+                           only_unmaterialized=True):
+        """
+        Materialize all aliases matching a regex pattern.
+        
+        DEPRECATED: Use materialize_aliases(pattern=...) instead.
+        
+        Parameters
+        ----------
+        pattern : str
+            Regex pattern to match alias names
+        cleanTemporary : bool, default=True
+            If True, remove intermediate dependencies that weren't targets
+        verbose : bool, default=False
+            If True, print progress information
+        only_unmaterialized : bool, default=True
+            If True, skip aliases already materialized as columns
+            
+        Returns
+        -------
+        list
+            Names of aliases that were materialized
+        """
+        import warnings
+        warnings.warn(
+            "materialize_pattern() is deprecated. Use materialize_aliases(pattern=...) instead.",
+            DeprecationWarning, stacklevel=2
+        )
+        return self.materialize_aliases(
+            pattern=pattern, 
+            cleanTemporary=cleanTemporary, 
+            verbose=verbose,
+            only_unmaterialized=only_unmaterialized
+        )
 
     def get_alias_series(self, name, dtype=None, warn_missing_keys=True):
         """
