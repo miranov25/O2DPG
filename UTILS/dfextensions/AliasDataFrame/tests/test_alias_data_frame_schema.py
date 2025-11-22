@@ -659,5 +659,76 @@ class TestSchemaIntegration:
         assert simple_adf.alias_dtypes.get('test') == np.float32
 
 
+# =============================================================================
+# Test: Mutation Safety (Gemini Review Directive)
+# =============================================================================
+
+class TestMutationSafety:
+    """Tests ensuring property getters return safe objects that don't mutate _schema."""
+
+    def test_aliases_mutation_does_not_affect_schema(self, simple_adf):
+        """Verify mutating returned aliases dict doesn't affect _schema."""
+        simple_adf.add_alias('original', 'x + 1')
+        
+        # Get aliases and mutate the returned dict
+        aliases_copy = simple_adf.aliases
+        aliases_copy['injected'] = 'malicious_expr'
+        
+        # _schema should be unaffected
+        assert 'injected' not in simple_adf._schema['columns']
+        assert 'injected' not in simple_adf.aliases
+
+    def test_alias_dtypes_mutation_does_not_affect_schema(self, simple_adf):
+        """Verify mutating returned alias_dtypes dict doesn't affect _schema."""
+        simple_adf.add_alias('typed', 'x + 1', dtype=np.float32)
+        
+        # Get alias_dtypes and mutate the returned dict
+        dtypes_copy = simple_adf.alias_dtypes
+        dtypes_copy['typed'] = np.int64
+        dtypes_copy['injected'] = np.float16
+        
+        # _schema should be unaffected
+        assert simple_adf._schema['columns']['typed']['dtype'] == np.float32
+        assert 'injected' not in simple_adf._schema['columns']
+
+    def test_constant_aliases_mutation_does_not_affect_schema(self, simple_adf):
+        """Verify mutating returned constant_aliases set doesn't affect _schema."""
+        simple_adf.add_alias('const', '42', is_constant=True)
+        
+        # Get constant_aliases and mutate the returned set
+        constants_copy = simple_adf.constant_aliases
+        constants_copy.add('injected')
+        constants_copy.discard('const')
+        
+        # _schema should be unaffected
+        assert simple_adf._schema['columns']['const'].get('constant') is True
+        assert 'injected' not in simple_adf._schema['columns']
+
+    def test_compression_info_is_reference_by_design(self, simple_adf):
+        """
+        Document that compression_info IS a reference (backward compat).
+        
+        This is intentional - existing code modifies compression_info directly.
+        Phase 4b may change this behavior.
+        """
+        # Modify via property
+        simple_adf.compression_info['test_entry'] = {'state': 'test'}
+        
+        # Should appear in _schema (this is expected behavior)
+        assert 'test_entry' in simple_adf._schema['compression']
+
+    def test_schema_property_is_deep_copy(self, adf_with_aliases):
+        """Verify schema property returns deep copy - mutations are isolated."""
+        schema = adf_with_aliases.schema
+        
+        # Mutate the copy deeply
+        schema['columns']['sum_xy']['expr'] = 'MUTATED'
+        schema['compression']['__meta__']['schema_version'] = 999
+        
+        # Original _schema should be unaffected
+        assert adf_with_aliases._schema['columns']['sum_xy']['expr'] == 'x + y'
+        assert adf_with_aliases._schema['compression']['__meta__']['schema_version'] == 1
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
