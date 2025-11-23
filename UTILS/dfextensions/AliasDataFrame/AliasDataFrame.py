@@ -2869,56 +2869,322 @@ class AliasDataFrame:
         else:
             return self.compression_info.get(column, {})
 
-    def describe_compression(self):
+    # Verbosity flags for describe_compression (bitmask)
+    COMPRESS_SHOW_CORE   = 0x01  # name, state, compressed_col, dtype (always on)
+    COMPRESS_SHOW_EXPR   = 0x02  # compress/decompress expressions
+    COMPRESS_SHOW_PREC   = 0x04  # precision metrics (RMSE, max, mean)
+    COMPRESS_SHOW_STATS  = 0x08  # sample counts, non-finite fraction
+    COMPRESS_SHOW_ALL    = 0x0F  # all flags
+
+    def select_compression(self, pattern=None, names=None, 
+                           only_compressed=False, only_decompressed=False,
+                           only_failed=False):
+        """
+        Select compressed columns by pattern and/or names with optional filters.
+        
+        Parameters
+        ----------
+        pattern : str, optional
+            Regex pattern to match column names
+        names : list, optional
+            Explicit list of column names to include
+        only_compressed : bool, default=False
+            If True, include only columns in 'compressed' state
+        only_decompressed : bool, default=False
+            If True, include only columns in 'decompressed' state
+        only_failed : bool, default=False
+            If True, include only columns where user-defined monitor threshold is exceeded.
+            Requires 'monitor' to be defined in compression_info for the column.
+            
+        Returns
+        -------
+        list
+            List of column names matching the criteria
+        """
+        import re as re_module
+        
+        # Validate mutually exclusive filters
+        exclusive_filters = [only_compressed, only_decompressed]
+        if sum(bool(x) for x in exclusive_filters) > 1:
+            raise ValueError("Filters only_compressed and only_decompressed are mutually exclusive")
+        
+        # Compile and validate pattern
+        regex = None
+        if pattern:
+            try:
+                regex = re_module.compile(pattern)
+            except re_module.error as e:
+                raise ValueError(f"Invalid regex pattern '{pattern}': {e}")
+        
+        # Get compression info (excluding __meta__)
+        columns_info = {k: v for k, v in self.compression_info.items() if k != "__meta__"}
+        
+        result = []
+        for name, info in columns_info.items():
+            # Filter by explicit names
+            if names is not None and name not in names:
+                continue
+            
+            # Filter by pattern
+            if regex and not regex.search(name):
+                continue
+            
+            # Filter by state
+            state = info.get('state', 'unknown')
+            if only_compressed and state != 'compressed':
+                continue
+            if only_decompressed and state != 'decompressed':
+                continue
+            
+            # Filter by failure status (requires user-defined monitor)
+            if only_failed:
+                monitor = info.get('monitor')
+                if monitor is None:
+                    # No monitor defined - skip (not considered failed)
+                    continue
+                if not self._check_monitor_failed(info):
+                    continue
+            
+            result.append(name)
+        
+        return result
+
+    def _check_monitor_failed(self, info):
+        """Check if compression monitor threshold is exceeded.
+        
+        Returns True if monitor is defined and threshold exceeded.
+        Returns False if no monitor or threshold not exceeded.
+        """
+        monitor = info.get('monitor')
+        if monitor is None:
+            return False
+        
+        prec = info.get('precision', {})
+        threshold = monitor.get('threshold')
+        if threshold is None:
+            return False
+        
+        monitor_type = monitor.get('type')
+        
+        if monitor_type == 'absolute':
+            # Check absolute RMSE
+            return prec.get('rmse', 0) > threshold
+        
+        elif monitor_type == 'relative':
+            relative_to = monitor.get('relative_to', 'data_range')
+            rmse = prec.get('rmse', 0)
+            
+            if relative_to == 'data_range':
+                data_range = prec.get('data_range')
+                if data_range:
+                    range_size = abs(data_range[1] - data_range[0])
+                    if range_size > 0:
+                        return rmse / range_size > threshold
+            # Could add other relative_to options here
+            return False
+        
+        elif monitor_type == 'function':
+            func = monitor.get('func')
+            if func and callable(func):
+                try:
+                    value = func(prec)
+                    return value > threshold
+                except Exception:
+                    return True  # Error in function = failed
+            return False
+        
+        return False
+
+    def _get_monitor_value(self, info):
+        """Compute current monitor value for display."""
+        monitor = info.get('monitor')
+        if monitor is None:
+            return None, None
+        
+        prec = info.get('precision', {})
+        monitor_type = monitor.get('type')
+        label = monitor.get('label', monitor_type)
+        
+        if monitor_type == 'absolute':
+            return label or 'RMSE', prec.get('rmse', 0)
+        
+        elif monitor_type == 'relative':
+            relative_to = monitor.get('relative_to', 'data_range')
+            rmse = prec.get('rmse', 0)
+            
+            if relative_to == 'data_range':
+                data_range = prec.get('data_range')
+                if data_range:
+                    range_size = abs(data_range[1] - data_range[0])
+                    if range_size > 0:
+                        return label or 'RMSE/range', rmse / range_size
+            return label or 'relative', None
+        
+        elif monitor_type == 'function':
+            func = monitor.get('func')
+            if func and callable(func):
+                try:
+                    value = func(prec)
+                    return label or 'custom', value
+                except Exception as e:
+                    return label or 'custom', f'error: {e}'
+        
+        return None, None
+
+    def describe_compression(self, verbosity=0x07, pattern=None, names=None, as_dict=False,
+                             only_compressed=False, only_decompressed=False, 
+                             only_failed=False, color=False):
         """
         Print human-readable compression summary.
-
-        Shows compressed columns, expressions, dtypes, state, and precision metrics
-        if available.
-
-        Examples
-        --------
-        >>> adf.describe_compression()
-        Compressed Columns:
-        -------------------
-        dy:
-          State: compressed
-          Compressed as: dy_c (int16)
-          Expression: round(asinh(dy)*40)
-          Decompression: sinh(dy_c/40.) → float16
-          Precision: RMSE=0.0012, Max=0.0045
+        
+        Parameters
+        ----------
+        verbosity : int, default=COMPRESS_SHOW_CORE | COMPRESS_SHOW_EXPR | COMPRESS_SHOW_PREC (0x07)
+            Bitmask controlling output detail:
+            - COMPRESS_SHOW_CORE (0x01): name, state, compressed_col, dtype
+            - COMPRESS_SHOW_EXPR (0x02): compress/decompress expressions
+            - COMPRESS_SHOW_PREC (0x04): precision metrics (RMSE, max, mean)
+            - COMPRESS_SHOW_STATS (0x08): sample counts, non-finite fraction
+            - COMPRESS_SHOW_ALL (0x0F): all flags
+        pattern : str, optional
+            Regex pattern to filter columns by name
+        names : list, optional
+            Explicit list of column names to include
+        as_dict : bool, default=False
+            If True, return dict instead of printing
+        only_compressed : bool, default=False
+            If True, show only columns in 'compressed' state
+        only_decompressed : bool, default=False
+            If True, show only columns in 'decompressed' state
+        only_failed : bool, default=False
+            If True, show only columns where user-defined monitor threshold is exceeded.
+            Requires 'monitor' to be defined in compression_info.
+        color : bool, default=False
+            If True, use ANSI colors in output
+            
+        Returns
+        -------
+        dict or None
+            If as_dict=True, returns structured dict of compression info
         """
-        # Filter out __meta__
+        # Mask unknown verbosity bits
+        verbosity &= self.COMPRESS_SHOW_ALL
+        
+        # Use select_compression for filtering
+        selected = self.select_compression(
+            pattern=pattern, names=names,
+            only_compressed=only_compressed,
+            only_decompressed=only_decompressed,
+            only_failed=only_failed
+        )
+        
+        # Get full compression info
         columns_info = {k: v for k, v in self.compression_info.items() if k != "__meta__"}
-
-        if not columns_info:
-            print("No compressed columns")
+        
+        # Color codes
+        if color:
+            C_RED = '\033[91m'
+            C_GREEN = '\033[92m'
+            C_YELLOW = '\033[93m'
+            C_CYAN = '\033[96m'
+            C_RESET = '\033[0m'
+        else:
+            C_RED = C_GREEN = C_YELLOW = C_CYAN = C_RESET = ''
+        
+        # Build result dict
+        result = {}
+        for name in selected:
+            info = columns_info[name]
+            entry = {
+                'name': name,
+                'state': info.get('state', 'unknown'),
+                'compressed_col': info.get('compressed_col'),
+                'compressed_dtype': info.get('compressed_dtype'),
+                'decompressed_dtype': info.get('decompressed_dtype'),
+                'compress_expr': info.get('compress_expr'),
+                'decompress_expr': info.get('decompress_expr'),
+                'original_removed': info.get('original_removed', False),
+                'precision': info.get('precision'),
+                'monitor': info.get('monitor'),
+            }
+            # Add monitor status if monitor is defined
+            if entry['monitor']:
+                label, value = self._get_monitor_value(info)
+                entry['monitor_label'] = label
+                entry['monitor_value'] = value
+                entry['monitor_failed'] = self._check_monitor_failed(info)
+            result[name] = entry
+        
+        if as_dict:
+            return result
+        
+        if not result:
+            print("No compressed columns" + (" matching criteria" if pattern or names or only_failed else ""))
             return
-
-        print("Compression Metadata:")
-        print("-" * 70)
-        for col, info in columns_info.items():
-            print(f"\n{col}:")
-            print(f"  State: {info.get('state', 'unknown')}")
-            print(f"  Compressed as: {info['compressed_col']} ({info['compressed_dtype']})")
-            print(f"  Expression: {info['compress_expr']}")
-            print(f"  Decompression: {info['decompress_expr']} → {info['decompressed_dtype']}")
-            print(f"  Original removed: {info.get('original_removed', False)}")
-
-            if 'precision' in info:
-                prec = info['precision']
-                if 'error' in prec:
-                    print(f"  Precision: measurement failed ({prec['error']})")
-                else:
-                    print(f"  Precision: RMSE={prec['rmse']:.6f}, "
-                          f"Max={prec['max_error']:.6f}, "
-                          f"Mean={prec['mean_error']:.6f}")
-                    # Add sample count info
+        
+        # Print header
+        print("Compression Info:")
+        print(f"  {'Name':<20} {'State':<12} {'Compressed':<15} {'Dtype':<10}")
+        print(f"  {'-'*20} {'-'*12} {'-'*15} {'-'*10}")
+        
+        for name, info in result.items():
+            state = info['state']
+            state_str = state
+            if color:
+                if state == 'compressed':
+                    state_str = f"{C_GREEN}{state}{C_RESET}"
+                elif state == 'decompressed':
+                    state_str = f"{C_CYAN}{state}{C_RESET}"
+            
+            comp_col = info['compressed_col'] or '-'
+            comp_dtype = info['compressed_dtype'] or '-'
+            
+            print(f"  {name:<20} {state_str:<12} {comp_col:<15} {comp_dtype:<10}")
+            
+            # Show monitor failure if applicable
+            if info.get('monitor_failed'):
+                monitor = info['monitor']
+                label = info.get('monitor_label', 'monitor')
+                value = info.get('monitor_value')
+                threshold = monitor.get('threshold')
+                fail_str = f"{label}={value:.4g} > {threshold}"
+                if color:
+                    fail_str = f"{C_RED}{fail_str}{C_RESET}"
+                print(f"  {'':<20} {'^ Failed:':<12} {fail_str}")
+            
+            # Show expressions if requested
+            if verbosity & self.COMPRESS_SHOW_EXPR:
+                if info['compress_expr']:
+                    print(f"  {'':<20} {'Compress:':<12} {info['compress_expr']}")
+                if info['decompress_expr']:
+                    decomp_str = f"{info['decompress_expr']} → {info['decompressed_dtype']}"
+                    print(f"  {'':<20} {'Decompress:':<12} {decomp_str}")
+            
+            # Show precision if requested
+            if verbosity & self.COMPRESS_SHOW_PREC:
+                prec = info.get('precision')
+                if prec:
+                    if 'error' in prec:
+                        print(f"  {'':<20} {'Precision:':<12} failed ({prec['error']})")
+                    else:
+                        print(f"  {'':<20} {'Precision:':<12} RMSE={prec.get('rmse', 0):.6f}, "
+                              f"Max={prec.get('max_error', 0):.6f}, "
+                              f"Mean={prec.get('mean_error', 0):.6f}")
+            
+            # Show stats if requested
+            if verbosity & self.COMPRESS_SHOW_STATS:
+                prec = info.get('precision')
+                if prec and 'n_samples' in prec:
                     n_samples = prec.get('n_samples', 0)
                     n_total = prec.get('n_total', n_samples)
                     frac_nonfinite = prec.get('fraction_nonfinite', 0.0)
-                    #if frac_nonfinite >= 0:
-                    print(f"  Samples: {n_samples:,}/{n_total:,}, "f"Non-finite: {frac_nonfinite*100:.2f}%")
+                    print(f"  {'':<20} {'Samples:':<12} {n_samples:,}/{n_total:,}, "
+                          f"Non-finite: {frac_nonfinite*100:.2f}%")
+        
+        # Summary
+        n_compressed = sum(1 for info in result.values() if info['state'] == 'compressed')
+        n_decompressed = sum(1 for info in result.values() if info['state'] == 'decompressed')
+        print(f"\nTotal: {len(result)} columns, {n_compressed} compressed, {n_decompressed} decompressed")
 
     def describe_structure(self, verbosity=None, return_dict=False):
         """
