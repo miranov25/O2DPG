@@ -604,5 +604,143 @@ class TestSubframeVsFlattened(unittest.TestCase):
         )
 
 
+"""
+Additional multi-key subframe tests to add to test_alias_subframe.py.
+These test 3D and 4D joins matching real TPC calibration use cases.
+"""
+
+import pytest
+import pandas as pd
+import numpy as np
+
+
+class TestMultiKeySubframeJoins:
+    """Test subframe joins with 3 and 4 index columns (TPC calibration scenarios)."""
+
+    def test_3d_subframe_join_matches_pandas(self):
+        """Test 3-key join: (drift, side, sector) - main TPC calibration case."""
+        from ..AliasDataFrame import AliasDataFrame
+
+        # Main data: TPC with drift zone, side, and sector
+        n_rows = 12
+        main_df = pd.DataFrame({
+            'drift': np.repeat([0, 1], n_rows // 2),
+            'side': np.tile(np.repeat([0, 1], n_rows // 4), 2),
+            'sector': np.tile([0, 1, 2], n_rows // 3),
+            'signal': np.random.randint(100, 300, n_rows)
+        })
+
+        # Subframe: calibration per (drift, side, sector)
+        calib_df = pd.DataFrame({
+            'drift': [0, 0, 0, 0, 1, 1, 1, 1],
+            'side': [0, 0, 1, 1, 0, 0, 1, 1],
+            'sector': [0, 1, 0, 1, 0, 1, 0, 1],
+            'correction': [0.1, 0.2, 0.15, 0.25, 0.12, 0.22, 0.17, 0.27]
+        })
+
+        # Method 1: Pandas merge (ground truth)
+        expected = main_df.merge(calib_df, on=['drift', 'side', 'sector'], how='left')
+        expected_correction = expected['correction'].values
+
+        # Method 2: AliasDataFrame subframe alias
+        adf = AliasDataFrame(main_df.copy())
+        calib_adf = AliasDataFrame(calib_df)
+        adf.register_subframe('calibration', calib_adf,
+                              index_columns=['drift', 'side', 'sector'])
+        adf.add_alias('correction', 'calibration.correction', dtype=np.float32)
+        adf.materialize_alias('correction')
+        result_correction = adf.df['correction'].values
+
+        # Compare: exact element-wise equality (including NaN handling)
+        np.testing.assert_array_almost_equal(result_correction, expected_correction, decimal=5,
+                                      err_msg="3D subframe join doesn't match pandas")
+
+    def test_4d_subframe_join_matches_pandas(self):
+        """Test 4-key join: (drift, side, sector, pad_row) - full TPC geometry."""
+        from ..AliasDataFrame import AliasDataFrame
+
+        # Main data: TPC with drift, side, sector, and pad row
+        n_rows = 16
+        main_df = pd.DataFrame({
+            'drift': np.repeat([0, 1], n_rows // 2),
+            'side': np.tile(np.repeat([0, 1], n_rows // 4), 2),
+            'sector': np.tile(np.repeat([0, 1], n_rows // 8), 4),
+            'pad_row': np.tile([0, 1], n_rows // 2),
+            'charge': np.random.randint(50, 150, n_rows)
+        })
+
+        # Subframe: calibration per (drift, side, sector, pad_row)
+        calib_df = pd.DataFrame({
+            'drift': [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
+            'side': [0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1],
+            'sector': [0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1],
+            'pad_row': [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+            'gain_factor': np.linspace(0.95, 1.15, 16)
+        })
+
+        # Method 1: Pandas merge (ground truth)
+        expected = main_df.merge(calib_df,
+                                 on=['drift', 'side', 'sector', 'pad_row'],
+                                 how='left')
+        expected_gain = expected['gain_factor'].values
+
+        # Method 2: AliasDataFrame subframe alias
+        adf = AliasDataFrame(main_df.copy())
+        calib_adf = AliasDataFrame(calib_df)
+        adf.register_subframe('calibration', calib_adf,
+                              index_columns=['drift', 'side', 'sector', 'pad_row'])
+        adf.add_alias('gain_factor', 'calibration.gain_factor', dtype=np.float32)
+        adf.materialize_alias('gain_factor')
+        result_gain = adf.df['gain_factor'].values
+
+        # Compare: exact element-wise equality with tolerance for float precision
+        np.testing.assert_array_almost_equal(result_gain, expected_gain, decimal=5,
+                                             err_msg="4D subframe join doesn't match pandas")
+
+    def test_3d_subframe_with_missing_keys(self):
+        """Test 3D join handles missing keys correctly (NaN fill, no data loss)."""
+        from ..AliasDataFrame import AliasDataFrame
+
+        # Main data has combinations not in calibration (sparse calibration table)
+        main_df = pd.DataFrame({
+            'drift': [0, 0, 1, 1, 2],  # drift=2 not in calib
+            'side': [0, 1, 0, 1, 0],
+            'sector': [0, 0, 1, 1, 0],
+            'value': [10, 20, 30, 40, 50]
+        })
+
+        # Calibration missing drift=2
+        calib_df = pd.DataFrame({
+            'drift': [0, 0, 1, 1],
+            'side': [0, 1, 0, 1],
+            'sector': [0, 0, 1, 1],
+            'scale': [1.0, 1.1, 1.05, 1.15]
+        })
+
+        # Pandas merge (ground truth)
+        expected = main_df.merge(calib_df, on=['drift', 'side', 'sector'], how='left')
+        expected_scale = expected['scale'].values
+
+        # AliasDataFrame
+        adf = AliasDataFrame(main_df.copy())
+        calib_adf = AliasDataFrame(calib_df)
+        adf.register_subframe('calib', calib_adf,
+                              index_columns=['drift', 'side', 'sector'])
+        adf.add_alias('scale', 'calib.scale', dtype=np.float32)
+        adf.materialize_alias('scale')
+        result_scale = adf.df['scale'].values
+
+        # Compare: exact equality (including NaN handling)
+        np.testing.assert_array_almost_equal(result_scale, expected_scale, decimal=5)
+
+        # Critical: verify missing key produces NaN (not dropped row)
+        assert np.isnan(result_scale[4]), "Missing key should produce NaN, not drop row"
+        assert len(result_scale) == len(expected_scale), "Row count must match"
+
+
+# Add to existing test_alias_subframe.py after the current classes
+
+
+
 if __name__ == "__main__":
     unittest.main()

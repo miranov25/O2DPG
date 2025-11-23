@@ -585,12 +585,12 @@ class AliasDataFrame:
                     except TypeError as e:
                         raise ValueError(f"Invalid dtype for column '{name}': {e}")
                 
-                # Check expr is string
-                if "expr" in spec and not isinstance(spec["expr"], str):
-                    raise ValueError(f"Expression for '{name}' must be a string")
+                # Check expr is string or None (None for physical columns)
+                if "expr" in spec and spec["expr"] is not None and not isinstance(spec["expr"], str):
+                    raise ValueError(f"Expression for '{name}' must be a string or None")
                 
                 # Check subframe references exist (lightweight check)
-                if "expr" in spec and "." in spec["expr"]:
+                if "expr" in spec and spec["expr"] is not None and "." in spec["expr"]:
                     subframe_refs = re.findall(r'([A-Z][A-Za-z0-9_]*)\.', spec["expr"])
                     for sf_name in subframe_refs:
                         if sf_name not in self._schema["subframes"] and \
@@ -878,9 +878,18 @@ class AliasDataFrame:
         from collections import defaultdict
         dependencies = defaultdict(set)
         for name, expr in self.aliases.items():
+            # Skip subframe references (pattern: subframe.column)
+            # They don't create alias dependencies
+            if '.' in expr:
+                parts = expr.split('.')
+                if len(parts) == 2 and parts[0] in self._subframes.subframes:
+                    # This is a subframe reference, skip dependency tracking
+                    continue
+            
             tokens = re.findall(r'\b\w+\b', expr)
             for token in tokens:
-                if token in self.aliases:
+                # Exclude self-references and check only for other aliases
+                if token != name and token in self.aliases:
                     dependencies[name].add(token)
         return dependencies
 
@@ -1299,7 +1308,8 @@ class AliasDataFrame:
         expr = self.aliases[name]
 
         # Automatically materialize any referenced aliases or subframe aliases
-        tokens = re.findall(r'\b\w+\b|\w+\.\w+', expr)
+        # Match dotted patterns first (subframe.col), then individual words
+        tokens = re.findall(r'\w+\.\w+|\b\w+\b(?!\s*\.)', expr)
         for token in tokens:
             if '.' in token:
                 sf_name, sf_attr = token.split('.', 1)
@@ -2876,6 +2886,20 @@ class AliasDataFrame:
     COMPRESS_SHOW_STATS  = 0x08  # sample counts, non-finite fraction
     COMPRESS_SHOW_ALL    = 0x0F  # all flags
 
+    # Verbosity flags for describe_data (bitmask)
+    DATA_SHOW_CORE   = 0x01  # name, dtype, memory, shape
+    DATA_SHOW_STATS  = 0x02  # null count, unique values  
+    DATA_SHOW_META   = 0x04  # user metadata (if present)
+    DATA_SHOW_SOURCE = 0x08  # physical/alias/subframe_ref
+    DATA_SHOW_ALL    = 0x0F  # all flags
+
+    # Verbosity flags for describe_schema (bitmask)
+    SCHEMA_SHOW_CORE        = 0x01  # basic overview
+    SCHEMA_SHOW_COMPRESSION = 0x02  # compression rules
+    SCHEMA_SHOW_METADATA    = 0x04  # user metadata
+    SCHEMA_SHOW_SUBFRAMES   = 0x08  # recursive schemas
+    SCHEMA_SHOW_ALL         = 0x0F  # all flags
+
     def select_compression(self, pattern=None, names=None, 
                            only_compressed=False, only_decompressed=False,
                            only_failed=False):
@@ -3186,6 +3210,784 @@ class AliasDataFrame:
         n_decompressed = sum(1 for info in result.values() if info['state'] == 'decompressed')
         print(f"\nTotal: {len(result)} columns, {n_compressed} compressed, {n_decompressed} decompressed")
 
+    def select_data(self, pattern=None, names=None, dtype=None,
+                    only_physical=False, only_aliases=False, only_compressed=False,
+                    min_memory_mb=None, include_subframes=True):
+        """
+        Select data columns by pattern, dtype, and other filters.
+        
+        Parameters
+        ----------
+        pattern : str, optional
+            Regex pattern to match column names
+        names : list, optional
+            Explicit list of column names to include
+        dtype : type or list of types, optional
+            Filter by dtype (supports single type or list of types)
+        only_physical : bool, default=False
+            If True, include only physical columns (exclude aliases)
+        only_aliases : bool, default=False
+            If True, include only alias columns (exclude physical)
+        only_compressed : bool, default=False
+            If True, include only compressed columns
+        min_memory_mb : float, optional
+            Minimum memory size in MB (only for physical columns)
+        include_subframes : bool, default=True
+            If True, include subframe-referencing aliases
+            
+        Returns
+        -------
+        list
+            List of column names matching the criteria
+        """
+        import re as re_module
+        
+        # Validate mutually exclusive filters
+        if only_physical and only_aliases:
+            raise ValueError("Filters only_physical and only_aliases are mutually exclusive")
+        
+        # Compile pattern
+        regex = None
+        if pattern:
+            try:
+                regex = re_module.compile(pattern)
+            except re_module.error as e:
+                raise ValueError(f"Invalid regex pattern '{pattern}': {e}")
+        
+        # Normalize dtype to list
+        if dtype is not None:
+            if not isinstance(dtype, (list, tuple)):
+                dtype = [dtype]
+            # Convert to numpy dtype objects for comparison
+            dtype = [np.dtype(d) for d in dtype]
+        
+        result = []
+        
+        # Physical columns
+        for col in self.df.columns:
+            # Filter by explicit names
+            if names is not None and col not in names:
+                continue
+            
+            # Filter by pattern
+            if regex and not regex.search(col):
+                continue
+            
+            # Skip if only_aliases
+            if only_aliases:
+                continue
+            
+            # Filter by dtype
+            if dtype is not None:
+                col_dtype = self.df[col].dtype
+                if not any(col_dtype == d for d in dtype):
+                    continue
+            
+            # Filter by memory
+            if min_memory_mb is not None:
+                memory_mb = self.df[col].memory_usage(deep=True) / (1024 * 1024)
+                if memory_mb < min_memory_mb:
+                    continue
+            
+            # Filter by compression
+            if only_compressed:
+                if col not in self.compression_info or self.compression_info[col].get('state') != 'compressed':
+                    continue
+            
+            result.append(col)
+        
+        # Alias columns
+        if not only_physical:
+            for alias_name, alias_expr in self.aliases.items():
+                # Filter by explicit names
+                if names is not None and alias_name not in names:
+                    continue
+                
+                # Filter by pattern
+                if regex and not regex.search(alias_name):
+                    continue
+                
+                # Check if subframe reference
+                is_subframe_ref = '.' in alias_expr and alias_expr.split('.')[0] in self._subframes.subframes
+                
+                # Filter subframes if requested
+                if not include_subframes and is_subframe_ref:
+                    continue
+                
+                # Filter by dtype (from schema)
+                if dtype is not None:
+                    col_info = self.schema['columns'].get(alias_name, {})
+                    col_dtype = col_info.get('dtype')
+                    if col_dtype is not None:
+                        try:
+                            col_dtype = np.dtype(col_dtype) if isinstance(col_dtype, str) else col_dtype
+                            if not any(col_dtype == d for d in dtype):
+                                continue
+                        except (TypeError, ValueError):
+                            continue
+                
+                result.append(alias_name)
+        
+        return result
+
+    def describe_data(self, verbosity=0x03, pattern=None, names=None,
+                     only_physical=False, only_aliases=False, only_compressed=False,
+                     sort_by='name', as_dict=False, color=False):
+        """
+        Describe data columns with memory usage and metadata.
+        
+        Parameters
+        ----------
+        verbosity : int, default=DATA_SHOW_CORE | DATA_SHOW_STATS (0x03)
+            Bitmask controlling output detail:
+            - DATA_SHOW_CORE (0x01): name, dtype, memory, shape
+            - DATA_SHOW_STATS (0x02): null count, unique values
+            - DATA_SHOW_META (0x04): user metadata (if present)
+            - DATA_SHOW_SOURCE (0x08): physical/alias/subframe_ref
+        pattern : str, optional
+            Regex pattern to filter columns
+        names : list, optional
+            Explicit list of column names
+        only_physical : bool, default=False
+            If True, show only physical columns
+        only_aliases : bool, default=False
+            If True, show only alias columns
+        only_compressed : bool, default=False
+            If True, show only compressed columns
+        sort_by : str, default='name'
+            Sort by: 'name', 'memory', 'dtype'
+        as_dict : bool, default=False
+            If True, return dict instead of printing
+        color : bool, default=False
+            If True, use ANSI colors in output
+            
+        Returns
+        -------
+        dict or None
+            If as_dict=True, returns structured dict of column info
+        """
+        # Mask unknown verbosity bits
+        verbosity &= self.DATA_SHOW_ALL
+        
+        # Use select_data for filtering
+        selected = self.select_data(
+            pattern=pattern, names=names,
+            only_physical=only_physical,
+            only_aliases=only_aliases,
+            only_compressed=only_compressed
+        )
+        
+        # Collect info for each column
+        result = {}
+        for name in selected:
+            is_physical = name in self.df.columns
+            is_alias = name in self.aliases
+            
+            entry = {'name': name}
+            
+            # Determine dtype
+            if is_physical:
+                entry['dtype'] = str(self.df[name].dtype)
+                entry['memory_bytes'] = self.df[name].memory_usage(deep=True)
+                entry['shape'] = self.df[name].shape
+                entry['source'] = 'physical'
+                
+                if verbosity & self.DATA_SHOW_STATS:
+                    entry['null_count'] = self.df[name].isna().sum()
+                    try:
+                        entry['unique_count'] = self.df[name].nunique()
+                    except (TypeError, ValueError):
+                        entry['unique_count'] = None
+            elif is_alias:
+                col_info = self.schema['columns'].get(name, {})
+                col_dtype = col_info.get('dtype')
+                # Convert dtype to string name
+                if col_dtype is not None:
+                    if isinstance(col_dtype, str):
+                        entry['dtype'] = col_dtype
+                    else:
+                        try:
+                            entry['dtype'] = np.dtype(col_dtype).name
+                        except (TypeError, ValueError):
+                            entry['dtype'] = str(col_dtype)
+                else:
+                    entry['dtype'] = 'unknown'
+                entry['memory_bytes'] = 0
+                entry['shape'] = '(computed)'
+                
+                # Determine if subframe reference
+                alias_expr = self.aliases[name]
+                is_subframe_ref = '.' in alias_expr and alias_expr.split('.')[0] in self._subframes.subframes
+                entry['source'] = 'subframe' if is_subframe_ref else 'alias'
+                entry['expr'] = alias_expr
+            
+            # Check metadata
+            col_info = self.schema['columns'].get(name, {})
+            if 'metadata' in col_info and col_info['metadata']:
+                entry['metadata'] = col_info['metadata']
+            
+            result[name] = entry
+        
+        if as_dict:
+            return result
+        
+        if not result:
+            print("No columns matching criteria")
+            return
+        
+        # Sort results
+        if sort_by == 'memory':
+            sorted_names = sorted(result.keys(), key=lambda n: result[n].get('memory_bytes', 0), reverse=True)
+        elif sort_by == 'dtype':
+            sorted_names = sorted(result.keys(), key=lambda n: result[n].get('dtype', ''))
+        else:  # name
+            sorted_names = sorted(result.keys())
+        
+        # Print header
+        print("Data Columns:")
+        if verbosity & self.DATA_SHOW_CORE:
+            print(f"  {'Name':<20} {'Dtype':<10} {'Memory':<10} {'Shape':<15}", end='')
+            if verbosity & self.DATA_SHOW_SOURCE:
+                print(f" {'Source':<10}", end='')
+            print()
+            print(f"  {'-'*20} {'-'*10} {'-'*10} {'-'*15}", end='')
+            if verbosity & self.DATA_SHOW_SOURCE:
+                print(f" {'-'*10}", end='')
+            print()
+        
+        # Print each column
+        total_memory = 0
+        n_physical = 0
+        n_aliases = 0
+        
+        for name in sorted_names:
+            info = result[name]
+            
+            # Core info
+            if verbosity & self.DATA_SHOW_CORE:
+                dtype_str = info.get('dtype', 'unknown')
+                mem_bytes = info.get('memory_bytes', 0)
+                total_memory += mem_bytes
+                
+                if mem_bytes > 0:
+                    if mem_bytes > 1024*1024*1024:
+                        mem_str = f"{mem_bytes/(1024*1024*1024):.2f} GB"
+                    elif mem_bytes > 1024*1024:
+                        mem_str = f"{mem_bytes/(1024*1024):.1f} MB"
+                    elif mem_bytes > 1024:
+                        mem_str = f"{mem_bytes/1024:.1f} KB"
+                    else:
+                        mem_str = f"{mem_bytes} B"
+                else:
+                    mem_str = "0 bytes"
+                
+                shape_str = str(info.get('shape', ''))
+                source_str = info.get('source', '')
+                
+                if info['source'] == 'physical':
+                    n_physical += 1
+                else:
+                    n_aliases += 1
+                
+                print(f"  {name:<20} {dtype_str:<10} {mem_str:<10} {shape_str:<15}", end='')
+                if verbosity & self.DATA_SHOW_SOURCE:
+                    print(f" {source_str:<10}", end='')
+                print()
+            
+            # Show expression for aliases/subframes
+            if (verbosity & self.DATA_SHOW_SOURCE) and 'expr' in info:
+                print(f"  {'':<20} {'→'} {info['expr']}")
+            
+            # Show stats
+            if verbosity & self.DATA_SHOW_STATS and info['source'] == 'physical':
+                null_count = info.get('null_count', 0)
+                unique_count = info.get('unique_count')
+                stats_str = f"Nulls: {null_count:,}"
+                if unique_count is not None:
+                    stats_str += f", Unique: {unique_count:,}"
+                print(f"  {'':<20} {stats_str}")
+            
+            # Show metadata
+            if verbosity & self.DATA_SHOW_META and 'metadata' in info:
+                meta = info['metadata']
+                for key, value in meta.items():
+                    print(f"  {'':<20} {key}: {value}")
+        
+        # Summary
+        if total_memory > 1024*1024*1024:
+            mem_str = f"{total_memory/(1024*1024*1024):.2f} GB"
+        elif total_memory > 1024*1024:
+            mem_str = f"{total_memory/(1024*1024):.1f} MB"
+        else:
+            mem_str = f"{total_memory/1024:.1f} KB"
+        
+        print(f"\nTotal: {len(result)} columns ({n_physical} physical: {mem_str}, {n_aliases} lazy)")
+
+
+    def select_schema(self, pattern=None, dtype=None, has_metadata=False, 
+                     is_subframe_ref=False, is_compressed=False):
+        """
+        Select schema entries by filters.
+        
+        Parameters
+        ----------
+        pattern : str, optional
+            Regex pattern to match column names
+        dtype : type or list of types, optional
+            Filter by dtype
+        has_metadata : bool, default=False
+            If True, include only columns with user metadata
+        is_subframe_ref : bool, default=False
+            If True, include only subframe-referencing aliases
+        is_compressed : bool, default=False
+            If True, include only columns with compression info
+            
+        Returns
+        -------
+        list
+            List of column names matching criteria
+        """
+        import re as re_module
+        
+        # Compile pattern
+        regex = None
+        if pattern:
+            try:
+                regex = re_module.compile(pattern)
+            except re_module.error as e:
+                raise ValueError(f"Invalid regex pattern '{pattern}': {e}")
+        
+        # Normalize dtype to list
+        if dtype is not None:
+            if not isinstance(dtype, (list, tuple)):
+                dtype = [dtype]
+            dtype = [np.dtype(d) for d in dtype]
+        
+        result = []
+        
+        for name, info in self.schema['columns'].items():
+            # Filter by pattern
+            if regex and not regex.search(name):
+                continue
+            
+            # Filter by dtype
+            if dtype is not None:
+                col_dtype = info.get('dtype')
+                if col_dtype is not None:
+                    try:
+                        col_dtype = np.dtype(col_dtype) if isinstance(col_dtype, str) else col_dtype
+                        if not any(col_dtype == d for d in dtype):
+                            continue
+                    except (TypeError, ValueError):
+                        continue
+                else:
+                    continue
+            
+            # Filter by metadata
+            if has_metadata:
+                if 'metadata' not in info or not info['metadata']:
+                    continue
+            
+            # Filter by subframe reference
+            if is_subframe_ref:
+                expr = info.get('expr', '')
+                is_subf_ref = '.' in expr and expr.split('.')[0] in self._subframes.subframes
+                if not is_subf_ref:
+                    continue
+            
+            # Filter by compression
+            if is_compressed:
+                if name not in self.compression_info:
+                    continue
+            
+            result.append(name)
+        
+        return result
+
+    def describe_schema(self, verbosity=0x0F, sections=None, as_dict=False):
+        """
+        Describe overall schema structure.
+        
+        Parameters
+        ----------
+        verbosity : int, default=SCHEMA_SHOW_ALL (0x0F)
+            Bitmask controlling output detail:
+            - SCHEMA_SHOW_CORE (0x01): basic overview
+            - SCHEMA_SHOW_COMPRESSION (0x02): compression rules
+            - SCHEMA_SHOW_METADATA (0x04): user metadata
+            - SCHEMA_SHOW_SUBFRAMES (0x08): recursive schemas
+        sections : list, optional
+            Specific sections to show: ['columns', 'compression', 'subframes']
+        as_dict : bool, default=False
+            If True, return dict instead of printing
+            
+        Returns
+        -------
+        dict or None
+            If as_dict=True, returns structured dict of schema info
+        """
+        # Mask unknown verbosity bits
+        verbosity &= self.SCHEMA_SHOW_ALL
+        
+        # Determine which sections to include
+        if sections is None:
+            sections = ['columns', 'compression', 'subframes']
+        
+        result = {
+            'version': self.schema.get('__meta__', {}).get('version', 'unknown'),
+            'columns': {},
+            'compression': {},
+            'subframes': {}
+        }
+        
+        # Columns section
+        if 'columns' in sections:
+            n_physical = 0
+            n_aliases = 0
+            n_subframe = 0
+            n_with_meta = 0
+            dtype_counts = {}
+            physical_memory = 0
+            
+            for name, info in self.schema['columns'].items():
+                is_alias = 'expr' in info and info['expr'] is not None
+                is_subframe = False
+                
+                if is_alias:
+                    expr = info['expr']
+                    is_subframe = '.' in expr and expr.split('.')[0] in self._subframes.subframes
+                    if is_subframe:
+                        n_subframe += 1
+                    else:
+                        n_aliases += 1
+                else:
+                    n_physical += 1
+                    # Calculate memory for physical columns
+                    if name in self.df.columns:
+                        physical_memory += self.df[name].memory_usage(deep=True)
+                
+                # Count dtypes
+                dtype = info.get('dtype')
+                if dtype is not None:
+                    dtype_str = np.dtype(dtype).name if not isinstance(dtype, str) else dtype
+                    dtype_counts[dtype_str] = dtype_counts.get(dtype_str, 0) + 1
+                
+                # Count metadata
+                if 'metadata' in info and info['metadata']:
+                    n_with_meta += 1
+            
+            result['columns'] = {
+                'total': len(self.schema['columns']),
+                'physical': n_physical,
+                'aliases': n_aliases,
+                'subframe_refs': n_subframe,
+                'with_metadata': n_with_meta,
+                'dtypes': dtype_counts,
+                'physical_memory_bytes': physical_memory
+            }
+        
+        # Compression section
+        if 'compression' in sections:
+            comp_info = {k: v for k, v in self.compression_info.items() if k != '__meta__'}
+            n_compressed = sum(1 for v in comp_info.values() if v.get('state') == 'compressed')
+            n_decompressed = sum(1 for v in comp_info.values() if v.get('state') == 'decompressed')
+            
+            result['compression'] = {
+                'total': len(comp_info),
+                'compressed': n_compressed,
+                'decompressed': n_decompressed
+            }
+        
+        # Subframes section
+        if 'subframes' in sections:
+            subframes_info = {}
+            for name, sf_data in self._subframes.subframes.items():
+                sf_adf = sf_data['frame']
+                subframes_info[name] = {
+                    'n_columns': len(sf_adf.df.columns),
+                    'index': sf_data['index'],
+                    'n_rows': len(sf_adf.df)
+                }
+            result['subframes'] = subframes_info
+        
+        if as_dict:
+            return result
+        
+        # Print formatted output
+        print("Schema Overview:")
+        print("=" * 70)
+        print(f"Version: {result['version']}")
+        print()
+        
+        # Columns overview
+        if 'columns' in sections and (verbosity & self.SCHEMA_SHOW_CORE):
+            col_info = result['columns']
+            mem_bytes = col_info['physical_memory_bytes']
+            if mem_bytes > 1024*1024*1024:
+                mem_str = f"{mem_bytes/(1024*1024*1024):.2f} GB"
+            elif mem_bytes > 1024*1024:
+                mem_str = f"{mem_bytes/(1024*1024):.1f} MB"
+            else:
+                mem_str = f"{mem_bytes/1024:.1f} KB"
+            
+            print(f"Columns:        {col_info['total']} total")
+            print(f"  Physical:     {col_info['physical']} ({mem_str} in memory)")
+            print(f"  Aliases:      {col_info['aliases']} (computed on demand)")
+            print(f"  Subframe refs: {col_info['subframe_refs']} (lazy join)")
+            if verbosity & self.SCHEMA_SHOW_METADATA:
+                print(f"  With metadata: {col_info['with_metadata']}")
+            print()
+            
+            print("Dtypes:")
+            for dtype, count in sorted(col_info['dtypes'].items(), key=lambda x: -x[1]):
+                print(f"  {dtype}: {count} columns")
+            print()
+        
+        # Compression overview
+        if 'compression' in sections and (verbosity & self.SCHEMA_SHOW_COMPRESSION):
+            comp_info = result['compression']
+            print(f"Compression:    {comp_info['total']} columns")
+            print(f"  Compressed:   {comp_info['compressed']}")
+            print(f"  Decompressed: {comp_info['decompressed']}")
+            print()
+        
+        # Subframes overview
+        if 'subframes' in sections and (verbosity & self.SCHEMA_SHOW_SUBFRAMES):
+            subframes_info = result['subframes']
+            print(f"Subframes:      {len(subframes_info)}")
+            for name, info in subframes_info.items():
+                index_str = ', '.join(f"'{idx}'" for idx in info['index'])
+                print(f"  {name}: {info['n_columns']} columns, "
+                      f"{info['n_rows']} rows, index=[{index_str}]")
+            if subframes_info:
+                print()
+
+    def export_schema(self):
+        """
+        Export schema as JSON-safe dictionary.
+        
+        Converts numpy dtypes to strings and removes non-serializable objects.
+        Includes physical column dtypes from DataFrame.
+        
+        Returns
+        -------
+        dict
+            JSON-safe schema dictionary
+        """
+        schema_copy = copy.deepcopy(self.schema)
+        
+        # Add physical column dtypes from DataFrame
+        for col in self.df.columns:
+            if col not in schema_copy['columns']:
+                schema_copy['columns'][col] = {}
+            # Store dtype
+            schema_copy['columns'][col]['dtype'] = str(self.df[col].dtype)
+            # Mark as physical (no expr)
+            if 'expr' not in schema_copy['columns'][col]:
+                schema_copy['columns'][col]['expr'] = None
+        
+        # Convert dtypes to strings in columns
+        for name, info in schema_copy.get('columns', {}).items():
+            if 'dtype' in info and info['dtype'] is not None:
+                try:
+                    # Convert numpy dtype to string
+                    dtype = info['dtype']
+                    if not isinstance(dtype, str):
+                        info['dtype'] = np.dtype(dtype).name
+                except (TypeError, ValueError):
+                    info['dtype'] = str(info['dtype'])
+        
+        # Convert dtypes in compression
+        for name, info in schema_copy.get('compression', {}).items():
+            if name == '__meta__':
+                continue
+            for dtype_field in ['compressed_dtype', 'decompressed_dtype']:
+                if dtype_field in info and info[dtype_field] is not None:
+                    try:
+                        dtype = info[dtype_field]
+                        if not isinstance(dtype, str):
+                            info[dtype_field] = np.dtype(dtype).name
+                    except (TypeError, ValueError):
+                        info[dtype_field] = str(info[dtype_field])
+            
+            # Remove monitor functions (not serializable)
+            if 'monitor' in info and info['monitor']:
+                monitor = info['monitor']
+                if 'func' in monitor:
+                    # Keep structure but remove function
+                    info['monitor'] = {k: v for k, v in monitor.items() if k != 'func'}
+        
+        return schema_copy
+
+    def save_schema(self, path):
+        """
+        Save schema to JSON file.
+        
+        Parameters
+        ----------
+        path : str
+            Path to save schema JSON file
+        """
+        schema = self.export_schema()
+        with open(path, 'w') as f:
+            json.dump(schema, f, indent=2)
+
+    @staticmethod
+    def load_schema(path):
+        """
+        Load schema from JSON file.
+        
+        Parameters
+        ----------
+        path : str
+            Path to schema JSON file
+            
+        Returns
+        -------
+        dict
+            Schema dictionary
+        """
+        with open(path, 'r') as f:
+            return json.load(f)
+
+    def apply_schema(self, schema, validate=True, warn_missing=True):
+        """
+        Apply schema to current AliasDataFrame.
+        
+        Applies dtypes, aliases, compression info, and metadata from schema.
+        
+        Parameters
+        ----------
+        schema : dict
+            Schema dictionary (from export_schema or load_schema)
+        validate : bool, default=True
+            If True, validate schema consistency
+        warn_missing : bool, default=True
+            If True, warn about columns in schema but not in data
+        """
+        # Apply dtypes to physical columns
+        if 'columns' in schema:
+            for name, info in schema['columns'].items():
+                # Skip aliases (handled separately)
+                if 'expr' in info and info['expr'] is not None:
+                    continue
+                
+                # Apply dtype to physical column
+                if name in self.df.columns:
+                    target_dtype = info.get('dtype')
+                    if target_dtype:
+                        try:
+                            current_dtype = self.df[name].dtype
+                            target_dtype_obj = np.dtype(target_dtype)
+                            if current_dtype != target_dtype_obj:
+                                self.df[name] = self.df[name].astype(target_dtype_obj)
+                        except (TypeError, ValueError) as e:
+                            if warn_missing:
+                                warnings.warn(f"Failed to apply dtype {target_dtype} to column {name}: {e}")
+                elif warn_missing:
+                    warnings.warn(f"Column '{name}' in schema but not in DataFrame")
+        
+        # Apply aliases
+        if 'columns' in schema:
+            for name, info in schema['columns'].items():
+                expr = info.get('expr')
+                if expr is not None:
+                    dtype = info.get('dtype')
+                    if dtype:
+                        try:
+                            dtype = np.dtype(dtype)
+                        except (TypeError, ValueError):
+                            dtype = None
+                    
+                    # Add alias (don't overwrite if already materialized as physical column)
+                    if name not in self.df.columns:
+                        self.add_alias(name, expr, dtype=dtype)
+                    elif validate:
+                        # Column exists physically but schema says it's an alias
+                        # Mark as materialized alias
+                        if name not in self.aliases:
+                            self.aliases[name] = expr
+        
+        # Update compression info
+        if 'compression' in schema:
+            for name, info in schema['compression'].items():
+                if name != '__meta__':
+                    self.compression_info[name] = info
+        
+        # Update schema metadata
+        self.update_schema(schema, validate=validate)
+
+    @classmethod
+    def from_schema(cls, schema):
+        """
+        Create empty AliasDataFrame from schema template.
+        
+        Parameters
+        ----------
+        schema : dict
+            Schema dictionary
+            
+        Returns
+        -------
+        AliasDataFrame
+            Empty AliasDataFrame with schema structure
+        """
+        # Create empty DataFrame with physical columns
+        columns_data = {}
+        if 'columns' in schema:
+            for name, info in schema['columns'].items():
+                # Only create physical columns (not aliases)
+                if 'expr' not in info or info['expr'] is None:
+                    dtype = info.get('dtype', 'float64')
+                    try:
+                        dtype_obj = np.dtype(dtype)
+                        columns_data[name] = pd.Series([], dtype=dtype_obj)
+                    except (TypeError, ValueError):
+                        columns_data[name] = pd.Series([])
+        
+        df = pd.DataFrame(columns_data)
+        adf = cls(df)
+        
+        # Apply full schema (aliases, compression, metadata)
+        adf.apply_schema(schema, validate=False, warn_missing=False)
+        
+        return adf
+
+    def convert_dtypes(self, dtype_map):
+        """
+        Convert dtypes for multiple columns.
+        
+        Parameters
+        ----------
+        dtype_map : dict
+            Mapping of column_name → target_dtype
+        """
+        for col, target_dtype in dtype_map.items():
+            if col in self.df.columns:
+                try:
+                    self.df[col] = self.df[col].astype(target_dtype)
+                    # Update schema
+                    if col in self.schema['columns']:
+                        self.schema['columns'][col]['dtype'] = np.dtype(target_dtype).name
+                except (TypeError, ValueError) as e:
+                    warnings.warn(f"Failed to convert {col} to {target_dtype}: {e}")
+            else:
+                warnings.warn(f"Column '{col}' not found in DataFrame")
+
+    def convert_dtypes_pattern(self, pattern, target_dtype):
+        """
+        Convert dtypes for columns matching pattern.
+        
+        Parameters
+        ----------
+        pattern : str
+            Regex pattern to match column names
+        target_dtype : type
+            Target dtype to convert to
+        """
+        matching_cols = self.select_data(pattern=pattern, only_physical=True)
+        dtype_map = {col: target_dtype for col in matching_cols}
+        self.convert_dtypes(dtype_map)
     def describe_structure(self, verbosity=None, return_dict=False):
         """
         Print or return comprehensive structure summary of the AliasDataFrame.
