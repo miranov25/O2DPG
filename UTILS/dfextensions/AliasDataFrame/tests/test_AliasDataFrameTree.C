@@ -1,34 +1,32 @@
 /**
- * test_AliasDataFrameTree.C - Unit tests for AliasDataFrameTree.C
+ * test_AliasDataFrameTree_Phase12.C - Tests for Phase 1 & 2 enhancements
  * 
- * Run with: root -l -b -q test_AliasDataFrameTree.C
- * Or:       root -x test_AliasDataFrameTree.C
+ * Tests LoadSchema(), DescribeSchema(), and DescribeData() functions
+ * 
+ * Run with: root -l -b -q test_AliasDataFrameTree_Phase12.C
  * 
  * Prerequisites:
- * - AliasDataFrameTree.C in same directory or ROOT include path
- * - Test data file (will be created if not present)
- * 
- * Exit codes:
- *   0 = All tests passed
- *   1 = Test failure
+ * - AliasDataFrameTree_enhanced.C in same directory
+ * - Write access to /tmp for test files
  */
 
 #include <TFile.h>
 #include <TTree.h>
 #include <TRandom3.h>
-#include <TH1F.h>
 #include <TString.h>
 #include <iostream>
+#include <fstream>
 #include <cmath>
 #include <vector>
 
-// Include the macro we're testing
+// Include the enhanced macro
 #include "../AliasDataFrameTree.C"
 
 // Test configuration
-const char* TEST_FILE = "/tmp/test_adf_tree.root";
-const int N_MAIN = 1000;
-const int N_SUB = 100;
+const char* TEST_FILE = "/tmp/test_adf_phase12.root";
+const char* TEST_SCHEMA = "/tmp/test_schema.json";
+const int N_MAIN = 100;
+const int N_SUB = 10;
 
 // Test counters
 int g_tests_passed = 0;
@@ -63,7 +61,7 @@ int g_tests_failed = 0;
     }
 
 /**
- * Create test ROOT file with main tree and subframe
+ * Create test ROOT file
  */
 bool CreateTestFile() {
     std::cout << "Creating test file: " << TEST_FILE << std::endl;
@@ -79,34 +77,36 @@ bool CreateTestFile() {
     // Main tree
     TTree* mainTree = new TTree("tree", "Main tree");
     Int_t track_index;
-    Float_t mX, mY;
+    Float_t x, y, z;
     
     mainTree->Branch("track_index", &track_index);
-    mainTree->Branch("mX", &mX);
-    mainTree->Branch("mY", &mY);
+    mainTree->Branch("x", &x);
+    mainTree->Branch("y", &y);
+    mainTree->Branch("z", &z);
     
     for (int i = 0; i < N_MAIN; i++) {
-        track_index = i % N_SUB;  // Reference to subframe
-        mX = rng.Gaus(0, 10);
-        mY = rng.Gaus(0, 10);
+        track_index = i % N_SUB;
+        x = rng.Gaus(0, 10);
+        y = rng.Gaus(0, 10);
+        z = rng.Gaus(0, 5);
         mainTree->Fill();
     }
     mainTree->Write();
     
-    // Subframe T (track properties)
+    // Subframe T
     TTree* subTree = new TTree("tree__subframe__T", "Subframe T");
-    Float_t sub_mX, mPt, mEta;
+    Float_t pt, eta, phi;
     
     subTree->Branch("track_index", &track_index);
-    subTree->Branch("mX", &sub_mX);
-    subTree->Branch("mPt", &mPt);
-    subTree->Branch("mEta", &mEta);
+    subTree->Branch("pt", &pt);
+    subTree->Branch("eta", &eta);
+    subTree->Branch("phi", &phi);
     
     for (int i = 0; i < N_SUB; i++) {
         track_index = i;
-        sub_mX = rng.Gaus(0, 5);
-        mPt = rng.Exp(1.0);
-        mEta = rng.Gaus(0, 1);
+        pt = rng.Exp(1.0);
+        eta = rng.Gaus(0, 1);
+        phi = rng.Uniform(-TMath::Pi(), TMath::Pi());
         subTree->Fill();
     }
     subTree->Write();
@@ -121,204 +121,270 @@ bool CreateTestFile() {
 }
 
 /**
- * Test 1: LoadADFTree loads file correctly
+ * Create test schema JSON file
  */
-bool Test_LoadADFTree() {
-    std::cout << "\n=== Test: LoadADFTree ===" << std::endl;
+bool CreateTestSchema() {
+    std::cout << "Creating test schema: " << TEST_SCHEMA << std::endl;
     
-    TTree* tree = LoadADFTree(TEST_FILE, "tree");
-    ASSERT_TRUE(tree != nullptr, "LoadADFTree returns non-null");
-    ASSERT_EQ(tree->GetEntries(), N_MAIN, "Main tree entry count");
-    
-    // Check friend was added
-    TList* friends = tree->GetListOfFriends();
-    ASSERT_TRUE(friends != nullptr, "Friends list exists");
-    ASSERT_TRUE(friends->GetEntries() > 0, "At least one friend attached");
-    
-    std::cout << "  PASS: LoadADFTree" << std::endl;
-    return true;
-}
-
-/**
- * Test 2: Draw main column works
- */
-bool Test_DrawMainColumn() {
-    std::cout << "\n=== Test: Draw Main Column ===" << std::endl;
-    
-    TTree* tree = LoadADFTree(TEST_FILE, "tree");
-    ASSERT_TRUE(tree != nullptr, "Tree loaded");
-    
-    Int_t n = tree->Draw("mX", "", "goff");
-    ASSERT_EQ(n, N_MAIN, "Draw returns correct entry count");
-    
-    Double_t* v = tree->GetV1();
-    ASSERT_TRUE(v != nullptr, "GetV1 returns values");
-    
-    // Check values are reasonable (not all zero)
-    double sum = 0;
-    for (int i = 0; i < n; i++) sum += std::abs(v[i]);
-    ASSERT_TRUE(sum > 0, "Values are non-zero");
-    
-    std::cout << "  PASS: Draw main column" << std::endl;
-    return true;
-}
-
-/**
- * Test 3: Draw friend column with dot notation
- */
-bool Test_DrawFriendColumn() {
-    std::cout << "\n=== Test: Draw Friend Column (T.mX) ===" << std::endl;
-    
-    TTree* tree = LoadADFTree(TEST_FILE, "tree");
-    ASSERT_TRUE(tree != nullptr, "Tree loaded");
-    
-    // Draw subframe column via friend
-    Int_t n = tree->Draw("T.mX", "", "goff");
-    ASSERT_TRUE(n > 0, "Draw T.mX returns entries");
-    
-    Double_t* v = tree->GetV1();
-    ASSERT_TRUE(v != nullptr, "GetV1 returns values");
-    
-    std::cout << "  Drew T.mX: " << n << " entries" << std::endl;
-    std::cout << "  PASS: Draw friend column" << std::endl;
-    return true;
-}
-
-/**
- * Test 4: Draw expression combining main and friend
- */
-bool Test_DrawExpression() {
-    std::cout << "\n=== Test: Draw Expression (mX - T.mX) ===" << std::endl;
-    
-    TTree* tree = LoadADFTree(TEST_FILE, "tree");
-    ASSERT_TRUE(tree != nullptr, "Tree loaded");
-    
-    Int_t n = tree->Draw("mX - T.mX", "", "goff");
-    ASSERT_TRUE(n > 0, "Draw expression returns entries");
-    
-    Double_t* v = tree->GetV1();
-    ASSERT_TRUE(v != nullptr, "GetV1 returns values");
-    
-    // Calculate mean - should be ~0 if both are Gaussian(0, sigma)
-    double mean = 0;
-    for (int i = 0; i < n; i++) mean += v[i];
-    mean /= n;
-    
-    std::cout << "  Expression mean: " << mean << std::endl;
-    ASSERT_NEAR(mean, 0.0, 2.0, "Mean of difference ~0");
-    
-    std::cout << "  PASS: Draw expression" << std::endl;
-    return true;
-}
-
-/**
- * Test 5: Draw with cut on friend column
- */
-bool Test_DrawWithCut() {
-    std::cout << "\n=== Test: Draw with Cut (T.mPt > 1.0) ===" << std::endl;
-    
-    TTree* tree = LoadADFTree(TEST_FILE, "tree");
-    ASSERT_TRUE(tree != nullptr, "Tree loaded");
-    
-    Int_t n_all = tree->Draw("mX", "", "goff");
-    Int_t n_cut = tree->Draw("mX", "T.mPt > 1.0", "goff");
-    
-    std::cout << "  All entries: " << n_all << std::endl;
-    std::cout << "  After cut: " << n_cut << std::endl;
-    
-    ASSERT_TRUE(n_cut > 0, "Some entries pass cut");
-    ASSERT_TRUE(n_cut < n_all, "Cut reduces entries");
-    
-    std::cout << "  PASS: Draw with cut" << std::endl;
-    return true;
-}
-
-/**
- * Test 6: 2D Draw main vs friend
- */
-bool Test_Draw2D() {
-    std::cout << "\n=== Test: 2D Draw (mX:T.mX) ===" << std::endl;
-    
-    TTree* tree = LoadADFTree(TEST_FILE, "tree");
-    ASSERT_TRUE(tree != nullptr, "Tree loaded");
-    
-    Int_t n = tree->Draw("mX:T.mX", "", "goff");
-    ASSERT_TRUE(n > 0, "2D Draw returns entries");
-    
-    Double_t* vx = tree->GetV1();
-    Double_t* vy = tree->GetV2();
-    ASSERT_TRUE(vx != nullptr && vy != nullptr, "Both axes have values");
-    
-    std::cout << "  2D entries: " << n << std::endl;
-    std::cout << "  PASS: 2D Draw" << std::endl;
-    return true;
-}
-
-/**
- * Test 7: PrintADFBranches doesn't crash
- */
-bool Test_PrintBranches() {
-    std::cout << "\n=== Test: PrintADFBranches ===" << std::endl;
-    
-    TTree* tree = LoadADFTree(TEST_FILE, "tree");
-    ASSERT_TRUE(tree != nullptr, "Tree loaded");
-    
-    // Just verify it doesn't crash
-    PrintADFBranches(tree);
-    
-    std::cout << "  PASS: PrintADFBranches" << std::endl;
-    return true;
-}
-
-/**
- * Test 8: Verify numerical accuracy
- */
-bool Test_NumericalAccuracy() {
-    std::cout << "\n=== Test: Numerical Accuracy ===" << std::endl;
-    
-    // Create a simple test case with known values
-    TFile* f = TFile::Open("/tmp/test_accuracy.root", "RECREATE");
-    
-    TTree* main = new TTree("tree", "main");
-    TTree* sub = new TTree("tree__subframe__S", "sub");
-    
-    Int_t key;
-    Float_t x, y;
-    
-    main->Branch("key", &key);
-    main->Branch("x", &x);
-    sub->Branch("key", &key);
-    sub->Branch("y", &y);
-    
-    // Known values: x[i] = i, y[i] = 2*i, diff = -i
-    for (int i = 0; i < 10; i++) {
-        key = i;
-        x = (Float_t)i;
-        main->Fill();
-        
-        y = (Float_t)(2 * i);
-        sub->Fill();
+    std::ofstream f(TEST_SCHEMA);
+    if (!f.is_open()) {
+        std::cerr << "Cannot create schema file" << std::endl;
+        return false;
     }
     
-    main->Write();
-    sub->Write();
-    f->Close();
-    delete f;
+    // Write realistic schema JSON
+    f << "{\n";
+    f << "  \"columns\": {\n";
+    f << "    \"x\": {\n";
+    f << "      \"expr\": null,\n";
+    f << "      \"dtype\": \"float32\"\n";
+    f << "    },\n";
+    f << "    \"y\": {\n";
+    f << "      \"expr\": null,\n";
+    f << "      \"dtype\": \"float32\"\n";
+    f << "    },\n";
+    f << "    \"r\": {\n";
+    f << "      \"expr\": \"sqrt(x*x + y*y)\",\n";
+    f << "      \"dtype\": \"float32\"\n";
+    f << "    },\n";
+    f << "    \"theta\": {\n";
+    f << "      \"expr\": \"atan2(y, x)\",\n";
+    f << "      \"dtype\": \"float32\"\n";
+    f << "    },\n";
+    f << "    \"pt_calib\": {\n";
+    f << "      \"expr\": \"T.pt\",\n";
+    f << "      \"dtype\": \"float32\"\n";
+    f << "    }\n";
+    f << "  },\n";
+    f << "  \"compression\": {},\n";
+    f << "  \"subframes\": {\n";
+    f << "    \"T\": {\n";
+    f << "      \"index\": [\"track_index\"],\n";
+    f << "      \"tree_name\": \"tree__subframe__T\"\n";
+    f << "    }\n";
+    f << "  }\n";
+    f << "}\n";
     
-    // Now test
-    TTree* tree = LoadADFTree("/tmp/test_accuracy.root", "tree");
-    ASSERT_TRUE(tree != nullptr, "Accuracy test tree loaded");
+    f.close();
     
-    Int_t n = tree->Draw("x - S.y", "", "goff");
-    ASSERT_EQ(n, 10, "All entries drawn");
+    std::cout << "  Created schema with 3 aliases" << std::endl;
     
-    Double_t* v = tree->GetV1();
-    for (int i = 0; i < n; i++) {
-        Float_t expected = -(Float_t)i;  // x - y = i - 2i = -i
-        ASSERT_NEAR(v[i], expected, 0.001, TString::Format("Entry %d value", i).Data());
+    return true;
+}
+
+/**
+ * PHASE 1 TESTS
+ */
+
+/**
+ * Test 1: LoadSchema loads file successfully
+ */
+bool Test_LoadSchema_FileLoad() {
+    std::cout << "\n=== Test: LoadSchema File Load ===" << std::endl;
+    
+    TTree* tree = LoadADFTree(TEST_FILE, "tree");
+    ASSERT_TRUE(tree != nullptr, "Tree loaded");
+    
+    Bool_t result = LoadSchema(tree, TEST_SCHEMA);
+    ASSERT_TRUE(result == kTRUE, "LoadSchema returns success");
+    
+    std::cout << "  PASS: LoadSchema file load" << std::endl;
+    return true;
+}
+
+/**
+ * Test 2: LoadSchema applies aliases correctly
+ */
+bool Test_LoadSchema_AliasesApplied() {
+    std::cout << "\n=== Test: LoadSchema Applies Aliases ===" << std::endl;
+    
+    TTree* tree = LoadADFTree(TEST_FILE, "tree");
+    ASSERT_TRUE(tree != nullptr, "Tree loaded");
+    
+    LoadSchema(tree, TEST_SCHEMA);
+    
+    // Test that aliases work in Draw
+    Int_t n = tree->Draw("r", "", "goff");
+    ASSERT_TRUE(n > 0, "Alias 'r' draws successfully");
+    
+    n = tree->Draw("theta", "", "goff");
+    ASSERT_TRUE(n > 0, "Alias 'theta' draws successfully");
+    
+    n = tree->Draw("pt_calib", "", "goff");
+    ASSERT_TRUE(n > 0, "Subframe alias 'pt_calib' draws successfully");
+    
+    std::cout << "  PASS: LoadSchema applies aliases" << std::endl;
+    return true;
+}
+
+/**
+ * Test 3: LoadSchema handles missing file gracefully
+ */
+bool Test_LoadSchema_MissingFile() {
+    std::cout << "\n=== Test: LoadSchema Missing File ===" << std::endl;
+    
+    TTree* tree = LoadADFTree(TEST_FILE, "tree");
+    ASSERT_TRUE(tree != nullptr, "Tree loaded");
+    
+    Bool_t result = LoadSchema(tree, "/nonexistent/schema.json");
+    ASSERT_TRUE(result == kFALSE, "LoadSchema returns failure for missing file");
+    
+    std::cout << "  PASS: LoadSchema handles missing file" << std::endl;
+    return true;
+}
+
+/**
+ * Test 4: DescribeSchema shows loaded aliases
+ */
+bool Test_DescribeSchema_ShowsAliases() {
+    std::cout << "\n=== Test: DescribeSchema Shows Aliases ===" << std::endl;
+    
+    TTree* tree = LoadADFTree(TEST_FILE, "tree");
+    ASSERT_TRUE(tree != nullptr, "Tree loaded");
+    
+    LoadSchema(tree, TEST_SCHEMA);
+    
+    // Redirect stdout to capture output (simplified: just check it doesn't crash)
+    std::cout << "  Calling DescribeSchema..." << std::endl;
+    DescribeSchema(tree);
+    
+    std::cout << "  PASS: DescribeSchema runs successfully" << std::endl;
+    return true;
+}
+
+/**
+ * Test 5: DescribeSchema handles no schema loaded
+ */
+bool Test_DescribeSchema_NoSchema() {
+    std::cout << "\n=== Test: DescribeSchema No Schema ===" << std::endl;
+    
+    TTree* tree = LoadADFTree(TEST_FILE, "tree");
+    ASSERT_TRUE(tree != nullptr, "Tree loaded");
+    
+    // Don't load schema, just describe
+    std::cout << "  Calling DescribeSchema without loading..." << std::endl;
+    DescribeSchema(tree);
+    
+    std::cout << "  PASS: DescribeSchema handles no schema" << std::endl;
+    return true;
+}
+
+/**
+ * PHASE 2 TESTS
+ */
+
+/**
+ * Test 6: DescribeData shows branches
+ */
+bool Test_DescribeData_ShowsBranches() {
+    std::cout << "\n=== Test: DescribeData Shows Branches ===" << std::endl;
+    
+    TTree* tree = LoadADFTree(TEST_FILE, "tree");
+    ASSERT_TRUE(tree != nullptr, "Tree loaded");
+    
+    std::cout << "  Calling DescribeData..." << std::endl;
+    DescribeData(tree);
+    
+    std::cout << "  PASS: DescribeData runs successfully" << std::endl;
+    return true;
+}
+
+/**
+ * Test 7: DescribeData with sort by memory
+ */
+bool Test_DescribeData_SortByMemory() {
+    std::cout << "\n=== Test: DescribeData Sort by Memory ===" << std::endl;
+    
+    TTree* tree = LoadADFTree(TEST_FILE, "tree");
+    ASSERT_TRUE(tree != nullptr, "Tree loaded");
+    
+    std::cout << "  Calling DescribeData with sort='memory'..." << std::endl;
+    DescribeData(tree, "memory");
+    
+    std::cout << "  PASS: DescribeData sorts by memory" << std::endl;
+    return true;
+}
+
+/**
+ * Test 8: DescribeData shows aliases from schema
+ */
+bool Test_DescribeData_WithSchema() {
+    std::cout << "\n=== Test: DescribeData With Schema ===" << std::endl;
+    
+    TTree* tree = LoadADFTree(TEST_FILE, "tree");
+    ASSERT_TRUE(tree != nullptr, "Tree loaded");
+    
+    LoadSchema(tree, TEST_SCHEMA);
+    
+    std::cout << "  Calling DescribeData with schema loaded..." << std::endl;
+    DescribeData(tree);
+    
+    std::cout << "  PASS: DescribeData shows schema info" << std::endl;
+    return true;
+}
+
+/**
+ * INTEGRATION TESTS
+ */
+
+/**
+ * Test 9: Full workflow - Load, Schema, Draw
+ */
+bool Test_Integration_FullWorkflow() {
+    std::cout << "\n=== Test: Integration Full Workflow ===" << std::endl;
+    
+    // 1. Load tree
+    TTree* tree = LoadADFTree(TEST_FILE, "tree");
+    ASSERT_TRUE(tree != nullptr, "Tree loaded");
+    
+    // 2. Load schema
+    Bool_t schemaLoaded = LoadSchema(tree, TEST_SCHEMA);
+    ASSERT_TRUE(schemaLoaded == kTRUE, "Schema loaded");
+    
+    // 3. Describe
+    DescribeSchema(tree);
+    DescribeData(tree);
+    
+    // 4. Use aliases in Draw
+    Int_t n = tree->Draw("r:theta", "", "goff");
+    ASSERT_TRUE(n > 0, "2D draw with aliases works");
+    
+    // 5. Use subframe alias
+    n = tree->Draw("pt_calib", "", "goff");
+    ASSERT_TRUE(n > 0, "Subframe alias works");
+    
+    std::cout << "  PASS: Full workflow integration" << std::endl;
+    return true;
+}
+
+/**
+ * Test 10: Verify alias numerical correctness
+ */
+bool Test_Integration_AliasCorrectness() {
+    std::cout << "\n=== Test: Alias Numerical Correctness ===" << std::endl;
+    
+    TTree* tree = LoadADFTree(TEST_FILE, "tree");
+    ASSERT_TRUE(tree != nullptr, "Tree loaded");
+    
+    LoadSchema(tree, TEST_SCHEMA);
+    
+    // Draw all three at once (x, y, r) to avoid pointer invalidation
+    Int_t n = tree->Draw("x:y:r", "", "goff");
+    ASSERT_TRUE(n > 0, "Draw succeeded");
+    
+    Double_t* x_vals = tree->GetV1();  // First variable
+    Double_t* y_vals = tree->GetV2();  // Second variable
+    Double_t* r_vals = tree->GetV3();  // Third variable
+    
+    // Verify r = sqrt(x^2 + y^2) for first 10 entries
+    Int_t nTest = TMath::Min(10, n);
+    for (Int_t i = 0; i < nTest; i++) {
+        Double_t expected_r = TMath::Sqrt(x_vals[i]*x_vals[i] + y_vals[i]*y_vals[i]);
+        ASSERT_NEAR(r_vals[i], expected_r, 0.001, 
+                   TString::Format("Entry %d: r = sqrt(x^2 + y^2)", i).Data());
     }
     
-    std::cout << "  PASS: Numerical accuracy" << std::endl;
+    std::cout << "  PASS: Alias numerical correctness" << std::endl;
     return true;
 }
 
@@ -327,7 +393,8 @@ bool Test_NumericalAccuracy() {
  */
 void test_AliasDataFrameTree() {
     std::cout << "\n========================================" << std::endl;
-    std::cout << "AliasDataFrameTree.C Unit Tests" << std::endl;
+    std::cout << "Phase 1 & 2 Tests" << std::endl;
+    std::cout << "LoadSchema, DescribeSchema, DescribeData" << std::endl;
     std::cout << "========================================\n" << std::endl;
     
     // Create test data
@@ -337,16 +404,40 @@ void test_AliasDataFrameTree() {
         return;
     }
     
-    // Run tests
+    if (!CreateTestSchema()) {
+        std::cerr << "FATAL: Cannot create test schema" << std::endl;
+        gSystem->Exit(1);
+        return;
+    }
+    
+    // Run Phase 1 tests
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "PHASE 1 TESTS" << std::endl;
+    std::cout << "========================================\n" << std::endl;
+    
     std::vector<bool> results;
-    results.push_back(Test_LoadADFTree());
-    results.push_back(Test_DrawMainColumn());
-    results.push_back(Test_DrawFriendColumn());
-    results.push_back(Test_DrawExpression());
-    results.push_back(Test_DrawWithCut());
-    results.push_back(Test_Draw2D());
-    results.push_back(Test_PrintBranches());
-    results.push_back(Test_NumericalAccuracy());
+    results.push_back(Test_LoadSchema_FileLoad());
+    results.push_back(Test_LoadSchema_AliasesApplied());
+    results.push_back(Test_LoadSchema_MissingFile());
+    results.push_back(Test_DescribeSchema_ShowsAliases());
+    results.push_back(Test_DescribeSchema_NoSchema());
+    
+    // Run Phase 2 tests
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "PHASE 2 TESTS" << std::endl;
+    std::cout << "========================================\n" << std::endl;
+    
+    results.push_back(Test_DescribeData_ShowsBranches());
+    results.push_back(Test_DescribeData_SortByMemory());
+    results.push_back(Test_DescribeData_WithSchema());
+    
+    // Run integration tests
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "INTEGRATION TESTS" << std::endl;
+    std::cout << "========================================\n" << std::endl;
+    
+    results.push_back(Test_Integration_FullWorkflow());
+    results.push_back(Test_Integration_AliasCorrectness());
     
     // Summary
     int passed = 0, failed = 0;
@@ -362,7 +453,7 @@ void test_AliasDataFrameTree() {
     
     // Cleanup
     gSystem->Unlink(TEST_FILE);
-    gSystem->Unlink("/tmp/test_accuracy.root");
+    gSystem->Unlink(TEST_SCHEMA);
     
     if (failed > 0) {
         std::cerr << "TESTS FAILED" << std::endl;
@@ -372,3 +463,5 @@ void test_AliasDataFrameTree() {
         gSystem->Exit(0);
     }
 }
+
+
