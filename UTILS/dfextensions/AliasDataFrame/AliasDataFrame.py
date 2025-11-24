@@ -6,6 +6,7 @@ import json
 import uproot
 import copy
 import warnings
+from datetime import datetime, timezone
 try:
     import ROOT  # type: ignore
 except ImportError as e:
@@ -15,6 +16,21 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import re
 import ast
+
+# =============================================================================
+# SECTION 0: Schema & Metadata Constants
+# =============================================================================
+#
+# The _schema dict is the SINGLE SOURCE OF TRUTH for all AliasDataFrame metadata.
+# See the canonical structure comment in AliasDataFrame.__init__().
+#
+# Key concepts:
+# - columns: physical column dtypes AND computed aliases (expr + dtype)
+# - compression: state machine tracking compressed columns
+# - subframes: registered child DataFrames with join keys
+# - __meta__: schema versioning, timestamps, user-defined IDs
+#
+# =============================================================================
 
 # =============================================================================
 # Verbosity Bitmask Constants for describe_structure()
@@ -200,6 +216,7 @@ def _serialize_schema(schema):
     - numpy dtype objects → string representation
     - Sets → lists
     - Ensures all values are JSON-serializable
+    - Preserves __meta__ (schema_version, created_at, schema_id)
     
     Parameters
     ----------
@@ -211,8 +228,16 @@ def _serialize_schema(schema):
     dict
         JSON-serializable version of schema
     """
-    result = {
+    # Preserve __meta__ if present, otherwise create default
+    meta = schema.get("__meta__", {
         "schema_version": SCHEMA_VERSION,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "schema_id": None
+    })
+    
+    result = {
+        "__meta__": meta,
+        "schema_version": meta.get("schema_version", SCHEMA_VERSION),  # Also at top level for backward compat
         "columns": {},
         "compression": schema.get("compression", {}),
         "subframes": schema.get("subframes", {}),
@@ -244,6 +269,7 @@ def _deserialize_schema(serialized):
     Handles:
     - String dtype names → numpy dtype types
     - Schema version migration (future-proofing)
+    - Restores __meta__ (schema_version, created_at, schema_id)
     
     Parameters
     ----------
@@ -255,7 +281,9 @@ def _deserialize_schema(serialized):
     dict
         Restored _schema dict with proper types
     """
-    version = serialized.get("schema_version", 1)
+    # Get version from __meta__ or top-level for backward compat
+    meta = serialized.get("__meta__", {})
+    version = meta.get("schema_version", serialized.get("schema_version", 1))
     
     # Future: Add migration logic here
     if version > SCHEMA_VERSION:
@@ -265,6 +293,11 @@ def _deserialize_schema(serialized):
         )
     
     result = {
+        "__meta__": {
+            "schema_version": version,
+            "created_at": meta.get("created_at"),  # May be None for old schemas
+            "schema_id": meta.get("schema_id")  # May be None
+        },
         "columns": {},
         "compression": serialized.get("compression", {
             "__meta__": {
@@ -307,14 +340,50 @@ class AliasDataFrame:
     Phase 4: Uses unified _schema dict as single source of truth.
     """
     
-    def __init__(self, df):
+    def __init__(self, df, schema_id=None):
         """
         Initialize AliasDataFrame with unified schema structure.
         
+        Parameters
+        ----------
+        df : pd.DataFrame
+            The underlying pandas DataFrame
+        schema_id : str, optional
+            User-defined identifier for this schema (e.g., "miranov_lxplus_TPC_calib_v3").
+            Useful for parameter scans, test studies, and provenance tracking.
+        
         The _schema dict is the single source of truth for:
+        - __meta__: schema version, timestamps, user-defined ID
         - columns: physical column dtypes and aliases (expr + dtype + constant)
         - compression: compression formulas per column
         - subframes: registered subframes with index info
+        
+        _schema canonical structure:
+        {
+            "__meta__": {
+                "schema_version": 1,
+                "created_at": "2025-01-15T10:30:00+00:00",  # ISO timestamp
+                "schema_id": None  # User-defined, optional
+            },
+            "columns": {
+                "x": {"dtype": "float32", "expr": None},           # Physical column
+                "pt": {"dtype": "float32", "expr": "sqrt(px**2+py**2)", "constant": False}  # Alias
+            },
+            "compression": {
+                "__meta__": {"schema_version": 1, "state_machine": "CompressionState.v1"},
+                "dy": {
+                    "compress": "round(asinh(dy)*40)",
+                    "decompress": "sinh(dy_c/40.)",
+                    "compressed_dtype": "int16",
+                    "decompressed_dtype": "float16",
+                    "compressed_col": "dy_c",
+                    "state": "compressed"  # One of: compressed, decompressed, schema_only
+                }
+            },
+            "subframes": {
+                "track": {"index": ["track_index"]}
+            }
+        }
         """
         if not isinstance(df, pd.DataFrame):
             raise TypeError(
@@ -325,6 +394,11 @@ class AliasDataFrame:
         
         # Unified schema (Phase 4)
         self._schema = {
+            "__meta__": {
+                "schema_version": 1,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "schema_id": schema_id  # User-defined, optional
+            },
             "columns": {},      # {name: {"dtype": ..., "expr": ..., "constant": ...}}
             "compression": {
                 "__meta__": {
@@ -342,6 +416,51 @@ class AliasDataFrame:
         self._auto_aliases = {}  # {alias_name: subframe_name}
         self.index_columns = {}  # {subframe_name: [index_cols]}
 
+    # =========================================================================
+    # SECTION 1: Core DataFrame Operations & Schema Properties
+    # =========================================================================
+    #
+    # Core properties and methods for accessing/modifying the DataFrame and schema.
+    # Includes backward-compatible property accessors for aliases, dtypes, etc.
+    #
+    # =========================================================================
+    
+    @property
+    def schema_id(self):
+        """Get the user-defined schema identifier."""
+        return self._schema.get("__meta__", {}).get("schema_id")
+    
+    @schema_id.setter
+    def schema_id(self, value):
+        """Set the user-defined schema identifier."""
+        if "__meta__" not in self._schema:
+            self._schema["__meta__"] = {
+                "schema_version": 1,
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+        self._schema["__meta__"]["schema_id"] = value
+    
+    def set_schema_id(self, schema_id):
+        """
+        Set the user-defined schema identifier.
+        
+        Parameters
+        ----------
+        schema_id : str
+            Identifier for this schema (e.g., "miranov_lxplus_TPC_calib_v3")
+        
+        Returns
+        -------
+        self : AliasDataFrame
+            For method chaining
+        
+        Example
+        -------
+        >>> adf.set_schema_id("TPC_residuals_run3_v2")
+        """
+        self.schema_id = schema_id
+        return self
+    
     # =========================================================================
     # Phase 4: Backward Compatibility Properties
     # =========================================================================
@@ -662,6 +781,20 @@ class AliasDataFrame:
             return sf
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{item}'")
 
+    # =========================================================================
+    # SECTION 3: Subframe Registry & Joins
+    # =========================================================================
+    #
+    # Subframes are nested AliasDataFrame instances that can be joined to the
+    # parent frame using index columns. Enables hierarchical data access like:
+    #   adf.df["track.pt"] or adf.track.df["pt"]
+    #
+    # Key methods:
+    # - register_subframe(): Add a child DataFrame with join keys
+    # - auto_alias_subframe(): Create convenience aliases for subframe columns
+    # - get_subframe(): Retrieve registered subframe
+    #
+    # =========================================================================
 
     def register_subframe(self, name, adf, index_columns, pre_index=False):
         """
@@ -826,6 +959,21 @@ class AliasDataFrame:
             self._topological_sort()
         except ValueError as e:
             raise ValueError("Cycle detected in alias dependencies") from e
+
+    # =========================================================================
+    # SECTION 2: Alias Management
+    # =========================================================================
+    #
+    # Aliases are lazy-evaluated computed columns defined by expressions.
+    # They are evaluated on-demand and can depend on other aliases or subframes.
+    #
+    # Key methods:
+    # - add_alias(): Define a new computed column
+    # - materialize_alias(): Evaluate and store in DataFrame
+    # - get_alias_series/array(): Evaluate without storing (non-materializing)
+    # - validate_aliases(): Check all aliases can be evaluated
+    #
+    # =========================================================================
 
     def add_alias(self, name, expression, dtype=None, is_constant=False):
         """
@@ -2163,9 +2311,42 @@ class AliasDataFrame:
                 ) from e
 
         return adf
-        # ========================================================================
-        # Compression Support
-        # ========================================================================
+    
+    # =========================================================================
+    # SECTION 4: Compression Engine
+    # =========================================================================
+    #
+    # Bidirectional column compression to reduce memory and file size while
+    # maintaining data accessibility through lazy decompression aliases.
+    #
+    # Compression State Machine:
+    #
+    #   ┌──────────────┐
+    #   │  (no state)  │
+    #   └──────┬───────┘
+    #          │ define_compression_schema()
+    #          ▼
+    #   ┌──────────────┐
+    #   │ SCHEMA_ONLY  │ ◄───────────────────────────┐
+    #   └──────┬───────┘                             │
+    #          │ compress_columns()                  │ decompress(keep_schema=True)
+    #          ▼                                     │
+    #   ┌──────────────┐                             │
+    #   │  COMPRESSED  │ ────────────────────────────┘
+    #   └──────┬───────┘
+    #          │ decompress_columns()
+    #          ▼
+    #   ┌──────────────┐
+    #   │ DECOMPRESSED │ ──► compress_columns() ──► COMPRESSED
+    #   └──────────────┘
+    #
+    # Key methods:
+    # - compress_columns(): Apply compression transform
+    # - decompress_columns(): Restore original values
+    # - get_compression_state(): Query column state
+    # - define_compression_schema(): Pre-define compression without applying
+    #
+    # =========================================================================
 
     def get_compression_state(self, column):
         """
@@ -3230,6 +3411,21 @@ class AliasDataFrame:
         n_decompressed = sum(1 for info in result.values() if info['state'] == 'decompressed')
         print(f"\nTotal: {len(result)} columns, {n_compressed} compressed, {n_decompressed} decompressed")
 
+    # =========================================================================
+    # SECTION 6: Introspection & Utilities
+    # =========================================================================
+    #
+    # Methods for inspecting data structure, selecting columns, and describing
+    # the AliasDataFrame contents.
+    #
+    # Key methods:
+    # - select_data(): Filter columns by pattern, dtype, etc.
+    # - describe_data(): Summary of columns with memory usage
+    # - describe_structure(): Overall structure summary
+    # - convert_dtypes(): Batch dtype conversion
+    #
+    # =========================================================================
+
     def select_data(self, pattern=None, names=None, dtype=None,
                     only_physical=False, only_aliases=False, only_compressed=False,
                     min_memory_mb=None, include_subframes=True):
@@ -3781,6 +3977,22 @@ class AliasDataFrame:
                       f"{info['n_rows']} rows, index=[{index_str}]")
             if subframes_info:
                 print()
+
+    # =========================================================================
+    # SECTION 5: Schema Persistence (JSON / ROOT / Parquet)
+    # =========================================================================
+    #
+    # Methods for exporting, saving, loading, and applying schemas.
+    # Schema can be embedded in ROOT files or saved alongside Parquet files.
+    #
+    # Key methods:
+    # - export_schema(): Get JSON-safe schema dict
+    # - save_schema() / load_schema(): JSON file I/O
+    # - save_schema_to_root() / load_schema_from_root(): ROOT file embedding
+    # - save_schema_to_parquet_metadata(): Parquet sidecar file
+    # - apply_schema(): Apply loaded schema to new DataFrame
+    #
+    # =========================================================================
 
     def export_schema(self):
         """
