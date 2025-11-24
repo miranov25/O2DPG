@@ -337,6 +337,10 @@ class AliasDataFrame:
         
         # Subframe registry (keeps actual ADF objects)
         self._subframes = SubframeRegistry()
+        
+        # Phase B: Auto-alias tracking
+        self._auto_aliases = {}  # {alias_name: subframe_name}
+        self.index_columns = {}  # {subframe_name: [index_cols]}
 
     # =========================================================================
     # Phase 4: Backward Compatibility Properties
@@ -875,33 +879,45 @@ class AliasDataFrame:
             raise
 
     def _resolve_dependencies(self):
+        """
+        Resolve alias dependencies for cycle detection and topological sorting.
+        
+        Handles:
+        - Regular alias references (alias_name)
+        - Subframe references (subframe_name.column) - NOT treated as dependencies
+        - Self-references are skipped to avoid false cycles
+        """
         from collections import defaultdict
         dependencies = defaultdict(set)
+        
+        # Get all subframe names to exclude them from dependency tracking
+        subframe_names = set()
+        if hasattr(self, '_subframes') and hasattr(self._subframes, 'subframes'):
+            subframe_names = set(self._subframes.subframes.keys())
+        
         for name, expr in self.aliases.items():
-            # Skip subframe references (pattern: subframe.column)
-            # They don't create alias dependencies
-            if '.' in expr:
-                parts = expr.split('.')
-                if len(parts) == 2 and parts[0] in self._subframes.subframes:
-                    # This is a subframe reference, skip dependency tracking
-                    continue
+            # Find all word tokens, but handle dotted expressions specially
+            # First, remove subframe references like "subframe.column" from consideration
+            expr_cleaned = expr
+            for sf_name in subframe_names:
+                # Remove "subframe.anything" patterns
+                expr_cleaned = re.sub(rf'\b{sf_name}\.\w+', '', expr_cleaned)
             
-            tokens = re.findall(r'\b\w+\b', expr)
+            # Now find remaining tokens
+            tokens = re.findall(r'\b\w+\b', expr_cleaned)
+            
             for token in tokens:
-                # Exclude self-references and check only for other aliases
-                if token != name and token in self.aliases:
+                # Skip self-references (alias depending on itself is always wrong)
+                if token == name:
+                    continue
+                # Skip subframe names (they're not aliases)
+                if token in subframe_names:
+                    continue
+                # Only add if token is actually an alias
+                if token in self.aliases:
                     dependencies[name].add(token)
+        
         return dependencies
-
-    def _check_for_cycles(self):
-        graph = nx.DiGraph()
-        for name, deps in self._resolve_dependencies().items():
-            for dep in deps:
-                graph.add_edge(dep, name)
-        try:
-            list(nx.topological_sort(graph))
-        except nx.NetworkXUnfeasible:
-            raise ValueError("Cycle detected in alias dependencies")
 
     def plot_alias_dependencies(self):
         deps = self._resolve_dependencies()
@@ -917,7 +933,8 @@ class AliasDataFrame:
 
     def _topological_sort(self):
         from collections import defaultdict, deque
-        self._check_for_cycles()
+        # Note: Do NOT call _check_for_cycles here - it would cause infinite recursion
+        # since _check_for_cycles calls _topological_sort
         dependencies = self._resolve_dependencies()
         reverse_deps = defaultdict(set)
         indegree = defaultdict(int)
@@ -1308,14 +1325,17 @@ class AliasDataFrame:
         expr = self.aliases[name]
 
         # Automatically materialize any referenced aliases or subframe aliases
-        # Match dotted patterns first (subframe.col), then individual words
-        tokens = re.findall(r'\w+\.\w+|\b\w+\b(?!\s*\.)', expr)
+        tokens = re.findall(r'\b\w+\b|\w+\.\w+', expr)
         for token in tokens:
             if '.' in token:
                 sf_name, sf_attr = token.split('.', 1)
                 sf = self.get_subframe(sf_name)
                 if sf and sf_attr in sf.aliases and sf_attr not in sf.df.columns:
                     sf.materialize_alias(sf_attr)
+            elif token == name:
+                # Skip self-reference to prevent infinite recursion
+                # (alias 'x' referencing 'subframe.x' where 'x' is extracted as a token)
+                continue
             elif token in self.aliases and token not in self.df.columns:
                 self.materialize_alias(token, warn_missing_keys=warn_missing_keys)
 
@@ -4226,3 +4246,536 @@ class AliasDataFrame:
         if lines:
             print("\n".join(lines))
         return None
+
+
+    # =========================================================================
+    # PHASE B: EXPLICIT SUBFRAME API
+    # =========================================================================
+    
+    def subframe(self, name):
+        """
+        Access a subframe by name with version compatibility.
+        
+        Args:
+            name: Name of subframe (e.g., 'DITS0FitSide')
+        
+        Returns:
+            AliasDataFrame or dict: The subframe data
+        
+        Raises:
+            KeyError: If subframe doesn't exist
+        
+        Example:
+            sf = adf.subframe('DITS0FitSide')
+            print(len(sf.df))
+        """
+        if not hasattr(self, '_subframes') or not hasattr(self._subframes, 'subframes'):
+            raise AttributeError("No subframes loaded. Use read_tree() with subframes.")
+        
+        if name not in self._subframes.subframes:
+            available = list(self._subframes.subframes.keys())
+            raise KeyError(
+                f"Subframe '{name}' not found. "
+                f"Available subframes: {available}"
+            )
+        
+        sf_data = self._subframes.subframes[name]
+        
+        # Handle version compatibility
+        if hasattr(sf_data, 'frame'):
+            return sf_data['frame']
+        elif hasattr(sf_data, 'df'):
+            return sf_data
+        elif isinstance(sf_data, dict):
+            if 'frame' in sf_data:
+                return sf_data['frame']
+            else:
+                return sf_data
+        else:
+            return sf_data
+    
+    def list_subframes(self):
+        """
+        List all available subframes.
+        
+        Returns:
+            list: Names of loaded subframes
+        
+        Example:
+            print(f"Available: {adf.list_subframes()}")
+        """
+        if not hasattr(self, '_subframes') or not hasattr(self._subframes, 'subframes'):
+            return []
+        return list(self._subframes.subframes.keys())
+    
+    def auto_alias_subframe(self, subframe_name, validate=False, reset_before=False):
+        """
+        Explicitly create aliases for all columns in a subframe.
+        
+        Creates aliases: column_name -> subframe_name.column_name
+        Tracks created aliases in self._auto_aliases
+        
+        Args:
+            subframe_name: Name of subframe
+            validate: If True, validate against materialized columns (slow!)
+            reset_before: If True, remove old auto-aliases for this subframe first
+        
+        Returns:
+            dict: {column_name: expression} for created aliases
+        
+        Example:
+            # First time
+            aliases = adf.auto_alias_subframe('DITS0FitSide', validate=True)
+            
+            # Regenerate later
+            aliases = adf.auto_alias_subframe('DITS0FitSide', reset_before=True)
+        """
+        import warnings
+        import numpy as np
+        
+        # Initialize _auto_aliases if not present (backward compatibility)
+        if not hasattr(self, '_auto_aliases'):
+            self._auto_aliases = {}
+        
+        # Get subframe
+        try:
+            sf = self.subframe(subframe_name)
+        except KeyError as e:
+            raise KeyError(f"Cannot auto-alias: {e}")
+        
+        # Get subframe DataFrame
+        if hasattr(sf, 'df'):
+            sf_df = sf.df
+        else:
+            sf_df = sf
+        
+        # Get index columns
+        if hasattr(self._subframes, 'subframes') and subframe_name in self._subframes.subframes:
+            sf_entry = self._subframes.subframes[subframe_name]
+            if isinstance(sf_entry, dict) and 'index' in sf_entry:
+                index_cols = sf_entry['index']
+            else:
+                index_cols = self.index_columns.get(subframe_name, [])
+        else:
+            index_cols = self.index_columns.get(subframe_name, [])
+        
+        # Reset: remove existing auto-aliases for this subframe
+        if reset_before:
+            old_aliases = [k for k, v in self._auto_aliases.items() 
+                          if v == subframe_name]
+            if old_aliases:
+                print(f"  Removing {len(old_aliases)} existing auto-aliases for '{subframe_name}'")
+                self.remove_aliases(old_aliases, strict=False)
+        
+        # Create aliases
+        aliases_created = {}
+        materialized_found = []
+        
+        for col in sf_df.columns:
+            if col in index_cols:
+                continue
+            
+            alias_expr = f"{subframe_name}.{col}"
+            
+            # Check if materialized
+            if col in self.df.columns:
+                materialized_found.append(col)
+                
+                if validate:
+                    print(f"    Validating '{col}'...", end=' ')
+                    self.add_alias(f'_temp_validate_{col}', alias_expr)
+                    self.materialize_alias(f'_temp_validate_{col}', warn_missing_keys=False)
+                    
+                    materialized = self.df[col].values
+                    alias_result = self.df[f'_temp_validate_{col}'].values
+                    
+                    match = np.allclose(materialized, alias_result, equal_nan=True, rtol=1e-6)
+                    
+                    if match:
+                        print("✓")
+                    else:
+                        print("✗ MISMATCH")
+                        warnings.warn(
+                            f"Alias '{col}' -> '{alias_expr}' does NOT match "
+                            f"materialized column '{col}'. Check subframe index!"
+                        )
+                    
+                    self.df.drop(columns=[f'_temp_validate_{col}'], inplace=True)
+            
+            # Add alias and track it
+            self.add_alias(col, alias_expr)
+            self._auto_aliases[col] = subframe_name  # Track as auto-created
+            aliases_created[col] = alias_expr
+        
+        # Report
+        print(f"\n  ✓ Created {len(aliases_created)} auto-aliases for '{subframe_name}'")
+        if materialized_found:
+            print(f"    {len(materialized_found)} columns have materialized versions")
+            print(f"    Can drop: {materialized_found[:3]}" + 
+                  (f" ... (+{len(materialized_found)-3} more)" if len(materialized_found) > 3 else ""))
+        
+        return aliases_created
+    
+    def auto_alias_all_subframes(self, validate=False, reset_before=False):
+        """
+        Explicitly create aliases for all loaded subframes.
+        
+        WARNING: If multiple subframes have same column name, last one wins.
+        For production, prefer auto_alias_subframe() for specific subframes.
+        
+        Args:
+            validate: If True, validate aliases (slow!)
+            reset_before: If True, remove old auto-aliases first
+        
+        Returns:
+            dict: {subframe_name: {column: expression}}
+        
+        Example:
+            all_aliases = adf.auto_alias_all_subframes(validate=False)
+        """
+        all_created = {}
+        
+        subframes = self.list_subframes()
+        print(f"\nAuto-aliasing {len(subframes)} subframes...")
+        
+        for sf_name in subframes:
+            print(f"\nSubframe '{sf_name}':")
+            aliases = self.auto_alias_subframe(sf_name, validate=validate, reset_before=reset_before)
+            all_created[sf_name] = aliases
+        
+        return all_created
+    
+    def get_auto_alias_candidates(self):
+        """
+        Get materialized columns that could be replaced with auto-aliases.
+        
+        Returns:
+            dict: {subframe_name: [columns]}
+        
+        Example:
+            candidates = adf.get_auto_alias_candidates()
+            print(f"Can remove {sum(len(v) for v in candidates.values())} columns")
+            
+            for cols in candidates.values():
+                adf.df.drop(columns=cols, inplace=True)
+        """
+        candidates = {}
+        
+        for sf_name in self.list_subframes():
+            sf = self.subframe(sf_name)
+            sf_df = sf.df if hasattr(sf, 'df') else sf
+            
+            # Get index columns
+            if hasattr(self._subframes, 'subframes') and sf_name in self._subframes.subframes:
+                sf_entry = self._subframes.subframes[sf_name]
+                if isinstance(sf_entry, dict) and 'index' in sf_entry:
+                    index_cols = sf_entry['index']
+                else:
+                    index_cols = self.index_columns.get(sf_name, [])
+            else:
+                index_cols = self.index_columns.get(sf_name, [])
+            
+            materialized = [
+                col for col in sf_df.columns
+                if col not in index_cols and col in self.df.columns
+            ]
+            
+            if materialized:
+                candidates[sf_name] = materialized
+        
+        return candidates
+    
+    def remove_alias(self, name, *, remove_from_schema=True, strict=True):
+        """
+        Remove a single alias safely.
+        
+        Removes from self.aliases, self._auto_aliases, and optionally schema.
+        
+        Args:
+            name: Alias name to remove
+            remove_from_schema: If True, also remove from schema
+            strict: If True, raise KeyError if alias doesn't exist
+        
+        Raises:
+            KeyError: If alias not found and strict=True
+        
+        Example:
+            adf.remove_alias('my_alias')
+            adf.remove_alias('maybe_alias', strict=False)
+        """
+        # Initialize _auto_aliases if not present (backward compatibility)
+        if not hasattr(self, '_auto_aliases'):
+            self._auto_aliases = {}
+        
+        # Check if alias exists
+        if name not in self.aliases:
+            if strict:
+                raise KeyError(f"Alias '{name}' not found in aliases")
+            else:
+                return
+        
+        # Remove from schema (which automatically removes from aliases property)
+        if name in self._schema["columns"]:
+            col_info = self._schema["columns"][name]
+            if "expr" in col_info:
+                # If only has expr/dtype/auto_alias, remove entire entry
+                if set(col_info.keys()) <= {'expr', 'dtype', 'compressed_dtype', 'auto_alias', 'auto_subframe'}:
+                    del self._schema["columns"][name]
+                else:
+                    # More complex entry, just remove expr
+                    del col_info["expr"]
+                    col_info.pop('auto_alias', None)
+                    col_info.pop('auto_subframe', None)
+        
+        # Remove from auto-aliases tracking
+        self._auto_aliases.pop(name, None)
+    
+    def remove_aliases(self, names, *, remove_from_schema=True, strict=True):
+        """
+        Remove multiple aliases safely.
+        
+        Args:
+            names: Iterable of alias names
+            remove_from_schema: If True, also remove from schema
+            strict: If True, raise KeyError on first missing alias
+        
+        Example:
+            adf.remove_aliases(['alias1', 'alias2', 'alias3'])
+            adf.remove_aliases(candidate_list, strict=False)
+        """
+        for name in names:
+            self.remove_alias(name, remove_from_schema=remove_from_schema, strict=strict)
+    
+    def is_auto_alias(self, name):
+        """
+        Check if an alias was auto-created from a subframe.
+        
+        Args:
+            name: Alias name to check
+        
+        Returns:
+            bool: True if auto-created, False otherwise
+        
+        Example:
+            if adf.is_auto_alias('dyC1_intercept'):
+                print("This is an auto-alias")
+        """
+        if not hasattr(self, '_auto_aliases'):
+            return False
+        return name in self._auto_aliases
+    
+    def get_auto_aliases(self, subframe_name=None):
+        """
+        Get all auto-created aliases (or for specific subframe).
+        
+        Args:
+            subframe_name: If provided, return only aliases from this subframe
+        
+        Returns:
+            dict: {alias_name: subframe_name}
+        
+        Example:
+            all_auto = adf.get_auto_aliases()
+            dits_auto = adf.get_auto_aliases('DITS0FitSide')
+        """
+        if not hasattr(self, '_auto_aliases'):
+            return {}
+        
+        if subframe_name is None:
+            return dict(self._auto_aliases)
+        return {k: v for k, v in self._auto_aliases.items() if v == subframe_name}
+    
+    def remove_auto_aliases(self, subframe_name=None):
+        """
+        Remove auto-created aliases (all or for specific subframe).
+        
+        Args:
+            subframe_name: If provided, remove only aliases from this subframe
+        
+        Example:
+            adf.remove_auto_aliases()  # Remove all auto-aliases
+            adf.remove_auto_aliases('DITS0FitSide')  # Remove only DITS0FitSide aliases
+        """
+        if not hasattr(self, '_auto_aliases'):
+            return
+        
+        if subframe_name is None:
+            to_remove = list(self._auto_aliases.keys())
+        else:
+            to_remove = [k for k, v in self._auto_aliases.items() if v == subframe_name]
+        
+        if to_remove:
+            print(f"  Removing {len(to_remove)} auto-aliases" + 
+                  (f" for '{subframe_name}'" if subframe_name else ""))
+            self.remove_aliases(to_remove, strict=False)
+    
+    def list_auto_aliases(self, subframe_name=None):
+        """
+        List auto-created alias names (all or for specific subframe).
+        
+        Args:
+            subframe_name: If provided, list only aliases from this subframe
+        
+        Returns:
+            list: Alias names
+        
+        Example:
+            print(adf.list_auto_aliases())
+            print(adf.list_auto_aliases('DITS0FitSide'))
+        """
+        if not hasattr(self, '_auto_aliases'):
+            return []
+        
+        if subframe_name is None:
+            return list(self._auto_aliases.keys())
+        return [k for k, v in self._auto_aliases.items() if v == subframe_name]
+
+    # =========================================================================
+    # PHASE B: SCHEMA EMBEDDING IN FILES
+    # =========================================================================
+    
+    def save_schema_to_root(self, root_file, tree_name='tree'):
+        """
+        Embed schema in ROOT file as TNamed object.
+        
+        Args:
+            root_file: Path to ROOT file or open ROOT.TFile
+            tree_name: Name of tree to attach schema to
+        
+        Example:
+            adf.save_schema_to_root('output.root', 'tree')
+        """
+        import json
+        
+        if ROOT is None:
+            raise ImportError("ROOT is required for save_schema_to_root()")
+        
+        # Export schema to JSON
+        schema_json = json.dumps(self.export_schema(), indent=2)
+        
+        # Open file
+        if isinstance(root_file, str):
+            f = ROOT.TFile.Open(root_file, "UPDATE")
+            should_close = True
+        else:
+            f = root_file
+            should_close = False
+        
+        try:
+            # Create TNamed with schema
+            schema_obj = ROOT.TObjString(schema_json)
+            schema_obj.Write("ADF_SCHEMA")
+            
+            print(f"  ✓ Embedded schema in ROOT file: {f.GetName()}")
+            
+        finally:
+            if should_close:
+                f.Close()
+    
+    def load_schema_from_root(self, root_file):
+        """
+        Load embedded schema from ROOT file.
+        
+        Args:
+            root_file: Path to ROOT file or open ROOT.TFile
+        
+        Returns:
+            bool: True if schema was found and loaded, False otherwise
+        
+        Example:
+            if adf.load_schema_from_root('input.root'):
+                print("Schema loaded from file")
+        """
+        import json
+        
+        if ROOT is None:
+            raise ImportError("ROOT is required for load_schema_from_root()")
+        
+        # Open file
+        if isinstance(root_file, str):
+            f = ROOT.TFile.Open(root_file, "READ")
+            should_close = True
+        else:
+            f = root_file
+            should_close = False
+        
+        try:
+            # Try to get schema object
+            schema_obj = f.Get("ADF_SCHEMA")
+            
+            if schema_obj:
+                schema_json = schema_obj.GetString().Data()
+                schema = json.loads(schema_json)
+                self.update_schema(schema)
+                
+                print(f"  ✓ Loaded embedded schema from ROOT file")
+                return True
+            else:
+                return False
+                
+        finally:
+            if should_close:
+                f.Close()
+    
+    def save_schema_to_parquet_metadata(self, parquet_file):
+        """
+        Save schema as metadata alongside Parquet file.
+        
+        Creates: filename.parquet + filename_schema.json
+        
+        Args:
+            parquet_file: Path to Parquet file
+        
+        Example:
+            adf.df.to_parquet('output.parquet')
+            adf.save_schema_to_parquet_metadata('output.parquet')
+        """
+        import json
+        from pathlib import Path
+        
+        # Generate schema JSON filename
+        parquet_path = Path(parquet_file)
+        schema_path = parquet_path.with_suffix('.schema.json')
+        
+        # Save schema
+        schema = self.export_schema()
+        with open(schema_path, 'w') as f:
+            json.dump(schema, f, indent=2)
+        
+        print(f"  ✓ Saved schema metadata: {schema_path}")
+    
+    def load_schema_from_parquet_metadata(self, parquet_file):
+        """
+        Load schema from Parquet metadata file.
+        
+        Looks for: filename_schema.json
+        
+        Args:
+            parquet_file: Path to Parquet file
+        
+        Returns:
+            bool: True if schema was found and loaded, False otherwise
+        
+        Example:
+            adf = AliasDataFrame(pd.read_parquet('input.parquet'))
+            if adf.load_schema_from_parquet_metadata('input.parquet'):
+                print("Schema loaded")
+        """
+        import json
+        from pathlib import Path
+        
+        # Look for schema JSON
+        parquet_path = Path(parquet_file)
+        schema_path = parquet_path.with_suffix('.schema.json')
+        
+        if schema_path.exists():
+            with open(schema_path, 'r') as f:
+                schema = json.load(f)
+            self.update_schema(schema)
+            
+            print(f"  ✓ Loaded schema from metadata: {schema_path}")
+            return True
+        else:
+            return False
+
+        return [k for k, v in self._auto_aliases.items() if v == subframe_name]
