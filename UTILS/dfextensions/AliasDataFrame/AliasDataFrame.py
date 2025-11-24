@@ -1092,10 +1092,19 @@ class AliasDataFrame:
             If True, set index on subframe DataFrame
         
         Phase 4: Also writes to _schema["subframes"] for metadata persistence.
+        Phase 4b: Auto-populates subframe schema if empty (fixes v2 export bug).
         """
         # Convert string to list (defensive - prevents iteration over characters)
         if isinstance(index_columns, str):
             index_columns = [index_columns]
+        
+        # Auto-populate subframe's _schema["columns"] if empty (v2 fix)
+        # This happens when subframes are loaded from ROOT without embedded schema
+        if not adf._schema.get("columns") and hasattr(adf, 'df') and adf.df is not None:
+            adf._schema["columns"] = {
+                col: {"dtype": str(adf.df[col].dtype)}
+                for col in adf.df.columns
+            }
         
         # Add to runtime registry
         self._subframes.add_subframe(name, adf, index_columns, pre_index=pre_index)
@@ -2307,7 +2316,8 @@ class AliasDataFrame:
         f.Close()
 
     @staticmethod
-    def read_tree(filename, treename="tree", entry_start=None, entry_stop=None, num_workers=8):
+    def read_tree(filename, treename="tree", entry_start=None, entry_stop=None, 
+                  num_workers=8, load_subframes=True):
         """
         Read AliasDataFrame from ROOT TTree with optimized memory and speed.
 
@@ -2329,6 +2339,10 @@ class AliasDataFrame:
         num_workers : int, optional
             Number of worker threads for parallel branch reading (default: 8).
             Set to 1 for single-threaded reading.
+        load_subframes : bool, optional
+            If True (default), automatically load and register subframes defined
+            in schema. Tries both Python naming ({treename}__subframe__{name})
+            and C++ naming ({name}) conventions.
 
         Returns
         -------
@@ -2353,6 +2367,9 @@ class AliasDataFrame:
 
         >>> # Single-threaded (for environments with threading issues)
         >>> adf = AliasDataFrame.read_tree("data.root", "tree", num_workers=1)
+        
+        >>> # Skip subframe loading (faster, for main tree only)
+        >>> adf = AliasDataFrame.read_tree("data.root", "tree", load_subframes=False)
         """
         import warnings
         import concurrent.futures
@@ -2580,34 +2597,59 @@ class AliasDataFrame:
         # =========================================================================
         # Step 5: Load subframes recursively
         # =========================================================================
-        # Warn if entry_range used with subframes
-        if metadata['subframes'] and (entry_start is not None or entry_stop is not None):
-            warnings.warn(
-                f"entry_start/entry_stop apply only to main tree '{treename}'. "
-                f"Subframes {metadata['subframes']} will be fully loaded."
-            )
-
-        for sf_name in metadata['subframes']:
-            try:
-                sf = AliasDataFrame.read_tree(
-                    filename,
-                    treename=f"{treename}__subframe__{sf_name}",
-                    num_workers=num_workers
+        if load_subframes and metadata['subframes']:
+            # Warn if entry_range used with subframes
+            if entry_start is not None or entry_stop is not None:
+                warnings.warn(
+                    f"entry_start/entry_stop apply only to main tree '{treename}'. "
+                    f"Subframes {metadata['subframes']} will be fully loaded."
                 )
 
-                index_columns = metadata['subframe_indices'].get(sf_name)
-                if index_columns is None:
-                    raise ValueError(
-                        f"Missing index_columns for subframe '{sf_name}' in metadata. "
-                        f"Available indices: {list(metadata['subframe_indices'].keys())}"
-                    )
+            for sf_name in metadata['subframes']:
+                try:
+                    # Try both naming conventions:
+                    # 1. Python convention: {treename}__subframe__{sf_name}
+                    # 2. C++/direct convention: {sf_name}
+                    sf = None
+                    tree_names_to_try = [
+                        f"{treename}__subframe__{sf_name}",  # Python export convention
+                        sf_name                              # C++/direct tree name
+                    ]
+                    
+                    last_error = None
+                    for sf_treename in tree_names_to_try:
+                        try:
+                            # load_subframes=False prevents recursive subframe loading
+                            sf = AliasDataFrame.read_tree(
+                                filename,
+                                treename=sf_treename,
+                                num_workers=num_workers,
+                                load_subframes=False
+                            )
+                            break  # Found it!
+                        except (ValueError, KeyError) as e:
+                            last_error = e
+                            continue  # Try next naming convention
+                    
+                    if sf is None:
+                        raise ValueError(
+                            f"Subframe tree not found. Tried: {tree_names_to_try}. "
+                            f"Last error: {last_error}"
+                        )
 
-                adf.register_subframe(sf_name, sf, index_columns=index_columns)
+                    index_columns = metadata['subframe_indices'].get(sf_name)
+                    if index_columns is None:
+                        raise ValueError(
+                            f"Missing index_columns for subframe '{sf_name}' in metadata. "
+                            f"Available indices: {list(metadata['subframe_indices'].keys())}"
+                        )
 
-            except Exception as e:
-                raise RuntimeError(
-                    f"Failed to load subframe '{sf_name}' from {filename}: {e}"
-                ) from e
+                    adf.register_subframe(sf_name, sf, index_columns=index_columns)
+
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Failed to load subframe '{sf_name}' from {filename}: {e}"
+                    ) from e
 
         return adf
     
@@ -4295,78 +4337,30 @@ class AliasDataFrame:
 
     def export_schema(self):
         """
-        Export schema as JSON-safe dictionary.
-        
-        Converts numpy dtypes to strings and removes non-serializable objects.
-        Includes physical column dtypes from DataFrame.
+        Export schema as JSON-safe dictionary (v2 format).
         
         Returns
         -------
         dict
             JSON-safe schema dictionary
         """
-        schema_copy = copy.deepcopy(self.schema)
-        
-        # Add physical column dtypes from DataFrame
-        for col in self.df.columns:
-            if col not in schema_copy['columns']:
-                schema_copy['columns'][col] = {}
-            # Store dtype
-            schema_copy['columns'][col]['dtype'] = str(self.df[col].dtype)
-            # Mark as physical (no expr)
-            if 'expr' not in schema_copy['columns'][col]:
-                schema_copy['columns'][col]['expr'] = None
-        
-        # Convert dtypes to strings in columns
-        for name, info in schema_copy.get('columns', {}).items():
-            if 'dtype' in info and info['dtype'] is not None:
-                try:
-                    # Convert numpy dtype to string
-                    dtype = info['dtype']
-                    if not isinstance(dtype, str):
-                        info['dtype'] = np.dtype(dtype).name
-                except (TypeError, ValueError):
-                    info['dtype'] = str(info['dtype'])
-        
-        # Convert dtypes in compression
-        for name, info in schema_copy.get('compression', {}).items():
-            if name == '__meta__':
-                continue
-            for dtype_field in ['compressed_dtype', 'decompressed_dtype']:
-                if dtype_field in info and info[dtype_field] is not None:
-                    try:
-                        dtype = info[dtype_field]
-                        if not isinstance(dtype, str):
-                            info[dtype_field] = np.dtype(dtype).name
-                    except (TypeError, ValueError):
-                        info[dtype_field] = str(info[dtype_field])
-            
-            # Remove monitor functions (not serializable)
-            if 'monitor' in info and info['monitor']:
-                monitor = info['monitor']
-                if 'func' in monitor:
-                    # Keep structure but remove function
-                    info['monitor'] = {k: v for k, v in monitor.items() if k != 'func'}
-        
-        return schema_copy
+        return self.export_schema_v2(include_compression=True)
 
     def save_schema(self, path):
         """
-        Save schema to JSON file.
+        Save schema to JSON file (v2 format).
         
         Parameters
         ----------
         path : str
             Path to save schema JSON file
         """
-        schema = self.export_schema()
-        with open(path, 'w') as f:
-            json.dump(schema, f, indent=2)
+        self.save_schema_v2(path, include_compression=True)
 
     @staticmethod
     def load_schema(path):
         """
-        Load schema from JSON file.
+        Load schema from JSON file (handles v1 and v2 formats).
         
         Parameters
         ----------
@@ -4378,8 +4372,7 @@ class AliasDataFrame:
         dict
             Schema dictionary
         """
-        with open(path, 'r') as f:
-            return json.load(f)
+        return AliasDataFrame.load_schema_v2(path)
 
     # =========================================================================
     # Schema Export v2: Enhanced methods with groups, metadata, smart formatting
@@ -4564,9 +4557,9 @@ class AliasDataFrame:
         result['columns'] = columns
         
         # Subframes section
-        if include_subframes and hasattr(self, '_subframe_registry'):
+        if include_subframes and hasattr(self, '_subframes'):
             subframes = {}
-            for name, entry in self._subframe_registry.items():
+            for name, entry in self._subframes.items():
                 subframes[name] = _export_subframe_schema_v2(entry, include_compression)
             if subframes:
                 result['subframes'] = subframes

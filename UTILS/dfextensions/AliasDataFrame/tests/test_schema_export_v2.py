@@ -503,6 +503,297 @@ class TestJqQueryability:
 
 
 # =============================================================================
+# Test: Subframe Schema Population (Bug Fix)
+# =============================================================================
+
+class TestSubframeSchemaPopulation:
+    """
+    Test that subframes with empty schemas get their columns populated.
+    
+    Bug: When subframes are loaded from ROOT without embedded schema,
+    their _schema['columns'] was empty, causing export_schema_v2() to
+    produce empty column blocks for subframes.
+    
+    Fix: register_subframe() now auto-populates the subframe's schema
+    from its DataFrame columns if empty.
+    """
+    
+    def test_subframe_schema_populated_on_register(self):
+        """Subframe with empty schema gets columns populated during registration."""
+        # Create main frame
+        main_df = pd.DataFrame({
+            'x': np.array([1.0, 2.0], dtype=np.float32),
+            'track_id': np.array([0, 1], dtype=np.int32)
+        })
+        adf = AliasDataFrame(main_df)
+        
+        # Create subframe with data but empty schema (simulates ROOT load without schema)
+        sub_df = pd.DataFrame({
+            'track_id': np.array([0, 1], dtype=np.int32),
+            'pt': np.array([1.5, 2.5], dtype=np.float32),
+            'eta': np.array([0.5, -0.5], dtype=np.float16)
+        })
+        sub_adf = AliasDataFrame(sub_df)
+        
+        # Verify schema is initially empty (no explicit column definitions)
+        # Note: __init__ may create empty columns dict, but no column specs
+        initial_columns = sub_adf._schema.get('columns', {})
+        # Filter to only columns with actual dtype definitions
+        defined_cols = {k: v for k, v in initial_columns.items() if v.get('dtype')}
+        assert len(defined_cols) == 0 or len(defined_cols) == len(sub_df.columns)
+        
+        # Register subframe - this should populate schema if empty
+        adf.register_subframe('T', sub_adf, index_columns='track_id')
+        
+        # Verify subframe schema now has columns
+        assert 'columns' in sub_adf._schema
+        assert 'track_id' in sub_adf._schema['columns']
+        assert 'pt' in sub_adf._schema['columns']
+        assert 'eta' in sub_adf._schema['columns']
+        
+        # Verify dtypes are correct
+        assert sub_adf._schema['columns']['pt']['dtype'] == 'float32'
+        assert sub_adf._schema['columns']['eta']['dtype'] == 'float16'
+        assert sub_adf._schema['columns']['track_id']['dtype'] == 'int32'
+    
+    def test_subframe_empty_schema_simulates_root_load(self):
+        """
+        Simulate exact bug scenario: subframe loaded from ROOT without embedded schema.
+        
+        This test explicitly clears the schema to mimic what happens when
+        read_tree() loads a subframe tree that has no TObjString metadata.
+        """
+        # Create main frame
+        main_df = pd.DataFrame({
+            'x': np.array([1.0, 2.0, 3.0], dtype=np.float32),
+            'track_tf_uid': np.array([0, 1, 2], dtype=np.uint32)
+        })
+        adf = AliasDataFrame(main_df)
+        
+        # Create subframe - simulating what read_tree() produces for a tree without schema
+        sub_df = pd.DataFrame({
+            'track_tf_uid': np.array([0, 1, 2], dtype=np.uint32),
+            'mX': np.array([39.0, 40.0, 41.0], dtype=np.float32),
+            'mP4': np.array([0.5, -0.3, 0.1], dtype=np.float32),
+            'nClsTPC': np.array([150, 145, 148], dtype=np.uint8)
+        })
+        sub_adf = AliasDataFrame(sub_df)
+        
+        # CRITICAL: Clear the schema to simulate ROOT load without embedded schema
+        # This is exactly what happens when read_tree() loads a subframe tree
+        # that doesn't have TObjString metadata with column info
+        sub_adf._schema['columns'] = {}
+        
+        # Verify schema is empty (the bug condition)
+        assert len(sub_adf._schema.get('columns', {})) == 0
+        
+        # But DataFrame has data
+        assert len(sub_adf.df.columns) == 4
+        
+        # Register subframe - the fix should populate schema
+        adf.register_subframe('T', sub_adf, index_columns='track_tf_uid')
+        
+        # Verify schema is now populated
+        assert len(sub_adf._schema['columns']) == 4
+        assert sub_adf._schema['columns']['mX']['dtype'] == 'float32'
+        assert sub_adf._schema['columns']['nClsTPC']['dtype'] == 'uint8'
+        
+        # Verify export includes subframe columns
+        schema = adf.export_schema_v2()
+        assert 'T' in schema['subframes']
+        assert len(schema['subframes']['T']['columns']) == 4
+        assert schema['subframes']['T']['columns']['mX']['dtype'] == 'float32'
+    
+    def test_subframe_columns_in_exported_schema(self):
+        """export_schema_v2() includes subframe columns."""
+        # Create main frame
+        main_df = pd.DataFrame({
+            'x': np.array([1.0, 2.0], dtype=np.float32),
+            'track_id': np.array([0, 1], dtype=np.int32)
+        })
+        adf = AliasDataFrame(main_df)
+        
+        # Create and register subframe
+        sub_df = pd.DataFrame({
+            'track_id': np.array([0, 1], dtype=np.int32),
+            'pt': np.array([1.5, 2.5], dtype=np.float32),
+            'phi': np.array([0.1, 0.2], dtype=np.float32)
+        })
+        sub_adf = AliasDataFrame(sub_df)
+        adf.register_subframe('T', sub_adf, index_columns='track_id')
+        
+        # Export schema
+        schema = adf.export_schema_v2()
+        
+        # Verify subframe has columns in exported schema
+        assert 'subframes' in schema
+        assert 'T' in schema['subframes']
+        assert 'columns' in schema['subframes']['T']
+        
+        sf_columns = schema['subframes']['T']['columns']
+        assert 'track_id' in sf_columns
+        assert 'pt' in sf_columns
+        assert 'phi' in sf_columns
+        
+        # Verify dtypes
+        assert sf_columns['pt']['dtype'] == 'float32'
+    
+    def test_subframe_describe_schema_works(self):
+        """Subframe's describe_schema() shows columns after registration."""
+        # Create main frame
+        main_df = pd.DataFrame({
+            'x': np.array([1.0, 2.0], dtype=np.float32),
+            'track_id': np.array([0, 1], dtype=np.int32)
+        })
+        adf = AliasDataFrame(main_df)
+        
+        # Create and register subframe
+        sub_df = pd.DataFrame({
+            'track_id': np.array([0, 1], dtype=np.int32),
+            'pt': np.array([1.5, 2.5], dtype=np.float32)
+        })
+        sub_adf = AliasDataFrame(sub_df)
+        adf.register_subframe('T', sub_adf, index_columns='track_id')
+        
+        # Get subframe and check its schema has columns
+        sf = adf.subframe('T')
+        assert len(sf._schema.get('columns', {})) > 0
+        assert 'pt' in sf._schema['columns']
+    
+    def test_subframe_with_existing_schema_not_overwritten(self):
+        """Subframe with existing schema is not overwritten."""
+        # Create main frame
+        main_df = pd.DataFrame({
+            'x': np.array([1.0, 2.0], dtype=np.float32),
+            'track_id': np.array([0, 1], dtype=np.int32)
+        })
+        adf = AliasDataFrame(main_df)
+        
+        # Create subframe with existing schema (includes an alias)
+        sub_df = pd.DataFrame({
+            'track_id': np.array([0, 1], dtype=np.int32),
+            'px': np.array([1.0, 2.0], dtype=np.float32),
+            'py': np.array([0.5, 1.0], dtype=np.float32)
+        })
+        sub_adf = AliasDataFrame(sub_df)
+        sub_adf.add_alias('pt', 'sqrt(px**2+py**2)', dtype=np.float32)
+        
+        # Schema already has columns
+        assert 'pt' in sub_adf._schema['columns']
+        assert sub_adf._schema['columns']['pt'].get('expr') == 'sqrt(px**2+py**2)'
+        
+        # Register subframe - should NOT overwrite existing schema
+        adf.register_subframe('T', sub_adf, index_columns='track_id')
+        
+        # Verify alias is preserved
+        assert sub_adf._schema['columns']['pt'].get('expr') == 'sqrt(px**2+py**2)'
+    
+    def test_export_schema_v2_roundtrip_with_subframes(self):
+        """Schema with subframe columns survives save/load cycle."""
+        # Create main frame with subframe
+        main_df = pd.DataFrame({
+            'x': np.array([1.0, 2.0], dtype=np.float32),
+            'track_id': np.array([0, 1], dtype=np.int32)
+        })
+        adf = AliasDataFrame(main_df)
+        
+        sub_df = pd.DataFrame({
+            'track_id': np.array([0, 1], dtype=np.int32),
+            'pt': np.array([1.5, 2.5], dtype=np.float32)
+        })
+        sub_adf = AliasDataFrame(sub_df)
+        adf.register_subframe('T', sub_adf, index_columns='track_id')
+        
+        # Export schema
+        schema = adf.export_schema_v2()
+        
+        # Save and reload
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json_str = _format_json_smart(schema)
+            f.write(json_str)
+            path = f.name
+        
+        try:
+            loaded = load_schema_v2(path)
+            
+            # Verify subframe columns survived
+            assert 'T' in loaded['subframes']
+            assert 'columns' in loaded['subframes']['T']
+            assert 'pt' in loaded['subframes']['T']['columns']
+            assert loaded['subframes']['T']['columns']['pt']['dtype'] == 'float32'
+        finally:
+            os.unlink(path)
+    
+    def test_multiple_subframes_all_populated(self):
+        """
+        Multiple subframes all get their schemas populated.
+        
+        Simulates real ALICE data with T, R, DTrack0, DITS0FitSide subframes.
+        """
+        # Create main frame
+        main_df = pd.DataFrame({
+            'x': np.array([1.0, 2.0], dtype=np.float32),
+            'track_tf_uid': np.array([0, 1], dtype=np.uint32),
+            'firstTForbit': np.array([30537824, 30537824], dtype=np.uint32),
+            'row': np.array([50, 100], dtype=np.uint8),
+            'drift25': np.array([10, 15], dtype=np.int8),
+            'side': np.array([0, 1], dtype=np.int8)
+        })
+        adf = AliasDataFrame(main_df)
+        
+        # Create multiple subframes with empty schemas (simulating ROOT load)
+        # Subframe T (tracks)
+        sub_T = AliasDataFrame(pd.DataFrame({
+            'track_tf_uid': np.array([0, 1], dtype=np.uint32),
+            'mX': np.array([39.0, 40.0], dtype=np.float32),
+            'mP4': np.array([0.5, -0.3], dtype=np.float32)
+        }))
+        sub_T._schema['columns'] = {}  # Clear to simulate ROOT load
+        
+        # Subframe R (run info)
+        sub_R = AliasDataFrame(pd.DataFrame({
+            'firstTForbit': np.array([30537824], dtype=np.uint32),
+            'timestampMS': np.array([1700000000000], dtype=np.int64),
+            'pressure': np.array([1013.25], dtype=np.float32)
+        }))
+        sub_R._schema['columns'] = {}  # Clear to simulate ROOT load
+        
+        # Subframe DTrack0 (calibration)
+        sub_DTrack0 = AliasDataFrame(pd.DataFrame({
+            'side': np.array([0, 1], dtype=np.int8),
+            'row': np.array([50, 100], dtype=np.uint8),
+            'drift25': np.array([10, 15], dtype=np.int8),
+            'dyC0T_median': np.array([0.01, -0.02], dtype=np.float32)
+        }))
+        sub_DTrack0._schema['columns'] = {}  # Clear to simulate ROOT load
+        
+        # Register all subframes
+        adf.register_subframe('T', sub_T, index_columns='track_tf_uid')
+        adf.register_subframe('R', sub_R, index_columns='firstTForbit')
+        adf.register_subframe('DTrack0', sub_DTrack0, index_columns=['side', 'row', 'drift25'])
+        
+        # Export schema
+        schema = adf.export_schema_v2()
+        
+        # Verify all subframes have columns
+        assert 'T' in schema['subframes']
+        assert 'R' in schema['subframes']
+        assert 'DTrack0' in schema['subframes']
+        
+        assert len(schema['subframes']['T']['columns']) == 3
+        assert len(schema['subframes']['R']['columns']) == 3
+        assert len(schema['subframes']['DTrack0']['columns']) == 4
+        
+        # Verify specific columns
+        assert schema['subframes']['T']['columns']['mX']['dtype'] == 'float32'
+        assert schema['subframes']['R']['columns']['timestampMS']['dtype'] == 'int64'
+        assert schema['subframes']['DTrack0']['columns']['dyC0T_median']['dtype'] == 'float32'
+        
+        # Verify multi-key index preserved
+        assert schema['subframes']['DTrack0']['index'] == ['side', 'row', 'drift25']
+
+
+# =============================================================================
 # Run tests
 # =============================================================================
 
