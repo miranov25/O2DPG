@@ -682,3 +682,87 @@ assert adf_verify.aliases == adf.aliases, "Schema round-trip failed"
 - **USER_GUIDE.md** - Complete feature overview
 - **COMPRESSION.md** - Compression system details
 - **CHANGELOG.md** - Version history
+## Composite Index for N > 2 Keys (C++ Only)
+
+When subframes have more than 2 index columns, the C++ macro automatically
+creates a composite key using cardinality-based packing.
+
+### Schema Format
+
+```json
+{
+  "subframes": {
+    "Calib": {
+      "index": ["row", "drift25", "side", "firstTFOrbit"]
+    }
+  }
+}
+```
+
+### How It Works
+
+The C++ `LoadADFTree()` function will:
+
+1. **Map values to codes:** Each column's distinct values are mapped to 
+   compact codes [0, 1, 2, ...]. This handles sparse indices correctly
+   (e.g., orbit values like 547832001, 547832045, ...).
+
+2. **Pack codes into single key:** Using cardinality as base:
+   ```
+   key = code[0] + code[1]*card[0] + code[2]*card[0]*card[1] + ...
+   ```
+
+3. **Create key branches:** A branch `__adf_key_<subframeName>__` is created
+   in both the main tree and subframe.
+
+4. **Build index on subframe:** Only the subframe tree gets `BuildIndex()`.
+   ROOT's friend mechanism uses the subframe's index for lookups.
+
+### Requirements
+
+- All index columns must be **integer types** (Int_t, Long64_t, etc.)
+- Float/Double columns will be rejected with an error message
+- Maximum key space is checked to prevent overflow
+
+### Multiple Subframes
+
+Each subframe can have its own independent index definition:
+
+```json
+{
+  "subframes": {
+    "CalibA": {"index": ["row", "drift", "side"]},
+    "CalibB": {"index": ["sector", "timeframe"]}
+  }
+}
+```
+
+Both subframes will work correctly and independently.
+
+### Behavior with Edge Cases
+
+| Case | Behavior |
+|------|----------|
+| No matching keys | Draw returns 0 entries for subframe columns |
+| Empty subframe | No crash; main tree still accessible |
+| Duplicate keys | ROOT uses first matching entry |
+| Non-integer columns | Error message; graceful degradation (no index) |
+
+### Example Usage
+
+```cpp
+// Load tree with 4-key composite index
+TTree* tree = LoadADFTree("data.root", "tree");
+
+// Access calibration data via standard ROOT syntax
+tree->Draw("mX * Calib.gain + Calib.offset");
+
+// Both subframes accessible independently
+tree->Draw("CalibA.value");
+tree->Draw("CalibB.correction");
+```
+
+### Performance Note
+
+The composite index provides O(log n) lookup instead of O(n) linear scan,
+which is critical for large calibration tables (>10k entries).
