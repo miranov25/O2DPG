@@ -319,12 +319,15 @@ class TestRegisterSubframeSchema:
     """Tests for register_subframe writing to _schema."""
 
     def test_register_subframe_writes_to_schema(self, simple_adf, subframe_df):
-        """Verify register_subframe writes to _schema['subframes']."""
+        """Verify register_subframe writes to _schema['subframes'].
+        
+        Note: String index_columns are auto-converted to list for consistency.
+        """
         sub_adf = AliasDataFrame(subframe_df)
         simple_adf.register_subframe('T', sub_adf, 'key')
         
         assert 'T' in simple_adf._schema['subframes']
-        assert simple_adf._schema['subframes']['T']['index'] == 'key'
+        assert simple_adf._schema['subframes']['T']['index'] == ['key']  # String converted to list
 
     def test_register_subframe_with_list_index(self, simple_adf, subframe_df):
         """Verify register_subframe works with list index."""

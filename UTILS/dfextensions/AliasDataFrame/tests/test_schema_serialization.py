@@ -251,7 +251,7 @@ class TestParquetSchemaRoundtrip:
         
         # Check subframe metadata in schema
         assert 'T' in loaded._schema['subframes']
-        assert loaded._schema['subframes']['T']['index'] == 'key'
+        assert loaded._schema['subframes']['T']['index'] == ['key']  # String converted to list
 
     def test_subframe_data_preserved(self, adf_with_subframe, temp_dir):
         """Verify subframe data preserved after Parquet roundtrip."""

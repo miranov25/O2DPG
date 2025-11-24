@@ -59,6 +59,9 @@ class SubframeRegistry:
         self.subframes = {}  # name → {'frame': adf, 'index': index_columns}
 
     def add_subframe(self, name, alias_df, index_columns, pre_index=False):
+        # Convert string to list (defensive - prevents "track_tf_uid" → ['t','r','a','c','k',...])
+        if isinstance(index_columns, str):
+            index_columns = [index_columns]
         if pre_index and not alias_df.df.index.names == index_columns:
             alias_df.df.set_index(index_columns, inplace=True)
         self.subframes[name] = {'frame': alias_df, 'index': index_columns}
@@ -208,6 +211,38 @@ SCHEMA_METADATA_KEY = "__alias_dataframe_schema__"
 SCHEMA_VERSION = 1
 
 
+def _repair_index_columns(index_cols, sf_name=None):
+    """
+    Repair corrupted index_columns that were stored as individual characters.
+    
+    Bug: If index_columns="track_tf_uid" was passed as string instead of list,
+    iteration yields ['t','r','a','c','k','_','t','f','_','u','i','d'].
+    
+    Parameters
+    ----------
+    index_cols : list
+        The index columns list (possibly corrupted)
+    sf_name : str, optional
+        Subframe name for warning message
+        
+    Returns
+    -------
+    list
+        Repaired index columns
+    """
+    if (isinstance(index_cols, list) and 
+        len(index_cols) > 1 and 
+        all(isinstance(c, str) and len(c) == 1 for c in index_cols)):
+        # Repair: rejoin characters back to original column name
+        repaired_name = "".join(index_cols)
+        sf_msg = f"Subframe '{sf_name}': " if sf_name else ""
+        warnings.warn(
+            f"{sf_msg}Repaired corrupted index {index_cols[:5]}... → ['{repaired_name}']"
+        )
+        return [repaired_name]
+    return index_cols
+
+
 def _serialize_schema(schema):
     """
     Serialize _schema dict to JSON-safe format.
@@ -270,6 +305,7 @@ def _deserialize_schema(serialized):
     - String dtype names → numpy dtype types
     - Schema version migration (future-proofing)
     - Restores __meta__ (schema_version, created_at, schema_id)
+    - Repairs corrupted subframe indices (string iterated as chars)
     
     Parameters
     ----------
@@ -305,7 +341,7 @@ def _deserialize_schema(serialized):
                 "state_machine": "CompressionState.v1"
             }
         }),
-        "subframes": serialized.get("subframes", {}),
+        "subframes": {},
     }
     
     # Ensure compression has __meta__
@@ -314,6 +350,14 @@ def _deserialize_schema(serialized):
             "schema_version": 1,
             "state_machine": "CompressionState.v1"
         }
+    
+    # Deserialize subframes with repair for corrupted indices
+    # Bug: "track_tf_uid" passed as string → stored as ['t','r','a','c','k','_',...]
+    for sf_name, sf_spec in serialized.get("subframes", {}).items():
+        repaired_spec = dict(sf_spec)
+        index_cols = sf_spec.get("index", [])
+        repaired_spec["index"] = _repair_index_columns(index_cols, sf_name)
+        result["subframes"][sf_name] = repaired_spec
     
     # Deserialize columns section - convert dtype strings to numpy types
     for name, spec in serialized.get("columns", {}).items():
@@ -800,8 +844,23 @@ class AliasDataFrame:
         """
         Register a subframe (nested AliasDataFrame) for join operations.
         
+        Parameters
+        ----------
+        name : str
+            Name to reference this subframe (e.g., "calibration")
+        adf : AliasDataFrame
+            The subframe to register
+        index_columns : str or list of str
+            Column(s) to use for joining. String is auto-converted to single-element list.
+        pre_index : bool, default=False
+            If True, set index on subframe DataFrame
+        
         Phase 4: Also writes to _schema["subframes"] for metadata persistence.
         """
+        # Convert string to list (defensive - prevents iteration over characters)
+        if isinstance(index_columns, str):
+            index_columns = [index_columns]
+        
         # Add to runtime registry
         self._subframes.add_subframe(name, adf, index_columns, pre_index=pre_index)
         
@@ -2143,6 +2202,10 @@ class AliasDataFrame:
                         )
         finally:
             f_root.Close()
+
+        # Repair corrupted subframe_indices from legacy format
+        for sf_name, idx_cols in metadata.get('subframe_indices', {}).items():
+            metadata['subframe_indices'][sf_name] = _repair_index_columns(idx_cols, sf_name)
 
         # Ensure __meta__ exists in compression_info
         if "__meta__" not in metadata['compression_info']:
