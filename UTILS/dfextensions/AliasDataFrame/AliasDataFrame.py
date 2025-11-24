@@ -209,6 +209,7 @@ class CompressionState:
 # Dedicated metadata key to avoid collisions
 SCHEMA_METADATA_KEY = "__alias_dataframe_schema__"
 SCHEMA_VERSION = 1
+SCHEMA_VERSION_V2 = 2  # New v2 format with groups, metadata, smart formatting
 
 
 def _repair_index_columns(index_cols, sf_name=None):
@@ -375,6 +376,241 @@ def _deserialize_schema(serialized):
         result["columns"][name] = deserialized_spec
     
     return result
+
+
+# =============================================================================
+# Schema Export v2: Enhanced JSON export with groups, metadata, smart formatting
+# =============================================================================
+
+def _format_json_smart(data, indent=2, max_line_length=100):
+    """
+    Format JSON with smart line splitting.
+    
+    Short entries stay on one line, long entries are expanded.
+    
+    Parameters
+    ----------
+    data : dict
+        Data to format as JSON
+    indent : int
+        Indentation level (spaces)
+    max_line_length : int
+        Maximum line length before splitting
+        
+    Returns
+    -------
+    str
+        Formatted JSON string
+    """
+    def format_dict_smart(d, level=0):
+        """Recursively format a dict with smart line decisions."""
+        if not d:
+            return '{}'
+        
+        base_indent = ' ' * (level * indent)
+        item_indent = ' ' * ((level + 1) * indent)
+        
+        lines = ['{']
+        items = list(d.items())
+        
+        for i, (key, value) in enumerate(items):
+            key_str = json.dumps(key)
+            comma = ',' if i < len(items) - 1 else ''
+            
+            # Check if this is a section that should always be expanded
+            if key in ('columns', '__meta__', 'groups', 'subframes', 'compression', 'schemas'):
+                if isinstance(value, dict) and value:
+                    nested = format_dict_smart(value, level + 1)
+                    lines.append(f'{item_indent}{key_str}: {nested}{comma}')
+                else:
+                    lines.append(f'{item_indent}{key_str}: {json.dumps(value)}{comma}')
+            elif isinstance(value, dict):
+                # Try compact first for column entries
+                compact = json.dumps(value, separators=(', ', ': '))
+                full_line = f'{item_indent}{key_str}: {compact}{comma}'
+                
+                if len(full_line) <= max_line_length:
+                    lines.append(full_line)
+                else:
+                    # Need to expand
+                    nested = format_dict_smart(value, level + 1)
+                    lines.append(f'{item_indent}{key_str}: {nested}{comma}')
+            elif isinstance(value, list):
+                compact = json.dumps(value, separators=(', ', ': '))
+                full_line = f'{item_indent}{key_str}: {compact}{comma}'
+                
+                if len(full_line) <= max_line_length:
+                    lines.append(full_line)
+                else:
+                    # Expand list
+                    lines.append(f'{item_indent}{key_str}: {json.dumps(value, indent=indent)}{comma}')
+            else:
+                lines.append(f'{item_indent}{key_str}: {json.dumps(value)}{comma}')
+        
+        lines.append(f'{base_indent}}}')
+        return '\n'.join(lines)
+    
+    return format_dict_smart(data)
+
+
+def _order_columns_by_groups(columns, groups, within_group_sort="schema"):
+    """
+    Order columns: grouped first (in group order), then ungrouped.
+    
+    Parameters
+    ----------
+    columns : dict
+        Column specifications
+    groups : dict
+        {group_name: [column_names], ...}
+    within_group_sort : str
+        "schema" - preserve order as defined in groups dict (default)
+        "alphabetic" - sort alphabetically within each group
+    
+    Returns
+    -------
+    dict
+        Ordered columns dict
+    """
+    if not groups:
+        return columns
+    
+    ordered = {}
+    seen = set()
+    
+    # First: columns in group order
+    for group_name, group_cols in groups.items():
+        cols_to_add = list(group_cols)
+        if within_group_sort == "alphabetic":
+            cols_to_add = sorted(cols_to_add)
+        
+        for col in cols_to_add:
+            if col in columns:
+                ordered[col] = columns[col]
+                seen.add(col)
+    
+    # Then: ungrouped columns (preserve original order from schema)
+    for col, spec in columns.items():
+        if col not in seen:
+            ordered[col] = spec
+    
+    return ordered
+
+
+def _export_column_spec_v2(col_name, col_info, df=None):
+    """
+    Export a single column specification in v2 format.
+    
+    Always returns object format: {"dtype": "..."} 
+    Excludes "expr": null for physical columns.
+    Preserves all metadata (unit, axisLabel, etc.)
+    
+    Parameters
+    ----------
+    col_name : str
+        Column name
+    col_info : dict
+        Column specification from schema
+    df : pd.DataFrame, optional
+        DataFrame to get dtype from if not in schema
+        
+    Returns
+    -------
+    dict
+        Clean column specification
+    """
+    result = {}
+    
+    # Get dtype
+    dtype = col_info.get('dtype')
+    if dtype is not None:
+        if hasattr(dtype, 'name'):
+            result['dtype'] = dtype.name
+        elif hasattr(dtype, '__name__'):
+            result['dtype'] = dtype.__name__
+        else:
+            result['dtype'] = str(dtype)
+    elif df is not None and col_name in df.columns:
+        result['dtype'] = str(df[col_name].dtype)
+    
+    # Add expr only if it's not None (aliases only)
+    expr = col_info.get('expr')
+    if expr is not None:
+        result['expr'] = expr
+    
+    # Copy all other metadata (unit, axisLabel, description, etc.)
+    # Skip internal keys
+    skip_keys = {'dtype', 'expr', 'constant'}
+    for key, value in col_info.items():
+        if key not in skip_keys and key not in result:
+            result[key] = value
+    
+    # Add constant only if True
+    if col_info.get('constant', False):
+        result['constant'] = True
+    
+    return result
+
+
+def _export_subframe_schema_v2(subframe_entry, include_compression=False):
+    """
+    Export a subframe's full schema recursively.
+    
+    Parameters
+    ----------
+    subframe_entry : dict
+        Entry from SubframeRegistry: {'frame': adf, 'index': [...]}
+    include_compression : bool
+        Whether to include compression section
+        
+    Returns
+    -------
+    dict
+        Subframe schema with index and columns
+    """
+    result = {}
+    
+    # Index columns (ensure list format)
+    index_cols = subframe_entry.get('index', [])
+    if isinstance(index_cols, str):
+        index_cols = [index_cols]
+    result['index'] = index_cols
+    
+    # Get the subframe AliasDataFrame
+    sf_adf = subframe_entry.get('frame')
+    if sf_adf is None:
+        return result
+    
+    # Export columns
+    columns = {}
+    sf_schema = sf_adf._schema if hasattr(sf_adf, '_schema') else {}
+    sf_df = sf_adf.df if hasattr(sf_adf, 'df') else None
+    
+    # Physical columns from DataFrame
+    if sf_df is not None:
+        for col in sf_df.columns:
+            col_info = sf_schema.get('columns', {}).get(col, {})
+            columns[col] = _export_column_spec_v2(col, col_info, sf_df)
+    
+    # Aliases from schema
+    for col, col_info in sf_schema.get('columns', {}).items():
+        if col not in columns:
+            columns[col] = _export_column_spec_v2(col, col_info)
+    
+    if columns:
+        result['columns'] = columns
+    
+    # Groups (if present)
+    if sf_schema.get('groups'):
+        result['groups'] = sf_schema['groups']
+    
+    # Compression (optional)
+    if include_compression and sf_schema.get('compression'):
+        comp = sf_schema['compression'].copy()
+        result['compression'] = comp
+    
+    return result
+
 
 class AliasDataFrame:
     """
@@ -4144,6 +4380,337 @@ class AliasDataFrame:
         """
         with open(path, 'r') as f:
             return json.load(f)
+
+    # =========================================================================
+    # Schema Export v2: Enhanced methods with groups, metadata, smart formatting
+    # =========================================================================
+
+    def set_groups(self, groups):
+        """
+        Define column groups for schema organization.
+        
+        Groups control the ordering of columns in exported schemas
+        and serve as logical documentation (like comments).
+        
+        Parameters
+        ----------
+        groups : dict
+            {group_name: [column_names], ...}
+            
+        Returns
+        -------
+        AliasDataFrame
+            self for method chaining
+            
+        Example
+        -------
+        >>> adf.set_groups({
+        ...     "coordinates": ["x", "y", "z", "r", "phi"],
+        ...     "calibtrack": ["dy_TrackFit0", "dz_TrackFit0"],
+        ...     "cuts": ["isOK", "isOKGB"]
+        ... })
+        """
+        self._schema['groups'] = groups
+        return self
+
+    def get_groups(self):
+        """
+        Get current column groups.
+        
+        Returns
+        -------
+        dict
+            {group_name: [column_names], ...} or empty dict
+        """
+        return self._schema.get('groups', {})
+
+    def set_column_metadata(self, column, **metadata):
+        """
+        Set metadata for a column. Supports any key-value pairs.
+        
+        Parameters
+        ----------
+        column : str
+            Column name (physical or alias)
+        **metadata : 
+            Arbitrary metadata fields (unit, axisLabel, description, etc.)
+            
+        Returns
+        -------
+        AliasDataFrame
+            self for method chaining
+            
+        Example
+        -------
+        >>> adf.set_column_metadata("pt", unit="GeV/c", axisLabel="p_{T} (GeV/c)")
+        >>> adf.set_column_metadata("x", 
+        ...     unit="cm", 
+        ...     axisLabel="x (cm)",
+        ...     description="TPC cluster x position",
+        ...     range=[-250, 250]
+        ... )
+        """
+        if column not in self._schema['columns']:
+            self._schema['columns'][column] = {}
+        
+        for key, value in metadata.items():
+            self._schema['columns'][column][key] = value
+        
+        return self
+
+    def set_columns_metadata(self, metadata):
+        """
+        Set metadata for multiple columns at once.
+        
+        Parameters
+        ----------
+        metadata : dict
+            {column_name: {field: value, ...}, ...}
+            Supports any metadata fields per column.
+            
+        Returns
+        -------
+        AliasDataFrame
+            self for method chaining
+            
+        Example
+        -------
+        >>> adf.set_columns_metadata({
+        ...     "x": {"unit": "cm", "axisLabel": "x (cm)", "range": [-250, 250]},
+        ...     "y": {"unit": "cm", "axisLabel": "y (cm)"},
+        ...     "pt": {"unit": "GeV/c", "axisLabel": "p_{T} (GeV/c)"}
+        ... })
+        """
+        for column, col_metadata in metadata.items():
+            self.set_column_metadata(column, **col_metadata)
+        return self
+
+    def get_column_metadata(self, column):
+        """
+        Get metadata for a column.
+        
+        Parameters
+        ----------
+        column : str
+            Column name
+            
+        Returns
+        -------
+        dict
+            Column metadata (excluding dtype and expr)
+        """
+        col_info = self._schema.get('columns', {}).get(column, {})
+        # Return all fields except dtype and expr
+        return {k: v for k, v in col_info.items() if k not in ('dtype', 'expr', 'constant')}
+
+    def export_schema_v2(self, include_compression=False, include_subframes=True,
+                         within_group_sort="schema"):
+        """
+        Export schema as JSON-safe dictionary (v2 format).
+        
+        Features:
+        - Uniform object format for all columns: {"dtype": "..."}
+        - No "expr": null for physical columns
+        - Groups preserved
+        - Column metadata preserved (unit, axisLabel, etc.)
+        - Recursive subframe schemas (nested)
+        - Compression optional
+        
+        Parameters
+        ----------
+        include_compression : bool, default=False
+            Whether to include compression section
+        include_subframes : bool, default=True
+            Whether to include recursive subframe schemas
+        within_group_sort : str, default="schema"
+            "schema" - preserve order as listed in groups
+            "alphabetic" - sort alphabetically within each group
+            
+        Returns
+        -------
+        dict
+            JSON-safe schema dictionary
+        """
+        result = {}
+        
+        # __meta__ section
+        result['__meta__'] = {
+            'schema_version': SCHEMA_VERSION_V2,
+            'created_at': datetime.now(timezone.utc).isoformat(),
+            'schema_id': self._schema.get('__meta__', {}).get('schema_id')
+        }
+        
+        # Groups section (if present)
+        groups = self._schema.get('groups', {})
+        if groups:
+            result['groups'] = groups
+        
+        # Columns section
+        columns = {}
+        schema_columns = self._schema.get('columns', {})
+        
+        # Physical columns from DataFrame first
+        for col in self.df.columns:
+            col_info = schema_columns.get(col, {})
+            columns[col] = _export_column_spec_v2(col, col_info, self.df)
+        
+        # Aliases from schema (not in DataFrame)
+        for col, col_info in schema_columns.items():
+            if col not in columns:
+                columns[col] = _export_column_spec_v2(col, col_info)
+        
+        # Order by groups
+        columns = _order_columns_by_groups(columns, groups, within_group_sort)
+        result['columns'] = columns
+        
+        # Subframes section
+        if include_subframes and hasattr(self, '_subframe_registry'):
+            subframes = {}
+            for name, entry in self._subframe_registry.items():
+                subframes[name] = _export_subframe_schema_v2(entry, include_compression)
+            if subframes:
+                result['subframes'] = subframes
+        elif self._schema.get('subframes'):
+            # Just include index info if no registry
+            result['subframes'] = {}
+            for name, info in self._schema.get('subframes', {}).items():
+                index_cols = info.get('index', [])
+                if isinstance(index_cols, str):
+                    index_cols = [index_cols]
+                result['subframes'][name] = {'index': index_cols}
+        
+        # Compression section (optional)
+        if include_compression and self._schema.get('compression'):
+            comp = copy.deepcopy(self._schema['compression'])
+            # Convert dtypes to strings
+            for name, info in comp.items():
+                if name == '__meta__':
+                    continue
+                for dtype_field in ['compressed_dtype', 'decompressed_dtype']:
+                    if dtype_field in info and info[dtype_field] is not None:
+                        dtype = info[dtype_field]
+                        if hasattr(dtype, 'name'):
+                            info[dtype_field] = dtype.name
+                        elif not isinstance(dtype, str):
+                            info[dtype_field] = str(dtype)
+                # Remove non-serializable monitor functions
+                if 'monitor' in info and info['monitor']:
+                    monitor = info['monitor']
+                    if 'func' in monitor:
+                        info['monitor'] = {k: v for k, v in monitor.items() if k != 'func'}
+            result['compression'] = comp
+        
+        return result
+
+    def save_schema_v2(self, path, include_compression=False, include_subframes=True,
+                       indent=2, max_line_length=100, within_group_sort="schema"):
+        """
+        Save schema to JSON file (v2 format).
+        
+        Short entries stay on one line, long entries are split.
+        Columns ordered by groups, then ungrouped columns.
+        
+        Parameters
+        ----------
+        path : str
+            Output file path
+        include_compression : bool, default=False
+            Whether to include compression section
+        include_subframes : bool, default=True
+            Whether to include recursive subframe schemas
+        indent : int, default=2
+            Indentation for JSON formatting
+        max_line_length : int, default=100
+            Maximum line length before splitting
+        within_group_sort : str, default="schema"
+            "schema" - preserve order as listed in groups
+            "alphabetic" - sort alphabetically within each group
+        """
+        schema = self.export_schema_v2(
+            include_compression=include_compression,
+            include_subframes=include_subframes,
+            within_group_sort=within_group_sort
+        )
+        
+        # Use smart formatting
+        json_str = _format_json_smart(schema, indent=indent, max_line_length=max_line_length)
+        
+        with open(path, 'w') as f:
+            f.write(json_str)
+
+    @staticmethod
+    def load_schema_v2(path):
+        """
+        Load schema from JSON file (handles v1 and v2 formats).
+        
+        Backward compatible: normalizes old format to new format.
+        
+        Parameters
+        ----------
+        path : str
+            Path to schema JSON file
+            
+        Returns
+        -------
+        dict
+            Normalized schema dictionary
+        """
+        with open(path, 'r') as f:
+            schema = json.load(f)
+        
+        # Detect version
+        meta = schema.get('__meta__', {})
+        version = meta.get('schema_version', 1)
+        
+        if version >= 2:
+            # Already v2 format
+            return schema
+        
+        # Normalize v1 to v2 format
+        normalized = {
+            '__meta__': {
+                'schema_version': 2,
+                'schema_id': meta.get('schema_id'),
+                'created_at': meta.get('created_at')
+            }
+        }
+        
+        # Normalize columns (remove "expr": null)
+        if 'columns' in schema:
+            normalized['columns'] = {}
+            for col, spec in schema['columns'].items():
+                if isinstance(spec, str):
+                    # Legacy compact format
+                    normalized['columns'][col] = {'dtype': spec}
+                elif isinstance(spec, dict):
+                    # Remove "expr": null
+                    clean_spec = {k: v for k, v in spec.items() if not (k == 'expr' and v is None)}
+                    normalized['columns'][col] = clean_spec
+                else:
+                    normalized['columns'][col] = spec
+        
+        # Copy other sections
+        if 'groups' in schema:
+            normalized['groups'] = schema['groups']
+        
+        if 'subframes' in schema:
+            normalized['subframes'] = {}
+            for name, info in schema['subframes'].items():
+                # Ensure index is a list
+                index_cols = info.get('index', [])
+                if isinstance(index_cols, str):
+                    index_cols = [index_cols]
+                # Repair corrupted indices (from char iteration bug)
+                index_cols = _repair_index_columns(index_cols, name)
+                normalized['subframes'][name] = {'index': index_cols}
+                # Copy columns if present
+                if 'columns' in info:
+                    normalized['subframes'][name]['columns'] = info['columns']
+        
+        if 'compression' in schema:
+            normalized['compression'] = schema['compression']
+        
+        return normalized
 
     def apply_schema(self, schema, validate=True, warn_missing=True):
         """
