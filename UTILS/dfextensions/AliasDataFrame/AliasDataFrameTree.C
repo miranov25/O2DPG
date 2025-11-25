@@ -204,11 +204,32 @@ Bool_t BuildCompositeIndex(TTree* mainTree, TTree* subframeTree,
     }
     
     // N > 2 keys: use cardinality-based composite index
+    // IMPORTANT: This requires adding branches to trees, which only works
+    // if the trees are writable (opened with "UPDATE" or created in memory)
+    
     Long64_t nEntries = subframeTree->GetEntries();
     size_t nCols = columns.size();
     
     std::cout << "    BuildCompositeIndex: " << nCols << " keys, " 
               << nEntries << " entries" << std::endl;
+    
+    // Check if trees are writable (must be opened with "UPDATE" or "RECREATE")
+    TFile* sfFile = subframeTree->GetCurrentFile();
+    Bool_t isWritable = kFALSE;
+    if (sfFile) {
+        TString option = sfFile->GetOption();
+        option.ToUpper();
+        isWritable = option.Contains("UPDATE") || option.Contains("RECREATE") || 
+                     option.Contains("CREATE") || option.Contains("NEW");
+    }
+    
+    if (!isWritable) {
+        std::cout << "    NOTE: File opened read-only. Cannot build " << nCols 
+                  << "-key composite index." << std::endl;
+        std::cout << "    Subframe '" << subframeName << "' will use linear scan (slower)." << std::endl;
+        std::cout << "    For indexed access, use: TFile::Open(filename, \"UPDATE\")" << std::endl;
+        return kFALSE;
+    }
     
     // Verify all columns exist and are integer types
     std::vector<TLeaf*> leaves(nCols);
@@ -285,6 +306,11 @@ Bool_t BuildCompositeIndex(TTree* mainTree, TTree* subframeTree,
     TBranch* keyBranch = subframeTree->Branch(keyBranchName.Data(), &compositeKey, 
                                               TString::Format("%s/L", keyBranchName.Data()).Data());
     
+    if (!keyBranch) {
+        std::cerr << "ERROR: Failed to create composite key branch on subframe tree" << std::endl;
+        return kFALSE;
+    }
+    
     for (Long64_t entry = 0; entry < nEntries; entry++) {
         subframeTree->GetEntry(entry);
         
@@ -308,13 +334,21 @@ Bool_t BuildCompositeIndex(TTree* mainTree, TTree* subframeTree,
     // Create matching composite key column in MAIN TREE
     // (Required for ROOT friend tree join to work)
     // =========================================================
+    // Check for columns in main tree - they might be branches OR aliases
     std::vector<TLeaf*> mainLeaves(nCols);
     Bool_t allColumnsInMain = kTRUE;
     for (size_t i = 0; i < nCols; i++) {
         mainLeaves[i] = mainTree->GetLeaf(columns[i].Data());
         if (!mainLeaves[i]) {
-            std::cerr << "WARNING: Column '" << columns[i] 
-                      << "' not found in main tree. Index may not work correctly." << std::endl;
+            // Check if it's an alias
+            TList* aliasList = mainTree->GetListOfAliases();
+            Bool_t isAlias = aliasList && aliasList->FindObject(columns[i].Data());
+            if (isAlias) {
+                std::cout << "      Note: '" << columns[i] << "' is an alias in main tree" << std::endl;
+            } else {
+                std::cerr << "WARNING: Column '" << columns[i] 
+                          << "' not found in main tree (neither branch nor alias)." << std::endl;
+            }
             allColumnsInMain = kFALSE;
         }
     }
@@ -324,26 +358,30 @@ Bool_t BuildCompositeIndex(TTree* mainTree, TTree* subframeTree,
         TBranch* mainKeyBranch = mainTree->Branch(keyBranchName.Data(), &mainCompositeKey,
                                                    TString::Format("%s/L", keyBranchName.Data()).Data());
         
-        Long64_t mainEntries = mainTree->GetEntries();
-        for (Long64_t entry = 0; entry < mainEntries; entry++) {
-            mainTree->GetEntry(entry);
-            
-            mainCompositeKey = 0;
-            Long64_t multiplier = 1;
-            for (size_t i = 0; i < nCols; i++) {
-                Long64_t value = (Long64_t)mainLeaves[i]->GetValue();
-                // Map value to code (use -1 for unknown values to ensure no match)
-                auto it = valueToCodes[i].find(value);
-                Long64_t code = (it != valueToCodes[i].end()) ? it->second : -1;
-                if (code == -1) {
-                    mainCompositeKey = -1;  // No match possible
-                    break;
+        if (!mainKeyBranch) {
+            std::cerr << "WARNING: Failed to create composite key branch on main tree" << std::endl;
+        } else {
+            Long64_t mainEntries = mainTree->GetEntries();
+            for (Long64_t entry = 0; entry < mainEntries; entry++) {
+                mainTree->GetEntry(entry);
+                
+                mainCompositeKey = 0;
+                Long64_t multiplier = 1;
+                for (size_t i = 0; i < nCols; i++) {
+                    Long64_t value = (Long64_t)mainLeaves[i]->GetValue();
+                    // Map value to code (use -1 for unknown values to ensure no match)
+                    auto it = valueToCodes[i].find(value);
+                    Long64_t code = (it != valueToCodes[i].end()) ? it->second : -1;
+                    if (code == -1) {
+                        mainCompositeKey = -1;  // No match possible
+                        break;
+                    }
+                    mainCompositeKey += code * multiplier;
+                    multiplier *= cardinalities[i];
                 }
-                mainCompositeKey += code * multiplier;
-                multiplier *= cardinalities[i];
+                
+                mainKeyBranch->Fill();
             }
-            
-            mainKeyBranch->Fill();
         }
         
         // NOTE: Do NOT call BuildIndex on main tree!
@@ -392,123 +430,250 @@ Bool_t LoadEmbeddedSchema(TFile* file, TTree* tree) {
 /**
  * Parse JSON schema and apply to tree
  * 
- * Robust parser that handles both compact and formatted JSON
+ * Robust parser that handles multiple schema formats:
+ * - v1 legacy: "subframe_indices": {"T": "col" or ["col1", "col2"]}
+ * - v1 nested: "subframes": {"T": {"index": [...]}}
+ * - v2: "subframes": {"T": {"index": [...], "columns": {...}}}
+ * 
+ * Also handles "aliases" (v1) vs "columns" with "expr" (v2)
  */
 Bool_t LoadSchemaFromJSON(TTree* tree, const TString& json) {
     SchemaInfo& schema = g_schemaRegistry[tree];
     schema.aliases.clear();
     schema.subframeIndices.clear();
     
-    // Parse subframes section for index columns
-    // Format: "subframes": { "NAME": { "index": ["col1", "col2", ...] }, ... }
-    TString subframesSection = ExtractJSONObject(json, "subframes");
-    if (subframesSection.Length() > 0) {
-        // Find each subframe entry by looking for "NAME": { pattern
+    // ========================================================================
+    // PRIORITY 1: Parse "subframe_indices" (v1 legacy format)
+    // Format: "subframe_indices": {"T": "col", "R": ["col1", "col2"], ...}
+    // ========================================================================
+    TString subframeIndicesSection = ExtractJSONObject(json, "subframe_indices");
+    if (subframeIndicesSection.Length() > 0) {
         Ssiz_t pos = 0;
-        while (pos < subframesSection.Length()) {
+        while (pos < subframeIndicesSection.Length()) {
             // Find opening quote of subframe name
-            Ssiz_t nameStart = subframesSection.Index("\"", pos);
+            Ssiz_t nameStart = subframeIndicesSection.Index("\"", pos);
             if (nameStart == kNPOS) break;
             
-            // Find closing quote
-            Ssiz_t nameEnd = subframesSection.Index("\"", nameStart + 1);
+            Ssiz_t nameEnd = subframeIndicesSection.Index("\"", nameStart + 1);
             if (nameEnd == kNPOS) break;
             
-            TString sfName = subframesSection(nameStart + 1, nameEnd - nameStart - 1);
+            TString sfName = subframeIndicesSection(nameStart + 1, nameEnd - nameStart - 1);
             
-            // Skip if this looks like a key (index, tree_name, etc)
-            if (sfName == "index" || sfName == "tree_name" || sfName == "dtype" || sfName == "expr") {
+            // Find colon after name
+            Ssiz_t colonPos = subframeIndicesSection.Index(":", nameEnd);
+            if (colonPos == kNPOS) {
                 pos = nameEnd + 1;
                 continue;
             }
             
-            // Find the opening brace for this subframe's object
-            Ssiz_t objStart = subframesSection.Index("{", nameEnd);
-            if (objStart == kNPOS) break;
+            // Look for either "[" (array) or "\"" (single string) after colon
+            Ssiz_t arrayStart = subframeIndicesSection.Index("[", colonPos);
+            Ssiz_t stringStart = subframeIndicesSection.Index("\"", colonPos + 1);
             
-            // Find matching closing brace
-            Int_t depth = 1;
-            Ssiz_t objEnd = objStart + 1;
-            while (objEnd < subframesSection.Length() && depth > 0) {
-                if (subframesSection[objEnd] == '{') depth++;
-                if (subframesSection[objEnd] == '}') depth--;
-                objEnd++;
-            }
+            std::vector<TString> indices;
             
-            TString sfObject = subframesSection(objStart, objEnd - objStart);
-            
-            // Extract index array from this subframe's object
-            std::vector<TString> indices = ExtractJSONArray(sfObject, "index");
-            if (indices.empty()) {
-                // Try single string format
-                TString singleIndex = ExtractJSONString(sfObject, "index");
-                if (singleIndex.Length() > 0) {
-                    indices.push_back(singleIndex);
+            // Determine if it's an array or single string
+            if (arrayStart != kNPOS && (stringStart == kNPOS || arrayStart < stringStart)) {
+                // It's an array: ["col1", "col2", ...]
+                Ssiz_t arrayEnd = subframeIndicesSection.Index("]", arrayStart);
+                if (arrayEnd != kNPOS) {
+                    TString arrayContent = subframeIndicesSection(arrayStart + 1, arrayEnd - arrayStart - 1);
+                    TObjArray* tokens = arrayContent.Tokenize(",");
+                    for (Int_t i = 0; i < tokens->GetEntries(); i++) {
+                        TString token = ((TObjString*)tokens->At(i))->GetString();
+                        token.ReplaceAll("\"", "");
+                        token.ReplaceAll(" ", "");
+                        token.ReplaceAll("\n", "");
+                        token.ReplaceAll("\t", "");
+                        if (token.Length() > 0) {
+                            indices.push_back(token);
+                        }
+                    }
+                    delete tokens;
+                    pos = arrayEnd + 1;
+                } else {
+                    pos = nameEnd + 1;
                 }
+            } else if (stringStart != kNPOS) {
+                // It's a single string: "col"
+                Ssiz_t stringEnd = subframeIndicesSection.Index("\"", stringStart + 1);
+                if (stringEnd != kNPOS) {
+                    TString singleIndex = subframeIndicesSection(stringStart + 1, stringEnd - stringStart - 1);
+                    if (singleIndex.Length() > 0) {
+                        indices.push_back(singleIndex);
+                    }
+                    pos = stringEnd + 1;
+                } else {
+                    pos = nameEnd + 1;
+                }
+            } else {
+                pos = nameEnd + 1;
+                continue;
             }
             
             if (!indices.empty()) {
                 schema.subframeIndices[sfName] = indices;
             }
-            
-            pos = objEnd;
         }
     }
     
-    // Parse columns section for aliases
-    TString columnsSection = ExtractJSONObject(json, "columns");
-    if (columnsSection.Length() > 0) {
-        // Find each column entry
+    // ========================================================================
+    // PRIORITY 2: Parse "subframes" with nested "index" (v1 nested / v2 format)
+    // Only if subframe_indices didn't provide the info
+    // Format: "subframes": { "NAME": { "index": ["col1", "col2", ...] }, ... }
+    // ========================================================================
+    if (schema.subframeIndices.empty()) {
+        TString subframesSection = ExtractJSONObject(json, "subframes");
+        
+        if (subframesSection.Length() > 0 && subframesSection.Contains("\"index\"")) {
+            Ssiz_t pos = 0;
+            while (pos < subframesSection.Length()) {
+                Ssiz_t nameStart = subframesSection.Index("\"", pos);
+                if (nameStart == kNPOS) break;
+                
+                Ssiz_t nameEnd = subframesSection.Index("\"", nameStart + 1);
+                if (nameEnd == kNPOS) break;
+                
+                TString sfName = subframesSection(nameStart + 1, nameEnd - nameStart - 1);
+                
+                // Skip JSON field keys
+                if (sfName == "index" || sfName == "tree_name" || sfName == "dtype" || 
+                    sfName == "expr" || sfName == "columns" || sfName.Length() == 0) {
+                    pos = nameEnd + 1;
+                    continue;
+                }
+                
+                Ssiz_t objStart = subframesSection.Index("{", nameEnd);
+                if (objStart == kNPOS) break;
+                
+                // Find matching closing brace
+                Int_t depth = 1;
+                Ssiz_t objEnd = objStart + 1;
+                while (objEnd < subframesSection.Length() && depth > 0) {
+                    if (subframesSection[objEnd] == '{') depth++;
+                    if (subframesSection[objEnd] == '}') depth--;
+                    objEnd++;
+                }
+                
+                TString sfObject = subframesSection(objStart, objEnd - objStart);
+                std::vector<TString> indices = ExtractJSONArray(sfObject, "index");
+                if (indices.empty()) {
+                    TString singleIndex = ExtractJSONString(sfObject, "index");
+                    if (singleIndex.Length() > 0) {
+                        indices.push_back(singleIndex);
+                    }
+                }
+                
+                if (!indices.empty()) {
+                    schema.subframeIndices[sfName] = indices;
+                }
+                
+                pos = objEnd;
+            }
+        }
+    }
+    
+    // ========================================================================
+    // Parse aliases from "aliases" section (v1 format)
+    // Format: "aliases": {"name": "expr", ...}
+    // ========================================================================
+    TString aliasesSection = ExtractJSONObject(json, "aliases");
+    if (aliasesSection.Length() > 0) {
         Ssiz_t pos = 0;
-        while (pos < columnsSection.Length()) {
-            Ssiz_t nameStart = columnsSection.Index("\"", pos);
+        while (pos < aliasesSection.Length()) {
+            Ssiz_t nameStart = aliasesSection.Index("\"", pos);
             if (nameStart == kNPOS) break;
             
-            Ssiz_t nameEnd = columnsSection.Index("\"", nameStart + 1);
+            Ssiz_t nameEnd = aliasesSection.Index("\"", nameStart + 1);
             if (nameEnd == kNPOS) break;
             
-            TString colName = columnsSection(nameStart + 1, nameEnd - nameStart - 1);
+            TString aliasName = aliasesSection(nameStart + 1, nameEnd - nameStart - 1);
             
-            // Skip if this looks like a JSON key
-            if (colName == "dtype" || colName == "expr" || colName == "constant" || 
-                colName == "index" || colName.Length() == 0) {
+            Ssiz_t colonPos = aliasesSection.Index(":", nameEnd);
+            if (colonPos == kNPOS) {
                 pos = nameEnd + 1;
                 continue;
             }
             
-            // Find the opening brace for this column's object
-            Ssiz_t objStart = columnsSection.Index("{", nameEnd);
-            if (objStart == kNPOS) break;
-            
-            // Check there's a colon between name and brace (confirms this is "name": {})
-            TString between = columnsSection(nameEnd + 1, objStart - nameEnd - 1);
-            between.ReplaceAll(" ", "");
-            between.ReplaceAll("\n", "");
-            between.ReplaceAll("\t", "");
-            if (!between.BeginsWith(":")) {
+            Ssiz_t exprStart = aliasesSection.Index("\"", colonPos);
+            if (exprStart == kNPOS) {
                 pos = nameEnd + 1;
                 continue;
             }
             
-            // Find matching closing brace
-            Int_t depth = 1;
-            Ssiz_t objEnd = objStart + 1;
-            while (objEnd < columnsSection.Length() && depth > 0) {
-                if (columnsSection[objEnd] == '{') depth++;
-                if (columnsSection[objEnd] == '}') depth--;
-                objEnd++;
+            // Find end of expression (handle escaped quotes)
+            Ssiz_t exprEnd = exprStart + 1;
+            while (exprEnd < aliasesSection.Length()) {
+                if (aliasesSection[exprEnd] == '\"' && aliasesSection[exprEnd - 1] != '\\') {
+                    break;
+                }
+                exprEnd++;
             }
             
-            TString colObject = columnsSection(objStart, objEnd - objStart);
-            
-            // Extract expr from this column's object
-            TString expr = ExtractJSONString(colObject, "expr");
-            if (expr.Length() > 0 && expr != "null") {
-                schema.aliases[colName] = expr;
-                tree->SetAlias(colName.Data(), expr.Data());
+            if (exprEnd < aliasesSection.Length()) {
+                TString expr = aliasesSection(exprStart + 1, exprEnd - exprStart - 1);
+                if (expr.Length() > 0) {
+                    schema.aliases[aliasName] = expr;
+                    tree->SetAlias(aliasName.Data(), expr.Data());
+                }
             }
             
-            pos = objEnd;
+            pos = exprEnd + 1;
+        }
+    }
+    
+    // ========================================================================
+    // Parse aliases from "columns" section (v2 format) - only if aliases empty
+    // Format: "columns": {"name": {"expr": "...", "dtype": "..."}, ...}
+    // ========================================================================
+    if (schema.aliases.empty()) {
+        TString columnsSection = ExtractJSONObject(json, "columns");
+        if (columnsSection.Length() > 0) {
+            Ssiz_t pos = 0;
+            while (pos < columnsSection.Length()) {
+                Ssiz_t nameStart = columnsSection.Index("\"", pos);
+                if (nameStart == kNPOS) break;
+                
+                Ssiz_t nameEnd = columnsSection.Index("\"", nameStart + 1);
+                if (nameEnd == kNPOS) break;
+                
+                TString colName = columnsSection(nameStart + 1, nameEnd - nameStart - 1);
+                
+                if (colName == "dtype" || colName == "expr" || colName == "constant" || 
+                    colName == "index" || colName.Length() == 0) {
+                    pos = nameEnd + 1;
+                    continue;
+                }
+                
+                Ssiz_t objStart = columnsSection.Index("{", nameEnd);
+                if (objStart == kNPOS) break;
+                
+                TString between = columnsSection(nameEnd + 1, objStart - nameEnd - 1);
+                between.ReplaceAll(" ", "");
+                between.ReplaceAll("\n", "");
+                between.ReplaceAll("\t", "");
+                if (!between.BeginsWith(":")) {
+                    pos = nameEnd + 1;
+                    continue;
+                }
+                
+                Int_t depth = 1;
+                Ssiz_t objEnd = objStart + 1;
+                while (objEnd < columnsSection.Length() && depth > 0) {
+                    if (columnsSection[objEnd] == '{') depth++;
+                    if (columnsSection[objEnd] == '}') depth--;
+                    objEnd++;
+                }
+                
+                TString colObject = columnsSection(objStart, objEnd - objStart);
+                TString expr = ExtractJSONString(colObject, "expr");
+                if (expr.Length() > 0 && expr != "null") {
+                    schema.aliases[colName] = expr;
+                    tree->SetAlias(colName.Data(), expr.Data());
+                }
+                
+                pos = objEnd;
+            }
         }
     }
     
