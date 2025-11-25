@@ -1777,13 +1777,27 @@ class AliasDataFrame:
         expr = self.aliases[name]
 
         # Automatically materialize any referenced aliases or subframe aliases
-        tokens = re.findall(r'\b\w+\b|\w+\.\w+', expr)
+        # CRITICAL: Match 'word.word' BEFORE 'word' to correctly detect subframe references
+        tokens = re.findall(r'\w+\.\w+|\b\w+\b', expr)
         for token in tokens:
             if '.' in token:
                 sf_name, sf_attr = token.split('.', 1)
                 sf = self.get_subframe(sf_name)
-                if sf and sf_attr in sf.aliases and sf_attr not in sf.df.columns:
-                    sf.materialize_alias(sf_attr)
+                if sf:
+                    # CRITICAL: Materialize subframe index columns first (if they're aliases)
+                    # This fixes the bug where joins fail because index columns aren't materialized
+                    entry = self._subframes.get_entry(sf_name)
+                    if entry:
+                        index_cols = entry['index']
+                        if isinstance(index_cols, str):
+                            index_cols = [index_cols]
+                        for idx_col in index_cols:
+                            if idx_col in self.aliases and idx_col not in self.df.columns:
+                                self.materialize_alias(idx_col, warn_missing_keys=warn_missing_keys)
+                    
+                    # Materialize the subframe attribute itself
+                    if sf_attr in sf.aliases and sf_attr not in sf.df.columns:
+                        sf.materialize_alias(sf_attr)
             elif token == name:
                 # Skip self-reference to prevent infinite recursion
                 # (alias 'x' referencing 'subframe.x' where 'x' is extracted as a token)
