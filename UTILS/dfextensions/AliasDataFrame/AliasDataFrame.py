@@ -4510,7 +4510,7 @@ class AliasDataFrame:
         # Return all fields except dtype and expr
         return {k: v for k, v in col_info.items() if k not in ('dtype', 'expr', 'constant')}
 
-    def export_schema_v2(self, include_compression=False, include_subframes=True,
+    def export_schema_v2(self, include_compression=True, include_subframes=True,
                          within_group_sort="schema"):
         """
         Export schema as JSON-safe dictionary (v2 format).
@@ -4589,6 +4589,10 @@ class AliasDataFrame:
         # Compression section (optional)
         if include_compression and self._schema.get('compression'):
             comp = copy.deepcopy(self._schema['compression'])
+            # Remove verbose precision stats from export
+            for name, info in comp.items():
+                if name != '__meta__' and 'precision' in info:
+                    del info['precision']
             # Convert dtypes to strings
             for name, info in comp.items():
                 if name == '__meta__':
@@ -4609,7 +4613,7 @@ class AliasDataFrame:
         
         return result
 
-    def save_schema_v2(self, path, include_compression=False, include_subframes=True,
+    def save_schema_v2(self, path, include_compression=True, include_subframes=True,
                        indent=2, max_line_length=100, within_group_sort="schema"):
         """
         Save schema to JSON file (v2 format).
