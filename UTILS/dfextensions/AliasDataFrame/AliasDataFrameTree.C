@@ -8,7 +8,9 @@
  * 3. Build N-key composite indices (overcoming ROOT's 2-key limit)
  * 4. Describe data and schema
  * 
- * Phase 3: Multi-key composite index support using cardinality-based packing
+ * Phase 3.1: In-memory composite index for read-only files
+ * - Uses TMemFile to clone subframes when file is read-only
+ * - Full TTree::Draw compatibility maintained
  * 
  * Usage:
  *   root -l AliasDataFrameTree.C
@@ -26,6 +28,7 @@
  */
 
 #include <TFile.h>
+#include <TMemFile.h>
 #include <TTree.h>
 #include <TKey.h>
 #include <TString.h>
@@ -36,6 +39,7 @@
 #include <TSystem.h>
 #include <TList.h>
 #include <TFriendElement.h>
+#include <TTreeFormula.h>
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -54,6 +58,9 @@ struct SchemaInfo {
 
 // Global storage (one per tree, keyed by tree pointer)
 std::map<TTree*, SchemaInfo> g_schemaRegistry;
+
+// Storage for in-memory files (keeps them alive for session)
+std::vector<TMemFile*> g_memFiles;
 
 // Forward declarations
 Bool_t LoadSchemaFromJSON(TTree* tree, const TString& json);
@@ -149,6 +156,43 @@ TString ExtractJSONObject(const TString& json, const TString& key) {
 }
 
 // ============================================================================
+// In-Memory Subframe Cloning (Phase 3.1)
+// ============================================================================
+
+/**
+ * Clone a subframe tree into an in-memory TMemFile.
+ * This allows adding branches for composite index even when original file is read-only.
+ * 
+ * @param subframe   Original subframe tree (read-only)
+ * @param name       Name for the cloned tree
+ * @return           Cloned tree in memory (writable)
+ */
+TTree* CloneSubframeToMemory(TTree* subframe, const TString& name) {
+    // Create in-memory file with unique name
+    TString memFileName = TString::Format("adf_mem_%s_%p", name.Data(), (void*)subframe);
+    TMemFile* memFile = new TMemFile(memFileName.Data(), "RECREATE");
+    g_memFiles.push_back(memFile);  // Keep alive for session lifetime
+    
+    memFile->cd();
+    
+    // Clone the entire tree (structure + data)
+    // "fast" option uses basket-by-basket copy (most efficient)
+    TTree* clone = subframe->CloneTree(-1, "fast");
+    clone->SetName(name.Data());
+    clone->SetDirectory(memFile);
+    
+    return clone;
+}
+
+/**
+ * Check if a TFile is writable
+ */
+Bool_t IsFileWritable(TFile* file) {
+    if (!file) return kFALSE;
+    return file->IsWritable();
+}
+
+// ============================================================================
 // Composite Index Implementation (Phase 3)
 // ============================================================================
 
@@ -179,18 +223,24 @@ Bool_t IsIntegerLeaf(TLeaf* leaf) {
  * - Handles sparse indices (e.g., firstTFOrbit) correctly
  * - Collision-free within the indexed tree
  * 
- * NOTE: Only builds index on subframe tree, NOT on main tree.
- * ROOT's friend mechanism will use the subframe's index for lookups.
+ * For read-only files:
+ * - Clones subframe to TMemFile
+ * - Builds composite key on clone
+ * - Returns clone as the tree to use as friend
  * 
- * @param mainTree      Main tree (used to create matching key column)
- * @param subframeTree  Subframe TTree to index
- * @param columns       Index column names from schema
- * @param subframeName  Name of subframe (for unique branch naming)
- * @return              true if successful, false otherwise
+ * @param mainTree       Main tree (used to create matching key column)
+ * @param subframeTree   Subframe TTree to index (will be cloned if read-only)
+ * @param columns        Index column names from schema
+ * @param subframeName   Name of subframe (for unique branch naming)
+ * @param outTree        [output] Tree to use as friend (may be clone)
+ * @return               true if successful, false otherwise
  */
 Bool_t BuildCompositeIndex(TTree* mainTree, TTree* subframeTree, 
                            const std::vector<TString>& columns,
-                           const TString& subframeName = "") {
+                           const TString& subframeName,
+                           TTree*& outTree) {
+    outTree = subframeTree;  // Default: use original
+    
     if (columns.size() <= 2) {
         // Use native ROOT BuildIndex for 1-2 keys
         if (columns.size() == 1) {
@@ -203,38 +253,31 @@ Bool_t BuildCompositeIndex(TTree* mainTree, TTree* subframeTree,
         return kTRUE;
     }
     
-    // N > 2 keys: use cardinality-based composite index
-    // IMPORTANT: This requires adding branches to trees, which only works
-    // if the trees are writable (opened with "UPDATE" or created in memory)
+    // N > 2 keys: need composite index
+    // Check if file is writable
+    TFile* file = subframeTree->GetCurrentFile();
+    Bool_t isWritable = IsFileWritable(file);
     
-    Long64_t nEntries = subframeTree->GetEntries();
+    TTree* workTree = subframeTree;
+    
+    if (!isWritable) {
+        // Clone subframe to memory for index building
+        std::cout << "    File is read-only, cloning subframe to memory..." << std::endl;
+        workTree = CloneSubframeToMemory(subframeTree, subframeName);
+        outTree = workTree;  // Return clone as the friend tree
+        std::cout << "    Cloned " << workTree->GetEntries() << " entries to memory" << std::endl;
+    }
+    
+    Long64_t nEntries = workTree->GetEntries();
     size_t nCols = columns.size();
     
     std::cout << "    BuildCompositeIndex: " << nCols << " keys, " 
               << nEntries << " entries" << std::endl;
     
-    // Check if trees are writable (must be opened with "UPDATE" or "RECREATE")
-    TFile* sfFile = subframeTree->GetCurrentFile();
-    Bool_t isWritable = kFALSE;
-    if (sfFile) {
-        TString option = sfFile->GetOption();
-        option.ToUpper();
-        isWritable = option.Contains("UPDATE") || option.Contains("RECREATE") || 
-                     option.Contains("CREATE") || option.Contains("NEW");
-    }
-    
-    if (!isWritable) {
-        std::cout << "    NOTE: File opened read-only. Cannot build " << nCols 
-                  << "-key composite index." << std::endl;
-        std::cout << "    Subframe '" << subframeName << "' will use linear scan (slower)." << std::endl;
-        std::cout << "    For indexed access, use: TFile::Open(filename, \"UPDATE\")" << std::endl;
-        return kFALSE;
-    }
-    
     // Verify all columns exist and are integer types
     std::vector<TLeaf*> leaves(nCols);
     for (size_t i = 0; i < nCols; i++) {
-        TLeaf* leaf = subframeTree->GetLeaf(columns[i].Data());
+        TLeaf* leaf = workTree->GetLeaf(columns[i].Data());
         if (!leaf) {
             std::cerr << "ERROR: Column '" << columns[i] << "' not found in subframe" << std::endl;
             return kFALSE;
@@ -253,7 +296,7 @@ Bool_t BuildCompositeIndex(TTree* mainTree, TTree* subframeTree,
     std::vector<std::map<Long64_t, Long64_t>> valueToCodes(nCols);
     
     for (Long64_t entry = 0; entry < nEntries; entry++) {
-        subframeTree->GetEntry(entry);
+        workTree->GetEntry(entry);
         for (size_t i = 0; i < nCols; i++) {
             Long64_t value = (Long64_t)leaves[i]->GetValue();
             auto& dict = valueToCodes[i];
@@ -296,23 +339,17 @@ Bool_t BuildCompositeIndex(TTree* mainTree, TTree* subframeTree,
     std::cout << "      Key space: " << keySpace << " combinations (safe)" << std::endl;
     
     // =========================================================
-    // PASS 2: Create composite key branch in SUBFRAME ONLY
+    // PASS 2: Create composite key branch in SUBFRAME (or clone)
     // =========================================================
-    // Use unique branch name per subframe to avoid collisions
     TString keyBranchName = TString::Format("__adf_key_%s__", 
         subframeName.Length() > 0 ? subframeName.Data() : "idx");
     
     Long64_t compositeKey;
-    TBranch* keyBranch = subframeTree->Branch(keyBranchName.Data(), &compositeKey, 
-                                              TString::Format("%s/L", keyBranchName.Data()).Data());
-    
-    if (!keyBranch) {
-        std::cerr << "ERROR: Failed to create composite key branch on subframe tree" << std::endl;
-        return kFALSE;
-    }
+    TBranch* keyBranch = workTree->Branch(keyBranchName.Data(), &compositeKey, 
+                                          TString::Format("%s/L", keyBranchName.Data()).Data());
     
     for (Long64_t entry = 0; entry < nEntries; entry++) {
-        subframeTree->GetEntry(entry);
+        workTree->GetEntry(entry);
         
         // Pack codes using cardinality as base
         compositeKey = 0;
@@ -328,68 +365,140 @@ Bool_t BuildCompositeIndex(TTree* mainTree, TTree* subframeTree,
     }
     
     // Build index on subframe's composite key
-    subframeTree->BuildIndex(keyBranchName.Data());
+    workTree->BuildIndex(keyBranchName.Data());
     
     // =========================================================
     // Create matching composite key column in MAIN TREE
     // (Required for ROOT friend tree join to work)
+    // Uses TTreeFormula to handle aliases as well as branches
     // =========================================================
-    // Check for columns in main tree - they might be branches OR aliases
-    std::vector<TLeaf*> mainLeaves(nCols);
-    Bool_t allColumnsInMain = kTRUE;
+    TFile* mainFile = mainTree->GetCurrentFile();
+    Bool_t mainWritable = IsFileWritable(mainFile);
+    
+    // =========================================================
+    // Handle case where index columns might be aliases (not branches)
+    // Use TTreeFormula to evaluate - works for both branches and aliases
+    // =========================================================
+    Long64_t mainEntries = mainTree->GetEntries();
+    
+    // Create TTreeFormulas for each index column (handles aliases)
+    std::vector<TTreeFormula*> mainFormulas(nCols);
+    Bool_t allFormulasValid = kTRUE;
+    
     for (size_t i = 0; i < nCols; i++) {
-        mainLeaves[i] = mainTree->GetLeaf(columns[i].Data());
-        if (!mainLeaves[i]) {
-            // Check if it's an alias
-            TList* aliasList = mainTree->GetListOfAliases();
-            Bool_t isAlias = aliasList && aliasList->FindObject(columns[i].Data());
-            if (isAlias) {
-                std::cout << "      Note: '" << columns[i] << "' is an alias in main tree" << std::endl;
-            } else {
-                std::cerr << "WARNING: Column '" << columns[i] 
-                          << "' not found in main tree (neither branch nor alias)." << std::endl;
-            }
-            allColumnsInMain = kFALSE;
+        TString formulaName = TString::Format("idx_%s_%zu", subframeName.Data(), i);
+        mainFormulas[i] = new TTreeFormula(formulaName.Data(), columns[i].Data(), mainTree);
+        
+        if (mainFormulas[i]->GetNdim() == 0) {
+            std::cerr << "ERROR: Cannot evaluate '" << columns[i] 
+                      << "' in main tree (not a branch or valid alias)" << std::endl;
+            allFormulasValid = kFALSE;
         }
     }
     
-    if (allColumnsInMain) {
+    if (!allFormulasValid) {
+        // Cleanup formulas
+        for (auto* f : mainFormulas) if (f) delete f;
+        std::cerr << "    Composite index FAILED for main tree" << std::endl;
+        return kFALSE;
+    }
+    
+    if (mainWritable) {
+        // Writable: add branch directly to main tree
         Long64_t mainCompositeKey;
         TBranch* mainKeyBranch = mainTree->Branch(keyBranchName.Data(), &mainCompositeKey,
                                                    TString::Format("%s/L", keyBranchName.Data()).Data());
         
-        if (!mainKeyBranch) {
-            std::cerr << "WARNING: Failed to create composite key branch on main tree" << std::endl;
-        } else {
-            Long64_t mainEntries = mainTree->GetEntries();
-            for (Long64_t entry = 0; entry < mainEntries; entry++) {
-                mainTree->GetEntry(entry);
-                
-                mainCompositeKey = 0;
-                Long64_t multiplier = 1;
-                for (size_t i = 0; i < nCols; i++) {
-                    Long64_t value = (Long64_t)mainLeaves[i]->GetValue();
-                    // Map value to code (use -1 for unknown values to ensure no match)
-                    auto it = valueToCodes[i].find(value);
-                    Long64_t code = (it != valueToCodes[i].end()) ? it->second : -1;
-                    if (code == -1) {
-                        mainCompositeKey = -1;  // No match possible
-                        break;
-                    }
-                    mainCompositeKey += code * multiplier;
-                    multiplier *= cardinalities[i];
+        for (Long64_t entry = 0; entry < mainEntries; entry++) {
+            mainTree->GetEntry(entry);
+            
+            // Update formulas for this entry
+            for (auto* f : mainFormulas) f->GetNdata();
+            
+            mainCompositeKey = 0;
+            Long64_t multiplier = 1;
+            for (size_t i = 0; i < nCols; i++) {
+                Long64_t value = (Long64_t)mainFormulas[i]->EvalInstance();
+                auto it = valueToCodes[i].find(value);
+                Long64_t code = (it != valueToCodes[i].end()) ? it->second : -1;
+                if (code == -1) {
+                    mainCompositeKey = -1;
+                    break;
                 }
-                
-                mainKeyBranch->Fill();
+                mainCompositeKey += code * multiplier;
+                multiplier *= cardinalities[i];
             }
+            
+            mainKeyBranch->Fill();
+        }
+        std::cout << "    Added composite key branch to main tree" << std::endl;
+    } else {
+        // Read-only: create auxiliary key tree in memory
+        std::cout << "    Main tree read-only, creating auxiliary key tree in memory..." << std::endl;
+        
+        TString memFileName = TString::Format("adf_mainkey_%s_%p", subframeName.Data(), (void*)mainTree);
+        TMemFile* memFile = new TMemFile(memFileName.Data(), "RECREATE");
+        g_memFiles.push_back(memFile);
+        
+        memFile->cd();
+        
+        // Create tree with same number of entries as main tree
+        // Tree name must be unique per subframe to avoid conflicts
+        TString auxTreeName = TString::Format("__adf_aux_%s__", subframeName.Data());
+        TTree* auxKeyTree = new TTree(auxTreeName.Data(), "Auxiliary composite key");
+        
+        Long64_t mainCompositeKey;
+        auxKeyTree->Branch(keyBranchName.Data(), &mainCompositeKey,
+                          TString::Format("%s/L", keyBranchName.Data()).Data());
+        
+        for (Long64_t entry = 0; entry < mainEntries; entry++) {
+            mainTree->GetEntry(entry);
+            
+            // Update formulas for this entry
+            for (auto* f : mainFormulas) f->GetNdata();
+            
+            mainCompositeKey = 0;
+            Long64_t multiplier = 1;
+            for (size_t i = 0; i < nCols; i++) {
+                Long64_t value = (Long64_t)mainFormulas[i]->EvalInstance();
+                auto it = valueToCodes[i].find(value);
+                Long64_t code = (it != valueToCodes[i].end()) ? it->second : -1;
+                if (code == -1) {
+                    mainCompositeKey = -1;
+                    break;
+                }
+                mainCompositeKey += code * multiplier;
+                multiplier *= cardinalities[i];
+            }
+            
+            auxKeyTree->Fill();
         }
         
-        // NOTE: Do NOT call BuildIndex on main tree!
-        // ROOT will use the subframe's index when evaluating friend expressions
+        // Add auxiliary tree as friend to main tree
+        // This makes __adf_key_SF__ available for TTreeFormula
+        mainTree->AddFriend(auxKeyTree);
+        
+        std::cout << "    Created auxiliary key tree: " << mainEntries 
+                  << " entries, " << (mainEntries * 8 / 1024.0 / 1024.0) 
+                  << " MB" << std::endl;
     }
+    
+    // Cleanup formulas
+    for (auto* f : mainFormulas) delete f;
+    
+    // NOTE: Do NOT call BuildIndex on main tree!
+    // ROOT will use the subframe's index when evaluating friend expressions
     
     std::cout << "    Composite index built successfully" << std::endl;
     return kTRUE;
+}
+
+// Overload for backward compatibility (without outTree parameter)
+Bool_t BuildCompositeIndex(TTree* mainTree, TTree* subframeTree, 
+                           const std::vector<TString>& columns,
+                           const TString& subframeName = "") {
+    TTree* outTree;
+    return BuildCompositeIndex(mainTree, subframeTree, columns, subframeName, outTree);
 }
 
 // ============================================================================
@@ -430,264 +539,167 @@ Bool_t LoadEmbeddedSchema(TFile* file, TTree* tree) {
 /**
  * Parse JSON schema and apply to tree
  * 
- * Robust parser that handles multiple schema formats:
- * - v1 legacy: "subframe_indices": {"T": "col" or ["col1", "col2"]}
- * - v1 nested: "subframes": {"T": {"index": [...]}}
- * - v2: "subframes": {"T": {"index": [...], "columns": {...}}}
- * 
- * Also handles "aliases" (v1) vs "columns" with "expr" (v2)
+ * Robust parser that handles both compact and formatted JSON
  */
 Bool_t LoadSchemaFromJSON(TTree* tree, const TString& json) {
     SchemaInfo& schema = g_schemaRegistry[tree];
     schema.aliases.clear();
     schema.subframeIndices.clear();
     
-    // ========================================================================
-    // PRIORITY 1: Parse "subframe_indices" (v1 legacy format)
-    // Format: "subframe_indices": {"T": "col", "R": ["col1", "col2"], ...}
-    // ========================================================================
-    TString subframeIndicesSection = ExtractJSONObject(json, "subframe_indices");
-    if (subframeIndicesSection.Length() > 0) {
+    // Parse aliases section
+    TString aliasSection = ExtractJSONObject(json, "aliases");
+    if (aliasSection.Length() > 0) {
+        // Find each alias definition
         Ssiz_t pos = 0;
-        while (pos < subframeIndicesSection.Length()) {
-            // Find opening quote of subframe name
-            Ssiz_t nameStart = subframeIndicesSection.Index("\"", pos);
-            if (nameStart == kNPOS) break;
+        while (pos < aliasSection.Length()) {
+            // Find next key
+            Ssiz_t keyStart = aliasSection.Index("\"", pos);
+            if (keyStart == kNPOS) break;
             
-            Ssiz_t nameEnd = subframeIndicesSection.Index("\"", nameStart + 1);
-            if (nameEnd == kNPOS) break;
+            Ssiz_t keyEnd = aliasSection.Index("\"", keyStart + 1);
+            if (keyEnd == kNPOS) break;
             
-            TString sfName = subframeIndicesSection(nameStart + 1, nameEnd - nameStart - 1);
+            TString aliasName = aliasSection(keyStart + 1, keyEnd - keyStart - 1);
             
-            // Find colon after name
-            Ssiz_t colonPos = subframeIndicesSection.Index(":", nameEnd);
-            if (colonPos == kNPOS) {
-                pos = nameEnd + 1;
+            // Skip internal keys
+            if (aliasName.BeginsWith("__")) {
+                pos = keyEnd + 1;
                 continue;
             }
             
-            // Look for either "[" (array) or "\"" (single string) after colon
-            Ssiz_t arrayStart = subframeIndicesSection.Index("[", colonPos);
-            Ssiz_t stringStart = subframeIndicesSection.Index("\"", colonPos + 1);
-            
-            std::vector<TString> indices;
-            
-            // Determine if it's an array or single string
-            if (arrayStart != kNPOS && (stringStart == kNPOS || arrayStart < stringStart)) {
-                // It's an array: ["col1", "col2", ...]
-                Ssiz_t arrayEnd = subframeIndicesSection.Index("]", arrayStart);
-                if (arrayEnd != kNPOS) {
-                    TString arrayContent = subframeIndicesSection(arrayStart + 1, arrayEnd - arrayStart - 1);
-                    TObjArray* tokens = arrayContent.Tokenize(",");
-                    for (Int_t i = 0; i < tokens->GetEntries(); i++) {
-                        TString token = ((TObjString*)tokens->At(i))->GetString();
-                        token.ReplaceAll("\"", "");
-                        token.ReplaceAll(" ", "");
-                        token.ReplaceAll("\n", "");
-                        token.ReplaceAll("\t", "");
-                        if (token.Length() > 0) {
-                            indices.push_back(token);
-                        }
-                    }
-                    delete tokens;
-                    pos = arrayEnd + 1;
-                } else {
-                    pos = nameEnd + 1;
-                }
-            } else if (stringStart != kNPOS) {
-                // It's a single string: "col"
-                Ssiz_t stringEnd = subframeIndicesSection.Index("\"", stringStart + 1);
-                if (stringEnd != kNPOS) {
-                    TString singleIndex = subframeIndicesSection(stringStart + 1, stringEnd - stringStart - 1);
-                    if (singleIndex.Length() > 0) {
-                        indices.push_back(singleIndex);
-                    }
-                    pos = stringEnd + 1;
-                } else {
-                    pos = nameEnd + 1;
-                }
-            } else {
-                pos = nameEnd + 1;
+            // Find expression (look for "expr" in the value object)
+            Ssiz_t objStart = aliasSection.Index("{", keyEnd);
+            if (objStart == kNPOS) {
+                pos = keyEnd + 1;
                 continue;
             }
             
-            if (!indices.empty()) {
-                schema.subframeIndices[sfName] = indices;
+            // Find matching closing brace
+            Int_t depth = 1;
+            Ssiz_t objEnd = objStart + 1;
+            while (depth > 0 && objEnd < aliasSection.Length()) {
+                if (aliasSection[objEnd] == '{') depth++;
+                if (aliasSection[objEnd] == '}') depth--;
+                objEnd++;
             }
+            
+            TString valueObj = aliasSection(objStart, objEnd - objStart);
+            TString expr = ExtractJSONString(valueObj, "expr");
+            
+            if (expr.Length() > 0) {
+                schema.aliases[aliasName] = expr;
+                // Apply alias to tree
+                tree->SetAlias(aliasName.Data(), expr.Data());
+            }
+            
+            pos = objEnd;
         }
     }
     
-    // ========================================================================
-    // PRIORITY 2: Parse "subframes" with nested "index" (v1 nested / v2 format)
-    // Only if subframe_indices didn't provide the info
-    // Format: "subframes": { "NAME": { "index": ["col1", "col2", ...] }, ... }
-    // ========================================================================
-    if (schema.subframeIndices.empty()) {
-        TString subframesSection = ExtractJSONObject(json, "subframes");
-        
-        if (subframesSection.Length() > 0 && subframesSection.Contains("\"index\"")) {
-            Ssiz_t pos = 0;
-            while (pos < subframesSection.Length()) {
-                Ssiz_t nameStart = subframesSection.Index("\"", pos);
-                if (nameStart == kNPOS) break;
-                
-                Ssiz_t nameEnd = subframesSection.Index("\"", nameStart + 1);
-                if (nameEnd == kNPOS) break;
-                
-                TString sfName = subframesSection(nameStart + 1, nameEnd - nameStart - 1);
-                
-                // Skip JSON field keys
-                if (sfName == "index" || sfName == "tree_name" || sfName == "dtype" || 
-                    sfName == "expr" || sfName == "columns" || sfName.Length() == 0) {
-                    pos = nameEnd + 1;
-                    continue;
-                }
-                
-                Ssiz_t objStart = subframesSection.Index("{", nameEnd);
-                if (objStart == kNPOS) break;
-                
-                // Find matching closing brace
-                Int_t depth = 1;
-                Ssiz_t objEnd = objStart + 1;
-                while (objEnd < subframesSection.Length() && depth > 0) {
-                    if (subframesSection[objEnd] == '{') depth++;
-                    if (subframesSection[objEnd] == '}') depth--;
-                    objEnd++;
-                }
-                
-                TString sfObject = subframesSection(objStart, objEnd - objStart);
-                std::vector<TString> indices = ExtractJSONArray(sfObject, "index");
-                if (indices.empty()) {
-                    TString singleIndex = ExtractJSONString(sfObject, "index");
-                    if (singleIndex.Length() > 0) {
-                        indices.push_back(singleIndex);
-                    }
-                }
-                
-                if (!indices.empty()) {
-                    schema.subframeIndices[sfName] = indices;
-                }
-                
-                pos = objEnd;
-            }
-        }
-    }
-    
-    // ========================================================================
-    // Parse aliases from "aliases" section (v1 format)
-    // Format: "aliases": {"name": "expr", ...}
-    // ========================================================================
-    TString aliasesSection = ExtractJSONObject(json, "aliases");
-    if (aliasesSection.Length() > 0) {
+    // Also check for "columns" section (v2 schema format)
+    TString columnsSection = ExtractJSONObject(json, "columns");
+    if (columnsSection.Length() > 0) {
         Ssiz_t pos = 0;
-        while (pos < aliasesSection.Length()) {
-            Ssiz_t nameStart = aliasesSection.Index("\"", pos);
-            if (nameStart == kNPOS) break;
+        while (pos < columnsSection.Length()) {
+            Ssiz_t keyStart = columnsSection.Index("\"", pos);
+            if (keyStart == kNPOS) break;
             
-            Ssiz_t nameEnd = aliasesSection.Index("\"", nameStart + 1);
-            if (nameEnd == kNPOS) break;
+            Ssiz_t keyEnd = columnsSection.Index("\"", keyStart + 1);
+            if (keyEnd == kNPOS) break;
             
-            TString aliasName = aliasesSection(nameStart + 1, nameEnd - nameStart - 1);
+            TString colName = columnsSection(keyStart + 1, keyEnd - keyStart - 1);
             
-            Ssiz_t colonPos = aliasesSection.Index(":", nameEnd);
-            if (colonPos == kNPOS) {
-                pos = nameEnd + 1;
+            if (colName.BeginsWith("__")) {
+                pos = keyEnd + 1;
                 continue;
             }
             
-            Ssiz_t exprStart = aliasesSection.Index("\"", colonPos);
-            if (exprStart == kNPOS) {
-                pos = nameEnd + 1;
+            Ssiz_t objStart = columnsSection.Index("{", keyEnd);
+            if (objStart == kNPOS) {
+                pos = keyEnd + 1;
                 continue;
             }
             
-            // Find end of expression (handle escaped quotes)
-            Ssiz_t exprEnd = exprStart + 1;
-            while (exprEnd < aliasesSection.Length()) {
-                if (aliasesSection[exprEnd] == '\"' && aliasesSection[exprEnd - 1] != '\\') {
-                    break;
-                }
-                exprEnd++;
+            Int_t depth = 1;
+            Ssiz_t objEnd = objStart + 1;
+            while (depth > 0 && objEnd < columnsSection.Length()) {
+                if (columnsSection[objEnd] == '{') depth++;
+                if (columnsSection[objEnd] == '}') depth--;
+                objEnd++;
             }
             
-            if (exprEnd < aliasesSection.Length()) {
-                TString expr = aliasesSection(exprStart + 1, exprEnd - exprStart - 1);
-                if (expr.Length() > 0) {
-                    schema.aliases[aliasName] = expr;
-                    tree->SetAlias(aliasName.Data(), expr.Data());
-                }
+            TString valueObj = columnsSection(objStart, objEnd - objStart);
+            TString expr = ExtractJSONString(valueObj, "expr");
+            
+            if (expr.Length() > 0) {
+                schema.aliases[colName] = expr;
+                tree->SetAlias(colName.Data(), expr.Data());
             }
             
-            pos = exprEnd + 1;
+            pos = objEnd;
         }
     }
     
-    // ========================================================================
-    // Parse aliases from "columns" section (v2 format) - only if aliases empty
-    // Format: "columns": {"name": {"expr": "...", "dtype": "..."}, ...}
-    // ========================================================================
-    if (schema.aliases.empty()) {
-        TString columnsSection = ExtractJSONObject(json, "columns");
-        if (columnsSection.Length() > 0) {
-            Ssiz_t pos = 0;
-            while (pos < columnsSection.Length()) {
-                Ssiz_t nameStart = columnsSection.Index("\"", pos);
-                if (nameStart == kNPOS) break;
-                
-                Ssiz_t nameEnd = columnsSection.Index("\"", nameStart + 1);
-                if (nameEnd == kNPOS) break;
-                
-                TString colName = columnsSection(nameStart + 1, nameEnd - nameStart - 1);
-                
-                if (colName == "dtype" || colName == "expr" || colName == "constant" || 
-                    colName == "index" || colName.Length() == 0) {
-                    pos = nameEnd + 1;
-                    continue;
-                }
-                
-                Ssiz_t objStart = columnsSection.Index("{", nameEnd);
-                if (objStart == kNPOS) break;
-                
-                TString between = columnsSection(nameEnd + 1, objStart - nameEnd - 1);
-                between.ReplaceAll(" ", "");
-                between.ReplaceAll("\n", "");
-                between.ReplaceAll("\t", "");
-                if (!between.BeginsWith(":")) {
-                    pos = nameEnd + 1;
-                    continue;
-                }
-                
-                Int_t depth = 1;
-                Ssiz_t objEnd = objStart + 1;
-                while (objEnd < columnsSection.Length() && depth > 0) {
-                    if (columnsSection[objEnd] == '{') depth++;
-                    if (columnsSection[objEnd] == '}') depth--;
-                    objEnd++;
-                }
-                
-                TString colObject = columnsSection(objStart, objEnd - objStart);
-                TString expr = ExtractJSONString(colObject, "expr");
-                if (expr.Length() > 0 && expr != "null") {
-                    schema.aliases[colName] = expr;
-                    tree->SetAlias(colName.Data(), expr.Data());
-                }
-                
-                pos = objEnd;
+    // Parse subframes section
+    TString subframesSection = ExtractJSONObject(json, "subframes");
+    if (subframesSection.Length() > 0) {
+        Ssiz_t pos = 0;
+        while (pos < subframesSection.Length()) {
+            Ssiz_t keyStart = subframesSection.Index("\"", pos);
+            if (keyStart == kNPOS) break;
+            
+            Ssiz_t keyEnd = subframesSection.Index("\"", keyStart + 1);
+            if (keyEnd == kNPOS) break;
+            
+            TString sfName = subframesSection(keyStart + 1, keyEnd - keyStart - 1);
+            
+            // Skip metadata
+            if (sfName == "__meta__") {
+                pos = keyEnd + 1;
+                continue;
             }
+            
+            // Find subframe object
+            Ssiz_t objStart = subframesSection.Index("{", keyEnd);
+            if (objStart == kNPOS) {
+                pos = keyEnd + 1;
+                continue;
+            }
+            
+            Int_t depth = 1;
+            Ssiz_t objEnd = objStart + 1;
+            while (depth > 0 && objEnd < subframesSection.Length()) {
+                if (subframesSection[objEnd] == '{') depth++;
+                if (subframesSection[objEnd] == '}') depth--;
+                objEnd++;
+            }
+            
+            TString sfObj = subframesSection(objStart, objEnd - objStart);
+            
+            // Extract index columns - try both "index" and "subframe_indices"
+            std::vector<TString> indexCols = ExtractJSONArray(sfObj, "index");
+            if (indexCols.empty()) {
+                indexCols = ExtractJSONArray(sfObj, "subframe_indices");
+            }
+            
+            if (!indexCols.empty()) {
+                schema.subframeIndices[sfName] = indexCols;
+            }
+            
+            pos = objEnd;
         }
     }
     
     schema.loaded = true;
-    
-    std::cout << "  Schema loaded: " << schema.aliases.size() << " aliases, "
+    std::cout << "  Schema loaded: " << schema.aliases.size() << " aliases, " 
               << schema.subframeIndices.size() << " subframes" << std::endl;
     
-    // Debug: print what we found
-    for (const auto& [name, indices] : schema.subframeIndices) {
+    // Print subframe index info
+    for (const auto& [name, cols] : schema.subframeIndices) {
         std::cout << "    Subframe '" << name << "' index: [";
-        for (size_t i = 0; i < indices.size(); i++) {
-            std::cout << indices[i];
-            if (i < indices.size() - 1) std::cout << ", ";
+        for (size_t i = 0; i < cols.size(); i++) {
+            std::cout << cols[i];
+            if (i < cols.size() - 1) std::cout << ", ";
         }
         std::cout << "]" << std::endl;
     }
@@ -730,6 +742,7 @@ Bool_t LoadSchema(TTree* tree, const char* schemaPath) {
  * - Automatically detects and loads embedded ADF_SCHEMA
  * - Builds N-key composite indices for subframes with >2 index columns
  * - Attaches subframes as friend trees
+ * - For read-only files, clones subframes to memory for index building
  * 
  * @param filename  Path to ROOT file exported from AliasDataFrame
  * @param treename  Name of main tree (default: "tree")
@@ -750,6 +763,11 @@ TTree* LoadADFTree(const char* filename, const char* treename = "tree") {
     }
     
     std::cout << "Loading ADF tree: " << filename << std::endl;
+    
+    // Report file access mode
+    if (!f->IsWritable()) {
+        std::cout << "  File opened read-only (composite indices will use in-memory clones)" << std::endl;
+    }
     
     // Try to load embedded schema
     Bool_t hasSchema = LoadEmbeddedSchema(f, mainTree);
@@ -818,14 +836,15 @@ TTree* LoadADFTree(const char* filename, const char* treename = "tree") {
         }
         
         // Build index (composite if >2 columns)
+        TTree* friendTree = sfTree;  // May be replaced with clone
         if (!indexCols.empty()) {
-            BuildCompositeIndex(mainTree, sfTree, indexCols, sfName);
+            BuildCompositeIndex(mainTree, sfTree, indexCols, sfName, friendTree);
         } else {
             std::cout << "    No index columns found (linear scan)" << std::endl;
         }
         
-        // Add as friend
-        mainTree->AddFriend(sfTree, sfName.Data());
+        // Add as friend (use clone if created)
+        mainTree->AddFriend(friendTree, sfName.Data());
     }
     
     std::cout << "Loaded '" << treename << "' with " << subframeNames.size() 
@@ -867,8 +886,9 @@ TTree* LoadADFTreeWithIndex(
         }
         
         std::cout << "  Subframe '" << sfName << "':" << std::endl;
-        BuildCompositeIndex(mainTree, sfTree, cols, sfName);
-        mainTree->AddFriend(sfTree, sfName.Data());
+        TTree* friendTree = sfTree;
+        BuildCompositeIndex(mainTree, sfTree, cols, sfName, friendTree);
+        mainTree->AddFriend(friendTree, sfName.Data());
     }
     
     return mainTree;
@@ -987,7 +1007,28 @@ void DescribeData(TTree* tree, const char* sortBy = "name") {
         }
     }
     
+    // Report in-memory clones
+    if (!g_memFiles.empty()) {
+        std::cout << "\nIn-memory subframe clones: " << g_memFiles.size() << std::endl;
+        Long64_t totalMem = 0;
+        for (auto* mf : g_memFiles) {
+            totalMem += mf->GetSize();
+        }
+        std::cout << "  Total memory: " << totalMem / 1024.0 / 1024.0 << " MB" << std::endl;
+    }
+    
     std::cout << "======================================\n" << std::endl;
+}
+
+/**
+ * Clean up in-memory files
+ */
+void CleanupMemFiles() {
+    std::cout << "Cleaning up " << g_memFiles.size() << " in-memory files..." << std::endl;
+    for (auto* mf : g_memFiles) {
+        delete mf;
+    }
+    g_memFiles.clear();
 }
 
 /**
@@ -995,7 +1036,7 @@ void DescribeData(TTree* tree, const char* sortBy = "name") {
  */
 void ExampleUsage() {
     std::cout << R"(
-=== AliasDataFrameTree.C Usage Examples (Phase 3) ===
+=== AliasDataFrameTree.C Usage Examples (Phase 3.1) ===
 
 1. Basic loading (automatic schema + composite index):
    TTree* tree = LoadADFTree("calibration.root", "tree");
@@ -1021,9 +1062,13 @@ void ExampleUsage() {
    tree->Draw("mX - DITS0FitSide.mX");
    tree->Draw("dy:dz", "DITS0FitSide.valid == 1");
 
-Features (Phase 3):
+7. Cleanup in-memory clones:
+   CleanupMemFiles();
+
+Features (Phase 3.1):
 - Automatic embedded schema loading
 - N-key composite indices (cardinality-based packing)
+- In-memory cloning for read-only files
 - Handles sparse indices (e.g., firstTFOrbit) correctly
 - Merge-safe (hadd) composite keys
 
@@ -1033,8 +1078,8 @@ Features (Phase 3):
 // Auto-run when loaded
 #ifndef __CINT__
 void AliasDataFrameTree() {
-    std::cout << "AliasDataFrameTree.C loaded (Phase 3: Composite Index)." << std::endl;
-    std::cout << "Features: N-key composite index, automatic schema loading" << std::endl;
+    std::cout << "AliasDataFrameTree.C loaded (Phase 3.1: In-memory Index)." << std::endl;
+    std::cout << "Features: N-key composite index, in-memory cloning for read-only files" << std::endl;
     std::cout << "Run ExampleUsage() for help." << std::endl;
 }
 #endif
