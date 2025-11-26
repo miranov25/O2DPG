@@ -1584,7 +1584,9 @@ class AliasDataFrame:
             try:
                 ordered = list(nx.topological_sort(g.subgraph(expanded)))
                 result = [n for n in ordered if n in expanded]
-            except nx.NetworkXError:
+            # Change to:
+            except (nx.NetworkXError, nx.NetworkXUnfeasible):
+                # Cycle detected or graph issue, return unordered
                 result = list(expanded)
         
         return result
