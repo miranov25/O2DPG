@@ -497,6 +497,43 @@ def _order_columns_by_groups(columns, groups, within_group_sort="schema"):
     return ordered
 
 
+def _dtype_to_str(dtype):
+    """
+    Convert a dtype to its string representation.
+    
+    Handles:
+    - numpy dtype instances: np.dtype('float32') → 'float32'
+    - numpy type classes: np.float32 → 'float32'
+    - strings: 'float32' → 'float32'
+    - None: None → None
+    
+    Parameters
+    ----------
+    dtype : various
+        A dtype in various formats
+        
+    Returns
+    -------
+    str or None
+        String representation of dtype
+    """
+    if dtype is None:
+        return None
+    if isinstance(dtype, str):
+        return dtype
+    # np.dtype instances have .name
+    if hasattr(dtype, 'name'):
+        return dtype.name
+    # numpy type classes like np.float32
+    if hasattr(dtype, '__name__'):
+        return dtype.__name__
+    # Fallback - try to convert via np.dtype
+    try:
+        return np.dtype(dtype).name
+    except (TypeError, AttributeError):
+        return str(dtype)
+
+
 def _export_column_spec_v2(col_name, col_info, df=None):
     """
     Export a single column specification in v2 format.
@@ -552,7 +589,7 @@ def _export_column_spec_v2(col_name, col_info, df=None):
     return result
 
 
-def _export_subframe_schema_v2(subframe_entry, include_compression=False):
+def _export_subframe_schema_v2(subframe_entry, include_precision_stats=False):
     """
     Export a subframe's full schema recursively.
     
@@ -560,8 +597,8 @@ def _export_subframe_schema_v2(subframe_entry, include_compression=False):
     ----------
     subframe_entry : dict
         Entry from SubframeRegistry: {'frame': adf, 'index': [...]}
-    include_compression : bool
-        Whether to include compression section
+    include_precision_stats : bool
+        Whether to include precision statistics in compression section
         
     Returns
     -------
@@ -604,10 +641,34 @@ def _export_subframe_schema_v2(subframe_entry, include_compression=False):
     if sf_schema.get('groups'):
         result['groups'] = sf_schema['groups']
     
-    # Compression (optional)
-    if include_compression and sf_schema.get('compression'):
-        comp = sf_schema['compression'].copy()
-        result['compression'] = comp
+    # Compression - always include when present (required for data interpretation)
+    if sf_schema.get('compression'):
+        comp = {}
+        for name, info in sf_schema['compression'].items():
+            if name == '__meta__':
+                comp['__meta__'] = copy.deepcopy(info)
+                continue
+            
+            entry = {}
+            # Required fields
+            for field in ['compressed_col', 'compress_expr', 'decompress_expr', 
+                          'state', 'original_removed']:
+                if field in info:
+                    entry[field] = info[field]
+            
+            # Convert dtypes to strings using helper
+            for dtype_field in ['compressed_dtype', 'decompressed_dtype']:
+                if dtype_field in info and info[dtype_field] is not None:
+                    entry[dtype_field] = _dtype_to_str(info[dtype_field])
+            
+            # Optional precision stats
+            if include_precision_stats and 'precision' in info:
+                entry['precision'] = copy.deepcopy(info['precision'])
+            
+            comp[name] = entry
+        
+        if comp:
+            result['compression'] = comp
     
     return result
 
@@ -1584,9 +1645,7 @@ class AliasDataFrame:
             try:
                 ordered = list(nx.topological_sort(g.subgraph(expanded)))
                 result = [n for n in ordered if n in expanded]
-            # Change to:
-            except (nx.NetworkXError, nx.NetworkXUnfeasible):
-                # Cycle detected or graph issue, return unordered
+            except nx.NetworkXError:
                 result = list(expanded)
         
         return result
@@ -3046,7 +3105,7 @@ class AliasDataFrame:
 
             # Standard state validation for non-selective modes
             if current_state == CompressionState.COMPRESSED:
-                # Already compressed - skip (idempotent)
+                # Idempotent behavior: skip already compressed columns
                 continue
             elif current_state == CompressionState.SCHEMA_ONLY:
                 # Valid transition: SCHEMA_ONLY → COMPRESSED
@@ -4358,7 +4417,7 @@ class AliasDataFrame:
         dict
             JSON-safe schema dictionary
         """
-        return self.export_schema_v2(include_compression=True)
+        return self.export_schema_v2(include_precision_stats=True)
 
     def save_schema(self, path):
         """
@@ -4369,7 +4428,7 @@ class AliasDataFrame:
         path : str
             Path to save schema JSON file
         """
-        self.save_schema_v2(path, include_compression=True)
+        self.save_schema_v2(path, include_precision_stats=True)
 
     @staticmethod
     def load_schema(path):
@@ -4510,7 +4569,7 @@ class AliasDataFrame:
         # Return all fields except dtype and expr
         return {k: v for k, v in col_info.items() if k not in ('dtype', 'expr', 'constant')}
 
-    def export_schema_v2(self, include_compression=True, include_subframes=True,
+    def export_schema_v2(self, include_precision_stats=False, include_subframes=True,
                          within_group_sort="schema"):
         """
         Export schema as JSON-safe dictionary (v2 format).
@@ -4518,15 +4577,24 @@ class AliasDataFrame:
         Features:
         - Uniform object format for all columns: {"dtype": "..."}
         - No "expr": null for physical columns
-        - Groups preserved
+        - Groups preserved (simple named lists of column names)
         - Column metadata preserved (unit, axisLabel, etc.)
         - Recursive subframe schemas (nested)
-        - Compression optional
+        - Compression always included (definitions required for data interpretation)
+        
+        Schema v2 canonical order:
+        1. __meta__     - version, creation info
+        2. columns      - column definitions (physical + aliases)
+        3. groups       - logical column groupings (if present)
+        4. compression  - storage/compression configuration
+        5. subframes    - hierarchical structure (related tables)
         
         Parameters
         ----------
-        include_compression : bool, default=False
-            Whether to include compression section
+        include_precision_stats : bool, default=False
+            Whether to include precision statistics (RMSE, max_error, etc.) in 
+            compression section. The compression definitions (expressions, dtypes,
+            state) are always included.
         include_subframes : bool, default=True
             Whether to include recursive subframe schemas
         within_group_sort : str, default="schema"
@@ -4536,25 +4604,22 @@ class AliasDataFrame:
         Returns
         -------
         dict
-            JSON-safe schema dictionary
+            JSON-safe schema dictionary with canonical key ordering
         """
-        result = {}
+        from collections import OrderedDict
+        result = OrderedDict()
         
-        # __meta__ section
+        # 1. __meta__ section (always first)
         result['__meta__'] = {
             'schema_version': SCHEMA_VERSION_V2,
             'created_at': datetime.now(timezone.utc).isoformat(),
             'schema_id': self._schema.get('__meta__', {}).get('schema_id')
         }
         
-        # Groups section (if present)
-        groups = self._schema.get('groups', {})
-        if groups:
-            result['groups'] = groups
-        
-        # Columns section
-        columns = {}
+        # 2. Columns section
+        columns = OrderedDict()
         schema_columns = self._schema.get('columns', {})
+        groups = self._schema.get('groups', {})
         
         # Physical columns from DataFrame first
         for col in self.df.columns:
@@ -4570,63 +4635,96 @@ class AliasDataFrame:
         columns = _order_columns_by_groups(columns, groups, within_group_sort)
         result['columns'] = columns
         
-        # Subframes section
-        if include_subframes and hasattr(self, '_subframes'):
-            subframes = {}
-            for name, entry in self._subframes.items():
-                subframes[name] = _export_subframe_schema_v2(entry, include_compression)
-            if subframes:
-                result['subframes'] = subframes
-        elif self._schema.get('subframes'):
-            # Just include index info if no registry
-            result['subframes'] = {}
-            for name, info in self._schema.get('subframes', {}).items():
-                index_cols = info.get('index', [])
-                if isinstance(index_cols, str):
-                    index_cols = [index_cols]
-                result['subframes'][name] = {'index': index_cols}
+        # 3. Groups section (if present) - simple named lists of column names
+        if groups:
+            result['groups'] = groups
         
-        # Compression section (optional)
-        if include_compression and self._schema.get('compression'):
-            comp = copy.deepcopy(self._schema['compression'])
-            # Remove verbose precision stats from export
-            for name, info in comp.items():
-                if name != '__meta__' and 'precision' in info:
-                    del info['precision']
-            # Convert dtypes to strings
-            for name, info in comp.items():
+        # 4. Compression section - ALWAYS included when present (required for data interpretation)
+        if self._schema.get('compression'):
+            comp = OrderedDict()
+            for name, info in self._schema['compression'].items():
                 if name == '__meta__':
+                    # Preserve compression metadata
+                    comp['__meta__'] = copy.deepcopy(info)
                     continue
+                
+                # Build compression entry with essential fields
+                entry = {}
+                
+                # Required fields for data interpretation
+                if 'compressed_col' in info:
+                    entry['compressed_col'] = info['compressed_col']
+                if 'compress_expr' in info:
+                    entry['compress_expr'] = info['compress_expr']
+                if 'decompress_expr' in info:
+                    entry['decompress_expr'] = info['decompress_expr']
+                
+                # Convert dtypes to strings using helper
                 for dtype_field in ['compressed_dtype', 'decompressed_dtype']:
                     if dtype_field in info and info[dtype_field] is not None:
-                        dtype = info[dtype_field]
-                        if hasattr(dtype, 'name'):
-                            info[dtype_field] = dtype.name
-                        elif not isinstance(dtype, str):
-                            info[dtype_field] = str(dtype)
-                # Remove non-serializable monitor functions
+                        entry[dtype_field] = _dtype_to_str(info[dtype_field])
+                
+                # State and flags
+                if 'state' in info:
+                    entry['state'] = info['state']
+                if 'original_removed' in info:
+                    entry['original_removed'] = info['original_removed']
+                
+                # Optional: precision statistics (can be verbose)
+                if include_precision_stats and 'precision' in info:
+                    entry['precision'] = copy.deepcopy(info['precision'])
+                
+                # Optional: monitor info (without non-serializable func)
                 if 'monitor' in info and info['monitor']:
                     monitor = info['monitor']
                     if 'func' in monitor:
-                        info['monitor'] = {k: v for k, v in monitor.items() if k != 'func'}
-            result['compression'] = comp
+                        entry['monitor'] = {k: v for k, v in monitor.items() if k != 'func'}
+                    else:
+                        entry['monitor'] = copy.deepcopy(monitor)
+                
+                comp[name] = entry
+            
+            if comp:
+                result['compression'] = comp
+        
+        # 5. Subframes section (last - hierarchical structure)
+        if include_subframes:
+            subframes = OrderedDict()
+            
+            # Try subframe registry first
+            if hasattr(self, '_subframes'):
+                for name, entry in self._subframes.items():
+                    subframes[name] = _export_subframe_schema_v2(entry, include_precision_stats)
+            
+            # Fall back to schema if registry is empty
+            if not subframes and self._schema.get('subframes'):
+                for name, info in self._schema.get('subframes', {}).items():
+                    index_cols = info.get('index', [])
+                    if isinstance(index_cols, str):
+                        index_cols = [index_cols]
+                    subframes[name] = {'index': index_cols}
+            
+            if subframes:
+                result['subframes'] = subframes
         
         return result
 
-    def save_schema_v2(self, path, include_compression=True, include_subframes=True,
+    def save_schema_v2(self, path, include_precision_stats=False, include_subframes=True,
                        indent=2, max_line_length=100, within_group_sort="schema"):
         """
         Save schema to JSON file (v2 format).
         
         Short entries stay on one line, long entries are split.
         Columns ordered by groups, then ungrouped columns.
+        Compression definitions are always saved (required for data interpretation).
         
         Parameters
         ----------
         path : str
             Output file path
-        include_compression : bool, default=False
-            Whether to include compression section
+        include_precision_stats : bool, default=False
+            Whether to include precision statistics (RMSE, max_error, etc.) in
+            compression section. Compression definitions are always included.
         include_subframes : bool, default=True
             Whether to include recursive subframe schemas
         indent : int, default=2
@@ -4638,7 +4736,7 @@ class AliasDataFrame:
             "alphabetic" - sort alphabetically within each group
         """
         schema = self.export_schema_v2(
-            include_compression=include_compression,
+            include_precision_stats=include_precision_stats,
             include_subframes=include_subframes,
             within_group_sort=within_group_sort
         )
@@ -4672,6 +4770,12 @@ class AliasDataFrame:
         # Detect version
         meta = schema.get('__meta__', {})
         version = meta.get('schema_version', 1)
+        # Handle string versions like '2.0'
+        if isinstance(version, str):
+            try:
+                version = float(version)
+            except (ValueError, TypeError):
+                version = 1
         
         if version >= 2:
             # Already v2 format

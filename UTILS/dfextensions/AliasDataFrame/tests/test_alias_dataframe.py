@@ -2080,5 +2080,195 @@ class TestDescribeStructure(unittest.TestCase):
 #                                           VERBOSITY_SUBFRAMES, VERBOSE_DEFAULT, VERBOSE_FULL)
 
 
+class TestSchemaV2Ordering(unittest.TestCase):
+    """Test schema v2 export ordering: __meta__ → columns → groups → compression → subframes"""
+    
+    def setUp(self):
+        """Create ADF with all schema components for testing"""
+        self.df = pd.DataFrame({
+            'x': [1.0, 2.0, 3.0],
+            'y': [4.0, 5.0, 6.0],
+            'z': [7.0, 8.0, 9.0],
+            'dy_c': [10, 20, 30],
+            'track_id': [100, 101, 102]
+        })
+        self.adf = AliasDataFrame(self.df)
+        
+        # Add groups
+        self.adf._schema['groups'] = {
+            'coordinates': ['x', 'y', 'z'],
+            'residuals': ['dy_c']
+        }
+        
+        # Add compression info
+        self.adf._schema['compression'] = {
+            'dy': {
+                'compressed_col': 'dy_c',
+                'compress_expr': 'int16(dy*40)',
+                'decompress_expr': 'sinh(dy_c/40.)',
+                'state': 'compressed'
+            }
+        }
+        
+        # Add subframe info
+        self.adf._schema['subframes'] = {
+            'Tracks': {
+                'index': ['track_id']
+            }
+        }
+    
+    def test_schema_v2_order_canonical(self):
+        """Test that export_schema_v2 produces canonical key order"""
+        schema = self.adf.export_schema_v2()
+        keys = list(schema.keys())
+        
+        # Must start with __meta__
+        self.assertEqual(keys[0], '__meta__')
+        
+        # Must have columns second
+        self.assertEqual(keys[1], 'columns')
+        
+        # Verify expected keys are present
+        self.assertIn('groups', keys)
+        self.assertIn('compression', keys)
+        self.assertIn('subframes', keys)
+        
+        # groups must come before compression
+        groups_idx = keys.index('groups')
+        comp_idx = keys.index('compression')
+        self.assertLess(groups_idx, comp_idx, "groups should come before compression")
+        
+        # compression must come before subframes
+        sf_idx = keys.index('subframes')
+        self.assertLess(comp_idx, sf_idx, "compression should come before subframes")
+    
+    def test_schema_v2_order_full(self):
+        """Test full canonical order: __meta__ → columns → groups → compression → subframes"""
+        schema = self.adf.export_schema_v2()
+        keys = list(schema.keys())
+        
+        expected_order = ['__meta__', 'columns', 'groups', 'compression', 'subframes']
+        self.assertEqual(keys, expected_order,
+            f"Schema keys must be in canonical order.\n"
+            f"Expected: {expected_order}\n"
+            f"Got:      {keys}")
+    
+    def test_schema_v2_order_strict_positions(self):
+        """Strict test: verify exact positions of each key"""
+        schema = self.adf.export_schema_v2()
+        keys = list(schema.keys())
+        
+        # __meta__ MUST be first
+        self.assertEqual(keys[0], '__meta__', "__meta__ must be first")
+        
+        # columns MUST be second
+        self.assertEqual(keys[1], 'columns', "columns must be second")
+        
+        # If groups present, it MUST be third (before compression)
+        if 'groups' in keys:
+            self.assertEqual(keys[2], 'groups', "groups must be third")
+            # compression must be fourth
+            self.assertEqual(keys[3], 'compression', "compression must be fourth")
+            # subframes must be fifth (last)
+            self.assertEqual(keys[4], 'subframes', "subframes must be last")
+        else:
+            # Without groups: compression third, subframes fourth
+            if 'compression' in keys:
+                self.assertEqual(keys[2], 'compression', "compression must be third (no groups)")
+            if 'subframes' in keys:
+                sf_idx = keys.index('subframes')
+                self.assertEqual(sf_idx, len(keys) - 1, "subframes must be last")
+    
+    def test_schema_v2_groups_simple_lists(self):
+        """Test that groups are exported as simple lists (not nested objects)"""
+        schema = self.adf.export_schema_v2()
+        groups = schema.get('groups', {})
+        
+        self.assertIn('coordinates', groups)
+        self.assertIn('residuals', groups)
+        
+        # Groups must be simple lists, not dicts
+        self.assertIsInstance(groups['coordinates'], list)
+        self.assertIsInstance(groups['residuals'], list)
+        
+        # Content must be column names
+        self.assertEqual(groups['coordinates'], ['x', 'y', 'z'])
+        self.assertEqual(groups['residuals'], ['dy_c'])
+    
+    def test_schema_v2_without_groups(self):
+        """Test schema order when groups are absent"""
+        # Remove groups
+        self.adf._schema['groups'] = {}
+        
+        schema = self.adf.export_schema_v2()
+        keys = list(schema.keys())
+        
+        # groups should not be in output
+        self.assertNotIn('groups', keys)
+        
+        # Order should be: __meta__ → columns → compression → subframes
+        self.assertEqual(keys[0], '__meta__')
+        self.assertEqual(keys[1], 'columns')
+        
+        comp_idx = keys.index('compression')
+        sf_idx = keys.index('subframes')
+        self.assertLess(comp_idx, sf_idx)
+    
+    def test_schema_v2_groups_roundtrip(self):
+        """Test that groups survive save/load roundtrip"""
+        import tempfile
+        import os
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            temp_path = f.name
+        
+        try:
+            # Save
+            self.adf.save_schema_v2(temp_path)
+            
+            # Load back
+            loaded = AliasDataFrame.load_schema(temp_path)
+            
+            # Groups should survive
+            self.assertIn('groups', loaded)
+            self.assertEqual(loaded['groups']['coordinates'], ['x', 'y', 'z'])
+            self.assertEqual(loaded['groups']['residuals'], ['dy_c'])
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+    
+    def test_schema_v2_order_agnostic_load(self):
+        """Test that loader handles any key order"""
+        import json
+        import tempfile
+        import os
+        
+        # Create schema with scrambled order (use numeric version)
+        scrambled = {
+            'subframes': {'T': {'index': ['id']}},
+            'compression': {'dy': {'state': 'compressed'}},
+            '__meta__': {'schema_version': 2},
+            'groups': {'test': ['x']},
+            'columns': {'x': {'dtype': 'float64'}}
+        }
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(scrambled, f)
+            temp_path = f.name
+        
+        try:
+            # Load should work regardless of order
+            loaded = AliasDataFrame.load_schema(temp_path)
+            
+            # All sections should be accessible
+            self.assertIn('columns', loaded)
+            self.assertIn('groups', loaded)
+            self.assertIn('compression', loaded)
+            self.assertIn('subframes', loaded)
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+
 if __name__ == "__main__":
     unittest.main()
