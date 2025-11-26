@@ -3044,10 +3044,8 @@ class AliasDataFrame:
 
             # Standard state validation for non-selective modes
             if current_state == CompressionState.COMPRESSED:
-                raise ValueError(
-                    f"Column '{orig_col}' is already compressed. "
-                    f"Use decompress_columns(['{orig_col}']) first to decompress before recompressing."
-                )
+                # Already compressed - skip (idempotent)
+                continue
             elif current_state == CompressionState.SCHEMA_ONLY:
                 # Valid transition: SCHEMA_ONLY → COMPRESSED
                 pass

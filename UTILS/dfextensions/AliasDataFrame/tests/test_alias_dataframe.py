@@ -385,8 +385,8 @@ class TestAliasDataFrameCompression(unittest.TestCase):
         self.assertIn('dy_scaled_c', self.adf.df.columns)
         self.assertIn('dy_scaled', self.adf.aliases)
 
-    def test_double_compression_raises_error(self):
-        """Test that compressing already compressed column raises error"""
+    def test_compression_is_idempotent(self):
+        """Compressing already compressed column should skip silently."""
         spec = {
             'dy': {
                 'compress': 'round(asinh(dy)*40)',
@@ -397,12 +397,15 @@ class TestAliasDataFrameCompression(unittest.TestCase):
         }
 
         self.adf.compress_columns(spec)
+        self.assertIn('dy_c', self.adf.df.columns)
+        self.assertNotIn('dy', self.adf.df.columns)
 
-        # Try to compress again - should fail
-        with self.assertRaises(ValueError) as cm:
-            self.adf.compress_columns(spec)
-
-        self.assertIn('already compressed', str(cm.exception))
+        # Compress again - should NOT raise, state unchanged
+        self.adf.compress_columns(spec)
+        self.assertIn('dy_c', self.adf.df.columns)
+        self.assertNotIn('dy', self.adf.df.columns)
+        # Verify no duplicate columns created
+        self.assertEqual(list(self.adf.df.columns).count('dy_c'), 1)
 
     def test_compressed_column_name_collision_raises_error(self):
         """Test that compressed column name collision is detected"""
@@ -838,16 +841,58 @@ class TestCompressionStateMachine(unittest.TestCase):
         self.assertIn('dy', self.adf.df.columns)
         self.assertNotIn('dy', self.adf.aliases)
 
-    def test_error_on_double_compression(self):
-        """Test that re-compressing COMPRESSED state raises error"""
+    def test_decompression_is_idempotent(self):
+        """Decompressing already decompressed column should skip silently."""
+        from dfextensions.AliasDataFrame import CompressionState
+
         self.adf.compress_columns({'dy': self.spec['dy']})
+        self.adf.decompress_columns(['dy'], keep_schema=True)
+        self.assertEqual(self.adf.get_compression_state('dy'), CompressionState.DECOMPRESSED)
+        self.assertIn('dy', self.adf.df.columns)
 
-        with self.assertRaises(ValueError) as cm:
-            self.adf.compress_columns({'dy': self.spec['dy']})
+        # Decompress again - should NOT raise, state unchanged
+        self.adf.decompress_columns(['dy'])
+        self.assertEqual(self.adf.get_compression_state('dy'), CompressionState.DECOMPRESSED)
+        self.assertIn('dy', self.adf.df.columns)
 
-        self.assertIn('already compressed', str(cm.exception))
-        # Check that it suggests decompression
-        self.assertIn('decompress', str(cm.exception).lower())
+    def test_double_compression_is_idempotent(self):
+        """Compressing already compressed column should skip silently."""
+        from dfextensions.AliasDataFrame import CompressionState
+
+        self.adf.compress_columns({'dy': self.spec['dy']})
+        self.assertEqual(self.adf.get_compression_state('dy'), CompressionState.COMPRESSED)
+        self.assertIn('dy_c', self.adf.df.columns)
+
+        # Compress again - should NOT raise, state unchanged
+        self.adf.compress_columns({'dy': self.spec['dy']})
+        self.assertEqual(self.adf.get_compression_state('dy'), CompressionState.COMPRESSED)
+        self.assertIn('dy_c', self.adf.df.columns)
+        self.assertEqual(list(self.adf.df.columns).count('dy_c'), 1)
+
+    def test_compress_decompress_roundtrip_idempotent(self):
+        """Test compress → decompress → compress roundtrip with idempotent calls."""
+        from dfextensions.AliasDataFrame import CompressionState
+
+        # First compress
+        self.adf.compress_columns({'dy': self.spec['dy']})
+        self.assertEqual(self.adf.get_compression_state('dy'), CompressionState.COMPRESSED)
+
+        # Compress again (idempotent - should skip)
+        self.adf.compress_columns({'dy': self.spec['dy']})
+        self.assertEqual(self.adf.get_compression_state('dy'), CompressionState.COMPRESSED)
+
+        # Decompress
+        self.adf.decompress_columns(['dy'], keep_schema=True)
+        self.assertEqual(self.adf.get_compression_state('dy'), CompressionState.DECOMPRESSED)
+
+        # Decompress again (idempotent - should skip)
+        self.adf.decompress_columns(['dy'])
+        self.assertEqual(self.adf.get_compression_state('dy'), CompressionState.DECOMPRESSED)
+
+        # Recompress
+        self.adf.compress_columns(columns=['dy'])
+        self.assertEqual(self.adf.get_compression_state('dy'), CompressionState.COMPRESSED)
+        self.assertIn('dy_c', self.adf.df.columns)
 
     def test_collision_same_schema_recompression(self):
         """Test recompression with matching schema is allowed"""
