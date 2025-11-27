@@ -793,7 +793,8 @@ def test_multi_subframe_column_collision():
     """
     Test handling when multiple subframes have same column name.
     
-    Last auto_alias_subframe call wins (as documented).
+    First auto_alias_subframe call wins (safe default - no overwrite).
+    Use overwrite=True to get "last wins" behavior.
     """
     df_main = pd.DataFrame({
         'idx': [0, 1, 2],
@@ -818,17 +819,18 @@ def test_multi_subframe_column_collision():
     adf_main.register_subframe('sub1', adf_sub1, index_columns='idx')
     adf_main.register_subframe('sub2', adf_sub2, index_columns='idx')
     
-    # Auto-alias both - sub2 should win for 'value'
+    # Auto-alias both - first wins (sub1), sub2 is skipped
     adf_main.auto_alias_subframe('sub1')
-    adf_main.auto_alias_subframe('sub2')
+    result = adf_main.auto_alias_subframe('sub2')
     
-    # 'value' should reference sub2
-    assert adf_main.aliases['value'] == 'sub2.value'
-    assert adf_main._auto_aliases['value'] == 'sub2'
+    # 'value' should reference sub1 (first wins without overwrite)
+    assert adf_main.aliases['value'] == 'sub1.value'
+    assert adf_main._auto_aliases['value'] == 'sub1'
+    assert 'value' in result['skipped_alias']  # sub2's 'value' was skipped
     
-    # Materialize to verify correct values
+    # Materialize to verify correct values (from sub1)
     adf_main.materialize_alias('value')
-    expected = pd.Series([100.0, 200.0, 300.0])
+    expected = pd.Series([10.0, 20.0, 30.0])
     pd.testing.assert_series_equal(
         adf_main.df['value'].reset_index(drop=True),
         expected,

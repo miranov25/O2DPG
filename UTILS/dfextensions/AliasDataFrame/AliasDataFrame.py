@@ -1355,6 +1355,94 @@ class AliasDataFrame:
         except ValueError as e:
             raise ValueError("Cycle detected in alias dependencies") from e
 
+    def validate_no_cycles(self, raise_on_cycle=True, verbose=False):
+        """
+        Check alias dependency graph for cycles.
+        
+        Useful for debugging cycle issues. Can be called explicitly to diagnose
+        problems before running materialize_aliases().
+        
+        Args:
+            raise_on_cycle: If True, raise ValueError on cycle. If False, return cycles.
+            verbose: If True, print detailed cycle information.
+            
+        Returns:
+            list: List of cycles found (each cycle is a list of alias names).
+                  Empty list if no cycles.
+                  
+        Raises:
+            ValueError: If raise_on_cycle=True and cycles are found.
+            
+        Example:
+            # Check for cycles
+            cycles = adf.validate_no_cycles(raise_on_cycle=False, verbose=True)
+            if cycles:
+                print(f"Found {len(cycles)} cycles!")
+                for cycle in cycles[:5]:
+                    print(f"  {' -> '.join(cycle)}")
+        """
+        # Get subframe names
+        subframe_names = set()
+        if hasattr(self, '_subframes') and hasattr(self._subframes, 'subframes'):
+            subframe_names = set(self._subframes.subframes.keys())
+        
+        # Build dependency graph
+        g = nx.DiGraph()
+        
+        for alias_name, expr in self.aliases.items():
+            # Clean expression: remove subframe.column patterns
+            expr_cleaned = expr
+            for sf_name in subframe_names:
+                expr_cleaned = re.sub(rf'\b{sf_name}\.\w+', '', expr_cleaned)
+            
+            # Find tokens that are aliases
+            tokens = set(re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b', expr_cleaned))
+            deps = tokens & set(self.aliases.keys())
+            
+            g.add_node(alias_name)
+            for dep in deps:
+                g.add_edge(alias_name, dep)
+        
+        # Find cycles
+        cycles = []
+        try:
+            cycles = list(nx.simple_cycles(g))
+        except Exception:
+            pass
+        
+        # Report
+        if verbose and cycles:
+            print(f"\n⚠️  Found {len(cycles)} cycles in alias dependency graph:")
+            
+            # Separate self-referential from indirect
+            self_refs = [c for c in cycles if len(c) == 1 or (len(c) == 2 and c[0] == c[-1])]
+            indirect = [c for c in cycles if c not in self_refs]
+            
+            if self_refs:
+                print(f"\n  Self-referential ({len(self_refs)}):")
+                for cycle in self_refs[:10]:
+                    name = cycle[0]
+                    expr = self.aliases.get(name, 'N/A')
+                    expr_display = expr[:50] + '...' if len(expr) > 50 else expr
+                    print(f"    {name} -> {name}  (expr: {expr_display})")
+                if len(self_refs) > 10:
+                    print(f"    ... and {len(self_refs) - 10} more")
+            
+            if indirect:
+                print(f"\n  Indirect cycles ({len(indirect)}):")
+                for cycle in indirect[:5]:
+                    print(f"    {' -> '.join(cycle)}")
+                if len(indirect) > 5:
+                    print(f"    ... and {len(indirect) - 5} more")
+        
+        if cycles and raise_on_cycle:
+            raise ValueError(
+                f"Found {len(cycles)} cycles in alias dependency graph. "
+                f"Use validate_no_cycles(verbose=True) for details."
+            )
+        
+        return cycles
+
     # =========================================================================
     # SECTION 2: Alias Management
     # =========================================================================
@@ -1381,7 +1469,38 @@ class AliasDataFrame:
             is_constant: Whether the alias represents a scalar constant.
             
         Phase 4: Writes to _schema["columns"] as single source of truth.
+        
+        Raises:
+            ValueError: If alias would create a self-referential cycle.
         """
+        # Check for self-reference BEFORE adding to schema
+        # This catches cases like: add_alias('x', 'x + 1') when 'x' is already a column
+        # or auto_alias creating: add_alias('dEdxTPC', 'T.dEdxTPC') when 'dEdxTPC' exists
+        
+        # Get subframe names to exclude from self-reference check
+        subframe_names = set()
+        if hasattr(self, '_subframes') and hasattr(self._subframes, 'subframes'):
+            subframe_names = set(self._subframes.subframes.keys())
+        
+        # Clean expression: remove subframe.column patterns
+        expr_cleaned = expression
+        for sf_name in subframe_names:
+            expr_cleaned = re.sub(rf'\b{sf_name}\.\w+', '', expr_cleaned)
+        
+        # Find remaining tokens
+        tokens = set(re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b', expr_cleaned))
+        
+        # Check if name appears in its own expression (after removing subframe refs)
+        if name in tokens:
+            # This would create a self-referential cycle
+            raise ValueError(
+                f"Alias '{name}' would reference itself in expression: {expression}\n"
+                f"This typically happens when:\n"
+                f"  1. A column '{name}' already exists in the DataFrame\n"
+                f"  2. auto_alias_subframe() tries to create alias '{name}' = 'Subframe.{name}'\n"
+                f"Solution: Don't create aliases for columns that already exist."
+            )
+        
         # Build spec for schema
         spec = {"expr": expression}
         if dtype is not None:
@@ -1392,7 +1511,7 @@ class AliasDataFrame:
         # Write to schema
         self._schema["columns"][name] = spec
         
-        # Check for cycles
+        # Check for cycles (catches indirect cycles like A -> B -> A)
         self._check_for_cycles()
 
     def _eval_in_namespace(self, expr, warn_missing_keys=True, alias_name=None):
@@ -1654,12 +1773,25 @@ class AliasDataFrame:
         if with_dependencies and result:
             import networkx as nx
             
+            # Get subframe names to exclude from dependency tracking
+            subframe_names = set()
+            if hasattr(self, '_subframes') and hasattr(self._subframes, 'subframes'):
+                subframe_names = set(self._subframes.subframes.keys())
+            
             def build_graph():
                 g = nx.DiGraph()
                 for alias, expr in self.aliases.items():
                     g.add_node(alias)
-                    for token in re.findall(r'\b\w+\b', expr):
-                        if token in self.aliases:
+                    
+                    # Clean expression: remove subframe.column patterns
+                    # This prevents false dependencies like new_col -> new_col
+                    # when expr is "T.new_col" (T is a subframe)
+                    expr_cleaned = expr
+                    for sf_name in subframe_names:
+                        expr_cleaned = re.sub(rf'\b{sf_name}\.\w+', '', expr_cleaned)
+                    
+                    for token in re.findall(r'\b\w+\b', expr_cleaned):
+                        if token in self.aliases and token != alias:
                             g.add_edge(token, alias)
                 return g
             
@@ -5809,7 +5941,8 @@ class AliasDataFrame:
             return []
         return list(self._subframes.subframes.keys())
     
-    def auto_alias_subframe(self, subframe_name, validate=False, reset_before=False):
+    def auto_alias_subframe(self, subframe_name, validate=False, reset_before=False,
+                            overwrite=False, verbose=True):
         """
         Explicitly create aliases for all columns in a subframe.
         
@@ -5820,16 +5953,22 @@ class AliasDataFrame:
             subframe_name: Name of subframe
             validate: If True, validate against materialized columns (slow!)
             reset_before: If True, remove old auto-aliases for this subframe first
+            overwrite: If True, overwrite existing aliases/columns. If False, skip conflicts.
+            verbose: If True, print summary of created/skipped aliases
         
         Returns:
-            dict: {column_name: expression} for created aliases
+            dict: {'created': [...], 'skipped_column': [...], 'skipped_alias': [...], 
+                   'validated': [...], 'expressions': {...}}
         
         Example:
             # First time
-            aliases = adf.auto_alias_subframe('DITS0FitSide', validate=True)
+            result = adf.auto_alias_subframe('DITS0FitSide', validate=True)
             
             # Regenerate later
-            aliases = adf.auto_alias_subframe('DITS0FitSide', reset_before=True)
+            result = adf.auto_alias_subframe('DITS0FitSide', reset_before=True)
+            
+            # Check what was skipped
+            print(f"Skipped {len(result['skipped_column'])} existing columns")
         """
         import warnings
         import numpy as np
@@ -5860,48 +5999,74 @@ class AliasDataFrame:
         else:
             index_cols = self.index_columns.get(subframe_name, [])
         
+        # Ensure index_cols is a list
+        if isinstance(index_cols, str):
+            index_cols = [index_cols]
+        
         # Reset: remove existing auto-aliases for this subframe
         if reset_before:
             old_aliases = [k for k, v in self._auto_aliases.items() 
                           if v == subframe_name]
             if old_aliases:
-                print(f"  Removing {len(old_aliases)} existing auto-aliases for '{subframe_name}'")
+                if verbose:
+                    print(f"  Removing {len(old_aliases)} existing auto-aliases for '{subframe_name}'")
                 self.remove_aliases(old_aliases, strict=False)
         
-        # Create aliases
+        # Create aliases - track what we create and skip
         aliases_created = {}
-        materialized_found = []
+        skipped_column = []  # Skipped because column exists in main DataFrame
+        skipped_alias = []   # Skipped because alias already exists
+        validated = []
         
         for col in sf_df.columns:
+            # Skip index columns
             if col in index_cols:
                 continue
             
             alias_expr = f"{subframe_name}.{col}"
             
-            # Check if materialized
+            # BUG FIX: Skip if column already exists in main DataFrame
+            # This prevents self-referential cycles like: dEdxTPC -> T.dEdxTPC -> dEdxTPC
             if col in self.df.columns:
-                materialized_found.append(col)
+                skipped_column.append(col)
                 
                 if validate:
-                    print(f"    Validating '{col}'...", end=' ')
-                    self.add_alias(f'_temp_validate_{col}', alias_expr)
-                    self.materialize_alias(f'_temp_validate_{col}', warn_missing_keys=False)
+                    # Validate that existing column matches subframe lookup
+                    if verbose:
+                        print(f"    Validating '{col}'...", end=' ')
+                    temp_name = f'_temp_validate_{col}'
+                    self.add_alias(temp_name, alias_expr)
+                    self.materialize_alias(temp_name, warn_missing_keys=False)
                     
                     materialized = self.df[col].values
-                    alias_result = self.df[f'_temp_validate_{col}'].values
+                    alias_result = self.df[temp_name].values
                     
                     match = np.allclose(materialized, alias_result, equal_nan=True, rtol=1e-6)
                     
                     if match:
-                        print("✓")
+                        if verbose:
+                            print("✓")
+                        validated.append(col)
                     else:
-                        print("✗ MISMATCH")
+                        if verbose:
+                            print("✗ MISMATCH")
                         warnings.warn(
-                            f"Alias '{col}' -> '{alias_expr}' does NOT match "
-                            f"materialized column '{col}'. Check subframe index!"
+                            f"Existing column '{col}' does NOT match subframe lookup "
+                            f"'{alias_expr}'. Data may be inconsistent!"
                         )
                     
-                    self.df.drop(columns=[f'_temp_validate_{col}'], inplace=True)
+                    self.df.drop(columns=[temp_name], inplace=True)
+                    if temp_name in self._schema.get('columns', {}):
+                        del self._schema['columns'][temp_name]
+                
+                if not overwrite:
+                    continue  # Skip - don't create alias for existing column
+            
+            # Skip if alias already exists (unless overwrite=True)
+            if col in self.aliases:
+                if not overwrite:
+                    skipped_alias.append(col)
+                    continue
             
             # Add alias and track it
             self.add_alias(col, alias_expr)
@@ -5909,15 +6074,29 @@ class AliasDataFrame:
             aliases_created[col] = alias_expr
         
         # Report
-        print(f"\n  ✓ Created {len(aliases_created)} auto-aliases for '{subframe_name}'")
-        if materialized_found:
-            print(f"    {len(materialized_found)} columns have materialized versions")
-            print(f"    Can drop: {materialized_found[:3]}" + 
-                  (f" ... (+{len(materialized_found)-3} more)" if len(materialized_found) > 3 else ""))
+        if verbose:
+            print(f"\n  ✓ Created {len(aliases_created)} auto-aliases for '{subframe_name}'")
+            if skipped_column:
+                preview = skipped_column[:5]
+                more = f" ... (+{len(skipped_column)-5} more)" if len(skipped_column) > 5 else ""
+                print(f"    ⚠️  Skipped {len(skipped_column)} (column exists in DataFrame): {preview}{more}")
+            if skipped_alias:
+                preview = skipped_alias[:5]
+                more = f" ... (+{len(skipped_alias)-5} more)" if len(skipped_alias) > 5 else ""
+                print(f"    Skipped {len(skipped_alias)} (alias already defined): {preview}{more}")
+            if validated:
+                print(f"    ✓ Validated {len(validated)} existing columns match subframe")
         
-        return aliases_created
+        return {
+            'created': list(aliases_created.keys()),
+            'skipped_column': skipped_column,
+            'skipped_alias': skipped_alias,
+            'validated': validated,
+            'expressions': aliases_created
+        }
     
-    def auto_alias_all_subframes(self, validate=False, reset_before=False):
+    def auto_alias_all_subframes(self, validate=False, reset_before=False, 
+                                  overwrite=False, verbose=True):
         """
         Explicitly create aliases for all loaded subframes.
         
@@ -5927,22 +6106,36 @@ class AliasDataFrame:
         Args:
             validate: If True, validate aliases (slow!)
             reset_before: If True, remove old auto-aliases first
+            overwrite: If True, overwrite existing aliases/columns
+            verbose: If True, print summary
         
         Returns:
-            dict: {subframe_name: {column: expression}}
+            dict: {subframe_name: result_dict} where result_dict contains
+                  'created', 'skipped_column', 'skipped_alias', etc.
         
         Example:
-            all_aliases = adf.auto_alias_all_subframes(validate=False)
+            all_results = adf.auto_alias_all_subframes(validate=False)
+            for sf_name, result in all_results.items():
+                print(f"{sf_name}: {len(result['created'])} created, "
+                      f"{len(result['skipped_column'])} skipped")
         """
         all_created = {}
         
         subframes = self.list_subframes()
-        print(f"\nAuto-aliasing {len(subframes)} subframes...")
+        if verbose:
+            print(f"\nAuto-aliasing {len(subframes)} subframes...")
         
         for sf_name in subframes:
-            print(f"\nSubframe '{sf_name}':")
-            aliases = self.auto_alias_subframe(sf_name, validate=validate, reset_before=reset_before)
-            all_created[sf_name] = aliases
+            if verbose:
+                print(f"\nSubframe '{sf_name}':")
+            result = self.auto_alias_subframe(
+                sf_name, 
+                validate=validate, 
+                reset_before=reset_before,
+                overwrite=overwrite,
+                verbose=verbose
+            )
+            all_created[sf_name] = result
         
         return all_created
     
@@ -6278,5 +6471,3 @@ class AliasDataFrame:
             return True
         else:
             return False
-
-        return [k for k, v in self._auto_aliases.items() if v == subframe_name]
