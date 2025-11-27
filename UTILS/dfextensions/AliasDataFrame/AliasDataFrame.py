@@ -1514,9 +1514,40 @@ class AliasDataFrame:
         # Check for cycles (catches indirect cycles like A -> B -> A)
         self._check_for_cycles()
 
-    def _eval_in_namespace(self, expr, warn_missing_keys=True, alias_name=None):
+    def _eval_in_namespace(self, expr, warn_missing_keys=True, alias_name=None, context_override=None):
+        """
+        Evaluate an expression in a namespace containing DataFrame columns and functions.
+        
+        Parameters
+        ----------
+        expr : str
+            Expression to evaluate
+        warn_missing_keys : bool, default=True
+            If True, warn when subframe join has missing keys
+        alias_name : str, optional
+            Name of alias being evaluated (for error messages)
+        context_override : dict, optional
+            Additional variables to include in evaluation namespace.
+            Used by materialize_aliases() to provide already-computed results
+            so that later aliases can reference earlier ones without requiring
+            them to be in self.df yet (enables batch materialization).
+            
+        Returns
+        -------
+        pandas.Series or scalar
+            Result of evaluating the expression
+        """
         expr = self._prepare_subframe_joins(expr, warn_missing_keys=warn_missing_keys, alias_name=alias_name)
+        
+        # Build namespace: DataFrame columns first
         local_env = {col: self.df[col] for col in self.df.columns}
+        
+        # Add context_override (previously computed aliases in batch mode)
+        # This allows alias B to reference alias A even if A isn't in self.df yet
+        if context_override:
+            local_env.update(context_override)
+        
+        # Add functions last (so they don't get shadowed by columns)
         local_env.update(self._default_functions())
 
         try:
@@ -2062,12 +2093,21 @@ class AliasDataFrame:
         list
             Names of aliases that were materialized
             
+        Notes
+        -----
+        Performance optimization: Uses batch pd.concat instead of sequential
+        column insertion to avoid O(n²) DataFrame fragmentation.
+        See BUG-2025-11-27-002 for details.
+            
         Examples
         --------
         >>> adf.materialize_aliases(pattern=r'is.*')  # All 'is*' aliases
         >>> adf.materialize_aliases(names=['r', 'phi', 'cosPhi'])  # Specific names
         >>> adf.materialize_aliases(pattern=r'dy.*|dz.*')  # dy and dz aliases
         """
+        import time
+        t_start = time.time() if verbose else None
+        
         # Get primary targets first (without dependencies)
         targets = self.select_aliases(
             pattern=pattern, 
@@ -2090,29 +2130,139 @@ class AliasDataFrame:
                 with_dependencies=True
             )
             if verbose:
-                print(f"[materialize_aliases] With dependencies: {to_materialize}")
+                print(f"[materialize_aliases] With dependencies: {len(to_materialize)} aliases")
         else:
             to_materialize = targets
         
-        # Materialize in order
-        added = []
-        for name in to_materialize:
-            if name not in self.df.columns:
-                if verbose:
-                    print(f"[materialize_aliases] Materializing: {name}")
-                self.materialize_alias(name, cleanTemporary=False)
-                added.append(name)
+        # =====================================================================
+        # BATCH MATERIALIZATION — Performance optimization (BUG-2025-11-27-002)
+        # 
+        # Instead of sequential self.df[name] = result (which causes O(n²)
+        # DataFrame fragmentation), we:
+        # 1. Compute all results into a dict
+        # 2. Use context_override so later aliases can reference earlier ones
+        # 3. Single pd.concat at the end
+        # =====================================================================
         
-        # Clean temporary dependencies if requested
+        results = {}  # Collect all computed results
+        added = []    # Track which aliases we computed
+        
+        for name in to_materialize:
+            if name in self.df.columns:
+                # Already materialized (either existed or subframe join added it)
+                continue
+            
+            if name not in self.aliases:
+                if verbose:
+                    print(f"[materialize_aliases] Warning: '{name}' not in aliases, skipping")
+                continue
+            
+            expr = self.aliases[name]
+            
+            # Handle subframe dependencies before evaluation
+            # This is necessary because _prepare_subframe_joins needs index columns
+            # and subframe attributes to exist
+            self._ensure_subframe_dependencies(name, expr, results, verbose)
+            
+            if verbose:
+                print(f"[materialize_aliases] Computing: {name}")
+            
+            # Evaluate with context_override containing previously computed results
+            # This allows alias B to reference alias A without A being in self.df yet
+            result = self._eval_in_namespace(
+                expr, 
+                warn_missing_keys=True, 
+                alias_name=name,
+                context_override=results
+            )
+            
+            # Apply dtype if specified
+            result_dtype = self.alias_dtypes.get(name)
+            if result_dtype is not None:
+                try:
+                    result = result.astype(result_dtype)
+                except AttributeError:
+                    result = result_dtype(result)
+            
+            results[name] = result
+            added.append(name)
+        
+        # =====================================================================
+        # BATCH ASSIGNMENT — Single DataFrame operation
+        # This avoids the O(n²) fragmentation from sequential column insertion
+        # =====================================================================
+        if results:
+            new_cols_df = pd.DataFrame(results, index=self.df.index)
+            self.df = pd.concat([self.df, new_cols_df], axis=1)
+            if verbose:
+                print(f"[materialize_aliases] Batch-added {len(results)} columns")
+        
+        # =====================================================================
+        # BATCH CLEANUP — Single drop operation (also avoids fragmentation)
+        # =====================================================================
         if cleanTemporary and with_dependencies:
             targets_set = set(targets)
-            for col in added:
-                if col not in targets_set and col in self.df.columns:
-                    self.df.drop(columns=[col], inplace=True)
-                    if verbose:
-                        print(f"[materialize_aliases] Cleaned temporary: {col}")
+            cols_to_drop = [col for col in added if col not in targets_set and col in self.df.columns]
+            if cols_to_drop:
+                self.df.drop(columns=cols_to_drop, inplace=True)
+                if verbose:
+                    print(f"[materialize_aliases] Batch-dropped {len(cols_to_drop)} temporary columns")
+        
+        if verbose:
+            elapsed = time.time() - t_start
+            print(f"[materialize_aliases] Completed in {elapsed:.2f}s ({len(added)} aliases)")
         
         return added
+    
+    def _ensure_subframe_dependencies(self, alias_name, expr, context_override, verbose=False):
+        """
+        Ensure subframe dependencies are available before evaluating an alias.
+        
+        This handles:
+        1. Materializing subframe index columns (if they're aliases)
+        2. Materializing subframe attributes (in the subframe's DataFrame)
+        
+        Parameters
+        ----------
+        alias_name : str
+            Name of the alias being evaluated
+        expr : str
+            Expression of the alias
+        context_override : dict
+            Dict of already-computed results (used to check if deps are available)
+        verbose : bool
+            If True, print progress
+        """
+        # Find subframe references (pattern: word.word)
+        tokens = re.findall(r'\w+\.\w+', expr)
+        
+        for token in tokens:
+            sf_name, sf_attr = token.split('.', 1)
+            sf = self.get_subframe(sf_name)
+            if sf is None:
+                continue
+            
+            # Materialize subframe index columns if they're aliases
+            entry = self._subframes.get_entry(sf_name)
+            if entry:
+                index_cols = entry['index']
+                if isinstance(index_cols, str):
+                    index_cols = [index_cols]
+                
+                for idx_col in index_cols:
+                    # Check if index column needs materialization
+                    if idx_col in self.aliases and idx_col not in self.df.columns:
+                        # Check if it's in context_override (already computed in this batch)
+                        if idx_col not in context_override:
+                            if verbose:
+                                print(f"[materialize_aliases]   Materializing index column: {idx_col}")
+                            self.materialize_alias(idx_col, warn_missing_keys=True)
+            
+            # Materialize the subframe attribute itself (in subframe's DataFrame)
+            if sf_attr in sf.aliases and sf_attr not in sf.df.columns:
+                if verbose:
+                    print(f"[materialize_aliases]   Materializing subframe attr: {sf_name}.{sf_attr}")
+                sf.materialize_alias(sf_attr)
 
     def materialize_pattern(self, pattern, cleanTemporary=True, verbose=False, 
                            only_unmaterialized=True):
