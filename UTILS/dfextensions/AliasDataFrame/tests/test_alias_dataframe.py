@@ -894,6 +894,218 @@ class TestCompressionStateMachine(unittest.TestCase):
         self.assertEqual(self.adf.get_compression_state('dy'), CompressionState.COMPRESSED)
         self.assertIn('dy_c', self.adf.df.columns)
 
+    def test_schema_compressed_but_data_not(self):
+        """Test compression when schema says compressed but data isn't.
+        
+        This happens when:
+        - Schema is loaded from file with state='compressed'
+        - But DataFrame has original columns (not compressed data)
+        
+        The fix should detect this and compress the data.
+        """
+        from dfextensions.AliasDataFrame import CompressionState
+        
+        # Manually set up the problematic state:
+        # - Schema says 'compressed' with full compression info
+        # - But DataFrame has original column 'dy', not 'dy_c'
+        self.adf._schema['compression']['dy'] = {
+            'compressed_col': 'dy_c',
+            'compress_expr': 'round(asinh(dy)*40)',
+            'decompress_expr': 'sinh(dy_c/40.)',
+            'compressed_dtype': 'int16',
+            'decompressed_dtype': 'float16',
+            'state': CompressionState.COMPRESSED,  # Schema says compressed!
+            'original_removed': True
+        }
+        
+        # Verify setup: schema says compressed, but df has 'dy' not 'dy_c'
+        self.assertEqual(self.adf.get_compression_state('dy'), CompressionState.COMPRESSED)
+        self.assertIn('dy', self.adf.df.columns)
+        self.assertNotIn('dy_c', self.adf.df.columns)
+        
+        # Now compress - should detect mismatch and actually compress
+        self.adf.compress_columns(columns=['dy'])
+        
+        # After compression: data should be compressed
+        self.assertIn('dy_c', self.adf.df.columns)
+        self.assertNotIn('dy', self.adf.df.columns)
+        self.assertEqual(self.adf.get_compression_state('dy'), CompressionState.COMPRESSED)
+
+    def test_export_schema_include_state_true(self):
+        """Test export_schema_v2 with include_state=True includes state fields."""
+        from dfextensions.AliasDataFrame import CompressionState
+        
+        self.adf.compress_columns({'dy': self.spec['dy']})
+        
+        schema = self.adf.export_schema_v2(include_state=True)
+        comp = schema.get('compression', {}).get('dy', {})
+        
+        # State fields should be present
+        self.assertIn('state', comp)
+        self.assertIn('original_removed', comp)
+        self.assertEqual(comp['state'], CompressionState.COMPRESSED)
+    
+    def test_export_schema_include_state_false(self):
+        """Test export_schema_v2 with include_state=False excludes state fields."""
+        from dfextensions.AliasDataFrame import CompressionState
+        
+        self.adf.compress_columns({'dy': self.spec['dy']})
+        
+        schema = self.adf.export_schema_v2(include_state=False)
+        comp = schema.get('compression', {}).get('dy', {})
+        
+        # State fields should NOT be present
+        self.assertNotIn('state', comp)
+        self.assertNotIn('original_removed', comp)
+        
+        # Definition fields should still be present
+        self.assertIn('compress_expr', comp)
+        self.assertIn('decompress_expr', comp)
+        self.assertIn('compressed_dtype', comp)
+        self.assertIn('decompressed_dtype', comp)
+
+    def test_export_schema_include_state_false_no_leakage(self):
+        """Test that state/original_removed never leak into any compression block.
+        
+        GPT review suggestion: ensure no state fields appear anywhere,
+        including in subframes.
+        """
+        from dfextensions.AliasDataFrame import CompressionState
+        
+        self.adf.compress_columns({'dy': self.spec['dy']})
+        
+        schema = self.adf.export_schema_v2(include_state=False, include_subframes=True)
+        
+        # Helper to walk all compression blocks (main + subframes recursively)
+        def walk_compression_blocks(s):
+            if 'compression' in s:
+                yield s['compression']
+            for sf in s.get('subframes', {}).values():
+                if isinstance(sf, dict):
+                    yield from walk_compression_blocks(sf)
+        
+        # Ensure no state fields anywhere
+        for comp_block in walk_compression_blocks(schema):
+            for name, cfg in comp_block.items():
+                if name == '__meta__':
+                    continue
+                self.assertNotIn('state', cfg, 
+                    f"state should not appear in compression block for {name}")
+                self.assertNotIn('original_removed', cfg,
+                    f"original_removed should not appear in compression block for {name}")
+
+    def test_definition_schema_infers_schema_only_state(self):
+        """Test that loading a definition schema (no state) infers SCHEMA_ONLY.
+        
+        When a schema is exported with include_state=False, loading it should
+        result in SCHEMA_ONLY state (not None/unknown), allowing compress_columns()
+        to work correctly.
+        """
+        from dfextensions.AliasDataFrame import CompressionState
+        
+        # Simulate loading a definition schema (no state field)
+        self.adf._schema['compression']['dy'] = {
+            'compressed_col': 'dy_c',
+            'compress_expr': 'round(asinh(dy)*40)',
+            'decompress_expr': 'sinh(dy_c/40.)',
+            'compressed_dtype': 'int16',
+            'decompressed_dtype': 'float16'
+            # NO 'state' field - this is definition-only schema
+        }
+        
+        # State should be inferred as SCHEMA_ONLY
+        self.assertEqual(self.adf.get_compression_state('dy'), CompressionState.SCHEMA_ONLY)
+        
+        # compress_columns should work (transition SCHEMA_ONLY → COMPRESSED)
+        self.adf.compress_columns(columns=['dy'])
+        
+        self.assertEqual(self.adf.get_compression_state('dy'), CompressionState.COMPRESSED)
+        self.assertIn('dy_c', self.adf.df.columns)
+        self.assertNotIn('dy', self.adf.df.columns)
+
+    def test_definition_schema_export_no_alias_for_compression_targets(self):
+        """Test that definition schema exports compression targets as physical columns.
+        
+        When exporting with include_state=False:
+        - Compression targets (e.g., dy) should be exported as physical columns (no expr)
+        - Compressed storage columns (e.g., dy_c) should NOT be exported
+        """
+        from dfextensions.AliasDataFrame import CompressionState
+        
+        # Compress first
+        self.adf.compress_columns({'dy': self.spec['dy']})
+        
+        # Export definition schema
+        def_schema = self.adf.export_schema_v2(include_state=False)
+        
+        # dy should be physical column (no expr)
+        dy_col = def_schema.get('columns', {}).get('dy', {})
+        self.assertNotIn('expr', dy_col, "Definition schema should not have expr for compression targets")
+        self.assertIn('dtype', dy_col)
+        
+        # dy_c should NOT be in columns (doesn't exist in fresh data)
+        self.assertNotIn('dy_c', def_schema.get('columns', {}), 
+            "Definition schema should not include compressed storage columns")
+        
+        # Compression section should still have the definitions
+        self.assertIn('dy', def_schema.get('compression', {}))
+        comp = def_schema['compression']['dy']
+        self.assertIn('compress_expr', comp)
+        self.assertIn('decompress_expr', comp)
+        self.assertNotIn('state', comp)  # No state in definition schema
+
+    def test_definition_schema_roundtrip_compress(self):
+        """Test full workflow: compress → export definition → load fresh → compress.
+        
+        This is the real-world use case that was failing with cycle detection.
+        """
+        from dfextensions.AliasDataFrame import AliasDataFrame, CompressionState
+        
+        # Compress original data
+        self.adf.compress_columns({'dy': self.spec['dy']})
+        
+        # Export definition schema
+        def_schema = self.adf.export_schema_v2(include_state=False)
+        
+        # Create fresh data (simulating loading new uncompressed file)
+        fresh_df = pd.DataFrame({
+            'dy': np.random.randn(50).astype(np.float32),
+            'x': np.random.randn(50).astype(np.float32)
+        })
+        fresh_adf = AliasDataFrame(fresh_df)
+        
+        # Apply compression definitions from schema
+        fresh_adf._schema['compression'] = def_schema.get('compression', {})
+        
+        # This should NOT fail with "Cycle detected"
+        fresh_adf.compress_columns(columns=['dy'])
+        
+        # Verify compression worked
+        self.assertIn('dy_c', fresh_adf.df.columns)
+        self.assertNotIn('dy', fresh_adf.df.columns)
+        self.assertEqual(fresh_adf.get_compression_state('dy'), CompressionState.COMPRESSED)
+
+    def test_record_schema_includes_aliases(self):
+        """Test that record schema (include_state=True) includes aliases correctly."""
+        from dfextensions.AliasDataFrame import CompressionState
+        
+        # Compress
+        self.adf.compress_columns({'dy': self.spec['dy']})
+        
+        # Export record schema
+        rec_schema = self.adf.export_schema_v2(include_state=True)
+        
+        # dy should be an alias in record schema
+        dy_col = rec_schema.get('columns', {}).get('dy', {})
+        self.assertIn('expr', dy_col, "Record schema should have expr for aliases")
+        
+        # dy_c should exist
+        self.assertIn('dy_c', rec_schema.get('columns', {}))
+        
+        # State should be included
+        comp = rec_schema.get('compression', {}).get('dy', {})
+        self.assertIn('state', comp)
+
     def test_collision_same_schema_recompression(self):
         """Test recompression with matching schema is allowed"""
         from dfextensions.AliasDataFrame import CompressionState

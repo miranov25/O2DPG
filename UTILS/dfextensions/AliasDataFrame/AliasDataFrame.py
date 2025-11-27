@@ -589,7 +589,7 @@ def _export_column_spec_v2(col_name, col_info, df=None):
     return result
 
 
-def _export_subframe_schema_v2(subframe_entry, include_precision_stats=False):
+def _export_subframe_schema_v2(subframe_entry, include_precision_stats=False, include_state=True):
     """
     Export a subframe's full schema recursively.
     
@@ -599,6 +599,8 @@ def _export_subframe_schema_v2(subframe_entry, include_precision_stats=False):
         Entry from SubframeRegistry: {'frame': adf, 'index': [...]}
     include_precision_stats : bool
         Whether to include precision statistics in compression section
+    include_state : bool
+        Whether to include runtime state fields (state, original_removed)
         
     Returns
     -------
@@ -622,17 +624,40 @@ def _export_subframe_schema_v2(subframe_entry, include_precision_stats=False):
     columns = {}
     sf_schema = sf_adf._schema if hasattr(sf_adf, '_schema') else {}
     sf_df = sf_adf.df if hasattr(sf_adf, 'df') else None
+    compression_info = sf_schema.get('compression', {})
+    
+    # Build set of compressed column names to exclude in definition mode
+    compressed_col_names = set()
+    compression_targets = set()
+    if not include_state:
+        for orig_col, comp_info in compression_info.items():
+            if orig_col == '__meta__':
+                continue
+            compressed_col_names.add(comp_info.get('compressed_col', f'{orig_col}_c'))
+            compression_targets.add(orig_col)
     
     # Physical columns from DataFrame
     if sf_df is not None:
         for col in sf_df.columns:
+            # In definition mode, skip compressed storage columns
+            if not include_state and col in compressed_col_names:
+                continue
             col_info = sf_schema.get('columns', {}).get(col, {})
             columns[col] = _export_column_spec_v2(col, col_info, sf_df)
     
     # Aliases from schema
     for col, col_info in sf_schema.get('columns', {}).items():
         if col not in columns:
-            columns[col] = _export_column_spec_v2(col, col_info)
+            # In definition mode, compression targets as physical columns
+            if not include_state and col in compression_targets:
+                decompressed_dtype = compression_info.get(col, {}).get('decompressed_dtype')
+                physical_info = col_info.copy()
+                physical_info.pop('expr', None)
+                if decompressed_dtype:
+                    physical_info['dtype'] = decompressed_dtype
+                columns[col] = _export_column_spec_v2(col, physical_info)
+            else:
+                columns[col] = _export_column_spec_v2(col, col_info)
     
     if columns:
         result['columns'] = columns
@@ -650,11 +675,16 @@ def _export_subframe_schema_v2(subframe_entry, include_precision_stats=False):
                 continue
             
             entry = {}
-            # Required fields
-            for field in ['compressed_col', 'compress_expr', 'decompress_expr', 
-                          'state', 'original_removed']:
+            # Required fields (always included)
+            for field in ['compressed_col', 'compress_expr', 'decompress_expr']:
                 if field in info:
                     entry[field] = info[field]
+            
+            # State fields (optional)
+            if include_state:
+                for field in ['state', 'original_removed']:
+                    if field in info:
+                        entry[field] = info[field]
             
             # Convert dtypes to strings using helper
             for dtype_field in ['compressed_dtype', 'decompressed_dtype']:
@@ -2777,6 +2807,7 @@ class AliasDataFrame:
         -------
         str or None
             CompressionState constant if column is tracked, None otherwise
+            Returns SCHEMA_ONLY if compression definition exists but no state
 
         Examples
         --------
@@ -2785,7 +2816,18 @@ class AliasDataFrame:
         """
         if column not in self.compression_info or column == "__meta__":
             return None
-        return self.compression_info[column].get('state')
+        
+        state = self.compression_info[column].get('state')
+        
+        # If compression definition exists but no state, treat as SCHEMA_ONLY
+        # This happens when loading a definition-only schema (include_state=False)
+        if state is None:
+            # Verify this is a real compression definition (has required fields)
+            info = self.compression_info[column]
+            if info.get('compress_expr') or info.get('decompress_expr'):
+                return CompressionState.SCHEMA_ONLY
+        
+        return state
 
     def is_compressed(self, column):
         """
@@ -3087,6 +3129,33 @@ class AliasDataFrame:
                 continue  # Don't compress data, just store schema
 
             # For actual compression (inline, reuse, or selective mode):
+            
+            # EARLY CHECK: If data is physically already compressed
+            # This handles mixed-state scenarios where embedded schema may be inconsistent
+            data_is_physically_compressed = (
+                compressed_col in self.df.columns and
+                orig_col not in self.df.columns
+            )
+            if data_is_physically_compressed:
+                # Data is already in compressed form
+                # If a new schema is being provided, check if it differs
+                if schema_mode in ('selective', 'inline') and compression_spec:
+                    existing_schema = self._schema_from_info(orig_col)
+                    new_schema = compression_spec.get(orig_col, {})
+                    if not self._schemas_equal(existing_schema, new_schema):
+                        # Different schema - cannot change schema of compressed column
+                        raise ValueError(
+                            f"Column '{orig_col}' is already compressed with a different schema. "
+                            f"Please decompress first before applying new compression schema:\n"
+                            f"  adf.decompress_columns(['{orig_col}'], keep_schema=False)\n"
+                            f"  adf.compress_columns(new_spec, columns=['{orig_col}'])"
+                        )
+                # Same schema or no new schema - skip (idempotent)
+                # Update state to reflect reality
+                if orig_col in self._schema.get('compression', {}):
+                    self._schema['compression'][orig_col]['state'] = CompressionState.COMPRESSED
+                continue
+            
             # Special handling for selective mode with COMPRESSED state
             if schema_mode == 'selective' and current_state == CompressionState.COMPRESSED:
                 # Check if schema is the same or different
@@ -3105,9 +3174,26 @@ class AliasDataFrame:
 
             # Standard state validation for non-selective modes
             if current_state == CompressionState.COMPRESSED:
-                # Idempotent behavior: skip already compressed columns
-                continue
-            elif current_state == CompressionState.SCHEMA_ONLY:
+                # Verify data is actually compressed, not just schema state
+                # This handles case where schema was loaded but data wasn't compressed
+                comp_info = self._schema['compression'].get(orig_col, {})
+                compressed_col_name = comp_info.get('compressed_col', f'{orig_col}_c')
+                data_is_compressed = (
+                    compressed_col_name in self.df.columns and
+                    orig_col not in self.df.columns
+                )
+                
+                if data_is_compressed:
+                    # Truly compressed - skip (idempotent)
+                    continue
+                else:
+                    # Schema says compressed but data isn't - treat as SCHEMA_ONLY
+                    # Update state to reflect reality
+                    self._schema['compression'][orig_col]['state'] = CompressionState.SCHEMA_ONLY
+                    current_state = CompressionState.SCHEMA_ONLY
+                    # Fall through to compress
+            
+            if current_state == CompressionState.SCHEMA_ONLY:
                 # Valid transition: SCHEMA_ONLY → COMPRESSED
                 pass
             elif current_state == CompressionState.DECOMPRESSED:
@@ -3670,6 +3756,336 @@ class AliasDataFrame:
         
         return None, None
 
+    def validate_schema(
+        self,
+        check_data: bool = True,
+        allow_missing_columns: bool = True,
+        allow_pending_aliases: bool = True,
+        strict: bool = False,
+        raise_on_error: bool = False,
+        verbose: bool = True
+    ):
+        """
+        Validate schema consistency, optionally checking against DataFrame state.
+        
+        This method validates the schema (definition/blueprint) and optionally
+        checks consistency with the current DataFrame state (runtime).
+        
+        Two modes:
+        - check_data=True (default): Validate schema AND check against DataFrame
+        - check_data=False: Validate schema structure only (for templates/blueprints)
+        
+        Parameters
+        ----------
+        check_data : bool, default=True
+            If True, validate schema against current DataFrame contents.
+            If False, validate schema structure only (for definition schemas/templates).
+            
+        allow_missing_columns : bool, default=True
+            If True, columns in schema but not in DataFrame are valid (pending state).
+            Schema-as-specification: columns can be defined before they exist in data.
+            Only relevant when check_data=True.
+            
+        allow_pending_aliases : bool, default=True
+            If True, aliases with missing dependencies are valid (pending).
+            Dependencies may be provided later via subframes or other means.
+            Only relevant when check_data=True.
+            
+        strict : bool, default=False
+            Convenience parameter. If True, sets allow_missing_columns=False and
+            allow_pending_aliases=False. Use after all subframes are registered
+            and before compression to ensure all dependencies are present.
+            
+        raise_on_error : bool, default=False
+            If True, raise ValueError on first error. If False, collect all issues.
+            
+        verbose : bool, default=True
+            If True, print validation results.
+            
+        Returns
+        -------
+        dict
+            Validation results with keys:
+            - 'valid': bool - True if no errors (respecting allow_* flags)
+            - 'errors': list of error messages
+            - 'warnings': list of warning messages
+            - 'pending': list of pending items (missing columns, unresolved aliases)
+            - 'info': dict with detailed state info
+            
+        Examples
+        --------
+        >>> # Default validation (permissive - pending allowed)
+        >>> result = adf.validate_schema()
+        
+        >>> # Strict validation (no pending allowed)
+        >>> result = adf.validate_schema(strict=True)
+        
+        >>> # Template/blueprint validation (schema only, no data check)
+        >>> result = adf.validate_schema(check_data=False)
+        """
+        # Apply strict mode
+        if strict:
+            allow_missing_columns = False
+            allow_pending_aliases = False
+        
+        errors = []
+        warnings = []
+        pending = []
+        info = {
+            'compression_targets': [],
+            'physical_columns': list(self.df.columns),
+            'aliases': list(self.aliases.keys()),
+            'pending_aliases': [],
+            'pending_columns': [],
+            'compression_state_mismatches': []
+        }
+        
+        # =====================================================================
+        # 1. Schema structure validation (always performed)
+        # =====================================================================
+        
+        # Check for required schema sections
+        if 'columns' not in self._schema:
+            self._schema['columns'] = {}
+        if 'compression' not in self._schema:
+            self._schema['compression'] = {}
+        
+        # Validate compression definitions have required fields
+        compression_info = self._schema.get('compression', {})
+        for orig_col, comp_info in compression_info.items():
+            if orig_col == '__meta__':
+                continue
+            info['compression_targets'].append(orig_col)
+            
+            # Check required fields
+            required_fields = ['compress_expr', 'decompress_expr']
+            for field in required_fields:
+                if field not in comp_info:
+                    warnings.append(f"Compression '{orig_col}': missing '{field}'")
+        
+        # =====================================================================
+        # 2. Data consistency validation (only if check_data=True)
+        # =====================================================================
+        
+        if check_data:
+            # -----------------------------------------------------------------
+            # 2a. Check for compression cycle risks (ALWAYS an error)
+            # -----------------------------------------------------------------
+            for orig_col, comp_info in compression_info.items():
+                if orig_col == '__meta__':
+                    continue
+                
+                compressed_col = comp_info.get('compressed_col', f'{orig_col}_c')
+                
+                # Check if orig_col is registered as alias depending on compressed_col
+                if orig_col in self.aliases:
+                    expr = self.aliases[orig_col]
+                    if compressed_col in expr:
+                        # Check actual data state
+                        has_compressed = compressed_col in self.df.columns
+                        has_original = orig_col in self.df.columns
+                        
+                        if has_original and not has_compressed:
+                            # Original column exists as physical, but alias says it depends on _c
+                            # This WILL cause cycle when compressing
+                            err = (
+                                f"CYCLE RISK: '{orig_col}' is registered as alias "
+                                f"depending on '{compressed_col}', but '{orig_col}' "
+                                f"is a physical column. Compression will fail.\n"
+                                f"  Hint: This usually means a definition schema was loaded "
+                                f"with runtime state. Re-export with include_state=False."
+                            )
+                            errors.append(err)
+                            if raise_on_error:
+                                raise ValueError(err)
+            
+            # -----------------------------------------------------------------
+            # 2b. Check compression state vs actual data
+            # -----------------------------------------------------------------
+            for orig_col, comp_info in compression_info.items():
+                if orig_col == '__meta__':
+                    continue
+                    
+                compressed_col = comp_info.get('compressed_col', f'{orig_col}_c')
+                state = self.get_compression_state(orig_col)
+                
+                has_compressed = compressed_col in self.df.columns
+                has_original = orig_col in self.df.columns
+                is_alias = orig_col in self.aliases
+                
+                # Determine actual state from data
+                if has_compressed and not has_original:
+                    actual_state = 'compressed'
+                elif has_original and not has_compressed:
+                    actual_state = 'decompressed' if is_alias else 'uncompressed'
+                elif has_original and has_compressed:
+                    actual_state = 'both_exist'
+                else:
+                    actual_state = 'neither_exist'
+                
+                # Compare with schema state
+                if state == CompressionState.COMPRESSED and actual_state != 'compressed':
+                    mismatch = f"'{orig_col}': schema says 'compressed' but actual is '{actual_state}'"
+                    info['compression_state_mismatches'].append(mismatch)
+                    warnings.append(f"STATE MISMATCH: {mismatch}")
+                
+                if actual_state == 'both_exist':
+                    warnings.append(f"UNUSUAL: Both '{orig_col}' and '{compressed_col}' exist in DataFrame")
+            
+            # -----------------------------------------------------------------
+            # 2c. Check for pending aliases (missing dependencies)
+            # -----------------------------------------------------------------
+            for alias_name, expr in self.aliases.items():
+                missing_deps = self._find_missing_dependencies(alias_name)
+                
+                if missing_deps:
+                    info['pending_aliases'].append({
+                        'name': alias_name,
+                        'missing': missing_deps
+                    })
+                    
+                    pending_msg = f"Pending alias '{alias_name}': missing {missing_deps}"
+                    pending.append(pending_msg)
+                    
+                    if not allow_pending_aliases:
+                        errors.append(pending_msg)
+                        if raise_on_error:
+                            raise ValueError(pending_msg)
+            
+            # -----------------------------------------------------------------
+            # 2d. Check for missing columns (in schema but not in data)
+            # -----------------------------------------------------------------
+            schema_columns = self._schema.get('columns', {})
+            for col_name, col_info in schema_columns.items():
+                # Skip aliases (they're computed, not physical)
+                if col_info.get('expr'):
+                    continue
+                
+                if col_name not in self.df.columns:
+                    info['pending_columns'].append(col_name)
+                    pending_msg = f"Pending column '{col_name}': defined in schema but not in DataFrame"
+                    pending.append(pending_msg)
+                    
+                    if not allow_missing_columns:
+                        errors.append(pending_msg)
+                        if raise_on_error:
+                            raise ValueError(pending_msg)
+        
+        # =====================================================================
+        # 3. Build result
+        # =====================================================================
+        result = {
+            'valid': len(errors) == 0,
+            'errors': errors,
+            'warnings': warnings,
+            'pending': pending,
+            'info': info
+        }
+        
+        # =====================================================================
+        # 4. Print report if verbose
+        # =====================================================================
+        if verbose:
+            print("=" * 60)
+            print("SCHEMA VALIDATION REPORT")
+            print("=" * 60)
+            
+            mode = "Full (schema + data)" if check_data else "Schema only (blueprint)"
+            print(f"Mode: {mode}")
+            print()
+            
+            if result['valid']:
+                print("✓ Schema is valid (no errors)")
+            else:
+                print(f"✗ Schema has {len(errors)} error(s)")
+            
+            if errors:
+                print("\nERRORS:")
+                for err in errors:
+                    # Handle multi-line errors
+                    lines = err.split('\n')
+                    print(f"  • {lines[0]}")
+                    for line in lines[1:]:
+                        print(f"    {line}")
+            
+            if warnings:
+                print(f"\nWARNINGS ({len(warnings)}):")
+                for warn in warnings:
+                    print(f"  • {warn}")
+            
+            if pending and check_data:
+                status = "allowed" if (allow_missing_columns and allow_pending_aliases) else "NOT allowed"
+                print(f"\nPENDING ({len(pending)}) - {status}:")
+                for p in pending[:10]:  # Show first 10
+                    print(f"  • {p}")
+                if len(pending) > 10:
+                    print(f"  ... and {len(pending) - 10} more")
+            
+            print(f"\nSummary:")
+            print(f"  Compression targets: {len(info['compression_targets'])}")
+            print(f"  Physical columns: {len(info['physical_columns'])}")
+            print(f"  Registered aliases: {len(info['aliases'])}")
+            if check_data:
+                print(f"  Pending aliases: {len(info['pending_aliases'])}")
+                print(f"  Pending columns: {len(info['pending_columns'])}")
+            print("=" * 60)
+        
+        return result
+
+    def _find_missing_dependencies(self, alias_name):
+        """
+        Find missing dependencies for an alias.
+        
+        Returns list of column names that are referenced but not available.
+        """
+        if alias_name not in self.aliases:
+            return []
+        
+        expr = self.aliases[alias_name]
+        
+        # Get all available columns (physical + other aliases + subframe refs)
+        available = set(self.df.columns)
+        available.update(self.aliases.keys())
+        
+        # Add subframe columns (T.column syntax will be handled during eval)
+        for sf_name, sf_entry in self._subframes.subframes.items():
+            sf_adf = sf_entry.get('frame')
+            if sf_adf:
+                # Add direct column names (auto_alias_subframe makes them available)
+                available.update(sf_adf.df.columns)
+                available.update(sf_adf.aliases.keys())
+        
+        # Simple token extraction (not perfect but catches most cases)
+        import re
+        # Match identifiers but not inside strings or after dots
+        tokens = set(re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b', expr))
+        
+        # Remove known functions and constants
+        builtins = {
+            'sin', 'cos', 'tan', 'exp', 'log', 'log10', 'sqrt', 'abs', 'pow',
+            'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh',
+            'arcsin', 'arccos', 'arctan', 'arctan2', 'atan2',
+            'floor', 'ceil', 'round', 'int', 'float', 'bool',
+            'min', 'max', 'sum', 'mean', 'std', 'var',
+            'pi', 'e', 'inf', 'nan', 'True', 'False',
+            'where', 'clip', 'sign', 'deg2rad', 'rad2deg',
+            'int8', 'int16', 'int32', 'int64', 'uint8', 'uint16', 'uint32', 'uint64',
+            'float16', 'float32', 'float64'
+        }
+        tokens -= builtins
+        
+        # Find missing
+        missing = []
+        for token in tokens:
+            if token not in available:
+                # Check if it's a subframe reference (T.column)
+                # The token would be 'T' and we'd see '.column' after
+                if token in self._subframes.subframes:
+                    continue  # Subframe name is valid
+                missing.append(token)
+        
+        return missing
+
     def describe_compression(self, verbosity=0x07, pattern=None, names=None, as_dict=False,
                              only_compressed=False, only_decompressed=False, 
                              only_failed=False, color=False):
@@ -3734,9 +4150,13 @@ class AliasDataFrame:
         result = {}
         for name in selected:
             info = columns_info[name]
+            # Use get_compression_state() to properly infer state for definition schemas
+            state = self.get_compression_state(name)
+            if state is None:
+                state = 'unknown'
             entry = {
                 'name': name,
-                'state': info.get('state', 'unknown'),
+                'state': state,
                 'compressed_col': info.get('compressed_col'),
                 'compressed_dtype': info.get('compressed_dtype'),
                 'decompressed_dtype': info.get('decompressed_dtype'),
@@ -4569,8 +4989,8 @@ class AliasDataFrame:
         # Return all fields except dtype and expr
         return {k: v for k, v in col_info.items() if k not in ('dtype', 'expr', 'constant')}
 
-    def export_schema_v2(self, include_precision_stats=False, include_subframes=True,
-                         within_group_sort="schema"):
+    def export_schema_v2(self, include_precision_stats=False, include_state=True,
+                         include_subframes=True, within_group_sort="schema"):
         """
         Export schema as JSON-safe dictionary (v2 format).
         
@@ -4595,6 +5015,10 @@ class AliasDataFrame:
             Whether to include precision statistics (RMSE, max_error, etc.) in 
             compression section. The compression definitions (expressions, dtypes,
             state) are always included.
+        include_state : bool, default=True
+            Whether to include runtime state fields (state, original_removed).
+            Set to False for "definition-only" schemas suitable for editing/sharing.
+            Set to True for "record" schemas that capture current data state.
         include_subframes : bool, default=True
             Whether to include recursive subframe schemas
         within_group_sort : str, default="schema"
@@ -4620,16 +5044,42 @@ class AliasDataFrame:
         columns = OrderedDict()
         schema_columns = self._schema.get('columns', {})
         groups = self._schema.get('groups', {})
+        compression_info = self._schema.get('compression', {})
+        
+        # Build set of compressed column names (e.g., dy_c) to exclude in definition mode
+        compressed_col_names = set()
+        compression_targets = set()  # Original column names (e.g., dy)
+        if not include_state:
+            for orig_col, comp_info in compression_info.items():
+                if orig_col == '__meta__':
+                    continue
+                compressed_col_names.add(comp_info.get('compressed_col', f'{orig_col}_c'))
+                compression_targets.add(orig_col)
         
         # Physical columns from DataFrame first
         for col in self.df.columns:
+            # In definition mode, skip compressed storage columns (e.g., dy_c)
+            # They don't exist in fresh data
+            if not include_state and col in compressed_col_names:
+                continue
             col_info = schema_columns.get(col, {})
             columns[col] = _export_column_spec_v2(col, col_info, self.df)
         
         # Aliases from schema (not in DataFrame)
         for col, col_info in schema_columns.items():
             if col not in columns:
-                columns[col] = _export_column_spec_v2(col, col_info)
+                # In definition mode, compression targets should be exported as physical columns
+                # (no expr), because in fresh data they ARE physical columns
+                if not include_state and col in compression_targets:
+                    # Export as physical column with decompressed dtype
+                    decompressed_dtype = compression_info.get(col, {}).get('decompressed_dtype')
+                    physical_info = col_info.copy()
+                    physical_info.pop('expr', None)  # Remove alias expression
+                    if decompressed_dtype:
+                        physical_info['dtype'] = decompressed_dtype
+                    columns[col] = _export_column_spec_v2(col, physical_info)
+                else:
+                    columns[col] = _export_column_spec_v2(col, col_info)
         
         # Order by groups
         columns = _order_columns_by_groups(columns, groups, within_group_sort)
@@ -4664,11 +5114,12 @@ class AliasDataFrame:
                     if dtype_field in info and info[dtype_field] is not None:
                         entry[dtype_field] = _dtype_to_str(info[dtype_field])
                 
-                # State and flags
-                if 'state' in info:
-                    entry['state'] = info['state']
-                if 'original_removed' in info:
-                    entry['original_removed'] = info['original_removed']
+                # State and flags (optional - for record schemas, not definition schemas)
+                if include_state:
+                    if 'state' in info:
+                        entry['state'] = info['state']
+                    if 'original_removed' in info:
+                        entry['original_removed'] = info['original_removed']
                 
                 # Optional: precision statistics (can be verbose)
                 if include_precision_stats and 'precision' in info:
@@ -4694,7 +5145,7 @@ class AliasDataFrame:
             # Try subframe registry first
             if hasattr(self, '_subframes'):
                 for name, entry in self._subframes.items():
-                    subframes[name] = _export_subframe_schema_v2(entry, include_precision_stats)
+                    subframes[name] = _export_subframe_schema_v2(entry, include_precision_stats, include_state)
             
             # Fall back to schema if registry is empty
             if not subframes and self._schema.get('subframes'):
@@ -4709,8 +5160,79 @@ class AliasDataFrame:
         
         return result
 
-    def save_schema_v2(self, path, include_precision_stats=False, include_subframes=True,
-                       indent=2, max_line_length=100, within_group_sort="schema"):
+    def export_definition_schema(self, **kwargs):
+        """
+        Export blueprint/definition schema without runtime state.
+        
+        This exports a schema suitable for:
+        - Sharing as a template/recipe
+        - Applying to fresh data
+        - Version control
+        - Human editing
+        
+        Compression targets are exported as physical columns (no expr),
+        compressed storage columns are NOT exported, and no state fields
+        are included.
+        
+        This is a convenience wrapper for:
+            export_schema_v2(include_state=False, **kwargs)
+            
+        Parameters
+        ----------
+        **kwargs
+            Additional arguments passed to export_schema_v2
+            (include_precision_stats, include_subframes, within_group_sort)
+            
+        Returns
+        -------
+        dict
+            Definition schema dictionary
+            
+        See Also
+        --------
+        export_record_schema : Export with runtime state
+        export_schema_v2 : Full export with all options
+        """
+        return self.export_schema_v2(include_state=False, **kwargs)
+
+    def export_record_schema(self, **kwargs):
+        """
+        Export schema with current runtime state (snapshot).
+        
+        This exports a schema that captures:
+        - Current compression state (compressed/decompressed)
+        - Which columns have been removed (original_removed)
+        - Aliases reflecting current decompression expressions
+        
+        Suitable for:
+        - Saving exact current state
+        - Reloading to identical DataFrame configuration
+        - Debugging/diagnostics
+        
+        This is a convenience wrapper for:
+            export_schema_v2(include_state=True, **kwargs)
+            
+        Parameters
+        ----------
+        **kwargs
+            Additional arguments passed to export_schema_v2
+            (include_precision_stats, include_subframes, within_group_sort)
+            
+        Returns
+        -------
+        dict
+            Record schema dictionary with runtime state
+            
+        See Also
+        --------
+        export_definition_schema : Export without runtime state
+        export_schema_v2 : Full export with all options
+        """
+        return self.export_schema_v2(include_state=True, **kwargs)
+
+    def save_schema_v2(self, path, include_precision_stats=False, include_state=True,
+                       include_subframes=True, indent=2, max_line_length=100, 
+                       within_group_sort="schema"):
         """
         Save schema to JSON file (v2 format).
         
@@ -4725,6 +5247,9 @@ class AliasDataFrame:
         include_precision_stats : bool, default=False
             Whether to include precision statistics (RMSE, max_error, etc.) in
             compression section. Compression definitions are always included.
+        include_state : bool, default=True
+            Whether to include runtime state fields (state, original_removed).
+            Set to False for "definition-only" schemas suitable for editing/sharing.
         include_subframes : bool, default=True
             Whether to include recursive subframe schemas
         indent : int, default=2
@@ -4737,6 +5262,7 @@ class AliasDataFrame:
         """
         schema = self.export_schema_v2(
             include_precision_stats=include_precision_stats,
+            include_state=include_state,
             include_subframes=include_subframes,
             within_group_sort=within_group_sort
         )
@@ -4842,6 +5368,24 @@ class AliasDataFrame:
         warn_missing : bool, default=True
             If True, warn about columns in schema but not in data
         """
+        # Check for old-format definition schemas (compression target has expr)
+        # This indicates a schema that was exported with runtime state when it
+        # should have been exported as a definition schema (include_state=False)
+        compression_targets = set(schema.get('compression', {}).keys()) - {'__meta__'}
+        columns_info = schema.get('columns', {})
+        
+        for target in compression_targets:
+            if target in columns_info and columns_info[target].get('expr'):
+                warnings.warn(
+                    f"Column '{target}' is a compression target but has 'expr' in schema. "
+                    f"This indicates an old-format definition schema that was exported with "
+                    f"runtime state. Re-export with include_state=False (or use "
+                    f"export_definition_schema()) to create a proper definition schema. "
+                    f"The schema will still load, but may cause issues when compressing.",
+                    DeprecationWarning,
+                    stacklevel=2
+                )
+        
         # Apply dtypes to physical columns
         if 'columns' in schema:
             for name, info in schema['columns'].items():
