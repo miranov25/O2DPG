@@ -25,6 +25,7 @@ Performance benchmarks for AliasDataFrame operations.
 | `benchmark_subframe.py` | Subframe join tests | ROOT file |
 | `benchmark_parallel.py` | Worker scaling analysis | ROOT file |
 | `generate_synthetic_data.py` | Create test ROOT file | None |
+| `diagnose_read_performance.py` | **Diagnose slowdowns** | ROOT file |
 
 ## run_benchmark.sh (Main Entry Point)
 
@@ -392,6 +393,166 @@ SUMMARY: 8 passed, 0 failed
 
 **Coverage:** Percentage of main frame keys that exist in the subframe. <100% is normal (not all clusters belong to tracks).
 
+## diagnose_read_performance.py
+
+**Diagnostic tool** for identifying root causes of read performance issues.
+
+### Purpose
+
+When you experience unexpected slowdowns (e.g., 100x slower reads), this tool helps identify:
+- Thread contention issues
+- Filesystem caching effects
+- Network I/O bottlenecks
+- AliasDataFrame overhead
+
+### Tests Performed
+
+| Test | What It Measures | Identifies |
+|------|------------------|------------|
+| `workers` | Scaling with 1,2,4,8,16 workers | Thread contention, optimal worker count |
+| `cache` | 5 sequential reads | Cold vs warm cache effect |
+| `local` | Network vs /tmp storage | I/O bandwidth bottleneck |
+| `overhead` | Raw uproot vs AliasDataFrame | ADF processing overhead |
+
+### Usage
+
+```bash
+# Run all diagnostic tests
+python diagnose_read_performance.py data.root
+
+# Run specific test
+python diagnose_read_performance.py data.root --test workers
+python diagnose_read_performance.py data.root --test cache
+python diagnose_read_performance.py data.root --test local
+python diagnose_read_performance.py data.root --test overhead
+
+# Quick test with limited entries
+python diagnose_read_performance.py data.root --entries 100000
+
+# Custom worker counts
+python diagnose_read_performance.py data.root --workers "1,2,4,8,12,16,32"
+
+# Export results to JSON
+python diagnose_read_performance.py data.root --json results.json
+```
+
+### Output Example
+
+```
+============================================================
+ALIASDATAFRAME READ PERFORMANCE DIAGNOSTIC
+============================================================
+File:      data.root
+Size:      254.6 MB
+Tree:      tree
+
+Host:      lxbk1130
+Platform:  Linux-4.18.0-x86_64
+CPUs:      256
+FS Type:   lustre
+
+============================================================
+TEST: WORKER SCALING
+============================================================
+Purpose: Find optimal worker count, detect thread contention
+
+  workers= 1:    4.50s  speedup=(baseline)  (12,630,498 rows)
+  workers= 2:    1.83s  speedup=   2.46x    (12,630,498 rows)
+  workers= 4:    1.12s  speedup=   4.00x    (12,630,498 rows)
+  workers= 8:    0.83s  speedup=   5.45x    (12,630,498 rows)
+  workers=16:    0.81s  speedup=   5.56x    (12,630,498 rows)
+
+Analysis:
+  Best:  workers=8 (0.83s)
+  Worst: workers=1 (4.50s)
+
+============================================================
+TEST: COLD VS WARM CACHE
+============================================================
+Purpose: Measure filesystem caching effect (5 sequential reads)
+
+  Read 1 (COLD  ):    1.18s  (12,630,498 rows)
+  Read 2 (WARM-1):    1.16s  (12,630,498 rows)
+  Read 3 (WARM-2):    1.14s  (12,630,498 rows)
+  Read 4 (WARM-3):    1.14s  (12,630,498 rows)
+  Read 5 (WARM-4):    1.12s  (12,630,498 rows)
+
+Analysis:
+  Cold read:     1.18s
+  Warm average:  1.14s
+  Cache benefit: 3%
+
+✓ Storage location has minimal impact.
+
+============================================================
+TEST: UPROOT VS ALIASDATAFRAME OVERHEAD
+============================================================
+Purpose: Measure AliasDataFrame processing overhead
+
+  Raw uproot:      2.58s  (12,630,498 rows)
+  AliasDataFrame:  1.13s  (workers=4)
+
+Analysis:
+  Overhead: -56% (0.44x)
+
+✓ AliasDataFrame is FASTER than raw uproot!
+  Threaded branch-by-branch reading provides speedup.
+
+============================================================
+RECOMMENDATIONS
+============================================================
+• Use num_workers=8 for best performance
+```
+
+### Interpreting Results
+
+**Worker Scaling:**
+- Linear speedup up to N workers → Good parallelization
+- Speedup plateaus early → I/O bound or GIL contention
+- More workers = slower → Thread contention, reduce workers
+
+**Cache Effect:**
+- Cold >> Warm → Filesystem caching significant, pre-warm for batch jobs
+- Cold ≈ Warm → No caching issues
+
+**Local vs Network:**
+- >2x speedup local → Copy to /tmp before processing
+- <1.5x speedup → Network storage is fine
+
+**Overhead:**
+- Negative overhead (ADF faster) → Threaded reading working well
+- <20% overhead → Normal
+- >100% overhead → Check subframes, reduce workers
+
+### JSON Output
+
+Results can be exported to JSON for programmatic analysis:
+
+```json
+{
+  "system_info": {
+    "hostname": "lxbk1130",
+    "platform": "Linux-4.18.0-x86_64",
+    "cpu_count": 256,
+    "filesystem_type": "lustre"
+  },
+  "workers": {
+    "results": [
+      {"workers": 1, "time_s": 4.50, "speedup": 1.0},
+      {"workers": 4, "time_s": 1.12, "speedup": 4.0},
+      {"workers": 8, "time_s": 0.83, "speedup": 5.45}
+    ]
+  },
+  "overhead": {
+    "results": {
+      "uproot": {"time_s": 2.58},
+      "aliasdataframe": {"time_s": 1.13},
+      "overhead_pct": -56.2
+    }
+  }
+}
+```
+
 ## JSON Output Format
 
 Both scripts support `--json` output for programmatic processing:
@@ -425,6 +586,7 @@ benchmarks/
 ├── README.md                      # This file
 ├── run_benchmark.sh               # Main entry point (pytest-style)
 ├── generate_synthetic_data.py     # Creates test ROOT file (~5MB)
+├── diagnose_read_performance.py   # Diagnostic tool for slowdowns (NEW)
 ├── benchmark_performance.py       # Synthetic benchmarks (NEW)
 ├── benchmark_parallel.py          # Parallel scaling tests (NEW)
 ├── benchmark_read_tree.py         # ROOT file read comparison (existing)
@@ -492,9 +654,10 @@ benchmark:
 
 ### Benchmark is slow
 
-1. Check server load: `top`, `htop`
-2. Try `num_workers=1` to isolate parallel issues
-3. Use `--quick` mode for faster iteration
+1. **Run diagnostic first:** `python diagnose_read_performance.py data.root`
+2. Check server load: `top`, `htop`
+3. Try `num_workers=1` to isolate parallel issues
+4. Use `--quick` mode for faster iteration
 
 ### Timeouts in parallel benchmark
 
@@ -514,3 +677,18 @@ benchmark:
 1. Check if code changed (regression)
 2. Check if hardware/environment changed
 3. Re-establish baseline with `--update-baselines`
+
+### Unexpected 100x slowdown
+
+This is usually caused by external factors, not code issues:
+
+1. **Run diagnostic:** `python diagnose_read_performance.py data.root --json diag.json`
+2. Check diagnostic results for:
+   - Worker scaling (thread contention?)
+   - Cache effect (cold start?)
+   - Network vs local (I/O bottleneck?)
+3. Common causes:
+   - Shared server under heavy load
+   - Network filesystem congestion
+   - Cold cache after server restart
+   - Parallel job contention
