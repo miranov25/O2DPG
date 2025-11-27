@@ -10,10 +10,13 @@
 #   ./run_benchmark.sh --quick            # Quick mode (smaller data)
 #   ./run_benchmark.sh --synthetic-only   # Only synthetic benchmarks (no ROOT files)
 #   ./run_benchmark.sh --generate-data    # Generate synthetic ROOT file first
+#   ./run_benchmark.sh --save-baseline    # Save results as new baseline
+#   ./run_benchmark.sh --compare-baseline # Compare against baseline (detect regressions)
+#   ./run_benchmark.sh --threshold 15     # Set regression threshold (default: 20%)
 #
 # Exit Codes:
 #   0 - All benchmarks passed
-#   1 - Some benchmarks failed (when --strict)
+#   1 - Some benchmarks failed or regression detected (when --strict)
 #   0 - Always (default, failures reported but not fatal)
 #
 
@@ -38,6 +41,12 @@ QUICK_MODE=""
 SYNTHETIC_ONLY=false
 GENERATE_DATA=false
 VERBOSE=false
+
+# Baseline comparison configuration
+SAVE_BASELINE=false
+COMPARE_BASELINE=false
+THRESHOLD=20
+BASELINE_FILE="${SCRIPT_DIR}/baseline.json"
 
 # Results tracking
 declare -a BENCHMARK_NAMES
@@ -141,6 +150,22 @@ while [[ $# -gt 0 ]]; do
             VERBOSE=true
             shift
             ;;
+        --save-baseline)
+            SAVE_BASELINE=true
+            shift
+            ;;
+        --compare-baseline)
+            COMPARE_BASELINE=true
+            shift
+            ;;
+        --threshold)
+            THRESHOLD="$2"
+            shift 2
+            ;;
+        --baseline)
+            BASELINE_FILE="$2"
+            shift 2
+            ;;
         --output)
             OUTPUT_DIR="$2"
             shift 2
@@ -152,16 +177,27 @@ while [[ $# -gt 0 ]]; do
             echo "  --quick            Quick mode (smaller data, faster)"
             echo "  --synthetic-only   Only run synthetic benchmarks (no ROOT file needed)"
             echo "  --generate-data    Generate synthetic ROOT file before running"
-            echo "  --strict           Exit with code 1 if any benchmark fails"
+            echo "  --strict           Exit with code 1 if any benchmark fails or regression detected"
             echo "  --verbose, -v      Show detailed output"
             echo "  --output DIR       Output directory (default: benchmarks/results)"
-            echo "  --help, -h         Show this help"
+            echo ""
+            echo "Regression Detection:"
+            echo "  --save-baseline    Save current results as new baseline"
+            echo "  --compare-baseline Compare results against baseline (detect regressions)"
+            echo "  --threshold PCT    Regression threshold percentage (default: 20)"
+            echo "  --baseline FILE    Baseline file path (default: benchmarks/baseline.json)"
             echo ""
             echo "Benchmarks:"
             echo "  benchmark_performance.py   Synthetic data tests (always runs)"
             echo "  benchmark_read_tree.py     ROOT file read tests (needs data)"
             echo "  benchmark_subframe.py      Subframe tests (needs data)"
             echo "  benchmark_parallel.py      Parallel scaling tests (needs data)"
+            echo ""
+            echo "Examples:"
+            echo "  $0                              # Run all benchmarks"
+            echo "  $0 --save-baseline              # Run and save as baseline"
+            echo "  $0 --compare-baseline --strict  # CI mode: fail on regression"
+            echo "  $0 --compare-baseline --threshold 15  # Custom threshold"
             exit 0
             ;;
         *)
@@ -352,14 +388,17 @@ if [[ "$SYNTHETIC_ONLY" = false ]] && [[ -f "$SYNTHETIC_DATA" ]]; then
         PARALLEL_ARGS="--repeats 1 --timeout 15 --max-workers 4"
     fi
     
+    # Save JSON output for baseline comparison
+    PARALLEL_JSON="${OUTPUT_DIR}/benchmark_parallel_${TIMESTAMP}.json"
+    
     START_TIME=$(get_time)
     
     if [[ "$VERBOSE" = true ]]; then
-        OUTPUT=$(python3 "${SCRIPT_DIR}/benchmark_parallel.py" "$SYNTHETIC_DATA" --treename tree $PARALLEL_ARGS 2>&1)
+        OUTPUT=$(python3 "${SCRIPT_DIR}/benchmark_parallel.py" "$SYNTHETIC_DATA" --treename tree $PARALLEL_ARGS --json "$PARALLEL_JSON" 2>&1)
         PAR_STATUS=$?
         echo "$OUTPUT"
     else
-        OUTPUT=$(python3 "${SCRIPT_DIR}/benchmark_parallel.py" "$SYNTHETIC_DATA" --treename tree $PARALLEL_ARGS --quiet 2>&1)
+        OUTPUT=$(python3 "${SCRIPT_DIR}/benchmark_parallel.py" "$SYNTHETIC_DATA" --treename tree $PARALLEL_ARGS --json "$PARALLEL_JSON" --quiet 2>&1)
         PAR_STATUS=$?
     fi
     
@@ -378,6 +417,60 @@ if [[ "$SYNTHETIC_ONLY" = false ]] && [[ -f "$SYNTHETIC_DATA" ]]; then
 else
     log_result "benchmark_parallel.py" "SKIPPED" "" "No ROOT file"
     print_status "benchmark_parallel.py" "SKIPPED" ""
+    echo ""
+fi
+
+# =============================================================================
+# Baseline Operations
+# =============================================================================
+
+# Save baseline if requested
+if [[ "$SAVE_BASELINE" = true ]]; then
+    echo "--- Saving Baseline ---"
+    
+    if python3 "${SCRIPT_DIR}/baseline_utils.py" merge "${OUTPUT_DIR}" "${BASELINE_FILE}" 2>&1; then
+        echo ""
+        echo -e "\033[32m✓ Baseline saved to: ${BASELINE_FILE}\033[0m"
+        echo "  Commit this file to track performance over time."
+    else
+        echo -e "\033[31m✗ Failed to save baseline\033[0m"
+        ((TOTAL_FAILED++))
+    fi
+    echo ""
+fi
+
+# Compare against baseline if requested
+REGRESSION_DETECTED=false
+if [[ "$COMPARE_BASELINE" = true ]]; then
+    echo "--- Comparing Against Baseline ---"
+    
+    if [[ -f "$BASELINE_FILE" ]]; then
+        COMPARE_ARGS="--threshold $THRESHOLD --latest"
+        if [[ "$STRICT_MODE" = true ]]; then
+            COMPARE_ARGS="$COMPARE_ARGS --strict"
+        fi
+        
+        # Export comparison results
+        COMPARISON_JSON="${OUTPUT_DIR}/comparison_${TIMESTAMP}.json"
+        
+        python3 "${SCRIPT_DIR}/baseline_utils.py" compare "${OUTPUT_DIR}" "$BASELINE_FILE" $COMPARE_ARGS --json "$COMPARISON_JSON"
+        COMPARE_STATUS=$?
+        
+        if [[ $COMPARE_STATUS -eq 1 ]]; then
+            REGRESSION_DETECTED=true
+            ((TOTAL_FAILED++))
+            log_result "regression_check" "FAILED" "" "Regression detected"
+        elif [[ $COMPARE_STATUS -eq 0 ]]; then
+            log_result "regression_check" "PASSED" "" "Within threshold"
+        else
+            echo -e "\033[33m⚠️  Comparison error (exit code $COMPARE_STATUS)\033[0m"
+        fi
+    else
+        echo -e "\033[33m⚠️  No baseline.json found at: ${BASELINE_FILE}\033[0m"
+        echo "   Run with --save-baseline to create one."
+        log_result "regression_check" "SKIPPED" "" "No baseline"
+        ((TOTAL_SKIPPED++))
+    fi
     echo ""
 fi
 
@@ -438,8 +531,13 @@ echo "Results saved to: ${OUTPUT_DIR}/"
 # Exit Code
 # =============================================================================
 
-if [[ "$STRICT_MODE" = true ]] && [[ $TOTAL_FAILED -gt 0 ]]; then
-    exit 1
+if [[ "$STRICT_MODE" = true ]]; then
+    if [[ $TOTAL_FAILED -gt 0 ]]; then
+        exit 1
+    fi
+    if [[ "$REGRESSION_DETECTED" = true ]]; then
+        exit 1
+    fi
 fi
 
 exit 0
