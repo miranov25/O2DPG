@@ -174,7 +174,7 @@ class TestSubframeMissingKeys(unittest.TestCase):
 
             # Check warning was emitted
             self.assertEqual(len(w), 1)
-            self.assertIn("not found", str(w[0].message).lower())
+            self.assertIn("missing", str(w[0].message).lower())
             self.assertIn("S", str(w[0].message))
 
         # Critical: All 5 rows must be preserved

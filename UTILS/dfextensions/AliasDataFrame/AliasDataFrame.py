@@ -786,6 +786,23 @@ class AliasDataFrame:
         # Phase B: Auto-alias tracking
         self._auto_aliases = {}  # {alias_name: subframe_name}
         self.index_columns = {}  # {subframe_name: [index_cols]}
+        
+        # Fill configuration for subframe joins (Phase 1: scalars only)
+        self._global_fill_config = {
+            'fill_missing': None,    # Fill value for missing keys (None = NaN)
+            'fill_nan': None,        # Fill value for NaN in subframe data
+            'fill_inf': None,        # Fill value for Inf in subframe data
+            'fill_invalid': None,    # Shortcut for both NaN and Inf
+            'warn_missing_keys': True,
+            'warn_threshold': 0.01,  # Warn if > 1% missing
+            'fill_mode': 'safe',     # 'safe' or 'direct'
+        }
+        self._subframe_fill_config = {}  # {subframe_name: {...}}
+        
+        # For aggregated warnings during materialization
+        # NOTE: _missing_key_stats is not thread-safe. If parallel 
+        # materialization is added, use thread-local storage.
+        self._missing_key_stats = {}  # {subframe_name: {'count': n, 'total': N, ...}}
 
     # =========================================================================
     # SECTION 1: Core DataFrame Operations & Schema Properties
@@ -1206,6 +1223,390 @@ class AliasDataFrame:
     def get_subframe(self, name):
         return self._subframes.get(name)
 
+    # =========================================================================
+    # Fill Configuration Methods
+    # =========================================================================
+    #
+    # Configure how missing keys and invalid values are handled during
+    # subframe joins. See set_global_fill() and set_subframe_fill() for details.
+    #
+    # =========================================================================
+
+    def set_global_fill(
+        self,
+        fill_missing=None,
+        fill_nan=None,
+        fill_inf=None,
+        fill_invalid=None,
+        warn_missing_keys=None,
+        warn_threshold=None,
+        fill_mode=None,
+        # Reserved for Phase 2 - accepted but ignored
+        patterns_missing=None,
+        patterns_nan=None,
+        patterns_inf=None,
+        patterns_invalid=None,
+    ):
+        """
+        Set global default fill behavior for all subframes.
+        
+        Subframe-specific settings (via set_subframe_fill) override these.
+        
+        Parameters
+        ----------
+        fill_missing : float, optional
+            Fill value for missing keys (row not in subframe).
+            If None, missing keys produce NaN.
+        
+        fill_nan : float, optional
+            Fill value for NaN values in subframe data.
+            Applied in 'safe' mode only.
+        
+        fill_inf : float, optional
+            Fill value for ±Inf values in subframe data.
+            Applied in 'safe' mode only.
+        
+        fill_invalid : float, optional
+            Shortcut: sets both fill_nan and fill_inf.
+            Individual fill_nan/fill_inf take precedence if specified.
+        
+        warn_missing_keys : bool, optional
+            Whether to warn about missing keys. Default True.
+        
+        warn_threshold : float, optional
+            Only warn if missing fraction > threshold. Default 0.01 (1%).
+        
+        fill_mode : str, optional
+            Performance mode:
+            - 'safe': Separate checks for missing/NaN/Inf (default)
+            - 'direct': Fill at join time, no post-processing (fastest)
+            - 'fast': Reserved for Phase 2 (raises NotImplementedError)
+        
+        patterns_missing, patterns_nan, patterns_inf, patterns_invalid : dict, optional
+            Reserved for Phase 2. Currently ignored.
+        
+        Examples
+        --------
+        >>> # Silence all warnings, fill missing with 0
+        >>> adf.set_global_fill(fill_missing=0.0, warn_missing_keys=False)
+        
+        >>> # Maximum speed for calibration
+        >>> adf.set_global_fill(fill_missing=0.0, fill_mode='direct')
+        """
+        # Validate fill_mode
+        if fill_mode is not None:
+            if fill_mode == 'fast':
+                raise NotImplementedError("fill_mode='fast' will be available in Phase 2")
+            if fill_mode not in ('safe', 'direct'):
+                raise ValueError(f"fill_mode must be 'safe' or 'direct', got '{fill_mode}'")
+            self._global_fill_config['fill_mode'] = fill_mode
+        
+        # Validate numeric types
+        for name, value in [('fill_missing', fill_missing), ('fill_nan', fill_nan),
+                            ('fill_inf', fill_inf), ('fill_invalid', fill_invalid)]:
+            if value is not None and not isinstance(value, (int, float)):
+                raise TypeError(f"{name} must be numeric, got {type(value).__name__}")
+        
+        # Apply values
+        if fill_missing is not None:
+            self._global_fill_config['fill_missing'] = fill_missing
+        if fill_nan is not None:
+            self._global_fill_config['fill_nan'] = fill_nan
+        if fill_inf is not None:
+            self._global_fill_config['fill_inf'] = fill_inf
+        if fill_invalid is not None:
+            self._global_fill_config['fill_invalid'] = fill_invalid
+        if warn_missing_keys is not None:
+            self._global_fill_config['warn_missing_keys'] = warn_missing_keys
+        if warn_threshold is not None:
+            self._global_fill_config['warn_threshold'] = warn_threshold
+        
+        # Pattern parameters are reserved for Phase 2 - silently ignore
+
+    def set_subframe_fill(
+        self,
+        subframe_name,
+        fill_missing=None,
+        fill_nan=None,
+        fill_inf=None,
+        fill_invalid=None,
+        warn_missing_keys=None,
+        warn_threshold=None,
+        fill_mode=None,
+        # Reserved for Phase 2 - accepted but ignored
+        patterns_missing=None,
+        patterns_nan=None,
+        patterns_inf=None,
+        patterns_invalid=None,
+    ):
+        """
+        Configure fill behavior for a specific subframe.
+        
+        Settings here override global defaults from set_global_fill().
+        
+        Parameters
+        ----------
+        subframe_name : str
+            Name of registered subframe. Must already be registered.
+        
+        fill_missing : float, optional
+            Fill value for missing keys (row not in subframe).
+        
+        fill_nan : float, optional
+            Fill value for NaN values from subframe data.
+        
+        fill_inf : float, optional
+            Fill value for ±Inf values from subframe data.
+        
+        fill_invalid : float, optional
+            Shortcut: sets both fill_nan and fill_inf.
+        
+        warn_missing_keys : bool, optional
+            Whether to warn about missing keys.
+        
+        warn_threshold : float, optional
+            Only warn if missing fraction > threshold.
+        
+        fill_mode : str, optional
+            'safe' or 'direct'. See set_global_fill() for details.
+        
+        patterns_missing, patterns_nan, patterns_inf, patterns_invalid : dict, optional
+            Reserved for Phase 2. Currently ignored.
+        
+        Raises
+        ------
+        ValueError
+            If subframe_name is not registered or fill_mode is invalid.
+        TypeError
+            If fill values are not numeric.
+        NotImplementedError
+            If fill_mode='fast' (reserved for Phase 2).
+        
+        Examples
+        --------
+        >>> # Calibration workflow: maximum speed
+        >>> adf.set_subframe_fill(
+        ...     'DITS0FitSide',
+        ...     fill_missing=0.0,
+        ...     fill_invalid=0.0,
+        ...     warn_missing_keys=False,
+        ...     fill_mode='direct',
+        ... )
+        
+        >>> # Debugging: keep NaN to see missing data
+        >>> adf.set_subframe_fill(
+        ...     'DITS0FitSide',
+        ...     fill_missing=None,  # Keep NaN
+        ...     warn_missing_keys=True,
+        ...     warn_threshold=0.001,  # Warn if >0.1% missing
+        ...     fill_mode='safe',
+        ... )
+        """
+        # Validate subframe exists
+        if not self._subframes.get_entry(subframe_name):
+            available = list(self._subframes.subframes.keys()) if hasattr(self._subframes, 'subframes') else []
+            raise ValueError(
+                f"Subframe '{subframe_name}' not registered. "
+                f"Available subframes: {available}"
+            )
+        
+        # Validate fill_mode
+        if fill_mode is not None:
+            if fill_mode == 'fast':
+                raise NotImplementedError("fill_mode='fast' will be available in Phase 2")
+            if fill_mode not in ('safe', 'direct'):
+                raise ValueError(f"fill_mode must be 'safe' or 'direct', got '{fill_mode}'")
+        
+        # Validate numeric types
+        for name, value in [('fill_missing', fill_missing), ('fill_nan', fill_nan),
+                            ('fill_inf', fill_inf), ('fill_invalid', fill_invalid)]:
+            if value is not None and not isinstance(value, (int, float)):
+                raise TypeError(f"{name} must be numeric, got {type(value).__name__}")
+        
+        # Initialize config for this subframe if needed
+        if subframe_name not in self._subframe_fill_config:
+            self._subframe_fill_config[subframe_name] = {}
+        
+        cfg = self._subframe_fill_config[subframe_name]
+        
+        # Only set values that are explicitly provided
+        if fill_missing is not None:
+            cfg['fill_missing'] = fill_missing
+        if fill_nan is not None:
+            cfg['fill_nan'] = fill_nan
+        if fill_inf is not None:
+            cfg['fill_inf'] = fill_inf
+        if fill_invalid is not None:
+            cfg['fill_invalid'] = fill_invalid
+        if warn_missing_keys is not None:
+            cfg['warn_missing_keys'] = warn_missing_keys
+        if warn_threshold is not None:
+            cfg['warn_threshold'] = warn_threshold
+        if fill_mode is not None:
+            cfg['fill_mode'] = fill_mode
+        
+        # Pattern parameters are reserved for Phase 2 - silently ignore
+
+    def clear_global_fill(self):
+        """
+        Reset global fill configuration to defaults.
+        
+        Does not affect subframe-specific configurations.
+        """
+        self._global_fill_config = {
+            'fill_missing': None,
+            'fill_nan': None,
+            'fill_inf': None,
+            'fill_invalid': None,
+            'warn_missing_keys': True,
+            'warn_threshold': 0.01,
+            'fill_mode': 'safe',
+        }
+
+    def clear_subframe_fill(self, subframe_name):
+        """
+        Clear fill configuration for a specific subframe.
+        
+        After clearing, the subframe will use global defaults.
+        
+        Parameters
+        ----------
+        subframe_name : str
+            Name of subframe to clear configuration for.
+        
+        Raises
+        ------
+        ValueError
+            If subframe_name is not registered.
+        """
+        if not self._subframes.get_entry(subframe_name):
+            available = list(self._subframes.subframes.keys()) if hasattr(self._subframes, 'subframes') else []
+            raise ValueError(
+                f"Subframe '{subframe_name}' not registered. "
+                f"Available subframes: {available}"
+            )
+        
+        if subframe_name in self._subframe_fill_config:
+            del self._subframe_fill_config[subframe_name]
+
+    def _get_fill_config(self, subframe_name):
+        """
+        Get resolved fill configuration for a subframe.
+        
+        Merges global defaults with subframe-specific overrides.
+        Handles fill_invalid -> fill_nan/fill_inf expansion.
+        
+        Parameters
+        ----------
+        subframe_name : str
+            Name of the subframe.
+        
+        Returns
+        -------
+        dict
+            Resolved configuration with keys:
+            - fill_missing: float or None
+            - fill_nan: float or None  
+            - fill_inf: float or None
+            - warn_missing_keys: bool
+            - warn_threshold: float
+            - fill_mode: str
+        """
+        # Start with global config
+        result = {
+            'fill_missing': self._global_fill_config.get('fill_missing'),
+            'fill_nan': self._global_fill_config.get('fill_nan'),
+            'fill_inf': self._global_fill_config.get('fill_inf'),
+            'warn_missing_keys': self._global_fill_config.get('warn_missing_keys', True),
+            'warn_threshold': self._global_fill_config.get('warn_threshold', 0.01),
+            'fill_mode': self._global_fill_config.get('fill_mode', 'safe'),
+        }
+        
+        # Apply global fill_invalid as fallback for fill_nan/fill_inf
+        global_invalid = self._global_fill_config.get('fill_invalid')
+        if global_invalid is not None:
+            if result['fill_nan'] is None:
+                result['fill_nan'] = global_invalid
+            if result['fill_inf'] is None:
+                result['fill_inf'] = global_invalid
+        
+        # Override with subframe-specific config
+        sf_cfg = self._subframe_fill_config.get(subframe_name, {})
+        
+        for key in ['fill_missing', 'fill_nan', 'fill_inf', 'warn_missing_keys', 
+                    'warn_threshold', 'fill_mode']:
+            if key in sf_cfg:
+                result[key] = sf_cfg[key]
+        
+        # Apply subframe fill_invalid (specific overrides general)
+        sf_invalid = sf_cfg.get('fill_invalid')
+        if sf_invalid is not None:
+            # Only apply if specific fill_nan/fill_inf not set at subframe level
+            if 'fill_nan' not in sf_cfg:
+                result['fill_nan'] = sf_invalid
+            if 'fill_inf' not in sf_cfg:
+                result['fill_inf'] = sf_invalid
+        
+        return result
+
+    def _record_missing_stats(self, subframe_name, n_missing, n_total, fill_value):
+        """
+        Record missing key statistics for aggregated warning.
+        
+        Called during _prepare_subframe_joins() for each subframe column.
+        """
+        if subframe_name not in self._missing_key_stats:
+            self._missing_key_stats[subframe_name] = {
+                'count': 0,
+                'total': 0,
+                'fill_value': fill_value,
+                'columns': 0,
+            }
+        
+        stats = self._missing_key_stats[subframe_name]
+        # Track maximum missing count across columns (they should be same for same subframe)
+        if n_missing > stats['count']:
+            stats['count'] = n_missing
+            stats['total'] = n_total
+            stats['fill_value'] = fill_value
+        stats['columns'] += 1
+
+    def _emit_missing_key_summary(self):
+        """
+        Emit aggregated warning about missing keys.
+        
+        Called at end of materialize_aliases() if any subframes had missing keys.
+        """
+        if not self._missing_key_stats:
+            return
+        
+        # Check which subframes should warn
+        warnings_to_emit = []
+        
+        for sf_name, stats in self._missing_key_stats.items():
+            config = self._get_fill_config(sf_name)
+            
+            if not config['warn_missing_keys']:
+                continue
+            
+            if stats['total'] == 0:
+                continue
+                
+            frac = stats['count'] / stats['total']
+            if frac > config['warn_threshold']:
+                fill_str = stats['fill_value'] if stats['fill_value'] is not None else 'NaN'
+                warnings_to_emit.append(
+                    f"  {sf_name}: {stats['count']:,} of {stats['total']:,} keys missing "
+                    f"({frac:.2%}), filled with {fill_str}"
+                )
+        
+        if warnings_to_emit:
+            msg = "[materialize_aliases] Missing key summary:\n" + "\n".join(warnings_to_emit)
+            warnings.warn(msg, UserWarning)
+        
+        # Clear stats for next materialization
+        self._missing_key_stats = {}
+
     def _default_functions(self):
         import math
 
@@ -1233,15 +1634,16 @@ class AliasDataFrame:
         Prepare subframe joins for expression evaluation.
         
         Detects dotted references like `T.mX` and performs left joins to bring
-        subframe columns into the main DataFrame.
+        subframe columns into the main DataFrame. Uses fill configuration to
+        handle missing keys and invalid values.
         
         Parameters
         ----------
         expr : str
             Expression containing potential subframe references (e.g., "x - T.mX")
         warn_missing_keys : bool, default=True
-            If True, emit warning when main frame keys are not found in subframe.
-            Missing keys produce NaN values (rows are never dropped).
+            Legacy parameter kept for backward compatibility.
+            Actual warning behavior is controlled by fill config.
         alias_name : str, optional
             Name of the alias being evaluated (for warning messages)
             
@@ -1253,12 +1655,15 @@ class AliasDataFrame:
         Notes
         -----
         - Uses LEFT JOIN to preserve all main frame rows
-        - Missing keys in subframe produce NaN (never drops rows)
+        - Missing keys in subframe are handled according to fill configuration
         - Column naming convention: {column}__{subframe} (e.g., mX__T)
         - TTree::Draw compatible: expressions use dot notation (T.mX)
-        """
-        import warnings
         
+        Fill Modes
+        ----------
+        - 'safe': After merge, applies separate fill_nan and fill_inf handling
+        - 'direct': Applies fill_missing immediately after merge (fastest)
+        """
         tokens = re.findall(r'(\b\w+)\.(\w+)', expr)
         for sf_name, sf_col in tokens:
             entry = self._subframes.get_entry(sf_name)
@@ -1289,11 +1694,9 @@ class AliasDataFrame:
                     raise KeyError(f"Subframe '{sf_name}' does not contain or define alias '{sf_col}'")
 
             # Handle duplicate keys in subframe by taking first match
-            # This prevents the merge from creating more rows than the main frame
             if cols_to_merge.duplicated(subset=index_cols).any():
                 cols_to_merge = cols_to_merge.drop_duplicates(subset=index_cols, keep='first')
-            # Phase 3A: Use LEFT JOIN to preserve all main frame rows
-            # Missing keys in subframe will produce NaN (rows are never dropped)
+            
             n_before = len(self.df)
             
             # Preserve original index for proper alignment
@@ -1306,7 +1709,8 @@ class AliasDataFrame:
                 cols_to_merge, 
                 on=index_cols, 
                 suffixes=('', suffix),
-                how='left'  # Critical: preserve all main frame rows
+                how='left',
+                indicator=True  # Adds '_merge' column to distinguish missing keys from original NaN
             )
             
             # Sort by original row order to restore alignment
@@ -1315,36 +1719,70 @@ class AliasDataFrame:
             # Remove temporary column
             self.df.drop(columns=['__row_order__'], inplace=True)
             
+            # Get missing key mask from indicator BEFORE looking at values
+            # 'left_only' means key was not found in subframe
+            missing_mask = (joined['_merge'] == 'left_only').values
+            n_missing = int(missing_mask.sum())
+            
+            # Remove indicator column
+            joined.drop(columns=['_merge'], inplace=True)
+            
             # Find the actual column name in joined DataFrame
-            # If subframe column name collides with main frame column, it gets suffix
-            # Priority: check for suffixed version first (collision case), then unsuffixed
             if col_renamed in joined.columns:
                 actual_col = col_renamed
             elif sf_col in joined.columns and sf_col not in self.df.columns:
-                # Column exists in joined but not in main frame - it's from subframe
                 actual_col = sf_col
             elif f'{sf_col}{suffix}' in joined.columns:
-                # Column got suffixed due to collision
                 actual_col = f'{sf_col}{suffix}'
             else:
-                # Fallback: column might have been added without suffix
                 actual_col = sf_col if sf_col in joined.columns else None
             
             if actual_col and actual_col in joined.columns:
-                # Count missing keys (NaN values introduced by left join)
-                n_missing = int(joined[actual_col].isna().sum())
+                values = joined[actual_col].values.copy()
                 
-                # Emit warning if there are missing keys
-                if warn_missing_keys and n_missing > 0:
-                    alias_info = f"Alias '{alias_name}': " if alias_name else ""
-                    warnings.warn(
-                        f"{alias_info}{n_missing:,} of {n_before:,} keys in main frame "
-                        f"not found in subframe '{sf_name}'. Filled with NaN.",
-                        UserWarning
-                    )
+                # Get fill configuration for this subframe
+                fill_config = self._get_fill_config(sf_name)
+                fill_mode = fill_config['fill_mode']
+                fill_missing = fill_config['fill_missing']
+                fill_nan = fill_config['fill_nan']
+                fill_inf = fill_config['fill_inf']
                 
-                # Assign aligned values back to DataFrame with standardized name
-                self.df[col_renamed] = joined[actual_col].values
+                # Record stats for aggregated warning
+                self._record_missing_stats(sf_name, n_missing, n_before, fill_missing)
+                
+                # Convert to Series for easier manipulation
+                values_series = pd.Series(values)
+                
+                if fill_mode == 'direct':
+                    # Direct mode: fill missing keys only, skip NaN/Inf processing
+                    if fill_missing is not None and n_missing > 0:
+                        values_series[missing_mask] = fill_missing
+                        values = values_series.values
+                
+                elif fill_mode == 'safe':
+                    # Safe mode: separate handling of missing, NaN, Inf
+                    
+                    # 1. Handle missing keys (from left join - identified by indicator)
+                    if fill_missing is not None and n_missing > 0:
+                        values_series[missing_mask] = fill_missing
+                    
+                    # 2. Handle NaN in original subframe data (distinct from missing keys)
+                    if fill_nan is not None:
+                        # NaN that was already in subframe data, NOT from missing key
+                        original_nan_mask = values_series.isna() & ~missing_mask
+                        if original_nan_mask.any():
+                            values_series[original_nan_mask] = fill_nan
+                    
+                    # 3. Handle Inf values
+                    if fill_inf is not None:
+                        inf_mask = np.isinf(values_series.values)
+                        if inf_mask.any():
+                            values_series[inf_mask] = fill_inf
+                    
+                    values = values_series.values
+                
+                # Assign aligned values back to DataFrame
+                self.df[col_renamed] = values
                 expr = expr.replace(f'{sf_name}.{sf_col}', col_renamed)
                 
         return expr
@@ -1514,40 +1952,31 @@ class AliasDataFrame:
         # Check for cycles (catches indirect cycles like A -> B -> A)
         self._check_for_cycles()
 
-    def _eval_in_namespace(self, expr, warn_missing_keys=True, alias_name=None, context_override=None):
+    def _eval_in_namespace(self, expr, context_override=None, warn_missing_keys=True, alias_name=None):
         """
-        Evaluate an expression in a namespace containing DataFrame columns and functions.
+        Evaluate expression in namespace with DataFrame columns, functions, and optional overrides.
         
         Parameters
         ----------
         expr : str
             Expression to evaluate
-        warn_missing_keys : bool, default=True
-            If True, warn when subframe join has missing keys
-        alias_name : str, optional
-            Name of alias being evaluated (for error messages)
         context_override : dict, optional
-            Additional variables to include in evaluation namespace.
-            Used by materialize_aliases() to provide already-computed results
-            so that later aliases can reference earlier ones without requiring
-            them to be in self.df yet (enables batch materialization).
-            
-        Returns
-        -------
-        pandas.Series or scalar
-            Result of evaluating the expression
+            Additional variables to inject into namespace. Used by materialize_aliases()
+            to pass already-computed alias values so dependent aliases can reference them
+            before they're added to the DataFrame.
+        warn_missing_keys : bool, default=True
+            Whether to warn about missing subframe keys
+        alias_name : str, optional
+            Name of alias being evaluated (for warning messages)
         """
         expr = self._prepare_subframe_joins(expr, warn_missing_keys=warn_missing_keys, alias_name=alias_name)
-        
-        # Build namespace: DataFrame columns first
         local_env = {col: self.df[col] for col in self.df.columns}
         
-        # Add context_override (previously computed aliases in batch mode)
-        # This allows alias B to reference alias A even if A isn't in self.df yet
+        # Merge context_override after df columns, before functions
+        # This allows batched aliases to see previously computed values
         if context_override:
             local_env.update(context_override)
         
-        # Add functions last (so they don't get shadowed by columns)
         local_env.update(self._default_functions())
 
         try:
@@ -1804,25 +2233,12 @@ class AliasDataFrame:
         if with_dependencies and result:
             import networkx as nx
             
-            # Get subframe names to exclude from dependency tracking
-            subframe_names = set()
-            if hasattr(self, '_subframes') and hasattr(self._subframes, 'subframes'):
-                subframe_names = set(self._subframes.subframes.keys())
-            
             def build_graph():
                 g = nx.DiGraph()
                 for alias, expr in self.aliases.items():
                     g.add_node(alias)
-                    
-                    # Clean expression: remove subframe.column patterns
-                    # This prevents false dependencies like new_col -> new_col
-                    # when expr is "T.new_col" (T is a subframe)
-                    expr_cleaned = expr
-                    for sf_name in subframe_names:
-                        expr_cleaned = re.sub(rf'\b{sf_name}\.\w+', '', expr_cleaned)
-                    
-                    for token in re.findall(r'\b\w+\b', expr_cleaned):
-                        if token in self.aliases and token != alias:
+                    for token in re.findall(r'\b\w+\b', expr):
+                        if token in self.aliases:
                             g.add_edge(token, alias)
                 return g
             
@@ -2014,64 +2430,90 @@ class AliasDataFrame:
         """
         Evaluate an alias and store its result as a real column.
         
+        This is the simple, immediate materialization path. For batch operations,
+        use materialize_aliases() which is optimized to avoid DataFrame fragmentation.
+        
         Args:
             name: Alias name to materialize.
             cleanTemporary: Whether to clean up intermediate dependencies.
             dtype: Optional override dtype to cast to.
             warn_missing_keys: If True, emit warning when subframe join has missing keys.
                              Missing keys produce NaN (rows are never dropped).
+                             This parameter temporarily overrides the fill config setting.
 
         Raises:
             KeyError: If alias is not defined.
             Exception: If alias evaluation fails.
         """
-        if name not in self.aliases:
-            print(f"[materialize_alias] Warning: alias '{name}' not found.")
-            return
-        expr = self.aliases[name]
+        # Reset missing key stats for this single-alias call
+        self._missing_key_stats = {}
+        
+        # Handle legacy warn_missing_keys parameter by temporarily overriding fill config
+        original_warn_setting = None
+        if not warn_missing_keys:
+            original_warn_setting = self._global_fill_config.get('warn_missing_keys', True)
+            self._global_fill_config['warn_missing_keys'] = False
+        
+        try:
+            if name not in self.aliases:
+                print(f"[materialize_alias] Warning: alias '{name}' not found.")
+                return
+            expr = self.aliases[name]
 
-        # Automatically materialize any referenced aliases or subframe aliases
-        # CRITICAL: Match 'word.word' BEFORE 'word' to correctly detect subframe references
-        tokens = re.findall(r'\w+\.\w+|\b\w+\b', expr)
-        for token in tokens:
-            if '.' in token:
-                sf_name, sf_attr = token.split('.', 1)
-                sf = self.get_subframe(sf_name)
-                if sf:
-                    # CRITICAL: Materialize subframe index columns first (if they're aliases)
-                    # This fixes the bug where joins fail because index columns aren't materialized
-                    entry = self._subframes.get_entry(sf_name)
-                    if entry:
-                        index_cols = entry['index']
-                        if isinstance(index_cols, str):
-                            index_cols = [index_cols]
-                        for idx_col in index_cols:
-                            if idx_col in self.aliases and idx_col not in self.df.columns:
-                                self.materialize_alias(idx_col, warn_missing_keys=warn_missing_keys)
-                    
-                    # Materialize the subframe attribute itself
-                    if sf_attr in sf.aliases and sf_attr not in sf.df.columns:
-                        sf.materialize_alias(sf_attr)
-            elif token == name:
-                # Skip self-reference to prevent infinite recursion
-                # (alias 'x' referencing 'subframe.x' where 'x' is extracted as a token)
-                continue
-            elif token in self.aliases and token not in self.df.columns:
-                self.materialize_alias(token, warn_missing_keys=warn_missing_keys)
+            # Automatically materialize any referenced aliases or subframe aliases
+            # CRITICAL: Match 'word.word' BEFORE 'word' to correctly detect subframe references
+            tokens = re.findall(r'\w+\.\w+|\b\w+\b', expr)
+            for token in tokens:
+                if '.' in token:
+                    sf_name, sf_attr = token.split('.', 1)
+                    sf = self.get_subframe(sf_name)
+                    if sf:
+                        # CRITICAL: Materialize subframe index columns first (if they're aliases)
+                        # This fixes the bug where joins fail because index columns aren't materialized
+                        entry = self._subframes.get_entry(sf_name)
+                        if entry:
+                            index_cols = entry['index']
+                            if isinstance(index_cols, str):
+                                index_cols = [index_cols]
+                            for idx_col in index_cols:
+                                if idx_col in self.aliases and idx_col not in self.df.columns:
+                                    self.materialize_alias(idx_col, warn_missing_keys=warn_missing_keys)
+                        
+                        # Materialize the subframe attribute itself
+                        if sf_attr in sf.aliases and sf_attr not in sf.df.columns:
+                            sf.materialize_alias(sf_attr)
+                elif token == name:
+                    # Skip self-reference to prevent infinite recursion
+                    # (alias 'x' referencing 'subframe.x' where 'x' is extracted as a token)
+                    continue
+                elif token in self.aliases and token not in self.df.columns:
+                    self.materialize_alias(token, warn_missing_keys=warn_missing_keys)
 
-        result = self._eval_in_namespace(expr, warn_missing_keys=warn_missing_keys, alias_name=name)
-        result_dtype = dtype or self.alias_dtypes.get(name)
-        if result_dtype is not None:
-            try:
-                result = result.astype(result_dtype)
-            except AttributeError:
-                result = result_dtype(result)
-        self.df[name] = result
+            result = self._eval_in_namespace(expr, warn_missing_keys=warn_missing_keys, alias_name=name)
+            result_dtype = dtype or self.alias_dtypes.get(name)
+            if result_dtype is not None:
+                try:
+                    result = result.astype(result_dtype)
+                except AttributeError:
+                    result = result_dtype(result)
+            self.df[name] = result
+            
+            # Emit aggregated missing key warning BEFORE restoring config
+            # (must be inside try block so warn_missing_keys=False takes effect)
+            self._emit_missing_key_summary()
+            
+        finally:
+            # Restore original warn_missing_keys setting if we changed it
+            if original_warn_setting is not None:
+                self._global_fill_config['warn_missing_keys'] = original_warn_setting
 
     def materialize_aliases(self, pattern=None, names=None, with_dependencies=True,
                             only_unmaterialized=True, cleanTemporary=True, verbose=False):
         """
-        Materialize aliases matching pattern and/or names.
+        Materialize aliases matching pattern and/or names using batch optimization.
+        
+        This method uses batched pd.concat to avoid DataFrame fragmentation, which
+        provides ~3x performance improvement over sequential column insertion.
         
         Parameters
         ----------
@@ -2093,20 +2535,14 @@ class AliasDataFrame:
         list
             Names of aliases that were materialized
             
-        Notes
-        -----
-        Performance optimization: Uses batch pd.concat instead of sequential
-        column insertion to avoid O(n²) DataFrame fragmentation.
-        See BUG-2025-11-27-002 for details.
-            
         Examples
         --------
         >>> adf.materialize_aliases(pattern=r'is.*')  # All 'is*' aliases
         >>> adf.materialize_aliases(names=['r', 'phi', 'cosPhi'])  # Specific names
         >>> adf.materialize_aliases(pattern=r'dy.*|dz.*')  # dy and dz aliases
         """
-        import time
-        t_start = time.time() if verbose else None
+        # Reset missing key stats for this materialization batch
+        self._missing_key_stats = {}
         
         # Get primary targets first (without dependencies)
         targets = self.select_aliases(
@@ -2130,51 +2566,46 @@ class AliasDataFrame:
                 with_dependencies=True
             )
             if verbose:
-                print(f"[materialize_aliases] With dependencies: {len(to_materialize)} aliases")
+                print(f"[materialize_aliases] With dependencies: {to_materialize}")
         else:
             to_materialize = targets
         
-        # =====================================================================
-        # BATCH MATERIALIZATION — Performance optimization (BUG-2025-11-27-002)
-        # 
-        # Instead of sequential self.df[name] = result (which causes O(n²)
-        # DataFrame fragmentation), we:
-        # 1. Compute all results into a dict
-        # 2. Use context_override so later aliases can reference earlier ones
-        # 3. Single pd.concat at the end
-        # =====================================================================
+        # =========================================================================
+        # BATCH OPTIMIZATION: Collect computed values, then single pd.concat
+        # This avoids O(n²) DataFrame fragmentation from sequential column inserts
+        # =========================================================================
         
-        results = {}  # Collect all computed results
-        added = []    # Track which aliases we computed
+        results = {}  # Collect computed alias values (Series/arrays only)
+        added = []
         
         for name in to_materialize:
+            # Skip if already a column
             if name in self.df.columns:
-                # Already materialized (either existed or subframe join added it)
                 continue
             
+            # Skip if not an alias
             if name not in self.aliases:
-                if verbose:
-                    print(f"[materialize_aliases] Warning: '{name}' not in aliases, skipping")
                 continue
             
             expr = self.aliases[name]
             
-            # Handle subframe dependencies before evaluation
-            # This is necessary because _prepare_subframe_joins needs index columns
-            # and subframe attributes to exist
-            self._ensure_subframe_dependencies(name, expr, results, verbose)
-            
             if verbose:
                 print(f"[materialize_aliases] Computing: {name}")
             
-            # Evaluate with context_override containing previously computed results
-            # This allows alias B to reference alias A without A being in self.df yet
-            result = self._eval_in_namespace(
-                expr, 
-                warn_missing_keys=True, 
-                alias_name=name,
-                context_override=results
-            )
+            # First, ensure any subframe aliases referenced in expression are materialized
+            # This handles cases like "T.mX" where mX might be an alias in subframe T
+            tokens = re.findall(r'(\w+)\.(\w+)', expr)
+            for sf_name, sf_attr in tokens:
+                sf = self.get_subframe(sf_name)
+                if sf and sf_attr in sf.aliases and sf_attr not in sf.df.columns:
+                    sf.materialize_alias(sf_attr)
+            
+            # Compute with context_override so dependent aliases can see prior results
+            # Note: _eval_in_namespace calls _prepare_subframe_joins which handles:
+            #   - Subframe joins (written directly to self.df)
+            #   - Fill handling (fill_missing, fill_nan, fill_inf)
+            #   - Missing key stats recording
+            result = self._eval_in_namespace(expr, context_override=results, alias_name=name)
             
             # Apply dtype if specified
             result_dtype = self.alias_dtypes.get(name)
@@ -2187,82 +2618,26 @@ class AliasDataFrame:
             results[name] = result
             added.append(name)
         
-        # =====================================================================
-        # BATCH ASSIGNMENT — Single DataFrame operation
-        # This avoids the O(n²) fragmentation from sequential column insertion
-        # =====================================================================
+        # BATCH ADD: Single concat instead of per-alias insert
         if results:
             new_cols_df = pd.DataFrame(results, index=self.df.index)
             self.df = pd.concat([self.df, new_cols_df], axis=1)
             if verbose:
                 print(f"[materialize_aliases] Batch-added {len(results)} columns")
         
-        # =====================================================================
-        # BATCH CLEANUP — Single drop operation (also avoids fragmentation)
-        # =====================================================================
+        # BATCH DROP: Single drop instead of per-column removal
         if cleanTemporary and with_dependencies:
             targets_set = set(targets)
-            cols_to_drop = [col for col in added if col not in targets_set and col in self.df.columns]
+            cols_to_drop = [c for c in added if c not in targets_set and c in self.df.columns]
             if cols_to_drop:
                 self.df.drop(columns=cols_to_drop, inplace=True)
                 if verbose:
-                    print(f"[materialize_aliases] Batch-dropped {len(cols_to_drop)} temporary columns")
+                    print(f"[materialize_aliases] Batch-dropped {len(cols_to_drop)} columns")
         
-        if verbose:
-            elapsed = time.time() - t_start
-            print(f"[materialize_aliases] Completed in {elapsed:.2f}s ({len(added)} aliases)")
+        # Emit aggregated missing key warnings
+        self._emit_missing_key_summary()
         
         return added
-    
-    def _ensure_subframe_dependencies(self, alias_name, expr, context_override, verbose=False):
-        """
-        Ensure subframe dependencies are available before evaluating an alias.
-        
-        This handles:
-        1. Materializing subframe index columns (if they're aliases)
-        2. Materializing subframe attributes (in the subframe's DataFrame)
-        
-        Parameters
-        ----------
-        alias_name : str
-            Name of the alias being evaluated
-        expr : str
-            Expression of the alias
-        context_override : dict
-            Dict of already-computed results (used to check if deps are available)
-        verbose : bool
-            If True, print progress
-        """
-        # Find subframe references (pattern: word.word)
-        tokens = re.findall(r'\w+\.\w+', expr)
-        
-        for token in tokens:
-            sf_name, sf_attr = token.split('.', 1)
-            sf = self.get_subframe(sf_name)
-            if sf is None:
-                continue
-            
-            # Materialize subframe index columns if they're aliases
-            entry = self._subframes.get_entry(sf_name)
-            if entry:
-                index_cols = entry['index']
-                if isinstance(index_cols, str):
-                    index_cols = [index_cols]
-                
-                for idx_col in index_cols:
-                    # Check if index column needs materialization
-                    if idx_col in self.aliases and idx_col not in self.df.columns:
-                        # Check if it's in context_override (already computed in this batch)
-                        if idx_col not in context_override:
-                            if verbose:
-                                print(f"[materialize_aliases]   Materializing index column: {idx_col}")
-                            self.materialize_alias(idx_col, warn_missing_keys=True)
-            
-            # Materialize the subframe attribute itself (in subframe's DataFrame)
-            if sf_attr in sf.aliases and sf_attr not in sf.df.columns:
-                if verbose:
-                    print(f"[materialize_aliases]   Materializing subframe attr: {sf_name}.{sf_attr}")
-                sf.materialize_alias(sf_attr)
 
     def materialize_pattern(self, pattern, cleanTemporary=True, verbose=False, 
                            only_unmaterialized=True):
@@ -6621,3 +6996,5 @@ class AliasDataFrame:
             return True
         else:
             return False
+
+        return [k for k, v in self._auto_aliases.items() if v == subframe_name]
