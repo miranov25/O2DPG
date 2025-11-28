@@ -1607,6 +1607,63 @@ class AliasDataFrame:
         # Clear stats for next materialization
         self._missing_key_stats = {}
 
+    def _run_with_profiling(self, func, profile=False, profile_output=None):
+        """
+        Execute function with optional cProfile profiling.
+        
+        Parameters
+        ----------
+        func : callable
+            Function to execute (typically a lambda wrapping the main logic)
+        profile : bool, default=False
+            If True, enable profiling and print results
+        profile_output : str, optional
+            If provided, write profiling results to this file path
+            
+        Returns
+        -------
+        any
+            Return value from func()
+            
+        Examples
+        --------
+        >>> def _do_work():
+        ...     # expensive operations
+        ...     return result
+        >>> return self._run_with_profiling(_do_work, profile=True)
+        """
+        if not profile:
+            return func()
+        
+        import cProfile
+        import pstats
+        from io import StringIO
+        
+        profiler = cProfile.Profile()
+        profiler.enable()
+        
+        try:
+            result = func()
+        finally:
+            profiler.disable()
+            
+            s = StringIO()
+            stats = pstats.Stats(profiler, stream=s)
+            stats.sort_stats('cumulative').print_stats(40)
+            s.write("\n" + "="*60 + "\nSorted by total time:\n" + "="*60 + "\n")
+            stats.sort_stats('tottime').print_stats(40)
+            
+            output = s.getvalue()
+            
+            if profile_output:
+                from pathlib import Path
+                Path(profile_output).write_text(output)
+                print(f"[profiler] Results saved to: {profile_output}")
+            else:
+                print(output)
+        
+        return result
+
     def _default_functions(self):
         import math
 
@@ -2452,7 +2509,8 @@ class AliasDataFrame:
         n_materialized = sum(1 for info in result.values() if info['materialized'])
         print(f"\nTotal: {len(result)} aliases, {n_materialized} materialized, {n_broken} broken")
 
-    def materialize_alias(self, name, cleanTemporary=False, dtype=None, warn_missing_keys=True):
+    def materialize_alias(self, name, cleanTemporary=False, dtype=None, warn_missing_keys=True,
+                          profile=False, profile_output=None):
         """
         Evaluate an alias and store its result as a real column.
         
@@ -2466,74 +2524,80 @@ class AliasDataFrame:
             warn_missing_keys: If True, emit warning when subframe join has missing keys.
                              Missing keys produce NaN (rows are never dropped).
                              This parameter temporarily overrides the fill config setting.
+            profile: If True, run with cProfile and print profiling results.
+            profile_output: If provided, write profiling results to this file path.
 
         Raises:
             KeyError: If alias is not defined.
             Exception: If alias evaluation fails.
         """
-        # Reset missing key stats for this single-alias call
-        self._missing_key_stats = {}
-        
-        # Handle legacy warn_missing_keys parameter by temporarily overriding fill config
-        original_warn_setting = None
-        if not warn_missing_keys:
-            original_warn_setting = self._global_fill_config.get('warn_missing_keys', True)
-            self._global_fill_config['warn_missing_keys'] = False
-        
-        try:
-            if name not in self.aliases:
-                print(f"[materialize_alias] Warning: alias '{name}' not found.")
-                return
-            expr = self.aliases[name]
-
-            # Automatically materialize any referenced aliases or subframe aliases
-            # CRITICAL: Match 'word.word' BEFORE 'word' to correctly detect subframe references
-            tokens = re.findall(r'\w+\.\w+|\b\w+\b', expr)
-            for token in tokens:
-                if '.' in token:
-                    sf_name, sf_attr = token.split('.', 1)
-                    sf = self.get_subframe(sf_name)
-                    if sf:
-                        # CRITICAL: Materialize subframe index columns first (if they're aliases)
-                        # This fixes the bug where joins fail because index columns aren't materialized
-                        entry = self._subframes.get_entry(sf_name)
-                        if entry:
-                            index_cols = entry['index']
-                            if isinstance(index_cols, str):
-                                index_cols = [index_cols]
-                            for idx_col in index_cols:
-                                if idx_col in self.aliases and idx_col not in self.df.columns:
-                                    self.materialize_alias(idx_col, warn_missing_keys=warn_missing_keys)
-                        
-                        # Materialize the subframe attribute itself
-                        if sf_attr in sf.aliases and sf_attr not in sf.df.columns:
-                            sf.materialize_alias(sf_attr)
-                elif token == name:
-                    # Skip self-reference to prevent infinite recursion
-                    # (alias 'x' referencing 'subframe.x' where 'x' is extracted as a token)
-                    continue
-                elif token in self.aliases and token not in self.df.columns:
-                    self.materialize_alias(token, warn_missing_keys=warn_missing_keys)
-
-            result = self._eval_in_namespace(expr, warn_missing_keys=warn_missing_keys, alias_name=name)
-            result_dtype = dtype or self.alias_dtypes.get(name)
-            if result_dtype is not None:
-                try:
-                    result = result.astype(result_dtype)
-                except AttributeError:
-                    result = result_dtype(result)
-            self.df[name] = result
+        def _do_materialize():
+            # Reset missing key stats for this single-alias call
+            self._missing_key_stats = {}
             
-            # Emit aggregated warning BEFORE restoring config (so warn_missing_keys=False takes effect)
-            self._emit_missing_key_summary()
+            # Handle legacy warn_missing_keys parameter by temporarily overriding fill config
+            original_warn_setting = None
+            if not warn_missing_keys:
+                original_warn_setting = self._global_fill_config.get('warn_missing_keys', True)
+                self._global_fill_config['warn_missing_keys'] = False
             
-        finally:
-            # Restore original warn_missing_keys setting if we changed it
-            if original_warn_setting is not None:
-                self._global_fill_config['warn_missing_keys'] = original_warn_setting
+            try:
+                if name not in self.aliases:
+                    print(f"[materialize_alias] Warning: alias '{name}' not found.")
+                    return
+                expr = self.aliases[name]
+
+                # Automatically materialize any referenced aliases or subframe aliases
+                # CRITICAL: Match 'word.word' BEFORE 'word' to correctly detect subframe references
+                tokens = re.findall(r'\w+\.\w+|\b\w+\b', expr)
+                for token in tokens:
+                    if '.' in token:
+                        sf_name, sf_attr = token.split('.', 1)
+                        sf = self.get_subframe(sf_name)
+                        if sf:
+                            # CRITICAL: Materialize subframe index columns first (if they're aliases)
+                            # This fixes the bug where joins fail because index columns aren't materialized
+                            entry = self._subframes.get_entry(sf_name)
+                            if entry:
+                                index_cols = entry['index']
+                                if isinstance(index_cols, str):
+                                    index_cols = [index_cols]
+                                for idx_col in index_cols:
+                                    if idx_col in self.aliases and idx_col not in self.df.columns:
+                                        self.materialize_alias(idx_col, warn_missing_keys=warn_missing_keys)
+                            
+                            # Materialize the subframe attribute itself
+                            if sf_attr in sf.aliases and sf_attr not in sf.df.columns:
+                                sf.materialize_alias(sf_attr)
+                    elif token == name:
+                        # Skip self-reference to prevent infinite recursion
+                        # (alias 'x' referencing 'subframe.x' where 'x' is extracted as a token)
+                        continue
+                    elif token in self.aliases and token not in self.df.columns:
+                        self.materialize_alias(token, warn_missing_keys=warn_missing_keys)
+
+                result = self._eval_in_namespace(expr, warn_missing_keys=warn_missing_keys, alias_name=name)
+                result_dtype = dtype or self.alias_dtypes.get(name)
+                if result_dtype is not None:
+                    try:
+                        result = result.astype(result_dtype)
+                    except AttributeError:
+                        result = result_dtype(result)
+                self.df[name] = result
+                
+                # Emit aggregated warning BEFORE restoring config (so warn_missing_keys=False takes effect)
+                self._emit_missing_key_summary()
+                
+            finally:
+                # Restore original warn_missing_keys setting if we changed it
+                if original_warn_setting is not None:
+                    self._global_fill_config['warn_missing_keys'] = original_warn_setting
+        
+        return self._run_with_profiling(_do_materialize, profile, profile_output)
 
     def materialize_aliases(self, pattern=None, names=None, with_dependencies=True,
-                            only_unmaterialized=True, cleanTemporary=True, verbose=False):
+                            only_unmaterialized=True, cleanTemporary=True, verbose=False,
+                            profile=False, profile_output=None):
         """
         Materialize aliases matching pattern and/or names using batch optimization.
         
@@ -2554,6 +2618,10 @@ class AliasDataFrame:
             If True, remove intermediate dependencies that weren't targets
         verbose : bool, default=False
             If True, print progress information
+        profile : bool, default=False
+            If True, run with cProfile and print profiling results
+        profile_output : str, optional
+            If provided, write profiling results to this file path
             
         Returns
         -------
@@ -2565,119 +2633,118 @@ class AliasDataFrame:
         >>> adf.materialize_aliases(pattern=r'is.*')  # All 'is*' aliases
         >>> adf.materialize_aliases(names=['r', 'phi', 'cosPhi'])  # Specific names
         >>> adf.materialize_aliases(pattern=r'dy.*|dz.*')  # dy and dz aliases
+        >>> adf.materialize_aliases(names=['x'], profile=True)  # With profiling
         """
-        # Reset missing key stats for this materialization batch
-        self._missing_key_stats = {}
-        
-        # Get primary targets first (without dependencies)
-        targets = self.select_aliases(
-            pattern=pattern, 
-            names=names,
-            only_unmaterialized=only_unmaterialized,
-            with_dependencies=False
-        )
-        
-        if verbose:
-            print(f"[materialize_aliases] Selected {len(targets)} targets: {targets}")
-        
-        if not targets:
-            return []
-        
-        # Get full list with dependencies in topological order
-        if with_dependencies:
-            to_materialize = self.select_aliases(
-                names=targets,
+        def _do_materialize():
+            # Reset missing key stats for this materialization batch
+            self._missing_key_stats = {}
+            
+            # Get primary targets first (without dependencies)
+            targets = self.select_aliases(
+                pattern=pattern, 
+                names=names,
                 only_unmaterialized=only_unmaterialized,
-                with_dependencies=True
+                with_dependencies=False
             )
-            if verbose:
-                print(f"[materialize_aliases] With dependencies: {to_materialize}")
-        else:
-            to_materialize = targets
-        
-        # =========================================================================
-        # BATCH OPTIMIZATION: Collect computed values, then single pd.concat
-        # This avoids O(n²) DataFrame fragmentation from sequential column inserts
-        # =========================================================================
-        
-        results = {}  # Collect computed alias values (Series/arrays only)
-        added = []
-        
-        for name in to_materialize:
-            # Skip if already a column
-            if name in self.df.columns:
-                continue
-            
-            # Skip if not an alias
-            if name not in self.aliases:
-                continue
-            
-            expr = self.aliases[name]
             
             if verbose:
-                print(f"[materialize_aliases] Computing: {name}")
+                print(f"[materialize_aliases] Selected {len(targets)} targets: {targets}")
             
-            # Handle subframe dependencies: index columns and subframe attributes
-            tokens = re.findall(r'(\w+)\.(\w+)', expr)
-            for sf_name, sf_attr in tokens:
-                sf = self.get_subframe(sf_name)
-                if sf:
-                    # FIX B: Materialize index columns if they're aliases
-                    # This was missing in the batched path but exists in materialize_alias()
-                    entry = self._subframes.get_entry(sf_name)
-                    if entry:
-                        index_cols = entry['index']
-                        if isinstance(index_cols, str):
-                            index_cols = [index_cols]
-                        for idx_col in index_cols:
-                            if idx_col in self.aliases and idx_col not in self.df.columns:
-                                if idx_col not in results:  # Not yet computed in batch
-                                    if verbose:
-                                        print(f"[materialize_aliases]   Materializing index: {idx_col}")
-                                    self.materialize_alias(idx_col)
-                    
-                    # Materialize subframe attribute if it's an alias
-                    if sf_attr in sf.aliases and sf_attr not in sf.df.columns:
-                        sf.materialize_alias(sf_attr)
+            if not targets:
+                return []
             
-            # Compute with context_override so dependent aliases can see prior results
-            # Note: _eval_in_namespace calls _prepare_subframe_joins which handles:
-            #   - Subframe joins (written directly to self.df)
-            #   - Fill handling (fill_missing, fill_nan, fill_inf)
-            #   - Missing key stats recording
-            result = self._eval_in_namespace(expr, context_override=results, alias_name=name)
-            
-            # Apply dtype if specified
-            result_dtype = self.alias_dtypes.get(name)
-            if result_dtype is not None:
-                try:
-                    result = result.astype(result_dtype)
-                except AttributeError:
-                    result = result_dtype(result)
-            
-            results[name] = result
-            added.append(name)
-        
-        # BATCH ADD: Single concat instead of per-alias insert
-        if results:
-            new_cols_df = pd.DataFrame(results, index=self.df.index)
-            self.df = pd.concat([self.df, new_cols_df], axis=1)
-            if verbose:
-                print(f"[materialize_aliases] Batch-added {len(results)} columns")
-        
-        # BATCH DROP: Single drop instead of per-column removal
-        if cleanTemporary and with_dependencies:
-            targets_set = set(targets)
-            cols_to_drop = [c for c in added if c not in targets_set and c in self.df.columns]
-            if cols_to_drop:
-                self.df.drop(columns=cols_to_drop, inplace=True)
+            # Get full list with dependencies in topological order
+            if with_dependencies:
+                to_materialize = self.select_aliases(
+                    names=targets,
+                    only_unmaterialized=only_unmaterialized,
+                    with_dependencies=True
+                )
                 if verbose:
-                    print(f"[materialize_aliases] Batch-dropped {len(cols_to_drop)} columns")
+                    print(f"[materialize_aliases] With dependencies: {to_materialize}")
+            else:
+                to_materialize = targets
+            
+            # =========================================================================
+            # BATCH OPTIMIZATION: Collect computed values, then single pd.concat
+            # This avoids O(n²) DataFrame fragmentation from sequential column inserts
+            # =========================================================================
+            
+            results = {}  # Collect computed alias values (Series/arrays only)
+            added = []
+            
+            for name in to_materialize:
+                # Skip if already a column
+                if name in self.df.columns:
+                    continue
+                
+                # Skip if not an alias
+                if name not in self.aliases:
+                    continue
+                
+                expr = self.aliases[name]
+                
+                if verbose:
+                    print(f"[materialize_aliases] Computing: {name}")
+                
+                # Handle subframe dependencies: index columns and subframe attributes
+                tokens = re.findall(r'(\w+)\.(\w+)', expr)
+                for sf_name, sf_attr in tokens:
+                    sf = self.get_subframe(sf_name)
+                    if sf:
+                        # Materialize index columns if they're aliases
+                        entry = self._subframes.get_entry(sf_name)
+                        if entry:
+                            index_cols = entry['index']
+                            if isinstance(index_cols, str):
+                                index_cols = [index_cols]
+                            for idx_col in index_cols:
+                                if idx_col in self.aliases and idx_col not in self.df.columns:
+                                    if idx_col not in results:  # Not yet computed in batch
+                                        if verbose:
+                                            print(f"[materialize_aliases]   Materializing index: {idx_col}")
+                                        self.materialize_alias(idx_col)
+                        
+                        # Materialize subframe attribute if it's an alias
+                        if sf_attr in sf.aliases and sf_attr not in sf.df.columns:
+                            sf.materialize_alias(sf_attr)
+                
+                # Compute with context_override so dependent aliases can see prior results
+                result = self._eval_in_namespace(expr, context_override=results, alias_name=name)
+                
+                # Apply dtype if specified
+                result_dtype = self.alias_dtypes.get(name)
+                if result_dtype is not None:
+                    try:
+                        result = result.astype(result_dtype)
+                    except AttributeError:
+                        result = result_dtype(result)
+                
+                results[name] = result
+                added.append(name)
+            
+            # BATCH ADD: Single concat instead of per-alias insert
+            if results:
+                new_cols_df = pd.DataFrame(results, index=self.df.index)
+                self.df = pd.concat([self.df, new_cols_df], axis=1)
+                if verbose:
+                    print(f"[materialize_aliases] Batch-added {len(results)} columns")
+            
+            # BATCH DROP: Single drop instead of per-column removal
+            if cleanTemporary and with_dependencies:
+                targets_set = set(targets)
+                cols_to_drop = [c for c in added if c not in targets_set and c in self.df.columns]
+                if cols_to_drop:
+                    self.df.drop(columns=cols_to_drop, inplace=True)
+                    if verbose:
+                        print(f"[materialize_aliases] Batch-dropped {len(cols_to_drop)} columns")
+            
+            # Emit aggregated missing key warnings
+            self._emit_missing_key_summary()
+            
+            return added
         
-        # Emit aggregated missing key warnings
-        self._emit_missing_key_summary()
-        
-        return added
+        return self._run_with_profiling(_do_materialize, profile, profile_output)
 
     def materialize_pattern(self, pattern, cleanTemporary=True, verbose=False, 
                            only_unmaterialized=True):
