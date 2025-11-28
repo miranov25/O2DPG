@@ -386,8 +386,10 @@ def find_benchmark_files(results_dir, timestamp=None):
     """Find benchmark result files in directory."""
     results_path = Path(results_dir)
     
+    # All recognized benchmarks
     benchmark_names = [
         'benchmark_performance',
+        'benchmark_materialize_aliases',  # NEW
         'benchmark_read_tree', 
         'benchmark_subframe',
         'benchmark_parallel'
@@ -422,6 +424,31 @@ def extract_metrics(bench_name, data):
                 result['metrics'][f"{test_name}_rows_per_sec"] = test['rows_per_sec']
         if 'all_passed' in data:
             result['metrics']['all_passed'] = 1 if data['all_passed'] else 0
+    
+    elif bench_name == 'benchmark_materialize_aliases':
+        # NEW: Extract metrics from materialize_aliases benchmark
+        result['time_s'] = data.get('time_s') or data.get('total_time_s')
+        
+        # Extract per-scenario metrics
+        for scenario in data.get('scenarios', []):
+            name = scenario.get('name', 'unknown')
+            if 'time_s' in scenario:
+                result['metrics'][f"{name}_time_s"] = scenario['time_s']
+            if 'rows_per_sec' in scenario:
+                result['metrics'][f"{name}_rows_per_sec"] = scenario['rows_per_sec']
+            if 'memory_mb' in scenario:
+                result['metrics'][f"{name}_memory_mb"] = scenario['memory_mb']
+        
+        # Extract speedup metrics
+        if 'direct_vs_safe_speedup' in data.get('metrics', {}):
+            result['metrics']['direct_vs_safe_speedup'] = data['metrics']['direct_vs_safe_speedup']
+        if 'safe_vs_simple_ratio' in data.get('metrics', {}):
+            result['metrics']['safe_vs_simple_ratio'] = data['metrics']['safe_vs_simple_ratio']
+        
+        # Alternative: metrics might be at top level
+        for key in ['direct_vs_safe_speedup', 'safe_vs_simple_ratio', 'missing_pct']:
+            if key in data:
+                result['metrics'][key] = data[key]
     
     elif bench_name == 'benchmark_read_tree':
         result['time_s'] = data.get('elapsed_s') or data.get('total_time_s')
@@ -458,6 +485,7 @@ def extract_metrics(bench_name, data):
             result['metrics']['optimal_workers'] = data['optimal_workers']
     
     else:
+        # Generic fallback for unknown benchmarks
         result['time_s'] = data.get('elapsed_s') or data.get('total_time_s') or data.get('time_s')
         for key, val in data.items():
             if isinstance(val, (int, float)) and key not in ['elapsed_s', 'time_s']:

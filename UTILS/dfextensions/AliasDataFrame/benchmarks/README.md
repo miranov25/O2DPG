@@ -21,6 +21,7 @@ Performance benchmarks for AliasDataFrame operations.
 |--------|---------|---------------|
 | `run_benchmark.sh` | **Main entry point** - runs all benchmarks | Auto-generates |
 | `benchmark_performance.py` | Core operations timing | Synthetic (built-in) |
+| `benchmark_materialize_aliases.py` | **Alias DAG + subframe joins** | Synthetic (built-in) |
 | `benchmark_read_tree.py` | ROOT file read tests | ROOT file |
 | `benchmark_subframe.py` | Subframe join tests | ROOT file |
 | `benchmark_parallel.py` | Worker scaling analysis | ROOT file |
@@ -33,16 +34,17 @@ Runs ALL benchmarks with pytest-style output:
 
 ```
 ==================== BENCHMARK SESSION STARTS ====================
-Timestamp:  2025-11-27T17:30:00
+Timestamp:  2025-11-28T14:40:00
 Host:       your-machine
 Python:     Python 3.9.6
 
-✓ benchmark_performance.py          PASSED (0.06s)
-✓ benchmark_read_tree.py            PASSED (2.34s)
-✓ benchmark_subframe.py             PASSED (1.20s)
-✓ benchmark_parallel.py             PASSED (8.50s)
+✓ benchmark_performance.py          PASSED (1.98s)
+✓ benchmark_materialize_aliases.py  PASSED (3.05s)
+✓ benchmark_read_tree.py            PASSED (0.73s)
+✓ benchmark_subframe.py             PASSED (2.52s)
+✓ benchmark_parallel.py             PASSED (6.23s)
 
-==================== 4 passed, 0 failed in 12.10s ====================
+==================== 5 passed in 14.51s ====================
 ```
 
 ### Options
@@ -54,6 +56,21 @@ Python:     Python 3.9.6
 ./run_benchmark.sh --generate-data  # Force regenerate test data
 ./run_benchmark.sh --strict        # Exit 1 on failure
 ./run_benchmark.sh --verbose       # Show detailed output
+./run_benchmark.sh --save-baseline # Save results as new baseline
+./run_benchmark.sh --compare-baseline # Compare against baseline
+```
+
+### Regression Detection
+
+```bash
+# Establish baseline
+./run_benchmark.sh --save-baseline
+
+# Compare future runs against baseline
+./run_benchmark.sh --compare-baseline
+
+# Fail CI if regression detected (>20% slower)
+./run_benchmark.sh --compare-baseline --strict
 ```
 
 ## benchmark_performance.py
@@ -134,6 +151,139 @@ python benchmark_performance.py
 ```
 
 Results show regression warnings if current run is >2x slower than baseline.
+
+## benchmark_materialize_aliases.py
+
+Tests `materialize_aliases()` performance with realistic physics data scenarios including subframe joins.
+
+### Purpose
+
+- Measure alias DAG materialization performance
+- Compare `fill_mode='safe'` vs `fill_mode='direct'`
+- Quantify subframe join overhead
+- Detect regressions in batch materialization (BUG-2025-11-27-002 fix)
+
+### Data Model (ITSTPC-like)
+
+| Dataset | Rows | Columns | Description |
+|---------|------|---------|-------------|
+| Main DataFrame | 500k | 8 | drift25, side, row, r, phi, y2x, dyC1, dzC1 |
+| Subframe | 1,288 | 11 | Calibration table with 3-column join key |
+
+The data simulates ALICE TPC calibration with ~15% missing keys (rows 161-190 have no calibration data).
+
+### Alias DAG Structure
+
+26 aliases organized in 4 layers:
+
+| Layer | Aliases | Description |
+|-------|---------|-------------|
+| A | rrel, cosPhi, sinPhi, y2x2 | Geometry calculations |
+| B | dyC1_SC, dzC1_SC | Subframe projections (joins) |
+| C | dyC1_SC_combined | Intermediate corrections |
+| D | dyC2, dzC2 | Final calibrated residuals |
+
+### Scenarios
+
+| Scenario | Aliases | Description |
+|----------|---------|-------------|
+| `simple` | 11 | No subframe joins (baseline) |
+| `safe` | 26 | Full NaN/Inf checking with subframe |
+| `direct` | 26 | Skip NaN/Inf checks (faster) |
+
+### Usage
+
+```bash
+# Full benchmark (500k rows)
+python benchmark_materialize_aliases.py
+
+# Quick mode (100k rows) - for CI
+python benchmark_materialize_aliases.py --quick
+
+# Export results to JSON
+python benchmark_materialize_aliases.py --json results.json
+
+# Minimal output
+python benchmark_materialize_aliases.py --quiet
+```
+
+### Output
+
+```
+============================================================
+MATERIALIZE_ALIASES BENCHMARK
+============================================================
+Rows:      500,000
+Hostname:  your-machine
+Timestamp: 2025-11-28T14:40:14
+
+Generating synthetic data...
+  Main DataFrame: 500,000 rows × 8 cols
+  Subframe: 1,288 rows × 11 cols
+  Expected missing: 15.2% (row > 160)
+
+--- Scenario 1: Simple (no subframe) ---
+  Aliases defined: 11
+  Targets: ['simple_result']
+  Time: 0.019s
+  Rows/sec: 26,751,976
+  Peak memory: 82.2 MB
+
+--- Scenario: Subframe (Safe) ---
+  Aliases defined: 26
+  Targets: ['dyC2', 'dzC2']
+  Fill mode: safe
+  Time: 0.767s
+  Rows/sec: 651,941
+  Peak memory: 196.7 MB
+  Missing keys: 15.2%
+
+--- Scenario: Subframe (Direct) ---
+  Aliases defined: 26
+  Fill mode: direct
+  Time: 0.706s
+  Rows/sec: 707,936
+  Peak memory: 196.6 MB
+
+============================================================
+SUMMARY
+============================================================
+
+Scenario        Time (s)     Rows/sec        Aliases   
+------------------------------------------------------------
+simple          0.019        26,751,976      11        
+safe            0.767        651,941         26        
+direct          0.706        707,936         26        
+------------------------------------------------------------
+Total           1.492       
+
+------------------------------------------------------------
+SPEEDUP METRICS
+------------------------------------------------------------
+  direct vs safe:   1.09x (faster)
+  safe vs simple:   41x (subframe overhead)
+============================================================
+```
+
+### Key Metrics
+
+| Metric | Description | Typical Value |
+|--------|-------------|---------------|
+| `direct_vs_safe_speedup` | Speed gain from skipping NaN checks | ~1.05-1.10x |
+| `safe_vs_simple_ratio` | Subframe join overhead | ~40-50x |
+| `missing_pct` | Percentage of missing join keys | 15.2% |
+
+### Interpreting Results
+
+**Subframe Overhead (safe_vs_simple):**
+- 30-50x is normal (join operations are expensive)
+- >100x may indicate inefficient join strategy
+- Use for comparison across code changes, not absolute benchmarking
+
+**Direct vs Safe Speedup:**
+- 1.05-1.15x expected (NaN/Inf checks have cost)
+- <1.0x indicates regression in direct mode
+- Use `fill_mode='direct'` when input data is pre-validated
 
 ## benchmark_parallel.py
 
@@ -281,136 +431,29 @@ Workers: 8
 ======================================================================
 SUMMARY
 ======================================================================
-Test            Time (s)     Peak (MB)    Final (MB)
+Test            Time (s)     Peak (MB)    Final (MB)  
 ---------------------------------------------------
-6-pd-direct     12.5         450          380
-1-np-oneshot    8.2          420          380
-8-branch-conv   2.1          180          95
-4-aliasdf       2.3          190          95
+6-pd-direct     12.5         450          380         
+1-np-oneshot    8.2          420          380         
+...
 
 ======================================================================
-RECOMMENDATIONS
+ANALYSIS
 ======================================================================
-Fastest approach: 8-branch-thr-conv (2.1s)
-✓✓ THREADED BRANCH-BY-BRANCH is the winner!
-   → Use this as default with num_workers>1
-======================================================================
+numpy vs pandas direct: +52% (faster)
+...
 ```
-
-### Key Insights
-
-This benchmark helped identify that **threaded branch-by-branch reading** is optimal:
-- 4-6x faster than one-shot reading
-- 50% less peak memory
-- Now the default in `AliasDataFrame.read_tree()`
-
-## benchmark_subframe.py
-
-Validates subframe functionality: loading, joining, and correctness.
-
-### Purpose
-
-- Verify subframe detection and loading
-- Validate join correctness (invariant tests)
-- Measure alias materialization speed
-- Check missing key statistics
-
-### Tests Performed
-
-| Test | Description |
-|------|-------------|
-| File Loading | Load ROOT file with `read_tree()` |
-| Subframe Detection | Detect and load all subframes |
-| Join Correctness | Verify `T.column` lookups return correct values |
-| Invariant Test | Same key must give same value (std within group = 0) |
-| Materialization Speed | Time to materialize subframe aliases |
-| Missing Key Stats | Coverage analysis (main keys vs subframe keys) |
-
-### Usage
-
-```bash
-# Basic run
-python benchmark_subframe.py data.root
-
-# Custom tree name
-python benchmark_subframe.py data.root --treename mytree
-
-# Limit entries
-python benchmark_subframe.py data.root --entries 100000
-
-# Custom workers
-python benchmark_subframe.py data.root --workers 4
-```
-
-### Output
-
-```
-============================================================
-AliasDataFrame Subframe Benchmark
-============================================================
-File: data.root
-Tree: tree
-Max entries: 100000
-
---- 1. File Loading ---
-  ✓ Loaded: 100,000 rows, 45 columns
-  ✓ Memory: 38.5 MB
-  ✓ Time: 1.23 s
-  ✓ Speed: 81,300 rows/sec
-
---- 2. Subframe Detection ---
-  Found 1 subframes: ['T']
-  ✓ T: 5,234 rows, index=['track_idx']
-    Columns: ['track_idx', 'mP3', 'mP4', 'mX', 'dEdxTPC']
-
---- 3. Join Correctness Validation ---
-  T.mP3: 98,234/100,000 valid (98.2%)
-  T.mX: 98,234/100,000 valid (98.2%)
-
-  Invariant test (same key → same value):
-    ✓ T.mP3: max_std_within_group=0.00e+00 (CORRECT)
-    ✓ T.mX: max_std_within_group=0.00e+00 (CORRECT)
-
---- 4. Alias Materialization Speed ---
-  ✓ simple_lookup: 45.2 ms, valid=98,234/100,000
-  ✓ expression: 52.1 ms, valid=98,234/100,000
-
---- 5. Missing Key Statistics ---
-  T:
-    Main keys: 5,500
-    Subframe keys: 5,234
-    Coverage: 95.2% (5,234 matched)
-    Missing in subframe: 266
-
-============================================================
-SUMMARY: 8 passed, 0 failed
-============================================================
-```
-
-### Key Tests Explained
-
-**Invariant Test:** Groups main frame by index key, checks that all rows with the same key get the same subframe value. Standard deviation within each group should be 0 (or near-zero for floating point).
-
-**Coverage:** Percentage of main frame keys that exist in the subframe. <100% is normal (not all clusters belong to tracks).
 
 ## diagnose_read_performance.py
 
-**Diagnostic tool** for identifying root causes of read performance issues.
+Diagnostic tool to identify root causes of read performance issues.
 
-### Purpose
+### Tests Available
 
-When you experience unexpected slowdowns (e.g., 100x slower reads), this tool helps identify:
-- Thread contention issues
-- Filesystem caching effects
-- Network I/O bottlenecks
-- AliasDataFrame overhead
-
-### Tests Performed
-
-| Test | What It Measures | Identifies |
-|------|------------------|------------|
-| `workers` | Scaling with 1,2,4,8,16 workers | Thread contention, optimal worker count |
-| `cache` | 5 sequential reads | Cold vs warm cache effect |
+| Test | What it measures | Identifies |
+|------|-----------------|------------|
+| `workers` | Scaling with num_workers | Thread contention |
+| `cache` | Cold vs warm reads | Filesystem caching |
 | `local` | Network vs /tmp storage | I/O bandwidth bottleneck |
 | `overhead` | Raw uproot vs AliasDataFrame | ADF processing overhead |
 
@@ -555,12 +598,12 @@ Results can be exported to JSON for programmatic analysis:
 
 ## JSON Output Format
 
-Both scripts support `--json` output for programmatic processing:
+All benchmarks support `--json` output for programmatic processing:
 
 ```json
 {
-  "timestamp": "2025-11-27T16:30:00.123456",
-  "hostname": "lxbk1130",
+  "timestamp": "2025-11-28T14:40:00.123456",
+  "hostname": "your-machine",
   "python_version": "3.9.6",
   "platform": "Linux-5.4.0-x86_64",
   "rows": 1000000,
@@ -583,19 +626,24 @@ Both scripts support `--json` output for programmatic processing:
 
 ```
 benchmarks/
-├── README.md                      # This file
-├── run_benchmark.sh               # Main entry point (pytest-style)
-├── generate_synthetic_data.py     # Creates test ROOT file (~5MB)
-├── diagnose_read_performance.py   # Diagnostic tool for slowdowns (NEW)
-├── benchmark_performance.py       # Synthetic benchmarks (NEW)
-├── benchmark_parallel.py          # Parallel scaling tests (NEW)
-├── benchmark_read_tree.py         # ROOT file read comparison (existing)
-├── benchmark_subframe.py          # Subframe validation (existing)
-├── baselines.json                 # Saved baselines (auto-generated)
-├── synthetic_data.root            # Test data (auto-generated, gitignored)
-└── results/                       # Output directory (gitignored)
-    ├── benchmark_*.json           # Detailed results
-    └── summary_*.txt              # Summary reports
+├── README.md                         # This file
+├── run_benchmark.sh                  # Main entry point (pytest-style)
+├── generate_synthetic_data.py        # Creates test ROOT file (~5MB)
+├── diagnose_read_performance.py      # Diagnostic tool for slowdowns
+├── benchmark_performance.py          # Core operations timing
+├── benchmark_materialize_aliases.py  # Alias DAG + subframe benchmark (NEW)
+├── benchmark_parallel.py             # Parallel scaling tests
+├── benchmark_read_tree.py            # ROOT file read comparison
+├── benchmark_subframe.py             # Subframe validation
+├── baseline_utils.py                 # Baseline management utilities
+├── baselines.json                    # Saved baselines (auto-generated)
+├── baseline.json                     # Unified baseline for regression detection
+├── synthetic_data.root               # Test data (auto-generated, gitignored)
+└── results/                          # Output directory (gitignored)
+    ├── benchmark_*.json              # Detailed results
+    ├── benchmark_merged_*.json       # Merged results for comparison
+    ├── comparison_*.json             # Regression comparison results
+    └── summary_*.txt                 # Summary reports
 ```
 
 ## Synthetic Data Generation
@@ -627,6 +675,9 @@ For continuous integration, use quick mode:
 
 # Or strict mode to fail on regression
 ./run_benchmark.sh --quick --strict
+
+# Full regression detection workflow
+./run_benchmark.sh --quick --compare-baseline --strict
 ```
 
 ### GitHub Actions Example
@@ -636,6 +687,11 @@ For continuous integration, use quick mode:
   run: |
     cd AliasDataFrame/benchmarks
     ./run_benchmark.sh --quick
+
+- name: Check for regressions
+  run: |
+    cd AliasDataFrame/benchmarks
+    ./run_benchmark.sh --quick --compare-baseline --strict
 ```
 
 ### GitLab CI Example
@@ -648,6 +704,13 @@ benchmark:
   artifacts:
     paths:
       - artifacts/
+
+regression-check:
+  script:
+    - cd AliasDataFrame/benchmarks
+    - ./run_benchmark.sh --quick --compare-baseline --strict
+  only:
+    - merge_requests
 ```
 
 ## Troubleshooting
@@ -676,7 +739,7 @@ benchmark:
 
 1. Check if code changed (regression)
 2. Check if hardware/environment changed
-3. Re-establish baseline with `--update-baselines`
+3. Re-establish baseline with `--save-baseline`
 
 ### Unexpected 100x slowdown
 

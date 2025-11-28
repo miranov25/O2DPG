@@ -188,10 +188,11 @@ while [[ $# -gt 0 ]]; do
             echo "  --baseline FILE    Baseline file path (default: benchmarks/baseline.json)"
             echo ""
             echo "Benchmarks:"
-            echo "  benchmark_performance.py   Synthetic data tests (always runs)"
-            echo "  benchmark_read_tree.py     ROOT file read tests (needs data)"
-            echo "  benchmark_subframe.py      Subframe tests (needs data)"
-            echo "  benchmark_parallel.py      Parallel scaling tests (needs data)"
+            echo "  benchmark_performance.py          Synthetic data tests (always runs)"
+            echo "  benchmark_materialize_aliases.py  Alias & subframe materialization (always runs)"
+            echo "  benchmark_read_tree.py            ROOT file read tests (needs data)"
+            echo "  benchmark_subframe.py             Subframe tests (needs data)"
+            echo "  benchmark_parallel.py             Parallel scaling tests (needs data)"
             echo ""
             echo "Examples:"
             echo "  $0                              # Run all benchmarks"
@@ -253,9 +254,14 @@ fi
 
 # =============================================================================
 # Benchmark 1: Performance (Synthetic)
+# Tests: AliasDataFrame creation, alias definition, schema operations,
+#        materialization, compression, and export. No I/O - pure computation.
 # =============================================================================
 
 echo "--- benchmark_performance.py ${QUICK_MODE} ---"
+if [[ "$VERBOSE" = true ]]; then
+    echo "    Tests: create_adf, add_aliases, validate_schema, materialize, compress, export"
+fi
 
 START_TIME=$(get_time)
 PERF_JSON="${OUTPUT_DIR}/benchmark_performance_${TIMESTAMP}.json"
@@ -295,11 +301,52 @@ fi
 echo ""
 
 # =============================================================================
-# Benchmark 2: Read Tree (needs ROOT file)
+# Benchmark 2: Materialize Aliases (Synthetic)
+# Tests: Alias DAG materialization with subframe joins.
+#        Compares fill_mode='safe' vs 'direct' performance.
+# =============================================================================
+
+echo "--- benchmark_materialize_aliases.py ${QUICK_MODE} ---"
+if [[ "$VERBOSE" = true ]]; then
+    echo "    Tests: simple (no subframe), safe (full NaN/Inf checks), direct (fast mode)"
+fi
+
+START_TIME=$(get_time)
+MATERIALIZE_JSON="${OUTPUT_DIR}/benchmark_materialize_aliases_${TIMESTAMP}.json"
+
+if [[ "$VERBOSE" = true ]]; then
+    OUTPUT=$(python3 "${SCRIPT_DIR}/benchmark_materialize_aliases.py" ${QUICK_MODE} --json "$MATERIALIZE_JSON" 2>&1)
+    MAT_STATUS=$?
+    echo "$OUTPUT"
+else
+    OUTPUT=$(python3 "${SCRIPT_DIR}/benchmark_materialize_aliases.py" ${QUICK_MODE} --json "$MATERIALIZE_JSON" --quiet 2>&1)
+    MAT_STATUS=$?
+fi
+
+END_TIME=$(get_time)
+ELAPSED=$(calc_elapsed "$START_TIME" "$END_TIME")
+
+if [[ $MAT_STATUS -eq 0 ]]; then
+    log_result "benchmark_materialize_aliases.py" "PASSED" "$ELAPSED" ""
+    print_status "benchmark_materialize_aliases.py" "PASSED" "$ELAPSED"
+else
+    log_result "benchmark_materialize_aliases.py" "FAILED" "$ELAPSED" "Exit code $MAT_STATUS"
+    print_status "benchmark_materialize_aliases.py" "FAILED" "$ELAPSED"
+fi
+
+echo ""
+
+# =============================================================================
+# Benchmark 3: Read Tree (needs ROOT file)
+# Tests: ROOT file I/O with uproot, threaded branch reading,
+#        dtype preservation (float16), and subframe loading.
 # =============================================================================
 
 if [[ "$SYNTHETIC_ONLY" = false ]] && [[ -f "$SYNTHETIC_DATA" ]]; then
     echo "--- benchmark_read_tree.py ---"
+    if [[ "$VERBOSE" = true ]]; then
+        echo "    Tests: read_tree speed, dtype preservation, subframe auto-detection"
+    fi
     
     ENTRIES_ARG=""
     if [[ -n "$QUICK_MODE" ]]; then
@@ -336,11 +383,16 @@ else
 fi
 
 # =============================================================================
-# Benchmark 3: Subframe (needs ROOT file)
+# Benchmark 4: Subframe (needs ROOT file)
+# Tests: Subframe registration, join correctness (invariant validation),
+#        alias materialization with subframe lookups, missing key statistics.
 # =============================================================================
 
 if [[ "$SYNTHETIC_ONLY" = false ]] && [[ -f "$SYNTHETIC_DATA" ]]; then
     echo "--- benchmark_subframe.py ---"
+    if [[ "$VERBOSE" = true ]]; then
+        echo "    Tests: subframe loading, join correctness, alias speed, missing key stats"
+    fi
     
     ENTRIES_ARG=""
     if [[ -n "$QUICK_MODE" ]]; then
@@ -377,11 +429,16 @@ else
 fi
 
 # =============================================================================
-# Benchmark 4: Parallel (needs ROOT file)
+# Benchmark 5: Parallel (needs ROOT file)
+# Tests: read_tree scaling with num_workers (1, 2, 4, 8).
+#        Identifies optimal worker count and detects hangs/instability.
 # =============================================================================
 
 if [[ "$SYNTHETIC_ONLY" = false ]] && [[ -f "$SYNTHETIC_DATA" ]]; then
     echo "--- benchmark_parallel.py ---"
+    if [[ "$VERBOSE" = true ]]; then
+        echo "    Tests: parallel read scaling, optimal num_workers, timeout detection"
+    fi
     
     PARALLEL_ARGS="--repeats 2 --timeout 30"
     if [[ -n "$QUICK_MODE" ]]; then
@@ -445,7 +502,17 @@ if [[ "$COMPARE_BASELINE" = true ]]; then
     echo "--- Comparing Against Baseline ---"
     
     if [[ -f "$BASELINE_FILE" ]]; then
-        COMPARE_ARGS="--threshold $THRESHOLD --latest"
+        # First, merge current results into a single file for comparison
+        MERGED_JSON="${OUTPUT_DIR}/benchmark_merged_${TIMESTAMP}.json"
+        
+        echo "Merging current results..."
+        if python3 "${SCRIPT_DIR}/baseline_utils.py" merge "${OUTPUT_DIR}" "$MERGED_JSON" --timestamp "$TIMESTAMP" 2>&1; then
+            echo "Merged results to: $MERGED_JSON"
+        else
+            echo "Warning: Could not merge results, comparing individual files"
+        fi
+        
+        COMPARE_ARGS="--threshold $THRESHOLD"
         if [[ "$STRICT_MODE" = true ]]; then
             COMPARE_ARGS="$COMPARE_ARGS --strict"
         fi
@@ -453,7 +520,12 @@ if [[ "$COMPARE_BASELINE" = true ]]; then
         # Export comparison results
         COMPARISON_JSON="${OUTPUT_DIR}/comparison_${TIMESTAMP}.json"
         
-        python3 "${SCRIPT_DIR}/baseline_utils.py" compare "${OUTPUT_DIR}" "$BASELINE_FILE" $COMPARE_ARGS --json "$COMPARISON_JSON"
+        # Compare merged results (or latest if merge failed)
+        if [[ -f "$MERGED_JSON" ]]; then
+            python3 "${SCRIPT_DIR}/baseline_utils.py" compare "$MERGED_JSON" "$BASELINE_FILE" $COMPARE_ARGS --json "$COMPARISON_JSON"
+        else
+            python3 "${SCRIPT_DIR}/baseline_utils.py" compare "${OUTPUT_DIR}" "$BASELINE_FILE" $COMPARE_ARGS --latest --json "$COMPARISON_JSON"
+        fi
         COMPARE_STATUS=$?
         
         if [[ $COMPARE_STATUS -eq 1 ]]; then
