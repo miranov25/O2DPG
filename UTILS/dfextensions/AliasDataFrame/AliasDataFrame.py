@@ -2238,7 +2238,9 @@ class AliasDataFrame:
                 for alias, expr in self.aliases.items():
                     g.add_node(alias)
                     for token in re.findall(r'\b\w+\b', expr):
-                        if token in self.aliases:
+                        # Exclude self-references to prevent false cycles
+                        # (e.g., alias 'val' with expr 'T.val' extracts token 'val')
+                        if token in self.aliases and token != alias:
                             g.add_edge(token, alias)
                 return g
             
@@ -2254,6 +2256,30 @@ class AliasDataFrame:
             try:
                 ordered = list(nx.topological_sort(g.subgraph(expanded)))
                 result = [n for n in ordered if n in expanded]
+            except nx.NetworkXUnfeasible:
+                # Find and report cycles with helpful error message
+                cycles = list(nx.simple_cycles(g.subgraph(expanded)))
+                if cycles:
+                    max_cycles = 5
+                    shown = cycles[:max_cycles]
+                    cycle_info = []
+                    for cycle in shown:
+                        cycle_str = ' -> '.join(cycle) + ' -> ' + cycle[0]
+                        exprs = [f"    {a} = {self.aliases.get(a, '[not found]')}" for a in cycle]
+                        cycle_info.append(f"  Cycle: {cycle_str}\n" + '\n'.join(exprs))
+                    
+                    msg = (
+                        f"Dependency cycle detected in aliases "
+                        f"({len(cycles)} total, showing first {len(shown)}):\n"
+                        + '\n'.join(cycle_info)
+                        + "\n\nHint: Self-referential aliases often occur when an alias name "
+                        "matches a subframe column name.\n"
+                        "To diagnose: adf.validate_no_cycles(raise_on_cycle=False)"
+                    )
+                    raise ValueError(msg)
+                else:
+                    # Shouldn't happen, but fallback
+                    result = list(expanded)
             except nx.NetworkXError:
                 result = list(expanded)
         
@@ -2498,8 +2524,7 @@ class AliasDataFrame:
                     result = result_dtype(result)
             self.df[name] = result
             
-            # Emit aggregated missing key warning BEFORE restoring config
-            # (must be inside try block so warn_missing_keys=False takes effect)
+            # Emit aggregated warning BEFORE restoring config (so warn_missing_keys=False takes effect)
             self._emit_missing_key_summary()
             
         finally:
@@ -2592,13 +2617,28 @@ class AliasDataFrame:
             if verbose:
                 print(f"[materialize_aliases] Computing: {name}")
             
-            # First, ensure any subframe aliases referenced in expression are materialized
-            # This handles cases like "T.mX" where mX might be an alias in subframe T
+            # Handle subframe dependencies: index columns and subframe attributes
             tokens = re.findall(r'(\w+)\.(\w+)', expr)
             for sf_name, sf_attr in tokens:
                 sf = self.get_subframe(sf_name)
-                if sf and sf_attr in sf.aliases and sf_attr not in sf.df.columns:
-                    sf.materialize_alias(sf_attr)
+                if sf:
+                    # FIX B: Materialize index columns if they're aliases
+                    # This was missing in the batched path but exists in materialize_alias()
+                    entry = self._subframes.get_entry(sf_name)
+                    if entry:
+                        index_cols = entry['index']
+                        if isinstance(index_cols, str):
+                            index_cols = [index_cols]
+                        for idx_col in index_cols:
+                            if idx_col in self.aliases and idx_col not in self.df.columns:
+                                if idx_col not in results:  # Not yet computed in batch
+                                    if verbose:
+                                        print(f"[materialize_aliases]   Materializing index: {idx_col}")
+                                    self.materialize_alias(idx_col)
+                    
+                    # Materialize subframe attribute if it's an alias
+                    if sf_attr in sf.aliases and sf_attr not in sf.df.columns:
+                        sf.materialize_alias(sf_attr)
             
             # Compute with context_override so dependent aliases can see prior results
             # Note: _eval_in_namespace calls _prepare_subframe_joins which handles:
