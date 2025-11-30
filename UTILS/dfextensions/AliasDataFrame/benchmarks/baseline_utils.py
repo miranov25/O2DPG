@@ -27,6 +27,120 @@ BASELINE_VERSION = 1
 
 
 # =============================================================================
+# GIT UTILITIES
+# =============================================================================
+
+def get_git_info():
+    """
+    Get current git commit info.
+    
+    Returns dict with commit hash, branch, dirty status, etc.
+    Returns None values if git is not available or not in a repo.
+    """
+    import subprocess
+    
+    def run_git(args):
+        try:
+            result = subprocess.run(
+                ['git'] + args,
+                capture_output=True, text=True, timeout=5
+            )
+            return result.stdout.strip() if result.returncode == 0 else None
+        except Exception:
+            return None
+    
+    # Check if we're in a git repo
+    if run_git(['rev-parse', '--git-dir']) is None:
+        return {
+            'commit': None,
+            'commit_short': None,
+            'branch': None,
+            'dirty': None,
+            'commit_date': None,
+            'commit_message': None,
+        }
+    
+    # Get status to check dirty
+    status_output = run_git(['status', '--porcelain'])
+    is_dirty = status_output is not None and status_output != ''
+    
+    return {
+        'commit': run_git(['rev-parse', 'HEAD']),
+        'commit_short': run_git(['rev-parse', '--short', 'HEAD']),
+        'branch': run_git(['rev-parse', '--abbrev-ref', 'HEAD']),
+        'dirty': is_dirty,
+        'commit_date': run_git(['log', '-1', '--format=%ci']),
+        'commit_message': run_git(['log', '-1', '--format=%s']),
+    }
+
+
+def archive_to_history(results_json, history_dir='results/history'):
+    """
+    Archive benchmark results to history directory with git info.
+    
+    Creates: history_dir/benchmark_YYYYMMDD_HHMMSS_COMMITHASH.json
+    
+    Parameters
+    ----------
+    results_json : str
+        Path to the merged results JSON file
+    history_dir : str
+        Directory to store history files
+        
+    Returns
+    -------
+    Path : Path to the created history file
+    """
+    history_path = Path(history_dir)
+    history_path.mkdir(parents=True, exist_ok=True)
+    
+    # Load results
+    with open(results_json) as f:
+        data = json.load(f)
+    
+    # Add git info
+    data['git'] = get_git_info()
+    
+    # Create history filename
+    # Extract timestamp from 'created' field or use current time
+    created = data.get('created', datetime.now().isoformat())
+    # Parse timestamp: "2025-11-30T09:03:17.481050" -> "20251130_090317"
+    try:
+        dt = datetime.fromisoformat(created.split('.')[0])
+        timestamp = dt.strftime('%Y%m%d_%H%M%S')
+    except (ValueError, AttributeError):
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    
+    commit_short = data['git'].get('commit_short') or 'nogit'
+    history_name = f"benchmark_{timestamp}_{commit_short}.json"
+    history_file = history_path / history_name
+    
+    # Save to history
+    with open(history_file, 'w') as f:
+        json.dump(data, f, indent=2)
+    
+    print(f"Archived to: {history_file}")
+    return history_file
+
+
+def cmd_archive(args):
+    """Execute archive subcommand."""
+    results_path = Path(args.results)
+    
+    if not results_path.exists():
+        print(f"Error: Results file not found: {args.results}")
+        return 1
+    
+    try:
+        history_file = archive_to_history(args.results, args.history_dir)
+        print(f"✓ History archived: {history_file}")
+        return 0
+    except Exception as e:
+        print(f"Error archiving results: {e}")
+        return 1
+
+
+# =============================================================================
 # SHARED UTILITIES
 # =============================================================================
 
@@ -575,6 +689,174 @@ def cmd_merge(args):
 
 
 # =============================================================================
+# DIFF FUNCTIONALITY
+# =============================================================================
+
+def compare_history_files(file_a, file_b, threshold_pct=10.0):
+    """
+    Compare two history/benchmark JSON files and show differences.
+    
+    Parameters
+    ----------
+    file_a : str
+        Path to first JSON file (typically older/baseline)
+    file_b : str
+        Path to second JSON file (typically newer/current)
+    threshold_pct : float
+        Highlight changes larger than this percentage
+        
+    Returns
+    -------
+    dict : Comparison results with changes for each metric
+    """
+    a = load_json(file_a)
+    b = load_json(file_b)
+    
+    results = {
+        'file_a': str(file_a),
+        'file_b': str(file_b),
+        'commit_a': a.get('git', {}).get('commit_short', 'N/A'),
+        'commit_b': b.get('git', {}).get('commit_short', 'N/A'),
+        'timestamp_a': a.get('created', 'N/A'),
+        'timestamp_b': b.get('created', 'N/A'),
+        'changes': [],
+        'regressions': [],
+        'improvements': [],
+    }
+    
+    # Get all benchmarks from both files
+    benchmarks_a = a.get('benchmarks', {})
+    benchmarks_b = b.get('benchmarks', {})
+    all_benchmarks = set(benchmarks_a.keys()) | set(benchmarks_b.keys())
+    
+    for bench_name in sorted(all_benchmarks):
+        metrics_a = benchmarks_a.get(bench_name, {}).get('metrics', {})
+        metrics_b = benchmarks_b.get(bench_name, {}).get('metrics', {})
+        
+        # Also compare time_s
+        time_a = benchmarks_a.get(bench_name, {}).get('time_s')
+        time_b = benchmarks_b.get(bench_name, {}).get('time_s')
+        if time_a and time_b:
+            metrics_a = dict(metrics_a)  # Copy to avoid modifying original
+            metrics_b = dict(metrics_b)
+            metrics_a['time_s'] = time_a
+            metrics_b['time_s'] = time_b
+        
+        all_metrics = set(metrics_a.keys()) | set(metrics_b.keys())
+        
+        for metric_name in sorted(all_metrics):
+            val_a = metrics_a.get(metric_name)
+            val_b = metrics_b.get(metric_name)
+            
+            if val_a is None or val_b is None:
+                continue
+            if not isinstance(val_a, (int, float)) or not isinstance(val_b, (int, float)):
+                continue
+            if val_a == 0:
+                continue
+                
+            change_pct = (val_b - val_a) / abs(val_a) * 100
+            
+            change = {
+                'benchmark': bench_name,
+                'metric': metric_name,
+                'value_a': val_a,
+                'value_b': val_b,
+                'change_pct': change_pct,
+            }
+            
+            results['changes'].append(change)
+            
+            # Classify as regression or improvement
+            # For time metrics, increase is regression
+            # For speedup metrics, decrease is regression
+            is_time_metric = 'time' in metric_name.lower() or metric_name.endswith('_s')
+            
+            if is_time_metric:
+                if change_pct > threshold_pct:
+                    results['regressions'].append(change)
+                elif change_pct < -threshold_pct:
+                    results['improvements'].append(change)
+            else:
+                if change_pct < -threshold_pct:
+                    results['regressions'].append(change)
+                elif change_pct > threshold_pct:
+                    results['improvements'].append(change)
+    
+    return results
+
+
+def print_diff_report(results):
+    """Print formatted diff report."""
+    print(f"\n{'='*70}")
+    print("BENCHMARK COMPARISON")
+    print(f"{'='*70}")
+    print(f"  A: {results['commit_a']} ({results['timestamp_a'][:19] if len(results['timestamp_a']) > 19 else results['timestamp_a']})")
+    print(f"  B: {results['commit_b']} ({results['timestamp_b'][:19] if len(results['timestamp_b']) > 19 else results['timestamp_b']})")
+    print()
+    
+    if results['regressions']:
+        print(f"⚠️  REGRESSIONS ({len(results['regressions'])}):")
+        for r in results['regressions']:
+            print(f"    {r['benchmark']}: {r['metric']}")
+            print(f"      {r['value_a']:.3f} → {r['value_b']:.3f} ({r['change_pct']:+.1f}%)")
+        print()
+    
+    if results['improvements']:
+        print(f"✓ IMPROVEMENTS ({len(results['improvements'])}):")
+        for r in results['improvements']:
+            print(f"    {r['benchmark']}: {r['metric']}")
+            print(f"      {r['value_a']:.3f} → {r['value_b']:.3f} ({r['change_pct']:+.1f}%)")
+        print()
+    
+    print(f"{'='*70}")
+    print("ALL CHANGES:")
+    print(f"{'='*70}")
+    print(f"{'Benchmark':<35} {'Metric':<25} {'A':>10} {'B':>10} {'Change':>10}")
+    print("-" * 95)
+    
+    for c in results['changes']:
+        bench_short = c['benchmark'].replace('benchmark_', '').replace('.py', '')[:33]
+        metric_short = c['metric'][:23]
+        print(f"{bench_short:<35} {metric_short:<25} {c['value_a']:>10.3f} {c['value_b']:>10.3f} {c['change_pct']:>+9.1f}%")
+    
+    print(f"{'='*70}")
+
+
+def cmd_diff(args):
+    """Execute diff subcommand."""
+    import glob
+    
+    # Handle glob patterns
+    files_a = glob.glob(args.file_a)
+    files_b = glob.glob(args.file_b)
+    
+    if not files_a:
+        print(f"Error: No files matching: {args.file_a}")
+        return 1
+    if not files_b:
+        print(f"Error: No files matching: {args.file_b}")
+        return 1
+    
+    # Use most recent if multiple matches
+    file_a = sorted(files_a)[-1]
+    file_b = sorted(files_b)[-1]
+    
+    results = compare_history_files(file_a, file_b, args.threshold)
+    print_diff_report(results)
+    
+    if args.json:
+        with open(args.json, 'w') as f:
+            json.dump(results, f, indent=2)
+        print(f"\nExported to: {args.json}")
+    
+    # Exit code
+    if args.strict and results['regressions']:
+        return 1
+    return 0
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -595,6 +877,12 @@ Examples:
     
     # Preview merge without writing
     python baseline_utils.py merge results/ baseline.json --dry-run
+    
+    # Archive results to history with git info
+    python baseline_utils.py archive results/benchmark_merged.json --history-dir results/history
+    
+    # Compare two history files (supports glob patterns)
+    python baseline_utils.py diff 'results/history/*_f9df9cf*' 'results/history/*_18caba7*'
         """
     )
     
@@ -630,6 +918,28 @@ Examples:
     merge_parser.add_argument('--dry-run', action='store_true',
         help='Preview merge without writing file')
     
+    # Archive subcommand
+    archive_parser = subparsers.add_parser('archive',
+        help='Archive results to history with git info')
+    archive_parser.add_argument('results',
+        help='Merged results JSON file to archive')
+    archive_parser.add_argument('--history-dir', default='results/history',
+        help='History directory (default: results/history)')
+    
+    # Diff subcommand
+    diff_parser = subparsers.add_parser('diff',
+        help='Compare two benchmark results')
+    diff_parser.add_argument('file_a',
+        help='First JSON file (baseline/older), supports glob patterns')
+    diff_parser.add_argument('file_b', 
+        help='Second JSON file (current/newer), supports glob patterns')
+    diff_parser.add_argument('--threshold', type=float, default=10.0,
+        help='Change threshold for flagging (default: 10%%)')
+    diff_parser.add_argument('--json',
+        help='Export comparison to JSON file')
+    diff_parser.add_argument('--strict', action='store_true',
+        help='Exit with code 1 if regressions detected')
+    
     args = parser.parse_args()
     
     if args.command is None:
@@ -640,6 +950,10 @@ Examples:
         return cmd_compare(args)
     elif args.command == 'merge':
         return cmd_merge(args)
+    elif args.command == 'archive':
+        return cmd_archive(args)
+    elif args.command == 'diff':
+        return cmd_diff(args)
     else:
         parser.print_help()
         return 1

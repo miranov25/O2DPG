@@ -15,6 +15,99 @@ Performance benchmarks for AliasDataFrame operations.
 ./run_benchmark.sh --synthetic-only
 ```
 
+## New Features
+
+### Full Analysis Mode
+
+Run complete benchmark with profiling, baseline comparison, and history archiving:
+
+```bash
+./run_benchmark.sh --full
+```
+
+This enables:
+- Profiler output (`.prof` and `.txt` files)
+- Baseline comparison
+- Automatic history archiving with git info
+
+### Profiler Output
+
+Generate detailed profiler output for performance analysis:
+
+```bash
+./run_benchmark.sh --profile
+
+# Or combined with full analysis
+./run_benchmark.sh --full
+```
+
+Profile files are saved to `results/profiles/` with naming:
+```
+bench_<component>_<scenario>_<timestamp>_<commit>.prof
+```
+
+Analyze profiles with standard Python tools:
+```python
+import pstats
+p = pstats.Stats('results/profiles/bench_materialize_safe_20251130_164906_18caba76.prof')
+p.sort_stats('cumulative').print_stats(20)
+
+# Or use snakeviz for visualization
+# pip install snakeviz
+# snakeviz results/profiles/bench_materialize_safe_20251130_164906_18caba76.prof
+```
+
+### History and Comparison
+
+Every benchmark run is archived to `results/history/` with git information.
+
+**Compare two runs:**
+```bash
+# Compare specific files
+python baseline_utils.py diff results/history/benchmark_*_f9df9cf.json results/history/benchmark_*_18caba7.json
+
+# Supports glob patterns
+python baseline_utils.py diff 'results/history/*f9df9cf*' 'results/history/*18caba7*'
+
+# With strict mode (exit code 1 on regression)
+python baseline_utils.py diff file_a.json file_b.json --strict
+```
+
+### History Analysis
+
+Load history into pandas DataFrames for custom analysis:
+
+```python
+from history_analysis import load_history_long, load_history_wide
+
+# Long format (one row per metric) - good for filtering
+df_long = load_history_long('results/history/')
+df_long[df_long['metric'] == 'direct_vs_safe_speedup']
+
+# Wide format (one row per run) - good for correlation
+df_wide = load_history_wide('results/history/')
+df_wide[['commit', 'materialize_aliases_time_s', 'materialize_aliases_direct_vs_safe_speedup']]
+
+# Time series of specific metric
+from history_analysis import get_metric_history
+ts = get_metric_history(df_long, 'materialize_aliases', 'direct_vs_safe_speedup')
+```
+
+**CLI commands:**
+```bash
+# List available metrics
+python history_analysis.py list results/history/
+
+# Show recent runs
+python history_analysis.py show results/history/ --last 10
+
+# Show specific metric
+python history_analysis.py show results/history/ --metric direct_vs_safe_speedup
+
+# Export for external tools
+python history_analysis.py export results/history/ --format wide -o history.csv
+```
+
 ## Overview
 
 | Script | Purpose | Data Required |
@@ -631,15 +724,23 @@ benchmarks/
 ├── generate_synthetic_data.py        # Creates test ROOT file (~5MB)
 ├── diagnose_read_performance.py      # Diagnostic tool for slowdowns
 ├── benchmark_performance.py          # Core operations timing
-├── benchmark_materialize_aliases.py  # Alias DAG + subframe benchmark (NEW)
+├── benchmark_materialize_aliases.py  # Alias DAG + subframe benchmark
 ├── benchmark_parallel.py             # Parallel scaling tests
 ├── benchmark_read_tree.py            # ROOT file read comparison
 ├── benchmark_subframe.py             # Subframe validation
 ├── baseline_utils.py                 # Baseline management utilities
+├── history_analysis.py               # DataFrame utilities for history analysis (NEW)
 ├── baselines.json                    # Saved baselines (auto-generated)
 ├── baseline.json                     # Unified baseline for regression detection
 ├── synthetic_data.root               # Test data (auto-generated, gitignored)
 └── results/                          # Output directory (gitignored)
+    ├── history/                      # Archived runs with git info (NEW)
+    │   ├── benchmark_20251128_150047_f9df9cf.json
+    │   └── benchmark_20251130_164906_18caba76.json
+    ├── profiles/                     # Profiler output (NEW)
+    │   ├── bench_materialize_safe_20251130_164906_18caba76.prof
+    │   ├── bench_materialize_safe_20251130_164906_18caba76.txt
+    │   └── ...
     ├── benchmark_*.json              # Detailed results
     ├── benchmark_merged_*.json       # Merged results for comparison
     ├── comparison_*.json             # Regression comparison results

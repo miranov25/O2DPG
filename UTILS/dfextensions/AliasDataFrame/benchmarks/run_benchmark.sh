@@ -47,6 +47,8 @@ SAVE_BASELINE=false
 COMPARE_BASELINE=false
 THRESHOLD=20
 BASELINE_FILE="${SCRIPT_DIR}/baseline.json"
+PROFILE_FLAG=""
+FULL_FLAG=""
 
 # Results tracking
 declare -a BENCHMARK_NAMES
@@ -57,6 +59,7 @@ declare -a BENCHMARK_MESSAGES
 TOTAL_PASSED=0
 TOTAL_FAILED=0
 TOTAL_SKIPPED=0
+MERGED_JSON=""
 
 # =============================================================================
 # Helper Functions
@@ -150,6 +153,16 @@ while [[ $# -gt 0 ]]; do
             VERBOSE=true
             shift
             ;;
+        --profile)
+            PROFILE_FLAG="--profile"
+            shift
+            ;;
+        --full)
+            PROFILE_FLAG="--profile"
+            FULL_FLAG="--full"
+            COMPARE_BASELINE=true
+            shift
+            ;;
         --save-baseline)
             SAVE_BASELINE=true
             shift
@@ -179,6 +192,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --generate-data    Generate synthetic ROOT file before running"
             echo "  --strict           Exit with code 1 if any benchmark fails or regression detected"
             echo "  --verbose, -v      Show detailed output"
+            echo "  --profile          Save profiler output (.prof and .txt) for analysis"
+            echo "  --full             Full analysis: profiling + baseline comparison + history archive"
             echo "  --output DIR       Output directory (default: benchmarks/results)"
             echo ""
             echo "Regression Detection:"
@@ -199,6 +214,8 @@ while [[ $# -gt 0 ]]; do
             echo "  $0 --save-baseline              # Run and save as baseline"
             echo "  $0 --compare-baseline --strict  # CI mode: fail on regression"
             echo "  $0 --compare-baseline --threshold 15  # Custom threshold"
+            echo "  $0 --full                       # Full run with profiling and history"
+            echo "  $0 --profile                    # Run with profiler output only"
             exit 0
             ;;
         *)
@@ -306,7 +323,7 @@ echo ""
 #        Compares fill_mode='safe' vs 'direct' performance.
 # =============================================================================
 
-echo "--- benchmark_materialize_aliases.py ${QUICK_MODE} ---"
+echo "--- benchmark_materialize_aliases.py ${QUICK_MODE} ${FULL_FLAG} ${PROFILE_FLAG} ---"
 if [[ "$VERBOSE" = true ]]; then
     echo "    Tests: simple (no subframe), safe (full NaN/Inf checks), direct (fast mode)"
 fi
@@ -315,11 +332,11 @@ START_TIME=$(get_time)
 MATERIALIZE_JSON="${OUTPUT_DIR}/benchmark_materialize_aliases_${TIMESTAMP}.json"
 
 if [[ "$VERBOSE" = true ]]; then
-    OUTPUT=$(python3 "${SCRIPT_DIR}/benchmark_materialize_aliases.py" ${QUICK_MODE} --json "$MATERIALIZE_JSON" 2>&1)
+    OUTPUT=$(python3 "${SCRIPT_DIR}/benchmark_materialize_aliases.py" ${QUICK_MODE} ${FULL_FLAG} ${PROFILE_FLAG} --json "$MATERIALIZE_JSON" 2>&1)
     MAT_STATUS=$?
     echo "$OUTPUT"
 else
-    OUTPUT=$(python3 "${SCRIPT_DIR}/benchmark_materialize_aliases.py" ${QUICK_MODE} --json "$MATERIALIZE_JSON" --quiet 2>&1)
+    OUTPUT=$(python3 "${SCRIPT_DIR}/benchmark_materialize_aliases.py" ${QUICK_MODE} ${FULL_FLAG} ${PROFILE_FLAG} --json "$MATERIALIZE_JSON" --quiet 2>&1)
     MAT_STATUS=$?
 fi
 
@@ -545,6 +562,31 @@ if [[ "$COMPARE_BASELINE" = true ]]; then
     fi
     echo ""
 fi
+
+# =============================================================================
+# Archive to History (always runs)
+# Archives every benchmark run for time series tracking
+# =============================================================================
+
+echo "--- Archiving to History ---"
+
+# Ensure we have a merged JSON file
+if [[ ! -f "$MERGED_JSON" ]]; then
+    MERGED_JSON="${OUTPUT_DIR}/benchmark_merged_${TIMESTAMP}.json"
+    echo "Merging results for archive..."
+    python3 "${SCRIPT_DIR}/baseline_utils.py" merge "${OUTPUT_DIR}" "$MERGED_JSON" --timestamp "$TIMESTAMP" 2>&1 || true
+fi
+
+if [[ -f "$MERGED_JSON" ]]; then
+    if python3 "${SCRIPT_DIR}/baseline_utils.py" archive "$MERGED_JSON" --history-dir "${OUTPUT_DIR}/history" 2>&1; then
+        echo -e "\033[32m✓ Results archived to history\033[0m"
+    else
+        echo -e "\033[33m⚠️  Failed to archive to history (non-fatal)\033[0m"
+    fi
+else
+    echo -e "\033[33m⚠️  No merged results to archive\033[0m"
+fi
+echo ""
 
 # =============================================================================
 # Summary (pytest-style)

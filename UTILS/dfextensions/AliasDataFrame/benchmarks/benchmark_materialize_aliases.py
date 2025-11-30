@@ -6,10 +6,12 @@ Tests alias materialization with realistic DAG complexity and subframe joins.
 Measures performance difference between fill_mode='safe' and fill_mode='direct'.
 
 Usage:
-    python benchmark_materialize_aliases.py                    # Full benchmark (500k rows)
-    python benchmark_materialize_aliases.py --quick            # Quick mode (100k rows)
+    python benchmark_materialize_aliases.py                    # Default (1M rows)
+    python benchmark_materialize_aliases.py --quick            # Quick mode (500K rows)
+    python benchmark_materialize_aliases.py --full             # Full mode (2M rows)
     python benchmark_materialize_aliases.py --json results.json
     python benchmark_materialize_aliases.py --rows 1000000     # Custom row count
+    python benchmark_materialize_aliases.py --profile          # Save profiler output
 
 Exit Codes:
     0 - Always (results are reported, not fatal)
@@ -44,8 +46,9 @@ from AliasDataFrame import AliasDataFrame
 # =============================================================================
 
 # Row counts
-DEFAULT_ROWS = 500_000      # ~3s target runtime
-QUICK_ROWS = 100_000        # CI/quick mode
+DEFAULT_ROWS = 1_000_000    # ~2s target runtime (reliable timing)
+QUICK_ROWS = 500_000        # ~1s (still statistically meaningful)
+FULL_ROWS = 2_000_000       # ~4s (high precision)
 
 # Random seed for reproducibility
 RNG_SEED = 12345
@@ -339,11 +342,22 @@ def measure_materialize(fn, adf):
 # Benchmark Scenarios
 # =============================================================================
 
-def run_scenario_simple(df_main, verbose=True):
+def run_scenario_simple(df_main, verbose=True, profile=False, profile_output=None):
     """
     Scenario 1: Simple alias chain without subframes.
     
     Measures baseline alias materialization overhead.
+    
+    Parameters
+    ----------
+    df_main : pd.DataFrame
+        Main DataFrame
+    verbose : bool
+        Print progress
+    profile : bool
+        Enable profiling
+    profile_output : str, optional
+        Path to save profile output (without extension)
     """
     if verbose:
         print("\n--- Scenario 1: Simple (no subframe) ---")
@@ -361,6 +375,8 @@ def run_scenario_simple(df_main, verbose=True):
             names=targets,
             with_dependencies=True,
             cleanTemporary=True,
+            profile=profile,
+            profile_output=profile_output,
         )
     
     result = measure_materialize(do_materialize, adf)
@@ -375,7 +391,8 @@ def run_scenario_simple(df_main, verbose=True):
     return result
 
 
-def run_scenario_subframe(df_main, df_subframe, fill_mode, verbose=True):
+def run_scenario_subframe(df_main, df_subframe, fill_mode, verbose=True, 
+                          profile=False, profile_output=None):
     """
     Scenario 2/3: Subframe joins with fill_mode configuration.
     
@@ -389,6 +406,10 @@ def run_scenario_subframe(df_main, df_subframe, fill_mode, verbose=True):
         'safe' or 'direct'
     verbose : bool
         Print progress
+    profile : bool
+        Enable profiling
+    profile_output : str, optional
+        Path to save profile output (without extension)
         
     Returns
     -------
@@ -440,6 +461,8 @@ def run_scenario_subframe(df_main, df_subframe, fill_mode, verbose=True):
             names=targets,
             with_dependencies=True,
             cleanTemporary=True,
+            profile=profile,
+            profile_output=profile_output,
         )
     
     result = measure_materialize(do_materialize, adf)
@@ -464,14 +487,45 @@ def run_scenario_subframe(df_main, df_subframe, fill_mode, verbose=True):
 # Main Benchmark Runner
 # =============================================================================
 
-def run_all_benchmarks(n_rows, verbose=True):
+def run_all_benchmarks(n_rows, verbose=True, profile=False, results_dir=None):
     """
     Run all benchmark scenarios.
+    
+    Parameters
+    ----------
+    n_rows : int
+        Number of rows to test
+    verbose : bool
+        Print progress
+    profile : bool
+        Enable profiling and save .prof/.txt files
+    results_dir : str, optional
+        Directory for results (needed when profile=True)
     
     Returns
     -------
     dict : All results
     """
+    # Setup profiling directory if needed
+    profile_dir = None
+    timestamp = None
+    commit_short = None
+    if profile:
+        from pathlib import Path
+        from baseline_utils import get_git_info
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        git_info = get_git_info()
+        commit_short = git_info.get('commit_short') or 'nogit'
+        
+        if results_dir:
+            profile_dir = Path(results_dir) / 'profiles'
+        else:
+            profile_dir = Path('results') / 'profiles'
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        if verbose:
+            print(f"Profile output directory: {profile_dir}")
+    
     if verbose:
         print("=" * 60)
         print("MATERIALIZE_ALIASES BENCHMARK")
@@ -505,13 +559,25 @@ def run_all_benchmarks(n_rows, verbose=True):
     results = {}
     
     # Scenario 1: Simple (no subframe)
-    results['simple'] = run_scenario_simple(df_main, verbose)
+    simple_profile_output = str(profile_dir / f'bench_materialize_simple_{timestamp}_{commit_short}.txt') if profile else None
+    results['simple'] = run_scenario_simple(
+        df_main, verbose, 
+        profile=profile, profile_output=simple_profile_output
+    )
     
     # Scenario 2: Subframe with fill_mode='safe'
-    results['safe'] = run_scenario_subframe(df_main, df_subframe, 'safe', verbose)
+    safe_profile_output = str(profile_dir / f'bench_materialize_safe_{timestamp}_{commit_short}.txt') if profile else None
+    results['safe'] = run_scenario_subframe(
+        df_main, df_subframe, 'safe', verbose,
+        profile=profile, profile_output=safe_profile_output
+    )
     
     # Scenario 3: Subframe with fill_mode='direct'
-    results['direct'] = run_scenario_subframe(df_main, df_subframe, 'direct', verbose)
+    direct_profile_output = str(profile_dir / f'bench_materialize_direct_{timestamp}_{commit_short}.txt') if profile else None
+    results['direct'] = run_scenario_subframe(
+        df_main, df_subframe, 'direct', verbose,
+        profile=profile, profile_output=direct_profile_output
+    )
     
     # Calculate speedup
     if results['safe']['time_s'] > 0 and results['direct']['time_s'] > 0:
@@ -647,8 +713,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    python benchmark_materialize_aliases.py                  # Full benchmark
-    python benchmark_materialize_aliases.py --quick          # Quick mode (CI)
+    python benchmark_materialize_aliases.py                  # Default benchmark (1M rows)
+    python benchmark_materialize_aliases.py --quick          # Quick mode (500K rows)
+    python benchmark_materialize_aliases.py --full           # Full mode (2M rows)
     python benchmark_materialize_aliases.py --json out.json  # Export to JSON
     python benchmark_materialize_aliases.py --rows 1000000   # Custom size
 
@@ -659,31 +726,45 @@ Scenarios:
         """
     )
     parser.add_argument('--quick', action='store_true',
-                        help=f'Quick mode: {QUICK_ROWS:,} rows')
+                        help=f'Quick mode: {QUICK_ROWS:,} rows (~1s)')
+    parser.add_argument('--full', action='store_true',
+                        help=f'Full mode: {FULL_ROWS:,} rows (~4s, high precision)')
     parser.add_argument('--rows', type=int, default=None,
-                        help='Custom row count (overrides --quick)')
+                        help='Custom row count (overrides --quick/--full)')
     parser.add_argument('--json', type=str, metavar='FILE',
                         help='Export results to JSON file')
     parser.add_argument('--quiet', action='store_true',
                         help='Minimal output')
+    parser.add_argument('--profile', action='store_true',
+                        help='Save profiler output (.prof and .txt) for each scenario')
     
     args = parser.parse_args()
     
-    # Determine row count
+    # Determine row count (--rows overrides --quick/--full)
     if args.rows:
         n_rows = args.rows
         mode = 'custom'
     elif args.quick:
         n_rows = QUICK_ROWS
         mode = 'quick'
+    elif args.full:
+        n_rows = FULL_ROWS
+        mode = 'full'
     else:
         n_rows = DEFAULT_ROWS
-        mode = 'full'
+        mode = 'default'
     
     verbose = not args.quiet
     
+    # Determine results directory for profiling
+    results_dir = None
+    if args.json:
+        results_dir = os.path.dirname(args.json) or 'results'
+    elif args.profile:
+        results_dir = 'results'
+    
     # Run benchmarks
-    results = run_all_benchmarks(n_rows, verbose)
+    results = run_all_benchmarks(n_rows, verbose, profile=args.profile, results_dir=results_dir)
     
     # Print summary
     if verbose:
