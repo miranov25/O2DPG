@@ -803,6 +803,12 @@ class AliasDataFrame:
         # NOTE: _missing_key_stats is not thread-safe. If parallel 
         # materialization is added, use thread-local storage.
         self._missing_key_stats = {}  # {subframe_name: {'count': n, 'total': N, ...}}
+        
+        # Phase 4: Join index cache for subframe lookups
+        # Caches precomputed indices to avoid repeated pd.merge() operations
+        self._join_index_cache = {}  # {sf_name: {indices, missing_mask, n_rows, subframe_id}}
+        self._join_cache_hits = 0
+        self._join_cache_misses = 0
 
     # =========================================================================
     # SECTION 1: Core DataFrame Operations & Schema Properties
@@ -1607,6 +1613,68 @@ class AliasDataFrame:
         # Clear stats for next materialization
         self._missing_key_stats = {}
 
+    def _apply_fill_config(self, sf_name, values, missing_mask, n_before):
+        """
+        Apply fill configuration to joined values.
+        
+        Handles fill_missing, fill_nan, fill_inf based on subframe config.
+        
+        Parameters
+        ----------
+        sf_name : str
+            Subframe name (for config lookup)
+        values : np.ndarray
+            Values array to modify
+        missing_mask : np.ndarray[bool]
+            Mask indicating missing keys (from join)
+        n_before : int
+            Total row count (for statistics)
+            
+        Returns
+        -------
+        np.ndarray
+            Modified values array
+        """
+        fill_config = self._get_fill_config(sf_name)
+        fill_mode = fill_config['fill_mode']
+        fill_missing = fill_config['fill_missing']
+        fill_nan = fill_config['fill_nan']
+        fill_inf = fill_config['fill_inf']
+        
+        n_missing = int(missing_mask.sum())
+        
+        # Record stats for aggregated warning
+        self._record_missing_stats(sf_name, n_missing, n_before, fill_missing)
+        
+        # Convert to Series for manipulation
+        values_series = pd.Series(values)
+        
+        if fill_mode == 'direct':
+            # Direct mode: fill missing keys only
+            if fill_missing is not None and n_missing > 0:
+                values_series[missing_mask] = fill_missing
+        
+        elif fill_mode == 'safe':
+            # Safe mode: separate handling of missing, NaN, Inf
+            
+            # 1. Handle missing keys
+            if fill_missing is not None and n_missing > 0:
+                values_series[missing_mask] = fill_missing
+            
+            # 2. Handle NaN in original subframe data (distinct from missing keys)
+            if fill_nan is not None:
+                original_nan_mask = values_series.isna() & ~missing_mask
+                if original_nan_mask.any():
+                    values_series[original_nan_mask] = fill_nan
+            
+            # 3. Handle Inf values
+            if fill_inf is not None:
+                inf_mask = np.isinf(values_series.values)
+                if inf_mask.any():
+                    values_series[inf_mask] = fill_inf
+        
+        return values_series.values
+
     def _run_with_profiling(self, func, profile=False, profile_output=None):
         """
         Execute function with optional cProfile profiling.
@@ -1657,18 +1725,8 @@ class AliasDataFrame:
             
             if profile_output:
                 from pathlib import Path
-                
-                # Save binary .prof for programmatic analysis (pstats, snakeviz)
-                if profile_output.endswith('.txt'):
-                    prof_path = profile_output[:-4] + '.prof'
-                else:
-                    prof_path = profile_output + '.prof'
-                profiler.dump_stats(prof_path)
-                print(f"[profiler] Binary profile saved to: {prof_path}")
-                
-                # Save text for human reading
                 Path(profile_output).write_text(output)
-                print(f"[profiler] Text profile saved to: {profile_output}")
+                print(f"[profiler] Results saved to: {profile_output}")
             else:
                 print(output)
         
@@ -1696,13 +1754,117 @@ class AliasDataFrame:
 
         return env
 
+    def _compute_join_indices(self, sf_name, index_cols):
+        """
+        Compute join index mapping from main DataFrame to subframe rows.
+        
+        Uses lightweight merge (keys only) to build index mapping without
+        copying full subframe data.
+        
+        Parameters
+        ----------
+        sf_name : str
+            Name of the registered subframe
+        index_cols : list of str
+            Column names to join on
+            
+        Returns
+        -------
+        tuple : (indices, missing_mask)
+            indices : np.ndarray[int64] of shape (n_main_rows,)
+                For each main row, the corresponding subframe row index.
+                -1 indicates missing key (no match in subframe).
+            missing_mask : np.ndarray[bool] of shape (n_main_rows,)
+                True where key was not found in subframe.
+        
+        Notes
+        -----
+        - Deduplicates subframe on index_cols only (not full columns)
+        - Takes first match for duplicate keys (keep='first')
+        - Indices refer to ORIGINAL subframe rows (before deduplication)
+        """
+        sub_adf = self.get_subframe(sf_name)
+        sub_df = sub_adf.df
+        
+        # Build lightweight key table with row indices into ORIGINAL subframe
+        # Critical: Add __sub_row__ BEFORE deduplication so indices map to original rows
+        sub_keys = sub_df[index_cols].copy()
+        sub_keys['__sub_row__'] = np.arange(len(sub_df), dtype=np.int64)
+        
+        # Deduplicate on index_cols only, keeping first match
+        if sub_keys.duplicated(subset=index_cols).any():
+            sub_keys = sub_keys.drop_duplicates(subset=index_cols, keep='first')
+        
+        # Lightweight merge: main keys -> subframe row indices
+        # Left merge preserves main DataFrame row order (Many-to-One join)
+        main_keys = self.df[index_cols]
+        merged = main_keys.merge(sub_keys, on=index_cols, how='left')
+        
+        # Extract indices and missing mask
+        indices = merged['__sub_row__'].fillna(-1).astype(np.int64).to_numpy()
+        missing_mask = (indices == -1)
+        
+        return indices, missing_mask
+
+    def _extract_subframe_values_cached(self, sf_name, sf_col, indices, missing_mask):
+        """
+        Extract subframe column values using cached indices.
+        
+        Uses NumPy advanced indexing for fast value extraction.
+        
+        Parameters
+        ----------
+        sf_name : str
+            Subframe name
+        sf_col : str
+            Column name to extract from subframe
+        indices : np.ndarray[int64]
+            Row indices into subframe (-1 for missing)
+        missing_mask : np.ndarray[bool]
+            Mask indicating missing keys
+            
+        Returns
+        -------
+        np.ndarray
+            Extracted values with fill config applied
+        """
+        sub_adf = self.get_subframe(sf_name)
+        sub_df = sub_adf.df
+        
+        # Materialize subframe alias if needed
+        if sf_col not in sub_df.columns:
+            if sf_col in sub_adf.aliases:
+                sub_adf.materialize_alias(sf_col)
+                sub_df = sub_adf.df
+            else:
+                raise KeyError(f"Subframe '{sf_name}' does not contain column or alias '{sf_col}'")
+        
+        sub_values = sub_df[sf_col].to_numpy()
+        n = len(indices)
+        
+        # Pre-fill with NaN to safely handle missing keys
+        # Must upcast non-float dtypes to allow NaN representation
+        if np.issubdtype(sub_values.dtype, np.floating):
+            values = np.full(n, np.nan, dtype=sub_values.dtype)
+        else:
+            values = np.full(n, np.nan, dtype=np.float64)
+        
+        # NumPy advanced indexing - fast C-level operation
+        valid = indices >= 0
+        values[valid] = sub_values[indices[valid]]
+        
+        # Apply fill configuration
+        values = self._apply_fill_config(sf_name, values, missing_mask, n)
+        
+        return values
+
     def _prepare_subframe_joins(self, expr, warn_missing_keys=True, alias_name=None):
         """
         Prepare subframe joins for expression evaluation.
         
         Detects dotted references like `T.mX` and performs left joins to bring
-        subframe columns into the main DataFrame. Uses fill configuration to
-        handle missing keys and invalid values.
+        subframe columns into the main DataFrame. Uses join index caching for
+        performance when multiple columns are accessed from the same subframe.
         
         Parameters
         ----------
@@ -1710,7 +1872,6 @@ class AliasDataFrame:
             Expression containing potential subframe references (e.g., "x - T.mX")
         warn_missing_keys : bool, default=True
             Legacy parameter kept for backward compatibility.
-            Actual warning behavior is controlled by fill config.
         alias_name : str, optional
             Name of the alias being evaluated (for warning messages)
             
@@ -1718,30 +1879,19 @@ class AliasDataFrame:
         -------
         str
             Modified expression with subframe references replaced by joined column names
-            
-        Notes
-        -----
-        - Uses LEFT JOIN to preserve all main frame rows
-        - Missing keys in subframe are handled according to fill configuration
-        - Column naming convention: {column}__{subframe} (e.g., mX__T)
-        - TTree::Draw compatible: expressions use dot notation (T.mX)
-        
-        Fill Modes
-        ----------
-        - 'safe': After merge, applies separate fill_nan and fill_inf handling
-        - 'direct': Applies fill_missing immediately after merge (fastest)
         """
         tokens = re.findall(r'(\b\w+)\.(\w+)', expr)
+        
         for sf_name, sf_col in tokens:
             entry = self._subframes.get_entry(sf_name)
             if not entry:
                 continue
+            
             sub_adf = entry['frame']
-            sub_df = sub_adf.df
             index_cols = entry['index']
             if isinstance(index_cols, str):
                 index_cols = [index_cols]
-            merge_cols = index_cols + [sf_col]
+            
             suffix = f'__{sf_name}'
             col_renamed = f'{sf_col}{suffix}'
             
@@ -1749,109 +1899,44 @@ class AliasDataFrame:
             if col_renamed in self.df.columns:
                 expr = expr.replace(f'{sf_name}.{sf_col}', col_renamed)
                 continue
-
-            try:
-                cols_to_merge = sub_df[merge_cols].copy()
-            except KeyError:
-                if sf_col in sub_adf.aliases:
-                    sub_adf.materialize_alias(sf_col)
-                    sub_df = sub_adf.df
-                    cols_to_merge = sub_df[merge_cols].copy()
-                else:
-                    raise KeyError(f"Subframe '{sf_name}' does not contain or define alias '{sf_col}'")
-
-            # Handle duplicate keys in subframe by taking first match
-            if cols_to_merge.duplicated(subset=index_cols).any():
-                cols_to_merge = cols_to_merge.drop_duplicates(subset=index_cols, keep='first')
             
-            n_before = len(self.df)
+            # Check cache for precomputed join indices
+            if sf_name in self._join_index_cache:
+                cache_entry = self._join_index_cache[sf_name]
+                # Validate cache entry (defensive check for future extensibility)
+                if (cache_entry['n_rows'] == len(self.df) and 
+                    cache_entry['subframe_id'] == id(sub_adf.df)):
+                    # CACHE HIT: Use cached indices
+                    self._join_cache_hits += 1
+                    indices = cache_entry['indices']
+                    missing_mask = cache_entry['missing_mask']
+                    values = self._extract_subframe_values_cached(
+                        sf_name, sf_col, indices, missing_mask
+                    )
+                    self.df[col_renamed] = values
+                    expr = expr.replace(f'{sf_name}.{sf_col}', col_renamed)
+                    continue
             
-            # Preserve original index for proper alignment
-            original_index = self.df.index.copy()
+            # CACHE MISS: Compute join indices
+            self._join_cache_misses += 1
+            indices, missing_mask = self._compute_join_indices(sf_name, index_cols)
             
-            # Add a temporary column to track original row order
-            self.df['__row_order__'] = np.arange(len(self.df))
+            # Store in cache
+            self._join_index_cache[sf_name] = {
+                'indices': indices,
+                'missing_mask': missing_mask,
+                'n_rows': len(self.df),
+                'subframe_id': id(sub_adf.df),
+            }
             
-            joined = self.df.merge(
-                cols_to_merge, 
-                on=index_cols, 
-                suffixes=('', suffix),
-                how='left',
-                indicator=True  # Adds '_merge' column to distinguish missing keys from original NaN
+            # Extract values using cached indices
+            values = self._extract_subframe_values_cached(
+                sf_name, sf_col, indices, missing_mask
             )
             
-            # Sort by original row order to restore alignment
-            joined = joined.sort_values('__row_order__').reset_index(drop=True)
-            
-            # Remove temporary column
-            self.df.drop(columns=['__row_order__'], inplace=True)
-            
-            # Get missing key mask from indicator BEFORE looking at values
-            # 'left_only' means key was not found in subframe
-            missing_mask = (joined['_merge'] == 'left_only').values
-            n_missing = int(missing_mask.sum())
-            
-            # Remove indicator column
-            joined.drop(columns=['_merge'], inplace=True)
-            
-            # Find the actual column name in joined DataFrame
-            if col_renamed in joined.columns:
-                actual_col = col_renamed
-            elif sf_col in joined.columns and sf_col not in self.df.columns:
-                actual_col = sf_col
-            elif f'{sf_col}{suffix}' in joined.columns:
-                actual_col = f'{sf_col}{suffix}'
-            else:
-                actual_col = sf_col if sf_col in joined.columns else None
-            
-            if actual_col and actual_col in joined.columns:
-                values = joined[actual_col].values.copy()
-                
-                # Get fill configuration for this subframe
-                fill_config = self._get_fill_config(sf_name)
-                fill_mode = fill_config['fill_mode']
-                fill_missing = fill_config['fill_missing']
-                fill_nan = fill_config['fill_nan']
-                fill_inf = fill_config['fill_inf']
-                
-                # Record stats for aggregated warning
-                self._record_missing_stats(sf_name, n_missing, n_before, fill_missing)
-                
-                # Convert to Series for easier manipulation
-                values_series = pd.Series(values)
-                
-                if fill_mode == 'direct':
-                    # Direct mode: fill missing keys only, skip NaN/Inf processing
-                    if fill_missing is not None and n_missing > 0:
-                        values_series[missing_mask] = fill_missing
-                        values = values_series.values
-                
-                elif fill_mode == 'safe':
-                    # Safe mode: separate handling of missing, NaN, Inf
-                    
-                    # 1. Handle missing keys (from left join - identified by indicator)
-                    if fill_missing is not None and n_missing > 0:
-                        values_series[missing_mask] = fill_missing
-                    
-                    # 2. Handle NaN in original subframe data (distinct from missing keys)
-                    if fill_nan is not None:
-                        # NaN that was already in subframe data, NOT from missing key
-                        original_nan_mask = values_series.isna() & ~missing_mask
-                        if original_nan_mask.any():
-                            values_series[original_nan_mask] = fill_nan
-                    
-                    # 3. Handle Inf values
-                    if fill_inf is not None:
-                        inf_mask = np.isinf(values_series.values)
-                        if inf_mask.any():
-                            values_series[inf_mask] = fill_inf
-                    
-                    values = values_series.values
-                
-                # Assign aligned values back to DataFrame
-                self.df[col_renamed] = values
-                expr = expr.replace(f'{sf_name}.{sf_col}', col_renamed)
-                
+            self.df[col_renamed] = values
+            expr = expr.replace(f'{sf_name}.{sf_col}', col_renamed)
+        
         return expr
 
     def _check_for_cycles(self):
@@ -2649,6 +2734,10 @@ class AliasDataFrame:
             # Reset missing key stats for this materialization batch
             self._missing_key_stats = {}
             
+            # Reset join cache statistics for this batch (Phase 4)
+            self._join_cache_hits = 0
+            self._join_cache_misses = 0
+            
             # Get primary targets first (without dependencies)
             targets = self.select_aliases(
                 pattern=pattern, 
@@ -2739,6 +2828,8 @@ class AliasDataFrame:
                 self.df = pd.concat([self.df, new_cols_df], axis=1)
                 if verbose:
                     print(f"[materialize_aliases] Batch-added {len(results)} columns")
+                    print(f"[materialize_aliases] Join cache: {self._join_cache_hits} hits, "
+                          f"{self._join_cache_misses} misses")
             
             # BATCH DROP: Single drop instead of per-column removal
             if cleanTemporary and with_dependencies:
@@ -2754,7 +2845,12 @@ class AliasDataFrame:
             
             return added
         
-        return self._run_with_profiling(_do_materialize, profile, profile_output)
+        result = self._run_with_profiling(_do_materialize, profile, profile_output)
+        
+        # Clear join cache after batch (Phase 4)
+        self._join_index_cache = {}
+        
+        return result
 
     def materialize_pattern(self, pattern, cleanTemporary=True, verbose=False, 
                            only_unmaterialized=True):

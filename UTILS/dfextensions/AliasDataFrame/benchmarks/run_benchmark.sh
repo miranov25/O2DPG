@@ -161,6 +161,7 @@ while [[ $# -gt 0 ]]; do
             PROFILE_FLAG="--profile"
             FULL_FLAG="--full"
             COMPARE_BASELINE=true
+            VERBOSE=true  # Full mode should show all output
             shift
             ;;
         --save-baseline)
@@ -193,7 +194,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --strict           Exit with code 1 if any benchmark fails or regression detected"
             echo "  --verbose, -v      Show detailed output"
             echo "  --profile          Save profiler output (.prof and .txt) for analysis"
-            echo "  --full             Full analysis: profiling + baseline comparison + history archive"
+            echo "  --full             Full analysis: verbose + profiling + baseline comparison + history"
             echo "  --output DIR       Output directory (default: benchmarks/results)"
             echo ""
             echo "Regression Detection:"
