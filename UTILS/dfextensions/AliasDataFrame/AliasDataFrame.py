@@ -1657,8 +1657,18 @@ class AliasDataFrame:
             
             if profile_output:
                 from pathlib import Path
+                
+                # Save binary .prof for programmatic analysis (pstats, snakeviz)
+                if profile_output.endswith('.txt'):
+                    prof_path = profile_output[:-4] + '.prof'
+                else:
+                    prof_path = profile_output + '.prof'
+                profiler.dump_stats(prof_path)
+                print(f"[profiler] Binary profile saved to: {prof_path}")
+                
+                # Save text for human reading
                 Path(profile_output).write_text(output)
-                print(f"[profiler] Results saved to: {profile_output}")
+                print(f"[profiler] Text profile saved to: {profile_output}")
             else:
                 print(output)
         
