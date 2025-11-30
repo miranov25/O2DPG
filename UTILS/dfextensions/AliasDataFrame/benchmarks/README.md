@@ -366,6 +366,44 @@ SPEEDUP METRICS
 | `safe_vs_simple_ratio` | Subframe join overhead | ~40-50x |
 | `missing_pct` | Percentage of missing join keys | 15.2% |
 
+### Roofline Analysis (Efficiency Metrics)
+
+The benchmark measures theoretical performance limits and calculates efficiency:
+
+| Metric | Description |
+|--------|-------------|
+| `memory_bandwidth` | Raw numpy.copy() speed (absolute floor) |
+| `numpy_indexing_join` | NumPy advanced indexing (ideal join target) |
+| `efficiency` | `theoretical_time / actual_time` (higher = better, max = 100%) |
+
+**Interpreting efficiency:**
+- **>50%**: Near optimal, limited optimization potential
+- **10-50%**: Room for optimization
+- **<10%**: Significant framework overhead, investigate
+
+Example output:
+```
+============================================================
+EFFICIENCY (vs Theoretical Limits)
+============================================================
+Memory bandwidth: 15.2 GB/s
+NumPy indexing:   0.0080s (8 cols × 1,000,000 rows)
+
+Scenario         Time      Limit   Efficiency
+----------------------------------------------
+simple          0.019s    0.0020s       10.5%
+safe            0.767s    0.0080s        1.0%
+direct          0.706s    0.0080s        1.1%
+----------------------------------------------
+
+Interpretation:
+  >50%  : Near optimal
+  10-50%: Room for optimization
+  <10%  : Significant overhead (investigate)
+```
+
+The efficiency values show how close we are to theoretical limits. Low efficiency in safe/direct modes indicates the join overhead dominates, which is the target for Phase 3 optimization.
+
 ### Interpreting Results
 
 **Subframe Overhead (safe_vs_simple):**

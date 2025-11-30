@@ -63,6 +63,95 @@ ROW_TOTAL = 190
 
 
 # =============================================================================
+# Roofline Analysis - Theoretical Limits
+# =============================================================================
+
+def measure_memory_bandwidth(n_rows, n_iterations=10, dtype=np.float32):
+    """
+    Measure theoretical memory bandwidth limit.
+    
+    This is the absolute floor for any operation that reads and writes data.
+    Uses numpy.copy() as the baseline memory operation.
+    
+    Parameters
+    ----------
+    n_rows : int
+        Number of rows (should match benchmark scenario)
+    n_iterations : int
+        Number of iterations for stable timing
+    dtype : numpy dtype
+        Data type (should match benchmark)
+        
+    Returns
+    -------
+    dict : {time_s, bandwidth_gbps, bytes_processed}
+    """
+    arr = np.random.randn(n_rows).astype(dtype)
+    
+    # Warm up cache
+    _ = arr.copy()
+    
+    gc.collect()
+    t0 = time.perf_counter()
+    for _ in range(n_iterations):
+        out = arr.copy()
+    elapsed = (time.perf_counter() - t0) / n_iterations
+    
+    bytes_processed = arr.nbytes * 2  # read + write
+    bandwidth_gbps = bytes_processed / max(elapsed, 1e-9) / 1e9
+    
+    return {
+        'time_s': max(elapsed, 1e-9),
+        'bandwidth_gbps': bandwidth_gbps,
+        'bytes_processed': bytes_processed,
+    }
+
+
+def measure_numpy_indexing(n_rows, n_cols, n_iterations=10, dtype=np.float32):
+    """
+    Measure theoretical join limit using NumPy advanced indexing.
+    
+    This simulates the best-case join: pre-computed index lookup.
+    This is the target for optimized join caching.
+    
+    Parameters
+    ----------
+    n_rows : int
+        Number of rows in main DataFrame
+    n_cols : int
+        Number of columns to fetch (MUST match scenario column count)
+    n_iterations : int
+        Number of iterations for stable timing
+    dtype : numpy dtype
+        Data type
+        
+    Returns
+    -------
+    dict : {time_s, rows, cols, rows_per_sec}
+    """
+    # Simulate subframe with ~1000 unique keys (similar to real calibration table)
+    subframe_size = 1000
+    indices = np.random.randint(0, subframe_size, size=n_rows)
+    subframe_data = np.random.randn(subframe_size, n_cols).astype(dtype)
+    
+    # Warm up
+    _ = subframe_data[indices]
+    
+    gc.collect()
+    t0 = time.perf_counter()
+    for _ in range(n_iterations):
+        result = subframe_data[indices]
+    elapsed = (time.perf_counter() - t0) / n_iterations
+    
+    return {
+        'time_s': max(elapsed, 1e-9),  # Guard against zero
+        'rows': n_rows,
+        'cols': n_cols,
+        'rows_per_sec': n_rows / max(elapsed, 1e-9),
+    }
+
+
+# =============================================================================
 # Synthetic Data Generation
 # =============================================================================
 
@@ -556,6 +645,30 @@ def run_all_benchmarks(n_rows, verbose=True, profile=False, results_dir=None):
         pct_missing = 100.0 * n_missing / len(df_main)
         print(f"  Expected missing: {pct_missing:.1f}% (row > {ROW_MAX_WITH_CALIBRATION})")
     
+    # =========================================================================
+    # Measure Theoretical Limits (Roofline Analysis)
+    # =========================================================================
+    if verbose:
+        print("\n--- Measuring Theoretical Limits ---")
+    
+    # Memory bandwidth (single column baseline)
+    bandwidth_result = measure_memory_bandwidth(n_rows)
+    if verbose:
+        print(f"  Memory bandwidth: {bandwidth_result['bandwidth_gbps']:.1f} GB/s")
+    
+    # NumPy indexing for simple scenario (1 output column)
+    simple_cols = 1
+    numpy_simple = measure_numpy_indexing(n_rows, n_cols=simple_cols)
+    if verbose:
+        print(f"  NumPy indexing ({simple_cols} col):  {numpy_simple['time_s']:.4f}s")
+    
+    # NumPy indexing for safe/direct scenarios
+    # Match the number of subframe columns fetched (8 calibration coefficients)
+    subframe_cols = 8
+    numpy_join = measure_numpy_indexing(n_rows, n_cols=subframe_cols)
+    if verbose:
+        print(f"  NumPy indexing ({subframe_cols} cols): {numpy_join['time_s']:.4f}s")
+    
     results = {}
     
     # Scenario 1: Simple (no subframe)
@@ -595,6 +708,38 @@ def run_all_benchmarks(n_rows, verbose=True, profile=False, results_dir=None):
         results['direct_vs_simple_ratio'] = (
             results['direct']['time_s'] / results['simple']['time_s']
         )
+    
+    # =========================================================================
+    # Store Theoretical Limits and Calculate Efficiency
+    # =========================================================================
+    results['theoretical_limits'] = {
+        'memory_bandwidth': bandwidth_result,
+        'numpy_indexing_simple': numpy_simple,
+        'numpy_indexing_join': numpy_join,
+    }
+    
+    # Calculate efficiency: theoretical_time / actual_time
+    # Higher is better, max is 1.0 (100%)
+    efficiency = {}
+    
+    # Simple scenario vs memory bandwidth
+    if results['simple']['time_s'] > 0:
+        efficiency['simple_vs_bandwidth'] = (
+            bandwidth_result['time_s'] / results['simple']['time_s']
+        )
+    
+    # Safe/direct scenarios vs NumPy join (the achievable target)
+    if results['safe']['time_s'] > 0:
+        efficiency['safe_vs_numpy_join'] = (
+            numpy_join['time_s'] / results['safe']['time_s']
+        )
+    
+    if results['direct']['time_s'] > 0:
+        efficiency['direct_vs_numpy_join'] = (
+            numpy_join['time_s'] / results['direct']['time_s']
+        )
+    
+    results['efficiency'] = efficiency
     
     return results
 
@@ -640,6 +785,53 @@ def print_summary(results, n_rows):
     if 'missing_keys_pct' in results['safe']:
         print(f"\n  Missing keys: {results['safe']['missing_keys_pct']:.1f}%")
     
+    # =========================================================================
+    # Efficiency (Roofline Analysis)
+    # =========================================================================
+    limits = results.get('theoretical_limits', {})
+    efficiency = results.get('efficiency', {})
+    
+    if limits and efficiency:
+        print("\n" + "=" * 60)
+        print("EFFICIENCY (vs Theoretical Limits)")
+        print("=" * 60)
+        
+        if limits.get('memory_bandwidth'):
+            bw = limits['memory_bandwidth']
+            print(f"Memory bandwidth: {bw['bandwidth_gbps']:.1f} GB/s")
+        
+        if limits.get('numpy_indexing_join'):
+            nj = limits['numpy_indexing_join']
+            print(f"NumPy indexing:   {nj['time_s']:.4f}s ({nj['cols']} cols × {nj['rows']:,} rows)")
+        
+        print()
+        print(f"{'Scenario':<12} {'Time':>10} {'Limit':>10} {'Efficiency':>12}")
+        print("-" * 46)
+        
+        # Simple vs bandwidth
+        simple_time = results['simple']['time_s']
+        bw_time = limits.get('memory_bandwidth', {}).get('time_s', 0)
+        simple_eff = efficiency.get('simple_vs_bandwidth', 0) * 100
+        print(f"{'simple':<12} {simple_time:>9.3f}s {bw_time:>9.4f}s {simple_eff:>11.1f}%")
+        
+        # Safe vs numpy join
+        safe_time = results['safe']['time_s']
+        join_time = limits.get('numpy_indexing_join', {}).get('time_s', 0)
+        safe_eff = efficiency.get('safe_vs_numpy_join', 0) * 100
+        print(f"{'safe':<12} {safe_time:>9.3f}s {join_time:>9.4f}s {safe_eff:>11.1f}%")
+        
+        # Direct vs numpy join
+        direct_time = results['direct']['time_s']
+        direct_eff = efficiency.get('direct_vs_numpy_join', 0) * 100
+        print(f"{'direct':<12} {direct_time:>9.3f}s {join_time:>9.4f}s {direct_eff:>11.1f}%")
+        
+        print("-" * 46)
+        print()
+        print("Interpretation:")
+        print("  >50%  : Near optimal")
+        print("  10-50%: Room for optimization")
+        print("  <10%  : Significant overhead (investigate)")
+    
     print("=" * 60)
 
 
@@ -680,6 +872,13 @@ def export_json(results, filepath, n_rows, mode):
         'direct_vs_simple_ratio': results.get('direct_vs_simple_ratio'),
     }
     
+    # Add efficiency metrics if available
+    efficiency = results.get('efficiency', {})
+    if efficiency:
+        metrics['simple_efficiency'] = efficiency.get('simple_vs_bandwidth')
+        metrics['safe_efficiency'] = efficiency.get('safe_vs_numpy_join')
+        metrics['direct_efficiency'] = efficiency.get('direct_vs_numpy_join')
+    
     output = {
         'benchmark': 'benchmark_materialize_aliases.py',
         'timestamp': datetime.now().isoformat(),
@@ -695,6 +894,8 @@ def export_json(results, filepath, n_rows, mode):
             'safe': results['safe'],
             'direct': results['direct'],
         },
+        'theoretical_limits': results.get('theoretical_limits', {}),
+        'efficiency': results.get('efficiency', {}),
     }
     
     with open(filepath, 'w') as f:
