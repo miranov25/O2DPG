@@ -1,16 +1,16 @@
 {
   "version": 1,
-  "created": "2025-11-28T15:00:47.358284",
+  "created": "2025-11-30T20:59:30.057647",
   "host": "Marians-MBP-3.fritz.box",
   "python_version": "3.9.6",
   "cpu_count": 12,
   "platform": "macOS-14.5-arm64-arm-64bit",
   "benchmarks": {
     "benchmark_materialize_aliases.py": {
-      "time_s": 1.406652083,
+      "time_s": 6.602904751,
       "metrics": {
-        "direct_vs_safe_speedup": 1.2558246197681708,
-        "safe_vs_simple_ratio": 49.60799311584217
+        "direct_vs_safe_speedup": 1.1213459329029052,
+        "safe_vs_simple_ratio": 33.48148131583073
       }
     },
     "benchmark_parallel.py": {
@@ -18,7 +18,7 @@
       "metrics": {}
     },
     "benchmark_performance.py": {
-      "time_s": 0.05693191499999983,
+      "time_s": 0.057923543000000466,
       "metrics": {
         "all_passed": 1
       }
