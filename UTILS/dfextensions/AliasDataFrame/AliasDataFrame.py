@@ -42,6 +42,15 @@ except ImportError:
     pa = None
     pc = None
 
+# Arrow compute mapper (optional) - Phase 9a/9c
+try:
+    from _arrow_compute import ArrowComputeMapper, evaluate_expression_arrow
+    ARROW_COMPUTE_AVAILABLE = PYARROW_AVAILABLE
+except ImportError:
+    ArrowComputeMapper = None
+    evaluate_expression_arrow = None
+    ARROW_COMPUTE_AVAILABLE = False
+
 # =============================================================================
 # SECTION 0: Schema & Metadata Constants
 # =============================================================================
@@ -935,17 +944,19 @@ class AliasDataFrame:
             - enabled: bool - whether this ADF instance uses PyArrow
             - version: str or None - PyArrow version if available
             - min_rows: int - minimum rows to use PyArrow (overhead threshold)
+            - compute_available: bool - whether ArrowComputeMapper is available
         
         Example
         -------
         >>> adf.arrow_info
-        {'available': True, 'enabled': True, 'version': '14.0.2', 'min_rows': 10000}
+        {'available': True, 'enabled': True, 'version': '14.0.2', 'min_rows': 10000, 'compute_available': True}
         """
         info = {
             'available': PYARROW_AVAILABLE,
             'enabled': self._use_arrow,
             'version': pa.__version__ if PYARROW_AVAILABLE else None,
-            'min_rows': NUMBA_MIN_ROWS  # Reuse same threshold
+            'min_rows': NUMBA_MIN_ROWS,  # Reuse same threshold
+            'compute_available': ARROW_COMPUTE_AVAILABLE
         }
         return info
     
@@ -2349,6 +2360,9 @@ class AliasDataFrame:
         """
         Evaluate expression in namespace with DataFrame columns, functions, and optional overrides.
         
+        Phase 9c: Arrow compute path disabled here - use _materialize_aliases_arrow()
+        for zero-copy pipeline instead.
+        
         Parameters
         ----------
         expr : str
@@ -2363,6 +2377,12 @@ class AliasDataFrame:
             Name of alias being evaluated (for warning messages)
         """
         expr = self._prepare_subframe_joins(expr, warn_missing_keys=warn_missing_keys, alias_name=alias_name)
+        
+        # Phase 9c note: Per-expression Arrow compute disabled here.
+        # Conversion overhead per expression exceeds benefits.
+        # Use _materialize_aliases_arrow() for zero-copy batch processing instead.
+        
+        # Python eval() path
         local_env = {col: self.df[col] for col in self.df.columns}
         
         # Merge context_override after df columns, before functions
@@ -2392,6 +2412,103 @@ class AliasDataFrame:
                     f"If you see this with standard functions like 'atan2', please report as a bug."
                 ) from e
             raise
+    
+    def _eval_arrow(self, expr, context_override=None, return_arrow=False, arrow_context=None):
+        """
+        Evaluate expression using PyArrow compute.
+        
+        Phase 9c/9e: Uses ArrowComputeMapper to compile expressions to PyArrow
+        compute function chains, eliminating Python dispatch overhead.
+        
+        Parameters
+        ----------
+        expr : str
+            Expression to evaluate (already processed by _prepare_subframe_joins)
+        context_override : dict, optional
+            Additional variables from previously computed aliases (numpy/pandas)
+        return_arrow : bool, default=False
+            If True, return PyArrow array (for zero-copy pipeline).
+            If False, return pandas Series (backward compatible).
+        arrow_context : dict, optional
+            Pre-converted Arrow arrays (for zero-copy pipeline). If provided,
+            skips conversion of DataFrame columns to Arrow.
+            
+        Returns
+        -------
+        pa.Array, pd.Series, or None
+            - pa.Array if return_arrow=True and Arrow succeeded
+            - pd.Series if return_arrow=False and Arrow succeeded  
+            - None if should fallback to eval()
+            
+        Notes
+        -----
+        Returns None (triggering fallback) for:
+        - Expressions with unsupported functions
+        - Expressions referencing non-numeric columns
+        - Any compilation or execution errors
+        """
+        # Check if expression is likely supported
+        if not ArrowComputeMapper.is_supported(expr):
+            return None
+        
+        # Use pre-built Arrow context if provided (zero-copy pipeline)
+        if arrow_context is not None:
+            pa_ctx = arrow_context
+        else:
+            # Build context with numeric columns only
+            arrow_ctx = {}
+            
+            # Add DataFrame columns
+            for col in self.df.columns:
+                series = self.df[col]
+                # Only include numeric columns (Arrow compute is for numeric ops)
+                if np.issubdtype(series.dtype, np.number):
+                    arrow_ctx[col] = series.values
+            
+            # Add context overrides (previously computed aliases)
+            if context_override:
+                for name, value in context_override.items():
+                    if hasattr(value, 'values'):
+                        # pandas Series
+                        if np.issubdtype(value.dtype, np.number):
+                            arrow_ctx[name] = value.values
+                    elif hasattr(value, '__array__'):
+                        # numpy array
+                        arr = np.asarray(value)
+                        if np.issubdtype(arr.dtype, np.number):
+                            arrow_ctx[name] = arr
+                    elif isinstance(value, (int, float)):
+                        # Scalar
+                        arrow_ctx[name] = value
+            
+            # Convert context to Arrow arrays
+            pa_ctx = {}
+            for name, value in arrow_ctx.items():
+                if isinstance(value, np.ndarray):
+                    pa_ctx[name] = pa.array(value)
+                elif isinstance(value, (int, float)):
+                    pa_ctx[name] = pa.scalar(value)
+                else:
+                    pa_ctx[name] = value
+        
+        # Compile and execute
+        try:
+            compiled = ArrowComputeMapper.compile(expr)
+            
+            # Execute
+            result_arrow = compiled(pa_ctx)
+            
+            # Return Arrow array for zero-copy pipeline
+            if return_arrow:
+                return result_arrow
+            
+            # Convert back to pandas Series (backward compatible)
+            result_np = result_arrow.to_numpy(zero_copy_only=False)
+            return pd.Series(result_np, index=self.df.index)
+            
+        except (ValueError, KeyError, TypeError) as e:
+            # Expression not fully supported, fall back to eval()
+            return None
 
     def _resolve_dependencies(self):
         """
@@ -2931,6 +3048,113 @@ class AliasDataFrame:
         
         return self._run_with_profiling(_do_materialize, profile, profile_output)
 
+    def _materialize_aliases_arrow(self, to_materialize, verbose=False):
+        """
+        Materialize aliases using Arrow-native zero-copy pipeline.
+        
+        Phase 9e: Converts data to Arrow ONCE at start, executes all operations
+        in Arrow, converts back to numpy ONCE at end. This eliminates the
+        per-expression conversion overhead that caused Phase 9c regression.
+        
+        Parameters
+        ----------
+        to_materialize : list
+            List of alias names to materialize in topological order
+        verbose : bool, default=False
+            If True, print progress information
+            
+        Returns
+        -------
+        dict or None
+            Dictionary of {alias_name: numpy_array} if Arrow succeeded,
+            None if should fall back to standard path
+            
+        Notes
+        -----
+        Data flow:
+        1. Convert input columns to Arrow (ONCE)
+        2. Execute all expressions in Arrow (no conversion)
+        3. Execute scatter operations in Arrow (no conversion)
+        4. Convert final results to numpy (ONCE)
+        
+        Falls back to None (triggering standard path) if:
+        - Any expression is not supported by ArrowComputeMapper
+        - Any runtime error occurs during Arrow execution
+        """
+        if not ARROW_COMPUTE_AVAILABLE or ArrowComputeMapper is None:
+            return None
+        
+        # Step 1: Build Arrow context with numeric columns (ONCE)
+        arrow_context = {}
+        
+        for col in self.df.columns:
+            series = self.df[col]
+            if np.issubdtype(series.dtype, np.number):
+                arrow_context[col] = pa.array(series.values)
+        
+        if verbose:
+            print(f"[Arrow pipeline] Converted {len(arrow_context)} columns to Arrow")
+        
+        # Step 2: Execute expressions in Arrow, keeping results as Arrow arrays
+        arrow_results = {}
+        
+        for name in to_materialize:
+            # Skip if already a column
+            if name in self.df.columns:
+                continue
+            
+            # Skip if not an alias
+            if name not in self.aliases:
+                continue
+            
+            expr = self.aliases[name]
+            
+            # Prepare subframe joins (this still uses existing path)
+            # The result may add columns to self.df that we need in context
+            prepared_expr = self._prepare_subframe_joins(
+                expr, 
+                warn_missing_keys=True, 
+                alias_name=name
+            )
+            
+            # Update context with any new columns from subframe joins
+            for col in self.df.columns:
+                if col not in arrow_context:
+                    series = self.df[col]
+                    if np.issubdtype(series.dtype, np.number):
+                        arrow_context[col] = pa.array(series.values)
+            
+            # Try to evaluate in Arrow
+            result = self._eval_arrow(
+                prepared_expr,
+                context_override=None,
+                return_arrow=True,
+                arrow_context=arrow_context
+            )
+            
+            if result is None:
+                # Expression not supported by Arrow, fall back to standard path
+                if verbose:
+                    print(f"[Arrow pipeline] Fallback: '{name}' not supported")
+                return None
+            
+            # Store result and add to context for dependent expressions
+            arrow_results[name] = result
+            arrow_context[name] = result
+            
+            if verbose:
+                print(f"[Arrow pipeline] Computed: {name}")
+        
+        # Step 3: Convert final results to numpy (ONCE)
+        numpy_results = {}
+        for name, arrow_arr in arrow_results.items():
+            numpy_results[name] = arrow_arr.to_numpy(zero_copy_only=False)
+        
+        if verbose:
+            print(f"[Arrow pipeline] Converted {len(numpy_results)} results to numpy")
+        
+        return numpy_results
+
     def materialize_aliases(self, pattern=None, names=None, with_dependencies=True,
                             only_unmaterialized=True, cleanTemporary=True, verbose=False,
                             profile=False, profile_output=None):
@@ -3006,62 +3230,100 @@ class AliasDataFrame:
                 to_materialize = targets
             
             # =========================================================================
-            # BATCH OPTIMIZATION: Collect computed values, then single pd.concat
-            # This avoids O(n²) DataFrame fragmentation from sequential column inserts
+            # PHASE 9e: TRY ARROW ZERO-COPY PIPELINE FIRST
+            # Converts data to Arrow ONCE, executes all ops, converts back ONCE.
+            # Falls back to standard path if any expression is unsupported.
             # =========================================================================
             
-            results = {}  # Collect computed alias values (Series/arrays only)
-            added = []
+            n_rows = len(self.df)
+            arrow_pipeline_succeeded = False
             
-            for name in to_materialize:
-                # Skip if already a column
-                if name in self.df.columns:
-                    continue
+            if (self._use_arrow and ARROW_COMPUTE_AVAILABLE and 
+                n_rows >= NUMBA_MIN_ROWS and not any('.' in self.aliases.get(n, '') for n in to_materialize if n in self.aliases)):
+                # Only try Arrow if no subframe references (those need special handling)
+                # TODO: Phase 9e+ can integrate subframe scatter into Arrow pipeline
+                try:
+                    arrow_results = self._materialize_aliases_arrow(to_materialize, verbose=verbose)
+                    if arrow_results is not None:
+                        # Arrow pipeline succeeded
+                        results = {}
+                        added = []
+                        for name, arr in arrow_results.items():
+                            # Apply dtype if specified
+                            result_dtype = self.alias_dtypes.get(name)
+                            if result_dtype is not None:
+                                arr = arr.astype(result_dtype)
+                            results[name] = arr
+                            added.append(name)
+                        arrow_pipeline_succeeded = True
+                        if verbose:
+                            print(f"[materialize_aliases] Arrow pipeline: {len(added)} aliases computed")
+                except Exception as e:
+                    if not hasattr(self, '_arrow_pipeline_warned'):
+                        warnings.warn(
+                            f"Arrow pipeline failed, using standard path: {e}",
+                            RuntimeWarning
+                        )
+                        self._arrow_pipeline_warned = True
+            
+            # =========================================================================
+            # STANDARD PATH: Python eval() with batch optimization
+            # Used when Arrow pipeline is disabled, unsupported, or failed
+            # =========================================================================
+            
+            if not arrow_pipeline_succeeded:
+                results = {}  # Collect computed alias values (Series/arrays only)
+                added = []
                 
-                # Skip if not an alias
-                if name not in self.aliases:
-                    continue
-                
-                expr = self.aliases[name]
-                
-                if verbose:
-                    print(f"[materialize_aliases] Computing: {name}")
-                
-                # Handle subframe dependencies: index columns and subframe attributes
-                tokens = re.findall(r'(\w+)\.(\w+)', expr)
-                for sf_name, sf_attr in tokens:
-                    sf = self.get_subframe(sf_name)
-                    if sf:
-                        # Materialize index columns if they're aliases
-                        entry = self._subframes.get_entry(sf_name)
-                        if entry:
-                            index_cols = entry['index']
-                            if isinstance(index_cols, str):
-                                index_cols = [index_cols]
-                            for idx_col in index_cols:
-                                if idx_col in self.aliases and idx_col not in self.df.columns:
-                                    if idx_col not in results:  # Not yet computed in batch
-                                        if verbose:
-                                            print(f"[materialize_aliases]   Materializing index: {idx_col}")
-                                        self.materialize_alias(idx_col)
-                        
-                        # Materialize subframe attribute if it's an alias
-                        if sf_attr in sf.aliases and sf_attr not in sf.df.columns:
-                            sf.materialize_alias(sf_attr)
-                
-                # Compute with context_override so dependent aliases can see prior results
-                result = self._eval_in_namespace(expr, context_override=results, alias_name=name)
-                
-                # Apply dtype if specified
-                result_dtype = self.alias_dtypes.get(name)
-                if result_dtype is not None:
-                    try:
-                        result = result.astype(result_dtype)
-                    except AttributeError:
-                        result = result_dtype(result)
-                
-                results[name] = result
-                added.append(name)
+                for name in to_materialize:
+                    # Skip if already a column
+                    if name in self.df.columns:
+                        continue
+                    
+                    # Skip if not an alias
+                    if name not in self.aliases:
+                        continue
+                    
+                    expr = self.aliases[name]
+                    
+                    if verbose:
+                        print(f"[materialize_aliases] Computing: {name}")
+                    
+                    # Handle subframe dependencies: index columns and subframe attributes
+                    tokens = re.findall(r'(\w+)\.(\w+)', expr)
+                    for sf_name, sf_attr in tokens:
+                        sf = self.get_subframe(sf_name)
+                        if sf:
+                            # Materialize index columns if they're aliases
+                            entry = self._subframes.get_entry(sf_name)
+                            if entry:
+                                index_cols = entry['index']
+                                if isinstance(index_cols, str):
+                                    index_cols = [index_cols]
+                                for idx_col in index_cols:
+                                    if idx_col in self.aliases and idx_col not in self.df.columns:
+                                        if idx_col not in results:  # Not yet computed in batch
+                                            if verbose:
+                                                print(f"[materialize_aliases]   Materializing index: {idx_col}")
+                                            self.materialize_alias(idx_col)
+                            
+                            # Materialize subframe attribute if it's an alias
+                            if sf_attr in sf.aliases and sf_attr not in sf.df.columns:
+                                sf.materialize_alias(sf_attr)
+                    
+                    # Compute with context_override so dependent aliases can see prior results
+                    result = self._eval_in_namespace(expr, context_override=results, alias_name=name)
+                    
+                    # Apply dtype if specified
+                    result_dtype = self.alias_dtypes.get(name)
+                    if result_dtype is not None:
+                        try:
+                            result = result.astype(result_dtype)
+                        except AttributeError:
+                            result = result_dtype(result)
+                    
+                    results[name] = result
+                    added.append(name)
             
             # BATCH ADD: Single concat instead of per-alias insert
             if results:
