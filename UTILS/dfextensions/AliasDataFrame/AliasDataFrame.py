@@ -32,6 +32,16 @@ except ImportError:
     get_numba_info = lambda: {'available': False, 'version': None}
     linearize_multi_column_keys_pair = None
 
+# PyArrow acceleration (optional) - Phase 9
+try:
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    PYARROW_AVAILABLE = True
+except ImportError:
+    PYARROW_AVAILABLE = False
+    pa = None
+    pc = None
+
 # =============================================================================
 # SECTION 0: Schema & Metadata Constants
 # =============================================================================
@@ -726,7 +736,7 @@ class AliasDataFrame:
     Phase 4: Uses unified _schema dict as single source of truth.
     """
     
-    def __init__(self, df, schema_id=None, use_numba=None):
+    def __init__(self, df, schema_id=None, use_numba=None, use_arrow=None):
         """
         Initialize AliasDataFrame with unified schema structure.
         
@@ -835,6 +845,13 @@ class AliasDataFrame:
             self._use_numba = NUMBA_AVAILABLE
         else:
             self._use_numba = use_numba and NUMBA_AVAILABLE
+        
+        # Phase 9: PyArrow acceleration configuration
+        # Auto-detect if not specified: use PyArrow when available
+        if use_arrow is None:
+            self._use_arrow = PYARROW_AVAILABLE
+        else:
+            self._use_arrow = use_arrow and PYARROW_AVAILABLE
 
     # =========================================================================
     # SECTION 1: Core DataFrame Operations & Schema Properties
@@ -903,6 +920,33 @@ class AliasDataFrame:
         info = get_numba_info()
         info['enabled'] = self._use_numba
         info['min_rows'] = NUMBA_MIN_ROWS
+        return info
+    
+    @property
+    def arrow_info(self):
+        """
+        Get information about PyArrow acceleration status.
+        
+        Returns
+        -------
+        dict
+            Contains:
+            - available: bool - whether PyArrow is installed
+            - enabled: bool - whether this ADF instance uses PyArrow
+            - version: str or None - PyArrow version if available
+            - min_rows: int - minimum rows to use PyArrow (overhead threshold)
+        
+        Example
+        -------
+        >>> adf.arrow_info
+        {'available': True, 'enabled': True, 'version': '14.0.2', 'min_rows': 10000}
+        """
+        info = {
+            'available': PYARROW_AVAILABLE,
+            'enabled': self._use_arrow,
+            'version': pa.__version__ if PYARROW_AVAILABLE else None,
+            'min_rows': NUMBA_MIN_ROWS  # Reuse same threshold
+        }
         return info
     
     # =========================================================================
@@ -1907,12 +1951,85 @@ class AliasDataFrame:
         
         return indices, missing_mask
 
+    def _extract_subframe_values_arrow(self, sf_name, sf_col, indices, missing_mask):
+        """
+        Extract subframe column values using PyArrow take() - gather operation.
+        
+        Phase 9b: Uses PyArrow's optimized C++ implementation for gathering
+        values from subframe based on precomputed join indices.
+        
+        Parameters
+        ----------
+        sf_name : str
+            Subframe name
+        sf_col : str
+            Column name to extract from subframe
+        indices : np.ndarray[int64]
+            Row indices into subframe (-1 for missing keys)
+        missing_mask : np.ndarray[bool]
+            Mask indicating missing keys (True where index == -1)
+            
+        Returns
+        -------
+        np.ndarray
+            Extracted values with NaN for missing keys (before fill config)
+            
+        Notes
+        -----
+        This is a GATHER operation: for each row i in main DataFrame,
+        we fetch subframe[indices[i]]. Missing keys (indices[i] == -1)
+        result in NaN values.
+        """
+        sub_adf = self.get_subframe(sf_name)
+        sub_df = sub_adf.df
+        
+        # Materialize subframe alias if needed
+        if sf_col not in sub_df.columns:
+            if sf_col in sub_adf.aliases:
+                sub_adf.materialize_alias(sf_col)
+                sub_df = sub_adf.df
+            else:
+                raise KeyError(f"Subframe '{sf_name}' does not contain column or alias '{sf_col}'")
+        
+        sub_values = sub_df[sf_col].to_numpy()
+        
+        # Convert subframe column to Arrow array
+        sub_arr = pa.array(sub_values)
+        
+        # Handle missing keys (-1 indices):
+        # 1. Replace -1 with 0 so take() doesn't fail
+        # 2. Take values
+        # 3. Replace values at missing positions with null
+        safe_indices = np.where(indices >= 0, indices, 0)
+        indices_arr = pa.array(safe_indices)
+        
+        # Perform the gather operation
+        taken = pc.take(sub_arr, indices_arr)
+        
+        # Apply null mask for missing keys
+        if missing_mask.any():
+            null_scalar = pa.scalar(None, type=taken.type)
+            mask_arr = pa.array(~missing_mask)  # True = keep value, False = null
+            taken = pc.if_else(mask_arr, taken, null_scalar)
+        
+        # Convert to numpy - nulls become NaN for float types
+        result = taken.to_numpy(zero_copy_only=False)
+        
+        # Ensure proper dtype for NaN handling
+        if not np.issubdtype(result.dtype, np.floating) and missing_mask.any():
+            result = result.astype(np.float64)
+            result[missing_mask] = np.nan
+        
+        return result
+
     def _extract_subframe_values_cached(self, sf_name, sf_col, indices, missing_mask):
         """
         Extract subframe column values using cached indices.
         
-        Uses Numba JIT-compiled scatter (Phase 8a) when available,
-        falls back to NumPy advanced indexing.
+        Uses acceleration in order of preference:
+        1. PyArrow take() (Phase 9b) - best for large arrays
+        2. Numba JIT scatter (Phase 8a) - good for repeated operations
+        3. NumPy advanced indexing - fallback
         
         Parameters
         ----------
@@ -1930,6 +2047,24 @@ class AliasDataFrame:
         np.ndarray
             Extracted values with fill config applied
         """
+        n = len(indices)
+        
+        # Phase 9b: Try PyArrow path first (fastest for large arrays)
+        if (self._use_arrow and PYARROW_AVAILABLE and n >= NUMBA_MIN_ROWS):
+            try:
+                values = self._extract_subframe_values_arrow(sf_name, sf_col, indices, missing_mask)
+                values = self._apply_fill_config(sf_name, values, missing_mask, n)
+                return values
+            except Exception as e:
+                if not hasattr(self, '_arrow_scatter_warned'):
+                    warnings.warn(
+                        f"Arrow scatter failed for {sf_name}.{sf_col}, "
+                        f"falling back to NumPy/Numba: {e}",
+                        RuntimeWarning
+                    )
+                    self._arrow_scatter_warned = True
+        
+        # Numba/NumPy fallback path
         sub_adf = self.get_subframe(sf_name)
         sub_df = sub_adf.df
         
@@ -1942,7 +2077,6 @@ class AliasDataFrame:
                 raise KeyError(f"Subframe '{sf_name}' does not contain column or alias '{sf_col}'")
         
         sub_values = sub_df[sf_col].to_numpy()
-        n = len(indices)
         
         # Pre-fill with NaN to safely handle missing keys
         # Must upcast non-float dtypes to allow NaN representation
