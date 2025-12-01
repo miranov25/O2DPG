@@ -355,6 +355,124 @@ def numba_compute_join_indices(main_keys, subframe_keys, use_hash=None):
 
 
 # =============================================================================
+# Phase 8c: Multi-Column Key Linearization
+# =============================================================================
+#
+# These functions pack multi-column integer keys into single int64 values,
+# enabling use of Phase 8b lookup for composite keys.
+#
+# Key insight: (col1, col2, col3) can be linearized as:
+#   linear_key = col1 * stride1 + col2 * stride2 + col3
+# where strides are computed from GLOBAL max values across both DataFrames.
+#
+
+if NUMBA_AVAILABLE:
+    @njit(cache=True, parallel=True)
+    def _numba_linearize_keys(keys_2d, strides):
+        """
+        Pack multi-column keys into single int64 values.
+        
+        Parameters
+        ----------
+        keys_2d : np.ndarray[int64] of shape (n_rows, n_cols)
+            Key columns stacked horizontally
+        strides : np.ndarray[int64] of shape (n_cols,)
+            Stride multipliers for each column (rightmost = 1)
+            
+        Returns
+        -------
+        np.ndarray[int64] of shape (n_rows,)
+            Linearized keys
+        """
+        n_rows = keys_2d.shape[0]
+        n_cols = keys_2d.shape[1]
+        result = np.zeros(n_rows, dtype=np.int64)
+        
+        for i in prange(n_rows):
+            val = 0
+            for j in range(n_cols):
+                val += keys_2d[i, j] * strides[j]
+            result[i] = val
+        
+        return result
+
+
+def linearize_multi_column_keys_pair(main_df, sub_df, key_cols):
+    """
+    Linearize keys from BOTH DataFrames using GLOBAL strides.
+    
+    Critical: Both DataFrames must use the same strides computed from
+    global max values, otherwise the same key tuple would map to different
+    linear values and the join would silently fail.
+    
+    Parameters
+    ----------
+    main_df : pd.DataFrame
+        Main DataFrame
+    sub_df : pd.DataFrame  
+        Subframe DataFrame
+    key_cols : list of str
+        Column names to use as keys
+        
+    Returns
+    -------
+    linear_main : np.ndarray[int64] or None
+        Linearized keys for main DataFrame
+    linear_sub : np.ndarray[int64] or None
+        Linearized keys for subframe
+    success : bool
+        False if linearization not possible (overflow, negative, non-integer)
+    """
+    if not NUMBA_AVAILABLE:
+        return None, None, False
+    
+    # Stack key columns into 2D arrays
+    try:
+        keys_main = np.column_stack([main_df[c].to_numpy() for c in key_cols])
+        keys_sub = np.column_stack([sub_df[c].to_numpy() for c in key_cols])
+    except (KeyError, ValueError):
+        return None, None, False
+    
+    # Handle empty subframe
+    if len(keys_sub) == 0:
+        return None, None, False
+    
+    # Check for integer dtype
+    if not (np.issubdtype(keys_main.dtype, np.integer) and 
+            np.issubdtype(keys_sub.dtype, np.integer)):
+        return None, None, False
+    
+    # Check for negative keys (fallback to pandas)
+    if np.any(keys_main < 0) or np.any(keys_sub < 0):
+        return None, None, False
+    
+    # Compute GLOBAL maxes from BOTH DataFrames
+    # This is critical for correctness!
+    max_main = keys_main.max(axis=0) if len(keys_main) > 0 else np.zeros(len(key_cols))
+    max_sub = keys_sub.max(axis=0)
+    global_maxes = np.maximum(max_main, max_sub)
+    
+    # Check for overflow using Python ints (avoid NumPy wraparound)
+    product = 1
+    for m in global_maxes:
+        product *= (int(m) + 1)
+        if product > 2**62:
+            return None, None, False
+    
+    # Compute strides (rightmost = 1, C-order / row-major)
+    n_cols = len(key_cols)
+    strides = np.ones(n_cols, dtype=np.int64)
+    for i in range(n_cols - 2, -1, -1):
+        strides[i] = strides[i + 1] * (int(global_maxes[i + 1]) + 1)
+    
+    # Linearize both using SAME strides
+    linear_main = _numba_linearize_keys(keys_main.astype(np.int64), strides)
+    linear_sub = _numba_linearize_keys(keys_sub.astype(np.int64), strides)
+    
+    return linear_main, linear_sub, True
+
+
+# =============================================================================
 # Utility Functions
 # =============================================================================
 

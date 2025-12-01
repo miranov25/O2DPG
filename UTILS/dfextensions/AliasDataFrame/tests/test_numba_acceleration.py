@@ -426,5 +426,171 @@ class TestNumbaWithFillConfig:
         assert adf_numba.df['v'].iloc[-1] == -999.0
 
 
+# =============================================================================
+# Phase 8c Tests: Multi-Column Key Linearization
+# =============================================================================
+
+class TestMultiColumnLinearization:
+    """Tests for Phase 8c: Multi-column key linearization."""
+    
+    @pytest.mark.skipif(not NUMBA_AVAILABLE, reason="Numba not installed")
+    def test_linearization_matches_pandas_3col(self):
+        """Linearized Numba path should match pd.merge for 3-column keys."""
+        np.random.seed(42)
+        n_main = 50000  # Above NUMBA_MIN_ROWS threshold
+        
+        # Create TPC-like structure: drift25 (0-3), side (0-1), row (0-150)
+        main_df = pd.DataFrame({
+            'drift25': np.random.randint(0, 4, n_main, dtype=np.int8),
+            'side': np.random.randint(0, 2, n_main, dtype=np.int8),
+            'row': np.random.randint(0, 151, n_main, dtype=np.int16),
+            'x': np.random.randn(n_main).astype(np.float32)
+        })
+        
+        # Subframe with calibration data
+        n_sub = 4 * 2 * 151  # Full coverage
+        sub_df = pd.DataFrame({
+            'drift25': np.repeat(np.arange(4), 2 * 151).astype(np.int8),
+            'side': np.tile(np.repeat(np.arange(2), 151), 4).astype(np.int8),
+            'row': np.tile(np.arange(151), 4 * 2).astype(np.int16),
+            'calibration': np.random.randn(n_sub).astype(np.float32)
+        })
+        
+        # With Numba (should use linearization)
+        adf_numba = AliasDataFrame(main_df.copy(), use_numba=True)
+        adf_numba.register_subframe('cal', AliasDataFrame(sub_df.copy()), 
+                                     index_columns=['drift25', 'side', 'row'])
+        adf_numba.add_alias('calib', 'cal.calibration')
+        adf_numba.materialize_alias('calib')
+        
+        # Without Numba (uses pandas merge)
+        adf_pandas = AliasDataFrame(main_df.copy(), use_numba=False)
+        adf_pandas.register_subframe('cal', AliasDataFrame(sub_df.copy()),
+                                      index_columns=['drift25', 'side', 'row'])
+        adf_pandas.add_alias('calib', 'cal.calibration')
+        adf_pandas.materialize_alias('calib')
+        
+        np.testing.assert_array_almost_equal(
+            adf_numba.df['calib'].values,
+            adf_pandas.df['calib'].values,
+            decimal=6,
+            err_msg="Linearization result doesn't match pandas merge"
+        )
+    
+    @pytest.mark.skipif(not NUMBA_AVAILABLE, reason="Numba not installed")
+    def test_linearization_different_maxes_in_main_vs_sub(self):
+        """
+        CRITICAL TEST: Global strides must handle different maxes in main vs sub.
+        
+        If main has max(col1)=100 but sub has max(col1)=50, we must use 
+        global max=100 for stride computation, otherwise keys won't match.
+        """
+        np.random.seed(42)
+        n_main = 20000
+        
+        # Main has LARGER range in col1 than subframe
+        main_df = pd.DataFrame({
+            'col1': np.random.randint(0, 100, n_main, dtype=np.int64),  # max=99
+            'col2': np.random.randint(0, 50, n_main, dtype=np.int64),   # max=49
+        })
+        
+        # Subframe has SMALLER range in col1
+        sub_df = pd.DataFrame({
+            'col1': np.arange(50, dtype=np.int64),  # max=49 (smaller than main!)
+            'col2': np.arange(50, dtype=np.int64),  # max=49
+            'value': np.arange(50, dtype=np.float64)
+        })
+        
+        # With Numba
+        adf_numba = AliasDataFrame(main_df.copy(), use_numba=True)
+        adf_numba.register_subframe('S', AliasDataFrame(sub_df.copy()),
+                                     index_columns=['col1', 'col2'])
+        adf_numba.add_alias('v', 'S.value')
+        adf_numba.materialize_alias('v')
+        
+        # Without Numba (ground truth)
+        adf_pandas = AliasDataFrame(main_df.copy(), use_numba=False)
+        adf_pandas.register_subframe('S', AliasDataFrame(sub_df.copy()),
+                                      index_columns=['col1', 'col2'])
+        adf_pandas.add_alias('v', 'S.value')
+        adf_pandas.materialize_alias('v')
+        
+        # Must match exactly - this tests global stride computation
+        np.testing.assert_array_equal(
+            np.isnan(adf_numba.df['v'].values),
+            np.isnan(adf_pandas.df['v'].values),
+            err_msg="Missing key pattern differs - global stride bug!"
+        )
+        
+        # Non-NaN values must match
+        mask = ~np.isnan(adf_pandas.df['v'].values)
+        if mask.any():
+            np.testing.assert_array_almost_equal(
+                adf_numba.df['v'].values[mask],
+                adf_pandas.df['v'].values[mask],
+                decimal=10,
+                err_msg="Values differ - global stride bug!"
+            )
+    
+    @pytest.mark.skipif(not NUMBA_AVAILABLE, reason="Numba not installed")
+    def test_linearization_negative_keys_fallback(self):
+        """Negative keys should fallback to pandas gracefully."""
+        np.random.seed(42)
+        n_main = 20000
+        
+        main_df = pd.DataFrame({
+            'col1': np.random.randint(-10, 10, n_main),  # Negative keys!
+            'col2': np.random.randint(0, 20, n_main),
+        })
+        sub_df = pd.DataFrame({
+            'col1': np.arange(-10, 10),
+            'col2': np.tile(np.arange(20), 1)[:20],
+            'value': np.arange(20, dtype=np.float64)
+        })
+        
+        # Should not crash - falls back to pandas
+        adf = AliasDataFrame(main_df, use_numba=True)
+        adf.register_subframe('S', AliasDataFrame(sub_df), 
+                               index_columns=['col1', 'col2'])
+        adf.add_alias('v', 'S.value')
+        adf.materialize_alias('v')
+        
+        assert 'v' in adf.df.columns
+    
+    @pytest.mark.skipif(not NUMBA_AVAILABLE, reason="Numba not installed") 
+    def test_linearization_2_columns(self):
+        """Two-column keys should work with linearization."""
+        np.random.seed(42)
+        n_main = 30000
+        
+        main_df = pd.DataFrame({
+            'sector': np.random.randint(0, 18, n_main, dtype=np.int32),
+            'pad': np.random.randint(0, 100, n_main, dtype=np.int32),
+        })
+        sub_df = pd.DataFrame({
+            'sector': np.repeat(np.arange(18), 100).astype(np.int32),
+            'pad': np.tile(np.arange(100), 18).astype(np.int32),
+            'gain': np.random.randn(1800).astype(np.float32)
+        })
+        
+        adf_numba = AliasDataFrame(main_df.copy(), use_numba=True)
+        adf_numba.register_subframe('cal', AliasDataFrame(sub_df.copy()),
+                                     index_columns=['sector', 'pad'])
+        adf_numba.add_alias('g', 'cal.gain')
+        adf_numba.materialize_alias('g')
+        
+        adf_pandas = AliasDataFrame(main_df.copy(), use_numba=False)
+        adf_pandas.register_subframe('cal', AliasDataFrame(sub_df.copy()),
+                                      index_columns=['sector', 'pad'])
+        adf_pandas.add_alias('g', 'cal.gain')
+        adf_pandas.materialize_alias('g')
+        
+        np.testing.assert_array_almost_equal(
+            adf_numba.df['g'].values,
+            adf_pandas.df['g'].values,
+            decimal=6
+        )
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

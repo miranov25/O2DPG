@@ -21,7 +21,8 @@ import ast
 try:
     from _numba_accelerators import (
         NUMBA_AVAILABLE, NUMBA_MIN_ROWS,
-        numba_scatter, numba_compute_join_indices, get_numba_info
+        numba_scatter, numba_compute_join_indices, get_numba_info,
+        linearize_multi_column_keys_pair
     )
 except ImportError:
     NUMBA_AVAILABLE = False
@@ -29,6 +30,7 @@ except ImportError:
     numba_scatter = None
     numba_compute_join_indices = None
     get_numba_info = lambda: {'available': False, 'version': None}
+    linearize_multi_column_keys_pair = None
 
 # =============================================================================
 # SECTION 0: Schema & Metadata Constants
@@ -1863,6 +1865,24 @@ class AliasDataFrame:
                     sub_keys.astype(np.int64)
                 )
                 
+                if used_numba:
+                    return indices, missing_mask
+        
+        # Phase 8c: Try multi-column linearization for composite integer keys
+        if (self._use_numba 
+            and linearize_multi_column_keys_pair is not None
+            and len(index_cols) > 1
+            and n_main >= NUMBA_MIN_ROWS):
+            
+            linear_main, linear_sub, ok = linearize_multi_column_keys_pair(
+                self.df, sub_df, index_cols
+            )
+            
+            if ok:
+                # Use Phase 8b hash lookup on linearized keys
+                indices, missing_mask, used_numba = numba_compute_join_indices(
+                    linear_main, linear_sub
+                )
                 if used_numba:
                     return indices, missing_mask
         
