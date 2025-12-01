@@ -1805,7 +1805,7 @@ class AliasDataFrame:
         # Lightweight merge: main keys -> subframe row indices
         # Left merge preserves main DataFrame row order (Many-to-One join)
         main_keys = self.df[index_cols]
-        merged = main_keys.merge(sub_keys, on=index_cols, how='left')
+        merged = main_keys.merge(sub_keys, on=index_cols, how='left', sort=False)
         
         # Extract indices and missing mask
         indices = merged['__sub_row__'].fillna(-1).astype(np.int64).to_numpy()
