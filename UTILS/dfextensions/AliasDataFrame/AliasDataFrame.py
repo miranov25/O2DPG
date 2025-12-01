@@ -17,6 +17,19 @@ import networkx as nx
 import re
 import ast
 
+# Numba acceleration (optional)
+try:
+    from _numba_accelerators import (
+        NUMBA_AVAILABLE, NUMBA_MIN_ROWS,
+        numba_scatter, numba_compute_join_indices, get_numba_info
+    )
+except ImportError:
+    NUMBA_AVAILABLE = False
+    NUMBA_MIN_ROWS = 10000
+    numba_scatter = None
+    numba_compute_join_indices = None
+    get_numba_info = lambda: {'available': False, 'version': None}
+
 # =============================================================================
 # SECTION 0: Schema & Metadata Constants
 # =============================================================================
@@ -711,7 +724,7 @@ class AliasDataFrame:
     Phase 4: Uses unified _schema dict as single source of truth.
     """
     
-    def __init__(self, df, schema_id=None):
+    def __init__(self, df, schema_id=None, use_numba=None):
         """
         Initialize AliasDataFrame with unified schema structure.
         
@@ -722,6 +735,10 @@ class AliasDataFrame:
         schema_id : str, optional
             User-defined identifier for this schema (e.g., "miranov_lxplus_TPC_calib_v3").
             Useful for parameter scans, test studies, and provenance tracking.
+        use_numba : bool, optional
+            Enable/disable Numba acceleration for subframe joins.
+            If None (default), auto-detect: use Numba if available.
+            Set to False to force pure NumPy/Pandas operations.
         
         The _schema dict is the single source of truth for:
         - __meta__: schema version, timestamps, user-defined ID
@@ -809,6 +826,13 @@ class AliasDataFrame:
         self._join_index_cache = {}  # {sf_name: {indices, missing_mask, n_rows, subframe_id}}
         self._join_cache_hits = 0
         self._join_cache_misses = 0
+        
+        # Phase 8: Numba acceleration configuration
+        # Auto-detect if not specified: use Numba when available
+        if use_numba is None:
+            self._use_numba = NUMBA_AVAILABLE
+        else:
+            self._use_numba = use_numba and NUMBA_AVAILABLE
 
     # =========================================================================
     # SECTION 1: Core DataFrame Operations & Schema Properties
@@ -854,6 +878,30 @@ class AliasDataFrame:
         """
         self.schema_id = schema_id
         return self
+    
+    @property
+    def numba_info(self):
+        """
+        Get information about Numba acceleration status.
+        
+        Returns
+        -------
+        dict
+            Contains:
+            - available: bool - whether Numba is installed
+            - enabled: bool - whether this ADF instance uses Numba
+            - version: str or None - Numba version if available
+            - min_rows: int - minimum rows to use Numba (JIT overhead threshold)
+        
+        Example
+        -------
+        >>> adf.numba_info
+        {'available': True, 'enabled': True, 'version': '0.57.0', 'min_rows': 10000}
+        """
+        info = get_numba_info()
+        info['enabled'] = self._use_numba
+        info['min_rows'] = NUMBA_MIN_ROWS
+        return info
     
     # =========================================================================
     # Phase 4: Backward Compatibility Properties
@@ -1765,8 +1813,8 @@ class AliasDataFrame:
         """
         Compute join index mapping from main DataFrame to subframe rows.
         
-        Uses lightweight merge (keys only) to build index mapping without
-        copying full subframe data.
+        Uses Numba JIT-compiled lookup (Phase 8b) for single-column integer keys,
+        falls back to lightweight merge (keys only) for complex cases.
         
         Parameters
         ----------
@@ -1789,23 +1837,49 @@ class AliasDataFrame:
         - Deduplicates subframe on index_cols only (not full columns)
         - Takes first match for duplicate keys (keep='first')
         - Indices refer to ORIGINAL subframe rows (before deduplication)
+        - Phase 8b: Uses Numba for single-column integer keys (>10K rows)
         """
         sub_adf = self.get_subframe(sf_name)
         sub_df = sub_adf.df
+        n_main = len(self.df)
         
+        # Phase 8b: Try Numba path for single-column integer keys
+        if (self._use_numba 
+            and numba_compute_join_indices is not None
+            and len(index_cols) == 1
+            and n_main >= NUMBA_MIN_ROWS):
+            
+            col = index_cols[0]
+            main_keys = self.df[col].to_numpy()
+            sub_keys = sub_df[col].to_numpy()
+            
+            # Check if keys are integer-compatible
+            if (np.issubdtype(main_keys.dtype, np.integer) and 
+                np.issubdtype(sub_keys.dtype, np.integer)):
+                
+                # Use Numba index lookup
+                indices, missing_mask, used_numba = numba_compute_join_indices(
+                    main_keys.astype(np.int64),
+                    sub_keys.astype(np.int64)
+                )
+                
+                if used_numba:
+                    return indices, missing_mask
+        
+        # Fallback: Pandas merge for multi-column or non-integer keys
         # Build lightweight key table with row indices into ORIGINAL subframe
         # Critical: Add __sub_row__ BEFORE deduplication so indices map to original rows
-        sub_keys = sub_df[index_cols].copy()
-        sub_keys['__sub_row__'] = np.arange(len(sub_df), dtype=np.int64)
+        sub_keys_df = sub_df[index_cols].copy()
+        sub_keys_df['__sub_row__'] = np.arange(len(sub_df), dtype=np.int64)
         
         # Deduplicate on index_cols only, keeping first match
-        if sub_keys.duplicated(subset=index_cols).any():
-            sub_keys = sub_keys.drop_duplicates(subset=index_cols, keep='first')
+        if sub_keys_df.duplicated(subset=index_cols).any():
+            sub_keys_df = sub_keys_df.drop_duplicates(subset=index_cols, keep='first')
         
         # Lightweight merge: main keys -> subframe row indices
         # Left merge preserves main DataFrame row order (Many-to-One join)
-        main_keys = self.df[index_cols]
-        merged = main_keys.merge(sub_keys, on=index_cols, how='left', sort=False)
+        main_keys_df = self.df[index_cols]
+        merged = main_keys_df.merge(sub_keys_df, on=index_cols, how='left', sort=False)
         
         # Extract indices and missing mask
         indices = merged['__sub_row__'].fillna(-1).astype(np.int64).to_numpy()
@@ -1817,7 +1891,8 @@ class AliasDataFrame:
         """
         Extract subframe column values using cached indices.
         
-        Uses NumPy advanced indexing for fast value extraction.
+        Uses Numba JIT-compiled scatter (Phase 8a) when available,
+        falls back to NumPy advanced indexing.
         
         Parameters
         ----------
@@ -1856,11 +1931,16 @@ class AliasDataFrame:
         else:
             values = np.full(n, np.nan, dtype=np.float64)
         
-        # NumPy advanced indexing - fast C-level operation
-        valid = indices >= 0
-        values[valid] = sub_values[indices[valid]]
+        # Phase 8a: Use Numba scatter if available and worthwhile
+        if self._use_numba and n >= NUMBA_MIN_ROWS and numba_scatter is not None:
+            # Numba scatter modifies values in-place
+            numba_scatter(sub_values, indices, values)
+        else:
+            # NumPy advanced indexing - fast C-level operation
+            valid = indices >= 0
+            values[valid] = sub_values[indices[valid]]
         
-        # Apply fill configuration
+        # Apply fill configuration (policy stays in Python - GPT's rule)
         values = self._apply_fill_config(sf_name, values, missing_mask, n)
         
         return values
