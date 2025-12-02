@@ -3381,7 +3381,23 @@ class AliasDataFrame:
             # BATCH DROP: Single drop instead of per-column removal
             if cleanTemporary and with_dependencies:
                 targets_set = set(targets)
+                
+                # 1. Drop intermediate alias dependencies (existing logic)
                 cols_to_drop = [c for c in added if c not in targets_set and c in self.df.columns]
+                
+                # 2. Drop subframe join columns (NEW: fix for subframe temporaries)
+                # These have pattern: {col}__{subframe_name}
+                if hasattr(self, '_subframes') and hasattr(self._subframes, 'subframes'):
+                    subframe_names = set(self._subframes.subframes.keys())
+                    for col in list(self.df.columns):
+                        # Check if column is a subframe join column
+                        if '__' in col and col not in targets_set:
+                            # Extract suffix after last '__'
+                            parts = col.rsplit('__', 1)
+                            if len(parts) == 2 and parts[1] in subframe_names:
+                                if col not in cols_to_drop:
+                                    cols_to_drop.append(col)
+                
                 if cols_to_drop:
                     self.df.drop(columns=cols_to_drop, inplace=True)
                     if verbose:
