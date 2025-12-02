@@ -1780,7 +1780,7 @@ class AliasDataFrame:
         
         return values_series.values
 
-    def _run_with_profiling(self, func, profile=False, profile_output=None):
+    def _run_with_profiling(self, func, profile=False, profile_text=None, profile_binary=None):
         """
         Execute function with optional cProfile profiling.
         
@@ -1789,9 +1789,11 @@ class AliasDataFrame:
         func : callable
             Function to execute (typically a lambda wrapping the main logic)
         profile : bool, default=False
-            If True, enable profiling and print results
-        profile_output : str, optional
-            If provided, write profiling results to this file path
+            If True, print profiling summary to stdout
+        profile_text : str, optional
+            Path to save human-readable text summary (e.g., "run.txt")
+        profile_binary : str, optional
+            Path to save binary .prof file for snakeviz/pstats (e.g., "run.prof")
             
         Returns
         -------
@@ -1800,12 +1802,19 @@ class AliasDataFrame:
             
         Examples
         --------
-        >>> def _do_work():
-        ...     # expensive operations
-        ...     return result
-        >>> return self._run_with_profiling(_do_work, profile=True)
+        >>> # Print to stdout only
+        >>> aDF.materialize_aliases(..., profile=True)
+        
+        >>> # Save binary for snakeviz
+        >>> aDF.materialize_aliases(..., profile_binary="run.prof")
+        
+        >>> # Save text for review
+        >>> aDF.materialize_aliases(..., profile_text="run.txt")
+        
+        >>> # Save both + print
+        >>> aDF.materialize_aliases(..., profile=True, profile_text="run.txt", profile_binary="run.prof")
         """
-        if not profile:
+        if not profile and not profile_text and not profile_binary:
             return func()
         
         import cProfile
@@ -1820,27 +1829,28 @@ class AliasDataFrame:
         finally:
             profiler.disable()
             
+            # Build text summary
             s = StringIO()
             stats = pstats.Stats(profiler, stream=s)
             stats.sort_stats('cumulative').print_stats(40)
             s.write("\n" + "="*60 + "\nSorted by total time:\n" + "="*60 + "\n")
             stats.sort_stats('tottime').print_stats(40)
+            text_output = s.getvalue()
             
-            output = s.getvalue()
+            # Print to stdout if profile=True
+            if profile:
+                print(text_output)
             
-            if profile_output:
+            # Save text file if requested
+            if profile_text:
                 from pathlib import Path
-                # Save text output
-                Path(profile_output).write_text(output)
-                print(f"[profiler] Results saved to: {profile_output}")
-                
-                # Also save binary .prof file for pstats/snakeviz analysis
-                prof_path = str(profile_output).replace('.txt', '.prof')
-                if prof_path != profile_output:  # Only if extension was .txt
-                    profiler.dump_stats(prof_path)
-                    print(f"[profiler] Binary profile saved to: {prof_path}")
-            else:
-                print(output)
+                Path(profile_text).write_text(text_output)
+                print(f"[profiler] Text saved to: {profile_text}")
+            
+            # Save binary file if requested
+            if profile_binary:
+                profiler.dump_stats(profile_binary)
+                print(f"[profiler] Binary saved to: {profile_binary}")
         
         return result
 
@@ -2907,7 +2917,8 @@ class AliasDataFrame:
 
     def describe_aliases(self, verbosity=0x05, pattern=None, names=None, as_dict=False,
                          only_broken=False, only_materialized=False, 
-                         only_unmaterialized=False, with_dependencies=False, color=False):
+                         only_unmaterialized=False, with_dependencies=False, color=False,
+                         expr_width=120):
         """
         Print summary of all aliases with name, type, materialized status, and expression.
         
@@ -2936,6 +2947,8 @@ class AliasDataFrame:
             If True, expand selection to include all dependencies
         color : bool, default=False
             If True, use ANSI colors in output (green=OK, red=broken)
+        expr_width : int or None, default=120
+            Maximum width for expression display. If None, no truncation.
             
         Returns
         -------
@@ -3044,9 +3057,14 @@ class AliasDataFrame:
             elif info['materialized'] and color:
                 mat_str = f"{C_GREEN}Yes{C_RESET}"
             
-            # Truncate long expressions
+            # Truncate long expressions based on expr_width
             expr = info['expr']
-            expr_display = expr if len(expr) <= 45 else expr[:42] + "..."
+            if expr_width is None:
+                expr_display = expr
+            elif len(expr) <= expr_width:
+                expr_display = expr
+            else:
+                expr_display = expr[:expr_width - 3] + "..."
             
             print(f"  {name:<28} {kind_str:<10} {mat_str:<5} {dtype_str:<10} {expr_display}")
             
@@ -3072,8 +3090,179 @@ class AliasDataFrame:
         n_materialized = sum(1 for info in result.values() if info['materialized'])
         print(f"\nTotal: {len(result)} aliases, {n_materialized} materialized, {n_broken} broken")
 
+    def dependency_tree(self, alias, max_depth=None, show_expr=True, _depth=0, _prefix="", _is_last=True):
+        """
+        Print hierarchical dependency tree for an alias.
+        
+        Shows the complete dependency structure with visual tree formatting,
+        including DataFrame columns and subframe references.
+        
+        Parameters
+        ----------
+        alias : str
+            Root alias to show tree for
+        max_depth : int, optional
+            Maximum depth to traverse (None = unlimited)
+        show_expr : bool, default=True
+            If True, show expression next to each node
+            
+        Examples
+        --------
+        >>> adf.dependency_tree('isOKGBTrackFit0')
+        isOKGBTrackFit0 = (row<152) & (abs(dyC0T)<2) & ...
+        ├── dyC0T = dy_c - dyC0T_median
+        │   ├── dy_c [column]
+        │   └── dyC0T_median = DTrack0.dyC0T_median
+        │       └── DTrack0.dyC0T_median [subframe]
+        └── isNotEdge = abs(y+dy)<(x*(pi/18)-1.5)
+            └── dy = T.dy
+                └── T.dy [subframe]
+        """
+        # Handle internal recursion parameters
+        if _depth == 0:
+            # Root call - print the root node
+            if alias in self.aliases:
+                expr = self.aliases[alias]
+                if show_expr:
+                    print(f"{alias} = {expr}")
+                else:
+                    print(alias)
+            elif alias in self.df.columns:
+                print(f"{alias} [column]")
+                return
+            else:
+                print(f"{alias} [unknown]")
+                return
+        
+        # Check max depth
+        if max_depth is not None and _depth >= max_depth:
+            return
+        
+        # Get dependencies for this alias
+        if alias not in self.aliases:
+            return
+        
+        expr = self.aliases[alias]
+        
+        # Parse expression to find dependencies
+        deps = self._get_alias_dependencies(alias, expr)
+        
+        if not deps:
+            return
+        
+        # Sort dependencies for consistent output
+        deps = sorted(deps, key=lambda x: (x[0] != 'alias', x[1]))  # aliases first
+        
+        for i, (dep_type, dep_name) in enumerate(deps):
+            is_last = (i == len(deps) - 1)
+            
+            # Build the tree connectors
+            if _depth == 0:
+                connector = "└── " if is_last else "├── "
+                child_prefix = "    " if is_last else "│   "
+            else:
+                connector = _prefix + ("└── " if is_last else "├── ")
+                child_prefix = _prefix + ("    " if is_last else "│   ")
+            
+            # Print the node based on type
+            if dep_type == 'column':
+                print(f"{connector}{dep_name} [column]")
+            elif dep_type == 'subframe':
+                print(f"{connector}{dep_name} [subframe]")
+            elif dep_type == 'alias':
+                dep_expr = self.aliases.get(dep_name, "")
+                if show_expr and dep_expr:
+                    print(f"{connector}{dep_name} = {dep_expr}")
+                else:
+                    print(f"{connector}{dep_name}")
+                # Recurse into alias
+                self.dependency_tree(
+                    dep_name, 
+                    max_depth=max_depth, 
+                    show_expr=show_expr,
+                    _depth=_depth + 1, 
+                    _prefix=child_prefix,
+                    _is_last=is_last
+                )
+    
+    def _get_alias_dependencies(self, alias_name, expr):
+        """
+        Parse expression to extract typed dependencies.
+        
+        Returns list of (type, name) tuples where type is:
+        - 'column': DataFrame column
+        - 'alias': Another alias
+        - 'subframe': Subframe reference (e.g., T.mX)
+        
+        Parameters
+        ----------
+        alias_name : str
+            Name of alias being analyzed (to avoid self-reference)
+        expr : str
+            Expression to parse
+            
+        Returns
+        -------
+        list of (str, str)
+            List of (dependency_type, dependency_name) tuples
+        """
+        deps = []
+        
+        # Get subframe names
+        subframe_names = set()
+        if hasattr(self, '_subframes') and hasattr(self._subframes, 'subframes'):
+            subframe_names = set(self._subframes.subframes.keys())
+        
+        # Known function names to exclude
+        known_funcs = set(self._default_functions().keys())
+        known_funcs.update(['np', 'numpy', 'math', 'abs', 'int', 'float', 'round', 
+                           'min', 'max', 'sum', 'len', 'range', 'True', 'False', 'None',
+                           'pi', 'e', 'inf', 'nan'])
+        
+        # Find subframe references first (T.column pattern)
+        subframe_refs = re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b', expr)
+        subframe_ref_names = set()
+        for sf_name, sf_col in subframe_refs:
+            if sf_name in subframe_names:
+                deps.append(('subframe', f"{sf_name}.{sf_col}"))
+                subframe_ref_names.add(sf_name)
+        
+        # Find all identifiers
+        tokens = re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b', expr)
+        
+        seen = set()
+        for token in tokens:
+            if token in seen:
+                continue
+            seen.add(token)
+            
+            # Skip known functions and constants
+            if token in known_funcs:
+                continue
+            
+            # Skip subframe names (they're part of subframe refs)
+            if token in subframe_names:
+                continue
+            
+            # Skip self-reference
+            if token == alias_name:
+                continue
+            
+            # Skip numeric-looking tokens
+            if token.isdigit():
+                continue
+            
+            # Classify the dependency
+            if token in self.aliases:
+                deps.append(('alias', token))
+            elif token in self.df.columns:
+                deps.append(('column', token))
+            # else: unknown identifier (function, constant, etc.) - skip
+        
+        return deps
+
     def materialize_alias(self, name, cleanTemporary=False, dtype=None, warn_missing_keys=True,
-                          profile=False, profile_output=None):
+                          profile=False, profile_text=None, profile_binary=None):
         """
         Evaluate an alias and store its result as a real column.
         
@@ -3087,8 +3276,9 @@ class AliasDataFrame:
             warn_missing_keys: If True, emit warning when subframe join has missing keys.
                              Missing keys produce NaN (rows are never dropped).
                              This parameter temporarily overrides the fill config setting.
-            profile: If True, run with cProfile and print profiling results.
-            profile_output: If provided, write profiling results to this file path.
+            profile: If True, print profiling summary to stdout.
+            profile_text: If provided, save text profile to this file path.
+            profile_binary: If provided, save binary .prof file for snakeviz/pstats.
 
         Raises:
             KeyError: If alias is not defined.
@@ -3156,7 +3346,7 @@ class AliasDataFrame:
                 if original_warn_setting is not None:
                     self._global_fill_config['warn_missing_keys'] = original_warn_setting
         
-        return self._run_with_profiling(_do_materialize, profile, profile_output)
+        return self._run_with_profiling(_do_materialize, profile, profile_text, profile_binary)
 
     def _materialize_aliases_arrow(self, to_materialize, verbose=False):
         """
@@ -3204,7 +3394,7 @@ class AliasDataFrame:
 
     def materialize_aliases(self, pattern=None, names=None, with_dependencies=True,
                             only_unmaterialized=True, cleanTemporary=True, verbose=False,
-                            profile=False, profile_output=None):
+                            profile=False, profile_text=None, profile_binary=None):
         """
         Materialize aliases matching pattern and/or names using batch optimization.
         
@@ -3226,9 +3416,11 @@ class AliasDataFrame:
         verbose : bool, default=False
             If True, print progress information
         profile : bool, default=False
-            If True, run with cProfile and print profiling results
-        profile_output : str, optional
-            If provided, write profiling results to this file path
+            If True, print profiling summary to stdout
+        profile_text : str, optional
+            Path to save human-readable text profile (e.g., "run.txt")
+        profile_binary : str, optional
+            Path to save binary .prof file for snakeviz/pstats (e.g., "run.prof")
             
         Returns
         -------
@@ -3240,7 +3432,8 @@ class AliasDataFrame:
         >>> adf.materialize_aliases(pattern=r'is.*')  # All 'is*' aliases
         >>> adf.materialize_aliases(names=['r', 'phi', 'cosPhi'])  # Specific names
         >>> adf.materialize_aliases(pattern=r'dy.*|dz.*')  # dy and dz aliases
-        >>> adf.materialize_aliases(names=['x'], profile=True)  # With profiling
+        >>> adf.materialize_aliases(names=['x'], profile=True)  # Print to stdout
+        >>> adf.materialize_aliases(names=['x'], profile_binary="run.prof")  # For snakeviz
         """
         def _do_materialize():
             # Reset missing key stats for this materialization batch
@@ -3408,7 +3601,7 @@ class AliasDataFrame:
             
             return added
         
-        result = self._run_with_profiling(_do_materialize, profile, profile_output)
+        result = self._run_with_profiling(_do_materialize, profile, profile_text, profile_binary)
         
         # Clear join cache after batch (Phase 4)
         self._join_index_cache = {}
