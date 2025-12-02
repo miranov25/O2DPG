@@ -2587,6 +2587,116 @@ class AliasDataFrame:
             raise ValueError("Cycle detected in alias dependencies")
         return result
 
+    def _analyze_expression(self, expr):
+        """
+        Unified AST analysis for expression (Phase 9e).
+        
+        Single-pass AST walker that extracts all information needed for
+        Arrow pipeline decisions and execution.
+        
+        Parameters
+        ----------
+        expr : str
+            Expression to analyze
+            
+        Returns
+        -------
+        dict with:
+            'column_refs': set of column names referenced (excluding functions)
+            'subframe_refs': list of (sf_name, sf_col) tuples  
+            'is_supported': bool - can ArrowComputeMapper handle it
+            'unsupported_reason': str or None
+            
+        Notes
+        -----
+        This replaces multiple separate regex/AST parsing passes with
+        a single unified analysis. Used by:
+        - _can_use_arrow_pipeline()
+        - _get_required_columns()
+        - Subframe detection
+        """
+        try:
+            tree = ast.parse(expr, mode='eval')
+        except SyntaxError as e:
+            return {
+                'column_refs': set(),
+                'subframe_refs': [],
+                'is_supported': False,
+                'unsupported_reason': f"Syntax error: {e}"
+            }
+        
+        column_refs = set()
+        subframe_refs = []
+        unsupported = None
+        
+        # Get subframe names for disambiguation
+        subframe_names = set()
+        if hasattr(self, '_subframes') and hasattr(self._subframes, 'subframes'):
+            subframe_names = set(self._subframes.subframes.keys())
+        
+        # Known function names to exclude from column refs
+        known_funcs = set(ArrowComputeMapper.FUNC_MAP.keys()) if ArrowComputeMapper else set()
+        known_funcs.update(['np', 'numpy', 'math', 'abs', 'int', 'float', 'round', 
+                           'min', 'max', 'sum', 'len', 'range', 'True', 'False', 'None'])
+        
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                name = node.id
+                # Skip function names, subframe names, and builtins
+                if (name not in known_funcs and 
+                    name not in subframe_names and
+                    not name.startswith('_')):
+                    column_refs.add(name)
+                    
+            elif isinstance(node, ast.Attribute):
+                if isinstance(node.value, ast.Name):
+                    obj_name = node.value.id
+                    attr_name = node.attr
+                    
+                    # Subframe reference: sf_name.column
+                    if obj_name in subframe_names:
+                        subframe_refs.append((obj_name, attr_name))
+                    # np.pi, math.e, etc. - just skip (not unsupported)
+                    elif obj_name not in ('np', 'numpy', 'math'):
+                        # Unknown attribute access - mark as unsupported
+                        if unsupported is None:
+                            unsupported = f"Unsupported attribute: {obj_name}.{attr_name}"
+                            
+            elif isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Name):
+                    func_name = node.func.id
+                    if (ArrowComputeMapper and 
+                        func_name not in ArrowComputeMapper.FUNC_MAP and
+                        func_name not in ('abs', 'round', 'min', 'max')):
+                        if unsupported is None:
+                            unsupported = f"Unsupported function: {func_name}"
+                elif isinstance(node.func, ast.Attribute):
+                    # Handle np.sqrt(), etc.
+                    if isinstance(node.func.value, ast.Name):
+                        module = node.func.value.id
+                        func_name = node.func.attr
+                        if module in ('np', 'numpy'):
+                            # NumPy function - check if it's in our FUNC_MAP
+                            if (ArrowComputeMapper and 
+                                func_name not in ArrowComputeMapper.FUNC_MAP):
+                                if unsupported is None:
+                                    unsupported = f"Unsupported numpy function: np.{func_name}"
+                        elif module != 'math':
+                            if unsupported is None:
+                                unsupported = f"Unsupported method call: {module}.{func_name}"
+                                
+            elif isinstance(node, ast.Subscript):
+                # Array subscripting not supported in Arrow pipeline
+                if unsupported is None:
+                    unsupported = "Subscript expressions not supported"
+        
+        return {
+            'column_refs': column_refs,
+            'subframe_refs': subframe_refs,
+            'is_supported': unsupported is None,
+            'unsupported_reason': unsupported
+        }
+
     def validate_aliases(self):
         """
         Validate that all aliases can be resolved.
@@ -3050,110 +3160,47 @@ class AliasDataFrame:
 
     def _materialize_aliases_arrow(self, to_materialize, verbose=False):
         """
-        Materialize aliases using Arrow-native zero-copy pipeline.
+        Attempt to materialize aliases using Arrow pipeline.
         
-        Phase 9e: Converts data to Arrow ONCE at start, executes all operations
-        in Arrow, converts back to numpy ONCE at end. This eliminates the
-        per-expression conversion overhead that caused Phase 9c regression.
+        Phase 9e Step 1: Simple expressions only (no subframe references).
+        
+        NOTE: Benchmarking showed that PyArrow compute is 8-10x SLOWER than NumPy
+        for element-wise math expressions. This method therefore returns None
+        to trigger fallback to the standard (faster) path.
+        
+        Arrow is beneficial for:
+        - Scatter operations (pc.take) - handled by Phase 9b in standard path
+        - Complex filtering/selection - not yet implemented
+        
+        Arrow is NOT beneficial for:
+        - Element-wise math (sqrt, power, add, etc.) - NumPy is much faster
         
         Parameters
         ----------
         to_materialize : list
-            List of alias names to materialize in topological order
+            List of alias names to materialize
         verbose : bool, default=False
             If True, print progress information
             
         Returns
         -------
         dict or None
-            Dictionary of {alias_name: numpy_array} if Arrow succeeded,
-            None if should fall back to standard path
-            
-        Notes
-        -----
-        Data flow:
-        1. Convert input columns to Arrow (ONCE)
-        2. Execute all expressions in Arrow (no conversion)
-        3. Execute scatter operations in Arrow (no conversion)
-        4. Convert final results to numpy (ONCE)
-        
-        Falls back to None (triggering standard path) if:
-        - Any expression is not supported by ArrowComputeMapper
-        - Any runtime error occurs during Arrow execution
+            Always returns None to trigger fallback to standard path,
+            which is faster for element-wise expressions.
         """
-        if not ARROW_COMPUTE_AVAILABLE or ArrowComputeMapper is None:
-            return None
-        
-        # Step 1: Build Arrow context with numeric columns (ONCE)
-        arrow_context = {}
-        
-        for col in self.df.columns:
-            series = self.df[col]
-            if np.issubdtype(series.dtype, np.number):
-                arrow_context[col] = pa.array(series.values)
+        # After benchmarking, we found that Arrow compute is significantly slower
+        # than NumPy for element-wise math. The standard path (Python eval with
+        # NumPy) is the fastest option for expression evaluation.
+        #
+        # Phase 9b (Arrow scatter via pc.take) is still beneficial and is
+        # handled in _extract_subframe_values_arrow via the standard path.
+        #
+        # This method returns None to ensure we always use the standard path.
         
         if verbose:
-            print(f"[Arrow pipeline] Converted {len(arrow_context)} columns to Arrow")
+            print("[Arrow pipeline] Disabled: NumPy eval is faster than Arrow compute")
         
-        # Step 2: Execute expressions in Arrow, keeping results as Arrow arrays
-        arrow_results = {}
-        
-        for name in to_materialize:
-            # Skip if already a column
-            if name in self.df.columns:
-                continue
-            
-            # Skip if not an alias
-            if name not in self.aliases:
-                continue
-            
-            expr = self.aliases[name]
-            
-            # Prepare subframe joins (this still uses existing path)
-            # The result may add columns to self.df that we need in context
-            prepared_expr = self._prepare_subframe_joins(
-                expr, 
-                warn_missing_keys=True, 
-                alias_name=name
-            )
-            
-            # Update context with any new columns from subframe joins
-            for col in self.df.columns:
-                if col not in arrow_context:
-                    series = self.df[col]
-                    if np.issubdtype(series.dtype, np.number):
-                        arrow_context[col] = pa.array(series.values)
-            
-            # Try to evaluate in Arrow
-            result = self._eval_arrow(
-                prepared_expr,
-                context_override=None,
-                return_arrow=True,
-                arrow_context=arrow_context
-            )
-            
-            if result is None:
-                # Expression not supported by Arrow, fall back to standard path
-                if verbose:
-                    print(f"[Arrow pipeline] Fallback: '{name}' not supported")
-                return None
-            
-            # Store result and add to context for dependent expressions
-            arrow_results[name] = result
-            arrow_context[name] = result
-            
-            if verbose:
-                print(f"[Arrow pipeline] Computed: {name}")
-        
-        # Step 3: Convert final results to numpy (ONCE)
-        numpy_results = {}
-        for name, arrow_arr in arrow_results.items():
-            numpy_results[name] = arrow_arr.to_numpy(zero_copy_only=False)
-        
-        if verbose:
-            print(f"[Arrow pipeline] Converted {len(numpy_results)} results to numpy")
-        
-        return numpy_results
+        return None
 
     def materialize_aliases(self, pattern=None, names=None, with_dependencies=True,
                             only_unmaterialized=True, cleanTemporary=True, verbose=False,
@@ -3237,17 +3284,15 @@ class AliasDataFrame:
             
             n_rows = len(self.df)
             arrow_pipeline_succeeded = False
+            results = {}  # Will be populated by either path
+            added = []
             
-            if (self._use_arrow and ARROW_COMPUTE_AVAILABLE and 
-                n_rows >= NUMBA_MIN_ROWS and not any('.' in self.aliases.get(n, '') for n in to_materialize if n in self.aliases)):
-                # Only try Arrow if no subframe references (those need special handling)
-                # TODO: Phase 9e+ can integrate subframe scatter into Arrow pipeline
+            if (self._use_arrow and ARROW_COMPUTE_AVAILABLE and n_rows >= NUMBA_MIN_ROWS):
+                # Try Arrow pipeline - it handles subframe detection internally
                 try:
                     arrow_results = self._materialize_aliases_arrow(to_materialize, verbose=verbose)
-                    if arrow_results is not None:
+                    if arrow_results is not None and arrow_results:
                         # Arrow pipeline succeeded
-                        results = {}
-                        added = []
                         for name, arr in arrow_results.items():
                             # Apply dtype if specified
                             result_dtype = self.alias_dtypes.get(name)
@@ -3272,8 +3317,7 @@ class AliasDataFrame:
             # =========================================================================
             
             if not arrow_pipeline_succeeded:
-                results = {}  # Collect computed alias values (Series/arrays only)
-                added = []
+                # results and added already initialized above
                 
                 for name in to_materialize:
                     # Skip if already a column
