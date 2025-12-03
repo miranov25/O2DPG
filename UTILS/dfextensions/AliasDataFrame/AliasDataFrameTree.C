@@ -40,10 +40,12 @@
 #include <TList.h>
 #include <TFriendElement.h>
 #include <TTreeFormula.h>
+#include <TStopwatch.h>
 #include <iostream>
 #include <fstream>
 #include <vector>
 #include <map>
+#include <unordered_map>
 #include <sstream>
 
 // ============================================================================
@@ -290,10 +292,13 @@ Bool_t BuildCompositeIndex(TTree* mainTree, TTree* subframeTree,
         leaves[i] = leaf;
     }
     
+    TStopwatch timer;
+    
     // =========================================================
     // PASS 1: Build value → code dictionaries for each column
     // =========================================================
-    std::vector<std::map<Long64_t, Long64_t>> valueToCodes(nCols);
+    timer.Start();
+    std::vector<std::unordered_map<Long64_t, Long64_t>> valueToCodes(nCols);
     
     for (Long64_t entry = 0; entry < nEntries; entry++) {
         workTree->GetEntry(entry);
@@ -305,6 +310,8 @@ Bool_t BuildCompositeIndex(TTree* mainTree, TTree* subframeTree,
             }
         }
     }
+    timer.Stop();
+    std::cout << "      Pass 1 (build dictionaries): " << timer.RealTime() << " s" << std::endl;
     
     // Report cardinalities and check for warnings
     std::vector<Long64_t> cardinalities(nCols);
@@ -341,6 +348,7 @@ Bool_t BuildCompositeIndex(TTree* mainTree, TTree* subframeTree,
     // =========================================================
     // PASS 2: Create composite key branch in SUBFRAME (or clone)
     // =========================================================
+    timer.Start();
     TString keyBranchName = TString::Format("__adf_key_%s__", 
         subframeName.Length() > 0 ? subframeName.Data() : "idx");
     
@@ -363,6 +371,8 @@ Bool_t BuildCompositeIndex(TTree* mainTree, TTree* subframeTree,
         
         keyBranch->Fill();
     }
+    timer.Stop();
+    std::cout << "      Pass 2 (subframe keys): " << timer.RealTime() << " s" << std::endl;
     
     // Build index on subframe's composite key
     workTree->BuildIndex(keyBranchName.Data());
@@ -405,32 +415,91 @@ Bool_t BuildCompositeIndex(TTree* mainTree, TTree* subframeTree,
     
     if (mainWritable) {
         // Writable: add branch directly to main tree
+        
         Long64_t mainCompositeKey;
         TBranch* mainKeyBranch = mainTree->Branch(keyBranchName.Data(), &mainCompositeKey,
                                                    TString::Format("%s/L", keyBranchName.Data()).Data());
         
-        for (Long64_t entry = 0; entry < mainEntries; entry++) {
-            mainTree->GetEntry(entry);
+        // =====================================================
+        // FAST PATH: Use TTree::Draw to read all values at once
+        // =====================================================
+        timer.Start();
+        
+        mainTree->SetEstimate(mainEntries);
+        
+        TString drawExpr = columns[0];
+        for (size_t i = 1; i < nCols; i++) {
+            drawExpr += ":" + columns[i];
+        }
+        
+        std::cout << "    Using fast Draw() path: " << drawExpr << std::endl;
+        
+        Long64_t nRead = mainTree->Draw(drawExpr.Data(), "", "goff");
+        timer.Stop();
+        std::cout << "      Draw():      " << timer.RealTime() << " s (" << nRead << " entries)" << std::endl;
+        
+        // Get value arrays using GetVal(i) - supports any number of columns
+        std::vector<Double_t*> valueArrays(nCols);
+        for (size_t i = 0; i < nCols; i++) {
+            valueArrays[i] = mainTree->GetVal(i);
+            if (!valueArrays[i]) {
+                std::cerr << "ERROR: GetVal(" << i << ") returned null" << std::endl;
+                return kFALSE;
+            }
+        }
+        
+        // =====================================================
+        // OPTIMIZED: Pre-compute all keys, then bulk fill
+        // =====================================================
+        timer.Start();
+        
+        // Step 1: Pre-convert value arrays to code arrays
+        std::vector<std::vector<Long64_t>> codeArrays(nCols);
+        for (size_t i = 0; i < nCols; i++) {
+            codeArrays[i].resize(nRead);
+            Double_t* values = valueArrays[i];
+            auto& dict = valueToCodes[i];
             
-            // Update formulas for this entry
-            for (auto* f : mainFormulas) f->GetNdata();
-            
-            mainCompositeKey = 0;
+            for (Long64_t entry = 0; entry < nRead; entry++) {
+                Long64_t value = (Long64_t)values[entry];
+                auto it = dict.find(value);
+                codeArrays[i][entry] = (it != dict.end()) ? it->second : -1;
+            }
+        }
+        timer.Stop();
+        std::cout << "      Codes:       " << timer.RealTime() << " s" << std::endl;
+        
+        // Step 2: Compute all composite keys
+        timer.Start();
+        std::vector<Long64_t> allKeys(nRead);
+        
+        for (Long64_t entry = 0; entry < nRead; entry++) {
+            Long64_t key = 0;
             Long64_t multiplier = 1;
+            
             for (size_t i = 0; i < nCols; i++) {
-                Long64_t value = (Long64_t)mainFormulas[i]->EvalInstance();
-                auto it = valueToCodes[i].find(value);
-                Long64_t code = (it != valueToCodes[i].end()) ? it->second : -1;
+                Long64_t code = codeArrays[i][entry];
                 if (code == -1) {
-                    mainCompositeKey = -1;
+                    key = -1;
                     break;
                 }
-                mainCompositeKey += code * multiplier;
+                key += code * multiplier;
                 multiplier *= cardinalities[i];
             }
-            
+            allKeys[entry] = key;
+        }
+        timer.Stop();
+        std::cout << "      Keys:        " << timer.RealTime() << " s" << std::endl;
+        
+        // Step 3: Bulk fill
+        timer.Start();
+        for (Long64_t entry = 0; entry < nRead; entry++) {
+            mainCompositeKey = allKeys[entry];
             mainKeyBranch->Fill();
         }
+        timer.Stop();
+        std::cout << "      Fill:        " << timer.RealTime() << " s" << std::endl;
+        
         std::cout << "    Added composite key branch to main tree" << std::endl;
     } else {
         // Read-only: create auxiliary key tree in memory
@@ -451,28 +520,99 @@ Bool_t BuildCompositeIndex(TTree* mainTree, TTree* subframeTree,
         auxKeyTree->Branch(keyBranchName.Data(), &mainCompositeKey,
                           TString::Format("%s/L", keyBranchName.Data()).Data());
         
-        for (Long64_t entry = 0; entry < mainEntries; entry++) {
-            mainTree->GetEntry(entry);
+        // =====================================================
+        // FAST PATH: Use TTree::Draw to read all values at once
+        // This is ~10x faster than TTreeFormula per-entry loop
+        // =====================================================
+        timer.Start();
+        
+        // Set estimate to handle all entries (default is 1M)
+        mainTree->SetEstimate(mainEntries);
+        
+        // Build draw expression: "col0:col1:col2"
+        TString drawExpr = columns[0];
+        for (size_t i = 1; i < nCols; i++) {
+            drawExpr += ":" + columns[i];
+        }
+        
+        std::cout << "    Using fast Draw() path: " << drawExpr << std::endl;
+        
+        // Read all values at once (much faster than per-entry TTreeFormula)
+        Long64_t nRead = mainTree->Draw(drawExpr.Data(), "", "goff");
+        timer.Stop();
+        std::cout << "      Draw():      " << timer.RealTime() << " s (" << nRead << " entries)" << std::endl;
+        
+        if (nRead != mainEntries) {
+            std::cerr << "WARNING: Draw returned " << nRead << " entries, expected " << mainEntries << std::endl;
+        }
+        
+        // Get value arrays using GetVal(i) - supports any number of columns
+        std::vector<Double_t*> valueArrays(nCols);
+        for (size_t i = 0; i < nCols; i++) {
+            valueArrays[i] = mainTree->GetVal(i);
+            if (!valueArrays[i]) {
+                std::cerr << "ERROR: GetVal(" << i << ") returned null" << std::endl;
+                return kFALSE;
+            }
+        }
+        
+        // =====================================================
+        // OPTIMIZED: Pre-compute all keys, then bulk fill
+        // =====================================================
+        timer.Start();
+        
+        // Step 1: Pre-convert value arrays to code arrays (eliminates hash lookups from hot loop)
+        std::vector<std::vector<Long64_t>> codeArrays(nCols);
+        for (size_t i = 0; i < nCols; i++) {
+            codeArrays[i].resize(nRead);
+            Double_t* values = valueArrays[i];
+            auto& dict = valueToCodes[i];
             
-            // Update formulas for this entry
-            for (auto* f : mainFormulas) f->GetNdata();
-            
-            mainCompositeKey = 0;
+            for (Long64_t entry = 0; entry < nRead; entry++) {
+                Long64_t value = (Long64_t)values[entry];
+                auto it = dict.find(value);
+                codeArrays[i][entry] = (it != dict.end()) ? it->second : -1;
+            }
+        }
+        timer.Stop();
+        std::cout << "      Codes:       " << timer.RealTime() << " s" << std::endl;
+        
+        // Step 2: Compute all composite keys (pure arithmetic, no lookups)
+        timer.Start();
+        std::vector<Long64_t> allKeys(nRead);
+        
+        for (Long64_t entry = 0; entry < nRead; entry++) {
+            Long64_t key = 0;
             Long64_t multiplier = 1;
+            Bool_t valid = kTRUE;
+            
             for (size_t i = 0; i < nCols; i++) {
-                Long64_t value = (Long64_t)mainFormulas[i]->EvalInstance();
-                auto it = valueToCodes[i].find(value);
-                Long64_t code = (it != valueToCodes[i].end()) ? it->second : -1;
+                Long64_t code = codeArrays[i][entry];
                 if (code == -1) {
-                    mainCompositeKey = -1;
+                    key = -1;
+                    valid = kFALSE;
                     break;
                 }
-                mainCompositeKey += code * multiplier;
+                key += code * multiplier;
                 multiplier *= cardinalities[i];
             }
-            
+            allKeys[entry] = key;
+        }
+        timer.Stop();
+        std::cout << "      Keys:        " << timer.RealTime() << " s" << std::endl;
+        
+        // Step 3: Bulk fill tree (optimized settings)
+        timer.Start();
+        auxKeyTree->SetAutoFlush(0);  // Disable auto-flush during bulk fill
+        
+        for (Long64_t entry = 0; entry < nRead; entry++) {
+            mainCompositeKey = allKeys[entry];
             auxKeyTree->Fill();
         }
+        
+        auxKeyTree->FlushBaskets();  // Single flush at end
+        timer.Stop();
+        std::cout << "      Fill:        " << timer.RealTime() << " s" << std::endl;
         
         // Add auxiliary tree as friend to main tree
         // This makes __adf_key_SF__ available for TTreeFormula
