@@ -986,7 +986,30 @@ def add_defines_to_rdf(rdf, adf, target_aliases, on_collision='warn'):
             else:
                 raise ValueError(f"Unknown on_collision: {on_collision!r}")
         
-        rdf = rdf.Define(name, cpp_expr)
+        # Try Define, catch ROOT's own collision detection as fallback
+        # (GetColumnNames() doesn't always return all friend tree branches)
+        # ROOT raises TypeError with "Template method resolution failed" and AbortSignal
+        # when there's a column collision
+        try:
+            rdf = rdf.Define(name, cpp_expr)
+        except TypeError as e:
+            error_str = str(e)
+            if "already present" in error_str or "Template method resolution failed" in error_str:
+                # ROOT detected a collision we missed
+                if on_collision == 'error':
+                    raise ValueError(
+                        f"add_defines_to_rdf: column '{name}' already exists in tree "
+                        f"(detected by ROOT). Use on_collision='skip', 'warn', or 'redefine'."
+                    ) from e
+                elif on_collision in ('skip', 'warn'):
+                    skipped.append(name)
+                    continue
+                elif on_collision == 'redefine':
+                    rdf = rdf.Redefine(name, cpp_expr)
+                    continue
+            else:
+                # Different error - re-raise
+                raise
     
     # Single warning for all skipped columns
     if skipped and on_collision == 'warn':

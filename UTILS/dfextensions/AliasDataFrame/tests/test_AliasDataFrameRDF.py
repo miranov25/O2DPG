@@ -808,6 +808,45 @@ class TestAddDefinesCollision:
         # Should use alias value (y*2 = 8,10,12), not original (1,2,3)
         mean = rdf.Mean('x').GetValue()
         assert abs(mean - 10.0) < 0.1  # Alias computation mean
+    
+    def test_collision_from_friend_tree(self, tmp_path):
+        """Test collision detection works for friend tree columns."""
+        from AliasDataFrameRDF import setup_rdf_with_friends, add_defines_to_rdf
+        
+        # Create main dataframe
+        df_main = pd.DataFrame({
+            'x': np.array([1, 2, 3], dtype=np.float32),
+            'row': np.array([0, 1, 2], dtype=np.int32),
+        })
+        
+        # Create subframe with column 'val'
+        df_sub = pd.DataFrame({
+            'row': np.array([0, 1, 2], dtype=np.int32),
+            'val': np.array([10, 20, 30], dtype=np.float32),
+        })
+        
+        adf = AliasDataFrame(df_main)
+        adf.register_subframe('S', AliasDataFrame(df_sub), index_columns='row')
+        
+        # Materialize subframe column to main tree
+        adf.add_alias('val', 'S.val')
+        adf.materialize_alias('val')
+        
+        # Export - 'val' now exists as physical branch
+        filepath = str(tmp_path / "friend_collision.root")
+        adf.export_tree(filepath, 'tree')
+        
+        # Add alias that collides with materialized column
+        adf.add_alias('val', 'x * 2')  # Different expression
+        
+        # Should handle collision gracefully with warn (default)
+        rdf, f = setup_rdf_with_friends(adf, filepath)
+        with pytest.warns(UserWarning, match="already exist"):
+            rdf = add_defines_to_rdf(rdf, adf, ['val'], on_collision='warn')
+        
+        # Should use original branch value (10, 20, 30), not alias (2, 4, 6)
+        mean = rdf.Mean('val').GetValue()
+        assert abs(mean - 20.0) < 0.1
 
 
 # =============================================================================
