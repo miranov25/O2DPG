@@ -2482,5 +2482,75 @@ class TestSchemaV2Ordering(unittest.TestCase):
                 os.unlink(temp_path)
 
 
+class TestExportTreeColumns(unittest.TestCase):
+    """Tests for export_tree(columns=...) snapshot mode."""
+    
+    def test_export_tree_columns_subset(self):
+        """Test export_tree with columns parameter exports only specified columns."""
+        import tempfile
+        
+        df = pd.DataFrame({
+            'x': np.array([1, 2, 3], dtype=np.float32),
+            'y': np.array([3, 4, 5], dtype=np.float32),
+            'z': np.array([5, 6, 7], dtype=np.float32),
+        })
+        adf = AliasDataFrame(df)
+        
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            filepath = os.path.join(tmp_dir, "subset.root")
+            adf.export_tree(filepath, "tree", columns=['x', 'y'])
+            
+            # Verify only x, y exported
+            adf2 = AliasDataFrame.read_tree(filepath, "tree")
+            self.assertIn('x', adf2.df.columns)
+            self.assertIn('y', adf2.df.columns)
+            self.assertNotIn('z', adf2.df.columns)
+            
+            # Verify data is correct
+            np.testing.assert_array_equal(adf2.df['x'].values, [1, 2, 3])
+            np.testing.assert_array_equal(adf2.df['y'].values, [3, 4, 5])
+    
+    def test_export_tree_columns_missing_raises(self):
+        """Test export_tree raises ValueError for missing columns."""
+        import tempfile
+        
+        df = pd.DataFrame({'x': np.array([1, 2], dtype=np.float32)})
+        adf = AliasDataFrame(df)
+        
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            filepath = os.path.join(tmp_dir, "out.root")
+            with self.assertRaises(ValueError) as ctx:
+                adf.export_tree(filepath, "tree", columns=['x', 'missing'])
+            self.assertIn("not found", str(ctx.exception))
+    
+    def test_export_tree_columns_warns_subframes(self):
+        """Test export_tree warns when subframes exist but columns specified."""
+        import tempfile
+        import warnings
+        
+        df = pd.DataFrame({
+            'x': np.array([1, 2], dtype=np.float32),
+            'row': np.array([0, 1], dtype=np.int32),
+        })
+        sub_df = pd.DataFrame({
+            'row': np.array([0, 1], dtype=np.int32),
+            'val': np.array([10, 20], dtype=np.float32),
+        })
+        
+        adf = AliasDataFrame(df)
+        adf.register_subframe('S', AliasDataFrame(sub_df), index_columns='row')
+        
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            filepath = os.path.join(tmp_dir, "out.root")
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                adf.export_tree(filepath, "tree", columns=['x'])
+                
+                # Check warning was raised
+                self.assertEqual(len(w), 1)
+                self.assertIn("subframes", str(w[0].message))
+                self.assertEqual(w[0].category, UserWarning)
+
+
 if __name__ == "__main__":
     unittest.main()

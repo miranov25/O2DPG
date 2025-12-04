@@ -3966,15 +3966,44 @@ class AliasDataFrame:
         
         return adf
 
-    def export_tree(self, filename_or_file, treename="tree", dropAliasColumns=True,compression=uproot.ZLIB(level=1)):
+    def export_tree(self, filename_or_file, treename="tree", dropAliasColumns=True, compression=uproot.ZLIB(level=1), columns=None):
         """
-        uproot.LZMA(level=5)
-        :param filename_or_file:
-        :param treename:
-        :param dropAliasColumns:
-        :param compression:
-        :return:
+        Export DataFrame to ROOT TTree.
+        
+        Parameters
+        ----------
+        filename_or_file : str or uproot file
+            Output file path or open uproot file
+        treename : str
+            Name of output tree
+        dropAliasColumns : bool
+            If True, don't export columns that are aliases
+        compression : uproot compression
+            Compression algorithm (default: ZLIB level 1)
+        columns : list of str, optional
+            If provided, export only these columns (snapshot/cache mode).
+            WARNING: Schema, aliases, and subframes are NOT exported.
         """
+        import warnings
+        
+        # Snapshot mode: export only specified columns, no schema/subframes
+        if columns is not None:
+            missing = set(columns) - set(self.df.columns)
+            if missing:
+                raise ValueError(f"Requested columns not found: {sorted(missing)}")
+            if self._subframes.subframes:
+                warnings.warn(
+                    "export_tree(columns=...) does not export subframes. "
+                    "Only specified columns will be saved.",
+                    UserWarning
+                )
+            dtype_casts = {col: np.float32 for col in columns if self.df[col].dtype == np.float16}
+            export_df = self.df[columns].astype(dtype_casts)
+            with uproot.recreate(filename_or_file, compression=compression) as f:
+                f[treename] = {col: export_df[col].values for col in export_df.columns}
+            return
+        
+        # Full export mode: existing behavior
         is_path = isinstance(filename_or_file, str)
 
         if is_path:
