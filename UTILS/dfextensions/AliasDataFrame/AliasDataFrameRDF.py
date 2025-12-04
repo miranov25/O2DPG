@@ -366,7 +366,11 @@ def get_ordered_defines(
     elif schema is not None:
         # Fallback: try 'aliases' key or extract from 'columns'
         if 'aliases' in schema:
-            all_aliases = schema['aliases']
+            # Normalize: handle both {name: expr} and {name: {'expr': expr}} formats
+            all_aliases = {
+                k: v.get('expr', v) if isinstance(v, dict) else v
+                for k, v in schema['aliases'].items()
+            }
         elif 'columns' in schema:
             # Extract aliases from columns (entries with 'expr' key)
             all_aliases = {
