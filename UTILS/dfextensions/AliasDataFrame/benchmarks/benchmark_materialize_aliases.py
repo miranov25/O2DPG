@@ -609,7 +609,7 @@ def run_scenario_simple(df_main, verbose=True, profile=False, profile_output=Non
             with_dependencies=True,
             cleanTemporary=True,
             profile=profile,
-            profile_output=profile_output,
+            profile_text=profile_output,
         )
     
     result = measure_materialize(do_materialize, adf)
@@ -695,7 +695,7 @@ def run_scenario_subframe(df_main, df_subframe, fill_mode, verbose=True,
             with_dependencies=True,
             cleanTemporary=True,
             profile=profile,
-            profile_output=profile_output,
+            profile_text=profile_output,
         )
     
     result = measure_materialize(do_materialize, adf)
