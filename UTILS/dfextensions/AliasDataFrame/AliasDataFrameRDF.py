@@ -324,6 +324,162 @@ def extract_dependencies(expr: str, known_names: Set[str] = None) -> List[str]:
 
 
 # =============================================================================
+# Sparse Key Support for Multi-Key Joins
+# =============================================================================
+
+def should_use_sparse(df, key_columns):
+    """
+    Determine if sparse key mapping should be used instead of compact linearization.
+    
+    Use sparse mapping when:
+    1. Compact range exceeds int32 (2^31), OR
+    2. Compact range is >10x wasteful compared to actual unique combinations
+    
+    Parameters
+    ----------
+    df : DataFrame
+        DataFrame with key columns
+    key_columns : list of str
+        Column names forming the composite key
+        
+    Returns
+    -------
+    bool
+        True if sparse mapping should be used
+    """
+    import numpy as np
+    
+    max_vals = [int(df[k].max()) + 1 for k in key_columns]
+    compact_range = np.prod(max_vals, dtype=np.int64)
+    n_unique = np.prod([df[k].nunique() for k in key_columns])
+    
+    return compact_range > 2**31 or compact_range > 10 * n_unique
+
+
+def compute_composite_key_dense(df, key_columns, max_values=None):
+    """
+    Compute composite key using compact linearization.
+    
+    __adf_key__ = k0 + k1*max0 + k2*max0*max1 + ...
+    
+    Parameters
+    ----------
+    df : DataFrame
+        DataFrame with key columns
+    key_columns : list of str
+        Column names forming the composite key
+    max_values : list of int, optional
+        Maximum values for each key column. If None, computed from data.
+        
+    Returns
+    -------
+    np.ndarray
+        Int64 composite keys
+    """
+    import numpy as np
+    
+    if max_values is None:
+        max_values = [int(df[k].max()) + 1 for k in key_columns]
+    
+    key = df[key_columns[0]].values.astype(np.int64)
+    multiplier = max_values[0]
+    
+    for i, col in enumerate(key_columns[1:], 1):
+        key = key + df[col].values.astype(np.int64) * multiplier
+        multiplier *= max_values[i]
+    
+    return key
+
+
+def compute_composite_key_sparse(main_df, sub_df, key_columns):
+    """
+    Compute composite key using vectorized unique value mapping.
+    
+    Works for any key distribution (dense or sparse).
+    Uses np.unique(axis=0) for efficient vectorized computation.
+    
+    Parameters
+    ----------
+    main_df : DataFrame
+        Main DataFrame with key columns
+    sub_df : DataFrame
+        Subframe DataFrame with key columns
+    key_columns : list of str
+        Column names forming the composite key
+        
+    Returns
+    -------
+    main_keys : np.ndarray
+        Int64 composite keys for main DataFrame
+    sub_keys : np.ndarray
+        Int64 composite keys for subframe DataFrame
+        
+    Notes
+    -----
+    Both DataFrames use the same mapping, ensuring keys match for joins.
+    Complexity: O(n log n) via np.unique, fully vectorized.
+    """
+    import numpy as np
+    
+    # Combine main and sub to build shared mapping
+    main_vals = main_df[key_columns].to_numpy()
+    sub_vals = sub_df[key_columns].to_numpy()
+    all_vals = np.vstack([main_vals, sub_vals])
+    
+    # Get unique rows and inverse mapping
+    _, inverse = np.unique(all_vals, axis=0, return_inverse=True)
+    
+    # Split back into main and sub
+    n_main = len(main_df)
+    main_keys = inverse[:n_main].astype(np.int64)
+    sub_keys = inverse[n_main:].astype(np.int64)
+    
+    return main_keys, sub_keys
+
+
+def compute_composite_key_auto(main_df, sub_df, key_columns):
+    """
+    Automatically choose dense or sparse key computation.
+    
+    Uses dense linearization when key ranges are compact,
+    sparse mapping when ranges are too large or wasteful.
+    
+    Parameters
+    ----------
+    main_df : DataFrame
+        Main DataFrame with key columns
+    sub_df : DataFrame
+        Subframe DataFrame with key columns
+    key_columns : list of str
+        Column names forming the composite key
+        
+    Returns
+    -------
+    main_keys : np.ndarray
+        Int64 composite keys for main DataFrame
+    sub_keys : np.ndarray
+        Int64 composite keys for subframe DataFrame
+    method : str
+        'dense' or 'sparse' indicating which method was used
+    """
+    import numpy as np
+    import pandas as pd
+    
+    # Check if sparse is needed using combined data
+    combined = pd.concat([main_df[key_columns], sub_df[key_columns]], ignore_index=True)
+    
+    if should_use_sparse(combined, key_columns):
+        main_keys, sub_keys = compute_composite_key_sparse(main_df, sub_df, key_columns)
+        return main_keys, sub_keys, 'sparse'
+    else:
+        # Compute shared max values from union
+        max_values = [int(combined[k].max()) + 1 for k in key_columns]
+        main_keys = compute_composite_key_dense(main_df, key_columns, max_values)
+        sub_keys = compute_composite_key_dense(sub_df, key_columns, max_values)
+        return main_keys, sub_keys, 'dense'
+
+
+# =============================================================================
 # Dependency Resolution
 # =============================================================================
 

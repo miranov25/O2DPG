@@ -157,6 +157,173 @@ class TestExtractDependencies:
         assert 'x' in deps
 
 
+# =============================================================================
+# Sparse Key Tests
+# =============================================================================
+
+import numpy as np
+import pandas as pd
+
+from AliasDataFrameRDF import (
+    should_use_sparse,
+    compute_composite_key_dense,
+    compute_composite_key_sparse,
+    compute_composite_key_auto,
+)
+
+
+class TestSparseKeySupport:
+    """Test sparse key mapping for multi-key joins."""
+    
+    def test_should_use_sparse_small_range(self):
+        """Small contiguous range should use dense."""
+        df = pd.DataFrame({
+            'a': [0, 1, 2, 3, 4],
+            'b': [0, 1, 2, 3, 4],
+        })
+        assert not should_use_sparse(df, ['a', 'b'])
+    
+    def test_should_use_sparse_large_range(self):
+        """Large range exceeding int32 should use sparse."""
+        df = pd.DataFrame({
+            'a': [0, 100000],
+            'b': [0, 100000],
+            'c': [0, 100000],
+        })
+        # 100001^3 > 2^31
+        assert should_use_sparse(df, ['a', 'b', 'c'])
+    
+    def test_should_use_sparse_wasteful(self):
+        """Wasteful range (>10x unique) should use sparse."""
+        df = pd.DataFrame({
+            'a': [0, 1000],  # max 1001
+            'b': [0, 1000],  # max 1001
+        })
+        # Compact range: 1001*1001 = 1M, unique: 2, ratio > 10x
+        assert should_use_sparse(df, ['a', 'b'])
+    
+    def test_dense_key_basic(self):
+        """Test dense key computation."""
+        df = pd.DataFrame({
+            'a': [0, 1, 2],
+            'b': [0, 1, 0],
+        })
+        keys = compute_composite_key_dense(df, ['a', 'b'], max_values=[3, 2])
+        # key = a + b*3
+        expected = np.array([0, 4, 2])  # 0+0*3, 1+1*3, 2+0*3
+        np.testing.assert_array_equal(keys, expected)
+    
+    def test_sparse_key_with_gaps(self):
+        """Sparse keys with gaps should produce contiguous indices."""
+        main_df = pd.DataFrame({
+            'k1': [0, 100, 500],
+            'k2': [5, 10, 15],
+        })
+        sub_df = pd.DataFrame({
+            'k1': [0, 100, 500, 999],
+            'k2': [5, 10, 15, 20],
+        })
+        
+        main_keys, sub_keys = compute_composite_key_sparse(main_df, sub_df, ['k1', 'k2'])
+        
+        # Keys should be contiguous integers starting from 0
+        assert main_keys.min() >= 0
+        assert sub_keys.min() >= 0
+        
+        # Total unique keys = 4 (main has 3, sub has 4, but 3 overlap)
+        # (0,5), (100,10), (500,15) shared + (999,20) only in sub
+        all_keys = np.concatenate([main_keys, sub_keys])
+        assert len(np.unique(all_keys)) == 4
+        
+        # Max key should be 3 (0-indexed for 4 unique combos)
+        assert all_keys.max() == 3
+    
+    def test_sparse_key_large_values(self):
+        """Sparse keys with values exceeding int32 range."""
+        main_df = pd.DataFrame({
+            'orbit': [1_000_000_000, 2_000_000_000, 3_000_000_000],
+            'row': [0, 1, 2],
+        })
+        sub_df = pd.DataFrame({
+            'orbit': [1_000_000_000, 2_000_000_000],
+            'row': [0, 1],
+        })
+        
+        main_keys, sub_keys = compute_composite_key_sparse(main_df, sub_df, ['orbit', 'row'])
+        
+        # Should produce small contiguous integers
+        assert main_keys.max() < 10
+        assert sub_keys.max() < 10
+    
+    def test_sparse_key_shared_mapping(self):
+        """Main and subframe must use same key mapping."""
+        main_df = pd.DataFrame({
+            'k': [1, 2, 3],
+        })
+        sub_df = pd.DataFrame({
+            'k': [2, 3, 4],  # Overlapping + extra
+        })
+        
+        main_keys, sub_keys = compute_composite_key_sparse(main_df, sub_df, ['k'])
+        
+        # k=2 should have same key in both
+        main_k2_idx = main_df[main_df['k'] == 2].index[0]
+        sub_k2_idx = sub_df[sub_df['k'] == 2].index[0]
+        assert main_keys[main_k2_idx] == sub_keys[sub_k2_idx]
+        
+        # k=3 should have same key in both
+        main_k3_idx = main_df[main_df['k'] == 3].index[0]
+        sub_k3_idx = sub_df[sub_df['k'] == 3].index[0]
+        assert main_keys[main_k3_idx] == sub_keys[sub_k3_idx]
+    
+    def test_sparse_matches_dense_for_contiguous(self):
+        """Sparse and dense should produce equivalent joins for contiguous keys."""
+        main_df = pd.DataFrame({
+            'a': [0, 0, 1, 1, 2, 2],
+            'b': [0, 1, 0, 1, 0, 1],
+            'val': [10, 20, 30, 40, 50, 60],
+        })
+        sub_df = pd.DataFrame({
+            'a': [0, 1, 2],
+            'b': [0, 0, 0],
+            'calib': [1.0, 2.0, 3.0],
+        })
+        
+        # Dense keys
+        max_values = [3, 2]
+        main_dense = compute_composite_key_dense(main_df, ['a', 'b'], max_values)
+        sub_dense = compute_composite_key_dense(sub_df, ['a', 'b'], max_values)
+        
+        # Sparse keys
+        main_sparse, sub_sparse = compute_composite_key_sparse(main_df, sub_df, ['a', 'b'])
+        
+        # Both should produce same join result
+        # Build index lookup for both
+        dense_lookup = {k: i for i, k in enumerate(sub_dense)}
+        sparse_lookup = {k: i for i, k in enumerate(sub_sparse)}
+        
+        for i in range(len(main_df)):
+            dense_match = dense_lookup.get(main_dense[i], -1)
+            sparse_match = sparse_lookup.get(main_sparse[i], -1)
+            assert dense_match == sparse_match, f"Row {i}: dense={dense_match}, sparse={sparse_match}"
+    
+    def test_auto_selects_dense_for_small(self):
+        """Auto should select dense for small contiguous keys."""
+        main_df = pd.DataFrame({'k': [0, 1, 2]})
+        sub_df = pd.DataFrame({'k': [0, 1, 2]})
+        
+        _, _, method = compute_composite_key_auto(main_df, sub_df, ['k'])
+        assert method == 'dense'
+    
+    def test_auto_selects_sparse_for_large(self):
+        """Auto should select sparse for large/wasteful keys."""
+        main_df = pd.DataFrame({'k': [0, 1_000_000_000]})
+        sub_df = pd.DataFrame({'k': [0, 1_000_000_000]})
+        
+        _, _, method = compute_composite_key_auto(main_df, sub_df, ['k'])
+        assert method == 'sparse'
+
+
 class TestGetOrderedDefines:
     """Test dependency resolution and ordering."""
     
