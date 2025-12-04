@@ -496,6 +496,57 @@ else
 fi
 
 # =============================================================================
+# RDF Benchmark (optional, requires ROOT)
+# =============================================================================
+
+echo "--- benchmark_rdf.py (RDataFrame comparison) ---"
+echo "    Tests: RDataFrame vs TTree::Draw vs AliasDataFrame"
+
+# Check if ROOT is available
+if python3 -c "import ROOT" 2>/dev/null; then
+    
+    # Generate RDF test data if not exists
+    RDF_DATA="${SCRIPT_DIR}/rdf_benchmark_1M.root"
+    if [[ ! -f "$RDF_DATA" ]]; then
+        echo "Generating RDF benchmark data (1M rows)..."
+        python3 "${SCRIPT_DIR}/generate_synthetic_data.py" --rdf --rows 1000000 -o "$RDF_DATA"
+    fi
+    
+    # Run benchmark with validation
+    if [[ -f "$RDF_DATA" ]]; then
+        RDF_JSON="${OUTPUT_DIR}/benchmark_rdf_${TIMESTAMP}.json"
+        
+        START_TIME=$(get_time)
+        
+        if [[ "$VERBOSE" = true ]]; then
+            OUTPUT=$(python3 "${SCRIPT_DIR}/benchmark_rdf.py" "$RDF_DATA" --aliases L10 --validate --iterations 3 --json-output "$RDF_JSON" 2>&1)
+            RDF_STATUS=$?
+            echo "$OUTPUT"
+        else
+            OUTPUT=$(python3 "${SCRIPT_DIR}/benchmark_rdf.py" "$RDF_DATA" --aliases L10 --validate --iterations 3 --json-output "$RDF_JSON" --quiet 2>&1)
+            RDF_STATUS=$?
+        fi
+        
+        END_TIME=$(get_time)
+        ELAPSED=$(calc_elapsed "$START_TIME" "$END_TIME")
+        
+        if [[ $RDF_STATUS -eq 0 ]]; then
+            log_result "benchmark_rdf.py" "PASSED" "$ELAPSED" ""
+            print_status "benchmark_rdf.py" "PASSED" "$ELAPSED"
+        else
+            log_result "benchmark_rdf.py" "FAILED" "$ELAPSED" "Exit code $RDF_STATUS"
+            print_status "benchmark_rdf.py" "FAILED" "$ELAPSED"
+        fi
+    fi
+    
+    echo ""
+else
+    log_result "benchmark_rdf.py" "SKIPPED" "" "ROOT not available"
+    print_status "benchmark_rdf.py" "SKIPPED" ""
+    echo ""
+fi
+
+# =============================================================================
 # Baseline Operations
 # =============================================================================
 
