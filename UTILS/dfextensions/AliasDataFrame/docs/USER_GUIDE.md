@@ -296,6 +296,69 @@ To enable alias translation, use the `AliasDataFrameTree.C` macro:
 
 This enables seamless analysis workflows where data preparation is done in Python and final visualization/fitting is done in C++ ROOT.
 
+### 🚀 RDataFrame Integration (AliasDataFrameRDF)
+
+Generate RDataFrame C++ code from AliasDataFrame expressions for high-performance analysis.
+
+#### Quick Start
+
+```python
+from AliasDataFrameRDF import generate_rdf_code_with_friends
+
+# Generate RDF code from AliasDataFrame
+code = generate_rdf_code_with_friends(
+    adf,
+    target_aliases=["L10", "correctedY"],
+    enable_mt=True,
+    num_threads=8
+)
+print(code)  # C++ code ready to compile
+```
+
+#### Key Functions
+
+| Function | Purpose |
+|----------|---------|
+| `to_cpp_expr(expr)` | Convert Python expression to C++ |
+| `extract_dependencies(expr)` | Find column dependencies |
+| `get_ordered_defines(adf, aliases)` | Topologically sorted Define() chain |
+| `generate_rdf_code_with_friends(adf, ...)` | Full RDF code with friend trees |
+
+#### Expression Translation
+
+| Python | C++ (ROOT) |
+|--------|------------|
+| `x**2` | `pow(x, 2)` |
+| `np.sqrt(x)` | `sqrt(x)` |
+| `np.abs(x)` | `abs(x)` |
+| `True/False` | `true/false` |
+| `track.mP3` | `T.mP3` (friend tree) |
+
+#### Sparse Key Support
+
+For multi-key joins with sparse distributions:
+
+```python
+from AliasDataFrameRDF import compute_composite_key_auto
+
+main_keys, sub_keys, method = compute_composite_key_auto(
+    main_df, sub_df, ['orbit', 'row', 'drift']
+)
+# method = 'dense' or 'sparse' (auto-selected)
+```
+
+#### Performance
+
+Benchmark results (1M rows, 10-level alias chain):
+
+| Method | Time | Speedup |
+|--------|------|---------|
+| AliasDataFrame | 0.04s | 25x |
+| TTree::Draw | 0.96s | 1.0x |
+| RDataFrame | 1.36s | 0.7x |
+
+> **Note:** RDataFrame slower at this scale due to JIT overhead. RDF advantage shows at larger scales (>10M rows) with complex DAGs.
+
 ### ✅ Dependency Graph & Cycle Detection
 
 * Automatically resolves dependency order

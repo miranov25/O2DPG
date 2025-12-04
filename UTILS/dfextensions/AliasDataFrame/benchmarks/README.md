@@ -204,6 +204,7 @@ The join/scatter **algorithm itself is near-optimal** (Phase 8 Numba kernels ach
 | `benchmark_read_tree.py` | ROOT file read tests | ROOT file |
 | `benchmark_subframe.py` | Subframe join tests | ROOT file |
 | `benchmark_parallel.py` | Worker scaling analysis | ROOT file |
+| `benchmark_rdf.py` | RDataFrame vs TTree::Draw comparison | ROOT file |
 | `generate_synthetic_data.py` | Create test ROOT file | None |
 | `diagnose_read_performance.py` | **Diagnose slowdowns** | ROOT file |
 
@@ -582,6 +583,43 @@ RECOMMENDATIONS
 
 On Windows, timeout is disabled and hangs will block indefinitely. 
 Use `--timeout 0` to acknowledge this and run without timeout protection.
+
+## benchmark_rdf.py
+
+Compares RDataFrame vs TTree::Draw vs AliasDataFrame performance.
+
+### Usage
+
+```bash
+# Basic run
+python benchmark_rdf.py rdf_benchmark_1M.root --aliases L10
+
+# With validation against ground truth
+python benchmark_rdf.py rdf_benchmark_1M.root --aliases L10 --validate
+
+# Generate test data first
+python generate_synthetic_data.py --rdf --rows 1000000 -o rdf_benchmark_1M.root
+```
+
+### What It Measures
+
+* **TTree::Draw**: Baseline C++ performance
+* **RDataFrame (1 thread)**: Modern ROOT with JIT compilation
+* **AliasDataFrame**: Python/NumPy vectorized approach
+
+### Ground Truth Validation
+
+Test data includes `_mat` suffix columns (e.g., `L10_mat`) containing pre-computed values. The `--validate` flag compares RDataFrame results against these ground truth columns.
+
+### Typical Results
+
+| Method | Cold | Warm | Speedup |
+|--------|------|------|---------|
+| TTree::Draw | 1.0s | 0.96s | 1.0x |
+| RDataFrame | 2.1s | 1.4s | 0.7x |
+| AliasDataFrame | 0.04s | 0.04s | 25x |
+
+> **Note:** AliasDataFrame faster because data pre-loaded in memory. Fair comparison would include I/O time.
 
 ## benchmark_read_tree.py
 
