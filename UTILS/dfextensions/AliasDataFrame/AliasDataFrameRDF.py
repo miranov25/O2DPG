@@ -358,15 +358,26 @@ def get_ordered_defines(
     ValueError
         If circular dependency detected
     """
-    # Get schema
-    if schema is None and aDF is not None:
-        schema = aDF.schema
-    
-    if schema is None:
+    # Get all aliases - prefer aDF.aliases property which handles schema properly
+    if aDF is not None and hasattr(aDF, 'aliases'):
+        # AliasDataFrame stores aliases in _schema["columns"] with "expr" key
+        # The .aliases property returns {name: expr} dict
+        all_aliases = aDF.aliases
+    elif schema is not None:
+        # Fallback: try 'aliases' key or extract from 'columns'
+        if 'aliases' in schema:
+            all_aliases = schema['aliases']
+        elif 'columns' in schema:
+            # Extract aliases from columns (entries with 'expr' key)
+            all_aliases = {
+                k: v.get('expr', v) if isinstance(v, dict) else v
+                for k, v in schema['columns'].items()
+                if isinstance(v, dict) and 'expr' in v
+            }
+        else:
+            all_aliases = {}
+    else:
         raise ValueError("Must provide either aDF or schema")
-    
-    # Get all aliases from schema
-    all_aliases = schema.get('aliases', {})
     
     # If specific aliases requested, use them; otherwise all
     if aliases is None:
@@ -389,8 +400,7 @@ def get_ordered_defines(
     # Build result list
     result = []
     for name in ordered:
-        info = all_aliases.get(name, {})
-        expr = info.get('expr', '') if isinstance(info, dict) else str(info)
+        expr = all_aliases.get(name, '')
         deps = extract_dependencies(expr, set(all_aliases.keys()))
         cpp_expr = to_cpp_expr(expr)
         
@@ -534,8 +544,8 @@ def setup_tree_with_friends(
             print(f"Warning: Subframe '{sf_name}' not found")
             continue
         
-        # Get index columns
-        index_cols = sf_info.get('index_columns', [])
+        # Get index columns - schema uses 'index' key
+        index_cols = sf_info.get('index', sf_info.get('index_columns', []))
         
         if len(index_cols) == 0:
             print(f"Warning: Subframe '{sf_name}' has no index columns")
