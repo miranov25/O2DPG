@@ -912,7 +912,7 @@ def setup_chain_with_friends(adf, file_patterns, treename="tree"):
     return rdf, chain, file_handles
 
 
-def add_defines_to_rdf(rdf, adf, target_aliases):
+def add_defines_to_rdf(rdf, adf, target_aliases, on_collision='warn'):
     """
     Add Define() chain to RDataFrame for requested aliases.
     
@@ -927,6 +927,12 @@ def add_defines_to_rdf(rdf, adf, target_aliases):
         AliasDataFrame with alias definitions
     target_aliases : list of str
         Alias names to define (dependencies are auto-resolved)
+    on_collision : str
+        How to handle when alias name matches existing column:
+        - 'error': Raise ValueError
+        - 'skip': Skip silently
+        - 'warn': Skip with UserWarning (default)
+        - 'redefine': Use Redefine() to overwrite
         
     Returns
     -------
@@ -946,15 +952,49 @@ def add_defines_to_rdf(rdf, adf, target_aliases):
     - Resolves alias dependencies using get_ordered_defines()
     - Converts Python expressions to C++ using to_cpp_expr()
     - Applies Define() calls in correct dependency order
+    - Handles column name collisions based on on_collision parameter
     """
+    import warnings
+    
+    # Get existing columns in RDataFrame
+    existing_columns = set(str(c) for c in rdf.GetColumnNames())
+    
     # Get ordered defines with C++ expressions
     defines = get_ordered_defines(target_aliases, aDF=adf)
+    skipped = []
     
     # Apply Define() chain
     for d in defines:
         name = d['name']
         cpp_expr = d['cpp_expr']
+        
+        if name in existing_columns:
+            if on_collision == 'error':
+                raise ValueError(
+                    f"add_defines_to_rdf: column '{name}' already exists. "
+                    f"Use on_collision='skip', 'warn', or 'redefine'."
+                )
+            elif on_collision == 'skip':
+                skipped.append(name)
+                continue
+            elif on_collision == 'warn':
+                skipped.append(name)
+                continue
+            elif on_collision == 'redefine':
+                rdf = rdf.Redefine(name, cpp_expr)
+                continue
+            else:
+                raise ValueError(f"Unknown on_collision: {on_collision!r}")
+        
         rdf = rdf.Define(name, cpp_expr)
+    
+    # Single warning for all skipped columns
+    if skipped and on_collision == 'warn':
+        warnings.warn(
+            f"add_defines_to_rdf: {len(skipped)} column(s) already exist, "
+            f"using existing branch data: {skipped[:5]}{'...' if len(skipped) > 5 else ''}",
+            UserWarning
+        )
     
     return rdf
 
@@ -1038,7 +1078,7 @@ def get_join_columns_for_snapshot(adf, target_aliases=None):
 
 def cache_to_snapshot(adf, input_file, output_file, target_aliases, 
                       treename="tree", output_treename="cache",
-                      include_join_columns=True):
+                      include_join_columns=True, on_collision='warn'):
     """
     Convenience function: compute aliases and save to ROOT file via RDataFrame.
     
@@ -1061,6 +1101,9 @@ def cache_to_snapshot(adf, input_file, output_file, target_aliases,
         Output tree name (default: "cache")
     include_join_columns : bool
         If True, include index columns for rejoining (default: True)
+    on_collision : str
+        How to handle column collisions (default: 'warn')
+        See add_defines_to_rdf() for options.
         
     Returns
     -------
@@ -1091,7 +1134,7 @@ def cache_to_snapshot(adf, input_file, output_file, target_aliases,
     rdf, file_handle = setup_rdf_with_friends(adf, input_file, treename)
     
     # Add defines
-    rdf = add_defines_to_rdf(rdf, adf, target_aliases)
+    rdf = add_defines_to_rdf(rdf, adf, target_aliases, on_collision=on_collision)
     
     # Determine columns to save
     columns_to_save = list(target_aliases)

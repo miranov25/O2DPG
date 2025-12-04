@@ -745,6 +745,71 @@ class TestCacheToSnapshot:
         assert result['time_s'] > 0
 
 
+@pytest.mark.skipif(not HAS_ROOT, reason="ROOT not available")
+class TestAddDefinesCollision:
+    """Test add_defines_to_rdf collision handling."""
+    
+    @pytest.fixture
+    def adf_with_collision(self, tmp_path):
+        """Create ADF with physical column that matches an alias name."""
+        df = pd.DataFrame({
+            'x': np.array([1, 2, 3], dtype=np.float32),
+            'y': np.array([4, 5, 6], dtype=np.float32),
+        })
+        adf = AliasDataFrame(df)
+        
+        # Export FIRST (so 'x' is a physical branch in tree)
+        filepath = str(tmp_path / "collision.root")
+        adf.export_tree(filepath, 'tree')
+        
+        # THEN add alias 'x' (collides with physical branch 'x')
+        adf.add_alias('x', 'y * 2')
+        
+        return adf, filepath
+    
+    def test_collision_error(self, adf_with_collision):
+        """Test on_collision='error' raises ValueError."""
+        from AliasDataFrameRDF import setup_rdf_with_friends, add_defines_to_rdf
+        adf, filepath = adf_with_collision
+        
+        rdf, f = setup_rdf_with_friends(adf, filepath)
+        with pytest.raises(ValueError, match="already exists"):
+            add_defines_to_rdf(rdf, adf, ['x'], on_collision='error')
+    
+    def test_collision_skip(self, adf_with_collision):
+        """Test on_collision='skip' skips silently."""
+        from AliasDataFrameRDF import setup_rdf_with_friends, add_defines_to_rdf
+        adf, filepath = adf_with_collision
+        
+        rdf, f = setup_rdf_with_friends(adf, filepath)
+        rdf = add_defines_to_rdf(rdf, adf, ['x'], on_collision='skip')
+        
+        # Should use original branch value (1,2,3), not alias (8,10,12)
+        mean = rdf.Mean('x').GetValue()
+        assert abs(mean - 2.0) < 0.1  # Original data mean
+    
+    def test_collision_warn(self, adf_with_collision):
+        """Test on_collision='warn' skips with warning."""
+        from AliasDataFrameRDF import setup_rdf_with_friends, add_defines_to_rdf
+        adf, filepath = adf_with_collision
+        
+        rdf, f = setup_rdf_with_friends(adf, filepath)
+        with pytest.warns(UserWarning, match="already exist"):
+            rdf = add_defines_to_rdf(rdf, adf, ['x'], on_collision='warn')
+    
+    def test_collision_redefine(self, adf_with_collision):
+        """Test on_collision='redefine' overwrites with alias."""
+        from AliasDataFrameRDF import setup_rdf_with_friends, add_defines_to_rdf
+        adf, filepath = adf_with_collision
+        
+        rdf, f = setup_rdf_with_friends(adf, filepath)
+        rdf = add_defines_to_rdf(rdf, adf, ['x'], on_collision='redefine')
+        
+        # Should use alias value (y*2 = 8,10,12), not original (1,2,3)
+        mean = rdf.Mean('x').GetValue()
+        assert abs(mean - 10.0) < 0.1  # Alias computation mean
+
+
 # =============================================================================
 # Summary Report
 # =============================================================================
