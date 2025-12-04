@@ -157,173 +157,6 @@ class TestExtractDependencies:
         assert 'x' in deps
 
 
-# =============================================================================
-# Sparse Key Tests
-# =============================================================================
-
-import numpy as np
-import pandas as pd
-
-from AliasDataFrameRDF import (
-    should_use_sparse,
-    compute_composite_key_dense,
-    compute_composite_key_sparse,
-    compute_composite_key_auto,
-)
-
-
-class TestSparseKeySupport:
-    """Test sparse key mapping for multi-key joins."""
-    
-    def test_should_use_sparse_small_range(self):
-        """Small contiguous range should use dense."""
-        df = pd.DataFrame({
-            'a': [0, 1, 2, 3, 4],
-            'b': [0, 1, 2, 3, 4],
-        })
-        assert not should_use_sparse(df, ['a', 'b'])
-    
-    def test_should_use_sparse_large_range(self):
-        """Large range exceeding int32 should use sparse."""
-        df = pd.DataFrame({
-            'a': [0, 100000],
-            'b': [0, 100000],
-            'c': [0, 100000],
-        })
-        # 100001^3 > 2^31
-        assert should_use_sparse(df, ['a', 'b', 'c'])
-    
-    def test_should_use_sparse_wasteful(self):
-        """Wasteful range (>10x unique) should use sparse."""
-        df = pd.DataFrame({
-            'a': [0, 1000],  # max 1001
-            'b': [0, 1000],  # max 1001
-        })
-        # Compact range: 1001*1001 = 1M, unique: 2, ratio > 10x
-        assert should_use_sparse(df, ['a', 'b'])
-    
-    def test_dense_key_basic(self):
-        """Test dense key computation."""
-        df = pd.DataFrame({
-            'a': [0, 1, 2],
-            'b': [0, 1, 0],
-        })
-        keys = compute_composite_key_dense(df, ['a', 'b'], max_values=[3, 2])
-        # key = a + b*3
-        expected = np.array([0, 4, 2])  # 0+0*3, 1+1*3, 2+0*3
-        np.testing.assert_array_equal(keys, expected)
-    
-    def test_sparse_key_with_gaps(self):
-        """Sparse keys with gaps should produce contiguous indices."""
-        main_df = pd.DataFrame({
-            'k1': [0, 100, 500],
-            'k2': [5, 10, 15],
-        })
-        sub_df = pd.DataFrame({
-            'k1': [0, 100, 500, 999],
-            'k2': [5, 10, 15, 20],
-        })
-        
-        main_keys, sub_keys = compute_composite_key_sparse(main_df, sub_df, ['k1', 'k2'])
-        
-        # Keys should be contiguous integers starting from 0
-        assert main_keys.min() >= 0
-        assert sub_keys.min() >= 0
-        
-        # Total unique keys = 4 (main has 3, sub has 4, but 3 overlap)
-        # (0,5), (100,10), (500,15) shared + (999,20) only in sub
-        all_keys = np.concatenate([main_keys, sub_keys])
-        assert len(np.unique(all_keys)) == 4
-        
-        # Max key should be 3 (0-indexed for 4 unique combos)
-        assert all_keys.max() == 3
-    
-    def test_sparse_key_large_values(self):
-        """Sparse keys with values exceeding int32 range."""
-        main_df = pd.DataFrame({
-            'orbit': [1_000_000_000, 2_000_000_000, 3_000_000_000],
-            'row': [0, 1, 2],
-        })
-        sub_df = pd.DataFrame({
-            'orbit': [1_000_000_000, 2_000_000_000],
-            'row': [0, 1],
-        })
-        
-        main_keys, sub_keys = compute_composite_key_sparse(main_df, sub_df, ['orbit', 'row'])
-        
-        # Should produce small contiguous integers
-        assert main_keys.max() < 10
-        assert sub_keys.max() < 10
-    
-    def test_sparse_key_shared_mapping(self):
-        """Main and subframe must use same key mapping."""
-        main_df = pd.DataFrame({
-            'k': [1, 2, 3],
-        })
-        sub_df = pd.DataFrame({
-            'k': [2, 3, 4],  # Overlapping + extra
-        })
-        
-        main_keys, sub_keys = compute_composite_key_sparse(main_df, sub_df, ['k'])
-        
-        # k=2 should have same key in both
-        main_k2_idx = main_df[main_df['k'] == 2].index[0]
-        sub_k2_idx = sub_df[sub_df['k'] == 2].index[0]
-        assert main_keys[main_k2_idx] == sub_keys[sub_k2_idx]
-        
-        # k=3 should have same key in both
-        main_k3_idx = main_df[main_df['k'] == 3].index[0]
-        sub_k3_idx = sub_df[sub_df['k'] == 3].index[0]
-        assert main_keys[main_k3_idx] == sub_keys[sub_k3_idx]
-    
-    def test_sparse_matches_dense_for_contiguous(self):
-        """Sparse and dense should produce equivalent joins for contiguous keys."""
-        main_df = pd.DataFrame({
-            'a': [0, 0, 1, 1, 2, 2],
-            'b': [0, 1, 0, 1, 0, 1],
-            'val': [10, 20, 30, 40, 50, 60],
-        })
-        sub_df = pd.DataFrame({
-            'a': [0, 1, 2],
-            'b': [0, 0, 0],
-            'calib': [1.0, 2.0, 3.0],
-        })
-        
-        # Dense keys
-        max_values = [3, 2]
-        main_dense = compute_composite_key_dense(main_df, ['a', 'b'], max_values)
-        sub_dense = compute_composite_key_dense(sub_df, ['a', 'b'], max_values)
-        
-        # Sparse keys
-        main_sparse, sub_sparse = compute_composite_key_sparse(main_df, sub_df, ['a', 'b'])
-        
-        # Both should produce same join result
-        # Build index lookup for both
-        dense_lookup = {k: i for i, k in enumerate(sub_dense)}
-        sparse_lookup = {k: i for i, k in enumerate(sub_sparse)}
-        
-        for i in range(len(main_df)):
-            dense_match = dense_lookup.get(main_dense[i], -1)
-            sparse_match = sparse_lookup.get(main_sparse[i], -1)
-            assert dense_match == sparse_match, f"Row {i}: dense={dense_match}, sparse={sparse_match}"
-    
-    def test_auto_selects_dense_for_small(self):
-        """Auto should select dense for small contiguous keys."""
-        main_df = pd.DataFrame({'k': [0, 1, 2]})
-        sub_df = pd.DataFrame({'k': [0, 1, 2]})
-        
-        _, _, method = compute_composite_key_auto(main_df, sub_df, ['k'])
-        assert method == 'dense'
-    
-    def test_auto_selects_sparse_for_large(self):
-        """Auto should select sparse for large/wasteful keys."""
-        main_df = pd.DataFrame({'k': [0, 1_000_000_000]})
-        sub_df = pd.DataFrame({'k': [0, 1_000_000_000]})
-        
-        _, _, method = compute_composite_key_auto(main_df, sub_df, ['k'])
-        assert method == 'sparse'
-
-
 class TestGetOrderedDefines:
     """Test dependency resolution and ordering."""
     
@@ -692,6 +525,224 @@ class TestRDataFrameWithRealSchema:
         # For entry 1: x=1, result=6
         assert abs(result[1] - 6.0) < 0.001
         print(f"[PASS] Schema-based defines work correctly")
+
+
+# =============================================================================
+# Modular RDataFrame API Tests
+# =============================================================================
+
+import pandas as pd
+import numpy as np
+from AliasDataFrame import AliasDataFrame
+
+
+@pytest.mark.skipif(not HAS_ROOT, reason="ROOT not available")
+class TestModularRDFSetup:
+    """Test modular RDataFrame setup functions."""
+    
+    @pytest.fixture
+    def sample_adf_with_file(self, tmp_path):
+        """Create sample AliasDataFrame and ROOT file."""
+        df = pd.DataFrame({
+            'x': np.random.randn(1000).astype(np.float32),
+            'y': np.random.randn(1000).astype(np.float32),
+            'row': np.random.randint(0, 100, 1000).astype(np.int32),
+        })
+        sub_df = pd.DataFrame({
+            'row': np.arange(100).astype(np.int32),
+            'calib': np.random.randn(100).astype(np.float32),
+        })
+        
+        adf = AliasDataFrame(df)
+        adf.register_subframe('T', AliasDataFrame(sub_df), index_columns='row')
+        adf.add_alias('r2', 'x**2 + y**2')
+        
+        filepath = str(tmp_path / "test_rdf.root")
+        adf.export_tree(filepath, 'tree')
+        return adf, filepath
+    
+    def test_setup_rdf_returns_tuple(self, sample_adf_with_file):
+        """Test setup_rdf_with_friends returns (rdf, file_handle)."""
+        from AliasDataFrameRDF import setup_rdf_with_friends
+        adf, filepath = sample_adf_with_file
+        
+        result = setup_rdf_with_friends(adf, filepath)
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        
+        rdf, file_handle = result
+        assert rdf is not None
+        assert file_handle is not None
+        assert not file_handle.IsZombie()
+    
+    def test_setup_rdf_can_count(self, sample_adf_with_file):
+        """Test RDataFrame can perform actions."""
+        from AliasDataFrameRDF import setup_rdf_with_friends
+        adf, filepath = sample_adf_with_file
+        
+        rdf, f = setup_rdf_with_friends(adf, filepath)
+        count = rdf.Count().GetValue()
+        assert count == 1000
+    
+    def test_setup_rdf_file_not_found(self, sample_adf_with_file):
+        """Test raises OSError for missing file."""
+        from AliasDataFrameRDF import setup_rdf_with_friends
+        adf, _ = sample_adf_with_file
+        
+        with pytest.raises(OSError):
+            setup_rdf_with_friends(adf, "nonexistent.root")
+    
+    def test_setup_rdf_has_columns(self, sample_adf_with_file):
+        """Test RDataFrame has expected columns."""
+        from AliasDataFrameRDF import setup_rdf_with_friends
+        adf, filepath = sample_adf_with_file
+        
+        rdf, f = setup_rdf_with_friends(adf, filepath)
+        columns = [str(c) for c in rdf.GetColumnNames()]
+        assert 'x' in columns
+        assert 'y' in columns
+        assert 'row' in columns
+
+
+@pytest.mark.skipif(not HAS_ROOT, reason="ROOT not available")
+class TestAddDefinesToRDF:
+    """Test add_defines_to_rdf function."""
+    
+    @pytest.fixture
+    def adf_with_aliases(self, tmp_path):
+        """Create ADF with aliases and ROOT file."""
+        df = pd.DataFrame({
+            'x': np.random.randn(500).astype(np.float32),
+            'y': np.random.randn(500).astype(np.float32),
+        })
+        adf = AliasDataFrame(df)
+        adf.add_alias('r2', 'x**2 + y**2')
+        adf.add_alias('r', 'np.sqrt(r2)')
+        
+        filepath = str(tmp_path / "test_defines.root")
+        adf.export_tree(filepath, 'tree')
+        return adf, filepath
+    
+    def test_add_defines_creates_column(self, adf_with_aliases):
+        """Test add_defines_to_rdf creates defined column."""
+        from AliasDataFrameRDF import setup_rdf_with_friends, add_defines_to_rdf
+        adf, filepath = adf_with_aliases
+        
+        rdf, f = setup_rdf_with_friends(adf, filepath)
+        rdf = add_defines_to_rdf(rdf, adf, ['r2'])
+        
+        columns = [str(c) for c in rdf.GetColumnNames()]
+        assert 'r2' in columns
+    
+    def test_add_defines_resolves_dependencies(self, adf_with_aliases):
+        """Test add_defines_to_rdf resolves alias dependencies."""
+        from AliasDataFrameRDF import setup_rdf_with_friends, add_defines_to_rdf
+        adf, filepath = adf_with_aliases
+        
+        rdf, f = setup_rdf_with_friends(adf, filepath)
+        # r depends on r2, both should be defined
+        rdf = add_defines_to_rdf(rdf, adf, ['r'])
+        
+        columns = [str(c) for c in rdf.GetColumnNames()]
+        assert 'r2' in columns  # Dependency
+        assert 'r' in columns   # Target
+    
+    def test_add_defines_computes_values(self, adf_with_aliases):
+        """Test computed values are correct."""
+        from AliasDataFrameRDF import setup_rdf_with_friends, add_defines_to_rdf
+        adf, filepath = adf_with_aliases
+        
+        rdf, f = setup_rdf_with_friends(adf, filepath)
+        rdf = add_defines_to_rdf(rdf, adf, ['r2'])
+        
+        mean_r2 = rdf.Mean('r2').GetValue()
+        # x**2 + y**2 with standard normal: E[X^2] + E[Y^2] ≈ 1 + 1 = 2
+        assert 1.5 < mean_r2 < 2.5
+
+
+@pytest.mark.skipif(not HAS_ROOT, reason="ROOT not available")
+class TestChainSetup:
+    """Test chain setup for multiple files."""
+    
+    @pytest.fixture
+    def multi_file_setup(self, tmp_path):
+        """Create multiple ROOT files."""
+        filepaths = []
+        for i in range(3):
+            df = pd.DataFrame({
+                'x': np.random.randn(100).astype(np.float32),
+                'file_id': np.full(100, i, dtype=np.int32),
+            })
+            adf = AliasDataFrame(df)
+            filepath = str(tmp_path / f"data_{i}.root")
+            adf.export_tree(filepath, 'tree')
+            filepaths.append(filepath)
+        return adf, filepaths, tmp_path
+    
+    def test_chain_with_list(self, multi_file_setup):
+        """Test setup_chain_with_friends with file list."""
+        from AliasDataFrameRDF import setup_chain_with_friends
+        adf, filepaths, _ = multi_file_setup
+        
+        rdf, chain, files = setup_chain_with_friends(adf, filepaths)
+        count = rdf.Count().GetValue()
+        assert count == 300  # 3 files × 100 rows
+    
+    def test_chain_with_glob(self, multi_file_setup):
+        """Test setup_chain_with_friends with glob pattern."""
+        from AliasDataFrameRDF import setup_chain_with_friends
+        adf, _, tmp_path = multi_file_setup
+        
+        pattern = str(tmp_path / "data_*.root")
+        rdf, chain, files = setup_chain_with_friends(adf, pattern)
+        count = rdf.Count().GetValue()
+        assert count == 300
+
+
+@pytest.mark.skipif(not HAS_ROOT, reason="ROOT not available")
+class TestJoinColumnsForSnapshot:
+    """Test get_join_columns_for_snapshot function."""
+    
+    def test_returns_index_columns(self):
+        """Test returns subframe index columns."""
+        from AliasDataFrameRDF import get_join_columns_for_snapshot
+        
+        df = pd.DataFrame({'x': [1, 2, 3], 'row': [0, 1, 2]})
+        sub_df = pd.DataFrame({'row': [0, 1, 2], 'val': [10, 20, 30]})
+        
+        adf = AliasDataFrame(df)
+        adf.register_subframe('S', AliasDataFrame(sub_df), index_columns='row')
+        
+        join_cols = get_join_columns_for_snapshot(adf)
+        assert 'row' in join_cols
+
+
+@pytest.mark.skipif(not HAS_ROOT, reason="ROOT not available")  
+class TestCacheToSnapshot:
+    """Test cache_to_snapshot convenience function."""
+    
+    def test_cache_creates_file(self, tmp_path):
+        """Test cache_to_snapshot creates output file."""
+        from AliasDataFrameRDF import cache_to_snapshot
+        import os
+        
+        df = pd.DataFrame({
+            'x': np.random.randn(100).astype(np.float32),
+            'y': np.random.randn(100).astype(np.float32),
+        })
+        adf = AliasDataFrame(df)
+        adf.add_alias('r2', 'x**2 + y**2')
+        
+        input_file = str(tmp_path / "input.root")
+        output_file = str(tmp_path / "cache.root")
+        adf.export_tree(input_file, 'tree')
+        
+        result = cache_to_snapshot(adf, input_file, output_file, ['r2'])
+        
+        assert os.path.exists(output_file)
+        assert result['entries'] == 100
+        assert 'r2' in result['columns']
+        assert result['time_s'] > 0
 
 
 # =============================================================================

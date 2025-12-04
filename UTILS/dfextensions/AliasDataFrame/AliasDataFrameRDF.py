@@ -15,6 +15,33 @@ import re
 from typing import List, Dict, Optional, Any, Set, Tuple
 
 
+__all__ = [
+    # Low-level utilities
+    'to_cpp_expr',
+    'extract_dependencies',
+    'get_ordered_defines',
+    
+    # Tree/Chain setup
+    'setup_tree_with_friends',
+    'setup_rdf_with_friends',
+    'setup_chain_with_friends',
+    
+    # RDataFrame helpers
+    'add_defines_to_rdf',
+    'get_join_columns_for_snapshot',
+    'cache_to_snapshot',
+    
+    # Sparse key support
+    'should_use_sparse',
+    'compute_composite_key_dense',
+    'compute_composite_key_sparse',
+    'compute_composite_key_auto',
+    
+    # Code generation (secondary API - C++ export)
+    'generate_rdf_code',
+]
+
+
 # =============================================================================
 # Expression Conversion (AST-based)
 # =============================================================================
@@ -727,6 +754,368 @@ def setup_tree_with_friends(
         print(f"  Added friend: {sf_name} ({sf_tree.GetEntries()} entries)")
     
     return tree, f
+
+
+# =============================================================================
+# Modular RDataFrame API
+# =============================================================================
+
+def setup_rdf_with_friends(adf, filename, treename="tree"):
+    """
+    Create RDataFrame with friend trees from AliasDataFrame schema.
+    
+    This is the primary entry point for interactive Python workflows.
+    Returns both the RDataFrame and file handle - the file handle MUST
+    be kept alive as long as the RDataFrame is in use.
+    
+    Parameters
+    ----------
+    adf : AliasDataFrame
+        AliasDataFrame with schema containing subframe definitions
+    filename : str
+        Path to ROOT file
+    treename : str
+        Name of main tree (default: "tree")
+        
+    Returns
+    -------
+    rdf : ROOT.RDataFrame
+        RDataFrame with friend trees attached
+    file_handle : ROOT.TFile
+        Open file handle - MUST be kept alive while using rdf
+        
+    Examples
+    --------
+    >>> rdf, f = setup_rdf_with_friends(adf, "data.root")
+    >>> rdf = add_defines_to_rdf(rdf, adf, ["dyC2"])
+    >>> result = rdf.Mean("dyC2").GetValue()
+    >>> # f must stay in scope until all actions complete
+    
+    Notes
+    -----
+    The file handle must remain in scope for the lifetime of the RDataFrame
+    due to ROOT's lazy evaluation. Letting it go out of scope will cause
+    segmentation faults when RDataFrame actions are triggered.
+    """
+    try:
+        import ROOT
+    except ImportError:
+        raise ImportError(
+            "ROOT is required for RDataFrame functionality. "
+            "Install with: conda install -c conda-forge root"
+        )
+    
+    # Use existing setup_tree_with_friends
+    schema = adf.schema if hasattr(adf, 'schema') else adf.export_schema()
+    tree, file_handle = setup_tree_with_friends(filename, treename, schema)
+    
+    # Create RDataFrame
+    rdf = ROOT.RDataFrame(tree)
+    
+    return rdf, file_handle
+
+
+def setup_chain_with_friends(adf, file_patterns, treename="tree"):
+    """
+    Create RDataFrame from TChain with friend chains for multiple files.
+    
+    Supports ALICE data structure where files contain:
+        dirID0/tree0, tree1, tree2
+        dirID1/tree0, tree1, tree2
+        
+    Parameters
+    ----------
+    adf : AliasDataFrame
+        AliasDataFrame with schema containing subframe definitions
+    file_patterns : str or list of str
+        Glob pattern(s) or explicit list of ROOT file paths
+        Examples: "data/*.root", ["file1.root", "file2.root"]
+    treename : str
+        Name of main tree in each file (default: "tree")
+        
+    Returns
+    -------
+    rdf : ROOT.RDataFrame
+        RDataFrame with friend chains attached
+    chain : ROOT.TChain
+        Main TChain - must be kept alive
+    file_handles : list of ROOT.TFile
+        Open file handles - must be kept alive while using rdf
+        
+    Examples
+    --------
+    >>> rdf, chain, files = setup_chain_with_friends(adf, "data/*.root")
+    >>> rdf = add_defines_to_rdf(rdf, adf, ["dyC2"])
+    >>> rdf.Snapshot("output", "merged.root", ["dyC2"])
+    >>> # chain and files must stay in scope until Snapshot completes
+    
+    Notes
+    -----
+    All files must have the same tree structure (main tree + friend trees).
+    Friend chains are built by adding the same-named trees from each file.
+    """
+    try:
+        import ROOT
+    except ImportError:
+        raise ImportError(
+            "ROOT is required for RDataFrame functionality. "
+            "Install with: conda install -c conda-forge root"
+        )
+    
+    import glob
+    
+    # Resolve file patterns to list of files
+    if isinstance(file_patterns, str):
+        files = sorted(glob.glob(file_patterns))
+        if not files:
+            raise FileNotFoundError(f"No files match pattern: {file_patterns}")
+    else:
+        files = list(file_patterns)
+    
+    if not files:
+        raise ValueError("No input files provided")
+    
+    # Get schema for subframe info
+    schema = adf.schema if hasattr(adf, 'schema') else adf.export_schema()
+    subframes = schema.get('subframes', {})
+    
+    # Create main chain
+    chain = ROOT.TChain(treename)
+    for f in files:
+        chain.Add(f)
+    
+    # Create friend chains for each subframe
+    friend_chains = {}
+    for sf_name, sf_info in subframes.items():
+        # Use the exported subframe tree name convention
+        sf_tree_name = f"{treename}__subframe__{sf_name}"
+        friend_chain = ROOT.TChain(sf_tree_name)
+        for f in files:
+            friend_chain.Add(f)
+        friend_chains[sf_name] = friend_chain
+        chain.AddFriend(friend_chain, sf_name)
+    
+    # Open file handles to keep trees valid
+    # (TChain may need files open for some operations)
+    file_handles = []
+    for f in files:
+        fh = ROOT.TFile.Open(f)
+        if fh and not fh.IsZombie():
+            file_handles.append(fh)
+    
+    # Create RDataFrame
+    rdf = ROOT.RDataFrame(chain)
+    
+    # Store friend chains on the main chain to prevent garbage collection
+    chain._friend_chains = friend_chains
+    
+    return rdf, chain, file_handles
+
+
+def add_defines_to_rdf(rdf, adf, target_aliases):
+    """
+    Add Define() chain to RDataFrame for requested aliases.
+    
+    Resolves all dependencies and adds Define() calls in topological order.
+    Returns a NEW RDataFrame - does not mutate the input.
+    
+    Parameters
+    ----------
+    rdf : ROOT.RDataFrame
+        Input RDataFrame (from setup_rdf_with_friends or setup_chain_with_friends)
+    adf : AliasDataFrame
+        AliasDataFrame with alias definitions
+    target_aliases : list of str
+        Alias names to define (dependencies are auto-resolved)
+        
+    Returns
+    -------
+    ROOT.RDataFrame
+        New RDataFrame with Define() chain applied
+        
+    Examples
+    --------
+    >>> rdf, f = setup_rdf_with_friends(adf, "data.root")
+    >>> rdf = add_defines_to_rdf(rdf, adf, ["dyC2"])
+    >>> rdf = add_defines_to_rdf(rdf, adf, ["L10"])  # Can chain more
+    >>> hist = rdf.Histo1D("dyC2")
+    
+    Notes
+    -----
+    This function automatically:
+    - Resolves alias dependencies using get_ordered_defines()
+    - Converts Python expressions to C++ using to_cpp_expr()
+    - Applies Define() calls in correct dependency order
+    """
+    # Get ordered defines with C++ expressions
+    defines = get_ordered_defines(target_aliases, aDF=adf)
+    
+    # Apply Define() chain
+    for d in defines:
+        name = d['name']
+        cpp_expr = d['cpp_expr']
+        rdf = rdf.Define(name, cpp_expr)
+    
+    return rdf
+
+
+def get_join_columns_for_snapshot(adf, target_aliases=None):
+    """
+    Get index/join columns needed to rejoin Snapshot output with original data.
+    
+    When creating a Snapshot with derived columns, you typically need to
+    include the index columns so the output can be joined back to the
+    original tree or other data.
+    
+    Parameters
+    ----------
+    adf : AliasDataFrame
+        AliasDataFrame with schema containing subframe definitions
+    target_aliases : list of str, optional
+        If provided, only return index columns for subframes used by these aliases.
+        If None, return all index columns from all subframes.
+        
+    Returns
+    -------
+    list of str
+        Column names for index/join columns
+        
+    Examples
+    --------
+    >>> join_cols = get_join_columns_for_snapshot(adf, ["dyC2"])
+    >>> cols_to_save = ["dyC2", "dzC2"] + join_cols
+    >>> rdf.Snapshot("cache", "output.root", cols_to_save)
+    
+    Notes
+    -----
+    Common index columns in ALICE data:
+    - entry, row (for cluster-level joins)
+    - track_index (for track-level joins)
+    - firstTForbit (for time-frame identification)
+    """
+    schema = adf.schema if hasattr(adf, 'schema') else adf.export_schema()
+    subframes = schema.get('subframes', {})
+    
+    index_columns = set()
+    
+    if target_aliases is None:
+        # Return all index columns from all subframes
+        for sf_name, sf_info in subframes.items():
+            idx = sf_info.get('index', [])
+            if isinstance(idx, str):
+                idx = [idx]
+            index_columns.update(idx)
+    else:
+        # Find which subframes are used by target aliases
+        # and return only their index columns
+        all_deps = set()
+        for alias in target_aliases:
+            # Get alias expression
+            if hasattr(adf, 'aliases') and alias in adf.aliases:
+                expr = adf.aliases[alias]
+            elif hasattr(adf, 'get_alias_expr'):
+                expr = adf.get_alias_expr(alias)
+            else:
+                continue
+            
+            if expr:
+                deps = extract_dependencies(expr)
+                all_deps.update(deps)
+        
+        # Check which subframes are referenced
+        for sf_name, sf_info in subframes.items():
+            # Check if any dependency references this subframe
+            for dep in all_deps:
+                if dep.startswith(f"{sf_name}.") or dep == sf_name:
+                    idx = sf_info.get('index', [])
+                    if isinstance(idx, str):
+                        idx = [idx]
+                    index_columns.update(idx)
+                    break
+    
+    return sorted(list(index_columns))
+
+
+def cache_to_snapshot(adf, input_file, output_file, target_aliases, 
+                      treename="tree", output_treename="cache",
+                      include_join_columns=True):
+    """
+    Convenience function: compute aliases and save to ROOT file via RDataFrame.
+    
+    This is a high-level function that combines setup, define, and snapshot
+    into a single call for simple caching workflows.
+    
+    Parameters
+    ----------
+    adf : AliasDataFrame
+        AliasDataFrame with alias definitions
+    input_file : str
+        Input ROOT file path
+    output_file : str
+        Output ROOT file path
+    target_aliases : list of str
+        Aliases to compute and save
+    treename : str
+        Input tree name (default: "tree")
+    output_treename : str
+        Output tree name (default: "cache")
+    include_join_columns : bool
+        If True, include index columns for rejoining (default: True)
+        
+    Returns
+    -------
+    dict
+        Statistics: entries processed, columns saved, time elapsed
+        
+    Examples
+    --------
+    >>> result = cache_to_snapshot(
+    ...     adf, "data.root", "cache.root", 
+    ...     ["dyC2", "dzC2", "L10"]
+    ... )
+    >>> print(f"Cached {result['entries']} entries in {result['time_s']:.2f}s")
+    """
+    import time
+    
+    try:
+        import ROOT
+    except ImportError:
+        raise ImportError(
+            "ROOT is required for RDataFrame functionality. "
+            "Install with: conda install -c conda-forge root"
+        )
+    
+    t0 = time.time()
+    
+    # Setup
+    rdf, file_handle = setup_rdf_with_friends(adf, input_file, treename)
+    
+    # Add defines
+    rdf = add_defines_to_rdf(rdf, adf, target_aliases)
+    
+    # Determine columns to save
+    columns_to_save = list(target_aliases)
+    if include_join_columns:
+        join_cols = get_join_columns_for_snapshot(adf, target_aliases)
+        for col in join_cols:
+            if col not in columns_to_save:
+                columns_to_save.append(col)
+    
+    # Get entry count before snapshot
+    entries = rdf.Count().GetValue()
+    
+    # Snapshot
+    rdf.Snapshot(output_treename, output_file, ROOT.std.vector['string'](columns_to_save))
+    
+    elapsed = time.time() - t0
+    
+    return {
+        'entries': entries,
+        'columns': columns_to_save,
+        'time_s': elapsed,
+        'input_file': input_file,
+        'output_file': output_file
+    }
 
 
 # =============================================================================
