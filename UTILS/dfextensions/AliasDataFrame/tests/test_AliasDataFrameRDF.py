@@ -194,6 +194,307 @@ class TestExtractDependencies:
         assert 'x' in deps
 
 
+# =============================================================================
+# Composite Key Tests
+# =============================================================================
+
+class TestCompositeKeyHelpers:
+    """Test composite key utility functions."""
+    
+    def test_get_composite_key_column_name(self):
+        """Test standard naming convention."""
+        from AliasDataFrameRDF import get_composite_key_column_name
+        
+        assert get_composite_key_column_name('DTrack0') == '__adf_key_DTrack0__'
+        assert get_composite_key_column_name('S') == '__adf_key_S__'
+        assert get_composite_key_column_name('calibration') == '__adf_key_calibration__'
+    
+    def test_check_dense_overflow_safe(self):
+        """Test overflow check for safe values."""
+        from AliasDataFrameRDF import check_dense_overflow
+        
+        # Small values - definitely safe
+        is_safe, compact_range = check_dense_overflow([10, 20, 30])
+        assert is_safe
+        assert compact_range == 10 * 20 * 30
+        
+        # Typical TPC case: side=2, row=152, drift=28
+        is_safe, compact_range = check_dense_overflow([2, 152, 28])
+        assert is_safe
+        assert compact_range == 2 * 152 * 28
+    
+    def test_check_dense_overflow_unsafe(self):
+        """Test overflow check for large values."""
+        from AliasDataFrameRDF import check_dense_overflow
+        
+        # Values that would overflow int64: 2^30 * 2^30 * 2^30 = 2^90 > 2^63
+        is_safe, _ = check_dense_overflow([2**30, 2**30, 2**30])
+        assert not is_safe
+    
+    def test_generate_dense_cpp_expression_single_key(self):
+        """Test C++ expression for single key (trivial case)."""
+        from AliasDataFrameRDF import generate_dense_cpp_expression
+        
+        result = generate_dense_cpp_expression(['key'], [100])
+        assert result == 'key'
+    
+    def test_generate_dense_cpp_expression_two_keys(self):
+        """Test C++ expression for two keys."""
+        from AliasDataFrameRDF import generate_dense_cpp_expression
+        
+        result = generate_dense_cpp_expression(['side', 'row'], [2, 152])
+        assert result == 'side + row * 2'
+    
+    def test_generate_dense_cpp_expression_three_keys(self):
+        """Test C++ expression for three keys."""
+        from AliasDataFrameRDF import generate_dense_cpp_expression
+        
+        result = generate_dense_cpp_expression(['a', 'b', 'c'], [10, 20, 30])
+        assert result == 'a + b * 10 + c * 10 * 20'
+    
+    def test_generate_dense_cpp_expression_four_keys(self):
+        """Test C++ expression for four keys."""
+        from AliasDataFrameRDF import generate_dense_cpp_expression
+        
+        result = generate_dense_cpp_expression(['k1', 'k2', 'k3', 'k4'], [2, 3, 4, 5])
+        assert result == 'k1 + k2 * 2 + k3 * 2 * 3 + k4 * 2 * 3 * 4'
+
+
+class TestShouldUseSparse:
+    """Test sparse vs dense decision function."""
+    
+    def test_small_dense_data(self):
+        """Dense data with small range should use dense."""
+        from AliasDataFrameRDF import should_use_sparse
+        
+        df = pd.DataFrame({
+            'k1': np.array([0, 1, 2, 3, 4], dtype=np.int32),
+            'k2': np.array([0, 0, 1, 1, 2], dtype=np.int32),
+        })
+        
+        assert not should_use_sparse(df, ['k1', 'k2'])
+    
+    def test_large_sparse_data(self):
+        """Sparse data with large gaps should use sparse."""
+        from AliasDataFrameRDF import should_use_sparse
+        
+        # Only 5 unique combinations but max values suggest huge range
+        df = pd.DataFrame({
+            'k1': np.array([0, 1000000, 2000000, 3000000, 4000000], dtype=np.int64),
+            'k2': np.array([0, 1000000, 2000000, 3000000, 4000000], dtype=np.int64),
+        })
+        
+        assert should_use_sparse(df, ['k1', 'k2'])
+    
+    def test_overflow_triggers_sparse(self):
+        """Data that would overflow int32 should use sparse."""
+        from AliasDataFrameRDF import should_use_sparse
+        
+        # max = 100000, range = 100001^2 > 2^31
+        df = pd.DataFrame({
+            'k1': np.array([0, 100000], dtype=np.int64),
+            'k2': np.array([0, 100000], dtype=np.int64),
+        })
+        
+        assert should_use_sparse(df, ['k1', 'k2'])
+
+
+class TestComputeCompositeKeyDense:
+    """Test dense linearization."""
+    
+    def test_single_column(self):
+        """Single column key is just the column values."""
+        from AliasDataFrameRDF import compute_composite_key_dense
+        
+        df = pd.DataFrame({'key': np.array([0, 5, 10, 15], dtype=np.int32)})
+        result = compute_composite_key_dense(df, ['key'])
+        
+        np.testing.assert_array_equal(result, [0, 5, 10, 15])
+    
+    def test_two_columns(self):
+        """Two column key: k0 + k1 * max0."""
+        from AliasDataFrameRDF import compute_composite_key_dense
+        
+        df = pd.DataFrame({
+            'k1': np.array([0, 0, 1, 1], dtype=np.int32),
+            'k2': np.array([0, 1, 0, 1], dtype=np.int32),
+        })
+        
+        # max_values auto-computed: [2, 2]
+        # k1=0,k2=0 -> 0 + 0*2 = 0
+        # k1=0,k2=1 -> 0 + 1*2 = 2
+        # k1=1,k2=0 -> 1 + 0*2 = 1
+        # k1=1,k2=1 -> 1 + 1*2 = 3
+        result = compute_composite_key_dense(df, ['k1', 'k2'])
+        
+        np.testing.assert_array_equal(result, [0, 2, 1, 3])
+    
+    def test_three_columns(self):
+        """Three column key: k0 + k1*max0 + k2*max0*max1."""
+        from AliasDataFrameRDF import compute_composite_key_dense
+        
+        df = pd.DataFrame({
+            'a': np.array([0, 1, 0, 1], dtype=np.int32),
+            'b': np.array([0, 0, 1, 1], dtype=np.int32),
+            'c': np.array([0, 0, 0, 1], dtype=np.int32),
+        })
+        
+        # max_values: [2, 2, 2]
+        # a=0,b=0,c=0 -> 0 + 0*2 + 0*2*2 = 0
+        # a=1,b=0,c=0 -> 1 + 0*2 + 0*2*2 = 1
+        # a=0,b=1,c=0 -> 0 + 1*2 + 0*2*2 = 2
+        # a=1,b=1,c=1 -> 1 + 1*2 + 1*2*2 = 7
+        result = compute_composite_key_dense(df, ['a', 'b', 'c'])
+        
+        np.testing.assert_array_equal(result, [0, 1, 2, 7])
+    
+    def test_with_explicit_max_values(self):
+        """Test with explicitly provided max values."""
+        from AliasDataFrameRDF import compute_composite_key_dense
+        
+        df = pd.DataFrame({
+            'k1': np.array([0, 1], dtype=np.int32),
+            'k2': np.array([0, 1], dtype=np.int32),
+        })
+        
+        # Use larger max values than data requires
+        result = compute_composite_key_dense(df, ['k1', 'k2'], max_values=[10, 10])
+        
+        # k1=0,k2=0 -> 0 + 0*10 = 0
+        # k1=1,k2=1 -> 1 + 1*10 = 11
+        np.testing.assert_array_equal(result, [0, 11])
+
+
+class TestComputeCompositeKeySparse:
+    """Test sparse key mapping."""
+    
+    def test_basic_mapping(self):
+        """Basic sparse mapping assigns sequential IDs."""
+        from AliasDataFrameRDF import compute_composite_key_sparse
+        
+        main_df = pd.DataFrame({
+            'k1': np.array([0, 1, 2], dtype=np.int32),
+            'k2': np.array([0, 0, 0], dtype=np.int32),
+        })
+        
+        sub_df = pd.DataFrame({
+            'k1': np.array([0, 1, 2], dtype=np.int32),
+            'k2': np.array([0, 0, 0], dtype=np.int32),
+        })
+        
+        main_keys, sub_keys = compute_composite_key_sparse(main_df, sub_df, ['k1', 'k2'])
+        
+        # Same keys should get same IDs
+        np.testing.assert_array_equal(main_keys, sub_keys)
+    
+    def test_shuffled_subframe(self):
+        """Sparse mapping works with shuffled subframe."""
+        from AliasDataFrameRDF import compute_composite_key_sparse
+        
+        main_df = pd.DataFrame({
+            'k1': np.array([0, 1, 2], dtype=np.int32),
+            'k2': np.array([0, 0, 0], dtype=np.int32),
+        })
+        
+        # Subframe in different order
+        sub_df = pd.DataFrame({
+            'k1': np.array([2, 0, 1], dtype=np.int32),
+            'k2': np.array([0, 0, 0], dtype=np.int32),
+        })
+        
+        main_keys, sub_keys = compute_composite_key_sparse(main_df, sub_df, ['k1', 'k2'])
+        
+        # Key (0,0) should have same ID in both
+        assert main_keys[0] == sub_keys[1]  # main row 0 = sub row 1
+        # Key (1,0) should have same ID in both
+        assert main_keys[1] == sub_keys[2]  # main row 1 = sub row 2
+        # Key (2,0) should have same ID in both
+        assert main_keys[2] == sub_keys[0]  # main row 2 = sub row 0
+    
+    def test_sparse_with_gaps(self):
+        """Sparse mapping handles large gaps efficiently."""
+        from AliasDataFrameRDF import compute_composite_key_sparse
+        
+        main_df = pd.DataFrame({
+            'k1': np.array([0, 1000000, 2000000], dtype=np.int64),
+            'k2': np.array([0, 1000000, 2000000], dtype=np.int64),
+        })
+        
+        sub_df = pd.DataFrame({
+            'k1': np.array([0, 1000000, 2000000], dtype=np.int64),
+            'k2': np.array([0, 1000000, 2000000], dtype=np.int64),
+        })
+        
+        main_keys, sub_keys = compute_composite_key_sparse(main_df, sub_df, ['k1', 'k2'])
+        
+        # Should get sequential IDs despite large gaps
+        assert max(main_keys) < 10  # Only 3 unique combinations
+
+
+class TestComputeCompositeKeyAuto:
+    """Test automatic dense/sparse selection."""
+    
+    def test_auto_selects_dense_for_compact_data(self):
+        """Auto should select dense for compact data."""
+        from AliasDataFrameRDF import compute_composite_key_auto
+        
+        main_df = pd.DataFrame({
+            'k1': np.array([0, 0, 1, 1], dtype=np.int32),
+            'k2': np.array([0, 1, 0, 1], dtype=np.int32),
+        })
+        
+        sub_df = pd.DataFrame({
+            'k1': np.array([0, 1], dtype=np.int32),
+            'k2': np.array([0, 0], dtype=np.int32),
+        })
+        
+        main_keys, sub_keys, method = compute_composite_key_auto(main_df, sub_df, ['k1', 'k2'])
+        
+        assert method == 'dense'
+        assert len(main_keys) == 4
+        assert len(sub_keys) == 2
+    
+    def test_auto_selects_sparse_for_large_gaps(self):
+        """Auto should select sparse for sparse data."""
+        from AliasDataFrameRDF import compute_composite_key_auto
+        
+        main_df = pd.DataFrame({
+            'k1': np.array([0, 1000000], dtype=np.int64),
+            'k2': np.array([0, 1000000], dtype=np.int64),
+        })
+        
+        sub_df = pd.DataFrame({
+            'k1': np.array([0, 1000000], dtype=np.int64),
+            'k2': np.array([0, 1000000], dtype=np.int64),
+        })
+        
+        main_keys, sub_keys, method = compute_composite_key_auto(main_df, sub_df, ['k1', 'k2'])
+        
+        assert method == 'sparse'
+    
+    def test_auto_keys_match_correctly(self):
+        """Auto-generated keys should match between main and sub."""
+        from AliasDataFrameRDF import compute_composite_key_auto
+        
+        main_df = pd.DataFrame({
+            'k1': np.array([0, 1, 2, 3, 4], dtype=np.int32),
+            'k2': np.array([0, 0, 0, 0, 0], dtype=np.int32),
+        })
+        
+        # Shuffled subframe
+        sub_df = pd.DataFrame({
+            'k1': np.array([4, 2, 0, 3, 1], dtype=np.int32),
+            'k2': np.array([0, 0, 0, 0, 0], dtype=np.int32),
+        })
+        
+        main_keys, sub_keys, _ = compute_composite_key_auto(main_df, sub_df, ['k1', 'k2'])
+        
+        # main row 0 (k1=0) should match sub row 2 (k1=0)
+        assert main_keys[0] == sub_keys[2]
+        # main row 1 (k1=1) should match sub row 4 (k1=1)
+        assert main_keys[1] == sub_keys[4]
+
+
 class TestGetOrderedDefines:
     """Test dependency resolution and ordering."""
     

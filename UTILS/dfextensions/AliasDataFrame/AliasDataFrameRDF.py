@@ -391,6 +391,91 @@ def should_use_sparse(df, key_columns):
     return compact_range > 2**31 or compact_range > 10 * n_unique
 
 
+def get_composite_key_column_name(subframe_name: str) -> str:
+    """
+    Get the standard column name for a composite key.
+    
+    Parameters
+    ----------
+    subframe_name : str
+        Name of the subframe
+        
+    Returns
+    -------
+    str
+        Column name like '__adf_key_DTrack0__'
+    """
+    return f"__adf_key_{subframe_name}__"
+
+
+def check_dense_overflow(max_values: list) -> tuple:
+    """
+    Check if dense linearization would overflow int64.
+    
+    Parameters
+    ----------
+    max_values : list of int
+        Maximum values for each key column (max + 1 for range)
+        
+    Returns
+    -------
+    tuple
+        (is_safe, compact_range) - is_safe is True if no overflow
+    """
+    import numpy as np
+    
+    # Calculate product carefully to detect overflow
+    compact_range = 1
+    for mv in max_values:
+        # Check if multiplication would overflow int64
+        if compact_range > 0 and mv > (2**63 - 1) // compact_range:
+            return False, float('inf')
+        compact_range *= mv
+    
+    return compact_range <= 2**63 - 1, compact_range
+
+
+def generate_dense_cpp_expression(key_columns: list, max_values: list) -> str:
+    """
+    Generate C++ expression for dense composite key computation.
+    
+    Used for runtime generation via rdf.Define().
+    
+    Parameters
+    ----------
+    key_columns : list of str
+        Column names forming the composite key
+    max_values : list of int
+        Maximum values for each key column (max + 1 for range)
+        
+    Returns
+    -------
+    str
+        C++ expression like "k0 + k1 * 10 + k2 * 10 * 5"
+        
+    Examples
+    --------
+    >>> generate_dense_cpp_expression(['side', 'row'], [2, 152])
+    'side + row * 2'
+    >>> generate_dense_cpp_expression(['a', 'b', 'c'], [10, 20, 30])
+    'a + b * 10 + c * 10 * 20'
+    """
+    if len(key_columns) == 1:
+        return key_columns[0]
+    
+    # First term: just the first column
+    parts = [key_columns[0]]
+    
+    # Subsequent terms: column * product of previous max values
+    multiplier_parts = []
+    for i in range(1, len(key_columns)):
+        multiplier_parts.append(str(max_values[i-1]))
+        multiplier = " * ".join(multiplier_parts)
+        parts.append(f"{key_columns[i]} * {multiplier}")
+    
+    return " + ".join(parts)
+
+
 def compute_composite_key_dense(df, key_columns, max_values=None):
     """
     Compute composite key using compact linearization.
