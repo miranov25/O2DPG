@@ -850,6 +850,193 @@ class TestAddDefinesCollision:
 
 
 # =============================================================================
+# RDataFrame Index Verification Tests
+# =============================================================================
+
+@pytest.mark.skipif(not HAS_ROOT, reason="ROOT not available")
+class TestRDataFrameIndexVerification:
+    """
+    Critical verification that RDataFrame uses BuildIndex for friend joins.
+    
+    These tests use SHUFFLED friend data to distinguish between:
+    - Index-based join (correct): uses key values to match
+    - Row-by-row join (incorrect): just matches by row number
+    
+    If these tests fail, our entire friend tree approach is broken.
+    """
+    
+    def test_rdf_uses_single_key_index(self, tmp_path):
+        """
+        CRITICAL: Verify RDataFrame uses BuildIndex for single-key friend joins.
+        
+        Main:   row 0 → key=0, row 1 → key=1, ...
+        Friend: row 0 → key=4, row 1 → key=2, row 2 → key=0, ... (SHUFFLED!)
+        
+        If index-based: main.key=0 → friend where key=0 → friend_val=0
+        If row-based:   main.row=0 → friend.row=0 → friend_val=400 (WRONG!)
+        """
+        main_file = str(tmp_path / "main.root")
+        friend_file = str(tmp_path / "friend.root")
+        
+        # Main tree: sequential keys
+        main_data = {
+            'key': np.array([0, 1, 2, 3, 4], dtype=np.int32),
+            'main_val': np.array([0, 10, 20, 30, 40], dtype=np.float64),
+        }
+        
+        # Friend tree: SHUFFLED key order!
+        # key = [4, 2, 0, 3, 1], friend_val = key * 100
+        friend_data = {
+            'key': np.array([4, 2, 0, 3, 1], dtype=np.int32),
+            'friend_val': np.array([400, 200, 0, 300, 100], dtype=np.float64),
+        }
+        
+        # Export to ROOT files using uproot
+        import uproot
+        with uproot.recreate(main_file) as f:
+            f["tree"] = main_data
+        
+        with uproot.recreate(friend_file) as f:
+            f["tree"] = friend_data
+        
+        # Setup with BuildIndex
+        f_main = ROOT.TFile.Open(main_file)
+        f_friend = ROOT.TFile.Open(friend_file)
+        
+        main_tree = f_main.Get("tree")
+        friend_tree = f_friend.Get("tree")
+        
+        # Build index on friend tree
+        friend_tree.BuildIndex("key")
+        
+        # Add as friend
+        main_tree.AddFriend(friend_tree, "F")
+        
+        # Create RDataFrame
+        rdf = ROOT.RDataFrame(main_tree)
+        
+        # Define check: friend_val should equal key * 100 if index is used
+        rdf = rdf.Define("expected", "key * 100.0")
+        rdf = rdf.Define("actual", "F.friend_val")
+        rdf = rdf.Define("diff", "F.friend_val - expected")
+        
+        # Get results
+        diffs = list(rdf.Take['double']("diff").GetValue())
+        
+        # All differences should be 0 if index is used
+        assert all(abs(d) < 0.001 for d in diffs), \
+            f"RDataFrame NOT using single-key index! Diffs: {diffs}"
+    
+    def test_rdf_uses_two_key_index(self, tmp_path):
+        """
+        CRITICAL: Verify RDataFrame uses BuildIndex for two-key friend joins.
+        
+        Uses composite index with two columns.
+        """
+        main_file = str(tmp_path / "main.root")
+        friend_file = str(tmp_path / "friend.root")
+        
+        # Main tree: k1, k2 combinations
+        main_data = {
+            'k1': np.array([0, 0, 1, 1, 2], dtype=np.int32),
+            'k2': np.array([0, 1, 0, 1, 0], dtype=np.int32),
+            'main_val': np.array([0, 1, 2, 3, 4], dtype=np.float64),
+        }
+        
+        # Friend tree: SHUFFLED order!
+        # Matching: (0,0)→100, (0,1)→101, (1,0)→102, (1,1)→103, (2,0)→104
+        friend_data = {
+            'k1': np.array([2, 1, 0, 1, 0], dtype=np.int32),       # Shuffled!
+            'k2': np.array([0, 1, 0, 0, 1], dtype=np.int32),       # Shuffled!
+            'friend_val': np.array([104, 103, 100, 102, 101], dtype=np.float64),
+        }
+        
+        # Export to ROOT files
+        import uproot
+        with uproot.recreate(main_file) as f:
+            f["tree"] = main_data
+        
+        with uproot.recreate(friend_file) as f:
+            f["tree"] = friend_data
+        
+        # Setup with BuildIndex (two columns)
+        f_main = ROOT.TFile.Open(main_file)
+        f_friend = ROOT.TFile.Open(friend_file)
+        
+        main_tree = f_main.Get("tree")
+        friend_tree = f_friend.Get("tree")
+        
+        # Build index with two keys
+        friend_tree.BuildIndex("k1", "k2")
+        
+        main_tree.AddFriend(friend_tree, "F")
+        
+        rdf = ROOT.RDataFrame(main_tree)
+        
+        # Expected: friend_val = 100 + main_val
+        rdf = rdf.Define("expected", "100.0 + main_val")
+        rdf = rdf.Define("actual", "F.friend_val")
+        rdf = rdf.Define("diff", "F.friend_val - expected")
+        
+        # Get results
+        diffs = list(rdf.Take['double']("diff").GetValue())
+        
+        assert all(abs(d) < 0.001 for d in diffs), \
+            f"RDataFrame NOT using 2-key index! Diffs: {diffs}"
+    
+    def test_ttree_draw_uses_index_for_comparison(self, tmp_path):
+        """
+        Sanity check: Verify TTree::Draw DOES use the index correctly.
+        
+        This confirms our test data is correct - if TTree::Draw works
+        but RDataFrame doesn't, then RDataFrame has the limitation.
+        """
+        main_file = str(tmp_path / "main.root")
+        friend_file = str(tmp_path / "friend.root")
+        
+        # Same data as single-key test
+        main_data = {
+            'key': np.array([0, 1, 2, 3, 4], dtype=np.int32),
+            'main_val': np.array([0, 10, 20, 30, 40], dtype=np.float64),
+        }
+        
+        friend_data = {
+            'key': np.array([4, 2, 0, 3, 1], dtype=np.int32),
+            'friend_val': np.array([400, 200, 0, 300, 100], dtype=np.float64),
+        }
+        
+        import uproot
+        with uproot.recreate(main_file) as f:
+            f["tree"] = main_data
+        
+        with uproot.recreate(friend_file) as f:
+            f["tree"] = friend_data
+        
+        # Setup
+        f_main = ROOT.TFile.Open(main_file)
+        f_friend = ROOT.TFile.Open(friend_file)
+        
+        main_tree = f_main.Get("tree")
+        friend_tree = f_friend.Get("tree")
+        
+        friend_tree.BuildIndex("key")
+        main_tree.AddFriend(friend_tree, "F")
+        
+        # Use TTree::Draw to get values
+        n = main_tree.Draw("F.friend_val:key*100", "", "goff")
+        
+        v1 = main_tree.GetV1()  # F.friend_val
+        v2 = main_tree.GetV2()  # key*100
+        
+        actual = [v1[i] for i in range(n)]
+        expected = [v2[i] for i in range(n)]
+        diffs = [actual[i] - expected[i] for i in range(n)]
+        
+        assert all(abs(d) < 0.001 for d in diffs), \
+            "TTree::Draw should use index - test data may be wrong"
+
+
+# =============================================================================
 # Summary Report
 # =============================================================================
 
