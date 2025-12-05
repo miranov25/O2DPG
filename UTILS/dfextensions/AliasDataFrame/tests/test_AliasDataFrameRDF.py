@@ -56,6 +56,43 @@ class TestToCppExpr:
         result = to_cpp_expr('2 * np.pi * r')
         assert 'M_PI' in result
     
+    def test_numpy_pi_full_module(self):
+        """Test numpy.pi (full module name) → M_PI."""
+        result = to_cpp_expr('2 * numpy.pi * r')
+        assert 'M_PI' in result
+        assert 'numpy' not in result
+    
+    def test_math_pi(self):
+        """Test math.pi → M_PI."""
+        result = to_cpp_expr('2 * math.pi * r')
+        assert 'M_PI' in result
+        assert 'math' not in result
+    
+    def test_np_e(self):
+        """Test np.e → M_E."""
+        result = to_cpp_expr('np.exp(1) == np.e')
+        assert 'M_E' in result
+        assert 'np.e' not in result
+    
+    def test_numpy_e_full_module(self):
+        """Test numpy.e (full module name) → M_E."""
+        result = to_cpp_expr('x * numpy.e')
+        assert 'M_E' in result
+        assert 'numpy' not in result
+    
+    def test_math_e(self):
+        """Test math.e → M_E."""
+        result = to_cpp_expr('x * math.e')
+        assert 'M_E' in result
+        assert 'math' not in result
+    
+    def test_pi_and_e_combined(self):
+        """Test expression with both pi and e constants."""
+        result = to_cpp_expr('np.pi * np.e')
+        assert 'M_PI' in result
+        assert 'M_E' in result
+        assert 'np.' not in result
+    
     def test_power_simple(self):
         result = to_cpp_expr('x**2')
         assert 'pow(x, 2)' in result

@@ -61,7 +61,7 @@ class CppExprConverter(ast.NodeVisitor):
         'sqrt': 'sqrt', 'abs': 'abs', 'exp': 'exp',
         'log': 'log', 'sin': 'sin', 'cos': 'cos',
         'tan': 'tan', 'arctan': 'atan', 'arctan2': 'atan2',
-        'pi': 'M_PI',
+        'pi': 'M_PI', 'e': 'M_E',
     }
     
     BUILTIN_TO_CPP = {
@@ -111,18 +111,24 @@ class CppExprConverter(ast.NodeVisitor):
         return result
     
     def _preprocess_numpy(self, expr: str) -> str:
-        """Replace np.func with __np_func__ for AST parsing."""
+        """Replace np/numpy/math module references with __np_func__ for AST parsing."""
         # np.sqrt(x) → __np_sqrt__(x)
+        # numpy.sqrt(x) → __np_sqrt__(x)
+        # math.sqrt(x) → __np_sqrt__(x)
         expr = re.sub(r'\bnp\.(\w+)\b', r'__np_\1__', expr)
+        expr = re.sub(r'\bnumpy\.(\w+)\b', r'__np_\1__', expr)
+        expr = re.sub(r'\bmath\.(\w+)\b', r'__np_\1__', expr)
         return expr
     
     def _fallback_convert(self, expr: str) -> str:
         """Simple regex-based conversion for unparseable expressions."""
         result = expr
         
-        # np.func → func
+        # np.func, numpy.func, math.func → func
         for np_name, cpp_name in self.NUMPY_TO_CPP.items():
             result = re.sub(rf'\bnp\.{np_name}\b', cpp_name, result)
+            result = re.sub(rf'\bnumpy\.{np_name}\b', cpp_name, result)
+            result = re.sub(rf'\bmath\.{np_name}\b', cpp_name, result)
         
         # True/False → true/false
         result = re.sub(r'\bTrue\b', 'true', result)
@@ -238,9 +244,11 @@ class CppExprConverter(ast.NodeVisitor):
         """Handle variable names and constants."""
         name = node.id
         
-        # Handle __np_pi__ → M_PI
+        # Handle __np_pi__ → M_PI, __np_e__ → M_E
         if name == '__np_pi__':
             return 'M_PI'
+        if name == '__np_e__':
+            return 'M_E'
         
         # Handle True/False
         if name in self.BUILTIN_TO_CPP:
@@ -986,20 +994,18 @@ def add_defines_to_rdf(rdf, adf, target_aliases, on_collision='warn'):
             else:
                 raise ValueError(f"Unknown on_collision: {on_collision!r}")
         
-        # Try Define, catch ROOT's own collision detection as fallback
-        # (GetColumnNames() doesn't always return all friend tree branches)
-        # ROOT raises TypeError with "Template method resolution failed" and AbortSignal
-        # when there's a column collision
+        # Try Define, catch ROOT's collision detection for friend tree columns
+        # that may not appear in GetColumnNames()
         try:
             rdf = rdf.Define(name, cpp_expr)
         except TypeError as e:
             error_str = str(e)
             if "already present" in error_str or "Template method resolution failed" in error_str:
-                # ROOT detected a collision we missed
+                # ROOT detected a collision we missed (e.g., friend tree column)
                 if on_collision == 'error':
                     raise ValueError(
-                        f"add_defines_to_rdf: column '{name}' already exists in tree "
-                        f"(detected by ROOT). Use on_collision='skip', 'warn', or 'redefine'."
+                        f"add_defines_to_rdf: column '{name}' already exists (detected by ROOT). "
+                        f"Use on_collision='skip', 'warn', or 'redefine'."
                     ) from e
                 elif on_collision in ('skip', 'warn'):
                     skipped.append(name)
@@ -1008,8 +1014,7 @@ def add_defines_to_rdf(rdf, adf, target_aliases, on_collision='warn'):
                     rdf = rdf.Redefine(name, cpp_expr)
                     continue
             else:
-                # Different error - re-raise
-                raise
+                raise  # Different error, re-raise
     
     # Single warning for all skipped columns
     if skipped and on_collision == 'warn':
