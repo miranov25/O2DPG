@@ -784,11 +784,14 @@ def _validate_leaf_deps(ordered: List[str], all_aliases: Dict, tree) -> None:
 def setup_tree_with_friends(
     filename: str, 
     treename: str, 
-    schema: Dict = None
-) -> Tuple[Any, Any]:
+    schema: Dict = None,
+    adf = None
+) -> Tuple[Any, Any, Dict]:
     """
     Load tree with subframes as indexed friends.
     Python equivalent of LoadADFTree() from AliasDataFrameTree.C.
+    
+    Supports runtime composite key generation for subframes with >2 index columns.
     
     Parameters
     ----------
@@ -798,68 +801,243 @@ def setup_tree_with_friends(
         Main tree name
     schema : dict, optional
         Schema with subframe index definitions
+    adf : AliasDataFrame, optional
+        If provided, used to get max values for runtime composite key generation
         
     Returns
     -------
     tuple
-        (tree, file_handle) - keep file_handle alive!
+        (tree, file_handle, composite_key_info)
+        composite_key_info contains metadata about generated composite keys
+        and '_memfiles' list that must be kept alive for RDF usage
     """
     import ROOT
+    import warnings
     
     f = ROOT.TFile.Open(filename)
     if not f or f.IsZombie():
-        raise IOError(f"Cannot open file: {filename}")
+        raise OSError(f"Cannot open file: {filename}")
     
     tree = f.Get(treename)
     if not tree:
         raise ValueError(f"Tree '{treename}' not found in {filename}")
     
     subframes = schema.get('subframes', {}) if schema else {}
+    composite_key_info = {}  # Track runtime-generated composite keys
+    _memfile_storage = []  # Keep references to prevent garbage collection
     
     for sf_name, sf_info in subframes.items():
         sf_tree_name = f"{treename}__subframe__{sf_name}"
         sf_tree = f.Get(sf_tree_name)
         
         if not sf_tree:
-            print(f"Warning: Subframe '{sf_name}' not found")
+            warnings.warn(f"Subframe tree '{sf_name}' not found in file", UserWarning)
             continue
         
         # Get index columns - schema uses 'index' key
         index_cols = sf_info.get('index', sf_info.get('index_columns', []))
+        if isinstance(index_cols, str):
+            index_cols = [index_cols]
         
         if len(index_cols) == 0:
-            print(f"Warning: Subframe '{sf_name}' has no index columns")
+            warnings.warn(f"Subframe '{sf_name}' has no index columns", UserWarning)
             continue
         elif len(index_cols) == 1:
             sf_tree.BuildIndex(index_cols[0])
+            tree.AddFriend(sf_tree, sf_name)
         elif len(index_cols) == 2:
             sf_tree.BuildIndex(index_cols[0], index_cols[1])
+            tree.AddFriend(sf_tree, sf_name)
         else:
-            # Composite index - need __adf_key__ column
-            key_branch = f"__adf_key_{sf_name}__"
+            # >2 keys: Need composite key
+            key_branch = get_composite_key_column_name(sf_name)
+            
             if sf_tree.GetBranch(key_branch):
+                # Composite key branch exists in file - use it
                 sf_tree.BuildIndex(key_branch)
+                composite_key_info[sf_name] = {
+                    'method': 'from_file',
+                    'branch': key_branch,
+                    'n_keys': len(index_cols),
+                }
+                tree.AddFriend(sf_tree, sf_name)
             else:
-                print(f"Warning: {sf_name} has {len(index_cols)} keys but no composite key branch")
-                continue
+                # Runtime composite key generation using Clone + SetFile approach
+                result = _generate_runtime_composite_key(
+                    tree, sf_tree, sf_name, index_cols, adf
+                )
+                
+                if result is None:
+                    # Generation failed - skip this subframe
+                    continue
+                
+                friend_clone, memfile_main, memfile_friend, runtime_info = result
+                
+                # Keep memfiles alive!
+                _memfile_storage.extend([memfile_main, memfile_friend])
+                
+                # Use the cloned friend tree (with composite key) instead of original
+                tree.AddFriend(friend_clone, sf_name)
+                composite_key_info[sf_name] = runtime_info
         
-        tree.AddFriend(sf_tree, sf_name)
-        print(f"  Added friend: {sf_name} ({sf_tree.GetEntries()} entries)")
+        method_str = composite_key_info.get(sf_name, {}).get('method', 'builtin')
+        print(f"  Added friend: {sf_name} ({sf_tree.GetEntries()} entries) [index: {method_str}]")
     
-    return tree, f
+    # Store memfiles at top level to keep them alive
+    composite_key_info['_memfiles'] = _memfile_storage
+    
+    return tree, f, composite_key_info
+
+
+def _generate_runtime_composite_key(main_tree, friend_tree, sf_name, index_cols, adf=None,
+                                     max_friend_clone_entries=1_000_000):
+    """
+    Generate composite key at runtime for >2 index columns.
+    
+    Strategy (validated by TMemFile tests):
+    - Main tree: SetFile for __adf_key__ branch only (memory efficient)
+    - Friend tree: Full clone to TMemFile + add __adf_key__ branch
+    
+    Parameters
+    ----------
+    main_tree : ROOT.TTree
+        Main tree (read-only)
+    friend_tree : ROOT.TTree
+        Friend tree (subframe, will be cloned)
+    sf_name : str
+        Subframe name
+    index_cols : list of str
+        Index column names
+    adf : AliasDataFrame, optional
+        If provided, used to get more accurate max values
+    max_friend_clone_entries : int
+        Maximum friend tree entries before refusing to clone (memory protection)
+        
+    Returns
+    -------
+    tuple
+        (friend_clone, memfile_main, memfile_friend, info_dict)
+        Caller must keep memfiles alive!
+        
+    Raises
+    ------
+    NotImplementedError
+        If friend tree too large or key space overflows int64
+    """
+    import ROOT
+    import numpy as np
+    import warnings
+    
+    key_branch_name = get_composite_key_column_name(sf_name)
+    
+    # Check friend tree size
+    n_friend_entries = int(friend_tree.GetEntries())
+    if n_friend_entries > max_friend_clone_entries:
+        raise NotImplementedError(
+            f"Friend tree '{sf_name}' too large for runtime clone "
+            f"({n_friend_entries:,} entries > {max_friend_clone_entries:,}). "
+            f"Use export_tree(composite_keys='auto') to pre-compute."
+        )
+    
+    # Get max values for each key column from both trees
+    max_values = []
+    for col in index_cols:
+        main_max = main_tree.GetMaximum(col)
+        friend_max = friend_tree.GetMaximum(col)
+        
+        if main_max == -1e308 or friend_max == -1e308:
+            warnings.warn(
+                f"Cannot determine max value for '{col}' in subframe '{sf_name}'. "
+                f"Skipping subframe.",
+                UserWarning
+            )
+            return None
+        
+        col_max = int(max(main_max, friend_max)) + 1
+        max_values.append(col_max)
+    
+    # Check if dense linearization is safe (int64 overflow)
+    is_safe, compact_range = check_dense_overflow(max_values)
+    
+    if not is_safe:
+        raise NotImplementedError(
+            f"Runtime composite key for '{sf_name}' exceeds int64 limit "
+            f"(key space {compact_range:.2e}). "
+            f"Use export_tree(composite_keys='auto') to pre-compute with sparse mapping."
+        )
+    
+    # === MAIN TREE: SetFile for key branch ===
+    memfile_main = ROOT.TMemFile(f"main_key_{sf_name}", "RECREATE")
+    
+    main_ckey = np.array([0], dtype=np.int64)
+    main_key_branch = main_tree.Branch(key_branch_name, main_ckey, f"{key_branch_name}/L")
+    main_key_branch.SetFile(memfile_main)
+    
+    n_main_entries = int(main_tree.GetEntries())
+    for i in range(n_main_entries):
+        main_tree.GetEntry(i)
+        # Compute linearized key: k0 + k1*max0 + k2*max0*max1 + ...
+        key_val = 0
+        multiplier = 1
+        for j, col in enumerate(index_cols):
+            col_val = int(getattr(main_tree, col))
+            key_val += col_val * multiplier
+            multiplier *= max_values[j]
+        main_ckey[0] = key_val
+        main_key_branch.Fill()
+    
+    # === FRIEND TREE: Clone to TMemFile ===
+    memfile_friend = ROOT.TMemFile(f"friend_{sf_name}", "RECREATE")
+    memfile_friend.cd()
+    
+    friend_clone = friend_tree.CloneTree(-1, "fast")
+    friend_clone.SetDirectory(memfile_friend)
+    
+    # Add composite key branch to clone
+    friend_ckey = np.array([0], dtype=np.int64)
+    friend_key_branch = friend_clone.Branch(key_branch_name, friend_ckey, f"{key_branch_name}/L")
+    
+    for i in range(n_friend_entries):
+        friend_clone.GetEntry(i)
+        key_val = 0
+        multiplier = 1
+        for j, col in enumerate(index_cols):
+            col_val = int(getattr(friend_clone, col))
+            key_val += col_val * multiplier
+            multiplier *= max_values[j]
+        friend_ckey[0] = key_val
+        friend_key_branch.Fill()
+    
+    # Build index on friend clone
+    friend_clone.BuildIndex(key_branch_name)
+    
+    info = {
+        'method': 'runtime_dense',
+        'branch': key_branch_name,
+        'n_keys': len(index_cols),
+        'max_values': max_values,
+        'compact_range': compact_range,
+        'friend_entries_cloned': n_friend_entries,
+    }
+    
+    return friend_clone, memfile_main, memfile_friend, info
 
 
 # =============================================================================
 # Modular RDataFrame API
 # =============================================================================
 
-def setup_rdf_with_friends(adf, filename, treename="tree"):
+def setup_rdf_with_friends(adf, filename, treename="tree", return_composite_info=False):
     """
     Create RDataFrame with friend trees from AliasDataFrame schema.
     
     This is the primary entry point for interactive Python workflows.
     Returns both the RDataFrame and file handle - the file handle MUST
     be kept alive as long as the RDataFrame is in use.
+    
+    Supports runtime composite key generation for subframes with >2 index columns.
+    When a subframe has >2 keys and no pre-computed composite key branch,
+    a dense linearization expression is generated and used for BuildIndex.
     
     Parameters
     ----------
@@ -869,6 +1047,9 @@ def setup_rdf_with_friends(adf, filename, treename="tree"):
         Path to ROOT file
     treename : str
         Name of main tree (default: "tree")
+    return_composite_info : bool
+        If True, return (rdf, file_handle, composite_key_info)
+        If False (default), return (rdf, file_handle) for backward compatibility
         
     Returns
     -------
@@ -876,6 +1057,9 @@ def setup_rdf_with_friends(adf, filename, treename="tree"):
         RDataFrame with friend trees attached
     file_handle : ROOT.TFile
         Open file handle - MUST be kept alive while using rdf
+    composite_key_info : dict, optional
+        Only returned if return_composite_info=True.
+        Contains metadata about runtime-generated composite keys.
         
     Examples
     --------
@@ -884,11 +1068,20 @@ def setup_rdf_with_friends(adf, filename, treename="tree"):
     >>> result = rdf.Mean("dyC2").GetValue()
     >>> # f must stay in scope until all actions complete
     
+    # To get composite key info for debugging:
+    >>> rdf, f, info = setup_rdf_with_friends(adf, "data.root", return_composite_info=True)
+    >>> print(info)  # {'DTrack0': {'method': 'runtime_dense', 'expression': '...'}}
+    
     Notes
     -----
     The file handle must remain in scope for the lifetime of the RDataFrame
     due to ROOT's lazy evaluation. Letting it go out of scope will cause
     segmentation faults when RDataFrame actions are triggered.
+    
+    For subframes with >2 index columns:
+    - If __adf_key_<sf_name>__ branch exists: Uses it
+    - If missing and dense is safe: Generates linearization at runtime
+    - If sparse required: Raises NotImplementedError with guidance
     """
     try:
         import ROOT
@@ -898,14 +1091,21 @@ def setup_rdf_with_friends(adf, filename, treename="tree"):
             "Install with: conda install -c conda-forge root"
         )
     
-    # Use existing setup_tree_with_friends
+    # Use existing setup_tree_with_friends (now with adf for max value hints)
     schema = adf.schema if hasattr(adf, 'schema') else adf.export_schema()
-    tree, file_handle = setup_tree_with_friends(filename, treename, schema)
+    tree, file_handle, composite_key_info = setup_tree_with_friends(
+        filename, treename, schema, adf=adf
+    )
     
     # Create RDataFrame
     rdf = ROOT.RDataFrame(tree)
     
-    return rdf, file_handle
+    if return_composite_info:
+        return rdf, file_handle, composite_key_info
+    else:
+        # Attach memfiles to file handle to keep them alive
+        file_handle._adf_memfiles = composite_key_info.get('_memfiles', [])
+        return rdf, file_handle
 
 
 def setup_chain_with_friends(adf, file_patterns, treename="tree"):

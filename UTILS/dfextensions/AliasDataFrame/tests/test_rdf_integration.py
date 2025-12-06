@@ -131,7 +131,7 @@ class TestRDFIntegration:
     
     def test_setup_tree_with_friends(self, rdf_test_file, rdf_test_adf):
         """Test that tree setup creates friends correctly."""
-        tree, f = setup_tree_with_friends(rdf_test_file, "tree", rdf_test_adf.schema)
+        tree, f, _ = setup_tree_with_friends(rdf_test_file, "tree", rdf_test_adf.schema)
         
         # Check tree loaded
         assert tree is not None
@@ -148,7 +148,7 @@ class TestRDFIntegration:
     
     def test_rdf_define_chain(self, rdf_test_file, rdf_test_adf):
         """Test full RDataFrame Define() chain including 3-key subframe."""
-        tree, f = setup_tree_with_friends(rdf_test_file, "tree", rdf_test_adf.schema)
+        tree, f, _ = setup_tree_with_friends(rdf_test_file, "tree", rdf_test_adf.schema)
         
         df = ROOT.RDataFrame(tree)
         # dyC2 depends on dy_c AND DTrack0.dyC2_median (3-key subframe)
@@ -169,7 +169,7 @@ class TestRDFIntegration:
     
     def test_3key_subframe_access(self, rdf_test_file, rdf_test_adf):
         """Test DTrack0 with 3-key composite index."""
-        tree, f = setup_tree_with_friends(rdf_test_file, "tree", rdf_test_adf.schema)
+        tree, f, _ = setup_tree_with_friends(rdf_test_file, "tree", rdf_test_adf.schema)
         
         df = ROOT.RDataFrame(tree)
         
@@ -185,7 +185,7 @@ class TestRDFIntegration:
     
     def test_1key_subframe_access(self, rdf_test_file, rdf_test_adf):
         """Test T and R with 1-key index."""
-        tree, f = setup_tree_with_friends(rdf_test_file, "tree", rdf_test_adf.schema)
+        tree, f, _ = setup_tree_with_friends(rdf_test_file, "tree", rdf_test_adf.schema)
         
         df = ROOT.RDataFrame(tree)
         
@@ -203,7 +203,7 @@ class TestRDFIntegration:
     
     def test_2key_subframe_access(self, rdf_test_file, rdf_test_adf):
         """Test DITS0FitSide with 2-key index."""
-        tree, f = setup_tree_with_friends(rdf_test_file, "tree", rdf_test_adf.schema)
+        tree, f, _ = setup_tree_with_friends(rdf_test_file, "tree", rdf_test_adf.schema)
         
         df = ROOT.RDataFrame(tree)
         
