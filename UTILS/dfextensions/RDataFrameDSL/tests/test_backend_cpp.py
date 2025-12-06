@@ -1109,8 +1109,8 @@ class TestCppCodeGeneratorErrors:
     def generator(self):
         return CppCodeGenerator()
     
-    def test_method_call_error(self, generator):
-        """Method calls raise unsupported error."""
+    def test_method_call_generates_code(self, generator):
+        """Method calls generate correct C++ code (Phase 6a)."""
         obj = make_double_var("obj")
         obj.dtype = IRType(IRTypeKind.Object, "MyClass")
         
@@ -1122,14 +1122,37 @@ class TestCppCodeGeneratorErrors:
             rank=0
         )
         
+        func = generator.generate(ir, "test")
+        
+        # Should generate method call code
+        assert "obj.getValue()" in func.code
+        assert func.return_type == "double"
+        # Object should be passed by const reference
+        assert "const MyClass& obj" in func.code
+    
+    def test_method_call_with_args_error(self, generator):
+        """Method calls with arguments raise unsupported error (Phase 6a)."""
+        obj = make_double_var("obj")
+        obj.dtype = IRType(IRTypeKind.Object, "MyClass")
+        
+        arg = make_int_const(42)
+        
+        ir = MethodCallNode(
+            object=obj,
+            method_name="getValue",
+            args=[arg],  # Has arguments
+            dtype=IRType(IRTypeKind.Float64),
+            rank=0
+        )
+        
         with pytest.raises(IRError) as exc_info:
             generator.generate(ir, "test")
         
         assert exc_info.value.kind == IRErrorKind.UNSUPPORTED_OP
-        assert "method" in exc_info.value.message.lower()
+        assert "argument" in exc_info.value.message.lower()
     
-    def test_property_access_error(self, generator):
-        """Property access raises unsupported error."""
+    def test_property_access_generates_code(self, generator):
+        """Property access generates correct C++ code (Phase 6a)."""
         obj = make_double_var("obj")
         obj.dtype = IRType(IRTypeKind.Object, "MyClass")
         
@@ -1140,10 +1163,13 @@ class TestCppCodeGeneratorErrors:
             rank=0
         )
         
-        with pytest.raises(IRError) as exc_info:
-            generator.generate(ir, "test")
+        func = generator.generate(ir, "test")
         
-        assert exc_info.value.kind == IRErrorKind.UNSUPPORTED_OP
+        # Should generate property access code
+        assert "obj.value" in func.code
+        assert func.return_type == "double"
+        # Object should be passed by const reference
+        assert "const MyClass& obj" in func.code
     
     def test_subscript_error(self, generator):
         """Subscript raises unsupported error."""

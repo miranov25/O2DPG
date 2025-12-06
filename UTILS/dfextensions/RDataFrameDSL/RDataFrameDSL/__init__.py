@@ -117,6 +117,7 @@ from .backend_cpp import (
     GeneratedFunction,
     FunctionLibrary,
     FUNCTION_HEADERS,
+    CLASS_HEADERS,
 )
 
 __all__ = [
@@ -192,4 +193,5 @@ __all__ = [
     'GeneratedFunction',
     'FunctionLibrary',
     'FUNCTION_HEADERS',
+    'CLASS_HEADERS',
 ]

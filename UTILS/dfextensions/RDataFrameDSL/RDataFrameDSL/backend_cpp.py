@@ -47,6 +47,7 @@ __all__ = [
     'GeneratedFunction',
     'FunctionLibrary',
     'FUNCTION_HEADERS',
+    'CLASS_HEADERS',
 ]
 
 
@@ -140,6 +141,30 @@ FUNCTION_CPP_NAMES: Dict[str, str] = {
     # min/max -> std:: versions
     "min": "std::min",
     "max": "std::max",
+}
+
+
+# Class headers for object types
+CLASS_HEADERS: Dict[str, str] = {
+    # Physics objects
+    "TParticle": "<TParticle.h>",
+    "TLorentzVector": "<TLorentzVector.h>",
+    "TVector3": "<TVector3.h>",
+    "TVector2": "<TVector2.h>",
+    
+    # String types
+    "TString": "<TString.h>",
+    "TObjString": "<TObjString.h>",
+    
+    # Base classes
+    "TObject": "<TObject.h>",
+    "TNamed": "<TNamed.h>",
+    
+    # Math objects
+    "TMatrixD": "<TMatrixD.h>",
+    "TMatrixF": "<TMatrixF.h>",
+    "TVectorD": "<TVectorD.h>",
+    "TVectorF": "<TVectorF.h>",
 }
 
 
@@ -265,7 +290,7 @@ class CppCodeGenerator:
         )
     
     def _validate_ir(self, ir: IRNode) -> None:
-        """Validate IR tree for Phase 5 scalar support."""
+        """Validate IR tree for supported operations."""
         for node in ir.walk():
             # Check for Unknown types
             if node.dtype.kind == IRTypeKind.Unknown:
@@ -282,34 +307,32 @@ class CppCodeGenerator:
                         suggestions=["Check that all sub-expressions have valid types"]
                     )
             
-            # Check for unsupported node types in Phase 5
+            # Phase 6a: Method calls supported, but not with arguments
             if isinstance(node, MethodCallNode):
-                raise IRError(
-                    IRErrorKind.UNSUPPORTED_OP,
-                    "Method calls on objects are not supported in Phase 5",
-                    suggestions=["Method call support will be added in Phase 6"]
-                )
+                if node.args and len(node.args) > 0:
+                    raise IRError(
+                        IRErrorKind.UNSUPPORTED_OP,
+                        f"Method arguments not yet supported: {node.method_name}(...)",
+                        suggestions=["Use no-argument methods for Phase 6a"]
+                    )
             
-            if isinstance(node, PropertyAccessNode):
-                raise IRError(
-                    IRErrorKind.UNSUPPORTED_OP,
-                    "Property access on objects is not supported in Phase 5",
-                    suggestions=["Property access support will be added in Phase 6"]
-                )
+            # Phase 6a: Property access supported
+            # (PropertyAccessNode is now allowed)
             
+            # Phase 6b+: Subscript/slicing not yet supported
             if isinstance(node, SubscriptNode):
                 raise IRError(
                     IRErrorKind.UNSUPPORTED_OP,
-                    "Subscript/slicing operations are not supported in Phase 5",
-                    suggestions=["Subscript support will be added in Phase 6"]
+                    "Subscript/slicing operations are not supported yet",
+                    suggestions=["Subscript support will be added in Phase 6b"]
                 )
             
-            # Check rank
+            # Check rank - vectors not yet supported (Phase 6b)
             if node.rank > 0 and not isinstance(node, (SliceNode,)):
                 raise IRError(
                     IRErrorKind.UNSUPPORTED_OP,
-                    f"Vector operations (rank > 0) are not supported in Phase 5",
-                    suggestions=["Vector support will be added in Phase 6"]
+                    f"Vector operations (rank > 0) are not supported yet",
+                    suggestions=["Vector support will be added in Phase 6b"]
                 )
     
     def _collect_inputs(self, ir: IRNode) -> List[Tuple[str, str]]:
@@ -338,6 +361,12 @@ class CppCodeGenerator:
                 suggestions=["Ensure variable is defined in the schema"]
             )
         
+        # Object types use const reference
+        if node.dtype.kind == IRTypeKind.Object:
+            cpp_type = node.dtype.cpp_type
+            return f"const {cpp_type}&"
+        
+        # Scalar types use value
         return node.dtype.to_cpp()
     
     def _get_cpp_return_type(self, ir: IRNode) -> str:
@@ -369,6 +398,10 @@ class CppCodeGenerator:
             return self._visit_ternary(node)
         elif isinstance(node, CallNode):
             return self._visit_call(node)
+        elif isinstance(node, MethodCallNode):
+            return self._visit_method_call(node)
+        elif isinstance(node, PropertyAccessNode):
+            return self._visit_property_access(node)
         else:
             raise IRError(
                 IRErrorKind.UNSUPPORTED_OP,
@@ -527,6 +560,72 @@ class CppCodeGenerator:
         
         return f"{cpp_name}({args})"
     
+    def _visit_method_call(self, node: MethodCallNode) -> str:
+        """
+        Generate C++ for method call on object.
+        
+        Example: particle.GetPx() → "particle.GetPx()"
+        
+        Phase 6a: Only no-argument methods supported.
+        Methods with arguments raise UNSUPPORTED_OP in _validate_ir.
+        """
+        # Generate code for the object
+        object_code = self._visit(node.object)
+        
+        # Optionally validate via reflection
+        if self.reflection_cache and node.object.dtype.kind == IRTypeKind.Object:
+            class_name = node.object.dtype.cpp_type
+            try:
+                method_info = self.reflection_cache.resolve_method(
+                    class_name,
+                    node.method_name
+                )
+                # Check for pointer return types (not supported in Phase 6a)
+                if method_info and method_info.return_type:
+                    ret_type = method_info.return_type.strip()
+                    if ret_type.endswith('*'):
+                        raise IRError(
+                            IRErrorKind.UNSUPPORTED_OP,
+                            f"Method '{node.method_name}' returns pointer type '{ret_type}' which is not supported",
+                            suggestions=["Pointer return types will be supported in Phase 8+"]
+                        )
+            except IRError as e:
+                # Re-raise pointer type errors
+                if "pointer type" in str(e.message):
+                    raise
+                # Other reflection errors - proceed anyway, let C++ compiler catch
+                pass
+        
+        # Generate method call (no arguments in Phase 6a)
+        return f"{object_code}.{node.method_name}()"
+    
+    def _visit_property_access(self, node: PropertyAccessNode) -> str:
+        """
+        Generate C++ for property access on object.
+        
+        Example: vec.fX → "vec.fX"
+        
+        Note: Only public members will compile successfully.
+        Private/protected members will cause C++ compilation errors.
+        """
+        # Generate code for the object
+        object_code = self._visit(node.object)
+        
+        # Optionally validate via reflection
+        if self.reflection_cache and node.object.dtype.kind == IRTypeKind.Object:
+            class_name = node.object.dtype.cpp_type
+            try:
+                prop_info = self.reflection_cache.resolve_property(
+                    class_name,
+                    node.property_name
+                )
+                # Property found - could do additional validation here
+            except IRError:
+                # Reflection failed - proceed anyway, let C++ compiler catch errors
+                pass
+        
+        return f"{object_code}.{node.property_name}"
+    
     def _cpp_function_name(self, node: CallNode) -> str:
         """Convert DSL function name to C++ function name."""
         # Check if it's a namespaced function (e.g., TMath.Gaus)
@@ -576,6 +675,13 @@ class CppCodeGenerator:
             elif isinstance(node, BinaryOpNode):
                 if node.op == BinaryOp.POW:
                     headers.add("<cmath>")
+            
+            # Phase 6a: Add class headers for object types
+            elif isinstance(node, VariableNode):
+                if node.dtype.kind == IRTypeKind.Object:
+                    class_name = node.dtype.cpp_type
+                    if class_name in CLASS_HEADERS:
+                        headers.add(CLASS_HEADERS[class_name])
         
         return sorted(headers)
     
