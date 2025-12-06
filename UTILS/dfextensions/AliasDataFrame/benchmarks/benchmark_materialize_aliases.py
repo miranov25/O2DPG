@@ -604,12 +604,16 @@ def run_scenario_simple(df_main, verbose=True, profile=False, profile_output=Non
         print(f"  Targets: {targets}")
     
     def do_materialize():
+        # Generate both text and binary profile paths
+        profile_text_path = profile_output if profile_output else None
+        profile_binary_path = profile_output.replace('.txt', '.prof') if profile_output else None
         adf.materialize_aliases(
             names=targets,
             with_dependencies=True,
             cleanTemporary=True,
             profile=profile,
-            profile_text=profile_output,
+            profile_text=profile_text_path,
+            profile_binary=profile_binary_path,
         )
     
     result = measure_materialize(do_materialize, adf)
@@ -690,12 +694,16 @@ def run_scenario_subframe(df_main, df_subframe, fill_mode, verbose=True,
         print(f"  Fill mode: {fill_mode}")
     
     def do_materialize():
+        # Generate both text and binary profile paths
+        profile_text_path = profile_output if profile_output else None
+        profile_binary_path = profile_output.replace('.txt', '.prof') if profile_output else None
         adf.materialize_aliases(
             names=targets,
             with_dependencies=True,
             cleanTemporary=True,
             profile=profile,
-            profile_text=profile_output,
+            profile_text=profile_text_path,
+            profile_binary=profile_binary_path,
         )
     
     result = measure_materialize(do_materialize, adf)

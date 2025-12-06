@@ -49,6 +49,7 @@ THRESHOLD=20
 BASELINE_FILE="${SCRIPT_DIR}/baseline.json"
 PROFILE_FLAG=""
 FULL_FLAG=""
+SCALE_FLAG=""
 
 # Results tracking
 declare -a BENCHMARK_NAMES
@@ -164,6 +165,11 @@ while [[ $# -gt 0 ]]; do
             VERBOSE=true  # Full mode should show all output
             shift
             ;;
+        --large)
+            SCALE_FLAG="--scale"
+            VERBOSE=true  # Large mode should show output
+            shift
+            ;;
         --save-baseline)
             SAVE_BASELINE=true
             shift
@@ -195,6 +201,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --verbose, -v      Show detailed output"
             echo "  --profile          Save profiler output (.prof and .txt) for analysis"
             echo "  --full             Full analysis: verbose + profiling + baseline comparison + history"
+            echo "  --large            Run large scale benchmarks (10^7 rows, slow)"
             echo "  --output DIR       Output directory (default: benchmarks/results)"
             echo ""
             echo "Regression Detection:"
@@ -558,11 +565,11 @@ COMPOSITE_JSON="${OUTPUT_DIR}/benchmark_composite_keys_rdf_${TIMESTAMP}.json"
 START_TIME=$(get_time)
 
 if [[ "$VERBOSE" = true ]]; then
-    OUTPUT=$(python3 "${SCRIPT_DIR}/benchmark_composite_keys_rdf.py" $QUICK_MODE $PROFILE_FLAG --json "$COMPOSITE_JSON" 2>&1)
+    OUTPUT=$(python3 "${SCRIPT_DIR}/benchmark_composite_keys_rdf.py" $QUICK_MODE $SCALE_FLAG $PROFILE_FLAG --json "$COMPOSITE_JSON" 2>&1)
     COMP_STATUS=$?
     echo "$OUTPUT"
 else
-    OUTPUT=$(python3 "${SCRIPT_DIR}/benchmark_composite_keys_rdf.py" $QUICK_MODE --json "$COMPOSITE_JSON" --quiet 2>&1)
+    OUTPUT=$(python3 "${SCRIPT_DIR}/benchmark_composite_keys_rdf.py" $QUICK_MODE $SCALE_FLAG --json "$COMPOSITE_JSON" --quiet 2>&1)
     COMP_STATUS=$?
 fi
 

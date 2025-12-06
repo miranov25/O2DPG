@@ -10,9 +10,15 @@ Tests the Phase 5 composite key infrastructure:
 
 Usage:
     python benchmark_composite_keys_rdf.py --json results.json           # Required: JSON output
-    python benchmark_composite_keys_rdf.py --quick --json results.json   # Quick mode
+    python benchmark_composite_keys_rdf.py --quick --json results.json   # Quick mode (10^4 rows)
+    python benchmark_composite_keys_rdf.py --scale --json results.json   # Scale mode (10^7 rows)
     python benchmark_composite_keys_rdf.py --profile --json results.json # With profiling
     python benchmark_composite_keys_rdf.py --quiet --json results.json   # Minimal output
+
+Modes:
+    --quick: 10^4 rows (fast, for CI)
+    default: 10^5, 10^6 rows
+    --scale: 10^5, 10^6, 10^7 rows (slow, for performance characterization)
 
 Exit Codes:
     0 - All benchmarks completed (passed or skipped)
@@ -94,6 +100,13 @@ DEFAULT_SIZES = {
     'sparse': [100_000, 1_000_000],
     'tmemfile_main': 1_000_000,
     'tmemfile_friend': 100_000,
+}
+
+SCALE_SIZES = {
+    'dense': [100_000, 1_000_000, 10_000_000],
+    'sparse': [100_000, 1_000_000, 10_000_000],
+    'tmemfile_main': 10_000_000,
+    'tmemfile_friend': 1_000_000,
 }
 
 # TPC-like key ranges (realistic ALICE calibration)
@@ -453,23 +466,44 @@ def benchmark_rdf_query(tmemfile_result, verbose=True):
 # Main Runner
 # =============================================================================
 
-def run_all_benchmarks(quick_mode=False, verbose=True, profile=False, results_dir=None):
+def run_all_benchmarks(quick_mode=False, scale_mode=False, verbose=True, profile=False, results_dir=None):
     """
     Run all benchmark scenarios.
+    
+    Parameters
+    ----------
+    quick_mode : bool
+        Use smaller data sizes (10^4 rows)
+    scale_mode : bool
+        Use larger data sizes (10^5, 10^6, 10^7 rows)
+    verbose : bool
+        Print progress information
+    profile : bool
+        Enable cProfile profiling
+    results_dir : str
+        Directory for profile output files
     
     Returns dict with results for each scenario.
     """
     np.random.seed(RNG_SEED)
     
-    sizes = QUICK_SIZES if quick_mode else DEFAULT_SIZES
+    # Select configuration based on mode
+    if scale_mode:
+        sizes = SCALE_SIZES
+        mode_name = 'scale'
+    elif quick_mode:
+        sizes = QUICK_SIZES
+        mode_name = 'quick'
+    else:
+        sizes = DEFAULT_SIZES
+        mode_name = 'default'
     
     results = {}
     total_start = time.perf_counter()
     
     if verbose:
-        mode = 'quick' if quick_mode else 'default'
         print(f"\n{'='*60}")
-        print(f"Composite Keys / RDF Benchmark ({mode} mode)")
+        print(f"Composite Keys / RDF Benchmark ({mode_name} mode)")
         print(f"{'='*60}")
     
     # Scenario A: Dense Key Generation
@@ -671,7 +705,13 @@ def main():
 Examples:
     python benchmark_composite_keys_rdf.py --json results.json
     python benchmark_composite_keys_rdf.py --quick --json results.json
+    python benchmark_composite_keys_rdf.py --scale --json results.json
     python benchmark_composite_keys_rdf.py --profile --json results.json
+
+Modes:
+    --quick: 10^4 rows (fast, for CI)
+    default: 10^5, 10^6 rows
+    --scale: 10^5, 10^6, 10^7 rows (slow, for performance characterization)
 
 Scenarios:
     A. dense_generation:  compute_composite_key_dense() performance
@@ -683,7 +723,9 @@ Scenarios:
     parser.add_argument('--json', type=str, required=True, metavar='FILE',
                         help='Export results to JSON file (required)')
     parser.add_argument('--quick', action='store_true',
-                        help='Quick mode: smaller data sizes')
+                        help='Quick mode: 10^4 rows (fast)')
+    parser.add_argument('--scale', action='store_true',
+                        help='Scale mode: 10^5, 10^6, 10^7 rows (slow)')
     parser.add_argument('--quiet', action='store_true',
                         help='Minimal output')
     parser.add_argument('--profile', action='store_true',
@@ -692,7 +734,14 @@ Scenarios:
     args = parser.parse_args()
     
     verbose = not args.quiet
-    mode = 'quick' if args.quick else 'default'
+    
+    # Determine mode name
+    if args.scale:
+        mode = 'scale'
+    elif args.quick:
+        mode = 'quick'
+    else:
+        mode = 'default'
     
     # Determine results directory for profiling
     results_dir = os.path.dirname(args.json) or 'results'
@@ -700,6 +749,7 @@ Scenarios:
     # Run benchmarks
     results = run_all_benchmarks(
         quick_mode=args.quick,
+        scale_mode=args.scale,
         verbose=verbose,
         profile=args.profile,
         results_dir=results_dir if args.profile else None,
