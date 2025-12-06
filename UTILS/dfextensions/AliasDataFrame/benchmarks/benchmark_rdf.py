@@ -488,7 +488,7 @@ Examples:
             print(f"\n  Falling back to: {fallback}")
             args.aliases = [fallback]
         
-        tree, f = setup_tree_with_friends(args.filepath, "tree", adf.schema)
+        tree, f, *_ = setup_tree_with_friends(args.filepath, "tree", adf.schema)
         
         n_rows = tree.GetEntries()
         if verbose:

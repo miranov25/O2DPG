@@ -547,6 +547,39 @@ else
 fi
 
 # =============================================================================
+# Composite Keys / RDF Benchmark
+# =============================================================================
+
+echo "--- benchmark_composite_keys_rdf.py (RDF composite key path) ---"
+echo "    Tests: dense/sparse key generation, TMemFile setup, RDF query"
+
+COMPOSITE_JSON="${OUTPUT_DIR}/benchmark_composite_keys_rdf_${TIMESTAMP}.json"
+
+START_TIME=$(get_time)
+
+if [[ "$VERBOSE" = true ]]; then
+    OUTPUT=$(python3 "${SCRIPT_DIR}/benchmark_composite_keys_rdf.py" $QUICK_MODE $PROFILE_FLAG --json "$COMPOSITE_JSON" 2>&1)
+    COMP_STATUS=$?
+    echo "$OUTPUT"
+else
+    OUTPUT=$(python3 "${SCRIPT_DIR}/benchmark_composite_keys_rdf.py" $QUICK_MODE --json "$COMPOSITE_JSON" --quiet 2>&1)
+    COMP_STATUS=$?
+fi
+
+END_TIME=$(get_time)
+ELAPSED=$(calc_elapsed "$START_TIME" "$END_TIME")
+
+if [[ $COMP_STATUS -eq 0 ]]; then
+    log_result "benchmark_composite_keys_rdf.py" "PASSED" "$ELAPSED" ""
+    print_status "benchmark_composite_keys_rdf.py" "PASSED" "$ELAPSED"
+else
+    log_result "benchmark_composite_keys_rdf.py" "FAILED" "$ELAPSED" "Exit code $COMP_STATUS"
+    print_status "benchmark_composite_keys_rdf.py" "FAILED" "$ELAPSED"
+fi
+
+echo ""
+
+# =============================================================================
 # Baseline Operations
 # =============================================================================
 
