@@ -778,6 +778,143 @@ class DFDraw:
         
         return fig, axes, stats_dict
     
+    def hexbin(
+        self,
+        expr: str,
+        selection: Optional[Union[str, np.ndarray, callable]] = None,
+        sample: Optional[int] = None,
+        gridsize: int = 50,
+        extent: Optional[Tuple[float, float, float, float]] = None,
+        norm: Optional[str] = None,
+        stats: Optional[Union[bool, List[str]]] = None,
+        title: Optional[str] = None,
+        xlabel: Optional[str] = None,
+        ylabel: Optional[str] = None,
+        ax=None,
+        save: Optional[str] = None,
+        group_by: Optional[str] = None,
+        facet: bool = False,
+        ncols: Optional[int] = None,
+        sharex: bool = True,
+        sharey: bool = True,
+        top_k: Optional[int] = None,
+        cmap: Optional[str] = None,
+        colorbar: bool = True,
+        clabel: Optional[str] = None,
+        mincnt: Optional[int] = None,
+        vmin: Optional[float] = None,
+        vmax: Optional[float] = None,
+        **kwargs
+    ) -> DrawResult:
+        """
+        Draw hexbin plot (2D density with hexagonal bins).
+        
+        Better than hist2d for large datasets - hexagons tile more 
+        efficiently and avoid alignment artifacts.
+        
+        Parameters
+        ----------
+        expr : str
+            Expression in "y:x" format.
+        selection : optional
+            Data selection/cut.
+        sample : int, optional
+            Max points to use.
+        gridsize : int, default 50
+            Number of hexagons in x-direction.
+        extent : tuple, optional
+            (xmin, xmax, ymin, ymax) extent.
+        norm : str, optional
+            Normalization: None (count), "log".
+        stats : bool or list, optional
+            Show stats box.
+        title : str, optional
+            Plot title.
+        xlabel, ylabel : str, optional
+            Axis labels.
+        ax : Axes, optional
+            Existing axes.
+        save : str, optional
+            Save path.
+        group_by : str, optional
+            Column for grouping.
+        facet : bool, default False
+            Create subplots for groups (requires group_by).
+        ncols : int, optional
+            Number of columns for facet grid.
+        sharex : bool, default True
+            Share x-axis in facet mode.
+        sharey : bool, default True
+            Share y-axis in facet mode.
+        top_k : int, optional
+            Show only top K groups.
+        cmap : str, optional
+            Colormap name.
+        colorbar : bool, default True
+            Show colorbar.
+        clabel : str, optional
+            Colorbar label.
+        mincnt : int, optional
+            Minimum count to display a hexagon.
+        vmin, vmax : float, optional
+            Color scale limits.
+        **kwargs
+            Additional arguments to plt.hexbin().
+        
+        Returns
+        -------
+        tuple
+            (fig, ax, stats_dict)
+        """
+        from .plots.histogram import draw_hexbin
+        
+        # Parse expression
+        y_expr, x_expr = self._parse_expr(expr)
+        
+        if x_expr is None:
+            raise ValueError(
+                f"hexbin requires 'y:x' format, got '{expr}'"
+            )
+        
+        # Apply selection and sampling
+        df = self._apply_selection(self.df, selection)
+        df = self._apply_sampling(df, sample)
+        
+        # Evaluate expressions if needed
+        if y_expr not in df.columns:
+            df = df.assign(**{y_expr: self._eval_column(y_expr)})
+        if x_expr not in df.columns:
+            df = df.assign(**{x_expr: self._eval_column(x_expr)})
+        
+        # Facet mode
+        if facet and group_by is not None:
+            from .facet import facet_hexbin
+            fig, axes, stats_dict = facet_hexbin(
+                df, x_expr, y_expr, group_by,
+                top_k=top_k, ncols=ncols, sharex=sharex, sharey=sharey,
+                suptitle=title, gridsize=gridsize, extent=extent, norm=norm,
+                stats=stats, xlabel=xlabel, ylabel=ylabel,
+                cmap=cmap, colorbar=colorbar, clabel=clabel,
+                mincnt=mincnt, vmin=vmin, vmax=vmax, **kwargs
+            )
+        else:
+            # Standard mode
+            fig, ax, stats_dict = draw_hexbin(
+                df, x_expr, y_expr,
+                ax=ax, gridsize=gridsize, extent=extent, norm=norm,
+                stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
+                cmap=cmap, colorbar=colorbar, clabel=clabel,
+                mincnt=mincnt, vmin=vmin, vmax=vmax, **kwargs
+            )
+            axes = ax
+        
+        # Save if requested
+        if save:
+            fig.savefig(save, dpi=get_style_value("figure.dpi", 100),
+                       bbox_inches="tight")
+        
+        return fig, axes, stats_dict
+    
     # =========================================================================
     # Statistics Method
     # =========================================================================

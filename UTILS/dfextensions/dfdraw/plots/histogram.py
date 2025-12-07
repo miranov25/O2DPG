@@ -457,3 +457,150 @@ def _add_stats_box_2d(
         horizontalalignment=ha,
         bbox=dict(boxstyle=boxstyle, facecolor="white", alpha=alpha)
     )
+
+
+def draw_hexbin(
+    df: pd.DataFrame,
+    x: Union[str, pd.Series, np.ndarray],
+    y: Union[str, pd.Series, np.ndarray],
+    ax: Optional[plt.Axes] = None,
+    gridsize: int = 50,
+    extent: Optional[Tuple[float, float, float, float]] = None,
+    norm: Optional[str] = None,
+    stats: Optional[Union[bool, List[str]]] = None,
+    title: Optional[str] = None,
+    xlabel: Optional[str] = None,
+    ylabel: Optional[str] = None,
+    cmap: Optional[str] = None,
+    colorbar: bool = True,
+    clabel: Optional[str] = None,
+    mincnt: Optional[int] = None,
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    **kwargs
+) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
+    """
+    Draw hexbin plot (2D density with hexagonal bins).
+    
+    Better than hist2d for large datasets - hexagons tile more efficiently
+    and avoid alignment artifacts.
+    
+    Parameters
+    ----------
+    df : DataFrame
+        Input data.
+    x : str, Series, or array
+        X-axis column.
+    y : str, Series, or array
+        Y-axis column.
+    ax : Axes, optional
+        Existing axes to plot on.
+    gridsize : int, default 50
+        Number of hexagons in x-direction.
+    extent : tuple, optional
+        (xmin, xmax, ymin, ymax) extent.
+    norm : str, optional
+        Normalization: None (count), "log".
+    stats : bool or list, optional
+        Show statistics box.
+    title : str, optional
+        Plot title.
+    xlabel : str, optional
+        X-axis label.
+    ylabel : str, optional
+        Y-axis label.
+    cmap : str, optional
+        Colormap name.
+    colorbar : bool, default True
+        Show colorbar.
+    clabel : str, optional
+        Colorbar label.
+    mincnt : int, optional
+        Minimum count to display a hexagon.
+    vmin, vmax : float, optional
+        Color scale limits.
+    **kwargs
+        Additional arguments passed to plt.hexbin().
+    
+    Returns
+    -------
+    tuple
+        (fig, ax, stats_dict)
+    """
+    # Get style defaults
+    if cmap is None:
+        cmap = "viridis"
+    
+    # Create figure if needed
+    if ax is None:
+        figsize = get_style_value("figure.figsize", (8, 6))
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.get_figure()
+    
+    # Get data
+    if isinstance(x, str):
+        x_name = x
+        x_data = df[x].values.astype(float)
+    else:
+        x_name = "x"
+        x_data = np.asarray(x, dtype=float)
+    
+    if isinstance(y, str):
+        y_name = y
+        y_data = df[y].values.astype(float)
+    else:
+        y_name = "y"
+        y_data = np.asarray(y, dtype=float)
+    
+    # Remove NaN
+    mask = ~(np.isnan(x_data) | np.isnan(y_data))
+    x_data = x_data[mask]
+    y_data = y_data[mask]
+    
+    # Statistics
+    stats_dict = _compute_hist2d_stats(x_data, y_data)
+    
+    # Normalization
+    bins_arg = None
+    if norm == "log":
+        bins_arg = "log"
+    
+    # Draw hexbin
+    hb = ax.hexbin(
+        x_data, y_data,
+        gridsize=gridsize,
+        extent=extent,
+        cmap=cmap,
+        mincnt=mincnt,
+        vmin=vmin,
+        vmax=vmax,
+        bins=bins_arg,
+        **kwargs
+    )
+    
+    # Colorbar
+    if colorbar:
+        cbar = plt.colorbar(hb, ax=ax)
+        if clabel:
+            cbar.set_label(clabel)
+        elif norm == "log":
+            cbar.set_label("log10(Count)")
+        else:
+            cbar.set_label("Count")
+    
+    # Labels
+    ax.set_xlabel(xlabel or x_name)
+    ax.set_ylabel(ylabel or y_name)
+    
+    if title:
+        ax.set_title(title)
+    
+    # Statistics box
+    if stats is True or (stats is None and get_style_value("stats.show", False)):
+        _add_stats_box_2d(ax, stats_dict, stats if isinstance(stats, list) else None)
+    elif isinstance(stats, list):
+        _add_stats_box_2d(ax, stats_dict, stats)
+    
+    plt.tight_layout()
+    return fig, ax, stats_dict

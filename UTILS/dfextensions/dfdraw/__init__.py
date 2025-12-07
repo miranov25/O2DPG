@@ -31,6 +31,7 @@ from .facet import (
     facet_scatter,
     facet_profile,
     facet_hist2d,
+    facet_hexbin,
 )
 
 # Functional API (convenience wrappers)
@@ -46,6 +47,10 @@ def hist2d(data, expr, **kwargs):
     """Draw 2D histogram."""
     return DFDraw(data).hist2d(expr, **kwargs)
 
+def hexbin(data, expr, **kwargs):
+    """Draw hexbin plot (2D density with hexagonal bins)."""
+    return DFDraw(data).hexbin(expr, **kwargs)
+
 def scatter(data, expr, **kwargs):
     """Draw scatter plot."""
     return DFDraw(data).scatter(expr, **kwargs)
@@ -58,9 +63,10 @@ __all__ = [
     # Class
     "DFDraw",
     # Functional
-    "draw", "hist", "hist2d", "scatter", "profile",
+    "draw", "hist", "hist2d", "hexbin", "scatter", "profile",
     # Facet utilities
-    "create_facet_grid", "facet_hist", "facet_scatter", "facet_profile", "facet_hist2d",
+    "create_facet_grid", "facet_hist", "facet_scatter", "facet_profile", 
+    "facet_hist2d", "facet_hexbin",
     # Style
     "get_style", "set_style", "save_style", "load_style", "list_styles",
     "DEFAULT_STYLE",

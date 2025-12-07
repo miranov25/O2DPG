@@ -305,3 +305,36 @@ def facet_hist2d(
         sharex=sharex, sharey=sharey, suptitle=suptitle,
         **hist2d_kwargs
     )
+
+
+def facet_hexbin(
+    df: pd.DataFrame,
+    x: str,
+    y: str,
+    group_by: str,
+    top_k: Optional[int] = None,
+    ncols: Optional[int] = None,
+    figsize: Optional[Tuple[float, float]] = None,
+    sharex: bool = True,
+    sharey: bool = True,
+    suptitle: Optional[str] = None,
+    **hexbin_kwargs
+) -> Tuple[plt.Figure, np.ndarray, Dict[str, Any]]:
+    """
+    Create faceted hexbin plot with subplots for each group.
+    """
+    from .plots.histogram import draw_hexbin
+    
+    # For hexbin, disable colorbar per subplot (too cluttered)
+    hexbin_kwargs.setdefault('colorbar', False)
+    
+    def plot_func(group_df, ax, **kwargs):
+        _, _, stats = draw_hexbin(group_df, x, y, ax=ax, **kwargs)
+        return stats
+    
+    return draw_facet(
+        df, group_by, plot_func,
+        top_k=top_k, ncols=ncols, figsize=figsize,
+        sharex=sharex, sharey=sharey, suptitle=suptitle,
+        **hexbin_kwargs
+    )
