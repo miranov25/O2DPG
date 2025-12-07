@@ -863,6 +863,82 @@ class AliasDataFrame:
             self._use_arrow = use_arrow and PYARROW_AVAILABLE
 
     # =========================================================================
+    # SECTION 0b: Proxy Pattern - DataFrame Delegation
+    # =========================================================================
+    #
+    # Enable direct DataFrame-like access: adf['column'], len(adf), adf.head()
+    # instead of adf.df['column'], len(adf.df), adf.df.head()
+    #
+    # =========================================================================
+
+    def __getitem__(self, key):
+        """
+        Enable adf['column'] and adf[['col1', 'col2']] syntax.
+        
+        Examples
+        --------
+        >>> adf['x']           # Single column
+        >>> adf[['x', 'y']]    # Multiple columns
+        >>> adf['x'].mean()    # Chain with pandas methods
+        """
+        return self.df[key]
+    
+    def __setitem__(self, key, value):
+        """
+        Block direct assignment to prevent confusion between aliases and columns.
+        
+        Use add_alias() for computed columns or adf.df['column'] = value for direct assignment.
+        """
+        raise TypeError(
+            "Direct assignment via adf['column'] = value is not supported.\n"
+            "Use one of:\n"
+            "  adf.add_alias('name', 'expression')  # For computed columns\n"
+            "  adf.df['column'] = value             # For direct DataFrame modification"
+        )
+    
+    def __len__(self):
+        """Enable len(adf) to return number of rows."""
+        return len(self.df)
+    
+    def __iter__(self):
+        """Enable iteration over column names."""
+        return iter(self.df)
+    
+    def __contains__(self, key):
+        """Enable 'column' in adf syntax."""
+        return key in self.df.columns
+    
+    @property
+    def columns(self):
+        """DataFrame columns (read-only access)."""
+        return self.df.columns
+    
+    @property
+    def index(self):
+        """DataFrame index (read-only access)."""
+        return self.df.index
+    
+    @property
+    def shape(self):
+        """DataFrame shape as (rows, columns) tuple."""
+        return self.df.shape
+    
+    @property
+    def dtypes(self):
+        """DataFrame column dtypes."""
+        return self.df.dtypes
+    
+    @property
+    def loc(self):
+        """Label-based indexer for DataFrame rows/columns."""
+        return self.df.loc
+    
+    @property
+    def iloc(self):
+        """Integer-based indexer for DataFrame rows/columns."""
+        return self.df.iloc
+
+    # =========================================================================
     # SECTION 1: Core DataFrame Operations & Schema Properties
     # =========================================================================
     #
@@ -1270,14 +1346,39 @@ class AliasDataFrame:
                     warnings.warn(f"Failed to cast '{col}' to {dtype}: {e}")
 
     def __getattr__(self, item: str):
+        """
+        Attribute access with DataFrame delegation.
+        
+        Order of resolution:
+        1. DataFrame columns → returns column Series
+        2. Defined aliases → materializes and returns column
+        3. Registered subframes → returns SubframeProxy
+        4. DataFrame methods → delegates to self.df (enables adf.head(), adf.describe(), etc.)
+        5. Otherwise → raises AttributeError
+        """
+        # Avoid infinite recursion during unpickling or when df doesn't exist yet
+        if item in ('df', '_schema', '_subframes', 'aliases'):
+            raise AttributeError(item)
+        
+        # 1. Check DataFrame columns
         if item in self.df.columns:
             return self.df[item]
+        
+        # 2. Check defined aliases
         if item in self.aliases:
             self.materialize_alias(item)
             return self.df[item]
+        
+        # 3. Check registered subframes
         sf = self._subframes.get(item)
         if sf is not None:
             return sf
+        
+        # 4. Delegate to DataFrame methods (head, tail, describe, groupby, etc.)
+        if hasattr(self.df, item):
+            return getattr(self.df, item)
+        
+        # 5. Not found
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{item}'")
 
     # =========================================================================
