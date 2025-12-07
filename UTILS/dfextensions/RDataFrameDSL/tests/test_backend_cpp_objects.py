@@ -12,6 +12,7 @@ Mock tests run everywhere. ROOT tests are skipped if ROOT unavailable.
 import pytest
 import os
 import tempfile
+from unittest.mock import Mock
 from RDataFrameDSL.ir_types import IRType, IRTypeKind
 from RDataFrameDSL.ir_nodes import (
     ConstantNode, VariableNode, UnaryOpNode, BinaryOpNode, TernaryOpNode,
@@ -239,7 +240,11 @@ class TestPropertyAccessCodeGeneration:
         return CppCodeGenerator()
     
     def test_simple_property_access(self, generator):
-        """Simple property access generates correct pattern."""
+        """Simple property access generates correct pattern (without reflection)."""
+        # Mock _get_data_member_info to return None (simulate no ROOT/fallback)
+        # This tests the Phase 6a direct access path
+        generator._get_data_member_info = Mock(return_value=None)
+        
         vec = make_object_var("vec", "TVector3")
         
         ir = PropertyAccessNode(

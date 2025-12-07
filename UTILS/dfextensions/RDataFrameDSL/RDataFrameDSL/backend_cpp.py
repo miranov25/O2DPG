@@ -40,6 +40,14 @@ Phase 6b Scope (RVec Operations):
 - Negative literal indexing (pt[-1])
 - Safe bounds checking (default ON, returns NaN)
 - RVec methods: size(), empty(), at()
+
+Phase 6c Scope (Private/Protected Member Access):
+- Detect member access level (public/protected/private) via TClass
+- Direct access for public members (obj.member)
+- Reflection-based access for protected/private members via GetOffset()
+- IsBasic() validation (reject non-basic members)
+- IsaPointer() validation (reject pointer members)
+- Thread-safe via C++11 magic statics
 """
 
 import re
@@ -63,6 +71,7 @@ __all__ = [
     'CLASS_HEADERS',
     'RVEC_HEADER',
     'RVEC_METHODS',
+    'REFLECTION_HEADERS',
 ]
 
 
@@ -189,6 +198,9 @@ RVEC_HEADER = "<ROOT/RVec.hxx>"
 # RVec methods supported in Phase 6b
 RVEC_METHODS = {"size", "empty", "at"}
 
+# Reflection headers for private/protected member access (Phase 6c)
+REFLECTION_HEADERS = ["<TClass.h>", "<TDataMember.h>"]
+
 
 # =============================================================================
 # GeneratedFunction
@@ -253,7 +265,8 @@ class CppCodeGenerator:
                  type_inferrer: Any = None,
                  reflection_cache: Any = None,
                  error_detail: str = "full",
-                 safe_indexing: bool = True):
+                 safe_indexing: bool = True,
+                 use_reflection: bool = True):
         """
         Initialize code generator.
         
@@ -264,12 +277,17 @@ class CppCodeGenerator:
             safe_indexing: If True (default), generate bounds-checked indexing that
                           returns NaN for out-of-bounds access. If False, use direct
                           indexing (faster but undefined behavior on out-of-bounds).
+            use_reflection: If True (default), use TClass reflection to access
+                           protected/private members. If False, only allow public
+                           member access (let C++ compiler enforce access rules).
         """
         self.type_inferrer = type_inferrer
         self.reflection_cache = reflection_cache
         self.error_detail = error_detail
         self.safe_indexing = safe_indexing
+        self.use_reflection = use_reflection
         self._existing_names: Set[str] = set()
+        self._uses_reflection_access = False  # Track if reflection access was generated
     
     def generate(self, ir: IRNode, name: str) -> GeneratedFunction:
         """
@@ -285,6 +303,9 @@ class CppCodeGenerator:
         Raises:
             IRError: If code generation fails
         """
+        # Reset per-generation state
+        self._uses_reflection_access = False
+        
         # Check for unsupported node types
         self._validate_ir(ir)
         
@@ -681,28 +702,134 @@ class CppCodeGenerator:
         """
         Generate C++ for property access on object.
         
-        Example: vec.fX → "vec.fX"
+        Phase 6c supports:
+        - Direct access for public members: obj.member
+        - Reflection-based access for protected/private members via GetOffset()
         
-        Note: Only public members will compile successfully.
-        Private/protected members will cause C++ compilation errors.
+        Example:
+            vec.fX (public) → "vec.fX"
+            particle.fPx (protected) → lambda with TClass reflection
+        
+        The reflection approach uses C++11 "magic statics" which are thread-safe.
         """
         # Generate code for the object
         object_code = self._visit(node.object)
+        class_name = node.object.dtype.cpp_type if node.object.dtype.kind == IRTypeKind.Object else None
+        member_name = node.property_name
         
-        # Optionally validate via reflection
-        if self.reflection_cache and node.object.dtype.kind == IRTypeKind.Object:
-            class_name = node.object.dtype.cpp_type
-            try:
-                prop_info = self.reflection_cache.resolve_property(
-                    class_name,
-                    node.property_name
-                )
-                # Property found - could do additional validation here
-            except IRError:
-                # Reflection failed - proceed anyway, let C++ compiler catch errors
-                pass
+        # If reflection is disabled or no class info, use direct access
+        if not self.use_reflection or not class_name:
+            return f"{object_code}.{member_name}"
         
-        return f"{object_code}.{node.property_name}"
+        # Try to get data member info via reflection
+        dm_info = self._get_data_member_info(class_name, member_name)
+        
+        if dm_info is None:
+            # Member not found - fall back to direct access (let C++ compiler handle it)
+            # This allows mock tests without ROOT to still work
+            return f"{object_code}.{member_name}"
+        
+        # Validate member type
+        if not dm_info['is_basic']:
+            access_str = dm_info.get('access_level', 'unknown')
+            raise IRError(
+                IRErrorKind.UNSUPPORTED_OP,
+                f"Non-basic member '{member_name}' ({access_str}) cannot be accessed via reflection",
+                suggestions=[f"Use getter method instead of direct member access"]
+            )
+        
+        if dm_info['is_pointer']:
+            access_str = dm_info.get('access_level', 'unknown')
+            raise IRError(
+                IRErrorKind.UNSUPPORTED_OP,
+                f"Pointer member '{member_name}' ({access_str}) not supported",
+                suggestions=["Pointer dereferencing is unsafe; use getter method"]
+            )
+        
+        # Check access level
+        if dm_info['is_public']:
+            # Public member - use direct access
+            return f"{object_code}.{member_name}"
+        else:
+            # Protected/private member - use reflection access
+            self._uses_reflection_access = True
+            return self._generate_reflection_access(
+                object_code, class_name, member_name, dm_info['type_name']
+            )
+    
+    def _get_data_member_info(self, class_name: str, member_name: str) -> Optional[dict]:
+        """
+        Get data member info using TClass reflection.
+        
+        Returns:
+            dict with keys: is_public, is_basic, is_pointer, type_name, access_level
+            None if TClass or member not found (e.g., ROOT not available)
+        """
+        try:
+            import ROOT
+            
+            tclass = ROOT.TClass.GetClass(class_name)
+            if not tclass:
+                return None
+            
+            dm = tclass.GetDataMember(member_name)
+            if not dm:
+                return None
+            
+            props = dm.Property()
+            
+            return {
+                'is_public': bool(props & ROOT.kIsPublic),
+                'is_basic': dm.IsBasic(),
+                'is_pointer': dm.IsaPointer(),
+                'type_name': dm.GetTypeName(),
+                'access_level': self._access_level_str(props),
+            }
+        except (ImportError, AttributeError):
+            # ROOT not available - return None to fall back to direct access
+            return None
+    
+    def _access_level_str(self, props: int) -> str:
+        """Convert property bits to access level string."""
+        try:
+            import ROOT
+            if props & ROOT.kIsPublic:
+                return "public"
+            if props & ROOT.kIsProtected:
+                return "protected"
+            if props & ROOT.kIsPrivate:
+                return "private"
+        except (ImportError, AttributeError):
+            pass
+        return "unknown"
+    
+    def _generate_reflection_access(self, object_code: str, class_name: str,
+                                     member_name: str, member_type: str) -> str:
+        """
+        Generate C++ code for reflection-based member access.
+        
+        Uses a lambda with static variables for one-time lookup (cached per function).
+        C++11 guarantees thread-safe initialization of function-local statics
+        ("magic statics"), so this approach is thread-safe.
+        
+        Example output:
+            [&]() -> double {
+                static TClass* cls = TClass::GetClass("TParticle");
+                static TDataMember* dm = cls->GetDataMember("fPx");
+                static Long_t offset = dm->GetOffset();
+                return *reinterpret_cast<const double*>(
+                    reinterpret_cast<const char*>(&particle) + offset);
+            }()
+        """
+        return (
+            f"[&]() -> {member_type} {{ "
+            f"static TClass* cls = TClass::GetClass(\"{class_name}\"); "
+            f"static TDataMember* dm = cls->GetDataMember(\"{member_name}\"); "
+            f"static Long_t offset = dm->GetOffset(); "
+            f"return *reinterpret_cast<const {member_type}*>("
+            f"reinterpret_cast<const char*>(&{object_code}) + offset); "
+            f"}}()"
+        )
     
     def _visit_subscript(self, node: SubscriptNode) -> str:
         """
@@ -852,6 +979,10 @@ class CppCodeGenerator:
         # Add limits header if safe indexing is used
         if needs_limits:
             headers.add("<limits>")
+        
+        # Phase 6c: Add reflection headers if private/protected member access is used
+        if self._uses_reflection_access:
+            headers.update(REFLECTION_HEADERS)
         
         return sorted(headers)
     

@@ -120,6 +120,7 @@ from .backend_cpp import (
     CLASS_HEADERS,
     RVEC_HEADER,
     RVEC_METHODS,
+    REFLECTION_HEADERS,
 )
 
 __all__ = [
@@ -198,4 +199,5 @@ __all__ = [
     'CLASS_HEADERS',
     'RVEC_HEADER',
     'RVEC_METHODS',
+    'REFLECTION_HEADERS',
 ]
