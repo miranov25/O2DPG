@@ -1,9 +1,9 @@
 """
-Profile plot implementation.
-[STUB - Phase 6.4]
+Profile plot implementation for dfdraw.
+
+[STUB - To be implemented in Phase 6.3]
 """
 
-
-def draw_profile(df, x, y, ax=None, **kwargs):
-    """Draw profile plot. To be implemented in Phase 6.4."""
-    raise NotImplementedError("Phase 6.4")
+def draw_profile(*args, **kwargs):
+    """Profile plot - not yet implemented."""
+    raise NotImplementedError("Profile plots will be implemented in Phase 6.3")

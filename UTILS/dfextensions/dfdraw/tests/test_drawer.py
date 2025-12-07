@@ -175,17 +175,27 @@ class TestDrawDispatch:
     
     def test_draw_1d_dispatches_to_hist(self):
         """1D expression should dispatch to hist."""
-        with pytest.raises(NotImplementedError, match="Phase 6.2"):
-            self.plotter.draw("x")
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        fig, ax, stats = self.plotter.draw("x")
+        assert isinstance(fig, plt.Figure)
+        assert stats['n'] == 3
+        plt.close('all')
     
     def test_draw_2d_dispatches_to_scatter(self):
         """2D expression should dispatch to scatter."""
-        with pytest.raises(NotImplementedError, match="Phase 6.3"):
-            self.plotter.draw("y:x")
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        fig, ax, stats = self.plotter.draw("y:x")
+        assert isinstance(fig, plt.Figure)
+        assert stats['n'] == 3
+        plt.close('all')
     
     def test_draw_explicit_type_profile(self):
         """Explicit type=profile should dispatch correctly."""
-        with pytest.raises(NotImplementedError, match="Phase 6.4"):
+        with pytest.raises(NotImplementedError, match="profile"):
             self.plotter.draw("y:x", type="profile")
     
     def test_draw_invalid_type_raises(self):

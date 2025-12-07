@@ -293,13 +293,196 @@ class DFDraw:
     # Plot Type Methods (Stubs - to be implemented in Phase 6.2-6.5)
     # =========================================================================
     
-    def hist(self, expr: str, **kwargs) -> DrawResult:
-        """Draw 1D histogram. [STUB - Phase 6.2]"""
-        raise NotImplementedError("hist() will be implemented in Phase 6.2")
+    def hist(
+        self, 
+        expr: str, 
+        selection: Optional[Union[str, np.ndarray, callable]] = None,
+        sample: Optional[int] = None,
+        bins: Optional[int] = None,
+        range: Optional[Tuple[float, float]] = None,
+        norm: Optional[str] = None,
+        stats: Optional[Union[bool, List[str]]] = None,
+        title: Optional[str] = None,
+        xlabel: Optional[str] = None,
+        ylabel: Optional[str] = None,
+        ax=None,
+        save: Optional[str] = None,
+        group_by: Optional[str] = None,
+        facet: bool = False,
+        **kwargs
+    ) -> DrawResult:
+        """
+        Draw 1D histogram.
+        
+        Parameters
+        ----------
+        expr : str
+            Column expression (single variable).
+        selection : optional
+            Data selection/cut.
+        sample : int, optional
+            Max points to use.
+        bins : int, optional
+            Number of bins.
+        range : tuple, optional
+            (min, max) range.
+        norm : str, optional
+            Normalization: "count", "density", "probability".
+        stats : bool or list, optional
+            Show stats box.
+        title : str, optional
+            Plot title.
+        xlabel, ylabel : str, optional
+            Axis labels.
+        ax : Axes, optional
+            Existing axes.
+        save : str, optional
+            Save path.
+        group_by : str, optional
+            Column for grouping.
+        facet : bool, default False
+            Create subplots for groups.
+        **kwargs
+            Additional arguments to plt.hist().
+        
+        Returns
+        -------
+        tuple
+            (fig, ax, stats_dict)
+        """
+        from .plots.histogram import draw_hist
+        
+        # Parse expression (take first part only for 1D)
+        y_expr, x_expr = self._parse_expr(expr)
+        col_expr = y_expr  # Use y (first part) as the variable
+        
+        # Apply selection and sampling
+        df = self._apply_selection(self.df, selection)
+        df = self._apply_sampling(df, sample)
+        
+        # Evaluate expression if needed
+        if col_expr not in df.columns:
+            df = df.assign(**{col_expr: self._eval_column(col_expr)})
+        
+        # Draw
+        fig, ax, stats_dict = draw_hist(
+            df, col_expr,
+            ax=ax, bins=bins, range=range, norm=norm, stats=stats,
+            title=title, xlabel=xlabel, ylabel=ylabel,
+            group_by=group_by, **kwargs
+        )
+        
+        # Save if requested
+        if save:
+            fig.savefig(save, dpi=get_style_value("figure.dpi", 100), 
+                       bbox_inches="tight")
+        
+        return fig, ax, stats_dict
     
-    def scatter(self, expr: str, **kwargs) -> DrawResult:
-        """Draw scatter plot. [STUB - Phase 6.3]"""
-        raise NotImplementedError("scatter() will be implemented in Phase 6.3")
+    def scatter(
+        self,
+        expr: str,
+        selection: Optional[Union[str, np.ndarray, callable]] = None,
+        sample: Optional[int] = None,
+        color: Optional[Union[str, np.ndarray]] = None,
+        size: Optional[Union[str, float, np.ndarray]] = None,
+        marker: Optional[str] = None,
+        stats: Optional[Union[bool, List[str]]] = None,
+        title: Optional[str] = None,
+        xlabel: Optional[str] = None,
+        ylabel: Optional[str] = None,
+        ax=None,
+        save: Optional[str] = None,
+        group_by: Optional[str] = None,
+        facet: bool = False,
+        cmap: Optional[str] = None,
+        colorbar: bool = True,
+        clabel: Optional[str] = None,
+        jitter: Optional[Union[bool, float, Tuple[float, float]]] = None,
+        **kwargs
+    ) -> DrawResult:
+        """
+        Draw scatter plot.
+        
+        Parameters
+        ----------
+        expr : str
+            Expression in "y:x" format.
+        selection : optional
+            Data selection/cut.
+        sample : int, optional
+            Max points to plot.
+        color : str, array, optional
+            Color mapping column or fixed color.
+        size : str, float, optional
+            Size mapping column or fixed size.
+        marker : str, optional
+            Marker style.
+        stats : bool or list, optional
+            Show stats box.
+        title : str, optional
+            Plot title.
+        xlabel, ylabel : str, optional
+            Axis labels.
+        ax : Axes, optional
+            Existing axes.
+        save : str, optional
+            Save path.
+        group_by : str, optional
+            Column for grouping.
+        facet : bool, default False
+            Create subplots for groups.
+        cmap : str, optional
+            Colormap name.
+        colorbar : bool, default True
+            Show colorbar.
+        clabel : str, optional
+            Colorbar label.
+        jitter : bool, float, or tuple, optional
+            Add jitter to points.
+        **kwargs
+            Additional arguments to plt.scatter().
+        
+        Returns
+        -------
+        tuple
+            (fig, ax, stats_dict)
+        """
+        from .plots.scatter import draw_scatter
+        
+        # Parse expression
+        y_expr, x_expr = self._parse_expr(expr)
+        
+        if x_expr is None:
+            raise ValueError(
+                f"Scatter plot requires 'y:x' format, got '{expr}'"
+            )
+        
+        # Apply selection and sampling
+        df = self._apply_selection(self.df, selection)
+        df = self._apply_sampling(df, sample)
+        
+        # Evaluate expressions if needed
+        if y_expr not in df.columns:
+            df = df.assign(**{y_expr: self._eval_column(y_expr)})
+        if x_expr not in df.columns:
+            df = df.assign(**{x_expr: self._eval_column(x_expr)})
+        
+        # Draw
+        fig, ax, stats_dict = draw_scatter(
+            df, x_expr, y_expr,
+            ax=ax, color=color, size=size, marker=marker,
+            stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
+            group_by=group_by, cmap=cmap, colorbar=colorbar,
+            clabel=clabel, jitter=jitter, **kwargs
+        )
+        
+        # Save if requested
+        if save:
+            fig.savefig(save, dpi=get_style_value("figure.dpi", 100),
+                       bbox_inches="tight")
+        
+        return fig, ax, stats_dict
     
     def profile(self, expr: str, **kwargs) -> DrawResult:
         """Draw profile plot. [STUB - Phase 6.4]"""
