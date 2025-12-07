@@ -118,6 +118,8 @@ from .backend_cpp import (
     FunctionLibrary,
     FUNCTION_HEADERS,
     CLASS_HEADERS,
+    RVEC_HEADER,
+    RVEC_METHODS,
 )
 
 __all__ = [
@@ -194,4 +196,6 @@ __all__ = [
     'FunctionLibrary',
     'FUNCTION_HEADERS',
     'CLASS_HEADERS',
+    'RVEC_HEADER',
+    'RVEC_METHODS',
 ]

@@ -1,9 +1,9 @@
 """
 C++ code generation backend for RDataFrame DSL.
 
-This module generates C++ helper functions from IR trees for scalar expressions.
-The generated functions can be compiled via ROOT's gInterpreter and used in
-RDataFrame.Define() calls.
+This module generates C++ helper functions from IR trees for scalar and vector
+expressions. The generated functions can be compiled via ROOT's gInterpreter
+and used in RDataFrame.Define() calls.
 
 Architecture:
     IR Tree → CppCodeGenerator → GeneratedFunction → FunctionLibrary → gInterpreter.Declare()
@@ -19,7 +19,7 @@ Example:
     >>> 
     >>> rdf.Define("pt", "alias_pt(px, py)")
 
-Phase 5 Scope (Scalars Only):
+Phase 5 Scope (Scalars):
 - Arithmetic operations (+, -, *, /, %, **)
 - Comparisons (<, <=, >, >=, ==, !=)
 - Logical operations (and, or, not)
@@ -27,6 +27,19 @@ Phase 5 Scope (Scalars Only):
 - Function calls (sqrt, sin, cos, abs, TMath::*)
 - Conditionals (ternary)
 - Constants (numeric, boolean) and variables
+
+Phase 6a Scope (Objects):
+- Method calls on objects (particle.Px())
+- Property access on objects (vec.fX)
+
+Phase 6b Scope (RVec Operations):
+- RVec arithmetic (pt * 1.5, px + py)
+- RVec comparisons (pt > 1.0)
+- Vectorized math via ADL (sqrt(pt))
+- Simple indexing (pt[0], pt[i])
+- Negative literal indexing (pt[-1])
+- Safe bounds checking (default ON, returns NaN)
+- RVec methods: size(), empty(), at()
 """
 
 import re
@@ -48,6 +61,8 @@ __all__ = [
     'FunctionLibrary',
     'FUNCTION_HEADERS',
     'CLASS_HEADERS',
+    'RVEC_HEADER',
+    'RVEC_METHODS',
 ]
 
 
@@ -168,6 +183,13 @@ CLASS_HEADERS: Dict[str, str] = {
 }
 
 
+# RVec header for vectorized operations (Phase 6b)
+RVEC_HEADER = "<ROOT/RVec.hxx>"
+
+# RVec methods supported in Phase 6b
+RVEC_METHODS = {"size", "empty", "at"}
+
+
 # =============================================================================
 # GeneratedFunction
 # =============================================================================
@@ -230,7 +252,8 @@ class CppCodeGenerator:
     def __init__(self,
                  type_inferrer: Any = None,
                  reflection_cache: Any = None,
-                 error_detail: str = "full"):
+                 error_detail: str = "full",
+                 safe_indexing: bool = True):
         """
         Initialize code generator.
         
@@ -238,10 +261,14 @@ class CppCodeGenerator:
             type_inferrer: TypeInferrer for looking up variable types
             reflection_cache: ReflectionCache for method/property types
             error_detail: Level of detail in error messages ("full", "summary", "minimal")
+            safe_indexing: If True (default), generate bounds-checked indexing that
+                          returns NaN for out-of-bounds access. If False, use direct
+                          indexing (faster but undefined behavior on out-of-bounds).
         """
         self.type_inferrer = type_inferrer
         self.reflection_cache = reflection_cache
         self.error_detail = error_detail
+        self.safe_indexing = safe_indexing
         self._existing_names: Set[str] = set()
     
     def generate(self, ir: IRNode, name: str) -> GeneratedFunction:
@@ -307,32 +334,53 @@ class CppCodeGenerator:
                         suggestions=["Check that all sub-expressions have valid types"]
                     )
             
-            # Phase 6a: Method calls supported, but not with arguments
+            # Phase 6a: Method calls supported, but not with arguments (except RVec.at())
             if isinstance(node, MethodCallNode):
+                # RVec methods: size(), empty() have no args; at() has one arg
                 if node.args and len(node.args) > 0:
-                    raise IRError(
-                        IRErrorKind.UNSUPPORTED_OP,
-                        f"Method arguments not yet supported: {node.method_name}(...)",
-                        suggestions=["Use no-argument methods for Phase 6a"]
-                    )
+                    # Allow at() with one argument for RVec
+                    if node.method_name == "at" and len(node.args) == 1:
+                        pass  # OK - at(i) is allowed
+                    else:
+                        raise IRError(
+                            IRErrorKind.UNSUPPORTED_OP,
+                            f"Method arguments not yet supported: {node.method_name}(...)",
+                            suggestions=["Use no-argument methods or at(i) for RVec"]
+                        )
             
             # Phase 6a: Property access supported
             # (PropertyAccessNode is now allowed)
             
-            # Phase 6b+: Subscript/slicing not yet supported
+            # Phase 6b: Subscript supported for RVec (single index only, no slicing)
             if isinstance(node, SubscriptNode):
-                raise IRError(
-                    IRErrorKind.UNSUPPORTED_OP,
-                    "Subscript/slicing operations are not supported yet",
-                    suggestions=["Subscript support will be added in Phase 6b"]
-                )
+                # Check for slicing (deferred to Phase 7)
+                if node.is_slice():
+                    raise IRError(
+                        IRErrorKind.UNSUPPORTED_OP,
+                        "Slicing operations (e.g., pt[1:3]) are not supported yet",
+                        suggestions=["Slicing support will be added in Phase 7"]
+                    )
+                # Check for multi-dimensional indexing (deferred)
+                if len(node.indices) > 1:
+                    raise IRError(
+                        IRErrorKind.UNSUPPORTED_OP,
+                        "Multi-dimensional indexing is not supported yet",
+                        suggestions=["Use single index for Phase 6b"]
+                    )
+                # Check for boolean mask (deferred)
+                if node.is_boolean_mask:
+                    raise IRError(
+                        IRErrorKind.UNSUPPORTED_OP,
+                        "Boolean mask indexing is not supported yet",
+                        suggestions=["Boolean masking will be added in Phase 7"]
+                    )
             
-            # Check rank - vectors not yet supported (Phase 6b)
-            if node.rank > 0 and not isinstance(node, (SliceNode,)):
+            # Check rank - allow rank 1 for RVec operations, reject rank > 1
+            if node.rank > 1 and not isinstance(node, (SliceNode,)):
                 raise IRError(
                     IRErrorKind.UNSUPPORTED_OP,
-                    f"Vector operations (rank > 0) are not supported yet",
-                    suggestions=["Vector support will be added in Phase 6b"]
+                    f"Nested vector operations (rank > 1) are not supported yet",
+                    suggestions=["Nested RVec support will be added in Phase 8"]
                 )
     
     def _collect_inputs(self, ir: IRNode) -> List[Tuple[str, str]]:
@@ -366,6 +414,11 @@ class CppCodeGenerator:
             cpp_type = node.dtype.cpp_type
             return f"const {cpp_type}&"
         
+        # RVec types (rank 1) use const reference
+        if node.rank == 1:
+            inner_type = node.dtype.to_cpp()
+            return f"const ROOT::RVec<{inner_type}>&"
+        
         # Scalar types use value
         return node.dtype.to_cpp()
     
@@ -378,6 +431,12 @@ class CppCodeGenerator:
                 suggestions=["Check that all sub-expressions have valid types"]
             )
         
+        # RVec return type (rank 1)
+        if ir.rank == 1:
+            inner_type = ir.dtype.to_cpp()
+            return f"ROOT::RVec<{inner_type}>"
+        
+        # Scalar return type
         return ir.dtype.to_cpp()
     
     def _generate_body(self, ir: IRNode) -> str:
@@ -402,6 +461,8 @@ class CppCodeGenerator:
             return self._visit_method_call(node)
         elif isinstance(node, PropertyAccessNode):
             return self._visit_property_access(node)
+        elif isinstance(node, SubscriptNode):
+            return self._visit_subscript(node)
         else:
             raise IRError(
                 IRErrorKind.UNSUPPORTED_OP,
@@ -566,13 +627,30 @@ class CppCodeGenerator:
         
         Example: particle.GetPx() → "particle.GetPx()"
         
-        Phase 6a: Only no-argument methods supported.
-        Methods with arguments raise UNSUPPORTED_OP in _validate_ir.
+        Phase 6a: Object methods (no arguments).
+        Phase 6b: RVec methods (size, empty, at).
         """
         # Generate code for the object
         object_code = self._visit(node.object)
         
-        # Optionally validate via reflection
+        # Check if this is an RVec method (Phase 6b)
+        if node.object.rank == 1 and node.method_name in RVEC_METHODS:
+            if node.method_name == "at":
+                # at(i) has one argument
+                if node.args and len(node.args) == 1:
+                    idx_code = self._visit(node.args[0])
+                    return f"{object_code}.at({idx_code})"
+                else:
+                    raise IRError(
+                        IRErrorKind.UNSUPPORTED_OP,
+                        "RVec.at() requires exactly one argument",
+                        suggestions=["Use vec.at(i) with a single index"]
+                    )
+            else:
+                # size() and empty() have no arguments
+                return f"{object_code}.{node.method_name}()"
+        
+        # Optionally validate via reflection for object types
         if self.reflection_cache and node.object.dtype.kind == IRTypeKind.Object:
             class_name = node.object.dtype.cpp_type
             try:
@@ -596,7 +674,7 @@ class CppCodeGenerator:
                 # Other reflection errors - proceed anyway, let C++ compiler catch
                 pass
         
-        # Generate method call (no arguments in Phase 6a)
+        # Generate method call (no arguments for object methods)
         return f"{object_code}.{node.method_name}()"
     
     def _visit_property_access(self, node: PropertyAccessNode) -> str:
@@ -625,6 +703,80 @@ class CppCodeGenerator:
                 pass
         
         return f"{object_code}.{node.property_name}"
+    
+    def _visit_subscript(self, node: SubscriptNode) -> str:
+        """
+        Generate C++ for subscript/indexing operation.
+        
+        Phase 6b supports:
+        - Simple indexing: pt[0], pt[i]
+        - Negative literal indexing: pt[-1], pt[-2]
+        - Safe bounds checking (default ON): returns NaN on out-of-bounds
+        
+        Examples:
+            pt[0] (safe mode) → (0 >= 0 && static_cast<size_t>(0) < pt.size()) 
+                                  ? pt[0] : std::numeric_limits<float>::quiet_NaN()
+            pt[-1] (safe mode) → (pt.size() > 0) 
+                                   ? pt[pt.size() - 1] : std::numeric_limits<float>::quiet_NaN()
+            pt[0] (unsafe mode) → pt[0]
+        """
+        # Generate code for the value being indexed
+        value_code = self._visit(node.value)
+        
+        # Get the index (single index only in Phase 6b)
+        if not node.indices:
+            raise IRError(
+                IRErrorKind.UNSUPPORTED_OP,
+                "Subscript requires at least one index",
+                suggestions=["Use pt[0] or pt[i] syntax"]
+            )
+        
+        idx = node.indices[0]
+        
+        # Get the result type for NaN generation
+        result_cpp_type = node.dtype.to_cpp()
+        
+        # Check for negative literal index
+        if isinstance(idx, ConstantNode) and isinstance(idx.value, int) and idx.value < 0:
+            return self._generate_negative_index(value_code, idx.value, result_cpp_type)
+        
+        # Generate index code
+        idx_code = self._visit(idx)
+        
+        if self.safe_indexing:
+            return self._generate_safe_index(value_code, idx_code, result_cpp_type)
+        else:
+            return f"{value_code}[{idx_code}]"
+    
+    def _generate_negative_index(self, value_code: str, neg_idx: int, result_type: str) -> str:
+        """
+        Generate C++ for negative index access.
+        
+        pt[-1] → last element
+        pt[-2] → second to last
+        
+        With safe mode, checks that the vector has enough elements.
+        """
+        abs_idx = abs(neg_idx)
+        
+        if self.safe_indexing:
+            # Safe: check size >= abs_idx
+            return (f"({value_code}.size() >= {abs_idx}) "
+                    f"? {value_code}[{value_code}.size() - {abs_idx}] "
+                    f": std::numeric_limits<{result_type}>::quiet_NaN()")
+        else:
+            # Unsafe: direct access
+            return f"{value_code}[{value_code}.size() - {abs_idx}]"
+    
+    def _generate_safe_index(self, value_code: str, idx_code: str, result_type: str) -> str:
+        """
+        Generate C++ for safe bounds-checked index access.
+        
+        Returns NaN if index is out of bounds.
+        """
+        return (f"({idx_code} >= 0 && static_cast<size_t>({idx_code}) < {value_code}.size()) "
+                f"? {value_code}[{idx_code}] "
+                f": std::numeric_limits<{result_type}>::quiet_NaN()")
     
     def _cpp_function_name(self, node: CallNode) -> str:
         """Convert DSL function name to C++ function name."""
@@ -657,6 +809,8 @@ class CppCodeGenerator:
     def _collect_headers(self, ir: IRNode) -> List[str]:
         """Collect required headers from IR tree."""
         headers: Set[str] = set()
+        needs_limits = False  # Track if we need <limits> for safe indexing
+        needs_rvec = False    # Track if we need RVec header
         
         for node in ir.walk():
             if isinstance(node, CallNode):
@@ -682,6 +836,22 @@ class CppCodeGenerator:
                     class_name = node.dtype.cpp_type
                     if class_name in CLASS_HEADERS:
                         headers.add(CLASS_HEADERS[class_name])
+                # Phase 6b: RVec variables need RVec header
+                if node.rank == 1:
+                    needs_rvec = True
+            
+            # Phase 6b: Subscript with safe indexing needs <limits>
+            elif isinstance(node, SubscriptNode):
+                if self.safe_indexing:
+                    needs_limits = True
+        
+        # Add RVec header if needed
+        if needs_rvec:
+            headers.add(RVEC_HEADER)
+        
+        # Add limits header if safe indexing is used
+        if needs_limits:
+            headers.add("<limits>")
         
         return sorted(headers)
     

@@ -1171,8 +1171,8 @@ class TestCppCodeGeneratorErrors:
         # Object should be passed by const reference
         assert "const MyClass& obj" in func.code
     
-    def test_subscript_error(self, generator):
-        """Subscript raises unsupported error."""
+    def test_subscript_generates_code(self, generator):
+        """Subscript generates correct C++ code (Phase 6b)."""
         arr = make_double_var("arr")
         arr.dtype = IRType(IRTypeKind.Float64)
         arr.rank = 1  # Vector
@@ -1184,10 +1184,43 @@ class TestCppCodeGeneratorErrors:
             rank=0
         )
         
+        func = generator.generate(ir, "test")
+        
+        # Should generate safe indexing by default
+        assert "arr" in func.code
+        assert "0" in func.code
+        assert func.return_type == "double"
+        # RVec should be passed by const reference
+        assert "const ROOT::RVec<double>& arr" in func.code
+    
+    def test_slicing_error(self, generator):
+        """Slicing raises unsupported error (deferred to Phase 7)."""
+        arr = make_double_var("arr")
+        arr.dtype = IRType(IRTypeKind.Float64)
+        arr.rank = 1  # Vector
+        
+        # Create a slice node for arr[1:3]
+        from RDataFrameDSL.ir_nodes import SliceNode
+        slice_node = SliceNode(
+            start=make_int_const(1),
+            stop=make_int_const(3),
+            step=None,
+            dtype=IRType(IRTypeKind.Unknown),
+            rank=0
+        )
+        
+        ir = SubscriptNode(
+            value=arr,
+            indices=[slice_node],
+            dtype=IRType(IRTypeKind.Float64),
+            rank=1
+        )
+        
         with pytest.raises(IRError) as exc_info:
             generator.generate(ir, "test")
         
         assert exc_info.value.kind == IRErrorKind.UNSUPPORTED_OP
+        assert "slicing" in exc_info.value.message.lower()
     
     def test_string_constant_error(self, generator):
         """String constants raise unsupported error."""
