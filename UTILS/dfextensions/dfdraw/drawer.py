@@ -950,19 +950,170 @@ class DFDraw:
         return compute_stats(df, y_expr, x_expr, group_by=group_by)
     
     # =========================================================================
-    # Batch Processing (Stub - Phase 6.9)
+    # Batch Processing
     # =========================================================================
     
     def draw_batch(
         self,
-        specs: Dict[str, Dict[str, Any]],
+        specs: Union[Dict[str, Dict[str, Any]], str],
         save_dir: Optional[str] = None,
-        on_error: str = "raise",
+        defaults: Optional[Dict[str, Any]] = None,
+        on_error: str = 'skip',
+        verbose: bool = True,
+        save_format: str = 'png',
+        dpi: int = 150,
+        close_figures: bool = True,
         **kwargs
-    ) -> Dict[str, DrawResult]:
+    ) -> Dict[str, Any]:
         """
         Draw multiple figures from specification dictionary.
         
-        [STUB - Phase 6.9]
+        Parameters
+        ----------
+        specs : dict or str
+            Dictionary of plot specifications, or path to YAML/JSON file.
+            Each key is the plot name, value is dict with 'expr' and optional parameters.
+        save_dir : str, optional
+            Directory to save figures. Created if doesn't exist.
+        defaults : dict, optional
+            Default parameters applied to all plots (overridden by per-plot specs).
+        on_error : str, default 'skip'
+            'skip': Continue on errors, collect in results['_errors']
+            'raise': Stop on first error
+        verbose : bool, default True
+            Print progress messages.
+        save_format : str, default 'png'
+            Output format: 'png', 'pdf', 'svg', etc.
+        dpi : int, default 150
+            Figure resolution for saving.
+        close_figures : bool, default True
+            Close figures after saving (recommended for large batches).
+        **kwargs
+            Additional parameters passed to all plot methods.
+        
+        Returns
+        -------
+        dict
+            Results dictionary with plot results, errors, and summary.
+            Each plot entry has: {'stats': dict, 'fig': Figure, 'ax': Axes, 'path': str}
+            If close_figures=True and save_dir set, fig/ax will be None.
+            '_errors': dict of {name: error_message}
+            '_summary': {'total': int, 'success': int, 'failed': int}
+        
+        Examples
+        --------
+        >>> specs = {
+        ...     'hist_x': {'expr': 'x', 'bins': 50},
+        ...     'scatter_yx': {'expr': 'y:x', 'sample': 10000},
+        ...     'profile_dEdx': {'expr': 'dEdx:p', 'type': 'profile', 'bins': 100},
+        ... }
+        >>> results = plotter.draw_batch(specs, save_dir='plots/', verbose=True)
+        [1/3] hist_x → plots/hist_x.png
+        [2/3] scatter_yx → plots/scatter_yx.png
+        [3/3] profile_dEdx → plots/profile_dEdx.png
+        Completed: 3/3 (0 errors)
         """
-        raise NotImplementedError("draw_batch() will be implemented in Phase 6.9")
+        import os
+        import matplotlib.pyplot as plt
+        
+        # Load from file if string path provided
+        if isinstance(specs, str):
+            specs = self._load_specs_file(specs)
+        
+        # Create save directory if needed
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
+        
+        results = {}
+        errors = {}
+        n = len(specs)
+        
+        for i, (name, spec) in enumerate(specs.items()):
+            if verbose:
+                print(f"[{i+1}/{n}] {name}", end="", flush=True)
+            
+            try:
+                # Merge: kwargs < defaults < spec
+                merged = {**kwargs, **(defaults or {}), **spec}
+                
+                # Extract required 'expr'
+                if 'expr' not in merged:
+                    raise ValueError(f"Missing 'expr' in spec for '{name}'")
+                expr = merged.pop('expr')
+                
+                # Determine plot type
+                plot_type = merged.pop('type', None)
+                if plot_type is None:
+                    plot_type = 'hist' if ':' not in expr else 'scatter'
+                
+                # Validate plot type
+                valid_types = ('hist', 'scatter', 'profile', 'hist2d', 'hexbin')
+                if plot_type not in valid_types:
+                    raise ValueError(f"Invalid type '{plot_type}'. Must be one of {valid_types}")
+                
+                # Call appropriate method
+                method = getattr(self, plot_type)
+                fig, ax, stats = method(expr, **merged)
+                
+                # Build result entry
+                result_entry = {'stats': stats, 'fig': fig, 'ax': ax, 'path': None}
+                
+                # Save if directory specified
+                if save_dir:
+                    path = os.path.join(save_dir, f"{name}.{save_format}")
+                    fig.savefig(path, dpi=dpi, bbox_inches='tight')
+                    result_entry['path'] = path
+                    
+                    if close_figures:
+                        plt.close(fig)
+                        result_entry['fig'] = None
+                        result_entry['ax'] = None
+                    
+                    if verbose:
+                        print(f" → {path}")
+                elif verbose:
+                    print()
+                
+                results[name] = result_entry
+                
+            except Exception as e:
+                errors[name] = str(e)
+                if verbose:
+                    print(f" ✗ {e}")
+                if on_error == 'raise':
+                    raise
+        
+        # Summary
+        results['_errors'] = errors
+        results['_summary'] = {
+            'total': n,
+            'success': n - len(errors),
+            'failed': len(errors)
+        }
+        
+        if verbose:
+            print(f"Completed: {results['_summary']['success']}/{n} ({len(errors)} errors)")
+        
+        return results
+    
+    def _load_specs_file(self, path: str) -> Dict[str, Dict[str, Any]]:
+        """Load specs from YAML or JSON file."""
+        import json
+        
+        if path.endswith('.json'):
+            with open(path, 'r') as f:
+                data = json.load(f)
+        elif path.endswith(('.yaml', '.yml')):
+            try:
+                import yaml
+                with open(path, 'r') as f:
+                    data = yaml.safe_load(f)
+            except ImportError:
+                raise ImportError("PyYAML required for YAML files: pip install pyyaml")
+        else:
+            raise ValueError(f"Unsupported file format: {path}. Use .json, .yaml, or .yml")
+        
+        # Handle 'plots' key if present (YAML style)
+        if 'plots' in data:
+            return data['plots']
+        return data
