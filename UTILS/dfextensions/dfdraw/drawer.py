@@ -309,6 +309,10 @@ class DFDraw:
         save: Optional[str] = None,
         group_by: Optional[str] = None,
         facet: bool = False,
+        ncols: Optional[int] = None,
+        sharex: bool = True,
+        sharey: bool = True,
+        top_k: Optional[int] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -341,7 +345,15 @@ class DFDraw:
         group_by : str, optional
             Column for grouping.
         facet : bool, default False
-            Create subplots for groups.
+            Create subplots for groups (requires group_by).
+        ncols : int, optional
+            Number of columns for facet grid.
+        sharex : bool, default True
+            Share x-axis in facet mode.
+        sharey : bool, default True
+            Share y-axis in facet mode.
+        top_k : int, optional
+            Show only top K groups.
         **kwargs
             Additional arguments to plt.hist().
         
@@ -364,20 +376,31 @@ class DFDraw:
         if col_expr not in df.columns:
             df = df.assign(**{col_expr: self._eval_column(col_expr)})
         
-        # Draw
-        fig, ax, stats_dict = draw_hist(
-            df, col_expr,
-            ax=ax, bins=bins, range=range, norm=norm, stats=stats,
-            title=title, xlabel=xlabel, ylabel=ylabel,
-            group_by=group_by, **kwargs
-        )
+        # Facet mode
+        if facet and group_by is not None:
+            from .facet import facet_hist
+            fig, axes, stats_dict = facet_hist(
+                df, col_expr, group_by,
+                top_k=top_k, ncols=ncols, sharex=sharex, sharey=sharey,
+                suptitle=title, bins=bins, range=range, norm=norm,
+                stats=stats, xlabel=xlabel, ylabel=ylabel, **kwargs
+            )
+        else:
+            # Standard mode (single plot or overlay)
+            fig, ax, stats_dict = draw_hist(
+                df, col_expr,
+                ax=ax, bins=bins, range=range, norm=norm, stats=stats,
+                title=title, xlabel=xlabel, ylabel=ylabel,
+                group_by=group_by, top_k=top_k, **kwargs
+            )
+            axes = ax
         
         # Save if requested
         if save:
             fig.savefig(save, dpi=get_style_value("figure.dpi", 100), 
                        bbox_inches="tight")
         
-        return fig, ax, stats_dict
+        return fig, axes, stats_dict
     
     def scatter(
         self,
@@ -395,6 +418,10 @@ class DFDraw:
         save: Optional[str] = None,
         group_by: Optional[str] = None,
         facet: bool = False,
+        ncols: Optional[int] = None,
+        sharex: bool = True,
+        sharey: bool = True,
+        top_k: Optional[int] = None,
         cmap: Optional[str] = None,
         colorbar: bool = True,
         clabel: Optional[str] = None,
@@ -431,7 +458,15 @@ class DFDraw:
         group_by : str, optional
             Column for grouping.
         facet : bool, default False
-            Create subplots for groups.
+            Create subplots for groups (requires group_by).
+        ncols : int, optional
+            Number of columns for facet grid.
+        sharex : bool, default True
+            Share x-axis in facet mode.
+        sharey : bool, default True
+            Share y-axis in facet mode.
+        top_k : int, optional
+            Show only top K groups.
         cmap : str, optional
             Colormap name.
         colorbar : bool, default True
@@ -468,21 +503,34 @@ class DFDraw:
         if x_expr not in df.columns:
             df = df.assign(**{x_expr: self._eval_column(x_expr)})
         
-        # Draw
-        fig, ax, stats_dict = draw_scatter(
-            df, x_expr, y_expr,
-            ax=ax, color=color, size=size, marker=marker,
-            stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
-            group_by=group_by, cmap=cmap, colorbar=colorbar,
-            clabel=clabel, jitter=jitter, **kwargs
-        )
+        # Facet mode
+        if facet and group_by is not None:
+            from .facet import facet_scatter
+            fig, axes, stats_dict = facet_scatter(
+                df, x_expr, y_expr, group_by,
+                top_k=top_k, ncols=ncols, sharex=sharex, sharey=sharey,
+                suptitle=title, color=color, size=size, marker=marker,
+                stats=stats, xlabel=xlabel, ylabel=ylabel,
+                cmap=cmap, colorbar=colorbar, clabel=clabel,
+                jitter=jitter, **kwargs
+            )
+        else:
+            # Standard mode (single plot or overlay)
+            fig, ax, stats_dict = draw_scatter(
+                df, x_expr, y_expr,
+                ax=ax, color=color, size=size, marker=marker,
+                stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
+                group_by=group_by, top_k=top_k, cmap=cmap, colorbar=colorbar,
+                clabel=clabel, jitter=jitter, **kwargs
+            )
+            axes = ax
         
         # Save if requested
         if save:
             fig.savefig(save, dpi=get_style_value("figure.dpi", 100),
                        bbox_inches="tight")
         
-        return fig, ax, stats_dict
+        return fig, axes, stats_dict
     
     def profile(
         self,
@@ -500,6 +548,10 @@ class DFDraw:
         save: Optional[str] = None,
         group_by: Optional[str] = None,
         facet: bool = False,
+        ncols: Optional[int] = None,
+        sharex: bool = True,
+        sharey: bool = True,
+        top_k: Optional[int] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -531,6 +583,16 @@ class DFDraw:
             Save path.
         group_by : str, optional
             Column for grouping.
+        facet : bool, default False
+            Create subplots for groups (requires group_by).
+        ncols : int, optional
+            Number of columns for facet grid.
+        sharex : bool, default True
+            Share x-axis in facet mode.
+        sharey : bool, default True
+            Share y-axis in facet mode.
+        top_k : int, optional
+            Show only top K groups.
         **kwargs
             Additional arguments.
         
@@ -559,20 +621,31 @@ class DFDraw:
         if x_expr not in df.columns:
             df = df.assign(**{x_expr: self._eval_column(x_expr)})
         
-        # Draw
-        fig, ax, stats_dict = draw_profile(
-            df, x_expr, y_expr,
-            ax=ax, bins=bins, x_range=range, error=error,
-            stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
-            group_by=group_by, **kwargs
-        )
+        # Facet mode
+        if facet and group_by is not None:
+            from .facet import facet_profile
+            fig, axes, stats_dict = facet_profile(
+                df, x_expr, y_expr, group_by,
+                top_k=top_k, ncols=ncols, sharex=sharex, sharey=sharey,
+                suptitle=title, bins=bins, x_range=range, error=error,
+                stats=stats, xlabel=xlabel, ylabel=ylabel, **kwargs
+            )
+        else:
+            # Standard mode (single plot or overlay)
+            fig, ax, stats_dict = draw_profile(
+                df, x_expr, y_expr,
+                ax=ax, bins=bins, x_range=range, error=error,
+                stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
+                group_by=group_by, top_k=top_k, **kwargs
+            )
+            axes = ax
         
         # Save if requested
         if save:
             fig.savefig(save, dpi=get_style_value("figure.dpi", 100),
                        bbox_inches="tight")
         
-        return fig, ax, stats_dict
+        return fig, axes, stats_dict
     
     def hist2d(
         self,
@@ -588,6 +661,12 @@ class DFDraw:
         ylabel: Optional[str] = None,
         ax=None,
         save: Optional[str] = None,
+        group_by: Optional[str] = None,
+        facet: bool = False,
+        ncols: Optional[int] = None,
+        sharex: bool = True,
+        sharey: bool = True,
+        top_k: Optional[int] = None,
         cmap: Optional[str] = None,
         colorbar: bool = True,
         clabel: Optional[str] = None,
@@ -622,6 +701,18 @@ class DFDraw:
             Existing axes.
         save : str, optional
             Save path.
+        group_by : str, optional
+            Column for grouping.
+        facet : bool, default False
+            Create subplots for groups (requires group_by).
+        ncols : int, optional
+            Number of columns for facet grid.
+        sharex : bool, default True
+            Share x-axis in facet mode.
+        sharey : bool, default True
+            Share y-axis in facet mode.
+        top_k : int, optional
+            Show only top K groups.
         cmap : str, optional
             Colormap name.
         colorbar : bool, default True
@@ -658,21 +749,34 @@ class DFDraw:
         if x_expr not in df.columns:
             df = df.assign(**{x_expr: self._eval_column(x_expr)})
         
-        # Draw
-        fig, ax, stats_dict = draw_hist2d(
-            df, x_expr, y_expr,
-            ax=ax, bins=bins, range=range, norm=norm,
-            stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
-            cmap=cmap, colorbar=colorbar, clabel=clabel,
-            vmin=vmin, vmax=vmax, **kwargs
-        )
+        # Facet mode
+        if facet and group_by is not None:
+            from .facet import facet_hist2d
+            fig, axes, stats_dict = facet_hist2d(
+                df, x_expr, y_expr, group_by,
+                top_k=top_k, ncols=ncols, sharex=sharex, sharey=sharey,
+                suptitle=title, bins=bins, range=range, norm=norm,
+                stats=stats, xlabel=xlabel, ylabel=ylabel,
+                cmap=cmap, colorbar=colorbar, clabel=clabel,
+                vmin=vmin, vmax=vmax, **kwargs
+            )
+        else:
+            # Standard mode
+            fig, ax, stats_dict = draw_hist2d(
+                df, x_expr, y_expr,
+                ax=ax, bins=bins, range=range, norm=norm,
+                stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
+                cmap=cmap, colorbar=colorbar, clabel=clabel,
+                vmin=vmin, vmax=vmax, **kwargs
+            )
+            axes = ax
         
         # Save if requested
         if save:
             fig.savefig(save, dpi=get_style_value("figure.dpi", 100),
                        bbox_inches="tight")
         
-        return fig, ax, stats_dict
+        return fig, axes, stats_dict
     
     # =========================================================================
     # Statistics Method

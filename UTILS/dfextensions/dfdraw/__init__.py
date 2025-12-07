@@ -11,6 +11,9 @@ Usage:
     # Functional
     fig, ax, stats = draw(df, "y:x")
     fig, ax, stats = hist(df, "x", bins=100)
+    
+    # Faceted (subplots by group)
+    fig, axes, stats = plotter.hist("x", group_by="category", facet=True)
 """
 
 from .drawer import DFDraw
@@ -21,6 +24,13 @@ from .style import (
     load_style,
     list_styles,
     DEFAULT_STYLE,
+)
+from .facet import (
+    create_facet_grid,
+    facet_hist,
+    facet_scatter,
+    facet_profile,
+    facet_hist2d,
 )
 
 # Functional API (convenience wrappers)
@@ -49,6 +59,8 @@ __all__ = [
     "DFDraw",
     # Functional
     "draw", "hist", "hist2d", "scatter", "profile",
+    # Facet utilities
+    "create_facet_grid", "facet_hist", "facet_scatter", "facet_profile", "facet_hist2d",
     # Style
     "get_style", "set_style", "save_style", "load_style", "list_styles",
     "DEFAULT_STYLE",
