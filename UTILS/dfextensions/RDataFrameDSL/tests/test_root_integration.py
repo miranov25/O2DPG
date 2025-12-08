@@ -638,3 +638,155 @@ class TestFuturePhaseTechniques:
         v = ROOT.RVec('double')([1.0, 2.0, 3.0, 4.0, 5.0])
         result = ROOT.test_d07_step(v)
         assert list(result) == [1.0, 3.0, 5.0]
+
+
+# =============================================================================
+# Category E: Phase 7 Slice Integration Tests
+# =============================================================================
+
+class TestSliceIntegration:
+    """
+    Category E: Phase 7 Slice Integration Tests
+    
+    Tests that slice operations work correctly with ROOT and RDataFrame.
+    """
+    
+    @pytest.fixture
+    def slice_setup(self):
+        """Set up builder and generator for slice tests."""
+        from RDataFrameDSL import IRBuilder, TypeInferrer, CppCodeGenerator, FunctionLibrary
+        
+        schema = {
+            "columns": {
+                "pt": {"dtype": "double", "rank": 1, "cpp_type": "RVec<double>"},
+            }
+        }
+        inferrer = TypeInferrer.from_schema(schema)
+        builder = IRBuilder(inferrer)
+        generator = CppCodeGenerator(inferrer)
+        library = FunctionLibrary()
+        
+        return builder, generator, library
+    
+    def test_E01_first_n_execute(self, slice_setup):
+        """[:3] returns first 3 elements."""
+        builder, generator, library = slice_setup
+        ir = builder.build("pt[:3]")
+        func = generator.generate(ir, "e01_first3")
+        library.add(func)
+        library.compile(func.name)
+        
+        # Create test vector
+        v = ROOT.RVec('double')([1.0, 2.0, 3.0, 4.0, 5.0])
+        
+        # Call the function
+        result = getattr(ROOT, func.name)(v)
+        assert list(result) == [1.0, 2.0, 3.0]
+    
+    def test_E02_last_n_execute(self, slice_setup):
+        """[-3:] returns last 3 elements."""
+        builder, generator, library = slice_setup
+        ir = builder.build("pt[-3:]")
+        func = generator.generate(ir, "e02_last3")
+        library.add(func)
+        library.compile(func.name)
+        
+        v = ROOT.RVec('double')([1.0, 2.0, 3.0, 4.0, 5.0])
+        result = getattr(ROOT, func.name)(v)
+        assert list(result) == [3.0, 4.0, 5.0]
+    
+    def test_E03_range_execute(self, slice_setup):
+        """[1:3] returns elements 1, 2."""
+        builder, generator, library = slice_setup
+        ir = builder.build("pt[1:3]")
+        func = generator.generate(ir, "e03_range")
+        library.add(func)
+        library.compile(func.name)
+        
+        v = ROOT.RVec('double')([10.0, 20.0, 30.0, 40.0])
+        result = getattr(ROOT, func.name)(v)
+        assert list(result) == [20.0, 30.0]
+    
+    def test_E04_step_execute(self, slice_setup):
+        """[::2] returns every other element."""
+        builder, generator, library = slice_setup
+        ir = builder.build("pt[::2]")
+        func = generator.generate(ir, "e04_step2")
+        library.add(func)
+        library.compile(func.name)
+        
+        v = ROOT.RVec('double')([1.0, 2.0, 3.0, 4.0, 5.0])
+        result = getattr(ROOT, func.name)(v)
+        assert list(result) == [1.0, 3.0, 5.0]
+    
+    def test_E05_reverse_execute(self, slice_setup):
+        """[::-1] returns reversed."""
+        builder, generator, library = slice_setup
+        ir = builder.build("pt[::-1]")
+        func = generator.generate(ir, "e05_reverse")
+        library.add(func)
+        library.compile(func.name)
+        
+        v = ROOT.RVec('double')([1.0, 2.0, 3.0])
+        result = getattr(ROOT, func.name)(v)
+        assert list(result) == [3.0, 2.0, 1.0]
+    
+    def test_E06_boolean_mask_execute(self, slice_setup):
+        """[pt > 2] filters correctly."""
+        builder, generator, library = slice_setup
+        ir = builder.build("pt[pt > 2.0]")
+        func = generator.generate(ir, "e06_mask")
+        library.add(func)
+        library.compile(func.name)
+        
+        v = ROOT.RVec('double')([1.0, 2.0, 3.0, 4.0])
+        result = getattr(ROOT, func.name)(v)
+        assert list(result) == [3.0, 4.0]
+    
+    def test_E07_slice_empty_vector(self, slice_setup):
+        """Slicing empty vector returns empty."""
+        builder, generator, library = slice_setup
+        ir = builder.build("pt[:3]")
+        func = generator.generate(ir, "e07_empty")
+        library.add(func)
+        library.compile(func.name)
+        
+        v = ROOT.RVec('double')()  # Empty
+        result = getattr(ROOT, func.name)(v)
+        assert len(result) == 0
+    
+    def test_E08_slice_oob_clamps(self, slice_setup):
+        """[1:100] on 3-element vec returns [1:3]."""
+        builder, generator, library = slice_setup
+        ir = builder.build("pt[1:100]")
+        func = generator.generate(ir, "e08_oob")
+        library.add(func)
+        library.compile(func.name)
+        
+        v = ROOT.RVec('double')([1.0, 2.0, 3.0])
+        result = getattr(ROOT, func.name)(v)
+        assert list(result) == [2.0, 3.0]  # Clamped to [1:3]
+    
+    def test_E09_step_with_range_execute(self, slice_setup):
+        """[1:5:2] returns elements at indices 1, 3."""
+        builder, generator, library = slice_setup
+        ir = builder.build("pt[1:5:2]")
+        func = generator.generate(ir, "e09_range_step")
+        library.add(func)
+        library.compile(func.name)
+        
+        v = ROOT.RVec('double')([0.0, 1.0, 2.0, 3.0, 4.0])
+        result = getattr(ROOT, func.name)(v)
+        assert list(result) == [1.0, 3.0]
+    
+    def test_E10_from_index_execute(self, slice_setup):
+        """[2:] returns from index 2 to end."""
+        builder, generator, library = slice_setup
+        ir = builder.build("pt[2:]")
+        func = generator.generate(ir, "e10_from_idx")
+        library.add(func)
+        library.compile(func.name)
+        
+        v = ROOT.RVec('double')([1.0, 2.0, 3.0, 4.0, 5.0])
+        result = getattr(ROOT, func.name)(v)
+        assert list(result) == [3.0, 4.0, 5.0]

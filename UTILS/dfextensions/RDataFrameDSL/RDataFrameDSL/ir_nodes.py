@@ -41,6 +41,7 @@ __all__ = [
     # Enums
     'UnaryOp',
     'BinaryOp',
+    'SliceKind',
     # Base
     'IRNode',
     # Leaf nodes
@@ -58,6 +59,7 @@ __all__ = [
     'SliceNode',
     'SubscriptNode',
     'CollectionIndexNode',
+    'RVecSliceNode',
     # Helpers
     'BroadcastInfo',
 ]
@@ -160,6 +162,21 @@ class BinaryOp(Enum):
             BinaryOp.BITXOR: "^",
         }
         return cpp_ops.get(self, str(self.value))
+
+
+class SliceKind(Enum):
+    """
+    Classification of slice operations for code generation.
+    
+    Each kind maps to a specific C++ code generation pattern.
+    """
+    FIRST_N = "first_n"       # [:3]      → Take(v, 3)
+    LAST_N = "last_n"         # [-3:]     → Take(v, -3)
+    FROM_INDEX = "from_index" # [2:]      → Take(v, Range(2, size))
+    RANGE = "range"           # [1:3]     → Take(v, Range(1, 3))
+    STEP = "step"             # [::2]     → loop-based indices
+    REVERSE = "reverse"       # [::-1]    → manual reverse loop
+    BOOLEAN = "boolean"       # [mask]    → native v[mask]
 
 
 # =============================================================================
@@ -718,6 +735,62 @@ class CollectionIndexNode(IRNode):
                 f"index_expr={self.index_expr!r}, safe_mode={self.safe_mode})")
 
 
+@dataclass
+class RVecSliceNode(IRNode):
+    """
+    Represents a slice operation on RVec.
+    
+    This node represents Python-like slicing operations (pt[:3], pt[-3:], 
+    pt[::2], etc.) and boolean masking (pt[pt > 1.0]).
+    
+    Attributes:
+        target: The RVec being sliced
+        start: Start index (None if open start)
+        stop: Stop index (None if open end)
+        step: Step value (None means step=1)
+        slice_kind: Classification for code generation
+        
+    Examples:
+        >>> RVecSliceNode(
+        ...     target=VariableNode(name="pt"),
+        ...     stop=ConstantNode(3),
+        ...     slice_kind=SliceKind.FIRST_N
+        ... )  # pt[:3]
+        
+        >>> RVecSliceNode(
+        ...     target=VariableNode(name="pt"),
+        ...     start=BinaryOpNode(...),  # pt > 1.0 expression
+        ...     slice_kind=SliceKind.BOOLEAN
+        ... )  # pt[pt > 1.0]
+    """
+    target: Optional[IRNode] = None
+    start: Optional[IRNode] = None  # Also used for mask in BOOLEAN kind
+    stop: Optional[IRNode] = None
+    step: Optional[IRNode] = None
+    slice_kind: SliceKind = SliceKind.FIRST_N
+    
+    def __post_init__(self):
+        # Slicing always returns RVec (rank=1)
+        self.rank = 1
+    
+    def children(self) -> List[IRNode]:
+        result = []
+        if self.target:
+            result.append(self.target)
+        if self.start:
+            result.append(self.start)
+        if self.stop:
+            result.append(self.stop)
+        if self.step:
+            result.append(self.step)
+        return result
+    
+    def __repr__(self) -> str:
+        return (f"RVecSliceNode(target={self.target!r}, "
+                f"start={self.start!r}, stop={self.stop!r}, "
+                f"step={self.step!r}, kind={self.slice_kind})")
+
+
 # =============================================================================
 # Node Factory Functions
 # =============================================================================
@@ -755,3 +828,19 @@ def make_method_call(obj: IRNode, method: str, args: List[IRNode] = None) -> Met
 def make_subscript(value: IRNode, indices: List[Union[IRNode, SliceNode]]) -> SubscriptNode:
     """Create a subscript node."""
     return SubscriptNode(value=value, indices=indices)
+
+
+def make_rvec_slice(target: IRNode, slice_kind: SliceKind,
+                    start: Optional[IRNode] = None,
+                    stop: Optional[IRNode] = None,
+                    step: Optional[IRNode] = None) -> RVecSliceNode:
+    """Create an RVec slice node."""
+    return RVecSliceNode(
+        target=target,
+        start=start,
+        stop=stop,
+        step=step,
+        slice_kind=slice_kind,
+        dtype=target.dtype,  # Preserve element type
+        rank=1  # Always returns RVec
+    )

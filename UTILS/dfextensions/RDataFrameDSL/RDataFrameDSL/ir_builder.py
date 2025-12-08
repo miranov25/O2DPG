@@ -42,8 +42,9 @@ from .ir_nodes import (
     UnaryOp, UnaryOpNode, BinaryOp, BinaryOpNode, TernaryOpNode,
     CallNode, MethodCallNode, PropertyAccessNode,
     SliceNode, SubscriptNode, CollectionIndexNode,
+    SliceKind, RVecSliceNode,
     make_constant, make_variable, make_binary_op, make_unary_op,
-    make_call, make_method_call, make_subscript
+    make_call, make_method_call, make_subscript, make_rvec_slice
 )
 from .ir_errors import (
     IRError, IRErrorKind, SourceLocation, ErrorCollector,
@@ -822,11 +823,39 @@ class IRBuilder:
     def _build_slice_subscript(self, value: IRNode, 
                                 slice_node: ast.Slice,
                                 ctx: BuildContext) -> IRNode:
-        """Build subscript with slice: arr[1:3], arr[:]."""
+        """Build subscript with slice: arr[1:3], arr[:], etc.
+        
+        Phase 7: Creates RVecSliceNode for RVec slicing with proper classification.
+        """
         start = self._visit(slice_node.lower, ctx) if slice_node.lower else None
         stop = self._visit(slice_node.upper, ctx) if slice_node.upper else None
         step = self._visit(slice_node.step, ctx) if slice_node.step else None
         
+        # Validate step != 0
+        if step and isinstance(step, ConstantNode) and step.value == 0:
+            raise IRError(
+                IRErrorKind.VALIDATION_ERROR,
+                "Slice step cannot be zero",
+                source_location=self._make_location(slice_node, ctx),
+                suggestions=["Use a non-zero step value, e.g., [::1] or [::2]"]
+            )
+        
+        # If this is an RVec (rank=1), use RVecSliceNode
+        if value.rank == 1:
+            slice_kind = self._classify_slice(start, stop, step, ctx, slice_node)
+            
+            return RVecSliceNode(
+                target=value,
+                start=start,
+                stop=stop,
+                step=step,
+                slice_kind=slice_kind,
+                dtype=value.dtype,
+                rank=1,  # Slicing RVec returns RVec
+                source_location=self._make_location(slice_node, ctx),
+            )
+        
+        # Fallback: For non-RVec (rank != 1), use existing SubscriptNode
         slice_ir = SliceNode(
             start=start,
             stop=stop,
@@ -834,7 +863,6 @@ class IRBuilder:
             source_location=self._make_location(slice_node, ctx),
         )
         
-        # Slicing preserves rank
         return SubscriptNode(
             value=value,
             indices=[slice_ir],
@@ -844,11 +872,117 @@ class IRBuilder:
             source_location=self._make_location(slice_node, ctx),
         )
     
+    def _classify_slice(self, start: Optional[IRNode], 
+                        stop: Optional[IRNode],
+                        step: Optional[IRNode],
+                        ctx: BuildContext,
+                        ast_node: ast.Slice) -> SliceKind:
+        """Classify slice pattern for code generation.
+        
+        Returns appropriate SliceKind based on start/stop/step values.
+        Raises IRError for unsupported patterns.
+        """
+        # Helper to check if a node is a constant with specific value
+        def is_const(node: Optional[IRNode], check_fn) -> bool:
+            return isinstance(node, ConstantNode) and check_fn(node.value)
+        
+        def is_positive_const(node: Optional[IRNode]) -> bool:
+            return is_const(node, lambda v: isinstance(v, int) and v > 0)
+        
+        def is_negative_const(node: Optional[IRNode]) -> bool:
+            return is_const(node, lambda v: isinstance(v, int) and v < 0)
+        
+        def is_nonneg_const(node: Optional[IRNode]) -> bool:
+            return is_const(node, lambda v: isinstance(v, int) and v >= 0)
+        
+        # Check for reverse: [::-1]
+        if step and is_const(step, lambda v: v == -1):
+            if start is None and stop is None:
+                return SliceKind.REVERSE
+            # Negative step with start/stop not supported
+            raise IRError(
+                IRErrorKind.UNSUPPORTED_OP,
+                "Negative step with start/stop not supported",
+                source_location=self._make_location(ast_node, ctx),
+                suggestions=["Use [::-1] for simple reverse, or implement in Python"]
+            )
+        
+        # Check for step slicing: [::n] or [start::n] or [start:stop:n]
+        if step and is_positive_const(step):
+            return SliceKind.STEP
+        
+        # No step cases
+        if step is None:
+            # [:] - full slice (copy all)
+            if start is None and stop is None:
+                # Full slice is essentially FROM_INDEX with start=0
+                return SliceKind.FROM_INDEX
+            
+            # [:n] - first n (stop must be positive)
+            if start is None and stop is not None:
+                if is_positive_const(stop):
+                    return SliceKind.FIRST_N
+                # [:n] with negative n - treat as range with clamping
+                if is_negative_const(stop):
+                    raise IRError(
+                        IRErrorKind.UNSUPPORTED_OP,
+                        "Slice '[:negative]' not yet supported",
+                        source_location=self._make_location(ast_node, ctx),
+                        suggestions=["Use [:-1] equivalent with explicit indices"]
+                    )
+            
+            # [-n:] - last n (start must be negative, stop must be None)
+            if stop is None and start is not None:
+                if is_negative_const(start):
+                    return SliceKind.LAST_N
+                # [n:] - from index (start must be non-negative)
+                if is_nonneg_const(start):
+                    return SliceKind.FROM_INDEX
+            
+            # [a:b] - range (both start and stop present)
+            if start is not None and stop is not None:
+                # Check for mixed negative indices
+                start_neg = is_negative_const(start)
+                stop_neg = is_negative_const(stop)
+                
+                if start_neg or stop_neg:
+                    raise IRError(
+                        IRErrorKind.UNSUPPORTED_OP,
+                        "Mixed negative indices in slice not yet supported",
+                        source_location=self._make_location(ast_node, ctx),
+                        suggestions=["Supported: [:n], [-n:], [n:], [a:b] with positive indices, [::step], [::-1]"]
+                    )
+                
+                return SliceKind.RANGE
+        
+        # Fallback - unsupported complex pattern
+        raise IRError(
+            IRErrorKind.UNSUPPORTED_OP,
+            "Complex slice pattern not yet supported",
+            source_location=self._make_location(ast_node, ctx),
+            suggestions=["Supported: [:n], [-n:], [n:], [a:b], [::step], [::-1], [mask]"]
+        )
+    
     def _build_scalar_subscript(self, value: IRNode, 
                                  index: IRNode,
                                  ctx: BuildContext) -> IRNode:
-        """Build subscript with scalar index: arr[i]."""
-        # Scalar indexing reduces rank by 1
+        """Build subscript with scalar index: arr[i] or boolean mask: arr[mask]."""
+        
+        # Check for boolean masking: arr[arr > 1.0] or arr[mask]
+        # Boolean mask must be rank=1 and dtype=bool
+        if self._is_boolean_mask(index, value):
+            return RVecSliceNode(
+                target=value,
+                start=index,  # Store mask in start field
+                stop=None,
+                step=None,
+                slice_kind=SliceKind.BOOLEAN,
+                dtype=value.dtype,
+                rank=1,  # Boolean masking returns RVec
+                source_location=index.source_location,
+            )
+        
+        # Regular scalar indexing reduces rank by 1
         new_rank = max(0, value.rank - 1)
         
         return SubscriptNode(
@@ -859,6 +993,23 @@ class IRBuilder:
             is_jagged=value.is_jagged if new_rank > 0 else False,
             source_location=index.source_location,
         )
+    
+    def _is_boolean_mask(self, index: IRNode, target: IRNode) -> bool:
+        """Check if index is a boolean mask for the target.
+        
+        Boolean masking requires:
+        - Target is rank=1 (RVec)
+        - Index is rank=1 (RVec)
+        - Index has dtype=bool
+        """
+        if target.rank != 1:
+            return False
+        if index.rank != 1:
+            return False
+        # Check for boolean type
+        if isinstance(index.dtype, IRType):
+            return index.dtype.kind == IRTypeKind.Bool
+        return str(index.dtype).lower() == 'bool'
     
     def _build_multi_subscript(self, value: IRNode,
                                 tuple_node: ast.Tuple,

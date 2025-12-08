@@ -59,7 +59,7 @@ from .ir_types import IRType, IRTypeKind, IR_TO_CPP_TYPE
 from .ir_nodes import (
     IRNode, ConstantNode, VariableNode, UnaryOpNode, BinaryOpNode,
     TernaryOpNode, CallNode, MethodCallNode, PropertyAccessNode,
-    SubscriptNode, SliceNode, UnaryOp, BinaryOp
+    SubscriptNode, SliceNode, UnaryOp, BinaryOp, RVecSliceNode, SliceKind
 )
 from .ir_errors import IRError, IRErrorKind
 
@@ -484,6 +484,8 @@ class CppCodeGenerator:
             return self._visit_property_access(node)
         elif isinstance(node, SubscriptNode):
             return self._visit_subscript(node)
+        elif isinstance(node, RVecSliceNode):
+            return self._visit_rvec_slice(node)
         else:
             raise IRError(
                 IRErrorKind.UNSUPPORTED_OP,
@@ -905,6 +907,157 @@ class CppCodeGenerator:
                 f"? {value_code}[{idx_code}] "
                 f": std::numeric_limits<{result_type}>::quiet_NaN()")
     
+    # =========================================================================
+    # Phase 7: RVec Slice Operations
+    # =========================================================================
+    
+    def _visit_rvec_slice(self, node: RVecSliceNode) -> str:
+        """
+        Generate C++ for RVec slice operations.
+        
+        Phase 7 supports:
+        - First N: [:n] → Take(v, n)
+        - Last N: [-n:] → Take(v, -n)
+        - From index: [n:] → Take(v, Range(n, size))
+        - Range: [a:b] → Take(v, Range(a, min(b, size)))
+        - Step: [::step] → loop-based index generation
+        - Reverse: [::-1] → manual reverse loop
+        - Boolean mask: [mask] → native v[mask]
+        """
+        target = self._visit(node.target)
+        
+        if node.slice_kind == SliceKind.FIRST_N:
+            return self._gen_slice_first_n(target, node)
+        elif node.slice_kind == SliceKind.LAST_N:
+            return self._gen_slice_last_n(target, node)
+        elif node.slice_kind == SliceKind.FROM_INDEX:
+            return self._gen_slice_from_index(target, node)
+        elif node.slice_kind == SliceKind.RANGE:
+            return self._gen_slice_range(target, node)
+        elif node.slice_kind == SliceKind.STEP:
+            return self._gen_slice_step(target, node)
+        elif node.slice_kind == SliceKind.REVERSE:
+            return self._gen_slice_reverse(target, node)
+        elif node.slice_kind == SliceKind.BOOLEAN:
+            return self._gen_slice_boolean(target, node)
+        else:
+            raise IRError(
+                IRErrorKind.UNSUPPORTED_OP,
+                f"Unsupported slice kind: {node.slice_kind}",
+                suggestions=["This slice pattern may be supported in a later phase"]
+            )
+    
+    def _gen_slice_first_n(self, target: str, node: RVecSliceNode) -> str:
+        """[:n] → Take(v, min(n, size)) - first n elements with clamping."""
+        n = self._visit(node.stop)
+        elem_type = self._cpp_type_for_rvec(node.dtype)
+        
+        return f'''[&]() -> {elem_type} {{
+    size_t n = std::min(static_cast<size_t>({n}), {target}.size());
+    return ROOT::VecOps::Take({target}, n);
+}}()'''
+    
+    def _gen_slice_last_n(self, target: str, node: RVecSliceNode) -> str:
+        """[-n:] → Take(v, -min(n, size)) - last n elements with clamping."""
+        # node.start contains the negative index, e.g., -3
+        # We need to extract the absolute value and clamp it
+        neg_n = self._visit(node.start)  # e.g., "-3"
+        elem_type = self._cpp_type_for_rvec(node.dtype)
+        
+        return f'''[&]() -> {elem_type} {{
+    size_t abs_n = static_cast<size_t>(-({neg_n}));
+    size_t clamped = std::min(abs_n, {target}.size());
+    if (clamped == 0) return {elem_type}();
+    return ROOT::VecOps::Take({target}, -static_cast<int>(clamped));
+}}()'''
+    
+    def _gen_slice_from_index(self, target: str, node: RVecSliceNode) -> str:
+        """[n:] or [:] → Take(v, Range(n, size)) - from index to end."""
+        elem_type = self._cpp_type_for_rvec(node.dtype)
+        
+        # Handle full slice [:] where start is None
+        if node.start is None:
+            start = "0"
+        else:
+            start = self._visit(node.start)
+        
+        return f'''[&]() -> {elem_type} {{
+    size_t start = {start};
+    if (start >= {target}.size()) return {elem_type}();
+    return ROOT::VecOps::Take({target}, 
+        ROOT::VecOps::Range(start, {target}.size()));
+}}()'''
+    
+    def _gen_slice_range(self, target: str, node: RVecSliceNode) -> str:
+        """[a:b] → Take(v, Range(a, min(b, size))) - range with clamping."""
+        start = self._visit(node.start)
+        stop = self._visit(node.stop)
+        elem_type = self._cpp_type_for_rvec(node.dtype)
+        
+        return f'''[&]() -> {elem_type} {{
+    size_t start = {start};
+    size_t stop = std::min(static_cast<size_t>({stop}), {target}.size());
+    if (start >= stop) return {elem_type}();
+    return ROOT::VecOps::Take({target}, 
+        ROOT::VecOps::Range(start, stop));
+}}()'''
+    
+    def _gen_slice_step(self, target: str, node: RVecSliceNode) -> str:
+        """[::step] or [start::step] or [start:stop:step] → loop-based indices."""
+        elem_type = self._cpp_type_for_rvec(node.dtype)
+        
+        # Get start (default 0)
+        if node.start is not None:
+            start = self._visit(node.start)
+        else:
+            start = "0"
+        
+        # Get step
+        step = self._visit(node.step)
+        
+        # Get stop (default: size)
+        if node.stop is not None:
+            stop = self._visit(node.stop)
+            stop_expr = f"std::min(static_cast<size_t>({stop}), {target}.size())"
+        else:
+            stop_expr = f"{target}.size()"
+        
+        return f'''[&]() -> {elem_type} {{
+    ROOT::RVec<size_t> indices;
+    size_t stop = {stop_expr};
+    for (size_t i = {start}; i < stop; i += {step}) {{
+        indices.push_back(i);
+    }}
+    return ROOT::VecOps::Take({target}, indices);
+}}()'''
+    
+    def _gen_slice_reverse(self, target: str, node: RVecSliceNode) -> str:
+        """[::-1] → manual reverse loop (not using VecOps::Reverse)."""
+        elem_type = self._cpp_type_for_rvec(node.dtype)
+        
+        return f'''[&]() -> {elem_type} {{
+    {elem_type} result;
+    result.reserve({target}.size());
+    for (size_t i = {target}.size(); i-- > 0; ) {{
+        result.push_back({target}[i]);
+    }}
+    return result;
+}}()'''
+    
+    def _gen_slice_boolean(self, target: str, node: RVecSliceNode) -> str:
+        """[mask] → native RVec boolean indexing."""
+        # mask is stored in node.start
+        mask = self._visit(node.start)
+        return f"{target}[{mask}]"
+    
+    def _cpp_type_for_rvec(self, dtype) -> str:
+        """Get C++ RVec<T> type string from dtype."""
+        if isinstance(dtype, IRType):
+            inner_type = dtype.to_cpp()
+        else:
+            inner_type = str(dtype)
+        return f"ROOT::RVec<{inner_type}>"
+    
     def _cpp_function_name(self, node: CallNode) -> str:
         """Convert DSL function name to C++ function name."""
         # Check custom cpp_name first - it takes priority
@@ -973,6 +1126,14 @@ class CppCodeGenerator:
             elif isinstance(node, SubscriptNode):
                 if self.safe_indexing:
                     needs_limits = True
+            
+            # Phase 7: RVec slice operations need headers
+            elif isinstance(node, RVecSliceNode):
+                needs_rvec = True
+                # Range and Step slices use std::min for clamping
+                if node.slice_kind in (SliceKind.RANGE, SliceKind.STEP, 
+                                       SliceKind.FROM_INDEX):
+                    headers.add("<algorithm>")  # for std::min
         
         # Add RVec header if needed
         if needs_rvec:

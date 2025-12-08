@@ -10,7 +10,7 @@ from RDataFrameDSL.ir_nodes import (
     ConstantNode, VariableNode, BinaryOpNode, UnaryOpNode,
     CallNode, MethodCallNode, PropertyAccessNode,
     SubscriptNode, SliceNode, TernaryOpNode,
-    BinaryOp, UnaryOp
+    BinaryOp, UnaryOp, RVecSliceNode, SliceKind
 )
 from RDataFrameDSL.ir_errors import IRError, IRErrorKind
 from RDataFrameDSL.type_inferrer import TypeInferrer
@@ -558,18 +558,21 @@ class TestSubscripts:
         assert isinstance(node.indices[0], VariableNode)
     
     def test_slice_full(self, vector_builder):
-        """Full slice: arr[:]."""
+        """Full slice: arr[:] - Phase 7: returns RVecSliceNode."""
         node = vector_builder.build("track_pt[:]")
-        assert isinstance(node, SubscriptNode)
-        assert isinstance(node.indices[0], SliceNode)
-        assert node.indices[0].is_full_slice()
+        assert isinstance(node, RVecSliceNode)
+        assert node.slice_kind == SliceKind.FROM_INDEX
+        assert node.start is None  # Full slice has no start
+        assert node.stop is None
         assert node.rank == 1  # Preserved
     
     def test_slice_range(self, vector_builder):
-        """Range slice: arr[1:3]."""
+        """Range slice: arr[1:3] - Phase 7: returns RVecSliceNode."""
         node = vector_builder.build("track_pt[1:3]")
-        assert isinstance(node, SubscriptNode)
-        assert isinstance(node.indices[0], SliceNode)
+        assert isinstance(node, RVecSliceNode)
+        assert node.slice_kind == SliceKind.RANGE
+        assert node.start.value == 1
+        assert node.stop.value == 3
         assert node.rank == 1
     
     def test_negative_index(self, vector_builder):
@@ -753,6 +756,121 @@ class TestBuildContext:
         
         assert new_ctx.in_subscript
         assert not ctx.in_subscript  # Original unchanged
+
+
+# =============================================================================
+# Phase 7: Slice Parsing Tests
+# =============================================================================
+
+class TestSliceParsing:
+    """Tests for Phase 7 slice parsing."""
+    
+    @pytest.fixture
+    def slice_builder(self):
+        """Builder with RVec column for slice tests."""
+        schema = {
+            "columns": {
+                "pt": {"dtype": "double", "rank": 1, "cpp_type": "RVec<double>"},
+                "mask": {"dtype": "bool", "rank": 1, "cpp_type": "RVec<bool>"},
+            }
+        }
+        inferrer = TypeInferrer.from_schema(schema)
+        return IRBuilder(inferrer)
+    
+    def test_slice_first_n(self, slice_builder):
+        """[:3] parses to RVecSliceNode with FIRST_N."""
+        node = slice_builder.build("pt[:3]")
+        assert isinstance(node, RVecSliceNode)
+        assert node.slice_kind == SliceKind.FIRST_N
+        assert node.stop.value == 3
+        assert node.start is None
+        assert node.step is None
+    
+    def test_slice_last_n(self, slice_builder):
+        """[-3:] parses to RVecSliceNode with LAST_N."""
+        node = slice_builder.build("pt[-3:]")
+        assert isinstance(node, RVecSliceNode)
+        assert node.slice_kind == SliceKind.LAST_N
+        assert node.start.value == -3
+        assert node.stop is None
+    
+    def test_slice_from_index(self, slice_builder):
+        """[2:] parses to RVecSliceNode with FROM_INDEX."""
+        node = slice_builder.build("pt[2:]")
+        assert isinstance(node, RVecSliceNode)
+        assert node.slice_kind == SliceKind.FROM_INDEX
+        assert node.start.value == 2
+        assert node.stop is None
+    
+    def test_slice_range(self, slice_builder):
+        """[1:3] parses to RVecSliceNode with RANGE."""
+        node = slice_builder.build("pt[1:3]")
+        assert isinstance(node, RVecSliceNode)
+        assert node.slice_kind == SliceKind.RANGE
+        assert node.start.value == 1
+        assert node.stop.value == 3
+    
+    def test_slice_step(self, slice_builder):
+        """[::2] parses to RVecSliceNode with STEP."""
+        node = slice_builder.build("pt[::2]")
+        assert isinstance(node, RVecSliceNode)
+        assert node.slice_kind == SliceKind.STEP
+        assert node.step.value == 2
+    
+    def test_slice_step_with_start(self, slice_builder):
+        """[1::2] parses to RVecSliceNode with STEP."""
+        node = slice_builder.build("pt[1::2]")
+        assert isinstance(node, RVecSliceNode)
+        assert node.slice_kind == SliceKind.STEP
+        assert node.start.value == 1
+        assert node.step.value == 2
+    
+    def test_slice_step_with_range(self, slice_builder):
+        """[1:5:2] parses to RVecSliceNode with STEP."""
+        node = slice_builder.build("pt[1:5:2]")
+        assert isinstance(node, RVecSliceNode)
+        assert node.slice_kind == SliceKind.STEP
+        assert node.start.value == 1
+        assert node.stop.value == 5
+        assert node.step.value == 2
+    
+    def test_slice_reverse(self, slice_builder):
+        """[::-1] parses to RVecSliceNode with REVERSE."""
+        node = slice_builder.build("pt[::-1]")
+        assert isinstance(node, RVecSliceNode)
+        assert node.slice_kind == SliceKind.REVERSE
+        assert node.step.value == -1
+    
+    def test_slice_step_zero_error(self, slice_builder):
+        """[::0] raises IRError."""
+        with pytest.raises(IRError) as exc:
+            slice_builder.build("pt[::0]")
+        assert "step cannot be zero" in str(exc.value).lower()
+    
+    def test_slice_mixed_negative_error(self, slice_builder):
+        """[-3:-1] raises unsupported error."""
+        with pytest.raises(IRError) as exc:
+            slice_builder.build("pt[-3:-1]")
+        assert "not yet supported" in str(exc.value).lower()
+    
+    def test_boolean_mask_comparison(self, slice_builder):
+        """[pt > 1.0] parses to RVecSliceNode with BOOLEAN."""
+        node = slice_builder.build("pt[pt > 1.0]")
+        assert isinstance(node, RVecSliceNode)
+        assert node.slice_kind == SliceKind.BOOLEAN
+    
+    def test_boolean_mask_variable(self, slice_builder):
+        """[mask] parses to RVecSliceNode with BOOLEAN."""
+        node = slice_builder.build("pt[mask]")
+        assert isinstance(node, RVecSliceNode)
+        assert node.slice_kind == SliceKind.BOOLEAN
+    
+    def test_slice_preserves_dtype(self, slice_builder):
+        """Slicing preserves element type."""
+        node = slice_builder.build("pt[:3]")
+        assert node.rank == 1  # Still RVec
+        # dtype should be double (the element type)
+        assert str(node.dtype) == "double" or "Float64" in str(node.dtype)
 
 
 if __name__ == "__main__":

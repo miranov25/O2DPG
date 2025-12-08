@@ -997,3 +997,159 @@ class TestRVecRDataFrameIntegration:
         
         for val in result:
             assert abs(val - 1.0) < 0.001
+
+
+# =============================================================================
+# Phase 7: Slice Code Generation Tests
+# =============================================================================
+
+class TestSliceCodeGeneration:
+    """Tests for Phase 7 slice code generation patterns."""
+    
+    @pytest.fixture
+    def slice_setup(self):
+        """Set up builder and generator for slice tests."""
+        from RDataFrameDSL import IRBuilder, TypeInferrer, CppCodeGenerator
+        
+        schema = {
+            "columns": {
+                "pt": {"dtype": "double", "rank": 1, "cpp_type": "RVec<double>"},
+                "mask": {"dtype": "bool", "rank": 1, "cpp_type": "RVec<bool>"},
+            }
+        }
+        inferrer = TypeInferrer.from_schema(schema)
+        builder = IRBuilder(inferrer)
+        generator = CppCodeGenerator(inferrer)
+        
+        return builder, generator
+    
+    def test_gen_first_n(self, slice_setup):
+        """[:3] generates Take with clamping."""
+        builder, generator = slice_setup
+        ir = builder.build("pt[:3]")
+        func = generator.generate(ir, "first_3")
+        
+        assert "ROOT::VecOps::Take" in func.code
+        assert "std::min" in func.code  # Clamps to vector size
+    
+    def test_gen_last_n(self, slice_setup):
+        """[-3:] generates Take with clamping."""
+        builder, generator = slice_setup
+        ir = builder.build("pt[-3:]")
+        func = generator.generate(ir, "last_3")
+        
+        assert "ROOT::VecOps::Take" in func.code
+        assert "std::min" in func.code  # Clamps to vector size
+    
+    def test_gen_from_index(self, slice_setup):
+        """[2:] generates lambda with Range."""
+        builder, generator = slice_setup
+        ir = builder.build("pt[2:]")
+        func = generator.generate(ir, "from_2")
+        
+        assert "Range" in func.code
+        assert "start = 2" in func.code
+    
+    def test_gen_range_has_clamp(self, slice_setup):
+        """[1:3] includes std::min clamp."""
+        builder, generator = slice_setup
+        ir = builder.build("pt[1:3]")
+        func = generator.generate(ir, "range_1_3")
+        
+        assert "std::min" in func.code
+        assert "start >= stop" in func.code  # Empty check
+    
+    def test_gen_step_has_loop(self, slice_setup):
+        """[::2] includes loop-based indexing."""
+        builder, generator = slice_setup
+        ir = builder.build("pt[::2]")
+        func = generator.generate(ir, "step_2")
+        
+        assert "for (size_t i" in func.code
+        assert "i += 2" in func.code
+        assert "indices.push_back" in func.code
+    
+    def test_gen_step_with_start(self, slice_setup):
+        """[1::2] includes loop starting at 1."""
+        builder, generator = slice_setup
+        ir = builder.build("pt[1::2]")
+        func = generator.generate(ir, "step_1_2")
+        
+        assert "i = 1" in func.code
+        assert "i += 2" in func.code
+    
+    def test_gen_step_with_range(self, slice_setup):
+        """[1:5:2] includes loop with bounds and step."""
+        builder, generator = slice_setup
+        ir = builder.build("pt[1:5:2]")
+        func = generator.generate(ir, "step_1_5_2")
+        
+        assert "i = 1" in func.code
+        assert "std::min" in func.code
+        assert "i += 2" in func.code
+    
+    def test_gen_reverse_no_vecops_reverse(self, slice_setup):
+        """[::-1] does NOT use VecOps::Reverse."""
+        builder, generator = slice_setup
+        ir = builder.build("pt[::-1]")
+        func = generator.generate(ir, "reverse")
+        
+        assert "Reverse" not in func.code  # We don't use VecOps::Reverse
+        assert "i-- > 0" in func.code  # Manual loop
+        assert "reserve" in func.code
+    
+    def test_gen_boolean_mask_native(self, slice_setup):
+        """[pt > 1.0] generates native v[mask]."""
+        builder, generator = slice_setup
+        ir = builder.build("pt[pt > 1.0]")
+        func = generator.generate(ir, "gt_1")
+        
+        # Should use native boolean indexing
+        assert "pt[" in func.code
+        assert "pt > 1.0" in func.code
+    
+    def test_gen_boolean_mask_variable(self, slice_setup):
+        """[mask] generates native v[mask]."""
+        builder, generator = slice_setup
+        ir = builder.build("pt[mask]")
+        func = generator.generate(ir, "with_mask")
+        
+        assert "pt[mask]" in func.code
+    
+    def test_gen_full_slice(self, slice_setup):
+        """[:] generates full copy via Range."""
+        builder, generator = slice_setup
+        ir = builder.build("pt[:]")
+        func = generator.generate(ir, "full")
+        
+        assert "Range" in func.code or "Take" in func.code
+    
+    def test_slice_return_type(self, slice_setup):
+        """Slice return type is RVec<T>."""
+        builder, generator = slice_setup
+        ir = builder.build("pt[:3]")
+        func = generator.generate(ir, "ret_type")
+        
+        assert "ROOT::RVec<double>" in func.code
+    
+    def test_slice_needs_algorithm_header(self, slice_setup):
+        """Range slice needs <algorithm> for std::min."""
+        builder, generator = slice_setup
+        ir = builder.build("pt[1:3]")
+        func = generator.generate(ir, "headers")
+        
+        assert "<algorithm>" in func.headers
+    
+    def test_slice_needs_rvec_header(self, slice_setup):
+        """Slices need RVec header."""
+        builder, generator = slice_setup
+        ir = builder.build("pt[:3]")
+        func = generator.generate(ir, "rvec_header")
+        
+        # Check for RVec header (may be in different forms)
+        has_rvec = any("RVec" in h for h in func.headers)
+        assert has_rvec
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
