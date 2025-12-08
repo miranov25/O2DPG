@@ -117,11 +117,12 @@ class TestConstants:
         assert node.dtype.kind == IRTypeKind.Bool
     
     def test_negative_int(self, basic_builder):
-        """Negative integer."""
+        """Negative integer - constant folding produces ConstantNode with negative value."""
         node = basic_builder.build("-42")
-        assert isinstance(node, UnaryOpNode)
-        assert node.op == UnaryOp.NEG
-        assert isinstance(node.operand, ConstantNode)
+        # Phase 6.9: Negative literals are now folded to ConstantNode(-42)
+        assert isinstance(node, ConstantNode)
+        assert node.value == -42
+        assert node.dtype.kind == IRTypeKind.Int64
 
 
 # =============================================================================
@@ -572,10 +573,12 @@ class TestSubscripts:
         assert node.rank == 1
     
     def test_negative_index(self, vector_builder):
-        """Negative index: arr[-1]."""
+        """Negative index: arr[-1] - constant folding produces ConstantNode(-1)."""
         node = vector_builder.build("track_pt[-1]")
         assert isinstance(node, SubscriptNode)
-        assert isinstance(node.indices[0], UnaryOpNode)
+        # Phase 6.9: Negative indices are now folded to ConstantNode(-1)
+        assert isinstance(node.indices[0], ConstantNode)
+        assert node.indices[0].value == -1
         assert node.rank == 0
 
 

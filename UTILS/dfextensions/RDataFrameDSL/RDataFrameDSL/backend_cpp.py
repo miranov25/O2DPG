@@ -907,14 +907,16 @@ class CppCodeGenerator:
     
     def _cpp_function_name(self, node: CallNode) -> str:
         """Convert DSL function name to C++ function name."""
+        # Check custom cpp_name first - it takes priority
+        if node.cpp_name:
+            # cpp_name already contains full qualified name (e.g., "std::sqrt")
+            # Don't add namespace again even if node.namespace is set
+            return node.cpp_name
+        
         # Check if it's a namespaced function (e.g., TMath.Gaus)
         if node.namespace:
             # TMath.Gaus -> TMath::Gaus
-            return f"{node.namespace}::{node.cpp_name or node.func}"
-        
-        # Check custom cpp_name first
-        if node.cpp_name:
-            return node.cpp_name
+            return f"{node.namespace}::{node.func}"
         
         # Use Python-dot notation to C++ double-colon
         func_name = node.func

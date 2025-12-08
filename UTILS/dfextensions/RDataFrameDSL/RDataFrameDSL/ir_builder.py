@@ -550,7 +550,33 @@ class IRBuilder:
         
         ir_op = AST_UNARYOP_MAP[op_type]
         
-        # Type inference
+        # Constant folding for numeric literals (Phase 6.9 bug fix)
+        # Fold -1 → ConstantNode(-1) instead of UnaryOpNode(NEG, ConstantNode(1))
+        # This is critical for negative indexing: pt[-1] must recognize -1 as negative
+        if isinstance(operand, ConstantNode):
+            if ir_op == UnaryOp.NEG and isinstance(operand.value, (int, float)):
+                # -constant → constant with negated value
+                return ConstantNode(
+                    value=-operand.value,
+                    dtype=operand.dtype,
+                    rank=operand.rank,
+                    is_jagged=operand.is_jagged,
+                    source_location=self._make_location(node, ctx),
+                )
+            elif ir_op == UnaryOp.POS and isinstance(operand.value, (int, float)):
+                # +constant → constant (no change)
+                return operand
+            elif ir_op == UnaryOp.NOT and isinstance(operand.value, bool):
+                # not True → False, not False → True
+                return ConstantNode(
+                    value=not operand.value,
+                    dtype=IRType(IRTypeKind.Bool),
+                    rank=0,
+                    is_jagged=False,
+                    source_location=self._make_location(node, ctx),
+                )
+        
+        # Type inference for non-constant operands
         if ir_op == UnaryOp.NOT:
             result_type = IRType(IRTypeKind.Bool)
         elif ir_op == UnaryOp.BITNOT:
