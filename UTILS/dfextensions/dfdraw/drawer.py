@@ -32,6 +32,7 @@ class DFDraw:
     """
     
     def __init__(self, data):
+        self._data_source = data  # Keep reference for duck typing (axis titles)
         self.df = self._normalize_data(data)
     
     def _normalize_data(self, data) -> pd.DataFrame:
@@ -179,6 +180,35 @@ class DFDraw:
         
         random_state = get_style_value("sample.random_state", 42)
         return df.sample(n=sample, random_state=random_state)
+    
+    # =========================================================================
+    # Label Resolution (Duck Typing for AliasDataFrame)
+    # =========================================================================
+    
+    def _get_label(self, varname: str):
+        """
+        Get display label for a variable via duck typing.
+        
+        Checks if data source has get_axis_title() method (duck typing).
+        Returns None if no title is set, allowing underlying plot methods
+        to use their own default formatting.
+        
+        Parameters
+        ----------
+        varname : str
+            Column/variable name
+        
+        Returns
+        -------
+        str or None
+            Display label string if set, None to use default
+        """
+        # Duck typing: check if data source provides axis titles
+        if hasattr(self, '_data_source') and hasattr(self._data_source, 'get_axis_title'):
+            title = self._data_source.get_axis_title(varname)
+            if title:
+                return title
+        return None  # Let plot methods use their default behavior
     
     # =========================================================================
     # Main Draw Method
@@ -376,6 +406,12 @@ class DFDraw:
         if col_expr not in df.columns:
             df = df.assign(**{col_expr: self._eval_column(col_expr)})
         
+        # Apply duck-typed label lookup if not explicitly set
+        if xlabel is None:
+            duck_label = self._get_label(col_expr)
+            if duck_label is not None:
+                xlabel = duck_label
+        
         # Facet mode
         if facet and group_by is not None:
             from .facet import facet_hist
@@ -503,6 +539,16 @@ class DFDraw:
         if x_expr not in df.columns:
             df = df.assign(**{x_expr: self._eval_column(x_expr)})
         
+        # Apply duck-typed label lookup if not explicitly set
+        if xlabel is None:
+            duck_label = self._get_label(x_expr)
+            if duck_label is not None:
+                xlabel = duck_label
+        if ylabel is None:
+            duck_label = self._get_label(y_expr)
+            if duck_label is not None:
+                ylabel = duck_label
+        
         # Facet mode
         if facet and group_by is not None:
             from .facet import facet_scatter
@@ -620,6 +666,16 @@ class DFDraw:
             df = df.assign(**{y_expr: self._eval_column(y_expr)})
         if x_expr not in df.columns:
             df = df.assign(**{x_expr: self._eval_column(x_expr)})
+        
+        # Apply duck-typed label lookup if not explicitly set
+        if xlabel is None:
+            duck_label = self._get_label(x_expr)
+            if duck_label is not None:
+                xlabel = duck_label
+        if ylabel is None:
+            duck_label = self._get_label(y_expr)
+            if duck_label is not None:
+                ylabel = duck_label
         
         # Facet mode
         if facet and group_by is not None:
@@ -748,6 +804,16 @@ class DFDraw:
             df = df.assign(**{y_expr: self._eval_column(y_expr)})
         if x_expr not in df.columns:
             df = df.assign(**{x_expr: self._eval_column(x_expr)})
+        
+        # Apply duck-typed label lookup if not explicitly set
+        if xlabel is None:
+            duck_label = self._get_label(x_expr)
+            if duck_label is not None:
+                xlabel = duck_label
+        if ylabel is None:
+            duck_label = self._get_label(y_expr)
+            if duck_label is not None:
+                ylabel = duck_label
         
         # Facet mode
         if facet and group_by is not None:
@@ -885,6 +951,16 @@ class DFDraw:
             df = df.assign(**{y_expr: self._eval_column(y_expr)})
         if x_expr not in df.columns:
             df = df.assign(**{x_expr: self._eval_column(x_expr)})
+        
+        # Apply duck-typed label lookup if not explicitly set
+        if xlabel is None:
+            duck_label = self._get_label(x_expr)
+            if duck_label is not None:
+                xlabel = duck_label
+        if ylabel is None:
+            duck_label = self._get_label(y_expr)
+            if duck_label is not None:
+                ylabel = duck_label
         
         # Facet mode
         if facet and group_by is not None:
