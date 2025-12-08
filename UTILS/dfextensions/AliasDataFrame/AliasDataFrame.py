@@ -8296,6 +8296,53 @@ class AliasDataFrame:
         alias_names = set(self.aliases.keys())
         return {c for c in columns_needed if c in alias_names}
 
+    def _eval_alias_on_df(self, alias_name: str, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Evaluate an alias expression on an arbitrary DataFrame.
+        
+        Used for slice-first lazy evaluation where we need to compute
+        aliases on a subset without modifying self.df.
+        
+        Args:
+            alias_name: Name of the alias to evaluate
+            df: DataFrame to evaluate on (may be a subset of self.df)
+        
+        Returns:
+            DataFrame with the alias column added
+        
+        Note:
+            This handles dependency resolution for the target alias.
+        """
+        if alias_name not in self.aliases:
+            raise ValueError(f"'{alias_name}' is not a defined alias")
+        
+        # Get the expression
+        expr = self.aliases[alias_name]
+        
+        # Build evaluation namespace from the subset df
+        namespace = {col: df[col].values for col in df.columns}
+        namespace['np'] = np
+        namespace['pd'] = pd
+        
+        # Add numpy functions
+        namespace.update(NumpyRootMapper.get_numpy_functions_for_eval())
+        
+        # Check for alias dependencies and evaluate them first
+        alias_deps = self._get_alias_dependencies(alias_name, expr)
+        for dep_type, dep_name in alias_deps:
+            if dep_type == 'alias' and dep_name not in df.columns:
+                df = self._eval_alias_on_df(dep_name, df)
+                namespace[dep_name] = df[dep_name].values
+        
+        # Evaluate the expression
+        try:
+            result = eval(expr, {"__builtins__": {}}, namespace)
+            df = df.copy()
+            df[alias_name] = result
+            return df
+        except Exception as e:
+            raise ValueError(f"Failed to evaluate alias '{alias_name}': {e}")
+
     def _resolve_plot_type(self, expr: str, type_hint: str) -> str:
         """
         Resolve plot method name from expression and type hint.
@@ -8367,14 +8414,33 @@ class AliasDataFrame:
         # Parse expression to find needed aliases
         needed_aliases = self._parse_expr_aliases(expr, kwargs.get('group_by'), kwargs.get('color'))
         
-        # Lazy materialization
-        if effective_lazy:
-            to_materialize = needed_aliases - already_materialized
-            if to_materialize:
-                self.materialize_aliases(names=list(to_materialize))
+        # Check if entry selection is requested
+        has_entry_selection = (entry_begin is not None or 
+                               entry_end is not None or 
+                               entry_mask is not None)
         
-        # Apply entry selection AFTER materialization
-        df_subset = self._apply_entry_selection(entry_begin, entry_end, entry_mask)
+        if has_entry_selection:
+            # SLICE-FIRST: Apply entry selection, then evaluate aliases on subset
+            df_subset = self._apply_entry_selection(entry_begin, entry_end, entry_mask)
+            
+            # Evaluate needed aliases directly on the subset (not on full df)
+            if effective_lazy:
+                to_evaluate = needed_aliases - already_materialized
+                for alias_name in to_evaluate:
+                    if alias_name not in df_subset.columns:
+                        df_subset = self._eval_alias_on_df(alias_name, df_subset)
+            
+            # No cleanup needed - we didn't modify self.df
+            cleanup_needed = False
+        else:
+            # NO SELECTION: Use standard lazy materialization on full df
+            if effective_lazy:
+                to_materialize = needed_aliases - already_materialized
+                if to_materialize:
+                    self.materialize_aliases(names=list(to_materialize))
+            
+            df_subset = self.df
+            cleanup_needed = not effective_keep
         
         # Create plotter and delegate
         plotter = DFDraw(df_subset)
@@ -8389,8 +8455,8 @@ class AliasDataFrame:
         # Call plot
         result = plot_func(expr, **kwargs)
         
-        # Cleanup if requested
-        if not effective_keep:
+        # Cleanup if requested (only when no entry selection)
+        if cleanup_needed:
             we_added = self._get_materialized_aliases() - already_materialized
             if we_added:
                 self.drop_materialized(we_added)
