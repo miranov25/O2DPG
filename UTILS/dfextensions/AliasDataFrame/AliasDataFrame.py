@@ -861,6 +861,12 @@ class AliasDataFrame:
             self._use_arrow = PYARROW_AVAILABLE
         else:
             self._use_arrow = use_arrow and PYARROW_AVAILABLE
+        
+        # Phase 6.8: Draw integration properties
+        # These control default behavior for draw methods
+        self.draw_lazy = False              # Default: require explicit materialization
+        self.draw_keep_materialized = True  # Default: keep after single draw
+        self.draw_clear_after = True        # Default: clear after batch
 
     # =========================================================================
     # SECTION 0b: Proxy Pattern - DataFrame Delegation
@@ -8096,4 +8102,436 @@ class AliasDataFrame:
         else:
             return False
 
-        return [k for k, v in self._auto_aliases.items() if v == subframe_name]
+    # =========================================================================
+    # PHASE 6.8: DFDRAW INTEGRATION
+    # =========================================================================
+    #
+    # Seamless plotting with lazy evaluation, axis metadata, and entry selection.
+    # dfdraw remains stateless; AliasDataFrame owns all state.
+    #
+    # Features:
+    # - Axis titles stored in schema
+    # - Lazy materialization on draw
+    # - Entry selection (range + mask)
+    # - Memory management (track what we add)
+    # - Instance-level defaults with 3-level precedence
+    #
+    # =========================================================================
+
+    def set_axis_title(self, column: str, title: str) -> None:
+        """
+        Set display title for a column/alias.
+        
+        Titles are stored in schema and used by dfdraw for automatic axis labels.
+        
+        Args:
+            column: Column or alias name
+            title: Display title (e.g., 'x [cm]', 'dE/dx [MeV/cm]')
+        
+        Example:
+            adf.set_axis_title('x', 'x [cm]')
+            adf.set_axis_title('exb_dy', 'ExB Δy [cm]')
+        """
+        if column not in self._schema.get('columns', {}):
+            self._schema.setdefault('columns', {})[column] = {}
+        self._schema['columns'][column]['title'] = title
+
+    def get_axis_title(self, column: str):
+        """
+        Get display title for a column/alias.
+        
+        Args:
+            column: Column or alias name
+            
+        Returns:
+            Title string if set, None otherwise.
+        
+        Note:
+            Used by dfdraw via duck typing for automatic axis labels.
+        """
+        return self._schema.get('columns', {}).get(column, {}).get('title')
+
+    def _get_materialized_aliases(self):
+        """
+        Return set of currently materialized alias names.
+        
+        Returns:
+            Set of alias names that exist as columns in the DataFrame.
+        
+        Note:
+            Used internally to track what draw methods add vs. pre-existing.
+        """
+        aliases = self.aliases  # {name: expr}
+        return {name for name in aliases if name in self.df.columns}
+
+    def drop_materialized(self, aliases):
+        """
+        Drop materialized alias columns from DataFrame.
+        
+        Args:
+            aliases: Alias names to drop (silently ignores non-existent)
+        
+        Note:
+            Only drops columns that are aliases, never physical columns.
+        """
+        alias_names = set(self.aliases.keys())
+        to_drop = [a for a in aliases if a in alias_names and a in self.df.columns]
+        if to_drop:
+            self.df = self.df.drop(columns=to_drop)
+
+    def _resolve_draw_param(self, param_value, param_name: str):
+        """
+        Resolve draw parameter with 3-level precedence.
+        
+        Precedence (highest to lowest):
+            1. Per-call parameter (if not None)
+            2. Instance property (self.draw_*)
+            3. Hard-coded default
+        
+        Args:
+            param_value: Value passed to draw method (or None)
+            param_name: One of 'lazy', 'keep_materialized', 'clear_after'
+        
+        Returns:
+            Resolved parameter value
+        """
+        defaults = {
+            'lazy': False,
+            'keep_materialized': True,
+            'clear_after': True,
+        }
+        
+        if param_value is not None:
+            return param_value
+        
+        instance_attr = f'draw_{param_name}'
+        if hasattr(self, instance_attr):
+            return getattr(self, instance_attr)
+        
+        return defaults[param_name]
+
+    def _apply_entry_selection(self, 
+                               entry_begin=None,
+                               entry_end=None,
+                               entry_mask=None):
+        """
+        Apply entry selection to get a subset of the DataFrame.
+        
+        Args:
+            entry_begin: Start index (positional, inclusive)
+            entry_end: End index (positional, exclusive)
+            entry_mask: Either boolean array (len=len(df)) or integer indices
+        
+        Returns:
+            Sliced DataFrame
+        
+        Raises:
+            ValueError: If both range (begin/end) AND mask are provided
+        
+        Semantics:
+            - Boolean mask: Uses loc-style selection (must match DataFrame length)
+            - Integer array: Uses iloc-style positional selection
+            - Range: Uses iloc[begin:end]
+        """
+        # Disallow mixing
+        has_range = entry_begin is not None or entry_end is not None
+        has_mask = entry_mask is not None
+        
+        if has_range and has_mask:
+            raise ValueError(
+                "Cannot specify both entry_begin/entry_end and entry_mask. "
+                "Use one or the other."
+            )
+        
+        if entry_mask is not None:
+            # Detect boolean vs integer mask
+            mask_array = np.asarray(entry_mask)
+            if pd.api.types.is_bool_dtype(mask_array):
+                # Boolean mask - use loc-style
+                if len(mask_array) != len(self.df):
+                    raise ValueError(
+                        f"Boolean mask length ({len(mask_array)}) must match "
+                        f"DataFrame length ({len(self.df)})"
+                    )
+                return self.df.loc[mask_array]
+            else:
+                # Integer indices - use iloc-style
+                return self.df.iloc[mask_array]
+        
+        elif has_range:
+            # Range selection
+            start = entry_begin if entry_begin is not None else 0
+            stop = entry_end  # None means to end
+            return self.df.iloc[start:stop]
+        
+        else:
+            # No selection - return full DataFrame
+            return self.df
+
+    def _parse_expr_aliases(self, expr: str, group_by=None, color=None):
+        """
+        Extract alias names from expression and optional parameters.
+        
+        Args:
+            expr: Plot expression like 'y:x' or 'x'
+            group_by: Optional group_by column
+            color: Optional color column
+        
+        Returns:
+            Set of alias names (not physical columns) needed
+        """
+        columns_needed = set()
+        
+        # Parse main expression
+        parts = expr.replace(' ', '').split(':')
+        columns_needed.update(parts)
+        
+        # Add group_by and color if present
+        if group_by:
+            columns_needed.add(group_by)
+        if color and isinstance(color, str):
+            columns_needed.add(color)
+        
+        # Filter to only aliases (not physical columns)
+        alias_names = set(self.aliases.keys())
+        return {c for c in columns_needed if c in alias_names}
+
+    def _resolve_plot_type(self, expr: str, type_hint: str) -> str:
+        """
+        Resolve plot method name from expression and type hint.
+        
+        Args:
+            expr: Plot expression
+            type_hint: 'auto', 'hist', 'scatter', 'profile', 'hist2d', 'hexbin'
+        
+        Returns:
+            Method name string
+        """
+        if type_hint != 'auto':
+            return type_hint
+        
+        # Auto-detect from expression
+        parts = expr.replace(' ', '').split(':')
+        if len(parts) == 1:
+            return 'hist'
+        else:
+            return 'scatter'
+
+    def draw(self,
+             expr: str,
+             type: str = 'auto',
+             *,
+             lazy=None,
+             keep_materialized=None,
+             entry_begin=None,
+             entry_end=None,
+             entry_mask=None,
+             **kwargs):
+        """
+        Draw a plot with automatic materialization and axis labels.
+        
+        Args:
+            expr: Plot expression (e.g., 'y:x', 'x', 'dEdx:p')
+            type: Plot type - 'auto', 'hist', 'scatter', 'profile', 'hist2d', 'hexbin'
+                  'auto' infers from expression (single var → hist, two vars → scatter)
+            lazy: If True, auto-materialize needed aliases. Default from self.draw_lazy
+            keep_materialized: If False, drop aliases we materialized after draw.
+                              Default from self.draw_keep_materialized
+            entry_begin: Start index for entry selection
+            entry_end: End index for entry selection
+            entry_mask: Boolean or integer mask for entry selection
+            **kwargs: Passed to underlying dfdraw method (bins, color, group_by, etc.)
+        
+        Returns:
+            (fig, ax, stats) tuple from dfdraw
+        
+        Example:
+            adf.draw('dEdx:p', type='profile', bins=100, group_by='charge')
+            adf.draw('x', lazy=True)  # Auto-materialize if x is an alias
+        """
+        # Import dfdraw
+        try:
+            from dfdraw import DFDraw
+        except ImportError:
+            raise ImportError(
+                "dfdraw package not found. Install it or ensure it's in your path."
+            )
+        
+        # Resolve parameters with 3-level precedence
+        effective_lazy = self._resolve_draw_param(lazy, 'lazy')
+        effective_keep = self._resolve_draw_param(keep_materialized, 'keep_materialized')
+        
+        # Track what's already materialized
+        already_materialized = self._get_materialized_aliases()
+        
+        # Parse expression to find needed aliases
+        needed_aliases = self._parse_expr_aliases(expr, kwargs.get('group_by'), kwargs.get('color'))
+        
+        # Lazy materialization
+        if effective_lazy:
+            to_materialize = needed_aliases - already_materialized
+            if to_materialize:
+                self.materialize_aliases(names=list(to_materialize))
+        
+        # Apply entry selection AFTER materialization
+        df_subset = self._apply_entry_selection(entry_begin, entry_end, entry_mask)
+        
+        # Create plotter and delegate
+        plotter = DFDraw(df_subset)
+        
+        # Attach self for duck-typed axis title lookup
+        plotter._data_source = self
+        
+        # Determine plot method
+        method_name = self._resolve_plot_type(expr, type)
+        plot_func = getattr(plotter, method_name)
+        
+        # Call plot
+        result = plot_func(expr, **kwargs)
+        
+        # Cleanup if requested
+        if not effective_keep:
+            we_added = self._get_materialized_aliases() - already_materialized
+            if we_added:
+                self.drop_materialized(we_added)
+        
+        return result
+
+    def hist(self, expr: str, **kwargs):
+        """Histogram. See draw() for parameters."""
+        return self.draw(expr, type='hist', **kwargs)
+
+    def scatter(self, expr: str, **kwargs):
+        """Scatter plot. See draw() for parameters."""
+        return self.draw(expr, type='scatter', **kwargs)
+
+    def profile(self, expr: str, **kwargs):
+        """Profile plot. See draw() for parameters."""
+        return self.draw(expr, type='profile', **kwargs)
+
+    def hist2d(self, expr: str, **kwargs):
+        """2D histogram. See draw() for parameters."""
+        return self.draw(expr, type='hist2d', **kwargs)
+
+    def hexbin(self, expr: str, **kwargs):
+        """Hexbin plot. See draw() for parameters."""
+        return self.draw(expr, type='hexbin', **kwargs)
+
+    def draw_batch(self,
+                   specs,
+                   save_dir=None,
+                   defaults=None,
+                   *,
+                   clear_after=None,
+                   lazy=None,
+                   on_error: str = 'skip',
+                   verbose: bool = True,
+                   **kwargs):
+        """
+        Generate multiple plots with optimized materialization.
+        
+        Optimization: Pre-scans all specs to collect needed aliases,
+        materializes ALL at once, then generates plots.
+        
+        Args:
+            specs: Dict of {name: spec} or path to JSON/YAML file
+            save_dir: Directory to save plots
+            defaults: Default parameters applied to all plots
+            clear_after: If True, drop aliases we materialized after batch.
+                        Default from self.draw_clear_after
+            lazy: If True, auto-materialize. Default from self.draw_lazy
+            on_error: 'skip' or 'raise'
+            verbose: Print progress
+            **kwargs: Additional defaults
+        
+        Returns:
+            Dict with results, _errors, _summary (see dfdraw.draw_batch)
+        
+        Example:
+            specs = {
+                'hist_x': {'expr': 'x'},
+                'profile_L1': {'expr': 'L1:x', 'type': 'profile'},
+                'scatter_L2': {'expr': 'L2:x', 'sample': 10000},
+            }
+            adf.draw_batch(specs, save_dir='qa/', defaults={'stats': True})
+        """
+        # Import dfdraw
+        try:
+            from dfdraw import DFDraw
+        except ImportError:
+            raise ImportError(
+                "dfdraw package not found. Install it or ensure it's in your path."
+            )
+        
+        # Resolve parameters
+        effective_lazy = self._resolve_draw_param(lazy, 'lazy')
+        effective_clear = self._resolve_draw_param(clear_after, 'clear_after')
+        
+        # Load specs if path
+        if isinstance(specs, str):
+            specs = self._load_specs_file_for_draw(specs)
+        
+        # Track pre-existing materialized aliases
+        already_materialized = self._get_materialized_aliases()
+        
+        # PRE-SCAN: Collect all needed aliases across all specs
+        if effective_lazy:
+            all_needed = set()
+            merged_defaults = {**(defaults or {}), **kwargs}
+            
+            for name, spec in specs.items():
+                merged_spec = {**merged_defaults, **spec}
+                expr = merged_spec.get('expr', name)
+                group_by = merged_spec.get('group_by')
+                color = merged_spec.get('color')
+                all_needed.update(self._parse_expr_aliases(expr, group_by, color))
+            
+            # Materialize ALL at once
+            to_materialize = all_needed - already_materialized
+            if to_materialize:
+                if verbose:
+                    print(f"Materializing {len(to_materialize)} aliases: {sorted(to_materialize)}")
+                self.materialize_aliases(names=list(to_materialize))
+        
+        # Delegate to dfdraw batch
+        plotter = DFDraw(self.df)
+        plotter._data_source = self  # For duck-typed axis title lookup
+        
+        results = plotter.draw_batch(
+            specs=specs,
+            save_dir=save_dir,
+            defaults=defaults,
+            on_error=on_error,
+            verbose=verbose,
+            **kwargs
+        )
+        
+        # Cleanup if requested
+        if effective_clear:
+            we_added = self._get_materialized_aliases() - already_materialized
+            if we_added:
+                if verbose:
+                    print(f"Clearing {len(we_added)} materialized aliases")
+                self.drop_materialized(we_added)
+        
+        return results
+
+    def _load_specs_file_for_draw(self, path: str):
+        """Load specs from JSON or YAML file for draw_batch."""
+        from pathlib import Path
+        
+        path = Path(path)
+        with open(path) as f:
+            if path.suffix in ('.yaml', '.yml'):
+                try:
+                    import yaml
+                    data = yaml.safe_load(f)
+                except ImportError:
+                    raise ImportError("PyYAML required for YAML files: pip install pyyaml")
+            else:
+                data = json.load(f)
+        
+        # Handle 'plots' key if present
+        if isinstance(data, dict) and 'plots' in data:
+            return data['plots']
+        return data
