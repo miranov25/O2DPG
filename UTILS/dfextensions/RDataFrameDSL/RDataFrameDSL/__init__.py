@@ -42,6 +42,7 @@ from .ir_nodes import (
     # Enums
     UnaryOp,
     BinaryOp,
+    SliceKind,
     # Base
     IRNode,
     # Leaf nodes
@@ -59,6 +60,7 @@ from .ir_nodes import (
     SliceNode,
     SubscriptNode,
     CollectionIndexNode,
+    RVecSliceNode,
     # Helpers
     BroadcastInfo,
     # Factory functions
@@ -69,6 +71,7 @@ from .ir_nodes import (
     make_call,
     make_method_call,
     make_subscript,
+    make_rvec_slice,
 )
 
 # Class Reflection
@@ -123,6 +126,11 @@ from .backend_cpp import (
     REFLECTION_HEADERS,
 )
 
+# High-Level Interface
+from .dsl_compiler import (
+    DSLCompiler,
+)
+
 __all__ = [
     # Version
     '__version__',
@@ -155,6 +163,7 @@ __all__ = [
     # Nodes
     'UnaryOp',
     'BinaryOp',
+    'SliceKind',
     'IRNode',
     'ConstantNode',
     'VariableNode',
@@ -167,6 +176,7 @@ __all__ = [
     'SliceNode',
     'SubscriptNode',
     'CollectionIndexNode',
+    'RVecSliceNode',
     'BroadcastInfo',
     'make_constant',
     'make_variable',
@@ -175,6 +185,7 @@ __all__ = [
     'make_call',
     'make_method_call',
     'make_subscript',
+    'make_rvec_slice',
     
     # Errors
     'IRErrorKind',
@@ -200,4 +211,7 @@ __all__ = [
     'RVEC_HEADER',
     'RVEC_METHODS',
     'REFLECTION_HEADERS',
+    
+    # High-Level Interface
+    'DSLCompiler',
 ]
