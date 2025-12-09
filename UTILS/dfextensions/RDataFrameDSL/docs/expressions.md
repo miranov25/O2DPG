@@ -325,6 +325,30 @@ The DSL automatically infers result types:
 
 ---
 
+---
+
+## Alias Referencing
+
+Aliases can reference other previously defined aliases:
+
+```python
+schema = {"px": "double", "py": "double", "pz": "double"}
+dsl = DSLCompiler(schema)
+
+# Step 1: Define pt
+dsl.define("pt", "sqrt(px**2 + py**2)")
+
+# Step 2: Use pt in eta calculation
+dsl.define("eta", "-log(tan(atan2(pt, pz)/2))")
+
+# Step 3: Use eta in cut
+dsl.define("is_central", "abs(eta) < 2.5")
+```
+
+**How it works:** After each `define()`, the alias is added to the schema with its inferred type, making it available for subsequent expressions.
+
+---
+
 ## Error Examples
 
 ### Unknown Variable

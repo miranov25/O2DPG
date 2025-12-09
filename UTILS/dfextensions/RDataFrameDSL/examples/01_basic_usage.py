@@ -48,8 +48,8 @@ dsl.define("pt", "sqrt(px**2 + py**2)")
 # Total momentum
 dsl.define("p", "sqrt(px**2 + py**2 + pz**2)")
 
-# Pseudorapidity (using theta = atan2(pt, pz), but inline pt calculation)
-dsl.define("eta", "-log(tan(atan2(sqrt(px**2 + py**2), pz)/2))")
+# Pseudorapidity - NOW WORKS! Uses 'pt' alias
+dsl.define("eta", "-log(tan(atan2(pt, pz)/2))")
 
 # Azimuthal angle
 dsl.define("phi", "atan2(py, px)")
@@ -57,16 +57,16 @@ dsl.define("phi", "atan2(py, px)")
 # Invariant mass
 dsl.define("mass", "sqrt(energy**2 - px**2 - py**2 - pz**2)")
 
-# Boolean cut (inline pt calculation)
-dsl.define("is_central", "abs(-log(tan(atan2(sqrt(px**2 + py**2), pz)/2))) < 2.5")
+# Boolean cut - NOW WORKS! Uses 'eta' alias
+dsl.define("is_central", "abs(eta) < 2.5")
 
 print("\nDefined expressions:")
 print("  pt         = sqrt(px**2 + py**2)")
 print("  p          = sqrt(px**2 + py**2 + pz**2)")
-print("  eta        = -log(tan(atan2(sqrt(px**2+py**2), pz)/2))")
+print("  eta        = -log(tan(atan2(pt, pz)/2))     # Uses pt alias!")
 print("  phi        = atan2(py, px)")
 print("  mass       = sqrt(energy**2 - px**2 - py**2 - pz**2)")
-print("  is_central = abs(eta) < 2.5")
+print("  is_central = abs(eta) < 2.5                 # Uses eta alias!")
 
 # =============================================================================
 # Preview Generated C++

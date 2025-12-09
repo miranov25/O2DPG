@@ -1,79 +1,74 @@
-# RDataFrameDSL Documentation
+# RDataFrameDSL Examples
 
-## What Is This?
+Runnable examples demonstrating RDataFrameDSL capabilities.
 
-RDataFrameDSL is a Python DSL (Domain-Specific Language) for ROOT RDataFrame that allows physicists to write analysis expressions in a Python-like syntax and have them automatically compiled to efficient C++ code.
+## Prerequisites
 
-## The Problem
+```bash
+# Ensure ROOT is available
+python -c "import ROOT; print(ROOT.__version__)"
 
-Writing RDataFrame expressions in C++ is verbose and error-prone:
-
-```cpp
-// C++ - verbose, unsafe, cryptic errors
-rdf.Define("track_pts", R"(
-    ROOT::RVec<double> result;
-    for (const auto& t : tracks) result.push_back(t.Pt());
-    return result;
-)");
-rdf.Define("first3", "ROOT::VecOps::Take(pt, std::min((size_t)3, pt.size()))");
-rdf.Define("lead_pt", "pt.size() > 0 ? pt[0] : std::nan(\"\")");
+# Add RDataFrameDSL to path
+export PYTHONPATH=/path/to/O2DPG/UTILS/dfextensions:$PYTHONPATH
 ```
 
-## The Solution
+## Examples
+
+| File | Description | ROOT Required |
+|------|-------------|---------------|
+| `01_basic_usage.py` | Scalar expressions, arithmetic | Yes |
+| `02_rvec_operations.py` | RVec indexing, slicing, masking | Yes |
+| `03_method_broadcasting.py` | **Phase 8 demo** - `tracks.Pt()` | Yes |
+| `04_comparison_dsl_vs_raw.py` | DSL vs raw RDataFrame side-by-side | Yes |
+| `05_export_macro.py` | Export to C++ macro file | Yes |
+| `create_test_data.py` | Generate test ROOT files | Yes |
+
+## Quick Start
+
+```bash
+# Generate test data first
+python create_test_data.py
+
+# Run any example
+python 01_basic_usage.py
+python 03_method_broadcasting.py  # Phase 8 demo!
+```
+
+## Demo Script (6 lines!)
+
+The most compelling demo for physicists:
 
 ```python
-# Python DSL - clean, safe, helpful errors
-dsl = DSLCompiler({
-    "pt": "RVec<double>",
-    "tracks": "RVec<TLorentzVector>"
-})
-dsl.define("track_pts", "tracks.Pt()")  # Element-wise method call!
-dsl.define("first3", "pt[:3]")          # Python-like slicing
-dsl.define("lead_pt", "pt[0]")          # Safe indexing (returns NaN on empty)
-rdf = dsl.apply(rdf)
+from RDataFrameDSL import DSLCompiler
+
+schema = {'tracks': 'RVec<TLorentzVector>'}
+dsl = DSLCompiler(schema)
+dsl.define("track_pts", "tracks.Pt()")
+dsl.define("lead_pt", "tracks[:1].Pt()")
+dsl.define("high_pt_eta", "tracks[tracks.Pt() > 1.0].Eta()")
+
+print(dsl.preview())  # Show generated C++
 ```
 
-## Key Features
+This demonstrates:
+- Method broadcasting (`tracks.Pt()`)
+- Slice then broadcast (`tracks[:1].Pt()`)
+- Filter then broadcast (`tracks[tracks.Pt() > 1.0].Eta()`)
 
-| Feature | Example | Phase |
-|---------|---------|-------|
-| Scalar math | `sqrt(px**2 + py**2)` | 5 |
-| Object methods | `particle.Pt()` | 6a |
-| Private member access | `track.fPx` (via reflection) | 6c |
-| RVec operations | `pt.size()`, `pt[0]`, `pt[-1]` | 6b |
-| Python-like slicing | `pt[:3]`, `pt[-3:]`, `pt[::2]` | 7 |
-| Boolean masking | `pt[pt > 1.0]` | 7 |
-| **Method broadcasting** | `tracks.Pt()` → `RVec<double>` | **8 ✓** |
-| **Property broadcasting** | `particles.fPx` → `RVec<double>` | **8 ✓** |
-| C++ macro export | `dsl.export_macro("analysis.C")` | 7.9 |
+## Output
 
-## Current Status
+Each example prints:
+1. What it's demonstrating
+2. The DSL expression
+3. Generated C++ code (via `preview()`)
+4. Execution results (when applicable)
 
-- **Phases 1-8:** ✅ Complete (549 tests passing)
-- **Phase 9:** Planned (RVec arithmetic type propagation)
-- **Target:** ROOT team demonstration
+## Alias Referencing
 
-## Quick Links
+Aliases can reference other previously defined aliases:
 
-- [Architecture Overview](ARCHITECTURE.md)
-- [Phase History](PHASE_HISTORY.md)
-- [User Guide](USER_GUIDE.md) *(planned)*
-- [Developer Guide](DEV_GUIDE.md) *(planned)*
-
-## Repository Structure
-
-```
-RDataFrameDSL/
-├── __init__.py              # Public API exports
-├── ir_nodes.py              # IR node definitions
-├── ir_types.py              # Type system
-├── ir_errors.py             # Error types with suggestions
-├── ir_builder.py            # Expression → IR
-├── type_inferrer.py         # Type inference from schema
-├── backend_cpp.py           # IR → C++ code generation
-├── dsl_compiler.py          # High-level DSLCompiler API
-└── tests/
-    ├── test_ir_*.py         # IR unit tests
-    ├── test_backend_*.py    # Code generation tests
-    └── test_root_*.py       # ROOT integration tests
+```python
+dsl.define("pt", "sqrt(px**2 + py**2)")
+dsl.define("eta", "-log(tan(atan2(pt, pz)/2))")  # Uses 'pt' alias!
+dsl.define("is_central", "abs(eta) < 2.5")       # Uses 'eta' alias!
 ```

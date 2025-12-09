@@ -21,6 +21,9 @@ Usage:
     dsl.define("n_tracks", "pt.size()")
     dsl.define("first3", "pt[:3]")
     
+    # Aliases can now reference other aliases!
+    dsl.define("high_pt", "event_pt > 10.0")  # Uses event_pt alias
+    
     # Apply to RDataFrame
     rdf = ROOT.RDataFrame("Events", "data.root")
     rdf = dsl.apply(rdf)
@@ -29,6 +32,7 @@ Usage:
     dsl.export_macro("my_functions.C")
 
 Phase 7.9: RDataFrame Validation & C++ Export
+Phase 8.1: Alias referencing support (aliases can use other aliases)
 """
 
 from typing import Dict, List, Optional, Any
@@ -72,6 +76,36 @@ def _simple_schema_to_full(simple_schema: Dict[str, str]) -> Dict:
     return {"columns": columns}
 
 
+def _ir_to_type_string(ir) -> str:
+    """
+    Convert IR node's type to a simple type string for schema.
+    
+    Args:
+        ir: IR node with dtype and rank attributes
+        
+    Returns:
+        Type string (e.g., "double", "RVec<double>", "RVec<TLorentzVector>")
+    """
+    # Get base type
+    if ir.dtype.cpp_type:
+        base_type = ir.dtype.cpp_type
+    else:
+        base_type = ir.dtype.to_cpp()
+    
+    # Handle RVec wrapping
+    if ir.rank == 1:
+        # Check if already wrapped
+        if base_type.startswith("RVec<") or base_type.startswith("ROOT::RVec<"):
+            return base_type
+        else:
+            return f"RVec<{base_type}>"
+    elif ir.rank == 0:
+        return base_type
+    else:
+        # rank > 1 not fully supported yet
+        return base_type
+
+
 class DSLCompiler:
     """
     High-level DSL compiler for RDataFrame.
@@ -81,6 +115,8 @@ class DSLCompiler:
     - Applying all definitions to an RDataFrame
     - Exporting generated C++ for inspection
     
+    Aliases can reference other previously defined aliases!
+    
     Attributes:
         schema: Column definitions (name -> C++ type)
         library: FunctionLibrary containing generated functions
@@ -88,6 +124,7 @@ class DSLCompiler:
     Example:
         >>> dsl = DSLCompiler({"px": "double", "py": "double"})
         >>> dsl.define("pt", "sqrt(px**2 + py**2)")
+        >>> dsl.define("high_pt", "pt > 10.0")  # Can use 'pt' alias!
         >>> rdf = dsl.apply(rdf)
     """
     
@@ -100,7 +137,7 @@ class DSLCompiler:
                     e.g. {"px": "double", "pt": "RVec<double>"}
             safe_indexing: Enable bounds checking (default True)
         """
-        self.schema = schema
+        self.schema = dict(schema)  # Make a copy to allow modifications
         self.safe_indexing = safe_indexing
         
         # Unique ID for this compiler instance (avoids parallel test collisions)
@@ -125,6 +162,10 @@ class DSLCompiler:
         """
         Define a new column from a DSL expression.
         
+        Expressions can reference:
+        - Schema columns (original data)
+        - Previously defined aliases
+        
         Args:
             name: Output column name
             expression: DSL expression (e.g. "sqrt(px**2 + py**2)")
@@ -137,10 +178,11 @@ class DSLCompiler:
         
         Example:
             >>> dsl.define("pt", "sqrt(px**2 + py**2)")
-            >>> dsl.define("n_tracks", "tracks.size()")
+            >>> dsl.define("high_pt", "pt > 10.0")  # Uses 'pt' alias
         """
-        # Check for name collision with schema
-        if name in self.schema:
+        # Check for name collision with original schema only
+        # (aliases are allowed to shadow other aliases via redefinition)
+        if name in self.schema and name not in [n for n, _ in self._definitions]:
             raise IRError(
                 IRErrorKind.VALIDATION_ERROR,
                 f"Column name '{name}' conflicts with existing branch",
@@ -171,7 +213,36 @@ class DSLCompiler:
         self._functions[name] = func
         self.library.add(func)
         
+        # === NEW: Register alias in schema for future expressions ===
+        self._register_alias_type(name, ir)
+        
         return self
+    
+    def _register_alias_type(self, name: str, ir) -> None:
+        """
+        Register a new alias in the schema and rebuild type inferrer.
+        
+        This allows subsequent define() calls to reference this alias.
+        
+        Args:
+            name: Alias name
+            ir: IR node with type information
+        """
+        # Get type string
+        type_str = _ir_to_type_string(ir)
+        
+        # Add to simple schema
+        self.schema[name] = type_str
+        
+        # Rebuild TypeInferrer with updated schema
+        full_schema = _simple_schema_to_full(self.schema)
+        self._inferrer = TypeInferrer.from_schema(full_schema)
+        
+        # Update generator with new inferrer
+        self._generator = CppCodeGenerator(
+            type_inferrer=self._inferrer,
+            safe_indexing=self.safe_indexing
+        )
     
     def compile_all(self) -> None:
         """
