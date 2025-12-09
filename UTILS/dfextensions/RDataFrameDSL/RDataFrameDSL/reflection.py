@@ -34,7 +34,134 @@ __all__ = [
     'ReflectionCache',
     'MethodInfo',
     'PropertyInfo',
+    'METHOD_RETURN_TYPES',
+    'get_method_return_type_fallback',
 ]
+
+
+# =============================================================================
+# Fallback Type Maps for Common Physics Classes
+# =============================================================================
+
+# Hardcoded return types for common HEP methods.
+# Used as fallback when TClass reflection is unavailable.
+# Format: {class_name: {method_name: return_type}}
+METHOD_RETURN_TYPES = {
+    "TLorentzVector": {
+        # Kinematic methods
+        "Pt": "double", "Eta": "double", "Phi": "double", "M": "double",
+        "Px": "double", "Py": "double", "Pz": "double", "E": "double",
+        "P": "double", "Mt": "double", "Et": "double",
+        "Theta": "double", "CosTheta": "double",
+        "Rapidity": "double", "PseudoRapidity": "double",
+        "Perp": "double", "Perp2": "double",
+        "Mag": "double", "Mag2": "double",
+        "Beta": "double", "Gamma": "double",
+        # Methods returning objects
+        "Vect": "TVector3", "BoostVector": "TVector3",
+    },
+    "TVector3": {
+        # Component access
+        "X": "double", "Y": "double", "Z": "double",
+        "Px": "double", "Py": "double", "Pz": "double",  # Aliases
+        # Magnitude
+        "Mag": "double", "Mag2": "double",
+        "Perp": "double", "Perp2": "double",
+        # Angles
+        "Theta": "double", "Phi": "double",
+        "CosTheta": "double", "Eta": "double",
+        # Methods returning objects
+        "Unit": "TVector3",
+    },
+    "TParticle": {
+        # Kinematic methods
+        "Pt": "double", "Eta": "double", "Phi": "double",
+        "Px": "double", "Py": "double", "Pz": "double",
+        "Energy": "double", "GetMass": "double",
+        "P": "double", "Theta": "double", "Vx": "double",
+        "Vy": "double", "Vz": "double", "T": "double",
+        # ID methods
+        "GetPdgCode": "int", "GetStatusCode": "int",
+        "GetMother": "int", "GetFirstMother": "int", "GetSecondMother": "int",
+        "GetFirstDaughter": "int", "GetLastDaughter": "int",
+        "GetNDaughters": "int",
+    },
+    "TVector2": {
+        "X": "double", "Y": "double",
+        "Px": "double", "Py": "double",
+        "Mod": "double", "Mod2": "double",
+        "Phi": "double",
+    },
+}
+
+# Common property types for HEP classes
+PROPERTY_TYPES = {
+    "TLorentzVector": {
+        "fX": "double", "fY": "double", "fZ": "double", "fE": "double",
+    },
+    "TVector3": {
+        "fX": "double", "fY": "double", "fZ": "double",
+    },
+    "TParticle": {
+        "fPdgCode": "int", "fStatusCode": "int",
+        "fMother": "int", "fDaughter": "int",
+        "fPx": "double", "fPy": "double", "fPz": "double", "fE": "double",
+        "fVx": "double", "fVy": "double", "fVz": "double", "fVt": "double",
+    },
+}
+
+
+def get_method_return_type_fallback(class_name: str, method_name: str) -> Optional[str]:
+    """
+    Get method return type from fallback map.
+    
+    Args:
+        class_name: C++ class name (e.g., "TLorentzVector")
+        method_name: Method name (e.g., "Pt")
+        
+    Returns:
+        C++ return type string, or None if not in fallback map
+        
+    Example:
+        >>> get_method_return_type_fallback("TLorentzVector", "Pt")
+        'double'
+        >>> get_method_return_type_fallback("TLorentzVector", "Vect")
+        'TVector3'
+    """
+    if class_name in METHOD_RETURN_TYPES:
+        return METHOD_RETURN_TYPES[class_name].get(method_name)
+    return None
+
+
+def get_property_type_fallback(class_name: str, property_name: str) -> Optional[str]:
+    """
+    Get property type from fallback map.
+    
+    Args:
+        class_name: C++ class name (e.g., "TParticle")
+        property_name: Property name (e.g., "fPx")
+        
+    Returns:
+        C++ type string, or None if not in fallback map
+    """
+    if class_name in PROPERTY_TYPES:
+        return PROPERTY_TYPES[class_name].get(property_name)
+    return None
+
+
+def get_known_methods(class_name: str) -> List[str]:
+    """
+    Get list of known methods for a class (for error suggestions).
+    
+    Args:
+        class_name: C++ class name
+        
+    Returns:
+        List of known method names
+    """
+    if class_name in METHOD_RETURN_TYPES:
+        return list(METHOD_RETURN_TYPES[class_name].keys())
+    return []
 
 
 # =============================================================================
@@ -208,7 +335,7 @@ class ReflectionCache:
     def resolve_method(self, class_name: str, method_name: str,
                        arg_types: List[str] = None) -> MethodInfo:
         """
-        Resolve method info. TClass first, schema fallback.
+        Resolve method info. TClass first, fallback map, then schema.
         
         Args:
             class_name: C++ class name
@@ -241,7 +368,21 @@ class ReflectionCache:
             self._method_cache[cache_key] = info
             return info
         
-        # Step 3: Neither worked - raise appropriate error
+        # Step 3: Try hardcoded fallback map for common HEP classes
+        fallback_type = get_method_return_type_fallback(class_name, method_name)
+        if fallback_type:
+            info = MethodInfo(
+                class_name=class_name,
+                method_name=method_name,
+                return_type=fallback_type,
+                arg_types=arg_types or [],
+                is_const=True,  # Assume const for common methods
+                source="fallback"
+            )
+            self._method_cache[cache_key] = info
+            return info
+        
+        # Step 4: Neither worked - raise appropriate error
         self._raise_method_not_found(tclass, class_name, method_name)
     
     def _resolve_method_from_tclass(self, tclass, class_name: str,
@@ -307,19 +448,33 @@ class ReflectionCache:
     def _raise_method_not_found(self, tclass, class_name: str, 
                                  method_name: str) -> None:
         """Raise appropriate error for method not found."""
+        # Get suggestions from fallback map
+        known = get_known_methods(class_name)
+        
         if tclass is None:
+            suggestions = [
+                f"ROOT.gSystem.Load('lib{class_name}')",
+                "Or provide method signature in schema"
+            ]
+            if known:
+                suggestions.insert(0, f"Known methods for {class_name}: {', '.join(known[:7])}")
+            
             raise IRError(
                 IRErrorKind.MISSING_DICT,
                 f"Class '{class_name}' not found (no dictionary). "
                 "Load the appropriate dictionary or add required headers.",
-                suggestions=[
-                    f"ROOT.gSystem.Load('lib{class_name}')",
-                    "Or provide method signature in schema"
-                ]
+                suggestions=suggestions
             )
         
-        # Class exists but method not found
+        # Class exists but method not found - get fuzzy match suggestions
         suggestions = self._fuzzy_match_methods(tclass, method_name)
+        
+        # Add fallback map suggestions if available
+        if known:
+            known_str = f"Common methods: {', '.join(known[:7])}"
+            if known_str not in suggestions:
+                suggestions.append(known_str)
+        
         raise IRError(
             IRErrorKind.TYPE_ERROR,  # Using TYPE_ERROR since METHOD_NOT_FOUND may not exist
             f"Method '{method_name}' not found in class '{class_name}'",
@@ -329,7 +484,7 @@ class ReflectionCache:
     def resolve_property(self, class_name: str, 
                          property_name: str) -> PropertyInfo:
         """
-        Resolve property/data member info. TClass first, schema fallback.
+        Resolve property/data member info. TClass first, fallback map, then schema.
         
         Args:
             class_name: C++ class name
@@ -361,7 +516,19 @@ class ReflectionCache:
             self._property_cache[cache_key] = info
             return info
         
-        # Step 3: Neither worked - raise appropriate error
+        # Step 3: Try hardcoded fallback map for common HEP classes
+        fallback_type = get_property_type_fallback(class_name, property_name)
+        if fallback_type:
+            info = PropertyInfo(
+                class_name=class_name,
+                property_name=property_name,
+                property_type=fallback_type,
+                source="fallback"
+            )
+            self._property_cache[cache_key] = info
+            return info
+        
+        # Step 4: Neither worked - raise appropriate error
         self._raise_property_not_found(tclass, class_name, property_name)
     
     def _resolve_property_from_tclass(self, tclass, class_name: str,

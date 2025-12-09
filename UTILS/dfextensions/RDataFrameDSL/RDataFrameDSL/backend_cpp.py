@@ -60,6 +60,7 @@ from .ir_types import IRType, IRTypeKind, IR_TO_CPP_TYPE
 from .ir_nodes import (
     IRNode, ConstantNode, VariableNode, UnaryOpNode, BinaryOpNode,
     TernaryOpNode, CallNode, MethodCallNode, PropertyAccessNode,
+    MethodBroadcastNode, PropertyBroadcastNode,  # Phase 8
     SubscriptNode, SliceNode, UnaryOp, BinaryOp, RVecSliceNode, SliceKind
 )
 from .ir_errors import IRError, IRErrorKind
@@ -447,15 +448,27 @@ class CppCodeGenerator:
                 suggestions=["Ensure variable is defined in the schema"]
             )
         
-        # Object types use const reference
+        # RVec types (rank 1) use const reference - check rank FIRST
+        # This handles both RVec<double> and RVec<TLorentzVector>
+        if node.rank == 1:
+            # Check if cpp_type is already a collection type
+            cpp_type = node.dtype.cpp_type or ""
+            if cpp_type.startswith("RVec<") or cpp_type.startswith("ROOT::RVec<"):
+                # Already have full RVec type
+                if not cpp_type.startswith("ROOT::"):
+                    cpp_type = f"ROOT::{cpp_type}"
+                return f"const {cpp_type}&"
+            elif cpp_type.startswith("std::vector<"):
+                return f"const {cpp_type}&"
+            else:
+                # cpp_type is the element type, wrap with RVec
+                inner_type = cpp_type if cpp_type else node.dtype.to_cpp()
+                return f"const ROOT::RVec<{inner_type}>&"
+        
+        # Object types (rank 0) use const reference
         if node.dtype.kind == IRTypeKind.Object:
             cpp_type = node.dtype.cpp_type
             return f"const {cpp_type}&"
-        
-        # RVec types (rank 1) use const reference
-        if node.rank == 1:
-            inner_type = node.dtype.to_cpp()
-            return f"const ROOT::RVec<{inner_type}>&"
         
         # Scalar types use value
         return node.dtype.to_cpp()
@@ -469,9 +482,25 @@ class CppCodeGenerator:
                 suggestions=["Check that all sub-expressions have valid types"]
             )
         
+        # Phase 8: Broadcast nodes already have RVec<T> as dtype
+        if isinstance(ir, (MethodBroadcastNode, PropertyBroadcastNode)):
+            # dtype is already RVec<result_element_type>
+            cpp_type = ir.dtype.cpp_type or ir.dtype.to_cpp()
+            # Ensure ROOT:: prefix
+            if cpp_type.startswith("RVec<"):
+                return f"ROOT::{cpp_type}"
+            elif "RVec<" in cpp_type and not cpp_type.startswith("ROOT::"):
+                return f"ROOT::{cpp_type}"
+            return cpp_type
+        
         # RVec return type (rank 1)
         if ir.rank == 1:
             inner_type = ir.dtype.to_cpp()
+            # Avoid double-wrapping if inner_type is already RVec
+            if inner_type.startswith("RVec<") or inner_type.startswith("ROOT::RVec<"):
+                if inner_type.startswith("ROOT::"):
+                    return inner_type
+                return f"ROOT::{inner_type}"
             return f"ROOT::RVec<{inner_type}>"
         
         # Scalar return type
@@ -499,6 +528,11 @@ class CppCodeGenerator:
             return self._visit_method_call(node)
         elif isinstance(node, PropertyAccessNode):
             return self._visit_property_access(node)
+        # Phase 8: Broadcasting nodes
+        elif isinstance(node, MethodBroadcastNode):
+            return self._visit_method_broadcast(node)
+        elif isinstance(node, PropertyBroadcastNode):
+            return self._visit_property_broadcast(node)
         elif isinstance(node, SubscriptNode):
             return self._visit_subscript(node)
         elif isinstance(node, RVecSliceNode):
@@ -850,6 +884,90 @@ class CppCodeGenerator:
             f"}}()"
         )
     
+    # =========================================================================
+    # Phase 8: Broadcasting Visitors
+    # =========================================================================
+    
+    def _visit_method_broadcast(self, node: MethodBroadcastNode) -> str:
+        """
+        Generate C++ for element-wise method call on RVec<Object>.
+        
+        Generates a loop that calls the method on each element and collects
+        results into a new RVec.
+        
+        Example for tracks.Pt() where tracks is RVec<TLorentzVector>:
+            [&]() -> ROOT::RVec<double> {
+                ROOT::RVec<double> result;
+                result.reserve(tracks.size());
+                for (const auto& elem : tracks) {
+                    result.push_back(elem.Pt());
+                }
+                return result;
+            }()
+        """
+        target = self._visit(node.target)
+        method = node.method_name
+        result_type = node.result_element_type
+        
+        # Build the RVec result type
+        rvec_result_type = f"ROOT::RVec<{result_type}>"
+        
+        return (
+            f"[&]() -> {rvec_result_type} {{\n"
+            f"    {rvec_result_type} result;\n"
+            f"    result.reserve({target}.size());\n"
+            f"    for (const auto& elem : {target}) {{\n"
+            f"        result.push_back(elem.{method}());\n"
+            f"    }}\n"
+            f"    return result;\n"
+            f"}}()"
+        )
+    
+    def _visit_property_broadcast(self, node: PropertyBroadcastNode) -> str:
+        """
+        Generate C++ for element-wise property access on RVec<Object>.
+        
+        Generates a loop that accesses the property on each element and collects
+        results into a new RVec.
+        
+        Example for particles.fPx where particles is RVec<TParticle>:
+            [&]() -> ROOT::RVec<double> {
+                ROOT::RVec<double> result;
+                result.reserve(particles.size());
+                for (const auto& elem : particles) {
+                    result.push_back(elem.fPx);
+                }
+                return result;
+            }()
+        """
+        target = self._visit(node.target)
+        property_name = node.property_name
+        result_type = node.result_element_type
+        
+        # Build the RVec result type
+        rvec_result_type = f"ROOT::RVec<{result_type}>"
+        
+        # Determine how to access the property
+        if node.access_mode == "reflection":
+            # Use reflection for protected/private members
+            accessor = self._generate_reflection_access(
+                "elem", node.element_type, property_name, result_type
+            )
+        else:
+            # Direct access for public members
+            accessor = f"elem.{property_name}"
+        
+        return (
+            f"[&]() -> {rvec_result_type} {{\n"
+            f"    {rvec_result_type} result;\n"
+            f"    result.reserve({target}.size());\n"
+            f"    for (const auto& elem : {target}) {{\n"
+            f"        result.push_back({accessor});\n"
+            f"    }}\n"
+            f"    return result;\n"
+            f"}}()"
+        )
+    
     def _visit_subscript(self, node: SubscriptNode) -> str:
         """
         Generate C++ for subscript/indexing operation.
@@ -1152,6 +1270,14 @@ class CppCodeGenerator:
                                        SliceKind.FROM_INDEX, SliceKind.FIRST_N,
                                        SliceKind.LAST_N):
                     headers.add("<algorithm>")  # for std::min
+            
+            # Phase 8: Broadcasting needs RVec header and element type headers
+            elif isinstance(node, (MethodBroadcastNode, PropertyBroadcastNode)):
+                needs_rvec = True
+                # Add header for element type
+                element_type = node.element_type
+                if element_type in CLASS_HEADERS:
+                    headers.add(CLASS_HEADERS[element_type])
         
         # Add RVec header if needed
         if needs_rvec:

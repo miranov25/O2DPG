@@ -41,10 +41,18 @@ from .ir_nodes import (
     IRNode, ConstantNode, VariableNode,
     UnaryOp, UnaryOpNode, BinaryOp, BinaryOpNode, TernaryOpNode,
     CallNode, MethodCallNode, PropertyAccessNode,
+    MethodBroadcastNode, PropertyBroadcastNode,  # Phase 8
     SliceNode, SubscriptNode, CollectionIndexNode,
     SliceKind, RVecSliceNode,
     make_constant, make_variable, make_binary_op, make_unary_op,
     make_call, make_method_call, make_subscript, make_rvec_slice
+)
+from .type_inferrer import extract_inner_type, is_collection_type
+from .reflection import (
+    ReflectionCache, 
+    get_method_return_type_fallback, 
+    get_property_type_fallback,
+    get_known_methods
 )
 from .ir_errors import (
     IRError, IRErrorKind, SourceLocation, ErrorCollector,
@@ -322,6 +330,171 @@ class IRBuilder:
                 break
         
         return results
+    
+    # =========================================================================
+    # Broadcasting Detection Helpers (Phase 8)
+    # =========================================================================
+    
+    # Scalar types that don't broadcast
+    _SCALAR_TYPES = frozenset({
+        'double', 'float', 'int', 'long', 'short', 'char',
+        'unsigned int', 'unsigned long', 'unsigned short', 'unsigned char',
+        'bool', 'size_t', 'int32_t', 'int64_t', 'uint32_t', 'uint64_t',
+        'Double_t', 'Float_t', 'Int_t', 'Long_t', 'Bool_t',
+    })
+    
+    def _is_rvec_of_objects(self, node: IRNode) -> bool:
+        """
+        Check if node is RVec<Object> (not RVec<scalar>).
+        
+        Returns True for RVec<TLorentzVector>, False for RVec<double>.
+        
+        Handles two schema formats:
+        - Full: dtype.cpp_type = 'RVec<TLorentzVector>'
+        - DSLCompiler: dtype.cpp_type = 'TLorentzVector', rank = 1
+        """
+        if node.rank != 1:
+            return False
+        
+        # Get cpp_type - try multiple sources
+        cpp_type = ""
+        if node.dtype.cpp_type:
+            cpp_type = node.dtype.cpp_type
+        elif hasattr(node.dtype, 'to_cpp'):
+            cpp_type = node.dtype.to_cpp()
+        
+        if not cpp_type:
+            return False
+        
+        # Case 1: cpp_type is already a collection type (RVec<T>, vector<T>)
+        if is_collection_type(cpp_type):
+            element_type, _ = extract_inner_type(cpp_type)
+            return element_type not in self._SCALAR_TYPES
+        
+        # Case 2: cpp_type is the element type itself (rank=1 implies RVec)
+        # This happens when DSLCompiler passes dtype as element type
+        return cpp_type not in self._SCALAR_TYPES
+    
+    def _get_rvec_element_type(self, node: IRNode) -> Optional[str]:
+        """
+        Extract element type from RVec node.
+        
+        For RVec<TLorentzVector>, returns "TLorentzVector".
+        For RVec<double>, returns "double".
+        
+        Handles two schema formats:
+        - Full: dtype.cpp_type = 'RVec<TLorentzVector>'
+        - DSLCompiler: dtype.cpp_type = 'TLorentzVector', rank = 1
+        """
+        # Get cpp_type - try multiple sources
+        cpp_type = ""
+        if node.dtype.cpp_type:
+            cpp_type = node.dtype.cpp_type
+        elif hasattr(node.dtype, 'to_cpp'):
+            cpp_type = node.dtype.to_cpp()
+        
+        if not cpp_type:
+            return None
+        
+        # Case 1: cpp_type is already a collection type
+        if is_collection_type(cpp_type):
+            element_type, _ = extract_inner_type(cpp_type)
+            return element_type
+        
+        # Case 2: cpp_type is the element type itself (rank=1 implies it's the element)
+        if node.rank == 1:
+            return cpp_type
+        
+        return None
+    
+    def _resolve_broadcast_method(self, element_type: str, method_name: str,
+                                   ctx: BuildContext, node: ast.AST) -> Tuple[str, IRType]:
+        """
+        Resolve method return type for broadcasting.
+        
+        Args:
+            element_type: C++ type of RVec elements (e.g., "TLorentzVector")
+            method_name: Method name (e.g., "Pt")
+            ctx: Build context for error location
+            node: AST node for error location
+            
+        Returns:
+            (return_type_str, ir_type) tuple
+            
+        Raises:
+            IRError: If method not found
+        """
+        # Try reflection cache first
+        try:
+            cache = ReflectionCache()
+            method_info = cache.resolve_method(element_type, method_name)
+            return_type_str = method_info.return_type
+        except IRError:
+            # Fall back to hardcoded map
+            return_type_str = get_method_return_type_fallback(element_type, method_name)
+            
+            if return_type_str is None:
+                # Method not found - give helpful error
+                known = get_known_methods(element_type)
+                suggestions = []
+                if known:
+                    suggestions.append(f"Did you mean: {', '.join(known[:7])}?")
+                suggestions.append(f"Note: Broadcasting '{method_name}()' on RVec<{element_type}>")
+                
+                raise IRError(
+                    IRErrorKind.TYPE_ERROR,
+                    f"Method '{method_name}' not found on element type '{element_type}'",
+                    source_location=self._make_location(node, ctx),
+                    suggestions=suggestions
+                )
+        
+        # Convert to IRType
+        ir_type = cpp_type_to_ir(return_type_str)
+        return return_type_str, ir_type
+    
+    def _resolve_broadcast_property(self, element_type: str, property_name: str,
+                                     ctx: BuildContext, node: ast.AST) -> Tuple[str, IRType, str]:
+        """
+        Resolve property type for broadcasting.
+        
+        Args:
+            element_type: C++ type of RVec elements
+            property_name: Property name (e.g., "fPx")
+            ctx: Build context for error location
+            node: AST node for error location
+            
+        Returns:
+            (property_type_str, ir_type, access_mode) tuple
+            
+        Raises:
+            IRError: If property not found
+        """
+        access_mode = "direct"
+        property_type_str = None
+        
+        # Try reflection cache first
+        try:
+            cache = ReflectionCache()
+            prop_info = cache.resolve_property(element_type, property_name)
+            property_type_str = prop_info.property_type
+            # Note: access_mode could be determined by reflection in future
+        except IRError:
+            # Fall back to hardcoded map
+            property_type_str = get_property_type_fallback(element_type, property_name)
+        
+        if property_type_str is None:
+            raise IRError(
+                IRErrorKind.TYPE_ERROR,
+                f"Property '{property_name}' not found on element type '{element_type}'",
+                source_location=self._make_location(node, ctx),
+                suggestions=[
+                    f"Note: Broadcasting '{property_name}' on RVec<{element_type}>",
+                    "Check that the property name is correct"
+                ]
+            )
+        
+        ir_type = cpp_type_to_ir(property_type_str)
+        return property_type_str, ir_type, access_mode
     
     # =========================================================================
     # AST Visitor Methods
@@ -680,7 +853,7 @@ class IRBuilder:
         return None
     
     def _visit_method_call(self, node: ast.Call, ctx: BuildContext) -> IRNode:
-        """Handle method calls: track.getX(), obj.Method(args)."""
+        """Handle method calls: track.getX(), obj.Method(args), tracks.Pt()."""
         if not isinstance(node.func, ast.Attribute):
             raise unsupported_operation_error(
                 "Invalid method call syntax",
@@ -691,9 +864,37 @@ class IRBuilder:
         method_name = node.func.attr
         args = [self._visit(arg, ctx) for arg in node.args]
         
-        # For object types, we need class reflection (Phase 4)
-        # For now, return Unknown type and let Phase 4 handle it
-        if obj.dtype.kind == IRTypeKind.Object:
+        # Phase 8: Check for method broadcasting on RVec<Object>
+        if self._is_rvec_of_objects(obj):
+            # Broadcasting: tracks.Pt() → RVec<double>
+            element_type = self._get_rvec_element_type(obj)
+            
+            # Resolve method return type
+            return_type_str, ir_type = self._resolve_broadcast_method(
+                element_type, method_name, ctx, node
+            )
+            
+            # Determine result dtype - it's RVec<return_type>
+            if ir_type.kind == IRTypeKind.Object:
+                # Method returns object (e.g., Vect() → TVector3)
+                result_dtype = IRType(IRTypeKind.Object, f"RVec<{return_type_str}>")
+            else:
+                # Method returns scalar (e.g., Pt() → double)
+                result_dtype = IRType(IRTypeKind.Object, f"RVec<{return_type_str}>")
+            
+            return MethodBroadcastNode(
+                target=obj,
+                method_name=method_name,
+                element_type=element_type,
+                result_element_type=return_type_str,
+                dtype=result_dtype,
+                rank=1,  # Result is always RVec
+                is_jagged=obj.is_jagged,
+                source_location=self._make_location(node, ctx),
+            )
+        
+        # For scalar object types, use direct method call (Phase 6a)
+        if obj.dtype.kind == IRTypeKind.Object and obj.rank == 0:
             return MethodCallNode(
                 object=obj,
                 method_name=method_name,
@@ -705,8 +906,7 @@ class IRBuilder:
                 source_location=self._make_location(node, ctx),
             )
         
-        # For non-object types, this might be RVec operations
-        # Handle common RVec methods
+        # For non-object types (e.g., RVec<double>), handle RVec methods
         rvec_methods = {"size", "at", "front", "back", "empty"}
         if method_name in rvec_methods:
             if method_name == "size":
@@ -781,7 +981,32 @@ class IRBuilder:
         obj = self._visit(node.value, ctx)
         attr_name = node.attr
         
-        # For object types, this is property access
+        # Phase 8: Check for property broadcasting on RVec<Object>
+        if self._is_rvec_of_objects(obj):
+            # Broadcasting: particles.fPx → RVec<double>
+            element_type = self._get_rvec_element_type(obj)
+            
+            # Resolve property type
+            property_type_str, ir_type, access_mode = self._resolve_broadcast_property(
+                element_type, attr_name, ctx, node
+            )
+            
+            # Determine result dtype - it's RVec<property_type>
+            result_dtype = IRType(IRTypeKind.Object, f"RVec<{property_type_str}>")
+            
+            return PropertyBroadcastNode(
+                target=obj,
+                property_name=attr_name,
+                element_type=element_type,
+                result_element_type=property_type_str,
+                access_mode=access_mode,
+                dtype=result_dtype,
+                rank=1,  # Result is always RVec
+                is_jagged=obj.is_jagged,
+                source_location=self._make_location(node, ctx),
+            )
+        
+        # For scalar object types, use direct property access (existing)
         if obj.dtype.kind == IRTypeKind.Object:
             return PropertyAccessNode(
                 object=obj,
@@ -826,7 +1051,27 @@ class IRBuilder:
         """Build subscript with slice: arr[1:3], arr[:], etc.
         
         Phase 7: Creates RVecSliceNode for RVec slicing with proper classification.
+        Phase 8: Detects and errors on broadcast-then-slice pattern.
         """
+        # Phase 8: Check for forbidden broadcast-then-slice pattern
+        if isinstance(value, (MethodBroadcastNode, PropertyBroadcastNode)):
+            if isinstance(value, MethodBroadcastNode):
+                original = f"tracks.{value.method_name}()"
+                suggestion = f"tracks[:n].{value.method_name}()"
+            else:
+                original = f"particles.{value.property_name}"
+                suggestion = f"particles[:n].{value.property_name}"
+            
+            raise IRError(
+                IRErrorKind.UNSUPPORTED_OP,
+                f"Slicing after broadcasting is not supported: '{original}[...]'",
+                source_location=self._make_location(slice_node, ctx),
+                suggestions=[
+                    f"Use '{suggestion}' instead of '{original}[:n]'",
+                    "Slice before broadcasting for better performance"
+                ]
+            )
+        
         start = self._visit(slice_node.lower, ctx) if slice_node.lower else None
         stop = self._visit(slice_node.upper, ctx) if slice_node.upper else None
         step = self._visit(slice_node.step, ctx) if slice_node.step else None
@@ -1000,15 +1245,25 @@ class IRBuilder:
         Boolean masking requires:
         - Target is rank=1 (RVec)
         - Index is rank=1 (RVec)
-        - Index has dtype=bool
+        - Index has element type=bool (RVec<bool>)
         """
         if target.rank != 1:
             return False
         if index.rank != 1:
             return False
-        # Check for boolean type
+        
+        # Check for boolean type - could be direct Bool or RVec<bool>
         if isinstance(index.dtype, IRType):
-            return index.dtype.kind == IRTypeKind.Bool
+            # Direct bool dtype
+            if index.dtype.kind == IRTypeKind.Bool:
+                return True
+            # RVec<bool> has kind=Object with cpp_type containing "bool"
+            if index.dtype.kind == IRTypeKind.Object:
+                cpp_type = index.dtype.cpp_type or ""
+                # Extract inner type and check if it's bool
+                inner_type, _ = extract_inner_type(cpp_type)
+                return inner_type.lower() in ('bool', 'bool_t')
+        
         return str(index.dtype).lower() == 'bool'
     
     def _build_multi_subscript(self, value: IRNode,

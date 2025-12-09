@@ -55,6 +55,9 @@ __all__ = [
     'CallNode',
     'MethodCallNode',
     'PropertyAccessNode',
+    # Broadcasting nodes (Phase 8)
+    'MethodBroadcastNode',
+    'PropertyBroadcastNode',
     # Indexing nodes
     'SliceNode',
     'SubscriptNode',
@@ -590,6 +593,112 @@ class PropertyAccessNode(IRNode):
     def __repr__(self) -> str:
         return (f"PropertyAccessNode(object={self.object!r}, "
                 f"property={self.property_name!r})")
+
+
+# =============================================================================
+# Broadcasting Nodes (Phase 8)
+# =============================================================================
+
+@dataclass
+class MethodBroadcastNode(IRNode):
+    """
+    Element-wise method call on RVec<Object>.
+    
+    This node represents broadcasting a method call across all elements
+    of an RVec containing objects. The result is an RVec of the method's
+    return values.
+    
+    Attributes:
+        target: The RVec<Object> expression being iterated
+        method_name: Name of the method to call on each element
+        element_type: C++ type of elements (e.g., "TLorentzVector")
+        result_element_type: C++ return type of the method (e.g., "double")
+        
+    Example:
+        # tracks.Pt() where tracks is RVec<TLorentzVector>
+        >>> MethodBroadcastNode(
+        ...     target=VariableNode(name="tracks"),
+        ...     method_name="Pt",
+        ...     element_type="TLorentzVector",
+        ...     result_element_type="double"
+        ... )
+        # Result type: RVec<double>, rank=1
+        
+    Code Generation Pattern:
+        [&]() -> ROOT::RVec<double> {
+            ROOT::RVec<double> result;
+            result.reserve(tracks.size());
+            for (const auto& elem : tracks) {
+                result.push_back(elem.Pt());
+            }
+            return result;
+        }()
+    """
+    target: Optional[IRNode] = None
+    method_name: str = ""
+    element_type: str = ""
+    result_element_type: str = ""
+    
+    def children(self) -> List[IRNode]:
+        return [self.target] if self.target else []
+    
+    def __repr__(self) -> str:
+        return (f"MethodBroadcastNode(target={self.target!r}, "
+                f"method={self.method_name!r}, "
+                f"element_type={self.element_type!r}, "
+                f"result_type={self.result_element_type!r})")
+
+
+@dataclass
+class PropertyBroadcastNode(IRNode):
+    """
+    Element-wise property/field access on RVec<Object>.
+    
+    This node represents broadcasting a property access across all elements
+    of an RVec containing objects. The result is an RVec of the property values.
+    
+    Attributes:
+        target: The RVec<Object> expression being iterated
+        property_name: Name of the property/field to access on each element
+        element_type: C++ type of elements (e.g., "TParticle")
+        result_element_type: C++ type of the property (e.g., "double")
+        access_mode: How to access the property ("direct" or "reflection")
+        
+    Example:
+        # particles.fPx where particles is RVec<TParticle>
+        >>> PropertyBroadcastNode(
+        ...     target=VariableNode(name="particles"),
+        ...     property_name="fPx",
+        ...     element_type="TParticle",
+        ...     result_element_type="double",
+        ...     access_mode="direct"
+        ... )
+        # Result type: RVec<double>, rank=1
+        
+    Code Generation Pattern:
+        [&]() -> ROOT::RVec<double> {
+            ROOT::RVec<double> result;
+            result.reserve(particles.size());
+            for (const auto& elem : particles) {
+                result.push_back(elem.fPx);
+            }
+            return result;
+        }()
+    """
+    target: Optional[IRNode] = None
+    property_name: str = ""
+    element_type: str = ""
+    result_element_type: str = ""
+    access_mode: str = "direct"  # "direct" or "reflection"
+    
+    def children(self) -> List[IRNode]:
+        return [self.target] if self.target else []
+    
+    def __repr__(self) -> str:
+        return (f"PropertyBroadcastNode(target={self.target!r}, "
+                f"property={self.property_name!r}, "
+                f"element_type={self.element_type!r}, "
+                f"result_type={self.result_element_type!r})")
 
 
 # =============================================================================

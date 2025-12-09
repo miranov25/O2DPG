@@ -56,6 +56,9 @@ from .ir_nodes import (
     CallNode,
     MethodCallNode,
     PropertyAccessNode,
+    # Phase 8: Broadcasting nodes
+    MethodBroadcastNode,
+    PropertyBroadcastNode,
     # Indexing nodes
     SliceNode,
     SubscriptNode,
@@ -79,6 +82,9 @@ from .reflection import (
     ReflectionCache,
     MethodInfo,
     PropertyInfo,
+    # Phase 8: Fallback maps
+    METHOD_RETURN_TYPES,
+    get_method_return_type_fallback,
 )
 
 # IR Builder
@@ -159,6 +165,8 @@ __all__ = [
     'ReflectionCache',
     'MethodInfo',
     'PropertyInfo',
+    'METHOD_RETURN_TYPES',
+    'get_method_return_type_fallback',
     
     # Nodes
     'UnaryOp',
@@ -173,6 +181,8 @@ __all__ = [
     'CallNode',
     'MethodCallNode',
     'PropertyAccessNode',
+    'MethodBroadcastNode',
+    'PropertyBroadcastNode',
     'SliceNode',
     'SubscriptNode',
     'CollectionIndexNode',
