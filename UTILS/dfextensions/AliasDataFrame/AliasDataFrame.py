@@ -8867,6 +8867,23 @@ class AliasDataFrame:
         effective_lazy = self._resolve_draw_param(lazy, 'lazy')
         effective_keep = self._resolve_draw_param(keep_materialized, 'keep_materialized')
         
+        # =================================================================
+        # Phase 7.3: Auto-load branches in lazy mode
+        # =================================================================
+        if self._lazy_reader is not None:
+            # Detect required branches from expression and parameters
+            required_branches = self.get_required_branches(
+                expr=expr,
+                selection=kwargs.get('selection'),
+                group_by=kwargs.get('group_by'),
+                color=kwargs.get('color')
+            )
+            # Load any branches not already loaded
+            branches_to_load = required_branches - self._lazy_reader.loaded_branches
+            if branches_to_load:
+                self.ensure_branches(list(branches_to_load))
+        # =================================================================
+        
         # Track what's already materialized
         already_materialized = self._get_materialized_aliases()
         
@@ -8995,6 +9012,31 @@ class AliasDataFrame:
         # Load specs if path
         if isinstance(specs, str):
             specs = self._load_specs_file_for_draw(specs)
+        
+        # =================================================================
+        # Phase 7.3: Pre-scan and batch-load branches in lazy mode
+        # =================================================================
+        if self._lazy_reader is not None:
+            all_required = set()
+            merged_defaults = {**(defaults or {}), **kwargs}
+            
+            for name, spec in specs.items():
+                merged_spec = {**merged_defaults, **spec}
+                required = self.get_required_branches(
+                    expr=merged_spec.get('expr', name),
+                    selection=merged_spec.get('selection'),
+                    group_by=merged_spec.get('group_by'),
+                    color=merged_spec.get('color')
+                )
+                all_required.update(required)
+            
+            # Load all required branches at once
+            branches_to_load = all_required - self._lazy_reader.loaded_branches
+            if branches_to_load:
+                if verbose:
+                    print(f"Loading {len(branches_to_load)} branches: {sorted(branches_to_load)}")
+                self.ensure_branches(list(branches_to_load))
+        # =================================================================
         
         # Track pre-existing materialized aliases
         already_materialized = self._get_materialized_aliases()
