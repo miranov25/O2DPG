@@ -4714,6 +4714,272 @@ class AliasDataFrame:
         return self._lazy_reader is not None
     
     # =========================================================================
+    # SECTION 3c: Branch Auto-Detection (Phase 7.2)
+    # =========================================================================
+    #
+    # Automatic detection of required branches from expressions, selections,
+    # and alias dependencies. Enables draw() integration to auto-load only
+    # needed branches.
+    #
+    # Key methods:
+    # - get_required_branches(): Public API for branch detection
+    # - _parse_selection_columns(): AST-based selection parsing
+    # - _resolve_to_base_branches(): Alias chain resolution
+    #
+    # =========================================================================
+    
+    def _parse_selection_columns(self, selection: str) -> set:
+        """
+        Extract column/variable names from a selection string.
+        
+        Uses Python AST to accurately parse expressions and extract
+        identifiers while filtering out function calls.
+        
+        Parameters
+        ----------
+        selection : str
+            Selection expression, e.g., 'isOK && pt > 0.5'
+            Supports Python syntax: and, or, not, &, |, ~
+            Also supports C-style: &&, ||, !
+            
+        Returns
+        -------
+        Set[str]
+            Set of variable names found in expression
+            
+        Examples
+        --------
+        >>> adf._parse_selection_columns('isOK && pt > 0.5')
+        {'isOK', 'pt'}
+        
+        >>> adf._parse_selection_columns('np.abs(eta) < 2.5')
+        {'eta'}  # 'np' and 'abs' filtered as module/function
+        
+        >>> adf._parse_selection_columns('(x > 0) & (y < 10) | isGood')
+        {'x', 'y', 'isGood'}
+        """
+        if not selection or not isinstance(selection, str):
+            return set()
+        
+        # Normalize syntax: && → and, || → or
+        normalized = selection.replace('&&', ' and ').replace('||', ' or ')
+        # Handle C-style ! but not !=
+        normalized = re.sub(r'!(?!=)', ' not ', normalized)
+        
+        try:
+            tree = ast.parse(normalized, mode='eval')
+        except SyntaxError:
+            # Fallback to regex for unparseable expressions
+            return self._parse_selection_columns_regex(selection)
+        
+        # Collect all Name nodes (identifiers)
+        identifiers = set()
+        function_names = set()
+        
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                identifiers.add(node.id)
+            elif isinstance(node, ast.Call):
+                # Track function names to exclude
+                if isinstance(node.func, ast.Name):
+                    function_names.add(node.func.id)
+                elif isinstance(node.func, ast.Attribute):
+                    # e.g., np.abs → exclude 'np'
+                    if isinstance(node.func.value, ast.Name):
+                        function_names.add(node.func.value.id)
+        
+        # Filter out functions, builtins, and common modules
+        excluded = function_names | {
+            'np', 'numpy', 'pd', 'pandas', 'math',
+            'True', 'False', 'None', 'and', 'or', 'not',
+            'abs', 'min', 'max', 'sum', 'len', 'round', 'int', 'float',
+            'sqrt', 'exp', 'log', 'log10', 'sin', 'cos', 'tan',
+            'arcsin', 'arccos', 'arctan', 'arctan2',
+            'sinh', 'cosh', 'tanh', 'floor', 'ceil', 'sign',
+            'pi', 'e', 'inf', 'nan'
+        }
+        
+        return identifiers - excluded
+
+    def _parse_selection_columns_regex(self, selection: str) -> set:
+        """
+        Fallback regex-based extraction for unparseable selections.
+        
+        Parameters
+        ----------
+        selection : str
+            Selection string
+            
+        Returns
+        -------
+        Set[str]
+            Variable names found via regex
+        """
+        # Match identifiers: word characters, not starting with digit
+        pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b'
+        matches = set(re.findall(pattern, selection))
+        
+        # Filter out Python keywords and common names
+        excluded = {
+            'and', 'or', 'not', 'in', 'is', 'True', 'False', 'None',
+            'if', 'else', 'for', 'while', 'np', 'numpy', 'pd', 'pandas', 'math',
+            'abs', 'min', 'max', 'sum', 'len', 'round', 'int', 'float',
+            'sqrt', 'exp', 'log', 'sin', 'cos', 'tan'
+        }
+        
+        return matches - excluded
+
+    def _resolve_to_base_branches(self, columns: set, _visited: set = None) -> set:
+        """
+        Resolve column names to base branches, expanding alias dependencies.
+        
+        Recursively traces through alias definitions to find the underlying
+        TTree branches needed.
+        
+        Parameters
+        ----------
+        columns : Set[str]
+            Column names (may include aliases)
+        _visited : Set[str], optional
+            Internal tracking for circular dependency detection
+            
+        Returns
+        -------
+        Set[str]
+            Base branch names (no aliases)
+            
+        Raises
+        ------
+        ValueError
+            If circular alias dependency detected
+            
+        Examples
+        --------
+        >>> adf.add_alias('dEdx', 'signal / trackLength')
+        >>> adf.add_alias('normalized', 'dEdx / expected')
+        >>> adf._resolve_to_base_branches({'normalized', 'pt'})
+        {'signal', 'trackLength', 'expected', 'pt'}
+        """
+        if _visited is None:
+            _visited = set()
+        
+        base_branches = set()
+        aliases = self.aliases  # {name: expr}
+        
+        for col in columns:
+            if col in _visited:
+                # Circular dependency detected
+                cycle_path = ' → '.join(list(_visited) + [col])
+                raise ValueError(
+                    f"Circular alias dependency detected: {cycle_path}"
+                )
+            
+            if col in aliases:
+                # This is an alias - resolve its dependencies
+                _visited.add(col)
+                expr = aliases[col]
+                
+                # Parse the alias expression for dependencies
+                alias_deps = self._parse_selection_columns(expr)
+                
+                # Recursively resolve (shared _visited set per GPT tweak)
+                resolved = self._resolve_to_base_branches(alias_deps, _visited)
+                base_branches.update(resolved)
+                
+                # Remove from visited after processing (GPT tweak #2)
+                _visited.remove(col)
+            else:
+                # This is a base column/branch
+                base_branches.add(col)
+        
+        return base_branches
+
+    def get_required_branches(self,
+                              expr: str = None,
+                              selection: str = None,
+                              group_by: str = None,
+                              color: str = None,
+                              aliases: list = None,
+                              validate: bool = False) -> set:
+        """
+        Get base branches required for expression, selection, and parameters.
+        
+        Parses all inputs to extract column references, then resolves any
+        aliases to their underlying branch dependencies.
+        
+        Parameters
+        ----------
+        expr : str, optional
+            Plot expression, e.g., 'dEdx:p' or 'pt'
+        selection : str, optional
+            Selection/cut expression, e.g., 'isOK && pt > 0.5'
+        group_by : str, optional
+            Group-by column name
+        color : str, optional
+            Color column name  
+        aliases : List[str], optional
+            Additional alias names to include
+        validate : bool, default False
+            If True, filter results to only existing branches/columns
+            
+        Returns
+        -------
+        Set[str]
+            Base branch names needed
+            
+        Examples
+        --------
+        >>> adf.add_alias('dEdx', 'signal / trackLength')
+        >>> adf.get_required_branches(
+        ...     expr='dEdx:p',
+        ...     selection='isOK && pt > 0.5',
+        ...     group_by='charge'
+        ... )
+        {'signal', 'trackLength', 'p', 'isOK', 'pt', 'charge'}
+        
+        >>> # With validation against available branches
+        >>> adf.get_required_branches(expr='x:y', validate=True)
+        {'x', 'y'}  # Only if x, y exist
+        """
+        all_columns = set()
+        
+        # 1. Parse main expression (e.g., 'dEdx:p' → {'dEdx', 'p'})
+        #    Reuse logic from _parse_expr_aliases but get ALL columns (GPT tweak #1)
+        if expr:
+            parts = expr.replace(' ', '').split(':')
+            all_columns.update(parts)
+        
+        # 2. Parse selection string
+        if selection:
+            selection_cols = self._parse_selection_columns(selection)
+            all_columns.update(selection_cols)
+        
+        # 3. Add group_by and color
+        if group_by:
+            all_columns.add(group_by)
+        if color and isinstance(color, str):
+            all_columns.add(color)
+        
+        # 4. Add explicit aliases
+        if aliases:
+            all_columns.update(aliases)
+        
+        # 5. Resolve aliases to base branches
+        base_branches = self._resolve_to_base_branches(all_columns)
+        
+        # 6. Optionally validate against available branches/columns (GPT tweak #3)
+        if validate:
+            if self._lazy_reader is not None:
+                # Lazy mode: check against TTree branches
+                available = self._lazy_reader.available_branches
+            else:
+                # Eager mode: check against df columns and aliases
+                available = set(self.df.columns) | set(self.aliases.keys())
+            base_branches = base_branches & available
+        
+        return base_branches
+    
+    # =========================================================================
     # SECTION 4: Compression Engine
     # =========================================================================
     #
