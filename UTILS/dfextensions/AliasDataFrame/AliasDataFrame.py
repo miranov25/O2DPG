@@ -867,6 +867,13 @@ class AliasDataFrame:
         self.draw_lazy = False              # Default: require explicit materialization
         self.draw_keep_materialized = True  # Default: keep after single draw
         self.draw_clear_after = True        # Default: clear after batch
+        
+        # Phase 7.1: Lazy branch loading support
+        # _lazy_reader: LazyTreeReader instance for on-demand branch loading
+        # _chain: Runtime config for file chain (separate from _schema)
+        self._lazy_reader = None  # Set by read_tree_lazy()
+        self._chain = None        # Set by read_tree_lazy() or read_chain()
+        self._df_access_warned = False  # Track if we've warned about .df access
 
     # =========================================================================
     # SECTION 0b: Proxy Pattern - DataFrame Delegation
@@ -881,12 +888,28 @@ class AliasDataFrame:
         """
         Enable adf['column'] and adf[['col1', 'col2']] syntax.
         
+        In lazy mode, auto-loads branches if available in TTree.
+        
         Examples
         --------
-        >>> adf['x']           # Single column
+        >>> adf['x']           # Single column (auto-loads if lazy)
         >>> adf[['x', 'y']]    # Multiple columns
         >>> adf['x'].mean()    # Chain with pandas methods
         """
+        # Phase 7.1: Auto-load branches in lazy mode
+        if self._lazy_reader is not None:
+            if isinstance(key, str):
+                # Single column access
+                if key not in self.df.columns and key in self._lazy_reader.available_branches:
+                    self.ensure_branches([key])
+            elif isinstance(key, list):
+                # Multiple column access
+                to_load = [k for k in key 
+                          if k not in self.df.columns 
+                          and k in self._lazy_reader.available_branches]
+                if to_load:
+                    self.ensure_branches(to_load)
+        
         return self.df[key]
     
     def __setitem__(self, key, value):
@@ -4519,6 +4542,176 @@ class AliasDataFrame:
                     ) from e
 
         return adf
+    
+    # =========================================================================
+    # SECTION 3b: Lazy Branch Loading (Phase 7.1)
+    # =========================================================================
+    #
+    # On-demand branch loading from ROOT files. Load only branches needed
+    # for current query, not all 100+ branches.
+    #
+    # Key methods:
+    # - read_tree_lazy(): Create ADF with lazy loading
+    # - ensure_branches(): Load specific branches on demand
+    # - available_branches: All branches in TTree
+    # - loaded_branches: Currently loaded branches
+    #
+    # =========================================================================
+    
+    @staticmethod
+    def read_tree_lazy(file_path: str,
+                       tree_name: str,
+                       branches=None,
+                       schema=None):
+        """
+        Create AliasDataFrame with lazy branch loading.
+        
+        Only specified branches are loaded initially. Additional branches
+        can be loaded on demand via ensure_branches() or auto-loaded on
+        column access (adf['x']).
+        
+        Parameters
+        ----------
+        file_path : str
+            Path to ROOT file
+        tree_name : str
+            Name of TTree
+        branches : List[str], optional
+            Initial branches to load. If None, loads metadata only.
+        schema : dict, optional
+            Schema dict to apply
+            
+        Returns
+        -------
+        AliasDataFrame
+            ADF in lazy mode
+            
+        Examples
+        --------
+        >>> # Load specific branches
+        >>> adf = AliasDataFrame.read_tree_lazy(
+        ...     'data.root', 'tree',
+        ...     branches=['x', 'y', 'pt']
+        ... )
+        
+        >>> # Load metadata only, branches later
+        >>> adf = AliasDataFrame.read_tree_lazy('data.root', 'tree')
+        >>> print(adf.available_branches)  # All branches in TTree
+        >>> adf.ensure_branches(['x', 'y'])  # Load on demand
+        
+        >>> # Auto-load on access
+        >>> adf = AliasDataFrame.read_tree_lazy('data.root', 'tree')
+        >>> adf['x']  # Auto-loads 'x' branch
+        """
+        from LazyTreeReader import LazyTreeReader
+        
+        # Create lazy reader (loads metadata immediately)
+        lazy_reader = LazyTreeReader(file_path, tree_name)
+        
+        # Create initial DataFrame
+        if branches:
+            # Load requested branches
+            df = lazy_reader.ensure_branches(branches, pd.DataFrame())
+        else:
+            # Empty DataFrame with correct length (metadata only)
+            df = pd.DataFrame(index=range(lazy_reader.num_entries))
+        
+        # Create AliasDataFrame
+        adf = AliasDataFrame(df)
+        
+        # Apply schema if provided
+        if schema:
+            adf.update_schema(schema)
+        
+        # Attach lazy reader
+        adf._lazy_reader = lazy_reader
+        
+        # Store chain config (single file for now, Phase 7.4 adds multi-file)
+        adf._chain = {
+            'files': [{
+                'path': file_path, 
+                'tree': tree_name, 
+                'entries': lazy_reader.num_entries
+            }],
+            'entry_offsets': [0],
+        }
+        
+        return adf
+    
+    def ensure_branches(self, names):
+        """
+        Ensure specified branches are loaded into DataFrame.
+        
+        No-op if not in lazy mode or branches already loaded.
+        In non-lazy mode, validates that columns exist.
+        
+        Parameters
+        ----------
+        names : List[str]
+            Branch names to load
+            
+        Raises
+        ------
+        ValueError
+            If branch doesn't exist (lazy mode) or column doesn't exist (non-lazy)
+            
+        Examples
+        --------
+        >>> adf.ensure_branches(['eta', 'phi'])
+        >>> print('eta' in adf.df.columns)  # True
+        """
+        if not names:
+            return
+        
+        if self._lazy_reader is None:
+            # Not in lazy mode - just check columns exist
+            missing = set(names) - set(self.df.columns)
+            if missing:
+                raise ValueError(f"Columns not found: {sorted(missing)}")
+            return
+        
+        # Lazy mode - load branches via reader
+        self.df = self._lazy_reader.ensure_branches(names, self.df)
+    
+    @property
+    def available_branches(self):
+        """
+        Get all branches available in TTree (lazy mode only).
+        
+        Returns
+        -------
+        Set[str] or None
+            Set of branch names, or None if not in lazy mode
+        """
+        if self._lazy_reader is None:
+            return None
+        return self._lazy_reader.available_branches
+    
+    @property
+    def loaded_branches(self):
+        """
+        Get currently loaded branches (lazy mode only).
+        
+        Returns
+        -------
+        Set[str] or None
+            Set of loaded branch names, or None if not in lazy mode
+        """
+        if self._lazy_reader is None:
+            return None
+        return self._lazy_reader.loaded_branches
+    
+    @property
+    def is_lazy(self):
+        """
+        Check if ADF is in lazy loading mode.
+        
+        Returns
+        -------
+        bool
+            True if lazy mode, False if eager mode
+        """
+        return self._lazy_reader is not None
     
     # =========================================================================
     # SECTION 4: Compression Engine
