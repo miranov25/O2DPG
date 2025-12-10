@@ -234,6 +234,8 @@ class TestEnsureBranchesMethod:
     
     def test_ensure_branches_non_lazy(self):
         """ensure_branches validates in non-lazy mode."""
+        from exceptions import BranchNotFoundError
+        
         # Create non-lazy ADF
         df = pd.DataFrame({'a': [1, 2, 3], 'b': [4, 5, 6]})
         adf = AliasDataFrame(df)
@@ -242,7 +244,7 @@ class TestEnsureBranchesMethod:
         adf.ensure_branches(['a', 'b'])
         
         # Should raise for missing columns
-        with pytest.raises(ValueError, match="not found"):
+        with pytest.raises(BranchNotFoundError):
             adf.ensure_branches(['c'])
     
     def test_ensure_branches_empty_noop(self, sample_root_file):

@@ -55,15 +55,79 @@ class LazyTreeReader:
         self.available_branches: Set[str] = set(self._tree.keys())
         self.num_entries: int = self._tree.num_entries
     
+    @property
+    def entries(self) -> int:
+        """Total entries in tree (alias for num_entries)."""
+        return self.num_entries
+    
     def _open_file(self):
         """Open file and tree if not already open."""
         if self._file is None:
             self._file = uproot.open(self.file_path)
             self._tree = self._file[self.tree_name]
     
+    def load_branches(self, names: List[str], existing_df: pd.DataFrame = None) -> pd.DataFrame:
+        """
+        Load branches from ROOT file.
+        
+        Returns NEW data only (doesn't merge with existing_df parameter,
+        which is kept for API compatibility but ignored).
+        
+        Parameters
+        ----------
+        names : List[str]
+            Branch names to load
+        existing_df : pd.DataFrame, optional
+            Ignored. Kept for API compatibility with chain reader.
+            
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with requested branches (new data only)
+            
+        Raises
+        ------
+        ValueError
+            If any branch doesn't exist in TTree
+        """
+        if not names:
+            return pd.DataFrame()
+        
+        # Validate branches exist
+        names_set = set(names)
+        missing = names_set - self.available_branches
+        if missing:
+            raise ValueError(
+                f"Branches not found in TTree: {sorted(missing)}. "
+                f"Available: {sorted(self.available_branches)}"
+            )
+        
+        # Find branches that need loading
+        to_load = names_set - self.loaded_branches
+        if not to_load:
+            return pd.DataFrame()  # Already loaded, nothing new
+        
+        # Load from ROOT file
+        self._open_file()
+        new_data = self._tree.arrays(
+            filter_name=list(to_load),
+            library='pd'
+        )
+        
+        # Copy to avoid modifying uproot's internal buffer
+        new_data = new_data.copy()
+        
+        # Track loaded branches
+        self.loaded_branches.update(to_load)
+        
+        return new_data
+    
     def ensure_branches(self, names: List[str], df: pd.DataFrame) -> pd.DataFrame:
         """
         Ensure specified branches are loaded into DataFrame.
+        
+        Legacy method that loads and merges. For new code, prefer
+        load_branches() + external merge.
         
         Args:
             names: Branch names to load
@@ -78,40 +142,20 @@ class LazyTreeReader:
         if not names:
             return df
         
-        # Validate branches exist
-        names_set = set(names)
-        missing = names_set - self.available_branches
-        if missing:
-            raise ValueError(
-                f"Branches not found in TTree: {sorted(missing)}. "
-                f"Available: {sorted(self.available_branches)}"
-            )
+        # Load new data
+        new_data = self.load_branches(names)
         
-        # Find branches that need loading
-        to_load = names_set - self.loaded_branches
-        if not to_load:
-            return df  # Already loaded
-        
-        # Load from ROOT file
-        self._open_file()
-        new_data = self._tree.arrays(
-            filter_name=list(to_load),
-            library='pd'
-        )
+        if new_data is None or len(new_data) == 0:
+            return df  # Nothing new loaded
         
         # Merge with existing DataFrame
         if df is None or len(df) == 0:
-            # Start fresh - copy to avoid modifying uproot's internal buffer
-            df = new_data.copy()
+            return new_data
         else:
             # Add columns to existing DataFrame
             for col in new_data.columns:
                 df[col] = new_data[col].values
-        
-        # Track loaded branches
-        self.loaded_branches.update(to_load)
-        
-        return df
+            return df
     
     def is_loaded(self, name: str) -> bool:
         """Check if a branch is currently loaded."""

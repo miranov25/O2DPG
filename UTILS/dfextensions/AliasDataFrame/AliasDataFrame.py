@@ -6,7 +6,10 @@ import json
 import uproot
 import copy
 import warnings
+import glob
+from pathlib import Path
 from datetime import datetime, timezone
+from typing import List, Set, Optional, Union
 try:
     import ROOT  # type: ignore
 except ImportError as e:
@@ -16,6 +19,28 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import re
 import ast
+
+# Phase 7.4: Custom exceptions
+try:
+    from exceptions import (
+        AliasDataFrameError,
+        BranchNotFoundError,
+        ChainValidationError,
+        CircularAliasError
+    )
+except ImportError:
+    # Define inline if module not found
+    class AliasDataFrameError(Exception):
+        pass
+    class BranchNotFoundError(AliasDataFrameError):
+        def __init__(self, missing, available=None, message=None):
+            self.missing = missing
+            self.available = available
+            super().__init__(message or f"Branches not found: {sorted(missing)}")
+    class ChainValidationError(AliasDataFrameError):
+        pass
+    class CircularAliasError(AliasDataFrameError):
+        pass
 
 # Numba acceleration (optional)
 try:
@@ -4634,44 +4659,101 @@ class AliasDataFrame:
                 'entries': lazy_reader.num_entries
             }],
             'entry_offsets': [0],
+            'total_entries': lazy_reader.num_entries,
+            'validation_mode': None
         }
         
         return adf
+    
+    def _merge_loaded_data(self, existing_df: pd.DataFrame, 
+                           new_data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Merge newly loaded data into existing DataFrame.
+        
+        This is the central merge point for all data loading operations.
+        Keeping merge logic here (not in readers) enables future Arrow
+        backend migration with minimal changes.
+        
+        Parameters
+        ----------
+        existing_df : pd.DataFrame
+            Current DataFrame (may be empty)
+        new_data : pd.DataFrame
+            Newly loaded data to merge
+            
+        Returns
+        -------
+        pd.DataFrame
+            Merged DataFrame
+        """
+        if new_data is None or len(new_data) == 0:
+            return existing_df
+        
+        if existing_df is None or len(existing_df) == 0:
+            return new_data
+        
+        # Verify row alignment
+        if len(existing_df) != len(new_data):
+            raise ValueError(
+                f"Row count mismatch: existing={len(existing_df)}, "
+                f"new={len(new_data)}. Cannot merge misaligned data."
+            )
+        
+        # Add new columns to existing DataFrame
+        for col in new_data.columns:
+            if col not in existing_df.columns:
+                existing_df[col] = new_data[col].values
+        
+        return existing_df
     
     def ensure_branches(self, names):
         """
         Ensure specified branches are loaded into DataFrame.
         
-        No-op if not in lazy mode or branches already loaded.
-        In non-lazy mode, validates that columns exist.
+        For lazy-loaded ADFs, loads branches from file(s) on demand.
+        For eager ADFs, verifies branches exist.
         
         Parameters
         ----------
-        names : List[str]
-            Branch names to load
+        names : str or List[str]
+            Branch name(s) to ensure are loaded
             
         Raises
         ------
-        ValueError
-            If branch doesn't exist (lazy mode) or column doesn't exist (non-lazy)
+        BranchNotFoundError
+            If requested branches don't exist
             
         Examples
         --------
         >>> adf.ensure_branches(['eta', 'phi'])
         >>> print('eta' in adf.df.columns)  # True
         """
+        if isinstance(names, str):
+            names = [names]
+        
         if not names:
             return
         
         if self._lazy_reader is None:
-            # Not in lazy mode - just check columns exist
+            # Eager mode - just verify columns exist
             missing = set(names) - set(self.df.columns)
             if missing:
-                raise ValueError(f"Columns not found: {sorted(missing)}")
+                raise BranchNotFoundError(missing, set(self.df.columns))
             return
         
-        # Lazy mode - load branches via reader
-        self.df = self._lazy_reader.ensure_branches(names, self.df)
+        # Lazy mode - load from reader
+        names_set = set(names)
+        already_loaded = self._lazy_reader.loaded_branches
+        to_load = names_set - already_loaded
+        
+        if not to_load:
+            return  # All requested branches already loaded
+        
+        # Reader returns new data only (doesn't merge)
+        new_data = self._lazy_reader.load_branches(list(to_load))
+        
+        # ADF handles merge (Arrow-compatible pattern)
+        self.df = self._merge_loaded_data(self.df, new_data)
     
     @property
     def available_branches(self):
@@ -4713,6 +4795,330 @@ class AliasDataFrame:
         """
         return self._lazy_reader is not None
     
+    # =========================================================================
+    # SECTION 3b2: Chain Mode - Multiple Files (Phase 7.4)
+    # =========================================================================
+    #
+    # Support for reading multiple ROOT files as a single dataset.
+    # Uses LazyChainReader with LRU file handle caching.
+    #
+    # Key methods:
+    # - read_chain(): Eager loading of multiple files
+    # - read_chain_lazy(): Lazy loading of multiple files
+    # - _parse_chain_files(): Parse file specifications
+    #
+    # =========================================================================
+    
+    @classmethod
+    def read_chain_lazy(cls,
+                        files: Union[str, List[str]],
+                        tree_name: str = None,
+                        branches: List[str] = None,
+                        schema: dict = None,
+                        validate_branches: str = 'first',
+                        add_file_index: bool = False,
+                        max_open_files: int = 8) -> 'AliasDataFrame':
+        """
+        Read multiple ROOT files as a single lazy dataset.
+        
+        Loads only metadata initially. Data loaded on demand via
+        ensure_branches() or automatically during draw().
+        
+        Parameters
+        ----------
+        files : str or List[str]
+            Glob pattern ('data_*.root:tree') or list of 'path:tree' strings
+        tree_name : str, optional
+            Tree name if not specified in files pattern
+        branches : List[str], optional
+            Branches to load initially. None = metadata only.
+        schema : dict, optional
+            Schema to apply
+        validate_branches : str, default 'first'
+            Validation mode:
+            - 'first': Use first file as reference, warn on differences.
+              Missing branches in later files are filled with NaN.
+              Extra branches in later files are ignored.
+            - 'strict': Error if any file differs from first file
+            - 'intersection': Only branches present in ALL files
+            - 'union': All branches from any file; missing filled with NaN
+        add_file_index : bool, default False
+            Add '__file_idx__' column tracking source file
+        max_open_files : int, default 8
+            Max open file handles (LRU cache size)
+            
+        Returns
+        -------
+        AliasDataFrame
+            Lazy dataset (loads data on demand)
+            
+        Examples
+        --------
+        >>> adf = AliasDataFrame.read_chain_lazy('data_*.root:tree')
+        >>> print(adf.available_branches)  # See all branches
+        >>> adf.draw('y:x')  # Auto-loads x, y
+        
+        >>> # With validation mode
+        >>> adf = AliasDataFrame.read_chain_lazy(
+        ...     'data_*.root:tree',
+        ...     validate_branches='strict'
+        ... )
+        """
+        from LazyChainReader import LazyChainReader
+        
+        # Parse file specifications
+        file_specs = cls._parse_chain_files(files, tree_name)
+        
+        if not file_specs:
+            raise ValueError(f"No files found matching: {files}")
+        
+        # Create chain reader
+        chain_reader = LazyChainReader(
+            files=file_specs,
+            validation=validate_branches,
+            max_open_files=max_open_files,
+            add_file_index=add_file_index
+        )
+        
+        # Create ADF with empty DataFrame
+        adf = cls(pd.DataFrame())
+        
+        # Apply schema if provided
+        if schema:
+            adf.update_schema(schema)
+        
+        adf._lazy_reader = chain_reader
+        
+        # Store chain config (not serialized with schema)
+        adf._chain = {
+            'files': file_specs,
+            'entry_offsets': chain_reader.entry_offsets,
+            'total_entries': chain_reader.entries,
+            'validation_mode': validate_branches
+        }
+        
+        # Load initial branches if requested
+        if branches:
+            adf.ensure_branches(branches)
+        
+        return adf
+    
+    @classmethod
+    def read_chain(cls,
+                   files: Union[str, List[str]],
+                   tree_name: str = None,
+                   branches: List[str] = None,
+                   schema: dict = None,
+                   validate_branches: str = 'first',
+                   add_file_index: bool = False,
+                   max_open_files: int = 8) -> 'AliasDataFrame':
+        """
+        Read multiple ROOT files as a single dataset (eager loading).
+        
+        Parameters
+        ----------
+        files : str or List[str]
+            Glob pattern ('data_*.root:tree') or list of 'path:tree' strings
+        tree_name : str, optional
+            Tree name if not specified in files pattern
+        branches : List[str], optional
+            Branches to load. None = all branches.
+        schema : dict, optional
+            Schema to apply
+        validate_branches : str, default 'first'
+            Validation mode: 'first', 'strict', 'intersection', 'union'
+        add_file_index : bool, default False
+            Add '__file_idx__' column
+        max_open_files : int, default 8
+            Max open file handles
+            
+        Returns
+        -------
+        AliasDataFrame
+            Combined dataset with all data loaded
+            
+        Examples
+        --------
+        >>> adf = AliasDataFrame.read_chain('data_*.root:tree')
+        >>> adf = AliasDataFrame.read_chain(['f1.root:T', 'f2.root:T'])
+        """
+        # Create lazy, then load all
+        adf = cls.read_chain_lazy(
+            files=files,
+            tree_name=tree_name,
+            branches=branches,
+            schema=schema,
+            validate_branches=validate_branches,
+            add_file_index=add_file_index,
+            max_open_files=max_open_files
+        )
+        
+        # Load all requested branches (or all available)
+        if branches is None:
+            branches = list(adf.available_branches)
+        adf.ensure_branches(branches)
+        
+        return adf
+    
+    @staticmethod
+    def _parse_chain_files(files: Union[str, List[str]], 
+                           tree_name: str = None) -> List[dict]:
+        """
+        Parse file specification into list of {path, tree} dicts.
+        
+        Supports:
+        - Glob patterns: 'data_*.root:tree'
+        - Single file: 'data.root:tree'
+        - List of files: ['f1.root:tree', 'f2.root:tree']
+        - List with separate tree: ['f1.root', 'f2.root'], tree_name='tree'
+        """
+        file_specs = []
+        
+        if isinstance(files, str):
+            # Single string - could be glob pattern
+            if ':' in files:
+                pattern, tree = files.rsplit(':', 1)
+            else:
+                pattern = files
+                tree = tree_name
+            
+            if tree is None:
+                raise ValueError("Tree name required. Use 'file.root:tree' or tree_name parameter.")
+            
+            # Expand glob
+            matched = sorted(glob.glob(pattern))
+            if not matched:
+                # Maybe it's not a glob, just a single file
+                if Path(pattern).exists():
+                    matched = [pattern]
+                else:
+                    raise FileNotFoundError(f"No files found: {pattern}")
+            
+            for path in matched:
+                file_specs.append({'path': path, 'tree': tree})
+        
+        else:
+            # List of files
+            for f in files:
+                if ':' in f:
+                    path, tree = f.rsplit(':', 1)
+                else:
+                    path = f
+                    tree = tree_name
+                
+                if tree is None:
+                    raise ValueError(f"Tree name required for {f}")
+                
+                file_specs.append({'path': path, 'tree': tree})
+        
+        return file_specs
+    
+    # Chain properties
+    
+    @property
+    def is_chain(self) -> bool:
+        """True if this ADF represents a chain of files."""
+        return self._chain is not None and len(self._chain.get('files', [])) > 1
+    
+    @property
+    def file_count(self) -> int:
+        """Number of files in chain (1 for single file)."""
+        if self._chain is None:
+            return 1 if self._lazy_reader is not None else 0
+        return len(self._chain.get('files', []))
+    
+    @property  
+    def chain_info(self) -> Optional[dict]:
+        """
+        Chain information (None for non-chain ADFs).
+        
+        Returns a shallow copy. Do not mutate the nested structures.
+        
+        Returns
+        -------
+        dict or None
+            'files': list of file specs
+            'entry_offsets': cumulative entry counts
+            'total_entries': total entries
+            'validation_mode': how branches were validated
+        """
+        return self._chain.copy() if self._chain else None
+    
+    # Resource management
+    
+    def close(self):
+        """
+        Release all resources (file handles, memory).
+        
+        After calling close(), the ADF should not be used for lazy operations.
+        """
+        if self._lazy_reader is not None:
+            self._lazy_reader.close()
+            self._lazy_reader = None
+        self._chain = None
+    
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - ensures cleanup."""
+        self.close()
+        return False
+    
+    # Memory estimation
+    
+    def estimate_memory(self, branches: List[str] = None) -> dict:
+        """
+        Estimate memory for loading branches.
+        
+        Parameters
+        ----------
+        branches : List[str], optional
+            Branches to estimate. None = all available/loaded.
+            
+        Returns
+        -------
+        dict
+            'bytes', 'human', 'branches', 'entries', 'warning' keys
+            
+        Examples
+        --------
+        >>> adf = AliasDataFrame.read_chain_lazy('data_*.root:tree')
+        >>> est = adf.estimate_memory(['pt', 'eta', 'phi'])
+        >>> print(est['human'])  # "2.4 GB"
+        >>> if est['warning']:
+        ...     print(est['warning'])
+        """
+        if self._lazy_reader is None:
+            # Eager mode - calculate from existing DataFrame
+            if branches is None:
+                branches = list(self.df.columns)
+            
+            total = sum(
+                self.df[col].nbytes for col in branches if col in self.df.columns
+            )
+            
+            return {
+                'bytes': total,
+                'human': self._format_bytes(total),
+                'branches': len(branches),
+                'entries': len(self.df),
+                'warning': None
+            }
+        
+        # Lazy mode - delegate to reader
+        return self._lazy_reader.estimate_memory(branches)
+    
+    @staticmethod
+    def _format_bytes(n: int) -> str:
+        """Format bytes as human-readable string."""
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if abs(n) < 1024:
+                return f"{n:.1f} {unit}"
+            n /= 1024
+        return f"{n:.1f} PB"
+
     # =========================================================================
     # SECTION 3c: Branch Auto-Detection (Phase 7.2)
     # =========================================================================
