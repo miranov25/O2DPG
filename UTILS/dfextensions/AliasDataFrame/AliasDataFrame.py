@@ -899,6 +899,14 @@ class AliasDataFrame:
         self._lazy_reader = None  # Set by read_tree_lazy()
         self._chain = None        # Set by read_tree_lazy() or read_chain()
         self._df_access_warned = False  # Track if we've warned about .df access
+        
+        # Phase 7.5a: Lazy subframe support
+        # _subframe_readers: LazyTreeReader for each lazy subframe
+        # _subframe_loaded: Whether each lazy subframe has been loaded
+        # _subframe_lazy_config: Config for lazy subframes (index_columns, columns, etc.)
+        self._subframe_readers = {}   # {name: LazyTreeReader}
+        self._subframe_loaded = {}    # {name: bool}
+        self._subframe_lazy_config = {}  # {name: {file, tree, index_columns, ...}}
 
     # =========================================================================
     # SECTION 0b: Proxy Pattern - DataFrame Delegation
@@ -1487,7 +1495,335 @@ class AliasDataFrame:
         self._schema["subframes"][name] = {"index": index_columns}
 
     def get_subframe(self, name):
+        """
+        Get a subframe by name, triggering lazy load if needed.
+        
+        MODIFIED FOR 7.5a: Triggers lazy loading if subframe is lazy.
+        """
+        # Check if it's a lazy subframe that needs loading
+        if name in self._subframe_readers and not self._subframe_loaded.get(name, False):
+            self._load_lazy_subframe(name)
         return self._subframes.get(name)
+
+    def register_subframe_lazy(
+        self,
+        name: str,
+        file: str,
+        tree_name: str = None,
+        index_columns: List[str] = None,
+        columns: List[str] = None,
+        alignment: str = 'by_key',
+        join_type: str = 'left'
+    ) -> None:
+        """
+        Register a lazy-loaded subframe from a single ROOT file.
+        
+        Data is NOT loaded immediately. Loading is triggered automatically
+        when an alias referencing this subframe is materialized or drawn.
+        
+        Parameters
+        ----------
+        name : str
+            Subframe name (used in alias expressions as 'Name.column')
+        file : str
+            File path with optional tree name ('calib.root:tree' or 'calib.root')
+        tree_name : str, optional
+            Tree name if not specified in file string
+        index_columns : List[str]
+            Columns for join key (must exist in both main DataFrame and subframe)
+        columns : List[str], optional
+            Specific columns to load from subframe. None = all columns.
+            Index columns are always loaded regardless of this parameter.
+        alignment : str, default 'by_key'
+            Alignment hint: 'by_key', 'N:1', '1:1'
+            Currently informational only (no behavioral change).
+        join_type : str, default 'left'
+            Join type: 'left', 'inner', 'outer'
+            
+        Raises
+        ------
+        ValueError
+            If name is already registered (eager or lazy)
+        ValueError
+            If tree_name not provided and not in file string
+        FileNotFoundError
+            If file does not exist
+        KeyError
+            If index_columns don't exist in subframe file
+            
+        Examples
+        --------
+        >>> adf.register_subframe_lazy(
+        ...     'Calib',
+        ...     'calibration.root:tree',
+        ...     index_columns=['run', 'sector']
+        ... )
+        >>> adf.add_alias('corrected', 'signal * Calib.gain')
+        >>> adf.draw('corrected')  # Calibration loads here
+        
+        Notes
+        -----
+        - After loading, the subframe behaves identically to an eager subframe.
+        - Use `ensure_subframe(name)` to explicitly trigger loading.
+        """
+        from LazyTreeReader import LazyTreeReader
+        
+        # Validate name not already registered
+        if self._subframes.has_subframe(name):
+            raise ValueError(f"Subframe '{name}' already registered (eager)")
+        if name in self._subframe_readers:
+            raise ValueError(f"Subframe '{name}' already registered (lazy)")
+        
+        # Parse file specification
+        if ':' in file:
+            file_path, tree = file.rsplit(':', 1)
+        else:
+            file_path = file
+            tree = tree_name
+        
+        if tree is None:
+            raise ValueError(
+                f"Tree name required. Use 'file.root:tree' or tree_name parameter."
+            )
+        
+        # Validate file exists
+        if not Path(file_path).exists():
+            raise FileNotFoundError(f"Subframe file not found: {file_path}")
+        
+        # Validate index_columns provided
+        if not index_columns:
+            raise ValueError(f"index_columns required for subframe '{name}'")
+        
+        # Convert string to list
+        if isinstance(index_columns, str):
+            index_columns = [index_columns]
+        
+        # Create reader (opens file for metadata only)
+        reader = LazyTreeReader(file_path, tree)
+        
+        # Validate index columns exist in subframe
+        missing_idx = set(index_columns) - reader.available_branches
+        if missing_idx:
+            reader.close()
+            raise KeyError(
+                f"Subframe '{name}' missing index column(s) in file: {sorted(missing_idx)}. "
+                f"Available: {sorted(reader.available_branches)}"
+            )
+        
+        # Validate requested columns exist (if specified)
+        if columns:
+            # Always include index columns
+            columns_to_check = set(columns) | set(index_columns)
+            missing_cols = columns_to_check - reader.available_branches
+            if missing_cols:
+                reader.close()
+                raise KeyError(
+                    f"Subframe '{name}' missing column(s): {sorted(missing_cols)}. "
+                    f"Available: {sorted(reader.available_branches)}"
+                )
+        
+        # Store reader and config
+        self._subframe_readers[name] = reader
+        self._subframe_loaded[name] = False
+        self._subframe_lazy_config[name] = {
+            'file': file_path,
+            'tree': tree,
+            'index_columns': list(index_columns),
+            'columns': list(columns) if columns else None,
+            'alignment': alignment,
+            'join_type': join_type,
+        }
+        
+        # Register in schema (without data) - allows alias validation to work
+        if 'subframes' not in self._schema:
+            self._schema['subframes'] = {}
+        
+        self._schema['subframes'][name] = {
+            'index_columns': list(index_columns),
+            'join_type': join_type,
+            'lazy': True,
+            'alignment': alignment,
+        }
+    
+    def ensure_subframe(self, name: str) -> None:
+        """
+        Ensure subframe data is loaded.
+        
+        For lazy subframes, triggers loading from file.
+        For eager subframes, no-op.
+        
+        Parameters
+        ----------
+        name : str
+            Subframe name
+            
+        Raises
+        ------
+        KeyError
+            If subframe not registered
+            
+        Examples
+        --------
+        >>> adf.register_subframe_lazy('Calib', 'calib.root:tree', ...)
+        >>> adf.ensure_subframe('Calib')  # Force load now
+        >>> print('Calib' in adf.loaded_subframes)  # True
+        """
+        # Check if it's an eager subframe (already loaded)
+        if self._subframes.has_subframe(name):
+            return  # Already loaded
+        
+        # Check if it's a lazy subframe
+        if name not in self._subframe_readers:
+            raise KeyError(f"Subframe '{name}' not registered")
+        
+        # Check if already loaded
+        if self._subframe_loaded.get(name, False):
+            return
+        
+        # Load the subframe
+        self._load_lazy_subframe(name)
+    
+    def _load_lazy_subframe(self, name: str) -> None:
+        """
+        Internal: Load a lazy subframe from file.
+        
+        After loading, the subframe is indistinguishable from an eager subframe.
+        This is the UNIFICATION PRINCIPLE from architecture review.
+        """
+        reader = self._subframe_readers[name]
+        config = self._subframe_lazy_config[name]
+        
+        # Determine columns to load
+        if config['columns'] is not None:
+            # User specified columns - ensure index columns included
+            columns_to_load = list(set(config['columns']) | set(config['index_columns']))
+        else:
+            # Load all columns
+            columns_to_load = list(reader.available_branches)
+        
+        # Load data from file
+        df = reader.load_branches(columns_to_load)
+        
+        # Create AliasDataFrame wrapper for subframe (UNIFICATION)
+        # This reuses ALL existing subframe join machinery
+        subframe_adf = AliasDataFrame(df)
+        
+        # Register as eager subframe
+        self._subframes.add_subframe(
+            name, 
+            subframe_adf, 
+            config['index_columns']
+        )
+        
+        # Update schema to mark as loaded
+        if name in self._schema.get('subframes', {}):
+            self._schema['subframes'][name]['lazy'] = False
+        
+        # Mark as loaded
+        self._subframe_loaded[name] = True
+        
+        # Validate index columns exist in main DataFrame (if not empty)
+        if len(self.df) > 0:
+            missing_in_main = set(config['index_columns']) - set(self.df.columns)
+            if missing_in_main:
+                # Check if they're available branches (lazy main)
+                if self._lazy_reader is not None:
+                    available = self._lazy_reader.available_branches
+                    truly_missing = missing_in_main - available
+                    if truly_missing:
+                        warnings.warn(
+                            f"Subframe '{name}' index column(s) {sorted(truly_missing)} "
+                            f"not found in main DataFrame or available branches."
+                        )
+                else:
+                    warnings.warn(
+                        f"Subframe '{name}' index column(s) {sorted(missing_in_main)} "
+                        f"not found in main DataFrame columns."
+                    )
+    
+    def _get_subframes_for_aliases(self, alias_names: List[str]) -> Set[str]:
+        """
+        Identify which subframes are referenced by the given aliases.
+        
+        Recursively resolves alias dependencies to find all subframe references.
+        
+        Parameters
+        ----------
+        alias_names : List[str]
+            Alias names to analyze
+            
+        Returns
+        -------
+        Set[str]
+            Names of subframes referenced by these aliases
+        """
+        subframes_needed = set()
+        
+        # Get all registered subframe names (eager + lazy)
+        all_subframes = set(self._subframes.subframes.keys()) | set(self._subframe_readers.keys())
+        
+        if not all_subframes:
+            return subframes_needed
+        
+        # Pattern to match subframe references: SubframeName.column
+        subframe_pattern = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b')
+        
+        def find_subframes_in_expr(expr: str):
+            """Find subframe references in an expression."""
+            for match in subframe_pattern.finditer(expr):
+                potential_subframe = match.group(1)
+                if potential_subframe in all_subframes:
+                    subframes_needed.add(potential_subframe)
+        
+        # Recursively process aliases
+        processed = set()
+        to_process = list(alias_names) if alias_names else []
+        
+        while to_process:
+            alias_name = to_process.pop()
+            if alias_name in processed:
+                continue
+            processed.add(alias_name)
+            
+            # Get alias expression
+            expr = self.aliases.get(alias_name)
+            
+            if expr:
+                # Find subframe references
+                find_subframes_in_expr(expr)
+                
+                # Find dependent aliases to process
+                if alias_name in self.aliases:
+                    deps = self._get_alias_dependencies(alias_name, expr)
+                    for dep_type, dep_name in deps:
+                        if dep_type == 'alias' and dep_name not in processed:
+                            to_process.append(dep_name)
+        
+        return subframes_needed
+
+    @property
+    def lazy_subframes(self) -> List[str]:
+        """
+        Names of registered lazy subframes (loaded or not).
+        
+        Returns
+        -------
+        List[str]
+            Names of lazy subframes
+        """
+        return list(self._subframe_readers.keys())
+    
+    @property
+    def loaded_subframes(self) -> List[str]:
+        """
+        Names of subframes that are currently loaded (eager or lazy-loaded).
+        
+        Returns
+        -------
+        List[str]
+            Names of loaded subframes
+        """
+        return list(self._subframes.subframes.keys())
 
     # =========================================================================
     # Fill Configuration Methods
@@ -3363,10 +3699,13 @@ class AliasDataFrame:
         """
         deps = []
         
-        # Get subframe names
+        # Get subframe names (eager + lazy)
         subframe_names = set()
         if hasattr(self, '_subframes') and hasattr(self._subframes, 'subframes'):
             subframe_names = set(self._subframes.subframes.keys())
+        # Also include lazy subframes
+        if hasattr(self, '_subframe_readers'):
+            subframe_names |= set(self._subframe_readers.keys())
         
         # Known function names to exclude
         known_funcs = set(self._default_functions().keys())
@@ -3454,6 +3793,11 @@ class AliasDataFrame:
                     print(f"[materialize_alias] Warning: alias '{name}' not found.")
                     return
                 expr = self.aliases[name]
+                
+                # Phase 7.5a: Load lazy subframes referenced by this alias
+                needed_subframes = self._get_subframes_for_aliases([name])
+                for sf_name in needed_subframes:
+                    self.ensure_subframe(sf_name)
 
                 # Automatically materialize any referenced aliases or subframe aliases
                 # CRITICAL: Match 'word.word' BEFORE 'word' to correctly detect subframe references
@@ -3623,6 +3967,18 @@ class AliasDataFrame:
                     print(f"[materialize_aliases] With dependencies: {to_materialize}")
             else:
                 to_materialize = targets
+            
+            # =========================================================================
+            # PHASE 7.5a: ENSURE LAZY SUBFRAMES ARE LOADED
+            # Before materializing, load any lazy subframes referenced by aliases
+            # =========================================================================
+            
+            needed_subframes = self._get_subframes_for_aliases(to_materialize)
+            for sf_name in needed_subframes:
+                if sf_name in self._subframe_readers and not self._subframe_loaded.get(sf_name, False):
+                    if verbose:
+                        print(f"[materialize_aliases] Loading lazy subframe: {sf_name}")
+                    self.ensure_subframe(sf_name)
             
             # =========================================================================
             # PHASE 9e: TRY ARROW ZERO-COPY PIPELINE FIRST
@@ -5051,10 +5407,21 @@ class AliasDataFrame:
         Release all resources (file handles, memory).
         
         After calling close(), the ADF should not be used for lazy operations.
+        
+        MODIFIED FOR 7.5a: Also closes subframe readers.
         """
+        # Close main reader
         if self._lazy_reader is not None:
             self._lazy_reader.close()
             self._lazy_reader = None
+        
+        # Phase 7.5a: Close subframe readers
+        for reader in self._subframe_readers.values():
+            reader.close()
+        self._subframe_readers.clear()
+        self._subframe_loaded.clear()
+        self._subframe_lazy_config.clear()
+        
         self._chain = None
     
     def __enter__(self):
