@@ -654,5 +654,486 @@ class TestSchemaConsistency:
         assert schema['index_columns'] == ['sector']
 
 
+# ============================================================================
+# PHASE 7.5b: SUBFRAME CHAIN TESTS
+# ============================================================================
+
+@pytest.fixture
+def calib_chain_files(tmp_path):
+    """Create multiple calibration files for chain testing."""
+    uproot = pytest.importorskip("uproot")
+    calib_dir = tmp_path / "calib"
+    calib_dir.mkdir()
+    files = []
+    for i in range(3):
+        file_path = calib_dir / f"calib_{i}.root"
+        with uproot.create(file_path) as f:
+            f["tree"] = {
+                "run": np.array([i * 10, i * 10 + 1], dtype=np.int32),
+                "sector": np.array([0, 1], dtype=np.int32),
+                "gain": np.array([1.0 + i * 0.1, 1.1 + i * 0.1], dtype=np.float64),
+                "offset": np.array([0.01 * i, 0.02 * i], dtype=np.float64),
+            }
+        files.append(str(file_path))
+    return calib_dir, files
+
+
+@pytest.fixture
+def main_chain_files(tmp_path):
+    """Create multiple main data files for chain testing."""
+    uproot = pytest.importorskip("uproot")
+    main_dir = tmp_path / "main"
+    main_dir.mkdir()
+    files = []
+    for i in range(2):
+        file_path = main_dir / f"data_{i}.root"
+        with uproot.create(file_path) as f:
+            f["tree"] = {
+                "x": np.array([10.0 + i, 20.0 + i, 30.0 + i], dtype=np.float64),
+                "run": np.array([i * 10, i * 10 + 1, i * 10], dtype=np.int32),
+                "sector": np.array([0, 1, 0], dtype=np.int32),
+            }
+        files.append(str(file_path))
+    return main_dir, files
+
+
+# ============================================================================
+# TEST: SUBFRAME CHAIN REGISTRATION
+# ============================================================================
+
+class TestSubframeChainRegistration:
+    """Test register_subframe_chain() method."""
+    
+    def test_register_chain_basic(self, sample_root_file, calib_chain_files):
+        """Basic chain registration stores config without loading."""
+        tmp_path, calib_files = calib_chain_files
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        adf.register_subframe_chain(
+            'Calib',
+            str(tmp_path / 'calib_*.root:tree'),
+            index_columns=['sector']
+        )
+        
+        # Should be registered but not loaded
+        assert 'Calib' in adf.lazy_subframes
+        assert 'Calib' not in adf.loaded_subframes
+        assert 'Calib' in adf.chain_subframes
+        assert adf._subframe_lazy_config['Calib']['type'] == 'chain'
+    
+    def test_register_chain_with_file_list(self, sample_root_file, calib_chain_files):
+        """Chain registration with explicit file list."""
+        tmp_path, calib_files = calib_chain_files
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        adf.register_subframe_chain(
+            'Calib',
+            calib_files,
+            tree_name='tree',
+            index_columns=['sector']
+        )
+        
+        config = adf._subframe_lazy_config['Calib']
+        assert len(config['files']) == 3
+        assert config['type'] == 'chain'
+    
+    def test_register_chain_no_files_raises_filenotfound(self, sample_root_file):
+        """Chain registration with no matching files raises FileNotFoundError."""
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        with pytest.raises(FileNotFoundError, match="No files found"):
+            adf.register_subframe_chain(
+                'Calib',
+                'nonexistent_*.root:tree',
+                index_columns=['sector']
+            )
+    
+    def test_register_chain_validates_index_columns(self, sample_root_file, calib_chain_files):
+        """Chain validates index columns exist in files."""
+        tmp_path, _ = calib_chain_files
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        with pytest.raises(KeyError, match="missing index column"):
+            adf.register_subframe_chain(
+                'Calib',
+                str(tmp_path / 'calib_*.root:tree'),
+                index_columns=['nonexistent_col']
+            )
+    
+    def test_register_chain_invalid_validation_mode(self, sample_root_file, calib_chain_files):
+        """Invalid validate_branches raises ValueError."""
+        tmp_path, _ = calib_chain_files
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        with pytest.raises(ValueError, match="Invalid validate_branches"):
+            adf.register_subframe_chain(
+                'Calib',
+                str(tmp_path / 'calib_*.root:tree'),
+                index_columns=['sector'],
+                validate_branches='invalid'
+            )
+    
+    def test_register_chain_duplicate_name_raises(self, sample_root_file, calib_chain_files):
+        """Registering chain with existing name raises ValueError."""
+        tmp_path, _ = calib_chain_files
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        adf.register_subframe_chain(
+            'Calib',
+            str(tmp_path / 'calib_*.root:tree'),
+            index_columns=['sector']
+        )
+        
+        with pytest.raises(ValueError, match="already registered"):
+            adf.register_subframe_chain(
+                'Calib',
+                str(tmp_path / 'calib_*.root:tree'),
+                index_columns=['sector']
+            )
+
+
+# ============================================================================
+# TEST: SUBFRAME CHAIN LOADING
+# ============================================================================
+
+class TestSubframeChainLoading:
+    """Test lazy loading of subframe chains."""
+    
+    def test_chain_loads_on_materialize(self, sample_root_file, calib_chain_files):
+        """Subframe chain loads when alias is materialized."""
+        tmp_path, _ = calib_chain_files
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        adf.register_subframe_chain(
+            'Calib',
+            str(tmp_path / 'calib_*.root:tree'),
+            index_columns=['sector']
+        )
+        
+        # Not loaded yet
+        assert not adf._subframe_loaded['Calib']
+        
+        adf.add_alias('corrected', 'x * Calib.gain')
+        adf.ensure_branches(['x', 'sector'])
+        adf.materialize_aliases(names=['corrected'])
+        
+        # Now loaded
+        assert adf._subframe_loaded['Calib']
+        assert 'Calib' in adf.loaded_subframes
+    
+    def test_chain_data_concatenated_correctly(self, sample_root_file, calib_chain_files):
+        """Chain subframe data is concatenated from all files."""
+        tmp_path, _ = calib_chain_files
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        adf.register_subframe_chain(
+            'Calib',
+            str(tmp_path / 'calib_*.root:tree'),
+            index_columns=['run']
+        )
+        
+        adf.ensure_subframe('Calib')
+        
+        # Subframe should have 6 entries (2 from each of 3 files)
+        sf = adf.get_subframe('Calib')
+        assert len(sf.df) == 6
+    
+    def test_chain_join_produces_correct_values(self, tmp_path):
+        """Chain subframe join produces correct aliased values."""
+        uproot = pytest.importorskip("uproot")
+        
+        # Create calibration chain with known values
+        for i in range(2):
+            file_path = tmp_path / f"calib_{i}.root"
+            with uproot.create(file_path) as f:
+                f["tree"] = {
+                    "sector": np.array([i], dtype=np.int32),
+                    "gain": np.array([2.0 if i == 0 else 3.0], dtype=np.float64),
+                }
+        
+        # Create main file
+        main_path = tmp_path / "main.root"
+        with uproot.create(main_path) as f:
+            f["tree"] = {
+                "x": np.array([10.0, 20.0, 30.0, 40.0], dtype=np.float64),
+                "sector": np.array([0, 1, 0, 1], dtype=np.int32),
+            }
+        
+        adf = AliasDataFrame.read_tree_lazy(str(main_path), 'tree')
+        adf.register_subframe_chain(
+            'Calib',
+            str(tmp_path / 'calib_*.root:tree'),
+            index_columns=['sector']
+        )
+        
+        adf.add_alias('corrected', 'x * Calib.gain')
+        adf.ensure_branches(['x', 'sector'])
+        adf.materialize_aliases(names=['corrected'])
+        
+        # sector 0: gain=2.0, sector 1: gain=3.0
+        expected = np.array([20.0, 60.0, 60.0, 120.0])
+        np.testing.assert_array_almost_equal(
+            adf.df['corrected'].values, expected
+        )
+    
+    def test_chain_with_column_subset(self, sample_root_file, calib_chain_files):
+        """Chain subframe with columns parameter loads only specified columns."""
+        tmp_path, _ = calib_chain_files
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        adf.register_subframe_chain(
+            'Calib',
+            str(tmp_path / 'calib_*.root:tree'),
+            index_columns=['sector'],
+            columns=['gain']  # Only load gain, not offset
+        )
+        
+        adf.ensure_subframe('Calib')
+        sf = adf.get_subframe('Calib')
+        
+        # Should have sector (index) + gain
+        assert 'sector' in sf.df.columns
+        assert 'gain' in sf.df.columns
+    
+    def test_ensure_subframe_idempotent(self, sample_root_file, calib_chain_files):
+        """Multiple ensure_subframe calls are idempotent."""
+        tmp_path, _ = calib_chain_files
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        adf.register_subframe_chain(
+            'Calib',
+            str(tmp_path / 'calib_*.root:tree'),
+            index_columns=['sector']
+        )
+        
+        adf.ensure_subframe('Calib')
+        sf1 = adf.get_subframe('Calib')
+        
+        adf.ensure_subframe('Calib')
+        sf2 = adf.get_subframe('Calib')
+        
+        assert sf1 is sf2  # Same object
+
+
+# ============================================================================
+# TEST: MAIN CHAIN + SUBFRAME CHAIN INTEGRATION
+# ============================================================================
+
+class TestChainPlusChainIntegration:
+    """Test main chain + subframe chain combination."""
+    
+    def test_main_chain_with_subframe_chain(self, main_chain_files, calib_chain_files):
+        """Main chain + subframe chain work together."""
+        main_tmp, main_files = main_chain_files
+        calib_tmp, calib_files = calib_chain_files
+        
+        # Main is a chain
+        adf = AliasDataFrame.read_chain_lazy(
+            [f + ':tree' for f in main_files]
+        )
+        
+        # Subframe is also a chain
+        adf.register_subframe_chain(
+            'Calib',
+            str(calib_tmp / 'calib_*.root:tree'),
+            index_columns=['sector']
+        )
+        
+        # Both should be lazy initially
+        assert adf._chain is not None
+        assert not adf._subframe_loaded.get('Calib', False)
+        
+        # Use alias that references subframe
+        adf.add_alias('corrected', 'x * Calib.gain')
+        adf.ensure_branches(['x', 'sector'])  # Ensure main branches loaded first
+        adf.materialize_aliases(names=['corrected'])
+        
+        # Both should now have loaded what's needed
+        assert adf._subframe_loaded['Calib']
+        assert 'corrected' in adf.df.columns
+
+
+# ============================================================================
+# TEST: VALIDATION MODES
+# ============================================================================
+
+class TestSubframeChainValidation:
+    """Test validation modes for subframe chains."""
+    
+    def test_first_mode_accepts_different_branches(self, tmp_path, sample_root_file):
+        """'first' validation accepts files with different branches."""
+        uproot = pytest.importorskip("uproot")
+        
+        # File 1 has gain only, file 2 has gain + extra
+        file1 = tmp_path / "calib_0.root"
+        with uproot.create(file1) as f:
+            f["tree"] = {
+                "sector": np.array([0], dtype=np.int32),
+                "gain": np.array([1.0], dtype=np.float64)
+            }
+        
+        file2 = tmp_path / "calib_1.root"
+        with uproot.create(file2) as f:
+            f["tree"] = {
+                "sector": np.array([1], dtype=np.int32),
+                "gain": np.array([1.1], dtype=np.float64),
+                "extra": np.array([9.9], dtype=np.float64)
+            }
+        
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        # Should not raise with 'first' mode
+        adf.register_subframe_chain(
+            'Calib',
+            str(tmp_path / 'calib_*.root:tree'),
+            index_columns=['sector'],
+            validate_branches='first'
+        )
+        
+        assert 'Calib' in adf.lazy_subframes
+    
+    def test_strict_mode_rejects_different_branches(self, tmp_path, sample_root_file):
+        """'strict' validation rejects files with different branches."""
+        uproot = pytest.importorskip("uproot")
+        
+        # File 1 has gain, file 2 has different column
+        file1 = tmp_path / "calib_0.root"
+        with uproot.create(file1) as f:
+            f["tree"] = {
+                "sector": np.array([0], dtype=np.int32),
+                "gain": np.array([1.0], dtype=np.float64)
+            }
+        
+        file2 = tmp_path / "calib_1.root"
+        with uproot.create(file2) as f:
+            f["tree"] = {
+                "sector": np.array([1], dtype=np.int32),
+                "other": np.array([2.0], dtype=np.float64)
+            }
+        
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        # Should raise with 'strict' mode
+        with pytest.raises(Exception):  # ChainValidationError
+            adf.register_subframe_chain(
+                'Calib',
+                str(tmp_path / 'calib_*.root:tree'),
+                index_columns=['sector'],
+                validate_branches='strict'
+            )
+
+
+# ============================================================================
+# TEST: RESOURCE MANAGEMENT
+# ============================================================================
+
+class TestSubframeChainResources:
+    """Test resource management for subframe chains."""
+    
+    def test_close_releases_chain_readers(self, sample_root_file, calib_chain_files):
+        """close() releases subframe chain readers."""
+        tmp_path, _ = calib_chain_files
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        adf.register_subframe_chain(
+            'Calib',
+            str(tmp_path / 'calib_*.root:tree'),
+            index_columns=['sector']
+        )
+        
+        assert len(adf._subframe_readers) == 1
+        
+        adf.close()
+        
+        assert len(adf._subframe_readers) == 0
+        assert len(adf._subframe_lazy_config) == 0
+    
+    def test_chain_subframes_property(self, sample_root_file, calib_chain_files, calib_root_file):
+        """chain_subframes property returns only chain subframe names."""
+        tmp_path, _ = calib_chain_files
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        # Register chain subframe
+        adf.register_subframe_chain(
+            'CalibChain',
+            str(tmp_path / 'calib_*.root:tree'),
+            index_columns=['sector']
+        )
+        
+        # Register single-file subframe
+        adf.register_subframe_lazy(
+            'CalibSingle',
+            f'{calib_root_file}:tree',
+            index_columns=['sector']
+        )
+        
+        # Only chain subframe in chain_subframes
+        assert 'CalibChain' in adf.chain_subframes
+        assert 'CalibSingle' not in adf.chain_subframes
+        
+        # Both in lazy_subframes
+        assert 'CalibChain' in adf.lazy_subframes
+        assert 'CalibSingle' in adf.lazy_subframes
+
+
+# ============================================================================
+# TEST: CONFIG TYPE FIELD (Q1 DECISION)
+# ============================================================================
+
+class TestConfigTypeField:
+    """Test that both single-file and chain have 'type' field."""
+    
+    def test_single_file_has_type_file(self, sample_root_file, calib_root_file):
+        """Single-file lazy subframe has type='file' in config."""
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        adf.register_subframe_lazy(
+            'Calib',
+            f'{calib_root_file}:tree',
+            index_columns=['sector']
+        )
+        
+        assert adf._subframe_lazy_config['Calib']['type'] == 'file'
+    
+    def test_chain_has_type_chain(self, sample_root_file, calib_chain_files):
+        """Chain subframe has type='chain' in config."""
+        tmp_path, _ = calib_chain_files
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        adf.register_subframe_chain(
+            'Calib',
+            str(tmp_path / 'calib_*.root:tree'),
+            index_columns=['sector']
+        )
+        
+        assert adf._subframe_lazy_config['Calib']['type'] == 'chain'
+
+
+# ============================================================================
+# TEST: SCHEMA CONSISTENCY
+# ============================================================================
+
+class TestChainSchemaConsistency:
+    """Test schema structure for chain subframes."""
+    
+    def test_chain_schema_has_both_index_keys(self, sample_root_file, calib_chain_files):
+        """Chain subframe schema has both 'index' and 'index_columns'."""
+        tmp_path, _ = calib_chain_files
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        adf.register_subframe_chain(
+            'Calib',
+            str(tmp_path / 'calib_*.root:tree'),
+            index_columns=['sector', 'run']
+        )
+        
+        schema = adf._schema['subframes']['Calib']
+        assert 'index' in schema
+        assert 'index_columns' in schema
+        assert schema['index'] == schema['index_columns']
+        assert schema['chain'] == True
+        assert 'file_count' in schema
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

@@ -1643,6 +1643,7 @@ class AliasDataFrame:
         self._subframe_readers[name] = reader
         self._subframe_loaded[name] = False
         self._subframe_lazy_config[name] = {
+            'type': 'file',  # Single-file subframe
             'file': file_path,
             'tree': tree,
             'index_columns': list(index_columns),
@@ -1656,10 +1657,187 @@ class AliasDataFrame:
             self._schema['subframes'] = {}
         
         self._schema['subframes'][name] = {
-            'index_columns': list(index_columns),
+            'index': list(index_columns),         # Legacy key (C++ macro compat)
+            'index_columns': list(index_columns), # Canonical key
             'join_type': join_type,
             'lazy': True,
             'alignment': alignment,
+        }
+    
+    def register_subframe_chain(
+        self,
+        name: str,
+        files: Union[str, List[str]],
+        tree_name: str = None,
+        index_columns: List[str] = None,
+        columns: List[str] = None,
+        alignment: str = 'by_key',
+        join_type: str = 'left',
+        validate_branches: str = 'first',
+        max_open_files: int = 8
+    ) -> None:
+        """
+        Register a lazy-loaded subframe chain from multiple ROOT files.
+        
+        Data is NOT loaded immediately. Loading is triggered automatically
+        when an alias referencing this subframe is materialized or drawn.
+        
+        Parameters
+        ----------
+        name : str
+            Subframe name (used in alias expressions as 'Name.column')
+        files : str or List[str]
+            Glob pattern ('calib_*.root:tree') or list of file paths
+        tree_name : str, optional
+            Tree name if not specified in files pattern
+        index_columns : List[str]
+            Columns for join key (must exist in ALL subframe files,
+            regardless of validation mode)
+        columns : List[str], optional
+            Specific columns to load. None = all columns.
+            Index columns are always loaded regardless of this parameter.
+        alignment : str, default 'by_key'
+            Alignment hint: 'by_key', 'N:1', '1:1'
+            Currently informational only.
+        join_type : str, default 'left'
+            Join type: 'left', 'inner', 'outer'
+        validate_branches : str, default 'first'
+            Branch validation mode:
+            - 'first': Use first file as reference, warn on differences
+            - 'strict': Error if any file differs
+            - 'intersection': Only branches in ALL files
+            - 'union': All branches, NaN for missing
+        max_open_files : int, default 8
+            Maximum open file handles (LRU cache size)
+            
+        Raises
+        ------
+        ValueError
+            If name already registered or invalid parameters
+        FileNotFoundError
+            If no files match the pattern
+        KeyError
+            If index_columns don't exist in subframe files
+            
+        Examples
+        --------
+        >>> # Calibration chain spanning multiple runs
+        >>> adf.register_subframe_chain(
+        ...     'Calib',
+        ...     'calib_run*.root:tree',
+        ...     index_columns=['run_number']
+        ... )
+        
+        >>> # With explicit file list
+        >>> adf.register_subframe_chain(
+        ...     'Calib',
+        ...     ['calib_2024.root:tree', 'calib_2025.root:tree'],
+        ...     index_columns=['run_number']
+        ... )
+        
+        Notes
+        -----
+        - Uses LazyChainReader from Phase 7.4 internally
+        - After loading, behaves identically to an eager subframe
+        - File handles managed via LRU cache
+        """
+        from LazyChainReader import LazyChainReader
+        
+        # Validate name not already registered
+        if self._subframes.has_subframe(name):
+            raise ValueError(f"Subframe '{name}' already registered (eager)")
+        if name in self._subframe_readers:
+            raise ValueError(f"Subframe '{name}' already registered (lazy)")
+        
+        # Validate index_columns provided
+        if not index_columns:
+            raise ValueError(f"index_columns required for subframe '{name}'")
+        
+        # Convert string to list
+        if isinstance(index_columns, str):
+            index_columns = [index_columns]
+        
+        # Validate alignment parameter
+        valid_alignments = {'by_key', 'N:1', '1:1'}
+        if alignment not in valid_alignments:
+            raise ValueError(
+                f"Invalid alignment '{alignment}'. Must be one of: {sorted(valid_alignments)}"
+            )
+        
+        # Validate join_type parameter
+        valid_join_types = {'left', 'inner', 'outer'}
+        if join_type not in valid_join_types:
+            raise ValueError(
+                f"Invalid join_type '{join_type}'. Must be one of: {sorted(valid_join_types)}"
+            )
+        
+        # Validate validate_branches parameter
+        valid_validations = {'first', 'strict', 'intersection', 'union'}
+        if validate_branches not in valid_validations:
+            raise ValueError(
+                f"Invalid validate_branches '{validate_branches}'. "
+                f"Must be one of: {sorted(valid_validations)}"
+            )
+        
+        # Parse file specifications (reuse existing method)
+        file_specs = self._parse_chain_files(files, tree_name)
+        
+        if not file_specs:
+            raise FileNotFoundError(f"No files found matching: {files}")
+        
+        # Create chain reader
+        chain_reader = LazyChainReader(
+            files=file_specs,
+            validation=validate_branches,
+            max_open_files=max_open_files,
+            add_file_index=False  # Subframes don't need __file_idx__
+        )
+        
+        # Validate index columns exist in subframe
+        missing_idx = set(index_columns) - chain_reader.available_branches
+        if missing_idx:
+            chain_reader.close()
+            raise KeyError(
+                f"Subframe '{name}' missing index column(s) in files: {sorted(missing_idx)}. "
+                f"Available: {sorted(chain_reader.available_branches)}"
+            )
+        
+        # Validate requested columns exist (if specified)
+        if columns:
+            columns_to_check = set(columns) | set(index_columns)
+            missing_cols = columns_to_check - chain_reader.available_branches
+            if missing_cols:
+                chain_reader.close()
+                raise KeyError(
+                    f"Subframe '{name}' missing column(s): {sorted(missing_cols)}. "
+                    f"Available: {sorted(chain_reader.available_branches)}"
+                )
+        
+        # Store reader and config
+        self._subframe_readers[name] = chain_reader
+        self._subframe_loaded[name] = False
+        self._subframe_lazy_config[name] = {
+            'type': 'chain',  # Chain subframe
+            'files': file_specs,
+            'index_columns': list(index_columns),
+            'columns': list(columns) if columns else None,
+            'alignment': alignment,
+            'join_type': join_type,
+            'validate_branches': validate_branches,
+        }
+        
+        # Register in schema (without data)
+        if 'subframes' not in self._schema:
+            self._schema['subframes'] = {}
+        
+        self._schema['subframes'][name] = {
+            'index': list(index_columns),         # Legacy key (C++ macro compat)
+            'index_columns': list(index_columns), # Canonical key
+            'join_type': join_type,
+            'lazy': True,
+            'chain': True,  # Mark as chain subframe
+            'alignment': alignment,
+            'file_count': len(file_specs),
         }
     
     def ensure_subframe(self, name: str) -> None:
@@ -1842,6 +2020,21 @@ class AliasDataFrame:
             Names of loaded subframes
         """
         return list(self._subframes.subframes.keys())
+
+    @property
+    def chain_subframes(self) -> List[str]:
+        """
+        Names of registered subframe chains (multi-file).
+        
+        Returns
+        -------
+        List[str]
+            Names of chain subframes
+        """
+        return [
+            name for name, config in self._subframe_lazy_config.items()
+            if config.get('type') == 'chain'
+        ]
 
     # =========================================================================
     # Fill Configuration Methods
