@@ -536,5 +536,123 @@ class TestGetSubframesForAliases:
         assert len(needed) == 0
 
 
+class TestLazinessPreservation:
+    """Test that lazy subframe operations don't break main laziness."""
+    
+    def test_ensure_subframe_does_not_load_main(self, sample_root_file, calib_root_file):
+        """Loading lazy subframe should NOT trigger main tree load."""
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        # Main should be lazy (no data loaded yet)
+        assert adf._lazy_reader is not None
+        initial_loaded = len(adf._lazy_reader.loaded_branches)
+        
+        # Register and load lazy subframe
+        adf.register_subframe_lazy(
+            'Calib',
+            f'{calib_root_file}:tree',
+            index_columns=['sector']
+        )
+        adf.ensure_subframe('Calib')
+        
+        # Main should STILL have same loaded branches (not triggered full load)
+        assert len(adf._lazy_reader.loaded_branches) == initial_loaded
+        
+        # Subframe should be loaded
+        assert adf._subframe_loaded['Calib'] == True
+    
+    def test_get_subframe_does_not_load_main(self, sample_root_file, calib_root_file):
+        """get_subframe() should not trigger main tree load."""
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        adf.register_subframe_lazy(
+            'Calib',
+            f'{calib_root_file}:tree',
+            index_columns=['sector']
+        )
+        
+        initial_loaded = len(adf._lazy_reader.loaded_branches)
+        
+        # Access subframe
+        sf = adf.get_subframe('Calib')
+        
+        # Main should not have loaded additional branches
+        assert len(adf._lazy_reader.loaded_branches) == initial_loaded
+
+
+class TestParameterValidation:
+    """Test parameter validation in register_subframe_lazy()."""
+    
+    def test_invalid_alignment_raises(self, sample_root_file, calib_root_file):
+        """Invalid alignment parameter should raise ValueError."""
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        with pytest.raises(ValueError, match="Invalid alignment"):
+            adf.register_subframe_lazy(
+                'Calib',
+                f'{calib_root_file}:tree',
+                index_columns=['sector'],
+                alignment='invalid_mode'
+            )
+    
+    def test_invalid_join_type_raises(self, sample_root_file, calib_root_file):
+        """Invalid join_type parameter should raise ValueError."""
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        with pytest.raises(ValueError, match="Invalid join_type"):
+            adf.register_subframe_lazy(
+                'Calib',
+                f'{calib_root_file}:tree',
+                index_columns=['sector'],
+                join_type='invalid_type'
+            )
+    
+    def test_valid_alignments_accepted(self, sample_root_file, calib_root_file):
+        """All valid alignment values should be accepted."""
+        for alignment in ['by_key', 'N:1', '1:1']:
+            adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+            adf.register_subframe_lazy(
+                f'Calib_{alignment}',
+                f'{calib_root_file}:tree',
+                index_columns=['sector'],
+                alignment=alignment
+            )
+            assert adf._subframe_lazy_config[f'Calib_{alignment}']['alignment'] == alignment
+
+
+class TestSchemaConsistency:
+    """Test schema structure consistency between eager and lazy subframes."""
+    
+    def test_eager_subframe_has_both_index_keys(self, sample_root_file):
+        """Eager subframe schema should have both 'index' and 'index_columns'."""
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        calib_df = pd.DataFrame({
+            'sector': [0, 1, 2],
+            'gain': [1.0, 1.1, 0.9]
+        })
+        calib_adf = AliasDataFrame(calib_df)
+        adf.register_subframe('Calib', calib_adf, index_columns=['sector'])
+        
+        schema = adf._schema['subframes']['Calib']
+        assert 'index' in schema
+        assert 'index_columns' in schema
+        assert schema['index'] == schema['index_columns']
+    
+    def test_lazy_subframe_has_index_columns(self, sample_root_file, calib_root_file):
+        """Lazy subframe schema should have 'index_columns'."""
+        adf = AliasDataFrame.read_tree_lazy(sample_root_file, 'tree')
+        
+        adf.register_subframe_lazy(
+            'Calib',
+            f'{calib_root_file}:tree',
+            index_columns=['sector']
+        )
+        
+        schema = adf._schema['subframes']['Calib']
+        assert 'index_columns' in schema
+        assert schema['index_columns'] == ['sector']
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

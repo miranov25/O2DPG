@@ -1492,7 +1492,10 @@ class AliasDataFrame:
         self._subframes.add_subframe(name, adf, index_columns, pre_index=pre_index)
         
         # Also write to schema for persistence
-        self._schema["subframes"][name] = {"index": index_columns}
+        self._schema["subframes"][name] = {
+            "index": index_columns,           # Legacy key (backward compat)
+            "index_columns": index_columns,   # New canonical key
+        }
 
     def get_subframe(self, name):
         """
@@ -1597,6 +1600,20 @@ class AliasDataFrame:
         # Convert string to list
         if isinstance(index_columns, str):
             index_columns = [index_columns]
+        
+        # Validate alignment parameter
+        valid_alignments = {'by_key', 'N:1', '1:1'}
+        if alignment not in valid_alignments:
+            raise ValueError(
+                f"Invalid alignment '{alignment}'. Must be one of: {sorted(valid_alignments)}"
+            )
+        
+        # Validate join_type parameter
+        valid_join_types = {'left', 'inner', 'outer'}
+        if join_type not in valid_join_types:
+            raise ValueError(
+                f"Invalid join_type '{join_type}'. Must be one of: {sorted(valid_join_types)}"
+            )
         
         # Create reader (opens file for metadata only)
         reader = LazyTreeReader(file_path, tree)
@@ -1722,24 +1739,25 @@ class AliasDataFrame:
         # Mark as loaded
         self._subframe_loaded[name] = True
         
-        # Validate index columns exist in main DataFrame (if not empty)
-        if len(self.df) > 0:
-            missing_in_main = set(config['index_columns']) - set(self.df.columns)
+        # Validate index columns exist in main DataFrame
+        # CRITICAL: Check lazy reader FIRST to avoid triggering main load
+        if self._lazy_reader is not None:
+            # Lazy main: check available branches only (no I/O)
+            available = self._lazy_reader.available_branches | self._lazy_reader.loaded_branches
+            missing_in_main = set(config['index_columns']) - available
             if missing_in_main:
-                # Check if they're available branches (lazy main)
-                if self._lazy_reader is not None:
-                    available = self._lazy_reader.available_branches
-                    truly_missing = missing_in_main - available
-                    if truly_missing:
-                        warnings.warn(
-                            f"Subframe '{name}' index column(s) {sorted(truly_missing)} "
-                            f"not found in main DataFrame or available branches."
-                        )
-                else:
-                    warnings.warn(
-                        f"Subframe '{name}' index column(s) {sorted(missing_in_main)} "
-                        f"not found in main DataFrame columns."
-                    )
+                warnings.warn(
+                    f"Subframe '{name}' index column(s) {sorted(missing_in_main)} "
+                    f"not found in main DataFrame available branches."
+                )
+        elif len(self._df) > 0:
+            # Eager main: safe to check columns directly
+            missing_in_main = set(config['index_columns']) - set(self._df.columns)
+            if missing_in_main:
+                warnings.warn(
+                    f"Subframe '{name}' index column(s) {sorted(missing_in_main)} "
+                    f"not found in main DataFrame columns."
+                )
     
     def _get_subframes_for_aliases(self, alias_names: List[str]) -> Set[str]:
         """
