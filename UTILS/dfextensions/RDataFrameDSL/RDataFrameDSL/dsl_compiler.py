@@ -357,3 +357,171 @@ class DSLCompiler:
     
     def __repr__(self) -> str:
         return f"DSLCompiler(schema={list(self.schema.keys())}, definitions={len(self._definitions)})"
+    
+    # =========================================================================
+    # Phase 10: UX/API Sugar
+    # =========================================================================
+    
+    @classmethod
+    def from_tree(cls, 
+                  filename: str, 
+                  treename: str,
+                  overrides: Optional[Dict[str, str]] = None,
+                  safe_indexing: bool = True) -> 'DSLCompiler':
+        """
+        Create DSLCompiler with schema auto-inferred from ROOT file.
+        
+        Reads branch types directly from the TTree, eliminating manual
+        schema definition. Use `overrides` for branches that need
+        manual type specification (e.g., TClonesArray).
+        
+        Args:
+            filename: Path to ROOT file
+            treename: Name of TTree
+            overrides: Manual type overrides {branch: cpp_type}
+                       These REPLACE any auto-detected types.
+            safe_indexing: Enable bounds checking (default True)
+        
+        Returns:
+            DSLCompiler with auto-inferred schema
+        
+        Raises:
+            FileNotFoundError: If ROOT file doesn't exist
+            KeyError: If tree not found in file
+        
+        Example:
+            >>> dsl = DSLCompiler.from_tree("data.root", "Events")
+            >>> print(dsl.schema)  # Auto-detected types
+            {'px': 'double', 'py': 'double', 'tracks': 'RVec<TLorentzVector>'}
+            >>> dsl.define("pt", "sqrt(px**2 + py**2)")
+        
+        Supported Types:
+            - Scalars: double, float, int, unsigned int, bool
+            - Vectors: std::vector<T>, RVec<T>
+            - Objects: TLorentzVector, TVector3, TParticle
+            - ROOT types: Double_t, Float_t, Int_t, UInt_t, Bool_t, etc.
+        
+        Limitations:
+            - TClonesArray requires manual override
+            - Nested collections (vector<vector<T>>) not supported
+            - Custom classes may need overrides
+        
+        Note:
+            File handle is released after reading metadata.
+        """
+        import ROOT
+        
+        # Open file
+        f = ROOT.TFile.Open(filename)
+        if not f or f.IsZombie():
+            raise FileNotFoundError(f"Cannot open ROOT file: {filename}")
+        
+        # Get tree
+        tree = f.Get(treename)
+        if not tree:
+            f.Close()
+            raise KeyError(f"Tree '{treename}' not found in {filename}")
+        
+        # Use existing TypeInferrer.from_tree(tree)
+        inferrer = TypeInferrer.from_tree(tree)
+        
+        # Get simple schema
+        schema = inferrer.to_simple_schema()
+        
+        # Close file (metadata extracted)
+        f.Close()
+        
+        # Apply overrides (user overrides win)
+        if overrides:
+            schema.update(overrides)
+        
+        # Create instance
+        instance = cls(schema, safe_indexing=safe_indexing)
+        
+        # Store source info for debugging
+        instance._source_file = filename
+        instance._source_tree = treename
+        
+        return instance
+    
+    def show_types(self, include_definitions: bool = True) -> str:
+        """
+        Display inferred types for all columns and definitions.
+        
+        Useful for debugging type inference issues and verifying
+        that auto-detection worked correctly.
+        
+        Args:
+            include_definitions: Also show types of defined columns
+        
+        Returns:
+            Formatted string showing column types
+        
+        Example:
+            >>> dsl = DSLCompiler.from_tree("data.root", "Events")
+            >>> dsl.define("pt", "sqrt(px**2 + py**2)")
+            >>> print(dsl.show_types())
+            Schema columns:
+              px          : double
+              py          : double
+              tracks      : RVec<TLorentzVector>
+            
+            Defined columns:
+              pt          : double         = sqrt(px**2 + py**2)
+        """
+        lines = ["Schema columns:"]
+        
+        # Get original schema columns (exclude defined aliases)
+        defined_names = {name for name, _ in self._definitions}
+        original_schema = {k: v for k, v in self.schema.items() 
+                          if k not in defined_names}
+        
+        for name, dtype in sorted(original_schema.items()):
+            lines.append(f"  {name:12}: {dtype}")
+        
+        # Defined columns
+        if include_definitions and self._definitions:
+            lines.append("")
+            lines.append("Defined columns:")
+            for name, expr in self._definitions:
+                func = self._functions[name]
+                ret_type = func.return_type
+                lines.append(f"  {name:12}: {ret_type:14} = {expr}")
+        
+        return "\n".join(lines)
+    
+    def validate(self) -> List[str]:
+        """
+        Validate all definitions without compiling to ROOT.
+        
+        This is a fast consistency check that verifies all definitions
+        have generated C++ code and can be used. Most syntax and type
+        errors are raised at define() time, so this method primarily
+        confirms that the DSLCompiler is in a valid state.
+        
+        Does NOT invoke ROOT compilation - use compile_all() for that.
+        
+        Returns:
+            List of error messages (empty if all valid)
+        
+        Example:
+            >>> dsl.define("pt", "sqrt(px**2 + py**2)")
+            >>> errors = dsl.validate()
+            >>> if errors:
+            ...     print("Validation failed:", errors)
+            >>> else:
+            ...     print("All definitions valid")
+        """
+        errors = []
+        
+        for name, expr in self._definitions:
+            try:
+                func = self._functions.get(name)
+                if func is None:
+                    errors.append(f"{name}: Function not found")
+                elif not func.code:
+                    errors.append(f"{name}: No code generated")
+            except Exception as e:
+                errors.append(f"{name}: {str(e)}")
+        
+        return errors

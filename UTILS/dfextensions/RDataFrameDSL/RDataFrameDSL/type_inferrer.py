@@ -620,3 +620,34 @@ class TypeInferrer:
             "columns": columns,
             "aliases": aliases,
         }
+    
+    def to_simple_schema(self) -> Dict[str, str]:
+        """
+        Convert internal schema to simple {name: cpp_type} format.
+        
+        Used by DSLCompiler.from_tree() to get schema in expected format.
+        
+        Returns:
+            Dict mapping column names to C++ type strings
+            
+        Example:
+            >>> inferrer = TypeInferrer.from_tree(tree)
+            >>> schema = inferrer.to_simple_schema()
+            >>> print(schema)
+            {'px': 'double', 'py': 'double', 'tracks': 'RVec<TLorentzVector>'}
+        """
+        result = {}
+        for name, info in self._variables.items():
+            if info.rank == 1:
+                # Vector type
+                if info.cpp_type and ('RVec' in info.cpp_type or 'vector' in info.cpp_type):
+                    result[name] = info.cpp_type
+                else:
+                    # Wrap element type in RVec
+                    elem_type = info.cpp_type or info.dtype.to_cpp()
+                    result[name] = f"RVec<{elem_type}>"
+            else:
+                # Scalar type
+                result[name] = info.cpp_type or info.dtype.to_cpp()
+        
+        return result
