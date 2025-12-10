@@ -372,5 +372,183 @@ class TestBroadcastEdgeCases:
         assert not isinstance(node, MethodBroadcastNode)
 
 
+# =============================================================================
+# Phase 9 Tests: RVec Arithmetic Type Propagation
+# =============================================================================
+
+from RDataFrameDSL.ir_nodes import IRTypeKind
+
+
+class TestPhase9RVecArithmetic:
+    """Phase 9: RVec arithmetic type propagation.
+    
+    Tests that arithmetic operations on RVec correctly propagate rank.
+    """
+    
+    @pytest.fixture
+    def rvec_schema(self):
+        """Schema with RVec<double> columns."""
+        return {'columns': {
+            'pt': {'dtype': 'double', 'rank': 1, 'cpp_type': 'RVec<double>'},
+            'px': {'dtype': 'double', 'rank': 1, 'cpp_type': 'RVec<double>'},
+            'py': {'dtype': 'double', 'rank': 1, 'cpp_type': 'RVec<double>'},
+            'eta': {'dtype': 'double', 'rank': 1, 'cpp_type': 'RVec<double>'},
+        }}
+    
+    @pytest.fixture
+    def rvec_builder(self, rvec_schema):
+        """IRBuilder for RVec schema."""
+        inferrer = TypeInferrer.from_schema(rvec_schema)
+        return IRBuilder(inferrer)
+    
+    def test_rvec_power_scalar(self, rvec_builder):
+        """RVec ** scalar → RVec."""
+        ir = rvec_builder.build("pt**2")
+        assert ir.rank == 1
+        assert ir.dtype.kind == IRTypeKind.Float64
+    
+    def test_rvec_multiply_scalar(self, rvec_builder):
+        """RVec * scalar → RVec."""
+        ir = rvec_builder.build("pt * 1.5")
+        assert ir.rank == 1
+    
+    def test_rvec_add_rvec(self, rvec_builder):
+        """RVec + RVec → RVec."""
+        ir = rvec_builder.build("px + py")
+        assert ir.rank == 1
+    
+    def test_sqrt_rvec(self, rvec_builder):
+        """sqrt(RVec) → RVec."""
+        ir = rvec_builder.build("sqrt(pt)")
+        assert ir.rank == 1
+    
+    def test_rvec_comparison(self, rvec_builder):
+        """RVec > scalar → RVec<bool>."""
+        ir = rvec_builder.build("pt > 1.0")
+        assert ir.rank == 1
+        assert ir.dtype.kind == IRTypeKind.Bool
+    
+    def test_unary_neg_rvec(self, rvec_builder):
+        """-RVec → RVec."""
+        ir = rvec_builder.build("-eta")
+        assert ir.rank == 1
+    
+    def test_complex_expression(self, rvec_builder):
+        """sqrt(px**2 + py**2) with RVec inputs."""
+        ir = rvec_builder.build("sqrt(px**2 + py**2)")
+        assert ir.rank == 1
+        assert ir.dtype.kind == IRTypeKind.Float64
+    
+    def test_chained_arithmetic(self, rvec_builder):
+        """(px + py) * 2 → RVec."""
+        ir = rvec_builder.build("(px + py) * 2")
+        assert ir.rank == 1
+    
+    def test_nested_with_scalar(self, rvec_builder):
+        """sqrt((px**2 + py**2) + 1.0) → RVec."""
+        ir = rvec_builder.build("sqrt((px**2 + py**2) + 1.0)")
+        assert ir.rank == 1
+
+
+class TestPhase9BroadcastArithmetic:
+    """Phase 9: Arithmetic on broadcast results.
+    
+    Tests that tracks.Px()**2 works correctly.
+    """
+    
+    @pytest.fixture
+    def track_builder(self):
+        """IRBuilder for track schema."""
+        schema = {'columns': {
+            'tracks': {'dtype': 'TLorentzVector', 'rank': 1, 'cpp_type': 'RVec<TLorentzVector>'},
+        }}
+        inferrer = TypeInferrer.from_schema(schema)
+        return IRBuilder(inferrer)
+    
+    def test_broadcast_then_power(self, track_builder):
+        """tracks.Px()**2 → RVec."""
+        ir = track_builder.build("tracks.Px()**2")
+        assert ir.rank == 1
+    
+    def test_broadcast_then_multiply(self, track_builder):
+        """tracks.Pt() * 1.5 → RVec."""
+        ir = track_builder.build("tracks.Pt() * 1.5")
+        assert ir.rank == 1
+    
+    def test_unary_on_broadcast(self, track_builder):
+        """-tracks.Eta() → RVec."""
+        ir = track_builder.build("-tracks.Eta()")
+        assert ir.rank == 1
+    
+    def test_broadcast_add_broadcast(self, track_builder):
+        """tracks.Px() + tracks.Py() → RVec."""
+        ir = track_builder.build("tracks.Px() + tracks.Py()")
+        assert ir.rank == 1
+    
+    def test_complex_broadcast_expression(self, track_builder):
+        """sqrt(tracks.Px()**2 + tracks.Py()**2) → RVec."""
+        ir = track_builder.build("sqrt(tracks.Px()**2 + tracks.Py()**2)")
+        assert ir.rank == 1
+        assert ir.dtype.kind == IRTypeKind.Float64
+    
+    def test_broadcast_comparison(self, track_builder):
+        """tracks.Pt() > 1.0 → RVec<bool>."""
+        ir = track_builder.build("tracks.Pt() > 1.0")
+        assert ir.rank == 1
+        assert ir.dtype.kind == IRTypeKind.Bool
+
+
+class TestPhase9CodeGeneration:
+    """Phase 9: Code generation for RVec arithmetic.
+    
+    Tests that generated C++ uses unqualified function names for ADL.
+    """
+    
+    @pytest.fixture
+    def generator(self):
+        """C++ code generator."""
+        schema = {'columns': {
+            'pt': {'dtype': 'double', 'rank': 1, 'cpp_type': 'RVec<double>'},
+            'px': {'dtype': 'double', 'rank': 1, 'cpp_type': 'RVec<double>'},
+            'py': {'dtype': 'double', 'rank': 1, 'cpp_type': 'RVec<double>'},
+        }}
+        inferrer = TypeInferrer.from_schema(schema)
+        return CppCodeGenerator(inferrer)
+    
+    @pytest.fixture
+    def builder(self):
+        """IRBuilder."""
+        schema = {'columns': {
+            'pt': {'dtype': 'double', 'rank': 1, 'cpp_type': 'RVec<double>'},
+            'px': {'dtype': 'double', 'rank': 1, 'cpp_type': 'RVec<double>'},
+            'py': {'dtype': 'double', 'rank': 1, 'cpp_type': 'RVec<double>'},
+        }}
+        inferrer = TypeInferrer.from_schema(schema)
+        return IRBuilder(inferrer)
+    
+    def test_sqrt_uses_adl(self, generator, builder):
+        """sqrt(pt) uses unqualified name for ADL."""
+        ir = builder.build("sqrt(pt)")
+        func = generator.generate(ir, "sqrt_test")
+        
+        assert "sqrt(pt)" in func.code
+        assert "std::sqrt" not in func.code
+    
+    def test_pow_uses_adl(self, generator, builder):
+        """pt**2 uses unqualified pow for ADL."""
+        ir = builder.build("pt**2")
+        func = generator.generate(ir, "pow_test")
+        
+        assert "pow(pt, 2)" in func.code
+        assert "std::pow" not in func.code
+    
+    def test_complex_expr_return_type(self, generator, builder):
+        """sqrt(px**2 + py**2) returns RVec."""
+        ir = builder.build("sqrt(px**2 + py**2)")
+        func = generator.generate(ir, "manual_pt")
+        
+        assert "ROOT::RVec<double>" in func.return_type
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

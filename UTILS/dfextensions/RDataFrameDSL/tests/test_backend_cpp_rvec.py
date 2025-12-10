@@ -560,8 +560,9 @@ class TestVectorizedMathCodeGeneration:
         
         func = generator.generate(ir, "sqrt_pt")
         
-        # ADL should find ROOT::VecOps::sqrt
-        assert "std::sqrt(pt)" in func.code
+        # Phase 9: Use unqualified sqrt for ADL to find ROOT::VecOps::sqrt
+        assert "sqrt(pt)" in func.code
+        assert "std::sqrt" not in func.code  # Should NOT use std:: for RVec
         assert func.return_type == "ROOT::RVec<double>"
     
     def test_abs_rvec(self, generator):
@@ -577,7 +578,9 @@ class TestVectorizedMathCodeGeneration:
         
         func = generator.generate(ir, "abs_eta")
         
-        assert "std::abs(eta)" in func.code
+        # Phase 9: Use unqualified abs for ADL to find ROOT::VecOps::abs
+        assert "abs(eta)" in func.code
+        assert "std::abs" not in func.code  # Should NOT use std:: for RVec
 
 
 # =============================================================================

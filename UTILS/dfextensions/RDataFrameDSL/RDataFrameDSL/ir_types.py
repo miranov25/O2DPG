@@ -151,7 +151,8 @@ def promote_types(left: IRType, right: IRType) -> IRType:
     1. If either is float, result is float (wider wins)
     2. If both are int, result is int (wider wins, signed wins over unsigned)
     3. If either is unknown, result is unknown
-    4. Object types cannot be promoted (returns Unknown)
+    4. RVec<T> types promote based on element type T (Phase 9)
+    5. Non-RVec object types cannot be promoted (returns Unknown)
     
     Args:
         left: Left operand type
@@ -170,41 +171,100 @@ def promote_types(left: IRType, right: IRType) -> IRType:
     if left.is_unknown() or right.is_unknown():
         return IRType(IRTypeKind.Unknown)
     
-    # Objects cannot be promoted arithmetically
-    if left.is_object() or right.is_object():
+    # === PHASE 9: Handle RVec<T> types ===
+    # RVec<double> + int should promote like double + int
+    left_effective = _get_effective_type_for_promotion(left)
+    right_effective = _get_effective_type_for_promotion(right)
+    
+    # If either is an Object that's NOT an RVec of scalar, can't promote
+    if left_effective.is_object() or right_effective.is_object():
         return IRType(IRTypeKind.Unknown)
     
+    # Now promote using effective types
     # Bool treated as int for arithmetic
-    if left.is_bool() and right.is_bool():
+    if left_effective.is_bool() and right_effective.is_bool():
         return IRType(IRTypeKind.Bool)
     
     # Float + anything numeric = Float (wider wins)
-    if left.is_float() or right.is_float():
-        if left.kind == IRTypeKind.Float64 or right.kind == IRTypeKind.Float64:
+    if left_effective.is_float() or right_effective.is_float():
+        if left_effective.kind == IRTypeKind.Float64 or right_effective.kind == IRTypeKind.Float64:
             return IRType(IRTypeKind.Float64)
         return IRType(IRTypeKind.Float32)
     
     # Int + Int = wider Int
-    if left.is_int() and right.is_int():
+    if left_effective.is_int() and right_effective.is_int():
         # 64-bit wins
-        if left.kind in (IRTypeKind.Int64, IRTypeKind.UInt64) or \
-           right.kind in (IRTypeKind.Int64, IRTypeKind.UInt64):
+        if left_effective.kind in (IRTypeKind.Int64, IRTypeKind.UInt64) or \
+           right_effective.kind in (IRTypeKind.Int64, IRTypeKind.UInt64):
             # Prefer signed if either is signed
-            if left.is_signed_int() or right.is_signed_int():
+            if left_effective.is_signed_int() or right_effective.is_signed_int():
                 return IRType(IRTypeKind.Int64)
             return IRType(IRTypeKind.UInt64)
         # 32-bit
-        if left.is_signed_int() or right.is_signed_int():
+        if left_effective.is_signed_int() or right_effective.is_signed_int():
             return IRType(IRTypeKind.Int32)
         return IRType(IRTypeKind.UInt32)
     
     # Bool + numeric
-    if left.is_bool() or right.is_bool():
-        other = right if left.is_bool() else left
+    if left_effective.is_bool() or right_effective.is_bool():
+        other = right_effective if left_effective.is_bool() else left_effective
         return other
     
     # Fallback
     return IRType(IRTypeKind.Unknown)
+
+
+def _get_effective_type_for_promotion(ir_type: IRType) -> IRType:
+    """
+    Get the effective type for promotion purposes.
+    
+    For RVec<T> where T is a scalar type, returns an IRType representing T.
+    This allows RVec<double> ** 2 to promote correctly to double (then rank handles the RVec part).
+    
+    For non-RVec types or RVec<Object>, returns the original type.
+    """
+    if not ir_type.is_object():
+        return ir_type
+    
+    cpp_type = ir_type.cpp_type or ""
+    
+    # Check if this is an RVec type
+    if not (cpp_type.startswith("RVec<") or cpp_type.startswith("ROOT::RVec<")):
+        return ir_type
+    
+    # Extract element type from RVec<T>
+    if cpp_type.startswith("ROOT::RVec<"):
+        inner = cpp_type[11:-1]  # Remove "ROOT::RVec<" and ">"
+    else:
+        inner = cpp_type[5:-1]   # Remove "RVec<" and ">"
+    
+    # Map element type to IRType
+    element_type_map = {
+        "double": IRType(IRTypeKind.Float64),
+        "Double_t": IRType(IRTypeKind.Float64),
+        "float": IRType(IRTypeKind.Float32),
+        "Float_t": IRType(IRTypeKind.Float32),
+        "int": IRType(IRTypeKind.Int32),
+        "Int_t": IRType(IRTypeKind.Int32),
+        "long": IRType(IRTypeKind.Int64),
+        "Long_t": IRType(IRTypeKind.Int64),
+        "long long": IRType(IRTypeKind.Int64),
+        "Long64_t": IRType(IRTypeKind.Int64),
+        "unsigned int": IRType(IRTypeKind.UInt32),
+        "UInt_t": IRType(IRTypeKind.UInt32),
+        "unsigned long": IRType(IRTypeKind.UInt64),
+        "ULong_t": IRType(IRTypeKind.UInt64),
+        "unsigned long long": IRType(IRTypeKind.UInt64),
+        "ULong64_t": IRType(IRTypeKind.UInt64),
+        "bool": IRType(IRTypeKind.Bool),
+        "Bool_t": IRType(IRTypeKind.Bool),
+    }
+    
+    if inner in element_type_map:
+        return element_type_map[inner]
+    
+    # Unknown element type (probably an object like TLorentzVector)
+    return ir_type
 
 
 def comparison_result_type() -> IRType:

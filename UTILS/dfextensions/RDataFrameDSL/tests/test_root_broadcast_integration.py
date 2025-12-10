@@ -216,7 +216,7 @@ class TestF04FilterThenBroadcast:
 # Test F05: Arithmetic on Broadcast Results
 # =============================================================================
 
-@pytest.mark.skip(reason="Phase 9: RVec arithmetic type propagation not yet implemented")
+# Phase 9: Now enabled - RVec arithmetic type propagation implemented
 class TestF05ArithmeticOnBroadcast:
     """F05: sqrt(tracks.Px()**2 + tracks.Py()**2).
     

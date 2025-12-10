@@ -613,6 +613,9 @@ class CppCodeGenerator:
         elif op == BinaryOp.DIV:
             return f"({left} / {right})"
         elif op == BinaryOp.POW:
+            # Phase 9: Use unqualified pow for RVec operations to enable ADL
+            if node.rank > 0:
+                return f"pow({left}, {right})"
             return f"std::pow({left}, {right})"
         elif op == BinaryOp.FLOORDIV:
             # C++ truncation toward zero
@@ -1195,6 +1198,17 @@ class CppCodeGenerator:
     
     def _cpp_function_name(self, node: CallNode) -> str:
         """Convert DSL function name to C++ function name."""
+        # === PHASE 9: For RVec operations, use unqualified names to enable ADL ===
+        # ROOT provides vectorized functions like sqrt, sin, cos via ROOT::VecOps
+        # ADL (Argument Dependent Lookup) finds them when arguments are ROOT::RVec
+        if node.rank > 0:
+            # Use unqualified name for ADL with RVec
+            func_name = node.func
+            if "." in func_name:
+                func_name = func_name.replace(".", "::")
+            # Don't use std:: prefix for RVec operations
+            return func_name
+        
         # Check custom cpp_name first - it takes priority
         if node.cpp_name:
             # cpp_name already contains full qualified name (e.g., "std::sqrt")
