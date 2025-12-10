@@ -13,7 +13,9 @@ __all__ = [
     'KNOWN_FUNCTIONS',
     'MATH_FUNCTIONS',
     'TMATH_FUNCTIONS',
+    'REDUCTION_FUNCTIONS',
     'RVEC_METHODS',
+    'RVEC_AGGREGATION_METHODS',
     'FUNCTION_HEADERS',
     'FUNCTION_CPP_NAMES',
     'CLASS_HEADERS',
@@ -49,8 +51,18 @@ TMATH_FUNCTIONS: Set[str] = {
     'TMath.Sign', 'TMath.Min', 'TMath.Max', 'TMath.Range',
 }
 
+# =============================================================================
+# RVec Reduction Functions (Phase 10.5)
+# =============================================================================
+
+REDUCTION_FUNCTIONS: Set[str] = {
+    'Sum', 'Mean', 'Max', 'Min',
+    'Any', 'All',
+    'StdDev', 'Var',
+}
+
 # Combined set for validation
-KNOWN_FUNCTIONS: Set[str] = MATH_FUNCTIONS | TMATH_FUNCTIONS
+KNOWN_FUNCTIONS: Set[str] = MATH_FUNCTIONS | TMATH_FUNCTIONS | REDUCTION_FUNCTIONS
 
 
 # =============================================================================
@@ -61,6 +73,18 @@ RVEC_METHODS: Dict[str, str] = {
     'size': 'size_t',
     'empty': 'bool',
     'at': 'element',  # Returns element type
+}
+
+# RVec aggregation methods (lowercase, method-style) -> function name
+RVEC_AGGREGATION_METHODS: Dict[str, str] = {
+    'sum': 'Sum',
+    'mean': 'Mean',
+    'max': 'Max',
+    'min': 'Min',
+    'any': 'Any',
+    'all': 'All',
+    'std': 'StdDev',
+    'var': 'Var',
 }
 
 
@@ -142,6 +166,16 @@ FUNCTION_HEADERS: Dict[str, List[str]] = {
     "TMath::Min": ["<TMath.h>"],
     "TMath::Max": ["<TMath.h>"],
     "TMath::Range": ["<TMath.h>"],
+    
+    # RVec reduction functions (Phase 10.5)
+    "Sum": ["<ROOT/RVec.hxx>"],
+    "Mean": ["<ROOT/RVec.hxx>"],
+    "Max": ["<ROOT/RVec.hxx>"],
+    "Min": ["<ROOT/RVec.hxx>"],
+    "Any": ["<ROOT/RVec.hxx>"],
+    "All": ["<ROOT/RVec.hxx>"],
+    "StdDev": ["<ROOT/RVec.hxx>"],
+    "Var": ["<ROOT/RVec.hxx>"],
 }
 
 # Mapping from Python/DSL function names to C++ equivalents
@@ -199,6 +233,16 @@ FUNCTION_CPP_NAMES: Dict[str, str] = {
     "TMath.Min": "TMath::Min",
     "TMath.Max": "TMath::Max",
     "TMath.Range": "TMath::Range",
+    
+    # RVec reduction functions (Phase 10.5)
+    "Sum": "ROOT::VecOps::Sum",
+    "Mean": "ROOT::VecOps::Mean",
+    "Max": "ROOT::VecOps::Max",
+    "Min": "ROOT::VecOps::Min",
+    "Any": "ROOT::VecOps::Any",
+    "All": "ROOT::VecOps::All",
+    "StdDev": "ROOT::VecOps::StdDev",
+    "Var": "ROOT::VecOps::Var",
 }
 
 

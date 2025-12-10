@@ -107,15 +107,18 @@ KNOWN_FUNCTIONS: Dict[str, Dict[str, Any]] = {
     "TMath.Sqrt": {"cpp_name": "TMath::Sqrt", "return_type": IRTypeKind.Float64},
     
     # RVec operations (will be expanded in Phase 7)
-    "Sum": {"cpp_name": "ROOT::VecOps::Sum", "return_type": None},  # Element type
-    "Mean": {"cpp_name": "ROOT::VecOps::Mean", "return_type": IRTypeKind.Float64},
-    "StdDev": {"cpp_name": "ROOT::VecOps::StdDev", "return_type": IRTypeKind.Float64},
-    "Var": {"cpp_name": "ROOT::VecOps::Var", "return_type": IRTypeKind.Float64},
-    "Min": {"cpp_name": "ROOT::VecOps::Min", "return_type": None},
-    "Max": {"cpp_name": "ROOT::VecOps::Max", "return_type": None},
-    "ArgMin": {"cpp_name": "ROOT::VecOps::ArgMin", "return_type": IRTypeKind.UInt64},
-    "ArgMax": {"cpp_name": "ROOT::VecOps::ArgMax", "return_type": IRTypeKind.UInt64},
-    "Sort": {"cpp_name": "ROOT::VecOps::Sort", "return_type": None},  # Same as input
+    # Phase 10.5: Reduction functions return scalar (rank=0)
+    "Sum": {"cpp_name": "ROOT::VecOps::Sum", "return_type": None, "is_reduction": True},  # Element type
+    "Mean": {"cpp_name": "ROOT::VecOps::Mean", "return_type": IRTypeKind.Float64, "is_reduction": True},
+    "StdDev": {"cpp_name": "ROOT::VecOps::StdDev", "return_type": IRTypeKind.Float64, "is_reduction": True},
+    "Var": {"cpp_name": "ROOT::VecOps::Var", "return_type": IRTypeKind.Float64, "is_reduction": True},
+    "Min": {"cpp_name": "ROOT::VecOps::Min", "return_type": None, "is_reduction": True},
+    "Max": {"cpp_name": "ROOT::VecOps::Max", "return_type": None, "is_reduction": True},
+    "Any": {"cpp_name": "ROOT::VecOps::Any", "return_type": IRTypeKind.Bool, "is_reduction": True},
+    "All": {"cpp_name": "ROOT::VecOps::All", "return_type": IRTypeKind.Bool, "is_reduction": True},
+    "ArgMin": {"cpp_name": "ROOT::VecOps::ArgMin", "return_type": IRTypeKind.UInt64, "is_reduction": True},
+    "ArgMax": {"cpp_name": "ROOT::VecOps::ArgMax", "return_type": IRTypeKind.UInt64, "is_reduction": True},
+    "Sort": {"cpp_name": "ROOT::VecOps::Sort", "return_type": None},  # Same as input (not reduction)
     "Reverse": {"cpp_name": "ROOT::VecOps::Reverse", "return_type": None},
     "Take": {"cpp_name": "ROOT::VecOps::Take", "return_type": None},
     "Where": {"cpp_name": "ROOT::VecOps::Where", "return_type": None},
@@ -791,16 +794,44 @@ class IRBuilder:
         # Infer return type
         return_kind = func_info.get("return_type")
         if return_kind is None and args:
-            # Infer from arguments (e.g., abs, min, max)
+            # Infer from arguments (e.g., abs, min, max, Sum, Min, Max)
             result_type = args[0].dtype
-            for arg in args[1:]:
-                result_type = promote_types(result_type, arg.dtype) or result_type
+            # For reductions, extract element type if input is RVec
+            if func_info.get("is_reduction") and args[0].rank > 0:
+                # Extract element type from RVec<T>
+                cpp_type = args[0].dtype.cpp_type or ""
+                inner = None
+                if cpp_type.startswith("RVec<") or "RVec<" in cpp_type:
+                    if cpp_type.startswith("ROOT::RVec<"):
+                        inner = cpp_type[11:-1]
+                    elif cpp_type.startswith("RVec<"):
+                        inner = cpp_type[5:-1]
+                    else:
+                        inner = cpp_type
+                    # Map to IRType
+                    from .ir_types import cpp_type_to_ir
+                    result_type = cpp_type_to_ir(inner)
+                else:
+                    # No cpp_type string, but rank > 0 means it's a vector
+                    # Use the dtype directly as the element type
+                    result_type = args[0].dtype
+                    
+                # Special case: Sum(RVec<bool>) returns int (count of true values)
+                if func_name == "Sum" and result_type.kind == IRTypeKind.Bool:
+                    result_type = IRType(IRTypeKind.Int32)
+            else:
+                for arg in args[1:]:
+                    result_type = promote_types(result_type, arg.dtype) or result_type
         else:
             result_type = IRType(return_kind) if return_kind else IRType(IRTypeKind.Float64)
         
-        # Rank from arguments
-        result_rank = max((arg.rank for arg in args), default=0)
-        result_jagged = any(arg.is_jagged for arg in args)
+        # Rank from arguments (unless it's a reduction)
+        if func_info.get("is_reduction"):
+            result_rank = 0  # Reductions always return scalar
+            result_jagged = False
+        else:
+            result_rank = max((arg.rank for arg in args), default=0)
+            result_jagged = any(arg.is_jagged for arg in args)
         
         # Parse namespace from cpp_name
         cpp_name = func_info["cpp_name"]
@@ -937,6 +968,53 @@ class IRBuilder:
                     dtype=obj.dtype,
                     rank=max(0, obj.rank - 1),
                     is_jagged=False,
+                    source_location=self._make_location(node, ctx),
+                )
+        
+        # Phase 10.5: RVec aggregation methods (sum, mean, max, min, etc.)
+        # Maps method-style to function-style: pt.sum() → Sum(pt)
+        rvec_aggregation_methods = {
+            'sum': 'Sum',
+            'mean': 'Mean',
+            'max': 'Max',
+            'min': 'Min',
+            'any': 'Any',
+            'all': 'All',
+            'std': 'StdDev',
+            'var': 'Var',
+        }
+        
+        if obj.rank > 0 and method_name in rvec_aggregation_methods:
+            func_name = rvec_aggregation_methods[method_name]
+            func_info = KNOWN_FUNCTIONS.get(func_name)
+            
+            if func_info:
+                # Determine return type
+                return_kind = func_info.get("return_type")
+                if return_kind is None:
+                    # Infer element type from RVec<T>
+                    cpp_type = obj.dtype.cpp_type or ""
+                    if cpp_type.startswith("ROOT::RVec<"):
+                        inner = cpp_type[11:-1]
+                    elif cpp_type.startswith("RVec<"):
+                        inner = cpp_type[5:-1]
+                    else:
+                        inner = obj.dtype.to_cpp()
+                    from .ir_types import cpp_type_to_ir
+                    result_type = cpp_type_to_ir(inner)
+                else:
+                    result_type = IRType(return_kind)
+                
+                # All aggregations return scalar (rank=0)
+                return CallNode(
+                    func=func_name,
+                    args=[obj],
+                    dtype=result_type,
+                    rank=0,
+                    is_jagged=False,
+                    namespace="ROOT::VecOps",
+                    cpp_name=func_info["cpp_name"],
+                    headers=["<ROOT/RVec.hxx>"],
                     source_location=self._make_location(node, ctx),
                 )
         
