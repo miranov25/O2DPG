@@ -1,21 +1,33 @@
 #!/usr/bin/env python3
 """
-generate_synthetic_data.py - Generate synthetic ROOT file for benchmarks
+generate_synthetic_data.py - Generate synthetic ROOT files for benchmarks and testing
 
-Creates a small (~5MB) ROOT file with realistic structure for testing
-AliasDataFrame functionality without requiring real data.
+Creates synthetic ROOT files with realistic structure for testing AliasDataFrame
+functionality without requiring real data.
 
 Usage:
-    python generate_synthetic_data.py                    # Default output
+    python generate_synthetic_data.py                    # Default: single file
     python generate_synthetic_data.py --output data.root # Custom path
     python generate_synthetic_data.py --rows 100000      # Custom size
     python generate_synthetic_data.py --rdf              # RDF mode (4 subframes)
     python generate_synthetic_data.py --rdf --sparse     # RDF with sparse keys
 
+Chain Mode (Phase 6.8):
+    python generate_synthetic_data.py --chain 5 -o chain_data/
+        → Creates data_run001.root ... data_run005.root
+    
+    python generate_synthetic_data.py --chain 5 --subframe-chain 3 -o chain_data/
+        → Creates data_run001-005.root + calib_001-003.root
+
+The generated data has KNOWN RELATIONSHIPS for invariance testing:
+    - y_derived = 2 * x (exact linear relationship)
+    - corrected = signal * gain[sector] (calibration join)
+    - gain varies by sector (deterministic per seed)
+
 Output:
     - Main tree with typical TPC-like columns
-    - Subframe tree 'T' with track-level data
-    - ~5MB file size (100k rows default)
+    - Subframe tree 'T' with track-level calibration data
+    - ~5MB file size per 100k rows
     
 RDF Mode (--rdf):
     - 4 subframes: T (1-key), R (1-key), DITS0FitSide (2-key), DTrack0 (3-key)
@@ -30,8 +42,17 @@ import numpy as np
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Default configuration
+DEFAULT_ROWS = 100_000
+DEFAULT_TRACKS = 10_000
+RNG_SEED = 42
 
-def generate_synthetic_root(output_path, n_rows=100_000, n_tracks=10_000, seed=42):
+# Number of sectors (for calibration joins)
+N_SECTORS = 36
+
+
+def generate_synthetic_root(output_path, n_rows=100_000, n_tracks=10_000, seed=42,
+                           file_index=0, include_derived=True):
     """
     Generate synthetic ROOT file with main tree and subframe.
     
@@ -44,7 +65,11 @@ def generate_synthetic_root(output_path, n_rows=100_000, n_tracks=10_000, seed=4
     n_tracks : int
         Number of unique tracks (for subframe)
     seed : int
-        Random seed for reproducibility
+        Base random seed for reproducibility
+    file_index : int
+        File index for chain generation (affects seed)
+    include_derived : bool
+        If True, include y_derived = 2*x for invariance testing
         
     Returns
     -------
@@ -56,9 +81,12 @@ def generate_synthetic_root(output_path, n_rows=100_000, n_tracks=10_000, seed=4
         print("ERROR: uproot is required. Install with: pip install uproot")
         return None
     
-    np.random.seed(seed)
+    # Deterministic seed based on file index
+    actual_seed = seed + file_index * 1000
+    np.random.seed(actual_seed)
     
     print(f"Generating synthetic ROOT file: {output_path}")
+    print(f"  Seed: {actual_seed} (base={seed}, file_index={file_index})")
     print(f"  Main tree rows: {n_rows:,}")
     print(f"  Subframe tracks: {n_tracks:,}")
     
@@ -69,44 +97,54 @@ def generate_synthetic_root(output_path, n_rows=100_000, n_tracks=10_000, seed=4
     # Track indices (for joining with subframe)
     track_idx = np.random.randint(0, n_tracks, n_rows, dtype=np.int32)
     
-    # Position columns (float32)
+    # Base position column - x is the source for y_derived
     x = np.random.randn(n_rows).astype(np.float32) * 100 + 200
+    
+    # y_derived = 2 * x (EXACT relationship for invariance testing)
+    # NO noise - this allows np.array_equal in tests
+    y_derived = (2.0 * x).astype(np.float32)
+    
+    # Other position columns
     y = np.random.randn(n_rows).astype(np.float32) * 10
     z = np.random.randn(n_rows).astype(np.float32) * 200
     
-    # Delta columns (float16 - for compression testing)
-    dy = np.random.randn(n_rows).astype(np.float16)
-    dz = np.random.randn(n_rows).astype(np.float16)
+    # Signal column (for calibration testing)
+    signal = np.abs(np.random.randn(n_rows).astype(np.float32) * 50 + 100)
     
-    # Sector/row columns (uint8)
-    sec = np.random.randint(0, 36, n_rows, dtype=np.uint8)
-    row = np.random.randint(0, 152, n_rows, dtype=np.uint8)
+    # Sector/row columns
+    sec = np.random.randint(0, N_SECTORS, n_rows, dtype=np.int32)
+    row = np.random.randint(0, 152, n_rows, dtype=np.int32)
     
-    # Additional physics columns
-    mX = np.random.randn(n_rows).astype(np.float32) * 50
-    mY = np.random.randn(n_rows).astype(np.float32) * 50
+    # File index column (for chain testing - identifies which file the data came from)
+    file_idx_col = np.full(n_rows, file_index, dtype=np.int32)
+    
+    # Run number (varies by file for chain calibration testing)
+    run_number = np.full(n_rows, 1000 + file_index, dtype=np.int32)
     
     main_data = {
         'track_idx': track_idx,
         'x': x,
         'y': y,
         'z': z,
-        'dy': dy.astype(np.float32),  # uproot needs float32
-        'dz': dz.astype(np.float32),
+        'signal': signal,
         'sec': sec,
         'row': row,
-        'mX': mX,
-        'mY': mY,
+        'file_idx': file_idx_col,
+        'run_number': run_number,
     }
     
+    # Include derived column for invariance testing
+    if include_derived:
+        main_data['y_derived'] = y_derived
+    
     # =========================================================================
-    # Generate subframe data (track-level)
+    # Generate subframe data (track-level calibration)
     # =========================================================================
     
     # One row per unique track
     track_ids = np.arange(n_tracks, dtype=np.int32)
     
-    # Track parameters
+    # Track parameters for calibration
     mP3 = np.random.randn(n_tracks).astype(np.float32) * 0.1
     mP4 = np.random.randn(n_tracks).astype(np.float32) * 0.01
     dEdxTPC = np.random.exponential(50, n_tracks).astype(np.float32)
@@ -115,8 +153,24 @@ def generate_synthetic_root(output_path, n_rows=100_000, n_tracks=10_000, seed=4
         'track_idx': track_ids,
         'mP3': mP3,
         'mP4': mP4,
-        'mX': np.random.randn(n_tracks).astype(np.float32) * 10,
         'dEdxTPC': dEdxTPC,
+    }
+    
+    # =========================================================================
+    # Generate sector calibration subframe (for sector-based joins)
+    # Gain is deterministic per sector for invariance testing
+    # =========================================================================
+    
+    sector_ids = np.arange(N_SECTORS, dtype=np.int32)
+    # Deterministic gain: gain[sector] = 1.0 + 0.01 * sector
+    # This allows exact verification: corrected = signal * (1.0 + 0.01 * sec)
+    gain = (1.0 + 0.01 * sector_ids).astype(np.float32)
+    offset = (np.random.randn(N_SECTORS) * 0.1).astype(np.float32)
+    
+    sector_calib_data = {
+        'sec': sector_ids,
+        'gain': gain,
+        'offset': offset,
     }
     
     # =========================================================================
@@ -127,8 +181,11 @@ def generate_synthetic_root(output_path, n_rows=100_000, n_tracks=10_000, seed=4
         # Main tree
         f['tree'] = main_data
         
-        # Subframe tree
+        # Track subframe
         f['T'] = subframe_data
+        
+        # Sector calibration subframe
+        f['SectorCalib'] = sector_calib_data
     
     # Get file size
     file_size = os.path.getsize(output_path)
@@ -139,14 +196,14 @@ def generate_synthetic_root(output_path, n_rows=100_000, n_tracks=10_000, seed=4
         'size_mb': file_size / (1024 * 1024),
         'main_rows': n_rows,
         'main_columns': len(main_data),
-        'subframe_rows': n_tracks,
-        'subframe_columns': len(subframe_data),
+        'subframe_T_rows': n_tracks,
+        'subframe_T_columns': len(subframe_data),
+        'subframe_SectorCalib_rows': N_SECTORS,
+        'file_index': file_index,
+        'seed': actual_seed,
     }
     
-    print(f"\n✓ Generated successfully:")
-    print(f"  File size: {stats['size_mb']:.1f} MB")
-    print(f"  Main tree: {n_rows:,} rows × {len(main_data)} columns")
-    print(f"  Subframe T: {n_tracks:,} rows × {len(subframe_data)} columns")
+    print(f"  ✓ Generated successfully: {stats['size_mb']:.1f} MB")
     
     return stats
 
@@ -397,26 +454,225 @@ def generate_rdf_synthetic_root(output_path, n_rows=1_000_000, seed=42, sparse_k
     return stats
 
 
-def verify_file(filepath, rdf_mode=False):
-    """Verify the generated ROOT file can be read."""
+def generate_calibration_file(output_path, seed=42, file_index=0, n_runs=10):
+    """
+    Generate a calibration file for subframe chain testing.
+    
+    The calibration contains run-dependent gain values for sector calibration.
+    
+    Parameters
+    ----------
+    output_path : str
+        Output ROOT file path
+    seed : int
+        Base random seed
+    file_index : int
+        File index for chain (affects seed and run range)
+    n_runs : int
+        Number of runs covered by this calibration file
+        
+    Returns
+    -------
+    dict : Statistics about generated file
+    """
     try:
-        print(f"\nVerifying file...")
+        import uproot
+    except ImportError:
+        print("ERROR: uproot is required. Install with: pip install uproot")
+        return None
+    
+    # Deterministic seed based on file index
+    actual_seed = seed + file_index * 500 + 10000
+    np.random.seed(actual_seed)
+    
+    print(f"Generating calibration file: {output_path}")
+    print(f"  Seed: {actual_seed}")
+    
+    # Run numbers covered by this calibration file
+    # Each file covers a range of runs
+    run_start = 1000 + file_index * n_runs
+    run_end = run_start + n_runs
+    
+    # Create calibration entries for each (run, sector) combination
+    n_entries = n_runs * N_SECTORS
+    
+    runs = np.repeat(np.arange(run_start, run_end, dtype=np.int32), N_SECTORS)
+    sectors = np.tile(np.arange(N_SECTORS, dtype=np.int32), n_runs)
+    
+    # Gain varies by run and sector (deterministic)
+    # gain[run, sector] = 1.0 + 0.01 * sector + 0.001 * (run - 1000)
+    gain = (1.0 + 0.01 * sectors + 0.001 * (runs - 1000)).astype(np.float32)
+    offset = (np.random.randn(n_entries) * 0.05).astype(np.float32)
+    
+    calib_data = {
+        'run_number': runs,
+        'sec': sectors,
+        'gain': gain,
+        'offset': offset,
+    }
+    
+    with uproot.recreate(output_path) as f:
+        f['tree'] = calib_data
+    
+    file_size = os.path.getsize(output_path)
+    
+    stats = {
+        'path': output_path,
+        'size_bytes': file_size,
+        'size_mb': file_size / (1024 * 1024),
+        'rows': n_entries,
+        'run_range': (run_start, run_end - 1),
+        'file_index': file_index,
+        'seed': actual_seed,
+    }
+    
+    print(f"  ✓ Generated: {n_entries} entries, runs {run_start}-{run_end-1}")
+    
+    return stats
+
+
+def generate_chain_data(output_dir, n_chain_files=5, n_subframe_chain_files=0,
+                       rows_per_file=100_000, tracks_per_file=10_000, seed=42):
+    """
+    Generate multiple files for chain testing.
+    
+    Parameters
+    ----------
+    output_dir : str
+        Output directory for all files
+    n_chain_files : int
+        Number of main data files to generate
+    n_subframe_chain_files : int
+        Number of calibration subframe files to generate
+    rows_per_file : int
+        Rows per main data file
+    tracks_per_file : int
+        Tracks per main data file
+    seed : int
+        Base random seed
+        
+    Returns
+    -------
+    dict : Statistics about all generated files
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    print(f"\n{'='*60}")
+    print(f"Generating chain data in: {output_dir}")
+    print(f"  Main data files: {n_chain_files}")
+    print(f"  Subframe chain files: {n_subframe_chain_files}")
+    print(f"  Rows per file: {rows_per_file:,}")
+    print(f"  Base seed: {seed}")
+    print(f"{'='*60}\n")
+    
+    stats = {
+        'output_dir': output_dir,
+        'main_files': [],
+        'subframe_files': [],
+        'total_rows': 0,
+        'total_size_mb': 0,
+    }
+    
+    # Generate main data files
+    for i in range(n_chain_files):
+        filename = f"data_run{i+1:03d}.root"
+        filepath = os.path.join(output_dir, filename)
+        
+        file_stats = generate_synthetic_root(
+            filepath,
+            n_rows=rows_per_file,
+            n_tracks=tracks_per_file,
+            seed=seed,
+            file_index=i,
+            include_derived=True
+        )
+        
+        if file_stats:
+            stats['main_files'].append(file_stats)
+            stats['total_rows'] += file_stats['main_rows']
+            stats['total_size_mb'] += file_stats['size_mb']
+    
+    # Generate calibration subframe chain files
+    for i in range(n_subframe_chain_files):
+        filename = f"calib_{i+1:03d}.root"
+        filepath = os.path.join(output_dir, filename)
+        
+        # Each calibration file covers runs for n_chain_files // n_subframe_chain_files files
+        # This creates overlapping coverage for testing
+        runs_per_calib = max(1, (n_chain_files + n_subframe_chain_files - 1) // max(1, n_subframe_chain_files))
+        
+        file_stats = generate_calibration_file(
+            filepath,
+            seed=seed,
+            file_index=i,
+            n_runs=runs_per_calib * 2  # Overlap coverage
+        )
+        
+        if file_stats:
+            stats['subframe_files'].append(file_stats)
+            stats['total_size_mb'] += file_stats['size_mb']
+    
+    # Print summary
+    print(f"\n{'='*60}")
+    print(f"CHAIN GENERATION COMPLETE")
+    print(f"{'='*60}")
+    print(f"  Main data files: {len(stats['main_files'])}")
+    print(f"  Subframe chain files: {len(stats['subframe_files'])}")
+    print(f"  Total rows: {stats['total_rows']:,}")
+    print(f"  Total size: {stats['total_size_mb']:.1f} MB")
+    print()
+    print(f"Main data pattern: {output_dir}/data_run*.root:tree")
+    if stats['subframe_files']:
+        print(f"Subframe pattern:  {output_dir}/calib_*.root:tree")
+    print()
+    print("Known relationships for invariance testing:")
+    print("  - y_derived = 2 * x (exact, no noise)")
+    print("  - gain[sec] = 1.0 + 0.01 * sec (in SectorCalib)")
+    print("  - gain[run,sec] = 1.0 + 0.01*sec + 0.001*(run-1000) (in calib chain)")
+    print(f"{'='*60}\n")
+    
+    return stats
+
+
+def verify_file(filepath, rdf_mode=False):
+    """Verify the generated ROOT file can be read.
+    
+    Parameters
+    ----------
+    filepath : str
+        Path to the ROOT file to verify
+    rdf_mode : bool
+        If True, expect RDF-style file with aliases and 4 subframes.
+        If False, expect standard file with y_derived invariant.
+    """
+    try:
+        print(f"\nVerifying file: {filepath}")
         
         # Test with AliasDataFrame
         from AliasDataFrame import AliasDataFrame
         
         adf = AliasDataFrame.read_tree(filepath, 'tree', load_subframes=True)
         print(f"  ✓ AliasDataFrame loaded: {len(adf.df):,} rows")
-        print(f"    Columns: {list(adf.df.columns)}")
+        print(f"    Columns: {list(adf.df.columns)[:8]}...")
         
         subframes = list(adf._subframes.subframes.keys()) if hasattr(adf, '_subframes') else []
         print(f"    Subframes: {subframes}")
         
         aliases = list(adf.aliases.keys()) if hasattr(adf, 'aliases') else []
         if aliases:
-            print(f"    Aliases ({len(aliases)}): {aliases}")
+            print(f"    Aliases ({len(aliases)}): {aliases[:5]}...")
         elif rdf_mode:
             print(f"  ⚠ Warning: No aliases found in RDF mode file")
+        
+        # Check for known relationships (standard mode)
+        if not rdf_mode and 'x' in adf.df.columns and 'y_derived' in adf.df.columns:
+            expected = 2.0 * adf.df['x'].values
+            actual = adf.df['y_derived'].values
+            if np.allclose(expected, actual):
+                print(f"  ✓ Invariant verified: y_derived = 2 * x")
+            else:
+                print(f"  ✗ Invariant FAILED: y_derived != 2 * x")
+                return False
         
         return True
             
@@ -427,63 +683,156 @@ def verify_file(filepath, rdf_mode=False):
         return False
 
 
+def verify_chain(output_dir, n_files):
+    """Verify chain files can be read together."""
+    try:
+        print(f"\nVerifying chain in: {output_dir}")
+        
+        from AliasDataFrame import AliasDataFrame
+        
+        pattern = os.path.join(output_dir, 'data_run*.root:tree')
+        adf = AliasDataFrame.read_chain_lazy(pattern)
+        
+        print(f"  ✓ Chain reader created")
+        print(f"    Files: {len(adf._lazy_reader._files)}")
+        print(f"    Available branches: {adf._lazy_reader.available_branches[:5]}...")
+        
+        # Load some data to verify
+        adf.load_branches(['x', 'y_derived', 'file_idx'])
+        print(f"  ✓ Loaded {len(adf.df):,} total rows from chain")
+        
+        # Verify invariant across chain
+        expected = 2.0 * adf.df['x'].values
+        actual = adf.df['y_derived'].values
+        if np.allclose(expected, actual):
+            print(f"  ✓ Invariant verified across chain: y_derived = 2 * x")
+        else:
+            print(f"  ✗ Invariant FAILED across chain")
+            return False
+        
+        # Verify file indices are present
+        unique_files = np.unique(adf.df['file_idx'].values)
+        print(f"  ✓ File indices present: {list(unique_files)}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"  ✗ Chain verification failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate synthetic ROOT file for benchmarks",
+        description="Generate synthetic ROOT files for benchmarks and testing",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+    # Single file (default)
     python generate_synthetic_data.py
     python generate_synthetic_data.py --output test_data.root
     python generate_synthetic_data.py --rows 500000 --tracks 50000
     
-RDF Benchmark Mode:
+    # Chain mode (Phase 6.8)
+    python generate_synthetic_data.py --chain 5 -o chain_data/
+    python generate_synthetic_data.py --chain 5 --subframe-chain 3 -o chain_data/
+    
+    # RDF Benchmark Mode
     python generate_synthetic_data.py --rdf
     python generate_synthetic_data.py --rdf --rows 1000000
     python generate_synthetic_data.py --rdf --sparse  # Test sparse key algorithm
+    
+    # Verify generated files
+    python generate_synthetic_data.py --verify
+    python generate_synthetic_data.py --chain 3 -o chain_data/ --verify
+
+Known Relationships (for invariance testing):
+    - y_derived = 2 * x (exact, no noise)
+    - gain[sec] = 1.0 + 0.01 * sec (SectorCalib subframe)
+    - gain[run,sec] = 1.0 + 0.01*sec + 0.001*(run-1000) (calibration chain)
         """
     )
+    
+    # Output options
     parser.add_argument('--output', '-o', type=str, 
                         default=os.path.join(os.path.dirname(__file__), 'synthetic_data.root'),
-                        help='Output file path (default: benchmarks/synthetic_data.root)')
-    parser.add_argument('--rows', type=int, default=100_000,
-                        help='Number of rows in main tree (default: 100000)')
-    parser.add_argument('--tracks', type=int, default=10_000,
-                        help='Number of tracks in subframe (default: 10000, ignored in --rdf mode)')
-    parser.add_argument('--seed', type=int, default=42,
-                        help='Random seed (default: 42)')
-    parser.add_argument('--verify', action='store_true',
-                        help='Verify file after generation')
+                        help='Output file path or directory (default: benchmarks/synthetic_data.root)')
+    
+    # Size options
+    parser.add_argument('--rows', type=int, default=DEFAULT_ROWS,
+                        help=f'Number of rows in main tree (default: {DEFAULT_ROWS:,})')
+    parser.add_argument('--tracks', type=int, default=DEFAULT_TRACKS,
+                        help=f'Number of tracks in subframe (default: {DEFAULT_TRACKS:,}, ignored in --rdf mode)')
+    
+    # Chain options (Phase 6.8)
+    parser.add_argument('--chain', type=int, default=0,
+                        help='Generate N files for chain testing (creates data_run001.root, etc.)')
+    parser.add_argument('--subframe-chain', type=int, default=0,
+                        help='Generate N calibration files for subframe chain testing')
+    
+    # RDF options (Phase 3/5 - backward compatible)
     parser.add_argument('--rdf', action='store_true',
                         help='Generate RDF benchmark data (4 subframes, multi-key indices)')
     parser.add_argument('--sparse', action='store_true',
                         help='Use sparse (non-contiguous) key values (only with --rdf)')
     
+    # Other options
+    parser.add_argument('--seed', type=int, default=RNG_SEED,
+                        help=f'Random seed (default: {RNG_SEED})')
+    parser.add_argument('--verify', action='store_true',
+                        help='Verify file(s) after generation')
+    
     args = parser.parse_args()
     
+    # RDF mode (Phase 3/5 benchmarks - backward compatible)
     if args.rdf:
-        # RDF mode: 4 subframes with multi-key indices
         stats = generate_rdf_synthetic_root(
             output_path=args.output,
             n_rows=args.rows,
             seed=args.seed,
             sparse_keys=args.sparse
         )
+        
+        if stats is None:
+            sys.exit(1)
+        
+        if args.verify:
+            if not verify_file(args.output, rdf_mode=True):
+                sys.exit(1)
+    
+    # Chain mode (Phase 6.8)
+    elif args.chain > 0:
+        stats = generate_chain_data(
+            output_dir=args.output,
+            n_chain_files=args.chain,
+            n_subframe_chain_files=args.subframe_chain,
+            rows_per_file=args.rows,
+            tracks_per_file=args.tracks,
+            seed=args.seed
+        )
+        
+        if args.verify and stats:
+            if not verify_chain(args.output, args.chain):
+                sys.exit(1)
+    
+    # Single file mode (default)
     else:
-        # Standard mode: main tree + T subframe
         stats = generate_synthetic_root(
             output_path=args.output,
             n_rows=args.rows,
             n_tracks=args.tracks,
-            seed=args.seed
+            seed=args.seed,
+            file_index=0,
+            include_derived=True
         )
-    
-    if stats is None:
-        sys.exit(1)
-    
-    if args.verify:
-        if not verify_file(args.output, rdf_mode=args.rdf):
+        
+        if stats is None:
             sys.exit(1)
+        
+        if args.verify:
+            if not verify_file(args.output, rdf_mode=False):
+                sys.exit(1)
     
     print(f"\nDone. File ready at: {args.output}")
 
