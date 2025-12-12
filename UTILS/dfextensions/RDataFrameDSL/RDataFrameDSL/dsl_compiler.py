@@ -35,8 +35,10 @@ Phase 7.9: RDataFrame Validation & C++ Export
 Phase 8.1: Alias referencing support (aliases can use other aliases)
 """
 
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set
 import uuid
+import re
+import warnings
 
 from .type_inferrer import TypeInferrer
 from .ir_builder import IRBuilder
@@ -719,3 +721,259 @@ class DSLCompiler:
                 errors.append(f"{name}: {str(e)}")
         
         return errors
+    
+    # =========================================================================
+    # Phase 12.1: dfdraw Integration
+    # =========================================================================
+    
+    def _collect_dependencies(self, expr: str) -> Set[str]:
+        """
+        Extract column dependencies from expression using IR parsing.
+        
+        Uses existing IRBuilder infrastructure for robust parsing that handles:
+        - Namespace functions (TMath.Sin)
+        - Nested expressions
+        - Aliases referencing other aliases
+        
+        Args:
+            expr: Expression string (e.g., "sqrt(pt**2 + eta**2)")
+        
+        Returns:
+            Set of column/alias names referenced in expression
+        """
+        from .ir_nodes import VariableNode
+        
+        dependencies = set()
+        
+        try:
+            # Preprocess and parse using existing infrastructure
+            preprocessed = self._preprocess_expression(expr)
+            # Create temporary builder (self._builder may not exist)
+            builder = IRBuilder(self._inferrer)
+            ir = builder.build(preprocessed, "_dep_check")
+            
+            # Use the built-in walk() method to collect all VariableNodes
+            for node in ir.walk():
+                if isinstance(node, VariableNode):
+                    dependencies.add(node.name)
+            
+        except Exception:
+            # Fallback to tokenization if IR parsing fails
+            # (e.g., for selection strings with && operators not in DSL)
+            tokens = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', expr)
+            keywords = {
+                'and', 'or', 'not', 'in', 'True', 'False', 'true', 'false',
+                'abs', 'sqrt', 'sin', 'cos', 'tan', 'exp', 'log', 'pow',
+                'TMath', 'ROOT', 'std', 'int', 'float', 'double', 'bool',
+                'RVec', 'Take', 'Range', 'Sum', 'Mean', 'Min', 'Max',
+            }
+            dependencies = {t for t in tokens if t not in keywords}
+        
+        return dependencies
+    
+    def _collect_draw_dependencies(self, expr: str, selection: str = None,
+                                    group_by: str = None, color: str = None) -> Set[str]:
+        """
+        Collect all column dependencies for a draw operation.
+        
+        Args:
+            expr: Plot expression ('pt', 'y:x', 'dy:row')
+            selection: Optional filter expression
+            group_by: Optional grouping column
+            color: Optional color column
+        
+        Returns:
+            Set of column names needed for the draw operation
+        """
+        columns = set()
+        
+        # Parse plot expression (handle 'y:x' syntax)
+        for part in expr.replace(' ', '').split(':'):
+            if part:  # Skip empty parts
+                columns.update(self._collect_dependencies(part))
+        
+        # Parse selection
+        if selection:
+            columns.update(self._collect_dependencies(selection))
+        
+        # Direct column references
+        if group_by:
+            columns.add(group_by)
+        if color and isinstance(color, str):
+            columns.add(color)
+        
+        # Check against schema and warn about unknowns
+        known_columns = set(self.schema.keys())
+        unknown = columns - known_columns
+        
+        if unknown:
+            warnings.warn(
+                f"Columns not in schema (will try as raw branches): {unknown}\n"
+                f"Known columns: {sorted(known_columns)[:10]}{'...' if len(known_columns) > 10 else ''}"
+            )
+        
+        return columns
+    
+    def draw(self, expr: str, rdf, columns: List[str] = None,
+             max_entries: int = None, **kwargs):
+        """
+        Draw a plot using dfdraw with automatic column detection.
+        
+        Args:
+            expr: Plot expression ('pt', 'y:x', 'dy:row')
+            rdf: Applied RDataFrame (after dsl.apply())
+            columns: Optional explicit column list (auto-detected if None)
+            max_entries: Optional limit on number of entries (for large datasets)
+            **kwargs: Passed to dfdraw.DFDraw.draw()
+                - selection: Filter expression (e.g., "isOK && pt > 1.0")
+                - type: Plot type ('hist', 'scatter', 'profile', 'hist2d')
+                - bins: Number of bins
+                - group_by: Grouping column
+                - color: Color column
+        
+        Returns:
+            Tuple of (fig, ax, stats) from dfdraw
+        
+        Raises:
+            ImportError: If dfdraw is not installed
+        
+        Example:
+            >>> dsl.draw("pt:eta", rdf, selection="isOK")
+            >>> dsl.draw("trackPt", rdf, max_entries=10000)  # RVec column
+        """
+        # Lazy import with helpful error
+        try:
+            from dfdraw import DFDraw
+        except ImportError:
+            raise ImportError(
+                "dfdraw is required for visualization.\n"
+                "Install with: pip install dfdraw\n"
+                "Or use to_dataframe() for manual plotting."
+            )
+        
+        import pandas as pd
+        
+        # Auto-detect columns if not provided
+        if columns is None:
+            columns = list(self._collect_draw_dependencies(
+                expr,
+                kwargs.get('selection'),
+                kwargs.get('group_by'),
+                kwargs.get('color')
+            ))
+        
+        # Apply entry limit if specified (for large datasets)
+        if max_entries is not None:
+            rdf = rdf.Range(max_entries)
+        
+        # Extract data
+        result = rdf.AsNumpy(columns)
+        
+        # Create drawer and draw
+        drawer = DFDraw(pd.DataFrame(result))
+        return drawer.draw(expr, **kwargs)
+    
+    def draw_batch(self, specs: Dict[str, dict], rdf,
+                   save_dir: str = None, max_entries: int = None,
+                   **defaults):
+        """
+        Draw multiple plots with a single AsNumpy call (efficient).
+        
+        Args:
+            specs: Dict of {name: {expr: str, ...options}}
+            rdf: Applied RDataFrame
+            save_dir: Optional directory to save plots as PNG
+            max_entries: Optional limit on entries
+            **defaults: Default options applied to all plots
+        
+        Returns:
+            Dict of {name: {fig, ax, stats}}
+        
+        Example:
+            >>> specs = {
+            ...     'pt_dist': {'expr': 'trackPt', 'bins': 50},
+            ...     'dy_vs_z': {'expr': 'clusterDy:clusterZ', 'type': 'hist2d'},
+            ...     'eta_good': {'expr': 'trackEta', 'selection': 'trackIsOK'},
+            ... }
+            >>> dsl.draw_batch(specs, rdf, save_dir='qa/')
+        """
+        # Handle empty specs
+        if not specs:
+            return {}
+        
+        # Lazy import
+        try:
+            from dfdraw import DFDraw
+        except ImportError:
+            raise ImportError(
+                "dfdraw is required for visualization.\n"
+                "Install with: pip install dfdraw\n"
+                "Or use to_dataframe() for manual plotting."
+            )
+        
+        from pathlib import Path
+        import pandas as pd
+        
+        # Collect ALL columns from ALL specs (single AsNumpy call)
+        all_columns = set()
+        for spec in specs.values():
+            all_columns.update(self._collect_draw_dependencies(
+                spec.get('expr', ''),
+                spec.get('selection', defaults.get('selection')),
+                spec.get('group_by', defaults.get('group_by')),
+                spec.get('color', defaults.get('color'))
+            ))
+        
+        # Apply entry limit
+        if max_entries is not None:
+            rdf = rdf.Range(max_entries)
+        
+        # Single data extraction (efficient!)
+        result = rdf.AsNumpy(list(all_columns))
+        drawer = DFDraw(pd.DataFrame(result))
+        
+        # Generate all plots
+        results = {}
+        for name, spec in specs.items():
+            merged = {**defaults, **spec}
+            expr = merged.pop('expr')
+            
+            fig, ax, stats = drawer.draw(expr, **merged)
+            
+            if save_dir:
+                Path(save_dir).mkdir(parents=True, exist_ok=True)
+                fig.savefig(f"{save_dir}/{name}.png", dpi=150, bbox_inches='tight')
+            
+            results[name] = {'fig': fig, 'ax': ax, 'stats': stats}
+        
+        return results
+    
+    def to_dataframe(self, rdf, columns: List[str] = None,
+                     max_entries: int = None):
+        """
+        Export RDataFrame result to pandas DataFrame.
+        
+        Note: RVec columns will be stored as numpy arrays (one array per row).
+        
+        Args:
+            rdf: Applied RDataFrame
+            columns: List of columns to export (default: all in schema)
+            max_entries: Optional limit on entries
+        
+        Returns:
+            pandas DataFrame
+        
+        Example:
+            >>> df = dsl.to_dataframe(rdf)
+            >>> df = dsl.to_dataframe(rdf, columns=['trackPt', 'trackEta'])
+            >>> df['trackPt'][0]  # First event's track pT array
+        """
+        import pandas as pd
+        
+        if columns is None:
+            columns = list(self.schema.keys())
+        
+        if max_entries is not None:
+            rdf = rdf.Range(max_entries)
+        
+        return pd.DataFrame(rdf.AsNumpy(columns))
