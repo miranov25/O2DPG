@@ -40,6 +40,7 @@ import uuid
 
 from .type_inferrer import TypeInferrer
 from .ir_builder import IRBuilder
+from .ir_types import IRType, IRTypeKind
 from .backend_cpp import CppCodeGenerator, FunctionLibrary, GeneratedFunction
 from .ir_errors import IRError, IRErrorKind
 
@@ -214,7 +215,7 @@ class DSLCompiler:
         
         return ''.join(result)
     
-    def define(self, name: str, expression: str) -> 'DSLCompiler':
+    def define(self, name: str, expression: str, dtype: str = None) -> 'DSLCompiler':
         """
         Define a new column from a DSL expression.
         
@@ -225,6 +226,12 @@ class DSLCompiler:
         Args:
             name: Output column name
             expression: DSL expression (e.g. "sqrt(px**2 + py**2)")
+            dtype: Optional explicit return type. Supported values:
+                   - "bool"
+                   - "int", "int8", "int16", "int32", "int64"
+                   - "uint8", "uint16", "uint32", "uint64"
+                   - "float", "float32", "float64", "double"
+                   If None, inferred from expression or defaults to double.
         
         Returns:
             self (for chaining)
@@ -235,6 +242,8 @@ class DSLCompiler:
         Example:
             >>> dsl.define("pt", "sqrt(px**2 + py**2)")
             >>> dsl.define("high_pt", "pt > 10.0")  # Uses 'pt' alias
+            >>> dsl.define("isOK", "(row < 152) & (abs(dy) < 10)", dtype="bool")
+            >>> dsl.define("sector", "int(9*phi/pi)", dtype="int8")
         """
         # Check for name collision with original schema only
         # (aliases are allowed to shadow other aliases via redefinition)
@@ -261,6 +270,10 @@ class DSLCompiler:
         builder = IRBuilder(self._inferrer)
         ir = builder.build(preprocessed)
         
+        # Phase 11.1c: Override return type if explicitly specified
+        if dtype is not None:
+            ir.dtype = self._parse_dtype(dtype)
+        
         # Use unique suffix to avoid collisions in parallel execution
         unique_name = f"{name}_{self._unique_id}"
         func = self._generator.generate(ir, unique_name)
@@ -273,11 +286,92 @@ class DSLCompiler:
         self.library.add(func)
         
         # === NEW: Register alias in schema for future expressions ===
-        self._register_alias_type(name, ir)
+        self._register_alias_type(name, ir, dtype)
         
         return self
     
-    def _register_alias_type(self, name: str, ir) -> None:
+    def _parse_dtype(self, dtype: str) -> IRType:
+        """
+        Parse dtype string to IRType.
+        
+        Phase 11.1c: Supports explicit type specification via dtype parameter.
+        
+        Args:
+            dtype: Type string like "bool", "int8", "float32"
+            
+        Returns:
+            IRType instance
+            
+        Raises:
+            IRError: If dtype is not recognized
+        """
+        dtype_map = {
+            # Boolean
+            "bool": IRType(IRTypeKind.Bool),
+            
+            # Signed integers
+            "int": IRType(IRTypeKind.Int32),
+            "int8": IRType(IRTypeKind.Int8),
+            "int16": IRType(IRTypeKind.Int16),
+            "int32": IRType(IRTypeKind.Int32),
+            "int64": IRType(IRTypeKind.Int64),
+            
+            # Unsigned integers
+            "uint8": IRType(IRTypeKind.UInt8),
+            "uint16": IRType(IRTypeKind.UInt16),
+            "uint32": IRType(IRTypeKind.UInt32),
+            "uint64": IRType(IRTypeKind.UInt64),
+            
+            # Floating point
+            "float": IRType(IRTypeKind.Float32),
+            "float32": IRType(IRTypeKind.Float32),
+            "float64": IRType(IRTypeKind.Float64),
+            "double": IRType(IRTypeKind.Float64),
+        }
+        
+        if dtype not in dtype_map:
+            raise IRError(
+                IRErrorKind.TYPE_ERROR,
+                f"Unknown dtype '{dtype}'",
+                suggestions=[
+                    "Supported types:",
+                    "  bool",
+                    "  int, int8, int16, int32, int64",
+                    "  uint8, uint16, uint32, uint64",
+                    "  float, float32, float64, double",
+                ]
+            )
+        
+        return dtype_map[dtype]
+    
+    def _dtype_to_string(self, ir_type: IRType) -> str:
+        """
+        Convert IRType to dtype string for schema.
+        
+        Phase 11.1c: Maps IRType back to dtype string.
+        
+        Args:
+            ir_type: IRType instance
+            
+        Returns:
+            Dtype string like "bool", "int32", "double"
+        """
+        type_strings = {
+            IRTypeKind.Bool: "bool",
+            IRTypeKind.Int8: "int8",
+            IRTypeKind.Int16: "int16",
+            IRTypeKind.Int32: "int32",
+            IRTypeKind.Int64: "int64",
+            IRTypeKind.UInt8: "uint8",
+            IRTypeKind.UInt16: "uint16",
+            IRTypeKind.UInt32: "uint32",
+            IRTypeKind.UInt64: "uint64",
+            IRTypeKind.Float32: "float32",
+            IRTypeKind.Float64: "double",
+        }
+        return type_strings.get(ir_type.kind, "double")
+    
+    def _register_alias_type(self, name: str, ir, dtype: str = None) -> None:
         """
         Register a new alias in the schema and rebuild type inferrer.
         
@@ -286,9 +380,13 @@ class DSLCompiler:
         Args:
             name: Alias name
             ir: IR node with type information
+            dtype: Optional explicit dtype (overrides inference)
         """
-        # Get type string
-        type_str = _ir_to_type_string(ir)
+        # Phase 11.1c: Use explicit dtype if provided
+        if dtype is not None:
+            type_str = self._dtype_to_cpp_type(dtype)
+        else:
+            type_str = _ir_to_type_string(ir)
         
         # Add to simple schema
         self.schema[name] = type_str
@@ -302,6 +400,43 @@ class DSLCompiler:
             type_inferrer=self._inferrer,
             safe_indexing=self.safe_indexing
         )
+    
+    def _dtype_to_cpp_type(self, dtype: str) -> str:
+        """
+        Convert dtype string to C++ type string for schema.
+        
+        Phase 11.1c: Maps dtype to C++ type for schema registration.
+        
+        Args:
+            dtype: Type string like "bool", "int8", "float32"
+            
+        Returns:
+            C++ type string like "bool", "int8_t", "float"
+        """
+        cpp_types = {
+            # Boolean
+            "bool": "bool",
+            
+            # Signed integers
+            "int": "int",
+            "int8": "int8_t",
+            "int16": "int16_t",
+            "int32": "int",
+            "int64": "long long",
+            
+            # Unsigned integers
+            "uint8": "uint8_t",
+            "uint16": "uint16_t",
+            "uint32": "unsigned int",
+            "uint64": "unsigned long long",
+            
+            # Floating point
+            "float": "float",
+            "float32": "float",
+            "float64": "double",
+            "double": "double",
+        }
+        return cpp_types.get(dtype, "double")
     
     def compile_all(self) -> None:
         """

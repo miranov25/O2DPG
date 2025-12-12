@@ -233,6 +233,8 @@ class IRBuilder:
         self.inferrer = type_inferrer
         self.errors = error_collector or ErrorCollector()
         self._custom_functions: Dict[str, Dict] = {}
+        # Phase 11.1c: Cache for namespace resolution (positive results only)
+        self._namespace_cache: Dict[str, bool] = {}
     
     def register_function(self, name: str, cpp_name: str, 
                          return_type: IRTypeKind = None,
@@ -784,6 +786,26 @@ class IRBuilder:
             if namespace_info:
                 namespace, func_name = namespace_info
                 return self._build_namespace_call(namespace, func_name, node.args, ctx, node)
+            
+            # Phase 11.1c: Check if this looks like an unknown namespace call
+            # If the base name is not in schema and not resolved by ROOT, give helpful error
+            chain = self._collect_attribute_chain(node.func)
+            if chain and len(chain) >= 2:
+                base_name = chain[0]
+                if not self.inferrer.has_variable(base_name):
+                    # This looks like a namespace call but wasn't resolved
+                    raise IRError(
+                        IRErrorKind.REFLECTION_ERROR,
+                        f"Unknown symbol '{base_name}'.\n"
+                        f"Not found in schema or ROOT.\n"
+                        f"Did you forget to load the library?",
+                        suggestions=[
+                            f"ROOT.gSystem.Load('lib{base_name}')",
+                            f"ROOT.gInterpreter.ProcessLine('#include \"{base_name}.h\"')",
+                            f"Or add '{base_name}' to the schema if it's a variable",
+                        ],
+                        source_location=self._make_location(node, ctx),
+                    )
         
         # Get function name
         func_name = self._get_call_name(node.func)
@@ -898,17 +920,25 @@ class IRBuilder:
         """
         Extract namespace and function from chained attribute access.
         
-        Phase 11.1: Handles namespace detection for calls like:
+        Phase 11.1c: Uses ROOT reflection to find longest valid namespace prefix.
+        Schema variables take priority over namespaces.
+        
+        Handles:
         - TMath.Pi -> ("TMath", "Pi")
         - ROOT.Math.VectorUtil.DeltaPhi -> ("ROOT.Math.VectorUtil", "DeltaPhi")
+        - o2.tpc.TrackTPC.GetParam -> ("o2.tpc.TrackTPC", "GetParam") if loaded
         
         Returns None if this is not a namespace call (e.g., track.Pt()).
+        Raises IRError if symbol cannot be resolved in schema or ROOT.
         
         Args:
             node: AST Attribute node representing the call target
             
         Returns:
             Tuple of (namespace, function_name) or None
+            
+        Raises:
+            IRError: If base symbol not found in schema or ROOT
         """
         # Collect the chain: [ROOT, Math, VectorUtil, DeltaPhi]
         chain = []
@@ -942,30 +972,91 @@ class IRBuilder:
         for i in range(len(chain) - 1, 0, -1):
             namespace = ".".join(chain[:i])
             
-            # Check if this namespace is known (builtin or registered)
+            # Check if this namespace is known (builtin, ROOT reflection, or registered)
             if self._is_known_namespace(namespace):
                 # The function name is everything after the namespace
                 func_name = chain[i]
+                # Cache positive result
+                self._namespace_cache[namespace] = True
                 return (namespace, func_name)
         
-        # Unknown namespace - return None and let it fall through to method call
+        # Phase 11.1c: Unknown symbol - raise helpful error
+        # (Only if we got here via a call, not attribute access)
+        # We return None here and let the caller decide whether to error
+        # This preserves backward compatibility for non-call attribute access
+        return None
+    
+    def _collect_attribute_chain(self, node: ast.AST) -> Optional[List[str]]:
+        """
+        Collect the chain of names from an attribute access.
+        
+        Phase 11.1c: Helper for error messages.
+        
+        Args:
+            node: AST node (Name or Attribute)
+            
+        Returns:
+            List of names like ["TMath", "Sin"] or None if not a simple chain
+        """
+        chain = []
+        current = node
+        
+        while isinstance(current, ast.Attribute):
+            chain.append(current.attr)
+            current = current.value
+        
+        if isinstance(current, ast.Name):
+            chain.append(current.id)
+            chain.reverse()
+            return chain
+        
         return None
     
     def _is_known_namespace(self, namespace: str) -> bool:
         """
-        Check if namespace is known (builtin or user-registered).
+        Check if namespace is known (via ROOT reflection or fallback list).
         
-        Phase 11.1: Checks KNOWN_NAMESPACES constant.
-        Phase 11.2 will add user-registered namespace support.
+        Phase 11.1c: Dynamic namespace detection using ROOT reflection.
+        
+        Resolution order:
+        1. Check positive cache (fast path)
+        2. Try ROOT reflection via hasattr
+        3. Fallback to KNOWN_NAMESPACES (for non-ROOT environments)
+        
+        Only positive results are cached to allow library loading after
+        a failed lookup.
         
         Args:
-            namespace: Namespace string (e.g., "TMath", "ROOT.Math.VectorUtil")
+            namespace: Namespace string (e.g., "TMath", "ROOT.Math.VectorUtil", "o2.tpc")
             
         Returns:
             True if namespace is recognized
         """
-        from .constants import KNOWN_NAMESPACES
+        # Check cache first (positive results only)
+        if namespace in self._namespace_cache:
+            return True
         
+        # Try ROOT reflection
+        try:
+            import ROOT
+            parts = namespace.replace("::", ".").split(".")
+            obj = ROOT
+            
+            for part in parts:
+                if hasattr(obj, part):
+                    obj = getattr(obj, part)
+                else:
+                    # Chain broken - not fully resolvable via ROOT
+                    break
+            else:
+                # Successfully resolved entire chain - cache positive result
+                self._namespace_cache[namespace] = True
+                return True
+        except ImportError:
+            pass  # ROOT not available, fall through to KNOWN_NAMESPACES
+        
+        # Fallback to hardcoded list (for non-ROOT environments / mock tests)
+        from .constants import KNOWN_NAMESPACES
         if namespace in KNOWN_NAMESPACES:
             return True
         

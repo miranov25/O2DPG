@@ -34,8 +34,12 @@ class IRTypeKind(Enum):
     """Enumeration of IR type kinds."""
     Float32 = "float"
     Float64 = "double"
+    Int8 = "int8_t"        # Phase 11.1c: Added for dtype support
+    Int16 = "int16_t"      # Phase 11.1c: Added for dtype support
     Int32 = "int"
     Int64 = "long long"
+    UInt8 = "uint8_t"      # Phase 11.1c: Added for dtype support
+    UInt16 = "uint16_t"    # Phase 11.1c: Added for dtype support
     UInt32 = "unsigned int"
     UInt64 = "unsigned long"
     Bool = "bool"
@@ -88,8 +92,8 @@ class IRType:
         """Check if type is numeric (float or int)."""
         return self.kind in (
             IRTypeKind.Float32, IRTypeKind.Float64,
-            IRTypeKind.Int32, IRTypeKind.Int64,
-            IRTypeKind.UInt32, IRTypeKind.UInt64
+            IRTypeKind.Int8, IRTypeKind.Int16, IRTypeKind.Int32, IRTypeKind.Int64,
+            IRTypeKind.UInt8, IRTypeKind.UInt16, IRTypeKind.UInt32, IRTypeKind.UInt64
         )
     
     def is_float(self) -> bool:
@@ -99,17 +103,17 @@ class IRType:
     def is_int(self) -> bool:
         """Check if type is integer (signed or unsigned)."""
         return self.kind in (
-            IRTypeKind.Int32, IRTypeKind.Int64,
-            IRTypeKind.UInt32, IRTypeKind.UInt64
+            IRTypeKind.Int8, IRTypeKind.Int16, IRTypeKind.Int32, IRTypeKind.Int64,
+            IRTypeKind.UInt8, IRTypeKind.UInt16, IRTypeKind.UInt32, IRTypeKind.UInt64
         )
     
     def is_signed_int(self) -> bool:
         """Check if type is signed integer."""
-        return self.kind in (IRTypeKind.Int32, IRTypeKind.Int64)
+        return self.kind in (IRTypeKind.Int8, IRTypeKind.Int16, IRTypeKind.Int32, IRTypeKind.Int64)
     
     def is_unsigned_int(self) -> bool:
         """Check if type is unsigned integer."""
-        return self.kind in (IRTypeKind.UInt32, IRTypeKind.UInt64)
+        return self.kind in (IRTypeKind.UInt8, IRTypeKind.UInt16, IRTypeKind.UInt32, IRTypeKind.UInt64)
     
     def is_bool(self) -> bool:
         """Check if type is boolean."""
@@ -128,8 +132,12 @@ class IRType:
         widths = {
             IRTypeKind.Float32: 32,
             IRTypeKind.Float64: 64,
+            IRTypeKind.Int8: 8,
+            IRTypeKind.Int16: 16,
             IRTypeKind.Int32: 32,
             IRTypeKind.Int64: 64,
+            IRTypeKind.UInt8: 8,
+            IRTypeKind.UInt16: 16,
             IRTypeKind.UInt32: 32,
             IRTypeKind.UInt64: 64,
             IRTypeKind.Bool: 8,
@@ -309,34 +317,45 @@ CPP_TO_IR_TYPE: Dict[str, IRTypeKind] = {
     "Float_t": IRTypeKind.Float32,
     "Double_t": IRTypeKind.Float64,
     
+    # Phase 11.1c: Fixed-width integers
+    "int8_t": IRTypeKind.Int8,
+    "int16_t": IRTypeKind.Int16,
+    "int32_t": IRTypeKind.Int32,
+    "int64_t": IRTypeKind.Int64,
+    "uint8_t": IRTypeKind.UInt8,
+    "uint16_t": IRTypeKind.UInt16,
+    "uint32_t": IRTypeKind.UInt32,
+    "uint64_t": IRTypeKind.UInt64,
+    
     # Standard C++ signed integers
     "int": IRTypeKind.Int32,
     "long": IRTypeKind.Int64,
     "long long": IRTypeKind.Int64,
-    "short": IRTypeKind.Int32,  # Promote to Int32
-    "char": IRTypeKind.Int32,   # Promote to Int32
+    "short": IRTypeKind.Int16,      # Phase 11.1c: Map to Int16
+    "char": IRTypeKind.Int8,        # Phase 11.1c: Map to Int8
+    "signed char": IRTypeKind.Int8,
     
     # ROOT typedefs for signed integers
     "Int_t": IRTypeKind.Int32,
     "Long_t": IRTypeKind.Int64,
     "Long64_t": IRTypeKind.Int64,
-    "Short_t": IRTypeKind.Int32,
-    "Char_t": IRTypeKind.Int32,
+    "Short_t": IRTypeKind.Int16,    # Phase 11.1c: Map to Int16
+    "Char_t": IRTypeKind.Int8,      # Phase 11.1c: Map to Int8
     
     # Standard C++ unsigned integers
     "unsigned int": IRTypeKind.UInt32,
     "unsigned long": IRTypeKind.UInt64,
     "unsigned long long": IRTypeKind.UInt64,
-    "unsigned short": IRTypeKind.UInt32,
-    "unsigned char": IRTypeKind.UInt32,
+    "unsigned short": IRTypeKind.UInt16,   # Phase 11.1c: Map to UInt16
+    "unsigned char": IRTypeKind.UInt8,     # Phase 11.1c: Map to UInt8
     "size_t": IRTypeKind.UInt64,
     
     # ROOT typedefs for unsigned integers
     "UInt_t": IRTypeKind.UInt32,
     "ULong_t": IRTypeKind.UInt64,
     "ULong64_t": IRTypeKind.UInt64,
-    "UShort_t": IRTypeKind.UInt32,
-    "UChar_t": IRTypeKind.UInt32,
+    "UShort_t": IRTypeKind.UInt16,         # Phase 11.1c: Map to UInt16
+    "UChar_t": IRTypeKind.UInt8,           # Phase 11.1c: Map to UInt8
     
     # Boolean
     "bool": IRTypeKind.Bool,
@@ -347,8 +366,12 @@ CPP_TO_IR_TYPE: Dict[str, IRTypeKind] = {
 IR_TO_CPP_TYPE: Dict[IRTypeKind, str] = {
     IRTypeKind.Float32: "float",
     IRTypeKind.Float64: "double",
+    IRTypeKind.Int8: "int8_t",
+    IRTypeKind.Int16: "int16_t",
     IRTypeKind.Int32: "int",
     IRTypeKind.Int64: "long long",
+    IRTypeKind.UInt8: "uint8_t",
+    IRTypeKind.UInt16: "uint16_t",
     IRTypeKind.UInt32: "unsigned int",
     IRTypeKind.UInt64: "unsigned long long",
     IRTypeKind.Bool: "bool",
