@@ -2,8 +2,9 @@
 
 ## Overview
 
-**Total Test Files**: 44 (42 Python + 2 C++)
-**Total Tests**: ~1190+
+**Test Files**: 40 (38 Python + 2 C++)
+**Supporting Files**: 4 (conftest.py, __init__.py, run_tests.sh, tests_README.md)
+**Total Tests**: ~1183 (as of Phase 6.8e/c)
 **Last Updated**: 2025-12-11 (Phase 6.8e/c)
 
 ## Running Tests
@@ -72,8 +73,8 @@ pytest tests --ignore=tests/test_draw_invariance.py --ignore=tests/test_draw_cha
 
 | File | Tests | Phase | Description |
 |------|-------|-------|-------------|
-| `test_draw_invariance.py` | 17 | 6.8e | Draw with known mathematical invariants |
-| `test_draw_chain_integration.py` | 26 | 6.8c | Draw across all Phase 7 combinations |
+| `test_draw_invariance.py` | 17 | 6.8e | Exact verification: y_derived = 2*x |
+| `test_draw_chain_integration.py` | 26 | 6.8c | All Phase 7 loading modes × draw() |
 | `test_draw_lazy_integration.py` | 22 | 6/7.3 | Draw with lazy loading |
 | `test_ttree_draw_subframe.py` | 10 | 3A | TTree::Draw with friend trees |
 
@@ -132,7 +133,7 @@ pytest tests --ignore=tests/test_draw_invariance.py --ignore=tests/test_draw_cha
 | Lazy Loading | 4 | 189 | 7 |
 | Performance Optimization | 4 | ~100 | 8-9 |
 | Infrastructure | 11 | ~195 | Various |
-| **Total** | **40** | **~1157** | |
+| **Total** | **40** | **~1183** | |
 
 ---
 
@@ -176,13 +177,13 @@ Validates TTree::Draw compatibility from C++ side with:
 
 ---
 
-## Known Issues
+## Known Bugs
 
-### xfail Tests (Expected Failures)
+| Bug ID | Test | File | Status | Description |
+|--------|------|------|--------|-------------|
+| BUG-2025-12-11 | `test_draw_with_subframe` | `test_draw_chain_integration.py` | ✅ Fixed (6.8a) | draw() passes subframe names to ensure_branches(). Fixed by filtering subframe names. |
 
-| Test | File | Reason |
-|------|------|--------|
-| `test_draw_with_subframe` | `test_draw_chain_integration.py` | BUG-2025-12-11: draw() passes subframe names to ensure_branches(). Fix in Phase 6.8a |
+Tests marked `@pytest.mark.xfail` are known issues with documented fix phases. When the fix is implemented, remove the xfail marker and verify the test passes.
 
 ---
 

@@ -598,15 +598,10 @@ class TestDrawIntegration:
         
         plt.close(fig)
     
-    @pytest.mark.xfail(
-        reason="BUG-2025-12-11: draw() in lazy mode treats subframe names as TTree branches. Fix in Phase 6.8a"
-    )
     def test_draw_with_subframe(self, single_file):
         """Draw with subframe join.
         
-        KNOWN BUG: draw() calls ensure_branches(['SectorCalib']) but SectorCalib
-        is a subframe name, not a TTree branch. LazyTreeReader correctly raises
-        ValueError. Fix: Phase 6.8a should filter subframe names from branch list.
+        Phase 6.8a fixed: draw() now filters subframe names from ensure_branches().
         """
         import matplotlib.pyplot as plt
         import uproot

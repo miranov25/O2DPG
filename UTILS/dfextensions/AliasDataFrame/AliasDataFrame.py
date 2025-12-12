@@ -9864,6 +9864,11 @@ class AliasDataFrame:
             )
             # Load any branches not already loaded
             branches_to_load = required_branches - self._lazy_reader.loaded_branches
+            
+            # Phase 6.8a fix: Filter out subframe names (they are not TTree branches)
+            all_subframes = set(self._subframes.subframes.keys()) | set(getattr(self, '_subframe_readers', {}).keys())
+            branches_to_load = branches_to_load - all_subframes
+            
             if branches_to_load:
                 self.ensure_branches(list(branches_to_load))
         # =================================================================
@@ -10016,6 +10021,11 @@ class AliasDataFrame:
             
             # Load all required branches at once
             branches_to_load = all_required - self._lazy_reader.loaded_branches
+            
+            # Phase 6.8a fix: Filter out subframe names (they are not TTree branches)
+            all_subframes = set(self._subframes.subframes.keys()) | set(getattr(self, '_subframe_readers', {}).keys())
+            branches_to_load = branches_to_load - all_subframes
+            
             if branches_to_load:
                 if verbose:
                     print(f"Loading {len(branches_to_load)} branches: {sorted(branches_to_load)}")
