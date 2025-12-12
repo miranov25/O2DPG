@@ -24,6 +24,8 @@ __all__ = [
     'KNOWN_NAMESPACES',
     'NAMESPACE_HEADERS',
     'NAMESPACE_FUNCTION_TYPES',
+    # Phase 11.1b: Scalar-to-vector broadcasting
+    'VECTORIZED_NAMESPACES',
 ]
 
 
@@ -344,4 +346,17 @@ NAMESPACE_FUNCTION_TYPES: Dict[str, Dict[str, str]] = {
         "Angle": "double",
         "InvariantMass": "double",
     },
+}
+
+
+# =============================================================================
+# Phase 11.1b: Scalar-to-Vector Broadcasting
+# =============================================================================
+
+# Namespaces that already support vectorized operations (don't wrap in loop)
+# All other namespaces are treated as scalar-only by default
+VECTORIZED_NAMESPACES: Set[str] = {
+    "ROOT.VecOps",      # Already handles RVec natively
+    "ROOT::VecOps",     # C++ notation variant
+    "std",              # std:: math functions use ADL to find ROOT::VecOps versions
 }

@@ -64,7 +64,7 @@ from .ir_nodes import (
     SubscriptNode, SliceNode, UnaryOp, BinaryOp, RVecSliceNode, SliceKind
 )
 from .ir_errors import IRError, IRErrorKind
-from .constants import NAMESPACE_HEADERS  # Phase 11.1
+from .constants import NAMESPACE_HEADERS, VECTORIZED_NAMESPACES, NAMESPACE_FUNCTION_TYPES  # Phase 11.1/11.1b
 
 __all__ = [
     'CppCodeGenerator',
@@ -694,10 +694,171 @@ class CppCodeGenerator:
     
     def _visit_call(self, node: CallNode) -> str:
         """Generate C++ for function call."""
+        # Phase 11.1b: Check if we need to broadcast scalar namespace function over vectors
+        if self._needs_scalar_broadcast(node):
+            return self._generate_broadcast_loop(node)
+        
         args = ", ".join(self._visit(arg) for arg in node.args)
         cpp_name = self._cpp_function_name(node)
         
         return f"{cpp_name}({args})"
+    
+    def _needs_scalar_broadcast(self, node: CallNode) -> bool:
+        """
+        Check if namespace call needs loop broadcasting.
+        
+        Phase 11.1b: Returns True if:
+        - The function has a namespace (e.g., TMath::)
+        - The namespace is NOT in VECTORIZED_NAMESPACES (which handle RVec natively)
+        - At least one argument has rank > 0 (is a vector)
+        
+        Args:
+            node: CallNode to check
+            
+        Returns:
+            True if we need to wrap in a loop for broadcasting
+        """
+        # Only applies to namespace functions
+        if not node.namespace:
+            return False
+        
+        # Vectorized namespaces handle RVec natively - no loop needed
+        # Check both dot and :: notation
+        ns_dot = node.namespace.replace("::", ".")
+        ns_cpp = node.namespace.replace(".", "::")
+        if ns_dot in VECTORIZED_NAMESPACES or ns_cpp in VECTORIZED_NAMESPACES:
+            return False
+        
+        # If any argument is a vector, we need to broadcast
+        return any(arg.rank > 0 for arg in node.args)
+    
+    def _generate_broadcast_loop(self, node: CallNode) -> str:
+        """
+        Generate loop to broadcast scalar namespace function over vectors.
+        
+        Phase 11.1b: Wraps scalar functions (like TMath::Sqrt) in a loop
+        when applied to RVec arguments. Vector arguments are hoisted to
+        local temporaries to ensure O(n) complexity even with nested broadcasts.
+        
+        Example:
+            TMath.Sqrt(pt) where pt is RVec<double>
+            Generates:
+            [&]() {
+                auto _arg0 = pt;
+                ROOT::RVec<double> result;
+                size_t n = _arg0.size();
+                result.reserve(n);
+                for (size_t i = 0; i < n; ++i) {
+                    result.push_back(TMath::Sqrt(_arg0[i]));
+                }
+                return result;
+            }()
+            
+        For nested broadcasts like TMath.Sqrt(TMath.Abs(pt)):
+            [&]() {
+                auto _arg0 = [inner broadcast]();  // Computed ONCE
+                ROOT::RVec<double> result;
+                size_t n = _arg0.size();
+                ...
+                    result.push_back(TMath::Sqrt(_arg0[i]));
+                ...
+            }()
+        
+        Args:
+            node: CallNode with namespace function and vector args
+            
+        Returns:
+            C++ code with loop-based broadcasting (O(n) guaranteed)
+        """
+        # Get the C++ function name (with namespace)
+        cpp_name = self._cpp_function_name(node)
+        
+        # Determine return type
+        return_type = self._get_broadcast_return_type(node)
+        
+        # Phase 1: Hoist all vector-valued arguments to temporaries
+        # This ensures nested broadcasts are computed ONCE, not N times
+        hoisted_vars = []
+        call_args = []
+        size_exprs = []
+        
+        for i, arg in enumerate(node.args):
+            arg_code = self._visit(arg)
+            
+            if arg.rank > 0:
+                # Hoist vector argument to temporary (computed ONCE)
+                temp_name = f"_arg{i}"
+                hoisted_vars.append(f"auto {temp_name} = {arg_code};")
+                call_args.append(f"{temp_name}[i]")
+                size_exprs.append(f"{temp_name}.size()")
+            else:
+                # Scalar used directly (no hoisting needed)
+                call_args.append(arg_code)
+        
+        if not size_exprs:
+            # Should not happen if _needs_scalar_broadcast returned True
+            raise RuntimeError("_generate_broadcast_loop called with no vector args")
+        
+        # Phase 2: Build size expression with min() for safety
+        if len(size_exprs) == 1:
+            size_expr = size_exprs[0]
+        else:
+            # Multiple vectors: chain std::min for safety
+            size_expr = size_exprs[0]
+            for s in size_exprs[1:]:
+                size_expr = f"std::min({size_expr}, {s})"
+        
+        # Phase 3: Generate the loop
+        func_call = f"{cpp_name}({', '.join(call_args)})"
+        hoisted_code = "\n        ".join(hoisted_vars)
+        
+        return f"""[&]() {{
+        {hoisted_code}
+        {return_type} result;
+        size_t n = {size_expr};
+        result.reserve(n);
+        for (size_t i = 0; i < n; ++i) {{
+            result.push_back({func_call});
+        }}
+        return result;
+    }}()"""
+    
+    def _get_broadcast_return_type(self, node: CallNode) -> str:
+        """
+        Get C++ return type for broadcasted function.
+        
+        Phase 11.1b: Looks up scalar return type from NAMESPACE_FUNCTION_TYPES
+        and wraps it in RVec<>.
+        
+        Args:
+            node: CallNode being broadcasted
+            
+        Returns:
+            C++ type string like "ROOT::RVec<double>"
+        """
+        # Get scalar return type from NAMESPACE_FUNCTION_TYPES
+        scalar_type = "double"  # Default
+        
+        # Convert namespace to dot notation for lookup
+        ns_dot = node.namespace.replace("::", ".") if node.namespace else ""
+        
+        if ns_dot in NAMESPACE_FUNCTION_TYPES:
+            if node.func in NAMESPACE_FUNCTION_TYPES[ns_dot]:
+                type_str = NAMESPACE_FUNCTION_TYPES[ns_dot][node.func]
+                # Map type strings to C++ types
+                type_map = {
+                    "double": "double",
+                    "float": "float",
+                    "int": "int",
+                    "bool": "bool",
+                    "Int_t": "int",
+                    "Double_t": "double",
+                    "Float_t": "float",
+                    "Bool_t": "bool",
+                }
+                scalar_type = type_map.get(type_str, type_str)
+        
+        return f"ROOT::RVec<{scalar_type}>"
     
     def _visit_method_call(self, node: MethodCallNode) -> str:
         """
@@ -1283,6 +1444,13 @@ class CppCodeGenerator:
                         if parent in NAMESPACE_HEADERS:
                             headers.add(NAMESPACE_HEADERS[parent])
                             break
+                    
+                    # Phase 11.1b: Add <algorithm> if broadcasting with multiple vectors
+                    if self._needs_scalar_broadcast(node):
+                        vec_count = sum(1 for arg in node.args if arg.rank > 0)
+                        if vec_count > 1:
+                            headers.add("<algorithm>")  # for std::min
+                        needs_rvec = True  # Broadcasting produces RVec
             
             elif isinstance(node, BinaryOpNode):
                 if node.op == BinaryOp.POW:
