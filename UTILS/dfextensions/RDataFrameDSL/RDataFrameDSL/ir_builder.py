@@ -777,7 +777,14 @@ class IRBuilder:
         )
     
     def _visit_Call(self, node: ast.Call, ctx: BuildContext) -> IRNode:
-        """Handle function calls: sqrt(x), TMath.Gaus(x, 0, 1)."""
+        """Handle function calls: sqrt(x), TMath.Gaus(x, 0, 1), TMath.Pi()."""
+        # Phase 11.1: Check if this is a namespace call (e.g., TMath.Pi())
+        if isinstance(node.func, ast.Attribute):
+            namespace_info = self._extract_namespace_chain(node.func)
+            if namespace_info:
+                namespace, func_name = namespace_info
+                return self._build_namespace_call(namespace, func_name, node.args, ctx, node)
+        
         # Get function name
         func_name = self._get_call_name(node.func)
         
@@ -882,6 +889,188 @@ class IRBuilder:
             return KNOWN_FUNCTIONS[name]
         
         return None
+    
+    # =========================================================================
+    # Phase 11.1: Namespace Call Support
+    # =========================================================================
+    
+    def _extract_namespace_chain(self, node: ast.Attribute) -> Optional[Tuple[str, str]]:
+        """
+        Extract namespace and function from chained attribute access.
+        
+        Phase 11.1: Handles namespace detection for calls like:
+        - TMath.Pi -> ("TMath", "Pi")
+        - ROOT.Math.VectorUtil.DeltaPhi -> ("ROOT.Math.VectorUtil", "DeltaPhi")
+        
+        Returns None if this is not a namespace call (e.g., track.Pt()).
+        
+        Args:
+            node: AST Attribute node representing the call target
+            
+        Returns:
+            Tuple of (namespace, function_name) or None
+        """
+        # Collect the chain: [ROOT, Math, VectorUtil, DeltaPhi]
+        chain = []
+        current = node
+        
+        while isinstance(current, ast.Attribute):
+            chain.append(current.attr)
+            current = current.value
+        
+        if isinstance(current, ast.Name):
+            chain.append(current.id)
+        else:
+            return None  # Complex expression, not a simple namespace
+        
+        chain.reverse()  # Now: [ROOT, Math, VectorUtil, DeltaPhi]
+        
+        if len(chain) < 2:
+            return None
+        
+        # The last element is the function, rest is namespace
+        func_name = chain[-1]
+        
+        # Check if base name is in schema (then it's an object method, not namespace)
+        base_name = chain[0]
+        if self.inferrer.has_variable(base_name):
+            return None  # This is track.Pt(), not a namespace
+        
+        # Try progressively longer namespace prefixes (longest match first)
+        # For [ROOT, Math, VectorUtil, DeltaPhi]:
+        # Try: ROOT.Math.VectorUtil, ROOT.Math, ROOT
+        for i in range(len(chain) - 1, 0, -1):
+            namespace = ".".join(chain[:i])
+            
+            # Check if this namespace is known (builtin or registered)
+            if self._is_known_namespace(namespace):
+                # The function name is everything after the namespace
+                func_name = chain[i]
+                return (namespace, func_name)
+        
+        # Unknown namespace - return None and let it fall through to method call
+        return None
+    
+    def _is_known_namespace(self, namespace: str) -> bool:
+        """
+        Check if namespace is known (builtin or user-registered).
+        
+        Phase 11.1: Checks KNOWN_NAMESPACES constant.
+        Phase 11.2 will add user-registered namespace support.
+        
+        Args:
+            namespace: Namespace string (e.g., "TMath", "ROOT.Math.VectorUtil")
+            
+        Returns:
+            True if namespace is recognized
+        """
+        from .constants import KNOWN_NAMESPACES
+        
+        if namespace in KNOWN_NAMESPACES:
+            return True
+        
+        # Phase 11.2: Check user-registered namespaces (guard for now)
+        if hasattr(self, '_registry') and self._registry:
+            if self._registry.is_registered_namespace(namespace):
+                return True
+        
+        return False
+    
+    def _build_namespace_call(self, namespace: str, func_name: str,
+                              args: List[ast.expr], ctx: BuildContext,
+                              node: ast.AST) -> CallNode:
+        """
+        Build a CallNode for a namespace function call.
+        
+        Phase 11.1: Creates CallNode with namespace information.
+        
+        Args:
+            namespace: Namespace string (e.g., "TMath")
+            func_name: Function name (e.g., "Pi", "Sin")
+            args: AST argument nodes
+            ctx: Build context
+            node: Original AST node for location info
+            
+        Returns:
+            CallNode with namespace and type information
+        """
+        # Visit arguments
+        visited_args = [self._visit(arg, ctx) for arg in args]
+        
+        # Get return type from registry
+        return_type = self._get_namespace_function_type(namespace, func_name)
+        
+        # Phase 11.1 fix: Propagate rank from arguments (enables RVec broadcasting)
+        # TMath.Sqrt(pt) where pt is RVec<double> → returns RVec<double>
+        arg_rank = max((arg.rank for arg in visited_args), default=0)
+        arg_jagged = any(arg.is_jagged for arg in visited_args)
+        
+        # Convert namespace to C++ format for cpp_name
+        cpp_namespace = namespace.replace(".", "::")
+        cpp_name = f"{cpp_namespace}::{func_name}"
+        
+        # Get headers for this namespace
+        from .constants import NAMESPACE_HEADERS
+        headers = []
+        if namespace in NAMESPACE_HEADERS:
+            headers.append(NAMESPACE_HEADERS[namespace])
+        # Check parent namespaces too
+        parts = namespace.split(".")
+        for i in range(len(parts), 0, -1):
+            parent = ".".join(parts[:i])
+            if parent in NAMESPACE_HEADERS:
+                headers.append(NAMESPACE_HEADERS[parent])
+                break
+        
+        return CallNode(
+            func=func_name,
+            args=visited_args,
+            namespace=cpp_namespace,  # Store as C++ style (TMath, ROOT::Math)
+            cpp_name=cpp_name,
+            dtype=return_type,
+            rank=arg_rank,  # Propagate rank for broadcasting
+            is_jagged=arg_jagged,
+            headers=headers,
+            source_location=self._make_location(node, ctx),
+        )
+    
+    def _get_namespace_function_type(self, namespace: str, func_name: str) -> IRType:
+        """
+        Get return type for namespace function.
+        
+        Phase 11.1: Uses NAMESPACE_FUNCTION_TYPES constant.
+        
+        Args:
+            namespace: Namespace string (e.g., "TMath")
+            func_name: Function name (e.g., "Sin", "Pi")
+            
+        Returns:
+            IRType for the function return value
+        """
+        from .constants import NAMESPACE_FUNCTION_TYPES
+        
+        # Check builtin types
+        if namespace in NAMESPACE_FUNCTION_TYPES:
+            if func_name in NAMESPACE_FUNCTION_TYPES[namespace]:
+                type_str = NAMESPACE_FUNCTION_TYPES[namespace][func_name]
+                if type_str == "double":
+                    return IRType(IRTypeKind.Float64)
+                elif type_str == "int":
+                    return IRType(IRTypeKind.Int32)
+                elif type_str == "bool":
+                    return IRType(IRTypeKind.Bool)
+                # Add more mappings as needed
+                return IRType(IRTypeKind.Float64)
+        
+        # Phase 11.2: Check user-registered functions
+        if hasattr(self, '_registry') and self._registry:
+            func_info = self._registry.lookup(f"{namespace}.{func_name}")
+            if func_info:
+                # Parse return type from func_info
+                return IRType(IRTypeKind.Float64)  # Placeholder
+        
+        # Default to double for unknown functions
+        return IRType(IRTypeKind.Float64)
     
     def _visit_method_call(self, node: ast.Call, ctx: BuildContext) -> IRNode:
         """Handle method calls: track.getX(), obj.Method(args), tracks.Pt()."""

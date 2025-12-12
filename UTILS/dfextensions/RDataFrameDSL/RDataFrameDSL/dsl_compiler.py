@@ -158,6 +158,62 @@ class DSLCompiler:
         self._functions: Dict[str, GeneratedFunction] = {}
         self.library = FunctionLibrary()
     
+    def _preprocess_expression(self, expr: str) -> str:
+        """
+        Convert C++ :: notation to Python dot notation.
+        
+        Phase 11.1: Handles namespace syntax preprocessing before AST parsing.
+        
+        Handles:
+        - TMath::Pi() -> TMath.Pi()
+        - ROOT::Math::VectorUtil::DeltaPhi() -> ROOT.Math.VectorUtil.DeltaPhi()
+        
+        Skips:
+        - String literals to avoid corrupting "Error::Message"
+        - Square brackets to preserve slice syntax like pt[::-1]
+        
+        Args:
+            expr: DSL expression potentially with C++ :: notation
+            
+        Returns:
+            Expression with :: replaced by . (except in strings and brackets)
+        """
+        result = []
+        i = 0
+        in_string = False
+        string_char = None
+        bracket_depth = 0  # Track [] nesting for slice syntax
+        
+        while i < len(expr):
+            char = expr[i]
+            
+            # Track string literals
+            if char in ('"', "'") and (i == 0 or expr[i-1] != '\\'):
+                if not in_string:
+                    in_string = True
+                    string_char = char
+                elif char == string_char:
+                    in_string = False
+                    string_char = None
+            
+            # Track square brackets (for slice syntax like [::-1])
+            if not in_string:
+                if char == '[':
+                    bracket_depth += 1
+                elif char == ']':
+                    bracket_depth -= 1
+            
+            # Replace :: with . only outside strings AND outside brackets
+            if not in_string and bracket_depth == 0 and expr[i:i+2] == '::':
+                result.append('.')
+                i += 2
+                continue
+            
+            result.append(char)
+            i += 1
+        
+        return ''.join(result)
+    
     def define(self, name: str, expression: str) -> 'DSLCompiler':
         """
         Define a new column from a DSL expression.
@@ -198,9 +254,12 @@ class DSLCompiler:
                 suggestions=["Each column name must be unique"]
             )
         
+        # Phase 11.1: Preprocess C++ :: syntax to Python dot syntax
+        preprocessed = self._preprocess_expression(expression)
+        
         # Parse and generate
         builder = IRBuilder(self._inferrer)
-        ir = builder.build(expression)
+        ir = builder.build(preprocessed)
         
         # Use unique suffix to avoid collisions in parallel execution
         unique_name = f"{name}_{self._unique_id}"

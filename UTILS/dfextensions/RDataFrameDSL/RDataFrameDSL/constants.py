@@ -20,6 +20,10 @@ __all__ = [
     'FUNCTION_CPP_NAMES',
     'CLASS_HEADERS',
     'SCALAR_TYPES',
+    # Phase 11.1: Namespace support
+    'KNOWN_NAMESPACES',
+    'NAMESPACE_HEADERS',
+    'NAMESPACE_FUNCTION_TYPES',
 ]
 
 
@@ -273,3 +277,71 @@ REFLECTION_HEADERS: List[str] = [
     "<TClass.h>",
     "<TDataMember.h>",
 ]
+
+
+# =============================================================================
+# Phase 11.1: Namespace Support
+# =============================================================================
+
+# Known ROOT/C++ namespaces (builtins)
+KNOWN_NAMESPACES: Set[str] = {
+    "TMath",
+    "ROOT",
+    "ROOT.Math",
+    "ROOT.Math.VectorUtil",
+    "ROOT.VecOps",
+    "std",
+}
+
+# Headers required for namespaces
+NAMESPACE_HEADERS: Dict[str, str] = {
+    "TMath": "<TMath.h>",
+    "ROOT.Math": "<Math/Vector4D.h>",
+    "ROOT.Math.VectorUtil": "<Math/VectorUtil.h>",
+    "ROOT.VecOps": "<ROOT/RVec.hxx>",
+    "std": "<cmath>",
+}
+
+# Return types for common namespace functions (explicit, no guessing)
+NAMESPACE_FUNCTION_TYPES: Dict[str, Dict[str, str]] = {
+    "TMath": {
+        "Pi": "double",
+        "E": "double",
+        "Sin": "double",
+        "Cos": "double",
+        "Tan": "double",
+        "ASin": "double",
+        "ACos": "double",
+        "ATan": "double",
+        "ATan2": "double",
+        "Sqrt": "double",
+        "Exp": "double",
+        "Log": "double",
+        "Log10": "double",
+        "Abs": "double",
+        "Power": "double",
+        "Min": "double",
+        "Max": "double",
+        "Sign": "double",
+        "Gaus": "double",
+        "BreitWigner": "double",
+        "Landau": "double",
+        "TwoPi": "double",
+        "PiOver2": "double",
+        "PiOver4": "double",
+        "DegToRad": "double",
+        "RadToDeg": "double",
+        "Hypot": "double",
+        "Range": "double",
+        "Floor": "double",
+        "Ceil": "double",
+        "Nint": "int",
+    },
+    "ROOT.Math.VectorUtil": {
+        "DeltaPhi": "double",
+        "DeltaR": "double",
+        "CosTheta": "double",
+        "Angle": "double",
+        "InvariantMass": "double",
+    },
+}

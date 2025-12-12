@@ -64,6 +64,7 @@ from .ir_nodes import (
     SubscriptNode, SliceNode, UnaryOp, BinaryOp, RVecSliceNode, SliceKind
 )
 from .ir_errors import IRError, IRErrorKind
+from .constants import NAMESPACE_HEADERS  # Phase 11.1
 
 __all__ = [
     'CppCodeGenerator',
@@ -1201,8 +1202,21 @@ class CppCodeGenerator:
         # === PHASE 9: For RVec operations, use unqualified names to enable ADL ===
         # ROOT provides vectorized functions like sqrt, sin, cos via ROOT::VecOps
         # ADL (Argument Dependent Lookup) finds them when arguments are ROOT::RVec
+        # Note: This applies to std:: functions but NOT TMath:: (which need explicit namespace)
         if node.rank > 0:
-            # Use unqualified name for ADL with RVec
+            # Phase 11.1: For non-std namespace functions (like TMath::Sin), preserve the namespace
+            # cpp_name contains full qualified name for namespace functions
+            is_std_function = (node.namespace == "std" or 
+                              (node.cpp_name and node.cpp_name.startswith("std::")))
+            
+            if not is_std_function and (node.namespace or node.cpp_name):
+                # Non-std namespace function - use cpp_name which has proper qualification
+                if node.cpp_name:
+                    return node.cpp_name
+                if node.namespace:
+                    return f"{node.namespace}::{node.func}"
+            
+            # Standard math functions - use unqualified name for ADL
             func_name = node.func
             if "." in func_name:
                 func_name = func_name.replace(".", "::")
@@ -1211,8 +1225,7 @@ class CppCodeGenerator:
         
         # Check custom cpp_name first - it takes priority
         if node.cpp_name:
-            # cpp_name already contains full qualified name (e.g., "std::sqrt")
-            # Don't add namespace again even if node.namespace is set
+            # cpp_name already contains full qualified name (e.g., "std::sqrt", "TMath::Sin")
             return node.cpp_name
         
         # Check if it's a namespaced function (e.g., TMath.Gaus)
@@ -1256,6 +1269,20 @@ class CppCodeGenerator:
                 # Add headers from node itself
                 if node.headers:
                     headers.update(node.headers)
+                
+                # Phase 11.1: Add namespace headers
+                if node.namespace:
+                    # Convert C++ namespace back to dot notation for lookup
+                    ns_dot = node.namespace.replace("::", ".")
+                    if ns_dot in NAMESPACE_HEADERS:
+                        headers.add(NAMESPACE_HEADERS[ns_dot])
+                    # Check parent namespaces
+                    parts = ns_dot.split(".")
+                    for i in range(len(parts), 0, -1):
+                        parent = ".".join(parts[:i])
+                        if parent in NAMESPACE_HEADERS:
+                            headers.add(NAMESPACE_HEADERS[parent])
+                            break
             
             elif isinstance(node, BinaryOpNode):
                 if node.op == BinaryOp.POW:
