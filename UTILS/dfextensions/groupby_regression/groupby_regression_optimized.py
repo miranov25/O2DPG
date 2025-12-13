@@ -13,6 +13,172 @@ import logging
 from typing import Union, List, Tuple, Callable, Optional
 from joblib import Parallel, delayed
 from sklearn.linear_model import LinearRegression, HuberRegressor
+import re
+
+
+# ============================================================================
+# PHASE 12.4a: METADATA EXPORT FUNCTIONS
+# ============================================================================
+
+_SAFE_NAME_PATTERN = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+
+
+def _validate_column_names(columns, context=""):
+    """
+    Validate that column names are safe for formula generation.
+    
+    Raises ValueError if any column name contains unsafe characters.
+    """
+    for name in columns:
+        if not _SAFE_NAME_PATTERN.match(name):
+            raise ValueError(
+                f"Column name '{name}' is not safe for formula generation{context}. "
+                f"Use only letters, digits, and underscores, starting with letter or underscore."
+            )
+
+
+def _build_prediction_formula(target, linear_columns, suffix, fit_intercept):
+    """
+    Generate prediction formula string.
+    
+    Examples:
+        >>> _build_prediction_formula('dyC2', ['rrel', 'rrel2'], '_Fit', True)
+        'dyC2_intercept_Fit + dyC2_slope_rrel_Fit*rrel + dyC2_slope_rrel2_Fit*rrel2'
+    
+    Raises:
+        ValueError: If fit_intercept=False and linear_columns is empty
+                    (would produce invalid empty formula)
+    """
+    terms = []
+    
+    if fit_intercept:
+        terms.append(f"{target}_intercept{suffix}")
+    
+    for col in linear_columns:
+        terms.append(f"{target}_slope_{col}{suffix}*{col}")
+    
+    if not terms:
+        raise ValueError(
+            f"Cannot build prediction formula for '{target}': "
+            f"fit_intercept=False and no linear_columns provided. "
+            f"At least one predictor or intercept is required."
+        )
+    
+    return " + ".join(terms)
+
+
+def _build_residual_formula(target, prediction_formula):
+    """Generate residual formula: target - prediction."""
+    return f"{target} - ({prediction_formula})"
+
+
+def _build_pull_formula(residual_formula, error_column):
+    """Generate pull formula: residual / error."""
+    return f"({residual_formula}) / {error_column}"
+
+
+def _build_fit_metadata(
+    fit_columns,
+    linear_columns,
+    suffix,
+    fit_intercept,
+    gb_columns,
+    weights_column=None,
+    median_columns=None,
+    min_stat=3,
+    diag=False,
+    diag_prefix="diag_",
+    fit_type="linear",
+):
+    """
+    Build complete metadata dict for fit results.
+    
+    Returns dict with formulas, column categorizations, and parameters.
+    """
+    # Validate column names (strict - raises on invalid)
+    _validate_column_names(fit_columns, " in fit_columns")
+    _validate_column_names(linear_columns, " in linear_columns")
+    
+    # Initialize metadata structure
+    metadata = {
+        'version': '1.0',
+        'formulas': {},
+        'residual_formulas': {},
+        'pull_formulas': {},
+        'columns': {
+            'gb_columns': list(gb_columns),
+            'fit_columns': list(fit_columns),
+            'linear_columns': list(linear_columns),
+            'coefficients': {},
+            'errors': {},
+            'quality': {},
+            'diagnostics': [],
+            'medians': [],
+        },
+        'parameters': {
+            'suffix': suffix,
+            'fit_intercept': fit_intercept,
+            'min_stat': min_stat,
+            'fit_type': fit_type,
+            'weights_column': weights_column,
+            'pull_default': 'rms',
+        },
+    }
+    
+    # Build formulas for each target
+    for target in fit_columns:
+        # Prediction formula
+        pred_formula = _build_prediction_formula(
+            target, linear_columns, suffix, fit_intercept
+        )
+        
+        # Residual formula
+        resid_formula = _build_residual_formula(target, pred_formula)
+        
+        # Pull formulas (both RMS and MAD based)
+        rms_col = f"{target}_rms{suffix}"
+        mad_col = f"{target}_mad{suffix}"
+        
+        pull_rms = _build_pull_formula(resid_formula, rms_col)
+        pull_mad = _build_pull_formula(resid_formula, f"({mad_col} * 1.4826)")
+        
+        # Store formulas
+        metadata['formulas'][f"{target}_pred{suffix}"] = pred_formula
+        metadata['residual_formulas'][f"{target}_delta{suffix}"] = resid_formula
+        metadata['pull_formulas'][f"{target}_pull{suffix}"] = pull_rms
+        metadata['pull_formulas'][f"{target}_pull_mad{suffix}"] = pull_mad
+        
+        # Build coefficient column names
+        coef_cols = []
+        err_cols = []
+        
+        if fit_intercept:
+            coef_cols.append(f"{target}_intercept{suffix}")
+            err_cols.append(f"{target}_intercept_err{suffix}")
+        
+        for col in linear_columns:
+            coef_cols.append(f"{target}_slope_{col}{suffix}")
+            err_cols.append(f"{target}_slope_{col}_err{suffix}")
+        
+        metadata['columns']['coefficients'][target] = coef_cols
+        metadata['columns']['errors'][target] = err_cols
+        metadata['columns']['quality'][target] = [rms_col, mad_col]
+    
+    # Median columns (if provided)
+    if median_columns:
+        metadata['columns']['medians'] = [f"{col}{suffix}" for col in median_columns]
+    
+    # Diagnostic columns (if enabled)
+    if diag:
+        metadata['columns']['diagnostics'] = [
+            f"{diag_prefix}n_total{suffix}",
+            f"{diag_prefix}n_valid{suffix}",
+            f"{diag_prefix}n_filtered{suffix}",
+            f"{diag_prefix}cond_xtx{suffix}",
+            f"{diag_prefix}status{suffix}",
+        ]
+    
+    return metadata
 
 
 # ============================================================================
@@ -511,6 +677,7 @@ def make_parallel_fit_v3(
     diag: bool = True,
     diag_prefix: str = "diag_",
     min_stat: Union[int, List[int]] = 3,
+    return_metadata: bool = False,
 ):
     """
     Phase 3 – High-performance NumPy implementation with numerical stability.
@@ -555,13 +722,30 @@ def make_parallel_fit_v3(
         Prefix for diagnostic columns
     min_stat : int or list[int], default=3
         Minimum number of points per group
+    return_metadata : bool, default=False
+        If True, return a third value containing metadata with auto-generated
+        formulas for predictions, residuals, and pulls.
         
     Returns
     -------
-    df_out : pd.DataFrame
-        Copy of input (with predictions if addPrediction=True)
-    dfGB : pd.DataFrame
-        Per-group fit results with columns:
+    If return_metadata=False (default):
+        df_out : pd.DataFrame
+            Copy of input (with predictions if addPrediction=True)
+        dfGB : pd.DataFrame
+            Per-group fit results
+    If return_metadata=True:
+        df_out : pd.DataFrame
+        dfGB : pd.DataFrame
+        metadata : dict
+            Auto-generated formulas and column categorizations with keys:
+            - version: Schema version ('1.0')
+            - formulas: Prediction formula expressions
+            - residual_formulas: Delta formula expressions
+            - pull_formulas: Pull formula expressions (RMS and MAD based)
+            - columns: Categorized output column names
+            - parameters: Fit settings for reproducibility
+    
+    dfGB columns:
         - Group keys (from gb_columns)
         - {target}_intercept{suffix} (only if fit_intercept=True)
         - {target}_intercept_err{suffix} (standard error, if fit_intercept=True)
@@ -1006,6 +1190,29 @@ def make_parallel_fit_v3(
     else:
         df_out = df.copy()
     
+    # ========================================================================
+    # 6. BUILD METADATA (IF REQUESTED)
+    # ========================================================================
+    
+    if return_metadata:
+        # Get the actual min_stat value used (may have been converted from list)
+        min_stat_val = min_stat if isinstance(min_stat, int) else int(np.max(min_stat))
+        
+        metadata = _build_fit_metadata(
+            fit_columns=fit_columns,
+            linear_columns=linear_columns,
+            suffix=suffix,
+            fit_intercept=fit_intercept,
+            gb_columns=gb_columns,
+            weights_column=weights,
+            median_columns=median_columns,
+            min_stat=min_stat_val,
+            diag=diag,
+            diag_prefix=diag_prefix,
+            fit_type='linear_v3',
+        )
+        return df_out, dfGB, metadata
+    
     return df_out, dfGB
 
 
@@ -1025,6 +1232,7 @@ def make_parallel_fit_v4(
         min_stat=3,
         diag=False,
         diag_prefix="diag_",
+        return_metadata: bool = False,
 ):
     """
     Phase 3 (v4): Numba JIT weighted OLS with fast multi-column groupby support.
@@ -1074,19 +1282,31 @@ def make_parallel_fit_v4(
         Include diagnostic columns
     diag_prefix : str, default="diag_"
         Prefix for diagnostic columns
+    return_metadata : bool, default=False
+        If True, return a third value containing metadata with auto-generated
+        formulas for predictions, residuals, and pulls.
         
     Returns
     -------
-    df_out : pd.DataFrame
-        Sorted copy of input
-    dfGB : pd.DataFrame
-        Per-group fit results with columns:
+    If return_metadata=False (default):
+        df_out : pd.DataFrame
+            Sorted copy of input
+        dfGB : pd.DataFrame
+            Per-group fit results
+    If return_metadata=True:
+        df_out : pd.DataFrame
+        dfGB : pd.DataFrame  
+        metadata : dict
+            Auto-generated formulas and column categorizations
+    
+    dfGB columns:
         - Group keys (from gb_columns)
         - {target}_intercept{suffix} (only if fit_intercept=True)
         - {target}_intercept_err{suffix} (standard error, if fit_intercept=True)
         - {target}_slope_{predictor}{suffix} (always)
         - {target}_slope_{predictor}_err{suffix} (standard error, always)
-        - {target}_rms{suffix} (RMS with dof correction, if diag=True)
+        - {target}_rms{suffix} (RMS with dof correction)
+        - {target}_mad{suffix} (MAD)
         - diag_* columns (if diag=True)
         
     Notes
@@ -1100,6 +1320,10 @@ def make_parallel_fit_v4(
     """
     import numpy as np
     import pandas as pd
+
+    # Normalize min_stat (V4 parity with V3 - accept list input)
+    if isinstance(min_stat, (list, tuple)):
+        min_stat = int(np.max(min_stat))
 
     if median_columns is None:
         median_columns = []
@@ -1366,5 +1590,28 @@ def make_parallel_fit_v4(
 
 
     dfGB = pd.DataFrame(out_dict)
+
+    # ========================================================================
+    # BUILD METADATA (IF REQUESTED)
+    # ========================================================================
+    
+    if return_metadata:
+        # Get the actual min_stat value used (may have been converted from list)
+        min_stat_val = min_stat if isinstance(min_stat, int) else int(np.max(min_stat))
+        
+        metadata = _build_fit_metadata(
+            fit_columns=fit_cols,
+            linear_columns=linear_cols,
+            suffix=suffix,
+            fit_intercept=fit_intercept,
+            gb_columns=gb_cols,
+            weights_column=weights,
+            median_columns=median_columns if median_columns else None,
+            min_stat=min_stat_val,
+            diag=diag,
+            diag_prefix=diag_prefix,
+            fit_type='linear_v4',
+        )
+        return df_sorted, dfGB, metadata
 
     return df_sorted, dfGB
