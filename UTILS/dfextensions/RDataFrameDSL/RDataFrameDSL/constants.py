@@ -26,6 +26,9 @@ __all__ = [
     'NAMESPACE_FUNCTION_TYPES',
     # Phase 11.1b: Scalar-to-vector broadcasting
     'VECTORIZED_NAMESPACES',
+    # Phase 12.2: RVec selection functions
+    'RVEC_SELECTION_FUNCTIONS',
+    'INDICES_FROM_OFFSETS_CODE',
 ]
 
 
@@ -67,8 +70,16 @@ REDUCTION_FUNCTIONS: Set[str] = {
     'StdDev', 'Var',
 }
 
+# Phase 12.2: RVec Selection Functions
+RVEC_SELECTION_FUNCTIONS: Set[str] = {
+    'Take',
+    'Range',
+    'Where',
+    'IndicesFromOffsets',
+}
+
 # Combined set for validation
-KNOWN_FUNCTIONS: Set[str] = MATH_FUNCTIONS | TMATH_FUNCTIONS | REDUCTION_FUNCTIONS
+KNOWN_FUNCTIONS: Set[str] = MATH_FUNCTIONS | TMATH_FUNCTIONS | REDUCTION_FUNCTIONS | RVEC_SELECTION_FUNCTIONS
 
 
 # =============================================================================
@@ -182,6 +193,12 @@ FUNCTION_HEADERS: Dict[str, List[str]] = {
     "All": ["<ROOT/RVec.hxx>"],
     "StdDev": ["<ROOT/RVec.hxx>"],
     "Var": ["<ROOT/RVec.hxx>"],
+    
+    # Phase 12.2: RVec selection functions
+    "Take": ["<ROOT/RVec.hxx>"],
+    "Range": ["<ROOT/RVec.hxx>"],
+    "Where": ["<ROOT/RVec.hxx>"],
+    "IndicesFromOffsets": ["<ROOT/RVec.hxx>"],
 }
 
 # Mapping from Python/DSL function names to C++ equivalents
@@ -249,6 +266,12 @@ FUNCTION_CPP_NAMES: Dict[str, str] = {
     "All": "ROOT::VecOps::All",
     "StdDev": "ROOT::VecOps::StdDev",
     "Var": "ROOT::VecOps::Var",
+    
+    # Phase 12.2: RVec selection functions
+    "Take": "ROOT::VecOps::Take",
+    "Range": "ROOT::VecOps::Range",
+    "Where": "ROOT::VecOps::Where",
+    "IndicesFromOffsets": "IndicesFromOffsets",  # Custom JIT helper
 }
 
 
@@ -360,3 +383,54 @@ VECTORIZED_NAMESPACES: Set[str] = {
     "ROOT::VecOps",     # C++ notation variant
     "std",              # std:: math functions use ADL to find ROOT::VecOps versions
 }
+
+
+# =============================================================================
+# Phase 12.2: JIT Helper Code for IndicesFromOffsets
+# =============================================================================
+
+INDICES_FROM_OFFSETS_CODE = '''
+#ifndef INDICES_FROM_OFFSETS_DEFINED
+#define INDICES_FROM_OFFSETS_DEFINED
+
+#include <ROOT/RVec.hxx>
+#include <stdexcept>
+#include <string>
+
+/**
+ * IndicesFromOffsets - Generate flat index array from offset/count pairs.
+ * 
+ * Used for Track→Cluster selection patterns in calibration workflows.
+ * 
+ * Example:
+ *   first = {0, 5, 8}
+ *   count = {3, 2, 4}
+ *   result = {0, 1, 2, 5, 6, 8, 9, 10, 11}
+ * 
+ * @param first Starting indices for each segment
+ * @param count Number of elements in each segment
+ * @return Concatenated indices
+ * @throws std::runtime_error if first.size() != count.size()
+ */
+ROOT::RVec<int> IndicesFromOffsets(const ROOT::RVec<int>& first, 
+                                    const ROOT::RVec<int>& count) {
+    if (first.size() != count.size()) {
+        throw std::runtime_error(
+            "IndicesFromOffsets: first and count must have same size (got " +
+            std::to_string(first.size()) + " vs " + std::to_string(count.size()) + ")"
+        );
+    }
+    
+    ROOT::RVec<int> result;
+    result.reserve(ROOT::VecOps::Sum(count));
+    
+    for (size_t i = 0; i < first.size(); i++) {
+        for (int j = 0; j < count[i]; j++) {
+            result.push_back(first[i] + j);
+        }
+    }
+    return result;
+}
+
+#endif // INDICES_FROM_OFFSETS_DEFINED
+'''

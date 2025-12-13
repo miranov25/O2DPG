@@ -160,6 +160,9 @@ class DSLCompiler:
         self._definitions: List[tuple] = []  # [(name, expr), ...]
         self._functions: Dict[str, GeneratedFunction] = {}
         self.library = FunctionLibrary()
+        
+        # Phase 12.2: Track if JIT helpers have been declared
+        self._helpers_declared = False
     
     def _preprocess_expression(self, expr: str) -> str:
         """
@@ -440,6 +443,65 @@ class DSLCompiler:
         }
         return cpp_types.get(dtype, "double")
     
+    def _ensure_helpers_declared(self) -> None:
+        """
+        Declare custom JIT helpers (once per session).
+        
+        Phase 12.2: Declares IndicesFromOffsets helper function for 
+        Track→Cluster selection patterns.
+        
+        This is idempotent - safe to call multiple times.
+        """
+        if self._helpers_declared:
+            return
+        
+        try:
+            import ROOT
+            from .constants import INDICES_FROM_OFFSETS_CODE
+            
+            # Declare IndicesFromOffsets helper
+            ROOT.gInterpreter.Declare(INDICES_FROM_OFFSETS_CODE)
+            self._helpers_declared = True
+            
+        except ImportError:
+            # ROOT not available - will error at compile time if helper is used
+            pass
+        except Exception:
+            # If declaration fails (e.g., already defined), mark as done
+            self._helpers_declared = True
+    
+    def _flatten_rvec_columns(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Flatten RVec columns to 1D arrays for dfdraw compatibility.
+        
+        Phase 12.2: dfdraw cannot handle arrays of RVec objects (one RVec per row).
+        This method detects such columns and concatenates them into flat arrays.
+        
+        Args:
+            result: Dict from rdf.AsNumpy() with column name -> array
+            
+        Returns:
+            Dict with RVec columns flattened to 1D numpy arrays
+        """
+        import numpy as np
+        
+        flattened = {}
+        for col, data in result.items():
+            if data.dtype == object and len(data) > 0:
+                first = data[0]
+                if hasattr(first, '__len__') and not isinstance(first, str):
+                    try:
+                        arrays = [np.asarray(x) for x in data if len(x) > 0]
+                        flattened[col] = np.concatenate(arrays) if arrays else np.array([])
+                    except (ValueError, TypeError):
+                        flattened[col] = data
+                else:
+                    flattened[col] = data
+            else:
+                flattened[col] = data
+        
+        return flattened
+    
     def compile_all(self) -> None:
         """
         Compile all defined functions to ROOT.
@@ -447,6 +509,9 @@ class DSLCompiler:
         Raises:
             IRError: If any compilation fails
         """
+        # Phase 12.2: Ensure JIT helpers are declared before compilation
+        self._ensure_helpers_declared()
+        
         for name, expr in self._definitions:
             try:
                 self.library.compile(self._functions[name].name)
@@ -869,6 +934,9 @@ class DSLCompiler:
         # Extract data
         result = rdf.AsNumpy(columns)
         
+        # Phase 12.2: Flatten RVec columns for dfdraw compatibility
+        result = self._flatten_rvec_columns(result)
+        
         # Create drawer and draw
         drawer = DFDraw(pd.DataFrame(result))
         return drawer.draw(expr, **kwargs)
@@ -913,6 +981,7 @@ class DSLCompiler:
         
         from pathlib import Path
         import pandas as pd
+        import numpy as np
         
         # Collect ALL columns from ALL specs (single AsNumpy call)
         all_columns = set()
@@ -930,21 +999,65 @@ class DSLCompiler:
         
         # Single data extraction (efficient!)
         result = rdf.AsNumpy(list(all_columns))
-        drawer = DFDraw(pd.DataFrame(result))
+        
+        # Phase 12.2: Flatten RVec columns for dfdraw compatibility
+        result = self._flatten_rvec_columns(result)
+        
+        # Check if all columns have the same length after flattening
+        lengths = {col: len(arr) for col, arr in result.items()}
+        unique_lengths = set(lengths.values())
         
         # Generate all plots
         results = {}
-        for name, spec in specs.items():
-            merged = {**defaults, **spec}
-            expr = merged.pop('expr')
+        
+        if len(unique_lengths) == 1:
+            # All columns same length - can use single DataFrame (efficient)
+            drawer = DFDraw(pd.DataFrame(result))
             
-            fig, ax, stats = drawer.draw(expr, **merged)
-            
-            if save_dir:
-                Path(save_dir).mkdir(parents=True, exist_ok=True)
-                fig.savefig(f"{save_dir}/{name}.png", dpi=150, bbox_inches='tight')
-            
-            results[name] = {'fig': fig, 'ax': ax, 'stats': stats}
+            for name, spec in specs.items():
+                merged = {**defaults, **spec}
+                expr = merged.pop('expr')
+                
+                fig, ax, stats = drawer.draw(expr, **merged)
+                
+                if save_dir:
+                    Path(save_dir).mkdir(parents=True, exist_ok=True)
+                    fig.savefig(f"{save_dir}/{name}.png", dpi=150, bbox_inches='tight')
+                
+                results[name] = {'fig': fig, 'ax': ax, 'stats': stats}
+        else:
+            # Different lengths - draw each spec separately with its own columns
+            for name, spec in specs.items():
+                merged = {**defaults, **spec}
+                expr = merged.pop('expr')
+                
+                # Get columns needed for this spec
+                spec_columns = self._collect_draw_dependencies(
+                    expr,
+                    merged.get('selection'),
+                    merged.get('group_by'),
+                    merged.get('color')
+                )
+                
+                # Build DataFrame with only matching-length columns
+                spec_data = {col: result[col] for col in spec_columns if col in result}
+                
+                # Check lengths within this spec
+                spec_lengths = [len(arr) for arr in spec_data.values()]
+                if len(set(spec_lengths)) > 1:
+                    # Columns in this spec have different lengths - skip with warning
+                    import warnings
+                    warnings.warn(f"Skipping '{name}': columns have different lengths after RVec flattening")
+                    continue
+                
+                drawer = DFDraw(pd.DataFrame(spec_data))
+                fig, ax, stats = drawer.draw(expr, **merged)
+                
+                if save_dir:
+                    Path(save_dir).mkdir(parents=True, exist_ok=True)
+                    fig.savefig(f"{save_dir}/{name}.png", dpi=150, bbox_inches='tight')
+                
+                results[name] = {'fig': fig, 'ax': ax, 'stats': stats}
         
         return results
     

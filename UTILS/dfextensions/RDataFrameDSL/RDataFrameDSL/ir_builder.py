@@ -120,8 +120,12 @@ KNOWN_FUNCTIONS: Dict[str, Dict[str, Any]] = {
     "ArgMax": {"cpp_name": "ROOT::VecOps::ArgMax", "return_type": IRTypeKind.UInt64, "is_reduction": True},
     "Sort": {"cpp_name": "ROOT::VecOps::Sort", "return_type": None},  # Same as input (not reduction)
     "Reverse": {"cpp_name": "ROOT::VecOps::Reverse", "return_type": None},
-    "Take": {"cpp_name": "ROOT::VecOps::Take", "return_type": None},
-    "Where": {"cpp_name": "ROOT::VecOps::Where", "return_type": None},
+    
+    # Phase 12.2: RVec selection functions
+    "Take": {"cpp_name": "ROOT::VecOps::Take", "return_type": None, "is_selection": True},
+    "Range": {"cpp_name": "ROOT::VecOps::Range", "return_type": None, "is_selection": True},
+    "Where": {"cpp_name": "ROOT::VecOps::Where", "return_type": None, "is_selection": True},
+    "IndicesFromOffsets": {"cpp_name": "IndicesFromOffsets", "return_type": None, "is_selection": True},
 }
 
 
@@ -820,6 +824,32 @@ class IRBuilder:
         # Build argument nodes
         args = [self._visit(arg, ctx) for arg in node.args]
         
+        # Phase 12.2: Special handling for selection functions
+        if func_info.get("is_selection"):
+            result_type, result_rank = self._infer_selection_function_type(
+                func_name, args, ctx, node
+            )
+            result_jagged = any(arg.is_jagged for arg in args) if args else False
+            
+            # Parse namespace from cpp_name
+            cpp_name = func_info["cpp_name"]
+            namespace = None
+            if "::" in cpp_name:
+                parts = cpp_name.rsplit("::", 1)
+                namespace = parts[0]
+            
+            return CallNode(
+                func=func_name,
+                args=args,
+                dtype=result_type,
+                rank=result_rank,
+                is_jagged=result_jagged,
+                namespace=namespace,
+                cpp_name=func_info["cpp_name"],
+                headers=func_info.get("headers", []),
+                source_location=self._make_location(node, ctx),
+            )
+        
         # Infer return type
         return_kind = func_info.get("return_type")
         if return_kind is None and args:
@@ -911,6 +941,97 @@ class IRBuilder:
             return KNOWN_FUNCTIONS[name]
         
         return None
+    
+    # =========================================================================
+    # Phase 12.2: Selection Function Type Inference
+    # =========================================================================
+    
+    def _infer_selection_function_type(self, func_name: str, args: List[IRNode],
+                                        ctx: BuildContext, node: ast.AST) -> Tuple[IRType, int]:
+        """
+        Infer return type for RVec selection functions (Take, Range, Where, IndicesFromOffsets).
+        
+        Phase 12.2: These functions have special type inference rules:
+        - Take(vec, n/indices) → same element type as vec, rank=1
+        - Range(start, end, step) → RVec<int>, args must be scalar
+        - Where(cond, if_true, if_false) → promoted type of if_true/if_false
+        - IndicesFromOffsets(first, count) → RVec<int>, args must be RVec
+        
+        Args:
+            func_name: Function name
+            args: List of IR nodes for arguments
+            ctx: Build context
+            node: AST node for error location
+            
+        Returns:
+            Tuple of (dtype, rank)
+            
+        Raises:
+            IRError: If type constraints are violated
+        """
+        if func_name == "Take":
+            # Take(vec, n) or Take(vec, indices) → same element type as vec, rank=1
+            if len(args) >= 1:
+                vec_type = args[0].dtype
+                # Return same type, always rank=1 (RVec)
+                return vec_type, 1
+            return IRType(IRTypeKind.Unknown), 1
+        
+        elif func_name == "Range":
+            # Range MUST have scalar arguments (rank=0)
+            for i, arg in enumerate(args):
+                if arg.rank != 0:
+                    raise IRError(
+                        IRErrorKind.RANK_ERROR,
+                        f"Range() argument {i+1} must be scalar (got rank={arg.rank}). "
+                        f"Range does not support RVec arguments.",
+                        suggestions=[
+                            "Use Range with scalar bounds: Range(start, end)",
+                            "For vector-of-ranges, use: IndicesFromOffsets(first_vec, count_vec)",
+                            "Or index into RVec first: Range(arr[0], arr[0] + n[0])"
+                        ],
+                        source_location=self._make_location(node, ctx),
+                    )
+            # Range always returns RVec<int>
+            return IRType(IRTypeKind.Object, cpp_type="RVec<int>"), 1
+        
+        elif func_name == "Where":
+            # Where(cond, if_true, if_false) → promoted type of if_true and if_false
+            if len(args) >= 3:
+                cond, if_true, if_false = args[0], args[1], args[2]
+                
+                # Result type is promoted common type of if_true and if_false
+                result_type = promote_types(if_true.dtype, if_false.dtype)
+                if result_type is None:
+                    result_type = if_true.dtype  # Fallback to first arg
+                
+                # Result rank: max of all argument ranks (broadcast semantics)
+                result_rank = max(cond.rank, if_true.rank, if_false.rank)
+                
+                return result_type, result_rank
+            return IRType(IRTypeKind.Unknown), 0
+        
+        elif func_name == "IndicesFromOffsets":
+            # IndicesFromOffsets(first_vec, count_vec) → RVec<int>
+            # Both args must be RVec<int> (rank=1)
+            if len(args) >= 2:
+                for i, arg in enumerate(args):
+                    if arg.rank != 1:
+                        raise IRError(
+                            IRErrorKind.RANK_ERROR,
+                            f"IndicesFromOffsets() argument {i+1} must be RVec (got rank={arg.rank}). "
+                            f"Both first and count must be RVec<int> arrays.",
+                            suggestions=[
+                                "Pass RVec<int> arrays for first and count",
+                                "Example: IndicesFromOffsets(trackClusterFirst, trackClusterN)"
+                            ],
+                            source_location=self._make_location(node, ctx),
+                        )
+            # Always returns RVec<int>
+            return IRType(IRTypeKind.Object, cpp_type="RVec<int>"), 1
+        
+        # Fallback
+        return IRType(IRTypeKind.Unknown), 0
     
     # =========================================================================
     # Phase 11.1: Namespace Call Support
