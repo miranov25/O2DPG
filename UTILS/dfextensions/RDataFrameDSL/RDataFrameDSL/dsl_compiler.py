@@ -35,7 +35,7 @@ Phase 7.9: RDataFrame Validation & C++ Export
 Phase 8.1: Alias referencing support (aliases can use other aliases)
 """
 
-from typing import Dict, List, Optional, Any, Set
+from typing import Dict, List, Optional, Any, Set, Tuple
 import uuid
 import re
 import warnings
@@ -501,6 +501,364 @@ class DSLCompiler:
                 flattened[col] = data
         
         return flattened
+    
+    def _flatten_rvec_with_validation(self, result: Dict[str, Any], 
+                                       paired_columns: List[Tuple[str, str]] = None
+                                       ) -> Dict[str, Any]:
+        """
+        Flatten RVec columns with paired column length validation.
+        
+        Phase 12.3: Enhanced flattening that validates paired RVec columns
+        (used in y:x plots) have matching lengths per event.
+        
+        Args:
+            result: Dict from rdf.AsNumpy() with column name -> array
+            paired_columns: List of (col1, col2) tuples that must have matching lengths
+            
+        Returns:
+            Dict with RVec columns flattened to 1D numpy arrays
+            
+        Raises:
+            ValueError: If paired columns have mismatched lengths in any event
+        """
+        import numpy as np
+        
+        # First, identify which columns are RVec (object dtype with array-like elements)
+        rvec_columns = set()
+        for col, data in result.items():
+            if data.dtype == object and len(data) > 0:
+                first = data[0]
+                if hasattr(first, '__len__') and not isinstance(first, str):
+                    rvec_columns.add(col)
+        
+        # Validate paired columns have matching lengths per event
+        if paired_columns:
+            for col1, col2 in paired_columns:
+                if col1 in rvec_columns and col2 in rvec_columns:
+                    data1, data2 = result[col1], result[col2]
+                    for i, (arr1, arr2) in enumerate(zip(data1, data2)):
+                        len1, len2 = len(arr1), len(arr2)
+                        if len1 != len2:
+                            raise ValueError(
+                                f"Paired RVec columns '{col1}' and '{col2}' have different "
+                                f"lengths in event {i}: {len1} vs {len2}. "
+                                f"For 2D plots (y:x), both columns must have the same "
+                                f"number of elements per event."
+                            )
+        
+        # Now flatten
+        return self._flatten_rvec_columns(result)
+    
+    def _extract_paired_columns(self, specs: List[dict]) -> List[Tuple[str, str]]:
+        """
+        Extract column pairs from plot expressions (y:x syntax).
+        
+        Phase 12.3: Identifies paired columns that need length validation.
+        
+        Args:
+            specs: List of figure specifications
+            
+        Returns:
+            List of (y_col, x_col) tuples
+        """
+        pairs = []
+        for spec in specs:
+            for plot in spec.get('plots', []):
+                expr = plot.get('expr', '') if isinstance(plot, dict) else plot
+                if ':' in expr:
+                    parts = expr.replace(' ', '').split(':')
+                    if len(parts) == 2:
+                        y_col, x_col = parts
+                        # Only add if both are simple column names (not expressions)
+                        if y_col.isidentifier() and x_col.isidentifier():
+                            pairs.append((y_col, x_col))
+        return pairs
+    
+    def _validate_figure_specs(self, specs: List[dict]) -> None:
+        """
+        Validate figure specifications with helpful error messages.
+        
+        Phase 12.3: Basic validation of required fields.
+        
+        Args:
+            specs: List of figure specifications
+            
+        Raises:
+            ValueError: If specs are invalid
+        """
+        if not specs:
+            return  # Empty specs is valid (returns empty dict)
+        
+        for i, spec in enumerate(specs):
+            name = spec.get('name', f'figure_{i}')
+            
+            if 'plots' not in spec:
+                raise ValueError(
+                    f"Figure '{name}': 'plots' is required. "
+                    f"Each figure spec must have a 'plots' list."
+                )
+            
+            if not spec['plots']:
+                raise ValueError(
+                    f"Figure '{name}': 'plots' cannot be empty. "
+                    f"Add at least one plot specification."
+                )
+            
+            for j, plot in enumerate(spec['plots']):
+                # Allow short form (string) or full form (dict)
+                if isinstance(plot, str):
+                    continue  # String is valid (will be converted to {'expr': plot})
+                
+                if not isinstance(plot, dict):
+                    raise ValueError(
+                        f"Figure '{name}', plot {j}: must be string or dict, "
+                        f"got {type(plot).__name__}"
+                    )
+                
+                if 'expr' not in plot:
+                    raise ValueError(
+                        f"Figure '{name}', plot {j}: 'expr' is required. "
+                        f"Specify what to plot, e.g. {{'expr': 'pt'}} or {{'expr': 'dy:row'}}"
+                    )
+    
+    def draw_figures(self, specs: List[dict], rdf, 
+                     save_dir: str = None, defaults: dict = None,
+                     max_entries: int = None, show: bool = False
+                     ) -> Dict[str, Any]:
+        """
+        Draw multiple composed figures with automatic column detection.
+        
+        Phase 12.3: Creates multi-subplot figures from declarative specifications.
+        Each figure can contain multiple plots arranged in a grid.
+        
+        Args:
+            specs: List of figure specifications. Each spec is a dict with:
+                - name: str (required) - Figure identifier
+                - plots: list (required) - List of plot specs or expressions
+                - ncols: int (default: 2) - Columns in grid
+                - figsize: tuple - (width, height) in inches (auto if None)
+                - sharex: bool (default: False) - Share x-axis
+                - sharey: bool (default: False) - Share y-axis
+                - suptitle: str - Figure title
+                - savefig: str - Save path (relative to save_dir)
+                - dpi: int (default: 150) - Resolution for saving
+                
+                Each plot spec can be:
+                - str: Simple expression like 'pt' or 'dy:row'
+                - dict: Full spec with 'expr' (required) plus optional:
+                    - type: 'hist', 'scatter', 'profile', 'hist2d', 'hexbin'
+                    - title: Subplot title
+                    - selection: Filter expression
+                    - bins: Number of bins
+                    - Any other dfdraw parameters
+                    
+            rdf: Applied RDataFrame
+            save_dir: Default directory for saving figures
+            defaults: Default parameters applied to all plots
+            max_entries: Limit entries for large datasets
+            show: Call plt.show() after drawing
+            
+        Returns:
+            Dict mapping figure names to {'fig': Figure, 'axes': list, 'stats': list}
+            
+        Example:
+            >>> qa_report = [
+            ...     {
+            ...         'name': 'overview',
+            ...         'suptitle': 'TPC Calibration QA',
+            ...         'ncols': 2,
+            ...         'savefig': 'qa/overview.png',
+            ...         'plots': [
+            ...             {'expr': 'chi2_norm', 'selection': 'isGoodTrack'},
+            ...             {'expr': 'dy:row', 'type': 'profile'},
+            ...             'nClusters',  # Short form
+            ...             {'expr': 'pt', 'bins': 100},
+            ...         ]
+            ...     }
+            ... ]
+            >>> results = dsl.draw_figures(qa_report, rdf)
+        """
+        # Lazy imports
+        try:
+            from dfdraw import DFDraw
+        except ImportError:
+            raise ImportError(
+                "dfdraw is required for visualization.\n"
+                "Install with: pip install dfdraw\n"
+                "Or use to_dataframe() for manual plotting."
+            )
+        
+        import matplotlib.pyplot as plt
+        from pathlib import Path
+        import pandas as pd
+        import numpy as np
+        import warnings
+        
+        # Validate specs
+        self._validate_figure_specs(specs)
+        
+        if not specs:
+            return {}
+        
+        defaults = defaults or {}
+        
+        # Collect ALL columns from ALL specs (single AsNumpy call)
+        all_columns = set()
+        for spec in specs:
+            for plot in spec.get('plots', []):
+                # Handle short form (string)
+                if isinstance(plot, str):
+                    plot = {'expr': plot}
+                
+                all_columns.update(self._collect_draw_dependencies(
+                    plot.get('expr', ''),
+                    plot.get('selection', defaults.get('selection')),
+                    plot.get('group_by', defaults.get('group_by')),
+                    plot.get('color', defaults.get('color'))
+                ))
+        
+        if not all_columns:
+            warnings.warn("No columns detected in figure specs")
+            return {}
+        
+        # Apply entry limit
+        if max_entries is not None:
+            rdf = rdf.Range(max_entries)
+        
+        # Single data extraction (efficient!)
+        result = rdf.AsNumpy(list(all_columns))
+        
+        # Extract paired columns for validation
+        paired_columns = self._extract_paired_columns(specs)
+        
+        # Flatten RVec columns with paired validation
+        try:
+            result = self._flatten_rvec_with_validation(result, paired_columns)
+        except ValueError as e:
+            raise ValueError(f"RVec validation error: {e}")
+        
+        # Check column lengths for DataFrame creation
+        lengths = {col: len(arr) for col, arr in result.items()}
+        unique_lengths = set(lengths.values())
+        
+        # Generate figures
+        results = {}
+        
+        for spec in specs:
+            name = spec.get('name', f'figure_{len(results)}')
+            plots = spec['plots']
+            ncols = spec.get('ncols', 2)
+            nrows = (len(plots) + ncols - 1) // ncols
+            
+            # Figure size
+            figsize = spec.get('figsize')
+            if figsize is None:
+                figsize = (5 * ncols, 4 * nrows)
+            
+            # Create figure
+            fig, axes = plt.subplots(
+                nrows, ncols,
+                figsize=figsize,
+                sharex=spec.get('sharex', False),
+                sharey=spec.get('sharey', False),
+                squeeze=False
+            )
+            axes_flat = axes.flatten()
+            
+            # Track stats for each subplot
+            all_stats = []
+            
+            # Draw each subplot
+            for i, plot_spec in enumerate(plots):
+                if i >= len(axes_flat):
+                    break
+                
+                ax = axes_flat[i]
+                
+                # Handle short form (string)
+                if isinstance(plot_spec, str):
+                    plot_spec = {'expr': plot_spec}
+                
+                # Merge defaults
+                merged = {**defaults, **plot_spec}
+                expr = merged.pop('expr')
+                title = merged.pop('title', None)
+                
+                # Get columns for this plot
+                plot_columns = self._collect_draw_dependencies(
+                    expr,
+                    merged.get('selection'),
+                    merged.get('group_by'),
+                    merged.get('color')
+                )
+                
+                # Build DataFrame for this plot
+                plot_data = {col: result[col] for col in plot_columns if col in result}
+                
+                # Check if columns have same length
+                plot_lengths = [len(arr) for arr in plot_data.values()]
+                if len(set(plot_lengths)) > 1:
+                    warnings.warn(
+                        f"Figure '{name}', plot {i} ('{expr}'): "
+                        f"columns have different lengths, skipping"
+                    )
+                    ax.text(0.5, 0.5, f"Skipped:\n{expr}\n(length mismatch)", 
+                           ha='center', va='center', transform=ax.transAxes)
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+                    all_stats.append(None)
+                    continue
+                
+                try:
+                    drawer = DFDraw(pd.DataFrame(plot_data))
+                    _, _, stats = drawer.draw(expr, ax=ax, **merged)
+                    all_stats.append(stats)
+                except Exception as e:
+                    warnings.warn(f"Figure '{name}', plot {i} ('{expr}'): {e}")
+                    ax.text(0.5, 0.5, f"Error:\n{expr}\n{str(e)[:50]}", 
+                           ha='center', va='center', transform=ax.transAxes,
+                           fontsize=8)
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+                    all_stats.append(None)
+                    continue
+                
+                if title:
+                    ax.set_title(title)
+            
+            # Hide unused axes
+            for i in range(len(plots), len(axes_flat)):
+                axes_flat[i].set_visible(False)
+            
+            # Suptitle
+            suptitle = spec.get('suptitle')
+            if suptitle:
+                fig.suptitle(suptitle, fontsize=14)
+            
+            # Tight layout
+            if spec.get('tight_layout', True):
+                plt.tight_layout()
+                if suptitle:
+                    plt.subplots_adjust(top=0.93)
+            
+            # Save
+            savefig = spec.get('savefig')
+            if savefig:
+                if save_dir and not savefig.startswith('/'):
+                    savefig = f"{save_dir}/{savefig}"
+                Path(savefig).parent.mkdir(parents=True, exist_ok=True)
+                fig.savefig(savefig, dpi=spec.get('dpi', 150), bbox_inches='tight')
+            
+            results[name] = {
+                'fig': fig,
+                'axes': list(axes_flat[:len(plots)]),
+                'stats': all_stats
+            }
+        
+        if show:
+            plt.show()
+        
+        return results
     
     def compile_all(self) -> None:
         """
