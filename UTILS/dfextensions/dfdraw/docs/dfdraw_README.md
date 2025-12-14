@@ -1,4 +1,4 @@
-# dfdraw — DataFrame Drawing Utilities
+# dfdraw - DataFrame Drawing Utilities
 
 **ROOT-style one-liner plotting for Pandas DataFrames**
 
@@ -43,6 +43,7 @@ pip install -e .
 ```python
 from dfdraw import DFDraw
 import pandas as pd
+import numpy as np
 
 # Create drawer from DataFrame
 df = pd.DataFrame({'x': np.random.randn(10000), 'y': np.random.randn(10000)})
@@ -191,6 +192,13 @@ class DFDraw:
 | `stats()` | `stats(expr, selection=None, group_by=None)` | Compute stats without plotting |
 | `draw_batch()` | `draw_batch(specs, save_dir=None, **kwargs)` | Batch plot generation from spec dict |
 
+### Annotation Methods
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `add_statistics_box()` | `add_statistics_box(ax, values, position='upper right', expected_mean=None, expected_std=None, **kwargs)` | Add n/mu/sigma annotation box |
+| `add_reference_overlay()` | `add_reference_overlay(ax, func='gaussian', mu=0, sigma=1, **kwargs)` | Add scaled reference curve |
+
 ### Common Parameters
 
 | Parameter | Type | Description |
@@ -301,6 +309,101 @@ drawer.scatter("y:x", stats=["n", "mean_x", "mean_y", "corr"])
 ```
 
 Available fields: `n`, `mean`, `std`, `min`, `max`, `mean_x`, `mean_y`, `std_x`, `std_y`, `corr`
+
+---
+
+## Annotation Methods
+
+### Statistics Box with Expected Values
+
+Add a statistics annotation box showing n, mean (mu), std (sigma), and optionally delta values comparing to expected:
+
+```python
+fig, ax, stats = drawer.hist("pull", bins=50)
+
+# Basic statistics box
+drawer.add_statistics_box(ax, df['pull'].values)
+
+# With expected values (shows delta)
+drawer.add_statistics_box(
+    ax, df['pull'].values,
+    expected_mean=0.0,    # Shows delta_mu = mu - 0
+    expected_std=1.0,     # Shows delta_sigma = sigma - 1
+    position='upper right',
+    precision=3,
+    fontsize=8
+)
+```
+
+**Parameters:**
+- `ax`: matplotlib Axes to annotate
+- `values`: array-like data for statistics computation
+- `position`: 'upper right', 'upper left', 'lower right', 'lower left'
+- `expected_mean`: if provided, shows delta_mu
+- `expected_std`: if provided, shows delta_sigma
+- `precision`: decimal places (default: 3)
+- `fontsize`: text size (default: 8)
+- `alpha`: box transparency (default: 0.5)
+
+### Reference Overlay
+
+Add a reference function (Gaussian or custom) scaled to match the histogram:
+
+```python
+fig, ax, stats = drawer.hist("pull", bins=50)
+
+# Gaussian N(0,1) overlay
+drawer.add_reference_overlay(ax, func='gaussian', mu=0, sigma=1)
+
+# Custom function overlay
+def laplace_pdf(x):
+    return 0.5 * np.exp(-np.abs(x))
+
+drawer.add_reference_overlay(ax, func=laplace_pdf, label='Laplace')
+
+# Styling options
+drawer.add_reference_overlay(
+    ax, func='gaussian', mu=0, sigma=1,
+    color='blue', linestyle='-', linewidth=2,
+    show_legend=True
+)
+```
+
+**Parameters:**
+- `ax`: matplotlib Axes containing histogram
+- `func`: 'gaussian' or callable f(x) -> y
+- `mu`, `sigma`: parameters for Gaussian
+- `label`: legend label (auto-generated for Gaussian)
+- `color`, `linestyle`, `linewidth`: line styling
+- `show_legend`: whether to display legend (default: True)
+- `n_points`: number of points for curve (default: 100)
+
+### Pull Distribution QA Workflow
+
+Typical usage for validating normalized residuals:
+
+```python
+# Create pull distribution histogram
+fig, ax, stats = drawer.hist('pull', bins=50, title='Pull Distribution')
+
+# Add N(0,1) reference curve
+drawer.add_reference_overlay(ax, func='gaussian', mu=0, sigma=1)
+
+# Add statistics box with expected values
+drawer.add_statistics_box(
+    ax, df['pull'].values,
+    expected_mean=0.0,
+    expected_std=1.0,
+    position='upper right'
+)
+
+# Result shows:
+#   n = 10,000
+#   mu = 0.012
+#   sigma = 1.023
+#   delta_mu = +0.012
+#   delta_sigma = +0.023
+```
 
 ---
 
@@ -422,34 +525,6 @@ dsl.draw_figures(qa_report, rdf)
 
 ---
 
-## Coming in Phase 12.4b5
-
-The following methods are planned for the next release:
-
-### `add_statistics_box()`
-```python
-def add_statistics_box(self, ax, values, position='upper right', 
-                       fields=['n', 'mean', 'std'], **kwargs):
-    """Add mu, sigma, n annotation box to existing axis."""
-```
-
-### `add_reference_overlay()`
-```python
-def add_reference_overlay(self, ax, func='gaussian', mu=0, sigma=1, 
-                          scale='auto', **kwargs):
-    """Add reference function overlay (Gaussian, etc.) scaled to histogram."""
-```
-
-These will enable:
-```python
-# Add Gaussian reference to pull distribution
-fig, ax, stats = drawer.hist("pull", bins=100)
-drawer.add_reference_overlay(ax, func='gaussian', mu=0, sigma=1)
-drawer.add_statistics_box(ax, stats, fields=['n', 'mean', 'std'])
-```
-
----
-
 ## Examples
 
 ### QA Dashboard
@@ -492,6 +567,13 @@ drawer.hexbin("dy:dz", gridsize=50, norm="log",
               title="Y vs Z Residuals")
 ```
 
+### Generate Example Gallery
+
+```bash
+# Generate example figures for documentation
+python examples/generate_gallery.py --output-dir docs/examples
+```
+
 ---
 
 ## Tests
@@ -508,11 +590,13 @@ Test files:
 - `test_histogram.py` - 1D/2D histogram functions
 - `test_scatter.py` - Scatter plot functions
 - `test_profile.py` - Profile plot functions
+- `test_hexbin.py` - Hexbin plot functions
+- `test_hist2d.py` - 2D histogram functions
 - `test_facet.py` - Faceted plot layouts
 - `test_style.py` - Style management
-- `test_stats.py` - Statistics computation
-- `test_integration.py` - End-to-end tests
-- `test_aliasdf_integration.py` - AliasDataFrame integration
+- `test_batch.py` - Batch processing
+- `test_adf_integration.py` - AliasDataFrame integration
+- `test_validation_display.py` - Statistics box and reference overlay
 
 ---
 
