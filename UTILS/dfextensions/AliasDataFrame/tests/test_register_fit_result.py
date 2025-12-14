@@ -857,7 +857,6 @@ class TestDrawFitSummaryOptions:
 class TestSchemaPersistence:
     """Tests for fit metadata in schema export/import."""
     
-    @pytest.mark.skip(reason="Requires schema export/import modifications")
     def test_export_includes_fit_metadata(self, mock_data_and_fit, mock_metadata):
         """export_schema includes fit_metadata."""
         df, dfGB = mock_data_and_fit
@@ -869,7 +868,6 @@ class TestSchemaPersistence:
         assert 'fit_metadata' in schema
         assert 'Fit' in schema['fit_metadata']
     
-    @pytest.mark.skip(reason="Requires schema export/import modifications")
     def test_apply_schema_restores_fit_metadata(self, mock_data_and_fit, mock_metadata):
         """apply_schema restores fit_metadata."""
         df, dfGB = mock_data_and_fit
@@ -878,12 +876,18 @@ class TestSchemaPersistence:
         
         schema = adf1.export_schema()
         
+        # Create adf2 with the same subframe registered so aliases can resolve
         adf2 = AliasDataFrame(df)
+        adf2.register_fit_result("Fit", dfGB, mock_metadata)
+        
+        # Clear fit_metadata to test restoration
+        adf2._fit_metadata = {}
+        
+        # Apply schema - should restore fit_metadata
         adf2.apply_schema(schema)
         
         assert 'Fit' in adf2._fit_metadata
     
-    @pytest.mark.skip(reason="Requires schema export/import modifications")
     def test_apply_schema_overwrites_with_warning(self, mock_data_and_fit, mock_metadata):
         """apply_schema warns when overwriting existing fit_metadata."""
         df, dfGB = mock_data_and_fit
@@ -894,6 +898,106 @@ class TestSchemaPersistence:
         
         with pytest.warns(UserWarning, match="Overwriting"):
             adf.apply_schema(schema)
+    
+    def test_schema_roundtrip_preserves_formulas(self, mock_data_and_fit, mock_metadata):
+        """Schema roundtrip preserves all formula strings."""
+        df, dfGB = mock_data_and_fit
+        adf1 = AliasDataFrame(df)
+        adf1.register_fit_result("Fit", dfGB, mock_metadata)
+        
+        schema = adf1.export_schema()
+        
+        # Create adf2 with same subframe so aliases can resolve
+        adf2 = AliasDataFrame(df)
+        adf2.register_fit_result("Fit", dfGB, mock_metadata)
+        adf2._fit_metadata = {}  # Clear to test restoration
+        
+        adf2.apply_schema(schema)
+        
+        # Verify formulas are preserved
+        original_formulas = mock_metadata['formulas']
+        restored_formulas = adf2._fit_metadata['Fit']['formulas']
+        assert original_formulas == restored_formulas
+    
+    def test_exported_schema_is_json_serializable(self, mock_data_and_fit, mock_metadata):
+        """Verify exported schema can be serialized to JSON."""
+        import json
+        df, dfGB = mock_data_and_fit
+        adf = AliasDataFrame(df)
+        adf.register_fit_result("Fit", dfGB, mock_metadata)
+        
+        schema = adf.export_schema()
+        
+        # Should not raise - use default=str to handle sets
+        json_str = json.dumps(schema, default=str)
+        restored = json.loads(json_str)
+        
+        assert 'fit_metadata' in restored
+    
+    def test_schema_without_fit_metadata_backward_compat(self, mock_data_and_fit):
+        """Old schemas without fit_metadata work normally."""
+        df, _ = mock_data_and_fit
+        adf = AliasDataFrame(df)
+        
+        # Old-style schema without fit_metadata
+        old_schema = {
+            'columns': {'x': {'dtype': 'float64'}},
+        }
+        
+        # Should not raise
+        adf.apply_schema(old_schema)
+        
+        # _fit_metadata should remain unchanged (not created)
+        assert not hasattr(adf, '_fit_metadata') or not adf._fit_metadata
+
+
+class TestValidationThresholds:
+    """Tests for custom validation thresholds."""
+    
+    def test_custom_validation_thresholds(self, mock_data_and_fit, mock_metadata):
+        """Custom thresholds override defaults."""
+        df, dfGB = mock_data_and_fit
+        adf = AliasDataFrame(df)
+        adf.register_fit_result("Fit", dfGB, mock_metadata)
+        
+        # With very strict thresholds, validation should fail
+        strict_thresholds = {'pull_mean_threshold': 0.001}
+        validation = adf._compute_fit_validation("Fit", thresholds=strict_thresholds)
+        
+        # The pull mean is ~0.1, so strict threshold should fail
+        assert validation['y']['pull_mean_pass'] == False
+    
+    def test_partial_threshold_override(self, mock_data_and_fit, mock_metadata):
+        """Partial threshold dict merges with defaults."""
+        df, dfGB = mock_data_and_fit
+        adf = AliasDataFrame(df)
+        adf.register_fit_result("Fit", dfGB, mock_metadata)
+        
+        # Only override one threshold
+        partial_thresholds = {'pull_std_max': 2.0}
+        validation = adf._compute_fit_validation("Fit", thresholds=partial_thresholds)
+        
+        # Other thresholds should still apply (defaults)
+        assert 'pull_mean' in validation['y']
+        assert 'outlier_fraction' in validation['y']
+    
+    def test_draw_fit_summary_with_thresholds(self, mock_data_and_fit, mock_metadata):
+        """draw_fit_summary accepts validation_thresholds."""
+        import matplotlib
+        matplotlib.use('Agg')
+        
+        df, dfGB = mock_data_and_fit
+        adf = AliasDataFrame(df)
+        adf.register_fit_result("Fit", dfGB, mock_metadata)
+        
+        # Should not raise
+        results = adf.draw_fit_summary(
+            "Fit", 
+            include=['pull_1d'],
+            validation_thresholds={'pull_mean_threshold': 0.5}
+        )
+        
+        assert '_validation' in results
 
 
 # =============================================================================
@@ -952,6 +1056,161 @@ class TestEdgeCases:
         adf.register_fit_result("Fit_Track_V4", dfGB, mock_metadata)
         
         assert "Fit_Track_V4" in adf.list_fit_results()
+
+
+# =============================================================================
+# Test: Result Verification (Phase 12.4b3 - verifies correctness, not just no-crash)
+# =============================================================================
+
+class TestResultVerification:
+    """Tests that verify actual output correctness, not just that code runs."""
+    
+    def test_draw_fit_summary_plots_render_without_error(self, mock_data_and_fit, mock_metadata):
+        """Verify plots actually render (no error text in figure)."""
+        import matplotlib
+        matplotlib.use('Agg')
+        
+        df, dfGB = mock_data_and_fit
+        adf = AliasDataFrame(df)
+        adf.register_fit_result("Fit", dfGB, mock_metadata)
+        
+        results = adf.draw_fit_summary("Fit", include=['delta_1d', 'pull_1d'], verbose=False)
+        
+        # Verify figure was created
+        assert 'Fit_residuals' in results
+        fig_data = results['Fit_residuals']
+        assert fig_data.get('fig') is not None, "Figure is None"
+        
+        # Verify no error text in any subplot
+        for ax in fig_data['axes']:
+            for txt in ax.texts:
+                text_content = txt.get_text()
+                assert 'Error' not in text_content, f"Plot contains error: {text_content}"
+            
+            # Verify title doesn't indicate error
+            title = ax.get_title()
+            assert '[ERROR]' not in title, f"Plot title indicates error: {title}"
+    
+    def test_gaussian_overlay_added_to_pull_histogram(self, mock_data_and_fit, mock_metadata):
+        """Verify Gaussian overlay is actually added to pull histogram."""
+        import matplotlib
+        matplotlib.use('Agg')
+        
+        df, dfGB = mock_data_and_fit
+        adf = AliasDataFrame(df)
+        adf.register_fit_result("Fit", dfGB, mock_metadata)
+        
+        results = adf.draw_fit_summary(
+            "Fit", 
+            include=['delta_1d', 'pull_1d'],
+            gaussian_overlay=True,
+            verbose=False
+        )
+        
+        axes = results['Fit_residuals']['axes']
+        
+        # Delta histogram (axis 0) should NOT have overlay
+        delta_ax = axes[0]
+        assert len(delta_ax.get_lines()) == 0, "Delta histogram should not have Gaussian overlay"
+        
+        # Pull histogram (axis 1) SHOULD have overlay
+        pull_ax = axes[1]
+        assert len(pull_ax.get_lines()) >= 1, "Pull histogram should have Gaussian overlay"
+    
+    def test_validation_metrics_match_expected_values(self, mock_data_and_fit, mock_metadata):
+        """Verify validation metrics are computed correctly."""
+        df, dfGB = mock_data_and_fit
+        adf = AliasDataFrame(df)
+        adf.register_fit_result("Fit", dfGB, mock_metadata)
+        
+        validation = adf._compute_fit_validation("Fit")
+        
+        # Verify structure
+        assert 'y' in validation
+        assert '_overall_pass' in validation
+        
+        # Verify metrics exist and are reasonable
+        y_metrics = validation['y']
+        
+        # Pull mean should be near zero for well-fitted data
+        assert 'pull_mean' in y_metrics
+        assert -1.0 < y_metrics['pull_mean'] < 1.0, f"Pull mean {y_metrics['pull_mean']} out of expected range"
+        
+        # Pull std should be near 1.0 for correctly estimated errors
+        assert 'pull_std' in y_metrics
+        assert 0.5 < y_metrics['pull_std'] < 2.0, f"Pull std {y_metrics['pull_std']} out of expected range"
+        
+        # Outlier fraction should be in [0, 1]
+        assert 'outlier_fraction' in y_metrics
+        assert 0.0 <= y_metrics['outlier_fraction'] <= 1.0
+        
+        # Pass/fail flags should be boolean-like (Python bool or numpy bool)
+        assert y_metrics['pull_mean_pass'] in (True, False)
+        assert y_metrics['pull_std_pass'] in (True, False)
+        assert y_metrics['outlier_pass'] in (True, False)
+    
+    def test_schema_roundtrip_metadata_values_match(self, mock_data_and_fit, mock_metadata):
+        """Verify actual metadata values survive roundtrip, not just keys."""
+        df, dfGB = mock_data_and_fit
+        adf1 = AliasDataFrame(df)
+        adf1.register_fit_result("Fit", dfGB, mock_metadata)
+        
+        schema = adf1.export_schema()
+        
+        # Create new ADF with same subframe to allow schema application
+        adf2 = AliasDataFrame(df)
+        adf2.register_fit_result("Fit", dfGB, mock_metadata)
+        adf2._fit_metadata = {}  # Clear to test restoration
+        
+        adf2.apply_schema(schema)
+        
+        # Deep comparison of actual values
+        original = adf1._fit_metadata['Fit']
+        restored = adf2._fit_metadata['Fit']
+        
+        # Verify formulas match exactly
+        assert original['formulas'] == restored['formulas'], "Formulas don't match after roundtrip"
+        
+        # Verify columns match exactly  
+        assert original['columns'] == restored['columns'], "Columns don't match after roundtrip"
+        
+        # Verify parameters match exactly
+        assert original['parameters'] == restored['parameters'], "Parameters don't match after roundtrip"
+    
+    def test_deepcopy_prevents_mutation(self, mock_data_and_fit, mock_metadata):
+        """Verify exported schema is isolated from source (deep copy works)."""
+        df, dfGB = mock_data_and_fit
+        adf = AliasDataFrame(df)
+        adf.register_fit_result("Fit", dfGB, mock_metadata)
+        
+        schema = adf.export_schema()
+        
+        # Get original formula value
+        original_formula = adf._fit_metadata['Fit']['formulas']['y_pred_Test']
+        
+        # Mutate the exported schema
+        schema['fit_metadata']['Fit']['formulas']['y_pred_Test'] = "CORRUPTED"
+        
+        # Original should be unchanged
+        assert adf._fit_metadata['Fit']['formulas']['y_pred_Test'] == original_formula
+        assert adf._fit_metadata['Fit']['formulas']['y_pred_Test'] != "CORRUPTED"
+    
+    def test_histograms_have_data(self, mock_data_and_fit, mock_metadata):
+        """Verify histograms actually contain data (patches exist)."""
+        import matplotlib
+        matplotlib.use('Agg')
+        
+        df, dfGB = mock_data_and_fit
+        adf = AliasDataFrame(df)
+        adf.register_fit_result("Fit", dfGB, mock_metadata)
+        
+        results = adf.draw_fit_summary("Fit", include=['delta_1d', 'pull_1d'], verbose=False)
+        
+        axes = results['Fit_residuals']['axes']
+        
+        for ax in axes:
+            # Each histogram should have at least one patch (bar or polygon)
+            assert len(ax.patches) > 0, f"Histogram '{ax.get_title()}' has no patches"
 
 
 if __name__ == '__main__':

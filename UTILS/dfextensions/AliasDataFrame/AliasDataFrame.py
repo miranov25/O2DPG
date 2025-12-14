@@ -8363,6 +8363,10 @@ class AliasDataFrame:
             if subframes:
                 result['subframes'] = subframes
         
+        # 6. Fit metadata section (Phase 12.4b3)
+        if hasattr(self, '_fit_metadata') and self._fit_metadata:
+            result['fit_metadata'] = copy.deepcopy(self._fit_metadata)
+        
         return result
 
     def export_definition_schema(self, **kwargs):
@@ -8642,6 +8646,16 @@ class AliasDataFrame:
         
         # Update schema metadata
         self.update_schema(schema, validate=validate)
+        
+        # Restore fit metadata if present (Phase 12.4b3)
+        if 'fit_metadata' in schema:
+            if hasattr(self, '_fit_metadata') and self._fit_metadata:
+                existing = list(self._fit_metadata.keys())
+                warnings.warn(
+                    f"Overwriting existing fit metadata: {existing}",
+                    UserWarning
+                )
+            self._fit_metadata = copy.deepcopy(schema['fit_metadata'])
 
     @classmethod
     def from_schema(cls, schema):
@@ -10765,6 +10779,9 @@ class AliasDataFrame:
         """
         Add N(0,1) reference curve to pull histogram.
         
+        Automatically scales the Gaussian PDF to match histogram counts.
+        Handles both Rectangle patches (standard hist) and Polygon patches (DFDraw filled hist).
+        
         Args:
             ax: Matplotlib axis
             mu: Mean of Gaussian
@@ -10774,17 +10791,46 @@ class AliasDataFrame:
             linestyle: Line style
             linewidth: Line width
         """
+        # Try to get scaling from histogram
+        scale_factor = 1.0
+        
+        patches = ax.patches
+        if patches:
+            p = patches[0]
+            if hasattr(p, 'get_height'):
+                # Standard Rectangle patches (bar histogram)
+                heights = [patch.get_height() for patch in patches]
+                widths = [patch.get_width() for patch in patches]
+                total_count = sum(h * w for h, w in zip(heights, widths))
+                scale_factor = total_count
+            elif hasattr(p, 'get_xy'):
+                # Polygon patch (DFDraw filled histogram)
+                # Get y-axis limits as proxy for histogram scale
+                ylim = ax.get_ylim()
+                # Estimate: use max y value * approximate bin width
+                # The y-limits typically extend a bit beyond the data
+                max_y = ylim[1] * 0.9  # 90% of y-limit as estimate
+                xlim = ax.get_xlim()
+                x_range = xlim[1] - xlim[0]
+                # Assume ~50 bins for typical histogram
+                approx_bin_width = x_range / 50
+                # Scale so Gaussian peak matches histogram peak
+                scale_factor = max_y * approx_bin_width * np.sqrt(2 * np.pi) * sigma
+        
         x = np.linspace(mu - 4*sigma, mu + 4*sigma, 100)
         y = (1 / (sigma * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x - mu) / sigma)**2)
+        y = y * scale_factor  # Scale PDF to histogram counts
         ax.plot(x, y, color=color, linestyle=linestyle, linewidth=linewidth, label=label)
 
-    def _compute_fit_validation(self, name: str, fit_columns: list = None) -> dict:
+    def _compute_fit_validation(self, name: str, fit_columns: list = None,
+                                thresholds: dict = None) -> dict:
         """
         Compute validation metrics for fit result.
         
         Args:
             name: Registered fit name
             fit_columns: Subset of fit columns (default: all)
+            thresholds: Override validation thresholds (merged with defaults)
             
         Returns:
             Dict with per-column validation results and _overall_pass
@@ -10793,7 +10839,11 @@ class AliasDataFrame:
         suffix = meta['parameters']['suffix']
         cols = fit_columns or meta['columns']['fit_columns']
         
-        thresholds = self._FIT_VALIDATION_DEFAULTS
+        # Merge custom thresholds with defaults
+        effective_thresholds = dict(self._FIT_VALIDATION_DEFAULTS)
+        if thresholds:
+            effective_thresholds.update(thresholds)
+        
         validation = {}
         all_pass = True
         
@@ -10823,13 +10873,13 @@ class AliasDataFrame:
                 pull_std = float(np.std(pull_values))
                 
                 # Outlier fraction (|pull| > threshold)
-                outlier_count = np.sum(np.abs(pull_values) > thresholds['outlier_threshold'])
+                outlier_count = np.sum(np.abs(pull_values) > effective_thresholds['outlier_threshold'])
                 outlier_fraction = outlier_count / len(pull_values)
                 
                 # Pass/fail checks
-                pull_mean_pass = abs(pull_mean) < thresholds['pull_mean_threshold']
-                pull_std_pass = (thresholds['pull_std_min'] < pull_std < thresholds['pull_std_max'])
-                outlier_pass = outlier_fraction < thresholds['outlier_max_fraction']
+                pull_mean_pass = abs(pull_mean) < effective_thresholds['pull_mean_threshold']
+                pull_std_pass = (effective_thresholds['pull_std_min'] < pull_std < effective_thresholds['pull_std_max'])
+                outlier_pass = outlier_fraction < effective_thresholds['outlier_max_fraction']
                 
                 col_pass = pull_mean_pass and pull_std_pass and outlier_pass
                 
@@ -11060,6 +11110,7 @@ class AliasDataFrame:
         dpi: int = 100,
         on_error: str = 'skip',
         verbose: bool = True,
+        validation_thresholds: dict = None,  # Phase 12.4b3
         **kwargs,
     ) -> dict:
         """
@@ -11085,6 +11136,9 @@ class AliasDataFrame:
             dpi: Resolution for saved figures
             on_error: 'skip' or 'raise' on plot errors
             verbose: Print progress
+            validation_thresholds: Override validation thresholds. Keys:
+                'pull_mean_threshold', 'pull_std_min', 'pull_std_max',
+                'outlier_threshold', 'outlier_max_fraction'
             **kwargs: Passed to individual draw() calls
             
         Returns:
@@ -11105,6 +11159,10 @@ class AliasDataFrame:
             # Only pull distributions with asinh transform
             aDF.draw_fit_summary("DTrackFit", include=['pull_1d'], 
                                 pull_transform='asinh')
+            
+            # Custom validation thresholds
+            aDF.draw_fit_summary("DTrackFit", 
+                                validation_thresholds={'pull_mean_threshold': 0.05})
         """
         import warnings
         
@@ -11195,7 +11253,7 @@ class AliasDataFrame:
         if not figure_specs:
             if verbose:
                 print(f"[draw_fit_summary] No figures to generate for categories: {categories}")
-            return {'_validation': self._compute_fit_validation(name, cols)}
+            return {'_validation': self._compute_fit_validation(name, cols, validation_thresholds)}
         
         # Phase 6: Handle save format
         if save_dir and save_format in ('png', 'both'):
@@ -11243,7 +11301,7 @@ class AliasDataFrame:
                             pass
         
         # Phase 10: Compute validation metrics
-        results['_validation'] = self._compute_fit_validation(name, cols)
+        results['_validation'] = self._compute_fit_validation(name, cols, validation_thresholds)
         
         return results
 
