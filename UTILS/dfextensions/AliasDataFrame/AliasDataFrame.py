@@ -10903,6 +10903,137 @@ class AliasDataFrame:
         validation['_overall_pass'] = all_pass
         return validation
 
+    # =========================================================================
+    # Phase 12.4b5: Validation Display Methods
+    # =========================================================================
+    
+    def _add_validation_indicator(self, ax, passed: bool):
+        """
+        Add PASS/FAIL text indicator to axis.
+        
+        Fit-specific method for validation visualization.
+        
+        Args:
+            ax: Matplotlib axis
+            passed: Whether validation passed
+            
+        Returns:
+            matplotlib.text.Text: The created text artist
+        """
+        if passed:
+            text = "PASS"
+            color = 'green'
+        else:
+            text = "FAIL"
+            color = 'red'
+        
+        text_artist = ax.text(
+            0.05, 0.95, text, transform=ax.transAxes,
+            verticalalignment='top', horizontalalignment='left',
+            fontsize=10, fontweight='bold', color=color,
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.7)
+        )
+        
+        return text_artist
+
+    def _add_validation_summary(self, fig, validation_results: dict):
+        """
+        Add validation summary panel to figure.
+        
+        Fit-specific method for overall validation display.
+        
+        Args:
+            fig: Matplotlib figure
+            validation_results: Dict from _compute_fit_validation()
+            
+        Returns:
+            matplotlib.text.Text: The created text artist
+        """
+        lines = ["Validation Summary", "=" * 20]
+        
+        overall = validation_results.get('_overall_pass', False)
+        lines.append(f"Overall: {'PASS' if overall else 'FAIL'}")
+        lines.append("")
+        
+        for col, metrics in validation_results.items():
+            if col.startswith('_'):
+                continue
+            if not isinstance(metrics, dict):
+                continue
+                
+            col_pass = metrics.get('pass', False)
+            status = "PASS" if col_pass else "FAIL"
+            
+            pull_mean = metrics.get('pull_mean', float('nan'))
+            pull_std = metrics.get('pull_std', float('nan'))
+            
+            lines.append(f"{col}: {status}")
+            lines.append(f"  μ={pull_mean:.3f}, σ={pull_std:.3f}")
+        
+        text = "\n".join(lines)
+        
+        text_artist = fig.text(
+            0.02, 0.02, text, fontsize=8, fontfamily='monospace',
+            verticalalignment='bottom',
+            bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8)
+        )
+        
+        return text_artist
+
+    def _compute_statistics(self, name: str) -> dict:
+        """
+        Compute statistics for fit columns.
+        
+        Args:
+            name: Fit result name
+            
+        Returns:
+            dict: Statistics per column {col: {'pull_mean': x, 'pull_std': y, ...}}
+        """
+        import numpy as np
+        
+        if not hasattr(self, '_fit_metadata') or name not in self._fit_metadata:
+            return {}
+        
+        metadata = self._fit_metadata[name]
+        fit_columns = metadata.get('columns', {}).get('fit_columns', [])
+        suffix = metadata.get('parameters', {}).get('suffix', '')
+        
+        stats = {}
+        
+        for col in fit_columns:
+            pull_alias = f'{col}_pull{suffix}'
+            delta_alias = f'{col}_delta{suffix}'
+            
+            col_stats = {}
+            
+            # Pull statistics
+            if pull_alias in self.aliases or pull_alias in self.df.columns:
+                try:
+                    self.materialize_aliases(names=[pull_alias])
+                    values = self.df[pull_alias].dropna().values
+                    col_stats['pull_mean'] = float(np.mean(values))
+                    col_stats['pull_std'] = float(np.std(values))
+                    col_stats['pull_n'] = len(values)
+                except Exception:
+                    pass
+            
+            # Delta statistics
+            if delta_alias in self.aliases or delta_alias in self.df.columns:
+                try:
+                    self.materialize_aliases(names=[delta_alias])
+                    values = self.df[delta_alias].dropna().values
+                    col_stats['delta_mean'] = float(np.mean(values))
+                    col_stats['delta_std'] = float(np.std(values))
+                    col_stats['delta_n'] = len(values)
+                except Exception:
+                    pass
+            
+            if col_stats:
+                stats[col] = col_stats
+        
+        return stats
+
     def _build_residuals_figure_spec(
         self, 
         name: str, 
@@ -11111,6 +11242,10 @@ class AliasDataFrame:
         on_error: str = 'skip',
         verbose: bool = True,
         validation_thresholds: dict = None,  # Phase 12.4b3
+        # Phase 12.4b5: Annotation parameters (all default False for backward compat)
+        show_statistics: bool = False,
+        show_validation: bool = False,
+        show_summary: bool = False,
         **kwargs,
     ) -> dict:
         """
@@ -11139,11 +11274,15 @@ class AliasDataFrame:
             validation_thresholds: Override validation thresholds. Keys:
                 'pull_mean_threshold', 'pull_std_min', 'pull_std_max',
                 'outlier_threshold', 'outlier_max_fraction'
+            show_statistics: Add μ, σ, n annotations to histograms (Phase 12.4b5)
+            show_validation: Add PASS/FAIL indicators to plots (Phase 12.4b5)
+            show_summary: Add validation summary panel to figure (Phase 12.4b5)
             **kwargs: Passed to individual draw() calls
             
         Returns:
             Dict of {category_name: {'fig': fig, 'axes': axes, 'stats': stats}}
             Also includes '_validation' key with automated validation metrics
+            Also includes '_statistics' key with computed statistics (Phase 12.4b5)
             
         Raises:
             KeyError: If name not found in registered fits
@@ -11163,6 +11302,12 @@ class AliasDataFrame:
             # Custom validation thresholds
             aDF.draw_fit_summary("DTrackFit", 
                                 validation_thresholds={'pull_mean_threshold': 0.05})
+            
+            # With statistics and validation display (Phase 12.4b5)
+            aDF.draw_fit_summary("DTrackFit", 
+                                show_statistics=True, 
+                                show_validation=True,
+                                show_summary=True)
         """
         import warnings
         
@@ -11301,7 +11446,90 @@ class AliasDataFrame:
                             pass
         
         # Phase 10: Compute validation metrics
-        results['_validation'] = self._compute_fit_validation(name, cols, validation_thresholds)
+        validation = self._compute_fit_validation(name, cols, validation_thresholds)
+        results['_validation'] = validation
+        
+        # Phase 11 (12.4b5): Compute and store statistics
+        statistics = self._compute_statistics(name)
+        results['_statistics'] = statistics
+        
+        # Phase 12 (12.4b5): Add annotations to residuals figure
+        residuals_key = f'{name}_residuals'
+        if residuals_key in results and results[residuals_key].get('axes'):
+            fig_data = results[residuals_key]
+            axes = fig_data['axes']
+            fig = fig_data.get('fig')
+            
+            suffix = meta['parameters']['suffix']
+            n_cols = len(cols)
+            has_delta = 'delta_1d' in categories
+            has_pull = 'pull_1d' in categories
+            
+            # Iterate through axes
+            for i, ax in enumerate(axes):
+                try:
+                    # Determine which column and type (delta vs pull)
+                    if has_delta and has_pull:
+                        col_idx = i // 2
+                        is_pull = (i % 2 == 1)
+                    elif has_pull:
+                        col_idx = i
+                        is_pull = True
+                    else:
+                        col_idx = i
+                        is_pull = False
+                    
+                    if col_idx >= n_cols:
+                        continue
+                    
+                    col = cols[col_idx]
+                    
+                    # Get values for statistics
+                    if is_pull:
+                        alias = f'{col}_pull{suffix}'
+                        expected_mean, expected_std = 0.0, 1.0
+                    else:
+                        alias = f'{col}_delta{suffix}'
+                        expected_mean, expected_std = 0.0, None
+                    
+                    # Add statistics box (uses DFDraw if available, else inline)
+                    if show_statistics and alias in self.df.columns:
+                        values = self.df[alias].dropna().values
+                        if len(values) > 0:
+                            import numpy as np
+                            mean = np.mean(values)
+                            std = np.std(values)
+                            n = len(values)
+                            
+                            lines = [f"n = {n:,}", f"μ = {mean:.3f}", f"σ = {std:.3f}"]
+                            if is_pull:
+                                lines.append(f"Δμ = {mean - expected_mean:+.3f}")
+                                lines.append(f"Δσ = {std - expected_std:+.3f}")
+                            
+                            text = "\n".join(lines)
+                            ax.text(
+                                0.95, 0.95, text, transform=ax.transAxes,
+                                verticalalignment='top', horizontalalignment='right',
+                                fontsize=8, fontfamily='monospace',
+                                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+                            )
+                    
+                    # Add validation indicator
+                    if show_validation and col in validation:
+                        col_passed = validation[col].get('pass', False)
+                        self._add_validation_indicator(ax, col_passed)
+                        
+                except Exception:
+                    pass  # Skip annotation errors silently
+            
+            # Add summary panel to figure
+            if show_summary and fig is not None:
+                try:
+                    self._add_validation_summary(fig, validation)
+                    # Adjust layout to make room for summary
+                    fig.subplots_adjust(bottom=0.15)
+                except Exception:
+                    pass
         
         return results
 
