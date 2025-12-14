@@ -10077,6 +10077,393 @@ class AliasDataFrame:
         
         return results
 
+    # =========================================================================
+    # Phase 12.4b1: draw_figures() - Composed multi-subplot figures
+    # =========================================================================
+
+    def draw_figures(
+        self,
+        specs: list,
+        save_dir: str = None,
+        *,
+        defaults: dict = None,
+        lazy: bool = None,
+        clear_after: bool = None,
+        max_entries: int = None,
+        entry_begin: int = None,
+        entry_end: int = None,
+        entry_mask: np.ndarray = None,
+        on_error: str = 'skip',
+        verbose: bool = True,
+        **kwargs,
+    ):
+        """
+        Generate multiple figures with composed subplots from declarative specs.
+        
+        Unlike draw_batch() which creates separate figures, this creates
+        multi-subplot canvases suitable for QA dashboards.
+        
+        Args:
+            specs: List of figure specifications. Each spec is a dict:
+                - name: Figure identifier (optional, auto-generated if missing)
+                - plots: List of plot specs (required)
+                - suptitle: Figure super-title (optional)
+                - ncols: Number of columns in grid (default: 2)
+                - figsize: (width, height) tuple (optional, auto-calculated)
+                - savefig: Filename to save (optional)
+                - sharex/sharey: Axis sharing (optional, default: False)
+            save_dir: Directory to save all figures (combined with savefig)
+            defaults: Default parameters applied to all plots
+            lazy: Auto-materialize aliases. Default: self.draw_lazy
+            clear_after: Drop materialized aliases after. Default: self.draw_clear_after
+            max_entries: Limit rows for performance
+            entry_begin/entry_end: Entry range selection
+            entry_mask: Boolean or integer mask for entry selection
+            on_error: 'skip' (continue on error) or 'raise' (stop on error)
+            verbose: Print progress messages
+            **kwargs: Additional defaults for all plots
+            
+        Returns:
+            Dict of {figure_name: {'fig': Figure, 'axes': list, 'stats': list}}
+            On error with on_error='skip': includes 'error' key instead
+            
+        Example:
+            specs = [
+                {
+                    'name': 'residuals',
+                    'suptitle': 'TPC Residuals QA',
+                    'ncols': 2,
+                    'savefig': 'residuals.png',
+                    'plots': [
+                        {'expr': 'dyC2', 'bins': 100},
+                        {'expr': 'dzC2', 'bins': 100},
+                        {'expr': 'dyC2:row', 'type': 'profile'},
+                        {'expr': 'dzC2:row', 'type': 'profile'},
+                    ]
+                }
+            ]
+            results = aDF.draw_figures(specs, save_dir='qa/')
+            
+        Note:
+            Plot specs support short form: 'column' expands to {'expr': 'column'}
+        """
+        # Import dfdraw
+        try:
+            from dfdraw import DFDraw
+        except ImportError:
+            raise ImportError(
+                "dfdraw package not found. Install it or ensure it's in your path."
+            )
+        
+        # Validate specs structure
+        self._validate_figure_specs(specs)
+        
+        # Resolve parameters with 3-level precedence
+        effective_lazy = self._resolve_draw_param(lazy, 'lazy')
+        effective_clear = self._resolve_draw_param(clear_after, 'clear_after')
+        
+        # Merge defaults
+        merged_defaults = {**(defaults or {}), **kwargs}
+        
+        # Track pre-existing materialized aliases
+        already_materialized = self._get_materialized_aliases()
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # PHASE 1: Pre-scan all specs to collect needed aliases
+        # ═══════════════════════════════════════════════════════════════════
+        
+        all_needed = set()
+        for fig_spec in specs:
+            plots = fig_spec.get('plots', [])
+            for plot_spec in plots:
+                # Normalize short form: 'column' -> {'expr': 'column'}
+                if isinstance(plot_spec, str):
+                    plot_spec = {'expr': plot_spec}
+                
+                merged_plot = {**merged_defaults, **plot_spec}
+                expr = merged_plot.get('expr', '')
+                group_by = merged_plot.get('group_by')
+                color = merged_plot.get('color')
+                
+                all_needed.update(self._parse_expr_aliases(expr, group_by, color))
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # PHASE 2: Batch-load branches in lazy reader mode
+        # ═══════════════════════════════════════════════════════════════════
+        
+        if self._lazy_reader is not None:
+            all_required = set()
+            for fig_spec in specs:
+                for plot_spec in fig_spec.get('plots', []):
+                    if isinstance(plot_spec, str):
+                        plot_spec = {'expr': plot_spec}
+                    merged_plot = {**merged_defaults, **plot_spec}
+                    required = self.get_required_branches(
+                        expr=merged_plot.get('expr', ''),
+                        selection=merged_plot.get('selection'),
+                        group_by=merged_plot.get('group_by'),
+                        color=merged_plot.get('color')
+                    )
+                    all_required.update(required)
+            
+            branches_to_load = all_required - self._lazy_reader.loaded_branches
+            
+            # Filter out subframe names (Phase 6.8a fix)
+            all_subframes = set(self._subframes.subframes.keys()) | set(getattr(self, '_subframe_readers', {}).keys())
+            branches_to_load = branches_to_load - all_subframes
+            
+            if branches_to_load:
+                if verbose:
+                    print(f"[draw_figures] Loading {len(branches_to_load)} branches")
+                self.ensure_branches(list(branches_to_load))
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # PHASE 3: Materialize all aliases at once (if lazy)
+        # ═══════════════════════════════════════════════════════════════════
+        
+        if effective_lazy:
+            to_materialize = all_needed - already_materialized
+            if to_materialize:
+                if verbose:
+                    print(f"[draw_figures] Materializing {len(to_materialize)} aliases")
+                self.materialize_aliases(names=list(to_materialize))
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # PHASE 4: Prepare DataFrame (with entry selection if specified)
+        # ═══════════════════════════════════════════════════════════════════
+        
+        has_entry_selection = (entry_begin is not None or 
+                              entry_end is not None or 
+                              entry_mask is not None)
+        
+        if has_entry_selection:
+            df_subset = self._apply_entry_selection(entry_begin, entry_end, entry_mask)
+        else:
+            df_subset = self.df
+        
+        # Apply max_entries limit
+        if max_entries and len(df_subset) > max_entries:
+            df_subset = df_subset.iloc[:max_entries]
+            if verbose:
+                print(f"[draw_figures] Limited to {max_entries} entries")
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # PHASE 5: Generate figures
+        # ═══════════════════════════════════════════════════════════════════
+        
+        results = {}
+        
+        for fig_idx, fig_spec in enumerate(specs):
+            fig_name = fig_spec.get('name', f'figure_{fig_idx}')
+            
+            try:
+                fig_result = self._draw_single_figure(
+                    fig_spec=fig_spec,
+                    df=df_subset,
+                    defaults=merged_defaults,
+                    save_dir=save_dir,
+                    on_error=on_error,
+                    verbose=verbose,
+                )
+                results[fig_name] = fig_result
+                
+                if verbose:
+                    n_plots = len(fig_spec.get('plots', []))
+                    print(f"[draw_figures] Generated: {fig_name} ({n_plots} plots)")
+                    
+            except Exception as e:
+                if on_error == 'raise':
+                    raise
+                if verbose:
+                    print(f"[draw_figures] Error in '{fig_name}': {e}")
+                results[fig_name] = {'fig': None, 'axes': [], 'stats': [], 'error': str(e)}
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # PHASE 6: Cleanup (if requested)
+        # ═══════════════════════════════════════════════════════════════════
+        
+        if effective_clear and not has_entry_selection:
+            we_added = self._get_materialized_aliases() - already_materialized
+            if we_added:
+                if verbose:
+                    print(f"[draw_figures] Clearing {len(we_added)} materialized aliases")
+                self.drop_materialized(we_added)
+        
+        return results
+
+    def _validate_figure_specs(self, specs):
+        """
+        Validate figure specifications structure.
+        
+        Args:
+            specs: List of figure specs to validate
+            
+        Raises:
+            ValueError: If specs structure is invalid
+        """
+        if not isinstance(specs, list):
+            raise ValueError(
+                f"specs must be a list of figure specifications, got {type(specs).__name__}"
+            )
+        
+        if len(specs) == 0:
+            raise ValueError("specs list cannot be empty")
+        
+        for i, spec in enumerate(specs):
+            if not isinstance(spec, dict):
+                raise ValueError(
+                    f"specs[{i}] must be a dict, got {type(spec).__name__}"
+                )
+            
+            if 'plots' not in spec:
+                raise ValueError(
+                    f"specs[{i}] missing required 'plots' key"
+                )
+            
+            plots = spec['plots']
+            if not isinstance(plots, list):
+                raise ValueError(
+                    f"specs[{i}]['plots'] must be a list, got {type(plots).__name__}"
+                )
+            
+            if len(plots) == 0:
+                raise ValueError(
+                    f"specs[{i}]['plots'] cannot be empty"
+                )
+            
+            for j, plot in enumerate(plots):
+                if isinstance(plot, str):
+                    continue  # Short form is valid
+                if not isinstance(plot, dict):
+                    raise ValueError(
+                        f"specs[{i}]['plots'][{j}] must be str or dict, "
+                        f"got {type(plot).__name__}"
+                    )
+                if 'expr' not in plot:
+                    raise ValueError(
+                        f"specs[{i}]['plots'][{j}] missing required 'expr' key"
+                    )
+
+    def _draw_single_figure(
+        self,
+        fig_spec: dict,
+        df: pd.DataFrame,
+        defaults: dict,
+        save_dir: str,
+        on_error: str,
+        verbose: bool,
+    ):
+        """
+        Draw a single figure with multiple subplots.
+        
+        Args:
+            fig_spec: Figure specification dict
+            df: DataFrame to plot from
+            defaults: Default plot parameters
+            save_dir: Directory for saving
+            on_error: 'skip' or 'raise'
+            verbose: Print progress
+            
+        Returns:
+            Dict with 'fig', 'axes', 'stats' keys
+        """
+        from dfdraw import DFDraw
+        
+        plots = fig_spec.get('plots', [])
+        ncols = fig_spec.get('ncols', 2)
+        nrows = (len(plots) + ncols - 1) // ncols
+        
+        # Calculate figure size
+        figsize = fig_spec.get('figsize')
+        if figsize is None:
+            figsize = (5 * ncols, 4 * nrows)
+        
+        sharex = fig_spec.get('sharex', False)
+        sharey = fig_spec.get('sharey', False)
+        
+        # Create figure and axes grid
+        fig, axes = plt.subplots(nrows, ncols, figsize=figsize,
+                                 sharex=sharex, sharey=sharey,
+                                 squeeze=False)
+        
+        # Flatten axes for easy iteration
+        axes_flat = axes.flatten().tolist()
+        
+        # Add super-title
+        suptitle = fig_spec.get('suptitle')
+        if suptitle:
+            fig.suptitle(suptitle, fontsize=14)
+        
+        # Create plotter with data source for axis labels
+        plotter = DFDraw(df)
+        plotter._data_source = self
+        
+        stats_list = []
+        
+        for idx, plot_spec in enumerate(plots):
+            ax = axes_flat[idx]
+            
+            # Normalize short form
+            if isinstance(plot_spec, str):
+                plot_spec = {'expr': plot_spec}
+            
+            # Merge with defaults (plot-level overrides defaults)
+            merged = {**defaults, **plot_spec}
+            expr = merged.pop('expr')
+            plot_type = merged.pop('type', 'auto')
+            title = merged.pop('title', None)
+            
+            try:
+                # Determine plot method
+                method_name = self._resolve_plot_type(expr, plot_type)
+                plot_func = getattr(plotter, method_name)
+                
+                # Draw on the specific axis
+                _, _, stats = plot_func(expr, ax=ax, **merged)
+                stats_list.append(stats)
+                
+                # Set title if provided
+                if title:
+                    ax.set_title(title)
+                    
+            except Exception as e:
+                if on_error == 'raise':
+                    raise
+                # Show error on plot
+                ax.text(0.5, 0.5, f'Error:\n{e}', 
+                       ha='center', va='center',
+                       transform=ax.transAxes, 
+                       color='red', fontsize=9,
+                       wrap=True)
+                ax.set_title(f"[ERROR] {expr}")
+                stats_list.append(None)
+        
+        # Hide unused axes
+        for idx in range(len(plots), len(axes_flat)):
+            axes_flat[idx].set_visible(False)
+        
+        # Adjust layout
+        plt.tight_layout()
+        if suptitle:
+            plt.subplots_adjust(top=0.93)  # Make room for suptitle
+        
+        # Save if requested
+        savefig = fig_spec.get('savefig')
+        if savefig:
+            save_path = savefig
+            if save_dir:
+                save_path = Path(save_dir) / savefig
+                save_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(save_path, dpi=150, bbox_inches='tight')
+            if verbose:
+                print(f"[draw_figures] Saved: {save_path}")
+        
+        return {
+            'fig': fig,
+            'axes': axes_flat[:len(plots)],
+            'stats': stats_list
+        }
+
     def _load_specs_file_for_draw(self, path: str):
         """Load specs from JSON or YAML file for draw_batch."""
         from pathlib import Path
