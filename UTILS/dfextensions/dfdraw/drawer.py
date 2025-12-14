@@ -1026,6 +1026,213 @@ class DFDraw:
         return compute_stats(df, y_expr, x_expr, group_by=group_by)
     
     # =========================================================================
+    # Annotation Methods (Phase 12.4b5)
+    # =========================================================================
+    
+    def add_statistics_box(
+        self, 
+        ax, 
+        values, 
+        position: str = 'upper right',
+        expected_mean: Optional[float] = None, 
+        expected_std: Optional[float] = None,
+        precision: int = 3, 
+        fontsize: int = 8, 
+        alpha: float = 0.5
+    ):
+        """
+        Add statistics annotation box to axis.
+        
+        Generic method for any histogram.
+        
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes
+            Matplotlib axis to annotate.
+        values : array-like
+            Array of values for statistics computation.
+        position : str, default 'upper right'
+            Box position: 'upper right', 'upper left', 'lower right', 'lower left'.
+        expected_mean : float, optional
+            If provided, show Δμ = mean - expected.
+        expected_std : float, optional
+            If provided, show Δσ = std - expected.
+        precision : int, default 3
+            Decimal places for values.
+        fontsize : int, default 8
+            Font size for text.
+        alpha : float, default 0.5
+            Background transparency.
+            
+        Returns
+        -------
+        matplotlib.text.Text
+            The created text artist.
+        """
+        values = np.asarray(values)
+        values = values[~np.isnan(values)]
+        
+        if len(values) == 0:
+            return None
+        
+        mean = np.mean(values)
+        std = np.std(values)
+        n = len(values)
+        
+        # Build annotation text
+        lines = [
+            f"n = {n:,}",
+            f"μ = {mean:.{precision}f}",
+            f"σ = {std:.{precision}f}",
+        ]
+        
+        if expected_mean is not None:
+            delta_mean = mean - expected_mean
+            lines.append(f"Δμ = {delta_mean:+.{precision}f}")
+        
+        if expected_std is not None:
+            delta_std = std - expected_std
+            lines.append(f"Δσ = {delta_std:+.{precision}f}")
+        
+        text = "\n".join(lines)
+        
+        # Position mapping
+        positions = {
+            'upper right': (0.95, 0.95, 'top', 'right'),
+            'upper left': (0.05, 0.95, 'top', 'left'),
+            'lower right': (0.95, 0.05, 'bottom', 'right'),
+            'lower left': (0.05, 0.05, 'bottom', 'left'),
+        }
+        x, y, va, ha = positions.get(position, positions['upper right'])
+        
+        text_artist = ax.text(
+            x, y, text, transform=ax.transAxes,
+            verticalalignment=va, horizontalalignment=ha,
+            fontsize=fontsize, fontfamily='monospace',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=alpha)
+        )
+        
+        return text_artist
+    
+    def add_reference_overlay(
+        self, 
+        ax, 
+        func: str = 'gaussian', 
+        mu: float = 0, 
+        sigma: float = 1,
+        label: Optional[str] = None, 
+        color: str = 'red', 
+        linestyle: str = '--',
+        linewidth: float = 1.5, 
+        show_legend: bool = True, 
+        n_points: int = 100
+    ):
+        """
+        Add reference function overlay scaled to histogram.
+        
+        Generic method for any histogram.
+        
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes
+            Matplotlib axis containing a histogram.
+        func : str or callable, default 'gaussian'
+            'gaussian' or callable f(x) -> y.
+        mu : float, default 0
+            Mean parameter for gaussian.
+        sigma : float, default 1
+            Std parameter for gaussian.
+        label : str, optional
+            Legend label (default: 'N(μ,σ)' for gaussian).
+        color : str, default 'red'
+            Line color.
+        linestyle : str, default '--'
+            Line style.
+        linewidth : float, default 1.5
+            Line width.
+        show_legend : bool, default True
+            Whether to add legend.
+        n_points : int, default 100
+            Number of points for curve.
+            
+        Returns
+        -------
+        matplotlib.lines.Line2D or None
+            The created line artist, or None if no histogram found.
+        """
+        # Get histogram data for scaling
+        patches = ax.patches
+        if not patches:
+            return None
+        
+        # Handle both Rectangle and Polygon patches
+        heights = []
+        widths = []
+        lefts = []
+        
+        for p in patches:
+            if hasattr(p, 'get_height') and hasattr(p, 'get_width'):
+                # Rectangle patch (standard bar histogram)
+                heights.append(p.get_height())
+                widths.append(p.get_width())
+                lefts.append(p.get_x())
+            elif hasattr(p, 'get_xy'):
+                # Polygon patch (stepfilled histogram from DFDraw)
+                # Extract bounds from polygon vertices
+                xy = p.get_xy()
+                if len(xy) > 0:
+                    x_coords = xy[:, 0]
+                    y_coords = xy[:, 1]
+                    lefts.append(np.min(x_coords))
+                    # Approximate height and width from polygon bounds
+                    heights.append(np.max(y_coords))
+                    widths.append(np.max(x_coords) - np.min(x_coords))
+        
+        if not heights or not widths:
+            return None
+        
+        # Calculate total area for scaling
+        if len(heights) > 1:
+            # Multiple patches - sum individual areas
+            total_area = sum(h * w for h, w in zip(heights, widths))
+            x_min = min(lefts)
+            x_max = max(lefts) + widths[-1] if widths else max(lefts)
+        else:
+            # Single polygon - use axis limits
+            xlim = ax.get_xlim()
+            ylim = ax.get_ylim()
+            x_min, x_max = xlim
+            # Estimate area from visible histogram
+            total_area = heights[0] * (x_max - x_min) / 2  # Rough estimate
+        
+        # Extend range slightly
+        x_range = x_max - x_min
+        x = np.linspace(x_min - 0.1 * x_range, x_max + 0.1 * x_range, n_points)
+        
+        # Generate reference curve
+        if func == 'gaussian':
+            y = (1 / (sigma * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x - mu) / sigma)**2)
+            if label is None:
+                label = f'N({mu},{sigma})' if (mu != 0 or sigma != 1) else 'N(0,1)'
+        elif callable(func):
+            y = func(x)
+            if label is None:
+                label = 'Reference'
+        else:
+            raise ValueError(f"func must be 'gaussian' or callable, got {func}")
+        
+        # Scale to histogram
+        y_scaled = y * total_area
+        
+        line_artist, = ax.plot(x, y_scaled, color=color, linestyle=linestyle,
+                               linewidth=linewidth, label=label)
+        
+        if show_legend:
+            ax.legend(loc='upper left', fontsize=8)
+        
+        return line_artist
+    
+    # =========================================================================
     # Batch Processing
     # =========================================================================
     

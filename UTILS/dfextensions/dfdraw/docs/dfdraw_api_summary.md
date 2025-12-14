@@ -31,6 +31,102 @@
 | `hexbin` | `hexbin(expr, gridsize=50, extent=None, norm=None, stats=None, title=None, xlabel=None, ylabel=None, cmap=None, colorbar=True, clabel=None, mincnt=None, vmin=None, vmax=None, **kwargs)` | Draw hexbin plot |
 | `stats` | `stats(expr, selection=None, group_by=None)` | Compute statistics without plotting |
 | `draw_batch` | `draw_batch(specs, save_dir=None, defaults=None, on_error='skip', verbose=True, save_format='png', dpi=150, close_figures=True, **kwargs)` | Batch plot generation from specification dict or YAML/JSON |
+| `add_statistics_box` | `add_statistics_box(ax, values, position='upper right', expected_mean=None, expected_std=None, precision=3, fontsize=8, alpha=0.5)` | Add statistics annotation box to axis |
+| `add_reference_overlay` | `add_reference_overlay(ax, func='gaussian', mu=0, sigma=1, label=None, color='red', linestyle='--', linewidth=1.5, show_legend=True, n_points=100)` | Add reference function overlay scaled to histogram |
+
+### Annotation Methods (Phase 12.4b5)
+
+#### `add_statistics_box()`
+
+```python
+def add_statistics_box(
+    self, 
+    ax, 
+    values, 
+    position: str = 'upper right',
+    expected_mean: Optional[float] = None, 
+    expected_std: Optional[float] = None,
+    precision: int = 3, 
+    fontsize: int = 8, 
+    alpha: float = 0.5
+) -> matplotlib.text.Text:
+    """
+    Add statistics annotation box to axis.
+    
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Matplotlib axis to annotate.
+    values : array-like
+        Array of values for statistics computation.
+    position : str, default 'upper right'
+        Box position: 'upper right', 'upper left', 'lower right', 'lower left'.
+    expected_mean : float, optional
+        If provided, show delta_mu = mean - expected.
+    expected_std : float, optional
+        If provided, show delta_sigma = std - expected.
+    precision : int, default 3
+        Decimal places for values.
+    fontsize : int, default 8
+        Font size for text.
+    alpha : float, default 0.5
+        Background transparency.
+        
+    Returns
+    -------
+    matplotlib.text.Text or None
+        The created text artist, or None if values is empty.
+    """
+```
+
+#### `add_reference_overlay()`
+
+```python
+def add_reference_overlay(
+    self, 
+    ax, 
+    func: str = 'gaussian', 
+    mu: float = 0, 
+    sigma: float = 1,
+    label: Optional[str] = None, 
+    color: str = 'red', 
+    linestyle: str = '--',
+    linewidth: float = 1.5, 
+    show_legend: bool = True, 
+    n_points: int = 100
+) -> matplotlib.lines.Line2D:
+    """
+    Add reference function overlay scaled to histogram.
+    
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Matplotlib axis containing a histogram.
+    func : str or callable, default 'gaussian'
+        'gaussian' or callable f(x) -> y.
+    mu : float, default 0
+        Mean parameter for gaussian.
+    sigma : float, default 1
+        Std parameter for gaussian.
+    label : str, optional
+        Legend label (default: 'N(mu,sigma)' for gaussian).
+    color : str, default 'red'
+        Line color.
+    linestyle : str, default '--'
+        Line style.
+    linewidth : float, default 1.5
+        Line width.
+    show_legend : bool, default True
+        Whether to add legend.
+    n_points : int, default 100
+        Number of points for curve.
+        
+    Returns
+    -------
+    matplotlib.lines.Line2D or None
+        The created line artist, or None if no histogram found.
+    """
+```
 
 ### histogram.py - Functions
 
@@ -143,15 +239,6 @@ stats_dict = {
 
 ---
 
-## Files Missing/Needing Enhanced Docstrings
-
-| File | Issue | Suggestion |
-|------|-------|------------|
-| `stats.py` | Module docstring is minimal | Add: "Includes `compute_stats()` for DataFrame statistics and `format_stats_box()` for display formatting." |
-| `__init__.py` | Not provided | Should export: `DFDraw`, `set_style`, `get_style`, `list_styles`, `save_style`, `load_style` |
-
----
-
 ## Comparison to ROOT TTree::Draw
 
 | ROOT | dfdraw | Notes |
@@ -165,63 +252,20 @@ stats_dict = {
 
 ---
 
-## Phase 12.4b5 Placeholder Methods
+## Test Coverage
 
-```python
-# To be added in drawer.py:
+| Test File | Coverage |
+|-----------|----------|
+| `test_drawer.py` | DFDraw class init, expression parsing, selection, sampling, dispatch |
+| `test_histogram.py` | 1D histogram: bins, range, norm, labels, selection, grouping, stats |
+| `test_scatter.py` | Scatter: color/size mapping, jitter, grouping, stats |
+| `test_profile.py` | Profile: bins, error types, grouping, labels |
+| `test_hexbin.py` | Hexbin: gridsize, colormap, normalization, faceting |
+| `test_hist2d.py` | 2D histogram: bins, colormap, normalization |
+| `test_facet.py` | Faceted layouts for all plot types |
+| `test_style.py` | Style get/set/save/load, predefined styles |
+| `test_batch.py` | Batch processing, YAML/JSON loading, error handling |
+| `test_adf_integration.py` | AliasDataFrame duck-typing, axis titles |
+| `test_validation_display.py` | Statistics box, reference overlay |
 
-def add_statistics_box(self, ax, values, position='upper right', 
-                       fields=['n', 'mean', 'std'], fontsize=10,
-                       alpha=0.8, boxstyle='round'):
-    """
-    Add statistics annotation box to existing axis.
-    
-    Parameters
-    ----------
-    ax : Axes
-        Target axes.
-    values : dict or array-like
-        Statistics dict or raw values to compute stats from.
-    position : str
-        Box position: 'upper right', 'upper left', 'lower right', 'lower left'.
-    fields : list
-        Statistics fields to display.
-    fontsize : int
-        Text font size.
-    alpha : float
-        Box transparency.
-    boxstyle : str
-        Box style ('round', 'square').
-    """
-    pass  # TODO: Implement in Phase 12.4b5
-
-
-def add_reference_overlay(self, ax, func='gaussian', mu=0, sigma=1,
-                          scale='auto', color='red', linestyle='--',
-                          linewidth=1.5, label=None, **kwargs):
-    """
-    Add reference function overlay scaled to histogram.
-    
-    Parameters
-    ----------
-    ax : Axes
-        Target axes with histogram.
-    func : str or callable
-        Reference function: 'gaussian', 'poisson', or custom callable.
-    mu : float
-        Mean for Gaussian.
-    sigma : float
-        Std for Gaussian.
-    scale : str or float
-        'auto' to match histogram peak, or explicit scale factor.
-    color : str
-        Line color.
-    linestyle : str
-        Line style.
-    linewidth : float
-        Line width.
-    label : str
-        Legend label.
-    """
-    pass  # TODO: Implement in Phase 12.4b5
-```
+**Total tests:** 232 passing
