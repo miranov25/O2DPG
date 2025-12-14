@@ -10464,6 +10464,789 @@ class AliasDataFrame:
             'stats': stats_list
         }
 
+    # =========================================================================
+    # Phase 12.4b2: Fit Result Registration and QA Visualization
+    # =========================================================================
+
+    # Default validation thresholds for fit quality assessment
+    _FIT_VALIDATION_DEFAULTS = {
+        'pull_mean_threshold': 0.1,
+        'pull_std_min': 0.8,
+        'pull_std_max': 1.2,
+        'outlier_threshold': 5.0,
+        'outlier_max_fraction': 0.05,
+    }
+
+    def _validate_fit_metadata(self, metadata: dict, validate: str = 'warn') -> list:
+        """
+        Validate fit metadata schema.
+        
+        Args:
+            metadata: Metadata dict from make_parallel_fit_vX
+            validate: 'raise' | 'warn' | 'skip'
+            
+        Returns:
+            List of validation issues (empty if valid)
+            
+        Raises:
+            ValueError: If validate='raise' and issues found
+        """
+        issues = []
+        
+        if not isinstance(metadata, dict):
+            issues.append(f"metadata must be dict, got {type(metadata).__name__}")
+            if validate == 'raise':
+                raise ValueError(f"Metadata validation failed: {issues}")
+            elif validate == 'warn':
+                import warnings
+                warnings.warn(f"Metadata validation issues: {issues}")
+            return issues
+        
+        # Check required top-level keys
+        required_keys = ['formulas', 'columns', 'parameters']
+        for key in required_keys:
+            if key not in metadata:
+                issues.append(f"Missing required key: '{key}'")
+        
+        # Check columns structure
+        if 'columns' in metadata:
+            columns = metadata['columns']
+            if not isinstance(columns, dict):
+                issues.append("'columns' must be a dict")
+            else:
+                if 'gb_columns' not in columns:
+                    issues.append("Missing 'columns.gb_columns'")
+                if 'fit_columns' not in columns:
+                    issues.append("Missing 'columns.fit_columns'")
+        
+        # Check formulas structure
+        if 'formulas' in metadata:
+            if not isinstance(metadata['formulas'], dict):
+                issues.append("'formulas' must be a dict")
+        
+        # Check parameters structure
+        if 'parameters' in metadata:
+            if not isinstance(metadata['parameters'], dict):
+                issues.append("'parameters' must be a dict")
+        
+        # Handle validation mode
+        if issues:
+            msg = f"Metadata validation issues: {issues}"
+            if validate == 'raise':
+                raise ValueError(msg)
+            elif validate == 'warn':
+                import warnings
+                warnings.warn(msg)
+        
+        return issues
+
+    def register_fit_result(
+        self,
+        name: str,
+        dfGB: pd.DataFrame,
+        metadata: dict = None,
+        *,
+        index_columns: list = None,
+        add_predictions: bool = True,
+        add_residuals: bool = True,
+        add_pulls: bool = True,
+        pull_type: str = None,
+        auto_alias_subframe: bool = True,
+        prediction_dtype=None,
+        residual_dtype=None,
+        pull_dtype=None,
+        validate: str = 'warn',
+    ) -> 'AliasDataFrame':
+        """
+        Register groupby fit result as subframe with auto-generated aliases.
+        
+        This is the main integration point for fit results from groupby-regression.
+        It performs:
+        1. Registers dfGB as a subframe with appropriate index columns
+        2. Auto-aliases subframe columns (makes coefficients available)
+        3. Creates prediction aliases from metadata['formulas']
+        4. Creates residual aliases from metadata['residual_formulas']
+        5. Creates pull aliases from metadata['pull_formulas']
+        6. Stores metadata for later use (draw_fit_summary, schema export)
+        
+        Args:
+            name: Subframe name (e.g., "DTrackFitAll")
+            dfGB: DataFrame with fit coefficients from make_parallel_fit_vX
+            metadata: Metadata dict from make_parallel_fit_vX(return_metadata=True)
+                      If None, only registers subframe (backward compatibility)
+            index_columns: Override gb_columns from metadata. Required if metadata=None.
+            add_predictions: Create prediction aliases from metadata['formulas']
+            add_residuals: Create residual aliases from metadata['residual_formulas']
+            add_pulls: Create pull aliases from metadata['pull_formulas']
+            pull_type: Which pull to create: 'rms', 'mad', or 'both'
+                       None → use metadata['parameters']['pull_default'] or 'rms'
+            auto_alias_subframe: Call auto_alias_subframe() after registration
+            prediction_dtype: Override dtype for prediction aliases (default: float32)
+            residual_dtype: Override dtype for residual aliases (default: float32)
+            pull_dtype: Override dtype for pull aliases (default: float32)
+            validate: Metadata validation mode: 'raise' | 'warn' | 'skip'
+            
+        Returns:
+            AliasDataFrame wrapping dfGB (the registered subframe)
+            
+        Raises:
+            ValueError: If metadata is invalid (when validate='raise')
+            ValueError: If metadata=None and index_columns not provided
+            
+        Example:
+            # With metadata (recommended)
+            _, dfGB, meta = make_parallel_fit_v4(..., return_metadata=True)
+            aDF.register_fit_result("DTrackFit", dfGB, meta)
+            
+            # Access auto-generated aliases
+            aDF.draw('dyC2_pred_DTrackFit:sector', type='profile')
+            aDF.draw('dyC2_pull_DTrackFit', bins=100)  # Should be ~N(0,1)
+            
+            # Without metadata (backward compat)
+            aDF.register_fit_result("Fit", dfGB, index_columns=['track', 'orbit'])
+        """
+        import warnings
+        
+        # Phase 1: Handle backward compatibility (no metadata)
+        if metadata is None:
+            if index_columns is None:
+                raise ValueError(
+                    "index_columns required when metadata not provided. "
+                    "Use make_parallel_fit_vX(return_metadata=True) for full functionality."
+                )
+            warnings.warn(
+                f"Registering '{name}' without metadata. "
+                "Auto-generated prediction/residual/pull aliases will not be available.",
+                UserWarning
+            )
+            aDFGB = AliasDataFrame(dfGB)
+            self.register_subframe(name, aDFGB, index_columns=index_columns)
+            if auto_alias_subframe:
+                self.auto_alias_subframe(name)
+            return aDFGB
+        
+        # Phase 2: Validate metadata schema
+        self._validate_fit_metadata(metadata, validate=validate)
+        
+        # Phase 3: Check for duplicate registration
+        if not hasattr(self, '_fit_metadata'):
+            self._fit_metadata = {}
+        
+        if name in self._fit_metadata:
+            old_suffix = self._fit_metadata[name].get('parameters', {}).get('suffix', '?')
+            warnings.warn(
+                f"Overwriting existing fit result '{name}' (old suffix: {old_suffix})",
+                UserWarning
+            )
+        
+        # Phase 4: Register subframe
+        idx_cols = index_columns or metadata['columns']['gb_columns']
+        aDFGB = AliasDataFrame(dfGB)
+        self.register_subframe(name, aDFGB, index_columns=idx_cols)
+        
+        # Phase 5: Auto-alias subframe columns
+        if auto_alias_subframe:
+            self.auto_alias_subframe(name)
+        
+        # Phase 6: Store metadata
+        self._fit_metadata[name] = metadata
+        
+        # Phase 7: Resolve pull_type from metadata if not specified
+        effective_pull_type = pull_type
+        if effective_pull_type is None:
+            effective_pull_type = metadata.get('parameters', {}).get('pull_default', 'rms')
+        
+        # Default dtypes
+        pred_dtype = prediction_dtype if prediction_dtype is not None else np.float32
+        res_dtype = residual_dtype if residual_dtype is not None else np.float32
+        pl_dtype = pull_dtype if pull_dtype is not None else np.float32
+        
+        # Phase 8a: Add prediction aliases
+        if add_predictions and 'formulas' in metadata:
+            for alias_name, formula in metadata['formulas'].items():
+                self.add_alias(alias_name, formula, dtype=pred_dtype)
+        
+        # Phase 8b: Add residual aliases
+        if add_residuals and 'residual_formulas' in metadata:
+            for alias_name, formula in metadata['residual_formulas'].items():
+                self.add_alias(alias_name, formula, dtype=res_dtype)
+        
+        # Phase 8c: Add pull aliases (filtered by pull_type)
+        if add_pulls and 'pull_formulas' in metadata:
+            for alias_name, formula in metadata['pull_formulas'].items():
+                is_mad = '_pull_mad_' in alias_name or alias_name.endswith('_pull_mad')
+                
+                if effective_pull_type == 'rms' and is_mad:
+                    continue
+                if effective_pull_type == 'mad' and not is_mad:
+                    continue
+                # effective_pull_type == 'both' includes all
+                
+                self.add_alias(alias_name, formula, dtype=pl_dtype)
+        
+        return aDFGB
+
+    def get_fit_metadata(self, name: str = None) -> dict:
+        """
+        Get stored fit metadata.
+        
+        Args:
+            name: Specific fit name, or None for all registered fits
+            
+        Returns:
+            If name provided: metadata dict for that fit
+            If name is None: dict of {name: metadata} for all fits
+            
+        Raises:
+            KeyError: If name not found in registered fits
+            
+        Example:
+            meta = aDF.get_fit_metadata("DTrackFit")
+            print(f"Fit columns: {meta['columns']['fit_columns']}")
+        """
+        all_meta = getattr(self, '_fit_metadata', {})
+        
+        if name is None:
+            return dict(all_meta)
+        
+        if name not in all_meta:
+            available = list(all_meta.keys())
+            raise KeyError(
+                f"No fit result registered with name '{name}'. "
+                f"Available: {available}"
+            )
+        
+        return all_meta[name]
+
+    def list_fit_results(self) -> list:
+        """
+        List all registered fit result names.
+        
+        Returns:
+            List of fit names registered via register_fit_result()
+            
+        Example:
+            print(aDF.list_fit_results())  # ['DTrackFit', 'DSectorCorr']
+        """
+        return list(getattr(self, '_fit_metadata', {}).keys())
+
+    def _apply_pull_transform(self, pull_alias: str, transform: str) -> str:
+        """
+        Create transformed pull alias if needed (idempotent).
+        
+        Args:
+            pull_alias: Original pull alias name
+            transform: None | 'asinh' | 'tanh'
+            
+        Returns:
+            Alias name to use (original or transformed)
+        """
+        if transform is None:
+            return pull_alias
+        
+        new_alias = f'{pull_alias}_{transform}'
+        
+        # Idempotent: don't recreate if exists
+        if new_alias not in self.aliases:
+            if transform == 'asinh':
+                self.add_alias(new_alias, f'np.arcsinh({pull_alias})')
+            elif transform == 'tanh':
+                self.add_alias(new_alias, f'np.tanh({pull_alias})')
+            else:
+                raise ValueError(
+                    f"Unknown pull_transform: '{transform}'. Use None, 'asinh', or 'tanh'"
+                )
+        
+        return new_alias
+
+    def _add_gaussian_overlay(self, ax, mu: float = 0, sigma: float = 1, 
+                               label: str = 'N(0,1)', color: str = 'r', 
+                               linestyle: str = '--', linewidth: float = 2):
+        """
+        Add N(0,1) reference curve to pull histogram.
+        
+        Args:
+            ax: Matplotlib axis
+            mu: Mean of Gaussian
+            sigma: Std of Gaussian
+            label: Legend label
+            color: Line color
+            linestyle: Line style
+            linewidth: Line width
+        """
+        x = np.linspace(mu - 4*sigma, mu + 4*sigma, 100)
+        y = (1 / (sigma * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x - mu) / sigma)**2)
+        ax.plot(x, y, color=color, linestyle=linestyle, linewidth=linewidth, label=label)
+
+    def _compute_fit_validation(self, name: str, fit_columns: list = None) -> dict:
+        """
+        Compute validation metrics for fit result.
+        
+        Args:
+            name: Registered fit name
+            fit_columns: Subset of fit columns (default: all)
+            
+        Returns:
+            Dict with per-column validation results and _overall_pass
+        """
+        meta = self._fit_metadata[name]
+        suffix = meta['parameters']['suffix']
+        cols = fit_columns or meta['columns']['fit_columns']
+        
+        thresholds = self._FIT_VALIDATION_DEFAULTS
+        validation = {}
+        all_pass = True
+        
+        for col in cols:
+            pull_alias = f'{col}_pull{suffix}'
+            
+            # Skip if pull alias doesn't exist
+            if pull_alias not in self.aliases:
+                validation[col] = {'error': f'Pull alias {pull_alias} not found'}
+                all_pass = False
+                continue
+            
+            try:
+                # Materialize if needed
+                if pull_alias not in self.df.columns:
+                    self.materialize_alias(pull_alias)
+                
+                pull_values = self.df[pull_alias].dropna().values
+                
+                if len(pull_values) == 0:
+                    validation[col] = {'error': 'No valid pull values'}
+                    all_pass = False
+                    continue
+                
+                # Compute metrics
+                pull_mean = float(np.mean(pull_values))
+                pull_std = float(np.std(pull_values))
+                
+                # Outlier fraction (|pull| > threshold)
+                outlier_count = np.sum(np.abs(pull_values) > thresholds['outlier_threshold'])
+                outlier_fraction = outlier_count / len(pull_values)
+                
+                # Pass/fail checks
+                pull_mean_pass = abs(pull_mean) < thresholds['pull_mean_threshold']
+                pull_std_pass = (thresholds['pull_std_min'] < pull_std < thresholds['pull_std_max'])
+                outlier_pass = outlier_fraction < thresholds['outlier_max_fraction']
+                
+                col_pass = pull_mean_pass and pull_std_pass and outlier_pass
+                
+                validation[col] = {
+                    'pull_mean': pull_mean,
+                    'pull_std': pull_std,
+                    'pull_mean_pass': pull_mean_pass,
+                    'pull_std_pass': pull_std_pass,
+                    'outlier_fraction': float(outlier_fraction),
+                    'outlier_pass': outlier_pass,
+                    '_pass': col_pass,
+                }
+                
+                if not col_pass:
+                    all_pass = False
+                    
+            except Exception as e:
+                validation[col] = {'error': str(e)}
+                all_pass = False
+        
+        validation['_overall_pass'] = all_pass
+        return validation
+
+    def _build_residuals_figure_spec(
+        self, 
+        name: str, 
+        cols: list, 
+        meta: dict, 
+        categories: set,
+        pull_transform: str = None,
+    ) -> dict:
+        """Build figure spec for residual and pull distributions (flat list)."""
+        suffix = meta['parameters']['suffix']
+        
+        plots = []
+        for col in cols:
+            if 'delta_1d' in categories:
+                plots.append({
+                    'expr': f'{col}_delta{suffix}',
+                    'type': 'hist',
+                    'bins': 100,
+                    'title': f'{col} Δ',
+                })
+            
+            if 'pull_1d' in categories:
+                pull_alias = f'{col}_pull{suffix}'
+                if pull_transform:
+                    pull_alias = self._apply_pull_transform(pull_alias, pull_transform)
+                
+                title = f'{col} pull'
+                if pull_transform:
+                    title += f' ({pull_transform})'
+                
+                plots.append({
+                    'expr': pull_alias,
+                    'type': 'hist',
+                    'bins': 100,
+                    'title': title,
+                })
+        
+        # Determine ncols based on categories
+        n_plot_cols = sum([
+            'delta_1d' in categories,
+            'pull_1d' in categories,
+        ])
+        
+        return {
+            'name': f'{name}_residuals',
+            'suptitle': f'{name}: Residual Distributions',
+            'plots': plots,
+            'ncols': max(n_plot_cols, 1),
+            'figsize': (5 * max(n_plot_cols, 1), 3 * len(cols)),
+            'savefig': f'{name}_residuals',
+        }
+
+    def _build_error_diagnostics_spec(
+        self, 
+        name: str, 
+        cols: list, 
+        meta: dict, 
+        categories: set,
+    ) -> dict:
+        """Build figure spec for delta/pull vs error scatter plots (flat list)."""
+        suffix = meta['parameters']['suffix']
+        
+        plots = []
+        for col in cols:
+            rms_col = f'{col}_rms{suffix}'
+            
+            if 'delta_vs_error' in categories:
+                plots.append({
+                    'expr': f'{col}_delta{suffix}:{rms_col}',
+                    'type': 'scatter',
+                    'title': f'{col}: Δ vs σ',
+                    'alpha': 0.3,
+                })
+            
+            if 'pull_vs_error' in categories:
+                plots.append({
+                    'expr': f'{col}_pull{suffix}:{rms_col}',
+                    'type': 'scatter',
+                    'title': f'{col}: pull vs σ',
+                    'alpha': 0.3,
+                })
+        
+        n_plot_cols = sum([
+            'delta_vs_error' in categories,
+            'pull_vs_error' in categories,
+        ])
+        
+        return {
+            'name': f'{name}_error_diagnostics',
+            'suptitle': f'{name}: Error Diagnostics',
+            'plots': plots,
+            'ncols': max(n_plot_cols, 1),
+            'figsize': (5 * max(n_plot_cols, 1), 4 * len(cols)),
+            'savefig': f'{name}_error_diagnostics',
+        }
+
+    def _build_quality_figure_spec(self, name: str, cols: list, meta: dict) -> dict:
+        """Build figure spec for RMS/MAD distributions (flat list)."""
+        suffix = meta['parameters']['suffix']
+        
+        plots = []
+        for col in cols:
+            quality_cols = meta['columns'].get('quality', {}).get(col, [])
+            
+            rms_col = f'{col}_rms{suffix}'
+            mad_col = f'{col}_mad{suffix}'
+            
+            if rms_col in quality_cols or not quality_cols:
+                plots.append({
+                    'expr': rms_col,
+                    'type': 'hist',
+                    'bins': 100,
+                    'title': f'{col} RMS',
+                })
+            
+            if mad_col in quality_cols or not quality_cols:
+                plots.append({
+                    'expr': mad_col,
+                    'type': 'hist',
+                    'bins': 100,
+                    'title': f'{col} MAD',
+                })
+        
+        return {
+            'name': f'{name}_quality',
+            'suptitle': f'{name}: Fit Quality (Error Estimates)',
+            'plots': plots,
+            'ncols': 2,
+            'figsize': (10, 3 * len(cols)),
+            'savefig': f'{name}_quality',
+        }
+
+    def _build_coefficients_figure_spec(self, name: str, col: str, meta: dict) -> dict:
+        """Build figure spec for coefficient distributions for one fit column (flat list)."""
+        suffix = meta['parameters']['suffix']
+        coefs = meta['columns'].get('coefficients', {}).get(col, [])
+        
+        if not coefs:
+            return None
+        
+        plots = []
+        for coef in coefs:
+            plots.append({
+                'expr': coef,
+                'type': 'hist',
+                'bins': 100,
+                'title': coef.replace(suffix, ''),
+            })
+        
+        n_coefs = len(coefs)
+        n_grid_cols = min(4, n_coefs)
+        n_grid_rows = (n_coefs + n_grid_cols - 1) // n_grid_cols
+        
+        return {
+            'name': f'{name}_coefficients_{col}',
+            'suptitle': f'{name}: Coefficients for {col}',
+            'plots': plots,
+            'ncols': n_grid_cols,
+            'figsize': (4 * n_grid_cols, 3 * n_grid_rows),
+            'savefig': f'{name}_coefficients_{col}',
+        }
+
+    def _build_diagnostics_figure_spec(self, name: str, meta: dict) -> dict:
+        """Build figure spec for fit diagnostics (nPoints, chi2, etc.) (flat list)."""
+        diag_cols = meta['columns'].get('diagnostics', [])
+        
+        if not diag_cols:
+            return None
+        
+        plots = []
+        for diag in diag_cols:
+            plots.append({
+                'expr': diag,
+                'type': 'hist',
+                'bins': 100,
+                'title': diag,
+            })
+        
+        n_diag = len(diag_cols)
+        n_grid_cols = min(4, n_diag)
+        n_grid_rows = (n_diag + n_grid_cols - 1) // n_grid_cols
+        
+        return {
+            'name': f'{name}_diagnostics',
+            'suptitle': f'{name}: Fit Diagnostics',
+            'plots': plots,
+            'ncols': n_grid_cols,
+            'figsize': (4 * n_grid_cols, 3 * n_grid_rows),
+            'savefig': f'{name}_diagnostics',
+        }
+
+    def draw_fit_summary(
+        self,
+        name: str,
+        save_dir: str = None,
+        *,
+        include: list = None,
+        exclude: list = None,
+        pull_transform: str = None,
+        gaussian_overlay: bool = True,
+        fit_columns: list = None,
+        entry_end: int = None,
+        save_format: str = 'png',
+        figsize: tuple = None,
+        dpi: int = 100,
+        on_error: str = 'skip',
+        verbose: bool = True,
+        **kwargs,
+    ) -> dict:
+        """
+        Generate comprehensive QA plots for a registered fit result.
+        
+        Uses draw_figures() internally to create multi-panel dashboards
+        with standardized layouts for fit quality assessment.
+        
+        Args:
+            name: Registered fit name from register_fit_result()
+            save_dir: Directory to save figures (None = don't save)
+            include: List of plot categories to include (default: core categories)
+                     Categories: 'delta_1d', 'pull_1d', 'delta_vs_error',
+                                'pull_vs_error', 'coefficients', 'quality',
+                                'diagnostics'
+            exclude: List of plot categories to exclude
+            pull_transform: Transform for pull display: None, 'asinh', 'tanh'
+            gaussian_overlay: Add N(0,1) overlay to pull histograms
+            fit_columns: Subset of fit columns to plot (default: all from metadata)
+            entry_end: Limit entries for quick testing (default: None = all)
+            save_format: 'png' | 'pdf' | 'both'
+            figsize: Override figure size (default: auto-calculated)
+            dpi: Resolution for saved figures
+            on_error: 'skip' or 'raise' on plot errors
+            verbose: Print progress
+            **kwargs: Passed to individual draw() calls
+            
+        Returns:
+            Dict of {category_name: {'fig': fig, 'axes': axes, 'stats': stats}}
+            Also includes '_validation' key with automated validation metrics
+            
+        Raises:
+            KeyError: If name not found in registered fits
+            
+        Example:
+            # Full QA suite
+            aDF.draw_fit_summary("DTrackFit", save_dir="qa/")
+            
+            # Quick test (first 10k entries, skip coefficients)
+            aDF.draw_fit_summary("DTrackFit", entry_end=10000, 
+                                exclude=['coefficients', 'diagnostics'])
+            
+            # Only pull distributions with asinh transform
+            aDF.draw_fit_summary("DTrackFit", include=['pull_1d'], 
+                                pull_transform='asinh')
+        """
+        import warnings
+        
+        # Phase 1: Validate fit exists
+        if not hasattr(self, '_fit_metadata') or name not in self._fit_metadata:
+            available = list(getattr(self, '_fit_metadata', {}).keys())
+            raise KeyError(
+                f"No fit result registered with name '{name}'. "
+                f"Available: {available}"
+            )
+        
+        meta = self._fit_metadata[name]
+        suffix = meta['parameters']['suffix']
+        
+        # Phase 2: Large dataset warning
+        if entry_end is None and len(self.df) > 1_000_000:
+            warnings.warn(
+                f"Large dataset ({len(self.df):,} rows). Consider using entry_end "
+                f"for faster iteration. Example: entry_end=100000",
+                UserWarning
+            )
+        
+        # Phase 3: Determine which categories to generate
+        default_categories = ['delta_1d', 'pull_1d', 'quality']
+        all_categories = ['delta_1d', 'pull_1d', 'delta_vs_error', 'pull_vs_error',
+                          'quality', 'coefficients', 'diagnostics']
+        
+        if include is not None:
+            categories = set(include)
+        else:
+            categories = set(default_categories)
+        
+        if exclude:
+            categories -= set(exclude)
+        
+        # Validate categories
+        invalid = categories - set(all_categories)
+        if invalid:
+            warnings.warn(f"Unknown categories ignored: {invalid}")
+            categories -= invalid
+        
+        # Phase 4: Determine fit columns to process
+        cols = fit_columns or meta['columns']['fit_columns']
+        
+        # Phase 5: Build figure specs for draw_figures()
+        figure_specs = []
+        
+        # Delta & Pull 1D distributions
+        if 'delta_1d' in categories or 'pull_1d' in categories:
+            residuals_spec = self._build_residuals_figure_spec(
+                name, cols, meta, categories, pull_transform
+            )
+            if figsize:
+                residuals_spec['figsize'] = figsize
+            figure_specs.append(residuals_spec)
+        
+        # Delta/Pull vs Error
+        if 'delta_vs_error' in categories or 'pull_vs_error' in categories:
+            error_spec = self._build_error_diagnostics_spec(name, cols, meta, categories)
+            if figsize:
+                error_spec['figsize'] = figsize
+            figure_specs.append(error_spec)
+        
+        # Quality (RMS/MAD)
+        if 'quality' in categories:
+            quality_spec = self._build_quality_figure_spec(name, cols, meta)
+            if figsize:
+                quality_spec['figsize'] = figsize
+            figure_specs.append(quality_spec)
+        
+        # Coefficients (one figure per fit column)
+        if 'coefficients' in categories:
+            for col in cols:
+                coef_spec = self._build_coefficients_figure_spec(name, col, meta)
+                if coef_spec:
+                    if figsize:
+                        coef_spec['figsize'] = figsize
+                    figure_specs.append(coef_spec)
+        
+        # Diagnostics
+        if 'diagnostics' in categories:
+            diag_spec = self._build_diagnostics_figure_spec(name, meta)
+            if diag_spec:
+                if figsize:
+                    diag_spec['figsize'] = figsize
+                figure_specs.append(diag_spec)
+        
+        if not figure_specs:
+            if verbose:
+                print(f"[draw_fit_summary] No figures to generate for categories: {categories}")
+            return {'_validation': self._compute_fit_validation(name, cols)}
+        
+        # Phase 6: Handle save format
+        if save_dir and save_format in ('png', 'both'):
+            for spec in figure_specs:
+                if 'savefig' in spec and not spec['savefig'].endswith('.png'):
+                    spec['savefig'] = f"{spec['savefig']}.png"
+        
+        # Phase 7: Call draw_figures()
+        # Note: lazy=True ensures aliases are materialized before plotting
+        results = self.draw_figures(
+            figure_specs,
+            save_dir=save_dir,
+            entry_end=entry_end,
+            on_error=on_error,
+            verbose=verbose,
+            lazy=True,  # Required for alias resolution
+            **kwargs
+        )
+        
+        # Phase 8: Save PDF if requested
+        if save_dir and save_format in ('pdf', 'both'):
+            from pathlib import Path
+            save_path = Path(save_dir)
+            save_path.mkdir(parents=True, exist_ok=True)
+            
+            for fig_name, fig_data in results.items():
+                if fig_data.get('fig') is not None:
+                    pdf_name = f"{fig_name}.pdf"
+                    fig_data['fig'].savefig(save_path / pdf_name, dpi=dpi, bbox_inches='tight')
+                    if verbose:
+                        print(f"[draw_fit_summary] Saved PDF: {save_path / pdf_name}")
+        
+        # Phase 9: Add Gaussian overlay to pull histograms
+        if gaussian_overlay and 'pull_1d' in categories:
+            residuals_key = f'{name}_residuals'
+            if residuals_key in results and results[residuals_key].get('axes'):
+                axes = results[residuals_key]['axes']
+                only_pulls = 'delta_1d' not in categories
+                
+                for i, ax in enumerate(axes):
+                    if only_pulls or (i % 2 == 1):
+                        try:
+                            self._add_gaussian_overlay(ax)
+                        except Exception:
+                            pass
+        
+        # Phase 10: Compute validation metrics
+        results['_validation'] = self._compute_fit_validation(name, cols)
+        
+        return results
+
     def _load_specs_file_for_draw(self, path: str):
         """Load specs from JSON or YAML file for draw_batch."""
         from pathlib import Path
