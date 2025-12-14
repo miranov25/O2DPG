@@ -31,6 +31,10 @@ from .AliasDataFrame import (
     VERBOSE_MINIMAL,
     VERBOSE_DEFAULT,
     VERBOSE_FULL,
+    # Feature availability flags
+    NUMBA_AVAILABLE,
+    # Schema constants
+    SCHEMA_METADATA_KEY,
 )
 
 __all__ = [
@@ -48,5 +52,8 @@ __all__ = [
     'VERBOSE_MINIMAL',
     'VERBOSE_DEFAULT',
     'VERBOSE_FULL',
+    'NUMBA_AVAILABLE',
+    # Schema constants
+    'SCHEMA_METADATA_KEY',
 ]
 
