@@ -8827,11 +8827,12 @@ class AliasDataFrame:
             # Check if this is a decompression alias
             is_decompression = any(
                 info_item.get('decompress_expr') == expr 
-                for info_item in self.compression_info.values() 
+                for info_item in self.compression_info.values()
                 if isinstance(info_item, dict)
             )
             dtype_obj = self.alias_dtypes.get(alias)
-            dtype_str = dtype_obj.__name__ if dtype_obj else 'unspecified'
+            #dtype_str = dtype_obj.__name__ if dtype_obj else 'unspecified'
+            dtype_str = dtype_obj.__name__ if hasattr(dtype_obj, '__name__') else str(dtype_obj) if dtype_obj else 'unspecified'
             
             if is_decompression:
                 decompression_aliases.append((alias, expr, dtype_str))
@@ -8930,6 +8931,7 @@ class AliasDataFrame:
                 'name': sf_name,
                 'rows': len(sf.df),
                 'columns': len(sf.df.columns),
+                'memory_mb': sf.df.memory_usage(deep=True).sum() / 1e6,
                 'index_columns': index_cols
             })
         
@@ -8940,7 +8942,8 @@ class AliasDataFrame:
                 lines.append(f"Subframes: {len(subframes_info)}")
                 for sf in subframes_info:
                     index_str = sf['index_columns'] if isinstance(sf['index_columns'], str) else ', '.join(sf['index_columns'])
-                    lines.append(f"  - {sf['name']}: {sf['rows']:,} rows × {sf['columns']} cols, index={index_str}")
+                    #lines.append(f"  - {sf['name']}: {sf['rows']:,} rows × {sf['columns']} cols, index={index_str}")
+                    lines.append(f"  - {sf['name']}: {sf['rows']:,} rows × {sf['columns']} cols, {sf['memory_mb']:.1f} MB, index={index_str}")
                 lines.append("")
         
         # =====================================================================
