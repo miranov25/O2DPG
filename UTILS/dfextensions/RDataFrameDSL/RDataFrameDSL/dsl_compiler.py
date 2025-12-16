@@ -47,6 +47,49 @@ from .backend_cpp import CppCodeGenerator, FunctionLibrary, GeneratedFunction
 from .ir_errors import IRError, IRErrorKind
 
 
+# Phase 13.2.DSL: PyArrow detection
+try:
+    import pyarrow as pa
+    _PYARROW_AVAILABLE = True
+except ImportError:
+    _PYARROW_AVAILABLE = False
+    pa = None  # For type hints
+
+
+def _require_pyarrow():
+    """Raise ImportError if PyArrow is not available."""
+    if not _PYARROW_AVAILABLE:
+        raise ImportError(
+            "PyArrow required for Arrow export/import. "
+            "Install with: pip install pyarrow>=12.0"
+        )
+
+
+def _arrow_type_to_ctype(arrow_type) -> str:
+    """
+    Map PyArrow type to C++ type string.
+    
+    Phase 13.2.DSL: Used by from_arrow() to infer schema.
+    """
+    import pyarrow as pa
+    
+    if pa.types.is_float64(arrow_type):
+        return 'double'
+    elif pa.types.is_float32(arrow_type):
+        return 'float'
+    elif pa.types.is_int32(arrow_type):
+        return 'int'
+    elif pa.types.is_int64(arrow_type):
+        return 'long'
+    elif pa.types.is_boolean(arrow_type):
+        return 'bool'
+    elif pa.types.is_list(arrow_type):
+        inner = _arrow_type_to_ctype(arrow_type.value_type)
+        return f'RVec<{inner}>'
+    else:
+        return 'double'  # fallback
+
+
 __all__ = ['DSLCompiler']
 
 
@@ -160,6 +203,9 @@ class DSLCompiler:
         self._definitions: List[tuple] = []  # [(name, expr), ...]
         self._functions: Dict[str, GeneratedFunction] = {}
         self.library = FunctionLibrary()
+        
+        # Phase 13.2.DSL: Optional RDataFrame reference for to_arrow()
+        self._rdf = None
         
         # Phase 12.2: Track if JIT helpers have been declared
         self._helpers_declared = False
@@ -1753,3 +1799,290 @@ class DSLCompiler:
         {'pt_gev': 'trackPt / 1000', 'good': 'pt_gev > 0.5'}
         """
         return {name: expr for name, expr in self._definitions}
+    
+    # =========================================================================
+    # Phase 13.2.DSL: ROOT ↔ Arrow Bridge
+    # =========================================================================
+    
+    def to_arrow(
+        self,
+        rdf=None,
+        columns: List[str] = None,
+        flatten_rvec: bool = False,
+        include_schema: bool = True,
+    ):
+        """
+        Export RDataFrame result as PyArrow Table.
+        
+        Phase 13.2.DSL: Enables Arrow-based interchange with copy-based
+        Phase 1 implementation. Future versions may support zero-copy
+        if ROOT adds native Arrow support.
+        
+        Parameters
+        ----------
+        rdf : ROOT.RDataFrame, optional
+            RDataFrame to export. If None, uses internal _rdf reference.
+        columns : List[str], optional
+            Columns to export. If None, exports all available columns.
+        flatten_rvec : bool, default=False
+            If True, flatten RVec columns to 1D (loses event structure).
+            If False, preserve as Arrow ListArray (maintains structure).
+        include_schema : bool, default=True
+            If True, embed DSL schema in Arrow metadata for round-trip.
+        
+        Returns
+        -------
+        pa.Table
+            PyArrow Table with exported data.
+            
+        Raises
+        ------
+        ImportError
+            If PyArrow is not installed.
+        ValueError
+            If no RDataFrame is available.
+            
+        Notes
+        -----
+        Phase 1 uses numpy as intermediate layer (copies data).
+        RVec → ListArray conversion materializes all events in memory.
+        
+        Examples
+        --------
+        >>> table = dsl.to_arrow(columns=['pt', 'eta'])
+        >>> pa.parquet.write_table(table, 'output.parquet')
+        
+        >>> # With schema for round-trip
+        >>> table = dsl.to_arrow(include_schema=True)
+        >>> new_dsl = DSLCompiler.from_arrow(table)
+        """
+        _require_pyarrow()
+        import pyarrow as pa
+        import json
+        import numpy as np
+        
+        rdf = rdf or self._rdf
+        if rdf is None:
+            raise ValueError(
+                "No RDataFrame available. Either pass rdf parameter "
+                "or set dsl._rdf after calling apply()."
+            )
+        
+        # Determine columns to export
+        # Note: GetColumnNames() returns ROOT strings, convert to Python strings
+        if columns is None:
+            columns = [str(c) for c in rdf.GetColumnNames()]
+        else:
+            columns = [str(c) for c in columns]
+        
+        # Export columns
+        arrays = {}
+        rvec_columns = []
+        
+        for col in columns:
+            col_type = str(rdf.GetColumnType(col))
+            
+            if 'RVec' in col_type:
+                rvec_columns.append(col)
+                if flatten_rvec:
+                    arrays[col] = self._flatten_rvec(rdf, col)
+                else:
+                    arrays[col] = self._rvec_to_listarray(rdf, col)
+            else:
+                # Standard scalar column
+                arrays[col] = rdf.AsNumpy([col])[col]
+        
+        # Create PyArrow Table
+        table = pa.Table.from_pydict(arrays)
+        
+        # Add schema metadata if requested
+        if include_schema:
+            schema_dict = self.to_aliasdf()
+            metadata = {
+                b'dsl_schema': json.dumps(schema_dict).encode('utf-8'),
+                b'rvec_columns': json.dumps(rvec_columns).encode('utf-8'),
+            }
+            # Preserve existing metadata
+            existing = table.schema.metadata or {}
+            existing.update(metadata)
+            table = table.replace_schema_metadata(existing)
+        
+        return table
+    
+    def _flatten_rvec(self, rdf, column: str):
+        """
+        Flatten RVec column to 1D numpy array.
+        
+        Warning: Loses event structure. Use for aggregate analysis only.
+        """
+        import numpy as np
+        
+        nested_data = rdf.AsNumpy([column])[column]
+        
+        # Concatenate all events
+        result = []
+        for event_array in nested_data:
+            result.extend(event_array)
+        
+        return np.array(result)
+    
+    def _rvec_to_listarray(self, rdf, column: str):
+        """
+        Convert RVec column to PyArrow ListArray.
+        
+        Preserves jagged event structure as Arrow ListArray.
+        
+        Note: Materializes all events in memory. For large datasets,
+        consider processing in chunks.
+        """
+        import pyarrow as pa
+        import numpy as np
+        
+        # AsNumpy returns nested object array for RVec
+        nested_data = rdf.AsNumpy([column])[column]
+        
+        # Build ListArray from variable-length arrays
+        values = []
+        offsets = [0]
+        
+        for event_array in nested_data:
+            values.extend(event_array)
+            offsets.append(len(values))
+        
+        # Warn on large materialization
+        if len(nested_data) > 1_000_000:
+            warnings.warn(
+                f"Large RVec materialization: {len(nested_data)} events. "
+                "Memory usage may be high.",
+                stacklevel=2
+            )
+        
+        return pa.ListArray.from_arrays(
+            pa.array(offsets, type=pa.int64()),  # int64 for safety
+            pa.array(values)
+        )
+    
+    @classmethod
+    def from_arrow(
+        cls,
+        table,
+        apply_schema: bool = True,
+    ) -> 'DSLCompiler':
+        """
+        Create DSLCompiler from PyArrow Table.
+        
+        Phase 13.2.DSL: Copy-based implementation using numpy intermediate.
+        
+        Parameters
+        ----------
+        table : pa.Table
+            Input PyArrow Table.
+        apply_schema : bool, default=True
+            If True and table has DSL schema in metadata, apply definitions.
+        
+        Returns
+        -------
+        DSLCompiler
+            New DSLCompiler instance with RDataFrame from table data.
+            
+        Raises
+        ------
+        ImportError
+            If PyArrow or ROOT is not available.
+            
+        Notes
+        -----
+        Creates a copy of the data (Phase 1 implementation).
+        Schema round-trip uses best-effort expression conversion.
+        
+        Examples
+        --------
+        >>> table = pa.parquet.read_table('data.parquet')
+        >>> dsl = DSLCompiler.from_arrow(table, apply_schema=True)
+        """
+        _require_pyarrow()
+        import ROOT
+        import json
+        
+        # Convert Arrow → numpy dict
+        numpy_dict = {}
+        for col in table.column_names:
+            arr = table.column(col).to_numpy()
+            numpy_dict[col] = arr
+        
+        # Create RDataFrame from numpy dict
+        rdf = ROOT.RDF.FromNumpy(numpy_dict)
+        
+        # Infer schema from Arrow types
+        schema = {
+            col: _arrow_type_to_ctype(table.schema.field(col).type)
+            for col in table.column_names
+        }
+        
+        # Create new DSLCompiler instance
+        new_dsl = cls(schema)
+        new_dsl._rdf = rdf
+        
+        # Apply schema from metadata if present
+        if apply_schema and table.schema.metadata:
+            schema_bytes = table.schema.metadata.get(b'dsl_schema')
+            if schema_bytes:
+                schema_dict = json.loads(schema_bytes.decode('utf-8'))
+                new_dsl._apply_aliasdf_schema(schema_dict)
+        
+        return new_dsl
+    
+    def _apply_aliasdf_schema(self, schema_dict: dict):
+        """
+        Apply AliasDataFrame schema to DSL definitions.
+        
+        Converts Python expressions back to C++ syntax.
+        
+        Note: Best-effort conversion. Complex expressions may
+        require manual review.
+        """
+        columns = schema_dict.get('columns', {})
+        
+        if columns:
+            warnings.warn(
+                "Round-trip expression conversion is best-effort. "
+                "Complex boolean logic may require manual review.",
+                stacklevel=2
+            )
+        
+        for name, info in columns.items():
+            expr = info.get('expr', name)
+            # Convert Python operators back to C++
+            cpp_expr = self._python_to_cpp_expr(expr)
+            try:
+                self.define(name, cpp_expr)
+            except Exception as e:
+                warnings.warn(
+                    f"Could not apply definition '{name}': {e}",
+                    stacklevel=2
+                )
+    
+    def _python_to_cpp_expr(self, py_expr: str) -> str:
+        """
+        Convert Python operators to C++ (best-effort).
+        
+        Warning: Not guaranteed for complex expressions.
+        Handles common cases from to_aliasdf() output.
+        
+        Conversions:
+            ' & '  → ' && '
+            ' | '  → ' || '
+            ~var   → !var
+            ~(     → !(
+        """
+        cpp_expr = py_expr
+        
+        # Logical operators
+        cpp_expr = cpp_expr.replace(' & ', ' && ')
+        cpp_expr = cpp_expr.replace(' | ', ' || ')
+        
+        # Unary NOT: ~var and ~(expr)
+        cpp_expr = re.sub(r'~(\w+)', r'!\1', cpp_expr)
+        cpp_expr = re.sub(r'~\(', '!(', cpp_expr)
+        
+        return cpp_expr
