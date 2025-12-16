@@ -29,6 +29,8 @@ schema = {
 dsl = DSLCompiler(schema)
 ```
 
+> **Note:** The schema is a flat dictionary mapping column names to C++ types. Values can be scalar types (`double`, `int`) or vector types (`RVec<T>`).
+
 ### 2. Define Computed Columns
 
 ```python
@@ -45,7 +47,7 @@ dsl.define("last_pt", "pt[-1]")          # Last element
 dsl.define("first3", "pt[:3]")           # First 3 elements
 dsl.define("high_pt", "pt[pt > 1.0]")    # Boolean mask
 
-# Method broadcasting (Phase 8)
+# Method broadcasting
 dsl.define("track_pts", "tracks.Pt()")   # Element-wise Pt()
 dsl.define("track_etas", "tracks.Eta()") # Element-wise Eta()
 ```
@@ -73,6 +75,83 @@ print(dsl.preview())
 # Export to .C macro file
 dsl.export_macro("my_analysis.C", include_test=True)
 ```
+
+---
+
+## Visualization (Phase 12)
+
+Generate QA plots with statistical annotations:
+
+```python
+# Define pull distributions
+dsl.define("dy_pull", "(dy - dy_fit) / dy_err")
+dsl.define("dz_pull", "(dz - dz_fit) / dz_err")
+
+# Create plots with stats
+specs = [
+    {'expr': 'dy_pull', 'bins': 50, 'range': (-5, 5)},
+    {'expr': 'dz_pull', 'bins': 50, 'range': (-5, 5)},
+]
+
+results = dsl.draw_figures(
+    specs, rdf,
+    show_statistics=True,   # Add μ, σ, n box
+    show_expected=True,     # Add N(0,1) overlay for pulls
+)
+```
+
+**Pull Detection:**
+- Auto-detected if `'pull'` appears in expression name
+- Override with `is_pull` in plot spec: `{'expr': 'residual', 'is_pull': True}`
+
+---
+
+## Export to AliasDataFrame (Phase 12)
+
+Migrate DSL definitions to pandas-based workflows:
+
+```python
+# Export DSL definitions as schema
+schema = dsl.to_aliasdf(
+    include=['pt_gev', 'good_track'],
+    dtype_map={'pt_gev': 'float32'}
+)
+
+# Apply to AliasDataFrame
+from AliasDataFrame import AliasDataFrame
+adf = AliasDataFrame(df)
+adf.apply_schema(schema)
+```
+
+> **Note:** C++ operators are converted to Python equivalents (`&&` → `&`, `||` → `|`). Complex expressions may need manual review.
+
+---
+
+## Arrow Integration (Phase 13)
+
+Export/import data via PyArrow for memory-efficient workflows:
+
+```python
+import pyarrow.parquet as pq
+
+# Export RDataFrame to Arrow (pass rdf explicitly)
+table = dsl.to_arrow(rdf=rdf, columns=['pt', 'eta'])
+
+# Save as Parquet
+pq.write_table(table, 'output.parquet')
+
+# Load and create new DSL
+table = pq.read_table('output.parquet')
+new_dsl = DSLCompiler.from_arrow(table)
+```
+
+**RVec Handling:**
+- `flatten_rvec=False` (default): Preserve as Arrow ListArray (jagged structure)
+- `flatten_rvec=True`: Flatten to 1D array (loses event structure)
+
+> **Note:** Round-trip for jagged (RVec) columns may have limitations. Use `flatten_rvec=True` for guaranteed compatibility.
+
+---
 
 ## Complete Example
 
@@ -103,6 +182,8 @@ rdf = dsl.apply(rdf)
 hist = rdf.Histo1D(("h_pt", "Event pT;pT [GeV];Events", 100, 0, 50), "event_pt")
 hist.Draw()
 ```
+
+---
 
 ## Common Patterns
 
@@ -144,6 +225,8 @@ dsl.define("last", "pt[-1]")
 dsl.define("tenth", "pt[9]")  # NaN if fewer than 10 elements
 ```
 
+---
+
 ## Error Messages
 
 The DSL provides helpful error messages:
@@ -157,6 +240,8 @@ dsl.define("bad", "tracks.Unknown()")
 # Error: Method 'Unknown' not found on element type 'TLorentzVector'
 # Suggestions: Did you mean 'Pt', 'Eta', 'Phi'?
 ```
+
+---
 
 ## Alias Referencing
 
@@ -176,10 +261,11 @@ dsl.define("eta", "-log(tan(atan2(pt, pz)/2))")
 dsl.define("is_central", "abs(eta) < 2.5")
 ```
 
-This makes expressions much cleaner and more readable.
+---
 
 ## Next Steps
 
-- See [expressions.md](expressions.md) for complete DSL syntax
-- See [ARCHITECTURE.md](ARCHITECTURE.md) for implementation details
+- See [API Reference](api_reference.md) for complete method documentation
+- See [Expression Reference](expressions.md) for complete DSL syntax
+- See [Architecture](ARCHITECTURE.md) for implementation details
 - See [examples/](../examples/) for more complex examples
