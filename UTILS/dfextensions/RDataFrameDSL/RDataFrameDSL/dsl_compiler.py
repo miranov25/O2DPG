@@ -623,13 +623,20 @@ class DSLCompiler:
     
     def draw_figures(self, specs: List[dict], rdf, 
                      save_dir: str = None, defaults: dict = None,
-                     max_entries: int = None, show: bool = False
+                     max_entries: int = None, show: bool = False,
+                     # Phase 12.5.DSL: Statistical annotations
+                     show_statistics: bool = False,
+                     show_expected: bool = False,
+                     expected_mean: float = 0.0,
+                     expected_std: float = 1.0,
                      ) -> Dict[str, Any]:
         """
         Draw multiple composed figures with automatic column detection.
         
         Phase 12.3: Creates multi-subplot figures from declarative specifications.
         Each figure can contain multiple plots arranged in a grid.
+        
+        Phase 12.5.DSL: Added statistical annotation support for QA validation.
         
         Args:
             specs: List of figure specifications. Each spec is a dict with:
@@ -650,6 +657,7 @@ class DSLCompiler:
                     - title: Subplot title
                     - selection: Filter expression
                     - bins: Number of bins
+                    - is_pull: bool - Override auto pull detection
                     - Any other dfdraw parameters
                     
             rdf: Applied RDataFrame
@@ -657,9 +665,19 @@ class DSLCompiler:
             defaults: Default parameters applied to all plots
             max_entries: Limit entries for large datasets
             show: Call plt.show() after drawing
+            show_statistics: Add statistics box (μ, σ, n) to histogram plots
+            show_expected: Add Gaussian N(0,1) overlay for pull distributions
+            expected_mean: Expected mean for Δμ calculation (default: 0.0)
+            expected_std: Expected std for Δσ calculation (default: 1.0)
             
         Returns:
             Dict mapping figure names to {'fig': Figure, 'axes': list, 'stats': list}
+            
+        Notes:
+            Pull detection: Expressions containing 'pull' (case-insensitive) are
+            treated as pull distributions. Override with plot_spec['is_pull'].
+            
+            Statistics and overlays only apply to histogram-like plots.
             
         Example:
             >>> qa_report = [
@@ -676,7 +694,7 @@ class DSLCompiler:
             ...         ]
             ...     }
             ... ]
-            >>> results = dsl.draw_figures(qa_report, rdf)
+            >>> results = dsl.draw_figures(qa_report, rdf, show_statistics=True, show_expected=True)
         """
         # Lazy imports
         try:
@@ -783,6 +801,7 @@ class DSLCompiler:
                 merged = {**defaults, **plot_spec}
                 expr = merged.pop('expr')
                 title = merged.pop('title', None)
+                is_pull_override = merged.pop('is_pull', None)  # Phase 12.5.DSL: Remove before draw()
                 
                 # Get columns for this plot
                 plot_columns = self._collect_draw_dependencies(
@@ -813,6 +832,69 @@ class DSLCompiler:
                     drawer = DFDraw(pd.DataFrame(plot_data))
                     _, _, stats = drawer.draw(expr, ax=ax, **merged)
                     all_stats.append(stats)
+                    
+                    # === Phase 12.5.DSL: Statistical annotations ===
+                    # Parse expression and plot type for annotation decisions
+                    plot_type = merged.get('type', 'hist')
+                    
+                    # Determine if this is a pull distribution
+                    if is_pull_override is not None:
+                        is_pull = is_pull_override
+                    else:
+                        is_pull = 'pull' in expr.lower()
+                    
+                    # Only apply annotations to histogram-like plots
+                    is_histogram = plot_type in ('hist', 'histogram', None, 'hist1d')
+                    
+                    if is_histogram and (show_statistics or show_expected):
+                        # Extract the x-expression (before : if 2D)
+                        x_expr = expr.split(':')[0].strip() if ':' in expr else expr.strip()
+                        
+                        # Get values from plot_data
+                        values = None
+                        if x_expr in plot_data:
+                            raw_values = plot_data[x_expr]
+                            # Handle NaN values
+                            values = raw_values[~np.isnan(raw_values)] if hasattr(raw_values, '__len__') else None
+                        
+                        # Add statistics box
+                        if show_statistics and values is not None and len(values) > 0:
+                            try:
+                                drawer.add_statistics_box(
+                                    ax,
+                                    values,
+                                    expected_mean=expected_mean if is_pull else None,
+                                    expected_std=expected_std if is_pull else None,
+                                )
+                            except AttributeError:
+                                warnings.warn(
+                                    "dfdraw.add_statistics_box() not available. "
+                                    "Update dfdraw to enable statistics display.",
+                                    stacklevel=2
+                                )
+                            except Exception as e:
+                                warnings.warn(f"Could not add statistics box for '{expr}': {e}")
+                        
+                        # Add Gaussian overlay for pull distributions
+                        if show_expected and is_pull:
+                            try:
+                                drawer.add_reference_overlay(
+                                    ax,
+                                    func='gaussian',
+                                    mu=expected_mean,
+                                    sigma=expected_std,
+                                    label=f'N({expected_mean},{expected_std})',
+                                )
+                            except AttributeError:
+                                warnings.warn(
+                                    "dfdraw.add_reference_overlay() not available. "
+                                    "Update dfdraw to enable reference overlays.",
+                                    stacklevel=2
+                                )
+                            except Exception as e:
+                                warnings.warn(f"Could not add reference overlay for '{expr}': {e}")
+                    # === End Phase 12.5.DSL ===
+                    
                 except Exception as e:
                     warnings.warn(f"Figure '{name}', plot {i} ('{expr}'): {e}")
                     ax.text(0.5, 0.5, f"Error:\n{expr}\n{str(e)[:50]}", 
@@ -1448,3 +1530,226 @@ class DSLCompiler:
             rdf = rdf.Range(max_entries)
         
         return pd.DataFrame(rdf.AsNumpy(columns))
+    
+    # =========================================================================
+    # Phase 12.6.DSL: AliasDataFrame Export
+    # =========================================================================
+    
+    def to_aliasdf(
+        self,
+        include: List[str] = None,
+        exclude: List[str] = None,
+        dtype_map: Dict[str, str] = None,
+    ) -> dict:
+        """
+        Export DSL definitions to AliasDataFrame schema format.
+        
+        Exports definitions only (not data). C++ operators are converted
+        to Python/pandas equivalents with proper precedence handling.
+        
+        Phase 12.6.DSL: Enables workflow migration from RDataFrameDSL to
+        AliasDataFrame for cases where pandas-based analysis is preferred.
+        
+        Parameters
+        ----------
+        include : List[str], optional
+            List of definition names to include. None = all.
+        exclude : List[str], optional
+            List of definition names to exclude.
+        dtype_map : Dict[str, str], optional
+            Map of definition names to dtypes (e.g., {'pt_gev': 'float32'}).
+            
+        Returns
+        -------
+        dict
+            Schema compatible with AliasDataFrame.apply_schema():
+            {
+                'columns': {'name': {'expr': 'expression', 'dtype': 'dtype'}, ...},
+                '__meta__': {'source': 'RDataFrameDSL', ...}
+            }
+            
+        Notes
+        -----
+        Operator conversions (with precedence safety):
+            a > 0 && b < 1  →  (a > 0) & (b < 1)
+            a > 0 || b < 1  →  (a > 0) | (b < 1)
+            !flag           →  ~flag
+            a != b          →  a != b (preserved)
+            
+        Complex C++ expressions (TMath, ROOT functions) may not convert
+        correctly. A warning is issued for potentially problematic expressions.
+        
+        Examples
+        --------
+        >>> dsl.define("good_track", "pt > 0.5 && nHits > 5")
+        >>> schema = dsl.to_aliasdf()
+        >>> adf.apply_schema(schema)
+        
+        >>> # With filtering
+        >>> schema = dsl.to_aliasdf(include=['pt_gev'], dtype_map={'pt_gev': 'float32'})
+        """
+        from datetime import datetime
+        
+        schema = {
+            'columns': {},
+            '__meta__': {
+                'source': 'RDataFrameDSL',
+                'export_version': '1.0',
+                'exported_at': datetime.now().isoformat(),
+            }
+        }
+        
+        dtype_map = dtype_map or {}
+        
+        for name, expr in self._definitions:
+            # Apply include filter
+            if include is not None and name not in include:
+                continue
+            
+            # Apply exclude filter
+            if exclude is not None and name in exclude:
+                continue
+            
+            # Convert expression
+            try:
+                py_expr = self._cpp_to_python_expr(expr)
+                
+                # Build column spec with expr (AliasDataFrame format)
+                col_spec = {'expr': py_expr}
+                
+                # Add dtype if specified
+                if name in dtype_map:
+                    col_spec['dtype'] = dtype_map[name]
+                
+                schema['columns'][name] = col_spec
+                    
+            except Exception as e:
+                warnings.warn(
+                    f"Could not convert definition '{name}': {e}. Skipping.",
+                    stacklevel=2
+                )
+        
+        return schema
+    
+    def _cpp_to_python_expr(self, cpp_expr: str) -> str:
+        """
+        Convert C++ expression syntax to Python/pandas eval syntax.
+        
+        Handles boolean operators with proper precedence (wraps in parentheses).
+        
+        Parameters
+        ----------
+        cpp_expr : str
+            C++ expression string
+            
+        Returns
+        -------
+        str
+            Python/pandas compatible expression
+            
+        Warns
+        -----
+        If expression contains potentially unconvertible constructs
+        (TMath, ROOT namespace, method calls)
+        """
+        py_expr = cpp_expr
+        
+        # Check for problematic constructs first
+        problematic = []
+        
+        if 'TMath::' in cpp_expr or 'TMath.' in cpp_expr:
+            problematic.append('TMath functions')
+        
+        if 'ROOT::' in cpp_expr:
+            problematic.append('ROOT namespace')
+        
+        if re.search(r'\.\w+\s*\(', cpp_expr):
+            problematic.append('method calls')
+        
+        if problematic:
+            warnings.warn(
+                f"Expression may not convert correctly ({', '.join(problematic)}): "
+                f"'{cpp_expr}'",
+                stacklevel=3
+            )
+        
+        # Handle boolean operators WITH PRECEDENCE SAFETY
+        if '&&' in py_expr or '||' in py_expr:
+            py_expr = self._convert_boolean_expr(py_expr)
+        
+        # Unary NOT (preserve !=)
+        # Replace ! that is not followed by =
+        py_expr = re.sub(r'!(?!=)', '~', py_expr)
+        
+        return py_expr
+    
+    def _convert_boolean_expr(self, expr: str) -> str:
+        """
+        Convert C++ boolean expression to Python with correct precedence.
+        
+        C++ precedence: && binds tighter than ||
+        Therefore: a && b || c && d  means  (a && b) || (c && d)
+        
+        Strategy: Split by || first (lower precedence), then && within each part.
+        
+        Parameters
+        ----------
+        expr : str
+            Expression containing && or ||
+            
+        Returns
+        -------
+        str
+            Expression with (a > 0) & (b > 0) format
+            
+        Examples
+        --------
+        >>> self._convert_boolean_expr('a > 0 && b < 1')
+        '(a > 0) & (b < 1)'
+        >>> self._convert_boolean_expr('a > 0 || b < 1')
+        '(a > 0) | (b < 1)'
+        >>> self._convert_boolean_expr('a && b || c && d')
+        '(a) & (b) | (c) & (d)'
+        """
+        result = expr
+        
+        # Handle || FIRST (lower precedence in C++)
+        if '||' in result:
+            or_parts = result.split('||')
+            converted_or_parts = []
+            for part in or_parts:
+                part = part.strip()
+                # Handle && within each OR-term
+                if '&&' in part:
+                    and_parts = part.split('&&')
+                    wrapped_and = [f'({p.strip()})' for p in and_parts]
+                    part = ' & '.join(wrapped_and)
+                elif not (part.startswith('(') and part.endswith(')')):
+                    part = f'({part})'
+                converted_or_parts.append(part)
+            result = ' | '.join(converted_or_parts)
+        elif '&&' in result:
+            # Only && present (no ||)
+            parts = result.split('&&')
+            wrapped = [f'({p.strip()})' for p in parts]
+            result = ' & '.join(wrapped)
+        
+        return result
+    
+    def get_definitions(self) -> Dict[str, str]:
+        """
+        Return all definitions as {name: expression} dict.
+        
+        Returns
+        -------
+        Dict[str, str]
+            Dictionary mapping definition names to their expressions
+            
+        Example
+        -------
+        >>> dsl.define("pt_gev", "trackPt / 1000")
+        >>> dsl.define("good", "pt_gev > 0.5")
+        >>> dsl.get_definitions()
+        {'pt_gev': 'trackPt / 1000', 'good': 'pt_gev > 0.5'}
+        """
+        return {name: expr for name, expr in self._definitions}
