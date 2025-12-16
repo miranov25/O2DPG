@@ -840,5 +840,196 @@ class TestFormulaEvaluation:
             assert not result.isna().any(), f"Formula {key} produced NaN"
 
 
+# =============================================================================
+# PHASE 12.5: MEMORY OPTIMIZATION TESTS
+# =============================================================================
+
+class TestMemoryOptimization:
+    """
+    Phase 12.5: Tests for memory optimization that selects only needed columns.
+    
+    The fix ensures df_out contains only columns needed for fitting,
+    reducing memory usage when sorting/grouping large DataFrames.
+    """
+    
+    def test_v4_column_selection_basic(self):
+        """V4: df_out contains only needed columns, extra columns excluded."""
+        from ..groupby_regression_optimized import make_parallel_fit_v4
+        
+        df = pd.DataFrame({
+            'group': [1, 2] * 50,
+            'x': np.random.randn(100),
+            'y': np.random.randn(100),
+            'extra1': np.random.randn(100),
+            'extra2': np.random.randn(100),
+        })
+        
+        df_out, dfGB = make_parallel_fit_v4(
+            df=df,
+            gb_columns=['group'],
+            fit_columns=['y'],
+            linear_columns=['x'],
+            suffix='_Test',
+        )
+        
+        # df_out should only have needed columns
+        assert set(df_out.columns) == {'group', 'x', 'y'}
+        assert 'extra1' not in df_out.columns
+        assert 'extra2' not in df_out.columns
+    
+    def test_v3_column_selection_basic(self):
+        """V3: df_out contains only needed columns, extra columns excluded."""
+        from ..groupby_regression_optimized import make_parallel_fit_v3
+        
+        df = pd.DataFrame({
+            'group': [1, 2] * 50,
+            'x': np.random.randn(100),
+            'y': np.random.randn(100),
+            'extra1': np.random.randn(100),
+        })
+        
+        df_out, dfGB = make_parallel_fit_v3(
+            df=df,
+            gb_columns=['group'],
+            fit_columns=['y'],
+            linear_columns=['x'],
+            suffix='_Test',
+        )
+        
+        assert set(df_out.columns) == {'group', 'x', 'y'}
+        assert 'extra1' not in df_out.columns
+    
+    def test_v4_includes_weights(self):
+        """V4: df_out includes weights column when specified."""
+        from ..groupby_regression_optimized import make_parallel_fit_v4
+        
+        df = pd.DataFrame({
+            'group': [1, 2] * 50,
+            'x': np.random.randn(100),
+            'y': np.random.randn(100),
+            'w': np.abs(np.random.randn(100)) + 0.1,
+            'extra': np.random.randn(100),
+        })
+        
+        df_out, dfGB = make_parallel_fit_v4(
+            df=df,
+            gb_columns=['group'],
+            fit_columns=['y'],
+            linear_columns=['x'],
+            weights='w',
+            suffix='_Test',
+        )
+        
+        assert 'w' in df_out.columns
+        assert 'extra' not in df_out.columns
+    
+    def test_v4_includes_median_columns(self):
+        """V4: df_out includes median_columns when specified."""
+        from ..groupby_regression_optimized import make_parallel_fit_v4
+        
+        df = pd.DataFrame({
+            'group': [1, 2] * 50,
+            'x': np.random.randn(100),
+            'y': np.random.randn(100),
+            'med1': np.random.randn(100),
+            'med2': np.random.randn(100),
+            'extra': np.random.randn(100),
+        })
+        
+        df_out, dfGB = make_parallel_fit_v4(
+            df=df,
+            gb_columns=['group'],
+            fit_columns=['y'],
+            linear_columns=['x'],
+            median_columns=['med1', 'med2'],
+            suffix='_Test',
+        )
+        
+        assert 'med1' in df_out.columns
+        assert 'med2' in df_out.columns
+        assert 'extra' not in df_out.columns
+    
+    def test_v4_deterministic_column_order(self):
+        """V4: Column order is deterministic (not random from set)."""
+        from ..groupby_regression_optimized import make_parallel_fit_v4
+        
+        df = pd.DataFrame({
+            'group': [1, 2] * 50,
+            'x1': np.random.randn(100),
+            'x2': np.random.randn(100),
+            'y': np.random.randn(100),
+        })
+        
+        # Run multiple times to check determinism
+        orders = []
+        for _ in range(5):
+            df_out, _ = make_parallel_fit_v4(
+                df=df,
+                gb_columns=['group'],
+                fit_columns=['y'],
+                linear_columns=['x1', 'x2'],
+                suffix='_Test',
+            )
+            orders.append(list(df_out.columns))
+        
+        # All runs should have same column order
+        assert all(order == orders[0] for order in orders), "Column order is not deterministic"
+    
+    def test_v4_fit_results_unchanged(self):
+        """V4: Fit results are identical with or without extra columns."""
+        from ..groupby_regression_optimized import make_parallel_fit_v4
+        
+        np.random.seed(42)
+        base_df = pd.DataFrame({
+            'group': [1, 2] * 50,
+            'x': np.random.randn(100),
+            'y': np.random.randn(100),
+        })
+        
+        # With extra columns
+        df_with_extra = base_df.copy()
+        df_with_extra['extra1'] = np.random.randn(100)
+        df_with_extra['extra2'] = np.random.randn(100)
+        
+        _, dfGB_base = make_parallel_fit_v4(
+            df=base_df,
+            gb_columns=['group'],
+            fit_columns=['y'],
+            linear_columns=['x'],
+            suffix='_Test',
+        )
+        
+        _, dfGB_extra = make_parallel_fit_v4(
+            df=df_with_extra,
+            gb_columns=['group'],
+            fit_columns=['y'],
+            linear_columns=['x'],
+            suffix='_Test',
+        )
+        
+        # Fit results should be identical
+        pd.testing.assert_frame_equal(dfGB_base, dfGB_extra)
+    
+    def test_v4_missing_median_column_raises(self):
+        """V4: Missing median_columns raises error."""
+        from ..groupby_regression_optimized import make_parallel_fit_v4
+        
+        df = pd.DataFrame({
+            'group': [1, 2] * 50,
+            'x': np.random.randn(100),
+            'y': np.random.randn(100),
+        })
+        
+        with pytest.raises(KeyError, match="Missing required columns"):
+            make_parallel_fit_v4(
+                df=df,
+                gb_columns=['group'],
+                fit_columns=['y'],
+                linear_columns=['x'],
+                median_columns=['nonexistent'],
+                suffix='_Test',
+            )
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

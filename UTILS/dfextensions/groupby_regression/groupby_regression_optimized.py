@@ -730,7 +730,9 @@ def make_parallel_fit_v3(
     -------
     If return_metadata=False (default):
         df_out : pd.DataFrame
-            Copy of input (with predictions if addPrediction=True)
+            DataFrame containing ONLY columns needed for fitting:
+            gb_columns, fit_columns, linear_columns, median_columns, and weights.
+            Note: Extra columns from input are not preserved (Phase 12.5 memory optimization).
         dfGB : pd.DataFrame
             Per-group fit results
     If return_metadata=True:
@@ -849,13 +851,25 @@ def make_parallel_fit_v3(
     if selection is not None:
         df = df.loc[selection]
     
-    # Validate we have enough columns
+    # Validate we have enough columns (including median_columns)
     required_cols = set(gb_columns) | set(fit_columns) | set(linear_columns)
     if weights is not None:
         required_cols.add(weights)
+    if median_columns:
+        required_cols.update(median_columns)
     missing = required_cols - set(df.columns)
     if missing:
         raise ValueError(f"Missing columns in DataFrame: {missing}")
+    
+    # === Phase 12.5: Memory optimization ===
+    # Select only needed columns before groupby to reduce memory
+    # Build list with deterministic order (no set randomization)
+    _needed_cols = list(gb_columns) + list(fit_columns) + list(linear_columns) + (median_columns or [])
+    if weights is not None:
+        _needed_cols = _needed_cols + [weights]
+    _needed_cols = list(dict.fromkeys(_needed_cols))  # Dedupe preserving order
+    df = df[_needed_cols]
+    # === End Phase 12.5 ===
     
     # ========================================================================
     # 1. CREATE GROUPS
@@ -1290,7 +1304,9 @@ def make_parallel_fit_v4(
     -------
     If return_metadata=False (default):
         df_out : pd.DataFrame
-            Sorted copy of input
+            Sorted DataFrame containing ONLY columns needed for fitting:
+            gb_columns, fit_columns, linear_columns, median_columns, and weights.
+            Note: Extra columns from input are not preserved (Phase 12.5 memory optimization).
         dfGB : pd.DataFrame
             Per-group fit results
     If return_metadata=True:
@@ -1337,13 +1353,25 @@ def make_parallel_fit_v4(
     fit_cols = [fit_columns] if isinstance(fit_columns, str) else list(fit_columns)
     linear_cols = [linear_columns] if isinstance(linear_columns, str) else list(linear_columns)
 
-    # Validate columns
+    # Validate columns (including median_columns)
     needed = set(gb_cols) | set(linear_cols) | set(fit_cols)
     if weights is not None:
         needed.add(weights)
+    if median_columns:
+        needed.update(median_columns)
     missing = [c for c in needed if c not in df.columns]
     if missing:
         raise KeyError(f"Missing required columns: {missing}")
+
+    # === Phase 12.5: Memory optimization ===
+    # Select only needed columns before sort to reduce memory
+    # Build list with deterministic order (no set randomization)
+    _needed_cols = gb_cols + fit_cols + linear_cols + (median_columns or [])
+    if weights is not None:
+        _needed_cols = _needed_cols + [weights]
+    _needed_cols = list(dict.fromkeys(_needed_cols))  # Dedupe preserving order
+    df = df[_needed_cols]
+    # === End Phase 12.5 ===
 
     # Stable sort by all group columns so groups are contiguous
     df_sorted = df.sort_values(gb_cols, kind="mergesort")
