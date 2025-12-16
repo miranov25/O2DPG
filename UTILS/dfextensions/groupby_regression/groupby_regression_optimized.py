@@ -15,6 +15,226 @@ from joblib import Parallel, delayed
 from sklearn.linear_model import LinearRegression, HuberRegressor
 import re
 
+# ============================================================================
+# PHASE 13.1.GB: PYARROW DETECTION
+# ============================================================================
+
+try:
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    _PYARROW_AVAILABLE = True
+    _PYARROW_VERSION = tuple(int(x) for x in pa.__version__.split('.')[:2])
+except ImportError:
+    _PYARROW_AVAILABLE = False
+    _PYARROW_VERSION = (0, 0)
+
+# Module-level logger
+_logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# PHASE 13.1.GB: PYARROW BACKEND FUNCTIONS
+# ============================================================================
+
+def _select_backend(df, backend, threshold):
+    """
+    Select processing backend for sorting.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input DataFrame
+    backend : str
+        'pandas', 'pyarrow', or 'auto'
+    threshold : int
+        Row count threshold for auto selection
+    
+    Returns
+    -------
+    str : 'pandas' or 'pyarrow'
+    """
+    if backend == 'pyarrow':
+        if not _PYARROW_AVAILABLE:
+            import warnings
+            warnings.warn(
+                "PyArrow not available, falling back to pandas. "
+                "Install with: pip install pyarrow>=12.0",
+                UserWarning
+            )
+            return 'pandas'
+        if _PYARROW_VERSION < (12, 0):
+            import warnings
+            warnings.warn(
+                f"PyArrow {'.'.join(map(str, _PYARROW_VERSION))} < 12.0, falling back to pandas. "
+                "Upgrade with: pip install pyarrow>=12.0",
+                UserWarning
+            )
+            return 'pandas'
+        return 'pyarrow'
+    
+    elif backend == 'auto':
+        if (_PYARROW_AVAILABLE and 
+            _PYARROW_VERSION >= (12, 0) and 
+            len(df) > threshold):
+            _logger.debug(
+                f"Backend auto-selected: pyarrow (rows={len(df)} > threshold={threshold})"
+            )
+            return 'pyarrow'
+        _logger.debug(
+            f"Backend auto-selected: pandas (rows={len(df)}, threshold={threshold}, "
+            f"pyarrow_available={_PYARROW_AVAILABLE})"
+        )
+        return 'pandas'
+    
+    elif backend == 'pandas':
+        return 'pandas'
+    
+    else:
+        raise ValueError(f"Invalid backend: {backend}. Must be 'pandas', 'pyarrow', or 'auto'")
+
+
+def _sort_pyarrow(df, needed_cols, gb_cols):
+    """
+    Memory-efficient sort using PyArrow.
+    
+    PyArrow sort_indices is stable as of PyArrow 12.0, matching
+    pandas mergesort behavior for deterministic group ordering.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input DataFrame
+    needed_cols : list
+        Columns to include in sorted output
+    gb_cols : list
+        Columns to sort by (group columns)
+    
+    Returns
+    -------
+    pa.Table : Sorted PyArrow table
+    """
+    # Convert only needed columns (memory efficient)
+    table = pa.Table.from_pandas(df[needed_cols], preserve_index=False)
+    
+    # Sort using PyArrow (stable sort as of PyArrow 12.0)
+    sort_keys = [(col, 'ascending') for col in gb_cols]
+    indices = pc.sort_indices(table, sort_keys=sort_keys)
+    sorted_table = table.take(indices)
+    
+    return sorted_table
+
+
+def _get_group_boundaries_pyarrow(sorted_table, gb_cols):
+    """
+    Get group boundary offsets from sorted PyArrow table.
+    
+    Uses Arrow-native comparisons (pc.not_equal, pc.or_) to avoid
+    materializing full column copies. Only the final boolean boundary
+    array is converted to numpy.
+    
+    Parameters
+    ----------
+    sorted_table : pa.Table
+        Sorted PyArrow table
+    gb_cols : list
+        Group columns
+    
+    Returns
+    -------
+    np.ndarray : Group boundary offsets (length = n_groups + 1)
+    """
+    n = sorted_table.num_rows
+    if n == 0:
+        return np.array([0], dtype=np.int64)
+    if n == 1:
+        return np.array([0, 1], dtype=np.int64)
+    
+    # Compute boundaries using Arrow-native operations (memory efficient)
+    # Avoids to_numpy() on full columns which would defeat memory optimization
+    boundary_mask_arrow = None
+    
+    for col in gb_cols:
+        arr = sorted_table.column(col)
+        
+        # Handle chunked arrays (required for slicing)
+        if arr.num_chunks > 1:
+            arr = arr.combine_chunks()
+        
+        # Arrow-native comparison: arr[1:] != arr[:-1]
+        shifted = arr.slice(1)           # arr[1:]
+        original = arr.slice(0, n - 1)   # arr[:-1]
+        changed = pc.not_equal(shifted, original)
+        
+        if boundary_mask_arrow is None:
+            boundary_mask_arrow = changed
+        else:
+            boundary_mask_arrow = pc.or_(boundary_mask_arrow, changed)
+    
+    # Convert only the boolean boundary array to numpy (small: n-1 elements)
+    boundary_changes = boundary_mask_arrow.to_numpy()
+    
+    # Build full boundary mask
+    boundaries = np.zeros(n, dtype=bool)
+    boundaries[0] = True  # First row is always a boundary
+    boundaries[1:] = boundary_changes
+    
+    # Convert to offsets: [0, first_boundary, ..., n]
+    boundary_indices = np.where(boundaries)[0]
+    offsets = np.append(boundary_indices, n).astype(np.int64)
+    
+    return offsets
+
+
+def _extract_arrays_pyarrow(sorted_table, linear_cols, fit_cols, weights_col):
+    """
+    Extract numpy arrays from PyArrow table.
+    
+    Uses zero-copy where possible for memory efficiency.
+    
+    Parameters
+    ----------
+    sorted_table : pa.Table
+        Sorted PyArrow table
+    linear_cols : list
+        Predictor column names
+    fit_cols : list
+        Target column names
+    weights_col : str or None
+        Weight column name
+    
+    Returns
+    -------
+    tuple : (X_all, Y_all, W_all) as numpy arrays
+    """
+    # Extract predictors
+    if len(linear_cols) == 1:
+        X_all = sorted_table.column(linear_cols[0]).to_numpy().reshape(-1, 1)
+    else:
+        X_all = np.column_stack([
+            sorted_table.column(col).to_numpy() for col in linear_cols
+        ])
+    
+    # Extract targets
+    if len(fit_cols) == 1:
+        Y_all = sorted_table.column(fit_cols[0]).to_numpy().reshape(-1, 1)
+    else:
+        Y_all = np.column_stack([
+            sorted_table.column(col).to_numpy() for col in fit_cols
+        ])
+    
+    # Extract weights
+    if weights_col is not None:
+        W_all = sorted_table.column(weights_col).to_numpy()
+    else:
+        W_all = np.ones(sorted_table.num_rows, dtype=np.float64)
+    
+    # Ensure float64 for numerical stability
+    X_all = X_all.astype(np.float64, copy=False)
+    Y_all = Y_all.astype(np.float64, copy=False)
+    W_all = W_all.astype(np.float64, copy=False)
+    
+    return X_all, Y_all, W_all
+
 
 # ============================================================================
 # PHASE 12.4a: METADATA EXPORT FUNCTIONS
@@ -732,7 +952,7 @@ def make_parallel_fit_v3(
         df_out : pd.DataFrame
             DataFrame containing ONLY columns needed for fitting:
             gb_columns, fit_columns, linear_columns, median_columns, and weights.
-            Note: Extra columns from input are not preserved (Phase 12.5 memory optimization).
+            Note: Extra columns from input are not preserved (Phase 12.5.GB memory optimization).
         dfGB : pd.DataFrame
             Per-group fit results
     If return_metadata=True:
@@ -851,7 +1071,7 @@ def make_parallel_fit_v3(
     if selection is not None:
         df = df.loc[selection]
     
-    # Validate we have enough columns (including median_columns)
+    # Validate we have enough columns
     required_cols = set(gb_columns) | set(fit_columns) | set(linear_columns)
     if weights is not None:
         required_cols.add(weights)
@@ -861,15 +1081,15 @@ def make_parallel_fit_v3(
     if missing:
         raise ValueError(f"Missing columns in DataFrame: {missing}")
     
-    # === Phase 12.5: Memory optimization ===
+    # === Phase 12.5.GB: Memory optimization (parity with V4) ===
     # Select only needed columns before groupby to reduce memory
     # Build list with deterministic order (no set randomization)
-    _needed_cols = list(gb_columns) + list(fit_columns) + list(linear_columns) + (median_columns or [])
+    _needed_cols = gb_columns + fit_columns + linear_columns + (median_columns or [])
     if weights is not None:
         _needed_cols = _needed_cols + [weights]
     _needed_cols = list(dict.fromkeys(_needed_cols))  # Dedupe preserving order
     df = df[_needed_cols]
-    # === End Phase 12.5 ===
+    # === End Phase 12.5.GB ===
     
     # ========================================================================
     # 1. CREATE GROUPS
@@ -1241,12 +1461,15 @@ def make_parallel_fit_v4(
         suffix="_v4",
         selection=None,
         addPrediction=False,
-        fit_intercept: bool = True,  # ← NEW PARAMETER
+        fit_intercept: bool = True,
         cast_dtype: str = "float64",
         min_stat=3,
         diag=False,
         diag_prefix="diag_",
         return_metadata: bool = False,
+        # Phase 13.1.GB: PyArrow backend parameters
+        backend: str = 'auto',
+        pyarrow_threshold: int = 1_000_000,
 ):
     """
     Phase 3 (v4): Numba JIT weighted OLS with fast multi-column groupby support.
@@ -1259,11 +1482,16 @@ def make_parallel_fit_v4(
     - Enhanced diagnostics with condition numbers
     - Parity with V3 enhancements
     
+    NEW in V4 v3.0 (Phase 13.1.GB - December 2025):
+    - Optional PyArrow backend for memory-efficient sorting
+    - Reduced memory fragmentation for large datasets
+    
     Key features:
     - Group boundaries via vectorized adjacent-row comparisons per key column
     - Vectorized dfGB assembly (no per-group iloc)
     - Optional Numba JIT acceleration (falls back to NumPy if unavailable)
     - Inf/NaN filtering with diagnostics
+    - PyArrow backend for memory-efficient sorting (optional)
     
     Parameters
     ----------
@@ -1299,14 +1527,26 @@ def make_parallel_fit_v4(
     return_metadata : bool, default=False
         If True, return a third value containing metadata with auto-generated
         formulas for predictions, residuals, and pulls.
+    backend : str, default='auto'
+        Memory backend for sorting.
+        - 'pandas': Standard pandas implementation (always works)
+        - 'pyarrow': Use PyArrow for memory-efficient sorting (requires pyarrow>=12.0)
+        - 'auto': Use PyArrow if available and len(df) > pyarrow_threshold
+        
+        Note: PyArrow is used for sorting/storage only. Computation remains in
+        NumPy/Numba. This reduces memory fragmentation for large datasets.
+    pyarrow_threshold : int, default=1_000_000
+        Minimum row count to trigger automatic PyArrow backend selection.
+        Only applies when backend='auto'. This is a pilot heuristic and
+        may be adjusted in future versions.
         
     Returns
     -------
     If return_metadata=False (default):
         df_out : pd.DataFrame
-            Sorted DataFrame containing ONLY columns needed for fitting:
+            DataFrame containing ONLY columns needed for fitting:
             gb_columns, fit_columns, linear_columns, median_columns, and weights.
-            Note: Extra columns from input are not preserved (Phase 12.5 memory optimization).
+            Note: Extra columns from input are not preserved (Phase 12.5.GB memory optimization).
         dfGB : pd.DataFrame
             Per-group fit results
     If return_metadata=True:
@@ -1333,6 +1573,10 @@ def make_parallel_fit_v4(
     Error estimates use the same formula as V3:
         SE(β_i) = sqrt(σ² * [(X'X)^(-1)]_ii)
     where σ² = SSR / (n - p) with degrees of freedom correction.
+    
+    Phase 13.1.GB: When backend='pyarrow' or auto-selected, sorting uses PyArrow
+    for reduced memory fragmentation. This is particularly beneficial for large
+    datasets (>1M rows) on batch farms with limited memory per core.
     """
     import numpy as np
     import pandas as pd
@@ -1344,16 +1588,12 @@ def make_parallel_fit_v4(
     if median_columns is None:
         median_columns = []
 
-    # Filter
-    if selection is not None:
-        df = df.loc[selection]
-
     # Normalize group columns
     gb_cols = [gb_columns] if isinstance(gb_columns, str) else list(gb_columns)
     fit_cols = [fit_columns] if isinstance(fit_columns, str) else list(fit_columns)
     linear_cols = [linear_columns] if isinstance(linear_columns, str) else list(linear_columns)
 
-    # Validate columns (including median_columns)
+    # Validate columns (including median_columns) - Phase 12.5.GB
     needed = set(gb_cols) | set(linear_cols) | set(fit_cols)
     if weights is not None:
         needed.add(weights)
@@ -1363,56 +1603,77 @@ def make_parallel_fit_v4(
     if missing:
         raise KeyError(f"Missing required columns: {missing}")
 
-    # === Phase 12.5: Memory optimization ===
-    # Select only needed columns before sort to reduce memory
-    # Build list with deterministic order (no set randomization)
+    # === Phase 12.5.GB + 13.1.GB: Memory optimization ===
+    # Build column list with deterministic order (no set randomization)
     _needed_cols = gb_cols + fit_cols + linear_cols + (median_columns or [])
     if weights is not None:
         _needed_cols = _needed_cols + [weights]
     _needed_cols = list(dict.fromkeys(_needed_cols))  # Dedupe preserving order
-    df = df[_needed_cols]
-    # === End Phase 12.5 ===
+    
+    # Apply selection filter BEFORE column subset
+    if selection is not None:
+        df = df.loc[selection]
+    
+    # Phase 13.1.GB: Select backend
+    use_backend = _select_backend(df, backend, pyarrow_threshold)
+    
+    if use_backend == 'pyarrow':
+        # === PyArrow path (memory efficient) ===
+        sorted_table = _sort_pyarrow(df, _needed_cols, gb_cols)
+        X_all, Y_all, W_all = _extract_arrays_pyarrow(
+            sorted_table, linear_cols, fit_cols, weights
+        )
+        # Get group boundaries without converting to pandas
+        offsets = _get_group_boundaries_pyarrow(sorted_table, gb_cols)
+        n_groups = len(offsets) - 1
+        N = sorted_table.num_rows
+        # Keep sorted_table for later df_sorted creation (lazy)
+        _sorted_table = sorted_table
+        df_sorted = None  # Will create if needed at return
+    else:
+        # === Pandas path (existing code) ===
+        _sorted_table = None
+        # Subset columns first (Phase 12.5.GB memory optimization)
+        df = df[_needed_cols]
+        # Stable sort by all group columns so groups are contiguous
+        df_sorted = df.sort_values(gb_cols, kind="mergesort")
+        
+        # Dense arrays (always float64 for stability)
+        dtype_num = np.float64
+        X_all = df_sorted[linear_cols].to_numpy(dtype=dtype_num, copy=False)
+        Y_all = df_sorted[fit_cols].to_numpy(dtype=dtype_num, copy=False)
+        W_all = (np.ones(len(df_sorted), dtype=np.float64) if weights is None
+                 else df_sorted[weights].to_numpy(dtype=np.float64, copy=False))
+        
+        N = X_all.shape[0]
+        
+        # Compute group boundaries (pandas path)
+        boundaries = np.empty(N, dtype=bool)
+        boundaries[0] = True
+        if N > 1:
+            boundaries[1:] = False
+            for col in gb_cols:
+                a = df_sorted[col].to_numpy()
+                boundaries[1:] |= (a[1:] != a[:-1])
+        
+        starts = np.flatnonzero(boundaries)
+        offsets = np.empty(len(starts) + 1, dtype=np.int64)
+        offsets[:-1] = starts
+        offsets[-1] = N
+        n_groups = len(starts)
+    # === End Phase 13.1.GB ===
 
-    # Stable sort by all group columns so groups are contiguous
-    df_sorted = df.sort_values(gb_cols, kind="mergesort")
-
-    # Dense arrays (always float64 for stability)
-    dtype_num = np.float64
-    X_all = df_sorted[linear_cols].to_numpy(dtype=dtype_num, copy=False)
-    Y_all = df_sorted[fit_cols].to_numpy(dtype=dtype_num, copy=False)
-    W_all = (np.ones(len(df_sorted), dtype=np.float64) if weights is None
-             else df_sorted[weights].to_numpy(dtype=np.float64, copy=False))
-
-    N = X_all.shape[0]
     if N == 0:
         empty_cols = gb_cols + [f"n_refits{suffix}", f"n_used{suffix}", f"frac_rejected{suffix}"]
-        return df_sorted.copy(), pd.DataFrame(columns=empty_cols)
+        if _sorted_table is not None:
+            df_sorted = _sorted_table.to_pandas()
+        return df_sorted.copy() if df_sorted is not None else pd.DataFrame(), pd.DataFrame(columns=empty_cols)
 
     n_feat = X_all.shape[1]
     n_tgt  = Y_all.shape[1]
     
     # Number of parameters (intercept + slopes)
     n_params = (1 + n_feat) if fit_intercept else n_feat
-
-    # ========================================================================
-    # FAST MULTI-COLUMN GROUP OFFSETS
-    # ========================================================================
-    
-    # boundaries[0] = True; boundaries[i] = True if any key column changes at i vs i-1
-    boundaries = np.empty(N, dtype=bool)
-    boundaries[0] = True
-    if N > 1:
-        boundaries[1:] = False
-        # OR-adjacent compare for each group column (vectorized)
-        for col in gb_cols:
-            a = df_sorted[col].to_numpy()
-            boundaries[1:] |= (a[1:] != a[:-1])
-
-    starts = np.flatnonzero(boundaries)
-    offsets = np.empty(len(starts) + 1, dtype=np.int64)
-    offsets[:-1] = starts
-    offsets[-1] = N
-    n_groups = len(starts)
 
     # ========================================================================
     # ALLOCATE OUTPUT ARRAYS
@@ -1583,8 +1844,22 @@ def make_parallel_fit_v4(
     # VECTORIZED OUTPUT ASSEMBLY
     # ========================================================================
     
+    # Group start indices
+    starts = offsets[:-1]
+    
     # Pre-take first-row-of-group keys
-    key_arrays = {col: df_sorted[col].to_numpy()[starts] for col in gb_cols}
+    # Phase 13.1.GB: Handle both pandas and PyArrow paths
+    if _sorted_table is not None:
+        # PyArrow path: extract from Arrow table
+        key_arrays = {}
+        for col in gb_cols:
+            arr = _sorted_table.column(col)
+            if arr.num_chunks > 1:
+                arr = arr.combine_chunks()
+            key_arrays[col] = arr.to_numpy()[starts]
+    else:
+        # Pandas path: extract from DataFrame
+        key_arrays = {col: df_sorted[col].to_numpy()[starts] for col in gb_cols}
     
     out_dict = {col: key_arrays[col] for col in gb_cols}
     
@@ -1640,6 +1915,12 @@ def make_parallel_fit_v4(
             diag_prefix=diag_prefix,
             fit_type='linear_v4',
         )
+        # Phase 13.1.GB: Create df_sorted from PyArrow table if needed
+        if _sorted_table is not None and df_sorted is None:
+            df_sorted = _sorted_table.to_pandas()
         return df_sorted, dfGB, metadata
 
+    # Phase 13.1.GB: Create df_sorted from PyArrow table if needed
+    if _sorted_table is not None and df_sorted is None:
+        df_sorted = _sorted_table.to_pandas()
     return df_sorted, dfGB
