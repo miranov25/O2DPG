@@ -162,16 +162,31 @@ Key methods:
 - `_visit_*()`: Visitor for each IR node type
 - `_generate_reflection_access()`: Private member access via TClass
 
-### dsl_compiler.py (~250 lines)
+### dsl_compiler.py (~800 lines)
 **Purpose:** High-level user API
 
 ```python
 class DSLCompiler:
+    # Core API (Phase 1-8)
     def __init__(self, schema: Dict[str, str])
     def define(self, name: str, expression: str) -> 'DSLCompiler'
     def apply(self, rdf) -> RDataFrame
     def preview(self) -> str
     def export_macro(self, filepath: str)
+    
+    # Visualization API (Phase 12.1-12.5)
+    def draw_figures(self, specs, rdf, **kwargs) -> dict
+    
+    # Export API (Phase 12.6)
+    def to_aliasdf(self, include=None, exclude=None, dtype_map=None) -> dict
+    def get_definitions(self) -> Dict[str, str]
+    
+    # Arrow Integration (Phase 13.2)
+    def to_arrow(self, rdf=None, columns=None, flatten_rvec=False, 
+                 include_schema=True) -> 'pyarrow.Table'
+    
+    @classmethod
+    def from_arrow(cls, table, apply_schema=True) -> 'DSLCompiler'
 ```
 
 ---
@@ -202,6 +217,11 @@ class DSLCompiler:
 - Functions compiled only when `apply()` or `compile_all()` called
 - Allows validation before ROOT interaction
 
+### 6. Arrow for Storage, NumPy for Compute (Phase 13)
+- PyArrow used only for storage and transport
+- Compute remains in NumPy/Pandas (proven faster)
+- Copy-based Phase 1 implementation
+
 ---
 
 ## Test Architecture
@@ -218,10 +238,15 @@ tests/
 │   ├── test_backend_cpp_rvec.py    # RVec code patterns
 │   └── test_backend_cpp_objects.py # Object access patterns
 │
-└── Integration Tests (ROOT required)
-    ├── test_root_integration.py              # ROOT behavior validation
-    ├── test_rdataframe_integration_advanced.py # Full pipeline tests
-    └── test_backend_cpp_reflection.py        # TClass reflection
+├── Integration Tests (ROOT required)
+│   ├── test_root_integration.py              # ROOT behavior validation
+│   ├── test_rdataframe_integration_advanced.py # Full pipeline tests
+│   └── test_backend_cpp_reflection.py        # TClass reflection
+│
+└── Feature Tests (Phase 12-13)
+    ├── test_draw_figures_stats.py  # Phase 12.5 visualization
+    ├── test_to_aliasdf.py          # Phase 12.6 export
+    └── test_arrow_export.py        # Phase 13.2 Arrow bridge
 ```
 
 ### Test Categories by Phase
@@ -236,7 +261,12 @@ tests/
 | 6.9 | `test_root_integration.py` | ROOT behavior assumptions |
 | 7 | `test_backend_cpp_rvec.py` | Slice code generation |
 | 7.9 | `test_rdataframe_integration_advanced.py` | Multi-function pipelines |
-| 8 | `test_backend_cpp_broadcast.py` *(new)* | Method broadcasting |
+| 8 | `test_backend_cpp_broadcast.py` | Method broadcasting |
+| 12.5 | `test_draw_figures_stats.py` | Statistical annotations |
+| 12.6 | `test_to_aliasdf.py` | AliasDataFrame export |
+| 13.2 | `test_arrow_export.py` | Arrow bridge |
+
+**Current Total: 964 tests passing, 1 skipped**
 
 ---
 
@@ -256,3 +286,40 @@ Suggestions:
 ```
 
 This replaces C++ template error messages that can be hundreds of lines.
+
+---
+
+## Integration with Other Tools
+
+### AliasDataFrame Export (Phase 12.6)
+
+```
+DSLCompiler.to_aliasdf()
+         │
+         ▼
+┌─────────────────────┐
+│  Schema Conversion  │
+│  C++ → Python ops   │
+│  && → &, || → |     │
+└─────────────────────┘
+         │
+         ▼
+┌─────────────────────┐
+│  AliasDataFrame     │
+│  apply_schema()     │
+└─────────────────────┘
+```
+
+### Arrow Bridge (Phase 13.2)
+
+```
+                    to_arrow()
+DSLCompiler ──────────────────────► PyArrow Table
+     ▲                                    │
+     │                                    │
+     │         from_arrow()               │
+     └────────────────────────────────────┘
+     
+Phase 1: numpy intermediate (copy-based)
+Future:  Direct Arrow IPC when ROOT supports it
+```
