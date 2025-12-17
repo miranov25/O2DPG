@@ -1,5 +1,7 @@
 """
 DFDraw - Main drawing class with TTree::Draw-like interface.
+
+Phase 13.1.DF: Added PyArrow Table input support.
 """
 
 import pandas as pd
@@ -7,6 +9,23 @@ import numpy as np
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .style import get_style, get_style_value
+
+# =============================================================================
+# Phase 13.1.DF: PyArrow Detection
+# =============================================================================
+
+try:
+    import pyarrow as pa
+    _PYARROW_AVAILABLE = True
+except ImportError:
+    _PYARROW_AVAILABLE = False
+    pa = None
+
+
+def _is_pyarrow_table(obj) -> bool:
+    """Check if object is a PyArrow Table (safe when PyArrow not installed)."""
+    return _PYARROW_AVAILABLE and isinstance(obj, pa.Table)
+
 
 # Type alias for return value
 DrawResult = Tuple[Any, Any, Dict[str, Any]]  # (fig, ax, stats)
@@ -18,9 +37,10 @@ class DFDraw:
     
     Parameters
     ----------
-    data : DataFrame-like
+    data : DataFrame-like or PyArrow Table
         Input data. Accepts:
         - pandas.DataFrame
+        - pyarrow.Table (Phase 13.1.DF - converted to pandas internally)
         - AliasDataFrame (uses .df attribute)
         - dict of arrays (converted to DataFrame)
     
@@ -29,10 +49,26 @@ class DFDraw:
     >>> plotter = DFDraw(df)
     >>> fig, ax, stats = plotter.draw("y:x", color="category")
     >>> fig, ax, stats = plotter.hist("x", bins=100)
+    
+    # Phase 13.1.DF: PyArrow input
+    >>> import pyarrow as pa
+    >>> table = pa.Table.from_pandas(df)
+    >>> plotter = DFDraw(table)
+    >>> fig, ax, stats = plotter.hist("x", bins=100)
+    
+    Notes
+    -----
+    Phase 13.1.DF: PyArrow Tables are accepted for API compatibility with
+    PyArrow-based pipelines (e.g., groupby-regression output), but are
+    converted to pandas internally. This provides seamless integration
+    but does not reduce memory usage within dfdraw itself. Memory
+    optimization occurs upstream in groupby-regression (Phase 13.1.GB)
+    and AliasDataFrame (Phase 13.3.ADF).
     """
     
     def __init__(self, data):
         self._data_source = data  # Keep reference for duck typing (axis titles)
+        self._table = None  # Phase 13.1.DF: Store original PyArrow Table if provided
         self.df = self._normalize_data(data)
     
     def _normalize_data(self, data) -> pd.DataFrame:
@@ -40,10 +76,20 @@ class DFDraw:
         Convert input to pandas DataFrame.
         
         Supports duck typing:
+        - PyArrow Table: convert to DataFrame (Phase 13.1.DF)
         - DataFrame: use as-is
         - Has .df attribute: extract DataFrame (AliasDataFrame)
         - dict-like: convert to DataFrame
         """
+        # Phase 13.1.DF: PyArrow Table - convert to pandas immediately
+        # Note: Immediate conversion for API compatibility. dfdraw requires pandas
+        # for expression evaluation (df.eval), selection, and group_by operations.
+        # Memory optimization happens upstream (groupby-regression, AliasDataFrame),
+        # not in dfdraw which is an end-of-pipeline visualization tool.
+        if _is_pyarrow_table(data):
+            self._table = data
+            return data.to_pandas()
+        
         # Already a DataFrame
         if isinstance(data, pd.DataFrame):
             return data
@@ -61,9 +107,50 @@ class DFDraw:
             return pd.DataFrame({k: data[k] for k in data.keys()})
         
         raise TypeError(
-            f"Cannot create DFDraw from {type(data)}. "
-            "Expected DataFrame, AliasDataFrame, or dict of arrays."
+            f"Cannot create DFDraw from {type(data).__name__}. "
+            "Expected DataFrame, PyArrow Table, AliasDataFrame, or dict of arrays."
         )
+    
+    # =========================================================================
+    # Phase 13.1.DF: Backend Detection
+    # =========================================================================
+    
+    @property
+    def backend(self) -> str:
+        """
+        Return storage backend type.
+        
+        Returns 'pyarrow' if input was PyArrow Table, 'pandas' otherwise.
+        Note: Data is always converted to pandas internally for processing.
+        """
+        return 'pyarrow' if self._table is not None else 'pandas'
+    
+    def memory_info(self) -> Dict[str, Any]:
+        """
+        Return memory usage information.
+        
+        Returns
+        -------
+        dict
+            Memory statistics including backend type and byte sizes.
+            - backend: 'pyarrow' or 'pandas' (original input type)
+            - nbytes: Current memory usage (always pandas internally)
+            - original_nbytes: Original PyArrow size (only if PyArrow input)
+            - num_rows, num_columns: Shape information
+        """
+        pandas_bytes = int(self.df.memory_usage(deep=True).sum())
+        
+        info = {
+            'backend': 'pyarrow' if self._table is not None else 'pandas',
+            'nbytes': pandas_bytes,  # Actual memory used (always pandas internally)
+            'num_rows': len(self.df),
+            'num_columns': len(self.df.columns),
+        }
+        
+        if self._table is not None:
+            info['original_nbytes'] = self._table.nbytes  # Input size before conversion
+        
+        return info
     
     # =========================================================================
     # Expression Parsing
