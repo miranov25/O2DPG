@@ -1924,3 +1924,956 @@ def make_parallel_fit_v4(
     if _sorted_table is not None and df_sorted is None:
         df_sorted = _sorted_table.to_pandas()
     return df_sorted, dfGB
+
+
+# ============================================================================
+# PHASE 12.8.GB: BATCH FITTING (V5)
+# ============================================================================
+
+def _compute_sort_indices_v5(df, gb_columns, backend='auto'):
+    """
+    Compute permutation indices for multi-key stable sort.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input data
+    gb_columns : list[str]
+        Columns to sort by (in order of priority)
+    backend : str
+        'pyarrow', 'pandas', or 'auto'
+        
+    Returns
+    -------
+    perm : np.ndarray[int64]
+        Indices that would sort df by gb_columns (stable sort)
+    """
+    gb_cols = [gb_columns] if isinstance(gb_columns, str) else list(gb_columns)
+    
+    use_pyarrow = (
+        backend == 'pyarrow' or 
+        (backend == 'auto' and _PYARROW_AVAILABLE)
+    )
+    
+    if use_pyarrow and _PYARROW_AVAILABLE:
+        # PyArrow multi-key sort (stable)
+        table = pa.Table.from_pandas(df[gb_cols])
+        perm = pc.sort_indices(
+            table,
+            sort_keys=[(col, "ascending") for col in gb_cols]
+        ).to_numpy()
+    else:
+        # NumPy fallback: lexsort uses REVERSED column order
+        keys = [df[col].values for col in reversed(gb_cols)]
+        perm = np.lexsort(keys)
+    
+    return perm.astype(np.int64)
+
+
+def _compute_group_boundaries_v5(df, gb_columns, perm):
+    """
+    Compute group boundary offsets from sorted permutation.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input data (original, unsorted)
+    gb_columns : list[str]
+        Groupby columns
+    perm : np.ndarray
+        Sort permutation indices
+        
+    Returns
+    -------
+    offsets : np.ndarray[int64]
+        Array of shape (n_groups + 1,) with group boundaries.
+        offsets[i] = start of group i in sorted order
+        offsets[-1] = len(df)
+        
+    Notes
+    -----
+    NaN semantics: NaN != NaN in numpy, which would incorrectly split
+    NaN-groups into singletons. gb_columns should not contain NaN/null.
+    """
+    N = len(perm)
+    if N == 0:
+        return np.array([0], dtype=np.int64)
+    if N == 1:
+        return np.array([0, 1], dtype=np.int64)
+    
+    gb_cols = [gb_columns] if isinstance(gb_columns, str) else list(gb_columns)
+    
+    # Compute boundaries by comparing adjacent rows in sorted order
+    boundaries = np.zeros(N, dtype=bool)
+    boundaries[0] = True
+    
+    for col in gb_cols:
+        col_vals = df[col].values
+        sorted_vals = col_vals[perm]
+        boundaries[1:] |= (sorted_vals[1:] != sorted_vals[:-1])
+    
+    # Convert to offsets
+    starts = np.flatnonzero(boundaries)
+    offsets = np.empty(len(starts) + 1, dtype=np.int64)
+    offsets[:-1] = starts
+    offsets[-1] = N
+    
+    return offsets
+
+
+def _compute_chunk_boundaries_v5(n_groups, n_chunks, offsets):
+    """
+    Compute chunk boundaries that never split groups.
+    
+    Parameters
+    ----------
+    n_groups : int
+        Total number of groups
+    n_chunks : int
+        Number of chunks
+    offsets : np.ndarray
+        Group boundary offsets (length n_groups + 1)
+        
+    Returns
+    -------
+    list of tuples: (g_start, g_end, row_start, row_end, local_offsets)
+    
+    Invariant
+    ---------
+    Chunks are defined over group indices and therefore never split a group.
+    """
+    # Ceiling division for even distribution
+    groups_per_chunk = (n_groups + n_chunks - 1) // n_chunks
+    
+    chunk_specs = []
+    for chunk_idx in range(n_chunks):
+        g_start = chunk_idx * groups_per_chunk
+        g_end = min((chunk_idx + 1) * groups_per_chunk, n_groups)
+        
+        if g_start >= n_groups:
+            break  # No more groups
+        
+        # Row boundaries DERIVED from group offsets
+        row_start = offsets[g_start]
+        row_end = offsets[g_end]
+        
+        # Local offsets (relative to row_start)
+        local_offsets = offsets[g_start:g_end + 1] - row_start
+        
+        chunk_specs.append((g_start, g_end, int(row_start), int(row_end), local_offsets))
+    
+    return chunk_specs
+
+
+def _validate_v5_params(fit_columns, suffixes, linear_columns, weights):
+    """
+    Validate and normalize batch fit parameters.
+    
+    Returns normalized (suffixes, linear_columns, weights) as lists.
+    """
+    n_fits = len(fit_columns)
+    
+    # === Suffixes validation ===
+    if isinstance(suffixes, str):
+        if len(fit_columns) != len(set(fit_columns)):
+            duplicates = [x for x in fit_columns if fit_columns.count(x) > 1]
+            raise ValueError(
+                f"Shared suffix '{suffixes}' not allowed when fit_columns "
+                f"contains duplicates: {set(duplicates)}. "
+                f"Provide list of suffixes to distinguish output columns."
+            )
+        suffixes = [suffixes] * n_fits
+    else:
+        suffixes = list(suffixes)
+        if len(suffixes) != n_fits:
+            raise ValueError(
+                f"suffixes length ({len(suffixes)}) != fit_columns length ({n_fits})"
+            )
+        # Check for duplicate (target, suffix) pairs
+        pairs = list(zip(fit_columns, suffixes))
+        if len(pairs) != len(set(pairs)):
+            raise ValueError(f"Duplicate (fit_column, suffix) pairs: {pairs}")
+    
+    # === linear_columns validation ===
+    if not linear_columns:
+        raise ValueError("linear_columns cannot be empty")
+    
+    if isinstance(linear_columns[0], str):
+        # Shared across all fits
+        linear_columns = [list(linear_columns)] * n_fits
+    else:
+        linear_columns = [list(lc) for lc in linear_columns]
+        if len(linear_columns) != n_fits:
+            raise ValueError(
+                f"linear_columns length ({len(linear_columns)}) != "
+                f"fit_columns length ({n_fits})"
+            )
+    
+    # === weights validation ===
+    if weights is None:
+        weights = [None] * n_fits
+    elif isinstance(weights, str):
+        weights = [weights] * n_fits
+    else:
+        weights = list(weights)
+        if len(weights) != n_fits:
+            raise ValueError(
+                f"weights length ({len(weights)}) != fit_columns length ({n_fits})"
+            )
+    
+    return suffixes, linear_columns, weights
+
+
+def _set_threading_policy_v5(n_jobs):
+    """
+    Set BLAS threading policy to prevent oversubscription.
+    
+    Returns dict of original values for restoration.
+    """
+    import os
+    
+    env_vars = [
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+    ]
+    
+    original = {}
+    for var in env_vars:
+        original[var] = os.environ.get(var)
+        os.environ[var] = "1"
+    
+    return original
+
+
+def _restore_threading_policy_v5(original):
+    """Restore original threading environment variables."""
+    import os
+    
+    for var, val in original.items():
+        if val is not None:
+            os.environ[var] = val
+        else:
+            os.environ.pop(var, None)
+
+
+def make_parallel_fit_v5(
+    *,
+    df,
+    gb_columns,
+    
+    # === Batch Fit Specification ===
+    fit_columns,
+    suffixes="_v5",
+    linear_columns,
+    weights=None,
+    
+    # === Common Parameters ===
+    selection=None,
+    fit_intercept=True,
+    min_stat=3,
+    compute_mad=True,
+    
+    # === Output Control ===
+    diag=False,
+    diag_prefix="diag_",
+    return_metadata=False,
+    
+    # === Performance ===
+    n_jobs=1,
+    n_chunks=None,
+    backend='auto',
+):
+    """
+    Batch OLS fitting: multiple fits with same groupby in single pass.
+    
+    Performs weighted ordinary least squares regression for multiple 
+    target/predictor combinations. All fits share the same groupby,
+    enabling significant optimization over calling v4 multiple times.
+    
+    Phase 12.8.GB: This function processes data in chunks defined by
+    group boundaries, reducing peak memory from O(N) to O(N/chunks).
+    
+    Physics Context
+    ---------------
+    In track fitting and calibration workflows:
+    
+    - **Intercept (offset):** Constant bias at reference position
+    - **Slopes:** Linear dependence on position variables
+    
+    Example distortion model:
+        dy = offset_y + slope_rrel * rrel + slope_rrel2 * rrel²
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input DataFrame. Pass the full DataFrame — the function extracts
+        needed columns internally. Avoid pre-slicing.
+        
+        **Precision:** All computations use float64 for numerical stability.
+        This ensures consistent results regardless of input dtype.
+        
+    gb_columns : str or list[str]
+        Columns defining groups. Each unique combination gets separate fits.
+        Must not contain null/NaN values (ValueError raised otherwise).
+        Example: ["track_index", "firstTForbit"]
+        
+    fit_columns : list[str]
+        Target variables, one per fit. Can contain duplicates when fitting
+        same target with different parameters.
+        Example: ["dyC2", "dzC2", "dzC2"]
+        
+    suffixes : str or list[str], default="_v5"
+        Suffix(es) for output column names.
+        - str: Same suffix for all fits (only if fit_columns unique)
+        - list[str]: Per-fit suffix (required if fit_columns has duplicates)
+        
+        Raises ValueError if would create duplicate output columns.
+        
+    linear_columns : list[str] or list[list[str]]
+        Predictor variables.
+        - list[str]: Same predictors for all fits
+        - list[list[str]]: Different predictors per fit
+        
+    weights : str or list[str], optional
+        Weight column(s) for weighted least squares.
+        - None: Unweighted (all weights = 1)
+        - str: Same weights for all fits
+        - list[str]: Different weights per fit
+        
+    selection : array-like of bool, optional
+        Row mask applied before grouping.
+        
+    fit_intercept : bool, default=True
+        If True, include intercept term.
+        
+    min_stat : int, default=3
+        Minimum points per group for valid fit.
+        
+    compute_mad : bool, default=True
+        Compute Median Absolute Deviation. Set False for ~30% speedup.
+        
+    diag : bool, default=False
+        Include diagnostic columns.
+        
+    diag_prefix : str, default="diag_"
+        Prefix for diagnostic columns.
+        
+    return_metadata : bool, default=False
+        If True, return (dfGB, metadata) with auto-generated formulas.
+        
+    n_jobs : int, default=1
+        Parallel workers for group processing.
+        - 1: Sequential
+        - N: Use N workers  
+        - -1: Use all CPU cores
+        
+        Note: When n_jobs > 1, OMP/MKL/OPENBLAS_NUM_THREADS are set to 1
+        internally to prevent BLAS oversubscription with Numba prange.
+        
+    n_chunks : int, optional
+        Number of data chunks for memory efficiency.
+        Default: max(n_jobs, 1).
+        Higher = less memory, same CPU time.
+        
+        Chunks are defined over group indices and therefore 
+        **never split a group**.
+        
+    backend : str, default='auto'
+        Sort backend: 'pandas', 'pyarrow', or 'auto'.
+        
+    Returns
+    -------
+    dfGB : pd.DataFrame
+        Per-group fit results (merged for all fits).
+        
+    metadata : dict (only if return_metadata=True)
+        Per-fit specifications and auto-generated formulas.
+        
+    Raises
+    ------
+    ValueError
+        If suffixes would create duplicate output columns.
+        If list parameters have inconsistent lengths.
+        If gb_columns contain null/NaN values.
+        
+    KeyError
+        If required columns not found in df.
+        
+    Notes
+    -----
+    Memory efficiency: Data is processed in chunks defined by group
+    boundaries. Only one chunk is materialized at a time, reducing 
+    peak memory from O(N) to O(N/chunks).
+    
+    Numerical precision: All computations use float64 for numerical
+    stability, regardless of input dtype. Results match v4 within 
+    float64 roundoff.
+    
+    Threading: When n_jobs > 1, the function sets OMP/MKL/OPENBLAS 
+    thread env vars to 1 to prevent oversubscription with Numba prange.
+    
+    Shared diagnostics: When diag=True, the columns n_total, n_valid, 
+    and n_filtered are computed based on the **first fit** specification
+    (fit index 0). Different fits may have different valid row counts
+    if their targets/weights contain different NaN patterns; per-fit
+    validity is reflected in the status column for each fit.
+    
+    Examples
+    --------
+    Basic usage:
+    
+    >>> dfGB = make_parallel_fit_v5(
+    ...     df=data,
+    ...     gb_columns=["track_index", "firstTForbit"],
+    ...     fit_columns=["dyC2", "dzC2"],
+    ...     linear_columns=["rrel", "rrel2"],
+    ...     suffixes="_Fit",
+    ... )
+    
+    Different weights per fit:
+    
+    >>> dfGB = make_parallel_fit_v5(
+    ...     df=data,
+    ...     gb_columns=["track_index", "firstTForbit"],
+    ...     fit_columns=["dzC2", "dzC2"],
+    ...     suffixes=["_TPC", "_ITS"],
+    ...     linear_columns=["rrel"],
+    ...     weights=["weightTPCR", "weightITSR"],
+    ...     n_jobs=4,
+    ... )
+    
+    Full calibration workflow:
+    
+    >>> dfGB, meta = make_parallel_fit_v5(
+    ...     df=aDF.df,
+    ...     gb_columns=["track_index", "firstTForbit"],
+    ...     selection=isOKTrackFitTPCITS,
+    ...     fit_columns=["dyC2", "dzC2", "dzC2"],
+    ...     suffixes=["_Y", "_Z", "_ZITS"],
+    ...     linear_columns=[["rrel", "rrel2"], ["rrel"], ["rrel"]],
+    ...     weights=["weightTPCR", "weightTPCR", "weightITSR"],
+    ...     return_metadata=True,
+    ...     n_jobs=4,
+    ... )
+    >>> print(meta["fits"]["_Y"]["formulas"]["prediction"])
+    
+    See Also
+    --------
+    make_parallel_fit_v4 : Single-fit version
+    """
+    import os
+    
+    # ========================================================================
+    # 1. VALIDATE & PARSE PARAMETERS
+    # ========================================================================
+    
+    # Normalize gb_columns
+    gb_cols = [gb_columns] if isinstance(gb_columns, str) else list(gb_columns)
+    
+    # Normalize fit_columns
+    fit_cols = list(fit_columns)
+    n_fits = len(fit_cols)
+    
+    if n_fits == 0:
+        raise ValueError("fit_columns cannot be empty")
+    
+    # Validate and normalize batch parameters
+    suffixes_list, linear_cols_list, weights_list = _validate_v5_params(
+        fit_cols, suffixes, linear_columns, weights
+    )
+    
+    # Collect all unique columns needed
+    unique_cols = set(gb_cols)
+    unique_cols.update(fit_cols)
+    for lc in linear_cols_list:
+        unique_cols.update(lc)
+    for w in weights_list:
+        if w is not None:
+            unique_cols.add(w)
+    
+    # Check all columns exist
+    missing = [c for c in unique_cols if c not in df.columns]
+    if missing:
+        raise KeyError(f"Missing required columns: {missing}")
+    
+    # Check for null/NaN in gb_columns
+    for col in gb_cols:
+        if df[col].isna().any():
+            raise ValueError(
+                f"gb_columns must not contain null/NaN. Column '{col}' has null values."
+            )
+    
+    # Apply selection
+    if selection is not None:
+        df = df.loc[selection]
+    
+    N = len(df)
+    if N == 0:
+        # Return empty DataFrame with correct columns
+        return _build_empty_v5_result(
+            gb_cols, fit_cols, suffixes_list, linear_cols_list, 
+            fit_intercept, compute_mad, diag, diag_prefix, return_metadata
+        )
+    
+    # ========================================================================
+    # 2. COMPUTE SORT ORDER (once)
+    # ========================================================================
+    
+    perm = _compute_sort_indices_v5(df, gb_cols, backend)
+    offsets = _compute_group_boundaries_v5(df, gb_cols, perm)
+    n_groups = len(offsets) - 1
+    
+    # ========================================================================
+    # 3. SETUP CHUNKING
+    # ========================================================================
+    
+    if n_jobs == -1:
+        n_jobs = os.cpu_count() or 4
+    
+    if n_chunks is None:
+        n_chunks = max(n_jobs, 1)
+    
+    chunk_specs = _compute_chunk_boundaries_v5(n_groups, n_chunks, offsets)
+    
+    # ========================================================================
+    # 4. ALLOCATE OUTPUT ARRAYS
+    # ========================================================================
+    
+    # Determine max params across fits
+    n_params_list = []
+    for fi in range(n_fits):
+        n_lin = len(linear_cols_list[fi])
+        n_p = (1 + n_lin) if fit_intercept else n_lin
+        n_params_list.append(n_p)
+    max_params = max(n_params_list)
+    
+    # Output arrays (float64)
+    beta = np.full((n_groups, n_fits, max_params), np.nan, dtype=np.float64)
+    errors = np.full((n_groups, n_fits, max_params), np.nan, dtype=np.float64)
+    rms_arr = np.full((n_groups, n_fits), np.nan, dtype=np.float64)
+    mad_arr = np.full((n_groups, n_fits), np.nan, dtype=np.float64)
+    
+    # Diagnostics - shared
+    n_total_arr = np.zeros(n_groups, dtype=np.int32)
+    n_valid_arr = np.zeros(n_groups, dtype=np.int32)
+    n_filtered_arr = np.zeros(n_groups, dtype=np.int32)
+    
+    # Diagnostics - per-fit
+    cond_arr = np.full((n_groups, n_fits), np.nan, dtype=np.float64)
+    status_arr = np.empty((n_groups, n_fits), dtype='U32')
+    status_arr[:] = ''
+    
+    # ========================================================================
+    # 5. SET THREADING POLICY
+    # ========================================================================
+    
+    original_threading = None
+    if n_jobs > 1:
+        original_threading = _set_threading_policy_v5(n_jobs)
+        try:
+            import numba
+            numba.set_num_threads(n_jobs)
+        except Exception:
+            pass
+    
+    # ========================================================================
+    # 6. PROCESS CHUNKS
+    # ========================================================================
+    
+    try:
+        for chunk_spec in chunk_specs:
+            g_start, g_end, row_start, row_end, local_offsets = chunk_spec
+            n_groups_chunk = g_end - g_start
+            
+            if n_groups_chunk == 0:
+                continue
+            
+            # Materialize chunk data (preserve dtype)
+            chunk_perm = perm[row_start:row_end]
+            chunk_data = {}
+            for col in unique_cols:
+                chunk_data[col] = df[col].values[chunk_perm]
+            
+            # Process groups in this chunk
+            _process_chunk_v5(
+                chunk_data=chunk_data,
+                local_offsets=local_offsets,
+                g_start=g_start,
+                n_groups_chunk=n_groups_chunk,
+                n_fits=n_fits,
+                fit_cols=fit_cols,
+                linear_cols_list=linear_cols_list,
+                weights_list=weights_list,
+                n_params_list=n_params_list,
+                fit_intercept=fit_intercept,
+                min_stat=min_stat,
+                compute_mad=compute_mad,
+                # Output arrays
+                beta=beta,
+                errors=errors,
+                rms_arr=rms_arr,
+                mad_arr=mad_arr,
+                n_total_arr=n_total_arr,
+                n_valid_arr=n_valid_arr,
+                n_filtered_arr=n_filtered_arr,
+                cond_arr=cond_arr,
+                status_arr=status_arr,
+            )
+            
+            # Free chunk memory
+            del chunk_data
+            del chunk_perm
+    
+    finally:
+        # Restore threading policy
+        if original_threading is not None:
+            _restore_threading_policy_v5(original_threading)
+    
+    # ========================================================================
+    # 7. BUILD OUTPUT DATAFRAME
+    # ========================================================================
+    
+    # Get group keys
+    out_dict = {}
+    for col in gb_cols:
+        sorted_vals = df[col].values[perm]
+        out_dict[col] = sorted_vals[offsets[:-1]]
+    
+    # Add fit results for each fit
+    for fi in range(n_fits):
+        target = fit_cols[fi]
+        suffix = suffixes_list[fi]
+        lin_cols = linear_cols_list[fi]
+        n_p = n_params_list[fi]
+        
+        # Coefficients
+        if fit_intercept:
+            out_dict[f"{target}_intercept{suffix}"] = beta[:, fi, 0]
+            out_dict[f"{target}_intercept_err{suffix}"] = errors[:, fi, 0]
+            for j, lc in enumerate(lin_cols):
+                out_dict[f"{target}_slope_{lc}{suffix}"] = beta[:, fi, j + 1]
+                out_dict[f"{target}_slope_{lc}_err{suffix}"] = errors[:, fi, j + 1]
+        else:
+            for j, lc in enumerate(lin_cols):
+                out_dict[f"{target}_slope_{lc}{suffix}"] = beta[:, fi, j]
+                out_dict[f"{target}_slope_{lc}_err{suffix}"] = errors[:, fi, j]
+        
+        # Quality metrics
+        out_dict[f"{target}_rms{suffix}"] = rms_arr[:, fi]
+        out_dict[f"{target}_mad{suffix}"] = mad_arr[:, fi]
+    
+    # Add diagnostics
+    if diag:
+        # Shared diagnostics
+        out_dict[f"{diag_prefix}n_total_v5"] = n_total_arr
+        out_dict[f"{diag_prefix}n_valid_v5"] = n_valid_arr
+        out_dict[f"{diag_prefix}n_filtered_v5"] = n_filtered_arr
+        
+        # Per-fit diagnostics
+        for fi in range(n_fits):
+            suffix = suffixes_list[fi]
+            out_dict[f"{diag_prefix}cond{suffix}"] = cond_arr[:, fi]
+            out_dict[f"{diag_prefix}status{suffix}"] = status_arr[:, fi]
+    
+    dfGB = pd.DataFrame(out_dict)
+    
+    # ========================================================================
+    # 8. BUILD METADATA (if requested)
+    # ========================================================================
+    
+    if return_metadata:
+        metadata = _build_v5_metadata(
+            gb_cols=gb_cols,
+            fit_cols=fit_cols,
+            suffixes_list=suffixes_list,
+            linear_cols_list=linear_cols_list,
+            weights_list=weights_list,
+            fit_intercept=fit_intercept,
+            min_stat=min_stat,
+            compute_mad=compute_mad,
+            n_groups=n_groups,
+        )
+        return dfGB, metadata
+    
+    return dfGB
+
+
+def _process_chunk_v5(
+    chunk_data,
+    local_offsets,
+    g_start,
+    n_groups_chunk,
+    n_fits,
+    fit_cols,
+    linear_cols_list,
+    weights_list,
+    n_params_list,
+    fit_intercept,
+    min_stat,
+    compute_mad,
+    # Output arrays
+    beta,
+    errors,
+    rms_arr,
+    mad_arr,
+    n_total_arr,
+    n_valid_arr,
+    n_filtered_arr,
+    cond_arr,
+    status_arr,
+):
+    """
+    Process all groups in a chunk, performing all fits for each group.
+    
+    This function processes groups sequentially. For parallel processing,
+    a Numba-compiled version could be used with prange.
+    """
+    for gi_local in range(n_groups_chunk):
+        gi_global = g_start + gi_local
+        i0 = local_offsets[gi_local]
+        i1 = local_offsets[gi_local + 1]
+        m = i1 - i0  # Number of rows in this group
+        
+        n_total_arr[gi_global] = m
+        
+        if m < min_stat:
+            for fi in range(n_fits):
+                status_arr[gi_global, fi] = 'INSUFFICIENT_DATA'
+            continue
+        
+        # Process each fit for this group
+        for fi in range(n_fits):
+            target = fit_cols[fi]
+            lin_cols = linear_cols_list[fi]
+            weight_col = weights_list[fi]
+            n_params = n_params_list[fi]
+            
+            # Extract data for this group and fit
+            Yg = chunk_data[target][i0:i1].astype(np.float64)
+            
+            # Build design matrix
+            n_lin = len(lin_cols)
+            if fit_intercept:
+                Xg = np.ones((m, n_params), dtype=np.float64)
+                for j, lc in enumerate(lin_cols):
+                    Xg[:, j + 1] = chunk_data[lc][i0:i1].astype(np.float64)
+            else:
+                Xg = np.empty((m, n_params), dtype=np.float64)
+                for j, lc in enumerate(lin_cols):
+                    Xg[:, j] = chunk_data[lc][i0:i1].astype(np.float64)
+            
+            # Get weights
+            if weight_col is not None:
+                Wg = chunk_data[weight_col][i0:i1].astype(np.float64)
+            else:
+                Wg = np.ones(m, dtype=np.float64)
+            
+            # Filter invalid values
+            valid_mask = np.isfinite(Yg) & np.isfinite(Wg) & (Wg > 0)
+            for j in range(n_params):
+                valid_mask &= np.isfinite(Xg[:, j])
+            
+            n_valid = np.sum(valid_mask)
+            n_filtered = m - n_valid
+            
+            # Update shared diagnostics (only from first fit)
+            if fi == 0:
+                n_valid_arr[gi_global] = n_valid
+                n_filtered_arr[gi_global] = n_filtered
+            
+            if n_valid < min_stat:
+                status_arr[gi_global, fi] = 'INSUFFICIENT_VALID'
+                continue
+            
+            # Apply filter
+            Xg = Xg[valid_mask]
+            Yg = Yg[valid_mask]
+            Wg = Wg[valid_mask]
+            
+            # Weighted design matrix
+            sqrt_w = np.sqrt(Wg)
+            X_weighted = Xg * sqrt_w[:, None]
+            Y_weighted = Yg * sqrt_w
+            
+            try:
+                # Normal equations
+                XtX = X_weighted.T @ X_weighted
+                XtY = X_weighted.T @ Y_weighted
+                
+                # Check condition number
+                cond = np.linalg.cond(XtX)
+                cond_arr[gi_global, fi] = cond
+                
+                # Add ridge if ill-conditioned
+                if cond > 1e12:
+                    ridge = 1e-8 * np.trace(XtX) / len(XtX)
+                    XtX += ridge * np.eye(len(XtX))
+                    status_arr[gi_global, fi] = 'ILL_CONDITIONED_RIDGED'
+                else:
+                    status_arr[gi_global, fi] = 'OK'
+                
+                # Solve
+                coeffs = np.linalg.solve(XtX, XtY)
+                beta[gi_global, fi, :n_params] = coeffs
+                
+                # Compute RMS
+                y_pred = X_weighted @ coeffs
+                resid = Y_weighted - y_pred
+                dof = n_valid - n_params
+                if dof > 0:
+                    s2 = np.sum(resid ** 2) / dof
+                    rms_arr[gi_global, fi] = np.sqrt(s2)
+                    
+                    # Compute parameter errors
+                    try:
+                        XtX_inv = np.linalg.inv(XtX)
+                        errors[gi_global, fi, :n_params] = np.sqrt(s2 * np.diag(XtX_inv))
+                    except np.linalg.LinAlgError:
+                        pass
+                
+                # Compute MAD (if enabled)
+                if compute_mad:
+                    # Use unweighted residuals for MAD
+                    y_pred_uw = Xg @ coeffs
+                    resid_uw = Yg - y_pred_uw
+                    sorted_resid = np.sort(resid_uw)
+                    n_r = len(sorted_resid)
+                    if n_r % 2 == 1:
+                        med = sorted_resid[n_r // 2]
+                    else:
+                        med = (sorted_resid[n_r // 2 - 1] + sorted_resid[n_r // 2]) / 2.0
+                    abs_dev = np.abs(resid_uw - med)
+                    sorted_dev = np.sort(abs_dev)
+                    if n_r % 2 == 1:
+                        mad_arr[gi_global, fi] = sorted_dev[n_r // 2]
+                    else:
+                        mad_arr[gi_global, fi] = (sorted_dev[n_r // 2 - 1] + sorted_dev[n_r // 2]) / 2.0
+                
+            except np.linalg.LinAlgError:
+                status_arr[gi_global, fi] = 'SINGULAR_MATRIX'
+                continue
+
+
+def _build_empty_v5_result(
+    gb_cols, fit_cols, suffixes_list, linear_cols_list,
+    fit_intercept, compute_mad, diag, diag_prefix, return_metadata
+):
+    """Build empty result DataFrame and metadata for empty input."""
+    out_dict = {col: [] for col in gb_cols}
+    
+    n_fits = len(fit_cols)
+    for fi in range(n_fits):
+        target = fit_cols[fi]
+        suffix = suffixes_list[fi]
+        lin_cols = linear_cols_list[fi]
+        
+        if fit_intercept:
+            out_dict[f"{target}_intercept{suffix}"] = []
+            out_dict[f"{target}_intercept_err{suffix}"] = []
+        for lc in lin_cols:
+            out_dict[f"{target}_slope_{lc}{suffix}"] = []
+            out_dict[f"{target}_slope_{lc}_err{suffix}"] = []
+        out_dict[f"{target}_rms{suffix}"] = []
+        out_dict[f"{target}_mad{suffix}"] = []
+    
+    if diag:
+        out_dict[f"{diag_prefix}n_total_v5"] = []
+        out_dict[f"{diag_prefix}n_valid_v5"] = []
+        out_dict[f"{diag_prefix}n_filtered_v5"] = []
+        for fi in range(n_fits):
+            suffix = suffixes_list[fi]
+            out_dict[f"{diag_prefix}cond{suffix}"] = []
+            out_dict[f"{diag_prefix}status{suffix}"] = []
+    
+    dfGB = pd.DataFrame(out_dict)
+    
+    if return_metadata:
+        metadata = {
+            "version": "v5",
+            "schema_version": "1.0",
+            "n_fits": n_fits,
+            "n_groups": 0,
+            "fits": {},
+        }
+        return dfGB, metadata
+    
+    return dfGB
+
+
+def _build_v5_metadata(
+    gb_cols,
+    fit_cols,
+    suffixes_list,
+    linear_cols_list,
+    weights_list,
+    fit_intercept,
+    min_stat,
+    compute_mad,
+    n_groups,
+):
+    """Build metadata dict with per-fit formulas."""
+    metadata = {
+        "version": "v5",
+        "schema_version": "1.0",
+        "gb_columns": gb_cols,
+        "n_fits": len(fit_cols),
+        "n_groups": n_groups,
+        "fit_intercept": fit_intercept,
+        "min_stat": min_stat,
+        "compute_mad": compute_mad,
+        "fits": {},
+    }
+    
+    for fi, (target, suffix, lin_cols, weight) in enumerate(
+        zip(fit_cols, suffixes_list, linear_cols_list, weights_list)
+    ):
+        # Build column names
+        columns = {
+            "rms": f"{target}_rms{suffix}",
+            "mad": f"{target}_mad{suffix}",
+        }
+        
+        slopes = []
+        slope_errs = []
+        
+        if fit_intercept:
+            columns["intercept"] = f"{target}_intercept{suffix}"
+            columns["intercept_err"] = f"{target}_intercept_err{suffix}"
+        
+        for lc in lin_cols:
+            slopes.append(f"{target}_slope_{lc}{suffix}")
+            slope_errs.append(f"{target}_slope_{lc}_err{suffix}")
+        
+        columns["slopes"] = slopes
+        columns["slope_errs"] = slope_errs
+        
+        # Build prediction formula
+        terms = []
+        if fit_intercept:
+            terms.append(f"{target}_intercept{suffix}")
+        for lc in lin_cols:
+            terms.append(f"{target}_slope_{lc}{suffix} * {lc}")
+        prediction = " + ".join(terms)
+        
+        # Build residual formula
+        residual = f"{target} - ({prediction})"
+        
+        # Build pull formula
+        pull = f"({residual}) / {target}_rms{suffix}"
+        
+        metadata["fits"][suffix] = {
+            "target": target,
+            "linear_columns": lin_cols,
+            "weights": weight,
+            "n_params": (1 + len(lin_cols)) if fit_intercept else len(lin_cols),
+            "columns": columns,
+            "formulas": {
+                "prediction": prediction,
+                "residual": residual,
+                "pull": pull,
+            },
+        }
+    
+    return metadata
