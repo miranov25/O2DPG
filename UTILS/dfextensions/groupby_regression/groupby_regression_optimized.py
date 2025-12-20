@@ -28,6 +28,44 @@ except ImportError:
     _PYARROW_AVAILABLE = False
     _PYARROW_VERSION = (0, 0)
 
+# ============================================================================
+# PHASE 12.9.GB: NUMBA DETECTION
+# ============================================================================
+
+try:
+    import numba
+    from numba import njit, prange
+    _NUMBA_AVAILABLE = True
+    _NUMBA_VERSION = tuple(int(x) for x in numba.__version__.split('.')[:2])
+except ImportError:
+    _NUMBA_AVAILABLE = False
+    _NUMBA_VERSION = (0, 0)
+    # Dummy decorators for when Numba unavailable
+    def njit(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator if not args else decorator(args[0])
+    def prange(*args):
+        return range(*args)
+
+# ============================================================================
+# PHASE 12.9.GB: STATUS CODES (Numba-compatible integers)
+# ============================================================================
+
+STATUS_OK = 0
+STATUS_INSUFFICIENT_DATA = 1
+STATUS_INSUFFICIENT_VALID = 2
+STATUS_ILL_CONDITIONED = 3
+STATUS_SINGULAR = 4
+
+STATUS_TO_STRING = {
+    STATUS_OK: 'OK',
+    STATUS_INSUFFICIENT_DATA: 'INSUFFICIENT_DATA',
+    STATUS_INSUFFICIENT_VALID: 'INSUFFICIENT_VALID',
+    STATUS_ILL_CONDITIONED: 'ILL_CONDITIONED_RIDGED',
+    STATUS_SINGULAR: 'SINGULAR_MATRIX',
+}
+
 # Module-level logger
 _logger = logging.getLogger(__name__)
 
@@ -2184,6 +2222,7 @@ def make_parallel_fit_v5(
     n_jobs=1,
     n_chunks=None,
     backend='auto',
+    parallel_backend='auto',
 ):
     """
     Batch OLS fitting: multiple fits with same groupby in single pass.
@@ -2194,6 +2233,8 @@ def make_parallel_fit_v5(
     
     Phase 12.8.GB: This function processes data in chunks defined by
     group boundaries, reducing peak memory from O(N) to O(N/chunks).
+    
+    Phase 12.9.GB: Added Numba parallel processing within chunks.
     
     Physics Context
     ---------------
@@ -2283,6 +2324,12 @@ def make_parallel_fit_v5(
     backend : str, default='auto'
         Sort backend: 'pandas', 'pyarrow', or 'auto'.
         
+    parallel_backend : str, default='auto'
+        Parallel processing backend (Phase 12.9.GB).
+        - 'auto': Use Numba if available and n_jobs > 1, else sequential
+        - 'numba': Force Numba (raises ImportError if unavailable)
+        - 'sequential': No parallelization (12.8.GB behavior)
+        
     Returns
     -------
     dfGB : pd.DataFrame
@@ -2314,11 +2361,12 @@ def make_parallel_fit_v5(
     Threading: When n_jobs > 1, the function sets OMP/MKL/OPENBLAS 
     thread env vars to 1 to prevent oversubscription with Numba prange.
     
-    Shared diagnostics: When diag=True, the columns n_total, n_valid, 
-    and n_filtered are computed based on the **first fit** specification
-    (fit index 0). Different fits may have different valid row counts
-    if their targets/weights contain different NaN patterns; per-fit
-    validity is reflected in the status column for each fit.
+    Diagnostics (Phase 12.9.GB): When diag=True:
+    - Shared: diag_n_total_v5 (rows per group, same for all fits)
+    - Per-fit: diag_n_valid{suffix}, diag_n_filtered{suffix}, 
+      diag_cond{suffix}, diag_status{suffix}
+    Different fits may have different valid row counts if their 
+    targets/weights/predictors contain different NaN patterns.
     
     Examples
     --------
@@ -2455,15 +2503,21 @@ def make_parallel_fit_v5(
     rms_arr = np.full((n_groups, n_fits), np.nan, dtype=np.float64)
     mad_arr = np.full((n_groups, n_fits), np.nan, dtype=np.float64)
     
-    # Diagnostics - shared
+    # Diagnostics - shared (1D)
     n_total_arr = np.zeros(n_groups, dtype=np.int32)
-    n_valid_arr = np.zeros(n_groups, dtype=np.int32)
-    n_filtered_arr = np.zeros(n_groups, dtype=np.int32)
     
-    # Diagnostics - per-fit
+    # Diagnostics - per-fit (2D) - Phase 12.9.GB
+    n_valid_arr = np.zeros((n_groups, n_fits), dtype=np.int32)
+    n_filtered_arr = np.zeros((n_groups, n_fits), dtype=np.int32)
     cond_arr = np.full((n_groups, n_fits), np.nan, dtype=np.float64)
-    status_arr = np.empty((n_groups, n_fits), dtype='U32')
-    status_arr[:] = ''
+    
+    # Status array: int for Numba, string for sequential
+    selected_backend = _select_parallel_backend(parallel_backend, n_jobs)
+    if selected_backend == 'numba':
+        status_arr = np.zeros((n_groups, n_fits), dtype=np.int32)
+    else:
+        status_arr = np.empty((n_groups, n_fits), dtype='U32')
+        status_arr[:] = ''
     
     # ========================================================================
     # 5. SET THREADING POLICY
@@ -2472,11 +2526,11 @@ def make_parallel_fit_v5(
     original_threading = None
     if n_jobs > 1:
         original_threading = _set_threading_policy_v5(n_jobs)
-        try:
-            import numba
-            numba.set_num_threads(n_jobs)
-        except Exception:
-            pass
+        if _NUMBA_AVAILABLE:
+            try:
+                numba.set_num_threads(n_jobs)
+            except Exception:
+                pass
     
     # ========================================================================
     # 6. PROCESS CHUNKS
@@ -2496,31 +2550,53 @@ def make_parallel_fit_v5(
             for col in unique_cols:
                 chunk_data[col] = df[col].values[chunk_perm]
             
-            # Process groups in this chunk
-            _process_chunk_v5(
-                chunk_data=chunk_data,
-                local_offsets=local_offsets,
-                g_start=g_start,
-                n_groups_chunk=n_groups_chunk,
-                n_fits=n_fits,
-                fit_cols=fit_cols,
-                linear_cols_list=linear_cols_list,
-                weights_list=weights_list,
-                n_params_list=n_params_list,
-                fit_intercept=fit_intercept,
-                min_stat=min_stat,
-                compute_mad=compute_mad,
-                # Output arrays
-                beta=beta,
-                errors=errors,
-                rms_arr=rms_arr,
-                mad_arr=mad_arr,
-                n_total_arr=n_total_arr,
-                n_valid_arr=n_valid_arr,
-                n_filtered_arr=n_filtered_arr,
-                cond_arr=cond_arr,
-                status_arr=status_arr,
-            )
+            # Dispatch to appropriate backend (Phase 12.9.GB)
+            if selected_backend == 'numba':
+                # Prepare dense matrices for Numba kernel
+                (X_mat, Y_mat, W_mat,
+                 fit_target_idx, fit_weight_idx, fit_n_params_arr,
+                 linear_col_indices, linear_col_starts) = _prepare_chunk_matrices_for_numba(
+                    chunk_data, fit_cols, linear_cols_list, weights_list, n_params_list
+                )
+                
+                # Call Numba kernel
+                _process_chunk_numba(
+                    X_mat, Y_mat, W_mat,
+                    local_offsets.astype(np.int64),
+                    fit_target_idx, fit_weight_idx, fit_n_params_arr,
+                    linear_col_indices, linear_col_starts,
+                    fit_intercept,
+                    beta, errors, rms_arr, mad_arr,
+                    n_total_arr, n_valid_arr, n_filtered_arr, cond_arr, status_arr,
+                    g_start,
+                    min_stat, compute_mad,
+                )
+            else:
+                # Sequential Python fallback
+                _process_chunk_v5(
+                    chunk_data=chunk_data,
+                    local_offsets=local_offsets,
+                    g_start=g_start,
+                    n_groups_chunk=n_groups_chunk,
+                    n_fits=n_fits,
+                    fit_cols=fit_cols,
+                    linear_cols_list=linear_cols_list,
+                    weights_list=weights_list,
+                    n_params_list=n_params_list,
+                    fit_intercept=fit_intercept,
+                    min_stat=min_stat,
+                    compute_mad=compute_mad,
+                    # Output arrays
+                    beta=beta,
+                    errors=errors,
+                    rms_arr=rms_arr,
+                    mad_arr=mad_arr,
+                    n_total_arr=n_total_arr,
+                    n_valid_arr=n_valid_arr,
+                    n_filtered_arr=n_filtered_arr,
+                    cond_arr=cond_arr,
+                    status_arr=status_arr,
+                )
             
             # Free chunk memory
             del chunk_data
@@ -2530,6 +2606,14 @@ def make_parallel_fit_v5(
         # Restore threading policy
         if original_threading is not None:
             _restore_threading_policy_v5(original_threading)
+    
+    # Convert status codes to strings if using Numba backend
+    if selected_backend == 'numba':
+        status_str_arr = np.empty((n_groups, n_fits), dtype='U32')
+        for gi in range(n_groups):
+            for fi in range(n_fits):
+                status_str_arr[gi, fi] = STATUS_TO_STRING.get(status_arr[gi, fi], '')
+        status_arr = status_str_arr
     
     # ========================================================================
     # 7. BUILD OUTPUT DATAFRAME
@@ -2566,14 +2650,14 @@ def make_parallel_fit_v5(
     
     # Add diagnostics
     if diag:
-        # Shared diagnostics
+        # Shared diagnostics (1D)
         out_dict[f"{diag_prefix}n_total_v5"] = n_total_arr
-        out_dict[f"{diag_prefix}n_valid_v5"] = n_valid_arr
-        out_dict[f"{diag_prefix}n_filtered_v5"] = n_filtered_arr
         
-        # Per-fit diagnostics
+        # Per-fit diagnostics (Phase 12.9.GB)
         for fi in range(n_fits):
             suffix = suffixes_list[fi]
+            out_dict[f"{diag_prefix}n_valid{suffix}"] = n_valid_arr[:, fi]
+            out_dict[f"{diag_prefix}n_filtered{suffix}"] = n_filtered_arr[:, fi]
             out_dict[f"{diag_prefix}cond{suffix}"] = cond_arr[:, fi]
             out_dict[f"{diag_prefix}status{suffix}"] = status_arr[:, fi]
     
@@ -2619,16 +2703,18 @@ def _process_chunk_v5(
     rms_arr,
     mad_arr,
     n_total_arr,
-    n_valid_arr,
-    n_filtered_arr,
+    n_valid_arr,      # Now 2D: [n_groups, n_fits]
+    n_filtered_arr,   # Now 2D: [n_groups, n_fits]
     cond_arr,
     status_arr,
 ):
     """
     Process all groups in a chunk, performing all fits for each group.
     
-    This function processes groups sequentially. For parallel processing,
-    a Numba-compiled version could be used with prange.
+    Sequential version. For parallel processing, use _process_chunk_numba
+    with parallel_backend='numba'.
+    
+    Phase 12.9.GB: n_valid_arr and n_filtered_arr are now per-fit (2D).
     """
     for gi_local in range(n_groups_chunk):
         gi_global = g_start + gi_local
@@ -2640,7 +2726,7 @@ def _process_chunk_v5(
         
         if m < min_stat:
             for fi in range(n_fits):
-                status_arr[gi_global, fi] = 'INSUFFICIENT_DATA'
+                status_arr[gi_global, fi] = STATUS_TO_STRING[STATUS_INSUFFICIENT_DATA]
             continue
         
         # Process each fit for this group
@@ -2678,13 +2764,12 @@ def _process_chunk_v5(
             n_valid = np.sum(valid_mask)
             n_filtered = m - n_valid
             
-            # Update shared diagnostics (only from first fit)
-            if fi == 0:
-                n_valid_arr[gi_global] = n_valid
-                n_filtered_arr[gi_global] = n_filtered
+            # Per-fit diagnostics (Phase 12.9.GB)
+            n_valid_arr[gi_global, fi] = n_valid
+            n_filtered_arr[gi_global, fi] = n_filtered
             
             if n_valid < min_stat:
-                status_arr[gi_global, fi] = 'INSUFFICIENT_VALID'
+                status_arr[gi_global, fi] = STATUS_TO_STRING[STATUS_INSUFFICIENT_VALID]
                 continue
             
             # Apply filter
@@ -2710,9 +2795,9 @@ def _process_chunk_v5(
                 if cond > 1e12:
                     ridge = 1e-8 * np.trace(XtX) / len(XtX)
                     XtX += ridge * np.eye(len(XtX))
-                    status_arr[gi_global, fi] = 'ILL_CONDITIONED_RIDGED'
+                    status_arr[gi_global, fi] = STATUS_TO_STRING[STATUS_ILL_CONDITIONED]
                 else:
-                    status_arr[gi_global, fi] = 'OK'
+                    status_arr[gi_global, fi] = STATUS_TO_STRING[STATUS_OK]
                 
                 # Solve
                 coeffs = np.linalg.solve(XtX, XtY)
@@ -2752,8 +2837,462 @@ def _process_chunk_v5(
                         mad_arr[gi_global, fi] = (sorted_dev[n_r // 2 - 1] + sorted_dev[n_r // 2]) / 2.0
                 
             except np.linalg.LinAlgError:
-                status_arr[gi_global, fi] = 'SINGULAR_MATRIX'
+                status_arr[gi_global, fi] = STATUS_TO_STRING[STATUS_SINGULAR]
                 continue
+
+
+# ============================================================================
+# PHASE 12.9.GB: NUMBA PARALLEL KERNEL
+# ============================================================================
+
+def _select_parallel_backend(parallel_backend, n_jobs):
+    """
+    Select the parallel processing backend.
+    
+    Parameters
+    ----------
+    parallel_backend : str
+        'auto', 'numba', or 'sequential'
+    n_jobs : int
+        Number of parallel jobs requested
+        
+    Returns
+    -------
+    str : 'numba' or 'sequential'
+    """
+    if parallel_backend == 'sequential':
+        return 'sequential'
+    
+    if parallel_backend == 'numba':
+        if not _NUMBA_AVAILABLE:
+            raise ImportError(
+                "Numba is required for parallel_backend='numba' but is not installed. "
+                "Install with: pip install numba"
+            )
+        return 'numba'
+    
+    # auto
+    if n_jobs > 1 and _NUMBA_AVAILABLE:
+        return 'numba'
+    return 'sequential'
+
+
+def _prepare_chunk_matrices_for_numba(
+    chunk_data,
+    fit_cols,
+    linear_cols_list,
+    weights_list,
+    n_params_list,
+):
+    """
+    Convert chunk dict to dense matrices for Numba kernel.
+    
+    Parameters
+    ----------
+    chunk_data : dict[str, ndarray]
+        Column data for this chunk (already sorted)
+    fit_cols : list[str]
+        Target column names
+    linear_cols_list : list[list[str]]
+        Linear columns per fit
+    weights_list : list[str or None]
+        Weight column per fit
+    n_params_list : list[int]
+        Number of parameters per fit
+        
+    Returns
+    -------
+    X_mat : ndarray[n_rows, n_linear_unique]
+    Y_mat : ndarray[n_rows, n_targets_unique]
+    W_mat : ndarray[n_rows, n_weights_unique]
+    fit_target_idx : ndarray[n_fits]
+    fit_weight_idx : ndarray[n_fits] (-1 means no weight)
+    fit_n_params : ndarray[n_fits]
+    linear_col_indices : ndarray[total_refs]
+    linear_col_starts : ndarray[n_fits + 1]
+    """
+    n_fits = len(fit_cols)
+    
+    # Collect unique columns
+    linear_cols_unique = sorted(set(c for lc in linear_cols_list for c in lc))
+    target_cols_unique = sorted(set(fit_cols))
+    weight_cols_unique = sorted(set(w for w in weights_list if w is not None))
+    
+    # Get chunk size
+    first_col = next(iter(chunk_data.values()))
+    n_rows = len(first_col)
+    
+    # Build dense matrices
+    n_linear = len(linear_cols_unique)
+    n_targets = len(target_cols_unique)
+    n_weights = len(weight_cols_unique)
+    
+    X_mat = np.empty((n_rows, n_linear), dtype=np.float64)
+    Y_mat = np.empty((n_rows, n_targets), dtype=np.float64)
+    W_mat = np.empty((n_rows, max(n_weights, 1)), dtype=np.float64)
+    
+    # Fill matrices
+    linear_idx = {}
+    for j, col in enumerate(linear_cols_unique):
+        X_mat[:, j] = chunk_data[col].astype(np.float64)
+        linear_idx[col] = j
+    
+    target_idx = {}
+    for j, col in enumerate(target_cols_unique):
+        Y_mat[:, j] = chunk_data[col].astype(np.float64)
+        target_idx[col] = j
+    
+    weight_idx = {}
+    if weight_cols_unique:
+        for j, col in enumerate(weight_cols_unique):
+            W_mat[:, j] = chunk_data[col].astype(np.float64)
+            weight_idx[col] = j
+    else:
+        W_mat[:, 0] = 1.0  # Default weights
+    
+    # Build fit specifications
+    fit_target_idx = np.array([target_idx[fit_cols[fi]] for fi in range(n_fits)], dtype=np.int32)
+    fit_weight_idx = np.array(
+        [weight_idx.get(weights_list[fi], -1) if weights_list[fi] else -1 for fi in range(n_fits)],
+        dtype=np.int32
+    )
+    fit_n_params = np.array(n_params_list, dtype=np.int32)
+    
+    # Build linear column indices (offset-based encoding)
+    linear_col_indices = []
+    linear_col_starts = [0]
+    for fi in range(n_fits):
+        for col in linear_cols_list[fi]:
+            linear_col_indices.append(linear_idx[col])
+        linear_col_starts.append(len(linear_col_indices))
+    
+    linear_col_indices = np.array(linear_col_indices, dtype=np.int32)
+    linear_col_starts = np.array(linear_col_starts, dtype=np.int32)
+    
+    return (
+        X_mat, Y_mat, W_mat,
+        fit_target_idx, fit_weight_idx, fit_n_params,
+        linear_col_indices, linear_col_starts,
+    )
+
+
+# Numba helper: median calculation
+@njit(cache=True)
+def _median_numba(arr):
+    """Compute median of 1D array."""
+    n = len(arr)
+    if n == 0:
+        return np.nan
+    sorted_arr = np.sort(arr)
+    if n % 2 == 1:
+        return sorted_arr[n // 2]
+    else:
+        return (sorted_arr[n // 2 - 1] + sorted_arr[n // 2]) / 2.0
+
+
+# Numba helper: MAD calculation
+@njit(cache=True)
+def _mad_numba(arr):
+    """Compute Median Absolute Deviation of 1D array."""
+    n = len(arr)
+    if n == 0:
+        return np.nan
+    med = _median_numba(arr)
+    abs_dev = np.abs(arr - med)
+    return _median_numba(abs_dev)
+
+
+# Numba helper: Cholesky solve
+@njit(cache=True)
+def _cholesky_solve_numba(L, b):
+    """Solve L @ L.T @ x = b given Cholesky factor L."""
+    n = len(b)
+    # Forward solve: L @ y = b
+    y = np.zeros(n, dtype=np.float64)
+    for i in range(n):
+        s = b[i]
+        for j in range(i):
+            s -= L[i, j] * y[j]
+        y[i] = s / L[i, i]
+    # Backward solve: L.T @ x = y
+    x = np.zeros(n, dtype=np.float64)
+    for i in range(n - 1, -1, -1):
+        s = y[i]
+        for j in range(i + 1, n):
+            s -= L[j, i] * x[j]
+        x[i] = s / L[i, i]
+    return x
+
+
+# Numba helper: Cholesky decomposition
+@njit(cache=True)
+def _cholesky_numba(A):
+    """
+    Compute Cholesky decomposition of positive definite matrix A.
+    Returns (L, success) where L is lower triangular and success is bool.
+    """
+    n = A.shape[0]
+    L = np.zeros((n, n), dtype=np.float64)
+    
+    for i in range(n):
+        for j in range(i + 1):
+            s = A[i, j]
+            for k in range(j):
+                s -= L[i, k] * L[j, k]
+            if i == j:
+                if s <= 0:
+                    return L, False
+                L[i, j] = np.sqrt(s)
+            else:
+                L[i, j] = s / L[j, j]
+    
+    return L, True
+
+
+# Numba helper: process one fit for one group
+@njit(cache=True)
+def _process_one_fit_numba(
+    gi_global, fi, i0, i1, m,
+    X_mat, Y_mat, W_mat,
+    target_idx, weight_idx, n_params,
+    linear_col_indices, lin_start, lin_end,
+    fit_intercept,
+    beta, errors, rms_arr, mad_arr,
+    n_valid_arr, n_filtered_arr, cond_arr, status_arr,
+    min_stat, compute_mad,
+):
+    """Process one fit for one group using streaming accumulation."""
+    n_lin = lin_end - lin_start
+    
+    # Initialize accumulators
+    XtX = np.zeros((n_params, n_params), dtype=np.float64)
+    XtY = np.zeros(n_params, dtype=np.float64)
+    n_valid = 0
+    
+    # First pass: accumulate XtX, XtY with validity checking
+    for row in range(i0, i1):
+        # Get target value
+        y_val = Y_mat[row, target_idx]
+        if not np.isfinite(y_val):
+            continue
+        
+        # Get weight
+        if weight_idx >= 0:
+            w_val = W_mat[row, weight_idx]
+        else:
+            w_val = 1.0
+        if not (np.isfinite(w_val) and w_val > 0):
+            continue
+        
+        # Check predictors are finite
+        valid_row = True
+        for k in range(n_lin):
+            col_idx = linear_col_indices[lin_start + k]
+            if not np.isfinite(X_mat[row, col_idx]):
+                valid_row = False
+                break
+        if not valid_row:
+            continue
+        
+        # This row is valid
+        n_valid += 1
+        sqrt_w = np.sqrt(w_val)
+        
+        # Build weighted x vector for this row
+        if fit_intercept:
+            x_w = np.empty(n_params, dtype=np.float64)
+            x_w[0] = sqrt_w
+            for k in range(n_lin):
+                col_idx = linear_col_indices[lin_start + k]
+                x_w[k + 1] = X_mat[row, col_idx] * sqrt_w
+        else:
+            x_w = np.empty(n_params, dtype=np.float64)
+            for k in range(n_lin):
+                col_idx = linear_col_indices[lin_start + k]
+                x_w[k] = X_mat[row, col_idx] * sqrt_w
+        
+        y_w = y_val * sqrt_w
+        
+        # Accumulate XtX and XtY
+        for p in range(n_params):
+            XtY[p] += x_w[p] * y_w
+            for q in range(p + 1):
+                XtX[p, q] += x_w[p] * x_w[q]
+    
+    # Fill upper triangle of XtX
+    for p in range(n_params):
+        for q in range(p + 1, n_params):
+            XtX[p, q] = XtX[q, p]
+    
+    # Store diagnostics
+    n_filtered_arr[gi_global, fi] = m - n_valid
+    n_valid_arr[gi_global, fi] = n_valid
+    
+    if n_valid < min_stat:
+        status_arr[gi_global, fi] = STATUS_INSUFFICIENT_VALID
+        return
+    
+    # Cholesky decomposition
+    L, success = _cholesky_numba(XtX)
+    
+    if not success:
+        status_arr[gi_global, fi] = STATUS_SINGULAR
+        return
+    
+    # Condition proxy from Cholesky diagonal
+    diag_min = L[0, 0]
+    diag_max = L[0, 0]
+    for p in range(1, n_params):
+        if L[p, p] < diag_min:
+            diag_min = L[p, p]
+        if L[p, p] > diag_max:
+            diag_max = L[p, p]
+    
+    cond_proxy = (diag_max / diag_min) ** 2 if diag_min > 0 else 1e30
+    cond_arr[gi_global, fi] = cond_proxy
+    
+    # Check ill-conditioning
+    if cond_proxy > 1e12:
+        # Add ridge and re-factor
+        ridge = 1e-8 * np.trace(XtX) / n_params
+        for p in range(n_params):
+            XtX[p, p] += ridge
+        L, success = _cholesky_numba(XtX)
+        if not success:
+            status_arr[gi_global, fi] = STATUS_SINGULAR
+            return
+        status_arr[gi_global, fi] = STATUS_ILL_CONDITIONED
+    else:
+        status_arr[gi_global, fi] = STATUS_OK
+    
+    # Solve for coefficients
+    coeffs = _cholesky_solve_numba(L, XtY)
+    for p in range(n_params):
+        beta[gi_global, fi, p] = coeffs[p]
+    
+    # Second pass: compute residuals for RMS and MAD
+    rss = 0.0
+    resid_uw = np.empty(n_valid, dtype=np.float64)
+    resid_idx = 0
+    
+    for row in range(i0, i1):
+        y_val = Y_mat[row, target_idx]
+        if not np.isfinite(y_val):
+            continue
+        
+        if weight_idx >= 0:
+            w_val = W_mat[row, weight_idx]
+        else:
+            w_val = 1.0
+        if not (np.isfinite(w_val) and w_val > 0):
+            continue
+        
+        valid_row = True
+        for k in range(n_lin):
+            col_idx = linear_col_indices[lin_start + k]
+            if not np.isfinite(X_mat[row, col_idx]):
+                valid_row = False
+                break
+        if not valid_row:
+            continue
+        
+        # Compute prediction
+        y_pred = 0.0
+        if fit_intercept:
+            y_pred = coeffs[0]
+            for k in range(n_lin):
+                col_idx = linear_col_indices[lin_start + k]
+                y_pred += coeffs[k + 1] * X_mat[row, col_idx]
+        else:
+            for k in range(n_lin):
+                col_idx = linear_col_indices[lin_start + k]
+                y_pred += coeffs[k] * X_mat[row, col_idx]
+        
+        # Unweighted residual (for MAD)
+        resid = y_val - y_pred
+        resid_uw[resid_idx] = resid
+        resid_idx += 1
+        
+        # Weighted residual for RSS
+        sqrt_w = np.sqrt(w_val)
+        rss += (resid * sqrt_w) ** 2
+    
+    # Compute RMS
+    dof = n_valid - n_params
+    if dof > 0:
+        s2 = rss / dof
+        rms_arr[gi_global, fi] = np.sqrt(s2)
+        
+        # Compute parameter errors from XtX_inv
+        # L @ L.T = XtX, so XtX_inv = L.T_inv @ L_inv
+        # Compute diagonal of XtX_inv
+        L_inv = np.zeros((n_params, n_params), dtype=np.float64)
+        for i in range(n_params):
+            L_inv[i, i] = 1.0 / L[i, i]
+            for j in range(i + 1, n_params):
+                s = 0.0
+                for k in range(i, j):
+                    s += L[j, k] * L_inv[k, i]
+                L_inv[j, i] = -s / L[j, j]
+        
+        # Diagonal of XtX_inv = sum of squared columns of L_inv
+        for p in range(n_params):
+            var_p = 0.0
+            for k in range(p, n_params):
+                var_p += L_inv[k, p] ** 2
+            errors[gi_global, fi, p] = np.sqrt(s2 * var_p)
+    
+    # Compute MAD
+    if compute_mad:
+        mad_arr[gi_global, fi] = _mad_numba(resid_uw)
+
+
+# Main Numba kernel: parallel over groups
+@njit(parallel=True, cache=True)
+def _process_chunk_numba(
+    X_mat, Y_mat, W_mat,
+    local_offsets,
+    fit_target_idx, fit_weight_idx, fit_n_params,
+    linear_col_indices, linear_col_starts,
+    fit_intercept,
+    beta, errors, rms_arr, mad_arr,
+    n_total_arr, n_valid_arr, n_filtered_arr, cond_arr, status_arr,
+    gi_offset,
+    min_stat, compute_mad,
+):
+    """
+    Process all groups in a chunk using Numba parallel.
+    
+    Phase 12.9.GB: Uses prange for parallel group processing.
+    """
+    n_groups_chunk = len(local_offsets) - 1
+    n_fits = len(fit_target_idx)
+    
+    for gi_local in prange(n_groups_chunk):
+        gi_global = gi_offset + gi_local
+        i0 = local_offsets[gi_local]
+        i1 = local_offsets[gi_local + 1]
+        m = i1 - i0
+        
+        n_total_arr[gi_global] = m
+        
+        if m < min_stat:
+            for fi in range(n_fits):
+                status_arr[gi_global, fi] = STATUS_INSUFFICIENT_DATA
+            continue
+        
+        # Process each fit for this group
+        for fi in range(n_fits):
+            _process_one_fit_numba(
+                gi_global, fi, i0, i1, m,
+                X_mat, Y_mat, W_mat,
+                fit_target_idx[fi], fit_weight_idx[fi], fit_n_params[fi],
+                linear_col_indices, linear_col_starts[fi], linear_col_starts[fi + 1],
+                fit_intercept,
+                beta, errors, rms_arr, mad_arr,
+                n_valid_arr, n_filtered_arr, cond_arr, status_arr,
+                min_stat, compute_mad,
+            )
 
 
 def _build_empty_v5_result(
@@ -2779,11 +3318,13 @@ def _build_empty_v5_result(
         out_dict[f"{target}_mad{suffix}"] = []
     
     if diag:
+        # Shared: n_total only
         out_dict[f"{diag_prefix}n_total_v5"] = []
-        out_dict[f"{diag_prefix}n_valid_v5"] = []
-        out_dict[f"{diag_prefix}n_filtered_v5"] = []
+        # Per-fit: n_valid, n_filtered, cond, status (Phase 12.9.GB)
         for fi in range(n_fits):
             suffix = suffixes_list[fi]
+            out_dict[f"{diag_prefix}n_valid{suffix}"] = []
+            out_dict[f"{diag_prefix}n_filtered{suffix}"] = []
             out_dict[f"{diag_prefix}cond{suffix}"] = []
             out_dict[f"{diag_prefix}status{suffix}"] = []
     
