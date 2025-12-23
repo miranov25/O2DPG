@@ -54,6 +54,14 @@ from .profiler import (
     run_benchmark_with_memory,
     MemoryStats,
 )
+from .history import (
+    load_history,
+    summarize_history,
+)
+from .regression import (
+    detect_regressions,
+    print_regression_summary,
+)
 
 
 # =============================================================================
@@ -183,7 +191,7 @@ def discover_benchmarks(subproject: str, suite: str = "quick") -> list[dict]:
     # Try to import subproject benchmark module
     try:
         if subproject == "groupby_regression":
-            from dfextensions.groupby_regression.benchmarks.bench_v5 import get_benchmarks
+            from groupby_regression.benchmarks.bench_v5 import get_benchmarks
             return get_benchmarks(suite=suite)
         else:
             raise ImportError(f"Unknown subproject: {subproject}")
@@ -555,9 +563,46 @@ def main(args=None) -> int:
     
     # Check-only mode
     if parsed.check_only:
-        # TODO: Implement regression check without running
-        print("--check-only not yet implemented")
-        return 2
+        # Load most recent run and check for regressions
+        from .history import discover_runs, load_run
+        
+        runs = discover_runs(parsed.subproject)
+        if not runs:
+            print(f"No runs found for {parsed.subproject}")
+            return 2
+        
+        latest_run = load_run(runs[0])
+        if latest_run is None:
+            print(f"Could not load latest run: {runs[0]}")
+            return 2
+        
+        print(f"Checking regressions for: {latest_run.meta.run_id}")
+        
+        history_df = load_history(
+            subproject=parsed.subproject,
+            exclude_profile=True,
+        )
+        
+        if len(history_df) == 0:
+            print("No history found for regression detection.")
+            return 0
+        
+        alarms, regression_results = detect_regressions(
+            current_run=latest_run,
+            history_df=history_df,
+            time_threshold=parsed.time_threshold,
+            memory_threshold=parsed.memory_threshold,
+            filter_env=not parsed.cross_env,
+        )
+        
+        print_regression_summary(regression_results, alarms)
+        
+        if alarms:
+            print_exit_code(1)
+            return 1
+        else:
+            print_exit_code(0)
+            return 0
     
     try:
         # Run benchmarks
@@ -582,12 +627,39 @@ def main(args=None) -> int:
         if not parsed.dry_run:
             output_path = save_run(run)
             print(f"\nResults saved to: {output_path}")
-            
-            if run.alarms:
-                alarms_path = save_alarms(run)
-                print(f"Alarms saved to: {alarms_path}")
         
-        # TODO: Detect regressions
+        # Detect regressions
+        if not parsed.profile:  # Skip for profile runs (different overhead)
+            history_df = load_history(
+                subproject=parsed.subproject,
+                exclude_profile=True,
+            )
+            
+            if len(history_df) > 0:
+                alarms, regression_results = detect_regressions(
+                    current_run=run,
+                    history_df=history_df,
+                    time_threshold=parsed.time_threshold,
+                    memory_threshold=parsed.memory_threshold,
+                    filter_env=not parsed.cross_env,
+                )
+                
+                # Update run with alarms
+                run.alarms = alarms
+                run.summary.n_regressions = len(alarms)
+                
+                # Print summary
+                if not parsed.quiet:
+                    print_regression_summary(regression_results, alarms)
+                
+                # Save alarms
+                if not parsed.dry_run and alarms:
+                    alarms_path = save_alarms(run)
+                    print(f"Alarms saved to: {alarms_path}")
+            else:
+                if not parsed.quiet:
+                    print("\nNo history found for regression detection.")
+        
         # TODO: Generate report
         
         # Determine exit code
