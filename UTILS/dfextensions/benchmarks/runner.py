@@ -1,0 +1,612 @@
+"""
+Benchmark Framework v1.0 — Runner
+
+CLI entry point for running benchmarks.
+
+Phase 12.10.BF: Standardized benchmark execution.
+
+Usage:
+    # Quick suite (default)
+    python -m dfextensions.benchmarks.runner --subproject groupby_regression
+    
+    # Release suite
+    python -m dfextensions.benchmarks.runner --subproject groupby_regression --suite release
+    
+    # With profiling (tracemalloc + top allocations)
+    python -m dfextensions.benchmarks.runner --subproject groupby_regression --profile
+    
+    # Check regressions only (no new run)
+    python -m dfextensions.benchmarks.runner --subproject groupby_regression --check-only
+    
+Exit Codes:
+    0 - All benchmarks passed, no regressions
+    1 - Regression detected
+    2 - Benchmark execution error
+"""
+
+import argparse
+import importlib
+import os
+import sys
+import time
+from pathlib import Path
+from typing import Optional, Callable
+
+from .schema import (
+    SCHEMA_VERSION,
+    RUNNER_VERSION,
+    DEFAULT_WARMUP_RUNS,
+    DEFAULT_N_RUNS,
+    DEFAULT_TIME_THRESHOLD,
+    DEFAULT_MEMORY_THRESHOLD,
+    BenchmarkResult,
+    RunMeta,
+    RunSummary,
+    BenchmarkRun,
+    get_run_output_dir,
+    get_results_path,
+    get_alarms_path,
+    validate_run,
+)
+from .profiler import (
+    check_platform_support,
+    get_peak_rss_mb,
+    run_benchmark_with_memory,
+    MemoryStats,
+)
+
+
+# =============================================================================
+# CONSOLE OUTPUT
+# =============================================================================
+
+def print_header(subproject: str, meta: RunMeta):
+    """Print benchmark run header."""
+    print("═" * 68)
+    print(f"BENCHMARK RESULTS: {subproject}")
+    print("═" * 68)
+    print()
+    print(f"  Commit:    {meta.commit} ({meta.branch}){' [dirty]' if meta.dirty else ''}")
+    print(f"  Host:      {meta.hostname} ({meta.cpu_count} cores)")
+    print(f"  Env:       {meta.env_id}")
+    print(f"  Suite:     {meta.suite}")
+    print(f"  Warmup:    {meta.warmup_runs} runs")
+    print(f"  Timing:    {meta.n_runs} runs")
+    print()
+
+
+def print_benchmark_result(result: BenchmarkResult, index: int, total: int):
+    """Print single benchmark result."""
+    status_icon = {
+        "OK": "✓",
+        "FAILED": "✗",
+        "SKIPPED": "○",
+    }.get(result.status, "?")
+    
+    time_str = f"{result.time_s:.3f}s ± {result.time_std_s:.3f}s"
+    mem_str = f"{result.peak_rss_mb:.0f}MB"
+    
+    print(f"  [{index}/{total}] {status_icon} {result.id}")
+    print(f"         Time: {time_str}  |  RSS: {mem_str}")
+    
+    if result.throughput_rows_per_sec:
+        throughput = result.throughput_rows_per_sec
+        if throughput >= 1_000_000:
+            print(f"         Throughput: {throughput/1_000_000:.2f}M rows/s")
+        else:
+            print(f"         Throughput: {throughput/1_000:.1f}K rows/s")
+    
+    if result.status == "FAILED" and result.error_message:
+        print(f"         Error: {result.error_message}")
+    print()
+
+
+def print_summary(run: BenchmarkRun, elapsed_total: float):
+    """Print run summary."""
+    summary = run.summary
+    
+    print("─" * 68)
+    print(f"  Duration:   {elapsed_total:.1f}s")
+    print(f"  Benchmarks: {summary.n_passed} passed", end="")
+    if summary.n_failed > 0:
+        print(f", {summary.n_failed} failed", end="")
+    if summary.n_skipped > 0:
+        print(f", {summary.n_skipped} skipped", end="")
+    print()
+    print(f"  Peak RSS:   {summary.peak_rss_mb:.0f} MB")
+    print("─" * 68)
+
+
+def print_regression(alarm: dict):
+    """Print regression alarm."""
+    print()
+    print("─" * 68)
+    print("⚠️  REGRESSION DETECTED")
+    print("─" * 68)
+    print()
+    print(f"  Benchmark:  {alarm['benchmark']} / {alarm['scenario']} / n_jobs={alarm['param_n_jobs']}")
+    print(f"  Metric:     {alarm['metric']}")
+    print(f"  Current:    {alarm['current']:.3f}")
+    print(f"  Baseline:   {alarm['baseline']:.3f} ({alarm['baseline_type']})")
+    print(f"  Change:     +{alarm['change_pct']:.1f}%")
+    print()
+
+
+def print_exit_code(code: int):
+    """Print exit code message."""
+    print("─" * 68)
+    messages = {
+        0: "Exit code: 0 (all passed, no regressions)",
+        1: "Exit code: 1 (regression detected)",
+        2: "Exit code: 2 (benchmark execution error)",
+    }
+    print(messages.get(code, f"Exit code: {code}"))
+    print()
+
+
+# =============================================================================
+# N_JOBS AUTO-DETECTION
+# =============================================================================
+
+def get_n_jobs_list(cpu_count: Optional[int] = None) -> list[int]:
+    """
+    Get list of n_jobs values based on CPU count.
+    
+    Parameters:
+        cpu_count: Override CPU count (default: auto-detect)
+    
+    Returns:
+        List of n_jobs values to benchmark
+    """
+    if cpu_count is None:
+        cpu_count = os.cpu_count() or 1
+    
+    if cpu_count >= 64:
+        return [1, 4, 16, 64]
+    elif cpu_count >= 32:
+        return [1, 4, 16, 32]
+    else:
+        return [1, 4, 8]
+
+
+# =============================================================================
+# BENCHMARK DISCOVERY
+# =============================================================================
+
+def discover_benchmarks(subproject: str, suite: str = "quick") -> list[dict]:
+    """
+    Discover benchmarks for a subproject.
+    
+    Returns list of benchmark specs:
+        [{"name": ..., "func": ..., "scenarios": [...], "params": {...}}, ...]
+    """
+    # Try to import subproject benchmark module
+    try:
+        if subproject == "groupby_regression":
+            from dfextensions.groupby_regression.benchmarks.bench_v5 import get_benchmarks
+            return get_benchmarks(suite=suite)
+        else:
+            raise ImportError(f"Unknown subproject: {subproject}")
+    except ImportError as e:
+        print(f"Warning: Could not import benchmarks for {subproject}: {e}")
+        return []
+
+
+# =============================================================================
+# BENCHMARK EXECUTION
+# =============================================================================
+
+def run_single_benchmark(
+    name: str,
+    func: Callable,
+    scenario: str,
+    params: dict,
+    n_runs: int = DEFAULT_N_RUNS,
+    warmup_runs: int = DEFAULT_WARMUP_RUNS,
+    profile: bool = False,
+) -> BenchmarkResult:
+    """
+    Run a single benchmark with timing and memory tracking.
+    
+    Parameters:
+        name: Benchmark name
+        func: Benchmark function
+        scenario: Scenario name (S1, S2, etc.)
+        params: Benchmark parameters
+        n_runs: Number of timed runs
+        warmup_runs: Number of warmup runs
+        profile: Enable tracemalloc profiling
+    
+    Returns:
+        BenchmarkResult
+    """
+    try:
+        times, mem_stats, result = run_benchmark_with_memory(
+            func,
+            scenario=scenario,
+            n_runs=n_runs,
+            warmup_runs=warmup_runs,
+            profile=profile,
+            **params,
+        )
+        
+        # Extract n_rows from benchmark result if available
+        benchmark_params = {"scenario": scenario, **params}
+        if isinstance(result, dict) and "n_rows_input" in result:
+            benchmark_params["n_rows"] = result["n_rows_input"]
+        
+        bench_result = BenchmarkResult.from_timing(
+            name=name,
+            scenario=scenario,
+            params=benchmark_params,
+            times=times,
+            peak_rss_mb=mem_stats.peak_rss_mb,
+            peak_tracemalloc_mb=mem_stats.peak_tracemalloc_mb,
+            memory_top_allocations=mem_stats.top_allocations,
+        )
+        
+        return bench_result
+    
+    except Exception as e:
+        # Create failed result
+        n_jobs = params.get("n_jobs", 1)
+        bench_id = f"{name}:{scenario}:n_jobs={n_jobs}"
+        
+        return BenchmarkResult(
+            id=bench_id,
+            name=name,
+            scenario=scenario,
+            params={"scenario": scenario, **params},
+            time_s=0.0,
+            time_std_s=0.0,
+            n_runs=0,
+            peak_rss_mb=get_peak_rss_mb(),
+            status="FAILED",
+            error_message=str(e),
+        )
+
+
+def run_benchmarks(
+    subproject: str,
+    suite: str = "quick",
+    n_runs: int = DEFAULT_N_RUNS,
+    warmup_runs: int = DEFAULT_WARMUP_RUNS,
+    profile: bool = False,
+    n_jobs_list: Optional[list[int]] = None,
+    verbose: bool = True,
+) -> BenchmarkRun:
+    """
+    Run all benchmarks for a subproject.
+    
+    Parameters:
+        subproject: Subproject name (e.g., "groupby_regression")
+        suite: "quick" or "release"
+        n_runs: Number of timed runs
+        warmup_runs: Number of warmup runs
+        profile: Enable tracemalloc
+        n_jobs_list: Override n_jobs values
+        verbose: Print progress
+    
+    Returns:
+        BenchmarkRun with all results
+    """
+    start_time = time.perf_counter()
+    
+    # Create run metadata
+    run_mode = "profile" if profile else "gate"
+    meta = RunMeta.create(
+        subproject=subproject,
+        run_mode=run_mode,
+        suite=suite,
+        warmup_runs=warmup_runs,
+        n_runs=n_runs,
+    )
+    
+    if verbose:
+        print_header(subproject, meta)
+    
+    # Discover benchmarks
+    benchmarks = discover_benchmarks(subproject, suite=suite)
+    
+    if not benchmarks:
+        print(f"No benchmarks found for {subproject}")
+        return BenchmarkRun(
+            meta=meta,
+            summary=RunSummary(),
+            benchmarks=[],
+            alarms=[],
+        )
+    
+    # Get n_jobs list
+    if n_jobs_list is None:
+        n_jobs_list = get_n_jobs_list()
+    
+    # Run all benchmarks
+    results = []
+    total_benchmarks = sum(
+        len(b.get("scenarios", [])) * len(n_jobs_list) 
+        for b in benchmarks
+    )
+    current = 0
+    
+    for bench_spec in benchmarks:
+        name = bench_spec["name"]
+        func = bench_spec["func"]
+        scenarios = bench_spec.get("scenarios", ["S1"])
+        
+        for scenario in scenarios:
+            for n_jobs in n_jobs_list:
+                current += 1
+                
+                params = {
+                    "n_jobs": n_jobs,
+                    **bench_spec.get("params", {}),
+                }
+                
+                result = run_single_benchmark(
+                    name=name,
+                    func=func,
+                    scenario=scenario,
+                    params=params,
+                    n_runs=n_runs,
+                    warmup_runs=warmup_runs,
+                    profile=profile,
+                )
+                
+                results.append(result)
+                
+                if verbose:
+                    print_benchmark_result(result, current, total_benchmarks)
+    
+    # Create run
+    elapsed = time.perf_counter() - start_time
+    
+    run = BenchmarkRun(
+        meta=meta,
+        summary=RunSummary(total_time_s=elapsed),
+        benchmarks=results,
+        alarms=[],
+    )
+    run.update_summary()
+    
+    if verbose:
+        print_summary(run, elapsed)
+    
+    return run
+
+
+# =============================================================================
+# SAVE RESULTS
+# =============================================================================
+
+def save_run(run: BenchmarkRun) -> Path:
+    """
+    Save benchmark run to JSON.
+    
+    Returns path to saved file.
+    """
+    output_path = get_results_path(
+        subproject=run.meta.subproject,
+        timestamp=run.meta.timestamp,
+    )
+    
+    run.save(output_path)
+    
+    return output_path
+
+
+def save_alarms(run: BenchmarkRun) -> Optional[Path]:
+    """
+    Save alarms to separate file (if any).
+    
+    Returns path to saved file, or None if no alarms.
+    """
+    if not run.alarms:
+        return None
+    
+    output_path = get_alarms_path(
+        subproject=run.meta.subproject,
+        timestamp=run.meta.timestamp,
+    )
+    
+    import json
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    alarm_data = {
+        "run_id": run.meta.run_id,
+        "timestamp": run.meta.timestamp,
+        "commit": run.meta.commit,
+        "n_alarms": len(run.alarms),
+        "alarms": [a.to_dict() for a in run.alarms],
+    }
+    
+    output_path.write_text(json.dumps(alarm_data, indent=2))
+    
+    return output_path
+
+
+# =============================================================================
+# CLI
+# =============================================================================
+
+def parse_args(args=None) -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Benchmark Framework v1.0",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    # Run quick suite
+    python -m dfextensions.benchmarks.runner --subproject groupby_regression
+    
+    # Run release suite
+    python -m dfextensions.benchmarks.runner --subproject groupby_regression --suite release
+    
+    # With profiling
+    python -m dfextensions.benchmarks.runner --subproject groupby_regression --profile
+    
+    # Check regressions only
+    python -m dfextensions.benchmarks.runner --subproject groupby_regression --check-only
+""",
+    )
+    
+    # Required
+    parser.add_argument(
+        "--subproject",
+        required=True,
+        help="Subproject to benchmark (e.g., groupby_regression)",
+    )
+    
+    # Suite
+    parser.add_argument(
+        "--suite",
+        choices=["quick", "release"],
+        default="quick",
+        help="Benchmark suite to run (default: quick)",
+    )
+    
+    # Profiling
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Enable tracemalloc profiling",
+    )
+    
+    # Runs
+    parser.add_argument(
+        "--n-runs",
+        type=int,
+        default=DEFAULT_N_RUNS,
+        help=f"Number of timed runs (default: {DEFAULT_N_RUNS})",
+    )
+    
+    parser.add_argument(
+        "--warmup-runs",
+        type=int,
+        default=DEFAULT_WARMUP_RUNS,
+        help=f"Number of warmup runs (default: {DEFAULT_WARMUP_RUNS})",
+    )
+    
+    # Thresholds
+    parser.add_argument(
+        "--time-threshold",
+        type=float,
+        default=DEFAULT_TIME_THRESHOLD,
+        help=f"Time regression threshold (default: {DEFAULT_TIME_THRESHOLD})",
+    )
+    
+    parser.add_argument(
+        "--memory-threshold",
+        type=float,
+        default=DEFAULT_MEMORY_THRESHOLD,
+        help=f"Memory regression threshold (default: {DEFAULT_MEMORY_THRESHOLD})",
+    )
+    
+    # Modes
+    parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Check regressions only, don't run benchmarks",
+    )
+    
+    parser.add_argument(
+        "--cross-env",
+        action="store_true",
+        help="Allow cross-environment baseline comparison",
+    )
+    
+    # Output
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        help="Generate report after run",
+    )
+    
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Minimal output",
+    )
+    
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate without saving",
+    )
+    
+    return parser.parse_args(args)
+
+
+def main(args=None) -> int:
+    """
+    Main entry point.
+    
+    Returns exit code:
+        0 - All passed, no regressions
+        1 - Regression detected
+        2 - Execution error
+    """
+    parsed = parse_args(args)
+    
+    # Check platform
+    supported, msg = check_platform_support()
+    if not supported:
+        print(f"Warning: {msg}")
+    
+    # Check-only mode
+    if parsed.check_only:
+        # TODO: Implement regression check without running
+        print("--check-only not yet implemented")
+        return 2
+    
+    try:
+        # Run benchmarks
+        run = run_benchmarks(
+            subproject=parsed.subproject,
+            suite=parsed.suite,
+            n_runs=parsed.n_runs,
+            warmup_runs=parsed.warmup_runs,
+            profile=parsed.profile,
+            verbose=not parsed.quiet,
+        )
+        
+        # Validate
+        errors = validate_run(run)
+        if errors:
+            print("Validation errors:")
+            for error in errors:
+                print(f"  - {error}")
+            return 2
+        
+        # Save results
+        if not parsed.dry_run:
+            output_path = save_run(run)
+            print(f"\nResults saved to: {output_path}")
+            
+            if run.alarms:
+                alarms_path = save_alarms(run)
+                print(f"Alarms saved to: {alarms_path}")
+        
+        # TODO: Detect regressions
+        # TODO: Generate report
+        
+        # Determine exit code
+        if run.summary.n_failed > 0:
+            print_exit_code(2)
+            return 2
+        elif run.summary.n_regressions > 0:
+            print_exit_code(1)
+            return 1
+        else:
+            print_exit_code(0)
+            return 0
+    
+    except Exception as e:
+        print(f"\nError: {e}")
+        import traceback
+        traceback.print_exc()
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
