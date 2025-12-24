@@ -75,6 +75,20 @@ from .regression import (
     format_regression_report,
 )
 
+from .report import (
+    HAS_MATPLOTLIB,
+    BenchmarkTrend,
+    BenchmarkReport,
+    extract_trend,
+    extract_all_trends,
+    plot_benchmark_trend,
+    plot_benchmark_trends,
+    generate_report,
+    format_report_text,
+    format_report_html,
+    save_report,
+)
+
 __version__ = RUNNER_VERSION
 
 __all__ = [
@@ -87,6 +101,7 @@ __all__ = [
     "DEFAULT_N_RUNS",
     "DEFAULT_TIME_THRESHOLD",
     "DEFAULT_MEMORY_THRESHOLD",
+    "MIN_BASELINE_SAMPLES",
     # Dataclasses
     "BenchmarkParams",
     "BenchmarkResult",
@@ -123,10 +138,21 @@ __all__ = [
     "get_all_baselines",
     "summarize_history",
     # Regression
-    "MIN_BASELINE_SAMPLES",
     "RegressionResult",
     "check_regression",
     "detect_regressions",
     "print_regression_summary",
     "format_regression_report",
+    # Report
+    "HAS_MATPLOTLIB",
+    "BenchmarkTrend",
+    "BenchmarkReport",
+    "extract_trend",
+    "extract_all_trends",
+    "plot_benchmark_trend",
+    "plot_benchmark_trends",
+    "generate_report",
+    "format_report_text",
+    "format_report_html",
+    "save_report",
 ]
