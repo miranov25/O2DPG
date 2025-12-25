@@ -26,6 +26,28 @@ import sys
 from pathlib import Path
 from typing import Optional, Callable
 
+# =============================================================================
+# PATH SETUP FOR JOBLIB WORKERS
+# =============================================================================
+# Add groupby_regression directory to sys.path so joblib workers can find
+# groupby_regression_optimized module (same strategy as working tests)
+
+_gr_dir = Path(__file__).parent.parent.resolve()
+_gr_dir_str = str(_gr_dir)
+
+if _gr_dir_str not in sys.path:
+    sys.path.insert(0, _gr_dir_str)
+
+# Also set PYTHONPATH for spawned workers (macOS uses spawn)
+_current_pythonpath = os.environ.get("PYTHONPATH", "")
+if _gr_dir_str not in _current_pythonpath:
+    if _current_pythonpath:
+        os.environ["PYTHONPATH"] = f"{_gr_dir_str}:{_current_pythonpath}"
+    else:
+        os.environ["PYTHONPATH"] = _gr_dir_str
+
+# =============================================================================
+
 from .scenarios import (
     Scenario,
     SCENARIOS,
@@ -46,45 +68,17 @@ def get_v5_function():
     """
     Lazy import of make_parallel_fit_v5.
     
-    Avoids import overhead until actually needed.
-    Tries multiple import paths for compatibility.
+    Uses direct import (not package import) to match test strategy.
+    This ensures __module__ is 'groupby_regression_optimized' which
+    joblib workers can resolve.
     """
     global _v5_func
     
     if _v5_func is None:
-        # Try import paths in order of preference
-        import_errors = []
-        
-        # 1. From groupby_regression package (O2DPG/UTILS/groupby_regression/)
-        try:
-            from groupby_regression.groupby_regression_optimized import make_parallel_fit_v5
-            _v5_func = make_parallel_fit_v5
-            return _v5_func
-        except ImportError as e:
-            import_errors.append(f"groupby_regression.groupby_regression_optimized: {e}")
-        
-        # 2. Direct import (if groupby_regression_optimized.py is in path)
-        try:
-            from groupby_regression_optimized import make_parallel_fit_v5
-            _v5_func = make_parallel_fit_v5
-            return _v5_func
-        except ImportError as e:
-            import_errors.append(f"groupby_regression_optimized: {e}")
-        
-        # 3. From dfextensions (if it exists there)
-        try:
-            from dfextensions.groupby_regression.groupby_regression_optimized import make_parallel_fit_v5
-            _v5_func = make_parallel_fit_v5
-            return _v5_func
-        except ImportError as e:
-            import_errors.append(f"dfextensions.groupby_regression.groupby_regression_optimized: {e}")
-        
-        # All imports failed
-        raise ImportError(
-            f"Could not import make_parallel_fit_v5. Tried:\n" +
-            "\n".join(f"  - {err}" for err in import_errors) +
-            "\n\nMake sure groupby_regression is in PYTHONPATH"
-        )
+        # Direct import - same as working tests
+        # __module__ will be 'groupby_regression_optimized'
+        from groupby_regression_optimized import make_parallel_fit_v5
+        _v5_func = make_parallel_fit_v5
     
     return _v5_func
 

@@ -32,6 +32,43 @@ import time
 from pathlib import Path
 from typing import Optional, Callable
 
+
+# =============================================================================
+# PATH SETUP FOR PARALLEL WORKERS
+# =============================================================================
+
+def setup_pythonpath():
+    """
+    Ensure PYTHONPATH includes the UTILS directory for joblib workers.
+    
+    When joblib spawns worker processes, they need to be able to import
+    modules like groupby_regression. This sets PYTHONPATH so workers
+    can find all required modules.
+    """
+    # Find UTILS directory (parent of dfextensions)
+    this_file = Path(__file__).resolve()
+    utils_dir = this_file.parent.parent.parent  # benchmarks -> dfextensions -> UTILS
+    
+    if utils_dir.exists():
+        utils_str = str(utils_dir)
+        
+        # Add to sys.path if not already there
+        if utils_str not in sys.path:
+            sys.path.insert(0, utils_str)
+        
+        # Set PYTHONPATH for child processes (joblib workers)
+        current_pythonpath = os.environ.get("PYTHONPATH", "")
+        if utils_str not in current_pythonpath:
+            if current_pythonpath:
+                os.environ["PYTHONPATH"] = f"{utils_str}:{current_pythonpath}"
+            else:
+                os.environ["PYTHONPATH"] = utils_str
+
+
+# Run path setup on import
+setup_pythonpath()
+
+
 from .schema import (
     SCHEMA_VERSION,
     RUNNER_VERSION,
@@ -191,7 +228,22 @@ def discover_benchmarks(subproject: str, suite: str = "quick") -> list[dict]:
     # Try to import subproject benchmark module
     try:
         if subproject == "groupby_regression":
-            from groupby_regression.benchmarks.bench_v5 import get_benchmarks
+            # Setup path for groupby_regression directory so workers can find modules
+            gr_dir = Path(__file__).parent.parent / "groupby_regression"
+            gr_dir_str = str(gr_dir.resolve())
+            
+            if gr_dir_str not in sys.path:
+                sys.path.insert(0, gr_dir_str)
+            
+            # Set PYTHONPATH for spawned workers (macOS uses spawn)
+            current_pythonpath = os.environ.get("PYTHONPATH", "")
+            if gr_dir_str not in current_pythonpath:
+                if current_pythonpath:
+                    os.environ["PYTHONPATH"] = f"{gr_dir_str}:{current_pythonpath}"
+                else:
+                    os.environ["PYTHONPATH"] = gr_dir_str
+            
+            from dfextensions.groupby_regression.benchmarks.bench_v5 import get_benchmarks
             return get_benchmarks(suite=suite)
         else:
             raise ImportError(f"Unknown subproject: {subproject}")
@@ -280,43 +332,38 @@ def run_benchmarks(
     n_runs: int = DEFAULT_N_RUNS,
     warmup_runs: int = DEFAULT_WARMUP_RUNS,
     profile: bool = False,
-    n_jobs_list: Optional[list[int]] = None,
     verbose: bool = True,
 ) -> BenchmarkRun:
     """
     Run all benchmarks for a subproject.
     
     Parameters:
-        subproject: Subproject name (e.g., "groupby_regression")
-        suite: "quick" or "release"
+        subproject: Subproject name
+        suite: Benchmark suite ("quick" or "release")
         n_runs: Number of timed runs
         warmup_runs: Number of warmup runs
-        profile: Enable tracemalloc
-        n_jobs_list: Override n_jobs values
+        profile: Enable tracemalloc profiling
         verbose: Print progress
     
     Returns:
-        BenchmarkRun with all results
+        BenchmarkRun with results
     """
-    start_time = time.perf_counter()
+    start_time = time.time()
     
-    # Create run metadata
-    run_mode = "profile" if profile else "gate"
-    meta = RunMeta.create(
-        subproject=subproject,
-        run_mode=run_mode,
-        suite=suite,
-        warmup_runs=warmup_runs,
-        n_runs=n_runs,
-    )
+    # Create metadata
+    meta = RunMeta.create(subproject=subproject)
+    meta.suite = suite
+    meta.n_runs = n_runs
+    meta.warmup_runs = warmup_runs
+    meta.run_mode = "profile" if profile else "gate"
     
     if verbose:
         print_header(subproject, meta)
     
     # Discover benchmarks
-    benchmarks = discover_benchmarks(subproject, suite=suite)
+    benchmark_specs = discover_benchmarks(subproject, suite)
     
-    if not benchmarks:
+    if not benchmark_specs:
         print(f"No benchmarks found for {subproject}")
         return BenchmarkRun(
             meta=meta,
@@ -325,57 +372,58 @@ def run_benchmarks(
             alarms=[],
         )
     
-    # Get n_jobs list
-    if n_jobs_list is None:
-        n_jobs_list = get_n_jobs_list()
+    # Build list of all benchmark configurations
+    all_configs = []
+    n_jobs_list = get_n_jobs_list()
+    
+    for spec in benchmark_specs:
+        for scenario in spec["scenarios"]:
+            for n_jobs in n_jobs_list:
+                all_configs.append({
+                    "name": spec["name"],
+                    "func": spec["func"],
+                    "scenario": scenario,
+                    "params": {**spec.get("params", {}), "n_jobs": n_jobs},
+                })
     
     # Run all benchmarks
     results = []
-    total_benchmarks = sum(
-        len(b.get("scenarios", [])) * len(n_jobs_list) 
-        for b in benchmarks
-    )
-    current = 0
+    total = len(all_configs)
     
-    for bench_spec in benchmarks:
-        name = bench_spec["name"]
-        func = bench_spec["func"]
-        scenarios = bench_spec.get("scenarios", ["S1"])
+    for i, config in enumerate(all_configs, 1):
+        result = run_single_benchmark(
+            name=config["name"],
+            func=config["func"],
+            scenario=config["scenario"],
+            params=config["params"],
+            n_runs=n_runs,
+            warmup_runs=warmup_runs,
+            profile=profile,
+        )
+        results.append(result)
         
-        for scenario in scenarios:
-            for n_jobs in n_jobs_list:
-                current += 1
-                
-                params = {
-                    "n_jobs": n_jobs,
-                    **bench_spec.get("params", {}),
-                }
-                
-                result = run_single_benchmark(
-                    name=name,
-                    func=func,
-                    scenario=scenario,
-                    params=params,
-                    n_runs=n_runs,
-                    warmup_runs=warmup_runs,
-                    profile=profile,
-                )
-                
-                results.append(result)
-                
-                if verbose:
-                    print_benchmark_result(result, current, total_benchmarks)
+        if verbose:
+            print_benchmark_result(result, i, total)
+    
+    # Create summary
+    summary = RunSummary(
+        n_benchmarks=len(results),
+        n_passed=sum(1 for r in results if r.status == "OK"),
+        n_failed=sum(1 for r in results if r.status == "FAILED"),
+        n_skipped=sum(1 for r in results if r.status == "SKIPPED"),
+        total_time_s=sum(r.time_s for r in results),
+        peak_rss_mb=max((r.peak_rss_mb for r in results), default=0),
+    )
     
     # Create run
-    elapsed = time.perf_counter() - start_time
-    
     run = BenchmarkRun(
         meta=meta,
-        summary=RunSummary(total_time_s=elapsed),
+        summary=summary,
         benchmarks=results,
         alarms=[],
     )
-    run.update_summary()
+    
+    elapsed = time.time() - start_time
     
     if verbose:
         print_summary(run, elapsed)
@@ -389,7 +437,7 @@ def run_benchmarks(
 
 def save_run(run: BenchmarkRun) -> Path:
     """
-    Save benchmark run to JSON.
+    Save benchmark run to JSON file.
     
     Returns path to saved file.
     """
@@ -405,7 +453,7 @@ def save_run(run: BenchmarkRun) -> Path:
 
 def save_alarms(run: BenchmarkRun) -> Optional[Path]:
     """
-    Save alarms to separate file (if any).
+    Save alarms to separate JSON file.
     
     Returns path to saved file, or None if no alarms.
     """
