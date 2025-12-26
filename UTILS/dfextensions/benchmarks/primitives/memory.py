@@ -290,3 +290,100 @@ def bench_strided_gather(
         bandwidth_gbs=bandwidth_gbs,
         status="OK",
     )
+
+
+# =============================================================================
+# M3w: Scatter Write (Write-Only with Random Indices)
+# =============================================================================
+
+def bench_scatter_write(
+    n_rows: int = 500_000,
+    n_groups: int = 5_000,
+    runs: int = 20,
+) -> PrimitiveResult:
+    """
+    M3w: Measure write-only scatter performance.
+    
+    This isolates write bandwidth from read+reduce patterns.
+    Unlike M3 (scatter_reduce with np.add.at), this does simple
+    indexed assignment.
+    """
+    values = np.random.randn(n_rows)
+    indices = np.random.randint(0, n_groups, size=n_rows)
+    out = np.zeros(n_groups)
+    
+    def scatter_write():
+        # Note: This overwrites (last write wins), not reduces
+        out[indices] = values
+    
+    mean_time, _ = _run_timed(scatter_write, warmup=2, runs=runs)
+    bytes_written = values.nbytes + indices.nbytes
+    bandwidth_gbs = bytes_written / mean_time / 1e9
+    
+    return PrimitiveResult(
+        primitive_id="M3w",
+        name="scatter_write",
+        implementation="numpy",
+        size=n_rows,
+        calls=runs,
+        wall_time_s=mean_time,
+        bandwidth_gbs=bandwidth_gbs,
+        status="OK",
+    )
+
+
+# =============================================================================
+# M7: Cache Sweep (Find L3 Cache Cliff)
+# =============================================================================
+
+def bench_cache_sweep(
+    sizes_kb: list = None,
+    runs: int = 10,
+) -> Dict:
+    """
+    M7: Measure bandwidth at different array sizes to find cache cliff.
+    
+    Returns bandwidth at each size. The "cliff" is where bandwidth
+    drops significantly (data no longer fits in L3 cache).
+    """
+    if sizes_kb is None:
+        # Typical sweep: 64KB, 256KB, 1MB, 4MB, 16MB, 64MB
+        sizes_kb = [64, 256, 1024, 4096, 16384, 65536]
+    
+    results = {}
+    
+    for size_kb in sizes_kb:
+        n_elements = (size_kb * 1024) // 8  # 8 bytes per float64
+        data = np.random.randn(n_elements)
+        
+        def stream_sum():
+            return np.sum(data)
+        
+        mean_time, _ = _run_timed(stream_sum, warmup=3, runs=runs)
+        bandwidth_gbs = data.nbytes / mean_time / 1e9
+        
+        results[size_kb] = {
+            "size_kb": size_kb,
+            "size_mb": size_kb / 1024,
+            "bandwidth_gbs": round(bandwidth_gbs, 2),
+            "time_ms": round(mean_time * 1000, 3),
+        }
+    
+    # Find cliff (where bandwidth drops > 30%)
+    bandwidths = [results[s]["bandwidth_gbs"] for s in sizes_kb]
+    cliff_size = None
+    for i in range(1, len(bandwidths)):
+        if bandwidths[i] < bandwidths[i-1] * 0.7:
+            cliff_size = sizes_kb[i]
+            break
+    
+    return {
+        "primitive_id": "M7",
+        "name": "cache_sweep",
+        "sizes_kb": sizes_kb,
+        "results": results,
+        "peak_bandwidth_gbs": max(bandwidths),
+        "cliff_size_kb": cliff_size,
+        "diagnosis": f"Cache cliff at {cliff_size or '>64MB'} KB" if cliff_size else "No clear cliff detected",
+        "status": "OK",
+    }
