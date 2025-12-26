@@ -4,16 +4,19 @@ Benchmark Framework v1.0 — Schema Definitions
 JSON schema for benchmark results with validation.
 
 Phase 12.10.BF: Standardized benchmark storage format.
+Phase 12.11: Added ProfileInfo, BackendInfo for CPU profiling integration.
 
 Key fields:
 - env_id: Environment fingerprint for baseline filtering
 - run_mode: "gate" (normal) or "profile" (with tracemalloc)
 - peak_rss_mb: Process-wide peak RSS (not per-benchmark isolated)
+- profile: Optional CPU profile metadata (Phase 12.11)
+- backend: Optional backend selection info (Phase 12.11)
 """
 
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
-from typing import Optional, Any, Union
+from typing import Optional, Any, Union, List, Dict
 import json
 import os
 import platform
@@ -157,6 +160,68 @@ def build_env_id(
 
 
 # =============================================================================
+# PHASE 12.11: PROFILE AND BACKEND INFO
+# =============================================================================
+
+@dataclass
+class ProfileInfo:
+    """
+    Profile information for a benchmark result.
+    
+    Phase 12.11: CPU and memory profiling metadata.
+    All fields optional for backward compatibility with Phase 12.10.
+    
+    Note on timing:
+        - wall_time_s is the consistent timing metric (always measured)
+        - cpu_total_time_s is cProfile's total_tt (only when CPU profiling enabled)
+    """
+    # CPU profiling status
+    cpu_enabled: bool = False
+    
+    # Timing (wall_time is always available)
+    wall_time_s: Optional[float] = None
+    cpu_total_time_s: Optional[float] = None
+    
+    # Profile artifact paths (relative to run directory)
+    cpu_prof_path: Optional[str] = None
+    cpu_txt_path: Optional[str] = None
+    cpu_json_path: Optional[str] = None
+    
+    # Profile summary
+    cpu_total_calls: Optional[int] = None
+    cpu_top_functions: Optional[List[Dict]] = None
+    cpu_sort_key: str = "cumulative"
+    
+    # Memory profiling
+    tracemalloc_peak_mb: Optional[float] = None
+    
+    def to_dict(self) -> dict:
+        """Convert to JSON-serializable dict, removing None values."""
+        d = asdict(self)
+        return {k: v for k, v in d.items() if v is not None}
+
+
+@dataclass
+class BackendInfo:
+    """
+    Backend selection information.
+    
+    Phase 12.11: Track which backend was ACTUALLY used (not inferred).
+    Critical for verifying Numba bypass fix is active.
+    """
+    selected_backend: str  # "numba" or "sequential"
+    n_jobs: int
+    n_chunks: Optional[int] = None
+    numba_available: bool = False
+    numba_version: Optional[str] = None
+    
+    def to_dict(self) -> dict:
+        """Convert to JSON-serializable dict, removing None values."""
+        d = asdict(self)
+        return {k: v for k, v in d.items() if v is not None}
+
+
+# =============================================================================
 # DATACLASSES
 # =============================================================================
 
@@ -180,7 +245,11 @@ class BenchmarkParams:
 
 @dataclass
 class BenchmarkResult:
-    """Result of a single benchmark execution."""
+    """
+    Result of a single benchmark execution.
+    
+    Phase 12.11: Added optional profile and backend fields.
+    """
     id: str
     name: str
     scenario: str
@@ -196,6 +265,10 @@ class BenchmarkResult:
     memory_top_allocations: Optional[list] = None
     cpu_top_functions: Optional[list] = None
     error_message: Optional[str] = None
+    
+    # Phase 12.11: Profile and backend info (optional for backward compat)
+    profile: Optional[ProfileInfo] = None
+    backend: Optional[BackendInfo] = None
     
     @classmethod
     def from_timing(
@@ -236,7 +309,19 @@ class BenchmarkResult:
         """Convert to JSON-serializable dict."""
         d = asdict(self)
         # Remove None values for cleaner JSON
-        return {k: v for k, v in d.items() if v is not None}
+        result = {}
+        for k, v in d.items():
+            if v is None:
+                continue
+            if k == 'profile' and isinstance(v, dict):
+                # Remove None values from nested profile dict
+                result[k] = {pk: pv for pk, pv in v.items() if pv is not None}
+            elif k == 'backend' and isinstance(v, dict):
+                # Remove None values from nested backend dict
+                result[k] = {bk: bv for bk, bv in v.items() if bv is not None}
+            else:
+                result[k] = v
+        return result
 
 
 @dataclass
@@ -262,6 +347,9 @@ class RunMeta:
     warmup_runs: int = DEFAULT_WARMUP_RUNS
     n_runs: int = DEFAULT_N_RUNS
     
+    # Phase 12.11: Profile configuration
+    profile_top_n: int = DEFAULT_TOP_N
+    
     @classmethod
     def create(
         cls,
@@ -270,6 +358,7 @@ class RunMeta:
         suite: str = "quick",
         warmup_runs: int = DEFAULT_WARMUP_RUNS,
         n_runs: int = DEFAULT_N_RUNS,
+        profile_top_n: int = DEFAULT_TOP_N,
     ) -> "RunMeta":
         """Create RunMeta with auto-detected system info."""
         git = get_git_info()
@@ -312,6 +401,7 @@ class RunMeta:
             subproject=subproject,
             warmup_runs=warmup_runs,
             n_runs=n_runs,
+            profile_top_n=profile_top_n,
         )
     
     def to_dict(self) -> dict:
@@ -381,7 +471,14 @@ class BenchmarkRun:
         
         benchmarks = []
         for b in data["benchmarks"]:
-            benchmarks.append(BenchmarkResult(**b))
+            # Handle optional profile and backend fields (Phase 12.11)
+            profile_data = b.pop("profile", None)
+            backend_data = b.pop("backend", None)
+            
+            profile = ProfileInfo(**profile_data) if profile_data else None
+            backend = BackendInfo(**backend_data) if backend_data else None
+            
+            benchmarks.append(BenchmarkResult(**b, profile=profile, backend=backend))
         
         alarms = []
         for a in data.get("alarms", []):
@@ -440,6 +537,11 @@ def get_results_path(subproject: str, timestamp: str) -> Path:
 def get_alarms_path(subproject: str, timestamp: str) -> Path:
     """Get path for alarms.json file."""
     return get_run_output_dir(subproject, timestamp) / "alarms.json"
+
+
+def get_profiles_dir(subproject: str, timestamp: str) -> Path:
+    """Get path for profiles directory (Phase 12.11)."""
+    return get_run_output_dir(subproject, timestamp) / "profiles"
 
 
 # =============================================================================
@@ -508,6 +610,9 @@ __all__ = [
     "get_tool_versions",
     "get_cpu_model",
     "build_env_id",
+    # Phase 12.11: Profile and Backend
+    "ProfileInfo",
+    "BackendInfo",
     # Dataclasses
     "BenchmarkParams",
     "BenchmarkResult",
@@ -520,6 +625,7 @@ __all__ = [
     "get_run_output_dir",
     "get_results_path",
     "get_alarms_path",
+    "get_profiles_dir",
     # Validation
     "validate_run",
 ]

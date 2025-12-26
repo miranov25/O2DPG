@@ -1,13 +1,16 @@
 """
-Benchmark Framework v1.0 — Memory Profiling
+Benchmark Framework v1.0 — Memory and CPU Profiling
 
-Cross-platform memory profiling utilities.
+Cross-platform memory and CPU profiling utilities.
 
 Phase 12.10.BF: Memory tracking for batch farm constraints.
+Phase 12.11: CPU profiling for performance recovery.
 
 Metrics:
 - peak_rss_mb: Process-wide peak RSS (primary metric)
 - peak_tracemalloc_mb: Python allocations only (optional, for debugging)
+- wall_time_s: Wall-clock time (always measured)
+- cpu_total_time_s: cProfile total time (when CPU profiling enabled)
 
 Platform Support:
 - macOS (Darwin): ru_maxrss returns bytes
@@ -24,13 +27,19 @@ Note on RSS Semantics:
     - Regression detection uses history from same benchmark+scenario+params
 """
 
+import cProfile
+import io
+import json
+import os
 import platform
+import pstats
 import sys
 import time
 import tracemalloc
 from contextlib import contextmanager
-from dataclasses import dataclass
-from typing import Optional, Callable, Any
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from typing import Optional, Callable, Any, List, Dict
 
 # resource module is Unix-only
 try:
@@ -326,6 +335,236 @@ def time_function_n(
 
 
 # =============================================================================
+# CPU PROFILING (Phase 12.11)
+# =============================================================================
+
+@dataclass
+class CPUProfileResult:
+    """
+    CPU profile results for archiving.
+    
+    Phase 12.11: Per-function CPU profiling with cProfile.
+    
+    Note on timing:
+        - wall_time_s: Always measured with time.perf_counter() (consistent metric)
+        - cpu_total_time_s: cProfile's total_tt (only when profiling enabled)
+    """
+    enabled: bool
+    wall_time_s: float = 0.0                    # Always measured (consistent!)
+    cpu_total_time_s: Optional[float] = None    # cProfile time (when enabled)
+    prof_path: Optional[str] = None             # Relative path to .prof
+    txt_path: Optional[str] = None              # Relative path to .txt
+    json_path: Optional[str] = None             # Relative path to _cpu.json
+    total_calls: int = 0
+    top_functions: List[Dict] = field(default_factory=list)
+    sort_key: str = "cumulative"                # Sort key used for top_functions
+
+
+def profile_function_cpu(
+    func: Callable,
+    *args,
+    output_dir: str,
+    name: str,
+    top_n: int = 10,
+    enabled: bool = True,
+    **kwargs,
+) -> tuple[Any, CPUProfileResult]:
+    """
+    Profile a single function call with cProfile.
+    
+    Parameters
+    ----------
+    func : Callable
+        Function to profile
+    output_dir : str
+        Directory for profile output files (profiles subdirectory)
+    name : str
+        Base name for output files (e.g., "v5_S3_n1")
+    top_n : int, default=10
+        Number of top functions to include in summary (user-configurable)
+    enabled : bool, default=True
+        If False, skip CPU profiling (still measure wall-time)
+    *args, **kwargs
+        Arguments passed to func
+        
+    Returns
+    -------
+    result : Any
+        Return value of func
+    profile : CPUProfileResult
+        Profile data for archiving (paths are RELATIVE to run directory)
+        
+    Note
+    ----
+    wall_time_s is ALWAYS measured, regardless of whether CPU profiling is enabled.
+    This ensures consistent timing metrics across all runs.
+    """
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Relative paths for JSON storage (portable across machines)
+    rel_prof_path = f"profiles/{name}.prof"
+    rel_txt_path = f"profiles/{name}.txt"
+    rel_json_path = f"profiles/{name}_cpu.json"
+    
+    # Absolute paths for file writing
+    abs_prof_path = out_dir / f"{name}.prof"
+    abs_txt_path = out_dir / f"{name}.txt"
+    abs_json_path = out_dir / f"{name}_cpu.json"
+    
+    if not enabled:
+        # Still measure wall-time even when profiling disabled
+        start = time.perf_counter()
+        result = func(*args, **kwargs)
+        wall_time = time.perf_counter() - start
+        
+        return result, CPUProfileResult(
+            enabled=False,
+            wall_time_s=round(wall_time, 6),
+            cpu_total_time_s=None,
+        )
+    
+    # Run with profiling + wall-time measurement
+    profiler = cProfile.Profile()
+    
+    start = time.perf_counter()
+    profiler.enable()
+    result = func(*args, **kwargs)
+    profiler.disable()
+    wall_time = time.perf_counter() - start
+    
+    # Save binary (.prof)
+    profiler.dump_stats(str(abs_prof_path))
+    
+    # Generate text summary
+    stream = io.StringIO()
+    stats = pstats.Stats(profiler, stream=stream)
+    stats.sort_stats("cumulative")
+    stats.print_stats(top_n * 2)  # Extra for text file
+    abs_txt_path.write_text(stream.getvalue())
+    
+    # Extract top N functions using fcn_list (CORRECT: sorted order)
+    # After sort_stats(), fcn_list contains function keys in sorted order
+    top_functions = []
+    
+    for func_key in stats.fcn_list[:top_n]:
+        filename, lineno, func_name = func_key
+        # pstats tuple: (primitive_calls, total_calls, tottime, cumtime, callers)
+        cc, nc, tt, ct, callers = stats.stats[func_key]
+        top_functions.append({
+            "function": func_name,
+            "file": filename.split("/")[-1] if "/" in filename else filename,
+            "line": lineno,
+            "ncalls": nc,         # Total calls (not primitive)
+            "tottime_s": round(tt, 6),
+            "cumtime_s": round(ct, 6),
+        })
+    
+    cpu_total_time = stats.total_tt
+    # Total calls: sum of nc (total calls) across all functions
+    total_calls = sum(stats.stats[k][1] for k in stats.stats)
+    
+    profile_result = CPUProfileResult(
+        enabled=True,
+        wall_time_s=round(wall_time, 6),          # Always wall-time
+        cpu_total_time_s=round(cpu_total_time, 6),
+        prof_path=rel_prof_path,                  # Relative path
+        txt_path=rel_txt_path,                    # Relative path
+        json_path=rel_json_path,                  # Relative path
+        total_calls=total_calls,
+        top_functions=top_functions,
+        sort_key="cumulative",
+    )
+    
+    # Save JSON summary (with relative paths)
+    abs_json_path.write_text(json.dumps(asdict(profile_result), indent=2))
+    
+    return result, profile_result
+
+
+# =============================================================================
+# COMBINED PROFILING (CPU + Memory)
+# =============================================================================
+
+@dataclass
+class CombinedProfileResult:
+    """Combined CPU and memory profile results."""
+    cpu: CPUProfileResult
+    peak_rss_mb: float
+    tracemalloc_peak_mb: Optional[float] = None
+
+
+def profile_function_full(
+    func: Callable,
+    *args,
+    output_dir: str,
+    name: str,
+    top_n: int = 10,
+    cpu_enabled: bool = True,
+    memory_enabled: bool = True,
+    **kwargs,
+) -> tuple[Any, CombinedProfileResult]:
+    """
+    Profile function with both CPU and memory tracking.
+    
+    Parameters
+    ----------
+    func : Callable
+        Function to profile
+    output_dir : str
+        Directory for profile output files
+    name : str
+        Base name for output files
+    top_n : int, default=10
+        Number of top functions in CPU profile
+    cpu_enabled : bool, default=True
+        Enable CPU profiling (cProfile)
+    memory_enabled : bool, default=True
+        Enable memory tracking (tracemalloc)
+    *args, **kwargs
+        Arguments passed to func
+        
+    Returns
+    -------
+    result : Any
+        Return value of func
+    profile : CombinedProfileResult
+        Combined profile data
+        
+    Note
+    ----
+    wall_time_s is always measured in the CPU profile, regardless of cpu_enabled.
+    """
+    tracemalloc_peak = None
+    
+    if memory_enabled:
+        tracemalloc.start()
+    
+    # CPU profile (or just wall-time if disabled)
+    result, cpu_profile = profile_function_cpu(
+        func, *args,
+        output_dir=output_dir,
+        name=name,
+        top_n=top_n,
+        enabled=cpu_enabled,
+        **kwargs,
+    )
+    
+    if memory_enabled:
+        _, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        tracemalloc_peak = round(peak / (1024 * 1024), 2)
+    
+    peak_rss = get_peak_rss_mb()
+    
+    return result, CombinedProfileResult(
+        cpu=cpu_profile,
+        peak_rss_mb=peak_rss,
+        tracemalloc_peak_mb=tracemalloc_peak,
+    )
+
+
+# =============================================================================
 # COMBINED BENCHMARK RUNNER
 # =============================================================================
 
@@ -384,9 +623,6 @@ def run_benchmark_with_memory(
 # EXPORTS
 # =============================================================================
 
-# Need os for get_current_rss_mb on macOS
-import os
-
 __all__ = [
     # Platform
     "check_platform_support",
@@ -404,6 +640,11 @@ __all__ = [
     "TimingResult",
     "time_function",
     "time_function_n",
-    # Combined
+    # Combined (legacy)
     "run_benchmark_with_memory",
+    # CPU profiling (Phase 12.11)
+    "CPUProfileResult",
+    "CombinedProfileResult",
+    "profile_function_cpu",
+    "profile_function_full",
 ]
