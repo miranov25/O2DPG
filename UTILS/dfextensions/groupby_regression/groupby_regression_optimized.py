@@ -2872,7 +2872,7 @@ def _select_parallel_backend(parallel_backend, n_jobs):
         return 'numba'
     
     # auto
-    if n_jobs > 1 and _NUMBA_AVAILABLE:
+    if _NUMBA_AVAILABLE:  # Phase 12.11 fix
         return 'numba'
     return 'sequential'
 
