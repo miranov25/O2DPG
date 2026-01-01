@@ -83,11 +83,21 @@ if [ "$REVIEW_MODE" = true ]; then
     echo "Running: Benchmark Framework Runner (Integration)"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     # Note: BF runner saves results automatically to $BENCHMARK_PREFIX
-    # We just capture the console output for review
+    # We capture console output and then copy the results.json
     python -m dfextensions.benchmarks.runner \
         --subproject groupby_regression \
         --suite quick \
         2>&1 | tee "$REVIEW_DIR/bf_results.log" || echo "BF runner failed (see log for details)"
+    
+    # Copy BF results.json to review directory (find most recent one)
+    sleep 1  # Ensure file is written
+    BF_RESULTS=$(find "${SCRIPT_DIR}/../benchmarks" -name "results.json" -newer "$REVIEW_DIR/bf_results.log" 2>/dev/null | head -1)
+    if [ -n "$BF_RESULTS" ] && [ -f "$BF_RESULTS" ]; then
+        cp "$BF_RESULTS" "$REVIEW_DIR/bf_results.json"
+        echo "Copied BF results: $BF_RESULTS -> $REVIEW_DIR/bf_results.json"
+    else
+        echo "Warning: Could not find BF results.json to copy"
+    fi
     
     echo ""
     echo "╔════════════════════════════════════════════════════════════════════╗"
@@ -102,7 +112,8 @@ if [ "$REVIEW_MODE" = true ]; then
     echo "    - kernel_results.log / kernel_results.json"
     echo "    - memory_results.log / memory_results.json"
     echo "  BF Integration:"
-    echo "    - bf_results.log (proves BF discovery works)"
+    echo "    - bf_results.log (console output)"
+    echo "    - bf_results.json (BF structured output)"
     
     return 0 2>/dev/null || exit 0
 fi
