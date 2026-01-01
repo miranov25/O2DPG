@@ -4,6 +4,7 @@ Benchmark Framework v1.0 — Runner
 CLI entry point for running benchmarks.
 
 Phase 12.10.BF: Standardized benchmark execution.
+Phase 12.14b.GB: Added kernel and memory benchmark discovery.
 
 Usage:
     # Quick suite (default)
@@ -222,33 +223,63 @@ def discover_benchmarks(subproject: str, suite: str = "quick") -> list[dict]:
     """
     Discover benchmarks for a subproject.
     
+    Phase 12.14b.GB: Now includes kernel and memory benchmarks.
+    
     Returns list of benchmark specs:
         [{"name": ..., "func": ..., "scenarios": [...], "params": {...}}, ...]
     """
-    # Try to import subproject benchmark module
-    try:
-        if subproject == "groupby_regression":
-            # Setup path for groupby_regression directory so workers can find modules
-            gr_dir = Path(__file__).parent.parent / "groupby_regression"
-            gr_dir_str = str(gr_dir.resolve())
-            
-            if gr_dir_str not in sys.path:
-                sys.path.insert(0, gr_dir_str)
-            
-            # Set PYTHONPATH for spawned workers (macOS uses spawn)
-            current_pythonpath = os.environ.get("PYTHONPATH", "")
-            if gr_dir_str not in current_pythonpath:
-                if current_pythonpath:
-                    os.environ["PYTHONPATH"] = f"{gr_dir_str}:{current_pythonpath}"
-                else:
-                    os.environ["PYTHONPATH"] = gr_dir_str
-            
-            from dfextensions.groupby_regression.benchmarks.bench_v5 import get_benchmarks
-            return get_benchmarks(suite=suite)
-        else:
-            raise ImportError(f"Unknown subproject: {subproject}")
-    except ImportError as e:
-        print(f"Warning: Could not import benchmarks for {subproject}: {e}")
+    if subproject == "groupby_regression":
+        # Setup path for groupby_regression directory so workers can find modules
+        gr_dir = Path(__file__).parent.parent / "groupby_regression"
+        gr_dir_str = str(gr_dir.resolve())
+        
+        if gr_dir_str not in sys.path:
+            sys.path.insert(0, gr_dir_str)
+        
+        # Set PYTHONPATH for spawned workers (macOS uses spawn)
+        current_pythonpath = os.environ.get("PYTHONPATH", "")
+        if gr_dir_str not in current_pythonpath:
+            if current_pythonpath:
+                os.environ["PYTHONPATH"] = f"{gr_dir_str}:{current_pythonpath}"
+            else:
+                os.environ["PYTHONPATH"] = gr_dir_str
+        
+        benchmarks = []
+        
+        # V5 benchmarks (high-level API)
+        try:
+            from dfextensions.groupby_regression.benchmarks.bench_v5 import (
+                get_benchmarks as get_v5_benchmarks
+            )
+            benchmarks.extend(get_v5_benchmarks(suite=suite))
+        except ImportError as e:
+            print(f"Warning: Could not import v5 benchmarks: {e}")
+        
+        # Kernel benchmarks (low-level Numba) - Phase 12.14b.GB
+        try:
+            from dfextensions.groupby_regression.benchmarks.bench_groupby_regression_kernels import (
+                get_benchmarks as get_kernel_benchmarks
+            )
+            benchmarks.extend(get_kernel_benchmarks(suite=suite))
+        except ImportError as e:
+            print(f"Warning: Could not import kernel benchmarks: {e}")
+        
+        # Memory benchmarks - Phase 12.14b.GB
+        try:
+            from dfextensions.groupby_regression.benchmarks.bench_groupby_regression_memory import (
+                get_benchmarks as get_memory_benchmarks
+            )
+            benchmarks.extend(get_memory_benchmarks(suite=suite))
+        except ImportError as e:
+            print(f"Warning: Could not import memory benchmarks: {e}")
+        
+        if not benchmarks:
+            print(f"Warning: No benchmarks discovered for {subproject}")
+        
+        return benchmarks
+    
+    else:
+        print(f"Warning: Unknown subproject: {subproject}")
         return []
 
 
@@ -294,6 +325,15 @@ def run_single_benchmark(
         benchmark_params = {"scenario": scenario, **params}
         if isinstance(result, dict) and "n_rows_input" in result:
             benchmark_params["n_rows"] = result["n_rows_input"]
+        
+        # Phase 12.14b.GB: Merge adapter metrics into params
+        if isinstance(result, dict):
+            # Copy relevant metrics from adapter return dict
+            for key in ["speedup_vs_numpy", "throughput_groups_per_sec", 
+                        "rss_drift_pct", "rss_cv", "correctness_passed",
+                        "speedup_gate_pass", "drift_gate_pass", "cv_gate_pass"]:
+                if key in result:
+                    benchmark_params[key] = result[key]
         
         bench_result = BenchmarkResult.from_timing(
             name=name,
@@ -377,13 +417,30 @@ def run_benchmarks(
     n_jobs_list = get_n_jobs_list()
     
     for spec in benchmark_specs:
+        # Phase 12.14b.GB: Check if benchmark uses n_jobs
+        # Kernel and memory benchmarks don't use n_jobs parallelization
+        benchmark_name = spec["name"]
+        uses_n_jobs = benchmark_name not in [
+            "kernel_single_fit", "kernel_multi_fit", "memory_rss_tracking"
+        ]
+        
         for scenario in spec["scenarios"]:
-            for n_jobs in n_jobs_list:
+            if uses_n_jobs:
+                # V5-style benchmarks: iterate over n_jobs
+                for n_jobs in n_jobs_list:
+                    all_configs.append({
+                        "name": spec["name"],
+                        "func": spec["func"],
+                        "scenario": scenario,
+                        "params": {**spec.get("params", {}), "n_jobs": n_jobs},
+                    })
+            else:
+                # Kernel/memory benchmarks: single config per scenario
                 all_configs.append({
                     "name": spec["name"],
                     "func": spec["func"],
                     "scenario": scenario,
-                    "params": {**spec.get("params", {}), "n_jobs": n_jobs},
+                    "params": spec.get("params", {}),
                 })
     
     # Run all benchmarks

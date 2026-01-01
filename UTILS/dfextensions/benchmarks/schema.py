@@ -5,6 +5,7 @@ JSON schema for benchmark results with validation.
 
 Phase 12.10.BF: Standardized benchmark storage format.
 Phase 12.11: Added ProfileInfo, BackendInfo for CPU profiling integration.
+Phase 12.14b.GB: Added NumpyEncoder for np.bool_ serialization fix.
 
 Key fields:
 - env_id: Environment fingerprint for baseline filtering
@@ -18,6 +19,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Optional, Any, Union, List, Dict
 import json
+import numpy as np  # Phase 12.14b.GB: Added for NumpyEncoder
 import os
 import platform
 import subprocess
@@ -37,6 +39,25 @@ DEFAULT_N_RUNS = 3
 DEFAULT_TIME_THRESHOLD = 0.10
 DEFAULT_MEMORY_THRESHOLD = 0.15  # Higher than time due to RSS variance
 DEFAULT_TOP_N = 10
+
+
+# =============================================================================
+# JSON ENCODER (Phase 12.14b.GB)
+# =============================================================================
+
+class NumpyEncoder(json.JSONEncoder):
+    """JSON encoder that handles NumPy types."""
+    
+    def default(self, obj):
+        if isinstance(obj, (np.bool_, bool)):
+            return bool(obj)
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
 
 
 # =============================================================================
@@ -456,10 +477,10 @@ class BenchmarkRun:
         }
     
     def save(self, path: Union[Path, str]):
-        """Save to JSON file."""
+        """Save to JSON file. Phase 12.14b.GB: Uses NumpyEncoder."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.to_dict(), indent=2))
+        path.write_text(json.dumps(self.to_dict(), indent=2, cls=NumpyEncoder))
     
     @classmethod
     def load(cls, path: Union[Path, str]) -> "BenchmarkRun":
@@ -605,6 +626,8 @@ __all__ = [
     "DEFAULT_TIME_THRESHOLD",
     "DEFAULT_MEMORY_THRESHOLD",
     "DEFAULT_TOP_N",
+    # JSON Encoder (Phase 12.14b.GB)
+    "NumpyEncoder",
     # Helpers
     "get_git_info",
     "get_tool_versions",
