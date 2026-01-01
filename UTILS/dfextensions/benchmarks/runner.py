@@ -5,6 +5,7 @@ CLI entry point for running benchmarks.
 
 Phase 12.10.BF: Standardized benchmark execution.
 Phase 12.14b.GB: Added kernel and memory benchmark discovery.
+Phase 12.14b.GB-addendum: Dual timing, spec-driven IDs, cProfile storage.
 
 Usage:
     # Quick suite (default)
@@ -13,8 +14,11 @@ Usage:
     # Release suite
     python -m dfextensions.benchmarks.runner --subproject groupby_regression --suite release
     
-    # With profiling (tracemalloc + top allocations)
+    # With tracemalloc profiling
     python -m dfextensions.benchmarks.runner --subproject groupby_regression --profile
+    
+    # Without cProfile (faster for CI)
+    python -m dfextensions.benchmarks.runner --subproject groupby_regression --no-profile
     
     # Check regressions only (no new run)
     python -m dfextensions.benchmarks.runner --subproject groupby_regression --check-only
@@ -26,6 +30,7 @@ Exit Codes:
 """
 
 import argparse
+import cProfile  # Phase 12.14b.GB-addendum
 import importlib
 import os
 import sys
@@ -295,9 +300,18 @@ def run_single_benchmark(
     n_runs: int = DEFAULT_N_RUNS,
     warmup_runs: int = DEFAULT_WARMUP_RUNS,
     profile: bool = False,
+    uses_n_jobs: bool = True,
+    enable_cprofile: bool = True,
+    profile_dir: Optional[Path] = None,
+    run_dir: Optional[Path] = None,
 ) -> BenchmarkResult:
     """
     Run a single benchmark with timing and memory tracking.
+    
+    Phase 12.14b.GB-addendum:
+    - D1: Store both time_s (kernel-only) and wall_time_s (wrapper)
+    - D2: Pass uses_n_jobs for ID construction
+    - D3: cProfile capture for first timed run
     
     Parameters:
         name: Benchmark name
@@ -307,19 +321,44 @@ def run_single_benchmark(
         n_runs: Number of timed runs
         warmup_runs: Number of warmup runs
         profile: Enable tracemalloc profiling
+        uses_n_jobs: Whether benchmark uses n_jobs (for ID hygiene)
+        enable_cprofile: Enable cProfile capture (default: True)
+        profile_dir: Directory to save .prof files
+        run_dir: Base run directory (for relative path calculation)
     
     Returns:
         BenchmarkResult
     """
     try:
+        # Phase 12.14b.GB-addendum D3: Setup cProfile
+        profiler = None
+        if enable_cprofile and profile_dir:
+            profiler = cProfile.Profile()
+        
+        # Measure wall time around entire benchmark execution
+        wall_start = time.perf_counter()
+        
+        # Phase 12.14b.GB-addendum D3: Profile only the benchmark call
+        if profiler:
+            profiler.enable()
+        
+        # Phase 12.14b.GB: Filter out params that conflict with explicit arguments
+        filtered_params = {k: v for k, v in params.items() 
+                          if k not in ('n_runs', 'warmup_runs', 'warmup', 'profile', 'scenario')}
+        
         times, mem_stats, result = run_benchmark_with_memory(
             func,
             scenario=scenario,
             n_runs=n_runs,
             warmup_runs=warmup_runs,
             profile=profile,
-            **params,
+            **filtered_params,
         )
+        
+        if profiler:
+            profiler.disable()
+        
+        wall_time = time.perf_counter() - wall_start
         
         # Extract n_rows from benchmark result if available
         benchmark_params = {"scenario": scenario, **params}
@@ -335,22 +374,64 @@ def run_single_benchmark(
                 if key in result:
                     benchmark_params[key] = result[key]
         
+        # Phase 12.14b.GB-addendum D1: Use returned time_s if available
+        # This gives us kernel-only timing for kernel benchmarks
+        kernel_time_s = None
+        if isinstance(result, dict) and "time_s" in result:
+            kernel_time_s = result["time_s"]
+        
+        # Phase 12.14b.GB-addendum D3: Save profile with error handling
+        profile_path = None
+        if profiler and profile_dir:
+            try:
+                profile_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Build profile filename
+                n_jobs = params.get("n_jobs", 1)
+                profile_name = f"{name}_{scenario}".replace(":", "_").replace("/", "_")
+                if uses_n_jobs:
+                    profile_name += f"_n_jobs_{n_jobs}"
+                profile_file = profile_dir / f"{profile_name}.prof"
+                
+                profiler.dump_stats(str(profile_file))
+                
+                # Store relative path if run_dir provided
+                if run_dir:
+                    profile_path = str(profile_file.relative_to(run_dir))
+                else:
+                    profile_path = str(profile_file)
+            except Exception as e:
+                print(f"Warning: Could not save profile for {name}:{scenario}: {e}")
+                profile_path = None
+        
         bench_result = BenchmarkResult.from_timing(
             name=name,
             scenario=scenario,
             params=benchmark_params,
             times=times,
             peak_rss_mb=mem_stats.peak_rss_mb,
+            wall_time_s=wall_time,  # Phase 12.14b.GB-addendum D1
+            uses_n_jobs=uses_n_jobs,  # Phase 12.14b.GB-addendum D2
             peak_tracemalloc_mb=mem_stats.peak_tracemalloc_mb,
             memory_top_allocations=mem_stats.top_allocations,
+            profile_path=profile_path,  # Phase 12.14b.GB-addendum D3
         )
+        
+        # Phase 12.14b.GB-addendum D1: Override time_s with kernel-only timing if available
+        if kernel_time_s is not None:
+            bench_result.time_s = kernel_time_s
         
         return bench_result
     
     except Exception as e:
         # Create failed result
         n_jobs = params.get("n_jobs", 1)
-        bench_id = f"{name}:{scenario}:n_jobs={n_jobs}"
+        
+        # Phase 12.14b.GB-addendum D2: ID hygiene in error case too
+        if uses_n_jobs:
+            bench_id = f"{name}:{scenario}:n_jobs={n_jobs}"
+        else:
+            bench_id = f"{name}:{scenario}"
         
         return BenchmarkResult(
             id=bench_id,
@@ -358,6 +439,7 @@ def run_single_benchmark(
             scenario=scenario,
             params={"scenario": scenario, **params},
             time_s=0.0,
+            wall_time_s=0.0,  # Phase 12.14b.GB-addendum D1
             time_std_s=0.0,
             n_runs=0,
             peak_rss_mb=get_peak_rss_mb(),
@@ -372,10 +454,15 @@ def run_benchmarks(
     n_runs: int = DEFAULT_N_RUNS,
     warmup_runs: int = DEFAULT_WARMUP_RUNS,
     profile: bool = False,
+    enable_cprofile: bool = True,
     verbose: bool = True,
 ) -> BenchmarkRun:
     """
     Run all benchmarks for a subproject.
+    
+    Phase 12.14b.GB-addendum:
+    - D2: uses_n_jobs read from benchmark spec
+    - D3: cProfile capture with enable_cprofile flag
     
     Parameters:
         subproject: Subproject name
@@ -383,6 +470,7 @@ def run_benchmarks(
         n_runs: Number of timed runs
         warmup_runs: Number of warmup runs
         profile: Enable tracemalloc profiling
+        enable_cprofile: Enable cProfile capture (default: True)
         verbose: Print progress
     
     Returns:
@@ -412,17 +500,17 @@ def run_benchmarks(
             alarms=[],
         )
     
+    # Phase 12.14b.GB-addendum D3: Create profiles directory
+    run_dir = get_run_output_dir(subproject, meta.timestamp)
+    profile_dir = run_dir / "profiles" if enable_cprofile else None
+    
     # Build list of all benchmark configurations
     all_configs = []
     n_jobs_list = get_n_jobs_list()
     
     for spec in benchmark_specs:
-        # Phase 12.14b.GB: Check if benchmark uses n_jobs
-        # Kernel and memory benchmarks don't use n_jobs parallelization
-        benchmark_name = spec["name"]
-        uses_n_jobs = benchmark_name not in [
-            "kernel_single_fit", "kernel_multi_fit", "memory_rss_tracking"
-        ]
+        # Phase 12.14b.GB-addendum D2: Read uses_n_jobs from spec (not hardcoded list)
+        uses_n_jobs = spec.get("uses_n_jobs", True)  # Default True for legacy
         
         for scenario in spec["scenarios"]:
             if uses_n_jobs:
@@ -432,6 +520,7 @@ def run_benchmarks(
                         "name": spec["name"],
                         "func": spec["func"],
                         "scenario": scenario,
+                        "uses_n_jobs": True,  # Phase 12.14b.GB-addendum D2
                         "params": {**spec.get("params", {}), "n_jobs": n_jobs},
                     })
             else:
@@ -440,6 +529,7 @@ def run_benchmarks(
                     "name": spec["name"],
                     "func": spec["func"],
                     "scenario": scenario,
+                    "uses_n_jobs": False,  # Phase 12.14b.GB-addendum D2
                     "params": spec.get("params", {}),
                 })
     
@@ -456,6 +546,10 @@ def run_benchmarks(
             n_runs=n_runs,
             warmup_runs=warmup_runs,
             profile=profile,
+            uses_n_jobs=config["uses_n_jobs"],  # Phase 12.14b.GB-addendum D2
+            enable_cprofile=enable_cprofile,  # Phase 12.14b.GB-addendum D3
+            profile_dir=profile_dir,  # Phase 12.14b.GB-addendum D3
+            run_dir=run_dir,  # Phase 12.14b.GB-addendum D3
         )
         results.append(result)
         
@@ -585,6 +679,13 @@ Examples:
         help="Enable tracemalloc profiling",
     )
     
+    # Phase 12.14b.GB-addendum D3: cProfile control
+    parser.add_argument(
+        "--no-profile",
+        action="store_true",
+        help="Disable cProfile capture (default: profiles always captured)",
+    )
+    
     # Runs
     parser.add_argument(
         "--n-runs",
@@ -711,12 +812,14 @@ def main(args=None) -> int:
     
     try:
         # Run benchmarks
+        # Phase 12.14b.GB-addendum D3: --no-profile disables cProfile capture
         run = run_benchmarks(
             subproject=parsed.subproject,
             suite=parsed.suite,
             n_runs=parsed.n_runs,
             warmup_runs=parsed.warmup_runs,
             profile=parsed.profile,
+            enable_cprofile=not parsed.no_profile,  # Phase 12.14b.GB-addendum D3
             verbose=not parsed.quiet,
         )
         
@@ -729,9 +832,23 @@ def main(args=None) -> int:
             return 2
         
         # Save results
+        # Phase 12.14b.GB-addendum: Track generated files for summary
+        generated_files = []
+        
         if not parsed.dry_run:
             output_path = save_run(run)
-            print(f"\nResults saved to: {output_path}")
+            abs_output_path = output_path.resolve()
+            print(f"\nResults saved to: {abs_output_path}")
+            generated_files.append(("results.json", abs_output_path))
+            
+            # Phase 12.14b.GB-addendum D3: Show profiles directory if cProfile enabled
+            if not parsed.no_profile:
+                profiles_dir = output_path.parent / "profiles"
+                if profiles_dir.exists():
+                    n_profiles = len(list(profiles_dir.glob("*.prof")))
+                    abs_profiles_dir = profiles_dir.resolve()
+                    print(f"Profiles saved to: {abs_profiles_dir} ({n_profiles} files)")
+                    generated_files.append(("profiles/", abs_profiles_dir))
         
         # Detect regressions
         if not parsed.profile:  # Skip for profile runs (different overhead)
@@ -760,12 +877,21 @@ def main(args=None) -> int:
                 # Save alarms
                 if not parsed.dry_run and alarms:
                     alarms_path = save_alarms(run)
-                    print(f"Alarms saved to: {alarms_path}")
+                    abs_alarms_path = Path(alarms_path).resolve()
+                    print(f"Alarms saved to: {abs_alarms_path}")
+                    generated_files.append(("alarms.json", abs_alarms_path))
             else:
                 if not parsed.quiet:
                     print("\nNo history found for regression detection.")
         
-        # TODO: Generate report
+        # Phase 12.14b.GB-addendum: Print greppable summary of generated files
+        if generated_files and not parsed.quiet:
+            print()
+            print("─" * 68)
+            print("GENERATED FILES (grep: BF_OUTPUT)")
+            print("─" * 68)
+            for name, path in generated_files:
+                print(f"  BF_OUTPUT {name}: {path}")
         
         # Determine exit code
         if run.summary.n_failed > 0:

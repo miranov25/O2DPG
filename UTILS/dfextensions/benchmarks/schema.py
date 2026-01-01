@@ -6,6 +6,7 @@ JSON schema for benchmark results with validation.
 Phase 12.10.BF: Standardized benchmark storage format.
 Phase 12.11: Added ProfileInfo, BackendInfo for CPU profiling integration.
 Phase 12.14b.GB: Added NumpyEncoder for np.bool_ serialization fix.
+Phase 12.14b.GB-addendum: Added wall_time_s, profile_path; spec-driven IDs.
 
 Key fields:
 - env_id: Environment fingerprint for baseline filtering
@@ -19,7 +20,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Optional, Any, Union, List, Dict
 import json
-import numpy as np  # Phase 12.14b.GB: Added for NumpyEncoder
+import numpy as np  # Phase 12.14b.GB: For NumpyEncoder
 import os
 import platform
 import subprocess
@@ -46,7 +47,12 @@ DEFAULT_TOP_N = 10
 # =============================================================================
 
 class NumpyEncoder(json.JSONEncoder):
-    """JSON encoder that handles NumPy types."""
+    """
+    JSON encoder that handles NumPy types.
+    
+    Phase 12.14b.GB: Fixes serialization of np.bool_, np.integer, np.floating
+    which are returned by benchmark gate comparisons.
+    """
     
     def default(self, obj):
         if isinstance(obj, (np.bool_, bool)):
@@ -270,12 +276,14 @@ class BenchmarkResult:
     Result of a single benchmark execution.
     
     Phase 12.11: Added optional profile and backend fields.
+    Phase 12.14b.GB-addendum: Added wall_time_s for observability, profile_path for cProfile.
     """
     id: str
     name: str
     scenario: str
     params: dict
-    time_s: float
+    time_s: float              # Kernel-only timing (authoritative for perf comparison)
+    wall_time_s: float         # Total wall time including setup/teardown (Phase 12.14b.GB-addendum)
     time_std_s: float
     n_runs: int
     peak_rss_mb: float
@@ -291,6 +299,9 @@ class BenchmarkResult:
     profile: Optional[ProfileInfo] = None
     backend: Optional[BackendInfo] = None
     
+    # Phase 12.14b.GB-addendum: cProfile storage path
+    profile_path: Optional[str] = None
+    
     @classmethod
     def from_timing(
         cls,
@@ -299,13 +310,26 @@ class BenchmarkResult:
         params: dict,
         times: list[float],
         peak_rss_mb: float,
+        wall_time_s: Optional[float] = None,
+        uses_n_jobs: bool = True,
         **kwargs,
     ) -> "BenchmarkResult":
-        """Create BenchmarkResult from timing measurements."""
+        """
+        Create BenchmarkResult from timing measurements.
+        
+        Phase 12.14b.GB-addendum:
+        - Added wall_time_s for observability (wrapper time)
+        - Added uses_n_jobs for ID hygiene (omit n_jobs suffix when False)
+        """
         import numpy as np
         
         n_jobs = params.get("n_jobs", 1)
-        bench_id = f"{name}:{scenario}:n_jobs={n_jobs}"
+        
+        # Phase 12.14b.GB-addendum: ID hygiene - only include n_jobs if benchmark uses it
+        if uses_n_jobs:
+            bench_id = f"{name}:{scenario}:n_jobs={n_jobs}"
+        else:
+            bench_id = f"{name}:{scenario}"
         
         mean_time = float(np.mean(times))
         std_time = float(np.std(times))
@@ -313,12 +337,17 @@ class BenchmarkResult:
         
         throughput = n_rows / mean_time if mean_time > 0 else 0.0
         
+        # Phase 12.14b.GB-addendum: wall_time_s defaults to mean_time if not provided
+        if wall_time_s is None:
+            wall_time_s = mean_time
+        
         return cls(
             id=bench_id,
             name=name,
             scenario=scenario,
             params=params,
             time_s=mean_time,
+            wall_time_s=wall_time_s,
             time_std_s=std_time,
             n_runs=len(times),
             peak_rss_mb=peak_rss_mb,

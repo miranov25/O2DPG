@@ -196,15 +196,7 @@ QUICK_MEMORY_SCENARIOS = ["M1", "M2"]
 RELEASE_MEMORY_SCENARIOS = ["M1", "M2", "M3", "M4"]
 
 
-def bench_memory_rss(
-    scenario: str = "M1",
-    n_iterations: int = 50,
-    seed: int = 42,
-    n_runs: int = None,  # Ignored - memory bench has its own timing model
-    warmup_runs: int = None,  # Ignored
-    n_jobs: int = None,  # Ignored - no parallelism
-    **kwargs
-) -> dict:
+def bench_memory_rss(scenario: str = "M1", n_iterations: int = 50, seed: int = 42, **kwargs) -> dict:
     """BF-compatible memory benchmark."""
     if scenario not in MEMORY_SCENARIOS:
         raise ValueError(f"Unknown scenario: {scenario}")
@@ -232,13 +224,18 @@ def bench_memory_rss(
 
 
 def get_benchmarks(suite: str = "quick") -> list:
-    """BF discovery function for memory benchmarks."""
+    """
+    BF discovery function for memory benchmarks.
+    
+    Phase 12.14b.GB-addendum: Added uses_n_jobs: False for ID hygiene.
+    """
     scenarios = QUICK_MEMORY_SCENARIOS if suite == "quick" else RELEASE_MEMORY_SCENARIOS
     n_iter = 20 if suite == "quick" else 50
     return [{
         "name": "memory_rss_tracking",
         "func": bench_memory_rss,
         "scenarios": scenarios,
+        "uses_n_jobs": False,  # Phase 12.14b.GB-addendum: ID hygiene
         "params": {"n_iterations": n_iter},
     }]
 

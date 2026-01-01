@@ -466,10 +466,8 @@ def bench_kernel_single_fit(
     scenario: str = "K1",
     n_runs: int = 5,
     warmup: int = 2,
-    warmup_runs: int = None,  # BF alias for warmup
     validate: bool = True,
     seed: int = 42,
-    n_jobs: int = None,  # Ignored - kernel benchmarks don't use parallelism
     **kwargs,
 ) -> dict:
     """
@@ -478,10 +476,6 @@ def bench_kernel_single_fit(
     TIMING CONTRACT (P0-B):
     - time_s measures KERNEL EXECUTION ONLY
     """
-    # Handle BF's warmup_runs vs our warmup
-    if warmup_runs is not None:
-        warmup = warmup_runs
-    
     scen = _get_kernel_scenario(scenario)
     n_groups = scen["n_groups"]
     rows_per_group = scen["rows_per_group"]
@@ -556,10 +550,8 @@ def bench_kernel_multi_fit(
     n_targets: int = 6,
     n_runs: int = 5,
     warmup: int = 2,
-    warmup_runs: int = None,  # BF alias for warmup
     validate: bool = True,
     seed: int = 42,
-    n_jobs: int = None,  # Ignored - kernel benchmarks don't use parallelism
     **kwargs,
 ) -> dict:
     """
@@ -567,10 +559,6 @@ def bench_kernel_multi_fit(
     
     P0-A: Uses timing helpers, NOT wrapper calls for speedup comparison.
     """
-    # Handle BF's warmup_runs vs our warmup
-    if warmup_runs is not None:
-        warmup = warmup_runs
-    
     scen = _get_kernel_scenario(scenario)
     n_groups = scen["n_groups"]
     rows_per_group = scen["rows_per_group"]
@@ -664,6 +652,9 @@ def get_benchmarks(suite: str = "quick") -> list:
     P0-C: This function is PURE and CHEAP.
     - No Numba JIT compilation
     - No large array allocations
+    
+    Phase 12.14b.GB-addendum: Added uses_n_jobs: False for ID hygiene.
+    Note: n_runs/warmup NOT passed in params - runner handles these.
     """
     scenarios = QUICK_KERNEL_SCENARIOS if suite == "quick" else RELEASE_KERNEL_SCENARIOS
     params = SUITE_PARAMS.get(suite, SUITE_PARAMS["quick"])
@@ -673,6 +664,7 @@ def get_benchmarks(suite: str = "quick") -> list:
             "name": "kernel_single_fit",
             "func": bench_kernel_single_fit,
             "scenarios": scenarios,
+            "uses_n_jobs": False,  # Phase 12.14b.GB-addendum: ID hygiene
             "params": {
                 "validate": params["validate"],
             },
@@ -681,6 +673,7 @@ def get_benchmarks(suite: str = "quick") -> list:
             "name": "kernel_multi_fit",
             "func": bench_kernel_multi_fit,
             "scenarios": scenarios,
+            "uses_n_jobs": False,  # Phase 12.14b.GB-addendum: ID hygiene
             "params": {
                 "validate": params["validate"],
                 "n_targets": 6,
