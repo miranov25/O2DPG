@@ -9858,7 +9858,7 @@ class AliasDataFrame:
         """
         # Import dfdraw
         try:
-            from dfdraw import DFDraw
+            from dfextensions.dfdraw import DFDraw
         except ImportError:
             raise ImportError(
                 "dfdraw package not found. Install it or ensure it's in your path."
@@ -10005,7 +10005,7 @@ class AliasDataFrame:
         """
         # Import dfdraw
         try:
-            from dfdraw import DFDraw
+            from dfextensions.dfdraw import DFDraw
         except ImportError:
             raise ImportError(
                 "dfdraw package not found. Install it or ensure it's in your path."
@@ -10166,7 +10166,7 @@ class AliasDataFrame:
         """
         # Import dfdraw
         try:
-            from dfdraw import DFDraw
+            from dfextensions.dfdraw import DFDraw
         except ImportError:
             raise ImportError(
                 "dfdraw package not found. Install it or ensure it's in your path."
@@ -10384,7 +10384,7 @@ class AliasDataFrame:
         Returns:
             Dict with 'fig', 'axes', 'stats' keys
         """
-        from dfdraw import DFDraw
+        from dfextensions.dfdraw import DFDraw
         
         plots = fig_spec.get('plots', [])
         ncols = fig_spec.get('ncols', 2)

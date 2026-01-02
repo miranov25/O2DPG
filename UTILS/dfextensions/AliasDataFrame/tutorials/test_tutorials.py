@@ -75,7 +75,7 @@ def check_prerequisites():
     
     # Check dfdraw (optional)
     try:
-        from dfdraw import DFDraw
+        from dfextensions.dfdraw import DFDraw
         print("✓ dfdraw available")
     except ImportError:
         print("⚠ dfdraw not found (tutorials will run without plots)")

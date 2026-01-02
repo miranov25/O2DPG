@@ -132,7 +132,7 @@ class TestChainLoading:
         
         # Skip if dfdraw not available
         try:
-            from dfdraw import DFDraw
+            from dfextensions.dfdraw import DFDraw
         except ImportError:
             pytest.skip("dfdraw not available")
         

@@ -29,7 +29,7 @@ from AliasDataFrame import AliasDataFrame
 
 # Check dependencies
 try:
-    from dfdraw import DFDraw
+    from dfextensions.dfdraw import DFDraw
     HAS_DFDRAW = True
 except ImportError:
     HAS_DFDRAW = False
