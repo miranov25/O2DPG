@@ -301,6 +301,8 @@ class BenchmarkResult:
     
     # Phase 12.14b.GB-addendum: cProfile storage path
     profile_path: Optional[str] = None
+    # Phase 12.14c.GB D6: Explanation when profile is skipped
+    profile_note: Optional[str] = None
     
     @classmethod
     def from_timing(

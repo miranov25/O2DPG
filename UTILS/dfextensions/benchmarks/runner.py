@@ -331,9 +331,16 @@ def run_single_benchmark(
     """
     try:
         # Phase 12.14b.GB-addendum D3: Setup cProfile
+        # Phase 12.14c.GB D6: Skip profiling for n_jobs > 1 (cProfile captures main process only)
         profiler = None
+        profile_note = None
+        n_jobs_param = params.get("n_jobs", 1)
+        
         if enable_cprofile and profile_dir:
-            profiler = cProfile.Profile()
+            if uses_n_jobs and n_jobs_param > 1:
+                profile_note = f"Profile skipped: n_jobs={n_jobs_param} (cProfile captures main process only)"
+            else:
+                profiler = cProfile.Profile()
         
         # Measure wall time around entire benchmark execution
         wall_start = time.perf_counter()
@@ -415,6 +422,7 @@ def run_single_benchmark(
             peak_tracemalloc_mb=mem_stats.peak_tracemalloc_mb,
             memory_top_allocations=mem_stats.top_allocations,
             profile_path=profile_path,  # Phase 12.14b.GB-addendum D3
+            profile_note=profile_note,  # Phase 12.14c.GB D6
         )
         
         # Phase 12.14b.GB-addendum D1: Override time_s with kernel-only timing if available
