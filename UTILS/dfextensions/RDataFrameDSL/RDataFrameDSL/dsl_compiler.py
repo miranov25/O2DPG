@@ -2004,6 +2004,16 @@ class DSLCompiler:
         import ROOT
         import json
         
+        # === NULL CHECK (Phase 13.2.3.DSL) ===
+        for field in table.schema:
+            column = table[field.name]
+            if column.null_count > 0:
+                raise TypeError(
+                    f"Column '{field.name}' contains {column.null_count} null values. "
+                    f"Null values not supported in V1."
+                )
+        # === END NULL CHECK ===
+        
         # Convert Arrow → numpy dict
         numpy_dict = {}
         for col in table.column_names:
