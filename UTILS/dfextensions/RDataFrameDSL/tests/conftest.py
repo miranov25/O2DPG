@@ -2,6 +2,7 @@
 pytest configuration for RDataFrameDSL tests.
 
 Phase 12: Adds synthetic data fixtures for draw integration testing.
+Phase 13.2.1.DSL: Adds invariant testing fixtures.
 """
 
 import pytest
@@ -12,6 +13,15 @@ def pytest_configure(config):
     """Register custom markers."""
     config.addinivalue_line(
         "markers", "future: marks tests for future phase techniques (Phase 7+)"
+    )
+    config.addinivalue_line(
+        "markers", "requires_root: mark test as requiring ROOT"
+    )
+    config.addinivalue_line(
+        "markers", "slow: mark test as slow running"
+    )
+    config.addinivalue_line(
+        "markers", "invariant: mark test as invariant-based correctness test"
     )
 
 
@@ -181,3 +191,181 @@ def scalar_schema():
         "isOK": "bool",
         "charge": "int",
     }
+
+
+# =============================================================================
+# Phase 13.2.1.DSL: Invariant Testing Fixtures
+# =============================================================================
+
+from .invariant_schema import (
+    TOLERANCE,
+    DEFAULT_N_EVENTS,
+    DEFAULT_SEED,
+    INVARIANT_SCHEMA,
+)
+
+
+def get_tolerance(dtype: str) -> dict:
+    """
+    Get tolerance settings for a given dtype.
+    
+    Parameters:
+        dtype: One of 'double', 'float', 'int', 'uint', 'bool', 'aggregation'
+    
+    Returns:
+        Dict with 'atol' and 'rtol' keys
+    """
+    dtype_key = dtype.lower()
+    if dtype_key in ("int32", "int64", "signed int"):
+        dtype_key = "int"
+    elif dtype_key in ("uint32", "uint64", "unsigned int"):
+        dtype_key = "uint"
+    elif dtype_key == "float32":
+        dtype_key = "float"
+    elif dtype_key in ("float64", "double"):
+        dtype_key = "double"
+    
+    return TOLERANCE.get(dtype_key, TOLERANCE["double"])
+
+
+def assert_invariant(actual, expected, dtype="double", context=""):
+    """
+    Assert that actual matches expected within dtype-appropriate tolerance.
+    
+    Parameters:
+        actual: Computed value
+        expected: Expected value (from invariant)
+        dtype: Data type for tolerance selection
+        context: Description for error messages
+    
+    Raises:
+        AssertionError: If values differ beyond tolerance
+    """
+    tol = get_tolerance(dtype)
+    
+    if isinstance(actual, np.ndarray) or isinstance(expected, np.ndarray):
+        actual = np.asarray(actual)
+        expected = np.asarray(expected)
+        
+        if tol["atol"] == 0 and tol["rtol"] == 0:
+            # Exact comparison
+            if not np.array_equal(actual, expected):
+                diff_idx = np.where(actual != expected)[0]
+                raise AssertionError(
+                    f"Exact match failed ({context}): "
+                    f"differs at indices {diff_idx[:5]}..."
+                )
+        else:
+            # Tolerance-based comparison
+            if not np.allclose(actual, expected, atol=tol["atol"], rtol=tol["rtol"]):
+                diff = np.abs(actual - expected)
+                max_diff_idx = np.argmax(diff)
+                raise AssertionError(
+                    f"Tolerance exceeded ({context}): "
+                    f"max_diff={diff[max_diff_idx]:.2e} at index {max_diff_idx}"
+                )
+    else:
+        # Scalar comparison
+        if tol["atol"] == 0 and tol["rtol"] == 0:
+            if actual != expected:
+                raise AssertionError(
+                    f"Exact match failed ({context}): actual={actual} expected={expected}"
+                )
+        else:
+            threshold = tol["atol"] + tol["rtol"] * abs(expected)
+            if abs(actual - expected) > threshold:
+                raise AssertionError(
+                    f"Tolerance exceeded ({context}): "
+                    f"actual={actual} expected={expected} diff={abs(actual - expected):.2e}"
+                )
+
+
+@pytest.fixture(scope="session")
+def test_data_dir(tmp_path_factory):
+    """Create a session-scoped temporary directory for test data."""
+    return tmp_path_factory.mktemp("invariant_test_data")
+
+
+@pytest.fixture(scope="session")
+def invariant_tree_path(test_data_dir):
+    """
+    Generate the invariant test TTree (session-scoped).
+    
+    Returns:
+        Path to ROOT file, or None if ROOT not available
+    """
+    try:
+        import ROOT
+        from .test_data_generator import generate_invariant_tree
+        
+        filepath = test_data_dir / "invariant_data.root"
+        generate_invariant_tree(
+            str(filepath),
+            n_events=DEFAULT_N_EVENTS,
+            seed=DEFAULT_SEED,
+        )
+        return filepath
+    except ImportError:
+        return None
+
+
+@pytest.fixture
+def invariant_rdf(invariant_tree_path):
+    """
+    Create an RDataFrame from the invariant test tree.
+    
+    Yields:
+        ROOT.RDataFrame or pytest.skip if ROOT not available
+    """
+    if invariant_tree_path is None:
+        pytest.skip("ROOT not available")
+    
+    import ROOT
+    rdf = ROOT.RDataFrame("invariants", str(invariant_tree_path))
+    return rdf
+
+
+@pytest.fixture(scope="session")
+def small_invariant_tree_path(test_data_dir):
+    """
+    Generate a small invariant test TTree for quick tests.
+    
+    Returns:
+        Path to ROOT file with 100 events
+    """
+    try:
+        import ROOT
+        from .test_data_generator import generate_invariant_tree
+        
+        filepath = test_data_dir / "invariant_data_small.root"
+        generate_invariant_tree(
+            str(filepath),
+            n_events=100,
+            seed=DEFAULT_SEED,
+        )
+        return filepath
+    except ImportError:
+        return None
+
+
+@pytest.fixture
+def dsl_compiler():
+    """
+    Create a DSLCompiler with the invariant schema.
+    
+    Returns:
+        DSLCompiler instance or pytest.skip if not available
+    """
+    try:
+        from dsl_compiler import DSLCompiler
+    except ImportError:
+        try:
+            from ..dsl_compiler import DSLCompiler
+        except ImportError:
+            pytest.skip("DSLCompiler not available")
+    
+    # Use the DSL schema (excludes C-array branches which are TTree-specific)
+    dsl_schema = {k: v for k, v in INVARIANT_SCHEMA.items() 
+                  if not k.startswith("arr_") and k != "n_arr" and k != "idx" and k != "picked"}
+    
+    return DSLCompiler(dsl_schema)
