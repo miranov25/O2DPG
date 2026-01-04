@@ -1,0 +1,89 @@
+# benchmarks/specs/benchmark_specs.yaml
+# Phase 12.14c.GB D2: Default visualization specifications
+#
+# Schema version: 1 (frozen for Phase 12.x)
+#
+# Each spec defines ONE plot. The --plot command generates all enabled specs.
+#
+# Required keys per kind:
+#   scatter/line: name, x, y, kind
+#   hist: name, x, kind
+#   bar: name, y, kind
+#
+# Optional keys: title, groupby, filter, enabled, bins
+
+__meta__:
+  schema_version: 1
+  description: "Visualization-only. Does NOT encode thresholds or alarms."
+
+specs:
+  # ═══════════════════════════════════════════════════════════════
+  # TIME TRENDS
+  # ═══════════════════════════════════════════════════════════════
+  
+  - name: time_trend
+    title: "Execution Time Trend"
+    x: timestamp
+    y: time_s
+    kind: scatter
+    groupby: name
+    enabled: true
+  
+  - name: time_trend_by_id
+    title: "Execution Time by Benchmark ID"
+    x: timestamp
+    y: time_s
+    kind: scatter
+    groupby: benchmark_id
+    enabled: false  # Too many lines by default
+  
+  - name: wall_time_trend
+    title: "Wall Time Trend (includes setup)"
+    x: timestamp
+    y: wall_time_s
+    kind: scatter
+    groupby: name
+    enabled: true
+
+  # ═══════════════════════════════════════════════════════════════
+  # MEMORY TRENDS
+  # ═══════════════════════════════════════════════════════════════
+  
+  - name: rss_trend
+    title: "Peak RSS Trend"
+    x: timestamp
+    y: peak_rss_mb
+    kind: scatter
+    groupby: name
+    enabled: true
+
+  # ═══════════════════════════════════════════════════════════════
+  # THROUGHPUT (V5 only — may be missing in some subprojects)
+  # ═══════════════════════════════════════════════════════════════
+  
+  - name: throughput_trend
+    title: "Throughput Trend"
+    x: timestamp
+    y: throughput_rows_per_sec
+    kind: scatter
+    groupby: benchmark_id
+    filter: "throughput_rows_per_sec > 0"
+    enabled: true
+
+  # ═══════════════════════════════════════════════════════════════
+  # DISTRIBUTIONS
+  # ═══════════════════════════════════════════════════════════════
+  
+  - name: time_distribution
+    title: "Execution Time Distribution"
+    x: time_s
+    kind: hist
+    bins: 30
+    enabled: true
+
+  - name: rss_distribution
+    title: "Peak RSS Distribution"
+    x: peak_rss_mb
+    kind: hist
+    bins: 20
+    enabled: false

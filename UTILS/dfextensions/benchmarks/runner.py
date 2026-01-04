@@ -106,6 +106,12 @@ from .regression import (
     print_regression_summary,
 )
 
+# Phase 12.14c.GB D3: Visualization CLI
+from .visualization_cli import (
+    add_visualization_args,
+    handle_visualization_command,
+)
+
 
 # =============================================================================
 # CONSOLE OUTPUT
@@ -756,6 +762,9 @@ Examples:
         help="Validate without saving",
     )
     
+    # Phase 12.14c.GB D3: Visualization commands
+    add_visualization_args(parser)
+    
     return parser.parse_args(args)
 
 
@@ -774,6 +783,11 @@ def main(args=None) -> int:
     supported, msg = check_platform_support()
     if not supported:
         print(f"Warning: {msg}")
+    
+    # Phase 12.14c.GB D3: Handle visualization commands
+    viz_result = handle_visualization_command(parsed)
+    if viz_result is not None:
+        return viz_result
     
     # Check-only mode
     if parsed.check_only:
