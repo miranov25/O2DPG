@@ -8,10 +8,12 @@ The benchmark framework provides:
 
 - **Reproducible benchmarks** with configurable warmup and run counts
 - **Memory profiling** using RSS (Resident Set Size) tracking
+- **CPU profiling** with cProfile integration and per-benchmark `.prof` files
 - **Environment fingerprinting** including Python, NumPy, and Numba versions
 - **Historical tracking** with JSON storage and DataFrame loading
 - **Regression detection** using median baselines with configurable thresholds
-- **Trend visualization** and HTML/text report generation
+- **Noise analysis** with CV% statistics for alarm threshold tuning
+- **Trend visualization** with PNG plots and CLI commands
 
 ## Quick Start
 
@@ -26,6 +28,19 @@ python -m dfextensions.benchmarks.runner --subproject groupby_regression --profi
 
 # Check for regressions without running new benchmarks
 python -m dfextensions.benchmarks.runner --subproject groupby_regression --check-only
+```
+
+### Analyzing History (Phase 12.14c.GB)
+
+```bash
+# View benchmark history summary
+python -m dfextensions.benchmarks.runner --subproject groupby_regression --history
+
+# View noise statistics (CV%) for alarm tuning
+python -m dfextensions.benchmarks.runner --subproject groupby_regression --history-stats
+
+# Generate trend plots
+python -m dfextensions.benchmarks.runner --subproject groupby_regression --plot ./plots/
 ```
 
 ### Programmatic Usage
@@ -49,6 +64,29 @@ if alarms:
     print(f"⚠ {len(alarms)} regression(s) detected!")
 ```
 
+### Using AliasDataFrame for Analysis (Phase 12.14c.GB)
+
+```python
+from dfextensions.benchmarks.benchmark_adf import (
+    load_benchmark_adf,
+    compute_benchmark_statistics,
+)
+
+# Load history as AliasDataFrame with subframes
+adf = load_benchmark_adf("groupby_regression", max_runs=20)
+
+# Main frame: benchmark results
+print(adf.df.head())
+
+# Subframes: CPU profiles and memory stats
+print(adf.subframes['TopCPU'].df.head())
+print(adf.subframes['TopMemory'].df.head())
+
+# Compute noise statistics
+stats = compute_benchmark_statistics("groupby_regression", baseline="7d")
+print(stats[['benchmark_id', 'mean_time_s', 'cv_pct', 'high_noise']])
+```
+
 ## CLI Reference
 
 ```
@@ -57,26 +95,108 @@ python -m dfextensions.benchmarks.runner [OPTIONS]
 Required:
   --subproject NAME     Subproject to benchmark (e.g., groupby_regression)
 
-Optional:
+Benchmark Execution:
   --suite SUITE         Benchmark suite: quick (default), release
   --n-runs N            Number of timed runs per benchmark (default: 3)
   --warmup-runs N       Warmup runs before timing (default: 2)
   --profile             Enable tracemalloc memory profiling
+  --no-profile          Disable cProfile capture (faster for CI)
   --check-only          Check regressions without running new benchmarks
   --dry-run             Run but don't save results
   --quiet               Minimal output
+
+Thresholds:
   --time-threshold F    Time regression threshold (default: 0.10 = 10%)
   --memory-threshold F  Memory regression threshold (default: 0.15 = 15%)
   --cross-env           Allow cross-environment baseline comparisons
+
+Visualization (Phase 12.14c.GB):
+  --history             Show benchmark history summary
+  --history-stats       Show noise statistics (mean, std, CV%) per benchmark
+  --plot DIR            Generate trend plots to specified directory
+  --baseline RANGE      Baseline range for statistics (default: 7d)
+  --max-runs N          Maximum runs to load (default: all)
 ```
 
 ### Exit Codes
 
 | Code | Meaning |
 |------|---------|
-| 0 | All benchmarks passed, no regressions |
-| 1 | Regression detected |
-| 2 | Execution error |
+| 0 | All benchmarks passed, no regressions / Visualization success |
+| 1 | Regression detected / No data found |
+| 2 | Execution error / Partial success (some plots failed) |
+| 3 | Dependency missing (matplotlib/pyyaml) |
+
+## Noise Analysis
+
+### Understanding CV% (Coefficient of Variation)
+
+The `--history-stats` command shows noise statistics for each benchmark:
+
+```
+Benchmark Statistics: groupby_regression (baseline: 7d)
+════════════════════════════════════════════════════════════════════
+  Benchmark                               Mean      Std     CV%    N
+  ──────────────────────────────────────────────────────────────────
+  kernel_multi_fit:K1                    3.6ms    4.1ms  114.4%    5  ⚠ HIGH
+  v5_batch_fit:S2:n_jobs=4              44.7ms    2.1ms    4.6%    5
+  ──────────────────────────────────────────────────────────────────
+
+  Summary: 15/18 benchmarks have high noise (CV > 10%)
+```
+
+### Interpreting Results
+
+| CV% | Classification | Recommendation |
+|-----|----------------|----------------|
+| < 5% | Low noise | Standard thresholds work well |
+| 5-10% | Moderate | Monitor for trends |
+| > 10% | High noise | Consider median-based thresholds |
+| > 50% | Very high | Micro-benchmark, expect variance |
+
+### Why High CV?
+
+Sub-millisecond benchmarks inherently have high CV because:
+- Timer resolution limits (~1ms on some systems)
+- CPU frequency scaling
+- Cache effects
+- Context switching
+
+**Recommendation:** For micro-benchmarks with CV > 50%, consider:
+1. Using median instead of mean for baselines
+2. Increasing sample count (`--n-runs 10`)
+3. Running on dedicated hardware
+
+## Trend Plots
+
+### Generated Plots
+
+The `--plot DIR` command generates these PNG files:
+
+| Plot | Description | Grouping |
+|------|-------------|----------|
+| `time_trend.png` | Execution time over time | By benchmark name |
+| `wall_time_trend.png` | Wall time (includes setup) | By benchmark name |
+| `rss_trend.png` | Peak RSS memory | By benchmark name |
+| `throughput_trend.png` | Rows/sec throughput | By benchmark ID |
+| `time_distribution.png` | Histogram of execution times | All benchmarks |
+
+### Customizing Plots
+
+Plot specifications are defined in `benchmarks/specs/benchmark_specs.yaml`:
+
+```yaml
+specs:
+  - name: time_trend
+    title: "Execution Time Trend"
+    x: timestamp
+    y: time_s
+    kind: scatter
+    groupby: name
+    enabled: true
+```
+
+Disable a plot by setting `enabled: false`.
 
 ## Storage Layout
 
@@ -85,7 +205,10 @@ $BENCHMARK_PREFIX/                        # Default: ~/benchmark_results
 ├── 2024-12-23T14-30-00/                 # Timestamp directory
 │   └── groupby_regression/              # Subproject
 │       ├── results.json                 # Benchmark results
-│       └── alarms.json                  # Regression alarms (if any)
+│       ├── alarms.json                  # Regression alarms (if any)
+│       └── profiles/                    # cProfile data (Phase 12.14b)
+│           ├── v5_batch_fit_S1_n_jobs_1.prof
+│           └── v5_batch_fit_S1_n_jobs_4.prof
 └── 2024-12-24T10-15-30/
     └── groupby_regression/
         └── results.json
@@ -130,6 +253,7 @@ export BENCHMARK_PREFIX=/path/to/benchmarks
       "params": {"n_jobs": 4, "n_rows": 100000, "n_fits": 1000},
       "time_s": 0.312,
       "time_std_s": 0.015,
+      "wall_time_s": 0.350,
       "n_runs": 3,
       "peak_rss_mb": 605.2,
       "throughput_rows_per_sec": 320512.8,
@@ -194,6 +318,38 @@ RSS measurements have higher variance than timing due to:
 - Background process activity
 
 A 15% threshold balances sensitivity against noise.
+
+## CPU Profiling (Phase 12.14b)
+
+### Automatic cProfile Capture
+
+By default, each benchmark captures a cProfile and saves it as a `.prof` file:
+
+```
+profiles/
+├── v5_batch_fit_S1_n_jobs_1.prof
+├── v5_batch_fit_S1_n_jobs_4.prof
+└── kernel_single_fit_K1.prof
+```
+
+### Analyzing Profiles
+
+```python
+import pstats
+
+# Load and display top functions
+stats = pstats.Stats("v5_batch_fit_S1_n_jobs_4.prof")
+stats.sort_stats("cumulative")
+stats.print_stats(20)
+```
+
+### Disabling cProfile
+
+For faster CI runs:
+
+```bash
+python -m dfextensions.benchmarks.runner --subproject groupby_regression --no-profile
+```
 
 ## Platform Support
 
@@ -313,6 +469,18 @@ from dfextensions.benchmarks import (
     detect_regressions,
     MIN_BASELINE_SAMPLES,
 )
+
+# Phase 12.14c.GB: AliasDataFrame integration
+from dfextensions.benchmarks.benchmark_adf import (
+    load_benchmark_adf,
+    compute_benchmark_statistics,
+)
+
+# Phase 12.14c.GB: Visualization specs
+from dfextensions.benchmarks.specs import (
+    load_benchmark_specs,
+    get_enabled_specs,
+)
 ```
 
 ### Constants
@@ -345,6 +513,18 @@ MIN_BASELINE_SAMPLES = 3
       echo "Performance regression detected!"
       exit 1
     fi
+
+- name: Generate Plots (optional)
+  run: |
+    python -m dfextensions.benchmarks.runner \
+      --subproject groupby_regression \
+      --plot ./benchmark_plots/
+  
+- name: Upload Plots
+  uses: actions/upload-artifact@v3
+  with:
+    name: benchmark-plots
+    path: ./benchmark_plots/
 ```
 
 ### Jenkins Example
@@ -375,6 +555,22 @@ First run for this subproject/environment. Run more benchmarks to build history.
 
 Windows platform - RSS measurement not available. Timing still works.
 
+### "PyYAML required for benchmark specs"
+
+Install PyYAML for `--plot` command:
+
+```bash
+pip install pyyaml
+```
+
+### "matplotlib required for --plot"
+
+Install matplotlib for plot generation:
+
+```bash
+pip install matplotlib
+```
+
 ### False Positives on Shared Servers
 
 Use `env_id` filtering (default) to prevent cross-machine comparisons. If running on heterogeneous batch farm, consider:
@@ -390,11 +586,20 @@ RSS is process-wide and non-decreasing. For accurate per-benchmark memory:
 - Run benchmarks in separate processes
 - Consider the memory threshold (15%)
 
+### High CV% Values
+
+Use `--history-stats` to identify noisy benchmarks. For benchmarks with CV > 50%:
+- Increase `--n-runs` for more samples
+- Consider median-based thresholds
+- Accept higher variance for micro-benchmarks
+
 ## Version History
 
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0.0 | 2024-12-23 | Initial release: Core + Analysis + Polish |
+| 1.1.0 | 2025-01-03 | Phase 12.14b: cProfile integration, dual timing |
+| 1.2.0 | 2025-01-04 | Phase 12.14c.GB: AliasDataFrame, visualization CLI |
 
 ## License
 
