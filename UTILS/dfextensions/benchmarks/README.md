@@ -598,8 +598,8 @@ Use `--history-stats` to identify noisy benchmarks. For benchmarks with CV > 50%
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0.0 | 2024-12-23 | Initial release: Core + Analysis + Polish |
-| 1.1.0 | 2025-01-03 | Phase 12.14b: cProfile integration, dual timing |
-| 1.2.0 | 2025-01-04 | Phase 12.14c.GB: AliasDataFrame, visualization CLI |
+| 1.1.0 | 2026-01-03 | Phase 12.14b: cProfile integration, dual timing |
+| 1.2.0 | 2026-01-04 | Phase 12.14c.GB: AliasDataFrame, visualization CLI |
 
 ## License
 
