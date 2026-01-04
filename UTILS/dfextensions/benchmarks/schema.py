@@ -283,10 +283,10 @@ class BenchmarkResult:
     scenario: str
     params: dict
     time_s: float              # Kernel-only timing (authoritative for perf comparison)
-    wall_time_s: float         # Total wall time including setup/teardown (Phase 12.14b.GB-addendum)
     time_std_s: float
     n_runs: int
     peak_rss_mb: float
+    wall_time_s: Optional[float] = None  # Fallback to time_s for backward compat
     status: str = "OK"
     bench_version: int = 1
     peak_tracemalloc_mb: Optional[float] = None
@@ -303,6 +303,11 @@ class BenchmarkResult:
     profile_path: Optional[str] = None
     # Phase 12.14c.GB D6: Explanation when profile is skipped
     profile_note: Optional[str] = None
+    
+    def __post_init__(self):
+        """Backward compat: fallback wall_time_s to time_s for old data."""
+        if self.wall_time_s is None:
+            self.wall_time_s = self.time_s
     
     @classmethod
     def from_timing(
