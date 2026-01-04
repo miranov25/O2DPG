@@ -744,7 +744,7 @@ class DSLCompiler:
         """
         # Lazy imports
         try:
-            from dfdraw import DFDraw
+            from dfextensions.dfdraw import DFDraw
         except ImportError:
             raise ImportError(
                 "dfdraw is required for visualization.\n"
@@ -1394,7 +1394,7 @@ class DSLCompiler:
         """
         # Lazy import with helpful error
         try:
-            from dfdraw import DFDraw
+            from dfextensions.dfdraw import DFDraw
         except ImportError:
             raise ImportError(
                 "dfdraw is required for visualization.\n"
@@ -1457,7 +1457,7 @@ class DSLCompiler:
         
         # Lazy import
         try:
-            from dfdraw import DFDraw
+            from dfextensions.dfdraw import DFDraw
         except ImportError:
             raise ImportError(
                 "dfdraw is required for visualization.\n"
