@@ -415,13 +415,13 @@ class CppCodeGenerator:
                         suggestions=["Boolean masking will be added in Phase 7"]
                     )
             
-            # Check rank - allow rank 1 for RVec operations, reject rank > 1
-            if node.rank > 1 and not isinstance(node, (SliceNode,)):
-                raise IRError(
-                    IRErrorKind.UNSUPPORTED_OP,
-                    f"Nested vector operations (rank > 1) are not supported yet",
-                    suggestions=["Nested RVec support will be added in Phase 8"]
-                )
+            # Phase 13.3.DSL: Nested RVec (rank > 1) now supported
+            # The type system correctly handles nested types, and SubscriptNode
+            # properly reduces rank through chained indexing operations.
+            # Example: nested[0][0] where nested is RVec<RVec<double>>
+            #   - VariableNode('nested'): rank=2, dtype=double
+            #   - SubscriptNode(nested[0]): rank=1, dtype=double
+            #   - SubscriptNode(nested[0][0]): rank=0, dtype=double
     
     def _collect_inputs(self, ir: IRNode) -> List[Tuple[str, str]]:
         """
@@ -448,6 +448,24 @@ class CppCodeGenerator:
                 f"Cannot determine C++ type for variable '{node.name}'",
                 suggestions=["Ensure variable is defined in the schema"]
             )
+        
+        # Phase 13.3.DSL: Handle nested RVec (rank > 1)
+        # For rank=2: ROOT::RVec<ROOT::RVec<dtype>>
+        # For rank=3: ROOT::RVec<ROOT::RVec<ROOT::RVec<dtype>>>
+        if node.rank > 1:
+            # Try to use stored cpp_type first (from schema)
+            cpp_type = node.dtype.cpp_type or ""
+            if cpp_type and ("RVec<" in cpp_type or "vector<" in cpp_type):
+                # Normalize to ROOT:: prefix
+                if "RVec<" in cpp_type and not cpp_type.startswith("ROOT::"):
+                    cpp_type = cpp_type.replace("RVec<", "ROOT::RVec<")
+                return f"const {cpp_type}&"
+            else:
+                # Reconstruct nested RVec type from rank and dtype
+                inner = node.dtype.to_cpp()
+                for _ in range(node.rank):
+                    inner = f"ROOT::RVec<{inner}>"
+                return f"const {inner}&"
         
         # RVec types (rank 1) use const reference - check rank FIRST
         # This handles both RVec<double> and RVec<TLorentzVector>
@@ -493,6 +511,13 @@ class CppCodeGenerator:
             elif "RVec<" in cpp_type and not cpp_type.startswith("ROOT::"):
                 return f"ROOT::{cpp_type}"
             return cpp_type
+        
+        # Phase 13.3.DSL: Handle nested RVec return (rank > 1)
+        if ir.rank > 1:
+            inner_type = ir.dtype.to_cpp()
+            for _ in range(ir.rank):
+                inner_type = f"ROOT::RVec<{inner_type}>"
+            return inner_type
         
         # RVec return type (rank 1)
         if ir.rank == 1:
@@ -1165,19 +1190,22 @@ class CppCodeGenerator:
         # Get the result type for NaN generation
         result_cpp_type = node.dtype.to_cpp()
         
+        # Phase 13.3.DSL: Get result rank for correct fallback generation
+        result_rank = node.rank
+        
         # Check for negative literal index
         if isinstance(idx, ConstantNode) and isinstance(idx.value, int) and idx.value < 0:
-            return self._generate_negative_index(value_code, idx.value, result_cpp_type)
+            return self._generate_negative_index(value_code, idx.value, result_cpp_type, result_rank)
         
         # Generate index code
         idx_code = self._visit(idx)
         
         if self.safe_indexing:
-            return self._generate_safe_index(value_code, idx_code, result_cpp_type)
+            return self._generate_safe_index(value_code, idx_code, result_cpp_type, result_rank)
         else:
             return f"{value_code}[{idx_code}]"
     
-    def _generate_negative_index(self, value_code: str, neg_idx: int, result_type: str) -> str:
+    def _generate_negative_index(self, value_code: str, neg_idx: int, result_type: str, result_rank: int = 0) -> str:
         """
         Generate C++ for negative index access.
         
@@ -1185,27 +1213,72 @@ class CppCodeGenerator:
         pt[-2] → second to last
         
         With safe mode, checks that the vector has enough elements.
+        
+        Phase 13.3.DSL: Added result_rank to generate correct fallback for nested RVec.
+        Also handles chained subscripts where value_code is a complex expression.
         """
         abs_idx = abs(neg_idx)
         
         if self.safe_indexing:
-            # Safe: check size >= abs_idx
-            return (f"({value_code}.size() >= {abs_idx}) "
-                    f"? {value_code}[{value_code}.size() - {abs_idx}] "
-                    f": std::numeric_limits<{result_type}>::quiet_NaN()")
+            # Phase 13.3.DSL: Use empty vector fallback for vector results
+            if result_rank > 0:
+                # Result is a vector - fallback is empty vector
+                inner = result_type
+                for _ in range(result_rank):
+                    inner = f"ROOT::RVec<{inner}>"
+                fallback = f"{inner}{{}}"
+            else:
+                # Result is scalar - fallback is NaN
+                fallback = f"std::numeric_limits<{result_type}>::quiet_NaN()"
+            
+            # Phase 13.3.DSL: Handle chained subscripts - if value_code is complex
+            # (contains ternary), wrap in lambda to extract to variable
+            if '?' in value_code:
+                return f'''[&]() {{
+    auto v = {value_code};
+    return (v.size() >= {abs_idx}) ? v[v.size() - {abs_idx}] : {fallback};
+}}()'''
+            else:
+                # Safe: check size >= abs_idx
+                return (f"({value_code}.size() >= {abs_idx}) "
+                        f"? {value_code}[{value_code}.size() - {abs_idx}] "
+                        f": {fallback}")
         else:
             # Unsafe: direct access
             return f"{value_code}[{value_code}.size() - {abs_idx}]"
     
-    def _generate_safe_index(self, value_code: str, idx_code: str, result_type: str) -> str:
+    def _generate_safe_index(self, value_code: str, idx_code: str, result_type: str, result_rank: int = 0) -> str:
         """
         Generate C++ for safe bounds-checked index access.
         
-        Returns NaN if index is out of bounds.
+        Returns NaN if index is out of bounds for scalars,
+        or empty vector for vector results.
+        
+        Phase 13.3.DSL: Added result_rank to generate correct fallback for nested RVec.
+        Also handles chained subscripts where value_code is a complex expression.
         """
-        return (f"({idx_code} >= 0 && static_cast<size_t>({idx_code}) < {value_code}.size()) "
-                f"? {value_code}[{idx_code}] "
-                f": std::numeric_limits<{result_type}>::quiet_NaN()")
+        # Phase 13.3.DSL: Use empty vector fallback for vector results
+        if result_rank > 0:
+            # Result is a vector - fallback is empty vector
+            inner = result_type
+            for _ in range(result_rank):
+                inner = f"ROOT::RVec<{inner}>"
+            fallback = f"{inner}{{}}"
+        else:
+            # Result is scalar - fallback is NaN
+            fallback = f"std::numeric_limits<{result_type}>::quiet_NaN()"
+        
+        # Phase 13.3.DSL: Handle chained subscripts - if value_code is complex
+        # (contains ternary), wrap in lambda to extract to variable
+        if '?' in value_code:
+            return f'''[&]() {{
+    auto v = {value_code};
+    return ({idx_code} >= 0 && static_cast<size_t>({idx_code}) < v.size()) ? v[{idx_code}] : {fallback};
+}}()'''
+        else:
+            return (f"({idx_code} >= 0 && static_cast<size_t>({idx_code}) < {value_code}.size()) "
+                    f"? {value_code}[{idx_code}] "
+                    f": {fallback}")
     
     # =========================================================================
     # Phase 7: RVec Slice Operations
@@ -1248,31 +1321,43 @@ class CppCodeGenerator:
             )
     
     def _gen_slice_first_n(self, target: str, node: RVecSliceNode) -> str:
-        """[:n] → Take(v, min(n, size)) - first n elements with clamping."""
+        """[:n] → Take(v, min(n, size)) - first n elements with clamping.
+        
+        Phase 13.3.DSL: Extract target to variable to handle complex expressions
+        like safe-indexed nested RVec.
+        """
         n = self._visit(node.stop)
         elem_type = self._cpp_type_for_rvec(node.dtype)
         
         return f'''[&]() -> {elem_type} {{
-    size_t n = std::min(static_cast<size_t>({n}), {target}.size());
-    return ROOT::VecOps::Take({target}, n);
+    auto target_val = {target};
+    size_t n = std::min(static_cast<size_t>({n}), target_val.size());
+    return ROOT::VecOps::Take(target_val, n);
 }}()'''
     
     def _gen_slice_last_n(self, target: str, node: RVecSliceNode) -> str:
-        """[-n:] → Take(v, -min(n, size)) - last n elements with clamping."""
+        """[-n:] → Take(v, -min(n, size)) - last n elements with clamping.
+        
+        Phase 13.3.DSL: Extract target to variable to handle complex expressions.
+        """
         # node.start contains the negative index, e.g., -3
         # We need to extract the absolute value and clamp it
         neg_n = self._visit(node.start)  # e.g., "-3"
         elem_type = self._cpp_type_for_rvec(node.dtype)
         
         return f'''[&]() -> {elem_type} {{
+    auto target_val = {target};
     size_t abs_n = static_cast<size_t>(-({neg_n}));
-    size_t clamped = std::min(abs_n, {target}.size());
+    size_t clamped = std::min(abs_n, target_val.size());
     if (clamped == 0) return {elem_type}();
-    return ROOT::VecOps::Take({target}, -static_cast<int>(clamped));
+    return ROOT::VecOps::Take(target_val, -static_cast<int>(clamped));
 }}()'''
     
     def _gen_slice_from_index(self, target: str, node: RVecSliceNode) -> str:
-        """[n:] or [:] → Take(v, Range(n, size)) - from index to end."""
+        """[n:] or [:] → Take(v, Range(n, size)) - from index to end.
+        
+        Phase 13.3.DSL: Extract target to variable to handle complex expressions.
+        """
         elem_type = self._cpp_type_for_rvec(node.dtype)
         
         # Handle full slice [:] where start is None
@@ -1282,28 +1367,36 @@ class CppCodeGenerator:
             start = self._visit(node.start)
         
         return f'''[&]() -> {elem_type} {{
+    auto target_val = {target};
     size_t start = {start};
-    if (start >= {target}.size()) return {elem_type}();
-    return ROOT::VecOps::Take({target}, 
-        ROOT::VecOps::Range(start, {target}.size()));
+    if (start >= target_val.size()) return {elem_type}();
+    return ROOT::VecOps::Take(target_val, 
+        ROOT::VecOps::Range(start, target_val.size()));
 }}()'''
     
     def _gen_slice_range(self, target: str, node: RVecSliceNode) -> str:
-        """[a:b] → Take(v, Range(a, min(b, size))) - range with clamping."""
+        """[a:b] → Take(v, Range(a, min(b, size))) - range with clamping.
+        
+        Phase 13.3.DSL: Extract target to variable to handle complex expressions.
+        """
         start = self._visit(node.start)
         stop = self._visit(node.stop)
         elem_type = self._cpp_type_for_rvec(node.dtype)
         
         return f'''[&]() -> {elem_type} {{
+    auto target_val = {target};
     size_t start = {start};
-    size_t stop = std::min(static_cast<size_t>({stop}), {target}.size());
+    size_t stop = std::min(static_cast<size_t>({stop}), target_val.size());
     if (start >= stop) return {elem_type}();
-    return ROOT::VecOps::Take({target}, 
+    return ROOT::VecOps::Take(target_val, 
         ROOT::VecOps::Range(start, stop));
 }}()'''
     
     def _gen_slice_step(self, target: str, node: RVecSliceNode) -> str:
-        """[::step] or [start::step] or [start:stop:step] → loop-based indices."""
+        """[::step] or [start::step] or [start:stop:step] → loop-based indices.
+        
+        Phase 13.3.DSL: Extract target to variable to handle complex expressions.
+        """
         elem_type = self._cpp_type_for_rvec(node.dtype)
         
         # Get start (default 0)
@@ -1318,28 +1411,33 @@ class CppCodeGenerator:
         # Get stop (default: size)
         if node.stop is not None:
             stop = self._visit(node.stop)
-            stop_expr = f"std::min(static_cast<size_t>({stop}), {target}.size())"
+            stop_expr = f"std::min(static_cast<size_t>({stop}), target_val.size())"
         else:
-            stop_expr = f"{target}.size()"
+            stop_expr = "target_val.size()"
         
         return f'''[&]() -> {elem_type} {{
+    auto target_val = {target};
     ROOT::RVec<size_t> indices;
     size_t stop = {stop_expr};
     for (size_t i = {start}; i < stop; i += {step}) {{
         indices.push_back(i);
     }}
-    return ROOT::VecOps::Take({target}, indices);
+    return ROOT::VecOps::Take(target_val, indices);
 }}()'''
     
     def _gen_slice_reverse(self, target: str, node: RVecSliceNode) -> str:
-        """[::-1] → manual reverse loop (not using VecOps::Reverse)."""
+        """[::-1] → manual reverse loop (not using VecOps::Reverse).
+        
+        Phase 13.3.DSL: Extract target to variable to handle complex expressions.
+        """
         elem_type = self._cpp_type_for_rvec(node.dtype)
         
         return f'''[&]() -> {elem_type} {{
+    auto target_val = {target};
     {elem_type} result;
-    result.reserve({target}.size());
-    for (size_t i = {target}.size(); i-- > 0; ) {{
-        result.push_back({target}[i]);
+    result.reserve(target_val.size());
+    for (size_t i = target_val.size(); i-- > 0; ) {{
+        result.push_back(target_val[i]);
     }}
     return result;
 }}()'''
@@ -1545,12 +1643,17 @@ class FunctionLibrary:
     - Providing expressions for RDataFrame.Define()
     - Saving functions to .C macro files
     
+    Phase 13.3.DSL: Added support for nested RVec type declarations via #pragma link.
+    
     Example:
         >>> library = FunctionLibrary()
         >>> library.add(func)
         >>> library.compile("alias_pt")
         >>> rdf.Define("pt", library.get_define_expression("alias_pt"))
     """
+    
+    # Phase 13.3.DSL: Track declared nested RVec types (class-level for session persistence)
+    _nested_rvec_declared: Set[str] = set()
     
     def __init__(self):
         """Initialize empty function library."""
@@ -1561,6 +1664,42 @@ class FunctionLibrary:
     def add(self, func: GeneratedFunction) -> None:
         """Add function to library."""
         self.functions[func.name] = func
+    
+    def _declare_nested_rvec_types(self, code: str) -> None:
+        """
+        Phase 13.3.DSL: Declare nested RVec types via #pragma link before compilation.
+        
+        ROOT requires explicit instantiation of nested RVec templates.
+        This detects patterns like ROOT::RVec<ROOT::RVec<double>> and
+        declares them if not already done.
+        
+        Args:
+            code: C++ code to scan for nested RVec types
+        """
+        import re
+        try:
+            import ROOT
+        except ImportError:
+            return
+        
+        # Pattern to match nested RVec types: RVec<RVec<type>>
+        # Handles: ROOT::RVec<ROOT::RVec<double>>, RVec<RVec<float>>, etc.
+        pattern = r'(?:ROOT::)?(?:VecOps::)?RVec<\s*(?:ROOT::)?(?:VecOps::)?RVec<\s*(\w+)\s*>\s*>'
+        
+        for match in re.finditer(pattern, code):
+            inner_type = match.group(1)
+            type_key = f"RVec<RVec<{inner_type}>>"
+            
+            if type_key not in FunctionLibrary._nested_rvec_declared:
+                # Declare the nested RVec type
+                pragma1 = f'#pragma link C++ class ROOT::RVec<ROOT::RVec<{inner_type}>>+;'
+                pragma2 = f'#pragma link C++ class ROOT::VecOps::RVec<ROOT::VecOps::RVec<{inner_type}>>+;'
+                
+                # Process the pragmas
+                ROOT.gInterpreter.ProcessLine(pragma1)
+                ROOT.gInterpreter.ProcessLine(pragma2)
+                
+                FunctionLibrary._nested_rvec_declared.add(type_key)
     
     def compile(self, name: str) -> bool:
         """
@@ -1601,6 +1740,9 @@ class FunctionLibrary:
             if header not in self.headers_loaded:
                 ROOT.gInterpreter.ProcessLine(f'#include {header}')
                 self.headers_loaded.add(header)
+        
+        # Phase 13.3.DSL: Declare nested RVec types if needed
+        self._declare_nested_rvec_types(func.code)
         
         # Compile function
         result = ROOT.gInterpreter.Declare(func.code)

@@ -656,27 +656,8 @@ class TestRVecErrorCases:
         assert exc_info.value.kind == IRErrorKind.UNSUPPORTED_OP
         assert "boolean" in exc_info.value.message.lower()
     
-    def test_nested_rvec_error(self, generator):
-        """Nested RVec (rank > 1) raises error."""
-        nested = VariableNode(
-            name="nested",
-            dtype=IRType(IRTypeKind.Float64),
-            rank=2  # Nested RVec
-        )
-        
-        ir = MethodCallNode(
-            object=nested,
-            method_name="size",
-            args=[],
-            dtype=IRType(IRTypeKind.UInt64),
-            rank=0
-        )
-        
-        with pytest.raises(IRError) as exc_info:
-            generator.generate(ir, "test")
         
         assert exc_info.value.kind == IRErrorKind.UNSUPPORTED_OP
-        assert "nested" in exc_info.value.message.lower()
 
 
 # =============================================================================

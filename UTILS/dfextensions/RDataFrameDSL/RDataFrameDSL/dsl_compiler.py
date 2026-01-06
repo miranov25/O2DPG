@@ -40,7 +40,7 @@ import uuid
 import re
 import warnings
 
-from .type_inferrer import TypeInferrer
+from .type_inferrer import TypeInferrer, extract_inner_type, is_collection_type
 from .ir_builder import IRBuilder
 from .ir_types import IRType, IRTypeKind
 from .backend_cpp import CppCodeGenerator, FunctionLibrary, GeneratedFunction
@@ -97,8 +97,15 @@ def _simple_schema_to_full(simple_schema: Dict[str, str]) -> Dict:
     """
     Convert simple schema to full TypeInferrer format.
     
-    Simple: {"px": "double", "pt": "RVec<double>"}
-    Full: {"columns": {"px": {"dtype": "double", "rank": 0}, ...}}
+    Simple: {"px": "double", "pt": "RVec<double>", "nested": "RVec<RVec<double>>"}
+    Full: {"columns": {"px": {"dtype": "double", "rank": 0}, 
+                       "pt": {"dtype": "double", "rank": 1},
+                       "nested": {"dtype": "double", "rank": 2}, ...}}
+    
+    Phase 13.3.DSL: Now correctly handles nested RVec types (D1-D4 bug fix).
+    Uses extract_inner_type() to properly determine:
+    - dtype: innermost element type (e.g., "double" for RVec<RVec<double>>)
+    - rank: nesting depth (e.g., 2 for RVec<RVec<double>>)
     
     Args:
         simple_schema: Dict mapping column names to C++ type strings
@@ -108,16 +115,16 @@ def _simple_schema_to_full(simple_schema: Dict[str, str]) -> Dict:
     """
     columns = {}
     for name, type_str in simple_schema.items():
-        if type_str.startswith("RVec<") and type_str.endswith(">"):
-            inner = type_str[5:-1]
-            columns[name] = {"dtype": inner, "rank": 1, "cpp_type": type_str}
-        elif type_str.startswith("ROOT::RVec<") and type_str.endswith(">"):
-            inner = type_str[11:-1]
-            columns[name] = {"dtype": inner, "rank": 1, "cpp_type": type_str}
-        elif type_str.startswith("std::vector<") and type_str.endswith(">"):
-            inner = type_str[12:-1]
-            columns[name] = {"dtype": inner, "rank": 1, "cpp_type": type_str}
+        if is_collection_type(type_str):
+            # Phase 13.3.DSL: Use extract_inner_type for correct nested type handling
+            inner_type, depth = extract_inner_type(type_str)
+            columns[name] = {
+                "dtype": inner_type,
+                "rank": depth,
+                "cpp_type": type_str,
+            }
         else:
+            # Scalar type
             columns[name] = {"dtype": type_str, "rank": 0}
     return {"columns": columns}
 
