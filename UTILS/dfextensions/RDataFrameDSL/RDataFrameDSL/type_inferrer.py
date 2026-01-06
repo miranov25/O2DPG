@@ -18,6 +18,10 @@ Usage:
     
     # From schema (for testing without ROOT)
     inferrer = TypeInferrer.from_schema(schema_dict)
+
+Phase 13.3.DSL D5+D6: Added ROOT linear algebra type detection:
+- TMatrixD, TMatrixF, TMatrixT<T>
+- TVectorD, TVectorF, TVectorT<T>
 """
 
 import re
@@ -36,6 +40,14 @@ __all__ = [
     'extract_inner_type',
     'is_vector_type',
     'is_rvec_type',
+    'is_collection_type',
+    # Phase 13.3.DSL D5+D6: ROOT linear algebra types
+    'is_root_matrix_type',
+    'is_root_vector_type',
+    'is_root_linalg_type',
+    'get_linalg_element_type',
+    'ROOT_MATRIX_TYPES',
+    'ROOT_VECTOR_TYPES',
 ]
 
 
@@ -91,6 +103,130 @@ def is_collection_type(cpp_type: str) -> bool:
     """Check if C++ type is any collection type."""
     return is_vector_type(cpp_type) or is_rvec_type(cpp_type)
 
+
+# =============================================================================
+# Phase 13.3.DSL D5+D6: ROOT Linear Algebra Type Detection
+# =============================================================================
+
+# Supported ROOT matrix types
+ROOT_MATRIX_TYPES = {
+    "TMatrixD",
+    "TMatrixF", 
+    "TMatrixT<double>",
+    "TMatrixT<float>",
+    "TMatrixTSym<double>",
+    "TMatrixTSym<float>",
+}
+
+# Supported ROOT vector types (linear algebra, not RVec)
+ROOT_VECTOR_TYPES = {
+    "TVectorD",
+    "TVectorF",
+    "TVectorT<double>",
+    "TVectorT<float>",
+}
+
+
+def is_root_matrix_type(cpp_type: str) -> bool:
+    """
+    Check if C++ type is a ROOT matrix type (TMatrixD, TMatrixF, etc.).
+    
+    Phase 13.3.DSL D5: Supports TMatrixD, TMatrixF, TMatrixT<T>.
+    
+    Args:
+        cpp_type: C++ type string
+        
+    Returns:
+        True if type is a ROOT matrix type
+        
+    Examples:
+        >>> is_root_matrix_type("TMatrixD")
+        True
+        >>> is_root_matrix_type("double")
+        False
+    """
+    clean = cpp_type.strip()
+    if clean in ROOT_MATRIX_TYPES:
+        return True
+    if clean.startswith("TMatrixT<") or clean.startswith("TMatrixTSym<"):
+        return True
+    return False
+
+
+def is_root_vector_type(cpp_type: str) -> bool:
+    """
+    Check if C++ type is a ROOT linear algebra vector (TVectorD, TVectorF, etc.).
+    
+    Note: This is NOT the same as RVec! TVectorD is ROOT's linear algebra vector.
+    Phase 13.3.DSL D6: Supports TVectorD, TVectorF, TVectorT<T>.
+    
+    Args:
+        cpp_type: C++ type string
+        
+    Returns:
+        True if type is a ROOT linear algebra vector type
+    """
+    clean = cpp_type.strip()
+    if clean in ROOT_VECTOR_TYPES:
+        return True
+    if clean.startswith("TVectorT<"):
+        return True
+    return False
+
+
+def is_root_linalg_type(cpp_type: str) -> bool:
+    """
+    Check if C++ type is any ROOT linear algebra type (matrix or vector).
+    
+    Phase 13.3.DSL D5+D6.
+    """
+    return is_root_matrix_type(cpp_type) or is_root_vector_type(cpp_type)
+
+
+def get_linalg_element_type(cpp_type: str) -> str:
+    """
+    Get element type for ROOT linear algebra types.
+    
+    Returns "double" or "float" based on type suffix or template parameter.
+    
+    Args:
+        cpp_type: C++ type string (TMatrixD, TVectorF, TMatrixT<float>, etc.)
+        
+    Returns:
+        "double" or "float"
+        
+    Examples:
+        >>> get_linalg_element_type("TMatrixD")
+        'double'
+        >>> get_linalg_element_type("TVectorF")
+        'float'
+        >>> get_linalg_element_type("TMatrixT<float>")
+        'float'
+    """
+    clean = cpp_type.strip()
+    
+    # D suffix = double
+    if clean.endswith("D") and not clean.endswith("<"):
+        return "double"
+    
+    # F suffix = float
+    if clean.endswith("F") and not clean.endswith("<"):
+        return "float"
+    
+    # Template form: extract T from TMatrixT<T> or TVectorT<T>
+    if "<" in clean and ">" in clean:
+        start = clean.find("<") + 1
+        end = clean.rfind(">")
+        inner = clean[start:end].strip()
+        return inner
+    
+    # Default to double
+    return "double"
+
+
+# =============================================================================
+# Original Helper Functions (continued)
+# =============================================================================
 
 def extract_inner_type(cpp_type: str) -> Tuple[str, int]:
     """
@@ -225,16 +361,19 @@ class TypeInferrer:
         """
         Create inferrer from schema dict (for testing without ROOT).
         
-        Schema format:
-        {
-            "columns": {
-                "px": {"dtype": "float", "rank": 0},
-                "tracks": {"dtype": "TParticle", "rank": 1, "is_jagged": True},
-            },
-            "aliases": {
-                "pt": "sqrt(px**2 + py**2)"
-            }
-        }
+        Schema formats:
+        1. Full format:
+           {
+               "columns": {
+                   "px": {"dtype": "float", "rank": 0},
+                   "tracks": {"dtype": "TParticle", "rank": 1, "is_jagged": True},
+               },
+               "aliases": {
+                   "pt": "sqrt(px**2 + py**2)"
+               }
+           }
+        2. Simple format (Phase 13.3.DSL):
+           {"px": "double", "mat": "TMatrixD", "vec": "TVectorD"}
         
         Args:
             schema: Schema dictionary
@@ -401,18 +540,28 @@ class TypeInferrer:
         """
         Apply schema to override/add type information.
         
-        Schema format:
-        {
-            "columns": {
-                "name": {"dtype": "float", "rank": 0, ...}
-            },
-            "aliases": {
-                "name": "expression"
-            }
-        }
+        Schema formats:
+        1. Full format:
+           {
+               "columns": {"name": {"dtype": "float", "rank": 0, ...}},
+               "aliases": {"name": "expression"}
+           }
+        2. Simple format (Phase 13.3.DSL D5+D6):
+           {"name": "cpp_type", ...}
+           
+        Phase 13.3.DSL D5+D6: Also handles TMatrixD/F and TVectorD/F types.
         """
+        # Detect schema format: full vs simple
+        if "columns" in schema:
+            # Full format
+            columns = schema.get("columns", {})
+            aliases = schema.get("aliases", {})
+        else:
+            # Simple format: treat entire schema as columns
+            columns = schema
+            aliases = {}
+        
         # Process columns
-        columns = schema.get("columns", {})
         for name, info in columns.items():
             if isinstance(info, dict):
                 # Full column specification
@@ -429,19 +578,58 @@ class TypeInferrer:
                 )
                 self._variables[name] = var_info
             elif isinstance(info, str):
-                # Just dtype string
-                dtype = self._parse_dtype(info)
-                self._variables[name] = VariableInfo(
-                    name=name,
-                    dtype=dtype,
-                    rank=0,
-                    is_jagged=False,
-                    cpp_type=info,
-                    source="schema"
-                )
+                # String type - detect special types or use as-is
+                type_str = info
+                
+                # Phase 13.3.DSL D5: Handle TMatrixD/F
+                if is_root_matrix_type(type_str):
+                    elem_type = get_linalg_element_type(type_str)
+                    dtype = self._parse_dtype(elem_type)
+                    self._variables[name] = VariableInfo(
+                        name=name,
+                        dtype=dtype,
+                        rank=0,  # Matrix treated as scalar container
+                        is_jagged=False,
+                        cpp_type=type_str,
+                        source="schema"
+                    )
+                # Phase 13.3.DSL D6: Handle TVectorD/F
+                elif is_root_vector_type(type_str):
+                    elem_type = get_linalg_element_type(type_str)
+                    dtype = self._parse_dtype(elem_type)
+                    self._variables[name] = VariableInfo(
+                        name=name,
+                        dtype=dtype,
+                        rank=0,  # TVectorD treated as scalar container
+                        is_jagged=False,
+                        cpp_type=type_str,
+                        source="schema"
+                    )
+                # Handle RVec/vector types
+                elif is_collection_type(type_str):
+                    inner_type, depth = extract_inner_type(type_str)
+                    dtype = self._parse_dtype(inner_type)
+                    self._variables[name] = VariableInfo(
+                        name=name,
+                        dtype=dtype,
+                        rank=depth,
+                        is_jagged=True,
+                        cpp_type=type_str,
+                        source="schema"
+                    )
+                else:
+                    # Regular scalar type
+                    dtype = self._parse_dtype(type_str)
+                    self._variables[name] = VariableInfo(
+                        name=name,
+                        dtype=dtype,
+                        rank=0,
+                        is_jagged=False,
+                        cpp_type=type_str,
+                        source="schema"
+                    )
         
         # Store aliases for later resolution
-        aliases = schema.get("aliases", {})
         for name, expr in aliases.items():
             self._aliases[name] = expr
     
@@ -530,6 +718,40 @@ class TypeInferrer:
     def is_jagged(self, name: str, namespace: str = None) -> bool:
         """Check if variable is jagged."""
         return self.get_variable_info(name, namespace).is_jagged
+    
+    # =========================================================================
+    # Phase 13.3.DSL D5+D6: Linear Algebra Type Queries
+    # =========================================================================
+    
+    def get_cpp_type(self, name: str, namespace: str = None) -> Optional[str]:
+        """Get C++ type string for a variable."""
+        return self.get_variable_info(name, namespace).cpp_type
+    
+    def is_linalg_type(self, name: str, namespace: str = None) -> bool:
+        """
+        Check if variable is a ROOT linear algebra type.
+        
+        Phase 13.3.DSL D5+D6.
+        """
+        info = self.get_variable_info(name, namespace)
+        cpp_type = info.cpp_type or ""
+        return is_root_linalg_type(cpp_type)
+    
+    def is_matrix_type(self, name: str, namespace: str = None) -> bool:
+        """Check if variable is a ROOT matrix type."""
+        info = self.get_variable_info(name, namespace)
+        cpp_type = info.cpp_type or ""
+        return is_root_matrix_type(cpp_type)
+    
+    def is_vector_linalg_type(self, name: str, namespace: str = None) -> bool:
+        """Check if variable is a ROOT linear algebra vector type."""
+        info = self.get_variable_info(name, namespace)
+        cpp_type = info.cpp_type or ""
+        return is_root_vector_type(cpp_type)
+    
+    # =========================================================================
+    # Alias Registration
+    # =========================================================================
     
     def register_alias(self, name: str, dtype: IRType, 
                        rank: int = 0, is_jagged: bool = False) -> None:
@@ -647,7 +869,7 @@ class TypeInferrer:
                     elem_type = info.cpp_type or info.dtype.to_cpp()
                     result[name] = f"RVec<{elem_type}>"
             else:
-                # Scalar type
+                # Scalar type or special type (TMatrixD, etc.)
                 result[name] = info.cpp_type or info.dtype.to_cpp()
         
         return result
