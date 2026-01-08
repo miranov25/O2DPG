@@ -63,10 +63,24 @@ class VariableInfo:
     Attributes:
         name: Variable name
         dtype: IR type
-        rank: Dimensionality (0=scalar, 1=vector, 2=nested)
+        rank: Container rank (0=scalar, 1=RVec, 2=RVec<RVec>)
+              NOTE: This is container rank, NOT logical dimensions.
+              A C-array mat[3][4] has rank=1 (it's an RVec in RDataFrame).
         is_jagged: Whether inner dimensions vary in size
-        cpp_type: Original C++ type string
+        cpp_type: Original C++ type string (normalized to scalar for C-arrays)
         source: Where the type came from ('tree', 'schema', 'alias')
+        
+        # Phase 13.4.D9: C-array specific fields
+        carray_shape: Logical ND shape for C-arrays, e.g., (3, 4) for mat[3][4]
+                      Variable dimensions use strings: ("n", 3) for arr[n][3]
+                      None if not a C-array.
+        carray_counter: Counter branch name for variable-length C-arrays.
+                        None if fixed-size or not a C-array.
+    
+    Invariant (FROZEN - Phase 13.4.D9):
+        rank = container rank (RDataFrame runtime type)
+        carray_shape = logical ND shape (metadata only)
+        DO NOT set rank = len(carray_shape)
     """
     name: str
     dtype: IRType
@@ -75,9 +89,24 @@ class VariableInfo:
     cpp_type: Optional[str] = None
     source: str = "unknown"
     
+    # Phase 13.4.D9: C-array fields
+    carray_shape: Optional[Tuple[Union[int, str], ...]] = None
+    carray_counter: Optional[str] = None
+    
     def __repr__(self) -> str:
         jagged_str = ", jagged" if self.is_jagged else ""
-        return f"VariableInfo({self.name}: {self.dtype}, rank={self.rank}{jagged_str})"
+        carray_str = f", carray_shape={self.carray_shape}" if self.carray_shape else ""
+        return f"VariableInfo({self.name}: {self.dtype}, rank={self.rank}{jagged_str}{carray_str})"
+    
+    @property
+    def is_carray(self) -> bool:
+        """True if this variable is a C-array with known dimensions."""
+        return self.carray_shape is not None
+    
+    @property
+    def carray_ndim(self) -> int:
+        """Number of logical dimensions for C-array, or 0 if not C-array."""
+        return len(self.carray_shape) if self.carray_shape else 0
 
 
 # =============================================================================
@@ -497,21 +526,43 @@ class TypeInferrer:
         Handle primitive leaf branch.
         
         Handles scalars, fixed-length arrays, and variable-length arrays.
+        
+        Phase 13.4.D9: Also extracts C-array shape from branch title.
         """
         type_name = leaf.GetTypeName()
         ir_type = cpp_type_to_ir(type_name)
+        
+        # Phase 13.4.D9: Try to extract C-array info from branch title
+        carray_shape = None
+        carray_counter = None
+        
+        try:
+            from .carray_detector import BranchTitleParser
+            branch = leaf.GetBranch()
+            if branch:
+                title = branch.GetTitle()
+                carray_info = BranchTitleParser.parse(title, name)
+                if carray_info:
+                    carray_shape = carray_info.shape
+                    carray_counter = carray_info.counter
+        except (ImportError, AttributeError):
+            # carray_detector not available or branch has no title
+            pass
         
         # Check for array
         leaf_count = leaf.GetLeafCount()
         if leaf_count:
             # Variable-length array (jagged)
+            counter_name = leaf_count.GetName() if leaf_count else None
             return VariableInfo(
                 name=name,
                 dtype=ir_type,
                 rank=1,
                 is_jagged=True,
                 cpp_type=type_name,
-                source="tree"
+                source="tree",
+                carray_shape=carray_shape,
+                carray_counter=carray_counter or counter_name,
             )
         
         array_len = leaf.GetLen()
@@ -523,7 +574,9 @@ class TypeInferrer:
                 rank=1,
                 is_jagged=False,
                 cpp_type=type_name,
-                source="tree"
+                source="tree",
+                carray_shape=carray_shape,
+                carray_counter=carray_counter,
             )
         
         # Scalar

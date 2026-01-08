@@ -242,6 +242,110 @@ class CArrayExpressionAnalyzer:
             ast.Mod: '%',
         }
         return ops.get(type(op), '?')
+    
+    # =========================================================================
+    # Phase 13.4.D9: AST-authoritative routing
+    # =========================================================================
+    
+    def is_carray_expression(self, expression: str) -> bool:
+        """
+        Check if expression contains a C-array multi-index operation.
+        
+        Phase 13.4.D9: AST-authoritative routing.
+        
+        Returns True only if:
+        1. Expression contains multi-index syntax (comma in brackets)
+        2. Base variable is a Name node (not attribute/call)
+        3. Base variable exists in schema (has C-array type)
+        
+        MUST NOT route to C-array:
+        - Attribute access: obj.mat[i,j]
+        - Call result: func(x)[i,j] or mat()[i,j]
+        - BinOp result: (mat + x)[i,j]
+        
+        Args:
+            expression: DSL expression string
+            
+        Returns:
+            True if expression contains C-array ND operation
+        """
+        # Quick pre-filter (optional optimization)
+        if ',' not in expression or '[' not in expression:
+            return False
+        
+        # Parse AST
+        try:
+            tree = ast.parse(expression, mode='eval')
+        except SyntaxError:
+            return False
+        
+        # Find all multi-index subscripts with Name base
+        return self._has_carray_access(tree.body)
+    
+    def _has_carray_access(self, node: ast.AST) -> bool:
+        """
+        Recursively check if AST contains C-array access.
+        
+        Walks entire tree to handle expressions like: mat[i,j] + 1
+        """
+        if isinstance(node, ast.Subscript):
+            # Check if this subscript is a C-array multi-index
+            if isinstance(node.slice, ast.Tuple):
+                # Multi-index detected
+                base = node.value
+                if isinstance(base, ast.Name):
+                    # Base is a simple name - check if it's in schema
+                    if base.id in self.schema:
+                        array_type = self.schema[base.id]
+                        # Only route if it's actually a CArrayType
+                        if isinstance(array_type, CArrayType):
+                            return True
+        
+        # Recursively check children
+        for child in ast.iter_child_nodes(node):
+            if self._has_carray_access(child):
+                return True
+        
+        return False
+    
+    def extract_carray_base(self, expression: str) -> Optional[str]:
+        """
+        Extract the base variable name from a C-array expression.
+        
+        Phase 13.4.D9: Single source of truth for AST-based extraction.
+        
+        Args:
+            expression: DSL expression containing C-array access
+            
+        Returns:
+            Base variable name, or None if not found
+        """
+        if ',' not in expression or '[' not in expression:
+            return None
+        
+        try:
+            tree = ast.parse(expression, mode='eval')
+        except SyntaxError:
+            return None
+        
+        return self._extract_first_carray_base(tree.body)
+    
+    def _extract_first_carray_base(self, node: ast.AST) -> Optional[str]:
+        """Extract the first C-array base variable from AST."""
+        if isinstance(node, ast.Subscript):
+            if isinstance(node.slice, ast.Tuple):
+                base = node.value
+                if isinstance(base, ast.Name):
+                    if base.id in self.schema:
+                        return base.id
+        
+        # Recursively check children
+        for child in ast.iter_child_nodes(node):
+            result = self._extract_first_carray_base(child)
+            if result:
+                return result
+        
+        return None
 
 
 class CArrayDSLCompiler:
@@ -306,6 +410,7 @@ class CArrayDSLCompiler:
             
         Returns:
             Tuple of (C++ code, set of dependencies)
+            Note: Call get_jit_declarations() to get required JIT function declarations.
             
         Raises:
             ValueError: If expression is invalid or not a C-array access
@@ -322,10 +427,17 @@ class CArrayDSLCompiler:
         # Generate code
         result = generate_carray_code(ir_node)
         
+        # Store JIT declarations for later retrieval
+        self._last_jit_declarations = result.jit_declarations
+        
         # Format as variable assignment
         code = f"auto {result_name} = {result.code};"
         
         return code, result.dependencies
+    
+    def get_jit_declarations(self) -> str:
+        """Get JIT declarations from last compile() call."""
+        return getattr(self, '_last_jit_declarations', '')
     
     def get_result_type(self, expr: str) -> Tuple[str, int]:
         """

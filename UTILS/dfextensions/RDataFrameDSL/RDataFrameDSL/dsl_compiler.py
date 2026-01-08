@@ -296,12 +296,14 @@ class DSLCompiler:
         
         Raises:
             IRError: If expression is invalid or name conflicts
+            ValueError: If C-array ND operation attempted without dimensions
         
         Example:
             >>> dsl.define("pt", "sqrt(px**2 + py**2)")
             >>> dsl.define("high_pt", "pt > 10.0")  # Uses 'pt' alias
             >>> dsl.define("isOK", "(row < 152) & (abs(dy) < 10)", dtype="bool")
             >>> dsl.define("sector", "int(9*phi/pi)", dtype="int8")
+            >>> dsl.define("row0", "mat[0,:]")  # C-array row extraction (D9)
         """
         # Check for name collision with original schema only
         # (aliases are allowed to shadow other aliases via redefinition)
@@ -320,6 +322,10 @@ class DSLCompiler:
                 f"Column '{name}' already defined",
                 suggestions=["Each column name must be unique"]
             )
+        
+        # Phase 13.4.D9: Check for C-array expression (AST-authoritative routing)
+        if self._is_carray_expression(expression):
+            return self._define_carray(name, expression, dtype)
         
         # Phase 11.1: Preprocess C++ :: syntax to Python dot syntax
         preprocessed = self._preprocess_expression(expression)
@@ -495,6 +501,208 @@ class DSLCompiler:
             "double": "double",
         }
         return cpp_types.get(dtype, "double")
+    
+    # =========================================================================
+    # Phase 13.4.D9: C-Array Integration
+    # =========================================================================
+    
+    def _is_carray_expression(self, expression: str) -> bool:
+        """
+        Check if expression contains C-array multi-index operation.
+        
+        Phase 13.4.D9: AST-authoritative routing via CArrayExpressionAnalyzer.
+        
+        Returns True only if:
+        1. Expression contains multi-index syntax (comma in brackets)
+        2. Base variable is a Name node (not attribute/call)
+        3. Base variable exists in schema with carray_shape
+        
+        Args:
+            expression: DSL expression string
+            
+        Returns:
+            True if expression should be routed to C-array compiler
+        """
+        # Quick pre-filter
+        if ',' not in expression or '[' not in expression:
+            return False
+        
+        # Build C-array schema and use analyzer
+        carray_schema = self._build_carray_schema()
+        if not carray_schema:
+            return False
+        
+        try:
+            from .dsl_carray import CArrayExpressionAnalyzer
+            analyzer = CArrayExpressionAnalyzer(carray_schema)
+            return analyzer.is_carray_expression(expression)
+        except ImportError:
+            return False
+    
+    def _define_carray(self, name: str, expression: str, dtype: str = None) -> 'DSLCompiler':
+        """
+        Define a column using C-array expression.
+        
+        Phase 13.4.D9: Handles C-array ND operations.
+        
+        Args:
+            name: Output column name
+            expression: C-array expression (e.g., "mat[0,:]")
+            dtype: Optional explicit return type
+            
+        Returns:
+            self (for chaining)
+            
+        Raises:
+            ValueError: If C-array dimensions unknown
+        """
+        from .dsl_carray import CArrayExpressionAnalyzer, CArrayDSLCompiler
+        
+        # Build C-array schema
+        carray_schema = self._build_carray_schema()
+        
+        # Extract base variable
+        analyzer = CArrayExpressionAnalyzer(carray_schema)
+        base_var = analyzer.extract_carray_base(expression)
+        
+        if base_var is None:
+            # Should not happen if _is_carray_expression returned True
+            raise ValueError(
+                f"Cannot extract C-array base from '{expression}'"
+            )
+        
+        # Check if dimensions are known (P0-3: fail-closed)
+        info = self._inferrer._variables.get(base_var)
+        
+        if info is None or not getattr(info, 'carray_shape', None):
+            # Dimensions unknown - cannot compute ND operations
+            import warnings
+            warnings.warn(
+                f"C-array dimensions unknown for '{base_var}'. "
+                f"Use from_tree() or provide carray_schema for ND operations.",
+                UserWarning
+            )
+            raise ValueError(
+                f"Cannot evaluate '{expression}': C-array dimensions unknown for '{base_var}'. "
+                f"Use from_tree() or provide carray_schema for ND operations."
+            )
+        
+        # Compile with CArrayDSLCompiler
+        compiler = CArrayDSLCompiler(carray_schema)
+        result = compiler.compile(expression)
+        
+        # Register the definition
+        self._definitions.append((name, expression))
+        
+        # Get generated function and register
+        if result and hasattr(result, 'code'):
+            # Create a GeneratedFunction-like object
+            func = GeneratedFunction(
+                name=f"{name}_{self._unique_id}",
+                code=result.code,
+                return_type=result.return_type if hasattr(result, 'return_type') else 'auto',
+                dsl_expression=expression,
+            )
+            func.column_name = name
+            self._functions[name] = func
+            self.library.add(func)
+            
+            # Register alias type
+            if dtype:
+                self.schema[name] = self._dtype_to_cpp_type(dtype)
+            elif hasattr(result, 'return_type'):
+                self.schema[name] = result.return_type
+            else:
+                self.schema[name] = 'auto'
+        
+        return self
+    
+    def _build_carray_schema(self) -> Dict:
+        """
+        Build C-array schema for CArrayDSLCompiler from VariableInfo.
+        
+        Phase 13.4.D9: Converts VariableInfo with carray_shape to CArrayType.
+        
+        Returns:
+            Dict mapping variable names to CArrayType objects
+        """
+        try:
+            from .schema_parser import CArrayType, Dimension, DimensionKind
+        except ImportError:
+            return {}
+        
+        schema = {}
+        
+        for name, info in self._inferrer._variables.items():
+            # Check if info has carray_shape attribute
+            carray_shape = getattr(info, 'carray_shape', None)
+            if carray_shape:
+                # Convert dimensions
+                dims = []
+                for d in carray_shape:
+                    if isinstance(d, int):
+                        dims.append(Dimension(DimensionKind.FIXED, d))
+                    else:
+                        dims.append(Dimension(DimensionKind.VARIABLE, d))
+                
+                # Use normalized scalar type (P0-4 fix)
+                scalar_type = self._get_scalar_cpp_type(info)
+                
+                schema[name] = CArrayType(
+                    base=scalar_type,
+                    dims=dims,
+                )
+        
+        return schema
+    
+    def _get_scalar_cpp_type(self, info) -> str:
+        """
+        Return canonical scalar C++ type for C-array elements.
+        
+        Phase 13.4.D9 P0-4: Normalizes container types to scalar.
+        
+        Args:
+            info: VariableInfo object
+            
+        Returns:
+            Scalar C++ type (e.g., 'float', not 'RVec<float>')
+        """
+        TYPE_MAP = {
+            # ROOT types
+            "Float_t": "float",
+            "Double_t": "double",
+            "Int_t": "int",
+            "UInt_t": "unsigned int",
+            "Long64_t": "long long",
+            "ULong64_t": "unsigned long long",
+            "Short_t": "short",
+            "UShort_t": "unsigned short",
+            "Char_t": "char",
+            "UChar_t": "unsigned char",
+            "Bool_t": "bool",
+            
+            # RVec types (extract element type)
+            "ROOT::VecOps::RVec<float>": "float",
+            "ROOT::VecOps::RVec<double>": "double",
+            "ROOT::VecOps::RVec<int>": "int",
+            "ROOT::VecOps::RVec<Float_t>": "float",
+            "ROOT::VecOps::RVec<Double_t>": "double",
+            "RVec<float>": "float",
+            "RVec<double>": "double",
+            "RVec<int>": "int",
+            
+            # Standard types (pass through)
+            "float": "float",
+            "double": "double",
+            "int": "int",
+            "long": "long",
+            "short": "short",
+            "char": "char",
+            "bool": "bool",
+        }
+        
+        cpp_type = getattr(info, 'cpp_type', None) or str(getattr(info, 'dtype', 'float'))
+        return TYPE_MAP.get(cpp_type, "float")  # Default to float
     
     def _ensure_helpers_declared(self) -> None:
         """
