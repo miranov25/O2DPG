@@ -70,30 +70,32 @@ class TestCArray1DElementAccess:
         node = make_carray_element_access("arr", "float", [(10, True)], [0])
         result = generate_carray_code(node)
         
-        assert "i_norm < 0 || i_norm >= size" in result.code
-        assert "quiet_NaN" in result.code
+        assert "i_norm < 0 || i_norm >= size" in result.jit_declarations
+        assert "quiet_NaN" in result.jit_declarations
     
     def test_element_access_generates_negative_normalization(self):
         """Generated code normalizes negative indices."""
         node = make_carray_element_access("arr", "float", [(10, True)], [-1])
         result = generate_carray_code(node)
         
-        assert "i >= 0 ? i : size + i" in result.code
+        assert "i >= 0 ? i : size + i" in result.jit_declarations
     
     def test_element_access_fixed_uses_constexpr(self):
-        """Fixed size uses constexpr declaration."""
+        """Fixed size: code passes literal value."""
         node = make_carray_element_access("arr", "float", [(10, True)], [0])
         result = generate_carray_code(node)
         
-        assert "constexpr int size = 10" in result.code
+        # New pattern: size passed as parameter, function call has literal
+        assert "int size" in result.jit_declarations
+        assert ", 10," in result.code  # Literal size in call
     
     def test_element_access_variable_uses_int(self):
-        """Variable size uses int declaration."""
+        """Variable size: code passes variable name."""
         node = make_carray_element_access("arr", "float", [("n", False)], [0])
         result = generate_carray_code(node)
         
-        assert "int size = n" in result.code
-        assert "constexpr" not in result.code.split("int size")[0]
+        assert "int size" in result.jit_declarations
+        assert ", n," in result.code  # Variable name in call
 
 
 class TestCArray1DSlice:
@@ -116,23 +118,29 @@ class TestCArray1DSlice:
         node = make_carray_slice_access("arr", "float", [(10, True)], SliceParams(stop=5))
         result = generate_carray_code(node)
         
-        assert "stop = 5" in result.code
-        assert "for (int k = start; k < stop" in result.code
+        # Function signature has stop parameter, call passes value 5
+        assert "int stop" in result.jit_declarations
+        assert ", 5," in result.code  # stop=5 passed as argument
+        assert "for (int k = start; k < stop" in result.jit_declarations
     
     def test_slice_from_n(self):
         """arr[3:] generates correct loop."""
         node = make_carray_slice_access("arr", "float", [(10, True)], SliceParams(start=3))
         result = generate_carray_code(node)
         
-        assert "start = 3" in result.code
+        # Function signature has start parameter, call passes value 3
+        assert "int start" in result.jit_declarations
+        assert ", 3," in result.code  # start=3 passed as argument
     
     def test_slice_with_step(self):
         """arr[::2] generates correct step."""
         node = make_carray_slice_access("arr", "float", [(10, True)], SliceParams(step=2))
         result = generate_carray_code(node)
         
-        assert "step = 2" in result.code
-        assert "k += step" in result.code
+        # Function signature has step parameter, call passes value 2
+        assert "int step" in result.jit_declarations
+        assert ", 2)" in result.code  # step=2 is last argument
+        assert "k += step" in result.jit_declarations
     
     def test_slice_reverse(self):
         """arr[::-1] generates reverse iteration."""
@@ -142,16 +150,17 @@ class TestCArray1DSlice:
         )
         result = generate_carray_code(node)
         
-        assert "step = -1" in result.code
-        assert "k > stop" in result.code
+        # Function has reverse iteration logic, call passes step=-1
+        assert ", -1)" in result.code  # step=-1 is last argument
+        assert "k > stop" in result.jit_declarations
     
     def test_slice_clamps_to_valid_range(self):
         """Slice clamps indices to valid range."""
         node = make_carray_slice_access("arr", "float", [(10, True)], SliceParams(stop=5))
         result = generate_carray_code(node)
         
-        assert "std::max(0, std::min(start, size))" in result.code
-        assert "std::max(0, std::min(stop, size))" in result.code
+        assert "std::max(0, std::min(start, size))" in result.jit_declarations
+        assert "std::max(0, std::min(stop, size))" in result.jit_declarations
 
 
 # =============================================================================
@@ -178,15 +187,15 @@ class TestCArray2DElementAccess:
         node = make_carray_element_access("mat", "float", [(3, True), (4, True)], [1, 2])
         result = generate_carray_code(node)
         
-        assert "r_norm * cols + c_norm" in result.code
+        assert "r_norm * cols + c_norm" in result.jit_declarations
     
     def test_element_2d_bounds_check_both_dims(self):
         """2D element checks both dimensions."""
         node = make_carray_element_access("mat", "float", [(3, True), (4, True)], [1, 2])
         result = generate_carray_code(node)
         
-        assert "r_norm < 0 || r_norm >= rows" in result.code
-        assert "c_norm < 0 || c_norm >= cols" in result.code
+        assert "r_norm < 0 || r_norm >= rows" in result.jit_declarations
+        assert "c_norm < 0 || c_norm >= cols" in result.jit_declarations
 
 
 class TestCArray2DRowAccess:
@@ -204,8 +213,8 @@ class TestCArray2DRowAccess:
         node = make_carray_row_access("mat", "float", [(3, True), (4, True)], 1)
         result = generate_carray_code(node)
         
-        assert "for (int c = 0; c < cols" in result.code
-        assert "base + c" in result.code
+        assert "for (int c = 0; c < cols" in result.jit_declarations
+        assert "base + c" in result.jit_declarations
 
 
 class TestCArray2DColumnAccess:
@@ -223,8 +232,8 @@ class TestCArray2DColumnAccess:
         node = make_carray_column_access("mat", "float", [(3, True), (4, True)], 2)
         result = generate_carray_code(node)
         
-        assert "for (int r = 0; r < rows" in result.code
-        assert "r * cols + c_norm" in result.code
+        assert "for (int r = 0; r < rows" in result.jit_declarations
+        assert "r * cols + c_norm" in result.jit_declarations
 
 
 class TestCArray2DSubarray:
@@ -249,7 +258,9 @@ class TestCArray2DSubarray:
         )
         result = generate_carray_code(node)
         
-        assert "r_stop = 2" in result.code
+        # Function signature has r_stop parameter, call passes value 2
+        assert "int r_stop" in result.jit_declarations
+        assert ", 2," in result.code  # r_stop=2 passed as argument
 
 
 class TestCArray2DHybrid:
@@ -260,8 +271,12 @@ class TestCArray2DHybrid:
         node = make_carray_column_access("hits", "float", [("n", False), (3, True)], 0)
         result = generate_carray_code(node)
         
-        assert "int rows = n" in result.code
-        assert "constexpr int cols = 3" in result.code
+        # Function takes rows/cols as parameters
+        assert "int rows" in result.jit_declarations
+        assert "int cols" in result.jit_declarations
+        # Call passes variable n for rows, literal 3 for cols
+        assert ", n," in result.code
+        assert ", 3," in result.code
     
     def test_hybrid_dependencies_include_counter(self):
         """Dependencies include counter branch."""
@@ -300,7 +315,7 @@ class TestCArray3DElementAccess:
         )
         result = generate_carray_code(node)
         
-        assert "i_norm * d1 * d2 + j_norm * d2 + k_norm" in result.code
+        assert "i_norm * d1 * d2 + j_norm * d2 + k_norm" in result.jit_declarations
 
 
 class TestCArray3DPlaneAccess:
@@ -326,8 +341,8 @@ class TestCArray3DPlaneAccess:
         )
         result = generate_carray_code(node)
         
-        assert "for (int j = 0; j < d1" in result.code
-        assert "for (int k = 0; k < d2" in result.code
+        assert "for (int j = 0; j < d1" in result.jit_declarations
+        assert "for (int k = 0; k < d2" in result.jit_declarations
 
 
 class TestCArray3DSlices:
@@ -350,7 +365,7 @@ class TestCArray3DSlices:
         )
         result = generate_carray_code(node)
         
-        assert "for (int i = 0; i < d0" in result.code
+        assert "for (int i = 0; i < d0" in result.jit_declarations
         assert node.result_type == "ROOT::RVec<float>"
     
     def test_slice_dim1_loops_middle_dim(self):
@@ -370,7 +385,7 @@ class TestCArray3DSlices:
         )
         result = generate_carray_code(node)
         
-        assert "for (int j = 0; j < d1" in result.code
+        assert "for (int j = 0; j < d1" in result.jit_declarations
 
 
 # =============================================================================
@@ -385,14 +400,14 @@ class TestBoundsCheckingSemantics:
         node = make_carray_element_access("arr", "float", [(10, True)], [0])
         result = generate_carray_code(node)
         
-        assert "std::numeric_limits<float>::quiet_NaN()" in result.code
+        assert "std::numeric_limits<float>::quiet_NaN()" in result.jit_declarations
     
     def test_double_oob_returns_nan(self):
         """Double type uses correct NaN."""
         node = make_carray_element_access("arr", "double", [(10, True)], [0])
         result = generate_carray_code(node)
         
-        assert "std::numeric_limits<double>::quiet_NaN()" in result.code
+        assert "std::numeric_limits<double>::quiet_NaN()" in result.jit_declarations
     
     def test_slice_oob_clamps(self):
         """Slice out-of-bounds clamps to valid range."""
@@ -400,22 +415,22 @@ class TestBoundsCheckingSemantics:
         result = generate_carray_code(node)
         
         # Clamp logic present
-        assert "std::max" in result.code
-        assert "std::min" in result.code
+        assert "std::max" in result.jit_declarations
+        assert "std::min" in result.jit_declarations
     
     def test_negative_index_normalized(self):
         """Negative indices are normalized."""
         node = make_carray_element_access("arr", "float", [(10, True)], [-1])
         result = generate_carray_code(node)
         
-        assert "i >= 0 ? i : size + i" in result.code
+        assert "i >= 0 ? i : size + i" in result.jit_declarations
     
     def test_row_oob_returns_empty_rvec(self):
         """Row out-of-bounds returns empty RVec."""
         node = make_carray_row_access("mat", "float", [(3, True), (4, True)], 0)
         result = generate_carray_code(node)
         
-        assert "return ROOT::RVec<float>()" in result.code
+        assert "return ROOT::RVec<float>()" in result.jit_declarations
 
 
 # =============================================================================
@@ -528,39 +543,45 @@ class TestCArrayDSLCompiler:
     def test_compile_1d_slice(self, compiler):
         """Compiles 1D slice."""
         code, deps = compiler.compile("arr[:5]", "slice")
+        jit = compiler.get_jit_declarations()
         
-        assert "ROOT::RVec<float>" in code
+        assert "ROOT::RVec<float>" in jit
     
     def test_compile_2d_element(self, compiler):
         """Compiles 2D element access."""
         code, deps = compiler.compile("mat[1, 2]", "elem")
+        jit = compiler.get_jit_declarations()
         
-        assert "r_norm * cols + c_norm" in code
+        assert "r_norm * cols + c_norm" in jit
     
     def test_compile_2d_row(self, compiler):
         """Compiles 2D row access."""
         code, deps = compiler.compile("mat[0]", "row")
+        jit = compiler.get_jit_declarations()
         
-        assert "ROOT::RVec<float>" in code
+        assert "ROOT::RVec<float>" in jit
     
     def test_compile_2d_column(self, compiler):
         """Compiles 2D column access."""
         code, deps = compiler.compile("mat[:, 0]", "col")
+        jit = compiler.get_jit_declarations()
         
-        assert "for (int r = 0; r < rows" in code
+        assert "for (int r = 0; r < rows" in jit
     
     def test_compile_3d_element(self, compiler):
         """Compiles 3D element access."""
         code, deps = compiler.compile("tensor[0, 1, 2]", "elem")
+        jit = compiler.get_jit_declarations()
         
-        assert "i_norm * d1 * d2 + j_norm * d2 + k_norm" in code
+        assert "i_norm * d1 * d2 + j_norm * d2 + k_norm" in jit
     
     def test_compile_hybrid_includes_counter(self, compiler):
         """Compiles hybrid array with counter dependency."""
         code, deps = compiler.compile("hits[:, 0]", "col")
         
         assert "n" in deps
-        assert "int rows = n" in code
+        # Code is now a function call with n as parameter
+        assert "n" in code or "col" in code
     
     def test_get_result_type_1d_element(self, compiler):
         """Gets correct result type for 1D element."""

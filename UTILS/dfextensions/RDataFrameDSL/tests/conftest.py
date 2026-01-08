@@ -1,209 +1,36 @@
 """
-pytest configuration for RDataFrameDSL tests.
+Phase 13.2: pytest configuration and shared fixtures for RDataFrameDSL tests.
 
-Phase 12: Adds synthetic data fixtures for draw integration testing.
-Phase 13.2.1.DSL: Adds invariant testing fixtures.
+Provides:
+- Tolerance helpers for invariant testing
+- Session-scoped test data generation
+- DSL compiler fixtures
+- ROOT test isolation markers (Phase 13.4.D9)
 """
 
 import pytest
 import numpy as np
 
-
-def pytest_configure(config):
-    """Register custom markers."""
-    config.addinivalue_line(
-        "markers", "future: marks tests for future phase techniques (Phase 7+)"
+# Import invariant schema configuration
+try:
+    from .invariant_schema import (
+        TOLERANCE,
+        DEFAULT_N_EVENTS,
+        DEFAULT_SEED,
+        INVARIANT_SCHEMA,
     )
-    config.addinivalue_line(
-        "markers", "requires_root: mark test as requiring ROOT"
-    )
-    config.addinivalue_line(
-        "markers", "slow: mark test as slow running"
-    )
-    config.addinivalue_line(
-        "markers", "invariant: mark test as invariant-based correctness test"
+except ImportError:
+    from invariant_schema import (
+        TOLERANCE,
+        DEFAULT_N_EVENTS,
+        DEFAULT_SEED,
+        INVARIANT_SCHEMA,
     )
 
 
 # =============================================================================
-# Phase 12.1: Synthetic Data Fixtures
+# Tolerance Helpers
 # =============================================================================
-
-@pytest.fixture
-def synthetic_scalar_rdf():
-    """Simple scalar RDataFrame for basic tests."""
-    ROOT = pytest.importorskip("ROOT")
-    
-    rdf = ROOT.RDataFrame(1000)
-    rdf = rdf.Define("pt", "gRandom->Gaus(10, 2)")
-    rdf = rdf.Define("eta", "gRandom->Uniform(-2, 2)")
-    rdf = rdf.Define("phi", "gRandom->Uniform(-3.14159, 3.14159)")
-    rdf = rdf.Define("isOK", "abs(eta) < 1.0")
-    rdf = rdf.Define("charge", "gRandom->Rndm() > 0.5 ? 1 : -1")
-    
-    return rdf
-
-
-@pytest.fixture
-def synthetic_track_cluster_rdf():
-    """
-    RDataFrame emulating Track → Cluster relationship for Phase 12.2.
-    
-    Structure:
-    - Per event: variable number of tracks (RVec)
-    - Per event: variable number of clusters (RVec)
-    - Index mapping: trackClusterFirst, trackClusterN
-    
-    This matches the TPC calibration pattern:
-        TrackDataCompact.idxFirstResidual → UnbinnedResid
-    """
-    ROOT = pytest.importorskip("ROOT")
-    
-    # Need to compile helper functions for complex RVec generation
-    ROOT.gInterpreter.Declare("""
-    #ifndef SYNTH_DATA_HELPERS_DEFINED
-    #define SYNTH_DATA_HELPERS_DEFINED
-    
-    #include <random>
-    
-    // Thread-local random generator for reproducibility
-    inline std::mt19937& getSynthGen() {
-        thread_local std::mt19937 gen(42);
-        return gen;
-    }
-    
-    inline ROOT::RVec<float> generateGausVec(int n, float mean, float sigma) {
-        auto& gen = getSynthGen();
-        std::normal_distribution<float> dist(mean, sigma);
-        ROOT::RVec<float> v(n);
-        for (auto& x : v) x = dist(gen);
-        return v;
-    }
-    
-    inline ROOT::RVec<float> generateUniformVec(int n, float low, float high) {
-        auto& gen = getSynthGen();
-        std::uniform_real_distribution<float> dist(low, high);
-        ROOT::RVec<float> v(n);
-        for (auto& x : v) x = dist(gen);
-        return v;
-    }
-    
-    inline ROOT::RVec<bool> generateBoolVec(int n, float prob_true) {
-        auto& gen = getSynthGen();
-        std::uniform_real_distribution<float> dist(0, 1);
-        ROOT::RVec<bool> v(n);
-        for (auto& x : v) x = (dist(gen) < prob_true);
-        return v;
-    }
-    
-    inline ROOT::RVec<int> generateClusterFirstIdx(int nTracks) {
-        auto& gen = getSynthGen();
-        std::poisson_distribution<int> dist(7);  // ~7 clusters per track
-        ROOT::RVec<int> firstIdx(nTracks);
-        int idx = 0;
-        for (int i = 0; i < nTracks; i++) {
-            firstIdx[i] = idx;
-            idx += 3 + dist(gen);  // 3-15 clusters per track
-        }
-        return firstIdx;
-    }
-    
-    inline int computeTotalClusters(const ROOT::RVec<int>& firstIdx, int nTracks) {
-        if (nTracks == 0) return 0;
-        // Estimate: last track starts at firstIdx[last], add average clusters
-        return firstIdx[nTracks-1] + 10;  // Approximate
-    }
-    
-    inline ROOT::RVec<int> computeClusterCounts(const ROOT::RVec<int>& firstIdx, int totalClusters) {
-        int n = firstIdx.size();
-        ROOT::RVec<int> counts(n);
-        for (int i = 0; i < n; i++) {
-            counts[i] = (i < n-1) ? (firstIdx[i+1] - firstIdx[i]) : (totalClusters - firstIdx[i]);
-        }
-        return counts;
-    }
-    
-    #endif
-    """)
-    
-    rdf = ROOT.RDataFrame(500)  # 500 events
-    
-    # === Track-level arrays ===
-    rdf = rdf.Define("nTracks", "2 + gRandom->Poisson(4)")  # 2-10 tracks per event
-    rdf = rdf.Define("trackPt", "generateGausVec(nTracks, 10.0, 2.0)")
-    rdf = rdf.Define("trackEta", "generateUniformVec(nTracks, -1.0, 1.0)")
-    rdf = rdf.Define("trackPhi", "generateUniformVec(nTracks, -3.14159, 3.14159)")
-    rdf = rdf.Define("trackIsOK", "generateBoolVec(nTracks, 0.7)")  # 70% good tracks
-    rdf = rdf.Define("trackMp4", "generateGausVec(nTracks, 0.0, 1.0)")  # mP4 parameter
-    
-    # === Index mapping: track → cluster ===
-    rdf = rdf.Define("trackClusterFirst", "generateClusterFirstIdx(nTracks)")
-    rdf = rdf.Define("nClusters", "computeTotalClusters(trackClusterFirst, nTracks)")
-    rdf = rdf.Define("trackClusterN", "computeClusterCounts(trackClusterFirst, nClusters)")
-    
-    # === Cluster-level arrays ===
-    rdf = rdf.Define("clusterDy", "generateGausVec(nClusters, 0.0, 0.5)")
-    rdf = rdf.Define("clusterDz", "generateGausVec(nClusters, 0.0, 0.3)")
-    rdf = rdf.Define("clusterY", "generateUniformVec(nClusters, -50.0, 50.0)")
-    rdf = rdf.Define("clusterZ", "generateUniformVec(nClusters, -250.0, 250.0)")
-    rdf = rdf.Define("clusterRow", "ROOT::RVec<int> v(nClusters); for(int i=0;i<nClusters;i++) v[i]=i%152; return v;")
-    
-    # === Derived columns (like calibration schema) ===
-    rdf = rdf.Define("trackIsGood", "abs(trackMp4) < 1.5")  # Quality cut
-    rdf = rdf.Define("clusterIsEdge", "abs(clusterY) > 45.0")  # Edge flag
-    
-    return rdf
-
-
-@pytest.fixture
-def track_cluster_schema():
-    """Schema matching synthetic_track_cluster_rdf."""
-    return {
-        # Scalars
-        "nTracks": "int",
-        "nClusters": "int",
-        # Track arrays
-        "trackPt": "RVec<float>",
-        "trackEta": "RVec<float>",
-        "trackPhi": "RVec<float>",
-        "trackIsOK": "RVec<bool>",
-        "trackMp4": "RVec<float>",
-        "trackIsGood": "RVec<bool>",
-        "trackClusterFirst": "RVec<int>",
-        "trackClusterN": "RVec<int>",
-        # Cluster arrays
-        "clusterDy": "RVec<float>",
-        "clusterDz": "RVec<float>",
-        "clusterY": "RVec<float>",
-        "clusterZ": "RVec<float>",
-        "clusterRow": "RVec<int>",
-        "clusterIsEdge": "RVec<bool>",
-    }
-
-
-@pytest.fixture
-def scalar_schema():
-    """Schema matching synthetic_scalar_rdf."""
-    return {
-        "pt": "double",
-        "eta": "double",
-        "phi": "double",
-        "isOK": "bool",
-        "charge": "int",
-    }
-
-
-# =============================================================================
-# Phase 13.2.1.DSL: Invariant Testing Fixtures
-# =============================================================================
-
-from .invariant_schema import (
-    TOLERANCE,
-    DEFAULT_N_EVENTS,
-    DEFAULT_SEED,
-    INVARIANT_SCHEMA,
-)
-
 
 def get_tolerance(dtype: str) -> dict:
     """
@@ -279,6 +106,10 @@ def assert_invariant(actual, expected, dtype="double", context=""):
                     f"actual={actual} expected={expected} diff={abs(actual - expected):.2e}"
                 )
 
+
+# =============================================================================
+# Session-Scoped Fixtures
+# =============================================================================
 
 @pytest.fixture(scope="session")
 def test_data_dir(tmp_path_factory):
@@ -357,10 +188,10 @@ def dsl_compiler():
         DSLCompiler instance or pytest.skip if not available
     """
     try:
-        from dsl_compiler import DSLCompiler
+        from RDataFrameDSL.dsl_compiler import DSLCompiler
     except ImportError:
         try:
-            from ..dsl_compiler import DSLCompiler
+            from dsl_compiler import DSLCompiler
         except ImportError:
             pytest.skip("DSLCompiler not available")
     
@@ -369,3 +200,162 @@ def dsl_compiler():
                   if not k.startswith("arr_") and k != "n_arr" and k != "idx" and k != "picked"}
     
     return DSLCompiler(dsl_schema)
+
+
+# =============================================================================
+# Fixtures for test_draw_integration.py
+# =============================================================================
+
+@pytest.fixture
+def scalar_schema():
+    """Schema with scalar columns for draw integration tests."""
+    return {"pt": "double", "eta": "double", "phi": "double"}
+
+
+@pytest.fixture
+def track_cluster_schema():
+    """Schema with RVec columns for draw integration tests."""
+    return {
+        "trackPt": "RVec<float>",
+        "trackEta": "RVec<float>",
+        "clusterE": "RVec<float>",
+        "nTracks": "int",      # P0-2/P0-3: Include counter columns
+        "nClusters": "int",
+    }
+
+
+@pytest.fixture
+def synthetic_scalar_rdf(tmp_path, scalar_schema):
+    """
+    Create an RDataFrame with synthetic scalar data.
+    
+    Generates a ROOT file with scalar columns (pt, eta, phi).
+    """
+    try:
+        import ROOT
+    except ImportError:
+        pytest.skip("ROOT not available")
+    
+    # Create a temporary ROOT file with scalar data
+    filepath = tmp_path / "scalar_data.root"
+    
+    # Use RDataFrame to create synthetic data
+    n_events = 100
+    rdf = ROOT.RDataFrame(n_events)
+    
+    # Add scalar columns with generated data
+    rdf_with_data = (
+        rdf.Define("pt", "gRandom->Uniform(0.5, 100.0)")
+           .Define("eta", "gRandom->Uniform(-2.5, 2.5)")
+           .Define("phi", "gRandom->Uniform(-3.14159, 3.14159)")
+    )
+    
+    # Save to file and re-read (ensures proper column types)
+    rdf_with_data.Snapshot("tree", str(filepath))
+    
+    return ROOT.RDataFrame("tree", str(filepath))
+
+
+@pytest.fixture
+def synthetic_track_cluster_rdf(tmp_path, track_cluster_schema):
+    """
+    Create an RDataFrame with synthetic track/cluster data (RVec columns).
+    
+    Generates a ROOT file with RVec<float> columns.
+    """
+    try:
+        import ROOT
+    except ImportError:
+        pytest.skip("ROOT not available")
+    
+    # Create a temporary ROOT file with RVec data
+    filepath = tmp_path / "track_cluster_data.root"
+    
+    n_events = 100
+    rdf = ROOT.RDataFrame(n_events)
+    
+    # Add RVec columns - generate variable-length vectors
+    rdf_with_data = (
+        rdf.Define("nTracks", "gRandom->Integer(10) + 1")  # 1-10 tracks
+           .Define("trackPt", "ROOT::RVecF v(nTracks); for(auto& x : v) x = gRandom->Uniform(0.5, 50.0); return v;")
+           .Define("trackEta", "ROOT::RVecF v(nTracks); for(auto& x : v) x = gRandom->Uniform(-1.0, 1.0); return v;")
+           .Define("nClusters", "gRandom->Integer(20) + 1")  # 1-20 clusters
+           .Define("clusterE", "ROOT::RVecF v(nClusters); for(auto& x : v) x = gRandom->Uniform(0.1, 10.0); return v;")
+    )
+    
+    # P0-2 FIX: Save ALL columns including nTracks and nClusters
+    rdf_with_data.Snapshot("tree", str(filepath), {"trackPt", "trackEta", "clusterE", "nTracks", "nClusters"})
+    
+    return ROOT.RDataFrame("tree", str(filepath))
+
+
+# =============================================================================
+# Phase 13.4.D9: ROOT Test Isolation
+# =============================================================================
+
+def pytest_configure(config):
+    """Register custom markers."""
+    config.addinivalue_line(
+        "markers",
+        "root_serial: mark test as requiring ROOT (runs serially, deselect with -m 'not root_serial')"
+    )
+
+
+
+def pytest_collection_modifyitems(config, items):
+    """
+    Auto-mark tests that use ROOT for serial execution.
+    
+    Tests are marked as root_serial if:
+    1. Test file name contains patterns indicating ROOT usage
+    2. Test is not in the parallel-safe list
+    """
+    # Patterns that indicate ROOT usage
+    root_patterns = [
+        'test_carray_correctness',  # JIT declarations
+        'test_carray_root',         # JIT declarations
+        'test_root_broadcast',      # Custom Define() code
+        'test_root_integration',    # Custom Define() code
+    ]
+    
+    # Tests that are safe for parallel (no ROOT JIT)
+    parallel_safe = [
+        'test_d9_integration',
+        'test_carray_detector',
+        'test_arrow',
+        'test_backend_cpp',
+        'test_ir_',
+        'test_parser',
+        'test_type_inferrer',
+        'test_schema',
+        'test_generator_sanity',
+    ]
+    
+    root_serial_marker = pytest.mark.root_serial
+    
+    for item in items:
+        # Get test file name
+        test_file = item.fspath.basename if hasattr(item, 'fspath') else str(item.path)
+        
+        # Check if it matches ROOT patterns
+        is_root_test = any(pattern in test_file for pattern in root_patterns)
+        is_parallel_safe = any(pattern in test_file for pattern in parallel_safe)
+        
+        # Mark ROOT tests for serial execution
+        if is_root_test and not is_parallel_safe:
+            item.add_marker(root_serial_marker)
+
+
+@pytest.fixture(scope="session")
+def root_lock():
+    """
+    Session-scoped lock for ROOT operations.
+    
+    Use this fixture in tests that need exclusive ROOT access:
+    
+        def test_something(root_lock):
+            with root_lock:
+                ROOT.gInterpreter.Declare(...)
+    """
+    import threading
+    return threading.Lock()
