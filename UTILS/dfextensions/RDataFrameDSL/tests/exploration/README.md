@@ -1,6 +1,6 @@
 # Phase 13.5 - Exploration Tests
 
-**Status:** ✅ COMPLETE (32/32 tests pass)  
+**Status:** ✅ COMPLETE (40/40 tests pass)  
 **Authorization:** Main Architect approved  
 **Completion Date:** 2026-01-11
 
@@ -15,6 +15,7 @@ This directory contains exploration tests for Phase 13.5: Hybrid C++ Integration
 | **13.5.A** | T1-T6 | ✅ 6/6 | Foundation (ACLiC, Debug, Performance) |
 | **13.5.B0** | T7-T14 | ✅ 6/6 | v7 Spec Foundation (Macro, Pragma, Redefine) |
 | **13.5.B1** | T15-T32 | ✅ 18/18 | v7 Spec Validation (Thread Safety, Overloads) |
+| **13.5.B2** | T33-T41 | ✅ 8/8 | Extended Validation (Headers, I/O, Physics Types) |
 
 ## Quick Start
 
@@ -110,6 +111,19 @@ Validates v7 specification for `register_function_cpp()`:
 | **T31** | ✅ PASS | Consistent across optimization levels |
 | **T32** | ✅ PASS | int, bool, float return types work |
 
+### Phase 13.5.B2 — Extended Validation (T33-T41)
+
+| Test | Status | Key Finding |
+|------|--------|-------------|
+| **T33** | ✅ PASS | **Header auto-detection** works for math, ROOT pre-includes `<algorithm>` |
+| **T34** | ✅ PASS | I/O contract: simple POD structs work without pragma |
+| **T35** | ✅ PASS | Namespace isolation verified |
+| **T36** | ✅ PASS | **Thread-safe!** 4/4 threads completed (surprising) |
+| **T37** | ✅ PASS | Re-declaration IGNORED (not rejected), hash naming works |
+| **T38** | ✅ PASS | **TLorentzVector, nested RVec work** (physics-critical) |
+| **T39** | ✅ PASS | Version matrix documented (ROOT 6.32.06, macOS ARM64) |
+| **T41** | ✅ PASS | **Lambda rejection enforced** (FROZEN RULE #1) |
+
 ---
 
 ## Critical Decision Points
@@ -144,6 +158,24 @@ Observation: Both arity and type-based overloading work perfectly
 Decision: DSL can register multiple overloads
 ```
 
+### T36: Thread Safety → ROOT JIT Thread-Safe (Surprising)
+```
+Observation: 4/4 threads completed, 0 failed
+Decision: No Lock required, but recommend for safety in implementation
+```
+
+### T37: Re-declaration → Silently Ignored
+```
+Observation: Cling ignores (doesn't reject) re-declaration of same name
+Decision: Track declared names to avoid wasted compilation attempts
+```
+
+### T41: Lambda Rejection → FROZEN RULE #1 Enforced
+```
+Observation: All 4 lambda patterns rejected by parser
+Decision: Named functions only, clear error message provided
+```
+
 ---
 
 ## v7 Specification Validation
@@ -176,12 +208,14 @@ exploration/
 ├── README.md                           # This file
 ├── exploration_report.md               # Phase 13.5.A report (T1-T6)
 ├── exploration_report_B.md             # Phase 13.5.B report (T7-T32)
+├── exploration_report_C.md             # Phase 13.5.B2 report (T33-T41)
 │
 ├── # Infrastructure
 ├── test_infrastructure.py              # Common utilities, MockDSLCompiler
 ├── run_exploration.sh                  # T1-T6 runner
 ├── run_phase_13_5_b0_tests.sh          # T7-T14 runner
 ├── run_phase_13_5_b0_extended.sh       # T15-T32 runner
+├── run_t33_t41_tests.sh                # T33-T41 runner
 │
 ├── # Phase 13.5.A Tests (T1-T6)
 ├── test_t1_aclic_basic.py
@@ -205,7 +239,10 @@ exploration/
 ├── test_t16_t18_parser_hash_cache.py
 ├── test_t19_t21_overload_crossinstance_export.py
 ├── test_t22_t24_overload_idempotency_schema.py
-└── test_t25_t32_robustness.py
+├── test_t25_t32_robustness.py
+│
+├── # Phase 13.5.B2 Tests (T33-T41)
+└── test_t33_t41_extended.py
 ```
 
 ---
@@ -248,9 +285,11 @@ All technical risks validated:
 6. ✅ Thread-safe under ImplicitMT
 7. ✅ C++ overload resolution preserved
 8. ✅ Export is deployable
+9. ✅ **TLorentzVector and nested RVec work** (physics-critical)
+10. ✅ **Lambda rejection enforced** (FROZEN RULE #1)
 
-**Recommendation:** Proceed to Phase 13.5.B2 Implementation
+**Recommendation:** Proceed to Phase 13.5.B3 Implementation
 
 ---
 
-**Phase 13.5 — Exploration Phase Complete**
+**Phase 13.5 — Exploration Phase Complete (40/40 tests pass)**
