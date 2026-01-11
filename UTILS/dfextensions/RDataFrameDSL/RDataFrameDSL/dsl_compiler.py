@@ -35,10 +35,14 @@ Phase 7.9: RDataFrame Validation & C++ Export
 Phase 8.1: Alias referencing support (aliases can use other aliases)
 """
 
-from typing import Dict, List, Optional, Any, Set, Tuple
+from typing import Dict, List, Optional, Any, Set, Tuple, FrozenSet
 import uuid
 import re
 import warnings
+import hashlib
+import threading
+import time
+from dataclasses import dataclass, field
 
 from .type_inferrer import TypeInferrer, extract_inner_type, is_collection_type
 from .ir_builder import IRBuilder
@@ -91,6 +95,67 @@ def _arrow_type_to_ctype(arrow_type) -> str:
 
 
 __all__ = ['DSLCompiler']
+
+
+# =============================================================================
+# Phase 13.5.B: C++ Function Registration Constants
+# =============================================================================
+
+HASH_LENGTH = 16
+HASH_SCHEMA_VERSION = 1
+
+# Default headers for C++ function registration
+REGISTER_DEFAULT_HEADERS: FrozenSet[str] = frozenset([
+    "<cmath>",
+    "<ROOT/RVec.hxx>",
+])
+
+# Header auto-detection map for register_function_cpp
+REGISTER_HEADER_MAP: Dict[str, str] = {
+    # Math functions
+    'sqrt': '<cmath>', 'sin': '<cmath>', 'cos': '<cmath>',
+    'tan': '<cmath>', 'atan2': '<cmath>', 'exp': '<cmath>',
+    'log': '<cmath>', 'pow': '<cmath>', 'fabs': '<cmath>',
+    'abs': '<cmath>', 'atanh': '<cmath>', 'acos': '<cmath>',
+    'asin': '<cmath>', 'ceil': '<cmath>', 'floor': '<cmath>',
+    # Algorithm
+    'std::max': '<algorithm>', 'std::min': '<algorithm>',
+    'std::sort': '<algorithm>', 'std::find': '<algorithm>',
+    # RVec
+    'RVec': '<ROOT/RVec.hxx>',
+    'Sum': '<ROOT/RVec.hxx>', 'Mean': '<ROOT/RVec.hxx>',
+    'StdDev': '<ROOT/RVec.hxx>', 'Var': '<ROOT/RVec.hxx>',
+    # Physics types (T38: validated)
+    'TLorentzVector': '<TLorentzVector.h>',
+    'TVector3': '<TVector3.h>',
+    'TVector2': '<TVector2.h>',
+    # TMath
+    'TMath::': '<TMath.h>',
+}
+
+# Lambda patterns to reject (FROZEN RULE #1)
+LAMBDA_PATTERNS = [
+    r'\[\s*[&=]?\s*\]\s*\(',           # [](, [&](, [=](
+    r'\[\s*[&=]?\s*\w*\s*\]\s*\(',     # [&x](, [=x](
+    r'auto\s+\w+\s*=\s*\[',            # auto f = [
+    r'std::function\s*<[^>]+>\s*\w*\s*=\s*\[',  # std::function<...> = [
+]
+
+
+@dataclass
+class RegisteredCppFunction:
+    """Internal representation of a registered C++ function (Phase 13.5.B)."""
+    name: str                           # User-facing name
+    cpp_name: str                       # Internal name (dsl_{name}_{hash})
+    hash: str                           # Content hash (16 chars)
+    params: List[Tuple[str, str]]       # [(param_name, param_type), ...]
+    return_type: str                    # Return type
+    body: str                           # Function body
+    full_cpp: str                       # Complete C++ code
+    headers: Set[str]                   # Required headers
+    pragmas: Set[str]                   # Raw pragma lines
+    declared: bool                      # Successfully declared in ROOT
+    timestamp: float = field(default_factory=time.time)
 
 
 def _simple_schema_to_full(simple_schema: Dict[str, str]) -> Dict:
@@ -181,6 +246,10 @@ class DSLCompiler:
         >>> rdf = dsl.apply(rdf)
     """
     
+    # Phase 13.5.B: Class-level state for C++ function registration (thread-safe)
+    _global_cpp_compile_lock: threading.RLock = threading.RLock()
+    _global_cpp_declared_names: Set[str] = set()
+    
     def __init__(self, schema: Dict[str, str], safe_indexing: bool = True):
         """
         Initialize DSL compiler.
@@ -216,6 +285,10 @@ class DSLCompiler:
         
         # Phase 12.2: Track if JIT helpers have been declared
         self._helpers_declared = False
+        
+        # Phase 13.5.B: Storage for registered C++ functions
+        self._registered_cpp_functions: Dict[str, RegisteredCppFunction] = {}
+        self._registered_cpp_by_name: Dict[str, List[str]] = {}
     
     def _preprocess_expression(self, expr: str) -> str:
         """
@@ -2311,3 +2384,305 @@ class DSLCompiler:
         cpp_expr = re.sub(r'~\(', '!(', cpp_expr)
         
         return cpp_expr
+
+    # =========================================================================
+    # Phase 13.5.B: C++ Function Registration API (v0.5)
+    # =========================================================================
+    
+    def register_function_cpp(
+        self,
+        code: str,
+        headers: Optional[List[str]] = None,
+        pragmas: Optional[List[str]] = None,
+        *,
+        name: Optional[str] = None,
+    ) -> 'DSLCompiler':
+        """
+        Register a C++ function for use in RDataFrame expressions.
+        
+        Phase 13.5.B v0.5 Implementation.
+        
+        Args:
+            code: C++ function definition using natural syntax.
+                  Example: "double pt(double px, double py) { return sqrt(px*px + py*py); }"
+            headers: Optional list of headers. If None, auto-detects.
+                     If provided, combines with default headers.
+            pragmas: Optional list of RAW pragma lines for I/O operations.
+                     Must be complete pragma statements.
+                     Example: ["#pragma link C++ class MyStruct+;"]
+            name: Override the function name parsed from code.
+        
+        Returns:
+            Self for method chaining.
+        
+        Raises:
+            ValueError: If lambda expression detected (FROZEN RULE #1).
+            ValueError: If code cannot be parsed.
+        
+        Example:
+            >>> dsl.register_function_cpp('''
+            ...     double pt(double px, double py) {
+            ...         return sqrt(px*px + py*py);
+            ...     }
+            ... ''')
+            >>> rdf = dsl.apply(rdf)
+            >>> rdf = rdf.Define("track_pt", "pt(px, py)")
+        
+        FROZEN RULE #1: Lambda expressions are PROHIBITED.
+        """
+        # Check for lambda expressions (FROZEN RULE #1)
+        self._check_lambda_cpp(code)
+        
+        # Parse function signature
+        parsed = self._parse_cpp_function(code)
+        if not parsed:
+            raise ValueError(
+                f"Could not parse function signature from:\n{code}\n"
+                f"Expected format: return_type name(params) {{ body }}"
+            )
+        
+        func_name, params, return_type, body = parsed
+        
+        # Override name if provided
+        if name is not None:
+            func_name = name
+        
+        # Determine headers
+        if headers is not None:
+            all_headers = set(REGISTER_DEFAULT_HEADERS) | set(headers)
+        else:
+            detected = self._detect_cpp_headers(body, return_type, params)
+            all_headers = set(REGISTER_DEFAULT_HEADERS) | detected
+        
+        # Generate hash (v0.5: preserves parameter order)
+        func_hash = self._generate_cpp_hash(params, return_type, body, all_headers)
+        
+        # Create C++ name: dsl_<n>_<hash16>
+        cpp_name = f"dsl_{func_name}_{func_hash}"
+        
+        # Build full C++ code
+        full_cpp = self._build_cpp_code(cpp_name, params, return_type, body, all_headers, pragmas)
+        
+        # Declare with ROOT if available
+        declared = self._declare_cpp_function(cpp_name, full_cpp)
+        
+        # Create registered function
+        func = RegisteredCppFunction(
+            name=func_name,
+            cpp_name=cpp_name,
+            hash=func_hash,
+            params=params,
+            return_type=return_type,
+            body=body,
+            full_cpp=full_cpp,
+            headers=all_headers,
+            pragmas=set(pragmas or []),
+            declared=declared,
+        )
+        
+        # Register
+        self._registered_cpp_functions[cpp_name] = func
+        if func_name not in self._registered_cpp_by_name:
+            self._registered_cpp_by_name[func_name] = []
+        self._registered_cpp_by_name[func_name].append(cpp_name)
+        
+        return self
+    
+    def _check_lambda_cpp(self, code: str) -> None:
+        """Check for lambda expressions (FROZEN RULE #1)."""
+        for pattern in LAMBDA_PATTERNS:
+            if re.search(pattern, code):
+                raise ValueError(
+                    "Lambda expressions are not supported (FROZEN RULE #1).\n"
+                    "Use named functions instead:\n"
+                    "  ❌ [](double x) { return x * 2; }\n"
+                    "  ✅ double my_func(double x) { return x * 2; }"
+                )
+    
+    def _parse_cpp_function(self, code: str) -> Optional[Tuple[str, List[Tuple[str, str]], str, str]]:
+        """
+        Parse C++ function: returns (name, params, return_type, body) or None.
+        
+        Handles complex types like const RVec<double>&, namespaces, etc.
+        """
+        code = code.strip()
+        
+        # Remove comments
+        code_no_comments = re.sub(r'//.*?$', '', code, flags=re.MULTILINE)
+        code_no_comments = re.sub(r'/\*.*?\*/', '', code_no_comments, flags=re.DOTALL)
+        
+        # Pattern: return_type name(params) { body }
+        pattern = r'([\w:<>&\s]+?)\s+(\w+)\s*\(([^)]*)\)\s*\{(.+)\}'
+        match = re.search(pattern, code_no_comments, re.DOTALL)
+        
+        if not match:
+            return None
+        
+        return_type = ' '.join(match.group(1).split())
+        name = match.group(2).strip()
+        params_str = match.group(3).strip()
+        body = match.group(4).strip()
+        
+        # Parse parameters (preserve order - v0.5 P0-1 fix)
+        params: List[Tuple[str, str]] = []
+        if params_str:
+            param_pattern = r'([\w:<>&\s]+?)\s+(\w+)\s*(?:,|$)'
+            for pmatch in re.finditer(param_pattern, params_str + ','):
+                ptype = ' '.join(pmatch.group(1).split())
+                pname = pmatch.group(2).strip()
+                params.append((pname, ptype))
+        
+        return name, params, return_type, body
+    
+    def _generate_cpp_hash(
+        self,
+        params: List[Tuple[str, str]],
+        return_type: str,
+        body: str,
+        headers: Set[str]
+    ) -> str:
+        """
+        Generate deterministic hash for function.
+        
+        v0.5 FIXES:
+        1. Parameter order PRESERVED (not sorted) — P0-1 fix
+        2. Only whitespace normalization — P1-1 fix
+        """
+        # Normalize body (whitespace only)
+        normalized_body = ' '.join(body.split())
+        
+        # v0.5 FIX: Preserve parameter order!
+        # DO NOT sort params — f(int,double) != f(double,int)
+        param_types = [self._canonicalize_cpp_type(t) for _, t in params]
+        
+        ret_type = self._canonicalize_cpp_type(return_type)
+        
+        # Build hash input (only headers are sorted)
+        hash_input = "|".join([
+            f"v{HASH_SCHEMA_VERSION}",
+            normalized_body,
+            ",".join(param_types),  # Order preserved!
+            ret_type,
+            ",".join(sorted(headers)),
+        ])
+        
+        return hashlib.sha256(hash_input.encode()).hexdigest()[:HASH_LENGTH]
+    
+    def _canonicalize_cpp_type(self, type_str: str) -> str:
+        """Normalize C++ type strings for consistent hashing."""
+        type_str = ' '.join(type_str.split())
+        
+        # Expand RVec to full name
+        if 'RVec<' in type_str and 'ROOT::VecOps::RVec' not in type_str:
+            type_str = re.sub(r'\bRVec<', 'ROOT::VecOps::RVec<', type_str)
+        
+        # Normalize spacing
+        type_str = re.sub(r'<\s+', '<', type_str)
+        type_str = re.sub(r'\s+>', '>', type_str)
+        type_str = re.sub(r'\s*&', '&', type_str)
+        type_str = re.sub(r'\s*\*', '*', type_str)
+        
+        return type_str
+    
+    def _detect_cpp_headers(
+        self,
+        body: str,
+        return_type: str,
+        params: Optional[List[Tuple[str, str]]] = None
+    ) -> Set[str]:
+        """Auto-detect required headers from code."""
+        headers: Set[str] = set()
+        
+        # Combine body, return type, and param types
+        combined = body + " " + return_type
+        if params:
+            for _, ptype in params:
+                combined += " " + ptype
+        
+        for keyword, header in REGISTER_HEADER_MAP.items():
+            if keyword in combined:
+                headers.add(header)
+        
+        return headers
+    
+    def _build_cpp_code(
+        self,
+        cpp_name: str,
+        params: List[Tuple[str, str]],
+        return_type: str,
+        body: str,
+        headers: Set[str],
+        pragmas: Optional[List[str]]
+    ) -> str:
+        """Build complete C++ code for declaration."""
+        lines = []
+        
+        # Headers
+        for h in sorted(headers):
+            lines.append(f"#include {h}")
+        if lines:
+            lines.append("")
+        
+        # Pragmas (raw lines)
+        if pragmas:
+            for p in pragmas:
+                lines.append(p)
+            lines.append("")
+        
+        # Function
+        param_str = ", ".join(f"{ptype} {pname}" for pname, ptype in params)
+        lines.append(f"{return_type} {cpp_name}({param_str}) {{")
+        lines.append(f"    {body}")
+        lines.append("}")
+        
+        return "\n".join(lines)
+    
+    def _declare_cpp_function(self, cpp_name: str, cpp_code: str) -> bool:
+        """
+        Declare C++ code with ROOT (thread-safe).
+        
+        Uses class-level lock because ROOT's gInterpreter is global.
+        v0.5 P0-3 fix: Class-level lock for thread safety.
+        """
+        # Quick check without lock
+        if cpp_name in DSLCompiler._global_cpp_declared_names:
+            return True
+        
+        with DSLCompiler._global_cpp_compile_lock:
+            # Double-check after acquiring lock
+            if cpp_name in DSLCompiler._global_cpp_declared_names:
+                return True
+            
+            try:
+                import ROOT
+                result = ROOT.gInterpreter.Declare(cpp_code)
+                if result:
+                    DSLCompiler._global_cpp_declared_names.add(cpp_name)
+                    # Update function record
+                    if cpp_name in self._registered_cpp_functions:
+                        self._registered_cpp_functions[cpp_name].declared = True
+                return result
+            except Exception:
+                return False
+    
+    def get_registered_function(self, name: str) -> Optional[RegisteredCppFunction]:
+        """Get most recent registered C++ function by name."""
+        cpp_names = self._registered_cpp_by_name.get(name, [])
+        if not cpp_names:
+            return None
+        return self._registered_cpp_functions.get(cpp_names[-1])
+    
+    def get_all_registered_functions(self, name: str) -> List[RegisteredCppFunction]:
+        """Get all versions of a registered C++ function by name."""
+        cpp_names = self._registered_cpp_by_name.get(name, [])
+        return [self._registered_cpp_functions[cn] for cn in cpp_names 
+                if cn in self._registered_cpp_functions]
+    
+    def list_registered_functions(self) -> List[str]:
+        """List all registered C++ function names."""
+        return list(self._registered_cpp_by_name.keys())
+    
+    def get_registered_cpp_name(self, name: str) -> Optional[str]:
+        """Get internal C++ name for a registered function."""
+        func = self.get_registered_function(name)
+        return func.cpp_name if func else None
