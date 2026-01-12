@@ -209,7 +209,7 @@ def dsl_compiler():
 @pytest.fixture
 def scalar_schema():
     """Schema with scalar columns for draw integration tests."""
-    return {"pt": "double", "eta": "double", "phi": "double"}
+    return {"pt": "double", "eta": "double", "phi": "double", "isOK": "bool"}
 
 
 @pytest.fixture
@@ -218,8 +218,11 @@ def track_cluster_schema():
     return {
         "trackPt": "RVec<float>",
         "trackEta": "RVec<float>",
+        "trackIsOK": "RVec<bool>",
         "clusterE": "RVec<float>",
-        "nTracks": "int",      # P0-2/P0-3: Include counter columns
+        "clusterDy": "RVec<float>",
+        "clusterZ": "RVec<float>",
+        "nTracks": "int",
         "nClusters": "int",
     }
 
@@ -229,7 +232,7 @@ def synthetic_scalar_rdf(tmp_path, scalar_schema):
     """
     Create an RDataFrame with synthetic scalar data.
     
-    Generates a ROOT file with scalar columns (pt, eta, phi).
+    Generates a ROOT file with scalar columns (pt, eta, phi, isOK).
     """
     try:
         import ROOT
@@ -248,6 +251,7 @@ def synthetic_scalar_rdf(tmp_path, scalar_schema):
         rdf.Define("pt", "gRandom->Uniform(0.5, 100.0)")
            .Define("eta", "gRandom->Uniform(-2.5, 2.5)")
            .Define("phi", "gRandom->Uniform(-3.14159, 3.14159)")
+           .Define("isOK", "abs(eta) < 1.0")
     )
     
     # Save to file and re-read (ensures proper column types)
@@ -261,7 +265,10 @@ def synthetic_track_cluster_rdf(tmp_path, track_cluster_schema):
     """
     Create an RDataFrame with synthetic track/cluster data (RVec columns).
     
-    Generates a ROOT file with RVec<float> columns.
+    Generates a ROOT file with RVec<float> columns including:
+    - trackPt, trackEta, trackIsOK
+    - clusterE, clusterDy, clusterZ
+    - nTracks, nClusters
     """
     try:
         import ROOT
@@ -279,12 +286,18 @@ def synthetic_track_cluster_rdf(tmp_path, track_cluster_schema):
         rdf.Define("nTracks", "gRandom->Integer(10) + 1")  # 1-10 tracks
            .Define("trackPt", "ROOT::RVecF v(nTracks); for(auto& x : v) x = gRandom->Uniform(0.5, 50.0); return v;")
            .Define("trackEta", "ROOT::RVecF v(nTracks); for(auto& x : v) x = gRandom->Uniform(-1.0, 1.0); return v;")
+           .Define("trackIsOK", "ROOT::RVec<bool> v(nTracks); for(auto& x : v) x = gRandom->Rndm() > 0.2; return v;")
            .Define("nClusters", "gRandom->Integer(20) + 1")  # 1-20 clusters
            .Define("clusterE", "ROOT::RVecF v(nClusters); for(auto& x : v) x = gRandom->Uniform(0.1, 10.0); return v;")
+           .Define("clusterDy", "ROOT::RVecF v(nClusters); for(auto& x : v) x = gRandom->Gaus(0, 0.1); return v;")
+           .Define("clusterZ", "ROOT::RVecF v(nClusters); for(auto& x : v) x = gRandom->Uniform(-200, 200); return v;")
     )
     
-    # P0-2 FIX: Save ALL columns including nTracks and nClusters
-    rdf_with_data.Snapshot("tree", str(filepath), {"trackPt", "trackEta", "clusterE", "nTracks", "nClusters"})
+    # Save ALL columns including the new ones
+    rdf_with_data.Snapshot("tree", str(filepath), 
+                           {"trackPt", "trackEta", "trackIsOK", 
+                            "clusterE", "clusterDy", "clusterZ",
+                            "nTracks", "nClusters"})
     
     return ROOT.RDataFrame("tree", str(filepath))
 
