@@ -458,9 +458,12 @@ class TestCustomFunctions:
     
     def test_register_custom_function(self, basic_builder):
         """Register and use custom function."""
+        # Phase 13.5.C: param_types required for overload resolution
+        # Note: px is defined as 'float' (Float32) in basic_schema
         basic_builder.register_function(
             "myFunc", "MyNamespace::myFunc", 
-            return_type=IRTypeKind.Float64
+            return_type=IRTypeKind.Float64,
+            param_types=[{'name': 'x', 'cpp_type': 'float', 'rank': 0, 'ir_kind': IRTypeKind.Float32}]
         )
         
         node = basic_builder.build("myFunc(px)")
@@ -637,8 +640,12 @@ class TestComplexExpressions:
     
     def test_eta_calculation(self, basic_builder):
         """Eta calculation with atanh."""
-        # Need to add atanh if not present
-        basic_builder.register_function("atanh", "std::atanh", IRTypeKind.Float64)
+        # Phase 13.5.C: param_types required for overload resolution
+        basic_builder.register_function(
+            "atanh", "std::atanh", 
+            return_type=IRTypeKind.Float64,
+            param_types=[{'name': 'x', 'cpp_type': 'double', 'rank': 0, 'ir_kind': IRTypeKind.Float64}]
+        )
         
         # First add pt alias
         basic_builder.inferrer.register_alias("pt", IRType(IRTypeKind.Float64))

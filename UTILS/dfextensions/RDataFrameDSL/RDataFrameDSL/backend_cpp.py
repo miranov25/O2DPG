@@ -223,6 +223,7 @@ class GeneratedFunction:
         ir: Original IR tree (for debugging)
         dsl_expression: Original DSL expression string (for comments/debugging)
         column_name: User-friendly column name for RDataFrame.Define()
+        is_raw: True if created via define_raw() (Phase 13.5.C)
     """
     name: str
     code: str
@@ -232,6 +233,7 @@ class GeneratedFunction:
     ir: Optional[IRNode] = None
     dsl_expression: str = ""
     column_name: str = ""  # User-friendly name for Define()
+    is_raw: bool = False  # Phase 13.5.C: True if from define_raw()
     
     def get_call_expression(self) -> str:
         """Get expression for RDataFrame.Define()."""

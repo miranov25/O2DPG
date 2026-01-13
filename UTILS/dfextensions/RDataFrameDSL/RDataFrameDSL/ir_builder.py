@@ -236,27 +236,62 @@ class IRBuilder:
         """
         self.inferrer = type_inferrer
         self.errors = error_collector or ErrorCollector()
-        self._custom_functions: Dict[str, Dict] = {}
+        self._custom_functions: Dict[str, List[Dict]] = {}  # Phase 13.5.C: List for overloads
         # Phase 11.1c: Cache for namespace resolution (positive results only)
         self._namespace_cache: Dict[str, bool] = {}
     
-    def register_function(self, name: str, cpp_name: str, 
-                         return_type: IRTypeKind = None,
-                         headers: List[str] = None) -> None:
+    def register_function(
+        self, 
+        name: str, 
+        cpp_name: str,
+        return_type: 'IRTypeKind' = None,
+        headers: List[str] = None,
+        param_types: List[Dict] = None,
+    ) -> None:
         """
         Register a custom function mapping.
         
+        Phase 13.5.C v0.5: Supports multiple overloads per name.
+        
         Args:
-            name: Python function name
-            cpp_name: C++ function name (with namespace)
-            return_type: Return type (None = infer from args)
+            name: Python function name (e.g., "pt")
+            cpp_name: C++ function name (e.g., "dsl_pt_abc123")
+            return_type: Return type. If None, defaults to Object with warning.
             headers: Required C++ headers
+            param_types: REQUIRED - List of parameter type info for overload resolution
+                         Each entry: {'name', 'cpp_type', 'rank', 'ir_kind'}
+        
+        Raises:
+            ValueError: If param_types is None (missing)
         """
-        self._custom_functions[name] = {
+        import warnings
+        
+        # v0.5 FIX (P0-1): Only reject None, allow [] for zero-param functions
+        if param_types is None:
+            raise ValueError(
+                f"Custom function '{name}' requires param_types for overload resolution. "
+                f"Got: None. "
+                f"Note: For zero-parameter functions, pass empty list []."
+            )
+        
+        # v0.5 FIX (P0-3): Handle None return_type with warning
+        if return_type is None:
+            warnings.warn(
+                f"Function '{name}' registered without return_type. "
+                f"Defaulting to Object. Specify return_type for better type inference.",
+                UserWarning
+            )
+            return_type = IRTypeKind.Object
+        
+        if name not in self._custom_functions:
+            self._custom_functions[name] = []
+        
+        self._custom_functions[name].append({
             "cpp_name": cpp_name,
             "return_type": return_type,
             "headers": headers or [],
-        }
+            "param_types": param_types,
+        })
     
     def build(self, expression: str, 
               alias_name: str = None,
@@ -814,15 +849,15 @@ class IRBuilder:
         # Get function name
         func_name = self._get_call_name(node.func)
         
-        # Check if it's a known function
-        func_info = self._get_function_info(func_name) if func_name else None
+        # Phase 13.5.C: Build argument nodes FIRST for overload resolution
+        args = [self._visit(arg, ctx) for arg in node.args]
+        
+        # Check if it's a known function (pass args for overload resolution)
+        func_info = self._get_function_info(func_name, args) if func_name else None
         
         if func_info is None:
             # Not a known function - treat as method call
             return self._visit_method_call(node, ctx)
-        
-        # Build argument nodes
-        args = [self._visit(arg, ctx) for arg in node.args]
         
         # Phase 12.2: Special handling for selection functions
         if func_info.get("is_selection"):
@@ -930,17 +965,120 @@ class IRBuilder:
                 return ".".join(reversed(parts))
         return None
     
-    def _get_function_info(self, name: str) -> Optional[Dict]:
-        """Look up function info by name."""
+    def _get_function_info(self, name: str, args: List['IRNode'] = None) -> Optional[Dict]:
+        """
+        Look up function info by name, with optional overload resolution.
+        
+        Phase 13.5.C v0.5: Selects correct overload based on argument types.
+        
+        Args:
+            name: Function name to look up
+            args: Optional argument IRNodes for overload resolution
+            
+        Returns:
+            Dict with function info, or None if not found
+            
+        Note:
+            When args=None, returns latest registered candidate (consistent with
+            "latest wins" versioning rule per v0.4 P0-3 fix).
+        """
         # Check custom functions first
         if name in self._custom_functions:
-            return self._custom_functions[name]
+            candidates = self._custom_functions[name]
+            
+            if args is None:
+                # v0.5 FIX (P0-3): Return latest for consistency with "latest wins" rule
+                return candidates[-1] if candidates else None
+            
+            # v0.5: Overload resolution
+            return self._select_overload(name, candidates, args)
         
-        # Check known functions
+        # Check known functions (no overloading for builtins)
         if name in KNOWN_FUNCTIONS:
             return KNOWN_FUNCTIONS[name]
         
         return None
+    
+    def _select_overload(
+        self, 
+        name: str, 
+        candidates: List[Dict], 
+        args: List['IRNode']
+    ) -> Dict:
+        """
+        Select the correct overload based on argument types.
+        
+        Phase 13.5.C v0.5: Exact (rank, kind) matching.
+        
+        Selection algorithm:
+        1. Filter by arity (number of arguments)
+        2. Filter by exact (rank, kind) match per argument
+        3. If exactly one match → return it
+        4. If multiple matches → same signature, latest wins
+        5. If no matches → raise clear error
+        """
+        # Step 1: Filter by arity
+        by_arity = [c for c in candidates if len(c['param_types']) == len(args)]
+        
+        if not by_arity:
+            available_arities = sorted(set(len(c['param_types']) for c in candidates))
+            raise IRError(
+                IRErrorKind.TYPE_ERROR,
+                f"No overload of '{name}' accepts {len(args)} argument(s).\n"
+                f"Available arities: {available_arities}",
+                suggestions=[
+                    f"Check the number of arguments passed to '{name}'",
+                ]
+            )
+        
+        # Step 2: Filter by exact (rank, kind) match
+        matching = []
+        for candidate in by_arity:
+            if self._signature_matches(candidate['param_types'], args):
+                matching.append(candidate)
+        
+        if not matching:
+            # Build helpful error message
+            arg_sig = [(arg.rank, arg.dtype.kind.name) for arg in args]
+            expected_sigs = []
+            for c in by_arity:
+                sig = [(p['rank'], p['ir_kind'].name) for p in c['param_types']]
+                expected_sigs.append(str(sig))
+            
+            raise IRError(
+                IRErrorKind.TYPE_ERROR,
+                f"No overload of '{name}' matches argument types.\n"
+                f"  Got:       {arg_sig}\n"
+                f"  Available: {', '.join(expected_sigs)}",
+                suggestions=[
+                    "Check argument types (scalar vs RVec, int vs double)",
+                    "Register an overload matching your argument types",
+                ]
+            )
+        
+        if len(matching) == 1:
+            return matching[0]
+        
+        # Step 3: Multiple matches = same signature registered multiple times
+        # Return latest (deterministic versioning)
+        return matching[-1]
+
+    def _signature_matches(self, param_types: List[Dict], args: List['IRNode']) -> bool:
+        """
+        Check if argument types exactly match parameter types.
+        
+        Phase 13.5.C v0.5: Exact (rank, kind) matching, no widening.
+        """
+        for param, arg in zip(param_types, args):
+            # Match rank exactly
+            if param['rank'] != arg.rank:
+                return False
+            
+            # Match kind exactly (no widening: int ≠ double)
+            if param['ir_kind'] != arg.dtype.kind:
+                return False
+        
+        return True
     
     # =========================================================================
     # Phase 12.2: Selection Function Type Inference

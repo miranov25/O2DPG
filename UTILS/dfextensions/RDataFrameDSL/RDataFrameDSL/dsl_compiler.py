@@ -405,6 +405,10 @@ class DSLCompiler:
         
         # Parse and generate
         builder = IRBuilder(self._inferrer)
+        
+        # Phase 13.5.C: Register custom functions with builder for overload resolution
+        self._register_custom_functions_with_builder(builder)
+        
         ir = builder.build(preprocessed)
         
         # Phase 11.1c: Override return type if explicitly specified
@@ -1589,6 +1593,8 @@ class DSLCompiler:
             preprocessed = self._preprocess_expression(expr)
             # Create temporary builder (self._builder may not exist)
             builder = IRBuilder(self._inferrer)
+            # Phase 13.5.C: Register custom functions
+            self._register_custom_functions_with_builder(builder)
             ir = builder.build(preprocessed, "_dep_check")
             
             # Use the built-in walk() method to collect all VariableNodes
@@ -2485,6 +2491,245 @@ class DSLCompiler:
         if func_name not in self._registered_cpp_by_name:
             self._registered_cpp_by_name[func_name] = []
         self._registered_cpp_by_name[func_name].append(cpp_name)
+        
+        # === Phase 13.5.C: Register for DSL parsing ===
+        self._register_function_for_dsl(
+            name=func_name,
+            cpp_name=cpp_name,
+            return_type=return_type,
+            params=params,
+            headers=all_headers,
+        )
+        
+        return self
+    
+    # =========================================================================
+    # Phase 13.5.C: DSL Integration for Registered Functions
+    # =========================================================================
+    
+    def _register_function_for_dsl(
+        self,
+        name: str,
+        cpp_name: str,
+        return_type: str,
+        params: List[Tuple[str, str]],
+        headers: Set[str],
+    ) -> None:
+        """
+        Register function with type system for DSL expression parsing.
+        
+        Phase 13.5.C v0.5: Stores (rank, kind) for each parameter.
+        Enables dsl.define("x", "pt(px, py)") to work.
+        """
+        _, ir_return_type = self._cpp_type_to_rank_kind(return_type)
+        
+        # Extract param types with rank and kind
+        param_types = []
+        for param_name, param_cpp_type in params:
+            rank, ir_kind = self._cpp_type_to_rank_kind(param_cpp_type)
+            param_types.append({
+                'name': param_name,
+                'cpp_type': param_cpp_type,
+                'rank': rank,
+                'ir_kind': ir_kind,
+            })
+        
+        # Store for later registration with IRBuilder
+        if not hasattr(self, '_dsl_registered_functions'):
+            self._dsl_registered_functions: Dict[str, List[Dict]] = {}
+        
+        if name not in self._dsl_registered_functions:
+            self._dsl_registered_functions[name] = []
+        
+        self._dsl_registered_functions[name].append({
+            'cpp_name': cpp_name,
+            'return_type': ir_return_type,
+            'param_types': param_types,
+            'headers': list(headers),
+        })
+    
+    def _cpp_type_to_rank_kind(self, cpp_type: str) -> Tuple[int, 'IRTypeKind']:
+        """
+        Convert C++ type string to (rank, IRTypeKind).
+        
+        Phase 13.5.C v0.5: Explicit mapping per type contract.
+        """
+        cpp_type = cpp_type.strip()
+        
+        # Remove const/reference qualifiers
+        normalized = cpp_type.replace('const ', '').replace('&', '').strip()
+        
+        # Check for RVec (rank 1 or 2)
+        if normalized.startswith('RVec<') or normalized.startswith('ROOT::VecOps::RVec<'):
+            # Extract inner type
+            inner_start = normalized.find('<') + 1
+            inner_end = normalized.rfind('>')
+            inner_type = normalized[inner_start:inner_end].strip()
+            
+            # Check for nested RVec (rank 2)
+            if inner_type.startswith('RVec<'):
+                inner_inner_start = inner_type.find('<') + 1
+                inner_inner_end = inner_type.rfind('>')
+                element_type = inner_type[inner_inner_start:inner_inner_end].strip()
+                kind = self._cpp_type_to_ir_kind(element_type)
+                return (2, kind)
+            else:
+                kind = self._cpp_type_to_ir_kind(inner_type)
+                return (1, kind)
+        
+        # Scalar types (rank 0)
+        kind = self._cpp_type_to_ir_kind(normalized)
+        return (0, kind)
+    
+    def _cpp_type_to_ir_kind(self, cpp_type: str) -> 'IRTypeKind':
+        """
+        Convert C++ scalar type string to IRTypeKind.
+        
+        Phase 13.5.C v0.5: Unknown types → Object with warning.
+        """
+        cpp_type = cpp_type.strip()
+        
+        TYPE_MAP = {
+            # Signed integers (exact kind matching)
+            'char': IRTypeKind.Int8,
+            'int8_t': IRTypeKind.Int8,
+            'short': IRTypeKind.Int16,
+            'int16_t': IRTypeKind.Int16,
+            'int': IRTypeKind.Int32,
+            'int32_t': IRTypeKind.Int32,
+            'long': IRTypeKind.Int64,
+            'long long': IRTypeKind.Int64,
+            'int64_t': IRTypeKind.Int64,
+            # Unsigned integers
+            'unsigned char': IRTypeKind.UInt8,
+            'uint8_t': IRTypeKind.UInt8,
+            'unsigned short': IRTypeKind.UInt16,
+            'uint16_t': IRTypeKind.UInt16,
+            'unsigned int': IRTypeKind.UInt32,
+            'uint32_t': IRTypeKind.UInt32,
+            'unsigned long': IRTypeKind.UInt64,
+            'uint64_t': IRTypeKind.UInt64,
+            # Floating point
+            'float': IRTypeKind.Float32,
+            'double': IRTypeKind.Float64,
+            # Boolean
+            'bool': IRTypeKind.Bool,
+        }
+        
+        if cpp_type in TYPE_MAP:
+            return TYPE_MAP[cpp_type]
+        
+        # Unknown type → Object with warning
+        import warnings
+        warnings.warn(
+            f"Unknown C++ type '{cpp_type}' in registered function. "
+            f"Treating as Object. Only matches Object-typed arguments.",
+            UserWarning
+        )
+        return IRTypeKind.Object
+    
+    def _register_custom_functions_with_builder(self, builder: 'IRBuilder') -> None:
+        """
+        Register all user-defined C++ functions with the IR builder.
+        
+        Phase 13.5.C v0.5: Registers ALL overloads with param_types.
+        """
+        if not hasattr(self, '_dsl_registered_functions'):
+            return
+        
+        for name, overloads in self._dsl_registered_functions.items():
+            for overload in overloads:
+                builder.register_function(
+                    name=name,
+                    cpp_name=overload['cpp_name'],
+                    return_type=overload['return_type'],
+                    headers=overload['headers'],
+                    param_types=overload['param_types'],
+                )
+    
+    def define_raw(
+        self,
+        name: str,
+        cpp_expression: str,
+        dtype: str = "double",
+        headers: Optional[List[str]] = None,
+    ) -> 'DSLCompiler':
+        """
+        Define a column using raw C++ expression (escape hatch).
+        
+        Phase 13.5.C: Bypasses DSL parsing for complex C++.
+        
+        Args:
+            name: Output column name
+            cpp_expression: Raw C++ expression
+            dtype: Return type (default: "double")
+            headers: Optional headers (stored for metadata)
+        
+        Warning:
+            ⚠️ UNSAFE ESCAPE HATCH:
+            - No type checking
+            - No dependency tracking
+            - Errors appear at execution time only
+        
+        Raises:
+            IRError: If name conflicts with schema
+            IRError: If expression contains lambda (FROZEN RULE #1)
+        
+        Example:
+            >>> dsl.define_raw("mass", "std::sqrt(E*E - px*px - py*py - pz*pz)")
+        """
+        from .backend_cpp import GeneratedFunction
+        
+        # Reject lambdas (FROZEN RULE #1)
+        for pattern in LAMBDA_PATTERNS:
+            if re.search(pattern, cpp_expression):
+                raise IRError(
+                    IRErrorKind.VALIDATION_ERROR,
+                    "Lambda expressions prohibited (FROZEN RULE #1)",
+                    suggestions=["Use a named function", "Register with register_function_cpp()"]
+                )
+        
+        # Check schema collision
+        if name in self.schema:
+            raise IRError(
+                IRErrorKind.VALIDATION_ERROR,
+                f"Column name '{name}' conflicts with schema column",
+                suggestions=[f"Use a different name like '{name}_raw'"]
+            )
+        
+        # Check duplicate
+        existing_names = [n for n, _ in self._definitions]
+        if name in existing_names:
+            raise IRError(
+                IRErrorKind.VALIDATION_ERROR,
+                f"Column '{name}' already defined"
+            )
+        
+        import warnings
+        warnings.warn(
+            f"define_raw('{name}') bypasses DSL parsing. "
+            f"Errors will only appear at execution time.",
+            UserWarning
+        )
+        
+        raw_func = GeneratedFunction(
+            name=f"{name}_{self._unique_id}",
+            code=cpp_expression,  # Store expression as code
+            inputs=[],  # Cannot determine from raw C++
+            return_type=dtype,
+            headers=list(headers) if headers else [],
+            ir=None,
+            dsl_expression=f"RAW: {cpp_expression}",
+            column_name=name,
+            is_raw=True,  # Phase 13.5.C flag
+        )
+        
+        self._definitions.append((name, f"RAW:{cpp_expression}"))
+        self._functions[name] = raw_func
+        
+        # Register type for dependent expressions
+        ir_type = self._parse_dtype(dtype)
+        self._inferrer.register_alias(name, ir_type, rank=0, is_jagged=False)
         
         return self
     
