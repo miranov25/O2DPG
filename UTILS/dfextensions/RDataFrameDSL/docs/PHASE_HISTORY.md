@@ -27,82 +27,229 @@ The RDataFrameDSL project follows a phased development approach with formal desi
 | 12.5.DSL | Statistical Annotations | +6 | ✅ Complete |
 | 12.6.DSL | to_aliasdf() Export | +20 | ✅ Complete |
 | 13.2.DSL | ROOT ↔ Arrow Bridge | +31 | ✅ Complete |
+| **13.5.B** | **C++ Function Registration** | **+38 (+40 exploration)** | **✅ Complete** |
+| **13.5.C** | **DSL Integration (Registered Functions)** | **+18** | **✅ Complete** |
+| **13.5.D** | **Numeric Widening (Overload Resolution)** | **+21** | **✅ Complete** |
+| **13.6.A** | **RDataFrame Flattening** | **+49 (+11 exploration)** | **✅ Complete** |
 | 13.4 | Integration Testing | - | 🔴 Pending |
 
-**Current Total: 964 tests passing, 1 skipped**
+**Current Total: ~1527 tests passing**
 
 ---
 
 ## Recent Phases (Team 2 — RDataFrameDSL)
 
-### Phase 12.1: dfdraw Integration
-**Commit:** Prior to Dec 14, 2025  
-**Goal:** Integrate RDataFrameDSL with dfdraw plotting library
+### Phase 13.6.A: RDataFrame Flattening
+**Commit:** 70d8ff6 (Jan 13, 2026)  
+**Goal:** Implement hierarchical data flattening (RVec → flat arrays) for TTree::Draw-like functionality
 
 **Deliverables:**
-- `draw_figures()` method for batch plotting from DSL definitions
-- Integration with DFDraw class
-- Support for histogram, scatter, and profile plots
+- NumPy backend with preallocate strategy (baseline, no dependencies)
+- Awkward Array backend for 2-level nesting (RVec<RVec>)
+- C++ helper functions (production performance path)
+- Support for struct types (RVec<Track> → multiple columns)
+- DSL-computed RVec column flattening
+- Permanent exploration tests for reproducibility across ROOT versions
 
-**Tests:** +38 tests
+**Key Features:**
+- Index semantics: `event_id` (replicated), `track_idx` (0-based within event)
+- AUTO backend selection heuristic (>1M → C++, nested → Awkward, <100k → NumPy)
+- Memory measurement methodology (tracemalloc for Python, RSS for total)
 
----
-
-### Phase 12.2: RVec Selection for draw_figures
-**Commit:** Prior to Dec 14, 2025  
-**Goal:** Enable RVec column plotting in draw_figures
-
-**Deliverables:**
-- Automatic RVec detection and flattening for histograms
-- RVec element selection via index
-- Support for jagged array visualization
-
-**Tests:** +33 tests
-
----
-
-### Phase 12.3: Composed Canvas
-**Commit:** Prior to Dec 14, 2025  
-**Goal:** Multi-subplot figure generation
-
-**Deliverables:**
-- Grid layout specification
-- Subplot configuration per plot_spec
-- Figure-level styling options
-
-**Tests:** +29 tests
-
----
-
-### Phase 12.5.DSL: Statistical Annotations
-**Commit:** Dec 16, 2025 (78135bc)  
-**Goal:** Add QA validation annotations to pull distribution plots
-
-**Deliverables:**
-- `show_statistics` parameter for μ, σ, n stats box
-- `show_expected` parameter for N(0,1) Gaussian overlay
-- Auto-detect pull distributions via `'pull' in expr.lower()`
-- Per-plot `is_pull` override in plot_spec
-- Graceful fallback for older dfdraw versions
+**Performance:**
+- 27ms for 500k tracks (target <500ms) ✅
+- Roofline performance achieved with preallocate strategy
 
 **API:**
 ```python
-results = dsl.draw_figures(
-    specs, rdf,
-    show_statistics=True,   # Add μ, σ, n stats box
-    show_expected=True,     # Add N(0,1) Gaussian overlay
+# Flatten RVec columns
+df = flatten_to_dataframe(
+    data=rdf.AsNumpy(["event_id", "track_pt"]),
+    rvec_columns=["track_pt"],
+    parent_id_column="event_id",
+    backend=FlattenBackend.AUTO  # NumPy, Awkward, or C++
 )
 
-# Per-plot override
-{'expr': 'my_residual', 'is_pull': True}   # Force as pull
+# Result:
+# event_id: [100, 100, 101, 101, 101]
+# track_idx: [0, 1, 0, 1, 2]
+# track_pt: [1.2, 3.4, 5.6, 7.8, 9.0]
 ```
 
-**Tests:** +6 tests
+**Tests:** +49 production (27 correctness + 5 benchmarks + 5 integration + 12 extended) + 11 exploration  
+**Specification:** PHASE_13_6_A_v02_Proposal.md  
+**Reviewers:** Claude-Opus-4.5, Claude-Sonnet-4.5, GPT3, GPT4, GPT5, GPT6, Gemini2
+
+**Next:** Phase 13.6.B (Draw Interface + TTree::Draw-equivalent stress tests)
+
+---
+
+### Phase 13.5.D: Numeric Widening for Overload Resolution
+**Commit:** 8863b526 (Jan 13, 2026)  
+**Goal:** Add C++-like implicit numeric conversions to overload resolution
+
+**Deliverables:**
+- Float32 → Float64 promotion (rank 1)
+- Int widening: Int8 → Int16 → Int32 → Int64 (rank 1)
+- Cross-type conversion: IntX → Float64 (rank 2)
+- Ranked candidate selection (lowest total rank wins)
+- Clear error messages for forbidden conversions
+
+**Forbidden Conversions:**
+- ❌ Narrowing (Float64 → Float32): precision loss
+- ❌ Int → Float32: lossy for values > 16,777,216
+- ❌ Signed ↔ Unsigned: ambiguous semantics
+- ❌ RVec element widening: exact match only (future phase)
+
+**Implementation:**
+```python
+# ir_builder.py changes:
+CONVERSION_MATRIX: Dict[Tuple[IRTypeKind, IRTypeKind], int]  # 11×11 table
+_select_overload()           # Ranked selection algorithm
+_compute_conversion_rank()   # Per-candidate scoring
+_conversion_rank()           # Per-argument rank lookup
+_explain_conversion_failure() # Human-readable errors
+```
+
+**Example:**
+```python
+# Register overloads:
+dsl.register_function_cpp('double f(int x) { return x * 2.0; }')
+dsl.register_function_cpp('double f(double x) { return x * 3.0; }')
+
+# Use with float32:
+dsl.define("result", "f(my_float32)")  
+# → Chooses f(double) via Float32→Float64 (rank 1)
+# → Better than no match (would fail)
+```
+
+**Key Decisions:**
+- **Q1:** Widening allowed? → YES (Float32→Float64, Int8→Int64)
+- **Q2:** Int→Float32? → NO FORBIDDEN (precision loss for large values)
+- **Q3:** Same rank candidates? → ERROR (ambiguity)
+
+**Tests:** +21 new + 2 updated  
+**Total:** 1467 passed, 30 skipped  
+**Specification:** PHASE_13_5_D_v08_Proposal.md  
+**Reviewers:** Claude-Opus-4.5, Gemini2, GPT3, GPT4, GPT6, Claude-Sonnet-4.5
+
+---
+
+### Phase 13.5.C: DSL Integration for Registered Functions
+**Commit:** 7eed1e9a (Jan 13, 2026)  
+**Goal:** Enable registered C++ functions in `dsl.define()` expressions with overload resolution
+
+**Deliverables:**
+- `dsl.define('pt_col', 'pt(px, py)')` now works with registered functions
+- Overload resolution by (rank, kind) exact matching (no widening in v0.5)
+- Multiple overloads per function name supported
+- `define_raw()` escape hatch for complex C++ expressions
+- `is_raw` flag on GeneratedFunction for raw expressions
+- Zero-parameter function support
+
+**Implementation Changes:**
+```python
+# ir_builder.py:
+_custom_functions: Dict[str, List[Dict]]  # Now List for overloads
+register_function()      # Requires param_types for resolution
+_select_overload()       # Filters by arity, then (rank, kind)
+_signature_matches()     # Exact (rank, kind) matching
+
+# dsl_compiler.py:
+_register_function_for_dsl()              # Stores (rank, kind) per param
+_cpp_type_to_rank_kind()                  # Type mapping
+_register_custom_functions_with_builder() # IRBuilder integration
+define_raw()                              # Escape hatch with guardrails
+```
+
+**Example:**
+```python
+# Register scalar and vector overloads:
+dsl.register_function_cpp('''
+    double pt(double px, double py) {
+        return sqrt(px*px + py*py);
+    }
+''')
+
+dsl.register_function_cpp('''
+    RVec<double> pt(const RVec<double>& px, const RVec<double>& py) {
+        return sqrt(px*px + py*py);
+    }
+''')
+
+# Use in DSL:
+dsl.define("track_pt", "pt(px, py)")  # Selects correct overload based on arg types
+```
+
+**Key Rules (v0.5):**
+- Exact (rank, kind) matching: int32 ≠ int64, float32 ≠ float64
+- No numeric widening (added in Phase 13.5.D)
+- Lambda expressions FORBIDDEN (FROZEN RULE #1)
+- Latest registration wins for identical signatures
+
+**Tests:** +18 (OV1-OV10: overloads, AC1-AC3: acceptance, DR1-DR3: define_raw, VAL1-VAL3: validation)  
+**Total:** 1439 passed, 37 skipped  
+**Specification:** PHASE_13_5_C_v05_Proposal.md  
+**Reviewers:** Gemini2, GPT3 (Arch), GPT3 (Team2), GPT6 (5/5 unanimous approval)
+
+---
+
+### Phase 13.5.B: C++ Function Registration API
+**Commit:** 06ddc3c5 (Jan 11, 2026)  
+**Goal:** Enable registration of user-defined C++ functions for use in DSL expressions
+
+**Deliverables:**
+- `register_function_cpp()` — Register C++ function with automatic compilation
+- `get_registered_function()` — Query registration details
+- `list_registered_functions()` — List all registered functions
+- Thread-safe declaration with class-level lock (protects ROOT's global interpreter)
+- Lambda rejection enforced (FROZEN RULE #1)
+- Hash-based naming: `dsl_<name>_<hash16>` (deterministic, collision-resistant)
+
+**Implementation:**
+```python
+# dsl_compiler.py:
+def register_function_cpp(self, cpp_code: str, headers=None, pragmas=None, name=None):
+    """
+    Register C++ function for use in DSL expressions.
+    
+    Example:
+        dsl.register_function_cpp('''
+            double pt(double px, double py) {
+                return sqrt(px*px + py*py);
+            }
+        ''', headers=["<cmath>"])
+    """
+    # Parse function signature
+    # Generate hash from code (deterministic)
+    # Compile via gInterpreter with thread-safe lock
+    # Store in registry for later use
+```
+
+**Key Features:**
+- **Hash naming:** `dsl_pt_a1b2c3d4e5f6` (name + 16-char hash)
+- **Thread safety:** Class-level `threading.RLock()` protects ROOT's gInterpreter
+- **Header auto-detection:** Common headers (<cmath>, <vector>, etc.) added automatically
+- **Registry persistence:** Functions survive across DSL instances (process-global ROOT state)
+- **Lambda rejection:** FROZEN RULE #1 enforced at registration time
+
+**Exploration Tests (40 total, T1-T41):**
+- T1-T6: ACLiC basics, thread safety, hash determinism
+- T7-T14: Macro loading, pragma handling, Cling redeclaration semantics
+- T15-T32: Thread safety under ImplicitMT, parser coverage, overload resolution
+- T33-T41: Header contracts, I/O snapshots, complex types (TLorentzVector)
+
+**Production Tests:** +38 tests  
+**Total:** 1387/1388 passed (1 pre-existing test_draw_integration failure)  
+**Specification:** PHASE_13_5_B_v05_Proposal.md  
+**Reviewers:** GPT-4, GPT5, GPT6, Gemini2, Claude Opus 4.5, Claude Sonnet 4.5 (7/8 approved, 1 with non-blocking comments)
+
+**Next:** Phase 13.5.C (DSL Integration)
 
 ---
 
 ### Phase 12.6.DSL: to_aliasdf() Export
-**Commit:** Dec 16, 2025 (78135bc)  
+**Commit:** 78135bc (Dec 16, 2025)  
 **Goal:** Enable workflow migration from RDataFrameDSL to AliasDataFrame
 
 **Deliverables:**
@@ -143,8 +290,74 @@ schema = dsl.to_aliasdf(
 
 ---
 
+### Phase 12.5.DSL: Statistical Annotations
+**Commit:** 78135bc (Dec 16, 2025)  
+**Goal:** Add QA validation annotations to pull distribution plots
+
+**Deliverables:**
+- `show_statistics` parameter for μ, σ, n stats box
+- `show_expected` parameter for N(0,1) Gaussian overlay
+- Auto-detect pull distributions via `'pull' in expr.lower()`
+- Per-plot `is_pull` override in plot_spec
+- Graceful fallback for older dfdraw versions
+
+**API:**
+```python
+results = dsl.draw_figures(
+    specs, rdf,
+    show_statistics=True,   # Add μ, σ, n stats box
+    show_expected=True,     # Add N(0,1) Gaussian overlay
+)
+
+# Per-plot override
+{'expr': 'my_residual', 'is_pull': True}   # Force as pull
+```
+
+**Tests:** +6 tests
+
+---
+
+### Phase 12.3: Composed Canvas
+**Commit:** Prior to Dec 14, 2025  
+**Goal:** Multi-subplot figure generation
+
+**Deliverables:**
+- Grid layout specification
+- Subplot configuration per plot_spec
+- Figure-level styling options
+
+**Tests:** +29 tests
+
+---
+
+### Phase 12.2: RVec Selection for draw_figures
+**Commit:** Prior to Dec 14, 2025  
+**Goal:** Enable RVec column plotting in draw_figures
+
+**Deliverables:**
+- Automatic RVec detection and flattening for histograms
+- RVec element selection via index
+- Support for jagged array visualization
+
+**Tests:** +33 tests
+
+---
+
+### Phase 12.1: dfdraw Integration
+**Commit:** Prior to Dec 14, 2025  
+**Goal:** Integrate RDataFrameDSL with dfdraw plotting library
+
+**Deliverables:**
+- `draw_figures()` method for batch plotting from DSL definitions
+- Integration with DFDraw class
+- Support for histogram, scatter, and profile plots
+
+**Tests:** +38 tests
+
+---
+
 ### Phase 13.2.DSL: ROOT ↔ Arrow Bridge
-**Commit:** Dec 16, 2025 (afda6fb)  
+**Commit:** afda6fb (Dec 16, 2025)  
 **Goal:** Enable zero-copy data transfer between ROOT RDataFrame and PyArrow
 
 **Deliverables:**
@@ -197,6 +410,10 @@ Phase 13 implements PyArrow-based memory optimization across all teams.
 | **13.2.DSL** | **Team 2** | **ROOT ↔ Arrow bridge** | ✅ **Complete** |
 | 13.3.ADF | Team 1 | Hybrid ADF implementation | 🟡 Pending pilots |
 | 13.4 | All | Integration testing | 🔴 Pending |
+| **13.5.B** | **Team 2** | **C++ Function Registration** | ✅ **Complete** |
+| **13.5.C** | **Team 2** | **DSL Integration (Registered Functions)** | ✅ **Complete** |
+| **13.5.D** | **Team 2** | **Numeric Widening (Overload Resolution)** | ✅ **Complete** |
+| **13.6.A** | **Team 2** | **RDataFrame Flattening** | ✅ **Complete** |
 
 ### Key Architecture Decision
 
@@ -257,11 +474,13 @@ Each phase follows this workflow:
 5. **Test Validation** — All tests must pass
 6. **Owner Approval** — Final sign-off before merge
 
-**Reviewers:**
-- Gemini (Architecture)
-- GPT-1 (Implementation)
-- GPT-2 (Testing/Edge Cases)
-- Claude-2 (Integration)
+**Active Reviewers (Phases 13.5+):**
+- Claude Opus 4.5 (Architecture Lead, Proposal Author)
+- Claude Sonnet 4.5 (Architecture Support, Technical Reviewer)
+- GPT-5.2 Thinking (Detailed Technical Analysis)
+- GPT3 (Architecture & Team2)
+- GPT4, GPT5, GPT6 (Implementation Reviews)
+- Gemini2 (RDataFrameDSL Domain Expert)
 
 **Approval Requirement:** Unanimous consent from all reviewers before commit.
 
@@ -272,6 +491,13 @@ Each phase follows this workflow:
 | File | Purpose |
 |------|---------|
 | `dsl_compiler.py` | Main DSLCompiler class with all methods |
+| `ir_builder.py` | IR builder with overload resolution |
+| `flatten.py` | Flattening backends (NumPy, Awkward, C++) |
+| `tests/test_register_function_cpp.py` | Phase 13.5.B tests |
+| `tests/test_phase_13_5_c.py` | Phase 13.5.C tests |
+| `tests/test_phase_13_5_d.py` | Phase 13.5.D tests |
+| `tests/test_flatten.py` | Phase 13.6.A tests |
+| `tests/exploration/flatten/` | Permanent exploration tests |
 | `tests/test_draw_figures_stats.py` | Phase 12.5.DSL tests |
 | `tests/test_to_aliasdf.py` | Phase 12.6.DSL tests |
 | `tests/test_arrow_export.py` | Phase 13.2.DSL tests |
@@ -299,3 +525,4 @@ schema = {
 |---------|------|--------|
 | 1.0 | Original | Phases 1-8 |
 | 2.0 | Dec 16, 2025 | Added Phases 12.x and 13.2.DSL |
+| 3.0 | Jan 13, 2026 | Added Phases 13.5.B/C/D and 13.6.A |
