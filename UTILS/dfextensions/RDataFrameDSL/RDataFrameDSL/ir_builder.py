@@ -130,8 +130,88 @@ KNOWN_FUNCTIONS: Dict[str, Dict[str, Any]] = {
 
 
 # =============================================================================
-# Build Context
+# Phase 13.5.D: Numeric Widening Conversion Matrix
 # =============================================================================
+
+# Conversion ranks:
+#   0  = Exact match
+#   1  = Promotion (safe widening within type family)
+#   2  = Conversion (cross-type, e.g., int→double)
+#   -1 = Forbidden (narrowing, lossy, or incompatible)
+#
+# Key decisions (unanimous 7/7 reviewers):
+#   - Int→Float32 is FORBIDDEN (lossy for values > 16,777,216)
+#   - Signed↔Unsigned is FORBIDDEN (ambiguous semantics)
+#   - Bool conversions are FORBIDDEN (exact match only)
+#   - Narrowing is ALWAYS FORBIDDEN
+
+CONVERSION_MATRIX: Dict[IRTypeKind, Dict[IRTypeKind, int]] = {
+    # Signed integers: can widen within family, convert to Float64
+    IRTypeKind.Int8: {
+        IRTypeKind.Int8: 0, IRTypeKind.Int16: 1, IRTypeKind.Int32: 1, IRTypeKind.Int64: 1,
+        IRTypeKind.UInt8: -1, IRTypeKind.UInt16: -1, IRTypeKind.UInt32: -1, IRTypeKind.UInt64: -1,
+        IRTypeKind.Float32: -1, IRTypeKind.Float64: 2, IRTypeKind.Bool: -1, IRTypeKind.Object: -1,
+    },
+    IRTypeKind.Int16: {
+        IRTypeKind.Int8: -1, IRTypeKind.Int16: 0, IRTypeKind.Int32: 1, IRTypeKind.Int64: 1,
+        IRTypeKind.UInt8: -1, IRTypeKind.UInt16: -1, IRTypeKind.UInt32: -1, IRTypeKind.UInt64: -1,
+        IRTypeKind.Float32: -1, IRTypeKind.Float64: 2, IRTypeKind.Bool: -1, IRTypeKind.Object: -1,
+    },
+    IRTypeKind.Int32: {
+        IRTypeKind.Int8: -1, IRTypeKind.Int16: -1, IRTypeKind.Int32: 0, IRTypeKind.Int64: 1,
+        IRTypeKind.UInt8: -1, IRTypeKind.UInt16: -1, IRTypeKind.UInt32: -1, IRTypeKind.UInt64: -1,
+        IRTypeKind.Float32: -1, IRTypeKind.Float64: 2, IRTypeKind.Bool: -1, IRTypeKind.Object: -1,
+    },
+    IRTypeKind.Int64: {
+        IRTypeKind.Int8: -1, IRTypeKind.Int16: -1, IRTypeKind.Int32: -1, IRTypeKind.Int64: 0,
+        IRTypeKind.UInt8: -1, IRTypeKind.UInt16: -1, IRTypeKind.UInt32: -1, IRTypeKind.UInt64: -1,
+        IRTypeKind.Float32: -1, IRTypeKind.Float64: 2, IRTypeKind.Bool: -1, IRTypeKind.Object: -1,
+    },
+    # Unsigned integers: can widen within family, convert to Float64
+    IRTypeKind.UInt8: {
+        IRTypeKind.Int8: -1, IRTypeKind.Int16: -1, IRTypeKind.Int32: -1, IRTypeKind.Int64: -1,
+        IRTypeKind.UInt8: 0, IRTypeKind.UInt16: 1, IRTypeKind.UInt32: 1, IRTypeKind.UInt64: 1,
+        IRTypeKind.Float32: -1, IRTypeKind.Float64: 2, IRTypeKind.Bool: -1, IRTypeKind.Object: -1,
+    },
+    IRTypeKind.UInt16: {
+        IRTypeKind.Int8: -1, IRTypeKind.Int16: -1, IRTypeKind.Int32: -1, IRTypeKind.Int64: -1,
+        IRTypeKind.UInt8: -1, IRTypeKind.UInt16: 0, IRTypeKind.UInt32: 1, IRTypeKind.UInt64: 1,
+        IRTypeKind.Float32: -1, IRTypeKind.Float64: 2, IRTypeKind.Bool: -1, IRTypeKind.Object: -1,
+    },
+    IRTypeKind.UInt32: {
+        IRTypeKind.Int8: -1, IRTypeKind.Int16: -1, IRTypeKind.Int32: -1, IRTypeKind.Int64: -1,
+        IRTypeKind.UInt8: -1, IRTypeKind.UInt16: -1, IRTypeKind.UInt32: 0, IRTypeKind.UInt64: 1,
+        IRTypeKind.Float32: -1, IRTypeKind.Float64: 2, IRTypeKind.Bool: -1, IRTypeKind.Object: -1,
+    },
+    IRTypeKind.UInt64: {
+        IRTypeKind.Int8: -1, IRTypeKind.Int16: -1, IRTypeKind.Int32: -1, IRTypeKind.Int64: -1,
+        IRTypeKind.UInt8: -1, IRTypeKind.UInt16: -1, IRTypeKind.UInt32: -1, IRTypeKind.UInt64: 0,
+        IRTypeKind.Float32: -1, IRTypeKind.Float64: 2, IRTypeKind.Bool: -1, IRTypeKind.Object: -1,
+    },
+    # Floating point: Float32→Float64 is promotion, no narrowing
+    IRTypeKind.Float32: {
+        IRTypeKind.Int8: -1, IRTypeKind.Int16: -1, IRTypeKind.Int32: -1, IRTypeKind.Int64: -1,
+        IRTypeKind.UInt8: -1, IRTypeKind.UInt16: -1, IRTypeKind.UInt32: -1, IRTypeKind.UInt64: -1,
+        IRTypeKind.Float32: 0, IRTypeKind.Float64: 1, IRTypeKind.Bool: -1, IRTypeKind.Object: -1,
+    },
+    IRTypeKind.Float64: {
+        IRTypeKind.Int8: -1, IRTypeKind.Int16: -1, IRTypeKind.Int32: -1, IRTypeKind.Int64: -1,
+        IRTypeKind.UInt8: -1, IRTypeKind.UInt16: -1, IRTypeKind.UInt32: -1, IRTypeKind.UInt64: -1,
+        IRTypeKind.Float32: -1, IRTypeKind.Float64: 0, IRTypeKind.Bool: -1, IRTypeKind.Object: -1,
+    },
+    # Bool: exact match only
+    IRTypeKind.Bool: {
+        IRTypeKind.Int8: -1, IRTypeKind.Int16: -1, IRTypeKind.Int32: -1, IRTypeKind.Int64: -1,
+        IRTypeKind.UInt8: -1, IRTypeKind.UInt16: -1, IRTypeKind.UInt32: -1, IRTypeKind.UInt64: -1,
+        IRTypeKind.Float32: -1, IRTypeKind.Float64: -1, IRTypeKind.Bool: 0, IRTypeKind.Object: -1,
+    },
+    # Object: exact match only
+    IRTypeKind.Object: {
+        IRTypeKind.Int8: -1, IRTypeKind.Int16: -1, IRTypeKind.Int32: -1, IRTypeKind.Int64: -1,
+        IRTypeKind.UInt8: -1, IRTypeKind.UInt16: -1, IRTypeKind.UInt32: -1, IRTypeKind.UInt64: -1,
+        IRTypeKind.Float32: -1, IRTypeKind.Float64: -1, IRTypeKind.Bool: -1, IRTypeKind.Object: 0,
+    },
+}
 
 @dataclass
 class BuildContext:
@@ -258,20 +338,20 @@ class IRBuilder:
             cpp_name: C++ function name (e.g., "dsl_pt_abc123")
             return_type: Return type. If None, defaults to Object with warning.
             headers: Required C++ headers
-            param_types: REQUIRED - List of parameter type info for overload resolution
+            param_types: List of parameter type info for overload resolution.
                          Each entry: {'name', 'cpp_type', 'rank', 'ir_kind'}
-        
+                         For zero-parameter functions, pass empty list [].
+                         
         Raises:
-            ValueError: If param_types is None (missing)
+            ValueError: If param_types is None (must be explicit list)
         """
         import warnings
         
-        # v0.5 FIX (P0-1): Only reject None, allow [] for zero-param functions
+        # Phase 13.5.C: param_types is REQUIRED for overload resolution
         if param_types is None:
             raise ValueError(
                 f"Custom function '{name}' requires param_types for overload resolution. "
-                f"Got: None. "
-                f"Note: For zero-parameter functions, pass empty list []."
+                f"Got: None. Note: For zero-parameter functions, pass empty list []."
             )
         
         # v0.5 FIX (P0-3): Handle None return_type with warning
@@ -1008,14 +1088,14 @@ class IRBuilder:
         """
         Select the correct overload based on argument types.
         
-        Phase 13.5.C v0.5: Exact (rank, kind) matching.
+        Phase 13.5.D: Ranked selection with numeric widening.
         
         Selection algorithm:
         1. Filter by arity (number of arguments)
-        2. Filter by exact (rank, kind) match per argument
-        3. If exactly one match → return it
-        4. If multiple matches → same signature, latest wins
-        5. If no matches → raise clear error
+        2. Score each candidate by conversion rank sum
+        3. Select lowest total rank (exact=0 > promotion=1 > conversion=2)
+        4. Error on ambiguity (multiple candidates with same rank)
+        5. Error if no viable candidates (all rank -1)
         """
         # Step 1: Filter by arity
         by_arity = [c for c in candidates if len(c['param_types']) == len(args)]
@@ -1031,54 +1111,150 @@ class IRBuilder:
                 ]
             )
         
-        # Step 2: Filter by exact (rank, kind) match
-        matching = []
-        for candidate in by_arity:
-            if self._signature_matches(candidate['param_types'], args):
-                matching.append(candidate)
+        # Step 2: Score each candidate by conversion rank
+        scored = []  # List of (total_rank, candidate, rank_details)
+        not_viable_reasons = []
         
-        if not matching:
-            # Build helpful error message
+        for candidate in by_arity:
+            total_rank, viable, details = self._compute_conversion_rank(
+                candidate['param_types'], args
+            )
+            if viable:
+                scored.append((total_rank, candidate, details))
+            else:
+                sig = [(p['rank'], p['ir_kind'].name) for p in candidate['param_types']]
+                not_viable_reasons.append((str(sig), details))
+        
+        # Step 3: Handle no viable candidates
+        if not scored:
             arg_sig = [(arg.rank, arg.dtype.kind.name) for arg in args]
-            expected_sigs = []
-            for c in by_arity:
-                sig = [(p['rank'], p['ir_kind'].name) for p in c['param_types']]
-                expected_sigs.append(str(sig))
+            reason_lines = []
+            for sig, reason in not_viable_reasons:
+                reason_lines.append(f"    {sig} - not viable: {reason}")
             
             raise IRError(
                 IRErrorKind.TYPE_ERROR,
                 f"No overload of '{name}' matches argument types.\n"
-                f"  Got:       {arg_sig}\n"
-                f"  Available: {', '.join(expected_sigs)}",
+                f"  Arguments: {arg_sig}\n"
+                f"  Available overloads:\n" + "\n".join(reason_lines),
                 suggestions=[
+                    "Register an overload with matching parameter types",
                     "Check argument types (scalar vs RVec, int vs double)",
-                    "Register an overload matching your argument types",
                 ]
             )
         
-        if len(matching) == 1:
-            return matching[0]
+        # Step 4: Sort by total rank (lowest wins)
+        scored.sort(key=lambda x: x[0])
         
-        # Step 3: Multiple matches = same signature registered multiple times
-        # Return latest (deterministic versioning)
-        return matching[-1]
-
-    def _signature_matches(self, param_types: List[Dict], args: List['IRNode']) -> bool:
-        """
-        Check if argument types exactly match parameter types.
-        
-        Phase 13.5.C v0.5: Exact (rank, kind) matching, no widening.
-        """
-        for param, arg in zip(param_types, args):
-            # Match rank exactly
-            if param['rank'] != arg.rank:
-                return False
+        # Step 5: Check for ambiguity (Q3 decision: error on same rank)
+        if len(scored) > 1 and scored[0][0] == scored[1][0]:
+            min_rank = scored[0][0]
+            ambiguous = [s for s in scored if s[0] == min_rank]
+            arg_sig = [(arg.rank, arg.dtype.kind.name) for arg in args]
             
-            # Match kind exactly (no widening: int ≠ double)
-            if param['ir_kind'] != arg.dtype.kind:
-                return False
+            amb_lines = []
+            for total, cand, details in ambiguous:
+                sig = [(p['rank'], p['ir_kind'].name) for p in cand['param_types']]
+                amb_lines.append(f"    - {sig} (rank {total})")
+            
+            raise IRError(
+                IRErrorKind.TYPE_ERROR,
+                f"Ambiguous overload for '{name}' with argument types {arg_sig}.\n"
+                f"  Multiple candidates with rank {min_rank}:\n" + "\n".join(amb_lines),
+                suggestions=[
+                    "Register an overload with exact parameter types",
+                    "Remove one of the ambiguous overloads",
+                ]
+            )
         
-        return True
+        # Return best match
+        return scored[0][1]
+    
+    def _compute_conversion_rank(
+        self, 
+        param_types: List[Dict], 
+        args: List['IRNode']
+    ) -> Tuple[int, bool, str]:
+        """
+        Compute total conversion rank for a candidate overload.
+        
+        Phase 13.5.D: Numeric widening with ranked matching.
+        
+        Returns:
+            (total_rank, viable, details)
+            - total_rank: Sum of per-argument conversion ranks
+            - viable: True if all conversions are allowed (no rank -1)
+            - details: Human-readable explanation
+        """
+        total_rank = 0
+        details_parts = []
+        
+        for i, (param, arg) in enumerate(zip(param_types, args)):
+            rank = self._conversion_rank(arg, param)
+            
+            if rank == -1:
+                # Not viable - explain why
+                reason = self._explain_conversion_failure(arg, param)
+                return (-1, False, f"arg[{i}]: {reason}")
+            
+            total_rank += rank
+            if rank > 0:
+                details_parts.append(f"arg[{i}]:{arg.dtype.kind.name}→{param['ir_kind'].name}=rank{rank}")
+        
+        details = ", ".join(details_parts) if details_parts else "exact match"
+        return (total_rank, True, details)
+    
+    def _conversion_rank(self, arg: 'IRNode', param: Dict) -> int:
+        """
+        Compute conversion rank from argument type to parameter type.
+        
+        Phase 13.5.D: Scalar-only widening per spec.
+        
+        Returns:
+            0  = Exact match
+            1  = Promotion (float→double, int→long)
+            2  = Conversion (int→double)
+            -1 = Not viable (narrowing, rank mismatch, etc.)
+        """
+        # P0-2: Check rank first (scalar-only widening)
+        if arg.rank != param['rank']:
+            return -1  # Rank mismatch is never viable
+        
+        if arg.rank != 0:
+            # Non-scalar: exact kind match only (Phase 13.5.C behavior)
+            return 0 if arg.dtype.kind == param['ir_kind'] else -1
+        
+        # Scalar: apply widening rules from CONVERSION_MATRIX
+        from_kind = arg.dtype.kind
+        to_kind = param['ir_kind']
+        
+        if from_kind not in CONVERSION_MATRIX:
+            return -1
+        if to_kind not in CONVERSION_MATRIX[from_kind]:
+            return -1
+        
+        return CONVERSION_MATRIX[from_kind][to_kind]
+    
+    def _explain_conversion_failure(self, arg: 'IRNode', param: Dict) -> str:
+        """Generate human-readable explanation for conversion failure."""
+        if arg.rank != param['rank']:
+            return f"rank mismatch ({arg.rank} vs {param['rank']})"
+        
+        from_kind = arg.dtype.kind
+        to_kind = param['ir_kind']
+        
+        # Check specific forbidden cases
+        if from_kind in (IRTypeKind.Float64,) and to_kind in (IRTypeKind.Float32,):
+            return f"narrowing {from_kind.name}→{to_kind.name} forbidden"
+        
+        if from_kind in (IRTypeKind.Int32, IRTypeKind.Int64) and to_kind == IRTypeKind.Float32:
+            return f"lossy {from_kind.name}→Float32 forbidden (precision loss > 16.7M)"
+        
+        if (from_kind.name.startswith('Int') and to_kind.name.startswith('UInt')) or \
+           (from_kind.name.startswith('UInt') and to_kind.name.startswith('Int')):
+            return f"signed↔unsigned {from_kind.name}→{to_kind.name} forbidden"
+        
+        return f"no conversion {from_kind.name}→{to_kind.name}"
     
     # =========================================================================
     # Phase 12.2: Selection Function Type Inference

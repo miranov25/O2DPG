@@ -163,8 +163,14 @@ class TestPhase13_5_C_Overloads:
         error_msg = str(exc_info.value)
         assert "match" in error_msg.lower() or "type" in error_msg.lower()
     
-    def test_OV5_same_signature_latest_wins(self):
-        """OV5: Same signature registered twice — latest wins."""
+    def test_OV5_same_signature_ambiguity_error(self):
+        """
+        OV5: Same signature registered twice raises ambiguity error.
+        
+        Phase 13.5.D Q3 Decision (7/7 unanimous): Error on ambiguity.
+        When multiple overloads have the same rank, raise an error
+        instead of silently picking one.
+        """
         dsl = DSLCompiler({"px": "double", "py": "double"})
         
         # Register first version
@@ -173,7 +179,6 @@ class TestPhase13_5_C_Overloads:
                 return sqrt(px*px + py*py);
             }
         ''')
-        first_cpp_name = dsl._dsl_registered_functions['pt'][0]['cpp_name']
         
         # Register same signature again (different body = different hash)
         dsl.register_function_cpp('''
@@ -181,23 +186,14 @@ class TestPhase13_5_C_Overloads:
                 return px + py;
             }
         ''')
-        second_cpp_name = dsl._dsl_registered_functions['pt'][1]['cpp_name']
         
-        # Different hashes
-        assert first_cpp_name != second_cpp_name
+        # Phase 13.5.D: Same signature = same rank = ambiguity error
+        with pytest.raises(IRError) as exc_info:
+            dsl.define("track_pt", "pt(px, py)")
         
-        # Use function — must select latest
-        dsl.define("track_pt", "pt(px, py)")
-        func = dsl._functions["track_pt"]
-        
-        # v0.5 FIX (P0-2): Check actual call site
-        second_call = rf'\b{re.escape(second_cpp_name)}\s*\('
-        first_call = rf'\b{re.escape(first_cpp_name)}\s*\('
-        
-        assert re.search(second_call, func.code), \
-            f"Latest overload {second_cpp_name} not called"
-        assert not re.search(first_call, func.code), \
-            f"Old overload {first_cpp_name} incorrectly called"
+        error_msg = str(exc_info.value)
+        assert "ambiguous" in error_msg.lower(), \
+            f"Expected 'ambiguous' in error, got: {error_msg}"
     
     def test_OV6_execution_smoke_test(self):
         """OV6: End-to-end execution with correct overload."""
@@ -307,25 +303,31 @@ class TestPhase13_5_C_Overloads:
             "Double overload not called for RVec<double>"
     
     def test_OV9_error_message_quality(self):
-        """OV9: Error messages include helpful diagnostics."""
+        """
+        OV9: Error messages include helpful diagnostics.
+        
+        Phase 13.5.D: Tests narrowing rejection (double→float is forbidden).
+        Note: int→double now works via conversion (rank 2).
+        """
         dsl = DSLCompiler({
-            "x": "int",
-            "y": "int",
+            "x": "double",  # Float64
+            "y": "double",
         })
         
+        # Only float overload available - narrowing required
         dsl.register_function_cpp('''
-            double f(double a, double b) { return a * b; }
+            float f(float a, float b) { return a * b; }
         ''')
         
         with pytest.raises(IRError) as exc_info:
-            dsl.define("wrong", "f(x, y)")  # int args, only double available
+            dsl.define("wrong", "f(x, y)")  # double args, only float available
         
         error_msg = str(exc_info.value)
         # Error should mention:
         # - Function name
         assert "f" in error_msg
-        # - What was expected vs got
-        assert "match" in error_msg.lower() or "type" in error_msg.lower()
+        # - What was expected vs got (type mismatch info)
+        assert "narrowing" in error_msg.lower() or "no overload" in error_msg.lower()
     
     def test_OV10_zero_parameter_function(self):
         """
