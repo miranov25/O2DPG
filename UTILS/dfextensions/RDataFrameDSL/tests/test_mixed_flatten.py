@@ -504,6 +504,100 @@ def test_none_columns_error():
 
 
 # =============================================================================
+# AUTO Backend Selection Tests (GPT8 Regression Tests)
+# =============================================================================
+
+def test_auto_selects_awkward_for_2d_same_depth():
+    """
+    GPT8 REGRESSION TEST: AUTO should select AWKWARD for same-depth 2D when available.
+    
+    This test verifies the Phase 13.6.A AUTO selection behavior is preserved:
+    - 2D columns + Awkward available → AWKWARD backend selected
+    - This prevents silent API contract changes
+    """
+    from RDataFrameDSL.flatten import (
+        _select_backend_same_depth, 
+        FlattenBackend, 
+        awkward_available,
+        is_nested_rvec
+    )
+    
+    # 2D test data (RVec<RVec<double>>)
+    data_2d = {
+        'event_id': np.array([100, 101], dtype=np.int64),
+        'cluster_Q': np.array([
+            np.array([
+                np.array([10.0, 20.0], dtype=np.float64),
+                np.array([30.0], dtype=np.float64),
+            ], dtype=object),
+            np.array([
+                np.array([40.0, 50.0], dtype=np.float64),
+            ], dtype=object),
+        ], dtype=object),
+    }
+    
+    # Verify it's actually 2D
+    assert is_nested_rvec(data_2d, 'cluster_Q'), "Test data should be 2D"
+    
+    # Test AUTO selection
+    selected = _select_backend_same_depth(data_2d, ['cluster_Q'])
+    
+    if awkward_available():
+        # AUTO should select AWKWARD for 2D when available
+        assert selected == FlattenBackend.AWKWARD, \
+            f"AUTO should select AWKWARD for 2D when available, got {selected}"
+    else:
+        # Without Awkward, AUTO falls back to NUMPY
+        assert selected == FlattenBackend.NUMPY, \
+            f"AUTO should select NUMPY when Awkward unavailable, got {selected}"
+
+
+def test_auto_selects_numpy_for_1d_same_depth():
+    """AUTO should select NUMPY for same-depth 1D columns."""
+    from RDataFrameDSL.flatten import (
+        _select_backend_same_depth, 
+        FlattenBackend,
+        is_nested_rvec
+    )
+    
+    # 1D test data (RVec<double>)
+    data_1d = {
+        'event_id': np.array([100, 101], dtype=np.int64),
+        'track_pt': np.array([
+            np.array([1.0, 2.0], dtype=np.float64),
+            np.array([3.0], dtype=np.float64),
+        ], dtype=object),
+    }
+    
+    # Verify it's actually 1D
+    assert not is_nested_rvec(data_1d, 'track_pt'), "Test data should be 1D"
+    
+    # AUTO should always select NUMPY for 1D
+    selected = _select_backend_same_depth(data_1d, ['track_pt'])
+    assert selected == FlattenBackend.NUMPY, \
+        f"AUTO should select NUMPY for 1D, got {selected}"
+
+
+def test_depth_detection_rejects_scalar_in_object_array():
+    """
+    P1-2 TEST: Depth detection should reject scalar items in object arrays.
+    
+    This protects against malformed input where object array contains
+    scalar elements instead of arrays (which would cause TypeError).
+    """
+    from RDataFrameDSL.flatten import _get_depth_from_data
+    
+    # Malformed: object array with scalar items
+    bad_data = {
+        'event_id': np.array([100, 101], dtype=np.int64),
+        'bad_column': np.array([42, 99], dtype=object),  # Scalars in object array!
+    }
+    
+    with pytest.raises(ValueError, match="scalar elements"):
+        _get_depth_from_data(bad_data, 'bad_column')
+
+
+# =============================================================================
 # Run Tests
 # =============================================================================
 

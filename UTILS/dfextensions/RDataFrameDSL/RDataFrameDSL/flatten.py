@@ -36,6 +36,39 @@ def awkward_available() -> bool:
         return False
 
 
+def _select_backend_same_depth(
+    data: Dict[str, np.ndarray], 
+    rvec_columns: List[str]
+) -> 'FlattenBackend':
+    """
+    AUTO backend selection for same-depth flattening (Phase 13.6.A behavior).
+    
+    This restores the original AUTO selection logic:
+    - 2D columns + Awkward available → AWKWARD
+    - Otherwise → NUMPY
+    
+    Note: Mixed-depth flattening always uses NumPy (per Phase 13.6.A-ext spec).
+    
+    Args:
+        data: Dict from rdf.AsNumpy()
+        rvec_columns: List of RVec column names
+    
+    Returns:
+        Selected FlattenBackend
+    """
+    if not rvec_columns:
+        return FlattenBackend.NUMPY
+    
+    # Check if 2D (nested RVec)
+    is_2d = is_nested_rvec(data, rvec_columns[0])
+    
+    # 2D + Awkward available → use Awkward
+    if is_2d and awkward_available():
+        return FlattenBackend.AWKWARD
+    
+    return FlattenBackend.NUMPY
+
+
 # =============================================================================
 # Type Detection
 # =============================================================================
@@ -57,6 +90,9 @@ def _get_depth_from_data(data: Dict[str, np.ndarray], col: str) -> int:
         0: Scalar (e.g., int64 array)
         1: RVec (e.g., object array of float64 arrays)
         2: RVec<RVec> (e.g., object array of object arrays)
+    
+    Raises:
+        ValueError: If object array contains scalar items (malformed input)
     """
     col_data = data[col]
     
@@ -66,7 +102,18 @@ def _get_depth_from_data(data: Dict[str, np.ndarray], col: str) -> int:
     
     # It's object array - check first non-empty element
     for item in col_data:
-        if item is not None and len(item) > 0:
+        if item is None:
+            continue
+        
+        # P1-2 FIX: Guard against scalar items in object array
+        if not hasattr(item, '__len__'):
+            raise ValueError(
+                f"Column '{col}' has object dtype but contains scalar elements. "
+                f"Expected RVec (array of arrays). "
+                f"Got item of type: {type(item).__name__}"
+            )
+        
+        if len(item) > 0:
             first_elem = item[0]
             # Is first element itself an array? → depth 2
             if hasattr(first_elem, '__len__') and not isinstance(first_elem, (str, bytes)):
@@ -977,10 +1024,13 @@ def flatten_to_dataframe(
     # Determine if 1D or 2D
     is_2d = is_nested_rvec(data, all_rvec_cols[0])
     
-    # Backend selection
+    # Backend selection - restore Phase 13.6.A AUTO behavior
     use_backend = backend
     if use_backend == FlattenBackend.AUTO:
-        use_backend = FlattenBackend.NUMPY
+        # GPT8 FIX: Restore original AUTO selection for same-depth
+        # - 2D + Awkward available → AWKWARD
+        # - Otherwise → NUMPY
+        use_backend = _select_backend_same_depth(data, all_rvec_cols)
     
     if use_backend == FlattenBackend.CPP:
         raise NotImplementedError("C++ backend not yet implemented")
