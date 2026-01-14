@@ -1,56 +1,31 @@
 """
-Phase 13.6.A: RDataFrame Flattening
+RDataFrameDSL Flatten Module
 
-Flatten hierarchical RVec data to flat arrays for TTree::Draw-like functionality.
-Multiple backends: NumPy (baseline), Awkward (2-level), C++ (production).
+Phase 13.6.A: Basic flatten functionality (same-depth columns)
+Phase 13.6.A-ext: Mixed-depth flatten (scalar + 1D + 2D)
 
-Usage:
-    from RDataFrameDSL.flatten import flatten_to_dataframe, FlattenBackend
-    
-    # Get data from RDataFrame
-    data = rdf.AsNumpy(['event_id', 'track_pt', 'track_eta'])
-    
-    # Flatten RVec columns
-    df = flatten_to_dataframe(
-        data, 
-        rvec_columns=['track_pt', 'track_eta'],
-        parent_id_column='event_id'
-    )
-    
-    # Result: DataFrame with event_id, track_idx, track_pt, track_eta
-
-Index Semantics Contract:
-    - event_id: Replicated verbatim from input (physics identifier)
-    - track_idx: Generated 0-based index within parent event
-    - cluster_idx: Generated 0-based index within parent track (2-level)
-    - All backends produce identical output (exact bit equality)
+This module provides functions to flatten hierarchical RVec data structures
+into flat pandas DataFrames for analysis and visualization.
 """
 
 from enum import Enum
 from typing import Dict, List, Optional, Tuple, Any, Union
-import numpy as np
 import warnings
-import logging
-import os
-
-logger = logging.getLogger(__name__)
+import numpy as np
+import pandas as pd
 
 
 # =============================================================================
-# Backend Enum
+# Backend Selection
 # =============================================================================
 
 class FlattenBackend(Enum):
-    """Available flattening backends."""
+    """Backend selection for flatten operations."""
+    AUTO = "auto"
     NUMPY = "numpy"
     AWKWARD = "awkward"
-    CPP = "cpp"
-    AUTO = "auto"
+    CPP = "cpp"  # Future
 
-
-# =============================================================================
-# Backend Availability Checks
-# =============================================================================
 
 def awkward_available() -> bool:
     """Check if Awkward Array is available."""
@@ -61,179 +36,352 @@ def awkward_available() -> bool:
         return False
 
 
-def cpp_helper_available() -> bool:
-    """Check if C++ flatten helper is registered."""
-    # TODO: Implement when C++ helper is added
-    return False
-
-
 # =============================================================================
 # Type Detection
 # =============================================================================
-
-def is_rvec(obj: Any) -> bool:
-    """Check if object is an RVec or RVec-like."""
-    type_name = type(obj).__name__
-    if 'RVec' in type_name:
-        return True
-    # Also handle numpy arrays that came from RVec
-    if hasattr(obj, '__len__') and not isinstance(obj, (str, bytes)):
-        return True
-    return False
-
 
 def is_nested_rvec(data: Dict[str, np.ndarray], column: str) -> bool:
     """
     Check if column contains nested RVec (RVec<RVec<T>>).
     
-    Returns True if the first non-empty element is itself iterable.
+    Returns True if column is 2-level nested (depth 2).
     """
-    col_data = data[column]
-    for item in col_data:
-        if len(item) > 0:
-            first_elem = item[0]
-            # Check if first element is itself iterable (nested)
-            if hasattr(first_elem, '__len__') and not isinstance(first_elem, (str, bytes)):
-                return True
-            return False
-    return False
+    return _get_depth_from_data(data, column) == 2
 
 
-def get_nesting_depth(data: Dict[str, np.ndarray], column: str) -> int:
+def _get_depth_from_data(data: Dict[str, np.ndarray], col: str) -> int:
     """
-    Get nesting depth of RVec column.
+    Determine nesting depth by inspecting data.
     
     Returns:
-        1 for RVec<T>
-        2 for RVec<RVec<T>>
+        0: Scalar (e.g., int64 array)
+        1: RVec (e.g., object array of float64 arrays)
+        2: RVec<RVec> (e.g., object array of object arrays)
     """
-    if is_nested_rvec(data, column):
-        return 2
+    col_data = data[col]
+    
+    # Check if it's a simple numpy array (scalar per event)
+    if col_data.dtype != object:
+        return 0
+    
+    # It's object array - check first non-empty element
+    for item in col_data:
+        if item is not None and len(item) > 0:
+            first_elem = item[0]
+            # Is first element itself an array? → depth 2
+            if hasattr(first_elem, '__len__') and not isinstance(first_elem, (str, bytes)):
+                return 2
+            return 1
+    
+    # All empty - assume depth 1 (RVec)
     return 1
 
 
-def infer_dtype(rvec_sample: Any) -> np.dtype:
-    """Infer numpy dtype from RVec sample."""
-    if len(rvec_sample) > 0:
-        arr = np.asarray(rvec_sample)
-        return arr.dtype
-    # Default to float64 for empty
-    return np.dtype('float64')
+def _infer_dtype(rvec_column: np.ndarray) -> np.dtype:
+    """Infer dtype from first non-empty RVec element."""
+    for item in rvec_column:
+        if item is not None and len(item) > 0:
+            return np.asarray(item).dtype
+    return np.float64  # Default
+
+
+def _infer_dtype_2d(rvec_column: np.ndarray) -> np.dtype:
+    """Infer dtype from first non-empty 2D RVec element."""
+    for event in rvec_column:
+        if event is not None:
+            for track in event:
+                if track is not None and len(track) > 0:
+                    return np.asarray(track).dtype
+    return np.float64  # Default
 
 
 # =============================================================================
-# Backend Selection
+# Validation (Phase 13.6.A + 13.6.A-ext)
 # =============================================================================
 
-def select_backend(
-    data: Dict[str, np.ndarray], 
-    rvec_columns: List[str],
-    verbose: bool = False
-) -> FlattenBackend:
+def validate_same_structure(data: Dict[str, np.ndarray], rvec_columns: List[str]) -> bool:
     """
-    AUTO backend selection heuristic.
+    Validate that all RVec columns have identical jagged structure.
     
-    Rules:
-    1. If C++ helper unavailable → NumPy
-    2. If nested depth >= 2 (RVec<RVec>) → Awkward (if available) or C++
-    3. If total tracks > 1M → C++ (performance)
-    4. If total tracks < 100k → NumPy (simplicity)
-    5. Else → C++ (default for production)
+    Phase 13.6.A: Used for same-depth validation.
     
     Args:
-        data: Output from rdf.AsNumpy()
-        rvec_columns: Columns to flatten
-        verbose: Log selection decision
+        data: Dict from rdf.AsNumpy()
+        rvec_columns: List of column names to validate
     
     Returns:
-        Selected backend
-    """
-    # Estimate total items (use first column)
-    first_col = rvec_columns[0]
-    total_items = sum(len(rv) for rv in data[first_col])
-    
-    # Check for nested RVec
-    is_nested = any(is_nested_rvec(data, col) for col in rvec_columns)
-    
-    reason = ""
-    
-    # Rule 1: No C++ → NumPy
-    if not cpp_helper_available():
-        # Rule 2: Nested → Awkward if available
-        if is_nested:
-            if awkward_available():
-                backend = FlattenBackend.AWKWARD
-                reason = "nested RVec, Awkward available"
-            else:
-                backend = FlattenBackend.NUMPY
-                reason = "nested RVec, fallback to NumPy (no Awkward)"
-        # Rule 4: Small → NumPy
-        elif total_items < 100_000:
-            backend = FlattenBackend.NUMPY
-            reason = f"small dataset ({total_items} items)"
-        else:
-            backend = FlattenBackend.NUMPY
-            reason = "no C++ helper available"
-    else:
-        # C++ available
-        if is_nested:
-            if awkward_available():
-                backend = FlattenBackend.AWKWARD
-                reason = "nested RVec, Awkward preferred"
-            else:
-                backend = FlattenBackend.CPP
-                reason = "nested RVec, C++ fallback"
-        elif total_items > 1_000_000:
-            backend = FlattenBackend.CPP
-            reason = f"large dataset ({total_items} items)"
-        elif total_items < 100_000:
-            backend = FlattenBackend.NUMPY
-            reason = f"small dataset ({total_items} items)"
-        else:
-            backend = FlattenBackend.CPP
-            reason = "default production backend"
-    
-    if verbose or os.getenv("DFEXT_DEBUG"):
-        logger.info(f"AUTO selected {backend.value}: {reason}")
-    
-    return backend
-
-
-# =============================================================================
-# Validation
-# =============================================================================
-
-def validate_same_structure(
-    data: Dict[str, np.ndarray], 
-    rvec_columns: List[str]
-) -> None:
-    """
-    Validate all RVec columns have same jagged structure.
-    
-    All columns must have same number of elements per parent.
+        True if valid
     
     Raises:
-        ValueError: If columns have different structures
+        ValueError if structures don't match
     """
     if len(rvec_columns) < 2:
-        return
+        return True
     
     ref_col = rvec_columns[0]
     ref_lengths = [len(rv) for rv in data[ref_col]]
     
     for col in rvec_columns[1:]:
         col_lengths = [len(rv) for rv in data[col]]
-        if col_lengths != ref_lengths:
+        
+        for event_idx, (ref_len, col_len) in enumerate(zip(ref_lengths, col_lengths)):
+            if ref_len != col_len:
+                raise ValueError(
+                    f"Columns have different structures in event {event_idx}: "
+                    f"'{ref_col}' has {ref_len} elements, "
+                    f"'{col}' has {col_len} elements. "
+                    f"All RVec columns must have identical per-event lengths."
+                )
+    
+    return True
+
+
+def _validate_parent_id(data: Dict[str, np.ndarray], parent_id_column: str) -> None:
+    """
+    Validate parent ID column exists and check for duplicates.
+    
+    Phase 13.6.A-ext: NEW validation.
+    
+    Raises:
+        ValueError if parent_id_column not found
+    
+    Warns:
+        UserWarning if duplicate parent IDs detected
+    """
+    if parent_id_column not in data:
+        raise ValueError(
+            f"parent_id_column '{parent_id_column}' not in data. "
+            f"Available columns: {list(data.keys())}"
+        )
+    
+    parent_ids = data[parent_id_column]
+    unique_ids = np.unique(parent_ids)
+    
+    if len(unique_ids) != len(parent_ids):
+        n_duplicates = len(parent_ids) - len(unique_ids)
+        warnings.warn(
+            f"parent_id_column '{parent_id_column}' contains {n_duplicates} duplicate values. "
+            f"This is allowed but may cause unexpected results in normalized mode joins. "
+            f"If this is intentional (e.g., filtered data), you can ignore this warning.",
+            UserWarning,
+            stacklevel=3
+        )
+
+
+def _validate_columns_exist(data: Dict[str, np.ndarray], columns: List[str]) -> None:
+    """Validate all requested columns exist in data."""
+    for col in columns:
+        if col not in data:
             raise ValueError(
-                f"RVec columns have different structures. "
-                f"'{ref_col}' lengths: {ref_lengths[:5]}..., "
-                f"'{col}' lengths: {col_lengths[:5]}..."
-                f"\nAll columns in one flatten call must have identical jagged structure."
+                f"Column '{col}' not in data. "
+                f"Available columns: {list(data.keys())}"
             )
 
 
+def _validate_1d_structure(data: Dict[str, np.ndarray], rvec_1d_cols: List[str]) -> None:
+    """
+    Validate all 1D columns have identical per-event lengths.
+    
+    Phase 13.6.A-ext: Used for mixed-depth validation.
+    """
+    if len(rvec_1d_cols) < 2:
+        return
+    
+    ref_col = rvec_1d_cols[0]
+    ref_lengths = [len(rv) for rv in data[ref_col]]
+    
+    for col in rvec_1d_cols[1:]:
+        col_lengths = [len(rv) for rv in data[col]]
+        
+        for event_idx, (ref_len, col_len) in enumerate(zip(ref_lengths, col_lengths)):
+            if ref_len != col_len:
+                raise ValueError(
+                    f"Columns have different structures in event {event_idx}: "
+                    f"'{ref_col}' has {ref_len} elements, "
+                    f"'{col}' has {col_len} elements. "
+                    f"All 1D columns must have identical per-event lengths."
+                )
+
+
+def _validate_2d_structure(data: Dict[str, np.ndarray], rvec_2d_cols: List[str]) -> None:
+    """
+    Validate all 2D columns have identical nested structure.
+    
+    Phase 13.6.A-ext: Used for mixed-depth validation.
+    """
+    if len(rvec_2d_cols) < 2:
+        return
+    
+    ref_col = rvec_2d_cols[0]
+    
+    for col in rvec_2d_cols[1:]:
+        for event_idx, (ref_event, col_event) in enumerate(zip(data[ref_col], data[col])):
+            # Check track count
+            if len(ref_event) != len(col_event):
+                raise ValueError(
+                    f"2D structure mismatch in event {event_idx}: "
+                    f"'{ref_col}' has {len(ref_event)} tracks, "
+                    f"'{col}' has {len(col_event)} tracks."
+                )
+            
+            # Check cluster count per track
+            for track_idx, (ref_track, col_track) in enumerate(zip(ref_event, col_event)):
+                if len(ref_track) != len(col_track):
+                    raise ValueError(
+                        f"2D structure mismatch in event {event_idx}, track {track_idx}: "
+                        f"'{ref_col}' has {len(ref_track)} clusters, "
+                        f"'{col}' has {len(col_track)} clusters."
+                    )
+
+
+def _validate_track_axis_alignment(
+    data: Dict[str, np.ndarray], 
+    col_1d: str, 
+    col_2d: str
+) -> None:
+    """
+    Validate that 1D and 2D columns share the same track axis.
+    
+    Phase 13.6.A-ext: Critical for mixed 2D+1D flattening.
+    """
+    for event_idx, (rvec_1d, rvec_2d) in enumerate(zip(data[col_1d], data[col_2d])):
+        n_tracks_1d = len(rvec_1d)
+        n_tracks_2d = len(rvec_2d)
+        
+        if n_tracks_1d != n_tracks_2d:
+            raise ValueError(
+                f"Track axis mismatch in event {event_idx}: "
+                f"1D column '{col_1d}' has {n_tracks_1d} tracks, "
+                f"2D column '{col_2d}' has {n_tracks_2d} track-groups. "
+                f"Cannot align 1D and 2D columns with different track counts."
+            )
+
+
+def _validate_mixed_structure(
+    data: Dict[str, np.ndarray],
+    scalar_cols: List[str],
+    rvec_1d_cols: List[str],
+    rvec_2d_cols: List[str],
+    parent_id_column: str
+) -> None:
+    """
+    Validate that columns can be flattened together.
+    
+    Phase 13.6.A-ext: Full mixed-depth validation.
+    
+    Rules:
+        R0: All columns must have same number of events
+        R1: All 1D columns must have identical per-event lengths
+        R2: All 2D columns must have identical nested structure
+        R3: If both 1D and 2D present, track axis must align
+        R4: Parent ID must exist (with duplicate warning)
+    """
+    all_cols = scalar_cols + rvec_1d_cols + rvec_2d_cols
+    if not all_cols:
+        return
+    
+    # R0: Event count consistency
+    n_events = None
+    for col in all_cols:
+        col_len = len(data[col])
+        if n_events is None:
+            n_events = col_len
+        elif col_len != n_events:
+            raise ValueError(
+                f"Event count mismatch: '{col}' has {col_len} events, "
+                f"expected {n_events}"
+            )
+    
+    # R1: 1D structure consistency
+    if len(rvec_1d_cols) > 1:
+        _validate_1d_structure(data, rvec_1d_cols)
+    
+    # R2: 2D structure consistency
+    if len(rvec_2d_cols) > 1:
+        _validate_2d_structure(data, rvec_2d_cols)
+    
+    # R3: Track axis alignment (1D vs 2D)
+    if rvec_1d_cols and rvec_2d_cols:
+        _validate_track_axis_alignment(data, rvec_1d_cols[0], rvec_2d_cols[0])
+    
+    # R4: Parent ID validation
+    _validate_parent_id(data, parent_id_column)
+
+
 # =============================================================================
-# NumPy Backend (Baseline)
+# Column Classification (Phase 13.6.A-ext)
+# =============================================================================
+
+def _classify_columns_by_depth(
+    data: Dict[str, np.ndarray], 
+    columns: List[str]
+) -> Tuple[List[str], List[str], List[str]]:
+    """
+    Classify columns into depth buckets.
+    
+    Phase 13.6.A-ext: NEW function.
+    
+    Args:
+        data: Dict from rdf.AsNumpy()
+        columns: List of column names
+    
+    Returns:
+        Tuple of (scalar_cols, rvec_1d_cols, rvec_2d_cols)
+    """
+    scalar_cols = []
+    rvec_1d_cols = []
+    rvec_2d_cols = []
+    
+    for col in columns:
+        depth = _get_depth_from_data(data, col)
+        if depth == 0:
+            scalar_cols.append(col)
+        elif depth == 1:
+            rvec_1d_cols.append(col)
+        elif depth == 2:
+            rvec_2d_cols.append(col)
+    
+    return scalar_cols, rvec_1d_cols, rvec_2d_cols
+
+
+def _determine_target_depth(
+    scalar_cols: List[str], 
+    rvec_1d_cols: List[str], 
+    rvec_2d_cols: List[str]
+) -> int:
+    """
+    Determine deepest nesting level.
+    
+    Phase 13.6.A-ext: NEW function.
+    
+    Returns:
+        0 if only scalars
+        1 if any 1D columns (and no 2D)
+        2 if any 2D columns
+    """
+    if rvec_2d_cols:
+        return 2
+    if rvec_1d_cols:
+        return 1
+    return 0
+
+
+def _is_mixed_depth(
+    scalar_cols: List[str], 
+    rvec_1d_cols: List[str], 
+    rvec_2d_cols: List[str]
+) -> bool:
+    """Check if columns have mixed nesting depths."""
+    has_scalar = len(scalar_cols) > 0
+    has_1d = len(rvec_1d_cols) > 0
+    has_2d = len(rvec_2d_cols) > 0
+    
+    # Mixed if: (scalar + 1D) or (scalar + 2D) or (1D + 2D) or all three
+    return (has_scalar and (has_1d or has_2d)) or (has_1d and has_2d)
+
+
+# =============================================================================
+# Phase 13.6.A: Same-Depth Flatten (NumPy Backend)
 # =============================================================================
 
 def _flatten_numpy_1level(
@@ -242,74 +390,52 @@ def _flatten_numpy_1level(
     parent_id_column: str
 ) -> Dict[str, np.ndarray]:
     """
-    Flatten 1-level RVec columns using NumPy preallocate.
+    NumPy backend for 1-level flatten.
     
-    This is the proven baseline (0.056s for 500k tracks).
+    Phase 13.6.A: Original implementation.
     """
-    # Get parent IDs and compute sizes
     parent_ids = data[parent_id_column]
     n_events = len(parent_ids)
     
-    # Get sizes from first RVec column
-    first_col = rvec_columns[0]
-    sizes = np.array([len(rv) for rv in data[first_col]], dtype=np.int64)
+    # Get structure from first rvec column
+    ref_col = rvec_columns[0]
+    sizes = np.array([len(rv) for rv in data[ref_col]], dtype=np.int64)
     total = sizes.sum()
     
     if total == 0:
-        # Handle empty case
+        # Empty result
         result = {
             parent_id_column: np.array([], dtype=parent_ids.dtype),
             'track_idx': np.array([], dtype=np.int64),
         }
         for col in rvec_columns:
-            dtype = infer_dtype(data[col][0]) if n_events > 0 else np.float64
-            result[col] = np.array([], dtype=dtype)
+            result[col] = np.array([], dtype=_infer_dtype(data[col]))
         return result
     
-    # Preallocate output arrays
-    # event_id: replicated parent IDs
-    flat_parent_ids = np.empty(total, dtype=parent_ids.dtype)
-    
-    # track_idx: 0-based within each event
-    flat_track_idx = np.empty(total, dtype=np.int64)
-    
-    # Flatten each RVec column
-    flat_columns = {}
+    # Preallocate
+    result = {
+        parent_id_column: np.empty(total, dtype=parent_ids.dtype),
+        'track_idx': np.empty(total, dtype=np.int64),
+    }
     for col in rvec_columns:
-        # Infer dtype from first non-empty RVec
-        dtype = infer_dtype(data[col][0]) if sizes[0] > 0 else np.float64
-        for i, rv in enumerate(data[col]):
-            if len(rv) > 0:
-                dtype = np.asarray(rv).dtype
-                break
-        flat_columns[col] = np.empty(total, dtype=dtype)
+        dtype = _infer_dtype(data[col])
+        result[col] = np.empty(total, dtype=dtype)
     
-    # Fill arrays
+    # Fill
     offset = 0
-    for i in range(n_events):
-        n = sizes[i]
+    for e in range(n_events):
+        n = sizes[e]
         if n == 0:
             continue
+        end = offset + n
         
-        # Parent ID: replicate
-        flat_parent_ids[offset:offset+n] = parent_ids[i]
+        result[parent_id_column][offset:end] = parent_ids[e]
+        result['track_idx'][offset:end] = np.arange(n)
         
-        # Track index: 0 to n-1
-        flat_track_idx[offset:offset+n] = np.arange(n)
-        
-        # Data columns
         for col in rvec_columns:
-            arr = np.asarray(data[col][i])
-            flat_columns[col][offset:offset+n] = arr
+            result[col][offset:end] = np.asarray(data[col][e])
         
-        offset += n
-    
-    # Build result
-    result = {
-        parent_id_column: flat_parent_ids,
-        'track_idx': flat_track_idx,
-    }
-    result.update(flat_columns)
+        offset = end
     
     return result
 
@@ -320,54 +446,47 @@ def _flatten_numpy_2level(
     parent_id_column: str
 ) -> Dict[str, np.ndarray]:
     """
-    Flatten 2-level RVec<RVec> columns using NumPy.
+    NumPy backend for 2-level flatten.
     
-    Produces: event_id, track_idx, cluster_idx, data columns
+    Phase 13.6.A: Original implementation.
     """
     parent_ids = data[parent_id_column]
     n_events = len(parent_ids)
     
-    # Count total elements (iterate through 2 levels)
-    first_col = rvec_columns[0]
+    # Get structure from first rvec column
+    ref_col = rvec_columns[0]
+    
+    # Count total clusters
     total = 0
-    for event_data in data[first_col]:
-        for track_data in event_data:
-            total += len(track_data)
+    for event in data[ref_col]:
+        for track in event:
+            total += len(track)
     
     if total == 0:
+        # Empty result
         result = {
             parent_id_column: np.array([], dtype=parent_ids.dtype),
             'track_idx': np.array([], dtype=np.int64),
             'cluster_idx': np.array([], dtype=np.int64),
         }
         for col in rvec_columns:
-            result[col] = np.array([], dtype=np.float64)
+            result[col] = np.array([], dtype=_infer_dtype_2d(data[col]))
         return result
     
     # Preallocate
-    flat_parent_ids = np.empty(total, dtype=parent_ids.dtype)
-    flat_track_idx = np.empty(total, dtype=np.int64)
-    flat_cluster_idx = np.empty(total, dtype=np.int64)
-    
-    # Infer dtype for each column
-    flat_columns = {}
+    result = {
+        parent_id_column: np.empty(total, dtype=parent_ids.dtype),
+        'track_idx': np.empty(total, dtype=np.int64),
+        'cluster_idx': np.empty(total, dtype=np.int64),
+    }
     for col in rvec_columns:
-        # Find first non-empty element
-        dtype = np.float64
-        for event_data in data[col]:
-            for track_data in event_data:
-                if len(track_data) > 0:
-                    dtype = np.asarray(track_data).dtype
-                    break
-            else:
-                continue
-            break
-        flat_columns[col] = np.empty(total, dtype=dtype)
+        dtype = _infer_dtype_2d(data[col])
+        result[col] = np.empty(total, dtype=dtype)
     
-    # Fill arrays
+    # Fill
     offset = 0
     for e in range(n_events):
-        event_data = data[first_col][e]
+        event_data = data[ref_col][e]
         n_tracks = len(event_data)
         
         for t in range(n_tracks):
@@ -377,123 +496,66 @@ def _flatten_numpy_2level(
             if n_clusters == 0:
                 continue
             
-            # Fill indices
-            flat_parent_ids[offset:offset+n_clusters] = parent_ids[e]
-            flat_track_idx[offset:offset+n_clusters] = t
-            flat_cluster_idx[offset:offset+n_clusters] = np.arange(n_clusters)
+            end = offset + n_clusters
             
-            # Fill data columns
+            result[parent_id_column][offset:end] = parent_ids[e]
+            result['track_idx'][offset:end] = t
+            result['cluster_idx'][offset:end] = np.arange(n_clusters)
+            
             for col in rvec_columns:
-                arr = np.asarray(data[col][e][t])
-                flat_columns[col][offset:offset+n_clusters] = arr
+                result[col][offset:end] = np.asarray(data[col][e][t])
             
-            offset += n_clusters
-    
-    # Build result
-    result = {
-        parent_id_column: flat_parent_ids,
-        'track_idx': flat_track_idx,
-        'cluster_idx': flat_cluster_idx,
-    }
-    result.update(flat_columns)
+            offset = end
     
     return result
 
 
-def flatten_numpy(
+# =============================================================================
+# Phase 13.6.A: Same-Depth Flatten (Awkward Backend)
+# =============================================================================
+
+def _flatten_awkward_1level(
     data: Dict[str, np.ndarray],
     rvec_columns: List[str],
     parent_id_column: str
 ) -> Dict[str, np.ndarray]:
     """
-    NumPy backend for flattening.
+    Awkward Array backend for 1-level flatten.
     
-    Automatically detects 1-level vs 2-level nesting.
+    Phase 13.6.A: Delegates to NumPy (Awkward provides no advantage here).
     """
-    # Check nesting depth
-    if is_nested_rvec(data, rvec_columns[0]):
+    return _flatten_numpy_1level(data, rvec_columns, parent_id_column)
+
+
+def _flatten_awkward_2level(
+    data: Dict[str, np.ndarray],
+    rvec_columns: List[str],
+    parent_id_column: str
+) -> Dict[str, np.ndarray]:
+    """
+    Awkward Array backend for 2-level flatten.
+    
+    Phase 13.6.A: Uses Awkward for potential performance benefits.
+    """
+    if not awkward_available():
         return _flatten_numpy_2level(data, rvec_columns, parent_id_column)
-    else:
-        return _flatten_numpy_1level(data, rvec_columns, parent_id_column)
-
-
-# =============================================================================
-# Awkward Backend (2-Level)
-# =============================================================================
-
-def flatten_awkward(
-    data: Dict[str, np.ndarray],
-    rvec_columns: List[str],
-    parent_id_column: str
-) -> Dict[str, np.ndarray]:
-    """
-    Awkward Array backend for flattening.
     
-    For 1-level nesting: Delegates to NumPy backend (simpler, faster).
-    For 2-level nesting: Uses Awkward Array (structural clarity).
-    
-    Roofline Analysis:
-    - 1-level: NumPy preallocate is optimal, Awkward adds overhead
-    - 2-level: Awkward's nested structure handling is cleaner
-    """
-    try:
-        import awkward as ak
-    except ImportError:
-        raise ImportError(
-            "Awkward Array required for this backend. "
-            "Install with: pip install awkward"
-        )
+    import awkward as ak
     
     parent_ids = data[parent_id_column]
     n_events = len(parent_ids)
-    first_col = rvec_columns[0]
-    
-    # Check nesting depth
-    is_2level = is_nested_rvec(data, first_col)
-    
-    if not is_2level:
-        # 1-level: Delegate to NumPy backend (faster, simpler, no dtype issues)
-        return flatten_numpy(data, rvec_columns, parent_id_column)
-    
-    # 2-level: Event → Track → Cluster
-    # Infer original dtypes
-    original_dtypes = {}
-    for col in rvec_columns:
-        dtype_found = False
-        for event in data[col]:
-            for track in event:
-                if len(track) > 0:
-                    arr = np.asarray(track)
-                    if arr.dtype != np.dtype('O'):
-                        original_dtypes[col] = arr.dtype
-                        dtype_found = True
-                        break
-            if dtype_found:
-                break
-        if not dtype_found:
-            original_dtypes[col] = np.float64
-    
-    # Build awkward arrays for 2-level
-    jagged_data = {}
-    for col in rvec_columns:
-        nested_list = []
-        for event in data[col]:
-            event_list = []
-            for track in event:
-                event_list.append(np.asarray(track))
-            nested_list.append(event_list)
-        jagged_data[col] = ak.Array(nested_list)
     
     # Get structure from first column
-    first_jagged = jagged_data[first_col]
+    ref_col = rvec_columns[0]
     
-    # Flatten values and restore original dtype
-    flat_columns = {}
-    for col in rvec_columns:
-        flat_arr = ak.flatten(jagged_data[col], axis=None).to_numpy()
-        flat_columns[col] = flat_arr.astype(original_dtypes[col])
+    # Convert to awkward array
+    ak_ref = ak.Array([
+        [list(track) for track in event]
+        for event in data[ref_col]
+    ])
     
-    total = len(flat_columns[first_col])
+    # Count total
+    total = ak.sum(ak.flatten(ak.num(ak_ref, axis=2)))
     
     if total == 0:
         result = {
@@ -501,185 +563,693 @@ def flatten_awkward(
             'track_idx': np.array([], dtype=np.int64),
             'cluster_idx': np.array([], dtype=np.int64),
         }
-        result.update(flat_columns)
+        for col in rvec_columns:
+            result[col] = np.array([], dtype=_infer_dtype_2d(data[col]))
         return result
     
-    # Build indices
-    flat_parent_ids = np.empty(total, dtype=parent_ids.dtype)
-    flat_track_idx = np.empty(total, dtype=np.int64)
-    flat_cluster_idx = np.empty(total, dtype=np.int64)
-    
-    offset = 0
-    for e in range(n_events):
-        n_tracks = len(first_jagged[e])
-        for t in range(n_tracks):
-            n_clusters = len(first_jagged[e][t])
-            if n_clusters == 0:
-                continue
-            flat_parent_ids[offset:offset+n_clusters] = parent_ids[e]
-            flat_track_idx[offset:offset+n_clusters] = t
-            flat_cluster_idx[offset:offset+n_clusters] = np.arange(n_clusters)
-            offset += n_clusters
-    
-    result = {
-        parent_id_column: flat_parent_ids,
-        'track_idx': flat_track_idx,
-        'cluster_idx': flat_cluster_idx,
-    }
-    result.update(flat_columns)
-    return result
+    # Build result using NumPy (Awkward construction overhead not worth it)
+    return _flatten_numpy_2level(data, rvec_columns, parent_id_column)
 
 
 # =============================================================================
-# C++ Backend (Production)
+# Phase 13.6.A-ext: Mixed-Depth Flatten
 # =============================================================================
 
-def flatten_cpp(
+def _flatten_depth_0(
     data: Dict[str, np.ndarray],
-    rvec_columns: List[str],
+    scalar_cols: List[str],
     parent_id_column: str
 ) -> Dict[str, np.ndarray]:
     """
-    C++ backend for flattening.
+    No flattening needed - return scalars as-is.
     
-    Uses registered C++ helper functions via Phase 13.5.C.
-    Falls back to NumPy if C++ helper not available.
+    Phase 13.6.A-ext: NEW function.
     """
-    if not cpp_helper_available():
-        warnings.warn(
-            "C++ flatten helper not available, falling back to NumPy backend.",
-            UserWarning
-        )
-        return flatten_numpy(data, rvec_columns, parent_id_column)
+    result = {parent_id_column: data[parent_id_column]}
+    for col in scalar_cols:
+        if col != parent_id_column:
+            result[col] = data[col]
+    return result
+
+
+def _flatten_depth_1_mixed(
+    data: Dict[str, np.ndarray],
+    scalar_cols: List[str],
+    rvec_1d_cols: List[str],
+    parent_id_column: str
+) -> Dict[str, np.ndarray]:
+    """
+    Flatten to track level, replicating scalars.
     
-    # TODO: Implement C++ helper integration
-    # For now, fall back to NumPy
-    return flatten_numpy(data, rvec_columns, parent_id_column)
+    Phase 13.6.A-ext: NEW function.
+    
+    Input (1 event):
+        event_id: 100           # scalar
+        multiplicity: 3         # scalar
+        track_pt: [1.0, 2.0, 3.0]  # 1D
+    
+    Output (3 rows):
+        event_id  multiplicity  track_idx  track_pt
+        100       3             0          1.0
+        100       3             1          2.0
+        100       3             2          3.0
+    """
+    parent_ids = data[parent_id_column]
+    n_events = len(parent_ids)
+    
+    # Get reference 1D column for structure
+    ref_1d_col = rvec_1d_cols[0]
+    sizes = np.array([len(rv) for rv in data[ref_1d_col]], dtype=np.int64)
+    total_rows = sizes.sum()
+    
+    # Handle empty case
+    if total_rows == 0:
+        result = {
+            parent_id_column: np.array([], dtype=parent_ids.dtype),
+            'track_idx': np.array([], dtype=np.int64),
+        }
+        for col in scalar_cols:
+            if col != parent_id_column:
+                result[col] = np.array([], dtype=data[col].dtype)
+        for col in rvec_1d_cols:
+            result[col] = np.array([], dtype=_infer_dtype(data[col]))
+        return result
+    
+    # Preallocate output arrays
+    result = {}
+    
+    # Parent ID column
+    result[parent_id_column] = np.empty(total_rows, dtype=parent_ids.dtype)
+    
+    # Scalar columns (will be replicated)
+    for col in scalar_cols:
+        if col != parent_id_column:
+            result[col] = np.empty(total_rows, dtype=data[col].dtype)
+    
+    # Track index
+    result['track_idx'] = np.empty(total_rows, dtype=np.int64)
+    
+    # 1D columns
+    for col in rvec_1d_cols:
+        dtype = _infer_dtype(data[col])
+        result[col] = np.empty(total_rows, dtype=dtype)
+    
+    # Fill arrays
+    offset = 0
+    for e in range(n_events):
+        n_tracks = sizes[e]
+        if n_tracks == 0:
+            continue
+        
+        end = offset + n_tracks
+        
+        # Replicate parent ID
+        result[parent_id_column][offset:end] = parent_ids[e]
+        
+        # Replicate scalars
+        for col in scalar_cols:
+            if col != parent_id_column:
+                result[col][offset:end] = data[col][e]
+        
+        # Generate track index
+        result['track_idx'][offset:end] = np.arange(n_tracks)
+        
+        # Copy 1D values
+        for col in rvec_1d_cols:
+            result[col][offset:end] = np.asarray(data[col][e])
+        
+        offset = end
+    
+    return result
+
+
+def _flatten_depth_2_mixed(
+    data: Dict[str, np.ndarray],
+    scalar_cols: List[str],
+    rvec_1d_cols: List[str],
+    rvec_2d_cols: List[str],
+    parent_id_column: str
+) -> Dict[str, np.ndarray]:
+    """
+    Flatten to cluster level, replicating scalars and track values.
+    
+    Phase 13.6.A-ext: NEW function.
+    
+    WARNING: Tracks with zero clusters will "disappear" from the output.
+    Their 1D values are NOT preserved. Use normalized mode if you need all tracks.
+    
+    Input (1 event):
+        event_id: 100                          # scalar
+        multiplicity: 3                        # scalar
+        track_pt: [1.0, 2.0, 3.0]             # 1D (3 tracks)
+        cluster_Q: [[10,20], [30], [40,50,60]] # 2D (2+1+3 = 6 clusters)
+    
+    Output (6 rows):
+        event_id  multiplicity  track_idx  track_pt  cluster_idx  cluster_Q
+        100       3             0          1.0       0            10
+        100       3             0          1.0       1            20
+        100       3             1          2.0       0            30
+        100       3             2          3.0       0            40
+        100       3             2          3.0       1            50
+        100       3             2          3.0       2            60
+    """
+    parent_ids = data[parent_id_column]
+    n_events = len(parent_ids)
+    
+    # Get reference 2D column for structure
+    ref_2d_col = rvec_2d_cols[0]
+    
+    # Count total clusters
+    total_rows = 0
+    for event_data in data[ref_2d_col]:
+        for track_data in event_data:
+            total_rows += len(track_data)
+    
+    # Handle empty case
+    if total_rows == 0:
+        result = {
+            parent_id_column: np.array([], dtype=parent_ids.dtype),
+            'track_idx': np.array([], dtype=np.int64),
+            'cluster_idx': np.array([], dtype=np.int64),
+        }
+        for col in scalar_cols:
+            if col != parent_id_column:
+                result[col] = np.array([], dtype=data[col].dtype)
+        for col in rvec_1d_cols:
+            result[col] = np.array([], dtype=_infer_dtype(data[col]))
+        for col in rvec_2d_cols:
+            result[col] = np.array([], dtype=_infer_dtype_2d(data[col]))
+        return result
+    
+    # Preallocate output arrays
+    result = {}
+    
+    # Parent ID column
+    result[parent_id_column] = np.empty(total_rows, dtype=parent_ids.dtype)
+    
+    # Scalar columns
+    for col in scalar_cols:
+        if col != parent_id_column:
+            result[col] = np.empty(total_rows, dtype=data[col].dtype)
+    
+    # Track index
+    result['track_idx'] = np.empty(total_rows, dtype=np.int64)
+    
+    # 1D columns (will be replicated to cluster level)
+    for col in rvec_1d_cols:
+        dtype = _infer_dtype(data[col])
+        result[col] = np.empty(total_rows, dtype=dtype)
+    
+    # Cluster index
+    result['cluster_idx'] = np.empty(total_rows, dtype=np.int64)
+    
+    # 2D columns
+    for col in rvec_2d_cols:
+        dtype = _infer_dtype_2d(data[col])
+        result[col] = np.empty(total_rows, dtype=dtype)
+    
+    # Fill arrays
+    offset = 0
+    for e in range(n_events):
+        event_2d = data[ref_2d_col][e]
+        n_tracks = len(event_2d)
+        
+        for t in range(n_tracks):
+            track_2d = event_2d[t]
+            n_clusters = len(track_2d)
+            
+            if n_clusters == 0:
+                continue
+            
+            end = offset + n_clusters
+            
+            # Replicate parent ID
+            result[parent_id_column][offset:end] = parent_ids[e]
+            
+            # Replicate scalars
+            for col in scalar_cols:
+                if col != parent_id_column:
+                    result[col][offset:end] = data[col][e]
+            
+            # Replicate track index
+            result['track_idx'][offset:end] = t
+            
+            # Replicate 1D values (track-level → cluster-level)
+            for col in rvec_1d_cols:
+                track_value = data[col][e][t]  # Single value for this track
+                result[col][offset:end] = track_value
+            
+            # Generate cluster index
+            result['cluster_idx'][offset:end] = np.arange(n_clusters)
+            
+            # Copy 2D values
+            for col in rvec_2d_cols:
+                result[col][offset:end] = np.asarray(data[col][e][t])
+            
+            offset = end
+    
+    return result
+
+
+def _build_output_dataframe(
+    result: Dict[str, np.ndarray],
+    parent_id_column: str,
+    scalar_cols: List[str],
+    rvec_1d_cols: List[str],
+    rvec_2d_cols: List[str],
+    target_depth: int
+) -> pd.DataFrame:
+    """
+    Build DataFrame with deterministic column order.
+    
+    Phase 13.6.A-ext: NEW function (fixed from v0.1).
+    
+    Order:
+        1. parent_id_column (e.g., 'event_id')
+        2. Scalar columns (input order preserved)
+        3. 'track_idx' (if depth >= 1)
+        4. 1D columns (input order preserved)
+        5. 'cluster_idx' (if depth == 2)
+        6. 2D columns (input order preserved)
+    """
+    ordered_columns = [parent_id_column]
+    
+    # Scalar columns (input order, excluding parent_id)
+    for col in scalar_cols:
+        if col != parent_id_column and col in result:
+            ordered_columns.append(col)
+    
+    # Track index and 1D columns
+    if target_depth >= 1:
+        ordered_columns.append('track_idx')
+        for col in rvec_1d_cols:
+            if col in result:
+                ordered_columns.append(col)
+    
+    # Cluster index and 2D columns
+    if target_depth == 2:
+        ordered_columns.append('cluster_idx')
+        for col in rvec_2d_cols:
+            if col in result:
+                ordered_columns.append(col)
+    
+    return pd.DataFrame({col: result[col] for col in ordered_columns})
 
 
 # =============================================================================
-# Main API
+# Main API Functions
 # =============================================================================
 
 def flatten_to_dataframe(
     data: Dict[str, np.ndarray],
-    rvec_columns: List[str],
+    columns: Optional[List[str]] = None,
+    rvec_columns: Optional[List[str]] = None,  # DEPRECATED (Phase 13.6.A compat)
     parent_id_column: str = "event_id",
     backend: FlattenBackend = FlattenBackend.AUTO
-) -> 'pd.DataFrame':
+) -> pd.DataFrame:
     """
     Flatten RVec columns to pandas DataFrame.
     
-    Converts hierarchical RDataFrame data (Events × Tracks × Clusters)
-    to flat DataFrame suitable for TTree::Draw-like operations.
+    Phase 13.6.A: Same-depth columns (backward compatible via rvec_columns)
+    Phase 13.6.A-ext: Mixed-depth columns (scalar + 1D + 2D via columns)
     
     Args:
-        data: Output from rdf.AsNumpy() containing RVec columns
-        rvec_columns: List of RVec column names to flatten
-        parent_id_column: Column with parent IDs to replicate (default: 'event_id')
-        backend: Implementation backend (default: AUTO)
+        data: Dict from rdf.AsNumpy() containing columns
+        columns: Column names to flatten (supports mixed depths)
+                 NEW in 13.6.A-ext
+        rvec_columns: DEPRECATED - use 'columns' instead
+                      Kept for Phase 13.6.A backward compatibility
+        parent_id_column: Parent ID column name (default: 'event_id')
+        backend: Flatten backend (default: AUTO)
     
     Returns:
-        pandas DataFrame with:
-        - parent_id_column: Replicated parent IDs
-        - track_idx: 0-based index within parent event
-        - cluster_idx: 0-based index within parent track (if 2-level)
-        - [rvec_columns]: Flattened data columns
+        Flat pandas DataFrame with appropriate index columns
     
-    Index Semantics:
-        - event_id: Replicated verbatim from input data (not generated)
-        - track_idx: Always local to parent event (0 to n_tracks-1)
-        - cluster_idx: Always local to parent track (0 to n_clusters-1)
-        - Indices are deterministic and stable across all backends
+    Backward Compatibility:
+        - If 'rvec_columns' is provided, it's treated as 'columns'
+        - Deprecation warning is issued
+        - Cannot specify both 'columns' and 'rvec_columns'
     
-    Example:
-        >>> data = rdf.AsNumpy(['event_id', 'track_pt', 'track_eta'])
-        >>> df = flatten_to_dataframe(data, ['track_pt', 'track_eta'])
-        >>> # Result: event_id, track_idx, track_pt, track_eta
-    
-    Raises:
-        ValueError: If rvec_columns have different jagged structures
-        ImportError: If Awkward backend requested but not installed
+    Examples:
+        # Phase 13.6.A style (still works):
+        >>> df = flatten_to_dataframe(data, rvec_columns=['track_pt'])
+        
+        # Phase 13.6.A-ext style (recommended):
+        >>> df = flatten_to_dataframe(data, columns=['track_pt'])
+        
+        # Mixed depths (NEW):
+        >>> df = flatten_to_dataframe(data, 
+        ...     columns=['cluster_Q', 'track_pt', 'multiplicity'])
     """
-    import pandas as pd
+    # Handle backward compatibility
+    if rvec_columns is not None:
+        if columns is not None:
+            raise ValueError(
+                "Cannot specify both 'columns' and 'rvec_columns'. "
+                "Use 'columns' (rvec_columns is deprecated)."
+            )
+        warnings.warn(
+            "'rvec_columns' parameter is deprecated. Use 'columns' instead. "
+            "The new 'columns' parameter supports mixed nesting depths "
+            "(scalars + RVec + RVec<RVec>).",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        columns = rvec_columns
     
-    # Validate inputs
-    if not rvec_columns:
-        raise ValueError("rvec_columns cannot be empty")
+    if columns is None:
+        raise ValueError("Must specify 'columns' parameter")
     
-    if parent_id_column not in data:
-        raise ValueError(f"parent_id_column '{parent_id_column}' not in data")
+    if not columns:
+        raise ValueError("'columns' list cannot be empty")
     
-    for col in rvec_columns:
-        if col not in data:
-            raise ValueError(f"Column '{col}' not in data")
+    # Validate columns exist
+    _validate_columns_exist(data, columns + [parent_id_column])
+    
+    # Classify columns by depth
+    scalar_cols, rvec_1d_cols, rvec_2d_cols = _classify_columns_by_depth(data, columns)
+    target_depth = _determine_target_depth(scalar_cols, rvec_1d_cols, rvec_2d_cols)
+    is_mixed = _is_mixed_depth(scalar_cols, rvec_1d_cols, rvec_2d_cols)
+    
+    # Validate structure
+    _validate_mixed_structure(data, scalar_cols, rvec_1d_cols, rvec_2d_cols, parent_id_column)
+    
+    # Backend dispatch
+    if is_mixed:
+        # Mixed-depth: NumPy only (Phase 13.6.A-ext)
+        if backend == FlattenBackend.AWKWARD:
+            raise NotImplementedError(
+                "Awkward Array backend does not yet support mixed-depth flattening. "
+                "Use backend=FlattenBackend.NUMPY or AUTO."
+            )
+        if backend == FlattenBackend.CPP:
+            raise NotImplementedError(
+                "C++ backend does not yet support mixed-depth flattening."
+            )
+        
+        # Dispatch by target depth
+        if target_depth == 0:
+            result = _flatten_depth_0(data, scalar_cols, parent_id_column)
+        elif target_depth == 1:
+            result = _flatten_depth_1_mixed(data, scalar_cols, rvec_1d_cols, parent_id_column)
+        else:  # target_depth == 2
+            result = _flatten_depth_2_mixed(
+                data, scalar_cols, rvec_1d_cols, rvec_2d_cols, parent_id_column
+            )
+        
+        return _build_output_dataframe(
+            result, parent_id_column, scalar_cols, rvec_1d_cols, rvec_2d_cols, target_depth
+        )
+    
+    # Same-depth: Use Phase 13.6.A backends
+    all_rvec_cols = rvec_1d_cols + rvec_2d_cols
+    
+    if not all_rvec_cols:
+        # Only scalars requested (treated as depth 0 mixed)
+        result = _flatten_depth_0(data, scalar_cols, parent_id_column)
+        return _build_output_dataframe(
+            result, parent_id_column, scalar_cols, [], [], 0
+        )
     
     # Validate same structure
-    validate_same_structure(data, rvec_columns)
+    validate_same_structure(data, all_rvec_cols)
     
-    # Select backend
-    if backend == FlattenBackend.AUTO:
-        backend = select_backend(data, rvec_columns)
+    # Determine if 1D or 2D
+    is_2d = is_nested_rvec(data, all_rvec_cols[0])
     
-    # Dispatch to backend
-    if backend == FlattenBackend.NUMPY:
-        result = flatten_numpy(data, rvec_columns, parent_id_column)
-    elif backend == FlattenBackend.AWKWARD:
-        result = flatten_awkward(data, rvec_columns, parent_id_column)
-    elif backend == FlattenBackend.CPP:
-        result = flatten_cpp(data, rvec_columns, parent_id_column)
+    # Backend selection
+    use_backend = backend
+    if use_backend == FlattenBackend.AUTO:
+        use_backend = FlattenBackend.NUMPY
+    
+    if use_backend == FlattenBackend.CPP:
+        raise NotImplementedError("C++ backend not yet implemented")
+    
+    # Dispatch
+    if is_2d:
+        if use_backend == FlattenBackend.AWKWARD and awkward_available():
+            result = _flatten_awkward_2level(data, all_rvec_cols, parent_id_column)
+        else:
+            result = _flatten_numpy_2level(data, all_rvec_cols, parent_id_column)
+        return _build_output_dataframe(
+            result, parent_id_column, [], [], all_rvec_cols, 2
+        )
     else:
-        raise ValueError(f"Unknown backend: {backend}")
-    
-    # Convert to DataFrame
-    return pd.DataFrame(result)
+        if use_backend == FlattenBackend.AWKWARD and awkward_available():
+            result = _flatten_awkward_1level(data, all_rvec_cols, parent_id_column)
+        else:
+            result = _flatten_numpy_1level(data, all_rvec_cols, parent_id_column)
+        return _build_output_dataframe(
+            result, parent_id_column, [], all_rvec_cols, [], 1
+        )
 
 
 def flatten_to_dict(
     data: Dict[str, np.ndarray],
-    rvec_columns: List[str],
+    columns: Optional[List[str]] = None,
+    rvec_columns: Optional[List[str]] = None,
     parent_id_column: str = "event_id",
     backend: FlattenBackend = FlattenBackend.AUTO
 ) -> Dict[str, np.ndarray]:
     """
-    Flatten RVec columns to dictionary of numpy arrays.
+    Flatten RVec columns to dict of arrays (without DataFrame conversion).
     
-    Same as flatten_to_dataframe but returns dict instead of DataFrame.
-    Useful when pandas overhead is not desired.
+    Phase 13.6.A: Original API.
+    
+    Same arguments as flatten_to_dataframe().
+    Returns dict of numpy arrays instead of DataFrame.
+    """
+    # Handle backward compatibility
+    if rvec_columns is not None:
+        if columns is not None:
+            raise ValueError(
+                "Cannot specify both 'columns' and 'rvec_columns'. "
+                "Use 'columns' (rvec_columns is deprecated)."
+            )
+        warnings.warn(
+            "'rvec_columns' parameter is deprecated. Use 'columns' instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        columns = rvec_columns
+    
+    if columns is None:
+        raise ValueError("Must specify 'columns' parameter")
+    
+    _validate_columns_exist(data, columns + [parent_id_column])
+    
+    scalar_cols, rvec_1d_cols, rvec_2d_cols = _classify_columns_by_depth(data, columns)
+    target_depth = _determine_target_depth(scalar_cols, rvec_1d_cols, rvec_2d_cols)
+    is_mixed = _is_mixed_depth(scalar_cols, rvec_1d_cols, rvec_2d_cols)
+    
+    _validate_mixed_structure(data, scalar_cols, rvec_1d_cols, rvec_2d_cols, parent_id_column)
+    
+    if is_mixed:
+        if target_depth == 0:
+            return _flatten_depth_0(data, scalar_cols, parent_id_column)
+        elif target_depth == 1:
+            return _flatten_depth_1_mixed(data, scalar_cols, rvec_1d_cols, parent_id_column)
+        else:
+            return _flatten_depth_2_mixed(
+                data, scalar_cols, rvec_1d_cols, rvec_2d_cols, parent_id_column
+            )
+    
+    all_rvec_cols = rvec_1d_cols + rvec_2d_cols
+    
+    if not all_rvec_cols:
+        return _flatten_depth_0(data, scalar_cols, parent_id_column)
+    
+    validate_same_structure(data, all_rvec_cols)
+    is_2d = is_nested_rvec(data, all_rvec_cols[0])
+    
+    if is_2d:
+        return _flatten_numpy_2level(data, all_rvec_cols, parent_id_column)
+    else:
+        return _flatten_numpy_1level(data, all_rvec_cols, parent_id_column)
+
+
+# =============================================================================
+# Phase 13.6.A-ext: Normalized Tables Output
+# =============================================================================
+
+def flatten_to_tables(
+    data: Dict[str, np.ndarray],
+    columns: List[str],
+    parent_id_column: str = "event_id"
+) -> Dict[str, pd.DataFrame]:
+    """
+    Flatten to normalized tables (no replication).
+    
+    Phase 13.6.A-ext: NEW function.
+    
+    Returns separate DataFrames for each depth level, suitable for
+    joins and AliasDataFrame integration.
     
     Args:
-        data: Output from rdf.AsNumpy()
-        rvec_columns: Columns to flatten
-        parent_id_column: Column with parent IDs
-        backend: Implementation backend
+        data: Dict from rdf.AsNumpy()
+        columns: Column names to include
+        parent_id_column: Parent ID column (default: 'event_id')
     
     Returns:
-        Dictionary with flattened arrays
+        Dict with keys 'events', 'tracks', 'clusters' (as applicable).
+        Only levels with requested columns are included.
+    
+    Join Keys:
+        - events ↔ tracks: parent_id_column
+        - tracks ↔ clusters: (parent_id_column, track_idx)
+    
+    Example:
+        >>> tables = flatten_to_tables(data, 
+        ...     columns=['multiplicity', 'track_pt', 'cluster_Q'])
+        >>> tables.keys()
+        dict_keys(['events', 'tracks', 'clusters'])
+        >>> 
+        >>> # Join for analysis
+        >>> merged = tables['tracks'].merge(tables['events'], on='event_id')
     """
-    # Validate inputs
-    if not rvec_columns:
-        raise ValueError("rvec_columns cannot be empty")
+    _validate_columns_exist(data, columns + [parent_id_column])
     
-    if parent_id_column not in data:
-        raise ValueError(f"parent_id_column '{parent_id_column}' not in data")
+    scalar_cols, rvec_1d_cols, rvec_2d_cols = _classify_columns_by_depth(data, columns)
     
-    for col in rvec_columns:
-        if col not in data:
-            raise ValueError(f"Column '{col}' not in data")
+    _validate_mixed_structure(data, scalar_cols, rvec_1d_cols, rvec_2d_cols, parent_id_column)
     
-    # Validate same structure
-    validate_same_structure(data, rvec_columns)
+    result = {}
     
-    # Select backend
-    if backend == FlattenBackend.AUTO:
-        backend = select_backend(data, rvec_columns)
+    # Events table (scalars)
+    if scalar_cols:
+        result['events'] = _build_events_table(data, scalar_cols, parent_id_column)
     
-    # Dispatch to backend
-    if backend == FlattenBackend.NUMPY:
-        return flatten_numpy(data, rvec_columns, parent_id_column)
-    elif backend == FlattenBackend.AWKWARD:
-        return flatten_awkward(data, rvec_columns, parent_id_column)
-    elif backend == FlattenBackend.CPP:
-        return flatten_cpp(data, rvec_columns, parent_id_column)
-    else:
-        raise ValueError(f"Unknown backend: {backend}")
+    # Tracks table (1D columns)
+    if rvec_1d_cols:
+        result['tracks'] = _build_tracks_table(data, rvec_1d_cols, parent_id_column)
+    
+    # Clusters table (2D columns)
+    if rvec_2d_cols:
+        result['clusters'] = _build_clusters_table(data, rvec_2d_cols, parent_id_column)
+    
+    return result
+
+
+def _build_events_table(
+    data: Dict[str, np.ndarray],
+    scalar_cols: List[str],
+    parent_id_column: str
+) -> pd.DataFrame:
+    """Build events table (no flattening, just scalars)."""
+    result = {parent_id_column: data[parent_id_column]}
+    for col in scalar_cols:
+        if col != parent_id_column:
+            result[col] = data[col]
+    
+    # Preserve column order
+    ordered_cols = [parent_id_column] + [c for c in scalar_cols if c != parent_id_column]
+    return pd.DataFrame({col: result[col] for col in ordered_cols if col in result})
+
+
+def _build_tracks_table(
+    data: Dict[str, np.ndarray],
+    rvec_1d_cols: List[str],
+    parent_id_column: str
+) -> pd.DataFrame:
+    """Build tracks table (flatten 1D only, no scalar replication)."""
+    parent_ids = data[parent_id_column]
+    n_events = len(parent_ids)
+    
+    ref_col = rvec_1d_cols[0]
+    sizes = np.array([len(rv) for rv in data[ref_col]], dtype=np.int64)
+    total = sizes.sum()
+    
+    if total == 0:
+        result = {
+            parent_id_column: np.array([], dtype=parent_ids.dtype),
+            'track_idx': np.array([], dtype=np.int64),
+        }
+        for col in rvec_1d_cols:
+            result[col] = np.array([], dtype=_infer_dtype(data[col]))
+        return pd.DataFrame(result)
+    
+    # Preallocate
+    result = {
+        parent_id_column: np.empty(total, dtype=parent_ids.dtype),
+        'track_idx': np.empty(total, dtype=np.int64),
+    }
+    for col in rvec_1d_cols:
+        result[col] = np.empty(total, dtype=_infer_dtype(data[col]))
+    
+    # Fill
+    offset = 0
+    for e in range(n_events):
+        n = sizes[e]
+        if n == 0:
+            continue
+        end = offset + n
+        
+        result[parent_id_column][offset:end] = parent_ids[e]
+        result['track_idx'][offset:end] = np.arange(n)
+        for col in rvec_1d_cols:
+            result[col][offset:end] = np.asarray(data[col][e])
+        
+        offset = end
+    
+    # Column order
+    ordered_cols = [parent_id_column, 'track_idx'] + list(rvec_1d_cols)
+    return pd.DataFrame({col: result[col] for col in ordered_cols})
+
+
+def _build_clusters_table(
+    data: Dict[str, np.ndarray],
+    rvec_2d_cols: List[str],
+    parent_id_column: str
+) -> pd.DataFrame:
+    """Build clusters table (flatten 2D only, no track replication)."""
+    parent_ids = data[parent_id_column]
+    n_events = len(parent_ids)
+    
+    ref_col = rvec_2d_cols[0]
+    
+    # Count total clusters
+    total = sum(
+        len(track)
+        for event in data[ref_col]
+        for track in event
+    )
+    
+    if total == 0:
+        result = {
+            parent_id_column: np.array([], dtype=parent_ids.dtype),
+            'track_idx': np.array([], dtype=np.int64),
+            'cluster_idx': np.array([], dtype=np.int64),
+        }
+        for col in rvec_2d_cols:
+            result[col] = np.array([], dtype=_infer_dtype_2d(data[col]))
+        return pd.DataFrame(result)
+    
+    # Preallocate
+    result = {
+        parent_id_column: np.empty(total, dtype=parent_ids.dtype),
+        'track_idx': np.empty(total, dtype=np.int64),
+        'cluster_idx': np.empty(total, dtype=np.int64),
+    }
+    for col in rvec_2d_cols:
+        result[col] = np.empty(total, dtype=_infer_dtype_2d(data[col]))
+    
+    # Fill
+    offset = 0
+    for e in range(n_events):
+        for t, track_data in enumerate(data[ref_col][e]):
+            n = len(track_data)
+            if n == 0:
+                continue
+            end = offset + n
+            
+            result[parent_id_column][offset:end] = parent_ids[e]
+            result['track_idx'][offset:end] = t
+            result['cluster_idx'][offset:end] = np.arange(n)
+            for col in rvec_2d_cols:
+                result[col][offset:end] = np.asarray(data[col][e][t])
+            
+            offset = end
+    
+    # Column order
+    ordered_cols = [parent_id_column, 'track_idx', 'cluster_idx'] + list(rvec_2d_cols)
+    return pd.DataFrame({col: result[col] for col in ordered_cols})
