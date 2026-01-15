@@ -50,6 +50,9 @@ from .ir_types import IRType, IRTypeKind
 from .backend_cpp import CppCodeGenerator, FunctionLibrary, GeneratedFunction
 from .ir_errors import IRError, IRErrorKind
 
+# Phase 13.6.B: Flatten module for TTree::Draw-like export
+from .flatten import flatten_to_dataframe, flatten_to_tables, FlattenBackend
+
 
 # Phase 13.2.DSL: PyArrow detection
 try:
@@ -1870,6 +1873,345 @@ class DSLCompiler:
             rdf = rdf.Range(max_entries)
         
         return pd.DataFrame(rdf.AsNumpy(columns))
+    
+    # =========================================================================
+    # Phase 13.6.B: TTree::Draw-like Export Methods
+    # =========================================================================
+    
+    def to_pandas(
+        self,
+        rdf,
+        columns: List[str],
+        event_selection: str = None,
+        parent_id_column: str = 'event_id',
+        backend: FlattenBackend = None,
+        max_entries: int = None,
+    ) -> 'pd.DataFrame':
+        """
+        Export RDataFrame to flat pandas DataFrame with TTree::Draw semantics.
+        
+        This method provides TTree::Draw-like functionality:
+        - Automatically flattens RVec columns to row-per-element format
+        - Supports mixed nesting depths (scalar + 1D RVec + 2D RVec<RVec>)
+        - Replicates shallower columns to match deepest level
+        
+        Phase 13.6.B: Core method for TTree::Draw equivalence.
+        
+        Args:
+            rdf: RDataFrame instance (applied or not)
+            columns: List of column names to export
+                     Can mix scalar, RVec, and RVec<RVec> columns
+            event_selection: Optional event-level filter expression (scalar bool)
+                            e.g., 'multiplicity > 50'
+                            Note: For track-level filters, use DSL define() first
+            parent_id_column: Name of parent ID column (default: 'event_id')
+            backend: Flatten backend (default: AUTO)
+            max_entries: Optional limit on number of events
+        
+        Returns:
+            Flat pandas DataFrame with index columns:
+            - event_id: Parent event ID (replicated from input)
+            - track_idx: Track index within event (if 1D+ columns)
+            - cluster_idx: Cluster index within track (if 2D columns)
+        
+        Example:
+            >>> # Basic usage
+            >>> df = dsl.to_pandas(rdf, ['track_pt', 'track_eta'])
+            
+            >>> # Mixed depths (scalar + 1D + 2D)
+            >>> df = dsl.to_pandas(rdf, ['cluster_Q', 'track_pt', 'multiplicity'])
+            
+            >>> # With event-level selection
+            >>> df = dsl.to_pandas(rdf, ['track_pt'], event_selection='multiplicity > 50')
+            
+            >>> # TTree::Draw equivalent:
+            >>> # tree->Draw("cluster_Q:track_pt")
+            >>> df = dsl.to_pandas(rdf, ['cluster_Q', 'track_pt'])
+        
+        TTree::Draw Equivalence:
+            The output DataFrame matches TTree::Draw semantics:
+            - Deepest nesting level determines row count
+            - Shallower columns are replicated to match
+            - Index columns enable groupby operations
+        
+        See Also:
+            flatten_to_dataframe: Low-level flatten function
+            export_to_aliasdf: Export to AliasDataFrame with subframes
+        """
+        import pandas as pd
+        
+        # Apply DSL definitions first if not already applied
+        applied_rdf = self.apply(rdf)
+        
+        # Apply event-level selection if provided
+        if event_selection:
+            applied_rdf = applied_rdf.Filter(event_selection)
+        
+        # Apply entry limit if specified
+        if max_entries is not None:
+            applied_rdf = applied_rdf.Range(max_entries)
+        
+        # Ensure parent_id_column is included
+        columns_to_fetch = list(columns)
+        if parent_id_column not in columns_to_fetch:
+            columns_to_fetch.append(parent_id_column)
+        
+        # Get data from RDataFrame
+        data = applied_rdf.AsNumpy(columns_to_fetch)
+        
+        # Use AUTO backend if not specified
+        if backend is None:
+            backend = FlattenBackend.AUTO
+        
+        # Flatten to DataFrame
+        df = flatten_to_dataframe(
+            data,
+            columns=columns,
+            parent_id_column=parent_id_column,
+            backend=backend
+        )
+        
+        return df
+    
+    def export_to_aliasdf(
+        self,
+        rdf,
+        columns: List[str],
+        event_selection: str = None,
+        parent_id_column: str = 'event_id',
+        max_entries: int = None,
+    ):
+        """
+        Export RDataFrame to AliasDataFrame with normalized subframes.
+        
+        This is the RECOMMENDED export method for Phase 13.6.B.
+        Uses normalized tables with subframe registration for memory efficiency.
+        
+        Option C implementation per Team 1 recommendation.
+        
+        Args:
+            rdf: RDataFrame instance
+            columns: List of column names to export
+            event_selection: Optional event-level filter expression
+            parent_id_column: Name of parent ID column (default: 'event_id')
+            max_entries: Optional limit on number of events
+        
+        Returns:
+            AliasDataFrame instance with registered subframes:
+            - Main frame: event-level data
+            - 'tracks' subframe: track-level data (joined on event_id)
+            - 'clusters' subframe: cluster-level data (joined on event_id, track_idx)
+        
+        Example:
+            >>> adf = dsl.export_to_aliasdf(rdf, ['cluster_Q', 'track_pt', 'multiplicity'])
+            >>> 
+            >>> # Access via subframe notation
+            >>> adf.add_alias('scaled_pt', 'tracks.track_pt * 1.1')
+            >>> 
+            >>> # Memory efficient: base tables not replicated
+        
+        Memory Efficiency:
+            Option C uses ~3x less memory than flat export (Option A)
+            because data is stored in normalized tables and joined on-demand.
+        
+        See Also:
+            export_to_aliasdf_flat: Simple flat export (Option A fallback)
+            to_pandas: Export to plain pandas DataFrame
+        """
+        from datetime import datetime, timezone
+        
+        # Import AliasDataFrame (may not be available)
+        try:
+            from dfextensions import AliasDataFrame
+        except ImportError:
+            try:
+                from AliasDataFrame import AliasDataFrame
+            except ImportError:
+                raise ImportError(
+                    "AliasDataFrame not installed. Install with: pip install aliasdf"
+                )
+        
+        # Apply DSL definitions
+        applied_rdf = self.apply(rdf)
+        
+        # Apply event-level selection if provided
+        if event_selection:
+            applied_rdf = applied_rdf.Filter(event_selection)
+        
+        # Apply entry limit if specified
+        if max_entries is not None:
+            applied_rdf = applied_rdf.Range(max_entries)
+        
+        # Ensure parent_id_column is included
+        columns_to_fetch = list(columns)
+        if parent_id_column not in columns_to_fetch:
+            columns_to_fetch.append(parent_id_column)
+        
+        # Get data from RDataFrame
+        data = applied_rdf.AsNumpy(columns_to_fetch)
+        
+        # Get normalized tables (no data replication)
+        tables = flatten_to_tables(
+            data,
+            columns=columns,
+            parent_id_column=parent_id_column
+        )
+        
+        # Create main frame from event-level data
+        if 'events' in tables and len(tables['events']) > 0:
+            main_df = tables['events']
+        else:
+            # Fallback: use flattened data
+            main_df = flatten_to_dataframe(
+                data,
+                columns=columns,
+                parent_id_column=parent_id_column
+            )
+        
+        # Create AliasDataFrame with schema_id for provenance
+        adf = AliasDataFrame(main_df, schema_id='RDataFrameDSL_v13.6.B')
+        
+        # Register track-level subframe if present
+        if 'tracks' in tables and len(tables['tracks']) > 0:
+            tracks_adf = AliasDataFrame(tables['tracks'])
+            adf.register_subframe('tracks', tracks_adf, [parent_id_column])
+        
+        # Register cluster-level subframe if present
+        if 'clusters' in tables and len(tables['clusters']) > 0:
+            clusters_adf = AliasDataFrame(tables['clusters'])
+            adf.register_subframe('clusters', clusters_adf, [parent_id_column, 'track_idx'])
+        
+        # Add column metadata
+        adf.update_schema({
+            'columns': {
+                col: {
+                    'dtype': str(main_df[col].dtype) if col in main_df.columns else 'object',
+                    'root_type': self.schema.get(col, 'unknown')
+                }
+                for col in columns if col in self.schema or col in main_df.columns
+            }
+        })
+        
+        # Add global metadata
+        adf._schema['__meta__'].update({
+            'source': 'RDataFrameDSL',
+            'source_version': '13.6.B',
+            'parent_id_column': parent_id_column,
+            'created_at': datetime.now(timezone.utc).isoformat(),
+            'n_events': len(main_df) if 'events' in tables else 'N/A',
+        })
+        
+        return adf
+    
+    def export_to_aliasdf_flat(
+        self,
+        rdf,
+        columns: List[str],
+        event_selection: str = None,
+        parent_id_column: str = 'event_id',
+        max_entries: int = None,
+    ):
+        """
+        Export RDataFrame to AliasDataFrame as flat structure (Option A fallback).
+        
+        Use this if Option C (subframes) proves incompatible or too complex.
+        Note: Higher memory usage due to data replication.
+        
+        Args:
+            rdf: RDataFrame instance
+            columns: List of column names to export
+            event_selection: Optional event-level filter expression
+            parent_id_column: Name of parent ID column (default: 'event_id')
+            max_entries: Optional limit on number of events
+        
+        Returns:
+            AliasDataFrame instance with flat data (no subframes)
+        
+        Example:
+            >>> adf = dsl.export_to_aliasdf_flat(rdf, ['cluster_Q', 'track_pt'])
+            >>> 
+            >>> # All columns in single DataFrame
+            >>> print(adf.df.columns)
+            # ['event_id', 'track_idx', 'cluster_idx', 'track_pt', 'cluster_Q']
+        
+        Memory Note:
+            This method uses ~3x more memory than export_to_aliasdf()
+            because shallower columns are replicated to match deepest level.
+        
+        See Also:
+            export_to_aliasdf: Memory-efficient export with subframes (recommended)
+        """
+        from datetime import datetime, timezone
+        
+        # Import AliasDataFrame
+        try:
+            from dfextensions import AliasDataFrame
+        except ImportError:
+            try:
+                from AliasDataFrame import AliasDataFrame
+            except ImportError:
+                raise ImportError(
+                    "AliasDataFrame not installed. Install with: pip install aliasdf"
+                )
+        
+        # Get flat DataFrame using to_pandas()
+        df = self.to_pandas(
+            rdf,
+            columns=columns,
+            event_selection=event_selection,
+            parent_id_column=parent_id_column,
+            max_entries=max_entries
+        )
+        
+        # Create AliasDataFrame with schema_id
+        adf = AliasDataFrame(df, schema_id='RDataFrameDSL_v13.6.B')
+        
+        # Add column metadata
+        adf.update_schema({
+            'columns': {
+                col: {
+                    'dtype': str(df[col].dtype),
+                    'root_type': self.schema.get(col, 'unknown')
+                }
+                for col in columns if col in df.columns
+            }
+        })
+        
+        # Add global metadata
+        adf._schema['__meta__'].update({
+            'source': 'RDataFrameDSL',
+            'source_version': '13.6.B',
+            'export_mode': 'flat',
+            'parent_id_column': parent_id_column,
+            'created_at': datetime.now(timezone.utc).isoformat(),
+        })
+        
+        return adf
+    
+    def _get_column_depth(self, column: str) -> int:
+        """
+        Get nesting depth of a column from schema.
+        
+        Returns:
+            0: Scalar
+            1: RVec<T>
+            2: RVec<RVec<T>>
+        """
+        if column not in self.schema:
+            return 0
+        
+        type_str = self.schema[column]
+        
+        # Count RVec nesting
+        depth = 0
+        while 'RVec<' in type_str:
+            depth += 1
+            # Strip outer RVec<...>
+            type_str = type_str.replace('RVec<', '', 1)
+            if type_str.endswith('>'):
+                type_str = type_str[:-1]
+        
+        return depth
     
     # =========================================================================
     # Phase 12.6.DSL: AliasDataFrame Export
