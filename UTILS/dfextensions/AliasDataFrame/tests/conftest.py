@@ -1,7 +1,12 @@
 """
-Pytest fixtures for AliasDataFrameRDF tests.
+conftest.py — Pytest configuration for AliasDataFrame tests
 
-Provides session-scoped test data with all 4 subframes and proper indices.
+Provides:
+- Session-scoped test data with all 4 subframes and proper indices
+- Custom marker registration (invariance, smoke, slow)
+- Shared comparison utilities for invariance tests
+
+Phase 13.7.ADF: Added invariance test support
 """
 
 import pytest
@@ -16,6 +21,91 @@ _parent_dir = os.path.dirname(_this_dir)
 if _parent_dir not in sys.path:
     sys.path.insert(0, _parent_dir)
 
+
+# =============================================================================
+# Pytest Configuration (Phase 13.7.ADF)
+# =============================================================================
+
+def pytest_configure(config):
+    """Register custom markers for invariance tests."""
+    config.addinivalue_line(
+        "markers", "invariance: Invariance test (locks semantic contracts before refactoring)"
+    )
+    config.addinivalue_line(
+        "markers", "smoke: Fast smoke test (<1s, always runs in CI)"
+    )
+    config.addinivalue_line(
+        "markers", "slow: Slow test (>5s, optional in CI)"
+    )
+
+
+# =============================================================================
+# Invariance Test Utilities (Phase 13.7.ADF)
+# =============================================================================
+
+FLOAT_RTOL = 1e-10  # Relative tolerance for float comparisons
+FLOAT_ATOL = 1e-12  # Absolute tolerance for float comparisons
+
+
+def assert_invariant_equal(result, expected, name="", rtol=FLOAT_RTOL, atol=FLOAT_ATOL):
+    """
+    Compare two arrays with appropriate method based on dtype.
+    
+    This is the standard comparator for all invariance tests.
+    Handles floats with tolerance and NaN positions.
+    """
+    result = np.asarray(result)
+    expected = np.asarray(expected)
+    
+    assert result.shape == expected.shape, \
+        f"{name}: Shape mismatch {result.shape} vs {expected.shape}"
+    
+    if result.size == 0:
+        return
+    
+    if np.issubdtype(result.dtype, np.floating):
+        result_nan = np.isnan(result)
+        expected_nan = np.isnan(expected)
+        np.testing.assert_array_equal(
+            result_nan, expected_nan, 
+            err_msg=f"{name}: NaN positions differ"
+        )
+        mask = ~result_nan
+        if mask.any():
+            np.testing.assert_allclose(
+                result[mask], expected[mask],
+                rtol=rtol, atol=atol,
+                err_msg=f"{name}: Float values differ"
+            )
+    elif np.issubdtype(result.dtype, np.integer):
+        np.testing.assert_array_equal(result, expected, err_msg=f"{name}: Integer values differ")
+    elif np.issubdtype(result.dtype, np.bool_):
+        np.testing.assert_array_equal(result, expected, err_msg=f"{name}: Boolean values differ")
+    else:
+        np.testing.assert_array_equal(result, expected, err_msg=f"{name}: Values differ")
+
+
+def assert_nan_positions_equal(result, expected, name=""):
+    """Check NaN positions match exactly between two arrays."""
+    result = np.asarray(result)
+    expected = np.asarray(expected)
+    
+    if np.issubdtype(result.dtype, np.floating):
+        result_nan = np.isnan(result)
+    else:
+        result_nan = np.zeros(result.shape, dtype=bool)
+        
+    if np.issubdtype(expected.dtype, np.floating):
+        expected_nan = np.isnan(expected)
+    else:
+        expected_nan = np.zeros(expected.shape, dtype=bool)
+    
+    np.testing.assert_array_equal(result_nan, expected_nan, err_msg=f"{name}: NaN positions differ")
+
+
+# =============================================================================
+# RDF Test Data Fixtures (Original)
+# =============================================================================
 
 def create_rdf_test_data(filepath: str):
     """
