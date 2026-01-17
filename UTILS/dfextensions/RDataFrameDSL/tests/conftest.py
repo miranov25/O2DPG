@@ -372,3 +372,225 @@ def root_lock():
     """
     import threading
     return threading.Lock()
+
+# =============================================================================
+# Phase 13.6.B: Invariance Test Fixtures - APPEND THIS TO conftest.py
+# =============================================================================
+# Add this section to the END of your existing conftest.py
+# DO NOT REPLACE the existing conftest.py!
+# =============================================================================
+
+import os
+import sys
+
+# Add tests directory for generator imports
+_this_dir = os.path.dirname(os.path.abspath(__file__))
+if _this_dir not in sys.path:
+    sys.path.insert(0, _this_dir)
+
+# Safe generator imports
+_GENERATORS_AVAILABLE = False
+try:
+    from generators.alice_events import ALICEEventGenerator, GeneratorConfig
+    from generators.toy_lorentz import (
+        generate_toy_lorentz_root,
+        generate_toy_lorentz_dict,
+        generate_toy_with_clusters
+    )
+    _GENERATORS_AVAILABLE = True
+except ImportError:
+    ALICEEventGenerator = None
+    GeneratorConfig = None
+    generate_toy_lorentz_root = None
+    generate_toy_lorentz_dict = None
+    generate_toy_with_clusters = None
+
+
+# =============================================================================
+# ALICE Event Generator Fixtures (Phase 13.6.B)
+# =============================================================================
+
+@pytest.fixture(scope="module")
+def alice_data_xs():
+    """Generate XS (extra-small) ALICE test data (100 events)."""
+    if not _GENERATORS_AVAILABLE:
+        pytest.skip("ALICE generators not available")
+    gen = ALICEEventGenerator(config=GeneratorConfig(seed=42))
+    return gen.generate_dict(n_events=100)
+
+
+@pytest.fixture(scope="module")
+def alice_data_small():
+    """Generate small ALICE test data (500 events)."""
+    if not _GENERATORS_AVAILABLE:
+        pytest.skip("ALICE generators not available")
+    gen = ALICEEventGenerator(config=GeneratorConfig(seed=42))
+    return gen.generate_dict(n_events=500)
+
+
+@pytest.fixture(scope="module")
+def alice_rdf(tmp_path_factory):
+    """Generate ALICE ROOT file and return RDataFrame."""
+    if not _GENERATORS_AVAILABLE:
+        pytest.skip("ALICE generators not available")
+    try:
+        import ROOT
+    except ImportError:
+        pytest.skip("ROOT not available")
+    
+    tmpdir = tmp_path_factory.mktemp("alice")
+    filename = str(tmpdir / "alice_test.root")
+    gen = ALICEEventGenerator(config=GeneratorConfig(seed=42))
+    gen.generate_tree(filename, n_events=100)
+    return ROOT.RDataFrame("Events", filename)
+
+
+@pytest.fixture(scope="module")
+def alice_root_file(tmp_path_factory):
+    """Generate ALICE ROOT file and return path."""
+    if not _GENERATORS_AVAILABLE:
+        pytest.skip("ALICE generators not available")
+    try:
+        import ROOT
+    except ImportError:
+        pytest.skip("ROOT not available")
+    
+    tmpdir = tmp_path_factory.mktemp("alice_file")
+    filename = str(tmpdir / "alice_events.root")
+    gen = ALICEEventGenerator(config=GeneratorConfig(seed=42))
+    gen.generate_tree(filename, n_events=100)
+    return filename
+
+
+# =============================================================================
+# Toy Lorentz Generator Fixtures (Phase 13.6.B)
+# =============================================================================
+
+@pytest.fixture(scope="module")
+def toy_lorentz_file(tmp_path_factory):
+    """Generate toy ROOT file with TLorentzVector."""
+    if not _GENERATORS_AVAILABLE:
+        pytest.skip("Toy generators not available")
+    try:
+        import ROOT
+    except ImportError:
+        pytest.skip("ROOT not available")
+    
+    tmpdir = tmp_path_factory.mktemp("toy")
+    filename = str(tmpdir / "toy_lorentz.root")
+    generate_toy_lorentz_root(filename, n_events=3, tracks_per_event=[2, 3, 2])
+    return filename
+
+
+@pytest.fixture(scope="module")
+def toy_data():
+    """Generate toy dict data."""
+    if not _GENERATORS_AVAILABLE:
+        pytest.skip("Toy generators not available")
+    return generate_toy_lorentz_dict(n_events=3)
+
+
+@pytest.fixture(scope="module")
+def toy_data_with_clusters():
+    """Generate toy dict data with 2D cluster structure."""
+    if not _GENERATORS_AVAILABLE:
+        pytest.skip("Toy generators not available")
+    return generate_toy_with_clusters(n_events=3)
+
+
+@pytest.fixture(scope="module")
+def toy_rdf(toy_lorentz_file):
+    """Return RDataFrame from toy Lorentz file."""
+    try:
+        import ROOT
+        return ROOT.RDataFrame("Events", toy_lorentz_file)
+    except ImportError:
+        pytest.skip("ROOT not available")
+
+
+# =============================================================================
+# Schema Fixtures (Phase 13.6.B)
+# =============================================================================
+
+@pytest.fixture
+def dsl_schema():
+    """Default schema for ALICE data."""
+    return {
+        'event_id': 'long',
+        'n_tracks': 'int',
+        'vertex_z': 'double',
+        'track_pt': 'RVec<double>',
+        'track_phi': 'RVec<double>',
+        'track_eta': 'RVec<double>',
+        'track_px': 'RVec<double>',
+        'track_py': 'RVec<double>',
+        'cluster_x': 'RVec<RVec<double>>',
+        'cluster_y': 'RVec<RVec<double>>',
+        'cluster_Q': 'RVec<RVec<double>>',
+    }
+
+
+@pytest.fixture
+def toy_schema():
+    """Schema for toy Lorentz data."""
+    return {
+        'event_id': 'long',
+        'n_tracks': 'int',
+        'tracks': 'RVec<TLorentzVector>',
+        'track_pt': 'RVec<double>',
+        'track_px': 'RVec<double>',
+        'track_py': 'RVec<double>',
+        'track_phi': 'RVec<double>',
+        'track_eta': 'RVec<double>',
+    }
+
+
+@pytest.fixture
+def simple_range_data():
+    """Simple deterministic data for range/sliding tests."""
+    return {
+        'event_id': np.array([0, 1, 2], dtype=np.int64),
+        'n_tracks': np.array([2, 3, 2], dtype=np.int32),
+        'track_pt': np.array([
+            np.array([1.0, 2.0], dtype=np.float64),
+            np.array([3.0, 4.0, 5.0], dtype=np.float64),
+            np.array([6.0, 7.0], dtype=np.float64),
+        ], dtype=object),
+        'cluster_Q': np.array([
+            np.array([
+                np.array([10., 11., 12., 13.], dtype=np.float64),
+                np.array([20., 21., 22., 23., 24.], dtype=np.float64),
+            ], dtype=object),
+            np.array([
+                np.array([30., 31., 32.], dtype=np.float64),
+                np.array([40., 41., 42., 43.], dtype=np.float64),
+                np.array([50., 51.], dtype=np.float64),
+            ], dtype=object),
+            np.array([
+                np.array([60., 61., 62., 63.], dtype=np.float64),
+                np.array([70., 71., 72.], dtype=np.float64),
+            ], dtype=object),
+        ], dtype=object),
+    }
+
+
+# =============================================================================
+# Additional Markers (add to existing pytest_configure if it exists)
+# =============================================================================
+# If pytest_configure already exists, add these lines to it instead:
+#
+#     config.addinivalue_line("markers", "type_a: Type A tests (Engine)")
+#     config.addinivalue_line("markers", "type_b: Type B tests (DSL)")
+#     config.addinivalue_line("markers", "p0: Priority 0 (blocking)")
+#     config.addinivalue_line("markers", "p1: Priority 1 (important)")
+#     config.addinivalue_line("markers", "p2: Priority 2 (nice to have)")
+#     config.addinivalue_line("markers", "phase8: Requires Phase 8")
+# =============================================================================
+def pytest_configure(config):
+    # Existing markers...
+    config.addinivalue_line("markers", "type_a: Type A tests (Engine)")
+    config.addinivalue_line("markers", "type_b: Type B tests (DSL)")
+    config.addinivalue_line("markers", "p0: Priority 0 (blocking)")
+    config.addinivalue_line("markers", "p1: Priority 1 (important)")
+    config.addinivalue_line("markers", "p2: Priority 2 (nice to have)")
+    config.addinivalue_line("markers", "phase8: Requires Phase 8 method broadcasting")
