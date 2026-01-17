@@ -285,7 +285,7 @@ class TestMemberFunctionsDSLTests:
     @pytest.mark.type_b
     @pytest.mark.p0
     @pytest.mark.phase8
-    def test_INV_F1_PT_DSL_phase8_method(self, alice_rdf):
+    def test_INV_F1_PT_DSL_phase8_method(self, toy_lorentz_file):
         """
         Test Phase 8 method broadcasting: tracks.Pt()
         
@@ -296,9 +296,13 @@ class TestMemberFunctionsDSLTests:
         Priority: P0
         """
         try:
+            import ROOT
             from RDataFrameDSL import DSLCompiler
         except ImportError:
-            pytest.skip("RDataFrameDSL not available")
+            pytest.skip("ROOT or RDataFrameDSL not available")
+        
+        # Create RDataFrame from toy file (has 'tracks' column)
+        rdf = ROOT.RDataFrame("Events", toy_lorentz_file)
         
         # Schema required for DSLCompiler
         schema = {
@@ -320,8 +324,8 @@ class TestMemberFunctionsDSLTests:
             # Computed via DSL (for comparison)
             dsl.define("pt_computed", "sqrt(px*px + py*py)")
             
-            # to_pandas calls apply internally - pass original rdf
-            df = dsl.to_pandas(alice_rdf, ['pt_method', 'pt_computed', 'event_id'])
+            # to_pandas calls apply internally - pass rdf from toy file
+            df = dsl.to_pandas(rdf, ['pt_method', 'pt_computed', 'event_id'])
             
             # Assertions
             assert len(df) > 0, "No rows returned"
