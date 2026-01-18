@@ -32,6 +32,7 @@ class TestDepthCombinations:
     # INV-S00-ENG: Scalar + Scalar (0D+0D) - P2
     # =========================================================================
     
+    @pytest.mark.feature("flatten_scalar")
     @pytest.mark.type_a
     @pytest.mark.p2
     def test_INV_S00_ENG_scalar_scalar_arithmetic(self, alice_data_xs):
@@ -65,6 +66,7 @@ class TestDepthCombinations:
     # INV-S01-ENG: Scalar + 1D (0D+1D) - P1
     # =========================================================================
     
+    @pytest.mark.feature("flatten_1d")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_S01a_ENG_scalar_1d_replication(self, alice_data_xs):
@@ -99,6 +101,7 @@ class TestDepthCombinations:
         assert np.abs(result).max() < tolerance, \
             f"Scalar+1D replication failed: max_error={np.abs(result).max()}"
     
+    @pytest.mark.feature("flatten_1d")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_S01b_ENG_scalar_1d_consistency(self, alice_data_xs):
@@ -127,6 +130,7 @@ class TestDepthCombinations:
     # INV-S02-ENG: Scalar + 2D (0D+2D) - P1
     # =========================================================================
     
+    @pytest.mark.feature("flatten_2d")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_S02a_ENG_scalar_2d_replication(self, alice_data_xs):
@@ -156,6 +160,7 @@ class TestDepthCombinations:
         assert np.abs(result).max() < tolerance, \
             f"Scalar+2D replication failed: max_error={np.abs(result).max()}"
     
+    @pytest.mark.feature("flatten_2d")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_S02b_ENG_scalar_2d_consistency(self, alice_data_xs):
@@ -184,6 +189,7 @@ class TestDepthCombinations:
     # INV-S11-ENG: 1D + 1D - P1
     # =========================================================================
     
+    @pytest.mark.feature("flatten_1d")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_S11a_ENG_1d_1d_alignment(self, alice_data_xs):
@@ -215,6 +221,7 @@ class TestDepthCombinations:
         tolerance = np.finfo(np.float64).eps * track_pt.max() * 10
         assert np.abs(result).max() < tolerance, f"1D+1D alignment failed"
     
+    @pytest.mark.feature("flatten_1d")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_S11b_ENG_1d_1d_index_match(self, alice_data_xs):
@@ -246,6 +253,7 @@ class TestDepthCombinations:
     # INV-S12-ENG: 1D + 2D (CRITICAL) - P0
     # =========================================================================
     
+    @pytest.mark.feature("flatten_mixed")
     @pytest.mark.type_a
     @pytest.mark.p0
     def test_INV_S12a_ENG_1d_2d_replication(self, alice_data_xs):
@@ -277,6 +285,7 @@ class TestDepthCombinations:
         tolerance = np.finfo(np.float64).eps * track_pt.max() * 10
         assert np.abs(result).max() < tolerance, f"1D+2D replication failed"
     
+    @pytest.mark.feature("flatten_mixed")
     @pytest.mark.type_a
     @pytest.mark.p0
     def test_INV_S12b_ENG_1d_2d_consistency(self, alice_data_xs):
@@ -301,6 +310,7 @@ class TestDepthCombinations:
             assert unique_values == 1, \
                 f"Event {event_id}, Track {track_idx}: track_pt varies across clusters"
     
+    @pytest.mark.feature("flatten_mixed")
     @pytest.mark.type_a
     @pytest.mark.p0
     def test_INV_S12_ENG_main_architect_expression_engine(self, alice_data_xs):
@@ -340,6 +350,7 @@ class TestDepthCombinations:
     # INV-S12-DSL: 1D + 2D DSL Chain (Type B) - P0
     # =========================================================================
     
+    @pytest.mark.feature("flatten_mixed")
     @pytest.mark.type_b
     @pytest.mark.p0
     def test_INV_S12c_DSL_main_architect_expression(self, alice_rdf):
@@ -389,6 +400,7 @@ class TestDepthCombinations:
         assert max_val < tolerance, \
             f"Main Architect's expression failed: max={max_val}, tolerance={tolerance}"
     
+    @pytest.mark.feature("flatten_mixed")
     @pytest.mark.type_b
     @pytest.mark.p0
     def test_INV_S12d_DSL_mixed_depth_chain(self, alice_rdf):
@@ -436,6 +448,7 @@ class TestDepthCombinations:
     # INV-S22-ENG: 2D + 2D - P1
     # =========================================================================
     
+    @pytest.mark.feature("flatten_2d")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_S22a_ENG_2d_2d_alignment(self, alice_data_xs):
@@ -465,6 +478,7 @@ class TestDepthCombinations:
         tolerance = np.finfo(np.float64).eps * cluster_x.abs().max() * 10
         assert np.abs(result).max() < tolerance, f"2D+2D alignment failed"
     
+    @pytest.mark.feature("flatten_2d")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_S22b_ENG_2d_2d_index_match(self, alice_data_xs):
@@ -495,6 +509,7 @@ class TestDepthCombinations:
 class TestDepthCombinationsToy:
     """Depth combination tests with toy data for exact validation."""
     
+    @pytest.mark.feature("toy_pythagorean")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_S_toy_1d_2d_replication(self, toy_data_with_clusters):
@@ -518,6 +533,7 @@ class TestDepthCombinationsToy:
             assert unique_pt == 1, \
                 f"Event {event_id}, Track {track_idx}: track_pt not constant"
     
+    @pytest.mark.feature("toy_pythagorean")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_S_toy_pythagorean_identity(self, toy_data):

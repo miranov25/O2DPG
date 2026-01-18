@@ -30,6 +30,7 @@ class TestStructuralInvariance:
     # INV-X1-SUM: Sum Preservation (P0)
     # =========================================================================
     
+    @pytest.mark.feature("struct_sum")
     @pytest.mark.type_a
     @pytest.mark.p0
     def test_INV_X1_SUM_preservation(self, alice_data_xs):
@@ -60,6 +61,7 @@ class TestStructuralInvariance:
         assert np.isclose(nested_sum, flat_sum, rtol=1e-10), \
             f"Sum mismatch: nested={nested_sum}, flat={flat_sum}"
     
+    @pytest.mark.feature("struct_sum")
     @pytest.mark.type_a
     @pytest.mark.p0
     def test_INV_X1_SUM_preservation_1d(self, alice_data_xs):
@@ -89,6 +91,7 @@ class TestStructuralInvariance:
     # INV-X2-COUNT: Count Consistency (P0)
     # =========================================================================
     
+    @pytest.mark.feature("struct_count")
     @pytest.mark.type_a
     @pytest.mark.p0
     def test_INV_X2_COUNT_consistency_2d(self, alice_data_xs):
@@ -118,6 +121,7 @@ class TestStructuralInvariance:
         assert len(df) == expected_rows, \
             f"Row count mismatch: expected={expected_rows}, got={len(df)}"
     
+    @pytest.mark.feature("struct_count")
     @pytest.mark.type_a
     @pytest.mark.p0
     def test_INV_X2_COUNT_consistency_1d(self, alice_data_xs):
@@ -146,6 +150,7 @@ class TestStructuralInvariance:
     # INV-X3-UNIQUE: Index Uniqueness (P0)
     # =========================================================================
     
+    @pytest.mark.feature("struct_index")
     @pytest.mark.type_a
     @pytest.mark.p0
     def test_INV_X3_UNIQUE_index_2d(self, alice_data_xs):
@@ -171,6 +176,7 @@ class TestStructuralInvariance:
         assert duplicates == 0, \
             f"Found {duplicates} duplicate index combinations"
     
+    @pytest.mark.feature("struct_index")
     @pytest.mark.type_a
     @pytest.mark.p0
     def test_INV_X3_UNIQUE_index_1d(self, alice_data_xs):
@@ -198,6 +204,7 @@ class TestStructuralInvariance:
     # INV-X4-GROUPBY: Groupby Reconstruction (P1)
     # =========================================================================
     
+    @pytest.mark.feature("struct_groupby")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_X4_GROUPBY_per_event_sum(self, alice_data_xs):
@@ -229,6 +236,7 @@ class TestStructuralInvariance:
                 assert np.isclose(expected, actual, rtol=1e-10), \
                     f"Event {event_id}: groupby sum mismatch"
     
+    @pytest.mark.feature("struct_groupby")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_X4_GROUPBY_per_track_sum(self, alice_data_xs):
@@ -258,6 +266,7 @@ class TestStructuralInvariance:
                 assert np.isclose(expected, actual, rtol=1e-10), \
                     f"Event {event_id}, Track {track_idx}: groupby sum mismatch"
     
+    @pytest.mark.feature("struct_groupby")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_X4_GROUPBY_count(self, alice_data_xs):
@@ -291,6 +300,7 @@ class TestStructuralInvariance:
     # INV-X5-DTYPE: Dtype Preservation (P1)
     # =========================================================================
     
+    @pytest.mark.feature("struct_dtype")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_X5_DTYPE_float64_preserved(self, alice_data_xs):
@@ -318,6 +328,7 @@ class TestStructuralInvariance:
         assert df['track_pt'].dtype == np.float64, \
             f"track_pt dtype: expected float64, got {df['track_pt'].dtype}"
     
+    @pytest.mark.feature("struct_dtype")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_X5_DTYPE_index_int(self, alice_data_xs):
@@ -347,6 +358,7 @@ class TestStructuralInvariance:
         assert np.issubdtype(df['cluster_idx'].dtype, np.integer), \
             f"cluster_idx dtype: expected integer, got {df['cluster_idx'].dtype}"
     
+    @pytest.mark.feature("struct_dtype")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_X5_DTYPE_no_nan(self, alice_data_xs):
@@ -382,6 +394,7 @@ class TestStructuralInvariance:
 class TestStructuralInvarianceSimple:
     """Structural tests with simple toy data."""
     
+    @pytest.mark.feature("simple_structural")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_X_simple_range_sum(self, simple_range_data):
@@ -413,6 +426,7 @@ class TestStructuralInvarianceSimple:
         assert nested_sum == flat_sum, \
             f"Simple range sum mismatch: nested={nested_sum}, flat={flat_sum}"
     
+    @pytest.mark.feature("simple_structural")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_X_first_last_elements(self, simple_range_data):

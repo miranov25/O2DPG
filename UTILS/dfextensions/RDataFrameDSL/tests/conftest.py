@@ -1,17 +1,42 @@
 """
-Phase 13.2: pytest configuration and shared fixtures for RDataFrameDSL tests.
+conftest.py — Pytest configuration and shared fixtures for RDataFrameDSL tests.
 
 Provides:
 - Tolerance helpers for invariant testing
 - Session-scoped test data generation
 - DSL compiler fixtures
 - ROOT test isolation markers (Phase 13.4.D9)
+- ALICE event generator fixtures (Phase 13.6.B)
+- Toy Lorentz generator fixtures (Phase 13.6.B)
+- Capability Matrix markers (Phase 13.6.B.fix)
+
+Phases:
+- 13.2: Initial pytest configuration
+- 13.4.D9: ROOT test isolation
+- 13.6.B: Invariance test fixtures
+- 13.6.B.fix: Capability Matrix semi-automation
+
+WARNING: This file must have exactly ONE pytest_configure function.
+         Multiple definitions cause markers to be silently lost.
 """
 
 import pytest
 import numpy as np
+import os
+import sys
 
+# =============================================================================
+# Path Setup
+# =============================================================================
+
+_this_dir = os.path.dirname(os.path.abspath(__file__))
+if _this_dir not in sys.path:
+    sys.path.insert(0, _this_dir)
+
+# =============================================================================
 # Import invariant schema configuration
+# =============================================================================
+
 try:
     from .invariant_schema import (
         TOLERANCE,
@@ -20,12 +45,239 @@ try:
         INVARIANT_SCHEMA,
     )
 except ImportError:
-    from invariant_schema import (
-        TOLERANCE,
-        DEFAULT_N_EVENTS,
-        DEFAULT_SEED,
-        INVARIANT_SCHEMA,
+    try:
+        from invariant_schema import (
+            TOLERANCE,
+            DEFAULT_N_EVENTS,
+            DEFAULT_SEED,
+            INVARIANT_SCHEMA,
+        )
+    except ImportError:
+        # Provide defaults if invariant_schema not available
+        TOLERANCE = {
+            "double": {"atol": 1e-10, "rtol": 1e-10},
+            "float": {"atol": 1e-5, "rtol": 1e-5},
+            "int": {"atol": 0, "rtol": 0},
+            "uint": {"atol": 0, "rtol": 0},
+            "bool": {"atol": 0, "rtol": 0},
+            "aggregation": {"atol": 1e-8, "rtol": 1e-8},
+        }
+        DEFAULT_N_EVENTS = 1000
+        DEFAULT_SEED = 42
+        INVARIANT_SCHEMA = {}
+
+# =============================================================================
+# Safe generator imports (Phase 13.6.B)
+# =============================================================================
+
+_GENERATORS_AVAILABLE = False
+try:
+    from generators.alice_events import ALICEEventGenerator, GeneratorConfig
+    from generators.toy_lorentz import (
+        generate_toy_lorentz_root,
+        generate_toy_lorentz_dict,
+        generate_toy_with_clusters
     )
+    _GENERATORS_AVAILABLE = True
+except ImportError:
+    ALICEEventGenerator = None
+    GeneratorConfig = None
+    generate_toy_lorentz_root = None
+    generate_toy_lorentz_dict = None
+    generate_toy_with_clusters = None
+
+
+# #############################################################################
+#
+#  PYTEST CONFIGURATION — ALL MARKERS IN ONE FUNCTION
+#
+#  WARNING: Python only keeps ONE pytest_configure. If you define it twice,
+#           the first one is silently replaced and its markers are lost!
+#
+# #############################################################################
+
+def pytest_configure(config):
+    """
+    Register ALL custom markers.
+    
+    This is the ONLY pytest_configure in this file.
+    All marker registrations MUST be here.
+    """
+    # -------------------------------------------------------------------------
+    # Phase 13.4.D9: ROOT test isolation marker
+    # -------------------------------------------------------------------------
+    config.addinivalue_line(
+        "markers",
+        "root_serial: mark test as requiring ROOT (runs serially, deselect with -m 'not root_serial')"
+    )
+    
+    # -------------------------------------------------------------------------
+    # Phase 13.6.B: Test type and priority markers
+    # -------------------------------------------------------------------------
+    config.addinivalue_line(
+        "markers", 
+        "type_a: Type A tests (Engine-level, flatten only)"
+    )
+    config.addinivalue_line(
+        "markers", 
+        "type_b: Type B tests (DSL-level, full pipeline)"
+    )
+    config.addinivalue_line(
+        "markers", 
+        "p0: Priority 0 (blocking/critical)"
+    )
+    config.addinivalue_line(
+        "markers", 
+        "p1: Priority 1 (important/required)"
+    )
+    config.addinivalue_line(
+        "markers", 
+        "p2: Priority 2 (nice to have/suggested)"
+    )
+    config.addinivalue_line(
+        "markers", 
+        "phase8: Requires Phase 8 method broadcasting"
+    )
+    
+    # -------------------------------------------------------------------------
+    # Phase 13.6.B.fix: Capability Matrix markers
+    # -------------------------------------------------------------------------
+    config.addinivalue_line(
+        "markers",
+        "feature(name): Feature ID from FEATURE_TAXONOMY (see tests/feature_taxonomy.py)"
+    )
+    config.addinivalue_line(
+        "markers",
+        "phase(id): Phase that implemented this feature (e.g., '8', '13.6', '13.6.B.fix')"
+    )
+    config.addinivalue_line(
+        "markers",
+        "limitation(id): Limitation ID from KNOWN_LIMITATIONS (e.g., 'L1')"
+    )
+
+
+# #############################################################################
+#
+#  PYTEST COLLECTION HOOK — ROOT isolation + Feature ID validation
+#
+# #############################################################################
+
+def pytest_collection_modifyitems(config, items):
+    """
+    Hook called after test collection. Does two things:
+    
+    1. Auto-mark ROOT tests for serial execution (Phase 13.4.D9)
+    2. Validate feature IDs with LAZY IMPORT (Phase 13.6.B.fix)
+    """
+    # =========================================================================
+    # Part 1: ROOT Test Isolation (Phase 13.4.D9)
+    # =========================================================================
+    
+    root_patterns = [
+        'test_carray_correctness',
+        'test_carray_root',
+        'test_root_broadcast',
+        'test_root_integration',
+    ]
+    
+    parallel_safe = [
+        'test_d9_integration',
+        'test_carray_detector',
+        'test_arrow',
+        'test_backend_cpp',
+        'test_ir_',
+        'test_parser',
+        'test_type_inferrer',
+        'test_schema',
+        'test_generator_sanity',
+    ]
+    
+    root_serial_marker = pytest.mark.root_serial
+    
+    for item in items:
+        test_file = item.fspath.basename if hasattr(item, 'fspath') else str(item.path)
+        is_root_test = any(pattern in test_file for pattern in root_patterns)
+        is_parallel_safe = any(pattern in test_file for pattern in parallel_safe)
+        
+        if is_root_test and not is_parallel_safe:
+            item.add_marker(root_serial_marker)
+    
+    # =========================================================================
+    # Part 2: Feature ID Validation (Phase 13.6.B.fix)
+    # =========================================================================
+    #
+    # CRITICAL: Uses LAZY IMPORT to avoid loading taxonomy for every pytest run.
+    # Only validates when a test actually uses @pytest.mark.feature.
+    # This prevents conftest.py interference!
+    #
+    
+    # Quick check: do any tests use feature markers?
+    needs_validation = False
+    for item in items:
+        if list(item.iter_markers(name="feature")):
+            needs_validation = True
+            break
+    
+    if not needs_validation:
+        # No tests use @pytest.mark.feature — skip taxonomy import entirely
+        return
+    
+    # LAZY IMPORT: Try multiple paths
+    FEATURE_TAXONOMY = None
+    FEATURE_ALIASES = None
+    
+    import_attempts = [
+        "feature_taxonomy",
+        "tests.feature_taxonomy",
+    ]
+    
+    for module_name in import_attempts:
+        try:
+            import importlib
+            module = importlib.import_module(module_name)
+            FEATURE_TAXONOMY = getattr(module, "FEATURE_TAXONOMY", None)
+            FEATURE_ALIASES = getattr(module, "FEATURE_ALIASES", {})
+            if FEATURE_TAXONOMY is not None:
+                break
+        except ImportError:
+            continue
+    
+    if FEATURE_TAXONOMY is None:
+        # Taxonomy not available — skip validation silently
+        import warnings
+        warnings.warn(
+            "feature_taxonomy.py not found — feature marker validation skipped.",
+            UserWarning
+        )
+        return
+    
+    # Build valid feature IDs
+    valid_feature_ids = set(FEATURE_TAXONOMY.keys())
+    if FEATURE_ALIASES:
+        valid_feature_ids.update(FEATURE_ALIASES.keys())
+    
+    # Validate
+    invalid_features = []
+    for item in items:
+        for marker in item.iter_markers(name="feature"):
+            if marker.args:
+                feature_id = marker.args[0]
+                if FEATURE_ALIASES and feature_id in FEATURE_ALIASES:
+                    feature_id = FEATURE_ALIASES[feature_id]
+                if feature_id not in FEATURE_TAXONOMY:
+                    invalid_features.append((item.nodeid, feature_id))
+    
+    if invalid_features:
+        error_lines = ["", "=" * 70, "INVALID FEATURE IDs FOUND", "=" * 70, ""]
+        for nodeid, feature_id in invalid_features:
+            error_lines.append(f"  ✗ {nodeid}")
+            error_lines.append(f"    Feature ID: '{feature_id}' (not in taxonomy)")
+            error_lines.append("")
+        error_lines.extend(["-" * 70, "Valid feature IDs:", ""])
+        for fid in sorted(FEATURE_TAXONOMY.keys()):
+            error_lines.append(f"  • {fid}")
+        error_lines.extend(["", "See: tests/feature_taxonomy.py", "=" * 70])
+        raise ValueError("\n".join(error_lines))
 
 
 # =============================================================================
@@ -239,14 +491,10 @@ def synthetic_scalar_rdf(tmp_path, scalar_schema):
     except ImportError:
         pytest.skip("ROOT not available")
     
-    # Create a temporary ROOT file with scalar data
     filepath = tmp_path / "scalar_data.root"
-    
-    # Use RDataFrame to create synthetic data
     n_events = 100
     rdf = ROOT.RDataFrame(n_events)
     
-    # Add scalar columns with generated data
     rdf_with_data = (
         rdf.Define("pt", "gRandom->Uniform(0.5, 100.0)")
            .Define("eta", "gRandom->Uniform(-2.5, 2.5)")
@@ -254,9 +502,7 @@ def synthetic_scalar_rdf(tmp_path, scalar_schema):
            .Define("isOK", "abs(eta) < 1.0")
     )
     
-    # Save to file and re-read (ensures proper column types)
     rdf_with_data.Snapshot("tree", str(filepath))
-    
     return ROOT.RDataFrame("tree", str(filepath))
 
 
@@ -264,36 +510,27 @@ def synthetic_scalar_rdf(tmp_path, scalar_schema):
 def synthetic_track_cluster_rdf(tmp_path, track_cluster_schema):
     """
     Create an RDataFrame with synthetic track/cluster data (RVec columns).
-    
-    Generates a ROOT file with RVec<float> columns including:
-    - trackPt, trackEta, trackIsOK
-    - clusterE, clusterDy, clusterZ
-    - nTracks, nClusters
     """
     try:
         import ROOT
     except ImportError:
         pytest.skip("ROOT not available")
     
-    # Create a temporary ROOT file with RVec data
     filepath = tmp_path / "track_cluster_data.root"
-    
     n_events = 100
     rdf = ROOT.RDataFrame(n_events)
     
-    # Add RVec columns - generate variable-length vectors
     rdf_with_data = (
-        rdf.Define("nTracks", "gRandom->Integer(10) + 1")  # 1-10 tracks
+        rdf.Define("nTracks", "gRandom->Integer(10) + 1")
            .Define("trackPt", "ROOT::RVecF v(nTracks); for(auto& x : v) x = gRandom->Uniform(0.5, 50.0); return v;")
            .Define("trackEta", "ROOT::RVecF v(nTracks); for(auto& x : v) x = gRandom->Uniform(-1.0, 1.0); return v;")
            .Define("trackIsOK", "ROOT::RVec<bool> v(nTracks); for(auto& x : v) x = gRandom->Rndm() > 0.2; return v;")
-           .Define("nClusters", "gRandom->Integer(20) + 1")  # 1-20 clusters
+           .Define("nClusters", "gRandom->Integer(20) + 1")
            .Define("clusterE", "ROOT::RVecF v(nClusters); for(auto& x : v) x = gRandom->Uniform(0.1, 10.0); return v;")
            .Define("clusterDy", "ROOT::RVecF v(nClusters); for(auto& x : v) x = gRandom->Gaus(0, 0.1); return v;")
            .Define("clusterZ", "ROOT::RVecF v(nClusters); for(auto& x : v) x = gRandom->Uniform(-200, 200); return v;")
     )
     
-    # Save ALL columns including the new ones
     rdf_with_data.Snapshot("tree", str(filepath), 
                            {"trackPt", "trackEta", "trackIsOK", 
                             "clusterE", "clusterDy", "clusterZ",
@@ -303,61 +540,8 @@ def synthetic_track_cluster_rdf(tmp_path, track_cluster_schema):
 
 
 # =============================================================================
-# Phase 13.4.D9: ROOT Test Isolation
+# ROOT Lock Fixture (Phase 13.4.D9)
 # =============================================================================
-
-def pytest_configure(config):
-    """Register custom markers."""
-    config.addinivalue_line(
-        "markers",
-        "root_serial: mark test as requiring ROOT (runs serially, deselect with -m 'not root_serial')"
-    )
-
-
-
-def pytest_collection_modifyitems(config, items):
-    """
-    Auto-mark tests that use ROOT for serial execution.
-    
-    Tests are marked as root_serial if:
-    1. Test file name contains patterns indicating ROOT usage
-    2. Test is not in the parallel-safe list
-    """
-    # Patterns that indicate ROOT usage
-    root_patterns = [
-        'test_carray_correctness',  # JIT declarations
-        'test_carray_root',         # JIT declarations
-        'test_root_broadcast',      # Custom Define() code
-        'test_root_integration',    # Custom Define() code
-    ]
-    
-    # Tests that are safe for parallel (no ROOT JIT)
-    parallel_safe = [
-        'test_d9_integration',
-        'test_carray_detector',
-        'test_arrow',
-        'test_backend_cpp',
-        'test_ir_',
-        'test_parser',
-        'test_type_inferrer',
-        'test_schema',
-        'test_generator_sanity',
-    ]
-    
-    root_serial_marker = pytest.mark.root_serial
-    
-    for item in items:
-        # Get test file name
-        test_file = item.fspath.basename if hasattr(item, 'fspath') else str(item.path)
-        
-        # Check if it matches ROOT patterns
-        is_root_test = any(pattern in test_file for pattern in root_patterns)
-        is_parallel_safe = any(pattern in test_file for pattern in parallel_safe)
-        
-        # Mark ROOT tests for serial execution
-        if is_root_test and not is_parallel_safe:
-            item.add_marker(root_serial_marker)
-
 
 @pytest.fixture(scope="session")
 def root_lock():
@@ -372,38 +556,6 @@ def root_lock():
     """
     import threading
     return threading.Lock()
-
-# =============================================================================
-# Phase 13.6.B: Invariance Test Fixtures - APPEND THIS TO conftest.py
-# =============================================================================
-# Add this section to the END of your existing conftest.py
-# DO NOT REPLACE the existing conftest.py!
-# =============================================================================
-
-import os
-import sys
-
-# Add tests directory for generator imports
-_this_dir = os.path.dirname(os.path.abspath(__file__))
-if _this_dir not in sys.path:
-    sys.path.insert(0, _this_dir)
-
-# Safe generator imports
-_GENERATORS_AVAILABLE = False
-try:
-    from generators.alice_events import ALICEEventGenerator, GeneratorConfig
-    from generators.toy_lorentz import (
-        generate_toy_lorentz_root,
-        generate_toy_lorentz_dict,
-        generate_toy_with_clusters
-    )
-    _GENERATORS_AVAILABLE = True
-except ImportError:
-    ALICEEventGenerator = None
-    GeneratorConfig = None
-    generate_toy_lorentz_root = None
-    generate_toy_lorentz_dict = None
-    generate_toy_with_clusters = None
 
 
 # =============================================================================
@@ -572,25 +724,3 @@ def simple_range_data():
             ], dtype=object),
         ], dtype=object),
     }
-
-
-# =============================================================================
-# Additional Markers (add to existing pytest_configure if it exists)
-# =============================================================================
-# If pytest_configure already exists, add these lines to it instead:
-#
-#     config.addinivalue_line("markers", "type_a: Type A tests (Engine)")
-#     config.addinivalue_line("markers", "type_b: Type B tests (DSL)")
-#     config.addinivalue_line("markers", "p0: Priority 0 (blocking)")
-#     config.addinivalue_line("markers", "p1: Priority 1 (important)")
-#     config.addinivalue_line("markers", "p2: Priority 2 (nice to have)")
-#     config.addinivalue_line("markers", "phase8: Requires Phase 8")
-# =============================================================================
-def pytest_configure(config):
-    # Existing markers...
-    config.addinivalue_line("markers", "type_a: Type A tests (Engine)")
-    config.addinivalue_line("markers", "type_b: Type B tests (DSL)")
-    config.addinivalue_line("markers", "p0: Priority 0 (blocking)")
-    config.addinivalue_line("markers", "p1: Priority 1 (important)")
-    config.addinivalue_line("markers", "p2: Priority 2 (nice to have)")
-    config.addinivalue_line("markers", "phase8: Requires Phase 8 method broadcasting")

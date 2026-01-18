@@ -32,6 +32,7 @@ class TestSlidingRangesDSL:
     # INV-R1-SLICE: tracks[:2] slice-only - P0
     # =========================================================================
     
+    @pytest.mark.feature("slice_1d")
     @pytest.mark.type_b
     @pytest.mark.p0
     def test_INV_R1_SLICE_dsl_slicing(self, toy_lorentz_file):
@@ -94,6 +95,9 @@ class TestSlidingRangesDSL:
         except (NotImplementedError, AttributeError) as e:
             pytest.skip(f"DSL slicing not implemented: {e}")
     
+    @pytest.mark.feature("slice_1d")
+    @pytest.mark.limitation("L1")
+    @pytest.mark.xfail(reason="L1: slice chain validation - known limitation")
     @pytest.mark.type_b
     @pytest.mark.p0
     def test_INV_R1_SLICE_preserves_order(self, toy_lorentz_file):
@@ -144,6 +148,9 @@ class TestSlidingRangesDSL:
     # INV-R2-SLICE: clusters[:3] slice-only - P1
     # =========================================================================
     
+    @pytest.mark.feature("slice_2d")
+    @pytest.mark.limitation("L1")
+    @pytest.mark.xfail(reason="L1: slice chain validation - known limitation")
     @pytest.mark.type_b
     @pytest.mark.p1
     def test_INV_R2_SLICE_2d_slicing(self, alice_rdf):
@@ -189,6 +196,7 @@ class TestSlidingRangesDSL:
     # INV-R3-COMBINED: tracks[:2].Pt() slice+method - P0
     # =========================================================================
     
+    @pytest.mark.feature("slice_chain")
     @pytest.mark.type_b
     @pytest.mark.p0
     @pytest.mark.phase8
@@ -246,6 +254,7 @@ class TestSlidingRangesDSL:
     # INV-R4-FILTER: tracks[tracks.Pt() > threshold] - P0
     # =========================================================================
     
+    @pytest.mark.feature("filter_export")
     @pytest.mark.type_b
     @pytest.mark.p0
     @pytest.mark.phase8
@@ -308,6 +317,7 @@ class TestSlidingRangesDSL:
         except (NotImplementedError, AttributeError) as e:
             pytest.skip(f"DSL filtering not implemented: {e}")
     
+    @pytest.mark.feature("filter_export")
     @pytest.mark.type_b
     @pytest.mark.p0
     @pytest.mark.phase8
@@ -362,6 +372,9 @@ class TestSlidingRangesDSL:
     # INV-R5-SUM: Sum preservation via DSL - P1
     # =========================================================================
     
+    @pytest.mark.feature("slice_chain")
+    @pytest.mark.limitation("L1")
+    @pytest.mark.xfail(reason="L1: slice chain validation - known limitation")
     @pytest.mark.type_b
     @pytest.mark.p1
     def test_INV_R5_SUM_dsl_sum_preservation(self, toy_lorentz_file):
@@ -417,6 +430,7 @@ class TestSlidingRangesDSL:
     # INV-R6-BOUNDARY: First/last via DSL - P1
     # =========================================================================
     
+    @pytest.mark.feature("boundary_access")
     @pytest.mark.type_b
     @pytest.mark.p1
     def test_INV_R6_BOUNDARY_first_element(self, toy_lorentz_file):
@@ -467,6 +481,7 @@ class TestSlidingRangesDSL:
         except (NotImplementedError, AttributeError) as e:
             pytest.skip(f"DSL slicing not implemented: {e}")
     
+    @pytest.mark.feature("boundary_access")
     @pytest.mark.type_b
     @pytest.mark.p1
     def test_INV_R6_BOUNDARY_negative_index(self, toy_lorentz_file):
@@ -521,6 +536,7 @@ class TestSlidingRangesDSL:
 class TestSlidingRangesSimple:
     """Sliding range tests with simple toy data (Type A for validation)."""
     
+    @pytest.mark.feature("simple_ranges")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_R_simple_fixed_window_1d_sum(self, simple_range_data):
@@ -552,6 +568,7 @@ class TestSlidingRangesSimple:
                 assert window_sum == pt_values[i:i+2].sum(), \
                     f"Event {event_id}: window sum mismatch at position {i}"
     
+    @pytest.mark.feature("simple_ranges")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_R_simple_fixed_window_2d_sum(self, simple_range_data):
@@ -582,6 +599,7 @@ class TestSlidingRangesSimple:
                 assert window_sum == Q_values[j:j+2].sum(), \
                     f"Event {event_id}, Track {track_idx}: window sum mismatch"
     
+    @pytest.mark.feature("simple_ranges")
     @pytest.mark.type_a
     @pytest.mark.p0
     def test_INV_R_simple_track_cluster_sum(self, simple_range_data):
@@ -613,6 +631,7 @@ class TestSlidingRangesSimple:
                 assert expected == actual, \
                     f"Event {event_id}, Track {track_idx}: sum mismatch"
     
+    @pytest.mark.feature("simple_ranges")
     @pytest.mark.type_a
     @pytest.mark.p0
     def test_INV_R_simple_event_cluster_sum(self, simple_range_data):

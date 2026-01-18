@@ -33,6 +33,7 @@ class TestMemberFunctionsEngineTests:
     # INV-F1-SQRT-ENG: sqrt() on 1D array - P2
     # =========================================================================
     
+    @pytest.mark.feature("method_trig")
     @pytest.mark.type_a
     @pytest.mark.p2
     def test_INV_F1_SQRT_ENG_1d(self, alice_data_xs):
@@ -67,6 +68,7 @@ class TestMemberFunctionsEngineTests:
     # INV-F1-TRIG-ENG: Trigonometric identity - P2
     # =========================================================================
     
+    @pytest.mark.feature("method_trig")
     @pytest.mark.type_a
     @pytest.mark.p2
     def test_INV_F1_TRIG_ENG_identity(self, alice_data_xs):
@@ -97,6 +99,7 @@ class TestMemberFunctionsEngineTests:
     # INV-F2-SQRT-ENG: sqrt() on 2D array - P2
     # =========================================================================
     
+    @pytest.mark.feature("method_trig")
     @pytest.mark.type_a
     @pytest.mark.p2
     def test_INV_F2_SQRT_ENG_2d(self, alice_data_xs):
@@ -129,6 +132,7 @@ class TestMemberFunctionsEngineTests:
     # INV-F2-R-ENG: cluster_r computation - P1
     # =========================================================================
     
+    @pytest.mark.feature("method_geometry")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_F2_R_ENG_radius(self, alice_data_xs):
@@ -165,6 +169,7 @@ class TestMemberFunctionsEngineTests:
     # INV-F2-ATAN2-ENG: atan2 reconstruction - P2
     # =========================================================================
     
+    @pytest.mark.feature("method_trig")
     @pytest.mark.type_a
     @pytest.mark.p2
     def test_INV_F2_ATAN2_ENG_reconstruction(self, alice_data_xs):
@@ -206,6 +211,7 @@ class TestMemberFunctionsEngineTests:
     # INV-F12-MIXED-ENG: Mixed 1D+2D function - P1
     # =========================================================================
     
+    @pytest.mark.feature("method_geometry")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_F12_MIXED_ENG_function(self, alice_data_xs):
@@ -240,6 +246,7 @@ class TestMemberFunctionsEngineTests:
     # INV-F12-WEIGHTED-ENG: Weighted cluster sum - P1
     # =========================================================================
     
+    @pytest.mark.feature("method_geometry")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_F12_WEIGHTED_ENG_cluster_sum(self, alice_data_xs):
@@ -282,6 +289,7 @@ class TestMemberFunctionsDSLTests:
     # INV-F1-PT-DSL: tracks.Pt() method - P0
     # =========================================================================
     
+    @pytest.mark.feature("method_broadcast")
     @pytest.mark.type_b
     @pytest.mark.p0
     @pytest.mark.phase8
@@ -344,6 +352,7 @@ class TestMemberFunctionsDSLTests:
     # INV-F1-PT-TOY: .Pt() on toy data (exact) - P0
     # =========================================================================
     
+    @pytest.mark.feature("method_broadcast")
     @pytest.mark.type_b
     @pytest.mark.p0
     @pytest.mark.phase8
@@ -400,6 +409,7 @@ class TestMemberFunctionsDSLTests:
     # INV-F1-PXPY-DSL: .Px(), .Py(), .Phi() methods - P0
     # =========================================================================
     
+    @pytest.mark.feature("method_broadcast")
     @pytest.mark.type_b
     @pytest.mark.p0
     @pytest.mark.phase8
@@ -465,6 +475,7 @@ class TestMemberFunctionsDSLTests:
     # INV-F-DUAL: Option A vs Option B comparison (CRITICAL) - P0
     # =========================================================================
     
+    @pytest.mark.feature("method_broadcast")
     @pytest.mark.type_b
     @pytest.mark.p0
     @pytest.mark.phase8
@@ -538,6 +549,7 @@ class TestMemberFunctionsDSLTests:
 class TestMemberFunctionsToyData:
     """Member function tests with toy data for exact validation."""
     
+    @pytest.mark.feature("toy_pythagorean")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_F_TOY_pythagorean_identity(self, toy_data):
@@ -569,6 +581,7 @@ class TestMemberFunctionsToyData:
         assert np.allclose(pt_squared, sum_squared), \
             f"Pythagorean identity failed: pt²={pt_squared}, px²+py²={sum_squared}"
     
+    @pytest.mark.feature("toy_pythagorean")
     @pytest.mark.type_a
     @pytest.mark.p1
     def test_INV_F_TOY_known_values(self, toy_data):
@@ -594,6 +607,7 @@ class TestMemberFunctionsToyData:
             assert (px, py, pt) in expected_triples, \
                 f"Unexpected triple: ({px}, {py}, {pt})"
     
+    @pytest.mark.feature("toy_pythagorean")
     @pytest.mark.type_a
     @pytest.mark.p2
     def test_INV_F_TOY_phi_consistency(self, toy_data):
