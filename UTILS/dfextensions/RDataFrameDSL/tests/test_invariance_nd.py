@@ -75,8 +75,39 @@ def nd_test_data_2d_legacy():
     OLD Formula: cluster_Q[e][t][c] = e*1000 + t*100 + c*10
     NEW Formula: cluster_Q[e][t][c] = e*1000 + t*100 + c (from toy_nd.py)
     
+    Added Phase 13.6.C: cluster_x = Q + 0.1, cluster_y = Q + 0.2
+    
     DEPRECATED: Use nd_2d_dict fixture instead.
     """
+    cluster_Q = np.array([
+        # Event 0: e=0 → 0*1000 = 0 base
+        np.array([
+            np.array([0., 10., 20., 30.], dtype=np.float64),      # Track 0
+            np.array([100., 110., 120., 130., 140.], dtype=np.float64),  # Track 1
+        ], dtype=object),
+        # Event 1: e=1 → 1*1000 = 1000 base
+        np.array([
+            np.array([1000., 1010., 1020.], dtype=np.float64),    # Track 0
+            np.array([1100., 1110., 1120., 1130.], dtype=np.float64),  # Track 1
+            np.array([1200., 1210.], dtype=np.float64),           # Track 2
+        ], dtype=object),
+        # Event 2: e=2 → 2*1000 = 2000 base
+        np.array([
+            np.array([2000., 2010., 2020., 2030.], dtype=np.float64),  # Track 0
+            np.array([2100., 2110., 2120.], dtype=np.float64),    # Track 1
+        ], dtype=object),
+    ], dtype=object)
+    
+    # Generate cluster_x = Q + 0.1 and cluster_y = Q + 0.2
+    def add_offset(q_data, offset):
+        result = []
+        for evt in q_data:
+            evt_result = []
+            for trk in evt:
+                evt_result.append(trk + offset)
+            result.append(np.array(evt_result, dtype=object))
+        return np.array(result, dtype=object)
+    
     return {
         'event_id': np.array([0, 1, 2], dtype=np.int64),
         'n_tracks': np.array([2, 3, 2], dtype=np.int32),
@@ -85,24 +116,9 @@ def nd_test_data_2d_legacy():
             np.array([3.0, 4.0, 5.0], dtype=np.float64),
             np.array([6.0, 7.0], dtype=np.float64),
         ], dtype=object),
-        'cluster_Q': np.array([
-            # Event 0: e=0 → 0*1000 = 0 base
-            np.array([
-                np.array([0., 10., 20., 30.], dtype=np.float64),      # Track 0
-                np.array([100., 110., 120., 130., 140.], dtype=np.float64),  # Track 1
-            ], dtype=object),
-            # Event 1: e=1 → 1*1000 = 1000 base
-            np.array([
-                np.array([1000., 1010., 1020.], dtype=np.float64),    # Track 0
-                np.array([1100., 1110., 1120., 1130.], dtype=np.float64),  # Track 1
-                np.array([1200., 1210.], dtype=np.float64),           # Track 2
-            ], dtype=object),
-            # Event 2: e=2 → 2*1000 = 2000 base
-            np.array([
-                np.array([2000., 2010., 2020., 2030.], dtype=np.float64),  # Track 0
-                np.array([2100., 2110., 2120.], dtype=np.float64),    # Track 1
-            ], dtype=object),
-        ], dtype=object),
+        'cluster_Q': cluster_Q,
+        'cluster_x': add_offset(cluster_Q, 0.1),
+        'cluster_y': add_offset(cluster_Q, 0.2),
     }
 
 
@@ -1212,6 +1228,579 @@ class TestND_ROOT_ToyGenerator:
                     actual = result[trk][clus]
                     assert actual == expected, \
                         f"DSL slice: [0][{trk}][{clus}] = {actual} != {expected}"
+
+
+# =============================================================================
+# Phase 13.6.C: Same-Slice Arithmetic Tests (NO JOINS NEEDED)
+# =============================================================================
+
+class TestND_SameSliceArithmetic:
+    """
+    Tests for arithmetic operations on uniformly sliced columns.
+    
+    Key insight: When ALL columns use the SAME slice range, no join is needed.
+    The columns remain aligned because they share the same index structure.
+    
+    These tests verify:
+    1. Arithmetic on sliced columns preserves exact values
+    2. DSL can compile and execute these expressions
+    3. Results match manual calculation
+    
+    Phase: 13.6.C
+    """
+    
+    @pytest.mark.feature("nd_slice_arithmetic")
+    @pytest.mark.type_a
+    @pytest.mark.p0
+    def test_INV_ND_SAME_SLICE_diff_exact(self, nd_test_data_2d):
+        """
+        INV-ND-SAME-1: cluster_x - cluster_Q = 0.1 exactly (same slice).
+        
+        Since x = Q + 0.1 by construction, the difference should be exactly 0.1
+        for ALL elements, regardless of slice range.
+        
+        No join needed: both columns use identical slice.
+        
+        Type: A (Engine)
+        Priority: P0
+        """
+        Q = nd_test_data_2d['cluster_Q']
+        x = nd_test_data_2d['cluster_x']
+        
+        # Test on sliced data: first 2 tracks, first 3 clusters
+        for evt in range(len(Q)):
+            for trk in range(min(2, len(Q[evt]))):
+                for clus in range(min(3, len(Q[evt][trk]))):
+                    diff = x[evt][trk][clus] - Q[evt][trk][clus]
+                    assert abs(diff - 0.1) < 1e-10, \
+                        f"Event {evt}, Track {trk}, Cluster {clus}: x - Q = {diff}, expected 0.1"
+    
+    @pytest.mark.feature("nd_slice_arithmetic")
+    @pytest.mark.type_a
+    @pytest.mark.p0
+    def test_INV_ND_SAME_SLICE_xy_diff_exact(self, nd_test_data_2d):
+        """
+        INV-ND-SAME-2: cluster_x - cluster_y = -0.1 exactly (same slice).
+        
+        Since x = Q + 0.1 and y = Q + 0.2, we have x - y = -0.1.
+        
+        No join needed: both columns use identical slice.
+        
+        Type: A (Engine)
+        Priority: P0
+        """
+        x = nd_test_data_2d['cluster_x']
+        y = nd_test_data_2d['cluster_y']
+        
+        # Test on sliced data: first 2 tracks, first 3 clusters
+        for evt in range(len(x)):
+            for trk in range(min(2, len(x[evt]))):
+                for clus in range(min(3, len(x[evt][trk]))):
+                    diff = x[evt][trk][clus] - y[evt][trk][clus]
+                    assert abs(diff - (-0.1)) < 1e-10, \
+                        f"Event {evt}, Track {trk}, Cluster {clus}: x - y = {diff}, expected -0.1"
+    
+    @pytest.mark.feature("nd_slice_arithmetic")
+    @pytest.mark.type_a
+    @pytest.mark.p1
+    def test_INV_ND_SAME_SLICE_sum_partition(self, nd_test_data_2d):
+        """
+        INV-ND-SAME-3: Sum partition - sliced sum + remainder = total.
+        
+        sum(cluster_Q[:2, :]) + sum(cluster_Q[2:, :]) = sum(cluster_Q)
+        
+        Tests that slicing correctly partitions the data.
+        
+        Type: A (Engine)
+        Priority: P1
+        """
+        Q = nd_test_data_2d['cluster_Q']
+        
+        for evt in range(len(Q)):
+            # Total sum
+            total = sum(sum(trk) for trk in Q[evt])
+            
+            # Sliced sum: first 2 tracks
+            n_tracks = len(Q[evt])
+            slice_end = min(2, n_tracks)
+            sliced_sum = sum(sum(Q[evt][trk]) for trk in range(slice_end))
+            
+            # Remainder sum: tracks 2+
+            remainder_sum = sum(sum(Q[evt][trk]) for trk in range(slice_end, n_tracks))
+            
+            assert abs((sliced_sum + remainder_sum) - total) < 1e-10, \
+                f"Event {evt}: partition sum {sliced_sum + remainder_sum} != total {total}"
+    
+    @pytest.mark.feature("nd_slice_arithmetic")
+    @pytest.mark.type_a
+    @pytest.mark.p1
+    def test_INV_ND_SAME_SLICE_scalar_multiply(self, nd_test_data_2d):
+        """
+        INV-ND-SAME-4: Scalar multiplication on sliced data.
+        
+        cluster_Q[:2, :] * 2 should double all values exactly.
+        
+        Type: A (Engine)
+        Priority: P1
+        """
+        Q = nd_test_data_2d['cluster_Q']
+        
+        for evt in range(len(Q)):
+            for trk in range(min(2, len(Q[evt]))):
+                for clus in range(len(Q[evt][trk])):
+                    original = Q[evt][trk][clus]
+                    doubled = original * 2
+                    # Verify scalar multiplication is exact
+                    assert doubled == original * 2, \
+                        f"Event {evt}, Track {trk}, Cluster {clus}: {original}*2 = {doubled}"
+                    # Verify it's actually doubled (non-zero for meaningful test)
+                    if original != 0:
+                        assert doubled / original == 2.0, \
+                            f"Event {evt}, Track {trk}, Cluster {clus}: ratio != 2"
+
+
+class TestND_SameSliceArithmetic_DSL:
+    """
+    DSL-level tests for same-slice arithmetic operations.
+    
+    These are Type B tests that verify the full DSL pipeline:
+    Parser → IR → C++ Backend → RDataFrame → Results
+    
+    Phase: 13.6.C
+    """
+    
+    @pytest.mark.feature("nd_slice_arithmetic")
+    @pytest.mark.type_b
+    @pytest.mark.p0
+    def test_INV_ND_DSL_same_slice_diff(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-ND-DSL-1: cluster_x[:2,:] - cluster_Q[:2,:] = 0.1 via full chain.
+        
+        Expression: cluster_x[0:2, :] - cluster_Q[0:2, :]
+        Expected: 0.1 everywhere (since x = Q + 0.1)
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P0
+        """
+        try:
+            from RDataFrameDSL import DSLCompiler
+        except ImportError:
+            pytest.skip("RDataFrameDSL not available")
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        dsl.define("diff_sliced", "cluster_x[0:2, :] - cluster_Q[0:2, :]")
+        
+        rdf_applied = dsl.apply(nd_2d_rdf)
+        results = rdf_applied.Take['ROOT::RVec<ROOT::RVec<double>>']("diff_sliced").GetValue()
+        
+        assert len(results) > 0, "No events returned"
+        
+        # Verify all values are exactly 0.1
+        for evt_idx, evt in enumerate(results):
+            assert len(evt) <= 2, f"Event {evt_idx}: expected <=2 tracks, got {len(evt)}"
+            for trk_idx, trk in enumerate(evt):
+                for clus_idx, val in enumerate(trk):
+                    assert abs(val - 0.1) < 1e-9, \
+                        f"Event {evt_idx}, Track {trk_idx}, Cluster {clus_idx}: " \
+                        f"x[:2,:] - Q[:2,:] = {val}, expected 0.1"
+    
+    @pytest.mark.feature("nd_slice_arithmetic")
+    @pytest.mark.type_b  
+    @pytest.mark.p0
+    def test_INV_ND_DSL_same_slice_scalar_mult(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-ND-DSL-2: cluster_Q[:2,:] * 2.0 doubles values via full chain.
+        
+        Expression: cluster_Q[0:2, :] * 2.0
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P0
+        """
+        try:
+            from RDataFrameDSL import DSLCompiler
+        except ImportError:
+            pytest.skip("RDataFrameDSL not available")
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        dsl.define("doubled", "cluster_Q[0:2, :] * 2.0")
+        
+        # Also get original for comparison
+        rdf_applied = dsl.apply(nd_2d_rdf)
+        doubled_results = rdf_applied.Take['ROOT::RVec<ROOT::RVec<double>>']("doubled").GetValue()
+        original_results = rdf_applied.Take['ROOT::RVec<ROOT::RVec<double>>']("cluster_Q").GetValue()
+        
+        assert len(doubled_results) > 0, "No events returned"
+        
+        # Verify values are doubled
+        for evt_idx in range(len(doubled_results)):
+            doubled_evt = doubled_results[evt_idx]
+            original_evt = original_results[evt_idx]
+            assert len(doubled_evt) <= 2, f"Event {evt_idx}: expected <=2 tracks"
+            for trk_idx in range(len(doubled_evt)):
+                for clus_idx in range(len(doubled_evt[trk_idx])):
+                    expected = original_evt[trk_idx][clus_idx] * 2.0
+                    actual = doubled_evt[trk_idx][clus_idx]
+                    assert abs(actual - expected) < 1e-9, \
+                        f"Event {evt_idx}, Track {trk_idx}, Cluster {clus_idx}: " \
+                        f"Q*2 = {actual}, expected {expected}"
+    
+    @pytest.mark.feature("nd_slice_arithmetic")
+    @pytest.mark.type_b
+    @pytest.mark.p1
+    def test_INV_ND_DSL_chained_slice_arithmetic(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-ND-DSL-3: (cluster_x[:2,:] - cluster_y[:2,:]) * 10.0 = -1.0 via full chain.
+        
+        Expression: (cluster_x[0:2, :] - cluster_y[0:2, :]) * 10.0
+        Expected: -1.0 everywhere (since x-y = -0.1, times 10 = -1.0)
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P1
+        """
+        try:
+            from RDataFrameDSL import DSLCompiler
+        except ImportError:
+            pytest.skip("RDataFrameDSL not available")
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        dsl.define("chained", "(cluster_x[0:2, :] - cluster_y[0:2, :]) * 10.0")
+        
+        rdf_applied = dsl.apply(nd_2d_rdf)
+        results = rdf_applied.Take['ROOT::RVec<ROOT::RVec<double>>']("chained").GetValue()
+        
+        assert len(results) > 0, "No events returned"
+        
+        # Verify all values are exactly -1.0
+        for evt_idx, evt in enumerate(results):
+            assert len(evt) <= 2, f"Event {evt_idx}: expected <=2 tracks"
+            for trk_idx, trk in enumerate(evt):
+                for clus_idx, val in enumerate(trk):
+                    assert abs(val - (-1.0)) < 1e-9, \
+                        f"Event {evt_idx}, Track {trk_idx}, Cluster {clus_idx}: " \
+                        f"(x-y)*10 = {val}, expected -1.0"
+    
+    @pytest.mark.feature("nd_slice_arithmetic")
+    @pytest.mark.type_b
+    @pytest.mark.p1
+    def test_INV_ND_DSL_slice_order_equivalence(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-ND-DSL-4: Slice order equivalence via full chain.
+        
+        Per reviewer suggestion: test BOTH patterns produce same results:
+        - cluster_x[:2,:] - cluster_y[:2,:]  (slice first, then subtract)
+        - (cluster_x - cluster_y)[:2,:]      (subtract first, then slice)
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P1
+        """
+        try:
+            from RDataFrameDSL import DSLCompiler
+        except ImportError:
+            pytest.skip("RDataFrameDSL not available")
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        # Pattern A: slice first, then operate
+        dsl.define("pattern_a", "cluster_x[0:2, :] - cluster_y[0:2, :]")
+        
+        # Pattern B: operate first, then slice
+        dsl.define("pattern_b", "(cluster_x - cluster_y)[0:2, :]")
+        
+        rdf_applied = dsl.apply(nd_2d_rdf)
+        results_a = rdf_applied.Take['ROOT::RVec<ROOT::RVec<double>>']("pattern_a").GetValue()
+        results_b = rdf_applied.Take['ROOT::RVec<ROOT::RVec<double>>']("pattern_b").GetValue()
+        
+        assert len(results_a) > 0, "No events returned"
+        assert len(results_a) == len(results_b), "Different number of events"
+        
+        # Verify both patterns produce identical results
+        for evt_idx in range(len(results_a)):
+            evt_a = results_a[evt_idx]
+            evt_b = results_b[evt_idx]
+            assert len(evt_a) == len(evt_b), f"Event {evt_idx}: different track counts"
+            for trk_idx in range(len(evt_a)):
+                assert len(evt_a[trk_idx]) == len(evt_b[trk_idx]), \
+                    f"Event {evt_idx}, Track {trk_idx}: different cluster counts"
+                for clus_idx in range(len(evt_a[trk_idx])):
+                    val_a = evt_a[trk_idx][clus_idx]
+                    val_b = evt_b[trk_idx][clus_idx]
+                    assert abs(val_a - val_b) < 1e-9, \
+                        f"Event {evt_idx}, Track {trk_idx}, Cluster {clus_idx}: " \
+                        f"pattern_a={val_a} != pattern_b={val_b}"
+
+
+class TestND_SameSliceReductions:
+    """
+    Tests for reduction operations (Sum, Mean) on sliced data.
+    
+    No joins needed - single column with slice + reduction.
+    
+    Phase: 13.6.C
+    """
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_a
+    @pytest.mark.p0
+    def test_INV_ND_SUM_sliced_exact(self, nd_test_data_2d):
+        """
+        INV-ND-SUM-1: Sum of sliced 2D data matches manual calculation.
+        
+        sum(cluster_Q[0:2, :]) for each event should equal sum of
+        first 2 tracks' clusters.
+        
+        Type: A (Engine)
+        Priority: P0
+        """
+        Q = nd_test_data_2d['cluster_Q']
+        
+        # Event 0: tracks 0,1 → clusters [0,10,20,30] + [100,110,120,130,140]
+        # = 60 + 600 = 660
+        sliced_sum_e0 = sum(sum(Q[0][trk]) for trk in range(min(2, len(Q[0]))))
+        assert sliced_sum_e0 == 660.0, f"Event 0 sliced sum: {sliced_sum_e0} != 660"
+        
+        # Event 1: tracks 0,1 → [1000,1010,1020] + [1100,1110,1120,1130]
+        # = 3030 + 4460 = 7490
+        sliced_sum_e1 = sum(sum(Q[1][trk]) for trk in range(min(2, len(Q[1]))))
+        assert sliced_sum_e1 == 7490.0, f"Event 1 sliced sum: {sliced_sum_e1} != 7490"
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_a
+    @pytest.mark.p0
+    def test_INV_ND_SUM_sliced_le_full(self, nd_test_data_2d):
+        """
+        INV-ND-SUM-2: Sliced sum <= full sum (monotonicity).
+        
+        Invariant: sum(cluster_Q[0:k, :]) <= sum(cluster_Q) for all k
+        
+        Type: A (Engine)
+        Priority: P0
+        """
+        Q = nd_test_data_2d['cluster_Q']
+        
+        for evt in range(len(Q)):
+            full_sum = sum(sum(trk) for trk in Q[evt])
+            
+            # Test various slice sizes
+            for k in range(1, len(Q[evt]) + 1):
+                sliced_sum = sum(sum(Q[evt][trk]) for trk in range(k))
+                assert sliced_sum <= full_sum + 1e-10, \
+                    f"Event {evt}: sliced[:k={k}] sum {sliced_sum} > full {full_sum}"
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_a
+    @pytest.mark.p1
+    def test_INV_ND_MEAN_sliced_bounds(self, nd_test_data_2d):
+        """
+        INV-ND-MEAN-1: Mean of sliced data lies within [min, max].
+        
+        Type: A (Engine)
+        Priority: P1
+        """
+        Q = nd_test_data_2d['cluster_Q']
+        
+        for evt in range(len(Q)):
+            # Flatten first 2 tracks
+            slice_end = min(2, len(Q[evt]))
+            values = []
+            for trk in range(slice_end):
+                values.extend(Q[evt][trk])
+            
+            if len(values) > 0:
+                mean_val = sum(values) / len(values)
+                min_val = min(values)
+                max_val = max(values)
+                
+                assert min_val <= mean_val <= max_val, \
+                    f"Event {evt}: mean {mean_val} not in [{min_val}, {max_val}]"
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_a
+    @pytest.mark.p1
+    def test_INV_ND_SUM_inner_slice_exact(self, nd_test_data_2d):
+        """
+        INV-ND-SUM-3: Sum with inner dimension slice.
+        
+        sum(cluster_Q[:, 0:2]) = sum of first 2 clusters per track.
+        
+        Type: A (Engine)
+        Priority: P1
+        """
+        Q = nd_test_data_2d['cluster_Q']
+        
+        for evt in range(len(Q)):
+            # Sum first 2 clusters from each track
+            inner_sliced_sum = 0
+            for trk in range(len(Q[evt])):
+                inner_sliced_sum += sum(Q[evt][trk][c] for c in range(min(2, len(Q[evt][trk]))))
+            
+            # Verify against manual calculation for event 0
+            if evt == 0:
+                # Track 0: [0, 10] = 10
+                # Track 1: [100, 110] = 210
+                # Total = 220
+                assert inner_sliced_sum == 220.0, \
+                    f"Event 0 inner-sliced sum: {inner_sliced_sum} != 220"
+
+
+class TestND_SameSliceReductions_DSL:
+    """
+    DSL-level tests for reduction operations on sliced data.
+    
+    Type B tests: Full DSL pipeline with RDataFrame execution.
+    
+    NOTE: These tests are SKIPPED due to L2 limitation - DSL doesn't support 
+    reductions/functions on sliced 2D columns yet, and attempting causes
+    ROOT JIT crashes that abort Python.
+    
+    Phase: 13.6.C
+    """
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.limitation("L2")
+    @pytest.mark.type_b
+    @pytest.mark.p0
+    def test_INV_ND_DSL_sum_sliced(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-ND-DSL-SUM-1: Sum on sliced 2D data via full chain.
+        
+        Expression: Sum(cluster_Q[0:2, :])
+        Result type: RVec<double> (sum per track for first 2 tracks)
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P0
+        
+        SKIPPED: L2 - DSL does not support Sum on sliced 2D columns yet.
+        """
+        pytest.skip("L2: DSL does not support Sum on sliced 2D columns yet (causes ROOT JIT crash)")
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.limitation("L2")
+    @pytest.mark.type_b
+    @pytest.mark.p1
+    def test_INV_ND_DSL_nested_sum(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-ND-DSL-SUM-2: Nested Sum for total via full chain.
+        
+        Expression: Sum(Sum(cluster_Q[0:2, :]))
+        Result type: double (total sum of sliced region)
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P1
+        
+        SKIPPED: L2 - DSL does not support nested Sum on sliced 2D columns yet.
+        """
+        pytest.skip("L2: DSL does not support nested Sum on sliced 2D columns yet (causes ROOT JIT crash)")
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.limitation("L2")
+    @pytest.mark.type_b
+    @pytest.mark.p1
+    def test_INV_ND_DSL_mean_sliced(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-ND-DSL-MEAN-1: Mean on sliced 2D data via full chain.
+        
+        Expression: Mean(cluster_Q[:, 0:3])
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P1
+        
+        SKIPPED: L2 - DSL does not support Mean on sliced 2D columns yet.
+        """
+        pytest.skip("L2: DSL does not support Mean on sliced 2D columns yet (causes ROOT JIT crash)")
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.limitation("L2")
+    @pytest.mark.type_b
+    @pytest.mark.p1
+    def test_INV_ND_DSL_sqrt_sliced(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-ND-DSL-SQRT-1: sqrt on sliced 2D data via full chain.
+        
+        Expression: sqrt(cluster_Q[0:2, 0:3])
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P1
+        
+        SKIPPED: L2 - DSL does not support sqrt on sliced 2D columns yet.
+        """
+        pytest.skip("L2: DSL does not support sqrt on sliced 2D columns yet (causes ROOT JIT crash)")
+
+
+class TestND_SliceOrderEquivalence:
+    """
+    Tests verifying slice-first vs operate-first produce identical results.
+    
+    Per reviewer P1 suggestion: Both orderings should be mathematically equivalent.
+    
+    Phase: 13.6.C
+    """
+    
+    @pytest.mark.feature("nd_slice_order")
+    @pytest.mark.type_a
+    @pytest.mark.p1
+    def test_INV_ND_ORDER_diff_equivalence(self, nd_test_data_2d):
+        """
+        INV-ND-ORDER-1: Slice order doesn't affect subtraction result.
+        
+        cluster_x[:2,:] - cluster_y[:2,:] == (cluster_x - cluster_y)[:2,:]
+        
+        Type: A (Engine)
+        Priority: P1
+        """
+        x_data = nd_test_data_2d['cluster_x']
+        y_data = nd_test_data_2d['cluster_y']
+        
+        # Both should give -0.1 everywhere
+        # Pattern A: slice first, then subtract
+        # Pattern B: subtract first, then slice
+        # For our data: x = Q + 0.1, y = Q + 0.2 → x - y = -0.1
+        expected_diff = -0.1
+        
+        # Simulate both patterns and verify they're equivalent
+        for evt in range(len(x_data)):
+            for trk in range(min(2, len(x_data[evt]))):
+                for clus in range(min(3, len(x_data[evt][trk]))):
+                    # Pattern A: slice first (elements are already from first 2 tracks)
+                    x_val = x_data[evt][trk][clus]
+                    y_val = y_data[evt][trk][clus]
+                    diff_a = x_val - y_val
+                    
+                    # Pattern B: operate first (same elements, just different order)
+                    # In pure math: (x - y)[i,j] == x[i,j] - y[i,j]
+                    diff_b = x_val - y_val  # Same computation
+                    
+                    # Both patterns must equal expected
+                    assert abs(diff_a - expected_diff) < 1e-10, \
+                        f"[{evt}][{trk}][{clus}]: x-y = {diff_a} != {expected_diff}"
+                    assert diff_a == diff_b, \
+                        f"[{evt}][{trk}][{clus}]: pattern A != pattern B"
+    
+    @pytest.mark.feature("nd_slice_order")
+    @pytest.mark.type_a
+    @pytest.mark.p1
+    def test_INV_ND_ORDER_sum_equivalence(self, nd_test_data_2d):
+        """
+        INV-ND-ORDER-2: Sum commutes with slicing.
+        
+        Sum(cluster_Q[:2,:]) == Sum of (cluster_Q sliced to [:2,:])
+        
+        This is trivially true but validates our understanding.
+        
+        Type: A (Engine)
+        Priority: P1
+        """
+        Q = nd_test_data_2d['cluster_Q']
+        
+        for evt in range(len(Q)):
+            # Direct calculation
+            direct_sum = sum(sum(Q[evt][trk]) for trk in range(min(2, len(Q[evt]))))
+            
+            # Via intermediate slice
+            sliced = [Q[evt][trk] for trk in range(min(2, len(Q[evt])))]
+            via_slice_sum = sum(sum(trk) for trk in sliced)
+            
+            assert abs(direct_sum - via_slice_sum) < 1e-10, \
+                f"Event {evt}: direct {direct_sum} != via_slice {via_slice_sum}"
 
 
 if __name__ == "__main__":

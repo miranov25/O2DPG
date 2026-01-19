@@ -16,7 +16,7 @@
 # Date: 2026-01-18
 # =============================================================================
 
-FEATURE_TAXONOMY_VERSION = "1.1"
+FEATURE_TAXONOMY_VERSION = "1.6"  # Phase 13.6.C: L2 tests SKIPPED (not xfail - ROOT JIT crash)
 
 # =============================================================================
 # FEATURE ALIASES (for backward compatibility if renaming needed)
@@ -155,6 +155,7 @@ FEATURE_TAXONOMY = {
         ],
         "proof": None,
     },
+
     # -------------------------------------------------------------------------
     # N-D SLICING (Phase 13.6.C) (INV-ND*)
     # -------------------------------------------------------------------------
@@ -211,6 +212,51 @@ FEATURE_TAXONOMY = {
         "proof": None,
         "phase": "13.6.C",
     },
+    "nd_slice_arithmetic": {
+        "name": "N-D slicing arithmetic (same-slice)",
+        "description": "Arithmetic operations on uniformly sliced columns (no join needed)",
+        "tests": [
+            "tests/test_invariance_nd.py::TestND_SameSliceArithmetic::test_INV_ND_SAME_SLICE_diff_exact",
+            "tests/test_invariance_nd.py::TestND_SameSliceArithmetic::test_INV_ND_SAME_SLICE_xy_diff_exact",
+            "tests/test_invariance_nd.py::TestND_SameSliceArithmetic::test_INV_ND_SAME_SLICE_sum_partition",
+            "tests/test_invariance_nd.py::TestND_SameSliceArithmetic::test_INV_ND_SAME_SLICE_scalar_multiply",
+            "tests/test_invariance_nd.py::TestND_SameSliceArithmetic_DSL::test_INV_ND_DSL_same_slice_diff",
+            "tests/test_invariance_nd.py::TestND_SameSliceArithmetic_DSL::test_INV_ND_DSL_same_slice_scalar_mult",
+            "tests/test_invariance_nd.py::TestND_SameSliceArithmetic_DSL::test_INV_ND_DSL_chained_slice_arithmetic",
+            "tests/test_invariance_nd.py::TestND_SameSliceArithmetic_DSL::test_INV_ND_DSL_slice_order_equivalence",
+        ],
+        "proof": None,
+        "phase": "13.6.C",
+    },
+    "nd_slice_reduction": {
+        "name": "N-D slicing reductions (Sum, Mean)",
+        "description": "Reduction operations (Sum, Mean) on sliced N-D columns - L2: DSL tests SKIPPED (ROOT JIT crash)",
+        "tests": [
+            "tests/test_invariance_nd.py::TestND_SameSliceReductions::test_INV_ND_SUM_sliced_exact",
+            "tests/test_invariance_nd.py::TestND_SameSliceReductions::test_INV_ND_SUM_sliced_le_full",
+            "tests/test_invariance_nd.py::TestND_SameSliceReductions::test_INV_ND_MEAN_sliced_bounds",
+            "tests/test_invariance_nd.py::TestND_SameSliceReductions::test_INV_ND_SUM_inner_slice_exact",
+            # L2: DSL tests below SKIPPED - reductions on sliced 2D cause ROOT JIT crash
+            "tests/test_invariance_nd.py::TestND_SameSliceReductions_DSL::test_INV_ND_DSL_sum_sliced",
+            "tests/test_invariance_nd.py::TestND_SameSliceReductions_DSL::test_INV_ND_DSL_nested_sum",
+            "tests/test_invariance_nd.py::TestND_SameSliceReductions_DSL::test_INV_ND_DSL_mean_sliced",
+            "tests/test_invariance_nd.py::TestND_SameSliceReductions_DSL::test_INV_ND_DSL_sqrt_sliced",
+        ],
+        "proof": None,
+        "phase": "13.6.C",
+        "limitation": "L2",  # DSL tests SKIPPED
+    },
+    "nd_slice_order": {
+        "name": "N-D slice order equivalence",
+        "description": "Verify slice-first vs operate-first produce identical results",
+        "tests": [
+            "tests/test_invariance_nd.py::TestND_SliceOrderEquivalence::test_INV_ND_ORDER_diff_equivalence",
+            "tests/test_invariance_nd.py::TestND_SliceOrderEquivalence::test_INV_ND_ORDER_sum_equivalence",
+        ],
+        "proof": None,
+        "phase": "13.6.C",
+    },
+
     # -------------------------------------------------------------------------
     # STRUCTURAL INVARIANTS (INV-X*)
     # -------------------------------------------------------------------------
@@ -310,15 +356,26 @@ FEATURE_TAXONOMY = {
 KNOWN_LIMITATIONS = {
     "L1": {
         "name": "Slice chain validation",
-        "status": "⚠️ Partial",
+        "status": "✅ Resolved",
         "description": "Cannot mix full and sliced columns in single to_pandas() call",
         "workaround": "Export full and sliced columns in separate to_pandas() calls",
         "bug_report": "BUG_RDataFrameDSL_20260116_dsl_slice_chain.md",
-        "resolution": "Phase 13.6.C",
+        "resolution": "Phase 13.6.C - Tests fixed to use separate exports",
+        "tests_affected": [],  # No longer affected - tests fixed
+    },
+    "L2": {
+        "name": "Reductions on sliced 2D columns",
+        "status": "⚠️ Not implemented",
+        "description": "DSL does not support Sum/Mean/sqrt on sliced 2D columns like Sum(cluster_Q[0:2, :]). Causes ROOT JIT crash.",
+        "workaround": "Use element-wise arithmetic on sliced 2D (e.g., cluster_x[:2,:] - cluster_Q[:2,:]), then Sum separately",
+        "bug_report": None,
+        "resolution": "Phase 13.6.C+ - requires DSL extension",
         "tests_affected": [
-            "tests/test_invariance_ranges.py::TestSlidingRangesDSL::test_INV_R1_SLICE_preserves_order",
-            "tests/test_invariance_ranges.py::TestSlidingRangesDSL::test_INV_R2_SLICE_2d_slicing",
-            "tests/test_invariance_ranges.py::TestSlidingRangesDSL::test_INV_R5_SUM_dsl_sum_preservation",
+            # SKIPPED (not xfail) - these crash ROOT JIT fatally
+            "tests/test_invariance_nd.py::TestND_SameSliceReductions_DSL::test_INV_ND_DSL_sum_sliced",
+            "tests/test_invariance_nd.py::TestND_SameSliceReductions_DSL::test_INV_ND_DSL_nested_sum",
+            "tests/test_invariance_nd.py::TestND_SameSliceReductions_DSL::test_INV_ND_DSL_mean_sliced",
+            "tests/test_invariance_nd.py::TestND_SameSliceReductions_DSL::test_INV_ND_DSL_sqrt_sliced",
         ],
     },
 }
