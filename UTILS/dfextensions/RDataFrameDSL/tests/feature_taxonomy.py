@@ -257,6 +257,27 @@ FEATURE_TAXONOMY = {
         "phase": "13.6.C",
     },
 
+    "nd_join_strategy": {
+        "name": "N-D join strategy for mixed-depth columns",
+        "description": "Join strategies (inner/outer/left/right) for combining columns of different nesting depths",
+        "tests": [
+            "tests/test_join_e2e.py::TestJoinWithRDataFrame::test_E2E_join_cluster_track",
+            "tests/test_join_e2e.py::TestJoinWithRDataFrame::test_E2E_join_cluster_event",
+            "tests/test_join_e2e.py::TestJoinWithRDataFrame::test_E2E_join_track_event",
+            "tests/test_join_e2e.py::TestJoinWithRDataFrame::test_E2E_join_three_depths",
+            "tests/test_join_e2e.py::TestJoinStrategiesE2E::test_E2E_join_inner",
+            "tests/test_join_e2e.py::TestJoinStrategiesE2E::test_E2E_join_outer",
+            "tests/test_join_e2e.py::TestJoinStrategiesE2E::test_E2E_join_left",
+            "tests/test_join_e2e.py::TestJoinStrategiesE2E::test_E2E_join_right",
+            "tests/test_join_e2e.py::TestJoinInvarianceE2E::test_INV_E2E_broadcast_event_weight",
+            "tests/test_join_e2e.py::TestJoinInvarianceE2E::test_INV_E2E_cluster_Q_preserved",
+            "tests/test_join_e2e.py::TestBackwardCompatibilityE2E::test_E2E_no_join_param_default",
+            "tests/test_join_e2e.py::TestBackwardCompatibilityE2E::test_E2E_single_column_still_works",
+        ],
+        "proof": None,
+        "phase": "13.6.C",
+    },
+
     # -------------------------------------------------------------------------
     # STRUCTURAL INVARIANTS (INV-X*)
     # -------------------------------------------------------------------------
