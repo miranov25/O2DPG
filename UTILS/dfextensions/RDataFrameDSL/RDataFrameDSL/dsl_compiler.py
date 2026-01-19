@@ -1886,6 +1886,7 @@ class DSLCompiler:
         parent_id_column: str = 'event_id',
         backend: FlattenBackend = None,
         max_entries: int = None,
+        join: str = 'inner',
     ) -> 'pd.DataFrame':
         """
         Export RDataFrame to flat pandas DataFrame with TTree::Draw semantics.
@@ -1896,6 +1897,7 @@ class DSLCompiler:
         - Replicates shallower columns to match deepest level
         
         Phase 13.6.B: Core method for TTree::Draw equivalence.
+        Phase 13.6.C: Added join parameter for mixed-depth join strategy.
         
         Args:
             rdf: RDataFrame instance (applied or not)
@@ -1907,6 +1909,11 @@ class DSLCompiler:
             parent_id_column: Name of parent ID column (default: 'event_id')
             backend: Flatten backend (default: AUTO)
             max_entries: Optional limit on number of events
+            join: Join strategy for mixed-depth columns (Phase 13.6.C)
+                  - 'inner': Intersection of indices (default, no NaN)
+                  - 'outer': Union of indices (NaN for missing)
+                  - 'left': All from deeper operand
+                  - 'right': All from shallower operand
         
         Returns:
             Flat pandas DataFrame with index columns:
@@ -1923,6 +1930,9 @@ class DSLCompiler:
             
             >>> # With event-level selection
             >>> df = dsl.to_pandas(rdf, ['track_pt'], event_selection='multiplicity > 50')
+            
+            >>> # With join strategy (Phase 13.6.C)
+            >>> df = dsl.to_pandas(rdf, ['cluster_Q', 'track_pt'], join='outer')
             
             >>> # TTree::Draw equivalent:
             >>> # tree->Draw("cluster_Q:track_pt")
@@ -1963,12 +1973,13 @@ class DSLCompiler:
         if backend is None:
             backend = FlattenBackend.AUTO
         
-        # Flatten to DataFrame
+        # Flatten to DataFrame (Phase 13.6.C: pass join strategy)
         df = flatten_to_dataframe(
             data,
             columns=columns,
             parent_id_column=parent_id_column,
-            backend=backend
+            backend=backend,
+            join=join,
         )
         
         return df

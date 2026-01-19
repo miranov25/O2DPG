@@ -912,13 +912,15 @@ def flatten_to_dataframe(
     columns: Optional[List[str]] = None,
     rvec_columns: Optional[List[str]] = None,  # DEPRECATED (Phase 13.6.A compat)
     parent_id_column: str = "event_id",
-    backend: FlattenBackend = FlattenBackend.AUTO
+    backend: FlattenBackend = FlattenBackend.AUTO,
+    join: str = 'inner',
 ) -> pd.DataFrame:
     """
     Flatten RVec columns to pandas DataFrame.
     
     Phase 13.6.A: Same-depth columns (backward compatible via rvec_columns)
     Phase 13.6.A-ext: Mixed-depth columns (scalar + 1D + 2D via columns)
+    Phase 13.6.C: Join strategy parameter
     
     Args:
         data: Dict from rdf.AsNumpy() containing columns
@@ -928,6 +930,11 @@ def flatten_to_dataframe(
                       Kept for Phase 13.6.A backward compatibility
         parent_id_column: Parent ID column name (default: 'event_id')
         backend: Flatten backend (default: AUTO)
+        join: Join strategy for mixed-depth columns (Phase 13.6.C)
+              - 'inner': Intersection of indices (default, no NaN)
+              - 'outer': Union of indices (NaN for missing)
+              - 'left': All from deeper operand
+              - 'right': All from shallower operand
     
     Returns:
         Flat pandas DataFrame with appropriate index columns
@@ -947,6 +954,11 @@ def flatten_to_dataframe(
         # Mixed depths (NEW):
         >>> df = flatten_to_dataframe(data, 
         ...     columns=['cluster_Q', 'track_pt', 'multiplicity'])
+        
+        # With join strategy (Phase 13.6.C):
+        >>> df = flatten_to_dataframe(data,
+        ...     columns=['cluster_Q', 'track_pt'],
+        ...     join='outer')  # NaN for missing
     """
     # Handle backward compatibility
     if rvec_columns is not None:
@@ -969,6 +981,13 @@ def flatten_to_dataframe(
     
     if not columns:
         raise ValueError("'columns' list cannot be empty")
+    
+    # Validate join parameter (Phase 13.6.C)
+    valid_joins = ('inner', 'outer', 'left', 'right')
+    if join not in valid_joins:
+        raise ValueError(
+            f"Invalid join type '{join}'. Must be one of: {valid_joins}"
+        )
     
     # Validate columns exist
     _validate_columns_exist(data, columns + [parent_id_column])

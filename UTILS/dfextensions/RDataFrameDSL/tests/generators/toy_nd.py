@@ -197,6 +197,22 @@ def track_pt_value(track_index: int) -> float:
     return float(pt)
 
 
+def event_weight_value(event: int) -> float:
+    """
+    Deterministic event weight.
+    
+    What: Returns event weight = event + 1.0
+    Why:  Simple formula for broadcast testing
+    Who:  Used by join strategy tests (Phase 13.6.C)
+    
+    Formula: event_weight[event] = event + 1.0
+    
+    Invariant for testing:
+        cluster_Q[e][t][c] * event_weight[e] = cluster_Q[e][t][c] * (e + 1.0)
+    """
+    return float(event + 1.0)
+
+
 # =============================================================================
 # Layout Generation
 # =============================================================================
@@ -270,6 +286,7 @@ def generate_layout_3d(
 ND_2D_SCHEMA = {
     'event_id': 'long',
     'n_tracks': 'int',
+    'event_weight': 'double',  # Phase 13.6.C: Scalar for broadcast tests
     'track_pt': 'RVec<double>',
     'track_eta': 'RVec<double>',
     'cluster_Q': 'RVec<RVec<double>>',
@@ -390,9 +407,14 @@ def generate_nd_2d_dict(
         cluster_x[evt] = evt_x
         cluster_y[evt] = evt_y
     
+    # Event-level scalar (Phase 13.6.C: for broadcast tests)
+    event_weight = np.array([event_weight_value(e) for e in range(n_events)], 
+                            dtype=np.float64)
+    
     return {
         'event_id': event_ids,
         'n_tracks': n_tracks_arr,
+        'event_weight': event_weight,
         'track_pt': track_pt,
         'track_eta': track_eta,
         'cluster_Q': cluster_Q,
@@ -660,6 +682,7 @@ def _generate_2d_embedded(func_name: str, filename: str, data: Dict[str, Any]) -
         '',
         '    Long64_t event_id;',
         '    Int_t n_tracks;',
+        '    Double_t event_weight;',
         '    ROOT::RVec<double> track_pt;',
         '    ROOT::RVec<double> track_eta;',
         '    ROOT::RVec<ROOT::RVec<double>> cluster_Q;',
@@ -668,6 +691,7 @@ def _generate_2d_embedded(func_name: str, filename: str, data: Dict[str, Any]) -
         '',
         '    tree.Branch("event_id", &event_id);',
         '    tree.Branch("n_tracks", &n_tracks);',
+        '    tree.Branch("event_weight", &event_weight);',
         '    tree.Branch("track_pt", &track_pt);',
         '    tree.Branch("track_eta", &track_eta);',
         '    tree.Branch("cluster_Q", &cluster_Q);',
@@ -680,6 +704,7 @@ def _generate_2d_embedded(func_name: str, filename: str, data: Dict[str, Any]) -
         lines.append(f'    // Event {evt}')
         lines.append(f'    event_id = {evt};')
         lines.append(f'    n_tracks = {data["n_tracks"][evt]};')
+        lines.append(f'    event_weight = {data["event_weight"][evt]:.1f};')
         
         pt_str = ', '.join(f'{v:.1f}' for v in data['track_pt'][evt])
         eta_str = ', '.join(f'{v:.1f}' for v in data['track_eta'][evt])
@@ -727,6 +752,7 @@ def _generate_3d_embedded(func_name: str, filename: str, data: Dict[str, Any]) -
         '',
         '    Long64_t event_id;',
         '    Int_t n_tracks;',
+        '    Double_t event_weight;',
         '    ROOT::RVec<double> track_pt;',
         '    ROOT::RVec<ROOT::RVec<double>> cluster_Q;',
         '    ROOT::RVec<ROOT::RVec<ROOT::RVec<double>>> hit_E;',
@@ -734,6 +760,7 @@ def _generate_3d_embedded(func_name: str, filename: str, data: Dict[str, Any]) -
         '',
         '    tree.Branch("event_id", &event_id);',
         '    tree.Branch("n_tracks", &n_tracks);',
+        '    tree.Branch("event_weight", &event_weight);',
         '    tree.Branch("track_pt", &track_pt);',
         '    tree.Branch("cluster_Q", &cluster_Q);',
         '    tree.Branch("hit_E", &hit_E);',
@@ -745,6 +772,7 @@ def _generate_3d_embedded(func_name: str, filename: str, data: Dict[str, Any]) -
         lines.append(f'    // Event {evt}')
         lines.append(f'    event_id = {evt};')
         lines.append(f'    n_tracks = {data["n_tracks"][evt]};')
+        lines.append(f'    event_weight = {data["event_weight"][evt]:.1f};')
         
         pt_str = ', '.join(f'{v:.1f}' for v in data['track_pt'][evt])
         lines.append(f'    track_pt = {{{pt_str}}};')
@@ -816,6 +844,7 @@ void {func_name}() {{
     
     Long64_t event_id;
     Int_t n_tracks;
+    Double_t event_weight;
     ROOT::RVec<double> track_pt;
     ROOT::RVec<double> track_eta;
     ROOT::RVec<ROOT::RVec<double>> cluster_Q;
@@ -824,6 +853,7 @@ void {func_name}() {{
     
     tree.Branch("event_id", &event_id);
     tree.Branch("n_tracks", &n_tracks);
+    tree.Branch("event_weight", &event_weight);
     tree.Branch("track_pt", &track_pt);
     tree.Branch("track_eta", &track_eta);
     tree.Branch("cluster_Q", &cluster_Q);
@@ -841,6 +871,7 @@ void {func_name}() {{
     
     for (int evt = 0; evt < {n_events}; evt++) {{
         event_id = evt;
+        event_weight = evt + 1.0;  // Phase 13.6.C: matches event_weight_value()
         int n_trk = trk_dist(rng);
         n_tracks = n_trk;
         
@@ -910,6 +941,7 @@ void {func_name}() {{
     
     Long64_t event_id;
     Int_t n_tracks;
+    Double_t event_weight;
     ROOT::RVec<double> track_pt;
     ROOT::RVec<ROOT::RVec<double>> cluster_Q;
     ROOT::RVec<ROOT::RVec<ROOT::RVec<double>>> hit_E;
@@ -917,6 +949,7 @@ void {func_name}() {{
     
     tree.Branch("event_id", &event_id);
     tree.Branch("n_tracks", &n_tracks);
+    tree.Branch("event_weight", &event_weight);
     tree.Branch("track_pt", &track_pt);
     tree.Branch("cluster_Q", &cluster_Q);
     tree.Branch("hit_E", &hit_E);
@@ -932,6 +965,7 @@ void {func_name}() {{
     
     for (int evt = 0; evt < {n_events}; evt++) {{
         event_id = evt;
+        event_weight = evt + 1.0;  // Phase 13.6.C: matches event_weight_value()
         int n_trk = trk_dist(rng);
         n_tracks = n_trk;
         
