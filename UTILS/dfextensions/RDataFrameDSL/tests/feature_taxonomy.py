@@ -16,7 +16,7 @@
 # Date: 2026-01-18
 # =============================================================================
 
-FEATURE_TAXONOMY_VERSION = "1.0"
+FEATURE_TAXONOMY_VERSION = "1.1"
 
 # =============================================================================
 # FEATURE ALIASES (for backward compatibility if renaming needed)
@@ -155,7 +155,62 @@ FEATURE_TAXONOMY = {
         ],
         "proof": None,
     },
-
+    # -------------------------------------------------------------------------
+    # N-D SLICING (Phase 13.6.C) (INV-ND*)
+    # -------------------------------------------------------------------------
+    "nd_slice_2d": {
+        "name": "2D N-dimensional slicing",
+        "description": "N-D slice syntax on 2D arrays (e.g., cluster_Q[0:2, 0:3])",
+        "tests": [
+            "tests/test_invariance_nd.py::TestND1_2DSlicingBasic::test_INV_ND1a_first_n_both_dims",
+            "tests/test_invariance_nd.py::TestND1_2DSlicingBasic::test_INV_ND1b_full_first_dim",
+            "tests/test_invariance_nd.py::TestND1_2DSlicingBasic::test_INV_ND1c_full_both_dims",
+            "tests/test_invariance_nd.py::TestND2_2DSlicingAdvanced::test_INV_ND2a_mixed_index_slice",
+            "tests/test_invariance_nd.py::TestND2_2DSlicingAdvanced::test_INV_ND2b_slice_index",
+            "tests/test_invariance_nd.py::TestND2_2DSlicingAdvanced::test_INV_ND2c_negative_outer",
+            "tests/test_invariance_nd.py::TestND2_2DSlicingAdvanced::test_INV_ND2d_negative_inner",
+            "tests/test_invariance_nd.py::TestND2_2DSlicingAdvanced::test_INV_ND2e_reverse_inner",
+            "tests/test_invariance_nd.py::TestND2_2DSlicingAdvanced::test_INV_ND2f_step_outer",
+        ],
+        "proof": None,
+        "phase": "13.6.C",
+    },
+    "nd_slice_3d": {
+        "name": "3D N-dimensional slicing",
+        "description": "N-D slice syntax on 3D arrays (e.g., hit_E[0:2, :, 0:3])",
+        "tests": [
+            "tests/test_invariance_nd.py::TestND3_3DSlicing::test_INV_ND3a_first_n_all_dims",
+            "tests/test_invariance_nd.py::TestND3_3DSlicing::test_INV_ND3b_full_middle",
+            "tests/test_invariance_nd.py::TestND3_3DSlicing::test_INV_ND3c_single_element",
+            "tests/test_invariance_nd.py::TestND3_3DSlicing::test_INV_ND3d_mixed_3d",
+        ],
+        "proof": None,
+        "phase": "13.6.C",
+    },
+    "nd_slice_invariance": {
+        "name": "N-D slicing mathematical invariance",
+        "description": "Mathematical properties: sum consistency, identity, partitioning",
+        "tests": [
+            "tests/test_invariance_nd.py::TestND4_MathematicalInvariance::test_INV_ND4a_sum_consistency_2d",
+            "tests/test_invariance_nd.py::TestND4_MathematicalInvariance::test_INV_ND4b_identity_slice_2d",
+            "tests/test_invariance_nd.py::TestND4_MathematicalInvariance::test_INV_ND4c_negative_index_equivalence",
+            "tests/test_invariance_nd.py::TestND4_MathematicalInvariance::test_INV_ND4d_slice_sum_partition",
+        ],
+        "proof": None,
+        "phase": "13.6.C",
+    },
+    "nd_slice_edge": {
+        "name": "N-D slicing edge cases",
+        "description": "Edge cases: OOB clipping, empty results, dimension limits, jagged arrays",
+        "tests": [
+            "tests/test_invariance_nd.py::TestND5_EdgeCases::test_INV_ND5a_oob_clipping",
+            "tests/test_invariance_nd.py::TestND5_EdgeCases::test_INV_ND5b_empty_result",
+            "tests/test_invariance_nd.py::TestND5_EdgeCases::test_INV_ND5c_dimension_limit",
+            "tests/test_invariance_nd.py::TestND5_EdgeCases::test_INV_ND5d_jagged_structure",
+        ],
+        "proof": None,
+        "phase": "13.6.C",
+    },
     # -------------------------------------------------------------------------
     # STRUCTURAL INVARIANTS (INV-X*)
     # -------------------------------------------------------------------------

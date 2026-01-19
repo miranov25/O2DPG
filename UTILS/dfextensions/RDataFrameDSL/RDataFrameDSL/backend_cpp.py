@@ -395,19 +395,15 @@ class CppCodeGenerator:
             
             # Phase 6b: Subscript supported for RVec (single index only, no slicing)
             if isinstance(node, SubscriptNode):
-                # Check for slicing (deferred to Phase 7)
-                if node.is_slice():
+                # Phase 13.6.C: N-D slicing now supported - removed is_slice() blocker
+                # The _visit_subscript method handles both indexing and slicing
+                
+                # Phase 13.6.C: N-D indexing supported (up to 5D)
+                if len(node.indices) > 5:
                     raise IRError(
                         IRErrorKind.UNSUPPORTED_OP,
-                        "Slicing operations (e.g., pt[1:3]) are not supported yet",
-                        suggestions=["Slicing support will be added in Phase 7"]
-                    )
-                # Check for multi-dimensional indexing (deferred)
-                if len(node.indices) > 1:
-                    raise IRError(
-                        IRErrorKind.UNSUPPORTED_OP,
-                        "Multi-dimensional indexing is not supported yet",
-                        suggestions=["Use single index for Phase 6b"]
+                        f"Indexing with {len(node.indices)} dimensions exceeds limit (max 5D)",
+                        suggestions=["Reduce number of dimensions"]
                     )
                 # Check for boolean mask (deferred)
                 if node.is_boolean_mask:
@@ -1164,22 +1160,44 @@ class CppCodeGenerator:
         """
         Generate C++ for subscript/indexing operation.
         
-        Phase 6b supports:
-        - Simple indexing: pt[0], pt[i]
-        - Negative literal indexing: pt[-1], pt[-2]
-        - Safe bounds checking (default ON): returns NaN on out-of-bounds
+        Phase 13.6.C: Extended to support N-dimensional slicing.
+        
+        Supports:
+        - Simple indexing: pt[0], pt[-1]
+        - N-D indexing: nested[0, 1] or nested[0][1]
+        - N-D slicing: cluster_Q[0:2, 0:3]
+        - Mixed: cluster_Q[0, :], cluster_Q[:, 0]
         
         Examples:
-            pt[0] (safe mode) → (0 >= 0 && static_cast<size_t>(0) < pt.size()) 
-                                  ? pt[0] : std::numeric_limits<float>::quiet_NaN()
-            pt[-1] (safe mode) → (pt.size() > 0) 
-                                   ? pt[pt.size() - 1] : std::numeric_limits<float>::quiet_NaN()
-            pt[0] (unsafe mode) → pt[0]
+            cluster_Q[0:2, :]     → first 2 tracks, all clusters
+            cluster_Q[:, 0:3]     → all tracks, first 3 clusters  
+            cluster_Q[0:2, 0:3]   → first 2 tracks, first 3 clusters
+            hit_E[0:2, :, 0:3]    → 3D slicing
         """
-        # Generate code for the value being indexed
+        # Check if this has N-D indices
+        if len(node.indices) > 1:
+            # Check if any index is a slice
+            has_slice = any(isinstance(idx, SliceNode) for idx in node.indices)
+            if has_slice:
+                return self._visit_nd_slice(node)
+            else:
+                return self._visit_nd_index(node)
+        
+        # Single dimension - check for slice (shouldn't happen, uses RVecSliceNode)
+        if len(node.indices) == 1 and isinstance(node.indices[0], SliceNode):
+            return self._visit_1d_slice_fallback(node)
+        
+        # Original simple indexing logic
+        return self._visit_subscript_simple(node)
+    
+    def _visit_subscript_simple(self, node: SubscriptNode) -> str:
+        """
+        Original _visit_subscript logic for simple single-index access.
+        
+        Handles: arr[0], arr[-1], arr[i]
+        """
         value_code = self._visit(node.value)
         
-        # Get the index (single index only in Phase 6b)
         if not node.indices:
             raise IRError(
                 IRErrorKind.UNSUPPORTED_OP,
@@ -1188,18 +1206,13 @@ class CppCodeGenerator:
             )
         
         idx = node.indices[0]
-        
-        # Get the result type for NaN generation
         result_cpp_type = node.dtype.to_cpp()
-        
-        # Phase 13.3.DSL: Get result rank for correct fallback generation
         result_rank = node.rank
         
         # Check for negative literal index
         if isinstance(idx, ConstantNode) and isinstance(idx.value, int) and idx.value < 0:
             return self._generate_negative_index(value_code, idx.value, result_cpp_type, result_rank)
         
-        # Generate index code
         idx_code = self._visit(idx)
         
         if self.safe_indexing:
@@ -1281,6 +1294,447 @@ class CppCodeGenerator:
             return (f"({idx_code} >= 0 && static_cast<size_t>({idx_code}) < {value_code}.size()) "
                     f"? {value_code}[{idx_code}] "
                     f": {fallback}")
+    
+    # =========================================================================
+    # Phase 13.6.C: N-D Slicing Operations
+    # =========================================================================
+    
+    def _visit_nd_index(self, node: SubscriptNode) -> str:
+        """
+        Handle N-dimensional indexing without slices.
+        
+        cluster_Q[0, 1] → cluster_Q[0][1] with bounds checking
+        """
+        value_code = self._visit(node.value)
+        result_cpp_type = node.dtype.to_cpp()
+        
+        if self.safe_indexing:
+            return self._generate_nd_index_safe(node, value_code, result_cpp_type)
+        else:
+            # Simple chained access
+            for idx in node.indices:
+                idx_code = self._visit(idx)
+                value_code = f"{value_code}[{idx_code}]"
+            return value_code
+    
+    def _generate_nd_index_safe(self, node: SubscriptNode, value_code: str, 
+                                 result_cpp_type: str) -> str:
+        """Generate safe N-D index access with bounds checking."""
+        num_dims = len(node.indices)
+        result_rank = node.rank
+        fallback = self._make_nd_fallback(result_cpp_type, result_rank)
+        
+        code_lines = []
+        code_lines.append(f"[&]() {{")
+        code_lines.append(f"    auto d0 = {value_code};")
+        
+        for i, idx in enumerate(node.indices):
+            d_var = f"d{i}"
+            next_d_var = f"d{i+1}" if i < num_dims - 1 else "result"
+            
+            if isinstance(idx, ConstantNode) and isinstance(idx.value, int) and idx.value < 0:
+                abs_idx = abs(idx.value)
+                code_lines.append(f"    if ({d_var}.size() < {abs_idx}) return {fallback};")
+                if i < num_dims - 1:
+                    code_lines.append(f"    auto {next_d_var} = {d_var}[{d_var}.size() - {abs_idx}];")
+                else:
+                    code_lines.append(f"    return {d_var}[{d_var}.size() - {abs_idx}];")
+            else:
+                idx_code = self._visit(idx)
+                code_lines.append(f"    if ({idx_code} < 0 || static_cast<size_t>({idx_code}) >= {d_var}.size()) return {fallback};")
+                if i < num_dims - 1:
+                    code_lines.append(f"    auto {next_d_var} = {d_var}[{idx_code}];")
+                else:
+                    code_lines.append(f"    return {d_var}[{idx_code}];")
+        
+        code_lines.append(f"}}()")
+        return "\n".join(code_lines)
+    
+    def _visit_nd_slice(self, node: SubscriptNode) -> str:
+        """
+        Generate C++ for N-dimensional slicing.
+        
+        Examples:
+            cluster_Q[0:2, :]     → slice first 2 tracks, keep all clusters
+            cluster_Q[:, 0:3]     → keep all tracks, slice first 3 clusters
+            cluster_Q[0:2, 0:3]   → slice both dimensions
+            hit_E[0:2, :, 0:3]    → 3D slicing
+        """
+        num_dims = len(node.indices)
+        target = self._visit(node.value)
+        result_type = self._get_nd_result_type(node)
+        
+        # Analyze each dimension's slice/index
+        slice_infos = []
+        for i, idx in enumerate(node.indices):
+            slice_infos.append(self._analyze_slice_dim(idx, i))
+        
+        # Generate code based on dimensionality
+        if num_dims == 2:
+            return self._generate_2d_slice(target, slice_infos, result_type, node)
+        elif num_dims == 3:
+            return self._generate_3d_slice(target, slice_infos, result_type, node)
+        else:
+            return self._generate_generic_nd_slice(target, slice_infos, result_type, num_dims, node)
+    
+    def _analyze_slice_dim(self, idx, dim: int) -> dict:
+        """
+        Analyze a single dimension's slice/index.
+        
+        Returns dict with kind, start, stop, step, dim, and for indices: index, is_negative.
+        """
+        if isinstance(idx, SliceNode):
+            start = self._visit(idx.start) if idx.start else None
+            stop = self._visit(idx.stop) if idx.stop else None
+            step = self._visit(idx.step) if idx.step else None
+            
+            # Classify the slice kind
+            if start is None and stop is None and step is None:
+                return {'kind': 'full', 'start': None, 'stop': None, 'step': None, 'dim': dim}
+            
+            if step is not None:
+                if isinstance(idx.step, ConstantNode) and idx.step.value == -1 and start is None and stop is None:
+                    return {'kind': 'reverse', 'start': None, 'stop': None, 'step': step, 'dim': dim}
+                return {'kind': 'step', 'start': start, 'stop': stop, 'step': step, 'dim': dim}
+            
+            if start is None and stop is not None:
+                return {'kind': 'first_n', 'start': None, 'stop': stop, 'step': None, 'dim': dim}
+            
+            if start is not None and stop is None:
+                if isinstance(idx.start, ConstantNode) and idx.start.value < 0:
+                    return {'kind': 'last_n', 'start': start, 'stop': None, 'step': None, 'dim': dim}
+                return {'kind': 'from_idx', 'start': start, 'stop': None, 'step': None, 'dim': dim}
+            
+            return {'kind': 'range', 'start': start, 'stop': stop, 'step': None, 'dim': dim}
+        
+        else:
+            idx_code = self._visit(idx)
+            is_negative = isinstance(idx, ConstantNode) and isinstance(idx.value, int) and idx.value < 0
+            return {'kind': 'index', 'index': idx_code, 'dim': dim, 'is_negative': is_negative,
+                    'neg_value': idx.value if is_negative else None}
+    
+    def _get_nd_result_type(self, node: SubscriptNode) -> str:
+        """Get the full C++ type for the result of N-D slicing."""
+        base_type = node.dtype.to_cpp()
+        rank = node.rank
+        
+        result = base_type
+        for _ in range(rank):
+            result = f"ROOT::RVec<{result}>"
+        return result
+    
+    def _make_nd_fallback(self, base_type: str, rank: int) -> str:
+        """Generate fallback value for out-of-bounds access."""
+        if rank > 0:
+            inner = base_type
+            for _ in range(rank):
+                inner = f"ROOT::RVec<{inner}>"
+            return f"{inner}{{}}"
+        else:
+            return f"std::numeric_limits<{base_type}>::quiet_NaN()"
+    
+    def _generate_2d_slice(self, target: str, slice_infos: list, 
+                           result_type: str, node: SubscriptNode) -> str:
+        """Generate optimized C++ for 2D slicing."""
+        outer = slice_infos[0]
+        inner = slice_infos[1]
+        
+        # Get inner element type (one RVec layer removed)
+        inner_type = result_type
+        if inner_type.startswith("ROOT::RVec<"):
+            inner_type = inner_type[len("ROOT::RVec<"):-1]
+        
+        elem_type = node.dtype.to_cpp()
+        
+        code = []
+        code.append(f"[&]() -> {result_type} {{")
+        code.append(f"    auto src = {target};")
+        code.append(f"    {result_type} result;")
+        
+        # Handle outer dimension
+        if outer['kind'] == 'index':
+            idx = outer['index']
+            if outer.get('is_negative'):
+                neg_val = outer['neg_value']
+                abs_val = abs(neg_val)
+                code.append(f"    if (src.size() < {abs_val}) return result;")
+                code.append(f"    auto row = src[src.size() - {abs_val}];")
+            else:
+                code.append(f"    if (static_cast<size_t>({idx}) >= src.size()) return result;")
+                code.append(f"    auto row = src[{idx}];")
+            
+            inner_result = self._gen_inner_slice_expr("row", inner, inner_type)
+            code.append(f"    return {inner_result};")
+        else:
+            outer_loop = self._gen_loop_header("src", outer, "oi")
+            if outer_loop['setup']:
+                code.append(f"    {outer_loop['setup']}")
+            code.append(f"    for ({outer_loop['header']}) {{")
+            code.append(f"        auto row = src[{outer_loop['index']}];")
+            
+            inner_result = self._gen_inner_slice_expr("row", inner, inner_type)
+            code.append(f"        result.push_back({inner_result});")
+            code.append("    }")
+            code.append("    return result;")
+        
+        code.append("}()")
+        return "\n".join(code)
+    
+    def _generate_3d_slice(self, target: str, slice_infos: list,
+                           result_type: str, node: SubscriptNode) -> str:
+        """Generate C++ for 3D slicing."""
+        d0 = slice_infos[0]
+        d1 = slice_infos[1]
+        d2 = slice_infos[2]
+        
+        # Type at each level
+        type_d0 = result_type
+        type_d1 = type_d0[len("ROOT::RVec<"):-1] if type_d0.startswith("ROOT::RVec<") else type_d0
+        type_d2 = type_d1[len("ROOT::RVec<"):-1] if type_d1.startswith("ROOT::RVec<") else type_d1
+        
+        code = []
+        code.append(f"[&]() -> {result_type} {{")
+        code.append(f"    auto src = {target};")
+        code.append(f"    {result_type} result;")
+        
+        # Level 0
+        if d0['kind'] == 'index':
+            idx = d0['index']
+            if d0.get('is_negative'):
+                abs_val = abs(d0['neg_value'])
+                code.append(f"    if (src.size() < {abs_val}) return result;")
+                code.append(f"    auto lv0 = src[src.size() - {abs_val}];")
+            else:
+                code.append(f"    if (static_cast<size_t>({idx}) >= src.size()) return result;")
+                code.append(f"    auto lv0 = src[{idx}];")
+            indent0 = "    "
+            result_var0 = "result"
+            close_loop0 = False
+        else:
+            loop0 = self._gen_loop_header("src", d0, "i0")
+            if loop0['setup']:
+                code.append(f"    {loop0['setup']}")
+            code.append(f"    for ({loop0['header']}) {{")
+            code.append(f"        auto lv0 = src[{loop0['index']}];")
+            code.append(f"        {type_d1} res0;")
+            indent0 = "        "
+            result_var0 = "res0"
+            close_loop0 = True
+        
+        # Level 1
+        if d1['kind'] == 'index':
+            idx = d1['index']
+            if d1.get('is_negative'):
+                abs_val = abs(d1['neg_value'])
+                code.append(f"{indent0}if (lv0.size() < {abs_val}) {{ }}")
+                code.append(f"{indent0}else {{ auto lv1 = lv0[lv0.size() - {abs_val}];")
+            else:
+                code.append(f"{indent0}if (static_cast<size_t>({idx}) < lv0.size()) {{")
+                code.append(f"{indent0}    auto lv1 = lv0[{idx}];")
+            
+            inner_result = self._gen_inner_slice_expr("lv1", d2, type_d2)
+            if d0['kind'] == 'index':
+                code.append(f"{indent0}    return {inner_result};")
+            else:
+                code.append(f"{indent0}    {result_var0} = {inner_result};")
+            code.append(f"{indent0}}}")
+        else:
+            loop1 = self._gen_loop_header("lv0", d1, "i1")
+            if loop1['setup']:
+                code.append(f"{indent0}{loop1['setup']}")
+            code.append(f"{indent0}for ({loop1['header']}) {{")
+            code.append(f"{indent0}    auto lv1 = lv0[{loop1['index']}];")
+            
+            inner_result = self._gen_inner_slice_expr("lv1", d2, type_d2)
+            code.append(f"{indent0}    {result_var0}.push_back({inner_result});")
+            code.append(f"{indent0}}}")
+        
+        # Close loops and return
+        if close_loop0:
+            code.append(f"        result.push_back(res0);")
+            code.append("    }")
+        code.append("    return result;")
+        code.append("}()")
+        
+        return "\n".join(code)
+    
+    def _generate_generic_nd_slice(self, target: str, slice_infos: list,
+                                    result_type: str, num_dims: int, 
+                                    node: SubscriptNode) -> str:
+        """Generate C++ for generic N-D slicing (4D+)."""
+        # For 4D+, generate explicit nested loops
+        code = []
+        code.append(f"[&]() -> {result_type} {{")
+        code.append(f"    auto src = {target};")
+        code.append(f"    {result_type} result;")
+        
+        # Build nested type strings
+        types = [result_type]
+        t = result_type
+        for _ in range(num_dims - 1):
+            if t.startswith("ROOT::RVec<"):
+                t = t[len("ROOT::RVec<"):-1]
+            types.append(t)
+        
+        # For simplicity, generate nested loops (may not be fully optimized for all patterns)
+        # This handles the general case
+        indent = "    "
+        src_var = "src"
+        
+        for d in range(num_dims - 1):
+            si = slice_infos[d]
+            lv_var = f"lv{d}"
+            
+            if si['kind'] == 'index':
+                idx = si['index']
+                code.append(f"{indent}if (static_cast<size_t>({idx}) >= {src_var}.size()) return result;")
+                code.append(f"{indent}auto {lv_var} = {src_var}[{idx}];")
+            else:
+                loop = self._gen_loop_header(src_var, si, f"i{d}")
+                res_var = f"res{d}"
+                if loop['setup']:
+                    code.append(f"{indent}{loop['setup']}")
+                code.append(f"{indent}{types[d+1]} {res_var};")
+                code.append(f"{indent}for ({loop['header']}) {{")
+                code.append(f"{indent}    auto {lv_var} = {src_var}[{loop['index']}];")
+                indent += "    "
+            
+            src_var = lv_var
+        
+        # Innermost slice
+        inner_si = slice_infos[-1]
+        inner_result = self._gen_inner_slice_expr(src_var, inner_si, types[-1])
+        
+        # Build result chain (simplified)
+        code.append(f"{indent}result.push_back({inner_result});")
+        
+        # Close loops
+        for d in range(num_dims - 2, -1, -1):
+            si = slice_infos[d]
+            if si['kind'] != 'index':
+                indent = indent[:-4]
+                code.append(f"{indent}}}")
+        
+        code.append("    return result;")
+        code.append("}()")
+        
+        return "\n".join(code)
+    
+    def _gen_loop_header(self, vec_var: str, si: dict, idx_var: str) -> dict:
+        """Generate loop setup and header for a slice dimension."""
+        kind = si['kind']
+        
+        if kind == 'full':
+            return {
+                'setup': "",
+                'header': f"size_t {idx_var} = 0; {idx_var} < {vec_var}.size(); ++{idx_var}",
+                'index': idx_var
+            }
+        
+        elif kind == 'first_n':
+            stop = si['stop']
+            return {
+                'setup': f"size_t {idx_var}_n = std::min(static_cast<size_t>({stop}), {vec_var}.size());",
+                'header': f"size_t {idx_var} = 0; {idx_var} < {idx_var}_n; ++{idx_var}",
+                'index': idx_var
+            }
+        
+        elif kind == 'range':
+            start, stop = si['start'], si['stop']
+            return {
+                'setup': f"size_t {idx_var}_start = std::min(static_cast<size_t>({start}), {vec_var}.size()); size_t {idx_var}_stop = std::min(static_cast<size_t>({stop}), {vec_var}.size());",
+                'header': f"size_t {idx_var} = {idx_var}_start; {idx_var} < {idx_var}_stop; ++{idx_var}",
+                'index': idx_var
+            }
+        
+        elif kind == 'from_idx':
+            start = si['start']
+            return {
+                'setup': f"size_t {idx_var}_start = std::min(static_cast<size_t>({start}), {vec_var}.size());",
+                'header': f"size_t {idx_var} = {idx_var}_start; {idx_var} < {vec_var}.size(); ++{idx_var}",
+                'index': idx_var
+            }
+        
+        elif kind == 'last_n':
+            start = si['start']
+            return {
+                'setup': f"size_t {idx_var}_n = std::min(static_cast<size_t>(-({start})), {vec_var}.size()); size_t {idx_var}_start = {vec_var}.size() - {idx_var}_n;",
+                'header': f"size_t {idx_var} = {idx_var}_start; {idx_var} < {vec_var}.size(); ++{idx_var}",
+                'index': idx_var
+            }
+        
+        elif kind == 'step':
+            start = si['start'] or "0"
+            stop = si['stop']
+            step = si['step']
+            stop_expr = f"std::min(static_cast<size_t>({stop}), {vec_var}.size())" if stop else f"{vec_var}.size()"
+            return {
+                'setup': f"size_t {idx_var}_stop = {stop_expr};",
+                'header': f"size_t {idx_var} = {start}; {idx_var} < {idx_var}_stop; {idx_var} += {step}",
+                'index': idx_var
+            }
+        
+        elif kind == 'reverse':
+            return {
+                'setup': "",
+                'header': f"size_t {idx_var} = 0; {idx_var} < {vec_var}.size(); ++{idx_var}",
+                'index': f"{vec_var}.size() - 1 - {idx_var}"
+            }
+        
+        else:
+            raise ValueError(f"Unknown slice kind for loop: {kind}")
+    
+    def _gen_inner_slice_expr(self, vec_var: str, si: dict, result_type: str) -> str:
+        """Generate slice expression for innermost dimension using ROOT::VecOps."""
+        kind = si['kind']
+        
+        if kind == 'full':
+            return vec_var
+        
+        elif kind == 'index':
+            idx = si['index']
+            if si.get('is_negative'):
+                abs_val = abs(si['neg_value'])
+                return f"({vec_var}.size() >= {abs_val} ? {vec_var}[{vec_var}.size() - {abs_val}] : {result_type}{{}})"
+            else:
+                return f"(static_cast<size_t>({idx}) < {vec_var}.size() ? {vec_var}[{idx}] : {result_type}{{}})"
+        
+        elif kind == 'first_n':
+            stop = si['stop']
+            return f"ROOT::VecOps::Take({vec_var}, static_cast<int>(std::min(static_cast<size_t>({stop}), {vec_var}.size())))"
+        
+        elif kind == 'range':
+            start, stop = si['start'], si['stop']
+            return f"[&]() -> {result_type} {{ size_t s = std::min(static_cast<size_t>({start}), {vec_var}.size()); size_t e = std::min(static_cast<size_t>({stop}), {vec_var}.size()); if (s >= e) return {result_type}{{}}; return ROOT::VecOps::Take({vec_var}, ROOT::VecOps::Range(s, e)); }}()"
+        
+        elif kind == 'from_idx':
+            start = si['start']
+            return f"[&]() -> {result_type} {{ size_t s = std::min(static_cast<size_t>({start}), {vec_var}.size()); if (s >= {vec_var}.size()) return {result_type}{{}}; return ROOT::VecOps::Take({vec_var}, ROOT::VecOps::Range(s, {vec_var}.size())); }}()"
+        
+        elif kind == 'last_n':
+            start = si['start']
+            return f"ROOT::VecOps::Take({vec_var}, -static_cast<int>(std::min(static_cast<size_t>(-({start})), {vec_var}.size())))"
+        
+        elif kind == 'step':
+            start = si['start'] or "0"
+            stop = si['stop']
+            step = si['step']
+            stop_expr = f"std::min(static_cast<size_t>({stop}), {vec_var}.size())" if stop else f"{vec_var}.size()"
+            return f"[&]() -> {result_type} {{ ROOT::RVec<size_t> indices; for (size_t i = {start}; i < {stop_expr}; i += {step}) indices.push_back(i); return ROOT::VecOps::Take({vec_var}, indices); }}()"
+        
+        elif kind == 'reverse':
+            return f"ROOT::VecOps::Reverse({vec_var})"
+        
+        else:
+            return vec_var
+    
+    def _visit_1d_slice_fallback(self, node: SubscriptNode) -> str:
+        """Fallback for 1D slice in SubscriptNode (should normally use RVecSliceNode)."""
+        target = self._visit(node.value)
+        si = node.indices[0]
+        result_type = self._get_nd_result_type(node)
+        slice_info = self._analyze_slice_dim(si, 0)
+        return self._gen_inner_slice_expr(target, slice_info, result_type)
     
     # =========================================================================
     # Phase 7: RVec Slice Operations

@@ -594,8 +594,8 @@ class TestRVecErrorCases:
     def generator(self):
         return CppCodeGenerator()
     
-    def test_slicing_error(self, generator):
-        """Slicing raises unsupported error."""
+    def test_slicing_now_works(self, generator):
+        """Phase 13.6.C: Slicing now supported."""
         pt = make_rvec_var("pt")
         
         slice_node = SliceNode(
@@ -613,28 +613,31 @@ class TestRVecErrorCases:
             rank=1
         )
         
-        with pytest.raises(IRError) as exc_info:
-            generator.generate(ir, "test")
-        
-        assert exc_info.value.kind == IRErrorKind.UNSUPPORTED_OP
-        assert "slicing" in exc_info.value.message.lower()
+        # Phase 13.6.C: Should now generate code without error
+        func = generator.generate(ir, "test")
+        assert func is not None
+        assert "pt" in func.code
     
-    def test_multi_index_error(self, generator):
-        """Multi-dimensional indexing raises error."""
-        arr = make_rvec_var("arr")
+    def test_multi_index_now_works(self, generator):
+        """Phase 13.6.C: Multi-dimensional indexing now supported."""
+        # Need rank=2 variable for multi-index
+        arr = VariableNode(
+            name="arr",
+            dtype=IRType(IRTypeKind.Float64),
+            rank=2  # 2D array
+        )
         
         ir = SubscriptNode(
             value=arr,
             indices=[make_int_const(0), make_int_const(1)],
             dtype=IRType(IRTypeKind.Float64),
-            rank=0
+            rank=0  # Result is scalar after 2D indexing
         )
         
-        with pytest.raises(IRError) as exc_info:
-            generator.generate(ir, "test")
-        
-        assert exc_info.value.kind == IRErrorKind.UNSUPPORTED_OP
-        assert "multi-dimensional" in exc_info.value.message.lower()
+        # Phase 13.6.C: Should now generate code without error
+        func = generator.generate(ir, "test")
+        assert func is not None
+        assert "arr" in func.code
     
     def test_boolean_mask_error(self, generator):
         """Boolean mask indexing raises error."""
@@ -655,9 +658,6 @@ class TestRVecErrorCases:
         
         assert exc_info.value.kind == IRErrorKind.UNSUPPORTED_OP
         assert "boolean" in exc_info.value.message.lower()
-    
-        
-        assert exc_info.value.kind == IRErrorKind.UNSUPPORTED_OP
 
 
 # =============================================================================

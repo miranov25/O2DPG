@@ -1193,8 +1193,8 @@ class TestCppCodeGeneratorErrors:
         # RVec should be passed by const reference
         assert "const ROOT::RVec<double>& arr" in func.code
     
-    def test_slicing_error(self, generator):
-        """Slicing raises unsupported error (deferred to Phase 7)."""
+    def test_slicing_now_works(self, generator):
+        """Phase 13.6.C: Slicing now supported."""
         arr = make_double_var("arr")
         arr.dtype = IRType(IRTypeKind.Float64)
         arr.rank = 1  # Vector
@@ -1216,11 +1216,10 @@ class TestCppCodeGeneratorErrors:
             rank=1
         )
         
-        with pytest.raises(IRError) as exc_info:
-            generator.generate(ir, "test")
-        
-        assert exc_info.value.kind == IRErrorKind.UNSUPPORTED_OP
-        assert "slicing" in exc_info.value.message.lower()
+        # Phase 13.6.C: Should now generate code without error
+        func = generator.generate(ir, "test")
+        assert func is not None
+        assert "arr" in func.code
     
     def test_string_constant_error(self, generator):
         """String constants raise unsupported error."""
