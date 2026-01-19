@@ -363,6 +363,11 @@ def assert_invariant(actual, expected, dtype="double", context=""):
 # Session-Scoped Fixtures
 # =============================================================================
 
+# NOTE: We tried a warmup_root_jit fixture but it made things WORSE with
+# pytest-xdist because each of 12 workers runs its own warmup (~3s each).
+# The algorithmic generation in toy_nd.py is fast enough without warmup.
+
+
 @pytest.fixture(scope="session")
 def test_data_dir(tmp_path_factory):
     """Create a session-scoped temporary directory for test data."""
@@ -724,3 +729,15 @@ def simple_range_data():
             ], dtype=object),
         ], dtype=object),
     }
+
+
+# =============================================================================
+# N-D Slicing Fixtures (Phase 13.6.C)
+# =============================================================================
+# Import all N-D fixtures from separate module.
+# This provides: nd_2d_dict, nd_3d_dict, nd_2d_rdf, cluster_value_fn, etc.
+
+try:
+    from conftest_nd_additions import *
+except ImportError:
+    pass  # N-D fixtures not available - tests will skip
