@@ -31,9 +31,10 @@ The RDataFrameDSL project follows a phased development approach with formal desi
 | **13.5.C** | **DSL Integration (Registered Functions)** | **+18** | **✅ Complete** |
 | **13.5.D** | **Numeric Widening (Overload Resolution)** | **+21** | **✅ Complete** |
 | **13.6.A** | **RDataFrame Flattening** | **+49 (+11 exploration)** | **✅ Complete** |
+| **13.6.C** | **N-D Slicing & Join Strategy** | **+97 (+24 integration)** | **✅ Complete** |
 | 13.4 | Integration Testing | - | 🔴 Pending |
 
-**Current Total: ~1527 tests passing**
+**Current Total: ~1648 tests passing**
 
 ---
 
@@ -81,6 +82,154 @@ df = flatten_to_dataframe(
 **Reviewers:** Claude-Opus-4.5, Claude-Sonnet-4.5, GPT3, GPT4, GPT5, GPT6, Gemini2
 
 **Next:** Phase 13.6.B (Draw Interface + TTree::Draw-equivalent stress tests)
+
+---
+
+### Phase 13.6.C: N-D Slicing & Join Strategy for Mixed-Depth Columns
+**Commit:** b192fb7 (Jan 20, 2026)  
+**Tag:** `phase-13.6.C`  
+**Goal:** Implement N-dimensional slicing (2D-5D) and join strategy for combining columns with different nesting depths
+
+**Deliverables:**
+- **N-D Slicing:** Support for `cluster_Q[0:2, 0:3]` syntax up to 5D arrays
+- **Join Strategy:** Four join modes (inner/outer/left/right) for mixed-depth columns
+- **join_utils.py:** JoinPlan dataclass, join_dataframes(), broadcast_to_depth()
+- **Integration:** join parameter added to flatten.py and dsl_compiler.to_pandas()
+- **Documentation:** DSL_SPEC_ND_Slicing.md (join strategy specification)
+- **Capability Matrix:** CAPABILITY_MATRIX.md updated to 28/28 features working
+
+**API:**
+```python
+# N-D slicing
+dsl.define("sub_cluster", "cluster_Q[0:2, 0:3]")  # 2D slice
+
+# Join strategy for mixed-depth
+df = dsl.to_pandas(
+    rdf,
+    columns=['cluster_Q', 'track_pt'],  # 2D + 1D
+    join='inner'  # inner/outer/left/right
+)
+```
+
+**Join Strategy:**
+- **inner:** Intersection of indices (only events with both columns)
+- **outer:** Union of indices (all events, NaN padding where missing)
+- **left:** Keep all rows from deepest column
+- **right:** Keep all rows from shallowest column (broadcast semantics)
+
+**Implementation:**
+```python
+# RDataFrameDSL/join_utils.py
+@dataclass
+class JoinPlan:
+    """
+    Strategy for joining columns of different depths.
+    
+    Attributes:
+        columns: List of (name, depth) tuples
+        target_depth: Maximum depth to align to
+        join_mode: 'inner', 'outer', 'left', 'right'
+    """
+    
+def join_dataframes(dfs: List[pd.DataFrame], plan: JoinPlan) -> pd.DataFrame:
+    """Join DataFrames with broadcast/alignment strategy."""
+    
+def broadcast_to_depth(df: pd.DataFrame, target_depth: int) -> pd.DataFrame:
+    """Broadcast shallow columns to match deeper nesting."""
+```
+
+**Backend Changes:**
+```python
+# backend_cpp.py: N-D slicing support
+def _visit_nd_slice(self, node):
+    """Generate C++ for N-D array slicing"""
+    # Supports: cluster[i, j], cluster[0:2, :], cluster[:, -1]
+    # Up to 5D: array[d1, d2, d3, d4, d5]
+    
+def _visit_nd_index(self, node):
+    """Generate C++ for N-D array indexing"""
+    # Supports: cluster[0, 1], hit[i, j, k]
+```
+
+**Test Coverage:**
+
+| Test Category | File | Count | Type |
+|---------------|------|-------|------|
+| Join Utils | test_join_utils.py | 38 | Tier 1 (Python) |
+| Flatten Join | test_flatten_join.py | 11 | Tier 1 (Python) |
+| End-to-End Join | test_join_e2e.py | 12 | Tier 3 (ROOT) |
+| C-Array Integration | test_d9_integration.py | 24 | Tier 3 (ROOT) |
+| ND Invariances | test_invariance_nd.py | 14 | Tier 2 (DSL) |
+| **Total** | | **97 (+24)** | |
+
+**Resolved Limitations:**
+- **L1 (RESOLVED):** Different-length columns in same to_pandas() call
+  - Solution: Separate to_pandas() calls per depth, then join
+  - Status: 3 previously xfailed tests now pass
+
+**Known Limitations:**
+- **L2 (DOCUMENTED):** Reductions on sliced 2D columns cause ROOT JIT crash
+  - Examples: `Sum(cluster_Q[:2, :])`, `Mean(cluster_Q[:, 0:3])`
+  - Cause: Backend C++ code generation issue, not architectural
+  - Workaround: Export to pandas first, then reduce
+  - Status: 4 tests skipped with clear documentation
+
+**Performance:**
+- Join operations: 49 Tier 1 tests pass in <1s
+- E2E tests: 12 tests pass in ~78s (optimization pending Phase 13.7)
+- Bottleneck: Awkward Array conversion, not join logic
+
+**Feature Taxonomy Updates (v1.6):**
+- Added: `nd_slice_2d`, `nd_slice_3d`, `nd_slice_4d`, `nd_slice_5d`
+- Added: `nd_join_strategy` (12 tests)
+- Added: `nd_slice_arithmetic`, `nd_slice_order`
+- Updated: L1 status (Resolved), L2 added (documented)
+
+**Documentation:**
+```markdown
+# DSL_SPEC_ND_Slicing.md
+- N-D indexing semantics (per-parent indexing)
+- Join strategy algorithms (inner/outer/left/right)
+- Broadcast replication rules
+- Index column generation (event_id, track_idx, cluster_idx, etc.)
+```
+
+**Examples:**
+```python
+# 2D slicing: cluster_Q[event_slice, cluster_slice]
+dsl.define("first_two_events", "cluster_Q[0:2, :]")
+dsl.define("last_cluster_per_track", "cluster_Q[:, -1]")
+
+# 3D slicing: hit_E[event_slice, cluster_slice, hit_slice]
+dsl.define("first_hit_per_cluster", "hit_E[:, :, 0]")
+
+# Mixed-depth join
+df = dsl.to_pandas(
+    rdf,
+    ['cluster_Q', 'track_pt', 'event_weight'],  # 2D, 1D, 0D
+    join='inner'
+)
+# Result has aligned indices with replication:
+# event_id | track_idx | cluster_Q | track_pt | event_weight
+#    0     |     0     |    123    |   5.2    |     1.0
+#    0     |     0     |    456    |   5.2    |     1.0  (replicated)
+#    0     |     1     |    789    |   3.1    |     1.0  (replicated)
+```
+
+**Key Design Decisions:**
+- **Q1:** How many dimensions to support? → **5D** (sufficient for ALICE use cases)
+- **Q2:** Join default behavior? → **inner** (safest, no unexpected NaNs)
+- **Q3:** Handle L2 (reduction crash)? → **Document + skip tests** (backend issue, not architecture)
+- **Q4:** Optimize E2E performance? → **Defer to Phase 13.7** (join logic correct, conversion slow)
+
+**Tests:** +97 new (38 join utils + 11 flatten join + 12 E2E + 14 ND invariance + 22 other) + 24 integration  
+**Total:** 1648 passed, 4 skipped (L2 limitation)  
+**Specification:** PHASE_13_6_C_Proposal.md (v1.2 approved)  
+**Reviewers:** GPT9, GPT10, GPT6, GPT7, Coder (5/5 unanimous approval on infrastructure)
+
+**Git Tag:** `phase-13.6.C` at commit `b192fb7`
+
+**Next:** Phase 13.6.D (Performance optimization for join operations) or Phase 13.7 (Method calls on sliced results)
 
 ---
 
@@ -414,6 +563,7 @@ Phase 13 implements PyArrow-based memory optimization across all teams.
 | **13.5.C** | **Team 2** | **DSL Integration (Registered Functions)** | ✅ **Complete** |
 | **13.5.D** | **Team 2** | **Numeric Widening (Overload Resolution)** | ✅ **Complete** |
 | **13.6.A** | **Team 2** | **RDataFrame Flattening** | ✅ **Complete** |
+| **13.6.C** | **Team 2** | **N-D Slicing & Join Strategy** | ✅ **Complete** |
 
 ### Key Architecture Decision
 
@@ -493,10 +643,16 @@ Each phase follows this workflow:
 | `dsl_compiler.py` | Main DSLCompiler class with all methods |
 | `ir_builder.py` | IR builder with overload resolution |
 | `flatten.py` | Flattening backends (NumPy, Awkward, C++) |
+| `join_utils.py` | Join strategy (JoinPlan, join_dataframes, broadcast) |
 | `tests/test_register_function_cpp.py` | Phase 13.5.B tests |
 | `tests/test_phase_13_5_c.py` | Phase 13.5.C tests |
 | `tests/test_phase_13_5_d.py` | Phase 13.5.D tests |
 | `tests/test_flatten.py` | Phase 13.6.A tests |
+| `tests/test_join_utils.py` | Phase 13.6.C join tests (Tier 1) |
+| `tests/test_flatten_join.py` | Phase 13.6.C flatten+join tests (Tier 1) |
+| `tests/test_join_e2e.py` | Phase 13.6.C end-to-end tests (Tier 3) |
+| `tests/test_d9_integration.py` | Phase 13.6.C C-array integration tests |
+| `tests/test_invariance_nd.py` | Phase 13.6.C N-D invariance tests |
 | `tests/exploration/flatten/` | Permanent exploration tests |
 | `tests/test_draw_figures_stats.py` | Phase 12.5.DSL tests |
 | `tests/test_to_aliasdf.py` | Phase 12.6.DSL tests |
@@ -526,3 +682,4 @@ schema = {
 | 1.0 | Original | Phases 1-8 |
 | 2.0 | Dec 16, 2025 | Added Phases 12.x and 13.2.DSL |
 | 3.0 | Jan 13, 2026 | Added Phases 13.5.B/C/D and 13.6.A |
+| 4.0 | Jan 20, 2026 | Added Phase 13.6.C (N-D Slicing & Join Strategy) |
