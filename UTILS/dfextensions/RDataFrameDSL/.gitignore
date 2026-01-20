@@ -3,3 +3,11 @@ _ROOT__
 *AutoDict_*
 *zip
 
+*.bak
+batch_list_*
+dff.txt
+diff*.txt
+*.log
+gitstatus.txt
+gitlsfiles.txt
+test_*.root
