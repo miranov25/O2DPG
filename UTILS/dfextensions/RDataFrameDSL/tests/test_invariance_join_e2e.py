@@ -4,6 +4,8 @@ End-to-End Tests: Join Strategy with RDataFrame (Phase 13.6.C)
 Tier 3 tests: Full chain from ROOT file → DSL → to_pandas() with join.
 
 These tests verify that join parameter works through the complete pipeline.
+
+Performance: Vectorized assertions (no iterrows) for fast execution.
 """
 
 import pytest
@@ -91,12 +93,9 @@ class TestJoinWithRDataFrame:
         assert 'cluster_Q' in df.columns
         assert 'event_weight' in df.columns
         
-        # Verify broadcast: each row's event_weight matches event_id + 1
-        for _, row in df.iterrows():
-            evt = int(row['event_id'])
-            expected_weight = float(evt + 1)  # event_weight_value formula
-            assert row['event_weight'] == expected_weight, \
-                f"Event {evt}: expected weight {expected_weight}, got {row['event_weight']}"
+        # Vectorized check: each row's event_weight matches event_id + 1
+        assert (df['event_weight'] == df['event_id'] + 1).all(), \
+            "event_weight broadcast mismatch: expected event_id + 1"
     
     @pytest.mark.feature("nd_join_strategy")
     @pytest.mark.type_b
@@ -122,11 +121,9 @@ class TestJoinWithRDataFrame:
         assert 'event_weight' in df.columns
         assert 'track_idx' in df.columns
         
-        # Verify broadcast
-        for _, row in df.iterrows():
-            evt = int(row['event_id'])
-            expected_weight = float(evt + 1)
-            assert row['event_weight'] == expected_weight
+        # Vectorized check: broadcast correctness
+        assert (df['event_weight'] == df['event_id'] + 1).all(), \
+            "event_weight broadcast mismatch: expected event_id + 1"
     
     @pytest.mark.feature("nd_join_strategy")
     @pytest.mark.type_b
@@ -266,13 +263,9 @@ class TestJoinInvarianceE2E:
             join='inner'
         )
         
-        # Every row should satisfy: event_weight == event_id + 1
-        for _, row in df.iterrows():
-            evt = int(row['event_id'])
-            expected = float(evt + 1)
-            actual = row['event_weight']
-            assert actual == expected, \
-                f"Event {evt}: event_weight={actual}, expected={expected}"
+        # Vectorized check: event_weight == event_id + 1
+        assert (df['event_weight'] == df['event_id'] + 1).all(), \
+            "event_weight invariant violated: expected event_id + 1"
     
     @pytest.mark.feature("nd_join_strategy")
     @pytest.mark.type_b
@@ -293,15 +286,10 @@ class TestJoinInvarianceE2E:
             join='inner'
         )
         
-        # Verify cluster_Q follows invariant pattern
-        for _, row in df.iterrows():
-            evt = int(row['event_id'])
-            trk = int(row['track_idx'])
-            clus = int(row['cluster_idx'])
-            expected_Q = 1000.0 * evt + 100.0 * trk + clus
-            actual_Q = row['cluster_Q']
-            assert actual_Q == expected_Q, \
-                f"cluster_Q[{evt}][{trk}][{clus}]={actual_Q}, expected={expected_Q}"
+        # Vectorized check: cluster_Q follows invariant pattern
+        expected_Q = 1000.0 * df['event_id'] + 100.0 * df['track_idx'] + df['cluster_idx']
+        assert (df['cluster_Q'] == expected_Q).all(), \
+            "cluster_Q invariant violated: expected 1000*e + 100*t + c"
 
 
 # =============================================================================

@@ -389,7 +389,13 @@ def generate_auto_section(
         notes = feature.get("notes", "")
         if feature.get("limitation"):
             lim_id = feature["limitation"]
-            notes = f"⚠️ {lim_id}: {limitations.get(lim_id, {}).get('name', 'Unknown')}"
+            lim_info = limitations.get(lim_id, {})
+            lim_status = lim_info.get("status", "")
+            # Check if limitation is resolved (status contains checkmark)
+            if "✅" in lim_status or "Resolved" in lim_status:
+                notes = f"✅ {lim_id} resolved"
+            else:
+                notes = f"⚠️ {lim_id}: {lim_info.get('name', 'Unknown')}"
         
         # Truncate long notes
         if len(notes) > 50:
