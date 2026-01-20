@@ -11,3 +11,4 @@ diff*.txt
 gitstatus.txt
 gitlsfiles.txt
 test_*.root
+tests/exploration/flatten/exploration_results.json
