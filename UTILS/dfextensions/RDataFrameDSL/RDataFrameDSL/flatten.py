@@ -582,39 +582,16 @@ def _flatten_awkward_2level(
     """
     Awkward Array backend for 2-level flatten.
     
-    Phase 13.6.A: Uses Awkward for potential performance benefits.
+    Phase 13.6.A: Originally intended for Awkward performance benefits.
+    Phase 13.6.C: Delegates to NumPy (Awkward conversion overhead eliminated).
+    
+    The previous implementation converted to Awkward Array just to count
+    elements, then fell back to NumPy anyway. This was wasteful - the
+    Awkward conversion has O(n) overhead with high constant factor due to
+    Python list comprehension + ak.Array construction.
+    
+    Now directly delegates to NumPy backend (same as _flatten_awkward_1level).
     """
-    if not awkward_available():
-        return _flatten_numpy_2level(data, rvec_columns, parent_id_column)
-    
-    import awkward as ak
-    
-    parent_ids = data[parent_id_column]
-    n_events = len(parent_ids)
-    
-    # Get structure from first column
-    ref_col = rvec_columns[0]
-    
-    # Convert to awkward array
-    ak_ref = ak.Array([
-        [list(track) for track in event]
-        for event in data[ref_col]
-    ])
-    
-    # Count total
-    total = ak.sum(ak.flatten(ak.num(ak_ref, axis=2)))
-    
-    if total == 0:
-        result = {
-            parent_id_column: np.array([], dtype=parent_ids.dtype),
-            'track_idx': np.array([], dtype=np.int64),
-            'cluster_idx': np.array([], dtype=np.int64),
-        }
-        for col in rvec_columns:
-            result[col] = np.array([], dtype=_infer_dtype_2d(data[col]))
-        return result
-    
-    # Build result using NumPy (Awkward construction overhead not worth it)
     return _flatten_numpy_2level(data, rvec_columns, parent_id_column)
 
 
