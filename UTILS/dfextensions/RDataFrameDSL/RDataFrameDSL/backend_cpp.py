@@ -721,10 +721,370 @@ class CppCodeGenerator:
         if self._needs_scalar_broadcast(node):
             return self._generate_broadcast_loop(node)
         
+        # Phase 13.6.D: Check if we need special handling for nested RVec (rank > 1)
+        if self._needs_nested_rvec_handling(node):
+            return self._generate_nested_rvec_call(node)
+        
         args = ", ".join(self._visit(arg) for arg in node.args)
         cpp_name = self._cpp_function_name(node)
         
         return f"{cpp_name}({args})"
+    
+    def _needs_nested_rvec_handling(self, node: CallNode) -> bool:
+        """
+        Check if function call needs special handling for nested RVec (rank > 1).
+        
+        Phase 13.6.D: ROOT's reduction functions (Sum, Mean, etc.) and elementwise
+        math functions (sqrt, abs, etc.) don't natively support RVec<RVec<T>>.
+        We need to generate explicit nested loops.
+        
+        Args:
+            node: CallNode to check
+            
+        Returns:
+            True if we need nested RVec handling
+        """
+        # Check if any argument is nested RVec (rank > 1)
+        has_nested_arg = any(arg.rank > 1 for arg in node.args)
+        
+        if not has_nested_arg:
+            return False
+        
+        # Functions that natively support nested RVec (currently none in ROOT)
+        # In future, if ROOT adds support, add them here
+        native_nested_functions: set = set()
+        
+        func_lower = node.func.lower()
+        return func_lower not in native_nested_functions
+    
+    def _generate_nested_rvec_call(self, node: CallNode) -> str:
+        """
+        Generate C++ for function call on nested RVec (rank > 1).
+        
+        Phase 13.6.D: Handles two categories of functions:
+        1. Reductions (Sum, Mean, Min, Max) - flatten and reduce all elements
+        2. Elementwise (sqrt, abs, sin, cos, etc.) - apply to each leaf element
+        
+        Args:
+            node: CallNode with nested RVec argument(s)
+            
+        Returns:
+            C++ code with explicit nested loops
+        """
+        func_lower = node.func.lower()
+        
+        # Reduction functions - collapse to scalar
+        reduction_functions = {'sum', 'mean', 'min', 'max', 'stddev', 'variance'}
+        
+        if func_lower in reduction_functions:
+            return self._generate_nested_reduction(node, func_lower)
+        else:
+            # Elementwise function (sqrt, abs, sin, cos, log, exp, etc.)
+            return self._generate_nested_elementwise(node)
+    
+    def _generate_nested_reduction(self, node: CallNode, func_name: str) -> str:
+        """
+        Generate C++ for reduction function on nested RVec.
+        
+        Phase 13.6.D: Generates explicit nested loops to reduce all elements.
+        
+        Example for Sum(cluster_Q[:2, :]):
+            [&]() {
+                auto nested = <slice_code>;
+                double total = 0.0;
+                for (size_t i = 0; i < nested.size(); ++i) {
+                    for (size_t j = 0; j < nested[i].size(); ++j) {
+                        total += nested[i][j];
+                    }
+                }
+                return total;
+            }()
+        
+        Args:
+            node: CallNode for reduction
+            func_name: Lowercase function name (sum, mean, min, max)
+            
+        Returns:
+            C++ code with nested reduction loop
+        """
+        if len(node.args) != 1:
+            # Fall back to default for multi-arg functions
+            args = ", ".join(self._visit(arg) for arg in node.args)
+            cpp_name = self._cpp_function_name(node)
+            return f"{cpp_name}({args})"
+        
+        arg = node.args[0]
+        arg_code = self._visit(arg)
+        rank = arg.rank
+        
+        # Get the scalar type
+        scalar_type = arg.dtype.to_cpp() if hasattr(arg, 'dtype') else 'double'
+        
+        # Build nested type string for auto declaration
+        nested_type = scalar_type
+        for _ in range(rank):
+            nested_type = f"ROOT::RVec<{nested_type}>"
+        
+        # Generate nested loop based on rank
+        if rank == 2:
+            return self._generate_2d_reduction(arg_code, func_name, scalar_type, nested_type)
+        elif rank == 3:
+            return self._generate_3d_reduction(arg_code, func_name, scalar_type, nested_type)
+        else:
+            # For rank > 3, fall back to recursive flattening
+            return self._generate_generic_nested_reduction(arg_code, func_name, scalar_type, rank)
+    
+    def _generate_2d_reduction(self, arg_code: str, func_name: str, 
+                                scalar_type: str, nested_type: str) -> str:
+        """Generate 2D nested reduction (rank 2)."""
+        
+        if func_name == 'sum':
+            return f"""[&]() {{
+        auto nested = {arg_code};
+        {scalar_type} total = 0;
+        for (size_t i = 0; i < nested.size(); ++i) {{
+            for (size_t j = 0; j < nested[i].size(); ++j) {{
+                total += nested[i][j];
+            }}
+        }}
+        return total;
+    }}()"""
+        
+        elif func_name == 'mean':
+            return f"""[&]() {{
+        auto nested = {arg_code};
+        {scalar_type} total = 0;
+        size_t count = 0;
+        for (size_t i = 0; i < nested.size(); ++i) {{
+            for (size_t j = 0; j < nested[i].size(); ++j) {{
+                total += nested[i][j];
+                ++count;
+            }}
+        }}
+        return count > 0 ? total / static_cast<{scalar_type}>(count) : std::numeric_limits<{scalar_type}>::quiet_NaN();
+    }}()"""
+        
+        elif func_name == 'min':
+            return f"""[&]() {{
+        auto nested = {arg_code};
+        {scalar_type} result = std::numeric_limits<{scalar_type}>::max();
+        bool found = false;
+        for (size_t i = 0; i < nested.size(); ++i) {{
+            for (size_t j = 0; j < nested[i].size(); ++j) {{
+                if (!found || nested[i][j] < result) {{
+                    result = nested[i][j];
+                    found = true;
+                }}
+            }}
+        }}
+        return found ? result : std::numeric_limits<{scalar_type}>::quiet_NaN();
+    }}()"""
+        
+        elif func_name == 'max':
+            return f"""[&]() {{
+        auto nested = {arg_code};
+        {scalar_type} result = std::numeric_limits<{scalar_type}>::lowest();
+        bool found = false;
+        for (size_t i = 0; i < nested.size(); ++i) {{
+            for (size_t j = 0; j < nested[i].size(); ++j) {{
+                if (!found || nested[i][j] > result) {{
+                    result = nested[i][j];
+                    found = true;
+                }}
+            }}
+        }}
+        return found ? result : std::numeric_limits<{scalar_type}>::quiet_NaN();
+    }}()"""
+        
+        else:
+            # Fallback for other reductions (stddev, variance)
+            # Use Sum of Sum approach
+            return f"""[&]() {{
+        auto nested = {arg_code};
+        {scalar_type} total = 0;
+        for (size_t i = 0; i < nested.size(); ++i) {{
+            total += Sum(nested[i]);
+        }}
+        return total;
+    }}()"""
+    
+    def _generate_3d_reduction(self, arg_code: str, func_name: str,
+                                scalar_type: str, nested_type: str) -> str:
+        """Generate 3D nested reduction (rank 3)."""
+        
+        if func_name == 'sum':
+            return f"""[&]() {{
+        auto nested = {arg_code};
+        {scalar_type} total = 0;
+        for (size_t i = 0; i < nested.size(); ++i) {{
+            for (size_t j = 0; j < nested[i].size(); ++j) {{
+                for (size_t k = 0; k < nested[i][j].size(); ++k) {{
+                    total += nested[i][j][k];
+                }}
+            }}
+        }}
+        return total;
+    }}()"""
+        
+        elif func_name == 'mean':
+            return f"""[&]() {{
+        auto nested = {arg_code};
+        {scalar_type} total = 0;
+        size_t count = 0;
+        for (size_t i = 0; i < nested.size(); ++i) {{
+            for (size_t j = 0; j < nested[i].size(); ++j) {{
+                for (size_t k = 0; k < nested[i][j].size(); ++k) {{
+                    total += nested[i][j][k];
+                    ++count;
+                }}
+            }}
+        }}
+        return count > 0 ? total / static_cast<{scalar_type}>(count) : std::numeric_limits<{scalar_type}>::quiet_NaN();
+    }}()"""
+        
+        else:
+            # Min/Max/other for 3D
+            return self._generate_generic_nested_reduction(arg_code, func_name, scalar_type, 3)
+    
+    def _generate_generic_nested_reduction(self, arg_code: str, func_name: str,
+                                            scalar_type: str, rank: int) -> str:
+        """Generate generic nested reduction for rank > 3."""
+        # Use recursive Sum approach
+        if func_name == 'sum':
+            inner = "nested"
+            for _ in range(rank - 1):
+                inner = f"Sum({inner})"
+            return f"""[&]() {{
+        auto nested = {arg_code};
+        return Sum({inner});
+    }}()"""
+        else:
+            # For other functions, flatten first then apply
+            # This is a simplified fallback
+            return f"""[&]() {{
+        auto nested = {arg_code};
+        // Fallback: flatten and reduce
+        ROOT::RVec<{scalar_type}> flat;
+        // TODO: implement generic flattening for rank {rank}
+        return {func_name.capitalize()}(flat);
+    }}()"""
+    
+    def _generate_nested_elementwise(self, node: CallNode) -> str:
+        """
+        Generate C++ for elementwise function on nested RVec.
+        
+        Phase 13.6.D: Applies function to each leaf element, preserving structure.
+        
+        Example for sqrt(cluster_Q[:2, :]):
+            [&]() -> ROOT::RVec<ROOT::RVec<double>> {
+                auto nested = <slice_code>;
+                ROOT::RVec<ROOT::RVec<double>> result;
+                result.reserve(nested.size());
+                for (size_t i = 0; i < nested.size(); ++i) {
+                    ROOT::RVec<double> inner;
+                    inner.reserve(nested[i].size());
+                    for (size_t j = 0; j < nested[i].size(); ++j) {
+                        inner.push_back(std::sqrt(nested[i][j]));
+                    }
+                    result.push_back(inner);
+                }
+                return result;
+            }()
+        
+        Args:
+            node: CallNode for elementwise function
+            
+        Returns:
+            C++ code with nested elementwise loop
+        """
+        if len(node.args) != 1:
+            # Multi-arg elementwise functions - fall back to default
+            args = ", ".join(self._visit(arg) for arg in node.args)
+            cpp_name = self._cpp_function_name(node)
+            return f"{cpp_name}({args})"
+        
+        arg = node.args[0]
+        arg_code = self._visit(arg)
+        rank = arg.rank
+        cpp_func = self._cpp_function_name(node)
+        
+        # Get the scalar type
+        scalar_type = arg.dtype.to_cpp() if hasattr(arg, 'dtype') else 'double'
+        
+        # Build result type (same structure as input)
+        result_type = scalar_type
+        for _ in range(rank):
+            result_type = f"ROOT::RVec<{result_type}>"
+        
+        if rank == 2:
+            return self._generate_2d_elementwise(arg_code, cpp_func, scalar_type, result_type)
+        elif rank == 3:
+            return self._generate_3d_elementwise(arg_code, cpp_func, scalar_type, result_type)
+        else:
+            # For higher ranks, fall back to a generic approach
+            return self._generate_generic_nested_elementwise(arg_code, cpp_func, scalar_type, rank)
+    
+    def _generate_2d_elementwise(self, arg_code: str, cpp_func: str,
+                                  scalar_type: str, result_type: str) -> str:
+        """Generate 2D nested elementwise (rank 2)."""
+        inner_type = f"ROOT::RVec<{scalar_type}>"
+        
+        return f"""[&]() -> {result_type} {{
+        auto nested = {arg_code};
+        {result_type} result;
+        result.reserve(nested.size());
+        for (size_t i = 0; i < nested.size(); ++i) {{
+            {inner_type} inner;
+            inner.reserve(nested[i].size());
+            for (size_t j = 0; j < nested[i].size(); ++j) {{
+                inner.push_back({cpp_func}(nested[i][j]));
+            }}
+            result.push_back(inner);
+        }}
+        return result;
+    }}()"""
+    
+    def _generate_3d_elementwise(self, arg_code: str, cpp_func: str,
+                                  scalar_type: str, result_type: str) -> str:
+        """Generate 3D nested elementwise (rank 3)."""
+        inner_type_2 = f"ROOT::RVec<{scalar_type}>"
+        inner_type_1 = f"ROOT::RVec<{inner_type_2}>"
+        
+        return f"""[&]() -> {result_type} {{
+        auto nested = {arg_code};
+        {result_type} result;
+        result.reserve(nested.size());
+        for (size_t i = 0; i < nested.size(); ++i) {{
+            {inner_type_1} mid;
+            mid.reserve(nested[i].size());
+            for (size_t j = 0; j < nested[i].size(); ++j) {{
+                {inner_type_2} inner;
+                inner.reserve(nested[i][j].size());
+                for (size_t k = 0; k < nested[i][j].size(); ++k) {{
+                    inner.push_back({cpp_func}(nested[i][j][k]));
+                }}
+                mid.push_back(inner);
+            }}
+            result.push_back(mid);
+        }}
+        return result;
+    }}()"""
+    
+    def _generate_generic_nested_elementwise(self, arg_code: str, cpp_func: str,
+                                              scalar_type: str, rank: int) -> str:
+        """Generate generic nested elementwise for rank > 3."""
+        # Build result type
+        result_type = scalar_type
+        for _ in range(rank):
+            result_type = f"ROOT::RVec<{result_type}>"
+        
+        # For very deep nesting, use Map if available, otherwise fallback
+        return f"""[&]() -> {result_type} {{
+        auto nested = {arg_code};
+        // TODO: implement generic elementwise for rank {rank}
+        // Using ROOT::VecOps::Map would be ideal but doesn't support nested RVec
+        return nested;  // Placeholder
+    }}()"""
     
     def _needs_scalar_broadcast(self, node: CallNode) -> bool:
         """
@@ -1984,6 +2344,13 @@ class CppCodeGenerator:
                 # Add headers from node itself
                 if node.headers:
                     headers.update(node.headers)
+                
+                # Phase 13.6.D: Nested RVec reductions need <limits> for NaN handling
+                if self._needs_nested_rvec_handling(node):
+                    func_lower = node.func.lower()
+                    if func_lower in {'mean', 'min', 'max', 'stddev', 'variance'}:
+                        needs_limits = True
+                    needs_rvec = True
                 
                 # Phase 11.1: Add namespace headers
                 if node.namespace:

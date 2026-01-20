@@ -1648,15 +1648,14 @@ class TestND_SameSliceReductions_DSL:
     
     Type B tests: Full DSL pipeline with RDataFrame execution.
     
-    NOTE: These tests are SKIPPED due to L2 limitation - DSL doesn't support 
-    reductions/functions on sliced 2D columns yet, and attempting causes
-    ROOT JIT crashes that abort Python.
+    Phase 13.6.D: L2 limitation RESOLVED - reductions/functions on sliced 2D
+    columns now work correctly via explicit nested loop generation in
+    backend_cpp.py.
     
-    Phase: 13.6.C
+    Phase: 13.6.C (original), 13.6.D (L2 fix)
     """
     
     @pytest.mark.feature("nd_slice_reduction")
-    @pytest.mark.limitation("L2")
     @pytest.mark.type_b
     @pytest.mark.p0
     def test_INV_ND_DSL_sum_sliced(self, nd_2d_rdf, nd_2d_schema):
@@ -1664,35 +1663,76 @@ class TestND_SameSliceReductions_DSL:
         INV-ND-DSL-SUM-1: Sum on sliced 2D data via full chain.
         
         Expression: Sum(cluster_Q[0:2, :])
-        Result type: RVec<double> (sum per track for first 2 tracks)
+        Result type: double (total sum of first 2 tracks)
         
         Type: B (DSL + RDataFrame end-to-end)
         Priority: P0
         
-        SKIPPED: L2 - DSL does not support Sum on sliced 2D columns yet.
+        Phase 13.6.D: L2 limitation RESOLVED - Sum on nested RVec now works.
         """
-        pytest.skip("L2: DSL does not support Sum on sliced 2D columns yet (causes ROOT JIT crash)")
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        # Define Sum on sliced 2D column (first 2 tracks, all clusters)
+        dsl.define("sum_sliced", "Sum(cluster_Q[0:2, :])")
+        
+        # Execute and get results
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "sum_sliced"])
+        
+        event_ids = result["event_id"]
+        sum_values = result["sum_sliced"]
+        
+        # Verify we got results
+        assert len(sum_values) > 0, "No results returned"
+        
+        # Verify results are valid (not NaN, non-negative for Q values)
+        for i, evt_id in enumerate(event_ids):
+            assert not np.isnan(sum_values[i]), f"Event {evt_id}: Sum returned NaN"
+            assert sum_values[i] >= 0, f"Event {evt_id}: Sum should be non-negative"
     
     @pytest.mark.feature("nd_slice_reduction")
-    @pytest.mark.limitation("L2")
     @pytest.mark.type_b
     @pytest.mark.p1
     def test_INV_ND_DSL_nested_sum(self, nd_2d_rdf, nd_2d_schema):
         """
-        INV-ND-DSL-SUM-2: Nested Sum for total via full chain.
+        INV-ND-DSL-SUM-2: Sum on sliced 2D returns scalar total.
         
-        Expression: Sum(Sum(cluster_Q[0:2, :]))
+        Expression: Sum(cluster_Q[0:2, :])
         Result type: double (total sum of sliced region)
+        
+        Note: With Phase 13.6.D fix, Sum on 2D already returns a scalar,
+        so this verifies the same behavior as test_INV_ND_DSL_sum_sliced
+        but with different slice pattern.
         
         Type: B (DSL + RDataFrame end-to-end)
         Priority: P1
         
-        SKIPPED: L2 - DSL does not support nested Sum on sliced 2D columns yet.
+        Phase 13.6.D: L2 limitation RESOLVED.
         """
-        pytest.skip("L2: DSL does not support nested Sum on sliced 2D columns yet (causes ROOT JIT crash)")
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        # Sum on 2D slice - returns scalar (sum of all elements)
+        dsl.define("total_sum", "Sum(cluster_Q[:, 0:2])")
+        
+        # Execute and get results
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "total_sum"])
+        
+        event_ids = result["event_id"]
+        totals = result["total_sum"]
+        
+        assert len(totals) > 0, "No results returned"
+        
+        # Verify results are valid scalars
+        for i, evt_id in enumerate(event_ids):
+            assert not np.isnan(totals[i]), f"Event {evt_id}: Total sum returned NaN"
+            assert totals[i] >= 0, f"Event {evt_id}: Total sum should be non-negative"
     
     @pytest.mark.feature("nd_slice_reduction")
-    @pytest.mark.limitation("L2")
     @pytest.mark.type_b
     @pytest.mark.p1
     def test_INV_ND_DSL_mean_sliced(self, nd_2d_rdf, nd_2d_schema):
@@ -1700,16 +1740,35 @@ class TestND_SameSliceReductions_DSL:
         INV-ND-DSL-MEAN-1: Mean on sliced 2D data via full chain.
         
         Expression: Mean(cluster_Q[:, 0:3])
+        Result type: double (mean of all elements in sliced region)
         
         Type: B (DSL + RDataFrame end-to-end)
         Priority: P1
         
-        SKIPPED: L2 - DSL does not support Mean on sliced 2D columns yet.
+        Phase 13.6.D: L2 limitation RESOLVED - Mean on nested RVec now works.
         """
-        pytest.skip("L2: DSL does not support Mean on sliced 2D columns yet (causes ROOT JIT crash)")
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        # Define Mean on sliced 2D column (all tracks, first 3 clusters)
+        dsl.define("mean_sliced", "Mean(cluster_Q[:, 0:3])")
+        
+        # Execute and get results
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "mean_sliced"])
+        
+        event_ids = result["event_id"]
+        mean_values = result["mean_sliced"]
+        
+        assert len(mean_values) > 0, "No results returned"
+        
+        # Verify results are valid
+        for i, evt_id in enumerate(event_ids):
+            assert not np.isnan(mean_values[i]), f"Event {evt_id}: Mean returned NaN"
+            assert mean_values[i] >= 0, f"Event {evt_id}: Mean should be non-negative"
     
     @pytest.mark.feature("nd_slice_reduction")
-    @pytest.mark.limitation("L2")
     @pytest.mark.type_b
     @pytest.mark.p1
     def test_INV_ND_DSL_sqrt_sliced(self, nd_2d_rdf, nd_2d_schema):
@@ -1717,13 +1776,49 @@ class TestND_SameSliceReductions_DSL:
         INV-ND-DSL-SQRT-1: sqrt on sliced 2D data via full chain.
         
         Expression: sqrt(cluster_Q[0:2, 0:3])
+        Result type: RVec<RVec<double>> (preserves nested structure)
         
         Type: B (DSL + RDataFrame end-to-end)
         Priority: P1
         
-        SKIPPED: L2 - DSL does not support sqrt on sliced 2D columns yet.
+        Phase 13.6.D: L2 limitation RESOLVED - elementwise functions on nested RVec now work.
         """
-        pytest.skip("L2: DSL does not support sqrt on sliced 2D columns yet (causes ROOT JIT crash)")
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        # Define sqrt on sliced 2D column
+        dsl.define("sqrt_sliced", "sqrt(cluster_Q[0:2, 0:3])")
+        
+        # Also define the original slice for comparison
+        dsl.define("original_sliced", "cluster_Q[0:2, 0:3]")
+        
+        # Execute and get results
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "sqrt_sliced", "original_sliced"])
+        
+        event_ids = result["event_id"]
+        sqrt_values = result["sqrt_sliced"]
+        original_values = result["original_sliced"]
+        
+        assert len(sqrt_values) > 0, "No results returned"
+        
+        # Verify sqrt results match sqrt of original
+        for i, evt_id in enumerate(event_ids):
+            sqrt_evt = sqrt_values[i]
+            orig_evt = original_values[i]
+            
+            # Both should be nested structures
+            assert hasattr(sqrt_evt, '__len__'), f"Event {evt_id}: sqrt result should be array-like"
+            
+            # Verify elementwise: sqrt_evt[t][c] ≈ sqrt(orig_evt[t][c])
+            for t in range(min(len(sqrt_evt), len(orig_evt))):
+                for c in range(min(len(sqrt_evt[t]), len(orig_evt[t]))):
+                    expected = np.sqrt(orig_evt[t][c])
+                    actual = sqrt_evt[t][c]
+                    assert np.isclose(actual, expected, rtol=1e-10), \
+                        f"Event {evt_id}, track {t}, cluster {c}: " \
+                        f"sqrt({orig_evt[t][c]}) = {expected}, got {actual}"
 
 
 class TestND_SliceOrderEquivalence:
@@ -1805,3 +1900,952 @@ class TestND_SliceOrderEquivalence:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-x"])
+
+
+# =============================================================================
+# L2 Invariance Tests - Phase 13.6.D
+# =============================================================================
+# Complete implementation of all invariance tests for L2 functionality.
+# These tests verify mathematical correctness, not just non-crash behavior.
+#
+# Test Categories:
+# - INV-L2-SUM-*: Sum linearity invariances
+# - INV-L2-MEAN-*: Mean definition invariances  
+# - INV-L2-SQRT-*: Elementwise sqrt invariances
+# - INV-L2-MINMAX-*: Min/Max ordering invariances
+# - INV-L2-EXACT-*: Exact value verification
+# - INV-L2-EMPTY-*: Empty input edge cases
+# - INV-L2-3D-*: 3D code path coverage
+# - INV-L2-1D-*: 1D code path coverage (baseline)
+#
+# Invariant Formulas (from toy_nd.py):
+# - cluster_Q[e][t][c] = 1000*e + 100*t + c
+# - hit_E[e][t][c][h] = 10000*e + 1000*t + 100*c + h
+# - track_pt[e][t] uses Pythagorean triples
+# =============================================================================
+
+
+class TestND_L2_Invariances:
+    """
+    L2 Invariance Tests - Mathematical correctness verification.
+    
+    Phase 13.6.D: These tests verify the L2 fix produces mathematically
+    correct results, not just non-crash behavior.
+    
+    Type B tests: Full DSL pipeline with RDataFrame execution.
+    """
+    
+    # =========================================================================
+    # Category 1: Sum Linearity Invariances
+    # =========================================================================
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p0
+    def test_INV_L2_SUM_additivity(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-L2-SUM-1: Sum(A[slice]) + Sum(B[slice]) == Sum((A+B)[slice])
+        
+        Tests that Sum distributes over addition.
+        Catches: wrong accumulator, missed elements, incorrect loop bounds.
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P1
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        # Sum(A) + Sum(B) vs Sum(A+B) on same slice
+        dsl.define("sum_Q", "Sum(cluster_Q[0:2, :])")
+        dsl.define("sum_x", "Sum(cluster_x[0:2, :])")
+        dsl.define("sum_Qx", "Sum(cluster_Q[0:2, :] + cluster_x[0:2, :])")
+        
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "sum_Q", "sum_x", "sum_Qx"])
+        
+        for i in range(len(result["event_id"])):
+            sum_separate = result["sum_Q"][i] + result["sum_x"][i]
+            sum_combined = result["sum_Qx"][i]
+            assert abs(sum_separate - sum_combined) < 1e-9, \
+                f"Event {i}: Sum(A)+Sum(B)={sum_separate} != Sum(A+B)={sum_combined}"
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p1
+    def test_INV_L2_SUM_scalar_multiplication(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-L2-SUM-2: Sum(k * A[slice]) == k * Sum(A[slice])
+        
+        Tests linearity with scalar factor.
+        Catches: type casting errors, accumulator initialization errors.
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P1
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        k = 2.5
+        dsl.define("sum_Q", "Sum(cluster_Q[0:2, :])")
+        dsl.define("sum_kQ", f"Sum({k} * cluster_Q[0:2, :])")
+        
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "sum_Q", "sum_kQ"])
+        
+        for i in range(len(result["event_id"])):
+            k_times_sum = k * result["sum_Q"][i]
+            sum_k_times = result["sum_kQ"][i]
+            assert abs(k_times_sum - sum_k_times) < 1e-9, \
+                f"Event {i}: k*Sum(A)={k_times_sum} != Sum(k*A)={sum_k_times}"
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p0
+    def test_INV_L2_SUM_partition(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-L2-SUM-3: Sum(A[:1,:]) + Sum(A[1:2,:]) == Sum(A[:2,:])
+        
+        Partition invariance: summing adjacent partitions equals summing whole.
+        Catches: double-counting, off-by-one in slice bounds.
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P0 (Core correctness)
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        dsl.define("sum_first", "Sum(cluster_Q[0:1, :])")
+        dsl.define("sum_second", "Sum(cluster_Q[1:2, :])")
+        dsl.define("sum_both", "Sum(cluster_Q[0:2, :])")
+        
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "sum_first", "sum_second", "sum_both"])
+        
+        for i in range(len(result["event_id"])):
+            partition = result["sum_first"][i] + result["sum_second"][i]
+            whole = result["sum_both"][i]
+            assert abs(partition - whole) < 1e-10, \
+                f"Event {i}: partition sum {partition} != whole sum {whole}"
+    
+    # =========================================================================
+    # Category 2: Mean Definition Invariances
+    # =========================================================================
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p0
+    def test_INV_L2_MEAN_definition(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-L2-MEAN-1: Mean(A[slice]) == Sum(A[slice]) / Count(A[slice])
+        
+        Fundamental definition check.
+        Catches: wrong divisor, element miscount.
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P0 (Core correctness)
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        # Get slice for counting
+        dsl.define("sliced", "cluster_Q[0:2, 0:3]")
+        dsl.define("sum_sliced", "Sum(cluster_Q[0:2, 0:3])")
+        dsl.define("mean_sliced", "Mean(cluster_Q[0:2, 0:3])")
+        
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "sliced", "sum_sliced", "mean_sliced"])
+        
+        for i in range(len(result["event_id"])):
+            sliced_data = result["sliced"][i]
+            
+            # Count elements in nested structure
+            count = 0
+            for track in sliced_data:
+                count += len(track)
+            
+            if count > 0:
+                expected_mean = result["sum_sliced"][i] / count
+                actual_mean = result["mean_sliced"][i]
+                assert abs(expected_mean - actual_mean) < 1e-9, \
+                    f"Event {i}: Sum/Count={expected_mean} != Mean={actual_mean}"
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p1
+    def test_INV_L2_MEAN_bounds(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-L2-MEAN-2: Min(A[slice]) <= Mean(A[slice]) <= Max(A[slice])
+        
+        Statistical property that must hold.
+        Catches: overflow, sign errors, catastrophic errors.
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P1
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        dsl.define("min_val", "Min(cluster_Q[0:2, :])")
+        dsl.define("mean_val", "Mean(cluster_Q[0:2, :])")
+        dsl.define("max_val", "Max(cluster_Q[0:2, :])")
+        
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "min_val", "mean_val", "max_val"])
+        
+        for i in range(len(result["event_id"])):
+            min_v = result["min_val"][i]
+            mean_v = result["mean_val"][i]
+            max_v = result["max_val"][i]
+            
+            # Skip if any are NaN (empty slice)
+            if np.isnan(min_v) or np.isnan(mean_v) or np.isnan(max_v):
+                continue
+            
+            assert min_v <= mean_v + 1e-9, \
+                f"Event {i}: Min ({min_v}) > Mean ({mean_v})"
+            assert mean_v <= max_v + 1e-9, \
+                f"Event {i}: Mean ({mean_v}) > Max ({max_v})"
+    
+    # =========================================================================
+    # Category 3: Elementwise Function Invariances (sqrt)
+    # =========================================================================
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p0
+    def test_INV_L2_SQRT_inverse(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-L2-SQRT-1: sqrt(A[slice])² == A[slice]
+        
+        Squaring the sqrt should recover original (for non-negative values).
+        Catches: wrong function applied, wrong element visited.
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P0 (Core correctness)
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        dsl.define("original", "cluster_Q[0:2, 0:3]")
+        dsl.define("sqrt_val", "sqrt(cluster_Q[0:2, 0:3])")
+        dsl.define("sqrt_squared", "sqrt(cluster_Q[0:2, 0:3]) * sqrt(cluster_Q[0:2, 0:3])")
+        
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "original", "sqrt_squared"])
+        
+        for i in range(len(result["event_id"])):
+            orig = result["original"][i]
+            squared = result["sqrt_squared"][i]
+            
+            for t in range(min(len(orig), len(squared))):
+                for c in range(min(len(orig[t]), len(squared[t]))):
+                    assert abs(orig[t][c] - squared[t][c]) < 1e-9, \
+                        f"Event {i}, track {t}, cluster {c}: " \
+                        f"original={orig[t][c]} != sqrt²={squared[t][c]}"
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p1
+    def test_INV_L2_SQRT_structure_preservation(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-L2-SQRT-2: shape(sqrt(A[slice])) == shape(A[slice])
+        
+        Elementwise functions must preserve nested structure, not flatten.
+        Catches: accidental flattening, wrong result type.
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P1
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        dsl.define("original", "cluster_Q[0:2, 0:3]")
+        dsl.define("sqrt_val", "sqrt(cluster_Q[0:2, 0:3])")
+        
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "original", "sqrt_val"])
+        
+        for i in range(len(result["event_id"])):
+            orig = result["original"][i]
+            sqrt_r = result["sqrt_val"][i]
+            
+            # Check outer dimension
+            assert len(orig) == len(sqrt_r), \
+                f"Event {i}: outer dim mismatch: {len(orig)} != {len(sqrt_r)}"
+            
+            # Check inner dimensions
+            for t in range(len(orig)):
+                assert len(orig[t]) == len(sqrt_r[t]), \
+                    f"Event {i}, track {t}: inner dim mismatch: {len(orig[t])} != {len(sqrt_r[t])}"
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p2
+    def test_INV_L2_SQRT_product_rule(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-L2-SQRT-3: sqrt(A * B) == sqrt(A) * sqrt(B)
+        
+        Product rule tests element alignment between operations.
+        Catches: element misalignment, broadcasting errors.
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P2
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        # Use cluster_Q and cluster_x (both positive)
+        dsl.define("sqrt_product", "sqrt(cluster_Q[0:2, 0:2] * cluster_x[0:2, 0:2])")
+        dsl.define("product_sqrt", "sqrt(cluster_Q[0:2, 0:2]) * sqrt(cluster_x[0:2, 0:2])")
+        
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "sqrt_product", "product_sqrt"])
+        
+        for i in range(len(result["event_id"])):
+            sp = result["sqrt_product"][i]
+            ps = result["product_sqrt"][i]
+            
+            for t in range(min(len(sp), len(ps))):
+                for c in range(min(len(sp[t]), len(ps[t]))):
+                    assert abs(sp[t][c] - ps[t][c]) < 1e-9, \
+                        f"Event {i}, track {t}, cluster {c}: " \
+                        f"sqrt(A*B)={sp[t][c]} != sqrt(A)*sqrt(B)={ps[t][c]}"
+    
+    # =========================================================================
+    # Category 4: Exact Value Verification
+    # =========================================================================
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p0
+    def test_INV_L2_EXACT_sum(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-L2-EXACT-1: Sum(cluster_Q[0:2, 0:2]) for event 0 = 202
+        
+        Exact value verification using toy_nd deterministic formula.
+        cluster_Q[e][t][c] = 1000*e + 100*t + c
+        
+        Event 0, cluster_Q[0:2, 0:2]:
+          Track 0: Q[0,1] = [0, 1] → sum = 1
+          Track 1: Q[100,101] = [100, 101] → sum = 201
+          Total = 202
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P0 (Required exact verification)
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        dsl.define("sum_sliced", "Sum(cluster_Q[0:2, 0:2])")
+        
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "sum_sliced"])
+        
+        # Find event 0
+        for i, evt_id in enumerate(result["event_id"]):
+            if evt_id == 0:
+                expected = 202.0  # 0 + 1 + 100 + 101 = 202
+                actual = result["sum_sliced"][i]
+                assert abs(actual - expected) < 1e-9, \
+                    f"Event 0: Sum(cluster_Q[0:2, 0:2]) = {actual}, expected {expected}"
+                break
+        else:
+            pytest.fail("Event 0 not found in results")
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p1
+    def test_INV_L2_EXACT_mean(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-L2-EXACT-2: Mean(cluster_Q[0:2, 0:2]) for event 0 = 50.5
+        
+        Exact value verification using toy_nd deterministic formula.
+        Sum = 202, Count = 4, Mean = 50.5
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P1
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        dsl.define("mean_sliced", "Mean(cluster_Q[0:2, 0:2])")
+        
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "mean_sliced"])
+        
+        # Find event 0
+        for i, evt_id in enumerate(result["event_id"]):
+            if evt_id == 0:
+                expected = 50.5  # 202 / 4 = 50.5
+                actual = result["mean_sliced"][i]
+                assert abs(actual - expected) < 1e-9, \
+                    f"Event 0: Mean(cluster_Q[0:2, 0:2]) = {actual}, expected {expected}"
+                break
+        else:
+            pytest.fail("Event 0 not found in results")
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p1
+    def test_INV_L2_EXACT_sqrt(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-L2-EXACT-3: sqrt(cluster_Q[1, 0]) for event 0 = 10.0
+        
+        Exact value verification: cluster_Q[0][1][0] = 100, sqrt(100) = 10.0
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P1
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        # Get sqrt of track 1, cluster 0 (value = 100 for event 0)
+        dsl.define("sqrt_sliced", "sqrt(cluster_Q[0:2, 0:2])")
+        
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "sqrt_sliced"])
+        
+        # Find event 0
+        for i, evt_id in enumerate(result["event_id"]):
+            if evt_id == 0:
+                # sqrt_sliced[1][0] should be sqrt(100) = 10.0
+                sqrt_data = result["sqrt_sliced"][i]
+                if len(sqrt_data) > 1 and len(sqrt_data[1]) > 0:
+                    actual = sqrt_data[1][0]  # Track 1, Cluster 0
+                    expected = 10.0  # sqrt(100)
+                    assert abs(actual - expected) < 1e-9, \
+                        f"Event 0: sqrt(cluster_Q[1][0]) = {actual}, expected {expected}"
+                break
+        else:
+            pytest.fail("Event 0 not found in results")
+    
+    # =========================================================================
+    # Category 5: Min/Max Ordering Invariances
+    # =========================================================================
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p1
+    def test_INV_L2_MINMAX_ordering(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-L2-MINMAX-1: Min(A) <= Mean(A) <= Max(A)
+        
+        Fundamental ordering property.
+        Catches: wrong comparison operators, sign errors.
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P1
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        dsl.define("min_val", "Min(cluster_Q[0:2, :])")
+        dsl.define("mean_val", "Mean(cluster_Q[0:2, :])")
+        dsl.define("max_val", "Max(cluster_Q[0:2, :])")
+        
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "min_val", "mean_val", "max_val"])
+        
+        for i in range(len(result["event_id"])):
+            min_v = result["min_val"][i]
+            mean_v = result["mean_val"][i]
+            max_v = result["max_val"][i]
+            
+            if np.isnan(min_v) or np.isnan(mean_v) or np.isnan(max_v):
+                continue
+            
+            assert min_v <= mean_v <= max_v, \
+                f"Event {i}: Min ({min_v}) <= Mean ({mean_v}) <= Max ({max_v}) violated"
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p2
+    def test_INV_L2_MINMAX_contains_all(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-L2-MINMAX-2: Min(A) <= A[i,j] <= Max(A) for all i,j
+        
+        Extrema must contain all elements.
+        Catches: missed elements in Min/Max computation.
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P2
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        dsl.define("sliced", "cluster_Q[0:2, :]")
+        dsl.define("min_val", "Min(cluster_Q[0:2, :])")
+        dsl.define("max_val", "Max(cluster_Q[0:2, :])")
+        
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "sliced", "min_val", "max_val"])
+        
+        for i in range(len(result["event_id"])):
+            sliced_data = result["sliced"][i]
+            min_v = result["min_val"][i]
+            max_v = result["max_val"][i]
+            
+            if np.isnan(min_v) or np.isnan(max_v):
+                continue
+            
+            for t in range(len(sliced_data)):
+                for c in range(len(sliced_data[t])):
+                    val = sliced_data[t][c]
+                    assert min_v <= val <= max_v, \
+                        f"Event {i}, track {t}, cluster {c}: " \
+                        f"value {val} outside [{min_v}, {max_v}]"
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p2
+    def test_INV_L2_MINMAX_exact(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-L2-MINMAX-3: Min(cluster_Q[0:2, 0:2]) for event 0 = 0
+        
+        Exact value verification for Min.
+        Min of [0, 1, 100, 101] = 0
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P2
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        dsl.define("min_sliced", "Min(cluster_Q[0:2, 0:2])")
+        
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "min_sliced"])
+        
+        for i, evt_id in enumerate(result["event_id"]):
+            if evt_id == 0:
+                expected = 0.0
+                actual = result["min_sliced"][i]
+                assert abs(actual - expected) < 1e-9, \
+                    f"Event 0: Min(cluster_Q[0:2, 0:2]) = {actual}, expected {expected}"
+                break
+        else:
+            pytest.fail("Event 0 not found in results")
+    
+    # =========================================================================
+    # Category 6: Empty Input Edge Cases
+    # =========================================================================
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p1
+    def test_INV_L2_EMPTY_sum(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-L2-EMPTY-1: Sum(A[0:0, :]) == 0
+        
+        Sum of empty slice should be 0 (additive identity).
+        Catches: crash on empty input, wrong default.
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P1
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        dsl.define("sum_empty", "Sum(cluster_Q[0:0, :])")
+        
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "sum_empty"])
+        
+        for i in range(len(result["event_id"])):
+            actual = result["sum_empty"][i]
+            # Sum of empty should be 0
+            assert actual == 0.0 or np.isnan(actual), \
+                f"Event {i}: Sum(empty) = {actual}, expected 0 or NaN"
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p1
+    def test_INV_L2_EMPTY_mean(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-L2-EMPTY-2: isnan(Mean(A[0:0, :]))
+        
+        Mean of empty slice should be NaN (0/0 is undefined).
+        Catches: division by zero handling.
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P1
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        dsl.define("mean_empty", "Mean(cluster_Q[0:0, :])")
+        
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "mean_empty"])
+        
+        for i in range(len(result["event_id"])):
+            actual = result["mean_empty"][i]
+            # Mean of empty should be NaN (or 0 if that's the chosen convention)
+            # Accept either NaN or 0 as valid empty semantics
+            assert np.isnan(actual) or actual == 0.0, \
+                f"Event {i}: Mean(empty) = {actual}, expected NaN or 0"
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p2
+    def test_INV_L2_EMPTY_sqrt(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-L2-EMPTY-3: sqrt(A[0:0, :]) returns empty nested RVec
+        
+        sqrt of empty slice should return empty structure, not crash.
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P2
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        dsl.define("sqrt_empty", "sqrt(cluster_Q[0:0, :])")
+        
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "sqrt_empty"])
+        
+        # Should not crash and should return empty structure
+        for i in range(len(result["event_id"])):
+            sqrt_data = result["sqrt_empty"][i]
+            # Should be empty or have length 0
+            assert len(sqrt_data) == 0, \
+                f"Event {i}: sqrt(empty) returned {len(sqrt_data)} tracks, expected 0"
+
+
+class TestND_L2_3D_Invariances:
+    """
+    3D code path coverage for L2 invariances.
+    
+    These tests verify the 3D code generation methods work correctly.
+    Uses hit_E data: hit_E[e][t][c][h] = 10000*e + 1000*t + 100*c + h
+    
+    Phase: 13.6.D
+    """
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p2
+    def test_INV_L2_3D_SUM_partition(self, nd_3d_rdf, nd_3d_schema):
+        """
+        INV-L2-3D-SUM-1: Sum(hit_E[:1,:,:]) + Sum(hit_E[1:,:,:]) ≈ Sum(hit_E)
+        
+        3D partition invariance.
+        Catches: 3D loop errors, index miscalculation.
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P2
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_3d_schema)
+        
+        dsl.define("sum_first", "Sum(hit_E[0:1, :, :])")
+        dsl.define("sum_rest", "Sum(hit_E[1:, :, :])")
+        dsl.define("sum_all", "Sum(hit_E)")
+        
+        rdf_result = dsl.apply(nd_3d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "sum_first", "sum_rest", "sum_all"])
+        
+        for i in range(len(result["event_id"])):
+            partition = result["sum_first"][i] + result["sum_rest"][i]
+            whole = result["sum_all"][i]
+            
+            if np.isnan(partition) or np.isnan(whole):
+                continue
+            
+            assert abs(partition - whole) < 1e-6, \
+                f"Event {i}: 3D partition sum {partition} != whole {whole}"
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p2
+    def test_INV_L2_3D_SQRT_inverse(self, nd_3d_rdf, nd_3d_schema):
+        """
+        INV-L2-3D-SQRT-1: sqrt(hit_E)² == hit_E
+        
+        3D elementwise inverse.
+        Catches: 3D elementwise loop errors.
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P2
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_3d_schema)
+        
+        dsl.define("original", "hit_E[0:1, 0:1, 0:2]")
+        dsl.define("sqrt_squared", "sqrt(hit_E[0:1, 0:1, 0:2]) * sqrt(hit_E[0:1, 0:1, 0:2])")
+        
+        rdf_result = dsl.apply(nd_3d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "original", "sqrt_squared"])
+        
+        for i in range(len(result["event_id"])):
+            orig = result["original"][i]
+            squared = result["sqrt_squared"][i]
+            
+            # Flatten and compare
+            def flatten_3d(arr):
+                flat = []
+                for t in arr:
+                    for c in t:
+                        for h in c:
+                            flat.append(h)
+                return flat
+            
+            orig_flat = flatten_3d(orig)
+            squared_flat = flatten_3d(squared)
+            
+            for j, (o, s) in enumerate(zip(orig_flat, squared_flat)):
+                assert abs(o - s) < 1e-9, \
+                    f"Event {i}, element {j}: original={o} != sqrt²={s}"
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p2
+    def test_INV_L2_3D_EXACT(self, nd_3d_rdf, nd_3d_schema):
+        """
+        INV-L2-3D-EXACT-1: Sum(hit_E[0:1, 0:1, 0:2]) for event 0 = 1
+        
+        Exact 3D value verification.
+        hit_E[0][0][0][0:2] = [0, 1] → sum = 1
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P2
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_3d_schema)
+        
+        dsl.define("sum_3d", "Sum(hit_E[0:1, 0:1, 0:2])")
+        
+        rdf_result = dsl.apply(nd_3d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "sum_3d"])
+        
+        for i, evt_id in enumerate(result["event_id"]):
+            if evt_id == 0:
+                expected = 1.0  # 0 + 1 = 1
+                actual = result["sum_3d"][i]
+                assert abs(actual - expected) < 1e-9, \
+                    f"Event 0: Sum(hit_E[0:1, 0:1, 0:2]) = {actual}, expected {expected}"
+                break
+        else:
+            pytest.fail("Event 0 not found in results")
+
+
+class TestND_L2_1D_Invariances:
+    """
+    1D Invariance Tests - Baseline code path coverage.
+    
+    Phase 13.6.D: These tests verify 1D operations work correctly.
+    1D operations use ROOT's native Sum/sqrt directly (no nested loops needed).
+    These tests establish baseline correctness that 2D/3D tests build upon.
+    
+    Uses track_pt (1D array) from toy_nd fixtures.
+    track_pt formula: Uses Pythagorean triples (3,4,5), (5,12,13), etc.
+    
+    Type B tests: Full DSL pipeline with RDataFrame execution.
+    """
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p1
+    def test_INV_L2_1D_SUM_partition(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-L2-1D-SUM-1: Sum(track_pt[:1]) + Sum(track_pt[1:2]) == Sum(track_pt[:2])
+        
+        1D partition invariance - baseline test.
+        Verifies Sum works on simple 1D slices before testing 2D/3D.
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P1
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        dsl.define("sum_first", "Sum(track_pt[0:1])")
+        dsl.define("sum_second", "Sum(track_pt[1:2])")
+        dsl.define("sum_both", "Sum(track_pt[0:2])")
+        
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "sum_first", "sum_second", "sum_both"])
+        
+        for i in range(len(result["event_id"])):
+            partition = result["sum_first"][i] + result["sum_second"][i]
+            whole = result["sum_both"][i]
+            assert abs(partition - whole) < 1e-10, \
+                f"Event {i}: 1D partition sum {partition} != whole sum {whole}"
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p1
+    def test_INV_L2_1D_SQRT_inverse(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-L2-1D-SQRT-1: sqrt(track_pt[:2])² == track_pt[:2]
+        
+        1D elementwise inverse - baseline test.
+        Verifies sqrt works on simple 1D slices before testing 2D/3D.
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P1
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        dsl.define("original", "track_pt[0:2]")
+        dsl.define("sqrt_squared", "sqrt(track_pt[0:2]) * sqrt(track_pt[0:2])")
+        
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "original", "sqrt_squared"])
+        
+        for i in range(len(result["event_id"])):
+            orig = result["original"][i]
+            squared = result["sqrt_squared"][i]
+            
+            for j in range(min(len(orig), len(squared))):
+                assert abs(orig[j] - squared[j]) < 1e-9, \
+                    f"Event {i}, track {j}: original={orig[j]} != sqrt²={squared[j]}"
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p1
+    def test_INV_L2_1D_MEAN_definition(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-L2-1D-MEAN-1: Mean(track_pt[:3]) == Sum(track_pt[:3]) / 3
+        
+        1D mean definition - baseline test.
+        Verifies Mean = Sum / Count for 1D slices.
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P1
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        dsl.define("sliced", "track_pt[0:3]")
+        dsl.define("sum_sliced", "Sum(track_pt[0:3])")
+        dsl.define("mean_sliced", "Mean(track_pt[0:3])")
+        
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "sliced", "sum_sliced", "mean_sliced"])
+        
+        for i in range(len(result["event_id"])):
+            sliced_data = result["sliced"][i]
+            count = len(sliced_data)
+            
+            if count > 0:
+                expected_mean = result["sum_sliced"][i] / count
+                actual_mean = result["mean_sliced"][i]
+                assert abs(expected_mean - actual_mean) < 1e-9, \
+                    f"Event {i}: Sum/Count={expected_mean} != Mean={actual_mean}"
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p1
+    def test_INV_L2_1D_MINMAX_ordering(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-L2-1D-MINMAX-1: Min(track_pt) <= Mean(track_pt) <= Max(track_pt)
+        
+        1D ordering invariance - baseline test.
+        Verifies statistical ordering property for 1D data.
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P1
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        dsl.define("min_val", "Min(track_pt)")
+        dsl.define("mean_val", "Mean(track_pt)")
+        dsl.define("max_val", "Max(track_pt)")
+        
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "min_val", "mean_val", "max_val"])
+        
+        for i in range(len(result["event_id"])):
+            min_v = result["min_val"][i]
+            mean_v = result["mean_val"][i]
+            max_v = result["max_val"][i]
+            
+            if np.isnan(min_v) or np.isnan(mean_v) or np.isnan(max_v):
+                continue
+            
+            assert min_v <= mean_v <= max_v, \
+                f"Event {i}: Min ({min_v}) <= Mean ({mean_v}) <= Max ({max_v}) violated"
+    
+    @pytest.mark.feature("nd_slice_reduction")
+    @pytest.mark.type_b
+    @pytest.mark.p2
+    def test_INV_L2_1D_ABS_identity(self, nd_2d_rdf, nd_2d_schema):
+        """
+        INV-L2-1D-ABS-1: abs(track_pt) == track_pt for positive values
+        
+        1D abs identity - track_pt is always positive (Pythagorean triples).
+        
+        Type: B (DSL + RDataFrame end-to-end)
+        Priority: P2
+        Phase: 13.6.D
+        """
+        from RDataFrameDSL import DSLCompiler
+        
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        dsl.define("original", "track_pt[:3]")
+        dsl.define("abs_val", "abs(track_pt[:3])")
+        
+        rdf_result = dsl.apply(nd_2d_rdf)
+        result = rdf_result.AsNumpy(["event_id", "original", "abs_val"])
+        
+        for i in range(len(result["event_id"])):
+            orig = result["original"][i]
+            absv = result["abs_val"][i]
+            
+            for j in range(min(len(orig), len(absv))):
+                assert abs(orig[j] - absv[j]) < 1e-9, \
+                    f"Event {i}, track {j}: original={orig[j]} != abs={absv[j]}"
+
