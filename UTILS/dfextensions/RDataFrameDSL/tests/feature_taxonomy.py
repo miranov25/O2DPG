@@ -16,7 +16,7 @@
 # Date: 2026-01-18
 # =============================================================================
 
-FEATURE_TAXONOMY_VERSION = "1.8"  # Phase 13.6.D: Added pragma_management for pragma registry tests
+FEATURE_TAXONOMY_VERSION = "1.9"  # Phase 13.6.D: L1 and L2 limitations resolved
 
 # =============================================================================
 # FEATURE ALIASES (for backward compatibility if renaming needed)
@@ -162,7 +162,7 @@ FEATURE_TAXONOMY = {
             "tests/test_invariance_ranges.py::TestSlidingRangesDSL::test_INV_R2_SLICE_2d_slicing",
         ],
         "proof": None,
-        "limitation": "L1",
+        # L1 resolved: Join path OK; full-vs-sliced same-column in single call remains constrained
     },
     "slice_chain": {
         "name": "Slice chain export",
@@ -172,7 +172,7 @@ FEATURE_TAXONOMY = {
             "tests/test_invariance_ranges.py::TestSlidingRangesDSL::test_INV_R5_SUM_dsl_sum_preservation",
         ],
         "proof": None,
-        "limitation": "L1",
+        # L1 resolved: Join path OK; full-vs-sliced same-column in single call remains constrained
     },
     "filter_export": {
         "name": "Filter and export",
@@ -266,13 +266,13 @@ FEATURE_TAXONOMY = {
     },
     "nd_slice_reduction": {
         "name": "N-D slicing reductions (Sum, Mean)",
-        "description": "Reduction operations (Sum, Mean) on sliced N-D columns - L2: DSL tests SKIPPED (ROOT JIT crash)",
+        "description": "Reduction operations (Sum, Mean) on sliced N-D columns",
         "tests": [
             "tests/test_invariance_nd.py::TestND_SameSliceReductions::test_INV_ND_SUM_sliced_exact",
             "tests/test_invariance_nd.py::TestND_SameSliceReductions::test_INV_ND_SUM_sliced_le_full",
             "tests/test_invariance_nd.py::TestND_SameSliceReductions::test_INV_ND_MEAN_sliced_bounds",
             "tests/test_invariance_nd.py::TestND_SameSliceReductions::test_INV_ND_SUM_inner_slice_exact",
-            # L2: DSL tests below SKIPPED - reductions on sliced 2D cause ROOT JIT crash
+            # L2 RESOLVED in Phase 13.6.D - DSL tests now pass
             "tests/test_invariance_nd.py::TestND_SameSliceReductions_DSL::test_INV_ND_DSL_sum_sliced",
             "tests/test_invariance_nd.py::TestND_SameSliceReductions_DSL::test_INV_ND_DSL_nested_sum",
             "tests/test_invariance_nd.py::TestND_SameSliceReductions_DSL::test_INV_ND_DSL_mean_sliced",
@@ -280,7 +280,7 @@ FEATURE_TAXONOMY = {
         ],
         "proof": None,
         "phase": "13.6.C",
-        "limitation": "L2",  # DSL tests SKIPPED
+        # L2 resolved in Phase 13.6.D - removed limitation marker
     },
     "nd_slice_order": {
         "name": "N-D slice order equivalence",
@@ -297,21 +297,24 @@ FEATURE_TAXONOMY = {
         "name": "N-D join strategy for mixed-depth columns",
         "description": "Join strategies (inner/outer/left/right) for combining columns of different nesting depths",
         "tests": [
-            "tests/test_join_e2e.py::TestJoinWithRDataFrame::test_E2E_join_cluster_track",
-            "tests/test_join_e2e.py::TestJoinWithRDataFrame::test_E2E_join_cluster_event",
-            "tests/test_join_e2e.py::TestJoinWithRDataFrame::test_E2E_join_track_event",
-            "tests/test_join_e2e.py::TestJoinWithRDataFrame::test_E2E_join_three_depths",
-            "tests/test_join_e2e.py::TestJoinStrategiesE2E::test_E2E_join_inner",
-            "tests/test_join_e2e.py::TestJoinStrategiesE2E::test_E2E_join_outer",
-            "tests/test_join_e2e.py::TestJoinStrategiesE2E::test_E2E_join_left",
-            "tests/test_join_e2e.py::TestJoinStrategiesE2E::test_E2E_join_right",
-            "tests/test_join_e2e.py::TestJoinInvarianceE2E::test_INV_E2E_broadcast_event_weight",
-            "tests/test_join_e2e.py::TestJoinInvarianceE2E::test_INV_E2E_cluster_Q_preserved",
-            "tests/test_join_e2e.py::TestBackwardCompatibilityE2E::test_E2E_no_join_param_default",
-            "tests/test_join_e2e.py::TestBackwardCompatibilityE2E::test_E2E_single_column_still_works",
+            "tests/test_invariance_join_e2e.py::TestJoinWithRDataFrame::test_E2E_join_cluster_track",
+            "tests/test_invariance_join_e2e.py::TestJoinWithRDataFrame::test_E2E_join_cluster_event",
+            "tests/test_invariance_join_e2e.py::TestJoinWithRDataFrame::test_E2E_join_track_event",
+            "tests/test_invariance_join_e2e.py::TestJoinWithRDataFrame::test_E2E_join_three_depths",
+            "tests/test_invariance_join_e2e.py::TestJoinStrategiesE2E::test_E2E_join_inner",
+            "tests/test_invariance_join_e2e.py::TestJoinStrategiesE2E::test_E2E_join_outer",
+            "tests/test_invariance_join_e2e.py::TestJoinStrategiesE2E::test_E2E_join_left",
+            "tests/test_invariance_join_e2e.py::TestJoinStrategiesE2E::test_E2E_join_right",
+            "tests/test_invariance_join_e2e.py::TestJoinInvarianceE2E::test_INV_E2E_broadcast_event_weight",
+            "tests/test_invariance_join_e2e.py::TestJoinInvarianceE2E::test_INV_E2E_broadcast_track_pt",
+            "tests/test_invariance_join_e2e.py::TestJoinInvarianceE2E::test_INV_E2E_cluster_Q_preserved",
+            "tests/test_invariance_join_e2e.py::TestJoinInvarianceE2E::test_INV_E2E_weighted_cluster_sum",
+            "tests/test_invariance_join_e2e.py::TestJoinInvarianceE2E::test_INV_E2E_row_count_consistency",
+            "tests/test_invariance_join_e2e.py::TestBackwardCompatibilityE2E::test_E2E_no_join_param_default",
+            "tests/test_invariance_join_e2e.py::TestBackwardCompatibilityE2E::test_E2E_single_column_still_works",
         ],
         "proof": None,
-        "phase": "13.6.C",
+        "phase": "13.6.D",  # Updated with invariance tests
     },
 
     # -------------------------------------------------------------------------
@@ -414,26 +417,23 @@ KNOWN_LIMITATIONS = {
     "L1": {
         "name": "Slice chain validation",
         "status": "✅ Resolved",
-        "description": "Cannot mix full and sliced columns in single to_pandas() call",
-        "workaround": "Export full and sliced columns in separate to_pandas() calls",
+        "description": "Mixed-depth joins (2D+1D+0D) now fully supported in to_pandas()",
+        "workaround": None,  # No longer needed for mixed-depth joins
+        "remaining_constraint": "Mixing full and sliced of same column (e.g., track_pt + track_pt[:2]) in single call remains unsupported",
         "bug_report": "BUG_RDataFrameDSL_20260116_dsl_slice_chain.md",
-        "resolution": "Phase 13.6.C - Tests fixed to use separate exports",
+        "resolution": "Phase 13.6.D - Mixed-depth join invariance tests added (15/15 pass)",
+        "resolution_date": "2026-01-21",
         "tests_affected": [],  # No longer affected - tests fixed
     },
     "L2": {
         "name": "Reductions on sliced 2D columns",
-        "status": "⚠️ Not implemented",
-        "description": "DSL does not support Sum/Mean/sqrt on sliced 2D columns like Sum(cluster_Q[0:2, :]). Causes ROOT JIT crash.",
-        "workaround": "Use element-wise arithmetic on sliced 2D (e.g., cluster_x[:2,:] - cluster_Q[:2,:]), then Sum separately",
+        "status": "✅ Resolved",
+        "description": "Sum/Mean/sqrt on sliced 2D columns previously caused ROOT JIT crash.",
+        "workaround": None,  # No longer needed
         "bug_report": None,
-        "resolution": "Phase 13.6.C+ - requires DSL extension",
-        "tests_affected": [
-            # SKIPPED (not xfail) - these crash ROOT JIT fatally
-            "tests/test_invariance_nd.py::TestND_SameSliceReductions_DSL::test_INV_ND_DSL_sum_sliced",
-            "tests/test_invariance_nd.py::TestND_SameSliceReductions_DSL::test_INV_ND_DSL_nested_sum",
-            "tests/test_invariance_nd.py::TestND_SameSliceReductions_DSL::test_INV_ND_DSL_mean_sliced",
-            "tests/test_invariance_nd.py::TestND_SameSliceReductions_DSL::test_INV_ND_DSL_sqrt_sliced",
-        ],
+        "resolution": "Phase 13.6.D - Added explicit nested loop generation in backend_cpp.py",
+        "resolution_date": "2026-01-21",
+        "tests_affected": [],  # No longer affected - all tests pass
     },
 }
 

@@ -22,7 +22,7 @@ import numpy as np
 
 # Mark entire module to not run in parallel with xdist
 # ROOT's GenerateDictionary cannot handle concurrent dictionary generation
-pytestmark = pytest.mark.serial
+pytestmark = pytest.mark.root_serial
 
 
 # =============================================================================

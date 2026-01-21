@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import pytest
+pytestmark = pytest.mark.root_serial
 """
 Phase 13.5.B0 - Tests T25-T32: P1/P2 Robustness & Edge Cases
 
