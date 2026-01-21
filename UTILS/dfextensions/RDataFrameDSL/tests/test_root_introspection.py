@@ -305,5 +305,142 @@ class TestExtractCustomTypes:
         assert extract_custom_types('double') == []
 
 
+# =============================================================================
+# Exploration Tests: Verify Introspection on Existing ROOT Classes
+# =============================================================================
+
+class TestExplorationExistingClasses:
+    """
+    Exploration tests to verify introspection works on real ROOT classes.
+    These tests can be copy-pasted and run standalone for debugging.
+    """
+    
+    def test_explore_TVector3(self):
+        """
+        Exploration: Discover all methods from TVector3.
+        Copy-paste friendly for debugging.
+        """
+        from RDataFrameDSL.root_introspection import discover_class_methods
+        
+        print("\n" + "="*70)
+        print("EXPLORING: TVector3")
+        print("="*70)
+        
+        methods = discover_class_methods('TVector3', verbose=True)
+        
+        print(f"\nTotal methods found: {len(methods)}")
+        print("\nMethod signatures:")
+        for name, return_type in sorted(methods.items()):
+            print(f"  {name:30s} → {return_type}")
+        
+        # Verify key methods
+        assert 'X' in methods, "Should find X()"
+        assert 'Y' in methods, "Should find Y()"
+        assert 'Z' in methods, "Should find Z()"
+        assert 'Mag' in methods, "Should find Mag()"
+        
+        print("\n✅ TVector3 exploration successful")
+    
+    def test_explore_TLorentzVector(self):
+        """
+        Exploration: Discover all methods from TLorentzVector.
+        Useful for understanding what's discovered from physics classes.
+        """
+        from RDataFrameDSL.root_introspection import discover_class_methods
+        
+        print("\n" + "="*70)
+        print("EXPLORING: TLorentzVector")
+        print("="*70)
+        
+        methods = discover_class_methods('TLorentzVector', verbose=True)
+        
+        print(f"\nTotal methods found: {len(methods)}")
+        
+        # Group by return type
+        by_type = {}
+        for name, return_type in methods.items():
+            if return_type not in by_type:
+                by_type[return_type] = []
+            by_type[return_type].append(name)
+        
+        print("\nMethods grouped by return type:")
+        for return_type, names in sorted(by_type.items()):
+            print(f"\n  {return_type}:")
+            for name in sorted(names):
+                print(f"    - {name}()")
+        
+        # Verify physics methods
+        assert 'Pt' in methods
+        assert 'Eta' in methods
+        assert 'Phi' in methods
+        assert methods['Pt'] == 'double'
+        
+        # Check for vector methods
+        assert 'Vect' in methods
+        assert methods['Vect'] == 'TVector3'
+        
+        print("\n✅ TLorentzVector exploration successful")
+    
+    def test_explore_TNamed(self):
+        """
+        Exploration: Discover methods from TNamed.
+        Shows what's inherited from TObject base class.
+        """
+        from RDataFrameDSL.root_introspection import discover_class_methods
+        
+        print("\n" + "="*70)
+        print("EXPLORING: TNamed")
+        print("="*70)
+        
+        methods = discover_class_methods('TNamed', verbose=True)
+        
+        print(f"\nTotal methods found: {len(methods)}")
+        
+        # Show string-related methods
+        print("\nString-related methods:")
+        for name, return_type in sorted(methods.items()):
+            if 'char' in return_type.lower() or 'string' in return_type.lower():
+                print(f"  {name:30s} → {return_type}")
+        
+        # Verify key methods
+        assert 'GetName' in methods
+        assert 'GetTitle' in methods
+        
+        print("\n✅ TNamed exploration successful")
+    
+    def test_explore_custom_class_if_available(self):
+        """
+        Exploration: Try to discover methods from custom test classes.
+        This will skip if custom classes aren't registered yet.
+        """
+        from RDataFrameDSL.root_introspection import discover_class_methods
+        import ROOT
+        
+        # Try to find ToyTrack (might be from conftest)
+        tclass = ROOT.TClass.GetClass('ToyTrack')
+        
+        if not tclass:
+            pytest.skip("ToyTrack not available (need to run after conftest)")
+        
+        print("\n" + "="*70)
+        print("EXPLORING: ToyTrack (Custom Class)")
+        print("="*70)
+        
+        methods = discover_class_methods('ToyTrack', verbose=True)
+        
+        print(f"\nTotal methods found: {len(methods)}")
+        print("\nAll methods:")
+        for name, return_type in sorted(methods.items()):
+            print(f"  {name:30s} → {return_type}")
+        
+        # Check for expected custom methods
+        if 'Pt' in methods:
+            print(f"\n✅ Found Pt(): {methods['Pt']}")
+        if 'clusters' in methods:
+            print(f"✅ Found clusters(): {methods['clusters']}")
+        
+        print("\n✅ ToyTrack exploration complete")
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v', '-s'])

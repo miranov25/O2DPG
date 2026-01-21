@@ -14,9 +14,14 @@ Usage:
 Phase: 13.6.C
 Approved: PROPOSAL_ND_GENERATORS_v1.2
 Phase 13.6.D+: Added ROOT introspection for automatic method discovery
+Phase 13.6.D++: Fixed pragma registration order for custom classes
 """
 
 import pytest
+import logging
+
+# Set up logging for debugging
+logger = logging.getLogger(__name__)
 
 # Phase 13.6.D+: Import ROOT introspection for automatic method discovery
 try:
@@ -25,6 +30,62 @@ try:
 except ImportError:
     _INTROSPECTION_AVAILABLE = False
     discover_class_methods = None
+
+
+# =============================================================================
+# Phase 13.6.D++: Centralized Pragma Registration
+# =============================================================================
+
+_CUSTOM_CLASS_PRAGMAS_REGISTERED = False
+
+def ensure_custom_class_pragmas():
+    """
+    Ensure custom class pragmas are registered exactly once.
+    
+    Phase 13.6.D++: CRITICAL - Must be called BEFORE:
+    1. Creating ROOT files with custom classes
+    2. Opening ROOT files with custom classes
+    3. Creating RDataFrame with custom classes
+    
+    Order matters! ROOT needs dictionaries before it can serialize/deserialize
+    RVec<ToyCluster> members inside ToyTrack.
+    
+    Phase 13.6.D+++: CRITICAL FIX - Pragmas must be registered BEFORE
+    register_custom_classes() is called, because gInterpreter.Declare()
+    triggers TStreamerInfo::Build which needs the RVec<ToyCluster> dictionary.
+    """
+    global _CUSTOM_CLASS_PRAGMAS_REGISTERED
+    
+    if _CUSTOM_CLASS_PRAGMAS_REGISTERED:
+        logger.debug("Custom class pragmas already registered, skipping")
+        return
+    
+    import ROOT
+    
+    # Phase 13.6.D+++: Register pragmas FIRST, before class declarations
+    # CRITICAL ORDER: RVec<ToyCluster> MUST be registered BEFORE ToyTrack
+    # because ToyTrack contains a member 'fClusters' of type RVec<ToyCluster>
+    # AND the pragmas must be processed BEFORE gInterpreter.Declare() in
+    # register_custom_classes(), or TStreamerInfo::Build will fail.
+    pragmas = [
+        '#pragma link C++ class ToyCluster+;',
+        '#pragma link C++ class ROOT::VecOps::RVec<ToyCluster>+;',  # Before ToyTrack!
+        '#pragma link C++ class ToyTrack+;',
+        '#pragma link C++ class ROOT::VecOps::RVec<ToyTrack>+;',
+    ]
+    
+    logger.info("Registering ROOT pragmas for custom classes...")
+    for pragma in pragmas:
+        logger.debug(f"  Processing: {pragma}")
+        ROOT.gInterpreter.ProcessLine(pragma)
+    
+    # NOW register custom classes (C++ declarations) - AFTER pragmas
+    if _ND_GENERATORS_AVAILABLE:
+        logger.info("Registering custom classes (ToyTrack, ToyCluster)...")
+        register_custom_classes()
+    
+    _CUSTOM_CLASS_PRAGMAS_REGISTERED = True
+    logger.info("Custom class pragmas registered successfully")
 
 
 # =============================================================================
@@ -197,20 +258,31 @@ def custom_class_schema():
     
     Phase 13.6.D: Added _pragmas for ROOT dictionary registration.
     Phase 13.6.D+: Auto-discover method signatures using ROOT introspection.
+    Phase 13.6.D++: Ensure pragmas are registered before introspection.
     """
+    # Phase 13.6.D++: Ensure pragmas registered before introspection
+    if _ND_GENERATORS_AVAILABLE and _root_available():
+        ensure_custom_class_pragmas()
+    
     # Auto-discover method signatures if introspection available
     if _INTROSPECTION_AVAILABLE and _ND_GENERATORS_AVAILABLE:
         try:
+            logger.debug("Auto-discovering ToyTrack methods...")
             toy_track_methods = discover_class_methods('ToyTrack', verbose=False)
+            logger.debug(f"  Found {len(toy_track_methods)} ToyTrack methods")
+            
+            logger.debug("Auto-discovering ToyCluster methods...")
             toy_cluster_methods = discover_class_methods('ToyCluster', verbose=False)
+            logger.debug(f"  Found {len(toy_cluster_methods)} ToyCluster methods")
             
             return {
                 'event_id': 'long',
                 'tracks': 'RVec<ToyTrack>',
                 '_pragmas': [
+                    # CRITICAL ORDER: RVec<ToyCluster> MUST be before ToyTrack
                     '#pragma link C++ class ToyCluster+;',
-                    '#pragma link C++ class ToyTrack+;',
                     '#pragma link C++ class ROOT::VecOps::RVec<ToyCluster>+;',
+                    '#pragma link C++ class ToyTrack+;',
                     '#pragma link C++ class ROOT::VecOps::RVec<ToyTrack>+;',
                 ],
                 '_methods': {
@@ -218,8 +290,9 @@ def custom_class_schema():
                     'ToyCluster': toy_cluster_methods,  # Auto-discovered!
                 }
             }
-        except Exception:
+        except Exception as e:
             # Fall back to schema without _methods if introspection fails
+            logger.warning(f"Introspection failed: {e}")
             pass
     
     # Fallback: Return schema without _methods (for compatibility)
@@ -228,9 +301,10 @@ def custom_class_schema():
         # Add _pragmas if not present
         if '_pragmas' not in schema:
             schema['_pragmas'] = [
+                # CRITICAL ORDER: RVec<ToyCluster> MUST be before ToyTrack
                 '#pragma link C++ class ToyCluster+;',
-                '#pragma link C++ class ToyTrack+;',
                 '#pragma link C++ class ROOT::VecOps::RVec<ToyCluster>+;',
+                '#pragma link C++ class ToyTrack+;',
                 '#pragma link C++ class ROOT::VecOps::RVec<ToyTrack>+;',
             ]
         return schema
@@ -239,9 +313,10 @@ def custom_class_schema():
         'event_id': 'long',
         'tracks': 'RVec<ToyTrack>',
         '_pragmas': [
+            # CRITICAL ORDER: RVec<ToyCluster> MUST be before ToyTrack
             '#pragma link C++ class ToyCluster+;',
-            '#pragma link C++ class ToyTrack+;',
             '#pragma link C++ class ROOT::VecOps::RVec<ToyCluster>+;',
+            '#pragma link C++ class ToyTrack+;',
             '#pragma link C++ class ROOT::VecOps::RVec<ToyTrack>+;',
         ]
     }
@@ -254,11 +329,11 @@ def custom_class_schema():
 @pytest.fixture
 def nd_2d_dict():
     """
-    2D cluster data as dict (size S, 100 events).
+    2D cluster data as dict (100 events).
     
-    What: Dict with cluster_Q[event][track][cluster] = 1000*e + 100*t + c
-    Why:  Tier 1 unit tests without ROOT
-    Who:  Flatten engine tests, parser tests
+    What: Pure Python dict with RVec-like nested lists
+    Why:  Tier 1 unit tests without ROOT dependency
+    Who:  Parser tests, transformer tests
     """
     if not _ND_GENERATORS_AVAILABLE:
         pytest.skip("N-D generators not available")
@@ -268,23 +343,23 @@ def nd_2d_dict():
 @pytest.fixture
 def nd_2d_dict_small():
     """
-    2D cluster data as dict (3 events only).
+    2D cluster data as dict (2 events only).
     
-    What: Small dict for quick tests
-    Why:  Fast iteration during development
-    Who:  Quick validation tests
+    What: Minimal 2D dict for quick tests
+    Why:  Fast iteration, exact value checking
+    Who:  Quick unit tests
     """
     if not _ND_GENERATORS_AVAILABLE:
         pytest.skip("N-D generators not available")
-    return generate_nd_2d_dict(size='S', n_events=3)
+    return generate_nd_2d_dict(size='S', n_events=2)
 
 
 @pytest.fixture
 def nd_3d_dict():
     """
-    3D hit data as dict (size S, 100 events).
+    3D hit data as dict (100 events).
     
-    What: Dict with hit_E[event][track][cluster][hit] = 10000*e + 1000*t + 100*c + h
+    What: Pure Python dict with 3-level nesting
     Why:  Tier 1 unit tests for 3D slicing
     Who:  3D flatten tests, parser tests
     """
@@ -327,6 +402,7 @@ def nd_2d_root_file_S(tmp_path_factory):
     
     tmpdir = tmp_path_factory.mktemp("nd_data")
     filename = str(tmpdir / "toy_nd_2d_S.root")
+    logger.info(f"Creating 2D ROOT file: {filename}")
     return generate_nd_2d_root(filename, size='S')
 
 
@@ -346,6 +422,7 @@ def nd_3d_root_file_S(tmp_path_factory):
     
     tmpdir = tmp_path_factory.mktemp("nd_data")
     filename = str(tmpdir / "toy_nd_3d_S.root")
+    logger.info(f"Creating 3D ROOT file: {filename}")
     return generate_nd_3d_root(filename, size='S')
 
 
@@ -357,15 +434,24 @@ def custom_class_root_file_S(tmp_path_factory):
     What: TTree with RVec<ToyTrack> containing RVec<ToyCluster>
     Why:  Test method calls (.Pt(), .getQ(), .r())
     Who:  Method call tests, computed property tests
+    
+    Phase 13.6.D++: CRITICAL - Pragmas must be registered BEFORE file creation!
     """
     if not _ND_GENERATORS_AVAILABLE:
         pytest.skip("N-D generators not available")
     if not _root_available():
         pytest.skip("ROOT not available")
     
+    # Phase 13.6.D++: MUST register pragmas BEFORE creating the file
+    # This ensures ROOT can properly serialize RVec<ToyCluster> members
+    ensure_custom_class_pragmas()
+    
     tmpdir = tmp_path_factory.mktemp("custom_class")
     filename = str(tmpdir / "toy_custom_S.root")
-    return generate_custom_class_root(filename, size='S')
+    logger.info(f"Creating custom class ROOT file: {filename}")
+    result = generate_custom_class_root(filename, size='S')
+    logger.info(f"Custom class ROOT file created: {result}")
+    return result
 
 
 # =============================================================================
@@ -414,6 +500,7 @@ def nd_2d_root_file_L():
 def nd_2d_rdf(nd_2d_root_file_S):
     """RDataFrame with 2D cluster structure (size S)."""
     import ROOT
+    logger.debug(f"Opening 2D RDataFrame from: {nd_2d_root_file_S}")
     return ROOT.RDataFrame("Events", nd_2d_root_file_S)
 
 
@@ -421,6 +508,7 @@ def nd_2d_rdf(nd_2d_root_file_S):
 def nd_3d_rdf(nd_3d_root_file_S):
     """RDataFrame with 3D hit structure (size S)."""
     import ROOT
+    logger.debug(f"Opening 3D RDataFrame from: {nd_3d_root_file_S}")
     return ROOT.RDataFrame("Events", nd_3d_root_file_S)
 
 
@@ -429,26 +517,23 @@ def custom_class_rdf(custom_class_root_file_S):
     """
     RDataFrame with custom class branches (size S).
     
-    Phase 13.6.D: Registers pragmas BEFORE creating RDataFrame.
+    Phase 13.6.D++: Pragmas already registered by custom_class_root_file_S fixture.
+    We ensure they're registered again (idempotent) before opening the file.
     """
     import ROOT
     
-    # Register custom classes (C++ declarations)
-    register_custom_classes()
+    # Phase 13.6.D++: Ensure pragmas are registered (idempotent)
+    # The file fixture already did this, but we ensure it here too for safety
+    ensure_custom_class_pragmas()
     
-    # Register pragmas for ROOT dictionary (BEFORE RDataFrame creation)
-    # This prevents "Class 'ToyTrack' not found (no dictionary)" errors
-    pragmas = [
-        '#pragma link C++ class ToyCluster+;',
-        '#pragma link C++ class ToyTrack+;',
-        '#pragma link C++ class ROOT::VecOps::RVec<ToyCluster>+;',
-        '#pragma link C++ class ROOT::VecOps::RVec<ToyTrack>+;',
-    ]
+    logger.info(f"Opening custom class RDataFrame from: {custom_class_root_file_S}")
+    rdf = ROOT.RDataFrame("Events", custom_class_root_file_S)
     
-    for pragma in pragmas:
-        ROOT.gInterpreter.ProcessLine(pragma)
+    # Debug: Check if we can access the data
+    count = rdf.Count().GetValue()
+    logger.info(f"Custom class RDataFrame has {count} entries")
     
-    return ROOT.RDataFrame("Events", custom_class_root_file_S)
+    return rdf
 
 
 # =============================================================================

@@ -1208,9 +1208,13 @@ def register_custom_classes(use_simple: bool = False) -> bool:
     """
     Register ToyCluster and ToyTrack classes with ROOT.
     
-    What: Declares C++ classes in ROOT interpreter
+    What: Declares C++ classes and generates dictionaries for TTree I/O
     Why:  Required before using custom class branches
     Who:  Called by generate_custom_class_root() and custom_class_rdf fixture
+    
+    Phase 13.6.D++++: Use GenerateDictionary() instead of just #pragma link.
+    The #pragma link statements are NOT sufficient for TTree I/O with 
+    std::vector<CustomClass> - we need actual compiled dictionaries.
     
     Returns
     -------
@@ -1223,22 +1227,106 @@ def register_custom_classes(use_simple: bool = False) -> bool:
         return _using_simple_classes
     
     import ROOT
+    import tempfile
+    import os
     
-    if use_simple:
-        ROOT.gInterpreter.Declare(TOYCLUSTER_HEADER_SIMPLE)
-        ROOT.gInterpreter.Declare(TOYTRACK_HEADER_SIMPLE)
-        _using_simple_classes = True
-    else:
-        try:
-            ROOT.gInterpreter.Declare(TOYCLUSTER_HEADER)
-            ROOT.gInterpreter.Declare(TOYTRACK_HEADER)
-            _using_simple_classes = False
-        except Exception:
-            # Fallback to simple if ClassDef fails
-            ROOT.gInterpreter.Declare(TOYCLUSTER_HEADER_SIMPLE)
-            ROOT.gInterpreter.Declare(TOYTRACK_HEADER_SIMPLE)
-            _using_simple_classes = True
+    # Phase 13.6.D++++: Write classes to temporary header file for GenerateDictionary
+    # GenerateDictionary requires a header file path, not inline declarations
     
+    # Use simple classes (struct without ClassDef) - they work better with
+    # runtime dictionary generation
+    header_content = '''
+#ifndef TOYCLASSES_RUNTIME_H
+#define TOYCLASSES_RUNTIME_H
+
+#include "TObject.h"
+#include "TLorentzVector.h"
+#include "TMath.h"
+#include "ROOT/RVec.hxx"
+#include <vector>
+
+struct ToyCluster {
+    Double_t fQ = 0, fX = 0, fY = 0, fZ = 0;
+    
+    ToyCluster() = default;
+    ToyCluster(Double_t q, Double_t x, Double_t y, Double_t z)
+        : fQ(q), fX(x), fY(y), fZ(z) {}
+    
+    Double_t getQ() const { return fQ; }
+    Double_t getX() const { return fX; }
+    Double_t getY() const { return fY; }
+    Double_t getZ() const { return fZ; }
+    Double_t GetQ() const { return fQ; }
+    Double_t GetX() const { return fX; }
+    Double_t r() const { return TMath::Sqrt(fX*fX + fY*fY); }
+    Double_t phi() const { return TMath::ATan2(fY, fX); }
+    Double_t charge() const { return fQ; }
+};
+
+struct ToyTrack {
+    TLorentzVector fMomentum;
+    std::vector<ToyCluster> fClusters;
+    Int_t fPdgCode = 211;
+    
+    ToyTrack() = default;
+    ToyTrack(Double_t px, Double_t py, Double_t pz, Double_t e, Int_t pdg = 211)
+        : fMomentum(px, py, pz, e), fPdgCode(pdg) {}
+    
+    Double_t pt() const { return fMomentum.Pt(); }
+    Double_t Pt() const { return fMomentum.Pt(); }
+    Double_t getPt() const { return fMomentum.Pt(); }
+    Double_t GetPt() const { return fMomentum.Pt(); }
+    Double_t px() const { return fMomentum.Px(); }
+    Double_t py() const { return fMomentum.Py(); }
+    Double_t pz() const { return fMomentum.Pz(); }
+    Double_t eta() const { return fMomentum.Eta(); }
+    Double_t Eta() const { return fMomentum.Eta(); }
+    Double_t phi() const { return fMomentum.Phi(); }
+    Double_t Phi() const { return fMomentum.Phi(); }
+    
+    ROOT::RVec<ToyCluster> clusters() const { 
+        return ROOT::RVec<ToyCluster>(fClusters.begin(), fClusters.end()); 
+    }
+    const std::vector<ToyCluster>& GetClusters() const { return fClusters; }
+    
+    Int_t nClusters() const { return fClusters.size(); }
+    Int_t GetNClusters() const { return fClusters.size(); }
+    
+    void addCluster(const ToyCluster& c) { fClusters.push_back(c); }
+    void AddCluster(const ToyCluster& c) { fClusters.push_back(c); }
+    void addCluster(Double_t q, Double_t x, Double_t y, Double_t z) {
+        fClusters.emplace_back(q, x, y, z);
+    }
+    
+    Double_t totalCharge() const {
+        Double_t sum = 0;
+        for (const auto& c : fClusters) sum += c.getQ();
+        return sum;
+    }
+};
+
+#endif
+'''
+    
+    # Write to temporary header file
+    # Use a fixed location in temp directory to allow reuse
+    header_dir = tempfile.gettempdir()
+    header_path = os.path.join(header_dir, 'ToyClasses_runtime.h')
+    
+    with open(header_path, 'w') as f:
+        f.write(header_content)
+    
+    # Include the header first
+    ROOT.gInterpreter.ProcessLine(f'#include "{header_path}"')
+    
+    # Generate dictionaries using GenerateDictionary
+    # This creates actual compiled dictionaries, not just pragma registrations
+    ROOT.gInterpreter.GenerateDictionary("ToyCluster", header_path)
+    ROOT.gInterpreter.GenerateDictionary("ToyTrack", header_path)
+    ROOT.gInterpreter.GenerateDictionary("vector<ToyCluster>", f"{header_path};vector")
+    ROOT.gInterpreter.GenerateDictionary("vector<ToyTrack>", f"{header_path};vector")
+    
+    _using_simple_classes = True  # Always use simple struct version now
     _custom_classes_registered = True
     return _using_simple_classes
 
@@ -1266,7 +1354,7 @@ def generate_custom_class_root(
     """
     import ROOT
     
-    # Register classes first
+    # Register classes (and pragmas) - Phase 13.6.D+++: pragmas now inside register_custom_classes
     register_custom_classes(use_simple)
     
     config = SIZE_CONFIGS[size]

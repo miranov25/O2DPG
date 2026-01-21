@@ -310,6 +310,32 @@ class CppCodeGenerator:
         self._existing_names: Set[str] = set()
         self._uses_reflection_access = False  # Track if reflection access was generated
     
+    def _is_numeric_type(self, type_str: str) -> bool:
+        """
+        Check if a type is numeric (supports std::numeric_limits::quiet_NaN).
+        
+        Phase 13.6.D+: Added to distinguish numeric types from custom classes.
+        Custom classes need default constructor T() instead of quiet_NaN().
+        """
+        # Basic numeric types
+        NUMERIC_TYPES = {
+            'double', 'float', 'int', 'long', 'short', 'char',
+            'unsigned int', 'unsigned long', 'unsigned short', 'unsigned char',
+            'long long', 'unsigned long long', 'size_t',
+            'int8_t', 'int16_t', 'int32_t', 'int64_t',
+            'uint8_t', 'uint16_t', 'uint32_t', 'uint64_t',
+            # ROOT types
+            'Int_t', 'Long_t', 'Short_t', 'Char_t',
+            'UInt_t', 'ULong_t', 'UShort_t', 'UChar_t',
+            'Float_t', 'Double_t', 'Long64_t', 'ULong64_t',
+            'Bool_t', 'bool'
+        }
+        
+        # Remove const, &, *, and whitespace for comparison
+        clean_type = type_str.replace('const', '').replace('&', '').replace('*', '').strip()
+        
+        return clean_type in NUMERIC_TYPES
+    
     def generate(self, ir: IRNode, name: str) -> GeneratedFunction:
         """
         Generate C++ helper function from IR tree.
@@ -369,7 +395,11 @@ class CppCodeGenerator:
                         f"Variable '{node.name}' has Unknown type",
                         suggestions=["Ensure all variables are defined in the schema"]
                     )
-                elif not isinstance(node, SliceNode):  # SliceNode has Unknown type by design
+                # Phase 13.6.D+: Allow SliceNode and MethodCallNode with Unknown type
+                # - SliceNode: Unknown type by design (slice semantics)
+                # - MethodCallNode: Method return type may not be in signature database,
+                #   but C++ compiler can still resolve the call at compile time
+                elif not isinstance(node, (SliceNode, MethodCallNode)):
                     raise IRError(
                         IRErrorKind.TYPE_ERROR,
                         "Expression contains Unknown type",
@@ -1297,6 +1327,14 @@ class CppCodeGenerator:
                 pass
         
         # Generate method call (no arguments for object methods)
+        # Phase 13.6.D+: Wrap ternary expressions in parentheses for correct precedence
+        # Without this: condition ? obj : fallback.method() ← Wrong!
+        # With this: (condition ? obj : fallback).method() ← Correct!
+        if '?' in object_code:
+            # Always wrap ternary to ensure correct precedence
+            # Strip outer spaces and wrap
+            object_code = f"({object_code.strip()})"
+        
         return f"{object_code}.{node.method_name}()"
     
     def _visit_property_access(self, node: PropertyAccessNode) -> str:
@@ -1603,8 +1641,12 @@ class CppCodeGenerator:
                     inner = f"ROOT::RVec<{inner}>"
                 fallback = f"{inner}{{}}"
             else:
-                # Result is scalar - fallback is NaN
-                fallback = f"std::numeric_limits<{result_type}>::quiet_NaN()"
+                # Result is scalar - fallback depends on type
+                # Phase 13.6.D+: Use default constructor for custom classes
+                if self._is_numeric_type(result_type):
+                    fallback = f"std::numeric_limits<{result_type}>::quiet_NaN()"
+                else:
+                    fallback = f"{result_type}()"  # Default constructor for custom classes
             
             # Phase 13.3.DSL: Handle chained subscripts - if value_code is complex
             # (contains ternary), wrap in lambda to extract to variable
@@ -1640,8 +1682,12 @@ class CppCodeGenerator:
                 inner = f"ROOT::RVec<{inner}>"
             fallback = f"{inner}{{}}"
         else:
-            # Result is scalar - fallback is NaN
-            fallback = f"std::numeric_limits<{result_type}>::quiet_NaN()"
+            # Result is scalar - fallback depends on type
+            # Phase 13.6.D+: Use default constructor for custom classes
+            if self._is_numeric_type(result_type):
+                fallback = f"std::numeric_limits<{result_type}>::quiet_NaN()"
+            else:
+                fallback = f"{result_type}()"  # Default constructor for custom classes
         
         # Phase 13.3.DSL: Handle chained subscripts - if value_code is complex
         # (contains ternary), wrap in lambda to extract to variable
@@ -1784,14 +1830,22 @@ class CppCodeGenerator:
         return result
     
     def _make_nd_fallback(self, base_type: str, rank: int) -> str:
-        """Generate fallback value for out-of-bounds access."""
+        """
+        Generate fallback value for out-of-bounds access.
+        
+        Phase 13.6.D+: Use default constructor for custom classes.
+        """
         if rank > 0:
             inner = base_type
             for _ in range(rank):
                 inner = f"ROOT::RVec<{inner}>"
             return f"{inner}{{}}"
         else:
-            return f"std::numeric_limits<{base_type}>::quiet_NaN()"
+            # Scalar fallback - depends on type
+            if self._is_numeric_type(base_type):
+                return f"std::numeric_limits<{base_type}>::quiet_NaN()"
+            else:
+                return f"{base_type}()"  # Default constructor for custom classes
     
     def _generate_2d_slice(self, target: str, slice_infos: list, 
                            result_type: str, node: SubscriptNode) -> str:

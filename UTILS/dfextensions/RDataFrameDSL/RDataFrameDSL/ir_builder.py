@@ -2064,10 +2064,21 @@ class IRBuilder:
         # Regular scalar indexing reduces rank by 1
         new_rank = max(0, value.rank - 1)
         
+        # Phase 13.6.D+ FIX: Extract element type when subscripting RVec
+        # When going from RVec<T> (rank=1) to T (rank=0), extract the element type
+        result_dtype = value.dtype
+        if new_rank == 0 and value.rank == 1:  # Was RVec (rank 1), now scalar (rank 0)
+            cpp_type = value.dtype.cpp_type or ""
+            if cpp_type.startswith("RVec<") and cpp_type.endswith(">"):
+                # Extract T from RVec<T>
+                element_type = cpp_type[5:-1]  # Strip "RVec<" and ">"
+                from .ir_types import cpp_type_to_ir
+                result_dtype = cpp_type_to_ir(element_type)
+        
         return SubscriptNode(
             value=value,
             indices=[index],
-            dtype=value.dtype,
+            dtype=result_dtype,  # Now: ToyTrack instead of RVec<ToyTrack>
             rank=new_rank,
             is_jagged=value.is_jagged if new_rank > 0 else False,
             source_location=index.source_location,
