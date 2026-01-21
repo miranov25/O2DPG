@@ -11,10 +11,18 @@ Tests verify:
 - Reductions on method results (Sum(tracks.Pt()))
 
 Data source: toy_nd.py custom class generator (ToyTrack, ToyCluster)
+
+IMPORTANT: These tests CANNOT run in parallel (-n > 0) due to ROOT constraints.
+GenerateDictionary() modifies global interpreter state and writes to shared temp files.
+Run with: pytest tests/test_invariance_udf.py -v  (NOT -n 12)
 """
 
 import pytest
 import numpy as np
+
+# Mark entire module to not run in parallel with xdist
+# ROOT's GenerateDictionary cannot handle concurrent dictionary generation
+pytestmark = pytest.mark.serial
 
 
 # =============================================================================
