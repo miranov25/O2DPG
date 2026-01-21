@@ -306,19 +306,24 @@ class IRBuilder:
     """
     
     def __init__(self, type_inferrer: TypeInferrer, 
-                 error_collector: ErrorCollector = None):
+                 error_collector: ErrorCollector = None,
+                 method_signatures: Optional[Dict[str, Dict[str, str]]] = None):
         """
         Initialize builder with type information.
         
         Args:
             type_inferrer: TypeInferrer with column/alias types
             error_collector: Optional error collector for batch processing
+            method_signatures: Optional method signature map (Phase 13.6.D+)
+                              Format: {'ClassName': {'method': 'return_type'}}
         """
         self.inferrer = type_inferrer
         self.errors = error_collector or ErrorCollector()
         self._custom_functions: Dict[str, List[Dict]] = {}  # Phase 13.5.C: List for overloads
         # Phase 11.1c: Cache for namespace resolution (positive results only)
         self._namespace_cache: Dict[str, bool] = {}
+        # Phase 13.6.D+: Store method signatures for UDF type resolution
+        self._method_signatures = method_signatures or {}
     
     def register_function(
         self, 
@@ -1639,16 +1644,52 @@ class IRBuilder:
                 source_location=self._make_location(node, ctx),
             )
         
-        # For scalar object types, use direct method call (Phase 6a)
+        # For scalar object types, use direct method call (Phase 6a + 13.6.D+)
         if obj.dtype.kind == IRTypeKind.Object and obj.rank == 0:
+            class_name = obj.dtype.cpp_type
+            return_type_str = None
+            result_rank = 0
+            
+            # Phase 13.6.D+: Check method signatures from schema
+            if class_name in self._method_signatures:
+                class_methods = self._method_signatures[class_name]
+                if method_name in class_methods:
+                    return_type_str = class_methods[method_name]
+            
+            # Fallback: try reflection cache if method not in signatures
+            if not return_type_str:
+                try:
+                    from .reflection_cache import ReflectionCache
+                    cache = ReflectionCache()
+                    method_info = cache.resolve_method(class_name, method_name)
+                    return_type_str = method_info.return_type
+                except Exception:
+                    # If reflection fails, leave as Unknown
+                    return_type_str = None
+            
+            # Determine result type and rank
+            if return_type_str:
+                # Import locally to match function scoping
+                from .ir_types import cpp_type_to_ir
+                return_dtype = cpp_type_to_ir(return_type_str)
+                
+                # Check if method returns collection
+                if 'RVec<' in return_type_str:
+                    result_rank = 1  # Returns collection like clusters()
+                else:
+                    result_rank = 0  # Returns scalar like getQ()
+            else:
+                return_dtype = IRType(IRTypeKind.Unknown)
+                result_rank = 0
+            
             return MethodCallNode(
                 object=obj,
                 method_name=method_name,
                 args=args,
-                dtype=IRType(IRTypeKind.Unknown),  # Will be resolved in Phase 4
-                rank=obj.rank,
+                dtype=return_dtype,          # Phase 13.6.D+: Resolved type
+                rank=result_rank,             # Phase 13.6.D+: Correct rank
                 is_jagged=obj.is_jagged,
-                class_name=obj.dtype.cpp_type,
+                class_name=class_name,
                 source_location=self._make_location(node, ctx),
             )
         

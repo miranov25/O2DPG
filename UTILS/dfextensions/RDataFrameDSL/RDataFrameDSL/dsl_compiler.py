@@ -107,6 +107,85 @@ __all__ = ['DSLCompiler']
 HASH_LENGTH = 16
 HASH_SCHEMA_VERSION = 1
 
+# =============================================================================
+# Phase 13.6.D: Global Pragma Registry
+# =============================================================================
+
+_PRAGMA_REGISTRY: Set[str] = set()
+_PRAGMA_LOCK: threading.RLock = threading.RLock()
+
+
+def register_pragma(pragma: str) -> bool:
+    """
+    Register a pragma globally. Thread-safe. Deduplicates automatically.
+    
+    Args:
+        pragma: Complete pragma statement (e.g., "#pragma link C++ class X+;")
+    
+    Returns:
+        True if pragma was newly registered, False if already registered
+    
+    Raises:
+        ValueError: If pragma doesn't start with "#pragma"
+    
+    Example:
+        >>> register_pragma('#pragma link C++ class ToyTrack+;')
+        True
+        >>> register_pragma('#pragma link C++ class ToyTrack+;')
+        False  # Already registered
+    
+    Phase: 13.6.D
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Normalize pragma (strip whitespace)
+    normalized = pragma.strip()
+    
+    # Validate format
+    if not normalized.startswith('#pragma'):
+        raise ValueError(f"Invalid pragma (must start with '#pragma'): {pragma}")
+    
+    with _PRAGMA_LOCK:
+        if normalized in _PRAGMA_REGISTRY:
+            logger.debug(f"Skipped duplicate pragma: {normalized}")
+            return False  # Already registered - skip
+        
+        # Execute pragma in ROOT (if available)
+        try:
+            import ROOT
+            ROOT.gInterpreter.ProcessLine(normalized)
+            logger.debug(f"Registered pragma: {normalized}")
+        except ImportError:
+            logger.debug(f"ROOT not available, pragma not executed: {normalized}")
+            pass  # ROOT not available - skip execution
+        except Exception as e:
+            # Don't crash if pragma fails - ROOT may already have it
+            logger.warning(f"Pragma execution warning for '{normalized}': {e}")
+            import warnings
+            warnings.warn(f"Pragma execution warning: {e}")
+        
+        # Track it
+        _PRAGMA_REGISTRY.add(normalized)
+        return True
+
+
+def is_pragma_registered(pragma: str) -> bool:
+    """
+    Check if pragma already registered.
+    
+    Args:
+        pragma: Pragma statement to check
+    
+    Returns:
+        True if pragma is registered, False otherwise
+    
+    Phase: 13.6.D
+    """
+    normalized = pragma.strip()
+    with _PRAGMA_LOCK:
+        return normalized in _PRAGMA_REGISTRY
+
 # Default headers for C++ function registration
 REGISTER_DEFAULT_HEADERS: FrozenSet[str] = frozenset([
     "<cmath>",
@@ -260,16 +339,42 @@ class DSLCompiler:
         Args:
             schema: Dict mapping column names to C++ types
                     e.g. {"px": "double", "pt": "RVec<double>"}
+                    
+                    Special key '_pragmas' (optional): List of pragma directives
+                    for custom class registration. These are automatically
+                    registered and deduplicated.
+                    
+                    Example with custom classes:
+                        schema = {
+                            'event_id': 'long',
+                            'tracks': 'RVec<ToyTrack>',
+                            '_pragmas': [
+                                '#pragma link C++ class ToyTrack+;',
+                                '#pragma link C++ class ROOT::VecOps::RVec<ToyTrack>+;',
+                            ]
+                        }
             safe_indexing: Enable bounds checking (default True)
+        
+        Phase 13.6.D: Added _pragmas key support for custom class dictionaries.
         """
-        self.schema = dict(schema)  # Make a copy to allow modifications
+        # Extract and register pragmas BEFORE processing schema
+        schema_copy = dict(schema)  # Make a copy
+        pragmas = schema_copy.pop('_pragmas', [])
+        method_signatures = schema_copy.pop('_methods', {})  # Phase 13.6.D+: Extract method signatures
+        
+        if pragmas:
+            for pragma in pragmas:
+                register_pragma(pragma)
+        
+        # Store cleaned schema (without _pragmas)
+        self.schema = schema_copy
         self.safe_indexing = safe_indexing
         
         # Unique ID for this compiler instance (avoids parallel test collisions)
         self._unique_id = uuid.uuid4().hex[:8]
         
-        # Convert schema
-        full_schema = _simple_schema_to_full(schema)
+        # Convert schema (use cleaned schema_copy, not original schema)
+        full_schema = _simple_schema_to_full(schema_copy)
         self._inferrer = TypeInferrer.from_schema(full_schema)
         
         # Set up generator
@@ -292,6 +397,9 @@ class DSLCompiler:
         # Phase 13.5.B: Storage for registered C++ functions
         self._registered_cpp_functions: Dict[str, RegisteredCppFunction] = {}
         self._registered_cpp_by_name: Dict[str, List[str]] = {}
+        
+        # Phase 13.6.D+: Store method signatures for IR builder
+        self._method_signatures = method_signatures
     
     def _preprocess_expression(self, expr: str) -> str:
         """
@@ -406,8 +514,12 @@ class DSLCompiler:
         # Phase 11.1: Preprocess C++ :: syntax to Python dot syntax
         preprocessed = self._preprocess_expression(expression)
         
-        # Parse and generate
-        builder = IRBuilder(self._inferrer)
+        # Parse and generate (Phase 13.6.D+: pass method_signatures)
+        builder = IRBuilder(
+            self._inferrer,
+            error_collector=None,
+            method_signatures=self._method_signatures
+        )
         
         # Phase 13.5.C: Register custom functions with builder for overload resolution
         self._register_custom_functions_with_builder(builder)
@@ -3212,7 +3324,11 @@ class DSLCompiler:
         headers: Set[str],
         pragmas: Optional[List[str]]
     ) -> str:
-        """Build complete C++ code for declaration."""
+        """
+        Build complete C++ code for declaration.
+        
+        Phase 13.6.D: Pragmas are registered globally and deduplicated.
+        """
         lines = []
         
         # Headers
@@ -3221,9 +3337,13 @@ class DSLCompiler:
         if lines:
             lines.append("")
         
-        # Pragmas (raw lines)
+        # Pragmas (register globally, skip if duplicate)
         if pragmas:
             for p in pragmas:
+                # Register pragma (deduplicates automatically)
+                newly_registered = register_pragma(p)
+                # Still include in code even if not newly registered
+                # (for export/macro generation)
                 lines.append(p)
             lines.append("")
         

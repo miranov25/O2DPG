@@ -16,7 +16,7 @@
 # Date: 2026-01-18
 # =============================================================================
 
-FEATURE_TAXONOMY_VERSION = "1.6"  # Phase 13.6.C: L2 tests SKIPPED (not xfail - ROOT JIT crash)
+FEATURE_TAXONOMY_VERSION = "1.8"  # Phase 13.6.D: Added pragma_management for pragma registry tests
 
 # =============================================================================
 # FEATURE ALIASES (for backward compatibility if renaming needed)
@@ -106,6 +106,42 @@ FEATURE_TAXONOMY = {
             "tests/test_invariance_functions.py::TestMemberFunctionsEngineTests::test_INV_F12_WEIGHTED_ENG_cluster_sum",
         ],
         "proof": None,
+    },
+    "udf_member_function": {
+        "name": "Custom class member functions",
+        "description": "Member function calls on user-defined objects (ToyTrack.Pt(), ToyCluster.getQ())",
+        "tests": [
+            "tests/test_invariance_udf.py::TestND_L2_UDF_Invariances::test_INV_L2_UDF_exact_pt",
+            "tests/test_invariance_udf.py::TestND_L2_UDF_Invariances::test_INV_L2_UDF_sliced_length",
+            "tests/test_invariance_udf.py::TestND_L2_UDF_Invariances::test_INV_L2_UDF_commutation",
+            "tests/test_invariance_udf.py::TestND_L2_UDF_Invariances::test_INV_L2_UDF_reduction_monotonicity",
+            "tests/test_invariance_udf.py::TestND_L2_UDF_Invariances::test_INV_L2_UDF_nested_exact",
+            "tests/test_invariance_udf.py::TestND_L2_UDF_Invariances::test_INV_L2_UDF_sliced_nested",
+            "tests/test_invariance_udf.py::TestND_L2_UDF_Validation::test_INV_L2_UDF_pythagorean_all_tracks",
+            "tests/test_invariance_udf.py::TestND_L2_UDF_Validation::test_INV_L2_UDF_cluster_x_offset",
+            "tests/test_invariance_udf.py::TestND_L2_UDF_Validation::test_INV_L2_UDF_total_charge_sum",
+        ],
+        "proof": None,
+        "phase": "13.6.D",
+    },
+    "pragma_management": {
+        "name": "ROOT pragma management",
+        "description": "Global pragma registry for custom class dictionaries with deduplication",
+        "tests": [
+            "tests/test_pragma_registry.py::TestPragmaRegistry::test_register_pragma_new",
+            "tests/test_pragma_registry.py::TestPragmaRegistry::test_register_pragma_duplicate",
+            "tests/test_pragma_registry.py::TestPragmaRegistry::test_is_pragma_registered",
+            "tests/test_pragma_registry.py::TestPragmaRegistry::test_register_pragma_invalid",
+            "tests/test_pragma_registry.py::TestPragmaRegistry::test_register_pragma_whitespace",
+            "tests/test_pragma_registry.py::TestSchemaPragmas::test_schema_pragma_extraction",
+            "tests/test_pragma_registry.py::TestSchemaPragmas::test_schema_pragma_registered",
+            "tests/test_pragma_registry.py::TestSchemaPragmas::test_schema_no_pragmas",
+            "tests/test_pragma_registry.py::TestSchemaPragmas::test_schema_multiple_pragmas",
+            "tests/test_pragma_registry.py::TestPragmaThreadSafety::test_concurrent_registration",
+            "tests/test_pragma_registry.py::TestRegisterFunctionCppPragmas::test_register_function_cpp_with_pragmas",
+        ],
+        "proof": None,
+        "phase": "13.6.D",
     },
 
     # -------------------------------------------------------------------------

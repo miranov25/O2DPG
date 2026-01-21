@@ -13,9 +13,18 @@ Usage:
 
 Phase: 13.6.C
 Approved: PROPOSAL_ND_GENERATORS_v1.2
+Phase 13.6.D+: Added ROOT introspection for automatic method discovery
 """
 
 import pytest
+
+# Phase 13.6.D+: Import ROOT introspection for automatic method discovery
+try:
+    from RDataFrameDSL.root_introspection import discover_class_methods
+    _INTROSPECTION_AVAILABLE = True
+except ImportError:
+    _INTROSPECTION_AVAILABLE = False
+    discover_class_methods = None
 
 
 # =============================================================================
@@ -183,12 +192,58 @@ def nd_3d_schema():
 
 @pytest.fixture
 def custom_class_schema():
-    """Schema for custom class test data."""
+    """
+    Schema for custom class test data.
+    
+    Phase 13.6.D: Added _pragmas for ROOT dictionary registration.
+    Phase 13.6.D+: Auto-discover method signatures using ROOT introspection.
+    """
+    # Auto-discover method signatures if introspection available
+    if _INTROSPECTION_AVAILABLE and _ND_GENERATORS_AVAILABLE:
+        try:
+            toy_track_methods = discover_class_methods('ToyTrack', verbose=False)
+            toy_cluster_methods = discover_class_methods('ToyCluster', verbose=False)
+            
+            return {
+                'event_id': 'long',
+                'tracks': 'RVec<ToyTrack>',
+                '_pragmas': [
+                    '#pragma link C++ class ToyCluster+;',
+                    '#pragma link C++ class ToyTrack+;',
+                    '#pragma link C++ class ROOT::VecOps::RVec<ToyCluster>+;',
+                    '#pragma link C++ class ROOT::VecOps::RVec<ToyTrack>+;',
+                ],
+                '_methods': {
+                    'ToyTrack': toy_track_methods,      # Auto-discovered!
+                    'ToyCluster': toy_cluster_methods,  # Auto-discovered!
+                }
+            }
+        except Exception:
+            # Fall back to schema without _methods if introspection fails
+            pass
+    
+    # Fallback: Return schema without _methods (for compatibility)
     if _ND_GENERATORS_AVAILABLE:
-        return CUSTOM_CLASS_SCHEMA.copy()
+        schema = CUSTOM_CLASS_SCHEMA.copy()
+        # Add _pragmas if not present
+        if '_pragmas' not in schema:
+            schema['_pragmas'] = [
+                '#pragma link C++ class ToyCluster+;',
+                '#pragma link C++ class ToyTrack+;',
+                '#pragma link C++ class ROOT::VecOps::RVec<ToyCluster>+;',
+                '#pragma link C++ class ROOT::VecOps::RVec<ToyTrack>+;',
+            ]
+        return schema
+    
     return {
         'event_id': 'long',
         'tracks': 'RVec<ToyTrack>',
+        '_pragmas': [
+            '#pragma link C++ class ToyCluster+;',
+            '#pragma link C++ class ToyTrack+;',
+            '#pragma link C++ class ROOT::VecOps::RVec<ToyCluster>+;',
+            '#pragma link C++ class ROOT::VecOps::RVec<ToyTrack>+;',
+        ]
     }
 
 
@@ -371,9 +426,28 @@ def nd_3d_rdf(nd_3d_root_file_S):
 
 @pytest.fixture
 def custom_class_rdf(custom_class_root_file_S):
-    """RDataFrame with custom class branches (size S)."""
+    """
+    RDataFrame with custom class branches (size S).
+    
+    Phase 13.6.D: Registers pragmas BEFORE creating RDataFrame.
+    """
     import ROOT
+    
+    # Register custom classes (C++ declarations)
     register_custom_classes()
+    
+    # Register pragmas for ROOT dictionary (BEFORE RDataFrame creation)
+    # This prevents "Class 'ToyTrack' not found (no dictionary)" errors
+    pragmas = [
+        '#pragma link C++ class ToyCluster+;',
+        '#pragma link C++ class ToyTrack+;',
+        '#pragma link C++ class ROOT::VecOps::RVec<ToyCluster>+;',
+        '#pragma link C++ class ROOT::VecOps::RVec<ToyTrack>+;',
+    ]
+    
+    for pragma in pragmas:
+        ROOT.gInterpreter.ProcessLine(pragma)
+    
     return ROOT.RDataFrame("Events", custom_class_root_file_S)
 
 
