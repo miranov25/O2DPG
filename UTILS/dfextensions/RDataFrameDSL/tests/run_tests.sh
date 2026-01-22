@@ -76,6 +76,12 @@ if [ "$CRASH_COUNT" -gt 0 ]; then
     echo "Extracting crash locations..."
     echo "=============================================="
     
+    # Extract crash locations (look AFTER "Fatal Python error" for stack trace)
+    CRASH_LOCATIONS=$(grep -A 30 "Fatal Python error" "$PARALLEL_LOG" | \
+        grep -E "tests/.*\.py.*line [0-9]+ in " | \
+        sed 's/.*File "\([^"]*\)", line \([0-9]*\) in \(.*\)/\1:\2  \3/' | \
+        sort -u)
+    
     # Create crash report
     {
         echo "# Crash Report - $TIMESTAMP"
@@ -87,35 +93,23 @@ if [ "$CRASH_COUNT" -gt 0 ]; then
         echo "#"
         echo "# Fix: Mark these tests with @pytest.mark.root_serial"
         echo "#      or add pytestmark = pytest.mark.root_serial to the file"
+        echo "#      Then add the file to ROOT_TEST_FILES in run_tests.sh"
         echo "#"
         echo "# Crash Locations:"
         echo "# ================"
-        
-        # Extract test file and function from stack traces
-        grep -B 15 "Fatal Python error" "$PARALLEL_LOG" | \
-            grep -E "tests/.*\.py.*line [0-9]+ in test_" | \
-            sed 's/.*File "\([^"]*\)", line \([0-9]*\) in \(test_[^"]*\)/\1:\2  \3/' | \
-            sort -u
-        
+        echo "$CRASH_LOCATIONS"
         echo ""
-        echo "# Unique files with crashes:"
-        echo "# =========================="
-        grep -B 15 "Fatal Python error" "$PARALLEL_LOG" | \
-            grep -E "tests/.*\.py.*line [0-9]+ in test_" | \
-            sed 's/.*File "\([^"]*\)".*/\1/' | \
-            sort -u
-            
+        echo "# Unique files needing root_serial marker:"
+        echo "# ========================================="
+        echo "$CRASH_LOCATIONS" | sed 's/:.*//g' | sort -u
     } > "$CRASH_LOG"
     
     # Display crash summary
     echo ""
     echo "Crash locations found:"
-    grep -B 15 "Fatal Python error" "$PARALLEL_LOG" | \
-        grep -E "tests/.*\.py.*line [0-9]+ in test_" | \
-        sed 's/.*File "\([^"]*\)", line \([0-9]*\) in \(test_[^"]*\)/  \1:\2  \3/' | \
-        sort -u
+    echo "$CRASH_LOCATIONS" | sed 's/^/  /'
     echo ""
-    echo "Full crash report saved to: $CRASH_LOG"
+    echo "Full crash report: $CRASH_LOG"
 fi
 
 echo ""
