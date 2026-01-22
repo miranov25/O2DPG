@@ -18,7 +18,9 @@ Per Phase 13.5.B0 v7 specification.
 CRITICAL: This test validates that explicit pragmas parameter IS needed for file output.
 """
 
+import pytest
 import os
+pytestmark = pytest.mark.root_serial
 import sys
 import tempfile
 import glob

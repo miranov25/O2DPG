@@ -9,6 +9,8 @@ T24: Schema-RDF Mismatch (P0)
 All Priority P0 - Core Architectural Validation
 """
 
+import pytest
+pytestmark = pytest.mark.root_serial
 import os
 import sys
 from datetime import datetime

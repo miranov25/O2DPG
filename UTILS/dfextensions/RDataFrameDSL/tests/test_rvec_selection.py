@@ -5,6 +5,7 @@ Tests for Take, Range, Where, and IndicesFromOffsets functions.
 """
 
 import pytest
+pytestmark = pytest.mark.root_serial
 import numpy as np
 
 

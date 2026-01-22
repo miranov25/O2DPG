@@ -55,6 +55,10 @@ ROOT_TEST_FILES=(
     tests/test_carray_root_integration.py
     tests/test_root_broadcast_integration.py
     tests/test_root_integration.py
+    #
+    tests/test_nested_slicing.py
+    tests/exploration/test_t8b_extended_streaming.py
+    tests/exploration/test_t22_t24_overload_idempotency_schema.py
 )
 
 printf '%s\n' "${ROOT_TEST_FILES[@]}" | \
@@ -66,8 +70,12 @@ PARALLEL_PASSED=$(grep -oE '[0-9]+ passed' "$PARALLEL_LOG" | tail -1 | grep -oE 
 SERIAL_PASSED=$(grep -oE '[0-9]+ passed' "$SERIAL_LOG" | grep -oE '^[0-9]+' | awk '{s+=$1} END {print s+0}')
 TOTAL_PASSED=$((PARALLEL_PASSED + SERIAL_PASSED))
 
-# Detect crashes in parallel log
-CRASH_COUNT=$(grep -c "Fatal Python error" "$PARALLEL_LOG" 2>/dev/null || echo "0")
+# Detect crashes in BOTH parallel and serial logs
+CRASH_COUNT_PARALLEL=$(grep -c "Fatal Python error" "$PARALLEL_LOG" 2>/dev/null || echo "0")
+CRASH_COUNT_PARALLEL="${CRASH_COUNT_PARALLEL%%[^0-9]*}"
+CRASH_COUNT_SERIAL=$(grep -c "Fatal Python error" "$SERIAL_LOG" 2>/dev/null || echo "0")
+CRASH_COUNT_SERIAL="${CRASH_COUNT_SERIAL%%[^0-9]*}"
+CRASH_COUNT=$((CRASH_COUNT_PARALLEL + CRASH_COUNT_SERIAL))
 
 # Extract crash locations if any
 if [ "$CRASH_COUNT" -gt 0 ]; then
@@ -76,38 +84,66 @@ if [ "$CRASH_COUNT" -gt 0 ]; then
     echo "Extracting crash locations..."
     echo "=============================================="
     
-    # Extract crash locations (look AFTER "Fatal Python error" for stack trace)
-    CRASH_LOCATIONS=$(grep -A 30 "Fatal Python error" "$PARALLEL_LOG" | \
-        grep -E "tests/.*\.py.*line [0-9]+ in " | \
-        sed 's/.*File "\([^"]*\)", line \([0-9]*\) in \(.*\)/\1:\2  \3/' | \
-        sort -u)
+    # Extract crash locations from BOTH logs
+    CRASH_LOCATIONS_PARALLEL=""
+    CRASH_LOCATIONS_SERIAL=""
+    
+    if [ "$CRASH_COUNT_PARALLEL" -gt 0 ]; then
+        CRASH_LOCATIONS_PARALLEL=$(grep -A 30 "Fatal Python error" "$PARALLEL_LOG" | \
+            grep -E "tests/.*\.py.*line [0-9]+ in " | \
+            sed 's/.*File "\([^"]*\)", line \([0-9]*\) in \(.*\)/\1:\2  \3/' | \
+            sort -u)
+    fi
+    
+    if [ "$CRASH_COUNT_SERIAL" -gt 0 ]; then
+        CRASH_LOCATIONS_SERIAL=$(grep -A 30 "Fatal Python error" "$SERIAL_LOG" | \
+            grep -E "tests/.*\.py.*line [0-9]+ in " | \
+            sed 's/.*File "\([^"]*\)", line \([0-9]*\) in \(.*\)/\1:\2  \3/' | \
+            sort -u)
+    fi
+    
+    # Combine and dedupe
+    CRASH_LOCATIONS=$(echo -e "${CRASH_LOCATIONS_PARALLEL}\n${CRASH_LOCATIONS_SERIAL}" | grep -v '^$' | sort -u)
     
     # Create crash report
     {
         echo "# Crash Report - $TIMESTAMP"
-        echo "# Detected $CRASH_COUNT pytest-xdist worker crashes"
+        echo "# Detected $CRASH_COUNT total crashes ($CRASH_COUNT_PARALLEL parallel, $CRASH_COUNT_SERIAL serial)"
         echo "#"
         echo "# Root Cause: ROOT gInterpreter is not thread-safe."
-        echo "# When pytest-xdist runs tests in parallel, multiple workers"
-        echo "# call ROOT simultaneously, causing interpreter crashes."
+        echo "# Parallel crashes: Multiple workers call ROOT simultaneously."
+        echo "# Serial crashes: Test or teardown triggers ROOT interpreter issue."
         echo "#"
-        echo "# Fix: Mark these tests with @pytest.mark.root_serial"
-        echo "#      or add pytestmark = pytest.mark.root_serial to the file"
-        echo "#      Then add the file to ROOT_TEST_FILES in run_tests.sh"
+        echo "# Fix for parallel: Mark tests with @pytest.mark.root_serial"
+        echo "# Fix for serial: Investigate specific test - may need xfail or code fix"
         echo "#"
         echo "# Crash Locations:"
         echo "# ================"
-        echo "$CRASH_LOCATIONS"
+        if [ -n "$CRASH_LOCATIONS_PARALLEL" ]; then
+            echo "# From parallel tests:"
+            echo "$CRASH_LOCATIONS_PARALLEL"
+        fi
+        if [ -n "$CRASH_LOCATIONS_SERIAL" ]; then
+            echo "# From serial tests:"
+            echo "$CRASH_LOCATIONS_SERIAL"
+        fi
         echo ""
-        echo "# Unique files needing root_serial marker:"
-        echo "# ========================================="
+        echo "# Unique files with crashes:"
+        echo "# =========================="
         echo "$CRASH_LOCATIONS" | sed 's/:.*//g' | sort -u
     } > "$CRASH_LOG"
     
     # Display crash summary
     echo ""
     echo "Crash locations found:"
-    echo "$CRASH_LOCATIONS" | sed 's/^/  /'
+    if [ -n "$CRASH_LOCATIONS_PARALLEL" ]; then
+        echo "  [PARALLEL]:"
+        echo "$CRASH_LOCATIONS_PARALLEL" | sed 's/^/    /'
+    fi
+    if [ -n "$CRASH_LOCATIONS_SERIAL" ]; then
+        echo "  [SERIAL]:"
+        echo "$CRASH_LOCATIONS_SERIAL" | sed 's/^/    /'
+    fi
     echo ""
     echo "Full crash report: $CRASH_LOG"
 fi
@@ -125,12 +161,14 @@ echo "      $SERIAL_LOG"
 
 if [ "$CRASH_COUNT" -gt 0 ]; then
     echo ""
-    echo "⚠️  WARNING: $CRASH_COUNT pytest-xdist worker crashes in parallel tests"
-    echo "   These tests may show false-positive results!"
+    echo "⚠️  WARNING: $CRASH_COUNT crashes detected ($CRASH_COUNT_PARALLEL parallel, $CRASH_COUNT_SERIAL serial)"
     echo "   Crash report: $CRASH_LOG"
-    echo ""
-    echo "   To fix: Add 'pytestmark = pytest.mark.root_serial' to affected files"
-    echo "   Then add the files to ROOT_TEST_FILES array in this script"
+    if [ "$CRASH_COUNT_PARALLEL" -gt 0 ]; then
+        echo "   Parallel fix: Add 'pytestmark = pytest.mark.root_serial' to affected files"
+    fi
+    if [ "$CRASH_COUNT_SERIAL" -gt 0 ]; then
+        echo "   Serial fix: Investigate test - may need xfail or ROOT cleanup fix"
+    fi
 fi
 echo ""
 

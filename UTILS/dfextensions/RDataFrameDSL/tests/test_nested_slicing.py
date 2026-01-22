@@ -10,6 +10,7 @@ Comprehensive test suite for RVec<RVec<T>> operations:
 """
 
 import pytest
+pytestmark = pytest.mark.root_serial
 from typing import Dict, List
 
 # Package imports
