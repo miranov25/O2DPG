@@ -11,6 +11,8 @@ Phase 13.6.D update: Added strong invariance assertions for broadcast correctnes
 - test_INV_E2E_broadcast_track_pt: Verifies 1D→2D broadcast with exact values
 - test_INV_E2E_weighted_cluster_sum: Verifies weighted sum (prep for DSL Draw)
 - Strengthened test_E2E_join_cluster_track with broadcast uniqueness check
+
+Phase 13.6.E update: Fixed pytestmark to combine root_serial with skipif.
 """
 
 import pytest
@@ -27,10 +29,11 @@ try:
 except ImportError:
     ROOT_AVAILABLE = False
 
-pytestmark = pytest.mark.skipif(
-    not ROOT_AVAILABLE, 
-    reason="ROOT not available"
-)
+# Combine markers: root_serial for serial execution, skipif for ROOT availability
+pytestmark = [
+    pytest.mark.root_serial,
+    pytest.mark.skipif(not ROOT_AVAILABLE, reason="ROOT not available")
+]
 
 
 # =============================================================================
@@ -226,7 +229,7 @@ class TestJoinStrategiesE2E:
     @pytest.mark.type_b
     @pytest.mark.p1
     def test_E2E_join_left(self, nd_2d_rdf, nd_2d_schema):
-        """Left join - all from deeper operand."""
+        """Left join - preserves all rows from deepest column."""
         from RDataFrameDSL import DSLCompiler
         
         dsl = DSLCompiler(nd_2d_schema)
@@ -238,12 +241,14 @@ class TestJoinStrategiesE2E:
         )
         
         assert len(df) > 0, "No rows returned"
+        # Left join should preserve all cluster rows
+        assert not df['cluster_Q'].isna().any(), "Left join lost cluster_Q rows"
     
     @pytest.mark.feature("nd_join_strategy")
     @pytest.mark.type_b
     @pytest.mark.p1
     def test_E2E_join_right(self, nd_2d_rdf, nd_2d_schema):
-        """Right join - all from shallower operand."""
+        """Right join - preserves all rows from shallowest column."""
         from RDataFrameDSL import DSLCompiler
         
         dsl = DSLCompiler(nd_2d_schema)

@@ -25,6 +25,7 @@ Phase: 13.6.C
 """
 
 import pytest
+pytestmark = pytest.mark.root_serial
 import numpy as np
 import pandas as pd
 
