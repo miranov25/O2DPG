@@ -3,7 +3,9 @@
 #
 # Phase 13.6.E: Two-phase execution for ROOT JIT isolation
 # 1. Parallel: Non-ROOT tests (pytest-xdist, -n 12)
-# 2. Parallel: ROOT tests (GNU parallel with TMPDIR isolation)
+# 2. Serial: ROOT tests (GNU parallel with TMPDIR isolation)
+#
+# NOTE: Exploration tests are excluded - run via tests/exploration/run_exploration.sh
 #
 # Usage:
 #   ./run_tests.sh              # Default: summary output
@@ -32,21 +34,23 @@ echo "Extra args: ${EXTRA_ARGS:-'(none)'}"
 echo ""
 
 # Phase 1: Parallel tests (non-ROOT)
+# Note: exploration/ excluded via pytest.ini norecursedirs
 echo "=============================================="
 echo "Phase 1: Non-ROOT tests (pytest -n 12)"
 echo "=============================================="
-pytest tests/ -n 12 -m "not root_serial" --tb=short $EXTRA_ARGS 2>&1 | tee "$PARALLEL_LOG"
+pytest tests/ -n 12 -m "not root_serial" --ignore=tests/exploration --tb=short $EXTRA_ARGS 2>&1 | tee "$PARALLEL_LOG"
 PARALLEL_EXIT=${PIPESTATUS[0]}
 
 echo ""
 
-# Phase 2: ROOT tests (parallel with TMPDIR isolation)
+# Phase 2: ROOT tests (serial with TMPDIR isolation)
+# Exploration tests excluded - run via tests/exploration/run_exploration.sh
 echo "=============================================="
 echo "Phase 2: ROOT tests (GNU parallel, TMPDIR isolated)"
 echo "=============================================="
 
 # List of test files containing root_serial tests
-# Add new ROOT test files here as needed
+# Exploration tests excluded - they have their own runner
 ROOT_TEST_FILES=(
     tests/test_invariance_nd.py
     tests/test_invariance_join_e2e.py
@@ -55,10 +59,8 @@ ROOT_TEST_FILES=(
     tests/test_carray_root_integration.py
     tests/test_root_broadcast_integration.py
     tests/test_root_integration.py
-    #
     tests/test_nested_slicing.py
-    tests/exploration/test_t8b_extended_streaming.py
-    tests/exploration/test_t22_t24_overload_idempotency_schema.py
+    tests/test_rvec_selection.py
 )
 
 printf '%s\n' "${ROOT_TEST_FILES[@]}" | \
@@ -170,6 +172,9 @@ if [ "$CRASH_COUNT" -gt 0 ]; then
         echo "   Serial fix: Investigate test - may need xfail or ROOT cleanup fix"
     fi
 fi
+echo ""
+echo "NOTE: Exploration tests excluded. Run separately:"
+echo "      ./tests/exploration/run_exploration.sh"
 echo ""
 
 if [ $PARALLEL_EXIT -eq 0 ] && [ $SERIAL_EXIT -eq 0 ]; then
