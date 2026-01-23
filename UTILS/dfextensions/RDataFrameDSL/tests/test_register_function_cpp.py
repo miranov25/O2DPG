@@ -16,6 +16,7 @@ import re
 class TestRegisterFunctionCppBasic:
     """Basic registration tests."""
     
+    @pytest.mark.feature("api_register_function_cpp")
     def test_simple_function_registration(self):
         """Test registering a simple C++ function."""
         from RDataFrameDSL import DSLCompiler
@@ -34,6 +35,7 @@ class TestRegisterFunctionCppBasic:
         assert len(func.params) == 1
         assert func.params[0] == ("x", "double")
     
+    @pytest.mark.feature("api_register_function_cpp")
     def test_function_with_multiple_params(self):
         """Test function with multiple parameters."""
         from RDataFrameDSL import DSLCompiler
@@ -167,6 +169,7 @@ class TestRegisterFunctionCppNaming:
 class TestRegisterFunctionCppLambdaRejection:
     """Test FROZEN RULE #1: No lambda expressions."""
     
+    @pytest.mark.feature("error_lambda_rejected")
     def test_simple_lambda_rejected(self):
         """Test rejection of simple lambda."""
         from RDataFrameDSL import DSLCompiler
@@ -175,6 +178,7 @@ class TestRegisterFunctionCppLambdaRejection:
         with pytest.raises(ValueError, match="Lambda|lambda|FROZEN RULE"):
             dsl.register_function_cpp("[](double x) { return x * 2; }")
     
+    @pytest.mark.feature("error_lambda_rejected")
     def test_capture_lambda_rejected(self):
         """Test rejection of lambda with capture."""
         from RDataFrameDSL import DSLCompiler
@@ -183,6 +187,7 @@ class TestRegisterFunctionCppLambdaRejection:
         with pytest.raises(ValueError, match="Lambda|lambda|FROZEN RULE"):
             dsl.register_function_cpp("[&](double x) { return x * 2; }")
     
+    @pytest.mark.feature("error_lambda_rejected")
     def test_auto_lambda_rejected(self):
         """Test rejection of auto lambda assignment."""
         from RDataFrameDSL import DSLCompiler

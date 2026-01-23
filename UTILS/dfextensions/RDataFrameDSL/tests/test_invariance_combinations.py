@@ -351,6 +351,8 @@ class TestDepthCombinations:
     # =========================================================================
     
     @pytest.mark.feature("flatten_mixed")
+    @pytest.mark.feature("api_to_pandas")
+    @pytest.mark.feature("api_define")
     @pytest.mark.type_b
     @pytest.mark.p0
     def test_INV_S12c_DSL_main_architect_expression(self, alice_rdf):
@@ -401,6 +403,8 @@ class TestDepthCombinations:
             f"Main Architect's expression failed: max={max_val}, tolerance={tolerance}"
     
     @pytest.mark.feature("flatten_mixed")
+    @pytest.mark.feature("api_to_pandas")
+    @pytest.mark.feature("api_define")
     @pytest.mark.type_b
     @pytest.mark.p0
     def test_INV_S12d_DSL_mixed_depth_chain(self, alice_rdf):

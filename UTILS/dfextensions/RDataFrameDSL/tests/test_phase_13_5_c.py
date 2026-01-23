@@ -143,6 +143,7 @@ class TestPhase13_5_C_Overloads:
         assert "3" in error_msg  # Mentions wrong arity
         assert "2" in error_msg or "arity" in error_msg.lower()
     
+    @pytest.mark.feature("error_rank_mismatch")
     def test_OV4_rank_mismatch_error(self):
         """OV4: Rank mismatch produces clear error."""
         dsl = DSLCompiler({

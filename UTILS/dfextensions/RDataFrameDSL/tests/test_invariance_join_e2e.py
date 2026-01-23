@@ -48,6 +48,7 @@ class TestJoinWithRDataFrame:
     """
     
     @pytest.mark.feature("nd_join_strategy")
+    @pytest.mark.feature("api_to_pandas")
     @pytest.mark.type_b
     @pytest.mark.p0
     def test_E2E_join_cluster_track(self, nd_2d_rdf, nd_2d_schema):
@@ -89,6 +90,7 @@ class TestJoinWithRDataFrame:
             "track_pt broadcast failed: varies within (event_id, track_idx) group"
     
     @pytest.mark.feature("nd_join_strategy")
+    @pytest.mark.feature("api_to_pandas")
     @pytest.mark.type_b
     @pytest.mark.p0
     def test_E2E_join_cluster_event(self, nd_2d_rdf, nd_2d_schema):
@@ -116,6 +118,7 @@ class TestJoinWithRDataFrame:
             "event_weight broadcast mismatch: expected event_id + 1"
     
     @pytest.mark.feature("nd_join_strategy")
+    @pytest.mark.feature("api_to_pandas")
     @pytest.mark.type_b
     @pytest.mark.p0
     def test_E2E_join_track_event(self, nd_2d_rdf, nd_2d_schema):
@@ -144,6 +147,7 @@ class TestJoinWithRDataFrame:
             "event_weight broadcast mismatch: expected event_id + 1"
     
     @pytest.mark.feature("nd_join_strategy")
+    @pytest.mark.feature("api_to_pandas")
     @pytest.mark.type_b
     @pytest.mark.p1
     def test_E2E_join_three_depths(self, nd_2d_rdf, nd_2d_schema):
@@ -188,6 +192,7 @@ class TestJoinStrategiesE2E:
     """End-to-end tests for all four join strategies."""
     
     @pytest.mark.feature("nd_join_strategy")
+    @pytest.mark.feature("api_to_pandas")
     @pytest.mark.type_b
     @pytest.mark.p1
     def test_E2E_join_inner(self, nd_2d_rdf, nd_2d_schema):
@@ -207,6 +212,7 @@ class TestJoinStrategiesE2E:
         assert not df['track_pt'].isna().any(), "Inner join produced NaN in track_pt"
     
     @pytest.mark.feature("nd_join_strategy")
+    @pytest.mark.feature("api_to_pandas")
     @pytest.mark.type_b
     @pytest.mark.p1
     def test_E2E_join_outer(self, nd_2d_rdf, nd_2d_schema):
@@ -226,6 +232,7 @@ class TestJoinStrategiesE2E:
         # Just verify it runs
     
     @pytest.mark.feature("nd_join_strategy")
+    @pytest.mark.feature("api_to_pandas")
     @pytest.mark.type_b
     @pytest.mark.p1
     def test_E2E_join_left(self, nd_2d_rdf, nd_2d_schema):
@@ -245,6 +252,7 @@ class TestJoinStrategiesE2E:
         assert not df['cluster_Q'].isna().any(), "Left join lost cluster_Q rows"
     
     @pytest.mark.feature("nd_join_strategy")
+    @pytest.mark.feature("api_to_pandas")
     @pytest.mark.type_b
     @pytest.mark.p1
     def test_E2E_join_right(self, nd_2d_rdf, nd_2d_schema):
@@ -276,6 +284,7 @@ class TestJoinInvarianceE2E:
     """
     
     @pytest.mark.feature("nd_join_strategy")
+    @pytest.mark.feature("api_to_pandas")
     @pytest.mark.type_b
     @pytest.mark.p0
     def test_INV_E2E_broadcast_event_weight(self, nd_2d_rdf, nd_2d_schema):
@@ -301,6 +310,7 @@ class TestJoinInvarianceE2E:
             "event_weight invariant violated: expected event_id + 1"
     
     @pytest.mark.feature("nd_join_strategy")
+    @pytest.mark.feature("api_to_pandas")
     @pytest.mark.type_b
     @pytest.mark.p0
     def test_INV_E2E_broadcast_track_pt(self, nd_2d_rdf, nd_2d_schema):
@@ -343,6 +353,7 @@ class TestJoinInvarianceE2E:
             "track_pt not monotonic with track_idx"
     
     @pytest.mark.feature("nd_join_strategy")
+    @pytest.mark.feature("api_to_pandas")
     @pytest.mark.type_b
     @pytest.mark.p0
     def test_INV_E2E_cluster_Q_preserved(self, nd_2d_rdf, nd_2d_schema):
@@ -369,6 +380,7 @@ class TestJoinInvarianceE2E:
             "cluster_Q invariant violated: expected 1000*e + 100*t + c"
     
     @pytest.mark.feature("nd_join_strategy")
+    @pytest.mark.feature("api_to_pandas")
     @pytest.mark.type_b
     @pytest.mark.p1
     def test_INV_E2E_weighted_cluster_sum(self, nd_2d_rdf, nd_2d_schema):
@@ -409,6 +421,7 @@ class TestJoinInvarianceE2E:
             "Weighted sum invariant violated: sum(Q*w) != sum(Q)*w"
     
     @pytest.mark.feature("nd_join_strategy")
+    @pytest.mark.feature("api_to_pandas")
     @pytest.mark.type_b
     @pytest.mark.p1
     def test_INV_E2E_row_count_consistency(self, nd_2d_rdf, nd_2d_schema):
@@ -449,6 +462,7 @@ class TestBackwardCompatibilityE2E:
     """Ensure existing behavior still works."""
     
     @pytest.mark.feature("nd_join_strategy")
+    @pytest.mark.feature("api_to_pandas")
     @pytest.mark.type_b
     @pytest.mark.p0
     def test_E2E_no_join_param_default(self, nd_2d_rdf, nd_2d_schema):
@@ -468,6 +482,7 @@ class TestBackwardCompatibilityE2E:
         assert 'track_pt' in df.columns
     
     @pytest.mark.feature("nd_join_strategy")
+    @pytest.mark.feature("api_to_pandas")
     @pytest.mark.type_b
     @pytest.mark.p0
     def test_E2E_single_column_still_works(self, nd_2d_rdf, nd_2d_schema):

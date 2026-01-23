@@ -290,6 +290,8 @@ class TestMemberFunctionsDSLTests:
     # =========================================================================
     
     @pytest.mark.feature("method_broadcast")
+    @pytest.mark.feature("api_to_pandas")
+    @pytest.mark.feature("api_define")
     @pytest.mark.type_b
     @pytest.mark.p0
     @pytest.mark.phase8
@@ -353,6 +355,8 @@ class TestMemberFunctionsDSLTests:
     # =========================================================================
     
     @pytest.mark.feature("method_broadcast")
+    @pytest.mark.feature("api_to_pandas")
+    @pytest.mark.feature("api_define")
     @pytest.mark.type_b
     @pytest.mark.p0
     @pytest.mark.phase8
@@ -410,6 +414,8 @@ class TestMemberFunctionsDSLTests:
     # =========================================================================
     
     @pytest.mark.feature("method_broadcast")
+    @pytest.mark.feature("api_to_pandas")
+    @pytest.mark.feature("api_define")
     @pytest.mark.type_b
     @pytest.mark.p0
     @pytest.mark.phase8
@@ -476,6 +482,8 @@ class TestMemberFunctionsDSLTests:
     # =========================================================================
     
     @pytest.mark.feature("method_broadcast")
+    @pytest.mark.feature("api_to_pandas")
+    @pytest.mark.feature("api_define")
     @pytest.mark.type_b
     @pytest.mark.p0
     @pytest.mark.phase8

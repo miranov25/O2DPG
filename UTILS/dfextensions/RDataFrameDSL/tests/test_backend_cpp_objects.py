@@ -174,6 +174,7 @@ class TestMethodCallCodeGeneration:
         # No header for unknown class
         assert "<UnknownClass.h>" not in func.headers
     
+    @pytest.mark.feature("error_invalid_method_args")
     def test_method_with_arguments_error(self, generator):
         """Method with arguments raises error in Phase 6a."""
         particle = make_object_var("particle", "TParticle")

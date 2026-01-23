@@ -25,9 +25,9 @@ Features:
     - Computes status from actual test outcomes
     - Handles all pytest outcomes: passed, failed, xfailed, xpassed, skipped, error
 
-Phase: 13.6.B.fix
-Date: 2026-01-18
-Version: 1.2 (fixed glob expansion in subprocess)
+Phase: 13.6.F
+Date: 2026-01-23
+Version: 1.3 (run only feature-marked tests for speed)
 """
 
 import subprocess
@@ -45,9 +45,14 @@ import re
 # PATH SETUP
 # =============================================================================
 
-# Determine project root (parent of scripts/)
+# Determine project root
+# Works whether script is in project root or scripts/ subdirectory
 SCRIPT_DIR = Path(__file__).parent.resolve()
-PROJECT_ROOT = SCRIPT_DIR.parent
+if SCRIPT_DIR.name == "scripts":
+    PROJECT_ROOT = SCRIPT_DIR.parent
+else:
+    # Script is in project root (e.g., during development)
+    PROJECT_ROOT = SCRIPT_DIR
 
 # Add both project root and tests/ to path for imports
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -65,6 +70,8 @@ def parse_feature_markers_from_files(test_pattern: str) -> Dict[str, List[str]]:
     Returns dict mapping feature_id -> [list of test nodeids]
     
     This is the KEY function that maps features to tests based on markers.
+    
+    Phase 13.6.F fix: Skip markers inside triple-quoted strings (docstrings/comments).
     """
     feature_tests = {}
     
@@ -81,8 +88,39 @@ def parse_feature_markers_from_files(test_pattern: str) -> Dict[str, List[str]]:
         lines = content.split('\n')
         current_class = None
         pending_features = []  # Can have multiple markers before one test
+        in_triple_quote = False  # Track if we're inside triple-quoted string
+        triple_quote_char = None  # Track which quote type (''' or """)
         
         for i, line in enumerate(lines):
+            # Check for triple quote transitions
+            # Count occurrences of ''' and """ in the line
+            for quote in ['"""', "'''"]:
+                count = line.count(quote)
+                if count > 0:
+                    if not in_triple_quote:
+                        # Entering triple quote
+                        in_triple_quote = True
+                        triple_quote_char = quote
+                        # If odd count, we end inside; if even, we exit
+                        if count % 2 == 0:
+                            in_triple_quote = False
+                            triple_quote_char = None
+                    elif quote == triple_quote_char:
+                        # Exiting triple quote (or re-entering)
+                        if count % 2 == 1:
+                            in_triple_quote = False
+                            triple_quote_char = None
+                    break  # Only process one quote type per line
+            
+            # Skip processing if inside triple-quoted string
+            if in_triple_quote:
+                continue
+            
+            # Skip comment lines
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            
             # Track class context
             class_match = re.match(r'^class (\w+)', line)
             if class_match:
@@ -90,8 +128,9 @@ def parse_feature_markers_from_files(test_pattern: str) -> Dict[str, List[str]]:
                 pending_features = []  # Reset on new class
                 continue
             
-            # Look for feature marker
-            feature_match = re.search(r'@pytest\.mark\.feature\(["\'](\w+)["\']\)', line)
+            # Look for feature marker - must start with @ (decorator)
+            # This ensures we only match actual decorators, not examples in strings
+            feature_match = re.match(r'\s*@pytest\.mark\.feature\(["\'](\w+)["\']\)', line)
             if feature_match:
                 pending_features.append(feature_match.group(1))
                 continue
@@ -131,13 +170,15 @@ def parse_feature_markers_from_files(test_pattern: str) -> Dict[str, List[str]]:
 # PYTEST EXECUTION
 # =============================================================================
 
-def run_pytest_for_outcomes(test_pattern: str = "tests/test_invariance_*.py") -> Dict[str, str]:
+def run_pytest_for_outcomes(test_pattern: str = "tests/test_*.py") -> Dict[str, str]:
     """
     Run pytest to get actual pass/fail/xfail status.
     
     Returns dict mapping nodeid -> outcome (passed/failed/xfailed/xpassed/skipped/error)
     
     Uses tempfile to avoid path collisions (P2 fix).
+    
+    Phase 13.6.F: Only runs tests with @pytest.mark.feature marker for speed.
     """
     # Use tempfile for report path (avoids /tmp/ collision issues)
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
@@ -152,9 +193,13 @@ def run_pytest_for_outcomes(test_pattern: str = "tests/test_invariance_*.py") ->
             return {}
         
         # Build command with expanded file list
+        # Phase 13.6.F: Add -m "feature" to only run feature-marked tests
+        # Phase 13.6.F: Add -n 0 to disable parallel execution (ROOT stability)
         cmd = [
             sys.executable, "-m", "pytest",
             *expanded_files,  # Expanded file paths
+            "-m", "feature",  # Only run tests with @pytest.mark.feature
+            "-n", "0",        # No parallelization (ROOT interpreter stability)
             "-q",
             "--json-report",
             f"--json-report-file={report_path}",
@@ -203,11 +248,11 @@ def compute_status(
     test_outcomes: Dict[str, str],
     limitations: Dict,
     taxonomy: Dict,
-) -> Tuple[str, int]:
+) -> Tuple[str, int, List[str]]:
     """
     Compute feature status from test outcomes.
     
-    Returns (status_string, test_count)
+    Returns (status_string, test_count, failed_tests)
     
     Status derivation (priority order - highest to lowest):
     1. failed/error → 🧨 Broken (even if limitation exists)
@@ -219,111 +264,89 @@ def compute_status(
     7. no tests → ❌ Not Implemented
     """
     if not feature_test_nodeids:
-        return "❌ Not Implemented", 0
+        return "❌ Not Implemented", 0, []
     
-    # Collect outcomes for all tests in this feature
-    has_failed = False
-    has_error = False
-    has_xfailed = False
-    has_xpassed = False
-    has_passed = False
-    has_skipped = False
-    has_unknown = False
-    test_count = 0
-    
-    for test_nodeid in feature_test_nodeids:
-        outcome = test_outcomes.get(test_nodeid, "unknown")
-        test_count += 1
+    # Collect outcomes for this feature's tests
+    outcomes = []
+    failed_tests = []
+    for nodeid in feature_test_nodeids:
+        # Try both with and without tests/ prefix
+        outcome = test_outcomes.get(nodeid)
+        matched_nodeid = nodeid
+        if outcome is None:
+            outcome = test_outcomes.get(f"tests/{nodeid}")
+            if outcome:
+                matched_nodeid = f"tests/{nodeid}"
+        if outcome is None:
+            # Try matching just the test name portion
+            for key, val in test_outcomes.items():
+                if nodeid in key or key.endswith(nodeid):
+                    outcome = val
+                    matched_nodeid = key
+                    break
+        outcomes.append(outcome or "unknown")
         
-        if outcome == "failed":
-            has_failed = True
-        elif outcome == "error":
-            has_error = True
-        elif outcome == "xfailed":
-            has_xfailed = True
-        elif outcome == "xpassed":
-            has_xpassed = True
-        elif outcome == "passed":
-            has_passed = True
-        elif outcome == "skipped":
-            has_skipped = True
-        else:
-            has_unknown = True
+        # Track failed tests
+        if outcome in ("failed", "error", "xpassed"):
+            failed_tests.append(matched_nodeid)
     
-    # Priority 1: Failures and errors always escalate to Broken
-    if has_failed or has_error:
-        return "🧨 Broken", test_count
+    test_count = len(feature_test_nodeids)
     
-    # Priority 2: Unexpected pass (xpassed) = implementation changed unexpectedly
-    if has_xpassed:
-        return "🧨 Broken", test_count
+    # Priority 1: Any failed/error = broken
+    if "failed" in outcomes or "error" in outcomes:
+        return "🧨 Broken", test_count, failed_tests
     
-    # Priority 3: Expected failures (xfailed)
-    if has_xfailed:
-        # Check if feature has explicit limitation in taxonomy
-        feature_info = taxonomy.get(feature_id, {})
-        if feature_info.get("limitation"):
-            lim_id = feature_info["limitation"]
-            if lim_id in limitations:
-                return limitations[lim_id]["status"], test_count
-        # xfail without limitation = partial (tests exist but don't pass)
-        return "⚠️ Partial", test_count
+    # Priority 2: xpassed = broken (unexpected pass)
+    if "xpassed" in outcomes:
+        return "🧨 Broken", test_count, failed_tests
     
-    # Priority 4: Unknown/skipped only (no real evidence)
-    if (has_unknown or has_skipped) and not has_passed:
-        return "❓ Unknown", test_count
+    # Priority 3-4: xfailed handling
+    if "xfailed" in outcomes:
+        # Check if limitation exists for this feature
+        feature_limitation = taxonomy.get(feature_id, {}).get("limitation")
+        if feature_limitation and feature_limitation in limitations:
+            lim_status = limitations[feature_limitation].get("status", "⚠️ Partial")
+            return lim_status, test_count, []
+        return "❌ Not Implemented", test_count, []
     
-    # Priority 5: At least some passed
-    if has_passed:
-        return "✅ Working", test_count
+    # Priority 5: Only unknown/skipped
+    known_outcomes = [o for o in outcomes if o not in ("unknown", "skipped")]
+    if not known_outcomes:
+        return "❓ Unknown", test_count, []
     
-    # Fallback: no tests matched
-    return "❓ Unknown", test_count
+    # Priority 6: All passed
+    if all(o == "passed" for o in known_outcomes):
+        return "✅ Working", test_count, []
+    
+    # Fallback
+    return "❓ Unknown", test_count, []
 
 
 # =============================================================================
-# MANUAL SECTION PRESERVATION
+# MATRIX SECTIONS
 # =============================================================================
 
-def extract_manual_section(existing_content: str) -> Optional[str]:
-    """
-    Extract the MANUAL section from existing CAPABILITY_MATRIX.md.
-    
-    Preserves everything after the MANUAL marker, including:
-    - Known Limitations (human-curated notes)
-    - For Reviewers section
-    - Any other human additions
-    
-    Returns None if no existing content or no MANUAL marker.
-    """
-    if not existing_content:
-        return None
-    
-    # Look for the MANUAL marker
-    manual_marker = "<!-- MANUAL: Human-maintained sections below"
-    
-    if manual_marker not in existing_content:
-        return None
-    
-    # Extract everything from the marker onwards
-    parts = existing_content.split(manual_marker, 1)
-    if len(parts) < 2:
-        return None
-    
-    # Return the marker + content
-    return manual_marker + parts[1]
-
-
-def read_existing_matrix(output_path: Path) -> Optional[str]:
-    """Read existing CAPABILITY_MATRIX.md if it exists."""
-    if output_path.exists():
-        return output_path.read_text()
+def read_existing_matrix(path: Path) -> Optional[str]:
+    """Read existing matrix file if it exists."""
+    if path.exists():
+        return path.read_text()
     return None
 
 
-# =============================================================================
-# MATRIX GENERATION
-# =============================================================================
+def extract_manual_section(content: str) -> Optional[str]:
+    """Extract the MANUAL section from existing matrix content."""
+    if not content:
+        return None
+    
+    # Look for MANUAL section marker
+    manual_marker = "<!-- MANUAL:"
+    if manual_marker not in content:
+        return None
+    
+    # Extract everything after the manual marker
+    idx = content.index(manual_marker)
+    return content[idx:]
+
 
 def generate_auto_section(
     taxonomy: Dict,
@@ -331,19 +354,16 @@ def generate_auto_section(
     test_outcomes: Dict[str, str],
     feature_tests: Dict[str, List[str]],
 ) -> List[str]:
-    """
-    Generate the AUTO-GENERATED section of the matrix.
+    """Generate the AUTO section of the matrix."""
+    lines = []
     
-    Uses feature_tests mapping from marker parsing, NOT taxonomy["tests"].
-    """
-    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-    
-    lines = [
+    # Header
+    lines.extend([
         "# Capability Matrix",
         "",
-        f"**Last Updated:** {timestamp}",
+        f"**Last Updated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "**Generated By:** `scripts/generate_capability_matrix.py`",
-        "**Phase:** 13.6.D",
+        f"**Phase:** 13.6.F",
         "",
         "> **Note:** Quick Status and Examples Index are auto-generated.",
         "> Known Limitations and For Reviewers sections are human-maintained.",
@@ -352,126 +372,127 @@ def generate_auto_section(
         "",
         "<!-- AUTO-GENERATED: Do not edit below this line until END AUTO-GENERATED -->",
         "",
-        "## Quick Status",
-        "",
-        "| Feature | Status | Proof | Tests | Notes |",
-        "|---------|--------|-------|-------|-------|",
-    ]
+    ])
     
-    # Track summary stats
+    # Quick Status Table
+    lines.append("## Quick Status")
+    lines.append("")
+    lines.append("| Feature | Status | Proof | Tests | Notes |")
+    lines.append("|---------|--------|-------|-------|-------|")
+    
     working = 0
     partial = 0
     broken = 0
     
-    for feature_id, feature in taxonomy.items():
-        # Get tests for this feature from parsed markers
-        tests = feature_tests.get(feature_id, [])
+    # Track all broken tests by feature
+    broken_features = {}  # feature_name -> [failed_tests]
+    
+    for feature_id, feature_info in taxonomy.items():
+        name = feature_info.get("name", feature_id)
+        proof = feature_info.get("proof", "None")
+        proof_display = f"`{proof}`" if proof else "None"
         
-        # Compute status from test outcomes
-        status, test_count = compute_status(
-            feature_id, tests, test_outcomes, limitations, taxonomy
+        # Get tests from parsed markers (not from taxonomy)
+        feature_test_list = feature_tests.get(feature_id, [])
+        
+        # Compute status (now returns failed_tests too)
+        status, test_count, failed_tests = compute_status(
+            feature_id, feature_test_list, test_outcomes, limitations, taxonomy
         )
         
-        # Update counters
-        if "✅" in status:
+        # Count for summary
+        if "Working" in status:
             working += 1
-        elif "⚠️" in status:
+        elif "Partial" in status:
             partial += 1
-        elif "🧨" in status:
+        elif "Broken" in status:
             broken += 1
+            if failed_tests:
+                broken_features[name] = failed_tests
         
-        # Format row
-        name = feature.get("name", feature_id)
-        proof = feature.get("proof", "—")
-        if proof != "—":
-            proof = f"`{proof}`"
+        # Notes column - show failed count if broken
+        notes = ""
+        if feature_info.get("limitation"):
+            notes = f"See L{feature_info['limitation'][1:]}"
+        if failed_tests:
+            notes = f"{len(failed_tests)} failed"
         
-        notes = feature.get("notes", "")
-        if feature.get("limitation"):
-            lim_id = feature["limitation"]
-            lim_info = limitations.get(lim_id, {})
-            lim_status = lim_info.get("status", "")
-            # Check if limitation is resolved (status contains checkmark)
-            if "✅" in lim_status or "Resolved" in lim_status:
-                notes = f"✅ {lim_id} resolved"
-            else:
-                notes = f"⚠️ {lim_id}: {lim_info.get('name', 'Unknown')}"
-        
-        # Truncate long notes
-        if len(notes) > 50:
-            notes = notes[:47] + "..."
-        
-        lines.append(f"| {name} | {status} | {proof} | {test_count} tests | {notes} |")
+        lines.append(f"| {name} | {status} | {proof_display} | {test_count} tests | {notes} |")
     
     total = len(taxonomy)
-    lines.extend([
-        "",
-        f"**Summary:** {working}/{total} working, {partial} partial, {broken} broken",
-        "",
-    ])
+    lines.append("")
+    lines.append(f"**Summary:** {working}/{total} working, {partial} partial, {broken} broken")
+    lines.append("")
     
     # Examples Index
-    lines.extend([
-        "## Examples Index",
-        "",
-        "| Example | Features Demonstrated |",
-        "|---------|----------------------|",
-    ])
+    lines.append("## Examples Index")
+    lines.append("")
+    lines.append("| Example | Features Demonstrated |")
+    lines.append("|---------|----------------------|")
     
-    # Collect examples -> features mapping
+    # Collect examples
     example_features = {}
-    for feature_id, feature in taxonomy.items():
-        proof = feature.get("proof")
-        if proof and proof != "—":
+    for feature_id, feature_info in taxonomy.items():
+        proof = feature_info.get("proof")
+        if proof:
             if proof not in example_features:
                 example_features[proof] = []
-            example_features[proof].append(feature.get("name", feature_id))
+            example_features[proof].append(feature_info.get("name", feature_id))
     
     for example, features in sorted(example_features.items()):
         lines.append(f"| `{example}` | {', '.join(features)} |")
     
-    # Test Coverage Details - lists tests per feature
-    lines.extend([
-        "",
-        "## Test Coverage Details",
-        "",
-        "Tests per feature (for traceability). Approval logic: Feature = ✅ Working iff **ALL** tests pass.",
-        "",
-    ])
+    lines.append("")
     
-    for feature_id, feature in taxonomy.items():
-        tests = feature_tests.get(feature_id, [])
-        if not tests:
-            continue
+    # Test Coverage Details
+    lines.append("## Test Coverage Details")
+    lines.append("")
+    lines.append("Tests per feature (for traceability). Approval logic: Feature = ✅ Working iff **ALL** tests pass.")
+    lines.append("")
+    
+    for feature_id, feature_info in taxonomy.items():
+        name = feature_info.get("name", feature_id)
+        feature_test_list = feature_tests.get(feature_id, [])
+        test_count = len(feature_test_list)
         
-        name = feature.get("name", feature_id)
+        lines.append("<details>")
+        lines.append(f"<summary><strong>{name}</strong> ({test_count} tests)</summary>")
+        lines.append("")
         
-        lines.append(f"<details>")
-        lines.append(f"<summary><strong>{name}</strong> ({len(tests)} tests)</summary>")
+        if feature_test_list:
+            for nodeid in sorted(feature_test_list):
+                lines.append(f"- `{nodeid}`")
+        else:
+            lines.append("*No tests with @pytest.mark.feature marker*")
+        
         lines.append("")
-        for nodeid in sorted(tests):
-            # nodeid format: "test_file.py::ClassName::test_name" - show full path
-            lines.append(f"- `{nodeid}`")
-        lines.append("")
-        lines.append(f"</details>")
+        lines.append("</details>")
         lines.append("")
     
-    lines.extend([
-        "<!-- END AUTO-GENERATED -->",
-        "",
-    ])
+    # Broken Tests Section (if any)
+    if broken_features:
+        lines.append("## ⚠️ Broken Tests")
+        lines.append("")
+        lines.append("The following tests are failing and need attention:")
+        lines.append("")
+        
+        for feature_name, failed_tests in sorted(broken_features.items()):
+            lines.append(f"### {feature_name} ({len(failed_tests)} failed)")
+            lines.append("")
+            for test in sorted(failed_tests):
+                lines.append(f"- `{test}`")
+            lines.append("")
+    
+    # End auto-generated marker
+    lines.append("<!-- END AUTO-GENERATED -->")
     
     return lines
 
 
 def generate_default_manual_section(limitations: Dict) -> List[str]:
-    """
-    Generate default MANUAL section for first-time creation.
-    
-    This is only used when no existing CAPABILITY_MATRIX.md exists.
-    After first generation, this section is preserved across regenerations.
-    """
+    """Generate default MANUAL section from limitations."""
     lines = [
+        "",
         "---",
         "",
         "<!-- MANUAL: Human-maintained sections below. Do not auto-generate. -->",
@@ -480,21 +501,22 @@ def generate_default_manual_section(limitations: Dict) -> List[str]:
         "",
     ]
     
-    # Initial population from KNOWN_LIMITATIONS
-    for lim_id, lim in limitations.items():
-        lines.extend([
-            f"### {lim_id}: {lim['name']}",
-            "",
-            f"**Status:** {lim['status']}",
-            f"**Symptom:** {lim['description']}",
-            f"**Workaround:** {lim['workaround']}",
-            f"**Tests affected:** {len(lim.get('tests_affected', []))} tests",
-            f"**Bug report:** `{lim['bug_report']}`",
-            f"**Resolution:** {lim['resolution']}",
-            "",
-        ])
+    for lim_id, lim_info in limitations.items():
+        lines.append(f"### {lim_id}: {lim_info.get('name', 'Unknown')}")
+        lines.append("")
+        lines.append(f"**Status:** {lim_info.get('status', '⚠️ Partial')}")
+        
+        if lim_info.get("description"):
+            lines.append(f"**Symptom:** {lim_info['description']}")
+        if lim_info.get("workaround"):
+            lines.append(f"**Workaround:** {lim_info['workaround']}")
+        if lim_info.get("bug_report"):
+            lines.append(f"**Bug report:** `{lim_info['bug_report']}`")
+        if lim_info.get("resolution"):
+            lines.append(f"**Resolution:** {lim_info['resolution']}")
+        
+        lines.append("")
     
-    # Verification Gate section (required per Organization-structure v1.12)
     lines.extend([
         "---",
         "",
@@ -591,8 +613,8 @@ Prerequisites:
     )
     parser.add_argument(
         "--test-pattern",
-        default="tests/test_invariance_*.py",
-        help="Pytest test pattern (default: tests/test_invariance_*.py)"
+        default="tests/test_*.py",  # Phase 13.6.F: Changed default to all tests
+        help="Pytest test pattern (default: tests/test_*.py)"
     )
     parser.add_argument(
         "--dry-run",
@@ -662,7 +684,7 @@ Prerequisites:
         print("Skipping pytest run (--skip-tests)")
         test_outcomes = {}
     else:
-        print(f"Running pytest to collect test outcomes...")
+        print(f"Running pytest (only @pytest.mark.feature tests) to collect outcomes...")
         test_outcomes = run_pytest_for_outcomes(args.test_pattern)
         print(f"Collected outcomes for {len(test_outcomes)} tests")
     
