@@ -16,7 +16,7 @@
 # Date: 2026-01-18
 # =============================================================================
 
-FEATURE_TAXONOMY_VERSION = "1.9"  # Phase 13.6.D: L1 and L2 limitations resolved
+FEATURE_TAXONOMY_VERSION = "2.0"  # Phase 13.6.F: Error detection and API features
 
 # =============================================================================
 # FEATURE ALIASES (for backward compatibility if renaming needed)
@@ -405,6 +405,162 @@ FEATURE_TAXONOMY = {
             "tests/test_invariance_structural.py::TestStructuralInvarianceSimple::test_INV_X_first_last_elements",
         ],
         "proof": None,
+    },
+    # -------------------------------------------------------------------------
+    # ERROR DETECTION (Phase 13.6.F - Layer 1)
+    # -------------------------------------------------------------------------
+    "error_missing_column": {
+        "name": "Missing column detection",
+        "description": "DSL rejects expressions referencing columns not in schema",
+        "tests": [
+            "tests/test_ir_builder.py::TestVariables::test_unknown_variable_error",
+        ],
+        "proof": None,
+        "phase": "7.9",
+    },
+    "error_suggestions": {
+        "name": "Error message suggestions",
+        "description": "Error messages include 'Did you mean...?' suggestions for similar names",
+        "tests": [
+            "tests/test_ir_builder.py::TestVariables::test_unknown_variable_suggestions",
+        ],
+        "proof": None,
+        "phase": "7.9",
+    },
+    "error_unknown_function": {
+        "name": "Unknown function detection",
+        "description": "DSL rejects calls to functions not in KNOWN_FUNCTIONS",
+        "tests": [
+            "tests/test_ir_builder.py::TestFunctionCalls::test_unknown_function_error",
+        ],
+        "proof": None,
+        "phase": "7.9",
+    },
+    "error_syntax": {
+        "name": "Syntax error detection",
+        "description": "DSL reports Python AST parse errors with PARSE_ERROR kind",
+        "tests": [
+            "tests/test_ir_builder.py::TestMiscellaneous::test_syntax_error",
+        ],
+        "proof": None,
+        "phase": "7.9",
+    },
+    "error_location": {
+        "name": "Error source location",
+        "description": "Errors include source_location with alias name and position",
+        "tests": [
+            "tests/test_ir_builder.py::TestMiscellaneous::test_error_has_location",
+        ],
+        "proof": None,
+        "phase": "7.9",
+    },
+    "error_slice_step_zero": {
+        "name": "Slice step zero detection",
+        "description": "DSL rejects slice with step=0",
+        "tests": [
+            "tests/test_ir_builder.py::TestSlicing::test_slice_step_zero_error",
+        ],
+        "proof": None,
+        "phase": "13.2",
+    },
+    "error_invalid_method_args": {
+        "name": "Invalid method arguments detection",
+        "description": "DSL rejects method calls with unsupported argument patterns",
+        "tests": [
+            "tests/test_backend_cpp_objects.py::TestMethodCallGeneration::test_method_with_arguments_error",
+        ],
+        "proof": None,
+        "phase": "8",
+    },
+    "error_rank_mismatch": {
+        "name": "Rank mismatch detection",
+        "description": "DSL detects scalar/vector rank incompatibilities",
+        "tests": [
+            "tests/test_backend_cpp.py::TestCppCodeGeneratorArithmetic::test_unknown_variable_error",
+        ],
+        "proof": None,
+        "phase": "7.9",
+    },
+    "error_name_conflict": {
+        "name": "Name conflict detection",
+        "description": "DSL rejects define() when name conflicts with schema column",
+        "tests": [
+            "tests/test_api_define.py::TestDefineErrors::test_define_name_conflict",
+        ],
+        "proof": None,
+        "phase": "7.9",
+    },
+    "error_duplicate_definition": {
+        "name": "Duplicate definition detection",
+        "description": "DSL rejects define() when name already defined",
+        "tests": [
+            "tests/test_api_define.py::TestDefineErrors::test_define_duplicate",
+        ],
+        "proof": None,
+        "phase": "7.9",
+    },
+    "error_lambda_rejected": {
+        "name": "Lambda rejection",
+        "description": "DSL rejects lambda expressions in define_raw() (FROZEN RULE #1)",
+        "tests": [
+            "tests/test_register_function_cpp.py::TestRegisterFunctionCpp::test_lambda_rejected",
+        ],
+        "proof": None,
+        "phase": "13.5.B",
+    },
+
+    # -------------------------------------------------------------------------
+    # USER API METHODS (Phase 13.6.F)
+    # -------------------------------------------------------------------------
+    "api_to_pandas": {
+        "name": "to_pandas() export",
+        "description": "Export RDataFrame to flat pandas DataFrame with TTree::Draw semantics",
+        "tests": [
+            "tests/test_api_to_pandas.py::TestToPandas::test_to_pandas_scalar",
+            "tests/test_api_to_pandas.py::TestToPandas::test_to_pandas_1d",
+            "tests/test_api_to_pandas.py::TestToPandas::test_to_pandas_2d",
+            "tests/test_api_to_pandas.py::TestToPandas::test_to_pandas_mixed_depth",
+            "tests/test_api_to_pandas.py::TestToPandas::test_to_pandas_with_selection",
+            "tests/test_api_to_pandas.py::TestToPandas::test_to_pandas_join_inner",
+            "tests/test_api_to_pandas.py::TestToPandas::test_to_pandas_join_outer",
+        ],
+        "proof": None,
+        "phase": "13.6.B",
+    },
+    "api_define": {
+        "name": "define() column creation",
+        "description": "Define computed columns with DSL expressions",
+        "tests": [
+            "tests/test_api_define.py::TestDefine::test_define_arithmetic",
+            "tests/test_api_define.py::TestDefine::test_define_method_call",
+            "tests/test_api_define.py::TestDefine::test_define_slicing",
+            "tests/test_api_define.py::TestDefine::test_define_chaining",
+            "tests/test_api_define.py::TestDefine::test_define_alias_reference",
+        ],
+        "proof": None,
+        "phase": "7.9",
+    },
+    "api_apply": {
+        "name": "apply() RDataFrame integration",
+        "description": "Apply all definitions to an RDataFrame",
+        "tests": [
+            "tests/test_api_define.py::TestApply::test_apply_single_definition",
+            "tests/test_api_define.py::TestApply::test_apply_multiple_definitions",
+            "tests/test_api_define.py::TestApply::test_apply_chained_aliases",
+        ],
+        "proof": None,
+        "phase": "7.9",
+    },
+    "api_register_function_cpp": {
+        "name": "register_function_cpp() UDF registration",
+        "description": "Register custom C++ functions for use in DSL expressions",
+        "tests": [
+            "tests/test_register_function_cpp.py::TestRegisterFunctionCpp::test_register_simple_function",
+            "tests/test_register_function_cpp.py::TestRegisterFunctionCpp::test_register_with_headers",
+            "tests/test_register_function_cpp.py::TestRegisterFunctionCpp::test_lambda_rejected",
+        ],
+        "proof": None,
+        "phase": "13.5.B",
     },
 }
 

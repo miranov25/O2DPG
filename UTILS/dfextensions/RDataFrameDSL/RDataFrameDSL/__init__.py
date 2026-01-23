@@ -120,6 +120,9 @@ from .ir_errors import (
     compile_error,
 )
 
+# Phase 13.6.F: User-facing alias for IRError
+DSLError = IRError
+
 # C++ Code Generation
 from .backend_cpp import (
     CppCodeGenerator,
@@ -201,6 +204,7 @@ __all__ = [
     'IRErrorKind',
     'SourceLocation',
     'IRError',
+    'DSLError',  # Phase 13.6.F: User-facing alias
     'ErrorRecoveryMode',
     'ErrorCollector',
     'type_mismatch_error',
