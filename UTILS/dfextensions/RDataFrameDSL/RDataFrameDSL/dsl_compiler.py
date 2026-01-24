@@ -754,6 +754,35 @@ class DSLCompiler:
         self._aliases[name] = expression
         return self
     
+    def redefine_alias(self, name: str, expression: str) -> 'DSLCompiler':
+        """
+        Redefine an existing alias (for notebook workflows).
+        
+        Phase 13.6.F: Allows overwriting previously defined aliases.
+        
+        Args:
+            name: Alias name to redefine
+            expression: New DSL expression
+            
+        Returns:
+            self for chaining
+            
+        Note:
+            If alias was already compiled, removes from schema/_defined_aliases
+            and puts new definition in pool for recompilation on next use.
+        """
+        # Remove from wherever it exists
+        if name in self._aliases:
+            del self._aliases[name]
+        if name in self._defined_aliases:
+            del self._defined_aliases[name]
+        if name in self.schema:
+            del self.schema[name]
+        
+        # Add new definition to pool
+        self._aliases[name] = expression
+        return self
+    
     @classmethod
     def from_rdf(cls, rdf, safe_indexing: bool = True) -> 'DSLCompiler':
         """
@@ -2430,6 +2459,7 @@ class DSLCompiler:
         join: str = 'inner',
         probe_size: int = 1000,
         timeout: float = 60.0,
+        jupyter: bool = False,
     ) -> 'pd.DataFrame':
         """
         Protected version of to_pandas() with probe-run safety.
@@ -2447,6 +2477,7 @@ class DSLCompiler:
             join: Join strategy for mixed depths ('inner' or 'outer')
             probe_size: Number of entries to test in probe-run (default: 1000)
             timeout: Timeout for probe-run in seconds (default: 60)
+            jupyter: Skip thread check for Jupyter notebooks (default: False)
             
         Returns:
             Flattened pandas DataFrame
@@ -2459,9 +2490,12 @@ class DSLCompiler:
             >>> # Safe export - won't crash main process
             >>> df = dsl.to_pandas_safe(rdf, ['track_pt', 'cluster_Q'])
             
+            >>> # In Jupyter notebook
+            >>> df = dsl.to_pandas_safe(rdf, ['track_pt'], jupyter=True)
+            
         Note:
-            Requires fork-safe environment (no ImplicitMT, single thread).
-            Use regular to_pandas() if safe mode requirements can't be met.
+            Requires fork-safe environment (no ImplicitMT).
+            In Jupyter, use jupyter=True to skip thread check.
         """
         import pandas as pd
         from .safe_mode import probe_columns, SafeModeError
@@ -2495,7 +2529,8 @@ class DSLCompiler:
             columns_to_fetch.append(parent_id_column)
         
         # Layer 3: Probe-run before full execution
-        probe_columns(applied_rdf, columns_to_fetch, probe_size=probe_size, timeout=timeout)
+        probe_columns(applied_rdf, columns_to_fetch, probe_size=probe_size, 
+                      timeout=timeout, skip_thread_check=jupyter)
         
         # Probe passed - execute full operation
         data = applied_rdf.AsNumpy(columns_to_fetch)

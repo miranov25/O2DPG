@@ -81,16 +81,34 @@ def _signal_name(signum: int) -> str:
 # Precondition Checks
 # =============================================================================
 
-def check_fork_safe() -> None:
+def _is_jupyter() -> bool:
+    """Detect if running in Jupyter notebook/lab environment."""
+    try:
+        from IPython import get_ipython
+        shell = get_ipython()
+        if shell is None:
+            return False
+        # Check for notebook-specific shell types
+        shell_name = shell.__class__.__name__
+        return shell_name in ('ZMQInteractiveShell', 'TerminalInteractiveShell')
+    except (ImportError, NameError):
+        return False
+
+
+def check_fork_safe(skip_thread_check: bool = False) -> None:
     """
     Verify that fork is safe to use.
     
     Raises:
         SafeModeError: If fork would be unsafe
         
+    Args:
+        skip_thread_check: Skip thread count check (for Jupyter notebooks).
+                          If False, auto-detects Jupyter and skips if detected.
+        
     Checks:
         - ROOT implicit MT not enabled (would corrupt after fork)
-        - No additional Python threads active
+        - No additional Python threads active (unless in Jupyter)
     """
     # Check 1: ROOT implicit MT
     try:
@@ -105,16 +123,19 @@ def check_fork_safe() -> None:
     except ImportError:
         pass  # ROOT not available, skip check
     
-    # Check 2: Python threading
-    active_threads = threading.active_count()
-    if active_threads > 1:
-        thread_names = [t.name for t in threading.enumerate()]
-        raise SafeModeError(
-            layer="precondition",
-            reason="precondition",
-            message=f"Cannot use safe mode with {active_threads} active threads. "
-                    f"Active threads: {thread_names}"
-        )
+    # Check 2: Python threading (auto-skip in Jupyter)
+    auto_skip = skip_thread_check or _is_jupyter()
+    if not auto_skip:
+        active_threads = threading.active_count()
+        if active_threads > 1:
+            thread_names = [t.name for t in threading.enumerate()]
+            raise SafeModeError(
+                layer="precondition",
+                reason="precondition",
+                message=f"Cannot use safe mode with {active_threads} active threads. "
+                        f"Active threads: {thread_names}. "
+                        f"Use skip_thread_check=True for Jupyter notebooks."
+            )
 
 
 # =============================================================================
@@ -292,6 +313,7 @@ def probe_columns(
     columns: List[str],
     probe_size: int = 1000,
     timeout: float = 30.0,
+    skip_thread_check: bool = False,
 ) -> bool:
     """
     Probe specific columns for execution safety.
@@ -303,6 +325,7 @@ def probe_columns(
         columns: Columns to probe
         probe_size: Number of entries to test
         timeout: Maximum time to wait (seconds)
+        skip_thread_check: Skip thread check for Jupyter notebooks
         
     Returns:
         True if probe succeeded
@@ -310,7 +333,7 @@ def probe_columns(
     Raises:
         SafeModeError: If probe crashed or failed
     """
-    check_fork_safe()
+    check_fork_safe(skip_thread_check=skip_thread_check)
     
     pid = os.fork()
     
