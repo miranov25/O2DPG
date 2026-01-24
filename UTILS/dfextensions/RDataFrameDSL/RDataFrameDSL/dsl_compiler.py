@@ -2369,6 +2369,102 @@ class DSLCompiler:
         
         return df
     
+    def to_pandas_safe(
+        self,
+        rdf,
+        columns: List[str],
+        event_selection: str = None,
+        parent_id_column: str = 'event_id',
+        backend: FlattenBackend = None,
+        max_entries: int = None,
+        join: str = 'inner',
+        probe_size: int = 1000,
+        timeout: float = 60.0,
+    ) -> 'pd.DataFrame':
+        """
+        Protected version of to_pandas() with probe-run safety.
+        
+        Phase 13.6.F Layer 3: Executes a probe-run on a small subset before
+        full execution to detect crashes safely.
+        
+        Args:
+            rdf: RDataFrame instance
+            columns: List of column names to export
+            event_selection: Optional event-level filter expression
+            parent_id_column: Name of parent ID column (default: 'event_id')
+            backend: Flatten backend (default: AUTO)
+            max_entries: Optional limit on number of events
+            join: Join strategy for mixed depths ('inner' or 'outer')
+            probe_size: Number of entries to test in probe-run (default: 1000)
+            timeout: Timeout for probe-run in seconds (default: 60)
+            
+        Returns:
+            Flattened pandas DataFrame
+            
+        Raises:
+            SafeModeError: If probe-run crashes or times out
+            IRError: If columns not found (Layer 1)
+            
+        Example:
+            >>> # Safe export - won't crash main process
+            >>> df = dsl.to_pandas_safe(rdf, ['track_pt', 'cluster_Q'])
+            
+        Note:
+            Requires fork-safe environment (no ImplicitMT, single thread).
+            Use regular to_pandas() if safe mode requirements can't be met.
+        """
+        import pandas as pd
+        from .safe_mode import probe_columns, SafeModeError
+        
+        # Phase 13.6.F: Materialize any aliases needed
+        if self._aliases:
+            all_requested = list(columns)
+            if parent_id_column not in all_requested:
+                all_requested.append(parent_id_column)
+            self._materialize_aliases(all_requested, rdf)
+        
+        # Layer 1: Validate columns
+        self._validate_columns(columns)
+        if parent_id_column not in columns:
+            self._validate_columns([parent_id_column])
+        
+        # Apply DSL definitions
+        applied_rdf = self.apply(rdf)
+        
+        # Apply event-level selection if provided
+        if event_selection:
+            applied_rdf = applied_rdf.Filter(event_selection)
+        
+        # Apply entry limit if specified
+        if max_entries is not None:
+            applied_rdf = applied_rdf.Range(max_entries)
+        
+        # Ensure parent_id_column is included
+        columns_to_fetch = list(columns)
+        if parent_id_column not in columns_to_fetch:
+            columns_to_fetch.append(parent_id_column)
+        
+        # Layer 3: Probe-run before full execution
+        probe_columns(applied_rdf, columns_to_fetch, probe_size=probe_size, timeout=timeout)
+        
+        # Probe passed - execute full operation
+        data = applied_rdf.AsNumpy(columns_to_fetch)
+        
+        # Use AUTO backend if not specified
+        if backend is None:
+            backend = FlattenBackend.AUTO
+        
+        # Flatten to DataFrame
+        df = flatten_to_dataframe(
+            data,
+            columns=columns,
+            parent_id_column=parent_id_column,
+            backend=backend,
+            join=join,
+        )
+        
+        return df
+    
     def export_to_aliasdf(
         self,
         rdf,

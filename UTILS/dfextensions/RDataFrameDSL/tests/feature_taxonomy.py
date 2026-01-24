@@ -16,7 +16,7 @@
 # Date: 2026-01-18
 # =============================================================================
 
-FEATURE_TAXONOMY_VERSION = "2.1"  # Phase 13.6.F: Added api_alias and api_from_rdf
+FEATURE_TAXONOMY_VERSION = "2.2"  # Phase 13.6.F: Added safe mode (Layer 2/3)
 
 # =============================================================================
 # FEATURE ALIASES (for backward compatibility if renaming needed)
@@ -587,6 +587,41 @@ FEATURE_TAXONOMY = {
             "tests/test_api_alias.py::TestFromRdf::test_from_rdf_basic",
             "tests/test_api_alias.py::TestFromRdf::test_update_schema_from_rdf",
             "tests/test_api_alias.py::TestFromRdf::test_update_schema_preserves_manual",
+        ],
+        "proof": None,
+        "phase": "13.6.F",
+    },
+    "api_to_pandas_safe": {
+        "name": "to_pandas_safe() protected export",
+        "description": "Protected to_pandas() with probe-run safety (Layer 3)",
+        "tests": [
+            "tests/test_safe_mode.py::TestToPandasSafe::test_to_pandas_safe_basic",
+            "tests/test_safe_mode.py::TestToPandasSafe::test_to_pandas_safe_with_alias",
+            "tests/test_safe_mode.py::TestToPandasSafe::test_to_pandas_safe_layer1_validation",
+        ],
+        "proof": None,
+        "phase": "13.6.F",
+    },
+    "layer2_safe_compile": {
+        "name": "Layer 2: Compile-time crash protection",
+        "description": "Fork-probe protection for C++ compilation (Declare/CompileMacro)",
+        "tests": [
+            "tests/test_safe_mode.py::TestPreconditions::test_check_fork_safe_single_thread",
+            "tests/test_safe_mode.py::TestPreconditions::test_check_fork_safe_rejects_threading",
+            "tests/test_safe_mode.py::TestLayer2::test_safe_declare_success",
+            "tests/test_safe_mode.py::TestLayer2::test_safe_declare_syntax_error",
+            "tests/test_safe_mode.py::TestLayer2::test_safe_compile_success",
+        ],
+        "proof": None,
+        "phase": "13.6.F",
+    },
+    "layer3_safe_execute": {
+        "name": "Layer 3: Execution-time crash protection",
+        "description": "Probe-run protection for RDataFrame actions",
+        "tests": [
+            "tests/test_safe_mode.py::TestLayer3::test_probe_run_success",
+            "tests/test_safe_mode.py::TestLayer3::test_probe_columns_success",
+            "tests/test_safe_mode.py::TestLayer3::test_probe_size_configurable",
         ],
         "proof": None,
         "phase": "13.6.F",
