@@ -332,13 +332,16 @@ class DSLCompiler:
     _global_cpp_compile_lock: threading.RLock = threading.RLock()
     _global_cpp_declared_names: Set[str] = set()
     
-    def __init__(self, schema: Dict[str, str], safe_indexing: bool = True):
+    def __init__(self, schema: Dict[str, str] = None, safe_indexing: bool = True):
         """
         Initialize DSL compiler.
         
         Args:
-            schema: Dict mapping column names to C++ types
+            schema: Dict mapping column names to C++ types (OPTIONAL in v13.6.F)
                     e.g. {"px": "double", "pt": "RVec<double>"}
+                    
+                    If None or empty, use alias() for deferred validation.
+                    Schema can be updated later via update_schema_from_rdf().
                     
                     Special key '_pragmas' (optional): List of pragma directives
                     for custom class registration. These are automatically
@@ -356,7 +359,12 @@ class DSLCompiler:
             safe_indexing: Enable bounds checking (default True)
         
         Phase 13.6.D: Added _pragmas key support for custom class dictionaries.
+        Phase 13.6.F: Made schema optional for alias() workflow.
         """
+        # Handle None or empty schema
+        if schema is None:
+            schema = {}
+        
         # Extract and register pragmas BEFORE processing schema
         schema_copy = dict(schema)  # Make a copy
         pragmas = schema_copy.pop('_pragmas', [])
@@ -387,6 +395,10 @@ class DSLCompiler:
         self._definitions: List[tuple] = []  # [(name, expr), ...]
         self._functions: Dict[str, GeneratedFunction] = {}
         self.library = FunctionLibrary()
+        
+        # Phase 13.6.F: Alias pool for deferred validation (TTree::SetAlias style)
+        self._aliases: Dict[str, str] = {}  # {name: expression} - NOT validated until needed
+        self._defined_aliases: Dict[str, str] = {}  # Already validated aliases (from define())
         
         # Phase 13.2.DSL: Optional RDataFrame reference for to_arrow()
         self._rdf = None
@@ -693,6 +705,251 @@ class DSLCompiler:
             "double": "double",
         }
         return cpp_types.get(dtype, "double")
+    
+    # =========================================================================
+    # Phase 13.6.F: alias() - Pool-Based Deferred Validation
+    # =========================================================================
+    
+    def alias(self, name: str, expression: str) -> 'DSLCompiler':
+        """
+        Define alias with DEFERRED validation (TTree::SetAlias style).
+        
+        Formula stored in pool but NOT validated until apply()/draw()/to_pandas().
+        Allows referencing columns not yet in schema.
+        
+        Phase 13.6.F: Pool-based compilation - only compile what's needed.
+        
+        Args:
+            name: Alias name
+            expression: DSL expression
+            
+        Returns:
+            self (for chaining)
+            
+        Raises:
+            IRError: If name conflicts with existing column or alias
+            
+        Example:
+            >>> dsl = DSLCompiler()  # Empty schema OK
+            >>> dsl.alias("pt", "sqrt(px**2 + py**2)")   # Stored, not validated
+            >>> dsl.alias("high_pt", "pt > 10")          # Stored, not validated
+            >>> dsl.draw("high_pt", rdf)  # NOW: validate pt, high_pt only
+        """
+        if name in self.schema:
+            raise IRError(
+                IRErrorKind.VALIDATION_ERROR,
+                f"Alias '{name}' conflicts with existing column in schema"
+            )
+        if name in self._aliases:
+            raise IRError(
+                IRErrorKind.VALIDATION_ERROR,
+                f"Alias '{name}' already defined in alias pool"
+            )
+        if name in self._defined_aliases:
+            raise IRError(
+                IRErrorKind.VALIDATION_ERROR,
+                f"Alias '{name}' already defined via define()"
+            )
+        
+        self._aliases[name] = expression
+        return self
+    
+    @classmethod
+    def from_rdf(cls, rdf, safe_indexing: bool = True) -> 'DSLCompiler':
+        """
+        Create DSLCompiler with schema auto-inferred from RDataFrame.
+        
+        Phase 13.6.F: Enables schema-less workflow by inferring types from RDF.
+        
+        Args:
+            rdf: RDataFrame instance
+            safe_indexing: Enable bounds checking (default True)
+            
+        Returns:
+            DSLCompiler instance with schema populated from RDF columns
+            
+        Example:
+            >>> rdf = ROOT.RDataFrame("Events", "data.root")
+            >>> dsl = DSLCompiler.from_rdf(rdf)
+            >>> dsl.define("pt", "sqrt(px**2 + py**2)")  # Works immediately
+        """
+        schema = {}
+        for col in rdf.GetColumnNames():
+            col_name = str(col)
+            try:
+                col_type = str(rdf.GetColumnType(col_name))
+                schema[col_name] = col_type
+            except Exception:
+                # GetColumnType may fail for some complex types
+                schema[col_name] = "Unknown"
+        
+        instance = cls(schema, safe_indexing=safe_indexing)
+        instance._rdf = rdf
+        return instance
+    
+    def update_schema_from_rdf(self, rdf) -> 'DSLCompiler':
+        """
+        Update schema with columns from RDataFrame.
+        
+        Phase 13.6.F: Allows incremental schema building.
+        Manual schema entries take precedence (don't overwrite).
+        
+        Args:
+            rdf: RDataFrame instance
+            
+        Returns:
+            self (for chaining)
+            
+        Example:
+            >>> dsl = DSLCompiler({'custom_col': 'double'})
+            >>> dsl.update_schema_from_rdf(rdf)  # Add RDF columns
+            >>> dsl.define("result", "custom_col + track_pt")  # Both available
+        """
+        for col in rdf.GetColumnNames():
+            col_name = str(col)
+            if col_name not in self.schema:
+                try:
+                    col_type = str(rdf.GetColumnType(col_name))
+                    self.schema[col_name] = col_type
+                except Exception:
+                    self.schema[col_name] = "Unknown"
+        
+        self._rebuild_inferrer()
+        return self
+    
+    def _rebuild_inferrer(self) -> None:
+        """Rebuild TypeInferrer and generator with current schema."""
+        full_schema = _simple_schema_to_full(self.schema)
+        self._inferrer = TypeInferrer.from_schema(full_schema)
+        self._generator = CppCodeGenerator(
+            type_inferrer=self._inferrer,
+            safe_indexing=self.safe_indexing
+        )
+    
+    def _extract_dependencies(self, expression: str) -> Set[str]:
+        """
+        Extract variable names from expression using AST.
+        
+        Phase 13.6.F: Used for alias dependency tracing.
+        
+        Args:
+            expression: DSL expression
+            
+        Returns:
+            Set of variable names referenced in expression
+        """
+        import ast
+        try:
+            tree = ast.parse(expression, mode='eval')
+            names = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Name):
+                    names.add(node.id)
+            return names
+        except SyntaxError:
+            # If AST parsing fails, return empty set (will fail at validation)
+            return set()
+    
+    def _get_needed_aliases(self, requested: List[str]) -> Set[str]:
+        """
+        Trace dependencies from requested columns to find needed aliases.
+        
+        Phase 13.6.F: Pool-based - only return aliases needed for requested columns.
+        
+        Args:
+            requested: List of column names requested by user
+            
+        Returns:
+            Set of alias names that need to be compiled
+            
+        Raises:
+            IRError: If circular dependency detected
+        """
+        needed = set()
+        visiting = set()  # For cycle detection (recursion stack)
+        
+        def trace(name: str):
+            # Cycle detection FIRST - check if we're already visiting this node
+            if name in visiting:
+                raise IRError(
+                    IRErrorKind.VALIDATION_ERROR,
+                    f"Circular dependency detected involving '{name}'",
+                    suggestions=[
+                        "Alias definitions cannot reference each other in a cycle",
+                        "Check your alias definitions for circular references"
+                    ]
+                )
+            
+            # Skip if already fully processed
+            if name in needed:
+                return
+            
+            # Only trace if it's in the alias pool
+            if name in self._aliases:
+                visiting.add(name)
+                needed.add(name)
+                
+                # Trace dependencies
+                deps = self._extract_dependencies(self._aliases[name])
+                for dep in deps:
+                    trace(dep)
+                
+                visiting.remove(name)
+        
+        for name in requested:
+            trace(name)
+        
+        return needed
+    
+    def _materialize_aliases(self, requested: List[str], rdf) -> None:
+        """
+        Validate and compile only needed aliases.
+        
+        Phase 13.6.F: Pool-based materialization.
+        
+        Args:
+            requested: List of column names requested by user
+            rdf: RDataFrame for schema inference
+        """
+        # Step 1: Update schema from RDF
+        self.update_schema_from_rdf(rdf)
+        
+        # Step 2: Get needed aliases
+        needed = self._get_needed_aliases(requested)
+        
+        if not needed:
+            return
+        
+        # Step 3: Compile in dependency order
+        compiled = set()
+        
+        def compile_with_deps(name: str):
+            if name in compiled:
+                return
+            if name not in self._aliases:
+                return
+            
+            # Compile dependencies first
+            deps = self._extract_dependencies(self._aliases[name])
+            for dep in deps:
+                if dep in needed:
+                    compile_with_deps(dep)
+            
+            # Now compile this alias using define()
+            # This validates and adds to schema
+            expr = self._aliases[name]
+            self.define(name, expr)
+            compiled.add(name)
+            
+            # Track that this alias has been materialized
+            self._defined_aliases[name] = expr
+        
+        for name in needed:
+            compile_with_deps(name)
+        
+        # Remove materialized aliases from pool
+        for name in compiled:
+            del self._aliases[name]
     
     # =========================================================================
     # Phase 13.4.D9: C-Array Integration
@@ -2062,6 +2319,22 @@ class DSLCompiler:
         """
         import pandas as pd
         
+        # Phase 13.6.F: Materialize any aliases needed for requested columns
+        # This must happen BEFORE validation since aliases aren't in schema yet
+        if self._aliases:
+            all_requested = list(columns)
+            if parent_id_column not in all_requested:
+                all_requested.append(parent_id_column)
+            self._materialize_aliases(all_requested, rdf)
+        
+        # Phase 13.6.F Layer 1: Validate columns before ROOT execution
+        # This catches missing columns early with helpful error messages
+        self._validate_columns(columns)
+        
+        # Also validate parent_id_column if it's not already in columns
+        if parent_id_column not in columns:
+            self._validate_columns([parent_id_column])
+        
         # Apply DSL definitions first if not already applied
         applied_rdf = self.apply(rdf)
         
@@ -2335,6 +2608,86 @@ class DSLCompiler:
                 type_str = type_str[:-1]
         
         return depth
+    
+    # =========================================================================
+    # Phase 13.6.F: Layer 1 - DSL-Level Validation
+    # =========================================================================
+    
+    def _validate_columns(self, columns: List[str]) -> None:
+        """
+        Validate that all requested columns exist in schema or are defined aliases.
+        
+        Phase 13.6.F Layer 1: Catches missing columns before ROOT execution,
+        providing helpful error messages with suggestions.
+        
+        Note: Alias pool (_aliases) is NOT checked here because _materialize_aliases()
+        should be called first to compile needed aliases into schema.
+        
+        Args:
+            columns: List of column names to validate
+            
+        Raises:
+            IRError: If any column is not found, with suggestions for similar names
+        """
+        if not columns:
+            raise IRError(
+                kind=IRErrorKind.VALIDATION_ERROR,
+                message="columns list cannot be empty",
+                suggestions=["Provide at least one column name to export"]
+            )
+        
+        # Build set of all available names: schema columns + defined aliases
+        available = set(self.schema.keys())
+        available.update(self._defined_aliases.keys())
+        
+        # Check each column
+        missing = []
+        in_alias_pool = []  # Track if missing column is in alias pool (should have been materialized)
+        for col in columns:
+            if col not in available:
+                if col in self._aliases:
+                    in_alias_pool.append(col)
+                else:
+                    missing.append(col)
+        
+        # If columns are in alias pool, that's an internal error (should have been materialized)
+        if in_alias_pool:
+            raise IRError(
+                kind=IRErrorKind.VALIDATION_ERROR,
+                message=f"Internal error: aliases not materialized: {', '.join(in_alias_pool)}",
+                suggestions=["This is a bug - _materialize_aliases() should have been called first"]
+            )
+        
+        if missing:
+            # Build helpful error message with suggestions
+            from difflib import get_close_matches
+            
+            all_names = sorted(available)
+            # Also include alias pool names in suggestions
+            all_names_for_suggestions = sorted(available | set(self._aliases.keys()))
+            suggestions_list = []
+            
+            for col in missing:
+                # Find similar names (include alias pool for suggestions)
+                similar = get_close_matches(col, all_names_for_suggestions, n=3, cutoff=0.4)
+                if similar:
+                    suggestions_list.append(f"'{col}' - did you mean: {', '.join(similar)}?")
+                else:
+                    suggestions_list.append(f"'{col}' - no similar names found")
+            
+            # Create detailed error
+            if len(missing) == 1:
+                msg = f"Column not found: {missing[0]}"
+            else:
+                msg = f"Columns not found: {', '.join(missing)}"
+            
+            raise IRError(
+                kind=IRErrorKind.TYPE_ERROR,
+                message=msg,
+                suggestions=suggestions_list + [
+                    f"Available columns: {', '.join(all_names[:10])}{'...' if len(all_names) > 10 else ''}"
+                ]
+            )
     
     # =========================================================================
     # Phase 12.6.DSL: AliasDataFrame Export

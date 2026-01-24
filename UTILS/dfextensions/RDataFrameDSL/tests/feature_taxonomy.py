@@ -16,7 +16,7 @@
 # Date: 2026-01-18
 # =============================================================================
 
-FEATURE_TAXONOMY_VERSION = "2.0"  # Phase 13.6.F: Error detection and API features
+FEATURE_TAXONOMY_VERSION = "2.1"  # Phase 13.6.F: Added api_alias and api_from_rdf
 
 # =============================================================================
 # FEATURE ALIASES (for backward compatibility if renaming needed)
@@ -561,6 +561,35 @@ FEATURE_TAXONOMY = {
         ],
         "proof": None,
         "phase": "13.5.B",
+    },
+    "api_alias": {
+        "name": "alias() deferred validation",
+        "description": "Define aliases with deferred validation (TTree::SetAlias style, pool-based)",
+        "tests": [
+            "tests/test_api_alias.py::TestAliasBasic::test_alias_basic_store",
+            "tests/test_api_alias.py::TestAliasBasic::test_alias_chaining",
+            "tests/test_api_alias.py::TestAliasBasic::test_alias_conflict_with_schema",
+            "tests/test_api_alias.py::TestAliasBasic::test_alias_conflict_with_alias",
+            "tests/test_api_alias.py::TestAliasPoolBased::test_alias_unused_ignored",
+            "tests/test_api_alias.py::TestAliasPoolBased::test_alias_dependency_chain",
+            "tests/test_api_alias.py::TestAliasCycleDetection::test_alias_cycle_detection",
+            "tests/test_api_alias.py::TestAliasCycleDetection::test_alias_self_reference",
+            "tests/test_api_alias.py::TestAliasIntegration::test_alias_compile_on_demand",
+            "tests/test_api_alias.py::TestAliasIntegration::test_alias_missing_column_error",
+        ],
+        "proof": None,
+        "phase": "13.6.F",
+    },
+    "api_from_rdf": {
+        "name": "from_rdf() schema inference",
+        "description": "Create DSLCompiler with schema auto-inferred from RDataFrame",
+        "tests": [
+            "tests/test_api_alias.py::TestFromRdf::test_from_rdf_basic",
+            "tests/test_api_alias.py::TestFromRdf::test_update_schema_from_rdf",
+            "tests/test_api_alias.py::TestFromRdf::test_update_schema_preserves_manual",
+        ],
+        "proof": None,
+        "phase": "13.6.F",
     },
 }
 

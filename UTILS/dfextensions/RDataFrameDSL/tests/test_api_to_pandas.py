@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 
 from RDataFrameDSL import DSLCompiler
-from RDataFrameDSL.ir_errors import IRError
+from RDataFrameDSL.ir_errors import IRError, IRErrorKind
 
 
 # =============================================================================
@@ -194,30 +194,57 @@ class TestToPandasErrors:
     @pytest.mark.root_serial
     def test_to_pandas_missing_column(self, nd_2d_rdf, nd_2d_schema):
         """
-        to_pandas() raises error for column not in schema.
+        to_pandas() raises IRError for column not in schema with suggestions.
         
-        NOTE: Currently error comes from ROOT (runtime_error), not DSL validation.
-        Phase 13.6.F Layer 1 should add DSL-level validation to catch this earlier
-        with better error messages.
-        
-        This test documents current behavior; update when Layer 1 validation added.
+        Phase 13.6.F Layer 1: DSL-level validation catches missing columns
+        before ROOT execution, providing helpful "Did you mean...?" suggestions.
         """
         dsl = DSLCompiler(nd_2d_schema)
         
-        # Currently raises ROOT runtime_error, not DSL error
-        # TODO Phase 13.6.F: Should raise IRError/DSLError with suggestions
-        with pytest.raises(Exception) as exc_info:
+        # Should raise IRError with suggestions
+        with pytest.raises(IRError) as exc_info:
             dsl.to_pandas(nd_2d_rdf, columns=['nonexistent_column'])
         
         # Verify error message mentions the column
-        assert 'nonexistent_column' in str(exc_info.value)
+        error = exc_info.value
+        assert 'nonexistent_column' in str(error)
+        assert error.kind == IRErrorKind.TYPE_ERROR
+        
+        # Verify suggestions are provided
+        assert error.suggestions is not None
+        assert len(error.suggestions) > 0
+    
+    @pytest.mark.feature("error_missing_column")
+    @pytest.mark.feature("error_suggestions")
+    @pytest.mark.feature("api_to_pandas")
+    @pytest.mark.root_serial
+    def test_to_pandas_missing_column_with_similar(self, nd_2d_rdf, nd_2d_schema):
+        """
+        to_pandas() suggests similar column names for typos.
+        
+        Phase 13.6.F Layer 1: Tests "Did you mean...?" functionality.
+        """
+        dsl = DSLCompiler(nd_2d_schema)
+        
+        # "track_pT" should suggest "track_pt"
+        with pytest.raises(IRError) as exc_info:
+            dsl.to_pandas(nd_2d_rdf, columns=['track_pT'])
+        
+        error = exc_info.value
+        # Should have suggestions including 'track_pt'
+        suggestions_str = ' '.join(error.suggestions or [])
+        assert 'track_pt' in suggestions_str.lower() or 'track' in suggestions_str.lower()
     
     @pytest.mark.feature("api_to_pandas")
     def test_to_pandas_empty_columns(self, nd_2d_rdf, nd_2d_schema):
         """
         to_pandas() raises error for empty columns list.
+        
+        Phase 13.6.F Layer 1: Empty columns list is caught early.
         """
         dsl = DSLCompiler(nd_2d_schema)
         
-        with pytest.raises((ValueError, TypeError)):
+        with pytest.raises(IRError) as exc_info:
             dsl.to_pandas(nd_2d_rdf, columns=[])
+        
+        assert exc_info.value.kind == IRErrorKind.VALIDATION_ERROR
