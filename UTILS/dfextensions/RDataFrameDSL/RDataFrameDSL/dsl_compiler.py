@@ -767,17 +767,34 @@ class DSLCompiler:
         Returns:
             self for chaining
             
+        Raises:
+            IRError: If trying to redefine a physical schema column
+            
         Note:
             If alias was already compiled, removes from schema/_defined_aliases
             and puts new definition in pool for recompilation on next use.
         """
+        # Guard: Cannot redefine physical schema columns (only aliases)
+        is_alias = name in self._aliases or name in self._defined_aliases
+        is_in_schema = name in self.schema
+        
+        if is_in_schema and not is_alias:
+            # This is a physical column from RDF, not an alias we created
+            raise IRError(
+                IRErrorKind.VALIDATION_ERROR,
+                f"Cannot redefine physical column '{name}'. "
+                f"Only aliases created via alias() can be redefined."
+            )
+        
         # Remove from wherever it exists
         if name in self._aliases:
             del self._aliases[name]
         if name in self._defined_aliases:
             del self._defined_aliases[name]
-        if name in self.schema:
+        if name in self.schema and is_alias:
             del self.schema[name]
+            # Rebuild inferrer to keep it consistent
+            self._rebuild_inferrer()
         
         # Add new definition to pool
         self._aliases[name] = expression
@@ -901,7 +918,7 @@ class DSLCompiler:
             # Cycle detection FIRST - check if we're already visiting this node
             if name in visiting:
                 raise IRError(
-                    IRErrorKind.VALIDATION_ERROR,
+                    IRErrorKind.CYCLE_ERROR,
                     f"Circular dependency detected involving '{name}'",
                     suggestions=[
                         "Alias definitions cannot reference each other in a cycle",
