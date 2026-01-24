@@ -16,7 +16,7 @@
 # Date: 2026-01-18
 # =============================================================================
 
-FEATURE_TAXONOMY_VERSION = "2.2"  # Phase 13.6.F: Added safe mode (Layer 2/3)
+FEATURE_TAXONOMY_VERSION = "2.4"  # Phase 13.6.F: Added integration tests for CAPABILITY_MATRIX
 
 # =============================================================================
 # FEATURE ALIASES (for backward compatibility if renaming needed)
@@ -576,6 +576,9 @@ FEATURE_TAXONOMY = {
             "tests/test_api_alias.py::TestAliasCycleDetection::test_alias_self_reference",
             "tests/test_api_alias.py::TestAliasIntegration::test_alias_compile_on_demand",
             "tests/test_api_alias.py::TestAliasIntegration::test_alias_missing_column_error",
+            "tests/test_invariance_safe_draw.py::TestAliasPoolIntegration::test_INV_ALIAS_unused_never_compiled",
+            "tests/test_invariance_safe_draw.py::TestAliasPoolIntegration::test_INV_ALIAS_chain_compiles_in_order",
+            "tests/test_invariance_safe_draw.py::TestAliasPoolIntegration::test_INV_ALIAS_cycle_detected",
         ],
         "proof": None,
         "phase": "13.6.F",
@@ -587,6 +590,9 @@ FEATURE_TAXONOMY = {
             "tests/test_api_alias.py::TestFromRdf::test_from_rdf_basic",
             "tests/test_api_alias.py::TestFromRdf::test_update_schema_from_rdf",
             "tests/test_api_alias.py::TestFromRdf::test_update_schema_preserves_manual",
+            "tests/test_invariance_safe_draw.py::TestFromRdfIntegration::test_INV_RDF_schema_matches_columns",
+            "tests/test_invariance_safe_draw.py::TestFromRdfIntegration::test_INV_RDF_define_works_after_inference",
+            "tests/test_invariance_safe_draw.py::TestFromRdfIntegration::test_INV_RDF_update_preserves_manual",
         ],
         "proof": None,
         "phase": "13.6.F",
@@ -598,6 +604,9 @@ FEATURE_TAXONOMY = {
             "tests/test_safe_mode.py::TestToPandasSafe::test_to_pandas_safe_basic",
             "tests/test_safe_mode.py::TestToPandasSafe::test_to_pandas_safe_with_alias",
             "tests/test_safe_mode.py::TestToPandasSafe::test_to_pandas_safe_layer1_validation",
+            "tests/test_invariance_safe_draw.py::TestSafeModeIntegration::test_INV_SAFE_to_pandas_safe_scalar",
+            "tests/test_invariance_safe_draw.py::TestSafeModeIntegration::test_INV_SAFE_to_pandas_safe_with_define",
+            "tests/test_invariance_safe_draw.py::TestSafeModeIntegration::test_INV_SAFE_to_pandas_safe_with_alias",
         ],
         "proof": None,
         "phase": "13.6.F",
@@ -622,6 +631,35 @@ FEATURE_TAXONOMY = {
             "tests/test_safe_mode.py::TestLayer3::test_probe_run_success",
             "tests/test_safe_mode.py::TestLayer3::test_probe_columns_success",
             "tests/test_safe_mode.py::TestLayer3::test_probe_size_configurable",
+            "tests/test_invariance_safe_draw.py::TestSafeModeIntegration::test_INV_SAFE_to_pandas_safe_scalar",
+        ],
+        "proof": None,
+        "phase": "13.6.F",
+    },
+    "api_draw": {
+        "name": "draw() TTree::Draw equivalent",
+        "description": "Draw plots with Layer 1 validation and optional safe mode",
+        "tests": [
+            "tests/test_api_draw.py::TestDrawValidation::test_draw_validates_columns",
+            "tests/test_api_draw.py::TestDrawValidation::test_draw_with_alias",
+            "tests/test_api_draw.py::TestDrawValidation::test_draw_error_has_suggestions",
+            "tests/test_api_draw.py::TestDrawSafeMode::test_draw_safe_mode",
+            "tests/test_invariance_safe_draw.py::TestDrawIntegration::test_INV_DRAW_layer1_validates_before_execution",
+            "tests/test_invariance_safe_draw.py::TestDrawIntegration::test_INV_DRAW_materializes_aliases",
+            "tests/test_invariance_safe_draw.py::TestDrawIntegration::test_INV_DRAW_safe_mode_probes_before_plot",
+        ],
+        "proof": None,
+        "phase": "13.6.F",
+    },
+    "api_batch_draw": {
+        "name": "batch_draw() batch plotting",
+        "description": "Draw multiple plots with single data extraction, validates ALL before any plotting",
+        "tests": [
+            "tests/test_api_draw.py::TestBatchDrawValidation::test_batch_draw_validates_all",
+            "tests/test_api_draw.py::TestBatchDrawValidation::test_batch_draw_empty_specs",
+            "tests/test_api_draw.py::TestBatchDrawValidation::test_batch_draw_with_aliases",
+            "tests/test_api_draw.py::TestDrawSafeMode::test_batch_draw_safe_mode",
+            "tests/test_invariance_safe_draw.py::TestDrawIntegration::test_INV_DRAW_batch_validates_all_before_any",
         ],
         "proof": None,
         "phase": "13.6.F",

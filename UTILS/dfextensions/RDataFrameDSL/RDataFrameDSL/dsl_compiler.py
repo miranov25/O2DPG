@@ -2032,15 +2032,20 @@ class DSLCompiler:
         return columns
     
     def draw(self, expr: str, rdf, columns: List[str] = None,
-             max_entries: int = None, **kwargs):
+             max_entries: int = None, safe_mode: bool = False,
+             probe_size: int = 1000, **kwargs):
         """
         Draw a plot using dfdraw with automatic column detection.
         
+        Phase 13.6.F: TTree::Draw equivalent with Layer 1 validation.
+        
         Args:
             expr: Plot expression ('pt', 'y:x', 'dy:row')
-            rdf: Applied RDataFrame (after dsl.apply())
+            rdf: RDataFrame instance (applied or not)
             columns: Optional explicit column list (auto-detected if None)
             max_entries: Optional limit on number of entries (for large datasets)
+            safe_mode: If True, use probe-run before execution (Layer 3)
+            probe_size: Probe size for safe mode (default: 1000)
             **kwargs: Passed to dfdraw.DFDraw.draw()
                 - selection: Filter expression (e.g., "isOK && pt > 1.0")
                 - type: Plot type ('hist', 'scatter', 'profile', 'hist2d')
@@ -2053,10 +2058,13 @@ class DSLCompiler:
         
         Raises:
             ImportError: If dfdraw is not installed
+            IRError: If columns not found (Layer 1 validation)
+            SafeModeError: If probe-run fails (Layer 3, when safe_mode=True)
         
         Example:
             >>> dsl.draw("pt:eta", rdf, selection="isOK")
             >>> dsl.draw("trackPt", rdf, max_entries=10000)  # RVec column
+            >>> dsl.draw("pt", rdf, safe_mode=True)  # With crash protection
         """
         # Lazy import with helpful error
         try:
@@ -2079,12 +2087,27 @@ class DSLCompiler:
                 kwargs.get('color')
             ))
         
+        # Phase 13.6.F: Materialize aliases needed for columns
+        if self._aliases:
+            self._materialize_aliases(columns, rdf)
+        
+        # Phase 13.6.F Layer 1: Validate columns exist
+        self._validate_columns(columns)
+        
+        # Apply definitions to RDF
+        applied_rdf = self.apply(rdf)
+        
         # Apply entry limit if specified (for large datasets)
         if max_entries is not None:
-            rdf = rdf.Range(max_entries)
+            applied_rdf = applied_rdf.Range(max_entries)
+        
+        # Phase 13.6.F Layer 3: Safe mode with probe-run
+        if safe_mode:
+            from .safe_mode import probe_columns
+            probe_columns(applied_rdf, columns, probe_size=probe_size)
         
         # Extract data
-        result = rdf.AsNumpy(columns)
+        result = applied_rdf.AsNumpy(columns)
         
         # Phase 12.2: Flatten RVec columns for dfdraw compatibility
         result = self._flatten_rvec_columns(result)
@@ -2095,19 +2118,29 @@ class DSLCompiler:
     
     def draw_batch(self, specs: Dict[str, dict], rdf,
                    save_dir: str = None, max_entries: int = None,
+                   safe_mode: bool = False, probe_size: int = 1000,
                    **defaults):
         """
         Draw multiple plots with a single AsNumpy call (efficient).
         
+        Phase 13.6.F: Batch plotting with Layer 1 validation.
+        Validates ALL expressions before any plotting, reports ALL errors.
+        
         Args:
             specs: Dict of {name: {expr: str, ...options}}
-            rdf: Applied RDataFrame
+            rdf: RDataFrame instance (applied or not)
             save_dir: Optional directory to save plots as PNG
             max_entries: Optional limit on entries
+            safe_mode: If True, use probe-run before execution (Layer 3)
+            probe_size: Probe size for safe mode (default: 1000)
             **defaults: Default options applied to all plots
         
         Returns:
             Dict of {name: {fig, ax, stats}}
+            
+        Raises:
+            IRError: If any columns not found (reports ALL errors)
+            SafeModeError: If probe-run fails (Layer 3, when safe_mode=True)
         
         Example:
             >>> specs = {
@@ -2145,12 +2178,29 @@ class DSLCompiler:
                 spec.get('color', defaults.get('color'))
             ))
         
+        all_columns_list = list(all_columns)
+        
+        # Phase 13.6.F: Materialize aliases needed for all columns
+        if self._aliases:
+            self._materialize_aliases(all_columns_list, rdf)
+        
+        # Phase 13.6.F Layer 1: Validate ALL columns before any plotting
+        self._validate_columns(all_columns_list)
+        
+        # Apply definitions to RDF
+        applied_rdf = self.apply(rdf)
+        
         # Apply entry limit
         if max_entries is not None:
-            rdf = rdf.Range(max_entries)
+            applied_rdf = applied_rdf.Range(max_entries)
+        
+        # Phase 13.6.F Layer 3: Safe mode with probe-run
+        if safe_mode:
+            from .safe_mode import probe_columns
+            probe_columns(applied_rdf, all_columns_list, probe_size=probe_size)
         
         # Single data extraction (efficient!)
-        result = rdf.AsNumpy(list(all_columns))
+        result = applied_rdf.AsNumpy(all_columns_list)
         
         # Phase 12.2: Flatten RVec columns for dfdraw compatibility
         result = self._flatten_rvec_columns(result)
