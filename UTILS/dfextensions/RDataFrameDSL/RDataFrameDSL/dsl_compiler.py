@@ -947,7 +947,7 @@ class DSLCompiler:
         
         return needed
     
-    def _materialize_aliases(self, requested: List[str], rdf) -> None:
+    def _materialize_aliases(self, requested: List[str], rdf, safe_mode: bool = False) -> None:
         """
         Validate and compile only needed aliases.
         
@@ -956,6 +956,7 @@ class DSLCompiler:
         Args:
             requested: List of column names requested by user
             rdf: RDataFrame for schema inference
+            safe_mode: If True, use Layer 2 fork-probe for Define() calls
         """
         # Step 1: Update schema from RDF
         self.update_schema_from_rdf(rdf)
@@ -984,7 +985,13 @@ class DSLCompiler:
             # Now compile this alias using define()
             # This validates and adds to schema
             expr = self._aliases[name]
-            self.define(name, expr)
+            
+            if safe_mode:
+                # Layer 2: Fork-probe protection for Define()
+                self._define_safe(name, expr)
+            else:
+                self.define(name, expr)
+            
             compiled.add(name)
             
             # Track that this alias has been materialized
@@ -996,6 +1003,71 @@ class DSLCompiler:
         # Remove materialized aliases from pool
         for name in compiled:
             del self._aliases[name]
+    
+    def _define_safe(self, name: str, expression: str) -> None:
+        """
+        Define a column with Layer 2 fork-probe protection.
+        
+        Phase 13.6.F P0-3: Protects against JIT compilation crashes.
+        
+        Args:
+            name: Column name to define
+            expression: DSL expression
+            
+        Raises:
+            SafeModeError: If compilation crashes in child process
+        """
+        from .safe_mode import check_fork_safe, SafeModeError, _is_jupyter
+        import os
+        import signal
+        
+        check_fork_safe()
+        
+        pid = os.fork()
+        
+        if pid == 0:
+            # === CHILD PROCESS ===
+            try:
+                # Try the define() - this triggers JIT compilation
+                self.define(name, expression)
+                os._exit(0)  # Success
+            except Exception:
+                os._exit(1)  # Failed but didn't crash
+        else:
+            # === PARENT PROCESS ===
+            try:
+                _, status = os.waitpid(pid, 0)
+                
+                if os.WIFSIGNALED(status):
+                    sig = os.WTERMSIG(status)
+                    raise SafeModeError(
+                        layer="compile",
+                        reason="define_crash",
+                        message=f"Definition of '{name} = {expression}' crashed with signal {sig}",
+                        signal_num=sig,
+                        details={"name": name, "expression": expression}
+                    )
+                
+                exit_code = os.WEXITSTATUS(status) if os.WIFEXITED(status) else -1
+                
+                if exit_code != 0:
+                    raise SafeModeError(
+                        layer="compile",
+                        reason="define_failed",
+                        message=f"Definition of '{name} = {expression}' failed",
+                        exit_code=exit_code,
+                        details={"name": name, "expression": expression}
+                    )
+                    
+            except ChildProcessError:
+                raise SafeModeError(
+                    layer="compile",
+                    reason="child_error",
+                    message=f"Child process error while defining '{name}'"
+                )
+        
+        # If probe passed, do the actual define in parent process
+        self.define(name, expression)
     
     # =========================================================================
     # Phase 13.4.D9: C-Array Integration
@@ -2134,11 +2206,13 @@ class DSLCompiler:
             ))
         
         # Phase 13.6.F: Materialize aliases needed for columns
+        # P0-3: Pass safe_mode for Layer 2 protection on Define()
         if self._aliases:
-            self._materialize_aliases(columns, rdf)
+            self._materialize_aliases(columns, rdf, safe_mode=safe_mode)
         
         # Phase 13.6.F Layer 1: Validate columns exist
-        self._validate_columns(columns)
+        # P0-4: Pass rdf to allow auto-extending schema
+        self._validate_columns(columns, rdf=rdf)
         
         # Apply definitions to RDF
         applied_rdf = self.apply(rdf)
@@ -2227,11 +2301,13 @@ class DSLCompiler:
         all_columns_list = list(all_columns)
         
         # Phase 13.6.F: Materialize aliases needed for all columns
+        # P0-3: Pass safe_mode for Layer 2 protection on Define()
         if self._aliases:
-            self._materialize_aliases(all_columns_list, rdf)
+            self._materialize_aliases(all_columns_list, rdf, safe_mode=safe_mode)
         
         # Phase 13.6.F Layer 1: Validate ALL columns before any plotting
-        self._validate_columns(all_columns_list)
+        # P0-4: Pass rdf to allow auto-extending schema
+        self._validate_columns(all_columns_list, rdf=rdf)
         
         # Apply definitions to RDF
         applied_rdf = self.apply(rdf)
@@ -2425,11 +2501,12 @@ class DSLCompiler:
         
         # Phase 13.6.F Layer 1: Validate columns before ROOT execution
         # This catches missing columns early with helpful error messages
-        self._validate_columns(columns)
+        # P0-4: Pass rdf to allow auto-extending schema
+        self._validate_columns(columns, rdf=rdf)
         
         # Also validate parent_id_column if it's not already in columns
         if parent_id_column not in columns:
-            self._validate_columns([parent_id_column])
+            self._validate_columns([parent_id_column], rdf=rdf)
         
         # Apply DSL definitions first if not already applied
         applied_rdf = self.apply(rdf)
@@ -2518,16 +2595,18 @@ class DSLCompiler:
         from .safe_mode import probe_columns, SafeModeError
         
         # Phase 13.6.F: Materialize any aliases needed
+        # P0-3: to_pandas_safe always uses safe_mode=True for alias materialization
         if self._aliases:
             all_requested = list(columns)
             if parent_id_column not in all_requested:
                 all_requested.append(parent_id_column)
-            self._materialize_aliases(all_requested, rdf)
+            self._materialize_aliases(all_requested, rdf, safe_mode=True)
         
         # Layer 1: Validate columns
-        self._validate_columns(columns)
+        # P0-4: Pass rdf to allow auto-extending schema
+        self._validate_columns(columns, rdf=rdf)
         if parent_id_column not in columns:
-            self._validate_columns([parent_id_column])
+            self._validate_columns([parent_id_column], rdf=rdf)
         
         # Apply DSL definitions
         applied_rdf = self.apply(rdf)
@@ -2811,18 +2890,22 @@ class DSLCompiler:
     # Phase 13.6.F: Layer 1 - DSL-Level Validation
     # =========================================================================
     
-    def _validate_columns(self, columns: List[str]) -> None:
+    def _validate_columns(self, columns: List[str], rdf=None) -> None:
         """
         Validate that all requested columns exist in schema or are defined aliases.
         
         Phase 13.6.F Layer 1: Catches missing columns before ROOT execution,
         providing helpful error messages with suggestions.
         
+        Phase 13.6.F P0-4: If rdf is provided and columns are missing from schema,
+        attempts to auto-extend schema from RDF columns (non-destructive).
+        
         Note: Alias pool (_aliases) is NOT checked here because _materialize_aliases()
         should be called first to compile needed aliases into schema.
         
         Args:
             columns: List of column names to validate
+            rdf: Optional RDataFrame for auto-extending schema
             
         Raises:
             IRError: If any column is not found, with suggestions for similar names
@@ -2855,6 +2938,17 @@ class DSLCompiler:
                 message=f"Internal error: aliases not materialized: {', '.join(in_alias_pool)}",
                 suggestions=["This is a bug - _materialize_aliases() should have been called first"]
             )
+        
+        # P0-4: If columns are missing and rdf is provided, try to extend schema
+        if missing and rdf is not None:
+            self.update_schema_from_rdf(rdf)
+            
+            # Re-check after schema update
+            available = set(self.schema.keys())
+            available.update(self._defined_aliases.keys())
+            
+            still_missing = [col for col in missing if col not in available]
+            missing = still_missing
         
         if missing:
             # Build helpful error message with suggestions
