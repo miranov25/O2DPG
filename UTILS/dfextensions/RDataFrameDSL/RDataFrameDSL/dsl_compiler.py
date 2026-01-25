@@ -53,6 +53,41 @@ from .ir_errors import IRError, IRErrorKind
 # Phase 13.6.B: Flatten module for TTree::Draw-like export
 from .flatten import flatten_to_dataframe, flatten_to_tables, FlattenBackend
 
+# =============================================================================
+# Phase 13.6.G: Logging Configuration
+# =============================================================================
+import logging
+from contextlib import contextmanager
+
+# Module-level logger
+logger = logging.getLogger("RDataFrameDSL")
+
+# Default to WARNING (silent unless issues)
+# Users can enable with: logging.getLogger("RDataFrameDSL").setLevel(logging.DEBUG)
+# Note: We don't add handlers here to allow pytest caplog to work properly.
+# The logger propagates to root logger which has default handlers.
+logger.setLevel(logging.WARNING)
+
+
+@contextmanager
+def _verbose_logging():
+    """
+    Context manager for temporarily enabling DEBUG logging.
+    
+    Phase 13.6.G: Used by verbose=True parameter in methods.
+    
+    Usage:
+        with _verbose_logging():
+            # DEBUG messages will be shown
+            ...
+    """
+    old_level = logger.level
+    logger.setLevel(logging.DEBUG)
+    try:
+        yield
+    finally:
+        logger.setLevel(old_level)
+
 
 # Phase 13.2.DSL: PyArrow detection
 try:
@@ -413,6 +448,155 @@ class DSLCompiler:
         # Phase 13.6.D+: Store method signatures for IR builder
         self._method_signatures = method_signatures
     
+    # =========================================================================
+    # Phase 13.6.G: Verbosity & Inspection
+    # =========================================================================
+    
+    def describe_structure(
+        self, 
+        verbosity: int = None, 
+        return_dict: bool = False
+    ):
+        """
+        Inspect DSLCompiler state without side effects.
+        
+        Phase 13.6.G: Interactive inspection with bitmask-based verbosity.
+        
+        CRITICAL CONTRACT - This method is SIDE-EFFECT FREE:
+            ❌ MUST NOT trigger compilation
+            ❌ MUST NOT trigger type inference
+            ❌ MUST NOT trigger execution
+            ❌ MUST NOT mutate schema
+            ❌ MUST NOT materialize aliases
+            ❌ MUST NOT call update_schema_from_rdf()
+        
+        Args:
+            verbosity: Bitmask of VERBOSITY_* flags (default: VERBOSE_DEFAULT)
+                       See RDataFrameDSL.verbosity for available flags.
+            return_dict: If True, return dict instead of formatted string
+            
+        Returns:
+            str: Formatted structure description (default)
+            dict: Structure data if return_dict=True
+            
+        Example:
+            >>> dsl = DSLCompiler.from_rdf(rdf)
+            >>> dsl.alias("pt", "tracks.Pt()")
+            >>> print(dsl.describe_structure())
+            DSLCompiler Status
+            ==================
+            Schema: 3 columns
+            Aliases: 1 in pool, 0 compiled
+            ...
+            
+            >>> info = dsl.describe_structure(return_dict=True)
+            >>> info['n_aliases']
+            1
+        """
+        from .verbosity import (
+            VERBOSE_DEFAULT, VERBOSITY_BASIC, VERBOSITY_SCHEMA,
+            VERBOSITY_ALIASES, VERBOSITY_ALIASES_FULL, VERBOSITY_DEFINES,
+            VERBOSITY_COMPILED, VERBOSITY_SAFE_MODE, VERBOSITY_CACHE
+        )
+        
+        if verbosity is None:
+            verbosity = VERBOSE_DEFAULT
+        
+        # Gather information WITHOUT triggering any computation
+        info = {}
+        
+        # Basic info (always gathered for dict, displayed if VERBOSITY_BASIC)
+        info['n_columns'] = len(self.schema)
+        info['n_aliases'] = len(self._aliases)
+        info['n_defined'] = len(self._defined_aliases)
+        info['n_definitions'] = len(self._definitions)
+        info['safe_indexing'] = self.safe_indexing
+        
+        # Schema columns
+        info['schema'] = dict(self.schema)
+        
+        # Aliases (pool - not yet compiled)
+        info['aliases'] = dict(self._aliases)
+        
+        # Defined aliases (compiled)
+        info['defined_aliases'] = dict(self._defined_aliases)
+        
+        # Definitions list
+        info['definitions'] = [(name, expr) for name, expr in self._definitions]
+        
+        # Cache stats
+        info['registered_functions'] = len(self._registered_cpp_functions)
+        info['helpers_declared'] = self._helpers_declared
+        
+        if return_dict:
+            return info
+        
+        # Build formatted string
+        lines = []
+        lines.append("DSLCompiler Status")
+        lines.append("=" * 40)
+        
+        # Basic
+        if verbosity & VERBOSITY_BASIC:
+            lines.append(f"Schema: {info['n_columns']} columns")
+            lines.append(f"Aliases: {info['n_aliases']} in pool, {info['n_defined']} compiled")
+            lines.append(f"Definitions: {info['n_definitions']}")
+            lines.append(f"Safe indexing: {info['safe_indexing']}")
+            lines.append("")
+        
+        # Schema
+        if verbosity & VERBOSITY_SCHEMA:
+            if info['schema']:
+                lines.append("Schema columns:")
+                max_name_len = max(len(n) for n in info['schema'].keys())
+                for name, dtype in sorted(info['schema'].items()):
+                    lines.append(f"  {name:<{max_name_len}} : {dtype}")
+                lines.append("")
+            else:
+                lines.append("Schema: (empty - use from_rdf() or provide schema)")
+                lines.append("")
+        
+        # Aliases
+        if verbosity & VERBOSITY_ALIASES:
+            if info['aliases']:
+                lines.append("Alias pool (pending):")
+                if verbosity & VERBOSITY_ALIASES_FULL:
+                    max_name_len = max(len(n) for n in info['aliases'].keys())
+                    for name, expr in sorted(info['aliases'].items()):
+                        lines.append(f"  {name:<{max_name_len}} → {expr}")
+                else:
+                    lines.append(f"  {', '.join(sorted(info['aliases'].keys()))}")
+                lines.append("")
+        
+        # Defined (compiled)
+        if verbosity & VERBOSITY_DEFINES:
+            if info['defined_aliases']:
+                lines.append("Compiled aliases:")
+                if verbosity & VERBOSITY_ALIASES_FULL:
+                    max_name_len = max(len(n) for n in info['defined_aliases'].keys())
+                    for name, expr in sorted(info['defined_aliases'].items()):
+                        # Try to show inferred type if available
+                        dtype = info['schema'].get(name, '?')
+                        lines.append(f"  {name:<{max_name_len}} → {expr}  [{dtype}]")
+                else:
+                    lines.append(f"  {', '.join(sorted(info['defined_aliases'].keys()))}")
+                lines.append("")
+        
+        # Compilation status
+        if verbosity & VERBOSITY_COMPILED:
+            lines.append("Compilation status:")
+            lines.append(f"  Registered C++ functions: {info['registered_functions']}")
+            lines.append(f"  Helpers declared: {info['helpers_declared']}")
+            lines.append("")
+        
+        # Cache
+        if verbosity & VERBOSITY_CACHE:
+            lines.append("Cache statistics:")
+            lines.append(f"  Function library size: {len(self.library._functions) if hasattr(self.library, '_functions') else 'N/A'}")
+            lines.append("")
+        
+        return '\n'.join(lines)
+    
     def _preprocess_expression(self, expr: str) -> str:
         """
         Convert C++ :: notation to Python dot notation.
@@ -469,7 +653,7 @@ class DSLCompiler:
         
         return ''.join(result)
     
-    def define(self, name: str, expression: str, dtype: str = None) -> 'DSLCompiler':
+    def define(self, name: str, expression: str, dtype: str = None, verbose: bool = False) -> 'DSLCompiler':
         """
         Define a new column from a DSL expression.
         
@@ -486,6 +670,7 @@ class DSLCompiler:
                    - "uint8", "uint16", "uint32", "uint64"
                    - "float", "float32", "float64", "double"
                    If None, inferred from expression or defaults to double.
+            verbose: If True, enable DEBUG logging for this call (Phase 13.6.G)
         
         Returns:
             self (for chaining)
@@ -501,6 +686,15 @@ class DSLCompiler:
             >>> dsl.define("sector", "int(9*phi/pi)", dtype="int8")
             >>> dsl.define("row0", "mat[0,:]")  # C-array row extraction (D9)
         """
+        if verbose:
+            with _verbose_logging():
+                return self._define_impl(name, expression, dtype)
+        return self._define_impl(name, expression, dtype)
+    
+    def _define_impl(self, name: str, expression: str, dtype: str = None) -> 'DSLCompiler':
+        """Internal implementation of define() with logging."""
+        logger.debug(f"[compile] Defining: {name} = {expression}")
+        
         # Check for name collision with original schema only
         # (aliases are allowed to shadow other aliases via redefinition)
         if name in self.schema and name not in [n for n, _ in self._definitions]:
@@ -525,6 +719,7 @@ class DSLCompiler:
         
         # Phase 11.1: Preprocess C++ :: syntax to Python dot syntax
         preprocessed = self._preprocess_expression(expression)
+        logger.debug(f"[compile] Preprocessed: {preprocessed}")
         
         # Parse and generate (Phase 13.6.D+: pass method_signatures)
         builder = IRBuilder(
@@ -548,6 +743,9 @@ class DSLCompiler:
         func.dsl_expression = expression  # Track original DSL
         func.column_name = name  # Track user-friendly name for Define()
         
+        logger.debug(f"[compile] Generated C++: {func.code[:100]}..." if len(func.code) > 100 else f"[compile] Generated C++: {func.code}")
+        logger.debug(f"[compile] Type inferred: {name} → {ir.dtype}")
+        
         # Store
         self._definitions.append((name, expression))
         self._functions[name] = func
@@ -555,6 +753,8 @@ class DSLCompiler:
         
         # === NEW: Register alias in schema for future expressions ===
         self._register_alias_type(name, ir, dtype)
+        
+        logger.info(f"[compile] Defined: {name} = {expression} [{ir.dtype}]")
         
         return self
     
@@ -710,7 +910,7 @@ class DSLCompiler:
     # Phase 13.6.F: alias() - Pool-Based Deferred Validation
     # =========================================================================
     
-    def alias(self, name: str, expression: str) -> 'DSLCompiler':
+    def alias(self, name: str, expression: str, verbose: bool = False) -> 'DSLCompiler':
         """
         Define alias with DEFERRED validation (TTree::SetAlias style).
         
@@ -722,6 +922,7 @@ class DSLCompiler:
         Args:
             name: Alias name
             expression: DSL expression
+            verbose: If True, enable DEBUG logging for this call (Phase 13.6.G)
             
         Returns:
             self (for chaining)
@@ -735,6 +936,9 @@ class DSLCompiler:
             >>> dsl.alias("high_pt", "pt > 10")          # Stored, not validated
             >>> dsl.draw("high_pt", rdf)  # NOW: validate pt, high_pt only
         """
+        if verbose:
+            logger.debug(f"[alias] Storing: {name} = {expression}")
+        
         if name in self.schema:
             raise IRError(
                 IRErrorKind.VALIDATION_ERROR,
@@ -752,6 +956,7 @@ class DSLCompiler:
             )
         
         self._aliases[name] = expression
+        logger.debug(f"[alias] Added to pool: {name} (pool size: {len(self._aliases)})")
         return self
     
     def redefine_alias(self, name: str, expression: str) -> 'DSLCompiler':
@@ -952,12 +1157,18 @@ class DSLCompiler:
         Validate and compile only needed aliases.
         
         Phase 13.6.F: Pool-based materialization.
+        Phase 13.6.G: Added logging for observability.
         
         Args:
             requested: List of column names requested by user
             rdf: RDataFrame for schema inference
             safe_mode: If True, use Layer 2 fork-probe for Define() calls
         """
+        import time
+        start_time = time.perf_counter()
+        
+        logger.debug(f"[alias] Materializing requested: {requested}")
+        
         # Step 1: Update schema from RDF
         self.update_schema_from_rdf(rdf)
         
@@ -965,7 +1176,10 @@ class DSLCompiler:
         needed = self._get_needed_aliases(requested)
         
         if not needed:
+            logger.debug("[alias] No aliases to materialize")
             return
+        
+        logger.debug(f"[alias] Need to compile: {needed}")
         
         # Step 3: Compile in dependency order
         compiled = set()
@@ -978,6 +1192,7 @@ class DSLCompiler:
             
             # Compile dependencies first
             deps = self._extract_dependencies(self._aliases[name])
+            logger.debug(f"[alias] Tracing dependencies: {name} → {deps}")
             for dep in deps:
                 if dep in needed:
                     compile_with_deps(dep)
@@ -985,9 +1200,11 @@ class DSLCompiler:
             # Now compile this alias using define()
             # This validates and adds to schema
             expr = self._aliases[name]
+            logger.debug(f"[compile] Compiling alias: {name} = {expr}")
             
             if safe_mode:
                 # Layer 2: Fork-probe protection for Define()
+                logger.debug(f"[safe] Fork-probe for: {name}")
                 self._define_safe(name, expr)
             else:
                 self.define(name, expr)
@@ -1003,6 +1220,9 @@ class DSLCompiler:
         # Remove materialized aliases from pool
         for name in compiled:
             del self._aliases[name]
+        
+        elapsed = time.perf_counter() - start_time
+        logger.info(f"[alias] Compiled {len(compiled)} aliases in {elapsed:.3f}s")
     
     def _define_safe(self, name: str, expression: str) -> None:
         """
@@ -2151,11 +2371,12 @@ class DSLCompiler:
     
     def draw(self, expr: str, rdf, columns: List[str] = None,
              max_entries: int = None, safe_mode: bool = False,
-             probe_size: int = 1000, **kwargs):
+             probe_size: int = 1000, verbose: bool = False, **kwargs):
         """
         Draw a plot using dfdraw with automatic column detection.
         
         Phase 13.6.F: TTree::Draw equivalent with Layer 1 validation.
+        Phase 13.6.G: Added verbose parameter for logging.
         
         Args:
             expr: Plot expression ('pt', 'y:x', 'dy:row')
@@ -2164,6 +2385,7 @@ class DSLCompiler:
             max_entries: Optional limit on number of entries (for large datasets)
             safe_mode: If True, use probe-run before execution (Layer 3)
             probe_size: Probe size for safe mode (default: 1000)
+            verbose: If True, enable DEBUG logging for this call (Phase 13.6.G)
             **kwargs: Passed to dfdraw.DFDraw.draw()
                 - selection: Filter expression (e.g., "isOK && pt > 1.0")
                 - type: Plot type ('hist', 'scatter', 'profile', 'hist2d')
@@ -2183,7 +2405,19 @@ class DSLCompiler:
             >>> dsl.draw("pt:eta", rdf, selection="isOK")
             >>> dsl.draw("trackPt", rdf, max_entries=10000)  # RVec column
             >>> dsl.draw("pt", rdf, safe_mode=True)  # With crash protection
+            >>> dsl.draw("pt", rdf, verbose=True)  # Show debug output
         """
+        if verbose:
+            with _verbose_logging():
+                return self._draw_impl(expr, rdf, columns, max_entries, safe_mode, probe_size, **kwargs)
+        return self._draw_impl(expr, rdf, columns, max_entries, safe_mode, probe_size, **kwargs)
+    
+    def _draw_impl(self, expr: str, rdf, columns: List[str] = None,
+                   max_entries: int = None, safe_mode: bool = False,
+                   probe_size: int = 1000, **kwargs):
+        """Internal implementation of draw()."""
+        logger.debug(f"[draw] Expression: {expr}")
+        
         # Lazy import with helpful error
         try:
             from dfextensions.dfdraw import DFDraw
@@ -2428,6 +2662,7 @@ class DSLCompiler:
         backend: FlattenBackend = None,
         max_entries: int = None,
         join: str = 'inner',
+        verbose: bool = False,
     ) -> 'pd.DataFrame':
         """
         Export RDataFrame to flat pandas DataFrame with TTree::Draw semantics.
@@ -2439,6 +2674,7 @@ class DSLCompiler:
         
         Phase 13.6.B: Core method for TTree::Draw equivalence.
         Phase 13.6.C: Added join parameter for mixed-depth join strategy.
+        Phase 13.6.G: Added verbose parameter for logging.
         
         Args:
             rdf: RDataFrame instance (applied or not)
@@ -2455,6 +2691,7 @@ class DSLCompiler:
                   - 'outer': Union of indices (NaN for missing)
                   - 'left': All from deeper operand
                   - 'right': All from shallower operand
+            verbose: If True, enable DEBUG logging for this call (Phase 13.6.G)
         
         Returns:
             Flat pandas DataFrame with index columns:
@@ -2491,6 +2728,29 @@ class DSLCompiler:
         """
         import pandas as pd
         
+        # Phase 13.6.G: Enable verbose logging if requested
+        if verbose:
+            with _verbose_logging():
+                return self._to_pandas_impl(
+                    rdf, columns, event_selection, parent_id_column,
+                    backend, max_entries, join
+                )
+        return self._to_pandas_impl(
+            rdf, columns, event_selection, parent_id_column,
+            backend, max_entries, join
+        )
+    
+    def _to_pandas_impl(
+        self, rdf, columns, event_selection, parent_id_column,
+        backend, max_entries, join
+    ):
+        """Internal implementation of to_pandas()."""
+        import time
+        import pandas as pd
+        
+        start_time = time.perf_counter()
+        logger.debug(f"[export] to_pandas: columns={columns}")
+        
         # Phase 13.6.F: Materialize any aliases needed for requested columns
         # This must happen BEFORE validation since aliases aren't in schema yet
         if self._aliases:
@@ -2525,6 +2785,7 @@ class DSLCompiler:
             columns_to_fetch.append(parent_id_column)
         
         # Get data from RDataFrame
+        logger.debug(f"[export] Fetching columns: {columns_to_fetch}")
         data = applied_rdf.AsNumpy(columns_to_fetch)
         
         # Use AUTO backend if not specified
@@ -2539,6 +2800,9 @@ class DSLCompiler:
             backend=backend,
             join=join,
         )
+        
+        elapsed = time.perf_counter() - start_time
+        logger.info(f"[export] Exported {len(df)} rows, {len(df.columns)} columns in {elapsed:.3f}s")
         
         return df
     
