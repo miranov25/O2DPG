@@ -270,20 +270,51 @@ def compute_status(
     outcomes = []
     failed_tests = []
     for nodeid in feature_test_nodeids:
-        # Try both with and without tests/ prefix
-        outcome = test_outcomes.get(nodeid)
+        # Normalize nodeid: extract just filename::class::test
+        # Handle cases like "tests/test_foo.py::Class::test" vs "test_foo.py::Class::test"
+        nodeid_normalized = nodeid
+        if nodeid.startswith("tests/"):
+            nodeid_normalized = nodeid[6:]  # Remove "tests/" prefix
+        
+        # Try multiple matching strategies
+        outcome = None
         matched_nodeid = nodeid
+        
+        # Strategy 1: Exact match
+        outcome = test_outcomes.get(nodeid)
+        if outcome:
+            matched_nodeid = nodeid
+        
+        # Strategy 2: With tests/ prefix
         if outcome is None:
             outcome = test_outcomes.get(f"tests/{nodeid}")
             if outcome:
                 matched_nodeid = f"tests/{nodeid}"
+        
+        # Strategy 3: Without tests/ prefix (if nodeid has it)
+        if outcome is None and nodeid.startswith("tests/"):
+            outcome = test_outcomes.get(nodeid_normalized)
+            if outcome:
+                matched_nodeid = nodeid_normalized
+        
+        # Strategy 4: Substring match on normalized nodeid
         if outcome is None:
-            # Try matching just the test name portion
             for key, val in test_outcomes.items():
-                if nodeid in key or key.endswith(nodeid):
+                # Normalize the key too
+                key_normalized = key[6:] if key.startswith("tests/") else key
+                if nodeid_normalized == key_normalized:
                     outcome = val
                     matched_nodeid = key
                     break
+        
+        # Strategy 5: Fuzzy match - nodeid contained in key or vice versa
+        if outcome is None:
+            for key, val in test_outcomes.items():
+                if nodeid_normalized in key or key.endswith(nodeid_normalized):
+                    outcome = val
+                    matched_nodeid = key
+                    break
+        
         outcomes.append(outcome or "unknown")
         
         # Track failed tests
@@ -461,7 +492,45 @@ def generate_auto_section(
         
         if feature_test_list:
             for nodeid in sorted(feature_test_list):
-                lines.append(f"- `{nodeid}`")
+                # Normalize nodeid for matching
+                nodeid_normalized = nodeid[6:] if nodeid.startswith("tests/") else nodeid
+                
+                # Try multiple matching strategies
+                outcome = test_outcomes.get(nodeid)
+                if outcome is None:
+                    outcome = test_outcomes.get(f"tests/{nodeid}")
+                if outcome is None:
+                    outcome = test_outcomes.get(nodeid_normalized)
+                if outcome is None:
+                    # Fuzzy match
+                    for key, val in test_outcomes.items():
+                        key_normalized = key[6:] if key.startswith("tests/") else key
+                        if nodeid_normalized == key_normalized:
+                            outcome = val
+                            break
+                if outcome is None:
+                    for key, val in test_outcomes.items():
+                        if nodeid_normalized in key or key.endswith(nodeid_normalized):
+                            outcome = val
+                            break
+                
+                # Status emoji based on outcome
+                if outcome == "passed":
+                    status_emoji = "✅"
+                elif outcome == "failed":
+                    status_emoji = "❌"
+                elif outcome == "error":
+                    status_emoji = "💥"
+                elif outcome == "skipped":
+                    status_emoji = "⏭️"
+                elif outcome == "xfailed":
+                    status_emoji = "⚠️"
+                elif outcome == "xpassed":
+                    status_emoji = "🔄"
+                else:
+                    status_emoji = "❓"
+                
+                lines.append(f"- {status_emoji} `{nodeid}`")
         else:
             lines.append("*No tests with @pytest.mark.feature marker*")
         
@@ -631,6 +700,12 @@ Prerequisites:
         action="store_true",
         help="Verbose output"
     )
+    parser.add_argument(
+        "--from-reports",
+        nargs="+",
+        metavar="JSON_FILE",
+        help="Read test outcomes from existing JSON report files (from pytest-json-report)"
+    )
     args = parser.parse_args()
     
     # -------------------------------------------------------------------------
@@ -678,9 +753,42 @@ Prerequisites:
             print(f"  {fid}: {len(tests)} tests")
     
     # -------------------------------------------------------------------------
-    # Run pytest to collect outcomes
+    # Collect test outcomes (from reports or by running pytest)
     # -------------------------------------------------------------------------
-    if args.skip_tests:
+    if args.from_reports:
+        # Read outcomes from existing JSON report files
+        print(f"Reading test outcomes from {len(args.from_reports)} report file(s)...")
+        test_outcomes = {}
+        for report_path in args.from_reports:
+            report_path = Path(report_path)
+            if not report_path.exists():
+                print(f"  Warning: Report not found: {report_path}")
+                continue
+            try:
+                with open(report_path) as f:
+                    report = json.load(f)
+                count = 0
+                for test in report.get("tests", []):
+                    nodeid = test.get("nodeid", "")
+                    outcome = test.get("outcome", "unknown")
+                    
+                    # Normalize nodeid: ensure it has tests/ prefix for consistency
+                    # Serial runs from tests/ dir so nodeids lack prefix
+                    # Parallel runs from project root so nodeids have tests/ prefix
+                    if not nodeid.startswith("tests/"):
+                        nodeid_normalized = f"tests/{nodeid}"
+                    else:
+                        nodeid_normalized = nodeid
+                    
+                    # Store both forms for flexible matching
+                    test_outcomes[nodeid] = outcome
+                    test_outcomes[nodeid_normalized] = outcome
+                    count += 1
+                print(f"  Loaded {count} outcomes from {report_path.name}")
+            except (json.JSONDecodeError, KeyError) as e:
+                print(f"  Warning: Failed to parse {report_path}: {e}")
+        print(f"Total: {len(test_outcomes)} test outcomes loaded (with normalized duplicates)")
+    elif args.skip_tests:
         print("Skipping pytest run (--skip-tests)")
         test_outcomes = {}
     else:
@@ -736,6 +844,68 @@ Prerequisites:
                 print("✅ MANUAL section preserved")
             else:
                 print("⚠️ Warning: MANUAL section may not have been preserved")
+        
+        # Generate debug log with detailed test outcomes
+        debug_log_path = output_path.parent / "capability_matrix_debug.log"
+        debug_lines = [
+            f"Capability Matrix Debug Log",
+            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"",
+            f"=" * 70,
+            f"TEST OUTCOMES BY FEATURE",
+            f"=" * 70,
+            f"",
+        ]
+        
+        for feature_id, feature_info in FEATURE_TAXONOMY.items():
+            name = feature_info.get("name", feature_id)
+            feature_test_list = feature_tests.get(feature_id, [])
+            
+            # Compute status
+            status, test_count, failed_tests = compute_status(
+                feature_id, feature_test_list, test_outcomes, KNOWN_LIMITATIONS, FEATURE_TAXONOMY
+            )
+            
+            debug_lines.append(f"Feature: {name}")
+            debug_lines.append(f"  ID: {feature_id}")
+            debug_lines.append(f"  Status: {status}")
+            debug_lines.append(f"  Tests: {test_count}")
+            
+            if failed_tests:
+                debug_lines.append(f"  FAILED TESTS:")
+                for t in failed_tests:
+                    debug_lines.append(f"    ❌ {t}")
+            
+            # Show all test outcomes for this feature
+            if feature_test_list:
+                debug_lines.append(f"  All test outcomes:")
+                for nodeid in sorted(feature_test_list):
+                    outcome = test_outcomes.get(nodeid)
+                    if outcome is None:
+                        outcome = test_outcomes.get(f"tests/{nodeid}")
+                    if outcome is None:
+                        for key, val in test_outcomes.items():
+                            if nodeid in key or key.endswith(nodeid):
+                                outcome = val
+                                break
+                    outcome = outcome or "unknown"
+                    marker = "✅" if outcome == "passed" else "❌" if outcome == "failed" else "❓"
+                    debug_lines.append(f"    {marker} [{outcome:8}] {nodeid}")
+            
+            debug_lines.append("")
+        
+        # Summary of all failures
+        debug_lines.append("=" * 70)
+        debug_lines.append("ALL FAILED TESTS")
+        debug_lines.append("=" * 70)
+        debug_lines.append("")
+        
+        for nodeid, outcome in sorted(test_outcomes.items()):
+            if outcome in ("failed", "error"):
+                debug_lines.append(f"❌ {nodeid}")
+        
+        debug_log_path.write_text("\n".join(debug_lines))
+        print(f"✅ Generated debug log: {debug_log_path}")
 
 
 if __name__ == "__main__":

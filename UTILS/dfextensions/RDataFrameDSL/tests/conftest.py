@@ -741,3 +741,41 @@ try:
     from conftest_nd_additions import *
 except ImportError:
     pass  # N-D fixtures not available - tests will skip
+# =============================================================================
+# ADD THIS TO tests/conftest.py - ROOT dictionary pre-generation
+# Phase 13.6.G: Ensures pytest works standalone without run_tests.sh
+# =============================================================================
+
+@pytest.fixture(scope="session", autouse=True)
+def ensure_root_dictionaries():
+    """
+    Pre-generate ROOT dictionaries before any tests run.
+    
+    This avoids race conditions when multiple parallel pytest workers
+    try to generate the same AutoDict_* files simultaneously.
+    
+    The fixture is session-scoped and autouse=True, so it runs once
+    at the start of the test session before any tests execute.
+    """
+    try:
+        import sys
+        from pathlib import Path
+        
+        # Ensure generators module is importable
+        tests_dir = Path(__file__).parent
+        generators_dir = tests_dir / "generators"
+        
+        if str(generators_dir) not in sys.path:
+            sys.path.insert(0, str(generators_dir))
+        if str(tests_dir) not in sys.path:
+            sys.path.insert(0, str(tests_dir))
+        
+        from toy_nd import _ensure_rvec_dictionaries
+        _ensure_rvec_dictionaries()
+    except ImportError as e:
+        import warnings
+        warnings.warn(f"Could not import toy_nd for dictionary generation: {e}")
+    except Exception as e:
+        import warnings
+        warnings.warn(f"Could not pre-generate ROOT dictionaries: {e}")
+    yield
