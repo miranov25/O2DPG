@@ -3,21 +3,22 @@
 # Phase 13.6.G: Debug notebook validation
 #
 # Usage:
-#   ./run_notebooks.sh              # Run all (quiet)
-#   ./run_notebooks.sh -v           # Run all (verbose - show errors)
+#   ./run_notebooks.sh              # Run all (default verbose)
+#   ./run_notebooks.sh -q           # Run all (quiet - less output)
 #   ./run_notebooks.sh 08a          # Run specific notebook
-#   ./run_notebooks.sh -v 08a       # Run specific notebook (verbose)
+#   ./run_notebooks.sh -q 08a       # Run specific notebook (quiet)
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_DIR="/tmp/notebook_tests"
-VERBOSE=0
+QUIET=0
 
 # Parse options
-while getopts "v" opt; do
+while getopts "qv" opt; do
     case $opt in
-        v) VERBOSE=1 ;;
+        q) QUIET=1 ;;
+        v) QUIET=0 ;;  # Kept for backward compatibility
     esac
 done
 shift $((OPTIND-1))
@@ -60,19 +61,7 @@ for nb in "${NOTEBOOKS[@]}"; do
     
     echo -n "Testing $nb... "
     
-    if [ $VERBOSE -eq 1 ]; then
-        # Verbose: show all output
-        if jupyter nbconvert --execute "$nb_path" \
-            --to html \
-            --output "$OUTPUT_DIR/$output_name.html" \
-            --ExecutePreprocessor.timeout=300; then
-            echo "✓ PASSED"
-            ((PASSED++))
-        else
-            echo "✗ FAILED"
-            ((FAILED++))
-        fi
-    else
+    if [ $QUIET -eq 1 ]; then
         # Quiet: suppress output, show only on failure
         if jupyter nbconvert --execute "$nb_path" \
             --to html \
@@ -88,7 +77,28 @@ for nb in "${NOTEBOOKS[@]}"; do
             jupyter nbconvert --execute "$nb_path" \
                 --to html \
                 --output "$OUTPUT_DIR/$output_name.html" \
-                --ExecutePreprocessor.timeout=300 2>&1 | tail -20
+                --ExecutePreprocessor.timeout=300 2>&1 | tail -30
+        fi
+    else
+        # Default verbose: show all output on failure, summary on success
+        OUTPUT=$(jupyter nbconvert --execute "$nb_path" \
+            --to html \
+            --output "$OUTPUT_DIR/$output_name.html" \
+            --ExecutePreprocessor.timeout=300 2>&1)
+        STATUS=$?
+        
+        if [ $STATUS -eq 0 ]; then
+            echo "✓ PASSED"
+            ((PASSED++))
+            # Show output path
+            echo "   → $OUTPUT_DIR/$output_name.html"
+        else
+            echo "✗ FAILED"
+            ((FAILED++))
+            # Show error details
+            echo "----------------------------------------"
+            echo "$OUTPUT" | tail -40
+            echo "----------------------------------------"
         fi
     fi
 done
