@@ -177,6 +177,7 @@ class SliceKind(Enum):
     LAST_N = "last_n"         # [-3:]     → Take(v, -3)
     FROM_INDEX = "from_index" # [2:]      → Take(v, Range(2, size))
     RANGE = "range"           # [1:3]     → Take(v, Range(1, 3))
+    RANGE_NEG = "range_neg"   # [1:-1]    → Range with negative index translation
     STEP = "step"             # [::2]     → loop-based indices
     REVERSE = "reverse"       # [::-1]    → manual reverse loop
     BOOLEAN = "boolean"       # [mask]    → native v[mask]

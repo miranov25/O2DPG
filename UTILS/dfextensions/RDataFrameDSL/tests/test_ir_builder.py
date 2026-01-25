@@ -149,14 +149,12 @@ class TestVariables:
         assert node.rank == 1
         assert node.is_jagged
     
-    @pytest.mark.feature("error_missing_column")
     def test_unknown_variable_error(self, basic_builder):
         """Unknown variable raises error."""
         with pytest.raises(IRError) as exc_info:
             basic_builder.build("unknown_var")
         assert exc_info.value.kind == IRErrorKind.TYPE_ERROR
     
-    @pytest.mark.feature("error_suggestions")
     def test_unknown_variable_suggestions(self, basic_builder):
         """Unknown variable error includes suggestions."""
         with pytest.raises(IRError) as exc_info:
@@ -433,7 +431,6 @@ class TestFunctionCalls:
         assert node.cpp_name == "TMath::Gaus"
         assert node.dtype.kind == IRTypeKind.Float64
     
-    @pytest.mark.feature("error_unknown_function")
     def test_unknown_function_error(self, basic_builder):
         """Unknown function raises error."""
         with pytest.raises(IRError) as exc_info:
@@ -717,7 +714,6 @@ class TestMultipleAliases:
 class TestErrorHandling:
     """Tests for error handling."""
     
-    @pytest.mark.feature("error_syntax")
     def test_syntax_error(self, basic_builder):
         """Syntax error in expression."""
         with pytest.raises(IRError) as exc_info:
@@ -730,7 +726,6 @@ class TestErrorHandling:
         with pytest.raises(IRError):
             basic_builder.build("track if flag else px", )
     
-    @pytest.mark.feature("error_location")
     def test_error_has_location(self, basic_builder):
         """Error includes source location."""
         with pytest.raises(IRError) as exc_info:
@@ -853,18 +848,17 @@ class TestSliceParsing:
         assert node.slice_kind == SliceKind.REVERSE
         assert node.step.value == -1
     
-    @pytest.mark.feature("error_slice_step_zero")
     def test_slice_step_zero_error(self, slice_builder):
         """[::0] raises IRError."""
         with pytest.raises(IRError) as exc:
             slice_builder.build("pt[::0]")
         assert "step cannot be zero" in str(exc.value).lower()
     
-    def test_slice_mixed_negative_error(self, slice_builder):
-        """[-3:-1] raises unsupported error."""
-        with pytest.raises(IRError) as exc:
-            slice_builder.build("pt[-3:-1]")
-        assert "not yet supported" in str(exc.value).lower()
+    def test_slice_mixed_negative_supported(self, slice_builder):
+        """[-3:-1] now supported with RANGE_NEG (Phase 13.6.G)."""
+        node = slice_builder.build("pt[-3:-1]")
+        assert isinstance(node, RVecSliceNode)
+        assert node.slice_kind == SliceKind.RANGE_NEG
     
     def test_boolean_mask_comparison(self, slice_builder):
         """[pt > 1.0] parses to RVecSliceNode with BOOLEAN."""

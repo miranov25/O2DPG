@@ -2024,13 +2024,10 @@ class IRBuilder:
                 start_neg = is_negative_const(start)
                 stop_neg = is_negative_const(stop)
                 
+                # Phase 13.6.G: Support mixed negative indices like [1:-1]
+                # These require length-dependent translation at code generation
                 if start_neg or stop_neg:
-                    raise IRError(
-                        IRErrorKind.UNSUPPORTED_OP,
-                        "Mixed negative indices in slice not yet supported",
-                        source_location=self._make_location(ast_node, ctx),
-                        suggestions=["Supported: [:n], [-n:], [n:], [a:b] with positive indices, [::step], [::-1]"]
-                    )
+                    return SliceKind.RANGE_NEG
                 
                 return SliceKind.RANGE
         

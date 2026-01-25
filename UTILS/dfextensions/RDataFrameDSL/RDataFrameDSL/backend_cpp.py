@@ -2177,6 +2177,8 @@ class CppCodeGenerator:
             return self._gen_slice_from_index(target, node)
         elif node.slice_kind == SliceKind.RANGE:
             return self._gen_slice_range(target, node)
+        elif node.slice_kind == SliceKind.RANGE_NEG:
+            return self._gen_slice_range_neg(target, node)
         elif node.slice_kind == SliceKind.STEP:
             return self._gen_slice_step(target, node)
         elif node.slice_kind == SliceKind.REVERSE:
@@ -2260,6 +2262,40 @@ class CppCodeGenerator:
     if (start >= stop) return {elem_type}();
     return ROOT::VecOps::Take(target_val, 
         ROOT::VecOps::Range(start, stop));
+}}()'''
+    
+    def _gen_slice_range_neg(self, target: str, node: RVecSliceNode) -> str:
+        """[a:b] with negative indices → Range with length-dependent translation.
+        
+        Phase 13.6.G: Support mixed negative indices like [1:-1], [-3:-1], etc.
+        Negative indices are translated: neg_idx -> size + neg_idx
+        Then clamped to [0, size] range.
+        """
+        start_expr = self._visit(node.start) if node.start is not None else "0"
+        stop_expr = self._visit(node.stop) if node.stop is not None else "target_val.size()"
+        elem_type = self._cpp_type_for_rvec(node.dtype)
+        
+        return f'''[&]() -> {elem_type} {{
+    auto target_val = {target};
+    long long sz = static_cast<long long>(target_val.size());
+    
+    // Translate negative indices: neg_idx -> size + neg_idx
+    long long raw_start = {start_expr};
+    long long raw_stop = {stop_expr};
+    
+    // Handle negative indices
+    long long start = raw_start < 0 ? std::max(0LL, sz + raw_start) : raw_start;
+    long long stop = raw_stop < 0 ? std::max(0LL, sz + raw_stop) : raw_stop;
+    
+    // Clamp to valid range
+    start = std::min(start, sz);
+    stop = std::min(stop, sz);
+    
+    // Return empty if start >= stop
+    if (start >= stop) return {elem_type}();
+    
+    return ROOT::VecOps::Take(target_val, 
+        ROOT::VecOps::Range(static_cast<size_t>(start), static_cast<size_t>(stop)));
 }}()'''
     
     def _gen_slice_step(self, target: str, node: RVecSliceNode) -> str:
