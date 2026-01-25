@@ -1697,9 +1697,12 @@ class CppCodeGenerator:
     return ({idx_code} >= 0 && static_cast<size_t>({idx_code}) < v.size()) ? v[{idx_code}] : {fallback};
 }}()'''
         else:
-            return (f"({idx_code} >= 0 && static_cast<size_t>({idx_code}) < {value_code}.size()) "
+            # Phase 13.6.G: Wrap entire ternary in parentheses for correct C++ precedence
+            # Without this: A + (condition) ? B : fallback → parsed as (A + condition) ? B : fallback
+            # With this:    A + ((condition) ? B : fallback) → correct!
+            return (f"(({idx_code} >= 0 && static_cast<size_t>({idx_code}) < {value_code}.size()) "
                     f"? {value_code}[{idx_code}] "
-                    f": {fallback}")
+                    f": {fallback})")
     
     # =========================================================================
     # Phase 13.6.C: N-D Slicing Operations

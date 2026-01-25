@@ -31,6 +31,7 @@ NOTEBOOKS=(
     "08b_debug_1d.ipynb"
     "08c_debug_2d.ipynb"
     "08f_invariance_visual.ipynb"
+    "08g_alias_equivalence.ipynb"
 )
 
 # Filter if argument provided

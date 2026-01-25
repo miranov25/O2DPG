@@ -104,6 +104,19 @@ FEATURE_TAXONOMY = {
         "proof": None,
         "phase": "13.6.G",
     },
+    "alias_order_independence": {
+        "name": "Alias order independence (Phase 13.6.G)",
+        "description": "Alias pool resolves references at compile time - any definition order produces identical results",
+        "tests": [
+            "tests/test_invariance_alias_equivalence.py::TestInvarianceAliasEquivalence::test_INV_ALIAS_EQ_1_reverse_order_vs_define",
+            "tests/test_invariance_alias_equivalence.py::TestInvarianceAliasEquivalence::test_INV_ALIAS_EQ_2_permutation_invariance",
+            "tests/test_invariance_alias_equivalence.py::TestInvarianceAliasEquivalence::test_INV_ALIAS_EQ_3_inline_vs_decomposed",
+            "tests/test_invariance_alias_equivalence.py::TestInvarianceAliasEquivalence::test_INV_ALIAS_EQ_4_commutativity",
+            "tests/test_invariance_alias_equivalence.py::TestInvarianceAliasEquivalence::test_INV_ALIAS_EQ_5_partial_alias",
+        ],
+        "proof": "examples/08g_alias_equivalence.ipynb",
+        "phase": "13.6.G",
+    },
     "method_trig": {
         "name": "Trigonometric functions",
         "description": "sin, cos, sqrt, atan2 on arrays",
