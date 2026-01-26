@@ -2,28 +2,66 @@
 # =============================================================================
 # run_tests.sh — RDataFrameDSL Test Runner
 # =============================================================================
-#
-# Location: tests/run_tests.sh (run from project root or tests/ directory)
-#
-# Phase 13.6.G: Improved failure reporting
-#   - Shows FAILED count prominently (not just passed)
-#   - Lists failed test names explicitly  
-#   - Saves summary to test_logs/SUMMARY_${TIMESTAMP}.txt
-#   - Failure summary BEFORE capability matrix
-#   - Color output for failures
-#
-# Fixes in this version:
-#   - Priority 1: Use --from-reports instead of --json-dir for capability matrix
-#   - Priority 2: Remove -m root_serial from serial phase (run ALL tests in file)
-#
-# Usage:
-#   ./tests/run_tests.sh          # From project root
-#   ./run_tests.sh                # From tests/ directory
-#   ./tests/run_tests.sh --quick  # Skip capability matrix
-#
-# =============================================================================
 
 set -e
+
+# =============================================================================
+# Help & Usage
+# =============================================================================
+
+show_help() {
+    cat << 'EOF'
+RDataFrameDSL Test Runner
+=========================
+
+Usage:
+  ./tests/run_tests.sh [OPTIONS]
+
+Options:
+  -h, --help     Show this help message
+  --quick        Skip capability matrix generation
+  --verbose      Force verbose output (default when PARALLEL_ROOT=0)
+  --quiet        Force quiet output (default when PARALLEL_ROOT=1)
+
+Environment Variables:
+  PYTEST_WORKERS=N      Phase 1 pytest-xdist workers (default: 8)
+  PARALLEL_ROOT=0|1     Phase 2 parallel execution (default: 1 = on)
+  PARALLEL_ROOT_JOBS=N  Phase 2 GNU parallel jobs (default: 4)
+
+Examples:
+  # Default: fast parallel execution
+  ./tests/run_tests.sh
+
+  # Debug mode: sequential with verbose output
+  PARALLEL_ROOT=0 ./tests/run_tests.sh
+
+  # Maximum parallelism
+  PYTEST_WORKERS=12 PARALLEL_ROOT_JOBS=8 ./tests/run_tests.sh
+
+  # Quick run without capability matrix
+  ./tests/run_tests.sh --quick
+
+Output:
+  test_logs/SUMMARY_<timestamp>.txt     Test summary with timing
+  test_logs/test_parallel_*.log         Phase 1 output
+  test_logs/test_serial_*.log           Phase 2 output
+  docs/CAPABILITY_MATRIX.md             Feature coverage matrix
+
+EOF
+    exit 0
+}
+
+# Parse arguments
+QUICK_MODE=0
+FORCE_VERBOSE=""
+for arg in "$@"; do
+    case $arg in
+        -h|--help) show_help ;;
+        --quick) QUICK_MODE=1 ;;
+        --verbose) FORCE_VERBOSE="-v" ;;
+        --quiet) FORCE_VERBOSE="-q" ;;
+    esac
+done
 
 # =============================================================================
 # Path Setup
@@ -54,6 +92,23 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_DIR="test_logs"
 mkdir -p "$LOG_DIR"
 
+# Parallelism settings
+# Phase 1: pytest-xdist workers (-n)
+PYTEST_WORKERS=${PYTEST_WORKERS:-8}
+
+# Phase 2: GNU parallel jobs for ROOT tests (ON by default for ~6x speedup)
+PARALLEL_ROOT=${PARALLEL_ROOT:-1}
+PARALLEL_ROOT_JOBS=${PARALLEL_ROOT_JOBS:-4}
+
+# Verbosity: quiet when parallel (less noise), verbose when sequential (debugging)
+if [[ -n "$FORCE_VERBOSE" ]]; then
+    PYTEST_VERBOSITY="$FORCE_VERBOSE"
+elif [[ "$PARALLEL_ROOT" == "1" ]]; then
+    PYTEST_VERBOSITY="-q"
+else
+    PYTEST_VERBOSITY="-v"
+fi
+
 # Colors
 if [[ -t 1 ]] && command -v tput &>/dev/null; then
     RED=$(tput setaf 1); GREEN=$(tput setaf 2); YELLOW=$(tput setaf 3)
@@ -82,26 +137,31 @@ trap "rm -f $FAILED_TESTS_FILE" EXIT
 # ROOT Test Files (run serially)
 # =============================================================================
 
+# ROOT test files ordered SLOWEST-FIRST for optimal parallel scheduling
+# (Longest jobs start first to maximize core utilization)
 ROOT_TEST_FILES=(
-    "tests/test_api_define.py"
-    "tests/test_api_alias.py"
-    "tests/test_api_to_pandas.py"
-    "tests/test_api_draw.py"
-    "tests/test_draw_integration.py"
-    "tests/test_redefinition_policy.py"
-    "tests/test_carray_root_integration.py"
-    "tests/test_carray_correctness.py"
-    "tests/test_invariance_join_e2e.py"
-    "tests/test_helix_generator.py"
-    "tests/test_invariance_safe_draw.py"
-    "tests/test_nested_slicing.py"
-    "tests/test_invariance_udf.py"
-    "tests/test_invariance_nd.py"
-    "tests/test_root_broadcast_integration.py"
-    "tests/test_root_integration.py"
-    "tests/test_rvec_selection.py"
-    "tests/test_safe_mode.py"
-    "tests/test_dsl_api.py"
+    # Tier 1: Slowest (40+ seconds)
+    "tests/test_draw_integration.py"       # ~44s, 38 tests
+    "tests/test_carray_correctness.py"     # ~39s, 23 tests
+    "tests/test_invariance_nd.py"          # ~38s, 86 tests
+    "tests/test_api_draw.py"               # ~37s, 12 tests
+    "tests/test_api_to_pandas.py"          # ~36s, 10 tests
+    "tests/test_invariance_udf.py"         # ~36s, 9 tests
+    "tests/test_helix_generator.py"        # ~36s, 12 tests
+    "tests/test_carray_root_integration.py" # ~36s, 16 tests
+    # Tier 2: Medium (30-40 seconds)
+    "tests/test_api_alias.py"              # ~33s, 19 tests
+    "tests/test_api_define.py"             # ~32s, 17 tests
+    "tests/test_redefinition_policy.py"    # ~32s, 18 tests
+    "tests/test_invariance_safe_draw.py"   # ~28s, 11 tests
+    # Tier 3: Fast (<25 seconds)
+    "tests/test_root_broadcast_integration.py" # ~22s, 16 tests
+    "tests/test_safe_mode.py"              # ~22s, 14 tests
+    "tests/test_invariance_join_e2e.py"    # ~21s, 15 tests
+    "tests/test_nested_slicing.py"         # ~21s, 66 tests
+    "tests/test_root_integration.py"       # ~21s, 44 tests
+    "tests/test_rvec_selection.py"         # ~16s, 33 tests
+    "tests/test_dsl_api.py"                # ~8s, 22 tests
 )
 
 # =============================================================================
@@ -113,6 +173,42 @@ print_header() {
     echo "=============================================="
     echo "$1"
     echo "=============================================="
+}
+
+# Time tracking for phases (bash 3 compatible)
+PHASE1_START=0
+PHASE1_DURATION=""
+PHASE2_START=0
+PHASE2_DURATION=""
+
+time_phase() {
+    local phase_name="$1"
+    local start_or_end="$2"
+    
+    if [[ "$start_or_end" == "start" ]]; then
+        if [[ "$phase_name" == "1" ]]; then
+            PHASE1_START=$(date +%s)
+        else
+            PHASE2_START=$(date +%s)
+        fi
+    else
+        local start end duration mins secs
+        if [[ "$phase_name" == "1" ]]; then
+            start=$PHASE1_START
+        else
+            start=$PHASE2_START
+        fi
+        end=$(date +%s)
+        duration=$((end - start))
+        mins=$((duration / 60))
+        secs=$((duration % 60))
+        if [[ "$phase_name" == "1" ]]; then
+            PHASE1_DURATION="${mins}m ${secs}s"
+        else
+            PHASE2_DURATION="${mins}m ${secs}s"
+        fi
+        echo "⏱️  Phase $phase_name: ${mins}m ${secs}s"
+    fi
 }
 
 aggregate_json_reports() {
@@ -167,7 +263,8 @@ except Exception as e: print(f'⚠️  {e}')
 # Phase 1: Parallel Tests (non-ROOT)
 # =============================================================================
 
-print_header "Phase 1: Running parallel tests (non-ROOT)"
+print_header "Phase 1: Running parallel tests (non-ROOT, -n ${PYTEST_WORKERS})"
+time_phase "1" "start"
 
 EXCLUDE_PATTERN=""
 for f in "${ROOT_TEST_FILES[@]}"; do
@@ -177,7 +274,7 @@ done
 [[ ! -d "tests" ]] && echo "ERROR: tests/ not found" && exit 1
 
 set +e
-python3 -m pytest tests/ -v -m "not root_serial" $EXCLUDE_PATTERN \
+python3 -m pytest tests/ $PYTEST_VERBOSITY -n "$PYTEST_WORKERS" -m "not root_serial" $EXCLUDE_PATTERN \
     --tb=short --json-report \
     --json-report-file="$PARALLEL_JSON_DIR/test_parallel_${TIMESTAMP}.json" \
     2>&1 | tee "$PARALLEL_LOG"
@@ -186,35 +283,53 @@ set -e
 
 read PARALLEL_PASSED PARALLEL_FAILED PARALLEL_SKIPPED < <(aggregate_json_reports "$PARALLEL_JSON_DIR" "$FAILED_TESTS_FILE")
 echo ""; echo "Phase 1 complete: ${PARALLEL_PASSED} passed, ${PARALLEL_FAILED} failed, ${PARALLEL_SKIPPED} skipped"
+time_phase "1" "end"
 
 # =============================================================================
-# Phase 2: Serial Tests (ROOT) - NO MARKER FILTER
+# Phase 2: Serial Tests (ROOT) - with optional parallel execution
 # =============================================================================
 
-print_header "Phase 2: Running serial tests (ROOT)"
+print_header "Phase 2: Running ROOT tests (PARALLEL_ROOT=${PARALLEL_ROOT})"
+time_phase "2" "start"
 > "$CRASH_LOG"
 
-for test_file in "${ROOT_TEST_FILES[@]}"; do
-    [[ ! -f "$test_file" ]] && echo "⚠️  Skipping missing: $test_file" && continue
+if [[ "$PARALLEL_ROOT" == "1" ]] && command -v parallel &>/dev/null; then
+    echo "🚀 Running ROOT tests in parallel (-j ${PARALLEL_ROOT_JOBS})"
     
-    basename_f=$(basename "$test_file" .py)
-    json_file="$SERIAL_JSON_DIR/${basename_f}.json"
-    echo "Running: $test_file"
-    
-    set +e
-    # NO -m filter: run ALL tests in these files serially
-    python3 -m pytest "$test_file" -v --tb=short \
-        --json-report --json-report-file="$json_file" \
+    # Run in parallel using inline command (bash 3 compatible)
+    # Each test file runs in its own pytest process
+    printf '%s\n' "${ROOT_TEST_FILES[@]}" | \
+        parallel -j "$PARALLEL_ROOT_JOBS" --halt never --tag \
+            "python3 -m pytest {} $PYTEST_VERBOSITY --tb=short --json-report --json-report-file='$SERIAL_JSON_DIR/{/.}.json'" \
         2>&1 | tee -a "$SERIAL_LOG"
-    exit_code=${PIPESTATUS[0]}
-    set -e
+else
+    if [[ "$PARALLEL_ROOT" == "1" ]]; then
+        echo "⚠️  PARALLEL_ROOT=1 but GNU parallel not found, falling back to sequential"
+    fi
     
-    [[ $exit_code -gt 1 ]] && echo "⚠️  Crash in $test_file (exit: $exit_code)" >> "$CRASH_LOG"
-done
+    # Sequential execution (for debugging or when parallel not available)
+    for test_file in "${ROOT_TEST_FILES[@]}"; do
+        [[ ! -f "$test_file" ]] && echo "⚠️  Skipping missing: $test_file" && continue
+        
+        basename_f=$(basename "$test_file" .py)
+        json_file="$SERIAL_JSON_DIR/${basename_f}.json"
+        echo "Running: $test_file"
+        
+        set +e
+        python3 -m pytest "$test_file" $PYTEST_VERBOSITY --tb=short \
+            --json-report --json-report-file="$json_file" \
+            2>&1 | tee -a "$SERIAL_LOG"
+        exit_code=${PIPESTATUS[0]}
+        set -e
+        
+        [[ $exit_code -gt 1 ]] && echo "⚠️  Crash in $test_file (exit: $exit_code)" >> "$CRASH_LOG"
+    done
+fi
 
 read SERIAL_PASSED SERIAL_FAILED SERIAL_SKIPPED < <(aggregate_json_reports "$SERIAL_JSON_DIR" "$FAILED_TESTS_FILE")
 [[ $SERIAL_FAILED -gt 0 ]] && SERIAL_EXIT=1 || SERIAL_EXIT=0
 echo ""; echo "Phase 2 complete: ${SERIAL_PASSED} passed, ${SERIAL_FAILED} failed, ${SERIAL_SKIPPED} skipped"
+time_phase "2" "end"
 
 # =============================================================================
 # FAILURE SUMMARY
@@ -240,8 +355,8 @@ RESULTS:
   FAILED:  ${TOTAL_FAILED}
   SKIPPED: ${TOTAL_SKIPPED}
 
-Phase 1 (Parallel/non-ROOT): ${PARALLEL_PASSED} passed, ${PARALLEL_FAILED} failed
-Phase 2 (Serial/ROOT):       ${SERIAL_PASSED} passed, ${SERIAL_FAILED} failed
+Phase 1 (Parallel/non-ROOT): ${PARALLEL_PASSED} passed, ${PARALLEL_FAILED} failed [${PHASE1_DURATION:-N/A}]
+Phase 2 (Serial/ROOT):       ${SERIAL_PASSED} passed, ${SERIAL_FAILED} failed [${PHASE2_DURATION:-N/A}]
 EOF
 
 if [[ ${#FAILED_TESTS[@]} -gt 0 ]]; then
