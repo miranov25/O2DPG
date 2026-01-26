@@ -331,7 +331,7 @@ void t8b_ext3_pragma_loaded() {}
 # =============================================================================
 # T8b_ext4: Verify Pragma Not Auto-Loaded
 # =============================================================================
-
+@pytest.mark.skip(reason="Intentionally crashes ROOT - observation documented")
 def test_t8b_ext4_pragma_not_autoloaded():
     """
     T8b_ext4: Verify that ROOT doesn't auto-load pragma for custom RVec types.
