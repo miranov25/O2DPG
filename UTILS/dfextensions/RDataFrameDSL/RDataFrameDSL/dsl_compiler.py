@@ -367,7 +367,7 @@ class DSLCompiler:
     _global_cpp_compile_lock: threading.RLock = threading.RLock()
     _global_cpp_declared_names: Set[str] = set()
     
-    def __init__(self, schema: Dict[str, str] = None, safe_indexing: bool = True):
+    def __init__(self, schema: Dict[str, str] = None, safe_indexing: bool = True, redefinition: str = "error"):
         """
         Initialize DSL compiler.
         
@@ -392,10 +392,36 @@ class DSLCompiler:
                             ]
                         }
             safe_indexing: Enable bounds checking (default True)
+            
+            redefinition: Policy for handling redefinition of columns (Phase 13.6.G+).
+                         
+                         - "error": Raise IRError on duplicate define() (default, safe)
+                         - "allow": Always redefine (use with caution)
+                         - "skip": Silently skip duplicate define()
+                         - "ifneeded": Redefine only if expression changed (recommended for notebooks)
+                         
+                         Note: Does NOT apply to alias() - use redefine_alias() for explicit overwrite.
+                         
+                         Examples:
+                             # Production scripts (strict)
+                             dsl = DSLCompiler(schema)  # redefinition="error"
+                             
+                             # Jupyter notebooks (idempotent)
+                             dsl = DSLCompiler(schema, redefinition="ifneeded")
         
         Phase 13.6.D: Added _pragmas key support for custom class dictionaries.
         Phase 13.6.F: Made schema optional for alias() workflow.
+        Phase 13.6.G+: Added redefinition parameter for configurable redefinition policy.
         """
+        # Validate redefinition policy
+        valid_policies = {"error", "allow", "skip", "ifneeded"}
+        if redefinition not in valid_policies:
+            raise ValueError(
+                f"Invalid redefinition policy '{redefinition}'. "
+                f"Valid values: {sorted(valid_policies)}"
+            )
+        self._redefinition = redefinition
+        
         # Handle None or empty schema
         if schema is None:
             schema = {}
@@ -436,6 +462,12 @@ class DSLCompiler:
         # Phase 13.6.F: Alias pool for deferred validation (TTree::SetAlias style)
         self._aliases: Dict[str, str] = {}  # {name: expression} - NOT validated until needed
         self._defined_aliases: Dict[str, str] = {}  # Already validated aliases (from define())
+        
+        # Phase 13.6.G+: Redefinition tracking
+        self._expressions_raw: Dict[str, str] = {}    # name → original expr (for display)
+        self._expressions_norm: Dict[str, str] = {}   # name → normalized expr (for comparison)
+        self._dirty: Dict[str, bool] = {}             # name → True if changed since last apply
+        self._materialized: Set[str] = set()          # names we've applied to RDF
         
         # Phase 13.2.DSL: Optional RDataFrame reference for to_arrow()
         self._rdf = None
@@ -655,6 +687,28 @@ class DSLCompiler:
         
         return ''.join(result)
     
+    def _normalize_expr(self, expr: str) -> str:
+        """
+        Normalize expression for equality check.
+        
+        Phase 13.6.G+: Collapses whitespace (leading, trailing, internal).
+        Conservative: does not attempt AST-level canonicalization.
+        
+        Examples:
+            "sqrt(px**2  +   py**2)" → "sqrt(px**2 + py**2)"
+            "  px * 2  " → "px * 2"
+        
+        Note: Does NOT normalize operator spacing within tokens:
+            "sqrt(px**2+py**2)" stays as "sqrt(px**2+py**2)"
+        
+        Args:
+            expr: Expression string to normalize
+            
+        Returns:
+            Normalized expression string
+        """
+        return " ".join(expr.split())
+    
     def define(self, name: str, expression: str, dtype: str = None, verbose: bool = False) -> 'DSLCompiler':
         """
         Define a new column from a DSL expression.
@@ -694,29 +748,60 @@ class DSLCompiler:
         return self._define_impl(name, expression, dtype)
     
     def _define_impl(self, name: str, expression: str, dtype: str = None) -> 'DSLCompiler':
-        """Internal implementation of define() with logging."""
+        """Internal implementation of define() with logging and redefinition policy."""
         logger.debug(f"[compile] Defining: {name} = {expression}")
         
-        # Check for name collision with original schema only
-        # (aliases are allowed to shadow other aliases via redefinition)
-        if name in self.schema and name not in [n for n, _ in self._definitions]:
+        # Phase 13.6.G+ P0-1: Guard physical columns ONLY
+        # Only reject if name IS a physical column (not a DSL-defined column)
+        if (name in self.schema and 
+            name not in self._expressions_raw and 
+            name not in self._aliases and 
+            name not in self._defined_aliases):
             raise IRError(
                 IRErrorKind.VALIDATION_ERROR,
-                f"Column name '{name}' conflicts with existing branch",
+                f"Cannot redefine physical column '{name}'. "
+                f"Physical columns from input data cannot be redefined.",
                 suggestions=[f"Use a different name like '{name}_calc'"]
             )
         
-        # Check for duplicate definition
+        # Phase 13.6.G+: Normalize expression for comparison
+        norm_expr = self._normalize_expr(expression)
+        
+        # Phase 13.6.G+: Check for duplicate definition with policy handling
         existing_names = [n for n, _ in self._definitions]
         if name in existing_names:
-            raise IRError(
-                IRErrorKind.VALIDATION_ERROR,
-                f"Column '{name}' already defined",
-                suggestions=["Each column name must be unique"]
-            )
+            if self._redefinition == "error":
+                raise IRError(
+                    IRErrorKind.VALIDATION_ERROR,
+                    f"Column '{name}' already defined. "
+                    f"Use redefinition='ifneeded' for notebook workflows.",
+                    suggestions=["Use DSLCompiler(schema, redefinition='ifneeded') for interactive use"]
+                )
+            elif self._redefinition == "skip":
+                logger.debug(f"[compile] Skipping duplicate definition: {name} (policy=skip)")
+                return self  # Keep existing, ignore new
+            elif self._redefinition == "ifneeded":
+                # Compare normalized expressions
+                if self._expressions_norm.get(name) == norm_expr:
+                    logger.debug(f"[compile] Skipping unchanged definition: {name} (policy=ifneeded)")
+                    return self  # Same expression - skip
+                # Different expression - fall through to redefine
+                logger.debug(f"[compile] Redefining changed expression: {name} (policy=ifneeded)")
+            # "allow" - fall through to redefine
+            
+            # Remove old definition for replacement
+            self._definitions = [(n, e) for n, e in self._definitions if n != name]
+            if name in self._functions:
+                old_func = self._functions[name]
+                self.library.remove(old_func) if hasattr(self.library, 'remove') else None
+                del self._functions[name]
         
         # Phase 13.4.D9: Check for C-array expression (AST-authoritative routing)
         if self._is_carray_expression(expression):
+            # Track expression for redefinition policy
+            self._expressions_raw[name] = expression
+            self._expressions_norm[name] = norm_expr
+            self._dirty[name] = True
             return self._define_carray(name, expression, dtype)
         
         # Phase 11.1: Preprocess C++ :: syntax to Python dot syntax
@@ -752,6 +837,11 @@ class DSLCompiler:
         self._definitions.append((name, expression))
         self._functions[name] = func
         self.library.add(func)
+        
+        # Phase 13.6.G+: Track expression for redefinition policy
+        self._expressions_raw[name] = expression
+        self._expressions_norm[name] = norm_expr
+        self._dirty[name] = True
         
         # === NEW: Register alias in schema for future expressions ===
         self._register_alias_type(name, ir, dtype)
@@ -2019,9 +2109,12 @@ class DSLCompiler:
         Apply all definitions to an RDataFrame.
         
         This method:
-        1. Validates schema columns exist in RDF (Phase 13.6.G)
-        2. Compiles all functions (if not already compiled)
-        3. Calls rdf.Define() for each definition in order
+        1. Compiles all functions (if not already compiled)
+        2. Calls rdf.Define() for new columns
+        3. Calls rdf.Redefine() for changed columns (Phase 13.6.G+)
+        
+        Phase 13.6.G+ P0-2: Checks actual RDF columns, not just internal tracking.
+        This correctly handles multiple apply() calls and different RDF instances.
         
         Args:
             rdf: ROOT.RDataFrame instance
@@ -2029,23 +2122,48 @@ class DSLCompiler:
         Returns:
             Modified RDataFrame with new columns
         
-        Raises:
-            IRError: If schema columns don't exist in RDF (Phase 13.6.G)
-        
         Example:
             >>> rdf = ROOT.RDataFrame("Events", "data.root")
             >>> rdf = dsl.apply(rdf)
             >>> result = rdf.AsNumpy(["pt", "n_tracks"])
         """
-        # Phase 13.6.G: Validate schema columns exist in RDF BEFORE calling Define()
-        # This prevents ROOT crashes from undefined column references
+        # Phase 13.6.G: Validate schema before any operations
         self._validate_schema_against_rdf(rdf)
         
         self.compile_all()
         
+        # Phase 13.6.G+ P0-2: Check actual RDF columns (source of truth)
+        # Handle mock objects that don't have GetColumnNames
+        if hasattr(rdf, 'GetColumnNames'):
+            existing = set(rdf.GetColumnNames())
+        else:
+            # Fallback for mock objects - use materialized tracking
+            existing = self._materialized.copy()
+        
         for name, _ in self._definitions:
             func = self._functions[name]
-            rdf = rdf.Define(name, func.get_call_expression())
+            cpp_code = func.get_call_expression()
+            
+            if name in existing:
+                # Column exists in THIS RDF
+                if not self._dirty.get(name, False):
+                    # Not changed since last apply - skip
+                    logger.debug(f"[apply] Skipping unchanged column: {name}")
+                    continue
+                # Changed - use Redefine
+                logger.debug(f"[apply] Redefining changed column: {name}")
+                rdf = rdf.Redefine(name, cpp_code)
+            else:
+                # Not in THIS RDF - use Define
+                logger.debug(f"[apply] Defining new column: {name}")
+                rdf = rdf.Define(name, cpp_code)
+            
+            # Clear dirty flag after successful apply
+            self._dirty[name] = False
+            # Track for optimization (but RDF is source of truth)
+            self._materialized.add(name)
+            # Update existing set for subsequent definitions
+            existing.add(name)
         
         return rdf
     
@@ -2065,6 +2183,9 @@ class DSLCompiler:
         """
         # Get actual columns from RDF
         try:
+            if not hasattr(rdf, 'GetColumnNames'):
+                # Mock object or similar - skip validation
+                return
             rdf_columns = set(str(c) for c in rdf.GetColumnNames())
         except Exception as e:
             # If we can't get column names (unusual), log warning and proceed
@@ -2073,7 +2194,11 @@ class DSLCompiler:
         
         # Get ORIGINAL schema columns only (excluding special keys like _pragmas)
         # Don't include defined aliases - those will be CREATED by Define(), not read from RDF
-        schema_columns = set(k for k in self._original_schema.keys() if not k.startswith('_'))
+        if not hasattr(self, '_original_schema'):
+            # Fallback for older instances
+            schema_columns = set(k for k in self.schema.keys() if not k.startswith('_'))
+        else:
+            schema_columns = set(k for k in self._original_schema.keys() if not k.startswith('_'))
         
         # Find columns in schema but not in RDF
         missing = schema_columns - rdf_columns
@@ -2099,8 +2224,6 @@ class DSLCompiler:
                 message=f"Schema contains columns not in RDataFrame: {sorted(missing)}",
                 suggestions=suggestions
             )
-        
-        logger.debug(f"Schema validation passed: {len(schema_columns)} columns verified against RDF")
     
     def preview(self) -> str:
         """

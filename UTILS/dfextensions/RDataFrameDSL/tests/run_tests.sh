@@ -87,6 +87,8 @@ ROOT_TEST_FILES=(
     "tests/test_api_alias.py"
     "tests/test_api_to_pandas.py"
     "tests/test_api_draw.py"
+    "tests/test_draw_integration.py"
+    "tests/test_redefinition_policy.py"
     "tests/test_carray_root_integration.py"
     "tests/test_carray_correctness.py"
     "tests/test_invariance_join_e2e.py"
@@ -201,7 +203,7 @@ for test_file in "${ROOT_TEST_FILES[@]}"; do
     
     set +e
     # NO -m filter: run ALL tests in these files serially
-    python3 -m pytest "$test_file" --tb=short -q \
+    python3 -m pytest "$test_file" -v --tb=short \
         --json-report --json-report-file="$json_file" \
         2>&1 | tee -a "$SERIAL_LOG"
     exit_code=${PIPESTATUS[0]}

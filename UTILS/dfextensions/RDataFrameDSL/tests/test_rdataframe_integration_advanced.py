@@ -385,7 +385,7 @@ class TestErrorHandling:
         with pytest.raises(Exception) as exc:
             dsl.define("pt", "pt * 2")  # Collision!
         
-        assert "conflict" in str(exc.value).lower()
+        assert "physical column" in str(exc.value).lower()
     
     def test_duplicate_definition_error(self):
         """Error when defining same name twice."""

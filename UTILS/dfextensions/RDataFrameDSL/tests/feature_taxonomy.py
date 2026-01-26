@@ -16,7 +16,7 @@
 # Date: 2026-01-18
 # =============================================================================
 
-FEATURE_TAXONOMY_VERSION = "2.5"  # Phase 13.6.G: Added schema_validation
+FEATURE_TAXONOMY_VERSION = "2.6"  # Phase 13.6.G+: Added redefinition_policy
 
 # =============================================================================
 # FEATURE ALIASES (for backward compatibility if renaming needed)
@@ -708,6 +708,26 @@ FEATURE_TAXONOMY = {
         ],
         "proof": None,
         "phase": "13.6.G",
+    },
+    "redefinition_policy": {
+        "name": "Configurable redefinition policy",
+        "description": "DSLCompiler redefinition parameter (error/allow/skip/ifneeded) for handling duplicate define() calls. Enables idempotent Jupyter notebook workflows.",
+        "tests": [
+            "tests/test_redefinition_policy.py::TestRedefinitionPolicyBasic::test_default_policy_is_error",
+            "tests/test_redefinition_policy.py::TestRedefinitionPolicyBasic::test_invalid_policy_raises",
+            "tests/test_redefinition_policy.py::TestRedefinitionPolicyBasic::test_error_policy_raises_on_duplicate",
+            "tests/test_redefinition_policy.py::TestRedefinitionPolicyBasic::test_skip_policy_keeps_original",
+            "tests/test_redefinition_policy.py::TestRedefinitionPolicyBasic::test_allow_policy_always_replaces",
+            "tests/test_redefinition_policy.py::TestRedefinitionPolicyBasic::test_ifneeded_same_expr_skips",
+            "tests/test_redefinition_policy.py::TestRedefinitionPolicyBasic::test_ifneeded_different_expr_marks_dirty",
+            "tests/test_redefinition_policy.py::TestRedefinitionPolicyBasic::test_physical_column_guard",
+            "tests/test_redefinition_policy.py::TestRedefinitionPolicyBasic::test_alias_stays_strict_with_ifneeded",
+            "tests/test_redefinition_policy.py::TestRedefinitionIntegration::test_apply_defines_new_columns",
+            "tests/test_redefinition_policy.py::TestRedefinitionIntegration::test_apply_skips_unchanged",
+            "tests/test_redefinition_policy.py::TestRedefinitionIntegration::test_apply_redefines_changed",
+        ],
+        "proof": None,
+        "phase": "13.6.G+",
     },
 }
 

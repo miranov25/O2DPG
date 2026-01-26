@@ -4,6 +4,9 @@ import pytest
 import warnings
 import numpy as np
 
+# File-level marker: ALL tests in this file run serially (ROOT dependency)
+pytestmark = pytest.mark.root_serial
+
 
 # =============================================================================
 # Dependency Collection Tests (IR-based)
@@ -413,7 +416,11 @@ class TestScalarIntegration:
         assert "pt" in df.columns
     
     def test_draw_defined_column(self, synthetic_scalar_rdf, scalar_schema):
-        """Test draw with a column defined via dsl.define()."""
+        """Test draw with a column defined via dsl.define().
+        
+        Phase 13.6.G+: Uses redefinition='ifneeded' since draw() internally
+        calls apply() again, and the column is already defined.
+        """
         dfdraw = pytest.importorskip("dfdraw")
         from RDataFrameDSL import DSLCompiler
         
@@ -433,12 +440,14 @@ class TestScalarIntegration:
         rdf = rdf.Define("isOK", "abs(eta) < 1.0")
         rdf = rdf.Define("charge", "gRandom->Rndm() > 0.5 ? 1 : -1")
         
-        dsl = DSLCompiler(schema)
+        # Phase 13.6.G+: Use redefinition='ifneeded' for interactive workflow
+        dsl = DSLCompiler(schema, redefinition="ifneeded")
         dsl.define("pt_calc", "sqrt(px**2 + py**2)")
         
         rdf = dsl.apply(rdf)
         
-        # Draw the DEFINED column
+        # Draw the DEFINED column - draw() calls apply() again, but with
+        # redefinition='ifneeded', it skips since expression unchanged
         fig, ax, stats = dsl.draw("pt_calc", rdf)
         assert fig is not None
 
