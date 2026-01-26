@@ -211,7 +211,7 @@ class ALICEEventGenerator:
             Event-level (scalars):
                 event_id, vertex_x, vertex_y, vertex_z, n_tracks
             Track-level (1D RVec):
-                track_pt, track_phi, track_pz_over_pt, track_pdgcode,
+                track_pt, track_phi, track_eta, track_pz_over_pt, track_pdgcode,
                 track_charge, track_px, track_py, track_pz
             Cluster-level (2D RVec<RVec>):
                 cluster_x, cluster_y, cluster_z, cluster_r, cluster_Q
@@ -233,6 +233,7 @@ class ALICEEventGenerator:
         # Track-level (1D RVec) - object arrays of arrays
         track_pt = np.empty(n_events, dtype=object)
         track_phi = np.empty(n_events, dtype=object)
+        track_eta = np.empty(n_events, dtype=object)  # Phase 13.6.G: Added
         track_pz_over_pt = np.empty(n_events, dtype=object)
         track_pdgcode = np.empty(n_events, dtype=object)
         track_charge = np.empty(n_events, dtype=object)
@@ -273,6 +274,7 @@ class ALICEEventGenerator:
                 # Empty event
                 track_pt[evt] = np.array([], dtype=dtype_float)
                 track_phi[evt] = np.array([], dtype=dtype_float)
+                track_eta[evt] = np.array([], dtype=dtype_float)  # Phase 13.6.G
                 track_pz_over_pt[evt] = np.array([], dtype=dtype_float)
                 track_pdgcode[evt] = np.array([], dtype=dtype_int)
                 track_charge[evt] = np.array([], dtype=dtype_int)
@@ -298,9 +300,13 @@ class ALICEEventGenerator:
                 trk_py = trk_pt * np.sin(trk_phi)
                 trk_pz = trk_pt * trk_pz_pt
                 
+                # Phase 13.6.G: Compute eta from pz/pt (eta = arcsinh(pz/pt))
+                trk_eta = np.arcsinh(trk_pz_pt)
+                
                 # Store track arrays
                 track_pt[evt] = trk_pt.astype(dtype_float)
                 track_phi[evt] = trk_phi.astype(dtype_float)
+                track_eta[evt] = trk_eta.astype(dtype_float)  # Phase 13.6.G
                 track_pz_over_pt[evt] = trk_pz_pt.astype(dtype_float)
                 track_pdgcode[evt] = trk_pdg.astype(dtype_int)
                 track_charge[evt] = trk_charge
@@ -362,6 +368,7 @@ class ALICEEventGenerator:
             # Track-level (1D RVec)
             'track_pt': track_pt,
             'track_phi': track_phi,
+            'track_eta': track_eta,  # Phase 13.6.G: Added
             'track_pz_over_pt': track_pz_over_pt,
             'track_pdgcode': track_pdgcode,
             'track_charge': track_charge,
@@ -414,6 +421,7 @@ class ALICEEventGenerator:
         # Track-level branches (RVec)
         track_pt_vec = ROOT.std.vector('double')()
         track_phi_vec = ROOT.std.vector('double')()
+        track_eta_vec = ROOT.std.vector('double')()  # Phase 13.6.G: Added
         track_pz_over_pt_vec = ROOT.std.vector('double')()
         track_pdgcode_vec = ROOT.std.vector('long')()
         track_charge_vec = ROOT.std.vector('long')()
@@ -423,6 +431,7 @@ class ALICEEventGenerator:
         
         tree.Branch("track_pt", track_pt_vec)
         tree.Branch("track_phi", track_phi_vec)
+        tree.Branch("track_eta", track_eta_vec)  # Phase 13.6.G: Added
         tree.Branch("track_pz_over_pt", track_pz_over_pt_vec)
         tree.Branch("track_pdgcode", track_pdgcode_vec)
         tree.Branch("track_charge", track_charge_vec)
@@ -455,6 +464,7 @@ class ALICEEventGenerator:
             # Track-level
             track_pt_vec.clear()
             track_phi_vec.clear()
+            track_eta_vec.clear()  # Phase 13.6.G
             track_pz_over_pt_vec.clear()
             track_pdgcode_vec.clear()
             track_charge_vec.clear()
@@ -466,6 +476,8 @@ class ALICEEventGenerator:
                 track_pt_vec.push_back(float(val))
             for val in data['track_phi'][evt]:
                 track_phi_vec.push_back(float(val))
+            for val in data['track_eta'][evt]:  # Phase 13.6.G
+                track_eta_vec.push_back(float(val))
             for val in data['track_pz_over_pt'][evt]:
                 track_pz_over_pt_vec.push_back(float(val))
             for val in data['track_pdgcode'][evt]:

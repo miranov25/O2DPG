@@ -19,6 +19,9 @@ import ast
 from RDataFrameDSL import DSLCompiler
 from RDataFrameDSL.ir_errors import IRError, IRErrorKind
 
+# File-level marker: ALL tests in this file run serially (ROOT dependency)
+pytestmark = pytest.mark.root_serial
+
 
 # =============================================================================
 # Test Class: Basic alias() functionality
@@ -220,7 +223,6 @@ class TestFromRdf:
     """Tests for from_rdf() and update_schema_from_rdf()."""
     
     @pytest.mark.feature("api_from_rdf")
-    @pytest.mark.root_serial
     def test_from_rdf_basic(self, nd_2d_rdf, nd_2d_schema):
         """
         from_rdf() infers schema from RDataFrame.
@@ -236,7 +238,6 @@ class TestFromRdf:
         assert dsl._rdf is nd_2d_rdf
     
     @pytest.mark.feature("api_from_rdf")
-    @pytest.mark.root_serial
     def test_update_schema_from_rdf(self, nd_2d_rdf, nd_2d_schema):
         """
         update_schema_from_rdf() adds RDF columns to existing schema.
@@ -257,7 +258,6 @@ class TestFromRdf:
         assert len(dsl.schema) > 1
     
     @pytest.mark.feature("api_from_rdf")
-    @pytest.mark.root_serial
     def test_update_schema_preserves_manual(self, nd_2d_rdf, nd_2d_schema):
         """
         update_schema_from_rdf() doesn't overwrite manual schema entries.
@@ -279,7 +279,6 @@ class TestAliasIntegration:
     """Integration tests for alias() with to_pandas()."""
     
     @pytest.mark.feature("api_alias")
-    @pytest.mark.root_serial
     def test_alias_compile_on_demand(self, nd_2d_rdf, nd_2d_schema):
         """
         Aliases are compiled only when needed for to_pandas().
@@ -304,7 +303,6 @@ class TestAliasIntegration:
         assert "double_weight" not in dsl._aliases
     
     @pytest.mark.feature("api_alias")
-    @pytest.mark.root_serial
     def test_alias_missing_column_error(self, nd_2d_rdf, nd_2d_schema):
         """
         Missing column in alias raises error with suggestions at materialization.
@@ -323,7 +321,6 @@ class TestAliasIntegration:
                "not found" in str(exc_info.value).lower()
     
     @pytest.mark.feature("api_alias")
-    @pytest.mark.root_serial  
     def test_alias_type_registration(self, nd_2d_rdf, nd_2d_schema):
         """
         After compilation, alias output type is registered in schema.

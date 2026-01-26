@@ -16,7 +16,7 @@
 # Date: 2026-01-18
 # =============================================================================
 
-FEATURE_TAXONOMY_VERSION = "2.4"  # Phase 13.6.F: Added integration tests for CAPABILITY_MATRIX
+FEATURE_TAXONOMY_VERSION = "2.5"  # Phase 13.6.G: Added schema_validation
 
 # =============================================================================
 # FEATURE ALIASES (for backward compatibility if renaming needed)
@@ -694,6 +694,20 @@ FEATURE_TAXONOMY = {
         ],
         "proof": None,
         "phase": "13.6.F",
+    },
+    "schema_validation": {
+        "name": "Schema vs RDF column validation",
+        "description": "Validate schema columns exist in RDataFrame before apply(), preventing ROOT crashes from undefined column references",
+        "tests": [
+            "tests/test_dsl_api.py::TestSchemaValidation::test_schema_mismatch_gives_clean_error",
+            "tests/test_dsl_api.py::TestSchemaValidation::test_schema_subset_of_rdf_works",
+            "tests/test_dsl_api.py::TestSchemaValidation::test_multiple_missing_columns_all_reported",
+            "tests/test_dsl_api.py::TestSchemaValidation::test_empty_rdf_validates_correctly",
+            "tests/test_dsl_api.py::TestSchemaValidation::test_rvec_column_validates",
+            "tests/test_dsl_api.py::TestSchemaValidation::test_chained_definitions_work",
+        ],
+        "proof": None,
+        "phase": "13.6.G",
     },
 }
 

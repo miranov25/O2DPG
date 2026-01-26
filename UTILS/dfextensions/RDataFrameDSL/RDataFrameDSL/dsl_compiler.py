@@ -411,6 +411,8 @@ class DSLCompiler:
         
         # Store cleaned schema (without _pragmas)
         self.schema = schema_copy
+        # Phase 13.6.G: Store original schema for RDF validation (before any define() calls)
+        self._original_schema = dict(schema_copy)
         self.safe_indexing = safe_indexing
         
         # Unique ID for this compiler instance (avoids parallel test collisions)
@@ -2017,8 +2019,9 @@ class DSLCompiler:
         Apply all definitions to an RDataFrame.
         
         This method:
-        1. Compiles all functions (if not already compiled)
-        2. Calls rdf.Define() for each definition in order
+        1. Validates schema columns exist in RDF (Phase 13.6.G)
+        2. Compiles all functions (if not already compiled)
+        3. Calls rdf.Define() for each definition in order
         
         Args:
             rdf: ROOT.RDataFrame instance
@@ -2026,11 +2029,18 @@ class DSLCompiler:
         Returns:
             Modified RDataFrame with new columns
         
+        Raises:
+            IRError: If schema columns don't exist in RDF (Phase 13.6.G)
+        
         Example:
             >>> rdf = ROOT.RDataFrame("Events", "data.root")
             >>> rdf = dsl.apply(rdf)
             >>> result = rdf.AsNumpy(["pt", "n_tracks"])
         """
+        # Phase 13.6.G: Validate schema columns exist in RDF BEFORE calling Define()
+        # This prevents ROOT crashes from undefined column references
+        self._validate_schema_against_rdf(rdf)
+        
         self.compile_all()
         
         for name, _ in self._definitions:
@@ -2038,6 +2048,59 @@ class DSLCompiler:
             rdf = rdf.Define(name, func.get_call_expression())
         
         return rdf
+    
+    def _validate_schema_against_rdf(self, rdf) -> None:
+        """
+        Validate that schema columns actually exist in the RDataFrame.
+        
+        Phase 13.6.G: Prevents ROOT crashes caused by schema/RDF mismatch.
+        This catches errors like defining a schema with 'track_phi' when
+        the actual data doesn't have that column.
+        
+        Args:
+            rdf: ROOT.RDataFrame instance
+            
+        Raises:
+            IRError: If schema contains columns not present in RDF
+        """
+        # Get actual columns from RDF
+        try:
+            rdf_columns = set(str(c) for c in rdf.GetColumnNames())
+        except Exception as e:
+            # If we can't get column names (unusual), log warning and proceed
+            logger.warning(f"Could not get RDF column names for validation: {e}")
+            return
+        
+        # Get ORIGINAL schema columns only (excluding special keys like _pragmas)
+        # Don't include defined aliases - those will be CREATED by Define(), not read from RDF
+        schema_columns = set(k for k in self._original_schema.keys() if not k.startswith('_'))
+        
+        # Find columns in schema but not in RDF
+        missing = schema_columns - rdf_columns
+        
+        if missing:
+            # Build helpful error message with suggestions
+            suggestions = [
+                "Check that schema matches the actual data columns",
+                f"RDF columns: {sorted(rdf_columns)[:10]}{'...' if len(rdf_columns) > 10 else ''}",
+            ]
+            
+            # For each missing column, try to find similar names
+            for col in sorted(missing):
+                similar = [c for c in rdf_columns 
+                          if col.lower() in c.lower() or c.lower() in col.lower()]
+                if similar:
+                    suggestions.append(f"'{col}' not found. Similar: {similar[:3]}")
+                else:
+                    suggestions.append(f"'{col}' not found in RDF")
+            
+            raise IRError(
+                kind=IRErrorKind.VALIDATION_ERROR,
+                message=f"Schema contains columns not in RDataFrame: {sorted(missing)}",
+                suggestions=suggestions
+            )
+        
+        logger.debug(f"Schema validation passed: {len(schema_columns)} columns verified against RDF")
     
     def preview(self) -> str:
         """

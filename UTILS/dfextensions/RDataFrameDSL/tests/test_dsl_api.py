@@ -12,6 +12,8 @@ Prerequisites:
 - ALICEEventGenerator (tests/generators/alice_events.py)
 - Phase 13.6.A-ext flatten module
 - DSLCompiler with new methods
+
+Phase 13.6.G: Added TestSchemaValidation for schema vs RDF validation.
 """
 
 import pytest
@@ -34,6 +36,12 @@ try:
 except ImportError:
     DSL_AVAILABLE = False
     DSLCompiler = None
+
+# Phase 13.6.G: Import IRError for schema validation tests
+try:
+    from RDataFrameDSL.ir_errors import IRError
+except ImportError:
+    IRError = None
 
 # Check if AliasDataFrame is available
 ADF_AVAILABLE = False
@@ -536,6 +544,161 @@ class TestAPIIntegration:
         except Exception as e:
             # Some ADF versions may have different API
             pytest.skip(f"ADF add_alias not available: {e}")
+
+
+# =============================================================================
+# Phase 13.6.G: Schema Validation Tests
+# =============================================================================
+
+class TestSchemaValidation:
+    """
+    Test schema vs RDF validation.
+    
+    Phase 13.6.G: Prevents ROOT crashes from schema/RDF mismatch
+    by validating that schema columns exist in RDF before calling Define().
+    """
+    
+    @pytest.mark.root_serial
+    @pytest.mark.feature("schema_validation")
+    def test_schema_mismatch_gives_clean_error(self):
+        """Schema with non-existent column should raise IRError, not crash."""
+        import ROOT
+        from RDataFrameDSL import DSLCompiler
+        from RDataFrameDSL.ir_errors import IRError
+        
+        # Create RDF with only 'x' column
+        rdf = ROOT.RDataFrame(10).Define("x", "1.0")
+        
+        # Schema claims 'y' exists (it doesn't)
+        schema = {'x': 'double', 'y': 'double'}
+        dsl = DSLCompiler(schema)
+        dsl.define("z", "x + y")
+        
+        # Should raise clean error, not ROOT crash
+        with pytest.raises(IRError) as exc_info:
+            dsl.apply(rdf)
+        
+        # Verify error message is helpful
+        error_msg = str(exc_info.value).lower()
+        assert "y" in str(exc_info.value)  # Missing column mentioned
+        assert "not" in error_msg or "missing" in error_msg or "found" in error_msg
+    
+    @pytest.mark.root_serial
+    @pytest.mark.feature("schema_validation")
+    def test_schema_subset_of_rdf_works(self):
+        """Schema can be subset of RDF columns (RDF has extra columns)."""
+        import ROOT
+        from RDataFrameDSL import DSLCompiler
+        
+        # RDF has x, y, z
+        rdf = ROOT.RDataFrame(10)
+        rdf = rdf.Define("x", "1.0")
+        rdf = rdf.Define("y", "2.0")
+        rdf = rdf.Define("z", "3.0")
+        
+        # Schema only declares x (subset is OK)
+        schema = {'x': 'double'}
+        dsl = DSLCompiler(schema)
+        dsl.define("x2", "x * 2")
+        
+        # Should work - schema is subset of RDF
+        result_rdf = dsl.apply(rdf)
+        assert result_rdf is not None
+    
+    @pytest.mark.root_serial
+    @pytest.mark.feature("schema_validation")
+    def test_multiple_missing_columns_all_reported(self):
+        """Error should report ALL missing columns, not just first."""
+        import ROOT
+        from RDataFrameDSL import DSLCompiler
+        from RDataFrameDSL.ir_errors import IRError
+        
+        # RDF has only 'x'
+        rdf = ROOT.RDataFrame(10).Define("x", "1.0")
+        
+        # Schema claims a, b, c exist (none do except x)
+        schema = {'x': 'double', 'a': 'double', 'b': 'double', 'c': 'double'}
+        dsl = DSLCompiler(schema)
+        dsl.define("sum", "x + a + b + c")
+        
+        with pytest.raises(IRError) as exc_info:
+            dsl.apply(rdf)
+        
+        # All missing columns should be mentioned
+        error_msg = str(exc_info.value)
+        assert 'a' in error_msg
+        assert 'b' in error_msg
+        assert 'c' in error_msg
+    
+    @pytest.mark.root_serial
+    @pytest.mark.feature("schema_validation")  
+    def test_empty_rdf_validates_correctly(self):
+        """Validation should work even with 0-row RDataFrame."""
+        import ROOT
+        from RDataFrameDSL import DSLCompiler
+        from RDataFrameDSL.ir_errors import IRError
+        
+        # Empty RDF (0 rows) but has column 'x'
+        rdf = ROOT.RDataFrame(0).Define("x", "1.0")
+        
+        # Schema claims 'y' exists
+        schema = {'x': 'double', 'y': 'double'}
+        dsl = DSLCompiler(schema)
+        dsl.define("z", "x + y")
+        
+        # Should still catch the mismatch
+        with pytest.raises(IRError):
+            dsl.apply(rdf)
+    
+    @pytest.mark.root_serial
+    @pytest.mark.feature("schema_validation")
+    def test_rvec_column_validates(self):
+        """RVec columns in schema should also be validated."""
+        import ROOT
+        from RDataFrameDSL import DSLCompiler
+        from RDataFrameDSL.ir_errors import IRError
+        
+        # RDF has scalar 'x' only
+        rdf = ROOT.RDataFrame(10).Define("x", "1.0")
+        
+        # Schema claims RVec column 'track_pt' exists
+        schema = {'x': 'double', 'track_pt': 'RVec<double>'}
+        dsl = DSLCompiler(schema)
+        dsl.define("sum_pt", "Sum(track_pt)")
+        
+        with pytest.raises(IRError) as exc_info:
+            dsl.apply(rdf)
+        
+        assert "track_pt" in str(exc_info.value)
+    
+    @pytest.mark.root_serial
+    @pytest.mark.feature("schema_validation")
+    def test_chained_definitions_work(self):
+        """Chained definitions (a1=a0+1, a2=a1+1) should work correctly."""
+        import ROOT
+        from RDataFrameDSL import DSLCompiler
+        
+        # RDF has only 'a0'
+        rdf = ROOT.RDataFrame(5).Define("a0", "1.0")
+        
+        # Schema declares only 'a0'
+        schema = {'a0': 'double'}
+        dsl = DSLCompiler(schema)
+        
+        # Chain of definitions - each references the previous
+        dsl.define("a1", "a0 + 1")  # a1 = 2.0
+        dsl.define("a2", "a1 + 1")  # a2 = 3.0
+        dsl.define("a3", "a2 + 1")  # a3 = 4.0
+        
+        # Should work - DSL handles dependency resolution
+        result_rdf = dsl.apply(rdf)
+        
+        # Verify values
+        result = result_rdf.AsNumpy(["a0", "a1", "a2", "a3"])
+        assert all(result["a0"] == 1.0)
+        assert all(result["a1"] == 2.0)
+        assert all(result["a2"] == 3.0)
+        assert all(result["a3"] == 4.0)
 
 
 # =============================================================================

@@ -738,6 +738,8 @@ def _generate_2d_embedded(func_name: str, filename: str, data: Dict[str, Any]) -
 def _generate_3d_embedded(func_name: str, filename: str, data: Dict[str, Any]) -> str:
     """
     Generate C++ function with embedded literal values for 3D (S-size).
+    
+    Phase 13.6.G: Added track_eta, cluster_x, cluster_y to match ND_3D_SCHEMA.
     """
     n_events = len(data['event_id'])
     
@@ -754,7 +756,10 @@ def _generate_3d_embedded(func_name: str, filename: str, data: Dict[str, Any]) -
         '    Int_t n_tracks;',
         '    Double_t event_weight;',
         '    ROOT::RVec<double> track_pt;',
+        '    ROOT::RVec<double> track_eta;',  # Phase 13.6.G: Added
         '    ROOT::RVec<ROOT::RVec<double>> cluster_Q;',
+        '    ROOT::RVec<ROOT::RVec<double>> cluster_x;',  # Phase 13.6.G: Added
+        '    ROOT::RVec<ROOT::RVec<double>> cluster_y;',  # Phase 13.6.G: Added
         '    ROOT::RVec<ROOT::RVec<ROOT::RVec<double>>> hit_E;',
         '    ROOT::RVec<ROOT::RVec<ROOT::RVec<double>>> hit_t;',
         '',
@@ -762,7 +767,10 @@ def _generate_3d_embedded(func_name: str, filename: str, data: Dict[str, Any]) -
         '    tree.Branch("n_tracks", &n_tracks);',
         '    tree.Branch("event_weight", &event_weight);',
         '    tree.Branch("track_pt", &track_pt);',
+        '    tree.Branch("track_eta", &track_eta);',  # Phase 13.6.G: Added
         '    tree.Branch("cluster_Q", &cluster_Q);',
+        '    tree.Branch("cluster_x", &cluster_x);',  # Phase 13.6.G: Added
+        '    tree.Branch("cluster_y", &cluster_y);',  # Phase 13.6.G: Added
         '    tree.Branch("hit_E", &hit_E);',
         '    tree.Branch("hit_t", &hit_t);',
         '',
@@ -775,15 +783,23 @@ def _generate_3d_embedded(func_name: str, filename: str, data: Dict[str, Any]) -
         lines.append(f'    event_weight = {data["event_weight"][evt]:.1f};')
         
         pt_str = ', '.join(f'{v:.1f}' for v in data['track_pt'][evt])
+        eta_str = ', '.join(f'{v:.1f}' for v in data['track_eta'][evt])
         lines.append(f'    track_pt = {{{pt_str}}};')
+        lines.append(f'    track_eta = {{{eta_str}}};')
         
         lines.append('    cluster_Q.clear();')
+        lines.append('    cluster_x.clear();')
+        lines.append('    cluster_y.clear();')
         lines.append('    hit_E.clear();')
         lines.append('    hit_t.clear();')
         
         for trk in range(len(data['cluster_Q'][evt])):
             Q_str = ', '.join(f'{v:.1f}' for v in data['cluster_Q'][evt][trk])
+            x_str = ', '.join(f'{v:.1f}' for v in data['cluster_x'][evt][trk])
+            y_str = ', '.join(f'{v:.1f}' for v in data['cluster_y'][evt][trk])
             lines.append(f'    cluster_Q.push_back({{{Q_str}}});')
+            lines.append(f'    cluster_x.push_back({{{x_str}}});')
+            lines.append(f'    cluster_y.push_back({{{y_str}}});')
             
             lines.append('    {')
             lines.append('        ROOT::RVec<ROOT::RVec<double>> trk_E, trk_t;')
@@ -918,6 +934,8 @@ void {func_name}() {{
 def _generate_3d_algorithmic(func_name: str, filename: str, config: Dict, seed: int) -> str:
     """
     Generate C++ with algorithmic 3D generation (M/L/XL).
+    
+    Phase 13.6.G: Added track_eta, cluster_x, cluster_y to match ND_3D_SCHEMA.
     """
     n_events = config['n_events']
     trk_min, trk_max = config['tracks_per_event']
@@ -943,7 +961,10 @@ void {func_name}() {{
     Int_t n_tracks;
     Double_t event_weight;
     ROOT::RVec<double> track_pt;
+    ROOT::RVec<double> track_eta;  // Phase 13.6.G: Added
     ROOT::RVec<ROOT::RVec<double>> cluster_Q;
+    ROOT::RVec<ROOT::RVec<double>> cluster_x;  // Phase 13.6.G: Added
+    ROOT::RVec<ROOT::RVec<double>> cluster_y;  // Phase 13.6.G: Added
     ROOT::RVec<ROOT::RVec<ROOT::RVec<double>>> hit_E;
     ROOT::RVec<ROOT::RVec<ROOT::RVec<double>>> hit_t;
     
@@ -951,7 +972,10 @@ void {func_name}() {{
     tree.Branch("n_tracks", &n_tracks);
     tree.Branch("event_weight", &event_weight);
     tree.Branch("track_pt", &track_pt);
+    tree.Branch("track_eta", &track_eta);  // Phase 13.6.G: Added
     tree.Branch("cluster_Q", &cluster_Q);
+    tree.Branch("cluster_x", &cluster_x);  // Phase 13.6.G: Added
+    tree.Branch("cluster_y", &cluster_y);  // Phase 13.6.G: Added
     tree.Branch("hit_E", &hit_E);
     tree.Branch("hit_t", &hit_t);
     
@@ -970,20 +994,26 @@ void {func_name}() {{
         n_tracks = n_trk;
         
         track_pt.clear();
+        track_eta.clear();
         cluster_Q.clear();
+        cluster_x.clear();
+        cluster_y.clear();
         hit_E.clear();
         hit_t.clear();
         
         for (int trk = 0; trk < n_trk; trk++) {{
             track_pt.push_back(PT_VALUES[trk % N_PT]);
+            track_eta.push_back(0.0);  // Phase 13.6.G: eta = 0 for simplicity
             
             int n_clus = clus_dist(rng);
-            ROOT::RVec<double> trk_Q;
+            ROOT::RVec<double> trk_Q, trk_x, trk_y;
             ROOT::RVec<ROOT::RVec<double>> trk_hits_E, trk_hits_t;
             
             for (int clus = 0; clus < n_clus; clus++) {{
                 double Q = 1000.0 * evt + 100.0 * trk + clus;
                 trk_Q.push_back(Q);
+                trk_x.push_back(Q + 0.1);  // Phase 13.6.G: cluster_x = Q + 0.1
+                trk_y.push_back(Q + 0.2);  // Phase 13.6.G: cluster_y = Q + 0.2
                 
                 int n_hits = hit_dist(rng);
                 ROOT::RVec<double> clus_E, clus_t;
@@ -1000,6 +1030,8 @@ void {func_name}() {{
             }}
             
             cluster_Q.push_back(trk_Q);
+            cluster_x.push_back(trk_x);
+            cluster_y.push_back(trk_y);
             hit_E.push_back(trk_hits_E);
             hit_t.push_back(trk_hits_t);
         }}

@@ -1,276 +1,332 @@
 #!/bin/bash
-# run_tests.sh - Unified test runner for RDataFrameDSL
+# =============================================================================
+# run_tests.sh — RDataFrameDSL Test Runner
+# =============================================================================
 #
-# Phase 13.6.E: Two-phase execution for ROOT JIT isolation
-# 0. Pre-generate ROOT dictionaries (avoids parallel compilation race)
-# 1. Parallel: Non-ROOT tests (pytest-xdist, -n 12)
-# 2. Serial: ROOT tests (GNU parallel with TMPDIR isolation)
+# Location: tests/run_tests.sh (run from project root or tests/ directory)
 #
-# NOTE: Exploration tests are excluded - run via tests/exploration/run_exploration.sh
+# Phase 13.6.G: Improved failure reporting
+#   - Shows FAILED count prominently (not just passed)
+#   - Lists failed test names explicitly  
+#   - Saves summary to test_logs/SUMMARY_${TIMESTAMP}.txt
+#   - Failure summary BEFORE capability matrix
+#   - Color output for failures
+#
+# Fixes in this version:
+#   - Priority 1: Use --from-reports instead of --json-dir for capability matrix
+#   - Priority 2: Remove -m root_serial from serial phase (run ALL tests in file)
 #
 # Usage:
-#   ./run_tests.sh              # Default: summary output
-#   ./run_tests.sh -v           # Verbose: show each test
-#   ./run_tests.sh --tb=long    # Long tracebacks
+#   ./tests/run_tests.sh          # From project root
+#   ./run_tests.sh                # From tests/ directory
+#   ./tests/run_tests.sh --quick  # Skip capability matrix
 #
-# Output logs:
-#   test_logs/test_parallel_TIMESTAMP.log
-#   test_logs/test_serial_TIMESTAMP.log
-#   test_logs/test_crashes_TIMESTAMP.log (if crashes detected)
+# =============================================================================
 
 set -e
 
-EXTRA_ARGS="$@"
+# =============================================================================
+# Path Setup
+# =============================================================================
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+if [[ -d "$SCRIPT_DIR/tests" ]]; then
+    PROJECT_ROOT="$SCRIPT_DIR"
+    TESTS_DIR="$SCRIPT_DIR/tests"
+elif [[ "$(basename "$SCRIPT_DIR")" == "tests" ]]; then
+    PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+    TESTS_DIR="$SCRIPT_DIR"
+else
+    echo "ERROR: Cannot determine project structure"
+    exit 1
+fi
+
+cd "$PROJECT_ROOT"
+echo "Project root: $PROJECT_ROOT"
+echo "Tests dir: $TESTS_DIR"
+
+# =============================================================================
+# Configuration
+# =============================================================================
+
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_DIR="test_logs"
 mkdir -p "$LOG_DIR"
+
+# Colors
+if [[ -t 1 ]] && command -v tput &>/dev/null; then
+    RED=$(tput setaf 1); GREEN=$(tput setaf 2); YELLOW=$(tput setaf 3)
+    BOLD=$(tput bold); RESET=$(tput sgr0)
+else
+    RED=""; GREEN=""; YELLOW=""; BOLD=""; RESET=""
+fi
+
+SUMMARY_FILE="$LOG_DIR/SUMMARY_${TIMESTAMP}.txt"
+PARALLEL_JSON_DIR="$LOG_DIR/parallel_json_${TIMESTAMP}"
+SERIAL_JSON_DIR="$LOG_DIR/serial_json_${TIMESTAMP}"
+mkdir -p "$PARALLEL_JSON_DIR" "$SERIAL_JSON_DIR"
 
 PARALLEL_LOG="$LOG_DIR/test_parallel_${TIMESTAMP}.log"
 SERIAL_LOG="$LOG_DIR/test_serial_${TIMESTAMP}.log"
 CRASH_LOG="$LOG_DIR/test_crashes_${TIMESTAMP}.log"
 
-echo "=== RDataFrameDSL Test Suite ==="
-echo "Timestamp: $TIMESTAMP"
-echo "Extra args: ${EXTRA_ARGS:-'(none)'}"
-echo ""
+PARALLEL_PASSED=0; PARALLEL_FAILED=0; PARALLEL_SKIPPED=0
+SERIAL_PASSED=0; SERIAL_FAILED=0; SERIAL_SKIPPED=0
+PARALLEL_EXIT=0; SERIAL_EXIT=0
 
-# Phase 0: Pre-generate ROOT dictionaries
-# This avoids race conditions when multiple parallel processes try to generate
-# the same AutoDict_* files simultaneously
-echo "=============================================="
-echo "Phase 0: Pre-generating ROOT dictionaries"
-echo "=============================================="
-python -c "
-import sys
-sys.path.insert(0, 'tests')
-sys.path.insert(0, 'tests/generators')
-try:
-    from toy_nd import _ensure_rvec_dictionaries
-    _ensure_rvec_dictionaries()
-    print('✅ RVec dictionaries ready')
-except Exception as e:
-    print(f'⚠️  Dictionary generation warning: {e}')
-    print('   Tests will generate dictionaries on demand')
-"
-echo ""
+FAILED_TESTS_FILE=$(mktemp)
+trap "rm -f $FAILED_TESTS_FILE" EXIT
 
-# Phase 1: Parallel tests (non-ROOT)
-# Note: exploration/ excluded via pytest.ini norecursedirs
-echo "=============================================="
-echo "Phase 1: Non-ROOT tests (pytest -n 12)"
-echo "=============================================="
-PARALLEL_JSON="$LOG_DIR/test_parallel_${TIMESTAMP}.json"
-pytest tests/ -n 12 -m "not root_serial" --ignore=tests/exploration --tb=short \
-    --json-report --json-report-file="$PARALLEL_JSON" \
-    $EXTRA_ARGS 2>&1 | tee "$PARALLEL_LOG"
-PARALLEL_EXIT=${PIPESTATUS[0]}
+# =============================================================================
+# ROOT Test Files (run serially)
+# =============================================================================
 
-echo ""
-
-# Phase 2: ROOT tests (serial with TMPDIR isolation)
-# Exploration tests excluded - run via tests/exploration/run_exploration.sh
-echo "=============================================="
-echo "Phase 2: ROOT tests (GNU parallel, TMPDIR isolated)"
-echo "=============================================="
-
-# List of test files containing root_serial tests
-# Exploration tests excluded - they have their own runner
 ROOT_TEST_FILES=(
-    tests/test_api_alias.py
-    tests/test_api_define.py
-    tests/test_api_draw.py
-    tests/test_api_to_pandas.py
-    tests/test_carray_correctness.py
-    tests/test_carray_root_integration.py
-    tests/test_helix_generator.py
-    tests/test_invariance_join_e2e.py
-    tests/test_invariance_nd.py
-    tests/test_invariance_safe_draw.py
-    tests/test_invariance_udf.py
-    tests/test_nested_slicing.py
-    tests/test_root_broadcast_integration.py
-    tests/test_root_integration.py
-    tests/test_rvec_selection.py
-    tests/test_safe_mode.py
+    "tests/test_api_define.py"
+    "tests/test_api_alias.py"
+    "tests/test_api_to_pandas.py"
+    "tests/test_api_draw.py"
+    "tests/test_carray_root_integration.py"
+    "tests/test_carray_correctness.py"
+    "tests/test_invariance_join_e2e.py"
+    "tests/test_helix_generator.py"
+    "tests/test_invariance_safe_draw.py"
+    "tests/test_nested_slicing.py"
+    "tests/test_invariance_udf.py"
+    "tests/test_invariance_nd.py"
+    "tests/test_root_broadcast_integration.py"
+    "tests/test_root_integration.py"
+    "tests/test_rvec_selection.py"
+    "tests/test_safe_mode.py"
+    "tests/test_dsl_api.py"
 )
 
-# Create directory for serial JSON reports
-SERIAL_JSON_DIR="$LOG_DIR/serial_json_${TIMESTAMP}"
-mkdir -p "$SERIAL_JSON_DIR"
+# =============================================================================
+# Helper Functions
+# =============================================================================
 
-printf '%s\n' "${ROOT_TEST_FILES[@]}" | \
-    parallel -j 4 "TMPDIR=\$(mktemp -d) pytest {} -n 0 -m 'root_serial' --tb=short \
-        --json-report --json-report-file='$SERIAL_JSON_DIR/{/.}.json' \
-        $EXTRA_ARGS" 2>&1 | tee "$SERIAL_LOG"
-SERIAL_EXIT=${PIPESTATUS[0]}
+print_header() {
+    echo ""
+    echo "=============================================="
+    echo "$1"
+    echo "=============================================="
+}
 
-# Count results from logs (macOS compatible - no -P flag)
-PARALLEL_PASSED=$(grep -oE '[0-9]+ passed' "$PARALLEL_LOG" | tail -1 | grep -oE '^[0-9]+' || echo "0")
-SERIAL_PASSED=$(grep -oE '[0-9]+ passed' "$SERIAL_LOG" | grep -oE '^[0-9]+' | awk '{s+=$1} END {print s+0}')
+aggregate_json_reports() {
+    local json_dir="$1"
+    local failed_file="$2"
+    
+    python3 << PYEOF
+import json, os, sys
+json_dir, failed_file = '$json_dir', '$failed_file'
+total_passed = total_failed = total_skipped = 0
+failed_tests = []
+
+if not os.path.exists(json_dir):
+    print("0 0 0"); sys.exit(0)
+
+for fn in sorted(os.listdir(json_dir)):
+    if not fn.endswith('.json'): continue
+    try:
+        with open(os.path.join(json_dir, fn)) as f:
+            data = json.load(f)
+        s = data.get('summary', {})
+        total_passed += s.get('passed', 0)
+        total_failed += s.get('failed', 0)
+        total_skipped += s.get('skipped', 0)
+        for t in data.get('tests', []):
+            if t.get('outcome') == 'failed':
+                failed_tests.append(t.get('nodeid', 'unknown'))
+    except Exception as e:
+        print(f"# Warning: {e}", file=sys.stderr)
+
+print(f"{total_passed} {total_failed} {total_skipped}")
+if failed_tests:
+    with open(failed_file, 'a') as f:
+        for t in failed_tests: f.write(t + '\n')
+PYEOF
+}
+
+# =============================================================================
+# Phase 0: Pre-generate ROOT dictionaries
+# =============================================================================
+
+print_header "Phase 0: Pre-generating ROOT dictionaries"
+python3 -c "
+import sys; sys.path.insert(0, 'tests/generators'); sys.path.insert(0, 'tests')
+try:
+    from generators.toy_nd import _ensure_rvec_dictionaries
+    _ensure_rvec_dictionaries(); print('✅ ROOT dictionaries pre-generated')
+except Exception as e: print(f'⚠️  {e}')
+" 2>/dev/null || echo "⚠️  Dictionary pre-generation skipped"
+
+# =============================================================================
+# Phase 1: Parallel Tests (non-ROOT)
+# =============================================================================
+
+print_header "Phase 1: Running parallel tests (non-ROOT)"
+
+EXCLUDE_PATTERN=""
+for f in "${ROOT_TEST_FILES[@]}"; do
+    EXCLUDE_PATTERN="$EXCLUDE_PATTERN --ignore=tests/$(basename "$f")"
+done
+
+[[ ! -d "tests" ]] && echo "ERROR: tests/ not found" && exit 1
+
+set +e
+python3 -m pytest tests/ -v -m "not root_serial" $EXCLUDE_PATTERN \
+    --tb=short --json-report \
+    --json-report-file="$PARALLEL_JSON_DIR/test_parallel_${TIMESTAMP}.json" \
+    2>&1 | tee "$PARALLEL_LOG"
+PARALLEL_EXIT=${PIPESTATUS[0]}
+set -e
+
+read PARALLEL_PASSED PARALLEL_FAILED PARALLEL_SKIPPED < <(aggregate_json_reports "$PARALLEL_JSON_DIR" "$FAILED_TESTS_FILE")
+echo ""; echo "Phase 1 complete: ${PARALLEL_PASSED} passed, ${PARALLEL_FAILED} failed, ${PARALLEL_SKIPPED} skipped"
+
+# =============================================================================
+# Phase 2: Serial Tests (ROOT) - NO MARKER FILTER
+# =============================================================================
+
+print_header "Phase 2: Running serial tests (ROOT)"
+> "$CRASH_LOG"
+
+for test_file in "${ROOT_TEST_FILES[@]}"; do
+    [[ ! -f "$test_file" ]] && echo "⚠️  Skipping missing: $test_file" && continue
+    
+    basename_f=$(basename "$test_file" .py)
+    json_file="$SERIAL_JSON_DIR/${basename_f}.json"
+    echo "Running: $test_file"
+    
+    set +e
+    # NO -m filter: run ALL tests in these files serially
+    python3 -m pytest "$test_file" --tb=short -q \
+        --json-report --json-report-file="$json_file" \
+        2>&1 | tee -a "$SERIAL_LOG"
+    exit_code=${PIPESTATUS[0]}
+    set -e
+    
+    [[ $exit_code -gt 1 ]] && echo "⚠️  Crash in $test_file (exit: $exit_code)" >> "$CRASH_LOG"
+done
+
+read SERIAL_PASSED SERIAL_FAILED SERIAL_SKIPPED < <(aggregate_json_reports "$SERIAL_JSON_DIR" "$FAILED_TESTS_FILE")
+[[ $SERIAL_FAILED -gt 0 ]] && SERIAL_EXIT=1 || SERIAL_EXIT=0
+echo ""; echo "Phase 2 complete: ${SERIAL_PASSED} passed, ${SERIAL_FAILED} failed, ${SERIAL_SKIPPED} skipped"
+
+# =============================================================================
+# FAILURE SUMMARY
+# =============================================================================
+
 TOTAL_PASSED=$((PARALLEL_PASSED + SERIAL_PASSED))
+TOTAL_FAILED=$((PARALLEL_FAILED + SERIAL_FAILED))
+TOTAL_SKIPPED=$((PARALLEL_SKIPPED + SERIAL_SKIPPED))
 
-# Detect crashes in BOTH parallel and serial logs
-CRASH_COUNT_PARALLEL=$(grep -c "Fatal Python error" "$PARALLEL_LOG" 2>/dev/null || echo "0")
-CRASH_COUNT_PARALLEL="${CRASH_COUNT_PARALLEL%%[^0-9]*}"
-CRASH_COUNT_SERIAL=$(grep -c "Fatal Python error" "$SERIAL_LOG" 2>/dev/null || echo "0")
-CRASH_COUNT_SERIAL="${CRASH_COUNT_SERIAL%%[^0-9]*}"
-CRASH_COUNT=$((CRASH_COUNT_PARALLEL + CRASH_COUNT_SERIAL))
+FAILED_TESTS=()
+[[ -f "$FAILED_TESTS_FILE" && -s "$FAILED_TESTS_FILE" ]] && \
+    while IFS= read -r line; do [[ -n "$line" ]] && FAILED_TESTS+=("$line"); done < "$FAILED_TESTS_FILE"
 
-# Extract crash locations if any
-if [ "$CRASH_COUNT" -gt 0 ]; then
-    echo ""
-    echo "=============================================="
-    echo "Extracting crash locations..."
-    echo "=============================================="
-    
-    # Extract crash locations from BOTH logs
-    CRASH_LOCATIONS_PARALLEL=""
-    CRASH_LOCATIONS_SERIAL=""
-    
-    if [ "$CRASH_COUNT_PARALLEL" -gt 0 ]; then
-        CRASH_LOCATIONS_PARALLEL=$(grep -A 30 "Fatal Python error" "$PARALLEL_LOG" | \
-            grep -E "tests/.*\.py.*line [0-9]+ in " | \
-            sed 's/.*File "\([^"]*\)", line \([0-9]*\) in \(.*\)/\1:\2  \3/' | \
-            sort -u)
-    fi
-    
-    if [ "$CRASH_COUNT_SERIAL" -gt 0 ]; then
-        CRASH_LOCATIONS_SERIAL=$(grep -A 30 "Fatal Python error" "$SERIAL_LOG" | \
-            grep -E "tests/.*\.py.*line [0-9]+ in " | \
-            sed 's/.*File "\([^"]*\)", line \([0-9]*\) in \(.*\)/\1:\2  \3/' | \
-            sort -u)
-    fi
-    
-    # Combine and dedupe
-    CRASH_LOCATIONS=$(echo -e "${CRASH_LOCATIONS_PARALLEL}\n${CRASH_LOCATIONS_SERIAL}" | grep -v '^$' | sort -u)
-    
-    # Create crash report
-    {
-        echo "# Crash Report - $TIMESTAMP"
-        echo "# Detected $CRASH_COUNT total crashes ($CRASH_COUNT_PARALLEL parallel, $CRASH_COUNT_SERIAL serial)"
-        echo "#"
-        echo "# Root Cause: ROOT gInterpreter is not thread-safe."
-        echo "# Parallel crashes: Multiple workers call ROOT simultaneously."
-        echo "# Serial crashes: Test or teardown triggers ROOT interpreter issue."
-        echo "#"
-        echo "# Fix for parallel: Mark tests with @pytest.mark.root_serial"
-        echo "# Fix for serial: Investigate specific test - may need xfail or code fix"
-        echo "#"
-        echo "# Crash Locations:"
-        echo "# ================"
-        if [ -n "$CRASH_LOCATIONS_PARALLEL" ]; then
-            echo "# From parallel tests:"
-            echo "$CRASH_LOCATIONS_PARALLEL"
-        fi
-        if [ -n "$CRASH_LOCATIONS_SERIAL" ]; then
-            echo "# From serial tests:"
-            echo "$CRASH_LOCATIONS_SERIAL"
-        fi
-        echo ""
-        echo "# Unique files with crashes:"
-        echo "# =========================="
-        echo "$CRASH_LOCATIONS" | sed 's/:.*//g' | sort -u
-    } > "$CRASH_LOG"
-    
-    # Display crash summary
-    echo ""
-    echo "Crash locations found:"
-    if [ -n "$CRASH_LOCATIONS_PARALLEL" ]; then
-        echo "  [PARALLEL]:"
-        echo "$CRASH_LOCATIONS_PARALLEL" | sed 's/^/    /'
-    fi
-    if [ -n "$CRASH_LOCATIONS_SERIAL" ]; then
-        echo "  [SERIAL]:"
-        echo "$CRASH_LOCATIONS_SERIAL" | sed 's/^/    /'
-    fi
-    echo ""
-    echo "Full crash report: $CRASH_LOG"
+cat > "$SUMMARY_FILE" << EOF
+================================================================================
+RDataFrameDSL Test Summary
+================================================================================
+Date: $(date '+%Y-%m-%d %H:%M:%S')
+Timestamp: ${TIMESTAMP}
+
+RESULTS:
+  PASSED:  ${TOTAL_PASSED}
+  FAILED:  ${TOTAL_FAILED}
+  SKIPPED: ${TOTAL_SKIPPED}
+
+Phase 1 (Parallel/non-ROOT): ${PARALLEL_PASSED} passed, ${PARALLEL_FAILED} failed
+Phase 2 (Serial/ROOT):       ${SERIAL_PASSED} passed, ${SERIAL_FAILED} failed
+EOF
+
+if [[ ${#FAILED_TESTS[@]} -gt 0 ]]; then
+    echo "" >> "$SUMMARY_FILE"
+    echo "FAILED TESTS:" >> "$SUMMARY_FILE"
+    for t in "${FAILED_TESTS[@]}"; do echo "  - $t" >> "$SUMMARY_FILE"; done
 fi
+echo "" >> "$SUMMARY_FILE"
+echo "Logs:" >> "$SUMMARY_FILE"
+echo "  Parallel: $PARALLEL_LOG" >> "$SUMMARY_FILE"
+echo "  Serial:   $SERIAL_LOG" >> "$SUMMARY_FILE"
+echo "  Summary:  $SUMMARY_FILE" >> "$SUMMARY_FILE"
 
-echo ""
-echo "=============================================="
-echo "=== Summary ==="
-echo "=============================================="
-echo "Phase 1 (non-ROOT): $PARALLEL_PASSED passed (exit: $PARALLEL_EXIT)"
-echo "Phase 2 (ROOT):     $SERIAL_PASSED passed (exit: $SERIAL_EXIT)"
-echo "Total:              $TOTAL_PASSED passed"
-echo ""
-echo "Logs: $PARALLEL_LOG"
-echo "      $SERIAL_LOG"
+print_header "TEST RESULTS SUMMARY"
 
-# Phase 3: Generate Capability Matrix from test results
-echo ""
-echo "=============================================="
-echo "Phase 3: Generating Capability Matrix"
-echo "=============================================="
-if [ -f "scripts/generate_capability_matrix.py" ]; then
-    python scripts/generate_capability_matrix.py \
-        --from-reports "$PARALLEL_JSON" "$SERIAL_JSON_DIR"/*.json \
-        --output docs/CAPABILITY_MATRIX.md
-    if [ $? -eq 0 ]; then
-        echo "✅ Capability matrix updated: docs/CAPABILITY_MATRIX.md"
-    else
-        echo "⚠️  Capability matrix generation failed (non-fatal)"
+if [[ $TOTAL_FAILED -gt 0 ]]; then
+    echo ""; echo "${RED}${BOLD}❌ FAILURES DETECTED${RESET}"; echo ""
+    echo "  ${BOLD}PASSED:${RESET}  ${GREEN}${TOTAL_PASSED}${RESET}"
+    echo "  ${BOLD}FAILED:${RESET}  ${RED}${TOTAL_FAILED}${RESET}"
+    echo "  ${BOLD}SKIPPED:${RESET} ${YELLOW}${TOTAL_SKIPPED}${RESET}"; echo ""
+    if [[ ${#FAILED_TESTS[@]} -gt 0 ]]; then
+        echo "${RED}${BOLD}FAILED TESTS:${RESET}"
+        for t in "${FAILED_TESTS[@]}"; do echo "  ${RED}- $t${RESET}"; done
+        echo ""
     fi
 else
-    echo "⚠️  scripts/generate_capability_matrix.py not found, skipping matrix generation"
+    echo ""; echo "${GREEN}${BOLD}✅ ALL TESTS PASSED${RESET}"; echo ""
+    echo "  ${BOLD}PASSED:${RESET}  ${GREEN}${TOTAL_PASSED}${RESET}"
+    echo "  ${BOLD}SKIPPED:${RESET} ${YELLOW}${TOTAL_SKIPPED}${RESET}"; echo ""
 fi
 
-if [ "$CRASH_COUNT" -gt 0 ]; then
-    echo ""
-    echo "⚠️  WARNING: $CRASH_COUNT crashes detected ($CRASH_COUNT_PARALLEL parallel, $CRASH_COUNT_SERIAL serial)"
-    echo "   Crash report: $CRASH_LOG"
-    if [ "$CRASH_COUNT_PARALLEL" -gt 0 ]; then
-        echo "   Parallel fix: Add 'pytestmark = pytest.mark.root_serial' to affected files"
-    fi
-    if [ "$CRASH_COUNT_SERIAL" -gt 0 ]; then
-        echo "   Serial fix: Investigate test - may need xfail or ROOT cleanup fix"
+echo "Phase 1 (non-ROOT): ${PARALLEL_PASSED} passed, ${PARALLEL_FAILED} failed (exit: ${PARALLEL_EXIT})"
+echo "Phase 2 (ROOT):     ${SERIAL_PASSED} passed, ${SERIAL_FAILED} failed (exit: ${SERIAL_EXIT})"
+echo ""; echo "Summary saved to: ${BOLD}${SUMMARY_FILE}${RESET}"
+
+CRASH_COUNT=0
+[[ -f "$CRASH_LOG" ]] && CRASH_COUNT=$(wc -l < "$CRASH_LOG" | tr -d ' ')
+[[ "$CRASH_COUNT" -gt 0 ]] && echo "" && echo "${YELLOW}⚠️  WARNING: ${CRASH_COUNT} crashes detected${RESET}" && echo "   See: $CRASH_LOG"
+
+# =============================================================================
+# Phase 3: Capability Matrix
+# =============================================================================
+
+if [[ "$1" != "--quick" ]]; then
+    print_header "Phase 3: Generating Capability Matrix"
+    
+    MATRIX_SCRIPT=""
+    for c in "scripts/generate_capability_matrix.py" "tests/scripts/generate_capability_matrix.py"; do
+        [[ -f "$c" ]] && MATRIX_SCRIPT="$c" && break
+    done
+    
+    if [[ -n "$MATRIX_SCRIPT" ]]; then
+        echo "Using: $MATRIX_SCRIPT"
+        # FIX: Use --from-reports with glob patterns
+        python3 "$MATRIX_SCRIPT" \
+            --from-reports "$PARALLEL_JSON_DIR"/*.json "$SERIAL_JSON_DIR"/*.json \
+            2>&1 || echo "⚠️  Capability matrix generation had errors"
+    else
+        echo "⚠️  generate_capability_matrix.py not found"
     fi
 fi
 
-# Phase 4: Check for orphaned root_serial tests
-echo ""
-echo "=============================================="
-echo "Phase 4: Checking for orphaned root_serial tests"
-echo "=============================================="
-ORPHANED_COUNT=0
-for f in tests/test_*.py; do
-    if grep -q "root_serial" "$f" 2>/dev/null; then
-        # Check if file is in ROOT_TEST_FILES
-        FOUND=0
-        for root_file in "${ROOT_TEST_FILES[@]}"; do
-            if [ "$root_file" = "$f" ]; then
-                FOUND=1
-                break
-            fi
+# =============================================================================
+# Phase 4: Orphaned root_serial check
+# =============================================================================
+
+print_header "Phase 4: Checking for orphaned root_serial tests"
+orphaned=0
+for tf in tests/test_*.py; do
+    [[ -f "$tf" ]] || continue
+    if grep -q "root_serial" "$tf" 2>/dev/null; then
+        bn=$(basename "$tf"); found=0
+        for rf in "${ROOT_TEST_FILES[@]}"; do
+            [[ "$(basename "$rf")" == "$bn" ]] && found=1 && break
         done
-        if [ $FOUND -eq 0 ]; then
-            echo "⚠️  ORPHANED: $f has root_serial tests but is not in ROOT_TEST_FILES!"
-            ORPHANED_COUNT=$((ORPHANED_COUNT + 1))
-        fi
+        [[ $found -eq 0 ]] && echo "⚠️  ORPHANED: $tf" && orphaned=$((orphaned + 1))
     fi
 done
-if [ $ORPHANED_COUNT -eq 0 ]; then
-    echo "✅ No orphaned root_serial tests found"
-else
-    echo ""
-    echo "⚠️  Found $ORPHANED_COUNT orphaned test file(s)"
-    echo "   Add them to ROOT_TEST_FILES in run_tests.sh"
-fi
+[[ $orphaned -eq 0 ]] && echo "✅ No orphaned root_serial tests found"
 
-# Note: AutoDict_* files are intentionally NOT cleaned up.
-# They are cached ROOT dictionaries needed for subsequent runs.
-# Cleaning them causes race conditions in parallel test execution.
+# =============================================================================
+# Final Status
+# =============================================================================
 
-echo ""
-echo "NOTE: Exploration tests excluded. Run separately:"
-echo "      ./tests/exploration/run_exploration.sh"
-echo ""
+print_header "Final Status"
+echo "Summary file: $SUMMARY_FILE"; echo ""; cat "$SUMMARY_FILE"; echo ""
+echo "NOTE: Exploration tests excluded. Run: ./tests/exploration/run_exploration.sh"; echo ""
 
-if [ $PARALLEL_EXIT -eq 0 ] && [ $SERIAL_EXIT -eq 0 ]; then
-    echo "✅ All tests passed"
-    exit 0
-else
-    echo "❌ Some tests failed"
-    exit 1
-fi
+[[ $TOTAL_FAILED -gt 0 ]] && echo "${RED}${BOLD}❌ Some tests failed${RESET}" && exit 1
+echo "${GREEN}${BOLD}✅ All tests passed${RESET}" && exit 0
