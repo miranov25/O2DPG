@@ -807,6 +807,16 @@ class DSLCompiler:
         # Phase 11.1: Preprocess C++ :: syntax to Python dot syntax
         preprocessed = self._preprocess_expression(expression)
         logger.debug(f"[compile] Preprocessed: {preprocessed}")
+
+        # Phase 13.6.G+: Resolve aliases in expression BEFORE IR compilation
+        # This makes define() consistent with to_pandas() and draw()
+        deps = self._extract_dependencies(preprocessed)
+        aliases_in_expr = [d for d in deps if d in self._aliases]
+        
+        if aliases_in_expr:
+            logger.debug(f"[compile] Resolving aliases in expression: {aliases_in_expr}")
+            self._materialize_aliases_for_define(aliases_in_expr)
+        
         
         # Parse and generate (Phase 13.6.D+: pass method_signatures)
         builder = IRBuilder(
@@ -1309,12 +1319,121 @@ class DSLCompiler:
         for name in needed:
             compile_with_deps(name)
         
-        # Remove materialized aliases from pool
+        # Remove materialized aliases from pool (if still present)
+        # Note: Some aliases may have been removed by _materialize_aliases_for_define
         for name in compiled:
-            del self._aliases[name]
+            if name in self._aliases:
+                del self._aliases[name]
         
         elapsed = time.perf_counter() - start_time
         logger.info(f"[alias] Compiled {len(compiled)} aliases in {elapsed:.3f}s")
+
+    def _materialize_aliases_for_define(self, aliases: List[str]) -> None:
+        """
+        Materialize aliases needed for a define() call.
+        
+        Phase 13.6.G+: Called by _define_impl() to resolve aliases before IR build.
+        
+        Unlike _materialize_aliases(), this doesn't require an RDF because
+        define() may be called before any RDataFrame is available.
+        
+        Args:
+            aliases: List of alias names to materialize
+        """
+        compiled = set()
+        
+        def compile_with_deps(name: str):
+            if name in compiled:
+                return
+            if name not in self._aliases:
+                return
+            
+            # Get dependencies
+            deps = self._extract_dependencies(self._aliases[name])
+            
+            # Compile dependencies first (that are also aliases)
+            for dep in deps:
+                if dep in self._aliases:
+                    compile_with_deps(dep)
+            
+            # Now compile this alias
+            expr = self._aliases[name]
+            logger.debug(f"[compile] Materializing alias for define(): {name} = {expr}")
+            
+            # Compile the alias expression
+            self._compile_alias_to_define(name, expr)
+            
+            compiled.add(name)
+            
+            # Track that this alias has been materialized
+            self._defined_aliases[name] = expr
+        
+        for name in aliases:
+            compile_with_deps(name)
+        
+        # Remove materialized aliases from pool
+        for name in compiled:
+            if name in self._aliases:
+                del self._aliases[name]
+    
+    def _compile_alias_to_define(self, name: str, expression: str) -> None:
+        """
+        Compile an alias expression and add to schema/definitions.
+        
+        Phase 13.6.G+: Helper for _materialize_aliases_for_define().
+        
+        This is similar to define() but:
+        - Doesn't check redefinition policy (aliases should always compile)
+        - Recursively resolves nested aliases
+        """
+        # Preprocess
+        preprocessed = self._preprocess_expression(expression)
+        
+        # Check if this expression ALSO has aliases (recursive case)
+        deps = self._extract_dependencies(preprocessed)
+        nested_aliases = [d for d in deps if d in self._aliases]
+        
+        if nested_aliases:
+            # Recursive materialization
+            self._materialize_aliases_for_define(nested_aliases)
+        
+        # Check for C-array expression
+        if self._is_carray_expression(expression):
+            self._define_carray(name, expression, dtype=None)
+            return
+        
+        # Build IR
+        builder = IRBuilder(
+            self._inferrer,
+            error_collector=None,
+            method_signatures=self._method_signatures
+        )
+        self._register_custom_functions_with_builder(builder)
+        
+        ir = builder.build(preprocessed)
+        
+        # Generate function
+        unique_name = f"{name}_{self._unique_id}"
+        func = self._generator.generate(ir, unique_name)
+        func.dsl_expression = expression
+        func.column_name = name
+        
+        # Add to library and definitions
+        self.library.add(func)
+        self._functions[name] = func
+        self._definitions.append((name, func))
+        
+        # Track for redefinition policy
+        self._expressions_raw[name] = expression
+        self._expressions_norm[name] = self._normalize_expr(expression)
+        self._dirty[name] = True
+        
+        # Update schema AND rebuild inferrer so subsequent expressions can reference this
+        # This is critical - without rebuilding inferrer, IRBuilder won't recognize the new column
+        self._register_alias_type(name, ir, dtype=None)
+        
+        logger.debug(f"[compile] Alias materialized: {name} -> {ir.dtype}")
+
     
     def _define_safe(self, name: str, expression: str) -> None:
         """

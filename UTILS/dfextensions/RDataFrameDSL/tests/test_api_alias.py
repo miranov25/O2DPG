@@ -378,3 +378,130 @@ class TestEmptySchemaWorkflow:
         # Should fail because px, py not in schema
         error = exc_info.value
         assert "px" in str(error).lower() or "unknown" in str(error).lower()
+# =============================================================================
+# ADDITION to tests/test_api_alias.py
+# =============================================================================
+# Add this class to test_api_alias.py after TestAliasIntegration
+#
+# Phase: 13.6.G+
+# Date: 2026-01-27
+#
+# BUG: define() does not resolve aliases
+# - to_pandas(columns=['alias'])  ✅ works
+# - draw("alias")                 ✅ works
+# - define("x", "alias")          ❌ FAILS
+#
+# Priority: P0 - Basic API consistency
+# =============================================================================
+
+
+# =============================================================================
+# Test Class: define() should resolve aliases (BUG FIX NEEDED)
+# =============================================================================
+
+class TestDefineAliasResolution:
+    """
+    Tests for define() alias resolution.
+    
+    BUG: define("x", "alias") fails with "Unknown variable 'alias'"
+    
+    These tests document expected behavior and will FAIL until bug is fixed.
+    """
+    
+    @pytest.mark.feature("api_define")
+    @pytest.mark.feature("api_alias")
+    @pytest.mark.p0
+    @pytest.mark.root_serial
+    def test_define_resolves_simple_alias(self, nd_2d_rdf, nd_2d_schema):
+        """
+        define() must resolve aliases - basic consistency requirement.
+        
+        BUG: Currently fails with IRError: "Unknown variable 'my_alias'"
+        
+        Alias resolution must work consistently across:
+        - to_pandas(columns=['alias'])  ✅ works
+        - draw("alias")                 ✅ works
+        - define("x", "alias")          ❌ FAILS (BUG)
+        """
+        dsl = DSLCompiler(nd_2d_schema)
+        dsl.alias("my_alias", "track_pt[0]")
+        
+        # define() should resolve alias
+        dsl.define("final", "my_alias")
+        
+        rdf = dsl.apply(nd_2d_rdf)
+        data = rdf.AsNumpy(["final"])
+        
+        assert "final" in data
+        assert "my_alias" in dsl.schema  # Alias should be materialized
+    
+    @pytest.mark.feature("api_define")
+    @pytest.mark.feature("api_alias")
+    @pytest.mark.p0
+    @pytest.mark.root_serial
+    def test_define_resolves_chained_alias(self, nd_2d_rdf, nd_2d_schema):
+        """
+        define() must resolve chained aliases.
+        
+        Chain: c → b → a → track_pt[0]
+        """
+        dsl = DSLCompiler(nd_2d_schema)
+        dsl.alias("a", "track_pt[0]")
+        dsl.alias("b", "a + 1")
+        dsl.alias("c", "b + 1")
+        
+        # Should resolve c → b → a → track_pt[0]
+        dsl.define("result", "c")
+        
+        rdf = dsl.apply(nd_2d_rdf)
+        data = rdf.AsNumpy(["result"])
+        
+        assert "result" in data
+        # All aliases in chain should be materialized
+        assert "a" in dsl.schema
+        assert "b" in dsl.schema
+        assert "c" in dsl.schema
+    
+    @pytest.mark.feature("api_define")
+    @pytest.mark.feature("api_alias")
+    @pytest.mark.p0
+    @pytest.mark.root_serial
+    def test_define_with_alias_in_expression(self, nd_2d_rdf, nd_2d_schema):
+        """
+        define() should resolve aliases used within expressions.
+        
+        Example: define("x", "my_alias * 2")
+        """
+        dsl = DSLCompiler(nd_2d_schema)
+        dsl.alias("pt0", "track_pt[0]")
+        
+        # Alias used in expression
+        dsl.define("double_pt", "pt0 * 2")
+        
+        rdf = dsl.apply(nd_2d_rdf)
+        data = rdf.AsNumpy(["double_pt"])
+        
+        assert "double_pt" in data
+        assert "pt0" in dsl.schema
+    
+    @pytest.mark.feature("api_define")
+    @pytest.mark.feature("api_alias")
+    @pytest.mark.p1
+    @pytest.mark.root_serial
+    def test_define_with_multiple_aliases(self, nd_2d_rdf, nd_2d_schema):
+        """
+        define() should resolve multiple aliases in one expression.
+        """
+        dsl = DSLCompiler(nd_2d_schema)
+        dsl.alias("pt0", "track_pt[0]")
+        dsl.alias("eta0", "track_eta[0]")
+        
+        # Multiple aliases in expression
+        dsl.define("combined", "pt0 + eta0")
+        
+        rdf = dsl.apply(nd_2d_rdf)
+        data = rdf.AsNumpy(["combined"])
+        
+        assert "combined" in data
+        assert "pt0" in dsl.schema
+        assert "eta0" in dsl.schema
