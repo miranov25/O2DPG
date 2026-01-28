@@ -39,7 +39,7 @@ class TestHelixPhysics:
             eta=0.0,     # perpendicular
             phi=0.0,     # along x
             charge=1,    # positive
-            r=0.1,       # 10 cm layer
+            r=10.0,      # 10 cm layer
         )
         
         assert isinstance(x, float)
@@ -50,7 +50,7 @@ class TestHelixPhysics:
         """Cluster position has correct radius."""
         from tests.generators.toy_nd import helix_position
         
-        r_layer = 0.1  # 10 cm
+        r_layer = 10.0  # 10 cm
         
         x, y, z = helix_position(
             pt=2.0, eta=0.5, phi=0.7, charge=1, r=r_layer
@@ -64,7 +64,7 @@ class TestHelixPhysics:
         """Positive and negative charges curve opposite directions."""
         from tests.generators.toy_nd import helix_position
         
-        params = dict(pt=1.0, eta=0.0, phi=0.0, r=0.1)
+        params = dict(pt=1.0, eta=0.0, phi=0.0, r=10.0)  # 10 cm
         
         x_pos, y_pos, _ = helix_position(charge=+1, **params)
         x_neg, y_neg, _ = helix_position(charge=-1, **params)
@@ -77,7 +77,7 @@ class TestHelixPhysics:
         """High pT tracks are nearly straight."""
         from tests.generators.toy_nd import helix_position
         
-        r_layer = 0.1
+        r_layer = 10.0  # 10 cm
         
         # Very high pT = large helix radius = nearly straight
         x, y, z = helix_position(
@@ -89,7 +89,7 @@ class TestHelixPhysics:
         )
         
         # For phi=0, straight track would have y ≈ 0
-        assert abs(y) < 0.01, f"High pT track should be nearly straight, got y={y}"
+        assert abs(y) < 1.0, f"High pT track should be nearly straight, got y={y} cm"
 
 
 class TestVectorizedHelix:
@@ -106,7 +106,7 @@ class TestVectorizedHelix:
         eta = np.array([0.0, 0.5, -0.3, 0.8, -0.5])
         phi = np.array([0.0, 0.5, 1.0, -0.5, 2.0])
         charge = np.array([1, -1, 1, 1, -1])
-        layers = np.array([0.023, 0.031, 0.039, 0.076, 0.120, 0.180, 0.240])
+        layers = np.array([2.3, 3.1, 3.9, 7.6, 15.0, 24.0, 40.0])  # ITS layers [cm]
         
         x, y, z = compute_helix_positions_vectorized(pt, eta, phi, charge, layers)
         
@@ -122,7 +122,7 @@ class TestVectorizedHelix:
         eta = np.array([0.3])
         phi = np.array([0.7])
         charge = np.array([1])
-        layers = np.array([0.1, 0.2])
+        layers = np.array([10.0, 20.0])  # 10 cm, 20 cm
         
         # Vectorized
         x_vec, y_vec, z_vec = compute_helix_positions_vectorized(pt, eta, phi, charge, layers)
@@ -228,7 +228,7 @@ class TestHelixGenerator:
         
         # Position should be on first detector layer (~2.3 cm)
         r = np.sqrt(x**2 + y**2)
-        assert 0.02 < r < 0.03, f"First cluster should be at ITS layer 1, got r={r:.4f}m"
+        assert 2.0 < r < 3.0, f"First cluster should be at ITS layer 1 (~2.3 cm), got r={r:.2f} cm"
         
         os.unlink(filename)
     
@@ -262,7 +262,7 @@ class TestHelixGenerator:
         # For a curved track, y should not be constant
         # (straight track would have constant y if phi=0)
         y_range = max(y_vals) - min(y_vals)
-        assert y_range > 0.01, f"Track should be curved, got y_range={y_range:.4f}"
+        assert y_range > 1.0, f"Track should be curved, got y_range={y_range:.2f} cm"
         
         os.unlink(filename)
     

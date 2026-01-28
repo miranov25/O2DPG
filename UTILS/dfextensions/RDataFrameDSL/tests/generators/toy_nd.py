@@ -302,11 +302,39 @@ ND_3D_SCHEMA = {
 
 CUSTOM_CLASS_SCHEMA = {
     'event_id': 'long',
-    'tracks': 'RVec<ToyTrack>',
-    # ToyTrack methods: .Pt(), .pt(), .getPt(), .px(), .eta(), .phi()
-    #                   .clusters(), .nClusters(), .cluster(i), .totalCharge()
-    # ToyCluster methods: .getQ(), .GetQ(), .getX(), .getY(), .getZ()
-    #                     .r(), .r3d(), .phi(), .charge()
+    'tracks': 'ROOT::VecOps::RVec<ToyTrack>',
+    
+    # Phase 13.6.G+: Method signatures for DSL type inference
+    '_methods': {
+        'ToyTrack': {
+            'Pt': 'double',
+            'pt': 'double',
+            'getPt': 'double',
+            'GetPt': 'double',
+            'px': 'double',
+            'py': 'double',
+            'pz': 'double',
+            'eta': 'double',
+            'Eta': 'double',
+            'phi': 'double',
+            'Phi': 'double',
+            'nClusters': 'int',
+            'GetNClusters': 'int',
+            'totalCharge': 'double',
+            'clusters': 'ROOT::VecOps::RVec<ToyCluster>',
+        },
+        'ToyCluster': {
+            'getQ': 'double',
+            'GetQ': 'double',
+            'getX': 'double',
+            'getY': 'double',
+            'getZ': 'double',
+            'GetX': 'double',
+            'r': 'double',
+            'phi': 'double',
+            'charge': 'double',
+        },
+    },
 }
 
 
@@ -1157,9 +1185,23 @@ public:
     Double_t mass() const { return fMomentum.M(); }
     Double_t M() const { return fMomentum.M(); }
     
-    // PDG code
+    // PDG code and charge
     Int_t pdgCode() const { return fPdgCode; }
     Int_t GetPdgCode() const { return fPdgCode; }
+    
+    // Phase 13.6.G+: Charge from PDG code (pions ±1, helium ±2)
+    Int_t charge() const {
+        if (TMath::Abs(fPdgCode) == 1000020040) return (fPdgCode > 0) ? 2 : -2;  // He4
+        return (fPdgCode > 0) ? 1 : -1;  // Default: pions and others
+    }
+    Int_t Charge() const { return charge(); }
+    Int_t getCharge() const { return charge(); }
+    
+    // Phase 13.6.G+: Signed curvature q/pT [1/GeV] - key for track visualization
+    Double_t qpt() const { return charge() / fMomentum.Pt(); }
+    Double_t Qpt() const { return qpt(); }
+    Double_t getQpt() const { return qpt(); }
+    Double_t GetQpt() const { return qpt(); }
     
     // Cluster access
     const ROOT::RVec<ToyCluster>& clusters() const { return fClusters; }
@@ -1215,6 +1257,17 @@ struct ToyTrack {
     Double_t eta() const { return fMomentum.Eta(); }
     Double_t phi() const { return fMomentum.Phi(); }
     
+    // Phase 13.6.G+: Charge from PDG code
+    Int_t charge() const {
+        if (TMath::Abs(fPdgCode) == 1000020040) return (fPdgCode > 0) ? 2 : -2;
+        return (fPdgCode > 0) ? 1 : -1;
+    }
+    Int_t getCharge() const { return charge(); }
+    
+    // Phase 13.6.G+: Signed curvature q/pT [1/GeV]
+    Double_t qpt() const { return charge() / fMomentum.Pt(); }
+    Double_t getQpt() const { return qpt(); }
+    
     const ROOT::RVec<ToyCluster>& clusters() const { return fClusters; }
     Int_t nClusters() const { return fClusters.size(); }
     
@@ -1235,41 +1288,22 @@ struct ToyTrack {
 _custom_classes_registered = False
 _using_simple_classes = False
 
+# =============================================================================
+# Phase 13.6.G+: Consolidated ToyClasses Library
+# =============================================================================
+# 
+# This replaces scattered dictionary generation with ONE shared library.
+# The source is written to tests/generators/ToyClasses.C and compiled once.
+# Result: ToyClasses_C.so (cached, not regenerated every run)
+# =============================================================================
 
-def register_custom_classes(use_simple: bool = False) -> bool:
-    """
-    Register ToyCluster and ToyTrack classes with ROOT.
-    
-    What: Declares C++ classes and generates dictionaries for TTree I/O
-    Why:  Required before using custom class branches
-    Who:  Called by generate_custom_class_root() and custom_class_rdf fixture
-    
-    Phase 13.6.D++++: Use GenerateDictionary() instead of just #pragma link.
-    The #pragma link statements are NOT sufficient for TTree I/O with 
-    std::vector<CustomClass> - we need actual compiled dictionaries.
-    
-    Returns
-    -------
-    bool
-        True if using simple classes, False if using full classes
-    """
-    global _custom_classes_registered, _using_simple_classes
-    
-    if _custom_classes_registered:
-        return _using_simple_classes
-    
-    import ROOT
-    import tempfile
-    import os
-    
-    # Phase 13.6.D++++: Write classes to temporary header file for GenerateDictionary
-    # GenerateDictionary requires a header file path, not inline declarations
-    
-    # Use simple classes (struct without ClassDef) - they work better with
-    # runtime dictionary generation
-    header_content = '''
-#ifndef TOYCLASSES_RUNTIME_H
-#define TOYCLASSES_RUNTIME_H
+TOYCLASSES_SOURCE = '''
+// =============================================================================
+// ToyClasses.C - Consolidated Dictionary for RDataFrameDSL Test Classes
+// =============================================================================
+// Phase 13.6.G+: Single shared library for all ToyTrack/ToyCluster tests.
+// Generated by toy_nd.py - DO NOT EDIT MANUALLY
+// =============================================================================
 
 #include "TObject.h"
 #include "TLorentzVector.h"
@@ -1277,6 +1311,9 @@ def register_custom_classes(use_simple: bool = False) -> bool:
 #include "ROOT/RVec.hxx"
 #include <vector>
 
+// =============================================================================
+// ToyCluster - Represents a detector cluster (hit)
+// =============================================================================
 struct ToyCluster {
     Double_t fQ = 0, fX = 0, fY = 0, fZ = 0;
     
@@ -1295,6 +1332,9 @@ struct ToyCluster {
     Double_t charge() const { return fQ; }
 };
 
+// =============================================================================
+// ToyTrack - Represents a particle track with clusters
+// =============================================================================
 struct ToyTrack {
     TLorentzVector fMomentum;
     std::vector<ToyCluster> fClusters;
@@ -1315,6 +1355,21 @@ struct ToyTrack {
     Double_t Eta() const { return fMomentum.Eta(); }
     Double_t phi() const { return fMomentum.Phi(); }
     Double_t Phi() const { return fMomentum.Phi(); }
+    
+    // Phase 13.6.G+: Charge from PDG code (pions ±1, helium ±2)
+    Int_t charge() const {
+        if (TMath::Abs(fPdgCode) == 1000020040) return (fPdgCode > 0) ? 2 : -2;
+        return (fPdgCode > 0) ? 1 : -1;
+    }
+    Int_t Charge() const { return charge(); }
+    Int_t getCharge() const { return charge(); }
+    Int_t GetCharge() const { return charge(); }
+    
+    // Phase 13.6.G+: Signed curvature q/pT [1/GeV] - key for track visualization
+    Double_t qpt() const { return charge() / fMomentum.Pt(); }
+    Double_t Qpt() const { return qpt(); }
+    Double_t getQpt() const { return qpt(); }
+    Double_t GetQpt() const { return qpt(); }
     
     ROOT::RVec<ToyCluster> clusters() const { 
         return ROOT::RVec<ToyCluster>(fClusters.begin(), fClusters.end()); 
@@ -1337,28 +1392,123 @@ struct ToyTrack {
     }
 };
 
+// =============================================================================
+// Explicit template instantiations - Required for JIT to find symbols
+// =============================================================================
+// These force the compiler to generate all template methods, avoiding
+// "undefined inline function" warnings in ROOT JIT.
+
+template class ROOT::VecOps::RVec<ToyCluster>;
+template class ROOT::VecOps::RVec<ToyTrack>;
+template class ROOT::VecOps::RVec<ROOT::VecOps::RVec<ToyCluster>>;
+template class std::vector<ToyCluster>;
+template class std::vector<ToyTrack>;
+
+// =============================================================================
+// ROOT Dictionary Pragmas - Required for RVec types to work properly
+// =============================================================================
+#ifdef __CLING__
+
+#pragma link C++ struct ToyCluster+;
+#pragma link C++ struct ToyTrack+;
+#pragma link C++ class std::vector<ToyCluster>+;
+#pragma link C++ class std::vector<ToyTrack>+;
+#pragma link C++ class ROOT::VecOps::RVec<ToyCluster>+;
+#pragma link C++ class ROOT::VecOps::RVec<ToyTrack>+;
+#pragma link C++ class ROOT::VecOps::RVec<ROOT::VecOps::RVec<ToyCluster>>+;
+
 #endif
 '''
+
+
+def register_custom_classes(use_simple: bool = False, force_rebuild: bool = False) -> bool:
+    """
+    Register ToyCluster and ToyTrack classes with ROOT.
     
-    # Write to temporary header file
-    # Use a fixed location in temp directory to allow reuse
-    header_dir = tempfile.gettempdir()
-    header_path = os.path.join(header_dir, 'ToyClasses_runtime.h')
+    Phase 13.6.G+: Uses consolidated shared library instead of scattered
+    dictionary generation. Creates ONE ToyClasses_C.so file that is cached.
     
-    with open(header_path, 'w') as f:
-        f.write(header_content)
+    Automatically detects when TOYCLASSES_SOURCE changes and rebuilds.
     
-    # Include the header first
-    ROOT.gInterpreter.ProcessLine(f'#include "{header_path}"')
+    What: Declares C++ classes and generates dictionaries for TTree I/O
+    Why:  Required before using custom class branches
+    Who:  Called by generate_custom_class_root() and custom_class_rdf fixture
     
-    # Generate dictionaries using GenerateDictionary
-    # This creates actual compiled dictionaries, not just pragma registrations
-    ROOT.gInterpreter.GenerateDictionary("ToyCluster", header_path)
-    ROOT.gInterpreter.GenerateDictionary("ToyTrack", header_path)
-    ROOT.gInterpreter.GenerateDictionary("vector<ToyCluster>", f"{header_path};vector")
-    ROOT.gInterpreter.GenerateDictionary("vector<ToyTrack>", f"{header_path};vector")
+    Args:
+        use_simple: Ignored (kept for backward compatibility)
+        force_rebuild: If True, rebuild the library even if .so exists
+        
+    Returns
+    -------
+    bool
+        True (always uses simple struct classes now)
+    """
+    global _custom_classes_registered, _using_simple_classes
     
-    _using_simple_classes = True  # Always use simple struct version now
+    if _custom_classes_registered and not force_rebuild:
+        return _using_simple_classes
+    
+    import ROOT
+    import os
+    import hashlib
+    
+    # Paths - library is stored alongside toy_nd.py
+    generators_dir = Path(__file__).parent
+    source_path = generators_dir / "ToyClasses.C"
+    lib_path = generators_dir / "ToyClasses_C.so"
+    hash_path = generators_dir / "ToyClasses.hash"
+    
+    # Compute hash of current TOYCLASSES_SOURCE
+    current_hash = hashlib.md5(TOYCLASSES_SOURCE.encode()).hexdigest()
+    
+    # Check if rebuild needed
+    rebuild_needed = force_rebuild
+    
+    if not lib_path.exists():
+        rebuild_needed = True
+    else:
+        # Check if source hash changed (detects Python code changes)
+        if hash_path.exists():
+            stored_hash = hash_path.read_text().strip()
+            if stored_hash != current_hash:
+                print(f"[toy_nd] TOYCLASSES_SOURCE changed, rebuilding library...")
+                rebuild_needed = True
+        else:
+            # No hash file, rebuild to be safe
+            rebuild_needed = True
+    
+    # Write source file and hash
+    if rebuild_needed or not source_path.exists():
+        with open(source_path, 'w') as f:
+            f.write(TOYCLASSES_SOURCE)
+        hash_path.write_text(current_hash)
+    
+    # Build or load library
+    if rebuild_needed:
+        # Change to generators directory for cleaner .so output location
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(generators_dir)
+            # Compile with ACLiC (+)
+            result = ROOT.gInterpreter.ProcessLine('.L ToyClasses.C+')
+            if result != 0:
+                raise RuntimeError(f"Failed to compile ToyClasses.C: {result}")
+        finally:
+            os.chdir(old_cwd)
+    else:
+        # Load existing library
+        load_result = ROOT.gSystem.Load(str(lib_path))
+        if load_result < 0:
+            # Library load failed, try rebuilding
+            print(f"[toy_nd] Library load failed, rebuilding...")
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(generators_dir)
+                ROOT.gInterpreter.ProcessLine('.L ToyClasses.C+')
+            finally:
+                os.chdir(old_cwd)
+    
+    _using_simple_classes = True
     _custom_classes_registered = True
     return _using_simple_classes
 
@@ -1460,9 +1610,13 @@ def generate_custom_class_root(
 # =============================================================================
 
 # Detector layer radii in meters
-LAYERS_ITS = np.array([0.023, 0.031, 0.039, 0.076, 0.120, 0.180, 0.240])  # 7 ITS layers
-LAYERS_TPC = np.linspace(0.85, 2.50, 50)  # 50 TPC layers
-LAYERS_ALL = np.concatenate([LAYERS_ITS, LAYERS_TPC])  # 57 total
+# Phase 13.6.G+: Detector layer radii in cm (ALICE convention)
+# ITS: 7 layers from 2.3 cm to 40 cm
+LAYERS_ITS = np.array([2.3, 3.1, 3.9, 7.6, 15.0, 24.0, 40.0])  # 7 ITS layers [cm]
+# TPC: 50 layers from 85 cm to 245 cm
+LAYERS_TPC = np.linspace(85.0, 245.0, 50)  # 50 TPC layers [cm]
+# Full detector: 57 layers total
+LAYERS_ALL = np.concatenate([LAYERS_ITS, LAYERS_TPC])  # 57 total [cm]
 
 
 def helix_position(
@@ -1477,25 +1631,26 @@ def helix_position(
     Calculate (x, y, z) position on helix at detector radius r.
     
     Phase 13.6.G: Single-track helix position calculation.
+    Phase 13.6.G+: Units in cm (ALICE convention).
     
     Args:
         pt: Transverse momentum [GeV/c]
         eta: Pseudorapidity
         phi: Azimuthal angle [rad]
-        charge: Particle charge (+1 or -1)
-        r: Detector layer radius [m]
+        charge: Particle charge (+1 or -1, or +2/-2 for helium)
+        r: Detector layer radius [cm]
         b_field: Magnetic field strength [Tesla]
         
     Returns:
-        (x, y, z) position on helix [m]
+        (x, y, z) position on helix [cm]
         
     Physics:
-        Helix radius: R = pt / (0.3 * B * |q|)  [m, pt in GeV, B in Tesla]
+        Helix radius: R = 100 * pt / (0.3 * B * |q|)  [cm, pt in GeV, B in Tesla]
         Arc angle at radius r: arc = charge * 2 * arcsin(r / (2*R))
         Position: (r*cos(phi + arc/2), r*sin(phi + arc/2), r/tan(theta))
     """
-    # Helix radius in meters
-    R = pt / (0.3 * b_field * abs(charge))
+    # Helix radius in cm
+    R = 100.0 * pt / (0.3 * b_field * abs(charge))
     
     # Polar angle from pseudorapidity
     theta = 2 * np.arctan(np.exp(-eta))
@@ -1504,7 +1659,7 @@ def helix_position(
     sin_arg = min(r / (2 * R), 1.0)
     arc = charge * 2 * np.arcsin(sin_arg)
     
-    # Position on helix
+    # Position on helix [cm]
     x = r * np.cos(phi + arc / 2)
     y = r * np.sin(phi + arc / 2)
     
@@ -1529,6 +1684,7 @@ def compute_helix_positions_vectorized(
     Compute helix positions for all tracks at all layers (vectorized).
     
     Phase 13.6.G: Vectorized helix physics for performance.
+    Phase 13.6.G+: Units changed to cm (ALICE convention).
     Target: < 1s for 1000 events.
     
     Args:
@@ -1536,17 +1692,18 @@ def compute_helix_positions_vectorized(
         eta: (n_tracks,) pseudorapidity
         phi: (n_tracks,) azimuthal angle [rad]
         charge: (n_tracks,) charge (+1 or -1)
-        layers: (n_layers,) detector radii [m]
+        layers: (n_layers,) detector radii [cm]
         b_field: Magnetic field strength [Tesla]
         
     Returns:
-        x, y, z: Arrays of shape (n_tracks, n_layers) with positions [m]
+        x, y, z: Arrays of shape (n_tracks, n_layers) with positions [cm]
     """
     n_tracks = len(pt)
     n_layers = len(layers)
     
-    # Helix radius: R = pt / (0.3 * B * |q|)  [meters]
-    R = pt / (0.3 * b_field * np.abs(charge))  # (n_tracks,)
+    # Helix radius: R = pt / (0.3 * B * |q|) [meters], convert to cm
+    # R[cm] = 100 * pt[GeV] / (0.3 * B[T] * |q|)
+    R = 100.0 * pt / (0.3 * b_field * np.abs(charge))  # (n_tracks,) [cm]
     
     # Polar angle from pseudorapidity
     theta = 2 * np.arctan(np.exp(-eta))  # (n_tracks,)
@@ -1556,13 +1713,13 @@ def compute_helix_positions_vectorized(
     theta = theta[:, np.newaxis]   # (n_tracks, 1)
     phi_2d = phi[:, np.newaxis]    # (n_tracks, 1)
     charge_2d = charge[:, np.newaxis]  # (n_tracks, 1)
-    r = layers[np.newaxis, :]      # (1, n_layers)
+    r = layers[np.newaxis, :]      # (1, n_layers) [cm]
     
     # Arc angle at each layer (clamp for numerical stability)
     sin_arg = np.clip(r / (2 * R), -1.0, 1.0)
     arc = charge_2d * 2 * np.arcsin(sin_arg)  # (n_tracks, n_layers)
     
-    # Helix positions
+    # Helix positions [cm]
     x = r * np.cos(phi_2d + arc / 2)  # (n_tracks, n_layers)
     y = r * np.sin(phi_2d + arc / 2)  # (n_tracks, n_layers)
     z = r / np.tan(theta)              # (n_tracks, n_layers)
@@ -1579,7 +1736,7 @@ def generate_helix_root(
     clusters_per_track: int = None,  # None = all layers
     detector_layers: np.ndarray = None,
     b_field: float = 0.5,
-    pt_range: Tuple[float, float] = (0.5, 5.0),
+    pt_range: Tuple[float, float] = (0.2, 20.0),
     eta_range: Tuple[float, float] = (-1.0, 1.0),
     seed: int = 42,
     filename: str = None,
@@ -1589,6 +1746,7 @@ def generate_helix_root(
     Generate ROOT file with tracks following helix trajectories.
     
     Phase 13.6.G: Physics-realistic test data generator.
+    Phase 13.6.G+: Units in cm (ALICE convention), exponential pT.
     
     Reuses ToyTrack and ToyCluster classes from toy_nd.py.
     Cluster positions are computed on physical helix trajectories,
@@ -1598,14 +1756,24 @@ def generate_helix_root(
         n_events: Number of events to generate
         tracks_per_event: (min, max) tracks per event
         clusters_per_track: Clusters per track (None = all layers)
-        detector_layers: Radii [m] for cluster positions
+        detector_layers: Radii [cm] for cluster positions
                         Default: ITS layers (7) or full detector (57)
         b_field: Magnetic field strength [Tesla]
         pt_range: (min, max) transverse momentum [GeV]
+                  Distribution: exponential with mean 0.4 GeV
         eta_range: (min, max) pseudorapidity
         seed: Random seed for reproducibility
         filename: Output filename (default: tempfile)
-        full_detector: If True, use all 57 layers; else use 7 ITS layers
+        full_detector: If True, use all 57 layers (ITS+TPC); else use 7 ITS layers
+        
+    Detector Layers (ALICE-like, cm):
+        ITS (7 layers):  2.3, 3.1, 3.9, 7.6, 15, 24, 40 cm
+        TPC (50 layers): 85 to 245 cm
+        
+    Track Physics:
+        - pT: Exponential distribution, slope -0.4 GeV (realistic)
+        - Charge: From PDG code (90% pions ±1, 10% helium ±2)
+        - Helix: Curved by B-field, opposite directions for ±charge
         
     Returns:
         Path to generated ROOT file
@@ -1613,17 +1781,17 @@ def generate_helix_root(
     Schema:
         event_id: Long64_t
         event_weight: double
-        vertex_x, vertex_y, vertex_z: double
+        vertex_x, vertex_y, vertex_z: double [cm]
         tracks: std::vector<ToyTrack>
-            └── .Pt(), .eta(), .phi()
+            └── .Pt(), .eta(), .phi(), .pdgCode()
             └── .clusters() → std::vector<ToyCluster>
-                 └── .getX(), .getY(), .getZ() (on helix!)
+                 └── .getX(), .getY(), .getZ() [cm] (on helix!)
                  └── .getQ(), .r(), .phi()
     
     Example:
-        >>> filename = generate_helix_root(n_events=100)
+        >>> filename = generate_helix_root(n_events=100, full_detector=True)
         >>> rdf = ROOT.RDataFrame("Events", filename)
-        >>> # Plot shows curved tracks!
+        >>> # Plot shows curved tracks from 2 cm to 245 cm!
         >>> rdf.Define("x", "...).Define("y", "...").Graph("x", "y")
         
     Performance:
@@ -1683,10 +1851,10 @@ def generate_helix_root(
         event_id[0] = evt
         event_weight[0] = 1.0 + 0.1 * rng.random()  # Small variation
         
-        # Vertex position (small spread around origin)
-        vertex_x[0] = rng.normal(0, 0.001)  # 1mm spread
-        vertex_y[0] = rng.normal(0, 0.001)
-        vertex_z[0] = rng.normal(0, 0.05)   # 5cm spread in z
+        # Vertex position (small spread around origin) [cm]
+        vertex_x[0] = rng.normal(0, 0.01)   # 0.1 mm spread in x
+        vertex_y[0] = rng.normal(0, 0.01)   # 0.1 mm spread in y  
+        vertex_z[0] = rng.normal(0, 5.0)    # 5 cm spread in z
         
         tracks.clear()
         
@@ -1694,10 +1862,24 @@ def generate_helix_root(
         n_trk = rng.integers(tracks_per_event[0], tracks_per_event[1] + 1)
         
         # Generate track parameters (vectorized)
-        pt = rng.uniform(pt_range[0], pt_range[1], n_trk)
+        # Phase 13.6.G+: Exponential pT distribution with mean 0.4 GeV (realistic)
+        # pT = pt_min + exponential(scale=mean) capped at pt_max
+        pt_exp = rng.exponential(scale=0.4, size=n_trk)  # mean = 0.4 GeV
+        pt = np.clip(pt_range[0] + pt_exp, pt_range[0], pt_range[1])
+        
         eta = rng.uniform(eta_range[0], eta_range[1], n_trk)
         phi = rng.uniform(-np.pi, np.pi, n_trk)
-        charge = rng.choice([-1, 1], n_trk)
+        
+        # Charge from PDG: +1 for pion+, -1 for pion-, +-2 for helium (rare)
+        # Use weighted choice: 90% pions, 10% helium
+        pdg_choices = np.array([211, -211, 1000020040, -1000020040])  # pi+, pi-, He4+, He4-
+        pdg_weights = np.array([0.45, 0.45, 0.05, 0.05])
+        pdg_codes = rng.choice(pdg_choices, size=n_trk, p=pdg_weights)
+        
+        # Derive charge from PDG code
+        charge = np.where(np.abs(pdg_codes) == 1000020040, 
+                         np.sign(pdg_codes) * 2,  # Helium: charge +-2
+                         np.sign(pdg_codes))       # Pions: charge +-1
         
         # Compute helix positions for ALL tracks at ALL layers (vectorized)
         x_all, y_all, z_all = compute_helix_positions_vectorized(
@@ -1713,9 +1895,8 @@ def generate_helix_root(
             pz = pt[trk] * np.sinh(eta[trk])
             E = np.sqrt(px**2 + py**2 + pz**2)  # Massless approximation
             
-            # Create track with PDG code (pion = 211 for +, -211 for -)
-            pdg = 211 if charge[trk] > 0 else -211
-            track = ROOT.ToyTrack(float(px), float(py), float(pz), float(E), pdg)
+            # Create track with PDG code
+            track = ROOT.ToyTrack(float(px), float(py), float(pz), float(E), int(pdg_codes[trk]))
             
             # Add clusters at helix positions
             for clus in range(clusters_per_track):
@@ -2022,3 +2203,95 @@ if __name__ == "__main__":
     
     else:
         parser.print_help()
+
+
+def test_toyclasses_library():
+    """
+    Test that ToyClasses library works correctly.
+    
+    Phase 13.6.G+: Validates the consolidated library.
+    
+    Run from command line:
+        cd tests/generators
+        python -c "from toy_nd import test_toyclasses_library; test_toyclasses_library()"
+    """
+    import ROOT
+    
+    print("=" * 60)
+    print("Testing ToyClasses library (Phase 13.6.G+)")
+    print("=" * 60)
+    
+    # Register classes (will build if needed)
+    register_custom_classes(force_rebuild=True)
+    
+    # Test ToyCluster
+    print("\n1. Testing ToyCluster...")
+    ROOT.gInterpreter.ProcessLine('''
+        ToyCluster c(100.0, 1.0, 2.0, 3.0);
+        std::cout << "   ToyCluster: Q=" << c.getQ() 
+                  << " r=" << c.r() << std::endl;
+    ''')
+    print("   ✓ ToyCluster OK")
+    
+    # Test ToyTrack
+    print("\n2. Testing ToyTrack...")
+    ROOT.gInterpreter.ProcessLine('''
+        ToyTrack t(3.0, 4.0, 0.0, 5.0);  // Pt = 5.0 (Pythagorean)
+        t.addCluster(100.0, 1.0, 0.0, 0.0);
+        t.addCluster(200.0, 2.0, 0.0, 0.0);
+        std::cout << "   ToyTrack: Pt=" << t.Pt() 
+                  << " nClusters=" << t.nClusters()
+                  << " totalCharge=" << t.totalCharge() << std::endl;
+    ''')
+    print("   ✓ ToyTrack OK")
+    
+    # Test RVec<ToyTrack>
+    print("\n3. Testing RVec<ToyTrack>...")
+    ROOT.gInterpreter.ProcessLine('''
+        ROOT::RVec<ToyTrack> tracks;
+        ToyTrack t1(3.0, 4.0, 0.0, 5.0);
+        t1.addCluster(100.0, 1.0, 0.0, 0.0);
+        tracks.push_back(t1);
+        std::cout << "   RVec<ToyTrack>: size=" << tracks.size() 
+                  << " tracks[0].Pt()=" << tracks[0].Pt() << std::endl;
+    ''')
+    print("   ✓ RVec<ToyTrack> OK")
+    
+    # Test nested: tracks.clusters()
+    print("\n4. Testing tracks.clusters() (nested RVec)...")
+    ROOT.gInterpreter.ProcessLine('''
+        ROOT::RVec<ToyTrack> tracks2;
+        ToyTrack t2(3.0, 4.0, 0.0, 5.0);
+        t2.addCluster(100.0, 1.0, 0.0, 0.0);
+        t2.addCluster(200.0, 2.0, 0.0, 0.0);
+        tracks2.push_back(t2);
+        
+        auto clusters = tracks2[0].clusters();
+        std::cout << "   tracks[0].clusters(): size=" << clusters.size()
+                  << " clusters[0].getQ()=" << clusters[0].getQ() << std::endl;
+    ''')
+    print("   ✓ tracks.clusters() OK")
+    
+    # Test RVec<RVec<ToyCluster>> (2D nested)
+    print("\n5. Testing RVec<RVec<ToyCluster>> (2D)...")
+    ROOT.gInterpreter.ProcessLine('''
+        ROOT::RVec<ROOT::RVec<ToyCluster>> nested;
+        ROOT::RVec<ToyCluster> inner;
+        inner.push_back(ToyCluster(100.0, 1.0, 0.0, 0.0));
+        inner.push_back(ToyCluster(200.0, 2.0, 0.0, 0.0));
+        nested.push_back(inner);
+        std::cout << "   RVec<RVec<ToyCluster>>: size=" << nested.size()
+                  << " nested[0].size()=" << nested[0].size() << std::endl;
+    ''')
+    print("   ✓ RVec<RVec<ToyCluster>> OK")
+    
+    print("\n" + "=" * 60)
+    print("✓ All ToyClasses tests passed!")
+    print("=" * 60)
+    
+    # Show library location
+    generators_dir = Path(__file__).parent
+    lib_path = generators_dir / "ToyClasses_C.so"
+    print(f"\nLibrary location: {lib_path}")
+    if lib_path.exists():
+        print(f"Library size: {lib_path.stat().st_size} bytes")

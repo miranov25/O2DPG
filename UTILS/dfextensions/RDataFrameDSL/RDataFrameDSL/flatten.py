@@ -91,8 +91,7 @@ def _get_depth_from_data(data: Dict[str, np.ndarray], col: str) -> int:
         1: RVec (e.g., object array of float64 arrays)
         2: RVec<RVec> (e.g., object array of object arrays)
     
-    Raises:
-        ValueError: If object array contains scalar items (malformed input)
+    Phase 13.6.G+: Handle bool columns stored as object dtype by ROOT.
     """
     col_data = data[col]
     
@@ -105,13 +104,14 @@ def _get_depth_from_data(data: Dict[str, np.ndarray], col: str) -> int:
         if item is None:
             continue
         
-        # P1-2 FIX: Guard against scalar items in object array
+        # Phase 13.6.G+: Handle scalar types stored as object array
+        # ROOT's AsNumpy() returns bool columns as object dtype with Python bool values
+        if isinstance(item, (bool, np.bool_, int, np.integer, float, np.floating, str)):
+            return 0  # Scalar column stored as object array
+        
+        # Check if it has length (is array-like)
         if not hasattr(item, '__len__'):
-            raise ValueError(
-                f"Column '{col}' has object dtype but contains scalar elements. "
-                f"Expected RVec (array of arrays). "
-                f"Got item of type: {type(item).__name__}"
-            )
+            return 0  # Treat unknown scalars as depth 0
         
         if len(item) > 0:
             first_elem = item[0]
@@ -434,15 +434,23 @@ def _is_mixed_depth(
 def _flatten_numpy_1level(
     data: Dict[str, np.ndarray],
     rvec_columns: List[str],
-    parent_id_column: str
+    parent_id_column: Optional[str]
 ) -> Dict[str, np.ndarray]:
     """
     NumPy backend for 1-level flatten.
     
     Phase 13.6.A: Original implementation.
+    Phase 13.6.G+: parent_id_column now optional.
     """
-    parent_ids = data[parent_id_column]
-    n_events = len(parent_ids)
+    # Get parent_ids if available
+    if parent_id_column is not None and parent_id_column in data:
+        parent_ids = data[parent_id_column]
+        n_events = len(parent_ids)
+    else:
+        parent_ids = None
+        # Infer n_events from first rvec column
+        ref_col = rvec_columns[0]
+        n_events = len(data[ref_col])
     
     # Get structure from first rvec column
     ref_col = rvec_columns[0]
@@ -452,18 +460,20 @@ def _flatten_numpy_1level(
     if total == 0:
         # Empty result
         result = {
-            parent_id_column: np.array([], dtype=parent_ids.dtype),
             'track_idx': np.array([], dtype=np.int64),
         }
+        if parent_ids is not None:
+            result[parent_id_column] = np.array([], dtype=parent_ids.dtype)
         for col in rvec_columns:
             result[col] = np.array([], dtype=_infer_dtype(data[col]))
         return result
     
     # Preallocate
     result = {
-        parent_id_column: np.empty(total, dtype=parent_ids.dtype),
         'track_idx': np.empty(total, dtype=np.int64),
     }
+    if parent_ids is not None:
+        result[parent_id_column] = np.empty(total, dtype=parent_ids.dtype)
     for col in rvec_columns:
         dtype = _infer_dtype(data[col])
         result[col] = np.empty(total, dtype=dtype)
@@ -476,7 +486,8 @@ def _flatten_numpy_1level(
             continue
         end = offset + n
         
-        result[parent_id_column][offset:end] = parent_ids[e]
+        if parent_ids is not None:
+            result[parent_id_column][offset:end] = parent_ids[e]
         result['track_idx'][offset:end] = np.arange(n)
         
         for col in rvec_columns:
@@ -490,15 +501,23 @@ def _flatten_numpy_1level(
 def _flatten_numpy_2level(
     data: Dict[str, np.ndarray],
     rvec_columns: List[str],
-    parent_id_column: str
+    parent_id_column: Optional[str]
 ) -> Dict[str, np.ndarray]:
     """
     NumPy backend for 2-level flatten.
     
     Phase 13.6.A: Original implementation.
+    Phase 13.6.G+: parent_id_column now optional.
     """
-    parent_ids = data[parent_id_column]
-    n_events = len(parent_ids)
+    # Get parent_ids if available
+    if parent_id_column is not None and parent_id_column in data:
+        parent_ids = data[parent_id_column]
+        n_events = len(parent_ids)
+    else:
+        parent_ids = None
+        # Infer n_events from first rvec column
+        ref_col = rvec_columns[0]
+        n_events = len(data[ref_col])
     
     # Get structure from first rvec column
     ref_col = rvec_columns[0]
@@ -512,20 +531,22 @@ def _flatten_numpy_2level(
     if total == 0:
         # Empty result
         result = {
-            parent_id_column: np.array([], dtype=parent_ids.dtype),
             'track_idx': np.array([], dtype=np.int64),
             'cluster_idx': np.array([], dtype=np.int64),
         }
+        if parent_ids is not None:
+            result[parent_id_column] = np.array([], dtype=parent_ids.dtype)
         for col in rvec_columns:
             result[col] = np.array([], dtype=_infer_dtype_2d(data[col]))
         return result
     
     # Preallocate
     result = {
-        parent_id_column: np.empty(total, dtype=parent_ids.dtype),
         'track_idx': np.empty(total, dtype=np.int64),
         'cluster_idx': np.empty(total, dtype=np.int64),
     }
+    if parent_ids is not None:
+        result[parent_id_column] = np.empty(total, dtype=parent_ids.dtype)
     for col in rvec_columns:
         dtype = _infer_dtype_2d(data[col])
         result[col] = np.empty(total, dtype=dtype)
@@ -545,7 +566,8 @@ def _flatten_numpy_2level(
             
             end = offset + n_clusters
             
-            result[parent_id_column][offset:end] = parent_ids[e]
+            if parent_ids is not None:
+                result[parent_id_column][offset:end] = parent_ids[e]
             result['track_idx'][offset:end] = t
             result['cluster_idx'][offset:end] = np.arange(n_clusters)
             
@@ -602,14 +624,17 @@ def _flatten_awkward_2level(
 def _flatten_depth_0(
     data: Dict[str, np.ndarray],
     scalar_cols: List[str],
-    parent_id_column: str
+    parent_id_column: Optional[str]
 ) -> Dict[str, np.ndarray]:
     """
     No flattening needed - return scalars as-is.
     
     Phase 13.6.A-ext: NEW function.
+    Phase 13.6.G+: parent_id_column now optional.
     """
-    result = {parent_id_column: data[parent_id_column]}
+    result = {}
+    if parent_id_column is not None and parent_id_column in data:
+        result[parent_id_column] = data[parent_id_column]
     for col in scalar_cols:
         if col != parent_id_column:
             result[col] = data[col]
@@ -620,12 +645,13 @@ def _flatten_depth_1_mixed(
     data: Dict[str, np.ndarray],
     scalar_cols: List[str],
     rvec_1d_cols: List[str],
-    parent_id_column: str
+    parent_id_column: Optional[str]
 ) -> Dict[str, np.ndarray]:
     """
     Flatten to track level, replicating scalars.
     
     Phase 13.6.A-ext: NEW function.
+    Phase 13.6.G+: parent_id_column now optional.
     
     Input (1 event):
         event_id: 100           # scalar
@@ -638,8 +664,15 @@ def _flatten_depth_1_mixed(
         100       3             1          2.0
         100       3             2          3.0
     """
-    parent_ids = data[parent_id_column]
-    n_events = len(parent_ids)
+    # Get parent_ids if available
+    if parent_id_column is not None and parent_id_column in data:
+        parent_ids = data[parent_id_column]
+        n_events = len(parent_ids)
+    else:
+        parent_ids = None
+        # Infer n_events from first 1D column
+        ref_col = rvec_1d_cols[0] if rvec_1d_cols else scalar_cols[0]
+        n_events = len(data[ref_col])
     
     # Get reference 1D column for structure
     ref_1d_col = rvec_1d_cols[0]
@@ -649,9 +682,10 @@ def _flatten_depth_1_mixed(
     # Handle empty case
     if total_rows == 0:
         result = {
-            parent_id_column: np.array([], dtype=parent_ids.dtype),
             'track_idx': np.array([], dtype=np.int64),
         }
+        if parent_ids is not None:
+            result[parent_id_column] = np.array([], dtype=parent_ids.dtype)
         for col in scalar_cols:
             if col != parent_id_column:
                 result[col] = np.array([], dtype=data[col].dtype)
@@ -662,8 +696,9 @@ def _flatten_depth_1_mixed(
     # Preallocate output arrays
     result = {}
     
-    # Parent ID column
-    result[parent_id_column] = np.empty(total_rows, dtype=parent_ids.dtype)
+    # Parent ID column (optional)
+    if parent_ids is not None:
+        result[parent_id_column] = np.empty(total_rows, dtype=parent_ids.dtype)
     
     # Scalar columns (will be replicated)
     for col in scalar_cols:
@@ -687,8 +722,9 @@ def _flatten_depth_1_mixed(
         
         end = offset + n_tracks
         
-        # Replicate parent ID
-        result[parent_id_column][offset:end] = parent_ids[e]
+        # Replicate parent ID (if available)
+        if parent_ids is not None:
+            result[parent_id_column][offset:end] = parent_ids[e]
         
         # Replicate scalars
         for col in scalar_cols:
@@ -712,12 +748,13 @@ def _flatten_depth_2_mixed(
     scalar_cols: List[str],
     rvec_1d_cols: List[str],
     rvec_2d_cols: List[str],
-    parent_id_column: str
+    parent_id_column: Optional[str]
 ) -> Dict[str, np.ndarray]:
     """
     Flatten to cluster level, replicating scalars and track values.
     
     Phase 13.6.A-ext: NEW function.
+    Phase 13.6.G+: parent_id_column now optional.
     
     WARNING: Tracks with zero clusters will "disappear" from the output.
     Their 1D values are NOT preserved. Use normalized mode if you need all tracks.
@@ -737,8 +774,15 @@ def _flatten_depth_2_mixed(
         100       3             2          3.0       1            50
         100       3             2          3.0       2            60
     """
-    parent_ids = data[parent_id_column]
-    n_events = len(parent_ids)
+    # Get parent_ids if available
+    if parent_id_column is not None and parent_id_column in data:
+        parent_ids = data[parent_id_column]
+        n_events = len(parent_ids)
+    else:
+        parent_ids = None
+        # Infer n_events from first 2D column
+        ref_col = rvec_2d_cols[0]
+        n_events = len(data[ref_col])
     
     # Get reference 2D column for structure
     ref_2d_col = rvec_2d_cols[0]
@@ -752,10 +796,11 @@ def _flatten_depth_2_mixed(
     # Handle empty case
     if total_rows == 0:
         result = {
-            parent_id_column: np.array([], dtype=parent_ids.dtype),
             'track_idx': np.array([], dtype=np.int64),
             'cluster_idx': np.array([], dtype=np.int64),
         }
+        if parent_ids is not None:
+            result[parent_id_column] = np.array([], dtype=parent_ids.dtype)
         for col in scalar_cols:
             if col != parent_id_column:
                 result[col] = np.array([], dtype=data[col].dtype)
@@ -768,8 +813,9 @@ def _flatten_depth_2_mixed(
     # Preallocate output arrays
     result = {}
     
-    # Parent ID column
-    result[parent_id_column] = np.empty(total_rows, dtype=parent_ids.dtype)
+    # Parent ID column (optional)
+    if parent_ids is not None:
+        result[parent_id_column] = np.empty(total_rows, dtype=parent_ids.dtype)
     
     # Scalar columns
     for col in scalar_cols:
@@ -807,8 +853,9 @@ def _flatten_depth_2_mixed(
             
             end = offset + n_clusters
             
-            # Replicate parent ID
-            result[parent_id_column][offset:end] = parent_ids[e]
+            # Replicate parent ID (if available)
+            if parent_ids is not None:
+                result[parent_id_column][offset:end] = parent_ids[e]
             
             # Replicate scalars
             for col in scalar_cols:
@@ -837,7 +884,7 @@ def _flatten_depth_2_mixed(
 
 def _build_output_dataframe(
     result: Dict[str, np.ndarray],
-    parent_id_column: str,
+    parent_id_column: Optional[str],
     scalar_cols: List[str],
     rvec_1d_cols: List[str],
     rvec_2d_cols: List[str],
@@ -847,16 +894,21 @@ def _build_output_dataframe(
     Build DataFrame with deterministic column order.
     
     Phase 13.6.A-ext: NEW function (fixed from v0.1).
+    Phase 13.6.G+: parent_id_column now optional.
     
     Order:
-        1. parent_id_column (e.g., 'event_id')
+        1. parent_id_column (e.g., 'event_id') - if provided
         2. Scalar columns (input order preserved)
         3. 'track_idx' (if depth >= 1)
         4. 1D columns (input order preserved)
         5. 'cluster_idx' (if depth == 2)
         6. 2D columns (input order preserved)
     """
-    ordered_columns = [parent_id_column]
+    ordered_columns = []
+    
+    # Parent ID column (optional)
+    if parent_id_column is not None and parent_id_column in result:
+        ordered_columns.append(parent_id_column)
     
     # Scalar columns (input order, excluding parent_id)
     for col in scalar_cols:
@@ -865,14 +917,16 @@ def _build_output_dataframe(
     
     # Track index and 1D columns
     if target_depth >= 1:
-        ordered_columns.append('track_idx')
+        if 'track_idx' in result:
+            ordered_columns.append('track_idx')
         for col in rvec_1d_cols:
             if col in result:
                 ordered_columns.append(col)
     
     # Cluster index and 2D columns
     if target_depth == 2:
-        ordered_columns.append('cluster_idx')
+        if 'cluster_idx' in result:
+            ordered_columns.append('cluster_idx')
         for col in rvec_2d_cols:
             if col in result:
                 ordered_columns.append(col)
@@ -888,7 +942,7 @@ def flatten_to_dataframe(
     data: Dict[str, np.ndarray],
     columns: Optional[List[str]] = None,
     rvec_columns: Optional[List[str]] = None,  # DEPRECATED (Phase 13.6.A compat)
-    parent_id_column: str = "event_id",
+    parent_id_column: Optional[str] = 'event_id',
     backend: FlattenBackend = FlattenBackend.AUTO,
     join: str = 'inner',
 ) -> pd.DataFrame:
@@ -898,6 +952,7 @@ def flatten_to_dataframe(
     Phase 13.6.A: Same-depth columns (backward compatible via rvec_columns)
     Phase 13.6.A-ext: Mixed-depth columns (scalar + 1D + 2D via columns)
     Phase 13.6.C: Join strategy parameter
+    Phase 13.6.G+: parent_id_column can be None for simple operations
     
     Args:
         data: Dict from rdf.AsNumpy() containing columns
@@ -906,6 +961,7 @@ def flatten_to_dataframe(
         rvec_columns: DEPRECATED - use 'columns' instead
                       Kept for Phase 13.6.A backward compatibility
         parent_id_column: Parent ID column name (default: 'event_id')
+                         Set to None if no parent tracking needed.
         backend: Flatten backend (default: AUTO)
         join: Join strategy for mixed-depth columns (Phase 13.6.C)
               - 'inner': Intersection of indices (default, no NaN)
@@ -936,6 +992,9 @@ def flatten_to_dataframe(
         >>> df = flatten_to_dataframe(data,
         ...     columns=['cluster_Q', 'track_pt'],
         ...     join='outer')  # NaN for missing
+        
+        # Without parent tracking (Phase 13.6.G+):
+        >>> df = flatten_to_dataframe(data, columns=['track_pt'], parent_id_column=None)
     """
     # Handle backward compatibility
     if rvec_columns is not None:
@@ -967,15 +1026,20 @@ def flatten_to_dataframe(
         )
     
     # Validate columns exist
-    _validate_columns_exist(data, columns + [parent_id_column])
+    # Phase 13.6.G+: parent_id_column is optional
+    cols_to_validate = list(columns)
+    if parent_id_column is not None:
+        cols_to_validate.append(parent_id_column)
+    _validate_columns_exist(data, cols_to_validate)
     
     # Classify columns by depth
     scalar_cols, rvec_1d_cols, rvec_2d_cols = _classify_columns_by_depth(data, columns)
     target_depth = _determine_target_depth(scalar_cols, rvec_1d_cols, rvec_2d_cols)
     is_mixed = _is_mixed_depth(scalar_cols, rvec_1d_cols, rvec_2d_cols)
     
-    # Validate structure
-    _validate_mixed_structure(data, scalar_cols, rvec_1d_cols, rvec_2d_cols, parent_id_column)
+    # Validate structure (only if parent_id_column provided)
+    if parent_id_column is not None:
+        _validate_mixed_structure(data, scalar_cols, rvec_1d_cols, rvec_2d_cols, parent_id_column)
     
     # Backend dispatch
     if is_mixed:

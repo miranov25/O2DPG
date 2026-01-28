@@ -2756,23 +2756,20 @@ class DSLCompiler:
         # Apply definitions to RDF
         applied_rdf = self.apply(rdf)
         
-        # Apply entry limit if specified (for large datasets)
-        if max_entries is not None:
-            applied_rdf = applied_rdf.Range(max_entries)
-        
         # Phase 13.6.F Layer 3: Safe mode with probe-run
         if safe_mode:
             from .safe_mode import probe_columns
-            probe_columns(applied_rdf, columns, probe_size=probe_size)
+            # Apply entry limit for probe if specified
+            probe_rdf = applied_rdf.Range(max_entries) if max_entries else applied_rdf
+            probe_columns(probe_rdf, columns, probe_size=probe_size)
         
-        # Extract data
-        result = applied_rdf.AsNumpy(columns)
-        
-        # Phase 12.2: Flatten RVec columns for dfdraw compatibility
-        result = self._flatten_rvec_columns(result)
+        # Phase 13.6.G+: Use to_pandas() which handles RVec<RVec<T>> flattening
+        # Pass parent_id_column=None since draw() doesn't need event tracking
+        df = self.to_pandas(applied_rdf, columns=columns, max_entries=max_entries,
+                           parent_id_column=None)
         
         # Create drawer and draw
-        drawer = DFDraw(pd.DataFrame(result))
+        drawer = DFDraw(df)
         return drawer.draw(expr, **kwargs)
     
     def draw_batch(self, specs: Dict[str, dict], rdf,
@@ -2851,76 +2848,32 @@ class DSLCompiler:
         # Apply definitions to RDF
         applied_rdf = self.apply(rdf)
         
-        # Apply entry limit
-        if max_entries is not None:
-            applied_rdf = applied_rdf.Range(max_entries)
-        
         # Phase 13.6.F Layer 3: Safe mode with probe-run
         if safe_mode:
             from .safe_mode import probe_columns
-            probe_columns(applied_rdf, all_columns_list, probe_size=probe_size)
+            probe_rdf = applied_rdf.Range(max_entries) if max_entries else applied_rdf
+            probe_columns(probe_rdf, all_columns_list, probe_size=probe_size)
         
-        # Single data extraction (efficient!)
-        result = applied_rdf.AsNumpy(all_columns_list)
+        # Phase 13.6.G+: Use to_pandas() which handles RVec<RVec<T>> flattening
+        # Pass parent_id_column=None since draw_batch() doesn't need event tracking
+        df = self.to_pandas(applied_rdf, columns=all_columns_list, max_entries=max_entries,
+                           parent_id_column=None)
         
-        # Phase 12.2: Flatten RVec columns for dfdraw compatibility
-        result = self._flatten_rvec_columns(result)
-        
-        # Check if all columns have the same length after flattening
-        lengths = {col: len(arr) for col, arr in result.items()}
-        unique_lengths = set(lengths.values())
-        
-        # Generate all plots
+        # Generate all plots with single DataFrame
         results = {}
+        drawer = DFDraw(df)
         
-        if len(unique_lengths) == 1:
-            # All columns same length - can use single DataFrame (efficient)
-            drawer = DFDraw(pd.DataFrame(result))
+        for name, spec in specs.items():
+            merged = {**defaults, **spec}
+            expr = merged.pop('expr')
             
-            for name, spec in specs.items():
-                merged = {**defaults, **spec}
-                expr = merged.pop('expr')
-                
-                fig, ax, stats = drawer.draw(expr, **merged)
-                
-                if save_dir:
-                    Path(save_dir).mkdir(parents=True, exist_ok=True)
-                    fig.savefig(f"{save_dir}/{name}.png", dpi=150, bbox_inches='tight')
-                
-                results[name] = {'fig': fig, 'ax': ax, 'stats': stats}
-        else:
-            # Different lengths - draw each spec separately with its own columns
-            for name, spec in specs.items():
-                merged = {**defaults, **spec}
-                expr = merged.pop('expr')
-                
-                # Get columns needed for this spec
-                spec_columns = self._collect_draw_dependencies(
-                    expr,
-                    merged.get('selection'),
-                    merged.get('group_by'),
-                    merged.get('color')
-                )
-                
-                # Build DataFrame with only matching-length columns
-                spec_data = {col: result[col] for col in spec_columns if col in result}
-                
-                # Check lengths within this spec
-                spec_lengths = [len(arr) for arr in spec_data.values()]
-                if len(set(spec_lengths)) > 1:
-                    # Columns in this spec have different lengths - skip with warning
-                    import warnings
-                    warnings.warn(f"Skipping '{name}': columns have different lengths after RVec flattening")
-                    continue
-                
-                drawer = DFDraw(pd.DataFrame(spec_data))
-                fig, ax, stats = drawer.draw(expr, **merged)
-                
-                if save_dir:
-                    Path(save_dir).mkdir(parents=True, exist_ok=True)
-                    fig.savefig(f"{save_dir}/{name}.png", dpi=150, bbox_inches='tight')
-                
-                results[name] = {'fig': fig, 'ax': ax, 'stats': stats}
+            fig, ax, stats = drawer.draw(expr, **merged)
+            
+            if save_dir:
+                Path(save_dir).mkdir(parents=True, exist_ok=True)
+                fig.savefig(f"{save_dir}/{name}.png", dpi=150, bbox_inches='tight')
+            
+            results[name] = {'fig': fig, 'ax': ax, 'stats': stats}
         
         return results
     
@@ -2980,6 +2933,7 @@ class DSLCompiler:
         Phase 13.6.B: Core method for TTree::Draw equivalence.
         Phase 13.6.C: Added join parameter for mixed-depth join strategy.
         Phase 13.6.G: Added verbose parameter for logging.
+        Phase 13.6.G+: parent_id_column can be None for simple operations.
         
         Args:
             rdf: RDataFrame instance (applied or not)
@@ -2989,6 +2943,7 @@ class DSLCompiler:
                             e.g., 'multiplicity > 50'
                             Note: For track-level filters, use DSL define() first
             parent_id_column: Name of parent ID column (default: 'event_id')
+                             Set to None if no parent tracking needed.
             backend: Flatten backend (default: AUTO)
             max_entries: Optional limit on number of events
             join: Join strategy for mixed-depth columns (Phase 13.6.C)
@@ -3000,7 +2955,7 @@ class DSLCompiler:
         
         Returns:
             Flat pandas DataFrame with index columns:
-            - event_id: Parent event ID (replicated from input)
+            - event_id: Parent event ID (if parent_id_column provided)
             - track_idx: Track index within event (if 1D+ columns)
             - cluster_idx: Cluster index within track (if 2D columns)
         
@@ -3060,7 +3015,8 @@ class DSLCompiler:
         # This must happen BEFORE validation since aliases aren't in schema yet
         if self._aliases:
             all_requested = list(columns)
-            if parent_id_column not in all_requested:
+            # Phase 13.6.G+: parent_id_column is optional
+            if parent_id_column is not None and parent_id_column not in all_requested:
                 all_requested.append(parent_id_column)
             self._materialize_aliases(all_requested, rdf)
         
@@ -3069,8 +3025,9 @@ class DSLCompiler:
         # P0-4: Pass rdf to allow auto-extending schema
         self._validate_columns(columns, rdf=rdf)
         
-        # Also validate parent_id_column if it's not already in columns
-        if parent_id_column not in columns:
+        # Also validate parent_id_column if provided and not already in columns
+        # Phase 13.6.G+: parent_id_column is optional
+        if parent_id_column is not None and parent_id_column not in columns:
             self._validate_columns([parent_id_column], rdf=rdf)
         
         # Apply DSL definitions first if not already applied
@@ -3084,9 +3041,10 @@ class DSLCompiler:
         if max_entries is not None:
             applied_rdf = applied_rdf.Range(max_entries)
         
-        # Ensure parent_id_column is included
+        # Build columns to fetch
+        # Phase 13.6.G+: parent_id_column is optional
         columns_to_fetch = list(columns)
-        if parent_id_column not in columns_to_fetch:
+        if parent_id_column is not None and parent_id_column not in columns_to_fetch:
             columns_to_fetch.append(parent_id_column)
         
         # Get data from RDataFrame
@@ -3098,6 +3056,7 @@ class DSLCompiler:
             backend = FlattenBackend.AUTO
         
         # Flatten to DataFrame (Phase 13.6.C: pass join strategy)
+        # Phase 13.6.G+: parent_id_column can be None
         df = flatten_to_dataframe(
             data,
             columns=columns,
