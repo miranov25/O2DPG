@@ -565,6 +565,7 @@ def generate_nd_2d_root(
     layout: Optional[Dict] = None,
     seed: int = 42,
     persistent: bool = False,
+    mode: Literal['invariant', 'demo'] = 'invariant',
 ) -> str:
     """
     Generate ROOT file with 2D cluster structure.
@@ -578,6 +579,10 @@ def generate_nd_2d_root(
     Generation Strategy:
     - S size: Embedded literals (exact match with dict)
     - M/L/XL sizes: Algorithmic C++ (scalable, invariants at runtime)
+    
+    Mode:
+    - 'invariant' (default): Pythagorean triples for unit tests (exact integers)
+    - 'demo': Realistic physics distributions for notebooks/demos
     
     Parameters
     ----------
@@ -593,6 +598,8 @@ def generate_nd_2d_root(
         Random seed
     persistent : bool
         If True, store in persistent cache directory
+    mode : str
+        'invariant' for unit tests, 'demo' for realistic distributions
         
     Returns
     -------
@@ -610,7 +617,7 @@ def generate_nd_2d_root(
     if filename is None:
         if persistent:
             cache_dir = get_cache_dir()
-            filename = str(cache_dir / f"toy_nd_2d_{size}.root")
+            filename = str(cache_dir / f"toy_nd_2d_{size}_{mode}.root")
         else:
             import tempfile
             filename = tempfile.mktemp(suffix='.root', prefix='toy_nd_2d_')
@@ -622,8 +629,11 @@ def generate_nd_2d_root(
     # Generate unique function name (avoid redefinition)
     func_name = f"generate_toy_2d_{abs(hash(filename)) & 0xFFFFFF:06x}"
     
-    # Choose generation strategy based on size
-    if config['generation'] == 'embedded':
+    # Choose generation strategy based on size and mode
+    if mode == 'demo':
+        # Demo mode: realistic physics distributions
+        cpp_code = _generate_2d_demo(func_name, filename, config, seed, n_events)
+    elif config['generation'] == 'embedded':
         data = generate_nd_2d_dict(size=size, n_events=n_events, layout=layout, seed=seed)
         cpp_code = _generate_2d_embedded(func_name, filename, data)
     else:
@@ -643,6 +653,7 @@ def generate_nd_3d_root(
     layout: Optional[Dict] = None,
     seed: int = 42,
     persistent: bool = False,
+    mode: Literal['invariant', 'demo'] = 'invariant',
 ) -> str:
     """
     Generate ROOT file with 3D hit structure.
@@ -652,6 +663,10 @@ def generate_nd_3d_root(
     Who:  Used by nd_3d_root_file_* fixtures
     
     Same approach as 2D but with additional nesting level.
+    
+    Mode:
+    - 'invariant' (default): Deterministic patterns for unit tests
+    - 'demo': Realistic physics distributions for notebooks/demos
     """
     import ROOT
     _ensure_rvec_dictionaries()  # One-time per process
@@ -663,7 +678,7 @@ def generate_nd_3d_root(
     if filename is None:
         if persistent:
             cache_dir = get_cache_dir()
-            filename = str(cache_dir / f"toy_nd_3d_{size}.root")
+            filename = str(cache_dir / f"toy_nd_3d_{size}_{mode}.root")
         else:
             import tempfile
             filename = tempfile.mktemp(suffix='.root', prefix='toy_nd_3d_')
@@ -673,7 +688,10 @@ def generate_nd_3d_root(
     
     func_name = f"generate_toy_3d_{abs(hash(filename)) & 0xFFFFFF:06x}"
     
-    if config['generation'] == 'embedded':
+    if mode == 'demo':
+        # Demo mode: realistic physics distributions
+        cpp_code = _generate_3d_demo(func_name, filename, config, seed, n_events)
+    elif config['generation'] == 'embedded':
         data = generate_nd_3d_dict(size=size, n_events=n_events, layout=layout, seed=seed)
         cpp_code = _generate_3d_embedded(func_name, filename, data)
     else:
@@ -959,6 +977,135 @@ void {func_name}() {{
     return cpp_code
 
 
+def _generate_2d_demo(func_name: str, filename: str, config: Dict, seed: int, n_events: int) -> str:
+    """
+    Generate C++ with realistic physics distributions for demos.
+    
+    Phase 13.6.G+: Demo mode for notebook visualizations.
+    
+    Distributions:
+    - track_pt: Exponential (mean 0.4 GeV)
+    - track_eta: Flat [-1, 1]
+    - cluster_Q: Log-normal * (1/beta^2) - Landau-like energy loss
+    - cluster_x, cluster_y: Gaussian around track trajectory
+    
+    Note: Uses log-normal instead of Landau to avoid scipy dependency.
+    """
+    trk_min, trk_max = config['tracks_per_event']
+    clus_min, clus_max = config['clusters_per_track']
+    
+    cpp_code = f'''
+#include "TFile.h"
+#include "TTree.h"
+#include "ROOT/RVec.hxx"
+#include <random>
+#include <cmath>
+#include <iostream>
+
+void {func_name}() {{
+    TFile f("{filename}", "RECREATE");
+    TTree tree("Events", "Toy 2D Events (Demo)");
+    
+    Long64_t event_id;
+    Int_t n_tracks;
+    Double_t event_weight;
+    ROOT::RVec<double> track_pt;
+    ROOT::RVec<double> track_eta;
+    ROOT::RVec<ROOT::RVec<double>> cluster_Q;
+    ROOT::RVec<ROOT::RVec<double>> cluster_x;
+    ROOT::RVec<ROOT::RVec<double>> cluster_y;
+    
+    tree.Branch("event_id", &event_id);
+    tree.Branch("n_tracks", &n_tracks);
+    tree.Branch("event_weight", &event_weight);
+    tree.Branch("track_pt", &track_pt);
+    tree.Branch("track_eta", &track_eta);
+    tree.Branch("cluster_Q", &cluster_Q);
+    tree.Branch("cluster_x", &cluster_x);
+    tree.Branch("cluster_y", &cluster_y);
+    
+    // Random number generators
+    std::mt19937 rng({seed});
+    std::uniform_int_distribution<int> trk_dist({trk_min}, {trk_max});
+    std::uniform_int_distribution<int> clus_dist({clus_min}, {clus_max});
+    std::exponential_distribution<double> pt_dist(1.0 / 0.4);  // mean = 0.4 GeV
+    std::uniform_real_distribution<double> eta_dist(-1.0, 1.0);  // flat eta
+    std::uniform_real_distribution<double> phi_dist(0.0, 2.0 * M_PI);  // azimuthal
+    std::normal_distribution<double> pos_smear(0.0, 0.1);  // position smearing (cm)
+    std::lognormal_distribution<double> landau_like(0.0, 0.3);  // Q fluctuation
+    
+    const double PION_MASS = 0.1396;  // GeV/c^2
+    const double LAYER_RADII[] = {{3.9, 7.6, 15.0, 22.4, 29.1, 37.8, 44.6}};  // cm (ITS2)
+    const int N_LAYERS = 7;
+    
+    for (int evt = 0; evt < {n_events}; evt++) {{
+        event_id = evt;
+        event_weight = 1.0 + 0.1 * (evt % 10);  // slight variation
+        int n_trk = trk_dist(rng);
+        n_tracks = n_trk;
+        
+        track_pt.clear();
+        track_eta.clear();
+        cluster_Q.clear();
+        cluster_x.clear();
+        cluster_y.clear();
+        
+        for (int trk = 0; trk < n_trk; trk++) {{
+            // Track kinematics
+            double pt = pt_dist(rng);
+            if (pt < 0.05) pt = 0.05;  // minimum pT cut
+            if (pt > 10.0) pt = 10.0;  // maximum pT cut
+            double eta = eta_dist(rng);
+            double phi = phi_dist(rng);
+            
+            track_pt.push_back(pt);
+            track_eta.push_back(eta);
+            
+            // Compute beta for energy loss
+            double p = pt * std::cosh(eta);  // total momentum
+            double E = std::sqrt(p * p + PION_MASS * PION_MASS);
+            double beta = p / E;
+            double beta2_inv = 1.0 / (beta * beta);
+            
+            // Clusters along track trajectory
+            int n_clus = clus_dist(rng);
+            if (n_clus > N_LAYERS) n_clus = N_LAYERS;  // max one cluster per layer
+            
+            ROOT::RVec<double> trk_Q, trk_x, trk_y;
+            
+            for (int clus = 0; clus < n_clus; clus++) {{
+                // Position: track trajectory + smearing
+                double r = LAYER_RADII[clus % N_LAYERS];
+                double x = r * std::cos(phi) + pos_smear(rng);
+                double y = r * std::sin(phi) + pos_smear(rng);
+                
+                // Charge: Landau-like with 1/beta^2 dependence
+                double Q_mean = 80.0 * beta2_inv;  // ~80 ADC at beta=1
+                double Q = Q_mean * landau_like(rng);
+                if (Q < 10.0) Q = 10.0;  // minimum threshold
+                
+                trk_Q.push_back(Q);
+                trk_x.push_back(x);
+                trk_y.push_back(y);
+            }}
+            
+            cluster_Q.push_back(trk_Q);
+            cluster_x.push_back(trk_x);
+            cluster_y.push_back(trk_y);
+        }}
+        
+        tree.Fill();
+    }}
+    
+    tree.Write();
+    f.Close();
+    
+    std::cout << "Generated " << {n_events} << " demo events to {filename}" << std::endl;
+}}
+'''
+    return cpp_code
+
+
 def _generate_3d_algorithmic(func_name: str, filename: str, config: Dict, seed: int) -> str:
     """
     Generate C++ with algorithmic 3D generation (M/L/XL).
@@ -1076,6 +1223,162 @@ void {func_name}() {{
     return cpp_code
 
 
+def _generate_3d_demo(func_name: str, filename: str, config: Dict, seed: int, n_events: int) -> str:
+    """
+    Generate C++ with realistic physics distributions for 3D demos.
+    
+    Phase 13.6.G+: Demo mode for notebook visualizations.
+    
+    Extends 2D demo with hit-level information:
+    - hit_E: Energy deposit with Landau-like fluctuations
+    - hit_t: Time of arrival with drift time simulation
+    """
+    trk_min, trk_max = config['tracks_per_event']
+    clus_min, clus_max = config['clusters_per_track']
+    hit_min, hit_max = config['hits_per_cluster']
+    
+    cpp_code = f'''
+#include "TFile.h"
+#include "TTree.h"
+#include "ROOT/RVec.hxx"
+#include <random>
+#include <cmath>
+#include <iostream>
+
+void {func_name}() {{
+    TFile f("{filename}", "RECREATE");
+    TTree tree("Events", "Toy 3D Events (Demo)");
+    
+    Long64_t event_id;
+    Int_t n_tracks;
+    Double_t event_weight;
+    ROOT::RVec<double> track_pt;
+    ROOT::RVec<double> track_eta;
+    ROOT::RVec<ROOT::RVec<double>> cluster_Q;
+    ROOT::RVec<ROOT::RVec<double>> cluster_x;
+    ROOT::RVec<ROOT::RVec<double>> cluster_y;
+    ROOT::RVec<ROOT::RVec<ROOT::RVec<double>>> hit_E;
+    ROOT::RVec<ROOT::RVec<ROOT::RVec<double>>> hit_t;
+    
+    tree.Branch("event_id", &event_id);
+    tree.Branch("n_tracks", &n_tracks);
+    tree.Branch("event_weight", &event_weight);
+    tree.Branch("track_pt", &track_pt);
+    tree.Branch("track_eta", &track_eta);
+    tree.Branch("cluster_Q", &cluster_Q);
+    tree.Branch("cluster_x", &cluster_x);
+    tree.Branch("cluster_y", &cluster_y);
+    tree.Branch("hit_E", &hit_E);
+    tree.Branch("hit_t", &hit_t);
+    
+    // Random number generators
+    std::mt19937 rng({seed});
+    std::uniform_int_distribution<int> trk_dist({trk_min}, {trk_max});
+    std::uniform_int_distribution<int> clus_dist({clus_min}, {clus_max});
+    std::uniform_int_distribution<int> hit_dist({hit_min}, {hit_max});
+    std::exponential_distribution<double> pt_dist(1.0 / 0.4);  // mean = 0.4 GeV
+    std::uniform_real_distribution<double> eta_dist(-1.0, 1.0);
+    std::uniform_real_distribution<double> phi_dist(0.0, 2.0 * M_PI);
+    std::normal_distribution<double> pos_smear(0.0, 0.1);  // cm
+    std::lognormal_distribution<double> landau_like(0.0, 0.3);
+    std::normal_distribution<double> time_smear(0.0, 0.05);  // ns
+    
+    const double PION_MASS = 0.1396;  // GeV/c^2
+    const double LAYER_RADII[] = {{3.9, 7.6, 15.0, 22.4, 29.1, 37.8, 44.6}};
+    const int N_LAYERS = 7;
+    const double DRIFT_VEL = 0.003;  // cm/ns (typical TPC)
+    
+    for (int evt = 0; evt < {n_events}; evt++) {{
+        event_id = evt;
+        event_weight = 1.0 + 0.1 * (evt % 10);
+        int n_trk = trk_dist(rng);
+        n_tracks = n_trk;
+        
+        track_pt.clear();
+        track_eta.clear();
+        cluster_Q.clear();
+        cluster_x.clear();
+        cluster_y.clear();
+        hit_E.clear();
+        hit_t.clear();
+        
+        for (int trk = 0; trk < n_trk; trk++) {{
+            double pt = pt_dist(rng);
+            if (pt < 0.05) pt = 0.05;
+            if (pt > 10.0) pt = 10.0;
+            double eta = eta_dist(rng);
+            double phi = phi_dist(rng);
+            
+            track_pt.push_back(pt);
+            track_eta.push_back(eta);
+            
+            double p = pt * std::cosh(eta);
+            double E = std::sqrt(p * p + PION_MASS * PION_MASS);
+            double beta = p / E;
+            double beta2_inv = 1.0 / (beta * beta);
+            
+            int n_clus = clus_dist(rng);
+            if (n_clus > N_LAYERS) n_clus = N_LAYERS;
+            
+            ROOT::RVec<double> trk_Q, trk_x, trk_y;
+            ROOT::RVec<ROOT::RVec<double>> trk_hits_E, trk_hits_t;
+            
+            for (int clus = 0; clus < n_clus; clus++) {{
+                double r = LAYER_RADII[clus % N_LAYERS];
+                double x = r * std::cos(phi) + pos_smear(rng);
+                double y = r * std::sin(phi) + pos_smear(rng);
+                
+                double Q_mean = 80.0 * beta2_inv;
+                double Q = Q_mean * landau_like(rng);
+                if (Q < 10.0) Q = 10.0;
+                
+                trk_Q.push_back(Q);
+                trk_x.push_back(x);
+                trk_y.push_back(y);
+                
+                // Hits within this cluster
+                int n_hits = hit_dist(rng);
+                ROOT::RVec<double> clus_E, clus_t;
+                
+                double t_base = r / (beta * 30.0);  // time of flight (ns, c=30cm/ns)
+                
+                for (int hit = 0; hit < n_hits; hit++) {{
+                    // Energy per hit (fraction of cluster charge)
+                    double hit_frac = landau_like(rng);
+                    double hit_E = Q * hit_frac / n_hits;
+                    if (hit_E < 1.0) hit_E = 1.0;
+                    
+                    // Time: base ToF + drift time + smearing
+                    double drift_dist = pos_smear(rng) * 0.5;  // small drift
+                    double t = t_base + std::abs(drift_dist) / DRIFT_VEL + time_smear(rng);
+                    
+                    clus_E.push_back(hit_E);
+                    clus_t.push_back(t);
+                }}
+                
+                trk_hits_E.push_back(clus_E);
+                trk_hits_t.push_back(clus_t);
+            }}
+            
+            cluster_Q.push_back(trk_Q);
+            cluster_x.push_back(trk_x);
+            cluster_y.push_back(trk_y);
+            hit_E.push_back(trk_hits_E);
+            hit_t.push_back(trk_hits_t);
+        }}
+        
+        tree.Fill();
+    }}
+    
+    tree.Write();
+    f.Close();
+    
+    std::cout << "Generated " << {n_events} << " 3D demo events to {filename}" << std::endl;
+}}
+'''
+    return cpp_code
+
+
 # =============================================================================
 # Custom Class Definitions (ToyCluster, ToyTrack)
 # =============================================================================
@@ -1185,23 +1488,9 @@ public:
     Double_t mass() const { return fMomentum.M(); }
     Double_t M() const { return fMomentum.M(); }
     
-    // PDG code and charge
+    // PDG code
     Int_t pdgCode() const { return fPdgCode; }
     Int_t GetPdgCode() const { return fPdgCode; }
-    
-    // Phase 13.6.G+: Charge from PDG code (pions ±1, helium ±2)
-    Int_t charge() const {
-        if (TMath::Abs(fPdgCode) == 1000020040) return (fPdgCode > 0) ? 2 : -2;  // He4
-        return (fPdgCode > 0) ? 1 : -1;  // Default: pions and others
-    }
-    Int_t Charge() const { return charge(); }
-    Int_t getCharge() const { return charge(); }
-    
-    // Phase 13.6.G+: Signed curvature q/pT [1/GeV] - key for track visualization
-    Double_t qpt() const { return charge() / fMomentum.Pt(); }
-    Double_t Qpt() const { return qpt(); }
-    Double_t getQpt() const { return qpt(); }
-    Double_t GetQpt() const { return qpt(); }
     
     // Cluster access
     const ROOT::RVec<ToyCluster>& clusters() const { return fClusters; }
@@ -1256,17 +1545,6 @@ struct ToyTrack {
     Double_t py() const { return fMomentum.Py(); }
     Double_t eta() const { return fMomentum.Eta(); }
     Double_t phi() const { return fMomentum.Phi(); }
-    
-    // Phase 13.6.G+: Charge from PDG code
-    Int_t charge() const {
-        if (TMath::Abs(fPdgCode) == 1000020040) return (fPdgCode > 0) ? 2 : -2;
-        return (fPdgCode > 0) ? 1 : -1;
-    }
-    Int_t getCharge() const { return charge(); }
-    
-    // Phase 13.6.G+: Signed curvature q/pT [1/GeV]
-    Double_t qpt() const { return charge() / fMomentum.Pt(); }
-    Double_t getQpt() const { return qpt(); }
     
     const ROOT::RVec<ToyCluster>& clusters() const { return fClusters; }
     Int_t nClusters() const { return fClusters.size(); }
@@ -1356,21 +1634,6 @@ struct ToyTrack {
     Double_t phi() const { return fMomentum.Phi(); }
     Double_t Phi() const { return fMomentum.Phi(); }
     
-    // Phase 13.6.G+: Charge from PDG code (pions ±1, helium ±2)
-    Int_t charge() const {
-        if (TMath::Abs(fPdgCode) == 1000020040) return (fPdgCode > 0) ? 2 : -2;
-        return (fPdgCode > 0) ? 1 : -1;
-    }
-    Int_t Charge() const { return charge(); }
-    Int_t getCharge() const { return charge(); }
-    Int_t GetCharge() const { return charge(); }
-    
-    // Phase 13.6.G+: Signed curvature q/pT [1/GeV] - key for track visualization
-    Double_t qpt() const { return charge() / fMomentum.Pt(); }
-    Double_t Qpt() const { return qpt(); }
-    Double_t getQpt() const { return qpt(); }
-    Double_t GetQpt() const { return qpt(); }
-    
     ROOT::RVec<ToyCluster> clusters() const { 
         return ROOT::RVec<ToyCluster>(fClusters.begin(), fClusters.end()); 
     }
@@ -1428,8 +1691,6 @@ def register_custom_classes(use_simple: bool = False, force_rebuild: bool = Fals
     Phase 13.6.G+: Uses consolidated shared library instead of scattered
     dictionary generation. Creates ONE ToyClasses_C.so file that is cached.
     
-    Automatically detects when TOYCLASSES_SOURCE changes and rebuilds.
-    
     What: Declares C++ classes and generates dictionaries for TTree I/O
     Why:  Required before using custom class branches
     Who:  Called by generate_custom_class_root() and custom_class_rdf fixture
@@ -1450,38 +1711,27 @@ def register_custom_classes(use_simple: bool = False, force_rebuild: bool = Fals
     
     import ROOT
     import os
-    import hashlib
     
     # Paths - library is stored alongside toy_nd.py
     generators_dir = Path(__file__).parent
     source_path = generators_dir / "ToyClasses.C"
     lib_path = generators_dir / "ToyClasses_C.so"
-    hash_path = generators_dir / "ToyClasses.hash"
-    
-    # Compute hash of current TOYCLASSES_SOURCE
-    current_hash = hashlib.md5(TOYCLASSES_SOURCE.encode()).hexdigest()
     
     # Check if rebuild needed
     rebuild_needed = force_rebuild
     
     if not lib_path.exists():
         rebuild_needed = True
-    else:
-        # Check if source hash changed (detects Python code changes)
-        if hash_path.exists():
-            stored_hash = hash_path.read_text().strip()
-            if stored_hash != current_hash:
-                print(f"[toy_nd] TOYCLASSES_SOURCE changed, rebuilding library...")
-                rebuild_needed = True
-        else:
-            # No hash file, rebuild to be safe
+    elif source_path.exists():
+        # Rebuild if source is newer than library
+        if source_path.stat().st_mtime > lib_path.stat().st_mtime:
             rebuild_needed = True
     
-    # Write source file and hash
-    if rebuild_needed or not source_path.exists():
+    # Write source file if it doesn't exist or rebuild requested
+    if not source_path.exists() or force_rebuild:
         with open(source_path, 'w') as f:
             f.write(TOYCLASSES_SOURCE)
-        hash_path.write_text(current_hash)
+        rebuild_needed = True  # New source means we need to build
     
     # Build or load library
     if rebuild_needed:
@@ -1500,7 +1750,6 @@ def register_custom_classes(use_simple: bool = False, force_rebuild: bool = Fals
         load_result = ROOT.gSystem.Load(str(lib_path))
         if load_result < 0:
             # Library load failed, try rebuilding
-            print(f"[toy_nd] Library load failed, rebuilding...")
             old_cwd = os.getcwd()
             try:
                 os.chdir(generators_dir)
@@ -1609,14 +1858,10 @@ def generate_custom_class_root(
 # Phase 13.6.G: Helix Trajectory Generator
 # =============================================================================
 
-# Detector layer radii in meters
-# Phase 13.6.G+: Detector layer radii in cm (ALICE convention)
-# ITS: 7 layers from 2.3 cm to 40 cm
-LAYERS_ITS = np.array([2.3, 3.1, 3.9, 7.6, 15.0, 24.0, 40.0])  # 7 ITS layers [cm]
-# TPC: 50 layers from 85 cm to 245 cm
-LAYERS_TPC = np.linspace(85.0, 245.0, 50)  # 50 TPC layers [cm]
-# Full detector: 57 layers total
-LAYERS_ALL = np.concatenate([LAYERS_ITS, LAYERS_TPC])  # 57 total [cm]
+# Detector layer radii in centimeters (Phase 13.6.G+: changed from meters)
+LAYERS_ITS = np.array([2.3, 3.1, 3.9, 7.6, 12.0, 18.0, 24.0])  # 7 ITS layers (cm)
+LAYERS_TPC = np.linspace(85.0, 250.0, 50)  # 50 TPC layers (cm)
+LAYERS_ALL = np.concatenate([LAYERS_ITS, LAYERS_TPC])  # 57 total (cm)
 
 
 def helix_position(
@@ -1631,26 +1876,25 @@ def helix_position(
     Calculate (x, y, z) position on helix at detector radius r.
     
     Phase 13.6.G: Single-track helix position calculation.
-    Phase 13.6.G+: Units in cm (ALICE convention).
     
     Args:
         pt: Transverse momentum [GeV/c]
         eta: Pseudorapidity
         phi: Azimuthal angle [rad]
-        charge: Particle charge (+1 or -1, or +2/-2 for helium)
+        charge: Particle charge (+1 or -1)
         r: Detector layer radius [cm]
         b_field: Magnetic field strength [Tesla]
         
     Returns:
-        (x, y, z) position on helix [cm]
+        (x, y, z) position on helix [m]
         
     Physics:
-        Helix radius: R = 100 * pt / (0.3 * B * |q|)  [cm, pt in GeV, B in Tesla]
+        Helix radius: R = pt / (0.3 * B * |q|)  [m, pt in GeV, B in Tesla]
         Arc angle at radius r: arc = charge * 2 * arcsin(r / (2*R))
         Position: (r*cos(phi + arc/2), r*sin(phi + arc/2), r/tan(theta))
     """
-    # Helix radius in cm
-    R = 100.0 * pt / (0.3 * b_field * abs(charge))
+    # Helix radius in meters
+    R = pt / (0.3 * b_field * abs(charge))
     
     # Polar angle from pseudorapidity
     theta = 2 * np.arctan(np.exp(-eta))
@@ -1659,7 +1903,7 @@ def helix_position(
     sin_arg = min(r / (2 * R), 1.0)
     arc = charge * 2 * np.arcsin(sin_arg)
     
-    # Position on helix [cm]
+    # Position on helix
     x = r * np.cos(phi + arc / 2)
     y = r * np.sin(phi + arc / 2)
     
@@ -1684,7 +1928,6 @@ def compute_helix_positions_vectorized(
     Compute helix positions for all tracks at all layers (vectorized).
     
     Phase 13.6.G: Vectorized helix physics for performance.
-    Phase 13.6.G+: Units changed to cm (ALICE convention).
     Target: < 1s for 1000 events.
     
     Args:
@@ -1692,18 +1935,17 @@ def compute_helix_positions_vectorized(
         eta: (n_tracks,) pseudorapidity
         phi: (n_tracks,) azimuthal angle [rad]
         charge: (n_tracks,) charge (+1 or -1)
-        layers: (n_layers,) detector radii [cm]
+        layers: (n_layers,) detector radii [m]
         b_field: Magnetic field strength [Tesla]
         
     Returns:
-        x, y, z: Arrays of shape (n_tracks, n_layers) with positions [cm]
+        x, y, z: Arrays of shape (n_tracks, n_layers) with positions [m]
     """
     n_tracks = len(pt)
     n_layers = len(layers)
     
-    # Helix radius: R = pt / (0.3 * B * |q|) [meters], convert to cm
-    # R[cm] = 100 * pt[GeV] / (0.3 * B[T] * |q|)
-    R = 100.0 * pt / (0.3 * b_field * np.abs(charge))  # (n_tracks,) [cm]
+    # Helix radius: R = pt / (0.3 * B * |q|)  [meters]
+    R = pt / (0.3 * b_field * np.abs(charge))  # (n_tracks,)
     
     # Polar angle from pseudorapidity
     theta = 2 * np.arctan(np.exp(-eta))  # (n_tracks,)
@@ -1713,13 +1955,13 @@ def compute_helix_positions_vectorized(
     theta = theta[:, np.newaxis]   # (n_tracks, 1)
     phi_2d = phi[:, np.newaxis]    # (n_tracks, 1)
     charge_2d = charge[:, np.newaxis]  # (n_tracks, 1)
-    r = layers[np.newaxis, :]      # (1, n_layers) [cm]
+    r = layers[np.newaxis, :]      # (1, n_layers)
     
     # Arc angle at each layer (clamp for numerical stability)
     sin_arg = np.clip(r / (2 * R), -1.0, 1.0)
     arc = charge_2d * 2 * np.arcsin(sin_arg)  # (n_tracks, n_layers)
     
-    # Helix positions [cm]
+    # Helix positions
     x = r * np.cos(phi_2d + arc / 2)  # (n_tracks, n_layers)
     y = r * np.sin(phi_2d + arc / 2)  # (n_tracks, n_layers)
     z = r / np.tan(theta)              # (n_tracks, n_layers)
@@ -1736,7 +1978,7 @@ def generate_helix_root(
     clusters_per_track: int = None,  # None = all layers
     detector_layers: np.ndarray = None,
     b_field: float = 0.5,
-    pt_range: Tuple[float, float] = (0.2, 20.0),
+    pt_range: Tuple[float, float] = (0.5, 5.0),
     eta_range: Tuple[float, float] = (-1.0, 1.0),
     seed: int = 42,
     filename: str = None,
@@ -1746,7 +1988,6 @@ def generate_helix_root(
     Generate ROOT file with tracks following helix trajectories.
     
     Phase 13.6.G: Physics-realistic test data generator.
-    Phase 13.6.G+: Units in cm (ALICE convention), exponential pT.
     
     Reuses ToyTrack and ToyCluster classes from toy_nd.py.
     Cluster positions are computed on physical helix trajectories,
@@ -1756,24 +1997,14 @@ def generate_helix_root(
         n_events: Number of events to generate
         tracks_per_event: (min, max) tracks per event
         clusters_per_track: Clusters per track (None = all layers)
-        detector_layers: Radii [cm] for cluster positions
+        detector_layers: Radii [m] for cluster positions
                         Default: ITS layers (7) or full detector (57)
         b_field: Magnetic field strength [Tesla]
         pt_range: (min, max) transverse momentum [GeV]
-                  Distribution: exponential with mean 0.4 GeV
         eta_range: (min, max) pseudorapidity
         seed: Random seed for reproducibility
         filename: Output filename (default: tempfile)
-        full_detector: If True, use all 57 layers (ITS+TPC); else use 7 ITS layers
-        
-    Detector Layers (ALICE-like, cm):
-        ITS (7 layers):  2.3, 3.1, 3.9, 7.6, 15, 24, 40 cm
-        TPC (50 layers): 85 to 245 cm
-        
-    Track Physics:
-        - pT: Exponential distribution, slope -0.4 GeV (realistic)
-        - Charge: From PDG code (90% pions ±1, 10% helium ±2)
-        - Helix: Curved by B-field, opposite directions for ±charge
+        full_detector: If True, use all 57 layers; else use 7 ITS layers
         
     Returns:
         Path to generated ROOT file
@@ -1781,17 +2012,17 @@ def generate_helix_root(
     Schema:
         event_id: Long64_t
         event_weight: double
-        vertex_x, vertex_y, vertex_z: double [cm]
+        vertex_x, vertex_y, vertex_z: double
         tracks: std::vector<ToyTrack>
-            └── .Pt(), .eta(), .phi(), .pdgCode()
+            └── .Pt(), .eta(), .phi()
             └── .clusters() → std::vector<ToyCluster>
-                 └── .getX(), .getY(), .getZ() [cm] (on helix!)
+                 └── .getX(), .getY(), .getZ() (on helix!)
                  └── .getQ(), .r(), .phi()
     
     Example:
-        >>> filename = generate_helix_root(n_events=100, full_detector=True)
+        >>> filename = generate_helix_root(n_events=100)
         >>> rdf = ROOT.RDataFrame("Events", filename)
-        >>> # Plot shows curved tracks from 2 cm to 245 cm!
+        >>> # Plot shows curved tracks!
         >>> rdf.Define("x", "...).Define("y", "...").Graph("x", "y")
         
     Performance:
@@ -1851,10 +2082,10 @@ def generate_helix_root(
         event_id[0] = evt
         event_weight[0] = 1.0 + 0.1 * rng.random()  # Small variation
         
-        # Vertex position (small spread around origin) [cm]
-        vertex_x[0] = rng.normal(0, 0.01)   # 0.1 mm spread in x
-        vertex_y[0] = rng.normal(0, 0.01)   # 0.1 mm spread in y  
-        vertex_z[0] = rng.normal(0, 5.0)    # 5 cm spread in z
+        # Vertex position (small spread around origin)
+        vertex_x[0] = rng.normal(0, 0.001)  # 1mm spread
+        vertex_y[0] = rng.normal(0, 0.001)
+        vertex_z[0] = rng.normal(0, 0.05)   # 5cm spread in z
         
         tracks.clear()
         
@@ -1862,24 +2093,10 @@ def generate_helix_root(
         n_trk = rng.integers(tracks_per_event[0], tracks_per_event[1] + 1)
         
         # Generate track parameters (vectorized)
-        # Phase 13.6.G+: Exponential pT distribution with mean 0.4 GeV (realistic)
-        # pT = pt_min + exponential(scale=mean) capped at pt_max
-        pt_exp = rng.exponential(scale=0.4, size=n_trk)  # mean = 0.4 GeV
-        pt = np.clip(pt_range[0] + pt_exp, pt_range[0], pt_range[1])
-        
+        pt = rng.uniform(pt_range[0], pt_range[1], n_trk)
         eta = rng.uniform(eta_range[0], eta_range[1], n_trk)
         phi = rng.uniform(-np.pi, np.pi, n_trk)
-        
-        # Charge from PDG: +1 for pion+, -1 for pion-, +-2 for helium (rare)
-        # Use weighted choice: 90% pions, 10% helium
-        pdg_choices = np.array([211, -211, 1000020040, -1000020040])  # pi+, pi-, He4+, He4-
-        pdg_weights = np.array([0.45, 0.45, 0.05, 0.05])
-        pdg_codes = rng.choice(pdg_choices, size=n_trk, p=pdg_weights)
-        
-        # Derive charge from PDG code
-        charge = np.where(np.abs(pdg_codes) == 1000020040, 
-                         np.sign(pdg_codes) * 2,  # Helium: charge +-2
-                         np.sign(pdg_codes))       # Pions: charge +-1
+        charge = rng.choice([-1, 1], n_trk)
         
         # Compute helix positions for ALL tracks at ALL layers (vectorized)
         x_all, y_all, z_all = compute_helix_positions_vectorized(
@@ -1895,8 +2112,9 @@ def generate_helix_root(
             pz = pt[trk] * np.sinh(eta[trk])
             E = np.sqrt(px**2 + py**2 + pz**2)  # Massless approximation
             
-            # Create track with PDG code
-            track = ROOT.ToyTrack(float(px), float(py), float(pz), float(E), int(pdg_codes[trk]))
+            # Create track with PDG code (pion = 211 for +, -211 for -)
+            pdg = 211 if charge[trk] > 0 else -211
+            track = ROOT.ToyTrack(float(px), float(py), float(pz), float(E), pdg)
             
             # Add clusters at helix positions
             for clus in range(clusters_per_track):

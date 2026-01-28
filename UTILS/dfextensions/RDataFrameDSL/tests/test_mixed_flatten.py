@@ -578,23 +578,47 @@ def test_auto_selects_numpy_for_1d_same_depth():
         f"AUTO should select NUMPY for 1D, got {selected}"
 
 
-def test_depth_detection_rejects_scalar_in_object_array():
+def test_depth_detection_accepts_scalar_in_object_array():
     """
-    P1-2 TEST: Depth detection should reject scalar items in object arrays.
+    Phase 13.6.G+ TEST: Depth detection accepts scalar items in object arrays.
     
-    This protects against malformed input where object array contains
-    scalar elements instead of arrays (which would cause TypeError).
+    ROOT's AsNumpy() returns bool columns as object dtype with Python bool values.
+    This test verifies we correctly detect these as depth 0 (scalar).
+    
+    Previously (P1-2): This raised ValueError - but that breaks draw() with bool columns.
+    Now: We accept scalars in object arrays and treat them as depth 0.
+    
+    APPROVAL REQUEST:
+    - Behavior change: _get_depth_from_data() now returns 0 for scalar-in-object-array
+    - Reason: ROOT returns bool columns as dtype=object with Python bool values
+    - Impact: Fixes draw() with bool selection columns (e.g., isOK)
+    - Risk: Low - scalars in object array are now handled, not rejected
     """
     from RDataFrameDSL.flatten import _get_depth_from_data
     
-    # Malformed: object array with scalar items
-    bad_data = {
+    # Case 1: bool scalars in object array (ROOT's bool column representation)
+    bool_data = {
         'event_id': np.array([100, 101], dtype=np.int64),
-        'bad_column': np.array([42, 99], dtype=object),  # Scalars in object array!
+        'isOK': np.array([True, False], dtype=object),  # ROOT's bool representation
     }
+    depth = _get_depth_from_data(bool_data, 'isOK')
+    assert depth == 0, f"bool in object array should be depth 0, got {depth}"
     
-    with pytest.raises(ValueError, match="scalar elements"):
-        _get_depth_from_data(bad_data, 'bad_column')
+    # Case 2: int scalars in object array
+    int_data = {
+        'event_id': np.array([100, 101], dtype=np.int64),
+        'flag': np.array([42, 99], dtype=object),  # int scalars
+    }
+    depth = _get_depth_from_data(int_data, 'flag')
+    assert depth == 0, f"int in object array should be depth 0, got {depth}"
+    
+    # Case 3: float scalars in object array
+    float_data = {
+        'event_id': np.array([100, 101], dtype=np.int64),
+        'value': np.array([1.5, 2.5], dtype=object),  # float scalars
+    }
+    depth = _get_depth_from_data(float_data, 'value')
+    assert depth == 0, f"float in object array should be depth 0, got {depth}"
 
 
 # =============================================================================
