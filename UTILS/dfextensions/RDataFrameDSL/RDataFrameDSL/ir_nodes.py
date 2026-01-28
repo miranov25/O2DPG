@@ -614,6 +614,8 @@ class MethodBroadcastNode(IRNode):
         method_name: Name of the method to call on each element
         element_type: C++ type of elements (e.g., "TLorentzVector")
         result_element_type: C++ return type of the method (e.g., "double")
+        inner_element_type: For nested broadcasts, the inner element type (e.g., "ToyCluster")
+        is_nested: If True, target is RVec<RVec<Object>> and needs nested loops
         
     Example:
         # tracks.Pt() where tracks is RVec<TLorentzVector>
@@ -625,7 +627,19 @@ class MethodBroadcastNode(IRNode):
         ... )
         # Result type: RVec<double>, rank=1
         
-    Code Generation Pattern:
+    Example (nested):
+        # tracks.clusters().getQ() where tracks.clusters() is RVec<RVec<ToyCluster>>
+        >>> MethodBroadcastNode(
+        ...     target=MethodBroadcastNode(...),  # tracks.clusters()
+        ...     method_name="getQ",
+        ...     element_type="RVec<ToyCluster>",
+        ...     inner_element_type="ToyCluster",
+        ...     result_element_type="double",
+        ...     is_nested=True
+        ... )
+        # Result type: RVec<RVec<double>>, rank=2
+        
+    Code Generation Pattern (simple):
         [&]() -> ROOT::RVec<double> {
             ROOT::RVec<double> result;
             result.reserve(tracks.size());
@@ -634,11 +648,29 @@ class MethodBroadcastNode(IRNode):
             }
             return result;
         }()
+        
+    Code Generation Pattern (nested):
+        [&]() -> ROOT::RVec<ROOT::RVec<double>> {
+            auto outer_input = <target>;
+            ROOT::RVec<ROOT::RVec<double>> result;
+            result.reserve(outer_input.size());
+            for (const auto& inner_vec : outer_input) {
+                ROOT::RVec<double> inner_result;
+                inner_result.reserve(inner_vec.size());
+                for (const auto& elem : inner_vec) {
+                    inner_result.push_back(elem.getQ());
+                }
+                result.push_back(inner_result);
+            }
+            return result;
+        }()
     """
     target: Optional[IRNode] = None
     method_name: str = ""
     element_type: str = ""
     result_element_type: str = ""
+    inner_element_type: str = ""  # Phase 13.6.G+: For nested broadcasts
+    is_nested: bool = False       # Phase 13.6.G+: True for RVec<RVec<T>> targets
     
     def children(self) -> List[IRNode]:
         return [self.target] if self.target else []

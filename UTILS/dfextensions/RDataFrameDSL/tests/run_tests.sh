@@ -162,6 +162,8 @@ ROOT_TEST_FILES=(
     "tests/test_root_integration.py"       # ~21s, 44 tests
     "tests/test_rvec_selection.py"         # ~16s, 33 tests
     "tests/test_dsl_api.py"                # ~8s, 22 tests
+    # Tier 4: Example tests (Phase 13.6.G+)
+    "tests/test_07_dsl_draw.py"            # ~10s, 20 tests (notebook pre-flight)
 )
 
 # =============================================================================

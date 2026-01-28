@@ -1490,12 +1490,51 @@ class CppCodeGenerator:
                 }
                 return result;
             }()
+            
+        Phase 13.6.G+: Nested broadcast for tracks.clusters().getQ():
+            [&]() -> ROOT::RVec<ROOT::RVec<double>> {
+                auto _outer_input = <target>;
+                ROOT::RVec<ROOT::RVec<double>> result;
+                result.reserve(_outer_input.size());
+                for (const auto& _inner_vec : _outer_input) {
+                    ROOT::RVec<double> _inner_result;
+                    _inner_result.reserve(_inner_vec.size());
+                    for (const auto& elem : _inner_vec) {
+                        _inner_result.push_back(elem.getQ());
+                    }
+                    result.push_back(_inner_result);
+                }
+                return result;
+            }()
         """
         target = self._visit(node.target)
         method = node.method_name
         result_type = node.result_element_type
         
-        # Build the RVec result type
+        # Phase 13.6.G+: Handle nested broadcasts (RVec<RVec<T>>)
+        if getattr(node, 'is_nested', False):
+            # Nested case: generate double loop
+            inner_rvec_type = f"ROOT::RVec<{result_type}>"
+            outer_rvec_type = f"ROOT::RVec<{inner_rvec_type}>"
+            
+            return (
+                f"[&]() -> {outer_rvec_type} {{\n"
+                f"    auto _outer_input = {target};\n"
+                f"    {outer_rvec_type} result;\n"
+                f"    result.reserve(_outer_input.size());\n"
+                f"    for (const auto& _inner_vec : _outer_input) {{\n"
+                f"        {inner_rvec_type} _inner_result;\n"
+                f"        _inner_result.reserve(_inner_vec.size());\n"
+                f"        for (const auto& elem : _inner_vec) {{\n"
+                f"            _inner_result.push_back(elem.{method}());\n"
+                f"        }}\n"
+                f"        result.push_back(_inner_result);\n"
+                f"    }}\n"
+                f"    return result;\n"
+                f"}}()"
+            )
+        
+        # Standard case: single loop
         rvec_result_type = f"ROOT::RVec<{result_type}>"
         
         return (

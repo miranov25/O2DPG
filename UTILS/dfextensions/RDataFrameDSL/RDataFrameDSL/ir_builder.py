@@ -506,10 +506,11 @@ class IRBuilder:
     
     def _get_rvec_element_type(self, node: IRNode) -> Optional[str]:
         """
-        Extract element type from RVec node.
+        Extract element type from RVec node (ONE level only).
         
         For RVec<TLorentzVector>, returns "TLorentzVector".
         For RVec<double>, returns "double".
+        For RVec<RVec<ToyCluster>>, returns "RVec<ToyCluster>" (not ToyCluster!).
         
         Handles two schema formats:
         - Full: dtype.cpp_type = 'RVec<TLorentzVector>'
@@ -525,16 +526,56 @@ class IRBuilder:
         if not cpp_type:
             return None
         
-        # Case 1: cpp_type is already a collection type
+        # Case 1: cpp_type is already a collection type - extract ONE level only
         if is_collection_type(cpp_type):
-            element_type, _ = extract_inner_type(cpp_type)
-            return element_type
+            # Phase 13.6.G+: Use _extract_one_level to get immediate element type
+            return self._extract_one_level(cpp_type)
         
         # Case 2: cpp_type is the element type itself (rank=1 implies it's the element)
         if node.rank == 1:
             return cpp_type
         
         return None
+    
+    def _extract_one_level(self, cpp_type: str) -> str:
+        """
+        Extract the immediate element type from a container (ONE level only).
+        
+        Phase 13.6.G+: Unlike extract_inner_type which goes to the innermost type,
+        this extracts just the immediate template argument.
+        
+        Examples:
+            'RVec<ToyTrack>' → 'ToyTrack'
+            'RVec<RVec<ToyCluster>>' → 'RVec<ToyCluster>'
+            'RVec<ROOT::RVec<ToyCluster>>' → 'ROOT::RVec<ToyCluster>'
+            'ROOT::VecOps::RVec<double>' → 'double'
+        """
+        clean = cpp_type.strip()
+        
+        # Handle various RVec formats
+        if clean.startswith("RVec<") and clean.endswith(">"):
+            return clean[5:-1].strip()
+        elif clean.startswith("ROOT::VecOps::RVec<") and clean.endswith(">"):
+            return clean[19:-1].strip()
+        elif "VecOps::RVec<" in clean:
+            start = clean.find("VecOps::RVec<") + 13
+            # Find matching closing >
+            depth = 0
+            for i, c in enumerate(clean[start:]):
+                if c == '<':
+                    depth += 1
+                elif c == '>':
+                    if depth == 0:
+                        return clean[start:start+i].strip()
+                    depth -= 1
+            return clean[start:-1].strip()
+        elif clean.startswith("std::vector<") and clean.endswith(">"):
+            return clean[12:-1].strip()
+        elif clean.startswith("vector<") and clean.endswith(">"):
+            return clean[7:-1].strip()
+        
+        # Fallback: return as-is
+        return clean
     
     def _resolve_broadcast_method(self, element_type: str, method_name: str,
                                    ctx: BuildContext, node: ast.AST) -> Tuple[str, IRType]:
@@ -1620,6 +1661,40 @@ class IRBuilder:
             # Broadcasting: tracks.Pt() → RVec<double>
             element_type = self._get_rvec_element_type(obj)
             
+            # Phase 13.6.G+: Handle nested RVec - chained method broadcast
+            # e.g., tracks.clusters().getQ() where tracks.clusters() returns RVec<RVec<ToyCluster>>
+            # The element_type would be RVec<ToyCluster>
+            is_nested = False
+            inner_element_type = ""
+            
+            if element_type and is_collection_type(element_type):
+                # This is a nested case: element_type is RVec<T>
+                inner_element_type, _ = extract_inner_type(element_type)
+                is_nested = True
+                
+                # Resolve method return type on the INNER element type (e.g., ToyCluster.getQ())
+                return_type_str, ir_type = self._resolve_broadcast_method(
+                    inner_element_type, method_name, ctx, node
+                )
+                
+                # Result is RVec<RVec<return_type>> - use ROOT:: prefixes
+                result_dtype = IRType(IRTypeKind.Object, f"ROOT::RVec<ROOT::RVec<{return_type_str}>>")
+                result_rank = 2  # 2D result
+                
+                return MethodBroadcastNode(
+                    target=obj,
+                    method_name=method_name,
+                    element_type=element_type,
+                    inner_element_type=inner_element_type,
+                    result_element_type=return_type_str,
+                    is_nested=True,
+                    dtype=result_dtype,
+                    rank=result_rank,
+                    is_jagged=True,  # Nested structures are jagged
+                    source_location=self._make_location(node, ctx),
+                )
+            
+            # Standard case: element_type is a simple object (e.g., ToyTrack)
             # Resolve method return type
             return_type_str, ir_type = self._resolve_broadcast_method(
                 element_type, method_name, ctx, node
