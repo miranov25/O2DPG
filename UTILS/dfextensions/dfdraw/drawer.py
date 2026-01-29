@@ -318,6 +318,7 @@ class DFDraw:
         ax=None,
         sample: Optional[int] = None,
         save: Optional[str] = None,
+        figsize: Optional[Tuple[float, float]] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -357,6 +358,8 @@ class DFDraw:
             Maximum points to plot (random sampling).
         save : str, optional
             Save figure to this path.
+        figsize : tuple, optional
+            Figure size as (width, height) in inches.
         **kwargs
             Additional style overrides.
         
@@ -365,6 +368,11 @@ class DFDraw:
         tuple
             (fig, ax, stats_dict)
         """
+        # Handle figsize: create axes if not provided
+        if figsize is not None and ax is None:
+            import matplotlib.pyplot as plt
+            fig, ax = plt.subplots(figsize=figsize)
+        
         # Parse expression to determine dimensionality
         y_expr, x_expr = self._parse_expr(expr)
         
