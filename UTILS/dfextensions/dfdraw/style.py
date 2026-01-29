@@ -67,6 +67,7 @@ DEFAULT_STYLE: Dict[str, Any] = {
     "stats.fontsize": 10,
     "stats.alpha": 0.8,
     "stats.boxstyle": "round",
+    "stats.robust": False,  # Phase 13.6.G.DF: Use robust stats (median, MAD) for 1D
     
     # Legend
     "legend.outside": False,
