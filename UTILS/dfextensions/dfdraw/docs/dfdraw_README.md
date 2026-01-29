@@ -8,6 +8,22 @@ Part of the `dfextensions` toolkit for ALICE experiment calibration and QA at CE
 
 ---
 
+## ⚠️ Breaking Change (Phase 13.6.G.DF)
+
+**Standard deviation now uses population std (ddof=0) to match ROOT.**
+
+As of Phase 13.6.G.DF, `std`, `std_x`, and `std_y` use population standard deviation (ddof=0) instead of sample standard deviation (ddof=1). This matches ROOT's TTree::Draw behavior exactly.
+
+**Impact:** Values are ~6% smaller than previous versions.
+
+```python
+# Example: data = [1, 2, 3, 4, 5]
+# Before (ddof=1): std = 1.5811
+# After (ddof=0):  std = 1.4142  ← Matches ROOT
+```
+
+---
+
 ## Toolkit Architecture
 
 `dfdraw` is part of the loosely-coupled dfextensions toolkit:
@@ -34,7 +50,8 @@ cd UTILS/dfextensions/dfdraw
 pip install -e .
 ```
 
-**Dependencies:** `pandas`, `numpy`, `matplotlib`
+**Dependencies:** `pandas`, `numpy`, `matplotlib`  
+**Optional:** `pyarrow` (for PyArrow Table input)
 
 ---
 
@@ -174,8 +191,9 @@ class DFDraw:
         
         Parameters
         ----------
-        data : DataFrame, AliasDataFrame, or dict
+        data : DataFrame, AliasDataFrame, PyArrow Table, or dict
             Input data. AliasDataFrame is auto-detected via duck typing.
+            PyArrow Tables are converted to pandas internally.
         """
 ```
 
@@ -297,6 +315,8 @@ drawer.hist("pt", group_by="sector", facet=True, ncols=4)
 
 ## Statistics Box
 
+### Basic Usage
+
 ```python
 # Enable stats box
 drawer.hist("x", stats=True)
@@ -308,7 +328,64 @@ drawer.hist("x", stats=["n", "mean", "std", "min", "max"])
 drawer.scatter("y:x", stats=["n", "mean_x", "mean_y", "corr"])
 ```
 
-Available fields: `n`, `mean`, `std`, `min`, `max`, `mean_x`, `mean_y`, `std_x`, `std_y`, `corr`
+### Default Fields by Plot Type (Phase 13.6.G.DF)
+
+Stats box now auto-detects appropriate fields based on plot type:
+
+| Plot Type | Default Fields |
+|-----------|---------------|
+| `hist` | n, mean, std |
+| `hist2d` | n, mean_x, mean_y, std_x, std_y, corr |
+| `scatter` | n, mean_x, mean_y |
+| `profile` | n, mean_x, mean_y |
+| `hexbin` | n, mean_x, mean_y |
+
+### Available Statistics Fields
+
+| Field | Description | Plot Types |
+|-------|-------------|------------|
+| `n` | Entry count | All |
+| `mean` | Arithmetic mean | 1D |
+| `std` | Standard deviation (population, ddof=0) | 1D |
+| `min` | Minimum value | 1D |
+| `max` | Maximum value | 1D |
+| `mean_x` | Mean of x | 2D |
+| `mean_y` | Mean of y | 2D |
+| `std_x` | Std dev of x (population, ddof=0) | 2D |
+| `std_y` | Std dev of y (population, ddof=0) | 2D |
+| `corr` | Pearson correlation | 2D |
+| `median` | 50th percentile | All (robust) |
+| `q25` | 25th percentile | All (robust) |
+| `q75` | 75th percentile | All (robust) |
+| `mad` | Median absolute deviation | All (robust) |
+
+### Range-Aware Statistics (Phase 13.6.G.DF)
+
+Statistics are now computed **only for data within the specified range**, matching ROOT's TTree::Draw behavior:
+
+```python
+# Stats computed on data in [0, 100] only
+drawer.hist("pt", range=(0, 100), stats=True)
+
+# 2D range: stats computed within both axis ranges
+drawer.hist2d("y:x", range=((0, 10), (-5, 5)), stats=True)
+```
+
+### Robust Statistics (Phase 13.6.G.DF)
+
+For non-Gaussian distributions, use robust statistics:
+
+```python
+# Per-plot: request specific robust fields
+drawer.hist("dEdx", stats=["n", "median", "q25", "q75", "mad"])
+
+# Global setting: change 1D defaults to robust
+from dfdraw import set_style
+set_style({"stats.robust": True})
+drawer.hist("dEdx", stats=True)  # Shows: n, median, MAD
+```
+
+**Note:** Robust mode only affects 1D defaults. 2D plots retain standard defaults.
 
 ---
 
@@ -428,6 +505,7 @@ set_style({
     "hist.bins": 100,
     "scatter.alpha": 0.5,
     "stats.show": True,
+    "stats.robust": True,  # Use robust defaults (Phase 13.6.G.DF)
 })
 ```
 
@@ -597,6 +675,10 @@ Test files:
 - `test_batch.py` - Batch processing
 - `test_adf_integration.py` - AliasDataFrame integration
 - `test_validation_display.py` - Statistics box and reference overlay
+- `test_pyarrow_input.py` - PyArrow Table input support
+- `test_stats_enhancements.py` - Statistics enhancements (Phase 13.6.G.DF)
+
+**Total tests:** 310 passing
 
 ---
 
@@ -617,6 +699,7 @@ Test files:
 | `profile.capsize` | 3 | Error bar cap size |
 | `stats.show` | False | Show stats by default |
 | `stats.position` | "upper right" | Stats box position |
+| `stats.robust` | False | Use robust defaults for 1D (Phase 13.6.G.DF) |
 | `colors.palette` | "tab10" | Color palette name |
 
 ---

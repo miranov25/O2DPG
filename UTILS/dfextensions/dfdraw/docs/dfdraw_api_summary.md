@@ -10,9 +10,23 @@
 | `profile.py` | "Profile plot implementation for dfdraw. A profile shows the mean..." | [OK] Present, comprehensive |
 | `facet.py` | "Facet plot utilities for dfdraw. Creates subplot grids..." | [OK] Present |
 | `style.py` | "Style management for dfdraw. Supports: Predefined styles..." | [OK] Present, comprehensive |
-| `stats.py` | "Statistics computation for dfdraw." | [OK] Present (brief) |
+| `stats.py` | "Statistics computation for dfdraw. Phase 13.6.G.DF: Statistics Enhancements..." | [OK] Present, comprehensive |
 
 **Assessment:** All files have module-level docstrings. [OK]
+
+---
+
+## ⚠️ Breaking Change (Phase 13.6.G.DF)
+
+**Standard deviation calculation changed from sample (ddof=1) to population (ddof=0) to match ROOT.**
+
+| Field | Change |
+|-------|--------|
+| `std` | Now uses ddof=0 (population std) |
+| `std_x` | Now uses ddof=0 (population std) |
+| `std_y` | Now uses ddof=0 (population std) |
+
+Values are approximately 6% smaller than previous versions.
 
 ---
 
@@ -22,7 +36,7 @@
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `__init__` | `__init__(self, data)` | Create drawer from DataFrame, AliasDataFrame, or dict |
+| `__init__` | `__init__(self, data)` | Create drawer from DataFrame, AliasDataFrame, PyArrow Table, or dict |
 | `draw` | `draw(expr, type=None, selection=None, color=None, size=None, marker=None, group_by=None, facet=False, bins=None, stats=None, norm=None, title=None, ax=None, sample=None, save=None, **kwargs)` | Universal draw method with auto type detection |
 | `hist` | `hist(expr, bins=None, range=None, norm=None, stats=None, title=None, xlabel=None, ylabel=None, color=None, alpha=None, histtype=None, edgecolor=None, linewidth=None, label=None, group_by=None, top_k=None, stacked=False, **kwargs)` | Draw 1D histogram |
 | `scatter` | `scatter(expr, color=None, size=None, marker=None, stats=None, title=None, xlabel=None, ylabel=None, alpha=None, edgecolors=None, linewidths=None, cmap=None, colorbar=True, clabel=None, group_by=None, top_k=None, jitter=None, **kwargs)` | Draw scatter plot |
@@ -33,6 +47,8 @@
 | `draw_batch` | `draw_batch(specs, save_dir=None, defaults=None, on_error='skip', verbose=True, save_format='png', dpi=150, close_figures=True, **kwargs)` | Batch plot generation from specification dict or YAML/JSON |
 | `add_statistics_box` | `add_statistics_box(ax, values, position='upper right', expected_mean=None, expected_std=None, precision=3, fontsize=8, alpha=0.5)` | Add statistics annotation box to axis |
 | `add_reference_overlay` | `add_reference_overlay(ax, func='gaussian', mu=0, sigma=1, label=None, color='red', linestyle='--', linewidth=1.5, show_legend=True, n_points=100)` | Add reference function overlay scaled to histogram |
+| `backend` | `@property` | Return storage backend type ('pyarrow' or 'pandas') |
+| `memory_info` | `memory_info()` | Return memory usage information |
 
 ### Annotation Methods (Phase 12.4b5)
 
@@ -171,12 +187,123 @@ def add_reference_overlay(
 | `list_styles` | `list_styles()` | List available predefined style names |
 | `get_style_value` | `get_style_value(key, default=None)` | Get single style value |
 
-### stats.py - Functions
+### stats.py - Functions (Phase 13.6.G.DF Updated)
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `compute_stats` | `compute_stats(df, y_col, x_col=None, group_by=None)` | Compute statistics for plotting |
-| `format_stats_box` | `format_stats_box(stats, fields=None)` | Format statistics dict for display |
+| `compute_stats` | `compute_stats(df, y_col, x_col=None, group_by=None, range_x=None, range_y=None, robust=False)` | Compute statistics for plotting |
+| `format_stats_box` | `format_stats_box(stats, fields=None, plot_type=None)` | Format statistics dict for display |
+| `get_default_stats_fields` | `get_default_stats_fields(plot_type, robust=False)` | Get default fields for plot type |
+
+#### `compute_stats()` (Phase 13.6.G.DF)
+
+```python
+def compute_stats(
+    df: pd.DataFrame,
+    y_col: str,
+    x_col: Optional[str] = None,
+    group_by: Optional[str] = None,
+    range_x: Optional[Tuple[float, float]] = None,
+    range_y: Optional[Tuple[float, float]] = None,
+    robust: bool = False,
+) -> pd.DataFrame:
+    """
+    Compute statistics for plotting.
+    
+    Parameters
+    ----------
+    df : DataFrame
+        Input data.
+    y_col : str
+        Primary column (or only column for 1D).
+    x_col : str, optional
+        Secondary column for 2D stats.
+    group_by : str, optional
+        Compute stats per group.
+    range_x : tuple, optional
+        (min, max) inclusive range for x values.
+        For 1D plots, this filters the primary variable.
+        For 2D plots, this filters the x-axis variable.
+    range_y : tuple, optional
+        (min, max) inclusive range for y values (2D only).
+    robust : bool, default False
+        If True, include robust statistics (median, q25, q75, mad).
+    
+    Returns
+    -------
+    DataFrame
+        Statistics table.
+    
+    Notes
+    -----
+    Phase 13.6.G.DF Breaking Change:
+        std, std_x, std_y now use population standard deviation (ddof=0)
+        to match ROOT's TTree::Draw behavior.
+    """
+```
+
+#### `format_stats_box()` (Phase 13.6.G.DF)
+
+```python
+def format_stats_box(
+    stats: Dict[str, Any],
+    fields: Optional[List[str]] = None,
+    plot_type: Optional[str] = None,
+) -> str:
+    """
+    Format statistics for display in plot.
+    
+    Parameters
+    ----------
+    stats : dict
+        Statistics dictionary.
+    fields : list, optional
+        Fields to include. If None, auto-detected from plot_type.
+    plot_type : str, optional
+        Plot type hint: 'hist', 'hist2d', 'scatter', 'profile', 'hexbin'
+        Used to select appropriate default fields.
+        
+        Default fields by plot_type:
+        - 'hist': ['n', 'mean', 'std']
+        - 'hist2d': ['n', 'mean_x', 'mean_y', 'std_x', 'std_y', 'corr']
+        - 'scatter', 'profile', 'hexbin': ['n', 'mean_x', 'mean_y']
+    
+    Returns
+    -------
+    str
+        Formatted text for stats box.
+    """
+```
+
+#### `get_default_stats_fields()` (Phase 13.6.G.DF - NEW)
+
+```python
+def get_default_stats_fields(
+    plot_type: str,
+    robust: bool = False,
+) -> List[str]:
+    """
+    Get default statistics fields for a plot type.
+    
+    Parameters
+    ----------
+    plot_type : str
+        Plot type: 'hist', 'hist2d', 'scatter', 'profile', 'hexbin'
+    robust : bool, default False
+        If True, use robust defaults for 1D plots.
+    
+    Returns
+    -------
+    list
+        List of field names.
+    
+    Notes
+    -----
+    When robust=True:
+    - 1D defaults change to ['n', 'median', 'mad']
+    - 2D defaults are unchanged
+    """
+```
 
 ---
 
@@ -187,23 +314,42 @@ All draw functions return `(fig, ax, stats_dict)`:
 ```python
 stats_dict = {
     # 1D stats
-    "n": int,           # Number of entries
+    "n": int,           # Number of entries (within range)
     "mean": float,      # Mean value
-    "std": float,       # Standard deviation
+    "std": float,       # Standard deviation (population, ddof=0)
     "min": float,       # Minimum
     "max": float,       # Maximum
     
     # 2D stats (additional)
     "mean_x": float,    # Mean of x
     "mean_y": float,    # Mean of y
-    "std_x": float,     # Std of x
-    "std_y": float,     # Std of y
+    "std_x": float,     # Std of x (population, ddof=0)
+    "std_y": float,     # Std of y (population, ddof=0)
     "corr": float,      # Correlation coefficient
+    
+    # Robust stats (when robust=True)
+    "median": float,    # 50th percentile
+    "q25": float,       # 25th percentile
+    "q75": float,       # 75th percentile
+    "mad": float,       # Median absolute deviation
     
     # Group stats (additional)
     "grouped": bool,    # Was group_by used?
 }
 ```
+
+---
+
+## Default Stats Fields by Plot Type (Phase 13.6.G.DF)
+
+| Plot Type | Default Fields |
+|-----------|----------------|
+| `hist` | `['n', 'mean', 'std']` |
+| `hist` (robust=True) | `['n', 'median', 'mad']` |
+| `hist2d` | `['n', 'mean_x', 'mean_y', 'std_x', 'std_y', 'corr']` |
+| `scatter` | `['n', 'mean_x', 'mean_y']` |
+| `profile` | `['n', 'mean_x', 'mean_y']` |
+| `hexbin` | `['n', 'mean_x', 'mean_y']` |
 
 ---
 
@@ -215,6 +361,20 @@ stats_dict = {
 | `"publication"` | Smaller (6x4.5), no grid, step histograms, no legend frame |
 | `"presentation"` | Larger (10x7), big fonts, 80pt markers |
 | `"minimal"` | No grid, no edges, no legend frame |
+
+---
+
+## Style Keys (Phase 13.6.G.DF Updated)
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `stats.show` | False | Show stats box by default |
+| `stats.position` | "upper right" | Stats box position |
+| `stats.fields` | ["n", "mean", "std"] | Default stats fields |
+| `stats.fontsize` | 10 | Stats box font size |
+| `stats.alpha` | 0.8 | Stats box transparency |
+| `stats.boxstyle` | "round" | Stats box style |
+| `stats.robust` | False | **NEW** Use robust defaults for 1D (median, MAD) |
 
 ---
 
@@ -239,6 +399,20 @@ stats_dict = {
 
 ---
 
+## Range Semantics (Phase 13.6.G.DF)
+
+| Plot Type | Range Format | Stats Application |
+|-----------|--------------|-------------------|
+| `hist` | `range=(min, max)` | Filter values, inclusive [min, max] |
+| `hist2d` | `range=((xmin, xmax), (ymin, ymax))` | Filter both axes, inclusive |
+| `scatter` | No range parameter | Stats on all plotted data |
+| `profile` | `range=(min, max)` | Filter x values only |
+| `hexbin` | `extent=(xmin, xmax, ymin, ymax)` | Stats filter uses `extent` |
+
+**Note:** For hexbin, if both `extent` and `range` are provided, `extent` takes precedence.
+
+---
+
 ## Comparison to ROOT TTree::Draw
 
 | ROOT | dfdraw | Notes |
@@ -249,6 +423,8 @@ stats_dict = {
 | `tree->Draw("y:x", "", "prof")` | `drawer.draw("y:x", type="profile")` | Profile |
 | `tree->Draw("y:x", "", "colz")` | `drawer.draw("y:x", type="hist2d")` | 2D histogram |
 | `tree->Draw("y:x>>h(100,0,1)")` | `drawer.draw("y:x", bins=100, range=(0,1))` | Custom binning |
+
+**Phase 13.6.G.DF:** Stats now computed within range, matching ROOT behavior.
 
 ---
 
@@ -267,5 +443,31 @@ stats_dict = {
 | `test_batch.py` | Batch processing, YAML/JSON loading, error handling |
 | `test_adf_integration.py` | AliasDataFrame duck-typing, axis titles |
 | `test_validation_display.py` | Statistics box, reference overlay |
+| `test_pyarrow_input.py` | PyArrow Table input support |
+| `test_stats_enhancements.py` | **NEW** Statistics enhancements (Phase 13.6.G.DF) |
 
-**Total tests:** 232 passing
+**Total tests:** 310 passing
+
+---
+
+## Phase 13.6.G.DF Summary
+
+### New Features
+
+1. **Auto-detect default stats fields** by plot type
+2. **Range-aware stats** — computed within specified range only
+3. **Robust statistics** — median, q25, q75, MAD
+4. **`stats.robust` style key** — global robust mode for 1D
+
+### Breaking Change
+
+- `std`, `std_x`, `std_y` now use population std (ddof=0) to match ROOT
+
+### New Functions
+
+- `get_default_stats_fields(plot_type, robust)` — helper for default fields
+
+### Updated Signatures
+
+- `compute_stats(..., range_x=None, range_y=None, robust=False)`
+- `format_stats_box(..., plot_type=None)`
