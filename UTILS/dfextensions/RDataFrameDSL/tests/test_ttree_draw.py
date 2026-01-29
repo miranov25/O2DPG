@@ -142,7 +142,7 @@ class TestTrackLevelQueries:
         
         # Required columns
         assert 'event_id' in df.columns
-        assert 'track_idx' in df.columns
+        assert 'idx_1' in df.columns
         assert 'track_pt' in df.columns
     
     def test_TD6_multiple_1d_same_structure(self, alice_data_xs):
@@ -159,7 +159,7 @@ class TestTrackLevelQueries:
         assert len(df['track_pt']) == len(df['track_phi'])
         
         # Values should be aligned (same track_idx)
-        assert 'track_idx' in df.columns
+        assert 'idx_1' in df.columns
     
     def test_TD7_track_idx_zero_based(self, alice_data_xs):
         """track_idx is 0-based within each event."""
@@ -175,10 +175,10 @@ class TestTrackLevelQueries:
         first_event = df[df['event_id'] == df['event_id'].iloc[0]]
         if len(first_event) > 0:
             # track_idx should start at 0
-            assert first_event['track_idx'].min() == 0
+            assert first_event['idx_1'].min() == 0
             # Should be contiguous
             expected_idx = np.arange(len(first_event))
-            np.testing.assert_array_equal(first_event['track_idx'].values, expected_idx)
+            np.testing.assert_array_equal(first_event['idx_1'].values, expected_idx)
     
     def test_TD8_mixed_1d_scalar(self, alice_data_xs):
         """Mixed 1D + scalar columns (TTree::Draw style)."""
@@ -260,8 +260,8 @@ class TestClusterLevelQueries:
         
         # Should have one row per cluster
         assert 'event_id' in df.columns
-        assert 'track_idx' in df.columns
-        assert 'cluster_idx' in df.columns
+        assert 'idx_1' in df.columns
+        assert 'idx_2' in df.columns
         assert 'cluster_Q' in df.columns
         
         # Count total clusters
@@ -283,13 +283,13 @@ class TestClusterLevelQueries:
         )
         
         # Result should be at cluster level
-        assert 'cluster_idx' in df.columns
+        assert 'idx_2' in df.columns
         
         # track_pt should be replicated for each cluster
         assert 'track_pt' in df.columns
         
         # Verify replication: all clusters in a track should have same track_pt
-        for (event_id, track_idx), group in df.groupby(['event_id', 'track_idx']):
+        for (event_id, track_idx), group in df.groupby(['event_id', 'idx_1']):
             if len(group) > 1:
                 assert group['track_pt'].nunique() == 1
     
@@ -310,8 +310,8 @@ class TestClusterLevelQueries:
         
         # Index columns present
         assert 'event_id' in df.columns
-        assert 'track_idx' in df.columns
-        assert 'cluster_idx' in df.columns
+        assert 'idx_1' in df.columns
+        assert 'idx_2' in df.columns
     
     def test_TD14_multiple_2d_columns(self, alice_data_xs):
         """Multiple 2D columns with same structure."""

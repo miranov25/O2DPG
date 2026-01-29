@@ -170,7 +170,7 @@ class TestStructuralInvariance:
             parent_id_column='event_id'
         )
         
-        key_cols = ['event_id', 'track_idx', 'cluster_idx']
+        key_cols = ['event_id', 'idx_1', 'idx_2']
         duplicates = df.duplicated(subset=key_cols).sum()
         
         assert duplicates == 0, \
@@ -194,7 +194,7 @@ class TestStructuralInvariance:
             parent_id_column='event_id'
         )
         
-        key_cols = ['event_id', 'track_idx']
+        key_cols = ['event_id', 'idx_1']
         duplicates = df.duplicated(subset=key_cols).sum()
         
         assert duplicates == 0, \
@@ -255,7 +255,7 @@ class TestStructuralInvariance:
         )
         
         # Per-track sum from groupby
-        gb_sums = df.groupby(['event_id', 'track_idx'])['cluster_Q'].sum()
+        gb_sums = df.groupby(['event_id', 'idx_1'])['cluster_Q'].sum()
         
         # Verify against original nested structure
         for event_id in range(len(alice_data_xs['cluster_Q'])):
@@ -285,7 +285,7 @@ class TestStructuralInvariance:
         )
         
         # Per-track count from groupby
-        gb_counts = df.groupby(['event_id', 'track_idx'])['cluster_Q'].count()
+        gb_counts = df.groupby(['event_id', 'idx_1'])['cluster_Q'].count()
         
         # Verify against original nested structure
         for event_id in range(len(alice_data_xs['cluster_Q'])):
@@ -351,12 +351,12 @@ class TestStructuralInvariance:
             f"event_id dtype: expected integer, got {df['event_id'].dtype}"
         
         # track_idx should be integer
-        assert np.issubdtype(df['track_idx'].dtype, np.integer), \
-            f"track_idx dtype: expected integer, got {df['track_idx'].dtype}"
+        assert np.issubdtype(df['idx_1'].dtype, np.integer), \
+            f"track_idx dtype: expected integer, got {df['idx_1'].dtype}"
         
         # cluster_idx should be integer
-        assert np.issubdtype(df['cluster_idx'].dtype, np.integer), \
-            f"cluster_idx dtype: expected integer, got {df['cluster_idx'].dtype}"
+        assert np.issubdtype(df['idx_2'].dtype, np.integer), \
+            f"cluster_idx dtype: expected integer, got {df['idx_2'].dtype}"
     
     @pytest.mark.feature("struct_dtype")
     @pytest.mark.type_a
@@ -387,7 +387,7 @@ class TestStructuralInvariance:
         assert not df['event_id'].isna().any(), \
             f"Found NaN values in event_id"
         
-        assert not df['track_idx'].isna().any(), \
+        assert not df['idx_1'].isna().any(), \
             f"Found NaN values in track_idx"
 
 
@@ -446,7 +446,7 @@ class TestStructuralInvarianceSimple:
             parent_id_column='event_id'
         )
         
-        for (event_id, track_idx), group in df.groupby(['event_id', 'track_idx']):
+        for (event_id, track_idx), group in df.groupby(['event_id', 'idx_1']):
             # Get original array
             original = simple_range_data['cluster_Q'][event_id][track_idx]
             

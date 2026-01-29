@@ -305,7 +305,7 @@ class TestDepthCombinations:
             parent_id_column='event_id'
         )
         
-        for (event_id, track_idx), group in df.groupby(['event_id', 'track_idx']):
+        for (event_id, track_idx), group in df.groupby(['event_id', 'idx_1']):
             unique_values = group['track_pt'].nunique()
             assert unique_values == 1, \
                 f"Event {event_id}, Track {track_idx}: track_pt varies across clusters"
@@ -532,7 +532,7 @@ class TestDepthCombinationsToy:
         )
         
         # Verify track_pt consistent within each (event, track) group
-        for (event_id, track_idx), group in df.groupby(['event_id', 'track_idx']):
+        for (event_id, track_idx), group in df.groupby(['event_id', 'idx_1']):
             unique_pt = group['track_pt'].nunique()
             assert unique_pt == 1, \
                 f"Event {event_id}, Track {track_idx}: track_pt not constant"

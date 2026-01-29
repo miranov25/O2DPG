@@ -67,7 +67,7 @@ class TestToPandas:
         
         assert isinstance(df, pd.DataFrame)
         assert 'track_pt' in df.columns
-        assert 'track_idx' in df.columns  # Auto-added for 1D
+        assert 'idx_1' in df.columns  # Auto-added for 1D
         assert len(df) > 0
     
     @pytest.mark.feature("api_to_pandas")
@@ -86,8 +86,8 @@ class TestToPandas:
         
         assert isinstance(df, pd.DataFrame)
         assert 'cluster_Q' in df.columns
-        assert 'track_idx' in df.columns
-        assert 'cluster_idx' in df.columns  # Auto-added for 2D
+        assert 'idx_1' in df.columns
+        assert 'idx_2' in df.columns  # Auto-added for 2D
         assert len(df) > 0
     
     @pytest.mark.feature("api_to_pandas")

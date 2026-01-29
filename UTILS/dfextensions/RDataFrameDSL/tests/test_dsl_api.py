@@ -248,7 +248,7 @@ class MockDSLCompiler:
         
         if 'clusters' in tables and len(tables['clusters']) > 0:
             clusters_adf = AliasDataFrame(tables['clusters'])
-            adf.register_subframe('clusters', clusters_adf, [parent_id_column, 'track_idx'])
+            adf.register_subframe('clusters', clusters_adf, [parent_id_column, 'idx_1'])
         
         adf._schema['__meta__'].update({
             'source': 'RDataFrameDSL',
@@ -315,7 +315,7 @@ class TestDSLToPandasAPI:
         # Verify output structure
         assert isinstance(df, pd.DataFrame)
         assert 'event_id' in df.columns
-        assert 'track_idx' in df.columns
+        assert 'idx_1' in df.columns
         assert 'track_pt' in df.columns
         assert 'track_phi' in df.columns
         
@@ -332,8 +332,8 @@ class TestDSLToPandasAPI:
         df = dsl.to_pandas(rdf, ['cluster_Q', 'track_pt', 'n_tracks'])
         
         # Should be at cluster level
-        assert 'cluster_idx' in df.columns
-        assert 'track_idx' in df.columns
+        assert 'idx_2' in df.columns
+        assert 'idx_1' in df.columns
         assert 'event_id' in df.columns
         
         # 1D and scalar should be replicated

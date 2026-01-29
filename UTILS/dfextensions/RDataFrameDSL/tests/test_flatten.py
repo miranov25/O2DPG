@@ -133,7 +133,7 @@ class TestFlattenPrimitives:
         
         # Should have correct columns
         assert 'event_id' in df.columns
-        assert 'track_idx' in df.columns
+        assert 'idx_1' in df.columns
         assert 'track_pt' in df.columns
     
     @pytest.mark.parametrize("backend", AVAILABLE_BACKENDS)
@@ -162,7 +162,7 @@ class TestFlattenPrimitives:
         
         # Track indices should be 0-based within each event
         expected_track_idx = np.array([0, 1, 0, 1, 2, 0])
-        np.testing.assert_array_equal(df['track_idx'].values, expected_track_idx)
+        np.testing.assert_array_equal(df['idx_1'].values, expected_track_idx)
     
     @pytest.mark.parametrize("backend", AVAILABLE_BACKENDS)
     def test_FL4_values_match_original(self, simple_1level_data, backend):
@@ -247,7 +247,7 @@ class TestFlattenPrimitives:
         assert len(df) == 7
         
         # Should have cluster_idx column
-        assert 'cluster_idx' in df.columns
+        assert 'idx_2' in df.columns
         
         # Values should be flattened
         expected_Q = np.array([10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0])
@@ -269,11 +269,11 @@ class TestFlattenPrimitives:
         
         # Track indices (0-based within event)
         expected_track_idx = np.array([0, 0, 1, 1, 1, 0, 0])
-        np.testing.assert_array_equal(df['track_idx'].values, expected_track_idx)
+        np.testing.assert_array_equal(df['idx_1'].values, expected_track_idx)
         
         # Cluster indices (0-based within track)
         expected_cluster_idx = np.array([0, 1, 0, 1, 2, 0, 1])
-        np.testing.assert_array_equal(df['cluster_idx'].values, expected_cluster_idx)
+        np.testing.assert_array_equal(df['idx_2'].values, expected_cluster_idx)
     
     def test_FL10_all_backends_same_result(self, simple_1level_data):
         """FL10: All backends produce same result (exact bit equality)."""
@@ -396,7 +396,7 @@ class TestFlattenStructs:
         assert 'hit_x' in df.columns
         assert 'hit_y' in df.columns
         assert 'hit_z' in df.columns
-        assert 'track_idx' in df.columns
+        assert 'idx_1' in df.columns
         
         # Values aligned correctly
         expected_x = np.array([1.0, 2.0, 3.0])
@@ -445,8 +445,8 @@ class TestFlattenStructs:
         assert len(df) == 3
         
         # Should have 2-level indices
-        assert 'track_idx' in df.columns
-        assert 'cluster_idx' in df.columns
+        assert 'idx_1' in df.columns
+        assert 'idx_2' in df.columns
         
         # Values correct
         expected_x = np.array([1.0, 2.0, 3.0])
@@ -496,8 +496,8 @@ class TestFlattenStructs:
         
         # All 4 columns + indices
         assert all(col in df.columns for col in ['cluster_Q', 'cluster_x', 'cluster_y', 'cluster_z'])
-        assert 'track_idx' in df.columns
-        assert 'cluster_idx' in df.columns
+        assert 'idx_1' in df.columns
+        assert 'idx_2' in df.columns
 
 
 # =============================================================================
@@ -616,7 +616,7 @@ class TestFlattenDSLComputed:
         expected_track_idx = np.array([0, 1, 2, 0, 1])
         
         np.testing.assert_array_equal(df['event_id'].values, expected_event_ids)
-        np.testing.assert_array_equal(df['track_idx'].values, expected_track_idx)
+        np.testing.assert_array_equal(df['idx_1'].values, expected_track_idx)
         
         # Correct values
         expected_pts = np.array([1.5, 2.5, 3.5, 4.5, 5.5])
@@ -869,12 +869,12 @@ class TestFlattenIntegration:
         )
         
         # AliasDataFrame expects: event_id, track_idx, data columns
-        required_columns = ['event_id', 'track_idx', 'track_pt', 'track_eta']
+        required_columns = ['event_id', 'idx_1', 'track_pt', 'track_eta']
         assert all(col in df.columns for col in required_columns)
         
         # Dtypes should be preserved
         assert df['event_id'].dtype == np.int64
-        assert df['track_idx'].dtype == np.int64
+        assert df['idx_1'].dtype == np.int64
         assert df['track_pt'].dtype == np.float64
     
     def test_INT3_dfdraw_compatible(self, integration_data):

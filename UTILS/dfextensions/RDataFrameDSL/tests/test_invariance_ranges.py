@@ -137,11 +137,11 @@ class TestSlidingRangesDSL:
             df = dsl.to_pandas(rdf, ['sliced_pt', 'event_id'])
             
             # flatten auto-adds track_idx for 1D columns
-            assert 'track_idx' in df.columns, "track_idx should be auto-generated"
+            assert 'idx_1' in df.columns, "track_idx should be auto-generated"
             
             # Within each event, track_idx should be 0, 1 (in order)
             for event_id, group in df.groupby('event_id'):
-                track_indices = group['track_idx'].values
+                track_indices = group['idx_1'].values
                 if len(track_indices) >= 2:
                     assert track_indices[0] == 0, "First track should be idx 0"
                     assert track_indices[1] == 1, "Second track should be idx 1"
@@ -191,12 +191,12 @@ class TestSlidingRangesDSL:
             assert len(df) > 0, "No rows returned"
             
             # Verify track_idx and cluster_idx are auto-generated
-            assert 'track_idx' in df.columns, "track_idx should be auto-generated for 2D"
-            assert 'cluster_idx' in df.columns, "cluster_idx should be auto-generated for 2D"
+            assert 'idx_1' in df.columns, "track_idx should be auto-generated for 2D"
+            assert 'idx_2' in df.columns, "cluster_idx should be auto-generated for 2D"
             
             # Each event should have at most 3 tracks
             for event_id, group in df.groupby('event_id'):
-                max_track_idx = group['track_idx'].max()
+                max_track_idx = group['idx_1'].max()
                 assert max_track_idx <= 2, \
                     f"Event {event_id}: expected max track_idx=2 (3 tracks), got {max_track_idx}"
                     
@@ -605,7 +605,7 @@ class TestSlidingRangesSimple:
         )
         
         # For each track, compute sliding window sums
-        for (event_id, track_idx), group in df.groupby(['event_id', 'track_idx']):
+        for (event_id, track_idx), group in df.groupby(['event_id', 'idx_1']):
             Q_values = group['cluster_Q'].values
             n_clusters = len(Q_values)
             
@@ -622,7 +622,7 @@ class TestSlidingRangesSimple:
         """
         Per-track cluster sum matches nested structure.
         
-        Invariance: groupby(['event_id', 'track_idx']).sum() matches
+        Invariance: groupby(['event_id', 'idx_1']).sum() matches
                    original nested sum
         
         Type: A (Engine)
@@ -637,7 +637,7 @@ class TestSlidingRangesSimple:
         )
         
         # Compute sums from flattened
-        flat_sums = df.groupby(['event_id', 'track_idx'])['cluster_Q'].sum()
+        flat_sums = df.groupby(['event_id', 'idx_1'])['cluster_Q'].sum()
         
         # Verify against original nested structure
         for event_id in range(len(simple_range_data['cluster_Q'])):

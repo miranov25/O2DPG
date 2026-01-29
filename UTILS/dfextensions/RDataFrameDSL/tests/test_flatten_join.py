@@ -145,13 +145,13 @@ class TestMixedDepthFlatten:
         
         # Should have index columns
         assert 'event_id' in df.columns
-        assert 'track_idx' in df.columns
-        assert 'cluster_idx' in df.columns
+        assert 'idx_1' in df.columns
+        assert 'idx_2' in df.columns
         
         # Verify broadcast: each cluster has correct track_pt
         for _, row in df.iterrows():
             evt = int(row['event_id'])
-            trk = int(row['track_idx'])
+            trk = int(row['idx_1'])
             expected_pt = mixed_depth_data['track_pt'][evt][trk]
             assert row['track_pt'] == expected_pt
     
@@ -189,7 +189,7 @@ class TestMixedDepthFlatten:
         assert len(df) == 7
         
         # Should have track_idx
-        assert 'track_idx' in df.columns
+        assert 'idx_1' in df.columns
         
         # Verify broadcast
         for _, row in df.iterrows():
@@ -225,8 +225,8 @@ class TestThreeLevelJoin:
         # Verify all broadcasts
         for _, row in df.iterrows():
             evt = int(row['event_id'])
-            trk = int(row['track_idx'])
-            clus = int(row['cluster_idx'])
+            trk = int(row['idx_1'])
+            clus = int(row['idx_2'])
             
             # Check cluster_Q value
             expected_Q = mixed_depth_data['cluster_Q'][evt][trk][clus]

@@ -100,7 +100,7 @@ def test_T1_scalar_plus_1d(scalar_1d_data):
     assert len(df) == 5
     
     # Columns present
-    assert list(df.columns) == ['event_id', 'multiplicity', 'track_idx', 'track_pt']
+    assert list(df.columns) == ['event_id', 'multiplicity', 'idx_1', 'track_pt']
     
     # Scalar replicated correctly
     expected_mult = np.array([2, 2, 3, 3, 3])
@@ -146,7 +146,7 @@ def test_T2_2d_plus_1d():
     
     # Track indices correct (replicated per cluster)
     expected_track_idx = np.array([0, 0, 1, 2, 2, 2])
-    np.testing.assert_array_equal(df['track_idx'].values, expected_track_idx)
+    np.testing.assert_array_equal(df['idx_1'].values, expected_track_idx)
 
 
 # =============================================================================
@@ -165,7 +165,7 @@ def test_T3_2d_plus_1d_plus_scalar(full_mixed_data):
     
     # All columns present in correct order
     assert list(df.columns) == [
-        'event_id', 'multiplicity', 'track_idx', 'track_pt', 'cluster_idx', 'cluster_Q'
+        'event_id', 'multiplicity', 'idx_1', 'track_pt', 'idx_2', 'cluster_Q'
     ]
     
     # Scalar replicated to all 6 rows
@@ -209,11 +209,11 @@ def test_T5_empty_track(empty_track_data):
     assert len(df) == 3
     
     # Track 0 not present (no clusters)
-    assert 0 not in df['track_idx'].values
+    assert 0 not in df['idx_1'].values
     
     # Track 1 and 2 present
-    assert 1 in df['track_idx'].values
-    assert 2 in df['track_idx'].values
+    assert 1 in df['idx_1'].values
+    assert 2 in df['idx_1'].values
 
 
 # =============================================================================
@@ -234,8 +234,8 @@ def test_T6_scalars_only():
     assert len(df) == 3
     
     # No index columns
-    assert 'track_idx' not in df.columns
-    assert 'cluster_idx' not in df.columns
+    assert 'idx_1' not in df.columns
+    assert 'idx_2' not in df.columns
 
 
 # =============================================================================
@@ -257,7 +257,7 @@ def test_T7_backward_compat_rvec_columns():
     
     # Still works
     assert len(df) == 3
-    assert list(df.columns) == ['event_id', 'track_idx', 'track_pt']
+    assert list(df.columns) == ['event_id', 'idx_1', 'track_pt']
 
 
 # =============================================================================
@@ -295,11 +295,11 @@ def test_T8_normalized_full_mixed():
     
     # Tracks table: 3 rows (2 + 1)
     assert len(tables['tracks']) == 3
-    assert list(tables['tracks'].columns) == ['event_id', 'track_idx', 'track_pt']
+    assert list(tables['tracks'].columns) == ['event_id', 'idx_1', 'track_pt']
     
     # Clusters table: 5 rows (2 + 1 + 2)
     assert len(tables['clusters']) == 5
-    assert list(tables['clusters'].columns) == ['event_id', 'track_idx', 'cluster_idx', 'cluster_Q']
+    assert list(tables['clusters'].columns) == ['event_id', 'idx_1', 'idx_2', 'cluster_Q']
     
     # No track_pt in clusters (normalized, not replicated)
     assert 'track_pt' not in tables['clusters'].columns
@@ -335,7 +335,7 @@ def test_T9_normalized_joinable():
     
     # Join clusters with tracks
     clusters_with_track = tables['clusters'].merge(
-        tables['tracks'], on=['event_id', 'track_idx']
+        tables['tracks'], on=['event_id', 'idx_1']
     )
     assert len(clusters_with_track) == 6
     assert 'track_pt' in clusters_with_track.columns

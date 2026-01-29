@@ -270,7 +270,7 @@ class TestMemberFunctionsEngineTests:
         # Add weighted column
         df['weighted_Q'] = df['track_pt'] * df['cluster_Q']
         
-        for (event_id, track_idx), group in df.groupby(['event_id', 'track_idx']):
+        for (event_id, track_idx), group in df.groupby(['event_id', 'idx_1']):
             pt = group['track_pt'].iloc[0]  # Same for all clusters
             sum_weighted = group['weighted_Q'].sum()
             sum_Q = group['cluster_Q'].sum()

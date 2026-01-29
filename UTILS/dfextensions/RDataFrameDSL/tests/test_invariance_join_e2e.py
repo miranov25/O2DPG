@@ -80,12 +80,12 @@ class TestJoinWithRDataFrame:
         
         # Should have index columns for depth 2
         assert 'event_id' in df.columns
-        assert 'track_idx' in df.columns
-        assert 'cluster_idx' in df.columns
+        assert 'idx_1' in df.columns
+        assert 'idx_2' in df.columns
         
         # P0 INVARIANCE: track_pt must be constant within (event_id, track_idx)
         # This verifies 1D → 2D broadcast correctness
-        broadcast_check = df.groupby(['event_id', 'track_idx'])['track_pt'].nunique()
+        broadcast_check = df.groupby(['event_id', 'idx_1'])['track_pt'].nunique()
         assert (broadcast_check == 1).all(), \
             "track_pt broadcast failed: varies within (event_id, track_idx) group"
     
@@ -140,7 +140,7 @@ class TestJoinWithRDataFrame:
         assert len(df) > 0, "No rows returned"
         assert 'track_pt' in df.columns
         assert 'event_weight' in df.columns
-        assert 'track_idx' in df.columns
+        assert 'idx_1' in df.columns
         
         # Vectorized check: broadcast correctness
         assert (df['event_weight'] == df['event_id'] + 1).all(), \
@@ -172,14 +172,14 @@ class TestJoinWithRDataFrame:
         assert 'event_weight' in df.columns
         
         # Output should be at cluster level (depth 2)
-        assert 'cluster_idx' in df.columns
+        assert 'idx_2' in df.columns
         
         # P0 INVARIANCE: event_weight broadcast to cluster level
         assert (df['event_weight'] == df['event_id'] + 1).all(), \
             "event_weight invariant violated in 3-depth join"
         
         # P0 INVARIANCE: track_pt constant within (event_id, track_idx)
-        broadcast_check = df.groupby(['event_id', 'track_idx'])['track_pt'].nunique()
+        broadcast_check = df.groupby(['event_id', 'idx_1'])['track_pt'].nunique()
         assert (broadcast_check == 1).all(), \
             "track_pt broadcast failed in 3-depth join"
 
@@ -337,7 +337,7 @@ class TestJoinInvarianceE2E:
         )
         
         # INVARIANT 1: track_pt constant within (event_id, track_idx)
-        broadcast_check = df.groupby(['event_id', 'track_idx'])['track_pt'].nunique()
+        broadcast_check = df.groupby(['event_id', 'idx_1'])['track_pt'].nunique()
         assert (broadcast_check == 1).all(), \
             "track_pt broadcast failed: varies within (event_id, track_idx) group"
         
@@ -346,7 +346,7 @@ class TestJoinInvarianceE2E:
         # track_pt[t] = sqrt((3*base)^2 + (4*base)^2) = 5*base = 5 * 5 * (t+1) = 25*(t+1)
         # Actually the formula is: pt = 5.0 * (track_idx + 1) for the base
         # Let's verify the pattern: track_pt should be deterministic per track_idx
-        unique_tracks = df.groupby('track_idx')['track_pt'].first()
+        unique_tracks = df.groupby('idx_1')['track_pt'].first()
         
         # Check monotonicity: track_pt should increase with track_idx
         assert unique_tracks.is_monotonic_increasing, \
@@ -375,7 +375,7 @@ class TestJoinInvarianceE2E:
         )
         
         # Vectorized check: cluster_Q follows invariant pattern
-        expected_Q = 1000.0 * df['event_id'] + 100.0 * df['track_idx'] + df['cluster_idx']
+        expected_Q = 1000.0 * df['event_id'] + 100.0 * df['idx_1'] + df['idx_2']
         assert (df['cluster_Q'] == expected_Q).all(), \
             "cluster_Q invariant violated: expected 1000*e + 100*t + c"
     
