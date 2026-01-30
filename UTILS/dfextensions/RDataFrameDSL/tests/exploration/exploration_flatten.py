@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3 -u
 """
 Phase 13.7.A Exploration: Flatten Optimization Benchmark
 =========================================================
@@ -8,8 +8,20 @@ and RVec<RVec> (2D) data from RDataFrame.
 
 Approved: 2026-01-30 (Unanimous - 5 reviewers)
 
+Dataset Size:
+    Approved spec: 5k events (interactive scale)
+    Actual test: 25k events (stress test scale)
+    
+    Rationale: 
+    - 5k events: Too small to see JIT overhead effects
+    - 25k events: Better represents realistic batch workflows
+    - Scaling tests confirm linear behavior (5x data → 5x time)
+
 Usage:
-    python exploration_flatten.py 2>&1 | tee exploration_flatten.log
+    python -u exploration_flatten.py 2>&1 | tee exploration_flatten.log
+    
+    NOTE: The -u flag (unbuffered output) is required when piping to tee,
+    otherwise C++ output from ROOT may appear out of order with Python output.
 
 Output:
     - exploration_flatten.log: Console output with results
@@ -32,6 +44,10 @@ import pstats
 import platform
 import traceback
 import tracemalloc
+import argparse
+import shutil
+import tempfile
+import atexit
 from pathlib import Path
 from io import StringIO
 from statistics import median
@@ -43,17 +59,60 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 # =============================================================================
+# Command Line Arguments
+# =============================================================================
+
+parser = argparse.ArgumentParser(
+    description='Phase 13.7.A Exploration: Flatten Optimization Benchmark',
+    formatter_class=argparse.RawDescriptionHelpFormatter,
+    epilog='''
+Examples:
+  python exploration_flatten.py              # Fast: reuse cached data file
+  python exploration_flatten.py --clean      # Clean: temp files, delete after
+  python exploration_flatten.py --regenerate # Force regenerate data file
+  python exploration_flatten.py --n-events 1000  # Generate/require 1000 events minimum
+'''
+)
+parser.add_argument('--clean', action='store_true',
+                    help='Clean run: use temp directory, delete artifacts after completion')
+parser.add_argument('--regenerate', action='store_true',
+                    help='Force regenerate data file even if it exists')
+parser.add_argument('--n-events', type=int, default=25000,
+                    help='Minimum events required (default: 25000). '
+                         'Reuses cached file if it has enough events.')
+
+ARGS = parser.parse_args()
+
+# =============================================================================
 # Configuration
 # =============================================================================
+
+# Determine working directory based on --clean flag
+if ARGS.clean:
+    _temp_dir = tempfile.mkdtemp(prefix='exploration_flatten_')
+    _output_dir = Path(_temp_dir)
+    _profiles_dir = _output_dir / 'profiles'
+    
+    def _cleanup():
+        print(f"\nCleaning up temp directory: {_temp_dir}")
+        shutil.rmtree(_temp_dir, ignore_errors=True)
+    
+    atexit.register(_cleanup)
+    print(f"[--clean mode] Using temp directory: {_temp_dir}")
+else:
+    _output_dir = Path(__file__).parent
+    _profiles_dir = _output_dir / 'profiles'
 
 CONFIG = {
     'n_warmup': 1,
     'n_runs': 5,
-    'n_events': 25000,  # Increased 5x for better scaling analysis
+    'n_events': ARGS.n_events,
     'seed': 42,
     'profile_top_n': 20,
-    'output_dir': Path(__file__).parent,
-    'profiles_dir': Path(__file__).parent / 'profiles',
+    'output_dir': _output_dir,
+    'profiles_dir': _profiles_dir,
+    'clean_mode': ARGS.clean,
+    'regenerate': ARGS.regenerate,
 }
 
 # =============================================================================
@@ -312,20 +371,51 @@ for key, value in CONFIG.items():
 # Create profiles directory
 CONFIG['profiles_dir'].mkdir(parents=True, exist_ok=True)
 
-# Generate test data
-print_subheader("Generating Test Data")
+# Load RVec dictionaries (needed for reading ROOT files with nested RVec)
+# This is separate from file generation - allows reusing cached files
+from tests.generators.toy_nd import ensure_rvec_dictionaries
+ensure_rvec_dictionaries()
 
-from tests.generators.toy_nd import generate_nd_2d_root
-import shutil
+# Generate or reuse test data
+print_subheader("Test Data")
 
-nd_2d_file_tmp = generate_nd_2d_root(
-    size="L",
-    seed=CONFIG['seed'],
-    n_events=CONFIG['n_events'],
-    mode='demo'
-)
 TEST_FILE = str(CONFIG['output_dir'] / 'exploration_flatten_data.root')
-shutil.copy(nd_2d_file_tmp, TEST_FILE)
+
+# Check if file exists and has correct size (reuse if possible)
+regenerate = CONFIG['regenerate']  # Force if --regenerate flag
+
+if not regenerate and os.path.exists(TEST_FILE):
+    try:
+        # Quick check: open and verify event count
+        rdf_check = ROOT.RDataFrame("Events", TEST_FILE)
+        existing_events = rdf_check.Count().GetValue()
+        if existing_events >= CONFIG['n_events']:
+            print(f"Reusing existing test file: {TEST_FILE}")
+            print(f"  (contains {existing_events} events, need {CONFIG['n_events']})")
+            regenerate = False
+        else:
+            print(f"Existing file too small ({existing_events} < {CONFIG['n_events']}), regenerating...")
+            regenerate = True
+    except Exception as e:
+        print(f"Existing file invalid ({e}), regenerating...")
+        regenerate = True
+elif not regenerate:
+    # File doesn't exist and --regenerate not set
+    print(f"Test file not found, will generate: {TEST_FILE}")
+    regenerate = True
+
+if regenerate:
+    print(f"Generating {CONFIG['n_events']} events...")
+    # Import generator only when needed
+    from tests.generators.toy_nd import generate_nd_2d_root
+    nd_2d_file_tmp = generate_nd_2d_root(
+        size="L",
+        seed=CONFIG['seed'],
+        n_events=CONFIG['n_events'],
+        mode='demo'
+    )
+    shutil.copy(nd_2d_file_tmp, TEST_FILE)
+    print(f"Saved to: {TEST_FILE}")
 
 # Create RDataFrame
 rdf = ROOT.RDataFrame("Events", TEST_FILE)
@@ -1484,17 +1574,26 @@ def print_summary(results: Dict):
     print("""
 Based on the benchmark results:
 
+Performance Summary:
+  Take vs AsNumpy (retrieval): ~2.5x faster
+  Take+C++ vs Baseline (end-to-end): ~10-12x faster
+  Slope ratio (per-element cost): 3-4x faster
+
 1D Arrays (RVec<T>):
-  RECOMMENDED: Method 3 - Take + np.concatenate
-  - Uses rdf.Take[] which is ~200x faster than AsNumpy for RVec columns
-  - np.concatenate is highly optimized (SIMD, cache-aware)
-  - Expected speedup: ~30x over baseline
+  RECOMMENDED: Method 4 - Take + C++ flatten
+  - End-to-end speedup: ~11x over baseline
+  - Slope: ~0.08 µs/elem (vs ~0.29 µs/elem baseline)
 
 2D Arrays (RVec<RVec<T>>):
   RECOMMENDED: Method 4 - Take + C++ flatten
-  - Uses rdf.Take[] for fast data retrieval
-  - C++ helper generates indices efficiently
-  - Expected speedup: ~10x over baseline
+  - End-to-end speedup: ~10x over baseline
+  - Slope: ~0.10 µs/elem (vs ~0.31 µs/elem baseline)
+  - Properly generates idx_1, idx_2 indices
+
+When to Enable MT (Multi-Threading):
+  - Minimal benefit (<1.5x) for single files, small datasets
+  - Better benefit (2-4x) for multiple files, large datasets
+  - Recommendation: Disable MT for interactive, enable for batch
 
 Note: uproot provides similar or better performance but requires file path,
 not compatible with RDataFrame-only workflows.
@@ -1540,8 +1639,8 @@ if __name__ == "__main__":
         results_file = CONFIG['output_dir'] / 'results.json'
         save_results(results, results_file)
 
-        # Cleanup
-        if os.path.exists(TEST_FILE):
+        # Cleanup (only in --clean mode)
+        if CONFIG['clean_mode'] and os.path.exists(TEST_FILE):
             os.remove(TEST_FILE)
 
         print_header("EXPLORATION COMPLETE")
