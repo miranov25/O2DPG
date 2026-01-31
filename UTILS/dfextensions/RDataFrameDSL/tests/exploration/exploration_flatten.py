@@ -80,6 +80,8 @@ parser.add_argument('--regenerate', action='store_true',
 parser.add_argument('--n-events', type=int, default=25000,
                     help='Minimum events required (default: 25000). '
                          'Reuses cached file if it has enough events.')
+parser.add_argument('--skip-expressions', action='store_true',
+                    help='Skip slow JIT expression overhead tests (saves ~2 min)')
 
 ARGS = parser.parse_args()
 
@@ -113,6 +115,7 @@ CONFIG = {
     'profiles_dir': _profiles_dir,
     'clean_mode': ARGS.clean,
     'regenerate': ARGS.regenerate,
+    'skip_expressions': ARGS.skip_expressions,
 }
 
 # =============================================================================
@@ -523,6 +526,43 @@ Flat2DResult Flatten2D(const std::vector<ROOT::RVec<ROOT::RVecD>>& events) {
 }
 
 }  // namespace FlattenHelpers
+
+// =============================================================================
+// Function Pointer Helpers - Pre-compiled functions to eliminate JIT overhead
+// =============================================================================
+namespace FuncPtrHelpers {
+
+// Pre-compiled transformation functions
+ROOT::RVecD Scale1000(const ROOT::RVecD& v) {
+    return v * 1000.0;
+}
+
+ROOT::RVecD Sqrt(const ROOT::RVecD& v) {
+    ROOT::RVecD result(v.size());
+    for (size_t i = 0; i < v.size(); ++i) {
+        result[i] = std::sqrt(v[i]);
+    }
+    return result;
+}
+
+ROOT::RVecD Square(const ROOT::RVecD& v) {
+    return v * v;
+}
+
+// Helpers to apply pre-compiled functions via RDF::RNode
+ROOT::RDF::RNode DefineScale1000(ROOT::RDF::RNode rdf, const std::string& newcol, const std::string& srccol) {
+    return rdf.Define(newcol, Scale1000, {srccol});
+}
+
+ROOT::RDF::RNode DefineSqrt(ROOT::RDF::RNode rdf, const std::string& newcol, const std::string& srccol) {
+    return rdf.Define(newcol, Sqrt, {srccol});
+}
+
+ROOT::RDF::RNode DefineSquare(ROOT::RDF::RNode rdf, const std::string& newcol, const std::string& srccol) {
+    return rdf.Define(newcol, Square, {srccol});
+}
+
+}  // namespace FuncPtrHelpers
 
 #endif
 """
@@ -1077,10 +1117,12 @@ def test_root_threading():
     if med_multi_on > 0:
         speedup_multi = med_multi_off / med_multi_on
         print(f"    Speedup: {speedup_multi:.1f}x")
+    else:
+        speedup_multi = 0
     
     results['multifile_mt_off'] = {'median_ms': med_multi_off, 'n_files': n_files}
     results['multifile_mt_on'] = {'median_ms': med_multi_on, 'n_files': n_files}
-    results['multifile_speedup'] = speedup_multi if med_multi_on > 0 else 0
+    results['multifile_speedup'] = speedup_multi
     
     # Cleanup symlinks
     for link_path in symlink_files:
@@ -1434,6 +1476,142 @@ def test_expression_overhead():
 
 
 # =============================================================================
+# Function Pointer Test (P1) - Eliminate JIT Overhead
+# =============================================================================
+
+def test_function_pointer():
+    """
+    Test pre-compiled function pointers vs JIT string expressions.
+    
+    Key finding: Function pointers eliminate ~130ms JIT overhead per expression.
+    This is critical for DSL implementation - pre-compile common operations!
+    """
+    print_header("Function Pointer Test (P1) - JIT Elimination")
+    
+    results = {}
+    N_RUNS = 5
+    
+    print("Comparing JIT string expressions vs pre-compiled function pointers:")
+    print("  - JIT: rdf.Define('col', 'track_pt * 1000')  # Compiles at runtime")
+    print("  - FuncPtr: C++ pre-compiled function         # No JIT overhead")
+    print()
+    
+    # Warmup - ensure C++ helpers are compiled
+    print("Warmup (one-time C++ compilation)...")
+    rdf_warmup = ROOT.RDataFrame("Events", TEST_FILE)
+    rdf_warmup2 = ROOT.FuncPtrHelpers.DefineScale1000(
+        ROOT.RDF.AsRNode(rdf_warmup), "warmup", "track_pt"
+    )
+    _ = rdf_warmup2.Take['ROOT::RVec<double>']('warmup').GetValue()
+    print("Done.\n")
+    
+    # -------------------------------------------------------------------------
+    # Test 1: Raw column (reference)
+    # -------------------------------------------------------------------------
+    print("1. Raw column (reference):")
+    times_raw = []
+    for i in range(N_RUNS):
+        rdf = ROOT.RDataFrame("Events", TEST_FILE)
+        t0 = time.perf_counter()
+        result = rdf.Take['ROOT::RVec<double>']('track_pt').GetValue()
+        times_raw.append((time.perf_counter() - t0) * 1000)
+    
+    med_raw = median(times_raw)
+    mad_raw = median([abs(t - med_raw) for t in times_raw])
+    print(f"   Time: {med_raw:.1f} ± {mad_raw:.1f} ms")
+    results['raw'] = {'median_ms': med_raw, 'mad_ms': mad_raw, 'runs_ms': times_raw}
+    
+    # -------------------------------------------------------------------------
+    # Test 2: JIT string expression
+    # -------------------------------------------------------------------------
+    print("\n2. JIT string expression (track_pt * 1000):")
+    times_jit = []
+    for i in range(N_RUNS):
+        rdf = ROOT.RDataFrame("Events", TEST_FILE)
+        t0 = time.perf_counter()
+        rdf2 = rdf.Define("scaled", "track_pt * 1000")
+        result = rdf2.Take['ROOT::RVec<double>']('scaled').GetValue()
+        times_jit.append((time.perf_counter() - t0) * 1000)
+    
+    med_jit = median(times_jit)
+    mad_jit = median([abs(t - med_jit) for t in times_jit])
+    jit_offset = med_jit - med_raw
+    print(f"   Time: {med_jit:.1f} ± {mad_jit:.1f} ms (JIT offset: {jit_offset:.1f} ms)")
+    results['jit_string'] = {
+        'median_ms': med_jit, 'mad_ms': mad_jit, 'runs_ms': times_jit,
+        'offset_ms': jit_offset
+    }
+    
+    # -------------------------------------------------------------------------
+    # Test 3: Function pointer (pre-compiled)
+    # -------------------------------------------------------------------------
+    print("\n3. Function pointer (pre-compiled Scale1000):")
+    times_ptr = []
+    for i in range(N_RUNS):
+        rdf = ROOT.RDataFrame("Events", TEST_FILE)
+        t0 = time.perf_counter()
+        rdf2 = ROOT.FuncPtrHelpers.DefineScale1000(
+            ROOT.RDF.AsRNode(rdf), "scaled", "track_pt"
+        )
+        result = rdf2.Take['ROOT::RVec<double>']('scaled').GetValue()
+        times_ptr.append((time.perf_counter() - t0) * 1000)
+    
+    med_ptr = median(times_ptr)
+    mad_ptr = median([abs(t - med_ptr) for t in times_ptr])
+    ptr_offset = med_ptr - med_raw
+    print(f"   Time: {med_ptr:.1f} ± {mad_ptr:.1f} ms (offset: {ptr_offset:.1f} ms)")
+    results['func_ptr'] = {
+        'median_ms': med_ptr, 'mad_ms': mad_ptr, 'runs_ms': times_ptr,
+        'offset_ms': ptr_offset
+    }
+    
+    # -------------------------------------------------------------------------
+    # Test 4: Function pointer - Sqrt
+    # -------------------------------------------------------------------------
+    print("\n4. Function pointer (pre-compiled Sqrt):")
+    times_sqrt = []
+    for i in range(N_RUNS):
+        rdf = ROOT.RDataFrame("Events", TEST_FILE)
+        t0 = time.perf_counter()
+        rdf2 = ROOT.FuncPtrHelpers.DefineSqrt(
+            ROOT.RDF.AsRNode(rdf), "sqrt_col", "track_pt"
+        )
+        result = rdf2.Take['ROOT::RVec<double>']('sqrt_col').GetValue()
+        times_sqrt.append((time.perf_counter() - t0) * 1000)
+    
+    med_sqrt = median(times_sqrt)
+    mad_sqrt = median([abs(t - med_sqrt) for t in times_sqrt])
+    sqrt_offset = med_sqrt - med_raw
+    print(f"   Time: {med_sqrt:.1f} ± {mad_sqrt:.1f} ms (offset: {sqrt_offset:.1f} ms)")
+    results['func_ptr_sqrt'] = {
+        'median_ms': med_sqrt, 'mad_ms': mad_sqrt, 'runs_ms': times_sqrt,
+        'offset_ms': sqrt_offset
+    }
+    
+    # -------------------------------------------------------------------------
+    # Summary
+    # -------------------------------------------------------------------------
+    print("\n" + "-" * 60)
+    print("SUMMARY - Function Pointer vs JIT:")
+    print("-" * 60)
+    print(f"  Raw column:        {med_raw:.1f} ms (reference)")
+    print(f"  JIT string:        {med_jit:.1f} ms (offset: {jit_offset:.1f} ms)")
+    print(f"  Function pointer:  {med_ptr:.1f} ms (offset: {ptr_offset:.1f} ms)")
+    
+    if jit_offset > 0:
+        eliminated = jit_offset - ptr_offset
+        pct = (eliminated / jit_offset) * 100 if jit_offset > 0 else 0
+        print(f"\n  JIT overhead eliminated: {eliminated:.1f} ms ({pct:.0f}%)")
+        results['jit_eliminated_ms'] = eliminated
+        results['jit_eliminated_pct'] = pct
+    
+    print("\n  RECOMMENDATION: Use pre-compiled function pointers for")
+    print("  common operations in DSL to eliminate JIT overhead.")
+    
+    return results
+
+
+# =============================================================================
 # Main Benchmark Execution
 # =============================================================================
 
@@ -1451,6 +1629,7 @@ def run_all_benchmarks():
         'threading_test': {},
         'multicol_test': {},
         'expression_test': {},
+        'funcptr_test': {},
     }
 
     # -------------------------------------------------------------------------
@@ -1589,8 +1768,16 @@ def run_all_benchmarks():
     # Multi-column test
     all_results['multicol_test'] = test_multi_column()
 
-    # Expression overhead test
-    all_results['expression_test'] = test_expression_overhead()
+    # Expression overhead test (slow - can skip with --skip-expressions)
+    if CONFIG['skip_expressions']:
+        print_header("Expression Overhead Test (P1) - SKIPPED")
+        print("  Use without --skip-expressions to run JIT expression tests")
+        all_results['expression_test'] = {'skipped': True}
+    else:
+        all_results['expression_test'] = test_expression_overhead()
+
+    # Function pointer test (fast - always run)
+    all_results['funcptr_test'] = test_function_pointer()
 
     return all_results
 
@@ -1658,11 +1845,9 @@ Performance Summary:
   - Properly generates idx_1, idx_2 indices
 
 When to Enable MT (Multi-Threading):
-  - Single file: Minimal benefit (<1.5x), sometimes slower
-  - Multi-file (5+ files): MASSIVE benefit (50-200x speedup!)
-  - Recommendation: 
-    * Disable MT for single-file interactive work
-    * ALWAYS enable MT for multi-file batch processing
+  - Minimal benefit (<1.5x) for single files, small datasets
+  - Better benefit (2-4x) for multiple files, large datasets
+  - Recommendation: Disable MT for interactive, enable for batch
 
 Note: uproot provides similar or better performance but requires file path,
 not compatible with RDataFrame-only workflows.
