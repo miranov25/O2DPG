@@ -1,0 +1,8 @@
+*.so
+*.o
+*.pyc
+__pycache__/
+*.log
+*.png
+.DS_Store
+o2residuals_tpc.root
