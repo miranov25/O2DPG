@@ -292,3 +292,235 @@ print("Next steps:")
 print("  1. Update RESIDUALS_FILE path")
 print("  2. Update column names based on E4/E5 output")
 print("  3. Test draw() and to_pandas() integration")
+
+# ============================================================
+# Cell E10: Export to pandas (Residual + Track data)
+# ============================================================
+if not SKIP_REAL_DATA:
+    print("\n" + "=" * 60)
+    print("E10: Export to pandas")
+    print("=" * 60)
+    
+    import numpy as np
+    
+    # Column names
+    FIRST_IDX_COL = "trk.clIdx.mFirstEntry"
+    N_ENTRIES_COL = "trk.clIdx.mEntries"
+    TRACK_VALUE_COL = "trk.dEdxTPC"  # Update if needed
+    
+    # Use Range for quick test
+    N_EVENTS = 5
+    rdf_export = ROOT.RDataFrame("trackData", RESIDUALS_FILE).Range(N_EVENTS)
+    
+    try:
+        # Define expanded columns
+        rdf_export = rdf_export.Define(
+            "parentIdx",
+            f"RDataFrameDSL::IndexHelpers::ExpandParentIndex({FIRST_IDX_COL}, {N_ENTRIES_COL})"
+        )
+        rdf_export = rdf_export.Define(
+            "res_dEdx",
+            f"RDataFrameDSL::IndexHelpers::ExpandToChildren({TRACK_VALUE_COL}, {FIRST_IDX_COL}, {N_ENTRIES_COL})"
+        )
+        
+        # Export to numpy/pandas
+        result = rdf_export.AsNumpy(["parentIdx", "res_dEdx", FIRST_IDX_COL, N_ENTRIES_COL])
+        
+        print(f"  Exported {N_EVENTS} events")
+        print(f"  Keys: {list(result.keys())}")
+        
+        # Flatten for pandas (each event is an RVec)
+        all_parentIdx = []
+        all_res_dEdx = []
+        all_eventIdx = []
+        
+        for evt_idx in range(len(result["parentIdx"])):
+            pidx = result["parentIdx"][evt_idx]
+            dEdx = result["res_dEdx"][evt_idx]
+            all_parentIdx.extend(pidx)
+            all_res_dEdx.extend(dEdx)
+            all_eventIdx.extend([evt_idx] * len(pidx))
+        
+        print(f"\n  Flattened to {len(all_parentIdx)} residuals")
+        print(f"  parentIdx[:10]: {all_parentIdx[:10]}")
+        print(f"  res_dEdx[:10]: {all_res_dEdx[:10]}")
+        
+        # Create pandas DataFrame
+        try:
+            import pandas as pd
+            df = pd.DataFrame({
+                "eventIdx": all_eventIdx,
+                "parentIdx": all_parentIdx,
+                "res_dEdx": all_res_dEdx,
+            })
+            print(f"\n  DataFrame shape: {df.shape}")
+            print(f"  DataFrame head:\n{df.head(10)}")
+            print("\n[OK] E10 PASSED: to_pandas export works")
+        except ImportError:
+            print("  pandas not available, skipping DataFrame creation")
+            
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+
+# ============================================================
+# Cell E11: Load unbinnedResid and Merge (using Friend Trees)
+# ============================================================
+if not SKIP_REAL_DATA:
+    print("\n" + "=" * 60)
+    print("E11: Load unbinnedResid with Friend Tree")
+    print("=" * 60)
+    
+    # Use TChain with friend to align trees
+    N_EVENTS = 5
+    
+    try:
+        # Create RDataFrame with friend tree
+        # trackData is the main tree, unbinnedResid is friend
+        chain = ROOT.TChain("trackData")
+        chain.Add(RESIDUALS_FILE)
+        
+        friend_chain = ROOT.TChain("unbinnedResid")
+        friend_chain.Add(RESIDUALS_FILE)
+        
+        chain.AddFriend(friend_chain)
+        
+        rdf_combined = ROOT.RDataFrame(chain).Range(N_EVENTS)
+        
+        # Check available columns
+        all_cols = [str(c) for c in rdf_combined.GetColumnNames()]
+        print(f"  Combined columns: {len(all_cols)}")
+        
+        # Check if res.dy is available
+        if "res.dy" in all_cols:
+            print("  ✓ res.dy available in combined RDF")
+            
+            # Define all columns we need
+            rdf_combined = rdf_combined.Define(
+                "parentIdx",
+                f"RDataFrameDSL::IndexHelpers::ExpandParentIndex({FIRST_IDX_COL}, {N_ENTRIES_COL})"
+            )
+            rdf_combined = rdf_combined.Define(
+                "res_dEdx",
+                f"RDataFrameDSL::IndexHelpers::ExpandToChildren({TRACK_VALUE_COL}, {FIRST_IDX_COL}, {N_ENTRIES_COL})"
+            )
+            
+            # Export all together
+            result = rdf_combined.AsNumpy(["parentIdx", "res_dEdx", "res.dy"])
+            
+            # Flatten
+            all_parentIdx = []
+            all_res_dEdx = []
+            all_dy = []
+            all_eventIdx = []
+            
+            for evt_idx in range(len(result["parentIdx"])):
+                pidx = result["parentIdx"][evt_idx]
+                dEdx = result["res_dEdx"][evt_idx]
+                dy = result["res.dy"][evt_idx]
+                
+                # Check lengths match within event
+                if len(pidx) == len(dy):
+                    all_parentIdx.extend(pidx)
+                    all_res_dEdx.extend(dEdx)
+                    all_dy.extend(dy)
+                    all_eventIdx.extend([evt_idx] * len(pidx))
+                else:
+                    print(f"  Event {evt_idx}: length mismatch pidx={len(pidx)}, dy={len(dy)}")
+            
+            print(f"\n  Flattened to {len(all_parentIdx)} residuals")
+            
+            # Create DataFrame
+            import pandas as pd
+            df = pd.DataFrame({
+                "eventIdx": all_eventIdx,
+                "parentIdx": all_parentIdx,
+                "res_dEdx": all_res_dEdx,
+                "dy": all_dy,
+            })
+            print(f"  DataFrame shape: {df.shape}")
+            print(f"  DataFrame head:\n{df.head(10)}")
+            print("\n[OK] E11 PASSED: Friend tree merge works")
+        else:
+            print("  ERROR: res.dy not found in combined columns")
+            print(f"  Available: {[c for c in all_cols if 'res' in c.lower()]}")
+            
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+
+# ============================================================
+# Cell E12: Draw Histogram (res.dy vs track property)
+# ============================================================
+if not SKIP_REAL_DATA:
+    print("\n" + "=" * 60)
+    print("E12: Draw Histogram")
+    print("=" * 60)
+    
+    try:
+        # Create 2D histogram if we have merged data
+        if 'df' in dir() and 'dy' in df.columns:
+            import matplotlib
+            matplotlib.use('Agg')  # Non-interactive backend
+            import matplotlib.pyplot as plt
+            
+            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+            
+            # Plot 1: dy distribution
+            axes[0].hist(df["dy"], bins=100, alpha=0.7)
+            axes[0].set_xlabel("dy (residual)")
+            axes[0].set_ylabel("Count")
+            axes[0].set_title("Residual dy distribution")
+            
+            # Plot 2: dy vs res_dEdx (track dEdx expanded to residual level)
+            axes[1].hist2d(df["res_dEdx"], df["dy"], bins=50, cmap='viridis')
+            axes[1].set_xlabel("Track dEdx (expanded)")
+            axes[1].set_ylabel("dy (residual)")
+            axes[1].set_title("dy vs Track dEdx")
+            plt.colorbar(axes[1].collections[0], ax=axes[1])
+            
+            plt.tight_layout()
+            plt.savefig("explore_residuals_plot.png", dpi=100)
+            print(f"  Saved: explore_residuals_plot.png")
+            print("\n[OK] E12 PASSED: Histogram drawn")
+        else:
+            print("  DataFrame not available or missing 'dy' column")
+            print("  Skipping histogram")
+            
+    except ImportError as e:
+        print(f"  matplotlib not available: {e}")
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+
+# ============================================================
+# Cell E13: Final Summary
+# ============================================================
+print("\n" + "=" * 60)
+print("E13: FINAL SUMMARY")
+print("=" * 60)
+
+print("""
+Phase 13.7.B Exploration Results:
+================================
+
+Index Helpers:
+  ✓ ExpandParentIndex - builds child→parent mapping
+  ✓ ExpandToChildren  - expands parent values to child level
+  ✓ GatherByIndex     - direct index lookup with fallback
+  ✓ CountChildren     - reverse lookup counts
+
+Residuals Data:
+  - trackData tree: track properties + index columns
+  - unbinnedResid tree: residual values (dy, dz, etc.)
+  - Index columns: trk.clIdx.mFirstEntry, trk.clIdx.mEntries
+
+Next Steps for DSL Integration:
+  1. Add index helpers to DSLCompiler
+  2. Auto-detect parent-child schema from tree
+  3. Support dsl.draw("res.dy : track.dEdx") syntax
+  4. Support dsl.to_pandas() with mixed levels
+""")
