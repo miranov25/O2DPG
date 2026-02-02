@@ -392,9 +392,10 @@ if not SKIP_REAL_DATA:
         all_cols = [str(c) for c in rdf_combined.GetColumnNames()]
         print(f"  Combined columns: {len(all_cols)}")
         
-        # Check if res.dy is available
-        if "res.dy" in all_cols:
-            print("  ✓ res.dy available in combined RDF")
+        # Check if res.dy is available (with friend tree prefix)
+        DY_COL = "unbinnedResid.res.dy"
+        if DY_COL in all_cols:
+            print(f"  ✓ {DY_COL} available in combined RDF")
             
             # Define all columns we need
             rdf_combined = rdf_combined.Define(
@@ -407,7 +408,7 @@ if not SKIP_REAL_DATA:
             )
             
             # Export all together
-            result = rdf_combined.AsNumpy(["parentIdx", "res_dEdx", "res.dy"])
+            result = rdf_combined.AsNumpy(["parentIdx", "res_dEdx", DY_COL])
             
             # Flatten
             all_parentIdx = []
@@ -418,7 +419,7 @@ if not SKIP_REAL_DATA:
             for evt_idx in range(len(result["parentIdx"])):
                 pidx = result["parentIdx"][evt_idx]
                 dEdx = result["res_dEdx"][evt_idx]
-                dy = result["res.dy"][evt_idx]
+                dy = result[DY_COL][evt_idx]
                 
                 # Check lengths match within event
                 if len(pidx) == len(dy):
@@ -443,8 +444,8 @@ if not SKIP_REAL_DATA:
             print(f"  DataFrame head:\n{df.head(10)}")
             print("\n[OK] E11 PASSED: Friend tree merge works")
         else:
-            print("  ERROR: res.dy not found in combined columns")
-            print(f"  Available: {[c for c in all_cols if 'res' in c.lower()]}")
+            print(f"  ERROR: {DY_COL} not found in combined columns")
+            print(f"  Available res columns: {[c for c in all_cols if 'res' in c.lower()]}")
             
     except Exception as e:
         print(f"  ERROR: {e}")

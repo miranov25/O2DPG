@@ -29,6 +29,125 @@ namespace IndexHelpers {
 using namespace ROOT::VecOps;
 
 // ============================================================================
+// Pattern 1a: Offset-only (compute nEntries from consecutive offsets)
+// Use when nEntries is buggy/unavailable, only offsets are reliable
+// ============================================================================
+
+/**
+ * Compute nEntries from consecutive offset values.
+ * 
+ * @param offsets     First index for each parent [nParents]
+ * @param totalSize   Total number of children (e.g., res.dy.size())
+ * @return Number of children per parent [nParents]
+ * 
+ * Example:
+ *   offsets   = [0, 158, 309, 460]
+ *   totalSize = 600
+ *   Output    = [158, 151, 151, 140]  (last = 600 - 460)
+ */
+inline RVec<int> ComputeEntriesFromOffsets(const RVec<unsigned int>& offsets, int totalSize) {
+    if (offsets.empty()) return RVec<int>{};
+    
+    RVec<int> nEntries(offsets.size());
+    for (size_t i = 0; i < offsets.size() - 1; ++i) {
+        nEntries[i] = static_cast<int>(offsets[i+1]) - static_cast<int>(offsets[i]);
+    }
+    // Last element: goes to totalSize
+    nEntries[offsets.size() - 1] = totalSize - static_cast<int>(offsets[offsets.size() - 1]);
+    return nEntries;
+}
+
+// Overload for signed int offsets
+inline RVec<int> ComputeEntriesFromOffsets(const RVec<int>& offsets, int totalSize) {
+    if (offsets.empty()) return RVec<int>{};
+    
+    RVec<int> nEntries(offsets.size());
+    for (size_t i = 0; i < offsets.size() - 1; ++i) {
+        nEntries[i] = offsets[i+1] - offsets[i];
+    }
+    // Last element: goes to totalSize
+    nEntries[offsets.size() - 1] = totalSize - offsets[offsets.size() - 1];
+    return nEntries;
+}
+
+/**
+ * Build parent index from offsets only (without explicit nEntries).
+ * Combines ComputeEntriesFromOffsets + ExpandParentIndex.
+ * 
+ * @param offsets     First index for each parent [nParents]
+ * @param totalSize   Total number of children
+ * @return Parent index for each child [totalSize]
+ */
+inline RVec<int> ExpandParentIndexFromOffsets(const RVec<unsigned int>& offsets, int totalSize) {
+    auto nEntries = ComputeEntriesFromOffsets(offsets, totalSize);
+    
+    RVec<int> parentIdx(totalSize);
+    int childPos = 0;
+    for (size_t parent = 0; parent < offsets.size(); ++parent) {
+        for (int i = 0; i < nEntries[parent]; ++i) {
+            parentIdx[childPos++] = static_cast<int>(parent);
+        }
+    }
+    return parentIdx;
+}
+
+// Overload for signed int offsets
+inline RVec<int> ExpandParentIndexFromOffsets(const RVec<int>& offsets, int totalSize) {
+    auto nEntries = ComputeEntriesFromOffsets(offsets, totalSize);
+    
+    RVec<int> parentIdx(totalSize);
+    int childPos = 0;
+    for (size_t parent = 0; parent < offsets.size(); ++parent) {
+        for (int i = 0; i < nEntries[parent]; ++i) {
+            parentIdx[childPos++] = static_cast<int>(parent);
+        }
+    }
+    return parentIdx;
+}
+
+/**
+ * Expand parent values to child level using offsets only.
+ * Combines ComputeEntriesFromOffsets + ExpandToChildren.
+ * 
+ * @param parentValues  Values per parent [nParents]
+ * @param offsets       First index for each parent [nParents]
+ * @param totalSize     Total number of children
+ * @return Values expanded to child level [totalSize]
+ */
+template<typename T>
+RVec<T> ExpandToChildrenFromOffsets(const RVec<T>& parentValues,
+                                     const RVec<unsigned int>& offsets,
+                                     int totalSize) {
+    auto nEntries = ComputeEntriesFromOffsets(offsets, totalSize);
+    
+    RVec<T> childValues(totalSize);
+    int childPos = 0;
+    for (size_t parent = 0; parent < parentValues.size(); ++parent) {
+        for (int i = 0; i < nEntries[parent]; ++i) {
+            childValues[childPos++] = parentValues[parent];
+        }
+    }
+    return childValues;
+}
+
+// Overload for signed int offsets
+template<typename T>
+RVec<T> ExpandToChildrenFromOffsets(const RVec<T>& parentValues,
+                                     const RVec<int>& offsets,
+                                     int totalSize) {
+    auto nEntries = ComputeEntriesFromOffsets(offsets, totalSize);
+    
+    RVec<T> childValues(totalSize);
+    int childPos = 0;
+    for (size_t parent = 0; parent < parentValues.size(); ++parent) {
+        for (int i = 0; i < nEntries[parent]; ++i) {
+            childValues[childPos++] = parentValues[parent];
+        }
+    }
+    return childValues;
+}
+
+// ============================================================================
 // Pattern 1: Offset + Count (Residuals, general parent-child)
 // INVARIANT: Indices are contiguous (firstIdx[i+1] == firstIdx[i] + nEntries[i])
 // ============================================================================

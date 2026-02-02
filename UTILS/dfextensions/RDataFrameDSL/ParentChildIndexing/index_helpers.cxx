@@ -12,6 +12,38 @@ namespace RDataFrameDSL {
 namespace IndexHelpers {
 
 // ============================================================================
+// Explicit instantiations for ExpandToChildrenFromOffsets (unsigned int offsets)
+// ============================================================================
+
+template RVec<float> ExpandToChildrenFromOffsets<float>(
+    const RVec<float>&, const RVec<unsigned int>&, int);
+
+template RVec<double> ExpandToChildrenFromOffsets<double>(
+    const RVec<double>&, const RVec<unsigned int>&, int);
+
+template RVec<int> ExpandToChildrenFromOffsets<int>(
+    const RVec<int>&, const RVec<unsigned int>&, int);
+
+template RVec<short> ExpandToChildrenFromOffsets<short>(
+    const RVec<short>&, const RVec<unsigned int>&, int);
+
+// ============================================================================
+// Explicit instantiations for ExpandToChildrenFromOffsets (signed int offsets)
+// ============================================================================
+
+template RVec<float> ExpandToChildrenFromOffsets<float>(
+    const RVec<float>&, const RVec<int>&, int);
+
+template RVec<double> ExpandToChildrenFromOffsets<double>(
+    const RVec<double>&, const RVec<int>&, int);
+
+template RVec<int> ExpandToChildrenFromOffsets<int>(
+    const RVec<int>&, const RVec<int>&, int);
+
+template RVec<short> ExpandToChildrenFromOffsets<short>(
+    const RVec<short>&, const RVec<int>&, int);
+
+// ============================================================================
 // Explicit instantiations for ExpandToChildren
 // ============================================================================
 
