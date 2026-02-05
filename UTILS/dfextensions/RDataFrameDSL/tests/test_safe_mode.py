@@ -64,7 +64,7 @@ class TestPreconditions:
             with pytest.raises(SafeModeError) as exc_info:
                 check_fork_safe()
             
-            assert "active threads" in str(exc_info.value)
+            assert "unsafe threads" in str(exc_info.value) or "active threads" in str(exc_info.value)
         finally:
             stop_event.set()
             thread.join()

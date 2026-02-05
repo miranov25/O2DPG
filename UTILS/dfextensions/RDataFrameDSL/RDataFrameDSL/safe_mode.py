@@ -122,18 +122,31 @@ def check_fork_safe(skip_thread_check: bool = False) -> None:
             )
     except ImportError:
         pass  # ROOT not available, skip check
-    
+
     # Check 2: Python threading (auto-skip in Jupyter)
     auto_skip = skip_thread_check or _is_jupyter()
     if not auto_skip:
-        active_threads = threading.active_count()
-        if active_threads > 1:
-            thread_names = [t.name for t in threading.enumerate()]
+        # Whitelist known-safe background threads (cross-platform)
+        # - MainThread: always present
+        # - *(_process_root_events): ROOT GUI event loop on Linux (not on macOS)
+        #   Thread names are like "Thread-2 (_process_root_events)"
+
+        def _is_safe_thread(name: str) -> bool:
+            if name == 'MainThread':
+                return True
+            if '_process_root_events' in name:
+                return True
+            return False
+
+        all_threads = threading.enumerate()
+        unsafe_threads = [t.name for t in all_threads if not _is_safe_thread(t.name)]
+
+        if unsafe_threads:
             raise SafeModeError(
                 layer="precondition",
                 reason="precondition",
-                message=f"Cannot use safe mode with {active_threads} active threads. "
-                        f"Active threads: {thread_names}. "
+                message=f"Cannot use safe mode with {len(unsafe_threads)} unsafe threads active: "
+                        f"{unsafe_threads}. "
                         f"Use skip_thread_check=True for Jupyter notebooks."
             )
 
