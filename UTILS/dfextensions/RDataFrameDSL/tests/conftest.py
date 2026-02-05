@@ -34,6 +34,23 @@ if _this_dir not in sys.path:
     sys.path.insert(0, _this_dir)
 
 # =============================================================================
+# Path Setup for dfextensions sibling packages (dfdraw, AliasDataFrame)
+# Only needed during development; unnecessary after pip install
+# =============================================================================
+
+from pathlib import Path
+
+try:
+    from dfextensions.dfdraw import DFDraw  # Check if already available (pip installed)
+except ImportError:
+    # Not pip-installed, add development path
+    # Path: tests/conftest.py -> tests/ -> RDataFrameDSL/ -> dfextensions/ -> UTILS/
+    _utils_dir = Path(__file__).resolve().parent.parent.parent.parent
+    if _utils_dir.exists() and str(_utils_dir) not in sys.path:
+        sys.path.insert(0, str(_utils_dir))
+
+
+# =============================================================================
 # Import invariant schema configuration
 # =============================================================================
 
