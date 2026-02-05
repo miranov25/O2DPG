@@ -453,26 +453,26 @@ git diff HEAD~1..HEAD > "$LOG_DIR/diff_last_commit_${TIMESTAMP}.txt" 2>/dev/null
     echo "✅ diff_last_commit_${TIMESTAMP}.txt (last commit)" || \
     echo "⚠️  Could not generate last commit diff"
 
-# 2. Diff to PHASE_BEGIN tag (for phase review)
-if git rev-parse --verify PHASE_BEGIN &>/dev/null; then
-    git diff PHASE_BEGIN..HEAD > "$LOG_DIR/diff_to_phase_${TIMESTAMP}.txt" 2>/dev/null && \
-        echo "✅ diff_to_phase_${TIMESTAMP}.txt (since PHASE_BEGIN)" || \
+# 2. Diff to PHASE_BEGIN_RDataFrameDSL tag (for phase review)
+if git rev-parse --verify PHASE_BEGIN_RDataFrameDSL &>/dev/null; then
+    git diff PHASE_BEGIN_RDataFrameDSL..HEAD > "$LOG_DIR/diff_to_phase_${TIMESTAMP}.txt" 2>/dev/null && \
+        echo "✅ diff_to_phase_${TIMESTAMP}.txt (since PHASE_BEGIN_RDataFrameDSL)" || \
         echo "⚠️  Could not generate phase diff"
 else
     # Create helpful error file
     cat > "$LOG_DIR/diff_to_phase_${TIMESTAMP}.txt" << 'NOTAGEOF'
-PHASE_BEGIN tag not found.
+PHASE_BEGIN_RDataFrameDSL tag not found.
 
 To enable phase diffs, create the tag at the start of each phase:
-    git tag -f PHASE_BEGIN <commit-hash>
+    git tag -f PHASE_BEGIN_RDataFrameDSL <commit-hash>
 
 Example (tag last commit of previous phase):
     git log --oneline -5
-    git tag -f PHASE_BEGIN abc1234
+    git tag -f PHASE_BEGIN_RDataFrameDSL abc1234
 
 Then re-run tests to generate the diff.
 NOTAGEOF
-    echo "⚠️  No PHASE_BEGIN tag (see diff_to_phase_${TIMESTAMP}.txt for instructions)"
+    echo "⚠️  No PHASE_BEGIN_RDataFrameDSL tag (see diff_to_phase_${TIMESTAMP}.txt for instructions)"
 fi
 
 # =============================================================================
