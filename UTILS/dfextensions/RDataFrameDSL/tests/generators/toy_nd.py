@@ -145,6 +145,24 @@ def _ensure_rvec_dictionaries() -> None:
     _RVEC_DICTS_INITIALIZED = True
 
 
+def ensure_rvec_dictionaries() -> None:
+    """
+    Public API to load ROOT RVec dictionaries WITHOUT generating files.
+    
+    What: Ensures nested RVec types are registered with ROOT
+    Why:  Allows loading cached ROOT files without regenerating them
+    Who:  Called by scripts that want to reuse existing data files
+    
+    This is safe to call multiple times - only initializes once.
+    
+    Example:
+        from tests.generators.toy_nd import ensure_rvec_dictionaries
+        ensure_rvec_dictionaries()  # Load libraries only
+        # Now can read existing ROOT files with RVec<RVec<double>>
+    """
+    _ensure_rvec_dictionaries()
+
+
 # =============================================================================
 # Invariant Value Functions (Exact Integers)
 # =============================================================================
@@ -1035,8 +1053,16 @@ void {func_name}() {{
     std::lognormal_distribution<double> landau_like(0.0, 0.3);  // Q fluctuation
     
     const double PION_MASS = 0.1396;  // GeV/c^2
-    const double LAYER_RADII[] = {{3.9, 7.6, 15.0, 22.4, 29.1, 37.8, 44.6}};  // cm (ITS2)
-    const int N_LAYERS = 7;
+    // Detector layer radii (cm):
+    // ITS2: 3.9, 7.6, 15.0, 22.4, 29.1, 37.8, 44.6
+    // TPC inner: 85, 90, 95, 100, 105, 110, 115, 120, 125, 130 (inner sectors)
+    // TPC outer: 135, 145, 155, 165, 175, 185, 195, 205, 215, 225, 235, 245 (outer sectors)
+    const double LAYER_RADII[] = {{
+        3.9, 7.6, 15.0, 22.4, 29.1, 37.8, 44.6,  // ITS2 (7 layers)
+        85.0, 95.0, 105.0, 115.0, 125.0,          // TPC inner (5 representative)
+        145.0, 165.0, 185.0, 205.0, 225.0, 245.0  // TPC outer (6 representative)
+    }};
+    const int N_LAYERS = 18;  // 7 ITS + 11 TPC
     
     for (int evt = 0; evt < {n_events}; evt++) {{
         event_id = evt;
