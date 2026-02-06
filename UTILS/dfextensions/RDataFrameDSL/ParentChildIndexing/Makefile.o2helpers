@@ -1,0 +1,101 @@
+# Makefile for O2 Residual Helpers Library with ROOT Dictionary
+#
+# This Makefile uses ROOT_INCLUDE_PATH environment variable which contains
+# all O2 dependencies (MS_GSL, FairLogger, Boost, etc.) automatically.
+#
+# Prerequisites:
+#   - O2 environment loaded (alienv enter O2Physics/latest)
+#   - ROOT_INCLUDE_PATH is set (automatic with O2 environment)
+#
+# Usage:
+#   make -f Makefile.o2helpers           # Build libO2ResidualHelpers.so
+#   make -f Makefile.o2helpers clean     # Remove built files  
+#   make -f Makefile.o2helpers test      # Quick test that library loads
+#   make -f Makefile.o2helpers show-env  # Show environment info
+
+CXX = g++
+CXXFLAGS = -O2 -fPIC -std=c++17
+
+# ROOT configuration
+ROOTCLING = rootcling
+ROOT_CFLAGS = $(shell root-config --cflags)
+ROOT_LIBS = $(shell root-config --libs)
+ROOT_INCDIR = $(shell root-config --incdir)
+ROOT_LIBDIR = $(shell root-config --libdir)
+
+# O2 library path (for linking)
+O2_LIBDIR = $(O2_ROOT)/lib
+
+# Convert ROOT_INCLUDE_PATH (colon-separated) to -I flags
+# This contains all O2 dependencies: MS_GSL, FairLogger, Boost, GPU, etc.
+ROOT_INC_FLAGS = $(addprefix -I,$(subst :, ,$(ROOT_INCLUDE_PATH)))
+
+# Files
+HEADER = o2_residual_helpers.h
+LINKDEF = O2ResidualHelpersLinkDef.h
+DICT_SRC = O2ResidualHelpersDict.cxx
+TARGET = libO2ResidualHelpers.so
+
+# All includes: local + ROOT + ROOT_INCLUDE_PATH
+INCLUDES = -I. -I$(ROOT_INCDIR) $(ROOT_INC_FLAGS)
+
+.PHONY: all clean test dict check-env show-env
+
+all: check-env $(TARGET)
+
+# Check that required environment variables are set
+check-env:
+	@if [ -z "$(O2_ROOT)" ]; then echo "ERROR: O2_ROOT not set. Run 'alienv enter O2Physics/latest'"; exit 1; fi
+	@if [ -z "$(ROOT_INCLUDE_PATH)" ]; then echo "ERROR: ROOT_INCLUDE_PATH not set"; exit 1; fi
+	@echo "Environment OK"
+
+# Show environment info (for debugging)
+show-env:
+	@echo "O2_ROOT=$(O2_ROOT)"
+	@echo "ROOT=$(shell root-config --prefix)"
+	@echo ""
+	@echo "ROOT_INCLUDE_PATH contains $(words $(subst :, ,$(ROOT_INCLUDE_PATH))) paths:"
+	@echo "$(ROOT_INCLUDE_PATH)" | tr ':' '\n' | head -10
+	@echo "..."
+
+# Generate dictionary
+$(DICT_SRC): $(HEADER) $(LINKDEF)
+	@echo "Generating dictionary..."
+	$(ROOTCLING) -f $@ $(INCLUDES) $(HEADER) $(LINKDEF)
+
+# Build shared library
+$(TARGET): $(DICT_SRC)
+	@echo "Building $(TARGET)..."
+	$(CXX) $(CXXFLAGS) -shared \
+		$(INCLUDES) \
+		$(ROOT_CFLAGS) \
+		-o $@ \
+		$(DICT_SRC) \
+		-L$(ROOT_LIBDIR) $(ROOT_LIBS) \
+		-L$(O2_LIBDIR) -lO2TPCCalibration \
+		-Wl,-rpath,$(ROOT_LIBDIR) \
+		-Wl,-rpath,$(O2_LIBDIR)
+	@echo "Built: $(TARGET)"
+
+dict: $(DICT_SRC)
+
+clean:
+	rm -f $(TARGET) $(DICT_SRC) *.pcm
+
+test: $(TARGET)
+	@echo "Testing library load..."
+	@python3 -c "\
+import ROOT; \
+print('Loading library...'); \
+result = ROOT.gSystem.Load('./$(TARGET)'); \
+print(f'  Load result: {result}'); \
+if result < 0: \
+    print('  ERROR: Failed to load library'); \
+    exit(1); \
+print('Including header...'); \
+ROOT.gInterpreter.Declare('#include \"$(HEADER)\"'); \
+print('Testing ExtractQMaxTPC symbol...'); \
+f = ROOT.RDataFrameDSL.O2ResidualHelpers.ExtractQMaxTPC; \
+print(f'  Function: {f}'); \
+print('✓ All tests passed'); \
+"
