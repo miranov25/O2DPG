@@ -19,12 +19,14 @@ The GroupBy Regression module provides high-performance grouped linear regressio
 | 12.10.BF | Benchmark Framework | Dec 23-25, 2025 | ✅ Complete |
 | 12.11 | n_jobs=1 Fix + Profiling | Dec 26, 2025 | ✅ Complete |
 | 13.1.GB | PyArrow Backend | Dec 16, 2025 | ✅ Complete |
-| **12.14.GB** | **Shared Numba Kernel** | **Dec 31, 2025** | ✅ Complete |
-| **12.14a.GB** | **Test Infrastructure** | **Dec 31, 2025** | ✅ Complete |
-| 12.14b.GB | Benchmark Integration | — | 📋 Planned |
+| 12.14.GB | Shared Numba Kernel | Dec 31, 2025 | ✅ Complete |
+| 12.14a.GB | Test Infrastructure | Dec 31, 2025 | ✅ Complete |
+| **12.14b.GB** | **BF Integration** | **Jan 1, 2026** | ✅ Complete |
+| **12.14b.GB-add** | **Dual Timing + cProfile** | **Jan 1, 2026** | ✅ Complete |
+| **12.14c.GB** | **ADF Visualization** | **Jan 3-4, 2026** | ✅ Complete |
 | 12.15.GB | V4 Integration | — | 📋 Planned |
 
-**Current Test Count:** 28 kernel tests + existing suite
+**Current Test Count:** 145 benchmark tests + existing kernel/module suites
 
 ---
 
@@ -43,18 +45,131 @@ On **November 14, 2025** (commit `db0eb019`), the V4 Numba JIT kernel was accide
 
 ### Resolution
 
-Phases 12.14.GB and 12.14a.GB address this with:
+Phases 12.14.GB through 12.14c.GB address this with:
 - Shared kernel module (prevents accidental deletion)
 - Numba/NumPy parity tests (catches silent regressions)
 - Performance gates (ratio-based, CI-friendly)
 - Memory stability tests (streaming validation)
+- Benchmark framework with historical tracking and visualization
 
 ---
 
-## Recent Phases (Dec 2025)
+## Recent Phases (Jan 2026)
 
-### Phase 12.14a.GB: Test Infrastructure
-**Commit:** `29e34be2` (Dec 31, 2025)  
+### Phase 12.14c.GB: AliasDataFrame Visualization (Jan 3-4, 2026)
+**Commits:** `5ffec1f8`, `95119b27`, `43ce0895`, `c321a6ec`  
+**Goal:** Visual analysis tools for benchmark history using AliasDataFrame
+
+**Deliverables:**
+
+| ID | Component | Description |
+|----|-----------|-------------|
+| Step 0 | ADF Smoke Test | 16 tests validating AliasDataFrame API |
+| D6 | cProfile Fix | Skip profiling for n_jobs > 1 (multiprocessing) |
+| D1 | ADF Loader | `load_benchmark_adf()` with TopCPU/TopMemory subframes |
+| D2 | Specs YAML | `benchmark_specs.yaml` with plot configurations |
+| D3 | CLI Commands | `--history`, `--history-stats`, `--plot DIR` |
+| D5 | Documentation | README.md with CV% interpretation guide |
+
+**Key Features:**
+
+```python
+# Load benchmark history as AliasDataFrame
+from dfextensions.benchmarks.benchmark_adf import (
+    load_benchmark_adf,
+    compute_benchmark_statistics,
+)
+
+adf = load_benchmark_adf("groupby_regression", max_runs=20)
+print(adf.subframes['TopCPU'].df.head())  # CPU profile data
+print(adf.subframes['TopMemory'].df.head())  # Memory stats
+
+# Noise analysis
+stats = compute_benchmark_statistics("groupby_regression", baseline="7d")
+print(stats[['benchmark_id', 'mean_time_s', 'cv_pct', 'high_noise']])
+```
+
+**CLI Commands:**
+
+```bash
+# Benchmark history summary
+python -m dfextensions.benchmarks.runner --subproject groupby_regression --history
+
+# Noise statistics (CV%) for alarm tuning
+python -m dfextensions.benchmarks.runner --subproject groupby_regression --history-stats
+
+# Generate trend plots
+python -m dfextensions.benchmarks.runner --subproject groupby_regression --plot ./plots/
+```
+
+**Exit Codes:**
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | No data found |
+| 2 | Partial success (some plots failed) |
+| 3 | Dependency missing (matplotlib/PyYAML) |
+
+**Backward Compatibility Fix:**
+- `wall_time_s` field made optional with `__post_init__` fallback to `time_s`
+- Preserves ability to load pre-12.14b.GB results.json files
+
+**Test Results:** 145 tests passing
+
+**Reviewed by:** Gemini (Architect), GPT-1, GPT-2, Claude-2, Claude-3 (Team 3)
+
+---
+
+### Phase 12.14b.GB-addendum: Benchmark Framework Refinements (Jan 1, 2026)
+**Commit:** `c94004cb`  
+**Goal:** Fix timing contract and add always-on profiling
+
+**Fixes:**
+
+| Issue | Resolution |
+|-------|------------|
+| D1: Timing contract | Dual timing: `time_s` (kernel) + `wall_time_s` (wrapper) |
+| D2: ID hygiene | `uses_n_jobs` flag; kernel/memory IDs exclude n_jobs=1 |
+| D3: Profile storage | Always-on cProfile; `--no-profile` flag for CI |
+
+**Timing Contract:**
+```
+wall_time_s  ←  Total benchmark time (includes setup, warmup)
+time_s       ←  Kernel-only time (excludes overhead)
+
+Ratio: ~80× for kernel benchmarks (wall includes JIT, setup)
+```
+
+**Reviewed by:** GPT-1, GPT-3, GPT-4, Gemini, Claude-2, Main Architect
+
+---
+
+### Phase 12.14b.GB: Benchmark Framework Integration (Jan 1, 2026)
+**Commits:** `5c84b42e`, `72a0ece2`  
+**Goal:** Integrate kernel and memory benchmarks with BF runner
+
+**Features:**
+- Multi-source discovery: v5 + kernel + memory benchmarks
+- `NumpyEncoder` for `np.bool_` JSON serialization
+- `run_benchmarks.sh --review` for artifact generation
+- 18/18 benchmarks passing via BF
+
+**Files Added/Modified:**
+- `benchmarks/runner.py`: Multi-source discovery
+- `benchmarks/schema.py`: NumpyEncoder
+- `groupby_regression/benchmarks/bench_*.py`: BF adapter functions
+- `groupby_regression/benchmarks/run_benchmarks.sh`: Review script
+- `groupby_regression/benchmarks/README.md`: Documentation
+
+**Reviewed by:** GPT-3, GPT-4, Gemini, Claude (Architect)
+
+---
+
+## December 2025 Phases
+
+### Phase 12.14a.GB: Test Infrastructure (Dec 31, 2025)
+**Commit:** `29e34be2`  
 **Goal:** Comprehensive test suite that would have caught the 1.5-month regression
 
 **Deliverables:**
@@ -91,8 +206,8 @@ Performance: 12.4× speedup ✓
 
 ---
 
-### Phase 12.14.GB: Shared Numba Kernel Module
-**Commit:** `b7301bae` (Dec 31, 2025)  
+### Phase 12.14.GB: Shared Numba Kernel Module (Dec 31, 2025)
+**Commit:** `b7301bae`  
 **Goal:** Restore V4 Numba performance with shared kernel architecture
 
 **Problem Addressed:**
@@ -134,8 +249,8 @@ Performance: 12.4× speedup ✓
 
 ---
 
-### Phase 12.11: Numba Bypass Fix + Profiling
-**Commits:** `6524fbf0`, `933a054c` (Dec 26, 2025)  
+### Phase 12.11: Numba Bypass Fix + Profiling (Dec 26, 2025)
+**Commits:** `6524fbf0`, `933a054c`  
 **Goal:** Fix n_jobs=1 falling back to sequential Python
 
 **Bug Fixed:**
@@ -149,8 +264,8 @@ Performance: 12.4× speedup ✓
 
 ---
 
-### Phase 12.10.BF: Benchmark Framework
-**Commits:** `35281e84`, `0e69568c` (Dec 23-25, 2025)  
+### Phase 12.10.BF: Benchmark Framework (Dec 23-25, 2025)
+**Commits:** `35281e84`, `0e69568c`  
 **Goal:** Foundational benchmark infrastructure
 
 **Deliverables:**
@@ -166,8 +281,8 @@ Performance: 12.4× speedup ✓
 
 ---
 
-### Phase 12.9.GB: Numba Parallel Kernel for V5
-**Commit:** `be4deda8` (Dec 20, 2025)  
+### Phase 12.9.GB: Numba Parallel Kernel for V5 (Dec 20, 2025)
+**Commit:** `be4deda8`  
 **Goal:** Add Numba prange parallelization within chunks
 
 **Performance:**
@@ -195,8 +310,8 @@ result = make_parallel_fit_v5(
 
 ---
 
-### Phase 12.8.GB: Batch Fitting (V5)
-**Commit:** `4f49119c` (Dec 19, 2025)  
+### Phase 12.8.GB: Batch Fitting (V5) (Dec 19, 2025)
+**Commit:** `4f49119c`  
 **Goal:** Multiple fits sharing same groupby in one call
 
 **Features:**
@@ -224,8 +339,8 @@ result = make_parallel_fit_v5(
 
 ---
 
-### Phase 13.1.GB: PyArrow Backend
-**Commit:** `bb29a647` (Dec 16, 2025)  
+### Phase 13.1.GB: PyArrow Backend (Dec 16, 2025)
+**Commit:** `bb29a647`  
 **Goal:** Memory-efficient sorting without changing compute logic
 
 **New Parameters:**
@@ -245,8 +360,8 @@ make_parallel_fit_v4(
 
 ## Earlier Phases (Oct 2025)
 
-### Package Restructuring
-**Commit:** `e43f332e` (Oct 25, 2025)
+### Package Restructuring (Oct 25, 2025)
+**Commit:** `e43f332e`
 
 Moved files to package structure with `git mv` (preserves history):
 ```
@@ -261,13 +376,14 @@ groupby_regression/
 │   └── test_groupby_regression_kernels.py  # Added Dec 31
 ├── benchmarks/
 │   ├── bench_groupby_regression.py
-│   └── bench_groupby_regression_kernels.py  # Added Dec 31
+│   ├── bench_groupby_regression_kernels.py  # Added Dec 31
+│   └── run_benchmarks.sh                    # Added Jan 1
 └── docs/
     └── PHASE_HISTORY.md
 ```
 
-### v2/v3/v4 Engine Benchmarks
-**Commits:** `94386df6`, `ba768f67` (Oct 25, 2025)
+### v2/v3/v4 Engine Benchmarks (Oct 25, 2025)
+**Commits:** `94386df6`, `ba768f67`
 
 **Engine Comparison:**
 
@@ -311,6 +427,10 @@ Two specifications govern Phase 12.14:
 | Ratio-based performance gates | Absolute thresholds fail on different CI machines | 12.14a.GB |
 | Numba/NumPy parity tests | Would have caught 6-week silent regression | 12.14a.GB |
 | Hybrid Arrow/NumPy | Arrow for storage, NumPy for compute (8-10× faster) | 13.1.GB |
+| Dual timing (time_s + wall_time_s) | Separate kernel time from wrapper overhead | 12.14b.GB |
+| Always-on cProfile | Historical profiles for bottleneck analysis | 12.14b.GB-add |
+| Skip cProfile for n_jobs > 1 | cProfile only captures main process | 12.14c.GB D6 |
+| wall_time_s optional fallback | Backward compat with pre-12.14b.GB data | 12.14c.GB D1 |
 
 ---
 
@@ -347,18 +467,16 @@ Each phase follows this workflow:
 | `groupby_regression_kernels.py` | Shared Numba kernel module |
 | `groupby_regression_optimized.py` | V4/V5 implementations |
 | `tests/test_groupby_regression_kernels.py` | 28 kernel tests |
-| `benchmarks/bench_groupby_regression_kernels.py` | Performance benchmarks |
-| `benchmarks/bench_groupby_regression_memory.py` | Memory benchmarks |
+| `benchmarks/runner.py` | BF runner with multi-source discovery |
+| `benchmarks/schema.py` | JSON schema + NumpyEncoder |
+| `benchmarks/benchmark_adf.py` | AliasDataFrame adapter |
+| `benchmarks/visualization_cli.py` | --history, --history-stats, --plot |
+| `benchmarks/specs/benchmark_specs.yaml` | Plot specifications |
+| `groupby_regression/benchmarks/run_benchmarks.sh` | Review artifact generator |
 
 ---
 
 ## Planned Phases
-
-### Phase 12.14b.GB: Benchmark Framework Integration
-- Standardized JSON output schema
-- Standardized profiles (CPU, memory)
-- Time series summaries for historical tracking
-- Alarm thresholds for CI
 
 ### Phase 12.15.GB: V4 Integration
 - Update `make_parallel_fit_v4()` to call shared kernel
@@ -392,6 +510,15 @@ Each phase follows this workflow:
 | 6 | 4.34× |
 | 6 (4 feat) | 5.79× |
 
+### Benchmark Framework (Phase 12.14c.GB)
+
+| Metric | Value |
+|--------|-------|
+| Total benchmarks | 18 |
+| Test count | 145 |
+| CLI commands | 3 (--history, --history-stats, --plot) |
+| Exit codes | 4 (0/1/2/3) |
+
 ---
 
 ## Document History
@@ -400,3 +527,4 @@ Each phase follows this workflow:
 |---------|------|--------|
 | 1.0 | Dec 16, 2025 | Initial version |
 | 2.0 | Dec 31, 2025 | Added Phases 12.14.GB, 12.14a.GB, incident analysis |
+| 3.0 | Jan 4, 2026 | Added Phases 12.14b.GB, 12.14b.GB-addendum, 12.14c.GB |
