@@ -44,3 +44,20 @@ docs/restartContext*.md
 restartContext*.md
 restartContext*.md
 docs/restartContext*.md
+# Generated test artifacts
+.pytest_report.json
+test_logs/
+results/
+results.json
+bench_*.json
+
+# Benchmark output directories
+benchmark_review_*/
+benchmarks/2026-*/
+benchmarks/results/
+
+# Archives and temp files
+*.zip
+files/
+gitls.txt
+*.gitlog
