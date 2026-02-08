@@ -94,14 +94,14 @@ echo ""
 # ── Git diffs ─────────────────────────────────────────────────────
 echo "--- Capturing git diffs ---"
 if git rev-parse --is-inside-work-tree &>/dev/null; then
-    git diff HEAD > "$DIFF_COMMIT" 2>/dev/null || true
+    git diff HEAD -- . > "$DIFF_COMMIT" 2>/dev/null || true
     # Try diff to phase tag — search both PHASE_* and phase_* conventions
     PHASE_TAG=$(git tag --list 'PHASE_BEGIN_GroupByRegression' 2>/dev/null | head -1)
     if [ -z "$PHASE_TAG" ]; then
         PHASE_TAG=$(git tag --list 'PHASE_*' --sort=-version:refname | head -1)
     fi
     if [ -n "$PHASE_TAG" ]; then
-        git diff "$PHASE_TAG" > "$DIFF_PHASE" 2>/dev/null || true
+        git diff "$PHASE_TAG" -- . > "$DIFF_PHASE" 2>/dev/null || true
         echo "  Phase tag: $PHASE_TAG"
     else
         echo "  No phase tag found — skipping diff_to_phase"
