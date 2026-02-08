@@ -222,10 +222,73 @@ fi
     echo "  Summary:   $SUMMARY_FILE"
     echo "  Diff HEAD: $DIFF_COMMIT"
     echo "  Diff tag:  $DIFF_PHASE"
+    echo "  Reviewer:  $LOG_DIR/reviewer_${TS}.zip"
     echo "========================================"
 } | tee "$SUMMARY_FILE"
+
+# ── Package reviewer.zip ──────────────────────────────────────────────────
+echo ""
+echo "--- Packaging reviewer.zip ---"
+
+REVIEWER_ZIP="$LOG_DIR/reviewer_${TS}.zip"
+REVIEWER_LATEST="$SCRIPT_DIR/reviewer.zip"
+
+# Collect files into zip (relative paths for clean extraction)
+(
+    cd "$SCRIPT_DIR"
+
+    ZIP_FILES=""
+
+    # 1. Timestamped logs and diffs
+    for f in \
+        "test_logs/SUMMARY_${TS}.txt" \
+        "test_logs/test_failures_${TS}.log" \
+        "test_logs/test_${MODE}_${TS}.log" \
+        "test_logs/CAPABILITY_MATRIX_${TS}.md" \
+        "test_logs/capability_matrix_${TS}.json" \
+        "test_logs/diff_last_commit_${TS}.txt" \
+        "test_logs/diff_to_phase_${TS}.txt"
+    do
+        [ -f "$f" ] && ZIP_FILES="$ZIP_FILES $f"
+    done
+
+    # 2. Infrastructure files (for reviewer to read code)
+    for f in \
+        tests/feature_taxonomy.py \
+        tests/test_layer_classification.py \
+        tests/conftest.py \
+        tests/README.md \
+        scripts/generate_capability_matrix.py \
+        pytest.ini \
+        run_tests.sh
+    do
+        [ -f "$f" ] && ZIP_FILES="$ZIP_FILES $f"
+    done
+
+    # 3. Proposal and review docs (if present in docs/)
+    for f in docs/PHASE_13_7_GB*.md docs/PHASE_*.md; do
+        [ -f "$f" ] && ZIP_FILES="$ZIP_FILES $f"
+    done
+
+    # 4. Generated matrix (live copy in docs/)
+    for f in docs/CAPABILITY_MATRIX.md docs/capability_matrix.json; do
+        [ -f "$f" ] && ZIP_FILES="$ZIP_FILES $f"
+    done
+
+    if [ -n "$ZIP_FILES" ]; then
+        zip -q "$REVIEWER_ZIP" $ZIP_FILES
+        cp "$REVIEWER_ZIP" "$REVIEWER_LATEST"
+        echo "  Reviewer package: $REVIEWER_ZIP"
+        echo "  Also copied to:   $REVIEWER_LATEST"
+        echo "  Contents:"
+        zipinfo -1 "$REVIEWER_ZIP" | sed 's/^/    /'
+    else
+        echo "  WARNING: No files to package"
+    fi
+)
 
 echo ""
 echo "========================================"
 echo "Done. Logs in: $LOG_DIR"
+echo "  reviewer.zip: $REVIEWER_LATEST"
 echo "========================================"
