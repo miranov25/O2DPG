@@ -167,55 +167,7 @@ def _validate_sliding_window_inputs(
         except Exception as e:
             raise ValueError(f"Malformed fit_formula: {fit_formula!r}. Error: {e}")
 
-    # window spec keys, nonneg ints, symmetric only
-    if not window_spec:
-        raise InvalidWindowSpec("window_spec must be a non-empty dict {dim: nonneg_int}")
-    for dim, w in window_spec.items():
-        if dim not in group_columns:
-            raise InvalidWindowSpec(
-                f"window_spec key '{dim}' must be one of group_columns {group_columns}"
-            )
-        if not isinstance(w, (int, np.integer)) or w < 0:
-            raise InvalidWindowSpec(
-                f"window_spec for '{dim}' must be a non-negative integer (got {w!r})"
-            )
 
-    # selection length alignment
-    if selection is not None:
-        if len(selection) != len(df):
-            raise ValueError(
-                f"selection length ({len(selection)}) must match DataFrame length ({len(df)})"
-            )
-
-    # weights column exists if provided
-    if weights_column is not None and weights_column not in df.columns:
-        raise ValueError(f"weights_column '{weights_column}' not found in DataFrame")
-
-    # fit columns exist
-    for t in fit_columns:
-        if t not in df.columns:
-            raise ValueError(f"fit column '{t}' not found in DataFrame")
-
-    # predictors exist (only validated if formula is None)
-    if fit_formula is None:
-        for p in predictor_columns:
-            if p not in df.columns:
-                raise ValueError(f"predictor column '{p}' not found in DataFrame")
-
-    # backend
-    if backend not in ("numpy", "numba"):
-        raise ValueError("backend must be 'numpy' or 'numba'")
-
-    # fitter
-    if fit_formula is not None and not isinstance(fit_formula, (str,)):
-        # Callable formulas not supported in M7.1
-        raise ValueError("fit_formula must be a formula string in M7.1 (e.g. 'target ~ x + y')")
-
-    if fitter not in ("ols", "wls", "glm", "rlm"):
-        raise ValueError("fitter must be one of {'ols','wls','glm','rlm'} in M7.1")
-
-    if min_entries < 0:
-        raise ValueError("min_entries must be >= 0")
 
 
 def _build_bin_index_map(
@@ -367,7 +319,7 @@ def _aggregate_window_zerocopy(
     expected_neighbors = int(neighbor_offsets.shape[0]) if neighbor_offsets.size else 1
 
     for center in center_bins:
-        neighbors = _get_neighbor_bins(center, neighbor_offsets, bounds, group_columns)
+        neighbors = _get_neighbor_bins(center, neighbor_offsets, bounds)
         n_used = 0
         idx_list: List[int] = []
         for nb in neighbors:
@@ -474,7 +426,9 @@ def _fit_window_regression_statsmodels(
             for t in fit_columns:
                 center_map[t] = {
                     "coeffs": {},
+                    "coeffs_err": {},
                     "intercept": np.nan,
+                    "intercept_err": np.nan,
                     "r_squared": np.nan,
                     "rmse": np.nan,
                     "n_fitted": 0,
@@ -509,7 +463,9 @@ def _fit_window_regression_statsmodels(
             if n_avail < max(1, int(min_entries)):
                 center_map[t] = {
                     "coeffs": {},
+                    "coeffs_err": {},
                     "intercept": np.nan,
+                    "intercept_err": np.nan,
                     "r_squared": np.nan,
                     "rmse": np.nan,
                     "n_fitted": int(n_avail),
@@ -539,6 +495,27 @@ def _fit_window_regression_statsmodels(
                 intercept = float(params.get("Intercept", params.get("const", np.nan)))
                 coeffs = {k: float(v) for k, v in params.items() if k not in ("Intercept", "const")}
 
+                # Bug #6 fix: extract coefficient standard errors (res.bse)
+                if hasattr(res, 'bse') and res.bse is not None:
+                    try:
+                        bse = res.bse.to_dict()
+                    except AttributeError:
+                        bse = {}
+                        warnings.warn(
+                            f"res.bse unavailable for fitter='{fitter}' — "
+                            f"_err columns will be NaN",
+                            stacklevel=2,
+                        )
+                else:
+                    bse = {}
+                    warnings.warn(
+                        f"res.bse unavailable for fitter='{fitter}' — "
+                        f"_err columns will be NaN",
+                        stacklevel=2,
+                    )
+                intercept_err = float(bse.get("Intercept", bse.get("const", np.nan)))
+                coeffs_err = {k: float(bse.get(k, np.nan)) for k in coeffs}
+
                 # Diagnostics
                 # rsquared may be missing for some models (e.g., some GLM families); guard
                 r2 = getattr(res, "rsquared", np.nan)
@@ -553,7 +530,9 @@ def _fit_window_regression_statsmodels(
 
                 center_map[t] = {
                     "coeffs": coeffs,
+                    "coeffs_err": coeffs_err,
                     "intercept": intercept,
+                    "intercept_err": intercept_err,
                     "r_squared": float(r2) if r2 is not None else np.nan,
                     "rmse": rmse,
                     "n_fitted": int(getattr(res, "nobs", len(sub_df))),
@@ -562,7 +541,9 @@ def _fit_window_regression_statsmodels(
             except Exception:
                 center_map[t] = {
                     "coeffs": {},
+                    "coeffs_err": {},
                     "intercept": np.nan,
+                    "intercept_err": np.nan,
                     "r_squared": np.nan,
                     "rmse": np.nan,
                     "n_fitted": int(n_avail),
@@ -615,16 +596,20 @@ def _assemble_results(
             if tres is None:
                 # no fitting requested or not available
                 base[f"{t}_intercept"] = np.nan
+                base[f"{t}_intercept_err"] = np.nan
                 for p, ps in pred_suffixes.items():
                     base[f"{t}_slope_{ps}"] = np.nan
+                    base[f"{t}_slope_{ps}_err"] = np.nan
                 base[f"{t}_r_squared"] = np.nan
                 base[f"{t}_rmse"] = np.nan
                 base[f"{t}_n_fitted"] = 0
                 continue
 
             base[f"{t}_intercept"] = tres.get("intercept", np.nan)
+            base[f"{t}_intercept_err"] = tres.get("intercept_err", np.nan)
             for p, ps in pred_suffixes.items():
                 base[f"{t}_slope_{ps}"] = tres.get("coeffs", {}).get(p, np.nan)
+                base[f"{t}_slope_{ps}_err"] = tres.get("coeffs_err", {}).get(p, np.nan)
             base[f"{t}_r_squared"] = tres.get("r_squared", np.nan)
             base[f"{t}_rmse"] = tres.get("rmse", np.nan)
             base[f"{t}_n_fitted"] = tres.get("n_fitted", 0)
@@ -651,8 +636,10 @@ def _assemble_results(
     fit_cols = []
     for t in fit_columns:
         fit_cols.append(f"{t}_intercept")
+        fit_cols.append(f"{t}_intercept_err")
         for p, ps in pred_suffixes.items():
             fit_cols.append(f"{t}_slope_{ps}")
+            fit_cols.append(f"{t}_slope_{ps}_err")
         fit_cols.append(f"{t}_r_squared")
         fit_cols.append(f"{t}_rmse")
         fit_cols.append(f"{t}_n_fitted")
