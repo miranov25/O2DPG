@@ -481,6 +481,51 @@ class DSLCompiler:
         
         # Phase 13.6.D+: Store method signatures for IR builder
         self._method_signatures = method_signatures
+        
+        # Phase 13.7.B: Parent-child indexing registry
+        from .index_helpers import ParentChildRegistry
+        self._parent_child_registry = ParentChildRegistry()
+    
+    # =========================================================================
+    # Phase 13.7.B: Parent-Child Indexing
+    # =========================================================================
+    
+    def register_parent_child(self, parent: str, child: str,
+                              offset_column: str) -> None:
+        """
+        Register a parent-child relationship for automatic column expansion.
+        
+        When to_pandas() or draw() is called with columns from both parent
+        and child levels, parent columns are automatically expanded to child
+        level using C++ IndexHelpers.
+        
+        Phase 13.7.B: Offset pattern (consecutive ranges).
+        
+        Args:
+            parent: Actual branch prefix for parent-level columns.
+                    Must match real branch names in the ROOT file.
+                    Example: "td.trk" matches td.trk.dEdxTPC, td.trk.chi2TPC
+            child: Actual branch prefix for child-level columns.
+                   Example: "res" matches res.dy, res.dz
+            offset_column: Branch name containing RVec<int> of first-child
+                          offsets per parent.
+                          Example: "trackInfo.idxFirstResidual"
+        
+        Raises:
+            ValueError: If parameters are missing, child already registered
+                       with a different parent, or offset_column shares a
+                       prefix with parent or child.
+        
+        Example:
+            dsl.register_parent_child(
+                parent="td.trk",
+                child="res",
+                offset_column="trackInfo.idxFirstResidual"
+            )
+            # Now: dsl.draw("res.dy : td.trk.dEdxTPC", rdf)
+            # automatically expands td.trk.dEdxTPC to residual level
+        """
+        self._parent_child_registry.register(parent, child, offset_column)
     
     # =========================================================================
     # Phase 13.6.G: Verbosity & Inspection
@@ -3033,6 +3078,16 @@ class DSLCompiler:
         # Apply DSL definitions first if not already applied
         applied_rdf = self.apply(rdf)
         
+        # Phase 13.7.B: Parent-child column expansion
+        # Must be after apply() (aliases available) and before Filter()/AsNumpy()
+        _pc_rename_map = {}
+        if self._parent_child_registry.has_registrations():
+            from .index_helpers import expand_parent_columns, ensure_index_helpers_loaded
+            ensure_index_helpers_loaded()
+            applied_rdf, _pc_rename_map = expand_parent_columns(
+                applied_rdf, self._parent_child_registry, columns, self.schema
+            )
+        
         # Apply event-level selection if provided
         if event_selection:
             applied_rdf = applied_rdf.Filter(event_selection)
@@ -3047,9 +3102,23 @@ class DSLCompiler:
         if parent_id_column is not None and parent_id_column not in columns_to_fetch:
             columns_to_fetch.append(parent_id_column)
         
+        # Phase 13.7.B: Replace parent column names with expanded names for AsNumpy
+        if _pc_rename_map:
+            # reverse map: original_name → expanded_name
+            _pc_orig_to_expanded = {v: k for k, v in _pc_rename_map.items()}
+            columns_to_fetch = [
+                _pc_orig_to_expanded.get(c, c) for c in columns_to_fetch
+            ]
+        
         # Get data from RDataFrame
         logger.debug(f"[export] Fetching columns: {columns_to_fetch}")
         data = applied_rdf.AsNumpy(columns_to_fetch)
+        
+        # Phase 13.7.B: Rename expanded columns back to original names
+        if _pc_rename_map:
+            for expanded_name, original_name in _pc_rename_map.items():
+                if expanded_name in data:
+                    data[original_name] = data.pop(expanded_name)
         
         # Use AUTO backend if not specified
         if backend is None:
