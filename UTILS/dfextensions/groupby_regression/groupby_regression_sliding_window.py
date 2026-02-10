@@ -752,6 +752,286 @@ def _empty_fit_result(quality_flag: str, n_fitted: int) -> Dict[str, Any]:
 
 
 # ===============
+# V3: Pre-computed per-bin XtX/XtY, summed over window (incremental algorithm)
+# ===============
+
+@dataclass
+class _BinSuffStats:
+    """Sufficient statistics for a single bin, single target."""
+    XtX: np.ndarray       # (p, p) — X^T X
+    XtY: np.ndarray       # (p,)   — X^T y
+    n: int                # number of valid rows
+    sum_y: float          # Σ y_i  (for R²)
+    sum_y2: float         # Σ y_i² (for R²)
+
+
+def _precompute_bin_sufficient_stats(
+        df: pd.DataFrame,
+        bin_map: Dict[Tuple[int, ...], List[int]],
+        fit_columns: List[str],
+        linear_columns: List[str],
+        fit_intercept: bool = True,
+) -> Dict[str, Dict[Tuple[int, ...], _BinSuffStats]]:
+    """Pre-compute XtX, XtY, n, Σy, Σy² for each bin and target.
+
+    Returns
+    -------
+    dict[target_name, dict[bin_key, _BinSuffStats]]
+    """
+    n_pred = len(linear_columns)
+    n_params = n_pred + (1 if fit_intercept else 0)
+
+    # Pre-extract full arrays
+    pred_arrays = [df[p].to_numpy(dtype=np.float64) for p in linear_columns]
+    target_arrays = {t: df[t].to_numpy(dtype=np.float64) for t in fit_columns}
+
+    result: Dict[str, Dict[Tuple[int, ...], _BinSuffStats]] = {}
+
+    for t in fit_columns:
+        y_full = target_arrays[t]
+        bin_stats: Dict[Tuple[int, ...], _BinSuffStats] = {}
+
+        for bin_key, row_indices in bin_map.items():
+            idx = np.array(row_indices, dtype=np.int64)
+            y = y_full[idx]
+            x_cols = [pa[idx] for pa in pred_arrays]
+
+            # Validity mask: finite target + finite predictors
+            valid = np.isfinite(y)
+            for xc in x_cols:
+                valid &= np.isfinite(xc)
+
+            n_valid = int(np.sum(valid))
+            if n_valid == 0:
+                bin_stats[bin_key] = _BinSuffStats(
+                    XtX=np.zeros((n_params, n_params), dtype=np.float64),
+                    XtY=np.zeros(n_params, dtype=np.float64),
+                    n=0,
+                    sum_y=0.0,
+                    sum_y2=0.0,
+                )
+                continue
+
+            y_v = y[valid]
+
+            # Build design matrix
+            if fit_intercept:
+                X = np.column_stack(
+                    [np.ones(n_valid, dtype=np.float64)]
+                    + [xc[valid] for xc in x_cols]
+                )
+            else:
+                X = np.column_stack([xc[valid] for xc in x_cols])
+
+            bin_stats[bin_key] = _BinSuffStats(
+                XtX=X.T @ X,
+                XtY=X.T @ y_v,
+                n=n_valid,
+                sum_y=float(np.sum(y_v)),
+                sum_y2=float(np.sum(y_v ** 2)),
+            )
+
+        result[t] = bin_stats
+
+    return result
+
+
+def _compute_lightweight_agg_results(
+        bin_map: Dict[Tuple[int, ...], List[int]],
+        center_bins: List[Tuple[int, ...]],
+        neighbor_offsets: np.ndarray,
+        bounds: Dict[str, Tuple[int, int]],
+        gb_columns: List[str],
+        fit_columns: List[str],
+        bin_suff_stats: Dict[str, Dict[Tuple[int, ...], _BinSuffStats]],
+) -> List[_AggResult]:
+    """Compute lightweight _AggResult entries from sufficient statistics.
+
+    Derives mean/std/entries from summed sufficient stats over the window,
+    avoiding the expensive row-level aggregation. Median is set to NaN
+    (cannot be computed from sufficient statistics).
+    """
+    expected_neighbors = int(neighbor_offsets.shape[0]) if neighbor_offsets.size else 1
+
+    results: List[_AggResult] = []
+    for center in center_bins:
+        neighbors = _get_neighbor_bins(center, neighbor_offsets, bounds)
+
+        # Count used neighbors and total rows
+        n_used = 0
+        for nb in neighbors:
+            if nb in bin_map and len(bin_map[nb]) > 0:
+                n_used += 1
+
+        # Compute per-target stats from sufficient statistics
+        stats: Dict[str, Dict[str, float]] = {}
+        n_rows_total = 0
+
+        for t in fit_columns:
+            target_stats = bin_suff_stats[t]
+            sum_y = 0.0
+            sum_y2 = 0.0
+            n_valid = 0
+
+            for nb in neighbors:
+                bs = target_stats.get(nb)
+                if bs is not None and bs.n > 0:
+                    n_valid += bs.n
+                    sum_y += bs.sum_y
+                    sum_y2 += bs.sum_y2
+
+            if n_valid > 0:
+                mean = sum_y / n_valid
+                # Var = (Σy² - n*mean²) / (n-1) for unbiased
+                var_num = sum_y2 - n_valid * mean ** 2
+                std = float(np.sqrt(var_num / (n_valid - 1))) if n_valid > 1 and var_num > 0 else np.nan
+                stats[t] = {
+                    "mean": mean,
+                    "std": std,
+                    "median": np.nan,  # Cannot compute from sufficient stats
+                    "entries": n_valid,
+                }
+            else:
+                stats[t] = {"mean": np.nan, "std": np.nan, "median": np.nan, "entries": 0}
+
+            n_rows_total = max(n_rows_total, n_valid)
+
+        eff_frac = (n_used / expected_neighbors) if expected_neighbors > 0 else np.nan
+
+        results.append(_AggResult(
+            center=center,
+            n_neighbors_used=n_used,
+            n_rows_aggregated=n_rows_total,
+            effective_window_fraction=eff_frac,
+            stats=stats,
+            row_indices=np.array([], dtype=np.int64),  # not needed for V3
+        ))
+
+    return results
+
+
+def _fit_window_regression_incremental(
+        bin_map: Dict[Tuple[int, ...], List[int]],
+        bin_suff_stats: Dict[str, Dict[Tuple[int, ...], _BinSuffStats]],
+        center_bins: List[Tuple[int, ...]],
+        neighbor_offsets: np.ndarray,
+        bounds: Dict[str, Tuple[int, int]],
+        fit_columns: List[str],
+        linear_columns: List[str],
+        fit_intercept: bool,
+        min_stat: int,
+        agg_results: List[_AggResult],
+) -> Dict[Tuple[int, ...], Dict[str, Dict[str, Any]]]:
+    """V3: Solve normal equations from summed per-bin sufficient statistics.
+
+    For each center bin c and target t:
+        XtX_w = Σ_{b ∈ neighbors(c)} XtX_bin[b]
+        XtY_w = Σ_{b ∈ neighbors(c)} XtY_bin[b]
+        beta  = solve(XtX_w, XtY_w)
+
+    This avoids rebuilding X matrices from raw data. Complexity per bin:
+    O(K × p²) for summation + O(p³) for solve, where K = #neighbors, p = #params.
+    Compared to V1/V2: O(K × n_per_bin × p²) for building X^T X from rows.
+    """
+    n_pred = len(linear_columns)
+    n_params = n_pred + (1 if fit_intercept else 0)
+
+    out: Dict[Tuple[int, ...], Dict[str, Dict[str, Any]]] = {}
+
+    # Build agg_result lookup for n_neighbors_used etc.
+    agg_map = {ar.center: ar for ar in agg_results}
+
+    for center in center_bins:
+        neighbors = _get_neighbor_bins(center, neighbor_offsets, bounds)
+
+        center_map: Dict[str, Dict[str, Any]] = {}
+
+        for t in fit_columns:
+            target_stats = bin_suff_stats[t]
+
+            # Sum sufficient statistics over window neighbors
+            XtX_w = np.zeros((n_params, n_params), dtype=np.float64)
+            XtY_w = np.zeros(n_params, dtype=np.float64)
+            n_total = 0
+            sum_y_total = 0.0
+            sum_y2_total = 0.0
+
+            for nb in neighbors:
+                bs = target_stats.get(nb)
+                if bs is not None and bs.n > 0:
+                    XtX_w += bs.XtX
+                    XtY_w += bs.XtY
+                    n_total += bs.n
+                    sum_y_total += bs.sum_y
+                    sum_y2_total += bs.sum_y2
+
+            if n_total < max(1, int(min_stat)):
+                center_map[t] = _empty_fit_result("insufficient_stats", n_total)
+                continue
+
+            # Solve normal equations: XtX_w @ beta = XtY_w
+            try:
+                beta = np.linalg.solve(XtX_w, XtY_w)
+            except np.linalg.LinAlgError:
+                center_map[t] = _empty_fit_result("singular_matrix", n_total)
+                continue
+
+            # Diagnostics from sufficient stats:
+            # RSS = y^T y - beta^T X^T y = sum_y2 - beta . XtY
+            # (Note: this uses the identity RSS = y'y - 2β'X'y + β'X'Xβ = y'y - β'X'y)
+            rss = sum_y2_total - float(beta @ XtY_w)
+            if rss < 0:
+                # Numerical guard — can happen with near-perfect fit
+                rss = 0.0
+
+            dof = n_total - n_params
+            s2 = rss / dof if dof > 0 else np.nan
+
+            # RMSE = sqrt(RSS / n)
+            rmse = float(np.sqrt(rss / n_total)) if n_total > 0 else np.nan
+
+            # R² = 1 - RSS / SS_tot
+            # SS_tot = Σ(y - ȳ)² = Σy² - (Σy)²/n
+            y_mean = sum_y_total / n_total
+            ss_tot = sum_y2_total - n_total * y_mean ** 2
+            r2 = 1.0 - rss / ss_tot if ss_tot > 0 else np.nan
+
+            # Standard errors: sqrt(s² × diag(XtX⁻¹))
+            try:
+                XtX_inv = np.linalg.inv(XtX_w)
+                se = np.sqrt(s2 * np.diag(XtX_inv)) if np.isfinite(s2) else np.full(n_params, np.nan)
+            except np.linalg.LinAlgError:
+                se = np.full(n_params, np.nan)
+
+            # Pack result
+            if fit_intercept:
+                intercept = float(beta[0])
+                intercept_err = float(se[0])
+                coeffs = {linear_columns[j]: float(beta[j + 1]) for j in range(n_pred)}
+                coeffs_err = {linear_columns[j]: float(se[j + 1]) for j in range(n_pred)}
+            else:
+                intercept = 0.0
+                intercept_err = 0.0
+                coeffs = {linear_columns[j]: float(beta[j]) for j in range(n_pred)}
+                coeffs_err = {linear_columns[j]: float(se[j]) for j in range(n_pred)}
+
+            center_map[t] = {
+                "coeffs": coeffs,
+                "coeffs_err": coeffs_err,
+                "intercept": intercept,
+                "intercept_err": intercept_err,
+                "r_squared": r2,
+                "rmse": rmse,
+                "n_fitted": n_total,
+                "quality_flag": "",
+            }
+
+        out[center] = center_map
+
+    return out
+
+
+# ===============
 # Assembly
 # ===============
 
@@ -1028,56 +1308,98 @@ def make_sliding_window_fit(
     neighbor_offsets = _generate_neighbor_offsets(full_window_spec, gb_columns)
     bounds = _observed_bin_bounds(bin_map, gb_columns)
 
-    # Aggregation per window
-    agg_results = _aggregate_window_zerocopy(
-        df=df,
-        bin_map=bin_map,
-        center_bins=center_bins,
-        neighbor_offsets=neighbor_offsets,
-        bounds=bounds,
-        gb_columns=gb_columns,
-        fit_columns=fit_columns,
-        weights=weights,
-    )
+    # Fitting — dispatch by algorithm and backend
+    if algorithm == 'incremental':
+        # V3: pre-compute per-bin XtX/XtY, sum over window
+        bin_suff_stats = _precompute_bin_sufficient_stats(
+            df=df,
+            bin_map=bin_map,
+            fit_columns=fit_columns,
+            linear_columns=linear_columns,
+            fit_intercept=fit_intercept,
+        )
 
-    if verbose:
-        print(f"[SW] Aggregation done: {len(agg_results)} bins, "
-              f"{time.time()-t0:.3f}s elapsed")
+        # Lightweight aggregation: derive mean/std/entries from suff stats
+        # (skips the expensive row-level _aggregate_window_zerocopy)
+        agg_results = _compute_lightweight_agg_results(
+            bin_map=bin_map,
+            center_bins=center_bins,
+            neighbor_offsets=neighbor_offsets,
+            bounds=bounds,
+            gb_columns=gb_columns,
+            fit_columns=fit_columns,
+            bin_suff_stats=bin_suff_stats,
+        )
 
-    # Fitting — dispatch V1 (numpy) / V2 (numba)
-    if _resolved_backend == 'numba' and weights is None:
-        try:
-            from groupby_regression_kernels import fit_groups_single_numba
-            _use_numba = True
-        except ImportError:
+        if verbose:
+            print(f"[SW] V3 pre-compute done: {len(bin_map)} bins × "
+                  f"{len(fit_columns)} targets, {time.time()-t0:.3f}s elapsed")
+
+        fit_results = _fit_window_regression_incremental(
+            bin_map=bin_map,
+            bin_suff_stats=bin_suff_stats,
+            center_bins=center_bins,
+            neighbor_offsets=neighbor_offsets,
+            bounds=bounds,
+            fit_columns=fit_columns,
+            linear_columns=linear_columns,
+            fit_intercept=fit_intercept,
+            min_stat=min_stat,
+            agg_results=agg_results,
+        )
+        _backend_used = "incremental_numpy"
+
+    else:
+        # V1/V2 path: row-level aggregation + recompute from raw data
+        agg_results = _aggregate_window_zerocopy(
+            df=df,
+            bin_map=bin_map,
+            center_bins=center_bins,
+            neighbor_offsets=neighbor_offsets,
+            bounds=bounds,
+            gb_columns=gb_columns,
+            fit_columns=fit_columns,
+            weights=weights,
+        )
+
+        if verbose:
+            print(f"[SW] Aggregation done: {len(agg_results)} bins, "
+                  f"{time.time()-t0:.3f}s elapsed")
+
+        # V1/V2 path: recompute from raw data
+        if _resolved_backend == 'numba' and weights is None:
             try:
-                from .groupby_regression_kernels import fit_groups_single_numba
+                from groupby_regression_kernels import fit_groups_single_numba
                 _use_numba = True
             except ImportError:
-                _use_numba = False
-    else:
-        _use_numba = False
+                try:
+                    from .groupby_regression_kernels import fit_groups_single_numba
+                    _use_numba = True
+                except ImportError:
+                    _use_numba = False
+        else:
+            _use_numba = False
 
-    if _use_numba:
-        fit_results = _fit_window_regression_numba(
-            df=df,
-            agg_results=agg_results,
-            fit_columns=fit_columns,
-            linear_columns=linear_columns,
-            weights=weights,
-            min_stat=min_stat,
-        )
-        _backend_used = "numba"
-    else:
-        fit_results = _fit_window_regression_numpy(
-            df=df,
-            agg_results=agg_results,
-            fit_columns=fit_columns,
-            linear_columns=linear_columns,
-            weights=weights,
-            min_stat=min_stat,
-        )
-        _backend_used = "numpy_lstsq"
+        if _use_numba:
+            fit_results = _fit_window_regression_numba(
+                df=df,
+                agg_results=agg_results,
+                fit_columns=fit_columns,
+                linear_columns=linear_columns,
+                weights=weights,
+                min_stat=min_stat,
+            )
+            _backend_used = "numba"
+        else:
+            fit_results = _fit_window_regression_numpy(
+                df=df,
+                agg_results=agg_results,
+                fit_columns=fit_columns,
+                linear_columns=linear_columns,
+                weights=weights,
+                min_stat=min_stat,
+            )
+            _backend_used = "numpy_lstsq"
 
     if verbose:
         print(f"[SW] Fitting done ({_backend_used}): {time.time()-t0:.3f}s elapsed")

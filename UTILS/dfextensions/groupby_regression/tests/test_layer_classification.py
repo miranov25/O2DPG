@@ -406,6 +406,15 @@ TEST_LAYERS = {
     # -- Oracle parity: window=0 ≡ per-bin OLS → invariance
     "test_invariance_sliding_window.py::TestSWOracleParity::test_sw_window0_equals_per_bin_ols": "invariance",
 
+    # -- V3 incremental algorithm parity: V3 ≡ V1 → invariance
+    "test_invariance_sliding_window.py::TestSWV3Parity::test_v3_slope_matches_v1": "invariance",
+    "test_invariance_sliding_window.py::TestSWV3Parity::test_v3_multi_predictor_matches_v1": "invariance",
+    "test_invariance_sliding_window.py::TestSWV3Parity::test_v3_errors_match_v1": "invariance",
+    "test_invariance_sliding_window.py::TestSWV3Parity::test_v3_diagnostics_match_v1": "invariance",
+    "test_invariance_sliding_window.py::TestSWV3Parity::test_v3_stats_from_sufficient": "invariance",
+    "test_invariance_sliding_window.py::TestSWV3Parity::test_v3_metadata_algorithm": "smoke",
+    "test_invariance_sliding_window.py::TestSWV3Parity::test_v3_nsigma_recovery": "invariance",
+
     # ==================================================================
     # test_invariance_kernels.py (4 tests)
     # All are invariance by design (Phase 13.8.GB)

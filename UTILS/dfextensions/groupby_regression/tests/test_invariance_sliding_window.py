@@ -791,3 +791,208 @@ class TestSWOracleParity:
                 f"n_fitted mismatch at bin {bin_key}: "
                 f"SW={int(row['value_n_fitted'])}, expected={len(bin_df)}"
             )
+
+
+# #############################################################################
+# Tests 14–20: V3 Incremental Algorithm Parity & Correctness
+# #############################################################################
+
+def _run_sw_fit_incremental(
+    df: pd.DataFrame,
+    window_size: int,
+    linear_columns: list,
+    min_stat: int = 5,
+) -> pd.DataFrame:
+    """Run make_sliding_window_fit with algorithm='incremental' (V3)."""
+    return make_sliding_window_fit(
+        df=df,
+        gb_columns=['xBin', 'yBin', 'zBin'],
+        window_spec={'xBin': window_size, 'yBin': window_size, 'zBin': window_size},
+        fit_columns=['value'],
+        linear_columns=linear_columns,
+        min_stat=min_stat,
+        algorithm='incremental',
+        suffix='',
+    )
+
+
+@pytest.mark.skipif(not _SW_AVAILABLE, reason="Sliding window module not available")
+class TestSWV3Parity:
+    """
+    V3 (incremental, pre-computed XtX/XtY) must match V1 (recompute, lstsq)
+    to machine precision for all regression outputs.
+
+    V3 computes mean/std from sufficient statistics so we allow small
+    differences in those columns (no median in V3 — set to NaN).
+
+    Invariance checks (A ≡ B):
+      14. V3 ≡ V1 coefficients (single predictor, window=0)
+      15. V3 ≡ V1 coefficients (single predictor, window=1)
+      16. V3 ≡ V1 coefficients (multi predictor, window=1)
+      17. V3 ≡ V1 error estimators
+      18. V3 ≡ V1 diagnostics (RMSE, R², n_fitted)
+    """
+
+    # Tolerances: V3 uses np.linalg.solve vs V1 uses np.linalg.lstsq
+    # Both use double precision; differences are floating-point noise.
+    COEFF_ATOL = 1e-10
+    COEFF_RTOL = 1e-10
+    ERR_ATOL = 1e-10
+    ERR_RTOL = 1e-10
+    DIAG_ATOL = 1e-10
+    DIAG_RTOL = 1e-10
+    # Stats from sufficient stats vs row-level: small differences
+    STAT_ATOL = 1e-10
+    STAT_RTOL = 1e-10
+
+    @pytest.mark.parametrize("window_size", [0, 1])
+    def test_v3_slope_matches_v1(self, window_size):
+        """Test 14: V3 slope ≡ V1 slope (single predictor)."""
+        df = _make_sw_grid_single()
+        r_v1 = _run_sw_fit(df, window_size, ['x'])
+        r_v3 = _run_sw_fit_incremental(df, window_size, ['x'])
+
+        sort_cols = ['xBin', 'yBin', 'zBin']
+        r_v1 = r_v1.sort_values(sort_cols).reset_index(drop=True)
+        r_v3 = r_v3.sort_values(sort_cols).reset_index(drop=True)
+
+        np.testing.assert_allclose(
+            r_v1['value_slope_x'].values,
+            r_v3['value_slope_x'].values,
+            atol=self.COEFF_ATOL, rtol=self.COEFF_RTOL,
+            err_msg=f"V3 ≠ V1 slope (window={window_size})",
+        )
+        np.testing.assert_allclose(
+            r_v1['value_intercept'].values,
+            r_v3['value_intercept'].values,
+            atol=self.COEFF_ATOL, rtol=self.COEFF_RTOL,
+            err_msg=f"V3 ≠ V1 intercept (window={window_size})",
+        )
+
+    def test_v3_multi_predictor_matches_v1(self):
+        """Test 15: V3 ≡ V1 multi-predictor coefficients (window=1)."""
+        df = _make_sw_grid_multi()
+        r_v1 = make_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin', 'zBin'],
+            window_spec={'xBin': 1, 'yBin': 1, 'zBin': 1},
+            fit_columns=['value'], linear_columns=['x1', 'x2'],
+            min_stat=5, algorithm='recompute', suffix='',
+        )
+        r_v3 = make_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin', 'zBin'],
+            window_spec={'xBin': 1, 'yBin': 1, 'zBin': 1},
+            fit_columns=['value'], linear_columns=['x1', 'x2'],
+            min_stat=5, algorithm='incremental', suffix='',
+        )
+
+        sort_cols = ['xBin', 'yBin', 'zBin']
+        r_v1 = r_v1.sort_values(sort_cols).reset_index(drop=True)
+        r_v3 = r_v3.sort_values(sort_cols).reset_index(drop=True)
+
+        for col in ['value_slope_x1', 'value_slope_x2', 'value_intercept']:
+            np.testing.assert_allclose(
+                r_v1[col].values, r_v3[col].values,
+                atol=self.COEFF_ATOL, rtol=self.COEFF_RTOL,
+                err_msg=f"V3 ≠ V1: {col}",
+            )
+
+    @pytest.mark.parametrize("window_size", [0, 1])
+    def test_v3_errors_match_v1(self, window_size):
+        """Test 16: V3 standard errors ≡ V1 standard errors."""
+        df = _make_sw_grid_single()
+        r_v1 = _run_sw_fit(df, window_size, ['x'])
+        r_v3 = _run_sw_fit_incremental(df, window_size, ['x'])
+
+        sort_cols = ['xBin', 'yBin', 'zBin']
+        r_v1 = r_v1.sort_values(sort_cols).reset_index(drop=True)
+        r_v3 = r_v3.sort_values(sort_cols).reset_index(drop=True)
+
+        for col in ['value_slope_x_err', 'value_intercept_err']:
+            np.testing.assert_allclose(
+                r_v1[col].values, r_v3[col].values,
+                atol=self.ERR_ATOL, rtol=self.ERR_RTOL,
+                err_msg=f"V3 ≠ V1 error: {col} (window={window_size})",
+            )
+
+    @pytest.mark.parametrize("window_size", [0, 1])
+    def test_v3_diagnostics_match_v1(self, window_size):
+        """Test 17: V3 RMSE, R², n_fitted ≡ V1."""
+        df = _make_sw_grid_single()
+        r_v1 = _run_sw_fit(df, window_size, ['x'])
+        r_v3 = _run_sw_fit_incremental(df, window_size, ['x'])
+
+        sort_cols = ['xBin', 'yBin', 'zBin']
+        r_v1 = r_v1.sort_values(sort_cols).reset_index(drop=True)
+        r_v3 = r_v3.sort_values(sort_cols).reset_index(drop=True)
+
+        np.testing.assert_allclose(
+            r_v1['value_rmse'].values,
+            r_v3['value_rmse'].values,
+            atol=self.DIAG_ATOL, rtol=self.DIAG_RTOL,
+            err_msg=f"V3 ≠ V1 RMSE (window={window_size})",
+        )
+        np.testing.assert_allclose(
+            r_v1['value_r_squared'].values,
+            r_v3['value_r_squared'].values,
+            atol=self.DIAG_ATOL, rtol=self.DIAG_RTOL,
+            err_msg=f"V3 ≠ V1 R² (window={window_size})",
+        )
+        np.testing.assert_array_equal(
+            r_v1['value_n_fitted'].values,
+            r_v3['value_n_fitted'].values,
+            err_msg=f"V3 ≠ V1 n_fitted (window={window_size})",
+        )
+
+    def test_v3_stats_from_sufficient(self):
+        """Test 18: V3 mean/std match V1 (from sufficient stats)."""
+        df = _make_sw_grid_single()
+        r_v1 = _run_sw_fit(df, window_size=1, linear_columns=['x'])
+        r_v3 = _run_sw_fit_incremental(df, window_size=1, linear_columns=['x'])
+
+        sort_cols = ['xBin', 'yBin', 'zBin']
+        r_v1 = r_v1.sort_values(sort_cols).reset_index(drop=True)
+        r_v3 = r_v3.sort_values(sort_cols).reset_index(drop=True)
+
+        np.testing.assert_allclose(
+            r_v1['value_mean'].values,
+            r_v3['value_mean'].values,
+            atol=self.STAT_ATOL, rtol=self.STAT_RTOL,
+            err_msg="V3 ≠ V1 mean",
+        )
+        np.testing.assert_allclose(
+            r_v1['value_std'].values,
+            r_v3['value_std'].values,
+            atol=self.STAT_ATOL, rtol=self.STAT_RTOL,
+            err_msg="V3 ≠ V1 std",
+        )
+        np.testing.assert_array_equal(
+            r_v1['value_entries'].values,
+            r_v3['value_entries'].values,
+            err_msg="V3 ≠ V1 entries",
+        )
+
+    def test_v3_metadata_algorithm(self):
+        """Test 19: V3 metadata reports algorithm='incremental'."""
+        df = _make_sw_grid_single(n_bins_per_dim=2, entries_per_bin=20)
+        r_v3 = _run_sw_fit_incremental(df, window_size=1, linear_columns=['x'])
+        assert r_v3.attrs.get('algorithm') == 'incremental'
+        assert 'incremental' in r_v3.attrs.get('backend_used', '')
+
+    def test_v3_nsigma_recovery(self):
+        """Test 20: V3 independently recovers true slope within nsigma."""
+        df = _make_sw_grid_single()
+        r_v3 = _run_sw_fit_incremental(df, window_size=1, linear_columns=['x'])
+
+        valid = r_v3.dropna(subset=['value_slope_x', 'value_slope_x_err'])
+        slopes = valid['value_slope_x'].values
+        slope_errs = valid['value_slope_x_err'].values
+
+        good = slope_errs > 0
+        pulls = compute_pulls(slopes[good], TRUE_SLOPE, slope_errs[good])
+
+        median_n = int(np.median(valid['value_n_fitted'].values))
+        check_pull_distribution(
+            pulls, nsigma=NSIGMA,
+            df=max(median_n - 2, 0),
+            label="V3 incremental slope pull distribution",
+        )
