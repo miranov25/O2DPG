@@ -34,14 +34,15 @@ ROOT_INC_FLAGS = $(addprefix -I,$(subst :, ,$(ROOT_INCLUDE_PATH)))
 HEADER = o2_residual_helpers.h
 LINKDEF = O2ResidualHelpersLinkDef.h
 DICT_SRC = O2ResidualHelpersDict.cxx
+DICT_PCM = O2ResidualHelpersDict_rdict.pcm
 TARGET = libO2ResidualHelpers.so
 
 # All includes: local + ROOT + ROOT_INCLUDE_PATH
 INCLUDES = -I. -I$(ROOT_INCDIR) $(ROOT_INC_FLAGS)
 
-.PHONY: all clean test dict check-env show-env
+.PHONY: all clean test dict check-env show-env verify
 
-all: check-env $(TARGET)
+all: check-env $(TARGET) verify
 
 # Check that required environment variables are set
 check-env:
@@ -62,6 +63,11 @@ show-env:
 $(DICT_SRC): $(HEADER) $(LINKDEF)
 	@echo "Generating dictionary..."
 	$(ROOTCLING) -f $@ $(INCLUDES) $(HEADER) $(LINKDEF)
+	@if [ ! -f $(DICT_PCM) ]; then \
+		echo "ERROR: rootcling did not generate $(DICT_PCM)"; \
+		exit 1; \
+	fi
+	@echo "  Generated: $(DICT_SRC) + $(DICT_PCM)"
 
 # Build shared library
 $(TARGET): $(DICT_SRC)
@@ -77,25 +83,25 @@ $(TARGET): $(DICT_SRC)
 		-Wl,-rpath,$(O2_LIBDIR)
 	@echo "Built: $(TARGET)"
 
+# Verify build artifacts exist
+verify: $(TARGET)
+	@echo ""
+	@echo "=== Build Verification ==="
+	@echo -n "  $(TARGET): " && (test -f $(TARGET) && echo "OK ($(shell ls -lh $(TARGET) | awk '{print $$5}'))" || echo "MISSING")
+	@echo -n "  $(DICT_PCM): " && (test -f $(DICT_PCM) && echo "OK ($(shell ls -lh $(DICT_PCM) | awk '{print $$5}'))" || echo "MISSING — will cause 'LoadPCM' errors at runtime")
+	@echo ""
+
 dict: $(DICT_SRC)
 
 clean:
-	rm -f $(TARGET) $(DICT_SRC) *.pcm
+	rm -f $(TARGET) $(DICT_SRC) $(DICT_PCM) *.pcm
 
 test: $(TARGET)
 	@echo "Testing library load..."
-	@python3 -c "\
-import ROOT; \
-print('Loading library...'); \
-result = ROOT.gSystem.Load('./$(TARGET)'); \
-print(f'  Load result: {result}'); \
-if result < 0: \
-    print('  ERROR: Failed to load library'); \
-    exit(1); \
-print('Including header...'); \
-ROOT.gInterpreter.Declare('#include \"$(HEADER)\"'); \
-print('Testing ExtractQMaxTPC symbol...'); \
-f = ROOT.RDataFrameDSL.O2ResidualHelpers.ExtractQMaxTPC; \
-print(f'  Function: {f}'); \
-print('✓ All tests passed'); \
-"
+	@python3 -c "import ROOT, sys; \
+r = ROOT.gSystem.Load('./$(TARGET)'); \
+print(f'  Load: {r}'); \
+sys.exit(1) if r < 0 else None; \
+assert ROOT.gInterpreter.Declare('#include \"$(HEADER)\"'), 'header failed'; \
+print(f'  Symbol: {ROOT.RDataFrameDSL.O2ResidualHelpers.ExtractQMaxTPC}'); \
+print('All tests passed')"
