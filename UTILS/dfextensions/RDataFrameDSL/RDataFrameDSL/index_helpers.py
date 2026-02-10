@@ -198,8 +198,16 @@ def ensure_index_helpers_loaded() -> bool:
     Domain-specific libraries (e.g., libO2TPCCalibration) must be loaded
     BEFORE calling this function.
 
+    The caller is responsible for ensuring that libIndexHelpers.so and
+    index_helpers.h are findable by ROOT — either via LD_LIBRARY_PATH,
+    ROOT.gSystem.AddDynamicPath(), and ROOT.gInterpreter.AddIncludePath(),
+    or by running from the directory containing them.
+
     Returns:
         True if helpers are loaded (or were already loaded).
+
+    Raises:
+        RuntimeError: If the library or header cannot be loaded.
     """
     global _INDEX_HELPERS_LOADED
     if _INDEX_HELPERS_LOADED:
@@ -207,20 +215,51 @@ def ensure_index_helpers_loaded() -> bool:
 
     try:
         import ROOT
-        load_result = ROOT.gSystem.Load("libIndexHelpers.so")
-        if load_result < 0:
-            logger.warning(
-                "[parent-child] Failed to load libIndexHelpers.so "
-                f"(result={load_result}). "
-                "Falling back to header-only declaration."
-            )
-        ROOT.gInterpreter.Declare('#include "index_helpers.h"')
-        _INDEX_HELPERS_LOADED = True
-        logger.debug("[parent-child] C++ IndexHelpers loaded")
-        return True
-    except Exception as e:
-        logger.error(f"[parent-child] Failed to load IndexHelpers: {e}")
-        return False
+    except ImportError:
+        raise RuntimeError(
+            "[parent-child] ROOT (PyROOT) is not available. "
+            "Install ROOT or activate the environment with ROOT."
+        )
+
+    # --- Load shared library ---
+    load_result = ROOT.gSystem.Load("libIndexHelpers.so")
+    if load_result < 0:
+        # Collect diagnostic info
+        dyn_path = ROOT.gSystem.GetDynamicPath()
+        raise RuntimeError(
+            f"[parent-child] Failed to load libIndexHelpers.so "
+            f"(gSystem.Load returned {load_result}).\n"
+            f"  ROOT dynamic path: {dyn_path}\n"
+            f"  Fix: either:\n"
+            f"    1. Run from directory containing libIndexHelpers.so, or\n"
+            f"    2. Add its directory to LD_LIBRARY_PATH, or\n"
+            f"    3. Call ROOT.gSystem.AddDynamicPath('/path/to/dir') "
+            f"before register_parent_child()"
+        )
+
+    # --- Include header ---
+    decl_ok = ROOT.gInterpreter.Declare('#include "index_helpers.h"')
+    if not decl_ok:
+        inc_path = ROOT.gInterpreter.GetIncludePath()
+        raise RuntimeError(
+            f"[parent-child] Failed to include index_helpers.h.\n"
+            f"  ROOT include path: {inc_path}\n"
+            f"  Fix: ROOT.gInterpreter.AddIncludePath('/path/to/dir')"
+        )
+
+    # --- Verify symbols exist ---
+    try:
+        _ = ROOT.RDataFrameDSL.IndexHelpers.ExpandParentIndexFromOffsets
+    except AttributeError:
+        raise RuntimeError(
+            "[parent-child] libIndexHelpers.so loaded but "
+            "RDataFrameDSL::IndexHelpers::ExpandParentIndexFromOffsets "
+            "not found. Library may be corrupt or from wrong build."
+        )
+
+    _INDEX_HELPERS_LOADED = True
+    logger.debug("[parent-child] C++ IndexHelpers loaded and verified")
+    return True
 
 
 def reset_helpers_loaded():
