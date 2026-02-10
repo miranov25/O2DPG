@@ -1,6 +1,6 @@
 # Capability Matrix — groupby_regression
 
-**Generated:** 2026-02-07 21:03 UTC
+**Generated:** 2026-02-10 08:16 UTC
 **Phase:** 13.7.GB — Test Quality Classification
 **Generator:** `scripts/generate_capability_matrix.py`
 
@@ -8,23 +8,23 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 21 | 21.9% |
-| ☑️ Smoke-only | 75 | 78.1% |
+| ✅ Verified | 24 | 24.0% |
+| ☑️ Smoke-only | 75 | 75.0% |
 | 🧨 Broken | 0 | 0.0% |
 | ⚠️ Partial | 0 | 0.0% |
-| 📋 Planned | 0 | 0.0% |
-| **Total** | **96** | |
+| 📋 Planned | 1 | 1.0% |
+| **Total** | **100** | |
 
 ## Test Layer Distribution (excluding verbose duplicates)
 
 | Layer | Count |
 |-------|------:|
-| invariance | 29 |
+| invariance | 40 |
 | integration | 10 |
 | performance | 5 |
-| smoke | 193 |
-| validation | 26 |
-| **Total unique** | **263** |
+| smoke | 192 |
+| validation | 24 |
+| **Total unique** | **271** |
 
 ## groupby_regression
 
@@ -125,21 +125,25 @@
 | Status | Feature | Tests | Inv/Int | Bench | Tag |
 |--------|---------|------:|--------:|-------|-----|
 | ☑️ | **SW.aggregation** — Sliding window aggregation | 1 | 0 |  |  |
+| ✅ | **SW.backend_auto** — Backend auto-dispatch | 2 | 1 |  |  |
 | ☑️ | **SW.basic** — Sliding window basic 3D | 1 | 0 |  |  |
 | ☑️ | **SW.bin_helpers** — Internal bin helpers | 2 | 0 |  |  |
 | ☑️ | **SW.boundary** — Boundary truncation | 3 | 0 |  |  |
 | ☑️ | **SW.empty_window** — Empty window handling | 1 | 0 |  |  |
+| ✅ | **SW.invariance** — Sliding window invariance tests | 8 | 8 |  |  |
 | ✅ | **SW.linear_fit** — Sliding window linear fit | 1 | 1 |  |  |
 | ☑️ | **SW.metadata** — Sliding window metadata | 1 | 0 |  |  |
-| ☑️ | **SW.min_entries** — Minimum entries enforcement | 1 | 0 |  |  |
+| ☑️ | **SW.min_stat** — Minimum entries enforcement | 1 | 0 |  |  |
+| ✅ | **SW.multi_predictor** — Sliding window multi-predictor | 2 | 1 |  |  |
 | ☑️ | **SW.multi_target** — Sliding window multi-target | 1 | 0 |  |  |
-| ☑️ | **SW.numpy_fallback** — NumPy fallback warning | 2 | 0 |  |  |
+| ☑️ | **SW.omitted_dims** — Omitted window dims default to 0 | 1 | 0 |  |  |
+| ☑️ | **SW.return_metadata** — Sliding window return_metadata | 1 | 0 |  |  |
 | ☑️ | **SW.selection** — Sliding window selection mask | 1 | 0 |  |  |
 | ☑️ | **SW.smoke_gate** — Realistic smoke normalised residuals | 1 | 0 |  |  |
-| ☑️ | **SW.statsmodels** — Statsmodels fitters in SW | 3 | 0 |  | STATSMODELS |
-| ✅ | **SW.v4_parity** — SW window-zero parity with V4 | 1 | 1 |  |  |
-| ☑️ | **SW.validation** — Sliding window input validation | 7 | 0 |  |  |
-| ☑️ | **SW.weighted** — Sliding window weighted fits | 1 | 0 |  |  |
+| ☑️ | **SW.suffix** — Sliding window output suffix | 1 | 0 |  |  |
+| ✅ | **SW.v4_parity** — SW window-zero parity with V4 | 2 | 2 |  |  |
+| ☑️ | **SW.validation** — Sliding window input validation | 5 | 0 |  |  |
+| 📋 | **SW.weighted** — Sliding window weighted fits (WLS) | 0 | 0 |  | PLANNED |
 
 ## synthetic_tpc_distortion
 

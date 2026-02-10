@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-07T21:03:38.402642",
+  "generated": "2026-02-10T08:16:52.986201",
   "phase": "13.7.GB",
   "features": {
     "KERNEL.single_fit": {
@@ -765,7 +765,7 @@
       "bench_proof": [],
       "unclassified_count": 0
     },
-    "SW.min_entries": {
+    "SW.min_stat": {
       "name": "Minimum entries enforcement",
       "module": "groupby_regression_sliding_window",
       "status": "\u2611\ufe0f",
@@ -783,20 +783,20 @@
       "status": "\u2611\ufe0f",
       "status_label": "Smoke-only",
       "impl_tag": null,
-      "test_count": 7,
+      "test_count": 5,
       "invariance_count": 0,
       "has_bench_proof": false,
       "bench_proof": [],
       "unclassified_count": 0
     },
-    "SW.numpy_fallback": {
-      "name": "NumPy fallback warning",
+    "SW.backend_auto": {
+      "name": "Backend auto-dispatch",
       "module": "groupby_regression_sliding_window",
-      "status": "\u2611\ufe0f",
-      "status_label": "Smoke-only",
+      "status": "\u2705",
+      "status_label": "Verified",
       "impl_tag": null,
       "test_count": 2,
-      "invariance_count": 0,
+      "invariance_count": 1,
       "has_bench_proof": false,
       "bench_proof": [],
       "unclassified_count": 0
@@ -825,13 +825,25 @@
       "bench_proof": [],
       "unclassified_count": 0
     },
-    "SW.weighted": {
-      "name": "Sliding window weighted fits",
+    "SW.multi_predictor": {
+      "name": "Sliding window multi-predictor",
       "module": "groupby_regression_sliding_window",
-      "status": "\u2611\ufe0f",
-      "status_label": "Smoke-only",
+      "status": "\u2705",
+      "status_label": "Verified",
       "impl_tag": null,
-      "test_count": 1,
+      "test_count": 2,
+      "invariance_count": 1,
+      "has_bench_proof": false,
+      "bench_proof": [],
+      "unclassified_count": 0
+    },
+    "SW.weighted": {
+      "name": "Sliding window weighted fits (WLS)",
+      "module": "groupby_regression_sliding_window",
+      "status": "\ud83d\udccb",
+      "status_label": "Planned",
+      "impl_tag": "PLANNED",
+      "test_count": 0,
       "invariance_count": 0,
       "has_bench_proof": false,
       "bench_proof": [],
@@ -861,13 +873,37 @@
       "bench_proof": [],
       "unclassified_count": 0
     },
-    "SW.statsmodels": {
-      "name": "Statsmodels fitters in SW",
+    "SW.suffix": {
+      "name": "Sliding window output suffix",
       "module": "groupby_regression_sliding_window",
       "status": "\u2611\ufe0f",
       "status_label": "Smoke-only",
-      "impl_tag": "STATSMODELS",
-      "test_count": 3,
+      "impl_tag": null,
+      "test_count": 1,
+      "invariance_count": 0,
+      "has_bench_proof": false,
+      "bench_proof": [],
+      "unclassified_count": 0
+    },
+    "SW.return_metadata": {
+      "name": "Sliding window return_metadata",
+      "module": "groupby_regression_sliding_window",
+      "status": "\u2611\ufe0f",
+      "status_label": "Smoke-only",
+      "impl_tag": null,
+      "test_count": 1,
+      "invariance_count": 0,
+      "has_bench_proof": false,
+      "bench_proof": [],
+      "unclassified_count": 0
+    },
+    "SW.omitted_dims": {
+      "name": "Omitted window dims default to 0",
+      "module": "groupby_regression_sliding_window",
+      "status": "\u2611\ufe0f",
+      "status_label": "Smoke-only",
+      "impl_tag": null,
+      "test_count": 1,
       "invariance_count": 0,
       "has_bench_proof": false,
       "bench_proof": [],
@@ -879,8 +915,8 @@
       "status": "\u2705",
       "status_label": "Verified",
       "impl_tag": null,
-      "test_count": 1,
-      "invariance_count": 1,
+      "test_count": 2,
+      "invariance_count": 2,
       "has_bench_proof": false,
       "bench_proof": [],
       "unclassified_count": 0
@@ -905,6 +941,18 @@
       "impl_tag": null,
       "test_count": 1,
       "invariance_count": 0,
+      "has_bench_proof": false,
+      "bench_proof": [],
+      "unclassified_count": 0
+    },
+    "SW.invariance": {
+      "name": "Sliding window invariance tests",
+      "module": "groupby_regression_sliding_window",
+      "status": "\u2705",
+      "status_label": "Verified",
+      "impl_tag": null,
+      "test_count": 8,
+      "invariance_count": 8,
       "has_bench_proof": false,
       "bench_proof": [],
       "unclassified_count": 0
@@ -1177,8 +1225,9 @@
     }
   },
   "summary": {
-    "Verified": 21,
+    "Verified": 24,
     "Smoke-only": 75,
-    "total": 96
+    "Planned": 1,
+    "total": 100
   }
 }

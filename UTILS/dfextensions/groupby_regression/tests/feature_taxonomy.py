@@ -634,10 +634,10 @@ FEATURE_TAXONOMY = {
         "impl_tag": None,
     },
 
-    # ====== SW — Sliding Window ======
+    # ====== SW — Sliding Window (v4-aligned API) ======
     "SW.basic": {
         "name": "Sliding window basic 3D",
-        "description": "Basic sliding window on 3-dimensional bins",
+        "description": "Basic sliding window on 3-dimensional bins (v4-aligned: gb_columns, linear_columns)",
         "module": "groupby_regression_sliding_window",
         "proof": ["test_groupby_regression_sliding_window.py::test_sliding_window_basic_3d_verbose"],
         "bench_proof": [],
@@ -653,7 +653,7 @@ FEATURE_TAXONOMY = {
     },
     "SW.linear_fit": {
         "name": "Sliding window linear fit",
-        "description": "Linear regression within sliding window",
+        "description": "Linear regression within sliding window (V1 numpy lstsq / V2 Numba)",
         "module": "groupby_regression_sliding_window",
         "proof": ["test_groupby_regression_sliding_window.py::test_sliding_window_linear_fit_recover_slope"],
         "bench_proof": [],
@@ -667,9 +667,9 @@ FEATURE_TAXONOMY = {
         "bench_proof": [],
         "impl_tag": None,
     },
-    "SW.min_entries": {
+    "SW.min_stat": {
         "name": "Minimum entries enforcement",
-        "description": "Windows below min_entries flagged or dropped",
+        "description": "Windows below min_stat flagged or dropped (renamed from min_entries)",
         "module": "groupby_regression_sliding_window",
         "proof": ["test_groupby_regression_sliding_window.py::test_min_entries_enforcement_flag_or_drop"],
         "bench_proof": [],
@@ -684,20 +684,18 @@ FEATURE_TAXONOMY = {
             "test_groupby_regression_sliding_window.py::test_missing_columns_raise_valueerror",
             "test_groupby_regression_sliding_window.py::test_float_bins_rejected_in_m71",
             "test_groupby_regression_sliding_window.py::test_min_entries_must_be_positive_int",
-            "test_groupby_regression_sliding_window.py::test_invalid_fit_formula_raises",
             "test_groupby_regression_sliding_window.py::test_selection_mask_length_and_dtype",
-            "test_groupby_regression_sliding_window.py::test_wls_requires_weights_column",
         ],
         "bench_proof": [],
         "impl_tag": None,
     },
-    "SW.numpy_fallback": {
-        "name": "NumPy fallback warning",
-        "description": "Numba falls back to NumPy with warning",
+    "SW.backend_auto": {
+        "name": "Backend auto-dispatch",
+        "description": "backend='auto' detects Numba availability, dispatches V2 (numba) or V1 (numpy)",
         "module": "groupby_regression_sliding_window",
         "proof": [
-            "test_groupby_regression_sliding_window.py::test_numpy_fallback_emits_performance_warning",
-            "test_groupby_regression_sliding_window.py::test_backend_numba_request_warns_numpy_fallback",
+            "test_invariance_sliding_window.py::TestSWNumba::test_sw_numba_backend_used",
+            "test_invariance_sliding_window.py::TestSWNumba::test_sw_numba_equals_numpy",
         ],
         "bench_proof": [],
         "impl_tag": None,
@@ -722,13 +720,24 @@ FEATURE_TAXONOMY = {
         "bench_proof": [],
         "impl_tag": None,
     },
-    "SW.weighted": {
-        "name": "Sliding window weighted fits",
-        "description": "Weighted vs unweighted differ appropriately",
+    "SW.multi_predictor": {
+        "name": "Sliding window multi-predictor",
+        "description": "Multiple linear predictors (e.g. x + x²) in sliding window",
         "module": "groupby_regression_sliding_window",
-        "proof": ["test_groupby_regression_sliding_window.py::test_weighted_vs_unweighted_coefficients_differ"],
+        "proof": [
+            "test_groupby_regression_sliding_window.py::test_statsmodels_formula_rich_syntax_relaxed",
+            "test_invariance_sliding_window.py::TestSWMultiPredictor::test_sw_multi_predictor_nsigma_recovery",
+        ],
         "bench_proof": [],
         "impl_tag": None,
+    },
+    "SW.weighted": {
+        "name": "Sliding window weighted fits (WLS)",
+        "description": "Weighted least squares in sliding window — planned for V3/V4",
+        "module": "groupby_regression_sliding_window",
+        "proof": [],
+        "bench_proof": [],
+        "impl_tag": "PLANNED",
     },
     "SW.selection": {
         "name": "Sliding window selection mask",
@@ -740,29 +749,50 @@ FEATURE_TAXONOMY = {
     },
     "SW.metadata": {
         "name": "Sliding window metadata",
-        "description": "Metadata in DataFrame.attrs",
+        "description": "Metadata in DataFrame.attrs (window_spec, backend_used, algorithm, suffix)",
         "module": "groupby_regression_sliding_window",
         "proof": ["test_groupby_regression_sliding_window.py::test_metadata_presence_in_attrs"],
         "bench_proof": [],
         "impl_tag": None,
     },
-    "SW.statsmodels": {
-        "name": "Statsmodels fitters in SW",
-        "description": "OLS, WLS, GLM, RLM fitters via statsmodels",
+    "SW.suffix": {
+        "name": "Sliding window output suffix",
+        "description": "Configurable suffix for output columns (default '_sw', v4-aligned)",
         "module": "groupby_regression_sliding_window",
         "proof": [
-            "test_groupby_regression_sliding_window.py::test_statsmodels_fitters_basic",
-            "test_groupby_regression_sliding_window.py::test_statsmodels_formula_rich_syntax_relaxed",
-            "test_groupby_regression_sliding_window.py::test_statsmodels_not_available_doc_behavior",
+            "test_groupby_regression_sliding_window.py::test_sliding_window_basic_3d_verbose",
         ],
         "bench_proof": [],
-        "impl_tag": "STATSMODELS",
+        "impl_tag": None,
+    },
+    "SW.return_metadata": {
+        "name": "Sliding window return_metadata",
+        "description": "return_metadata=True returns (DataFrame, dict) with computation details",
+        "module": "groupby_regression_sliding_window",
+        "proof": [
+            "test_groupby_regression_sliding_window.py::test_metadata_presence_in_attrs",
+        ],
+        "bench_proof": [],
+        "impl_tag": None,
+    },
+    "SW.omitted_dims": {
+        "name": "Omitted window dims default to 0",
+        "description": "window_spec with missing gb_columns dimensions defaults to 0 (no sliding)",
+        "module": "groupby_regression_sliding_window",
+        "proof": [
+            "test_groupby_regression_sliding_window.py::test_invalid_window_spec_rejected",
+        ],
+        "bench_proof": [],
+        "impl_tag": None,
     },
     "SW.v4_parity": {
         "name": "SW window-zero parity with V4",
         "description": "Zero window size reproduces V4 standard groupby",
         "module": "groupby_regression_sliding_window",
-        "proof": ["test_groupby_regression_sliding_window.py::test_window_size_zero_parity_with_v4_relaxed"],
+        "proof": [
+            "test_groupby_regression_sliding_window.py::test_window_size_zero_parity_with_v4_relaxed",
+            "test_invariance_sliding_window.py::TestSWOracleParity::test_sw_window0_equals_per_bin_ols",
+        ],
         "bench_proof": [],
         "impl_tag": None,
     },
@@ -782,6 +812,23 @@ FEATURE_TAXONOMY = {
         "description": "End-to-end scenario with normalised residuals",
         "module": "groupby_regression_sliding_window",
         "proof": ["test_groupby_regression_sliding_window.py::test_realistic_smoke_normalised_residuals_gate"],
+        "bench_proof": [],
+        "impl_tag": None,
+    },
+    "SW.invariance": {
+        "name": "Sliding window invariance tests",
+        "description": "Statistical validation: nsigma recovery, error estimator consistency, pull distributions",
+        "module": "groupby_regression_sliding_window",
+        "proof": [
+            "test_invariance_sliding_window.py::TestSWValueRecovery::test_sw_slope_nsigma_recovery",
+            "test_invariance_sliding_window.py::TestSWErrorEstimator::test_sw_error_estimator_consistency",
+            "test_invariance_sliding_window.py::TestSWPullDistribution::test_sw_pull_distribution",
+            "test_invariance_sliding_window.py::TestSWStructuralInvariants::test_sw_window0_entries_equals_bin",
+            "test_invariance_sliding_window.py::TestSWStructuralInvariants::test_sw_window0_neighbors_equals_one",
+            "test_invariance_sliding_window.py::TestSWStructuralInvariants::test_sw_interior_entries_27x",
+            "test_invariance_sliding_window.py::TestSWMetamorphic::test_sw_permutation_invariance",
+            "test_invariance_sliding_window.py::TestSWMetamorphic::test_sw_determinism",
+        ],
         "bench_proof": [],
         "impl_tag": None,
     },

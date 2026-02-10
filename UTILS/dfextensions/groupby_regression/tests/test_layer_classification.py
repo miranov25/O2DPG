@@ -377,6 +377,45 @@ TEST_LAYERS = {
     "test_groupby_regression_sliding_window_verbose.py::test_realistic_smoke_normalised_residuals_gate": "smoke",
 
     # ==================================================================
+    # test_invariance_sliding_window.py (21 tests)
+    # All are invariance or integration by design (Phase 13.8.GB)
+    # ==================================================================
+    # -- Value recovery: nsigma-gated coefficient recovery → invariance
+    "test_invariance_sliding_window.py::TestSWValueRecovery::test_sw_slope_nsigma_recovery": "invariance",
+    "test_invariance_sliding_window.py::TestSWValueRecovery::test_sw_intercept_nsigma_recovery": "invariance",
+    # -- Error estimator: consistency check → invariance
+    "test_invariance_sliding_window.py::TestSWErrorEstimator::test_sw_error_estimator_consistency": "invariance",
+    # -- Pull distribution: chi2 goodness-of-fit → invariance
+    "test_invariance_sliding_window.py::TestSWPullDistribution::test_sw_pull_distribution": "invariance",
+    # -- RMSE: noise recovery → invariance
+    "test_invariance_sliding_window.py::TestSWRmse::test_sw_rmse_vs_known_noise": "invariance",
+    # -- Structural invariants: window=0 parity, neighbor counts → invariance
+    "test_invariance_sliding_window.py::TestSWStructuralInvariants::test_sw_window0_entries_equals_bin": "invariance",
+    "test_invariance_sliding_window.py::TestSWStructuralInvariants::test_sw_window0_neighbors_equals_one": "invariance",
+    "test_invariance_sliding_window.py::TestSWStructuralInvariants::test_sw_interior_entries_27x": "invariance",
+    # -- Metamorphic: permutation invariance, determinism → invariance
+    "test_invariance_sliding_window.py::TestSWMetamorphic::test_sw_permutation_invariance": "invariance",
+    "test_invariance_sliding_window.py::TestSWMetamorphic::test_sw_determinism": "invariance",
+    # -- Numba backend parity: V2 ≡ V1 → invariance
+    "test_invariance_sliding_window.py::TestSWNumba::test_sw_numba_backend_used": "smoke",
+    "test_invariance_sliding_window.py::TestSWNumba::test_sw_numba_equals_numpy": "invariance",
+    "test_invariance_sliding_window.py::TestSWNumba::test_sw_numba_nsigma_recovery": "invariance",
+    "test_invariance_sliding_window.py::TestSWNumba::test_sw_numba_multi_predictor": "invariance",
+    # -- Multi-predictor: nsigma recovery with x + x² → invariance
+    "test_invariance_sliding_window.py::TestSWMultiPredictor::test_sw_multi_predictor_nsigma_recovery": "invariance",
+    # -- Oracle parity: window=0 ≡ per-bin OLS → invariance
+    "test_invariance_sliding_window.py::TestSWOracleParity::test_sw_window0_equals_per_bin_ols": "invariance",
+
+    # ==================================================================
+    # test_invariance_kernels.py (4 tests)
+    # All are invariance by design (Phase 13.8.GB)
+    # ==================================================================
+    "test_invariance_kernels.py::TestKernelSingleFitTruth::test_kernel_single_nsigma_recovery": "invariance",
+    "test_invariance_kernels.py::TestKernelMultiFitTruth::test_kernel_multi_nsigma_recovery": "invariance",
+    "test_invariance_kernels.py::TestKernelNumbaNumpyParity::test_kernel_numba_equals_numpy_lstsq": "invariance",
+    "test_invariance_kernels.py::TestKernelSingleMultiParity::test_kernel_single_equals_multi_target0": "invariance",
+
+    # ==================================================================
     # test_groupby_regression_standardization.py (5 tests)
     # All structural/column checks → smoke
     # ==================================================================

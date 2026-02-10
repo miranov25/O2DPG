@@ -1,6 +1,6 @@
 # groupby_regression — Test Infrastructure
 
-**Phase:** 13.7.GB — Test Quality Classification & Capability Matrix Automation  
+**Phase:** 13.8.GB — v4-aligned Sliding Window API + Invariance Tests  
 **Subproject:** groupby_regression (ALICE TPC calibration, O2DPG/dfextensions)
 
 ---
@@ -49,8 +49,8 @@ If a test has no layer classification, the generator treats it as `smoke` and em
 ```
 tests/
 ├── conftest.py                          # Marker registration (feature, layer, slow)
-├── feature_taxonomy.py                  # 96 features → proof tests + bench_proof
-├── test_layer_classification.py         # 291 tests → layer assignments
+├── feature_taxonomy.py                  # 100 features → proof tests + bench_proof
+├── test_layer_classification.py         # ~311 tests → layer assignments
 ├── README.md                            # This file
 │
 ├── test_groupby_regression.py           # Robust fit (make_parallel_fit)
@@ -60,8 +60,11 @@ tests/
 ├── test_phase_12_9_gb.py                # Backend selection
 ├── test_cross_validation.py             # Cross-engine parity
 ├── test_fit_metadata.py                 # Metadata schema/formulas (65 tests)
-├── test_groupby_regression_sliding_window.py          # Sliding window
+├── test_groupby_regression_sliding_window.py          # Sliding window (v4-aligned)
 ├── test_groupby_regression_sliding_window_verbose.py  # Verbose duplicate (deduped)
+├── test_invariance_sliding_window.py    # SW invariance: recovery, pulls, parity
+├── test_invariance_kernels.py           # Kernel invariance: MC truth, Numba/NumPy
+├── _invariance_helpers.py               # Shared analytical validation helpers
 ├── test_pyarrow_backend.py              # PyArrow backend
 └── test_tpc_distortion_recovery.py      # TPC pipeline (zero assertions — smoke)
 
@@ -94,6 +97,66 @@ PYTEST_WORKERS=4 source run_tests.sh
 
 Output goes to `test_logs/` with timestamped filenames. `reviewer.zip` is also created in the project root with all artifacts needed for external review.
 
+## Numba Threading — Troubleshooting
+
+Numba uses a threading layer for `@njit(parallel=True)`. Under **pytest-xdist** (parallel
+test workers), each worker initialises its own Numba runtime, which can trigger TBB version
+conflicts.
+
+### Symptom
+
+```
+ValueError: No threading layer could be loaded.
+NumbaWarning: The TBB threading layer requires TBB version 2021 update 6 or later
+  i.e., TBB_INTERFACE_VERSION >= 12060. Found TBB_INTERFACE_VERSION = 12050.
+  The TBB threading layer is disabled.
+```
+
+This typically happens on Linux where a system TBB (e.g. from `libtbb-dev`) is version
+2021.5 (interface 12050) but Numba requires 2021.6+ (interface 12060).
+
+### Fix Options (pick one)
+
+**Option A — Use OpenMP instead of TBB (recommended, zero install)**
+```bash
+export NUMBA_THREADING_LAYER=omp
+source run_tests.sh                     # ← run_tests.sh defaults to 'omp' since Phase 13.8
+```
+
+**Option B — Upgrade TBB via pip**
+```bash
+pip install tbb --upgrade               # installs TBB ≥ 2021.6 into venv
+# On Linux you may also need:
+export LD_LIBRARY_PATH="$VIRTUAL_ENV/lib:$LD_LIBRARY_PATH"
+```
+
+**Option C — Upgrade system TBB (if you have root)**
+```bash
+# RHEL/Alma/CentOS:
+sudo dnf install tbb-devel              # ≥ 2021.6
+# Ubuntu/Debian:
+sudo apt install libtbb-dev             # ≥ 2021.6
+```
+
+### Verification
+
+```bash
+python -c "import numba; numba.config.THREADING_LAYER_PRIORITY"
+# or
+numba -s | grep -A3 Threading
+```
+
+Should show at least one of: `TBB Threading Layer Available : True` or
+`OpenMP Threading Layer Available : True`.
+
+### Environment Variable Reference
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `NUMBA_THREADING_LAYER` | `omp` (in `run_tests.sh`) | Which threading backend Numba uses |
+| `NUMBA_NUM_THREADS` | (all cores) | Limit Numba parallel threads |
+| `PYTEST_WORKERS` | `auto` (in `run_tests.sh`) | pytest-xdist worker count |
+
 ## Verbose Test Deduplication
 
 `test_groupby_regression_sliding_window_verbose.py` is a copy of the non-verbose suite with added `vprint()` calls. Both files run in pytest, but for the capability matrix:
@@ -112,13 +175,14 @@ Benchmark proof is informational. Only gated checks contribute to status.
 
 | Metric | Value |
 |--------|-------|
-| Total features | 96 |
-| Total test functions | 291 |
-| Effective unique (excl. verbose) | ~263 |
-| Invariance + Integration tests | 39 (14.9%) |
-| ✅ Verified features | 21 (21.9%) |
-| ☑️ Smoke-only features | 75 (78.1%) |
+| Total features | 100 |
+| Total test functions | ~311 |
+| Effective unique (excl. verbose) | ~283 |
+| Invariance + Integration tests | ~50 |
+| ✅ Verified features | 21+ |
+| ☑️ Smoke-only features | ~78 |
+| 📋 Planned features | 1 (SW.weighted / WLS) |
 
 ---
 
-*Phase 13.7.GB — infrastructure only, no source code changes.*
+*Phase 13.8.GB — v4-aligned sliding window API, invariance tests, capability matrix updates.*

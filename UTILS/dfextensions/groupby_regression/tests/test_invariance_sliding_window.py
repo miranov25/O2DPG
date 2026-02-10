@@ -169,20 +169,18 @@ def _make_sw_grid_multi(
 def _run_sw_fit(
     df: pd.DataFrame,
     window_size: int,
-    predictor_columns: list,
-    fit_formula: str,
-    min_entries: int = 5,
+    linear_columns: list,
+    min_stat: int = 5,
 ) -> pd.DataFrame:
     """Helper to run make_sliding_window_fit with standard parameters."""
     return make_sliding_window_fit(
         df=df,
-        group_columns=['xBin', 'yBin', 'zBin'],
+        gb_columns=['xBin', 'yBin', 'zBin'],
         window_spec={'xBin': window_size, 'yBin': window_size, 'zBin': window_size},
         fit_columns=['value'],
-        predictor_columns=predictor_columns,
-        fit_formula=fit_formula,
-        fitter='ols',
-        min_entries=min_entries,
+        linear_columns=linear_columns,
+        min_stat=min_stat,
+        suffix='',
     )
 
 
@@ -217,7 +215,7 @@ class TestSWValueRecovery:
     def test_sw_slope_nsigma_recovery(self, window_size):
         """Test 1: Mean slope across bins is within nsigma of truth."""
         df = _make_sw_grid_single()
-        result = _run_sw_fit(df, window_size, ['x'], 'value ~ x')
+        result = _run_sw_fit(df, window_size, ['x'])
 
         slopes = result['value_slope_x'].dropna()
         assert len(slopes) > 0, "No slopes recovered"
@@ -243,7 +241,7 @@ class TestSWValueRecovery:
     def test_sw_intercept_nsigma_recovery(self, window_size):
         """Test 2: Mean intercept across bins is within nsigma of truth."""
         df = _make_sw_grid_single()
-        result = _run_sw_fit(df, window_size, ['x'], 'value ~ x')
+        result = _run_sw_fit(df, window_size, ['x'])
 
         intercepts = result['value_intercept'].dropna()
         assert len(intercepts) > 0, "No intercepts recovered"
@@ -284,7 +282,7 @@ class TestSWErrorEstimator:
     def test_sw_error_estimator_consistency(self, window_size):
         """Test 3: Reported SE ≈ analytical SE within adaptive tolerance."""
         df = _make_sw_grid_single()
-        result = _run_sw_fit(df, window_size, ['x'], 'value ~ x')
+        result = _run_sw_fit(df, window_size, ['x'])
 
         # Only check bins with valid fit AND valid _err columns
         valid = result.dropna(subset=['value_slope_x', 'value_slope_x_err'])
@@ -339,8 +337,7 @@ class TestSWPullDistribution:
     def test_sw_pull_distribution(self):
         """Test 4: Pull distribution has mean≈0, std≈1."""
         df = _make_sw_grid_single()
-        result = _run_sw_fit(df, window_size=1, predictor_columns=['x'],
-                             fit_formula='value ~ x')
+        result = _run_sw_fit(df, window_size=1, linear_columns=['x'])
 
         valid = result.dropna(subset=['value_slope_x', 'value_slope_x_err'])
         assert len(valid) > 5, "Too few valid bins for pull distribution"
@@ -381,7 +378,7 @@ class TestSWRmse:
     def test_sw_rmse_vs_known_noise(self, window_size):
         """Test 5: RMSE ≈ σ_noise (bias-corrected)."""
         df = _make_sw_grid_single()
-        result = _run_sw_fit(df, window_size, ['x'], 'value ~ x')
+        result = _run_sw_fit(df, window_size, ['x'])
 
         valid = result.dropna(subset=['value_rmse'])
         rmse_vals = valid['value_rmse'].values
@@ -413,8 +410,7 @@ class TestSWStructuralInvariants:
     def test_sw_window0_entries_equals_bin(self):
         """Test 6: window=0 → n_rows_aggregated == entries_per_bin (exact)."""
         df = _make_sw_grid_single()
-        result = _run_sw_fit(df, window_size=0, predictor_columns=['x'],
-                             fit_formula='value ~ x', min_entries=1)
+        result = _run_sw_fit(df, window_size=0, linear_columns=['x'], min_stat=1)
 
         for _, row in result.iterrows():
             assert row['n_rows_aggregated'] == ENTRIES_PER_BIN, (
@@ -426,8 +422,7 @@ class TestSWStructuralInvariants:
     def test_sw_window0_neighbors_equals_one(self):
         """Test 7: window=0 → n_neighbors_used == 1 (exact, self only)."""
         df = _make_sw_grid_single(n_bins_per_dim=3, entries_per_bin=20)
-        result = _run_sw_fit(df, window_size=0, predictor_columns=['x'],
-                             fit_formula='value ~ x', min_entries=1)
+        result = _run_sw_fit(df, window_size=0, linear_columns=['x'], min_stat=1)
 
         assert (result['n_neighbors_used'] == 1).all(), (
             "window=0 should use exactly 1 neighbor (self)"
@@ -438,8 +433,7 @@ class TestSWStructuralInvariants:
         entries = 20
         n_bins = 4
         df = _make_sw_grid_single(n_bins_per_dim=n_bins, entries_per_bin=entries)
-        result = _run_sw_fit(df, window_size=1, predictor_columns=[],
-                             fit_formula=None, min_entries=1)
+        result = _run_sw_fit(df, window_size=1, linear_columns=[], min_stat=1)
 
         interior = result[_get_interior_mask(result, n_bins)]
         expected = 27 * entries  # (2×1+1)³ = 27 neighbors × entries_per_bin
@@ -469,13 +463,12 @@ class TestSWMetamorphic:
         """Test 9: Shuffling input rows does not change fit results."""
         df = _make_sw_grid_single(n_bins_per_dim=3, entries_per_bin=30)
 
-        result_orig = _run_sw_fit(df, window_size=1, predictor_columns=['x'],
-                                  fit_formula='value ~ x')
+        result_orig = _run_sw_fit(df, window_size=1, linear_columns=['x'])
 
         # Shuffle rows
         df_shuffled = df.sample(frac=1.0, random_state=99).reset_index(drop=True)
         result_shuf = _run_sw_fit(df_shuffled, window_size=1,
-                                  predictor_columns=['x'], fit_formula='value ~ x')
+                                  linear_columns=['x'])
 
         # Sort both by bin coordinates for comparison
         sort_cols = ['xBin', 'yBin', 'zBin']
@@ -502,33 +495,185 @@ class TestSWMetamorphic:
         """Test 10: Same input → identical output on repeated runs."""
         df = _make_sw_grid_single(n_bins_per_dim=3, entries_per_bin=20)
 
-        r1 = _run_sw_fit(df, window_size=0, predictor_columns=['x'],
-                         fit_formula='value ~ x')
-        r2 = _run_sw_fit(df, window_size=0, predictor_columns=['x'],
-                         fit_formula='value ~ x')
+        r1 = _run_sw_fit(df, window_size=0, linear_columns=['x'])
+        r2 = _run_sw_fit(df, window_size=0, linear_columns=['x'])
 
         pd.testing.assert_frame_equal(r1, r2)
 
 
 # #############################################################################
-# Test 11: Fast SW Placeholder
+# Tests 11a-d: V1 (numpy) ≡ V2 (Numba) Parity + V2 Analytical Checks
 # #############################################################################
 
-@pytest.mark.skip(reason="Phase 13.8.GB Step 4: Enable when fast SW implementation lands")
-class TestSWFastParity:
+# Check if Numba kernel is available
+try:
+    from groupby_regression_kernels import fit_groups_single_numba as _test_kernel
+    _NUMBA_KERNEL_AVAILABLE = True
+except ImportError:
+    try:
+        from ..groupby_regression_kernels import fit_groups_single_numba as _test_kernel
+        _NUMBA_KERNEL_AVAILABLE = True
+    except ImportError:
+        _NUMBA_KERNEL_AVAILABLE = False
+
+_skip_no_numba = pytest.mark.skipif(
+    not (_SW_AVAILABLE and _NUMBA_KERNEL_AVAILABLE),
+    reason="Sliding window or Numba kernel module not available",
+)
+
+
+def _run_sw_fit_backend(
+    df: pd.DataFrame,
+    window_size: int,
+    linear_columns: list,
+    backend: str,
+    min_stat: int = 5,
+) -> pd.DataFrame:
+    """Run make_sliding_window_fit with explicit backend selection."""
+    return make_sliding_window_fit(
+        df=df,
+        gb_columns=['xBin', 'yBin', 'zBin'],
+        window_spec={'xBin': window_size, 'yBin': window_size, 'zBin': window_size},
+        fit_columns=['value'],
+        linear_columns=linear_columns,
+        min_stat=min_stat,
+        backend=backend,
+        suffix='',
+    )
+
+
+@_skip_no_numba
+class TestSWNumba:
     """
-    PLACEHOLDER: fast_SW ≡ current_SW within defined tolerances.
+    V2 (Numba kernel batch) parity and analytical verification.
 
     Step 4 tolerances (approved by 5/5 reviewers):
-        COEFF_ATOL = 1e-6
+        COEFF_ATOL = 1e-6    (V1 vs V2 coefficient match)
         COEFF_RTOL = 1e-4
-        ERR_ATOL = 1e-5
-        ERR_RTOL = 1e-3
-        N_FITTED_EXACT = True
+        ERR_ATOL   = 1e-5    (V1 vs V2 error estimate match)
+        ERR_RTOL   = 1e-3
+        N_FITTED   = exact   (integer outputs match exactly)
     """
 
-    def test_fast_sw_matches_current(self):
-        pass
+    COEFF_ATOL = 1e-6
+    COEFF_RTOL = 1e-4
+    ERR_ATOL = 1e-5
+    ERR_RTOL = 1e-3
+
+    def test_sw_numba_backend_used(self):
+        """Test 11a: backend='numba' actually dispatches to Numba kernel."""
+        df = _make_sw_grid_single(n_bins_per_dim=3, entries_per_bin=20)
+        result = _run_sw_fit_backend(df, window_size=0,
+                                     linear_columns=['x'],
+                                     backend='numba')
+        assert result.attrs.get('backend_used') == 'numba', (
+            f"Expected backend_used='numba', got '{result.attrs.get('backend_used')}'"
+        )
+
+    @pytest.mark.parametrize("window_size", [0, 1])
+    def test_sw_numba_equals_numpy(self, window_size):
+        """Test 11b: V1 (numpy) ≡ V2 (numba) coefficient and error parity."""
+        df = _make_sw_grid_single(n_bins_per_dim=4, entries_per_bin=40)
+
+        r_v1 = _run_sw_fit_backend(df, window_size, ['x'],
+                                   backend='numpy')
+        r_v2 = _run_sw_fit_backend(df, window_size, ['x'],
+                                   backend='numba')
+
+        sort_cols = ['xBin', 'yBin', 'zBin']
+        r_v1 = r_v1.sort_values(sort_cols).reset_index(drop=True)
+        r_v2 = r_v2.sort_values(sort_cols).reset_index(drop=True)
+
+        # Integer outputs must match exactly (P1-6)
+        for col in ['n_rows_aggregated', 'n_neighbors_used',
+                     'value_entries', 'value_n_fitted']:
+            np.testing.assert_array_equal(
+                r_v1[col].values, r_v2[col].values,
+                err_msg=f"V1 ≠ V2 integer output: {col} (window={window_size})",
+            )
+
+        # Coefficient parity
+        for col in ['value_slope_x', 'value_intercept']:
+            np.testing.assert_allclose(
+                r_v1[col].values, r_v2[col].values,
+                atol=self.COEFF_ATOL, rtol=self.COEFF_RTOL,
+                err_msg=f"V1 ≠ V2 coefficient: {col} (window={window_size})",
+            )
+
+        # Error estimate parity
+        for col in ['value_slope_x_err', 'value_intercept_err']:
+            np.testing.assert_allclose(
+                r_v1[col].values, r_v2[col].values,
+                atol=self.ERR_ATOL, rtol=self.ERR_RTOL,
+                err_msg=f"V1 ≠ V2 error: {col} (window={window_size})",
+            )
+
+        # RMSE parity
+        np.testing.assert_allclose(
+            r_v1['value_rmse'].values, r_v2['value_rmse'].values,
+            atol=self.ERR_ATOL, rtol=self.ERR_RTOL,
+            err_msg=f"V1 ≠ V2 RMSE (window={window_size})",
+        )
+
+    def test_sw_numba_nsigma_recovery(self):
+        """Test 11c: V2 (numba) slope recovery within nsigma of truth."""
+        df = _make_sw_grid_single()
+        result = _run_sw_fit_backend(df, window_size=1,
+                                     linear_columns=['x'],
+                                     backend='numba')
+
+        valid = result.dropna(subset=['value_slope_x', 'value_slope_x_err'])
+        assert len(valid) > 5, "Too few valid V2 bins"
+
+        slopes = valid['value_slope_x'].values
+        slope_errs = valid['value_slope_x_err'].values
+
+        good = slope_errs > 0
+        pulls = compute_pulls(slopes[good], TRUE_SLOPE, slope_errs[good])
+
+        # Use median n_eff for dof correction
+        median_n = int(np.median(valid['n_rows_aggregated'].values))
+        check_pull_distribution(
+            pulls, nsigma=NSIGMA,
+            df=max(median_n - 2, 0),
+            label="V2 (numba) slope pull distribution",
+        )
+
+    def test_sw_numba_multi_predictor(self):
+        """Test 11d: V2 (numba) multi-predictor parity with V1."""
+        df = _make_sw_grid_multi()
+
+        r_v1 = make_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin', 'zBin'],
+            window_spec={'xBin': 1, 'yBin': 1, 'zBin': 1},
+            fit_columns=['value'], linear_columns=['x1', 'x2'],
+            min_stat=5, backend='numpy', suffix='',
+        )
+        r_v2 = make_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin', 'zBin'],
+            window_spec={'xBin': 1, 'yBin': 1, 'zBin': 1},
+            fit_columns=['value'], linear_columns=['x1', 'x2'],
+            min_stat=5, backend='numba', suffix='',
+        )
+
+        sort_cols = ['xBin', 'yBin', 'zBin']
+        r_v1 = r_v1.sort_values(sort_cols).reset_index(drop=True)
+        r_v2 = r_v2.sort_values(sort_cols).reset_index(drop=True)
+
+        for col in ['value_slope_x1', 'value_slope_x2', 'value_intercept']:
+            np.testing.assert_allclose(
+                r_v1[col].values, r_v2[col].values,
+                atol=self.COEFF_ATOL, rtol=self.COEFF_RTOL,
+                err_msg=f"V1 ≠ V2 multi-predictor: {col}",
+            )
+
+        for col in ['value_slope_x1_err', 'value_slope_x2_err',
+                     'value_intercept_err']:
+            np.testing.assert_allclose(
+                r_v1[col].values, r_v2[col].values,
+                atol=self.ERR_ATOL, rtol=self.ERR_RTOL,
+                err_msg=f"V1 ≠ V2 multi-predictor error: {col}",
+            )
 
 
 # #############################################################################
@@ -553,8 +698,7 @@ class TestSWMultiPredictor:
         df = _make_sw_grid_multi()
         result = _run_sw_fit(
             df, window_size=1,
-            predictor_columns=['x1', 'x2'],
-            fit_formula='value ~ x1 + x2',
+            linear_columns=['x1', 'x2'],
         )
 
         valid = result.dropna(subset=['value_slope_x1', 'value_slope_x2'])
@@ -613,8 +757,7 @@ class TestSWOracleParity:
         """Test 13: SW(window=0) ≡ numpy.lstsq per bin."""
         df = _make_sw_grid_single(n_bins_per_dim=3, entries_per_bin=50)
 
-        result = _run_sw_fit(df, window_size=0, predictor_columns=['x'],
-                             fit_formula='value ~ x', min_entries=1)
+        result = _run_sw_fit(df, window_size=0, linear_columns=['x'], min_stat=1)
 
         # Run per-bin OLS via numpy
         for _, row in result.iterrows():
