@@ -415,6 +415,35 @@ TEST_LAYERS = {
     "test_invariance_sliding_window.py::TestSWV3Parity::test_v3_metadata_algorithm": "smoke",
     "test_invariance_sliding_window.py::TestSWV3Parity::test_v3_nsigma_recovery": "invariance",
 
+    # -- V3b boundary handling and bin weights → invariance/smoke
+    "test_invariance_sliding_window.py::TestSWV3bBackwardCompat::test_v3b_defaults_equal_v3": "invariance",
+    "test_invariance_sliding_window.py::TestSWV3bBackwardCompat::test_v3b_defaults_equal_v3_stats": "invariance",
+    "test_invariance_sliding_window.py::TestSWV3bBoundary::test_symmetric_reduces_corner_window": "invariance",
+    "test_invariance_sliding_window.py::TestSWV3bBoundary::test_symmetric_interior_equals_full": "invariance",
+    "test_invariance_sliding_window.py::TestSWV3bBoundary::test_symmetric_per_dimension": "invariance",
+    "test_invariance_sliding_window.py::TestSWV3bBoundary::test_periodic_wraps_at_edges": "invariance",
+    "test_invariance_sliding_window.py::TestSWV3bBoundary::test_periodic_too_few_bins_raises": "smoke",
+    "test_invariance_sliding_window.py::TestSWV3bBoundary::test_invalid_boundary_raises": "smoke",
+    "test_invariance_sliding_window.py::TestSWV3bKernel::test_weight_scale_invariance": "invariance",
+    "test_invariance_sliding_window.py::TestSWV3bKernel::test_err_nan_for_nonuniform_kernel": "invariance",
+    "test_invariance_sliding_window.py::TestSWV3bKernel::test_err_valid_for_uniform_kernel": "smoke",
+    "test_invariance_sliding_window.py::TestSWV3bKernel::test_gaussian_recovers_slope": "invariance",
+    "test_invariance_sliding_window.py::TestSWV3bKernel::test_epanechnikov_kernel_zeros_distant_bins": "invariance",
+    "test_invariance_sliding_window.py::TestSWV3bKernel::test_invalid_kernel_raises": "smoke",
+    "test_invariance_sliding_window.py::TestSWV3bInteraction::test_symmetric_gaussian_interior_same_as_full_gaussian": "invariance",
+
+    # -- V3b timing benchmarks (relative, not absolute)
+    "test_invariance_sliding_window.py::TestSWV3bTiming::test_v3_numpy_faster_than_v1_numpy": "performance",
+    "test_invariance_sliding_window.py::TestSWV3bTiming::test_v1_numpy_slower_than_v2_numba": "performance",
+    "test_invariance_sliding_window.py::TestSWV3bTiming::test_v3_numba_faster_than_v2_numba": "performance",
+
+    # -- V3-Numba parity: incremental_numba ≡ incremental_numpy
+    "test_invariance_sliding_window.py::TestSWV3Numba::test_v3_numba_coeffs_match_numpy": "invariance",
+    "test_invariance_sliding_window.py::TestSWV3Numba::test_v3_numba_errors_match_numpy": "invariance",
+    "test_invariance_sliding_window.py::TestSWV3Numba::test_v3_numba_diagnostics_match_numpy": "invariance",
+    "test_invariance_sliding_window.py::TestSWV3Numba::test_v3_numba_gaussian_err_nan": "invariance",
+    "test_invariance_sliding_window.py::TestSWV3Numba::test_v3_numba_multi_predictor": "invariance",
+
     # ==================================================================
     # test_invariance_kernels.py (4 tests)
     # All are invariance by design (Phase 13.8.GB)

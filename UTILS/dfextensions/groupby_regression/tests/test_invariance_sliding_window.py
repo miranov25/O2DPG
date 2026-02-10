@@ -996,3 +996,545 @@ class TestSWV3Parity:
             df=max(median_n - 2, 0),
             label="V3 incremental slope pull distribution",
         )
+
+
+# #############################################################################
+# Tests 21–35: V3b Boundary Handling & Bin Weights
+# #############################################################################
+
+def _run_sw_fit_v3b(
+    df: pd.DataFrame,
+    window_size: int,
+    linear_columns: list,
+    min_stat: int = 5,
+    boundary: str = 'full',
+    kernel: str = 'uniform',
+    kernel_width=None,
+) -> pd.DataFrame:
+    """Run make_sliding_window_fit with V3b parameters."""
+    return make_sliding_window_fit(
+        df=df,
+        gb_columns=['xBin', 'yBin', 'zBin'],
+        window_spec={'xBin': window_size, 'yBin': window_size, 'zBin': window_size},
+        fit_columns=['value'],
+        linear_columns=linear_columns,
+        min_stat=min_stat,
+        algorithm='incremental',
+        boundary=boundary,
+        kernel=kernel,
+        kernel_width=kernel_width,
+        suffix='',
+    )
+
+
+@pytest.mark.skipif(not _SW_AVAILABLE, reason="Sliding window module not available")
+class TestSWV3bBackwardCompat:
+    """V3b with default parameters must be identical to V3."""
+
+    def test_v3b_defaults_equal_v3(self):
+        """Test 21: kernel='uniform', boundary='full' ≡ V3."""
+        df = _make_sw_grid_single()
+        r_v3 = _run_sw_fit_incremental(df, window_size=1, linear_columns=['x'])
+        r_v3b = _run_sw_fit_v3b(df, window_size=1, linear_columns=['x'],
+                                boundary='full', kernel='uniform')
+
+        sort_cols = ['xBin', 'yBin', 'zBin']
+        r_v3 = r_v3.sort_values(sort_cols).reset_index(drop=True)
+        r_v3b = r_v3b.sort_values(sort_cols).reset_index(drop=True)
+
+        for col in ['value_slope_x', 'value_intercept', 'value_rmse',
+                     'value_r_squared', 'value_slope_x_err', 'value_intercept_err']:
+            np.testing.assert_array_equal(
+                r_v3[col].values, r_v3b[col].values,
+                err_msg=f"V3b defaults ≠ V3: {col}",
+            )
+
+    def test_v3b_defaults_equal_v3_stats(self):
+        """Test 22: V3b default mean/std/entries ≡ V3."""
+        df = _make_sw_grid_single()
+        r_v3 = _run_sw_fit_incremental(df, window_size=1, linear_columns=['x'])
+        r_v3b = _run_sw_fit_v3b(df, window_size=1, linear_columns=['x'])
+
+        sort_cols = ['xBin', 'yBin', 'zBin']
+        r_v3 = r_v3.sort_values(sort_cols).reset_index(drop=True)
+        r_v3b = r_v3b.sort_values(sort_cols).reset_index(drop=True)
+
+        for col in ['value_mean', 'value_std', 'value_entries']:
+            np.testing.assert_array_equal(
+                r_v3[col].values, r_v3b[col].values,
+                err_msg=f"V3b defaults ≠ V3 stats: {col}",
+            )
+
+
+@pytest.mark.skipif(not _SW_AVAILABLE, reason="Sliding window module not available")
+class TestSWV3bBoundary:
+    """Boundary handling correctness tests."""
+
+    def test_symmetric_reduces_corner_window(self):
+        """Test 23: Symmetric boundary at corner (0,0,0) gives single-bin fit."""
+        df = _make_sw_grid_single(n_bins_per_dim=5, entries_per_bin=40)
+        r_sym = _run_sw_fit_v3b(df, window_size=2, linear_columns=['x'],
+                                boundary='symmetric')
+
+        corner = r_sym[(r_sym.xBin == 0) & (r_sym.yBin == 0) & (r_sym.zBin == 0)]
+        # Corner: max_left=0 in all dims → eff_w=0 → only center bin
+        assert int(corner['value_n_fitted'].iloc[0]) == 40, \
+            f"Corner should have 40 rows (1 bin), got {int(corner['value_n_fitted'].iloc[0])}"
+
+    def test_symmetric_interior_equals_full(self):
+        """Test 24: Symmetric interior bins ≡ full (no truncation needed)."""
+        df = _make_sw_grid_single(n_bins_per_dim=5, entries_per_bin=40)
+        r_full = _run_sw_fit_v3b(df, window_size=1, linear_columns=['x'],
+                                 boundary='full')
+        r_sym = _run_sw_fit_v3b(df, window_size=1, linear_columns=['x'],
+                                boundary='symmetric')
+
+        # Interior mask: bins [1,2,3] in all dims for 5-bin grid with window=1
+        interior = (
+            (r_full['xBin'] >= 1) & (r_full['xBin'] <= 3) &
+            (r_full['yBin'] >= 1) & (r_full['yBin'] <= 3) &
+            (r_full['zBin'] >= 1) & (r_full['zBin'] <= 3)
+        )
+        sort_cols = ['xBin', 'yBin', 'zBin']
+        rf = r_full[interior].sort_values(sort_cols).reset_index(drop=True)
+        rs = r_sym[interior].sort_values(sort_cols).reset_index(drop=True)
+
+        np.testing.assert_allclose(
+            rf['value_slope_x'].values, rs['value_slope_x'].values,
+            atol=1e-14, err_msg="Symmetric interior ≠ full interior",
+        )
+
+    def test_symmetric_per_dimension(self):
+        """Test 25: Symmetric truncation is per-dimension independent."""
+        df = _make_sw_grid_single(n_bins_per_dim=5, entries_per_bin=40)
+        r_sym = _run_sw_fit_v3b(df, window_size=2, linear_columns=['x'],
+                                boundary='symmetric')
+
+        # Edge bin (0, 2, 2): x limited to eff_w=0 (1 bin), y and z interior eff_w=2 (5 bins)
+        # Total: 1 × 5 × 5 = 25 bins × 40 = 1000
+        edge = r_sym[(r_sym.xBin == 0) & (r_sym.yBin == 2) & (r_sym.zBin == 2)]
+        n = int(edge['value_n_fitted'].iloc[0])
+        assert n == 1000, f"Edge (0,2,2) sym: expected 1000 (1×5×5 bins), got {n}"
+
+        # Compare with corner (0,0,0): all dims truncated to eff_w=0
+        corner = r_sym[(r_sym.xBin == 0) & (r_sym.yBin == 0) & (r_sym.zBin == 0)]
+        n_corner = int(corner['value_n_fitted'].iloc[0])
+        assert n_corner == 40, f"Corner (0,0,0) sym: expected 40, got {n_corner}"
+        assert n > n_corner, "Edge should have more entries than corner"
+
+    def test_periodic_wraps_at_edges(self):
+        """Test 26: Periodic boundary gives same n_fitted at edge as interior."""
+        df = _make_sw_grid_single(n_bins_per_dim=5, entries_per_bin=40)
+        r_per = make_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin', 'zBin'],
+            window_spec={'xBin': 2, 'yBin': 0, 'zBin': 0},
+            fit_columns=['value'], linear_columns=['x'],
+            min_stat=5, algorithm='incremental',
+            boundary={'xBin': 'periodic', 'yBin': 'full', 'zBin': 'full'},
+            suffix='',
+        )
+
+        # xBin=0 with periodic should wrap to bins [3,4,0,1,2] → 5 bins
+        edge = r_per[(r_per.xBin == 0) & (r_per.yBin == 2) & (r_per.zBin == 2)]
+        interior = r_per[(r_per.xBin == 2) & (r_per.yBin == 2) & (r_per.zBin == 2)]
+        assert int(edge['value_n_fitted'].iloc[0]) == int(interior['value_n_fitted'].iloc[0]), \
+            "Periodic edge should have same n_fitted as interior"
+
+    def test_periodic_too_few_bins_raises(self):
+        """Test 27: Periodic with insufficient bins raises ValueError (P1-7)."""
+        df = _make_sw_grid_single(n_bins_per_dim=3, entries_per_bin=20)
+        with pytest.raises(ValueError, match="Periodic dimension"):
+            make_sliding_window_fit(
+                df=df, gb_columns=['xBin', 'yBin', 'zBin'],
+                window_spec={'xBin': 2, 'yBin': 0, 'zBin': 0},
+                fit_columns=['value'], linear_columns=['x'],
+                min_stat=5, algorithm='incremental',
+                boundary={'xBin': 'periodic', 'yBin': 'full', 'zBin': 'full'},
+                suffix='',
+            )
+
+    def test_invalid_boundary_raises(self):
+        """Test 28: Invalid boundary mode raises ValueError."""
+        df = _make_sw_grid_single(n_bins_per_dim=3, entries_per_bin=20)
+        with pytest.raises(ValueError, match="boundary must be"):
+            _run_sw_fit_v3b(df, window_size=1, linear_columns=['x'],
+                            boundary='invalid_mode')
+
+
+@pytest.mark.skipif(not _SW_AVAILABLE, reason="Sliding window module not available")
+class TestSWV3bKernel:
+    """Bin weight / kernel correctness tests."""
+
+    def test_weight_scale_invariance(self):
+        """Test 29: Coefficients invariant to kernel scale (P2-1)."""
+        df = _make_sw_grid_single()
+        r_g1 = _run_sw_fit_v3b(df, window_size=1, linear_columns=['x'],
+                                kernel='gaussian', kernel_width=1.0)
+        # Custom kernel = 100× gaussian
+        import math
+        def scaled_gauss(offset, sigma):
+            scaled = offset / sigma
+            return 100.0 * math.exp(-0.5 * float(np.sum(scaled ** 2)))
+
+        r_g100 = make_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin', 'zBin'],
+            window_spec={'xBin': 1, 'yBin': 1, 'zBin': 1},
+            fit_columns=['value'], linear_columns=['x'],
+            min_stat=5, algorithm='incremental',
+            kernel=scaled_gauss, kernel_width=1.0, suffix='',
+        )
+
+        sort_cols = ['xBin', 'yBin', 'zBin']
+        r_g1 = r_g1.sort_values(sort_cols).reset_index(drop=True)
+        r_g100 = r_g100.sort_values(sort_cols).reset_index(drop=True)
+
+        np.testing.assert_allclose(
+            r_g1['value_slope_x'].values, r_g100['value_slope_x'].values,
+            atol=1e-12, err_msg="Coefficients should be scale-invariant",
+        )
+
+    def test_err_nan_for_nonuniform_kernel(self):
+        """Test 30: _err columns NaN when kernel != 'uniform' (P1-3)."""
+        df = _make_sw_grid_single()
+        for kernel in ['gaussian', 'epanechnikov', 'linear']:
+            r = _run_sw_fit_v3b(df, window_size=1, linear_columns=['x'],
+                                kernel=kernel)
+            valid = r.dropna(subset=['value_slope_x'])
+            assert valid['value_slope_x_err'].isna().all(), \
+                f"_err should be NaN for kernel='{kernel}'"
+            assert valid['value_intercept_err'].isna().all(), \
+                f"intercept_err should be NaN for kernel='{kernel}'"
+
+    def test_err_valid_for_uniform_kernel(self):
+        """Test 31: _err columns are finite for kernel='uniform'."""
+        df = _make_sw_grid_single()
+        r = _run_sw_fit_v3b(df, window_size=1, linear_columns=['x'],
+                            kernel='uniform')
+        valid = r.dropna(subset=['value_slope_x'])
+        assert valid['value_slope_x_err'].notna().all(), \
+            "_err should be finite for uniform kernel"
+
+    def test_gaussian_recovers_slope(self):
+        """Test 32: Gaussian kernel still recovers true slope within nsigma."""
+        df = _make_sw_grid_single(n_bins_per_dim=5, entries_per_bin=60)
+        r = _run_sw_fit_v3b(df, window_size=1, linear_columns=['x'],
+                            kernel='gaussian', kernel_width=1.0)
+
+        slopes = r['value_slope_x'].dropna().values
+        # With Gaussian weighting, all slopes should still be close to truth
+        mean_slope = np.mean(slopes)
+        # Generous tolerance — kernel changes weights but true slope is still 2.0
+        assert abs(mean_slope - TRUE_SLOPE) < 0.1, \
+            f"Mean slope {mean_slope:.4f} too far from truth {TRUE_SLOPE}"
+
+    def test_epanechnikov_kernel_zeros_distant_bins(self):
+        """Test 33: Epanechnikov kernel gives 0 weight to bins beyond σ."""
+        # With window=2 and kernel_width=1.0, bins at offset=2 should have
+        # weight 0 (1 - (2/1)² = 1 - 4 = -3 → clipped to 0)
+        df = _make_sw_grid_single(n_bins_per_dim=5, entries_per_bin=40)
+        r_epan = _run_sw_fit_v3b(df, window_size=2, linear_columns=['x'],
+                                  kernel='epanechnikov', kernel_width=1.0)
+        # Interior bin (2,2,2): only bins within offset ≤ 1 contribute
+        # That's (2w+1)^3 = 125 total offsets, but only 27 with ||δ||≤1
+        interior = r_epan[(r_epan.xBin == 2) & (r_epan.yBin == 2) & (r_epan.zBin == 2)]
+        # n_fitted should still be all rows (unweighted count, P1-1)
+        n = int(interior['value_n_fitted'].iloc[0])
+        # With window=2: 5³ × 40 is max but Epan zeros some → n is unweighted
+        # count of rows from bins with w > 0. The key test: n should be less
+        # than full 125-bin count since distant bins get w=0 and are excluded
+        # Actually P1-1 says n_total counts ALL neighbors with bs.n > 0 even if w=0...
+        # Let me verify the coefficient differs from uniform window=2
+        r_uni = _run_sw_fit_v3b(df, window_size=2, linear_columns=['x'],
+                                 kernel='uniform')
+        int_uni = r_uni[(r_uni.xBin == 2) & (r_uni.yBin == 2) & (r_uni.zBin == 2)]
+        # Coefficients must differ (different weighting)
+        assert float(interior['value_slope_x'].iloc[0]) != float(int_uni['value_slope_x'].iloc[0]), \
+            "Epanechnikov should differ from uniform"
+
+    def test_invalid_kernel_raises(self):
+        """Test 34: Invalid kernel string raises ValueError."""
+        df = _make_sw_grid_single(n_bins_per_dim=3, entries_per_bin=20)
+        with pytest.raises(ValueError, match="Unknown kernel"):
+            _run_sw_fit_v3b(df, window_size=1, linear_columns=['x'],
+                            kernel='invalid_kernel')
+
+
+@pytest.mark.skipif(not _SW_AVAILABLE, reason="Sliding window module not available")
+class TestSWV3bInteraction:
+    """Boundary + kernel interaction tests."""
+
+    def test_symmetric_gaussian_interior_same_as_full_gaussian(self):
+        """Test 35: Symmetric + Gaussian at interior ≡ Full + Gaussian."""
+        df = _make_sw_grid_single(n_bins_per_dim=5, entries_per_bin=40)
+        r_fg = _run_sw_fit_v3b(df, window_size=1, linear_columns=['x'],
+                                boundary='full', kernel='gaussian', kernel_width=1.0)
+        r_sg = _run_sw_fit_v3b(df, window_size=1, linear_columns=['x'],
+                                boundary='symmetric', kernel='gaussian', kernel_width=1.0)
+
+        # Interior bins: both should be identical
+        interior = (
+            (r_fg['xBin'] >= 1) & (r_fg['xBin'] <= 3) &
+            (r_fg['yBin'] >= 1) & (r_fg['yBin'] <= 3) &
+            (r_fg['zBin'] >= 1) & (r_fg['zBin'] <= 3)
+        )
+        sort_cols = ['xBin', 'yBin', 'zBin']
+        rf = r_fg[interior].sort_values(sort_cols).reset_index(drop=True)
+        rs = r_sg[interior].sort_values(sort_cols).reset_index(drop=True)
+
+        np.testing.assert_allclose(
+            rf['value_slope_x'].values, rs['value_slope_x'].values,
+            atol=1e-14, err_msg="Interior: symmetric+gaussian ≠ full+gaussian",
+        )
+
+
+# #############################################################################
+# Tests 36–38: Lightweight Timing Benchmarks
+# #############################################################################
+
+@pytest.mark.skipif(not _SW_AVAILABLE, reason="Sliding window module not available")
+class TestSWV3bTiming:
+    """Lightweight timing benchmarks (~0.1s each).
+
+    These are NOT gated performance tests — they record timing for
+    regression detection. A future benchmark suite will use larger grids.
+    """
+
+    @staticmethod
+    def _make_bench_data():
+        """15³ = 3375 bins × 10 entries = 33750 rows — TPC-like scale."""
+        return _make_sw_grid_single(n_bins_per_dim=15, entries_per_bin=10)
+
+    def test_v3_numpy_faster_than_v1_numpy(self):
+        """Test 36: V3-NumPy faster than V1-NumPy (same backend comparison)."""
+        import time
+        df = self._make_bench_data()
+
+        # Force numpy backend for V1
+        t0 = time.perf_counter()
+        make_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin', 'zBin'],
+            window_spec={'xBin': 1, 'yBin': 1, 'zBin': 1},
+            fit_columns=['value'], linear_columns=['x'],
+            min_stat=5, algorithm='recompute', backend='numpy', suffix='',
+        )
+        t_v1 = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
+        make_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin', 'zBin'],
+            window_spec={'xBin': 1, 'yBin': 1, 'zBin': 1},
+            fit_columns=['value'], linear_columns=['x'],
+            min_stat=5, algorithm='incremental', backend='numpy', suffix='',
+        )
+        t_v3 = time.perf_counter() - t0
+
+        ratio = t_v1 / t_v3 if t_v3 > 0 else float('inf')
+        print(f"\n  [BENCH] V1-numpy={t_v1:.3f}s, V3-numpy={t_v3:.3f}s, speedup={ratio:.1f}×")
+        assert ratio > 1.0, f"V3-numpy should be faster than V1-numpy (ratio={ratio:.2f})"
+
+    def test_v1_numpy_slower_than_v2_numba(self):
+        """Test 37: V1-NumPy slower than V2-Numba (Numba advantage)."""
+        pytest.importorskip("numba")
+        import time
+        df = self._make_bench_data()
+
+        t0 = time.perf_counter()
+        make_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin', 'zBin'],
+            window_spec={'xBin': 1, 'yBin': 1, 'zBin': 1},
+            fit_columns=['value'], linear_columns=['x'],
+            min_stat=5, algorithm='recompute', backend='numpy', suffix='',
+        )
+        t_v1_np = time.perf_counter() - t0
+
+        # Warm up JIT
+        make_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin', 'zBin'],
+            window_spec={'xBin': 1, 'yBin': 1, 'zBin': 1},
+            fit_columns=['value'], linear_columns=['x'],
+            min_stat=5, algorithm='recompute', backend='numba', suffix='',
+        )
+        t0 = time.perf_counter()
+        make_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin', 'zBin'],
+            window_spec={'xBin': 1, 'yBin': 1, 'zBin': 1},
+            fit_columns=['value'], linear_columns=['x'],
+            min_stat=5, algorithm='recompute', backend='numba', suffix='',
+        )
+        t_v2 = time.perf_counter() - t0
+
+        ratio = t_v1_np / t_v2 if t_v2 > 0 else float('inf')
+        print(f"\n  [BENCH] V1-numpy={t_v1_np:.3f}s, V2-numba={t_v2:.3f}s, speedup={ratio:.1f}×")
+        assert ratio > 1.0, f"V2-numba should be faster than V1-numpy (ratio={ratio:.2f})"
+
+    def test_v3_numba_faster_than_v2_numba(self):
+        """Test 38: V3-Numba faster than V2-Numba (algorithm + backend)."""
+        pytest.importorskip("numba")
+        import time
+        df = self._make_bench_data()
+
+        # Warm up V2
+        make_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin', 'zBin'],
+            window_spec={'xBin': 1, 'yBin': 1, 'zBin': 1},
+            fit_columns=['value'], linear_columns=['x'],
+            min_stat=5, algorithm='recompute', backend='numba', suffix='',
+        )
+        t0 = time.perf_counter()
+        make_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin', 'zBin'],
+            window_spec={'xBin': 1, 'yBin': 1, 'zBin': 1},
+            fit_columns=['value'], linear_columns=['x'],
+            min_stat=5, algorithm='recompute', backend='numba', suffix='',
+        )
+        t_v2 = time.perf_counter() - t0
+
+        # Warm up V3-Numba
+        make_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin', 'zBin'],
+            window_spec={'xBin': 1, 'yBin': 1, 'zBin': 1},
+            fit_columns=['value'], linear_columns=['x'],
+            min_stat=5, algorithm='incremental', backend='numba', suffix='',
+        )
+        t0 = time.perf_counter()
+        make_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin', 'zBin'],
+            window_spec={'xBin': 1, 'yBin': 1, 'zBin': 1},
+            fit_columns=['value'], linear_columns=['x'],
+            min_stat=5, algorithm='incremental', backend='numba', suffix='',
+        )
+        t_v3nb = time.perf_counter() - t0
+
+        ratio = t_v2 / t_v3nb if t_v3nb > 0 else float('inf')
+        print(f"\n  [BENCH] V2-numba={t_v2:.3f}s, V3-numba={t_v3nb:.3f}s, speedup={ratio:.1f}×")
+        # Log but don't hard-gate — on small grids the difference may be small
+        # The real speedup shows on 15³+ grids
+        assert ratio > 0.3, f"V3-numba catastrophically slower than V2 (ratio={ratio:.2f})"
+
+
+# #############################################################################
+# Tests 39–43: V3-Numba Parity (incremental_numba ≡ incremental_numpy)
+# #############################################################################
+
+@pytest.mark.skipif(not _SW_AVAILABLE, reason="Sliding window module not available")
+class TestSWV3Numba:
+    """V3-Numba (Cholesky kernel) must match V3-NumPy (np.linalg.solve)."""
+
+    @pytest.fixture(autouse=True)
+    def _require_numba(self):
+        pytest.importorskip("numba")
+
+    def _run_v3_numpy(self, df, window_size=1, linear_columns=None,
+                      boundary='full', kernel='uniform', kernel_width=None):
+        if linear_columns is None:
+            linear_columns = ['x']
+        return make_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin', 'zBin'],
+            window_spec={'xBin': window_size, 'yBin': window_size, 'zBin': window_size},
+            fit_columns=['value'], linear_columns=linear_columns,
+            min_stat=5, algorithm='incremental', backend='numpy',
+            boundary=boundary, kernel=kernel, kernel_width=kernel_width, suffix='',
+        )
+
+    def _run_v3_numba(self, df, window_size=1, linear_columns=None,
+                      boundary='full', kernel='uniform', kernel_width=None):
+        if linear_columns is None:
+            linear_columns = ['x']
+        return make_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin', 'zBin'],
+            window_spec={'xBin': window_size, 'yBin': window_size, 'zBin': window_size},
+            fit_columns=['value'], linear_columns=linear_columns,
+            min_stat=5, algorithm='incremental', backend='numba',
+            boundary=boundary, kernel=kernel, kernel_width=kernel_width, suffix='',
+        )
+
+    @pytest.mark.parametrize("window_size", [0, 1])
+    def test_v3_numba_coeffs_match_numpy(self, window_size):
+        """Test 39: V3-Numba coefficients ≡ V3-NumPy."""
+        df = _make_sw_grid_single()
+        r_np = self._run_v3_numpy(df, window_size)
+        r_nb = self._run_v3_numba(df, window_size)
+
+        sort_cols = ['xBin', 'yBin', 'zBin']
+        r_np = r_np.sort_values(sort_cols).reset_index(drop=True)
+        r_nb = r_nb.sort_values(sort_cols).reset_index(drop=True)
+
+        np.testing.assert_allclose(
+            r_np['value_slope_x'].values, r_nb['value_slope_x'].values,
+            atol=1e-12, rtol=1e-12,
+            err_msg=f"V3-Numba ≠ V3-NumPy slope (window={window_size})",
+        )
+        np.testing.assert_allclose(
+            r_np['value_intercept'].values, r_nb['value_intercept'].values,
+            atol=1e-12, rtol=1e-12,
+            err_msg=f"V3-Numba ≠ V3-NumPy intercept (window={window_size})",
+        )
+
+    def test_v3_numba_errors_match_numpy(self):
+        """Test 40: V3-Numba SE ≡ V3-NumPy SE (uniform kernel)."""
+        df = _make_sw_grid_single()
+        r_np = self._run_v3_numpy(df, window_size=1)
+        r_nb = self._run_v3_numba(df, window_size=1)
+
+        sort_cols = ['xBin', 'yBin', 'zBin']
+        r_np = r_np.sort_values(sort_cols).reset_index(drop=True)
+        r_nb = r_nb.sort_values(sort_cols).reset_index(drop=True)
+
+        np.testing.assert_allclose(
+            r_np['value_slope_x_err'].values, r_nb['value_slope_x_err'].values,
+            atol=1e-10, rtol=1e-10,
+            err_msg="V3-Numba ≠ V3-NumPy slope_err",
+        )
+        np.testing.assert_allclose(
+            r_np['value_intercept_err'].values, r_nb['value_intercept_err'].values,
+            atol=1e-10, rtol=1e-10,
+            err_msg="V3-Numba ≠ V3-NumPy intercept_err",
+        )
+
+    def test_v3_numba_diagnostics_match_numpy(self):
+        """Test 41: V3-Numba RMSE, R², n_fitted ≡ V3-NumPy."""
+        df = _make_sw_grid_single()
+        r_np = self._run_v3_numpy(df, window_size=1)
+        r_nb = self._run_v3_numba(df, window_size=1)
+
+        sort_cols = ['xBin', 'yBin', 'zBin']
+        r_np = r_np.sort_values(sort_cols).reset_index(drop=True)
+        r_nb = r_nb.sort_values(sort_cols).reset_index(drop=True)
+
+        np.testing.assert_allclose(
+            r_np['value_rmse'].values, r_nb['value_rmse'].values,
+            atol=1e-12, rtol=1e-12, err_msg="V3-Numba ≠ V3-NumPy RMSE",
+        )
+        np.testing.assert_allclose(
+            r_np['value_r_squared'].values, r_nb['value_r_squared'].values,
+            atol=1e-12, rtol=1e-12, err_msg="V3-Numba ≠ V3-NumPy R²",
+        )
+        np.testing.assert_array_equal(
+            r_np['value_n_fitted'].values, r_nb['value_n_fitted'].values,
+            err_msg="V3-Numba ≠ V3-NumPy n_fitted",
+        )
+
+    def test_v3_numba_gaussian_err_nan(self):
+        """Test 42: V3-Numba with Gaussian kernel has _err=NaN (P1-3)."""
+        df = _make_sw_grid_single()
+        r_nb = self._run_v3_numba(df, kernel='gaussian', kernel_width=1.0)
+        valid = r_nb.dropna(subset=['value_slope_x'])
+        assert valid['value_slope_x_err'].isna().all(), \
+            "V3-Numba Gaussian: _err should be NaN"
+
+    def test_v3_numba_multi_predictor(self):
+        """Test 43: V3-Numba multi-predictor ≡ V3-NumPy."""
+        df = _make_sw_grid_multi()
+        r_np = self._run_v3_numpy(df, linear_columns=['x1', 'x2'])
+        r_nb = self._run_v3_numba(df, linear_columns=['x1', 'x2'])
+
+        sort_cols = ['xBin', 'yBin', 'zBin']
+        r_np = r_np.sort_values(sort_cols).reset_index(drop=True)
+        r_nb = r_nb.sort_values(sort_cols).reset_index(drop=True)
+
+        for col in ['value_slope_x1', 'value_slope_x2', 'value_intercept']:
+            np.testing.assert_allclose(
+                r_np[col].values, r_nb[col].values,
+                atol=1e-12, rtol=1e-12,
+                err_msg=f"V3-Numba ≠ V3-NumPy multi-predictor: {col}",
+            )

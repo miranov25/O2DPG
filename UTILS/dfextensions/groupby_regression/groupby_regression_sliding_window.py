@@ -178,6 +178,194 @@ def _generate_neighbor_offsets(window_spec: Dict[str, int], gb_columns: Optional
     return stacked  # (num_offsets, D)
 
 
+# ===============
+# Kernel functions (V3b)
+# ===============
+
+def _resolve_kernel_width(
+        kernel_width: Optional[Union[float, Dict[str, float]]],
+        window_spec: Dict[str, int],
+        gb_columns: List[str],
+) -> Dict[str, float]:
+    """Resolve kernel_width to per-dimension dict.
+
+    If None, defaults to window_spec half-widths (σ = w means ~68% of
+    Gaussian mass within the window). If float, same for all dims.
+    """
+    if kernel_width is None:
+        return {dim: float(max(window_spec.get(dim, 0), 1)) for dim in gb_columns}
+    if isinstance(kernel_width, (int, float)):
+        return {dim: float(kernel_width) for dim in gb_columns}
+    # dict — fill missing dims with window_spec defaults
+    return {dim: float(kernel_width.get(dim, max(window_spec.get(dim, 0), 1)))
+            for dim in gb_columns}
+
+
+def _kernel_gaussian(offset: np.ndarray, sigma: np.ndarray) -> float:
+    """Gaussian kernel: exp(-0.5 * ||offset/sigma||²)."""
+    scaled = offset / sigma
+    return float(np.exp(-0.5 * np.sum(scaled ** 2)))
+
+
+def _kernel_epanechnikov(offset: np.ndarray, sigma: np.ndarray) -> float:
+    """Epanechnikov kernel: max(0, 1 - ||offset/sigma||²)."""
+    u2 = float(np.sum((offset / sigma) ** 2))
+    return max(0.0, 1.0 - u2)
+
+
+def _kernel_linear(offset: np.ndarray, sigma: np.ndarray) -> float:
+    """Linear decay kernel: max(0, 1 - ||offset/sigma||)."""
+    u = float(np.sqrt(np.sum((offset / sigma) ** 2)))
+    return max(0.0, 1.0 - u)
+
+
+def _kernel_uniform(offset: np.ndarray, sigma: np.ndarray) -> float:
+    """Uniform kernel: w = 1 for all neighbors."""
+    return 1.0
+
+
+_KERNEL_REGISTRY: Dict[str, Callable] = {
+    'uniform': _kernel_uniform,
+    'gaussian': _kernel_gaussian,
+    'epanechnikov': _kernel_epanechnikov,
+    'linear': _kernel_linear,
+}
+
+
+def _precompute_offset_weights(
+        offsets: np.ndarray,
+        kernel: Union[str, Callable],
+        kernel_width_vec: np.ndarray,
+) -> np.ndarray:
+    """Compute weight for each offset in the offset table.
+
+    Returns array of shape (K,) with non-negative weights.
+    Weights depend only on offset (not on center), so they are
+    precomputable once for the entire grid.
+    """
+    if isinstance(kernel, str):
+        kernel_fn = _KERNEL_REGISTRY.get(kernel)
+        if kernel_fn is None:
+            raise ValueError(
+                f"Unknown kernel '{kernel}'. "
+                f"Available: {list(_KERNEL_REGISTRY.keys())}"
+            )
+    else:
+        kernel_fn = kernel
+
+    K = offsets.shape[0]
+    weights = np.empty(K, dtype=np.float64)
+    for i in range(K):
+        weights[i] = kernel_fn(offsets[i].astype(np.float64), kernel_width_vec)
+    return weights
+
+
+# ===============
+# Boundary handling (V3b)
+# ===============
+
+def _resolve_boundary(
+        boundary: Union[str, Dict[str, str]],
+        gb_columns: List[str],
+) -> Dict[str, str]:
+    """Resolve boundary to per-dimension dict."""
+    valid_modes = ('full', 'symmetric', 'periodic')
+    if isinstance(boundary, str):
+        if boundary not in valid_modes:
+            raise ValueError(f"boundary must be one of {valid_modes}, got '{boundary}'")
+        return {dim: boundary for dim in gb_columns}
+    for dim, mode in boundary.items():
+        if mode not in valid_modes:
+            raise ValueError(f"boundary['{dim}'] must be one of {valid_modes}, got '{mode}'")
+    # Fill missing dims with 'full' (default)
+    return {dim: boundary.get(dim, 'full') for dim in gb_columns}
+
+
+def _validate_periodic_dims(
+        boundary_resolved: Dict[str, str],
+        bounds: Dict[str, Tuple[int, int]],
+        window_spec: Dict[str, int],
+) -> None:
+    """Validate periodic dimensions have enough bins (P1-4, P1-7)."""
+    for dim, mode in boundary_resolved.items():
+        if mode == 'periodic':
+            lo, hi = bounds[dim]
+            n_bins = hi - lo + 1
+            w = window_spec.get(dim, 0)
+            if n_bins < 2 * w + 1:
+                raise ValueError(
+                    f"Periodic dimension '{dim}' has {n_bins} bins but "
+                    f"window={w} requires at least {2*w+1}. "
+                    f"Reduce window or use more bins."
+                )
+
+
+def _get_neighbor_bins_v2(
+        center: Tuple[int, ...],
+        offsets: np.ndarray,
+        bin_ranges: Dict[str, Tuple[int, int]],
+        boundary_resolved: Dict[str, str],
+        window_spec: Dict[str, int],
+) -> Tuple[List[Tuple[int, ...]], np.ndarray]:
+    """Boundary-aware neighbor generation (V3b).
+
+    Returns (neighbor_bins, valid_offset_indices) — the indices into the
+    offsets array for the surviving neighbors, needed to look up
+    precomputed weights.
+
+    Boundary modes per dimension:
+    - 'full': truncate at observed range (current behavior)
+    - 'symmetric': limit to max symmetric extent around center
+    - 'periodic': wrap around [lo, hi] range
+    """
+    gb_columns = list(bin_ranges.keys())
+
+    if offsets.size == 0:
+        return [center], np.array([0], dtype=np.int64)
+
+    center_arr = np.array(center, dtype=np.int64)
+    D = len(gb_columns)
+
+    # For symmetric mode: compute effective window per dimension
+    effective_offsets = offsets.copy()
+    mask = np.ones(len(offsets), dtype=bool)
+
+    for j, dim in enumerate(gb_columns):
+        lo, hi = bin_ranges[dim]
+        mode = boundary_resolved[dim]
+        w = window_spec.get(dim, 0)
+
+        if mode == 'symmetric':
+            # Max symmetric extent: min distance to either boundary
+            max_left = center_arr[j] - lo
+            max_right = hi - center_arr[j]
+            eff_w = min(w, max_left, max_right)
+            # Filter offsets to [-eff_w, +eff_w] in this dimension
+            mask &= (offsets[:, j] >= -eff_w) & (offsets[:, j] <= eff_w)
+
+        elif mode == 'periodic':
+            # Wrap: candidate = ((center + offset - lo) % range) + lo
+            n_range = hi - lo + 1
+            raw = center_arr[j] + offsets[:, j]
+            wrapped = ((raw - lo) % n_range) + lo
+            effective_offsets[:, j] = wrapped - center_arr[j]
+            # All periodic neighbors are valid (no truncation)
+
+        else:  # 'full'
+            cand = center_arr[j] + offsets[:, j]
+            mask &= (cand >= lo) & (cand <= hi)
+
+    # Apply mask
+    valid_indices = np.where(mask)[0]
+    valid_offsets = effective_offsets[valid_indices]
+
+    # Compute actual neighbor coordinates
+    neighbors = center_arr + valid_offsets
+    result = [tuple(map(int, row)) for row in neighbors]
+
+    return result, valid_indices
+
+
 def _get_neighbor_bins(
         center: Tuple[int, ...],
         offsets: np.ndarray,
@@ -844,18 +1032,121 @@ def _compute_lightweight_agg_results(
         gb_columns: List[str],
         fit_columns: List[str],
         bin_suff_stats: Dict[str, Dict[Tuple[int, ...], _BinSuffStats]],
+        boundary_resolved: Optional[Dict[str, str]] = None,
+        window_spec: Optional[Dict[str, int]] = None,
+        offset_weights: Optional[np.ndarray] = None,
+        use_weighted_kernel: bool = False,
+        prebuilt_neighbor_table: Optional[Tuple] = None,
 ) -> List[_AggResult]:
     """Compute lightweight _AggResult entries from sufficient statistics.
 
-    Derives mean/std/entries from summed sufficient stats over the window,
-    avoiding the expensive row-level aggregation. Median is set to NaN
-    (cannot be computed from sufficient statistics).
+    Derives mean/std/entries from summed sufficient stats over the window.
+    Median is NaN (cannot compute from sufficient statistics).
+
+    V3b extensions:
+    - boundary_resolved: per-dim boundary mode for neighbor generation
+    - offset_weights: precomputed kernel weight per offset
+    - use_weighted_kernel: if True, use weighted formulas for stats (P1-2)
+    - prebuilt_neighbor_table: (nbr_indices, nbr_weights, nbr_counts) to skip
+      redundant _get_neighbor_bins_v2 calls — share with _build_neighbor_table
     """
     expected_neighbors = int(neighbor_offsets.shape[0]) if neighbor_offsets.size else 1
+    use_v2_neighbors = (boundary_resolved is not None and window_spec is not None)
+
+    # If we have a prebuilt table, use index-based lookup instead of per-bin _get_neighbor_bins_v2
+    if prebuilt_neighbor_table is not None:
+        nbr_indices, nbr_weights_tbl, nbr_counts = prebuilt_neighbor_table
+        bin_idx_map = {b: i for i, b in enumerate(center_bins)}
+        use_prebuilt = True
+    else:
+        use_prebuilt = False
 
     results: List[_AggResult] = []
-    for center in center_bins:
-        neighbors = _get_neighbor_bins(center, neighbor_offsets, bounds)
+    for ci, center in enumerate(center_bins):
+        if use_prebuilt:
+            # Use prebuilt neighbor table — no _get_neighbor_bins_v2 call
+            nc = int(nbr_counts[ci])
+            neighbor_bin_indices = nbr_indices[ci, :nc]
+            nbr_weights_local = nbr_weights_tbl[ci, :nc] if use_weighted_kernel else None
+
+            n_used = 0
+            for k in range(nc):
+                j = int(neighbor_bin_indices[k])
+                if j >= 0 and center_bins[j] in bin_map and len(bin_map[center_bins[j]]) > 0:
+                    n_used += 1
+
+            stats: Dict[str, Dict[str, float]] = {}
+            n_rows_total = 0
+
+            for t in fit_columns:
+                target_stats = bin_suff_stats[t]
+
+                if use_weighted_kernel and nbr_weights_local is not None:
+                    w_sum_y = 0.0
+                    w_sum_y2 = 0.0
+                    w_n = 0.0
+                    n_raw = 0
+                    for k in range(nc):
+                        j = int(neighbor_bin_indices[k])
+                        if j < 0:
+                            continue
+                        nb = center_bins[j]
+                        bs = target_stats.get(nb)
+                        if bs is not None and bs.n > 0:
+                            w = float(nbr_weights_local[k])
+                            w_sum_y += w * bs.sum_y
+                            w_sum_y2 += w * bs.sum_y2
+                            w_n += w * bs.n
+                            n_raw += bs.n
+
+                    if w_n > 0:
+                        mean = w_sum_y / w_n
+                        var = w_sum_y2 / w_n - mean ** 2
+                        std = float(np.sqrt(var)) if var > 0 else 0.0
+                        stats[t] = {"mean": mean, "std": std, "median": np.nan, "entries": n_raw}
+                    else:
+                        stats[t] = {"mean": np.nan, "std": np.nan, "median": np.nan, "entries": 0}
+                    n_rows_total = max(n_rows_total, n_raw)
+                else:
+                    sum_y = 0.0
+                    sum_y2 = 0.0
+                    n_valid = 0
+                    for k in range(nc):
+                        j = int(neighbor_bin_indices[k])
+                        if j < 0:
+                            continue
+                        nb = center_bins[j]
+                        bs = target_stats.get(nb)
+                        if bs is not None and bs.n > 0:
+                            n_valid += bs.n
+                            sum_y += bs.sum_y
+                            sum_y2 += bs.sum_y2
+
+                    if n_valid > 0:
+                        mean = sum_y / n_valid
+                        var_num = sum_y2 - n_valid * mean ** 2
+                        std = float(np.sqrt(var_num / (n_valid - 1))) if n_valid > 1 and var_num > 0 else np.nan
+                        stats[t] = {"mean": mean, "std": std, "median": np.nan, "entries": n_valid}
+                    else:
+                        stats[t] = {"mean": np.nan, "std": np.nan, "median": np.nan, "entries": 0}
+                    n_rows_total = max(n_rows_total, n_valid)
+
+            eff_frac = (n_used / expected_neighbors) if expected_neighbors > 0 else np.nan
+            results.append(_AggResult(
+                center=center, n_neighbors_used=n_used,
+                n_rows_aggregated=n_rows_total, effective_window_fraction=eff_frac,
+                stats=stats, row_indices=np.array([], dtype=np.int64),
+            ))
+            continue
+
+        # Original path (no prebuilt table)
+        if use_v2_neighbors:
+            neighbors, valid_idx = _get_neighbor_bins_v2(
+                center, neighbor_offsets, bounds, boundary_resolved, window_spec)
+            nbr_weights = offset_weights[valid_idx] if offset_weights is not None else None
+        else:
+            neighbors = _get_neighbor_bins(center, neighbor_offsets, bounds)
+            nbr_weights = None
 
         # Count used neighbors and total rows
         n_used = 0
@@ -869,32 +1160,61 @@ def _compute_lightweight_agg_results(
 
         for t in fit_columns:
             target_stats = bin_suff_stats[t]
-            sum_y = 0.0
-            sum_y2 = 0.0
-            n_valid = 0
 
-            for nb in neighbors:
-                bs = target_stats.get(nb)
-                if bs is not None and bs.n > 0:
-                    n_valid += bs.n
-                    sum_y += bs.sum_y
-                    sum_y2 += bs.sum_y2
+            if use_weighted_kernel and nbr_weights is not None:
+                # Weighted stats (P1-2: population-weighted, no Bessel)
+                w_sum_y = 0.0
+                w_sum_y2 = 0.0
+                w_n = 0.0
+                n_raw = 0
+                for k, nb in enumerate(neighbors):
+                    bs = target_stats.get(nb)
+                    if bs is not None and bs.n > 0:
+                        w = nbr_weights[k]
+                        w_sum_y += w * bs.sum_y
+                        w_sum_y2 += w * bs.sum_y2
+                        w_n += w * bs.n
+                        n_raw += bs.n
 
-            if n_valid > 0:
-                mean = sum_y / n_valid
-                # Var = (Σy² - n*mean²) / (n-1) for unbiased
-                var_num = sum_y2 - n_valid * mean ** 2
-                std = float(np.sqrt(var_num / (n_valid - 1))) if n_valid > 1 and var_num > 0 else np.nan
-                stats[t] = {
-                    "mean": mean,
-                    "std": std,
-                    "median": np.nan,  # Cannot compute from sufficient stats
-                    "entries": n_valid,
-                }
+                if w_n > 0:
+                    mean = w_sum_y / w_n
+                    # Population-weighted variance (P1-2: no Bessel)
+                    var = w_sum_y2 / w_n - mean ** 2
+                    std = float(np.sqrt(var)) if var > 0 else 0.0
+                    stats[t] = {
+                        "mean": mean,
+                        "std": std,
+                        "median": np.nan,
+                        "entries": n_raw,  # unweighted integer count
+                    }
+                else:
+                    stats[t] = {"mean": np.nan, "std": np.nan, "median": np.nan, "entries": 0}
+                n_rows_total = max(n_rows_total, n_raw)
             else:
-                stats[t] = {"mean": np.nan, "std": np.nan, "median": np.nan, "entries": 0}
+                # Unweighted stats (original V3 path)
+                sum_y = 0.0
+                sum_y2 = 0.0
+                n_valid = 0
+                for nb in neighbors:
+                    bs = target_stats.get(nb)
+                    if bs is not None and bs.n > 0:
+                        n_valid += bs.n
+                        sum_y += bs.sum_y
+                        sum_y2 += bs.sum_y2
 
-            n_rows_total = max(n_rows_total, n_valid)
+                if n_valid > 0:
+                    mean = sum_y / n_valid
+                    var_num = sum_y2 - n_valid * mean ** 2
+                    std = float(np.sqrt(var_num / (n_valid - 1))) if n_valid > 1 and var_num > 0 else np.nan
+                    stats[t] = {
+                        "mean": mean,
+                        "std": std,
+                        "median": np.nan,
+                        "entries": n_valid,
+                    }
+                else:
+                    stats[t] = {"mean": np.nan, "std": np.nan, "median": np.nan, "entries": 0}
+                n_rows_total = max(n_rows_total, n_valid)
 
         eff_frac = (n_used / expected_neighbors) if expected_neighbors > 0 else np.nan
 
@@ -904,7 +1224,7 @@ def _compute_lightweight_agg_results(
             n_rows_aggregated=n_rows_total,
             effective_window_fraction=eff_frac,
             stats=stats,
-            row_indices=np.array([], dtype=np.int64),  # not needed for V3
+            row_indices=np.array([], dtype=np.int64),
         ))
 
     return results
@@ -921,50 +1241,61 @@ def _fit_window_regression_incremental(
         fit_intercept: bool,
         min_stat: int,
         agg_results: List[_AggResult],
+        boundary_resolved: Optional[Dict[str, str]] = None,
+        window_spec: Optional[Dict[str, int]] = None,
+        offset_weights: Optional[np.ndarray] = None,
+        use_weighted_kernel: bool = False,
 ) -> Dict[Tuple[int, ...], Dict[str, Dict[str, Any]]]:
-    """V3: Solve normal equations from summed per-bin sufficient statistics.
+    """V3/V3b: Solve normal equations from summed per-bin sufficient statistics.
 
     For each center bin c and target t:
-        XtX_w = Σ_{b ∈ neighbors(c)} XtX_bin[b]
-        XtY_w = Σ_{b ∈ neighbors(c)} XtY_bin[b]
+        XtX_w = Σ_{b ∈ N(c)} w_b · XtX_bin[b]
+        XtY_w = Σ_{b ∈ N(c)} w_b · XtY_bin[b]
         beta  = solve(XtX_w, XtY_w)
 
-    This avoids rebuilding X matrices from raw data. Complexity per bin:
-    O(K × p²) for summation + O(p³) for solve, where K = #neighbors, p = #params.
-    Compared to V1/V2: O(K × n_per_bin × p²) for building X^T X from rows.
+    V3b extensions:
+    - boundary_resolved: per-dim boundary mode for _get_neighbor_bins_v2
+    - offset_weights: precomputed kernel weight per offset index
+    - use_weighted_kernel: if True, _err columns → NaN (P1-3)
     """
     n_pred = len(linear_columns)
     n_params = n_pred + (1 if fit_intercept else 0)
+    use_v2_neighbors = (boundary_resolved is not None and window_spec is not None)
 
     out: Dict[Tuple[int, ...], Dict[str, Dict[str, Any]]] = {}
 
-    # Build agg_result lookup for n_neighbors_used etc.
-    agg_map = {ar.center: ar for ar in agg_results}
-
     for center in center_bins:
-        neighbors = _get_neighbor_bins(center, neighbor_offsets, bounds)
+        if use_v2_neighbors:
+            neighbors, valid_idx = _get_neighbor_bins_v2(
+                center, neighbor_offsets, bounds, boundary_resolved, window_spec)
+            nbr_weights = offset_weights[valid_idx] if offset_weights is not None else None
+        else:
+            neighbors = _get_neighbor_bins(center, neighbor_offsets, bounds)
+            nbr_weights = None
 
         center_map: Dict[str, Dict[str, Any]] = {}
 
         for t in fit_columns:
             target_stats = bin_suff_stats[t]
 
-            # Sum sufficient statistics over window neighbors
+            # Sum (weighted) sufficient statistics over window neighbors
             XtX_w = np.zeros((n_params, n_params), dtype=np.float64)
             XtY_w = np.zeros(n_params, dtype=np.float64)
-            n_total = 0
+            n_total = 0       # unweighted row count (P1-1: for min_stat)
             sum_y_total = 0.0
             sum_y2_total = 0.0
 
-            for nb in neighbors:
+            for k, nb in enumerate(neighbors):
                 bs = target_stats.get(nb)
                 if bs is not None and bs.n > 0:
-                    XtX_w += bs.XtX
-                    XtY_w += bs.XtY
-                    n_total += bs.n
-                    sum_y_total += bs.sum_y
-                    sum_y2_total += bs.sum_y2
+                    w_b = nbr_weights[k] if nbr_weights is not None else 1.0
+                    XtX_w += w_b * bs.XtX
+                    XtY_w += w_b * bs.XtY
+                    n_total += bs.n          # unweighted (P1-1)
+                    sum_y_total += w_b * bs.sum_y
+                    sum_y2_total += w_b * bs.sum_y2
 
+            # min_stat uses unweighted count (P1-1)
             if n_total < max(1, int(min_stat)):
                 center_map[t] = _empty_fit_result("insufficient_stats", n_total)
                 continue
@@ -977,11 +1308,9 @@ def _fit_window_regression_incremental(
                 continue
 
             # Diagnostics from sufficient stats:
-            # RSS = y^T y - beta^T X^T y = sum_y2 - beta . XtY
-            # (Note: this uses the identity RSS = y'y - 2β'X'y + β'X'Xβ = y'y - β'X'y)
+            # RSS = Σ w·y² - β' · (Σ w·X'y) = sum_y2_total - beta @ XtY_w
             rss = sum_y2_total - float(beta @ XtY_w)
             if rss < 0:
-                # Numerical guard — can happen with near-perfect fit
                 rss = 0.0
 
             dof = n_total - n_params
@@ -990,18 +1319,31 @@ def _fit_window_regression_incremental(
             # RMSE = sqrt(RSS / n)
             rmse = float(np.sqrt(rss / n_total)) if n_total > 0 else np.nan
 
-            # R² = 1 - RSS / SS_tot
-            # SS_tot = Σ(y - ȳ)² = Σy² - (Σy)²/n
-            y_mean = sum_y_total / n_total
-            ss_tot = sum_y2_total - n_total * y_mean ** 2
+            # R²: use weighted sums for consistency
+            # SS_tot = Σ w·y² - (Σ w·y)² / (Σ w·n)
+            # But we need Σ w·n for weighted mean calculation
+            if nbr_weights is not None:
+                w_n_total = 0.0
+                for k, nb in enumerate(neighbors):
+                    bs = target_stats.get(nb)
+                    if bs is not None and bs.n > 0:
+                        w_n_total += nbr_weights[k] * bs.n
+                y_mean = sum_y_total / w_n_total if w_n_total > 0 else 0.0
+                ss_tot = sum_y2_total - w_n_total * y_mean ** 2
+            else:
+                y_mean = sum_y_total / n_total if n_total > 0 else 0.0
+                ss_tot = sum_y2_total - n_total * y_mean ** 2
             r2 = 1.0 - rss / ss_tot if ss_tot > 0 else np.nan
 
-            # Standard errors: sqrt(s² × diag(XtX⁻¹))
-            try:
-                XtX_inv = np.linalg.inv(XtX_w)
-                se = np.sqrt(s2 * np.diag(XtX_inv)) if np.isfinite(s2) else np.full(n_params, np.nan)
-            except np.linalg.LinAlgError:
+            # Standard errors (P1-3): NaN when kernel != 'uniform'
+            if use_weighted_kernel:
                 se = np.full(n_params, np.nan)
+            else:
+                try:
+                    XtX_inv = np.linalg.inv(XtX_w)
+                    se = np.sqrt(s2 * np.diag(XtX_inv)) if np.isfinite(s2) else np.full(n_params, np.nan)
+                except np.linalg.LinAlgError:
+                    se = np.full(n_params, np.nan)
 
             # Pack result
             if fit_intercept:
@@ -1027,6 +1369,385 @@ def _fit_window_regression_incremental(
             }
 
         out[center] = center_map
+
+    return out
+
+
+# ===============
+# V3-Numba: Incremental solve kernel
+# ===============
+
+def _check_numba_available() -> bool:
+    """Check if Numba is importable."""
+    try:
+        import numba
+        return True
+    except ImportError:
+        return False
+
+
+def _pack_suff_stats_for_numba(
+        bin_suff_stats: Dict[str, Dict[Tuple[int, ...], _BinSuffStats]],
+        center_bins: List[Tuple[int, ...]],
+        fit_columns: List[str],
+        n_params: int,
+) -> Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+    """Pack per-bin sufficient stats into contiguous arrays for Numba.
+
+    Returns dict[target] → (XtX_all, XtY_all, n_all, sum_y_all, sum_y2_all)
+    where each array is indexed by bin position in center_bins.
+    """
+    n_bins = len(center_bins)
+    bin_idx = {b: i for i, b in enumerate(center_bins)}
+
+    result = {}
+    for t in fit_columns:
+        XtX_all = np.zeros((n_bins, n_params, n_params), dtype=np.float64)
+        XtY_all = np.zeros((n_bins, n_params), dtype=np.float64)
+        n_all = np.zeros(n_bins, dtype=np.int64)
+        sum_y_all = np.zeros(n_bins, dtype=np.float64)
+        sum_y2_all = np.zeros(n_bins, dtype=np.float64)
+
+        target_stats = bin_suff_stats[t]
+        for bk, bs in target_stats.items():
+            if bk in bin_idx and bs.n > 0:
+                i = bin_idx[bk]
+                XtX_all[i] = bs.XtX
+                XtY_all[i] = bs.XtY
+                n_all[i] = bs.n
+                sum_y_all[i] = bs.sum_y
+                sum_y2_all[i] = bs.sum_y2
+
+        result[t] = (XtX_all, XtY_all, n_all, sum_y_all, sum_y2_all)
+
+    return result
+
+
+def _build_neighbor_table(
+        center_bins: List[Tuple[int, ...]],
+        neighbor_offsets: np.ndarray,
+        bounds: Dict[str, Tuple[int, int]],
+        boundary_resolved: Dict[str, str],
+        window_spec: Dict[str, int],
+        offset_weights: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build packed neighbor index + weight tables for Numba kernel.
+
+    Returns:
+        nbr_indices: (n_bins, max_neighbors) — index into center_bins, -1 = invalid
+        nbr_weights: (n_bins, max_neighbors) — kernel weight, 0.0 for invalid
+        nbr_counts:  (n_bins,) — number of valid neighbors per center
+    """
+    bin_idx = {b: i for i, b in enumerate(center_bins)}
+    n_bins = len(center_bins)
+    max_nbr = neighbor_offsets.shape[0]
+
+    nbr_indices = np.full((n_bins, max_nbr), -1, dtype=np.int64)
+    nbr_weights = np.zeros((n_bins, max_nbr), dtype=np.float64)
+    nbr_counts = np.zeros(n_bins, dtype=np.int64)
+
+    for i, center in enumerate(center_bins):
+        neighbors, valid_idx = _get_neighbor_bins_v2(
+            center, neighbor_offsets, bounds, boundary_resolved, window_spec)
+
+        k = 0
+        for j, nb in enumerate(neighbors):
+            if nb in bin_idx:
+                nbr_indices[i, k] = bin_idx[nb]
+                nbr_weights[i, k] = offset_weights[valid_idx[j]]
+                k += 1
+        nbr_counts[i] = k
+
+    return nbr_indices, nbr_weights, nbr_counts
+
+
+def _get_numba_incremental_kernel():
+    """JIT-compile the incremental solve kernel. Returns the @njit function."""
+    import numba as nb
+
+    @nb.njit(cache=True)
+    def _solve_cholesky_inplace(A, b, p):
+        """Solve A @ x = b via Cholesky decomposition (A must be SPD).
+
+        Modifies A in place (lower triangle becomes L).
+        Returns x in b, and success flag.
+        """
+        # Cholesky: A = L L^T
+        for i in range(p):
+            for j in range(i):
+                s = 0.0
+                for k in range(j):
+                    s += A[i, k] * A[j, k]
+                A[i, j] = (A[i, j] - s) / A[j, j]
+            s = 0.0
+            for k in range(i):
+                s += A[i, k] * A[i, k]
+            val = A[i, i] - s
+            if val <= 0.0:
+                return False  # Not positive definite
+            A[i, i] = math.sqrt(val)
+
+        # Forward: L @ z = b
+        for i in range(p):
+            s = 0.0
+            for k in range(i):
+                s += A[i, k] * b[k]
+            b[i] = (b[i] - s) / A[i, i]
+
+        # Backward: L^T @ x = z
+        for i in range(p - 1, -1, -1):
+            s = 0.0
+            for k in range(i + 1, p):
+                s += A[k, i] * b[k]
+            b[i] = (b[i] - s) / A[i, i]
+
+        return True
+
+    @nb.njit(cache=True)
+    def _cholesky_diag_inv(L, p):
+        """Compute diag(A^-1) from Cholesky factor L where A = L L^T.
+
+        Uses forward/backward substitution with unit vectors.
+        Returns diagonal of A^-1.
+        """
+        diag = np.empty(p, dtype=np.float64)
+        e = np.zeros(p, dtype=np.float64)
+
+        for col in range(p):
+            # Set up unit vector
+            for i in range(p):
+                e[i] = 0.0
+            e[col] = 1.0
+
+            # Forward: L z = e
+            for i in range(p):
+                s = 0.0
+                for k in range(i):
+                    s += L[i, k] * e[k]
+                e[i] = (e[i] - s) / L[i, i]
+
+            # Backward: L^T x = z
+            for i in range(p - 1, -1, -1):
+                s = 0.0
+                for k in range(i + 1, p):
+                    s += L[k, i] * e[k]
+                e[i] = (e[i] - s) / L[i, i]
+
+            diag[col] = e[col]
+
+        return diag
+
+    @nb.njit(cache=True, parallel=False)
+    def incremental_solve_kernel(
+            XtX_all, XtY_all, n_all, sum_y_all, sum_y2_all,
+            nbr_indices, nbr_weights, nbr_counts,
+            n_params, min_stat, use_weighted_kernel,
+            # outputs (pre-allocated):
+            beta_out, se_out, rmse_out, r2_out, n_fitted_out, status_out,
+    ):
+        """Numba kernel: solve weighted normal equations for all center bins.
+
+        For each center bin i:
+          XtX_w = Σ_j w_j * XtX_all[nbr[j]]
+          XtY_w = Σ_j w_j * XtY_all[nbr[j]]
+          beta = solve(XtX_w, XtY_w) via Cholesky
+
+        Parameters
+        ----------
+        status_out: 0 = OK, 1 = insufficient_stats, 2 = singular
+        """
+        n_bins = XtX_all.shape[0]
+        p = n_params
+
+        for i in range(n_bins):
+            nc = nbr_counts[i]
+
+            # Sum weighted sufficient stats
+            XtX_w = np.zeros((p, p), dtype=np.float64)
+            XtY_w = np.zeros(p, dtype=np.float64)
+            n_total = 0
+            sum_y = 0.0
+            sum_y2 = 0.0
+            w_n = 0.0  # weighted n for R² calculation
+
+            for k in range(nc):
+                j = nbr_indices[i, k]
+                if j < 0 or n_all[j] == 0:
+                    continue
+                w = nbr_weights[i, k]
+                n_j = n_all[j]
+                n_total += n_j
+                sum_y += w * sum_y_all[j]
+                sum_y2 += w * sum_y2_all[j]
+                w_n += w * n_j
+                for r in range(p):
+                    XtY_w[r] += w * XtY_all[j, r]
+                    for c in range(p):
+                        XtX_w[r, c] += w * XtX_all[j, r, c]
+
+            n_fitted_out[i] = n_total
+
+            if n_total < min_stat:
+                status_out[i] = 1
+                for r in range(p):
+                    beta_out[i, r] = np.nan
+                    se_out[i, r] = np.nan
+                rmse_out[i] = np.nan
+                r2_out[i] = np.nan
+                continue
+
+            # Solve via Cholesky (in-place on copy)
+            A = XtX_w.copy()
+            b = XtY_w.copy()
+            ok = _solve_cholesky_inplace(A, b, p)
+
+            if not ok:
+                status_out[i] = 2
+                for r in range(p):
+                    beta_out[i, r] = np.nan
+                    se_out[i, r] = np.nan
+                rmse_out[i] = np.nan
+                r2_out[i] = np.nan
+                continue
+
+            # beta is now in b
+            for r in range(p):
+                beta_out[i, r] = b[r]
+
+            # RSS = sum_y2 - beta . XtY
+            rss = sum_y2
+            for r in range(p):
+                rss -= b[r] * XtY_w[r]
+            if rss < 0.0:
+                rss = 0.0
+
+            # RMSE
+            rmse_out[i] = math.sqrt(rss / n_total) if n_total > 0 else np.nan
+
+            # R²
+            if w_n > 0.0:
+                y_mean = sum_y / w_n
+            else:
+                y_mean = 0.0
+            ss_tot = sum_y2 - w_n * y_mean * y_mean
+            if ss_tot > 0.0:
+                r2_out[i] = 1.0 - rss / ss_tot
+            else:
+                r2_out[i] = np.nan
+
+            # Standard errors (P1-3: NaN when weighted kernel)
+            if use_weighted_kernel:
+                for r in range(p):
+                    se_out[i, r] = np.nan
+            else:
+                dof = n_total - p
+                if dof > 0:
+                    s2 = rss / dof
+                    # Get diag(XtX^-1) from Cholesky factor A (=L)
+                    diag_inv = _cholesky_diag_inv(A, p)
+                    for r in range(p):
+                        if diag_inv[r] > 0.0:
+                            se_out[i, r] = math.sqrt(s2 * diag_inv[r])
+                        else:
+                            se_out[i, r] = np.nan
+                else:
+                    for r in range(p):
+                        se_out[i, r] = np.nan
+
+            status_out[i] = 0
+
+    return incremental_solve_kernel
+
+
+def _fit_window_regression_incremental_numba(
+        bin_suff_stats: Dict[str, Dict[Tuple[int, ...], _BinSuffStats]],
+        center_bins: List[Tuple[int, ...]],
+        neighbor_offsets: np.ndarray,
+        bounds: Dict[str, Tuple[int, int]],
+        boundary_resolved: Dict[str, str],
+        window_spec: Dict[str, int],
+        offset_weights: np.ndarray,
+        fit_columns: List[str],
+        linear_columns: List[str],
+        fit_intercept: bool,
+        min_stat: int,
+        use_weighted_kernel: bool,
+        prebuilt_neighbor_table: Optional[Tuple] = None,
+) -> Dict[Tuple[int, ...], Dict[str, Dict[str, Any]]]:
+    """V3-Numba: Solve normal equations via JIT-compiled Cholesky kernel.
+
+    Packs all sufficient stats into contiguous arrays, builds a neighbor
+    index table, and dispatches to a single Numba kernel for all bins.
+    """
+    n_pred = len(linear_columns)
+    n_params = n_pred + (1 if fit_intercept else 0)
+    n_bins = len(center_bins)
+
+    # Pack sufficient stats
+    packed = _pack_suff_stats_for_numba(bin_suff_stats, center_bins, fit_columns, n_params)
+
+    # Reuse prebuilt neighbor table or build new one
+    if prebuilt_neighbor_table is not None:
+        nbr_indices, nbr_weights, nbr_counts = prebuilt_neighbor_table
+    else:
+        nbr_indices, nbr_weights, nbr_counts = _build_neighbor_table(
+            center_bins, neighbor_offsets, bounds, boundary_resolved, window_spec, offset_weights)
+
+    # Get JIT kernel
+    kernel_fn = _get_numba_incremental_kernel()
+
+    out: Dict[Tuple[int, ...], Dict[str, Dict[str, Any]]] = {}
+
+    for t in fit_columns:
+        XtX_all, XtY_all, n_all, sum_y_all, sum_y2_all = packed[t]
+
+        # Allocate outputs
+        beta_out = np.full((n_bins, n_params), np.nan, dtype=np.float64)
+        se_out = np.full((n_bins, n_params), np.nan, dtype=np.float64)
+        rmse_out = np.full(n_bins, np.nan, dtype=np.float64)
+        r2_out = np.full(n_bins, np.nan, dtype=np.float64)
+        n_fitted_out = np.zeros(n_bins, dtype=np.int64)
+        status_out = np.zeros(n_bins, dtype=np.int64)
+
+        # Dispatch
+        kernel_fn(
+            XtX_all, XtY_all, n_all, sum_y_all, sum_y2_all,
+            nbr_indices, nbr_weights, nbr_counts,
+            n_params, min_stat, use_weighted_kernel,
+            beta_out, se_out, rmse_out, r2_out, n_fitted_out, status_out,
+        )
+
+        # Unpack to dict structure
+        for i, center in enumerate(center_bins):
+            if center not in out:
+                out[center] = {}
+
+            if status_out[i] == 1:
+                out[center][t] = _empty_fit_result("insufficient_stats", int(n_fitted_out[i]))
+            elif status_out[i] == 2:
+                out[center][t] = _empty_fit_result("singular_matrix", int(n_fitted_out[i]))
+            else:
+                if fit_intercept:
+                    intercept = float(beta_out[i, 0])
+                    intercept_err = float(se_out[i, 0])
+                    coeffs = {linear_columns[j]: float(beta_out[i, j + 1]) for j in range(n_pred)}
+                    coeffs_err = {linear_columns[j]: float(se_out[i, j + 1]) for j in range(n_pred)}
+                else:
+                    intercept = 0.0
+                    intercept_err = 0.0
+                    coeffs = {linear_columns[j]: float(beta_out[i, j]) for j in range(n_pred)}
+                    coeffs_err = {linear_columns[j]: float(se_out[i, j]) for j in range(n_pred)}
+
+                out[center][t] = {
+                    "coeffs": coeffs,
+                    "coeffs_err": coeffs_err,
+                    "intercept": intercept,
+                    "intercept_err": intercept_err,
+                    "r_squared": float(r2_out[i]),
+                    "rmse": float(rmse_out[i]),
+                    "n_fitted": int(n_fitted_out[i]),
+                    "quality_flag": "",
+                }
 
     return out
 
@@ -1150,6 +1871,9 @@ def make_sliding_window_fit(
         cast_dtype: str = 'float64',
         backend: str = 'auto',
         algorithm: str = 'recompute',
+        boundary: Union[str, Dict[str, str]] = 'full',
+        kernel: Union[str, Callable] = 'uniform',
+        kernel_width: Optional[Union[float, Dict[str, float]]] = None,
         aggregation_functions: Optional[Dict[str, List[str]]] = None,
         binning_formulas: Optional[Dict[str, str]] = None,
         partition_strategy: Optional[dict] = None,
@@ -1308,9 +2032,21 @@ def make_sliding_window_fit(
     neighbor_offsets = _generate_neighbor_offsets(full_window_spec, gb_columns)
     bounds = _observed_bin_bounds(bin_map, gb_columns)
 
+    # Resolve V3b boundary and kernel (used by incremental path)
+    boundary_resolved = _resolve_boundary(boundary, gb_columns)
+    _validate_periodic_dims(boundary_resolved, bounds, full_window_spec)
+
+    # Determine if non-uniform kernel is active
+    _is_weighted_kernel = (kernel != 'uniform') if isinstance(kernel, str) else True
+    kernel_width_resolved = _resolve_kernel_width(kernel_width, full_window_spec, gb_columns)
+    kernel_width_vec = np.array([kernel_width_resolved[dim] for dim in gb_columns], dtype=np.float64)
+
+    # Precompute offset weights (depends only on offsets, not on center)
+    offset_weights = _precompute_offset_weights(neighbor_offsets, kernel, kernel_width_vec)
+
     # Fitting — dispatch by algorithm and backend
     if algorithm == 'incremental':
-        # V3: pre-compute per-bin XtX/XtY, sum over window
+        # V3/V3b: pre-compute per-bin XtX/XtY, sum over window
         bin_suff_stats = _precompute_bin_sufficient_stats(
             df=df,
             bin_map=bin_map,
@@ -1319,8 +2055,7 @@ def make_sliding_window_fit(
             fit_intercept=fit_intercept,
         )
 
-        # Lightweight aggregation: derive mean/std/entries from suff stats
-        # (skips the expensive row-level _aggregate_window_zerocopy)
+        # Lightweight aggregation with V3b boundary + weights
         agg_results = _compute_lightweight_agg_results(
             bin_map=bin_map,
             center_bins=center_bins,
@@ -1329,25 +2064,86 @@ def make_sliding_window_fit(
             gb_columns=gb_columns,
             fit_columns=fit_columns,
             bin_suff_stats=bin_suff_stats,
+            boundary_resolved=boundary_resolved,
+            window_spec=full_window_spec,
+            offset_weights=offset_weights if _is_weighted_kernel else None,
+            use_weighted_kernel=_is_weighted_kernel,
         )
 
         if verbose:
-            print(f"[SW] V3 pre-compute done: {len(bin_map)} bins × "
-                  f"{len(fit_columns)} targets, {time.time()-t0:.3f}s elapsed")
+            print(f"[SW] V3b pre-compute done: {len(bin_map)} bins × "
+                  f"{len(fit_columns)} targets, kernel={kernel}, "
+                  f"boundary={boundary}, {time.time()-t0:.3f}s elapsed")
 
-        fit_results = _fit_window_regression_incremental(
-            bin_map=bin_map,
-            bin_suff_stats=bin_suff_stats,
-            center_bins=center_bins,
-            neighbor_offsets=neighbor_offsets,
-            bounds=bounds,
-            fit_columns=fit_columns,
-            linear_columns=linear_columns,
-            fit_intercept=fit_intercept,
-            min_stat=min_stat,
-            agg_results=agg_results,
+        # Dispatch: Numba or NumPy for the solve loop
+        _use_numba_incremental = (
+            _resolved_backend == 'numba'
+            and _check_numba_available()
+            and weights is None  # WLS not supported in Numba kernel
         )
-        _backend_used = "incremental_numpy"
+
+        if _use_numba_incremental:
+            # Build neighbor table ONCE and share with agg + solve
+            nbr_indices, nbr_weights_tbl, nbr_counts = _build_neighbor_table(
+                center_bins, neighbor_offsets, bounds, boundary_resolved,
+                full_window_spec, offset_weights)
+            prebuilt_table = (nbr_indices, nbr_weights_tbl, nbr_counts)
+
+            # Lightweight aggregation reusing prebuilt table
+            agg_results = _compute_lightweight_agg_results(
+                bin_map=bin_map,
+                center_bins=center_bins,
+                neighbor_offsets=neighbor_offsets,
+                bounds=bounds,
+                gb_columns=gb_columns,
+                fit_columns=fit_columns,
+                bin_suff_stats=bin_suff_stats,
+                boundary_resolved=boundary_resolved,
+                window_spec=full_window_spec,
+                offset_weights=offset_weights if _is_weighted_kernel else None,
+                use_weighted_kernel=_is_weighted_kernel,
+                prebuilt_neighbor_table=prebuilt_table,
+            )
+
+            if verbose:
+                print(f"[SW] V3-Numba pre-compute done: {len(bin_map)} bins × "
+                      f"{len(fit_columns)} targets, kernel={kernel}, "
+                      f"boundary={boundary}, {time.time()-t0:.3f}s elapsed")
+
+            fit_results = _fit_window_regression_incremental_numba(
+                bin_suff_stats=bin_suff_stats,
+                center_bins=center_bins,
+                neighbor_offsets=neighbor_offsets,
+                bounds=bounds,
+                boundary_resolved=boundary_resolved,
+                window_spec=full_window_spec,
+                offset_weights=offset_weights,
+                fit_columns=fit_columns,
+                linear_columns=linear_columns,
+                fit_intercept=fit_intercept,
+                min_stat=min_stat,
+                use_weighted_kernel=_is_weighted_kernel,
+                prebuilt_neighbor_table=prebuilt_table,
+            )
+            _backend_used = "incremental_numba"
+        else:
+            fit_results = _fit_window_regression_incremental(
+                bin_map=bin_map,
+                bin_suff_stats=bin_suff_stats,
+                center_bins=center_bins,
+                neighbor_offsets=neighbor_offsets,
+                bounds=bounds,
+                fit_columns=fit_columns,
+                linear_columns=linear_columns,
+                fit_intercept=fit_intercept,
+                min_stat=min_stat,
+                agg_results=agg_results,
+                boundary_resolved=boundary_resolved,
+                window_spec=full_window_spec,
+                offset_weights=offset_weights if _is_weighted_kernel else None,
+                use_weighted_kernel=_is_weighted_kernel,
+            )
+            _backend_used = "incremental_numpy"
 
     else:
         # V1/V2 path: row-level aggregation + recompute from raw data
@@ -1431,7 +2227,9 @@ def make_sliding_window_fit(
     metadata = {
         "gb_columns": list(gb_columns),
         "window_spec": full_window_spec,
-        "boundary_mode": "truncate",
+        "boundary_mode": {dim: boundary_resolved[dim] for dim in gb_columns},
+        "kernel": kernel if isinstance(kernel, str) else "custom",
+        "kernel_width": kernel_width_resolved,
         "backend_used": _backend_used,
         "algorithm": algorithm,
         "suffix": suffix,
