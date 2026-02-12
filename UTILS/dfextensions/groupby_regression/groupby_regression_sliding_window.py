@@ -2787,3 +2787,496 @@ def make_sliding_window_fit(
     if return_metadata:
         return out, metadata
     return out
+
+
+# ============================================================
+# Strategy A: Split-column parallel sliding window regression
+# ============================================================
+
+import logging
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+_log = logging.getLogger(__name__)
+
+
+def _counting_sort_indices(keys, n_groups):
+    """O(N) counting sort: return (order, offsets).
+
+    order[offsets[g]:offsets[g+1]] are the row indices belonging to group g.
+
+    Uses Numba JIT if available, falls back to numpy otherwise.
+    """
+    try:
+        return _counting_sort_indices_numba(keys, n_groups)
+    except Exception:
+        # Numba not available — fallback to numpy bincount + argsort
+        n = len(keys)
+        counts = np.bincount(keys.astype(np.int64), minlength=n_groups)
+        offsets = np.zeros(n_groups + 1, dtype=np.int64)
+        np.cumsum(counts, out=offsets[1:])
+        order = np.argsort(keys, kind='stable')
+        return order, offsets
+
+
+def _counting_sort_indices_numba(keys, n_groups):
+    """Numba-accelerated O(N) counting sort."""
+    import numba as nb
+
+    @nb.njit(cache=True)
+    def _csort(keys, n_groups):
+        n = len(keys)
+        # Count occurrences
+        counts = np.zeros(n_groups, dtype=np.int64)
+        for i in range(n):
+            counts[keys[i]] += 1
+        # Cumulative offsets
+        offsets = np.zeros(n_groups + 1, dtype=np.int64)
+        for g in range(n_groups):
+            offsets[g + 1] = offsets[g] + counts[g]
+        # Scatter into output order
+        order = np.empty(n, dtype=np.int64)
+        pos = offsets[:-1].copy()
+        for i in range(n):
+            g = keys[i]
+            order[pos[g]] = i
+            pos[g] += 1
+        return order, offsets
+
+    return _csort(keys.astype(np.int64), n_groups)
+
+
+def _worker_init():
+    """Set NUMBA_NUM_THREADS=1 inside worker to prevent oversubscription."""
+    os.environ['NUMBA_NUM_THREADS'] = '1'
+    try:
+        import numba
+        numba.config.THREADING_LAYER_PRIORITY = ['workqueue']
+    except Exception:
+        pass
+
+
+# Module-level shared state for fork()-based parallel workers.
+# Set by parent before spawning workers; children inherit via COW.
+_shared_gb_arrays = None   # ndarray[N, n_gb], int64
+_shared_x_array = None     # ndarray[N, n_pred], float64
+_shared_y_array = None     # ndarray[N, n_tgt], float64
+_shared_order = None       # ndarray[N], int64 — counting-sort order
+
+
+def _worker_v5_shared(
+        start,         # int — offset into _shared_order
+        end,           # int — offset into _shared_order
+        gb_columns,
+        fit_columns,
+        linear_columns,
+        window_spec,
+        fit_intercept,
+        min_stat,
+        boundary,
+        kernel,
+        kernel_width,
+        suffix,
+        unit_id,
+        split_columns,
+):
+    """Worker: reads shared parent arrays via module globals, runs V5 path.
+
+    With fork() start method, _shared_* globals are copy-on-write
+    from the parent — zero pickle overhead for big arrays.
+    Only (start, end) integers + small config args are pickled.
+    """
+    _worker_init()
+    try:
+        row_indices = _shared_order[start:end]
+        gb_unit = _shared_gb_arrays[row_indices]
+        x_unit = _shared_x_array[row_indices]
+        y_unit = _shared_y_array[row_indices]
+
+        # Reconstruct minimal DataFrame for _flatten_bins_for_v5
+        data = {}
+        for d, col in enumerate(gb_columns):
+            data[col] = gb_unit[:, d]
+        for i, col in enumerate(linear_columns):
+            data[col] = x_unit[:, i]
+        for i, col in enumerate(fit_columns):
+            data[col] = y_unit[:, i]
+        df_unit = pd.DataFrame(data)
+
+        # Flatten to numpy
+        bin_ids, X_all, Y_all, n_bins, bin_coords, bounds = \
+            _flatten_bins_for_v5(df_unit, gb_columns, fit_columns,
+                                 linear_columns, None, fit_intercept)
+
+        if n_bins == 0:
+            return (unit_id, pd.DataFrame())
+
+        # V5 arrays path
+        v5_out = make_sliding_window_fit_v5_arrays(
+            bin_ids=bin_ids, X_all=X_all, Y_all=Y_all,
+            n_bins=n_bins, bin_coords=bin_coords, bounds=bounds,
+            gb_columns=gb_columns, fit_columns=fit_columns,
+            linear_columns=linear_columns, window_spec=window_spec,
+            boundary=boundary, kernel=kernel, kernel_width=kernel_width,
+            fit_intercept=fit_intercept, min_stat=min_stat,
+        )
+
+        # Assemble DataFrame
+        result = _assemble_results_v5(v5_out, gb_columns, fit_columns,
+                                       linear_columns, suffix)
+
+        # Add split_columns
+        for col, val in zip(split_columns, unit_id):
+            result[col] = val
+
+        return (unit_id, result)
+
+    except Exception as e:
+        return (unit_id, str(e))
+
+
+def _worker_v5(
+        gb_vals,       # dict[str, ndarray] — gb columns for this unit
+        x_vals,        # ndarray[n_rows, n_pred]
+        y_vals,        # ndarray[n_rows, n_tgt]
+        gb_columns,
+        fit_columns,
+        linear_columns,
+        window_spec,
+        fit_intercept,
+        min_stat,
+        boundary,
+        kernel,
+        kernel_width,
+        suffix,
+        unit_id,       # tuple — split_columns values for this unit
+        split_columns,
+):
+    """Worker function: runs V5 arrays path on pre-extracted numpy arrays.
+
+    Reconstructs a minimal DataFrame for _flatten_bins_for_v5, then calls
+    V5 arrays path directly. Returns (unit_id, result_df) or (unit_id, error_str).
+    """
+    _worker_init()
+    try:
+        # Reconstruct minimal DataFrame from arrays
+        data = {}
+        for col in gb_columns:
+            data[col] = gb_vals[col]
+        for i, col in enumerate(linear_columns):
+            data[col] = x_vals[:, i]
+        for i, col in enumerate(fit_columns):
+            data[col] = y_vals[:, i]
+        df_unit = pd.DataFrame(data)
+
+        # Flatten to numpy
+        bin_ids, X_all, Y_all, n_bins, bin_coords, bounds = \
+            _flatten_bins_for_v5(df_unit, gb_columns, fit_columns,
+                                 linear_columns, None, fit_intercept)
+
+        if n_bins == 0:
+            return (unit_id, pd.DataFrame())
+
+        # V5 arrays path
+        v5_out = make_sliding_window_fit_v5_arrays(
+            bin_ids=bin_ids, X_all=X_all, Y_all=Y_all,
+            n_bins=n_bins, bin_coords=bin_coords, bounds=bounds,
+            gb_columns=gb_columns, fit_columns=fit_columns,
+            linear_columns=linear_columns, window_spec=window_spec,
+            boundary=boundary, kernel=kernel, kernel_width=kernel_width,
+            fit_intercept=fit_intercept, min_stat=min_stat,
+        )
+
+        # Assemble DataFrame
+        result = _assemble_results_v5(v5_out, gb_columns, fit_columns,
+                                       linear_columns, suffix)
+
+        # Add split_columns
+        for col, val in zip(split_columns, unit_id):
+            result[col] = val
+
+        return (unit_id, result)
+
+    except Exception as e:
+        return (unit_id, str(e))
+
+
+def make_sliding_window_fit_parallel(
+        df: pd.DataFrame,
+        gb_columns: List[str],
+        fit_columns: List[str],
+        linear_columns: List[str],
+        split_columns: List[str],
+        n_workers: int,
+        window_spec: Optional[Dict[str, int]] = None,
+        weights: Optional[str] = None,
+        suffix: str = '_sw',
+        selection=None,
+        fit_intercept: bool = True,
+        min_stat: int = 10,
+        cast_dtype: str = 'float64',
+        backend: str = 'auto',
+        boundary: Union[str, Dict[str, str]] = 'full',
+        kernel: Union[str, Callable] = 'uniform',
+        kernel_width: Optional[Union[float, Dict[str, float]]] = None,
+        on_error: str = 'nan',
+        verbose: int = 0,
+) -> pd.DataFrame:
+    """Parallel sliding window regression over independent data units.
+
+    Splits the input DataFrame by `split_columns` (e.g., ['sector', 'stack']),
+    dispatches each unit to a worker process, and concatenates results.
+    Each worker runs the V5 numpy arrays path independently.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input data containing gb_columns, fit_columns, linear_columns,
+        and split_columns.
+    gb_columns : list[str]
+        Columns defining the bin grid within each unit.
+    fit_columns : list[str]
+        Target columns for regression.
+    linear_columns : list[str]
+        Predictor columns.
+    split_columns : list[str]
+        Columns defining independent parallel units (e.g., ['sector', 'stack']).
+        Rows with the same split_columns values form one unit.
+    n_workers : int
+        Number of parallel worker processes. Should not exceed core count.
+    window_spec : dict[str, int], optional
+        Half-width of sliding window per gb dimension.
+    weights : str, optional
+        Not supported in parallel V5 path. Reserved for future use.
+    suffix : str
+        Suffix for output column names.
+    selection : pd.Series, optional
+        Boolean mask to filter rows before fitting.
+    fit_intercept : bool
+        Include intercept in regression.
+    min_stat : int
+        Minimum rows in window for valid fit.
+    cast_dtype : str
+        Output float dtype.
+    backend : str
+        Ignored — parallel always uses V5 Numba path.
+    boundary : str or dict
+        Boundary mode for window edge handling.
+    kernel : str
+        Weighting kernel.
+    kernel_width : float or dict, optional
+        Kernel width parameter.
+    on_error : str
+        Error handling: 'nan' (default) = return NaN for failed units,
+        'raise' = raise on first failure.
+    verbose : int
+        0 = silent, 1 = summary, 2 = per-unit progress.
+
+    Returns
+    -------
+    pd.DataFrame
+        Same schema as make_sliding_window_fit, with split_columns added.
+    """
+    t0 = time.time()
+
+    if window_spec is None:
+        window_spec = {}
+    full_window_spec = {dim: window_spec.get(dim, 0) for dim in gb_columns}
+
+    if weights is not None:
+        raise ValueError("weights not supported in parallel V5 path")
+
+    # Validate split_columns exist
+    for col in split_columns:
+        if col not in df.columns:
+            raise ValueError(f"split_column '{col}' not in DataFrame")
+    for col in gb_columns:
+        if col not in df.columns:
+            raise ValueError(f"gb_column '{col}' not in DataFrame")
+
+    # Apply selection
+    if selection is not None:
+        df_work = df[selection].copy()
+    else:
+        df_work = df
+
+    # ---- Step 0: Extract columns as numpy arrays ONCE from DataFrame ----
+    t0_extract = time.time()
+
+    split_arrays = [df_work[c].to_numpy(dtype=np.int64) for c in split_columns]
+    n_split = len(split_columns)
+
+    # Compute integer split IDs (single key for multi-column split)
+    if n_split == 1:
+        split_ids = split_arrays[0]
+    else:
+        mins = [int(a.min()) for a in split_arrays]
+        maxs = [int(a.max()) for a in split_arrays]
+        sizes = [mx - mn + 1 for mn, mx in zip(mins, maxs)]
+        shifted = [split_arrays[d] - mins[d] for d in range(n_split)]
+        strides = np.ones(n_split, dtype=np.int64)
+        for d in range(n_split - 2, -1, -1):
+            strides[d] = strides[d + 1] * sizes[d + 1]
+        split_ids = np.zeros(len(df_work), dtype=np.int64)
+        for d in range(n_split):
+            split_ids += shifted[d] * strides[d]
+
+    n_rows_work = len(df_work)
+    n_gb = len(gb_columns)
+
+    gb_arrays = np.column_stack(
+        [df_work[c].to_numpy(dtype=np.int64) for c in gb_columns]
+    )
+    x_array = np.column_stack(
+        [df_work[c].to_numpy(dtype=np.float64) for c in linear_columns]
+    ) if linear_columns else np.empty((n_rows_work, 0), dtype=np.float64)
+    y_array = np.column_stack(
+        [df_work[c].to_numpy(dtype=np.float64) for c in fit_columns]
+    )
+
+    t1_extract = time.time()
+
+    # ---- Step 1: Counting sort — O(N), Numba JIT ----
+    t0_sort = time.time()
+
+    # Shift to 0-based keys for counting sort
+    sid_min = int(split_ids.min())
+    sid_max = int(split_ids.max())
+    n_groups = sid_max - sid_min + 1
+    keys = (split_ids - sid_min).astype(np.int64)
+
+    order, offsets = _counting_sort_indices(keys, n_groups)
+
+    # Identify non-empty groups and decode unit_ids
+    tasks = []
+    for g in range(n_groups):
+        if offsets[g + 1] > offsets[g]:
+            start, end = int(offsets[g]), int(offsets[g + 1])
+            # Decode unit_id from original split_arrays
+            first_row = int(order[start])
+            unit_id = tuple(int(split_arrays[d][first_row])
+                            for d in range(n_split))
+            tasks.append((unit_id, start, end))
+    n_units = len(tasks)
+
+    t1_sort = time.time()
+
+    if verbose >= 1:
+        _log.info(
+            f"[parallel] {n_units} units, {n_rows_work} rows: "
+            f"extract={t1_extract - t0_extract:.3f}s "
+            f"sort={t1_sort - t0_sort:.3f}s, "
+            f"dispatching to {n_workers} workers")
+
+    # ---- Step 2: Dispatch to workers (NO reorder — workers index directly) ----
+    t0_workers = time.time()
+    results = []
+    errors = []
+
+    if n_workers <= 1:
+        # Serial fallback — index directly into original arrays
+        for idx, (unit_id, start, end) in enumerate(tasks):
+            row_idx = order[start:end]
+            gb_unit = {c: gb_arrays[row_idx, d] for d, c in enumerate(gb_columns)}
+            x_unit = x_array[row_idx]
+            y_unit = y_array[row_idx]
+            res = _worker_v5(
+                gb_unit, x_unit, y_unit,
+                gb_columns, fit_columns, linear_columns,
+                full_window_spec, fit_intercept, min_stat,
+                boundary, kernel, kernel_width,
+                suffix, unit_id, split_columns,
+            )
+            uid, payload = res
+            if isinstance(payload, str):
+                errors.append((uid, payload))
+                if on_error == 'raise':
+                    raise RuntimeError(f"Unit {uid} failed: {payload}")
+                if verbose >= 2:
+                    _log.warning(f"[parallel] Unit {uid} failed: {payload}")
+            else:
+                results.append(payload)
+            if verbose >= 2:
+                _log.info(f"[parallel] {idx + 1}/{n_units} done")
+    else:
+        # Parallel: set module globals, fork() gives COW access to children.
+        # Only (start, end) integers + small config are pickled per task.
+        global _shared_gb_arrays, _shared_x_array, _shared_y_array, _shared_order
+        _shared_gb_arrays = gb_arrays
+        _shared_x_array = x_array
+        _shared_y_array = y_array
+        _shared_order = order
+
+        try:
+            futures = {}
+            with ProcessPoolExecutor(max_workers=n_workers) as executor:
+                for unit_id, start, end in tasks:
+                    fut = executor.submit(
+                        _worker_v5_shared,
+                        start, end,
+                        gb_columns, fit_columns, linear_columns,
+                        full_window_spec, fit_intercept, min_stat,
+                        boundary, kernel, kernel_width,
+                        suffix, unit_id, split_columns,
+                    )
+                    futures[fut] = unit_id
+
+                done_count = 0
+                for fut in as_completed(futures):
+                    done_count += 1
+                    uid = futures[fut]
+                    try:
+                        _, payload = fut.result()
+                        if isinstance(payload, str):
+                            errors.append((uid, payload))
+                            if on_error == 'raise':
+                                raise RuntimeError(f"Unit {uid} failed: {payload}")
+                            if verbose >= 2:
+                                _log.warning(f"[parallel] Unit {uid} failed: {payload}")
+                        else:
+                            results.append(payload)
+                    except Exception as e:
+                        errors.append((uid, str(e)))
+                        if on_error == 'raise':
+                            raise
+                        if verbose >= 2:
+                            _log.warning(f"[parallel] Unit {uid} exception: {e}")
+
+                    if verbose >= 2 and done_count % max(1, n_units // 10) == 0:
+                        _log.info(f"[parallel] {done_count}/{n_units} units complete")
+        finally:
+            _shared_gb_arrays = None
+            _shared_x_array = None
+            _shared_y_array = None
+            _shared_order = None
+
+    t1_workers = time.time()
+
+    # ---- Step 4: Concatenate results ----
+    t0_concat = time.time()
+    if results:
+        out = pd.concat(results, ignore_index=True)
+    else:
+        out = pd.DataFrame()
+
+    # Cast dtype
+    if cast_dtype and len(out) > 0:
+        float_cols = out.select_dtypes(include=[np.floating]).columns
+        if len(float_cols) > 0:
+            out[float_cols] = out[float_cols].astype(cast_dtype)
+
+    t1_concat = time.time()
+    if verbose >= 1:
+        _log.info(
+            f"[parallel] Done: {len(out)} bins, {len(errors)} errors, "
+            f"extract={t1_extract - t0_extract:.3f}s "
+            f"sort={t1_sort - t0_sort:.3f}s "
+            f"workers={t1_workers - t0_workers:.3f}s "
+            f"concat={t1_concat - t0_concat:.3f}s "
+            f"total={t1_concat - t0:.3f}s")
+
+    if errors and verbose >= 1:
+        for uid, err in errors:
+            _log.warning(f"[parallel] Failed unit {uid}: {err}")
+
+    return out

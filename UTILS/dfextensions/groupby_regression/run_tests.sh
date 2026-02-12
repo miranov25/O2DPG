@@ -31,6 +31,7 @@ cd "$SCRIPT_DIR"
 
 # Numba threading fallback — use 'safe' if no OpenMP/TBB available
 export NUMBA_THREADING_LAYER="${NUMBA_THREADING_LAYER:-safe}"
+find . -name "*.nbi" -name "*.nbc" -delete.  #clear numba cache to avoid stale files if threading layer changed
 
 # Timestamp
 TS=$(date +"%Y%m%d_%H%M%S")
