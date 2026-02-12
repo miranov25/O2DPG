@@ -440,18 +440,17 @@ def _aggregate_window_zerocopy(
         fit_columns: List[str],
         weights: Optional[str],
 ) -> List[_AggResult]:
-    """Aggregate per center bin using zero-copy neighbor indexing."""
-    results: List[_AggResult] = []
+    """Aggregate per center bin using zero-copy neighbor indexing.
 
-    expected_neighbors = 1
-    for dim in gb_columns:
-        w = int(neighbor_offsets.max(initial=0))  # not exact per-dim, recompute precisely below
-    # exact expected product
-    expected_neighbors = 1
-    for dim in gb_columns:
-        w = window_spec_w = bounds.get(dim, (0, 0))  # placeholder not used here
-    # Better: compute from offsets directly
+    Pre-extracts numpy arrays from DataFrame once, then uses direct
+    array indexing per bin — no Pandas operations in the hot loop.
+    """
+    results: List[_AggResult] = []
     expected_neighbors = int(neighbor_offsets.shape[0]) if neighbor_offsets.size else 1
+
+    # Pre-extract numpy arrays ONCE — eliminates all Pandas overhead in the loop
+    target_arrays = {t: df[t].to_numpy(dtype=np.float64) for t in fit_columns}
+    w_array = df[weights].to_numpy(dtype=np.float64) if weights is not None else None
 
     for center in center_bins:
         neighbors = _get_neighbor_bins(center, neighbor_offsets, bounds)
@@ -464,7 +463,6 @@ def _aggregate_window_zerocopy(
                 idx_list.extend(rows)
 
         if idx_list:
-            # dedup defensively
             idx_unique = np.unique(np.fromiter(idx_list, dtype=np.int64))
         else:
             idx_unique = np.array([], dtype=np.int64)
@@ -474,33 +472,37 @@ def _aggregate_window_zerocopy(
 
         stats: Dict[str, Dict[str, float]] = {}
         if n_rows > 0:
-            window_df = df.iloc[idx_unique]
-            w = None
-            if weights is not None:
-                w_series = window_df[weights]
-                # drop NaN/negative weights for stats
-                valid_w = (~w_series.isna()) & (w_series.to_numpy() >= 0)
-                w = w_series.to_numpy()[valid_w]
+            # Weight validity mask (computed once per window, shared across targets)
+            if w_array is not None:
+                w_win = w_array[idx_unique]
+                w_valid = np.isfinite(w_win) & (w_win >= 0)
+            else:
+                w_win = None
+                w_valid = None
+
             for t in fit_columns:
-                col = window_df[t]
+                y = target_arrays[t][idx_unique]
+                y_finite = np.isfinite(y)
+
                 if weights is None:
-                    x = col.dropna().to_numpy()
+                    x = y[y_finite]
                     mean, std = _weighted_mean_std(x, None)
                 else:
-                    # apply joint validity: target not NaN and weight valid
-                    valid = (~col.isna()).to_numpy()
-                    if w is not None:
-                        valid = valid & ((~w_series.isna()).to_numpy()) & (w_series.to_numpy() >= 0)
-                    x = col.to_numpy()[valid]
-                    ww = w_series.to_numpy()[valid]
+                    valid = y_finite & w_valid
+                    x = y[valid]
+                    ww = w_win[valid]
                     mean, std = _weighted_mean_std(x, ww)
-                median = float(np.median(col.dropna().to_numpy())) if col.notna().any() else np.nan
-                entries = int(col.notna().sum())
+
+                n_finite = int(np.sum(y_finite))
+                if n_finite > 0:
+                    median = float(np.median(y[y_finite]))
+                else:
+                    median = np.nan
                 stats[t] = {
                     "mean": mean,
                     "std": std,
                     "median": median,
-                    "entries": entries,
+                    "entries": n_finite,
                 }
         else:
             for t in fit_columns:
@@ -1245,6 +1247,7 @@ def _fit_window_regression_incremental(
         window_spec: Optional[Dict[str, int]] = None,
         offset_weights: Optional[np.ndarray] = None,
         use_weighted_kernel: bool = False,
+        prebuilt_neighbor_table: Optional[Tuple] = None,
 ) -> Dict[Tuple[int, ...], Dict[str, Dict[str, Any]]]:
     """V3/V3b: Solve normal equations from summed per-bin sufficient statistics.
 
@@ -1257,15 +1260,35 @@ def _fit_window_regression_incremental(
     - boundary_resolved: per-dim boundary mode for _get_neighbor_bins_v2
     - offset_weights: precomputed kernel weight per offset index
     - use_weighted_kernel: if True, _err columns → NaN (P1-3)
+    - prebuilt_neighbor_table: (nbr_indices, nbr_weights, nbr_counts) to skip
+      redundant _get_neighbor_bins_v2 calls
     """
     n_pred = len(linear_columns)
     n_params = n_pred + (1 if fit_intercept else 0)
     use_v2_neighbors = (boundary_resolved is not None and window_spec is not None)
 
+    # If we have a prebuilt table, use index-based lookup
+    if prebuilt_neighbor_table is not None:
+        nbr_indices_tbl, nbr_weights_tbl, nbr_counts_tbl = prebuilt_neighbor_table
+        use_prebuilt = True
+    else:
+        use_prebuilt = False
+
     out: Dict[Tuple[int, ...], Dict[str, Dict[str, Any]]] = {}
 
-    for center in center_bins:
-        if use_v2_neighbors:
+    for ci, center in enumerate(center_bins):
+        if use_prebuilt:
+            nc = int(nbr_counts_tbl[ci])
+            # Build neighbors list from prebuilt table
+            neighbors = []
+            nbr_weights = np.empty(nc, dtype=np.float64) if use_weighted_kernel else None
+            for k in range(nc):
+                j = int(nbr_indices_tbl[ci, k])
+                if j >= 0:
+                    neighbors.append(center_bins[j])
+                    if nbr_weights is not None:
+                        nbr_weights[k] = nbr_weights_tbl[ci, k]
+        elif use_v2_neighbors:
             neighbors, valid_idx = _get_neighbor_bins_v2(
                 center, neighbor_offsets, bounds, boundary_resolved, window_spec)
             nbr_weights = offset_weights[valid_idx] if offset_weights is not None else None
@@ -1386,189 +1409,275 @@ def _check_numba_available() -> bool:
         return False
 
 
-def _pack_suff_stats_for_numba(
-        bin_suff_stats: Dict[str, Dict[Tuple[int, ...], _BinSuffStats]],
-        center_bins: List[Tuple[int, ...]],
+def _flatten_bins_for_v4(
+        df,
+        gb_columns: List[str],
         fit_columns: List[str],
-        n_params: int,
-) -> Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
-    """Pack per-bin sufficient stats into contiguous arrays for Numba.
+        linear_columns: List[str],
+        selection=None,
+        fit_intercept: bool = True,
+):
+    """Convert DataFrame + bin structure to flat integer arrays for V4 Numba kernels.
 
-    Returns dict[target] → (XtX_all, XtY_all, n_all, sum_y_all, sum_y2_all)
-    where each array is indexed by bin position in center_bins.
+    Returns
+    -------
+    bin_ids : ndarray[n_rows] — flat bin index per row (0..n_bins-1), -1 if filtered
+    X_all : ndarray[n_rows, n_linear] — predictor values
+    Y_all : ndarray[n_rows, n_targets] — target values
+    n_bins : int — number of unique bins
+    center_bins : list[tuple] — bin keys ordered by flat index
+    bin_coords : ndarray[n_bins, n_dims] — integer bin coordinates
+    bounds : dict[str, (int, int)] — per-dim (min, max)
     """
-    n_bins = len(center_bins)
-    bin_idx = {b: i for i, b in enumerate(center_bins)}
+    if selection is not None:
+        sel_mask = selection.to_numpy().astype(bool)
+    else:
+        sel_mask = np.ones(len(df), dtype=bool)
 
-    result = {}
-    for t in fit_columns:
-        XtX_all = np.zeros((n_bins, n_params, n_params), dtype=np.float64)
-        XtY_all = np.zeros((n_bins, n_params), dtype=np.float64)
-        n_all = np.zeros(n_bins, dtype=np.int64)
-        sum_y_all = np.zeros(n_bins, dtype=np.float64)
-        sum_y2_all = np.zeros(n_bins, dtype=np.float64)
+    gb_arrays = [df[c].to_numpy(dtype=np.int64) for c in gb_columns]
+    n_dims = len(gb_columns)
+    n_rows = len(df)
 
-        target_stats = bin_suff_stats[t]
-        for bk, bs in target_stats.items():
-            if bk in bin_idx and bs.n > 0:
-                i = bin_idx[bk]
-                XtX_all[i] = bs.XtX
-                XtY_all[i] = bs.XtY
-                n_all[i] = bs.n
-                sum_y_all[i] = bs.sum_y
-                sum_y2_all[i] = bs.sum_y2
+    selected_rows = np.flatnonzero(sel_mask)
+    if len(selected_rows) == 0:
+        return (np.full(n_rows, -1, dtype=np.int64),
+                np.empty((n_rows, len(linear_columns)), dtype=np.float64),
+                np.empty((n_rows, len(fit_columns)), dtype=np.float64),
+                0, [], np.empty((0, n_dims), dtype=np.int64), {})
 
-        result[t] = (XtX_all, XtY_all, n_all, sum_y_all, sum_y2_all)
+    coords_selected = np.column_stack([a[selected_rows] for a in gb_arrays])
+    unique_coords, inverse = np.unique(coords_selected, axis=0, return_inverse=True)
+    n_bins = unique_coords.shape[0]
 
-    return result
+    bin_ids = np.full(n_rows, -1, dtype=np.int64)
+    bin_ids[selected_rows] = inverse
+
+    center_bins = [tuple(int(x) for x in row) for row in unique_coords]
+
+    bounds = {}
+    for j, dim in enumerate(gb_columns):
+        bounds[dim] = (int(unique_coords[:, j].min()), int(unique_coords[:, j].max()))
+
+    X_all = np.column_stack([df[c].to_numpy(dtype=np.float64) for c in linear_columns]) if linear_columns else np.empty((n_rows, 0), dtype=np.float64)
+    Y_all = np.column_stack([df[c].to_numpy(dtype=np.float64) for c in fit_columns])
+
+    return bin_ids, X_all, Y_all, n_bins, center_bins, unique_coords, bounds
 
 
-def _build_neighbor_table(
-        center_bins: List[Tuple[int, ...]],
+def _build_neighbor_table_vectorized(
+        bin_coords: np.ndarray,
         neighbor_offsets: np.ndarray,
         bounds: Dict[str, Tuple[int, int]],
+        gb_columns: List[str],
         boundary_resolved: Dict[str, str],
         window_spec: Dict[str, int],
         offset_weights: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Build packed neighbor index + weight tables for Numba kernel.
+    """Build neighbor table using vectorized numpy — no Python loop over bins.
 
-    Returns:
-        nbr_indices: (n_bins, max_neighbors) — index into center_bins, -1 = invalid
-        nbr_weights: (n_bins, max_neighbors) — kernel weight, 0.0 for invalid
-        nbr_counts:  (n_bins,) — number of valid neighbors per center
+    Works per-dimension to avoid large (n_bins, n_offsets, n_dims) allocation.
     """
-    bin_idx = {b: i for i, b in enumerate(center_bins)}
-    n_bins = len(center_bins)
-    max_nbr = neighbor_offsets.shape[0]
+    n_bins = bin_coords.shape[0]
+    n_dims = bin_coords.shape[1]
+    n_offsets = neighbor_offsets.shape[0]
 
+    bounds_arr = np.array([(bounds[d][0], bounds[d][1]) for d in gb_columns], dtype=np.int64)
+    mins = bounds_arr[:, 0]
+    maxs = bounds_arr[:, 1]
+    sizes = maxs - mins + 1
+
+    grid = np.full(tuple(int(s) for s in sizes), -1, dtype=np.int64)
+    for i in range(n_bins):
+        idx = tuple(int(bin_coords[i, d] - mins[d]) for d in range(n_dims))
+        grid[idx] = i
+
+    nbr_valid = np.ones((n_bins, n_offsets), dtype=bool)
+    clipped_per_dim = []
+
+    for d, dim in enumerate(gb_columns):
+        bmode = boundary_resolved.get(dim, 'full')
+        lo, hi = int(mins[d]), int(maxs[d])
+        dim_size = hi - lo + 1
+        w = window_spec.get(dim, 0)
+
+        nbr_d = bin_coords[:, d:d+1] + neighbor_offsets[np.newaxis, :, d]
+
+        if bmode == 'periodic':
+            nbr_d = ((nbr_d - lo) % dim_size) + lo
+        elif bmode == 'symmetric':
+            center_d = bin_coords[:, d:d+1]
+            offset_d = np.abs(neighbor_offsets[:, d])
+            max_left = center_d - lo
+            max_right = hi - center_d
+            eff_w = np.minimum(w, np.minimum(max_left, max_right))
+            nbr_valid &= (offset_d[np.newaxis, :] <= eff_w)
+
+        out_of_range = (nbr_d < lo) | (nbr_d > hi)
+        nbr_valid &= ~out_of_range
+        clipped_per_dim.append(np.clip(nbr_d - lo, 0, dim_size - 1).astype(np.intp))
+
+    nbr_flat = grid[tuple(clipped_per_dim)]
+    nbr_flat[~nbr_valid] = -1
+
+    is_valid = (nbr_flat >= 0)
+    nbr_counts = is_valid.sum(axis=1).astype(np.int64)
+    max_nbr = int(nbr_counts.max()) if n_bins > 0 else 0
+
+    if max_nbr == n_offsets and int(nbr_counts.min()) == n_offsets:
+        return nbr_flat.copy(), np.broadcast_to(offset_weights, (n_bins, n_offsets)).copy(), nbr_counts
+
+    all_valid_mask = (nbr_counts == n_offsets)
     nbr_indices = np.full((n_bins, max_nbr), -1, dtype=np.int64)
-    nbr_weights = np.zeros((n_bins, max_nbr), dtype=np.float64)
-    nbr_counts = np.zeros(n_bins, dtype=np.int64)
+    nbr_weights_out = np.zeros((n_bins, max_nbr), dtype=np.float64)
 
-    for i, center in enumerate(center_bins):
-        neighbors, valid_idx = _get_neighbor_bins_v2(
-            center, neighbor_offsets, bounds, boundary_resolved, window_spec)
+    n_interior = int(all_valid_mask.sum())
+    if n_interior > 0:
+        interior_idx = np.flatnonzero(all_valid_mask)
+        nbr_indices[interior_idx, :] = nbr_flat[interior_idx, :max_nbr]
+        nbr_weights_out[interior_idx, :] = offset_weights[np.newaxis, :max_nbr]
 
-        k = 0
-        for j, nb in enumerate(neighbors):
-            if nb in bin_idx:
-                nbr_indices[i, k] = bin_idx[nb]
-                nbr_weights[i, k] = offset_weights[valid_idx[j]]
-                k += 1
-        nbr_counts[i] = k
+    edge_idx = np.flatnonzero(~all_valid_mask)
+    for ei in range(len(edge_idx)):
+        i = edge_idx[ei]
+        nc = int(nbr_counts[i])
+        if nc > 0:
+            valid_idx = np.flatnonzero(is_valid[i])[:nc]
+            nbr_indices[i, :nc] = nbr_flat[i, valid_idx]
+            nbr_weights_out[i, :nc] = offset_weights[valid_idx]
 
-    return nbr_indices, nbr_weights, nbr_counts
+    return nbr_indices, nbr_weights_out, nbr_counts
 
 
-def _get_numba_incremental_kernel():
-    """JIT-compile the incremental solve kernel. Returns the @njit function."""
+_NUMBA_V4_KERNEL_CACHE = None  # Module-level cache: avoids 470ms/call overhead of re-defining closures
+
+def _get_numba_v4_kernels():
+    """JIT-compile V4 Loop 1 (accumulate) and Loop 2 (solve) kernels.
+
+    Cached at module level after first call to avoid the ~470ms Python overhead
+    of defining nested @nb.njit closures on every invocation.
+    """
+    global _NUMBA_V4_KERNEL_CACHE
+    if _NUMBA_V4_KERNEL_CACHE is not None:
+        return _NUMBA_V4_KERNEL_CACHE
+
     import numba as nb
 
     @nb.njit(cache=True)
     def _solve_cholesky_inplace(A, b, p):
-        """Solve A @ x = b via Cholesky decomposition (A must be SPD).
-
-        Modifies A in place (lower triangle becomes L).
-        Returns x in b, and success flag.
-        """
-        # Cholesky: A = L L^T
+        """Cholesky solve A @ x = b in place. Returns success flag."""
         for i in range(p):
             for j in range(i):
                 s = 0.0
-                for k in range(j):
-                    s += A[i, k] * A[j, k]
+                for kk in range(j):
+                    s += A[i, kk] * A[j, kk]
                 A[i, j] = (A[i, j] - s) / A[j, j]
             s = 0.0
-            for k in range(i):
-                s += A[i, k] * A[i, k]
+            for kk in range(i):
+                s += A[i, kk] * A[i, kk]
             val = A[i, i] - s
             if val <= 0.0:
-                return False  # Not positive definite
+                return False
             A[i, i] = math.sqrt(val)
-
-        # Forward: L @ z = b
         for i in range(p):
             s = 0.0
-            for k in range(i):
-                s += A[i, k] * b[k]
+            for kk in range(i):
+                s += A[i, kk] * b[kk]
             b[i] = (b[i] - s) / A[i, i]
-
-        # Backward: L^T @ x = z
         for i in range(p - 1, -1, -1):
             s = 0.0
-            for k in range(i + 1, p):
-                s += A[k, i] * b[k]
+            for kk in range(i + 1, p):
+                s += A[kk, i] * b[kk]
             b[i] = (b[i] - s) / A[i, i]
-
         return True
 
     @nb.njit(cache=True)
     def _cholesky_diag_inv(L, p):
-        """Compute diag(A^-1) from Cholesky factor L where A = L L^T.
-
-        Uses forward/backward substitution with unit vectors.
-        Returns diagonal of A^-1.
-        """
+        """Compute diag(A^-1) from Cholesky factor L."""
         diag = np.empty(p, dtype=np.float64)
         e = np.zeros(p, dtype=np.float64)
-
         for col in range(p):
-            # Set up unit vector
             for i in range(p):
                 e[i] = 0.0
             e[col] = 1.0
-
-            # Forward: L z = e
             for i in range(p):
                 s = 0.0
-                for k in range(i):
-                    s += L[i, k] * e[k]
+                for kk in range(i):
+                    s += L[i, kk] * e[kk]
                 e[i] = (e[i] - s) / L[i, i]
-
-            # Backward: L^T x = z
             for i in range(p - 1, -1, -1):
                 s = 0.0
-                for k in range(i + 1, p):
-                    s += L[k, i] * e[k]
+                for kk in range(i + 1, p):
+                    s += L[kk, i] * e[kk]
                 e[i] = (e[i] - s) / L[i, i]
-
             diag[col] = e[col]
-
         return diag
 
-    @nb.njit(cache=True, parallel=False)
-    def incremental_solve_kernel(
+    @nb.njit(cache=True)
+    def accumulate_bin_stats(
+            bin_ids, X_all, Y_all, n_bins, n_params, n_targets, fit_intercept,
+            XtX_all, XtY_all, n_all, sum_y_all, sum_y2_all,
+    ):
+        """Loop 1: Stream raw data, accumulate per-bin XtX/XtY."""
+        n_rows = bin_ids.shape[0]
+        n_linear = X_all.shape[1]
+
+        for row in range(n_rows):
+            b = bin_ids[row]
+            if b < 0:
+                continue
+            x_ok = True
+            for j in range(n_linear):
+                if not np.isfinite(X_all[row, j]):
+                    x_ok = False
+                    break
+            if not x_ok:
+                continue
+            x = np.empty(n_params, dtype=np.float64)
+            if fit_intercept:
+                x[0] = 1.0
+                for j in range(n_linear):
+                    x[j + 1] = X_all[row, j]
+            else:
+                for j in range(n_linear):
+                    x[j] = X_all[row, j]
+            for t in range(n_targets):
+                y = Y_all[row, t]
+                if not np.isfinite(y):
+                    continue
+                n_all[t, b] += 1
+                sum_y_all[t, b] += y
+                sum_y2_all[t, b] += y * y
+                for p in range(n_params):
+                    XtY_all[t, b, p] += x[p] * y
+                    for q in range(p + 1):
+                        XtX_all[t, b, p, q] += x[p] * x[q]
+        # Symmetrize XtX
+        for t in range(n_targets):
+            for b in range(n_bins):
+                for p in range(n_params):
+                    for q in range(p + 1, n_params):
+                        XtX_all[t, b, p, q] = XtX_all[t, b, q, p]
+
+    @nb.njit(cache=True)
+    def solve_all_windows(
             XtX_all, XtY_all, n_all, sum_y_all, sum_y2_all,
             nbr_indices, nbr_weights, nbr_counts,
             n_params, min_stat, use_weighted_kernel,
-            # outputs (pre-allocated):
             beta_out, se_out, rmse_out, r2_out, n_fitted_out, status_out,
+            mean_out, std_out, entries_out,
     ):
-        """Numba kernel: solve weighted normal equations for all center bins.
-
-        For each center bin i:
-          XtX_w = Σ_j w_j * XtX_all[nbr[j]]
-          XtY_w = Σ_j w_j * XtY_all[nbr[j]]
-          beta = solve(XtX_w, XtY_w) via Cholesky
-
-        Parameters
-        ----------
-        status_out: 0 = OK, 1 = insufficient_stats, 2 = singular
-        """
+        """Loop 2: For each center bin, sum neighbors + solve + compute stats."""
         n_bins = XtX_all.shape[0]
         p = n_params
 
         for i in range(n_bins):
             nc = nbr_counts[i]
-
-            # Sum weighted sufficient stats
             XtX_w = np.zeros((p, p), dtype=np.float64)
             XtY_w = np.zeros(p, dtype=np.float64)
             n_total = 0
             sum_y = 0.0
             sum_y2 = 0.0
-            w_n = 0.0  # weighted n for R² calculation
+            w_n = 0.0
 
             for k in range(nc):
                 j = nbr_indices[i, k]
@@ -1586,6 +1695,26 @@ def _get_numba_incremental_kernel():
                         XtX_w[r, c] += w * XtX_all[j, r, c]
 
             n_fitted_out[i] = n_total
+            entries_out[i] = n_total
+
+            if n_total > 0:
+                if use_weighted_kernel and w_n > 0.0:
+                    mean_val = sum_y / w_n
+                    var_val = sum_y2 / w_n - mean_val * mean_val
+                    mean_out[i] = mean_val
+                    std_out[i] = math.sqrt(max(0.0, var_val))
+                else:
+                    mean_val = sum_y / n_total
+                    mean_out[i] = mean_val
+                    # ddof=1 (Bessel correction) to match np.std(data, ddof=1)
+                    if n_total > 1:
+                        var_val = (sum_y2 - n_total * mean_val * mean_val) / (n_total - 1)
+                        std_out[i] = math.sqrt(max(0.0, var_val))
+                    else:
+                        std_out[i] = np.nan
+            else:
+                mean_out[i] = np.nan
+                std_out[i] = np.nan
 
             if n_total < min_stat:
                 status_out[i] = 1
@@ -1596,7 +1725,6 @@ def _get_numba_incremental_kernel():
                 r2_out[i] = np.nan
                 continue
 
-            # Solve via Cholesky (in-place on copy)
             A = XtX_w.copy()
             b = XtY_w.copy()
             ok = _solve_cholesky_inplace(A, b, p)
@@ -1610,21 +1738,17 @@ def _get_numba_incremental_kernel():
                 r2_out[i] = np.nan
                 continue
 
-            # beta is now in b
             for r in range(p):
                 beta_out[i, r] = b[r]
 
-            # RSS = sum_y2 - beta . XtY
             rss = sum_y2
             for r in range(p):
                 rss -= b[r] * XtY_w[r]
             if rss < 0.0:
                 rss = 0.0
 
-            # RMSE
             rmse_out[i] = math.sqrt(rss / n_total) if n_total > 0 else np.nan
 
-            # R²
             if w_n > 0.0:
                 y_mean = sum_y / w_n
             else:
@@ -1635,7 +1759,6 @@ def _get_numba_incremental_kernel():
             else:
                 r2_out[i] = np.nan
 
-            # Standard errors (P1-3: NaN when weighted kernel)
             if use_weighted_kernel:
                 for r in range(p):
                     se_out[i, r] = np.nan
@@ -1643,7 +1766,6 @@ def _get_numba_incremental_kernel():
                 dof = n_total - p
                 if dof > 0:
                     s2 = rss / dof
-                    # Get diag(XtX^-1) from Cholesky factor A (=L)
                     diag_inv = _cholesky_diag_inv(A, p)
                     for r in range(p):
                         if diag_inv[r] > 0.0:
@@ -1656,104 +1778,503 @@ def _get_numba_incremental_kernel():
 
             status_out[i] = 0
 
-    return incremental_solve_kernel
+    _NUMBA_V4_KERNEL_CACHE = (accumulate_bin_stats, solve_all_windows)
+    return _NUMBA_V4_KERNEL_CACHE
 
 
-def _fit_window_regression_incremental_numba(
-        bin_suff_stats: Dict[str, Dict[Tuple[int, ...], _BinSuffStats]],
-        center_bins: List[Tuple[int, ...]],
-        neighbor_offsets: np.ndarray,
-        bounds: Dict[str, Tuple[int, int]],
-        boundary_resolved: Dict[str, str],
-        window_spec: Dict[str, int],
-        offset_weights: np.ndarray,
+def _fit_incremental_v4_numba(
+        df,
+        gb_columns: List[str],
         fit_columns: List[str],
         linear_columns: List[str],
-        fit_intercept: bool,
-        min_stat: int,
-        use_weighted_kernel: bool,
-        prebuilt_neighbor_table: Optional[Tuple] = None,
-) -> Dict[Tuple[int, ...], Dict[str, Dict[str, Any]]]:
-    """V3-Numba: Solve normal equations via JIT-compiled Cholesky kernel.
+        window_spec: Dict[str, int],
+        neighbor_offsets: np.ndarray,
+        offset_weights: np.ndarray,
+        boundary_resolved: Dict[str, str],
+        fit_intercept: bool = True,
+        min_stat: int = 5,
+        selection=None,
+        kernel: str = 'uniform',
+        verbose: bool = False,
+) -> Tuple[Dict, List[_AggResult]]:
+    """V4 Numba sliding window: flatten → accumulate → solve, all in Numba.
 
-    Packs all sufficient stats into contiguous arrays, builds a neighbor
-    index table, and dispatches to a single Numba kernel for all bins.
+    Replaces V3-numba. Returns (fit_results, agg_results) compatible with
+    _assemble_results.
     """
-    n_pred = len(linear_columns)
-    n_params = n_pred + (1 if fit_intercept else 0)
-    n_bins = len(center_bins)
+    t0 = time.time()
 
-    # Pack sufficient stats
-    packed = _pack_suff_stats_for_numba(bin_suff_stats, center_bins, fit_columns, n_params)
+    n_linear = len(linear_columns)
+    n_targets = len(fit_columns)
+    n_params = n_linear + (1 if fit_intercept else 0)
+    _is_weighted_kernel = (kernel != 'uniform') if isinstance(kernel, str) else True
 
-    # Reuse prebuilt neighbor table or build new one
-    if prebuilt_neighbor_table is not None:
-        nbr_indices, nbr_weights, nbr_counts = prebuilt_neighbor_table
-    else:
-        nbr_indices, nbr_weights, nbr_counts = _build_neighbor_table(
-            center_bins, neighbor_offsets, bounds, boundary_resolved, window_spec, offset_weights)
+    # Step 1: Flatten DataFrame to arrays
+    bin_ids, X_all, Y_all, n_bins, center_bins, bin_coords, bounds = \
+        _flatten_bins_for_v4(df, gb_columns, fit_columns, linear_columns, selection, fit_intercept)
 
-    # Get JIT kernel
-    kernel_fn = _get_numba_incremental_kernel()
+    if n_bins == 0:
+        return {}, []
 
-    out: Dict[Tuple[int, ...], Dict[str, Dict[str, Any]]] = {}
+    if verbose:
+        print(f"[V4] Flatten: {n_bins} bins, {X_all.shape[0]} rows, {time.time()-t0:.3f}s")
 
-    for t in fit_columns:
-        XtX_all, XtY_all, n_all, sum_y_all, sum_y2_all = packed[t]
+    # Step 2: Build vectorized neighbor table
+    nbr_indices, nbr_weights, nbr_counts = _build_neighbor_table_vectorized(
+        bin_coords, neighbor_offsets, bounds, gb_columns,
+        boundary_resolved, window_spec, offset_weights)
 
-        # Allocate outputs
-        beta_out = np.full((n_bins, n_params), np.nan, dtype=np.float64)
-        se_out = np.full((n_bins, n_params), np.nan, dtype=np.float64)
-        rmse_out = np.full(n_bins, np.nan, dtype=np.float64)
-        r2_out = np.full(n_bins, np.nan, dtype=np.float64)
-        n_fitted_out = np.zeros(n_bins, dtype=np.int64)
-        status_out = np.zeros(n_bins, dtype=np.int64)
+    if verbose:
+        print(f"[V4] Neighbor table: {time.time()-t0:.3f}s")
 
-        # Dispatch
-        kernel_fn(
-            XtX_all, XtY_all, n_all, sum_y_all, sum_y2_all,
+    # Step 3: JIT kernels
+    accumulate_bin_stats, solve_all_windows = _get_numba_v4_kernels()
+
+    # Step 4: Allocate + Loop 1 (accumulate)
+    XtX_all = np.zeros((n_targets, n_bins, n_params, n_params), dtype=np.float64)
+    XtY_all = np.zeros((n_targets, n_bins, n_params), dtype=np.float64)
+    n_all = np.zeros((n_targets, n_bins), dtype=np.int64)
+    sum_y_all = np.zeros((n_targets, n_bins), dtype=np.float64)
+    sum_y2_all = np.zeros((n_targets, n_bins), dtype=np.float64)
+
+    t_l1 = time.time()
+    accumulate_bin_stats(
+        bin_ids, X_all, Y_all, n_bins, n_params, n_targets, fit_intercept,
+        XtX_all, XtY_all, n_all, sum_y_all, sum_y2_all)
+    t_l1 = time.time() - t_l1
+
+    if verbose:
+        print(f"[V4] Loop 1 (accumulate): {t_l1:.4f}s  [cum: {time.time()-t0:.3f}s]")
+
+    # Step 5: Loop 2 (solve) per target
+    all_beta = np.full((n_targets, n_bins, n_params), np.nan, dtype=np.float64)
+    all_se = np.full((n_targets, n_bins, n_params), np.nan, dtype=np.float64)
+    all_rmse = np.full((n_targets, n_bins), np.nan, dtype=np.float64)
+    all_r2 = np.full((n_targets, n_bins), np.nan, dtype=np.float64)
+    all_n_fitted = np.zeros((n_targets, n_bins), dtype=np.int64)
+    all_status = np.zeros((n_targets, n_bins), dtype=np.int64)
+    all_mean = np.full((n_targets, n_bins), np.nan, dtype=np.float64)
+    all_std = np.full((n_targets, n_bins), np.nan, dtype=np.float64)
+    all_entries = np.zeros((n_targets, n_bins), dtype=np.int64)
+
+    t_l2 = time.time()
+    for ti in range(n_targets):
+        solve_all_windows(
+            XtX_all[ti], XtY_all[ti], n_all[ti], sum_y_all[ti], sum_y2_all[ti],
             nbr_indices, nbr_weights, nbr_counts,
-            n_params, min_stat, use_weighted_kernel,
-            beta_out, se_out, rmse_out, r2_out, n_fitted_out, status_out,
-        )
+            n_params, min_stat, _is_weighted_kernel,
+            all_beta[ti], all_se[ti], all_rmse[ti], all_r2[ti],
+            all_n_fitted[ti], all_status[ti],
+            all_mean[ti], all_std[ti], all_entries[ti])
+    t_l2 = time.time() - t_l2
 
-        # Unpack to dict structure
-        for i, center in enumerate(center_bins):
-            if center not in out:
-                out[center] = {}
+    if verbose:
+        print(f"[V4] Loop 2 (solve):  {t_l2:.4f}s  [cum: {time.time()-t0:.3f}s]")
 
-            if status_out[i] == 1:
-                out[center][t] = _empty_fit_result("insufficient_stats", int(n_fitted_out[i]))
-            elif status_out[i] == 2:
-                out[center][t] = _empty_fit_result("singular_matrix", int(n_fitted_out[i]))
+    # Step 6: Unpack to dict format for _assemble_results
+    n_pred = len(linear_columns)
+    fit_results: Dict[Tuple[int, ...], Dict[str, Dict[str, Any]]] = {}
+    for i, center in enumerate(center_bins):
+        center_map: Dict[str, Dict[str, Any]] = {}
+        for ti, t in enumerate(fit_columns):
+            status = int(all_status[ti, i])
+            if status != 0:
+                reason = "insufficient_stats" if status == 1 else "singular_matrix"
+                center_map[t] = _empty_fit_result(reason, int(all_n_fitted[ti, i]))
+                continue
+
+            beta = all_beta[ti, i]
+            se = all_se[ti, i]
+
+            if fit_intercept:
+                intercept = float(beta[0])
+                intercept_err = float(se[0])
+                coeffs = {linear_columns[j]: float(beta[j + 1]) for j in range(n_pred)}
+                coeffs_err = {linear_columns[j]: float(se[j + 1]) for j in range(n_pred)}
             else:
-                if fit_intercept:
-                    intercept = float(beta_out[i, 0])
-                    intercept_err = float(se_out[i, 0])
-                    coeffs = {linear_columns[j]: float(beta_out[i, j + 1]) for j in range(n_pred)}
-                    coeffs_err = {linear_columns[j]: float(se_out[i, j + 1]) for j in range(n_pred)}
-                else:
-                    intercept = 0.0
-                    intercept_err = 0.0
-                    coeffs = {linear_columns[j]: float(beta_out[i, j]) for j in range(n_pred)}
-                    coeffs_err = {linear_columns[j]: float(se_out[i, j]) for j in range(n_pred)}
+                intercept = 0.0
+                intercept_err = 0.0
+                coeffs = {linear_columns[j]: float(beta[j]) for j in range(n_pred)}
+                coeffs_err = {linear_columns[j]: float(se[j]) for j in range(n_pred)}
 
-                out[center][t] = {
-                    "coeffs": coeffs,
-                    "coeffs_err": coeffs_err,
-                    "intercept": intercept,
-                    "intercept_err": intercept_err,
-                    "r_squared": float(r2_out[i]),
-                    "rmse": float(rmse_out[i]),
-                    "n_fitted": int(n_fitted_out[i]),
-                    "quality_flag": "",
-                }
+            center_map[t] = {
+                "coeffs": coeffs,
+                "coeffs_err": coeffs_err,
+                "intercept": intercept,
+                "intercept_err": intercept_err,
+                "r_squared": float(all_r2[ti, i]),
+                "rmse": float(all_rmse[ti, i]),
+                "n_fitted": int(all_n_fitted[ti, i]),
+                "quality_flag": "",
+            }
+        fit_results[center] = center_map
+
+    # Build compatible agg_results
+    expected_neighbors = int(neighbor_offsets.shape[0]) if neighbor_offsets.size else 1
+    agg_results: List[_AggResult] = []
+    for i, center in enumerate(center_bins):
+        nc = int(nbr_counts[i])
+        stats: Dict[str, Dict[str, float]] = {}
+        for ti, t in enumerate(fit_columns):
+            stats[t] = {
+                "mean": float(all_mean[ti, i]),
+                "std": float(all_std[ti, i]),
+                "median": np.nan,  # Cannot compute from sufficient stats
+                "entries": int(all_entries[ti, i]),
+            }
+        agg_results.append(_AggResult(
+            center=center,
+            n_neighbors_used=nc,
+            n_rows_aggregated=int(all_entries[0, i]) if n_targets > 0 else 0,
+            effective_window_fraction=nc / expected_neighbors if expected_neighbors > 0 else np.nan,
+            stats=stats,
+            row_indices=np.array([], dtype=np.int64),
+        ))
+
+    if verbose:
+        print(f"[V4] Unpack + total: {time.time()-t0:.3f}s")
+
+    return fit_results, agg_results
+
+
+# ###########################################################################
+# V5: numpy-in / numpy-out — eliminates DataFrame conversion overhead
+# ###########################################################################
+
+def _flatten_bins_for_v5(
+        df: pd.DataFrame,
+        gb_columns: List[str],
+        fit_columns: List[str],
+        linear_columns: List[str],
+        selection=None,
+        fit_intercept: bool = True,
+):
+    """Fast DataFrame → flat arrays. Avoids np.unique axis=0 by using ravel_multi_index.
+
+    Returns
+    -------
+    bin_ids : ndarray[n_rows] int64 — bin index per row (0..n_bins-1), -1 if filtered
+    X_all : ndarray[n_rows, n_linear] float64
+    Y_all : ndarray[n_rows, n_targets] float64
+    n_bins : int
+    bin_coords : ndarray[n_bins, n_dims] int64 — (row, col, ...) per bin
+    bounds : dict[str, (int, int)]
+    """
+    n_rows = len(df)
+    n_dims = len(gb_columns)
+
+    # Extract group arrays — single pass over DataFrame
+    gb_arrays = [df[c].to_numpy(dtype=np.int64) for c in gb_columns]
+
+    # Selection mask
+    if selection is not None:
+        sel = selection.to_numpy().astype(bool) if hasattr(selection, 'to_numpy') else np.asarray(selection, dtype=bool)
+    else:
+        sel = None
+
+    # Bounds per dimension
+    bounds = {}
+    mins = np.empty(n_dims, dtype=np.int64)
+    maxs = np.empty(n_dims, dtype=np.int64)
+    sizes = np.empty(n_dims, dtype=np.int64)
+    for d, dim in enumerate(gb_columns):
+        a = gb_arrays[d]
+        if sel is not None:
+            a_sel = a[sel]
+        else:
+            a_sel = a
+        if len(a_sel) == 0:
+            return (np.full(n_rows, -1, dtype=np.int64),
+                    np.empty((n_rows, len(linear_columns)), dtype=np.float64),
+                    np.empty((n_rows, len(fit_columns)), dtype=np.float64),
+                    0, np.empty((0, n_dims), dtype=np.int64), {})
+        lo, hi = int(a_sel.min()), int(a_sel.max())
+        bounds[dim] = (lo, hi)
+        mins[d] = lo
+        maxs[d] = hi
+        sizes[d] = hi - lo + 1
+
+    # Ravel multi-index: (d0, d1, d2) → flat index in dense grid
+    # Much faster than np.unique(coords, axis=0)
+    shifted = [gb_arrays[d] - mins[d] for d in range(n_dims)]
+    strides = np.ones(n_dims, dtype=np.int64)
+    for d in range(n_dims - 2, -1, -1):
+        strides[d] = strides[d + 1] * sizes[d + 1]
+
+    flat_grid_ids = np.zeros(n_rows, dtype=np.int64)
+    for d in range(n_dims):
+        flat_grid_ids += shifted[d] * strides[d]
+
+    # Apply selection
+    if sel is not None:
+        flat_grid_ids[~sel] = -1
+
+    # Find occupied bins — which flat_grid_ids actually have data
+    valid_mask = flat_grid_ids >= 0
+    occupied = np.unique(flat_grid_ids[valid_mask])
+    n_bins = len(occupied)
+
+    # Map flat_grid_id → compact bin index (0..n_bins-1)
+    grid_total = int(np.prod(sizes))
+    remap = np.full(grid_total, -1, dtype=np.int64)
+    remap[occupied] = np.arange(n_bins, dtype=np.int64)
+
+    bin_ids = np.where(valid_mask, remap[flat_grid_ids], -1)
+
+    # Reconstruct bin coordinates from flat index
+    bin_coords = np.empty((n_bins, n_dims), dtype=np.int64)
+    for d in range(n_dims):
+        bin_coords[:, d] = (occupied // strides[d]) % sizes[d] + mins[d]
+
+    # Extract predictor and target arrays — single pass
+    if linear_columns:
+        X_all = df[linear_columns].to_numpy(dtype=np.float64, copy=False)
+    else:
+        X_all = np.empty((n_rows, 0), dtype=np.float64)
+    Y_all = df[fit_columns].to_numpy(dtype=np.float64, copy=False)
+
+    return bin_ids, X_all, Y_all, n_bins, bin_coords, bounds
+
+
+def make_sliding_window_fit_v5_arrays(
+        *,
+        bin_ids: np.ndarray,
+        X_all: np.ndarray,
+        Y_all: np.ndarray,
+        n_bins: int,
+        bin_coords: np.ndarray,
+        bounds: Dict[str, Tuple[int, int]],
+        gb_columns: List[str],
+        fit_columns: List[str],
+        linear_columns: List[str],
+        window_spec: Dict[str, int],
+        boundary: Union[str, Dict[str, str]] = 'full',
+        kernel: Union[str, Callable] = 'uniform',
+        kernel_width: Optional[Union[float, Dict[str, float]]] = None,
+        fit_intercept: bool = True,
+        min_stat: int = 10,
+        verbose: bool = False,
+        _collect_timings: bool = False,
+) -> Dict[str, np.ndarray]:
+    """V5 numpy-in / numpy-out sliding window regression.
+
+    This is the hot-path function. No DataFrame conversion.
+    Accepts pre-extracted arrays and returns flat numpy arrays.
+
+    Parameters
+    ----------
+    bin_ids : ndarray[n_rows] int64 — bin index per row, -1 for excluded
+    X_all : ndarray[n_rows, n_linear] float64 — predictor values
+    Y_all : ndarray[n_rows, n_targets] float64 — target values
+    n_bins : int — number of unique bins
+    bin_coords : ndarray[n_bins, n_dims] int64 — bin grid coordinates
+    bounds : dict[str, (min, max)] — per-dimension bounds
+    gb_columns : list[str] — group-by column names
+    fit_columns : list[str] — target column names
+    linear_columns : list[str] — predictor column names
+    window_spec : dict[str, int] — half-width per dimension
+    boundary : str or dict — boundary mode ('full', 'symmetric', 'periodic')
+    kernel : str — weighting kernel ('uniform', 'gaussian', etc.)
+    kernel_width : optional — kernel width parameter
+    fit_intercept : bool — include intercept
+    min_stat : int — minimum rows for valid fit
+    verbose : bool — print timing
+
+    Returns
+    -------
+    dict of str → ndarray, all shape (n_bins,) or (n_bins, n_params):
+        'bin_coords': ndarray[n_bins, n_dims] int64
+        Per target t, predictor p:
+            '{t}_intercept': ndarray[n_bins]
+            '{t}_intercept_err': ndarray[n_bins]
+            '{t}_slope_{p}': ndarray[n_bins]
+            '{t}_slope_{p}_err': ndarray[n_bins]
+            '{t}_r_squared': ndarray[n_bins]
+            '{t}_rmse': ndarray[n_bins]
+            '{t}_n_fitted': ndarray[n_bins] int64
+            '{t}_mean': ndarray[n_bins]
+            '{t}_std': ndarray[n_bins]
+            '{t}_entries': ndarray[n_bins] int64
+        'n_neighbors_used': ndarray[n_bins] int64
+        'n_rows_aggregated': ndarray[n_bins] int64
+        'effective_window_fraction': ndarray[n_bins] float64
+        'status': ndarray[n_bins] int64  (0=ok, 1=insufficient, 2=singular)
+    """
+    t0 = time.time()
+
+    n_linear = len(linear_columns)
+    n_targets = len(fit_columns)
+    n_params = n_linear + (1 if fit_intercept else 0)
+    _is_weighted_kernel = (kernel != 'uniform') if isinstance(kernel, str) else True
+
+    if n_bins == 0:
+        return {'bin_coords': bin_coords}
+
+    # --- Setup: offsets, boundary, kernel weights, array allocation ---
+    t_setup_start = time.time()
+    full_window_spec = {dim: window_spec.get(dim, 0) for dim in gb_columns}
+    neighbor_offsets = _generate_neighbor_offsets(full_window_spec, gb_columns)
+    boundary_resolved = _resolve_boundary(boundary, gb_columns)
+    _validate_periodic_dims(boundary_resolved, bounds, full_window_spec)
+    kernel_width_resolved = _resolve_kernel_width(kernel_width, full_window_spec, gb_columns)
+    kernel_width_vec = np.array([kernel_width_resolved[dim] for dim in gb_columns], dtype=np.float64)
+    offset_weights = _precompute_offset_weights(neighbor_offsets, kernel, kernel_width_vec)
+    t_setup = time.time() - t_setup_start
+
+    # --- Neighbor table ---
+    t_nbr_start = time.time()
+    nbr_indices, nbr_weights, nbr_counts = _build_neighbor_table_vectorized(
+        bin_coords, neighbor_offsets, bounds, gb_columns,
+        boundary_resolved, full_window_spec, offset_weights)
+    t_nbr = time.time() - t_nbr_start
+
+    if verbose:
+        print(f"[V5] Neighbor table: {n_bins} bins, {time.time()-t0:.4f}s")
+
+    # JIT kernels
+    accumulate_bin_stats, solve_all_windows = _get_numba_v4_kernels()
+
+    # --- Loop 1: accumulate per-bin XtX/XtY ---
+    XtX_all = np.zeros((n_targets, n_bins, n_params, n_params), dtype=np.float64)
+    XtY_all = np.zeros((n_targets, n_bins, n_params), dtype=np.float64)
+    n_all = np.zeros((n_targets, n_bins), dtype=np.int64)
+    sum_y_all = np.zeros((n_targets, n_bins), dtype=np.float64)
+    sum_y2_all = np.zeros((n_targets, n_bins), dtype=np.float64)
+
+    t_l1_start = time.time()
+    accumulate_bin_stats(
+        bin_ids, X_all, Y_all, n_bins, n_params, n_targets, fit_intercept,
+        XtX_all, XtY_all, n_all, sum_y_all, sum_y2_all)
+    t_l1 = time.time() - t_l1_start
+
+    if verbose:
+        print(f"[V5] Loop 1 (accumulate): {t_l1:.4f}s  [cum: {time.time()-t0:.3f}s]")
+
+    # --- Loop 2: solve per window ---
+    all_beta = np.full((n_targets, n_bins, n_params), np.nan, dtype=np.float64)
+    all_se = np.full((n_targets, n_bins, n_params), np.nan, dtype=np.float64)
+    all_rmse = np.full((n_targets, n_bins), np.nan, dtype=np.float64)
+    all_r2 = np.full((n_targets, n_bins), np.nan, dtype=np.float64)
+    all_n_fitted = np.zeros((n_targets, n_bins), dtype=np.int64)
+    all_status = np.zeros((n_targets, n_bins), dtype=np.int64)
+    all_mean = np.full((n_targets, n_bins), np.nan, dtype=np.float64)
+    all_std = np.full((n_targets, n_bins), np.nan, dtype=np.float64)
+    all_entries = np.zeros((n_targets, n_bins), dtype=np.int64)
+
+    t_l2_start = time.time()
+    for ti in range(n_targets):
+        solve_all_windows(
+            XtX_all[ti], XtY_all[ti], n_all[ti], sum_y_all[ti], sum_y2_all[ti],
+            nbr_indices, nbr_weights, nbr_counts,
+            n_params, min_stat, _is_weighted_kernel,
+            all_beta[ti], all_se[ti], all_rmse[ti], all_r2[ti],
+            all_n_fitted[ti], all_status[ti],
+            all_mean[ti], all_std[ti], all_entries[ti])
+    t_l2 = time.time() - t_l2_start
+
+    if verbose:
+        print(f"[V5] Loop 2 (solve):  {t_l2:.4f}s  [cum: {time.time()-t0:.3f}s]")
+
+    # --- Pack output --- flat arrays, no Python dicts, no per-bin loops
+    t_pack_start = time.time()
+    pred_names = [_sanitize_suffix(p) for p in linear_columns]
+    expected_nbr = int(neighbor_offsets.shape[0]) if neighbor_offsets.size else 1
+
+    out = {
+        'bin_coords': bin_coords,
+        'n_neighbors_used': nbr_counts.astype(np.int64),
+        'n_rows_aggregated': all_entries[0].copy() if n_targets > 0 else np.zeros(n_bins, dtype=np.int64),
+        'effective_window_fraction': nbr_counts.astype(np.float64) / expected_nbr if expected_nbr > 0 else np.full(n_bins, np.nan),
+    }
+
+    for ti, tgt in enumerate(fit_columns):
+        # Coefficients
+        if fit_intercept:
+            out[f'{tgt}_intercept'] = all_beta[ti, :, 0].copy()
+            out[f'{tgt}_intercept_err'] = all_se[ti, :, 0].copy()
+            for pi, pname in enumerate(pred_names):
+                out[f'{tgt}_slope_{pname}'] = all_beta[ti, :, pi + 1].copy()
+                out[f'{tgt}_slope_{pname}_err'] = all_se[ti, :, pi + 1].copy()
+        else:
+            out[f'{tgt}_intercept'] = np.zeros(n_bins, dtype=np.float64)
+            out[f'{tgt}_intercept_err'] = np.zeros(n_bins, dtype=np.float64)
+            for pi, pname in enumerate(pred_names):
+                out[f'{tgt}_slope_{pname}'] = all_beta[ti, :, pi].copy()
+                out[f'{tgt}_slope_{pname}_err'] = all_se[ti, :, pi].copy()
+
+        out[f'{tgt}_r_squared'] = all_r2[ti].copy()
+        out[f'{tgt}_rmse'] = all_rmse[ti].copy()
+        out[f'{tgt}_n_fitted'] = all_n_fitted[ti].copy()
+        out[f'{tgt}_mean'] = all_mean[ti].copy()
+        out[f'{tgt}_std'] = all_std[ti].copy()
+        out[f'{tgt}_entries'] = all_entries[ti].copy()
+    t_pack = time.time() - t_pack_start
+
+    if verbose:
+        print(f"[V5] Total: {time.time()-t0:.4f}s")
+
+    if _collect_timings:
+        out['_timings'] = {
+            'setup': t_setup,
+            'nbr_table': t_nbr,
+            'loop1': t_l1,
+            'loop2': t_l2,
+            'pack': t_pack,
+            'total': time.time() - t0,
+        }
 
     return out
 
 
+def _assemble_results_v5(
+        v5_arrays: Dict[str, np.ndarray],
+        gb_columns: List[str],
+        fit_columns: List[str],
+        linear_columns: List[str],
+        suffix: str = '',
+) -> pd.DataFrame:
+    """Vectorized DataFrame assembly from V5 flat arrays. No per-bin loops."""
+    bin_coords = v5_arrays['bin_coords']
+    n_bins = bin_coords.shape[0]
+
+    if n_bins == 0:
+        return pd.DataFrame()
+
+    # Start with bin coordinates — no suffix
+    data = {}
+    for d, dim in enumerate(gb_columns):
+        data[dim] = bin_coords[:, d]
+
+    pred_names = [_sanitize_suffix(p) for p in linear_columns]
+
+    # Per-target columns
+    for tgt in fit_columns:
+        s = suffix
+        data[f'{tgt}_mean{s}'] = v5_arrays[f'{tgt}_mean']
+        data[f'{tgt}_std{s}'] = v5_arrays[f'{tgt}_std']
+        data[f'{tgt}_median{s}'] = np.full(n_bins, np.nan)  # Cannot compute from sufficient stats
+        data[f'{tgt}_entries{s}'] = v5_arrays[f'{tgt}_entries']
+        data[f'{tgt}_intercept{s}'] = v5_arrays[f'{tgt}_intercept']
+        data[f'{tgt}_intercept_err{s}'] = v5_arrays[f'{tgt}_intercept_err']
+        for pname in pred_names:
+            data[f'{tgt}_slope_{pname}{s}'] = v5_arrays[f'{tgt}_slope_{pname}']
+            data[f'{tgt}_slope_{pname}_err{s}'] = v5_arrays[f'{tgt}_slope_{pname}_err']
+        data[f'{tgt}_r_squared{s}'] = v5_arrays[f'{tgt}_r_squared']
+        data[f'{tgt}_rmse{s}'] = v5_arrays[f'{tgt}_rmse']
+        data[f'{tgt}_n_fitted{s}'] = v5_arrays[f'{tgt}_n_fitted']
+
+    # Diagnostics
+    data[f'quality_flag{s}'] = np.where(
+        v5_arrays['n_rows_aggregated'] == 0, 'empty_window', '')
+    data[f'n_neighbors_used{s}'] = v5_arrays['n_neighbors_used']
+    data[f'n_rows_aggregated{s}'] = v5_arrays['n_rows_aggregated']
+    data[f'effective_window_fraction{s}'] = v5_arrays['effective_window_fraction']
+
+    return pd.DataFrame(data)
+
+
 # ===============
-# Assembly
+# Assembly (V4 legacy — used by V1/V2/V3 paths)
 # ===============
 
 def _assemble_results(
@@ -2024,13 +2545,13 @@ def make_sliding_window_fit(
         print(f"[SW] backend={_resolved_backend}, algorithm={algorithm}, "
               f"bins={len(gb_columns)}D, window={full_window_spec}")
 
-    # Build zero-copy bin map
-    bin_map = _build_bin_index_map(df, gb_columns, selection)
-    center_bins = list(bin_map.keys())
-
-    # Neighbor offsets and bounds
+    # Neighbor offsets (cheap — depends only on window_spec)
     neighbor_offsets = _generate_neighbor_offsets(full_window_spec, gb_columns)
-    bounds = _observed_bin_bounds(bin_map, gb_columns)
+
+    # Lightweight bounds (min/max per column) — needed for validation before dispatch.
+    # Does NOT build bin_map (which is O(n_rows) Python and the V5tot bottleneck).
+    _sel_df = df if selection is None else df[selection]
+    bounds = {dim: (int(_sel_df[dim].min()), int(_sel_df[dim].max())) for dim in gb_columns}
 
     # Resolve V3b boundary and kernel (used by incremental path)
     boundary_resolved = _resolve_boundary(boundary, gb_columns)
@@ -2046,50 +2567,84 @@ def make_sliding_window_fit(
 
     # Fitting — dispatch by algorithm and backend
     if algorithm == 'incremental':
-        # V3/V3b: pre-compute per-bin XtX/XtY, sum over window
-        bin_suff_stats = _precompute_bin_sufficient_stats(
-            df=df,
-            bin_map=bin_map,
-            fit_columns=fit_columns,
-            linear_columns=linear_columns,
-            fit_intercept=fit_intercept,
-        )
-
-        # Lightweight aggregation with V3b boundary + weights
-        agg_results = _compute_lightweight_agg_results(
-            bin_map=bin_map,
-            center_bins=center_bins,
-            neighbor_offsets=neighbor_offsets,
-            bounds=bounds,
-            gb_columns=gb_columns,
-            fit_columns=fit_columns,
-            bin_suff_stats=bin_suff_stats,
-            boundary_resolved=boundary_resolved,
-            window_spec=full_window_spec,
-            offset_weights=offset_weights if _is_weighted_kernel else None,
-            use_weighted_kernel=_is_weighted_kernel,
-        )
-
-        if verbose:
-            print(f"[SW] V3b pre-compute done: {len(bin_map)} bins × "
-                  f"{len(fit_columns)} targets, kernel={kernel}, "
-                  f"boundary={boundary}, {time.time()-t0:.3f}s elapsed")
-
-        # Dispatch: Numba or NumPy for the solve loop
-        _use_numba_incremental = (
+        # Dispatch: V5 (fast numpy-in/numpy-out) or V3 NumPy (fallback)
+        _use_numba_v5 = (
             _resolved_backend == 'numba'
             and _check_numba_available()
             and weights is None  # WLS not supported in Numba kernel
         )
 
-        if _use_numba_incremental:
-            # Build neighbor table ONCE and share with agg + solve
-            nbr_indices, nbr_weights_tbl, nbr_counts = _build_neighbor_table(
-                center_bins, neighbor_offsets, bounds, boundary_resolved,
-                full_window_spec, offset_weights)
-            prebuilt_table = (nbr_indices, nbr_weights_tbl, nbr_counts)
+        if _use_numba_v5:
+            # V5: fast path — DataFrame conversion once, then numpy only
+            t_flat = time.time()
+            bin_ids, X_all, Y_all, _n_bins, _bin_coords, _bounds = \
+                _flatten_bins_for_v5(df, gb_columns, fit_columns, linear_columns, selection, fit_intercept)
+            if verbose:
+                print(f"[V5] Flatten: {_n_bins} bins, {X_all.shape[0]} rows, {time.time()-t_flat:.4f}s")
 
-            # Lightweight aggregation reusing prebuilt table
+            v5_arrays = make_sliding_window_fit_v5_arrays(
+                bin_ids=bin_ids, X_all=X_all, Y_all=Y_all,
+                n_bins=_n_bins, bin_coords=_bin_coords, bounds=_bounds,
+                gb_columns=gb_columns, fit_columns=fit_columns,
+                linear_columns=linear_columns, window_spec=full_window_spec,
+                boundary=boundary, kernel=kernel, kernel_width=kernel_width,
+                fit_intercept=fit_intercept, min_stat=min_stat, verbose=verbose,
+            )
+
+            # Vectorized assembly — no per-bin Python loops
+            t_asm = time.time()
+            out = _assemble_results_v5(v5_arrays, gb_columns, fit_columns, linear_columns, suffix)
+            if verbose:
+                print(f"[V5] Assembly: {time.time()-t_asm:.4f}s")
+
+            _backend_used = "v5_numba"
+
+            # Skip the old assemble path
+            # Provenance
+            metadata = {
+                "gb_columns": list(gb_columns),
+                "window_spec": full_window_spec,
+                "boundary_mode": {dim: boundary_resolved[dim] for dim in gb_columns},
+                "kernel": kernel if isinstance(kernel, str) else "custom",
+                "kernel_width": kernel_width_resolved,
+                "backend_used": _backend_used,
+                "algorithm": algorithm,
+                "suffix": suffix,
+                "fit_intercept": fit_intercept,
+                "n_bins": _n_bins,
+                "computation_time_sec": time.time() - t0,
+                "python_version": sys.version,
+            }
+            out.attrs.update(metadata)
+
+            # Cast dtype
+            if cast_dtype:
+                float_cols = out.select_dtypes(include=[np.floating]).columns
+                if len(float_cols) > 0:
+                    out[float_cols] = out[float_cols].astype(cast_dtype)
+
+            if verbose:
+                print(f"[V5] Complete: {len(out)} bins, {time.time()-t0:.3f}s total")
+
+            if return_metadata:
+                return out, metadata
+            return out
+
+        else:
+            # V3 NumPy fallback: needs bin_map (not used by V5 path)
+            bin_map = _build_bin_index_map(df, gb_columns, selection)
+            center_bins = list(bin_map.keys())
+
+            # V3 pre-compute per-bin XtX/XtY, sum over window
+            bin_suff_stats = _precompute_bin_sufficient_stats(
+                df=df,
+                bin_map=bin_map,
+                fit_columns=fit_columns,
+                linear_columns=linear_columns,
+                fit_intercept=fit_intercept,
+            )
+
+            # Lightweight aggregation
             agg_results = _compute_lightweight_agg_results(
                 bin_map=bin_map,
                 center_bins=center_bins,
@@ -2102,31 +2657,13 @@ def make_sliding_window_fit(
                 window_spec=full_window_spec,
                 offset_weights=offset_weights if _is_weighted_kernel else None,
                 use_weighted_kernel=_is_weighted_kernel,
-                prebuilt_neighbor_table=prebuilt_table,
             )
 
             if verbose:
-                print(f"[SW] V3-Numba pre-compute done: {len(bin_map)} bins × "
+                print(f"[SW] V3 numpy pre-compute done: {len(bin_map)} bins × "
                       f"{len(fit_columns)} targets, kernel={kernel}, "
                       f"boundary={boundary}, {time.time()-t0:.3f}s elapsed")
 
-            fit_results = _fit_window_regression_incremental_numba(
-                bin_suff_stats=bin_suff_stats,
-                center_bins=center_bins,
-                neighbor_offsets=neighbor_offsets,
-                bounds=bounds,
-                boundary_resolved=boundary_resolved,
-                window_spec=full_window_spec,
-                offset_weights=offset_weights,
-                fit_columns=fit_columns,
-                linear_columns=linear_columns,
-                fit_intercept=fit_intercept,
-                min_stat=min_stat,
-                use_weighted_kernel=_is_weighted_kernel,
-                prebuilt_neighbor_table=prebuilt_table,
-            )
-            _backend_used = "incremental_numba"
-        else:
             fit_results = _fit_window_regression_incremental(
                 bin_map=bin_map,
                 bin_suff_stats=bin_suff_stats,
@@ -2146,7 +2683,11 @@ def make_sliding_window_fit(
             _backend_used = "incremental_numpy"
 
     else:
-        # V1/V2 path: row-level aggregation + recompute from raw data
+        # V1/V2 path: needs bin_map
+        bin_map = _build_bin_index_map(df, gb_columns, selection)
+        center_bins = list(bin_map.keys())
+
+        # Row-level aggregation + recompute from raw data
         agg_results = _aggregate_window_zerocopy(
             df=df,
             bin_map=bin_map,
