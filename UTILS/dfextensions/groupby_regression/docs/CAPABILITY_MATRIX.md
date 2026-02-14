@@ -1,30 +1,32 @@
 # Capability Matrix — groupby_regression
 
-**Generated:** 2026-02-10 08:16 UTC
-**Phase:** 13.7.GB — Test Quality Classification
+**Generated:** 2026-02-14 10:29 UTC
+**Phase:** 13.8.SW — Parallel Sliding Window + Benchmarks
 **Generator:** `scripts/generate_capability_matrix.py`
 
 ## Summary
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 24 | 24.0% |
-| ☑️ Smoke-only | 75 | 75.0% |
+| ✅ Verified | 25 | 24.5% |
+| ☑️ Smoke-only | 76 | 74.5% |
 | 🧨 Broken | 0 | 0.0% |
 | ⚠️ Partial | 0 | 0.0% |
 | 📋 Planned | 1 | 1.0% |
-| **Total** | **100** | |
+| **Total** | **102** | |
 
 ## Test Layer Distribution (excluding verbose duplicates)
 
 | Layer | Count |
 |-------|------:|
-| invariance | 40 |
+| invariance | 41 |
 | integration | 10 |
 | performance | 5 |
-| smoke | 192 |
+| smoke | 201 |
 | validation | 24 |
-| **Total unique** | **271** |
+| **Total unique** | **281** |
+
+⚠️ **UNCLASSIFIED tests: 9** — defaulted to smoke (fail-closed rule §3.5)
 
 ## groupby_regression
 
@@ -137,11 +139,13 @@
 | ✅ | **SW.multi_predictor** — Sliding window multi-predictor | 2 | 1 |  |  |
 | ☑️ | **SW.multi_target** — Sliding window multi-target | 1 | 0 |  |  |
 | ☑️ | **SW.omitted_dims** — Omitted window dims default to 0 | 1 | 0 |  |  |
+| ☑️ | **SW.parallel** — Parallel sliding window (split-column) | 8 | 0 | ✓ | NUMBA |
 | ☑️ | **SW.return_metadata** — Sliding window return_metadata | 1 | 0 |  |  |
 | ☑️ | **SW.selection** — Sliding window selection mask | 1 | 0 |  |  |
 | ☑️ | **SW.smoke_gate** — Realistic smoke normalised residuals | 1 | 0 |  |  |
 | ☑️ | **SW.suffix** — Sliding window output suffix | 1 | 0 |  |  |
 | ✅ | **SW.v4_parity** — SW window-zero parity with V4 | 2 | 2 |  |  |
+| ✅ | **SW.v5_dominance** — V5 algorithm dominance across all backends | 2 | 1 | ✓ | NUMBA |
 | ☑️ | **SW.validation** — Sliding window input validation | 5 | 0 |  |  |
 | 📋 | **SW.weighted** — Sliding window weighted fits (WLS) | 0 | 0 |  | PLANNED |
 
@@ -164,11 +168,29 @@
 | KERNEL.single_multi_parity | bench_groupby_regression_kernels.py::Numba/NumPy parity [GATED] | ✅ GATED |
 | KERNEL.streaming_memory | bench_groupby_regression_memory.py::RSS drift < 5% [GATED] | ✅ GATED |
 | KERNEL.streaming_memory | bench_groupby_regression_memory.py::RSS CV < 0.1 [GATED] | ✅ GATED |
+| SW.parallel | bench_slidingwindow_parallel.py::parallel_scaling (1-36 workers) [GATED] | ✅ GATED |
+| SW.parallel | bench_slidingwindow_parallel.py::serial_vs_parallel_validation [GATED] | ✅ GATED |
+| SW.parallel | bench_slidingwindow_parallel.py::counting_sort_vs_argsort [MONITOR] | 📊 MONITOR |
+| SW.v5_dominance | bench_slidingwindow_parametric.py::V1_vs_V2_vs_V3_vs_V5_validation (30/30 PASS) [GATED] | ✅ GATED |
+| SW.v5_dominance | bench_slidingwindow_parametric.py::algorithm_recommendation (V5 wins 10/10) [MONITOR] | 📊 MONITOR |
+| SW.v5_dominance | bench_slidingwindow_parametric.py::cost_model_fit (11 models, R2>0.99) [MONITOR] | 📊 MONITOR |
 | V5.performance | bench_v5.py::timing [MONITOR] | 📊 MONITOR |
 | XVAL.robust_v4_parity | bench_comparison.py::compute_agreement() [MONITOR] | 📊 MONITOR |
 
+## ⚠️ UNCLASSIFIED Tests (fail-closed → smoke)
+
+- `test_parallel_sliding_window.py::TestParallelCorrectness::test_parallel_matches_serial`
+- `test_parallel_sliding_window.py::TestParallelCorrectness::test_parallel_matches_serial`
+- `test_parallel_sliding_window.py::TestParallelCorrectness::test_parallel_multiple_targets`
+- `test_parallel_sliding_window.py::TestParallelCorrectness::test_parallel_output_columns`
+- `test_parallel_sliding_window.py::TestParallelCorrectness::test_parallel_single_worker`
+- `test_parallel_sliding_window.py::TestParallelEdgeCases::test_empty_dataframe`
+- `test_parallel_sliding_window.py::TestParallelErrorHandling::test_on_error_nan_fills`
+- `test_parallel_sliding_window.py::TestParallelErrorHandling::test_on_error_raise_raises`
+- `test_parallel_sliding_window.py::TestParallelPerformance::test_parallel_speedup`
+
 ---
 
-*Two-tier verification per Phase 13.7.GB v02 proposal.*
+*Two-tier verification per Phase 13.8.SW v02 proposal.*
 *✅ = invariance/integration test exists. ☑️ = smoke tests only — does not catch numerical regressions.*
 *Verbose SW duplicates (1 files) deduplicated per §3.6.*

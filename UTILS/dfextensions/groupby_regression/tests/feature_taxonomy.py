@@ -832,6 +832,44 @@ FEATURE_TAXONOMY = {
         "bench_proof": [],
         "impl_tag": None,
     },
+    "SW.parallel": {
+        "name": "Parallel sliding window (split-column)",
+        "description": "Multi-sector parallel execution via ProcessPoolExecutor with fork() COW, "
+                       "O(N) counting sort, zero-pickle dispatch (~200B/task vs 125MB)",
+        "module": "groupby_regression_sliding_window",
+        "proof": [
+            "test_parallel_sliding_window.py::TestParallelCorrectness::test_parallel_matches_serial",
+            "test_parallel_sliding_window.py::TestParallelCorrectness::test_parallel_single_worker",
+            "test_parallel_sliding_window.py::TestParallelCorrectness::test_parallel_multiple_targets",
+            "test_parallel_sliding_window.py::TestParallelCorrectness::test_parallel_output_columns",
+            "test_parallel_sliding_window.py::TestParallelPerformance::test_parallel_speedup",
+            "test_parallel_sliding_window.py::TestParallelErrorHandling::test_on_error_nan_fills",
+            "test_parallel_sliding_window.py::TestParallelErrorHandling::test_on_error_raise_raises",
+            "test_parallel_sliding_window.py::TestParallelEdgeCases::test_empty_dataframe",
+        ],
+        "bench_proof": [
+            "bench_slidingwindow_parallel.py::parallel_scaling (1-36 workers) [GATED]",
+            "bench_slidingwindow_parallel.py::serial_vs_parallel_validation [GATED]",
+            "bench_slidingwindow_parallel.py::counting_sort_vs_argsort [MONITOR]",
+        ],
+        "impl_tag": "NUMBA",
+    },
+    "SW.v5_dominance": {
+        "name": "V5 algorithm dominance across all backends",
+        "description": "V5 (incremental+numba) is 25-68x faster than V1/V2/V3 across all tested "
+                       "configurations. Validated via parametric benchmark with cost model fitting.",
+        "module": "groupby_regression_sliding_window",
+        "proof": [
+            "test_invariance_sliding_window.py::TestSWNumba::test_sw_numba_equals_numpy",
+            "test_parallel_sliding_window.py::TestParallelCorrectness::test_parallel_matches_serial",
+        ],
+        "bench_proof": [
+            "bench_slidingwindow_parametric.py::V1_vs_V2_vs_V3_vs_V5_validation (30/30 PASS) [GATED]",
+            "bench_slidingwindow_parametric.py::algorithm_recommendation (V5 wins 10/10) [MONITOR]",
+            "bench_slidingwindow_parametric.py::cost_model_fit (11 models, R2>0.99) [MONITOR]",
+        ],
+        "impl_tag": "NUMBA",
+    },
 
     # ====== META — Fit metadata ======
     "META.column_validation": {

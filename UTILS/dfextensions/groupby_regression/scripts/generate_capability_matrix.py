@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Capability Matrix Generator — Phase 13.7.GB
+Capability Matrix Generator — Phase 13.8.SW
 
 Reads feature taxonomy + test layer classification to produce a two-tier
 capability matrix showing which features are truly verified vs smoke-only.
@@ -177,7 +177,7 @@ def format_markdown(matrix):
     lines.append("# Capability Matrix — groupby_regression")
     lines.append("")
     lines.append(f"**Generated:** {now}")
-    lines.append(f"**Phase:** 13.7.GB — Test Quality Classification")
+    lines.append(f"**Phase:** 13.8.SW — Parallel Sliding Window + Benchmarks")
     lines.append(f"**Generator:** `scripts/generate_capability_matrix.py`")
     lines.append("")
 
@@ -281,7 +281,7 @@ def format_markdown(matrix):
     # Footer
     lines.append("---")
     lines.append("")
-    lines.append("*Two-tier verification per Phase 13.7.GB v02 proposal.*")
+    lines.append("*Two-tier verification per Phase 13.8.SW v02 proposal.*")
     lines.append(f"*✅ = invariance/integration test exists. "
                  f"☑️ = smoke tests only — does not catch numerical regressions.*")
     lines.append(f"*Verbose SW duplicates ({len(VERBOSE_DUPLICATES)} files) "
@@ -294,7 +294,7 @@ def format_json(matrix):
     """Format matrix as JSON for programmatic consumption."""
     output = {
         "generated": datetime.utcnow().isoformat(),
-        "phase": "13.7.GB",
+        "phase": "13.8.SW",
         "features": {},
         "summary": {},
     }

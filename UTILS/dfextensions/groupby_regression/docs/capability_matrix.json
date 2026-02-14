@@ -1,6 +1,6 @@
 {
-  "generated": "2026-02-10T08:16:52.986201",
-  "phase": "13.7.GB",
+  "generated": "2026-02-14T10:29:51.441595",
+  "phase": "13.8.SW",
   "features": {
     "KERNEL.single_fit": {
       "name": "Single-target OLS kernel",
@@ -957,6 +957,38 @@
       "bench_proof": [],
       "unclassified_count": 0
     },
+    "SW.parallel": {
+      "name": "Parallel sliding window (split-column)",
+      "module": "groupby_regression_sliding_window",
+      "status": "\u2611\ufe0f",
+      "status_label": "Smoke-only",
+      "impl_tag": "NUMBA",
+      "test_count": 8,
+      "invariance_count": 0,
+      "has_bench_proof": true,
+      "bench_proof": [
+        "bench_slidingwindow_parallel.py::parallel_scaling (1-36 workers) [GATED]",
+        "bench_slidingwindow_parallel.py::serial_vs_parallel_validation [GATED]",
+        "bench_slidingwindow_parallel.py::counting_sort_vs_argsort [MONITOR]"
+      ],
+      "unclassified_count": 8
+    },
+    "SW.v5_dominance": {
+      "name": "V5 algorithm dominance across all backends",
+      "module": "groupby_regression_sliding_window",
+      "status": "\u2705",
+      "status_label": "Verified",
+      "impl_tag": "NUMBA",
+      "test_count": 2,
+      "invariance_count": 1,
+      "has_bench_proof": true,
+      "bench_proof": [
+        "bench_slidingwindow_parametric.py::V1_vs_V2_vs_V3_vs_V5_validation (30/30 PASS) [GATED]",
+        "bench_slidingwindow_parametric.py::algorithm_recommendation (V5 wins 10/10) [MONITOR]",
+        "bench_slidingwindow_parametric.py::cost_model_fit (11 models, R2>0.99) [MONITOR]"
+      ],
+      "unclassified_count": 1
+    },
     "META.column_validation": {
       "name": "Column name validation",
       "module": "groupby_regression_optimized",
@@ -1225,9 +1257,9 @@
     }
   },
   "summary": {
-    "Verified": 24,
-    "Smoke-only": 75,
+    "Verified": 25,
+    "Smoke-only": 76,
     "Planned": 1,
-    "total": 100
+    "total": 102
   }
 }
