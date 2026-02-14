@@ -132,14 +132,28 @@ def measure_all(df, window):
     T['v5arr'] = times_v5a[best]
     for k in ('setup', 'nbr_table', 'loop1', 'loop2', 'pack'):
         T['v5_' + k] = internals[best][k]
+    # V5tot = full pipeline (incremental+numba)
     T['v5tot'], r_v5 = _timed(lambda: make_sliding_window_fit(
         df=df, gb_columns=gb, window_spec=ws, fit_columns=fit_cols,
         linear_columns=lin_cols, min_stat=5, algorithm='incremental',
         backend='numba', suffix=''))
+    # V1 = recompute+numpy
     T['v1sw'], r_v1 = _timed(lambda: make_sliding_window_fit(
         df=df, gb_columns=gb, window_spec=ws, fit_columns=fit_cols,
         linear_columns=lin_cols, min_stat=5, algorithm='recompute',
         backend='numpy', suffix=''))
+    # V2 = recompute+numba
+    T['v2sw'], r_v2 = _timed(lambda: make_sliding_window_fit(
+        df=df, gb_columns=gb, window_spec=ws, fit_columns=fit_cols,
+        linear_columns=lin_cols, min_stat=5, algorithm='recompute',
+        backend='numba', suffix=''))
+    # V3-numpy = incremental+numpy
+    T['v3np'], r_v3np = _timed(lambda: make_sliding_window_fit(
+        df=df, gb_columns=gb, window_spec=ws, fit_columns=fit_cols,
+        linear_columns=lin_cols, min_stat=5, algorithm='incremental',
+        backend='numpy', suffix=''))
+    # V3-numba = incremental+numba (same as V5tot but via make_sliding_window_fit)
+    # Already measured as v5tot above, skip duplicate
     T['v5flat'], _ = _timed(lambda: _flatten_bins_for_v5(df, gb, fit_cols, lin_cols))
     T['bin_map'], _ = _timed(lambda: _build_bin_index_map(df, gb, None))
     v5r = make_sliding_window_fit_v5_arrays(
@@ -148,24 +162,26 @@ def measure_all(df, window):
         window_spec=ws, min_stat=5)
     T['assemble'], _ = _timed(lambda: _assemble_results_v5(v5r, gb, fit_cols, lin_cols, ''))
     T['_r_v1'] = r_v1
+    T['_r_v2'] = r_v2
+    T['_r_v3np'] = r_v3np
     T['_r_v5'] = r_v5
     return T
 
 
-def validate_v1_v5(r_v1, r_v5):
-    """Compare V1 (recompute) vs V5 (incremental) coefficients.
+def validate_v1_vs(r_v1, r_other, label='V5'):
+    """Compare V1 (recompute) vs another backend's coefficients.
     Returns (max_abs_diff, n_compared)."""
     slope_col = 'value_slope_x'
-    if slope_col not in r_v1.columns or slope_col not in r_v5.columns:
+    if slope_col not in r_v1.columns or slope_col not in r_other.columns:
         return float('nan'), 0
     merged = r_v1[gb + [slope_col]].merge(
-        r_v5[gb + [slope_col]], on=gb, suffixes=('_v1', '_v5'))
+        r_other[gb + [slope_col]], on=gb, suffixes=('_v1', '_other'))
     v1 = merged[f'{slope_col}_v1'].values
-    v5 = merged[f'{slope_col}_v5'].values
-    mask = np.isfinite(v1) & np.isfinite(v5)
+    vo = merged[f'{slope_col}_other'].values
+    mask = np.isfinite(v1) & np.isfinite(vo)
     if mask.sum() == 0:
         return float('nan'), 0
-    return float(np.max(np.abs(v1[mask] - v5[mask]))), int(mask.sum())
+    return float(np.max(np.abs(v1[mask] - vo[mask]))), int(mask.sum())
 
 
 def profile_config(df, window, label):
@@ -259,8 +275,8 @@ print(f"{'QUICK mode' if QUICK else 'FULL mode'}\n")
 
 # Main table
 hdr = (f"{'Grid':>5s} {'W':>2s} {'RPB':>4s} | {'N_bins':>7s} {'N_rows':>8s} {'N_nbr':>5s} "
-       f"| {'noSWarr':>7s} {'noSWDF':>7s} {'V5flat':>7s} {'V5arr':>7s} {'V5tot':>7s} {'V1-SW':>7s} "
-       f"| {'SW/noSW':>7s} {'V5/V1':>6s} {'V1=V5':>8s}")
+       f"| {'V1np':>7s} {'V2nb':>7s} {'V3np':>7s} {'V5tot':>7s} {'V5arr':>7s} "
+       f"| {'V5/V1':>6s} {'Best':>5s} {'V1=V5':>8s}")
 print(hdr); print("-" * len(hdr))
 
 rows = []
@@ -275,41 +291,61 @@ for grid, window, entries in scan:
     sw = t['v5arr']/t['nosw_arr'] if t['nosw_arr']>0 else float('nan')
     v5v1 = t['v1sw']/t['v5tot'] if t['v5tot']>0 else float('nan')
 
-    # Validation: V1 vs V5
-    diff, n_cmp = validate_v1_v5(t['_r_v1'], t['_r_v5'])
-    val_ok = diff < 1e-10 if np.isfinite(diff) else False
-    val_str = f"{diff:.1e}" if np.isfinite(diff) else "N/A"
-    val_results.append({'grid': grid, 'window': window, 'entries': entries,
-                        'max_diff': diff, 'n_compared': n_cmp, 'ok': val_ok})
+    # Find fastest backend
+    backend_times = {'V1np': t['v1sw'], 'V2nb': t['v2sw'],
+                     'V3np': t['v3np'], 'V5tot': t['v5tot']}
+    best_name = min(backend_times, key=backend_times.get)
+
+    # Validation: all backends vs V1
+    val_entry = {'grid': grid, 'window': window, 'entries': entries}
+    r_v1 = t['_r_v1']
+    for vlabel, rkey in [('V2', '_r_v2'), ('V3np', '_r_v3np'), ('V5', '_r_v5')]:
+        diff, n_cmp = validate_v1_vs(r_v1, t[rkey], vlabel)
+        val_entry[f'diff_{vlabel}'] = diff
+        val_entry[f'n_{vlabel}'] = n_cmp
+        val_entry[f'ok_{vlabel}'] = diff < 1e-10 if np.isfinite(diff) else False
+    val_results.append(val_entry)
+
+    # Validation string (worst case)
+    max_diff = max(val_entry.get(f'diff_{v}', 0) for v in ['V2', 'V3np', 'V5'])
+    val_str = f"{max_diff:.1e}" if np.isfinite(max_diff) else "N/A"
 
     print(f"{grid:5d} {window:2d} {entries:4d} | {n_bins:7d} {n_rows:8d} {n_nbr:5d} "
-          f"| {t['nosw_arr']:7.4f} {t['nosw_df']:7.3f} {t['v5flat']:7.4f} "
-          f"{t['v5arr']:7.4f} {t['v5tot']:7.3f} {t['v1sw']:7.3f} "
-          f"| {sw:7.2f} {v5v1:6.2f} {val_str:>8s}")
+          f"| {t['v1sw']:7.3f} {t['v2sw']:7.3f} {t['v3np']:7.3f} "
+          f"{t['v5tot']:7.3f} {t['v5arr']:7.4f} "
+          f"| {v5v1:6.2f} {best_name:>5s} {val_str:>8s}")
 
     if DO_CPROFILE:
         label = f"param_g{grid}_w{window}_r{entries}"
         pf, cf = profile_config(df, window, label)
         profile_files.extend([pf, cf])
 
-    t.pop('_r_v1', None); t.pop('_r_v5', None)
+    for k in ['_r_v1', '_r_v2', '_r_v3np', '_r_v5']:
+        t.pop(k, None)
     rows.append({'grid':grid,'window':window,'entries':entries,
                  'n_bins':n_bins,'n_rows':n_rows,'n_nbr':n_nbr,
-                 **t,'sw_nosw':sw,'v5_v1':v5v1})
+                 **t,'sw_nosw':sw,'v5_v1':v5v1,'best':best_name})
 
 df_r = pd.DataFrame(rows)
 cfg_labels = [f"{int(r['grid'])}^3 W{int(r['window'])} r{int(r['entries'])}" for r in rows]
 
 # Validation summary
 print("\n" + "="*80)
-print("VALIDATION: V1 (recompute) vs V5 (incremental)")
+print("VALIDATION: all backends vs V1 (recompute+numpy)")
 print("="*80)
-n_val_pass = sum(1 for v in val_results if v['ok'])
-n_val_total = len(val_results)
+n_val_pass = 0; n_val_total = 0
 for v in val_results:
-    status = "PASS" if v['ok'] else "FAIL"
-    print(f"  {v['grid']:3d}^3 W={v['window']} r={v['entries']:4d}: "
-          f"max|diff|={v['max_diff']:.2e} ({v['n_compared']} bins) {status}")
+    g, w, e = v['grid'], v['window'], v['entries']
+    parts = []
+    for vlabel in ['V2', 'V3np', 'V5']:
+        ok = v.get(f'ok_{vlabel}', False)
+        diff = v.get(f'diff_{vlabel}', float('nan'))
+        n_cmp = v.get(f'n_{vlabel}', 0)
+        status = "PASS" if ok else "FAIL"
+        parts.append(f"{vlabel}={diff:.1e}")
+        n_val_total += 1
+        if ok: n_val_pass += 1
+    print(f"  {g:3d}^3 W={w} r={e:4d}: {', '.join(parts)}")
 print(f"\n  Validation: {n_val_pass}/{n_val_total} PASS")
 
 # V5arr component breakdown
@@ -410,6 +446,18 @@ c_v5t,_,_ = fit_report("Model 9: V5tot = a*N_rows + b*N_bins*N_nbr + d*N_bins + 
     np.column_stack([df_r['n_rows'],df_r['n_bins']*df_r['n_nbr'],
                      df_r['n_bins'],np.ones(len(df_r))]),
     df_r['v5tot'].values, ['a','b','d','c'],
+    [(1e6,'us/row'),(1e6,'us/(bin*nbr)'),(1e6,'us/bin'),(1e3,'ms')], cfg_labels)
+
+c_v2,_,_ = fit_report("Model 10: V2-SW (recompute+numba) = a*N_bins*N_nbr*RPB + b*N_bins + c",
+    np.column_stack([df_r['n_bins']*df_r['n_nbr']*df_r['entries'],
+                     df_r['n_bins'],np.ones(len(df_r))]),
+    df_r['v2sw'].values, ['a','b','c'],
+    [(1e6,'us/(bin*nbr*row)'),(1e6,'us/bin'),(1e3,'ms')], cfg_labels)
+
+c_v3np,_,_ = fit_report("Model 11: V3-numpy (incremental+numpy) = a*N_rows + b*N_bins*N_nbr + d*N_bins + c",
+    np.column_stack([df_r['n_rows'],df_r['n_bins']*df_r['n_nbr'],
+                     df_r['n_bins'],np.ones(len(df_r))]),
+    df_r['v3np'].values, ['a','b','d','c'],
     [(1e6,'us/row'),(1e6,'us/(bin*nbr)'),(1e6,'us/bin'),(1e3,'ms')], cfg_labels)
 
 # Consistency checks
@@ -534,6 +582,42 @@ for label,nb,rpb,wl,nn in scenarios:
     nr = nb*rpb
     tna=p_na(nr,nb); tv5a=p_v5a(nr,nb,nn); tv5t=p_v5t(nr,nb,nn)
     print(f"  {label:<10s} | {m*tna/60:9.1f}m {m*tv5a/60:9.1f}m {m*tv5a/10/60:10.1f}m {m*tv5t/60:9.1f}m")
+
+# Algorithm recommendation
+print("\n" + "="*80)
+print("ALGORITHM RECOMMENDATION (fastest per config)")
+print("="*80)
+print(f"\n  V1np  = recompute + numpy   (no numba needed, simple)")
+print(f"  V2nb  = recompute + numba   (JIT-compiled per-bin)")
+print(f"  V3np  = incremental + numpy (XtX accumulation, pure numpy)")
+print(f"  V5tot = incremental + numba (V5 array pipeline, fastest at scale)")
+
+print(f"\n  {'Config':<22s} | {'V1np':>8s} {'V2nb':>8s} {'V3np':>8s} {'V5tot':>8s} | {'Best':>5s} {'Speedup':>8s}")
+print(f"  {'-'*22}-+-{'-'*8}-{'-'*8}-{'-'*8}-{'-'*8}-+-{'-'*5}-{'-'*8}")
+for r in rows:
+    g,w,e = int(r['grid']),int(r['window']),int(r['entries'])
+    label = f"{g}^3 W={w} r={e}"
+    times = {'V1np': r['v1sw'], 'V2nb': r['v2sw'], 'V3np': r['v3np'], 'V5tot': r['v5tot']}
+    best = min(times, key=times.get)
+    t_best = times[best]
+    t_worst = max(times.values())
+    speedup = t_worst / t_best if t_best > 0 else 0
+    print(f"  {label:<22s} | {r['v1sw']:8.3f} {r['v2sw']:8.3f} {r['v3np']:8.3f} {r['v5tot']:8.3f} "
+          f"| {best:>5s} {speedup:7.1f}x")
+
+# Summary: best algorithm by category
+print(f"\n  Summary by window size and RPB:")
+from collections import Counter
+best_counts = Counter()
+for r in rows:
+    w, e = int(r['window']), int(r['entries'])
+    best_counts[(w, e, r['best'])] += 1
+
+categories = sorted(set((w, e) for w, e, _ in best_counts.keys()))
+for w, e in categories:
+    winners = {b: best_counts.get((w, e, b), 0) for b in ['V1np', 'V2nb', 'V3np', 'V5tot']}
+    dominant = max(winners, key=winners.get)
+    print(f"    W={w}, RPB={e:4d}: {dominant} wins {winners[dominant]}/{sum(winners.values())} configs")
 
 # Package profiles
 if DO_CPROFILE and profile_files:
