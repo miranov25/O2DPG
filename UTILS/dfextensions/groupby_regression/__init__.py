@@ -29,12 +29,16 @@ from .groupby_regression_optimized import (
 # Phase 7: Sliding Window Regression (M7.1)
 from .groupby_regression_sliding_window import (
     make_sliding_window_fit,
+    make_sliding_window_fit_parallel,
     InvalidWindowSpec,
     PerformanceWarning,
 )
 
+# Phase 13.9.GB: Evaluator & Interpolator
+from .groupby_regression_evaluator import GroupByRegressionEvaluator
+
 # Version info
-__version__ = '2.0.0'
+__version__ = '2.1.0'
 __author__ = 'Marian Ivanov'
 
 # Expose at package level (will uncomment after files are moved)
@@ -46,6 +50,9 @@ __all__ = [
     'GroupByRegressorOptimized',
     # Sliding Window (Phase 7)
     'make_sliding_window_fit',
+    'make_sliding_window_fit_parallel',
     'InvalidWindowSpec',
     'PerformanceWarning',
+    # Evaluator (Phase 13.9.GB)
+    'GroupByRegressionEvaluator',
 ]

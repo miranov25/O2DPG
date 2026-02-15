@@ -500,6 +500,100 @@ TEST_LAYERS = {
     # Zero assertions (E1) → smoke
     # ==================================================================
     "test_tpc_distortion_recovery.py::test_tpc_distortion_recovery": "smoke",
+
+    # ==================================================================
+    # test_groupby_regression_evaluator.py (38 tests)
+    # Construction and API tests → smoke; integration tests → integration
+    # ==================================================================
+    # -- Construction: structural → smoke
+    "test_groupby_regression_evaluator.py::TestConstruction::test_from_dfGB_basic": "smoke",
+    "test_groupby_regression_evaluator.py::TestConstruction::test_from_dfGB_with_bin_centers": "smoke",
+    "test_groupby_regression_evaluator.py::TestConstruction::test_from_dfGB_with_bin_edges": "smoke",
+    "test_groupby_regression_evaluator.py::TestConstruction::test_from_dfGB_sparse": "smoke",
+    "test_groupby_regression_evaluator.py::TestConstruction::test_grid_shape_matches_unique_bins": "smoke",
+    "test_groupby_regression_evaluator.py::TestConstruction::test_from_dfGB_multi_target": "smoke",
+    "test_groupby_regression_evaluator.py::TestConstruction::test_from_dfGB_with_suffix": "smoke",
+    # -- Per-bin evaluation: analytical known-truth → invariance
+    "test_groupby_regression_evaluator.py::TestPerBinEvaluation::test_evaluate_nearest_exact_bin": "invariance",
+    "test_groupby_regression_evaluator.py::TestPerBinEvaluation::test_evaluate_nearest_known_truth": "invariance",
+    "test_groupby_regression_evaluator.py::TestPerBinEvaluation::test_evaluate_batch": "smoke",
+    # -- Interpolation invariance: analytical → invariance
+    "test_groupby_regression_evaluator.py::TestInterpolationInvariance::test_interpolate_at_grid_point": "invariance",
+    "test_groupby_regression_evaluator.py::TestInterpolationInvariance::test_interpolate_midpoint_2bins": "invariance",
+    "test_groupby_regression_evaluator.py::TestInterpolationInvariance::test_interpolate_recovers_linear_field": "invariance",
+    "test_groupby_regression_evaluator.py::TestInterpolationInvariance::test_interpolate_continuity": "invariance",
+    "test_groupby_regression_evaluator.py::TestInterpolationInvariance::test_interpolate_boundary_nan": "invariance",
+    "test_groupby_regression_evaluator.py::TestInterpolationInvariance::test_interpolate_invalid_bin_nan": "invariance",
+    "test_groupby_regression_evaluator.py::TestInterpolationInvariance::test_interpolate_invalid_bin_skip": "invariance",
+    "test_groupby_regression_evaluator.py::TestInterpolationInvariance::test_interpolate_boundary_clamp": "invariance",
+    # -- Inverse-variance: analytical → invariance
+    "test_groupby_regression_evaluator.py::TestInverseVarianceWeighting::test_ivar_weights_favor_precise_bins": "invariance",
+    "test_groupby_regression_evaluator.py::TestInverseVarianceWeighting::test_ivar_uniform_errors_equals_multilinear": "invariance",
+    # -- Export roundtrip: numerical identity → invariance
+    "test_groupby_regression_evaluator.py::TestExportRoundtrip::test_to_dict_roundtrip": "invariance",
+    "test_groupby_regression_evaluator.py::TestExportRoundtrip::test_to_json_roundtrip": "invariance",
+    "test_groupby_regression_evaluator.py::TestExportRoundtrip::test_evaluate_after_roundtrip": "invariance",
+    # -- SW integration: pipeline → integration
+    "test_groupby_regression_evaluator.py::TestSWIntegration::test_from_sliding_window_output": "integration",
+    "test_groupby_regression_evaluator.py::TestSWIntegration::test_sw_evaluate_matches_direct": "integration",
+    # -- Edge cases: structural → smoke
+    "test_groupby_regression_evaluator.py::TestEdgeCases::test_string_target_convenience": "smoke",
+    "test_groupby_regression_evaluator.py::TestEdgeCases::test_repr": "smoke",
+    "test_groupby_regression_evaluator.py::TestEdgeCases::test_evaluate_grid": "smoke",
+    "test_groupby_regression_evaluator.py::TestEdgeCases::test_missing_intercept_raises": "smoke",
+    "test_groupby_regression_evaluator.py::TestEdgeCases::test_mutually_exclusive_bin_specs": "smoke",
+    "test_groupby_regression_evaluator.py::TestEdgeCases::test_schema_version_in_export": "smoke",
+    # -- Metadata construction: structural → smoke
+    "test_groupby_regression_evaluator.py::TestMetadataConstruction::test_from_metadata_v4": "smoke",
+    "test_groupby_regression_evaluator.py::TestMetadataConstruction::test_from_metadata_sw": "smoke",
+    "test_groupby_regression_evaluator.py::TestMetadataConstruction::test_from_metadata_multi_target": "smoke",
+    "test_groupby_regression_evaluator.py::TestMetadataConstruction::test_explicit_params_override_metadata": "smoke",
+    "test_groupby_regression_evaluator.py::TestMetadataConstruction::test_no_metadata_no_params_raises": "smoke",
+    "test_groupby_regression_evaluator.py::TestMetadataConstruction::test_no_metadata_explicit_params_works": "smoke",
+    "test_groupby_regression_evaluator.py::TestMetadataConstruction::test_metadata_suffix_extracted": "smoke",
+
+    # ==================================================================
+    # test_invariance_evaluator.py (31 tests)
+    # All analytical invariance checks → invariance
+    # ==================================================================
+    # -- Nearest invariance
+    "test_invariance_evaluator.py::TestNearestInvariance::test_nearest_at_bin_center_exact": "invariance",
+    "test_invariance_evaluator.py::TestNearestInvariance::test_nearest_prediction_formula": "invariance",
+    "test_invariance_evaluator.py::TestNearestInvariance::test_nearest_snaps_to_closer_bin": "invariance",
+    "test_invariance_evaluator.py::TestNearestInvariance::test_nearest_constant_field_everywhere_equal": "invariance",
+    # -- Multilinear invariance
+    "test_invariance_evaluator.py::TestMultilinearInvariance::test_multilinear_exact_at_grid_points": "invariance",
+    "test_invariance_evaluator.py::TestMultilinearInvariance::test_multilinear_recovers_linear_field_2d": "invariance",
+    "test_invariance_evaluator.py::TestMultilinearInvariance::test_multilinear_recovers_linear_field_3d": "invariance",
+    "test_invariance_evaluator.py::TestMultilinearInvariance::test_multilinear_midpoint_is_average": "invariance",
+    "test_invariance_evaluator.py::TestMultilinearInvariance::test_multilinear_constant_field": "invariance",
+    "test_invariance_evaluator.py::TestMultilinearInvariance::test_multilinear_symmetry": "invariance",
+    "test_invariance_evaluator.py::TestMultilinearInvariance::test_multilinear_continuity_lipschitz": "invariance",
+    "test_invariance_evaluator.py::TestMultilinearInvariance::test_multilinear_bilinear_weight_formula": "invariance",
+    # -- Inverse-variance invariance
+    "test_invariance_evaluator.py::TestIVarInvariance::test_ivar_uniform_errors_equals_unweighted": "invariance",
+    "test_invariance_evaluator.py::TestIVarInvariance::test_ivar_extreme_error_ratio": "invariance",
+    "test_invariance_evaluator.py::TestIVarInvariance::test_ivar_zero_error_gets_all_weight": "invariance",
+    "test_invariance_evaluator.py::TestIVarInvariance::test_ivar_proportional_weighting": "invariance",
+    # -- Boundary invariance
+    "test_invariance_evaluator.py::TestBoundaryInvariance::test_clamp_at_edge_equals_edge_bin": "invariance",
+    "test_invariance_evaluator.py::TestBoundaryInvariance::test_nan_outside_grid": "invariance",
+    "test_invariance_evaluator.py::TestBoundaryInvariance::test_nan_inside_grid_not_nan": "invariance",
+    "test_invariance_evaluator.py::TestBoundaryInvariance::test_clamp_vs_edge_bin_all_corners": "invariance",
+    "test_invariance_evaluator.py::TestBoundaryInvariance::test_inside_grid_clamp_and_nan_agree": "invariance",
+    # -- Sparse grid invariance
+    "test_invariance_evaluator.py::TestSparseGridInvariance::test_nan_strategy_with_invalid_corner": "invariance",
+    "test_invariance_evaluator.py::TestSparseGridInvariance::test_skip_strategy_renormalises": "invariance",
+    "test_invariance_evaluator.py::TestSparseGridInvariance::test_nan_strategy_far_from_invalid_bin": "invariance",
+    "test_invariance_evaluator.py::TestSparseGridInvariance::test_all_corners_valid_skip_equals_nan": "invariance",
+    # -- Multi-target invariance
+    "test_invariance_evaluator.py::TestMultiTargetInvariance::test_targets_independent_evaluation": "invariance",
+    "test_invariance_evaluator.py::TestMultiTargetInvariance::test_target_ratio_preserved": "invariance",
+    "test_invariance_evaluator.py::TestMultiTargetInvariance::test_single_target_subset": "invariance",
+    # -- Export invariance
+    "test_invariance_evaluator.py::TestExportInvariance::test_dict_roundtrip_exact": "invariance",
+    "test_invariance_evaluator.py::TestExportInvariance::test_roundtrip_evaluation_identical": "invariance",
+    "test_invariance_evaluator.py::TestExportInvariance::test_roundtrip_preserves_valid_mask": "invariance",
 }
 # fmt: on
 

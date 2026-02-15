@@ -2374,6 +2374,107 @@ def _assemble_results(
 
 
 # =====================
+# Metadata builder (V4-compatible + SW-specific fields)
+# =====================
+
+def _build_sw_metadata(
+    fit_columns,
+    linear_columns,
+    suffix,
+    fit_intercept,
+    gb_columns,
+    weights_column=None,
+    min_stat=10,
+    window_spec=None,
+    boundary_mode=None,
+    kernel='uniform',
+    kernel_width=None,
+    algorithm='recompute',
+    backend_used='numpy',
+    n_bins=0,
+    computation_time_sec=0.0,
+):
+    """
+    Build metadata dict for sliding window regression results.
+
+    Flat structure following the V4 per-bin metadata convention.
+    Same top-level keys as V4 (version, formulas, columns, parameters)
+    plus SW-specific keys (window_spec, boundary_mode, kernel, algorithm,
+    backend_used) at the same flat level.
+
+    One level, one source of truth. V4 metadata is the reference standard;
+    SW adds to it, does not restructure it.
+    """
+    metadata = {
+        # --- V4-compatible keys (same convention) ---
+        'version': '1.0',
+        'formulas': {},
+        'residual_formulas': {},
+        'pull_formulas': {},
+        'columns': {
+            'gb_columns': list(gb_columns),
+            'fit_columns': list(fit_columns),
+            'linear_columns': list(linear_columns),
+            'coefficients': {},
+            'errors': {},
+            'quality': {},
+        },
+        'parameters': {
+            'suffix': suffix,
+            'fit_intercept': fit_intercept,
+            'min_stat': min_stat,
+            'fit_type': 'sliding_window',
+            'weights_column': weights_column,
+        },
+        # --- Flat keys from original SW metadata (unchanged) ---
+        'gb_columns': list(gb_columns),
+        'suffix': suffix,
+        'fit_intercept': fit_intercept,
+        'window_spec': window_spec or {},
+        'boundary_mode': boundary_mode or {},
+        'kernel': kernel if isinstance(kernel, str) else 'custom',
+        'kernel_width': kernel_width,
+        'algorithm': algorithm,
+        'backend_used': backend_used,
+        'n_bins': n_bins,
+        'computation_time_sec': computation_time_sec,
+        'python_version': sys.version,
+    }
+
+    # Build per-target column lists and formulas
+    for target in fit_columns:
+        coef_cols = []
+        err_cols = []
+
+        if fit_intercept:
+            coef_cols.append(f"{target}_intercept{suffix}")
+            err_cols.append(f"{target}_intercept_err{suffix}")
+
+        for col in linear_columns:
+            coef_cols.append(f"{target}_slope_{col}{suffix}")
+            err_cols.append(f"{target}_slope_{col}_err{suffix}")
+
+        metadata['columns']['coefficients'][target] = coef_cols
+        metadata['columns']['errors'][target] = err_cols
+        metadata['columns']['quality'][target] = [
+            f"{target}_rmse{suffix}",
+            f"{target}_r_squared{suffix}",
+            f"{target}_std{suffix}",
+        ]
+
+        # Prediction formula (same convention as V4)
+        terms = []
+        if fit_intercept:
+            terms.append(f"{target}_intercept{suffix}")
+        for col in linear_columns:
+            terms.append(f"{target}_slope_{col}{suffix}*{col}")
+        if terms:
+            metadata['formulas'][f"{target}_pred{suffix}"] = " + ".join(terms)
+
+    return metadata
+
+
+# =====================
 # Main entry point
 # =====================
 
@@ -2600,21 +2701,24 @@ def make_sliding_window_fit(
             _backend_used = "v5_numba"
 
             # Skip the old assemble path
-            # Provenance
-            metadata = {
-                "gb_columns": list(gb_columns),
-                "window_spec": full_window_spec,
-                "boundary_mode": {dim: boundary_resolved[dim] for dim in gb_columns},
-                "kernel": kernel if isinstance(kernel, str) else "custom",
-                "kernel_width": kernel_width_resolved,
-                "backend_used": _backend_used,
-                "algorithm": algorithm,
-                "suffix": suffix,
-                "fit_intercept": fit_intercept,
-                "n_bins": _n_bins,
-                "computation_time_sec": time.time() - t0,
-                "python_version": sys.version,
-            }
+            # Provenance (V4-compatible metadata + SW-specific fields)
+            metadata = _build_sw_metadata(
+                fit_columns=fit_columns,
+                linear_columns=linear_columns,
+                suffix=suffix,
+                fit_intercept=fit_intercept,
+                gb_columns=gb_columns,
+                weights_column=weights,
+                min_stat=min_stat,
+                window_spec=full_window_spec,
+                boundary_mode={dim: boundary_resolved[dim] for dim in gb_columns},
+                kernel=kernel,
+                kernel_width=kernel_width_resolved,
+                algorithm=algorithm,
+                backend_used=_backend_used,
+                n_bins=_n_bins,
+                computation_time_sec=time.time() - t0,
+            )
             out.attrs.update(metadata)
 
             # Cast dtype
@@ -2764,21 +2868,24 @@ def make_sliding_window_fit(
         float_cols = out.select_dtypes(include=[np.floating]).columns
         out[float_cols] = out[float_cols].astype(cast_dtype)
 
-    # Provenance
-    metadata = {
-        "gb_columns": list(gb_columns),
-        "window_spec": full_window_spec,
-        "boundary_mode": {dim: boundary_resolved[dim] for dim in gb_columns},
-        "kernel": kernel if isinstance(kernel, str) else "custom",
-        "kernel_width": kernel_width_resolved,
-        "backend_used": _backend_used,
-        "algorithm": algorithm,
-        "suffix": suffix,
-        "fit_intercept": fit_intercept,
-        "n_bins": len(center_bins),
-        "computation_time_sec": time.time() - t0,
-        "python_version": sys.version,
-    }
+    # Provenance (V4-compatible metadata + SW-specific fields)
+    metadata = _build_sw_metadata(
+        fit_columns=fit_columns,
+        linear_columns=linear_columns,
+        suffix=suffix,
+        fit_intercept=fit_intercept,
+        gb_columns=gb_columns,
+        weights_column=weights,
+        min_stat=min_stat,
+        window_spec=full_window_spec,
+        boundary_mode={dim: boundary_resolved[dim] for dim in gb_columns},
+        kernel=kernel,
+        kernel_width=kernel_width_resolved,
+        algorithm=algorithm,
+        backend_used=_backend_used,
+        n_bins=len(center_bins),
+        computation_time_sec=time.time() - t0,
+    )
     out.attrs.update(metadata)
 
     if verbose:
