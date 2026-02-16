@@ -37,8 +37,12 @@ from .groupby_regression_sliding_window import (
 # Phase 13.9.GB: Evaluator & Interpolator
 from .groupby_regression_evaluator import GroupByRegressionEvaluator
 
+# Phase 13.10.GB: Non-Linear Sliding Window + Model Registry
+from .groupby_regression_nonlinear import make_nonlinear_sliding_window_fit
+from .groupby_regression_models import register_fit_model, get_model, list_models
+
 # Version info
-__version__ = '2.1.0'
+__version__ = '2.2.0'
 __author__ = 'Marian Ivanov'
 
 # Expose at package level (will uncomment after files are moved)
@@ -55,4 +59,9 @@ __all__ = [
     'PerformanceWarning',
     # Evaluator (Phase 13.9.GB)
     'GroupByRegressionEvaluator',
+    # Non-Linear Sliding Window (Phase 13.10.GB)
+    'make_nonlinear_sliding_window_fit',
+    'register_fit_model',
+    'get_model',
+    'list_models',
 ]
