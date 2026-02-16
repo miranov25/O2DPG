@@ -245,3 +245,78 @@ register_fit_model(
     estimate_p0=_estimate_p0_power_law,
     description='Power law + offset: A·|x|^n + C',
 )
+
+
+# ---------------------------------------------------------------------------
+#  Gaussian + linear background (most common TPC spectrum model)
+# ---------------------------------------------------------------------------
+
+def _gaussian_plus_line(x, amplitude, mean, sigma, offset, slope):
+    """Gaussian peak + linear background: A·exp(-(x-μ)²/(2σ²)) + a + bx"""
+    return amplitude * np.exp(-0.5 * ((x - mean) / sigma) ** 2) + offset + slope * x
+
+
+def _estimate_p0_gaussian_plus_line(x, y, weights):
+    """Estimate initial params for gaussian + linear background.
+
+    Strategy: estimate linear background from tails, subtract it,
+    then estimate Gaussian from residual.
+    """
+    if len(x) < 5:
+        return [1.0, 0.0, 1.0, 0.0, 0.0]
+
+    # Sort by x for tail estimation
+    order = np.argsort(x)
+    x_s, y_s = x[order], y[order]
+
+    # Estimate linear background from lowest/highest 20% of x
+    n_tail = max(2, len(x) // 5)
+    x_lo, y_lo = x_s[:n_tail], y_s[:n_tail]
+    x_hi, y_hi = x_s[-n_tail:], y_s[-n_tail:]
+
+    x_bg = np.concatenate([x_lo, x_hi])
+    y_bg = np.concatenate([y_lo, y_hi])
+
+    # Linear fit to background
+    if len(x_bg) >= 2 and (np.max(x_bg) - np.min(x_bg)) > 0:
+        slope = float((np.mean(x_hi * y_hi) - np.mean(x_lo * y_lo)) /
+                       (np.mean(x_hi ** 2) - np.mean(x_lo ** 2) + 1e-30))
+        offset = float(np.mean(y_bg) - slope * np.mean(x_bg))
+    else:
+        slope = 0.0
+        offset = float(np.median(y))
+
+    # Subtract background, estimate Gaussian from residual
+    y_sub = y - (offset + slope * x)
+    amplitude = float(np.max(y_sub))
+    if amplitude <= 0:
+        amplitude = 1.0
+
+    # Peak position
+    threshold = 0.5 * amplitude
+    mask = y_sub >= threshold
+    if np.sum(mask) < 2:
+        mask = y_sub >= np.median(y_sub)
+
+    w = weights[mask] if weights is not None else np.ones(np.sum(mask))
+    w_sum = np.sum(w)
+    if w_sum > 0:
+        mean = float(np.sum(x[mask] * w) / w_sum)
+        sigma = float(np.sqrt(np.sum(w * (x[mask] - mean) ** 2) / w_sum))
+    else:
+        mean = float(np.mean(x))
+        sigma = float(np.std(x))
+
+    sigma = max(sigma, (np.max(x) - np.min(x)) / 100)
+    return [amplitude, mean, sigma, offset, slope]
+
+
+register_fit_model(
+    'gaussian_plus_line', _gaussian_plus_line,
+    param_names=['amplitude', 'mean', 'sigma', 'offset', 'slope'],
+    default_p0=[1.0, 0.0, 1.0, 0.0, 0.0],
+    default_bounds=([-np.inf, -np.inf, 1e-10, -np.inf, -np.inf],
+                    [np.inf, np.inf, np.inf, np.inf, np.inf]),
+    estimate_p0=_estimate_p0_gaussian_plus_line,
+    description='Gaussian peak + linear background: A·exp(-(x-μ)²/(2σ²)) + a + bx',
+)

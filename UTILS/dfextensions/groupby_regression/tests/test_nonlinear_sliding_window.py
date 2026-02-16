@@ -10,9 +10,10 @@ import pytest
 
 from ..groupby_regression_models import (
     register_fit_model, get_model, list_models,
-    _gaussian, _estimate_p0_gaussian,
+    _gaussian, _estimate_p0_gaussian, _gaussian_plus_line,
 )
 from ..groupby_regression_nonlinear import make_nonlinear_sliding_window_fit
+from ..groupby_regression_sliding_window import make_sliding_window_fit
 
 def _has_scipy():
     try:
@@ -635,3 +636,298 @@ class TestEvaluatorNonLinear:
         # Max jump between neighbors should be small
         jumps = np.abs(np.diff(y_arr))
         assert np.max(jumps) < 2.0, f"Large jump: {np.max(jumps):.3f}"
+
+    @pytest.mark.skipif(not _has_scipy(), reason="scipy not available")
+    def test_evaluate_function_peak_vs_tail(self):
+        """Option B: Gaussian evaluate_function peak > tail."""
+        df = _make_gaussian_data(n_bins_x=5, n_bins_y=5, n_per_bin=100)
+        result, metadata = make_nonlinear_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin'],
+            fit_columns=['peak'], linear_columns=['mass'],
+            window_spec={'xBin': 1, 'yBin': 1},
+            fit_func='gaussian',
+            optimizer_kwargs={'p0': [10, 0.5, 0.1, 1]},
+            suffix='_gaus', min_stat=20, return_metadata=True,
+        )
+        ev = GroupByRegressionEvaluator.from_dfGB(result, metadata=metadata)
+        y_peak = ev.evaluate_function(
+            positions={'xBin': 2.0, 'yBin': 2.0}, x_query=0.5)
+        y_tail = ev.evaluate_function(
+            positions={'xBin': 2.0, 'yBin': 2.0}, x_query=0.0)
+        assert y_peak['peak'] > y_tail['peak']
+        assert y_peak['peak'] > 8.0
+        assert y_tail['peak'] < 3.0
+
+    @pytest.mark.skipif(not _has_scipy(), reason="scipy not available")
+    def test_evaluate_function_vectorized_x(self):
+        """Option B: vectorized x_query."""
+        df = _make_gaussian_data(n_bins_x=5, n_bins_y=5, n_per_bin=100)
+        result, metadata = make_nonlinear_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin'],
+            fit_columns=['peak'], linear_columns=['mass'],
+            window_spec={'xBin': 1, 'yBin': 1},
+            fit_func='gaussian',
+            optimizer_kwargs={'p0': [10, 0.5, 0.1, 1]},
+            suffix='_gaus', min_stat=20, return_metadata=True,
+        )
+        ev = GroupByRegressionEvaluator.from_dfGB(result, metadata=metadata)
+        x = np.linspace(0, 1, 20)
+        y = ev.evaluate_function(
+            positions={'xBin': 2.0, 'yBin': 2.0}, x_query=x)
+        assert isinstance(y['peak'], np.ndarray)
+        assert y['peak'].shape == (20,)
+        # Gaussian shaped
+        assert np.argmax(y['peak']) in (9, 10)
+
+    @pytest.mark.skipif(not _has_scipy(), reason="scipy not available")
+    def test_evaluate_function_batch_positions(self):
+        """Option B: batch of positions."""
+        df = _make_gaussian_data(n_bins_x=5, n_bins_y=5, n_per_bin=100)
+        result, metadata = make_nonlinear_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin'],
+            fit_columns=['peak'], linear_columns=['mass'],
+            window_spec={'xBin': 1, 'yBin': 1},
+            fit_func='gaussian',
+            optimizer_kwargs={'p0': [10, 0.5, 0.1, 1]},
+            suffix='_gaus', min_stat=20, return_metadata=True,
+        )
+        ev = GroupByRegressionEvaluator.from_dfGB(result, metadata=metadata)
+        pos = {'xBin': np.array([1.0, 2.0, 3.0]),
+               'yBin': np.array([2.0, 2.0, 2.0])}
+        y = ev.evaluate_function(positions=pos, x_query=0.5)
+        assert isinstance(y['peak'], np.ndarray)
+        assert y['peak'].shape == (3,)
+        assert all(v > 8.0 for v in y['peak'])
+
+    @pytest.mark.skipif(not _has_scipy(), reason="scipy not available")
+    def test_option_a_equals_b_at_grid_center(self):
+        """I-NL.6: Options A and B agree exactly at grid centers."""
+        df = _make_gaussian_data(n_bins_x=5, n_bins_y=5, n_per_bin=100)
+        result, metadata = make_nonlinear_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin'],
+            fit_columns=['peak'], linear_columns=['mass'],
+            window_spec={'xBin': 1, 'yBin': 1},
+            fit_func='gaussian',
+            optimizer_kwargs={'p0': [10, 0.5, 0.1, 1]},
+            suffix='_gaus', min_stat=20, return_metadata=True,
+        )
+        ev = GroupByRegressionEvaluator.from_dfGB(result, metadata=metadata)
+        # At exact grid center — no interpolation, A must equal B
+        ya = ev.evaluate_model(
+            positions={'xBin': 2.0, 'yBin': 2.0}, x_query=0.5)
+        yb = ev.evaluate_function(
+            positions={'xBin': 2.0, 'yBin': 2.0}, x_query=0.5)
+        np.testing.assert_allclose(
+            ya['peak'], yb['peak'], atol=1e-10,
+            err_msg="Options A and B must agree at grid centers")
+
+    @pytest.mark.skipif(not _has_scipy(), reason="scipy not available")
+    def test_option_a_close_to_b_interpolated(self):
+        """I-NL.7: Options A and B are close for slowly varying params."""
+        df = _make_gaussian_data(n_bins_x=5, n_bins_y=5, n_per_bin=200)
+        result, metadata = make_nonlinear_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin'],
+            fit_columns=['peak'], linear_columns=['mass'],
+            window_spec={'xBin': 1, 'yBin': 1},
+            fit_func='gaussian',
+            optimizer_kwargs={'p0': [10, 0.5, 0.1, 1]},
+            suffix='_gaus', min_stat=20, return_metadata=True,
+        )
+        ev = GroupByRegressionEvaluator.from_dfGB(result, metadata=metadata)
+        ya = ev.evaluate_model(
+            positions={'xBin': 1.5, 'yBin': 2.5}, x_query=0.5)
+        yb = ev.evaluate_function(
+            positions={'xBin': 1.5, 'yBin': 2.5}, x_query=0.5)
+        # For slowly varying params (all bins have ~same Gaussian),
+        # A and B should agree within ~1%
+        np.testing.assert_allclose(
+            ya['peak'], yb['peak'], rtol=0.01,
+            err_msg="A and B should agree for slowly varying params")
+
+    @pytest.mark.skipif(not _has_scipy(), reason="scipy not available")
+    def test_evaluate_params(self):
+        """evaluate_params returns parameter dict."""
+        df = _make_gaussian_data(n_bins_x=5, n_bins_y=5, n_per_bin=100)
+        result, metadata = make_nonlinear_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin'],
+            fit_columns=['peak'], linear_columns=['mass'],
+            window_spec={'xBin': 1, 'yBin': 1},
+            fit_func='gaussian',
+            optimizer_kwargs={'p0': [10, 0.5, 0.1, 1]},
+            suffix='_gaus', min_stat=20, return_metadata=True,
+        )
+        ev = GroupByRegressionEvaluator.from_dfGB(result, metadata=metadata)
+        params = ev.evaluate_params(positions={'xBin': 2.0, 'yBin': 2.0})
+        assert 'peak' in params
+        assert set(params['peak'].keys()) == {
+            'amplitude', 'mean', 'sigma', 'offset'}
+        # Amplitude should be ~10
+        amp = float(np.atleast_1d(params['peak']['amplitude'])[0])
+        assert 8.0 < amp < 12.0
+
+
+# ================================================================== #
+#  Cross-engine and extended invariance tests
+# ================================================================== #
+
+class TestCrossEngineInvariance:
+    """Tests that non-linear fits match linear fits for polynomial models."""
+
+    @pytest.mark.skipif(not _has_scipy(), reason="scipy not available")
+    def test_polynomial2_matches_linear_ols(self):
+        """I-NL.8: polynomial_2 non-linear ≡ linear OLS with [x, x²].
+
+        For y = 2 + 3x + 4x², fitting with linear SW (predictors=[x, x²],
+        fit_intercept=True) and non-linear SW (fit_func='polynomial_2')
+        must produce identical coefficients to numerical precision.
+        """
+        rng = np.random.RandomState(42)
+        rows = []
+        for b in range(7):
+            x = np.linspace(-1, 1, 60)
+            y = 2.0 + 3.0 * x + 4.0 * x ** 2 + rng.normal(0, 0.05, len(x))
+            rows.append(pd.DataFrame({
+                'xBin': b, 'pred': x, 'pred_sq': x ** 2, 'target': y,
+            }))
+        df = pd.concat(rows, ignore_index=True)
+
+        # Linear SW: predictors = [pred, pred_sq], fit_intercept=True
+        r_lin = make_sliding_window_fit(
+            df=df,
+            gb_columns=['xBin'],
+            fit_columns=['target'],
+            linear_columns=['pred', 'pred_sq'],
+            window_spec={'xBin': 1},
+            fit_intercept=True,
+            suffix='_lin',
+            min_stat=10,
+        )
+
+        # Non-linear SW: polynomial_2
+        r_nl = make_nonlinear_sliding_window_fit(
+            df=df,
+            gb_columns=['xBin'],
+            fit_columns=['target'],
+            linear_columns=['pred'],
+            window_spec={'xBin': 1},
+            fit_func='polynomial_2',
+            suffix='_nl',
+            min_stat=10,
+        )
+
+        # Compare at center bin (xBin=3, uses bins 2-4)
+        lin_row = r_lin[r_lin['xBin'] == 3].iloc[0]
+        nl_row = r_nl[r_nl['xBin'] == 3].iloc[0]
+
+        # Linear: intercept ≡ coeff_0, slope_pred ≡ coeff_1, slope_pred_sq ≡ coeff_2
+        np.testing.assert_allclose(
+            lin_row['target_intercept_lin'],
+            nl_row['target_coeff_0_nl'],
+            rtol=1e-4,
+            err_msg="intercept ≡ coeff_0")
+        np.testing.assert_allclose(
+            lin_row['target_slope_pred_lin'],
+            nl_row['target_coeff_1_nl'],
+            rtol=1e-4,
+            err_msg="slope_pred ≡ coeff_1")
+        np.testing.assert_allclose(
+            lin_row['target_slope_pred_sq_lin'],
+            nl_row['target_coeff_2_nl'],
+            rtol=1e-4,
+            err_msg="slope_pred_sq ≡ coeff_2")
+
+
+class TestGaussianPlusLine:
+    """Tests for the gaussian_plus_line model (most common TPC spectrum)."""
+
+    @pytest.mark.skipif(not _has_scipy(), reason="scipy not available")
+    def test_gaussian_plus_line_recovery(self):
+        """I-NL.9a: Recover known gaussian_plus_line parameters.
+
+        True: amplitude=10, mean=0.5, sigma=0.1, offset=1.0, slope=0.5
+        """
+        rng = np.random.RandomState(42)
+        rows = []
+        for xb in range(5):
+            for yb in range(5):
+                mass = rng.uniform(0, 1, 100)
+                y_true = (10.0 * np.exp(-0.5 * ((mass - 0.5) / 0.1) ** 2)
+                          + 1.0 + 0.5 * mass)
+                y = y_true + rng.normal(0, 0.1, len(mass))
+                rows.append(pd.DataFrame({
+                    'xBin': xb, 'yBin': yb, 'mass': mass, 'signal': y,
+                }))
+        df = pd.concat(rows, ignore_index=True)
+
+        result = make_nonlinear_sliding_window_fit(
+            df=df,
+            gb_columns=['xBin', 'yBin'],
+            fit_columns=['signal'],
+            linear_columns=['mass'],
+            window_spec={'xBin': 1, 'yBin': 1},
+            fit_func='gaussian_plus_line',
+            optimizer_kwargs={'p0': [10, 0.5, 0.1, 1.0, 0.5]},
+            suffix='_gpl',
+            min_stat=20,
+        )
+
+        center = result[(result['xBin'] == 2) & (result['yBin'] == 2)].iloc[0]
+        assert abs(center['signal_amplitude_gpl'] - 10.0) < 2.0, \
+            f"amplitude={center['signal_amplitude_gpl']}"
+        assert abs(center['signal_mean_gpl'] - 0.5) < 0.05, \
+            f"mean={center['signal_mean_gpl']}"
+        assert abs(center['signal_sigma_gpl'] - 0.1) < 0.05, \
+            f"sigma={center['signal_sigma_gpl']}"
+        assert abs(center['signal_offset_gpl'] - 1.0) < 0.5, \
+            f"offset={center['signal_offset_gpl']}"
+        assert abs(center['signal_slope_gpl'] - 0.5) < 0.5, \
+            f"slope={center['signal_slope_gpl']}"
+        assert center['signal_converged_gpl'] > 0.5
+
+    @pytest.mark.skipif(not _has_scipy(), reason="scipy not available")
+    def test_gaussian_plus_line_evaluate_roundtrip(self):
+        """I-NL.9b: Fit → evaluate → compare to ground truth.
+
+        Fit gaussian_plus_line, evaluate at original x positions,
+        verify mean |y_pred - y_true| < 3 * noise_level.
+        """
+        rng = np.random.RandomState(123)
+        noise_level = 0.15
+        rows = []
+        for xb in range(5):
+            for yb in range(5):
+                mass = rng.uniform(0, 1, 80)
+                y_true = (10.0 * np.exp(-0.5 * ((mass - 0.5) / 0.1) ** 2)
+                          + 1.0 + 0.5 * mass)
+                y = y_true + rng.normal(0, noise_level, len(mass))
+                rows.append(pd.DataFrame({
+                    'xBin': xb, 'yBin': yb, 'mass': mass,
+                    'signal': y, 'signal_true': y_true,
+                }))
+        df = pd.concat(rows, ignore_index=True)
+
+        result, metadata = make_nonlinear_sliding_window_fit(
+            df=df,
+            gb_columns=['xBin', 'yBin'],
+            fit_columns=['signal'],
+            linear_columns=['mass'],
+            window_spec={'xBin': 1, 'yBin': 1},
+            fit_func='gaussian_plus_line',
+            optimizer_kwargs={'p0': [10, 0.5, 0.1, 1.0, 0.5]},
+            suffix='_gpl',
+            min_stat=20,
+            return_metadata=True,
+        )
+
+        ev = GroupByRegressionEvaluator.from_dfGB(result, metadata=metadata)
+
+        # Evaluate at center bin across x range
+        x_eval = np.linspace(0, 1, 50)
+        y_pred = ev.evaluate_model(
+            positions={'xBin': 2.0, 'yBin': 2.0}, x_query=x_eval)
+        y_true = (10.0 * np.exp(-0.5 * ((x_eval - 0.5) / 0.1) ** 2)
+                  + 1.0 + 0.5 * x_eval)
+
+        mae = np.mean(np.abs(y_pred['signal'] - y_true))
+        assert mae < 3 * noise_level, \
+            f"MAE={mae:.4f} > 3*noise={3*noise_level:.4f}"
