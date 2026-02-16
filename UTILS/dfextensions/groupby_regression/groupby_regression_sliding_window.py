@@ -2426,10 +2426,7 @@ def _build_sw_metadata(
             'fit_type': 'sliding_window',
             'weights_column': weights_column,
         },
-        # --- Flat keys from original SW metadata (unchanged) ---
-        'gb_columns': list(gb_columns),
-        'suffix': suffix,
-        'fit_intercept': fit_intercept,
+        # --- Flat keys from original SW metadata (SW-specific, not in sub-dicts) ---
         'window_spec': window_spec or {},
         'boundary_mode': boundary_mode or {},
         'kernel': kernel if isinstance(kernel, str) else 'custom',

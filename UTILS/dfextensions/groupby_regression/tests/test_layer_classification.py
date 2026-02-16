@@ -575,6 +575,7 @@ TEST_LAYERS = {
     "test_invariance_evaluator.py::TestIVarInvariance::test_ivar_extreme_error_ratio": "invariance",
     "test_invariance_evaluator.py::TestIVarInvariance::test_ivar_zero_error_gets_all_weight": "invariance",
     "test_invariance_evaluator.py::TestIVarInvariance::test_ivar_proportional_weighting": "invariance",
+    "test_invariance_evaluator.py::TestIVarInvariance::test_use_errors_false_ignores_error_columns": "invariance",
     # -- Boundary invariance
     "test_invariance_evaluator.py::TestBoundaryInvariance::test_clamp_at_edge_equals_edge_bin": "invariance",
     "test_invariance_evaluator.py::TestBoundaryInvariance::test_nan_outside_grid": "invariance",
@@ -594,6 +595,22 @@ TEST_LAYERS = {
     "test_invariance_evaluator.py::TestExportInvariance::test_dict_roundtrip_exact": "invariance",
     "test_invariance_evaluator.py::TestExportInvariance::test_roundtrip_evaluation_identical": "invariance",
     "test_invariance_evaluator.py::TestExportInvariance::test_roundtrip_preserves_valid_mask": "invariance",
+
+    # ==================================================================
+    # test_parallel_sliding_window.py (9 tests) — Phase 13.8.SW
+    # ==================================================================
+    # -- Correctness: serial≡parallel parity → invariance
+    "test_parallel_sliding_window.py::TestParallelCorrectness::test_parallel_matches_serial": "invariance",
+    "test_parallel_sliding_window.py::TestParallelCorrectness::test_parallel_multiple_targets": "invariance",
+    "test_parallel_sliding_window.py::TestParallelCorrectness::test_parallel_output_columns": "smoke",
+    "test_parallel_sliding_window.py::TestParallelCorrectness::test_parallel_single_worker": "invariance",
+    # -- Edge cases: structural → smoke
+    "test_parallel_sliding_window.py::TestParallelEdgeCases::test_empty_dataframe": "smoke",
+    # -- Error handling: structural → smoke
+    "test_parallel_sliding_window.py::TestParallelErrorHandling::test_on_error_nan_fills": "smoke",
+    "test_parallel_sliding_window.py::TestParallelErrorHandling::test_on_error_raise_raises": "smoke",
+    # -- Performance: timing → performance
+    "test_parallel_sliding_window.py::TestParallelPerformance::test_parallel_speedup": "performance",
 }
 # fmt: on
 

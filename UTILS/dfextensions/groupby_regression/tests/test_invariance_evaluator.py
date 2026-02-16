@@ -385,6 +385,58 @@ class TestIVarInvariance:
         assert abs(result['val'] - 20.0) < 1e-10, \
             f"Expected 20.0, got {result['val']}"
 
+    def test_use_errors_false_ignores_error_columns(self):
+        """I3.5: use_errors=False must NOT apply inverse-variance weighting.
+
+        Regression test for operator precedence bug: with non-uniform errors,
+        use_errors=False must produce pure geometric multilinear interpolation
+        identical to a grid without any error columns.
+        """
+        grid_shape = (3, 3)
+        dims = ['x', 'y']
+        rng = np.random.RandomState(99)
+        intercept = rng.randn(*grid_shape)
+        slope = rng.randn(*grid_shape)
+        # Highly non-uniform errors — if ivar is applied, result differs
+        err_intercept = np.array([[0.01, 1.0, 100.0],
+                                   [0.01, 1.0, 100.0],
+                                   [0.01, 1.0, 100.0]])
+        err_slope = np.array([[100.0, 1.0, 0.01],
+                               [100.0, 1.0, 0.01],
+                               [100.0, 1.0, 0.01]])
+
+        # Evaluator WITH error columns
+        ev_with_err = GroupByRegressionEvaluator(
+            grid_shape=grid_shape, group_columns=dims,
+            predictor_columns=['pred'], targets=['val'],
+            bin_centers={d: np.arange(3, dtype=float) for d in dims},
+            coefficients={'val': {
+                'intercept': intercept, 'slope_pred': slope,
+                'intercept_err': err_intercept,
+                'slope_pred_err': err_slope,
+            }},
+        )
+        # Evaluator WITHOUT error columns (pure geometric baseline)
+        ev_no_err = GroupByRegressionEvaluator(
+            grid_shape=grid_shape, group_columns=dims,
+            predictor_columns=['pred'], targets=['val'],
+            bin_centers={d: np.arange(3, dtype=float) for d in dims},
+            coefficients={'val': {
+                'intercept': intercept, 'slope_pred': slope,
+            }},
+        )
+
+        pos = {'x': 0.7, 'y': 1.3}
+        pred = {'pred': 2.5}
+        result_with = ev_with_err.evaluate(pos, pred, method='multilinear',
+                                            use_errors=False)
+        result_without = ev_no_err.evaluate(pos, pred, method='multilinear',
+                                             use_errors=False)
+        assert abs(result_with['val'] - result_without['val']) < 1e-12, \
+            (f"use_errors=False should ignore error columns. "
+             f"With errors: {result_with['val']}, "
+             f"Without errors: {result_without['val']}")
+
 
 # ================================================================== #
 #  I4. Boundary handling invariances

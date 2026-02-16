@@ -1244,6 +1244,7 @@ FEATURE_TAXONOMY = {
             "test_invariance_evaluator.py::TestIVarInvariance::test_ivar_extreme_error_ratio",
             "test_invariance_evaluator.py::TestIVarInvariance::test_ivar_zero_error_gets_all_weight",
             "test_invariance_evaluator.py::TestIVarInvariance::test_ivar_proportional_weighting",
+            "test_invariance_evaluator.py::TestIVarInvariance::test_use_errors_false_ignores_error_columns",
         ],
         "bench_proof": [],
         "impl_tag": None,

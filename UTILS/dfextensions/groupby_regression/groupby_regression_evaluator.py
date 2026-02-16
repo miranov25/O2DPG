@@ -534,8 +534,8 @@ class GroupByRegressionEvaluator:
                     corner_vals[ci] = grid[idx_tuple]
 
                 # Apply weights
-                if use_errors and key in ('intercept',) or (
-                        key.startswith('slope_') and not key.endswith('_err')):
+                if use_errors and (key in ('intercept',) or (
+                        key.startswith('slope_') and not key.endswith('_err'))):
                     # Use inverse-variance weighting from error columns
                     err_key = key + '_err'
                     if err_key in self._coefficients[tgt]:
