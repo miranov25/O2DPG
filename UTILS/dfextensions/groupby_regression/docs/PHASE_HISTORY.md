@@ -24,9 +24,14 @@ The GroupBy Regression module provides high-performance grouped linear regressio
 | **12.14b.GB** | **BF Integration** | **Jan 1, 2026** | ✅ Complete |
 | **12.14b.GB-add** | **Dual Timing + cProfile** | **Jan 1, 2026** | ✅ Complete |
 | **12.14c.GB** | **ADF Visualization** | **Jan 3-4, 2026** | ✅ Complete |
+| **13.7.GB** | **Capability Matrix Infrastructure** | **Feb 7-8, 2026** | ✅ Complete |
+| **13.8.GB** | **SW API Refactor + Invariance Tests** | **Feb 9-10, 2026** | ✅ Complete |
+| **13.9.GB** | **V3 Incremental Algorithm** | **Feb 10, 2026** | ✅ Complete |
+| **13.8.SW** | **Parallel Sliding Window + Benchmarks** | **Feb 12-14, 2026** | ✅ Complete |
 | 12.15.GB | V4 Integration | — | 📋 Planned |
 
-**Current Test Count:** 145 benchmark tests + existing kernel/module suites
+**Current Test Count:** 338 passed, 3 failed (pre-existing), 102 features (25 verified)
+**Capability Matrix:** Phase 13.8.SW — 0 broken, 1 planned (SW.weighted)
 
 ---
 
@@ -51,6 +56,143 @@ Phases 12.14.GB through 12.14c.GB address this with:
 - Performance gates (ratio-based, CI-friendly)
 - Memory stability tests (streaming validation)
 - Benchmark framework with historical tracking and visualization
+
+---
+
+## February 2026 Phases
+
+### Phase 13.8.SW: Parallel Sliding Window + Benchmarks (Feb 12-14, 2026)
+**Tag:** `phase-13.8.SW`
+**Commits:** `b38fd93d`, `b45f69c5`, `7838885c`, `8785fd58`, `73de51f1`, `ef8c89bc`
+**Goal:** Parallel execution for V5 sliding window, benchmark consolidation, user-facing documentation
+
+**Deliverables:**
+
+| # | Component | Description |
+|---|-----------|-------------|
+| D1 | Parallel dispatch | `make_sliding_window_fit_parallel()` with fork() COW |
+| D2 | Zero-pickle fix | Module-level shared state, ~200B/task vs 125MB |
+| D3 | Counting sort | O(N) `_counting_sort_indices()`, 44.8× vs mergesort |
+| D4 | Numba cache fix | `conftest.py` hash-based auto-invalidation |
+| D5 | Parallel tests | 8 tests in `test_parallel_sliding_window.py` |
+| D6 | Parametric benchmark | `bench_slidingwindow_parametric.py` (V1/V2/V3/V5, 11 cost models) |
+| D7 | Parallel benchmark | `bench_slidingwindow_parallel.py` (scaling curve, sort comparison) |
+| D8 | README | `README_sliding_window_benchmark.md` (algorithm guidance + cost formulas) |
+| D9 | Capability matrix | Updated to 102 features, Phase 13.8.SW |
+
+**Performance Results:**
+
+| Metric | Value |
+|--------|-------|
+| V5 speedup vs alternatives | 25–68× (wins 10/10 configs) |
+| Parallel scaling (16 workers, 112M rows) | 3.3× |
+| Counting sort vs mergesort | 44.8× |
+| Pickle overhead eliminated | 155GB → 200 bytes/task |
+| Smoothing overhead at TPC scale | ~10–20% vs noSW |
+
+**TPC Predictions (extrapolated):**
+
+| Scenario | Serial (36×3) | With 10-way parallel |
+|----------|---------------|----------------------|
+| Standard (54K bins, 1K rpb) | ~3.4 min | ~20s |
+| High (54K bins, 2K rpb) | ~6.8 min | ~40s |
+
+**Bug Fixes:**
+
+| Bug | Impact | Fix |
+|-----|--------|-----|
+| `_build_bin_index_map` on V5 path | 85% of V5tot wasted (70 min → 3.4 min) | Skip on V5 path |
+| `executor.submit()` pickled arrays | 125MB × 36 = 155GB serialization | Module globals + fork() COW |
+| Numba stale cache after restructuring | `ModuleNotFoundError` | Hash-based auto-clear |
+
+**Cost Models:** 11 linear models fitted (R² > 0.99 at production scale). User-facing prediction formulas in README with machine-scaling guidance.
+
+**Tests:** 338 passed, 3 failed (pre-existing), 0 errors
+
+**Reviewed by:** Claude14 (coder), cross-review pending
+
+---
+
+### Phase 13.9.GB: V3 Incremental Algorithm (Feb 10, 2026)
+**Commit:** `bda26ca3`
+**Goal:** Replace O(N_bins × N_nbr × RPB) recompute with O(N_rows + N_bins × N_nbr) incremental
+
+**Key Innovation:** Pre-compute per-bin sufficient statistics (XtX, XtY, n, sum_y, sum_y2) in one pass over raw data, then sum neighbor matrices instead of re-accumulating from rows for each window.
+
+**Performance:**
+
+| Config | V3/V1 speedup |
+|--------|---------------|
+| 10³ grid, W=1 | 4.6× |
+| 15³ grid, W=2 | 5.6× |
+
+**Correctness:** V3 = V1 to machine precision (max diff < 3×10⁻¹⁴)
+
+**Trade-off:** median=NaN (cannot compute from sufficient statistics)
+
+**Tests:** +10 new invariance tests (TestSWV3Parity). Results: 306 passed, 3 failed (pre-existing)
+
+---
+
+### Phase 13.8.GB: SW API Refactor + V3b + V3-Numba (Feb 9-10, 2026)
+**Commits:** `2a713f2c`, `6601dc9b`, `bd6f042e`
+**Goal:** Align sliding window API with v4 conventions, add boundary/kernel modes, add Numba incremental solver
+
+**Sub-phases:**
+
+**Action A+B (Feb 9):** 3 bug fixes + invariance tests
+- A.1: Remove duplicate validation block
+- A.2: Fix wrong arg to `_get_neighbor_bins`
+- A.3: Add `res.bse` extraction — new `_err` columns (Bug #6)
+- 13 invariance tests with analytical checks (nsigma recovery, error consistency, pull distribution)
+
+**API Refactor (Feb 10):** v4-aligned `make_sliding_window_fit()`
+- Keyword-only params, v4 naming (`gb_columns`, `linear_columns`, `weights`, `min_stat`)
+- `backend='auto'` (Numba auto-detect), omitted window dims default to 0
+- Feature taxonomy: 96 → 100 features. Verified: 21 → 24
+
+**V3b Boundary + Kernel (Feb 10):**
+- `boundary='full'|'symmetric'|'periodic'`, per-dimension
+- `kernel='uniform'|'gaussian'|'epanechnikov'|'linear'|callable`
+- 15 V3b invariance tests
+
+**V3-Numba (Feb 10):** Incremental + Cholesky JIT
+- `_get_numba_incremental_kernel`: Cholesky solve + SE + diagnostics
+- Shared neighbor table between accumulation and solve phases
+- Dispatch: `algorithm='incremental', backend='numba'`
+
+**Tests:** 55 SW tests total (24 new), all passing
+
+**Approved by:** GPT10, GPT11, Claude, Claude-Opus, Claude12 (5/5)
+
+---
+
+### Phase 13.7.GB: Capability Matrix Infrastructure (Feb 7-8, 2026)
+**Commits:** `5279be73`, `692ffeab`, `3bfdcfc5`
+**Goal:** Two-tier quality classification for all features and tests
+
+**Deliverables:**
+
+| Component | Description |
+|-----------|-------------|
+| `feature_taxonomy.py` | 96-feature taxonomy with proof-test references |
+| `test_layer_classification.py` | 291-test classification (invariance/integration/smoke/validation/performance) |
+| `generate_capability_matrix.py` | Auto-generated two-tier capability matrix |
+| `run_tests.sh` | Unified test runner with timestamped logging, reviewer.zip packaging |
+| `conftest.py` | Register feature/layer markers |
+| `pytest.ini` | Strict marker enforcement |
+| `tests/README.md` | Test infrastructure documentation |
+
+**Classification Rules:**
+- ✅ Verified: has invariance or integration test
+- ☑️ Smoke-only: smoke tests only — does not catch numerical regressions
+- 🧨 Broken: test failures
+- 📋 Planned: no tests yet
+- Fail-closed (§3.5): unclassified tests default to smoke
+
+**Initial Matrix:** 96 features (21 verified, 75 smoke-only, 0 broken, 0 partial)
+
+**Tests:** 296 passed, 3 failed (pre-existing)
 
 ---
 
@@ -431,6 +573,15 @@ Two specifications govern Phase 12.14:
 | Always-on cProfile | Historical profiles for bottleneck analysis | 12.14b.GB-add |
 | Skip cProfile for n_jobs > 1 | cProfile only captures main process | 12.14c.GB D6 |
 | wall_time_s optional fallback | Backward compat with pre-12.14b.GB data | 12.14c.GB D1 |
+| Two-tier capability matrix | Verified (inv/int test) vs smoke-only classification | 13.7.GB |
+| Fail-closed rule | Unclassified tests default to smoke, not verified | 13.7.GB |
+| V4-aligned SW API | Keyword-only, gb_columns/linear_columns naming | 13.8.GB |
+| Incremental algorithm (V3) | Pre-compute XtX/XtY per bin, sum neighbors | 13.9.GB |
+| V5 incremental+numba | Best of both: incremental algorithm + JIT kernels | 13.8.SW |
+| Fork() COW dispatch | Module globals + try/finally, not pickle | 13.8.SW |
+| O(N) counting sort | Numba JIT counting sort vs O(N log N) argsort | 13.8.SW |
+| Retain statsmodels | OLS/WLS/GLM/RLM diversity for TPC calibration | 13.8.GB |
+| Always-on benchmark validation | V1 vs V5 diff check catches bugs unit tests miss | 13.8.SW |
 
 ---
 
@@ -464,9 +615,20 @@ Each phase follows this workflow:
 
 | File | Purpose |
 |------|---------|
+| `groupby_regression_sliding_window.py` | Sliding window regression (V1-V5 + parallel) |
 | `groupby_regression_kernels.py` | Shared Numba kernel module |
 | `groupby_regression_optimized.py` | V4/V5 implementations |
+| `tests/test_parallel_sliding_window.py` | 8 parallel correctness tests |
+| `tests/test_invariance_sliding_window.py` | 55 SW invariance tests |
 | `tests/test_groupby_regression_kernels.py` | 28 kernel tests |
+| `tests/feature_taxonomy.py` | 102-feature taxonomy |
+| `tests/test_layer_classification.py` | 281-test layer classification |
+| `scripts/generate_capability_matrix.py` | Capability matrix generator |
+| `tests/conftest.py` | Numba cache invalidation + markers |
+| `run_tests.sh` | Unified test runner + reviewer.zip |
+| `benchmarks/bench_slidingwindow_parametric.py` | Serial V1/V2/V3/V5 benchmark |
+| `benchmarks/bench_slidingwindow_parallel.py` | Parallel scaling benchmark |
+| `benchmarks/README_sliding_window_benchmark.md` | User-facing performance guide |
 | `benchmarks/runner.py` | BF runner with multi-source discovery |
 | `benchmarks/schema.py` | JSON schema + NumpyEncoder |
 | `benchmarks/benchmark_adf.py` | AliasDataFrame adapter |
@@ -487,6 +649,15 @@ Each phase follows this workflow:
 ### Phase 12.16.GB: V5 Integration (Potential)
 - Update V5 to use shared kernel
 - Handle heterogeneous `linear_columns` in wrapper
+
+### SW.weighted: Sliding Window Weighted Fits (WLS)
+- Planned feature (marked in capability matrix)
+- Requires extending sufficient statistics to weighted case
+
+### Asymmetric Windows (benchmark coverage)
+- Asymmetric window support exists in code
+- Missing from benchmark parametric sweep
+- Add to `bench_slidingwindow_parametric.py`
 
 ---
 
@@ -519,6 +690,35 @@ Each phase follows this workflow:
 | CLI commands | 3 (--history, --history-stats, --plot) |
 | Exit codes | 4 (0/1/2/3) |
 
+### V5 Sliding Window (Phase 13.8.SW, Apple M1 Pro)
+
+| Config | V1 | V2 | V3 | V5tot | V5 Speedup |
+|--------|------|------|------|-------|------------|
+| 10³ W=1 r=10 | 0.114s | 0.093s | 0.127s | 0.005s | 25× |
+| 25³ W=1 r=10 | 1.867s | 1.609s | 2.179s | 0.050s | 44× |
+| 25³ W=2 r=10 | 3.515s | 3.094s | 6.072s | 0.089s | 68× |
+| 25³ W=1 r=50 | 3.377s | 2.832s | 2.702s | 0.086s | 40× |
+
+### Parallel Scaling (Phase 13.8.SW, Linux aarch64, 112M rows)
+
+| Workers | Time | Speedup |
+|---------|------|---------|
+| 1 | 16.6s | 1.0× |
+| 8 | 5.2s | 3.2× |
+| 16 | 5.1s | 3.3× |
+
+### Capability Matrix (Phase 13.8.SW)
+
+| Metric | Value |
+|--------|-------|
+| Total features | 102 |
+| Verified (✅) | 25 (24.5%) |
+| Smoke-only (☑️) | 76 (74.5%) |
+| Broken (🧨) | 0 (0.0%) |
+| Planned (📋) | 1 (1.0%) |
+| Total tests (unique) | 281 |
+| Invariance tests | 41 |
+
 ---
 
 ## Document History
@@ -528,3 +728,4 @@ Each phase follows this workflow:
 | 1.0 | Dec 16, 2025 | Initial version |
 | 2.0 | Dec 31, 2025 | Added Phases 12.14.GB, 12.14a.GB, incident analysis |
 | 3.0 | Jan 4, 2026 | Added Phases 12.14b.GB, 12.14b.GB-addendum, 12.14c.GB |
+| 4.0 | Feb 14, 2026 | Added Phases 13.7.GB, 13.8.GB, 13.9.GB, 13.8.SW. Updated capability matrix (102 features), performance reference, key files, technical decisions |

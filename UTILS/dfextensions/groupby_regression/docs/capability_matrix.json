@@ -1,6 +1,6 @@
 {
-  "generated": "2026-02-14T10:29:51.441595",
-  "phase": "13.8.SW",
+  "generated": "2026-02-16T08:00:09.081008",
+  "phase": "13.9.GB",
   "features": {
     "KERNEL.single_fit": {
       "name": "Single-target OLS kernel",
@@ -960,18 +960,18 @@
     "SW.parallel": {
       "name": "Parallel sliding window (split-column)",
       "module": "groupby_regression_sliding_window",
-      "status": "\u2611\ufe0f",
-      "status_label": "Smoke-only",
+      "status": "\u2705",
+      "status_label": "Verified",
       "impl_tag": "NUMBA",
       "test_count": 8,
-      "invariance_count": 0,
+      "invariance_count": 3,
       "has_bench_proof": true,
       "bench_proof": [
         "bench_slidingwindow_parallel.py::parallel_scaling (1-36 workers) [GATED]",
         "bench_slidingwindow_parallel.py::serial_vs_parallel_validation [GATED]",
         "bench_slidingwindow_parallel.py::counting_sort_vs_argsort [MONITOR]"
       ],
-      "unclassified_count": 8
+      "unclassified_count": 0
     },
     "SW.v5_dominance": {
       "name": "V5 algorithm dominance across all backends",
@@ -980,14 +980,14 @@
       "status_label": "Verified",
       "impl_tag": "NUMBA",
       "test_count": 2,
-      "invariance_count": 1,
+      "invariance_count": 2,
       "has_bench_proof": true,
       "bench_proof": [
         "bench_slidingwindow_parametric.py::V1_vs_V2_vs_V3_vs_V5_validation (30/30 PASS) [GATED]",
         "bench_slidingwindow_parametric.py::algorithm_recommendation (V5 wins 10/10) [MONITOR]",
         "bench_slidingwindow_parametric.py::cost_model_fit (11 models, R2>0.99) [MONITOR]"
       ],
-      "unclassified_count": 1
+      "unclassified_count": 0
     },
     "META.column_validation": {
       "name": "Column name validation",
@@ -1254,12 +1254,132 @@
       "has_bench_proof": false,
       "bench_proof": [],
       "unclassified_count": 0
+    },
+    "EVAL.construction": {
+      "name": "Evaluator construction from dfGB",
+      "module": "groupby_regression_evaluator",
+      "status": "\u2611\ufe0f",
+      "status_label": "Smoke-only",
+      "impl_tag": null,
+      "test_count": 7,
+      "invariance_count": 0,
+      "has_bench_proof": false,
+      "bench_proof": [],
+      "unclassified_count": 0
+    },
+    "EVAL.metadata_construction": {
+      "name": "Evaluator construction from metadata",
+      "module": "groupby_regression_evaluator",
+      "status": "\u2611\ufe0f",
+      "status_label": "Smoke-only",
+      "impl_tag": null,
+      "test_count": 7,
+      "invariance_count": 0,
+      "has_bench_proof": false,
+      "bench_proof": [],
+      "unclassified_count": 0
+    },
+    "EVAL.nearest": {
+      "name": "Nearest-neighbor evaluation",
+      "module": "groupby_regression_evaluator",
+      "status": "\u2705",
+      "status_label": "Verified",
+      "impl_tag": null,
+      "test_count": 7,
+      "invariance_count": 6,
+      "has_bench_proof": false,
+      "bench_proof": [],
+      "unclassified_count": 0
+    },
+    "EVAL.multilinear": {
+      "name": "Multilinear interpolation",
+      "module": "groupby_regression_evaluator",
+      "status": "\u2705",
+      "status_label": "Verified",
+      "impl_tag": null,
+      "test_count": 8,
+      "invariance_count": 8,
+      "has_bench_proof": false,
+      "bench_proof": [],
+      "unclassified_count": 0
+    },
+    "EVAL.ivar_weighting": {
+      "name": "Inverse-variance weighted interpolation",
+      "module": "groupby_regression_evaluator",
+      "status": "\u2705",
+      "status_label": "Verified",
+      "impl_tag": null,
+      "test_count": 7,
+      "invariance_count": 7,
+      "has_bench_proof": false,
+      "bench_proof": [],
+      "unclassified_count": 0
+    },
+    "EVAL.boundary": {
+      "name": "Boundary handling (clamp/nan/extrapolate)",
+      "module": "groupby_regression_evaluator",
+      "status": "\u2705",
+      "status_label": "Verified",
+      "impl_tag": null,
+      "test_count": 7,
+      "invariance_count": 7,
+      "has_bench_proof": false,
+      "bench_proof": [],
+      "unclassified_count": 0
+    },
+    "EVAL.sparse_grid": {
+      "name": "Sparse grid handling (invalid bins)",
+      "module": "groupby_regression_evaluator",
+      "status": "\u2705",
+      "status_label": "Verified",
+      "impl_tag": null,
+      "test_count": 6,
+      "invariance_count": 6,
+      "has_bench_proof": false,
+      "bench_proof": [],
+      "unclassified_count": 0
+    },
+    "EVAL.multi_target": {
+      "name": "Multi-target evaluation",
+      "module": "groupby_regression_evaluator",
+      "status": "\u2705",
+      "status_label": "Verified",
+      "impl_tag": null,
+      "test_count": 3,
+      "invariance_count": 3,
+      "has_bench_proof": false,
+      "bench_proof": [],
+      "unclassified_count": 0
+    },
+    "EVAL.export_roundtrip": {
+      "name": "JSON export/import roundtrip",
+      "module": "groupby_regression_evaluator",
+      "status": "\u2705",
+      "status_label": "Verified",
+      "impl_tag": null,
+      "test_count": 6,
+      "invariance_count": 6,
+      "has_bench_proof": false,
+      "bench_proof": [],
+      "unclassified_count": 0
+    },
+    "EVAL.sw_integration": {
+      "name": "SW output integration",
+      "module": "groupby_regression_evaluator",
+      "status": "\u2705",
+      "status_label": "Verified",
+      "impl_tag": null,
+      "test_count": 2,
+      "invariance_count": 2,
+      "has_bench_proof": false,
+      "bench_proof": [],
+      "unclassified_count": 0
     }
   },
   "summary": {
-    "Verified": 25,
-    "Smoke-only": 76,
+    "Verified": 34,
+    "Smoke-only": 77,
     "Planned": 1,
-    "total": 102
+    "total": 112
   }
 }
