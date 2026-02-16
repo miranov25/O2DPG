@@ -479,3 +479,159 @@ class TestSWInfrastructureReuse:
         # xBin=0 has only 2 rows < min_stat=5
         row0 = result[result['xBin'] == 0].iloc[0]
         assert 'insufficient' in row0['target_quality_flag_nl']
+
+
+# ================================================================== #
+#  Evaluator extension tests (Phase 13.10.GB-D)
+# ================================================================== #
+
+from ..groupby_regression_evaluator import GroupByRegressionEvaluator
+
+
+class TestEvaluatorNonLinear:
+    """Tests for non-linear evaluator extension (Option A: interpolate params)."""
+
+    @pytest.mark.skipif(not _has_scipy(), reason="scipy not available")
+    def test_from_dfGB_nonlinear(self):
+        """Evaluator constructs from non-linear SW output."""
+        df = _make_gaussian_data(n_bins_x=5, n_bins_y=5, n_per_bin=100)
+        result, metadata = make_nonlinear_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin'],
+            fit_columns=['peak'], linear_columns=['mass'],
+            window_spec={'xBin': 1, 'yBin': 1},
+            fit_func='gaussian',
+            optimizer_kwargs={'p0': [10, 0.5, 0.1, 1]},
+            suffix='_gaus', min_stat=20, return_metadata=True,
+        )
+        ev = GroupByRegressionEvaluator.from_dfGB(result, metadata=metadata)
+        assert ev.fit_model == 'gaussian'
+        assert ev.param_names == ['amplitude', 'mean', 'sigma', 'offset']
+        assert ev.grid_shape == (5, 5)
+
+    @pytest.mark.skipif(not _has_scipy(), reason="scipy not available")
+    def test_evaluate_model_peak_vs_tail(self):
+        """Gaussian evaluate_model: peak > tail."""
+        df = _make_gaussian_data(n_bins_x=5, n_bins_y=5, n_per_bin=100)
+        result, metadata = make_nonlinear_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin'],
+            fit_columns=['peak'], linear_columns=['mass'],
+            window_spec={'xBin': 1, 'yBin': 1},
+            fit_func='gaussian',
+            optimizer_kwargs={'p0': [10, 0.5, 0.1, 1]},
+            suffix='_gaus', min_stat=20, return_metadata=True,
+        )
+        ev = GroupByRegressionEvaluator.from_dfGB(result, metadata=metadata)
+        y_peak = ev.evaluate_model(
+            positions={'xBin': 2.0, 'yBin': 2.0}, x_query=0.5)
+        y_tail = ev.evaluate_model(
+            positions={'xBin': 2.0, 'yBin': 2.0}, x_query=0.0)
+        assert y_peak['peak'] > y_tail['peak']
+        assert y_peak['peak'] > 8.0  # amplitude ~10 + offset ~1
+        assert y_tail['peak'] < 3.0  # near offset
+
+    @pytest.mark.skipif(not _has_scipy(), reason="scipy not available")
+    def test_evaluate_model_vectorized(self):
+        """evaluate_model accepts array x_query."""
+        df = _make_gaussian_data(n_bins_x=5, n_bins_y=5, n_per_bin=100)
+        result, metadata = make_nonlinear_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin'],
+            fit_columns=['peak'], linear_columns=['mass'],
+            window_spec={'xBin': 1, 'yBin': 1},
+            fit_func='gaussian',
+            optimizer_kwargs={'p0': [10, 0.5, 0.1, 1]},
+            suffix='_gaus', min_stat=20, return_metadata=True,
+        )
+        ev = GroupByRegressionEvaluator.from_dfGB(result, metadata=metadata)
+        x = np.linspace(0, 1, 10)
+        y = ev.evaluate_model(
+            positions={'xBin': 2.0, 'yBin': 2.0}, x_query=x)
+        assert isinstance(y['peak'], np.ndarray)
+        assert y['peak'].shape == (10,)
+        # Should be Gaussian-shaped: max near center
+        assert np.argmax(y['peak']) in (4, 5)
+
+    @pytest.mark.skipif(not _has_scipy(), reason="scipy not available")
+    def test_evaluate_model_auto_registry_lookup(self):
+        """Named model auto-resolved from registry — no model_func needed."""
+        df = _make_gaussian_data(n_bins_x=3, n_bins_y=3, n_per_bin=100)
+        result, metadata = make_nonlinear_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin'],
+            fit_columns=['peak'], linear_columns=['mass'],
+            window_spec={'xBin': 1, 'yBin': 1},
+            fit_func='gaussian',
+            optimizer_kwargs={'p0': [10, 0.5, 0.1, 1]},
+            suffix='_gaus', min_stat=20, return_metadata=True,
+        )
+        ev = GroupByRegressionEvaluator.from_dfGB(result, metadata=metadata)
+        # Should work without model_func= argument
+        y = ev.evaluate_model(
+            positions={'xBin': 1.0, 'yBin': 1.0}, x_query=0.5)
+        assert 'peak' in y
+        assert y['peak'] > 5.0
+
+    @pytest.mark.skipif(not _has_scipy(), reason="scipy not available")
+    def test_evaluate_model_custom_func(self):
+        """Custom model_func passed explicitly at evaluate time."""
+        df = _make_gaussian_data(n_bins_x=3, n_bins_y=3, n_per_bin=100)
+        result, metadata = make_nonlinear_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin'],
+            fit_columns=['peak'], linear_columns=['mass'],
+            window_spec={'xBin': 1, 'yBin': 1},
+            fit_func='gaussian',
+            optimizer_kwargs={'p0': [10, 0.5, 0.1, 1]},
+            suffix='_gaus', min_stat=20, return_metadata=True,
+        )
+        ev = GroupByRegressionEvaluator.from_dfGB(result, metadata=metadata)
+        # Pass model_func explicitly — should give same result
+        y_auto = ev.evaluate_model(
+            positions={'xBin': 1.0, 'yBin': 1.0}, x_query=0.5)
+        y_explicit = ev.evaluate_model(
+            positions={'xBin': 1.0, 'yBin': 1.0}, x_query=0.5,
+            model_func=_gaussian)
+        assert abs(y_auto['peak'] - y_explicit['peak']) < 1e-10
+
+    def test_evaluate_model_rejects_linear(self):
+        """evaluate_model raises on linear evaluators."""
+        coefficients = {
+            'dX': {
+                'intercept': np.array([[1.0, 2.0], [3.0, 4.0]]),
+                'slope_pred': np.array([[0.5, 0.6], [0.7, 0.8]]),
+            }
+        }
+        ev = GroupByRegressionEvaluator(
+            grid_shape=(2, 2),
+            group_columns=['xBin', 'yBin'],
+            predictor_columns=['pred'],
+            targets=['dX'],
+            bin_centers={'xBin': np.array([0.0, 1.0]),
+                         'yBin': np.array([0.0, 1.0])},
+            coefficients=coefficients,
+        )
+        with pytest.raises(ValueError, match="non-linear"):
+            ev.evaluate_model(
+                positions={'xBin': 0.5, 'yBin': 0.5}, x_query=0.5)
+
+    @pytest.mark.skipif(not _has_scipy(), reason="scipy not available")
+    def test_evaluator_interpolation_smoothness(self):
+        """I-NL.5: Interpolated params produce smooth function."""
+        df = _make_gaussian_data(n_bins_x=5, n_bins_y=5, n_per_bin=200)
+        result, metadata = make_nonlinear_sliding_window_fit(
+            df=df, gb_columns=['xBin', 'yBin'],
+            fit_columns=['peak'], linear_columns=['mass'],
+            window_spec={'xBin': 1, 'yBin': 1},
+            fit_func='gaussian',
+            optimizer_kwargs={'p0': [10, 0.5, 0.1, 1]},
+            suffix='_gaus', min_stat=20, return_metadata=True,
+        )
+        ev = GroupByRegressionEvaluator.from_dfGB(result, metadata=metadata)
+        # Evaluate at neighboring positions — should be smooth
+        x_query = 0.5
+        y_values = []
+        for pos in np.linspace(1.0, 3.0, 10):
+            y = ev.evaluate_model(
+                positions={'xBin': pos, 'yBin': 2.0}, x_query=x_query)
+            y_values.append(y['peak'])
+        y_arr = np.array(y_values)
+        # Max jump between neighbors should be small
+        jumps = np.abs(np.diff(y_arr))
+        assert np.max(jumps) < 2.0, f"Large jump: {np.max(jumps):.3f}"

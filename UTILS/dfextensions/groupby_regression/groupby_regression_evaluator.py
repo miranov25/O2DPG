@@ -121,6 +121,12 @@ class GroupByRegressionEvaluator:
         self._grid_shape = tuple(grid_shape)
         self._metadata = dict(metadata) if metadata else {}
 
+        # Detect fit model type from metadata
+        params_info = self._metadata.get('parameters', {})
+        self._fit_model = params_info.get('fit_model', 'linear')
+        self._param_names = params_info.get('param_names', [])
+        self._is_nonlinear = (self._fit_model != 'linear')
+
         # Validate bin_centers
         if set(bin_centers.keys()) != set(group_columns):
             raise ValueError(
@@ -150,16 +156,22 @@ class GroupByRegressionEvaluator:
                         f"coefficients['{tgt}']['{key}'] shape {arr.shape} "
                         f"!= grid_shape {self._grid_shape}")
                 tgt_coeffs[key] = arr
-            # Validate that intercept exists
-            if 'intercept' not in tgt_coeffs:
-                raise ValueError(
-                    f"coefficients['{tgt}'] must contain 'intercept'")
-            # Validate slope columns match predictor_columns
-            for pred in predictor_columns:
-                if f'slope_{pred}' not in tgt_coeffs:
+
+            if self._is_nonlinear:
+                # Non-linear: require at least one parameter grid
+                if len(tgt_coeffs) == 0:
                     raise ValueError(
-                        f"coefficients['{tgt}'] must contain "
-                        f"'slope_{pred}' for predictor '{pred}'")
+                        f"coefficients['{tgt}'] has no entries")
+            else:
+                # Linear: require intercept + slope_* (original behavior)
+                if 'intercept' not in tgt_coeffs:
+                    raise ValueError(
+                        f"coefficients['{tgt}'] must contain 'intercept'")
+                for pred in predictor_columns:
+                    if f'slope_{pred}' not in tgt_coeffs:
+                        raise ValueError(
+                            f"coefficients['{tgt}'] must contain "
+                            f"'slope_{pred}' for predictor '{pred}'")
             self._coefficients[tgt] = tgt_coeffs
 
         # Valid mask
@@ -170,10 +182,11 @@ class GroupByRegressionEvaluator:
                     f"valid_mask shape {self._valid_mask.shape} != "
                     f"grid_shape {self._grid_shape}")
         else:
-            # Infer from intercept NaN of first target
+            # Infer from first coefficient of first target
             first_tgt = self._targets[0]
+            first_key = next(iter(self._coefficients[first_tgt]))
             self._valid_mask = ~np.isnan(
-                self._coefficients[first_tgt]['intercept'])
+                self._coefficients[first_tgt][first_key])
 
     # ------------------------------------------------------------------ #
     #  Properties
@@ -386,6 +399,136 @@ class GroupByRegressionEvaluator:
             result[tgt] = val
 
         return result
+
+    @property
+    def fit_model(self) -> str:
+        """Fit model type: 'linear', 'gaussian', '<callable>', etc."""
+        return self._fit_model
+
+    @property
+    def param_names(self) -> List[str]:
+        """Parameter names for non-linear models (empty for linear)."""
+        return list(self._param_names)
+
+    def evaluate_model(
+        self,
+        positions: Union[Dict[str, float], 'pd.DataFrame'],
+        x_query: Union[float, np.ndarray],
+        model_func: Optional[Callable] = None,
+        method: str = 'multilinear',
+        use_errors: bool = False,
+        invalid_strategy: str = 'nan',
+        bounds: str = 'clamp',
+        targets: Optional[List[str]] = None,
+    ) -> Union[Dict[str, float], Dict[str, np.ndarray]]:
+        """
+        Evaluate a non-linear model at arbitrary positions (Option A).
+
+        Interpolates fitted parameters across the grid, then evaluates
+        the model function with the interpolated parameters.
+
+        Parameters
+        ----------
+        positions : dict[str, float] or DataFrame
+            Coordinates per dimension (bin positions).
+        x_query : float or array-like
+            Predictor value(s) at which to evaluate the model.
+            For named models, must be a scalar or 1-D array.
+        model_func : callable, optional
+            Model function ``f(x, *params) → y``, scipy.optimize.curve_fit
+            compatible.  For named models, auto-resolved from the registry.
+            Required for custom callables.
+        method : str
+            Interpolation method: ``'nearest'`` or ``'multilinear'``.
+        use_errors : bool
+            If True, use inverse-variance weighting for interpolation.
+        invalid_strategy : str
+            How to handle invalid bins: ``'nan'``, ``'skip'``, ``'nearest_valid'``.
+        bounds : str
+            Out-of-bounds handling: ``'clamp'``, ``'nan'``, ``'extrapolate'``.
+        targets : list of str, optional
+            Subset of targets to evaluate. None = all.
+
+        Returns
+        -------
+        result : dict[str, float or np.ndarray]
+            {target: predicted_value(s)} for each target.
+
+        Raises
+        ------
+        ValueError
+            If model_func is None and fit_model is not a registered named model.
+        """
+        if not self._is_nonlinear:
+            raise ValueError(
+                "evaluate_model() is for non-linear fits. "
+                "Use evaluate() for linear fits."
+            )
+
+        # Resolve model function
+        if model_func is None:
+            model_func = self._resolve_model_func()
+
+        eval_targets = targets if targets is not None else self._targets
+
+        # Get interpolated parameters (reuses get_coefficients)
+        coeffs = self.get_coefficients(
+            positions, method=method, use_errors=use_errors,
+            invalid_strategy=invalid_strategy, bounds=bounds,
+            targets=eval_targets,
+        )
+
+        x = np.atleast_1d(np.asarray(x_query, dtype=np.float64))
+
+        result = {}
+        for tgt in eval_targets:
+            tgt_coeffs = coeffs[tgt]
+            # Extract parameter arrays (exclude _err and diagnostic keys)
+            param_values = []
+            for pn in self._param_names:
+                if pn in tgt_coeffs:
+                    param_values.append(tgt_coeffs[pn])
+                else:
+                    raise KeyError(
+                        f"Parameter '{pn}' not found in interpolated "
+                        f"coefficients for target '{tgt}'. "
+                        f"Available: {list(tgt_coeffs.keys())}")
+
+            # Evaluate: model_func(x, *params) → y
+            # param_values are scalar or 1-D arrays from interpolation
+            # x can be scalar or array
+            try:
+                params = [np.atleast_1d(p) for p in param_values]
+                val = model_func(x, *[p for p in params])
+            except Exception as exc:
+                val = np.full_like(x, np.nan)
+
+            # Squeeze scalar
+            if val.size == 1:
+                val = float(val.ravel()[0])
+            result[tgt] = val
+
+        return result
+
+    def _resolve_model_func(self) -> Callable:
+        """Auto-resolve model function from registry for named models."""
+        try:
+            from .groupby_regression_models import get_model
+        except ImportError:
+            from groupby_regression_models import get_model
+
+        if self._fit_model in ('<callable>', 'linear'):
+            raise ValueError(
+                f"Cannot auto-resolve model function for fit_model="
+                f"'{self._fit_model}'. Pass model_func= explicitly.")
+        try:
+            spec = get_model(self._fit_model)
+            return spec.func
+        except KeyError:
+            raise ValueError(
+                f"Model '{self._fit_model}' not in registry. "
+                f"Pass model_func= explicitly or register the model."
+            )
 
     def get_coefficients(
         self,
@@ -944,6 +1087,10 @@ class GroupByRegressionEvaluator:
         #   {target}_mad{suffix} → 'mad'
         #   {target}_n_fitted{suffix} → 'n_fitted'
 
+        # Detect if this is a non-linear fit
+        params_info = (metadata or {}).get('parameters', {})
+        self_is_nonlinear = params_info.get('fit_model', 'linear') != 'linear'
+
         coefficients = {}
         for tgt in targets:
             tgt_coeffs = {}
@@ -979,6 +1126,15 @@ class GroupByRegressionEvaluator:
                 col_name = f'{tgt}_{canonical}{suffix}'
                 if col_name not in dfGB.columns:
                     continue
+                # Skip non-numeric columns (e.g., quality_flag)
+                col_dtype = dfGB[col_name].dtype
+                try:
+                    is_numeric = np.issubdtype(col_dtype, np.number)
+                except TypeError:
+                    # Pandas extension dtypes (StringDtype, etc.)
+                    is_numeric = False
+                if not is_numeric:
+                    continue
                 grid = np.full(grid_shape, np.nan, dtype=np.float64)
                 for _, row in dfGB.iterrows():
                     idx = tuple(
@@ -989,21 +1145,31 @@ class GroupByRegressionEvaluator:
                 filled_coeffs[canonical] = grid
 
             # Ensure minimum required coefficients exist
-            if 'intercept' not in filled_coeffs:
-                raise ValueError(
-                    f"Column '{tgt}_intercept{suffix}' not found in dfGB. "
-                    f"Available: {list(dfGB.columns)}")
-            for pred in predictor_columns:
-                if f'slope_{pred}' not in filled_coeffs:
+            if self_is_nonlinear:
+                # Non-linear: just need at least one coefficient grid
+                if len(filled_coeffs) == 0:
                     raise ValueError(
-                        f"Column '{tgt}_slope_{pred}{suffix}' not found. "
+                        f"No coefficient columns found for target '{tgt}' "
+                        f"with suffix '{suffix}'. "
                         f"Available: {list(dfGB.columns)}")
+            else:
+                # Linear: require intercept + slope_*
+                if 'intercept' not in filled_coeffs:
+                    raise ValueError(
+                        f"Column '{tgt}_intercept{suffix}' not found in dfGB. "
+                        f"Available: {list(dfGB.columns)}")
+                for pred in predictor_columns:
+                    if f'slope_{pred}' not in filled_coeffs:
+                        raise ValueError(
+                            f"Column '{tgt}_slope_{pred}{suffix}' not found. "
+                            f"Available: {list(dfGB.columns)}")
 
             coefficients[tgt] = filled_coeffs
 
-        # Step 5: Build valid mask (from intercept of first target)
-        first_intercept = coefficients[targets[0]]['intercept']
-        valid_mask_arr = ~np.isnan(first_intercept)
+        # Step 5: Build valid mask (from first coefficient of first target)
+        first_tgt_coeffs = coefficients[targets[0]]
+        first_key = next(iter(first_tgt_coeffs))
+        valid_mask_arr = ~np.isnan(first_tgt_coeffs[first_key])
 
         return cls(
             grid_shape=grid_shape,
@@ -1021,6 +1187,7 @@ class GroupByRegressionEvaluator:
     # ------------------------------------------------------------------ #
 
     def __repr__(self) -> str:
+        model_info = f", fit_model='{self._fit_model}'" if self._is_nonlinear else ''
         return (
             f"GroupByRegressionEvaluator("
             f"targets={self._targets}, "
@@ -1028,5 +1195,6 @@ class GroupByRegressionEvaluator:
             f"dims={self._group_columns}, "
             f"predictors={self._predictor_columns}, "
             f"valid={self.n_valid_bins}/{self._valid_mask.size}"
+            f"{model_info}"
             f")"
         )
