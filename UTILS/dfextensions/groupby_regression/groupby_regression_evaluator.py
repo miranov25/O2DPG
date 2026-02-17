@@ -530,6 +530,352 @@ class GroupByRegressionEvaluator:
                 f"Pass model_func= explicitly or register the model."
             )
 
+    def evaluate_params(
+        self,
+        positions: Union[Dict[str, float], 'pd.DataFrame'],
+        method: str = 'multilinear',
+        use_errors: bool = False,
+        invalid_strategy: str = 'nan',
+        bounds: str = 'clamp',
+        targets: Optional[List[str]] = None,
+    ) -> Dict[str, Dict[str, Union[float, np.ndarray]]]:
+        """
+        Get interpolated non-linear parameters at arbitrary positions.
+
+        Convenience wrapper around get_coefficients() for non-linear fits.
+        Returns only the model parameters (excluding _err and diagnostic keys).
+
+        Parameters
+        ----------
+        positions : dict[str, float] or DataFrame
+            Coordinates per dimension.
+        method, use_errors, invalid_strategy, bounds, targets :
+            Same as get_coefficients().
+
+        Returns
+        -------
+        params : dict[str, dict[str, float or np.ndarray]]
+            {target: {param_name: interpolated_value}} for model parameters only.
+        """
+        coeffs = self.get_coefficients(
+            positions, method=method, use_errors=use_errors,
+            invalid_strategy=invalid_strategy, bounds=bounds,
+            targets=targets,
+        )
+        eval_targets = targets if targets is not None else self._targets
+        result = {}
+        for tgt in eval_targets:
+            tgt_params = {}
+            for pn in self._param_names:
+                if pn in coeffs[tgt]:
+                    tgt_params[pn] = coeffs[tgt][pn]
+            result[tgt] = tgt_params
+        return result
+
+    def evaluate_function(
+        self,
+        positions: Union[Dict[str, float], 'pd.DataFrame'],
+        x_query: Union[float, np.ndarray],
+        model_func: Optional[Callable] = None,
+        method: str = 'multilinear',
+        invalid_strategy: str = 'nan',
+        bounds: str = 'clamp',
+        targets: Optional[List[str]] = None,
+    ) -> Union[Dict[str, float], Dict[str, np.ndarray]]:
+        """
+        Evaluate a non-linear model at arbitrary positions (Option B).
+
+        Evaluates the model function at the 2^D enclosing grid corners
+        using each corner's fitted parameters, then interpolates the
+        function values.  This respects parameter correlations because
+        each corner evaluation uses a consistent parameter set.
+
+        Parameters
+        ----------
+        positions : dict[str, float] or DataFrame
+            Coordinates per dimension (bin positions).
+        x_query : float or array-like
+            Predictor value(s) at which to evaluate the model.
+        model_func : callable, optional
+            Model function ``f(x, *params) → y``.  Auto-resolved for
+            named models.  Required for custom callables.
+        method : str
+            ``'multilinear'`` or ``'nearest'``.
+        invalid_strategy : str
+            ``'nan'``, ``'skip'``, or ``'nearest_valid'``.
+        bounds : str
+            ``'clamp'``, ``'nan'``, or ``'extrapolate'``.
+        targets : list of str, optional
+            Subset of targets.  None = all.
+
+        Returns
+        -------
+        result : dict[str, float or np.ndarray]
+            {target: predicted_value(s)} for each target.
+
+        Notes
+        -----
+        Complexity is O(2^D × n_points × len(x_query)).  For typical
+        TPC grids (D ≤ 4), this is 16 model evaluations per query point
+        — negligible compared to I/O.
+
+        This method is preferred over ``evaluate_model`` when fitted
+        parameters are correlated (e.g., amplitude and sigma in Gaussian
+        fits), as it avoids unphysical parameter combinations from
+        independent interpolation.
+
+        For C++/WASM portability, this method decomposes into:
+        (1) grid cell lookup, (2) corner parameter extraction,
+        (3) model evaluation at corners, (4) weighted average.
+        Each step is a simple array operation.
+        """
+        if not self._is_nonlinear:
+            raise ValueError(
+                "evaluate_function() is for non-linear fits. "
+                "Use evaluate() for linear fits."
+            )
+
+        if model_func is None:
+            model_func = self._resolve_model_func()
+
+        eval_targets = targets if targets is not None else self._targets
+
+        # Convert positions to dict
+        if HAS_PANDAS and isinstance(positions, pd.DataFrame):
+            pos_dict = {col: positions[col].values
+                        for col in self._group_columns}
+            n_points = len(positions)
+        elif isinstance(positions, dict):
+            pos_dict = positions
+            sample = positions[self._group_columns[0]]
+            n_points = 1 if np.isscalar(sample) else len(sample)
+        else:
+            raise TypeError(
+                f"positions must be dict or DataFrame, got {type(positions)}")
+
+        x = np.atleast_1d(np.asarray(x_query, dtype=np.float64))
+
+        if method == 'nearest':
+            return self._eval_function_nearest(
+                pos_dict, n_points, x, eval_targets, model_func, bounds)
+
+        # --- Multilinear: evaluate model at 2^D corners, interpolate values ---
+        lower_indices, fracs, out_of_bounds = self._find_cell(pos_dict, bounds)
+        D = len(self._group_columns)
+
+        corners = list(itertools.product([0, 1], repeat=D))
+        n_corners = len(corners)
+
+        # Build corner indices and geometric weights
+        corner_indices = []
+        geometric_weights = np.ones((n_corners, n_points), dtype=np.float64)
+
+        for ci, corner in enumerate(corners):
+            idx_tuple = []
+            for d in range(D):
+                idx_d = lower_indices[d] + corner[d]
+                idx_d = np.clip(idx_d, 0, self._grid_shape[d] - 1)
+                idx_tuple.append(idx_d)
+                if corner[d] == 1:
+                    geometric_weights[ci] *= fracs[d]
+                else:
+                    geometric_weights[ci] *= (1.0 - fracs[d])
+            corner_indices.append(tuple(idx_tuple))
+
+        # Corner validity
+        corner_valid = np.ones((n_corners, n_points), dtype=bool)
+        for ci, idx_tuple in enumerate(corner_indices):
+            corner_valid[ci] = self._valid_mask[idx_tuple]
+
+        # For each target: evaluate model at each corner, then interpolate
+        result = {}
+        for tgt in eval_targets:
+            # Extract parameter arrays at each corner
+            # corner_params[ci] = list of param arrays, each shape (n_points,)
+            corner_params = []
+            for ci, idx_tuple in enumerate(corner_indices):
+                params_at_corner = []
+                for pn in self._param_names:
+                    if pn in self._coefficients[tgt]:
+                        params_at_corner.append(
+                            self._coefficients[tgt][pn][idx_tuple])
+                    else:
+                        params_at_corner.append(
+                            np.full(n_points, np.nan))
+                corner_params.append(params_at_corner)
+
+            # Evaluate model at each corner for the given x_query
+            # corner_fvals[ci] shape: (n_points,) if x is scalar,
+            #                         (n_points, len(x)) if x is array
+            is_scalar_x = (x.size == 1)
+
+            if is_scalar_x:
+                # Scalar x: one function value per corner per point
+                corner_fvals = np.empty((n_corners, n_points),
+                                        dtype=np.float64)
+                for ci in range(n_corners):
+                    for pt in range(n_points):
+                        if not corner_valid[ci, pt]:
+                            corner_fvals[ci, pt] = np.nan
+                            continue
+                        try:
+                            p = [corner_params[ci][k][pt]
+                                 for k in range(len(self._param_names))]
+                            corner_fvals[ci, pt] = model_func(x[0], *p)
+                        except Exception:
+                            corner_fvals[ci, pt] = np.nan
+
+                # Weighted average of function values
+                vals = self._weighted_corner_average(
+                    corner_fvals, geometric_weights, corner_valid,
+                    n_points, n_corners, invalid_strategy, out_of_bounds)
+                if vals.size == 1:
+                    vals = float(vals.ravel()[0])
+                result[tgt] = vals
+            else:
+                # Array x: evaluate model curve at each corner
+                # Result shape: (n_points, len(x))
+                n_x = len(x)
+                corner_fvals = np.empty((n_corners, n_points, n_x),
+                                        dtype=np.float64)
+                for ci in range(n_corners):
+                    for pt in range(n_points):
+                        if not corner_valid[ci, pt]:
+                            corner_fvals[ci, pt, :] = np.nan
+                            continue
+                        try:
+                            p = [corner_params[ci][k][pt]
+                                 for k in range(len(self._param_names))]
+                            corner_fvals[ci, pt, :] = model_func(x, *p)
+                        except Exception:
+                            corner_fvals[ci, pt, :] = np.nan
+
+                # Interpolate per x-value
+                vals = np.empty((n_points, n_x), dtype=np.float64)
+                for xi in range(n_x):
+                    vals[:, xi] = self._weighted_corner_average(
+                        corner_fvals[:, :, xi],
+                        geometric_weights, corner_valid,
+                        n_points, n_corners, invalid_strategy, out_of_bounds)
+
+                # Squeeze
+                if n_points == 1:
+                    vals = vals.ravel()
+                result[tgt] = vals
+
+        return result
+
+    def _eval_function_nearest(
+        self,
+        pos_dict: Dict[str, Any],
+        n_points: int,
+        x: np.ndarray,
+        targets: List[str],
+        model_func: Callable,
+        bounds: str,
+    ) -> Dict[str, Union[float, np.ndarray]]:
+        """Nearest-neighbor version of evaluate_function."""
+        lower_indices, fracs, out_of_bounds = self._find_cell(pos_dict, bounds)
+        D = len(self._group_columns)
+
+        nearest_idx = []
+        for d in range(D):
+            idx = lower_indices[d].copy()
+            upper = fracs[d] >= 0.5
+            idx[upper] += 1
+            idx = np.clip(idx, 0, self._grid_shape[d] - 1)
+            nearest_idx.append(idx)
+        idx_tuple = tuple(nearest_idx)
+
+        result = {}
+        for tgt in targets:
+            params = []
+            for pn in self._param_names:
+                if pn in self._coefficients[tgt]:
+                    params.append(self._coefficients[tgt][pn][idx_tuple])
+                else:
+                    params.append(np.full(n_points, np.nan))
+
+            is_scalar_x = (x.size == 1)
+            if is_scalar_x:
+                vals = np.empty(n_points, dtype=np.float64)
+                for pt in range(n_points):
+                    try:
+                        p = [params[k][pt]
+                             for k in range(len(self._param_names))]
+                        vals[pt] = model_func(x[0], *p)
+                    except Exception:
+                        vals[pt] = np.nan
+            else:
+                vals = np.empty((n_points, len(x)), dtype=np.float64)
+                for pt in range(n_points):
+                    try:
+                        p = [params[k][pt]
+                             for k in range(len(self._param_names))]
+                        vals[pt, :] = model_func(x, *p)
+                    except Exception:
+                        vals[pt, :] = np.nan
+                if n_points == 1:
+                    vals = vals.ravel()
+
+            if out_of_bounds is not None:
+                if vals.ndim == 1:
+                    vals[out_of_bounds] = np.nan
+                else:
+                    vals[out_of_bounds, :] = np.nan
+
+            if vals.size == 1:
+                vals = float(vals.ravel()[0])
+            result[tgt] = vals
+
+        return result
+
+    @staticmethod
+    def _weighted_corner_average(
+        corner_vals: np.ndarray,
+        geometric_weights: np.ndarray,
+        corner_valid: np.ndarray,
+        n_points: int,
+        n_corners: int,
+        invalid_strategy: str,
+        out_of_bounds: Optional[np.ndarray],
+    ) -> np.ndarray:
+        """Weighted average of corner values with validity handling.
+
+        Parameters
+        ----------
+        corner_vals : (n_corners, n_points)
+        geometric_weights : (n_corners, n_points)
+        corner_valid : (n_corners, n_points)
+        """
+        weights = geometric_weights.copy()
+
+        if invalid_strategy == 'nan':
+            any_invalid = np.zeros(n_points, dtype=bool)
+            for ci in range(n_corners):
+                has_weight = geometric_weights[ci] > 1e-15
+                any_invalid |= (has_weight & ~corner_valid[ci])
+        elif invalid_strategy in ('skip', 'nearest_valid'):
+            weights = np.where(corner_valid, weights, 0.0)
+            corner_vals = np.where(corner_valid, corner_vals, 0.0)
+        else:
+            raise ValueError(f"Unknown invalid_strategy '{invalid_strategy}'")
+
+        total_weight = np.sum(weights, axis=0)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            vals = np.where(
+                total_weight > 0,
+                np.sum(weights * corner_vals, axis=0) / total_weight,
+                np.nan)
+
+        if invalid_strategy == 'nan':
+            vals[any_invalid] = np.nan
+
+        if out_of_bounds is not None:
+            vals[out_of_bounds] = np.nan
+
+        return vals
+
     def get_coefficients(
         self,
         positions: Union[Dict[str, float], 'pd.DataFrame'],
