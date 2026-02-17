@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Capability Matrix Generator — Phase 13.9.GB
+Capability Matrix Generator
 
 Reads feature taxonomy + test layer classification to produce a two-tier
 capability matrix showing which features are truly verified vs smoke-only.
@@ -169,7 +169,7 @@ def generate_matrix(test_results=None):
     return matrix
 
 
-def format_markdown(matrix):
+def format_markdown(matrix, phase="13.10.GB"):
     """Format matrix as markdown document."""
     lines = []
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
@@ -177,7 +177,7 @@ def format_markdown(matrix):
     lines.append("# Capability Matrix — groupby_regression")
     lines.append("")
     lines.append(f"**Generated:** {now}")
-    lines.append(f"**Phase:** 13.9.GB — GroupByRegressionEvaluator + Unified Metadata")
+    lines.append(f"**Phase:** {phase}")
     lines.append(f"**Generator:** `scripts/generate_capability_matrix.py`")
     lines.append("")
 
@@ -281,7 +281,7 @@ def format_markdown(matrix):
     # Footer
     lines.append("---")
     lines.append("")
-    lines.append("*Two-tier verification per Phase 13.9.GB v02 proposal.*")
+    lines.append(f"*Two-tier verification per {phase} v02 proposal.*")
     lines.append(f"*✅ = invariance/integration test exists. "
                  f"☑️ = smoke tests only — does not catch numerical regressions.*")
     lines.append(f"*Verbose SW duplicates ({len(VERBOSE_DUPLICATES)} files) "
@@ -290,11 +290,11 @@ def format_markdown(matrix):
     return "\n".join(lines)
 
 
-def format_json(matrix):
+def format_json(matrix, phase="13.10.GB"):
     """Format matrix as JSON for programmatic consumption."""
     output = {
         "generated": datetime.utcnow().isoformat(),
-        "phase": "13.9.GB",
+        "phase": phase,
         "features": {},
         "summary": {},
     }
@@ -337,7 +337,12 @@ def main():
                        help="Output file path (default: docs/CAPABILITY_MATRIX.md)")
     parser.add_argument("--test-results", default=None,
                        help="Path to pytest JSON report for pass/fail status")
+    parser.add_argument("--phase", default=None,
+                       help="Phase label (e.g. '13.10.GB'). Overrides hardcoded default.")
     args = parser.parse_args()
+
+    # Phase label — single source of truth when passed from run_tests.sh
+    phase_label = args.phase or "13.10.GB"
 
     # Load test results if provided
     test_results = None
@@ -355,10 +360,10 @@ def main():
 
     # Format output
     if args.json:
-        content = format_json(matrix)
+        content = format_json(matrix, phase=phase_label)
         default_path = os.path.join(PROJECT_DIR, "docs", "capability_matrix.json")
     else:
-        content = format_markdown(matrix)
+        content = format_markdown(matrix, phase=phase_label)
         default_path = os.path.join(PROJECT_DIR, "docs", "CAPABILITY_MATRIX.md")
 
     output_path = args.output or default_path

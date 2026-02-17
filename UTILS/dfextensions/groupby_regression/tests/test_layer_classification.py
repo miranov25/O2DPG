@@ -595,6 +595,22 @@ TEST_LAYERS = {
     "test_invariance_evaluator.py::TestExportInvariance::test_dict_roundtrip_exact": "invariance",
     "test_invariance_evaluator.py::TestExportInvariance::test_roundtrip_evaluation_identical": "invariance",
     "test_invariance_evaluator.py::TestExportInvariance::test_roundtrip_preserves_valid_mask": "invariance",
+    # -- Export roundtrip (also in test_invariance_evaluator.py)
+    "test_invariance_evaluator.py::TestExportRoundtrip::test_to_dict_roundtrip": "invariance",
+    "test_invariance_evaluator.py::TestExportRoundtrip::test_to_json_roundtrip": "invariance",
+    "test_invariance_evaluator.py::TestExportRoundtrip::test_evaluate_after_roundtrip": "invariance",
+    # -- Interpolation invariance (also in test_invariance_evaluator.py)
+    "test_invariance_evaluator.py::TestInterpolationInvariance::test_interpolate_at_grid_point": "invariance",
+    "test_invariance_evaluator.py::TestInterpolationInvariance::test_interpolate_midpoint_2bins": "invariance",
+    "test_invariance_evaluator.py::TestInterpolationInvariance::test_interpolate_recovers_linear_field": "invariance",
+    "test_invariance_evaluator.py::TestInterpolationInvariance::test_interpolate_continuity": "invariance",
+    "test_invariance_evaluator.py::TestInterpolationInvariance::test_interpolate_boundary_nan": "invariance",
+    "test_invariance_evaluator.py::TestInterpolationInvariance::test_interpolate_invalid_bin_nan": "invariance",
+    "test_invariance_evaluator.py::TestInterpolationInvariance::test_interpolate_invalid_bin_skip": "invariance",
+    "test_invariance_evaluator.py::TestInterpolationInvariance::test_interpolate_boundary_clamp": "invariance",
+    # -- Inverse-variance weighting (also in test_invariance_evaluator.py)
+    "test_invariance_evaluator.py::TestInverseVarianceWeighting::test_ivar_weights_favor_precise_bins": "invariance",
+    "test_invariance_evaluator.py::TestInverseVarianceWeighting::test_ivar_uniform_errors_equals_multilinear": "invariance",
 
     # ==================================================================
     # test_parallel_sliding_window.py (9 tests) — Phase 13.8.SW
@@ -611,6 +627,72 @@ TEST_LAYERS = {
     "test_parallel_sliding_window.py::TestParallelErrorHandling::test_on_error_raise_raises": "smoke",
     # -- Performance: timing → performance
     "test_parallel_sliding_window.py::TestParallelPerformance::test_parallel_speedup": "performance",
+
+    # ==================================================================
+    # test_nonlinear_sliding_window.py (37 tests) — Phase 13.10.GB
+    # ==================================================================
+    # -- Registry: structural checks → smoke
+    "test_nonlinear_sliding_window.py::TestModelRegistry::test_built_in_models_registered": "smoke",
+    "test_nonlinear_sliding_window.py::TestModelRegistry::test_get_model_returns_spec": "smoke",
+    "test_nonlinear_sliding_window.py::TestModelRegistry::test_get_model_unknown_raises": "validation",
+    "test_nonlinear_sliding_window.py::TestModelRegistry::test_register_custom_model": "smoke",
+    "test_nonlinear_sliding_window.py::TestModelRegistry::test_gaussian_function_evaluates": "smoke",
+    # -- P0 estimation: checks against known data properties → smoke
+    "test_nonlinear_sliding_window.py::TestP0Estimation::test_gaussian_p0_reasonable": "smoke",
+    "test_nonlinear_sliding_window.py::TestP0Estimation::test_auto_p0_no_explicit": "smoke",
+    # -- Callable dispatch: structural/error handling → smoke/validation
+    "test_nonlinear_sliding_window.py::TestCallableDispatch::test_custom_callable_basic": "smoke",
+    "test_nonlinear_sliding_window.py::TestCallableDispatch::test_custom_callable_with_metadata": "smoke",
+    "test_nonlinear_sliding_window.py::TestCallableDispatch::test_bad_callable_returns_nan": "smoke",
+    "test_nonlinear_sliding_window.py::TestCallableDispatch::test_bad_return_type_handled": "smoke",
+    "test_nonlinear_sliding_window.py::TestCallableDispatch::test_fit_func_type_validation": "validation",
+    # -- Named model dispatch: structural → smoke/validation
+    "test_nonlinear_sliding_window.py::TestNamedModelDispatch::test_gaussian_named_model": "smoke",
+    "test_nonlinear_sliding_window.py::TestNamedModelDispatch::test_metadata_schema": "smoke",
+    "test_nonlinear_sliding_window.py::TestNamedModelDispatch::test_unknown_model_raises": "validation",
+    # -- SW reuse: structural → smoke
+    "test_nonlinear_sliding_window.py::TestSWInfrastructureReuse::test_window_spec_affects_results": "smoke",
+    "test_nonlinear_sliding_window.py::TestSWInfrastructureReuse::test_min_stat_enforcement": "smoke",
+    # -- NL Invariance: allclose against known true or two code paths → invariance/integration
+    # I-NL.1: allclose against known Gaussian params → integration
+    "test_nonlinear_sliding_window.py::TestNonLinearInvariance::test_gaussian_peak_recovery": "integration",
+    # I-NL.2: exact polynomial recovery from noiseless data → integration
+    "test_nonlinear_sliding_window.py::TestNonLinearInvariance::test_polynomial_exact_recovery": "integration",
+    # I-NL.3: fitting together ≡ separately (TWO code paths) → invariance
+    "test_nonlinear_sliding_window.py::TestNonLinearInvariance::test_multi_target_independence": "invariance",
+    # I-NL.4: uniform weights ≡ no weights (TWO code paths) → invariance
+    "test_nonlinear_sliding_window.py::TestNonLinearInvariance::test_uniform_weights_equals_no_weights": "invariance",
+    # -- Cross-engine: polynomial_2 ≡ linear OLS (TWO code paths) → invariance
+    # I-NL.8: non-linear polynomial ≡ linear OLS (cross-engine)
+    "test_nonlinear_sliding_window.py::TestCrossEngineInvariance::test_polynomial2_matches_linear_ols": "invariance",
+    # -- Gaussian+line: allclose against known params / ground truth → integration
+    # I-NL.9a: known params recovery
+    "test_nonlinear_sliding_window.py::TestGaussianPlusLine::test_gaussian_plus_line_recovery": "integration",
+    # I-NL.9b: fit → evaluate → compare to ground truth
+    "test_nonlinear_sliding_window.py::TestGaussianPlusLine::test_gaussian_plus_line_evaluate_roundtrip": "integration",
+    # -- Evaluator: structural checks → smoke; except invariance pairs
+    "test_nonlinear_sliding_window.py::TestEvaluatorNonLinear::test_from_dfGB_nonlinear": "smoke",
+    "test_nonlinear_sliding_window.py::TestEvaluatorNonLinear::test_evaluate_model_peak_vs_tail": "smoke",
+    "test_nonlinear_sliding_window.py::TestEvaluatorNonLinear::test_evaluate_model_vectorized": "smoke",
+    "test_nonlinear_sliding_window.py::TestEvaluatorNonLinear::test_evaluate_model_auto_registry_lookup": "smoke",
+    "test_nonlinear_sliding_window.py::TestEvaluatorNonLinear::test_evaluate_model_custom_func": "smoke",
+    "test_nonlinear_sliding_window.py::TestEvaluatorNonLinear::test_evaluate_model_rejects_linear": "validation",
+    # I-NL.5: interpolated params produce smooth curve → smoke (no known-true)
+    "test_nonlinear_sliding_window.py::TestEvaluatorNonLinear::test_evaluator_interpolation_smoothness": "smoke",
+    "test_nonlinear_sliding_window.py::TestEvaluatorNonLinear::test_evaluate_function_peak_vs_tail": "smoke",
+    "test_nonlinear_sliding_window.py::TestEvaluatorNonLinear::test_evaluate_function_vectorized_x": "smoke",
+    "test_nonlinear_sliding_window.py::TestEvaluatorNonLinear::test_evaluate_function_batch_positions": "smoke",
+    # I-NL.6: Option A ≡ Option B at grid center (TWO code paths) → invariance
+    "test_nonlinear_sliding_window.py::TestEvaluatorNonLinear::test_option_a_equals_b_at_grid_center": "invariance",
+    # I-NL.7: Option A ≈ Option B interpolated (TWO code paths) → invariance
+    "test_nonlinear_sliding_window.py::TestEvaluatorNonLinear::test_option_a_close_to_b_interpolated": "invariance",
+    "test_nonlinear_sliding_window.py::TestEvaluatorNonLinear::test_evaluate_params": "smoke",
+
+    # -- Extended invariance (I-NL.11, I-NL.12)
+    # I-NL.12: constant field → A ≡ B everywhere (TWO code paths) → invariance
+    "test_nonlinear_sliding_window.py::TestExtendedInvariance::test_constant_field_invariance": "invariance",
+    # I-NL.11: area conservation Option B vs A (TWO code paths) → invariance
+    "test_nonlinear_sliding_window.py::TestExtendedInvariance::test_area_conservation_option_b": "invariance",
 }
 # fmt: on
 

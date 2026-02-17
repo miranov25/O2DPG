@@ -1,5 +1,5 @@
 #!/bin/bash
-# Phase 13.7.GB — Unified test runner with capability matrix generation
+# Unified test runner with capability matrix generation
 #
 # Usage:
 #   source run_tests.sh              # Run all tests + generate matrix + log
@@ -72,6 +72,14 @@ done
 LOG_DIR="$SCRIPT_DIR/test_logs"
 mkdir -p "$LOG_DIR"
 
+# Phase label — derived from git tag if available, fallback to hardcoded
+if [ -f "$SCRIPT_DIR/scripts/phase_tag.sh" ]; then
+    source "$SCRIPT_DIR/scripts/phase_tag.sh"
+    PHASE_LABEL="$(phase_label)"
+else
+    PHASE_LABEL="Phase 13.10.GB"
+fi
+
 # File paths
 LOG_FILE="$LOG_DIR/test_${MODE}_${TS}.log"
 FAIL_FILE="$LOG_DIR/test_failures_${TS}.log"
@@ -83,7 +91,7 @@ DIFF_COMMIT="$LOG_DIR/diff_last_commit_${TS}.txt"
 DIFF_PHASE="$LOG_DIR/diff_to_phase_${TS}.txt"
 
 echo "========================================"
-echo "Phase 13.7.GB — Test Runner"
+echo "$PHASE_LABEL — Test Runner"
 echo "Mode: $MODE"
 echo "Timestamp: $TS"
 echo "NUMBA_THREADING_LAYER=$NUMBA_THREADING_LAYER"
@@ -170,12 +178,12 @@ if [ "$MODE" != "quick" ]; then
     fi
 
     # Generate markdown
-    python scripts/generate_capability_matrix.py $MATRIX_ARGS
+    python scripts/generate_capability_matrix.py --phase "$PHASE_LABEL" $MATRIX_ARGS
     # Copy timestamped snapshot
     cp "$SCRIPT_DIR/docs/CAPABILITY_MATRIX.md" "$MATRIX_MD" 2>/dev/null || true
 
     # Generate JSON
-    python scripts/generate_capability_matrix.py --json $MATRIX_ARGS
+    python scripts/generate_capability_matrix.py --json --phase "$PHASE_LABEL" $MATRIX_ARGS
     cp "$SCRIPT_DIR/docs/capability_matrix.json" "$MATRIX_JSON" 2>/dev/null || true
 
     echo ""
@@ -184,7 +192,7 @@ fi
 # ── Summary ───────────────────────────────────────────────────────
 {
     echo "========================================"
-    echo "SUMMARY — Phase 13.7.GB Test Run"
+    echo "SUMMARY — $PHASE_LABEL Test Run"
     echo "========================================"
     echo ""
     echo "Timestamp:    $TS"

@@ -931,3 +931,112 @@ class TestGaussianPlusLine:
         mae = np.mean(np.abs(y_pred['signal'] - y_true))
         assert mae < 3 * noise_level, \
             f"MAE={mae:.4f} > 3*noise={3*noise_level:.4f}"
+
+
+class TestExtendedInvariance:
+    """Extended invariance tests requested by reviewers."""
+
+    @pytest.mark.skipif(not _has_scipy(), reason="scipy not available")
+    def test_constant_field_invariance(self):
+        """I-NL.12: If all bins have identical parameters, Option A ≡ Option B
+        everywhere, regardless of query position.
+
+        Constant field = no interpolation ambiguity.
+        """
+        rng = np.random.RandomState(42)
+        rows = []
+        for xb in range(5):
+            for yb in range(5):
+                x = rng.uniform(0, 1, 80)
+                # Identical Gaussian in every bin
+                y = 10.0 * np.exp(-0.5 * ((x - 0.5) / 0.1) ** 2) + 1.0
+                y += rng.normal(0, 0.05, len(x))
+                rows.append(pd.DataFrame({
+                    'xBin': xb, 'yBin': yb, 'x': x, 'y': y,
+                }))
+        df = pd.concat(rows, ignore_index=True)
+
+        result, metadata = make_nonlinear_sliding_window_fit(
+            df=df,
+            gb_columns=['xBin', 'yBin'],
+            fit_columns=['y'],
+            linear_columns=['x'],
+            window_spec={'xBin': 1, 'yBin': 1},
+            fit_func='gaussian',
+            optimizer_kwargs={'p0': [10, 0.5, 0.1, 1.0]},
+            suffix='_cf',
+            min_stat=20,
+            return_metadata=True,
+        )
+
+        ev = GroupByRegressionEvaluator.from_dfGB(result, metadata=metadata)
+        x_query = np.linspace(0, 1, 20)
+
+        # Test at multiple positions including off-grid interpolated points
+        positions_list = [
+            {'xBin': 2.0, 'yBin': 2.0},   # grid center
+            {'xBin': 1.5, 'yBin': 2.5},   # interpolated
+            {'xBin': 0.8, 'yBin': 3.2},   # interpolated
+        ]
+        for pos in positions_list:
+            y_a = ev.evaluate_model(positions=pos, x_query=x_query)
+            y_b = ev.evaluate_function(positions=pos, x_query=x_query)
+            np.testing.assert_allclose(
+                y_a['y'], y_b['y'], rtol=0.02,
+                err_msg=f"A ≠ B for constant field at {pos}")
+
+    @pytest.mark.skipif(not _has_scipy(), reason="scipy not available")
+    def test_area_conservation_option_b(self):
+        """I-NL.11: Option B interpolation conserves integrated area.
+
+        Integral of evaluate_function over x ≈ weighted average of
+        per-corner integrals. Verifies interpolation doesn't create
+        or destroy 'area' under the curve.
+        """
+        rng = np.random.RandomState(42)
+        rows = []
+        # Slowly varying amplitude across grid
+        for xb in range(5):
+            for yb in range(5):
+                amp = 8.0 + 0.5 * xb + 0.3 * yb
+                x = rng.uniform(0, 1, 100)
+                y = amp * np.exp(-0.5 * ((x - 0.5) / 0.1) ** 2) + 1.0
+                y += rng.normal(0, 0.05, len(x))
+                rows.append(pd.DataFrame({
+                    'xBin': xb, 'yBin': yb, 'x': x, 'y': y,
+                }))
+        df = pd.concat(rows, ignore_index=True)
+
+        result, metadata = make_nonlinear_sliding_window_fit(
+            df=df,
+            gb_columns=['xBin', 'yBin'],
+            fit_columns=['y'],
+            linear_columns=['x'],
+            window_spec={'xBin': 1, 'yBin': 1},
+            fit_func='gaussian',
+            optimizer_kwargs={'p0': [10, 0.5, 0.1, 1.0]},
+            suffix='_ac',
+            min_stat=20,
+            return_metadata=True,
+        )
+
+        ev = GroupByRegressionEvaluator.from_dfGB(result, metadata=metadata)
+
+        # Dense x grid for numerical integration (trapezoidal)
+        x_dense = np.linspace(0.05, 0.95, 200)
+        pos = {'xBin': 2.3, 'yBin': 1.7}  # interpolated position
+
+        # Area via Option B (evaluate_function)
+        y_b = ev.evaluate_function(positions=pos, x_query=x_dense)
+        area_b = np.trapz(y_b['y'], x_dense)
+
+        # Area via Option A (evaluate_model with interpolated params)
+        y_a = ev.evaluate_model(positions=pos, x_query=x_dense)
+        area_a = np.trapz(y_a['y'], x_dense)
+
+        # For slowly varying params, both should agree within ~5%
+        # (area conservation: interpolating function values ≈
+        #  evaluating with interpolated params for smooth fields)
+        rel_diff = abs(area_b - area_a) / abs(area_a)
+        assert rel_diff < 0.05, \
+            f"Area mismatch: A={area_a:.4f}, B={area_b:.4f}, rel={rel_diff:.4f}"
