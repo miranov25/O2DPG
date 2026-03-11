@@ -399,6 +399,8 @@ class _AggResult:
     stats: Dict[str, Dict[str, float]]  # target -> {mean,std,median,entries}
     # rows indices (unique) used for the window (for fitting)
     row_indices: np.ndarray
+    # per-agg_column aggregates (COG etc.)
+    agg_stats: Optional[Dict[str, Dict[str, float]]] = None  # col -> {mean,std,median}
 
 
 def _weighted_mean_std(x: np.ndarray, w: Optional[np.ndarray]) -> Tuple[float, float]:
@@ -439,11 +441,22 @@ def _aggregate_window_zerocopy(
         gb_columns: List[str],
         fit_columns: List[str],
         weights: Optional[str],
+        agg_columns: Optional[List[str]] = None,
+        agg_median: bool = False,
 ) -> List[_AggResult]:
     """Aggregate per center bin using zero-copy neighbor indexing.
 
     Pre-extracts numpy arrays from DataFrame once, then uses direct
     array indexing per bin — no Pandas operations in the hot loop.
+
+    Parameters
+    ----------
+    agg_columns : list[str], optional
+        Additional columns to aggregate (mean, std, and optionally median)
+        within each window. Useful for computing center-of-gravity of
+        groupby variables or predictor columns.
+    agg_median : bool
+        If True, also compute (unweighted) median for agg_columns.
     """
     results: List[_AggResult] = []
     expected_neighbors = int(neighbor_offsets.shape[0]) if neighbor_offsets.size else 1
@@ -451,6 +464,10 @@ def _aggregate_window_zerocopy(
     # Pre-extract numpy arrays ONCE — eliminates all Pandas overhead in the loop
     target_arrays = {t: df[t].to_numpy(dtype=np.float64) for t in fit_columns}
     w_array = df[weights].to_numpy(dtype=np.float64) if weights is not None else None
+
+    # Pre-extract agg_columns arrays
+    _agg_cols = agg_columns or []
+    agg_arrays = {c: df[c].to_numpy(dtype=np.float64) for c in _agg_cols}
 
     for center in center_bins:
         neighbors = _get_neighbor_bins(center, neighbor_offsets, bounds)
@@ -471,6 +488,8 @@ def _aggregate_window_zerocopy(
         n_rows = int(idx_unique.size)
 
         stats: Dict[str, Dict[str, float]] = {}
+        agg_st: Optional[Dict[str, Dict[str, float]]] = None
+
         if n_rows > 0:
             # Weight validity mask (computed once per window, shared across targets)
             if w_array is not None:
@@ -504,9 +523,34 @@ def _aggregate_window_zerocopy(
                     "median": median,
                     "entries": n_finite,
                 }
+
+            # Aggregate extra columns (COG etc.)
+            if _agg_cols:
+                agg_st = {}
+                for c in _agg_cols:
+                    y = agg_arrays[c][idx_unique]
+                    y_finite = np.isfinite(y)
+
+                    if weights is None:
+                        x = y[y_finite]
+                        mean, std = _weighted_mean_std(x, None)
+                    else:
+                        valid = y_finite & w_valid
+                        x = y[valid]
+                        ww = w_win[valid]
+                        mean, std = _weighted_mean_std(x, ww)
+
+                    if agg_median and int(np.sum(y_finite)) > 0:
+                        median = float(np.median(y[y_finite]))
+                    else:
+                        median = np.nan
+
+                    agg_st[c] = {"mean": mean, "std": std, "median": median}
         else:
             for t in fit_columns:
                 stats[t] = {"mean": np.nan, "std": np.nan, "median": np.nan, "entries": 0}
+            if _agg_cols:
+                agg_st = {c: {"mean": np.nan, "std": np.nan, "median": np.nan} for c in _agg_cols}
 
         results.append(
             _AggResult(
@@ -516,6 +560,7 @@ def _aggregate_window_zerocopy(
                 effective_window_fraction=eff_frac,
                 stats=stats,
                 row_indices=idx_unique,
+                agg_stats=agg_st,
             )
         )
 
@@ -961,12 +1006,19 @@ def _precompute_bin_sufficient_stats(
         fit_columns: List[str],
         linear_columns: List[str],
         fit_intercept: bool = True,
-) -> Dict[str, Dict[Tuple[int, ...], _BinSuffStats]]:
+        agg_columns: Optional[List[str]] = None,
+) -> Tuple[Dict[str, Dict[Tuple[int, ...], '_BinSuffStats']],
+           Optional[Dict[str, Dict[Tuple[int, ...], Tuple[float, float, int]]]]]:
     """Pre-compute XtX, XtY, n, Σy, Σy² for each bin and target.
+
+    If agg_columns is provided, also compute per-bin (sum, sum_sq, n) for
+    each agg column — lightweight sufficient stats for mean/std.
 
     Returns
     -------
-    dict[target_name, dict[bin_key, _BinSuffStats]]
+    (fit_stats, agg_stats) where:
+      fit_stats: dict[target_name, dict[bin_key, _BinSuffStats]]
+      agg_stats: dict[agg_col, dict[bin_key, (sum_y, sum_y2, n)]] or None
     """
     n_pred = len(linear_columns)
     n_params = n_pred + (1 if fit_intercept else 0)
@@ -1023,7 +1075,27 @@ def _precompute_bin_sufficient_stats(
 
         result[t] = bin_stats
 
-    return result
+    # Agg columns: lightweight sufficient stats (sum, sum_sq, n)
+    agg_result: Optional[Dict[str, Dict[Tuple[int, ...], Tuple[float, float, int]]]] = None
+    if agg_columns:
+        agg_result = {}
+        agg_arrays = {c: df[c].to_numpy(dtype=np.float64) for c in agg_columns}
+        for c in agg_columns:
+            a_full = agg_arrays[c]
+            c_stats: Dict[Tuple[int, ...], Tuple[float, float, int]] = {}
+            for bin_key, row_indices in bin_map.items():
+                idx = np.array(row_indices, dtype=np.int64)
+                y = a_full[idx]
+                valid = np.isfinite(y)
+                n_v = int(np.sum(valid))
+                if n_v > 0:
+                    y_v = y[valid]
+                    c_stats[bin_key] = (float(np.sum(y_v)), float(np.sum(y_v ** 2)), n_v)
+                else:
+                    c_stats[bin_key] = (0.0, 0.0, 0)
+            agg_result[c] = c_stats
+
+    return result, agg_result
 
 
 def _compute_lightweight_agg_results(
@@ -1039,6 +1111,9 @@ def _compute_lightweight_agg_results(
         offset_weights: Optional[np.ndarray] = None,
         use_weighted_kernel: bool = False,
         prebuilt_neighbor_table: Optional[Tuple] = None,
+        agg_columns: Optional[List[str]] = None,
+        agg_suff_stats: Optional[Dict[str, Dict[Tuple[int, ...], Tuple[float, float, int]]]] = None,
+        agg_median: bool = False,
 ) -> List[_AggResult]:
     """Compute lightweight _AggResult entries from sufficient statistics.
 
@@ -1133,11 +1208,56 @@ def _compute_lightweight_agg_results(
                         stats[t] = {"mean": np.nan, "std": np.nan, "median": np.nan, "entries": 0}
                     n_rows_total = max(n_rows_total, n_valid)
 
+            # Compute agg_columns stats from sufficient stats
+            agg_st = None
+            _agg_cols = agg_columns or []
+            if _agg_cols and agg_suff_stats is not None:
+                agg_st = {}
+                for c in _agg_cols:
+                    c_stats = agg_suff_stats.get(c, {})
+                    if use_weighted_kernel and nbr_weights_local is not None:
+                        w_sy, w_sy2, w_n = 0.0, 0.0, 0.0
+                        for k in range(nc):
+                            j = int(neighbor_bin_indices[k])
+                            if j < 0:
+                                continue
+                            nb = center_bins[j]
+                            cs = c_stats.get(nb)
+                            if cs is not None and cs[2] > 0:
+                                w = float(nbr_weights_local[k])
+                                w_sy += w * cs[0]
+                                w_sy2 += w * cs[1]
+                                w_n += w * cs[2]
+                        if w_n > 0:
+                            mean = w_sy / w_n
+                            var = w_sy2 / w_n - mean ** 2
+                            std = float(np.sqrt(var)) if var > 0 else 0.0
+                        else:
+                            mean, std = np.nan, np.nan
+                    else:
+                        sy, sy2, nv = 0.0, 0.0, 0
+                        for k in range(nc):
+                            j = int(neighbor_bin_indices[k])
+                            if j < 0:
+                                continue
+                            nb = center_bins[j]
+                            cs = c_stats.get(nb)
+                            if cs is not None and cs[2] > 0:
+                                sy += cs[0]; sy2 += cs[1]; nv += cs[2]
+                        if nv > 0:
+                            mean = sy / nv
+                            var_num = sy2 - nv * mean ** 2
+                            std = float(np.sqrt(var_num / (nv - 1))) if nv > 1 and var_num > 0 else np.nan
+                        else:
+                            mean, std = np.nan, np.nan
+                    agg_st[c] = {"mean": mean, "std": std, "median": np.nan}
+
             eff_frac = (n_used / expected_neighbors) if expected_neighbors > 0 else np.nan
             results.append(_AggResult(
                 center=center, n_neighbors_used=n_used,
                 n_rows_aggregated=n_rows_total, effective_window_fraction=eff_frac,
                 stats=stats, row_indices=np.array([], dtype=np.int64),
+                agg_stats=agg_st,
             ))
             continue
 
@@ -1220,6 +1340,42 @@ def _compute_lightweight_agg_results(
 
         eff_frac = (n_used / expected_neighbors) if expected_neighbors > 0 else np.nan
 
+        # Compute agg_columns stats from sufficient stats (original path)
+        agg_st = None
+        _agg_cols = agg_columns or []
+        if _agg_cols and agg_suff_stats is not None:
+            agg_st = {}
+            for c in _agg_cols:
+                c_stats = agg_suff_stats.get(c, {})
+                if use_weighted_kernel and nbr_weights is not None:
+                    w_sy, w_sy2, w_n = 0.0, 0.0, 0.0
+                    for k, nb in enumerate(neighbors):
+                        cs = c_stats.get(nb)
+                        if cs is not None and cs[2] > 0:
+                            w = nbr_weights[k]
+                            w_sy += w * cs[0]
+                            w_sy2 += w * cs[1]
+                            w_n += w * cs[2]
+                    if w_n > 0:
+                        mean = w_sy / w_n
+                        var = w_sy2 / w_n - mean ** 2
+                        std = float(np.sqrt(var)) if var > 0 else 0.0
+                    else:
+                        mean, std = np.nan, np.nan
+                else:
+                    sy, sy2, nv = 0.0, 0.0, 0
+                    for nb in neighbors:
+                        cs = c_stats.get(nb)
+                        if cs is not None and cs[2] > 0:
+                            sy += cs[0]; sy2 += cs[1]; nv += cs[2]
+                    if nv > 0:
+                        mean = sy / nv
+                        var_num = sy2 - nv * mean ** 2
+                        std = float(np.sqrt(var_num / (nv - 1))) if nv > 1 and var_num > 0 else np.nan
+                    else:
+                        mean, std = np.nan, np.nan
+                agg_st[c] = {"mean": mean, "std": std, "median": np.nan}
+
         results.append(_AggResult(
             center=center,
             n_neighbors_used=n_used,
@@ -1227,6 +1383,7 @@ def _compute_lightweight_agg_results(
             effective_window_fraction=eff_frac,
             stats=stats,
             row_indices=np.array([], dtype=np.int64),
+            agg_stats=agg_st,
         ))
 
     return results
@@ -2283,8 +2440,11 @@ def _assemble_results(
         fit_results: Dict[Tuple[int, ...], Dict[str, Dict[str, Any]]],
         fit_columns: List[str],
         linear_columns: List[str],
+        agg_columns: Optional[List[str]] = None,
+        agg_median: bool = False,
 ) -> pd.DataFrame:
     rows: List[Dict[str, Any]] = []
+    _agg_cols = agg_columns or []
 
     # Build column order
     pred_suffixes = {p: _sanitize_suffix(p) for p in linear_columns}
@@ -2295,7 +2455,22 @@ def _assemble_results(
         base["n_rows_aggregated"] = ar.n_rows_aggregated
         base["effective_window_fraction"] = ar.effective_window_fraction
 
-        # Aggregate stats
+        # Agg columns stats (COG etc.) — placed before fit_columns stats
+        if _agg_cols and ar.agg_stats:
+            for c in _agg_cols:
+                cst = ar.agg_stats.get(c, {})
+                base[f"{c}_mean"] = cst.get("mean", np.nan)
+                base[f"{c}_std"] = cst.get("std", np.nan)
+                if agg_median:
+                    base[f"{c}_median"] = cst.get("median", np.nan)
+        elif _agg_cols:
+            for c in _agg_cols:
+                base[f"{c}_mean"] = np.nan
+                base[f"{c}_std"] = np.nan
+                if agg_median:
+                    base[f"{c}_median"] = np.nan
+
+        # Aggregate stats (fit_columns)
         for t, st in ar.stats.items():
             base[f"{t}_mean"] = st["mean"]
             base[f"{t}_std"] = st["std"]
@@ -2347,7 +2522,14 @@ def _assemble_results(
         if dim not in out.columns:
             out[dim] = pd.Series(dtype="int64")
 
-    # Order columns: gb_columns -> aggregations -> fit outputs -> diagnostics
+    # Order columns: gb_columns -> agg_columns stats -> fit aggregations -> fit outputs -> diagnostics
+    extra_agg_cols = []
+    for c in _agg_cols:
+        extra_agg_cols.append(f"{c}_mean")
+        extra_agg_cols.append(f"{c}_std")
+        if agg_median:
+            extra_agg_cols.append(f"{c}_median")
+
     agg_cols = [c for c in out.columns if any(c.startswith(f"{t}_") for t in fit_columns) and (
             c.endswith("_mean") or c.endswith("_std") or c.endswith("_median") or c.endswith("_entries")
     )]
@@ -2365,7 +2547,7 @@ def _assemble_results(
 
     diag_cols = ["quality_flag", "n_neighbors_used", "n_rows_aggregated", "effective_window_fraction"]
 
-    ordered = gb_columns + agg_cols + fit_cols + diag_cols
+    ordered = gb_columns + extra_agg_cols + agg_cols + fit_cols + diag_cols
     # Keep any other columns at the end (defensive)
     others = [c for c in out.columns if c not in ordered]
     out = out[ordered + others]
@@ -2438,6 +2620,9 @@ def _build_sw_metadata(
         'python_version': sys.version,
     }
 
+    # agg_columns metadata (if present in kwargs-style caller)
+    # Callers should pass agg_columns via metadata['agg_columns'] after build
+
     # Build per-target column lists and formulas
     for target in fit_columns:
         coef_cols = []
@@ -2494,6 +2679,8 @@ def make_sliding_window_fit(
         kernel: Union[str, Callable] = 'uniform',
         kernel_width: Optional[Union[float, Dict[str, float]]] = None,
         aggregation_functions: Optional[Dict[str, List[str]]] = None,
+        agg_columns: Optional[List[str]] = None,
+        agg_median: bool = False,
         binning_formulas: Optional[Dict[str, str]] = None,
         partition_strategy: Optional[dict] = None,
         return_metadata: bool = False,
@@ -2576,6 +2763,23 @@ def make_sliding_window_fit(
                 'driftV': ['mean', 'median', 'std', 'entries'],
                 'temperature': ['mean', 'std'],
             }
+    agg_columns : list[str], optional
+        Additional columns to aggregate (mean, std, and optionally median)
+        within each sliding window. Useful for computing center-of-gravity
+        of groupby variables or predictor columns.
+
+        Example: To get the data COG for the groupby coordinates::
+
+            agg_columns = ['mpt', 'vertex_z', 'tgl', 'phi']
+
+        Output: ``mpt_mean_sw``, ``mpt_std_sw``, ``vertex_z_mean_sw``, etc.
+
+        When kernel is non-uniform (e.g. ``kernel='gaussian'``), mean and
+        std are kernel-weighted. Median (if enabled) is always unweighted.
+    agg_median : bool
+        If True, also compute (unweighted) median for agg_columns.
+        Default False — median computation requires sorting and can be
+        slow for large windows.
     binning_formulas : dict[str, str], optional
         Provenance metadata recording how float columns were binned.
         Not used in computation, stored in output DataFrame.attrs.
@@ -2692,6 +2896,78 @@ def make_sliding_window_fit(
             # Vectorized assembly — no per-bin Python loops
             t_asm = time.time()
             out = _assemble_results_v5(v5_arrays, gb_columns, fit_columns, linear_columns, suffix)
+
+            # V5 agg_columns: compute from raw data using bin_ids mapping
+            if agg_columns:
+                _agg_cols_v5 = agg_columns
+                _agg_arrays_v5 = {c: df[c].to_numpy(dtype=np.float64) for c in _agg_cols_v5}
+                n_dims = len(gb_columns)
+
+                # Build per-bin row lists from bin_ids — O(n_rows) once
+                _bin_rows_v5: Dict[int, np.ndarray] = {}
+                for bi in range(_n_bins):
+                    _bin_rows_v5[bi] = np.where(bin_ids == bi)[0]
+
+                # P1-2 fix: O(1) coord→bin_index lookup instead of O(n_bins) scan
+                coord_to_bin: Dict[Tuple[int, ...], int] = {
+                    tuple(int(_bin_coords[i, d]) for d in range(n_dims)): i
+                    for i in range(_n_bins)
+                }
+
+                # Pre-allocate output arrays (avoid per-cell .loc assignment)
+                _agg_out: Dict[str, np.ndarray] = {}
+                for c in _agg_cols_v5:
+                    _agg_out[f'{c}_mean'] = np.full(_n_bins, np.nan, dtype=np.float64)
+                    _agg_out[f'{c}_std'] = np.full(_n_bins, np.nan, dtype=np.float64)
+                    if agg_median:
+                        _agg_out[f'{c}_median'] = np.full(_n_bins, np.nan, dtype=np.float64)
+
+                # For each center bin, aggregate agg_columns over its window
+                for bi in range(_n_bins):
+                    center_coord = tuple(int(_bin_coords[bi, d]) for d in range(n_dims))
+                    nbr_coords, valid_oi = _get_neighbor_bins_v2(
+                        center_coord, neighbor_offsets, bounds, gb_columns,
+                        boundary_resolved, full_window_spec)
+
+                    # Collect rows and per-row kernel weights
+                    idx_list_v5: List[int] = []
+                    kw_list_v5: List[np.ndarray] = []  # kernel weight per row
+                    for ni, nb_coord in enumerate(nbr_coords):
+                        bj = coord_to_bin.get(nb_coord)
+                        if bj is not None and bj in _bin_rows_v5:
+                            rows_j = _bin_rows_v5[bj]
+                            idx_list_v5.extend(rows_j.tolist())
+                            # P1-3 fix: kernel weight for this neighbor
+                            kw = float(offset_weights[valid_oi[ni]])
+                            kw_list_v5.append(np.full(len(rows_j), kw, dtype=np.float64))
+
+                    if not idx_list_v5:
+                        continue
+
+                    idx_v5 = np.array(idx_list_v5, dtype=np.int64)
+                    kw_v5 = np.concatenate(kw_list_v5) if _is_weighted_kernel else None
+
+                    for c in _agg_cols_v5:
+                        y = _agg_arrays_v5[c][idx_v5]
+                        y_fin = np.isfinite(y)
+                        if _is_weighted_kernel and kw_v5 is not None:
+                            valid = y_fin
+                            x = y[valid]
+                            ww = kw_v5[valid]
+                            mean, std = _weighted_mean_std(x, ww)
+                        else:
+                            x = y[y_fin]
+                            mean, std = _weighted_mean_std(x, None)
+
+                        _agg_out[f'{c}_mean'][bi] = mean
+                        _agg_out[f'{c}_std'][bi] = std
+                        if agg_median:
+                            _agg_out[f'{c}_median'][bi] = float(np.median(x)) if len(x) > 0 else np.nan
+
+                # Assign columns to DataFrame at once (not per-cell)
+                for key, arr in _agg_out.items():
+                    out[f'{key}{suffix}'] = arr
+
             if verbose:
                 print(f"[V5] Assembly: {time.time()-t_asm:.4f}s")
 
@@ -2716,6 +2992,8 @@ def make_sliding_window_fit(
                 n_bins=_n_bins,
                 computation_time_sec=time.time() - t0,
             )
+            metadata['agg_columns'] = agg_columns or []
+            metadata['agg_median'] = agg_median
             out.attrs.update(metadata)
 
             # Cast dtype
@@ -2737,12 +3015,13 @@ def make_sliding_window_fit(
             center_bins = list(bin_map.keys())
 
             # V3 pre-compute per-bin XtX/XtY, sum over window
-            bin_suff_stats = _precompute_bin_sufficient_stats(
+            bin_suff_stats, agg_suff_stats = _precompute_bin_sufficient_stats(
                 df=df,
                 bin_map=bin_map,
                 fit_columns=fit_columns,
                 linear_columns=linear_columns,
                 fit_intercept=fit_intercept,
+                agg_columns=agg_columns,
             )
 
             # Lightweight aggregation
@@ -2758,6 +3037,9 @@ def make_sliding_window_fit(
                 window_spec=full_window_spec,
                 offset_weights=offset_weights if _is_weighted_kernel else None,
                 use_weighted_kernel=_is_weighted_kernel,
+                agg_columns=agg_columns,
+                agg_suff_stats=agg_suff_stats,
+                agg_median=agg_median,
             )
 
             if verbose:
@@ -2798,6 +3080,8 @@ def make_sliding_window_fit(
             gb_columns=gb_columns,
             fit_columns=fit_columns,
             weights=weights,
+            agg_columns=agg_columns,
+            agg_median=agg_median,
         )
 
         if verbose:
@@ -2849,6 +3133,8 @@ def make_sliding_window_fit(
         fit_results=fit_results,
         fit_columns=fit_columns,
         linear_columns=linear_columns,
+        agg_columns=agg_columns,
+        agg_median=agg_median,
     )
 
     # Apply suffix to non-bin columns
@@ -2883,6 +3169,8 @@ def make_sliding_window_fit(
         n_bins=len(center_bins),
         computation_time_sec=time.time() - t0,
     )
+    metadata['agg_columns'] = agg_columns or []
+    metadata['agg_median'] = agg_median
     out.attrs.update(metadata)
 
     if verbose:
