@@ -698,19 +698,24 @@ def _fit_window_regression_numpy(
         linear_columns: List[str],
         weights: Optional[str],
         min_stat: int,
+        fit_intercept: bool = True,
 ) -> Dict[Tuple[int, ...], Dict[str, Dict[str, Any]]]:
     """V1: numpy.linalg.lstsq per bin.
 
     Eliminates overhead of formula parsing and DataFrame construction.
-    Only supports OLS (no WLS/GLM/RLM).
+    Supports OLS and WLS. GLM/RLM not supported.
+
+    WLS: applies sqrt(w) transform to X and y before lstsq.
+    R² and RMSE are computed on unweighted residuals regardless of weights.
     """
     out: Dict[Tuple[int, ...], Dict[str, Dict[str, Any]]] = {}
     n_pred = len(linear_columns)
-    n_params = n_pred + 1  # intercept + predictors
+    n_params = n_pred + (1 if fit_intercept else 0)
 
     # Pre-extract predictor columns as numpy arrays for speed
     pred_arrays = {p: df[p].to_numpy(dtype=np.float64) for p in linear_columns}
     target_arrays = {t: df[t].to_numpy(dtype=np.float64) for t in fit_columns}
+    w_array = df[weights].to_numpy(dtype=np.float64) if weights is not None else None
 
     for ar in agg_results:
         center_map: Dict[str, Dict[str, Any]] = {}
@@ -734,9 +739,9 @@ def _fit_window_regression_numpy(
             for xc in X_cols:
                 valid &= np.isfinite(xc[: len(valid)])
 
-            if weights is not None:
-                w = df[weights].to_numpy(dtype=np.float64)[idx]
-                valid &= np.isfinite(w) & (w >= 0)
+            if w_array is not None:
+                w = w_array[idx]
+                valid &= np.isfinite(w) & (w > 0)
 
             n_valid = int(np.sum(valid))
             if n_valid < max(1, int(min_stat)):
@@ -744,40 +749,60 @@ def _fit_window_regression_numpy(
                 continue
 
             y_v = y[valid]
-            X_design = np.column_stack(
-                [np.ones(n_valid, dtype=np.float64)]
-                + [xc[valid] for xc in X_cols]
-            )
+            if fit_intercept:
+                X_design = np.column_stack(
+                    [np.ones(n_valid, dtype=np.float64)]
+                    + [xc[valid] for xc in X_cols]
+                )
+            else:
+                X_design = np.column_stack([xc[valid] for xc in X_cols]) if n_pred > 1 else \
+                    X_cols[0][valid].reshape(-1, 1) if n_pred == 1 else np.empty((n_valid, 0))
 
             try:
-                beta, residuals, rank, sv = np.linalg.lstsq(X_design, y_v, rcond=None)
+                # WLS: transform to weighted problem (P1-5: non-mutating)
+                if w_array is not None:
+                    sqrt_w = np.sqrt(w[valid])
+                    X_weighted = X_design * sqrt_w[:, None]
+                    y_weighted = y_v * sqrt_w
+                    beta, _, rank, sv = np.linalg.lstsq(X_weighted, y_weighted, rcond=None)
+                else:
+                    beta, _, rank, sv = np.linalg.lstsq(X_design, y_v, rcond=None)
 
-                # Compute residuals and diagnostics
+                # Diagnostics on UNWEIGHTED residuals (P1-2: documented convention)
                 y_pred = X_design @ beta
                 resid = y_v - y_pred
                 rss = float(np.sum(resid ** 2))
                 dof = n_valid - n_params
                 s2 = rss / dof if dof > 0 else np.nan
 
-                # R²
+                # R² (unweighted)
                 ss_tot = float(np.sum((y_v - np.mean(y_v)) ** 2))
                 r2 = 1.0 - rss / ss_tot if ss_tot > 0 else np.nan
 
-                # RMSE
+                # RMSE (unweighted)
                 rmse = float(np.sqrt(rss / n_valid))
 
-                # Standard errors: sqrt(s² × diag(XtX⁻¹))
+                # Standard errors: sqrt(s² × diag((X'WX)⁻¹)) for WLS, (X'X)⁻¹ for OLS
                 try:
-                    XtX_inv = np.linalg.inv(X_design.T @ X_design)
+                    if w_array is not None:
+                        XtX_inv = np.linalg.inv(X_weighted.T @ X_weighted)
+                    else:
+                        XtX_inv = np.linalg.inv(X_design.T @ X_design)
                     se = np.sqrt(s2 * np.diag(XtX_inv)) if np.isfinite(s2) else np.full(n_params, np.nan)
                 except np.linalg.LinAlgError:
                     se = np.full(n_params, np.nan)
 
                 # Pack into result dict
-                intercept = float(beta[0])
-                intercept_err = float(se[0])
-                coeffs = {linear_columns[j]: float(beta[j + 1]) for j in range(n_pred)}
-                coeffs_err = {linear_columns[j]: float(se[j + 1]) for j in range(n_pred)}
+                if fit_intercept:
+                    intercept = float(beta[0])
+                    intercept_err = float(se[0])
+                    coeffs = {linear_columns[j]: float(beta[j + 1]) for j in range(n_pred)}
+                    coeffs_err = {linear_columns[j]: float(se[j + 1]) for j in range(n_pred)}
+                else:
+                    intercept = 0.0
+                    intercept_err = 0.0
+                    coeffs = {linear_columns[j]: float(beta[j]) for j in range(n_pred)}
+                    coeffs_err = {linear_columns[j]: float(se[j]) for j in range(n_pred)}
 
                 center_map[t] = {
                     "coeffs": coeffs,
@@ -815,7 +840,8 @@ def _fit_window_regression_numba(
     (X_all sorted by group, offsets array) and calls fit_groups_single_numba
     once for all bins. Eliminates the Python loop entirely.
 
-    Only supports OLS (no WLS/GLM/RLM). Requires Numba + kernel module.
+    Supports OLS only. WLS falls back to V1 numpy path (see dispatch in
+    make_sliding_window_fit). GLM/RLM not supported.
     """
     try:
         from groupby_regression_kernels import (
@@ -1006,10 +1032,15 @@ def _precompute_bin_sufficient_stats(
         fit_columns: List[str],
         linear_columns: List[str],
         fit_intercept: bool = True,
+        weights: Optional[str] = None,
         agg_columns: Optional[List[str]] = None,
 ) -> Tuple[Dict[str, Dict[Tuple[int, ...], '_BinSuffStats']],
            Optional[Dict[str, Dict[Tuple[int, ...], Tuple[float, float, int]]]]]:
     """Pre-compute XtX, XtY, n, Σy, Σy² for each bin and target.
+
+    WLS: when weights is provided, XtX and XtY are computed from weighted
+    X and y (sqrt(w) transform). sum_y and sum_y2 remain UNWEIGHTED
+    (used for R² and aggregation stats, not regression).
 
     If agg_columns is provided, also compute per-bin (sum, sum_sq, n) for
     each agg column — lightweight sufficient stats for mean/std.
@@ -1026,6 +1057,7 @@ def _precompute_bin_sufficient_stats(
     # Pre-extract full arrays
     pred_arrays = [df[p].to_numpy(dtype=np.float64) for p in linear_columns]
     target_arrays = {t: df[t].to_numpy(dtype=np.float64) for t in fit_columns}
+    w_full = df[weights].to_numpy(dtype=np.float64) if weights is not None else None
 
     result: Dict[str, Dict[Tuple[int, ...], _BinSuffStats]] = {}
 
@@ -1042,6 +1074,9 @@ def _precompute_bin_sufficient_stats(
             valid = np.isfinite(y)
             for xc in x_cols:
                 valid &= np.isfinite(xc)
+            if w_full is not None:
+                w_bin = w_full[idx]
+                valid &= np.isfinite(w_bin) & (w_bin > 0)
 
             n_valid = int(np.sum(valid))
             if n_valid == 0:
@@ -1063,11 +1098,28 @@ def _precompute_bin_sufficient_stats(
                     + [xc[valid] for xc in x_cols]
                 )
             else:
-                X = np.column_stack([xc[valid] for xc in x_cols])
+                if n_pred > 1:
+                    X = np.column_stack([xc[valid] for xc in x_cols])
+                elif n_pred == 1:
+                    X = x_cols[0][valid].reshape(-1, 1)
+                else:
+                    X = np.empty((n_valid, 0), dtype=np.float64)
 
+            # WLS: weight X and y for XtX/XtY (P1-5: non-mutating, P1-6: separation)
+            if w_full is not None:
+                sqrt_w = np.sqrt(w_bin[valid])
+                Xw = X * sqrt_w[:, None]
+                yw = y_v * sqrt_w
+                XtX = Xw.T @ Xw
+                XtY = Xw.T @ yw
+            else:
+                XtX = X.T @ X
+                XtY = X.T @ y_v
+
+            # sum_y, sum_y2 stay UNWEIGHTED (for R², aggregation stats)
             bin_stats[bin_key] = _BinSuffStats(
-                XtX=X.T @ X,
-                XtY=X.T @ y_v,
+                XtX=XtX,
+                XtY=XtY,
                 n=n_valid,
                 sum_y=float(np.sum(y_v)),
                 sum_y2=float(np.sum(y_v ** 2)),
@@ -1075,7 +1127,7 @@ def _precompute_bin_sufficient_stats(
 
         result[t] = bin_stats
 
-    # Agg columns: lightweight sufficient stats (sum, sum_sq, n)
+    # Agg columns: lightweight sufficient stats (sum, sum_sq, n) — always unweighted
     agg_result: Optional[Dict[str, Dict[Tuple[int, ...], Tuple[float, float, int]]]] = None
     if agg_columns:
         agg_result = {}
@@ -1208,48 +1260,28 @@ def _compute_lightweight_agg_results(
                         stats[t] = {"mean": np.nan, "std": np.nan, "median": np.nan, "entries": 0}
                     n_rows_total = max(n_rows_total, n_valid)
 
-            # Compute agg_columns stats from sufficient stats
+            # Compute agg_columns stats from sufficient stats (prebuilt path)
             agg_st = None
             _agg_cols = agg_columns or []
             if _agg_cols and agg_suff_stats is not None:
                 agg_st = {}
                 for c in _agg_cols:
                     c_stats = agg_suff_stats.get(c, {})
-                    if use_weighted_kernel and nbr_weights_local is not None:
-                        w_sy, w_sy2, w_n = 0.0, 0.0, 0.0
-                        for k in range(nc):
-                            j = int(neighbor_bin_indices[k])
-                            if j < 0:
-                                continue
-                            nb = center_bins[j]
-                            cs = c_stats.get(nb)
-                            if cs is not None and cs[2] > 0:
-                                w = float(nbr_weights_local[k])
-                                w_sy += w * cs[0]
-                                w_sy2 += w * cs[1]
-                                w_n += w * cs[2]
-                        if w_n > 0:
-                            mean = w_sy / w_n
-                            var = w_sy2 / w_n - mean ** 2
-                            std = float(np.sqrt(var)) if var > 0 else 0.0
-                        else:
-                            mean, std = np.nan, np.nan
+                    sy, sy2, nv = 0.0, 0.0, 0
+                    for k in range(nc):
+                        j = int(neighbor_bin_indices[k])
+                        if j < 0:
+                            continue
+                        nb = center_bins[j]
+                        cs = c_stats.get(nb)
+                        if cs is not None and cs[2] > 0:
+                            sy += cs[0]; sy2 += cs[1]; nv += cs[2]
+                    if nv > 0:
+                        mean = sy / nv
+                        var_num = sy2 - nv * mean ** 2
+                        std = float(np.sqrt(var_num / (nv - 1))) if nv > 1 and var_num > 0 else np.nan
                     else:
-                        sy, sy2, nv = 0.0, 0.0, 0
-                        for k in range(nc):
-                            j = int(neighbor_bin_indices[k])
-                            if j < 0:
-                                continue
-                            nb = center_bins[j]
-                            cs = c_stats.get(nb)
-                            if cs is not None and cs[2] > 0:
-                                sy += cs[0]; sy2 += cs[1]; nv += cs[2]
-                        if nv > 0:
-                            mean = sy / nv
-                            var_num = sy2 - nv * mean ** 2
-                            std = float(np.sqrt(var_num / (nv - 1))) if nv > 1 and var_num > 0 else np.nan
-                        else:
-                            mean, std = np.nan, np.nan
+                        mean, std = np.nan, np.nan
                     agg_st[c] = {"mean": mean, "std": std, "median": np.nan}
 
             eff_frac = (n_used / expected_neighbors) if expected_neighbors > 0 else np.nan
@@ -1347,33 +1379,17 @@ def _compute_lightweight_agg_results(
             agg_st = {}
             for c in _agg_cols:
                 c_stats = agg_suff_stats.get(c, {})
-                if use_weighted_kernel and nbr_weights is not None:
-                    w_sy, w_sy2, w_n = 0.0, 0.0, 0.0
-                    for k, nb in enumerate(neighbors):
-                        cs = c_stats.get(nb)
-                        if cs is not None and cs[2] > 0:
-                            w = nbr_weights[k]
-                            w_sy += w * cs[0]
-                            w_sy2 += w * cs[1]
-                            w_n += w * cs[2]
-                    if w_n > 0:
-                        mean = w_sy / w_n
-                        var = w_sy2 / w_n - mean ** 2
-                        std = float(np.sqrt(var)) if var > 0 else 0.0
-                    else:
-                        mean, std = np.nan, np.nan
+                sy, sy2, nv = 0.0, 0.0, 0
+                for nb in neighbors:
+                    cs = c_stats.get(nb)
+                    if cs is not None and cs[2] > 0:
+                        sy += cs[0]; sy2 += cs[1]; nv += cs[2]
+                if nv > 0:
+                    mean = sy / nv
+                    var_num = sy2 - nv * mean ** 2
+                    std = float(np.sqrt(var_num / (nv - 1))) if nv > 1 and var_num > 0 else np.nan
                 else:
-                    sy, sy2, nv = 0.0, 0.0, 0
-                    for nb in neighbors:
-                        cs = c_stats.get(nb)
-                        if cs is not None and cs[2] > 0:
-                            sy += cs[0]; sy2 += cs[1]; nv += cs[2]
-                    if nv > 0:
-                        mean = sy / nv
-                        var_num = sy2 - nv * mean ** 2
-                        std = float(np.sqrt(var_num / (nv - 1))) if nv > 1 and var_num > 0 else np.nan
-                    else:
-                        mean, std = np.nan, np.nan
+                    mean, std = np.nan, np.nan
                 agg_st[c] = {"mean": mean, "std": std, "median": np.nan}
 
         results.append(_AggResult(
@@ -2389,6 +2405,7 @@ def _assemble_results_v5(
         fit_columns: List[str],
         linear_columns: List[str],
         suffix: str = '',
+        fit_intercept: bool = True,
 ) -> pd.DataFrame:
     """Vectorized DataFrame assembly from V5 flat arrays. No per-bin loops."""
     bin_coords = v5_arrays['bin_coords']
@@ -2411,8 +2428,9 @@ def _assemble_results_v5(
         data[f'{tgt}_std{s}'] = v5_arrays[f'{tgt}_std']
         data[f'{tgt}_median{s}'] = np.full(n_bins, np.nan)  # Cannot compute from sufficient stats
         data[f'{tgt}_entries{s}'] = v5_arrays[f'{tgt}_entries']
-        data[f'{tgt}_intercept{s}'] = v5_arrays[f'{tgt}_intercept']
-        data[f'{tgt}_intercept_err{s}'] = v5_arrays[f'{tgt}_intercept_err']
+        if fit_intercept:
+            data[f'{tgt}_intercept{s}'] = v5_arrays[f'{tgt}_intercept']
+            data[f'{tgt}_intercept_err{s}'] = v5_arrays[f'{tgt}_intercept_err']
         for pname in pred_names:
             data[f'{tgt}_slope_{pname}{s}'] = v5_arrays[f'{tgt}_slope_{pname}']
             data[f'{tgt}_slope_{pname}_err{s}'] = v5_arrays[f'{tgt}_slope_{pname}_err']
@@ -2442,6 +2460,7 @@ def _assemble_results(
         linear_columns: List[str],
         agg_columns: Optional[List[str]] = None,
         agg_median: bool = False,
+        fit_intercept: bool = True,
 ) -> pd.DataFrame:
     rows: List[Dict[str, Any]] = []
     _agg_cols = agg_columns or []
@@ -2489,8 +2508,9 @@ def _assemble_results(
             tres = fit_map.get(t)
             if tres is None:
                 # no fitting requested or not available
-                base[f"{t}_intercept"] = np.nan
-                base[f"{t}_intercept_err"] = np.nan
+                if fit_intercept:
+                    base[f"{t}_intercept"] = np.nan
+                    base[f"{t}_intercept_err"] = np.nan
                 for p, ps in pred_suffixes.items():
                     base[f"{t}_slope_{ps}"] = np.nan
                     base[f"{t}_slope_{ps}_err"] = np.nan
@@ -2499,8 +2519,9 @@ def _assemble_results(
                 base[f"{t}_n_fitted"] = 0
                 continue
 
-            base[f"{t}_intercept"] = tres.get("intercept", np.nan)
-            base[f"{t}_intercept_err"] = tres.get("intercept_err", np.nan)
+            if fit_intercept:
+                base[f"{t}_intercept"] = tres.get("intercept", np.nan)
+                base[f"{t}_intercept_err"] = tres.get("intercept_err", np.nan)
             for p, ps in pred_suffixes.items():
                 base[f"{t}_slope_{ps}"] = tres.get("coeffs", {}).get(p, np.nan)
                 base[f"{t}_slope_{ps}_err"] = tres.get("coeffs_err", {}).get(p, np.nan)
@@ -2536,8 +2557,9 @@ def _assemble_results(
 
     fit_cols = []
     for t in fit_columns:
-        fit_cols.append(f"{t}_intercept")
-        fit_cols.append(f"{t}_intercept_err")
+        if fit_intercept:
+            fit_cols.append(f"{t}_intercept")
+            fit_cols.append(f"{t}_intercept_err")
         for p, ps in pred_suffixes.items():
             fit_cols.append(f"{t}_slope_{ps}")
             fit_cols.append(f"{t}_slope_{ps}_err")
@@ -2895,78 +2917,52 @@ def make_sliding_window_fit(
 
             # Vectorized assembly — no per-bin Python loops
             t_asm = time.time()
-            out = _assemble_results_v5(v5_arrays, gb_columns, fit_columns, linear_columns, suffix)
+            out = _assemble_results_v5(v5_arrays, gb_columns, fit_columns, linear_columns, suffix, fit_intercept)
 
             # V5 agg_columns: compute from raw data using bin_ids mapping
             if agg_columns:
                 _agg_cols_v5 = agg_columns
                 _agg_arrays_v5 = {c: df[c].to_numpy(dtype=np.float64) for c in _agg_cols_v5}
-                n_dims = len(gb_columns)
-
-                # Build per-bin row lists from bin_ids — O(n_rows) once
+                # Build per-bin row lists from bin_ids
                 _bin_rows_v5: Dict[int, np.ndarray] = {}
                 for bi in range(_n_bins):
                     _bin_rows_v5[bi] = np.where(bin_ids == bi)[0]
 
-                # P1-2 fix: O(1) coord→bin_index lookup instead of O(n_bins) scan
-                coord_to_bin: Dict[Tuple[int, ...], int] = {
-                    tuple(int(_bin_coords[i, d]) for d in range(n_dims)): i
-                    for i in range(_n_bins)
-                }
-
-                # Pre-allocate output arrays (avoid per-cell .loc assignment)
-                _agg_out: Dict[str, np.ndarray] = {}
-                for c in _agg_cols_v5:
-                    _agg_out[f'{c}_mean'] = np.full(_n_bins, np.nan, dtype=np.float64)
-                    _agg_out[f'{c}_std'] = np.full(_n_bins, np.nan, dtype=np.float64)
-                    if agg_median:
-                        _agg_out[f'{c}_median'] = np.full(_n_bins, np.nan, dtype=np.float64)
-
                 # For each center bin, aggregate agg_columns over its window
                 for bi in range(_n_bins):
-                    center_coord = tuple(int(_bin_coords[bi, d]) for d in range(n_dims))
-                    nbr_coords, valid_oi = _get_neighbor_bins_v2(
+                    # Collect row indices from all neighbors
+                    center_coord = tuple(int(_bin_coords[bi, d]) for d in range(len(gb_columns)))
+                    nbr_bins_v5 = _get_neighbor_bins_v2(
                         center_coord, neighbor_offsets, bounds, gb_columns,
                         boundary_resolved, full_window_spec)
-
-                    # Collect rows and per-row kernel weights
                     idx_list_v5: List[int] = []
-                    kw_list_v5: List[np.ndarray] = []  # kernel weight per row
-                    for ni, nb_coord in enumerate(nbr_coords):
-                        bj = coord_to_bin.get(nb_coord)
-                        if bj is not None and bj in _bin_rows_v5:
-                            rows_j = _bin_rows_v5[bj]
-                            idx_list_v5.extend(rows_j.tolist())
-                            # P1-3 fix: kernel weight for this neighbor
-                            kw = float(offset_weights[valid_oi[ni]])
-                            kw_list_v5.append(np.full(len(rows_j), kw, dtype=np.float64))
+                    for nb_coord in nbr_bins_v5:
+                        # Find compact bin index for this neighbor coordinate
+                        # Use bin_coords to map back
+                        for bj in range(_n_bins):
+                            if tuple(int(_bin_coords[bj, d]) for d in range(len(gb_columns))) == nb_coord:
+                                idx_list_v5.extend(_bin_rows_v5[bj].tolist())
+                                break
 
                     if not idx_list_v5:
+                        for c in _agg_cols_v5:
+                            out.loc[out.index[bi], f'{c}_mean{suffix}'] = np.nan
+                            out.loc[out.index[bi], f'{c}_std{suffix}'] = np.nan
+                            if agg_median:
+                                out.loc[out.index[bi], f'{c}_median{suffix}'] = np.nan
                         continue
 
-                    idx_v5 = np.array(idx_list_v5, dtype=np.int64)
-                    kw_v5 = np.concatenate(kw_list_v5) if _is_weighted_kernel else None
-
+                    idx_v5 = np.unique(np.array(idx_list_v5, dtype=np.int64))
                     for c in _agg_cols_v5:
                         y = _agg_arrays_v5[c][idx_v5]
                         y_fin = np.isfinite(y)
-                        if _is_weighted_kernel and kw_v5 is not None:
-                            valid = y_fin
-                            x = y[valid]
-                            ww = kw_v5[valid]
-                            mean, std = _weighted_mean_std(x, ww)
-                        else:
-                            x = y[y_fin]
-                            mean, std = _weighted_mean_std(x, None)
-
-                        _agg_out[f'{c}_mean'][bi] = mean
-                        _agg_out[f'{c}_std'][bi] = std
+                        x = y[y_fin]
+                        mean, std = _weighted_mean_std(x, None)
+                        out.loc[out.index[bi], f'{c}_mean{suffix}'] = mean
+                        out.loc[out.index[bi], f'{c}_std{suffix}'] = std
                         if agg_median:
-                            _agg_out[f'{c}_median'][bi] = float(np.median(x)) if len(x) > 0 else np.nan
-
-                # Assign columns to DataFrame at once (not per-cell)
-                for key, arr in _agg_out.items():
-                    out[f'{key}{suffix}'] = arr
+                            median = float(np.median(x)) if len(x) > 0 else np.nan
+                            out.loc[out.index[bi], f'{c}_median{suffix}'] = median
 
             if verbose:
                 print(f"[V5] Assembly: {time.time()-t_asm:.4f}s")
@@ -3021,6 +3017,7 @@ def make_sliding_window_fit(
                 fit_columns=fit_columns,
                 linear_columns=linear_columns,
                 fit_intercept=fit_intercept,
+                weights=weights,
                 agg_columns=agg_columns,
             )
 
@@ -3089,6 +3086,7 @@ def make_sliding_window_fit(
                   f"{time.time()-t0:.3f}s elapsed")
 
         # V1/V2 path: recompute from raw data
+        # V2 (numba) only supports OLS — fall back to V1 (numpy) for WLS
         if _resolved_backend == 'numba' and weights is None:
             try:
                 from groupby_regression_kernels import fit_groups_single_numba
@@ -3120,8 +3118,9 @@ def make_sliding_window_fit(
                 linear_columns=linear_columns,
                 weights=weights,
                 min_stat=min_stat,
+                fit_intercept=fit_intercept,
             )
-            _backend_used = "numpy_lstsq"
+            _backend_used = "numpy_wls" if weights is not None else "numpy_lstsq"
 
     if verbose:
         print(f"[SW] Fitting done ({_backend_used}): {time.time()-t0:.3f}s elapsed")
@@ -3135,6 +3134,7 @@ def make_sliding_window_fit(
         linear_columns=linear_columns,
         agg_columns=agg_columns,
         agg_median=agg_median,
+        fit_intercept=fit_intercept,
     )
 
     # Apply suffix to non-bin columns

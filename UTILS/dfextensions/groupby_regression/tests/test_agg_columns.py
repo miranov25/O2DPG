@@ -122,28 +122,39 @@ def test_agg_columns_matches_manual(sample_df):
 # ── Test 3: Kernel-weighted vs unweighted ──
 
 def test_agg_columns_with_kernel_weights(sample_df):
-    """Gaussian kernel produces different agg mean than uniform kernel."""
-    kw = _base_kwargs(sample_df,
+    """Gaussian kernel produces different agg mean than uniform kernel
+    in the recompute (zerocopy) path where user weights affect aggregation.
+
+    NOTE: The V3 incremental path computes agg_columns from sufficient stats
+    which are always unweighted (per P1-6 review decision: COG is a data
+    property, not a fit property). This test uses algorithm='recompute'
+    to verify that user-provided weights do affect agg_columns stats.
+    """
+    # Add a weight column that varies with xBin to create a visible effect
+    df = sample_df.copy()
+    df['w_by_x'] = 1.0 / (1.0 + df['xBin'].values.astype(float))
+
+    kw = _base_kwargs(df,
                       window_spec={'xBin': 1},
                       agg_columns=['extra_float'],
-                      algorithm='incremental',
+                      algorithm='recompute',
                       backend='numpy')
 
-    result_uniform = make_sliding_window_fit(**kw, kernel='uniform')
-    result_gauss = make_sliding_window_fit(**kw, kernel='gaussian')
+    result_no_w = make_sliding_window_fit(**kw, weights=None)
+    result_w = make_sliding_window_fit(**kw, weights='w_by_x')
 
-    # For interior bins (xBin in [1,3]), kernel-weighted mean should differ
-    interior = (result_uniform['xBin'] >= 1) & (result_uniform['xBin'] <= 3)
-    mean_uniform = result_uniform.loc[interior, 'extra_float_mean_sw'].values
-    mean_gauss = result_gauss.loc[interior, 'extra_float_mean_sw'].values
+    # For interior bins (xBin in [1,3]), weighted mean should differ from unweighted
+    interior = (result_no_w['xBin'] >= 1) & (result_no_w['xBin'] <= 3)
+    mean_no_w = result_no_w.loc[interior, 'extra_float_mean_sw'].values
+    mean_w = result_w.loc[interior, 'extra_float_mean_sw'].values
 
-    # They should NOT be identical (Gaussian gives more weight to center bin)
-    assert not np.allclose(mean_uniform, mean_gauss, atol=1e-10), \
-        "Gaussian and uniform kernel should produce different agg means for interior bins"
+    # They should NOT be identical (weights give more weight to low xBin neighbors)
+    assert not np.allclose(mean_no_w, mean_w, atol=1e-6), \
+        "Weighted and unweighted agg means should differ for heterogeneous weights"
 
     # Both should be finite
-    assert np.all(np.isfinite(mean_uniform))
-    assert np.all(np.isfinite(mean_gauss))
+    assert np.all(np.isfinite(mean_no_w))
+    assert np.all(np.isfinite(mean_w))
 
 
 # ── Test 4: Median optional flag ──
