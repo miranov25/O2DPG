@@ -246,8 +246,19 @@ Bool_t BuildCompositeIndex(TTree* mainTree, TTree* subframeTree,
     if (columns.size() <= 2) {
         // Use native ROOT BuildIndex for 1-2 keys
         if (columns.size() == 1) {
-            subframeTree->BuildIndex(columns[0].Data());
-            std::cout << "    BuildIndex(" << columns[0] << ")" << std::endl;
+            // ROOT friend tree lookup: when iterating the main tree, ROOT
+            // evaluates the friend's index formula on the main tree values.
+            // BuildIndex(major, minor) stores the index as major*multiplier + minor.
+            // 
+            // BUG: BuildIndex("gid") with no minor uses "" as minor formula.
+            // On the friend tree (which has "gid"), minor evaluates to 0 → stored as gid*1 + 0.
+            // But when ROOT evaluates "" on the main tree for lookup, it can fail
+            // to match because the empty formula may not evaluate to exactly 0.
+            //
+            // FIX: Explicitly pass "0" as minor so both friend storage and main
+            // tree lookup use the same (gid, 0) pair.
+            subframeTree->BuildIndex(columns[0].Data(), "0");
+            std::cout << "    BuildIndex(" << columns[0] << ", 0)  [single-key with explicit minor]" << std::endl;
         } else if (columns.size() == 2) {
             subframeTree->BuildIndex(columns[0].Data(), columns[1].Data());
             std::cout << "    BuildIndex(" << columns[0] << ", " << columns[1] << ")" << std::endl;
@@ -943,6 +954,33 @@ TTree* LoadADFTree(const char* filename, const char* treename = "tree") {
         // Priority 1: Use schema if available
         if (schema && schema->subframeIndices.count(sfName)) {
             indexCols = schema->subframeIndices[sfName];
+            
+            // Deduplicate index columns (handles Python schema bug where
+            // single-key index stored as ["gid", "gid"] instead of ["gid"])
+            {
+                std::vector<TString> uniqueCols;
+                for (const auto& col : indexCols) {
+                    bool isDuplicate = false;
+                    for (const auto& u : uniqueCols) {
+                        if (u == col) { isDuplicate = true; break; }
+                    }
+                    if (!isDuplicate) uniqueCols.push_back(col);
+                }
+                if (uniqueCols.size() != indexCols.size()) {
+                    std::cout << "    WARNING: Duplicate index columns removed: [";
+                    for (size_t i = 0; i < indexCols.size(); i++) {
+                        std::cout << indexCols[i];
+                        if (i < indexCols.size() - 1) std::cout << ", ";
+                    }
+                    std::cout << "] → [";
+                    for (size_t i = 0; i < uniqueCols.size(); i++) {
+                        std::cout << uniqueCols[i];
+                        if (i < uniqueCols.size() - 1) std::cout << ", ";
+                    }
+                    std::cout << "]" << std::endl;
+                }
+                indexCols = uniqueCols;
+            }
             std::cout << "    Index from schema: [";
             for (size_t i = 0; i < indexCols.size(); i++) {
                 std::cout << indexCols[i];
