@@ -247,3 +247,35 @@ def test_agg_columns_v5_matches_zerocopy(sample_df):
             merged[f'{col}_std_sw_inc'].values,
             rtol=1e-10, atol=1e-12,
             err_msg=f"{col}_std differs between recompute and incremental")
+
+
+# ── Test 7: Default output has no fit_column stats ──
+
+def test_default_no_fit_stats(sample_df):
+    """Default output has no {t}_mean, {t}_std, {t}_median, {t}_entries, {t}_r_squared."""
+    result = make_sliding_window_fit(**_base_kwargs(sample_df))
+
+    for col in result.columns:
+        assert not col.endswith('_mean_sw'), f"Unexpected fit stat column: {col}"
+        assert not col.endswith('_std_sw'), f"Unexpected fit stat column: {col}"
+        assert not col.endswith('_median_sw'), f"Unexpected fit stat column: {col}"
+        assert not col.endswith('_entries_sw'), f"Unexpected fit stat column: {col}"
+        assert '_r_squared_' not in col, f"Unexpected r_squared column: {col}"
+
+    # Fit results should still be present
+    assert 'target_intercept_sw' in result.columns
+    assert 'target_slope_predictor_sw' in result.columns
+    assert 'target_rmse_sw' in result.columns
+    assert 'target_n_fitted_sw' in result.columns
+
+
+# ── Test 8: agg_columns restores fit_column stats ──
+
+def test_agg_columns_restores_fit_stats(sample_df):
+    """Adding fit_column to agg_columns produces mean/std for that column."""
+    result = make_sliding_window_fit(
+        **_base_kwargs(sample_df, agg_columns=['target']))
+
+    assert 'target_mean_sw' in result.columns
+    assert 'target_std_sw' in result.columns
+    assert result['target_mean_sw'].notna().all()

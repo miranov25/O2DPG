@@ -123,7 +123,7 @@ class TestParallelSchema:
         assert 'value_intercept_sw' in result.columns
         assert 'value_slope_x_sw' in result.columns
         assert 'value_rmse_sw' in result.columns
-        assert 'value_mean_sw' in result.columns
+        assert 'value_intercept_sw' in result.columns
 
 
 class TestParallelSingleWorker:

@@ -171,6 +171,7 @@ def _run_sw_fit(
     window_size: int,
     linear_columns: list,
     min_stat: int = 5,
+    agg_columns=None,
 ) -> pd.DataFrame:
     """Helper to run make_sliding_window_fit with standard parameters."""
     return make_sliding_window_fit(
@@ -181,6 +182,7 @@ def _run_sw_fit(
         linear_columns=linear_columns,
         min_stat=min_stat,
         suffix='',
+        agg_columns=agg_columns,
     )
 
 
@@ -417,7 +419,7 @@ class TestSWStructuralInvariants:
                 f"Bin ({row['xBin']},{row['yBin']},{row['zBin']}): "
                 f"expected {ENTRIES_PER_BIN}, got {row['n_rows_aggregated']}"
             )
-            assert row['value_entries'] == ENTRIES_PER_BIN
+            assert row['value_n_fitted'] == ENTRIES_PER_BIN
 
     def test_sw_window0_neighbors_equals_one(self):
         """Test 7: window=0 → n_neighbors_used == 1 (exact, self only)."""
@@ -476,7 +478,7 @@ class TestSWMetamorphic:
         r2 = result_shuf.sort_values(sort_cols).reset_index(drop=True)
 
         # Integer outputs must match exactly (P1-6)
-        for col in ['n_rows_aggregated', 'n_neighbors_used', 'value_entries', 'value_n_fitted']:
+        for col in ['n_rows_aggregated', 'n_neighbors_used', 'value_n_fitted']:
             np.testing.assert_array_equal(
                 r1[col].values, r2[col].values,
                 err_msg=f"Permutation changed integer output: {col}",
@@ -586,7 +588,7 @@ class TestSWNumba:
 
         # Integer outputs must match exactly (P1-6)
         for col in ['n_rows_aggregated', 'n_neighbors_used',
-                     'value_entries', 'value_n_fitted']:
+                     'value_n_fitted']:
             np.testing.assert_array_equal(
                 r_v1[col].values, r_v2[col].values,
                 err_msg=f"V1 ≠ V2 integer output: {col} (window={window_size})",
@@ -802,6 +804,7 @@ def _run_sw_fit_incremental(
     window_size: int,
     linear_columns: list,
     min_stat: int = 5,
+    agg_columns=None,
 ) -> pd.DataFrame:
     """Run make_sliding_window_fit with algorithm='incremental' (V3)."""
     return make_sliding_window_fit(
@@ -813,6 +816,7 @@ def _run_sw_fit_incremental(
         min_stat=min_stat,
         algorithm='incremental',
         suffix='',
+        agg_columns=agg_columns,
     )
 
 
@@ -931,12 +935,6 @@ class TestSWV3Parity:
             atol=self.DIAG_ATOL, rtol=self.DIAG_RTOL,
             err_msg=f"V3 ≠ V1 RMSE (window={window_size})",
         )
-        np.testing.assert_allclose(
-            r_v1['value_r_squared'].values,
-            r_v3['value_r_squared'].values,
-            atol=self.DIAG_ATOL, rtol=self.DIAG_RTOL,
-            err_msg=f"V3 ≠ V1 R² (window={window_size})",
-        )
         np.testing.assert_array_equal(
             r_v1['value_n_fitted'].values,
             r_v3['value_n_fitted'].values,
@@ -946,8 +944,8 @@ class TestSWV3Parity:
     def test_v3_stats_from_sufficient(self):
         """Test 18: V3 mean/std match V1 (from sufficient stats)."""
         df = _make_sw_grid_single()
-        r_v1 = _run_sw_fit(df, window_size=1, linear_columns=['x'])
-        r_v3 = _run_sw_fit_incremental(df, window_size=1, linear_columns=['x'])
+        r_v1 = _run_sw_fit(df, window_size=1, linear_columns=['x'], agg_columns=['value'])
+        r_v3 = _run_sw_fit_incremental(df, window_size=1, linear_columns=['x'], agg_columns=['value'])
 
         sort_cols = ['xBin', 'yBin', 'zBin']
         r_v1 = r_v1.sort_values(sort_cols).reset_index(drop=True)
@@ -964,11 +962,6 @@ class TestSWV3Parity:
             r_v3['value_std'].values,
             atol=self.STAT_ATOL, rtol=self.STAT_RTOL,
             err_msg="V3 ≠ V1 std",
-        )
-        np.testing.assert_array_equal(
-            r_v1['value_entries'].values,
-            r_v3['value_entries'].values,
-            err_msg="V3 ≠ V1 entries",
         )
 
     def test_v3_metadata_algorithm(self):
@@ -1012,6 +1005,7 @@ def _run_sw_fit_v3b(
     boundary: str = 'full',
     kernel: str = 'uniform',
     kernel_width=None,
+    agg_columns=None,
 ) -> pd.DataFrame:
     """Run make_sliding_window_fit with V3b parameters."""
     return make_sliding_window_fit(
@@ -1026,6 +1020,7 @@ def _run_sw_fit_v3b(
         kernel=kernel,
         kernel_width=kernel_width,
         suffix='',
+        agg_columns=agg_columns,
     )
 
 
@@ -1045,23 +1040,23 @@ class TestSWV3bBackwardCompat:
         r_v3b = r_v3b.sort_values(sort_cols).reset_index(drop=True)
 
         for col in ['value_slope_x', 'value_intercept', 'value_rmse',
-                     'value_r_squared', 'value_slope_x_err', 'value_intercept_err']:
+                     'value_slope_x_err', 'value_intercept_err']:
             np.testing.assert_array_equal(
                 r_v3[col].values, r_v3b[col].values,
                 err_msg=f"V3b defaults ≠ V3: {col}",
             )
 
     def test_v3b_defaults_equal_v3_stats(self):
-        """Test 22: V3b default mean/std/entries ≡ V3."""
+        """Test 22: V3b default mean/std ≡ V3 (via agg_columns)."""
         df = _make_sw_grid_single()
-        r_v3 = _run_sw_fit_incremental(df, window_size=1, linear_columns=['x'])
-        r_v3b = _run_sw_fit_v3b(df, window_size=1, linear_columns=['x'])
+        r_v3 = _run_sw_fit_incremental(df, window_size=1, linear_columns=['x'], agg_columns=['value'])
+        r_v3b = _run_sw_fit_v3b(df, window_size=1, linear_columns=['x'], agg_columns=['value'])
 
         sort_cols = ['xBin', 'yBin', 'zBin']
         r_v3 = r_v3.sort_values(sort_cols).reset_index(drop=True)
         r_v3b = r_v3b.sort_values(sort_cols).reset_index(drop=True)
 
-        for col in ['value_mean', 'value_std', 'value_entries']:
+        for col in ['value_mean', 'value_std']:
             np.testing.assert_array_equal(
                 r_v3[col].values, r_v3b[col].values,
                 err_msg=f"V3b defaults ≠ V3 stats: {col}",
@@ -1504,10 +1499,6 @@ class TestSWV3Numba:
         np.testing.assert_allclose(
             r_np['value_rmse'].values, r_nb['value_rmse'].values,
             atol=1e-12, rtol=1e-12, err_msg="V3-Numba ≠ V3-NumPy RMSE",
-        )
-        np.testing.assert_allclose(
-            r_np['value_r_squared'].values, r_nb['value_r_squared'].values,
-            atol=1e-12, rtol=1e-12, err_msg="V3-Numba ≠ V3-NumPy R²",
         )
         np.testing.assert_array_equal(
             r_np['value_n_fitted'].values, r_nb['value_n_fitted'].values,

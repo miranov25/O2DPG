@@ -218,7 +218,7 @@ def test_sliding_window_basic_3d_verbose():
         fit_columns=['value'],
         linear_columns=['x'],
         min_stat=10
-    , suffix='')
+    , suffix='', agg_columns=['value'])
 
     vprint("✓ Checking output structure:")
     assert_msg(isinstance(result, pd.DataFrame), "Result must be a DataFrame", type=type(result))
@@ -228,12 +228,12 @@ def test_sliding_window_basic_3d_verbose():
                "Missing group columns", columns=list(result.columns))
     vprint(f"  ✓ Has group columns: xBin, yBin, zBin")
     
-    assert_msg({'value_mean', 'value_std', 'value_entries'}.issubset(result.columns),
+    assert_msg({'value_mean', 'value_std'}.issubset(result.columns),
                "Missing aggregation outputs", columns=list(result.columns))
     vprint(f"  ✓ Has aggregations: mean, std, entries")
 
     # Regression: ensure at least basic coefficients are present
-    expect_any = {'value_slope_x', 'value_intercept', 'value_r_squared'}
+    expect_any = {'value_slope_x', 'value_intercept'}
     assert_msg(any(c in result.columns for c in expect_any),
                "Missing regression outputs", expected=expect_any, columns=list(result.columns))
     vprint(f"  ✓ Has regression outputs: slope_x, intercept, r_squared")
@@ -273,12 +273,11 @@ def test_sliding_window_aggregation_verbose():
         fit_columns=['value'],
         linear_columns=[],
         min_stat=1
-    , suffix='')
+    , suffix='', agg_columns=['value'])
 
     row_0 = result[(result['xBin'] == 0) & (result['yBin'] == 0) & (result['zBin'] == 0)].iloc[0]
-    assert row_0['value_entries'] == 6, "Entries must include neighbors in x."
+    assert row_0['n_rows_aggregated'] == 6, "Entries must include neighbors in x."
     assert np.isclose(row_0['value_mean'], 3.5, atol=1e-6), "Mean mismatch."
-    assert np.isclose(row_0.get('value_median', 3.5), 3.5, atol=1e-6), "Median mismatch."
 
 
 def test_sliding_window_linear_fit_recover_slope():
@@ -598,13 +597,11 @@ def test_multi_target_fit_output_schema():
         df=df, gb_columns=['xBin', 'yBin', 'zBin'],
         window_spec={'xBin': 1, 'yBin': 1, 'zBin': 1},
         fit_columns=['value', 'value2'], linear_columns=['x'], min_stat=10
-    , suffix='')
+    , suffix='', agg_columns=['value'])
 
     expected = [
-        'value_mean', 'value_std', 'value_median', 'value_entries',
-        'value_slope_x', 'value_intercept', 'value_r_squared',
-        'value2_mean', 'value2_std', 'value2_median', 'value2_entries',
-        'value2_slope_x', 'value2_intercept', 'value2_r_squared'
+        'value_slope_x', 'value_intercept',
+        'value2_slope_x', 'value2_intercept'
     ]
     for c in expected:
         assert c in result.columns, f"Missing column: {c}"
@@ -644,7 +641,7 @@ def test_selection_mask_filters_pre_windowing():
         fit_columns=['value'], linear_columns=['x'], selection=selection
     , suffix='')
 
-    assert res_sel['value_entries'].mean() < res_all['value_entries'].mean(), \
+    assert res_sel['n_rows_aggregated'].mean() < res_all['n_rows_aggregated'].mean(), \
         "Selected run must show fewer entries per bin on average."
 
 

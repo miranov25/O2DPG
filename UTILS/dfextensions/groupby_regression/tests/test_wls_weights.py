@@ -138,7 +138,7 @@ def test_wls_uniform_weights_equals_ols(heteroscedastic_df):
     result_uniform = make_sliding_window_fit(**kw, weights='w_uniform')
 
     for col in ['target_intercept_sw', 'target_slope_predictor_sw',
-                'target_rmse_sw', 'target_r_squared_sw']:
+                'target_rmse_sw']:
         np.testing.assert_allclose(
             result_none[col].values, result_uniform[col].values,
             rtol=1e-10, atol=1e-12,
