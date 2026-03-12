@@ -3229,12 +3229,22 @@ def _counting_sort_indices_numba(keys, n_groups):
 
 
 def _worker_init():
-    """Set NUMBA_NUM_THREADS=1 inside worker to prevent oversubscription."""
+    """Set NUMBA_NUM_THREADS=1 inside worker to prevent oversubscription.
+
+    Must set env var BEFORE importing numba, as numba reads it at import time.
+    Handles the case where Numba is already imported (in-process n_workers=1).
+    """
+    # Set env var first — affects any future numba import in child processes
     os.environ['NUMBA_NUM_THREADS'] = '1'
+    os.environ['NUMBA_THREADING_LAYER'] = 'workqueue'
     try:
         import numba
-        numba.config.THREADING_LAYER_PRIORITY = ['workqueue']
-    except Exception:
+        # If numba already imported, try to adjust thread count
+        try:
+            numba.set_num_threads(1)
+        except Exception:
+            pass  # Threads already launched — continue with current count
+    except ImportError:
         pass
 
 
@@ -3268,7 +3278,12 @@ def _worker_v5_shared(
     from the parent — zero pickle overhead for big arrays.
     Only (start, end) integers + small config args are pickled.
     """
-    _worker_init()
+    # Suppress Numba threading conflicts in forked workers
+    try:
+        import numba
+        numba.set_num_threads(1)
+    except Exception:
+        pass
     try:
         row_indices = _shared_order[start:end]
         gb_unit = _shared_gb_arrays[row_indices]
@@ -3339,7 +3354,12 @@ def _worker_v5(
     Reconstructs a minimal DataFrame for _flatten_bins_for_v5, then calls
     V5 arrays path directly. Returns (unit_id, result_df) or (unit_id, error_str).
     """
-    _worker_init()
+    # Suppress Numba threading conflicts in forked workers
+    try:
+        import numba
+        numba.set_num_threads(1)
+    except Exception:
+        pass
     try:
         # Reconstruct minimal DataFrame from arrays
         data = {}
@@ -3589,6 +3609,13 @@ def make_sliding_window_fit_parallel(
         _shared_y_array = y_array
         _shared_order = order
 
+        # Prevent Numba thread conflicts in child processes:
+        # Save parent env, set threads=1 BEFORE fork, restore after.
+        _orig_numba_threads = os.environ.get('NUMBA_NUM_THREADS')
+        _orig_numba_layer = os.environ.get('NUMBA_THREADING_LAYER')
+        os.environ['NUMBA_NUM_THREADS'] = '1'
+        os.environ['NUMBA_THREADING_LAYER'] = 'workqueue'
+
         try:
             futures = {}
             with ProcessPoolExecutor(max_workers=n_workers) as executor:
@@ -3631,6 +3658,15 @@ def make_sliding_window_fit_parallel(
             _shared_x_array = None
             _shared_y_array = None
             _shared_order = None
+            # Restore parent's Numba env
+            if _orig_numba_threads is not None:
+                os.environ['NUMBA_NUM_THREADS'] = _orig_numba_threads
+            elif 'NUMBA_NUM_THREADS' in os.environ:
+                del os.environ['NUMBA_NUM_THREADS']
+            if _orig_numba_layer is not None:
+                os.environ['NUMBA_THREADING_LAYER'] = _orig_numba_layer
+            elif 'NUMBA_THREADING_LAYER' in os.environ:
+                del os.environ['NUMBA_THREADING_LAYER']
 
     t1_workers = time.time()
 
