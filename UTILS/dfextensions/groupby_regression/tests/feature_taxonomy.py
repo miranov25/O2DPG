@@ -834,18 +834,18 @@ FEATURE_TAXONOMY = {
     },
     "SW.parallel": {
         "name": "Parallel sliding window (split-column)",
-        "description": "Multi-sector parallel execution via ProcessPoolExecutor with fork() COW, "
-                       "O(N) counting sort, zero-pickle dispatch (~200B/task vs 125MB)",
+        "description": "Multi-sector parallel execution via ProcessPoolExecutor with forkserver/spawn, "
+                       "O(N) counting sort, zero-pickle dispatch via fork COW or per-unit pickle for spawn",
         "module": "groupby_regression_sliding_window",
         "proof": [
             "test_parallel_sliding_window.py::TestParallelCorrectness::test_parallel_matches_serial",
-            "test_parallel_sliding_window.py::TestParallelCorrectness::test_parallel_single_worker",
-            "test_parallel_sliding_window.py::TestParallelCorrectness::test_parallel_multiple_targets",
-            "test_parallel_sliding_window.py::TestParallelCorrectness::test_parallel_output_columns",
-            "test_parallel_sliding_window.py::TestParallelPerformance::test_parallel_speedup",
-            "test_parallel_sliding_window.py::TestParallelErrorHandling::test_on_error_nan_fills",
+            "test_parallel_sliding_window.py::TestParallelSchema::test_output_has_split_columns",
+            "test_parallel_sliding_window.py::TestParallelSingleWorker::test_single_vs_multi_worker",
+            "test_parallel_sliding_window.py::TestParallelMissingUnits::test_missing_sectors",
+            "test_parallel_sliding_window.py::TestParallelPerformance::test_parallel_faster",
+            "test_parallel_sliding_window.py::TestParallelErrorHandling::test_on_error_nan_continues",
             "test_parallel_sliding_window.py::TestParallelErrorHandling::test_on_error_raise_raises",
-            "test_parallel_sliding_window.py::TestParallelEdgeCases::test_empty_dataframe",
+            "test_parallel_sliding_window.py::TestParallelErrorHandling::test_missing_split_column_raises",
         ],
         "bench_proof": [
             "bench_slidingwindow_parallel.py::parallel_scaling (1-36 workers) [GATED]",
@@ -869,6 +869,100 @@ FEATURE_TAXONOMY = {
             "bench_slidingwindow_parametric.py::cost_model_fit (11 models, R2>0.99) [MONITOR]",
         ],
         "impl_tag": "NUMBA",
+    },
+
+    # ====== SW Phase 13.9.GB Extensions ======
+    "SW.agg_columns": {
+        "name": "Sliding window agg_columns (COG)",
+        "description": "User-specified columns aggregated (mean/std/median) within sliding window. "
+                       "Canonical pattern: agg_columns = gb_columns + linear_columns. "
+                       "All 3 paths: zerocopy, V3 incremental, V5 numba.",
+        "module": "groupby_regression_sliding_window",
+        "proof": [
+            "test_agg_columns.py::test_agg_columns_basic",
+            "test_agg_columns.py::test_agg_columns_matches_manual",
+            "test_agg_columns.py::test_agg_columns_with_kernel_weights",
+            "test_agg_columns.py::test_agg_columns_median_optional",
+            "test_agg_columns.py::test_agg_columns_none_backward_compat",
+            "test_agg_columns.py::test_agg_columns_v5_matches_zerocopy",
+            "test_agg_columns.py::test_default_no_fit_stats",
+            "test_agg_columns.py::test_agg_columns_restores_fit_stats",
+        ],
+        "bench_proof": [],
+        "impl_tag": None,
+    },
+    "SW.wls_weights": {
+        "name": "WLS weights in sliding window",
+        "description": "Weighted least squares: sqrt(w) transform in V1/V3, V2 falls back to V1. "
+                       "R²/RMSE on unweighted residuals (documented convention).",
+        "module": "groupby_regression_sliding_window",
+        "proof": [
+            "test_wls_weights.py::test_wls_changes_coefficients",
+            "test_wls_weights.py::test_wls_recovers_known_slope",
+            "test_wls_weights.py::test_wls_uniform_weights_equals_ols",
+            "test_wls_weights.py::test_wls_all_paths_match",
+            "test_wls_weights.py::test_wls_positive_intercept_ms",
+        ],
+        "bench_proof": [],
+        "impl_tag": None,
+    },
+    "SW.fit_intercept_false": {
+        "name": "fit_intercept=False column handling",
+        "description": "No intercept columns emitted when fit_intercept=False. "
+                       "Design matrix without ones column, correct coefficient indexing.",
+        "module": "groupby_regression_sliding_window",
+        "proof": [
+            "test_wls_weights.py::test_fit_intercept_false_no_intercept_columns",
+            "test_wls_weights.py::test_fit_intercept_false_slope_correct",
+        ],
+        "bench_proof": [],
+        "impl_tag": None,
+    },
+    "SW.lean_output": {
+        "name": "Lean default output (no fit_column stats)",
+        "description": "Default output has no per-target mean/std/median/entries/r_squared. "
+                       "Use agg_columns to opt-in. 52→28 columns for 4-target fits.",
+        "module": "groupby_regression_sliding_window",
+        "proof": [
+            "test_agg_columns.py::test_default_no_fit_stats",
+            "test_agg_columns.py::test_agg_columns_restores_fit_stats",
+        ],
+        "bench_proof": [],
+        "impl_tag": None,
+    },
+    "SW.parallel_agg": {
+        "name": "Parallel sliding window with agg_columns",
+        "description": "agg_columns propagated to parallel workers. "
+                       "Invariance: parallel agg ≡ serial agg at rtol=1e-12.",
+        "module": "groupby_regression_sliding_window",
+        "proof": [
+            "test_parallel_sliding_window.py::TestParallelAggColumns::test_parallel_with_agg_columns",
+            "test_parallel_sliding_window.py::TestParallelAggColumns::test_parallel_agg_matches_serial",
+        ],
+        "bench_proof": [],
+        "impl_tag": None,
+    },
+    "SW.parallel_fit_intercept": {
+        "name": "Parallel fit_intercept=False",
+        "description": "fit_intercept propagated to parallel workers and assembly. "
+                       "No intercept columns when fit_intercept=False.",
+        "module": "groupby_regression_sliding_window",
+        "proof": [
+            "test_parallel_sliding_window.py::TestParallelFitIntercept::test_parallel_fit_intercept_false",
+        ],
+        "bench_proof": [],
+        "impl_tag": None,
+    },
+    "SW.parallel_safety": {
+        "name": "Parallel total-failure safety",
+        "description": "RuntimeError if all parallel units fail. "
+                       "forkserver/spawn context for Numba thread conflicts.",
+        "module": "groupby_regression_sliding_window",
+        "proof": [
+            "test_parallel_sliding_window.py::TestParallelSafety::test_parallel_total_failure_raises",
+        ],
+        "bench_proof": [],
+        "impl_tag": None,
     },
 
     # ====== META — Fit metadata ======

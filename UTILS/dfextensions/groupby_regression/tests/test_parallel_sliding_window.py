@@ -270,3 +270,100 @@ class TestParallelPerformance:
         # Use generous threshold — process spawn overhead is significant at small scale
         assert speedup > 1.0 or t_serial < 0.5, \
             f"Parallel not faster: {speedup:.2f}× (serial={t_serial:.3f}s)"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Tests for Phase 13.9.GB Extension — Parallel parity
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestParallelAggColumns:
+    """Parallel path supports agg_columns with correct values."""
+
+    def test_parallel_with_agg_columns(self):
+        """Test 9: agg_columns produces COG columns in parallel output."""
+        df = _make_tpc_like_data(n_sectors=2, n_stacks=1, grid=5, rpb=10)
+        result = make_sliding_window_fit_parallel(
+            df, gb_columns=GB, fit_columns=FIT, linear_columns=LIN,
+            split_columns=['sector'], n_workers=1,
+            window_spec=WS, min_stat=5, suffix='_sw',
+            agg_columns=['x', 'xBin'],
+        )
+        assert 'x_mean_sw' in result.columns, "Missing x_mean_sw"
+        assert 'x_std_sw' in result.columns, "Missing x_std_sw"
+        assert 'xBin_mean_sw' in result.columns, "Missing xBin_mean_sw"
+        assert result['x_mean_sw'].notna().all(), "x_mean_sw has NaN"
+
+    def test_parallel_agg_matches_serial(self):
+        """Test 10 (invariance): parallel agg_columns ≡ serial agg_columns."""
+        df = _make_tpc_like_data(n_sectors=3, n_stacks=1, grid=5, rpb=15)
+        agg = ['x', 'xBin']
+
+        # Serial: run per unit, concat
+        serial_parts = []
+        for sec, grp in df.groupby('sector'):
+            r = make_sliding_window_fit(
+                df=grp, gb_columns=GB, fit_columns=FIT, linear_columns=LIN,
+                window_spec=WS, min_stat=5, suffix='_sw',
+                agg_columns=agg,
+            )
+            r['sector'] = sec
+            serial_parts.append(r)
+        serial = pd.concat(serial_parts, ignore_index=True)
+
+        # Parallel
+        parallel = make_sliding_window_fit_parallel(
+            df, gb_columns=GB, fit_columns=FIT, linear_columns=LIN,
+            split_columns=['sector'], n_workers=2,
+            window_spec=WS, min_stat=5, suffix='_sw',
+            agg_columns=agg,
+        )
+
+        keys = GB + ['sector']
+        serial_s = serial.sort_values(keys).reset_index(drop=True)
+        parallel_s = parallel.sort_values(keys).reset_index(drop=True)
+
+        assert len(serial_s) == len(parallel_s), \
+            f"Row count: serial={len(serial_s)}, parallel={len(parallel_s)}"
+
+        for col in ['x_mean_sw', 'x_std_sw', 'xBin_mean_sw', 'xBin_std_sw']:
+            assert col in parallel_s.columns, f"Missing {col} in parallel"
+            s = serial_s[col].values
+            p = parallel_s[col].values
+            np.testing.assert_allclose(
+                s, p, rtol=1e-12, atol=1e-14,
+                err_msg=f"Parallel ≠ serial: {col}")
+
+
+class TestParallelFitIntercept:
+    """fit_intercept=False works in parallel."""
+
+    def test_parallel_fit_intercept_false(self):
+        """Test 11: No intercept columns when fit_intercept=False."""
+        df = _make_tpc_like_data(n_sectors=2, n_stacks=1, grid=5, rpb=10)
+        result = make_sliding_window_fit_parallel(
+            df, gb_columns=GB, fit_columns=FIT, linear_columns=LIN,
+            split_columns=['sector'], n_workers=1,
+            window_spec=WS, min_stat=5, suffix='_sw',
+            fit_intercept=False,
+        )
+        assert 'value_intercept_sw' not in result.columns, \
+            "Intercept column should not exist when fit_intercept=False"
+        assert 'value_intercept_err_sw' not in result.columns, \
+            "Intercept err column should not exist when fit_intercept=False"
+        assert 'value_slope_x_sw' in result.columns, \
+            "Slope column must still exist"
+
+
+class TestParallelSafety:
+    """Safety: total failure must raise, not return empty."""
+
+    def test_parallel_total_failure_raises(self):
+        """Test 12: All units fail → RuntimeError or KeyError with message."""
+        df = _make_tpc_like_data(n_sectors=2, n_stacks=1, grid=5, rpb=10)
+        # Non-existent column raises KeyError in parent (column extraction)
+        with pytest.raises((RuntimeError, KeyError)):
+            make_sliding_window_fit_parallel(
+                df, gb_columns=GB, fit_columns=['NONEXISTENT'],
+                linear_columns=LIN, split_columns=['sector'], n_workers=1,
+                window_spec=WS, min_stat=5, suffix='_sw',
+            )

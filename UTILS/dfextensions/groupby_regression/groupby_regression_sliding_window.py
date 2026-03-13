@@ -3254,6 +3254,7 @@ _shared_gb_arrays = None   # ndarray[N, n_gb], int64
 _shared_x_array = None     # ndarray[N, n_pred], float64
 _shared_y_array = None     # ndarray[N, n_tgt], float64
 _shared_order = None       # ndarray[N], int64 — counting-sort order
+_shared_agg_arrays = None  # dict[str, ndarray[N]] float64, or None
 
 
 def _worker_v5_shared(
@@ -3271,6 +3272,8 @@ def _worker_v5_shared(
         suffix,
         unit_id,
         split_columns,
+        agg_columns=None,
+        agg_median=False,
 ):
     """Worker: reads shared parent arrays via module globals, runs V5 path.
 
@@ -3320,7 +3323,79 @@ def _worker_v5_shared(
 
         # Assemble DataFrame
         result = _assemble_results_v5(v5_out, gb_columns, fit_columns,
-                                       linear_columns, suffix)
+                                       linear_columns, suffix, fit_intercept)
+
+        # agg_columns post-processing (same as serial V5 path)
+        _agg_cols = agg_columns or []
+        if _agg_cols and _shared_agg_arrays is not None:
+            n_dims = len(gb_columns)
+            _agg_arrays_unit = {c: _shared_agg_arrays[c][row_indices] for c in _agg_cols}
+
+            # Build per-bin row lists
+            _bin_rows: Dict[int, np.ndarray] = {}
+            for bi in range(n_bins):
+                _bin_rows[bi] = np.where(bin_ids == bi)[0]
+
+            # O(1) coord→bin lookup
+            coord_to_bin: Dict[Tuple[int, ...], int] = {
+                tuple(int(bin_coords[i, d]) for d in range(n_dims)): i
+                for i in range(n_bins)
+            }
+
+            # Resolve boundary and kernel for neighbor generation
+            full_ws = {dim: window_spec.get(dim, 0) for dim in gb_columns}
+            boundary_resolved = _resolve_boundary(boundary, gb_columns)
+            neighbor_offsets = _generate_neighbor_offsets(full_ws, gb_columns)
+            kernel_width_resolved = _resolve_kernel_width(kernel_width, full_ws, gb_columns)
+            kernel_width_vec = np.array([kernel_width_resolved[dim] for dim in gb_columns], dtype=np.float64)
+            offset_weights = _precompute_offset_weights(neighbor_offsets, kernel, kernel_width_vec)
+            _is_wk = (kernel != 'uniform') if isinstance(kernel, str) else True
+
+            _agg_out: Dict[str, np.ndarray] = {}
+            for c in _agg_cols:
+                _agg_out[f'{c}_mean'] = np.full(n_bins, np.nan, dtype=np.float64)
+                _agg_out[f'{c}_std'] = np.full(n_bins, np.nan, dtype=np.float64)
+                if agg_median:
+                    _agg_out[f'{c}_median'] = np.full(n_bins, np.nan, dtype=np.float64)
+
+            for bi in range(n_bins):
+                center_coord = tuple(int(bin_coords[bi, d]) for d in range(n_dims))
+                nbr_coords, valid_oi = _get_neighbor_bins_v2(
+                    center_coord, neighbor_offsets, bounds,
+                    boundary_resolved, full_ws)
+
+                idx_list: List[int] = []
+                kw_list: List[np.ndarray] = []
+                for ni, nb_coord in enumerate(nbr_coords):
+                    bj = coord_to_bin.get(nb_coord)
+                    if bj is not None and bj in _bin_rows:
+                        rows_j = _bin_rows[bj]
+                        idx_list.extend(rows_j.tolist())
+                        kw = float(offset_weights[valid_oi[ni]])
+                        kw_list.append(np.full(len(rows_j), kw, dtype=np.float64))
+
+                if not idx_list:
+                    continue
+
+                idx_arr = np.array(idx_list, dtype=np.int64)
+                kw_arr = np.concatenate(kw_list) if _is_wk else None
+
+                for c in _agg_cols:
+                    y = _agg_arrays_unit[c][idx_arr]
+                    y_fin = np.isfinite(y)
+                    if _is_wk and kw_arr is not None:
+                        x = y[y_fin]; ww = kw_arr[y_fin]
+                        mean, std = _weighted_mean_std(x, ww)
+                    else:
+                        x = y[y_fin]
+                        mean, std = _weighted_mean_std(x, None)
+                    _agg_out[f'{c}_mean'][bi] = mean
+                    _agg_out[f'{c}_std'][bi] = std
+                    if agg_median:
+                        _agg_out[f'{c}_median'][bi] = float(np.median(x)) if len(x) > 0 else np.nan
+
+            for key, arr in _agg_out.items():
+                result[f'{key}{suffix}'] = arr
 
         # Add split_columns
         for col, val in zip(split_columns, unit_id):
@@ -3348,6 +3423,9 @@ def _worker_v5(
         suffix,
         unit_id,       # tuple — split_columns values for this unit
         split_columns,
+        agg_columns=None,
+        agg_median=False,
+        agg_vals=None,  # dict[str, ndarray] — agg column data for this unit
 ):
     """Worker function: runs V5 arrays path on pre-extracted numpy arrays.
 
@@ -3391,7 +3469,74 @@ def _worker_v5(
 
         # Assemble DataFrame
         result = _assemble_results_v5(v5_out, gb_columns, fit_columns,
-                                       linear_columns, suffix)
+                                       linear_columns, suffix, fit_intercept)
+
+        # agg_columns post-processing
+        _agg_cols = agg_columns or []
+        if _agg_cols and agg_vals is not None:
+            n_dims = len(gb_columns)
+            _bin_rows: Dict[int, np.ndarray] = {}
+            for bi in range(n_bins):
+                _bin_rows[bi] = np.where(bin_ids == bi)[0]
+
+            coord_to_bin: Dict[Tuple[int, ...], int] = {
+                tuple(int(bin_coords[i, d]) for d in range(n_dims)): i
+                for i in range(n_bins)
+            }
+
+            full_ws = {dim: window_spec.get(dim, 0) for dim in gb_columns}
+            boundary_resolved = _resolve_boundary(boundary, gb_columns)
+            neighbor_offsets = _generate_neighbor_offsets(full_ws, gb_columns)
+            kernel_width_resolved = _resolve_kernel_width(kernel_width, full_ws, gb_columns)
+            kernel_width_vec = np.array([kernel_width_resolved[dim] for dim in gb_columns], dtype=np.float64)
+            offset_weights = _precompute_offset_weights(neighbor_offsets, kernel, kernel_width_vec)
+            _is_wk = (kernel != 'uniform') if isinstance(kernel, str) else True
+
+            _agg_out: Dict[str, np.ndarray] = {}
+            for c in _agg_cols:
+                _agg_out[f'{c}_mean'] = np.full(n_bins, np.nan, dtype=np.float64)
+                _agg_out[f'{c}_std'] = np.full(n_bins, np.nan, dtype=np.float64)
+                if agg_median:
+                    _agg_out[f'{c}_median'] = np.full(n_bins, np.nan, dtype=np.float64)
+
+            for bi in range(n_bins):
+                center_coord = tuple(int(bin_coords[bi, d]) for d in range(n_dims))
+                nbr_coords, valid_oi = _get_neighbor_bins_v2(
+                    center_coord, neighbor_offsets, bounds,
+                    boundary_resolved, full_ws)
+
+                idx_list: List[int] = []
+                kw_list: List[np.ndarray] = []
+                for ni, nb_coord in enumerate(nbr_coords):
+                    bj = coord_to_bin.get(nb_coord)
+                    if bj is not None and bj in _bin_rows:
+                        rows_j = _bin_rows[bj]
+                        idx_list.extend(rows_j.tolist())
+                        kw = float(offset_weights[valid_oi[ni]])
+                        kw_list.append(np.full(len(rows_j), kw, dtype=np.float64))
+
+                if not idx_list:
+                    continue
+
+                idx_arr = np.array(idx_list, dtype=np.int64)
+                kw_arr = np.concatenate(kw_list) if _is_wk else None
+
+                for c in _agg_cols:
+                    y = agg_vals[c][idx_arr]
+                    y_fin = np.isfinite(y)
+                    if _is_wk and kw_arr is not None:
+                        x = y[y_fin]; ww = kw_arr[y_fin]
+                        mean, std = _weighted_mean_std(x, ww)
+                    else:
+                        x = y[y_fin]
+                        mean, std = _weighted_mean_std(x, None)
+                    _agg_out[f'{c}_mean'][bi] = mean
+                    _agg_out[f'{c}_std'][bi] = std
+                    if agg_median:
+                        _agg_out[f'{c}_median'][bi] = float(np.median(x)) if len(x) > 0 else np.nan
+
+            for key, arr in _agg_out.items():
+                result[f'{key}{suffix}'] = arr
 
         # Add split_columns
         for col, val in zip(split_columns, unit_id):
@@ -3421,6 +3566,8 @@ def make_sliding_window_fit_parallel(
         boundary: Union[str, Dict[str, str]] = 'full',
         kernel: Union[str, Callable] = 'uniform',
         kernel_width: Optional[Union[float, Dict[str, float]]] = None,
+        agg_columns: Optional[List[str]] = None,
+        agg_median: bool = False,
         on_error: str = 'nan',
         verbose: int = 0,
 ) -> pd.DataFrame:
@@ -3486,7 +3633,9 @@ def make_sliding_window_fit_parallel(
     full_window_spec = {dim: window_spec.get(dim, 0) for dim in gb_columns}
 
     if weights is not None:
-        raise ValueError("weights not supported in parallel V5 path")
+        raise ValueError(
+            "weights not supported in parallel V5 path. "
+            "Use serial make_sliding_window_fit() for WLS.")
 
     # Validate split_columns exist
     for col in split_columns:
@@ -3495,6 +3644,11 @@ def make_sliding_window_fit_parallel(
     for col in gb_columns:
         if col not in df.columns:
             raise ValueError(f"gb_column '{col}' not in DataFrame")
+    # Validate agg_columns exist
+    _agg_cols = agg_columns or []
+    for col in _agg_cols:
+        if col not in df.columns:
+            raise ValueError(f"agg_column '{col}' not in DataFrame")
 
     # Apply selection
     if selection is not None:
@@ -3507,6 +3661,12 @@ def make_sliding_window_fit_parallel(
 
     split_arrays = [df_work[c].to_numpy(dtype=np.int64) for c in split_columns]
     n_split = len(split_columns)
+
+    # Extract agg_column arrays (shared via COW in fork, pickled in spawn)
+    if _agg_cols:
+        agg_arrays_all = {c: df_work[c].to_numpy(dtype=np.float64) for c in _agg_cols}
+    else:
+        agg_arrays_all = None
 
     # Compute integer split IDs (single key for multi-column split)
     if n_split == 1:
@@ -3582,12 +3742,16 @@ def make_sliding_window_fit_parallel(
             gb_unit = {c: gb_arrays[row_idx, d] for d, c in enumerate(gb_columns)}
             x_unit = x_array[row_idx]
             y_unit = y_array[row_idx]
+            agg_unit = {c: agg_arrays_all[c][row_idx] for c in _agg_cols} if agg_arrays_all else None
             res = _worker_v5(
                 gb_unit, x_unit, y_unit,
                 gb_columns, fit_columns, linear_columns,
                 full_window_spec, fit_intercept, min_stat,
                 boundary, kernel, kernel_width,
                 suffix, unit_id, split_columns,
+                agg_columns=_agg_cols or None,
+                agg_median=agg_median,
+                agg_vals=agg_unit,
             )
             uid, payload = res
             if isinstance(payload, str):
@@ -3601,16 +3765,34 @@ def make_sliding_window_fit_parallel(
             if verbose >= 2:
                 _log.info(f"[parallel] {idx + 1}/{n_units} done")
     else:
-        # Parallel: set module globals, fork() gives COW access to children.
-        # Only (start, end) integers + small config are pickled per task.
-        global _shared_gb_arrays, _shared_x_array, _shared_y_array, _shared_order
-        _shared_gb_arrays = gb_arrays
-        _shared_x_array = x_array
-        _shared_y_array = y_array
-        _shared_order = order
+        # Parallel execution.
+        # Use 'forkserver' or 'spawn' context to avoid inheriting parent's
+        # Numba thread pool state (which causes NUMBA_NUM_THREADS conflicts).
+        # Fall back to fork if spawn is not available.
+        import multiprocessing as mp
+        try:
+            ctx = mp.get_context('forkserver')
+        except ValueError:
+            try:
+                ctx = mp.get_context('spawn')
+            except ValueError:
+                ctx = mp.get_context('fork')
 
-        # Prevent Numba thread conflicts in child processes:
-        # Save parent env, set threads=1 BEFORE fork, restore after.
+        global _shared_gb_arrays, _shared_x_array, _shared_y_array, _shared_order
+        global _shared_agg_arrays
+
+        # For spawn/forkserver: shared arrays can't use module globals (no fork COW).
+        # Fall back to pickling per-unit data via _worker_v5 (not _worker_v5_shared).
+        _use_shared = (ctx.get_start_method() == 'fork')
+
+        if _use_shared:
+            _shared_gb_arrays = gb_arrays
+            _shared_x_array = x_array
+            _shared_y_array = y_array
+            _shared_order = order
+            _shared_agg_arrays = agg_arrays_all
+
+        # Set env before spawning
         _orig_numba_threads = os.environ.get('NUMBA_NUM_THREADS')
         _orig_numba_layer = os.environ.get('NUMBA_THREADING_LAYER')
         os.environ['NUMBA_NUM_THREADS'] = '1'
@@ -3618,16 +3800,34 @@ def make_sliding_window_fit_parallel(
 
         try:
             futures = {}
-            with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as executor:
                 for unit_id, start, end in tasks:
-                    fut = executor.submit(
-                        _worker_v5_shared,
-                        start, end,
-                        gb_columns, fit_columns, linear_columns,
-                        full_window_spec, fit_intercept, min_stat,
-                        boundary, kernel, kernel_width,
-                        suffix, unit_id, split_columns,
-                    )
+                    if _use_shared:
+                        fut = executor.submit(
+                            _worker_v5_shared,
+                            start, end,
+                            gb_columns, fit_columns, linear_columns,
+                            full_window_spec, fit_intercept, min_stat,
+                            boundary, kernel, kernel_width,
+                            suffix, unit_id, split_columns,
+                            _agg_cols or None, agg_median,
+                        )
+                    else:
+                        # spawn/forkserver: pass data directly (pickled)
+                        row_idx = order[start:end]
+                        gb_unit = {c: gb_arrays[row_idx, d] for d, c in enumerate(gb_columns)}
+                        x_unit = x_array[row_idx]
+                        y_unit = y_array[row_idx]
+                        agg_unit = {c: agg_arrays_all[c][row_idx] for c in _agg_cols} if agg_arrays_all else None
+                        fut = executor.submit(
+                            _worker_v5,
+                            gb_unit, x_unit, y_unit,
+                            gb_columns, fit_columns, linear_columns,
+                            full_window_spec, fit_intercept, min_stat,
+                            boundary, kernel, kernel_width,
+                            suffix, unit_id, split_columns,
+                            _agg_cols or None, agg_median, agg_unit,
+                        )
                     futures[fut] = unit_id
 
                 done_count = 0
@@ -3654,10 +3854,12 @@ def make_sliding_window_fit_parallel(
                     if verbose >= 2 and done_count % max(1, n_units // 10) == 0:
                         _log.info(f"[parallel] {done_count}/{n_units} units complete")
         finally:
-            _shared_gb_arrays = None
-            _shared_x_array = None
-            _shared_y_array = None
-            _shared_order = None
+            if _use_shared:
+                _shared_gb_arrays = None
+                _shared_x_array = None
+                _shared_y_array = None
+                _shared_order = None
+                _shared_agg_arrays = None
             # Restore parent's Numba env
             if _orig_numba_threads is not None:
                 os.environ['NUMBA_NUM_THREADS'] = _orig_numba_threads
@@ -3676,6 +3878,19 @@ def make_sliding_window_fit_parallel(
         out = pd.concat(results, ignore_index=True)
     else:
         out = pd.DataFrame()
+
+    # Safety: never silently return empty when ALL units failed
+    if len(results) == 0 and len(errors) > 0:
+        first_err = errors[0][1]
+        raise RuntimeError(
+            f"All {len(errors)} parallel units failed. "
+            f"First error: {first_err}")
+
+    # Always warn if any units failed (not just at verbose>=2)
+    if errors:
+        _log.warning(
+            f"[parallel] {len(errors)}/{n_units} units failed. "
+            f"First: {errors[0][1]}")
 
     # Cast dtype
     if cast_dtype and len(out) > 0:
