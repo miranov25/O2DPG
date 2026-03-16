@@ -4,6 +4,7 @@ from .downsample import (
     downsampleDFTrigger,
     downsampleDFSmoothFactorized,
     downsampleDFSmooth,
+    downsampleDFSmoothTrigger,
 )
 
 __all__ = [
@@ -11,4 +12,5 @@ __all__ = [
     "downsampleDFTrigger",
     "downsampleDFSmoothFactorized",
     "downsampleDFSmooth",
+    "downsampleDFSmoothTrigger",
 ]
