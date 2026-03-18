@@ -13,7 +13,16 @@ Six public functions:
     - downsampleDFSmooth:             Smooth PDF, full ND joint histogram
     - downsampleDFSmoothTrigger:      Multi-trigger bitmask (smooth)
 
-Phase 13.10.DF v3.0 + Phase 13.11.DF
+Phase 13.10.DF v3.0 + Phase 13.11.DF + Debug support (Phase 13.12.DF)
+
+Debug mode (debug=True):
+  Adds columns to output:
+    - _debug_pdf:        Empirical PDF at each point (after interpolation)
+    - _debug_weight_raw: 1/PDF before normalization (= raw inverse-PDF weight)
+  
+  These allow verification:
+    - weight ∝ _debug_weight_raw (normalized)
+    - _debug_pdf × _debug_weight_raw ≈ constant
 """
 
 from typing import List, Union, Dict, Optional, Tuple
@@ -178,6 +187,53 @@ def _estimate_1d_pdf_from_edges(values: np.ndarray, bin_edges: np.ndarray) -> tu
     return bin_centers, pdf
 
 
+def _estimate_binned_pdf(
+    values: np.ndarray,
+    bin_edges: np.ndarray,
+    bias_correction: bool = True,
+) -> tuple:
+    """
+    Estimate 1D PDF via histogram (piecewise constant).
+
+    Empty bins have PDF = 0 (AD-11). No interpolation.
+
+    Optional first-order Poisson bias correction (AD-11, Phase 13.11.DF v2.1):
+        f̂_corr = f̂ × (1 - exp(-n_bin))
+
+    This corrects for the conditional bias E[f̂ | n_bin > 0] = f_true / (1 - exp(-λ)).
+    Uses plug-in estimator λ̂ = n_bin (first-order Poisson debiasing).
+
+    Parameters
+    ----------
+    values : np.ndarray
+        Data values.
+    bin_edges : np.ndarray
+        Histogram bin edges.
+    bias_correction : bool, default True
+        If True, apply plug-in Poisson correction.
+
+    Returns
+    -------
+    bin_centers : np.ndarray
+    pdf : np.ndarray
+        PDF values per bin. Zero for empty bins.
+    counts : np.ndarray
+        Raw bin counts (for diagnostics).
+    """
+    counts, _ = np.histogram(values, bins=bin_edges)
+    bin_widths = np.diff(bin_edges)
+    N = len(values)
+    pdf = counts.astype(np.float64) / (N * bin_widths)
+
+    if bias_correction:
+        # Plug-in correction: λ̂ = n_bin (first-order Poisson debiasing)
+        correction = 1.0 - np.exp(-counts.astype(np.float64))
+        pdf = pdf * correction
+
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    return bin_centers, pdf, counts
+
+
 def _weighted_sample(
     df: pd.DataFrame,
     weights: np.ndarray,
@@ -186,6 +242,9 @@ def _weighted_sample(
     keep_weights: bool,
     weight_column: str,
     weight_dtype: np.dtype,
+    debug: bool = False,
+    debug_pdf: Optional[np.ndarray] = None,
+    debug_weight_raw: Optional[np.ndarray] = None,
 ) -> pd.DataFrame:
     """
     Sample rows using numpy (avoids pandas weight constraint).
@@ -195,6 +254,10 @@ def _weighted_sample(
     To reconstruct the original distribution:
         correction_weight = 1 / p_i
         correction_weight *= N_orig / correction_weight.sum()
+    
+    When debug=True, also stores:
+        _debug_pdf: empirical PDF at each sampled point
+        _debug_weight_raw: 1/PDF before normalization
     """
     rng = np.random.RandomState(random_state)
     probs = weights / weights.sum()
@@ -203,6 +266,11 @@ def _weighted_sample(
     result = df.iloc[chosen].copy()
     if keep_weights:
         result[weight_column] = probs[chosen].astype(weight_dtype)
+    if debug:
+        if debug_pdf is not None:
+            result["_debug_pdf"] = debug_pdf[chosen].astype(np.float64)
+        if debug_weight_raw is not None:
+            result["_debug_weight_raw"] = debug_weight_raw[chosen].astype(np.float64)
     return result
 
 
@@ -210,7 +278,8 @@ def _compute_smooth_weights_factorized(
     df: pd.DataFrame,
     categorical_cols: list,
     continuous_specs: dict,
-) -> np.ndarray:
+    return_debug: bool = False,
+) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray, np.ndarray]]:
     """
     Compute inverse-PDF weights using factorized (product of marginals) approach.
 
@@ -218,6 +287,8 @@ def _compute_smooth_weights_factorized(
 
     Each 1D marginal estimated independently.
     Categorical: value_counts normalized.
+    
+    When return_debug=True, returns (weights, pdf_at_points, weight_raw)
     """
     log_pdf = np.zeros(len(df), dtype=np.float64)
 
@@ -236,35 +307,53 @@ def _compute_smooth_weights_factorized(
         pdf_at_points = np.maximum(pdf_at_points, 1e-30)
         log_pdf += np.log(pdf_at_points)
 
-    # weights = 1 / PDF
+    # PDF at each point
+    pdf = np.exp(log_pdf)
+    
+    # weight_raw = 1 / PDF (before any normalization)
+    weight_raw = 1.0 / pdf
+    
+    # weights for sampling (shifted for numerical stability)
     log_weights = -log_pdf
     log_weights -= log_weights.max()
-    return np.exp(log_weights)
+    weights = np.exp(log_weights)
+    
+    if return_debug:
+        return weights, pdf, weight_raw
+    return weights
 
 
 def _compute_smooth_weights_nd(
     df: pd.DataFrame,
     categorical_cols: list,
     continuous_specs: dict,
-) -> np.ndarray:
+    return_debug: bool = False,
+) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray, np.ndarray]]:
     """
     Compute inverse-PDF weights using full ND histogram.
 
     Per AD-3: one ND histogram. Categorical axes = exact lookup (no interpolation).
     Continuous axes = linear interpolation. Implemented as: groupby categoricals,
     then ND histogram + interpolation on continuous axes per group.
+    
+    When return_debug=True, returns (weights, pdf_at_points, weight_raw)
     """
     weights = np.zeros(len(df), dtype=np.float64)
+    pdf_all = np.zeros(len(df), dtype=np.float64)
+    weight_raw_all = np.zeros(len(df), dtype=np.float64)
+    
     cont_cols = list(continuous_specs.keys())
     all_edges = [continuous_specs[c] for c in cont_cols]
 
     if not categorical_cols:
         # Pure continuous: single ND histogram
-        weights = _compute_nd_weights_for_group(df, cont_cols, all_edges)
+        w, pdf, wr = _compute_nd_weights_for_group(df, cont_cols, all_edges, return_debug=True)
+        if return_debug:
+            return w, pdf, wr
+        return w
     else:
         # Per AD-3: group by categoricals, ND histogram per group
         grouped = df.groupby(categorical_cols)
-        n_groups = grouped.ngroups
 
         for cat_key, group_idx in grouped.groups.items():
             group_df = df.loc[group_idx]
@@ -274,15 +363,24 @@ def _compute_smooth_weights_nd(
             if not cont_cols:
                 # All-categorical per AD-10: uniform within group
                 w = np.ones(len(group_df), dtype=np.float64)
+                pdf = np.ones(len(group_df), dtype=np.float64) * (len(group_df) / len(df))
+                wr = 1.0 / pdf
             else:
-                w = _compute_nd_weights_for_group(group_df, cont_cols, all_edges)
+                w, pdf, wr = _compute_nd_weights_for_group(group_df, cont_cols, all_edges, return_debug=True)
 
             # Scale by 1/group_fraction (categorical inverse weight)
             group_frac = len(group_df) / len(df)
             w /= group_frac
+            pdf *= group_frac  # Adjust PDF for categorical contribution
+            wr /= group_frac   # Adjust weight_raw accordingly
 
-            weights[df.index.get_indexer(group_idx)] = w
+            idx = df.index.get_indexer(group_idx)
+            weights[idx] = w
+            pdf_all[idx] = pdf
+            weight_raw_all[idx] = wr
 
+    if return_debug:
+        return weights, pdf_all, weight_raw_all
     return weights
 
 
@@ -290,14 +388,18 @@ def _compute_nd_weights_for_group(
     group_df: pd.DataFrame,
     cont_cols: list,
     all_edges: list,
-) -> np.ndarray:
+    return_debug: bool = False,
+) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray, np.ndarray]]:
     """Compute inverse-PDF weights for one categorical group on continuous axes."""
     from scipy.interpolate import RegularGridInterpolator
 
     data_arrays = [group_df[c].values.astype(np.float64) for c in cont_cols]
 
     if len(cont_cols) == 0:
-        return np.ones(len(group_df), dtype=np.float64)
+        w = np.ones(len(group_df), dtype=np.float64)
+        if return_debug:
+            return w, np.ones(len(group_df)), np.ones(len(group_df))
+        return w
 
     hist_nd, _ = np.histogramdd(np.column_stack(data_arrays), bins=all_edges)
 
@@ -325,9 +427,16 @@ def _compute_nd_weights_for_group(
     pdf_at_points = interpolator(points)
     pdf_at_points = np.maximum(pdf_at_points, 1e-30)
 
+    # weight_raw = 1/PDF
+    weight_raw = 1.0 / pdf_at_points
+    
     log_weights = -np.log(pdf_at_points)
     log_weights -= log_weights.max()
-    return np.exp(log_weights)
+    weights = np.exp(log_weights)
+    
+    if return_debug:
+        return weights, pdf_at_points, weight_raw
+    return weights
 
 
 # ===================================================================
@@ -342,6 +451,7 @@ def downsampleDF(
     keep_weights: bool = True,
     weight_dtype: np.dtype = np.float32,
     weight_column: str = "weight",
+    debug: bool = False,
 ) -> pd.DataFrame:
     """
     Downsample a DataFrame with inverse-group-size weighting.
@@ -368,6 +478,8 @@ def downsampleDF(
         Data type for the weight column.
     weight_column : str, default 'weight'
         Name of the weight column added to the output.
+    debug : bool, default False
+        If True, add _debug_pdf and _debug_weight_raw columns.
 
     Returns
     -------
@@ -393,16 +505,33 @@ def downsampleDF(
         raise ValueError(f"weight_column '{weight_column}' already exists in DataFrame")
 
     group_sizes = df.groupby(stratify).size()
-    weights = 1 / group_sizes
-    weights /= weights.sum()
-    temp_df = df.merge(weights.reset_index(name=weight_column), on=stratify, how="left")
+    
+    # PDF per group = group_size / N (this is the empirical PDF for the binned approach)
+    pdf_per_group = group_sizes / len(df)
+    
+    # Weight per group = 1 / group_size (unnormalized)
+    weights_per_group = 1 / group_sizes
+    weights_per_group_norm = weights_per_group / weights_per_group.sum()
+    
+    # Merge to get per-row values
+    temp_df = df.merge(weights_per_group_norm.reset_index(name=weight_column), on=stratify, how="left")
     temp_df[weight_column] = temp_df[weight_column].astype(weight_dtype)
+    
+    if debug:
+        # Add debug columns: PDF and weight_raw for each row
+        temp_df = temp_df.merge(pdf_per_group.reset_index(name="_debug_pdf"), on=stratify, how="left")
+        weight_raw_per_group = 1.0 / pdf_per_group
+        temp_df = temp_df.merge(weight_raw_per_group.reset_index(name="_debug_weight_raw"), on=stratify, how="left")
+    
     n_samples = int(len(df) * frac)
     downsampled_df = temp_df.sample(
         n=n_samples, weights=weight_column, replace=False, random_state=random_state,
     )
     if not keep_weights:
         downsampled_df = downsampled_df.drop(columns=[weight_column])
+    if debug and not keep_weights:
+        # Keep debug columns even if weights are dropped
+        pass
     return downsampled_df
 
 
@@ -479,7 +608,7 @@ def downsampleDFTrigger(
 
 
 # ===================================================================
-# downsampleDFSmoothFactorized — Smooth factorized PDF (v3.2)
+# downsampleDFSmoothFactorized — Smooth factorized PDF (v3.2 + debug)
 # ===================================================================
 
 def downsampleDFSmoothFactorized(
@@ -491,6 +620,7 @@ def downsampleDFSmoothFactorized(
     weight_dtype: np.dtype = np.float32,
     weight_column: str = "weight",
     mask: Optional[Union[str, np.ndarray]] = None,
+    debug: bool = False,
 ) -> pd.DataFrame:
     """
     Downsample with smooth factorized PDF weighting.
@@ -518,6 +648,10 @@ def downsampleDFSmoothFactorized(
     weight_column : str, default 'weight'
     mask : str, np.ndarray, or None
         Boolean selection. PDF estimated on masked rows only (AD-8).
+    debug : bool, default False
+        If True, add _debug_pdf and _debug_weight_raw columns to output.
+        - _debug_pdf: empirical PDF at each sampled point
+        - _debug_weight_raw: 1/PDF before normalization
 
     Returns
     -------
@@ -552,18 +686,33 @@ def downsampleDFSmoothFactorized(
             work_df, frac=frac, stratify=categorical_cols,
             random_state=random_state, keep_weights=keep_weights,
             weight_dtype=weight_dtype, weight_column=weight_column,
+            debug=debug,
         )
 
-    weights = _compute_smooth_weights_factorized(work_df, categorical_cols, continuous_specs)
+    # Reset index for alignment
+    work_df = work_df.reset_index(drop=True)
+    
+    if debug:
+        weights, debug_pdf, debug_weight_raw = _compute_smooth_weights_factorized(
+            work_df, categorical_cols, continuous_specs, return_debug=True
+        )
+    else:
+        weights = _compute_smooth_weights_factorized(
+            work_df, categorical_cols, continuous_specs, return_debug=False
+        )
+        debug_pdf = None
+        debug_weight_raw = None
+    
     n_samples = int(len(work_df) * frac)
     return _weighted_sample(
         work_df, weights, n_samples, random_state,
         keep_weights, weight_column, weight_dtype,
+        debug=debug, debug_pdf=debug_pdf, debug_weight_raw=debug_weight_raw,
     )
 
 
 # ===================================================================
-# downsampleDFSmooth — Smooth full ND PDF (v3.2)
+# downsampleDFSmooth — Smooth full ND PDF (v3.2 + debug)
 # ===================================================================
 
 def downsampleDFSmooth(
@@ -575,6 +724,7 @@ def downsampleDFSmooth(
     weight_dtype: np.dtype = np.float32,
     weight_column: str = "weight",
     mask: Optional[Union[str, np.ndarray]] = None,
+    debug: bool = False,
 ) -> pd.DataFrame:
     """
     Downsample with smooth full ND PDF weighting.
@@ -603,6 +753,8 @@ def downsampleDFSmooth(
     weight_column : str, default 'weight'
     mask : str, np.ndarray, or None
         Boolean selection. PDF estimated on masked rows only (AD-8).
+    debug : bool, default False
+        If True, add _debug_pdf and _debug_weight_raw columns.
 
     Returns
     -------
@@ -641,15 +793,28 @@ def downsampleDFSmooth(
             work_df, frac=frac, stratify=categorical_cols,
             random_state=random_state, keep_weights=keep_weights,
             weight_dtype=weight_dtype, weight_column=weight_column,
+            debug=debug,
         )
 
     # Reset index for positional weight alignment
     work_df = work_df.reset_index(drop=True)
-    weights = _compute_smooth_weights_nd(work_df, categorical_cols, continuous_specs)
+    
+    if debug:
+        weights, debug_pdf, debug_weight_raw = _compute_smooth_weights_nd(
+            work_df, categorical_cols, continuous_specs, return_debug=True
+        )
+    else:
+        weights = _compute_smooth_weights_nd(
+            work_df, categorical_cols, continuous_specs, return_debug=False
+        )
+        debug_pdf = None
+        debug_weight_raw = None
+    
     n_samples = int(len(work_df) * frac)
     return _weighted_sample(
         work_df, weights, n_samples, random_state,
         keep_weights, weight_column, weight_dtype,
+        debug=debug, debug_pdf=debug_pdf, debug_weight_raw=debug_weight_raw,
     )
 
 
