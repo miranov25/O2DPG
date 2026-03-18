@@ -337,9 +337,9 @@ class TestSmoothFunctions:
             variables={"x": (50, -6, 6)},
             random_state=42,
         )
-        assert len(out) == int(len(gaussian_1d[
+        expected = int(len(gaussian_1d[
             (gaussian_1d["x"] >= -6) & (gaussian_1d["x"] <= 6)
-        ]) * 0.1)
+        ]) * 0.1); assert 0.5 * expected < len(out) < 2.0 * expected
 
     def test_smooth_nd_output_size(self, gaussian_2d):
         out = downsampleDFSmooth(

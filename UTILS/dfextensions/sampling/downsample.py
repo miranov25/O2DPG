@@ -13,7 +13,12 @@ Six public functions:
     - downsampleDFSmooth:             Smooth PDF, full ND joint histogram
     - downsampleDFSmoothTrigger:      Multi-trigger bitmask (smooth)
 
-Phase 13.10.DF v3.0 + Phase 13.11.DF v2.1 + Debug support
+Sampling algorithm (Phase 13.11.DF v2.1 — architect's algorithm):
+  Threshold-based efficiency sampling:
+    Accept x_i if pdf(x_i) * U_i < threshold,  U_i ~ Uniform(0,1)
+    Reconstruction weight: cw_i = 1 / max(pdf(x_i), threshold)
+  Specify exactly one of frac or threshold (keyword-only after *).
+  frac → threshold computed via bisection on empirical PDF.
 
 PDF estimator (pdf_params):
   When pdf_params is provided, uses 3-layer estimator:
@@ -24,14 +29,12 @@ PDF estimator (pdf_params):
   Parameters accept scalar (all dims) or list (per continuous dim).
   Categorical dimensions are sliced, not fitted (AD-2/3/10).
 
+Optional pdf_func:
+  When provided, replaces empirical PDF entirely. Enables testing
+  sampling/reweighting independently of PDF estimation.
+
 Debug mode (debug=True):
-  Adds columns to output:
-    - _debug_pdf:        Empirical PDF at each point (after interpolation)
-    - _debug_weight_raw: 1/PDF before normalization (= raw inverse-PDF weight)
-  
-  These allow verification:
-    - weight ∝ _debug_weight_raw (normalized)
-    - _debug_pdf × _debug_weight_raw ≈ constant
+  Adds columns: _debug_pdf, _debug_weight_raw, _debug_threshold.
 """
 
 from typing import List, Union, Dict, Optional, Tuple
@@ -452,6 +455,125 @@ def _weighted_sample(
         if debug_weight_raw is not None:
             result["_debug_weight_raw"] = debug_weight_raw[chosen].astype(np.float64)
     return result
+
+
+# ===================================================================
+# Threshold-based sampling (Phase 13.11.DF v2.1 — Architect's algorithm)
+# ===================================================================
+
+def _frac_from_threshold(pdf_at_points: np.ndarray, threshold: float) -> float:
+    """
+    Expected acceptance fraction for a given threshold.
+
+    For each point: acceptance prob = min(1, threshold / pdf(x)).
+    Returns mean acceptance probability = expected fraction.
+    """
+    pdf = np.maximum(pdf_at_points, 1e-30)
+    acceptance = np.minimum(1.0, threshold / pdf)
+    return float(acceptance.mean())
+
+
+def _threshold_from_frac(pdf_at_points: np.ndarray, target_frac: float) -> float:
+    """
+    Find threshold that gives target acceptance fraction via bisection.
+
+    Solves: mean(min(1, threshold / pdf(x))) = target_frac
+    Monotonically increasing in threshold — bisection converges.
+    ~20 iterations for machine precision.
+    """
+    if target_frac >= 1.0:
+        return float(np.max(pdf_at_points))
+    if target_frac <= 0.0:
+        raise ValueError(f"target_frac must be in (0, 1], got {target_frac}")
+
+    pdf = np.maximum(pdf_at_points, 1e-30)
+    lo, hi = 0.0, float(np.max(pdf))
+
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        if _frac_from_threshold(pdf, mid) < target_frac:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def _threshold_sample(
+    df: pd.DataFrame,
+    pdf_at_points: np.ndarray,
+    threshold: float,
+    random_state: int,
+    keep_weights: bool,
+    weight_column: str,
+    weight_dtype: np.dtype,
+    debug: bool = False,
+) -> pd.DataFrame:
+    """
+    Architect's threshold-based efficiency sampling.
+
+    Accept point x_i if: pdf(x_i) * U_i < threshold,  U_i ~ Uniform(0,1)
+    Reconstruction weight:  cw_i = 1 / max(pdf(x_i), threshold)
+
+    Properties:
+        - Points with pdf < threshold: always accepted, cw = 1/threshold
+        - Points with pdf > threshold: accepted with prob threshold/pdf, cw = 1/pdf
+        - Weight bound: 1/threshold (no extreme weights)
+        - Unbiased: E[Σ cw_i] = N_orig
+    """
+    rng = np.random.RandomState(random_state)
+    N = len(df)
+    pdf = pdf_at_points.astype(np.float64)
+
+    # Accept/reject: accept if pdf(x) * U < threshold
+    U = rng.uniform(0, 1, N)
+    accepted = (pdf * U) < threshold
+    chosen = np.where(accepted)[0]
+
+    result = df.iloc[chosen].copy()
+
+    # Reconstruction weight: 1 / max(pdf, threshold)
+    pdf_capped = np.maximum(pdf[chosen], threshold)
+    cw = 1.0 / pdf_capped
+
+    if keep_weights:
+        # Store normalized weight (consistent with downsampleDF convention)
+        cw_norm = cw / cw.sum()
+        result[weight_column] = cw_norm.astype(weight_dtype)
+
+    if debug:
+        result["_debug_pdf"] = pdf[chosen]
+        result["_debug_weight_raw"] = cw  # 1/max(pdf, threshold)
+        result["_debug_threshold"] = threshold
+
+    return result
+
+
+def _get_pdf_at_points(
+    work_df: pd.DataFrame,
+    categorical_cols: list,
+    continuous_specs: dict,
+    pdf_params: Optional[dict],
+    pdf_func: Optional[callable],
+    method: str = "factorized",
+) -> np.ndarray:
+    """
+    Get PDF values at each data point. Dispatches to pdf_func, factorized, or ND.
+    """
+    if pdf_func is not None:
+        pdf_at_points = np.asarray(pdf_func(work_df), dtype=np.float64)
+        return np.maximum(pdf_at_points, 1e-30)
+
+    if method == "factorized":
+        _, pdf_at_points, _ = _compute_smooth_weights_factorized(
+            work_df, categorical_cols, continuous_specs,
+            return_debug=True, pdf_params=pdf_params,
+        )
+    else:
+        _, pdf_at_points, _ = _compute_smooth_weights_nd(
+            work_df, categorical_cols, continuous_specs,
+            return_debug=True, pdf_params=pdf_params,
+        )
+    return pdf_at_points
 
 
 def _compute_smooth_weights_factorized(
@@ -882,30 +1004,34 @@ def downsampleDFTrigger(
 
 def downsampleDFSmoothFactorized(
     df: pd.DataFrame,
-    frac: float,
     variables: Dict[str, Union[Tuple, np.ndarray, str]],
     random_state: int,
+    *,
+    frac: Optional[float] = None,
+    threshold: Optional[float] = None,
     keep_weights: bool = True,
     weight_dtype: np.dtype = np.float32,
     weight_column: str = "weight",
     mask: Optional[Union[str, np.ndarray]] = None,
     debug: bool = False,
     pdf_params: Optional[dict] = None,
+    pdf_func: Optional[callable] = None,
 ) -> pd.DataFrame:
     """
     Downsample with smooth factorized PDF weighting.
 
     PDF(x, y, cat, ...) ≈ PDF(cat) × PDF(x) × PDF(y) × ...
 
-    Each continuous marginal: histogram + linear interpolation.
-    Categorical: value_counts. Product of marginals.
+    Uses threshold-based efficiency sampling (architect's algorithm):
+        Accept x_i if pdf(x_i) * U_i < threshold
+        Reconstruction weight: cw_i = 1 / max(pdf(x_i), threshold)
+
+    Specify exactly one of frac or threshold (keyword-only).
 
     Parameters
     ----------
     df : pd.DataFrame
         Input DataFrame. **Not modified.**
-    frac : float
-        Fraction of rows to retain (0 < frac <= 1).
     variables : dict
         Per-variable spec:
         - 'categorical': exact groupby, no interpolation
@@ -913,45 +1039,47 @@ def downsampleDFSmoothFactorized(
         - list/np.ndarray of edges: Option D, explicit bins
     random_state : int
         Random seed for reproducibility.
+    frac : float or None
+        Target fraction of rows to retain. Threshold computed via bisection.
+    threshold : float or None
+        PDF threshold for accept/reject. Controls weight bound (1/threshold).
     keep_weights : bool, default True
     weight_dtype : np.dtype, default np.float32
     weight_column : str, default 'weight'
     mask : str, np.ndarray, or None
         Boolean selection. PDF estimated on masked rows only (AD-8).
     debug : bool, default False
-        If True, add _debug_pdf and _debug_weight_raw columns to output.
+        If True, add _debug_pdf, _debug_weight_raw, _debug_threshold columns.
     pdf_params : dict or None
-        If provided, uses 3-layer PDF estimator (Phase 13.11.DF v2.1):
-          kernel_sigma_bins: float or list (default 0.5)
-          bias_correction: bool (default True)
-          poly_order: int or list (default 2)
-          poly_half_range: float or list (default 0.5)
-        Per-dimension: pass list with one value per continuous dimension.
-        If None, uses legacy estimator (log-interp + linear interp).
+        3-layer PDF estimator params (Phase 13.11.DF v2.1).
+        If None, uses legacy estimator.
+    pdf_func : callable or None
+        If provided, replaces empirical PDF. Called as pdf_func(df) → array.
 
     Returns
     -------
     pd.DataFrame
-        Downsampled DataFrame with inverse-PDF weights.
+        Downsampled DataFrame with reconstruction weights.
 
     Examples
     --------
-    >>> variables = {'type': 'categorical', 'pT': (50, 0, 10), 'eta': [-2, -1, 0, 1, 2]}
-    >>> out = downsampleDFSmoothFactorized(df, frac=0.1, variables=variables, random_state=42)
-    >>> # With 3-layer estimator:
-    >>> out = downsampleDFSmoothFactorized(df, frac=0.1, variables=variables, random_state=42,
-    ...     pdf_params={'poly_order': 2, 'poly_half_range': 0.5})
+    >>> variables = {'pT': (50, 0, 10), 'eta': [-2, -1, 0, 1, 2]}
+    >>> out = downsampleDFSmoothFactorized(df, variables, 42, frac=0.1)
+    >>> out = downsampleDFSmoothFactorized(df, variables, 42, threshold=0.01)
     """
-    if not (0 < frac <= 1):
+    # Validate: exactly one of frac/threshold
+    if (frac is None) == (threshold is None):
+        raise ValueError("Specify exactly one of frac or threshold, not both/neither")
+    if frac is not None and not (0 < frac <= 1):
         raise ValueError(f"frac must be in (0, 1], got {frac}")
+    if threshold is not None and threshold <= 0:
+        raise ValueError(f"threshold must be > 0, got {threshold}")
     if weight_column in df.columns:
         raise ValueError(f"weight_column '{weight_column}' already exists in DataFrame")
 
     categorical_cols, continuous_specs = _parse_variables(variables, df)
 
-    # Apply mask (AD-8: affects both PDF and sampling)
     work_df = _apply_mask(df, mask)
-    # Apply range filter (P0.2: out-of-range excluded)
     work_df = _apply_range_filter(work_df, continuous_specs)
 
     if len(work_df) == 0:
@@ -961,32 +1089,29 @@ def downsampleDFSmoothFactorized(
     if not continuous_specs:
         if not categorical_cols:
             raise ValueError("No variables specified")
+        _frac = frac if frac is not None else 0.1
         return downsampleDF(
-            work_df, frac=frac, stratify=categorical_cols,
+            work_df, frac=_frac, stratify=categorical_cols,
             random_state=random_state, keep_weights=keep_weights,
             weight_dtype=weight_dtype, weight_column=weight_column,
             debug=debug,
         )
 
-    # Reset index for alignment
     work_df = work_df.reset_index(drop=True)
-    
-    if debug:
-        weights, debug_pdf, debug_weight_raw = _compute_smooth_weights_factorized(
-            work_df, categorical_cols, continuous_specs, return_debug=True, pdf_params=pdf_params
-        )
-    else:
-        weights = _compute_smooth_weights_factorized(
-            work_df, categorical_cols, continuous_specs, return_debug=False, pdf_params=pdf_params
-        )
-        debug_pdf = None
-        debug_weight_raw = None
-    
-    n_samples = int(len(work_df) * frac)
-    return _weighted_sample(
-        work_df, weights, n_samples, random_state,
-        keep_weights, weight_column, weight_dtype,
-        debug=debug, debug_pdf=debug_pdf, debug_weight_raw=debug_weight_raw,
+
+    # Get PDF at each point
+    pdf_at_points = _get_pdf_at_points(
+        work_df, categorical_cols, continuous_specs,
+        pdf_params, pdf_func, method="factorized",
+    )
+
+    # Resolve threshold from frac if needed
+    if threshold is None:
+        threshold = _threshold_from_frac(pdf_at_points, frac)
+
+    return _threshold_sample(
+        work_df, pdf_at_points, threshold, random_state,
+        keep_weights, weight_column, weight_dtype, debug=debug,
     )
 
 
@@ -996,15 +1121,18 @@ def downsampleDFSmoothFactorized(
 
 def downsampleDFSmooth(
     df: pd.DataFrame,
-    frac: float,
     variables: Dict[str, Union[Tuple, np.ndarray, str]],
     random_state: int,
+    *,
+    frac: Optional[float] = None,
+    threshold: Optional[float] = None,
     keep_weights: bool = True,
     weight_dtype: np.dtype = np.float32,
     weight_column: str = "weight",
     mask: Optional[Union[str, np.ndarray]] = None,
     debug: bool = False,
     pdf_params: Optional[dict] = None,
+    pdf_func: Optional[callable] = None,
 ) -> pd.DataFrame:
     """
     Downsample with smooth full ND PDF weighting.
@@ -1013,44 +1141,43 @@ def downsampleDFSmooth(
     Continuous axes = linear interpolation. Each categorical combination
     gets its own smooth PDF on the continuous variables.
 
-    Continuous dimension limit: D_continuous <= 5 per category combination.
-    Categorical dimensions partition the data — no limit.
+    Uses threshold-based efficiency sampling (architect's algorithm).
+    Specify exactly one of frac or threshold (keyword-only).
 
-    WARNING: Memory scales as n_category_combinations × prod(n_bins).
+    Continuous dimension limit: D_continuous <= 5 per category combination.
 
     Parameters
     ----------
     df : pd.DataFrame
         Input DataFrame. **Not modified.**
-    frac : float
-        Fraction of rows to retain (0 < frac <= 1).
     variables : dict
         Per-variable spec (same as downsampleDFSmoothFactorized).
     random_state : int
         Random seed for reproducibility.
-    keep_weights : bool, default True
-    weight_dtype : np.dtype, default np.float32
-    weight_column : str, default 'weight'
-    mask : str, np.ndarray, or None
-        Boolean selection. PDF estimated on masked rows only (AD-8).
-    debug : bool, default False
-        If True, add _debug_pdf and _debug_weight_raw columns.
-    pdf_params : dict or None
-        3-layer PDF estimator params (same as downsampleDFSmoothFactorized).
-        Applied to ND grid: kernel per axis, Poisson, local poly per axis.
+    frac : float or None
+        Target fraction. Threshold computed via bisection.
+    threshold : float or None
+        PDF threshold for accept/reject.
+    keep_weights, weight_dtype, weight_column, mask, debug, pdf_params, pdf_func :
+        Same as downsampleDFSmoothFactorized.
 
     Returns
     -------
     pd.DataFrame
-        Downsampled DataFrame with inverse-PDF weights.
+        Downsampled DataFrame with reconstruction weights.
 
     Examples
     --------
-    >>> variables = {'type': 'categorical', 'pT': (50, 0, 10), 'eta': (20, -2, 2)}
-    >>> out = downsampleDFSmooth(df, frac=0.1, variables=variables, random_state=42)
+    >>> variables = {'pT': (50, 0, 10), 'eta': (20, -2, 2)}
+    >>> out = downsampleDFSmooth(df, variables, 42, frac=0.1)
+    >>> out = downsampleDFSmooth(df, variables, 42, threshold=0.01)
     """
-    if not (0 < frac <= 1):
+    if (frac is None) == (threshold is None):
+        raise ValueError("Specify exactly one of frac or threshold, not both/neither")
+    if frac is not None and not (0 < frac <= 1):
         raise ValueError(f"frac must be in (0, 1], got {frac}")
+    if threshold is not None and threshold <= 0:
+        raise ValueError(f"threshold must be > 0, got {threshold}")
     if weight_column in df.columns:
         raise ValueError(f"weight_column '{weight_column}' already exists in DataFrame")
 
@@ -1072,32 +1199,27 @@ def downsampleDFSmooth(
     if not continuous_specs:
         if not categorical_cols:
             raise ValueError("No variables specified")
+        _frac = frac if frac is not None else 0.1
         return downsampleDF(
-            work_df, frac=frac, stratify=categorical_cols,
+            work_df, frac=_frac, stratify=categorical_cols,
             random_state=random_state, keep_weights=keep_weights,
             weight_dtype=weight_dtype, weight_column=weight_column,
             debug=debug,
         )
 
-    # Reset index for positional weight alignment
     work_df = work_df.reset_index(drop=True)
-    
-    if debug:
-        weights, debug_pdf, debug_weight_raw = _compute_smooth_weights_nd(
-            work_df, categorical_cols, continuous_specs, return_debug=True, pdf_params=pdf_params
-        )
-    else:
-        weights = _compute_smooth_weights_nd(
-            work_df, categorical_cols, continuous_specs, return_debug=False, pdf_params=pdf_params
-        )
-        debug_pdf = None
-        debug_weight_raw = None
-    
-    n_samples = int(len(work_df) * frac)
-    return _weighted_sample(
-        work_df, weights, n_samples, random_state,
-        keep_weights, weight_column, weight_dtype,
-        debug=debug, debug_pdf=debug_pdf, debug_weight_raw=debug_weight_raw,
+
+    pdf_at_points = _get_pdf_at_points(
+        work_df, categorical_cols, continuous_specs,
+        pdf_params, pdf_func, method="nd",
+    )
+
+    if threshold is None:
+        threshold = _threshold_from_frac(pdf_at_points, frac)
+
+    return _threshold_sample(
+        work_df, pdf_at_points, threshold, random_state,
+        keep_weights, weight_column, weight_dtype, debug=debug,
     )
 
 
@@ -1116,11 +1238,10 @@ def downsampleDFSmoothTrigger(
     """
     Multi-trigger bitmask downsampling with smooth PDF.
 
-    Each trigger independently estimates its own PDF (smooth or categorical)
-    and samples. Combined with OR bitmask.
+    Each trigger independently estimates its own PDF and samples using
+    threshold-based efficiency sampling. Combined with OR bitmask.
 
-    Weights are trigger-specific; no universal combined weight is defined.
-    Downstream code must choose the relevant weight_{name} column.
+    Each trigger dict must specify exactly one of 'frac' or 'threshold'.
 
     Maximum 16 triggers (uint16 bitmask).
 
@@ -1131,13 +1252,16 @@ def downsampleDFSmoothTrigger(
     triggers : list of dict
         Each dict:
         - 'name': str — trigger label
-        - 'variables': dict — per-variable spec (Option C/D/categorical)
-        - 'frac': float — fraction to sample
+        - 'variables': dict — per-variable spec
+        - 'frac': float — target fraction (mutually exclusive with 'threshold')
+        - 'threshold': float — PDF threshold (mutually exclusive with 'frac')
     random_state : int
         Base seed. Each trigger uses random_state + i.
     weight_dtype : np.dtype, default np.float32
     mask : str, np.ndarray, or None
         Boolean selection applied before all triggers (AD-8).
+    pdf_params : dict or None
+        3-layer PDF estimator params.
 
     Returns
     -------
@@ -1148,24 +1272,27 @@ def downsampleDFSmoothTrigger(
     Examples
     --------
     >>> triggers = [
-    ...     {'name': 'flat_pid_pt', 'variables': {
-    ...         'type': 'categorical', 'fPidIndex': 'categorical',
-    ...         'fSigned1Pt': (50, -5, 5),
-    ...     }, 'frac': 0.07},
-    ...     {'name': 'rare_De', 'variables': {'isDe': 'categorical'}, 'frac': 0.01},
+    ...     {'name': 'flat_pt', 'variables': {'pT': (50, 0, 10)}, 'frac': 0.07},
+    ...     {'name': 'rare', 'variables': {'isDe': 'categorical'}, 'threshold': 0.01},
     ... ]
-    >>> out = downsampleDFSmoothTrigger(df, triggers, random_state=42, mask='isForFit')
+    >>> out = downsampleDFSmoothTrigger(df, triggers, random_state=42)
     """
     if len(triggers) > 16:
         raise ValueError(f"Maximum 16 triggers (uint16), got {len(triggers)}")
 
-    required_keys = {"name", "variables", "frac"}
     for i, t in enumerate(triggers):
-        missing_keys = required_keys - set(t.keys())
-        if missing_keys:
-            raise ValueError(f"Trigger {i} missing keys: {missing_keys}")
-        if not (0 < t["frac"] <= 1):
+        if "name" not in t or "variables" not in t:
+            raise ValueError(f"Trigger {i} missing 'name' or 'variables'")
+        has_frac = "frac" in t
+        has_thresh = "threshold" in t
+        if has_frac == has_thresh:
+            raise ValueError(
+                f"Trigger '{t.get('name', i)}': specify exactly one of 'frac' or 'threshold'"
+            )
+        if has_frac and not (0 < t["frac"] <= 1):
             raise ValueError(f"Trigger '{t['name']}': frac must be in (0,1], got {t['frac']}")
+        if has_thresh and t["threshold"] <= 0:
+            raise ValueError(f"Trigger '{t['name']}': threshold must be > 0, got {t['threshold']}")
 
     # Apply mask once (AD-8)
     work_df = _apply_mask(df, mask)
@@ -1178,19 +1305,22 @@ def downsampleDFSmoothTrigger(
     for i, trigger in enumerate(triggers):
         name = trigger["name"]
         variables = trigger["variables"]
-        frac = trigger["frac"]
+        t_frac = trigger.get("frac", None)
+        t_threshold = trigger.get("threshold", None)
 
         categorical_cols, continuous_specs = _parse_variables(variables, work_df)
 
-        # Range filter per trigger (different triggers may have different ranges)
+        # Range filter per trigger
         trigger_df = _apply_range_filter(work_df, continuous_specs)
         if len(trigger_df) == 0:
             trigger_bitmask <<= 1
             continue
 
-        # Compute weights
+        trigger_df = trigger_df.reset_index(drop=False)  # keep original index
+        orig_idx = trigger_df.index
+
         if not continuous_specs:
-            # All-categorical (AD-10): groupby inverse-size
+            # All-categorical (AD-10): groupby inverse-size, use old algorithm
             if categorical_cols:
                 group_sizes = trigger_df.groupby(categorical_cols).size()
                 w = 1 / group_sizes
@@ -1201,30 +1331,59 @@ def downsampleDFSmoothTrigger(
                 weights = merged[f"_w_{name}"].values.astype(np.float64)
             else:
                 weights = np.ones(len(trigger_df), dtype=np.float64)
+
+            # Use old sampling for categorical
+            _frac = t_frac if t_frac is not None else 0.1
+            n_samples = int(len(trigger_df) * _frac)
+            if n_samples == 0:
+                trigger_bitmask <<= 1
+                continue
+            probs = weights / weights.sum()
+            rng = np.random.RandomState(random_state + i)
+            n_samples = min(n_samples, len(trigger_df))
+            chosen_local = rng.choice(len(trigger_df), size=n_samples, replace=False, p=probs)
+            chosen_global = trigger_df["index"].values[chosen_local]
+            combined_trigger[chosen_global] |= trigger_bitmask
+
+            w_col = np.full(len(work_df), np.nan, dtype=np.float64)
+            w_col[trigger_df["index"].values] = probs
+            weight_columns[f"weight_{name}"] = w_col.astype(weight_dtype)
         else:
-            weights = _compute_smooth_weights_factorized(
-                trigger_df, categorical_cols, continuous_specs, pdf_params=pdf_params
+            # Threshold-based sampling for continuous variables
+            trigger_df_clean = trigger_df.drop(columns=["index"]).reset_index(drop=True)
+
+            pdf_at_points = _get_pdf_at_points(
+                trigger_df_clean, categorical_cols, continuous_specs,
+                pdf_params, None, method="factorized",
             )
 
-        # Sample
-        n_samples = int(len(trigger_df) * frac)
-        if n_samples == 0:
-            trigger_bitmask <<= 1
-            continue
+            # Resolve threshold
+            if t_threshold is not None:
+                thr = t_threshold
+            else:
+                thr = _threshold_from_frac(pdf_at_points, t_frac)
 
-        probs = weights / weights.sum()
-        rng = np.random.RandomState(random_state + i)
-        n_samples = min(n_samples, len(trigger_df))
-        chosen_local = rng.choice(len(trigger_df), size=n_samples, replace=False, p=probs)
+            # Accept/reject
+            rng = np.random.RandomState(random_state + i)
+            U = rng.uniform(0, 1, len(trigger_df_clean))
+            accepted = (pdf_at_points * U) < thr
+            chosen_local = np.where(accepted)[0]
 
-        # Map back to work_df indices
-        chosen_global = trigger_df.index[chosen_local]
-        combined_trigger[chosen_global] |= trigger_bitmask
+            if len(chosen_local) == 0:
+                trigger_bitmask <<= 1
+                continue
 
-        # Store weights for all rows (selected or not)
-        w_col = np.full(len(work_df), np.nan, dtype=np.float64)
-        w_col[trigger_df.index] = probs
-        weight_columns[f"weight_{name}"] = w_col.astype(weight_dtype)
+            chosen_global = trigger_df["index"].values[chosen_local]
+            combined_trigger[chosen_global] |= trigger_bitmask
+
+            # Weights: 1 / max(pdf, threshold), normalized
+            pdf_capped = np.maximum(pdf_at_points, thr)
+            cw = 1.0 / pdf_capped
+            cw_norm = cw / cw.sum()
+
+            w_col = np.full(len(work_df), np.nan, dtype=np.float64)
+            w_col[trigger_df["index"].values] = cw_norm
+            weight_columns[f"weight_{name}"] = w_col.astype(weight_dtype)
 
         trigger_bitmask <<= 1
 
