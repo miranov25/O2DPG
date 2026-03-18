@@ -545,6 +545,9 @@ def _threshold_sample(
         result["_debug_weight_raw"] = cw  # 1/max(pdf, threshold)
         result["_debug_threshold"] = threshold
 
+    # Always export threshold as metadata for downstream reconstruction
+    result.attrs["threshold"] = threshold
+
     return result
 
 
