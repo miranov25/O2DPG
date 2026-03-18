@@ -8,12 +8,21 @@ Six public functions:
     - downsampleDF:                   Binned groupby, inverse-group-size weights
     - downsampleDFTrigger:            Multi-trigger bitmask (binned)
 
-  Smooth (v3.1/v3.2):
+  Smooth (v3.1/v3.2 + Phase 13.11.DF v2.1):
     - downsampleDFSmoothFactorized:   Smooth PDF, product of 1D marginals
     - downsampleDFSmooth:             Smooth PDF, full ND joint histogram
     - downsampleDFSmoothTrigger:      Multi-trigger bitmask (smooth)
 
-Phase 13.10.DF v3.0 + Phase 13.11.DF + Debug support (Phase 13.12.DF)
+Phase 13.10.DF v3.0 + Phase 13.11.DF v2.1 + Debug support
+
+PDF estimator (pdf_params):
+  When pdf_params is provided, uses 3-layer estimator:
+    Layer 1: Gaussian kernel smoothing (sigma = kernel_sigma_bins * dx)
+    Layer 2: Poisson plug-in correction: * (1 - exp(-n_eff))
+    Layer 3: Local polynomial regression at grid points
+  Per-point evaluation via interpolation on corrected grid.
+  Parameters accept scalar (all dims) or list (per continuous dim).
+  Categorical dimensions are sliced, not fitted (AD-2/3/10).
 
 Debug mode (debug=True):
   Adds columns to output:
@@ -196,29 +205,12 @@ def _estimate_binned_pdf(
     Estimate 1D PDF via histogram (piecewise constant).
 
     Empty bins have PDF = 0 (AD-11). No interpolation.
+    Optional first-order Poisson bias correction (Phase 13.11.DF v2.1):
+        f_corr = f * (1 - exp(-n_bin))
 
-    Optional first-order Poisson bias correction (AD-11, Phase 13.11.DF v2.1):
-        f̂_corr = f̂ × (1 - exp(-n_bin))
+    Uses plug-in estimator lambda_hat = n_bin (first-order Poisson debiasing).
 
-    This corrects for the conditional bias E[f̂ | n_bin > 0] = f_true / (1 - exp(-λ)).
-    Uses plug-in estimator λ̂ = n_bin (first-order Poisson debiasing).
-
-    Parameters
-    ----------
-    values : np.ndarray
-        Data values.
-    bin_edges : np.ndarray
-        Histogram bin edges.
-    bias_correction : bool, default True
-        If True, apply plug-in Poisson correction.
-
-    Returns
-    -------
-    bin_centers : np.ndarray
-    pdf : np.ndarray
-        PDF values per bin. Zero for empty bins.
-    counts : np.ndarray
-        Raw bin counts (for diagnostics).
+    Returns bin_centers, pdf, counts.
     """
     counts, _ = np.histogram(values, bins=bin_edges)
     bin_widths = np.diff(bin_edges)
@@ -226,12 +218,200 @@ def _estimate_binned_pdf(
     pdf = counts.astype(np.float64) / (N * bin_widths)
 
     if bias_correction:
-        # Plug-in correction: λ̂ = n_bin (first-order Poisson debiasing)
+        # Plug-in correction: lambda_hat = n_bin (first-order Poisson debiasing)
         correction = 1.0 - np.exp(-counts.astype(np.float64))
         pdf = pdf * correction
 
     bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
     return bin_centers, pdf, counts
+
+
+def _normalize_per_dim_param(param, n_dims, name):
+    """
+    Normalize a scalar or list to a per-dimension list.
+
+    Parameters
+    ----------
+    param : scalar or list
+        If scalar, replicated for all dimensions. If list, must have length n_dims.
+    n_dims : int
+    name : str
+        For error messages.
+    """
+    if isinstance(param, (int, float)):
+        return [param] * n_dims
+    if len(param) != n_dims:
+        raise ValueError(f"{name} has length {len(param)}, expected {n_dims}")
+    return list(param)
+
+
+def _estimate_pdf_smooth_1d(
+    values: np.ndarray,
+    bin_edges: np.ndarray,
+    kernel_sigma_bins: float = 0.5,
+    bias_correction: bool = True,
+    poly_order: int = 2,
+    poly_half_range: float = 0.5,
+) -> tuple:
+    """
+    Three-layer 1D PDF estimator (Phase 13.11.DF v2.1).
+
+    Layer 1: Gaussian kernel smoothing (sigma = kernel_sigma_bins * dx)
+    Layer 2: Poisson plug-in correction: * (1 - exp(-n_eff))
+    Layer 3: Local polynomial regression at each bin center
+
+    Returns corrected PDF at bin centers. Per-point evaluation via
+    np.interp (factorized) or RegularGridInterpolator (ND) in the caller.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        Data values for one dimension.
+    bin_edges : np.ndarray
+        Histogram bin edges.
+    kernel_sigma_bins : float, default 0.5
+        Kernel sigma in bin-width units. 0.5 = half a bin.
+    bias_correction : bool, default True
+        Apply Poisson plug-in correction.
+    poly_order : int, default 2
+        Polynomial order: 1=linear, 2=parabolic.
+    poly_half_range : float, default 0.5
+        Fit neighborhood in data units (not bins).
+
+    Returns
+    -------
+    bin_centers : np.ndarray
+    pdf_corrected : np.ndarray
+        Corrected PDF at bin centers.
+    """
+    from scipy.ndimage import gaussian_filter1d
+
+    counts, _ = np.histogram(values, bins=bin_edges)
+    bin_widths = np.diff(bin_edges)
+    N = len(values)
+    centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    dx = bin_widths[0]  # assume uniform for kernel
+    n_bins = len(counts)
+
+    # Layer 1: Gaussian kernel smoothing
+    if kernel_sigma_bins > 0:
+        counts_smooth = gaussian_filter1d(counts.astype(np.float64), sigma=kernel_sigma_bins)
+        counts_smooth[counts_smooth < 0.0001 * counts_smooth.max()] = 0.0
+    else:
+        counts_smooth = counts.astype(np.float64)
+
+    # Layer 2: Poisson correction
+    pdf_grid = counts_smooth / (N * bin_widths)
+    if bias_correction:
+        correction = 1.0 - np.exp(-counts_smooth)
+        pdf_grid = pdf_grid * correction
+
+    # Layer 3: Local polynomial at each bin center
+    half_width = max(1, int(round(poly_half_range / dx)))
+
+    pdf_corrected = np.zeros(n_bins, dtype=np.float64)
+    for b in range(n_bins):
+        lo = max(0, b - half_width)
+        hi = min(n_bins - 1, b + half_width)
+        nb = np.arange(lo, hi + 1)
+
+        valid = pdf_grid[nb] > 0
+        if valid.sum() < (poly_order + 1):
+            # Not enough points — fall back to grid value
+            pdf_corrected[b] = max(pdf_grid[b], 0.0)
+            continue
+
+        xc = centers[nb[valid]]
+        yc = pdf_grid[nb[valid]]
+
+        actual_order = min(poly_order, len(xc) - 1)
+        try:
+            coeffs = np.polyfit(xc, yc, actual_order)
+            val = np.polyval(coeffs, centers[b])
+            pdf_corrected[b] = max(val, 0.0)
+        except (np.linalg.LinAlgError, ValueError):
+            pdf_corrected[b] = max(pdf_grid[b], 0.0)
+
+    # Fill remaining zeros via log-interp (fallback for extreme tails)
+    pdf_corrected = _interpolate_empty_bins_log(pdf_corrected)
+
+    return centers, pdf_corrected
+
+
+def _correct_nd_grid_polynomial(
+    pdf_nd: np.ndarray,
+    centers_per_axis: list,
+    poly_order_per_axis: list,
+    poly_half_range_per_axis: list,
+    edges_per_axis: list,
+) -> np.ndarray:
+    """
+    Apply local polynomial correction to an ND grid of PDF values.
+
+    At each grid point, fits a local polynomial in the ND neighborhood
+    and evaluates at the grid point itself, replacing the original value.
+
+    For efficiency, correction is applied axis-by-axis (sequential 1D passes),
+    not as a full joint ND polynomial. This is consistent with the factorized
+    kernel smoothing approach and avoids combinatorial explosion in ND.
+
+    Parameters
+    ----------
+    pdf_nd : np.ndarray
+        ND array of PDF values at grid centers.
+    centers_per_axis : list of np.ndarray
+    poly_order_per_axis : list of int
+    poly_half_range_per_axis : list of float (data units)
+    edges_per_axis : list of np.ndarray
+
+    Returns
+    -------
+    np.ndarray : corrected PDF grid
+    """
+    result = pdf_nd.copy()
+
+    for axis in range(result.ndim):
+        centers = centers_per_axis[axis]
+        order = poly_order_per_axis[axis]
+        dx = np.diff(edges_per_axis[axis])[0]
+        half_width = max(1, int(round(poly_half_range_per_axis[axis] / dx)))
+        n_bins = len(centers)
+
+        # Move target axis to position 0 for easy iteration
+        moved = np.moveaxis(result, axis, 0)
+        shape = moved.shape
+        flat = moved.reshape(shape[0], -1)
+
+        for j in range(flat.shape[1]):
+            col = flat[:, j].copy()
+            corrected = np.zeros_like(col)
+
+            for b in range(n_bins):
+                lo = max(0, b - half_width)
+                hi = min(n_bins - 1, b + half_width)
+                nb = np.arange(lo, hi + 1)
+
+                valid = col[nb] > 0
+                if valid.sum() < (order + 1):
+                    corrected[b] = max(col[b], 0.0)
+                    continue
+
+                xc = centers[nb[valid]]
+                yc = col[nb[valid]]
+
+                actual_order = min(order, len(xc) - 1)
+                try:
+                    coeffs = np.polyfit(xc, yc, actual_order)
+                    val = np.polyval(coeffs, centers[b])
+                    corrected[b] = max(val, 0.0)
+                except (np.linalg.LinAlgError, ValueError):
+                    corrected[b] = max(col[b], 0.0)
+
+            flat[:, j] = corrected
+
+        result = np.moveaxis(flat.reshape(shape), 0, axis)
+
+    return result
 
 
 def _weighted_sample(
@@ -279,6 +459,7 @@ def _compute_smooth_weights_factorized(
     categorical_cols: list,
     continuous_specs: dict,
     return_debug: bool = False,
+    pdf_params: Optional[dict] = None,
 ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray, np.ndarray]]:
     """
     Compute inverse-PDF weights using factorized (product of marginals) approach.
@@ -289,6 +470,16 @@ def _compute_smooth_weights_factorized(
     Categorical: value_counts normalized.
     
     When return_debug=True, returns (weights, pdf_at_points, weight_raw)
+    
+    Parameters
+    ----------
+    pdf_params : dict or None
+        If provided, uses 3-layer estimator (Phase 13.11.DF v2.1):
+          kernel_sigma_bins: float or list (default 0.5)
+          bias_correction: bool (default True)
+          poly_order: int or list (default 2)
+          poly_half_range: float or list (default 0.5)
+        If None, uses legacy estimator (_estimate_1d_pdf_from_edges).
     """
     log_pdf = np.zeros(len(df), dtype=np.float64)
 
@@ -300,12 +491,36 @@ def _compute_smooth_weights_factorized(
         log_pdf += np.log(pdf_cat)
 
     # Continuous marginals
-    for col, edges in continuous_specs.items():
-        values = df[col].values.astype(np.float64)
-        centers, pdf_1d = _estimate_1d_pdf_from_edges(values, edges)
-        pdf_at_points = np.interp(values, centers, pdf_1d)
-        pdf_at_points = np.maximum(pdf_at_points, 1e-30)
-        log_pdf += np.log(pdf_at_points)
+    cont_cols = list(continuous_specs.keys())
+    n_cont = len(cont_cols)
+
+    if pdf_params is not None and n_cont > 0:
+        # 3-layer estimator per axis
+        ks = _normalize_per_dim_param(pdf_params.get("kernel_sigma_bins", 0.5), n_cont, "kernel_sigma_bins")
+        bc = pdf_params.get("bias_correction", True)
+        po = _normalize_per_dim_param(pdf_params.get("poly_order", 2), n_cont, "poly_order")
+        pr = _normalize_per_dim_param(pdf_params.get("poly_half_range", 0.5), n_cont, "poly_half_range")
+
+        for i, (col, edges) in enumerate(continuous_specs.items()):
+            values = df[col].values.astype(np.float64)
+            centers, pdf_1d = _estimate_pdf_smooth_1d(
+                values, edges,
+                kernel_sigma_bins=ks[i],
+                bias_correction=bc,
+                poly_order=int(po[i]),
+                poly_half_range=pr[i],
+            )
+            pdf_at_points = np.interp(values, centers, pdf_1d)
+            pdf_at_points = np.maximum(pdf_at_points, 1e-30)
+            log_pdf += np.log(pdf_at_points)
+    else:
+        # Legacy estimator
+        for col, edges in continuous_specs.items():
+            values = df[col].values.astype(np.float64)
+            centers, pdf_1d = _estimate_1d_pdf_from_edges(values, edges)
+            pdf_at_points = np.interp(values, centers, pdf_1d)
+            pdf_at_points = np.maximum(pdf_at_points, 1e-30)
+            log_pdf += np.log(pdf_at_points)
 
     # PDF at each point
     pdf = np.exp(log_pdf)
@@ -328,6 +543,7 @@ def _compute_smooth_weights_nd(
     categorical_cols: list,
     continuous_specs: dict,
     return_debug: bool = False,
+    pdf_params: Optional[dict] = None,
 ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray, np.ndarray]]:
     """
     Compute inverse-PDF weights using full ND histogram.
@@ -337,6 +553,8 @@ def _compute_smooth_weights_nd(
     then ND histogram + interpolation on continuous axes per group.
     
     When return_debug=True, returns (weights, pdf_at_points, weight_raw)
+    
+    pdf_params: if provided, uses 3-layer estimator on the ND grid.
     """
     weights = np.zeros(len(df), dtype=np.float64)
     pdf_all = np.zeros(len(df), dtype=np.float64)
@@ -347,7 +565,8 @@ def _compute_smooth_weights_nd(
 
     if not categorical_cols:
         # Pure continuous: single ND histogram
-        w, pdf, wr = _compute_nd_weights_for_group(df, cont_cols, all_edges, return_debug=True)
+        w, pdf, wr = _compute_nd_weights_for_group(
+            df, cont_cols, all_edges, return_debug=True, pdf_params=pdf_params)
         if return_debug:
             return w, pdf, wr
         return w
@@ -366,7 +585,8 @@ def _compute_smooth_weights_nd(
                 pdf = np.ones(len(group_df), dtype=np.float64) * (len(group_df) / len(df))
                 wr = 1.0 / pdf
             else:
-                w, pdf, wr = _compute_nd_weights_for_group(group_df, cont_cols, all_edges, return_debug=True)
+                w, pdf, wr = _compute_nd_weights_for_group(
+                    group_df, cont_cols, all_edges, return_debug=True, pdf_params=pdf_params)
 
             # Scale by 1/group_fraction (categorical inverse weight)
             group_frac = len(group_df) / len(df)
@@ -389,8 +609,17 @@ def _compute_nd_weights_for_group(
     cont_cols: list,
     all_edges: list,
     return_debug: bool = False,
+    pdf_params: Optional[dict] = None,
 ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-    """Compute inverse-PDF weights for one categorical group on continuous axes."""
+    """
+    Compute inverse-PDF weights for one categorical group on continuous axes.
+    
+    When pdf_params is provided, applies 3-layer correction to the ND grid:
+      1. Kernel smoothing per axis
+      2. Poisson bias correction
+      3. Local polynomial correction per axis
+    Then uses RegularGridInterpolator on the corrected grid.
+    """
     from scipy.interpolate import RegularGridInterpolator
 
     data_arrays = [group_df[c].values.astype(np.float64) for c in cont_cols]
@@ -412,10 +641,50 @@ def _compute_nd_weights_for_group(
             np.meshgrid(*widths_per_axis, indexing='ij'), axis=0
         )
 
-    pdf_nd = hist_nd / (len(group_df) * volumes)
-    pdf_nd = _interpolate_empty_bins_log_nd(pdf_nd)
-
+    N = len(group_df)
+    n_cont = len(cont_cols)
     centers = [0.5 * (e[:-1] + e[1:]) for e in all_edges]
+
+    if pdf_params is not None:
+        from scipy.ndimage import gaussian_filter1d
+
+        # Parse per-dimension parameters
+        ks = _normalize_per_dim_param(pdf_params.get("kernel_sigma_bins", 0.5), n_cont, "kernel_sigma_bins")
+        bc = pdf_params.get("bias_correction", True)
+        po = _normalize_per_dim_param(pdf_params.get("poly_order", 2), n_cont, "poly_order")
+        pr = _normalize_per_dim_param(pdf_params.get("poly_half_range", 0.5), n_cont, "poly_half_range")
+
+        # Layer 1: Kernel smoothing per axis
+        counts_smooth = hist_nd.astype(np.float64)
+        for axis in range(n_cont):
+            if ks[axis] > 0:
+                counts_smooth = gaussian_filter1d(counts_smooth, sigma=ks[axis], axis=axis)
+        # Floor tiny values
+        max_val = counts_smooth.max()
+        if max_val > 0:
+            counts_smooth[counts_smooth < 0.0001 * max_val] = 0.0
+
+        # Layer 2: Poisson correction
+        pdf_nd = counts_smooth / (N * volumes)
+        if bc:
+            correction = 1.0 - np.exp(-counts_smooth)
+            pdf_nd = pdf_nd * correction
+
+        # Layer 3: Local polynomial correction per axis
+        pdf_nd = _correct_nd_grid_polynomial(
+            pdf_nd, centers,
+            poly_order_per_axis=[int(p) for p in po],
+            poly_half_range_per_axis=pr,
+            edges_per_axis=all_edges,
+        )
+
+        # Fill remaining zeros
+        pdf_nd = _interpolate_empty_bins_log_nd(pdf_nd)
+    else:
+        # Legacy path
+        pdf_nd = hist_nd / (N * volumes)
+        pdf_nd = _interpolate_empty_bins_log_nd(pdf_nd)
+
     interpolator = RegularGridInterpolator(
         centers, pdf_nd, method="linear",
         bounds_error=False, fill_value=None,
@@ -621,6 +890,7 @@ def downsampleDFSmoothFactorized(
     weight_column: str = "weight",
     mask: Optional[Union[str, np.ndarray]] = None,
     debug: bool = False,
+    pdf_params: Optional[dict] = None,
 ) -> pd.DataFrame:
     """
     Downsample with smooth factorized PDF weighting.
@@ -650,8 +920,14 @@ def downsampleDFSmoothFactorized(
         Boolean selection. PDF estimated on masked rows only (AD-8).
     debug : bool, default False
         If True, add _debug_pdf and _debug_weight_raw columns to output.
-        - _debug_pdf: empirical PDF at each sampled point
-        - _debug_weight_raw: 1/PDF before normalization
+    pdf_params : dict or None
+        If provided, uses 3-layer PDF estimator (Phase 13.11.DF v2.1):
+          kernel_sigma_bins: float or list (default 0.5)
+          bias_correction: bool (default True)
+          poly_order: int or list (default 2)
+          poly_half_range: float or list (default 0.5)
+        Per-dimension: pass list with one value per continuous dimension.
+        If None, uses legacy estimator (log-interp + linear interp).
 
     Returns
     -------
@@ -662,6 +938,9 @@ def downsampleDFSmoothFactorized(
     --------
     >>> variables = {'type': 'categorical', 'pT': (50, 0, 10), 'eta': [-2, -1, 0, 1, 2]}
     >>> out = downsampleDFSmoothFactorized(df, frac=0.1, variables=variables, random_state=42)
+    >>> # With 3-layer estimator:
+    >>> out = downsampleDFSmoothFactorized(df, frac=0.1, variables=variables, random_state=42,
+    ...     pdf_params={'poly_order': 2, 'poly_half_range': 0.5})
     """
     if not (0 < frac <= 1):
         raise ValueError(f"frac must be in (0, 1], got {frac}")
@@ -694,11 +973,11 @@ def downsampleDFSmoothFactorized(
     
     if debug:
         weights, debug_pdf, debug_weight_raw = _compute_smooth_weights_factorized(
-            work_df, categorical_cols, continuous_specs, return_debug=True
+            work_df, categorical_cols, continuous_specs, return_debug=True, pdf_params=pdf_params
         )
     else:
         weights = _compute_smooth_weights_factorized(
-            work_df, categorical_cols, continuous_specs, return_debug=False
+            work_df, categorical_cols, continuous_specs, return_debug=False, pdf_params=pdf_params
         )
         debug_pdf = None
         debug_weight_raw = None
@@ -725,6 +1004,7 @@ def downsampleDFSmooth(
     weight_column: str = "weight",
     mask: Optional[Union[str, np.ndarray]] = None,
     debug: bool = False,
+    pdf_params: Optional[dict] = None,
 ) -> pd.DataFrame:
     """
     Downsample with smooth full ND PDF weighting.
@@ -755,6 +1035,9 @@ def downsampleDFSmooth(
         Boolean selection. PDF estimated on masked rows only (AD-8).
     debug : bool, default False
         If True, add _debug_pdf and _debug_weight_raw columns.
+    pdf_params : dict or None
+        3-layer PDF estimator params (same as downsampleDFSmoothFactorized).
+        Applied to ND grid: kernel per axis, Poisson, local poly per axis.
 
     Returns
     -------
@@ -801,11 +1084,11 @@ def downsampleDFSmooth(
     
     if debug:
         weights, debug_pdf, debug_weight_raw = _compute_smooth_weights_nd(
-            work_df, categorical_cols, continuous_specs, return_debug=True
+            work_df, categorical_cols, continuous_specs, return_debug=True, pdf_params=pdf_params
         )
     else:
         weights = _compute_smooth_weights_nd(
-            work_df, categorical_cols, continuous_specs, return_debug=False
+            work_df, categorical_cols, continuous_specs, return_debug=False, pdf_params=pdf_params
         )
         debug_pdf = None
         debug_weight_raw = None
@@ -828,6 +1111,7 @@ def downsampleDFSmoothTrigger(
     random_state: int,
     weight_dtype: np.dtype = np.float32,
     mask: Optional[Union[str, np.ndarray]] = None,
+    pdf_params: Optional[dict] = None,
 ) -> pd.DataFrame:
     """
     Multi-trigger bitmask downsampling with smooth PDF.
@@ -919,7 +1203,7 @@ def downsampleDFSmoothTrigger(
                 weights = np.ones(len(trigger_df), dtype=np.float64)
         else:
             weights = _compute_smooth_weights_factorized(
-                trigger_df, categorical_cols, continuous_specs
+                trigger_df, categorical_cols, continuous_specs, pdf_params=pdf_params
             )
 
         # Sample
