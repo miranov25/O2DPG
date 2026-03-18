@@ -519,6 +519,13 @@ def _threshold_sample(
         - Points with pdf > threshold: accepted with prob threshold/pdf, cw = 1/pdf
         - Weight bound: 1/threshold (no extreme weights)
         - Unbiased: E[Σ cw_i] = N_orig
+
+    Always adds to output:
+        _pdf:       empirical PDF at each sampled point (per event)
+        _threshold: threshold value used for this call (constant per group)
+
+    With debug=True, additionally:
+        _debug_pdf, _debug_weight_raw, _debug_threshold (legacy names)
     """
     rng = np.random.RandomState(random_state)
     N = len(df)
@@ -539,6 +546,10 @@ def _threshold_sample(
         # Store normalized weight (consistent with downsampleDF convention)
         cw_norm = cw / cw.sum()
         result[weight_column] = cw_norm.astype(weight_dtype)
+
+    # Production columns: always stored (needed for reconstruction)
+    result["_pdf"] = pdf[chosen]
+    result["_threshold"] = threshold
 
     if debug:
         result["_debug_pdf"] = pdf[chosen]

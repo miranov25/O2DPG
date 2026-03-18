@@ -190,7 +190,7 @@ def report_table(header, rows, col_widths=None):
 # =============================================================================
 
 def test_t1(sampled, methods, bw=DEFAULT_BW, output_dir="."):
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     fig.suptitle(f"T1: Self-Consistency ({bw})\n{SETTINGS_TEXT}", fontsize=10)
     results = []
 
@@ -202,18 +202,21 @@ What: Verify that the stored pdf and weight_raw are algebraically consistent.
       For threshold sampling: weight_raw = 1/max(pdf, threshold).
       Therefore pdf × weight_raw = pdf / max(pdf, threshold) = min(1, pdf/threshold).
 
-Theory: In the dense region (pdf > threshold), pdf × weight_raw = 1.0 exactly.
-        In the sparse region (pdf < threshold), pdf × weight_raw = pdf/threshold < 1.
-        The boundary is at x where pdf(x) = threshold ≈ 0.018 (for frac=0.1 Gaussian),
-        corresponding to |x| ≈ 2.5σ. Points above this boundary are ~88% of the sample.
+Theory: Two regimes separated by pdf = threshold:
+      Dense (pdf > threshold):  pdf × weight_raw = 1.0 exactly
+      Sparse (pdf < threshold): pdf × weight_raw = pdf/threshold < 1
 
-Expected: max(pdf × weight_raw) ≤ 1.0 (hard bound, no exceptions).
-          frac@~1.0 ≈ 88% (fraction of points in the dense region).
-Pass criterion: all values ≤ 1.0 + numerical tolerance (1e-10).
-Note: FAIL status here is a known pass-criterion issue — the test correctly verifies
-      boundedness but the old criterion (CV < 1e-6) does not apply to threshold sampling.
+      The theoretical expectation using the TRUE pdf is:
+        expected = min(1, pdf_true / threshold)
+      Deviations from this come from PDF estimation bias (pdf_empirical ≠ pdf_true).
+
+Expected: Dense regime: product = 1.0 ± numerical tolerance
+          Ratio to expectation ≈ 1.0 everywhere (deviations = PDF bias)
+          Threshold distribution: Gaussian with σ ~ 0.00007
+Pass criterion: Dense-region max deviation < 1e-6, all products ≤ 1.0 + 1e-6.
 """)
-    rows = []
+    regime_rows = []
+    threshold_rows = []
 
     for method in methods:
         if not method_available(sampled, method, bw): continue
@@ -222,27 +225,134 @@ Note: FAIL status here is a known pass-criterion issue — the test correctly ve
         data = sampled[mask]
         if len(data) == 0: continue
 
-        product = data[f"{prefix}_pdf"].values * data[f"{prefix}_weight_raw"].values
+        pdf_emp = data[f"{prefix}_pdf"].values.astype(np.float64)
+        wr = data[f"{prefix}_weight_raw"].values.astype(np.float64)
+        pdf_true = data["pdf_true"].values.astype(np.float64)
+        x_vals = data["x"].values.astype(np.float64)
+        product = pdf_emp * wr
         c = METHOD_COLORS.get(method, "black")
 
+        # Get threshold per iteration
+        thr_col = f"{prefix}_threshold"
+        if thr_col in data.columns:
+            thresholds = data.groupby(sampled.loc[mask, "iteration"])[thr_col].first().values
+            thr_mean = thresholds.mean()
+            thr_std = thresholds.std()
+            thr_per_point = data[thr_col].values.astype(np.float64)
+        else:
+            thr_mean = 1.0 / wr.max() if wr.max() > 0 else 0.018
+            thr_std = 0.0
+            thresholds = np.array([thr_mean])
+            thr_per_point = np.full(len(pdf_emp), thr_mean)
+
+        # Theoretical expectation: min(1, pdf_true / threshold)
+        expected = np.minimum(1.0, pdf_true / thr_per_point)
+
+        # Ratio to expectation
+        ratio = np.where(expected > 1e-10, product / expected, np.nan)
+
+        # Regime split
+        dense = pdf_emp > thr_per_point
+        sparse = ~dense
+        n_dense = dense.sum()
+        frac_dense = n_dense / len(product)
+
+        if n_dense > 0:
+            dense_max_dev = np.abs(product[dense] - 1.0).max()
+        else:
+            dense_max_dev = 0.0
+
+        all_bounded = bool(np.all(product <= 1.0 + 1e-6))
+        passed = all_bounded and (dense_max_dev < 1e-6)
+
+        # Regime table
+        sparse_mean = product[sparse].mean() if sparse.sum() > 0 else np.nan
+        regime_rows.append([method,
+                           f"{frac_dense:.1%}", f"{dense_max_dev:.2e}",
+                           f"{np.nanmean(ratio):.6f}", f"{np.nanstd(ratio):.4f}",
+                           "PASS" if passed else "FAIL"])
+
+        # Threshold table
+        threshold_rows.append([method, f"{thr_mean:.6f}", f"{thr_std:.6f}",
+                              f"{thresholds.min():.6f}", f"{thresholds.max():.6f}"])
+
+        results.append(TestResult(f"T1: {method}", passed, dense_max_dev, 0.0, 1e-6,
+                                  f"dense_dev={dense_max_dev:.2e}, frac_dense={frac_dense:.1%}, "
+                                  f"thr={thr_mean:.6f}±{thr_std:.6f}"))
+
+        # --- Plots ---
         idx = np.random.RandomState(0).choice(len(data), min(20000, len(data)), replace=False)
-        axes[0].scatter(data["x"].values[idx], product[idx], s=1, alpha=0.15, color=c, label=method)
-        axes[1].hist(product, bins=100, alpha=0.35, color=c, label=method)
 
-        bounded = bool(np.all(product <= 1.0 + 1e-10))
-        frac1 = (product > 0.99).sum() / len(product)
-        frac_low = (product < 0.5).sum() / len(product)
+        # [0,0]: Data + theory overlay
+        axes[0, 0].scatter(x_vals[idx], product[idx], s=1, alpha=0.15, color=c, label=f'{method} (data)')
+        # Theory curve: sort by x for clean line
+        x_sorted = np.linspace(x_vals.min(), x_vals.max(), 500)
+        pdf_true_curve = gaussian_pdf(x_sorted)
+        expected_curve = np.minimum(1.0, pdf_true_curve / thr_mean)
+        ls = '-' if 'v5' not in method else '--'
+        axes[0, 0].plot(x_sorted, expected_curve, ls, color=c, lw=2, alpha=0.8,
+                        label=f'min(1, f_true/thr) [{method}]')
 
-        rows.append([method, f"{product.max():.6f}", f"{frac1:.1%}", f"{frac_low:.1%}",
-                      "PASS" if bounded else "FAIL"])
-        results.append(TestResult(f"T1: {method}", bounded, product.max(), 1.0, 1e-6,
-                                  f"max={product.max():.6f}, frac@1={frac1:.1%}"))
+        # [0,1]: Ratio to expectation vs x (binned profile)
+        x_bins = np.linspace(-5, 5, 51)
+        x_centers = 0.5 * (x_bins[:-1] + x_bins[1:])
+        ratio_mean, ratio_err = [], []
+        for i in range(len(x_bins) - 1):
+            in_bin = (x_vals >= x_bins[i]) & (x_vals < x_bins[i + 1])
+            r_bin = ratio[in_bin]
+            r_valid = r_bin[np.isfinite(r_bin)]
+            if len(r_valid) > 10:
+                ratio_mean.append(r_valid.mean())
+                ratio_err.append(r_valid.std() / np.sqrt(len(r_valid)))
+            else:
+                ratio_mean.append(np.nan); ratio_err.append(np.nan)
+        ratio_mean = np.array(ratio_mean); ratio_err = np.array(ratio_err)
+        axes[0, 1].errorbar(x_centers, ratio_mean, yerr=ratio_err, fmt='o', ms=3,
+                           capsize=1, color=c, alpha=0.7, label=method)
 
-    report_table(["Method", "max(pdf×wr)", "frac@~1.0", "frac<0.5", "Status"], rows)
+        # [1,0]: Threshold distribution with Gaussian fit
+        axes[1, 0].hist(thresholds, bins=20, alpha=0.35, color=c, density=True,
+                        label=f'{method}: {thr_mean:.5f}±{thr_std:.5f}')
+        if thr_std > 0 and len(thresholds) > 5:
+            x_fit = np.linspace(thresholds.min(), thresholds.max(), 100)
+            gauss_fit = stats.norm.pdf(x_fit, thr_mean, thr_std)
+            axes[1, 0].plot(x_fit, gauss_fit, '-', color=c, lw=2, alpha=0.8)
 
-    axes[0].axhline(1.0, color='r', lw=2, ls='--')
-    axes[0].set_xlabel("x", fontsize=12); axes[0].set_ylabel("pdf × weight_raw", fontsize=12); axes[0].legend(fontsize=11)
-    axes[1].axvline(1.0, color='r', lw=2, ls='--'); axes[1].set_xlabel("pdf × weight_raw", fontsize=12); axes[1].legend(fontsize=11)
+        # [1,1]: Dense regime residuals (rounding error)
+        if n_dense > 0:
+            dev = product[dense] - 1.0
+            axes[1, 1].hist(dev, bins=100, alpha=0.35, color=c,
+                           label=f'{method}: max|dev|={dense_max_dev:.2e}')
+
+    # Report tables
+    report("\nRegime breakdown:")
+    report_table(["Method", "dense%", "dense_max_dev", "⟨ratio⟩", "σ(ratio)", "Status"],
+                 regime_rows)
+
+    report("\nThreshold distribution (across 100 iterations):")
+    report_table(["Method", "⟨thr⟩", "σ(thr)", "min", "max"], threshold_rows)
+
+    # Axes formatting
+    axes[0, 0].axhline(1.0, color='gray', lw=1, ls=':')
+    axes[0, 0].set_xlabel("x"); axes[0, 0].set_ylabel("pdf × weight_raw")
+    axes[0, 0].set_title("Data vs theory: min(1, f_true/thr)")
+    axes[0, 0].legend(fontsize=8, ncol=2)
+
+    axes[0, 1].axhline(1.0, color='r', lw=2, ls='--')
+    axes[0, 1].fill_between([-5, 5], 0.99, 1.01, alpha=0.15, color='green')
+    axes[0, 1].set_xlim(-5, 5); axes[0, 1].set_ylim(0.95, 1.05)
+    axes[0, 1].set_xlabel("x"); axes[0, 1].set_ylabel("data / expected")
+    axes[0, 1].set_title("Ratio to expectation (= PDF bias)")
+    axes[0, 1].legend(fontsize=10)
+
+    axes[1, 0].set_xlabel("Threshold"); axes[1, 0].set_ylabel("Density")
+    axes[1, 0].set_title("Threshold distribution (Gaussian fit overlay)")
+    axes[1, 0].legend(fontsize=9)
+
+    axes[1, 1].set_xlabel("Deviation from 1.0 (dense regime)")
+    axes[1, 1].set_title("Dense regime: numerical rounding")
+    axes[1, 1].legend(fontsize=9)
+
     savefig(fig, os.path.join(output_dir, "t1_self_consistency"))
     return results
 
@@ -255,22 +365,34 @@ def test_t2(full, sampled, methods, bw=DEFAULT_BW, output_dir="."):
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     fig.suptitle(f"T2: Integral Reconstruction ({bw})\n{SETTINGS_TEXT}", fontsize=10)
     n_iter = full["iteration"].nunique()
+    n_per_iter = (full["iteration"] == 0).sum()  # N points per iteration
+    n_sampled_approx = int(n_per_iter * FRAC)
+    # Theoretical σ bounds
+    sigma_lower = 1.0 / np.sqrt(n_per_iter * FRAC)  # all weights equal
+    # N_eff ~ 44% of N_sampled for frac=0.1 Gaussian (from T7)
+    sigma_upper = 1.0 / np.sqrt(n_sampled_approx * 0.44)
     results = []
 
     report(f"\n{'='*70}\nT2: Integral Reconstruction (Σcw / N_orig)\n{'='*70}")
     report(f"\nSetup: {SETTINGS_TEXT}")
-    report(f"Default Δx: {BIN_WIDTHS[bw]}")
-    report("""
+    report(f"Δx used: {BIN_WIDTHS[bw]} (single bin width; T2 depends on PDF estimator via Δx)")
+    report(f"N per iteration: {n_per_iter}, frac: {FRAC}, N_sampled ≈ {n_sampled_approx}")
+    report(f"""
 What: Verify that the sum of reconstruction weights recovers the original population size.
       For threshold sampling the HT weight is w_HT = max(1, pdf/threshold).
       Summing over all sampled points: Σ w_HT ≈ N_orig.
 
 Theory: The Horvitz-Thompson estimator is unbiased: E[Σ w_HT] = N_orig.
         However Σ w_HT is stochastic (unlike the binned method where Σcw = N_orig exactly
-        by normalization). The variance depends on the sampling efficiency.
+        by normalization). The variance depends on the weight distribution:
+          σ_lower = 1/√(N×frac) = 1/√{n_per_iter * FRAC:.0f} = {sigma_lower:.4f}  (uniform weights)
+          σ_upper = 1/√N_eff   ≈ 1/√{n_sampled_approx * 0.44:.0f} = {sigma_upper:.4f}  (using N_eff/N_samp ≈ 44%)
+        Observed σ should fall between these bounds.
 
-Expected: ⟨Σcw/N_orig⟩ = 1.000 ± ~0.013 over 100 iterations.
+Expected: ⟨Σcw/N_orig⟩ = 1.000, σ ∈ [{sigma_lower:.4f}, {sigma_upper:.4f}]
 Pass criterion: |mean - 1.0| < 0.05.
+Note: A stronger test (T9, deferred) would scan random N and threshold to verify
+      σ ∝ 1/√N_eff across two orders of magnitude.
 """)
     rows = []
 
@@ -293,18 +415,32 @@ Pass criterion: |mean - 1.0| < 0.05.
         axes[0].hist(ratios, bins=20, alpha=0.35, color=c, label=f'{method}: {mean_r:.4f}±{std_r:.4f}')
         axes[1].plot(range(len(ratios)), ratios, 'o-', ms=2, color=c, alpha=0.7, label=method)
 
-        rows.append([method, f"{mean_r:.6f}", f"{std_r:.6f}", f"{ratios.min():.4f}", f"{ratios.max():.4f}",
+        rows.append([method, f"{mean_r:.6f}", f"{std_r:.6f}",
+                      f"{sigma_lower:.4f}", f"{sigma_upper:.4f}",
+                      f"{ratios.min():.4f}", f"{ratios.max():.4f}",
                       "PASS" if abs(mean_r - 1.0) < 0.05 else "FAIL"])
         results.append(TestResult(f"T2: {method}", abs(mean_r - 1.0) < 0.05,
-                                  mean_r, 1.0, 0.05, f"Mean={mean_r:.6f}±{std_r:.6f}"))
+                                  mean_r, 1.0, 0.05,
+                                  f"Mean={mean_r:.6f}±{std_r:.6f}, σ∈[{sigma_lower:.4f},{sigma_upper:.4f}]"))
 
-    report_table(["Method", "⟨Σcw/N⟩", "σ", "min", "max", "Status"], rows)
+    report_table(["Method", "⟨Σcw/N⟩", "σ_obs", "σ_lower", "σ_upper", "min", "max", "Status"], rows)
 
-    axes[0].axvline(1.0, color='r', lw=2, ls='--'); axes[0].set_xlabel("Σ(cw)/N_orig", fontsize=12); axes[0].legend(fontsize=9)
+    # Theory bands on histogram
+    axes[0].axvline(1.0, color='r', lw=2, ls='--', label='Expected')
+    axes[0].axvline(1.0 - sigma_lower, color='green', lw=1, ls=':', alpha=0.7)
+    axes[0].axvline(1.0 + sigma_lower, color='green', lw=1, ls=':', alpha=0.7, label=f'±σ_lower ({sigma_lower:.4f})')
+    axes[0].axvline(1.0 - sigma_upper, color='orange', lw=1, ls=':', alpha=0.7)
+    axes[0].axvline(1.0 + sigma_upper, color='orange', lw=1, ls=':', alpha=0.7, label=f'±σ_upper ({sigma_upper:.4f})')
+    axes[0].set_xlabel("Σ(cw)/N_orig", fontsize=12); axes[0].legend(fontsize=8)
+
+    # Theory bands on iteration plot
     axes[1].axhline(1.0, color='r', lw=2, ls='--')
-    axes[1].fill_between(range(n_iter), 0.95, 1.05, alpha=0.1, color='green')
+    axes[1].fill_between(range(n_iter), 1.0 - sigma_lower, 1.0 + sigma_lower,
+                         alpha=0.15, color='green', label=f'±σ_lower={sigma_lower:.4f}')
+    axes[1].fill_between(range(n_iter), 1.0 - sigma_upper, 1.0 + sigma_upper,
+                         alpha=0.1, color='orange', label=f'±σ_upper={sigma_upper:.4f}')
     axes[1].set_xlabel("Iteration", fontsize=12); axes[1].set_ylabel("Σ(cw)/N_orig", fontsize=12)
-    axes[1].set_ylim(0.9, 1.1); axes[1].legend(fontsize=9)
+    axes[1].set_ylim(0.93, 1.07); axes[1].legend(fontsize=8)
     savefig(fig, os.path.join(output_dir, "t2_integral_reconstruction"))
     return results
 
