@@ -8,11 +8,9 @@ Primary figures (physics observables):
   S1: asinh(N_sampled/(N*frac) - 1) vs frac     — bisection accuracy
   S2: σ(threshold residuals) vs 1/√(N×frac)     — threshold stability
   S3: RMS(pdf_emp/pdf_true - 1) vs 1/√λ         — PDF estimator bias
-  S4: reweighted_hist / expected_hist (core)      — full pipeline recovery
-
-Supplementary (diagnostics):
-  S5: σ(Σcw/N) vs 1/√N_eff                       — HT variance scaling
-  S6: N_eff/N_sampled vs frac                     — weight efficiency
+  S4a: reweighted_hist / expected_hist by frac       — spectra recovery (per x-bin)
+  S4b: same by Δx, color N_sampled                   — spectra recovery (per x-bin)
+  S4c: σ_meas vs σ_model scatter + pull              — σ scaling validation
 
 Usage:
     python validate_scan.py --input scan_test1000.root --output figures/
@@ -635,7 +633,7 @@ def _compute_per_xbin_ratios(scan, params, methods):
 def _s4_plot_panel(axes_bias, axes_sig, bin_centers, bin_width,
                    ratios_dict, sub_params, method, obs,
                    color, label):
-    """Plot one group's bias and sigma on given axes."""
+    """Plot one group's bias and sigma (no connecting lines). Return model data."""
     all_ratios = []
     for _, prow in sub_params.iterrows():
         iteration = int(prow["iteration"])
@@ -644,7 +642,7 @@ def _s4_plot_panel(axes_bias, axes_sig, bin_centers, bin_width,
             all_ratios.append(ratios_dict[key])
 
     if len(all_ratios) < 5:
-        return
+        return None
 
     ratios_arr = np.array(all_ratios)
     with np.errstate(all='ignore'):
@@ -654,31 +652,90 @@ def _s4_plot_panel(axes_bias, axes_sig, bin_centers, bin_width,
 
     ok = n_valid >= 5
 
-    # Bias
+    # Bias (row 0) — markers only, no lines
     axes_bias.errorbar(bin_centers[ok], bias[ok],
                       yerr=sigma[ok] / np.sqrt(n_valid[ok]),
-                      fmt='o-', ms=3, capsize=1, color=color,
+                      fmt='o', ms=3, capsize=1, color=color,
                       label=label, alpha=0.8)
 
-    # Sigma
-    axes_sig.plot(bin_centers[ok], sigma[ok], 'o-', ms=3,
-                 color=color, label=label, alpha=0.8)
+    # Sigma with error bars (row 1) — markers only
+    sigma_err = sigma / np.sqrt(2 * np.maximum(n_valid - 1, 1))
+    axes_sig.errorbar(bin_centers[ok], sigma[ok], yerr=sigma_err[ok],
+                     fmt='o', ms=3, capsize=1, color=color,
+                     label=label, alpha=0.8)
 
-    # Model: σ(x) = 1/√(N × min(f(x), thr) × Δx_hist)
-    # Dense (f>thr): N×thr×Δx sampled, weight=f/thr → variance cancels → σ=1/√(N×thr×Δx)
-    # Sparse (f<thr): N×f×Δx sampled, weight=1 → σ=1/√(N×f×Δx)
-    # Uses N (original count), NOT N_eff
+    # Model: σ_dense = √(⟨1/(N×thr)⟩ / Δx_hist), σ_sparse = √(⟨1/N⟩ / (f×Δx_hist))
     iter_list = sub_params["iteration"].values
     obs_sub = obs[(obs["method"] == method) & obs["iteration"].isin(iter_list)]
-    N_med = sub_params["N"].median()
-    thr_med = obs_sub["threshold"].median() if len(obs_sub) > 0 else 0
+    N_vals = sub_params["N"].values.astype(float)
+    thr_vals = obs_sub["threshold"].values if len(obs_sub) > 0 else np.array([])
 
-    if thr_med > 0 and N_med > 0:
+    sigma_model = np.full_like(sigma, np.nan)
+    mean_ratio = np.nan
+    mean_ratio_err = np.nan
+    if len(thr_vals) > 0 and len(N_vals) > 0:
+        inv_Nthr = 1.0 / (N_vals * thr_vals[:len(N_vals)])
+        mean_inv_Nthr = np.mean(inv_Nthr)
+        thr_med = np.median(thr_vals)
+
         gauss_vals = gaussian_pdf(bin_centers)
-        n_per_bin = N_med * np.minimum(gauss_vals, thr_med) * bin_width
-        sigma_model = 1.0 / np.sqrt(np.maximum(n_per_bin, 0.1))
+        mean_inv_N = np.mean(1.0 / N_vals)
+
+        sigma_model = np.where(
+            gauss_vals > thr_med,
+            np.sqrt(mean_inv_Nthr / bin_width),
+            np.sqrt(mean_inv_N / (gauss_vals * bin_width + 1e-30))
+        )
         axes_sig.plot(bin_centers[ok], sigma_model[ok], '--', color=color,
                      alpha=0.4, lw=1.5)
+
+        # Mean ratio σ_meas / σ_model (core only, |x| < 2σ)
+        core = ok & (np.abs(bin_centers) < 2 * SIGMA) & np.isfinite(sigma_model) & (sigma_model > 0)
+        if core.sum() > 3:
+            ratios_core = sigma[core] / sigma_model[core]
+            mean_ratio = np.mean(ratios_core)
+            mean_ratio_err = np.std(ratios_core) / np.sqrt(len(ratios_core))
+
+    return {"sigma": sigma, "sigma_model": sigma_model, "ok": ok,
+            "n_valid": n_valid, "mean_ratio": mean_ratio, "mean_ratio_err": mean_ratio_err}
+
+
+def _s4_compute_sigma(ratios_dict, sub_params, method, obs,
+                      bin_centers, bin_width):
+    """Compute σ and σ_model for a group without plotting. For S4c scatter."""
+    all_ratios = []
+    for _, prow in sub_params.iterrows():
+        key = (method, int(prow["iteration"]))
+        if key in ratios_dict:
+            all_ratios.append(ratios_dict[key])
+    if len(all_ratios) < 5:
+        return None
+
+    ratios_arr = np.array(all_ratios)
+    with np.errstate(all='ignore'):
+        sigma = np.nanstd(ratios_arr, axis=0)
+        n_valid = np.sum(~np.isnan(ratios_arr), axis=0)
+    ok = n_valid >= 5
+
+    iter_list = sub_params["iteration"].values
+    obs_sub = obs[(obs["method"] == method) & obs["iteration"].isin(iter_list)]
+    N_vals = sub_params["N"].values.astype(float)
+    thr_vals = obs_sub["threshold"].values if len(obs_sub) > 0 else np.array([])
+
+    sigma_model = np.full_like(sigma, np.nan)
+    if len(thr_vals) > 0 and len(N_vals) > 0:
+        inv_Nthr = 1.0 / (N_vals * thr_vals[:len(N_vals)])
+        mean_inv_Nthr = np.mean(inv_Nthr)
+        thr_med = np.median(thr_vals)
+        gauss_vals = gaussian_pdf(bin_centers)
+        mean_inv_N = np.mean(1.0 / N_vals)
+        sigma_model = np.where(
+            gauss_vals > thr_med,
+            np.sqrt(mean_inv_Nthr / bin_width),
+            np.sqrt(mean_inv_N / (gauss_vals * bin_width + 1e-30))
+        )
+
+    return {"sigma": sigma, "sigma_model": sigma_model, "ok": ok}
 
 
 def figure_s4(obs, methods, output_dir, scan=None, params=None):
@@ -713,12 +770,12 @@ def figure_s4(obs, methods, output_dir, scan=None, params=None):
 
     for method in methods:
         fig, axes = plt.subplots(2, len(frac_groups), figsize=(5 * len(frac_groups), 8),
-                                 sharex=True, sharey='row')
+                                 sharex=True)
         if len(frac_groups) == 1: axes = axes.reshape(-1, 1)
 
         fig.suptitle(f"S4a: Spectra Recovery — {METHOD_LABELS.get(method, method)}\n"
-                    "Cols = frac bins, Color = N bins.  Row 0: bias, Row 1: σ\n"
-                    "Dashed = 1/√(N × min(f,thr) × Δx)", fontsize=10)
+                    "Row 0: bias, Row 1: σ (with error bars + model dashed)\n"
+                    "Cols = frac bins, Color = N bins", fontsize=10)
 
         for col_idx, fq in enumerate(frac_groups):
             frac_params = params[params["frac_qbin"] == fq]
@@ -742,12 +799,15 @@ def figure_s4(obs, methods, output_dir, scan=None, params=None):
         savefig(fig, os.path.join(output_dir, f"s4a_spectra_frac_{method}"),
                 f"S4a: Spectra by frac ({method})")
 
-    # --- S4b: cols = Δx bins, color = N_sampled bins ---
+    # --- S4b: cols = Δx bins, color = N_sampled bins (2 rows) ---
     n_dx_bins = 3
     params["dx_bin"] = pd.qcut(params["dx"], n_dx_bins, duplicates="drop")
     dx_groups = sorted(params["dx_bin"].dropna().unique())
 
-    # Color by N_sampled (from obs)
+    # Collect all model data for S4c
+    s4c_data = {}
+    s4b_ratio_table = []  # for summary report
+
     for method in methods:
         obs_m = obs[obs["method"] == method][["iteration", "N_sampled"]].copy()
         params_m = params.merge(obs_m, on="iteration", how="left")
@@ -759,12 +819,13 @@ def figure_s4(obs, methods, output_dir, scan=None, params=None):
                                     labels=ns_labels, include_lowest=True)
 
         fig, axes = plt.subplots(2, len(dx_groups), figsize=(5 * len(dx_groups), 8),
-                                 sharex=True, sharey='row')
+                                 sharex=True)
         if len(dx_groups) == 1: axes = axes.reshape(-1, 1)
 
         fig.suptitle(f"S4b: Spectra Recovery — {METHOD_LABELS.get(method, method)}\n"
-                    "Cols = Δx bins, Color = N_sampled bins.  Row 0: bias, Row 1: σ\n"
-                    "Dashed = 1/√(N × min(f,thr) × Δx)", fontsize=10)
+                    "Row 0: bias, Row 1: σ (markers + model dashed)\n"
+                    "Model: σ = √(⟨1/(N×thr)⟩/Δx) dense, √(⟨1/N⟩/(f×Δx)) sparse",
+                    fontsize=10)
 
         for col_idx, dx_grp in enumerate(dx_groups):
             dx_sub = params_m[params_m["dx_bin"] == dx_grp]
@@ -773,9 +834,16 @@ def figure_s4(obs, methods, output_dir, scan=None, params=None):
             for ns_label, ns_color in zip(ns_labels, N_COLORS_3):
                 sub = dx_sub[dx_sub["Ns_bin"] == ns_label]
                 if len(sub) == 0: continue
-                _s4_plot_panel(axes[0, col_idx], axes[1, col_idx],
+                result = _s4_plot_panel(axes[0, col_idx], axes[1, col_idx],
                               bin_centers, bin_width, ratios_dict,
                               sub, method, obs, ns_color, ns_label)
+                if result is not None:
+                    s4c_data[(method, col_idx, ns_label)] = result
+                    mr = result["mean_ratio"]
+                    mre = result["mean_ratio_err"]
+                    if np.isfinite(mr):
+                        s4b_ratio_table.append([method, f"{dx_mean:.3f}", ns_label,
+                                               f"{mr:.3f}±{mre:.3f}"])
 
             axes[0, col_idx].set_title(f"⟨Δx⟩={dx_mean:.3f}", fontsize=10)
             axes[0, col_idx].axhline(0, color='red', ls='--', lw=1, alpha=0.5)
@@ -787,6 +855,160 @@ def figure_s4(obs, methods, output_dir, scan=None, params=None):
 
         savefig(fig, os.path.join(output_dir, f"s4b_spectra_dx_{method}"),
                 f"S4b: Spectra by Δx ({method})")
+
+    if s4b_ratio_table:
+        report("\nS4b model agreement: ⟨σ_meas/σ_model⟩ in core (|x|<2σ)")
+        report_table(["Method", "⟨Δx⟩", "N_sampled bin", "⟨σ/σ_model⟩"], s4b_ratio_table)
+
+    # --- S4c: 3 cols (Dx) x 3 rows: ratio vs x, scatter, pull histogram ---
+    ABS_X_BINS = [(0, 1, "|x|<1 (core)"), (1, 2, "1<|x|<2"), (2, 4, "|x|>2 (tail)")]
+    ABS_X_COLORS = ["#1b9e77", "#d95f02", "#7570b3"]
+
+    s4c_fit_table = []
+
+    for method in methods:
+        obs_m = obs[obs["method"] == method][["iteration", "N_sampled", "threshold"]].copy()
+        params_m = params.merge(obs_m, on="iteration", how="left")
+
+        n_ns_fine = 6
+        ns_fine_edges = np.quantile(params_m["N_sampled"].dropna(), np.linspace(0, 1, n_ns_fine + 1))
+        ns_fine_edges[0] -= 1; ns_fine_edges[-1] += 1
+        ns_fine_labels = [f"Ns:{i}" for i in range(n_ns_fine)]
+        params_m["Ns_fine"] = pd.cut(params_m["N_sampled"], bins=ns_fine_edges,
+                                     labels=ns_fine_labels, include_lowest=True)
+
+        ns_edges = np.quantile(params_m["N_sampled"].dropna(), [0, 1/3, 2/3, 1.0])
+        ns_edges[0] -= 1; ns_edges[-1] += 1
+        ns_labels = [f"Ns:[{ns_edges[i]:.0f},{ns_edges[i+1]:.0f}]" for i in range(3)]
+
+        fig, axes_c = plt.subplots(3, len(dx_groups), figsize=(5 * len(dx_groups), 12))
+        if len(dx_groups) == 1: axes_c = axes_c.reshape(-1, 1)
+
+        fig.suptitle(f"S4c: sigma Scaling - {METHOD_LABELS.get(method, method)}\n"
+                    "Row 0: sigma_meas/sigma_model vs x.  Row 1: scatter.  Row 2: pull.\n"
+                    "Scatter color = |x| category (core/shoulder/tail)", fontsize=10)
+
+        global_sig_meas, global_sig_model = [], []
+
+        for col_idx, dx_grp in enumerate(dx_groups):
+            dx_mean = params[params["dx_bin"] == dx_grp]["dx"].mean()
+            ax_ratio = axes_c[0, col_idx]
+            ax_scatter = axes_c[1, col_idx]
+            ax_pull = axes_c[2, col_idx]
+
+            # Row 0: ratio per Ns group
+            for ns_label, ns_color in zip(ns_labels, N_COLORS_3):
+                key = (method, col_idx, ns_label)
+                if key not in s4c_data: continue
+                d = s4c_data[key]
+                sigma, sigma_model, ok, n_valid = d["sigma"], d["sigma_model"], d["ok"], d["n_valid"]
+
+                valid = ok & np.isfinite(sigma_model) & (sigma_model > 0)
+                if valid.sum() == 0: continue
+
+                ratio = sigma[valid] / sigma_model[valid]
+                ratio_err = sigma[valid] / (sigma_model[valid] * np.sqrt(2 * np.maximum(n_valid[valid] - 1, 1)))
+
+                ax_ratio.errorbar(bin_centers[valid], ratio, yerr=ratio_err,
+                                 fmt='o', ms=3, capsize=1, color=ns_color,
+                                 label=ns_label, alpha=0.8)
+
+                mr = d["mean_ratio"]
+                if np.isfinite(mr):
+                    ax_ratio.axhline(mr, color=ns_color, ls=':', lw=1, alpha=0.5)
+
+            ax_ratio.axhline(1.0, color='red', ls='--', lw=1, alpha=0.5)
+            ax_ratio.set_title(f"<Dx>={dx_mean:.3f}", fontsize=10)
+            if col_idx == 0:
+                ax_ratio.set_ylabel("sigma_meas / sigma_model", fontsize=9)
+                ax_ratio.legend(fontsize=7)
+
+            # Row 1 + Row 2: scatter and pull from 6 fine Ns bins
+            params_m["dx_bin"] = pd.qcut(params_m["dx"], n_dx_bins, duplicates="drop")
+            dx_sub = params_m[params_m["dx_bin"] == dx_grp]
+
+            all_sig_meas, all_sig_model, all_abs_x = [], [], []
+
+            for ns_fine_label in ns_fine_labels:
+                sub = dx_sub[dx_sub["Ns_fine"] == ns_fine_label]
+                if len(sub) < 5: continue
+
+                result = _s4_compute_sigma(ratios_dict, sub, method, obs,
+                                           bin_centers, bin_width)
+                if result is None: continue
+
+                sig, sig_mod, ok_r = result["sigma"], result["sigma_model"], result["ok"]
+                valid = ok_r & np.isfinite(sig_mod) & (sig_mod > 0)
+                all_sig_meas.extend(sig[valid])
+                all_sig_model.extend(sig_mod[valid])
+                all_abs_x.extend(np.abs(bin_centers[valid]))
+
+            all_sig_meas = np.array(all_sig_meas)
+            all_sig_model = np.array(all_sig_model)
+            all_abs_x = np.array(all_abs_x)
+
+            if len(all_sig_meas) > 5:
+                # Scatter with 3 discrete |x| categories
+                for (xlo, xhi, xlabel), xcolor in zip(ABS_X_BINS, ABS_X_COLORS):
+                    mask = (all_abs_x >= xlo) & (all_abs_x < xhi)
+                    if mask.sum() == 0: continue
+                    ax_scatter.scatter(all_sig_model[mask], all_sig_meas[mask],
+                                      s=15, alpha=0.6, color=xcolor, label=xlabel)
+
+                maxval = max(all_sig_meas.max(), all_sig_model.max()) * 1.1
+                ax_scatter.plot([0, maxval], [0, maxval], 'k--', lw=1.5)
+
+                # Fit: y = a*x
+                a_fit = np.sum(all_sig_meas * all_sig_model) / np.sum(all_sig_model ** 2)
+                y_pred = a_fit * all_sig_model
+                ss_res = np.sum((all_sig_meas - y_pred) ** 2)
+                ss_tot = np.sum((all_sig_meas - all_sig_meas.mean()) ** 2)
+                r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+                ax_scatter.plot([0, maxval], [0, a_fit * maxval], 'r-', lw=1,
+                               alpha=0.7, label=f"slope={a_fit:.3f}, R2={r2:.3f}")
+                ax_scatter.legend(fontsize=6)
+                ax_scatter.set_xlim(0, maxval); ax_scatter.set_ylim(0, maxval)
+                ax_scatter.set_aspect('equal')
+
+                s4c_fit_table.append([method, f"{dx_mean:.3f}", f"{a_fit:.4f}", f"{r2:.4f}"])
+                global_sig_meas.extend(all_sig_meas)
+                global_sig_model.extend(all_sig_model)
+
+                # Pull: (sigma_meas - sigma_model) / sigma_err
+                # sigma_err ~ sigma_model / sqrt(2*(n_per_group-1)), approx n~100
+                sigma_err_approx = all_sig_model / np.sqrt(200)
+                pull = (all_sig_meas - all_sig_model) / np.maximum(sigma_err_approx, 1e-30)
+                for (xlo, xhi, xlabel), xcolor in zip(ABS_X_BINS, ABS_X_COLORS):
+                    mask = (all_abs_x >= xlo) & (all_abs_x < xhi)
+                    if mask.sum() < 3: continue
+                    ax_pull.hist(pull[mask], bins=20, range=(-4, 4),
+                                alpha=0.4, color=xcolor, label=xlabel)
+                # Gaussian overlay
+                px = np.linspace(-4, 4, 100)
+                ax_pull.plot(px, sp_stats.norm.pdf(px) * len(pull) * 8 / 20,
+                            'k--', lw=1, alpha=0.5)
+
+            ax_scatter.set_xlabel("sigma_model", fontsize=9)
+            ax_pull.set_xlabel("pull", fontsize=9)
+            if col_idx == 0:
+                ax_scatter.set_ylabel("sigma_measured", fontsize=9)
+                ax_pull.set_ylabel("count", fontsize=9)
+
+        savefig(fig, os.path.join(output_dir, f"s4c_sigma_scaling_{method}"),
+                f"S4c: sigma Scaling ({method})")
+
+        # Global fit
+        gm, gmod = np.array(global_sig_meas), np.array(global_sig_model)
+        if len(gm) > 10:
+            a_g = np.sum(gm * gmod) / np.sum(gmod ** 2)
+            ss_res = np.sum((gm - a_g * gmod) ** 2)
+            ss_tot = np.sum((gm - gm.mean()) ** 2)
+            r2_g = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+            report(f"  S4c {method} global fit: slope={a_g:.4f}, R2={r2_g:.4f}")
+
+    if s4c_fit_table:
+        report("\nS4c fit results: sigma_meas = slope * sigma_model")
+        report_table(["Method", "<Dx>", "slope", "R2"], s4c_fit_table)
 
     # Summary
     fit_rows = []
@@ -828,91 +1050,6 @@ def _figure_s4_simple(obs, methods, output_dir):
         ax.legend(fontsize=7); ax.set_ylim(0.9, 1.1)
 
     savefig(fig, os.path.join(output_dir, "s4_spectra_recovery"), "S4: Spectra (summary)")
-
-
-# ===================================================================
-# S5: σ(Σcw/N) vs 1/√N_eff  (supplementary)
-# ===================================================================
-
-def figure_s5(obs, methods, output_dir):
-    fig, axes = plt.subplots(1, len(methods), figsize=(7 * len(methods), 6))
-    if len(methods) == 1: axes = [axes]
-    fig.suptitle("S5 (suppl.): σ(Σcw/N) vs 1/√N_eff — Theory: y = x", fontsize=11)
-
-    for ax, method in zip(axes, methods):
-        d = obs[obs["method"] == method].copy()
-        if len(d) == 0: continue
-
-        d["inv_sqrt_neff"] = 1.0 / np.sqrt(d["N_eff"])
-        d["xbin"] = pd.qcut(d["inv_sqrt_neff"], 10, duplicates="drop")
-        frac_med = d["frac"].median()
-        d["frac_bin_2"] = np.where(d["frac"] < frac_med, "low frac", "high frac")
-
-        for fl, fc, fm in [("low frac", "royalblue", "o"), ("high frac", "crimson", "s")]:
-            sub = d[d["frac_bin_2"] == fl]
-            grouped = sub.groupby("xbin", observed=True)
-            x_c, y_sig, y_err = [], [], []
-            for name, grp in grouped:
-                if len(grp) < 5: continue
-                x_c.append(grp["inv_sqrt_neff"].mean())
-                sig = grp["sum_cw_over_N"].std()
-                y_sig.append(sig)
-                y_err.append(sig / np.sqrt(2 * (len(grp) - 1)))
-            x_c, y_sig, y_err = np.array(x_c), np.array(y_sig), np.array(y_err)
-            ax.errorbar(x_c, y_sig, yerr=y_err, fmt=fm, ms=5, capsize=2,
-                       color=fc, alpha=0.7, label=fl)
-
-        xmax = d["inv_sqrt_neff"].max() * 1.1
-        ax.plot([0, xmax], [0, xmax], 'k--', lw=2, label="y = x")
-
-        all_g = d.groupby("xbin", observed=True)
-        xa = [grp["inv_sqrt_neff"].mean() for _, grp in all_g if len(grp) >= 5]
-        ya = [grp["sum_cw_over_N"].std() for _, grp in all_g if len(grp) >= 5]
-        if len(xa) > 3:
-            slope, _, r, _, _ = sp_stats.linregress(xa, ya)
-            ax.set_title(f"{METHOD_LABELS.get(method, method)}\nslope={slope:.3f}, R²={r**2:.3f}",
-                        fontsize=10)
-        else:
-            ax.set_title(METHOD_LABELS.get(method, method), fontsize=10)
-
-        ax.set_xlabel("1/√N_eff"); ax.set_ylabel("σ(Σcw/N)")
-        ax.legend(fontsize=8); ax.set_xlim(left=0); ax.set_ylim(bottom=0)
-
-    savefig(fig, os.path.join(output_dir, "s5_sigma_vs_neff"), "S5: HT Variance (suppl.)")
-
-
-# ===================================================================
-# S6: N_eff/N_sampled vs frac  (supplementary)
-# ===================================================================
-
-def figure_s6(obs, methods, output_dir):
-    fig, axes = plt.subplots(1, len(methods), figsize=(7 * len(methods), 6))
-    if len(methods) == 1: axes = [axes]
-    fig.suptitle("S6 (suppl.): N_eff/N_sampled vs frac — monotonically increasing",
-                fontsize=11)
-
-    for ax, method in zip(axes, methods):
-        d = obs[obs["method"] == method].copy()
-        if len(d) == 0: continue
-
-        n_labels = add_logN_bins(d, 3)
-        add_frac_bins(d, 5)
-        ax.scatter(d["frac"], d["neff_over_nsamp"], s=2, alpha=0.08, color="gray")
-
-        for n_label, n_color in zip(n_labels, N_COLORS_3):
-            sub = d[d["N_bin"] == n_label]
-            x_c, y_m, y_e = grouped_profile(sub, "frac", "neff_over_nsamp", "frac_bin")
-            if len(x_c) > 0:
-                ax.errorbar(x_c, y_m, yerr=y_e, fmt='o-', ms=5, capsize=2,
-                           color=n_color, label=n_label, alpha=0.8)
-
-        grouped_all = d.groupby("frac_bin", observed=True)["neff_over_nsamp"].mean()
-        ax.set_title(f"{METHOD_LABELS.get(method, method)}\n"
-                    f"Monotonic: {grouped_all.is_monotonic_increasing}", fontsize=10)
-        ax.set_xlabel("frac"); ax.set_ylabel("N_eff / N_sampled")
-        ax.legend(fontsize=7); ax.set_ylim(0, 1.0)
-
-    savefig(fig, os.path.join(output_dir, "s6_neff_vs_frac"), "S6: N_eff (suppl.)")
 
 
 # ===================================================================
@@ -998,34 +1135,35 @@ S3: PDF Estimator Bias (s3_pdf_bias.png -- combined, 2 rows x 4 cols)
   Fit parameters in summary table.
 """)
     report("""
+S4: Spectra Recovery Model
+  Model formula for sigma(ratio) at position x:
+    Dense regime (f(x) > thr):  sigma = sqrt( <1/(N*thr)> / dx_hist )
+    Sparse regime (f(x) < thr): sigma = sqrt( <1/N> / (f(x)*dx_hist) )
+  Where <.> = mean over iterations in the group, f(x) = Gauss(x), thr = threshold.
+  The dense formula is flat (independent of x), sparse rises in tails.
+
 S4a: Spectra Recovery by frac (s4a_spectra_frac_{method}.png)
   Layout: 2 rows x 3 cols. Cols = frac bins, Color = N bins.
-  Row 0: bias = mean(ratio - 1) vs x -- systematic offset per x-bin
-  Row 1: sigma(ratio) vs x -- statistical fluctuation per x-bin
-  Dashed: 1/sqrt(N * min(f(x), thr) * dx_hist) — per-bin model using N and threshold
+  Row 0: bias = mean(ratio - 1) vs x (markers, no lines)
+  Row 1: sigma(ratio) vs x (markers + error bars + model dashed)
   Grouping by frac separates threshold values -> model matches better.
 
 S4b: Spectra Recovery by Dx (s4b_spectra_dx_{method}.png)
   Layout: 2 rows x 3 cols. Cols = Dx bins, Color = N_sampled bins.
-  Same rows as S4a.
+  Same rows as S4a (markers, error bars, model dashed).
   Grouping by N_sampled -> direct control variable for sigma.
-  Dx columns test whether PDF estimation bin width affects spectra recovery.
+  Report: <sigma_meas/sigma_model> per group in core (|x|<2sigma).
 
-  Common properties:
-    x range: [-3sigma, 3sigma], 30 bins
-    Bias ~ 0 everywhere -> pipeline is unbiased
-    sigma follows model -> fluctuations understood
-    sigma decreases with N, increases in tails
-""")
+S4c: Sigma Scaling Validation (s4c_sigma_scaling_{method}.png)
+  Layout: 2 rows x 3 cols. Cols = Dx bins.
+  Row 0: sigma_meas / sigma_model vs x (markers, error bars, no lines)
+    Color = N_sampled bins. Horizontal dotted = mean ratio per group.
+  Row 1: scatter sigma_meas vs sigma_model (6 N_sampled bins for density)
+    Color = |x| (viridis, dark=core, bright=tails)
+    Fit: y = a*x through origin, report slope and R^2.
+    Points on y=x diagonal -> model is correct.
 
-    report(f"\n{'='*70}")
-    report("FIGURE DESCRIPTIONS -- SUPPLEMENTARY")
-    report(f"{'='*70}")
-    report("""
-S5: HT Variance (s5_sigma_vs_neff.png)
-  y = sigma(Scw/N) in bins, x = 1/sqrt(N_eff), theory: y = x
-S6: Weight Efficiency (s6_neff_vs_frac.png)
-  y = N_eff/N_sampled vs frac, theory: monotonically increasing
+  Common: x range [-3sigma, 3sigma], 30 bins, markers only (no connecting lines)
 """)
 
     report(f"\n{'='*70}")
@@ -1085,8 +1223,6 @@ def main():
     figure_s2(obs, methods, args.output)
     figure_s3(obs, methods, args.output)
     figure_s4(obs, methods, args.output, scan=scan, params=params)
-    figure_s5(obs, methods, args.output)
-    figure_s6(obs, methods, args.output)
 
     save_combined_pdf(args.output)
     write_summary(obs, methods, args.output, args.input)
