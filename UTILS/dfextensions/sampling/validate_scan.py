@@ -590,14 +590,222 @@ def figure_s3(obs, methods, output_dir):
 # S4: Spectra Recovery
 # ===================================================================
 
-def figure_s4(obs, methods, output_dir):
+def _compute_per_xbin_ratios(scan, params, methods):
+    """Precompute per-iteration per-x-bin ratios. Heavy loop, run once."""
+    hist_bins = np.linspace(-3 * SIGMA, 3 * SIGMA, 31)
+    bin_centers = 0.5 * (hist_bins[:-1] + hist_bins[1:])
+    n_bins = len(bin_centers)
+
+    results = {}  # key: (method, iteration) -> ratio array
+
+    for method in methods:
+        pdf_col = f"{method}_pdf"
+        thr_col = f"{method}_threshold"
+        is_col = f"{method}_is_sampled"
+
+        for _, prow in params.iterrows():
+            iteration = int(prow["iteration"])
+            N = int(prow["N"])
+
+            mask = (scan["iteration"] == iteration) & (scan[is_col] == 1)
+            data = scan[mask]
+            if len(data) == 0: continue
+
+            x = data["x"].values.astype(np.float64)
+            pdf = data[pdf_col].values.astype(np.float64)
+            thr = data[thr_col].values.astype(np.float64)
+            threshold = thr[0]
+
+            w_ht = np.maximum(1.0, pdf / threshold)
+
+            expected = N * (sp_stats.norm.cdf(hist_bins[1:], 0, SIGMA) -
+                           sp_stats.norm.cdf(hist_bins[:-1], 0, SIGMA))
+
+            reco, _ = np.histogram(x, bins=hist_bins, weights=w_ht)
+
+            ratio = np.full(n_bins, np.nan)
+            good = expected > 10
+            ratio[good] = reco[good] / expected[good]
+
+            results[(method, iteration)] = ratio
+
+    return hist_bins, bin_centers, results
+
+
+def _s4_plot_panel(axes_bias, axes_sig, bin_centers, bin_width,
+                   ratios_dict, sub_params, method, obs,
+                   color, label):
+    """Plot one group's bias and sigma on given axes."""
+    all_ratios = []
+    for _, prow in sub_params.iterrows():
+        iteration = int(prow["iteration"])
+        key = (method, iteration)
+        if key in ratios_dict:
+            all_ratios.append(ratios_dict[key])
+
+    if len(all_ratios) < 5:
+        return
+
+    ratios_arr = np.array(all_ratios)
+    with np.errstate(all='ignore'):
+        bias = np.nanmean(ratios_arr - 1.0, axis=0)
+        sigma = np.nanstd(ratios_arr, axis=0)
+        n_valid = np.sum(~np.isnan(ratios_arr), axis=0)
+
+    ok = n_valid >= 5
+
+    # Bias
+    axes_bias.errorbar(bin_centers[ok], bias[ok],
+                      yerr=sigma[ok] / np.sqrt(n_valid[ok]),
+                      fmt='o-', ms=3, capsize=1, color=color,
+                      label=label, alpha=0.8)
+
+    # Sigma
+    axes_sig.plot(bin_centers[ok], sigma[ok], 'o-', ms=3,
+                 color=color, label=label, alpha=0.8)
+
+    # Model: σ(x) = 1/√(N × min(f(x), thr) × Δx_hist)
+    # Dense (f>thr): N×thr×Δx sampled, weight=f/thr → variance cancels → σ=1/√(N×thr×Δx)
+    # Sparse (f<thr): N×f×Δx sampled, weight=1 → σ=1/√(N×f×Δx)
+    # Uses N (original count), NOT N_eff
+    iter_list = sub_params["iteration"].values
+    obs_sub = obs[(obs["method"] == method) & obs["iteration"].isin(iter_list)]
+    N_med = sub_params["N"].median()
+    thr_med = obs_sub["threshold"].median() if len(obs_sub) > 0 else 0
+
+    if thr_med > 0 and N_med > 0:
+        gauss_vals = gaussian_pdf(bin_centers)
+        n_per_bin = N_med * np.minimum(gauss_vals, thr_med) * bin_width
+        sigma_model = 1.0 / np.sqrt(np.maximum(n_per_bin, 0.1))
+        axes_sig.plot(bin_centers[ok], sigma_model[ok], '--', color=color,
+                     alpha=0.4, lw=1.5)
+
+
+def figure_s4(obs, methods, output_dir, scan=None, params=None):
+    """S4: Two variants of spectra recovery per x-bin.
+    S4a: cols = frac bins, color = N bins
+    S4b: cols = Δx bins, color = N_sampled bins
+    """
+    if scan is None or params is None:
+        _figure_s4_simple(obs, methods, output_dir)
+        return
+
+    report("  Computing per-x-bin ratios...")
+    t_s4 = time.time()
+    hist_bins, bin_centers, ratios_dict = _compute_per_xbin_ratios(scan, params, methods)
+    bin_width = hist_bins[1] - hist_bins[0]
+    report(f"  Per-x-bin ratios: {time.time() - t_s4:.1f}s")
+
+    params = params.copy()
+
+    # --- S4a: cols = frac bins, color = N bins ---
+    n_frac_bins = 3
+    params["frac_qbin"] = pd.qcut(params["frac"], n_frac_bins, duplicates="drop")
+    frac_groups = sorted(params["frac_qbin"].dropna().unique())
+
+    params["logN"] = np.log10(params["N"].astype(float))
+    logN_edges = np.quantile(params["logN"], [0, 1/3, 2/3, 1.0])
+    logN_edges[0] -= 0.01; logN_edges[-1] += 0.01
+    n_labels = [f"N:[{10**logN_edges[i]:.0f},{10**logN_edges[i+1]:.0f}]"
+                for i in range(3)]
+    params["N_bin"] = pd.cut(params["logN"], bins=logN_edges, labels=n_labels,
+                            include_lowest=True)
+
+    for method in methods:
+        fig, axes = plt.subplots(2, len(frac_groups), figsize=(5 * len(frac_groups), 8),
+                                 sharex=True, sharey='row')
+        if len(frac_groups) == 1: axes = axes.reshape(-1, 1)
+
+        fig.suptitle(f"S4a: Spectra Recovery — {METHOD_LABELS.get(method, method)}\n"
+                    "Cols = frac bins, Color = N bins.  Row 0: bias, Row 1: σ\n"
+                    "Dashed = 1/√(N × min(f,thr) × Δx)", fontsize=10)
+
+        for col_idx, fq in enumerate(frac_groups):
+            frac_params = params[params["frac_qbin"] == fq]
+            frac_mean = frac_params["frac"].mean()
+
+            for n_label, n_color in zip(n_labels, N_COLORS_3):
+                sub = frac_params[frac_params["N_bin"] == n_label]
+                if len(sub) == 0: continue
+                _s4_plot_panel(axes[0, col_idx], axes[1, col_idx],
+                              bin_centers, bin_width, ratios_dict,
+                              sub, method, obs, n_color, n_label)
+
+            axes[0, col_idx].set_title(f"⟨frac⟩={frac_mean:.3f}", fontsize=10)
+            axes[0, col_idx].axhline(0, color='red', ls='--', lw=1, alpha=0.5)
+            axes[1, col_idx].set_xlabel("x", fontsize=9)
+            if col_idx == 0:
+                axes[0, col_idx].set_ylabel("⟨ratio−1⟩ (bias)", fontsize=9)
+                axes[1, col_idx].set_ylabel("σ(ratio)", fontsize=9)
+                axes[0, col_idx].legend(fontsize=7)
+
+        savefig(fig, os.path.join(output_dir, f"s4a_spectra_frac_{method}"),
+                f"S4a: Spectra by frac ({method})")
+
+    # --- S4b: cols = Δx bins, color = N_sampled bins ---
+    n_dx_bins = 3
+    params["dx_bin"] = pd.qcut(params["dx"], n_dx_bins, duplicates="drop")
+    dx_groups = sorted(params["dx_bin"].dropna().unique())
+
+    # Color by N_sampled (from obs)
+    for method in methods:
+        obs_m = obs[obs["method"] == method][["iteration", "N_sampled"]].copy()
+        params_m = params.merge(obs_m, on="iteration", how="left")
+
+        ns_edges = np.quantile(params_m["N_sampled"].dropna(), [0, 1/3, 2/3, 1.0])
+        ns_edges[0] -= 1; ns_edges[-1] += 1
+        ns_labels = [f"Ns:[{ns_edges[i]:.0f},{ns_edges[i+1]:.0f}]" for i in range(3)]
+        params_m["Ns_bin"] = pd.cut(params_m["N_sampled"], bins=ns_edges,
+                                    labels=ns_labels, include_lowest=True)
+
+        fig, axes = plt.subplots(2, len(dx_groups), figsize=(5 * len(dx_groups), 8),
+                                 sharex=True, sharey='row')
+        if len(dx_groups) == 1: axes = axes.reshape(-1, 1)
+
+        fig.suptitle(f"S4b: Spectra Recovery — {METHOD_LABELS.get(method, method)}\n"
+                    "Cols = Δx bins, Color = N_sampled bins.  Row 0: bias, Row 1: σ\n"
+                    "Dashed = 1/√(N × min(f,thr) × Δx)", fontsize=10)
+
+        for col_idx, dx_grp in enumerate(dx_groups):
+            dx_sub = params_m[params_m["dx_bin"] == dx_grp]
+            dx_mean = dx_sub["dx"].mean()
+
+            for ns_label, ns_color in zip(ns_labels, N_COLORS_3):
+                sub = dx_sub[dx_sub["Ns_bin"] == ns_label]
+                if len(sub) == 0: continue
+                _s4_plot_panel(axes[0, col_idx], axes[1, col_idx],
+                              bin_centers, bin_width, ratios_dict,
+                              sub, method, obs, ns_color, ns_label)
+
+            axes[0, col_idx].set_title(f"⟨Δx⟩={dx_mean:.3f}", fontsize=10)
+            axes[0, col_idx].axhline(0, color='red', ls='--', lw=1, alpha=0.5)
+            axes[1, col_idx].set_xlabel("x", fontsize=9)
+            if col_idx == 0:
+                axes[0, col_idx].set_ylabel("⟨ratio−1⟩ (bias)", fontsize=9)
+                axes[1, col_idx].set_ylabel("σ(ratio)", fontsize=9)
+                axes[0, col_idx].legend(fontsize=7)
+
+        savefig(fig, os.path.join(output_dir, f"s4b_spectra_dx_{method}"),
+                f"S4b: Spectra by Δx ({method})")
+
+    # Summary
+    fit_rows = []
+    for method in methods:
+        d = obs[obs["method"] == method]
+        m = d["spectra_ratio_mean"].mean()
+        s = d["spectra_ratio_mean"].std()
+        fit_rows.append([method, f"{m:.4f}", f"{s:.4f}"])
+    if fit_rows:
+        report("\nS4 spectra recovery summary (per-iteration mean ratio):")
+        report_table(["Method", "⟨ratio⟩", "σ"], fit_rows)
+
+
+def _figure_s4_simple(obs, methods, output_dir):
+    """Fallback S4 when scan tree not available."""
     fig, axes = plt.subplots(1, len(methods), figsize=(7 * len(methods), 6))
     if len(methods) == 1: axes = [axes]
-    fig.suptitle("S4: Spectra Recovery (full pipeline)\n"
-                "⟨reweighted_hist / expected_hist⟩ in core bins vs frac",
-                fontsize=11)
+    fig.suptitle("S4: Spectra Recovery (summary only — no scan tree)", fontsize=11)
 
-    fit_rows = []
     for ax, method in zip(axes, methods):
         d = obs[obs["method"] == method].copy()
         d = d.dropna(subset=["spectra_ratio_mean"])
@@ -606,8 +814,6 @@ def figure_s4(obs, methods, output_dir):
         n_labels = add_logN_bins(d, 3)
         add_frac_bins(d, 5)
 
-        ax.scatter(d["frac"], d["spectra_ratio_mean"], s=3, alpha=0.08, color="gray")
-
         for n_label, n_color in zip(n_labels, N_COLORS_3):
             sub = d[d["N_bin"] == n_label]
             x_c, y_m, y_e = grouped_profile(sub, "frac", "spectra_ratio_mean", "frac_bin")
@@ -615,23 +821,13 @@ def figure_s4(obs, methods, output_dir):
                 ax.errorbar(x_c, y_m, yerr=y_e, fmt='o-', ms=5, capsize=2,
                            color=n_color, label=n_label, alpha=0.8)
 
-        ax.axhline(1.0, color='red', ls='--', lw=1.5, label="perfect")
-        ax.fill_between([d["frac"].min(), d["frac"].max()], 0.99, 1.01,
-                       alpha=0.1, color='green', label="±1%")
-
+        ax.axhline(1.0, color='red', ls='--', lw=1.5)
         m = d["spectra_ratio_mean"].mean()
-        s = d["spectra_ratio_mean"].std()
-        ax.set_title(f"{METHOD_LABELS.get(method, method)}\n⟨ratio⟩={m:.4f}±{s:.4f}",
-                    fontsize=10)
-        ax.set_xlabel("frac"); ax.set_ylabel("⟨reco/expected⟩ (core)")
+        ax.set_title(f"{METHOD_LABELS.get(method, method)}\n⟨ratio⟩={m:.4f}", fontsize=10)
+        ax.set_xlabel("frac"); ax.set_ylabel("⟨reco/expected⟩")
         ax.legend(fontsize=7); ax.set_ylim(0.9, 1.1)
-        fit_rows.append([method, f"{m:.4f}", f"{s:.4f}"])
 
-    savefig(fig, os.path.join(output_dir, "s4_spectra_recovery"), "S4: Spectra Recovery")
-
-    if fit_rows:
-        report("\nS4 spectra recovery summary:")
-        report_table(["Method", "⟨ratio⟩", "σ"], fit_rows)
+    savefig(fig, os.path.join(output_dir, "s4_spectra_recovery"), "S4: Spectra (summary)")
 
 
 # ===================================================================
@@ -802,10 +998,24 @@ S3: PDF Estimator Bias (s3_pdf_bias.png -- combined, 2 rows x 4 cols)
   Fit parameters in summary table.
 """)
     report("""
-S4: Spectra Recovery (s4_spectra_recovery.png)
-  y = mean(reweighted_hist / expected_hist) over 20 core bins (|x|<2sigma)
-  x-axis: frac, color: 3 log(N) bins
-  Expected: all near 1.0, sigma decreases with N and frac
+S4a: Spectra Recovery by frac (s4a_spectra_frac_{method}.png)
+  Layout: 2 rows x 3 cols. Cols = frac bins, Color = N bins.
+  Row 0: bias = mean(ratio - 1) vs x -- systematic offset per x-bin
+  Row 1: sigma(ratio) vs x -- statistical fluctuation per x-bin
+  Dashed: 1/sqrt(N * min(f(x), thr) * dx_hist) — per-bin model using N and threshold
+  Grouping by frac separates threshold values -> model matches better.
+
+S4b: Spectra Recovery by Dx (s4b_spectra_dx_{method}.png)
+  Layout: 2 rows x 3 cols. Cols = Dx bins, Color = N_sampled bins.
+  Same rows as S4a.
+  Grouping by N_sampled -> direct control variable for sigma.
+  Dx columns test whether PDF estimation bin width affects spectra recovery.
+
+  Common properties:
+    x range: [-3sigma, 3sigma], 30 bins
+    Bias ~ 0 everywhere -> pipeline is unbiased
+    sigma follows model -> fluctuations understood
+    sigma decreases with N, increases in tails
 """)
 
     report(f"\n{'='*70}")
@@ -874,7 +1084,7 @@ def main():
     figure_s1(obs, methods, args.output)
     figure_s2(obs, methods, args.output)
     figure_s3(obs, methods, args.output)
-    figure_s4(obs, methods, args.output)
+    figure_s4(obs, methods, args.output, scan=scan, params=params)
     figure_s5(obs, methods, args.output)
     figure_s6(obs, methods, args.output)
 
