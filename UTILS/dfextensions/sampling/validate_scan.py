@@ -664,7 +664,7 @@ def _s4_plot_panel(axes_bias, axes_sig, bin_centers, bin_width,
                      fmt='o', ms=3, capsize=1, color=color,
                      label=label, alpha=0.8)
 
-    # Model: σ_dense = √(⟨1/(N×thr)⟩ / Δx_hist), σ_sparse = √(⟨1/N⟩ / (f×Δx_hist))
+    # Model: σ_model = √(⟨σ_model_i²⟩) where σ_model_i = 1/√(N_i × min(f, thr_i) × Δx)
     iter_list = sub_params["iteration"].values
     obs_sub = obs[(obs["method"] == method) & obs["iteration"].isin(iter_list)]
     N_vals = sub_params["N"].values.astype(float)
@@ -674,18 +674,16 @@ def _s4_plot_panel(axes_bias, axes_sig, bin_centers, bin_width,
     mean_ratio = np.nan
     mean_ratio_err = np.nan
     if len(thr_vals) > 0 and len(N_vals) > 0:
-        inv_Nthr = 1.0 / (N_vals * thr_vals[:len(N_vals)])
-        mean_inv_Nthr = np.mean(inv_Nthr)
-        thr_med = np.median(thr_vals)
-
         gauss_vals = gaussian_pdf(bin_centers)
-        mean_inv_N = np.mean(1.0 / N_vals)
-
-        sigma_model = np.where(
-            gauss_vals > thr_med,
-            np.sqrt(mean_inv_Nthr / bin_width),
-            np.sqrt(mean_inv_N / (gauss_vals * bin_width + 1e-30))
-        )
+        n_iter = min(len(N_vals), len(thr_vals))
+        sig_models_i = np.zeros((n_iter, len(bin_centers)))
+        for i in range(n_iter):
+            sig_models_i[i] = np.where(
+                gauss_vals > thr_vals[i],
+                1.0 / np.sqrt(N_vals[i] * thr_vals[i] * bin_width + 1e-30),
+                1.0 / np.sqrt(N_vals[i] * gauss_vals * bin_width + 1e-30)
+            )
+        sigma_model = np.sqrt(np.mean(sig_models_i ** 2, axis=0))
         axes_sig.plot(bin_centers[ok], sigma_model[ok], '--', color=color,
                      alpha=0.4, lw=1.5)
 
@@ -724,18 +722,21 @@ def _s4_compute_sigma(ratios_dict, sub_params, method, obs,
 
     sigma_model = np.full_like(sigma, np.nan)
     if len(thr_vals) > 0 and len(N_vals) > 0:
-        inv_Nthr = 1.0 / (N_vals * thr_vals[:len(N_vals)])
-        mean_inv_Nthr = np.mean(inv_Nthr)
-        thr_med = np.median(thr_vals)
         gauss_vals = gaussian_pdf(bin_centers)
-        mean_inv_N = np.mean(1.0 / N_vals)
-        sigma_model = np.where(
-            gauss_vals > thr_med,
-            np.sqrt(mean_inv_Nthr / bin_width),
-            np.sqrt(mean_inv_N / (gauss_vals * bin_width + 1e-30))
-        )
 
-    return {"sigma": sigma, "sigma_model": sigma_model, "ok": ok}
+        # Per-iteration σ_model_i, then σ_model = √(⟨σ_model_i²⟩)
+        # This is correct because σ_meas = std(ratio) = √(⟨σ_i²⟩), not √(⟨σ_i⟩²)
+        n_iter = min(len(N_vals), len(thr_vals))
+        sig_models_i = np.zeros((n_iter, len(bin_centers)))
+        for i in range(n_iter):
+            sig_models_i[i] = np.where(
+                gauss_vals > thr_vals[i],
+                1.0 / np.sqrt(N_vals[i] * thr_vals[i] * bin_width + 1e-30),
+                1.0 / np.sqrt(N_vals[i] * gauss_vals * bin_width + 1e-30)
+            )
+        sigma_model = np.sqrt(np.mean(sig_models_i ** 2, axis=0))
+
+    return {"sigma": sigma, "sigma_model": sigma_model, "ok": ok, "n_valid": n_valid}
 
 
 def figure_s4(obs, methods, output_dir, scan=None, params=None):
@@ -865,6 +866,7 @@ def figure_s4(obs, methods, output_dir, scan=None, params=None):
     ABS_X_COLORS = ["#1b9e77", "#d95f02", "#7570b3"]
 
     s4c_fit_table = []
+    s4c_pull_table = []
 
     for method in methods:
         obs_m = obs[obs["method"] == method][["iteration", "N_sampled", "threshold"]].copy()
@@ -927,7 +929,7 @@ def figure_s4(obs, methods, output_dir, scan=None, params=None):
             params_m["dx_bin"] = pd.qcut(params_m["dx"], n_dx_bins, duplicates="drop")
             dx_sub = params_m[params_m["dx_bin"] == dx_grp]
 
-            all_sig_meas, all_sig_model, all_abs_x = [], [], []
+            all_sig_meas, all_sig_model, all_abs_x, all_n_valid = [], [], [], []
 
             for ns_fine_label in ns_fine_labels:
                 sub = dx_sub[dx_sub["Ns_fine"] == ns_fine_label]
@@ -937,15 +939,17 @@ def figure_s4(obs, methods, output_dir, scan=None, params=None):
                                            bin_centers, bin_width)
                 if result is None: continue
 
-                sig, sig_mod, ok_r = result["sigma"], result["sigma_model"], result["ok"]
+                sig, sig_mod, ok_r, nv = result["sigma"], result["sigma_model"], result["ok"], result["n_valid"]
                 valid = ok_r & np.isfinite(sig_mod) & (sig_mod > 0)
                 all_sig_meas.extend(sig[valid])
                 all_sig_model.extend(sig_mod[valid])
                 all_abs_x.extend(np.abs(bin_centers[valid]))
+                all_n_valid.extend(nv[valid])
 
             all_sig_meas = np.array(all_sig_meas)
             all_sig_model = np.array(all_sig_model)
             all_abs_x = np.array(all_abs_x)
+            all_n_valid = np.array(all_n_valid, dtype=float)
 
             if len(all_sig_meas) > 5:
                 # Scatter with 3 discrete |x| categories
@@ -975,21 +979,35 @@ def figure_s4(obs, methods, output_dir, scan=None, params=None):
                 global_sig_model.extend(all_sig_model)
 
                 # Pull: (sigma_meas - sigma_model) / sigma_err
-                # sigma_err ~ sigma_model / sqrt(2*(n_per_group-1)), approx n~100
-                sigma_err_approx = all_sig_model / np.sqrt(200)
-                pull = (all_sig_meas - all_sig_model) / np.maximum(sigma_err_approx, 1e-30)
+                # sigma_err = sigma_meas / sqrt(2*(n-1)) — standard chi^2 error on std
+                # sigma_model already uses √(⟨σ_model_i²⟩) via _s4_compute_sigma
+                sigma_err = all_sig_meas / np.sqrt(2 * np.maximum(all_n_valid - 1, 1))
+                pull = (all_sig_meas - all_sig_model) / np.maximum(sigma_err, 1e-30)
+
+                # Pull histogram per |x| category
                 for (xlo, xhi, xlabel), xcolor in zip(ABS_X_BINS, ABS_X_COLORS):
                     mask = (all_abs_x >= xlo) & (all_abs_x < xhi)
                     if mask.sum() < 3: continue
-                    ax_pull.hist(pull[mask], bins=20, range=(-4, 4),
+                    ax_pull.hist(pull[mask], bins=20, range=(-5, 5),
                                 alpha=0.4, color=xcolor, label=xlabel)
-                # Gaussian overlay
-                px = np.linspace(-4, 4, 100)
-                ax_pull.plot(px, sp_stats.norm.pdf(px) * len(pull) * 8 / 20,
-                            'k--', lw=1, alpha=0.5)
+
+                # Annotate with mean and RMS per category
+                pull_stats_text = []
+                for (xlo, xhi, xlabel), xcolor in zip(ABS_X_BINS, ABS_X_COLORS):
+                    mask = (all_abs_x >= xlo) & (all_abs_x < xhi)
+                    if mask.sum() < 3: continue
+                    pm = np.mean(pull[mask])
+                    prms = np.std(pull[mask])
+                    pull_stats_text.append(f"{xlabel}: μ={pm:.2f}, RMS={prms:.2f}")
+                    s4c_pull_table.append([method, f"{dx_mean:.3f}", xlabel,
+                                          f"{pm:.2f}", f"{prms:.2f}", str(mask.sum())])
+
+                ax_pull.text(0.02, 0.98, "\n".join(pull_stats_text),
+                           transform=ax_pull.transAxes, fontsize=7,
+                           va='top', ha='left', family='monospace')
 
             ax_scatter.set_xlabel("sigma_model", fontsize=9)
-            ax_pull.set_xlabel("pull", fontsize=9)
+            ax_pull.set_xlabel("pull = (σ_meas−σ_model) / (σ_meas/√(2(n−1)))", fontsize=7)
             if col_idx == 0:
                 ax_scatter.set_ylabel("sigma_measured", fontsize=9)
                 ax_pull.set_ylabel("count", fontsize=9)
@@ -1009,6 +1027,10 @@ def figure_s4(obs, methods, output_dir, scan=None, params=None):
     if s4c_fit_table:
         report("\nS4c fit results: sigma_meas = slope * sigma_model")
         report_table(["Method", "<Dx>", "slope", "R2"], s4c_fit_table)
+
+    if s4c_pull_table:
+        report("\nS4c pull statistics: pull = (σ_meas − σ_model) / (σ_meas/√(2(n−1)))")
+        report_table(["Method", "<Dx>", "|x| bin", "mean", "RMS", "N_pts"], s4c_pull_table)
 
     # Summary
     fit_rows = []
@@ -1137,10 +1159,11 @@ S3: PDF Estimator Bias (s3_pdf_bias.png -- combined, 2 rows x 4 cols)
     report("""
 S4: Spectra Recovery Model
   Model formula for sigma(ratio) at position x:
-    Dense regime (f(x) > thr):  sigma = sqrt( <1/(N*thr)> / dx_hist )
-    Sparse regime (f(x) < thr): sigma = sqrt( <1/N> / (f(x)*dx_hist) )
-  Where <.> = mean over iterations in the group, f(x) = Gauss(x), thr = threshold.
-  The dense formula is flat (independent of x), sparse rises in tails.
+    sigma_model = sqrt( <sigma_model_i^2> )  where average is over iterations in group
+    sigma_model_i = 1/sqrt(N_i * min(f(x), thr_i) * dx_hist)
+    Dense regime (f(x) > thr_i):  sigma_i = 1/sqrt(N_i * thr_i * dx_hist)
+    Sparse regime (f(x) < thr_i): sigma_i = 1/sqrt(N_i * f(x) * dx_hist)
+  Using RMS (not harmonic mean) because sigma_meas = std(ratio) = sqrt(<sigma_i^2>).
 
 S4a: Spectra Recovery by frac (s4a_spectra_frac_{method}.png)
   Layout: 2 rows x 3 cols. Cols = frac bins, Color = N bins.
@@ -1155,13 +1178,18 @@ S4b: Spectra Recovery by Dx (s4b_spectra_dx_{method}.png)
   Report: <sigma_meas/sigma_model> per group in core (|x|<2sigma).
 
 S4c: Sigma Scaling Validation (s4c_sigma_scaling_{method}.png)
-  Layout: 2 rows x 3 cols. Cols = Dx bins.
+  Layout: 3 rows x 3 cols. Cols = Dx bins.
   Row 0: sigma_meas / sigma_model vs x (markers, error bars, no lines)
     Color = N_sampled bins. Horizontal dotted = mean ratio per group.
   Row 1: scatter sigma_meas vs sigma_model (6 N_sampled bins for density)
-    Color = |x| (viridis, dark=core, bright=tails)
+    Color = 3 discrete |x| categories: core (|x|<1), shoulder (1<|x|<2), tail (|x|>2)
     Fit: y = a*x through origin, report slope and R^2.
-    Points on y=x diagonal -> model is correct.
+  Row 2: pull histogram = (sigma_meas - sigma_model) / (sigma_meas / sqrt(2*(n-1)))
+    sigma_err = sigma_meas / sqrt(2*(n-1)) — standard chi^2 error on sample std.
+    sigma_model = sqrt(<sigma_model_i^2>) — RMS of per-iteration models (not harmonic mean).
+    Color = same 3 |x| categories. Annotated with mean and RMS per category.
+    Expected: mean~0, RMS~1.
+  Tables: fit (slope, R^2), pull stats (mean, RMS) per (method, Dx, |x| bin).
 
   Common: x range [-3sigma, 3sigma], 30 bins, markers only (no connecting lines)
 """)
