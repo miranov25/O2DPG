@@ -255,6 +255,7 @@ def _estimate_pdf_smooth_1d(
     bias_correction: bool = True,
     poly_order: int = 2,
     poly_half_range: float = 0.5,
+    fit_coordinate: str = "x",
 ) -> tuple:
     """
     Three-layer 1D PDF estimator (Phase 13.11.DF v2.1).
@@ -280,6 +281,9 @@ def _estimate_pdf_smooth_1d(
         Polynomial order: 1=linear, 2=parabolic.
     poly_half_range : float, default 0.5
         Fit neighborhood in data units (not bins).
+    fit_coordinate : str, default "x"
+        Regression coordinate for Layer 3: "x" (data units) or "bin" (bin index).
+        "bin" is recommended for non-uniform binning (e.g. quantile bins).
 
     Returns
     -------
@@ -310,7 +314,15 @@ def _estimate_pdf_smooth_1d(
         pdf_grid = pdf_grid * correction
 
     # Layer 3: Local polynomial at each bin center
-    half_width = max(1, int(round(poly_half_range / dx)))
+    if fit_coordinate == "bin":
+        # For bin-index fitting: use median bin width for neighborhood size
+        # This gives ~6 neighbors for quantile bins (vs 1 with edge bin width)
+        dx_for_half = np.median(bin_widths)
+    else:
+        dx_for_half = dx
+    half_width = max(1, int(round(poly_half_range / dx_for_half)))
+    # Poisson-corrected counts for bin-index fitting (pdf_grid already has correction)
+    counts_corrected = pdf_grid * N * bin_widths
 
     pdf_corrected = np.zeros(n_bins, dtype=np.float64)
     for b in range(n_bins):
@@ -324,14 +336,26 @@ def _estimate_pdf_smooth_1d(
             pdf_corrected[b] = max(pdf_grid[b], 0.0)
             continue
 
-        xc = centers[nb[valid]]
-        yc = pdf_grid[nb[valid]]
+        if fit_coordinate == "bin":
+            # Fit Poisson-corrected counts vs bin index
+            # For quantile bins: counts ≈ constant → polynomial fit trivial
+            xc = nb[valid].astype(np.float64)
+            x_eval = float(b)
+            yc = counts_corrected[nb[valid]]
+        else:
+            xc = centers[nb[valid]]
+            x_eval = centers[b]
+            yc = pdf_grid[nb[valid]]
 
         actual_order = min(poly_order, len(xc) - 1)
         try:
             coeffs = np.polyfit(xc, yc, actual_order)
-            val = np.polyval(coeffs, centers[b])
-            pdf_corrected[b] = max(val, 0.0)
+            val = np.polyval(coeffs, x_eval)
+            if fit_coordinate == "bin":
+                # Convert fitted counts back to pdf
+                pdf_corrected[b] = max(val, 0.0) / (N * bin_widths[b])
+            else:
+                pdf_corrected[b] = max(val, 0.0)
         except (np.linalg.LinAlgError, ValueError):
             pdf_corrected[b] = max(pdf_grid[b], 0.0)
 
@@ -636,6 +660,7 @@ def _compute_smooth_weights_factorized(
         bc = pdf_params.get("bias_correction", True)
         po = _normalize_per_dim_param(pdf_params.get("poly_order", 2), n_cont, "poly_order")
         pr = _normalize_per_dim_param(pdf_params.get("poly_half_range", 0.5), n_cont, "poly_half_range")
+        fc = pdf_params.get("fit_coordinate", "x")
 
         for i, (col, edges) in enumerate(continuous_specs.items()):
             values = df[col].values.astype(np.float64)
@@ -645,8 +670,16 @@ def _compute_smooth_weights_factorized(
                 bias_correction=bc,
                 poly_order=int(po[i]),
                 poly_half_range=pr[i],
+                fit_coordinate=fc,
             )
-            pdf_at_points = np.interp(values, centers, pdf_1d)
+            if fc == "bin":
+                # Log-interpolation: interpolate log(pdf) in x-space, then exp()
+                # For steeply falling PDFs (non-uniform bins), log(pdf) is nearly
+                # linear between bin centers → log-interp is much more accurate
+                log_pdf_1d = np.log(np.maximum(pdf_1d, 1e-30))
+                pdf_at_points = np.exp(np.interp(values, centers, log_pdf_1d))
+            else:
+                pdf_at_points = np.interp(values, centers, pdf_1d)
             pdf_at_points = np.maximum(pdf_at_points, 1e-30)
             log_pdf += np.log(pdf_at_points)
     else:

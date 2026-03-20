@@ -82,21 +82,27 @@ def gaussian_pdf(x, sigma=SIGMA):
     return np.exp(-0.5 * (x / sigma) ** 2) / (sigma * np.sqrt(2 * np.pi))
 
 
-def draw_scan_params(rng):
-    """Draw random (N, frac, Δx) for one iteration.
+def draw_scan_params(rng, mode="uniform", nbins_min=20, nbins_max=500):
+    """Draw random (N, frac, Δx/nbins) for one iteration.
 
     N:    log-uniform in [N_MIN, N_MAX] — equal representation per decade
     frac: uniform in [FRAC_MIN, FRAC_MAX]
-    Δx:   uniform in [DX_MIN, DX_MAX]
+    Δx:   uniform in [DX_MIN, DX_MAX] (uniform mode)
+    nbins: uniform int in [nbins_min, nbins_max] (quantile mode)
     """
     log_n = rng.uniform(np.log10(N_MIN), np.log10(N_MAX))
     N = int(10 ** log_n)
     frac = rng.uniform(FRAC_MIN, FRAC_MAX)
-    dx = rng.uniform(DX_MIN, DX_MAX)
-    return N, frac, dx
+    if mode == "quantile":
+        nbins = rng.randint(nbins_min, nbins_max + 1)
+        dx = 0.0  # placeholder — per-point dx computed in iteration
+        return N, frac, dx, nbins
+    else:
+        dx = rng.uniform(DX_MIN, DX_MAX)
+        return N, frac, dx, 0
 
 
-def run_one_iteration(iteration, N, frac, dx):
+def run_one_iteration(iteration, N, frac, dx, pdf_params_v5=None):
     """Run one scan iteration with given parameters.
 
     Returns DataFrame with sampled rows only (union of both methods).
@@ -121,6 +127,12 @@ def run_one_iteration(iteration, N, frac, dx):
         return None  # skip degenerate cases
 
     pdf_true = gaussian_pdf(df_filtered["x"].values)
+
+    # Per-point edge flag and nbins
+    bin_edges = np.linspace(lo, hi, n_bins + 1)
+    x_vals = df_filtered["x"].values
+    bin_idx = np.clip(np.digitize(x_vals, bin_edges) - 1, 0, n_bins - 1)
+    is_edge = ((bin_idx == 0) | (bin_idx == n_bins - 1)).astype(np.int8)
 
     # Initialize result arrays for filtered points
     smooth_pdf = np.full(N_filtered, np.nan, dtype=np.float32)
@@ -152,7 +164,7 @@ def run_one_iteration(iteration, N, frac, dx):
             variables={"x": (n_bins, lo, hi)},
             random_state=iteration * 100 + 2,
             debug=False,
-            pdf_params=PDF_PARAMS_V5,
+            pdf_params=pdf_params_v5 or PDF_PARAMS_V5,
         )
         idx = sampled_v5.index.values
         v5_pdf[idx] = sampled_v5["_pdf"].values.astype(np.float32)
@@ -175,6 +187,113 @@ def run_one_iteration(iteration, N, frac, dx):
         "N": np.int32(N),
         "frac": np.float16(frac),
         "dx": np.float16(dx),
+        "isEdge": is_edge[is_any],
+        "nBins": np.int16(n_bins),
+        # Smooth legacy
+        "smooth_pdf": smooth_pdf[is_any].astype(np.float16),
+        "smooth_threshold": np.float32(np.round(smooth_thr[is_any], 5)),
+        "smooth_is_sampled": smooth_is[is_any],
+        # Smooth v5
+        "smooth_v5_pdf": v5_pdf[is_any].astype(np.float16),
+        "smooth_v5_threshold": np.float32(np.round(v5_thr[is_any], 5)),
+        "smooth_v5_is_sampled": v5_is[is_any],
+    })
+
+    return result
+
+
+def run_one_iteration_quantile(iteration, N, frac, nbins, pdf_params_v5=None):
+    """Run one scan iteration with Gaussian CDF-quantile bin edges.
+
+    Bin edges: norm.ppf(np.linspace(0.001, 0.999, nbins+1))
+    Per-point dx: actual bin width at each point's position.
+    With quantile bins: pdf(x) × dx ≈ 1/nbins = constant → λ ≈ N/nbins.
+    """
+    from scipy.stats import norm as sp_norm
+
+    rng_data = np.random.RandomState(iteration)
+
+    # Quantile bin edges
+    edges = sp_norm.ppf(np.linspace(0.001, 0.999, nbins + 1)) * SIGMA
+    lo, hi = edges[0], edges[-1]
+
+    # Generate Gaussian data
+    x = rng_data.normal(0, SIGMA, N)
+    df = pd.DataFrame({"x": x})
+
+    # Filter to bin range
+    in_range = (df["x"] >= lo) & (df["x"] <= hi)
+    df_filtered = df[in_range].reset_index(drop=True)
+    N_filtered = len(df_filtered)
+
+    if N_filtered < 10:
+        return None
+
+    pdf_true = gaussian_pdf(df_filtered["x"].values)
+    x_vals = df_filtered["x"].values
+
+    # Per-point dx: actual bin width at each point's position
+    bin_idx = np.clip(np.digitize(x_vals, edges) - 1, 0, nbins - 1)
+    dx_per_point = (edges[bin_idx + 1] - edges[bin_idx]).astype(np.float32)
+    is_edge = ((bin_idx == 0) | (bin_idx == nbins - 1)).astype(np.int8)
+    nbins_arr = np.full(N_filtered, nbins, dtype=np.int16)
+
+    # Initialize result arrays
+    smooth_pdf = np.full(N_filtered, np.nan, dtype=np.float32)
+    smooth_thr = np.full(N_filtered, np.nan, dtype=np.float32)
+    smooth_is = np.zeros(N_filtered, dtype=np.int8)
+    v5_pdf = np.full(N_filtered, np.nan, dtype=np.float32)
+    v5_thr = np.full(N_filtered, np.nan, dtype=np.float32)
+    v5_is = np.zeros(N_filtered, dtype=np.int8)
+
+    # Option D: pass explicit edges array
+    variables = {"x": edges}
+
+    # --- Smooth legacy ---
+    try:
+        sampled = downsampleDFSmoothFactorized(
+            df_filtered, frac=frac,
+            variables=variables,
+            random_state=iteration * 100 + 1,
+            debug=False,
+        )
+        idx = sampled.index.values
+        smooth_pdf[idx] = sampled["_pdf"].values.astype(np.float32)
+        smooth_thr[idx] = sampled["_threshold"].values.astype(np.float32)
+        smooth_is[idx] = 1
+    except Exception as e:
+        print(f"  WARNING: smooth failed iter {iteration}: {e}")
+
+    # --- Smooth v5 ---
+    try:
+        sampled_v5 = downsampleDFSmoothFactorized(
+            df_filtered, frac=frac,
+            variables=variables,
+            random_state=iteration * 100 + 2,
+            debug=False,
+            pdf_params=pdf_params_v5 or PDF_PARAMS_V5,
+        )
+        idx = sampled_v5.index.values
+        v5_pdf[idx] = sampled_v5["_pdf"].values.astype(np.float32)
+        v5_thr[idx] = sampled_v5["_threshold"].values.astype(np.float32)
+        v5_is[idx] = 1
+    except Exception as e:
+        print(f"  WARNING: smooth_v5 failed iter {iteration}: {e}")
+
+    # Keep only sampled rows
+    is_any = (smooth_is == 1) | (v5_is == 1)
+    if is_any.sum() == 0:
+        return None
+
+    result = pd.DataFrame({
+        "iteration": np.int16(iteration),
+        "x": x_vals[is_any].astype(np.float16),
+        "pdf_true": pdf_true[is_any].astype(np.float32),
+        "N": np.int32(N),
+        "frac": np.float16(frac),
+        "dx": dx_per_point[is_any].astype(np.float16),  # per-point bin width
+        "isEdge": is_edge[is_any],
+        "nBins": nbins_arr[is_any],
         # Smooth legacy
         "smooth_pdf": smooth_pdf[is_any].astype(np.float16),
         "smooth_threshold": np.float32(np.round(smooth_thr[is_any], 5)),
@@ -197,22 +316,37 @@ def main():
     parser.add_argument("--n_iter", type=int, default=1000, help="Number of iterations (default: 1000)")
     parser.add_argument("--output", type=str, default="scan_validation.root", help="Output file")
     parser.add_argument("--seed", type=int, default=42, help="Master RNG seed")
+    parser.add_argument("--mode", type=str, default="uniform", choices=["uniform", "quantile"],
+                       help="Binning mode: 'uniform' (fixed Δx) or 'quantile' (CDF-quantile edges)")
+    parser.add_argument("--fit_coordinate", type=str, default="x", choices=["x", "bin"],
+                       help="Polynomial fit coordinate: 'x' (data units) or 'bin' (bin index)")
+    parser.add_argument("--nbins_min", type=int, default=20, help="Min nbins for quantile mode")
+    parser.add_argument("--nbins_max", type=int, default=500, help="Max nbins for quantile mode")
     args = parser.parse_args()
 
     n_iter = args.n_iter
     output_file = args.output
+    mode = args.mode
+
+    # Build pdf_params with fit_coordinate — store in module for iteration functions
+    _pdf_params_v5 = dict(PDF_PARAMS_V5)
+    _pdf_params_v5["fit_coordinate"] = args.fit_coordinate
 
     print("=" * 70)
-    print("GENERATING SCAN TREE FOR PARAMETER VALIDATION")
+    print(f"GENERATING SCAN TREE — mode={mode}")
     print("=" * 70)
     print(f"\nScan parameters:")
     print(f"  N_ITERATIONS = {n_iter}")
     print(f"  N range      = [{N_MIN}, {N_MAX}] (log-uniform)")
     print(f"  frac range   = [{FRAC_MIN}, {FRAC_MAX}] (uniform)")
-    print(f"  Δx range     = [{DX_MIN}, {DX_MAX}] (uniform)")
-    print(f"  RANGE        = ±{RANGE}σ")
+    if mode == "uniform":
+        print(f"  Δx range     = [{DX_MIN}, {DX_MAX}] (uniform)")
+    else:
+        print(f"  nbins range  = [{args.nbins_min}, {args.nbins_max}] (uniform int)")
+        print(f"  Edges        = norm.ppf(linspace(0.001, 0.999, nbins+1)) × σ")
+        print(f"  dx           = per-point actual bin width")
     print(f"  Methods      = smooth (legacy), smooth_v5")
-    print(f"  PDF_PARAMS_V5= {PDF_PARAMS_V5}")
+    print(f"  PDF_PARAMS_V5= {_pdf_params_v5}")
     print(f"  OUTPUT       = {output_file}")
     print(f"  Seed         = {args.seed}")
 
@@ -220,18 +354,24 @@ def main():
     master_rng = np.random.RandomState(args.seed)
     scan_params = []
     for i in range(n_iter):
-        N, frac, dx = draw_scan_params(master_rng)
-        scan_params.append((i, N, frac, dx))
+        N, frac, dx, nbins = draw_scan_params(master_rng, mode=mode,
+                                               nbins_min=args.nbins_min,
+                                               nbins_max=args.nbins_max)
+        scan_params.append((i, N, frac, dx, nbins))
 
     # Print parameter summary
     Ns = [p[1] for p in scan_params]
     fracs = [p[2] for p in scan_params]
-    dxs = [p[3] for p in scan_params]
+    total_points = sum(Ns)
     print(f"\nParameter summary ({n_iter} iterations):")
     print(f"  N:    [{min(Ns)}, {max(Ns)}], median={int(np.median(Ns))}")
     print(f"  frac: [{min(fracs):.4f}, {max(fracs):.4f}], median={np.median(fracs):.4f}")
-    print(f"  Δx:   [{min(dxs):.4f}, {max(dxs):.4f}], median={np.median(dxs):.4f}")
-    total_points = sum(Ns)
+    if mode == "uniform":
+        dxs = [p[3] for p in scan_params]
+        print(f"  Δx:   [{min(dxs):.4f}, {max(dxs):.4f}], median={np.median(dxs):.4f}")
+    else:
+        nbinss = [p[4] for p in scan_params]
+        print(f"  nbins: [{min(nbinss)}, {max(nbinss)}], median={int(np.median(nbinss))}")
     print(f"  Total input points: {total_points:,} (~{total_points * 0.06:,.0f} sampled)")
 
     # Run iterations
@@ -240,16 +380,25 @@ def main():
     all_results = []
     n_failed = 0
 
-    for i, (iteration, N, frac, dx) in enumerate(scan_params):
+    for i, (iteration, N, frac, dx, nbins) in enumerate(scan_params):
         if i % 100 == 0 and i > 0:
             elapsed = time.time() - t0
             rate = i / elapsed
             eta = (n_iter - i) / rate
             print(f"  [{i}/{n_iter}] {elapsed:.0f}s elapsed, ETA {eta:.0f}s")
         elif i % 10 == 0:
-            print(f"  iter {i}: N={N}, frac={frac:.4f}, dx={dx:.4f}", end="", flush=True)
+            if mode == "uniform":
+                print(f"  iter {i}: N={N}, frac={frac:.4f}, dx={dx:.4f}", end="", flush=True)
+            else:
+                print(f"  iter {i}: N={N}, frac={frac:.4f}, nbins={nbins}", end="", flush=True)
 
-        result = run_one_iteration(iteration, N, frac, dx)
+        if mode == "quantile":
+            result = run_one_iteration_quantile(iteration, N, frac, nbins,
+                                               pdf_params_v5=_pdf_params_v5)
+        else:
+            result = run_one_iteration(iteration, N, frac, dx,
+                                      pdf_params_v5=_pdf_params_v5)
+
         if result is not None:
             all_results.append(result)
             if i % 10 == 0:
@@ -268,16 +417,24 @@ def main():
     scan_df = pd.concat(all_results, ignore_index=True)
     print(f"  Total rows: {len(scan_df):,}")
 
-    # Size estimate
     nbytes = scan_df.memory_usage(deep=True).sum()
     print(f"  Memory: {nbytes / 1e6:.1f} MB")
 
-    # Also save per-iteration params as separate small tree
-    params_df = pd.DataFrame(scan_params, columns=["iteration", "N", "frac", "dx"])
+    # Params table — dx from scan tree (mean per iteration), nbins for quantile
+    mean_dx_per_iter = scan_df.groupby("iteration")["dx"].apply(
+        lambda s: float(np.mean(s.astype(np.float32)))).to_dict()
+    params_list = []
+    for p in scan_params:
+        it, N_p, frac_p, dx_p, nbins_p = p
+        dx_val = mean_dx_per_iter.get(it, dx_p)
+        params_list.append((it, N_p, frac_p, dx_val, nbins_p))
+    params_df = pd.DataFrame(params_list,
+                             columns=["iteration", "N", "frac", "dx", "nbins"])
     params_df["iteration"] = params_df["iteration"].astype(np.int16)
     params_df["N"] = params_df["N"].astype(np.int32)
     params_df["frac"] = params_df["frac"].astype(np.float32)
     params_df["dx"] = params_df["dx"].astype(np.float32)
+    params_df["nbins"] = params_df["nbins"].astype(np.int32)
     print(f"  Params table: {len(params_df)} rows")
 
     # Export

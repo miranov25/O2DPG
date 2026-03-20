@@ -621,31 +621,32 @@ def figure_s3(obs, methods, output_dir):
 def figure_s3b(obs, methods, output_dir, scan=None, params=None):
     """S3b: PDF estimator bias as a function of x position.
 
-    Shows RMS(pdf_emp/pdf_true - 1) vs x, directly from per-point scan data.
+    3 rows × 2 cols: col 0 = all bins, col 1 = excluding edge bins.
     Row 0: bias (mean) vs x
     Row 1: RMS vs x
     Row 2: RMS vs per-point dx
-    Color = method. Uses all sampled points.
-    Reveals where discretization error dominates (tails for quantile bins).
+    Color = method. If isEdge column missing, col 1 shows same as col 0.
     """
     if scan is None or params is None:
         report("  S3b: no scan tree — skipping")
         return
 
-    # Compute per-point bias for all methods
+    has_edge = "isEdge" in scan.columns
+
     x_bins = np.linspace(-3 * SIGMA, 3 * SIGMA, 31)
     x_centers = 0.5 * (x_bins[:-1] + x_bins[1:])
     n_xbins = len(x_centers)
 
     # Collect per-point data
-    method_data = {}  # method -> (bias_per_xbin, rms_per_xbin, count_per_xbin)
-    dx_scatter = {}   # method -> (dx_arr, bias_arr) for all points
+    # key: (method, subset) -> profiles
+    profiles = {}  # (method, subset) -> (bias_mean, bias_rms, count)
+    dx_data = {}   # (method, subset) -> (dx_arr, bias_arr)
 
     for method in methods:
         pdf_col = f"{method}_pdf"
         is_col = f"{method}_is_sampled"
 
-        all_x, all_bias, all_dx = [], [], []
+        all_x, all_bias, all_dx, all_edge = [], [], [], []
 
         for _, prow in params.iterrows():
             iteration = int(prow["iteration"])
@@ -657,6 +658,7 @@ def figure_s3b(obs, methods, output_dir, scan=None, params=None):
             pdf_true = data["pdf_true"].values.astype(np.float64)
             x = data["x"].values.astype(np.float64)
             dx = data["dx"].values.astype(np.float64)
+            edge = data["isEdge"].values.astype(np.int8) if has_edge else np.zeros(len(data), dtype=np.int8)
 
             finite = np.isfinite(pdf) & (pdf > 0) & (pdf_true > 0.001)
             if finite.sum() < 10: continue
@@ -665,109 +667,126 @@ def figure_s3b(obs, methods, output_dir, scan=None, params=None):
             all_x.extend(x[finite])
             all_bias.extend(bias)
             all_dx.extend(dx[finite])
+            all_edge.extend(edge[finite])
 
         all_x = np.array(all_x)
         all_bias = np.array(all_bias)
         all_dx = np.array(all_dx)
+        all_edge = np.array(all_edge)
 
-        # Profile vs x
-        bias_mean = np.full(n_xbins, np.nan)
-        bias_rms = np.full(n_xbins, np.nan)
-        bias_count = np.full(n_xbins, 0)
-        bin_idx = np.clip(np.digitize(all_x, x_bins) - 1, 0, n_xbins - 1)
+        for subset_name, subset_mask in [("all", np.ones(len(all_x), dtype=bool)),
+                                          ("no_edge", all_edge == 0)]:
+            sx, sb, sd = all_x[subset_mask], all_bias[subset_mask], all_dx[subset_mask]
+            if len(sx) < 100:
+                continue
 
-        for i in range(n_xbins):
-            sel = bin_idx == i
-            if sel.sum() > 50:
-                bias_mean[i] = np.mean(all_bias[sel])
-                bias_rms[i] = np.sqrt(np.mean(all_bias[sel] ** 2))
-                bias_count[i] = sel.sum()
+            bias_mean = np.full(n_xbins, np.nan)
+            bias_rms = np.full(n_xbins, np.nan)
+            bias_count = np.full(n_xbins, 0)
+            bidx = np.clip(np.digitize(sx, x_bins) - 1, 0, n_xbins - 1)
 
-        method_data[method] = (bias_mean, bias_rms, bias_count)
-        dx_scatter[method] = (all_dx, all_bias)
+            for i in range(n_xbins):
+                sel = bidx == i
+                if sel.sum() > 50:
+                    bias_mean[i] = np.mean(sb[sel])
+                    bias_rms[i] = np.sqrt(np.mean(sb[sel] ** 2))
+                    bias_count[i] = sel.sum()
 
-    # --- Plot: 3 rows ---
-    fig, axes = plt.subplots(3, 1, figsize=(10, 12), sharex=False)
+            profiles[(method, subset_name)] = (bias_mean, bias_rms, bias_count)
+            dx_data[(method, subset_name)] = (sd, sb)
+
+    # --- Plot: 3 rows × 2 cols ---
+    subsets = [("all", "All bins"), ("no_edge", "Excluding edge bins")]
+    fig, axes = plt.subplots(3, 2, figsize=(14, 12))
 
     fig.suptitle("S3b: PDF Estimator Bias vs Position\n"
-                "Row 0: ⟨bias⟩ vs x,  Row 1: RMS(bias) vs x,  Row 2: RMS(bias) vs dx",
+                "Col 0: all bins,  Col 1: excluding edge bins\n"
+                "Row 0: ⟨bias⟩,  Row 1: RMS,  Row 2: RMS vs dx",
                 fontsize=11)
 
     method_colors = {"smooth": "#d62728", "smooth_v5": "#1f77b4"}
 
-    # Row 0: bias vs x
-    ax = axes[0]
-    for method in methods:
-        bias_mean, _, count = method_data[method]
-        ok = count > 50
-        mc = method_colors.get(method, "gray")
-        ax.plot(x_centers[ok], bias_mean[ok], 'o', ms=4, color=mc,
-               label=METHOD_LABELS.get(method, method), alpha=0.8)
-    ax.axhline(0, color='red', ls='--', lw=1, alpha=0.5)
-    ax.set_ylabel("⟨pdf/pdf_true − 1⟩ (bias)", fontsize=10)
-    ax.set_xlabel("x", fontsize=10)
-    ax.legend(fontsize=9)
+    for col_idx, (subset_key, subset_label) in enumerate(subsets):
+        # Row 0: bias vs x
+        ax = axes[0, col_idx]
+        for method in methods:
+            key = (method, subset_key)
+            if key not in profiles: continue
+            bias_mean, _, count = profiles[key]
+            ok = count > 50
+            mc = method_colors.get(method, "gray")
+            ax.plot(x_centers[ok], bias_mean[ok], 'o', ms=4, color=mc,
+                   label=METHOD_LABELS.get(method, method), alpha=0.8)
+        ax.axhline(0, color='red', ls='--', lw=1, alpha=0.5)
+        ax.set_title(subset_label, fontsize=10)
+        if col_idx == 0:
+            ax.set_ylabel("⟨pdf/pdf_true − 1⟩ (bias)", fontsize=10)
+            ax.legend(fontsize=8)
 
-    # Row 1: RMS vs x
-    ax = axes[1]
-    for method in methods:
-        _, bias_rms, count = method_data[method]
-        ok = count > 50
-        mc = method_colors.get(method, "gray")
-        ax.plot(x_centers[ok], bias_rms[ok], 'o', ms=4, color=mc,
-               label=METHOD_LABELS.get(method, method), alpha=0.8)
-    ax.set_ylabel("RMS(pdf/pdf_true − 1)", fontsize=10)
-    ax.set_xlabel("x", fontsize=10)
-    ax.set_ylim(bottom=0)
-    ax.legend(fontsize=9)
+        # Row 1: RMS vs x
+        ax = axes[1, col_idx]
+        for method in methods:
+            key = (method, subset_key)
+            if key not in profiles: continue
+            _, bias_rms, count = profiles[key]
+            ok = count > 50
+            mc = method_colors.get(method, "gray")
+            ax.plot(x_centers[ok], bias_rms[ok], 'o', ms=4, color=mc,
+                   label=METHOD_LABELS.get(method, method), alpha=0.8)
+        ax.set_ylim(bottom=0)
+        if col_idx == 0:
+            ax.set_ylabel("RMS(pdf/pdf_true − 1)", fontsize=10)
 
-    # Row 2: RMS vs dx (binned profile)
-    ax = axes[2]
-    for method in methods:
-        all_dx, all_bias = dx_scatter[method]
-        if len(all_dx) < 100: continue
+        # Row 2: RMS vs dx
+        ax = axes[2, col_idx]
+        for method in methods:
+            key = (method, subset_key)
+            if key not in dx_data: continue
+            sd, sb = dx_data[key]
+            if len(sd) < 100: continue
 
-        # Profile in dx bins
-        dx_edges = np.quantile(all_dx, np.linspace(0, 1, 21))
-        dx_edges = np.unique(dx_edges)
-        if len(dx_edges) < 3: continue
-        dx_centers = 0.5 * (dx_edges[:-1] + dx_edges[1:])
-        dx_idx = np.clip(np.digitize(all_dx, dx_edges) - 1, 0, len(dx_centers) - 1)
+            dx_edges = np.quantile(sd, np.linspace(0, 1, 21))
+            dx_edges = np.unique(dx_edges)
+            if len(dx_edges) < 3: continue
+            dx_cntrs = 0.5 * (dx_edges[:-1] + dx_edges[1:])
+            didx = np.clip(np.digitize(sd, dx_edges) - 1, 0, len(dx_cntrs) - 1)
 
-        rms_vs_dx = []
-        dx_ok = []
-        for i in range(len(dx_centers)):
-            sel = dx_idx == i
-            if sel.sum() > 50:
-                rms_vs_dx.append(np.sqrt(np.mean(all_bias[sel] ** 2)))
-                dx_ok.append(dx_centers[i])
+            rms_list, dx_list = [], []
+            for i in range(len(dx_cntrs)):
+                sel = didx == i
+                if sel.sum() > 50:
+                    rms_list.append(np.sqrt(np.mean(sb[sel] ** 2)))
+                    dx_list.append(dx_cntrs[i])
 
-        mc = method_colors.get(method, "gray")
-        ax.plot(dx_ok, rms_vs_dx, 'o-', ms=4, color=mc,
-               label=METHOD_LABELS.get(method, method), alpha=0.8)
+            mc = method_colors.get(method, "gray")
+            ax.plot(dx_list, rms_list, 'o-', ms=4, color=mc,
+                   label=METHOD_LABELS.get(method, method), alpha=0.8)
 
-    ax.set_ylabel("RMS(pdf/pdf_true − 1)", fontsize=10)
-    ax.set_xlabel("dx (per-point bin width)", fontsize=10)
-    ax.set_ylim(bottom=0)
-    ax.legend(fontsize=9)
+        ax.set_xlabel("dx (per-point bin width)", fontsize=10)
+        ax.set_ylim(bottom=0)
+        if col_idx == 0:
+            ax.set_ylabel("RMS(pdf/pdf_true − 1)", fontsize=10)
 
     savefig(fig, os.path.join(output_dir, "s3b_pdf_bias_vs_x"),
             "S3b: PDF Bias vs Position")
 
-    # Report table: mean RMS per |x| category
+    # Report table: RMS per |x| category, both subsets
     s3b_rows = []
     for method in methods:
-        _, bias_rms, count = method_data[method]
-        for (xlo, xhi, label) in [(0, 1, "|x|<1"), (1, 2, "1<|x|<2"), (2, 3, "|x|>2")]:
-            sel = (np.abs(x_centers) >= xlo) & (np.abs(x_centers) < xhi) & (count > 50)
-            if sel.sum() > 0:
-                rms_mean = np.mean(bias_rms[sel])
-                n_pts = int(np.sum(count[sel]))
-                s3b_rows.append([method, label, f"{rms_mean:.4f}", str(n_pts)])
+        for subset_key, subset_label in subsets:
+            key = (method, subset_key)
+            if key not in profiles: continue
+            _, bias_rms, count = profiles[key]
+            for (xlo, xhi, label) in [(0, 1, "|x|<1"), (1, 2, "1<|x|<2"), (2, 3, "|x|>2")]:
+                sel = (np.abs(x_centers) >= xlo) & (np.abs(x_centers) < xhi) & (count > 50)
+                if sel.sum() > 0:
+                    rms_mean = np.mean(bias_rms[sel])
+                    n_pts = int(np.sum(count[sel]))
+                    s3b_rows.append([method, subset_label, label, f"{rms_mean:.4f}", str(n_pts)])
 
     if s3b_rows:
         report("\nS3b: PDF bias RMS by |x| region")
-        report_table(["Method", "|x| region", "⟨RMS⟩", "N_points"], s3b_rows)
+        report_table(["Method", "Subset", "|x| region", "⟨RMS⟩", "N_points"], s3b_rows)
 
 
 # ===================================================================
