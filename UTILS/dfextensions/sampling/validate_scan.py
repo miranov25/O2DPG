@@ -190,6 +190,12 @@ def compute_iteration_observables(scan, params, methods):
 
             # Per-pdf-bin RMS bias (for S3)
             pdf_bin_rms = {}
+            has_edge = "isEdge" in data.columns
+            edge_arr = data["isEdge"].values.astype(np.int8) if has_edge else None
+            not_edge = (edge_arr == 0) if has_edge else np.ones(len(pdf), dtype=bool)
+            # Apply finite filter to not_edge
+            not_edge_f = not_edge[finite]
+
             for plo, phi in PDF_BINS:
                 sel = (pdf_true >= plo) & (pdf_true < phi) & (np.abs(x) < 3 * SIGMA)
                 label = f"rms_pdf_{plo:.2f}_{phi:.2f}"
@@ -201,6 +207,17 @@ def compute_iteration_observables(scan, params, methods):
                 else:
                     pdf_bin_rms[label] = np.nan
                     pdf_bin_rms[lambda_label] = np.nan
+
+                # Edge-excluded variant
+                sel_ne = sel & not_edge_f
+                label_ne = f"rms_pdf_noedge_{plo:.2f}_{phi:.2f}"
+                lambda_ne = f"lambda_noedge_{plo:.2f}_{phi:.2f}"
+                if sel_ne.sum() > 10:
+                    pdf_bin_rms[label_ne] = np.sqrt(np.mean((pdf[sel_ne] / pdf_true[sel_ne] - 1.0) ** 2))
+                    pdf_bin_rms[lambda_ne] = np.mean(N * pdf_true[sel_ne] * dx_arr[sel_ne])
+                else:
+                    pdf_bin_rms[label_ne] = np.nan
+                    pdf_bin_rms[lambda_ne] = np.nan
 
             # Spectra recovery
             hist_bins = np.linspace(-2 * SIGMA, 2 * SIGMA, 21)
@@ -469,13 +486,15 @@ def _plot_s2(obs, methods, output_dir, subset_key, subset_label):
 # S3: PDF Estimator Bias
 # ===================================================================
 
-def figure_s3(obs, methods, output_dir):
+def figure_s3(obs, methods, output_dir, col_suffix="", label_suffix=""):
     """S3: RMS(pdf_emp/pdf_true - 1) vs 1/√λ where λ = N×pdf×Δx.
 
     Combined figure: rows = methods, cols = Δx bins.
     Shared x/y range so methods are directly comparable.
     All pdf_true colors should collapse if Poisson dominates.
     Model: RMS = √(a²/λ + b²). Fit a, b globally per method.
+
+    col_suffix: "" for all bins, "_noedge" for edge-excluded.
     """
     n_dx_bins = 4
 
@@ -495,7 +514,7 @@ def figure_s3(obs, methods, output_dir):
     if n_methods == 1: axes = axes.reshape(1, -1)
     if n_panels == 1: axes = axes.reshape(-1, 1)
 
-    fig.suptitle("S3: PDF Estimator Bias — RMS(pdf_emp/pdf_true − 1) vs 1/√λ\n"
+    fig.suptitle(f"S3: PDF Estimator Bias{label_suffix} — RMS(pdf_emp/pdf_true − 1) vs 1/√λ\n"
                 "λ = N×⟨pdf⟩×Δx — all colors should collapse if Poisson dominates\n"
                 "Model: RMS = √(a²/λ + b²),  a=Poisson coeff (expect ~1), b=discretization floor",
                 fontsize=11)
@@ -520,8 +539,8 @@ def figure_s3(obs, methods, output_dir):
             dx_mean = sub_dx["dx"].mean()
 
             for (plo, phi), pc, pl in zip(PDF_BINS, PDF_COLORS, PDF_LABELS):
-                rms_col = f"rms_pdf_{plo:.2f}_{phi:.2f}"
-                lam_col = f"lambda_{plo:.2f}_{phi:.2f}"
+                rms_col = f"rms_pdf{col_suffix}_{plo:.2f}_{phi:.2f}"
+                lam_col = f"lambda{col_suffix}_{plo:.2f}_{phi:.2f}"
                 if rms_col not in sub_dx.columns or lam_col not in sub_dx.columns:
                     continue
 
@@ -611,7 +630,7 @@ def figure_s3(obs, methods, output_dir):
                                   f"{b_fit:.6f}" if np.isfinite(b_fit) else "—",
                                   f"{r2_2p:.4f}" if np.isfinite(r2_2p) else "—"])
 
-            report(f"\n  S3 {method} global fit:")
+            report(f"\n  S3{col_suffix} {method} global fit:")
             report(f"    Poisson: a={a_fit:.4f}, R²={r2_1p:.4f}")
             if np.isfinite(b_fit):
                 report(f"    2-param: a={a_fit:.4f}, b={b_fit:.6f}, R²={r2_2p:.4f}")
@@ -636,10 +655,12 @@ def figure_s3(obs, methods, output_dir):
                 ax.plot([], [], 'r:', lw=1.5, label=f"√(a²/λ+b²): b={fr[3]}")
             ax.legend(fontsize=8)
 
-    savefig(fig, os.path.join(output_dir, "s3_pdf_bias"), "S3: PDF Bias")
+    file_suffix = col_suffix if col_suffix else ""
+    savefig(fig, os.path.join(output_dir, f"s3_pdf_bias{file_suffix}"),
+            f"S3: PDF Bias{label_suffix}")
 
     if fit_table_rows:
-        report("\nS3 fit summary: RMS = √(a²/λ + b²)")
+        report(f"\nS3 fit summary{label_suffix}: RMS = √(a²/λ + b²)")
         report_table(["Method", "a", "R²(Poisson)", "b", "R²(2-param)"], fit_table_rows)
 
 
@@ -1532,6 +1553,10 @@ def main():
     figure_s1(obs, methods, args.output)
     figure_s2(obs, methods, args.output, scan=scan)
     figure_s3(obs, methods, args.output)
+    # Edge-excluded S3 if isEdge data available
+    if scan is not None and "isEdge" in scan.columns:
+        figure_s3(obs, methods, args.output,
+                  col_suffix="_noedge", label_suffix=" (excluding edge bins)")
     figure_s3b(obs, methods, args.output, scan=scan, params=params)
     figure_s4(obs, methods, args.output, scan=scan, params=params)
 
