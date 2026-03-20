@@ -299,14 +299,41 @@ def figure_s1(obs, methods, output_dir):
 # S2: Threshold Stability
 # ===================================================================
 
-def figure_s2(obs, methods, output_dir):
+def figure_s2(obs, methods, output_dir, scan=None):
     """S2: Threshold stability via local linear fit.
 
     2 rows (methods) × 3 cols (Δx bins). Shared axes.
     Within each (N_bin × frac_bin) cell: fit thr = a + b*frac + c/√N.
     σ = std(residuals). Plot vs 1/√(N×frac).
     Smaller Δx → less PDF bias → smaller offset.
+
+    If scan has nBins column, produces second figure S2 (high nBins only).
     """
+    has_nbins = scan is not None and "nBins" in scan.columns
+
+    # Get nBins per iteration if available
+    if has_nbins:
+        nbins_per_iter = scan.groupby("iteration")["nBins"].first()
+        obs_with_nb = obs.copy()
+        obs_with_nb["nBins"] = obs_with_nb["iteration"].map(nbins_per_iter)
+        nbins_median = obs_with_nb["nBins"].median()
+    else:
+        obs_with_nb = obs.copy()
+        obs_with_nb["nBins"] = 0
+        nbins_median = 0
+
+    subsets = [("all", "All iterations", obs)]
+    if has_nbins and nbins_median > 0:
+        obs_hi = obs_with_nb[obs_with_nb["nBins"] > nbins_median].copy()
+        if len(obs_hi) > 30:
+            subsets.append(("hi_nbins", f"nBins>{nbins_median:.0f}", obs_hi))
+
+    for subset_key, subset_label, obs_sub in subsets:
+        _plot_s2(obs_sub, methods, output_dir, subset_key, subset_label)
+
+
+def _plot_s2(obs, methods, output_dir, subset_key, subset_label):
+    """Internal S2 plot for one subset."""
     n_dx_bins = 3
     d_all = obs.copy()
     d_all["dx_bin"] = pd.qcut(d_all["dx"], n_dx_bins, duplicates="drop")
@@ -323,8 +350,8 @@ def figure_s2(obs, methods, output_dir):
     if n_methods == 1: axes = axes.reshape(1, -1)
     if n_panels == 1: axes = axes.reshape(-1, 1)
 
-    fig.suptitle("S2: Threshold Stability — σ(thr − local_fit) vs 1/√(N×frac)\n"
-                "Local fit: thr = a + b×frac + c/√N per (N_bin × frac_bin) cell\n"
+    fig.suptitle(f"S2: Threshold Stability — {subset_label}\n"
+                "σ(thr − local_fit) vs 1/√(N×frac)\n"
                 "Columns = Δx bins — smaller Δx → less PDF bias → smaller offset",
                 fontsize=10)
 
@@ -429,10 +456,12 @@ def figure_s2(obs, methods, output_dir):
     for col_idx in range(n_panels):
         axes[-1, col_idx].set_xlabel("1/√(N×frac)", fontsize=9)
 
-    savefig(fig, os.path.join(output_dir, "s2_threshold_stability"), "S2: Threshold Stability")
+    suffix = f"_{subset_key}" if subset_key != "all" else ""
+    savefig(fig, os.path.join(output_dir, f"s2_threshold_stability{suffix}"),
+            f"S2: Threshold Stability ({subset_label})")
 
     if fit_table_rows:
-        report("\nS2 fit results: σ(thr_resid) = slope/√(N×frac) + intercept, per Δx bin")
+        report(f"\nS2 fit results ({subset_label}): σ(thr_resid) = slope/√(N×frac) + intercept, per Δx bin")
         report_table(["Method", "⟨Δx⟩", "slope", "intercept", "R²"], fit_table_rows)
 
 
@@ -695,20 +724,23 @@ def figure_s3b(obs, methods, output_dir, scan=None, params=None):
             profiles[(method, subset_name)] = (bias_mean, bias_rms, bias_count)
             dx_data[(method, subset_name)] = (sd, sb)
 
-    # --- Plot: 3 rows × 2 cols ---
+    # --- Plot: 2 rows × 4 cols ---
+    # Row 0 = all bins, Row 1 = excluding edge bins
+    # Cols: bias vs x, RMS vs x, bias vs dx, RMS vs dx
     subsets = [("all", "All bins"), ("no_edge", "Excluding edge bins")]
-    fig, axes = plt.subplots(3, 2, figsize=(14, 12))
+    fig, axes = plt.subplots(2, 4, figsize=(20, 8))
 
-    fig.suptitle("S3b: PDF Estimator Bias vs Position\n"
-                "Col 0: all bins,  Col 1: excluding edge bins\n"
-                "Row 0: ⟨bias⟩,  Row 1: RMS,  Row 2: RMS vs dx",
+    fig.suptitle("S3b: PDF Estimator Bias — Row 0: all bins, Row 1: excluding edge bins\n"
+                "Cols: ⟨bias⟩ vs x,  RMS vs x,  ⟨bias⟩ vs dx,  RMS vs dx",
                 fontsize=11)
 
     method_colors = {"smooth": "#d62728", "smooth_v5": "#1f77b4"}
 
-    for col_idx, (subset_key, subset_label) in enumerate(subsets):
-        # Row 0: bias vs x
-        ax = axes[0, col_idx]
+    col_labels = ["⟨bias⟩ vs x", "RMS vs x", "⟨bias⟩ vs dx", "RMS vs dx"]
+
+    for row_idx, (subset_key, subset_label) in enumerate(subsets):
+        # Col 0: bias vs x
+        ax = axes[row_idx, 0]
         for method in methods:
             key = (method, subset_key)
             if key not in profiles: continue
@@ -718,13 +750,15 @@ def figure_s3b(obs, methods, output_dir, scan=None, params=None):
             ax.plot(x_centers[ok], bias_mean[ok], 'o', ms=4, color=mc,
                    label=METHOD_LABELS.get(method, method), alpha=0.8)
         ax.axhline(0, color='red', ls='--', lw=1, alpha=0.5)
-        ax.set_title(subset_label, fontsize=10)
-        if col_idx == 0:
-            ax.set_ylabel("⟨pdf/pdf_true − 1⟩ (bias)", fontsize=10)
-            ax.legend(fontsize=8)
+        ax.set_ylabel(subset_label, fontsize=10)
+        if row_idx == 0:
+            ax.set_title(col_labels[0], fontsize=9)
+            ax.legend(fontsize=7)
+        if row_idx == 1:
+            ax.set_xlabel("x", fontsize=9)
 
-        # Row 1: RMS vs x
-        ax = axes[1, col_idx]
+        # Col 1: RMS vs x
+        ax = axes[row_idx, 1]
         for method in methods:
             key = (method, subset_key)
             if key not in profiles: continue
@@ -734,22 +768,54 @@ def figure_s3b(obs, methods, output_dir, scan=None, params=None):
             ax.plot(x_centers[ok], bias_rms[ok], 'o', ms=4, color=mc,
                    label=METHOD_LABELS.get(method, method), alpha=0.8)
         ax.set_ylim(bottom=0)
-        if col_idx == 0:
-            ax.set_ylabel("RMS(pdf/pdf_true − 1)", fontsize=10)
+        if row_idx == 0:
+            ax.set_title(col_labels[1], fontsize=9)
+        if row_idx == 1:
+            ax.set_xlabel("x", fontsize=9)
 
-        # Row 2: RMS vs dx
-        ax = axes[2, col_idx]
+        # Col 2: bias vs dx
+        ax = axes[row_idx, 2]
         for method in methods:
             key = (method, subset_key)
             if key not in dx_data: continue
             sd, sb = dx_data[key]
             if len(sd) < 100: continue
 
-            dx_edges = np.quantile(sd, np.linspace(0, 1, 21))
-            dx_edges = np.unique(dx_edges)
-            if len(dx_edges) < 3: continue
-            dx_cntrs = 0.5 * (dx_edges[:-1] + dx_edges[1:])
-            didx = np.clip(np.digitize(sd, dx_edges) - 1, 0, len(dx_cntrs) - 1)
+            dx_edges_q = np.quantile(sd, np.linspace(0, 1, 21))
+            dx_edges_q = np.unique(dx_edges_q)
+            if len(dx_edges_q) < 3: continue
+            dx_cntrs = 0.5 * (dx_edges_q[:-1] + dx_edges_q[1:])
+            didx = np.clip(np.digitize(sd, dx_edges_q) - 1, 0, len(dx_cntrs) - 1)
+
+            bias_list, dx_list = [], []
+            for i in range(len(dx_cntrs)):
+                sel = didx == i
+                if sel.sum() > 50:
+                    bias_list.append(np.mean(sb[sel]))
+                    dx_list.append(dx_cntrs[i])
+
+            mc = method_colors.get(method, "gray")
+            ax.plot(dx_list, bias_list, 'o-', ms=4, color=mc,
+                   label=METHOD_LABELS.get(method, method), alpha=0.8)
+        ax.axhline(0, color='red', ls='--', lw=1, alpha=0.5)
+        if row_idx == 0:
+            ax.set_title(col_labels[2], fontsize=9)
+        if row_idx == 1:
+            ax.set_xlabel("dx", fontsize=9)
+
+        # Col 3: RMS vs dx
+        ax = axes[row_idx, 3]
+        for method in methods:
+            key = (method, subset_key)
+            if key not in dx_data: continue
+            sd, sb = dx_data[key]
+            if len(sd) < 100: continue
+
+            dx_edges_q = np.quantile(sd, np.linspace(0, 1, 21))
+            dx_edges_q = np.unique(dx_edges_q)
+            if len(dx_edges_q) < 3: continue
+            dx_cntrs = 0.5 * (dx_edges_q[:-1] + dx_edges_q[1:])
+            didx = np.clip(np.digitize(sd, dx_edges_q) - 1, 0, len(dx_cntrs) - 1)
 
             rms_list, dx_list = [], []
             for i in range(len(dx_cntrs)):
@@ -761,11 +827,11 @@ def figure_s3b(obs, methods, output_dir, scan=None, params=None):
             mc = method_colors.get(method, "gray")
             ax.plot(dx_list, rms_list, 'o-', ms=4, color=mc,
                    label=METHOD_LABELS.get(method, method), alpha=0.8)
-
-        ax.set_xlabel("dx (per-point bin width)", fontsize=10)
         ax.set_ylim(bottom=0)
-        if col_idx == 0:
-            ax.set_ylabel("RMS(pdf/pdf_true − 1)", fontsize=10)
+        if row_idx == 0:
+            ax.set_title(col_labels[3], fontsize=9)
+        if row_idx == 1:
+            ax.set_xlabel("dx", fontsize=9)
 
     savefig(fig, os.path.join(output_dir, "s3b_pdf_bias_vs_x"),
             "S3b: PDF Bias vs Position")
@@ -1365,13 +1431,12 @@ S3: PDF Estimator Bias (s3_pdf_bias.png -- combined, 2 rows x 4 cols)
   Fit parameters in summary table.
 
 S3b: PDF Estimator Bias vs Position (s3b_pdf_bias_vs_x.png)
-  3 rows x 1 col. Color = method.
-  Row 0: mean(pdf/pdf_true - 1) vs x -- systematic bias profile
-  Row 1: RMS(pdf/pdf_true - 1) vs x -- total error profile
-  Row 2: RMS(pdf/pdf_true - 1) vs dx (per-point bin width) -- discretization
-  Key test: for uniform bins, RMS is flat vs x.
-    For quantile bins, RMS rises in tails (large dx -> interpolation error).
-  Table: mean RMS per |x| region (core/shoulder/tail).
+  2 rows x 4 cols. Color = method.
+  Row 0: all bins. Row 1: excluding edge bins (first/last PDF bin).
+  Col 0: bias vs x. Col 1: RMS vs x. Col 2: bias vs dx. Col 3: RMS vs dx.
+  Key test: excluding edges should remove tail bias, confirming edge extrapolation
+  is the sole source of large RMS in tails for non-uniform binning.
+  Table: mean RMS per |x| region × subset.
 """)
     report("""
 S4: Spectra Recovery Model
@@ -1465,7 +1530,7 @@ def main():
 
     report(f"\nGenerating figures...")
     figure_s1(obs, methods, args.output)
-    figure_s2(obs, methods, args.output)
+    figure_s2(obs, methods, args.output, scan=scan)
     figure_s3(obs, methods, args.output)
     figure_s3b(obs, methods, args.output, scan=scan, params=params)
     figure_s4(obs, methods, args.output, scan=scan, params=params)
