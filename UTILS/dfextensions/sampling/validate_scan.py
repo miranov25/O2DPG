@@ -139,11 +139,11 @@ def grouped_profile(sub, x_col, y_col, x_bin_col, min_per_bin=5, stat="mean"):
 
 def compute_iteration_observables(scan, params, methods):
     rows = []
+    nan_counts = {m: {"total": 0, "nan": 0} for m in methods}
     for _, prow in params.iterrows():
         iteration = int(prow["iteration"])
         N = int(prow["N"])
         frac = float(prow["frac"])
-        dx = float(prow["dx"])
         iter_mask = scan["iteration"] == iteration
 
         for method in methods:
@@ -156,8 +156,23 @@ def compute_iteration_observables(scan, params, methods):
             thr = data[f"{method}_threshold"].values.astype(np.float64)
             pdf_true = data["pdf_true"].values.astype(np.float64)
             x = data["x"].values.astype(np.float64)
-            threshold = thr[0]
-            N_sampled = len(data)
+            dx_arr = data["dx"].values.astype(np.float64)  # per-point dx
+            dx_mean = float(np.mean(dx_arr))  # for grouping labels
+
+            # Count NaN before filtering
+            n_total = len(pdf)
+            finite = np.isfinite(pdf) & np.isfinite(thr) & (pdf > 0)
+            n_nan = n_total - finite.sum()
+            nan_counts[method]["total"] += n_total
+            nan_counts[method]["nan"] += n_nan
+
+            if finite.sum() < 10:
+                continue
+            pdf = pdf[finite]; thr = thr[finite]; pdf_true = pdf_true[finite]
+            x = x[finite]; dx_arr = dx_arr[finite]
+
+            threshold = np.median(thr)
+            N_sampled = len(pdf)
 
             w_cal = 1.0 / np.maximum(pdf, threshold)
             w_ht = np.maximum(1.0, pdf / threshold)
@@ -178,14 +193,14 @@ def compute_iteration_observables(scan, params, methods):
             for plo, phi in PDF_BINS:
                 sel = (pdf_true >= plo) & (pdf_true < phi) & (np.abs(x) < 3 * SIGMA)
                 label = f"rms_pdf_{plo:.2f}_{phi:.2f}"
-                pdf_mid = (plo + phi) / 2
                 lambda_label = f"lambda_{plo:.2f}_{phi:.2f}"
                 if sel.sum() > 10:
                     pdf_bin_rms[label] = np.sqrt(np.mean((pdf[sel] / pdf_true[sel] - 1.0) ** 2))
-                    pdf_bin_rms[lambda_label] = N * pdf_mid * dx  # λ = N × pdf × Δx
+                    # λ per point = N × pdf_true_i × dx_i, then average
+                    pdf_bin_rms[lambda_label] = np.mean(N * pdf_true[sel] * dx_arr[sel])
                 else:
                     pdf_bin_rms[label] = np.nan
-                    pdf_bin_rms[lambda_label] = N * pdf_mid * dx
+                    pdf_bin_rms[lambda_label] = np.nan
 
             # Spectra recovery
             hist_bins = np.linspace(-2 * SIGMA, 2 * SIGMA, 21)
@@ -203,7 +218,7 @@ def compute_iteration_observables(scan, params, methods):
 
             row = {
                 "iteration": iteration, "method": method,
-                "N": N, "frac": frac, "dx": dx,
+                "N": N, "frac": frac, "dx": dx_mean,
                 "frac_sampled": N_sampled / N,
                 "N_sampled": N_sampled, "N_eff": N_eff,
                 "neff_over_nsamp": N_eff / N_sampled,
@@ -217,6 +232,16 @@ def compute_iteration_observables(scan, params, methods):
             rows.append(row)
 
     obs = pd.DataFrame(rows)
+
+    # Report NaN statistics
+    for method in methods:
+        nc = nan_counts[method]
+        if nc["total"] > 0:
+            pct = 100 * nc["nan"] / nc["total"]
+            report(f"  {method}: {nc['nan']}/{nc['total']} NaN pdf points ({pct:.2f}%)")
+            if pct > 5:
+                report(f"  WARNING: {method} has >5% NaN — check generation")
+
     return obs
 
 
@@ -289,6 +314,10 @@ def figure_s2(obs, methods, output_dir):
     n_panels = len(dx_groups)
     n_methods = len(methods)
 
+    if n_panels == 0:
+        report("  S2: no dx groups — skipping")
+        return
+
     fig, axes = plt.subplots(n_methods, n_panels, figsize=(5 * n_panels, 5 * n_methods),
                              sharex=True, sharey=True)
     if n_methods == 1: axes = axes.reshape(1, -1)
@@ -304,12 +333,11 @@ def figure_s2(obs, methods, output_dir):
     global_ymax = 0
 
     for row_idx, method in enumerate(methods):
-        d = obs[obs["method"] == method].copy()
+        d = d_all[d_all["method"] == method].copy()
         if len(d) == 0: continue
 
         d["inv_sqrt_N"] = 1.0 / np.sqrt(d["N"].astype(float))
         d["inv_sqrt_Nf"] = 1.0 / np.sqrt(d["N"].astype(float) * d["frac"])
-        d["dx_bin"] = pd.qcut(d["dx"], n_dx_bins, duplicates="drop")
 
         for col_idx, dx_grp in enumerate(dx_groups):
             ax = axes[row_idx, col_idx]
@@ -429,6 +457,10 @@ def figure_s3(obs, methods, output_dir):
     n_panels = len(dx_groups)
     n_methods = len(methods)
 
+    if n_panels == 0:
+        report("  S3: no dx groups — skipping")
+        return
+
     fig, axes = plt.subplots(n_methods, n_panels, figsize=(5 * n_panels, 5 * n_methods),
                              sharex=True, sharey=True)
     if n_methods == 1: axes = axes.reshape(1, -1)
@@ -446,10 +478,8 @@ def figure_s3(obs, methods, output_dir):
     fit_table_rows = []
 
     for row_idx, method in enumerate(methods):
-        d = obs[obs["method"] == method].copy()
+        d = d_all[d_all["method"] == method].copy()
         if len(d) == 0: continue
-
-        d["dx_bin"] = pd.qcut(d["dx"], n_dx_bins, duplicates="drop")
 
         # Collect all points for global fit
         all_inv_sqrt_lam = []
@@ -582,6 +612,162 @@ def figure_s3(obs, methods, output_dir):
     if fit_table_rows:
         report("\nS3 fit summary: RMS = √(a²/λ + b²)")
         report_table(["Method", "a", "R²(Poisson)", "b", "R²(2-param)"], fit_table_rows)
+
+
+# ===================================================================
+# S3b: PDF Estimator Bias vs position
+# ===================================================================
+
+def figure_s3b(obs, methods, output_dir, scan=None, params=None):
+    """S3b: PDF estimator bias as a function of x position.
+
+    Shows RMS(pdf_emp/pdf_true - 1) vs x, directly from per-point scan data.
+    Row 0: bias (mean) vs x
+    Row 1: RMS vs x
+    Row 2: RMS vs per-point dx
+    Color = method. Uses all sampled points.
+    Reveals where discretization error dominates (tails for quantile bins).
+    """
+    if scan is None or params is None:
+        report("  S3b: no scan tree — skipping")
+        return
+
+    # Compute per-point bias for all methods
+    x_bins = np.linspace(-3 * SIGMA, 3 * SIGMA, 31)
+    x_centers = 0.5 * (x_bins[:-1] + x_bins[1:])
+    n_xbins = len(x_centers)
+
+    # Collect per-point data
+    method_data = {}  # method -> (bias_per_xbin, rms_per_xbin, count_per_xbin)
+    dx_scatter = {}   # method -> (dx_arr, bias_arr) for all points
+
+    for method in methods:
+        pdf_col = f"{method}_pdf"
+        is_col = f"{method}_is_sampled"
+
+        all_x, all_bias, all_dx = [], [], []
+
+        for _, prow in params.iterrows():
+            iteration = int(prow["iteration"])
+            mask = (scan["iteration"] == iteration) & (scan[is_col] == 1)
+            data = scan[mask]
+            if len(data) == 0: continue
+
+            pdf = data[pdf_col].values.astype(np.float64)
+            pdf_true = data["pdf_true"].values.astype(np.float64)
+            x = data["x"].values.astype(np.float64)
+            dx = data["dx"].values.astype(np.float64)
+
+            finite = np.isfinite(pdf) & (pdf > 0) & (pdf_true > 0.001)
+            if finite.sum() < 10: continue
+
+            bias = pdf[finite] / pdf_true[finite] - 1.0
+            all_x.extend(x[finite])
+            all_bias.extend(bias)
+            all_dx.extend(dx[finite])
+
+        all_x = np.array(all_x)
+        all_bias = np.array(all_bias)
+        all_dx = np.array(all_dx)
+
+        # Profile vs x
+        bias_mean = np.full(n_xbins, np.nan)
+        bias_rms = np.full(n_xbins, np.nan)
+        bias_count = np.full(n_xbins, 0)
+        bin_idx = np.clip(np.digitize(all_x, x_bins) - 1, 0, n_xbins - 1)
+
+        for i in range(n_xbins):
+            sel = bin_idx == i
+            if sel.sum() > 50:
+                bias_mean[i] = np.mean(all_bias[sel])
+                bias_rms[i] = np.sqrt(np.mean(all_bias[sel] ** 2))
+                bias_count[i] = sel.sum()
+
+        method_data[method] = (bias_mean, bias_rms, bias_count)
+        dx_scatter[method] = (all_dx, all_bias)
+
+    # --- Plot: 3 rows ---
+    fig, axes = plt.subplots(3, 1, figsize=(10, 12), sharex=False)
+
+    fig.suptitle("S3b: PDF Estimator Bias vs Position\n"
+                "Row 0: ⟨bias⟩ vs x,  Row 1: RMS(bias) vs x,  Row 2: RMS(bias) vs dx",
+                fontsize=11)
+
+    method_colors = {"smooth": "#d62728", "smooth_v5": "#1f77b4"}
+
+    # Row 0: bias vs x
+    ax = axes[0]
+    for method in methods:
+        bias_mean, _, count = method_data[method]
+        ok = count > 50
+        mc = method_colors.get(method, "gray")
+        ax.plot(x_centers[ok], bias_mean[ok], 'o', ms=4, color=mc,
+               label=METHOD_LABELS.get(method, method), alpha=0.8)
+    ax.axhline(0, color='red', ls='--', lw=1, alpha=0.5)
+    ax.set_ylabel("⟨pdf/pdf_true − 1⟩ (bias)", fontsize=10)
+    ax.set_xlabel("x", fontsize=10)
+    ax.legend(fontsize=9)
+
+    # Row 1: RMS vs x
+    ax = axes[1]
+    for method in methods:
+        _, bias_rms, count = method_data[method]
+        ok = count > 50
+        mc = method_colors.get(method, "gray")
+        ax.plot(x_centers[ok], bias_rms[ok], 'o', ms=4, color=mc,
+               label=METHOD_LABELS.get(method, method), alpha=0.8)
+    ax.set_ylabel("RMS(pdf/pdf_true − 1)", fontsize=10)
+    ax.set_xlabel("x", fontsize=10)
+    ax.set_ylim(bottom=0)
+    ax.legend(fontsize=9)
+
+    # Row 2: RMS vs dx (binned profile)
+    ax = axes[2]
+    for method in methods:
+        all_dx, all_bias = dx_scatter[method]
+        if len(all_dx) < 100: continue
+
+        # Profile in dx bins
+        dx_edges = np.quantile(all_dx, np.linspace(0, 1, 21))
+        dx_edges = np.unique(dx_edges)
+        if len(dx_edges) < 3: continue
+        dx_centers = 0.5 * (dx_edges[:-1] + dx_edges[1:])
+        dx_idx = np.clip(np.digitize(all_dx, dx_edges) - 1, 0, len(dx_centers) - 1)
+
+        rms_vs_dx = []
+        dx_ok = []
+        for i in range(len(dx_centers)):
+            sel = dx_idx == i
+            if sel.sum() > 50:
+                rms_vs_dx.append(np.sqrt(np.mean(all_bias[sel] ** 2)))
+                dx_ok.append(dx_centers[i])
+
+        mc = method_colors.get(method, "gray")
+        ax.plot(dx_ok, rms_vs_dx, 'o-', ms=4, color=mc,
+               label=METHOD_LABELS.get(method, method), alpha=0.8)
+
+    ax.set_ylabel("RMS(pdf/pdf_true − 1)", fontsize=10)
+    ax.set_xlabel("dx (per-point bin width)", fontsize=10)
+    ax.set_ylim(bottom=0)
+    ax.legend(fontsize=9)
+
+    savefig(fig, os.path.join(output_dir, "s3b_pdf_bias_vs_x"),
+            "S3b: PDF Bias vs Position")
+
+    # Report table: mean RMS per |x| category
+    s3b_rows = []
+    for method in methods:
+        _, bias_rms, count = method_data[method]
+        for (xlo, xhi, label) in [(0, 1, "|x|<1"), (1, 2, "1<|x|<2"), (2, 3, "|x|>2")]:
+            sel = (np.abs(x_centers) >= xlo) & (np.abs(x_centers) < xhi) & (count > 50)
+            if sel.sum() > 0:
+                rms_mean = np.mean(bias_rms[sel])
+                n_pts = int(np.sum(count[sel]))
+                s3b_rows.append([method, label, f"{rms_mean:.4f}", str(n_pts)])
+
+    if s3b_rows:
+        report("\nS3b: PDF bias RMS by |x| region")
+        report_table(["Method", "|x| region", "⟨RMS⟩", "N_points"], s3b_rows)
 
 
 # ===================================================================
@@ -805,6 +991,10 @@ def figure_s4(obs, methods, output_dir, scan=None, params=None):
     params["dx_bin"] = pd.qcut(params["dx"], n_dx_bins, duplicates="drop")
     dx_groups = sorted(params["dx_bin"].dropna().unique())
 
+    if len(dx_groups) == 0:
+        report("  WARNING: no dx groups — skipping S4b/S4c")
+        return
+
     # Collect all model data for S4c
     s4c_data = {}
     s4b_ratio_table = []  # for summary report
@@ -926,7 +1116,6 @@ def figure_s4(obs, methods, output_dir, scan=None, params=None):
                 ax_ratio.legend(fontsize=7)
 
             # Row 1 + Row 2: scatter and pull from 6 fine Ns bins
-            params_m["dx_bin"] = pd.qcut(params_m["dx"], n_dx_bins, duplicates="drop")
             dx_sub = params_m[params_m["dx_bin"] == dx_grp]
 
             all_sig_meas, all_sig_model, all_abs_x, all_n_valid = [], [], [], []
@@ -1155,6 +1344,15 @@ S3: PDF Estimator Bias (s3_pdf_bias.png -- combined, 2 rows x 4 cols)
     b = discretization floor (expect ~0 for v5, >0 for legacy)
   Black dashed: a/sqrt(lambda) fit. Red dotted: 2-param fit.
   Fit parameters in summary table.
+
+S3b: PDF Estimator Bias vs Position (s3b_pdf_bias_vs_x.png)
+  3 rows x 1 col. Color = method.
+  Row 0: mean(pdf/pdf_true - 1) vs x -- systematic bias profile
+  Row 1: RMS(pdf/pdf_true - 1) vs x -- total error profile
+  Row 2: RMS(pdf/pdf_true - 1) vs dx (per-point bin width) -- discretization
+  Key test: for uniform bins, RMS is flat vs x.
+    For quantile bins, RMS rises in tails (large dx -> interpolation error).
+  Table: mean RMS per |x| region (core/shoulder/tail).
 """)
     report("""
 S4: Spectra Recovery Model
@@ -1250,6 +1448,7 @@ def main():
     figure_s1(obs, methods, args.output)
     figure_s2(obs, methods, args.output)
     figure_s3(obs, methods, args.output)
+    figure_s3b(obs, methods, args.output, scan=scan, params=params)
     figure_s4(obs, methods, args.output, scan=scan, params=params)
 
     save_combined_pdf(args.output)
