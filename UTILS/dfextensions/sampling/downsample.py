@@ -332,13 +332,10 @@ def _estimate_pdf_smooth_1d(
 
         valid = pdf_grid[nb] > 0
         if valid.sum() < (poly_order + 1):
-            # Not enough points — fall back to grid value
             pdf_corrected[b] = max(pdf_grid[b], 0.0)
             continue
 
         if fit_coordinate == "bin":
-            # Fit Poisson-corrected counts vs bin index
-            # For quantile bins: counts ≈ constant → polynomial fit trivial
             xc = nb[valid].astype(np.float64)
             x_eval = float(b)
             yc = counts_corrected[nb[valid]]
@@ -352,7 +349,6 @@ def _estimate_pdf_smooth_1d(
             coeffs = np.polyfit(xc, yc, actual_order)
             val = np.polyval(coeffs, x_eval)
             if fit_coordinate == "bin":
-                # Convert fitted counts back to pdf
                 pdf_corrected[b] = max(val, 0.0) / (N * bin_widths[b])
             else:
                 pdf_corrected[b] = max(val, 0.0)
@@ -362,7 +358,25 @@ def _estimate_pdf_smooth_1d(
     # Fill remaining zeros via log-interp (fallback for extreme tails)
     pdf_corrected = _interpolate_empty_bins_log(pdf_corrected)
 
-    return centers, pdf_corrected
+    # Extend with edge points: log-linear extrapolation from last two centers
+    ext_centers = centers
+    ext_pdf = pdf_corrected
+    # Left edge
+    if pdf_corrected[0] > 0 and pdf_corrected[1] > 0:
+        log_slope = (np.log(pdf_corrected[0]) - np.log(pdf_corrected[1])) / (centers[0] - centers[1])
+        pdf_edge = pdf_corrected[0] * np.exp(log_slope * (bin_edges[0] - centers[0]))
+        pdf_edge = max(pdf_edge, 0.0)
+        ext_centers = np.concatenate([[bin_edges[0]], ext_centers])
+        ext_pdf = np.concatenate([[pdf_edge], ext_pdf])
+    # Right edge
+    if pdf_corrected[-1] > 0 and pdf_corrected[-2] > 0:
+        log_slope = (np.log(pdf_corrected[-1]) - np.log(pdf_corrected[-2])) / (centers[-1] - centers[-2])
+        pdf_edge = pdf_corrected[-1] * np.exp(log_slope * (bin_edges[-1] - centers[-1]))
+        pdf_edge = max(pdf_edge, 0.0)
+        ext_centers = np.concatenate([ext_centers, [bin_edges[-1]]])
+        ext_pdf = np.concatenate([ext_pdf, [pdf_edge]])
+
+    return ext_centers, ext_pdf
 
 
 def _correct_nd_grid_polynomial(
