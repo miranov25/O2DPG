@@ -258,9 +258,15 @@ class TestS8PolynomialFallback:
         centers, pdf = _estimate_pdf_smooth_1d(
             x, edges, kernel_sigma_bins=0.5, poly_order=2, poly_half_range=0.5
         )
-        assert len(pdf) == 60
+        # Returns 60 bin centers + up to 2 edge extrapolation points
+        assert len(pdf) >= 60
+        assert len(pdf) <= 62
+        assert len(centers) == len(pdf)
         assert np.all(pdf >= 0)
         assert np.all(np.isfinite(pdf))
+        # Edge points extend to bin edges
+        assert centers[0] <= edges[0] + 1e-10
+        assert centers[-1] >= edges[-1] - 1e-10
 
 
 # =============================================================================
