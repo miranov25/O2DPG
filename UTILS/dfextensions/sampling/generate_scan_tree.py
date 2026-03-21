@@ -82,6 +82,47 @@ def gaussian_pdf(x, sigma=SIGMA):
     return np.exp(-0.5 * (x / sigma) ** 2) / (sigma * np.sqrt(2 * np.pi))
 
 
+# Linear ramp: f(x) = (1 + slope*x) / L on [-L/2, L/2], normalized
+LINEAR_HALF = 5.0   # support [-5, 5]
+LINEAR_SLOPE = 0.1  # mild slope
+
+def linear_pdf(x):
+    """Linear ramp PDF: (1 + 0.1*x)/10 on [-5, 5]."""
+    x = np.asarray(x, dtype=np.float64)
+    L = 2 * LINEAR_HALF
+    return np.where((x >= -LINEAR_HALF) & (x <= LINEAR_HALF),
+                    (1.0 + LINEAR_SLOPE * x) / L, 0.0)
+
+
+def generate_data(rng, N, distribution="gaussian"):
+    """Generate N random samples from the specified distribution."""
+    if distribution == "linear":
+        # Inverse CDF sampling for f(x) = (1 + slope*x)/L on [-a, a]
+        # CDF(x) = (x + a)/L + slope*(x² - a²)/(2*L)
+        # Use rejection: envelope = max_pdf = (1 + slope*a)/L
+        a = LINEAR_HALF
+        L = 2 * a
+        max_pdf = (1.0 + LINEAR_SLOPE * a) / L
+        samples = []
+        while len(samples) < N:
+            batch = N - len(samples) + 1000
+            x_cand = rng.uniform(-a, a, batch)
+            u = rng.uniform(0, max_pdf, batch)
+            accept = u < (1.0 + LINEAR_SLOPE * x_cand) / L
+            samples.extend(x_cand[accept])
+        return np.array(samples[:N])
+    else:
+        return rng.normal(0, SIGMA, N)
+
+
+def true_pdf(x, distribution="gaussian"):
+    """Analytical PDF for the specified distribution."""
+    if distribution == "linear":
+        return linear_pdf(x)
+    else:
+        return gaussian_pdf(x)
+
+
 def draw_scan_params(rng, mode="uniform", nbins_min=20, nbins_max=500):
     """Draw random (N, frac, Δx/nbins) for one iteration.
 
@@ -102,7 +143,7 @@ def draw_scan_params(rng, mode="uniform", nbins_min=20, nbins_max=500):
         return N, frac, dx, 0
 
 
-def run_one_iteration(iteration, N, frac, dx, pdf_params_v5=None):
+def run_one_iteration(iteration, N, frac, dx, pdf_params_v5=None, distribution="gaussian"):
     """Run one scan iteration with given parameters.
 
     Returns DataFrame with sampled rows only (union of both methods).
@@ -111,11 +152,12 @@ def run_one_iteration(iteration, N, frac, dx, pdf_params_v5=None):
              smooth_v5_pdf, smooth_v5_threshold, smooth_v5_is_sampled
     """
     rng_data = np.random.RandomState(iteration)
-    lo, hi = -RANGE, RANGE
-    n_bins = max(4, int(2 * RANGE / dx))  # at least 4 bins
+    half_range = LINEAR_HALF if distribution == "linear" else RANGE
+    lo, hi = -half_range, half_range
+    n_bins = max(4, int(2 * half_range / dx))
 
-    # Generate Gaussian data
-    x = rng_data.normal(0, SIGMA, N)
+    # Generate data
+    x = generate_data(rng_data, N, distribution=distribution)
     df = pd.DataFrame({"x": x})
 
     # Filter to range (same as algorithm does internally)
@@ -126,7 +168,7 @@ def run_one_iteration(iteration, N, frac, dx, pdf_params_v5=None):
     if N_filtered < 10:
         return None  # skip degenerate cases
 
-    pdf_true = gaussian_pdf(df_filtered["x"].values)
+    pdf_true_vals = true_pdf(df_filtered["x"].values, distribution=distribution)
 
     # Per-point edge flag and nbins
     bin_edges = np.linspace(lo, hi, n_bins + 1)
@@ -182,7 +224,7 @@ def run_one_iteration(iteration, N, frac, dx, pdf_params_v5=None):
     result = pd.DataFrame({
         "iteration": np.int16(iteration),
         "x": df_filtered["x"].values[is_any].astype(np.float16),
-        "pdf_true": pdf_true[is_any].astype(np.float32),
+        "pdf_true": pdf_true_vals[is_any].astype(np.float32),
         # Per-iteration metadata (constant per iteration)
         "N": np.int32(N),
         "frac": np.float16(frac),
@@ -202,7 +244,7 @@ def run_one_iteration(iteration, N, frac, dx, pdf_params_v5=None):
     return result
 
 
-def run_one_iteration_quantile(iteration, N, frac, nbins, pdf_params_v5=None):
+def run_one_iteration_quantile(iteration, N, frac, nbins, pdf_params_v5=None, distribution="gaussian"):
     """Run one scan iteration with Gaussian CDF-quantile bin edges.
 
     Bin edges: norm.ppf(np.linspace(0.001, 0.999, nbins+1))
@@ -213,12 +255,12 @@ def run_one_iteration_quantile(iteration, N, frac, nbins, pdf_params_v5=None):
 
     rng_data = np.random.RandomState(iteration)
 
-    # Quantile bin edges
+    # Quantile bin edges (Gaussian quantiles — works for any distribution)
     edges = sp_norm.ppf(np.linspace(0.001, 0.999, nbins + 1)) * SIGMA
     lo, hi = edges[0], edges[-1]
 
-    # Generate Gaussian data
-    x = rng_data.normal(0, SIGMA, N)
+    # Generate data
+    x = generate_data(rng_data, N, distribution=distribution)
     df = pd.DataFrame({"x": x})
 
     # Filter to bin range
@@ -229,7 +271,7 @@ def run_one_iteration_quantile(iteration, N, frac, nbins, pdf_params_v5=None):
     if N_filtered < 10:
         return None
 
-    pdf_true = gaussian_pdf(df_filtered["x"].values)
+    pdf_true_vals = true_pdf(df_filtered["x"].values, distribution=distribution)
     x_vals = df_filtered["x"].values
 
     # Per-point dx: actual bin width at each point's position
@@ -288,7 +330,7 @@ def run_one_iteration_quantile(iteration, N, frac, nbins, pdf_params_v5=None):
     result = pd.DataFrame({
         "iteration": np.int16(iteration),
         "x": x_vals[is_any].astype(np.float16),
-        "pdf_true": pdf_true[is_any].astype(np.float32),
+        "pdf_true": pdf_true_vals[is_any].astype(np.float32),
         "N": np.int32(N),
         "frac": np.float16(frac),
         "dx": dx_per_point[is_any].astype(np.float16),  # per-point bin width
@@ -322,6 +364,9 @@ def main():
                        help="Polynomial fit coordinate: 'x' (data units) or 'bin' (bin index)")
     parser.add_argument("--nbins_min", type=int, default=20, help="Min nbins for quantile mode")
     parser.add_argument("--nbins_max", type=int, default=500, help="Max nbins for quantile mode")
+    parser.add_argument("--distribution", type=str, default="gaussian",
+                       choices=["gaussian", "linear"],
+                       help="Data distribution: 'gaussian' or 'linear' (ramp on [-5,5])")
     args = parser.parse_args()
 
     n_iter = args.n_iter
@@ -333,7 +378,7 @@ def main():
     _pdf_params_v5["fit_coordinate"] = args.fit_coordinate
 
     print("=" * 70)
-    print(f"GENERATING SCAN TREE — mode={mode}")
+    print(f"GENERATING SCAN TREE — mode={mode}, distribution={args.distribution}")
     print("=" * 70)
     print(f"\nScan parameters:")
     print(f"  N_ITERATIONS = {n_iter}")
@@ -347,6 +392,7 @@ def main():
         print(f"  dx           = per-point actual bin width")
     print(f"  Methods      = smooth (legacy), smooth_v5")
     print(f"  PDF_PARAMS_V5= {_pdf_params_v5}")
+    print(f"  Distribution = {args.distribution}")
     print(f"  OUTPUT       = {output_file}")
     print(f"  Seed         = {args.seed}")
 
@@ -394,10 +440,12 @@ def main():
 
         if mode == "quantile":
             result = run_one_iteration_quantile(iteration, N, frac, nbins,
-                                               pdf_params_v5=_pdf_params_v5)
+                                               pdf_params_v5=_pdf_params_v5,
+                                               distribution=args.distribution)
         else:
             result = run_one_iteration(iteration, N, frac, dx,
-                                      pdf_params_v5=_pdf_params_v5)
+                                      pdf_params_v5=_pdf_params_v5,
+                                      distribution=args.distribution)
 
         if result is not None:
             all_results.append(result)

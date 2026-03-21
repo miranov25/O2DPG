@@ -65,6 +65,56 @@ def gaussian_pdf(x, sigma=SIGMA):
     return np.exp(-0.5 * (x / sigma) ** 2) / (sigma * np.sqrt(2 * np.pi))
 
 
+def derive_scan_metadata(scan):
+    """Derive distribution-agnostic metadata from scan tree.
+
+    Returns dict with x_range, pdf_true profile, core/shoulder/tail boundaries.
+    All downstream code uses this instead of hardcoded Gaussian assumptions.
+    """
+    x_all = scan["x"].values.astype(np.float64)
+    pdf_all = scan["pdf_true"].values.astype(np.float64)
+
+    x_lo = float(np.min(x_all))
+    x_hi = float(np.max(x_all))
+    x_mid = 0.5 * (x_lo + x_hi)
+    x_full = x_hi - x_lo
+
+    # Boundaries: split range into 3 equal parts (core/shoulder/tail)
+    b1 = x_full / 6.0  # core: |x - x_mid| < b1
+    b2 = x_full / 3.0  # shoulder: b1 < |x - x_mid| < b2
+
+    # pdf_true profile: median per x-bin across all iterations
+    n_profile = 200
+    profile_edges = np.linspace(x_lo, x_hi, n_profile + 1)
+    profile_centers = 0.5 * (profile_edges[:-1] + profile_edges[1:])
+    profile_pdf = np.zeros(n_profile)
+    idx = np.clip(np.digitize(x_all, profile_edges) - 1, 0, n_profile - 1)
+    for i in range(n_profile):
+        sel = idx == i
+        if sel.sum() > 10:
+            profile_pdf[i] = np.median(pdf_all[sel])
+
+    return {
+        "x_lo": x_lo, "x_hi": x_hi, "x_mid": x_mid, "x_full": x_full,
+        "b1": b1, "b2": b2,  # core/shoulder/tail boundaries
+        "profile_centers": profile_centers,
+        "profile_pdf": profile_pdf,
+    }
+
+
+def pdf_true_at(x, meta):
+    """Interpolate pdf_true profile at arbitrary x positions."""
+    return np.interp(x, meta["profile_centers"], meta["profile_pdf"])
+
+
+def expected_counts_from_profile(N, hist_bins, meta):
+    """Expected histogram counts using pdf_true profile. Distribution-agnostic."""
+    bin_centers = 0.5 * (hist_bins[:-1] + hist_bins[1:])
+    bin_widths = np.diff(hist_bins)
+    pdf_vals = pdf_true_at(bin_centers, meta)
+    return N * pdf_vals * bin_widths
+
+
 # ===================================================================
 # I/O
 # ===================================================================
@@ -137,7 +187,7 @@ def grouped_profile(sub, x_col, y_col, x_bin_col, min_per_bin=5, stat="mean"):
 # Per-iteration observables
 # ===================================================================
 
-def compute_iteration_observables(scan, params, methods):
+def compute_iteration_observables(scan, params, methods, meta=None):
     rows = []
     nan_counts = {m: {"total": 0, "nan": 0} for m in methods}
     for _, prow in params.iterrows():
@@ -179,8 +229,10 @@ def compute_iteration_observables(scan, params, methods):
             sum_cw_over_N = w_ht.sum() / N
             N_eff = w_cal.sum() ** 2 / (w_cal ** 2).sum()
 
-            # PDF bias in core
-            core = (np.abs(x) < 2 * SIGMA) & (pdf_true > 0.01)
+            # PDF bias in core (central 1/3 of x range)
+            core_half = meta["b1"] if meta else 2 * SIGMA
+            x_mid = meta["x_mid"] if meta else 0.0
+            core = (np.abs(x - x_mid) < core_half) & (pdf_true > 0.01)
             if core.sum() > 10:
                 bias_core = np.mean(pdf[core] / pdf_true[core] - 1.0)
                 rms_bias = np.sqrt(np.mean((pdf[core] / pdf_true[core] - 1.0) ** 2))
@@ -197,7 +249,7 @@ def compute_iteration_observables(scan, params, methods):
             not_edge_f = not_edge[finite]
 
             for plo, phi in PDF_BINS:
-                sel = (pdf_true >= plo) & (pdf_true < phi) & (np.abs(x) < 3 * SIGMA)
+                sel = (pdf_true >= plo) & (pdf_true < phi)
                 label = f"rms_pdf_{plo:.2f}_{phi:.2f}"
                 lambda_label = f"lambda_{plo:.2f}_{phi:.2f}"
                 if sel.sum() > 10:
@@ -219,14 +271,14 @@ def compute_iteration_observables(scan, params, methods):
                     pdf_bin_rms[label_ne] = np.nan
                     pdf_bin_rms[lambda_ne] = np.nan
 
-            # Spectra recovery
-            hist_bins = np.linspace(-2 * SIGMA, 2 * SIGMA, 21)
-            expected = N * (sp_stats.norm.cdf(hist_bins[1:], 0, SIGMA) -
-                           sp_stats.norm.cdf(hist_bins[:-1], 0, SIGMA))
+            # Spectra recovery (central 2/3 of x range)
+            spec_half = meta["b2"] if meta else 2 * SIGMA
+            hist_bins = np.linspace(x_mid - spec_half, x_mid + spec_half, 21)
+            exp_counts = expected_counts_from_profile(N, hist_bins, meta) if meta else np.ones(20)
             reco, _ = np.histogram(x, bins=hist_bins, weights=w_ht)
-            good = expected > 10
+            good = exp_counts > 10
             if good.sum() > 5:
-                ratio_bins = reco[good] / expected[good]
+                ratio_bins = reco[good] / exp_counts[good]
                 spectra_mean = ratio_bins.mean()
                 spectra_std = ratio_bins.std()
             else:
@@ -668,7 +720,7 @@ def figure_s3(obs, methods, output_dir, col_suffix="", label_suffix=""):
 # S3b: PDF Estimator Bias vs position
 # ===================================================================
 
-def figure_s3b(obs, methods, output_dir, scan=None, params=None):
+def figure_s3b(obs, methods, output_dir, scan=None, params=None, meta=None):
     """S3b: PDF estimator bias as a function of x position.
 
     3 rows × 2 cols: col 0 = all bins, col 1 = excluding edge bins.
@@ -683,7 +735,9 @@ def figure_s3b(obs, methods, output_dir, scan=None, params=None):
 
     has_edge = "isEdge" in scan.columns
 
-    x_bins = np.linspace(-3 * SIGMA, 3 * SIGMA, 31)
+    x_lo = meta["x_lo"] if meta else -3 * SIGMA
+    x_hi = meta["x_hi"] if meta else 3 * SIGMA
+    x_bins = np.linspace(x_lo, x_hi, 31)
     x_centers = 0.5 * (x_bins[:-1] + x_bins[1:])
     n_xbins = len(x_centers)
 
@@ -864,8 +918,11 @@ def figure_s3b(obs, methods, output_dir, scan=None, params=None):
             key = (method, subset_key)
             if key not in profiles: continue
             _, bias_rms, count = profiles[key]
-            for (xlo, xhi, label) in [(0, 1, "|x|<1"), (1, 2, "1<|x|<2"), (2, 3, "|x|>2")]:
-                sel = (np.abs(x_centers) >= xlo) & (np.abs(x_centers) < xhi) & (count > 50)
+            b1 = meta["b1"] if meta else 1.0
+            b2 = meta["b2"] if meta else 2.0
+            x_mid_val = meta["x_mid"] if meta else 0.0
+            for (xlo, xhi, label) in [(0, b1, "core"), (b1, b2, "shoulder"), (b2, 999, "tail")]:
+                sel = (np.abs(x_centers - x_mid_val) >= xlo) & (np.abs(x_centers - x_mid_val) < xhi) & (count > 50)
                 if sel.sum() > 0:
                     rms_mean = np.mean(bias_rms[sel])
                     n_pts = int(np.sum(count[sel]))
@@ -880,9 +937,11 @@ def figure_s3b(obs, methods, output_dir, scan=None, params=None):
 # S4: Spectra Recovery
 # ===================================================================
 
-def _compute_per_xbin_ratios(scan, params, methods):
+def _compute_per_xbin_ratios(scan, params, methods, meta=None):
     """Precompute per-iteration per-x-bin ratios. Heavy loop, run once."""
-    hist_bins = np.linspace(-3 * SIGMA, 3 * SIGMA, 31)
+    x_lo = meta["x_lo"] if meta else -3 * SIGMA
+    x_hi = meta["x_hi"] if meta else 3 * SIGMA
+    hist_bins = np.linspace(x_lo, x_hi, 31)
     bin_centers = 0.5 * (hist_bins[:-1] + hist_bins[1:])
     n_bins = len(bin_centers)
 
@@ -908,14 +967,13 @@ def _compute_per_xbin_ratios(scan, params, methods):
 
             w_ht = np.maximum(1.0, pdf / threshold)
 
-            expected = N * (sp_stats.norm.cdf(hist_bins[1:], 0, SIGMA) -
-                           sp_stats.norm.cdf(hist_bins[:-1], 0, SIGMA))
+            exp_counts = expected_counts_from_profile(N, hist_bins, meta) if meta else np.ones(n_bins)
 
             reco, _ = np.histogram(x, bins=hist_bins, weights=w_ht)
 
             ratio = np.full(n_bins, np.nan)
-            good = expected > 10
-            ratio[good] = reco[good] / expected[good]
+            good = exp_counts > 10
+            ratio[good] = reco[good] / exp_counts[good]
 
             results[(method, iteration)] = ratio
 
@@ -924,7 +982,7 @@ def _compute_per_xbin_ratios(scan, params, methods):
 
 def _s4_plot_panel(axes_bias, axes_sig, bin_centers, bin_width,
                    ratios_dict, sub_params, method, obs,
-                   color, label):
+                   color, label, meta=None):
     """Plot one group's bias and sigma (no connecting lines). Return model data."""
     all_ratios = []
     for _, prow in sub_params.iterrows():
@@ -966,21 +1024,23 @@ def _s4_plot_panel(axes_bias, axes_sig, bin_centers, bin_width,
     mean_ratio = np.nan
     mean_ratio_err = np.nan
     if len(thr_vals) > 0 and len(N_vals) > 0:
-        gauss_vals = gaussian_pdf(bin_centers)
+        f_true_vals = pdf_true_at(bin_centers, meta) if meta else gaussian_pdf(bin_centers)
         n_iter = min(len(N_vals), len(thr_vals))
         sig_models_i = np.zeros((n_iter, len(bin_centers)))
         for i in range(n_iter):
             sig_models_i[i] = np.where(
-                gauss_vals > thr_vals[i],
+                f_true_vals > thr_vals[i],
                 1.0 / np.sqrt(N_vals[i] * thr_vals[i] * bin_width + 1e-30),
-                1.0 / np.sqrt(N_vals[i] * gauss_vals * bin_width + 1e-30)
+                1.0 / np.sqrt(N_vals[i] * f_true_vals * bin_width + 1e-30)
             )
         sigma_model = np.sqrt(np.mean(sig_models_i ** 2, axis=0))
         axes_sig.plot(bin_centers[ok], sigma_model[ok], '--', color=color,
                      alpha=0.4, lw=1.5)
 
-        # Mean ratio σ_meas / σ_model (core only, |x| < 2σ)
-        core = ok & (np.abs(bin_centers) < 2 * SIGMA) & np.isfinite(sigma_model) & (sigma_model > 0)
+        # Mean ratio σ_meas / σ_model (core only)
+        core_half = meta["b1"] if meta else 2 * SIGMA
+        x_mid = meta["x_mid"] if meta else 0.0
+        core = ok & (np.abs(bin_centers - x_mid) < core_half) & np.isfinite(sigma_model) & (sigma_model > 0)
         if core.sum() > 3:
             ratios_core = sigma[core] / sigma_model[core]
             mean_ratio = np.mean(ratios_core)
@@ -991,7 +1051,7 @@ def _s4_plot_panel(axes_bias, axes_sig, bin_centers, bin_width,
 
 
 def _s4_compute_sigma(ratios_dict, sub_params, method, obs,
-                      bin_centers, bin_width):
+                      bin_centers, bin_width, meta=None):
     """Compute σ and σ_model for a group without plotting. For S4c scatter."""
     all_ratios = []
     for _, prow in sub_params.iterrows():
@@ -1014,24 +1074,23 @@ def _s4_compute_sigma(ratios_dict, sub_params, method, obs,
 
     sigma_model = np.full_like(sigma, np.nan)
     if len(thr_vals) > 0 and len(N_vals) > 0:
-        gauss_vals = gaussian_pdf(bin_centers)
+        f_true_vals = pdf_true_at(bin_centers, meta) if meta else gaussian_pdf(bin_centers)
 
         # Per-iteration σ_model_i, then σ_model = √(⟨σ_model_i²⟩)
-        # This is correct because σ_meas = std(ratio) = √(⟨σ_i²⟩), not √(⟨σ_i⟩²)
         n_iter = min(len(N_vals), len(thr_vals))
         sig_models_i = np.zeros((n_iter, len(bin_centers)))
         for i in range(n_iter):
             sig_models_i[i] = np.where(
-                gauss_vals > thr_vals[i],
+                f_true_vals > thr_vals[i],
                 1.0 / np.sqrt(N_vals[i] * thr_vals[i] * bin_width + 1e-30),
-                1.0 / np.sqrt(N_vals[i] * gauss_vals * bin_width + 1e-30)
+                1.0 / np.sqrt(N_vals[i] * f_true_vals * bin_width + 1e-30)
             )
         sigma_model = np.sqrt(np.mean(sig_models_i ** 2, axis=0))
 
     return {"sigma": sigma, "sigma_model": sigma_model, "ok": ok, "n_valid": n_valid}
 
 
-def figure_s4(obs, methods, output_dir, scan=None, params=None):
+def figure_s4(obs, methods, output_dir, scan=None, params=None, meta=None):
     """S4: Two variants of spectra recovery per x-bin.
     S4a: cols = frac bins, color = N bins
     S4b: cols = Δx bins, color = N_sampled bins
@@ -1042,7 +1101,7 @@ def figure_s4(obs, methods, output_dir, scan=None, params=None):
 
     report("  Computing per-x-bin ratios...")
     t_s4 = time.time()
-    hist_bins, bin_centers, ratios_dict = _compute_per_xbin_ratios(scan, params, methods)
+    hist_bins, bin_centers, ratios_dict = _compute_per_xbin_ratios(scan, params, methods, meta=meta)
     bin_width = hist_bins[1] - hist_bins[0]
     report(f"  Per-x-bin ratios: {time.time() - t_s4:.1f}s")
 
@@ -1079,7 +1138,7 @@ def figure_s4(obs, methods, output_dir, scan=None, params=None):
                 if len(sub) == 0: continue
                 _s4_plot_panel(axes[0, col_idx], axes[1, col_idx],
                               bin_centers, bin_width, ratios_dict,
-                              sub, method, obs, n_color, n_label)
+                              sub, method, obs, n_color, n_label, meta=meta)
 
             axes[0, col_idx].set_title(f"⟨frac⟩={frac_mean:.3f}", fontsize=10)
             axes[0, col_idx].axhline(0, color='red', ls='--', lw=1, alpha=0.5)
@@ -1133,7 +1192,7 @@ def figure_s4(obs, methods, output_dir, scan=None, params=None):
                 if len(sub) == 0: continue
                 result = _s4_plot_panel(axes[0, col_idx], axes[1, col_idx],
                               bin_centers, bin_width, ratios_dict,
-                              sub, method, obs, ns_color, ns_label)
+                              sub, method, obs, ns_color, ns_label, meta=meta)
                 if result is not None:
                     s4c_data[(method, col_idx, ns_label)] = result
                     mr = result["mean_ratio"]
@@ -1158,7 +1217,9 @@ def figure_s4(obs, methods, output_dir, scan=None, params=None):
         report_table(["Method", "⟨Δx⟩", "N_sampled bin", "⟨σ/σ_model⟩"], s4b_ratio_table)
 
     # --- S4c: 3 cols (Dx) x 3 rows: ratio vs x, scatter, pull histogram ---
-    ABS_X_BINS = [(0, 1, "|x|<1 (core)"), (1, 2, "1<|x|<2"), (2, 4, "|x|>2 (tail)")]
+    b1 = meta["b1"] if meta else 1.0
+    b2 = meta["b2"] if meta else 2.0
+    ABS_X_BINS = [(0, b1, "core"), (b1, b2, "shoulder"), (b2, 999, "tail")]
     ABS_X_COLORS = ["#1b9e77", "#d95f02", "#7570b3"]
 
     s4c_fit_table = []
@@ -1231,14 +1292,15 @@ def figure_s4(obs, methods, output_dir, scan=None, params=None):
                 if len(sub) < 5: continue
 
                 result = _s4_compute_sigma(ratios_dict, sub, method, obs,
-                                           bin_centers, bin_width)
+                                           bin_centers, bin_width, meta=meta)
                 if result is None: continue
 
                 sig, sig_mod, ok_r, nv = result["sigma"], result["sigma_model"], result["ok"], result["n_valid"]
                 valid = ok_r & np.isfinite(sig_mod) & (sig_mod > 0)
                 all_sig_meas.extend(sig[valid])
                 all_sig_model.extend(sig_mod[valid])
-                all_abs_x.extend(np.abs(bin_centers[valid]))
+                x_mid_s4c = meta["x_mid"] if meta else 0.0
+                all_abs_x.extend(np.abs(bin_centers[valid] - x_mid_s4c))
                 all_n_valid.extend(nv[valid])
 
             all_sig_meas = np.array(all_sig_meas)
@@ -1540,8 +1602,13 @@ def main():
     scan, params = load_scan(args.input)
     report(f"  Load time: {time.time() - t0:.1f}s")
 
+    # Derive distribution-agnostic metadata from scan tree
+    meta = derive_scan_metadata(scan)
+    report(f"  x range: [{meta['x_lo']:.2f}, {meta['x_hi']:.2f}], "
+           f"core<{meta['b1']:.2f}, shoulder<{meta['b2']:.2f}")
+
     t1 = time.time()
-    obs = compute_iteration_observables(scan, params, methods)
+    obs = compute_iteration_observables(scan, params, methods, meta=meta)
     report(f"Computed: {len(obs)} rows ({obs['iteration'].nunique()} iter x {len(methods)} methods)")
     report(f"  Compute time: {time.time() - t1:.1f}s")
 
@@ -1557,8 +1624,8 @@ def main():
     if scan is not None and "isEdge" in scan.columns:
         figure_s3(obs, methods, args.output,
                   col_suffix="_noedge", label_suffix=" (excluding edge bins)")
-    figure_s3b(obs, methods, args.output, scan=scan, params=params)
-    figure_s4(obs, methods, args.output, scan=scan, params=params)
+    figure_s3b(obs, methods, args.output, scan=scan, params=params, meta=meta)
+    figure_s4(obs, methods, args.output, scan=scan, params=params, meta=meta)
 
     save_combined_pdf(args.output)
     write_summary(obs, methods, args.output, args.input)
