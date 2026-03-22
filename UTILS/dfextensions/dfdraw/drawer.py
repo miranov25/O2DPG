@@ -699,6 +699,8 @@ class DFDraw:
         group_by_bins: Optional[int] = None,
         group_by_quantiles: Optional[int] = None,
         sort_groups: bool = True,
+        # Phase 13.12.DF v1.1: Weights support
+        weights: Optional[str] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -756,6 +758,10 @@ class DFDraw:
         sort_groups : bool, default True
             If True, sort groups numerically/alphabetically in legend.
             Phase 13.12.DF F4.
+        weights : str, optional
+            Column name for weights. If provided, computes weighted mean/std/sem.
+            Useful for reconstructing distributions from importance sampling.
+            Phase 13.12.DF v1.1.
         **kwargs
             Additional arguments.
         
@@ -809,7 +815,7 @@ class DFDraw:
                 # Phase 13.12.DF: pass new parameters
                 return_data=return_data, min_entries=min_entries,
                 group_by_bins=group_by_bins, group_by_quantiles=group_by_quantiles,
-                sort_groups=sort_groups,
+                sort_groups=sort_groups, weights=weights,
                 **kwargs
             )
         else:
@@ -822,7 +828,7 @@ class DFDraw:
                 # Phase 13.12.DF: pass new parameters
                 return_data=return_data, min_entries=min_entries,
                 group_by_bins=group_by_bins, group_by_quantiles=group_by_quantiles,
-                sort_groups=sort_groups,
+                sort_groups=sort_groups, weights=weights,
                 **kwargs
             )
             axes = ax

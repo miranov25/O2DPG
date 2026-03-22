@@ -309,6 +309,98 @@ class TestSortGroups:
         assert labels == ['C', 'A', 'B'], f"Expected occurrence order, got {labels}"
 
 
+class TestFacetMode:
+    """Tests for facet mode with new parameters."""
+    
+    def test_facet_profile_with_new_params(self, sample_df):
+        """Verify new parameters work in facet mode."""
+        plotter = DFDraw(sample_df)
+        fig, axes, stats = plotter.profile(
+            'y:x',
+            group_by='group',
+            facet=True,
+            min_entries=5,
+            return_data=True,
+        )
+        
+        assert stats.get('faceted', False), "Should be faceted"
+        assert 'per_group' in stats
+        # Each subplot should have profile_data from return_data=True
+        for group_name, group_stats in stats['per_group'].items():
+            assert 'profile_data' in group_stats, f"Missing profile_data for {group_name}"
+
+
+class TestWeights:
+    """Tests for Phase 13.12.DF v1.1: weights parameter."""
+    
+    def test_weighted_profile_basic(self):
+        """Verify weighted profile computes correctly."""
+        np.random.seed(42)
+        # Create data where weights should shift the mean
+        df = pd.DataFrame({
+            'x': np.repeat([1, 2, 3], 100),
+            'y': np.tile([0, 10], 150),  # alternating 0 and 10
+            'w': np.tile([1, 9], 150),   # weight 10s much higher
+        })
+        
+        plotter = DFDraw(df)
+        
+        # Unweighted: mean should be 5
+        fig, ax, stats_unweighted = plotter.profile(
+            'y:x', bins=3, range=(0.5, 3.5), return_data=True
+        )
+        plt.close(fig)
+        
+        # Weighted: mean should be ~9 (heavily weighted toward 10)
+        fig, ax, stats_weighted = plotter.profile(
+            'y:x', bins=3, range=(0.5, 3.5), return_data=True, weights='w'
+        )
+        plt.close(fig)
+        
+        unweighted_mean = stats_unweighted['profile_data']['y_mean'].mean()
+        weighted_mean = stats_weighted['profile_data']['y_mean'].mean()
+        
+        assert abs(unweighted_mean - 5.0) < 0.1, f"Unweighted mean should be ~5, got {unweighted_mean}"
+        assert weighted_mean > 8.0, f"Weighted mean should be >8, got {weighted_mean}"
+    
+    def test_weighted_profile_sum_weights_column(self):
+        """Verify sum_weights column present when weights used."""
+        np.random.seed(42)
+        df = pd.DataFrame({
+            'x': np.random.uniform(0, 10, 100),
+            'y': np.random.normal(0, 1, 100),
+            'w': np.random.uniform(0.5, 2, 100),
+        })
+        
+        plotter = DFDraw(df)
+        fig, ax, stats = plotter.profile(
+            'y:x', bins=10, return_data=True, weights='w'
+        )
+        plt.close(fig)
+        
+        assert 'sum_weights' in stats['profile_data'].columns
+    
+    def test_weighted_profile_grouped(self):
+        """Verify weights work with group_by."""
+        np.random.seed(42)
+        df = pd.DataFrame({
+            'x': np.random.uniform(0, 10, 300),
+            'y': np.random.normal(0, 1, 300),
+            'w': np.random.uniform(0.5, 2, 300),
+            'group': np.tile(['A', 'B', 'C'], 100),
+        })
+        
+        plotter = DFDraw(df)
+        fig, ax, stats = plotter.profile(
+            'y:x', bins=10, group_by='group', return_data=True, weights='w'
+        )
+        plt.close(fig)
+        
+        assert 'profile_data' in stats
+        assert 'sum_weights' in stats['profile_data'].columns
+        assert 'group' in stats['profile_data'].columns
+
+
 class TestBackwardCompatibility:
     """Tests for backward compatibility."""
     

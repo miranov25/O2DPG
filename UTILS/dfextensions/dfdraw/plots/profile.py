@@ -89,6 +89,8 @@ def draw_profile(
     group_by_bins: Optional[int] = None,
     group_by_quantiles: Optional[int] = None,
     sort_groups: bool = True,
+    # Phase 13.12.DF v1.1: Weights support
+    weights: Optional[str] = None,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -156,6 +158,10 @@ def draw_profile(
         If True, sort groups numerically/alphabetically in legend.
         If False, use DataFrame occurrence order.
         Phase 13.12.DF F4.
+    weights : str, optional
+        Column name for weights. If provided, computes weighted mean/std/sem.
+        Useful for reconstructing distributions from importance sampling.
+        Phase 13.12.DF v1.1.
     **kwargs
         Additional arguments passed to plt.errorbar().
     
@@ -166,7 +172,7 @@ def draw_profile(
         
         If return_data=True, stats_dict['profile_data'] contains a DataFrame
         with columns: x_center, x_low, x_high, y_mean, y_std, y_sem, count,
-        and 'group' if group_by is used.
+        sum_weights (if weights used), and 'group' if group_by is used.
     """
     # Phase 13.12.DF F3: Validate mutual exclusion
     if group_by_bins is not None and group_by_quantiles is not None:
@@ -208,8 +214,16 @@ def draw_profile(
         y_name = "y"
         y_data = np.asarray(y, dtype=float)
     
-    # Remove NaN
+    # Phase 13.12.DF v1.1: Get weights if specified
+    w_data = None
+    if weights is not None and weights in df.columns:
+        w_data = df[weights].values.astype(float)
+    
+    # Remove NaN (include weights in mask if present)
     mask = ~(np.isnan(x_data) | np.isnan(y_data))
+    if w_data is not None:
+        mask &= ~np.isnan(w_data)
+        w_data = w_data[mask]
     x_data = x_data[mask]
     y_data = y_data[mask]
     df_filtered = df[mask].copy() if len(df) == len(mask) else df.copy()
@@ -239,6 +253,7 @@ def draw_profile(
             min_entries=min_entries,
             sort_groups=sort_groups,
             return_data=return_data,
+            weights=weights,  # Phase 13.12.DF v1.1
             **kwargs
         )
         stats_dict["grouped"] = True
@@ -249,7 +264,8 @@ def draw_profile(
     else:
         # Single profile
         bin_centers, bin_means, bin_errors, bin_counts, profile_df = _compute_profile(
-            x_data, y_data, bins, x_range, error, return_data=return_data
+            x_data, y_data, bins, x_range, error, return_data=return_data,
+            w_data=w_data  # Phase 13.12.DF v1.1
         )
         
         # Phase 13.12.DF F2: Apply min_entries filter for plotting
@@ -293,7 +309,8 @@ def _compute_profile(
     bins: int,
     x_range: Optional[Tuple[float, float]],
     error: str,
-    return_data: bool = False
+    return_data: bool = False,
+    w_data: Optional[np.ndarray] = None
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Optional[pd.DataFrame]]:
     """
     Compute profile (mean of y in bins of x).
@@ -312,6 +329,8 @@ def _compute_profile(
         Error type: "sem", "std", "none".
     return_data : bool
         If True, return profile DataFrame.
+    w_data : array, optional
+        Weights for weighted statistics. Phase 13.12.DF v1.1.
     
     Returns
     -------
@@ -319,6 +338,7 @@ def _compute_profile(
         (bin_centers, bin_means, bin_errors, bin_counts, profile_df or None)
         
         Phase 13.12.DF: Extended return to include bin_counts and profile_df.
+        Phase 13.12.DF v1.1: Supports weighted statistics.
     """
     if x_range is None:
         x_range = (np.nanmin(x_data), np.nanmax(x_data))
@@ -337,6 +357,7 @@ def _compute_profile(
     bin_stds = np.full(bins, np.nan)
     bin_sems = np.full(bins, np.nan)
     bin_counts = np.zeros(bins, dtype=int)
+    bin_sum_weights = np.full(bins, np.nan) if w_data is not None else None
     
     for i in range(bins):
         mask = bin_indices == i
@@ -345,10 +366,33 @@ def _compute_profile(
         bin_counts[i] = n
         
         if n > 0:
-            bin_means[i] = np.mean(y_bin)
-            if n > 1:
-                bin_stds[i] = np.std(y_bin, ddof=1)
-                bin_sems[i] = bin_stds[i] / np.sqrt(n)
+            if w_data is not None:
+                # Phase 13.12.DF v1.1: Weighted statistics
+                w_bin = w_data[mask]
+                sum_w = np.sum(w_bin)
+                bin_sum_weights[i] = sum_w
+                
+                if sum_w > 0:
+                    # Weighted mean: Σ(w × y) / Σw
+                    bin_means[i] = np.sum(w_bin * y_bin) / sum_w
+                    
+                    if n > 1:
+                        # Weighted variance: Σ(w × (y - mean)²) / Σw
+                        weighted_var = np.sum(w_bin * (y_bin - bin_means[i])**2) / sum_w
+                        bin_stds[i] = np.sqrt(weighted_var)
+                        
+                        # Effective sample size: (Σw)² / Σ(w²)
+                        sum_w2 = np.sum(w_bin**2)
+                        n_eff = (sum_w**2) / sum_w2 if sum_w2 > 0 else 1
+                        
+                        # Weighted SEM: std / sqrt(n_eff)
+                        bin_sems[i] = bin_stds[i] / np.sqrt(n_eff) if n_eff > 0 else np.nan
+            else:
+                # Unweighted statistics (original behavior)
+                bin_means[i] = np.mean(y_bin)
+                if n > 1:
+                    bin_stds[i] = np.std(y_bin, ddof=1)
+                    bin_sems[i] = bin_stds[i] / np.sqrt(n)
     
     # Select error type
     if error == "std":
@@ -370,6 +414,9 @@ def _compute_profile(
             'y_sem': bin_sems,
             'count': bin_counts,
         })
+        # Phase 13.12.DF v1.1: Add sum_weights column if weighted
+        if bin_sum_weights is not None:
+            profile_df['sum_weights'] = bin_sum_weights
     
     return bin_centers, bin_means, bin_errors, bin_counts, profile_df
 
@@ -397,12 +444,14 @@ def _draw_profile_grouped(
     min_entries: int = 3,
     sort_groups: bool = True,
     return_data: bool = False,
+    weights: Optional[str] = None,  # Phase 13.12.DF v1.1
     **profile_kwargs
 ) -> Optional[List[pd.DataFrame]]:
     """
     Draw grouped profile plots.
     
     Phase 13.12.DF: Added min_entries, sort_groups, return_data parameters.
+    Phase 13.12.DF v1.1: Added weights parameter.
     
     Returns
     -------
@@ -456,8 +505,16 @@ def _draw_profile_grouped(
         x_data = group_df[x].values.astype(float)
         y_data = group_df[y].values.astype(float)
         
-        # Remove NaN
+        # Phase 13.12.DF v1.1: Get weights for this group
+        w_data = None
+        if weights is not None and weights in group_df.columns:
+            w_data = group_df[weights].values.astype(float)
+        
+        # Remove NaN (include weights in mask if present)
         mask = ~(np.isnan(x_data) | np.isnan(y_data))
+        if w_data is not None:
+            mask &= ~np.isnan(w_data)
+            w_data = w_data[mask]
         x_data = x_data[mask]
         y_data = y_data[mask]
         
@@ -465,7 +522,8 @@ def _draw_profile_grouped(
             continue
         
         bin_centers, bin_means, bin_errors, bin_counts, profile_df = _compute_profile(
-            x_data, y_data, bins, x_range, error, return_data=return_data
+            x_data, y_data, bins, x_range, error, return_data=return_data,
+            w_data=w_data  # Phase 13.12.DF v1.1
         )
         
         # Phase 13.12.DF F1: Add group column and collect

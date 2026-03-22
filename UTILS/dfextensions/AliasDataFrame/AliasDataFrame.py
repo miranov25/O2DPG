@@ -6692,6 +6692,10 @@ class AliasDataFrame:
         # Filter __meta__
         columns = [c for c in columns if c != "__meta__"]
 
+        # Phase 13.7: Collect columns to drop, then batch-drop once at end
+        # (Avoids O(N_cols × N_rows) pandas reindex per drop)
+        cols_to_drop = []
+
         for col in columns:
             if col not in self.compression_info:
                 raise ValueError(
@@ -6741,9 +6745,9 @@ class AliasDataFrame:
             if col in self.aliases:
                 del self._schema["columns"][col]
 
-            # Step 4: Handle compressed column
+            # Step 4: Collect compressed column for batch drop
             if not keep_compressed:
-                self.df.drop(columns=[compressed_col], inplace=True)
+                cols_to_drop.append(compressed_col)
 
             # Step 5: Update state
             if keep_schema:
@@ -6752,6 +6756,10 @@ class AliasDataFrame:
             else:
                 # Remove all compression metadata
                 del self.compression_info[col]
+
+        # Batch drop all compressed columns at once (single reindex)
+        if cols_to_drop:
+            self.df.drop(columns=cols_to_drop, inplace=True)
 
         return self
 
