@@ -10,6 +10,12 @@ Supports:
 - Statistics box
 - Group-by overlay
 - Style integration
+
+Phase 13.12.DF additions:
+- F1: return_data=True → export profile statistics as DataFrame
+- F2: min_entries=3 → suppress low-statistics bins (AD-1)
+- F3: group_by_bins/group_by_quantiles → auto-bin float columns
+- F4: sort_groups=True → sorted legend order
 """
 
 import numpy as np
@@ -19,6 +25,41 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ..style import get_style_value
 from ..stats import format_stats_box
+
+
+# =============================================================================
+# Phase 13.12.DF: Interval label formatting (AD-3)
+# =============================================================================
+
+def _format_interval_label(interval) -> str:
+    """
+    Format pandas Interval as 'low-high' string.
+    
+    AD-3: Custom format instead of pandas default '(0.0, 1.5]'.
+    Uses consistent decimal places based on interval width.
+    
+    Parameters
+    ----------
+    interval : pandas.Interval
+        Interval object from pd.cut or pd.qcut.
+    
+    Returns
+    -------
+    str
+        Formatted label like '0.5-1.2'
+    """
+    # Determine precision based on interval width (P2 fix from Reviewer 30)
+    width = interval.right - interval.left
+    if width >= 10:
+        fmt = ".0f"
+    elif width >= 1:
+        fmt = ".1f"
+    elif width >= 0.1:
+        fmt = ".2f"
+    else:
+        fmt = ".3f"
+    
+    return f"{interval.left:{fmt}}-{interval.right:{fmt}}"
 
 
 def draw_profile(
@@ -42,6 +83,12 @@ def draw_profile(
     label: Optional[str] = None,
     group_by: Optional[str] = None,
     top_k: Optional[int] = None,
+    # Phase 13.12.DF: New parameters
+    return_data: bool = False,
+    min_entries: int = 3,
+    group_by_bins: Optional[int] = None,
+    group_by_quantiles: Optional[int] = None,
+    sort_groups: bool = True,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -89,6 +136,26 @@ def draw_profile(
         Column for grouping (creates overlaid profiles).
     top_k : int, optional
         Show only top K categories.
+    return_data : bool, default False
+        If True, include 'profile_data' DataFrame in stats_dict.
+        Phase 13.12.DF F1.
+    min_entries : int, default 3
+        Minimum entries per bin to be plotted. Bins with fewer entries
+        are excluded from the plot but included in profile_data if
+        return_data=True. AD-1: default=3 for stable error bars.
+        Phase 13.12.DF F2.
+    group_by_bins : int, optional
+        Number of equal-width bins for float group_by column.
+        Uses pd.cut internally. Mutually exclusive with group_by_quantiles.
+        Phase 13.12.DF F3.
+    group_by_quantiles : int, optional
+        Number of equal-count quantile bins for float group_by column.
+        Uses pd.qcut internally. Mutually exclusive with group_by_bins.
+        Phase 13.12.DF F3.
+    sort_groups : bool, default True
+        If True, sort groups numerically/alphabetically in legend.
+        If False, use DataFrame occurrence order.
+        Phase 13.12.DF F4.
     **kwargs
         Additional arguments passed to plt.errorbar().
     
@@ -96,7 +163,15 @@ def draw_profile(
     -------
     tuple
         (fig, ax, stats_dict)
+        
+        If return_data=True, stats_dict['profile_data'] contains a DataFrame
+        with columns: x_center, x_low, x_high, y_mean, y_std, y_sem, count,
+        and 'group' if group_by is used.
     """
+    # Phase 13.12.DF F3: Validate mutual exclusion
+    if group_by_bins is not None and group_by_quantiles is not None:
+        raise ValueError("Cannot specify both group_by_bins and group_by_quantiles")
+    
     # Get style defaults
     if bins is None:
         bins = get_style_value("hist.bins", 50)
@@ -137,32 +212,59 @@ def draw_profile(
     mask = ~(np.isnan(x_data) | np.isnan(y_data))
     x_data = x_data[mask]
     y_data = y_data[mask]
-    df_filtered = df[mask] if len(df) == len(mask) else df
+    df_filtered = df[mask].copy() if len(df) == len(mask) else df.copy()
     
     # Compute profile statistics
     stats_dict = _compute_profile_stats(x_data, y_data)
     
+    # Phase 13.12.DF F3: Auto-bin float group_by column
+    group_col = group_by
+    if group_by is not None and group_by in df_filtered.columns:
+        if group_by_bins is not None:
+            intervals = pd.cut(df_filtered[group_by], bins=group_by_bins)
+            df_filtered['_group'] = intervals.map(_format_interval_label)
+            group_col = '_group'
+        elif group_by_quantiles is not None:
+            intervals = pd.qcut(df_filtered[group_by], q=group_by_quantiles, duplicates='drop')
+            df_filtered['_group'] = intervals.map(_format_interval_label)
+            group_col = '_group'
+    
     # Group-by handling
-    if group_by is not None and group_by in df.columns:
-        _draw_profile_grouped(
-            df_filtered, x, y, ax, group_by, top_k,
+    if group_col is not None and group_col in df_filtered.columns:
+        profile_data_list = _draw_profile_grouped(
+            df_filtered, x, y, ax, group_col, top_k,
             bins=bins, x_range=x_range, error=error,
             marker=marker, markersize=markersize, capsize=capsize,
-            linestyle=linestyle, linewidth=linewidth, **kwargs
+            linestyle=linestyle, linewidth=linewidth,
+            min_entries=min_entries,
+            sort_groups=sort_groups,
+            return_data=return_data,
+            **kwargs
         )
         stats_dict["grouped"] = True
+        
+        # Phase 13.12.DF F1: Combine profile data from all groups
+        if return_data and profile_data_list:
+            stats_dict['profile_data'] = pd.concat(profile_data_list, ignore_index=True)
     else:
         # Single profile
-        bin_centers, bin_means, bin_errors = _compute_profile(
-            x_data, y_data, bins, x_range, error
+        bin_centers, bin_means, bin_errors, bin_counts, profile_df = _compute_profile(
+            x_data, y_data, bins, x_range, error, return_data=return_data
         )
         
+        # Phase 13.12.DF F2: Apply min_entries filter for plotting
+        plot_mask = bin_counts >= min_entries
+        
         ax.errorbar(
-            bin_centers, bin_means, yerr=bin_errors,
+            bin_centers[plot_mask], bin_means[plot_mask], yerr=bin_errors[plot_mask],
             fmt=marker, color=color, markersize=markersize,
             capsize=capsize, linestyle=linestyle, linewidth=linewidth,
             label=label, **kwargs
         )
+        
+        # Phase 13.12.DF F1: Add profile data to stats
+        if return_data and profile_df is not None:
+            stats_dict['profile_data'] = profile_df
     
     # Labels
     ax.set_xlabel(xlabel or x_name)
@@ -178,7 +280,7 @@ def draw_profile(
         _add_stats_box(ax, stats_dict, stats)
     
     # Legend for grouped
-    if group_by is not None:
+    if group_col is not None:
         ax.legend(loc=get_style_value("legend.loc", "best"))
     
     plt.tight_layout()
@@ -190,15 +292,33 @@ def _compute_profile(
     y_data: np.ndarray,
     bins: int,
     x_range: Optional[Tuple[float, float]],
-    error: str
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    error: str,
+    return_data: bool = False
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Optional[pd.DataFrame]]:
     """
     Compute profile (mean of y in bins of x).
+    
+    Parameters
+    ----------
+    x_data : array
+        X values.
+    y_data : array
+        Y values.
+    bins : int
+        Number of bins.
+    x_range : tuple or None
+        (min, max) range for binning.
+    error : str
+        Error type: "sem", "std", "none".
+    return_data : bool
+        If True, return profile DataFrame.
     
     Returns
     -------
     tuple
-        (bin_centers, bin_means, bin_errors)
+        (bin_centers, bin_means, bin_errors, bin_counts, profile_df or None)
+        
+        Phase 13.12.DF: Extended return to include bin_counts and profile_df.
     """
     if x_range is None:
         x_range = (np.nanmin(x_data), np.nanmax(x_data))
@@ -209,31 +329,49 @@ def _compute_profile(
     
     # Digitize x values
     bin_indices = np.digitize(x_data, bin_edges) - 1
+    # Clip to valid range (handle edge cases)
+    bin_indices = np.clip(bin_indices, 0, bins - 1)
     
-    # Compute mean and error for each bin
+    # Compute mean, std, sem, count for each bin
     bin_means = np.full(bins, np.nan)
-    bin_errors = np.full(bins, np.nan)
+    bin_stds = np.full(bins, np.nan)
+    bin_sems = np.full(bins, np.nan)
+    bin_counts = np.zeros(bins, dtype=int)
     
     for i in range(bins):
         mask = bin_indices == i
         y_bin = y_data[mask]
+        n = len(y_bin)
+        bin_counts[i] = n
         
-        if len(y_bin) > 0:
+        if n > 0:
             bin_means[i] = np.mean(y_bin)
-            
-            if error == "sem" and len(y_bin) > 1:
-                bin_errors[i] = np.std(y_bin, ddof=1) / np.sqrt(len(y_bin))
-            elif error == "std":
-                bin_errors[i] = np.std(y_bin)
-            elif error == "none":
-                bin_errors[i] = 0
-            else:  # default to sem
-                if len(y_bin) > 1:
-                    bin_errors[i] = np.std(y_bin, ddof=1) / np.sqrt(len(y_bin))
-                else:
-                    bin_errors[i] = 0
+            if n > 1:
+                bin_stds[i] = np.std(y_bin, ddof=1)
+                bin_sems[i] = bin_stds[i] / np.sqrt(n)
     
-    return bin_centers, bin_means, bin_errors
+    # Select error type
+    if error == "std":
+        bin_errors = bin_stds.copy()
+    elif error == "none":
+        bin_errors = np.zeros(bins)
+    else:  # "sem" (default)
+        bin_errors = bin_sems.copy()
+    
+    # Phase 13.12.DF F1: Build DataFrame if requested
+    profile_df = None
+    if return_data:
+        profile_df = pd.DataFrame({
+            'x_center': bin_centers,
+            'x_low': bin_edges[:-1],
+            'x_high': bin_edges[1:],
+            'y_mean': bin_means,
+            'y_std': bin_stds,
+            'y_sem': bin_sems,
+            'count': bin_counts,
+        })
+    
+    return bin_centers, bin_means, bin_errors, bin_counts, profile_df
 
 
 def _compute_profile_stats(x_data: np.ndarray, y_data: np.ndarray) -> Dict[str, Any]:
@@ -256,16 +394,43 @@ def _draw_profile_grouped(
     ax: plt.Axes,
     group_by: str,
     top_k: Optional[int],
+    min_entries: int = 3,
+    sort_groups: bool = True,
+    return_data: bool = False,
     **profile_kwargs
-) -> None:
-    """Draw grouped profile plots."""
+) -> Optional[List[pd.DataFrame]]:
+    """
+    Draw grouped profile plots.
+    
+    Phase 13.12.DF: Added min_entries, sort_groups, return_data parameters.
+    
+    Returns
+    -------
+    list of DataFrame or None
+        If return_data=True, returns list of profile DataFrames (one per group).
+    """
     # Get groups
     groups = df[group_by].unique()
+    
+    # Phase 13.12.DF F4: Sort groups
+    if sort_groups:
+        try:
+            # Try numeric sort first
+            groups = sorted(groups, key=lambda x: float(x) if not pd.isna(x) else float('inf'))
+        except (ValueError, TypeError):
+            # Fall back to string sort
+            groups = sorted(groups, key=str)
     
     # Top-K filtering
     if top_k is not None and len(groups) > top_k:
         counts = df[group_by].value_counts()
         top_groups = counts.head(top_k).index.tolist()
+        # Preserve sort order
+        if sort_groups:
+            try:
+                top_groups = sorted(top_groups, key=lambda x: float(x) if not pd.isna(x) else float('inf'))
+            except (ValueError, TypeError):
+                top_groups = sorted(top_groups, key=str)
         groups = top_groups
     
     # Color palette
@@ -283,6 +448,9 @@ def _draw_profile_grouped(
     profile_kwargs.pop('marker', None)
     profile_kwargs.pop('markersize', None)
     
+    # Phase 13.12.DF F1: Collect profile data
+    profile_data_list = [] if return_data else None
+    
     for i, group in enumerate(groups):
         group_df = df[df[group_by] == group]
         x_data = group_df[x].values.astype(float)
@@ -296,17 +464,27 @@ def _draw_profile_grouped(
         if len(x_data) == 0:
             continue
         
-        bin_centers, bin_means, bin_errors = _compute_profile(
-            x_data, y_data, bins, x_range, error
+        bin_centers, bin_means, bin_errors, bin_counts, profile_df = _compute_profile(
+            x_data, y_data, bins, x_range, error, return_data=return_data
         )
         
+        # Phase 13.12.DF F1: Add group column and collect
+        if return_data and profile_df is not None:
+            profile_df['group'] = group
+            profile_data_list.append(profile_df)
+        
+        # Phase 13.12.DF F2: Apply min_entries filter for plotting
+        plot_mask = bin_counts >= min_entries
+        
         ax.errorbar(
-            bin_centers, bin_means, yerr=bin_errors,
+            bin_centers[plot_mask], bin_means[plot_mask], yerr=bin_errors[plot_mask],
             fmt=markers[i % len(markers)],
             color=palette(i % 10),
             label=str(group),
             **profile_kwargs
         )
+    
+    return profile_data_list
 
 
 def _add_stats_box(

@@ -693,6 +693,12 @@ class DFDraw:
         sharex: bool = True,
         sharey: bool = True,
         top_k: Optional[int] = None,
+        # Phase 13.12.DF: New parameters
+        return_data: bool = False,
+        min_entries: int = 3,
+        group_by_bins: Optional[int] = None,
+        group_by_quantiles: Optional[int] = None,
+        sort_groups: bool = True,
         **kwargs
     ) -> DrawResult:
         """
@@ -734,6 +740,22 @@ class DFDraw:
             Share y-axis in facet mode.
         top_k : int, optional
             Show only top K groups.
+        return_data : bool, default False
+            If True, include 'profile_data' DataFrame in stats_dict.
+            Phase 13.12.DF F1.
+        min_entries : int, default 3
+            Minimum entries per bin to be plotted. Bins with fewer entries
+            are excluded from the plot but included in profile_data.
+            AD-1: default=3 for stable error bars. Phase 13.12.DF F2.
+        group_by_bins : int, optional
+            Number of equal-width bins for float group_by column.
+            Mutually exclusive with group_by_quantiles. Phase 13.12.DF F3.
+        group_by_quantiles : int, optional
+            Number of equal-count quantile bins for float group_by column.
+            Mutually exclusive with group_by_bins. Phase 13.12.DF F3.
+        sort_groups : bool, default True
+            If True, sort groups numerically/alphabetically in legend.
+            Phase 13.12.DF F4.
         **kwargs
             Additional arguments.
         
@@ -741,6 +763,10 @@ class DFDraw:
         -------
         tuple
             (fig, ax, stats_dict)
+            
+            If return_data=True, stats_dict['profile_data'] contains DataFrame
+            with columns: x_center, x_low, x_high, y_mean, y_std, y_sem, count,
+            and 'group' if group_by is used.
         """
         from .plots.profile import draw_profile
         
@@ -779,7 +805,12 @@ class DFDraw:
                 df, x_expr, y_expr, group_by,
                 top_k=top_k, ncols=ncols, sharex=sharex, sharey=sharey,
                 suptitle=title, bins=bins, x_range=range, error=error,
-                stats=stats, xlabel=xlabel, ylabel=ylabel, **kwargs
+                stats=stats, xlabel=xlabel, ylabel=ylabel,
+                # Phase 13.12.DF: pass new parameters
+                return_data=return_data, min_entries=min_entries,
+                group_by_bins=group_by_bins, group_by_quantiles=group_by_quantiles,
+                sort_groups=sort_groups,
+                **kwargs
             )
         else:
             # Standard mode (single plot or overlay)
@@ -787,7 +818,12 @@ class DFDraw:
                 df, x_expr, y_expr,
                 ax=ax, bins=bins, x_range=range, error=error,
                 stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
-                group_by=group_by, top_k=top_k, **kwargs
+                group_by=group_by, top_k=top_k,
+                # Phase 13.12.DF: pass new parameters
+                return_data=return_data, min_entries=min_entries,
+                group_by_bins=group_by_bins, group_by_quantiles=group_by_quantiles,
+                sort_groups=sort_groups,
+                **kwargs
             )
             axes = ax
         
