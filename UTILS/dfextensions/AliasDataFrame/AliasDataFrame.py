@@ -2576,6 +2576,10 @@ class AliasDataFrame:
         env["round"] = np.round
         env["clip"] = np.clip
 
+        # Phase 13.9: Add registered custom functions
+        if hasattr(self, '_registered_functions'):
+            env.update(self._registered_functions)
+
         return env
 
     def _compute_join_indices(self, sf_name, index_cols):
@@ -9993,6 +9997,104 @@ class AliasDataFrame:
     def hexbin(self, expr: str, **kwargs):
         """Hexbin plot. See ``adf.draw_help('hexbin')`` for all options."""
         return self.draw(expr, type='hexbin', **kwargs)
+
+    # =========================================================================
+    # Phase 13.9: Registered Functions & Polynomial Support
+    # =========================================================================
+
+    def register_function(self, name, func, overwrite=False):
+        """
+        Register a custom callable for use in alias expressions.
+
+        The function becomes available in the eval namespace,
+        callable from alias expressions. Registered functions take
+        precedence over column names in alias evaluation.
+
+        Parameters
+        ----------
+        name : str
+            Function name (used in expressions)
+        func : callable
+            Function that takes numpy arrays, returns numpy array
+        overwrite : bool, default False
+            If True, allow replacing an existing registered function.
+
+        Raises
+        ------
+        ValueError
+            If name already registered and overwrite=False.
+
+        Example
+        -------
+        >>> adf.register_function('myFunc', some_numba_function)
+        >>> adf.add_alias('result', 'myFunc(col1, col2)')
+        """
+        if not hasattr(self, '_registered_functions'):
+            self._registered_functions = {}
+
+        if not overwrite and name in self._registered_functions:
+            raise ValueError(
+                f"Function '{name}' already registered. Use overwrite=True to replace."
+            )
+
+        self._registered_functions[name] = func
+
+    def register_polynomial_from_subframe(self, func_name, poly_spec,
+                                           coefficients_subframe, coeff_select):
+        """
+        Register a polynomial function that reads coefficients from a subframe.
+        Coefficients are accessed via join indices — no column materialization.
+
+        Parameters
+        ----------
+        func_name : str
+            Function name for use in alias expressions (e.g., 'polFit')
+        poly_spec : PolynomialSpec
+            Polynomial specification (from AliasDataFrame.PolynomialSpec)
+        coefficients_subframe : str
+            Name of registered subframe containing coefficient columns
+        coeff_select : list of str or str
+            Coefficient columns, ordered to match poly_spec terms.
+            - list: explicit column names (safest)
+            - str: regexp pattern to match against subframe columns
+
+        Example
+        -------
+        >>> from AliasDataFrame.PolynomialSpec import PolynomialSpec
+        >>> spec = PolynomialSpec(['xM', 'driftM', 'dsecM', 'tgSlp'], (3, 3, 2, 1))
+        >>> keys = [t[0] for t in spec.basis_expressions()]
+        >>> coeff_cols = [f'dyC3_slope_{k}_poly' for k in keys]
+        >>> adf.register_polynomial_from_subframe('polFit', spec, 'PolyFit', coeff_cols)
+        >>> adf.add_alias('dy_corr', 'polFit(xM, driftM, dsecM, tgSlp)')
+        """
+        import re
+
+        sf = self.get_subframe(coefficients_subframe)
+
+        # Resolve coeff_select
+        if isinstance(coeff_select, str):
+            pattern = re.compile(coeff_select)
+            coeff_cols = [c for c in sf.df.columns if pattern.match(c)]
+            if len(coeff_cols) != poly_spec.n_terms:
+                raise ValueError(
+                    f"Regexp '{coeff_select}' matched {len(coeff_cols)} columns, "
+                    f"but poly_spec has {poly_spec.n_terms} terms"
+                )
+        else:
+            coeff_cols = list(coeff_select)
+
+        # Generate Numba evaluator
+        evaluator = poly_spec.numba_evaluator(self, coefficients_subframe, coeff_cols)
+        self.register_function(func_name, evaluator)
+
+        # Store in schema for reconstruction
+        if not self._schema.get('registered_functions'):
+            self._schema['registered_functions'] = {}
+        self._schema['registered_functions'][func_name] = {
+            **poly_spec.to_schema(),
+            'coefficients_subframe': coefficients_subframe,
+            'coeff_select': coeff_cols,
+        }
 
     def draw_help(self, plot_type=None):
         """
