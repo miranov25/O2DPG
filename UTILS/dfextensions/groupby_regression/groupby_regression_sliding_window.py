@@ -45,6 +45,80 @@ class PerformanceWarning(UserWarning):
 # Helper utilities
 # =========================
 
+def _preprocess_linear_columns(
+        df: pd.DataFrame,
+        linear_columns: list,
+) -> tuple:
+    """Normalize linear_columns: evaluate expression tuples, return augmented DataFrame.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input DataFrame.
+    linear_columns : list[str | tuple[str, str]]
+        Each element is either a column name (str) or a (key_name, expression) tuple.
+
+    Returns
+    -------
+    df_augmented : pd.DataFrame
+        DataFrame with expression columns materialized under key_name.
+    normalized_columns : list[str]
+        List of column names (all strings) for downstream processing.
+    column_map : dict[str, str]
+        Mapping key_name → expression (or key_name → key_name for plain strings).
+    """
+    df_columns = set(df.columns)
+    normalized = []
+    new_columns = {}
+    column_map = {}
+    seen_keys = set()
+
+    for item in linear_columns:
+        if isinstance(item, str):
+            if item not in df_columns:
+                raise ValueError(
+                    f"Column '{item}' not found in DataFrame. "
+                    f"For expressions, use tuple: (key_name, expression)"
+                )
+            if item in seen_keys:
+                raise ValueError(f"Duplicate linear column: '{item}'")
+            seen_keys.add(item)
+            normalized.append(item)
+            column_map[item] = item
+        elif isinstance(item, tuple) and len(item) == 2:
+            key_name, expression = item
+            if not isinstance(key_name, str) or not key_name.isidentifier():
+                raise ValueError(f"Key name '{key_name}' is not a valid Python identifier")
+            if key_name in df_columns:
+                raise ValueError(
+                    f"Key name '{key_name}' conflicts with existing DataFrame column. "
+                    f"Choose a different key name."
+                )
+            if key_name in seen_keys:
+                raise ValueError(f"Duplicate key name: '{key_name}'")
+            seen_keys.add(key_name)
+            try:
+                new_columns[key_name] = df.eval(expression)
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to evaluate expression '{expression}' "
+                    f"for key '{key_name}': {e}"
+                ) from e
+            normalized.append(key_name)
+            column_map[key_name] = expression
+        else:
+            raise TypeError(
+                f"linear_columns must be str or (key_name, expression) tuple, "
+                f"got {type(item)}: {item!r}"
+            )
+
+    if new_columns:
+        df_augmented = df.assign(**new_columns)
+    else:
+        df_augmented = df
+
+    return df_augmented, normalized, column_map
+
 def _validate_sliding_window_inputs(
         df: pd.DataFrame,
         gb_columns: List[str],
@@ -2804,6 +2878,13 @@ def make_sliding_window_fit(
     """
     t0 = time.time()
 
+    # Preprocess linear_columns: evaluate expression tuples (Phase 13.13.GB)
+    _has_expressions = any(isinstance(item, tuple) for item in linear_columns)
+    if _has_expressions:
+        df, linear_columns, _linear_col_map = _preprocess_linear_columns(df, linear_columns)
+    else:
+        _linear_col_map = {c: c for c in linear_columns}
+
     # Fill missing window_spec dimensions with 0 (no sliding)
     full_window_spec = {dim: window_spec.get(dim, 0) for dim in gb_columns}
 
@@ -3161,6 +3242,9 @@ def make_sliding_window_fit(
     )
     metadata['agg_columns'] = agg_columns or []
     metadata['agg_median'] = agg_median
+    if _has_expressions:
+        metadata['linear_column_map'] = _linear_col_map
+        metadata['linear_columns_normalized'] = list(linear_columns)
     out.attrs.update(metadata)
 
     if verbose:
