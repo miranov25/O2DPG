@@ -1,6 +1,6 @@
 # Capability Matrix — groupby_regression
 
-**Generated:** 2026-03-13 09:07 UTC
+**Generated:** 2026-03-23 14:52 UTC
 **Phase:** Phase 13.11.GB
 **Generator:** `scripts/generate_capability_matrix.py`
 
