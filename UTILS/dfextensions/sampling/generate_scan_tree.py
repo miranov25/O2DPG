@@ -483,7 +483,24 @@ def main():
     params_df["frac"] = params_df["frac"].astype(np.float32)
     params_df["dx"] = params_df["dx"].astype(np.float32)
     params_df["nbins"] = params_df["nbins"].astype(np.int32)
+
+    # Analysis range: where validation figures should be computed
+    if mode == "quantile":
+        # Quantile edges define the range
+        from scipy.stats import norm as sp_norm
+        q_edges = sp_norm.ppf(np.linspace(0.001, 0.999, 2)) * SIGMA
+        params_df["x_lo"] = np.float32(q_edges[0])
+        params_df["x_hi"] = np.float32(q_edges[1])
+    elif args.distribution == "linear":
+        params_df["x_lo"] = np.float32(-LINEAR_HALF)
+        params_df["x_hi"] = np.float32(LINEAR_HALF)
+    else:
+        # Gaussian uniform: ±3σ analysis range (data extends to ±6σ)
+        params_df["x_lo"] = np.float32(-3 * SIGMA)
+        params_df["x_hi"] = np.float32(3 * SIGMA)
+
     print(f"  Params table: {len(params_df)} rows")
+    print(f"  Analysis range: [{params_df['x_lo'].iloc[0]:.2f}, {params_df['x_hi'].iloc[0]:.2f}]")
 
     # Export
     if HAS_UPROOT:

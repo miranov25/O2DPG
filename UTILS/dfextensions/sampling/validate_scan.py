@@ -65,17 +65,24 @@ def gaussian_pdf(x, sigma=SIGMA):
     return np.exp(-0.5 * (x / sigma) ** 2) / (sigma * np.sqrt(2 * np.pi))
 
 
-def derive_scan_metadata(scan):
+def derive_scan_metadata(scan, params=None, x_range=None):
     """Derive distribution-agnostic metadata from scan tree.
 
-    Returns dict with x_range, pdf_true profile, core/shoulder/tail boundaries.
-    All downstream code uses this instead of hardcoded Gaussian assumptions.
+    Priority for x_range: (1) x_range arg (from --x_range CLI),
+    (2) params table x_lo/x_hi, (3) data min/max.
     """
     x_all = scan["x"].values.astype(np.float64)
     pdf_all = scan["pdf_true"].values.astype(np.float64)
 
-    x_lo = float(np.min(x_all))
-    x_hi = float(np.max(x_all))
+    # Determine x range: CLI > params table > data
+    if x_range is not None:
+        x_lo, x_hi = float(x_range[0]), float(x_range[1])
+    elif params is not None and "x_lo" in params.columns:
+        x_lo = float(params["x_lo"].iloc[0])
+        x_hi = float(params["x_hi"].iloc[0])
+    else:
+        x_lo = float(np.min(x_all))
+        x_hi = float(np.max(x_all))
     x_mid = 0.5 * (x_lo + x_hi)
     x_full = x_hi - x_lo
 
@@ -1589,6 +1596,8 @@ def main():
     parser.add_argument("--input", type=str, required=True)
     parser.add_argument("--output", type=str, default=".")
     parser.add_argument("--methods", type=str, default="smooth,smooth_v5")
+    parser.add_argument("--x_range", type=float, nargs=2, default=None,
+                       help="Analysis range [x_lo, x_hi]. Default: from params table or data.")
     args = parser.parse_args()
 
     methods = [m.strip() for m in args.methods.split(",")]
@@ -1602,9 +1611,10 @@ def main():
     scan, params = load_scan(args.input)
     report(f"  Load time: {time.time() - t0:.1f}s")
 
-    # Derive distribution-agnostic metadata from scan tree
-    meta = derive_scan_metadata(scan)
-    report(f"  x range: [{meta['x_lo']:.2f}, {meta['x_hi']:.2f}], "
+    # Derive metadata: --x_range > params x_lo/x_hi > data min/max
+    meta = derive_scan_metadata(scan, params=params, x_range=args.x_range)
+    source = "CLI" if args.x_range else ("params" if params is not None and "x_lo" in params.columns else "data")
+    report(f"  x range: [{meta['x_lo']:.2f}, {meta['x_hi']:.2f}] (from {source}), "
            f"core<{meta['b1']:.2f}, shoulder<{meta['b2']:.2f}")
 
     t1 = time.time()
