@@ -9844,25 +9844,46 @@ class AliasDataFrame:
              **kwargs):
         """
         Draw a plot with automatic materialization and axis labels.
-        
-        Args:
-            expr: Plot expression (e.g., 'y:x', 'x', 'dEdx:p')
-            type: Plot type - 'auto', 'hist', 'scatter', 'profile', 'hist2d', 'hexbin'
-                  'auto' infers from expression (single var → hist, two vars → scatter)
-            lazy: If True, auto-materialize needed aliases. Default from self.draw_lazy
-            keep_materialized: If False, drop aliases we materialized after draw.
-                              Default from self.draw_keep_materialized
-            entry_begin: Start index for entry selection
-            entry_end: End index for entry selection
-            entry_mask: Boolean or integer mask for entry selection
-            **kwargs: Passed to underlying dfdraw method (bins, color, group_by, etc.)
-        
-        Returns:
-            (fig, ax, stats) tuple from dfdraw
-        
-        Example:
-            adf.draw('dEdx:p', type='profile', bins=100, group_by='charge')
-            adf.draw('x', lazy=True)  # Auto-materialize if x is an alias
+
+        All plotting parameters are forwarded to dfdraw. For full docs::
+
+            adf.draw_help()              # list all plot types
+            adf.draw_help('profile')     # profile-specific options
+            adf.draw_help('hist')        # histogram options
+
+        Parameters
+        ----------
+        expr : str
+            Plot expression (e.g., 'y:x', 'x', 'dEdx:p')
+        type : str, default 'auto'
+            Plot type: 'auto', 'hist', 'scatter', 'profile', 'hist2d', 'hexbin'.
+            'auto' infers from expression (single var → hist, two vars → scatter).
+        lazy : bool, optional
+            If True, auto-materialize needed aliases. Default from self.draw_lazy.
+        keep_materialized : bool, optional
+            If False, drop aliases we materialized after draw.
+        entry_begin, entry_end : int, optional
+            Row range selection.
+        entry_mask : array, optional
+            Boolean or integer mask for entry selection.
+        **kwargs
+            Forwarded to dfdraw. Common: selection, group_by, bins, range,
+            title, xlabel, ylabel. Profile: return_data, min_entries,
+            group_by_bins, group_by_quantiles, sort_groups.
+
+        Returns
+        -------
+        tuple
+            (fig, ax, stats_dict)
+
+        Examples
+        --------
+        >>> adf.draw('dEdx:p', type='profile', bins=100, group_by='charge')
+        >>> adf.draw('dy:row', type='profile', selection='abs(dy)<3',
+        ...          group_by='mP3', group_by_bins=5, min_entries=10,
+        ...          return_data=True)
+        >>> stats = adf.draw('dy:row', type='profile', return_data=True)[2]
+        >>> profile_df = stats['profile_data']  # DataFrame for fitting
         """
         # Import dfdraw
         try:
@@ -9954,24 +9975,62 @@ class AliasDataFrame:
         return result
 
     def hist(self, expr: str, **kwargs):
-        """Histogram. See draw() for parameters."""
+        """Histogram. See ``adf.draw_help('hist')`` for all options."""
         return self.draw(expr, type='hist', **kwargs)
 
     def scatter(self, expr: str, **kwargs):
-        """Scatter plot. See draw() for parameters."""
+        """Scatter plot. See ``adf.draw_help('scatter')`` for all options."""
         return self.draw(expr, type='scatter', **kwargs)
 
     def profile(self, expr: str, **kwargs):
-        """Profile plot. See draw() for parameters."""
+        """Profile plot (mean of y in bins of x). See ``adf.draw_help('profile')`` for all options."""
         return self.draw(expr, type='profile', **kwargs)
 
     def hist2d(self, expr: str, **kwargs):
-        """2D histogram. See draw() for parameters."""
+        """2D histogram. See ``adf.draw_help('hist2d')`` for all options."""
         return self.draw(expr, type='hist2d', **kwargs)
 
     def hexbin(self, expr: str, **kwargs):
-        """Hexbin plot. See draw() for parameters."""
+        """Hexbin plot. See ``adf.draw_help('hexbin')`` for all options."""
         return self.draw(expr, type='hexbin', **kwargs)
+
+    def draw_help(self, plot_type=None):
+        """
+        Print dfdraw parameter documentation.
+
+        Parameters
+        ----------
+        plot_type : str, optional
+            Specific plot type: 'profile', 'hist', 'scatter', 'hist2d', 'hexbin'.
+            If None, list available types.
+
+        Examples
+        --------
+        >>> adf.draw_help()              # list all plot types
+        >>> adf.draw_help('profile')     # profile-specific options
+        >>> adf.draw_help('hist')        # histogram options
+        """
+        try:
+            from dfextensions.dfdraw import DFDraw
+        except ImportError:
+            print("dfdraw package not found. Install it or ensure it's in your path.")
+            return
+
+        if plot_type is None:
+            print("Available plot types: profile, hist, scatter, hist2d, hexbin")
+            print("Usage: adf.draw_help('profile')  # show options for profile plots")
+            print("\nDFDraw methods:")
+            for method in ['profile', 'hist', 'scatter', 'hist2d', 'hexbin']:
+                doc = getattr(DFDraw, method, None)
+                if doc and doc.__doc__:
+                    first_line = doc.__doc__.strip().split('\n')[0]
+                    print(f"  {method:10s} — {first_line}")
+        else:
+            func = getattr(DFDraw, plot_type, None)
+            if func is None:
+                print(f"Unknown plot type '{plot_type}'. Available: profile, hist, scatter, hist2d, hexbin")
+            else:
+                help(func)
 
     def draw_batch(self,
                    specs,
