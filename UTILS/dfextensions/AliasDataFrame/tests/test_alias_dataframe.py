@@ -2552,5 +2552,23 @@ class TestExportTreeColumns(unittest.TestCase):
                 self.assertEqual(w[0].category, UserWarning)
 
 
+    def test_fill_value_replaces_inf_nan(self):
+        df = pd.DataFrame({'x': [1.0, 0.0, 2.0, -0.0]})
+        adf = AliasDataFrame(df)
+        adf.add_alias('y', '1/x', fill_value=0)
+        adf.materialize_alias('y')
+        result = adf.df['y'].values
+        assert result[0] == 1.0
+        assert result[1] == 0.0
+        assert result[2] == 0.5
+        assert result[3] == 0.0
+
+    def test_fill_value_none_preserves_inf(self):
+        df = pd.DataFrame({'x': [1.0, 0.0]})
+        adf = AliasDataFrame(df)
+        adf.add_alias('y', '1/x')
+        adf.materialize_alias('y')
+        assert np.isinf(adf.df['y'].values[1])
+
 if __name__ == "__main__":
     unittest.main()
