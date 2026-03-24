@@ -4154,7 +4154,7 @@ def _get_numba_agg_kernel():
     """Compile and return numba-accelerated window accumulation kernel."""
     import numba as nb
 
-    @nb.njit(cache=True)
+    @nb.njit(parallel=True, cache=True)
     def _accumulate_numba(
             bin_coords,        # (B, D) int64
             neighbor_offsets,  # (W, D) int64
@@ -4177,7 +4177,7 @@ def _get_numba_agg_kernel():
         n_cols = sum_x.shape[1]
         n_dims = bin_coords.shape[1]
 
-        for bi in range(n_bins):
+        for bi in nb.prange(n_bins):
             for ni in range(n_offsets):
                 valid = True
                 flat_idx = np.int64(0)
