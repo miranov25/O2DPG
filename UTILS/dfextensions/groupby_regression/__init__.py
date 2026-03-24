@@ -30,6 +30,8 @@ from .groupby_regression_optimized import (
 from .groupby_regression_sliding_window import (
     make_sliding_window_fit,
     make_sliding_window_fit_parallel,
+    make_sliding_window_aggregate,          # NEW
+    make_sliding_window_aggregate_parallel,  # NEW
     InvalidWindowSpec,
     PerformanceWarning,
 )
@@ -55,6 +57,7 @@ __all__ = [
     # Sliding Window (Phase 7)
     'make_sliding_window_fit',
     'make_sliding_window_fit_parallel',
+
     'InvalidWindowSpec',
     'PerformanceWarning',
     # Evaluator (Phase 13.9.GB)
