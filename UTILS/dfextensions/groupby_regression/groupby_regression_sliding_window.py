@@ -4015,7 +4015,8 @@ _log_agg = _logging.getLogger(__name__)
 def _build_dense_lookup(bin_coords: np.ndarray, bounds: dict, gb_columns: list):
     """Build a dense N-D array mapping grid coordinates to compact bin indices.
 
-    Returns (lookup, grid_shape, mins) where lookup[shifted_coords] = bin_index (-1 = empty).
+    Returns (lookup, grid_shape, mins, strides) where lookup[flat_idx] = bin_index (-1 = empty).
+    Vectorized — no Python loop over bins.
     """
     n_bins, n_dims = bin_coords.shape
     mins = np.array([bounds[dim][0] for dim in gb_columns], dtype=np.int64)
@@ -4029,11 +4030,10 @@ def _build_dense_lookup(bin_coords: np.ndarray, bounds: dict, gb_columns: list):
     for d in range(n_dims - 2, -1, -1):
         strides[d] = strides[d + 1] * grid_shape[d + 1]
 
-    for bi in range(n_bins):
-        flat_idx = 0
-        for d in range(n_dims):
-            flat_idx += (int(bin_coords[bi, d]) - int(mins[d])) * int(strides[d])
-        lookup[flat_idx] = bi
+    # Vectorized flat index computation — no loop over bins
+    shifted = bin_coords - mins[np.newaxis, :]  # (n_bins, n_dims)
+    flat_indices = (shifted * strides[np.newaxis, :]).sum(axis=1)  # (n_bins,)
+    lookup[flat_indices] = np.arange(n_bins, dtype=np.int32)
 
     return lookup, grid_shape, mins, strides
 
