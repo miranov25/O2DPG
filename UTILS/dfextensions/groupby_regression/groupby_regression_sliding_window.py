@@ -3997,3 +3997,644 @@ def make_sliding_window_fit_parallel(
             _log.warning(f"[parallel] Failed unit {uid}: {err}")
 
     return out
+
+# ============================================================
+# Phase 13.14.GB: Dedicated Sliding Window Aggregation
+# ============================================================
+#
+# Pure aggregation (mean/std/count/optional median) using per-bin
+# sufficient statistics. No regression, no design matrix.
+#
+# Target: 815k bins × 81 neighbors in <10 seconds.
+# ============================================================
+
+import logging as _logging
+_log_agg = _logging.getLogger(__name__)
+
+
+def _build_dense_lookup(bin_coords: np.ndarray, bounds: dict, gb_columns: list):
+    """Build a dense N-D array mapping grid coordinates to compact bin indices.
+
+    Returns (lookup, grid_shape, mins) where lookup[shifted_coords] = bin_index (-1 = empty).
+    """
+    n_bins, n_dims = bin_coords.shape
+    mins = np.array([bounds[dim][0] for dim in gb_columns], dtype=np.int64)
+    maxs = np.array([bounds[dim][1] for dim in gb_columns], dtype=np.int64)
+    grid_shape = (maxs - mins + 1).astype(np.int64)
+
+    lookup = np.full(int(np.prod(grid_shape)), -1, dtype=np.int32)
+
+    # Compute strides for raveled indexing
+    strides = np.ones(n_dims, dtype=np.int64)
+    for d in range(n_dims - 2, -1, -1):
+        strides[d] = strides[d + 1] * grid_shape[d + 1]
+
+    for bi in range(n_bins):
+        flat_idx = 0
+        for d in range(n_dims):
+            flat_idx += (int(bin_coords[bi, d]) - int(mins[d])) * int(strides[d])
+        lookup[flat_idx] = bi
+
+    return lookup, grid_shape, mins, strides
+
+
+def _precompute_agg_sufficient_stats(
+        bin_ids: np.ndarray,
+        agg_arrays: dict,
+        n_bins: int,
+        weight_array=None,
+):
+    """Compute per-bin sufficient statistics for aggregation.
+
+    Returns
+    -------
+    sum_x : ndarray[n_bins, n_cols] — sum of values (or weighted sum)
+    sum_x2 : ndarray[n_bins, n_cols] — sum of squares (or weighted)
+    counts : ndarray[n_bins, n_cols] — per-column finite counts (or weight sums)
+    col_names : list[str] — column order
+    """
+    col_names = list(agg_arrays.keys())
+    n_cols = len(col_names)
+
+    sum_x = np.zeros((n_bins, n_cols), dtype=np.float64)
+    sum_x2 = np.zeros((n_bins, n_cols), dtype=np.float64)
+    counts = np.zeros((n_bins, n_cols), dtype=np.float64)
+
+    for ci, col in enumerate(col_names):
+        vals = agg_arrays[col]
+        for i in range(len(vals)):
+            bi = bin_ids[i]
+            if bi < 0:
+                continue
+            v = vals[i]
+            if not np.isfinite(v):
+                continue
+            if weight_array is not None:
+                w = weight_array[i]
+                if not np.isfinite(w) or w <= 0:
+                    continue
+                sum_x[bi, ci] += w * v
+                sum_x2[bi, ci] += w * v * v
+                counts[bi, ci] += w
+            else:
+                sum_x[bi, ci] += v
+                sum_x2[bi, ci] += v * v
+                counts[bi, ci] += 1.0
+
+    return sum_x, sum_x2, counts, col_names
+
+
+def _accumulate_window_agg_numpy(
+        bin_coords: np.ndarray,
+        neighbor_offsets: np.ndarray,
+        kernel_weights: np.ndarray,
+        sum_x: np.ndarray,
+        sum_x2: np.ndarray,
+        counts: np.ndarray,
+        lookup: np.ndarray,
+        grid_shape: np.ndarray,
+        mins: np.ndarray,
+        strides: np.ndarray,
+):
+    """Window accumulation using numpy (fallback when numba unavailable).
+
+    Returns (sum_x_out, sum_x2_out, counts_out, n_neighbors_used).
+    """
+    n_bins = bin_coords.shape[0]
+    n_dims = bin_coords.shape[1]
+    n_cols = sum_x.shape[1]
+    n_offsets = neighbor_offsets.shape[0]
+
+    sum_x_out = np.zeros_like(sum_x)
+    sum_x2_out = np.zeros_like(sum_x2)
+    counts_out = np.zeros_like(counts)
+    n_neighbors_used = np.zeros(n_bins, dtype=np.int32)
+
+    for bi in range(n_bins):
+        for ni in range(n_offsets):
+            # Compute neighbor coordinate
+            valid = True
+            flat_idx = 0
+            for d in range(n_dims):
+                nb_d = int(bin_coords[bi, d]) + int(neighbor_offsets[ni, d])
+                shifted = nb_d - int(mins[d])
+                if shifted < 0 or shifted >= int(grid_shape[d]):
+                    valid = False
+                    break
+                flat_idx += shifted * int(strides[d])
+
+            if not valid:
+                continue
+
+            nbi = lookup[flat_idx]
+            if nbi < 0:
+                continue
+
+            n_neighbors_used[bi] += 1
+            kw = kernel_weights[ni]
+            for ci in range(n_cols):
+                sum_x_out[bi, ci] += kw * sum_x[nbi, ci]
+                sum_x2_out[bi, ci] += kw * sum_x2[nbi, ci]
+                counts_out[bi, ci] += kw * counts[nbi, ci]
+
+    return sum_x_out, sum_x2_out, counts_out, n_neighbors_used
+
+
+def _get_numba_agg_kernel():
+    """Compile and return numba-accelerated window accumulation kernel."""
+    import numba as nb
+
+    @nb.njit(cache=True)
+    def _accumulate_numba(
+            bin_coords,        # (B, D) int64
+            neighbor_offsets,  # (W, D) int64
+            kernel_weights,    # (W,) float64
+            sum_x,             # (B, C) float64
+            sum_x2,            # (B, C) float64
+            counts,            # (B, C) float64
+            lookup,            # flat int32 array
+            grid_shape,        # (D,) int64
+            mins,              # (D,) int64
+            strides,           # (D,) int64
+            # outputs
+            sum_x_out,         # (B, C) float64
+            sum_x2_out,        # (B, C) float64
+            counts_out,        # (B, C) float64
+            n_neighbors_out,   # (B,) int32
+    ):
+        n_bins = bin_coords.shape[0]
+        n_offsets = neighbor_offsets.shape[0]
+        n_cols = sum_x.shape[1]
+        n_dims = bin_coords.shape[1]
+
+        for bi in range(n_bins):
+            for ni in range(n_offsets):
+                valid = True
+                flat_idx = np.int64(0)
+                for d in range(n_dims):
+                    nb_d = bin_coords[bi, d] + neighbor_offsets[ni, d]
+                    shifted = nb_d - mins[d]
+                    if shifted < 0 or shifted >= grid_shape[d]:
+                        valid = False
+                        break
+                    flat_idx += shifted * strides[d]
+
+                if not valid:
+                    continue
+
+                nbi = lookup[flat_idx]
+                if nbi < 0:
+                    continue
+
+                n_neighbors_out[bi] += 1
+                kw = kernel_weights[ni]
+                for ci in range(n_cols):
+                    sum_x_out[bi, ci] += kw * sum_x[nbi, ci]
+                    sum_x2_out[bi, ci] += kw * sum_x2[nbi, ci]
+                    counts_out[bi, ci] += kw * counts[nbi, ci]
+
+    return _accumulate_numba
+
+
+def make_sliding_window_aggregate(
+        *,
+        df: 'pd.DataFrame',
+        gb_columns: 'List[str]',
+        agg_columns: 'List[str]',
+        window_spec: 'Dict[str, int]',
+        weights: 'Optional[str]' = None,
+        selection=None,
+        suffix: str = '_sw',
+        min_stat: int = 1,
+        kernel: str = 'uniform',
+        kernel_width=None,
+        boundary: 'Union[str, Dict[str, str]]' = 'full',
+        agg_median: bool = False,
+        verbose: bool = False,
+) -> 'pd.DataFrame':
+    """Sliding window aggregation without regression.
+
+    Computes mean, std, count (and optional median) for each column
+    in agg_columns within each sliding window. Uses per-bin sufficient
+    statistics for O(1) per-neighbor accumulation.
+
+    WARNING: agg_median=True disables the sufficient-statistics optimization
+    for median computation and scales as O(N × W) per column.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input data with integer-binned gb_columns.
+    gb_columns : list[str]
+        Groupby dimensions defining the bin grid.
+    agg_columns : list[str]
+        Columns to aggregate (mean, std, count per column).
+    window_spec : dict[str, int]
+        Sliding window half-width per dimension.
+    weights : str, optional
+        Column for row weights (weighted mean/std).
+    selection : array-like, optional
+        Boolean mask for row selection.
+    suffix : str
+        Output column suffix.
+    min_stat : int
+        Minimum entries per window for valid output.
+    kernel : str
+        Window kernel ('uniform' or 'gaussian').
+    kernel_width : float or dict, optional
+        Kernel bandwidth.
+    boundary : str or dict
+        Boundary handling mode.
+    agg_median : bool
+        If True, also compute median (slow — requires raw values).
+    verbose : bool
+        Print timing information.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per populated bin with mean/std/count per agg_column.
+    """
+    t0 = time.time()
+
+    # ---- Validate ----
+    for col in gb_columns:
+        if col not in df.columns:
+            raise ValueError(f"gb_column '{col}' not in DataFrame")
+    for col in agg_columns:
+        if col not in df.columns:
+            raise ValueError(f"agg_column '{col}' not in DataFrame")
+    if weights is not None and weights not in df.columns:
+        raise ValueError(f"weights column '{weights}' not in DataFrame")
+
+    full_window_spec = {dim: window_spec.get(dim, 0) for dim in gb_columns}
+
+    # ---- Apply selection ----
+    if selection is not None:
+        sel = np.asarray(selection, dtype=bool)
+        df_work = df[sel]
+    else:
+        df_work = df
+
+    n_rows = len(df_work)
+    if n_rows == 0:
+        return pd.DataFrame()
+
+    # ---- Step 1: Bin mapping (reuse _flatten_bins_for_v5 logic) ----
+    t1 = time.time()
+    n_dims = len(gb_columns)
+    gb_arrays = [df_work[c].to_numpy(dtype=np.int64) for c in gb_columns]
+
+    bounds = {}
+    mins_arr = np.empty(n_dims, dtype=np.int64)
+    maxs_arr = np.empty(n_dims, dtype=np.int64)
+    sizes = np.empty(n_dims, dtype=np.int64)
+    for d, dim in enumerate(gb_columns):
+        a = gb_arrays[d]
+        lo, hi = int(a.min()), int(a.max())
+        bounds[dim] = (lo, hi)
+        mins_arr[d] = lo
+        maxs_arr[d] = hi
+        sizes[d] = hi - lo + 1
+
+    # Ravel multi-index
+    strides = np.ones(n_dims, dtype=np.int64)
+    for d in range(n_dims - 2, -1, -1):
+        strides[d] = strides[d + 1] * sizes[d + 1]
+
+    flat_ids = np.zeros(n_rows, dtype=np.int64)
+    for d in range(n_dims):
+        flat_ids += (gb_arrays[d] - mins_arr[d]) * strides[d]
+
+    occupied = np.unique(flat_ids)
+    n_bins = len(occupied)
+
+    grid_total = int(np.prod(sizes))
+    remap = np.full(grid_total, -1, dtype=np.int64)
+    remap[occupied] = np.arange(n_bins, dtype=np.int64)
+    bin_ids = remap[flat_ids]
+
+    # Bin coordinates
+    bin_coords = np.empty((n_bins, n_dims), dtype=np.int64)
+    for d in range(n_dims):
+        bin_coords[:, d] = (occupied // strides[d]) % sizes[d] + mins_arr[d]
+
+    if verbose:
+        print(f"[SWAgg] Step 1 bin mapping: {n_bins} bins, {n_rows} rows, {time.time()-t1:.3f}s")
+
+    # ---- Step 2: Per-bin sufficient statistics ----
+    t2 = time.time()
+    agg_arrays = {c: df_work[c].to_numpy(dtype=np.float64) for c in agg_columns}
+    w_array = df_work[weights].to_numpy(dtype=np.float64) if weights else None
+
+    sum_x, sum_x2, counts, col_names = _precompute_agg_sufficient_stats(
+        bin_ids, agg_arrays, n_bins, w_array)
+
+    if verbose:
+        print(f"[SWAgg] Step 2 per-bin stats: {time.time()-t2:.3f}s")
+
+    # ---- Step 3: Window accumulation ----
+    t3 = time.time()
+
+    # Build dense lookup
+    lookup, grid_shape_arr, lookup_mins, lookup_strides = _build_dense_lookup(
+        bin_coords, bounds, gb_columns)
+
+    # Neighbor offsets and kernel weights
+    neighbor_offsets = _generate_neighbor_offsets(full_window_spec, gb_columns)
+    boundary_resolved = _resolve_boundary(boundary, gb_columns)
+    kernel_width_resolved = _resolve_kernel_width(kernel_width, full_window_spec, gb_columns)
+    kernel_width_vec = np.array([kernel_width_resolved[dim] for dim in gb_columns], dtype=np.float64)
+    offset_weights = _precompute_offset_weights(neighbor_offsets, kernel, kernel_width_vec)
+
+    n_expected_neighbors = len(neighbor_offsets)
+
+    # Try numba, fall back to numpy
+    _use_numba = False
+    try:
+        _numba_kernel = _get_numba_agg_kernel()
+        _use_numba = True
+    except Exception:
+        pass
+
+    n_cols = len(col_names)
+    sum_x_out = np.zeros((n_bins, n_cols), dtype=np.float64)
+    sum_x2_out = np.zeros((n_bins, n_cols), dtype=np.float64)
+    counts_out = np.zeros((n_bins, n_cols), dtype=np.float64)
+    n_neighbors_used = np.zeros(n_bins, dtype=np.int32)
+
+    if _use_numba:
+        _numba_kernel(
+            bin_coords, neighbor_offsets.astype(np.int64), offset_weights,
+            sum_x, sum_x2, counts,
+            lookup, grid_shape_arr, lookup_mins, lookup_strides,
+            sum_x_out, sum_x2_out, counts_out, n_neighbors_used)
+    else:
+        sum_x_out, sum_x2_out, counts_out, n_neighbors_used = _accumulate_window_agg_numpy(
+            bin_coords, neighbor_offsets, offset_weights,
+            sum_x, sum_x2, counts,
+            lookup, grid_shape_arr, lookup_mins, lookup_strides)
+
+    if verbose:
+        backend_name = 'numba' if _use_numba else 'numpy'
+        print(f"[SWAgg] Step 3 window accumulation ({backend_name}): {time.time()-t3:.3f}s")
+
+    # ---- Step 4: Compute mean/std ----
+    t4 = time.time()
+    means = np.where(counts_out > 0, sum_x_out / counts_out, np.nan)
+    var = np.where(counts_out > 0, sum_x2_out / counts_out - means ** 2, np.nan)
+    # Bessel correction (ddof=1) to match _weighted_mean_std convention
+    var_corrected = np.where(counts_out > 1, var * counts_out / (counts_out - 1), np.nan)
+    stds = np.sqrt(np.maximum(var_corrected, 0.0))
+
+    if verbose:
+        print(f"[SWAgg] Step 4 compute stats: {time.time()-t4:.3f}s")
+
+    # ---- Step 5: Assembly ----
+    t5 = time.time()
+    data = {}
+    for d, dim in enumerate(gb_columns):
+        data[dim] = bin_coords[:, d]
+
+    s = suffix
+    for ci, col in enumerate(col_names):
+        data[f'{col}_mean{s}'] = means[:, ci]
+        data[f'{col}_std{s}'] = stds[:, ci]
+        data[f'{col}_count{s}'] = counts_out[:, ci]
+
+    data[f'n_neighbors_used{s}'] = n_neighbors_used
+    eff_frac = n_neighbors_used.astype(np.float64) / max(n_expected_neighbors, 1)
+    data[f'effective_window_fraction{s}'] = eff_frac
+
+    # Optional median (slow path)
+    if agg_median:
+        t_med = time.time()
+        # Need raw row indices per window — fall back to per-bin row lists
+        bin_rows = {}
+        for bi in range(n_bins):
+            bin_rows[bi] = np.where(bin_ids == bi)[0]
+
+        for ci, col in enumerate(col_names):
+            medians = np.full(n_bins, np.nan, dtype=np.float64)
+            vals = agg_arrays[col]
+            for bi in range(n_bins):
+                # Collect all rows from window neighbors
+                idx_list = []
+                for ni in range(len(neighbor_offsets)):
+                    flat_idx = 0
+                    valid = True
+                    for d in range(n_dims):
+                        nb_d = int(bin_coords[bi, d]) + int(neighbor_offsets[ni, d])
+                        shifted = nb_d - int(lookup_mins[d])
+                        if shifted < 0 or shifted >= int(grid_shape_arr[d]):
+                            valid = False
+                            break
+                        flat_idx += shifted * int(lookup_strides[d])
+                    if not valid:
+                        continue
+                    nbi = lookup[flat_idx]
+                    if nbi < 0:
+                        continue
+                    idx_list.extend(bin_rows[nbi].tolist())
+
+                if idx_list:
+                    window_vals = vals[np.array(idx_list)]
+                    finite = window_vals[np.isfinite(window_vals)]
+                    if len(finite) > 0:
+                        medians[bi] = float(np.median(finite))
+            data[f'{col}_median{s}'] = medians
+
+        if verbose:
+            print(f"[SWAgg] Median (slow path): {time.time()-t_med:.3f}s")
+
+    # Apply min_stat filter
+    # Use first column's count as representative
+    if min_stat > 1:
+        total_count = counts_out[:, 0]
+        mask = total_count < min_stat
+        for ci, col in enumerate(col_names):
+            means_col = data[f'{col}_mean{s}']
+            means_col[mask] = np.nan
+            stds_col = data[f'{col}_std{s}']
+            stds_col[mask] = np.nan
+
+    out = pd.DataFrame(data)
+
+    if verbose:
+        print(f"[SWAgg] Step 5 assembly: {time.time()-t5:.3f}s")
+        print(f"[SWAgg] Total: {n_bins} bins, {time.time()-t0:.3f}s")
+
+    return out
+
+
+def make_sliding_window_aggregate_parallel(
+        *,
+        df: 'pd.DataFrame',
+        gb_columns: 'List[str]',
+        agg_columns: 'List[str]',
+        window_spec: 'Dict[str, int]',
+        split_columns: 'List[str]',
+        n_workers: int = 4,
+        weights: 'Optional[str]' = None,
+        selection=None,
+        suffix: str = '_sw',
+        min_stat: int = 1,
+        kernel: str = 'uniform',
+        kernel_width=None,
+        boundary: 'Union[str, Dict[str, str]]' = 'full',
+        agg_median: bool = False,
+        on_error: str = 'nan',
+        verbose: int = 0,
+) -> 'pd.DataFrame':
+    """Parallel sliding window aggregation over independent data units.
+
+    Splits by split_columns, runs make_sliding_window_aggregate per unit.
+    Uses forkserver/spawn context for Numba safety.
+    """
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    # Validate
+    for col in split_columns:
+        if col not in df.columns:
+            raise ValueError(f"split_column '{col}' not in DataFrame")
+
+    if selection is not None:
+        df_work = df[np.asarray(selection, dtype=bool)]
+    else:
+        df_work = df
+
+    # Group by split_columns
+    grouped = df_work.groupby(split_columns, sort=False)
+    tasks = list(grouped)
+
+    n_units = len(tasks)
+    results = []
+    errors = []
+
+    if verbose >= 1:
+        _log_agg.info(f"[parallel-agg] {n_units} units, {len(df_work)} rows, n_workers={n_workers}")
+
+    if n_workers <= 1:
+        # Serial
+        for idx, (unit_key, grp) in enumerate(tasks):
+            try:
+                r = make_sliding_window_aggregate(
+                    df=grp, gb_columns=gb_columns, agg_columns=agg_columns,
+                    window_spec=window_spec, weights=weights, suffix=suffix,
+                    min_stat=min_stat, kernel=kernel, kernel_width=kernel_width,
+                    boundary=boundary, agg_median=agg_median, verbose=(verbose >= 2),
+                )
+                if isinstance(unit_key, tuple):
+                    for col, val in zip(split_columns, unit_key):
+                        r[col] = val
+                else:
+                    r[split_columns[0]] = unit_key
+                results.append(r)
+            except Exception as e:
+                errors.append((unit_key, str(e)))
+                if on_error == 'raise':
+                    raise RuntimeError(f"Unit {unit_key} failed: {e}")
+                if verbose >= 2:
+                    _log_agg.warning(f"[parallel-agg] Unit {unit_key} failed: {e}")
+            if verbose >= 2:
+                _log_agg.info(f"[parallel-agg] {idx+1}/{n_units} done")
+    else:
+        # Parallel
+        import multiprocessing as mp
+        try:
+            ctx = mp.get_context('forkserver')
+        except ValueError:
+            try:
+                ctx = mp.get_context('spawn')
+            except ValueError:
+                ctx = mp.get_context('fork')
+
+        _orig_nt = os.environ.get('NUMBA_NUM_THREADS')
+        os.environ['NUMBA_NUM_THREADS'] = '1'
+
+        try:
+            futures = {}
+            with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as executor:
+                for unit_key, grp in tasks:
+                    fut = executor.submit(
+                        _worker_agg,
+                        grp.to_dict('list'),  # pickle-safe
+                        gb_columns, agg_columns, window_spec,
+                        weights, suffix, min_stat, kernel, kernel_width,
+                        boundary, agg_median,
+                        unit_key, split_columns,
+                    )
+                    futures[fut] = unit_key
+
+                done_count = 0
+                for fut in as_completed(futures):
+                    done_count += 1
+                    uid = futures[fut]
+                    try:
+                        _, payload = fut.result()
+                        if isinstance(payload, str):
+                            errors.append((uid, payload))
+                            if on_error == 'raise':
+                                raise RuntimeError(f"Unit {uid} failed: {payload}")
+                        else:
+                            results.append(payload)
+                    except Exception as e:
+                        errors.append((uid, str(e)))
+                        if on_error == 'raise':
+                            raise
+                    if verbose >= 2 and done_count % max(1, n_units // 10) == 0:
+                        _log_agg.info(f"[parallel-agg] {done_count}/{n_units} done")
+        finally:
+            if _orig_nt is not None:
+                os.environ['NUMBA_NUM_THREADS'] = _orig_nt
+            elif 'NUMBA_NUM_THREADS' in os.environ:
+                del os.environ['NUMBA_NUM_THREADS']
+
+    # Concatenate
+    if results:
+        out = pd.concat(results, ignore_index=True)
+    else:
+        out = pd.DataFrame()
+
+    if len(results) == 0 and len(errors) > 0:
+        raise RuntimeError(
+            f"All {len(errors)} parallel units failed. First: {errors[0][1]}")
+
+    if errors:
+        _log_agg.warning(
+            f"[parallel-agg] {len(errors)}/{n_units} units failed. First: {errors[0][1]}")
+
+    if verbose >= 1:
+        _log_agg.info(f"[parallel-agg] Done: {len(out)} bins, {len(errors)} errors")
+
+    return out
+
+
+def _worker_agg(
+        df_dict, gb_columns, agg_columns, window_spec,
+        weights, suffix, min_stat, kernel, kernel_width,
+        boundary, agg_median,
+        unit_key, split_columns,
+):
+    """Worker for parallel aggregation. Receives dict, reconstructs DataFrame."""
+    try:
+        import numba
+        numba.set_num_threads(1)
+    except Exception:
+        pass
+    try:
+        df_unit = pd.DataFrame(df_dict)
+        result = make_sliding_window_aggregate(
+            df=df_unit, gb_columns=gb_columns, agg_columns=agg_columns,
+            window_spec=window_spec, weights=weights, suffix=suffix,
+            min_stat=min_stat, kernel=kernel, kernel_width=kernel_width,
+            boundary=boundary, agg_median=agg_median,
+        )
+        if isinstance(unit_key, tuple):
+            for col, val in zip(split_columns, unit_key):
+                result[col] = val
+        else:
+            result[split_columns[0]] = unit_key
+        return (unit_key, result)
+    except Exception as e:
+        return (unit_key, str(e))
