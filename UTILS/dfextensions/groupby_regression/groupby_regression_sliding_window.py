@@ -4384,7 +4384,8 @@ def make_sliding_window_aggregate(
     means = np.where(counts_out > 0, sum_x_out / counts_out, np.nan)
     var = np.where(counts_out > 0, sum_x2_out / counts_out - means ** 2, np.nan)
     # Bessel correction (ddof=1) to match _weighted_mean_std convention
-    var_corrected = np.where(counts_out > 1, var * counts_out / (counts_out - 1), np.nan)
+    safe_denom = np.maximum(counts_out - 1, 1)  # avoid division by zero
+    var_corrected = np.where(counts_out > 1, var * counts_out / safe_denom, np.nan)
     stds = np.sqrt(np.maximum(var_corrected, 0.0))
 
     if verbose:
