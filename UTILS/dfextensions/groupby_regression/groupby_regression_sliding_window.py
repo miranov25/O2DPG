@@ -4046,6 +4046,8 @@ def _precompute_agg_sufficient_stats(
 ):
     """Compute per-bin sufficient statistics for aggregation.
 
+    Uses np.bincount for O(N) vectorized accumulation (C-implemented).
+
     Returns
     -------
     sum_x : ndarray[n_bins, n_cols] — sum of values (or weighted sum)
@@ -4060,26 +4062,34 @@ def _precompute_agg_sufficient_stats(
     sum_x2 = np.zeros((n_bins, n_cols), dtype=np.float64)
     counts = np.zeros((n_bins, n_cols), dtype=np.float64)
 
+    # Common mask: valid bin assignment
+    valid_bin = bin_ids >= 0
+
+    # Weight validity mask (if weights provided)
+    if weight_array is not None:
+        w_valid = np.isfinite(weight_array) & (weight_array > 0)
+    else:
+        w_valid = None
+
     for ci, col in enumerate(col_names):
         vals = agg_arrays[col]
-        for i in range(len(vals)):
-            bi = bin_ids[i]
-            if bi < 0:
-                continue
-            v = vals[i]
-            if not np.isfinite(v):
-                continue
-            if weight_array is not None:
-                w = weight_array[i]
-                if not np.isfinite(w) or w <= 0:
-                    continue
-                sum_x[bi, ci] += w * v
-                sum_x2[bi, ci] += w * v * v
-                counts[bi, ci] += w
-            else:
-                sum_x[bi, ci] += v
-                sum_x2[bi, ci] += v * v
-                counts[bi, ci] += 1.0
+        finite = np.isfinite(vals)
+
+        if weight_array is not None:
+            mask = valid_bin & finite & w_valid
+            ids = bin_ids[mask]
+            v = vals[mask]
+            w = weight_array[mask]
+            sum_x[:, ci] = np.bincount(ids, weights=w * v, minlength=n_bins)[:n_bins]
+            sum_x2[:, ci] = np.bincount(ids, weights=w * v * v, minlength=n_bins)[:n_bins]
+            counts[:, ci] = np.bincount(ids, weights=w, minlength=n_bins)[:n_bins]
+        else:
+            mask = valid_bin & finite
+            ids = bin_ids[mask]
+            v = vals[mask]
+            sum_x[:, ci] = np.bincount(ids, weights=v, minlength=n_bins)[:n_bins]
+            sum_x2[:, ci] = np.bincount(ids, weights=v * v, minlength=n_bins)[:n_bins]
+            counts[:, ci] = np.bincount(ids, minlength=n_bins)[:n_bins].astype(np.float64)
 
     return sum_x, sum_x2, counts, col_names
 
