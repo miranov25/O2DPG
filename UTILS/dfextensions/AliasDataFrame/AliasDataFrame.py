@@ -3016,7 +3016,7 @@ class AliasDataFrame:
     #
     # =========================================================================
 
-    def add_alias(self, name, expression, dtype=None, is_constant=False):
+    def add_alias(self, name, expression, dtype=None, is_constant=False, fill_value=None):
         """
         Define a new alias (lazy computed column).
         
@@ -3025,11 +3025,17 @@ class AliasDataFrame:
             expression: Expression string using pandas or NumPy operations.
             dtype: Optional numpy dtype to enforce.
             is_constant: Whether the alias represents a scalar constant.
+            fill_value: Optional value to replace inf and NaN in result.
+                If set, np.where(np.isfinite(result), result, fill_value)
+                is applied after evaluation and before dtype conversion.
             
         Phase 4: Writes to _schema["columns"] as single source of truth.
         
         Raises:
             ValueError: If alias would create a self-referential cycle.
+        
+        Example:
+            >>> adf.add_alias('dsectorM', '18*((y+dy)/x)/pi', dtype=np.float16, fill_value=0)
         """
         # Check for self-reference BEFORE adding to schema
         # This catches cases like: add_alias('x', 'x + 1') when 'x' is already a column
@@ -3065,6 +3071,8 @@ class AliasDataFrame:
             spec["dtype"] = dtype
         if is_constant:
             spec["constant"] = True
+        if fill_value is not None:
+            spec["fill_value"] = fill_value
         
         # Write to schema
         self._schema["columns"][name] = spec
@@ -4044,6 +4052,13 @@ class AliasDataFrame:
                         self.materialize_alias(token, warn_missing_keys=warn_missing_keys)
 
                 result = self._eval_in_namespace(expr, warn_missing_keys=warn_missing_keys, alias_name=name)
+                
+                # Phase 13.9: Apply fill_value for inf/NaN replacement
+                alias_spec = self._schema["columns"].get(name, {})
+                fill_val = alias_spec.get("fill_value")
+                if fill_val is not None:
+                    result = np.where(np.isfinite(result), result, fill_val)
+                
                 result_dtype = dtype or self.alias_dtypes.get(name)
                 if result_dtype is not None:
                     try:
