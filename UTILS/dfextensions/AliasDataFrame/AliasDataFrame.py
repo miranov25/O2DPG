@@ -4292,6 +4292,12 @@ class AliasDataFrame:
                     # Compute with context_override so dependent aliases can see prior results
                     result = self._eval_in_namespace(expr, context_override=results, alias_name=name)
                     
+                    # Apply fill_value for inf/NaN replacement (must be before dtype cast)
+                    alias_spec = self._schema["columns"].get(name, {})
+                    fill_val = alias_spec.get("fill_value")
+                    if fill_val is not None:
+                        result = np.where(np.isfinite(result), result, fill_val)
+                    
                     # Apply dtype if specified
                     result_dtype = self.alias_dtypes.get(name)
                     if result_dtype is not None:
