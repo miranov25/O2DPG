@@ -1673,7 +1673,7 @@ class DFDraw:
     
     def draw_batch(
         self,
-        specs: Union[Dict[str, Dict[str, Any]], str],
+        specs: Union[Dict[str, Dict[str, Any]], List[Dict[str, Any]], str],
         save_dir: Optional[str] = None,
         defaults: Optional[Dict[str, Any]] = None,
         on_error: str = 'skip',
@@ -1684,13 +1684,23 @@ class DFDraw:
         **kwargs
     ) -> Dict[str, Any]:
         """
-        Draw multiple figures from specification dictionary.
+        Draw multiple figures from specification.
+        
+        Supports two formats:
+        
+        **Dict format (original):** Each key is a plot name, value is a spec dict.
+        Each spec produces one independent figure.
+        
+        **List format (Phase 13.14.DF):** List of group dicts. Each group produces
+        one figure with subplots. Group-level defaults cascade to individual plots
+        (option hierarchy: kwargs < batch defaults < group defaults < plot spec).
         
         Parameters
         ----------
-        specs : dict or str
-            Dictionary of plot specifications, or path to YAML/JSON file.
-            Each key is the plot name, value is dict with 'expr' and optional parameters.
+        specs : dict, list, or str
+            Dict format: ``{'name': {'expr': 'y:x', ...}, ...}``
+            List format: ``[{'name': 'fig1', 'defaults': {...}, 'plots': [...]}, ...]``
+            String: path to YAML/JSON file (dict format only).
         save_dir : str, optional
             Directory to save figures. Created if doesn't exist.
         defaults : dict, optional
@@ -1713,26 +1723,50 @@ class DFDraw:
         -------
         dict
             Results dictionary with plot results, errors, and summary.
-            Each plot entry has: {'stats': dict, 'fig': Figure, 'ax': Axes, 'path': str}
-            If close_figures=True and save_dir set, fig/ax will be None.
-            '_errors': dict of {name: error_message}
-            '_summary': {'total': int, 'success': int, 'failed': int}
+            
+            Dict format: ``{'name': {'stats': dict, 'fig': Figure, 'ax': Axes, 'path': str}, ...}``
+            List format: ``{'name': {'fig': Figure, 'axes': list, 'stats': list, 'path': str}, ...}``
         
         Examples
         --------
+        Dict format (original):
+        
         >>> specs = {
         ...     'hist_x': {'expr': 'x', 'bins': 50},
-        ...     'scatter_yx': {'expr': 'y:x', 'sample': 10000},
-        ...     'profile_dEdx': {'expr': 'dEdx:p', 'type': 'profile', 'bins': 100},
+        ...     'profile_yx': {'expr': 'y:x', 'type': 'profile', 'bins': 100},
         ... }
-        >>> results = plotter.draw_batch(specs, save_dir='plots/', verbose=True)
-        [1/3] hist_x → plots/hist_x.png
-        [2/3] scatter_yx → plots/scatter_yx.png
-        [3/3] profile_dEdx → plots/profile_dEdx.png
-        Completed: 3/3 (0 errors)
+        >>> results = plotter.draw_batch(specs, save_dir='plots/')
+        
+        List format (Phase 13.14.DF — defaults hierarchy + subplot grid):
+        
+        >>> specs = [{
+        ...     'name': 'residuals_qa',
+        ...     'suptitle': 'ITS-TPC Residuals QA',
+        ...     'ncols': 2,
+        ...     'figsize': (16, 12),
+        ...     'savefig': 'residuals_qa.png',
+        ...     'defaults': {
+        ...         'type': 'profile', 'bins': 152, 'min_entries': 250,
+        ...         'selection': 'group_count>100',
+        ...     },
+        ...     'plots': [
+        ...         {'expr': 'dystd:row', 'group_by': 'mP4_bin'},
+        ...         {'expr': 'Side.dy:xM', 'group_by': 'mP4', 'group_by_quantiles': 10},
+        ...         {'expr': 'Side.dy:row'},
+        ...     ]
+        ... }]
+        >>> results = plotter.draw_batch(specs, dpi=150)
         """
         import os
         import matplotlib.pyplot as plt
+        
+        # Phase 13.14.DF: Detect list format → group mode
+        if isinstance(specs, list):
+            return self._draw_batch_groups(
+                specs, save_dir=save_dir, defaults=defaults,
+                on_error=on_error, verbose=verbose, save_format=save_format,
+                dpi=dpi, close_figures=close_figures, **kwargs
+            )
         
         # Load from file if string path provided
         if isinstance(specs, str):
@@ -1811,6 +1845,220 @@ class DFDraw:
         
         if verbose:
             print(f"Completed: {results['_summary']['success']}/{n} ({len(errors)} errors)")
+        
+        return results
+    
+    # =========================================================================
+    # Phase 13.14.DF: Group-based Batch Processing
+    # =========================================================================
+    
+    # Group-level keys that are not draw parameters — stripped before dispatch
+    _GROUP_KEYS = frozenset({
+        'name', 'defaults', 'ncols', 'layout', 'figsize',
+        'suptitle', 'savefig', 'sharex', 'sharey', 'plots',
+    })
+    
+    def _draw_batch_groups(
+        self,
+        groups: List[Dict[str, Any]],
+        save_dir: Optional[str] = None,
+        defaults: Optional[Dict[str, Any]] = None,
+        on_error: str = 'skip',
+        verbose: bool = True,
+        save_format: str = 'png',
+        dpi: int = 150,
+        close_figures: bool = True,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Draw batch from list-of-groups format.
+        
+        Each group produces one figure with subplots. Group-level defaults
+        cascade to individual plots via option hierarchy:
+        ``kwargs < batch defaults < group defaults < plot spec``
+        
+        Phase 13.14.DF v1.0.
+        
+        Parameters
+        ----------
+        groups : list of dict
+            Each dict has 'name' (required), 'plots' (required),
+            and optional 'defaults', 'ncols', 'layout', 'figsize',
+            'suptitle', 'savefig', 'sharex', 'sharey'.
+        save_dir : str, optional
+            Directory for saving (used when 'savefig' not in group).
+        defaults : dict, optional
+            Batch-level defaults (below group defaults in hierarchy).
+        on_error : str, default 'skip'
+            'skip' or 'raise'.
+        verbose : bool, default True
+            Print progress.
+        save_format : str, default 'png'
+            Format when using save_dir.
+        dpi : int, default 150
+            Save resolution.
+        close_figures : bool, default True
+            Close figures after saving.
+        **kwargs
+            Lowest-priority defaults passed to all draw methods.
+        
+        Returns
+        -------
+        dict
+            ``{'group_name': {'fig': Figure, 'axes': list, 'stats': list, 'path': str}, ...}``
+        """
+        import os
+        import math
+        import matplotlib.pyplot as plt
+        
+        results = {}
+        errors = {}
+        total_groups = len(groups)
+        
+        for g_idx, group in enumerate(groups):
+            name = group.get('name', f'group_{g_idx}')
+            group_defaults = group.get('defaults', {})
+            plots = group.get('plots', [])
+            suptitle = group.get('suptitle', None)
+            savefig = group.get('savefig', None)
+            sharex = group.get('sharex', False)
+            sharey = group.get('sharey', False)
+            
+            if verbose:
+                print(f"[{g_idx+1}/{total_groups}] {name} ({len(plots)} plots)",
+                      end="", flush=True)
+            
+            try:
+                if not plots:
+                    raise ValueError(f"Group '{name}' has no plots")
+                
+                # Count subplots (same=True doesn't consume a new subplot)
+                n_subplots = sum(1 for p in plots if not p.get('same', False))
+                if n_subplots == 0:
+                    raise ValueError(f"Group '{name}': all plots have same=True")
+                
+                # Layout resolution: layout > ncols > auto (AD-29)
+                if 'layout' in group:
+                    nrows, ncols = group['layout']
+                elif 'ncols' in group:
+                    ncols = group['ncols']
+                    nrows = math.ceil(n_subplots / ncols)
+                else:
+                    ncols = min(3, n_subplots)
+                    nrows = math.ceil(n_subplots / ncols) if ncols > 0 else 1
+                
+                # Figure size: explicit > auto-scaled
+                if 'figsize' in group:
+                    figsize = group['figsize']
+                else:
+                    base = get_style_value("figure.figsize", (8, 6))
+                    figsize = (base[0] * ncols / 1.5, base[1] * nrows / 1.5)
+                
+                # Create figure — squeeze=False ensures axes is always 2D array (P1-2)
+                fig, axes = plt.subplots(
+                    nrows, ncols, figsize=figsize,
+                    squeeze=False, sharex=sharex, sharey=sharey
+                )
+                
+                # Hide empty subplots (P1-3)
+                for j in range(n_subplots, nrows * ncols):
+                    axes.flat[j].set_visible(False)
+                
+                subplot_idx = -1
+                group_stats = []
+                
+                for p_idx, plot_spec in enumerate(plots):
+                    # Merge: kwargs < batch defaults < group defaults < plot spec
+                    merged = {**kwargs, **(defaults or {}), **group_defaults, **plot_spec}
+                    
+                    expr = merged.pop('expr')
+                    is_same = merged.pop('same', False)
+                    
+                    # Guard: same=True on first plot (P1-1)
+                    if is_same and subplot_idx < 0:
+                        raise ValueError(
+                            f"same=True on first plot in group '{name}' "
+                            "has no previous subplot"
+                        )
+                    
+                    if not is_same:
+                        subplot_idx += 1
+                    merged['ax'] = axes.flat[subplot_idx]
+                    
+                    # Remove group-level keys that aren't draw parameters
+                    for key in self._GROUP_KEYS:
+                        merged.pop(key, None)
+                    
+                    # Dispatch
+                    plot_type = merged.pop('type', None)
+                    if plot_type is None:
+                        plot_type = 'hist' if ':' not in expr else 'scatter'
+                    
+                    valid_types = ('hist', 'scatter', 'profile', 'hist2d', 'hexbin')
+                    if plot_type not in valid_types:
+                        raise ValueError(
+                            f"Invalid type '{plot_type}' in group '{name}' "
+                            f"plot {p_idx}. Must be one of {valid_types}"
+                        )
+                    
+                    method = getattr(self, plot_type)
+                    _, _, stats = method(expr, **merged)
+                    group_stats.append(stats)
+                
+                # Suptitle
+                if suptitle:
+                    fig.suptitle(
+                        suptitle,
+                        fontsize=get_style_value("axes.titlesize", 14) + 2
+                    )
+                
+                # Layout
+                plt.tight_layout()
+                if suptitle:
+                    plt.subplots_adjust(top=0.92)
+                
+                # Save
+                save_path = None
+                if savefig:
+                    save_path = savefig
+                elif save_dir:
+                    os.makedirs(save_dir, exist_ok=True)
+                    save_path = os.path.join(save_dir, f"{name}.{save_format}")
+                
+                if save_path:
+                    fig.savefig(save_path, dpi=dpi, bbox_inches='tight')
+                    if verbose:
+                        print(f" → {save_path}")
+                elif verbose:
+                    print()
+                
+                results[name] = {
+                    'fig': fig,
+                    'axes': list(axes.flat[:n_subplots]),
+                    'stats': group_stats,
+                    'path': save_path,
+                }
+                
+                if close_figures and save_path:
+                    plt.close(fig)
+                    results[name]['fig'] = None
+                
+            except Exception as e:
+                errors[name] = str(e)
+                if verbose:
+                    print(f" ✗ {e}")
+                if on_error == 'raise':
+                    raise
+        
+        results['_errors'] = errors
+        results['_summary'] = {
+            'total': total_groups,
+            'success': total_groups - len(errors),
+            'failed': len(errors)
+        }
+        if verbose:
+            print(f"Completed: {results['_summary']['success']}/{total_groups} "
+                  f"({len(errors)} errors)")
         
         return results
     
