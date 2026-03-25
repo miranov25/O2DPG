@@ -70,6 +70,9 @@ class DFDraw:
         self._data_source = data  # Keep reference for duck typing (axis titles)
         self._table = None  # Phase 13.1.DF: Store original PyArrow Table if provided
         self.df = self._normalize_data(data)
+        # Phase 13.13.DF: Track last axes for same=True (AD-15)
+        self._last_ax = None
+        self._color_cycle_index = 1  # Start at 1: first plot uses index 0 (AD-16, A2)
     
     def _normalize_data(self, data) -> pd.DataFrame:
         """
@@ -298,6 +301,151 @@ class DFDraw:
         return None  # Let plot methods use their default behavior
     
     # =========================================================================
+    # Phase 13.13.DF: same=True Support (AD-15 through AD-18)
+    # =========================================================================
+    
+    def _resolve_axes(self, same: bool, ax):
+        """
+        Resolve axes for drawing.
+        
+        AD-15: self._last_ax with plt.gca() fallback.
+        
+        Parameters
+        ----------
+        same : bool
+            If True, reuse last axes.
+        ax : Axes or None
+            Explicitly provided axes.
+        
+        Returns
+        -------
+        tuple
+            (resolved_axes_or_None, is_new_figure)
+            If resolved_axes is None, caller creates new figure.
+        
+        Notes
+        -----
+        For AliasDataFrame users: if AliasDataFrame creates new DFDraw on each
+        draw() call, same=True will use plt.gca() fallback instead of instance-
+        tracked _last_ax. AD-37 requires AliasDataFrame to cache DFDraw instance
+        for safe same=True behavior.
+        """
+        import matplotlib.pyplot as plt
+        
+        if ax is not None:
+            # Explicit ax= always wins (§5.4 Precedence Rule 2)
+            return ax, False
+        
+        if same:
+            if self._last_ax is not None:
+                return self._last_ax, False
+            else:
+                # Fallback to plt.gca() (AD-15)
+                current = plt.gca()
+                if current.has_data() or len(current.get_children()) > 5:
+                    return current, False
+                # No valid axes found, create new
+                return None, True
+        
+        # Not same=True: create new figure
+        return None, True
+    
+    def _get_next_color(self):
+        """
+        Get next color from palette for same=True overlay.
+        
+        AD-16: Auto-increment colors from palette.
+        Color cycle starts at index 1 (first plot uses index 0 via default).
+        """
+        import matplotlib.pyplot as plt
+        palette = plt.colormaps.get_cmap(get_style_value("colors.palette", "tab10"))
+        color = palette(self._color_cycle_index % 10)
+        self._color_cycle_index += 1
+        return color
+    
+    def _reset_color_cycle(self):
+        """
+        Reset color cycle when creating new figure.
+        
+        Starts at 1: first plot implicitly uses palette index 0 (matplotlib default).
+        """
+        self._color_cycle_index = 1
+    
+    def _auto_label(self, y_expr, x_expr=None):
+        """
+        Generate label from expression for legend.
+        
+        AD-17: Auto-generate label from expression (user can override with label=).
+        
+        Parameters
+        ----------
+        y_expr : str
+            Y-axis expression name.
+        x_expr : str or None
+            X-axis expression name.
+        
+        Returns
+        -------
+        str
+            Label string like "y vs x" or "y".
+        """
+        if x_expr:
+            return f"{y_expr} vs {x_expr}"
+        return y_expr
+    
+    def _handle_same_post(self, ax, same, auto_title, selection, y_name,
+                          x_name=None, group_by=None, weights=None):
+        """
+        Post-draw handling for same=True: title append and legend.
+        
+        Called after the underlying draw_* function returns.
+        
+        Parameters
+        ----------
+        ax : Axes
+            The axes that was drawn on.
+        same : bool
+            Whether same=True was used.
+        auto_title : bool or str
+            Auto-title setting from caller.
+        selection : str or None
+            Selection string for auto-title.
+        y_name, x_name : str
+            Expression names for auto-title.
+        group_by : str or None
+            Group-by column name.
+        weights : str or None
+            Weights column name.
+        """
+        from .plots._auto_title import (
+            build_auto_title, append_auto_title, apply_auto_title,
+            parse_auto_title_parts, resolve_auto_title
+        )
+        
+        # Store axes for next same=True call
+        self._last_ax = ax
+        
+        if not same:
+            return
+        
+        # AD-18: Append to title when same=True + auto_title=True
+        auto_title = resolve_auto_title(auto_title)
+        if auto_title:
+            parts = parse_auto_title_parts(auto_title)
+            td = build_auto_title(
+                x_name or y_name, y_name if x_name else None,
+                group_by=group_by, selection=selection,
+                weights=weights, parts=parts
+            )
+            if ax.get_title():
+                append_auto_title(ax, td)
+            else:
+                apply_auto_title(ax, td)
+        
+        # Show legend when overlaying
+        ax.legend(loc=get_style_value("legend.loc", "best"))
+    
+    # =========================================================================
     # Main Draw Method
     # =========================================================================
     
@@ -319,6 +467,8 @@ class DFDraw:
         sample: Optional[int] = None,
         save: Optional[str] = None,
         figsize: Optional[Tuple[float, float]] = None,
+        # Phase 13.13.DF: same=True for superposition (AD-15)
+        same: bool = False,
         **kwargs
     ) -> DrawResult:
         """
@@ -360,6 +510,9 @@ class DFDraw:
             Save figure to this path.
         figsize : tuple, optional
             Figure size as (width, height) in inches.
+        same : bool, default False
+            If True, overlay on last axes. Phase 13.13.DF (AD-15).
+            Uses self._last_ax with plt.gca() fallback.
         **kwargs
             Additional style overrides.
         
@@ -388,25 +541,27 @@ class DFDraw:
             return self.hist(
                 expr, selection=selection, bins=bins, stats=stats,
                 norm=norm, title=title, ax=ax, sample=sample, 
-                save=save, group_by=group_by, facet=facet, **kwargs
+                save=save, group_by=group_by, facet=facet,
+                same=same, **kwargs
             )
         elif type == "scatter":
             return self.scatter(
                 expr, selection=selection, color=color, size=size,
                 marker=marker, stats=stats, title=title, ax=ax,
                 sample=sample, save=save, group_by=group_by, 
-                facet=facet, **kwargs
+                facet=facet, same=same, **kwargs
             )
         elif type == "hist2d":
             return self.hist2d(
                 expr, selection=selection, bins=bins, stats=stats,
-                title=title, ax=ax, sample=sample, save=save, **kwargs
+                title=title, ax=ax, sample=sample, save=save,
+                same=same, **kwargs
             )
         elif type == "profile":
             return self.profile(
                 expr, selection=selection, bins=bins, stats=stats,
                 title=title, ax=ax, sample=sample, save=save,
-                group_by=group_by, **kwargs
+                group_by=group_by, same=same, **kwargs
             )
         else:
             raise ValueError(
@@ -440,6 +595,8 @@ class DFDraw:
         top_k: Optional[int] = None,
         # Phase 13.12.DF v1.2: Auto-title
         auto_title: Union[bool, str] = False,
+        # Phase 13.13.DF: same=True (AD-15)
+        same: bool = False,
         **kwargs
     ) -> DrawResult:
         """
@@ -481,6 +638,8 @@ class DFDraw:
             Share y-axis in facet mode.
         top_k : int, optional
             Show only top K groups.
+        same : bool, default False
+            If True, overlay on last axes. Phase 13.13.DF (AD-15).
         **kwargs
             Additional arguments to plt.hist().
         
@@ -494,6 +653,26 @@ class DFDraw:
         # Parse expression (take first part only for 1D)
         y_expr, x_expr = self._parse_expr(expr)
         col_expr = y_expr  # Use y (first part) as the variable
+        
+        # Phase 13.13.DF: Resolve axes for same=True
+        resolved_ax, is_new = self._resolve_axes(same, ax)
+        if is_new:
+            self._reset_color_cycle()
+            ax = None
+        else:
+            ax = resolved_ax
+        
+        # Phase 13.13.DF: Inject color and label for same=True
+        save_auto_title = auto_title
+        if same:
+            if 'color' not in kwargs:
+                kwargs['color'] = self._get_next_color()
+            if 'label' not in kwargs and group_by is None:
+                kwargs['label'] = self._auto_label(col_expr)
+            # Suppress title handling — we do it in _handle_same_post
+            if ax is not None and ax.get_title():
+                title = None
+                auto_title = False
         
         # Apply selection and sampling
         df = self._apply_selection(self.df, selection)
@@ -509,7 +688,7 @@ class DFDraw:
             if duck_label is not None:
                 xlabel = duck_label
         
-        # Facet mode
+        # Facet mode (same=True ignored in facet mode)
         if facet and group_by is not None:
             from .facet import facet_hist
             fig, axes, stats_dict = facet_hist(
@@ -530,6 +709,12 @@ class DFDraw:
                 **kwargs
             )
             axes = ax
+            
+            # Phase 13.13.DF: Post-draw handling for same=True
+            self._handle_same_post(
+                ax, same, save_auto_title, selection,
+                y_name=col_expr
+            )
         
         # Save if requested
         if save:
@@ -562,6 +747,8 @@ class DFDraw:
         colorbar: bool = True,
         clabel: Optional[str] = None,
         jitter: Optional[Union[bool, float, Tuple[float, float]]] = None,
+        # Phase 13.13.DF: same=True (AD-15)
+        same: bool = False,
         **kwargs
     ) -> DrawResult:
         """
@@ -611,6 +798,8 @@ class DFDraw:
             Colorbar label.
         jitter : bool, float, or tuple, optional
             Add jitter to points.
+        same : bool, default False
+            If True, overlay on last axes. Phase 13.13.DF (AD-15).
         **kwargs
             Additional arguments to plt.scatter().
         
@@ -628,6 +817,24 @@ class DFDraw:
             raise ValueError(
                 f"Scatter plot requires 'y:x' format, got '{expr}'"
             )
+        
+        # Phase 13.13.DF: Resolve axes for same=True
+        resolved_ax, is_new = self._resolve_axes(same, ax)
+        if is_new:
+            self._reset_color_cycle()
+            ax = None
+        else:
+            ax = resolved_ax
+        
+        # Phase 13.13.DF: Inject color and label for same=True
+        if same:
+            if color is None:
+                color = self._get_next_color()
+            if 'label' not in kwargs and group_by is None:
+                kwargs['label'] = self._auto_label(y_expr, x_expr)
+            # Suppress title — handled in _handle_same_post
+            if ax is not None and ax.get_title():
+                title = None
         
         # Apply selection and sampling
         df = self._apply_selection(self.df, selection)
@@ -649,7 +856,7 @@ class DFDraw:
             if duck_label is not None:
                 ylabel = duck_label
         
-        # Facet mode
+        # Facet mode (same=True ignored in facet mode)
         if facet and group_by is not None:
             from .facet import facet_scatter
             fig, axes, stats_dict = facet_scatter(
@@ -670,6 +877,12 @@ class DFDraw:
                 clabel=clabel, jitter=jitter, **kwargs
             )
             axes = ax
+            
+            # Phase 13.13.DF: Post-draw handling for same=True
+            self._handle_same_post(
+                ax, same, False, selection,
+                y_name=y_expr, x_name=x_expr
+            )
         
         # Save if requested
         if save:
@@ -708,6 +921,8 @@ class DFDraw:
         weights: Optional[str] = None,
         # Phase 13.12.DF v1.2: Auto-title
         auto_title: Union[bool, str] = False,
+        # Phase 13.13.DF: same=True (AD-15)
+        same: bool = False,
         **kwargs
     ) -> DrawResult:
         """
@@ -772,6 +987,8 @@ class DFDraw:
         auto_title : bool or str, default False
             Automatic title. True/"all", "expr", "expr+group", "expr+sel".
             Phase 13.12.DF v1.2.
+        same : bool, default False
+            If True, overlay on last axes. Phase 13.13.DF (AD-15).
         **kwargs
             Additional arguments.
         
@@ -794,6 +1011,26 @@ class DFDraw:
                 f"Profile plot requires 'y:x' format, got '{expr}'"
             )
         
+        # Phase 13.13.DF: Resolve axes for same=True
+        resolved_ax, is_new = self._resolve_axes(same, ax)
+        if is_new:
+            self._reset_color_cycle()
+            ax = None
+        else:
+            ax = resolved_ax
+        
+        # Phase 13.13.DF: Inject color and label for same=True
+        save_auto_title = auto_title
+        if same:
+            if 'color' not in kwargs:
+                kwargs['color'] = self._get_next_color()
+            if 'label' not in kwargs and group_by is None:
+                kwargs['label'] = self._auto_label(y_expr, x_expr)
+            # Suppress title — handled in _handle_same_post
+            if ax is not None and ax.get_title():
+                title = None
+                auto_title = False
+        
         # Apply selection and sampling
         df = self._apply_selection(self.df, selection)
         df = self._apply_sampling(df, sample)
@@ -814,7 +1051,7 @@ class DFDraw:
             if duck_label is not None:
                 ylabel = duck_label
         
-        # Facet mode
+        # Facet mode (same=True ignored in facet mode)
         if facet and group_by is not None:
             from .facet import facet_profile
             fig, axes, stats_dict = facet_profile(
@@ -844,6 +1081,13 @@ class DFDraw:
                 **kwargs
             )
             axes = ax
+            
+            # Phase 13.13.DF: Post-draw handling for same=True
+            self._handle_same_post(
+                ax, same, save_auto_title, selection,
+                y_name=y_expr, x_name=x_expr,
+                group_by=group_by, weights=weights
+            )
         
         # Save if requested
         if save:
@@ -879,6 +1123,8 @@ class DFDraw:
         vmax: Optional[float] = None,
         # Phase 13.12.DF v1.2: Auto-title
         auto_title: Union[bool, str] = False,
+        # Phase 13.13.DF: same=True (AD-15)
+        same: bool = False,
         **kwargs
     ) -> DrawResult:
         """
@@ -928,6 +1174,9 @@ class DFDraw:
             Colorbar label.
         vmin, vmax : float, optional
             Color scale limits.
+        same : bool, default False
+            If True, overlay on last axes. Phase 13.13.DF (AD-15).
+            Useful for overlaying profile on hist2d.
         **kwargs
             Additional arguments.
         
@@ -945,6 +1194,14 @@ class DFDraw:
             raise ValueError(
                 f"hist2d requires 'y:x' format, got '{expr}'"
             )
+        
+        # Phase 13.13.DF: Resolve axes for same=True
+        resolved_ax, is_new = self._resolve_axes(same, ax)
+        if is_new:
+            self._reset_color_cycle()
+            ax = None
+        else:
+            ax = resolved_ax
         
         # Apply selection and sampling
         df = self._apply_selection(self.df, selection)
@@ -966,7 +1223,7 @@ class DFDraw:
             if duck_label is not None:
                 ylabel = duck_label
         
-        # Facet mode
+        # Facet mode (same=True ignored in facet mode)
         if facet and group_by is not None:
             from .facet import facet_hist2d
             fig, axes, stats_dict = facet_hist2d(
@@ -990,6 +1247,9 @@ class DFDraw:
                 **kwargs
             )
             axes = ax
+            
+            # Phase 13.13.DF: Store axes for same=True chain
+            self._last_ax = ax
         
         # Save if requested
         if save:
@@ -1026,6 +1286,8 @@ class DFDraw:
         vmax: Optional[float] = None,
         # Phase 13.12.DF v1.2: Auto-title
         auto_title: Union[bool, str] = False,
+        # Phase 13.13.DF: same=True (AD-15)
+        same: bool = False,
         **kwargs
     ) -> DrawResult:
         """
@@ -1080,6 +1342,9 @@ class DFDraw:
             Minimum count to display a hexagon.
         vmin, vmax : float, optional
             Color scale limits.
+        same : bool, default False
+            If True, overlay on last axes. Phase 13.13.DF (AD-15).
+            Useful for overlaying profile on hexbin.
         **kwargs
             Additional arguments to plt.hexbin().
         
@@ -1097,6 +1362,14 @@ class DFDraw:
             raise ValueError(
                 f"hexbin requires 'y:x' format, got '{expr}'"
             )
+        
+        # Phase 13.13.DF: Resolve axes for same=True
+        resolved_ax, is_new = self._resolve_axes(same, ax)
+        if is_new:
+            self._reset_color_cycle()
+            ax = None
+        else:
+            ax = resolved_ax
         
         # Apply selection and sampling
         df = self._apply_selection(self.df, selection)
@@ -1118,7 +1391,7 @@ class DFDraw:
             if duck_label is not None:
                 ylabel = duck_label
         
-        # Facet mode
+        # Facet mode (same=True ignored in facet mode)
         if facet and group_by is not None:
             from .facet import facet_hexbin
             fig, axes, stats_dict = facet_hexbin(
@@ -1142,6 +1415,9 @@ class DFDraw:
                 **kwargs
             )
             axes = ax
+            
+            # Phase 13.13.DF: Store axes for same=True chain
+            self._last_ax = ax
         
         # Save if requested
         if save:
