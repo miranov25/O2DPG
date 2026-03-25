@@ -9983,6 +9983,7 @@ class AliasDataFrame:
         # Detect 'Subframe.column' patterns in expression and selection,
         # materialize them as temporary columns so dfdraw can access them.
         # Column names use underscores (Sub_col) to avoid pandas eval issues.
+        # Uses pd.merge so it works correctly on entry-sliced DataFrames.
         # =================================================================
         subframe_replacements = {}
         if hasattr(self, '_subframes') and hasattr(self._subframes, 'subframes'):
@@ -9994,6 +9995,7 @@ class AliasDataFrame:
                 all_text += ' ' + str(kwargs['group_by'])
             
             import re as _re
+            refs_to_resolve = []
             for match in _re.finditer(r'\b(\w+)\.(\w+)\b', all_text):
                 sf_name, col_name = match.group(1), match.group(2)
                 if sf_name in sf_names:
@@ -10005,14 +10007,23 @@ class AliasDataFrame:
                             index_cols = self._subframes.get_entry(sf_name)['index']
                             if isinstance(index_cols, str):
                                 index_cols = [index_cols]
-                            join_idx, missing = self._compute_join_indices(sf_name, index_cols)
                             if col_name in sf.df.columns:
-                                if df_subset is self.df:
-                                    df_subset = df_subset.copy()
-                                df_subset[flat_ref] = sf.df[col_name].values[join_idx]
+                                refs_to_resolve.append((sf_name, col_name, dot_ref, flat_ref, index_cols))
                                 subframe_replacements[dot_ref] = flat_ref
                         except Exception:
                             pass
+            
+            if refs_to_resolve:
+                df_subset = df_subset.copy()
+                for sf_name, col_name, dot_ref, flat_ref, index_cols in refs_to_resolve:
+                    sf = self.get_subframe(sf_name)
+                    # Rename subframe column to flat_ref before merge to avoid
+                    # pandas suffix collision (dy_x, dy_y) when names conflict
+                    sf_keys = sf.df[index_cols + [col_name]].rename(
+                        columns={col_name: flat_ref}
+                    )
+                    merged = df_subset[index_cols].merge(sf_keys, on=index_cols, how='left')
+                    df_subset[flat_ref] = merged[flat_ref].values
             
             if subframe_replacements:
                 for dot_ref, flat_ref in subframe_replacements.items():
