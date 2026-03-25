@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ..style import get_style_value
 from ..stats import format_stats_box
+from ._auto_title import build_auto_title, apply_auto_title, parse_auto_title_parts, resolve_auto_title
 
 
 # =============================================================================
@@ -91,6 +92,9 @@ def draw_profile(
     sort_groups: bool = True,
     # Phase 13.12.DF v1.1: Weights support
     weights: Optional[str] = None,
+    # Phase 13.12.DF v1.2: Auto-title
+    auto_title: Union[bool, str] = False,
+    selection: Optional[Union[str, np.ndarray, callable]] = None,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -162,6 +166,17 @@ def draw_profile(
         Column name for weights. If provided, computes weighted mean/std/sem.
         Useful for reconstructing distributions from importance sampling.
         Phase 13.12.DF v1.1.
+    auto_title : bool or str, default False
+        Automatic title from plot parameters. Phase 13.12.DF v1.2.
+        - False: no auto-title (default, or from style)
+        - True / "all": "y vs x  group:group_by  weights:w\\nselection"
+        - "expr": "y vs x" only
+        - "expr+group": "y vs x  group:group_by"
+        - "expr+sel": "y vs x\\nselection"
+        Explicit title= always overrides auto_title.
+    selection : str, array, or None
+        Selection string (used for auto-title display only).
+        Non-string selections are silently skipped in the title.
     **kwargs
         Additional arguments passed to plt.errorbar().
     
@@ -191,6 +206,8 @@ def draw_profile(
         linestyle = "-"
     if linewidth is None:
         linewidth = 1.5
+    # Phase 13.12.DF v1.2: auto_title from style if not set per-call
+    auto_title = resolve_auto_title(auto_title)
     
     # Create figure if needed
     if ax is None:
@@ -234,6 +251,9 @@ def draw_profile(
     # Phase 13.12.DF F3: Auto-bin float group_by column
     group_col = group_by
     if group_by is not None and group_by in df_filtered.columns:
+        # float16 not supported by pd.cut/pd.qcut (pandas Index limitation)
+        if df_filtered[group_by].dtype == np.float16:
+            df_filtered[group_by] = df_filtered[group_by].astype(np.float32)
         if group_by_bins is not None:
             intervals = pd.cut(df_filtered[group_by], bins=group_by_bins)
             df_filtered['_group'] = intervals.map(_format_interval_label)
@@ -286,8 +306,14 @@ def draw_profile(
     ax.set_xlabel(xlabel or x_name)
     ax.set_ylabel(ylabel or f"<{y_name}>")
     
+    # Title: explicit > auto > none
     if title:
         ax.set_title(title)
+    elif auto_title:
+        parts = parse_auto_title_parts(auto_title)
+        td = build_auto_title(x_name, y_name, group_by=group_by,
+                              selection=selection, weights=weights, parts=parts)
+        apply_auto_title(ax, td)
     
     # Statistics box
     if stats is True or (stats is None and get_style_value("stats.show", False)):

@@ -438,6 +438,8 @@ class DFDraw:
         sharex: bool = True,
         sharey: bool = True,
         top_k: Optional[int] = None,
+        # Phase 13.12.DF v1.2: Auto-title
+        auto_title: Union[bool, str] = False,
         **kwargs
     ) -> DrawResult:
         """
@@ -522,7 +524,10 @@ class DFDraw:
                 df, col_expr,
                 ax=ax, bins=bins, range=range, norm=norm, stats=stats,
                 title=title, xlabel=xlabel, ylabel=ylabel,
-                group_by=group_by, top_k=top_k, **kwargs
+                group_by=group_by, top_k=top_k,
+                # Phase 13.12.DF v1.2: auto-title
+                auto_title=auto_title, selection=selection,
+                **kwargs
             )
             axes = ax
         
@@ -701,6 +706,8 @@ class DFDraw:
         sort_groups: bool = True,
         # Phase 13.12.DF v1.1: Weights support
         weights: Optional[str] = None,
+        # Phase 13.12.DF v1.2: Auto-title
+        auto_title: Union[bool, str] = False,
         **kwargs
     ) -> DrawResult:
         """
@@ -762,6 +769,9 @@ class DFDraw:
             Column name for weights. If provided, computes weighted mean/std/sem.
             Useful for reconstructing distributions from importance sampling.
             Phase 13.12.DF v1.1.
+        auto_title : bool or str, default False
+            Automatic title. True/"all", "expr", "expr+group", "expr+sel".
+            Phase 13.12.DF v1.2.
         **kwargs
             Additional arguments.
         
@@ -829,6 +839,8 @@ class DFDraw:
                 return_data=return_data, min_entries=min_entries,
                 group_by_bins=group_by_bins, group_by_quantiles=group_by_quantiles,
                 sort_groups=sort_groups, weights=weights,
+                # Phase 13.12.DF v1.2: auto-title
+                auto_title=auto_title, selection=selection,
                 **kwargs
             )
             axes = ax
@@ -865,6 +877,8 @@ class DFDraw:
         clabel: Optional[str] = None,
         vmin: Optional[float] = None,
         vmax: Optional[float] = None,
+        # Phase 13.12.DF v1.2: Auto-title
+        auto_title: Union[bool, str] = False,
         **kwargs
     ) -> DrawResult:
         """
@@ -970,7 +984,10 @@ class DFDraw:
                 ax=ax, bins=bins, range=range, norm=norm,
                 stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
                 cmap=cmap, colorbar=colorbar, clabel=clabel,
-                vmin=vmin, vmax=vmax, **kwargs
+                vmin=vmin, vmax=vmax,
+                # Phase 13.12.DF v1.2: auto-title
+                auto_title=auto_title, selection=selection,
+                **kwargs
             )
             axes = ax
         
@@ -1007,6 +1024,8 @@ class DFDraw:
         mincnt: Optional[int] = None,
         vmin: Optional[float] = None,
         vmax: Optional[float] = None,
+        # Phase 13.12.DF v1.2: Auto-title
+        auto_title: Union[bool, str] = False,
         **kwargs
     ) -> DrawResult:
         """
@@ -1117,7 +1136,10 @@ class DFDraw:
                 ax=ax, gridsize=gridsize, extent=extent, norm=norm,
                 stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
                 cmap=cmap, colorbar=colorbar, clabel=clabel,
-                mincnt=mincnt, vmin=vmin, vmax=vmax, **kwargs
+                mincnt=mincnt, vmin=vmin, vmax=vmax,
+                # Phase 13.12.DF v1.2: auto-title
+                auto_title=auto_title, selection=selection,
+                **kwargs
             )
             axes = ax
         

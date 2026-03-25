@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ..style import get_style_value
 from ..stats import format_stats_box
+from ._auto_title import build_auto_title, apply_auto_title, parse_auto_title_parts, resolve_auto_title
 
 
 def draw_hist(
@@ -38,6 +39,9 @@ def draw_hist(
     group_by: Optional[str] = None,
     top_k: Optional[int] = None,
     stacked: bool = False,
+    # Phase 13.12.DF v1.2: Auto-title
+    auto_title: Union[bool, str] = False,
+    selection: Optional[Union[str, np.ndarray, callable]] = None,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -102,6 +106,8 @@ def draw_hist(
         edgecolor = get_style_value("hist.edgecolor", "black")
     if linewidth is None:
         linewidth = get_style_value("hist.linewidth", 1.0)
+    # Phase 13.12.DF v1.2: auto_title from style if not set per-call
+    auto_title = resolve_auto_title(auto_title)
     
     # Create figure if needed
     if ax is None:
@@ -169,6 +175,11 @@ def draw_hist(
     
     if title:
         ax.set_title(title)
+    elif auto_title:
+        parts = parse_auto_title_parts(auto_title)
+        td = build_auto_title(x_name, y=None, group_by=group_by,
+                              selection=selection, parts=parts)
+        apply_auto_title(ax, td)
     
     # Statistics box
     if stats is True or (stats is None and get_style_value("stats.show", False)):
@@ -274,6 +285,9 @@ def draw_hist2d(
     clabel: Optional[str] = None,
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
+    # Phase 13.12.DF v1.2: Auto-title
+    auto_title: Union[bool, str] = False,
+    selection: Optional[Union[str, np.ndarray, callable]] = None,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -326,6 +340,8 @@ def draw_hist2d(
         bins = get_style_value("hist.bins", 50)
     if cmap is None:
         cmap = "viridis"
+    # Phase 13.12.DF v1.2: auto_title from style if not set per-call
+    auto_title = resolve_auto_title(auto_title)
     
     # Handle bins parameter
     if isinstance(bins, int):
@@ -399,8 +415,13 @@ def draw_hist2d(
     ax.set_xlabel(xlabel or x_name)
     ax.set_ylabel(ylabel or y_name)
     
+    # Title: explicit > auto > none
     if title:
         ax.set_title(title)
+    elif auto_title:
+        parts = parse_auto_title_parts(auto_title)
+        td = build_auto_title(x_name, y_name, selection=selection, parts=parts)
+        apply_auto_title(ax, td)
     
     # Statistics box
     if stats is True or (stats is None and get_style_value("stats.show", False)):
@@ -477,6 +498,9 @@ def draw_hexbin(
     mincnt: Optional[int] = None,
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
+    # Phase 13.12.DF v1.2: Auto-title
+    auto_title: Union[bool, str] = False,
+    selection: Optional[Union[str, np.ndarray, callable]] = None,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -530,6 +554,8 @@ def draw_hexbin(
     # Get style defaults
     if cmap is None:
         cmap = "viridis"
+    # Phase 13.12.DF v1.2: auto_title from style if not set per-call
+    auto_title = resolve_auto_title(auto_title)
     
     # Create figure if needed
     if ax is None:
@@ -593,8 +619,13 @@ def draw_hexbin(
     ax.set_xlabel(xlabel or x_name)
     ax.set_ylabel(ylabel or y_name)
     
+    # Title: explicit > auto > none
     if title:
         ax.set_title(title)
+    elif auto_title:
+        parts = parse_auto_title_parts(auto_title)
+        td = build_auto_title(x_name, y_name, selection=selection, parts=parts)
+        apply_auto_title(ax, td)
     
     # Statistics box
     if stats is True or (stats is None and get_style_value("stats.show", False)):

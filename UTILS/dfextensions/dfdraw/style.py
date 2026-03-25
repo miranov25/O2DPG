@@ -55,6 +55,11 @@ DEFAULT_STYLE: Dict[str, Any] = {
     "profile.markersize": 6,
     "profile.capsize": 3,
     
+    # Auto-title (Phase 13.12.DF v1.2)
+    "auto_title": False,
+    "auto_title.fontsize": 10,
+    "auto_title.sel_fontsize": 8,
+    
     # Colors & markers
     "colors.palette": "tab10",
     "colors.categorical_palette": "tab20",
