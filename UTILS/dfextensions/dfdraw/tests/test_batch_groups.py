@@ -438,3 +438,46 @@ def test_value_correctness(plotter):
         "mean_y mismatch"
 
     plt.close('all')
+
+
+# =========================================================================
+# T18-T20: Verbose levels
+# =========================================================================
+
+def test_verbose_false_silent(plotter, capsys):
+    """T18: verbose=False produces no output."""
+    specs = [{
+        'name': 'quiet',
+        'plots': [{'expr': 'y1:x', 'type': 'profile', 'bins': 20}]
+    }]
+    plotter.draw_batch(specs, verbose=False)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+
+
+def test_verbose_true_progress(plotter, capsys):
+    """T19: verbose=True shows progress but not merged params."""
+    specs = [{
+        'name': 'progress',
+        'defaults': {'linestyle': 'none'},
+        'plots': [{'expr': 'y1:x', 'type': 'profile', 'bins': 20}]
+    }]
+    plotter.draw_batch(specs, verbose=True)
+    captured = capsys.readouterr()
+    assert 'progress' in captured.out
+    assert 'linestyle' not in captured.out
+
+
+def test_verbose_2_debug(plotter, capsys):
+    """T20: verbose=2 shows merged parameters per plot."""
+    specs = [{
+        'name': 'debug',
+        'defaults': {'linestyle': 'none', 'auto_title': True},
+        'plots': [{'expr': 'y1:x', 'type': 'profile', 'bins': 20}]
+    }]
+    plotter.draw_batch(specs, verbose=2)
+    captured = capsys.readouterr()
+    assert "plot[0]" in captured.out
+    assert "linestyle" in captured.out
+    assert "'none'" in captured.out
+    assert "auto_title" in captured.out

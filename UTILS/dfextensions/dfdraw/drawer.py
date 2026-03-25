@@ -1677,7 +1677,7 @@ class DFDraw:
         save_dir: Optional[str] = None,
         defaults: Optional[Dict[str, Any]] = None,
         on_error: str = 'skip',
-        verbose: bool = True,
+        verbose: Union[bool, int] = True,
         save_format: str = 'png',
         dpi: int = 150,
         close_figures: bool = True,
@@ -1708,8 +1708,11 @@ class DFDraw:
         on_error : str, default 'skip'
             'skip': Continue on errors, collect in results['_errors']
             'raise': Stop on first error
-        verbose : bool, default True
-            Print progress messages.
+        verbose : bool or int, default True
+            Verbosity level:
+            - ``False`` / ``0``: Silent — no output.
+            - ``True`` / ``1``: Progress — group names, save paths, summary.
+            - ``2``: Debug — also prints merged parameters per plot.
         save_format : str, default 'png'
             Output format: 'png', 'pdf', 'svg', etc.
         dpi : int, default 150
@@ -1864,7 +1867,7 @@ class DFDraw:
         save_dir: Optional[str] = None,
         defaults: Optional[Dict[str, Any]] = None,
         on_error: str = 'skip',
-        verbose: bool = True,
+        verbose: Union[bool, int] = True,
         save_format: str = 'png',
         dpi: int = 150,
         close_figures: bool = True,
@@ -1891,8 +1894,8 @@ class DFDraw:
             Batch-level defaults (below group defaults in hierarchy).
         on_error : str, default 'skip'
             'skip' or 'raise'.
-        verbose : bool, default True
-            Print progress.
+        verbose : bool or int, default True
+            Verbosity level: False/0=silent, True/1=progress, 2=debug.
         save_format : str, default 'png'
             Format when using save_dir.
         dpi : int, default 150
@@ -1973,6 +1976,13 @@ class DFDraw:
                     
                     expr = merged.pop('expr')
                     is_same = merged.pop('same', False)
+                    
+                    # Verbose>=2: show merged params per plot (debug mode)
+                    if verbose and int(verbose) >= 2:
+                        print(f"\n  plot[{p_idx}] expr='{expr}' merged:")
+                        for k, v in sorted(merged.items()):
+                            if k != 'ax':
+                                print(f"    {k}: {v!r}")
                     
                     # Guard: same=True on first plot (P1-1)
                     if is_same and subplot_idx < 0:
