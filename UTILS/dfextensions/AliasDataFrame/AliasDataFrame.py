@@ -10564,6 +10564,77 @@ class AliasDataFrame:
                 print(f"[draw_figures] Limited to {max_entries} entries")
         
         # ═══════════════════════════════════════════════════════════════════
+        # Subframe column resolution for draw_figures
+        # Same approach as draw()/draw_batch() — detect Subframe.column
+        # patterns, materialize via pd.merge, rewrite expressions.
+        # ═══════════════════════════════════════════════════════════════════
+        
+        if hasattr(self, '_subframes') and hasattr(self._subframes, 'subframes'):
+            sf_names = set(self._subframes.subframes.keys())
+            
+            # Collect all text across all figure specs
+            all_text_parts = []
+            for fig_spec in specs:
+                for plot_spec in fig_spec.get('plots', []):
+                    if isinstance(plot_spec, str):
+                        all_text_parts.append(plot_spec)
+                        continue
+                    merged_plot = {**merged_defaults, **plot_spec}
+                    all_text_parts.append(merged_plot.get('expr', ''))
+                    if merged_plot.get('selection'):
+                        all_text_parts.append(merged_plot['selection'])
+                    if merged_plot.get('group_by'):
+                        all_text_parts.append(str(merged_plot['group_by']))
+            all_text = ' '.join(all_text_parts)
+            
+            import re as _re
+            refs_to_resolve = []
+            subframe_replacements = {}
+            for match in _re.finditer(r'\b(\w+)\.(\w+)\b', all_text):
+                sf_name, col_name = match.group(1), match.group(2)
+                if sf_name in sf_names:
+                    dot_ref = f"{sf_name}.{col_name}"
+                    flat_ref = f"{sf_name}_{col_name}"
+                    if flat_ref not in df_subset.columns and dot_ref not in subframe_replacements:
+                        try:
+                            sf = self.get_subframe(sf_name)
+                            index_cols = self._subframes.get_entry(sf_name)['index']
+                            if isinstance(index_cols, str):
+                                index_cols = [index_cols]
+                            if col_name in sf.df.columns:
+                                refs_to_resolve.append((sf_name, col_name, dot_ref, flat_ref, index_cols))
+                                subframe_replacements[dot_ref] = flat_ref
+                        except Exception:
+                            pass
+            
+            if refs_to_resolve:
+                df_subset = df_subset.copy()
+                for sf_name, col_name, dot_ref, flat_ref, index_cols in refs_to_resolve:
+                    sf = self.get_subframe(sf_name)
+                    sf_keys = sf.df[index_cols + [col_name]].rename(
+                        columns={col_name: flat_ref}
+                    )
+                    merged = df_subset[index_cols].merge(sf_keys, on=index_cols, how='left')
+                    df_subset[flat_ref] = merged[flat_ref].values
+            
+            if subframe_replacements:
+                for fig_spec in specs:
+                    plots = fig_spec.get('plots', [])
+                    for i, plot_spec in enumerate(plots):
+                        if isinstance(plot_spec, str):
+                            for dot_ref, flat_ref in subframe_replacements.items():
+                                plot_spec = plot_spec.replace(dot_ref, flat_ref)
+                            plots[i] = plot_spec
+                            continue
+                        for dot_ref, flat_ref in subframe_replacements.items():
+                            if 'expr' in plot_spec:
+                                plot_spec['expr'] = plot_spec['expr'].replace(dot_ref, flat_ref)
+                            if 'selection' in plot_spec and plot_spec['selection']:
+                                plot_spec['selection'] = plot_spec['selection'].replace(dot_ref, flat_ref)
+                            if 'group_by' in plot_spec and isinstance(plot_spec.get('group_by'), str):
+                                plot_spec['group_by'] = plot_spec['group_by'].replace(dot_ref, flat_ref)
+        
+        # ═══════════════════════════════════════════════════════════════════
         # PHASE 5: Generate figures
         # ═══════════════════════════════════════════════════════════════════
         
