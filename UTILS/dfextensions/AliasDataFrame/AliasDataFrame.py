@@ -10305,8 +10305,62 @@ class AliasDataFrame:
                     print(f"Materializing {len(to_materialize)} aliases: {sorted(to_materialize)}")
                 self.materialize_aliases(names=list(to_materialize))
         
+        # =================================================================
+        # Subframe column resolution for draw_batch
+        # Same logic as draw() — detect Subframe.column patterns across
+        # all specs, materialize as temporary columns, rewrite expressions.
+        # =================================================================
+        subframe_replacements = {}
+        df_for_plot = self.df
+        if hasattr(self, '_subframes') and hasattr(self._subframes, 'subframes'):
+            sf_names = set(self._subframes.subframes.keys())
+            merged_defaults = {**(defaults or {}), **kwargs}
+            
+            # Collect all text across all specs
+            all_text_parts = []
+            for name, spec in specs.items():
+                merged_spec = {**merged_defaults, **spec}
+                all_text_parts.append(merged_spec.get('expr', name))
+                if merged_spec.get('selection'):
+                    all_text_parts.append(merged_spec['selection'])
+                if merged_spec.get('group_by'):
+                    all_text_parts.append(str(merged_spec['group_by']))
+            all_text = ' '.join(all_text_parts)
+            
+            import re as _re
+            for match in _re.finditer(r'\b(\w+)\.(\w+)\b', all_text):
+                sf_name, col_name = match.group(1), match.group(2)
+                if sf_name in sf_names:
+                    dot_ref = f"{sf_name}.{col_name}"
+                    flat_ref = f"{sf_name}_{col_name}"
+                    if flat_ref not in df_for_plot.columns and dot_ref not in subframe_replacements:
+                        try:
+                            sf = self.get_subframe(sf_name)
+                            index_cols = self._subframes.get_entry(sf_name)['index']
+                            if isinstance(index_cols, str):
+                                index_cols = [index_cols]
+                            join_idx, missing = self._compute_join_indices(sf_name, index_cols)
+                            if col_name in sf.df.columns:
+                                if df_for_plot is self.df:
+                                    df_for_plot = df_for_plot.copy()
+                                df_for_plot[flat_ref] = sf.df[col_name].values[join_idx]
+                                subframe_replacements[dot_ref] = flat_ref
+                        except Exception:
+                            pass
+            
+            # Rewrite all specs: replace Sub.col → Sub_col
+            if subframe_replacements:
+                for name, spec in specs.items():
+                    for dot_ref, flat_ref in subframe_replacements.items():
+                        if 'expr' in spec:
+                            spec['expr'] = spec['expr'].replace(dot_ref, flat_ref)
+                        if 'selection' in spec and spec['selection']:
+                            spec['selection'] = spec['selection'].replace(dot_ref, flat_ref)
+                        if 'group_by' in spec and isinstance(spec.get('group_by'), str):
+                            spec['group_by'] = spec['group_by'].replace(dot_ref, flat_ref)
+        
         # Delegate to dfdraw batch
-        plotter = DFDraw(self.df)
+        plotter = DFDraw(df_for_plot)
         plotter._data_source = self  # For duck-typed axis title lookup
         
         results = plotter.draw_batch(
