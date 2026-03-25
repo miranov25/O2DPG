@@ -10757,8 +10757,18 @@ class AliasDataFrame:
         from dfextensions.dfdraw import DFDraw
         
         plots = fig_spec.get('plots', [])
-        ncols = fig_spec.get('ncols', 2)
-        nrows = (len(plots) + ncols - 1) // ncols
+        
+        # Layout: support explicit (nrows, ncols) or just ncols
+        layout = fig_spec.get('layout')
+        if layout:
+            nrows, ncols = layout
+        else:
+            ncols = fig_spec.get('ncols', 2)
+            nrows = (len(plots) + ncols - 1) // ncols
+        
+        # Merge per-figure defaults into cascade: top-level < fig_defaults < plot_spec
+        fig_defaults = fig_spec.get('defaults', {})
+        effective_defaults = {**defaults, **fig_defaults}
         
         # Calculate figure size
         figsize = fig_spec.get('figsize')
@@ -10794,8 +10804,8 @@ class AliasDataFrame:
             if isinstance(plot_spec, str):
                 plot_spec = {'expr': plot_spec}
             
-            # Merge with defaults (plot-level overrides defaults)
-            merged = {**defaults, **plot_spec}
+            # Merge with defaults (plot-level overrides fig-level overrides top-level)
+            merged = {**effective_defaults, **plot_spec}
             expr = merged.pop('expr')
             plot_type = merged.pop('type', 'auto')
             title = merged.pop('title', None)
