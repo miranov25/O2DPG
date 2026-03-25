@@ -9978,6 +9978,50 @@ class AliasDataFrame:
             df_subset = self.df
             cleanup_needed = not effective_keep
         
+        # =================================================================
+        # Subframe column resolution for draw
+        # Detect 'Subframe.column' patterns in expression and selection,
+        # materialize them as temporary columns so dfdraw can access them.
+        # Column names use underscores (Sub_col) to avoid pandas eval issues.
+        # =================================================================
+        subframe_replacements = {}
+        if hasattr(self, '_subframes') and hasattr(self._subframes, 'subframes'):
+            sf_names = set(self._subframes.subframes.keys())
+            all_text = expr
+            if kwargs.get('selection'):
+                all_text += ' ' + kwargs['selection']
+            if kwargs.get('group_by'):
+                all_text += ' ' + str(kwargs['group_by'])
+            
+            import re as _re
+            for match in _re.finditer(r'\b(\w+)\.(\w+)\b', all_text):
+                sf_name, col_name = match.group(1), match.group(2)
+                if sf_name in sf_names:
+                    dot_ref = f"{sf_name}.{col_name}"
+                    flat_ref = f"{sf_name}_{col_name}"
+                    if flat_ref not in df_subset.columns and dot_ref not in subframe_replacements:
+                        try:
+                            sf = self.get_subframe(sf_name)
+                            index_cols = self._subframes.get_entry(sf_name)['index']
+                            if isinstance(index_cols, str):
+                                index_cols = [index_cols]
+                            join_idx, missing = self._compute_join_indices(sf_name, index_cols)
+                            if col_name in sf.df.columns:
+                                if df_subset is self.df:
+                                    df_subset = df_subset.copy()
+                                df_subset[flat_ref] = sf.df[col_name].values[join_idx]
+                                subframe_replacements[dot_ref] = flat_ref
+                        except Exception:
+                            pass
+            
+            if subframe_replacements:
+                for dot_ref, flat_ref in subframe_replacements.items():
+                    expr = expr.replace(dot_ref, flat_ref)
+                    if 'selection' in kwargs and kwargs['selection']:
+                        kwargs['selection'] = kwargs['selection'].replace(dot_ref, flat_ref)
+                    if 'group_by' in kwargs and isinstance(kwargs.get('group_by'), str):
+                        kwargs['group_by'] = kwargs['group_by'].replace(dot_ref, flat_ref)
+        
         # Create plotter and delegate
         plotter = DFDraw(df_subset)
         
