@@ -252,3 +252,135 @@ class TestDrawSubframeEdgeCases:
         fig, ax, stats = adf.draw("Sub.dz:x", type='profile', bins=2)
         cols_after = set(adf.df.columns)
         assert cols_before == cols_after, f"Columns leaked: {cols_after - cols_before}"
+
+
+# =========================================================================
+# draw_figures() tests
+# =========================================================================
+
+class TestDrawFiguresSubframeResolution:
+    """draw_figures() should resolve Subframe.column references."""
+
+    def test_draw_figures_subframe_basic(self, adf_with_subframe):
+        """draw_figures with Subframe.column in plot expr."""
+        adf = adf_with_subframe
+        specs = [{
+            'name': 'test_fig',
+            'plots': [
+                {'expr': 'Sub.dz:x', 'type': 'profile', 'bins': 3},
+            ]
+        }]
+        results = adf.draw_figures(specs)
+        assert 'test_fig' in results
+        assert results['test_fig'].get('error') is None
+
+    def test_draw_figures_subframe_conflict(self, adf_with_subframe):
+        """draw_figures with conflicting column name."""
+        adf = adf_with_subframe
+        specs = [{
+            'name': 'conflict_fig',
+            'plots': [
+                {'expr': 'Sub.dy:x', 'type': 'profile', 'bins': 2},
+            ]
+        }]
+        results = adf.draw_figures(specs)
+        assert results['conflict_fig'].get('error') is None
+
+    def test_draw_figures_mixed_subframe_and_local(self, adf_with_subframe):
+        """draw_figures with both subframe and local columns in same figure."""
+        adf = adf_with_subframe
+        specs = [{
+            'name': 'mixed_fig',
+            'ncols': 2,
+            'plots': [
+                {'expr': 'dy:x', 'type': 'profile', 'bins': 2},
+                {'expr': 'Sub.dz:x', 'type': 'profile', 'bins': 2},
+            ]
+        }]
+        results = adf.draw_figures(specs)
+        assert results['mixed_fig'].get('error') is None
+
+    def test_draw_figures_multikey(self, adf_multikey_subframe):
+        """draw_figures with multi-key subframe."""
+        adf = adf_multikey_subframe
+        specs = [{
+            'name': 'multikey_fig',
+            'plots': [
+                {'expr': 'Side.dyS:x', 'type': 'profile', 'bins': 4},
+                {'expr': 'Side.dzS:x', 'type': 'profile', 'bins': 4},
+            ]
+        }]
+        results = adf.draw_figures(specs)
+        assert results['multikey_fig'].get('error') is None
+
+    def test_draw_figures_defaults_cascade(self, adf_with_subframe):
+        """Per-figure defaults propagate to plots (linestyle, type, bins)."""
+        adf = adf_with_subframe
+        specs = [{
+            'name': 'defaults_fig',
+            'defaults': {'type': 'profile', 'bins': 3, 'linestyle': 'none'},
+            'plots': [
+                {'expr': 'Sub.dz:x'},
+                {'expr': 'dy:x'},
+            ]
+        }]
+        results = adf.draw_figures(specs)
+        assert results['defaults_fig'].get('error') is None
+
+    def test_draw_figures_layout_tuple(self, adf_with_subframe):
+        """layout=(nrows, ncols) tuple works."""
+        adf = adf_with_subframe
+        specs = [{
+            'name': 'layout_fig',
+            'layout': (1, 2),
+            'plots': [
+                {'expr': 'dy:x', 'type': 'profile', 'bins': 2},
+                {'expr': 'Sub.dz:x', 'type': 'profile', 'bins': 2},
+            ]
+        }]
+        results = adf.draw_figures(specs)
+        assert results['layout_fig'].get('error') is None
+
+    def test_draw_figures_subframe_in_selection(self, adf_with_subframe):
+        """Subframe.column works in selection within draw_figures."""
+        adf = adf_with_subframe
+        specs = [{
+            'name': 'sel_fig',
+            'plots': [
+                {'expr': 'dy:x', 'type': 'profile', 'bins': 2,
+                 'selection': 'Sub.dz<0.015'},
+            ]
+        }]
+        results = adf.draw_figures(specs)
+        assert results['sel_fig'].get('error') is None
+
+    def test_draw_figures_multiple_figures(self, adf_with_subframe):
+        """Multiple figures in one draw_figures call."""
+        adf = adf_with_subframe
+        specs = [
+            {
+                'name': 'fig1',
+                'plots': [{'expr': 'Sub.dz:x', 'type': 'profile', 'bins': 2}]
+            },
+            {
+                'name': 'fig2',
+                'plots': [{'expr': 'Sub.dy:x', 'type': 'profile', 'bins': 2}]
+            },
+        ]
+        results = adf.draw_figures(specs)
+        assert 'fig1' in results
+        assert 'fig2' in results
+        assert results['fig1'].get('error') is None
+        assert results['fig2'].get('error') is None
+
+    def test_draw_figures_preserves_df(self, adf_with_subframe):
+        """draw_figures doesn't modify self.df."""
+        adf = adf_with_subframe
+        cols_before = set(adf.df.columns)
+        specs = [{
+            'name': 'preserve_fig',
+            'plots': [{'expr': 'Sub.dz:x', 'type': 'profile', 'bins': 2}]
+        }]
+        adf.draw_figures(specs)
+        cols_after = set(adf.df.columns)
+        assert cols_before == cols_after

@@ -10636,6 +10636,9 @@ class AliasDataFrame:
         
         # ═══════════════════════════════════════════════════════════════════
         # PHASE 5: Generate figures
+        # Note: Uses ADF's _draw_single_figure which handles per-figure
+        # defaults cascade and layout. Future: delegate to dfdraw once
+        # specs format alignment is resolved.
         # ═══════════════════════════════════════════════════════════════════
         
         results = {}
