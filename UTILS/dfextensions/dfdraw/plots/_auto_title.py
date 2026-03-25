@@ -114,12 +114,16 @@ def apply_auto_title(ax, title_dict, fontsize=None, sub_fontsize=None):
     if sub_fontsize is None:
         sub_fontsize = get_style_value("auto_title.sel_fontsize", 8)
 
-    if title_dict.get("main"):
-        ax.set_title(title_dict["main"], fontsize=fontsize)
-    if title_dict.get("sub"):
+    has_sub = bool(title_dict.get("sub"))
+    if has_sub:
+        # Subtitle between plot frame and main title
         ax.text(0.5, 1.01, title_dict["sub"],
                 transform=ax.transAxes, fontsize=sub_fontsize,
                 ha='center', va='bottom', style='italic', color='0.4')
+    if title_dict.get("main"):
+        # Push main title up when subtitle present to avoid overlap
+        pad = 20 if has_sub else 6
+        ax.set_title(title_dict["main"], fontsize=fontsize, pad=pad)
 
 
 def resolve_auto_title(auto_title):
