@@ -4220,6 +4220,7 @@ def make_sliding_window_aggregate(
         kernel_width=None,
         boundary: 'Union[str, Dict[str, str]]' = 'full',
         agg_median: bool = False,
+        n_sigma_cut: 'Optional[float]' = None,
         verbose: bool = False,
 ) -> 'pd.DataFrame':
     """Sliding window aggregation without regression.
@@ -4401,8 +4402,75 @@ def make_sliding_window_aggregate(
     if verbose:
         print(f"[SWAgg] Step 4 compute stats: {time.time()-t4:.3f}s")
 
-    # ---- Step 5: Assembly ----
-    t5 = time.time()
+    # ---- Step 5 (optional): N-sigma cut + recompute ----
+    # Uses per-bin mean/std (not per-window) to flag outliers before
+    # window accumulation. This avoids neighbor contamination bias.
+    if n_sigma_cut is not None:
+        t5_cut = time.time()
+
+        # Map per-bin mean/std to per-row via bin_ids
+        # Use Pass 1 window means/stds for the cut threshold
+        agg_arrays_clean = {}
+        for ci, col in enumerate(col_names):
+            vals = agg_arrays[col].copy()
+            row_mean = means[bin_ids, ci]
+            row_std = stds[bin_ids, ci]
+            # Guard: std == 0 or non-finite → don't clip (P1-1)
+            safe_std = np.where((row_std > 0) & np.isfinite(row_std), row_std, np.inf)
+            deviation = np.abs(vals - row_mean)
+            outlier = deviation > n_sigma_cut * safe_std
+            # Also exclude rows with invalid bin_ids
+            outlier |= (bin_ids < 0)
+            vals[outlier] = np.nan
+            agg_arrays_clean[col] = vals
+
+        # Recompute per-bin sufficient stats with cleaned data
+        sum_x_clean, sum_x2_clean, counts_clean, _ = _precompute_agg_sufficient_stats(
+            bin_ids, agg_arrays_clean, n_bins, w_array)
+
+        if verbose:
+            n_outliers = sum(np.isnan(agg_arrays_clean[c]).sum() - np.isnan(agg_arrays[c]).sum()
+                            for c in col_names)
+            print(f"[SWAgg] Step 5 sigma cut (n={n_sigma_cut}): "
+                  f"{n_outliers} outliers removed, {time.time()-t5_cut:.3f}s")
+
+        # Re-run window accumulation with cleaned stats
+        t5_reacc = time.time()
+        sum_x_out2 = np.zeros_like(sum_x)
+        sum_x2_out2 = np.zeros_like(sum_x2)
+        counts_out2 = np.zeros_like(counts)
+        n_neighbors_used2 = np.zeros(n_bins, dtype=np.int32)
+
+        if _use_numba:
+            _numba_kernel(
+                bin_coords, neighbor_offsets.astype(np.int64), offset_weights,
+                sum_x_clean, sum_x2_clean, counts_clean,
+                lookup, grid_shape_arr, lookup_mins, lookup_strides,
+                sum_x_out2, sum_x2_out2, counts_out2, n_neighbors_used2)
+        else:
+            sum_x_out2, sum_x2_out2, counts_out2, n_neighbors_used2 = _accumulate_window_agg_numpy(
+                bin_coords, neighbor_offsets, offset_weights,
+                sum_x_clean, sum_x2_clean, counts_clean,
+                lookup, grid_shape_arr, lookup_mins, lookup_strides)
+
+        # Replace with cleaned results
+        sum_x_out = sum_x_out2
+        sum_x2_out = sum_x2_out2
+        counts_out = counts_out2
+        n_neighbors_used = n_neighbors_used2
+
+        # Recompute mean/std from cleaned stats
+        means = np.where(counts_out > 0, sum_x_out / counts_out, np.nan)
+        var = np.where(counts_out > 0, sum_x2_out / counts_out - means ** 2, np.nan)
+        safe_denom = np.maximum(counts_out - 1, 1)
+        var_corrected = np.where(counts_out > 1, var * counts_out / safe_denom, np.nan)
+        stds = np.sqrt(np.maximum(var_corrected, 0.0))
+
+        if verbose:
+            print(f"[SWAgg] Step 5 reaccumulate: {time.time()-t5_reacc:.3f}s")
+
+    # ---- Step 6: Assembly ----
+    t6 = time.time()
     data = {}
     for d, dim in enumerate(gb_columns):
         data[dim] = bin_coords[:, d]
@@ -4472,7 +4540,7 @@ def make_sliding_window_aggregate(
     out = pd.DataFrame(data)
 
     if verbose:
-        print(f"[SWAgg] Step 5 assembly: {time.time()-t5:.3f}s")
+        print(f"[SWAgg] Step 6 assembly: {time.time()-t6:.3f}s")
         print(f"[SWAgg] Total: {n_bins} bins, {time.time()-t0:.3f}s")
 
     return out
@@ -4494,6 +4562,7 @@ def make_sliding_window_aggregate_parallel(
         kernel_width=None,
         boundary: 'Union[str, Dict[str, str]]' = 'full',
         agg_median: bool = False,
+        n_sigma_cut: 'Optional[float]' = None,
         on_error: str = 'nan',
         verbose: int = 0,
 ) -> 'pd.DataFrame':
@@ -4533,7 +4602,8 @@ def make_sliding_window_aggregate_parallel(
                     df=grp, gb_columns=gb_columns, agg_columns=agg_columns,
                     window_spec=window_spec, weights=weights, suffix=suffix,
                     min_stat=min_stat, kernel=kernel, kernel_width=kernel_width,
-                    boundary=boundary, agg_median=agg_median, verbose=(verbose >= 2),
+                    boundary=boundary, agg_median=agg_median,
+                    n_sigma_cut=n_sigma_cut, verbose=(verbose >= 2),
                 )
                 if isinstance(unit_key, tuple):
                     for col, val in zip(split_columns, unit_key):
@@ -4572,7 +4642,7 @@ def make_sliding_window_aggregate_parallel(
                         grp.to_dict('list'),  # pickle-safe
                         gb_columns, agg_columns, window_spec,
                         weights, suffix, min_stat, kernel, kernel_width,
-                        boundary, agg_median,
+                        boundary, agg_median, n_sigma_cut,
                         unit_key, split_columns,
                     )
                     futures[fut] = unit_key
@@ -4624,7 +4694,7 @@ def make_sliding_window_aggregate_parallel(
 def _worker_agg(
         df_dict, gb_columns, agg_columns, window_spec,
         weights, suffix, min_stat, kernel, kernel_width,
-        boundary, agg_median,
+        boundary, agg_median, n_sigma_cut,
         unit_key, split_columns,
 ):
     """Worker for parallel aggregation. Receives dict, reconstructs DataFrame."""
@@ -4640,6 +4710,7 @@ def _worker_agg(
             window_spec=window_spec, weights=weights, suffix=suffix,
             min_stat=min_stat, kernel=kernel, kernel_width=kernel_width,
             boundary=boundary, agg_median=agg_median,
+            n_sigma_cut=n_sigma_cut,
         )
         if isinstance(unit_key, tuple):
             for col, val in zip(split_columns, unit_key):
