@@ -10116,7 +10116,8 @@ class AliasDataFrame:
         self._registered_functions[name] = func
 
     def register_polynomial_from_subframe(self, func_name, poly_spec,
-                                           coefficients_subframe, coeff_select):
+                                           coefficients_subframe, coeff_select,
+                                           overwrite=False):
         """
         Register a polynomial function that reads coefficients from a subframe.
         Coefficients are accessed via join indices — no column materialization.
@@ -10133,6 +10134,8 @@ class AliasDataFrame:
             Coefficient columns, ordered to match poly_spec terms.
             - list: explicit column names (safest)
             - str: regexp pattern to match against subframe columns
+        overwrite : bool, default False
+            If True, allow replacing an existing registered function.
 
         Example
         -------
@@ -10161,7 +10164,7 @@ class AliasDataFrame:
 
         # Generate Numba evaluator
         evaluator = poly_spec.numba_evaluator(self, coefficients_subframe, coeff_cols)
-        self.register_function(func_name, evaluator)
+        self.register_function(func_name, evaluator, overwrite=overwrite)
 
         # Store in schema for reconstruction
         if not self._schema.get('registered_functions'):
@@ -10829,6 +10832,8 @@ class AliasDataFrame:
             except Exception as e:
                 if on_error == 'raise':
                     raise
+                if verbose:
+                    print(f"  [ERROR] plot {idx} '{expr}': {e}")
                 # Show error on plot
                 ax.text(0.5, 0.5, f'Error:\n{e}', 
                        ha='center', va='center',
