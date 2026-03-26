@@ -63,6 +63,48 @@ def _format_interval_label(interval) -> str:
     return f"{interval.left:{fmt}}-{interval.right:{fmt}}"
 
 
+def _interval_sort_key(label):
+    """
+    Sort key for group labels: plain numbers, interval labels, or strings.
+    
+    Returns a tuple (priority, value) so numbers sort before strings:
+    - (0, float) for numeric labels and interval left boundaries
+    - (1, str) for non-numeric string labels
+    
+    Handles interval labels like '0.01-0.40' or '-0.39--0.00' by extracting
+    the left boundary. NaN sorts to end.
+    
+    Parameters
+    ----------
+    label : str or any
+        Group label to sort.
+    
+    Returns
+    -------
+    tuple
+        (priority, sort_value) for consistent ordering.
+    """
+    if pd.isna(label):
+        return (2, 0)
+    s = str(label)
+    # Try plain number first
+    try:
+        return (0, float(s))
+    except ValueError:
+        pass
+    # Interval label: left boundary is before the separator dash.
+    # The separator dash is the first '-' that follows a digit.
+    # For "-0.39--0.00": skip leading '-' (negative sign), find next '-' after digit.
+    try:
+        for i in range(1, len(s)):
+            if s[i] == '-' and s[i-1].isdigit():
+                return (0, float(s[:i]))
+    except (ValueError, IndexError):
+        pass
+    # String fallback — alphabetical
+    return (1, s)
+
+
 def draw_profile(
     df: pd.DataFrame,
     x: Union[str, pd.Series, np.ndarray],
@@ -488,13 +530,9 @@ def _draw_profile_grouped(
     groups = df[group_by].unique()
     
     # Phase 13.12.DF F4: Sort groups
+    # Phase 13.14.DF: Use _interval_sort_key for correct negative interval sorting
     if sort_groups:
-        try:
-            # Try numeric sort first
-            groups = sorted(groups, key=lambda x: float(x) if not pd.isna(x) else float('inf'))
-        except (ValueError, TypeError):
-            # Fall back to string sort
-            groups = sorted(groups, key=str)
+        groups = sorted(groups, key=_interval_sort_key)
     
     # Top-K filtering
     if top_k is not None and len(groups) > top_k:
@@ -502,10 +540,7 @@ def _draw_profile_grouped(
         top_groups = counts.head(top_k).index.tolist()
         # Preserve sort order
         if sort_groups:
-            try:
-                top_groups = sorted(top_groups, key=lambda x: float(x) if not pd.isna(x) else float('inf'))
-            except (ValueError, TypeError):
-                top_groups = sorted(top_groups, key=str)
+            top_groups = sorted(top_groups, key=_interval_sort_key)
         groups = top_groups
     
     # Color palette
