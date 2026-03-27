@@ -10175,6 +10175,101 @@ class AliasDataFrame:
             'coeff_select': coeff_cols,
         }
 
+    def register_evaluator(self, name, evaluator, coord_columns,
+                            predictor_columns=None, overwrite=False):
+        """
+        Register an evaluator (e.g., GroupByRegressionEvaluator) for use in alias expressions.
+
+        The evaluator becomes callable in alias expressions using the
+        coordinate column names as arguments. This is a thin wrapper around
+        register_function() that adapts the evaluator's dict-based interface
+        to the positional-array interface used by alias evaluation.
+
+        Registered function names are in a separate namespace from aliases
+        and DataFrame columns — no collision possible.
+
+        Parameters
+        ----------
+        name : str
+            Function name for alias expressions (e.g., 'corr_I1')
+        evaluator : object
+            Any object with .evaluate(positions: dict) -> np.ndarray or dict.
+            Typically GroupByRegressionEvaluator.
+        coord_columns : list of str
+            Column names that map to evaluator coordinate axes, in order.
+            These become the function arguments in alias expressions.
+        predictor_columns : list of str, optional
+            If evaluator returns dict of multiple predictors, select which
+            to return. If None and evaluator returns single predictor, uses it.
+            If None and evaluator returns multiple, raises ValueError.
+        overwrite : bool, default False
+            If True, allow replacing an existing registered function.
+
+        Raises
+        ------
+        TypeError
+            If evaluator has no .evaluate() method.
+        ValueError
+            If evaluator returns multiple predictors and predictor_columns not set.
+
+        Example
+        -------
+        >>> adf.register_evaluator('corr_I1', evaluator, ['xM', 'driftM', 'dsectorM'])
+        >>> adf.add_alias('dy_corr', 'corr_I1(xM, driftM, dsectorM)')
+        >>> adf.materialize_alias('dy_corr')
+
+        >>> # Composition with polynomial — via alias chaining:
+        >>> adf.add_alias('dy_total', 'polIter0(xM,driftM,dsectorM,tgSlp) + corr_I1(xM,driftM,dsectorM)')
+        """
+        col_names = list(coord_columns)
+
+        if not hasattr(evaluator, 'evaluate'):
+            raise TypeError(
+                f"Evaluator must have .evaluate(positions) method, "
+                f"got {type(evaluator).__name__}"
+            )
+
+        # Capture in closure for alias evaluation
+        _evaluator = evaluator
+        _col_names = col_names
+        _name = name
+        _predictor_columns = predictor_columns
+
+        def _eval_func(*arrays):
+            if len(arrays) != len(_col_names):
+                raise ValueError(
+                    f"'{_name}' expects {len(_col_names)} arguments "
+                    f"({', '.join(_col_names)}), got {len(arrays)}"
+                )
+            positions = {
+                col: np.asarray(arr, dtype=np.float64)
+                for col, arr in zip(_col_names, arrays)
+            }
+            result = _evaluator.evaluate(positions)
+
+            if isinstance(result, dict):
+                if _predictor_columns:
+                    return result[_predictor_columns[0]]
+                elif len(result) == 1:
+                    return next(iter(result.values()))
+                else:
+                    raise ValueError(
+                        f"Evaluator '{_name}' returns multiple predictors "
+                        f"{list(result.keys())}. Specify predictor_columns to select one."
+                    )
+            return result
+
+        self.register_function(name, _eval_func, overwrite=overwrite)
+
+        # Store in schema (interface contract only — evaluator not serialized)
+        if not self._schema.get('registered_functions'):
+            self._schema['registered_functions'] = {}
+        self._schema['registered_functions'][name] = {
+            'type': 'evaluator',
+            'coord_columns': col_names,
+            'predictor_columns': predictor_columns,
+        }
+
     def draw_help(self, plot_type=None):
         """
         Print dfdraw parameter documentation.
