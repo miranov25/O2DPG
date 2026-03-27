@@ -1,7 +1,7 @@
 # AliasDataFrame Phase History
 
 > **Purpose**: Development history for architecture reviews and restart prompts.  
-> **Last Updated**: 2025-12-11  
+> **Last Updated**: 2026-03-27  
 > **Maintained By**: Marian Ivanov (miranov25)
 
 ## How to Use This File
@@ -20,6 +20,7 @@ This file is intended for AI reviewers and human collaborators as a **restart co
 ## Table of Contents
 
 - [Overview](#overview)
+- [Phase 13: Advanced Features](#phase-13-advanced-features)
 - [Phase 9: PyArrow Acceleration](#phase-9-pyarrow-acceleration)
 - [Phase 8: Numba Acceleration](#phase-8-numba-acceleration)
 - [Phase 7: Lazy Loading](#phase-7-lazy-loading)
@@ -29,6 +30,7 @@ This file is intended for AI reviewers and human collaborators as a **restart co
 - [Phase 3: Benchmark Infrastructure](#phase-3-benchmark-infrastructure)
 - [Phase 2: Batch Optimization](#phase-2-batch-optimization)
 - [Phase 1: Foundation & Schema](#phase-1-foundation--schema)
+- [Bug Fixes](#bug-fixes)
 - [Architecture Decisions](#architecture-decisions)
 - [Performance Summary](#performance-summary)
 
@@ -40,13 +42,92 @@ AliasDataFrame is a high-performance data analysis framework for particle physic
 
 **Key Metrics:**
 - Performance: 60-770x speedups achieved
-- Test Coverage: 1178+ tests passing
+- Test Coverage: 1425+ tests passing
 - Lines of Code: ~10,000 (AliasDataFrame.py)
 
 **Development Team:**
 - Coordinator: Marian Ivanov (miranov25)
 - Primary Coder: Claude (Anthropic)
 - Reviewers: GPT, Gemini, Claude instances
+
+---
+
+## Phase 13: Advanced Features
+
+**Dates**: 2026-03-22 to 2026-03-27  
+**Status**: 🔄 In Progress
+
+### Phase 13.12.DF: Profile Enhancements
+**Date**: 2026-03-22  
+**Commit**: `8e6e5d87d60206ad24b39af5847424d1d5db3c9d`
+
+dfdraw profile() enhancements:
+- F1: `return_data=True` exports profile statistics as DataFrame
+- F2: `min_entries=3` suppresses low-statistics bins
+- F3: `group_by_bins`/`group_by_quantiles` auto-bins float columns
+- F4: `sort_groups=True` sorts legend numerically/alphabetically
+- v1.1: `weights` parameter for weighted mean/std/sem
+
+**Tests**: 19 tests (16 original + 3 weights)
+
+### Phase 13.9.ADF: PolynomialSpec
+**Date**: 2026-03-23  
+**Commit**: `eb54d3bc16e216e057da32c50a7a67e9a5dac568`
+
+N-dimensional polynomial specification for calibration workflows:
+- `PolynomialSpec.py` (337 lines) — polynomial term generation
+- `basis_expressions()` → (key_name, expression) tuples for GB Regression
+- `numba_evaluator()` → Numba JIT with subframe coefficient lookup (42× vs eval)
+- `to_schema()`/`from_schema()` — JSON serialization
+- `to_root_expression()` — C++ expression for TTree::Draw
+
+New methods on AliasDataFrame:
+- `register_function(name, func, overwrite=False)` — generic callable registry
+- `register_polynomial_from_subframe()` — polynomial alias from subframe coefficients
+
+**Architecture**: Coefficient matrix stays at subframe size (e.g., 36×96 = 27 KB). No materialization to main frame length.
+
+**Tests**: 26 new tests, 1402 total passed
+
+### Phase 13.10.ADF: register_evaluator
+**Date**: 2026-03-27  
+**Commit**: `66164aadd6dd8216d18e545e1df5dac87ba8a087`
+
+GroupByRegressionEvaluator integration:
+- `register_evaluator(name, evaluator, coord_columns, predictor_columns, overwrite)`
+- Wraps any object with `.evaluate(positions: dict) → ndarray`
+- Enables lazy evaluation via `add_alias('dy_corr', 'corr_I1(xM, driftM, dsectorM)')`
+- Multi-predictor: auto-selects single, raises ValueError if multiple without `predictor_columns`
+- Schema stores interface contract only — evaluator must be re-registered after load
+
+**Tests**: 24 new tests, 1425 total passed
+
+---
+
+## Bug Fixes
+
+### BUG_AliasDataFrame_20260324_draw_subframe_resolution
+**Dates**: 2026-03-25  
+**Status**: ✅ Fixed
+
+**Problem**: `adf.draw("Side.dy:row")` fails — dfdraw receives unresolved `Side.dy`, pandas eval interprets dots as attribute access.
+
+**Commits**:
+- `75609ea2` — draw() fix (5 tests)
+- `3c069a55` — draw_batch() fix
+- `b4c845c1` — consolidated fix (19 tests, 1392 passed)
+- `0f4fd63f` — draw_figures() extension (4 tests, 23 total draw subframe tests)
+
+**Solution**: Detect `Subframe.column` patterns in expr/selection/group_by, materialize via `pd.merge` on index columns only, rename to underscore format (`Side_dy`) for pandas eval safety, rewrite all expressions to match.
+
+**Key insight**: `pd.merge` operates only on index columns, NOT full DataFrame — memory is O(N × index_cols), not O(N × all_cols).
+
+### Production Fixes (2026-03-24 to 2026-03-26)
+**Commits**:
+- `4c45c4dd`, `abd5d518`, `cef9bfef` — `fill_value` parameter for `add_alias()` (division-by-zero handling)
+- `f7d2335c` — `register_polynomial_from_subframe()` accepts `overwrite` parameter
+- `f7d2335c` — `_draw_single_figure()` prints errors to console when verbose=True
+- `486ff33c`, `6930690d` — `draw_figures()` per-figure defaults cascade (temporary fix)
 
 ---
 
@@ -85,8 +166,7 @@ AliasDataFrame is a high-performance data analysis framework for particle physic
 **Date**: 2025-12-02  
 **Commit**: `a788a687c6d0684fbaa71427e443451dd09445b7`
 
-**Finding**: PyArrow compute 16x slower than NumPy for element-wise math
-- NumPy: 2.6ms vs Arrow: 41.2ms
+**Finding**: PyArrow compute 8-10× slower than NumPy for element-wise math
 - Root cause: Arrow lacks expression fusion
 
 **Design Decision**: Keep Arrow for I/O + scatter operations, use NumPy for compute. This hybrid approach gets the best of both worlds.
@@ -125,7 +205,6 @@ AliasDataFrame is a high-performance data analysis framework for particle physic
 **Performance**:
 - Phase 7: 0.34s → Phase 8c: 0.228s (1.5x faster)
 - Total speedup vs baseline: 10.8x
-- Efficiency vs theoretical: 6.8%
 
 ---
 
@@ -179,11 +258,6 @@ AliasDataFrame is a high-performance data analysis framework for particle physic
 - `__file_idx__` column for file provenance
 - Custom exception hierarchy
 
-**Architecture**:
-- Composition pattern ✅
-- LRU cache K=8 ✅
-- Single pd.concat with ignore_index=True ✅
-
 **Tests**: 51 new chain tests, 136 total lazy/chain
 
 ### Phase 7.5a: Lazy Single-File Subframes
@@ -205,12 +279,6 @@ AliasDataFrame is a high-performance data analysis framework for particle physic
 - Reuses LazyChainReader from Phase 7.4
 - Validation modes: first, strict, intersection, union
 
-**Architecture Decisions** (4-reviewer consensus):
-- Add 'type': 'file' to single-file config ✅
-- No file index for subframes ✅
-- Trust reader protocol ✅
-- Schema has both 'index' and 'index_columns' ✅
-
 **Tests**: 19 new, 52 total lazy subframe tests
 
 ---
@@ -218,9 +286,7 @@ AliasDataFrame is a high-performance data analysis framework for particle physic
 ## Phase 6: dfdraw Integration & Drawing Validation
 
 **Dates**: 2025-12-07 to 2025-12-11  
-**Status**: 🔄 In Progress (6.8e/c)
-
-> **Note**: The "6.8" label has been extended. Original 6.8 (dfdraw integration: axis titles + slice-first evaluation) is now part of the broader "Phase 6.8: Drawing Validation & Benchmarks" package.
+**Status**: ✅ Complete
 
 ### Phase 6.8 Core: Duck-Typed Axis Titles
 **Date**: 2025-12-08  
@@ -239,33 +305,6 @@ AliasDataFrame is a high-performance data analysis framework for particle physic
 - Entry selection happens BEFORE alias evaluation
 - `_eval_alias_on_df()` for arbitrary DataFrame subset
 - Performance: 12M rows with 10K mask evaluates on 10K only
-
-### Phase 6.8d: Synthetic Data Generator
-**Date**: 2025-12-11
-
-- Extended `generate_synthetic_data.py` with `--chain` and `--subframe-chain` flags
-- Created examples/ directory with four documented examples for draw invariance and lazy loading
-- Known relationships for testing:
-  - `y_derived = 2 * x` (exact, no noise)
-  - `gain[sec] = 1.0 + 0.01 * sec`
-  - `gain[run,sec] = 1.0 + 0.01*sec + 0.001*(run-1000)`
-
-### Phase 6.8e/c: Draw Invariance Tests (Current)
-**Date**: 2025-12-11
-
-- `test_draw_invariance.py`: Core invariants, subframe joins, dtype preservation
-- `test_draw_chain_integration.py`: Chain loading modes, lazy subframes, error handling
-- Tests validate eager vs lazy equivalence across all loading modes
-
-**draw() API** (from dfdraw):
-- Returns: `(fig, ax, stats_dict)` tuple
-- `stats_dict` keys: `'n'`, `'mean'`, `'std'`, `'min'`, `'max'`
-- Use `lazy=True` or call `materialize_alias()` before draw
-
-### Phase 6.8 Remaining (per spec)
-- **6.8a**: Execution-order fixes (if needed from test failures)
-- **6.8b**: Per-spec selection (nice-to-have)
-- **6.8f**: Performance benchmarks (nice-to-have)
 
 ---
 
@@ -293,7 +332,7 @@ AliasDataFrame is a high-performance data analysis framework for particle physic
 
 ### Phase 5.3: Runtime Composite Keys
 **Date**: 2025-12-06  
-**Commit**: `d5591a07b252fe432afefe68b94ceced68cbfbb1`
+**Commit**: `d5591a07b252fe432afefe68b94ceced68cbfbb11`
 
 - Runtime composite key generation for >2 index columns
 - TMemFile + SetFile approach
@@ -444,6 +483,15 @@ All major decisions require consensus from 3+ AI reviewers:
 | intersection | Common branches only |
 | union | All branches, fill missing |
 
+### Phase 13 Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| PolynomialSpec `tgSlp` as standard dimension | Coupling via alias algebra, not special parameter |
+| Evaluator schema stores contract only | User must re-register after load; GBAI handles serialization |
+| Multi-predictor requires explicit selection | Silent default on multi-predictor is P1 violation |
+| pd.merge on index columns only | Memory O(N × index_cols), not O(N × all_cols) |
+
 ---
 
 ## Performance Summary
@@ -456,6 +504,7 @@ All major decisions require consensus from 3+ AI reviewers:
 | Phase 7 | 86% | Join caching |
 | Phase 8 | 10.8× | Numba acceleration |
 | Phase 5 | 25× | vs TTree::Draw |
+| Phase 13.9 | 42× | Numba polynomial evaluator vs eval |
 
 ### Memory Savings
 
@@ -463,6 +512,7 @@ All major decisions require consensus from 3+ AI reviewers:
 |---------|---------|
 | Lazy loading | 90%+ |
 | Compression | 50-80% |
+| Coefficient matrix (Phase 13.9) | 36×96 = 27 KB vs 13.5M rows |
 
 ### Current Efficiency
 
@@ -484,7 +534,23 @@ Remaining overhead is Python/Pandas framework cost.
 | 7.4 | 51 | 136 (lazy/chain) |
 | 7.5a | 33 | 33 (lazy subframe) |
 | 7.5b | 19 | 52 (lazy subframe) |
-| 6.8e/c | 43 | 1178+ |
+| 6.8 | 43 | 1178+ |
+| 13.9.ADF | 26 | 1402 |
+| 13.10.ADF | 24 | 1425 |
+| BUG draw_subframe | 23 | 1392 (at fix time) |
+
+---
+
+## Pending Items
+
+- [ ] GBAI benchmark: evaluator at 82M rows D=3/D=4 with peak RSS
+- [ ] Fix `register_subframe_lazy()` bug (BUG_AliasDataFrame_20260116)
+- [ ] SCHEMA_VERSION export in `__init__.py`
+- [ ] P1 tests: I2_6, I4_2, I4_3 fixes
+- [ ] CAPABILITY_MATRIX.md creation
+- [ ] PHASE_BEGIN_AliasDataFrame tag
+- [ ] Axis title lookup for subframe columns (`Sub_dy` vs `Side.dy`)
+- [ ] dfdraw `same=True` — awaiting Team 3 response
 
 ---
 
