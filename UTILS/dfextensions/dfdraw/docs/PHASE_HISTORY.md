@@ -4,8 +4,8 @@
 
 This document tracks the development history of the `dfdraw` module, a DataFrame drawing utility with ROOT TTree::Draw-like interface. Part of the dfextensions toolkit for ALICE experiment calibration and QA at CERN.
 
-**Current Status:** Phase 13.6.G.DF - Statistics enhancements for ROOT compatibility  
-**Test Count:** 310 passing  
+**Current Status:** Phase 13.14.DF v1.0 - Batch defaults hierarchy + subplot grid  
+**Test Count:** 399 passing  
 **Stability Phase:** Experimental (active development)
 
 ---
@@ -545,6 +545,209 @@ Immediate pandas conversion chosen for simplicity and reliability. Rationale:
 
 ---
 
+## Phase 13.12.DF: Profile Enhancements
+
+**Date:** 2026-03-01  
+**Commits:** Multiple (v1.0 through v1.2)  
+**Status:** ✅ Complete
+
+### Objectives
+- Export profile statistics as DataFrame
+- Suppress low-statistics bins
+- Auto-bin float grouping variables
+- Sort groups in legend
+- Add weighted profile statistics
+- Add automatic title system
+
+### Implementation
+
+**Phase 13.12.DF v1.0 — Profile Data Export & Filtering**
+
+**F1: return_data=True**
+- `profile()` returns `stats_dict['profile_data']` DataFrame
+- Columns: x_center, x_low, x_high, y_mean, y_std, y_sem, count
+- Grouped profiles include 'group' column
+- Source: `plots/profile.py` line 432-446
+
+**F2: min_entries=3 (AD-1)**
+- Bins with fewer than `min_entries` are excluded from plot
+- Still included in `profile_data` if `return_data=True`
+- Default=3 for stable error bars
+- Source: `plots/profile.py` line 291-292
+
+**F3: group_by_bins / group_by_quantiles**
+- `group_by_bins=N`: equal-width bins via `pd.cut()`
+- `group_by_quantiles=N`: equal-count bins via `pd.qcut()`
+- Mutually exclusive (raises ValueError if both set)
+- Custom label format: `_format_interval_label()` → `"0.5-1.2"`
+- Source: `plots/profile.py` line 257-264
+
+**F4: sort_groups=True**
+- Numeric groups sorted by value
+- Interval labels sorted by left boundary via `_interval_sort_key()`
+- String groups sorted alphabetically
+- NaN sorted to end
+- Source: `plots/profile.py` line 524-530
+
+**Phase 13.12.DF v1.1 — Weighted Statistics**
+
+- `weights='column'` parameter for weighted mean/std/sem
+- Weighted variance: Σ(w × (y - mean)²) / Σw
+- Effective sample size: (Σw)² / Σ(w²) for SEM
+- Weighted SEM: std / √n_eff
+- Source: `plots/profile.py` line 396-415
+
+**Phase 13.12.DF v1.2 — Auto-Title System**
+
+- `auto_title=True` generates title from plot parameters
+- New module: `plots/_auto_title.py`
+- Functions: `build_auto_title()`, `apply_auto_title()`, `parse_auto_title_parts()`, `resolve_auto_title()`
+- Title format: "y vs x  group:group_by  weights:w" + subtitle "selection" (italic)
+- Style integration: `auto_title` key in DEFAULT_STYLE
+- Parts control: `auto_title='expr'`, `'expr+group'`, `'expr+sel'`, `True`/'all'
+
+**Testing:**
+- Tests: 16 in `test_profile_phase13_12.py`
+- Coverage: return_data, min_entries, group_by_bins, group_by_quantiles, sort_groups, weights, backward compatibility
+
+### Interval Sort Fix
+
+During Phase 13.14.DF production testing, interval labels with negative ranges (e.g., `"-0.39--0.00"`) sorted incorrectly due to dash ambiguity (separator vs negative sign).
+
+**Fix:** `_interval_sort_key()` function in `plots/profile.py`
+- Extracts left boundary by finding first `-` after a digit
+- Returns tuple `(priority, value)`: `(0, float)` for numbers, `(1, str)` for strings
+- Handles NaN, plain numbers, interval labels, and string labels
+- Source: `plots/profile.py` line 66-102
+
+---
+
+## Phase 13.13.DF v1.0: same=True Superposition
+
+**Date:** 2026-03-25  
+**Commit:** (on feature/groupby-optimization branch)  
+**Status:** ✅ Complete  
+**Specification:** PHASE_13_13_DF_v1_0_Proposal_Same.md  
+**Brainstorming:** dfdraw_Brainstorming_v1_2.md
+
+### Objectives
+- Add ROOT-like `same=True` parameter for plot superposition
+- Auto-increment colors for overlaid curves
+- Auto-generate legend labels
+- Title append for overlaid auto-titles
+
+### Implementation
+
+**Architect Decisions:**
+- AD-15: `self._last_ax` with `plt.gca()` fallback
+- AD-16: Auto-increment colors from palette
+- AD-17: Auto-generate label from expression
+- AD-18: Append to title when `same=True` + `auto_title=True`
+- AD-35: No hard limit on title lines
+- AD-36: `(+N more)` truncation indicator
+- AD-37: AliasDataFrame must cache DFDraw instance for safe same=True
+
+**New in `drawer.py`:**
+- `_last_ax`, `_color_cycle_index` instance variables
+- `_resolve_axes(same, ax)` — axes resolution with fallback chain
+- `_get_next_color()` — palette auto-increment (starts at index 1)
+- `_reset_color_cycle()` — reset on new figure
+- `_auto_label(y_expr, x_expr)` — label generation
+- `_handle_same_post()` — centralized title append + legend
+- `same=` parameter on all 6 draw methods: `draw()`, `hist()`, `scatter()`, `profile()`, `hist2d()`, `hexbin()`
+
+**New in `plots/_auto_title.py`:**
+- `append_auto_title()` — title appending for overlays
+- Subtitle merging with `_is_auto_subtitle` marker
+
+**Usage:**
+```python
+drawer.profile('y1:x', auto_title=True)
+drawer.profile('y2:x', same=True, auto_title=True)
+# → Two curves, different colors, auto-labeled, multi-line title
+```
+
+**Testing:**
+- Tests: 22 in `tests/test_same.py`
+- 7 test classes: BasicSame, AutoTitle, Override, Fallback, AcrossMethods, ColorCycle, Legend
+
+### Key Decisions
+- Color cycle starts at index 1 (first plot uses matplotlib default index 0)
+- First plot has no auto-label (Option B — can add retroactively later)
+- `same=True` ignored in facet mode
+
+---
+
+## Phase 13.14.DF v1.0: draw_batch Defaults Hierarchy + Subplot Grid
+
+**Date:** 2026-03-25  
+**Commit:** (on feature/groupby-optimization branch)  
+**Status:** ✅ Complete  
+**Specification:** PHASE_13_14_DF_v1_0_Proposal_Batch_Rev2.md
+
+### Objectives
+- Add group-based batch format with defaults cascade
+- Support subplot grids (ncols, layout, figsize, suptitle)
+- Enable same=True within groups
+- Add verbose=2 debug mode
+
+### Implementation
+
+**New in `drawer.py`:**
+- `_draw_batch_groups()` method (~160 lines)
+- `_GROUP_KEYS` frozenset for key stripping
+- `draw_batch()` updated: isinstance routing for list vs dict format
+- `verbose` type: `Union[bool, int]` — 0=silent, 1=progress, 2=debug
+
+**Option hierarchy (more local wins):**
+```
+kwargs < draw_batch defaults= < group['defaults'] < plot_spec
+```
+
+**Group spec keys:**
+- Figure structure: `name`, `suptitle`, `layout`, `ncols`, `figsize`, `savefig`, `sharex`, `sharey`, `plots`, `defaults`
+- All draw parameters go in `defaults` or plot specs (not at group level)
+
+**Features:**
+- `layout=(nrows, ncols)` overrides `ncols` (AD-29)
+- `figsize` for multi-subplot figures (auto-scaled default)
+- `squeeze=False` ensures axes always 2D array
+- Empty subplots hidden with `set_visible(False)`
+- `same=True` guard: ValueError on first plot
+- `verbose=2` prints merged params per plot
+
+**Usage:**
+```python
+specs = [{
+    'name': 'qa_dashboard',
+    'suptitle': 'ITS-TPC Residuals',
+    'ncols': 2,
+    'figsize': (16, 12),
+    'defaults': {
+        'type': 'profile', 'bins': 152, 'min_entries': 250,
+        'auto_title': True, 'linestyle': 'none',
+    },
+    'plots': [
+        {'expr': 'dy:row', 'group_by': 'mP3', 'group_by_quantiles': 5},
+        {'expr': 'dz:row', 'group_by': 'mP3', 'group_by_quantiles': 5},
+    ]
+}]
+results = drawer.draw_batch(specs, verbose=2)
+```
+
+**Old dict format still works** — isinstance routing, fully backward compatible.
+
+**Testing:**
+- Tests: 20 in `tests/test_batch_groups.py` (T1-T17 + T18-T20 verbose)
+- Coverage: dict compat, list format, defaults cascade, override, layouts, suptitle, savefig, same=True, return structure, multiple groups, figsize, mixed formats, value correctness, verbose levels
+
+### Key Decisions
+- AD-29: Both `ncols` and `layout=(r,c)` supported; layout takes precedence
+- AD-31: Extend `draw_batch()`, no new method
+- Group-level keys stripped via `_GROUP_KEYS` frozenset — prevents leakage to draw methods
+
+---
+
 ## Statistics Summary
 
 | Phase | Test Count | Delta | Key Feature |
@@ -558,9 +761,12 @@ Immediate pandas conversion chosen for simplicity and reliability. Rationale:
 | 6.9 | 241 | +28 | Batch processing |
 | 12.4b5 | 242 | +10 | Statistics box, reference overlay |
 | 13.1.DF | 263 | +30 | PyArrow Table input |
-| **13.6.G.DF** | **310** | **+47** | **Stats enhancements, ROOT compatibility** |
+| 13.6.G.DF | 310 | +47 | Stats enhancements, ROOT compatibility |
+| 13.12.DF | 326 | +16 | Profile enhancements, auto-title |
+| 13.13.DF | 348 | +22 | same=True superposition |
+| **13.14.DF** | **399** | **+51** | **Batch defaults, subplot grid, verbose=2, interval sort fix** |
 
-**Total Development:** 10 phases, 310 tests, all passing
+**Total Development:** 13 phases, 399 tests, all passing
 
 ---
 
@@ -588,28 +794,28 @@ All APIs subject to change based on user feedback and integration testing with:
 - **pyarrow:** Optional (Phase 13.1.DF)
 
 ### Downstream Integrations
-- **AliasDataFrame:** Duck-typed axis titles (Phase 6.8)
+- **AliasDataFrame:** Duck-typed axis titles (Phase 6.8), draw_figures (planned delegation)
 - **GroupByRegressor:** PyArrow Table output (Phase 13.1.DF)
 - **RDataFrameDSL:** Batch QA plot generation (Phase 6.9)
 
 ### Integration Points
 1. **Data Input:** DataFrame, AliasDataFrame, dict, PyArrow Table
 2. **Axis Titles:** Duck-typed `get_axis_title()` method
-3. **Batch Processing:** JSON/YAML specifications for QA workflows
+3. **Batch Processing:** Dict specs, list-of-groups, JSON/YAML files
 4. **Statistics:** Standardized stats dict format for all plots
+5. **Overlay:** `same=True` for ROOT-like superposition
 
 ---
 
 ## Open Items
 
 ### For Next Phase
-- [ ] **Performance benchmarking:** Profile memory usage with large datasets
-- [ ] **PyArrow native operations:** Investigate compute functions (future optimization)
-- [ ] **Style presets:** Add ALICE-specific style preset
-- [ ] **Export formats:** Support SVG, PDF output in batch mode
+- [ ] **AliasDataFrame delegation:** ADF `draw_figures()` should delegate drawing to dfdraw `draw_batch()` (3-phase split: scan → draw → cleanup)
+- [ ] **Technical summary update:** ✅ Done (this document)
+- [ ] **Test infrastructure:** `run_tests.sh`, `phase_tag.sh`, CAPABILITY_MATRIX
 
 ### Technical Debt
-- None identified (clean implementation throughout)
+- AliasDataFrame `draw_figures()` reimplements drawing loop independently (missing defaults cascade, same=True, layout, figsize). Fix planned in Phase 13.13.ADF v1.0.
 
 ### Documentation Gaps
 - [ ] Add tutorial notebook for PyArrow workflows
@@ -622,20 +828,23 @@ All APIs subject to change based on user feedback and integration testing with:
 
 ### What Worked Well
 1. **Incremental development:** Each phase added clear value
-2. **Test-first approach:** 263 tests caught regressions early
+2. **Test-first approach:** 399 tests caught regressions early
 3. **Duck typing:** Clean integration without hard dependencies
 4. **Style system:** Established early, avoided later refactoring
+5. **Governance process:** Proposal → review → implement → test cycle caught issues before production
 
 ### What Could Improve
-1. **Earlier integration testing:** Some ADF features discovered late
+1. **Earlier integration testing:** ADF `draw_figures()` duplication discovered late
 2. **Documentation cadence:** Should update with each phase
 3. **Performance profiling:** Should have benchmarked earlier phases
+4. **Verbose debug mode:** Would have caught the ADF defaults cascade issue faster
 
 ### Best Practices Established
 1. **Expression syntax:** ROOT-like syntax reduces learning curve
 2. **Return tuples:** `(fig, ax, stats)` consistent across all methods
 3. **Keyword-only args:** After first positional, all kwargs for clarity
 4. **Graceful degradation:** Optional dependencies handled cleanly
+5. **Option hierarchy:** More local wins (kwargs < batch < group < plot)
 
 ---
 
@@ -645,8 +854,9 @@ All APIs subject to change based on user feedback and integration testing with:
 |---------|------|--------|---------|
 | 1.0 | 2026-01-14 | Main Reviewer | Initial PHASE_HISTORY.md from git log |
 | 1.1 | 2026-01-29 | Claude-Main | Added Phase 13.6.G.DF (stats enhancements) |
+| 1.2 | 2026-03-28 | Claude41 | Added Phases 13.12.DF, 13.13.DF, 13.14.DF; interval sort fix; updated test count to 399 |
 
 ---
 
-**Document Status:** Updated for Phase 13.6.G.DF completion  
-**Next Update:** After Phase 13.6.H.DF (drawer.py integration)
+**Document Status:** Updated for Phase 13.14.DF v1.0 completion  
+**Next Update:** After Phase 13.15.DF (test infrastructure) or next feature phase

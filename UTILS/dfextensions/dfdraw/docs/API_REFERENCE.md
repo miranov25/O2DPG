@@ -11,6 +11,7 @@
 | `facet.py` | "Facet plot utilities for dfdraw. Creates subplot grids..." | [OK] Present |
 | `style.py` | "Style management for dfdraw. Supports: Predefined styles..." | [OK] Present, comprehensive |
 | `stats.py` | "Statistics computation for dfdraw. Phase 13.6.G.DF: Statistics Enhancements..." | [OK] Present, comprehensive |
+| `_auto_title.py` | "Auto-title helpers for dfdraw plot functions. Phase 13.12.DF v1.2..." | [OK] Present |
 
 **Assessment:** All files have module-level docstrings. [OK]
 
@@ -37,18 +38,93 @@ Values are approximately 6% smaller than previous versions.
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `__init__` | `__init__(self, data)` | Create drawer from DataFrame, AliasDataFrame, PyArrow Table, or dict |
-| `draw` | `draw(expr, type=None, selection=None, color=None, size=None, marker=None, group_by=None, facet=False, bins=None, stats=None, norm=None, title=None, ax=None, sample=None, save=None, **kwargs)` | Universal draw method with auto type detection |
-| `hist` | `hist(expr, bins=None, range=None, norm=None, stats=None, title=None, xlabel=None, ylabel=None, color=None, alpha=None, histtype=None, edgecolor=None, linewidth=None, label=None, group_by=None, top_k=None, stacked=False, **kwargs)` | Draw 1D histogram |
-| `scatter` | `scatter(expr, color=None, size=None, marker=None, stats=None, title=None, xlabel=None, ylabel=None, alpha=None, edgecolors=None, linewidths=None, cmap=None, colorbar=True, clabel=None, group_by=None, top_k=None, jitter=None, **kwargs)` | Draw scatter plot |
-| `profile` | `profile(expr, bins=None, x_range=None, error="sem", stats=None, title=None, xlabel=None, ylabel=None, color=None, marker=None, markersize=None, capsize=None, linestyle=None, linewidth=None, label=None, group_by=None, top_k=None, **kwargs)` | Draw profile plot (mean of y vs binned x) |
-| `hist2d` | `hist2d(expr, bins=None, range=None, norm=None, stats=None, title=None, xlabel=None, ylabel=None, cmap=None, colorbar=True, clabel=None, vmin=None, vmax=None, **kwargs)` | Draw 2D histogram |
-| `hexbin` | `hexbin(expr, gridsize=50, extent=None, norm=None, stats=None, title=None, xlabel=None, ylabel=None, cmap=None, colorbar=True, clabel=None, mincnt=None, vmin=None, vmax=None, **kwargs)` | Draw hexbin plot |
+| `draw` | `draw(expr, type=None, selection=None, color=None, size=None, marker=None, group_by=None, facet=False, bins=None, stats=None, norm=None, title=None, ax=None, sample=None, save=None, figsize=None, same=False, **kwargs)` | Universal draw method with auto type detection |
+| `hist` | `hist(expr, ..., auto_title=False, same=False, **kwargs)` | Draw 1D histogram |
+| `scatter` | `scatter(expr, ..., same=False, **kwargs)` | Draw scatter plot |
+| `profile` | `profile(expr, ..., return_data=False, min_entries=3, group_by_bins=None, group_by_quantiles=None, sort_groups=True, weights=None, auto_title=False, same=False, **kwargs)` | Draw profile plot (mean of y vs binned x) |
+| `hist2d` | `hist2d(expr, ..., auto_title=False, same=False, **kwargs)` | Draw 2D histogram |
+| `hexbin` | `hexbin(expr, ..., auto_title=False, same=False, **kwargs)` | Draw hexbin plot |
 | `stats` | `stats(expr, selection=None, group_by=None)` | Compute statistics without plotting |
-| `draw_batch` | `draw_batch(specs, save_dir=None, defaults=None, on_error='skip', verbose=True, save_format='png', dpi=150, close_figures=True, **kwargs)` | Batch plot generation from specification dict or YAML/JSON |
+| `draw_batch` | `draw_batch(specs, save_dir=None, defaults=None, on_error='skip', verbose=True, save_format='png', dpi=150, close_figures=True, **kwargs)` | Batch plot generation — dict format or list-of-groups format |
 | `add_statistics_box` | `add_statistics_box(ax, values, position='upper right', expected_mean=None, expected_std=None, precision=3, fontsize=8, alpha=0.5)` | Add statistics annotation box to axis |
 | `add_reference_overlay` | `add_reference_overlay(ax, func='gaussian', mu=0, sigma=1, label=None, color='red', linestyle='--', linewidth=1.5, show_legend=True, n_points=100)` | Add reference function overlay scaled to histogram |
 | `backend` | `@property` | Return storage backend type ('pyarrow' or 'pandas') |
 | `memory_info` | `memory_info()` | Return memory usage information |
+
+### New Parameters (Phase 13.12–13.14.DF)
+
+#### same=True — Plot Superposition (Phase 13.13.DF, AD-15)
+
+Available on all draw methods: `draw()`, `hist()`, `scatter()`, `profile()`, `hist2d()`, `hexbin()`.
+
+```python
+same: bool = False
+```
+
+When `True`:
+- Reuses last axes (`self._last_ax`) or falls back to `plt.gca()`
+- Auto-increments colors from palette (AD-16)
+- Auto-generates label from expression (AD-17)
+- Appends to title when `auto_title=True` (AD-18)
+- Shows legend automatically
+
+Precedence: `ax=` wins over `same=True`. Explicit `color=`, `label=`, `title=` override auto-features.
+
+#### auto_title — Automatic Title (Phase 13.12.DF v1.2)
+
+Available on: `hist()`, `profile()`, `hist2d()`, `hexbin()`.
+
+```python
+auto_title: Union[bool, str] = False
+```
+
+Values:
+- `False`: no auto-title (default, or from style)
+- `True` / `"all"`: "y vs x  group:group_by  weights:w\nselection"
+- `"expr"`: "y vs x" only
+- `"expr+group"`: "y vs x  group:group_by"
+- `"expr+sel"`: "y vs x\nselection"
+
+Explicit `title=` always overrides `auto_title`.
+
+#### Profile-Specific Parameters (Phase 13.12.DF)
+
+```python
+return_data: bool = False       # F1: Include profile DataFrame in stats_dict
+min_entries: int = 3            # F2: Min entries per bin to plot (AD-1)
+group_by_bins: int = None       # F3: Equal-width bins for float group_by
+group_by_quantiles: int = None  # F3: Equal-count bins for float group_by
+sort_groups: bool = True        # F4: Sort groups in legend
+weights: str = None             # v1.1: Column name for weighted statistics
+```
+
+#### draw_batch — List Format (Phase 13.14.DF)
+
+`specs` parameter now accepts `list` (group format) in addition to `dict` (original format):
+
+```python
+specs: Union[Dict[str, Dict[str, Any]], List[Dict[str, Any]], str]
+```
+
+Group spec keys:
+- `name` (required), `plots` (required)
+- `defaults`, `ncols`, `layout`, `figsize`, `suptitle`, `savefig`, `sharex`, `sharey`
+
+Option hierarchy: `kwargs < draw_batch defaults= < group['defaults'] < plot_spec`
+
+#### verbose — Verbosity Levels (Phase 13.14.DF)
+
+```python
+verbose: Union[bool, int] = True
+```
+
+| Value | Behavior |
+|-------|----------|
+| `False` / `0` | Silent |
+| `True` / `1` | Progress — group names, save paths, summary |
+| `2` | Debug — also prints merged parameters per plot |
+
+---
 
 ### Annotation Methods (Phase 12.4b5)
 
@@ -148,9 +224,9 @@ def add_reference_overlay(
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `draw_hist` | `draw_hist(df, x, ax=None, bins=None, range=None, norm=None, stats=None, title=None, xlabel=None, ylabel=None, color=None, alpha=None, histtype=None, edgecolor=None, linewidth=None, label=None, group_by=None, top_k=None, stacked=False, **kwargs)` | Draw 1D histogram |
-| `draw_hist2d` | `draw_hist2d(df, x, y, ax=None, bins=None, range=None, norm=None, stats=None, title=None, xlabel=None, ylabel=None, cmap=None, colorbar=True, clabel=None, vmin=None, vmax=None, **kwargs)` | Draw 2D histogram |
-| `draw_hexbin` | `draw_hexbin(df, x, y, ax=None, gridsize=50, extent=None, norm=None, stats=None, title=None, xlabel=None, ylabel=None, cmap=None, colorbar=True, clabel=None, mincnt=None, vmin=None, vmax=None, **kwargs)` | Draw hexbin plot |
+| `draw_hist` | `draw_hist(df, x, ax=None, bins=None, range=None, norm=None, stats=None, title=None, xlabel=None, ylabel=None, color=None, alpha=None, histtype=None, edgecolor=None, linewidth=None, label=None, group_by=None, top_k=None, stacked=False, auto_title=False, selection=None, **kwargs)` | Draw 1D histogram |
+| `draw_hist2d` | `draw_hist2d(df, x, y, ax=None, bins=None, range=None, norm=None, stats=None, title=None, xlabel=None, ylabel=None, cmap=None, colorbar=True, clabel=None, vmin=None, vmax=None, auto_title=False, selection=None, **kwargs)` | Draw 2D histogram |
+| `draw_hexbin` | `draw_hexbin(df, x, y, ax=None, gridsize=50, extent=None, norm=None, stats=None, title=None, xlabel=None, ylabel=None, cmap=None, colorbar=True, clabel=None, mincnt=None, vmin=None, vmax=None, auto_title=False, selection=None, **kwargs)` | Draw hexbin plot |
 
 ### scatter.py - Functions
 
@@ -162,7 +238,19 @@ def add_reference_overlay(
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `draw_profile` | `draw_profile(df, x, y, ax=None, bins=None, x_range=None, error="sem", stats=None, title=None, xlabel=None, ylabel=None, color=None, marker=None, markersize=None, capsize=None, linestyle=None, linewidth=None, label=None, group_by=None, top_k=None, **kwargs)` | Draw profile plot |
+| `draw_profile` | `draw_profile(df, x, y, ax=None, bins=None, x_range=None, error="sem", stats=None, title=None, xlabel=None, ylabel=None, color=None, marker=None, markersize=None, capsize=None, linestyle=None, linewidth=None, label=None, group_by=None, top_k=None, return_data=False, min_entries=3, group_by_bins=None, group_by_quantiles=None, sort_groups=True, weights=None, auto_title=False, selection=None, **kwargs)` | Draw profile plot |
+| `_format_interval_label` | `_format_interval_label(interval) -> str` | Format pandas Interval as 'low-high' string (AD-3) |
+| `_interval_sort_key` | `_interval_sort_key(label) -> tuple` | Sort key for interval labels including negative ranges |
+
+### _auto_title.py - Functions (Phase 13.12.DF v1.2)
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `parse_auto_title_parts` | `parse_auto_title_parts(auto_title) -> set` | Parse auto_title parameter into set of parts |
+| `build_auto_title` | `build_auto_title(x, y=None, group_by=None, selection=None, weights=None, parts=...) -> dict` | Build auto-title dict with 'main' and 'sub' keys |
+| `apply_auto_title` | `apply_auto_title(ax, title_dict, fontsize=None, sub_fontsize=None)` | Apply auto-title to axes (first plot) |
+| `append_auto_title` | `append_auto_title(ax, title_dict, fontsize=None, sub_fontsize=None)` | Append to existing title for same=True overlay (Phase 13.13.DF) |
+| `resolve_auto_title` | `resolve_auto_title(auto_title) -> bool\|str` | Resolve auto_title: per-call value > style default |
 
 ### facet.py - Functions
 
@@ -335,6 +423,23 @@ stats_dict = {
     
     # Group stats (additional)
     "grouped": bool,    # Was group_by used?
+    
+    # Profile data export (when return_data=True, Phase 13.12.DF)
+    "profile_data": DataFrame,  # x_center, x_low, x_high, y_mean, y_std, y_sem, count
+}
+```
+
+**draw_batch return (list format, Phase 13.14.DF):**
+```python
+results = {
+    'group_name': {
+        'fig': Figure,          # None if close_figures + save
+        'axes': [ax1, ax2, ...],  # List of subplot axes
+        'stats': [stats1, stats2, ...],  # Stats per plot
+        'path': 'saved/path.png',  # Save path or None
+    },
+    '_errors': {'name': 'error message'},
+    '_summary': {'total': int, 'success': int, 'failed': int},
 }
 ```
 
@@ -364,7 +469,7 @@ stats_dict = {
 
 ---
 
-## Style Keys (Phase 13.6.G.DF Updated)
+## Style Keys (Phase 13.14.DF Updated)
 
 | Key | Default | Description |
 |-----|---------|-------------|
@@ -374,7 +479,10 @@ stats_dict = {
 | `stats.fontsize` | 10 | Stats box font size |
 | `stats.alpha` | 0.8 | Stats box transparency |
 | `stats.boxstyle` | "round" | Stats box style |
-| `stats.robust` | False | **NEW** Use robust defaults for 1D (median, MAD) |
+| `stats.robust` | False | Use robust defaults for 1D (median, MAD) |
+| `auto_title` | False | Enable auto-title globally (Phase 13.12.DF v1.2) |
+| `auto_title.fontsize` | 10 | Auto-title main font size |
+| `auto_title.sel_fontsize` | 8 | Auto-title selection subtitle font size |
 
 ---
 
@@ -423,6 +531,7 @@ stats_dict = {
 | `tree->Draw("y:x", "", "prof")` | `drawer.draw("y:x", type="profile")` | Profile |
 | `tree->Draw("y:x", "", "colz")` | `drawer.draw("y:x", type="hist2d")` | 2D histogram |
 | `tree->Draw("y:x>>h(100,0,1)")` | `drawer.draw("y:x", bins=100, range=(0,1))` | Custom binning |
+| `hist2->Draw("same")` | `drawer.draw("y:x", same=True)` | Superposition (Phase 13.13.DF) |
 
 **Phase 13.6.G.DF:** Stats now computed within range, matching ROOT behavior.
 
@@ -444,9 +553,13 @@ stats_dict = {
 | `test_adf_integration.py` | AliasDataFrame duck-typing, axis titles |
 | `test_validation_display.py` | Statistics box, reference overlay |
 | `test_pyarrow_input.py` | PyArrow Table input support |
-| `test_stats_enhancements.py` | **NEW** Statistics enhancements (Phase 13.6.G.DF) |
+| `test_stats_enhancements.py` | Statistics enhancements (Phase 13.6.G.DF) |
+| `test_auto_title.py` | Auto-title system (Phase 13.12.DF v1.2) |
+| `test_profile_phase13_12.py` | Profile enhancements: return_data, min_entries, group_by_bins, weights |
+| `test_same.py` | same=True superposition: axes reuse, colors, labels, titles (Phase 13.13.DF) |
+| `test_batch_groups.py` | Batch groups: defaults cascade, layouts, same=True, verbose levels (Phase 13.14.DF) |
 
-**Total tests:** 310 passing
+**Total tests:** 399 passing
 
 ---
 
@@ -471,3 +584,41 @@ stats_dict = {
 
 - `compute_stats(..., range_x=None, range_y=None, robust=False)`
 - `format_stats_box(..., plot_type=None)`
+
+---
+
+## Phase 13.12–13.14.DF Summary
+
+### Phase 13.12.DF — Profile Enhancements
+
+- `return_data=True`: export profile stats as DataFrame
+- `min_entries=3`: suppress low-statistics bins
+- `group_by_bins`/`group_by_quantiles`: auto-bin float columns
+- `sort_groups=True`: sorted legend order
+- `weights='col'`: weighted mean/std/sem
+- `auto_title`: automatic title system
+
+### Phase 13.13.DF — same=True Superposition
+
+- `same=True` on all draw methods
+- Auto-increment colors, auto-labels, title append
+- `self._last_ax` tracking with `plt.gca()` fallback
+- `append_auto_title()` for title merging
+
+### Phase 13.14.DF — draw_batch Defaults Hierarchy
+
+- List-of-groups format with option hierarchy
+- Subplot grid: `ncols`, `layout=(r,c)`, `figsize`, `suptitle`
+- `same=True` within groups
+- `verbose=2` debug mode (merged params per plot)
+- Interval sort fix for negative ranges
+
+---
+
+## Revision History
+
+| Version | Date | Author | Changes |
+|---------|------|--------|---------|
+| 1.0 | 2026-01-14 | Main Reviewer | Initial API_REFERENCE.md |
+| 1.1 | 2026-01-29 | Claude-Main | Added Phase 13.6.G.DF stats API |
+| 1.2 | 2026-03-28 | Claude41 | Added Phase 13.12-13.14 APIs: same=, auto_title=, profile params, list format, verbose=int, _auto_title.py functions, _interval_sort_key, updated test coverage to 399 |
