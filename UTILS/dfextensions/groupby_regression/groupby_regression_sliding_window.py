@@ -885,6 +885,7 @@ def _fit_window_regression_numba(
         linear_columns: List[str],
         weights: Optional[str],
         min_stat: int,
+        fit_intercept: bool = True,
 ) -> Dict[Tuple[int, ...], Dict[str, Dict[str, Any]]]:
     """V2: Batch all window bins into a single Numba kernel call.
 
@@ -991,7 +992,7 @@ def _fit_window_regression_numba(
         _kernel_single(
             X_all, Y_all, W_all, offsets,
             n_bins, n_pred, n_params,
-            True,  # fit_intercept
+            fit_intercept,  # was hardcoded True — P0 bug fix
             max(1, int(min_stat)),  # min_stat
             False,  # compute_mad
             _INVALID_DETECT,
@@ -3179,6 +3180,7 @@ def make_sliding_window_fit(
                 linear_columns=linear_columns,
                 weights=weights,
                 min_stat=min_stat,
+                fit_intercept=fit_intercept,
             )
             _backend_used = "numba"
         else:
