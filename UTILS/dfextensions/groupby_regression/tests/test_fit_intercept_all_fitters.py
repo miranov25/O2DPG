@@ -338,3 +338,131 @@ def test_cross_fitter_parity_fit_intercept_false(poly_df):
                         other_vals[valid], ref_vals[valid],
                         rtol=1e-4, atol=1e-8,
                         err_msg=f"{name} ≠ V4 for {col} with fit_intercept=False")
+
+
+# ═══════════════════════════════════════════════════════════════
+# Test 8: SW window>0 numba ≡ manual windowed V4 (INVARIANCE — full chain)
+# ═══════════════════════════════════════════════════════════════
+
+def test_sw_window1_numba_matches_manual_windowed_v4(poly_df):
+    """SW numba with window=1 and fit_intercept=False ≡ manually windowed V4.
+
+    THIS IS THE FULL-CHAIN TEST. It exercises the complete recompute path
+    including result unpacking. Previous tests used window=0 which could
+    bypass the buggy code path.
+
+    The manual windowing replicates data with ±1 shift in row_bin, then
+    fits with V4 — producing the same result as SW with window=1.
+    """
+    lin_cols = LIN_COLS
+    gb = ['sec', 'row_bin']
+
+    # SW with actual window > 0
+    try:
+        dfGB_sw = make_sliding_window_fit(
+            df=poly_df, gb_columns=gb, fit_columns=['y'],
+            linear_columns=lin_cols,
+            window_spec={'sec': 0, 'row_bin': 1},
+            suffix='_test', fit_intercept=False, min_stat=10,
+            backend='numba',
+        )
+    except Exception:
+        pytest.skip("Numba not available")
+
+    # No fit failures
+    _check_no_failures(dfGB_sw, '_test', 'SW-numba-w1')
+
+    # No intercept columns
+    _check_no_intercept_columns(dfGB_sw, '_test', 'SW-numba-w1')
+
+    # Must have slope columns with finite values
+    slope_cols = [c for c in dfGB_sw.columns if 'slope' in c and '_err' not in c]
+    assert len(slope_cols) == len(lin_cols), \
+        f"Expected {len(lin_cols)} slope columns, got {len(slope_cols)}: {slope_cols}"
+    for col in slope_cols:
+        n_finite = np.isfinite(dfGB_sw[col]).sum()
+        assert n_finite > 0, f"All NaN in {col}"
+
+    # Manual windowing: replicate data with ±1 row_bin shift
+    parts = []
+    for offset in [-1, 0, 1]:
+        tmp = poly_df.copy()
+        tmp['row_bin'] = tmp['row_bin'] - offset
+        parts.append(tmp)
+    df_windowed = pd.concat(parts, ignore_index=True)
+
+    _, dfGB_manual = make_parallel_fit_v4(
+        df=df_windowed, gb_columns=gb, fit_columns=['y'],
+        linear_columns=lin_cols, suffix='_test',
+        fit_intercept=False, min_stat=10,
+    )
+
+    # Compare: SW window=1 ≡ manual windowed V4
+    sw = dfGB_sw.sort_values(gb).reset_index(drop=True)
+    manual = dfGB_manual.sort_values(gb).reset_index(drop=True)
+
+    # Only compare bins present in both (edge bins may differ)
+    merged = sw.merge(manual, on=gb, suffixes=('_sw', '_manual'))
+
+    for lin_col in lin_cols:
+        col_sw = f'y_slope_{lin_col}_test_sw'
+        col_man = f'y_slope_{lin_col}_test_manual'
+        if col_sw in merged.columns and col_man in merged.columns:
+            sw_vals = merged[col_sw].values
+            man_vals = merged[col_man].values
+            valid = np.isfinite(sw_vals) & np.isfinite(man_vals)
+            if valid.sum() > 0:
+                np.testing.assert_allclose(
+                    sw_vals[valid], man_vals[valid],
+                    rtol=1e-5, atol=1e-8,
+                    err_msg=f"SW-numba window=1 ≠ manual windowed V4 for {lin_col}")
+
+
+# ═══════════════════════════════════════════════════════════════
+# Test 9: SW window>0 numpy ≡ numba (INVARIANCE — backend parity with window)
+# ═══════════════════════════════════════════════════════════════
+
+def test_sw_window1_numba_matches_numpy(poly_df):
+    """SW numba with window=1 ≡ SW numpy with window=1 and fit_intercept=False.
+
+    Both backends must produce identical results with actual windowing.
+    """
+    ws = {'sec': 0, 'row_bin': 1}
+
+    dfGB_numpy = make_sliding_window_fit(
+        df=poly_df, gb_columns=GB_COLS, fit_columns=['y'],
+        linear_columns=LIN_COLS, window_spec=ws,
+        suffix='_test', fit_intercept=False, min_stat=10,
+        backend='numpy',
+    )
+
+    try:
+        dfGB_numba = make_sliding_window_fit(
+            df=poly_df, gb_columns=GB_COLS, fit_columns=['y'],
+            linear_columns=LIN_COLS, window_spec=ws,
+            suffix='_test', fit_intercept=False, min_stat=10,
+            backend='numba',
+        )
+    except Exception:
+        pytest.skip("Numba not available")
+
+    # No failures in either
+    _check_no_failures(dfGB_numpy, '_test', 'SW-numpy-w1')
+    _check_no_failures(dfGB_numba, '_test', 'SW-numba-w1')
+
+    np_s = dfGB_numpy.sort_values(GB_COLS).reset_index(drop=True)
+    nb_s = dfGB_numba.sort_values(GB_COLS).reset_index(drop=True)
+
+    assert len(np_s) == len(nb_s)
+
+    slope_cols = [c for c in np_s.columns if 'slope' in c]
+    for col in slope_cols:
+        if col in nb_s.columns:
+            np_vals = np_s[col].values
+            nb_vals = nb_s[col].values
+            valid = np.isfinite(np_vals) & np.isfinite(nb_vals)
+            if valid.sum() > 0:
+                np.testing.assert_allclose(
+                    nb_vals[valid], np_vals[valid],
+                    rtol=1e-6, atol=1e-10,
+                    err_msg=f"numba ≠ numpy for {col} with window=1, fit_intercept=False")

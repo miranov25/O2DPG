@@ -1006,11 +1006,12 @@ def _fit_window_regression_numba(
                 out[center] = {}
 
             if out_status[i] == _STATUS_OK:
-                intercept = float(out_beta[i, 0])
-                intercept_err = float(out_errors[i, 0])
-                coeffs = {linear_columns[j]: float(out_beta[i, j + 1])
+                offset = 1 if fit_intercept else 0
+                intercept = float(out_beta[i, 0]) if fit_intercept else 0.0
+                intercept_err = float(out_errors[i, 0]) if fit_intercept else 0.0
+                coeffs = {linear_columns[j]: float(out_beta[i, j + offset])
                           for j in range(n_pred)}
-                coeffs_err = {linear_columns[j]: float(out_errors[i, j + 1])
+                coeffs_err = {linear_columns[j]: float(out_errors[i, j + offset])
                               for j in range(n_pred)}
 
                 # RMSE: V1 uses sqrt(RSS/n), kernel gives sqrt(RSS/dof).
