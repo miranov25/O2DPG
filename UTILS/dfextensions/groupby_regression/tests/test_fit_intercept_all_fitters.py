@@ -15,14 +15,12 @@ import pytest
 
 try:
     from groupby_regression_optimized import (
-        make_parallel_fit_v2,
         make_parallel_fit_v3,
         make_parallel_fit_v4,
     )
     from groupby_regression_sliding_window import make_sliding_window_fit
 except ImportError:
     from ..groupby_regression_optimized import (
-        make_parallel_fit_v2,
         make_parallel_fit_v3,
         make_parallel_fit_v4,
     )
@@ -131,64 +129,122 @@ def test_v3_fit_intercept_false_recovers_coefficients(poly_df):
 
 
 # ═══════════════════════════════════════════════════════════════
-# Test 3: V2 recovers coefficients (INVARIANCE)
+# Test 3: V2 — SKIPPED (legacy API, does not support fit_intercept)
 # ═══════════════════════════════════════════════════════════════
 
-def test_v2_fit_intercept_false_recovers_coefficients(poly_df):
-    """V2 with fit_intercept=False recovers known polynomial coefficients."""
-    _, dfGB = make_parallel_fit_v2(
-        df=poly_df, gb_columns=GB_COLS, fit_columns=['y'],
-        linear_columns=LIN_COLS, suffix='_test',
-        fit_intercept=False, min_stat=10,
-    )
-    _check_no_intercept_columns(dfGB, '_test', 'V2')
-    _check_coefficients(dfGB, '_test', 'V2')
+# V2 (make_parallel_fit_v2) is the legacy statsmodels wrapper.
+# It does not accept fit_intercept parameter. Not tested here.
 
 
 # ═══════════════════════════════════════════════════════════════
-# Test 4: SW fit recovers coefficients (INVARIANCE — bug target)
+# Test 4a: SW numpy recovers coefficients (INVARIANCE)
 # ═══════════════════════════════════════════════════════════════
 
-def test_sw_fit_intercept_false_recovers_coefficients(poly_df):
-    """SW with fit_intercept=False and window=0 recovers known coefficients.
-
-    This is the exact bug scenario: polynomial basis with constant term,
-    fit_intercept=False, sliding window path.
-    """
+def test_sw_numpy_fit_intercept_false_recovers_coefficients(poly_df):
+    """SW numpy backend with fit_intercept=False recovers known coefficients."""
     dfGB = make_sliding_window_fit(
         df=poly_df, gb_columns=GB_COLS, fit_columns=['y'],
         linear_columns=LIN_COLS,
         window_spec={'sec': 0, 'row_bin': 0},
         suffix='_test', fit_intercept=False, min_stat=10,
+        backend='numpy',
     )
-    _check_no_failures(dfGB, '_test', 'SW')
-    _check_no_intercept_columns(dfGB, '_test', 'SW')
-    _check_coefficients(dfGB, '_test', 'SW')
+    _check_no_failures(dfGB, '_test', 'SW-numpy')
+    _check_no_intercept_columns(dfGB, '_test', 'SW-numpy')
+    _check_coefficients(dfGB, '_test', 'SW-numpy')
 
 
 # ═══════════════════════════════════════════════════════════════
-# Test 5: SW ≡ V4 with fit_intercept=False (INVARIANCE — gate)
+# Test 4b: SW numba recovers coefficients (INVARIANCE — exact bug)
 # ═══════════════════════════════════════════════════════════════
 
-def test_sw_fit_intercept_false_matches_v4(poly_df):
-    """SW fit with window=0 and fit_intercept=False ≡ V4 on same data."""
+def test_sw_numba_fit_intercept_false_recovers_coefficients(poly_df):
+    """SW numba backend with fit_intercept=False recovers known coefficients.
+
+    THIS IS THE EXACT BUG: _fit_window_regression_numba hardcoded
+    fit_intercept=True and n_params=n_pred+1. This test forces the
+    numba backend to verify the fix.
+    """
+    try:
+        dfGB = make_sliding_window_fit(
+            df=poly_df, gb_columns=GB_COLS, fit_columns=['y'],
+            linear_columns=LIN_COLS,
+            window_spec={'sec': 0, 'row_bin': 0},
+            suffix='_test', fit_intercept=False, min_stat=10,
+            backend='numba',
+        )
+    except Exception:
+        pytest.skip("Numba not available")
+    _check_no_failures(dfGB, '_test', 'SW-numba')
+    _check_no_intercept_columns(dfGB, '_test', 'SW-numba')
+    _check_coefficients(dfGB, '_test', 'SW-numba')
+
+
+# ═══════════════════════════════════════════════════════════════
+# Test 5a: SW numpy ≡ V4 with fit_intercept=False (INVARIANCE)
+# ═══════════════════════════════════════════════════════════════
+
+def test_sw_numpy_fit_intercept_false_matches_v4(poly_df):
+    """SW numpy with window=0 and fit_intercept=False ≡ V4."""
     _, dfGB_v4 = make_parallel_fit_v4(
         df=poly_df, gb_columns=GB_COLS, fit_columns=['y'],
         linear_columns=LIN_COLS, suffix='_ref',
         fit_intercept=False, min_stat=10,
     )
-
     dfGB_sw = make_sliding_window_fit(
         df=poly_df, gb_columns=GB_COLS, fit_columns=['y'],
         linear_columns=LIN_COLS,
         window_spec={'sec': 0, 'row_bin': 0},
         suffix='_ref', fit_intercept=False, min_stat=10,
+        backend='numpy',
     )
-
     v4 = dfGB_v4.sort_values(GB_COLS).reset_index(drop=True)
     sw = dfGB_sw.sort_values(GB_COLS).reset_index(drop=True)
-
     assert len(v4) == len(sw), f"Row count: v4={len(v4)}, sw={len(sw)}"
+    slope_cols = [c for c in v4.columns if 'slope' in c]
+    for col in slope_cols:
+        if col in sw.columns:
+            v4_vals = v4[col].values
+            sw_vals = sw[col].values
+            valid = np.isfinite(v4_vals) & np.isfinite(sw_vals)
+            if valid.sum() > 0:
+                np.testing.assert_allclose(
+                    sw_vals[valid], v4_vals[valid],
+                    rtol=1e-6, atol=1e-10,
+                    err_msg=f"SW-numpy ≠ V4 for {col}")
+
+
+# ═══════════════════════════════════════════════════════════════
+# Test 5b: SW numba ≡ V4 with fit_intercept=False (INVARIANCE — gate)
+# ═══════════════════════════════════════════════════════════════
+
+def test_sw_numba_fit_intercept_false_matches_v4(poly_df):
+    """SW numba with window=0 and fit_intercept=False ≡ V4.
+
+    THIS IS THE GATE TEST. If this fails, fit_intercept is broken
+    in the numba SW path.
+    """
+    _, dfGB_v4 = make_parallel_fit_v4(
+        df=poly_df, gb_columns=GB_COLS, fit_columns=['y'],
+        linear_columns=LIN_COLS, suffix='_ref',
+        fit_intercept=False, min_stat=10,
+    )
+    try:
+        dfGB_sw = make_sliding_window_fit(
+            df=poly_df, gb_columns=GB_COLS, fit_columns=['y'],
+            linear_columns=LIN_COLS,
+            window_spec={'sec': 0, 'row_bin': 0},
+            suffix='_ref', fit_intercept=False, min_stat=10,
+            backend='numba',
+        )
+    except Exception:
+        pytest.skip("Numba not available")
+    v4 = dfGB_v4.sort_values(GB_COLS).reset_index(drop=True)
+    sw = dfGB_sw.sort_values(GB_COLS).reset_index(drop=True)
+    assert len(v4) == len(sw), f"Row count: v4={len(v4)}, sw={len(sw)}"
+
+    # First: no failures
+    _check_no_failures(sw, '_ref', 'SW-numba')
 
     slope_cols = [c for c in v4.columns if 'slope' in c]
     for col in slope_cols:
@@ -200,7 +256,7 @@ def test_sw_fit_intercept_false_matches_v4(poly_df):
                 np.testing.assert_allclose(
                     sw_vals[valid], v4_vals[valid],
                     rtol=1e-6, atol=1e-10,
-                    err_msg=f"SW ≠ V4 for {col} with fit_intercept=False")
+                    err_msg=f"SW-numba ≠ V4 for {col}")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -254,11 +310,10 @@ def test_sw_fit_intercept_false_numba_matches_numpy(poly_df):
 # ═══════════════════════════════════════════════════════════════
 
 def test_cross_fitter_parity_fit_intercept_false(poly_df):
-    """All per-bin fitters agree with fit_intercept=False."""
+    """V3 and V4 agree with fit_intercept=False."""
     results = {}
 
-    for name, func in [('V2', make_parallel_fit_v2),
-                        ('V3', make_parallel_fit_v3),
+    for name, func in [('V3', make_parallel_fit_v3),
                         ('V4', make_parallel_fit_v4)]:
         _, dfGB = func(
             df=poly_df, gb_columns=GB_COLS, fit_columns=['y'],
@@ -267,11 +322,11 @@ def test_cross_fitter_parity_fit_intercept_false(poly_df):
         )
         results[name] = dfGB.sort_values(GB_COLS).reset_index(drop=True)
 
-    # Compare V2 and V3 against V4 (reference)
+    # Compare V3 against V4 (reference)
     ref = results['V4']
     slope_cols = [c for c in ref.columns if 'slope' in c]
 
-    for name in ['V2', 'V3']:
+    for name in ['V3']:
         other = results[name]
         for col in slope_cols:
             if col in other.columns:

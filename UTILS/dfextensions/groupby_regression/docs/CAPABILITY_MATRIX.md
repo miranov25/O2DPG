@@ -1,7 +1,7 @@
 # Capability Matrix — groupby_regression
 
-**Generated:** 2026-03-23 14:52 UTC
-**Phase:** Phase 13.11.GB
+**Generated:** 2026-03-29 08:39 UTC
+**Phase:** Phase 13.14.GB
 **Generator:** `scripts/generate_capability_matrix.py`
 
 ## Summary
@@ -255,6 +255,6 @@
 
 ---
 
-*Two-tier verification per Phase 13.11.GB v02 proposal.*
+*Two-tier verification per Phase 13.14.GB v02 proposal.*
 *✅ = invariance/integration test exists. ☑️ = smoke tests only — does not catch numerical regressions.*
 *Verbose SW duplicates (1 files) deduplicated per §3.6.*

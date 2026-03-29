@@ -910,7 +910,7 @@ def _fit_window_regression_numba(
         )
 
     n_pred = len(linear_columns)
-    n_params = n_pred + 1
+    n_params = n_pred + (1 if fit_intercept else 0)
 
     # Pre-extract arrays
     pred_arrays = [df[p].to_numpy(dtype=np.float64) for p in linear_columns]
