@@ -120,6 +120,7 @@ def chain_with_subframe_data(tmp_path_factory):
 # Core Invariant Tests (work without dfdraw)
 # =============================================================================
 
+@pytest.mark.invariance
 class TestCoreInvariants:
     """Core invariant tests that work without dfdraw."""
     
@@ -234,6 +235,7 @@ class TestCoreInvariants:
 # Subframe Join Correctness Tests
 # =============================================================================
 
+@pytest.mark.invariance
 class TestSubframeJoinCorrectness:
     """Verify subframe joins produce correct results with known relationships."""
     
@@ -268,6 +270,7 @@ class TestSubframeJoinCorrectness:
 # Chain + Subframe Integration
 # =============================================================================
 
+@pytest.mark.invariance
 class TestChainSubframeIntegration:
     """Verify chain loading with subframes produces correct results."""
     
@@ -309,6 +312,7 @@ class TestChainSubframeIntegration:
 # dtype Preservation Tests
 # =============================================================================
 
+@pytest.mark.invariance
 class TestDtypePreservation:
     """Verify dtypes are preserved across loading modes."""
     
@@ -369,6 +373,7 @@ class TestErrorScenarios:
 # =============================================================================
 
 @requires_dfdraw
+@pytest.mark.invariance
 class TestDrawInvariance:
     """Tests that specifically require draw() functionality."""
     

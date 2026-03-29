@@ -276,6 +276,7 @@ class TestRepr:
 # §8.2 Invariance Tests
 # =============================================================================
 
+@pytest.mark.invariance
 class TestInvariancePolynomial:
     """Semantic invariance tests per §8.2."""
 

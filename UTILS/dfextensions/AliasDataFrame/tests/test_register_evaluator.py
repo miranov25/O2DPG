@@ -339,6 +339,7 @@ class TestRegisterEvaluatorComposition:
 # Invariance Tests
 # =========================================================================
 
+@pytest.mark.invariance
 class TestRegisterEvaluatorInvariance:
     """Alias evaluation must match direct evaluator call."""
 
