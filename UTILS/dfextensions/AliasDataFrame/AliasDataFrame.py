@@ -4289,6 +4289,30 @@ class AliasDataFrame:
                             if sf_attr in sf.aliases and sf_attr not in sf.df.columns:
                                 sf.materialize_alias(sf_attr)
                     
+                    # BUG FIX (2026-03-31): Materialize dependency aliases that have
+                    # fill_value BEFORE evaluating this alias. Without this, dependencies
+                    # are resolved inside _eval_in_namespace which skips fill_value,
+                    # causing NaN propagation through alias chains.
+                    deps = self._get_alias_dependencies(name, expr)
+                    for dep_type, dep_name in deps:
+                        if dep_type == 'alias' and dep_name not in self.df.columns and dep_name not in results:
+                            dep_spec = self._schema["columns"].get(dep_name, {})
+                            dep_fill = dep_spec.get("fill_value")
+                            if dep_fill is not None and dep_name in self.aliases:
+                                if verbose:
+                                    print(f"[materialize_aliases]   Materializing dependency with fill_value: {dep_name}")
+                                dep_expr = self.aliases[dep_name]
+                                dep_result = self._eval_in_namespace(dep_expr, context_override=results, alias_name=dep_name)
+                                dep_result = np.where(np.isfinite(dep_result), dep_result, dep_fill)
+                                dep_dtype = self.alias_dtypes.get(dep_name)
+                                if dep_dtype is not None:
+                                    try:
+                                        dep_result = dep_result.astype(dep_dtype)
+                                    except (AttributeError, TypeError):
+                                        pass
+                                results[dep_name] = dep_result
+                                added.append(dep_name)
+                    
                     # Compute with context_override so dependent aliases can see prior results
                     result = self._eval_in_namespace(expr, context_override=results, alias_name=name)
                     
