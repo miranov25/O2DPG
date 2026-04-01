@@ -8424,6 +8424,11 @@ class AliasDataFrame:
         if hasattr(self, '_fit_metadata') and self._fit_metadata:
             result['fit_metadata'] = copy.deepcopy(self._fit_metadata)
         
+        # 7. Registered functions (Phase 13.9 Fix1)
+        reg_funcs = self._schema.get('registered_functions')
+        if reg_funcs:
+            result['registered_functions'] = copy.deepcopy(reg_funcs)
+        
         return result
 
     def export_definition_schema(self, **kwargs):
@@ -8713,6 +8718,69 @@ class AliasDataFrame:
                     UserWarning
                 )
             self._fit_metadata = copy.deepcopy(schema['fit_metadata'])
+        
+        # Restore registered functions if present (Phase 13.9 Fix1)
+        # Polynomials are reconstructed automatically if subframes are registered.
+        # Evaluators require manual re-registration (by design).
+        if 'registered_functions' in schema:
+            self._schema['registered_functions'] = copy.deepcopy(schema['registered_functions'])
+            self._reconstruct_registered_functions()
+
+    def _reconstruct_registered_functions(self):
+        """
+        Reconstruct polynomial functions from schema after load.
+        
+        Requires subframes to be already registered. Evaluator functions
+        are NOT reconstructed (by design — GBAI owns evaluator persistence).
+        
+        Phase 13.9 Fix1: Polynomial persistence through export/import.
+        """
+        from dfextensions.AliasDataFrame.PolynomialSpec import PolynomialSpec
+        
+        reg_funcs = self._schema.get('registered_functions', {})
+        reconstructed = []
+        skipped = []
+        
+        for name, spec_dict in reg_funcs.items():
+            func_type = spec_dict.get('type')
+            
+            if func_type == 'evaluator':
+                # Evaluators must be re-registered manually
+                skipped.append(f"{name} (evaluator — re-register manually)")
+                continue
+            
+            # Polynomial reconstruction
+            coeff_subframe = spec_dict.get('coefficients_subframe')
+            coeff_select = spec_dict.get('coeff_select')
+            
+            if not coeff_subframe or not coeff_select:
+                skipped.append(f"{name} (missing coefficients_subframe or coeff_select)")
+                continue
+            
+            # Check if subframe is registered
+            try:
+                sf = self.get_subframe(coeff_subframe)
+                if sf is None:
+                    skipped.append(f"{name} (subframe '{coeff_subframe}' not registered)")
+                    continue
+            except (KeyError, AttributeError):
+                skipped.append(f"{name} (subframe '{coeff_subframe}' not found)")
+                continue
+            
+            # Reconstruct PolynomialSpec from schema
+            try:
+                poly_spec = PolynomialSpec.from_schema(spec_dict)
+                self.register_polynomial_from_subframe(
+                    name, poly_spec, coeff_subframe, coeff_select, overwrite=True
+                )
+                reconstructed.append(name)
+            except Exception as e:
+                skipped.append(f"{name} (reconstruction failed: {e})")
+        
+        if reconstructed:
+            print(f"[apply_schema] Reconstructed {len(reconstructed)} polynomial functions: {reconstructed}")
+        if skipped:
+            print(f"[apply_schema] Skipped {len(skipped)} functions: {skipped}")
 
     @classmethod
     def from_schema(cls, schema):
