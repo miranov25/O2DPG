@@ -179,3 +179,42 @@ class TestPolynomialPersistence:
 
         np.testing.assert_allclose(before, after, atol=1e-10,
                                     err_msg="Polynomial values differ after schema roundtrip")
+
+    @pytest.mark.invariance
+    def test_invariance_export_tree_read_tree_roundtrip(self, adf_with_polynomial, tmp_path):
+        """Full chain: register polynomial → export_tree → read_tree → polynomial works."""
+        adf, _, _ = adf_with_polynomial
+
+        # Materialize and get reference values
+        adf.materialize_alias('correction')
+        before = adf.df['correction'].values.copy()
+
+        # Verify schema has registered_functions before export
+        assert 'poly' in adf._schema.get('registered_functions', {}), \
+            "registered_functions missing from schema before export"
+
+        # Export to ROOT file
+        root_path = str(tmp_path / 'test_poly_persistence.root')
+        adf.export_tree(root_path)
+
+        # Read back — polynomials should auto-reconstruct
+        adf2 = AliasDataFrame.read_tree(root_path)
+
+        # Verify schema was restored
+        assert 'registered_functions' in adf2._schema, \
+            "registered_functions missing from schema after read_tree"
+        assert 'poly' in adf2._schema['registered_functions'], \
+            "poly not in registered_functions after read_tree"
+
+        # Verify function was reconstructed
+        assert hasattr(adf2, '_registered_functions'), \
+            "_registered_functions attribute missing after read_tree"
+        assert 'poly' in adf2._registered_functions, \
+            "poly not reconstructed in _registered_functions after read_tree"
+
+        # Verify alias works — materialize and compare
+        adf2.materialize_alias('correction')
+        after = adf2.df['correction'].values.copy()
+
+        np.testing.assert_allclose(before, after, atol=1e-10,
+                                    err_msg="Polynomial values differ after export_tree/read_tree roundtrip")

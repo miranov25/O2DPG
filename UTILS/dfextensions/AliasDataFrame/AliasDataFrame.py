@@ -354,6 +354,10 @@ def _serialize_schema(schema):
                 serialized_spec[key] = value
         result["columns"][name] = serialized_spec
     
+    # Phase 13.9.Fix1: Include registered_functions if present
+    if "registered_functions" in schema:
+        result["registered_functions"] = schema["registered_functions"]
+    
     return result
 
 
@@ -433,6 +437,10 @@ def _deserialize_schema(serialized):
             else:
                 deserialized_spec[key] = value
         result["columns"][name] = deserialized_spec
+    
+    # Phase 13.9.Fix1: Restore registered_functions if present
+    if "registered_functions" in serialized:
+        result["registered_functions"] = serialized["registered_functions"]
     
     return result
 
@@ -1285,6 +1293,12 @@ class AliasDataFrame:
         
         # Restore subframes metadata (not actual subframe objects)
         self._schema["subframes"] = serialized_schema.get("subframes", {})
+        
+        # Phase 13.9.Fix1: Restore registered_functions schema
+        # NOTE: Reconstruction is deferred — subframes must be loaded first.
+        # Call _reconstruct_registered_functions() after subframes are registered.
+        if "registered_functions" in serialized_schema:
+            self._schema["registered_functions"] = serialized_schema["registered_functions"]
 
     def update_schema(self, update, validate=True, apply=True, errors="raise"):
         """
@@ -5181,6 +5195,10 @@ class AliasDataFrame:
                     raise RuntimeError(
                         f"Failed to load subframe '{sf_name}' from {filename}: {e}"
                     ) from e
+
+        # Phase 13.9.Fix1: Reconstruct registered functions after subframes loaded
+        if adf._schema.get('registered_functions'):
+            adf._reconstruct_registered_functions()
 
         return adf
     
