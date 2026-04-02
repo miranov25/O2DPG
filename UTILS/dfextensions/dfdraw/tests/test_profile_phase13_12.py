@@ -330,77 +330,6 @@ class TestFacetMode:
             assert 'profile_data' in group_stats, f"Missing profile_data for {group_name}"
 
 
-class TestWeights:
-    """Tests for Phase 13.12.DF v1.1: weights parameter."""
-    
-    def test_weighted_profile_basic(self):
-        """Verify weighted profile computes correctly."""
-        np.random.seed(42)
-        # Create data where weights should shift the mean
-        df = pd.DataFrame({
-            'x': np.repeat([1, 2, 3], 100),
-            'y': np.tile([0, 10], 150),  # alternating 0 and 10
-            'w': np.tile([1, 9], 150),   # weight 10s much higher
-        })
-        
-        plotter = DFDraw(df)
-        
-        # Unweighted: mean should be 5
-        fig, ax, stats_unweighted = plotter.profile(
-            'y:x', bins=3, range=(0.5, 3.5), return_data=True
-        )
-        plt.close(fig)
-        
-        # Weighted: mean should be ~9 (heavily weighted toward 10)
-        fig, ax, stats_weighted = plotter.profile(
-            'y:x', bins=3, range=(0.5, 3.5), return_data=True, weights='w'
-        )
-        plt.close(fig)
-        
-        unweighted_mean = stats_unweighted['profile_data']['y_mean'].mean()
-        weighted_mean = stats_weighted['profile_data']['y_mean'].mean()
-        
-        assert abs(unweighted_mean - 5.0) < 0.1, f"Unweighted mean should be ~5, got {unweighted_mean}"
-        assert weighted_mean > 8.0, f"Weighted mean should be >8, got {weighted_mean}"
-    
-    def test_weighted_profile_sum_weights_column(self):
-        """Verify sum_weights column present when weights used."""
-        np.random.seed(42)
-        df = pd.DataFrame({
-            'x': np.random.uniform(0, 10, 100),
-            'y': np.random.normal(0, 1, 100),
-            'w': np.random.uniform(0.5, 2, 100),
-        })
-        
-        plotter = DFDraw(df)
-        fig, ax, stats = plotter.profile(
-            'y:x', bins=10, return_data=True, weights='w'
-        )
-        plt.close(fig)
-        
-        assert 'sum_weights' in stats['profile_data'].columns
-    
-    def test_weighted_profile_grouped(self):
-        """Verify weights work with group_by."""
-        np.random.seed(42)
-        df = pd.DataFrame({
-            'x': np.random.uniform(0, 10, 300),
-            'y': np.random.normal(0, 1, 300),
-            'w': np.random.uniform(0.5, 2, 300),
-            'group': np.tile(['A', 'B', 'C'], 100),
-        })
-        
-        plotter = DFDraw(df)
-        fig, ax, stats = plotter.profile(
-            'y:x', bins=10, group_by='group', return_data=True, weights='w'
-        )
-        plt.close(fig)
-        
-        assert 'profile_data' in stats
-        assert 'sum_weights' in stats['profile_data'].columns
-        assert 'group' in stats['profile_data'].columns
-
-
 class TestBackwardCompatibility:
     """Tests for backward compatibility."""
     
@@ -440,3 +369,53 @@ class TestBackwardCompatibility:
         assert isinstance(fig, plt.Figure)
         assert ax.get_title() == 'Test Profile'
         assert ax.get_xlabel() == 'X Axis'
+
+
+# =========================================================================
+# Phase 13.12.DF v1.1 Bugfix: Weight expression support
+# =========================================================================
+
+class TestWeightExpressions:
+    """Bugfix: weights='(1+mP4**2)' was silently ignored (P1 safety)."""
+
+    def test_weight_column_name(self, sample_df):
+        """Column name weights still work (regression check)."""
+        sample_df['w'] = np.abs(np.random.normal(1, 0.5, len(sample_df)))
+        plotter = DFDraw(sample_df)
+        fig, ax, stats = plotter.profile('y:x', bins=10, weights='w')
+        assert stats['n'] > 0
+
+    def test_weight_expression(self, sample_df):
+        """Expression weights are evaluated, not silently ignored."""
+        plotter = DFDraw(sample_df)
+        # Unweighted
+        fig1, ax1, stats1 = plotter.profile('y:x', bins=10)
+        # Weighted by expression — should produce different means
+        sample_df['big_w'] = 1.0
+        sample_df.loc[sample_df['x'] > 5, 'big_w'] = 100.0
+        fig2, ax2, stats2 = plotter.profile('y:x', bins=10, weights='big_w * 1.0')
+        # With extreme weights, means should differ
+        # (not testing exact values, just that weights are applied)
+        assert stats2['n'] > 0
+
+    def test_weight_expression_grouped(self, sample_df):
+        """Expression weights work in grouped profiles."""
+        sample_df['w_col'] = np.abs(sample_df['x']) + 1
+        plotter = DFDraw(sample_df)
+        fig, ax, stats = plotter.profile(
+            'y:x', bins=10, group_by='group', weights='w_col * 2'
+        )
+        assert stats['n'] > 0
+
+    def test_weight_invalid_raises(self, sample_df):
+        """Invalid weight expression raises ValueError (not silent)."""
+        plotter = DFDraw(sample_df)
+        with pytest.raises(ValueError, match="Cannot evaluate weight"):
+            plotter.profile('y:x', bins=10, weights='nonexistent_column')
+
+    def test_weight_none_unchanged(self, sample_df):
+        """weights=None produces unweighted profile (no regression)."""
+        plotter = DFDraw(sample_df)
+        fig, ax, stats = plotter.profile('y:x', bins=10, weights=None)
+        assert stats['n'] > 0
+

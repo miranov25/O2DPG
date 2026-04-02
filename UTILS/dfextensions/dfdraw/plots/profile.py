@@ -105,6 +105,43 @@ def _interval_sort_key(label):
     return (1, s)
 
 
+def _eval_weights(df: pd.DataFrame, weights: str) -> np.ndarray:
+    """
+    Evaluate weight column or expression.
+    
+    Supports both column names and computed expressions.
+    Raises ValueError if evaluation fails (not silent).
+    
+    Parameters
+    ----------
+    df : DataFrame
+        Input data.
+    weights : str
+        Column name or expression (e.g., "(1+mP4**2)").
+    
+    Returns
+    -------
+    ndarray
+        Weight values as float array.
+    
+    Raises
+    ------
+    ValueError
+        If weight expression cannot be evaluated.
+    """
+    # Direct column access
+    if weights in df.columns:
+        return df[weights].values.astype(float)
+    # Computed expression via df.eval()
+    try:
+        return df.eval(weights).values.astype(float)
+    except Exception as e:
+        raise ValueError(
+            f"Cannot evaluate weight expression '{weights}': {e}. "
+            "Weights must be a column name or a valid pandas expression."
+        )
+
+
 def draw_profile(
     df: pd.DataFrame,
     x: Union[str, pd.Series, np.ndarray],
@@ -274,9 +311,10 @@ def draw_profile(
         y_data = np.asarray(y, dtype=float)
     
     # Phase 13.12.DF v1.1: Get weights if specified
+    # Bugfix: support weight expressions (e.g., "(1+mP4**2)"), not just column names
     w_data = None
-    if weights is not None and weights in df.columns:
-        w_data = df[weights].values.astype(float)
+    if weights is not None:
+        w_data = _eval_weights(df, weights)
     
     # Remove NaN (include weights in mask if present)
     mask = ~(np.isnan(x_data) | np.isnan(y_data))
@@ -567,9 +605,10 @@ def _draw_profile_grouped(
         y_data = group_df[y].values.astype(float)
         
         # Phase 13.12.DF v1.1: Get weights for this group
+        # Bugfix: support weight expressions, not just column names
         w_data = None
-        if weights is not None and weights in group_df.columns:
-            w_data = group_df[weights].values.astype(float)
+        if weights is not None:
+            w_data = _eval_weights(group_df, weights)
         
         # Remove NaN (include weights in mask if present)
         mask = ~(np.isnan(x_data) | np.isnan(y_data))
