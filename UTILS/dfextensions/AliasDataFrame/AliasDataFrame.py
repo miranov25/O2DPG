@@ -9871,33 +9871,56 @@ class AliasDataFrame:
             # No selection - return full DataFrame
             return self.df
 
-    def _parse_expr_aliases(self, expr: str, group_by=None, color=None):
+    def _parse_expr_aliases(self, expr: str, group_by=None, color=None, selection=None, weights=None):
         """
         Extract alias names from expression and optional parameters.
         
+        Parses all identifier tokens from expressions including those
+        inside function calls like abs(alias), sqrt(alias**2), etc.
+        
         Args:
-            expr: Plot expression like 'y:x' or 'x'
+            expr: Plot expression like 'y:x', 'abs(dy):x', 'dy-dx:x'
             group_by: Optional group_by column
             color: Optional color column
+            selection: Optional selection expression
+            weights: Optional weights expression or column name
         
         Returns:
             Set of alias names (not physical columns) needed
         """
-        columns_needed = set()
+        import re as _re
         
-        # Parse main expression
-        parts = expr.replace(' ', '').split(':')
-        columns_needed.update(parts)
+        # Known function/constant names to exclude
+        _exclude = {
+            'abs', 'sqrt', 'sin', 'cos', 'tan', 'exp', 'log', 'log2', 'log10',
+            'asin', 'acos', 'atan', 'atan2', 'arcsin', 'arccos', 'arctan', 'arctan2',
+            'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh',
+            'ceil', 'floor', 'round', 'clip', 'sign', 'copysign',
+            'min', 'max', 'sum', 'mean', 'std',
+            'pi', 'e', 'inf', 'nan', 'True', 'False', 'None',
+            'int', 'float', 'np', 'pd',
+        }
+        
+        # Collect all text to parse
+        all_text = expr
+        if selection:
+            all_text += ' ' + selection
+        if weights and isinstance(weights, str):
+            all_text += ' ' + weights
+        
+        # Extract all identifiers from expression
+        tokens = set(_re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b', all_text))
+        tokens -= _exclude
         
         # Add group_by and color if present
-        if group_by:
-            columns_needed.add(group_by)
+        if group_by and isinstance(group_by, str):
+            tokens.add(group_by)
         if color and isinstance(color, str):
-            columns_needed.add(color)
+            tokens.add(color)
         
         # Filter to only aliases (not physical columns)
         alias_names = set(self.aliases.keys())
-        return {c for c in columns_needed if c in alias_names}
+        return {c for c in tokens if c in alias_names}
 
     def _eval_alias_on_df(self, alias_name: str, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -10058,7 +10081,11 @@ class AliasDataFrame:
         already_materialized = self._get_materialized_aliases()
         
         # Parse expression to find needed aliases
-        needed_aliases = self._parse_expr_aliases(expr, kwargs.get('group_by'), kwargs.get('color'))
+        needed_aliases = self._parse_expr_aliases(
+            expr, kwargs.get('group_by'), kwargs.get('color'),
+            selection=kwargs.get('selection'),
+            weights=kwargs.get('weights')
+        )
         
         # Check if entry selection is requested
         has_entry_selection = (entry_begin is not None or 
