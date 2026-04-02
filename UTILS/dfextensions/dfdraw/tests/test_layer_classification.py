@@ -28,5 +28,12 @@ TEST_LAYERS = {
     "test_same.py::TestSameAcrossMethods::test_hist_overlay": "invariance",
     "test_same.py::TestSameAcrossMethods::test_draw_dispatch_same": "invariance",
 
+    # ── Invariance: PyArrow ≡ pandas parity ──
+    "test_pyarrow_input.py::TestResultsParity::test_hist_parity": "invariance",
+    "test_pyarrow_input.py::TestResultsParity::test_scatter_parity": "invariance",
+    "test_pyarrow_input.py::TestResultsParity::test_profile_parity": "invariance",
+    "test_pyarrow_input.py::TestResultsParity::test_hist2d_parity": "invariance",
+    "test_pyarrow_input.py::TestResultsParity::test_hexbin_parity": "invariance",
+
     # Everything else defaults to "smoke"
 }

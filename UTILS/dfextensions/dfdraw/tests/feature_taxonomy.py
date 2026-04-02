@@ -37,8 +37,8 @@ FEATURES = [
         "name": "1D histogram",
         "category": "PLOT",
         "tests": [
-            "test_histogram.py::TestHistBasic::test_hist_returns_tuple",
-            "test_histogram.py::TestHistNorm::test_hist_density",
+            "test_histogram.py::TestBasicHistogram::test_hist_returns_tuple",
+            "test_histogram.py::TestHistogramNormalization::test_hist_norm_count",
         ],
     },
     {
@@ -46,7 +46,7 @@ FEATURES = [
         "name": "Scatter plot",
         "category": "PLOT",
         "tests": [
-            "test_scatter.py::TestScatterBasic::test_scatter_returns_tuple",
+            "test_scatter.py::TestBasicScatter::test_scatter_returns_tuple",
         ],
     },
     {
@@ -54,7 +54,7 @@ FEATURES = [
         "name": "Profile plot (mean per bin)",
         "category": "PLOT",
         "tests": [
-            "test_profile.py::TestProfileBasic::test_profile_returns_tuple",
+            "test_profile.py::TestBasicProfile::test_profile_returns_tuple",
         ],
     },
     {
@@ -62,7 +62,7 @@ FEATURES = [
         "name": "2D histogram (density heatmap)",
         "category": "PLOT",
         "tests": [
-            "test_hist2d.py::TestHist2dBasic::test_hist2d_returns_tuple",
+            "test_hist2d.py::TestBasicHist2D::test_hist2d_returns_tuple",
         ],
     },
     {
@@ -70,7 +70,7 @@ FEATURES = [
         "name": "Hexbin plot (hexagonal binning)",
         "category": "PLOT",
         "tests": [
-            "test_hexbin.py::TestHexbinBasic::test_hexbin_returns_tuple",
+            "test_hexbin.py::TestBasicHexbin::test_hexbin_returns_tuple",
         ],
     },
 
@@ -379,7 +379,15 @@ FEATURES = [
         "id": "PYARROW.input",
         "name": "PyArrow Table input support",
         "category": "PYARROW",
-        "tests": [],  # tests exist but in test_pyarrow_input.py — need exact nodeids
+        "tests": [
+            "test_pyarrow_input.py::TestPyArrowInputAcceptance::test_init_pyarrow_table",
+            "test_pyarrow_input.py::TestBackendProperty::test_backend_pyarrow",
+            "test_pyarrow_input.py::TestResultsParity::test_hist_parity",
+            "test_pyarrow_input.py::TestResultsParity::test_scatter_parity",
+            "test_pyarrow_input.py::TestResultsParity::test_profile_parity",
+            "test_pyarrow_input.py::TestResultsParity::test_hist2d_parity",
+            "test_pyarrow_input.py::TestResultsParity::test_hexbin_parity",
+        ],
     },
 
     # ── Faceting (Phase 6.4) ──
