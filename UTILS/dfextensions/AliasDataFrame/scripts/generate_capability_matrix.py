@@ -1,327 +1,187 @@
 #!/usr/bin/env python3
 """
-Capability Matrix Generator — AliasDataFrame
+Capability Matrix Generator v2 — AliasDataFrame (taxonomy-based)
 
-Auto-generates CAPABILITY_MATRIX.md from pytest JSON reports.
-Uses @pytest.mark.invariance markers (set on test classes) to determine
-two-tier verification status: Verified vs Smoke-only.
+Generates CAPABILITY_MATRIX.md from:
+  1. pytest JSON report (.pytest_report.json)
+  2. tests/feature_taxonomy.py (feature → test pattern mapping)
+  3. @pytest.mark.invariance markers (from pytest keywords)
 
-Usage:
-  python scripts/generate_capability_matrix.py [--test-results path.json]
-  python scripts/generate_capability_matrix.py --json
+Phase 13.11.B — 41 approved features.
 """
 
-import sys
-import os
-import json
-import re
-import argparse
+import sys, os, json, argparse
 from datetime import datetime
 from collections import Counter, defaultdict
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
+sys.path.insert(0, os.path.join(PROJECT_DIR, 'tests'))
 
-FILE_MODULE_MAP = {
-    'test_alias_dataframe': 'Core',
-    'test_constructor': 'Core',
-    'test_batch_materialization': 'Core',
-    'test_proxy_pattern': 'Core',
-    'test_cycle_detection': 'Core',
-    'test_self_referential': 'Core',
-    'test_branch_detection': 'Core',
-    'test_dependency_tree': 'Core',
-    'test_fill_handling': 'Core',
-    'test_clean_temporary': 'Core',
-    'test_lazy': 'Lazy Loading',
-    'test_chain': 'Lazy Loading',
-    'test_invariance_load': 'Lazy Loading',
-    'test_invariance_smoke': 'Invariance',
-    'test_invariance_subframe': 'Subframes',
-    'test_invariance_backend': 'Backend',
-    'test_invariance_compression': 'Compression',
-    'test_draw': 'Drawing',
-    'test_register_evaluator': 'Registered Functions',
-    'test_polynomial': 'Registered Functions',
-    'test_register_fit': 'Fit Registration',
-    'test_schema': 'Schema',
-    'test_data_schema': 'Schema',
-    'test_validation': 'Schema',
-    'test_alias_data_frame_schema': 'Schema',
-    'test_alias_subframe': 'Subframes',
-    'test_subframe_alias': 'Subframes',
-    'test_join': 'Subframes',
-    'test_materialize_subframe': 'Subframes',
-    'test_composite_keys': 'Subframes',
-    'test_rdf': 'RDataFrame',
-    'test_AliasDataFrameRDF': 'RDataFrame',
-    'test_ttree': 'RDataFrame',
-    'test_compression': 'Compression',
-    'test_numba': 'Backend',
-    'test_arrow': 'Backend',
-    'test_profiling': 'Core',
-}
-
-CLASS_FEATURE_MAP = {
-    'TestRegisterEvaluatorBasic': 'register_evaluator — basic',
-    'TestRegisterEvaluatorCollision': 'register_evaluator — collision/overwrite',
-    'TestRegisterEvaluatorValidation': 'register_evaluator — validation',
-    'TestRegisterEvaluatorMultiPredictor': 'register_evaluator — multi-predictor',
-    'TestRegisterEvaluatorComposition': 'register_evaluator — composition',
-    'TestRegisterEvaluatorInvariance': 'register_evaluator — invariance',
-    'TestRegisterEvaluatorEdgeCases': 'register_evaluator — edge cases',
-    'TestBasisExpressions': 'PolynomialSpec — basis expressions',
-    'TestSchemaRoundtrip': 'PolynomialSpec — schema roundtrip',
-    'TestRootExpression': 'PolynomialSpec — ROOT expression',
-    'TestRegisterFunction': 'register_function',
-    'TestRegisterPolynomial': 'register_polynomial_from_subframe',
-    'TestInvariancePolynomial': 'PolynomialSpec — invariance',
-    'TestDrawSubframeResolution': 'draw() subframe resolution',
-    'TestDrawBatchSubframeResolution': 'draw_batch() subframe resolution',
-    'TestDrawFiguresSubframeResolution': 'draw_figures() subframe resolution',
-    'TestDrawSubframeEdgeCases': 'draw() subframe edge cases',
-    'TestCoreInvariants': 'Core data invariants',
-    'TestSubframeJoinCorrectness': 'Subframe join correctness',
-    'TestChainSubframeIntegration': 'Chain + subframe integration',
-    'TestDtypePreservation': 'Dtype preservation',
-    'TestErrorScenarios': 'Error scenarios',
-    'TestDrawInvariance': 'Draw vs materialize invariance',
-    'TestInvarianceSmoke': 'Invariance smoke (I0)',
-    'TestInvarianceLoadMode': 'Load mode invariance (I1)',
-    'TestInvarianceBackend': 'Backend invariance (I2)',
-    'TestInvarianceSubframe': 'Subframe join invariance (I3)',
-    'TestInvarianceCompression': 'Compression invariance (I4)',
-}
-
-
-def classify_test(node_id, markers=None):
-    parts = node_id.split('::')
-    # Extract just the filename — handle full paths like
-    # dfextensions/AliasDataFrame/tests/test_foo.py
-    file_path = parts[0]
-    file_basename = os.path.basename(file_path).replace('.py', '')
-    file_part = file_basename
-    class_name = parts[1] if len(parts) > 1 else None
-    method_name = parts[-1] if len(parts) > 1 else parts[0]
-
-    module = 'Other'
-    for prefix, mod in FILE_MODULE_MAP.items():
-        if file_part.startswith(prefix):
-            module = mod
-            break
-
-    feature = None
-    if class_name and class_name in CLASS_FEATURE_MAP:
-        feature = CLASS_FEATURE_MAP[class_name]
-    elif class_name:
-        feature = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', class_name.replace('Test', '')).strip()
-    else:
-        feature = file_part.replace('test_', '').replace('_', ' ').title()
-
-    markers = markers or set()
-    if 'invariance' in markers:
-        layer = 'invariance'
-    elif 'integration' in markers:
-        layer = 'integration'
-    else:
-        layer = 'smoke'
-
-    return {
-        'module': module, 'feature': feature, 'layer': layer,
-        'file': file_part, 'class': class_name, 'method': method_name,
-    }
-
-
-def generate_matrix(test_results, test_markers=None):
-    test_markers = test_markers or {}
-    features = defaultdict(lambda: {
-        'module': 'Other', 'name': '', 'tests': [],
-        'passed': 0, 'failed': 0, 'skipped': 0, 'has_invariance': False,
-    })
-
-    for node_id, passed in test_results.items():
-        markers = test_markers.get(node_id, set())
-        info = classify_test(node_id, markers)
-        feature_key = f"{info['module']}::{info['feature']}"
-        feat = features[feature_key]
-        feat['module'] = info['module']
-        feat['name'] = info['feature']
-        feat['tests'].append({'node_id': node_id, 'passed': passed, 'layer': info['layer']})
-
-        if passed is True: feat['passed'] += 1
-        elif passed is False: feat['failed'] += 1
-        else: feat['skipped'] += 1
-        if info['layer'] in ('invariance', 'integration'):
-            feat['has_invariance'] = True
-
-    for key, feat in features.items():
-        if feat['failed'] > 0:
-            feat['status'], feat['status_label'] = '🧨', 'Broken'
-        elif feat['passed'] == 0:
-            feat['status'], feat['status_label'] = '📋', 'Planned'
-        elif feat['has_invariance']:
-            feat['status'], feat['status_label'] = '✅', 'Verified'
-        else:
-            feat['status'], feat['status_label'] = '☑️', 'Smoke-only'
-
-    return dict(features)
-
-
-def format_markdown(matrix, phase="13.11.ADF"):
-    lines = []
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-    lines.append("# Capability Matrix — AliasDataFrame")
-    lines.append("")
-    lines.append(f"**Generated:** {now}")
-    lines.append(f"**Phase:** {phase}")
-    lines.append(f"**Generator:** `scripts/generate_capability_matrix.py`")
-    lines.append(f"**Verification:** `@pytest.mark.invariance` markers on test classes")
-    lines.append("")
-
-    statuses = Counter(f['status_label'] for f in matrix.values())
-    total = len(matrix)
-    total_tests = sum(f['passed'] + f['failed'] + f['skipped'] for f in matrix.values())
-    inv_tests = sum(sum(1 for t in f['tests'] if t['layer'] == 'invariance') for f in matrix.values())
-
-    lines.append("## Summary")
-    lines.append("")
-    lines.append("| Status | Count | % |")
-    lines.append("|--------|------:|--:|")
-    for label, emoji in [("Verified", "✅"), ("Smoke-only", "☑️"), ("Broken", "🧨"), ("Planned", "📋")]:
-        count = statuses.get(label, 0)
-        pct = 100 * count / total if total > 0 else 0
-        lines.append(f"| {emoji} {label} | {count} | {pct:.0f}% |")
-    lines.append(f"| **Total features** | **{total}** | |")
-    lines.append(f"| **Total tests** | **{total_tests}** | |")
-    lines.append(f"| **Invariance tests** | **{inv_tests}** | |")
-    lines.append("")
-    lines.append("**Status key:**")
-    lines.append("- ✅ Verified — has `@pytest.mark.invariance` tests")
-    lines.append("- ☑️ Smoke-only — functional tests pass, no invariance verification")
-    lines.append("- 🧨 Broken — at least one test failing")
-    lines.append("- 📋 Planned — no tests yet")
-    lines.append("")
-
-    modules = defaultdict(list)
-    for key, feat in sorted(matrix.items()):
-        modules[feat['module']].append((key, feat))
-
-    for mod in sorted(modules.keys()):
-        features = modules[mod]
-        lines.append(f"## {mod}")
-        lines.append("")
-        lines.append("| Status | Feature | Passed | Failed | Invariance |")
-        lines.append("|--------|---------|-------:|-------:|:----------:|")
-        for key, feat in sorted(features, key=lambda x: x[1]['name']):
-            n_inv = sum(1 for t in feat['tests'] if t['layer'] == 'invariance')
-            inv = f"{n_inv}" if n_inv > 0 else ""
-            lines.append(f"| {feat['status']} | {feat['name']} | {feat['passed']} | {feat['failed']} | {inv} |")
-        lines.append("")
-
-    broken = [(k, f) for k, f in matrix.items() if f['status_label'] == 'Broken']
-    if broken:
-        lines.append("## 🧨 Broken Features — Details")
-        lines.append("")
-        for key, feat in broken:
-            lines.append(f"### {feat['name']}")
-            lines.append("")
-            for t in feat['tests']:
-                if t['passed'] is False:
-                    lines.append(f"- ❌ `{t['node_id']}`")
-            lines.append("")
-
-    lines.append("---")
-    lines.append("")
-    lines.append("*Auto-generated from pytest results. ✅ = @pytest.mark.invariance test exists. ☑️ = smoke tests only.*")
-    return "\n".join(lines)
-
-
-def format_json(matrix, phase="13.11.ADF"):
-    output = {"generated": datetime.utcnow().isoformat(), "phase": phase, "features": {}, "summary": {}}
-    statuses = Counter()
-    for key, feat in matrix.items():
-        statuses[feat['status_label']] += 1
-        n_inv = sum(1 for t in feat['tests'] if t['layer'] == 'invariance')
-        output["features"][key] = {
-            "name": feat['name'], "module": feat['module'], "status": feat['status'],
-            "status_label": feat['status_label'], "passed": feat['passed'],
-            "failed": feat['failed'], "has_invariance": feat['has_invariance'], "invariance_count": n_inv,
-        }
-    output["summary"] = dict(statuses)
-    output["summary"]["total"] = len(matrix)
-    return json.dumps(output, indent=2)
+try:
+    from feature_taxonomy import FEATURES
+except ImportError:
+    print("ERROR: Cannot import feature_taxonomy. Place feature_taxonomy.py in tests/")
+    sys.exit(1)
 
 
 def load_pytest_report(path):
     with open(path) as f:
         report = json.load(f)
-    results = {}
-    markers = {}
+    results, markers = {}, {}
     for test in report.get("tests", []):
         node_id = test.get("nodeid", "")
-        outcome = test.get("outcome", "")
-        results[node_id] = True if outcome == "passed" else (False if outcome == "failed" else None)
-        test_markers = set()
-        for kw in test.get("keywords", []):
-            if kw in ("invariance", "smoke", "slow", "integration"):
-                test_markers.add(kw)
-        markers[node_id] = test_markers
+        if '/' in node_id:
+            if '::' in node_id:
+                file_part, rest = node_id.split('::', 1)
+                node_id = f"{os.path.basename(file_part)}::{rest}"
+            else:
+                node_id = os.path.basename(node_id)
+        results[node_id] = test.get("outcome", "unknown")
+        markers[node_id] = {kw for kw in test.get("keywords", [])
+                            if kw in ("invariance", "smoke", "slow", "integration")}
     return results, markers
 
 
-def load_from_multiple_reports(paths):
-    merged_results, merged_markers = {}, {}
-    for path in paths:
-        if os.path.exists(path):
-            r, m = load_pytest_report(path)
-            merged_results.update(r)
-            merged_markers.update(m)
-    return merged_results, merged_markers
+def match_tests(patterns, all_ids):
+    matched = set()
+    for pat in patterns:
+        for nid in all_ids:
+            if pat.endswith('.py'):
+                if nid.startswith(pat + '::') or nid == pat:
+                    matched.add(nid)
+            elif '::' in pat:
+                if nid.startswith(pat + '::') or nid == pat:
+                    matched.add(nid)
+    return matched
+
+
+def feature_status(feature, results, markers):
+    matched = match_tests(feature.get("test_patterns", []), results.keys())
+    if not matched and not feature.get("test_patterns"):
+        return '📋', 'Planned', 0, 0, 0, matched
+    n_pass = n_fail = n_inv = 0
+    for t in matched:
+        out = results.get(t, 'missing')
+        if out == 'passed':
+            n_pass += 1
+        elif out == 'failed':
+            n_fail += 1
+        if 'invariance' in markers.get(t, set()):
+            n_inv += 1
+    if not matched:
+        return '📋', 'Planned', 0, 0, 0, matched
+    if n_fail > 0:
+        return '🧨', 'Broken', n_pass, n_fail, n_inv, matched
+    if n_pass == 0:
+        return '📋', 'Planned', 0, 0, 0, matched
+    if n_inv > 0:
+        return '✅', 'Verified', n_pass, n_fail, n_inv, matched
+    return '☑️', 'Smoke-only', n_pass, n_fail, 0, matched
+
+
+def generate_matrix(results, markers, phase="13.11.B"):
+    lines = []
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    lines += [
+        "# Capability Matrix — AliasDataFrame", "",
+        f"**Generated:** {now}", f"**Phase:** {phase}",
+        f"**Taxonomy:** {len(FEATURES)} features (PHASE_13_11_B approved)",
+        f"**Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)", "",
+    ]
+    data = []
+    for f in FEATURES:
+        icon, status, np_, nf, ni, matched = feature_status(f, results, markers)
+        data.append(dict(feature=f, icon=icon, status=status,
+                         n_pass=np_, n_fail=nf, n_inv=ni, n_tests=len(matched)))
+    counts = Counter(d['status'] for d in data)
+    total = len(data)
+    lines += ["## Summary", "", "| Status | Count | % |", "|--------|------:|--:|"]
+    for label, emoji in [("Verified","✅"),("Smoke-only","☑️"),("Broken","🧨"),("Planned","📋")]:
+        c = counts.get(label, 0)
+        lines.append(f"| {emoji} {label} | {c} | {100*c//total if total else 0}% |")
+    lines += [
+        f"| **Total features** | **{total}** | |",
+        f"| **Matched tests** | **{sum(d['n_tests'] for d in data)}** | |",
+        f"| **Invariance tests** | **{sum(d['n_inv'] for d in data)}** | |", "",
+    ]
+    unmatched = sorted(set(results.keys()) - set().union(
+        *(match_tests(f.get("test_patterns", []), results.keys()) for f in FEATURES)))
+    if unmatched:
+        lines += [f"**Unmatched tests:** {len(unmatched)} (not mapped to any feature)", ""]
+
+    cats = defaultdict(list)
+    for d in data:
+        cats[d['feature']['category']].append(d)
+    for cat in dict.fromkeys(f['category'] for f in FEATURES):
+        if cat not in cats:
+            continue
+        lines += [f"## {cat}", "", "| Status | Feature | Tests | Pass | Fail | Inv |",
+                  "|--------|---------|------:|-----:|-----:|:---:|"]
+        for d in cats[cat]:
+            iv = str(d['n_inv']) if d['n_inv'] > 0 else ""
+            lines.append(f"| {d['icon']} | **{d['feature']['id']}** — {d['feature']['name']} "
+                         f"| {d['n_tests']} | {d['n_pass']} | {d['n_fail']} | {iv} |")
+        lines.append("")
+
+    broken = [d for d in data if d['status'] == 'Broken']
+    if broken:
+        lines += ["## 🧨 Broken Features — Details", ""]
+        for d in broken:
+            lines.append(f"### {d['feature']['id']}")
+            for t in match_tests(d['feature'].get("test_patterns", []), results.keys()):
+                if results.get(t) == 'failed':
+                    lines.append(f"- ❌ `{t}`")
+            lines.append("")
+
+    if unmatched:
+        lines += ["## Unmatched Tests", "",
+                   f"{len(unmatched)} tests not mapped to any feature.", ""]
+        for t in unmatched[:30]:
+            lines.append(f"- `{t}`")
+        if len(unmatched) > 30:
+            lines.append(f"- ... +{len(unmatched)-30} more")
+        lines.append("")
+
+    lines += ["---", "*Generated from pytest JSON + feature_taxonomy.py (v2 taxonomy-based).*"]
+    return "\n".join(lines)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate capability matrix for AliasDataFrame")
-    parser.add_argument("--json", action="store_true")
-    parser.add_argument("--output", "-o", default=None)
+    parser = argparse.ArgumentParser()
     parser.add_argument("--test-results", default=None)
-    parser.add_argument("--from-reports", nargs="*", default=None)
-    parser.add_argument("--phase", default="13.11.ADF")
+    parser.add_argument("--output", "-o", default=None)
+    parser.add_argument("--phase", default="13.11.B")
     args = parser.parse_args()
 
-    test_results, test_markers = {}, {}
-    if args.from_reports:
-        test_results, test_markers = load_from_multiple_reports(args.from_reports)
-    elif args.test_results and os.path.exists(args.test_results):
-        test_results, test_markers = load_pytest_report(args.test_results)
-    else:
-        default_report = os.path.join(PROJECT_DIR, ".pytest_report.json")
-        if os.path.exists(default_report):
-            test_results, test_markers = load_pytest_report(default_report)
+    report_path = args.test_results
+    if not report_path or not os.path.exists(report_path):
+        default = os.path.join(PROJECT_DIR, ".pytest_report.json")
+        if os.path.exists(default):
+            report_path = default
         else:
-            print("No test results found. Run tests first.")
+            print("No test results. Run: pytest --json-report --json-report-file=.pytest_report.json")
             sys.exit(1)
 
-    matrix = generate_matrix(test_results, test_markers)
+    results, markers = load_pytest_report(report_path)
+    print(f"Loaded {len(results)} tests from {report_path}")
+    matrix = generate_matrix(results, markers, phase=args.phase)
 
-    if args.json:
-        content = format_json(matrix, phase=args.phase)
-        default_path = os.path.join(PROJECT_DIR, "docs", "capability_matrix.json")
-    else:
-        content = format_markdown(matrix, phase=args.phase)
-        default_path = os.path.join(PROJECT_DIR, "docs", "CAPABILITY_MATRIX.md")
+    output = args.output or os.path.join(PROJECT_DIR, "docs", "CAPABILITY_MATRIX.md")
+    os.makedirs(os.path.dirname(output), exist_ok=True)
+    with open(output, "w") as f:
+        f.write(matrix)
+    print(f"Matrix: {output}")
 
-    output_path = args.output or default_path
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, "w") as f:
-        f.write(content)
-
-    print(f"Capability matrix written to: {output_path}")
-    statuses = Counter(f['status_label'] for f in matrix.values())
-    total = len(matrix)
-    inv = sum(sum(1 for t in f['tests'] if t['layer'] == 'invariance') for f in matrix.values())
-    print(f"\n  Features: {total}  |  Tests: {sum(f['passed']+f['failed']+f['skipped'] for f in matrix.values())}  |  Invariance: {inv}")
-    for label in ["Verified", "Smoke-only", "Broken", "Planned"]:
-        print(f"  {label}: {statuses.get(label, 0)}")
+    counts = Counter()
+    for feat in FEATURES:
+        _, s, *_ = feature_status(feat, results, markers)
+        counts[s] += 1
+    unmatched = sorted(set(results.keys()) - set().union(
+        *(match_tests(f.get("test_patterns", []), results.keys()) for f in FEATURES)))
+    print(f"\n  Features: {len(FEATURES)} | Matched: {len(results)-len(unmatched)} | Unmatched: {len(unmatched)}")
+    for l in ["Verified", "Smoke-only", "Broken", "Planned"]:
+        print(f"  {l}: {counts.get(l, 0)}")
 
 
 if __name__ == "__main__":
