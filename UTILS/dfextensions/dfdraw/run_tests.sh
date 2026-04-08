@@ -137,15 +137,16 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
     # Combined diff: uncommitted work (reviewer's primary interest)
     # + last committed change (for context).
     # Phase 13.16.DF fix: was 'git diff HEAD~1..HEAD' which misses uncommitted work.
+    # --relative makes paths cwd-relative (drawer.py instead of UTILS/.../drawer.py).
     {
         echo "=== Uncommitted changes (git diff HEAD) ==="
         echo "=== staged + unstaged, relative to last commit ==="
         echo ""
-        git diff HEAD -- "$PROJECT_ROOT" 2>/dev/null || echo "(no uncommitted changes)"
+        git diff --relative HEAD -- . 2>/dev/null || echo "(no uncommitted changes)"
         echo ""
         echo "=== Previous commit (git diff HEAD~1..HEAD) ==="
         echo ""
-        git diff HEAD~1..HEAD -- "$PROJECT_ROOT" 2>/dev/null || echo "(no previous commit)"
+        git diff --relative HEAD~1..HEAD -- . 2>/dev/null || echo "(no previous commit)"
     } > "$DIFF_COMMIT"
     echo "  Last commit diff: $(realpath "$DIFF_COMMIT" 2>/dev/null || echo "$DIFF_COMMIT")"
 
@@ -161,7 +162,8 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
     if [[ -n "$PHASE_TAG" ]]; then
         # Phase 13.16.DF fix: was '$PHASE_TAG..HEAD' which misses uncommitted work.
         # 'git diff $PHASE_TAG' without range includes working tree.
-        git diff "$PHASE_TAG" -- "$PROJECT_ROOT" > "$DIFF_PHASE" 2>/dev/null || true
+        # --relative scopes paths to cwd.
+        git diff --relative "$PHASE_TAG" -- . > "$DIFF_PHASE" 2>/dev/null || true
         echo "  Phase tag: $PHASE_TAG"
     else
         echo "(No PHASE_BEGIN_* tag found — searched: PHASE_BEGIN_dfdraw, PHASE_BEGIN_AliasDataFrame, PHASE_BEGIN_ADF)" > "$DIFF_PHASE"

@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-04-02 14:08 UTC
+**Generated:** 2026-04-08 17:10 UTC
 **Phase:** 13.15.DF
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -9,13 +9,13 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 5 | 14% |
-| ☑️ Smoke-only | 30 | 86% |
+| ✅ Verified | 6 | 14% |
+| ☑️ Smoke-only | 37 | 86% |
 | 🧨 Broken | 0 | 0% |
 | 📋 Planned | 0 | 0% |
-| **Total features** | **35** | |
-| **Total proof tests** | **118** | |
-| **Invariance tests** | **14** | |
+| **Total features** | **43** | |
+| **Total proof tests** | **152** | |
+| **Invariance tests** | **21** | |
 
 **Status key:**
 - ✅ Verified — has at least one invariance test (A ≡ B check)
@@ -75,6 +75,15 @@
 | ☑️ | **FACET.grid** — Facet subplot grids (group_by + facet=True) | 1 | 0 |
 | | **COMPAT** | | |
 | ☑️ | **COMPAT.profile** — Profile backward compatibility | 2 | 0 |
+| | **VECTOR** | | |
+| ☑️ | **VECTOR.parse** — Bracket syntax parsing with paren-aware split | 8 | 0 |
+| ☑️ | **VECTOR.dispatch** — Vector dispatch across profile/hist/scatter/draw | 5 | 0 |
+| ☑️ | **VECTOR.fail_fast** — Fail-fast guards on hist2d/hexbin; per-pair for stats | 3 | 0 |
+| ☑️ | **VECTOR.style_channels** — Vector + group_by style channel decomposition (P1-2) | 4 | 0 |
+| ☑️ | **VECTOR.contract** — Return contract: stats_list, ylabel, auto_title | 3 | 0 |
+| ☑️ | **VECTOR.color_cycle** — Color cycle continuity with outer same=True (GPT5 fix) | 3 | 0 |
+| ☑️ | **VECTOR.adf_integration** — Vector through AliasDataFrame entry point (P0-3) | 1 | 0 |
+| ✅ | **VECTOR.invariance** — Vector ≡ scalar same-loop semantic invariance (strong A≡B) | 7 | 0 |
 
 ---
 

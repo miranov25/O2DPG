@@ -412,4 +412,97 @@ FEATURES = [
             "test_profile_phase13_12.py::TestBackwardCompatibility::test_all_original_parameters_work",
         ],
     },
+
+    # ── Vector Expression Interface (Phase 13.16.DF) ──
+
+    {
+        "id": "VECTOR.parse",
+        "name": "Bracket syntax parsing with paren-aware split",
+        "category": "VECTOR",
+        "tests": [
+            "test_vector.py::TestParserScalar::test_parse_scalar_2d_unchanged",
+            "test_vector.py::TestParserScalar::test_parse_scalar_with_paren_y",
+            "test_vector.py::TestParserScalar::test_parse_three_colons_still_raises",
+            "test_vector.py::TestParserVectorBroadcast::test_N1",
+            "test_vector.py::TestParserVectorBroadcast::test_1N",
+            "test_vector.py::TestParserVectorBroadcast::test_NN_equal",
+            "test_vector.py::TestParserVectorBroadcast::test_NM_broadcast_mismatch_raises",
+            "test_vector.py::TestParserParenInsideBracket::test_paren_comma_inside_bracket",
+        ],
+    },
+    {
+        "id": "VECTOR.dispatch",
+        "name": "Vector dispatch across profile/hist/scatter/draw",
+        "category": "VECTOR",
+        "tests": [
+            "test_vector.py::TestVectorDispatch::test_profile_N1",
+            "test_vector.py::TestVectorDispatch::test_hist_1d_vector",
+            "test_vector.py::TestVectorDispatch::test_scatter_NN",
+            "test_vector.py::TestVectorDispatch::test_draw_dispatches_profile",
+            "test_vector.py::TestVectorDispatch::test_draw_1d_auto_dispatches_hist",
+        ],
+    },
+    {
+        "id": "VECTOR.fail_fast",
+        "name": "Fail-fast guards on hist2d/hexbin; per-pair for stats",
+        "category": "VECTOR",
+        "tests": [
+            "test_vector.py::TestVectorFailFast::test_hist2d_vector_raises",
+            "test_vector.py::TestVectorFailFast::test_hexbin_vector_raises",
+            "test_vector.py::TestVectorFailFast::test_stats_vector_returns_list",
+        ],
+    },
+    {
+        "id": "VECTOR.style_channels",
+        "name": "Vector + group_by style channel decomposition (P1-2)",
+        "category": "VECTOR",
+        "tests": [
+            "test_vector.py::TestVectorChannels::test_default_vector_only_uses_color",
+            "test_vector.py::TestVectorChannels::test_vector_style_linestyle_explicit",
+            "test_vector.py::TestVectorChannels::test_same_channel_collision_raises",
+            "test_vector.py::TestVectorChannels::test_vector_style_invalid_raises",
+        ],
+    },
+    {
+        "id": "VECTOR.contract",
+        "name": "Return contract: stats_list, ylabel, auto_title",
+        "category": "VECTOR",
+        "tests": [
+            "test_vector.py::TestVectorContract::test_stats_list_length",
+            "test_vector.py::TestVectorContract::test_ylabel_common_prefix",
+            "test_vector.py::TestVectorContract::test_auto_title_default_on_for_vector",
+        ],
+    },
+    {
+        "id": "VECTOR.color_cycle",
+        "name": "Color cycle continuity with outer same=True (GPT5 fix)",
+        "category": "VECTOR",
+        "tests": [
+            "test_vector.py::TestVectorColorCycle::test_fresh_vector_draw_resets_cycle",
+            "test_vector.py::TestVectorColorCycle::test_vector_same_chain_continues_color_cycle",
+            "test_vector.py::TestVectorColorCycle::test_outer_same_true_not_swallowed",
+        ],
+    },
+    {
+        "id": "VECTOR.adf_integration",
+        "name": "Vector through AliasDataFrame entry point (P0-3)",
+        "category": "VECTOR",
+        "tests": [
+            "test_vector.py::TestVectorThroughADF::test_vector_through_adf_draw",
+        ],
+    },
+    {
+        "id": "VECTOR.invariance",
+        "name": "Vector ≡ scalar same-loop semantic invariance (strong A≡B)",
+        "category": "VECTOR",
+        "tests": [
+            "test_vector.py::TestVectorInvariance::test_vector_N1_equivalent_to_scalar_loop",
+            "test_vector.py::TestVectorInvariance::test_vector_1N_equivalent_to_scalar_loop",
+            "test_vector.py::TestVectorInvariance::test_vector_NN_equivalent_to_scalar_loop",
+            "test_vector.py::TestVectorInvariance::test_vector_hist_equivalent_to_scalar_loop",
+            "test_vector.py::TestVectorInvariance::test_vector_through_adf_equivalent_to_direct",
+            "test_vector.py::TestVectorInvariance::test_vector_chain_continuity_equivalent_to_full_scalar_loop",
+            "test_vector.py::TestVectorInvariance::test_vector_determinism",
+        ],
+    },
 ]
