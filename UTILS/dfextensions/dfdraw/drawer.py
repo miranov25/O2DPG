@@ -73,6 +73,7 @@ class DFDraw:
         # Phase 13.13.DF: Track last axes for same=True (AD-15)
         self._last_ax = None
         self._color_cycle_index = 1  # Start at 1: first plot uses index 0 (AD-16, A2)
+        self._last_plot_expr = None  # Phase 13.13.DF fix: track first plot expression for retroactive label
     
     def _normalize_data(self, data) -> pd.DataFrame:
         """
@@ -159,30 +160,145 @@ class DFDraw:
     # Expression Parsing
     # =========================================================================
     
-    def _parse_expr(self, expr: str) -> Tuple[str, Optional[str]]:
+    def _parse_expr(self, expr: str):
         """
-        Parse TTree::Draw-style expression.
+        Parse TTree::Draw-style expression. Supports scalar and vector forms.
         
-        Parameters
-        ----------
-        expr : str
-            Expression like "y:x" or "x"
+        Scalar (backward compatible):
+            "y:x"            -> ("y", "x")
+            "x"              -> ("x", None)
+            "max(a,b):x"     -> ("max(a,b)", "x")  (comma inside parens is safe)
+        
+        Vector (Phase 13.16.DF):
+            "[y1,y2,y3]:x"       -> (["y1","y2","y3"], ["x","x","x"])    (N:1)
+            "y:[x1,x2,x3]"       -> (["y","y","y"], ["x1","x2","x3"])    (1:N)
+            "[y1,y2]:[x1,x2]"    -> (["y1","y2"], ["x1","x2"])           (N:N)
+            "[y1,y2,y3]"         -> (["y1","y2","y3"], [None,None,None]) (1D)
         
         Returns
         -------
         tuple
-            (y_expr, x_expr) or (x_expr, None) for 1D
+            Scalar: (str, str|None)
+            Vector: (list, list) — same length after broadcasting
+        
+        Raises
+        ------
+        ValueError
+            Too many top-level ':' separators, broadcast mismatch, empty vector.
         """
-        parts = expr.split(":")
-        if len(parts) == 1:
-            return (parts[0].strip(), None)
-        elif len(parts) == 2:
-            return (parts[0].strip(), parts[1].strip())
-        else:
+        # P0-1 / P1-3: preserve existing validation — reject >1 top-level colon
+        colon_count = self._count_colons_outside_brackets(expr)
+        if colon_count > 1:
             raise ValueError(
                 f"Invalid expression '{expr}'. "
                 "Expected 'y:x' or 'x' format."
             )
+        
+        if colon_count == 0:
+            # 1D form (may still be vector)
+            return self._parse_expr_1d(expr)
+        
+        # colon_count == 1: 2D form, may be scalar or vector on either side
+        y_part, x_part = self._split_top_level_colon(expr)
+        y_list = self._parse_vector_part(y_part)
+        x_list = self._parse_vector_part(x_part)
+        
+        if len(y_list) == 1 and len(x_list) == 1:
+            # Scalar path — backward compatible
+            return (y_list[0], x_list[0])
+        
+        # Vector path — broadcast
+        ny, nx = len(y_list), len(x_list)
+        if ny == 0 or nx == 0:
+            raise ValueError(f"Empty vector in expression '{expr}'")
+        if ny == nx:
+            pass  # N:N
+        elif ny == 1:
+            y_list = y_list * nx  # 1:N broadcast
+        elif nx == 1:
+            x_list = x_list * ny  # N:1 broadcast
+        else:
+            raise ValueError(
+                f"Cannot broadcast {ny} y-expressions with {nx} x-expressions "
+                f"in '{expr}'. Need N:N, N:1, or 1:N."
+            )
+        return (y_list, x_list)
+    
+    def _parse_expr_1d(self, expr: str):
+        """Parse 1D expression — scalar or vector."""
+        y_list = self._parse_vector_part(expr)
+        if len(y_list) == 0:
+            raise ValueError(f"Empty expression: '{expr}'")
+        if len(y_list) == 1:
+            return (y_list[0], None)  # scalar 1D, unchanged
+        return (y_list, [None] * len(y_list))  # vector 1D
+    
+    def _parse_vector_part(self, part: str):
+        """
+        Parse '[a,b,c]' -> ['a','b','c'] or 'scalar' -> ['scalar'].
+        
+        Only strips brackets if the ENTIRE part (after stripping whitespace)
+        is wrapped in brackets. Uses paren-aware split to respect function calls.
+        """
+        stripped = part.strip()
+        if len(stripped) >= 2 and stripped[0] == '[' and stripped[-1] == ']':
+            # Ensure brackets are balanced at the outer level
+            inner = stripped[1:-1]
+            # Paren-aware split of inner content
+            items = self._split_paren_aware(inner)
+            return [item.strip() for item in items]
+        return [stripped]
+    
+    def _split_paren_aware(self, s: str):
+        """
+        Split on top-level commas, respecting parenthesis and bracket depth.
+        
+        'max(a,b),max(c,d)' -> ['max(a,b)', 'max(c,d)']
+        'y1,y2,y3'          -> ['y1', 'y2', 'y3']
+        """
+        parts = []
+        depth = 0
+        current = []
+        for ch in s:
+            if ch in '([{':
+                depth += 1
+                current.append(ch)
+            elif ch in ')]}':
+                depth -= 1
+                current.append(ch)
+            elif ch == ',' and depth == 0:
+                parts.append(''.join(current))
+                current = []
+            else:
+                current.append(ch)
+        if current or (s.endswith(',')):
+            parts.append(''.join(current))
+        return parts
+    
+    def _count_colons_outside_brackets(self, expr: str) -> int:
+        """Count ':' characters that are NOT inside [...] or (...)."""
+        count = 0
+        depth = 0
+        for ch in expr:
+            if ch in '([':
+                depth += 1
+            elif ch in ')]':
+                depth -= 1
+            elif ch == ':' and depth == 0:
+                count += 1
+        return count
+    
+    def _split_top_level_colon(self, expr: str):
+        """Split on the single top-level ':' — assumes exactly one exists."""
+        depth = 0
+        for i, ch in enumerate(expr):
+            if ch in '([':
+                depth += 1
+            elif ch in ')]':
+                depth -= 1
+            elif ch == ':' and depth == 0:
+                return expr[:i], expr[i+1:]
+        raise ValueError(f"No top-level ':' found in '{expr}'")
     
     def _eval_column(self, expr: str) -> pd.Series:
         """
@@ -393,6 +509,196 @@ class DFDraw:
             return f"{y_expr} vs {x_expr}"
         return y_expr
     
+    # =========================================================================
+    # Vector Expression Support (Phase 13.16.DF)
+    # =========================================================================
+    
+    # Style channel cycles
+    _LINESTYLE_CYCLE = ['-', '--', '-.', ':']
+    _MARKER_CYCLE = ['o', 's', '^', 'D', 'v', '<', '>', 'p']
+    _VALID_STYLE_CHANNELS = ('color', 'linestyle', 'marker')
+    
+    def _draw_vector(self, y_list, x_list, draw_method,
+                     vector_style=None, group_style='color',
+                     group_by=None, **kwargs):
+        """
+        Draw multiple (y, x) pairs overlaid on one axes (Phase 13.16.DF).
+        
+        Parameters
+        ----------
+        y_list, x_list : list
+            Parallel lists from _parse_expr (already broadcast to same length).
+        draw_method : bound method
+            One of self.profile, self.hist, self.scatter.
+        vector_style : str, optional
+            Channel distinguishing vector curves: 'color', 'linestyle', 'marker'.
+            Context-dependent default:
+                - Without group_by: 'color' (existing same=True cycle)
+                - With group_by:    'linestyle' (color reserved for groups)
+        group_style : str, default 'color'
+            Channel distinguishing groups (when group_by is set).
+        group_by : str, optional
+            Grouping column, passed through to each iteration.
+        **kwargs
+            All other parameters passed to draw_method.
+        
+        Returns
+        -------
+        (fig, ax, stats_list)
+            stats_list is list[dict] — one entry per (y_i, x_i) pair.
+        """
+        # P0-4: extract 'same' from outer kwargs to avoid collision
+        outer_same = kwargs.pop('same', False)
+        
+        # P1-1 + GPT5 fix: only reset color cycle when NOT chaining onto existing overlay
+        if not outer_same:
+            self._reset_color_cycle()
+        # else: continue existing cycle (preserves SAME.axes_reuse contract)
+        
+        # P1-10 / architect Q4: auto_title defaults True for vector mode
+        # BUT only for methods that actually accept auto_title (profile, hist)
+        # Scatter does not have auto_title in its signature.
+        import inspect
+        try:
+            sig_params = inspect.signature(draw_method).parameters
+            supports_auto_title = 'auto_title' in sig_params
+        except (TypeError, ValueError):
+            supports_auto_title = False
+        if supports_auto_title and 'auto_title' not in kwargs:
+            kwargs['auto_title'] = True
+        # If the caller passed auto_title but the method doesn't support it,
+        # strip it to avoid matplotlib TypeError.
+        if not supports_auto_title:
+            kwargs.pop('auto_title', None)
+        
+        # Context-dependent default for vector_style
+        if vector_style is None:
+            vector_style = 'linestyle' if group_by is not None else 'color'
+        
+        # Validate channel names
+        if vector_style not in self._VALID_STYLE_CHANNELS:
+            raise ValueError(
+                f"vector_style must be one of {self._VALID_STYLE_CHANNELS}, "
+                f"got {vector_style!r}"
+            )
+        if group_style not in self._VALID_STYLE_CHANNELS:
+            raise ValueError(
+                f"group_style must be one of {self._VALID_STYLE_CHANNELS}, "
+                f"got {group_style!r}"
+            )
+        
+        # Channel collision check (only meaningful when group_by is set)
+        if group_by is not None and vector_style == group_style:
+            raise ValueError(
+                f"vector_style and group_style cannot both use {vector_style!r}. "
+                f"Choose different channels from {self._VALID_STYLE_CHANNELS}."
+            )
+        
+        stats_list = []
+        fig, ax = None, None
+        
+        for i, (y, x) in enumerate(zip(y_list, x_list)):
+            expr = f"{y}:{x}" if x is not None else y
+            iter_kwargs = dict(kwargs)
+            
+            # Apply vector style channel for this iteration
+            if vector_style == 'linestyle':
+                iter_kwargs['linestyle'] = self._LINESTYLE_CYCLE[i % len(self._LINESTYLE_CYCLE)]
+                # P1-2: suppress same=True color cycle so group_by colors are preserved
+                if group_by is not None:
+                    iter_kwargs['_suppress_color_cycle'] = True
+            elif vector_style == 'marker':
+                iter_kwargs['marker'] = self._MARKER_CYCLE[i % len(self._MARKER_CYCLE)]
+                if group_by is not None:
+                    iter_kwargs['_suppress_color_cycle'] = True
+            # vector_style == 'color': rely on existing same=True color cycle
+            
+            if group_by is not None:
+                iter_kwargs['group_by'] = group_by
+            
+            # First iteration uses outer same; subsequent always same=True
+            iter_kwargs['same'] = outer_same if i == 0 else True
+            
+            fig, ax, stats = draw_method(expr, **iter_kwargs)
+            stats_list.append(stats)
+        
+        # P1-6: secondary legend for vector + group_by
+        if group_by is not None and ax is not None and vector_style != 'color':
+            self._add_vector_legend(ax, y_list, x_list, vector_style)
+        
+        # P1-8: deterministic y-axis label for vector
+        if ax is not None:
+            self._set_vector_ylabel(ax, y_list, x_list)
+        
+        return fig, ax, stats_list
+    
+    def _add_vector_legend(self, ax, y_list, x_list, vector_style):
+        """
+        Add a secondary legend identifying vector channel meaning.
+        
+        When group_by is set, the main legend shows groups (colors).
+        This adds a small secondary legend showing which linestyle/marker
+        corresponds to which y expression. P1-6.
+        """
+        from matplotlib.lines import Line2D
+        
+        unique_pairs = []
+        seen = set()
+        for y, x in zip(y_list, x_list):
+            key = (y, x)
+            if key not in seen:
+                seen.add(key)
+                unique_pairs.append(key)
+        
+        proxies = []
+        labels = []
+        for i, (y, x) in enumerate(unique_pairs):
+            label = f"{y} vs {x}" if x is not None else str(y)
+            if vector_style == 'linestyle':
+                ls = self._LINESTYLE_CYCLE[i % len(self._LINESTYLE_CYCLE)]
+                proxies.append(Line2D([0], [0], color='black', linestyle=ls))
+            elif vector_style == 'marker':
+                mk = self._MARKER_CYCLE[i % len(self._MARKER_CYCLE)]
+                proxies.append(Line2D([0], [0], color='black', marker=mk,
+                                     linestyle='', markerfacecolor='black'))
+            else:
+                continue
+            labels.append(label)
+        
+        if not proxies:
+            return
+        
+        # Preserve existing group-legend by re-adding it as a secondary artist
+        first_legend = ax.get_legend()
+        second_legend = ax.legend(proxies, labels, loc='lower right',
+                                  title='Variable', fontsize='small',
+                                  framealpha=0.8)
+        if first_legend is not None:
+            ax.add_artist(first_legend)
+    
+    def _set_vector_ylabel(self, ax, y_list, x_list):
+        """
+        Deterministic y-axis label for vector plots. P1-8.
+        
+        Rule:
+          1. Dedupe y expressions (preserve order)
+          2. If all share a common prefix of length >= 2: use "{prefix}*"
+          3. Otherwise: bracket-list notation, truncated if >40 chars
+        """
+        import os.path
+        unique_ys = list(dict.fromkeys(y_list))  # preserve order, dedupe
+        if len(unique_ys) <= 1:
+            return  # nothing to override
+        
+        prefix = os.path.commonprefix(unique_ys)
+        if len(prefix) >= 2:
+            ax.set_ylabel(f"{prefix}*")
+        else:
+            joined = ", ".join(unique_ys)
+            if len(joined) > 40:
+                joined = ", ".join(unique_ys[:3]) + f", ... (+{len(unique_ys)-3} more)"
+            ax.set_ylabel(f"[{joined}]")
+    
     def _handle_same_post(self, ax, same, auto_title, selection, y_name,
                           x_name=None, group_by=None, weights=None):
         """
@@ -426,7 +732,22 @@ class DFDraw:
         self._last_ax = ax
         
         if not same:
+            # Store expression for retroactive labeling when same=True arrives
+            self._last_plot_expr = (y_name, x_name)
             return
+        
+        # Phase 13.13.DF fix: retroactively label first plot when first same=True arrives
+        if self._last_plot_expr is not None:
+            first_y, first_x = self._last_plot_expr
+            first_label = self._auto_label(first_y, first_x)
+            # Find unlabeled artists (matplotlib default labels start with '_' or are None)
+            # Check lines (profiles), containers (bar charts), patches (histograms), collections (scatter)
+            for artist in ax.lines + list(ax.containers) + list(ax.patches) + ax.collections:
+                label = artist.get_label()
+                if label is None or (isinstance(label, str) and label.startswith('_')):
+                    artist.set_label(first_label)
+                    break  # Only label the first unlabeled artist
+            self._last_plot_expr = None  # Only do this once
         
         # AD-18: Append to title when same=True + auto_title=True
         auto_title = resolve_auto_title(auto_title)
@@ -529,7 +850,63 @@ class DFDraw:
         # Parse expression to determine dimensionality
         y_expr, x_expr = self._parse_expr(expr)
         
-        # Auto-detect type
+        # Phase 13.16.DF: Vector expression dispatch
+        if isinstance(y_expr, list):
+            # P1-4: Auto-detect type for vectors
+            if type is None:
+                # x_expr is a list with None entries for 1D vectors
+                type = "hist" if x_expr[0] is None else "scatter"
+            
+            # Map type to bound method
+            method_map = {
+                'hist': self.hist,
+                'scatter': self.scatter,
+                'profile': self.profile,
+            }
+            if type not in method_map:
+                raise ValueError(
+                    f"Vector expressions not supported for type={type!r}. "
+                    f"Supported types: {sorted(method_map.keys())}"
+                )
+            
+            # P0-5: Build kwargs for _draw_vector, dropping 'type'
+            # (already consumed) and passing through all others.
+            vector_kwargs = dict(kwargs)
+            # Forward known named params from draw() signature
+            if selection is not None:
+                vector_kwargs.setdefault('selection', selection)
+            if color is not None:
+                vector_kwargs.setdefault('color', color)
+            if size is not None:
+                vector_kwargs.setdefault('size', size)
+            if marker is not None:
+                vector_kwargs.setdefault('marker', marker)
+            if bins is not None:
+                vector_kwargs.setdefault('bins', bins)
+            if stats is not None:
+                vector_kwargs.setdefault('stats', stats)
+            if norm is not None:
+                vector_kwargs.setdefault('norm', norm)
+            if title is not None:
+                vector_kwargs.setdefault('title', title)
+            if ax is not None:
+                vector_kwargs.setdefault('ax', ax)
+            if sample is not None:
+                vector_kwargs.setdefault('sample', sample)
+            if save is not None:
+                vector_kwargs.setdefault('save', save)
+            if same:
+                vector_kwargs.setdefault('same', same)
+            # Note: 'type', 'facet', 'group_by' deliberately not put in vector_kwargs.
+            # group_by is passed as named param to _draw_vector (see below).
+            # facet with vector is undefined.
+            
+            return self._draw_vector(
+                y_expr, x_expr, method_map[type],
+                group_by=group_by, **vector_kwargs
+            )
+        
+        # Auto-detect type (scalar path)
         if type is None:
             if x_expr is None:
                 type = "hist"
@@ -652,6 +1029,43 @@ class DFDraw:
         
         # Parse expression (take first part only for 1D)
         y_expr, x_expr = self._parse_expr(expr)
+        
+        # Phase 13.16.DF: Vector dispatch
+        if isinstance(y_expr, list):
+            # For hist, we accept both 1D vector (x is list of Nones) and 2D
+            # (x is present, but hist only uses the first part — treat as 1D per element).
+            vector_kwargs = dict(kwargs)
+            if selection is not None:
+                vector_kwargs.setdefault('selection', selection)
+            if sample is not None:
+                vector_kwargs.setdefault('sample', sample)
+            if bins is not None:
+                vector_kwargs.setdefault('bins', bins)
+            if range is not None:
+                vector_kwargs.setdefault('range', range)
+            if norm is not None:
+                vector_kwargs.setdefault('norm', norm)
+            if stats is not None:
+                vector_kwargs.setdefault('stats', stats)
+            if title is not None:
+                vector_kwargs.setdefault('title', title)
+            if xlabel is not None:
+                vector_kwargs.setdefault('xlabel', xlabel)
+            if ylabel is not None:
+                vector_kwargs.setdefault('ylabel', ylabel)
+            if ax is not None:
+                vector_kwargs.setdefault('ax', ax)
+            if save is not None:
+                vector_kwargs.setdefault('save', save)
+            if auto_title:
+                vector_kwargs.setdefault('auto_title', auto_title)
+            if same:
+                vector_kwargs.setdefault('same', same)
+            return self._draw_vector(
+                y_expr, x_expr, self.hist,
+                group_by=group_by, **vector_kwargs
+            )
+        
         col_expr = y_expr  # Use y (first part) as the variable
         
         # Phase 13.13.DF: Resolve axes for same=True
@@ -663,9 +1077,11 @@ class DFDraw:
             ax = resolved_ax
         
         # Phase 13.13.DF: Inject color and label for same=True
+        # Phase 13.16.DF: _suppress_color_cycle flag (P1-2)
+        _suppress_color_cycle = kwargs.pop('_suppress_color_cycle', False)
         save_auto_title = auto_title
         if same:
-            if 'color' not in kwargs:
+            if 'color' not in kwargs and not _suppress_color_cycle:
                 kwargs['color'] = self._get_next_color()
             if 'label' not in kwargs and group_by is None:
                 kwargs['label'] = self._auto_label(col_expr)
@@ -813,6 +1229,42 @@ class DFDraw:
         # Parse expression
         y_expr, x_expr = self._parse_expr(expr)
         
+        # Phase 13.16.DF: Vector dispatch
+        if isinstance(y_expr, list):
+            if x_expr[0] is None:
+                raise ValueError(
+                    f"Scatter plot requires 'y:x' format, got vector 1D '{expr}'"
+                )
+            vector_kwargs = dict(kwargs)
+            if selection is not None:
+                vector_kwargs.setdefault('selection', selection)
+            if sample is not None:
+                vector_kwargs.setdefault('sample', sample)
+            if color is not None:
+                vector_kwargs.setdefault('color', color)
+            if size is not None:
+                vector_kwargs.setdefault('size', size)
+            if marker is not None:
+                vector_kwargs.setdefault('marker', marker)
+            if stats is not None:
+                vector_kwargs.setdefault('stats', stats)
+            if title is not None:
+                vector_kwargs.setdefault('title', title)
+            if xlabel is not None:
+                vector_kwargs.setdefault('xlabel', xlabel)
+            if ylabel is not None:
+                vector_kwargs.setdefault('ylabel', ylabel)
+            if ax is not None:
+                vector_kwargs.setdefault('ax', ax)
+            if save is not None:
+                vector_kwargs.setdefault('save', save)
+            if same:
+                vector_kwargs.setdefault('same', same)
+            return self._draw_vector(
+                y_expr, x_expr, self.scatter,
+                group_by=group_by, **vector_kwargs
+            )
+        
         if x_expr is None:
             raise ValueError(
                 f"Scatter plot requires 'y:x' format, got '{expr}'"
@@ -827,8 +1279,10 @@ class DFDraw:
             ax = resolved_ax
         
         # Phase 13.13.DF: Inject color and label for same=True
+        # Phase 13.16.DF: _suppress_color_cycle flag (P1-2)
+        _suppress_color_cycle = kwargs.pop('_suppress_color_cycle', False)
         if same:
-            if color is None:
+            if color is None and not _suppress_color_cycle:
                 color = self._get_next_color()
             if 'label' not in kwargs and group_by is None:
                 kwargs['label'] = self._auto_label(y_expr, x_expr)
@@ -1006,6 +1460,44 @@ class DFDraw:
         # Parse expression
         y_expr, x_expr = self._parse_expr(expr)
         
+        # Phase 13.16.DF: Vector dispatch
+        if isinstance(y_expr, list):
+            # Confirm 2D — profile requires x
+            if x_expr[0] is None:
+                raise ValueError(
+                    f"Profile plot requires 'y:x' format, got vector 1D '{expr}'"
+                )
+            # Collect all current locals that are relevant for delegation.
+            vector_kwargs = dict(kwargs)
+            if selection is not None:
+                vector_kwargs.setdefault('selection', selection)
+            if bins is not None:
+                vector_kwargs.setdefault('bins', bins)
+            if stats is not None:
+                vector_kwargs.setdefault('stats', stats)
+            if title is not None:
+                vector_kwargs.setdefault('title', title)
+            if ax is not None:
+                vector_kwargs.setdefault('ax', ax)
+            if sample is not None:
+                vector_kwargs.setdefault('sample', sample)
+            if save is not None:
+                vector_kwargs.setdefault('save', save)
+            if xlabel is not None:
+                vector_kwargs.setdefault('xlabel', xlabel)
+            if ylabel is not None:
+                vector_kwargs.setdefault('ylabel', ylabel)
+            if weights is not None:
+                vector_kwargs.setdefault('weights', weights)
+            if same:
+                vector_kwargs.setdefault('same', same)
+            if auto_title:
+                vector_kwargs.setdefault('auto_title', auto_title)
+            return self._draw_vector(
+                y_expr, x_expr, self.profile,
+                group_by=group_by, **vector_kwargs
+            )
+        
         if x_expr is None:
             raise ValueError(
                 f"Profile plot requires 'y:x' format, got '{expr}'"
@@ -1020,9 +1512,11 @@ class DFDraw:
             ax = resolved_ax
         
         # Phase 13.13.DF: Inject color and label for same=True
+        # Phase 13.16.DF: _suppress_color_cycle flag (P1-2)
+        _suppress_color_cycle = kwargs.pop('_suppress_color_cycle', False)
         save_auto_title = auto_title
         if same:
-            if 'color' not in kwargs:
+            if 'color' not in kwargs and not _suppress_color_cycle:
                 kwargs['color'] = self._get_next_color()
             if 'label' not in kwargs and group_by is None:
                 kwargs['label'] = self._auto_label(y_expr, x_expr)
@@ -1189,6 +1683,14 @@ class DFDraw:
         
         # Parse expression
         y_expr, x_expr = self._parse_expr(expr)
+        
+        # Phase 13.16.DF: vector not supported in hist2d (2D density is single-surface)
+        if isinstance(y_expr, list):
+            raise ValueError(
+                "Vector expressions are not supported by hist2d(). "
+                "2D density plots are fundamentally single-surface. "
+                "Use profile(), hist(), or scatter() for vector overlays."
+            )
         
         if x_expr is None:
             raise ValueError(
@@ -1358,6 +1860,14 @@ class DFDraw:
         # Parse expression
         y_expr, x_expr = self._parse_expr(expr)
         
+        # Phase 13.16.DF: vector not supported in hexbin (2D density is single-surface)
+        if isinstance(y_expr, list):
+            raise ValueError(
+                "Vector expressions are not supported by hexbin(). "
+                "2D density plots are fundamentally single-surface. "
+                "Use profile(), hist(), or scatter() for vector overlays."
+            )
+        
         if x_expr is None:
             raise ValueError(
                 f"hexbin requires 'y:x' format, got '{expr}'"
@@ -1457,6 +1967,13 @@ class DFDraw:
         
         df = self._apply_selection(self.df, selection)
         y_expr, x_expr = self._parse_expr(expr)
+        
+        # Phase 13.16.DF: vector support - per-pair stats
+        if isinstance(y_expr, list):
+            stats_list = []
+            for y, x in zip(y_expr, x_expr):
+                stats_list.append(compute_stats(df, y, x, group_by=group_by))
+            return stats_list
         
         return compute_stats(df, y_expr, x_expr, group_by=group_by)
     

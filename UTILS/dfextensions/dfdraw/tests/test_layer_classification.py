@@ -35,5 +35,15 @@ TEST_LAYERS = {
     "test_pyarrow_input.py::TestResultsParity::test_hist2d_parity": "invariance",
     "test_pyarrow_input.py::TestResultsParity::test_hexbin_parity": "invariance",
 
+    # ── Invariance: vector path ≡ scalar same-loop (Phase 13.16.DF) ──
+    # True A≡B comparisons: stats + line count + colors + xydata must match.
+    "test_vector.py::TestVectorInvariance::test_vector_N1_equivalent_to_scalar_loop": "invariance",
+    "test_vector.py::TestVectorInvariance::test_vector_1N_equivalent_to_scalar_loop": "invariance",
+    "test_vector.py::TestVectorInvariance::test_vector_NN_equivalent_to_scalar_loop": "invariance",
+    "test_vector.py::TestVectorInvariance::test_vector_hist_equivalent_to_scalar_loop": "invariance",
+    "test_vector.py::TestVectorInvariance::test_vector_through_adf_equivalent_to_direct": "invariance",
+    "test_vector.py::TestVectorInvariance::test_vector_chain_continuity_equivalent_to_full_scalar_loop": "invariance",
+    "test_vector.py::TestVectorInvariance::test_vector_determinism": "invariance",
+
     # Everything else defaults to "smoke"
 }
