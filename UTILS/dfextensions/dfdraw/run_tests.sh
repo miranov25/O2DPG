@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# run_tests.sh — dfdraw Test Runner
+# run_tests.sh — AliasDataFrame Test Runner
 # =============================================================================
 #
 # Usage:
@@ -10,7 +10,7 @@
 #   ./run_tests.sh --help       # Show help
 #
 # Environment:
-#   PYTEST_WORKERS=N    Parallel workers (default: auto)
+#   PYTEST_WORKERS=N    Parallel workers (default: 12)
 #
 # Output (in test_logs/):
 #   SUMMARY_<ts>.txt               Test summary
@@ -19,15 +19,22 @@
 #   CAPABILITY_MATRIX_<ts>.md      Auto-generated matrix snapshot
 #   diff_last_commit_<ts>.txt      Git diff since last commit
 #   diff_to_phase_<ts>.txt         Git diff to PHASE_BEGIN tag
-#   git_status_<ts>.txt            Git status snapshot
 #   reviewer_<ts>.zip              Review package
+
+# Don't exit on test failures
+# set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# dfdraw root — run_tests.sh lives at dfdraw/
-PROJECT_ROOT="$SCRIPT_DIR"
-PROJECT_NAME="dfdraw"
-SUBPROJECT="dfdraw"
+# Navigate to AliasDataFrame root (parent of tests/)
+if [[ "$(basename "$SCRIPT_DIR")" == "tests" ]]; then
+    PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+elif [[ -d "$SCRIPT_DIR/tests" ]]; then
+    PROJECT_ROOT="$SCRIPT_DIR"
+else
+    echo "ERROR: Cannot determine project structure"
+    exit 1
+fi
 
 cd "$PROJECT_ROOT"
 echo "Project root: $PROJECT_ROOT"
@@ -38,8 +45,8 @@ echo "Project root: $PROJECT_ROOT"
 
 show_help() {
     cat << 'EOF'
-dfdraw Test Runner
-===================
+AliasDataFrame Test Runner
+===========================
 
 Usage:
   ./run_tests.sh [OPTIONS]
@@ -51,13 +58,12 @@ Options:
   --verbose    Verbose pytest output
 
 Environment:
-  PYTEST_WORKERS=N    Parallel workers (default: auto)
+  PYTEST_WORKERS=N    Parallel workers (default: 12)
 
 Output:
   test_logs/SUMMARY_<ts>.txt            Test summary
   test_logs/CAPABILITY_MATRIX_<ts>.md   Feature matrix
   test_logs/diff_to_phase_<ts>.txt      Phase diff
-  test_logs/git_status_<ts>.txt         Git status
   test_logs/reviewer_<ts>.zip           Review package
 
 EOF
@@ -88,8 +94,7 @@ TS=$(date +"%Y%m%d_%H%M%S")
 LOG_DIR="test_logs"
 mkdir -p "$LOG_DIR"
 
-# dfdraw tests are fast — use auto or specified workers
-PYTEST_WORKERS=${PYTEST_WORKERS:-auto}
+PYTEST_WORKERS=${PYTEST_WORKERS:-12}
 
 # Colors
 if [[ -t 1 ]] && command -v tput &>/dev/null; then
@@ -108,20 +113,20 @@ MATRIX_MD="$LOG_DIR/CAPABILITY_MATRIX_${TS}.md"
 SUMMARY_FILE="$LOG_DIR/SUMMARY_${TS}.txt"
 DIFF_COMMIT="$LOG_DIR/diff_last_commit_${TS}.txt"
 DIFF_PHASE="$LOG_DIR/diff_to_phase_${TS}.txt"
-GIT_STATUS="$LOG_DIR/git_status_${TS}.txt"
 
 echo "========================================"
-echo "dfdraw Test Runner"
+echo "AliasDataFrame Test Runner"
 echo "Mode: $MODE"
 echo "Timestamp: $TS"
+echo "PYTEST_WORKERS: $PYTEST_WORKERS"
 echo "========================================"
 echo ""
 
 # =============================================================================
-# Git diffs + status
+# Git diffs
 # =============================================================================
 
-echo "--- Capturing git info ---"
+echo "--- Capturing git diffs ---"
 GIT_HASH="unknown"
 GIT_BRANCH="unknown"
 
@@ -129,14 +134,24 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
     GIT_HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
     GIT_BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
 
-    # Last commit diff (scoped to dfdraw)
-    git diff HEAD~1..HEAD -- "$PROJECT_ROOT" > "$DIFF_COMMIT" 2>/dev/null || \
-        echo "(could not generate)" > "$DIFF_COMMIT"
-    echo "  Last commit diff: $DIFF_COMMIT"
+    # Combined diff: uncommitted work (reviewer's primary interest)
+    # + last committed change (for context).
+    # Phase 13.16.DF fix: was 'git diff HEAD~1..HEAD' which misses uncommitted work.
+    {
+        echo "=== Uncommitted changes (git diff HEAD) ==="
+        echo "=== staged + unstaged, relative to last commit ==="
+        echo ""
+        git diff HEAD -- "$PROJECT_ROOT" 2>/dev/null || echo "(no uncommitted changes)"
+        echo ""
+        echo "=== Previous commit (git diff HEAD~1..HEAD) ==="
+        echo ""
+        git diff HEAD~1..HEAD -- "$PROJECT_ROOT" 2>/dev/null || echo "(no previous commit)"
+    } > "$DIFF_COMMIT"
+    echo "  Last commit diff: $(realpath "$DIFF_COMMIT" 2>/dev/null || echo "$DIFF_COMMIT")"
 
-    # Phase diff
+    # Phase diff — dfdraw tag names first, fall back to ADF for shared scripts
     PHASE_TAG=""
-    for tag in PHASE_BEGIN_dfdraw; do
+    for tag in PHASE_BEGIN_dfdraw PHASE_BEGIN_AliasDataFrame PHASE_BEGIN_ADF; do
         if git rev-parse --verify "$tag" &>/dev/null; then
             PHASE_TAG="$tag"
             break
@@ -144,20 +159,17 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
     done
 
     if [[ -n "$PHASE_TAG" ]]; then
-        git diff "$PHASE_TAG"..HEAD -- "$PROJECT_ROOT" > "$DIFF_PHASE" 2>/dev/null || true
+        # Phase 13.16.DF fix: was '$PHASE_TAG..HEAD' which misses uncommitted work.
+        # 'git diff $PHASE_TAG' without range includes working tree.
+        git diff "$PHASE_TAG" -- "$PROJECT_ROOT" > "$DIFF_PHASE" 2>/dev/null || true
         echo "  Phase tag: $PHASE_TAG"
     else
-        echo "(No PHASE_BEGIN_dfdraw tag found)" > "$DIFF_PHASE"
-        echo "  ⚠️  No phase tag — create with: source scripts/phase_tag.sh && phase_begin 13_15_DF"
+        echo "(No PHASE_BEGIN_* tag found — searched: PHASE_BEGIN_dfdraw, PHASE_BEGIN_AliasDataFrame, PHASE_BEGIN_ADF)" > "$DIFF_PHASE"
+        echo "  ⚠️  No phase tag — create with: source scripts/phase_tag.sh && phase_begin <id>"
     fi
-
-    # Git status snapshot
-    git status --short -- "$PROJECT_ROOT" > "$GIT_STATUS" 2>/dev/null
-    echo "  Git status: $GIT_STATUS"
 else
     echo "(not a git repository)" > "$DIFF_COMMIT"
     echo "(not a git repository)" > "$DIFF_PHASE"
-    echo "(not a git repository)" > "$GIT_STATUS"
 fi
 echo ""
 
@@ -167,7 +179,6 @@ echo ""
 
 TEST_EXIT=0
 PASSED=0; FAILED=0; ERRORS=0; SKIPPED=0
-DURATION_STR="N/A"
 
 if [[ "$MODE" != "matrix" ]]; then
     echo "--- Running tests ---"
@@ -175,10 +186,10 @@ if [[ "$MODE" != "matrix" ]]; then
 
     START_TIME=$(date +%s)
 
-    # dfdraw single-phase test run (no ROOT serial phase needed)
     python3 -m pytest tests/ \
         $PYTEST_VERBOSITY \
         --tb=short \
+        -n "$PYTEST_WORKERS" \
         --json-report --json-report-file="$JSON_REPORT" \
         2>&1 | tee "$LOG_FILE"
     TEST_EXIT=${PIPESTATUS[0]}
@@ -211,7 +222,8 @@ if [[ "$MODE" != "quick" ]]; then
 
     MATRIX_SCRIPT=""
     for candidate in \
-        "scripts/generate_capability_matrix.py"; do
+        "scripts/generate_capability_matrix.py" \
+        "tests/scripts/generate_capability_matrix.py"; do
         [[ -f "$candidate" ]] && MATRIX_SCRIPT="$candidate" && break
     done
 
@@ -219,7 +231,7 @@ if [[ "$MODE" != "quick" ]]; then
         MATRIX_ARGS=""
         [[ -f "$JSON_REPORT" ]] && MATRIX_ARGS="--test-results $JSON_REPORT"
 
-        python3 "$MATRIX_SCRIPT" $MATRIX_ARGS --phase "13.15.DF" 2>&1 || \
+        python3 "$MATRIX_SCRIPT" $MATRIX_ARGS 2>&1 || \
             echo "⚠️  Capability matrix generation had errors"
 
         # Copy timestamped snapshot
@@ -237,7 +249,7 @@ fi
 
 {
     echo "========================================"
-    echo "SUMMARY — dfdraw Test Run"
+    echo "SUMMARY — AliasDataFrame Test Run"
     echo "========================================"
     echo ""
     echo "Timestamp:    $TS"
@@ -247,7 +259,8 @@ fi
     echo "Git commit:   $GIT_HASH"
     echo "Python:       $(python3 --version 2>&1)"
     echo "Platform:     $(uname -s) $(uname -m)"
-    echo "Duration:     ${DURATION_STR}"
+    echo "Workers:      $PYTEST_WORKERS"
+    echo "Duration:     ${DURATION_STR:-N/A}"
     echo ""
     echo "── Test Results ──"
     echo "  Passed:   $PASSED"
@@ -267,13 +280,12 @@ fi
         echo ""
     fi
     echo "── Files ──"
-    echo "  Log:      $LOG_FILE"
-    echo "  Failures: $FAIL_FILE"
-    echo "  Matrix:   $MATRIX_MD"
-    echo "  Summary:  $SUMMARY_FILE"
-    echo "  Diff:     $DIFF_COMMIT"
-    echo "  Phase:    $DIFF_PHASE"
-    echo "  Status:   $GIT_STATUS"
+    echo "  Log:      $(realpath "$LOG_FILE" 2>/dev/null || echo "$LOG_FILE")"
+    echo "  Failures: $(realpath "$FAIL_FILE" 2>/dev/null || echo "$FAIL_FILE")"
+    echo "  Matrix:   $(realpath "$MATRIX_MD" 2>/dev/null || echo "$MATRIX_MD")"
+    echo "  Summary:  $(realpath "$SUMMARY_FILE" 2>/dev/null || echo "$SUMMARY_FILE")"
+    echo "  Diff:     $(realpath "$DIFF_COMMIT" 2>/dev/null || echo "$DIFF_COMMIT")"
+    echo "  Phase:    $(realpath "$DIFF_PHASE" 2>/dev/null || echo "$DIFF_PHASE")"
     echo "========================================"
 } | tee "$SUMMARY_FILE"
 
@@ -295,7 +307,6 @@ REVIEWER_ZIP="$LOG_DIR/reviewer_${TS}.zip"
         "$MATRIX_MD" \
         "$DIFF_COMMIT" \
         "$DIFF_PHASE" \
-        "$GIT_STATUS" \
         "docs/CAPABILITY_MATRIX.md"
     do
         [[ -f "$f" ]] && ZIP_FILES="$ZIP_FILES $f"
