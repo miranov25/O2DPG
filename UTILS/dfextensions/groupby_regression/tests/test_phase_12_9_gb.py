@@ -281,9 +281,20 @@ class TestBackendSelection:
         """parallel_backend='auto' chooses numba when n_jobs > 1."""
         assert _select_parallel_backend('auto', n_jobs=4) == 'numba'
     
+    @pytest.mark.skipif(not _NUMBA_AVAILABLE, reason="Numba not available")
     def test_select_backend_auto_sequential(self):
-        """parallel_backend='auto' chooses sequential when n_jobs=1."""
-        assert _select_parallel_backend('auto', n_jobs=1) == 'sequential'
+        """parallel_backend='auto' with n_jobs=1 chooses numba when available.
+
+        Phase 12.11 (Dec 26, 2025) changed auto-dispatch to prefer numba
+        whenever Numba is installed, regardless of n_jobs. This test was not
+        updated at that time and silently failed from Phase 12.11 through
+        Phase 13.16.GB. Updated in Phase 13.16.GB-FIX2.
+
+        See `_select_parallel_backend` in groupby_regression_optimized.py
+        (line ~2944, "# Phase 12.11 fix" comment) for the production behavior
+        this test asserts.
+        """
+        assert _select_parallel_backend('auto', n_jobs=1) == 'numba'
     
     def test_select_backend_auto_no_numba(self, monkeypatch):
         """parallel_backend='auto' falls back to sequential without Numba."""

@@ -222,3 +222,290 @@ def test_lookup_performance(evaluator_3d):
 
     assert speedup > 1.5, \
         f"Lookup should be faster than nearest: {speedup:.1f}× (expect >1.5×)"
+
+
+# ═══════════════════════════════════════════════════════════════
+# Phase 13.16.GB-FIX2 — Bug fix tests (F2, F3, F4)
+# ═══════════════════════════════════════════════════════════════
+#
+# Each test specifies path-controlling parameters explicitly per failure
+# mode #11 (invariance tests must not rely on auto/default dispatch). Each
+# ValueError assertion uses pytest.raises(..., match=...) per C7 to prevent
+# silent message drift in future refactors.
+
+
+# ─── F2: method=dict validation (detect-and-reject mixed interp orders) ───
+
+def test_dict_lookup_plus_two_same_interp_works(evaluator_3d):
+    """F2 anti-regression: {lookup, linear, linear} must continue to work.
+
+    Per C3: this is the legitimate supported shape — any number of 'lookup'
+    dimensions plus any number of copies of the SAME interpolation method.
+    The bug fix must not accidentally reject this case.
+    """
+    rng = np.random.RandomState(17)
+    n = 500
+
+    # g0 integer (lookup), g1 and g2 continuous (both linear)
+    positions = {
+        'g0': rng.randint(0, 10, n),
+        'g1': rng.uniform(0, 9, n),
+        'g2': rng.uniform(0, 9, n),
+    }
+    predictors = {'x': rng.normal(0, 1, n)}
+
+    result = evaluator_3d.evaluate(
+        positions=positions, predictors=predictors,
+        method={'g0': 'lookup', 'g1': 'linear', 'g2': 'linear'},
+    )
+    vals = result['y']
+    assert len(vals) == n
+    assert np.isfinite(vals).all(), \
+        "Supported shape {lookup, linear, linear} should produce finite values"
+
+
+def test_dict_mixed_linear_cubic_raises(evaluator_3d):
+    """F2: {'g1':'linear', 'g2':'cubic'} must raise ValueError.
+
+    This is the pure bug case: no lookup dims, two distinct interp orders.
+    Before the fix, this silently picked the first dim's order and ran.
+    """
+    rng = np.random.RandomState(18)
+    n = 100
+    positions = {
+        'g0': rng.randint(0, 10, n),
+        'g1': rng.uniform(0, 9, n),
+        'g2': rng.uniform(0, 9, n),
+    }
+    predictors = {'x': rng.normal(0, 1, n)}
+
+    with pytest.raises(ValueError, match="at most one interpolation order"):
+        evaluator_3d.evaluate(
+            positions=positions, predictors=predictors,
+            method={'g0': 'linear', 'g1': 'linear', 'g2': 'cubic'},
+        )
+
+
+def test_dict_lookup_plus_mixed_interp_raises(evaluator_3d):
+    """F2: lookup + mixed interp (linear+cubic) must raise ValueError.
+
+    Mixed case with lookup present. Same bug, different branch in
+    _eval_per_dimension (the mixed case at line ~1430).
+    """
+    rng = np.random.RandomState(19)
+    n = 100
+    positions = {
+        'g0': rng.randint(0, 10, n),
+        'g1': rng.uniform(0, 9, n),
+        'g2': rng.uniform(0, 9, n),
+    }
+    predictors = {'x': rng.normal(0, 1, n)}
+
+    with pytest.raises(ValueError, match="at most one interpolation order"):
+        evaluator_3d.evaluate(
+            positions=positions, predictors=predictors,
+            method={'g0': 'lookup', 'g1': 'linear', 'g2': 'cubic'},
+        )
+
+
+def test_dict_lookup_plus_nearest_plus_linear_raises(evaluator_3d):
+    """F2: lookup + nearest + linear must raise (order 0 vs order 1).
+
+    Distinct interp orders: nearest is order=0, linear is order=1. The
+    ValueError message must include the full method dict per C5.
+    """
+    rng = np.random.RandomState(20)
+    n = 100
+    positions = {
+        'g0': rng.randint(0, 10, n),
+        'g1': rng.randint(0, 10, n),
+        'g2': rng.uniform(0, 9, n),
+    }
+    predictors = {'x': rng.normal(0, 1, n)}
+
+    with pytest.raises(ValueError, match="at most one interpolation order") as exc_info:
+        evaluator_3d.evaluate(
+            positions=positions, predictors=predictors,
+            method={'g0': 'lookup', 'g1': 'nearest', 'g2': 'linear'},
+        )
+    # C5: full dict must appear in the error message for debuggability
+    msg = str(exc_info.value)
+    assert 'g1' in msg and 'g2' in msg, \
+        f"Error message must name the conflicting dimensions. Got: {msg}"
+
+
+def test_dict_all_lookup_unchanged(evaluator_3d):
+    """F2 anti-regression: all-lookup dict ≡ scalar method='lookup'.
+
+    Bit-identical equivalence check. The all-lookup branch delegates to
+    _eval_lookup directly and must not be touched by the F2 validation.
+    """
+    rng = np.random.RandomState(21)
+    n = 1000
+    positions = {
+        'g0': rng.randint(0, 10, n),
+        'g1': rng.randint(0, 10, n),
+        'g2': rng.randint(0, 10, n),
+    }
+    predictors = {'x': rng.normal(0, 1, n)}
+
+    result_dict = evaluator_3d.evaluate(
+        positions=positions, predictors=predictors,
+        method={'g0': 'lookup', 'g1': 'lookup', 'g2': 'lookup'},
+    )
+    result_scalar = evaluator_3d.evaluate(
+        positions=positions, predictors=predictors,
+        method='lookup',
+    )
+    np.testing.assert_array_equal(
+        result_dict['y'], result_scalar['y'],
+        err_msg="All-lookup dict must be bit-identical to method='lookup'")
+
+
+# ─── C3 (from Claude21 P1 #3): nearest/nearest_fast equivalence in dict ───
+
+def test_dict_nearest_plus_nearest_fast_works(evaluator_3d):
+    """C3: 'nearest' and 'nearest_fast' are both order=0 and must mix freely.
+
+    Per Claude21 P1 #3 and Claude20 consolidated comment C3: the two names
+    are semantically equivalent (both map to scipy order=0). Rejecting this
+    combination would surprise a user who is doing nothing wrong. The F2
+    validation treats them as equivalent via _METHOD_ORDER.
+    """
+    rng = np.random.RandomState(22)
+    n = 500
+    positions = {
+        'g0': rng.randint(0, 10, n),
+        'g1': rng.uniform(0, 9, n),
+        'g2': rng.uniform(0, 9, n),
+    }
+    predictors = {'x': rng.normal(0, 1, n)}
+
+    # This must NOT raise — both are order=0
+    result = evaluator_3d.evaluate(
+        positions=positions, predictors=predictors,
+        method={'g0': 'lookup', 'g1': 'nearest', 'g2': 'nearest_fast'},
+    )
+    vals = result['y']
+    assert len(vals) == n
+    assert np.isfinite(vals).all(), \
+        "lookup + nearest + nearest_fast should produce finite values"
+
+
+# ─── C10 (bonus, one-line addition): unknown method detection ───
+
+def test_dict_unknown_method_raises(evaluator_3d):
+    """C10: typo in dict value must raise clear error, not silently default.
+
+    Before the fix, {'g0':'lookup','g1':'linaer'} silently fell through to
+    the default 'linear' case. The F2 validation now catches unknown
+    method strings at dispatch time.
+    """
+    rng = np.random.RandomState(23)
+    n = 100
+    positions = {
+        'g0': rng.randint(0, 10, n),
+        'g1': rng.uniform(0, 9, n),
+        'g2': rng.uniform(0, 9, n),
+    }
+    predictors = {'x': rng.normal(0, 1, n)}
+
+    with pytest.raises(ValueError, match="unknown method"):
+        evaluator_3d.evaluate(
+            positions=positions, predictors=predictors,
+            method={'g0': 'lookup', 'g1': 'linaer', 'g2': 'linear'},  # typo
+        )
+
+
+# ─── F3: evaluate() docstring coverage ───
+
+def test_evaluate_docstring_mentions_lookup():
+    """F3: evaluate.__doc__ must document 'lookup' method."""
+    doc = GroupByRegressionEvaluator.evaluate.__doc__
+    assert doc is not None, "evaluate() must have a docstring"
+    assert "'lookup'" in doc or '"lookup"' in doc or "``'lookup'``" in doc, \
+        "docstring must document method='lookup' (added in Phase 13.16.GB)"
+
+
+def test_evaluate_docstring_mentions_dict():
+    """F3: evaluate.__doc__ must document the per-dimension dict shape."""
+    doc = GroupByRegressionEvaluator.evaluate.__doc__
+    assert doc is not None
+    # Must mention dict and per-dimension (case-insensitive)
+    doc_lower = doc.lower()
+    assert 'dict' in doc_lower, "docstring must mention dict method shape"
+    assert 'per-dimension' in doc_lower or 'per dimension' in doc_lower, \
+        "docstring must mention per-dimension dispatch"
+
+
+# ─── C8 (from Claude21 P1 #2): runnable docstring examples ───
+
+def test_evaluate_docstring_examples_run(evaluator_3d):
+    """C8: the method='lookup' and method=dict examples in the docstring
+    must produce valid output when run against a real evaluator.
+
+    Catches future regressions where someone edits the docstring example
+    but not the behavior (or vice versa). The examples in the docstring
+    are marked +SKIP for doctest because they need a live evaluator, so
+    we reproduce them here against the real evaluator_3d fixture.
+    """
+    rng = np.random.RandomState(24)
+    n = 100
+
+    # Example 1: method='lookup' on integer grid (paraphrased with fixture names)
+    track_g0 = rng.randint(0, 10, n)
+    track_g1 = rng.randint(0, 10, n)
+    track_g2 = rng.randint(0, 10, n)
+    track_x = rng.normal(0, 1, n)
+
+    result1 = evaluator_3d.evaluate(
+        positions={'g0': track_g0, 'g1': track_g1, 'g2': track_g2},
+        predictors={'x': track_x},
+        method='lookup',
+    )
+    assert 'y' in result1
+    assert np.isfinite(result1['y']).all(), \
+        "Docstring example 1 (method='lookup') must produce finite output"
+
+    # Example 2: method=dict per-dimension dispatch
+    g0s = rng.randint(0, 10, n)
+    g1s = rng.randint(0, 10, n)
+    g2s = rng.uniform(0, 9, n)
+    xs = rng.normal(0, 1, n)
+
+    result2 = evaluator_3d.evaluate(
+        positions={'g0': g0s, 'g1': g1s, 'g2': g2s},
+        predictors={'x': xs},
+        method={'g0': 'lookup', 'g1': 'lookup', 'g2': 'linear'},
+    )
+    assert 'y' in result2
+    assert np.isfinite(result2['y']).all(), \
+        "Docstring example 2 (method=dict) must produce finite output"
+
+
+# ─── F4: bounds='extrapolate' with method='lookup' ───
+
+def test_lookup_with_extrapolate_bounds_raises(evaluator_3d):
+    """F4: method='lookup' + bounds='extrapolate' must raise ValueError.
+
+    Before the fix, this fell through _eval_lookup's if/elif chain to
+    `idx = raw` with no bounds handling, then raised an opaque IndexError
+    from numpy fancy indexing when any raw value was out of range.
+
+    Direct integer indexing has no interpolation to extrapolate from —
+    the combination is nonsensical and must be rejected at dispatch time
+    with a clear message.
+    """
+    positions = {
+        'g0': np.array([0, 5, 9]),  # all in-range
+        'g1': np.array([0, 5, 9]),
+        'g2': np.array([0, 5, 9]),
+    }
+    predictors = {'x': np.array([1.0, 1.0, 1.0])}
+
+    # Must raise even for in-range positions — the combination itself is invalid
+    with pytest.raises(ValueError, match="extrapolate"):
+        evaluator_3d.evaluate(
+            positions=positions, predictors=predictors,
+            method='lookup', bounds='extrapolate',
+        )

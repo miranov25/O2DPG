@@ -331,7 +331,7 @@ class GroupByRegressionEvaluator:
         self,
         positions: Union[Dict[str, float], 'pd.DataFrame'],
         predictors: Union[Dict[str, float], 'pd.DataFrame'],
-        method: str = 'multilinear',
+        method: Union[str, Dict[str, str]] = 'multilinear',
         use_errors: bool = False,
         invalid_strategy: str = 'nan',
         bounds: str = 'clamp',
@@ -347,17 +347,53 @@ class GroupByRegressionEvaluator:
             array/DataFrame for batch evaluation.
         predictors : dict[str, float] or DataFrame
             Predictor values.
-        method : str
-            'nearest' — snap to closest bin center (fastest, no interpolation).
-            'multilinear' — N-D multilinear interpolation (Python, supports
-                use_errors and invalid_strategy).
-            'linear' — N-D linear interpolation via scipy map_coordinates
-                (C-implemented, ~3-5× faster than multilinear, equivalent results).
-            'cubic' — N-D cubic spline interpolation via scipy map_coordinates
-                (C-implemented, smooth C1-continuous output, ~2× faster than multilinear).
-            'nearest_fast' — nearest via scipy (C-implemented).
+        method : str or dict[str, str]
+            Interpolation method. Accepts either a string (applied to all
+            dimensions) or a dict mapping group column names to per-dimension
+            methods.
+
+            String values:
+
+            - ``'nearest'`` — snap to closest bin center (Python, fastest
+              non-interpolating method for small batches).
+            - ``'nearest_fast'`` — nearest via scipy ``map_coordinates``
+              order=0 (C-implemented, faster than ``'nearest'`` for large
+              batches; equivalent results).
+            - ``'multilinear'`` — N-D multilinear interpolation (Python,
+              supports ``use_errors`` and ``invalid_strategy``).
+            - ``'linear'`` — N-D linear interpolation via scipy
+              ``map_coordinates`` order=1 (C-implemented, ~3-5× faster than
+              ``'multilinear'``, equivalent results; does not support
+              ``use_errors``).
+            - ``'cubic'`` — N-D cubic spline interpolation via scipy
+              ``map_coordinates`` order=3 (C-implemented, smooth
+              C1-continuous output).
+            - ``'lookup'`` — direct integer array indexing (fastest for
+              all-integer grids; skips ``searchsorted`` entirely). Positions
+              must be integer-like. Not compatible with
+              ``bounds='extrapolate'``. Added in Phase 13.16.GB.
+
+            Dict value (per-dimension dispatch, added in Phase 13.16.GB):
+
+            The dict maps group column names to per-dimension method strings.
+            Missing keys default to ``'linear'``. Supported shapes:
+
+            - zero or more ``'lookup'`` dimensions, plus
+            - zero or more dimensions using the SAME interpolation order.
+
+            ``'nearest'`` and ``'nearest_fast'`` are both order 0 and are
+            treated as equivalent for the mixed-order check.
+
+            Unsupported shapes (e.g. ``{'a':'linear', 'b':'cubic'}``) raise
+            ``ValueError``. This is a deliberate Option-A simplification:
+            scipy's ``map_coordinates`` accepts only a scalar ``order``
+            argument and cannot do per-axis orders in a single call. To mix
+            interpolation orders across dimensions, call ``evaluate()``
+            multiple times. See Phase 13.16.GB-FIX2 for rationale.
         use_errors : bool
             If True, use inverse-variance weighting for interpolation.
+            Supported only for ``method='multilinear'`` and dict methods
+            resolving to multilinear.
         invalid_strategy : str
             'nan' — return NaN if any interpolation corner is invalid.
             'skip' — renormalise using valid corners only.
@@ -366,6 +402,11 @@ class GroupByRegressionEvaluator:
             'clamp' — clip to grid edges (default).
             'nan' — return NaN for out-of-range positions.
             'extrapolate' — linear extrapolation from edge cells.
+
+            ``bounds='extrapolate'`` is not compatible with
+            ``method='lookup'`` — direct integer indexing has no
+            interpolation to extrapolate from. Use ``method='linear'`` or
+            ``'cubic'`` with ``bounds='extrapolate'``.
         targets : list of str, optional
             Subset of targets to evaluate. None = all.
 
@@ -373,6 +414,24 @@ class GroupByRegressionEvaluator:
         -------
         result : dict[str, float or np.ndarray]
             {target: predicted_value(s)} for each target.
+
+        Examples
+        --------
+        Fast interpolation on an integer grid (e.g. sector × padRow):
+
+        >>> result = evaluator.evaluate(                              # doctest: +SKIP
+        ...     positions={'sector': track_sectors, 'padRow': track_padRows},
+        ...     predictors={'x': track_x},
+        ...     method='lookup',
+        ... )
+
+        Per-dimension dispatch for mixed integer/continuous grids:
+
+        >>> result = evaluator.evaluate(                              # doctest: +SKIP
+        ...     positions={'sector': sectors, 'padRow': padRows, 'zBin': z_bins},
+        ...     predictors={'x': xs},
+        ...     method={'sector': 'lookup', 'padRow': 'lookup', 'zBin': 'linear'},
+        ... )
         """
         eval_targets = targets if targets is not None else self._targets
 
@@ -886,7 +945,7 @@ class GroupByRegressionEvaluator:
     def get_coefficients(
         self,
         positions: Union[Dict[str, float], 'pd.DataFrame'],
-        method: str = 'multilinear',
+        method: Union[str, Dict[str, str]] = 'multilinear',
         use_errors: bool = False,
         invalid_strategy: str = 'nan',
         bounds: str = 'clamp',
@@ -894,6 +953,9 @@ class GroupByRegressionEvaluator:
     ) -> Dict[str, Dict[str, Union[float, np.ndarray]]]:
         """
         Get interpolated coefficients (and errors) at arbitrary positions.
+
+        See :meth:`evaluate` for the full description of the ``method``
+        parameter (string values and per-dimension dict shape).
 
         Returns
         -------
@@ -1134,8 +1196,23 @@ class GroupByRegressionEvaluator:
         targets : list[str]
             Targets to evaluate.
         bounds : str
-            'clamp' or 'nan'.
+            'clamp' or 'nan'. 'extrapolate' is rejected — extrapolation is
+            incompatible with direct integer indexing (there is no interpolation
+            to extrapolate from). Use method='linear' with bounds='extrapolate'
+            instead.
         """
+        # Phase 13.16.GB-FIX2 (F4): reject bounds='extrapolate' explicitly.
+        # Previously this fell through to `idx = raw` and then raised an
+        # opaque IndexError from numpy fancy indexing. Reject with a clear
+        # message at dispatch time.
+        if bounds == 'extrapolate':
+            raise ValueError(
+                "method='lookup' is incompatible with bounds='extrapolate'. "
+                "Direct integer indexing cannot extrapolate — there is no "
+                "interpolation to extend. Use method='linear' or 'cubic' "
+                "with bounds='extrapolate', or use bounds='clamp'/'nan' "
+                "with method='lookup'.")
+
         D = len(self._group_columns)
 
         indices = []
@@ -1162,7 +1239,9 @@ class GroupByRegressionEvaluator:
                 out_of_bounds |= oob
                 idx = np.clip(raw, 0, self._grid_shape[d] - 1)
             else:
-                idx = raw
+                raise ValueError(
+                    f"method='lookup' got bounds={bounds!r}. "
+                    f"Supported: 'clamp', 'nan'.")
 
             indices.append(idx)
 
@@ -1204,6 +1283,20 @@ class GroupByRegressionEvaluator:
         method_dict : dict[str, str]
             Method per dimension, e.g. {'sector': 'lookup', 'zBin': 'linear'}.
             Missing keys default to 'linear'.
+
+            Supported shapes:
+            - zero or more 'lookup' dimensions, plus
+            - zero or more dimensions using the SAME interpolation order.
+
+            'nearest' and 'nearest_fast' are both order=0 and are treated as
+            equivalent for the purposes of the mixed-order check.
+
+            Unsupported shapes (e.g. {'a':'linear', 'b':'cubic'}) raise
+            ValueError. This is a deliberate Option-A simplification: scipy's
+            ``map_coordinates`` accepts only a scalar ``order`` argument and
+            cannot do per-axis orders in a single call. To mix interpolation
+            orders across dimensions, call ``evaluate()`` multiple times.
+            See Phase 13.16.GB-FIX2 proposal § 3.1 for the rationale.
         """
         D = len(self._group_columns)
 
@@ -1217,6 +1310,49 @@ class GroupByRegressionEvaluator:
         # Fill missing keys with default 'linear'
         full_method = {col: method_dict.get(col, 'linear')
                        for col in self._group_columns}
+
+        # Phase 13.16.GB-FIX2 (F2): validate that all non-lookup dimensions
+        # use the same interpolation order. scipy.ndimage.map_coordinates
+        # accepts only a scalar `order`, so per-axis mixing is not possible
+        # in a single call. Previously this silently picked the first
+        # interpolation dimension's method and applied it to all — a
+        # parameter-not-propagated bug class instance.
+        _METHOD_ORDER = {
+            'lookup': None,      # not an interp order
+            'nearest': 0,
+            'nearest_fast': 0,
+            'multilinear': 1,
+            'linear': 1,
+            'cubic': 3,
+        }
+        # First check all methods are recognized
+        unknown = {col: m for col, m in full_method.items()
+                   if m not in _METHOD_ORDER}
+        if unknown:
+            raise ValueError(
+                f"method dict contains unknown method(s): {unknown}. "
+                f"Valid methods: {sorted(k for k in _METHOD_ORDER)}. "
+                f"Full dict: {full_method}")
+
+        # Collect distinct interpolation orders (excluding lookup)
+        non_lookup_orders = {
+            _METHOD_ORDER[m] for col, m in full_method.items()
+            if m != 'lookup'
+        }
+        if len(non_lookup_orders) > 1:
+            non_lookup_methods = {
+                col: m for col, m in full_method.items() if m != 'lookup'
+            }
+            raise ValueError(
+                f"per-dimension method dict supports lookup combined with "
+                f"at most one interpolation order per call. Got methods "
+                f"with distinct orders: {non_lookup_methods} "
+                f"(orders: {sorted(non_lookup_orders)}). "
+                f"'nearest'/'nearest_fast' (order 0), 'linear'/'multilinear' "
+                f"(order 1), and 'cubic' (order 3) cannot be combined in a "
+                f"single call. To mix interpolation orders across dimensions, "
+                f"call evaluate() multiple times or request per-axis chaining "
+                f"in a future phase. Full dict: {full_method}")
 
         # Classify dimensions
         lookup_dims = []
