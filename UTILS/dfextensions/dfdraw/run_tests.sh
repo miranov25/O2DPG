@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# run_tests.sh — AliasDataFrame Test Runner
+# run_tests.sh — dfdraw Test Runner
 # =============================================================================
 #
 # Usage:
@@ -17,8 +17,9 @@
 #   test_full_<ts>.log             Full pytest output
 #   test_failures_<ts>.log         Failures only
 #   CAPABILITY_MATRIX_<ts>.md      Auto-generated matrix snapshot
-#   diff_last_commit_<ts>.txt      Git diff since last commit
-#   diff_to_phase_<ts>.txt         Git diff to PHASE_BEGIN tag
+#   diff_last_commit_<ts>.txt      Uncommitted diff + last commit diff
+#   diff_to_phase_<ts>.txt         Diff since PHASE_BEGIN_dfdraw tag
+#   git_status_<ts>.txt            Working tree state (git status --porcelain)
 #   reviewer_<ts>.zip              Review package
 
 # Don't exit on test failures
@@ -26,7 +27,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Navigate to AliasDataFrame root (parent of tests/)
+# Navigate to dfdraw root (parent of tests/)
 if [[ "$(basename "$SCRIPT_DIR")" == "tests" ]]; then
     PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 elif [[ -d "$SCRIPT_DIR/tests" ]]; then
@@ -45,8 +46,8 @@ echo "Project root: $PROJECT_ROOT"
 
 show_help() {
     cat << 'EOF'
-AliasDataFrame Test Runner
-===========================
+dfdraw Test Runner
+===================
 
 Usage:
   ./run_tests.sh [OPTIONS]
@@ -63,7 +64,9 @@ Environment:
 Output:
   test_logs/SUMMARY_<ts>.txt            Test summary
   test_logs/CAPABILITY_MATRIX_<ts>.md   Feature matrix
-  test_logs/diff_to_phase_<ts>.txt      Phase diff
+  test_logs/diff_last_commit_<ts>.txt   Uncommitted + HEAD~1 diffs
+  test_logs/diff_to_phase_<ts>.txt      Diff since PHASE_BEGIN tag
+  test_logs/git_status_<ts>.txt         Working tree state snapshot
   test_logs/reviewer_<ts>.zip           Review package
 
 EOF
@@ -113,9 +116,10 @@ MATRIX_MD="$LOG_DIR/CAPABILITY_MATRIX_${TS}.md"
 SUMMARY_FILE="$LOG_DIR/SUMMARY_${TS}.txt"
 DIFF_COMMIT="$LOG_DIR/diff_last_commit_${TS}.txt"
 DIFF_PHASE="$LOG_DIR/diff_to_phase_${TS}.txt"
+GIT_STATUS="$LOG_DIR/git_status_${TS}.txt"
 
 echo "========================================"
-echo "AliasDataFrame Test Runner"
+echo "dfdraw Test Runner"
 echo "Mode: $MODE"
 echo "Timestamp: $TS"
 echo "PYTEST_WORKERS: $PYTEST_WORKERS"
@@ -169,9 +173,26 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
         echo "(No PHASE_BEGIN_* tag found — searched: PHASE_BEGIN_dfdraw, PHASE_BEGIN_AliasDataFrame, PHASE_BEGIN_ADF)" > "$DIFF_PHASE"
         echo "  ⚠️  No phase tag — create with: source scripts/phase_tag.sh && phase_begin <id>"
     fi
+    
+    # Working tree snapshot — reviewers use this to verify repo state
+    {
+        echo "=== git status --porcelain (scoped to cwd) ==="
+        git status --porcelain -- . 2>/dev/null || echo "(git status failed)"
+        echo ""
+        echo "=== git status (human-readable) ==="
+        git status -- . 2>/dev/null || echo "(git status failed)"
+        echo ""
+        echo "=== Current HEAD ==="
+        git log -1 --oneline 2>/dev/null || echo "(git log failed)"
+        echo ""
+        echo "=== Branch ==="
+        git branch --show-current 2>/dev/null || echo "(git branch failed)"
+    } > "$GIT_STATUS"
+    echo "  Working tree: $(realpath "$GIT_STATUS" 2>/dev/null || echo "$GIT_STATUS")"
 else
     echo "(not a git repository)" > "$DIFF_COMMIT"
     echo "(not a git repository)" > "$DIFF_PHASE"
+    echo "(not a git repository)" > "$GIT_STATUS"
 fi
 echo ""
 
@@ -251,7 +272,7 @@ fi
 
 {
     echo "========================================"
-    echo "SUMMARY — AliasDataFrame Test Run"
+    echo "SUMMARY — dfdraw Test Run"
     echo "========================================"
     echo ""
     echo "Timestamp:    $TS"
@@ -288,6 +309,7 @@ fi
     echo "  Summary:  $(realpath "$SUMMARY_FILE" 2>/dev/null || echo "$SUMMARY_FILE")"
     echo "  Diff:     $(realpath "$DIFF_COMMIT" 2>/dev/null || echo "$DIFF_COMMIT")"
     echo "  Phase:    $(realpath "$DIFF_PHASE" 2>/dev/null || echo "$DIFF_PHASE")"
+    echo "  Status:   $(realpath "$GIT_STATUS" 2>/dev/null || echo "$GIT_STATUS")"
     echo "========================================"
 } | tee "$SUMMARY_FILE"
 
@@ -309,6 +331,7 @@ REVIEWER_ZIP="$LOG_DIR/reviewer_${TS}.zip"
         "$MATRIX_MD" \
         "$DIFF_COMMIT" \
         "$DIFF_PHASE" \
+        "$GIT_STATUS" \
         "docs/CAPABILITY_MATRIX.md"
     do
         [[ -f "$f" ]] && ZIP_FILES="$ZIP_FILES $f"
