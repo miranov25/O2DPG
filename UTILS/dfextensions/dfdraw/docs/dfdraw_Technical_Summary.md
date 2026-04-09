@@ -1,7 +1,7 @@
 # dfdraw Technical Summary
 
-**Version:** Phase 13.14.DF v1.0 (399 tests passing)  
-**Date:** 2026-03-28  
+**Version:** Phase 13.16.DF v1.0 (451 tests passing, 43 features, 21 invariance tests)  
+**Date:** 2026-04-09  
 **Audience:** Integration teams (Team2, architects, developers)  
 **Purpose:** Technical reference for dfdraw capabilities, limitations, and integration
 
@@ -51,6 +51,54 @@ drawer.profile('y:x')
 **Expression syntax:**
 - 1D: `'column'` or `'expression'`
 - 2D: `'y:x'` (y vs x, y on vertical axis)
+- Vector (Phase 13.16.DF): `'[y1,y2,y3]:x'`, `'y:[x1,x2]'`, `'[y1,y2]:[x1,x2]'`
+
+### 1.3 Vector Expression Syntax (Phase 13.16.DF v1.0)
+
+Bracket-vector syntax draws multiple related curves/series in a single call,
+overlaid on one axes. This is the architecturally-correct solution for the
+AD-37 AliasDataFrame color-cycling bug: a single `DFDraw` instance handles
+the full loop internally, so color/label continuity is preserved across the
+full series.
+
+**Broadcasting rules:**
+
+| Pattern | Syntax | Result |
+|---------|--------|--------|
+| N:1 | `[y1,y2,y3]:x` | 3 series sharing x |
+| 1:N | `y:[x1,x2,x3]` | 3 series sharing y |
+| N:N | `[y1,y2]:[x1,x2]` | 2 paired series |
+| N:M (N≠M) | `[y1,y2]:[x1,x2,x3]` | `ValueError` |
+| 1D vector | `[y1,y2,y3]` | 3 overlaid histograms |
+
+**Features:**
+- Paren-aware split: `[max(a,b),max(c,d)]:x` parses correctly
+- `vector_style` channel: `'color'` (default without group_by) or `'linestyle'` (default with group_by)
+- `group_style` channel for second dimension when combining vector with `group_by`
+- Per-pair stats: `stats()` returns `list[dict]` of length N for vector input
+- `auto_title` defaults to `True` in vector mode
+- Y-axis label: common-prefix rule (≥2 chars) or truncated bracket-list
+- Fail-fast on `hist2d()` and `hexbin()` (single-density surfaces have no meaningful overlay)
+
+**Supported on:** `draw()`, `profile()`, `hist()`, `scatter()`, `draw_batch()`
+
+**Example — ITS layer residuals:**
+```python
+# Before (broken AD-37): only 2 colors appear instead of 6
+aDF.draw("dd_dyITS0:staveITS", type='profile', bins=12)
+aDF.draw("dd_dyITS1:staveITS", type='profile', bins=12, same=True)
+# ... 6 times — each call creates fresh DFDraw, resetting color cycle
+
+# After (Phase 13.16.DF): single call, correct 6 colors
+aDF.draw("[dd_dyITS0,dd_dyITS1,dd_dyITS2,dd_dyITS3,dd_dyITS4,dd_dyITS5]:staveITS",
+         selection="row==180 & isPrimITS==1",
+         type='profile', bins=12)
+```
+
+**Invariance contract:** Vector path produces byte-identical axes state
+(line count, colors, linestyles, labels, xdata/ydata) and per-pair stats
+to a scalar `same=True` loop. Verified by 7 A≡B tests in
+`tests/test_vector.py::TestVectorInvariance`.
 
 ---
 
@@ -719,9 +767,23 @@ drawer.profile('y:x', weights='w')
 - Stats are diagnostic, not analytical
 - For advanced statistics, use scipy/statsmodels
 
+**Vector expressions (Phase 13.16.DF):**
+- Nested brackets not supported: `"[arr[0],arr[1]]:x"` — use explicit column names
+- Broadcasting is strict N:1, 1:N, N:N — mismatched shapes raise `ValueError`
+- `hist2d`/`hexbin` do not accept vector input (fail-fast with clear message)
+- Typical N ≤ 20; complexity is O(N × draw_cost), not optimized for N ≥ 100
+- `stats()` with vector returns `list[dict]` instead of a single `dict`
+
 ### 11.3 Current Bugs / Issues
 
-**None identified in Phase 13.14.DF** (399/399 tests passing)
+**None identified in Phase 13.16.DF** (451/451 tests passing)
+
+**Resolved in Phase 13.16.DF:**
+- **AD-37** — AliasDataFrame per-call `DFDraw` instantiation reset the color
+  cycle, causing `aDF.draw(...same=True)` loops to show only 1–2 colors instead
+  of the expected N. Fixed via vector expression interface: a single `DFDraw`
+  instance now handles the full series internally. Invariance test
+  `test_vector_through_adf_equivalent_to_direct` confirms the fix.
 
 **Known integration gap:**
 - AliasDataFrame's `draw_figures()` reimplements the drawing loop independently.
@@ -988,29 +1050,49 @@ set_style({
 
 ## 16. Testing Coverage
 
-**Test suite:** 399 tests (100% passing)
+**Test suite:** 451 tests (100% passing)
+**Features:** 43
+**Invariance tests:** 21 (A≡B semantic contracts)
+**Verified features:** 6 (features with at least one invariance test)
 
 **Coverage areas:**
 - All plot types: hist, scatter, profile, hist2d, hexbin ✅
 - Expression evaluation ✅
+- Vector expression interface (Phase 13.16.DF) ✅ **Verified**
 - Selection and filtering ✅
 - Group-by overlays ✅
 - Batch processing (dict and list formats) ✅
-- PyArrow integration ✅
+- PyArrow integration ✅ **Verified**
 - Stats computation ✅
 - Error handling ✅
-- same=True superposition (Phase 13.13.DF) ✅
-- Defaults cascade and verbose levels (Phase 13.14.DF) ✅
+- same=True superposition (Phase 13.13.DF) ✅ **Verified**
+- Defaults cascade and verbose levels (Phase 13.14.DF) ✅ **Verified**
 - Profile enhancements: return_data, min_entries, group_by_bins, weights (Phase 13.12.DF) ✅
+- Test infrastructure: feature taxonomy, capability matrix (Phase 13.15.DF) ✅
+
+**Verified (A≡B invariance) features:**
+- `SAME.axes_reuse` — `same=True` byte-identical axes reuse
+- `SAME.override` — `ax=` / explicit overrides precedence
+- `SAME.cross_method` — profile-on-hist2d cross-type superposition
+- `BATCH.group_format` — defaults cascade byte-identical to manual merge
+- `PYARROW.input` — PyArrow ≡ pandas parity for all plot types
+- `VECTOR.invariance` — vector path ≡ scalar `same=True` loop (7 strong tests)
 
 **Integration tests:**
 - AliasDataFrame integration ✅
 - Lazy loading ✅
 - Subframe joins ✅
+- ADF vector dispatch (Phase 13.16.DF) ✅
 
 **Performance tests:**
 - Large datasets (100k+ rows) ✅
 - Memory overhead (PyArrow conversion) ✅
+
+**Test infrastructure (Phase 13.15.DF):**
+- `tests/feature_taxonomy.py` — 43 features enumerated
+- `tests/test_layer_classification.py` — smoke vs invariance classification
+- `scripts/generate_capability_matrix.py` → `docs/CAPABILITY_MATRIX.md`
+- `run_tests.sh` — full/quick/matrix modes + reviewer.zip packaging
 
 ---
 
@@ -1074,7 +1156,26 @@ set_style({
 
 ## Appendix B: Version History
 
-**Phase 13.14.DF v1.0 (Current):**
+**Phase 13.16.DF v1.0 (Current):**
+- Vector expression interface: `[y1,y2,y3]:x`, `y:[x1,x2]`, `[y1,y2]:[x1,x2]`
+- Paren-aware comma split: `[max(a,b),max(c,d)]:x`
+- Architectural fix for AD-37 AliasDataFrame color-cycling bug
+- `vector_style` and `group_style` channel decomposition
+- Per-pair stats return (`list[dict]`)
+- Fail-fast on `hist2d`/`hexbin` vector input
+- 7 strong A≡B invariance tests (`TestVectorInvariance`)
+- Conditional color cycle reset preserves `SAME.axes_reuse` contract
+- 451 tests passing, 43 features, 21 invariance tests, 6 Verified
+
+**Phase 13.15.DF v1.0:**
+- Test infrastructure: `feature_taxonomy.py` (35→43 features)
+- `test_layer_classification.py` — smoke vs invariance markers
+- `scripts/generate_capability_matrix.py` → `CAPABILITY_MATRIX.md`
+- `run_tests.sh` with full/quick/matrix modes + `reviewer.zip`
+- `scripts/phase_tag.sh` helper
+- 401 tests passing, 5 Verified features
+
+**Phase 13.14.DF v1.0:**
 - draw_batch group format with defaults hierarchy
 - Subplot grid: ncols, layout, figsize, suptitle
 - same=True within groups
@@ -1139,5 +1240,5 @@ set_style({
 
 **Document Status:** Ready for GitLab  
 **Maintainer:** Team3-dfdraw  
-**Last Updated:** 2026-03-28  
-**Version:** Phase 13.14.DF v1.0
+**Last Updated:** 2026-04-09  
+**Version:** Phase 13.16.DF v1.0

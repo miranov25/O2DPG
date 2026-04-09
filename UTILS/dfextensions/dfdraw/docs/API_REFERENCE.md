@@ -1,5 +1,8 @@
 # dfdraw Documentation Review & API Summary
 
+**Version:** Phase 13.16.DF v1.0
+**Last Updated:** 2026-04-09
+
 ## Module Docstring Status
 
 | File | Module Docstring | Status |
@@ -38,20 +41,87 @@ Values are approximately 6% smaller than previous versions.
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `__init__` | `__init__(self, data)` | Create drawer from DataFrame, AliasDataFrame, PyArrow Table, or dict |
-| `draw` | `draw(expr, type=None, selection=None, color=None, size=None, marker=None, group_by=None, facet=False, bins=None, stats=None, norm=None, title=None, ax=None, sample=None, save=None, figsize=None, same=False, **kwargs)` | Universal draw method with auto type detection |
-| `hist` | `hist(expr, ..., auto_title=False, same=False, **kwargs)` | Draw 1D histogram |
-| `scatter` | `scatter(expr, ..., same=False, **kwargs)` | Draw scatter plot |
-| `profile` | `profile(expr, ..., return_data=False, min_entries=3, group_by_bins=None, group_by_quantiles=None, sort_groups=True, weights=None, auto_title=False, same=False, **kwargs)` | Draw profile plot (mean of y vs binned x) |
-| `hist2d` | `hist2d(expr, ..., auto_title=False, same=False, **kwargs)` | Draw 2D histogram |
-| `hexbin` | `hexbin(expr, ..., auto_title=False, same=False, **kwargs)` | Draw hexbin plot |
-| `stats` | `stats(expr, selection=None, group_by=None)` | Compute statistics without plotting |
-| `draw_batch` | `draw_batch(specs, save_dir=None, defaults=None, on_error='skip', verbose=True, save_format='png', dpi=150, close_figures=True, **kwargs)` | Batch plot generation — dict format or list-of-groups format |
+| `draw` | `draw(expr, type=None, selection=None, color=None, size=None, marker=None, group_by=None, facet=False, bins=None, stats=None, norm=None, title=None, ax=None, sample=None, save=None, figsize=None, same=False, vector_style=None, group_style=None, **kwargs)` | Universal draw method with auto type detection; supports vector expressions |
+| `hist` | `hist(expr, ..., auto_title=False, same=False, vector_style=None, group_style=None, **kwargs)` | Draw 1D histogram (supports vector `[y1,y2,y3]`) |
+| `scatter` | `scatter(expr, ..., same=False, vector_style=None, group_style=None, **kwargs)` | Draw scatter plot (supports vector `[y1,y2]:[x1,x2]` etc.) |
+| `profile` | `profile(expr, ..., return_data=False, min_entries=3, group_by_bins=None, group_by_quantiles=None, sort_groups=True, weights=None, auto_title=False, same=False, vector_style=None, group_style=None, **kwargs)` | Draw profile plot (supports vector expressions) |
+| `hist2d` | `hist2d(expr, ..., auto_title=False, same=False, **kwargs)` | Draw 2D histogram (vector input rejected — fail-fast) |
+| `hexbin` | `hexbin(expr, ..., auto_title=False, same=False, **kwargs)` | Draw hexbin plot (vector input rejected — fail-fast) |
+| `stats` | `stats(expr, selection=None, group_by=None)` | Compute statistics without plotting; returns `list[dict]` for vector input |
+| `draw_batch` | `draw_batch(specs, save_dir=None, defaults=None, on_error='skip', verbose=True, save_format='png', dpi=150, close_figures=True, **kwargs)` | Batch plot generation — dict format or list-of-groups format; supports vector expressions in plot specs |
 | `add_statistics_box` | `add_statistics_box(ax, values, position='upper right', expected_mean=None, expected_std=None, precision=3, fontsize=8, alpha=0.5)` | Add statistics annotation box to axis |
 | `add_reference_overlay` | `add_reference_overlay(ax, func='gaussian', mu=0, sigma=1, label=None, color='red', linestyle='--', linewidth=1.5, show_legend=True, n_points=100)` | Add reference function overlay scaled to histogram |
 | `backend` | `@property` | Return storage backend type ('pyarrow' or 'pandas') |
 | `memory_info` | `memory_info()` | Return memory usage information |
 
-### New Parameters (Phase 13.12–13.14.DF)
+### New Parameters (Phase 13.12–13.16.DF)
+
+#### Vector Expression Syntax (Phase 13.16.DF v1.0)
+
+Bracket-vector syntax draws multiple curves/series in a single call. Available on
+`draw()`, `profile()`, `hist()`, `scatter()`. Fail-fast on `hist2d()` and `hexbin()`.
+
+**Syntax patterns:**
+
+```python
+# N:1 — 3 y-columns vs shared x
+drawer.profile("[y1,y2,y3]:x")
+
+# 1:N — shared y vs 3 x-columns
+drawer.profile("y1:[x1,x2,x3]")
+
+# N:N — 2 paired series (element-wise)
+drawer.profile("[y1,y2]:[x1,x2]")
+
+# 1D vector — 3 overlaid histograms
+drawer.hist("[y1,y2,y3]")
+
+# Paren-aware expressions inside brackets
+drawer.profile("[max(a,b),max(c,d)]:x")
+
+# N:M mismatch raises ValueError
+drawer.profile("[y1,y2]:[x1,x2,x3]")  # ValueError
+```
+
+**New parameters:**
+
+```python
+vector_style: Optional[str] = None    # 'color' | 'linestyle' — channel for vector dimension
+group_style: Optional[str] = None     # 'color' | 'linestyle' — channel for group_by dimension
+```
+
+**Style channel defaults:**
+- Without `group_by`: `vector_style='color'` (each vector series gets a different color)
+- With `group_by`: `vector_style='linestyle'`, `group_style='color'` (groups get colors, vector series get linestyles)
+- Both channels must be distinct when used together (otherwise `ValueError`)
+
+**Return value for vector input:**
+- `fig, ax, stats_list` where `stats_list` is `list[dict]` of length N
+- `auto_title` defaults to `True` in vector mode (can be overridden)
+- Y-axis label uses common-prefix rule when ≥2 characters shared, else bracket-list
+- Secondary legend for vector dimension added via `ax.add_artist()` (preserves group legend)
+
+**Architectural note — AD-37 fix:** The vector interface was introduced to fix a bug
+in `AliasDataFrame.draw()` where each call creates a fresh `DFDraw` instance, resetting
+the color cycle. A scalar `same=True` loop through ADF therefore showed only 1–2 colors.
+The vector path uses a single `DFDraw` instance internally, preserving color/label
+continuity across the full series. Invariance test
+`test_vector_through_adf_equivalent_to_direct` confirms the fix.
+
+**Example — ITS layer residuals (real use case):**
+
+```python
+# 6 ITS layer residuals vs stave, single call
+aDF.draw("[dd_dyITS0,dd_dyITS1,dd_dyITS2,dd_dyITS3,dd_dyITS4,dd_dyITS5]:staveITS",
+         selection="row==180 & isPrimITS==1",
+         type='profile', bins=12)
+# Result: 6 distinct colors, per-layer legend, auto-title, stats_list of length 6
+```
+
+**Invariance contract:** Vector path produces byte-identical axes state (line count,
+colors, linestyles, labels, xdata/ydata to 10 decimals) and per-pair stats (each
+numeric field within 1e-9) compared to a manual scalar `same=True` loop. Verified
+by 7 A≡B tests in `tests/test_vector.py::TestVectorInvariance`.
 
 #### same=True — Plot Superposition (Phase 13.13.DF, AD-15)
 
@@ -587,7 +657,7 @@ results = {
 
 ---
 
-## Phase 13.12–13.14.DF Summary
+## Phase 13.12–13.16.DF Summary
 
 ### Phase 13.12.DF — Profile Enhancements
 
@@ -613,6 +683,27 @@ results = {
 - `verbose=2` debug mode (merged params per plot)
 - Interval sort fix for negative ranges
 
+### Phase 13.15.DF — Test Infrastructure
+
+- `tests/feature_taxonomy.py` — 35 feature enumeration (expanded to 43 in 13.16.DF)
+- `tests/test_layer_classification.py` — smoke vs invariance test markers
+- `scripts/generate_capability_matrix.py` → auto-generated `docs/CAPABILITY_MATRIX.md`
+- `run_tests.sh` — full/quick/matrix modes + `reviewer.zip` packaging
+- `scripts/phase_tag.sh` — phase boundary tag helper
+- 401/401 tests passing, 5 Verified features
+
+### Phase 13.16.DF — Vector Expression Interface
+
+- Bracket-vector syntax: `[y1,y2,y3]:x`, `y:[x1,x2]`, `[y1,y2]:[x1,x2]`, `[y1,y2,y3]`
+- Paren-aware comma split: `[max(a,b),max(c,d)]:x`
+- New parameters: `vector_style`, `group_style` (style channel decomposition)
+- Per-pair `stats()` returns `list[dict]`
+- Fail-fast on `hist2d()`/`hexbin()` vector input
+- Architectural fix for AD-37 AliasDataFrame color-cycling bug
+- Conditional color cycle reset (preserves `SAME.axes_reuse` contract)
+- 7 strong A≡B invariance tests (`TestVectorInvariance`)
+- 451/451 tests passing, 43 features, 21 invariance, 6 Verified
+
 ---
 
 ## Revision History
@@ -622,3 +713,4 @@ results = {
 | 1.0 | 2026-01-14 | Main Reviewer | Initial API_REFERENCE.md |
 | 1.1 | 2026-01-29 | Claude-Main | Added Phase 13.6.G.DF stats API |
 | 1.2 | 2026-03-28 | Claude41 | Added Phase 13.12-13.14 APIs: same=, auto_title=, profile params, list format, verbose=int, _auto_title.py functions, _interval_sort_key, updated test coverage to 399 |
+| 1.3 | 2026-04-09 | Claude41 | Added Phase 13.15.DF (test infrastructure) and Phase 13.16.DF (vector expressions): bracket syntax, `vector_style`/`group_style` parameters, `stats()` list return for vector, fail-fast on hist2d/hexbin, AD-37 fix documentation. Updated test coverage to 451 (43 features, 21 invariance, 6 Verified). |

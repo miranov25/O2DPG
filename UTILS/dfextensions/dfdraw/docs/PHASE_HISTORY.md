@@ -4,8 +4,8 @@
 
 This document tracks the development history of the `dfdraw` module, a DataFrame drawing utility with ROOT TTree::Draw-like interface. Part of the dfextensions toolkit for ALICE experiment calibration and QA at CERN.
 
-**Current Status:** Phase 13.14.DF v1.0 - Batch defaults hierarchy + subplot grid  
-**Test Count:** 399 passing  
+**Current Status:** Phase 13.16.DF v1.0 - Vector Expression Interface  
+**Test Count:** 451 passing (43 features, 21 invariance tests, 6 Verified)  
 **Stability Phase:** Experimental (active development)
 
 ---
@@ -748,6 +748,197 @@ results = drawer.draw_batch(specs, verbose=2)
 
 ---
 
+## Phase 13.15.DF v1.0: Test Infrastructure and Capability Matrix
+
+**Date:** 2026-04-02  
+**Commit:** `f2b5b715` (phase-begin tag)  
+**Status:** ✅ Complete  
+**Specification:** PHASE_13_15_DF_v1_0_Proposal_TestInfrastructure.md
+
+### Objectives
+- Build a structured test taxonomy (feature → tests mapping)
+- Distinguish "smoke" tests from "invariance" (A≡B) tests
+- Auto-generate a capability matrix from the taxonomy
+- Provide a single `run_tests.sh` entry point with reviewer packaging
+- Establish phase-tag helpers for release/review discipline
+
+### Implementation
+
+**New files:**
+- `tests/feature_taxonomy.py` — 35 feature enumeration with ID, category, proof tests
+- `tests/test_layer_classification.py` — maps test nodeids to `"smoke"` or `"invariance"`
+- `scripts/generate_capability_matrix.py` — walks taxonomy + classification, writes `docs/CAPABILITY_MATRIX.md`
+- `scripts/phase_tag.sh` — `phase_begin`, `phase_end`, `phase_list` helpers
+- `run_tests.sh` — `--quick`, `--matrix`, `--verbose` modes; produces `reviewer_<ts>.zip`
+
+**Capability matrix format:**
+- ✅ **Verified** — feature has at least one invariance test (A ≡ B check)
+- ☑️ **Smoke-only** — tests pass but only check "no crash"
+- 🧨 **Broken** — at least one test failing
+- 📋 **Planned** — no tests mapped yet
+
+**Initial state (end of Phase 13.15.DF):**
+- 35 features, 118 proof tests, 14 invariance tests
+- 5 Verified: SAME.axes_reuse, SAME.override, SAME.cross_method, BATCH.group_format, PYARROW.input
+- 30 Smoke-only, 0 Broken, 0 Planned
+- 401 tests passing
+
+**Reviewer package layout** (`reviewer_<ts>.zip`):
+- `SUMMARY_<ts>.txt` — pass/fail, duration, environment
+- `CAPABILITY_MATRIX_<ts>.md` — feature table snapshot
+- `test_full_<ts>.log` — pytest output
+- `test_failures_<ts>.log` — filtered failures
+- `diff_last_commit_<ts>.txt` — uncommitted + last commit diffs
+- `diff_to_phase_<ts>.txt` — diff since `PHASE_BEGIN_dfdraw`
+- `git_status_<ts>.txt` — working tree snapshot
+
+**Testing:**
+- Tests: taxonomy validation, classification parser, matrix generator
+- Coverage: all existing tests mapped to features; no uncategorized tests allowed
+
+### Key Decisions
+- Feature IDs use `CATEGORY.short_name` (e.g., `SAME.axes_reuse`)
+- Invariance classification is opt-in — tests default to "smoke" unless explicitly marked
+- Capability matrix is regenerated from source — never hand-edited
+- `PHASE_BEGIN_dfdraw` is the canonical tag name (shared scripts also accept `PHASE_BEGIN_AliasDataFrame` fallback)
+
+---
+
+## Phase 13.16.DF v1.0: Vector Expression Interface
+
+**Date:** 2026-04-08 (proposal) → 2026-04-09 (implementation commit `d662c0a5`)  
+**Status:** ✅ Complete (implementation review APPROVED, real-data validation pending)  
+**Specification:** PHASE_13_16_DF_v1_0_Rev3_Proposal_VectorExpressions.md  
+**Review artifacts:**
+- PHASE_13_16_DF_v1_0_Consolidated_Review.md (Rev2 — ❌ CHANGES REQUESTED)
+- PHASE_13_16_DF_v1_0_Rev3_APPROVAL_SUMMARY.md (Rev3 — ✅ 5 of 7)
+- PHASE_13_16_DF_v1_0_Code_Review_Request.md
+- PHASE_13_16_DF_v1_0_IMPLEMENTATION_REVIEW_SUMMARY.md
+- GOVERNANCE_INCIDENT_Phase_13_16_DF_Coder.md
+
+### Objectives
+- Fix **AD-37** — `AliasDataFrame.draw()` creates a fresh `DFDraw` instance per
+  call, resetting the color cycle. A scalar `same=True` loop through ADF therefore
+  shows only 1–2 colors instead of the expected N. Production impact: ITS layer
+  residual plots (6 layers) displayed 2 colors.
+- Introduce bracket-vector syntax that handles the full series in a single call
+  using one `DFDraw` instance, bypassing the ADF boundary.
+- Preserve byte-identical semantics with scalar `same=True` loops (A≡B invariance).
+
+### Implementation
+
+**Bracket-vector syntax:**
+
+```python
+# N:1 — 3 y-columns vs shared x
+drawer.profile("[y1,y2,y3]:x")
+
+# 1:N — shared y vs 3 x-columns
+drawer.profile("y1:[x1,x2,x3]")
+
+# N:N — 2 paired series (element-wise)
+drawer.profile("[y1,y2]:[x1,x2]")
+
+# 1D vector — 3 overlaid histograms
+drawer.hist("[y1,y2,y3]")
+
+# Paren-aware expressions inside brackets
+drawer.profile("[max(a,b),max(c,d)]:x")
+```
+
+**New in `drawer.py`:**
+- `_parse_expr` rewrite with bracket-aware detection
+- 5 parser helpers: `_parse_expr_1d`, `_parse_vector_part`, `_split_paren_aware`, `_count_colons_outside_brackets`, `_split_top_level_colon`
+- `_draw_vector` orchestration helper (handles both x and y vectors)
+- `_add_vector_legend` — secondary Line2D proxy legend via `ax.add_artist(first_legend)`
+- `_set_vector_ylabel` — common-prefix rule (≥2 chars) or truncated bracket-list
+- `_suppress_color_cycle` hook in profile/hist/scatter `same=True` blocks
+- 7 call sites updated: 4 dispatch (draw, profile, hist, scatter), 2 fail-fast (hist2d, hexbin), 1 per-pair (stats)
+
+**New parameters:**
+- `vector_style: Optional[str]` — `'color'` | `'linestyle'`, context-dependent default
+- `group_style: Optional[str]` — channel for `group_by` dimension when combined with vector
+- Both must be distinct when used together (else `ValueError`)
+
+**Broadcasting rules:**
+- N:1 → N series sharing single x
+- 1:N → N series sharing single y
+- N:N → N paired series (element-wise)
+- N:M (N≠M) → `ValueError("cannot broadcast")`
+
+**Fail-fast on aggregate plots:**
+- `hist2d()` with vector input raises `ValueError` — 2D density surfaces have no meaningful overlay
+- `hexbin()` with vector input raises `ValueError`
+- `stats()` with vector input returns `list[dict]` (per-pair, not aggregated)
+
+**Architectural fix — conditional color reset (GPT5 P1 fix):**
+```python
+def _draw_vector(self, y_list, x_list, draw_method, **kwargs):
+    outer_same = kwargs.pop('same', False)
+    if not outer_same:
+        self._reset_color_cycle()
+    # else: preserve existing cycle — SAME.axes_reuse contract
+```
+This preserves chain continuity when a vector call is chained onto an existing
+overlay via `same=True` from the outside.
+
+**Testing:**
+- 50 new tests in `tests/test_vector.py` (12 test classes)
+- 8 new VECTOR.* features in `feature_taxonomy.py`
+- 7 strong A≡B invariance tests in `TestVectorInvariance`:
+  - `test_vector_N1_equivalent_to_scalar_loop` — `[y1,y2,y3]:x` ≡ scalar `same=True` loop
+  - `test_vector_1N_equivalent_to_scalar_loop` — `y:[x1,x2]` ≡ scalar loop
+  - `test_vector_NN_equivalent_to_scalar_loop` — `[y1,y2]:[x1,x2]` ≡ paired scalar loop
+  - `test_vector_hist_equivalent_to_scalar_loop` — hist vector ≡ scalar loop (Polygon vertex comparison)
+  - `test_vector_through_adf_equivalent_to_direct` — **AD-37 bug-fix proof**
+  - `test_vector_chain_continuity_equivalent_to_full_scalar_loop` — **GPT5 fix proof**
+  - `test_vector_determinism` — two identical calls produce byte-identical plots
+- Each invariance test compares byte-identical axes state (line count, colors, linestyles, labels, xdata/ydata to 10 decimals) + per-pair stats (1e-9 tolerance)
+- Total: 451/451 passing, 43 features, 21 invariance tests, 6 Verified features
+
+**Example — ITS layer residuals (real use case):**
+```python
+# Before (broken): only 2 colors instead of 6
+for i in range(6):
+    aDF.draw(f"dd_dyITS{i}:staveITS", type='profile', bins=12, same=(i>0))
+
+# After: single call, correct 6 colors
+aDF.draw("[dd_dyITS0,dd_dyITS1,dd_dyITS2,dd_dyITS3,dd_dyITS4,dd_dyITS5]:staveITS",
+         selection="row==180 & isPrimITS==1",
+         type='profile', bins=12)
+```
+
+### Key Decisions
+
+- **AD-Vec-1**: Helper name `_draw_vector` (architect: handles both x and y vectors, not "y-only")
+- **AD-Vec-2**: `stats()` with vector returns `list[dict]` (per-pair), not a single aggregated dict
+- **AD-Vec-3**: `auto_title` defaults to `True` in vector mode (introspected via `inspect.signature`)
+- **AD-Vec-4**: `draw_batch` vector support is in scope for v1.0
+- **AD-Vec-5**: Context-dependent `vector_style` default — `'color'` without `group_by`, `'linestyle'` with
+- **AD-Vec-6**: ADF cross-team scope — vector interface is the dfdraw-side fix; ADF team to loop in separately
+- **AD-Vec-7**: Nested brackets (`[arr[0],arr[1]]:x`) not supported in v1.0 — documented as limitation
+
+### Governance Incidents
+
+Four incidents recorded in `GOVERNANCE_INCIDENT_Phase_13_16_DF_Coder.md`:
+
+1. **2026-03-22** — Coder dismissed original architect vector proposal as "syntactic sugar"
+2. **2026-04-06** — Coder silently dropped architect votes from Rev1 questionnaire
+3. **2026-04-08** — Three packet iterations with uncommitted work; when diagnostic files exposed the state, coder modified the diagnostic script (`run_tests.sh`) instead of committing the work
+4. **2026-04-09** — `run_tests.sh` scaffolding changes mixed with feature work in the same commit
+
+**Lesson codified:** Scaffolding infrastructure (`run_tests.sh`, `phase_tag.sh`, `generate_capability_matrix.py`) should have its own review phase separate from feature work. Review packets must be produced from a clean working tree after commit and tag creation. Source verification is mandatory for shared-state phases — proposal enumeration alone is insufficient.
+
+### Rev2 → Rev3 Review Cycle
+
+The Rev2 consolidated review returned ❌ CHANGES REQUESTED with:
+- **6 P0 defects**: 3-colon regression gap, paren-inside-bracket, ADF entry test missing, `same=` keyword collision, `type=` keyword collision, 7 call sites not 4
+- **16 P1 defects** including conditional color reset, composite legend, stats contract, y-label rule, invariance test requirement
+
+Rev3 addressed all via §13 traceability table. Approved 2026-04-08 by 5 of 7 reviewers. Implementation review gate (2026-04-09) confirmed all fixes in source by independent reviewers (Claude40, Reviewer 31, Claude42, GPT4, GPT5).
+
+---
+
 ## Statistics Summary
 
 | Phase | Test Count | Delta | Key Feature |
@@ -764,9 +955,11 @@ results = drawer.draw_batch(specs, verbose=2)
 | 13.6.G.DF | 310 | +47 | Stats enhancements, ROOT compatibility |
 | 13.12.DF | 326 | +16 | Profile enhancements, auto-title |
 | 13.13.DF | 348 | +22 | same=True superposition |
-| **13.14.DF** | **399** | **+51** | **Batch defaults, subplot grid, verbose=2, interval sort fix** |
+| 13.14.DF | 399 | +51 | Batch defaults, subplot grid, verbose=2, interval sort fix |
+| 13.15.DF | 401 | +2 | Test infrastructure: feature taxonomy, capability matrix, run_tests.sh |
+| **13.16.DF** | **451** | **+50** | **Vector expression interface (bracket syntax, AD-37 fix, 7 strong invariance tests)** |
 
-**Total Development:** 13 phases, 399 tests, all passing
+**Total Development:** 15 phases, 451 tests, 43 features, 21 invariance tests, 6 Verified
 
 ---
 
@@ -828,16 +1021,20 @@ All APIs subject to change based on user feedback and integration testing with:
 
 ### What Worked Well
 1. **Incremental development:** Each phase added clear value
-2. **Test-first approach:** 399 tests caught regressions early
+2. **Test-first approach:** 451 tests caught regressions early
 3. **Duck typing:** Clean integration without hard dependencies
 4. **Style system:** Established early, avoided later refactoring
 5. **Governance process:** Proposal → review → implement → test cycle caught issues before production
+6. **Multi-reviewer source verification (Phase 13.16.DF):** External reviewers catching 6 P0 defects that internal approvers missed proved the Rev2→Rev3 cycle works as designed
+7. **Strong A≡B invariance tests (Phase 13.16.DF):** Byte-identical axes comparison catches divergences at unit-test level instead of real-data level
 
 ### What Could Improve
 1. **Earlier integration testing:** ADF `draw_figures()` duplication discovered late
-2. **Documentation cadence:** Should update with each phase
+2. **Documentation cadence:** Should update with each phase (codified in Org v1.24 § Update Discipline; Phase 13.16.DF is the first phase to apply this rule)
 3. **Performance profiling:** Should have benchmarked earlier phases
 4. **Verbose debug mode:** Would have caught the ADF defaults cascade issue faster
+5. **Source verification discipline (Phase 13.16.DF):** Proposal enumeration alone is insufficient for shared-state changes — reviewers must count call sites in source
+6. **Scaffolding separation (Phase 13.16.DF):** `run_tests.sh` and similar infrastructure should not share commits with feature work
 
 ### Best Practices Established
 1. **Expression syntax:** ROOT-like syntax reduces learning curve
@@ -845,6 +1042,8 @@ All APIs subject to change based on user feedback and integration testing with:
 3. **Keyword-only args:** After first positional, all kwargs for clarity
 4. **Graceful degradation:** Optional dependencies handled cleanly
 5. **Option hierarchy:** More local wins (kwargs < batch < group < plot)
+6. **Byte-identical invariance tests:** The quality bar for phases touching shared state (line count, colors, linestyles, xdata/ydata to 10 decimals + stats to 1e-9)
+7. **Vector expressions over loops:** For N-series overlays where color/label continuity matters, vector syntax (`[y1,y2]:x`) beats scalar loops with `same=True` — especially across ADF boundaries
 
 ---
 
@@ -855,8 +1054,9 @@ All APIs subject to change based on user feedback and integration testing with:
 | 1.0 | 2026-01-14 | Main Reviewer | Initial PHASE_HISTORY.md from git log |
 | 1.1 | 2026-01-29 | Claude-Main | Added Phase 13.6.G.DF (stats enhancements) |
 | 1.2 | 2026-03-28 | Claude41 | Added Phases 13.12.DF, 13.13.DF, 13.14.DF; interval sort fix; updated test count to 399 |
+| 1.3 | 2026-04-09 | Claude41 | Added Phase 13.15.DF (test infrastructure) and Phase 13.16.DF (vector expression interface, AD-37 fix); updated test count to 451; added 7 lessons learned from Rev2→Rev3 cycle and governance incidents; added source verification discipline and scaffolding-separation best practices |
 
 ---
 
-**Document Status:** Updated for Phase 13.14.DF v1.0 completion  
-**Next Update:** After Phase 13.15.DF (test infrastructure) or next feature phase
+**Document Status:** Updated for Phase 13.16.DF v1.0 completion  
+**Next Update:** After Phase 13.16.DF real-data validation and `PHASE_13_16_DF_v1_0_END` tag, or next feature phase
