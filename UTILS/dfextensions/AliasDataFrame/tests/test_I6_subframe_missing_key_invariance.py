@@ -2,16 +2,25 @@
 Batch 1 — I6: Subframe-Missing-Key NaN Propagation
 Phase 13.12.ADF — Public API Invariance Test Suite
 
-APPEND to tests/test_fill_value_dependency.py (inside existing module,
-after the last test class). All tests are marked @pytest.mark.invariance.
+STANDALONE NEW TEST FILE (§5.1 deviation note)
+-----------------------------------------------
+v1.2 proposal §5.1 committed to extending existing files with zero new
+files. Phase 13.12 Batch 1 delivered 3 new standalone files instead,
+with "invariance" in each filename per §3.1 fallback rule. Deviation
+acknowledged by Main Architect on 2026-04-10 after reviewer feedback
+(Claude32 P2 #1, Claude33 P1-2). All tests are marked
+@pytest.mark.invariance.
 
 Feature flipped: CORE.materialization + CORE.dependency_resolution
 Incident addressed: BUG_AliasDataFrame_20260331_fill_value_dependency
     (7.4% NaN contamination in TPC calibration production output)
+    Fixed in production by commit 06d2d611
+    "fix(materialize_aliases): Apply fill_value during dependency resolution"
+    These tests are regression guards for that fix.
 
 NOTE ON INTEGRATION WITH EXISTING TESTS
 ---------------------------------------
-test_fill_value_dependency.py already has
+tests/test_fill_value_dependency.py already has
 test_invariance_direct_vs_dependency (marked @pytest.mark.invariance)
 which is a 6-row toy-scale I6_2. Per architect A3, I6 tests use a
 SINGLE TPC SECTOR scale (~250 rows, 1/36 of production) for faithful
@@ -152,15 +161,34 @@ class TestI6SubframeMissingKeyNaNPropagation:
         )
 
         # Invariant: matched rows (track_id < 150) must have B = S.dy * pt
-        matched_rows = adf.df['track_id'].values < 150
+        # Per Claude32 P2 #3: compute expected_matched via pd.merge rather
+        # than by direct slicing of the subframe .values. The slicing
+        # approach worked only because the fixture happened to use
+        # contiguous arange keys in both main and subframe; any future
+        # fixture change (seeded random keys, reordering) would make the
+        # direct-indexing path silently wrong AND silently passing.
+        matched_rows_mask = adf.df['track_id'].values < 150
+        # Build a reference via merge — independent of fixture ordering
+        sub_df = adf.get_subframe('S').df[['track_id', 'dy']].copy()
+        reference = adf.df[['track_id', 'pt']].merge(
+            sub_df, on='track_id', how='left'
+        )
+        # For matched rows (track_id < 150), dy must not be NaN after merge
+        reference_matched = reference[matched_rows_mask]
+        assert not reference_matched['dy'].isna().any(), (
+            "I6_1 fixture invariant broken: main rows with track_id<150 "
+            "must have a subframe match"
+        )
         expected_matched = (
-            adf.df.loc[matched_rows, 'pt'].values *
-            adf.get_subframe('S').df['dy'].values[:matched_rows.sum()]
+            reference_matched['pt'].values * reference_matched['dy'].values
         )
         np.testing.assert_allclose(
-            b_values[matched_rows], expected_matched,
+            b_values[matched_rows_mask], expected_matched,
             rtol=1e-6, atol=1e-9,
-            err_msg="I6_1 FAILED: matched rows have incorrect B values"
+            err_msg=(
+                "I6_1 FAILED: matched rows have incorrect B values "
+                "(merge-reference path)"
+            )
         )
 
     @pytest.mark.invariance

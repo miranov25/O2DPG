@@ -1,9 +1,15 @@
 """
-Batch 1 — I7: Draw Path Equivalence
+Batch 1 — I7: Draw Path Invariance
 Phase 13.12.ADF — Public API Invariance Test Suite
 
-APPEND to tests/test_draw_invariance.py (inside existing module, after
-TestDrawInvariance class). All tests are marked @pytest.mark.invariance.
+STANDALONE NEW TEST FILE (§5.1 deviation note)
+-----------------------------------------------
+v1.2 proposal §5.1 committed to extending existing files with zero new
+files. Phase 13.12 Batch 1 delivered 3 new standalone files instead,
+with "invariance" in each filename per §3.1 fallback rule. Deviation
+acknowledged by Main Architect on 2026-04-10 after reviewer feedback
+(Claude32 P2 #1, Claude33 P1-2). All tests are marked
+@pytest.mark.invariance.
 
 Feature flipped: DRAW.execution, DRAW.subframe_resolution
 Incidents addressed:
@@ -14,7 +20,7 @@ Incidents addressed:
 
 NOTE ON INTEGRATION WITH EXISTING TESTS
 ---------------------------------------
-test_draw_invariance.py already has
+tests/test_draw_invariance.py already has
 TestDrawInvariance::test_draw_vs_materialize_identical (line ~380)
 which is a partial I7_1 checking only stats['n']. The tests below are
 stricter versions asserting full stats-dict equality (n, mean, std,
@@ -372,7 +378,8 @@ class TestI7DrawPathEquivalence:
         mask = adf_a.df['pt'].values > 2.0
         filtered_df = adf_a.df[mask].reset_index(drop=True)
         adf_b = AliasDataFrame(filtered_df)
-        sub_entry = adf_a._subframes.get('Side')
+        # Per Claude32 P2 #6: use public get_subframe, not _subframes private
+        sub_entry = adf_a.get_subframe('Side')
         if sub_entry is not None:
             adf_b.register_subframe(
                 'Side', sub_entry, index_columns='sector'

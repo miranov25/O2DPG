@@ -1,6 +1,16 @@
 """
-Batch 1 — I5: Schema Roundtrip Invariance (FIXED v2)
+Batch 1 — I5: Schema Roundtrip Invariance
 Phase 13.12.ADF — Public API Invariance Test Suite
+
+STANDALONE NEW TEST FILE (§5.1 deviation note)
+-----------------------------------------------
+v1.2 proposal §5.1 committed to extending existing files with zero new
+files. Phase 13.12 Batch 1 delivered 3 new standalone files instead,
+with "invariance" in each filename per §3.1 fallback rule. Deviation
+acknowledged by Main Architect on 2026-04-10 after reviewer feedback
+(Claude32 P2 #1, Claude33 P1-2).
+
+All tests are marked @pytest.mark.invariance.
 
 FIX HISTORY
 -----------
@@ -14,13 +24,14 @@ v2 (2026-04-10): Fixed by registering subframes on the fresh ADF
     BEFORE calling apply_schema(), mirroring the actual production
     JSON-path workflow:
         adf2 = AliasDataFrame(df_main)
-        adf2.register_subframe('S', sub_adf, 'sector')  ← added
+        adf2.register_subframe('S', sub_adf, 'sector')  <-- added
         adf2.apply_schema(schema)
     I5_2 passed in v1 and remains unchanged — it uses the ROOT path
     where read_tree() internally loads subframes before apply_schema.
-
-APPEND to tests/test_schema_serialization.py (inside existing module, after
-the last test class). All tests are marked @pytest.mark.invariance.
+v3 (2026-04-10): Post-review polish applied from Claude32 review:
+    - I5_1 Invariant 2: strict set equality instead of subset-or
+    - I5_4: added key ordering assertion (docstring previously promised
+      ordering determinism but body did not assert it)
 
 Feature flipped: SCHEMA.export_import (currently ☑️ smoke-only)
 Incident addressed: Phase 13.9.Fix1 (polynomial persistence — JSON path
@@ -210,12 +221,13 @@ class TestI5SchemaRoundtripInvariance:
                 f"'{aliases_before[name]}' → '{aliases_after[name]}'"
             )
 
-        # Invariant 2: Subframe metadata in schema preserved
+        # Invariant 2: Subframe metadata in schema preserved (strict equality)
+        # Per Claude32 P2 #4: strict == instead of subset-or. A schema that
+        # invented spurious subframe names would silently pass the subset test.
         subframes_in_schema_after = set(adf2._schema.get('subframes', {}).keys())
-        assert subframes_before.issubset(subframes_in_schema_after) \
-            or subframes_before == subframes_in_schema_after, (
-            f"Subframe metadata lost: before={subframes_before}, "
-            f"in schema after={subframes_in_schema_after}"
+        assert subframes_before == subframes_in_schema_after, (
+            f"Subframe metadata changed through JSON roundtrip: "
+            f"before={subframes_before}, after={subframes_in_schema_after}"
         )
 
         # Invariant 3: Re-materialization produces equivalent values.
@@ -442,4 +454,21 @@ class TestI5SchemaRoundtripInvariance:
             assert aliases_1[name] == aliases_2[name], (
                 f"Alias '{name}' changed between consecutive exports: "
                 f"'{aliases_1[name]}' → '{aliases_2[name]}'"
+            )
+
+        # Key ordering determinism (per Claude32 P2 #5).
+        # The docstring promises "deterministic key ordering" as a guard
+        # against spurious diffs in schema-under-VCS workflows. Assert it.
+        assert list(aliases_1.keys()) == list(aliases_2.keys()), (
+            f"Alias key ordering changed between consecutive exports: "
+            f"first={list(aliases_1.keys())}, second={list(aliases_2.keys())}. "
+            f"This would cause spurious diffs in schema-under-VCS workflows."
+        )
+        # Also assert columns-level ordering if v2 schema shape is present
+        cols_1 = list(schema_1.get('columns', {}).keys())
+        cols_2 = list(schema_2.get('columns', {}).keys())
+        if cols_1 or cols_2:
+            assert cols_1 == cols_2, (
+                f"Columns key ordering changed between consecutive exports: "
+                f"first={cols_1}, second={cols_2}"
             )
