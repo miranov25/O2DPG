@@ -1,10 +1,22 @@
 # Technical Summary: GroupBy Regression
 
-**Version:** 3.3
-**Phase:** 13.16.GB-FIX2
-**Last Updated:** 2026-04-07
-**Coder:** Claude21 (GBAI team)
-**Suggested archive filename:** `GroupByRegression_Technical_Summary_PHASE_13_16_GB_FIX2_v3_3.md`
+**Version:** 3.4
+**Phase:** 13.17.GB
+**Last Updated:** 2026-04-11
+**Coder:** Claude22 (GBAI team)
+**Suggested archive filename:** `GroupByRegression_Technical_Summary_PHASE_13_17_GB_v3_4.md`
+
+> **Changes from v3.3:**
+> - **F1 fixed:** `make_sliding_window_aggregate` and its parallel sibling now honour `boundary='symmetric'` and `boundary='periodic'` for the mean/std/count output columns. Both the primary kernel call and the sigma-cut recompute kernel call thread a Path 2 structure `(valid_offset_mask, wrap_flag, wrap_idx, wrapped_coords)` computed once per call by the new helper `_precompute_aggregate_boundary_mask`. Zero behavioural change on the default `boundary='full'` path (verified strictly by T9 against a captured literal baseline).
+> - **D1 (median path boundary honouring) DEFERRED** to Phase 13.17.GB-MedianFix per architect direction on 2026-04-09. The median slow path continues to use `'full'` behaviour regardless of `boundary` for the median column only. Mean/std/count columns are fully fixed. Architect quotes verbatim (typos preserved): *"D1. We can psopone for later Phase"* and *"D1. I decidee only later on . I did not realize it it too complicated. Can be postponed...."*
+> - **Tests:** 28 new pytest-level test runs in `tests/test_aggregate_boundary.py` from 16 test functions (T14 × 6 parametrize, T16 × 3, T17 × 6, plus 13 singles). Unified Claude22 + Claude23 joint plan from v1.3 §6.2. 8 of 16 are invariance-style (50% invariance ratio, up from v1.2's 25%) — including T13 oracle via `_get_neighbor_bins_v2`, T14 numba≡numpy cross-backend via `monkeypatch`, T15 periodic shift + topology on 2-D grid, T16 window=0 ≡ pandas groupby across all modes, T17 constant-field canary. T12 (median) removed per D1 deferral.
+> - **Test count — CORRECTION of inherited v3.3 arithmetic error:** v3.3 records 528 passed canonical but the correct number is 529. Calculation: `517 + 11 (FIX2 evaluator tests) + 1 (F5 flip) = 529`. v3.3 omitted the F5 flip. v3.4 corrects this throughout.
+> - **Canonical test count v3.4:** **556 passed / 3 failed / 19 skipped** on `alma2` commit `85713774`, branch `feature/groupby-optimization`, 2026-04-11 09:03 CEST. Source: `test_logs/SUMMARY_20260411_090322.txt`. Calculation: `528 baseline (corrected) + 28 new = 556`. The previously cited "529 baseline" was off by one because the timing test `test_v3_numpy_faster_than_v1_numpy` was already failing pre-Phase-13.17.GB but had not been recorded in any deferred-failure list.
+> - **Pre-existing failures: 3 (was 2 in v3.3 corrected baseline).** The third is `test_invariance_sliding_window.py::TestSWV3bTiming::test_v3_numpy_faster_than_v1_numpy` — a wall-clock timing comparison, environment-sensitive, unrelated to F1 boundary handling. Not introduced by Phase 13.17.GB; surfaced by the canonical run because the deferred-failure list was incomplete in v3.3.
+> - **Capability matrix: 0 broken / 0 partial / 43 verified / 133 total.** F1 closes the only Broken row from v3.3.
+> - **Incident 7 added** to PHASE_HISTORY v6.1 — see that document for the F1 description and the Resolution block.
+> - **Parameter-not-propagated bug class catalog:** now at 7 instances. F2 (Incident 6, FIX2) and F1 (Incident 7, this phase) are consecutive entries.
+> - **All v3.0 / v3.2 / v3.3 sections marked `[UNCHANGED]` preserved verbatim.** Sections marked `[UPDATED]` extend rather than replace.
 
 > **Changes from v3.2:**
 > - **Fix F2 committed:** `method=dict` with mixed interpolation orders now raises `ValueError` at dispatch time instead of silently picking the first dim's order. Validation in `_eval_per_dimension` treats `'nearest'`/`'nearest_fast'` as equivalent (both order 0) per C3. Full `method_dict` included in error message per C5.
@@ -35,16 +47,17 @@
 | 4 | Function evaluator and interpolator (linear models) | ✅ Complete (Phase 13.9.GB) |
 | 5 | Non-linear GroupBy regression (binned spectra) | ✅ Complete (Phase 13.10.GB) |
 | 6 | Expression-based linear columns | ✅ Complete (Phase 13.13.GB) |
-| 7 | Dedicated sliding window aggregation | ✅ Complete (Phase 13.14.GB) |
+| 7 | Dedicated sliding window aggregation | ✅ Complete (mean/std/count, F1 fixed in 13.17.GB); ⚠️ partial for median (boundary deferred to 13.17.GB-MedianFix) |
 | 8 | Sigma-clipped robust aggregation | ✅ Complete (Phase 13.15.GB) |
 | 9 | **Evaluator: scipy interpolation + lookup + per-dimension methods** | **✅ Complete (Phase 13.16.GB)** |
 | 10 | THn interface (histogram fitting) | 📋 Planned (Phase 13.12.GB) |
 | 11 | Integration interfaces (ADF, RDataFrameDSL, RootInteractive) | 📋 Planned |
 
 **Next scheduled phases** (in order):
-1. ~~`13.16.GB-FIX2`~~ — ✅ **Completed 2026-04-07** (this document is the FIX2 summary update). Evaluator bug fixes F2/F3/F4/F5 plus C3/C8/C10 improvements. 11 new tests. Coder: Claude21.
-2. `13.17.GB` — `boundary='symmetric'` in `make_sliding_window_aggregate` (silent-drop bug fix). Tier 1 review. ~2.5 days. Proposal drafted, pending review.
-3. `13.11.GB` / `13.12.GB` / `12.15.GB` — planned, unordered.
+1. ~~`13.16.GB-FIX2`~~ — ✅ Completed 2026-04-09. Evaluator bug fixes F2/F3/F4/F5 + C3/C8/C10. 11 new tests. Coder: Claude21.
+2. ~~`13.17.GB`~~ — ✅ **Completed 2026-04-11** (this document is the v3.4 summary update). F1 fixed for mean/std/count in both kernel call sites via Path 2 (mask + wrap_flag). D1 (median subpath) deferred. 28 new pytest-level test runs. Coder: Claude22.
+3. `13.17.GB-MedianFix` — **NEW micro-phase, scheduled immediately.** Fixes the `agg_median=True + boundary` interaction deferred from 13.17.GB. Estimated ~6-10h. Same fix strategy (reuse the Path 2 mask infrastructure from 13.17.GB), dedicated T12 invariance test.
+4. `13.11.GB` / `13.12.GB` / `12.15.GB` — planned, unordered.
 
 ---
 
@@ -87,8 +100,10 @@ result = make_sliding_window_aggregate(
     window_spec={'row_bin': 1, 'driftM_bin': 1, 'dsecM_bin': 1, 'mP4_bin': 1},
     n_sigma_cut=3.0,  # robust 2-pass statistics
 )
-# ⚠️ NOTE: boundary='symmetric' is currently silently ignored in this function.
-# Fix scheduled in Phase 13.17.GB. See § Known Limitations.
+# ✅ Phase 13.17.GB: boundary='symmetric' and 'periodic' now honoured for the
+# mean/std/count output columns. The median subpath (agg_median=True) still
+# uses 'full' behaviour regardless — that fix is scheduled for Phase
+# 13.17.GB-MedianFix. See § Known Limitations.
 
 # Expression-based polynomial fitting
 df_out, dfGB = make_parallel_fit_v4(
@@ -156,7 +171,9 @@ Need fast eval (any grid)?      → evaluate(method='linear')        [NEW]
 Need fastest eval (integer)?    → evaluate(method='lookup')        [NEW]
 Need mixed integer/continuous?  → evaluate(method=dict)            [NEW]
 Need symmetric boundary in
-  SW aggregation?               → wait for Phase 13.17.GB          [BUG]
+  SW aggregation (mean/std)?    → make_sliding_window_aggregate(boundary='symmetric')
+Need symmetric boundary in
+  SW aggregation median?        → wait for Phase 13.17.GB-MedianFix [KNOWN LIMITATION]
 ```
 
 ---
@@ -286,7 +303,7 @@ result = make_sliding_window_aggregate(
 | `min_stat` | int | 1 | Minimum entries per window |
 | `kernel` | str | 'uniform' | Window kernel ('uniform' or 'gaussian') |
 | `kernel_width` | float/dict or None | None | Kernel bandwidth |
-| `boundary` | str/dict | 'full' | Boundary handling. **⚠️ `'symmetric'` and `'periodic'` silently ignored — see Known Limitations. Fix in Phase 13.17.GB.** |
+| `boundary` | str/dict | 'full' | **Phase 13.17.GB:** boundary handling now honoured for mean/std/count via Path 2 mask + wrap_flag threading through both backends and both kernel call sites (primary + sigma-cut recompute). `'full'` (default) is bit-identical to pre-fix behaviour (T9 regression gate). `'symmetric'` mirrors `_get_neighbor_bins_v2`'s `eff_w(c) = min(w, c-lo, hi-c)` from the SW fit path. `'periodic'` wraps neighbours via `((raw - lo) % n_range) + lo`. **Known limitation:** the median subpath (`agg_median=True`) still ignores `boundary` — see Known Limitations. |
 | `n_sigma_cut` | float or None | None | 2-pass sigma clipping threshold |
 | `agg_median` | bool | False | Compute median (slow — disables sufficient stats) |
 | `verbose` | bool | False | Print timing per step |
@@ -395,8 +412,11 @@ Output coefficients use the key name: `slope_xM2`, `slope_xM_driftM`.
 | ~~`fit_intercept=False` in SW numba~~ | ✅ Fixed (P0, Mar 29 2026) | — |
 | ~~`method=dict` with mixed interpolation orders~~ | ✅ Fixed (13.16.GB-FIX2) — now raises `ValueError` | Use one interpolation method per call, or call `evaluate()` multiple times |
 | ~~`evaluate(method='lookup', bounds='extrapolate')`~~ | ✅ Fixed (13.16.GB-FIX2) — now raises `ValueError` | Use `bounds='clamp'` or `bounds='nan'` with `method='lookup'` |
-| **`boundary='symmetric'` in `make_sliding_window_fit` (V3b / V4)** | **⚠️ Implemented, 4 V3b tests pass** | **Use the fit path as currently tested. See note below.** |
-| **`boundary='symmetric'` in `make_sliding_window_aggregate` (serial and parallel)** | **🧨 Silently broken** | **Use `boundary='full'` explicitly. See note below. Fix in Phase 13.17.GB.** |
+| `boundary='symmetric'` / `'periodic'` in `make_sliding_window_fit` (V3b/V4) | ✅ Implemented, 6 V3b tests pass (4 boundary + 2 integration) | — |
+| `boundary='symmetric'` / `'periodic'` in `make_sliding_window_aggregate` mean/std/count (serial and parallel) | ✅ **Fixed Phase 13.17.GB**, 28 tests pass (unified 16-function plan, 50% invariance ratio) | — |
+| **`boundary` + `agg_median=True` interaction in `make_sliding_window_aggregate`** | **⚠️ Median subpath silently uses `'full'` regardless of `boundary`.** Mean/std/count columns honour `boundary` correctly. | **Workaround:** call the function twice — once with the desired boundary and `agg_median=False` for the statistics, once with `boundary='full'` and `agg_median=True` for the (uncorrected) median. **Fix scheduled for Phase 13.17.GB-MedianFix.** Architect-authorised deferral 2026-04-09 (verbatim): *"D1. We can psopone for later Phase"* and *"D1. I decidee only later on . I did not realize it it too complicated. Can be postponed...."* |
+| **Pre-existing broken `test_aggregate_numba_matches_numpy` test** | **⚠️ False-positive cross-backend invariance.** Test at `tests/test_sliding_window_aggregate.py:219` calls the same numba backend twice and compares output to itself — auto-dispatch failure mode #11 hiding a real gap that has existed since Phase 13.14.GB. | **Superseded by T14 `test_aggregate_numba_equals_numpy_all_boundaries_all_paths` added in Phase 13.17.GB via `monkeypatch` on `_get_numba_agg_kernel`.** Deletion of the old test is a separate micro-task after 13.17.GB commit (NOT done in-phase per scope rule 1). |
+| **`test_v3_numpy_faster_than_v1_numpy` timing test failing on canonical** | **⚠️ Pre-existing wall-clock timing comparison, environment-sensitive.** Failing on canonical alma2 since at least Phase 13.16.GB-FIX2 (predecessor tag), unrelated to F1. | Investigate in a separate cleanup pass; unrelated to boundary handling. Listed in deferred-failures alongside `test_multiple_fits_match_v4_merged` and `test_tpc_distortion_recovery`. |
 | V3/V5 incremental: median=NaN | By design | Use V1/V2 (recompute) or `agg_median=True` in aggregate |
 | Parallel SW: Windows OS | By design | Linux/macOS only |
 | WLS not supported in parallel V5 | By design | Use serial, or split manually |
@@ -408,66 +428,49 @@ Output coefficients use the key name: `slope_xM2`, `slope_xM_driftM`.
 | Python multiprocessing overhead for aggregation | Inherent | Use serial with Numba prange |
 | Dense grid with high-cardinality grouping vars | User code issue | Loop per-sector instead of including in `gb_columns` (see PHASE_HISTORY § Performance Reference) |
 
-### Note: `boundary='symmetric'` — Two Distinct Statuses
+### Note: `boundary='symmetric'` resolved in Phase 13.17.GB
 
-**Architect requirement (original sliding window proposal, October 2025, quoted in PHASE_HISTORY § Incident 4):**
-
-> "For TPC – drift, radius, and rphi – all should be symmetric. **I do not want to introduce edge bias.**"
->
-> — Main Architect (MI)
-
-**Architect clarification (2026-04-07, this phase):**
-
-> "In the TPC use case, we want usually option A 'Truncate to symmetric extent'. This will be our usual default. All option A. We are calibrating diffs."
->
-> — Main Architect (MI)
-
-**Definition (Option A, "truncate to symmetric extent"):** For a 1-D grid `[lo..hi]` with window half-width `w` at center bin `c`: `eff_w(c) = min(w, c-lo, hi-c)`, window = `[c - eff_w, c + eff_w]`. The window stays symmetric around the center and shrinks near edges so it never extends past the observed bin range. Interior bins use the full `2w+1` neighborhood; edge bins use less data; no asymmetric bias.
-
-**Status in `make_sliding_window_fit` (V3b path, Phases 13.8.GB–):**
-- Implemented in `_get_neighbor_bins_v2` at `groupby_regression_sliding_window.py:412-418` (symmetric) and `:420-426` (periodic)
-- 4 invariance tests passing in `test_invariance_sliding_window.py::TestSWV3bBoundary`
-  - `test_symmetric_reduces_corner_window`
-  - `test_symmetric_interior_equals_full`
-  - `test_symmetric_per_dimension`
-  - `test_symmetric_gaussian_interior_same_as_full_gaussian`
-- **Use with confidence for the fit path.**
-
-**Status in `make_sliding_window_aggregate` (and parallel variant, Phase 13.14.GB):**
-- **🧨 Silently broken.** Parameter accepted at line 4224, validated at line 4359 via `_resolve_boundary`, then `boundary_resolved` is **never read again** in the function body (lines 4359–4549). The numba accumulation kernel and the numpy fallback receive only the unfiltered `neighbor_offsets`. Both `'symmetric'` and `'periodic'` are silently dropped — output is identical to `boundary='full'`.
-- **Instance #5 of the parameter-not-propagated bug class.** See PHASE_HISTORY § Incident 5 (to be added when 13.17.GB closes).
-- **Impact:** Edge bins of every grid computed with `boundary='symmetric'` in this function carry a bias of approximately `0.5 × (local gradient × window size)` in the direction of the grid interior. Interior bins (distance ≥ `window` from every edge) are unaffected. For TPC distortion calibration, this means maps produced with the current version have silently used asymmetric windows at the boundaries of the drift, radius, and rphi dimensions.
-- **Verified by smoke test on a linear-rise-in-dsector fixture:** corner bin 0 with `window=1` returned 100 entries / mean ≈ 0.5 instead of the expected 50 entries / mean ≈ 0.0.
-- **Fix scheduled in Phase 13.17.GB** (proposal drafted, pending Tier 1 review).
-- **Workaround until fixed:** Use `boundary='full'` explicitly and restrict analysis to interior bins (distance ≥ `window` from every edge), or use `make_sliding_window_fit` with `linear_columns=[]` which routes through the correct V3b path (slower but correct).
+The v3.3 split between fit-path (`⚠️`) and aggregate-path (`🧨 silently broken`) is now obsolete: as of Phase 13.17.GB the aggregate path honours `boundary` for mean/std/count columns via the Path 2 mask + wrap_flag mechanism (see § Sliding Window Aggregation API for the parameter description). The full historical narrative — architect quotes, root cause, parameter-not-propagated bug class progression — is preserved in PHASE_HISTORY v6.1 Critical Incident 7.
 
 ---
 
 ## [UPDATED] Current State
 
-| Metric | v2.1 (Feb 2026) | v3.0 (Mar 2026) | v3.2 (Apr 2026) | v3.3 (Apr 2026) |
-|--------|-----------------|-----------------|-----------------|-----------------|
-| Test count | 338 passed | 500 passed | 517 passed | **528 passed** |
-| Pre-existing failures | 3 | 4 | 3 | **2** |
-| Skipped | — | — | 19 | **19** |
-| Features | 102 | 133 | 133 | **133** |
-| Verified (✅) | 25 (24.5%) | 43 (32.3%) | 43 (32.3%) | **43+ (+11 new tests in test_evaluator_lookup.py)** |
-| Smoke-only (☑️) | — | — | 89 (66.9%) | **89 (66.9%)** |
-| Broken (🧨) | 0 | 0 | 2 (F1, F2) | **1 (F1 only — F2 fixed)** |
-| Public functions | 14 | 20 | 20 | **20** |
-| Evaluator method values | 2 | 3 | 6 (5 methods + per-dim dispatch) | **6 (5 methods + per-dim dispatch, now with detect-and-reject validation)** |
+| Metric | v2.1 (Feb 2026) | v3.0 (Mar 2026) | v3.2 (Apr 2026) | v3.3 corrected¹ | **v3.4 (Apr 2026)** |
+|--------|-----------------|-----------------|-----------------|-----------------|---------------------|
+| Test count | 338 passed | 500 passed | 517 passed | 529 passed¹ | **556 passed²** |
+| Pre-existing failures | 3 | 4 | 3 | 2 | **3³** |
+| Skipped | — | — | 19 | 19 | **19** |
+| Features | 102 | 133 | 133 | 133 | **133** |
+| Verified (✅) | 25 (24.5%) | 43 (32.3%) | 43 (32.3%) | 43 (32.3%) | **43 (32.3%) + 28 new pytest runs (T1–T17)** |
+| Smoke-only (☑️) | — | — | 89 (66.9%) | 89 (66.9%) | **89 (66.9%)** |
+| Broken (🧨) | 0 | 0 | 2 (F1, F2) | 1 (F1) | **0** |
+| Partial (⚠️) | 0 | 0 | 0 | 0 | **0** (D1 median deferral is recorded as a Known Limitation, not as a Capability Matrix Partial entry, since it does not map to a distinct capability row) |
+| Public functions | 14 | 20 | 20 | 20 | **20** |
+| Evaluator method values | 2 | 3 | 6 | 6 | **6** |
 
-**Test count sourced from `run_tests.log` on the canonical machine** (`alma2`, Python 3.10.19, pytest-7.2.2-xdist, 12 workers). Reproducible via `bash run_tests.sh | tee run_tests.log`.
+¹ **v3.3 on disk records 528 passed.** This is an inherited arithmetic error carried over from the FIX2 coder packet: `517 + 11 new = 528` forgot the F5 flip (one failing test moved to passing). Correct arithmetic: `517 + 11 + 1 = 529`. Reference: `SUMMARY_20260409_112129.txt` from the FIX2 reviewer packet. v3.4 corrects this.
 
-**Arithmetic:** 517 (v3.2) + 11 new tests in `test_evaluator_lookup.py` + 1 flipped (`test_select_backend_auto_sequential` fail→pass) = **528 passed on canonical machine**. Failures: 3 − 1 (F5 flipped) = **2**.
+² **Canonical v3.4 number from `test_logs/SUMMARY_20260411_090322.txt`** on alma2 commit `85713774`, branch `feature/groupby-optimization`, 2026-04-11 09:03 CEST. Calculation: `528 baseline + 28 new pytest-level runs = 556`. The v3.3 corrected baseline above was 529, but the canonical run revealed the timing test (footnote 3) was already failing pre-phase, so the *true* pre-phase passed-count was 528 not 529. Both numbers are surfaced for transparency: 529 was the expected baseline from arithmetic alone, 528 was the empirically-observed pre-phase passed-count once the third pre-existing failure was identified.
 
-> **Coder env vs canonical env:** The FIX2 Coder (Claude21, implementation environment) runs on pandas 4.x which introduces 3 environmental failures and 21 additional skips unrelated to FIX2 scope. Coder-env numbers: **505 passed / 5 failed / 40 skipped**. Arithmetic: 493 baseline + 11 new + 1 flipped = 505. Failures: 6 baseline − 1 flipped = 5. Canonical-env numbers (above) will be produced when the Coder's commit is tested on `alma2`.
+³ **Pre-existing failures jumped from 2 to 3** because the Phase 13.17.GB canonical run surfaced `test_invariance_sliding_window.py::TestSWV3bTiming::test_v3_numpy_faster_than_v1_numpy` as a pre-existing failure not previously listed. This is a wall-clock timing comparison test, environment-sensitive, unrelated to F1 boundary handling. The other 2 failures (`test_multiple_fits_match_v4_merged` V5-vs-V4 rtol, and `test_tpc_distortion_recovery` test bug) were already on the deferred list.
 
-**The 2 remaining pre-existing failures** are unrelated to Phase 13.16.GB-FIX2 scope and remain deferred:
-- `test_tpc_distortion_recovery::test_tpc_distortion_recovery` — test calls `make_sliding_window_fit` with wrong argument convention (test bug, not code bug); fix deferred to 13.17.GB or separate cleanup.
-- `test_phase_12_8_gb::test_multiple_fits_match_v4_merged` — V5 vs V4 parity at `rtol=1e-12`; numerical, ambiguous, out of scope for FIX2 and 13.17.GB, separate micro-task.
+**Coder env note:** Phase 13.17.GB Coder environment was numpy 2.4.3, pandas 3.0.1, numba 0.65.0, pytest 9.0.3 (a different combination from the canonical alma2 environment of pytest 7.2.2 + Python 3.10.19). The 28 new test runs all pass on both environments.
 
-**The 1 remaining broken-feature entry (F1)** is the `boundary='symmetric'` silent-drop in `make_sliding_window_aggregate`, scheduled for fix in Phase 13.17.GB (Tier 1 review, ~2.5 days). F2 (`method=dict` mixed interp) is now ✅ fixed and removed from the Broken count.
+**Capability Matrix snapshot at v3.4:** 0 broken / 0 partial / 43 verified / 89 smoke-only / 1 planned (Phase 13.17.GB-MedianFix) / 133 total. Source: `test_logs/CAPABILITY_MATRIX_20260411_090322.md`.
+
+**Test count sourced from `test_logs/SUMMARY_20260411_090322.txt`** on canonical `alma2` commit `85713774`, branch `feature/groupby-optimization`, Python 3.10.19, pytest-7.2.2-xdist, 12 workers. Reproducible via `bash run_tests.sh | tee run_tests.log`.
+
+**Arithmetic v3.4:** `528 corrected baseline + 28 new pytest-level runs (16 functions in tests/test_aggregate_boundary.py expanded via parametrize: T14 × 6, T16 × 3, T17 × 6, plus 13 singles) = 556 passed`. Pre-existing failures: 3 (was 2 in v3.3 corrected; +1 from the timing test newly listed as pre-existing).
+
+> **Coder env vs canonical env (Phase 13.17.GB):** The Phase 13.17.GB Coder (Claude22) ran in numpy 2.4.3 / pandas 3.0.1 / numba 0.65.0 / pytest 9.0.3 / Python 3.12. Coder-env full-suite numbers: **532 passed / 5 failed / 41 skipped**. The 5 coder-env failures include the 3 canonical pre-existing failures plus 2 environment-only failures (`test_area_conservation_option_b`, `test_parallel_matches_serial`/`test_single_vs_multi_worker` clusters) verified pre-existing on baseline source before any 13.17.GB changes. Canonical numbers (above) come from the alma2 run on 2026-04-11 09:03 CEST.
+
+**The 3 remaining pre-existing failures** are unrelated to Phase 13.17.GB scope and remain deferred:
+- `test_tpc_distortion_recovery::test_tpc_distortion_recovery` — test calls `make_sliding_window_fit` with wrong argument convention (test bug, not code bug); separate cleanup.
+- `test_phase_12_8_gb::test_multiple_fits_match_v4_merged` — V5 vs V4 parity at `rtol=1e-12`; numerical, ambiguous, separate micro-task.
+- **`test_invariance_sliding_window::TestSWV3bTiming::test_v3_numpy_faster_than_v1_numpy`** — wall-clock timing comparison, environment-sensitive, **newly listed in v3.4** but pre-existing on canonical alma2; surfaced by the Phase 13.17.GB canonical run because it had not been in any prior deferred list.
+
+**Zero broken-feature entries in v3.4.** F1 (`boundary` silent-drop in aggregate path) is now ✅ fixed for mean/std/count via Phase 13.17.GB. F2 (`method=dict` mixed interp) was fixed in 13.16.GB-FIX2. The median-subpath D1 deferral is recorded as a Known Limitation but does not constitute a Capability Matrix Broken entry (the SW.aggregate_boundary capability is satisfied for the mean/std/count surface).
 
 ---
 
@@ -535,6 +538,23 @@ Per Organization-structure v1.25 § Cross-Team Information Flow, behavioral clai
 | `boundary='symmetric'` per-dimension dict in SW fit | `test_invariance_sliding_window.py::TestSWV3bBoundary::test_symmetric_per_dimension` | `make_sliding_window_fit(boundary={...})` |
 | `boundary='symmetric'` + gaussian kernel in SW fit | `test_invariance_sliding_window.py::TestSWV3bInteraction::test_symmetric_gaussian_interior_same_as_full_gaussian` | `make_sliding_window_fit(boundary='symmetric', kernel='gaussian')` |
 
+| F1: aggregate `boundary='full'` bit-identical to pre-fix baseline | `test_aggregate_boundary.py::test_aggregate_default_boundary_full_unchanged` | `make_sliding_window_aggregate(boundary='full')` |
+| F1: aggregate `boundary='symmetric'` corner is unbiased | `test_aggregate_boundary.py::test_aggregate_symmetric_corner_is_unbiased` | `make_sliding_window_aggregate(boundary='symmetric')` |
+| F1: aggregate symmetric interior ≡ full interior | `test_aggregate_boundary.py::test_aggregate_symmetric_interior_equals_full` | `make_sliding_window_aggregate(boundary='symmetric')` |
+| F1: aggregate per-dimension boundary dict | `test_aggregate_boundary.py::test_aggregate_symmetric_per_dimension_dict` | `make_sliding_window_aggregate(boundary={...})` |
+| F1: aggregate `boundary='periodic'` wraps at edges | `test_aggregate_boundary.py::test_aggregate_periodic_wraps_at_edges` | `make_sliding_window_aggregate(boundary='periodic')` |
+| F1: aggregate `boundary='nonsense'` raises ValueError | `test_aggregate_boundary.py::test_aggregate_invalid_boundary_raises` | `make_sliding_window_aggregate` |
+| F1: parallel aggregate with `boundary='symmetric'` ≡ serial | `test_aggregate_boundary.py::test_aggregate_parallel_symmetric_matches_serial` | `make_sliding_window_aggregate_parallel(boundary='symmetric')` |
+| F1: aggregate `symmetric` + `n_sigma_cut=3.0` gates the sigma-cut recompute path + interior invariance | `test_aggregate_boundary.py::test_aggregate_symmetric_with_sigma_cut_gate_and_invariance` | `make_sliding_window_aggregate(boundary='symmetric', n_sigma_cut=3.0)` |
+| F1 (ORACLE invariance): aggregate symmetric ≡ manual reference via `_get_neighbor_bins_v2` on a non-linear 2-D fixture | `test_aggregate_boundary.py::test_aggregate_symmetric_matches_manual_oracle` | `make_sliding_window_aggregate` vs hand-rolled Python reference |
+| F1 (CROSS-BACKEND × 6 params): numba ≡ numpy for all boundary modes × all kernel call sites via monkeypatch on `_get_numba_agg_kernel` | `test_aggregate_boundary.py::test_aggregate_numba_equals_numpy_all_boundaries_all_paths[{full,symmetric,periodic},{None,3.0}]` | `make_sliding_window_aggregate` |
+| F1 (PERIODIC arithmetic): shift invariance on sinusoidal fixture + topology invariant on 2-D fully-periodic grid | `test_aggregate_boundary.py::test_aggregate_periodic_shift_and_topology_invariance` | `make_sliding_window_aggregate(boundary='periodic')` |
+| F1 (EXTERNAL ORACLE × 3 params): window=0 ≡ pandas groupby for all 3 boundary modes | `test_aggregate_boundary.py::test_aggregate_window_zero_equals_groupby_all_boundaries[{full,symmetric,periodic}]` | `make_sliding_window_aggregate(window_spec={...:0})` vs `df.groupby(...)` |
+| F1 (CANARY × 6 params): constant-field preservation across all boundary modes × sigma-cut paths | `test_aggregate_boundary.py::test_aggregate_constant_field_invariance_all_modes[{full,symmetric,periodic},{None,3.0}]` | `make_sliding_window_aggregate` |
+| F1: aggregate `boundary='full'` corner is biased (reference documenting removed bias) | `test_aggregate_boundary.py::test_aggregate_full_corner_is_biased` | `make_sliding_window_aggregate(boundary='full')` |
+| F1: aggregate `boundary='symmetric'` corner count shrinks to 1-neighbour window | `test_aggregate_boundary.py::test_aggregate_symmetric_count_at_corner` | `make_sliding_window_aggregate(boundary='symmetric')` |
+| F1: aggregate `boundary='full'` corner count is 2-neighbour window (reference) | `test_aggregate_boundary.py::test_aggregate_full_count_at_corner` | `make_sliding_window_aggregate(boundary='full')` |
+
 ### Unverified Claims
 
 | Claim | Status | Action |
@@ -542,7 +562,8 @@ Per Organization-structure v1.25 § Cross-Team Information Flow, behavioral clai
 | Evaluator `'lookup'` is the fastest method on integer grids | Estimated from algorithmic complexity; **not measured at production scale** | Profile after first production run; add hard performance gate in future phase |
 | Evaluator `'linear'` is ~3× faster than `'multilinear'` | Directional estimate from small synthetic workloads | Re-benchmark with profile artifacts in a future update |
 | Evaluator `'cubic'` is ~2× slower than `'linear'` | Directional estimate | Same as above |
-| `boundary='symmetric'` in `make_sliding_window_aggregate` | **🧨 Silently broken (verified by smoke test).** | Fix and invariance tests in Phase 13.17.GB |
+| ~~`boundary='symmetric'` in `make_sliding_window_aggregate`~~ | ✅ **Fixed in Phase 13.17.GB**, see Verified Claims table above (16 entries from `test_aggregate_boundary.py`) | — |
+| `boundary` + `agg_median=True` interaction in `make_sliding_window_aggregate` | **⚠️ Median subpath silently uses `'full'`.** Verified broken by smoke test 2026-04-09. Mean/std/count fully fixed. | Fix in Phase 13.17.GB-MedianFix |
 | Per-dimension `boundary='periodic'` correctness in SW fit | Implemented in V3b, no dedicated test | Add invariance tests in 13.17.GB (aggregate path) or separate cleanup |
 
 ---
@@ -558,3 +579,4 @@ Per Organization-structure v1.25 § Cross-Team Information Flow, behavioral clai
 | 3.1 | 2026-04-07 | Phase 13.16.GB evaluator methods. P0 `fit_intercept` fix. Coverage Map added. **Returned for corrections — 2 APPROVED / 3 CHANGES REQUESTED across 5 reviewers (wrong phase references, non-runnable examples, wrong function names, aggregate-vs-fit distinction missing).** |
 | **3.2** | **2026-04-07** | **Corrections from v3.1 multi-reviewer cycle. Phase references corrected to `13.16.GB-FIX2` and `13.17.GB`. `boundary='symmetric'` split into two rows (⚠️ fit path tested, 🧨 aggregate path silently broken). All three Quick Start examples made runnable with keyword `df=`. `register_fit_model()` correct name in Public Interface Catalog. `'nearest_fast'` added to Evaluator Method Reference. `from_dfGB()` example uses real keyword arguments. F1 and F2 added to Current State "Broken" count. Governance reference updated to Org-structure v1.25. All v3.0 sections preserved verbatim. Drafted by Main Reviewer (Claude20, GBAI) at architect request after v3.1 review cycle.** |
 | **3.3** | **2026-04-07** | **Phase 13.16.GB-FIX2 landed. F2/F3/F4/F5 fixed in source (evaluator method=dict validation, docstring coverage, lookup+extrapolate rejection, stale backend test). C3/C8/C10 addressed as part of the same commit ('nearest'/'nearest_fast' equivalence, runnable docstring examples, unknown-method detection). 11 new tests in `test_evaluator_lookup.py`, all with explicit path parameters per failure mode #11 and `pytest.raises(..., match=...)` per C7. Test count 517 → 528 canonical / 493 → 505 coder-env. Pre-existing failures 3 → 2 (F5 flipped). Broken count 2 → 1 (F2 fixed; F1 remains for 13.17.GB). All v3.0 sections preserved verbatim. Drafted by Coder (Claude21, GBAI) during implementation of PHASE_13_16_GB_FIX2_v1.0 proposal as consolidated in Claude20's review summary.** |
+| **3.4** | **2026-04-11** | **Phase 13.17.GB landed.** F1 fixed for mean/std/count in both the primary kernel call and the sigma-cut recompute kernel call via the new `_precompute_aggregate_boundary_mask` helper (Path 2: mask + per-bin wrap flag + compact per-edge-bin wrapped-coords table). Both numba JIT and numpy fallback receive the new `(valid_offset_mask, wrap_flag, wrap_idx, wrapped_coords)` parameters in identical order at all 4 call sites (verified via signature-chain grep). Zero behavioural change on the default `boundary='full'` path — verified strictly by T9 against a literal baseline array hardcoded in the test file. Parallel wrapper inherits the fix automatically (T10 parallel ≡ serial invariance, 2-D fixture). D1 (median path boundary honouring) deferred to Phase 13.17.GB-MedianFix per architect direction 2026-04-09. **28 new pytest-level test runs** in `tests/test_aggregate_boundary.py` from 16 test functions: T1–T11 (T11 with second invariance assertion block), T13 oracle, T14 cross-backend × 6, T15 shift + topology, T16 window=0 × 3, T17 canary × 6. Unified Claude22 + Claude23 joint plan, **50% invariance ratio** (8/16 functions are invariance-style — up from v1.2's 25%). T12 removed per D1 deferral. **Test count: 528 corrected baseline + 28 new = 556 passed canonical** on alma2 commit `85713774`, branch `feature/groupby-optimization`, `test_logs/SUMMARY_20260411_090322.txt`. Pre-existing failures: 3 (was 2 in v3.3 corrected; +1 from `test_v3_numpy_faster_than_v1_numpy` newly listed). Capability Matrix: 0 broken / 0 partial / 43 verified / 89 smoke-only / 1 planned / 133 total. **Inherited arithmetic correction:** v3.3 records 528 passed canonical (off by one — forgot the F5 flip in FIX2); the *correct* v3.3 baseline is 529, but the *empirical* pre-13.17.GB passed-count was 528 because the timing test was already silently failing. v3.4 surfaces both numbers transparently. **New Known Limitation rows added:** D1 median deferral (with verbatim architect quotes including typos), pre-existing broken `test_aggregate_numba_matches_numpy` (superseded by T14, NOT deleted in-phase), `test_v3_numpy_faster_than_v1_numpy` timing test. **Public Interface Catalog unchanged** — Phase 13.17.GB extends behaviour of an existing parameter (`boundary`) without changing any function signature. **All v3.0 / v3.2 / v3.3 sections marked `[UNCHANGED]` preserved verbatim.** Drafted by Coder Claude22 during Phase 13.17.GB implementation; commit-time Main Reviewer Claude21. Suggested archive filename: `GroupByRegression_Technical_Summary_PHASE_13_17_GB_v3_4.md`. |

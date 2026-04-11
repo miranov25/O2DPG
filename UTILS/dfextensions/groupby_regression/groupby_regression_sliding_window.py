@@ -4097,6 +4097,202 @@ def _precompute_agg_sufficient_stats(
     return sum_x, sum_x2, counts, col_names
 
 
+def _precompute_aggregate_boundary_mask(
+        bin_coords: np.ndarray,
+        neighbor_offsets: np.ndarray,
+        bounds: Dict[str, Tuple[int, int]],
+        boundary_resolved: Dict[str, str],
+        window_spec: Dict[str, int],
+        gb_columns: List[str],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Phase 13.17.GB — precompute per-bin boundary handling for the aggregate
+    window accumulation kernel.
+
+    This is the Path 2 helper: it returns a dense boolean mask of valid
+    (bin, offset) pairs plus a compact per-edge-bin table of wrapped
+    coordinates for periodic dimensions. The numba/numpy kernel consults
+    ``valid_offset_mask[bi, ni]`` to decide whether to include a neighbor;
+    for periodic-wrap bins, the kernel uses ``wrapped_coords`` via
+    ``wrap_idx[bi]`` instead of computing ``bin_coords[bi] + offset[ni]``
+    directly.
+
+    The mask logic mirrors ``_get_neighbor_bins_v2`` (which is the
+    reference implementation used by the SW fit path). See § 4 of the
+    phase proposal for the mathematical definitions.
+
+    Parameters
+    ----------
+    bin_coords : ndarray of shape (n_bins, n_dims), int64
+        Integer coordinates of the occupied bins.
+    neighbor_offsets : ndarray of shape (n_offsets, n_dims), int64
+        Offsets relative to a center bin (covering the full window).
+    bounds : dict[str, (int, int)]
+        Per-dimension (lo, hi) bin range derived from the input data.
+    boundary_resolved : dict[str, str]
+        Per-dimension boundary mode, each one of {'full', 'symmetric',
+        'periodic'} (already resolved by ``_resolve_boundary``).
+    window_spec : dict[str, int]
+        Per-dimension window half-width.
+    gb_columns : list[str]
+        Column order; defines the axis order of ``bin_coords`` and
+        ``neighbor_offsets``.
+
+    Returns
+    -------
+    valid_offset_mask : ndarray of shape (n_bins, n_offsets), bool
+        ``True`` where offset ``ni`` is a valid neighbor of bin ``bi``
+        under the selected boundary mode. For the default ``'full'``
+        mode in every dimension this is bit-identical to the range
+        filter that the pre-fix kernel applied implicitly; the
+        mask approach centralises the decision in one place.
+    wrap_flag : ndarray of shape (n_bins,), bool
+        ``True`` where bin ``bi`` sits near a periodic edge and needs
+        the slow-path wrapped-coordinate lookup. Always all-``False``
+        unless at least one dimension is ``'periodic'``.
+    wrapped_coords : ndarray of shape (n_wrap_bins, n_offsets, n_dims), int64
+        Compact table of absolute neighbor coordinates for wrap bins
+        only. Indexed via ``wrap_idx[bi]``. Shape is ``(0, n_offsets,
+        n_dims)`` when there are no wrap bins (all-``full`` / all-
+        ``symmetric`` modes, or periodic with no edge bins).
+    wrap_idx : ndarray of shape (n_bins,), int64
+        Per-bin index into ``wrapped_coords``, or ``-1`` when the bin
+        uses the fast path ``bin_coords[bi] + neighbor_offsets[ni]``.
+
+    Notes
+    -----
+    * For ``'full'``-in-every-dimension (the default) the mask is
+      all-``True``, ``wrap_flag`` is all-``False`` and ``wrapped_coords``
+      is empty. The kernel's per-``(bi, ni)`` mask check is a no-op
+      branch and the accumulation order is unchanged relative to
+      pre-Phase-13.17.GB behaviour — this is what T9 verifies.
+    * For ``'symmetric'`` the mask filters offsets in each dim to
+      ``|offset| <= eff_w(bi)`` where
+      ``eff_w(bi) = min(w, c-lo, hi-c)``.
+    * For ``'periodic'`` the mask leaves offsets unfiltered in the
+      periodic dimension but flags bins whose neighbours cross the
+      boundary so the kernel picks up pre-computed wrapped
+      coordinates.
+    * Memory is ``O(n_bins * n_offsets + n_wrap_bins * n_offsets *
+      n_dims)`` bytes. The ``_check_mask_memory_safety`` helper guards
+      against pathological grid sizes.
+    """
+    n_bins, n_dims = bin_coords.shape
+    n_offsets = neighbor_offsets.shape[0]
+
+    dim_modes = [boundary_resolved[dim] for dim in gb_columns]
+    any_periodic = any(m == 'periodic' for m in dim_modes)
+    any_non_full = any(m != 'full' for m in dim_modes)
+
+    # Fast path: all dims are 'full'. Return trivial structures — no
+    # per-bin filtering, no wrap handling. The kernel's mask check is
+    # a no-op which numba optimises well.
+    if not any_non_full:
+        valid_offset_mask = np.ones((n_bins, n_offsets), dtype=np.bool_)
+        wrap_flag = np.zeros(n_bins, dtype=np.bool_)
+        wrapped_coords = np.zeros((0, n_offsets, n_dims), dtype=np.int64)
+        wrap_idx = np.full(n_bins, -1, dtype=np.int64)
+        return valid_offset_mask, wrap_flag, wrapped_coords, wrap_idx
+
+    valid_offset_mask = np.ones((n_bins, n_offsets), dtype=np.bool_)
+    wrap_flag = np.zeros(n_bins, dtype=np.bool_)
+
+    # Vectorised per-dimension mask computation
+    for j, (dim, mode) in enumerate(zip(gb_columns, dim_modes)):
+        lo, hi = bounds[dim]
+        lo_i = int(lo)
+        hi_i = int(hi)
+        w = int(window_spec.get(dim, 0))
+        c = bin_coords[:, j]                       # (n_bins,)
+        off_j = neighbor_offsets[:, j]             # (n_offsets,)
+
+        if mode == 'symmetric':
+            # eff_w(c) = min(w, c-lo, hi-c), per bin
+            max_left = c - lo_i
+            max_right = hi_i - c
+            eff_w = np.minimum(w, np.minimum(max_left, max_right))  # (n_bins,)
+            # bin_mask[bi, ni] = |off_j[ni]| <= eff_w[bi]
+            bin_mask = (off_j[None, :] >= -eff_w[:, None]) & \
+                       (off_j[None, :] <=  eff_w[:, None])
+            valid_offset_mask &= bin_mask
+
+        elif mode == 'periodic':
+            # Periodic dim does not filter offsets; every offset has a
+            # legal wrapped target. But we must identify bins whose
+            # raw (c + off) would cross the boundary — those are the
+            # wrap bins that need the slow-path coord lookup.
+            raw = c[:, None] + off_j[None, :]  # (n_bins, n_offsets)
+            wraps_here = (raw < lo_i) | (raw > hi_i)
+            wrap_flag |= wraps_here.any(axis=1)
+
+        else:  # 'full'
+            # Standard range filter (what the pre-fix kernel computed
+            # implicitly via its inner-loop break).
+            cand = c[:, None] + off_j[None, :]  # (n_bins, n_offsets)
+            bin_mask = (cand >= lo_i) & (cand <= hi_i)
+            valid_offset_mask &= bin_mask
+
+    # Compact wrapped-coords table for wrap bins only
+    wrap_idx = np.full(n_bins, -1, dtype=np.int64)
+    if any_periodic and wrap_flag.any():
+        wrap_bin_ids = np.where(wrap_flag)[0]
+        n_wrap_bins = wrap_bin_ids.size
+        wrapped_coords = np.zeros((n_wrap_bins, n_offsets, n_dims), dtype=np.int64)
+        # Assign compact indices
+        wrap_idx[wrap_bin_ids] = np.arange(n_wrap_bins, dtype=np.int64)
+        for j, (dim, mode) in enumerate(zip(gb_columns, dim_modes)):
+            lo_i = int(bounds[dim][0])
+            hi_i = int(bounds[dim][1])
+            n_range = hi_i - lo_i + 1
+            # For each wrap bin: compute candidate coord for every offset
+            c_wrap = bin_coords[wrap_bin_ids, j][:, None]    # (n_wrap_bins, 1)
+            raw = c_wrap + neighbor_offsets[:, j][None, :]   # (n_wrap_bins, n_offsets)
+            if mode == 'periodic':
+                wrapped_coords[:, :, j] = ((raw - lo_i) % n_range) + lo_i
+            else:
+                # Non-periodic dim inside a periodic-containing call:
+                # coords are identity, but the mask already filtered
+                # out-of-range offsets in this dim (mode='full' branch
+                # above) or shrunk them (mode='symmetric'), so the
+                # stored values are only consulted for valid (bi, ni).
+                wrapped_coords[:, :, j] = raw
+    else:
+        wrapped_coords = np.zeros((0, n_offsets, n_dims), dtype=np.int64)
+
+    return valid_offset_mask, wrap_flag, wrapped_coords, wrap_idx
+
+
+def _check_mask_memory_safety(n_bins: int, n_offsets: int) -> None:
+    """Phase 13.17.GB § 5.1b — guard against pathological grid sizes.
+
+    The Path 2 aggregate boundary mask is ``(n_bins, n_offsets)`` bool.
+    For typical TPC 3D aggregation (n_bins ~10^5, n_offsets ~125) this
+    is ~12 MB and fine. For a 6D worst case (n_bins ~10^6, n_offsets
+    ~729) it reaches ~700 MB, at which point the user should split
+    the grid via ``split_columns`` instead.
+
+    * 100 MB -> ``PerformanceWarning`` (continue)
+    * 1 GB  -> ``MemoryError`` (abort)
+    """
+    mask_bytes = n_bins * n_offsets  # 1 byte per bool
+    if mask_bytes > 1_000_000_000:  # 1 GB hard limit
+        raise MemoryError(
+            f"Aggregate boundary mask size {mask_bytes / 1e6:.0f} MB "
+            f"exceeds 1 GB safety limit. n_bins={n_bins}, "
+            f"n_offsets={n_offsets}. Split the grid via split_columns, "
+            f"reduce window_spec, or call make_sliding_window_aggregate "
+            f"on sector subsets."
+        )
+    if mask_bytes > 100_000_000:  # 100 MB warning threshold
+        warnings.warn(
+            f"Aggregate boundary mask size {mask_bytes / 1e6:.1f} MB "
+            f"exceeds 100 MB threshold. Grid shape: n_bins={n_bins}, "
+            f"n_offsets={n_offsets}. Consider splitting the grid via "
+            f"split_columns for better memory scaling.",
+            PerformanceWarning,
+            stacklevel=2,
+        )
+
+
 def _accumulate_window_agg_numpy(
         bin_coords: np.ndarray,
         neighbor_offsets: np.ndarray,
@@ -4108,8 +4304,19 @@ def _accumulate_window_agg_numpy(
         grid_shape: np.ndarray,
         mins: np.ndarray,
         strides: np.ndarray,
+        valid_offset_mask: np.ndarray,
+        wrap_flag: np.ndarray,
+        wrap_idx: np.ndarray,
+        wrapped_coords: np.ndarray,
 ):
     """Window accumulation using numpy (fallback when numba unavailable).
+
+    Phase 13.17.GB: now honours ``boundary`` via the pre-computed
+    ``valid_offset_mask`` (symmetric, full) and the
+    ``wrap_flag`` / ``wrap_idx`` / ``wrapped_coords`` table (periodic).
+    For ``boundary='full'`` (default) the mask is all-True and
+    ``wrap_flag`` is all-False, so this reduces to the pre-fix
+    accumulation with identical floating-point behaviour (T9 gate).
 
     Returns (sum_x_out, sum_x2_out, counts_out, n_neighbors_used).
     """
@@ -4124,17 +4331,36 @@ def _accumulate_window_agg_numpy(
     n_neighbors_used = np.zeros(n_bins, dtype=np.int32)
 
     for bi in range(n_bins):
+        bi_wrap = bool(wrap_flag[bi])
+        bi_wrap_idx = int(wrap_idx[bi]) if bi_wrap else -1
         for ni in range(n_offsets):
-            # Compute neighbor coordinate
+            # Phase 13.17.GB boundary mask gate. For 'full' this is
+            # always True and the branch is free in tight loops.
+            if not valid_offset_mask[bi, ni]:
+                continue
+
+            # Compute neighbor coordinate — fast path unless this bin
+            # needs periodic wrap handling.
             valid = True
             flat_idx = 0
-            for d in range(n_dims):
-                nb_d = int(bin_coords[bi, d]) + int(neighbor_offsets[ni, d])
-                shifted = nb_d - int(mins[d])
-                if shifted < 0 or shifted >= int(grid_shape[d]):
-                    valid = False
-                    break
-                flat_idx += shifted * int(strides[d])
+            if bi_wrap:
+                # Slow path: look up pre-computed wrapped coords
+                for d in range(n_dims):
+                    nb_d = int(wrapped_coords[bi_wrap_idx, ni, d])
+                    shifted = nb_d - int(mins[d])
+                    if shifted < 0 or shifted >= int(grid_shape[d]):
+                        valid = False
+                        break
+                    flat_idx += shifted * int(strides[d])
+            else:
+                # Fast path — identical arithmetic to pre-fix code
+                for d in range(n_dims):
+                    nb_d = int(bin_coords[bi, d]) + int(neighbor_offsets[ni, d])
+                    shifted = nb_d - int(mins[d])
+                    if shifted < 0 or shifted >= int(grid_shape[d]):
+                        valid = False
+                        break
+                    flat_idx += shifted * int(strides[d])
 
             if not valid:
                 continue
@@ -4154,26 +4380,44 @@ def _accumulate_window_agg_numpy(
 
 
 def _get_numba_agg_kernel():
-    """Compile and return numba-accelerated window accumulation kernel."""
+    """Compile and return numba-accelerated window accumulation kernel.
+
+    Phase 13.17.GB: signature extended with four arrays for the Path 2
+    boundary handling (``valid_offset_mask``, ``wrap_flag``,
+    ``wrap_idx``, ``wrapped_coords``). See
+    ``_precompute_aggregate_boundary_mask`` for the semantics.
+
+    For ``boundary='full'`` (default) the mask is all-True,
+    ``wrap_flag`` is all-False and ``wrapped_coords`` has shape
+    ``(0, n_offsets, n_dims)`` — the per-``(bi, ni)`` mask check is a
+    trivially-predictable branch and accumulation order is unchanged
+    relative to pre-Phase-13.17.GB behaviour, which is what the T9
+    regression gate verifies.
+    """
     import numba as nb
 
     @nb.njit(parallel=True, cache=True)
     def _accumulate_numba(
-            bin_coords,        # (B, D) int64
-            neighbor_offsets,  # (W, D) int64
-            kernel_weights,    # (W,) float64
-            sum_x,             # (B, C) float64
-            sum_x2,            # (B, C) float64
-            counts,            # (B, C) float64
-            lookup,            # flat int32 array
-            grid_shape,        # (D,) int64
-            mins,              # (D,) int64
-            strides,           # (D,) int64
+            bin_coords,         # (B, D) int64
+            neighbor_offsets,   # (W, D) int64
+            kernel_weights,     # (W,) float64
+            sum_x,              # (B, C) float64
+            sum_x2,             # (B, C) float64
+            counts,             # (B, C) float64
+            lookup,             # flat int32 array
+            grid_shape,         # (D,) int64
+            mins,               # (D,) int64
+            strides,            # (D,) int64
             # outputs
-            sum_x_out,         # (B, C) float64
-            sum_x2_out,        # (B, C) float64
-            counts_out,        # (B, C) float64
-            n_neighbors_out,   # (B,) int32
+            sum_x_out,          # (B, C) float64
+            sum_x2_out,         # (B, C) float64
+            counts_out,         # (B, C) float64
+            n_neighbors_out,    # (B,) int32
+            # Phase 13.17.GB boundary handling
+            valid_offset_mask,  # (B, W) bool
+            wrap_flag,          # (B,) bool
+            wrap_idx,           # (B,) int64  (-1 when not a wrap bin)
+            wrapped_coords,     # (n_wrap_bins, W, D) int64
     ):
         n_bins = bin_coords.shape[0]
         n_offsets = neighbor_offsets.shape[0]
@@ -4181,16 +4425,34 @@ def _get_numba_agg_kernel():
         n_dims = bin_coords.shape[1]
 
         for bi in nb.prange(n_bins):
+            bi_wrap = wrap_flag[bi]
+            bi_wrap_idx = wrap_idx[bi]
             for ni in range(n_offsets):
+                # Phase 13.17.GB boundary gate.
+                if not valid_offset_mask[bi, ni]:
+                    continue
+
                 valid = True
                 flat_idx = np.int64(0)
-                for d in range(n_dims):
-                    nb_d = bin_coords[bi, d] + neighbor_offsets[ni, d]
-                    shifted = nb_d - mins[d]
-                    if shifted < 0 or shifted >= grid_shape[d]:
-                        valid = False
-                        break
-                    flat_idx += shifted * strides[d]
+                if bi_wrap:
+                    # Periodic slow path — use pre-computed wrapped
+                    # coordinates for this (bi, ni).
+                    for d in range(n_dims):
+                        nb_d = wrapped_coords[bi_wrap_idx, ni, d]
+                        shifted = nb_d - mins[d]
+                        if shifted < 0 or shifted >= grid_shape[d]:
+                            valid = False
+                            break
+                        flat_idx += shifted * strides[d]
+                else:
+                    # Fast path — identical arithmetic to pre-fix code.
+                    for d in range(n_dims):
+                        nb_d = bin_coords[bi, d] + neighbor_offsets[ni, d]
+                        shifted = nb_d - mins[d]
+                        if shifted < 0 or shifted >= grid_shape[d]:
+                            valid = False
+                            break
+                        flat_idx += shifted * strides[d]
 
                 if not valid:
                     continue
@@ -4235,6 +4497,18 @@ def make_sliding_window_aggregate(
     WARNING: agg_median=True disables the sufficient-statistics optimization
     for median computation and scales as O(N × W) per column.
 
+    Known limitation (Phase 13.17.GB): when ``agg_median=True``, the
+    median slow path ignores the ``boundary`` parameter and always uses
+    ``'full'`` behaviour. The mean, std and count columns honour
+    ``boundary`` correctly for every mode. This is a known limitation
+    scheduled for fix in Phase 13.17.GB-MedianFix. Workaround: call
+    ``make_sliding_window_aggregate`` twice — once with the desired
+    boundary and ``agg_median=False`` for the statistics, and once with
+    ``boundary='full'`` and ``agg_median=True`` if you need the (un-
+    corrected) median. Architect direction 2026-04-09 authorising the
+    deferral: "I decidee only later on . I did not realize it it too
+    complicated. Can be postponed."
+
     Parameters
     ----------
     df : pd.DataFrame
@@ -4258,9 +4532,31 @@ def make_sliding_window_aggregate(
     kernel_width : float or dict, optional
         Kernel bandwidth.
     boundary : str or dict
-        Boundary handling mode.
+        Boundary handling mode. One of ``'full'``, ``'symmetric'``,
+        ``'periodic'`` (scalar applied to every dimension) or a dict
+        mapping dimension name to mode.
+
+        * ``'full'`` (default): window = ``[max(c-w, lo), min(c+w, hi)]``.
+          Truncates at the observed grid edge. Edge bins are biased
+          toward the interior because the window is asymmetric.
+        * ``'symmetric'``: ``eff_w(c) = min(w, c-lo, hi-c)``, window =
+          ``[c - eff_w, c + eff_w]``. The window stays symmetric
+          around ``c``, shrinking near edges so it never extends past
+          the observed range. Interior bins use the full ``2w+1``
+          neighbourhood; edge bins use less data; no asymmetric bias.
+          **Recommended default for TPC distortion calibration.**
+        * ``'periodic'``: window = ``[c-w, c+w]`` always; out-of-range
+          neighbours wrap to the other side. Physically correct only
+          when the dimension genuinely wraps (e.g. azimuth φ).
+
+        **Phase 13.17.GB:** all three modes are now honoured in the
+        mean/std/count path (both the primary and the sigma-cut
+        recompute branches). Before Phase 13.17.GB the parameter was
+        silently dropped — see PHASE_HISTORY Incident 7.
     agg_median : bool
         If True, also compute median (slow — requires raw values).
+        See "Known limitation" note above regarding ``boundary`` +
+        ``agg_median`` interaction.
     verbose : bool
         Print timing information.
 
@@ -4357,6 +4653,20 @@ def make_sliding_window_aggregate(
     # Neighbor offsets and kernel weights
     neighbor_offsets = _generate_neighbor_offsets(full_window_spec, gb_columns)
     boundary_resolved = _resolve_boundary(boundary, gb_columns)
+    # Phase 13.17.GB: validate periodic dimensions have enough bins,
+    # check mask memory safety, then precompute the per-bin boundary
+    # structures (mask + wrap table) that the kernel will consume.
+    _validate_periodic_dims(boundary_resolved, bounds, full_window_spec)
+    _check_mask_memory_safety(n_bins, len(neighbor_offsets))
+    valid_offset_mask, wrap_flag, wrapped_coords, wrap_idx = \
+        _precompute_aggregate_boundary_mask(
+            bin_coords=bin_coords,
+            neighbor_offsets=neighbor_offsets,
+            bounds=bounds,
+            boundary_resolved=boundary_resolved,
+            window_spec=full_window_spec,
+            gb_columns=gb_columns,
+        )
     kernel_width_resolved = _resolve_kernel_width(kernel_width, full_window_spec, gb_columns)
     kernel_width_vec = np.array([kernel_width_resolved[dim] for dim in gb_columns], dtype=np.float64)
     offset_weights = _precompute_offset_weights(neighbor_offsets, kernel, kernel_width_vec)
@@ -4382,12 +4692,14 @@ def make_sliding_window_aggregate(
             bin_coords, neighbor_offsets.astype(np.int64), offset_weights,
             sum_x, sum_x2, counts,
             lookup, grid_shape_arr, lookup_mins, lookup_strides,
-            sum_x_out, sum_x2_out, counts_out, n_neighbors_used)
+            sum_x_out, sum_x2_out, counts_out, n_neighbors_used,
+            valid_offset_mask, wrap_flag, wrap_idx, wrapped_coords)
     else:
         sum_x_out, sum_x2_out, counts_out, n_neighbors_used = _accumulate_window_agg_numpy(
             bin_coords, neighbor_offsets, offset_weights,
             sum_x, sum_x2, counts,
-            lookup, grid_shape_arr, lookup_mins, lookup_strides)
+            lookup, grid_shape_arr, lookup_mins, lookup_strides,
+            valid_offset_mask, wrap_flag, wrap_idx, wrapped_coords)
 
     if verbose:
         backend_name = 'numba' if _use_numba else 'numpy'
@@ -4449,12 +4761,18 @@ def make_sliding_window_aggregate(
                 bin_coords, neighbor_offsets.astype(np.int64), offset_weights,
                 sum_x_clean, sum_x2_clean, counts_clean,
                 lookup, grid_shape_arr, lookup_mins, lookup_strides,
-                sum_x_out2, sum_x2_out2, counts_out2, n_neighbors_used2)
+                sum_x_out2, sum_x2_out2, counts_out2, n_neighbors_used2,
+                # Phase 13.17.GB: reuse the same mask + wrap structures
+                # from the first pass — they depend only on
+                # bin_coords/offsets/boundary/bounds/window_spec, none of
+                # which change between passes.
+                valid_offset_mask, wrap_flag, wrap_idx, wrapped_coords)
         else:
             sum_x_out2, sum_x2_out2, counts_out2, n_neighbors_used2 = _accumulate_window_agg_numpy(
                 bin_coords, neighbor_offsets, offset_weights,
                 sum_x_clean, sum_x2_clean, counts_clean,
-                lookup, grid_shape_arr, lookup_mins, lookup_strides)
+                lookup, grid_shape_arr, lookup_mins, lookup_strides,
+                valid_offset_mask, wrap_flag, wrap_idx, wrapped_coords)
 
         # Replace with cleaned results
         sum_x_out = sum_x_out2
@@ -4573,6 +4891,19 @@ def make_sliding_window_aggregate_parallel(
 
     Splits by split_columns, runs make_sliding_window_aggregate per unit.
     Uses forkserver/spawn context for Numba safety.
+
+    The ``boundary`` parameter is honoured per-unit: each sub-grid
+    uses its own observed (lo, hi) range when computing the symmetric
+    effective window and the periodic wrap. This matches the fit
+    path's convention (see ``_get_neighbor_bins_v2`` and
+    ``test_aggregate_parallel_matches_serial``).
+
+    Phase 13.17.GB: the ``boundary`` parameter is now actually used —
+    before this phase it was silently dropped (see F1 /
+    PHASE_HISTORY Incident 7). The D1 median-path known limitation
+    documented on ``make_sliding_window_aggregate`` applies here too:
+    ``agg_median=True`` still uses ``'full'`` behaviour for the
+    median slow path regardless of ``boundary``.
     """
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
