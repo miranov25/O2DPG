@@ -1,7 +1,7 @@
 # AliasDataFrame Phase History
 
 > **Purpose**: Development history for architecture reviews and restart prompts.  
-> **Last Updated**: 2026-03-27  
+> **Last Updated**: 2026-04-12  
 > **Maintained By**: Marian Ivanov (miranov25)
 
 ## How to Use This File
@@ -42,7 +42,7 @@ AliasDataFrame is a high-performance data analysis framework for particle physic
 
 **Key Metrics:**
 - Performance: 60-770x speedups achieved
-- Test Coverage: 1425+ tests passing
+- Test Coverage: 1480+ tests passing (1463 baseline + 31 Phase 13.12 invariance tests; 17 net after ROOT/numba skips)
 - Lines of Code: ~10,000 (AliasDataFrame.py)
 
 **Development Team:**
@@ -101,6 +101,58 @@ GroupByRegressionEvaluator integration:
 - Schema stores interface contract only — evaluator must be re-registered after load
 
 **Tests**: 24 new tests, 1425 total passed
+
+### Phase 13.12.ADF: Public API Invariance Test Suite
+**Dates**: 2026-04-08 to 2026-04-12 (4 calendar days)
+**Commits**:
+- `037767e8` — Batch 1: I5, I6, I7 (10 tests; schema roundtrip, subframe NaN, draw paths)
+- `1c4d6038` — Batch 2: I8, I9, I10 (7 tests; composition, register_function, lazy/eager)
+- `bc7fd19e` — Batch 3: I11, I12 (4 tests; linear compression, metadata persistence)
+- `d812d871` — Batch 4: I13, I14, I15, I16, I17 (10 tests; backend, join, order, dtype, pipeline)
+- `77a8fa22` — Close: feature_taxonomy + Capability Matrix regeneration
+
+**Proposal**: `PHASE_13_12_ADF_v1.2_Proposal.md` (approved 2026-04-08)
+**Code Review Request**: `PHASE_13_12_ADF_v1.0_Code_Review_Request.md`
+
+31 invariance tests across 13 new standalone files in `tests/`, all named
+`test_I{N}_*_invariance.py` per §5.1 architect waiver, all marked
+`@pytest.mark.invariance`. Every test carries a path-explicit docstring
+naming its production entry point and source line number (per Failure
+Mode #11 discipline).
+
+**Coverage added**:
+- I5 (4 tests): JSON + ROOT schema roundtrip preserves aliases and subframes
+- I6 (3 tests): subframe-missing-key NaN propagation + fill_value (BUG_20260331 regression guard, production fix `06d2d611`)
+- I7 (3 tests): draw() path invariance with draw_lazy (BUG_20260324, BUG_20260401 regression guards)
+- I8 (3 tests): subframe + alias composition, composite-key join vs pd.merge reference, auto_alias_subframe
+- I9 (2 tests): register_function one-arg and two-arg identity
+- I10 (2 tests): read_tree eager vs read_tree_lazy+ensure_branches equivalence
+- I11 (2 tests): linear compression roundtrip within bit-budget (working paths only; asinh/scaled still 🧨)
+- I12 (2 tests): set_axis_title + set_columns_metadata schema persistence
+- I13 (3 tests): numba vs numpy backend equivalence (arithmetic, compound expr, subframe scatter)
+- I14 (2 tests): single-key and composite-key join == pd.merge
+- I15 (2 tests): batch vs sequential, forward vs reversed materialization order
+- I16 (2 tests): explicit dtype pinning + no silent narrowing
+- I17 (1 test): end-to-end integration (register → alias → metadata → export_tree → read_tree → materialize)
+
+**Scope deviations** (all flagged upfront in module docstrings, none silent):
+- §5.1: standalone-files model accepted in lieu of "extend existing files"
+- §4.2 I9_2: two-arg register_function replaces polynomial test (duplicate coverage already in `test_polynomial_persistence.py`)
+- §4.3 I11_1: v1.2 shorthand `{formula,bits}` does not exist in source; real API uses explicit compress/decompress expressions
+
+**Tests**: 1463 → 1480 passed (+17 net after skip accounting); same 6 pre-existing failures; same 1 pre-existing xdist parallel-collection artifact; zero regressions; zero xfails filed; zero bug reports filed throughout phase.
+
+**Lessons learned**:
+- **Failure Mode #11 (path-explicit discipline)** remains the single highest-value coder rule. Caught one test-writing bug in Batch 1 I5 (fixed via `_build_fresh_adf_with_subframe` helper) and one silent-pass hazard in Batch 2 I8_3 (Claude33 source-line 9305 verification).
+- **Scope changes must be flagged upfront, not in commit messages.** Batch 2 I9_2 silent deviation cost two review rounds. From Batch 3 onward, deviations were documented in module docstrings at delivery time.
+- **Reviewer package must contain committed code**, not staged. Reviewer-package generation before `git commit` produced an empty `diff_last_commit` in two cases; workflow corrected mid-phase.
+- **Independent reference paths catch silent-pass hazards**. Direct fixture-array slicing in I6_1 was replaced with `pd.merge` reference after Claude32 P2 feedback; the pattern was reused in I8_2 and I14 from the start.
+
+**Reviewer performance**: Claude33 consistently produced the highest-signal findings via source-line verification. Claude30 tracked cross-round spec fidelity. Claude32 provided the cleanest per-test verification tables. Main Reviewer Claude1 consolidated each batch and the end-of-phase review.
+
+**Follow-up items** (tracked elsewhere, not blocking phase closure):
+- Technical Summary v1.6 full public API documentation (~90 methods) — deferred to separate future phase per Phase 13.11 decision
+- `draw_lazy=True` default change — pending architect decision (pre-existing, not a 13.12 deliverable)
 
 ---
 
