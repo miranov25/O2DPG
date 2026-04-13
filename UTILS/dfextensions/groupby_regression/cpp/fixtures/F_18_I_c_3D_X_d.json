@@ -1,0 +1,301 @@
+{
+  "fixture_id": "F_18_I_c_3D_X_d",
+  "axis_values": {
+    "fit_intercept": true,
+    "bounds": "clamp",
+    "dimensions": 3,
+    "method": "linear",
+    "coverage": "dense"
+  },
+  "input": {
+    "gb_columns": [
+      "bin_x",
+      "bin_y",
+      "bin_z"
+    ],
+    "predictor_columns": [],
+    "targets": [
+      "y"
+    ],
+    "suffix": "_fit",
+    "fit_intercept": true,
+    "subframe_rows": [
+      {
+        "bin_x": 0,
+        "bin_y": 0,
+        "bin_z": 0,
+        "y_intercept_fit": 0.4600501579386349
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 0,
+        "bin_z": 1,
+        "y_intercept_fit": -0.9831726814623818
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 0,
+        "bin_z": 2,
+        "y_intercept_fit": 0.3437388253469067
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 1,
+        "bin_z": 0,
+        "y_intercept_fit": 0.5879033605279287
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 1,
+        "bin_z": 1,
+        "y_intercept_fit": 0.92994994975537
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 1,
+        "bin_z": 2,
+        "y_intercept_fit": -0.9786063145405306
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 2,
+        "bin_z": 0,
+        "y_intercept_fit": 0.4491773799338932
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 2,
+        "bin_z": 1,
+        "y_intercept_fit": -0.013438309820750893
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 2,
+        "bin_z": 2,
+        "y_intercept_fit": -0.477201737919817
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 0,
+        "bin_z": 0,
+        "y_intercept_fit": -0.12100140080949529
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 0,
+        "bin_z": 1,
+        "y_intercept_fit": 0.05946141647427061
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 0,
+        "bin_z": 2,
+        "y_intercept_fit": 0.5898706949690882
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 1,
+        "bin_z": 0,
+        "y_intercept_fit": -0.49978929012140627
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 1,
+        "bin_z": 1,
+        "y_intercept_fit": 0.4926171702371043
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 1,
+        "bin_z": 2,
+        "y_intercept_fit": -0.8703478077756772
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 2,
+        "bin_z": 0,
+        "y_intercept_fit": -0.06224975734078142
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 2,
+        "bin_z": 1,
+        "y_intercept_fit": -0.29548300059253996
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 2,
+        "bin_z": 2,
+        "y_intercept_fit": 0.8555652387570409
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 0,
+        "bin_z": 0,
+        "y_intercept_fit": -0.2444027156947508
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 0,
+        "bin_z": 1,
+        "y_intercept_fit": -0.649063821529577
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 0,
+        "bin_z": 2,
+        "y_intercept_fit": 0.4733445182842033
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 1,
+        "bin_z": 0,
+        "y_intercept_fit": -0.6318795960373194
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 1,
+        "bin_z": 1,
+        "y_intercept_fit": -0.9275273923004967
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 1,
+        "bin_z": 2,
+        "y_intercept_fit": 0.2845839007277653
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 2,
+        "bin_z": 0,
+        "y_intercept_fit": -0.9884010577119362
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 2,
+        "bin_z": 1,
+        "y_intercept_fit": 0.6306091662602307
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 2,
+        "bin_z": 2,
+        "y_intercept_fit": -0.8883310143461616
+      }
+    ],
+    "query_positions": [
+      [
+        0.5,
+        0.5,
+        0.5
+      ],
+      [
+        -1.0,
+        -1.0,
+        -1.0
+      ],
+      [
+        3.5,
+        3.5,
+        3.5
+      ],
+      [
+        1.5,
+        1.5,
+        1.5
+      ]
+    ],
+    "predictor_values_per_query": [
+      [],
+      [],
+      [],
+      []
+    ],
+    "method": "linear",
+    "bounds": "clamp"
+  },
+  "expected_output": {
+    "y": [
+      0.11575233531750315,
+      0.4600501579386349,
+      -0.8883310143461616,
+      -0.08978921737909179
+    ]
+  },
+  "intermediates": {
+    "expected_bin_centers": [
+      [
+        0,
+        1,
+        2
+      ],
+      [
+        0,
+        1,
+        2
+      ],
+      [
+        0,
+        1,
+        2
+      ]
+    ],
+    "expected_valid_mask_flat": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "expected_coefficient_shape": [
+      3,
+      3,
+      3
+    ],
+    "expected_remap": [
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2
+      },
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2
+      },
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2
+      }
+    ]
+  },
+  "metadata": {
+    "generator_version": "0.1.0",
+    "generator_timestamp": "2026-04-13T11:49:03+00:00",
+    "python_evaluator_hash": "reference-kernel-v0.1.0",
+    "notes": "3D linear + clamp; performance canary."
+  }
+}

@@ -1,0 +1,107 @@
+{
+  "fixture_id": "F_02_I_n_1D_X_d",
+  "axis_values": {
+    "fit_intercept": true,
+    "bounds": "nan",
+    "dimensions": 1,
+    "method": "linear",
+    "coverage": "dense"
+  },
+  "input": {
+    "gb_columns": [
+      "bin_x"
+    ],
+    "predictor_columns": [],
+    "targets": [
+      "y"
+    ],
+    "suffix": "_fit",
+    "fit_intercept": true,
+    "subframe_rows": [
+      {
+        "bin_x": 0,
+        "y_intercept_fit": 0.3396135858471787
+      },
+      {
+        "bin_x": 1,
+        "y_intercept_fit": 0.28881863270154784
+      },
+      {
+        "bin_x": 2,
+        "y_intercept_fit": 0.618483640885839
+      },
+      {
+        "bin_x": 3,
+        "y_intercept_fit": -0.24940016771366413
+      }
+    ],
+    "query_positions": [
+      [
+        0.0
+      ],
+      [
+        0.5
+      ],
+      [
+        1.25
+      ],
+      [
+        2.75
+      ],
+      [
+        3.0
+      ]
+    ],
+    "predictor_values_per_query": [
+      [],
+      [],
+      [],
+      [],
+      []
+    ],
+    "method": "linear",
+    "bounds": "nan"
+  },
+  "expected_output": {
+    "y": [
+      0.3396135858471787,
+      0.3142161092743633,
+      0.3712348847476206,
+      -0.03242921556378836,
+      -0.24940016771366413
+    ]
+  },
+  "intermediates": {
+    "expected_bin_centers": [
+      [
+        0,
+        1,
+        2,
+        3
+      ]
+    ],
+    "expected_valid_mask_flat": [
+      true,
+      true,
+      true,
+      true
+    ],
+    "expected_coefficient_shape": [
+      4
+    ],
+    "expected_remap": [
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2,
+        "3": 3
+      }
+    ]
+  },
+  "metadata": {
+    "generator_version": "0.1.0",
+    "generator_timestamp": "2026-04-13T11:49:03+00:00",
+    "python_evaluator_hash": "reference-kernel-v0.1.0",
+    "notes": "1D linear interpolation with intercept; mid-point + endpoint."
+  }
+}

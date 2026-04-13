@@ -1,0 +1,107 @@
+{
+  "fixture_id": "F_04_I_c_1D_X_d",
+  "axis_values": {
+    "fit_intercept": true,
+    "bounds": "clamp",
+    "dimensions": 1,
+    "method": "linear",
+    "coverage": "dense"
+  },
+  "input": {
+    "gb_columns": [
+      "bin_x"
+    ],
+    "predictor_columns": [],
+    "targets": [
+      "y"
+    ],
+    "suffix": "_fit",
+    "fit_intercept": true,
+    "subframe_rows": [
+      {
+        "bin_x": 0,
+        "y_intercept_fit": 0.986427797403757
+      },
+      {
+        "bin_x": 1,
+        "y_intercept_fit": 0.7749027752132431
+      },
+      {
+        "bin_x": 2,
+        "y_intercept_fit": -0.6181994039126959
+      },
+      {
+        "bin_x": 3,
+        "y_intercept_fit": 0.2545894325654354
+      }
+    ],
+    "query_positions": [
+      [
+        -0.5
+      ],
+      [
+        0.0
+      ],
+      [
+        2.5
+      ],
+      [
+        3.0
+      ],
+      [
+        4.5
+      ]
+    ],
+    "predictor_values_per_query": [
+      [],
+      [],
+      [],
+      [],
+      []
+    ],
+    "method": "linear",
+    "bounds": "clamp"
+  },
+  "expected_output": {
+    "y": [
+      0.986427797403757,
+      0.986427797403757,
+      -0.18180498567363024,
+      0.2545894325654354,
+      0.2545894325654354
+    ]
+  },
+  "intermediates": {
+    "expected_bin_centers": [
+      [
+        0,
+        1,
+        2,
+        3
+      ]
+    ],
+    "expected_valid_mask_flat": [
+      true,
+      true,
+      true,
+      true
+    ],
+    "expected_coefficient_shape": [
+      4
+    ],
+    "expected_remap": [
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2,
+        "3": 3
+      }
+    ]
+  },
+  "metadata": {
+    "generator_version": "0.1.0",
+    "generator_timestamp": "2026-04-13T11:49:03+00:00",
+    "python_evaluator_hash": "reference-kernel-v0.1.0",
+    "notes": "1D linear + clamp at edges; edge queries return edge values."
+  }
+}

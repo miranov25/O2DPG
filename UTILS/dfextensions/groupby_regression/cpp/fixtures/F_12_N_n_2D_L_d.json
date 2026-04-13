@@ -1,0 +1,188 @@
+{
+  "fixture_id": "F_12_N_n_2D_L_d",
+  "axis_values": {
+    "fit_intercept": false,
+    "bounds": "nan",
+    "dimensions": 2,
+    "method": "lookup",
+    "coverage": "dense"
+  },
+  "input": {
+    "gb_columns": [
+      "bin_x",
+      "bin_y"
+    ],
+    "predictor_columns": [
+      "x",
+      "z"
+    ],
+    "targets": [
+      "y"
+    ],
+    "suffix": "_fit",
+    "fit_intercept": false,
+    "subframe_rows": [
+      {
+        "bin_x": 0,
+        "bin_y": 0,
+        "y_slope_x_fit": -0.5890827148984199,
+        "y_slope_z_fit": 0.8008953701123604
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 1,
+        "y_slope_x_fit": -0.4643103086035143,
+        "y_slope_z_fit": 0.4394474258014802
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 2,
+        "y_slope_x_fit": -0.10333749063891795,
+        "y_slope_z_fit": -0.11042559621619952
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 3,
+        "y_slope_x_fit": -0.04205128666727198,
+        "y_slope_z_fit": -0.09366541239576054
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 0,
+        "y_slope_x_fit": 0.7041473473400408,
+        "y_slope_z_fit": -0.9786617097977413
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 1,
+        "y_slope_x_fit": 0.9420185457798615,
+        "y_slope_z_fit": 0.6898754274183168
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 2,
+        "y_slope_x_fit": -0.2531915995440497,
+        "y_slope_z_fit": 0.8863563928882923
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 3,
+        "y_slope_x_fit": -0.7845860946295513,
+        "y_slope_z_fit": 0.2890870425167287
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 0,
+        "y_slope_x_fit": 0.3204831115937319,
+        "y_slope_z_fit": -0.7508719441924274
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 1,
+        "y_slope_x_fit": 0.9382407969357198,
+        "y_slope_z_fit": 0.3687254477173798
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 2,
+        "y_slope_x_fit": -0.08455681979472929,
+        "y_slope_z_fit": -0.5155137804140484
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 3,
+        "y_slope_x_fit": 0.34016831515337254,
+        "y_slope_z_fit": 0.39557993567784266
+      }
+    ],
+    "query_positions": [
+      [
+        0.0,
+        0.0
+      ],
+      [
+        1.0,
+        2.0
+      ],
+      [
+        2.0,
+        3.0
+      ]
+    ],
+    "predictor_values_per_query": [
+      [
+        0.5,
+        -0.3
+      ],
+      [
+        1.0,
+        0.7
+      ],
+      [
+        -1.0,
+        1.5
+      ]
+    ],
+    "method": "lookup",
+    "bounds": "nan"
+  },
+  "expected_output": {
+    "y": [
+      -0.5348099684829181,
+      0.3672578754777549,
+      0.25320158836339146
+    ]
+  },
+  "intermediates": {
+    "expected_bin_centers": [
+      [
+        0,
+        1,
+        2
+      ],
+      [
+        0,
+        1,
+        2,
+        3
+      ]
+    ],
+    "expected_valid_mask_flat": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "expected_coefficient_shape": [
+      3,
+      4
+    ],
+    "expected_remap": [
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2
+      },
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2,
+        "3": 3
+      }
+    ]
+  },
+  "metadata": {
+    "generator_version": "0.1.0",
+    "generator_timestamp": "2026-04-13T11:49:03+00:00",
+    "python_evaluator_hash": "reference-kernel-v0.1.0",
+    "notes": "2D fit_intercept=False + 2 predictors; slope-column mapping."
+  }
+}

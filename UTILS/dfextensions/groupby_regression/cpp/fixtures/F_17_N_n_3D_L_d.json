@@ -1,0 +1,259 @@
+{
+  "fixture_id": "F_17_N_n_3D_L_d",
+  "axis_values": {
+    "fit_intercept": false,
+    "bounds": "nan",
+    "dimensions": 3,
+    "method": "lookup",
+    "coverage": "dense"
+  },
+  "input": {
+    "gb_columns": [
+      "sector",
+      "padRow",
+      "zBin"
+    ],
+    "predictor_columns": [
+      "meanIDC",
+      "t"
+    ],
+    "targets": [
+      "y"
+    ],
+    "suffix": "_fit",
+    "fit_intercept": false,
+    "subframe_rows": [
+      {
+        "sector": 2,
+        "padRow": 0,
+        "zBin": 10,
+        "y_slope_meanIDC_fit": -0.255301013678779,
+        "y_slope_t_fit": -0.7304799771770722
+      },
+      {
+        "sector": 2,
+        "padRow": 0,
+        "zBin": 20,
+        "y_slope_meanIDC_fit": 0.4332682495993325,
+        "y_slope_t_fit": -0.02292411920985038
+      },
+      {
+        "sector": 2,
+        "padRow": 1,
+        "zBin": 10,
+        "y_slope_meanIDC_fit": -0.3464805148266239,
+        "y_slope_t_fit": -0.9338679855442689
+      },
+      {
+        "sector": 2,
+        "padRow": 1,
+        "zBin": 20,
+        "y_slope_meanIDC_fit": 0.4437927644903872,
+        "y_slope_t_fit": -0.7233072373166363
+      },
+      {
+        "sector": 2,
+        "padRow": 2,
+        "zBin": 10,
+        "y_slope_meanIDC_fit": 0.9311066615821297,
+        "y_slope_t_fit": 0.043864521053535555
+      },
+      {
+        "sector": 2,
+        "padRow": 2,
+        "zBin": 20,
+        "y_slope_meanIDC_fit": 0.469330754792211,
+        "y_slope_t_fit": -0.6588687470442884
+      },
+      {
+        "sector": 5,
+        "padRow": 0,
+        "zBin": 10,
+        "y_slope_meanIDC_fit": -0.0760096328075428,
+        "y_slope_t_fit": 0.054989714136213674
+      },
+      {
+        "sector": 5,
+        "padRow": 0,
+        "zBin": 20,
+        "y_slope_meanIDC_fit": -0.8938731440336449,
+        "y_slope_t_fit": -0.6275551363282368
+      },
+      {
+        "sector": 5,
+        "padRow": 1,
+        "zBin": 10,
+        "y_slope_meanIDC_fit": 0.7927270558434996,
+        "y_slope_t_fit": -0.018076017072772732
+      },
+      {
+        "sector": 5,
+        "padRow": 1,
+        "zBin": 20,
+        "y_slope_meanIDC_fit": 0.08271691273162363,
+        "y_slope_t_fit": -0.4967429423548495
+      },
+      {
+        "sector": 5,
+        "padRow": 2,
+        "zBin": 10,
+        "y_slope_meanIDC_fit": 0.11697041767877137,
+        "y_slope_t_fit": -0.42136595871019433
+      },
+      {
+        "sector": 5,
+        "padRow": 2,
+        "zBin": 20,
+        "y_slope_meanIDC_fit": 0.9341893481093877,
+        "y_slope_t_fit": -0.9864029779254813
+      },
+      {
+        "sector": 9,
+        "padRow": 0,
+        "zBin": 10,
+        "y_slope_meanIDC_fit": -0.4845127551293307,
+        "y_slope_t_fit": 0.2827456039831451
+      },
+      {
+        "sector": 9,
+        "padRow": 0,
+        "zBin": 20,
+        "y_slope_meanIDC_fit": 0.24975459150259294,
+        "y_slope_t_fit": -0.6013494219893654
+      },
+      {
+        "sector": 9,
+        "padRow": 1,
+        "zBin": 10,
+        "y_slope_meanIDC_fit": -0.25996883438269314,
+        "y_slope_t_fit": -0.5956597778240478
+      },
+      {
+        "sector": 9,
+        "padRow": 1,
+        "zBin": 20,
+        "y_slope_meanIDC_fit": -0.8646565436270692,
+        "y_slope_t_fit": -0.12741744396121768
+      },
+      {
+        "sector": 9,
+        "padRow": 2,
+        "zBin": 10,
+        "y_slope_meanIDC_fit": 0.3889892011085361,
+        "y_slope_t_fit": 0.4601924436981062
+      },
+      {
+        "sector": 9,
+        "padRow": 2,
+        "zBin": 20,
+        "y_slope_meanIDC_fit": -0.7791930514710994,
+        "y_slope_t_fit": 0.043996599482687415
+      }
+    ],
+    "query_positions": [
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        1.0,
+        1.0,
+        1.0
+      ],
+      [
+        2.0,
+        2.0,
+        0.0
+      ]
+    ],
+    "predictor_values_per_query": [
+      [
+        0.3,
+        0.7
+      ],
+      [
+        -0.5,
+        1.2
+      ],
+      [
+        1.0,
+        -0.4
+      ]
+    ],
+    "method": "lookup",
+    "bounds": "nan"
+  },
+  "expected_output": {
+    "y": [
+      -0.5879262881275842,
+      -0.6374499871916312,
+      0.2049122236292936
+    ]
+  },
+  "intermediates": {
+    "expected_bin_centers": [
+      [
+        2,
+        5,
+        9
+      ],
+      [
+        0,
+        1,
+        2
+      ],
+      [
+        10,
+        20
+      ]
+    ],
+    "expected_valid_mask_flat": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "expected_coefficient_shape": [
+      3,
+      3,
+      2
+    ],
+    "expected_remap": [
+      {
+        "2": 0,
+        "5": 1,
+        "9": 2
+      },
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2
+      },
+      {
+        "10": 0,
+        "20": 1
+      }
+    ]
+  },
+  "metadata": {
+    "generator_version": "0.1.0",
+    "generator_timestamp": "2026-04-13T11:49:03+00:00",
+    "python_evaluator_hash": "reference-kernel-v0.1.0",
+    "notes": "3D fit_intercept=False lookup; NON-COMPACT natural labels exercise the remap builder (sector in {2,5,9})."
+  }
+}

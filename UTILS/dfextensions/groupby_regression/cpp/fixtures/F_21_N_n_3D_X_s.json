@@ -1,0 +1,278 @@
+{
+  "fixture_id": "F_21_N_n_3D_X_s",
+  "axis_values": {
+    "fit_intercept": false,
+    "bounds": "nan",
+    "dimensions": 3,
+    "method": "linear",
+    "coverage": "sparse"
+  },
+  "input": {
+    "gb_columns": [
+      "bin_x",
+      "bin_y",
+      "bin_z"
+    ],
+    "predictor_columns": [
+      "x"
+    ],
+    "targets": [
+      "y"
+    ],
+    "suffix": "_fit",
+    "fit_intercept": false,
+    "subframe_rows": [
+      {
+        "bin_x": 0,
+        "bin_y": 0,
+        "bin_z": 0,
+        "y_slope_x_fit": 0.6669424293587989
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 0,
+        "bin_z": 1,
+        "y_slope_x_fit": 0.5423062136920531
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 0,
+        "bin_z": 2,
+        "y_slope_x_fit": -0.7911699952126292
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 1,
+        "bin_z": 0,
+        "y_slope_x_fit": -0.4085472443996636
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 1,
+        "bin_z": 1,
+        "y_slope_x_fit": 0.15840937504924724
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 1,
+        "bin_z": 2,
+        "y_slope_x_fit": -0.6669021899051
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 2,
+        "bin_z": 0,
+        "y_slope_x_fit": 0.7572037984873452
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 2,
+        "bin_z": 1,
+        "y_slope_x_fit": 0.2698725101252164
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 2,
+        "bin_z": 2,
+        "y_slope_x_fit": 0.7844347988313702
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 0,
+        "bin_z": 0,
+        "y_slope_x_fit": 0.004714138335670581
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 0,
+        "bin_z": 1,
+        "y_slope_x_fit": 0.2564350053013009
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 0,
+        "bin_z": 2,
+        "y_slope_x_fit": -0.9150661539073701
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 1,
+        "bin_z": 0,
+        "y_slope_x_fit": 0.8673661881013608
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 1,
+        "bin_z": 2,
+        "y_slope_x_fit": 0.9878741609575608
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 2,
+        "bin_z": 0,
+        "y_slope_x_fit": 0.08952161880577103
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 2,
+        "bin_z": 1,
+        "y_slope_x_fit": -0.5713798861578632
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 2,
+        "bin_z": 2,
+        "y_slope_x_fit": 0.7735263548800166
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 0,
+        "bin_z": 0,
+        "y_slope_x_fit": -0.23507559458604121
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 0,
+        "bin_z": 1,
+        "y_slope_x_fit": 0.07382654168528702
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 0,
+        "bin_z": 2,
+        "y_slope_x_fit": -0.21219759675400396
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 1,
+        "bin_z": 0,
+        "y_slope_x_fit": 0.3375448897290092
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 1,
+        "bin_z": 1,
+        "y_slope_x_fit": -0.0551836187504926
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 1,
+        "bin_z": 2,
+        "y_slope_x_fit": -0.4028663558616361
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 2,
+        "bin_z": 0,
+        "y_slope_x_fit": 0.20597593404325942
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 2,
+        "bin_z": 1,
+        "y_slope_x_fit": 0.3281149256045448
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 2,
+        "bin_z": 2,
+        "y_slope_x_fit": 0.7293693535846251
+      }
+    ],
+    "query_positions": [
+      [
+        0.5,
+        0.5,
+        0.5
+      ]
+    ],
+    "predictor_values_per_query": [
+      [
+        0.5
+      ]
+    ],
+    "method": "linear",
+    "bounds": "nan"
+  },
+  "expected_output": {
+    "y": [
+      0.14911615038848344
+    ]
+  },
+  "intermediates": {
+    "expected_bin_centers": [
+      [
+        0,
+        1,
+        2
+      ],
+      [
+        0,
+        1,
+        2
+      ],
+      [
+        0,
+        1,
+        2
+      ]
+    ],
+    "expected_valid_mask_flat": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "expected_coefficient_shape": [
+      3,
+      3,
+      3
+    ],
+    "expected_remap": [
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2
+      },
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2
+      },
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2
+      }
+    ]
+  },
+  "metadata": {
+    "generator_version": "0.1.0",
+    "generator_timestamp": "2026-04-13T11:49:03+00:00",
+    "python_evaluator_hash": "reference-kernel-v0.1.0",
+    "notes": "F_adv_1 — query in-grid near corner; interior neighbour (1,1,1) missing; renormalization over remaining 7 corners."
+  }
+}

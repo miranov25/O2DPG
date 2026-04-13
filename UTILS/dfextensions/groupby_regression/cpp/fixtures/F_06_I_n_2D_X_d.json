@@ -1,0 +1,176 @@
+{
+  "fixture_id": "F_06_I_n_2D_X_d",
+  "axis_values": {
+    "fit_intercept": true,
+    "bounds": "nan",
+    "dimensions": 2,
+    "method": "linear",
+    "coverage": "dense"
+  },
+  "input": {
+    "gb_columns": [
+      "bin_x",
+      "bin_y"
+    ],
+    "predictor_columns": [],
+    "targets": [
+      "y"
+    ],
+    "suffix": "_fit",
+    "fit_intercept": true,
+    "subframe_rows": [
+      {
+        "bin_x": 0,
+        "bin_y": 0,
+        "y_intercept_fit": 0.7931513210683556
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 1,
+        "y_intercept_fit": 0.6835254203267223
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 2,
+        "y_intercept_fit": 0.513863980937028
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 3,
+        "y_intercept_fit": -0.9779332751640855
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 0,
+        "y_intercept_fit": -0.5372217217460176
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 1,
+        "y_intercept_fit": 0.7778724277157931
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 2,
+        "y_intercept_fit": 0.037373893995442
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 3,
+        "y_intercept_fit": -0.027745330001843982
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 0,
+        "y_intercept_fit": 0.3831806241591771
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 1,
+        "y_intercept_fit": 0.34675503964550836
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 2,
+        "y_intercept_fit": 0.29593211170982836
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 3,
+        "y_intercept_fit": -0.3027198898941532
+      }
+    ],
+    "query_positions": [
+      [
+        0.0,
+        0.0
+      ],
+      [
+        1.0,
+        1.0
+      ],
+      [
+        0.5,
+        1.5
+      ],
+      [
+        1.25,
+        2.75
+      ],
+      [
+        2.0,
+        3.0
+      ]
+    ],
+    "predictor_values_per_query": [
+      [],
+      [],
+      [],
+      [],
+      []
+    ],
+    "method": "linear",
+    "bounds": "nan"
+  },
+  "expected_output": {
+    "y": [
+      0.7931513210683556,
+      0.7778724277157931,
+      0.5031589307437463,
+      -0.04686336537518132,
+      -0.3027198898941532
+    ]
+  },
+  "intermediates": {
+    "expected_bin_centers": [
+      [
+        0,
+        1,
+        2
+      ],
+      [
+        0,
+        1,
+        2,
+        3
+      ]
+    ],
+    "expected_valid_mask_flat": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "expected_coefficient_shape": [
+      3,
+      4
+    ],
+    "expected_remap": [
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2
+      },
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2,
+        "3": 3
+      }
+    ]
+  },
+  "metadata": {
+    "generator_version": "0.1.0",
+    "generator_timestamp": "2026-04-13T11:49:03+00:00",
+    "python_evaluator_hash": "reference-kernel-v0.1.0",
+    "notes": "2D bilinear with integer + fractional positions."
+  }
+}

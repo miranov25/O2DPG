@@ -1,0 +1,180 @@
+{
+  "fixture_id": "F_14_N_c_2D_X_d",
+  "axis_values": {
+    "fit_intercept": false,
+    "bounds": "clamp",
+    "dimensions": 2,
+    "method": "linear",
+    "coverage": "dense"
+  },
+  "input": {
+    "gb_columns": [
+      "bin_x",
+      "bin_y"
+    ],
+    "predictor_columns": [
+      "x"
+    ],
+    "targets": [
+      "y"
+    ],
+    "suffix": "_fit",
+    "fit_intercept": false,
+    "subframe_rows": [
+      {
+        "bin_x": 0,
+        "bin_y": 0,
+        "y_slope_x_fit": -0.6259082103736209
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 1,
+        "y_slope_x_fit": 0.1658127387988111
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 2,
+        "y_slope_x_fit": -0.4186504283146315
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 3,
+        "y_slope_x_fit": 0.9612260523789957
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 0,
+        "y_slope_x_fit": 0.03996313610863056
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 1,
+        "y_slope_x_fit": 0.058297491005412816
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 2,
+        "y_slope_x_fit": 0.02528411740366554
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 3,
+        "y_slope_x_fit": -0.9579755480875061
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 0,
+        "y_slope_x_fit": 0.6813391772894062
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 1,
+        "y_slope_x_fit": 0.7333889607759683
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 2,
+        "y_slope_x_fit": -0.8120099813264914
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 3,
+        "y_slope_x_fit": -0.719180022851895
+      }
+    ],
+    "query_positions": [
+      [
+        -0.5,
+        -0.5
+      ],
+      [
+        2.5,
+        3.5
+      ],
+      [
+        1.5,
+        2.0
+      ],
+      [
+        3.2,
+        3.5
+      ]
+    ],
+    "predictor_values_per_query": [
+      [
+        0.5
+      ],
+      [
+        1.0
+      ],
+      [
+        -0.5
+      ],
+      [
+        2.0
+      ]
+    ],
+    "method": "linear",
+    "bounds": "clamp"
+  },
+  "expected_output": {
+    "y": [
+      -0.31295410518681044,
+      -0.719180022851895,
+      0.19668146598070646,
+      -1.43836004570379
+    ]
+  },
+  "intermediates": {
+    "expected_bin_centers": [
+      [
+        0,
+        1,
+        2
+      ],
+      [
+        0,
+        1,
+        2,
+        3
+      ]
+    ],
+    "expected_valid_mask_flat": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "expected_coefficient_shape": [
+      3,
+      4
+    ],
+    "expected_remap": [
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2
+      },
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2,
+        "3": 3
+      }
+    ]
+  },
+  "metadata": {
+    "generator_version": "0.1.0",
+    "generator_timestamp": "2026-04-13T11:49:03+00:00",
+    "python_evaluator_hash": "reference-kernel-v0.1.0",
+    "notes": "2D fit_intercept=False + clamp + linear (quadruple interaction)."
+  }
+}

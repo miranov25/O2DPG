@@ -1,0 +1,112 @@
+{
+  "fixture_id": "F_10_N_c_1D_L_d",
+  "axis_values": {
+    "fit_intercept": false,
+    "bounds": "clamp",
+    "dimensions": 1,
+    "method": "lookup",
+    "coverage": "dense"
+  },
+  "input": {
+    "gb_columns": [
+      "bin_x"
+    ],
+    "predictor_columns": [
+      "x"
+    ],
+    "targets": [
+      "y"
+    ],
+    "suffix": "_fit",
+    "fit_intercept": false,
+    "subframe_rows": [
+      {
+        "bin_x": 0,
+        "y_slope_x_fit": -0.704601899104573
+      },
+      {
+        "bin_x": 1,
+        "y_slope_x_fit": 0.4753750839618529
+      },
+      {
+        "bin_x": 2,
+        "y_slope_x_fit": -0.6858371098019465
+      },
+      {
+        "bin_x": 3,
+        "y_slope_x_fit": -0.4353369909095577
+      }
+    ],
+    "query_positions": [
+      [
+        -1.0
+      ],
+      [
+        0.0
+      ],
+      [
+        3.0
+      ],
+      [
+        6.0
+      ]
+    ],
+    "predictor_values_per_query": [
+      [
+        0.5
+      ],
+      [
+        1.0
+      ],
+      [
+        1.5
+      ],
+      [
+        2.0
+      ]
+    ],
+    "method": "lookup",
+    "bounds": "clamp"
+  },
+  "expected_output": {
+    "y": [
+      -0.3523009495522865,
+      -0.704601899104573,
+      -0.6530054863643365,
+      -0.8706739818191154
+    ]
+  },
+  "intermediates": {
+    "expected_bin_centers": [
+      [
+        0,
+        1,
+        2,
+        3
+      ]
+    ],
+    "expected_valid_mask_flat": [
+      true,
+      true,
+      true,
+      true
+    ],
+    "expected_coefficient_shape": [
+      4
+    ],
+    "expected_remap": [
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2,
+        "3": 3
+      }
+    ]
+  },
+  "metadata": {
+    "generator_version": "0.1.0",
+    "generator_timestamp": "2026-04-13T11:49:03+00:00",
+    "python_evaluator_hash": "reference-kernel-v0.1.0",
+    "notes": "fit_intercept=False + clamp."
+  }
+}

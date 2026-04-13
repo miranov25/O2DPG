@@ -1,0 +1,176 @@
+{
+  "fixture_id": "F_05_I_n_2D_L_d",
+  "axis_values": {
+    "fit_intercept": true,
+    "bounds": "nan",
+    "dimensions": 2,
+    "method": "lookup",
+    "coverage": "dense"
+  },
+  "input": {
+    "gb_columns": [
+      "bin_x",
+      "bin_y"
+    ],
+    "predictor_columns": [],
+    "targets": [
+      "y"
+    ],
+    "suffix": "_fit",
+    "fit_intercept": true,
+    "subframe_rows": [
+      {
+        "bin_x": 0,
+        "bin_y": 0,
+        "y_intercept_fit": -0.4720137119171288
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 1,
+        "y_intercept_fit": -0.688869454109508
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 2,
+        "y_intercept_fit": 0.8900434038552192
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 3,
+        "y_intercept_fit": -0.38129216584951564
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 0,
+        "y_intercept_fit": 0.6484616968096626
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 1,
+        "y_intercept_fit": 0.04103243467166573
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 2,
+        "y_intercept_fit": -0.3790220835351852
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 3,
+        "y_intercept_fit": -0.8487550037422784
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 0,
+        "y_intercept_fit": 0.26708355172918874
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 1,
+        "y_intercept_fit": -0.7638970970848173
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 2,
+        "y_intercept_fit": 0.1598651437285472
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 3,
+        "y_intercept_fit": 0.7050270825567149
+      }
+    ],
+    "query_positions": [
+      [
+        0.0,
+        0.0
+      ],
+      [
+        1.0,
+        2.0
+      ],
+      [
+        2.0,
+        3.0
+      ],
+      [
+        0.0,
+        3.0
+      ],
+      [
+        2.0,
+        0.0
+      ]
+    ],
+    "predictor_values_per_query": [
+      [],
+      [],
+      [],
+      [],
+      []
+    ],
+    "method": "lookup",
+    "bounds": "nan"
+  },
+  "expected_output": {
+    "y": [
+      -0.4720137119171288,
+      -0.3790220835351852,
+      0.7050270825567149,
+      -0.38129216584951564,
+      0.26708355172918874
+    ]
+  },
+  "intermediates": {
+    "expected_bin_centers": [
+      [
+        0,
+        1,
+        2
+      ],
+      [
+        0,
+        1,
+        2,
+        3
+      ]
+    ],
+    "expected_valid_mask_flat": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "expected_coefficient_shape": [
+      3,
+      4
+    ],
+    "expected_remap": [
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2
+      },
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2,
+        "3": 3
+      }
+    ]
+  },
+  "metadata": {
+    "generator_version": "0.1.0",
+    "generator_timestamp": "2026-04-13T11:49:03+00:00",
+    "python_evaluator_hash": "reference-kernel-v0.1.0",
+    "notes": "2D lookup; asymmetric grid shape catches linearization swap."
+  }
+}

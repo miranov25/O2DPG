@@ -1,0 +1,176 @@
+{
+  "fixture_id": "F_07_I_c_2D_L_d",
+  "axis_values": {
+    "fit_intercept": true,
+    "bounds": "clamp",
+    "dimensions": 2,
+    "method": "lookup",
+    "coverage": "dense"
+  },
+  "input": {
+    "gb_columns": [
+      "bin_x",
+      "bin_y"
+    ],
+    "predictor_columns": [],
+    "targets": [
+      "y"
+    ],
+    "suffix": "_fit",
+    "fit_intercept": true,
+    "subframe_rows": [
+      {
+        "bin_x": 0,
+        "bin_y": 0,
+        "y_intercept_fit": 0.18912122177523805
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 1,
+        "y_intercept_fit": 0.29416130212689917
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 2,
+        "y_intercept_fit": -0.8699460876055023
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 3,
+        "y_intercept_fit": -0.9634674561805676
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 0,
+        "y_intercept_fit": 0.9475756574925567
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 1,
+        "y_intercept_fit": 0.663307116732875
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 2,
+        "y_intercept_fit": -0.5666100519702029
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 3,
+        "y_intercept_fit": 0.8248746460572689
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 0,
+        "y_intercept_fit": 0.3137028356326137
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 1,
+        "y_intercept_fit": 0.06565854143439154
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 2,
+        "y_intercept_fit": -0.905481915652053
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 3,
+        "y_intercept_fit": -0.3706410080130176
+      }
+    ],
+    "query_positions": [
+      [
+        -1.0,
+        -1.0
+      ],
+      [
+        -1.0,
+        5.0
+      ],
+      [
+        5.0,
+        -1.0
+      ],
+      [
+        5.0,
+        5.0
+      ],
+      [
+        1.0,
+        2.0
+      ]
+    ],
+    "predictor_values_per_query": [
+      [],
+      [],
+      [],
+      [],
+      []
+    ],
+    "method": "lookup",
+    "bounds": "clamp"
+  },
+  "expected_output": {
+    "y": [
+      0.18912122177523805,
+      -0.9634674561805676,
+      0.3137028356326137,
+      -0.3706410080130176,
+      -0.5666100519702029
+    ]
+  },
+  "intermediates": {
+    "expected_bin_centers": [
+      [
+        0,
+        1,
+        2
+      ],
+      [
+        0,
+        1,
+        2,
+        3
+      ]
+    ],
+    "expected_valid_mask_flat": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "expected_coefficient_shape": [
+      3,
+      4
+    ],
+    "expected_remap": [
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2
+      },
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2,
+        "3": 3
+      }
+    ]
+  },
+  "metadata": {
+    "generator_version": "0.1.0",
+    "generator_timestamp": "2026-04-13T11:49:03+00:00",
+    "python_evaluator_hash": "reference-kernel-v0.1.0",
+    "notes": "2D lookup + simultaneous clamp on both dims (per-dim leak)."
+  }
+}

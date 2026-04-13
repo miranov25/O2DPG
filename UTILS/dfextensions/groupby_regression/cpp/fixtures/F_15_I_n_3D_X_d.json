@@ -1,0 +1,301 @@
+{
+  "fixture_id": "F_15_I_n_3D_X_d",
+  "axis_values": {
+    "fit_intercept": true,
+    "bounds": "nan",
+    "dimensions": 3,
+    "method": "linear",
+    "coverage": "dense"
+  },
+  "input": {
+    "gb_columns": [
+      "bin_x",
+      "bin_y",
+      "bin_z"
+    ],
+    "predictor_columns": [],
+    "targets": [
+      "y"
+    ],
+    "suffix": "_fit",
+    "fit_intercept": true,
+    "subframe_rows": [
+      {
+        "bin_x": 0,
+        "bin_y": 0,
+        "bin_z": 0,
+        "y_intercept_fit": 0.9821551285287913
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 0,
+        "bin_z": 1,
+        "y_intercept_fit": -0.7944630974445137
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 0,
+        "bin_z": 2,
+        "y_intercept_fit": 0.8626302711488885
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 1,
+        "bin_z": 0,
+        "y_intercept_fit": -0.17581799742379856
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 1,
+        "bin_z": 1,
+        "y_intercept_fit": -0.574762240847529
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 1,
+        "bin_z": 2,
+        "y_intercept_fit": -0.8356441759857209
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 2,
+        "bin_z": 0,
+        "y_intercept_fit": -0.6416997459728035
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 2,
+        "bin_z": 1,
+        "y_intercept_fit": 0.6523059613208377
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 2,
+        "bin_z": 2,
+        "y_intercept_fit": -0.8566019939858955
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 0,
+        "bin_z": 0,
+        "y_intercept_fit": 0.28291865072589584
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 0,
+        "bin_z": 1,
+        "y_intercept_fit": 0.8211082374293104
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 0,
+        "bin_z": 2,
+        "y_intercept_fit": 0.7010160461313257
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 1,
+        "bin_z": 0,
+        "y_intercept_fit": 0.3215665158534262
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 1,
+        "bin_z": 1,
+        "y_intercept_fit": 0.11437540090568965
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 1,
+        "bin_z": 2,
+        "y_intercept_fit": 0.23163522798233016
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 2,
+        "bin_z": 0,
+        "y_intercept_fit": -0.1673890775368836
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 2,
+        "bin_z": 1,
+        "y_intercept_fit": -0.1971319838476311
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 2,
+        "bin_z": 2,
+        "y_intercept_fit": 0.09485219731958683
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 0,
+        "bin_z": 0,
+        "y_intercept_fit": 0.376745940793745
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 0,
+        "bin_z": 1,
+        "y_intercept_fit": 0.02660748616395381
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 0,
+        "bin_z": 2,
+        "y_intercept_fit": -0.6959381121051382
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 1,
+        "bin_z": 0,
+        "y_intercept_fit": -0.7445113580318647
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 1,
+        "bin_z": 1,
+        "y_intercept_fit": 0.4270766869220284
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 1,
+        "bin_z": 2,
+        "y_intercept_fit": 0.6262300097757127
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 2,
+        "bin_z": 0,
+        "y_intercept_fit": 0.07093680734561914
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 2,
+        "bin_z": 1,
+        "y_intercept_fit": -0.7290217358247297
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 2,
+        "bin_z": 2,
+        "y_intercept_fit": 0.9320818739884964
+      }
+    ],
+    "query_positions": [
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        1.0,
+        1.0,
+        1.0
+      ],
+      [
+        0.5,
+        1.5,
+        2.0
+      ],
+      [
+        2.0,
+        2.0,
+        2.0
+      ]
+    ],
+    "predictor_values_per_query": [
+      [],
+      [],
+      [],
+      []
+    ],
+    "method": "linear",
+    "bounds": "nan"
+  },
+  "expected_output": {
+    "y": [
+      0.9821551285287913,
+      0.11437540090568965,
+      -0.34143968616742487,
+      0.9320818739884964
+    ]
+  },
+  "intermediates": {
+    "expected_bin_centers": [
+      [
+        0,
+        1,
+        2
+      ],
+      [
+        0,
+        1,
+        2
+      ],
+      [
+        0,
+        1,
+        2
+      ]
+    ],
+    "expected_valid_mask_flat": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "expected_coefficient_shape": [
+      3,
+      3,
+      3
+    ],
+    "expected_remap": [
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2
+      },
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2
+      },
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2
+      }
+    ]
+  },
+  "metadata": {
+    "generator_version": "0.1.0",
+    "generator_timestamp": "2026-04-13T11:49:03+00:00",
+    "python_evaluator_hash": "reference-kernel-v0.1.0",
+    "notes": "3D trilinear with intercept; 8-corner weighted sum."
+  }
+}

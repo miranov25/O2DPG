@@ -1,0 +1,139 @@
+{
+  "fixture_id": "F_24_N_n_2D_X_s",
+  "axis_values": {
+    "fit_intercept": false,
+    "bounds": "nan",
+    "dimensions": 2,
+    "method": "linear",
+    "coverage": "sparse"
+  },
+  "input": {
+    "gb_columns": [
+      "bin_x",
+      "bin_y"
+    ],
+    "predictor_columns": [
+      "x"
+    ],
+    "targets": [
+      "y"
+    ],
+    "suffix": "_fit",
+    "fit_intercept": false,
+    "subframe_rows": [
+      {
+        "bin_x": 0,
+        "bin_y": 0,
+        "y_slope_x_fit": -0.5951204521163225
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 1,
+        "y_slope_x_fit": -0.008569424281198001
+      },
+      {
+        "bin_x": 0,
+        "bin_y": 2,
+        "y_slope_x_fit": 0.15627718396707757
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 0,
+        "y_slope_x_fit": 0.021201844728508723
+      },
+      {
+        "bin_x": 1,
+        "bin_y": 2,
+        "y_slope_x_fit": 0.584146638957298
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 0,
+        "y_slope_x_fit": 0.8102202393687576
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 1,
+        "y_slope_x_fit": 0.6411945026492003
+      },
+      {
+        "bin_x": 2,
+        "bin_y": 2,
+        "y_slope_x_fit": -0.7338353388414862
+      }
+    ],
+    "query_positions": [
+      [
+        0.5,
+        0.5
+      ],
+      [
+        1.0,
+        1.0
+      ]
+    ],
+    "predictor_values_per_query": [
+      [
+        0.5
+      ],
+      [
+        1.0
+      ]
+    ],
+    "method": "linear",
+    "bounds": "nan"
+  },
+  "expected_output": {
+    "y": [
+      -0.09708133861150196,
+      "NaN"
+    ]
+  },
+  "intermediates": {
+    "expected_bin_centers": [
+      [
+        0,
+        1,
+        2
+      ],
+      [
+        0,
+        1,
+        2
+      ]
+    ],
+    "expected_valid_mask_flat": [
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true
+    ],
+    "expected_coefficient_shape": [
+      3,
+      3
+    ],
+    "expected_remap": [
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2
+      },
+      {
+        "0": 0,
+        "1": 1,
+        "2": 2
+      }
+    ]
+  },
+  "metadata": {
+    "generator_version": "0.1.0",
+    "generator_timestamp": "2026-04-13T11:49:03+00:00",
+    "python_evaluator_hash": "reference-kernel-v0.1.0",
+    "notes": "F_adv_4 — (0.5,0.5) renormalized finite; (1.0,1.0) NaN."
+  }
+}
