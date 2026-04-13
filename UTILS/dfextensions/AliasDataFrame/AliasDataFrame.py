@@ -358,6 +358,13 @@ def _serialize_schema(schema):
     if "registered_functions" in schema:
         result["registered_functions"] = schema["registered_functions"]
     
+    # Phase 13.18.ADF: Include regression_metadata if present
+    if "regression_metadata" in schema and schema["regression_metadata"]:
+        result["regression_metadata"] = {
+            name: dict(meta)
+            for name, meta in schema["regression_metadata"].items()
+        }
+    
     return result
 
 
@@ -441,6 +448,13 @@ def _deserialize_schema(serialized):
     # Phase 13.9.Fix1: Restore registered_functions if present
     if "registered_functions" in serialized:
         result["registered_functions"] = serialized["registered_functions"]
+    
+    # Phase 13.18.ADF: Restore regression_metadata if present
+    if "regression_metadata" in serialized:
+        result["regression_metadata"] = {
+            name: dict(meta)
+            for name, meta in serialized["regression_metadata"].items()
+        }
     
     return result
 
@@ -849,6 +863,7 @@ class AliasDataFrame:
                 }
             },
             "subframes": {},    # {name: {"index": ...}}
+            "regression_metadata": {},  # Phase 13.18.ADF: {name: {subframe_name, group_columns, ...}}
         }
         
         # Subframe registry (keeps actual ADF objects)
@@ -1299,6 +1314,10 @@ class AliasDataFrame:
         # Call _reconstruct_registered_functions() after subframes are registered.
         if "registered_functions" in serialized_schema:
             self._schema["registered_functions"] = serialized_schema["registered_functions"]
+        
+        # Phase 13.18.ADF: Restore regression_metadata
+        if "regression_metadata" in serialized_schema:
+            self._schema["regression_metadata"] = serialized_schema["regression_metadata"]
 
     def update_schema(self, update, validate=True, apply=True, errors="raise"):
         """
@@ -10406,6 +10425,443 @@ class AliasDataFrame:
             'coord_columns': col_names,
             'predictor_columns': predictor_columns,
         }
+
+    # =============================================================
+    # Phase 13.18.ADF — Regression Metadata Bridge
+    # =============================================================
+
+    def register_regression_metadata(
+        self,
+        name,
+        subframe_name,
+        group_columns,
+        predictor_columns,
+        targets,
+        suffix='',
+        fit_intercept=True,
+        default_method='lookup',
+        default_bounds='nan',
+        description=None,
+        annotations=None,
+    ):
+        """
+        Register persistent metadata for a GroupByRegressionEvaluator bridge.
+
+        Phase 13.18.ADF. See PHASE_13_18_ADF_v1.1_Proposal.md §3.1.
+
+        No evaluator is built by this call — use
+        register_evaluator_from_metadata for that. The metadata dict
+        persists through export_tree/read_tree via the same mechanism
+        as _schema['registered_functions'].
+
+        The referenced subframe does NOT have to be registered at call
+        time (lazy pattern per A-1 option b). Validation happens at
+        register_evaluator_from_metadata. Use describe_regression() to
+        inspect current status.
+
+        Parameters
+        ----------
+        name : str
+            Metadata ID.
+        subframe_name : str
+            Subframe that supplies coefficient content. NOT validated here.
+        group_columns : list of str
+            Index columns on the subframe.
+        predictor_columns : list of str
+            Predictor variable names.
+        targets : list of str
+            Target variable names.
+        suffix : str, default ''
+            Column suffix used by from_dfGB (e.g., '_sw').
+        fit_intercept : bool, default True
+        default_method : {'lookup', 'linear'}, default 'lookup'
+        default_bounds : {'nan', 'clamp', 'extrapolate'}, default 'nan'
+            Stored for documentation; the evaluator uses its own
+            configured method/bounds. See correction note in
+            PHASE_13_18_ADF_v1.1_Proposal.md §3.3 addendum.
+        description : str, optional
+            Free-text documentation.
+        annotations : dict, optional
+            Free-form dict (axis titles, units, display hints).
+
+        Returns
+        -------
+        dict
+            Shallow copy of stored metadata.
+
+        Raises
+        ------
+        ValueError
+            If name already registered or invalid method/bounds.
+        """
+        if 'regression_metadata' not in self._schema:
+            self._schema['regression_metadata'] = {}
+
+        if name in self._schema['regression_metadata']:
+            raise ValueError(
+                f"Regression metadata '{name}' already exists. Use "
+                f"update_regression_metadata to modify it."
+            )
+        if default_method not in ('lookup', 'linear'):
+            raise ValueError(
+                f"default_method must be 'lookup' or 'linear', got "
+                f"{default_method!r}"
+            )
+        if default_bounds not in ('nan', 'clamp', 'extrapolate'):
+            raise ValueError(
+                f"default_bounds must be one of "
+                f"{{'nan', 'clamp', 'extrapolate'}}, got {default_bounds!r}"
+            )
+
+        meta = {
+            'subframe_name': subframe_name,
+            'group_columns': list(group_columns),
+            'predictor_columns': list(predictor_columns),
+            'targets': list(targets),
+            'suffix': suffix,
+            'fit_intercept': bool(fit_intercept),
+            'default_method': default_method,
+            'default_bounds': default_bounds,
+            'description': description,
+            'annotations': dict(annotations) if annotations else {},
+        }
+        self._schema['regression_metadata'][name] = meta
+        return dict(meta)
+
+    def update_regression_metadata(self, name, **fields):
+        """
+        Update fields of an existing regression metadata entry.
+
+        Phase 13.18.ADF. See PHASE_13_18_ADF_v1.1_Proposal.md §3.2.
+
+        Most common use: swap subframe_name for recalibration. The
+        referenced subframe is NOT validated here (lazy pattern per
+        A-1 option b). Subsequent register_evaluator_from_metadata
+        will raise KeyError if the subframe is still missing.
+
+        Side effect: invalidates any previously built evaluator binding
+        derived from this metadata entry.
+
+        Raises
+        ------
+        KeyError
+            If name not registered.
+        ValueError
+            If invalid default_method or default_bounds.
+        """
+        if name not in self._schema.get('regression_metadata', {}):
+            raise KeyError(
+                f"Regression metadata '{name}' is not registered. "
+                f"Call register_regression_metadata first."
+            )
+        if 'default_method' in fields and fields['default_method'] not in (
+                'lookup', 'linear'):
+            raise ValueError(
+                f"default_method must be 'lookup' or 'linear', got "
+                f"{fields['default_method']!r}"
+            )
+        if 'default_bounds' in fields and fields['default_bounds'] not in (
+                'nan', 'clamp', 'extrapolate'):
+            raise ValueError(
+                f"default_bounds must be one of "
+                f"{{'nan', 'clamp', 'extrapolate'}}, got "
+                f"{fields['default_bounds']!r}"
+            )
+
+        meta = self._schema['regression_metadata'][name]
+        for key, value in fields.items():
+            if key == 'annotations' and value is not None:
+                meta[key] = dict(value)
+            elif key in ('group_columns', 'predictor_columns', 'targets'):
+                meta[key] = list(value)
+            else:
+                meta[key] = value
+
+        bound_evaluator = meta.get('_bound_evaluator')
+        if bound_evaluator and hasattr(self, '_registered_functions'):
+            self._registered_functions.pop(bound_evaluator, None)
+            meta['_bound_evaluator'] = None
+
+        return dict(meta)
+
+    def register_evaluator_from_metadata(
+        self,
+        evaluator_name,
+        metadata_name,
+        overwrite=False,
+        validate_subframe=True,
+    ):
+        """
+        Build GroupByRegressionEvaluator from stored metadata and
+        register it as an alias function.
+
+        Phase 13.18.ADF. See PHASE_13_18_ADF_v1.1_Proposal.md §3.3.
+
+        Delegates to GroupByRegressionEvaluator.from_dfGB(...) per
+        v1.1 P1-A. from_dfGB handles sparse→dense expansion,
+        valid_mask construction, and bin_centers inference.
+
+        Raises
+        ------
+        KeyError
+            If metadata_name or referenced subframe not registered.
+        ValueError
+            If subframe structure violates a §3.4 contract.
+        """
+        try:
+            from groupby_regression_evaluator import (
+                GroupByRegressionEvaluator,
+            )
+        except ImportError:
+            from dfextensions.groupby_regression.groupby_regression_evaluator import (
+                GroupByRegressionEvaluator,
+            )
+
+        if metadata_name not in self._schema.get('regression_metadata', {}):
+            raise KeyError(
+                f"Regression metadata '{metadata_name}' is not registered."
+            )
+        meta = self._schema['regression_metadata'][metadata_name]
+        subframe_name = meta['subframe_name']
+
+        subframe = self.get_subframe(subframe_name)
+        if subframe is None:
+            raise KeyError(
+                f"Regression metadata '{metadata_name}' references "
+                f"subframe '{subframe_name}' which is not registered. "
+                f"Register the subframe first, or "
+                f"update_regression_metadata to point at a different "
+                f"subframe."
+            )
+
+        dfGB = subframe.df if hasattr(subframe, 'df') else subframe
+
+        if validate_subframe:
+            self._validate_regression_subframe_contracts(
+                metadata_name, meta, dfGB
+            )
+
+        evaluator = GroupByRegressionEvaluator.from_dfGB(
+            dfGB,
+            group_columns=meta['group_columns'],
+            predictor_columns=meta['predictor_columns'],
+            targets=meta['targets'],
+            suffix=meta['suffix'],
+        )
+
+        # Build our own wrapper instead of delegating to register_evaluator
+        # (which predates the current evaluate(positions, predictors, ...)
+        # signature and passes only positions). The Phase 13.18 bridge
+        # wrapper knows both group_columns and predictor_columns and splits
+        # incoming alias arguments accordingly.
+        #
+        # Alias calling convention:
+        #     evaluator_name(g1, g2, ..., gN, p1, p2, ..., pM)
+        # where first N args are group_columns (in registered order) and
+        # next M args are predictor_columns (in registered order).
+        #
+        # method and bounds are taken from metadata defaults:
+        #   default_method='lookup'  → method='lookup'
+        #   default_method='linear'  → method='linear'
+        #   default_bounds in {'nan', 'clamp', 'extrapolate'} → passed through
+        _group_cols = list(meta['group_columns'])
+        _pred_cols = list(meta['predictor_columns'])
+        _target = meta['targets'][0]  # bridge returns scalar single target
+        _method = meta['default_method']
+        _bounds = meta['default_bounds']
+        _evaluator_ref = evaluator
+        _n_group = len(_group_cols)
+        _n_pred = len(_pred_cols)
+        _n_total = _n_group + _n_pred
+
+        def _bridge_eval_func(*arrays):
+            if len(arrays) != _n_total:
+                raise ValueError(
+                    f"'{evaluator_name}' expects {_n_total} arguments "
+                    f"({_n_group} group + {_n_pred} predictor): "
+                    f"{_group_cols + _pred_cols}, got {len(arrays)}"
+                )
+            positions = {
+                col: np.asarray(arr, dtype=np.float64)
+                for col, arr in zip(_group_cols, arrays[:_n_group])
+            }
+            predictors = {
+                col: np.asarray(arr, dtype=np.float64)
+                for col, arr in zip(_pred_cols, arrays[_n_group:])
+            }
+            result = _evaluator_ref.evaluate(
+                positions,
+                predictors,
+                method=_method,
+                bounds=_bounds,
+            )
+            # Single-target bridge: extract the target value.
+            if isinstance(result, dict):
+                val = result[_target]
+            else:
+                val = result
+            return np.asarray(val, dtype=np.float64)
+
+        self.register_function(
+            evaluator_name, _bridge_eval_func, overwrite=overwrite
+        )
+        # Mark in registered_functions schema so describe/structure sees it.
+        if 'registered_functions' not in self._schema:
+            self._schema['registered_functions'] = {}
+        self._schema['registered_functions'][evaluator_name] = {
+            'type': 'evaluator',
+            'coord_columns': _group_cols + _pred_cols,
+            'predictor_columns': [_target],
+            'from_metadata': metadata_name,
+        }
+        meta['_bound_evaluator'] = evaluator_name
+
+        shape = getattr(evaluator, 'grid_shape', None)
+        # valid_mask is a METHOD on GroupByRegressionEvaluator (line 238 of
+        # groupby_regression_evaluator.py), not a @property. Call it.
+        try:
+            vm_array = evaluator.valid_mask()
+        except (AttributeError, TypeError):
+            vm_array = None
+        if vm_array is not None:
+            n_total = int(np.prod(vm_array.shape))
+            n_populated = int(np.sum(vm_array))
+            n_missing = n_total - n_populated
+        else:
+            n_total = int(np.prod(shape)) if shape else len(dfGB)
+            n_populated = len(dfGB)
+            n_missing = max(0, n_total - n_populated)
+
+        return {
+            'evaluator_name': evaluator_name,
+            'metadata_name': metadata_name,
+            'subframe_name': subframe_name,
+            'shape': tuple(shape) if shape else None,
+            'n_populated': n_populated,
+            'n_total': n_total,
+            'n_missing': n_missing,
+        }
+
+    def describe_regression(self, name=None, as_dict=False):
+        """
+        Describe registered regression metadata entries.
+
+        Phase 13.18.ADF. See PHASE_13_18_ADF_v1.1_Proposal.md §3.6.
+
+        Parameters
+        ----------
+        name : str, optional
+            If given, describe only this entry.
+        as_dict : bool, default False
+            If True, return dict instead of printing.
+        """
+        entries = self._schema.get('regression_metadata', {})
+        if name is not None:
+            if name not in entries:
+                raise KeyError(
+                    f"Regression metadata '{name}' not registered."
+                )
+            entries = {name: entries[name]}
+
+        result = {}
+        for entry_name, meta in entries.items():
+            subframe_name = meta.get('subframe_name')
+            try:
+                sf = self.get_subframe(subframe_name) if subframe_name else None
+                status = 'registered' if sf is not None else 'pending'
+            except Exception:
+                status = 'pending'
+            bound = meta.get('_bound_evaluator')
+            result[entry_name] = {
+                'subframe_name': subframe_name,
+                'subframe_status': status,
+                'group_columns': meta.get('group_columns'),
+                'predictor_columns': meta.get('predictor_columns'),
+                'targets': meta.get('targets'),
+                'suffix': meta.get('suffix', ''),
+                'fit_intercept': meta.get('fit_intercept', True),
+                'default_method': meta.get('default_method'),
+                'default_bounds': meta.get('default_bounds'),
+                'description': meta.get('description'),
+                'annotations': meta.get('annotations', {}),
+                'bound_as': bound if bound else None,
+            }
+
+        if as_dict:
+            return result
+
+        if not result:
+            print("No regression metadata registered.")
+            return None
+
+        print("Regression Metadata")
+        print("=" * 60)
+        for entry_name, info in result.items():
+            print(f"  {entry_name}:")
+            print(f"    subframe      : {info['subframe_name']} "
+                  f"[{info['subframe_status']}]")
+            print(f"    group_columns : {info['group_columns']}")
+            print(f"    predictors    : {info['predictor_columns']}")
+            print(f"    targets       : {info['targets']}")
+            print(f"    suffix        : '{info['suffix']}'")
+            print(f"    fit_intercept : {info['fit_intercept']}")
+            print(f"    method/bounds : {info['default_method']} / "
+                  f"{info['default_bounds']}")
+            if info['description']:
+                print(f"    description   : {info['description']}")
+            if info['annotations']:
+                print(f"    annotations   : "
+                      f"{list(info['annotations'].keys())}")
+            print(f"    bound_as      : "
+                  f"{info['bound_as'] if info['bound_as'] else '(not bound)'}")
+        return None
+
+    def _validate_regression_subframe_contracts(
+        self, metadata_name, meta, dfGB
+    ):
+        """Phase 13.18.ADF §3.4 registration-time contracts."""
+        group_columns = meta['group_columns']
+        targets = meta['targets']
+        predictors = meta['predictor_columns']
+        suffix = meta.get('suffix', '')
+        fit_intercept = meta.get('fit_intercept', True)
+
+        for col in group_columns:
+            if col not in dfGB.columns:
+                raise ValueError(
+                    f"Regression metadata '{metadata_name}': "
+                    f"group_column '{col}' is not a column of the "
+                    f"referenced subframe. subframe columns: "
+                    f"{list(dfGB.columns)}"
+                )
+
+        required = []
+        for target in targets:
+            if fit_intercept:
+                required.append(f"{target}_intercept{suffix}")
+            for pred in predictors:
+                required.append(f"{target}_slope_{pred}{suffix}")
+
+        missing = [c for c in required if c not in dfGB.columns]
+        if missing:
+            raise ValueError(
+                f"Regression metadata '{metadata_name}': required "
+                f"coefficient columns missing from subframe: {missing}. "
+                f"Subframe columns: {list(dfGB.columns)}"
+            )
+
+        for col in group_columns:
+            col_values = dfGB[col].to_numpy()
+            if np.issubdtype(col_values.dtype, np.floating):
+                if np.all(np.isnan(col_values)):
+                    raise ValueError(
+                        f"Regression metadata '{metadata_name}': "
+                        f"group_column '{col}' is all-NaN in subframe."
+                    )
+
+    # =============================================================
+    # End Phase 13.18.ADF
+    # =============================================================
 
     def draw_help(self, plot_type=None):
         """

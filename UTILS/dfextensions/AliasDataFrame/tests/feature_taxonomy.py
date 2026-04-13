@@ -6,6 +6,9 @@ Updated from .pytest_report.json (2026-04-02, 1456 tests).
 Phase 13.12.ADF (2026-04-12): Added test_I5..I17 patterns for the 31 new
 invariance tests. No new features added — existing features gain
 verification coverage.
+Phase 13.18.ADF (2026-04-13): Added 3 new features under REGISTERED_FUNCTIONS
+category (FUNC.regression_metadata, FUNC.evaluator_from_metadata,
+FUNC.regression_persistence) covered by 11 R-tests. Total features: 41 → 44.
 """
 
 FEATURES = [
@@ -301,5 +304,28 @@ FEATURES = [
          "test_invariance_smoke.py",
          # Phase 13.12.ADF — full integration pipeline
          "test_I17_full_pipeline_invariance.py",
+     ]},
+
+    # ── Phase 13.18.ADF — Regression Metadata Bridge (3 new features) ──
+    {"id": "FUNC.regression_metadata",
+     "name": "Regression metadata registration & update",
+     "category": "REGISTERED_FUNCTIONS",
+     "test_patterns": [
+         "test_R1_metadata_persistence_invariance.py",
+         "test_R2_recalibration_invariance.py",
+     ]},
+    {"id": "FUNC.evaluator_from_metadata",
+     "name": "Bridge: metadata → evaluator binding",
+     "category": "REGISTERED_FUNCTIONS",
+     "test_patterns": [
+         "test_R3_missing_bin_safety_invariance.py",
+         "test_R4_registration_contract_invariance.py",
+         "test_R5_remap_correctness_invariance.py",
+     ]},
+    {"id": "FUNC.regression_persistence",
+     "name": "Regression metadata schema roundtrip",
+     "category": "REGISTERED_FUNCTIONS",
+     "test_patterns": [
+         "test_R1_2_evaluator_roundtrip_invariance.py",
      ]},
 ]
