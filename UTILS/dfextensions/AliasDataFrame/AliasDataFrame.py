@@ -10674,6 +10674,43 @@ class AliasDataFrame:
         _n_pred = len(_pred_cols)
         _n_total = _n_group + _n_pred
 
+        # NATURAL-LABEL → COMPACT-INDEX REMAP (Phase 13.18.ADF design pivot,
+        # 2026-04-13, following GB team clarification). Rationale:
+        #
+        # GroupByRegressionEvaluator._eval_lookup's "raw grid indices" means
+        # compact 0..N-1 integer indices into the dense coefficient array,
+        # NOT natural bin labels. Our callers write alias expressions using
+        # natural labels (sector=2, padRow=42, etc.), so the bridge is
+        # responsible for the natural→compact remap.
+        #
+        # Per GB team (Claude20, Claude22, Claude23 unanimous on 2026-04-13):
+        #   - Per-dimension remap: natural label v -> idx where bin_centers[d][idx] == v
+        #   - Off-grid natural label (not in bin_centers) -> short-circuit to NaN at
+        #     the bridge layer; never reaches the evaluator.
+        #   - Interior missing bins (valid_mask[idx_tuple] == False) already
+        #     return NaN automatically from _eval_lookup via the NaN values
+        #     stored in the coefficient array at those cells.
+        #
+        # This fulfills PHASE_13_18_GBADF_v0.3 §4.4 Safety Hard Constraint
+        # (missing bins -> NaN) using only existing GB public contract.
+        # No GB-side change required.
+        #
+        # Build the remap dict per group dimension at registration time.
+        # Key = natural label value (int or float); value = compact index.
+        _remap = []  # list of dict, one per group dimension
+        for col in _group_cols:
+            bc = evaluator._bin_centers[col]  # numpy array of natural labels
+            # Build remap from each natural label to its compact index.
+            # Natural labels are usually integer; stored as float64 inside
+            # the evaluator. Convert to int where round-trippable to support
+            # integer-label callers; fall back to float key otherwise.
+            remap_d = {}
+            for idx, val in enumerate(bc):
+                if float(val).is_integer():
+                    remap_d[int(val)] = idx
+                remap_d[float(val)] = idx  # always keep float key too
+            _remap.append(remap_d)
+
         def _bridge_eval_func(*arrays):
             if len(arrays) != _n_total:
                 raise ValueError(
@@ -10681,26 +10718,66 @@ class AliasDataFrame:
                     f"({_n_group} group + {_n_pred} predictor): "
                     f"{_group_cols + _pred_cols}, got {len(arrays)}"
                 )
-            positions = {
-                col: np.asarray(arr, dtype=np.float64)
-                for col, arr in zip(_group_cols, arrays[:_n_group])
-            }
+
+            # Remap natural labels -> compact indices; track off-grid mask.
+            n_rows = len(np.atleast_1d(arrays[0]))
+            off_grid = np.zeros(n_rows, dtype=bool)
+            compact_positions = {}
+            for d, (col, raw_arr) in enumerate(
+                zip(_group_cols, arrays[:_n_group])
+            ):
+                raw = np.atleast_1d(np.asarray(raw_arr))
+                compact = np.empty(n_rows, dtype=np.int64)
+                remap_d = _remap[d]
+                for i, v in enumerate(raw):
+                    # Try int key first (natural integer labels),
+                    # then float key (physical-coordinate bin centers).
+                    key_int = None
+                    try:
+                        vf = float(v)
+                        if vf.is_integer():
+                            key_int = int(vf)
+                    except (TypeError, ValueError):
+                        pass
+                    if key_int is not None and key_int in remap_d:
+                        compact[i] = remap_d[key_int]
+                    elif float(v) in remap_d:
+                        compact[i] = remap_d[float(v)]
+                    else:
+                        # Off-grid natural label -> NaN at bridge layer.
+                        compact[i] = 0  # placeholder; will be NaN'd below
+                        off_grid[i] = True
+                compact_positions[col] = compact.astype(np.float64)
+
             predictors = {
                 col: np.asarray(arr, dtype=np.float64)
                 for col, arr in zip(_pred_cols, arrays[_n_group:])
             }
+
+            # Call evaluator with COMPACT indices. method='lookup' with
+            # bounds='nan' returns NaN for valid_mask=False cells
+            # automatically via the NaN coefficient values at those cells.
+            # Use 'lookup' regardless of metadata's default_method for the
+            # bridge's natural-label path; default_method is stored for
+            # documentation (see describe_regression).
             result = _evaluator_ref.evaluate(
-                positions,
+                compact_positions,
                 predictors,
-                method=_method,
-                bounds=_bounds,
+                method='lookup',
+                bounds='nan',
             )
-            # Single-target bridge: extract the target value.
             if isinstance(result, dict):
                 val = result[_target]
             else:
                 val = result
-            return np.asarray(val, dtype=np.float64)
+            val = np.asarray(val, dtype=np.float64)
+
+            # Apply off-grid mask: any position whose natural label was not
+            # in bin_centers becomes NaN regardless of what evaluate returned.
+            if off_grid.any():
+                val = val.copy()
+                val[off_grid] = np.nan
+            return val
 
         self.register_function(
             evaluator_name, _bridge_eval_func, overwrite=overwrite

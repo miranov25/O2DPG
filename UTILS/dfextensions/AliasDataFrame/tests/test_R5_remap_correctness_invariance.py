@@ -3,18 +3,15 @@ Phase 13.18.ADF — R5: Natural-Label Remap Correctness Invariance
 
 STANDALONE NEW TEST FILE. Marked @pytest.mark.invariance.
 
-Currently **xfail(strict=True)**. See
-BUG_AliasDataFrame_20260413_gb_evaluator_safety_semantics.md.
+Covers:
+    R5_1: Subframe with natural-label NON-CONTIGUOUS index values
+          (e.g., sector in {2, 5, 9}) produces evaluator results
+          equal to an independent pd.merge-based reference. Uses
+          LARGE deterministic coefficient values to prevent silent-pass
+          if the remap silently drops to contiguous indices.
 
-Same root cause as R3 family: method='lookup' uses raw grid indices
-rather than remapping through bin_centers. For non-contiguous natural
-labels {2,5,9}, the raw-index semantic collapses them to 0-based grid
-positions [0,1,2], so:
-    - query sector=2 returns coefs[2]=900 (expected coefs[0]=200)
-    - query sector=5 is grid-index 5 >= grid_shape=3 → NaN (expected
-      coefs[1]=500)
-    - query sector=9 is grid-index 9 >= grid_shape=3 → NaN (expected
-      coefs[2]=900)
+Independent reference path via pd.merge per Phase 13.12 Batch 1
+I6_1 P2 #3 lesson (direct fixture-array slicing is fragile).
 """
 
 import os
@@ -30,48 +27,20 @@ from AliasDataFrame import AliasDataFrame
 class TestR5RemapCorrectnessInvariance:
 
     @pytest.mark.invariance
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG_AliasDataFrame_20260413_gb_evaluator_safety_semantics: "
-            "method='lookup' does not remap natural labels via bin_centers."
-        ),
-    )
     def test_R5_1_noncontiguous_natural_labels_match_pd_merge(self):
         """
-        XFAIL: Non-contiguous natural labels produce wrong results.
-
-        Status: 🧨 Broken (correctness violation on non-contiguous labels)
-        Limitation ID: GB_EVALUATOR_SAFETY
-        Bug Report: BUG_AliasDataFrame_20260413_gb_evaluator_safety_semantics.md
-        Resolution: Phase 13.19.ADF-GB (or later).
-
-        Evidence (2026-04-13):
-            natural_labels=[2,5,9], coefs=[200,500,900]
-            Query [2,5,9,...] returns [900, NaN, NaN, 900, NaN, NaN, ...]
-            Expected:             [200, 500, 900, 200, 500, 900, ...]
-            Root cause: method='lookup' indexes grid[sector_value]:
-              - sector=2 → grid[2]=coefs[2]=900
-              - sector=5 → grid[5] out-of-range → NaN
-              - sector=9 → grid[9] out-of-range → NaN
-
-        Workaround (application-level):
-            Pre-remap natural labels to contiguous 0..N-1:
-                remap = {2:0, 5:1, 9:2}
-                df['sector_idx'] = df['sector'].map(remap)
-                # Then query with 'sector_idx'
-            Alternatively, use pd.merge directly for lookup-table use.
-
-        When to remove xfail:
-            After GB adds 'strict_lookup' method with bin_centers
-            remapping, OR after bridge does pre-remap itself, OR after
-            proposal scope change.
-
-        R5_1 INVARIANT (target, currently violated):
+        R5_1 INVARIANT:
+            Subframe uses natural labels {2, 5, 9} (non-contiguous).
+            Main DataFrame queries all of those labels.
             Evaluator result == pd.merge(main, sub, on='sector',
             how='left')['dX_intercept_sw'].values.
+        REGRESSION GUARD:
+            If from_dfGB silently reduces non-contiguous labels to
+            contiguous integers via argsort, the query result would
+            drift from the pd.merge reference. This test catches that.
         """
         natural_labels = np.array([2, 5, 9], dtype=np.int32)
+        # LARGE distinct values per P1-C style.
         coef_intercept = np.array([200.0, 500.0, 900.0], dtype=np.float64)
 
         df_sub = pd.DataFrame({
@@ -79,6 +48,8 @@ class TestR5RemapCorrectnessInvariance:
             'dX_intercept_sw': coef_intercept,
             'dX_slope_meanIDC_sw': np.zeros(3, dtype=np.float64),
         })
+
+        # Main DataFrame: queries natural labels, repeated.
         df_main = pd.DataFrame({
             'sector': np.tile(natural_labels, 5).astype(np.int32),
             'meanIDC': np.zeros(15, dtype=np.float64),
@@ -102,6 +73,8 @@ class TestR5RemapCorrectnessInvariance:
         adf.materialize_aliases(names=['dX_pred'])
         evaluator_result = adf.df['dX_pred'].values
 
+        # Independent pd.merge reference. Because meanIDC=0, the
+        # evaluator result equals the intercept per sector.
         reference = df_main[['sector']].merge(
             df_sub[['sector', 'dX_intercept_sw']],
             on='sector', how='left'
@@ -112,6 +85,10 @@ class TestR5RemapCorrectnessInvariance:
             rtol=1e-12, atol=1e-15, equal_nan=True,
             err_msg=(
                 "R5_1: evaluator result diverges from pd.merge "
-                "reference on non-contiguous natural-label indices."
+                "reference on non-contiguous natural-label indices. "
+                "Either from_dfGB collapses natural labels to "
+                "contiguous indices silently, or the remap path is "
+                "wrong, or the alias evaluation path passes raw "
+                "natural labels without remapping."
             )
         )

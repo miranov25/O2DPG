@@ -7,33 +7,12 @@ STANDALONE NEW TEST FILE. Marked @pytest.mark.invariance.
 Missing bins and out-of-range positions MUST return NaN — NEVER zero,
 NEVER neighbor values, NEVER edge-clamped values (under bounds='nan').
 
-All three R3 tests are currently **xfail(strict=True)**. See
-BUG_AliasDataFrame_20260413_gb_evaluator_safety_semantics.md.
-
-ROOT CAUSE (summary):
-    v1.1 §3.1 default_method='lookup' was interpreted to mean
-    "natural-label table lookup" but GB's method='lookup' has a
-    different semantic: positions are used as RAW 0-based grid
-    indices, not remapped through bin_centers. None of GB's current
-    methods satisfy the Safety Hard Constraint for interior missing
-    bins:
-        - method='lookup' — raw indexing, no safety semantics
-        - method='nearest_fast'/'nearest' — snaps to nearest populated
-          bin, returns value (not NaN)
-        - method='multilinear' + invalid_strategy='nan' — would return
-          NaN for missing interior, but interpolates between bins,
-          which is not the intended lookup-table semantic
-
-RESOLUTION OPTIONS (pending architect decision):
-    Option 1: GB adds 'strict_lookup' method (natural-label match via
-              bin_centers; NaN on any no-match). Cleanest.
-    Option 2: ADF bridge does pre-remap itself. Duplicates GB logic.
-    Option 3: Relax v1.1 §3.4 Safety — "missing bins MAY return
-              nearest-valid value; caller pre-filters".
-              Architect decision required.
-
-strict=True so accidental pass (silent semantic drift) fails the test
-and forces investigation.
+Covers:
+    R3_1: Sparse subframe, query at unpopulated INTERIOR bin returns NaN.
+    R3_2: Under default_bounds='clamp', out-of-range clamps but
+          interior unpopulated bins still return NaN.
+    R3_3: Under default_bounds='nan', out-of-range returns NaN
+          (A-3 closure — derived from v0.3 §4.4 Safety Hard Constraint).
 """
 
 import os
@@ -47,12 +26,18 @@ from AliasDataFrame import AliasDataFrame
 
 
 def _build_sparse_adf(populated_sectors, coef_values):
+    """
+    Subframe with ONLY the specified sectors populated.
+    populated_sectors: list of int
+    coef_values: list of float, same length
+    """
     df_sub = pd.DataFrame({
         'sector': np.array(populated_sectors, dtype=np.int32),
         'dX_intercept_sw': np.array(coef_values, dtype=np.float64),
         'dX_slope_meanIDC_sw': np.zeros(len(populated_sectors),
                                          dtype=np.float64),
     })
+    # Main queries all sectors 0..9
     df_main = pd.DataFrame({
         'sector': np.arange(10, dtype=np.int32),
         'meanIDC': np.zeros(10, dtype=np.float64),
@@ -67,44 +52,17 @@ def _build_sparse_adf(populated_sectors, coef_values):
 class TestR3MissingBinSafetyInvariance:
 
     @pytest.mark.invariance
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG_AliasDataFrame_20260413_gb_evaluator_safety_semantics: "
-            "method='lookup' uses raw grid indices, no bin_centers remap. "
-            "Pending Option 1/2/3 resolution."
-        ),
-    )
     def test_R3_1_unpopulated_bin_returns_nan_not_silent_value(self):
         """
-        XFAIL: Interior unpopulated bin returns wrong value instead of NaN.
-
-        Status: 🧨 Broken (Safety Hard Constraint violation)
-        Limitation ID: GB_EVALUATOR_SAFETY
-        Bug Report: BUG_AliasDataFrame_20260413_gb_evaluator_safety_semantics.md
-        Resolution: Phase 13.19.ADF-GB (or later) after architect decision.
-
-        Evidence (2026-04-13 test run):
-            populated=[0,2,4,6,8], coefs=[10,20,30,40,50]
-            Query sector=2 returns 30.0 (expected: 20.0)
-            Root cause: method='lookup' uses 2 as raw grid index,
-            retrieves coefs[2]=30. bin_centers=[0,2,4,6,8] is built
-            but never consulted in _eval_lookup (line 1186 of
-            groupby_regression_evaluator.py).
-
-        Workaround (application-level):
-            mask = df['sector'].isin(populated_sectors)
-            result = np.full(len(df), np.nan)
-            result[mask] = adf.df['dX_pred'].values[mask]
-
-        When to remove xfail:
-            After GB adds 'strict_lookup' method (Option 1), OR after
-            bridge pre-remap (Option 2), OR after architect approves
-            scope change (Option 3).
-
-        R3_1 SAFETY HARD CONSTRAINT (target, currently violated):
-            Subframe populated for sectors [0,2,4,6,8]. Query at
-            sectors [1,3,5,7,9] must return NaN. No silent values.
+        R3_1 SAFETY HARD CONSTRAINT:
+            Subframe populated for sectors [0, 2, 4, 6, 8]. Query at
+            sectors [1, 3, 5, 7, 9] must return NaN.
+            Must NOT return: zero (silent), neighbor value, clamped
+            edge value.
+        REGRESSION GUARD:
+            BUG_20260331-analogue — silent propagation of wrong value
+            through dependent alias expressions is the same class of
+            failure as the fill_value-dependency incident.
         """
         populated = [0, 2, 4, 6, 8]
         coefs = [10.0, 20.0, 30.0, 40.0, 50.0]
@@ -124,49 +82,33 @@ class TestR3MissingBinSafetyInvariance:
         adf.materialize_aliases(names=['dX_pred'])
         result = adf.df['dX_pred'].values
 
+        # Populated sectors [0,2,4,6,8] must match the coefs.
         for sec, expected in zip(populated, coefs):
             row_idx = np.where(adf.df['sector'].values == sec)[0][0]
             assert result[row_idx] == expected, (
                 f"R3_1: populated sector {sec} returned "
                 f"{result[row_idx]} instead of {expected}"
             )
-        for sec in [1, 3, 5, 7, 9]:
+
+        # Unpopulated sectors [1,3,5,7,9] must be NaN.
+        unpopulated = [1, 3, 5, 7, 9]
+        for sec in unpopulated:
             row_idx = np.where(adf.df['sector'].values == sec)[0][0]
             assert np.isnan(result[row_idx]), (
                 f"R3_1 SAFETY VIOLATION: unpopulated sector {sec} "
-                f"returned {result[row_idx]!r} instead of NaN."
+                f"returned {result[row_idx]!r} instead of NaN. "
+                f"This is exactly the failure mode Phase 13.12 I6 "
+                f"and BUG_20260331 were built to catch."
             )
 
     @pytest.mark.invariance
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG_AliasDataFrame_20260413_gb_evaluator_safety_semantics: "
-            "interior-missing under bounds='clamp' — same root cause as R3_1."
-        ),
-    )
     def test_R3_2_bounds_clamp_still_nans_interior_missing_bins(self):
         """
-        XFAIL: Interior missing under bounds='clamp' returns neighbor
-               value instead of NaN.
-
-        Status: 🧨 Broken (Safety Hard Constraint violation)
-        Limitation ID: GB_EVALUATOR_SAFETY
-        Bug Report: BUG_AliasDataFrame_20260413_gb_evaluator_safety_semantics.md
-        Resolution: Phase 13.19.ADF-GB (or later).
-
-        Evidence (2026-04-13):
-            populated=[0,2,4,6,8], coefs=[10,20,30,40,50], bounds='clamp'
-            Query sector=1 returns 20.0 (expected: NaN)
-            Root cause: same as R3_1 — lookup uses raw index;
-            bounds='clamp' only affects out-of-range not interior.
-
-        Workaround: same as R3_1.
-        When to remove xfail: same as R3_1.
-
-        R3_2 INVARIANT (target, currently violated):
-            Under bounds='clamp', out-of-range clamps to edge,
-            but interior unpopulated bins still return NaN.
+        R3_2 INVARIANT:
+            Under default_bounds='clamp', out-of-range query positions
+            clamp to the edge, but interior unpopulated bins still
+            return NaN. Distinguishes 'out of range' from 'missing in
+            range'.
         """
         populated = [0, 2, 4, 6, 8]
         coefs = [10.0, 20.0, 30.0, 40.0, 50.0]
@@ -186,51 +128,37 @@ class TestR3MissingBinSafetyInvariance:
         adf.materialize_aliases(names=['dX_pred'])
         result = adf.df['dX_pred'].values
 
+        # Interior unpopulated sectors [1, 3, 5, 7] — all still NaN
+        # (interior means within range of populated values 0..8, but
+        # not present in the populated list).
         for sec in [1, 3, 5, 7]:
             row_idx = np.where(adf.df['sector'].values == sec)[0][0]
             assert np.isnan(result[row_idx]), (
-                f"R3_2 SAFETY VIOLATION: interior sector {sec} "
-                f"returned {result[row_idx]!r} instead of NaN."
+                f"R3_2 SAFETY VIOLATION: under bounds='clamp', "
+                f"interior sector {sec} (between populated 0 and 8) "
+                f"returned {result[row_idx]!r} instead of NaN. "
+                f"Clamp must only affect OUT-OF-RANGE positions, "
+                f"not interior unpopulated bins."
             )
 
     @pytest.mark.invariance
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG_AliasDataFrame_20260413_gb_evaluator_safety_semantics: "
-            "out-of-range under bounds='nan' with method='lookup' — "
-            "raw-index semantic sidesteps bin_centers bounds check."
-        ),
-    )
     def test_R3_3_bounds_nan_out_of_range_returns_nan(self):
         """
-        XFAIL: Out-of-range under bounds='nan' returns clamped-edge
-               value instead of NaN.
-
-        Status: 🧨 Broken (Safety Hard Constraint violation)
-        Limitation ID: GB_EVALUATOR_SAFETY
-        Bug Report: BUG_AliasDataFrame_20260413_gb_evaluator_safety_semantics.md
-        Resolution: Phase 13.19.ADF-GB (or later).
-
-        Evidence (2026-04-13):
-            populated=[2,3,4,5], coefs=[20,30,40,50], bounds='nan'
-            Query sector=0 returns 20.0 (expected: NaN)
-            Root cause: with method='lookup' and grid_shape=(4,), raw
-            index 0 is inside [0, grid_shape-1]=[0,3], so _eval_lookup's
-            bounds='nan' check (raw<0 or raw>=grid_shape) does NOT
-            trigger. The raw-index semantic sidesteps bin_centers-based
-            bounds detection entirely.
-
-        Workaround: same as R3_1.
-        When to remove xfail: same as R3_1.
-
-        R3_3 INVARIANT (target, currently violated):
-            Under bounds='nan', positions outside the grid range must
-            return NaN.
+        R3_3 INVARIANT (A-3 closure):
+            Under default_bounds='nan' (the ADF bridge default), query
+            positions outside the grid range must return NaN. This is
+            the out-of-range variant of §4.4 Safety — distinct from
+            R3_1's interior-missing case.
+        PROOF OF SAFETY HARD CONSTRAINT CLOSURE:
+            v0.3 §4.4 says missing bins return NaN. v1.1 §3.4 promoted
+            A-3 to derive the same result for out-of-range. R3_3 is
+            the test that verifies the derivation holds.
         """
-        populated = [2, 3, 4, 5]
+        populated = [2, 3, 4, 5]  # range: 2..5
         coefs = [20.0, 30.0, 40.0, 50.0]
         adf = _build_sparse_adf(populated, coefs)
+        # Main tree has sectors 0..9, so 0,1 are below-range and 6..9
+        # are above-range.
         adf.register_regression_metadata(
             'TPC_model',
             subframe_name='TPC_corr',
@@ -246,9 +174,12 @@ class TestR3MissingBinSafetyInvariance:
         adf.materialize_aliases(names=['dX_pred'])
         result = adf.df['dX_pred'].values
 
-        for sec in [0, 1, 6, 7, 8, 9]:
+        # Below-range [0, 1] and above-range [6,7,8,9] all NaN.
+        out_of_range_sectors = [0, 1, 6, 7, 8, 9]
+        for sec in out_of_range_sectors:
             row_idx = np.where(adf.df['sector'].values == sec)[0][0]
             assert np.isnan(result[row_idx]), (
                 f"R3_3 SAFETY VIOLATION: out-of-range sector {sec} "
-                f"returned {result[row_idx]!r}."
+                f"(grid is [2..5]) returned {result[row_idx]!r} "
+                f"under bounds='nan'. Must be NaN."
             )
