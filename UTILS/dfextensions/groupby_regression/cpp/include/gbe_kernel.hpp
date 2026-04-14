@@ -17,7 +17,7 @@
 //     on a cell with valid_mask=false returns NaN regardless of bounds
 //     mode. No silent neighbour fallback. (Phase 13.18.GBADF v0.3 §4.4.)
 //
-// Turn 3 scope: lookup only. evaluate_linear arrives in Turn 4.
+// Turn 3: lookup. Turn 4: linear. Both implemented.
 
 #ifndef GBE_KERNEL_HPP
 #define GBE_KERNEL_HPP
@@ -93,6 +93,22 @@ public:
     // Turn 3: lookup only. If method_ == Linear this throws.
     std::vector<double> evaluate_lookup(
         const std::vector<int64_t>& position_idx,
+        const std::vector<double>& predictor_values) const;
+
+    // Evaluate at a fractional (float) position via N-D multilinear
+    // interpolation over 2^N corners. Corners with valid_mask=false
+    // are excluded from the weighted sum and remaining valid-corner
+    // weights are renormalized to sum to 1. If ALL corners are
+    // invalid, returns NaN per Safety contract (proposal v1.1 §6.3,
+    // P1-β closure in Turn 5).
+    //
+    // bounds='nan': position outside [0, N-1] in any dim -> NaN
+    // bounds='clamp': out-of-grid clamped to nearest in-grid edge
+    // before interpolation.
+    //
+    // Turn 4: linear only. If method_ == Lookup this throws.
+    std::vector<double> evaluate_linear(
+        const std::vector<double>& position,
         const std::vector<double>& predictor_values) const;
 
     // -------- public accessors (ADF-facing) --------

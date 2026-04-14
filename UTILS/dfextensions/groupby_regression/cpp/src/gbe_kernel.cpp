@@ -260,4 +260,157 @@ std::vector<double> GroupByRegressionEvaluator::evaluate_lookup(
     return result;
 }
 
+// ---------------------------------------------------------------------
+// Turn 4: evaluate_linear
+//
+// Reference algorithm — mirrors cpp/fixtures/generate_fixtures.py
+// _evaluate_linear_one() bit-for-bit (modulo FMA, suppressed via
+// -ffp-contract=off in Makefile per Turn 3 lesson):
+//
+//   1. Per-dim apply bounds:
+//        bounds='nan'  : if pos < 0 or pos > N-1 -> NaN for all targets
+//        bounds='clamp': clamp pos to [0, N-1]
+//   2. Per-dim compute floor(pos) and frac = pos - floor.
+//      Special case grid_shape[d] == 1: degenerate dim, weight=1.
+//   3. Iterate 2^N corners, accumulate (target_value * weight) only
+//      over corners with valid_mask=true.
+//   4. If sum-of-valid-weights == 0 (all 2^N corners invalid): NaN
+//      for all targets (P1-β closure).
+//   5. Otherwise renormalize per-target accumulator by sum-of-valid-
+//      weights (preserves convex combination over the valid subset).
+// ---------------------------------------------------------------------
+std::vector<double> GroupByRegressionEvaluator::evaluate_linear(
+    const std::vector<double>& position,
+    const std::vector<double>& predictor_values) const
+{
+    if (method_ != MethodMode::Linear) {
+        throw std::logic_error(
+            "evaluate_linear called but method != Linear");
+    }
+    if (position.size() != schema_.group_columns.size()) {
+        std::ostringstream oss;
+        oss << "position size " << position.size()
+            << " != group_columns size " << schema_.group_columns.size();
+        throw std::invalid_argument(oss.str());
+    }
+    if (predictor_values.size() != schema_.predictor_columns.size()) {
+        std::ostringstream oss;
+        oss << "predictor_values size " << predictor_values.size()
+            << " != predictor_columns size "
+            << schema_.predictor_columns.size();
+        throw std::invalid_argument(oss.str());
+    }
+
+    const double kNaN = std::nan("");
+    const std::size_t ndim = position.size();
+    const std::size_t ntargets = schema_.targets.size();
+    std::vector<double> result(ntargets, kNaN);
+
+    // --- Per-dim: apply bounds and compute floors / fracs ---
+    std::vector<int> floors(ndim, 0);
+    std::vector<double> fracs(ndim, 0.0);
+    for (std::size_t d = 0; d < ndim; ++d) {
+        const int n = grid_shape_[d];
+        double pos_d = position[d];
+
+        if (bounds_ == BoundsMode::Nan) {
+            if (pos_d < 0.0 || pos_d > static_cast<double>(n - 1)) {
+                return result; // NaN for every target
+            }
+        } else { // Clamp
+            if (pos_d < 0.0) pos_d = 0.0;
+            else if (pos_d > static_cast<double>(n - 1)) {
+                pos_d = static_cast<double>(n - 1);
+            }
+        }
+
+        // floor + frac
+        double f_floor = std::floor(pos_d);
+        // Cap floor at n-2 so floor+1 <= n-1 (for non-degenerate grids).
+        if (n >= 2) {
+            if (f_floor >= static_cast<double>(n - 1)) {
+                f_floor = static_cast<double>(n - 2);
+            }
+        } else {
+            // Degenerate single-cell dim: only index 0 exists.
+            f_floor = 0.0;
+        }
+        if (f_floor < 0.0) f_floor = 0.0;
+
+        floors[d] = static_cast<int>(f_floor);
+
+        double frac = pos_d - f_floor;
+        if (frac < 0.0) frac = 0.0;
+        else if (frac > 1.0) frac = 1.0;
+        fracs[d] = frac;
+    }
+
+    // --- Iterate 2^ndim corners ---
+    // Cap at 2^31-1 corners just for sanity; real use is ndim <= ~6.
+    if (ndim >= 31) {
+        throw std::invalid_argument(
+            "evaluate_linear: ndim >= 31 not supported");
+    }
+    const std::size_t ncorners = static_cast<std::size_t>(1) << ndim;
+
+    std::vector<double> accum(ntargets, 0.0);
+    double weight_sum = 0.0;
+
+    for (std::size_t corner = 0; corner < ncorners; ++corner) {
+        std::vector<int64_t> corner_idx(ndim);
+        double weight = 1.0;
+        for (std::size_t d = 0; d < ndim; ++d) {
+            // Degenerate single-cell dim: weight=1, idx=0 always.
+            if (grid_shape_[d] == 1) {
+                corner_idx[d] = 0;
+                continue;
+            }
+            const std::size_t bit = (corner >> d) & 1u;
+            if (bit == 0u) {
+                corner_idx[d] = floors[d];
+                weight *= (1.0 - fracs[d]);
+            } else {
+                corner_idx[d] = floors[d] + 1;
+                weight *= fracs[d];
+            }
+        }
+        const int flat = linearize_(corner_idx);
+        if (!valid_mask_[static_cast<std::size_t>(flat)]) {
+            continue; // skip invalid corner
+        }
+        weight_sum += weight;
+
+        // Accumulate per-target: compute corner-cell prediction, * weight
+        for (std::size_t ti = 0; ti < ntargets; ++ti) {
+            const auto& t = schema_.targets[ti];
+            double v = 0.0;
+            if (schema_.fit_intercept) {
+                const auto& arr = coeff_arrays_.at(intercept_col_(t));
+                v += arr[static_cast<std::size_t>(flat)];
+            }
+            for (std::size_t pi = 0;
+                 pi < schema_.predictor_columns.size(); ++pi) {
+                const auto& arr = coeff_arrays_.at(
+                    slope_col_(t, schema_.predictor_columns[pi]));
+                v += arr[static_cast<std::size_t>(flat)]
+                     * predictor_values[pi];
+            }
+            accum[ti] += weight * v;
+        }
+    }
+
+    // Safety: all corners invalid -> NaN (P1-β; F_24 second query;
+    // explicit Turn 5 test will use a custom inline fixture too).
+    if (weight_sum == 0.0) {
+        return result; // all NaN
+    }
+
+    // Renormalize by sum-of-valid weights (closes F_24 first-query
+    // renormalization-by-valid-corner-weight semantics).
+    for (std::size_t ti = 0; ti < ntargets; ++ti) {
+        result[ti] = accum[ti] / weight_sum;
+    }
+    return result;
+}
+
 } // namespace gbe

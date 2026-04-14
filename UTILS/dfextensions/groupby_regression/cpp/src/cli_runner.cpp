@@ -92,7 +92,8 @@ int64_t as_int64(const JsonValue& v) {
 struct FixtureBundle {
     gbe::ModelSchema schema;
     std::vector<gbe::SubframeRow> rows;
-    std::vector<std::vector<int64_t>> query_positions;      // per-query compact idx
+    std::vector<std::vector<int64_t>> query_positions;       // integer for lookup
+    std::vector<std::vector<double>>  query_positions_float; // float for linear
     std::vector<std::vector<double>>  predictor_values_per_query;
     gbe::MethodMode method;
     gbe::BoundsMode bounds;
@@ -169,16 +170,18 @@ FixtureBundle unpack_fixture(const JsonValue& root) {
         b.rows.push_back(std::move(row));
     }
 
-    // query_positions: interpret as integer compact indices for lookup.
-    // (For linear in Turn 4, same field reused with float semantics.)
+    // query_positions: stored as floats in the JSON. Capture both
+    // forms so cli_runner can dispatch to lookup (int) or linear (float).
     for (const auto& qp : input.at("query_positions").as_array()) {
-        std::vector<int64_t> one;
+        std::vector<int64_t> one_int;
+        std::vector<double>  one_flt;
         for (const auto& v : qp.as_array()) {
-            // Query positions are stored as floats in the fixture JSON.
-            // For lookup, they are integer-valued; static_cast is fine.
-            one.push_back(static_cast<int64_t>(v.as_number()));
+            const double f = v.as_number();
+            one_flt.push_back(f);
+            one_int.push_back(static_cast<int64_t>(f));
         }
-        b.query_positions.push_back(std::move(one));
+        b.query_positions.push_back(std::move(one_int));
+        b.query_positions_float.push_back(std::move(one_flt));
     }
 
     // predictor_values_per_query
@@ -202,9 +205,18 @@ void emit_success(const gbe::GroupByRegressionEvaluator& ev,
     for (const auto& t : b.schema.targets) predictions[t] = {};
 
     for (std::size_t i = 0; i < b.query_positions.size(); ++i) {
-        auto r = ev.evaluate_lookup(
-            b.query_positions[i],
-            b.predictor_values_per_query[i]);
+        std::vector<double> r;
+        if (b.method == gbe::MethodMode::Lookup) {
+            r = ev.evaluate_lookup(
+                b.query_positions[i],
+                b.predictor_values_per_query[i]);
+        } else {
+            // Linear: positions are floating-point. Use the float copy
+            // captured in unpack_fixture (b.query_positions_float).
+            r = ev.evaluate_linear(
+                b.query_positions_float[i],
+                b.predictor_values_per_query[i]);
+        }
         for (std::size_t ti = 0; ti < b.schema.targets.size(); ++ti) {
             predictions[b.schema.targets[ti]].push_back(r[ti]);
         }
@@ -249,13 +261,6 @@ int main(int argc, char** argv) {
         const FixtureBundle b = unpack_fixture(root);
         gbe::GroupByRegressionEvaluator ev(
             b.schema, b.rows, b.method, b.bounds);
-        if (b.method != gbe::MethodMode::Lookup) {
-            // Turn 3 scope: lookup only. Emit structured error.
-            std::cout << "{\"status\":\"error\",\"error\":"
-                      << "\"method 'linear' not implemented in Turn 3\"}"
-                      << std::endl;
-            return 2;
-        }
         emit_success(ev, b);
         return 0;
     } catch (const std::exception& e) {
