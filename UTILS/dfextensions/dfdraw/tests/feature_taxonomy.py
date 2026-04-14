@@ -505,4 +505,49 @@ FEATURES = [
             "test_vector.py::TestVectorInvariance::test_vector_determinism",
         ],
     },
+
+    # ── Phase 13.16.DF FIX1 (2026-04-14) — Vector kwarg propagation bug fix ──
+    # Permanent capability matrix entries. Pre-fix (d662c0a5): all tests FAIL.
+    # Post-fix (PHASE_13_16_DF_FIX1_END): all tests PASS.
+    # Diagnostic role: localizes bugs to dfdraw vs ADF subproject.
+
+    {
+        "id": "VECTOR.kwarg_propagation",
+        "name": "Vector path forwards all scalar-mode kwargs (FIX1)",
+        "category": "VECTOR",
+        "tests": [
+            "test_vector.py::TestVectorKwargPropagation::test_vector_group_by_bins_equivalent_to_scalar_loop",
+            "test_vector.py::TestVectorKwargPropagation::test_vector_group_by_quantiles_equivalent_to_scalar_loop",
+            "test_vector.py::TestVectorKwargPropagation::test_vector_min_entries_equivalent_to_scalar_loop",
+            "test_vector.py::TestVectorKwargPropagation::test_vector_sort_groups_equivalent_to_scalar_loop",
+            "test_vector.py::TestVectorKwargPropagation::test_vector_linestyle_equivalent_to_scalar_loop",
+            "test_vector.py::TestVectorKwargPropagation::test_vector_weights_equivalent_to_scalar_loop",
+            "test_vector.py::TestVectorKwargPropagation::test_vector_return_data_equivalent_to_scalar_loop",
+        ],
+    },
+    {
+        "id": "VECTOR.groupby_polish",
+        "name": "Vector + group_by deduplicated legend, title, layout (FIX1)",
+        "category": "VECTOR",
+        "tests": [
+            "test_vector.py::TestVectorGroupBy::test_vector_groupby_main_legend_dedup_count",
+            "test_vector.py::TestVectorGroupBy::test_vector_groupby_secondary_legend_count",
+            "test_vector.py::TestVectorGroupBy::test_vector_groupby_title_one_line",
+            "test_vector.py::TestVectorGroupBy::test_vector_groupby_no_layout_warnings",
+            "test_vector.py::TestVectorGroupBy::test_vector_groupby_real_world_reproducer",
+        ],
+    },
+    {
+        "id": "VECTOR.kwarg_surface",
+        "name": "Vector dispatch forwards named-parameter surface + facet guard (FIX1)",
+        "category": "VECTOR",
+        "tests": [
+            "test_vector.py::TestVectorKwargSurface::test_vector_profile_kwarg_surface_enumeration",
+            "test_vector.py::TestVectorKwargSurface::test_vector_hist_kwarg_surface_enumeration",
+            "test_vector.py::TestVectorKwargSurface::test_vector_scatter_kwarg_surface_enumeration",
+            "test_vector.py::TestVectorKwargSurface::test_vector_draw_kwarg_surface_enumeration",
+            "test_vector.py::TestVectorKwargSurface::test_vector_facet_with_vector_raises",
+            "test_vector.py::TestVectorKwargSurface::test_all_forwarded_names_are_valid_signature_params",
+        ],
+    },
 ]

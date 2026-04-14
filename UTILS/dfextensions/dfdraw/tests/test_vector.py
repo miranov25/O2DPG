@@ -730,3 +730,625 @@ class TestVectorMixedRanges:
         assert isinstance(stats, list)
         assert len(stats) == 2
         plt.close(fig)
+
+
+# =============================================================================
+# Phase 13.16.DF FIX1 — additions (2026-04-14)
+#
+# Three new test classes diagnosing the vector-path kwarg-propagation bug class.
+# Added as PERMANENT capability matrix entries (VECTOR.kwarg_propagation,
+# VECTOR.groupby_polish, VECTOR.kwarg_surface) — not temporary regression tests.
+#
+# EXPECTED STATE PRE-FIX (at commit d662c0a5): 18 tests all FAIL with
+#   diagnostic messages tagged [dfdraw <bug-class> <method>/<kwarg>].
+# EXPECTED STATE POST-FIX (PHASE_13_16_DF_FIX1_END): all 18 tests PASS.
+#
+# Governance: v1.4 proposal approved by Claude40 with source-verified
+#   spot-check; multi-reviewer panel (Claude42/43/45/46) source-verified
+#   the per-method inventory.
+# =============================================================================
+
+from matplotlib.legend import Legend
+
+
+# ── Fixtures (FIX1) ──────────────────────────────────────────────────────────
+
+@pytest.fixture
+def df_with_groups():
+    """4-category fixture for vector + group_by tests (FIX1)."""
+    np.random.seed(42)
+    n = 400
+    return pd.DataFrame({
+        'x': np.random.uniform(0, 10, n),
+        'y1': np.random.normal(0, 1, n),
+        'y2': np.random.normal(0.5, 1, n),
+        'y3': np.random.normal(1.0, 1, n),
+        'category': np.random.choice(['A', 'B', 'C', 'D'], n),
+        'cat_float': np.random.uniform(-1, 1, n),
+    })
+
+
+@pytest.fixture
+def df_sparse_groups():
+    """
+    3-category fixture with intentionally heterogeneous bin density.
+    Category A: 600 rows clustered at low x (dense bins)
+    Category B: 100 rows uniform (medium bins)
+    Category C: 30 rows uniform (sparse bins → caught by min_entries=20)
+    """
+    np.random.seed(43)
+    rows = []
+    for _ in range(600):
+        rows.append({
+            'x': np.random.uniform(0, 5),  # clustered low
+            'y1': np.random.normal(0, 1),
+            'y2': np.random.normal(0.5, 1),
+            'category': 'A',
+        })
+    for _ in range(100):
+        rows.append({
+            'x': np.random.uniform(0, 10),
+            'y1': np.random.normal(0, 1),
+            'y2': np.random.normal(0.5, 1),
+            'category': 'B',
+        })
+    for _ in range(30):
+        rows.append({
+            'x': np.random.uniform(0, 10),
+            'y1': np.random.normal(0, 1),
+            'y2': np.random.normal(0.5, 1),
+            'category': 'C',
+        })
+    return pd.DataFrame(rows)
+
+
+@pytest.fixture
+def df_with_weights():
+    """Non-uniform weights fixture for 3-path weights invariance test."""
+    np.random.seed(45)
+    n = 400
+    return pd.DataFrame({
+        'x': np.random.uniform(0, 10, n),
+        'y1': np.random.normal(0, 1, n),
+        'y2': np.random.normal(0.5, 1, n),
+        # Extreme non-uniform weights so weighted vs unweighted means differ
+        'w': np.where(np.random.rand(n) > 0.9, 10.0, 0.5),
+    })
+
+
+@pytest.fixture
+def df_its_like():
+    """ITS-like fixture mimicking architect's production reproducer."""
+    np.random.seed(44)
+    n = 60_000
+    return pd.DataFrame({
+        'staveITS': np.random.randint(0, 12, n),
+        'dd_dzITS0': np.random.normal(0, 0.001, n),
+        'dd_dzITS1': np.random.normal(0, 0.001, n),
+        'dd_dzITS2': np.random.normal(0, 0.001, n),
+        'dd_dzITS3': np.random.normal(0, 0.001, n),
+        'dd_dzITS4': np.random.normal(0, 0.001, n),
+        'dd_dzITS5': np.random.normal(0, 0.001, n),
+        # ~210 unique mP3 values → reproduces architect's 210×2+1=421 legend bug
+        'mP3': np.round(np.random.uniform(-2.1, 0.0, n), 2),
+    })
+
+
+# ── Helpers (FIX1) ───────────────────────────────────────────────────────────
+
+def _fix1_get_all_legends(ax):
+    """All Legend objects on the axes (main + any add_artist legends)."""
+    return [a for a in ax.get_children() if isinstance(a, Legend)]
+
+
+def _fix1_get_main_group_legend(ax):
+    """Main group legend = the legend with the most entries."""
+    legends = _fix1_get_all_legends(ax)
+    if not legends:
+        return None
+    return max(legends, key=lambda L: len(L.get_texts()))
+
+
+# =============================================================================
+# TestVectorKwargPropagation — 7 strong A≡B invariance tests
+# =============================================================================
+# 
+# Pattern: Path A (scalar same-loop with kwarg=X) ≡ Path B (vector with kwarg=X).
+# Failure pre-fix: vector silently drops the kwarg, producing different stats/legend.
+# Diagnostic role: if A≡B in dfdraw but fails via aDF.draw(), bug is at ADF boundary.
+# =============================================================================
+
+class TestVectorKwargPropagation:
+    """
+    Strong A≡B tests proving vector dispatch forwards all scalar-mode kwargs.
+    
+    Phase 13.16.DF FIX1 root bug: vector dispatch blocks in
+    profile()/hist()/scatter()/draw() enumerate a hardcoded subset of named
+    parameters and silently drop the rest (B1a). Matplotlib channel kwargs
+    linestyle/marker are additionally clobbered at _draw_vector:606,611 (B1b).
+    """
+
+    def test_vector_group_by_bins_equivalent_to_scalar_loop(self, df_with_groups):
+        """B1a: group_by_bins propagates correctly through vector path (root symptom)."""
+        df = df_with_groups
+        drawer_a = DFDraw(df.copy())
+        drawer_a.profile("y1:x", bins=10, group_by='cat_float', group_by_bins=4)
+        _, ax_a, _ = drawer_a.profile(
+            "y2:x", bins=10, same=True, group_by='cat_float', group_by_bins=4,
+        )
+        drawer_b = DFDraw(df.copy())
+        _, ax_b, _ = drawer_b.profile(
+            "[y1,y2]:x", bins=10, group_by='cat_float', group_by_bins=4,
+        )
+        legend_a = _fix1_get_main_group_legend(ax_a)
+        legend_b = _fix1_get_main_group_legend(ax_b)
+        n_a = len(legend_a.get_texts()) if legend_a else 0
+        n_b = len(legend_b.get_texts()) if legend_b else 0
+        assert n_a == n_b, (
+            f"[dfdraw B1a profile/group_by_bins] Scalar loop {n_a} group "
+            f"legend entries, vector {n_b}. group_by_bins silently dropped in "
+            f"vector dispatch (profile() lines 1464-1499)."
+        )
+        assert n_a <= 4, (
+            f"[dfdraw B1a profile/group_by_bins] group_by_bins=4 requested, "
+            f"scalar path has {n_a} groups. Scalar path ALSO broken — check "
+            f"whether group_by_bins reaches underlying profile logic."
+        )
+        plt.close('all')
+
+    def test_vector_group_by_quantiles_equivalent_to_scalar_loop(self, df_with_groups):
+        """B1a: group_by_quantiles propagates correctly through vector path."""
+        df = df_with_groups
+        drawer_a = DFDraw(df.copy())
+        drawer_a.profile("y1:x", bins=10, group_by='cat_float', group_by_quantiles=3)
+        _, ax_a, _ = drawer_a.profile(
+            "y2:x", bins=10, same=True, group_by='cat_float', group_by_quantiles=3,
+        )
+        drawer_b = DFDraw(df.copy())
+        _, ax_b, _ = drawer_b.profile(
+            "[y1,y2]:x", bins=10, group_by='cat_float', group_by_quantiles=3,
+        )
+        legend_a = _fix1_get_main_group_legend(ax_a)
+        legend_b = _fix1_get_main_group_legend(ax_b)
+        n_a = len(legend_a.get_texts()) if legend_a else 0
+        n_b = len(legend_b.get_texts()) if legend_b else 0
+        assert n_a == n_b, (
+            f"[dfdraw B1a profile/group_by_quantiles] Scalar {n_a} groups, "
+            f"vector {n_b}. group_by_quantiles silently dropped."
+        )
+        plt.close('all')
+
+    def test_vector_min_entries_equivalent_to_scalar_loop(self, df_sparse_groups):
+        """
+        B1a: min_entries propagates (per-BIN filter — affects how many bins
+        survive in each group's profile line, not just whether group appears).
+        
+        The profile lines must have the SAME number of plotted points in
+        scalar-loop and vector paths. If min_entries is dropped in vector,
+        vector lines have MORE points (sparse bins not filtered).
+        """
+        df = df_sparse_groups
+        drawer_a = DFDraw(df.copy())
+        drawer_a.profile("y1:x", bins=10, group_by='category', min_entries=20)
+        _, ax_a, _ = drawer_a.profile(
+            "y2:x", bins=10, same=True, group_by='category', min_entries=20,
+        )
+        drawer_b = DFDraw(df.copy())
+        _, ax_b, _ = drawer_b.profile(
+            "[y1,y2]:x", bins=10, group_by='category', min_entries=20,
+        )
+        # Count total plotted bin-points across all real (non-empty proxy) lines.
+        # If min_entries is dropped in vector, vector has more total points.
+        n_pts_a = sum(len(l.get_xdata()) for l in ax_a.lines if len(l.get_xdata()) > 0)
+        n_pts_b = sum(len(l.get_xdata()) for l in ax_b.lines if len(l.get_xdata()) > 0)
+        assert n_pts_a == n_pts_b, (
+            f"[dfdraw B1a profile/min_entries] Scalar path plots {n_pts_a} total "
+            f"bin-points after min_entries=20 filter; vector plots {n_pts_b}. "
+            f"Mismatch indicates min_entries silently dropped in vector dispatch — "
+            f"vector retained sparse bins that scalar correctly filtered."
+        )
+        # And legend should match too (group filter as secondary check)
+        legend_a = _fix1_get_main_group_legend(ax_a)
+        legend_b = _fix1_get_main_group_legend(ax_b)
+        n_a = len(legend_a.get_texts()) if legend_a else 0
+        n_b = len(legend_b.get_texts()) if legend_b else 0
+        assert n_a == n_b, (
+            f"[dfdraw B1a profile/min_entries legend] Scalar {n_a} groups, "
+            f"vector {n_b} after min_entries=20."
+        )
+        plt.close('all')
+
+    def test_vector_sort_groups_equivalent_to_scalar_loop(self, df_with_groups):
+        """B1a: sort_groups propagates (legend order must match between paths)."""
+        df = df_with_groups
+        drawer_a = DFDraw(df.copy())
+        drawer_a.profile("y1:x", bins=10, group_by='category', sort_groups=False)
+        _, ax_a, _ = drawer_a.profile(
+            "y2:x", bins=10, same=True, group_by='category', sort_groups=False,
+        )
+        drawer_b = DFDraw(df.copy())
+        _, ax_b, _ = drawer_b.profile(
+            "[y1,y2]:x", bins=10, group_by='category', sort_groups=False,
+        )
+        legend_a = _fix1_get_main_group_legend(ax_a)
+        legend_b = _fix1_get_main_group_legend(ax_b)
+        labels_a = [t.get_text() for t in legend_a.get_texts()] if legend_a else []
+        labels_b = [t.get_text() for t in legend_b.get_texts()] if legend_b else []
+        assert labels_a == labels_b, (
+            f"[dfdraw B1a profile/sort_groups] Scalar legend order {labels_a}, "
+            f"vector {labels_b}. sort_groups=False silently dropped — vector "
+            f"applied default sort_groups=True."
+        )
+        plt.close('all')
+
+    def test_vector_linestyle_equivalent_to_scalar_loop(self, df_with_groups):
+        """B1b: user linestyle='none' must survive channel clobbering (setdefault fix)."""
+        drawer = DFDraw(df_with_groups.copy())
+        _, ax, _ = drawer.profile(
+            "[y1,y2]:x", bins=10, group_by='category', linestyle='none',
+        )
+        real_lines = [l for l in ax.lines if len(l.get_xdata()) > 0]
+        for line in real_lines:
+            ls = line.get_linestyle()
+            assert ls in ('none', 'None', ''), (
+                f"[dfdraw B1b _draw_vector line 606] User linestyle='none' "
+                f"overwritten by channel cycle (got {ls!r}). Fix: "
+                f"iter_kwargs.setdefault('linestyle', ...) at line 606."
+            )
+        plt.close('all')
+
+    def test_vector_weights_equivalent_to_scalar_loop(self, df_with_weights):
+        """
+        B1a: weights propagates (scientifically critical — silent numerical bug otherwise).
+        
+        3-path test: A≡B (propagation works) AND B≠C (weights had effect).
+        """
+        df = df_with_weights
+        drawer_a = DFDraw(df.copy())
+        _, _, s_a1 = drawer_a.profile("y1:x", bins=10, weights='w')
+        _, _, s_a2 = drawer_a.profile("y2:x", bins=10, same=True, weights='w')
+        drawer_b = DFDraw(df.copy())
+        _, _, stats_b = drawer_b.profile("[y1,y2]:x", bins=10, weights='w')
+        drawer_c = DFDraw(df.copy())
+        _, _, stats_c = drawer_c.profile("[y1,y2]:x", bins=10)  # no weights
+
+        assert len(stats_b) == 2, (
+            f"[dfdraw contract] vector [y1,y2]:x must return 2 stats, got {len(stats_b)}"
+        )
+        assert abs(s_a1['mean_y'] - stats_b[0]['mean_y']) < 1e-10, (
+            f"[dfdraw B1a profile/weights A≡B] Scalar y1 mean={s_a1['mean_y']:.6f}, "
+            f"vector y1 mean={stats_b[0]['mean_y']:.6f}. Weights silently dropped "
+            f"in vector dispatch."
+        )
+        assert abs(s_a2['mean_y'] - stats_b[1]['mean_y']) < 1e-10, (
+            f"[dfdraw B1a profile/weights A≡B] Scalar y2 mean={s_a2['mean_y']:.6f}, "
+            f"vector y2 mean={stats_b[1]['mean_y']:.6f}."
+        )
+        assert abs(stats_b[0]['mean_y'] - stats_c[0]['mean_y']) > 1e-6, (
+            f"[dfdraw B1a profile/weights B≠C sanity] Vector with weights and "
+            f"without weights produced equal mean_y. Weights had no effect in "
+            f"EITHER path — test would be worthless without this third-path check."
+        )
+        plt.close('all')
+
+    def test_vector_return_data_equivalent_to_scalar_loop(self, df_with_groups):
+        """B1a: return_data must propagate — 'profile_data' key in each stats dict."""
+        df = df_with_groups
+        drawer_a = DFDraw(df.copy())
+        _, _, s_a1 = drawer_a.profile("y1:x", bins=10, return_data=True)
+        _, _, s_a2 = drawer_a.profile("y2:x", bins=10, same=True, return_data=True)
+        drawer_b = DFDraw(df.copy())
+        _, _, stats_b = drawer_b.profile("[y1,y2]:x", bins=10, return_data=True)
+
+        assert 'profile_data' in s_a1, (
+            f"[dfdraw setup] scalar path missing 'profile_data' — not a vector bug; "
+            f"check return_data in profile() scalar code path."
+        )
+        for i, s in enumerate(stats_b):
+            assert 'profile_data' in s, (
+                f"[dfdraw B1a profile/return_data] Vector stats[{i}] missing "
+                f"'profile_data' key (keys: {list(s.keys())}). User code doing "
+                f"stats[{i}]['profile_data'] hits KeyError."
+            )
+        pd.testing.assert_frame_equal(
+            s_a1['profile_data'].reset_index(drop=True),
+            stats_b[0]['profile_data'].reset_index(drop=True),
+        )
+        pd.testing.assert_frame_equal(
+            s_a2['profile_data'].reset_index(drop=True),
+            stats_b[1]['profile_data'].reset_index(drop=True),
+        )
+        plt.close('all')
+
+
+# =============================================================================
+# TestVectorGroupBy — 5 smoke tests (count-based)
+# =============================================================================
+# Not A≡B: scalar loop INTENTIONALLY produces N legend copies; vector should
+# dedup to 1. Count-based smoke tests capture the post-fix contract.
+# =============================================================================
+
+class TestVectorGroupBy:
+    """Smoke tests for vector + group_by cosmetic dedup (B2-B5)."""
+
+    def test_vector_groupby_main_legend_dedup_count(self, df_with_groups):
+        """B2: main group legend = N groups, not N × vector_dim."""
+        drawer = DFDraw(df_with_groups.copy())
+        _, ax, _ = drawer.profile(
+            "[y1,y2,y3]:x", bins=10, group_by='category',
+        )
+        main = _fix1_get_main_group_legend(ax)
+        n = len(main.get_texts()) if main else 0
+        assert n == 4, (
+            f"[dfdraw B2 profile/legend_dedup] Main legend has {n} entries; "
+            f"expected 4 (= unique groups). If n==12, legend duplicated per "
+            f"vector iteration — dedup missing in _draw_vector."
+        )
+        plt.close('all')
+
+    def test_vector_groupby_secondary_legend_count(self, df_with_groups):
+        """B2 corollary: secondary 'Variable' legend = vector dim (=3); dedup must not break it."""
+        drawer = DFDraw(df_with_groups.copy())
+        _, ax, _ = drawer.profile(
+            "[y1,y2,y3]:x", bins=10, group_by='category',
+        )
+        legends = _fix1_get_all_legends(ax)
+        if len(legends) < 2:
+            pytest.fail(
+                f"[dfdraw B2 profile/secondary_legend] Expected 2 legends (main + "
+                f"Variable secondary), got {len(legends)}. Phase 13.16.DF "
+                f"_add_vector_legend may be broken."
+            )
+        secondary = min(legends, key=lambda L: len(L.get_texts()))
+        n = len(secondary.get_texts())
+        assert n == 3, (
+            f"[dfdraw B2 profile/secondary_legend] Secondary 'Variable' legend "
+            f"has {n} entries; expected 3 (= vector dim)."
+        )
+        plt.close('all')
+
+    def test_vector_groupby_title_one_line(self, df_with_groups):
+        """B3+B4: title ≤ 2 lines, not N lines (one title + optional subtitle)."""
+        drawer = DFDraw(df_with_groups.copy())
+        _, ax, _ = drawer.profile(
+            "[y1,y2,y3]:x", bins=10, group_by='category', auto_title=True,
+        )
+        title = ax.get_title()
+        n_lines = title.count('\n') + 1 if title else 0
+        assert n_lines <= 2, (
+            f"[dfdraw B3 profile/title] Title has {n_lines} lines; expected ≤ 2. "
+            f"If n_lines == vector_dim+1, title appended per iteration."
+        )
+        plt.close('all')
+
+    def test_vector_groupby_no_layout_warnings(self, df_with_groups):
+        """
+        B5: tight_layout must be invoked ≤ 1 time across the vector call.
+        
+        Pre-fix: each per-iteration call of profile() invokes plt.tight_layout()
+        once → N invocations for N-vector. Post-fix: _suppress_layout flag
+        suppresses iterations 1..N-1; one call at end of _draw_vector.
+        
+        Use direct call counting (via monkeypatch) rather than waiting for
+        warnings — warnings only fire when tight_layout fails to fit, which
+        depends on the figure/title shape and is not deterministic across
+        machines or matplotlib versions. Counting direct calls IS deterministic.
+        """
+        import matplotlib.pyplot as _plt
+        call_counter = {'n': 0}
+        original_tight = _plt.tight_layout
+        def _counting_tight(*args, **kwargs):
+            call_counter['n'] += 1
+            return original_tight(*args, **kwargs)
+        _plt.tight_layout = _counting_tight
+        try:
+            drawer = DFDraw(df_with_groups.copy())
+            drawer.profile("[y1,y2,y3]:x", bins=10, group_by='category')
+        finally:
+            _plt.tight_layout = original_tight
+        n = call_counter['n']
+        assert n <= 1, (
+            f"[dfdraw B5 profile/tight_layout] plt.tight_layout() called {n} "
+            f"times during a single 3-vector call; expected ≤ 1. If n == 3 "
+            f"(= vector_dim), tight_layout is invoked per iteration in "
+            f"profile.py instead of once at end of _draw_vector. "
+            f"Fix: add _suppress_layout flag, suppress per-iteration calls, "
+            f"single call at end of _draw_vector."
+        )
+        plt.close('all')
+
+    def test_vector_groupby_real_world_reproducer(self, df_its_like):
+        """
+        Architect's production reproducer as permanent regression test.
+        
+        Pre-fix: ~420 main legend entries (210 unique mP3 × 2 vector iterations + 1).
+        Post-fix: ≤6 (group_by_bins=6 honored + dedup applied).
+        """
+        drawer = DFDraw(df_its_like.copy())
+        _, ax, _ = drawer.profile(
+            "[dd_dzITS0,dd_dzITS1]:staveITS", bins=12,
+            group_by='mP3', group_by_bins=6, auto_title=True,
+        )
+        main = _fix1_get_main_group_legend(ax)
+        n = len(main.get_texts()) if main else 0
+        assert n <= 6, (
+            f"[dfdraw B1a+B2 architect reproducer] Main legend has {n} entries; "
+            f"expected ≤ 6 (group_by_bins). "
+            f"If n≈420 both B1a+B2 broken; if n≈12 only B1a broken "
+            f"(dedup works); if n≈210 only B2 broken (bins applied, no dedup)."
+        )
+        plt.close('all')
+
+
+# =============================================================================
+# TestVectorKwargSurface — 6 surface + guard tests
+# =============================================================================
+# Structural tests exercising every named parameter of each method + R4
+# facet-guard + R17 forwarded-names validity regression.
+# =============================================================================
+
+class TestVectorKwargSurface:
+    """Surface enumeration tests (R5 + R12 + R4 + R17)."""
+
+    def test_vector_profile_kwarg_surface_enumeration(self, df_with_groups):
+        """R5: every non-facet named parameter of profile() flows through vector dispatch."""
+        drawer = DFDraw(df_with_groups.copy())
+        _, ax, stats_list = drawer.profile(
+            "[y1,y2]:x",
+            selection="x > 0",
+            sample=350,
+            bins=8,
+            range=(0, 10),
+            error="std",
+            stats=['n', 'mean_y'],
+            title="test",
+            xlabel="X", ylabel="Y",
+            group_by='category',
+            top_k=3,
+            return_data=True,
+            min_entries=1,
+            group_by_bins=4,
+            sort_groups=False,
+            auto_title=True,
+        )
+        assert len(stats_list) == 2, (
+            f"[dfdraw contract profile surface] Expected 2 stats, got {len(stats_list)}"
+        )
+        for i, s in enumerate(stats_list):
+            assert 'profile_data' in s, (
+                f"[dfdraw B1a profile/return_data surface] stats[{i}] missing "
+                f"'profile_data' (keys: {list(s.keys())})."
+            )
+        main = _fix1_get_main_group_legend(ax)
+        n = len(main.get_texts()) if main else 0
+        assert n <= 4, (
+            f"[dfdraw B1a profile/group_by_bins surface] Main legend has {n} "
+            f"entries; expected ≤ 4."
+        )
+        plt.close('all')
+
+    def test_vector_hist_kwarg_surface_enumeration(self, df_with_groups):
+        """
+        R5 companion for hist().
+        
+        Pre-fix: hist() vector dispatch drops top_k (per §3.1 — confirmed by
+        signature inspection at d662c0a5). Test asserts top_k=2 limits group
+        count, which fails pre-fix because top_k is silently dropped → all 4
+        groups appear in legend.
+        """
+        drawer = DFDraw(df_with_groups.copy())
+        _, ax, stats_list = drawer.hist(
+            "[y1,y2,y3]",
+            selection="x > 0",
+            sample=350,
+            bins=8,
+            range=(-3, 3),
+            norm='density',
+            stats=['n'],
+            title="test",
+            xlabel="X", ylabel="Y",
+            group_by='category',
+            top_k=2,             # B1a hist drops top_k — only 2 groups should plot
+            auto_title=True,
+        )
+        assert len(stats_list) == 3, (
+            f"[dfdraw contract hist surface] Expected 3 stats, got {len(stats_list)}"
+        )
+        # top_k=2 → main legend should have exactly 2 group entries
+        # Pre-fix: top_k dropped → 4 entries (all categories)
+        main = _fix1_get_main_group_legend(ax)
+        n_groups = len(main.get_texts()) if main else 0
+        assert n_groups <= 2, (
+            f"[dfdraw B1a hist/top_k surface] top_k=2 requested, but main legend "
+            f"has {n_groups} group entries. top_k silently dropped in hist() "
+            f"vector dispatch (lines 1034-1066). Expected ≤ 2."
+        )
+        plt.close('all')
+
+    def test_vector_scatter_kwarg_surface_enumeration(self, df_with_groups):
+        """
+        R12: scatter surface — catches cmap/colorbar/clabel/jitter drops.
+        
+        Pre-fix: scatter() vector dispatch drops top_k AND colorbar (per §3.1).
+        Test asserts via top_k that group filter applies AND no colorbar
+        figure-axes added when colorbar=False.
+        """
+        drawer = DFDraw(df_with_groups.copy())
+        fig, ax, stats_list = drawer.scatter(
+            "[y1,y2]:x",
+            selection="x > 0",
+            sample=350,
+            color='category',
+            size=20.0,
+            marker='s',
+            stats=['n'],
+            title="test",
+            xlabel="X", ylabel="Y",
+            cmap='plasma',
+            colorbar=False,         # B1a scatter drops colorbar
+            clabel="Category",
+            jitter=0.1,
+            group_by='category',
+            top_k=2,                # B1a scatter drops top_k
+        )
+        assert len(stats_list) == 2, (
+            f"[dfdraw contract scatter surface] Expected 2 stats, got {len(stats_list)}"
+        )
+        # top_k=2: pre-fix dropped → all 4 groups → too many lines
+        main = _fix1_get_main_group_legend(ax)
+        n_groups = len(main.get_texts()) if main else 0
+        assert n_groups <= 2, (
+            f"[dfdraw B1a scatter/top_k surface] top_k=2 requested, main legend "
+            f"has {n_groups} entries. top_k silently dropped in scatter() vector "
+            f"dispatch (lines 1233-1265)."
+        )
+        plt.close('all')
+
+    def test_vector_draw_kwarg_surface_enumeration(self, df_with_groups):
+        """R12: draw() surface — exercises draw()'s own named params."""
+        drawer = DFDraw(df_with_groups.copy())
+        _, _, stats_list = drawer.draw(
+            "[y1,y2]:x",
+            type='scatter',
+            selection="x > 0",
+            sample=350,
+            color='category',
+            size=20.0,
+            marker='s',
+            bins=12,
+            stats=['n'],
+            title="test",
+        )
+        assert len(stats_list) == 2, (
+            f"[dfdraw contract draw surface] Expected 2 stats, got {len(stats_list)}"
+        )
+        plt.close('all')
+
+    def test_vector_facet_with_vector_raises(self, df_with_groups):
+        """R4: facet=True + vector must raise ValueError at all 3 dispatch sites."""
+        drawer = DFDraw(df_with_groups.copy())
+        with pytest.raises(ValueError, match=r"facet.*vector"):
+            drawer.profile("[y1,y2]:x", bins=10, group_by='category', facet=True)
+        with pytest.raises(ValueError, match=r"facet.*vector"):
+            drawer.hist("[y1,y2]", bins=10, group_by='category', facet=True)
+        with pytest.raises(ValueError, match=r"facet.*vector"):
+            drawer.scatter("[y1,y2]:x", group_by='category', facet=True)
+        plt.close('all')
+
+    def test_all_forwarded_names_are_valid_signature_params(self):
+        """R17: regression gate for R6 class-load validation."""
+        import inspect
+        pairs = [
+            (DFDraw._PROFILE_FORWARDED_NAMES, DFDraw.profile, 'profile'),
+            (DFDraw._HIST_FORWARDED_NAMES, DFDraw.hist, 'hist'),
+            (DFDraw._SCATTER_FORWARDED_NAMES, DFDraw.scatter, 'scatter'),
+            (DFDraw._DRAW_FORWARDED_NAMES, DFDraw.draw, 'draw'),
+        ]
+        for tup, method, name in pairs:
+            sig_params = set(inspect.signature(method).parameters)
+            missing = set(tup) - sig_params
+            assert not missing, (
+                f"[dfdraw R6 forwarded-names drift] "
+                f"_{name.upper()}_FORWARDED_NAMES contains non-signature params: "
+                f"{missing}. Update the tuple."
+            )
