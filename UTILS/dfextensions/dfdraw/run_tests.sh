@@ -328,6 +328,7 @@ REVIEWER_ZIP="$LOG_DIR/reviewer_${TS}.zip"
     for f in \
         "$SUMMARY_FILE" \
         "$FAIL_FILE" \
+        "$LOG_FILE" \
         "$MATRIX_MD" \
         "$DIFF_COMMIT" \
         "$DIFF_PHASE" \
