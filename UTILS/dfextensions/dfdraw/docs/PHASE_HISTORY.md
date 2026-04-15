@@ -4,8 +4,8 @@
 
 This document tracks the development history of the `dfdraw` module, a DataFrame drawing utility with ROOT TTree::Draw-like interface. Part of the dfextensions toolkit for ALICE experiment calibration and QA at CERN.
 
-**Current Status:** Phase 13.16.DF v1.0 - Vector Expression Interface  
-**Test Count:** 451 passing (43 features, 21 invariance tests, 6 Verified)  
+**Current Status:** Phase 13.16.DF FIX1 - Vector Path Kwarg Propagation Fix (✅ APPROVED — END-TO-END VERIFIED)  
+**Test Count:** 469 passing (46 features, 28 invariance tests, 7 Verified)  
 **Stability Phase:** Experimental (active development)
 
 ---
@@ -939,6 +939,205 @@ Rev3 addressed all via §13 traceability table. Approved 2026-04-08 by 5 of 7 re
 
 ---
 
+## Phase 13.16.DF FIX1: Vector Path Kwarg Propagation Fix
+
+**Date:** 2026-04-13 (proposal v1.0) → 2026-04-15 (commit `fe007b7c`, tag `PHASE_13_16_DF_FIX1_END`)  
+**Status:** ✅ APPROVED — END-TO-END VERIFIED (cross-subproject validated)  
+**Specification:** PHASE_13_16_DF_FIX1_v1_4_Proposal_VectorKwargPropagation.md (v1.0 → v1.4)  
+**Review artifacts:**
+- PHASE_13_16_DF_FIX1_v1_3_PROPOSAL_REVIEW_SUMMARY.md
+- PHASE_13_16_DF_FIX1_v1_4_PROPOSAL_REVIEW_SUMMARY.md
+- CODE_REVIEW_REQUEST_PHASE_13_16_DF_FIX1_END.md
+- PHASE_13_16_DF_FIX1_END_CODE_REVIEW_SUMMARY.md (consolidated, 7 reviewers)
+- ADF_RESPONSE_2026_04_15_FIX1_END_TO_END_VERIFICATION.md (Claude31, ADF)
+
+### Trigger
+
+Architect's production reproducer on real ITS calibration data showed **421 main legend entries** instead of 6, with main legend = `group_by_bins × n_vector` instead of `group_by_bins`. The vector interface from Phase 13.16.DF v1.0 silently dropped named parameters at vector dispatch in `profile()`, `hist()`, `scatter()`, and `draw()`, causing `group_by_bins`, `top_k`, `weights`, `min_entries`, `sort_groups`, `return_data`, `group_by_quantiles` and other parameters to never reach the underlying plot modules in vector mode.
+
+### Objectives
+
+- Localize and fix the kwarg-propagation bug at all 4 vector dispatch sites
+- Eliminate per-iteration legend duplication, title accumulation, and redundant `tight_layout()` calls
+- Validate fix end-to-end through real ADF→DFDraw pipeline (not just unit-level)
+- Add permanent surface-enumeration tests to prevent recurrence
+- Establish class-load validation pattern that fails loudly on future signature drift
+
+### Two-Commit Pattern (codified for future fix phases)
+
+**Commit 1 — Test baseline** (`444ad7f3`, 2026-04-15):
+- 18 new diagnostic tests added with tags `[dfdraw B*a|b/method/kwarg]`
+- 17 of 18 fail at this commit (the diagnostic instrument for localizing the bug)
+- 3 new permanent capability matrix entries: `VECTOR.kwarg_propagation`, `VECTOR.groupby_polish`, `VECTOR.kwarg_surface`
+- Pre-fix `reviewer_*.zip` is now a permanent diagnostic artifact
+
+**Commit 2 — Fix** (`fe007b7c`, 2026-04-15):
+- 17 → 0 failures, total 469/0/0
+- 5 files modified: `drawer.py`, `plots/profile.py`, `plots/histogram.py`, `plots/scatter.py`, `tests/test_vector.py`
+- Plus auto-regenerated `docs/CAPABILITY_MATRIX.md`
+
+**Tooling commit** (`46af8af4`, between baseline and fix):
+- `run_tests.sh`: include `test_full_*.log` in `reviewer.zip` (Claude45 hygiene fix)
+- Paid off twice within the same phase (see §11.3 of code review summary)
+
+### Implementation
+
+**B1a — Named-parameter omission at vector dispatch (root bug):**
+
+Python binds named parameters before `**kwargs`, so vector dispatch blocks only enumerated a hardcoded subset of caller arguments. Fix:
+
+```python
+# 4 class-level forwarded-name tuples on DFDraw
+_PROFILE_FORWARDED_NAMES  = ('selection', 'sample', 'bins', ..., 'auto_title')  # 20 entries
+_HIST_FORWARDED_NAMES     = (..., )                                              # 14 entries
+_SCATTER_FORWARDED_NAMES  = (..., )                                              # 17 entries
+_DRAW_FORWARDED_NAMES     = (..., )                                              # 12 entries
+
+# _MISSING sentinel distinguishes "caller didn't pass" from "caller passed None"
+_MISSING = object()
+
+# Each dispatch block iterates the tuple and forwards via locals().get(name, _MISSING)
+for name in self._PROFILE_FORWARDED_NAMES:
+    val = _local.get(name, _MISSING)
+    if val is not _MISSING and val is not None:
+        if name == 'auto_title' and val is False:  # skip signature default
+            continue
+        vector_kwargs.setdefault(name, val)
+
+# Module-import validation — fails loudly if signatures drift in future phases
+_validate_forwarded_names()  # at end of drawer.py
+```
+
+**B1b — Matplotlib channel clobbering** at `_draw_vector` lines 606, 611:
+```python
+# Before: iter_kwargs['linestyle'] = ...   # unconditionally overwrote user choice
+# After:  iter_kwargs.setdefault('linestyle', ...)   # user wins
+```
+
+**B2 — Main legend duplicated N times:**
+- `_suppress_legend=True` injected per iteration
+- Single post-loop `_add_vector_main_legend_dedup()` builds deduplicated legend
+
+**B3+B4 — Title appended/replaced N times:**
+- Iterations 0..N-2: `_suppress_title=True`
+- Iteration N-1: `_suppress_title=False` (last iteration produces title naturally)
+- Failsafe in `_draw_vector` for `group_by=None` + empty-title case
+
+**B5 — `plt.tight_layout()` called N times:**
+- `_suppress_layout=True` injected per iteration
+- Single post-loop `plt.tight_layout()` call (wrapped in try/except — non-fatal warnings)
+
+**R4 — `facet=True` + vector silently undefined:**
+- All 4 dispatch sites raise `ValueError` with actionable message
+- Implementation added 4th guard at `draw()` (defense-in-depth beyond v1.4 §3.1c spec)
+
+### Two Implementation Deviations from v1.4 (both positive)
+
+Recorded per §11.2 of code review summary as the **scope-positive divergence** pattern:
+
+1. **`top_k` inclusion in 3 tuples** (caught by Claude43, Claude46): v1.4 §5.1 categorized `top_k` as facet-only and excluded it. Implementation discovered via source-read at `plots/profile.py:913`, `plots/histogram.py:595`, `plots/scatter.py:745` that `top_k` actually works in overlay mode. Added to `_PROFILE_FORWARDED_NAMES`, `_HIST_FORWARDED_NAMES`, `_SCATTER_FORWARDED_NAMES`. **None of 4 source-verifying reviewers caught the categorization error at proposal stage; implementation phase caught it.**
+
+2. **R4 facet-guard at 4 sites instead of 3** (caught by Claude42, Claude43, Claude46): v1.4 §3.1c specified guard at 3 dispatch sites. Implementation added 4th guard at `draw()` for defense-in-depth. Catches `facet=True + vector` even when ADF or other callers route through `draw()` with `type=`.
+
+Both deviations: discovered via source-read, correctness-improving, inline-documented with rationale, disclosed in Review Request §3 deviations table.
+
+### Late Catch — `auto_title=False` Forwarding Bug (fresh-reviewer pattern)
+
+During implementation, `test_auto_title_default_on_for_vector` (pre-existing Phase 13.16.DF test) regressed for **4 consecutive test runs**. Coder's debug-print-driven approach failed to converge (commitment bias accumulating across turns).
+
+**Fresh reviewer Claude45 diagnosed correctly on first source read:** the signature default `auto_title=False` was being propagated through the forwarding loop, preventing `_draw_vector`'s vector-mode default-True injection because `'auto_title' in kwargs` evaluated True with value False, skipping the default-injection branch.
+
+**Fix** — single-location, 2-line addition in both `profile()` and `hist()` forwarding loops:
+```python
+if name == 'auto_title' and val is False:
+    continue
+```
+
+After this fix: 469/469 passed.
+
+### Cross-Subproject End-to-End Verification (Phase 13.19.ADF.FIX1)
+
+ADF team independently identified the same failure-mode class with 3 manifestations and executed parallel **Phase 13.19.ADF.FIX1**:
+
+- **K1 boundary diagnostic** confirmed ADF forwards kwargs correctly — bug entirely on dfdraw side
+- **K2 test suite (4 tests)** covers full `aDF.draw → DFDraw.*` pipeline
+- **K2_3 = synthetic mirror of architect's ITS reproducer**: `[y1..y6]:staveITS, group_by='mP3', group_by_bins=6` — main legend bounded by `group_by_bins` (target ≤6, actual ≤8 with quantile-edge headroom), not `group_by_bins × n_vector`
+- **Entry-point clarification** (closes R5 from v1.3 review): `aDF.draw(..., type='profile', ...)` dispatches via `getattr(plotter, 'profile')(expr, **kwargs)` at `AliasDataFrame.py:10180-10184`, bypassing `DFDraw.draw()` — confirms v1.4 §2.1 working hypothesis verbatim
+
+**Three-level verification coverage:**
+1. **dfdraw unit level** — 469/469 tests pass
+2. **ADF integration level** — K2 suite 4/4 pass
+3. **Production-pattern level** — K2_3 mirrors architect's real ITS reproducer
+
+### Five-Iteration Source-Verification Chain (governance evidence)
+
+This phase produced a complete catch chain across 5 abstraction levels:
+
+| Iteration | Catch level | Reviewer | What was caught |
+|-----------|-------------|----------|-----------------|
+| v1.0 → v1.1 | Symptom-level | Architect | Screenshot misanalysis |
+| v1.2 → v1.3 | Location-level | Claude43 | Fix location was `_draw_vector` (wrong); should be dispatch blocks |
+| v1.3 → v1.4 | Documentation-level | Claude42/43/45/46 | §3.1 inventory wrong for 3 of 4 methods |
+| Implementation | Runtime-level | Claude45 | `auto_title=False` forwarding bug (4 turns of debug failed; fresh source-read resolved in 1 turn) |
+| Closure | Pipeline-level | Claude31 (ADF) | End-to-end verification through full `aDF → DFDraw` pipeline |
+
+Each iteration caught a different class of error at a different abstraction level. **The most important governance evidence produced by the project to date.**
+
+### Multi-Reviewer Verdict (7 reviewers, 5 source-verified)
+
+| Reviewer | Verdict | Source-verified | Notes |
+|----------|---------|-----------------|-------|
+| Claude40 (Main) | ✅ APPROVED | ✅ Yes | All 7 §6.1 items verified |
+| Claude42 | ✅ APPROVED | ✅ Yes | Identified top_k deviation |
+| Claude43 (deepest) | ✅ APPROVED | ✅ AST set-comparison | Mathematical match (∅ symmetric difference) |
+| Claude45 (NEW) | ⚠️ APPROVED W/ COMMENTS | ✅ Yes | Caught RR text typos + tag gap; previously caught auto_title=False |
+| Claude46 (NEW) | ✅ APPROVED W/ P2 NOTES | ✅ AST validation | Caught both implementation deviations |
+| GPT4 | ⚠️ APPROVED W/ P2 NOTES | ❌ Self-disclosed gap | Architectural framing |
+| GPT5 | ⚠️ APPROVED W/ COMMENTS | ⚠️ Partial | Caught capability matrix phase header drift |
+| Claude31 (ADF, end-to-end) | ✅ END-TO-END VERIFIED | ✅ Pipeline-level | K2 suite 4/4 |
+
+**Consolidated:** 0 P0, 0 code-correctness P1, ~6 admin P1 (deduplicated to 4 housekeeping items), ~23 P2 (consolidated to 4).
+
+### Capability Matrix Delta
+
+| Metric | Before FIX1 | After FIX1 |
+|--------|------------:|-----------:|
+| Total features | 43 | **46** (+3) |
+| Total proof tests | 152 | **170** (+18) |
+| Invariance tests | 21 | **28** (+7) |
+| ✅ Verified | 6 | **7** (+1: `VECTOR.kwarg_propagation`) |
+| ☑️ Smoke-only | 37 | **39** (+2) |
+| 🧨 Broken | 0 | **0** |
+
+### Test Coverage Added
+
+- `TestVectorKwargPropagation` — **7 invariance tests** (A≡B for `group_by_bins`, `group_by_quantiles`, `min_entries`, `sort_groups`, `weights`, `top_k`, `linestyle`)
+- `TestVectorGroupBy` — **5 smoke tests** (legend dedup, title one-line, secondary legend count, tight_layout call count, architect's ITS production reproducer)
+- `TestVectorKwargSurface` — **6 surface + guard tests** (4 per-method enumeration + R4 facet-guard + R17 forwarded-names-validity regression)
+
+### Process Lessons Codified
+
+- **Tooling investments compound:** `46af8af4` log-in-zip fix paid off twice in the same phase (Claude45's `auto_title=False` diagnosis + multi-reviewer test-name verification)
+- **Two-commit pattern for fix phases:** Commit 1 (red baseline) + Commit 2 (green fix) preserves the diagnostic state in git history forever
+- **Fresh-reviewer rule (proposed Coder QRC Rule 13):** "If 2 consecutive 'single-line fix' attempts fail to resolve a bug, request a fresh reviewer source-read before adding more debug"
+- **Cross-subproject convergence triggered AND closed:** ADF team executed parallel verification within 2 working days of dfdraw FIX1 commit
+- **Source verification at all 5 abstraction levels** (symptom → location → documentation → runtime → pipeline) demonstrated in a single phase
+
+### Closure Status
+
+**Required items closed:**
+- ✅ Architect production reproducer verified (synthetic K2_3 mirror passed; real ITS data acceptance gate per v1.4 §8 — see architect confirmation)
+- ✅ Tag `PHASE_13_16_DF_FIX1_END` confirmed at commit `fe007b7c`
+- ✅ ADF entry-point hypothesis confirmed verbatim
+- ✅ Cross-subproject end-to-end verification complete
+
+**Recommended housekeeping (non-blocking):**
+- Capability matrix header phase ID update (script enhancement)
+- Workspace cleanup (`diagnose_auto_title.py`, `.ipynb_checkpoints/`, untracked PNGs)
+- Tooling patch (add `git tag --list 'PHASE_*'` to reviewer.zip git_status section)
+
+---
+
 ## Statistics Summary
 
 | Phase | Test Count | Delta | Key Feature |
@@ -958,8 +1157,9 @@ Rev3 addressed all via §13 traceability table. Approved 2026-04-08 by 5 of 7 re
 | 13.14.DF | 399 | +51 | Batch defaults, subplot grid, verbose=2, interval sort fix |
 | 13.15.DF | 401 | +2 | Test infrastructure: feature taxonomy, capability matrix, run_tests.sh |
 | **13.16.DF** | **451** | **+50** | **Vector expression interface (bracket syntax, AD-37 fix, 7 strong invariance tests)** |
+| **13.16.DF FIX1** | **469** | **+18** | **Vector path kwarg propagation fix (B1a-B5 + R4 + auto_title forwarding; 7 invariance + 5 smoke + 6 surface; ADF end-to-end verified)** |
 
-**Total Development:** 15 phases, 451 tests, 43 features, 21 invariance tests, 6 Verified
+**Total Development:** 16 phases, 469 tests, 46 features, 28 invariance tests, 7 Verified
 
 ---
 
@@ -1021,12 +1221,16 @@ All APIs subject to change based on user feedback and integration testing with:
 
 ### What Worked Well
 1. **Incremental development:** Each phase added clear value
-2. **Test-first approach:** 451 tests caught regressions early
+2. **Test-first approach:** 469 tests caught regressions early
 3. **Duck typing:** Clean integration without hard dependencies
 4. **Style system:** Established early, avoided later refactoring
 5. **Governance process:** Proposal → review → implement → test cycle caught issues before production
 6. **Multi-reviewer source verification (Phase 13.16.DF):** External reviewers catching 6 P0 defects that internal approvers missed proved the Rev2→Rev3 cycle works as designed
 7. **Strong A≡B invariance tests (Phase 13.16.DF):** Byte-identical axes comparison catches divergences at unit-test level instead of real-data level
+8. **Two-commit pattern for fix phases (Phase 13.16.DF FIX1):** Commit 1 (red baseline) + Commit 2 (green fix) preserves the diagnostic state in git history forever; pre-fix `reviewer.zip` becomes a permanent regression-detection artifact
+9. **Fresh-reviewer pattern (Phase 13.16.DF FIX1):** When debug cycles exceed 2 turns, an unbiased source-read by a fresh reviewer resolves faster than continued debug-print iteration; commitment bias is real
+10. **Cross-subproject end-to-end verification (Phase 13.16.DF FIX1):** ADF team's parallel Phase 13.19.ADF.FIX1 with K2 test suite validated the dfdraw fix through the full pipeline within 2 working days — the strongest possible cross-subproject validation pattern
+11. **Class-load validation (Phase 13.16.DF FIX1):** `_validate_forwarded_names()` running at module import catches signature drift loudly at import time, not silently at runtime — codified as the pattern for all future signature-coupled tuples
 
 ### What Could Improve
 1. **Earlier integration testing:** ADF `draw_figures()` duplication discovered late
@@ -1035,6 +1239,8 @@ All APIs subject to change based on user feedback and integration testing with:
 4. **Verbose debug mode:** Would have caught the ADF defaults cascade issue faster
 5. **Source verification discipline (Phase 13.16.DF):** Proposal enumeration alone is insufficient for shared-state changes — reviewers must count call sites in source
 6. **Scaffolding separation (Phase 13.16.DF):** `run_tests.sh` and similar infrastructure should not share commits with feature work
+7. **Tooling-packet hygiene (Phase 13.16.DF FIX1):** `reviewer.zip` was missing `test_full_*.log` until Claude45 caught it mid-cycle; tooling completeness gaps surface only when downstream reviewers actually need the artifact
+8. **Spec inventory accuracy (Phase 13.16.DF FIX1):** v1.4 §3.1 inventory had `top_k` miscategorized as facet-only across 3 methods; 4 source-verifying reviewers approved the proposal without catching it; only implementation source-read caught the categorization error — argues for AST-derived inventories over hand-typed ones
 
 ### Best Practices Established
 1. **Expression syntax:** ROOT-like syntax reduces learning curve
@@ -1044,6 +1250,10 @@ All APIs subject to change based on user feedback and integration testing with:
 5. **Option hierarchy:** More local wins (kwargs < batch < group < plot)
 6. **Byte-identical invariance tests:** The quality bar for phases touching shared state (line count, colors, linestyles, xdata/ydata to 10 decimals + stats to 1e-9)
 7. **Vector expressions over loops:** For N-series overlays where color/label continuity matters, vector syntax (`[y1,y2]:x`) beats scalar loops with `same=True` — especially across ADF boundaries
+8. **Forwarded-name tuples + class-load validation (Phase 13.16.DF FIX1):** Class-level tuples enumerate which named parameters propagate through dispatch; `_validate_forwarded_names()` runs at module import to catch signature drift loudly
+9. **AST-derived over hand-typed inventories (Phase 13.16.DF FIX1):** When a proposal must enumerate signature parameters, derive via `inspect.signature()` rather than hand-typing; v1.4 §3.1 categorization errors were avoided in implementation by reading source directly
+10. **Scope-positive divergence pattern (Phase 13.16.DF FIX1):** Implementation-time discoveries that improve correctness beyond spec are acceptable when (a) discovered via source-read, (b) inline-documented with rationale, and (c) disclosed in the Review Request deviations table
+11. **Three-level test coverage for cross-subproject features (Phase 13.16.DF FIX1):** Unit-level (dfdraw), integration-level (ADF K2 suite), production-pattern level (synthetic mirror of architect's reproducer) — full pipeline validated
 
 ---
 
@@ -1055,8 +1265,9 @@ All APIs subject to change based on user feedback and integration testing with:
 | 1.1 | 2026-01-29 | Claude-Main | Added Phase 13.6.G.DF (stats enhancements) |
 | 1.2 | 2026-03-28 | Claude41 | Added Phases 13.12.DF, 13.13.DF, 13.14.DF; interval sort fix; updated test count to 399 |
 | 1.3 | 2026-04-09 | Claude41 | Added Phase 13.15.DF (test infrastructure) and Phase 13.16.DF (vector expression interface, AD-37 fix); updated test count to 451; added 7 lessons learned from Rev2→Rev3 cycle and governance incidents; added source verification discipline and scaffolding-separation best practices |
+| 1.4 | 2026-04-15 | Claude41 | Added Phase 13.16.DF FIX1 (vector path kwarg propagation fix, B1a-B5 + R4 + auto_title forwarding); updated test count to 469; +3 features +7 invariance tests +1 Verified; added 5-iteration source-verification chain (symptom → location → documentation → runtime → pipeline); cross-subproject end-to-end verification via ADF Phase 13.19.ADF.FIX1; added 4 lessons learned (two-commit pattern, fresh-reviewer rule, cross-subproject convergence, class-load validation) and 4 best practices (forwarded-name tuples, AST-derived inventories, scope-positive divergence pattern, three-level test coverage) |
 
 ---
 
-**Document Status:** Updated for Phase 13.16.DF v1.0 completion  
-**Next Update:** After Phase 13.16.DF real-data validation and `PHASE_13_16_DF_v1_0_END` tag, or next feature phase
+**Document Status:** Updated for Phase 13.16.DF FIX1 completion (commit `fe007b7c`, tag `PHASE_13_16_DF_FIX1_END`)  
+**Next Update:** After Phase 13.18.DF or next phase milestone
