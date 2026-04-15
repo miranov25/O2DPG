@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-04-09 09:59 UTC
+**Generated:** 2026-04-15 07:03 UTC
 **Phase:** 13.15.DF
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -9,13 +9,13 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 6 | 14% |
-| ☑️ Smoke-only | 37 | 86% |
+| ✅ Verified | 7 | 15% |
+| ☑️ Smoke-only | 39 | 85% |
 | 🧨 Broken | 0 | 0% |
 | 📋 Planned | 0 | 0% |
-| **Total features** | **43** | |
-| **Total proof tests** | **152** | |
-| **Invariance tests** | **21** | |
+| **Total features** | **46** | |
+| **Total proof tests** | **170** | |
+| **Invariance tests** | **28** | |
 
 **Status key:**
 - ✅ Verified — has at least one invariance test (A ≡ B check)
@@ -84,6 +84,9 @@
 | ☑️ | **VECTOR.color_cycle** — Color cycle continuity with outer same=True (GPT5 fix) | 3 | 0 |
 | ☑️ | **VECTOR.adf_integration** — Vector through AliasDataFrame entry point (P0-3) | 1 | 0 |
 | ✅ | **VECTOR.invariance** — Vector ≡ scalar same-loop semantic invariance (strong A≡B) | 7 | 0 |
+| ✅ | **VECTOR.kwarg_propagation** — Vector path forwards all scalar-mode kwargs (FIX1) | 7 | 0 |
+| ☑️ | **VECTOR.groupby_polish** — Vector + group_by deduplicated legend, title, layout (FIX1) | 5 | 0 |
+| ☑️ | **VECTOR.kwarg_surface** — Vector dispatch forwards named-parameter surface + facet guard (FIX1) | 6 | 0 |
 
 ---
 

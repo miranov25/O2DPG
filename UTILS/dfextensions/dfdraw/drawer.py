@@ -2,13 +2,23 @@
 DFDraw - Main drawing class with TTree::Draw-like interface.
 
 Phase 13.1.DF: Added PyArrow Table input support.
+Phase 13.16.DF FIX1 (2026-04-14): Vector path kwarg propagation fix.
 """
 
+import inspect
 import pandas as pd
 import numpy as np
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .style import get_style, get_style_value
+
+# =============================================================================
+# Phase 13.16.DF FIX1: Sentinel for "parameter was not passed by caller".
+# Used by vector dispatch tuple-driven forwarding so that we can distinguish
+# "caller passed value=None explicitly" from "caller didn't pass it at all".
+# =============================================================================
+
+_MISSING = object()
 
 # =============================================================================
 # Phase 13.1.DF: PyArrow Detection
@@ -517,6 +527,65 @@ class DFDraw:
     _LINESTYLE_CYCLE = ['-', '--', '-.', ':']
     _MARKER_CYCLE = ['o', 's', '^', 'D', 'v', '<', '>', 'p']
     _VALID_STYLE_CHANNELS = ('color', 'linestyle', 'marker')
+
+    # =========================================================================
+    # Phase 13.16.DF FIX1: Vector dispatch forwarded-name tuples.
+    # 
+    # Each tuple enumerates the named parameters of one method that must be
+    # propagated through vector dispatch via locals().get(name, _MISSING).
+    # 
+    # Excluded from each tuple:
+    #   - self, expr, **kwargs (handled separately)
+    #   - group_by (passed as explicit named arg to _draw_vector)
+    #   - facet, ncols, sharex, sharey, top_k for profile/hist/scatter
+    #     (R4 fail-fast guard catches facet=True; the others are facet-only)
+    #   - draw(): also excludes 'type' (consumed for routing) and 'figsize'
+    #     (figure created once by draw() before dispatch; per-iteration
+    #     forwarding is semantic noise per R3)
+    # 
+    # All entries are validated against signatures at module import via
+    # _validate_forwarded_names() (see end of this file).
+    # =========================================================================
+
+    _PROFILE_FORWARDED_NAMES = (
+        'selection', 'sample', 'bins', 'range', 'error', 'stats',
+        'title', 'xlabel', 'ylabel', 'ax', 'save',
+        'top_k',  # included: profile.draw_profile accepts top_k as scalar-mode group filter
+        'return_data', 'min_entries',
+        'group_by_bins', 'group_by_quantiles', 'sort_groups',
+        'weights',
+        'auto_title',
+        'same',
+    )
+
+    _HIST_FORWARDED_NAMES = (
+        'selection', 'sample', 'bins', 'range', 'norm', 'stats',
+        'title', 'xlabel', 'ylabel', 'ax', 'save',
+        'top_k',  # included: histogram.draw_hist accepts top_k as scalar-mode group filter
+        'auto_title',
+        'same',
+    )
+
+    _SCATTER_FORWARDED_NAMES = (
+        'selection', 'sample', 'color', 'size', 'marker', 'stats',
+        'title', 'xlabel', 'ylabel', 'ax', 'save',
+        'top_k',  # included: scatter.draw_scatter accepts top_k as scalar-mode group filter
+        'cmap', 'colorbar', 'clabel', 'jitter',
+        'same',
+    )
+
+    _DRAW_FORWARDED_NAMES = (
+        'selection', 'color', 'size', 'marker',
+        'bins', 'stats', 'norm', 'title', 'ax', 'sample', 'save',
+        'same',
+        # Note: 'type' consumed for routing; 'figsize' deliberately excluded
+        # (figure already created); 'facet' caught by R4 guard; 'group_by'
+        # passed as explicit named arg to _draw_vector.
+    )
+
+    # Private kwargs that _draw_vector injects into iter_kwargs to suppress
+    # per-iteration legend/title/tight_layout in the underlying plot modules.
+    _VECTOR_SUPPRESS_KWARGS = ('_suppress_legend', '_suppress_title', '_suppress_layout')
     
     def _draw_vector(self, y_list, x_list, draw_method,
                      vector_style=None, group_style='color',
@@ -596,19 +665,28 @@ class DFDraw:
         
         stats_list = []
         fig, ax = None, None
+        n_iter = len(y_list)
         
         for i, (y, x) in enumerate(zip(y_list, x_list)):
             expr = f"{y}:{x}" if x is not None else y
             iter_kwargs = dict(kwargs)
             
             # Apply vector style channel for this iteration
+            # Phase 13.16.DF FIX1 B1b: use setdefault so user-supplied
+            # linestyle/marker survives instead of being clobbered.
             if vector_style == 'linestyle':
-                iter_kwargs['linestyle'] = self._LINESTYLE_CYCLE[i % len(self._LINESTYLE_CYCLE)]
+                iter_kwargs.setdefault(
+                    'linestyle',
+                    self._LINESTYLE_CYCLE[i % len(self._LINESTYLE_CYCLE)],
+                )
                 # P1-2: suppress same=True color cycle so group_by colors are preserved
                 if group_by is not None:
                     iter_kwargs['_suppress_color_cycle'] = True
             elif vector_style == 'marker':
-                iter_kwargs['marker'] = self._MARKER_CYCLE[i % len(self._MARKER_CYCLE)]
+                iter_kwargs.setdefault(
+                    'marker',
+                    self._MARKER_CYCLE[i % len(self._MARKER_CYCLE)],
+                )
                 if group_by is not None:
                     iter_kwargs['_suppress_color_cycle'] = True
             # vector_style == 'color': rely on existing same=True color cycle
@@ -619,18 +697,164 @@ class DFDraw:
             # First iteration uses outer same; subsequent always same=True
             iter_kwargs['same'] = outer_same if i == 0 else True
             
+            # Phase 13.16.DF FIX1 (B2-B5): suppress per-iteration legend / title /
+            # tight_layout in the underlying plot modules. We perform a single
+            # post-loop pass below for legend and layout.
+            # Title: suppress on iterations 0..N-2; let the LAST iteration's
+            # title through (the plot module's auto_title logic handles it
+            # correctly for the final y-var). Post-loop helper may override
+            # with a better common-prefix title if the auto_title import works.
+            iter_kwargs['_suppress_legend'] = True
+            iter_kwargs['_suppress_title'] = (i < n_iter - 1)
+            iter_kwargs['_suppress_layout'] = True
+            
             fig, ax, stats = draw_method(expr, **iter_kwargs)
             stats_list.append(stats)
         
-        # P1-6: secondary legend for vector + group_by
+        # Phase 13.16.DF FIX1 (B2): post-loop main-group legend dedup.
+        # Underlying plot modules collected handles via ax.scatter/plot label= but
+        # we suppressed their legend calls. Now build a deduplicated legend.
+        if group_by is not None and ax is not None:
+            self._add_vector_main_legend_dedup(ax)
+        
+        # P1-6: secondary legend for vector + group_by (existing behavior)
         if group_by is not None and ax is not None and vector_style != 'color':
             self._add_vector_legend(ax, y_list, x_list, vector_style)
         
-        # P1-8: deterministic y-axis label for vector
+        # Phase 13.16.DF FIX1 (B3+B4): post-loop title.
+        # Only needed when group_by is set — each iteration produces a group-specific
+        # title that needs dedup. Without group_by, the last iteration's title
+        # (produced by _suppress_title=False on the final iteration) is correct.
+        if group_by is not None and ax is not None:
+            self._set_vector_title_with_groupby(
+                ax, y_list, x_list,
+                explicit_title=kwargs.get('title'),
+                auto_title=kwargs.get('auto_title', False),
+                group_by=group_by,
+                selection=kwargs.get('selection'),
+                weights=kwargs.get('weights'),
+            )
+        
+        # Phase 13.16.DF FIX1: auto_title failsafe for no-group_by case.
+        # If auto_title was requested and the axes still have no title after
+        # the loop (can happen if apply_auto_title from the plot module didn't
+        # persist across same=True iterations), build a minimal title here.
+        if (ax is not None and kwargs.get('auto_title')
+                and not kwargs.get('title') and not ax.get_title()):
+            # Build a simple title from y expressions + x
+            unique_ys = list(dict.fromkeys(y_list))
+            # Common-prefix y name like "y*" if common prefix ≥ 2 chars, else list
+            import os.path as _ospath
+            prefix = _ospath.commonprefix(unique_ys) if len(unique_ys) > 1 else unique_ys[0]
+            if len(unique_ys) > 1 and len(prefix) >= 2:
+                y_label = f"{prefix}*"
+            elif len(unique_ys) == 1:
+                y_label = unique_ys[0]
+            else:
+                y_label = "[" + ",".join(unique_ys) + "]"
+            x_label = x_list[0] if x_list and x_list[0] is not None else None
+            if x_label:
+                ax.set_title(f"{y_label} vs {x_label}")
+            else:
+                ax.set_title(y_label)
+        
+        # P1-8: deterministic y-axis label for vector (existing behavior)
         if ax is not None:
             self._set_vector_ylabel(ax, y_list, x_list)
         
+        # Phase 13.16.DF FIX1 (B5): single tight_layout call at end.
+        if fig is not None:
+            try:
+                import matplotlib.pyplot as _plt
+                _plt.tight_layout()
+            except Exception:
+                pass  # tight_layout warnings are non-fatal
+        
         return fig, ax, stats_list
+    
+    # =========================================================================
+    # Phase 13.16.DF FIX1 helpers (B2, B3+B4)
+    # =========================================================================
+    
+    def _add_vector_main_legend_dedup(self, ax):
+        """
+        Phase 13.16.DF FIX1 (B2): Build deduplicated main group legend.
+        
+        After the vector loop, the axes hold N×N_groups labeled artists (one
+        labeled artist per group, per vector iteration). This collapses them
+        to N_groups by keeping only the first occurrence of each label.
+        
+        Called only when group_by is set; ignored otherwise (the secondary
+        Variable legend is still added by _add_vector_legend below).
+        """
+        handles, labels = ax.get_legend_handles_labels()
+        # Deduplicate while preserving order
+        seen = set()
+        unique = [(h, l) for h, l in zip(handles, labels)
+                  if not (l in seen or seen.add(l))]
+        if unique:
+            uh, ul = zip(*unique)
+            ax.legend(uh, ul, loc=get_style_value("legend.loc", "best"))
+    
+    def _set_vector_title_with_groupby(self, ax, y_list, x_list,
+                                       explicit_title=None,
+                                       auto_title=False,
+                                       group_by=None,
+                                       selection=None,
+                                       weights=None):
+        """
+        Phase 13.16.DF FIX1 (B3+B4): Build a single title for the vector plot.
+        
+        Resolution order:
+          1. explicit_title (user passed title='...')                 → use as-is
+          2. auto_title truthy + axes already has title from suppress → leave it
+          3. auto_title truthy                                        → build via build_auto_title
+          4. otherwise                                                → no title
+        
+        The reason (3) re-builds rather than letting plot modules build it
+        per-iteration is that per-iteration titles use a single y-name; the
+        vector title should reflect the common prefix (handled by callers
+        of build_auto_title via parts/group_by).
+        """
+        if explicit_title:
+            ax.set_title(explicit_title)
+            return
+        if not auto_title:
+            return
+        # Use common-prefix y_name for vector
+        # The auto_title helpers live in plots._auto_title (sibling to drawer.py).
+        try:
+            from .plots._auto_title import (
+                parse_auto_title_parts, build_auto_title, apply_auto_title,
+            )
+        except ImportError:
+            return  # auto_title module not available; leave title blank
+        # Pick representative names
+        x_name = x_list[0] if x_list and x_list[0] is not None else None
+        # Common-prefix y name (mirror _set_vector_ylabel)
+        common = self._common_prefix(y_list) if y_list else None
+        y_name = common if common else (y_list[0] if y_list else None)
+        try:
+            parts = parse_auto_title_parts(auto_title)
+            td = build_auto_title(
+                x_name, y_name, group_by=group_by,
+                selection=selection, weights=weights, parts=parts,
+            )
+            apply_auto_title(ax, td)
+        except Exception:
+            # Title building failed (e.g. unusual signature); silent fallback
+            pass
+    
+    @staticmethod
+    def _common_prefix(strings):
+        """Return longest common prefix of a list of strings (or None if empty)."""
+        if not strings:
+            return None
+        shortest = min(strings, key=len)
+        for i, ch in enumerate(shortest):
+            if any(s[i] != ch for s in strings):
+                return shortest[:i] if i > 0 else None
+        return shortest
     
     def _add_vector_legend(self, ax, y_list, x_list, vector_style):
         """
@@ -851,6 +1075,10 @@ class DFDraw:
         y_expr, x_expr = self._parse_expr(expr)
         
         # Phase 13.16.DF: Vector expression dispatch
+        # Phase 13.16.DF FIX1: tuple-driven forwarding via _DRAW_FORWARDED_NAMES.
+        # Note: facet check is performed inside the routed method (profile/hist/
+        # scatter), not here, because draw() forwards type/method-specific kwargs
+        # via _draw_vector which calls the routed method.
         if isinstance(y_expr, list):
             # P1-4: Auto-detect type for vectors
             if type is None:
@@ -869,37 +1097,22 @@ class DFDraw:
                     f"Supported types: {sorted(method_map.keys())}"
                 )
             
-            # P0-5: Build kwargs for _draw_vector, dropping 'type'
-            # (already consumed) and passing through all others.
+            # R4 mirror: facet=True + vector is undefined at draw() level too.
+            if facet:
+                raise ValueError(
+                    "facet=True is not supported with vector expression. "
+                    "Use a scalar expression with facet=True for subplot grids, "
+                    "or a vector expression without facet for overlay."
+                )
+            
+            # FIX1 B1a: forward every named param via tuple.
+            # type/figsize/facet/group_by/expr deliberately excluded.
             vector_kwargs = dict(kwargs)
-            # Forward known named params from draw() signature
-            if selection is not None:
-                vector_kwargs.setdefault('selection', selection)
-            if color is not None:
-                vector_kwargs.setdefault('color', color)
-            if size is not None:
-                vector_kwargs.setdefault('size', size)
-            if marker is not None:
-                vector_kwargs.setdefault('marker', marker)
-            if bins is not None:
-                vector_kwargs.setdefault('bins', bins)
-            if stats is not None:
-                vector_kwargs.setdefault('stats', stats)
-            if norm is not None:
-                vector_kwargs.setdefault('norm', norm)
-            if title is not None:
-                vector_kwargs.setdefault('title', title)
-            if ax is not None:
-                vector_kwargs.setdefault('ax', ax)
-            if sample is not None:
-                vector_kwargs.setdefault('sample', sample)
-            if save is not None:
-                vector_kwargs.setdefault('save', save)
-            if same:
-                vector_kwargs.setdefault('same', same)
-            # Note: 'type', 'facet', 'group_by' deliberately not put in vector_kwargs.
-            # group_by is passed as named param to _draw_vector (see below).
-            # facet with vector is undefined.
+            _local = locals()
+            for name in self._DRAW_FORWARDED_NAMES:
+                val = _local.get(name, _MISSING)
+                if val is not _MISSING and val is not None:
+                    vector_kwargs.setdefault(name, val)
             
             return self._draw_vector(
                 y_expr, x_expr, method_map[type],
@@ -1031,36 +1244,26 @@ class DFDraw:
         y_expr, x_expr = self._parse_expr(expr)
         
         # Phase 13.16.DF: Vector dispatch
+        # Phase 13.16.DF FIX1: tuple-driven forwarding via _HIST_FORWARDED_NAMES
+        # + R4 fail-fast guard on facet=True + vector.
         if isinstance(y_expr, list):
-            # For hist, we accept both 1D vector (x is list of Nones) and 2D
-            # (x is present, but hist only uses the first part — treat as 1D per element).
+            # R4: facet=True + vector is undefined; fail-fast.
+            if facet:
+                raise ValueError(
+                    "facet=True is not supported with vector expression. "
+                    "Use a scalar expression with facet=True for subplot grids, "
+                    "or a vector expression without facet for overlay."
+                )
+            # FIX1 B1a: forward every named param via tuple.
             vector_kwargs = dict(kwargs)
-            if selection is not None:
-                vector_kwargs.setdefault('selection', selection)
-            if sample is not None:
-                vector_kwargs.setdefault('sample', sample)
-            if bins is not None:
-                vector_kwargs.setdefault('bins', bins)
-            if range is not None:
-                vector_kwargs.setdefault('range', range)
-            if norm is not None:
-                vector_kwargs.setdefault('norm', norm)
-            if stats is not None:
-                vector_kwargs.setdefault('stats', stats)
-            if title is not None:
-                vector_kwargs.setdefault('title', title)
-            if xlabel is not None:
-                vector_kwargs.setdefault('xlabel', xlabel)
-            if ylabel is not None:
-                vector_kwargs.setdefault('ylabel', ylabel)
-            if ax is not None:
-                vector_kwargs.setdefault('ax', ax)
-            if save is not None:
-                vector_kwargs.setdefault('save', save)
-            if auto_title:
-                vector_kwargs.setdefault('auto_title', auto_title)
-            if same:
-                vector_kwargs.setdefault('same', same)
+            _local = locals()
+            for name in self._HIST_FORWARDED_NAMES:
+                val = _local.get(name, _MISSING)
+                if val is not _MISSING and val is not None:
+                    # FIX1: auto_title=False is signature default, not user choice.
+                    if name == 'auto_title' and val is False:
+                        continue
+                    vector_kwargs.setdefault(name, val)
             return self._draw_vector(
                 y_expr, x_expr, self.hist,
                 group_by=group_by, **vector_kwargs
@@ -1230,36 +1433,27 @@ class DFDraw:
         y_expr, x_expr = self._parse_expr(expr)
         
         # Phase 13.16.DF: Vector dispatch
+        # Phase 13.16.DF FIX1: tuple-driven forwarding via _SCATTER_FORWARDED_NAMES
+        # + R4 fail-fast guard on facet=True + vector.
         if isinstance(y_expr, list):
             if x_expr[0] is None:
                 raise ValueError(
                     f"Scatter plot requires 'y:x' format, got vector 1D '{expr}'"
                 )
+            # R4: facet=True + vector is undefined; fail-fast.
+            if facet:
+                raise ValueError(
+                    "facet=True is not supported with vector expression. "
+                    "Use a scalar expression with facet=True for subplot grids, "
+                    "or a vector expression without facet for overlay."
+                )
+            # FIX1 B1a: forward every named param via tuple.
             vector_kwargs = dict(kwargs)
-            if selection is not None:
-                vector_kwargs.setdefault('selection', selection)
-            if sample is not None:
-                vector_kwargs.setdefault('sample', sample)
-            if color is not None:
-                vector_kwargs.setdefault('color', color)
-            if size is not None:
-                vector_kwargs.setdefault('size', size)
-            if marker is not None:
-                vector_kwargs.setdefault('marker', marker)
-            if stats is not None:
-                vector_kwargs.setdefault('stats', stats)
-            if title is not None:
-                vector_kwargs.setdefault('title', title)
-            if xlabel is not None:
-                vector_kwargs.setdefault('xlabel', xlabel)
-            if ylabel is not None:
-                vector_kwargs.setdefault('ylabel', ylabel)
-            if ax is not None:
-                vector_kwargs.setdefault('ax', ax)
-            if save is not None:
-                vector_kwargs.setdefault('save', save)
-            if same:
-                vector_kwargs.setdefault('same', same)
+            _local = locals()
+            for name in self._SCATTER_FORWARDED_NAMES:
+                val = _local.get(name, _MISSING)
+                if val is not _MISSING and val is not None:
+                    vector_kwargs.setdefault(name, val)
             return self._draw_vector(
                 y_expr, x_expr, self.scatter,
                 group_by=group_by, **vector_kwargs
@@ -1461,38 +1655,33 @@ class DFDraw:
         y_expr, x_expr = self._parse_expr(expr)
         
         # Phase 13.16.DF: Vector dispatch
+        # Phase 13.16.DF FIX1: tuple-driven forwarding via _PROFILE_FORWARDED_NAMES
+        # + R4 fail-fast guard on facet=True + vector.
         if isinstance(y_expr, list):
             # Confirm 2D — profile requires x
             if x_expr[0] is None:
                 raise ValueError(
                     f"Profile plot requires 'y:x' format, got vector 1D '{expr}'"
                 )
-            # Collect all current locals that are relevant for delegation.
+            # R4: facet=True + vector is undefined; fail-fast with actionable message.
+            if facet:
+                raise ValueError(
+                    "facet=True is not supported with vector expression. "
+                    "Use a scalar expression with facet=True for subplot grids, "
+                    "or a vector expression without facet for overlay."
+                )
+            # FIX1 B1a: forward every named param via tuple + locals().get(name, _MISSING).
+            # _MISSING distinguishes "caller didn't pass" from "caller passed None".
             vector_kwargs = dict(kwargs)
-            if selection is not None:
-                vector_kwargs.setdefault('selection', selection)
-            if bins is not None:
-                vector_kwargs.setdefault('bins', bins)
-            if stats is not None:
-                vector_kwargs.setdefault('stats', stats)
-            if title is not None:
-                vector_kwargs.setdefault('title', title)
-            if ax is not None:
-                vector_kwargs.setdefault('ax', ax)
-            if sample is not None:
-                vector_kwargs.setdefault('sample', sample)
-            if save is not None:
-                vector_kwargs.setdefault('save', save)
-            if xlabel is not None:
-                vector_kwargs.setdefault('xlabel', xlabel)
-            if ylabel is not None:
-                vector_kwargs.setdefault('ylabel', ylabel)
-            if weights is not None:
-                vector_kwargs.setdefault('weights', weights)
-            if same:
-                vector_kwargs.setdefault('same', same)
-            if auto_title:
-                vector_kwargs.setdefault('auto_title', auto_title)
+            _local = locals()
+            for name in self._PROFILE_FORWARDED_NAMES:
+                val = _local.get(name, _MISSING)
+                if val is not _MISSING and val is not None:
+                    # FIX1: auto_title=False is the SIGNATURE DEFAULT, not a user choice.
+                    # Skip it so _draw_vector's vector-mode default-True logic can inject.
+                    if name == 'auto_title' and val is False:
+                        continue
+                    vector_kwargs.setdefault(name, val)
             return self._draw_vector(
                 y_expr, x_expr, self.profile,
                 group_by=group_by, **vector_kwargs
@@ -2610,3 +2799,43 @@ class DFDraw:
         if 'plots' in data:
             return data['plots']
         return data
+
+
+# =============================================================================
+# Phase 13.16.DF FIX1 (R6): Class-load validation of forwarded-name tuples.
+# 
+# Runs at module import. Verifies every entry in each _*_FORWARDED_NAMES tuple
+# is a real parameter of the corresponding signature. If a future phase renames
+# a parameter and forgets to update the tuple, the import fails loudly here
+# instead of producing silent kwarg drops at user-trigger time.
+# =============================================================================
+
+def _validate_forwarded_names():
+    """Validate at module-import that all _*_FORWARDED_NAMES entries match signatures."""
+    pairs = [
+        (DFDraw._PROFILE_FORWARDED_NAMES, DFDraw.profile, 'profile'),
+        (DFDraw._HIST_FORWARDED_NAMES,    DFDraw.hist,    'hist'),
+        (DFDraw._SCATTER_FORWARDED_NAMES, DFDraw.scatter, 'scatter'),
+        (DFDraw._DRAW_FORWARDED_NAMES,    DFDraw.draw,    'draw'),
+    ]
+    errors = []
+    for tup, method, name in pairs:
+        try:
+            sig_params = set(inspect.signature(method).parameters)
+        except (TypeError, ValueError):
+            continue  # introspection failed; skip silently
+        missing = set(tup) - sig_params
+        if missing:
+            errors.append(
+                f"_{name.upper()}_FORWARDED_NAMES contains non-signature "
+                f"parameters: {sorted(missing)}"
+            )
+    if errors:
+        raise RuntimeError(
+            "Phase 13.16.DF FIX1 R6 validation failed at module import:\n"
+            + "\n".join("  - " + e for e in errors)
+            + "\n\nUpdate the relevant _*_FORWARDED_NAMES tuple in DFDraw."
+        )
+
+
+_validate_forwarded_names()

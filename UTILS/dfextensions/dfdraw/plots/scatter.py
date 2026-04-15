@@ -42,6 +42,10 @@ def draw_scatter(
     group_by: Optional[str] = None,
     top_k: Optional[int] = None,
     jitter: Optional[Union[bool, float, Tuple[float, float]]] = None,
+    # Phase 13.16.DF FIX1: vector dispatch suppression flags (private).
+    _suppress_legend: bool = False,
+    _suppress_title: bool = False,
+    _suppress_layout: bool = False,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -178,15 +182,15 @@ def draw_scatter(
             elif isinstance(color, str) and color in df.columns:
                 cbar.set_label(color)
         
-        # Legend for categorical color
-        if is_categorical and isinstance(color, str):
+        # Legend for categorical color (Phase 13.16.DF FIX1: skip when suppressed)
+        if is_categorical and isinstance(color, str) and not _suppress_legend:
             ax.legend(loc=get_style_value("legend.loc", "best"))
     
     # Labels
     ax.set_xlabel(xlabel or x_name)
     ax.set_ylabel(ylabel or y_name)
     
-    if title:
+    if title and not _suppress_title:
         ax.set_title(title)
     
     # Statistics box
@@ -195,11 +199,13 @@ def draw_scatter(
     elif isinstance(stats, list):
         _add_stats_box(ax, stats_dict, stats)
     
-    # Legend for grouped
-    if group_by is not None:
+    # Legend for grouped (Phase 13.16.DF FIX1: skip when suppressed)
+    if group_by is not None and not _suppress_legend:
         ax.legend(loc=get_style_value("legend.loc", "best"))
     
-    plt.tight_layout()
+    # Phase 13.16.DF FIX1: skip tight_layout when suppressed
+    if not _suppress_layout:
+        plt.tight_layout()
     return fig, ax, stats_dict
 
 

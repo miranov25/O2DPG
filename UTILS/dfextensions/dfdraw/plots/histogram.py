@@ -42,6 +42,10 @@ def draw_hist(
     # Phase 13.12.DF v1.2: Auto-title
     auto_title: Union[bool, str] = False,
     selection: Optional[Union[str, np.ndarray, callable]] = None,
+    # Phase 13.16.DF FIX1: vector dispatch suppression flags (private).
+    _suppress_legend: bool = False,
+    _suppress_title: bool = False,
+    _suppress_layout: bool = False,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -173,13 +177,14 @@ def draw_hist(
     else:
         ax.set_ylabel("Count")
     
-    if title:
-        ax.set_title(title)
-    elif auto_title:
-        parts = parse_auto_title_parts(auto_title)
-        td = build_auto_title(x_name, y=None, group_by=group_by,
-                              selection=selection, parts=parts)
-        apply_auto_title(ax, td)
+    if not _suppress_title:
+        if title:
+            ax.set_title(title)
+        elif auto_title:
+            parts = parse_auto_title_parts(auto_title)
+            td = build_auto_title(x_name, y=None, group_by=group_by,
+                                  selection=selection, parts=parts)
+            apply_auto_title(ax, td)
     
     # Statistics box
     if stats is True or (stats is None and get_style_value("stats.show", False)):
@@ -187,11 +192,13 @@ def draw_hist(
     elif isinstance(stats, list):
         _add_stats_box(ax, stats_dict, stats)
     
-    # Legend for grouped
-    if group_by is not None:
+    # Legend for grouped (Phase 13.16.DF FIX1: skip when suppressed)
+    if group_by is not None and not _suppress_legend:
         ax.legend(loc=get_style_value("legend.loc", "best"))
     
-    plt.tight_layout()
+    # Phase 13.16.DF FIX1: skip tight_layout when suppressed
+    if not _suppress_layout:
+        plt.tight_layout()
     return fig, ax, stats_dict
 
 
