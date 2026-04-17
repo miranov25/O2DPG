@@ -144,6 +144,100 @@ def main() -> None:
     if len(list(ROOT.GBE.list_models())) != 0:
         fail("registry not empty after clear_models")
 
+    # ---- Turn 7 tests: gInterpreter stub + eval_on_tree ----
+
+    banner("Test 8: gInterpreter eval stub (scalar)")
+    # Reload model for stub testing
+    ok = ROOT.GBE.load_model_explicit(
+        "stub_test",
+        str(tmp),
+        "dfGB",
+        ROOT.std.vector("string")(["bin_x", "bin_y"]),
+        ROOT.std.vector("string")(["x"]),
+        ROOT.std.vector("string")(["y"]),
+        "_fit",
+        True,
+        "lookup",
+        "nan",
+    )
+    if not ok:
+        fail("load_model_explicit failed for stub_test")
+
+    # The load auto-calls declare_eval_stub. The stub function
+    # GBE::eval_stub_test(double, double, double) should now exist.
+    # Call it from PyROOT:
+    try:
+        pred = ROOT.GBE.eval_stub_test(0.0, 0.0, 1.0)
+        print(f"  eval_stub_test(0, 0, 1.0) = {pred}")
+    except Exception as e:
+        fail(f"eval_stub_test call failed: {e}")
+
+    # Verify prediction matches Python reference:
+    # bin_x=0, bin_y=0 -> intercept + slope_x * 1.0
+    expected_intercept = df.loc[(df.bin_x == 0) & (df.bin_y == 0),
+                                "y_intercept_fit"].values[0]
+    expected_slope = df.loc[(df.bin_x == 0) & (df.bin_y == 0),
+                            "y_slope_x_fit"].values[0]
+    expected = expected_intercept + expected_slope * 1.0
+    if abs(pred - expected) > 1e-12:
+        fail(f"stub prediction {pred} != expected {expected}")
+    print(f"  matches Python reference: {expected}")
+
+    # Out-of-grid natural label -> NaN
+    pred_oog = ROOT.GBE.eval_stub_test(99.0, 0.0, 1.0)
+    import math
+    if not math.isnan(pred_oog):
+        fail(f"out-of-grid natural label should return NaN, got {pred_oog}")
+    print(f"  out-of-grid (99,0,1.0) = NaN ✓")
+
+    banner("Test 9: eval_on_tree (tabular)")
+    # Open the same .root file, read the dfGB tree as an "input" tree,
+    # and call eval_on_tree to predict on every entry.
+    f_root = ROOT.TFile.Open(str(tmp), "READ")
+    input_tree = f_root.Get("dfGB")
+    col_names = ROOT.std.vector("string")(["bin_x", "bin_y", "x"])
+    # For eval_on_tree, the "x" column doesn't exist in dfGB — it's a
+    # predictor. We need an input tree that HAS a branch named "x".
+    # The dfGB tree doesn't have bare "x". Let's create a small test
+    # tree with the right branches.
+    f_root.Close()
+
+    # Build a small input tree with (bin_x, bin_y, x) branches
+    import tempfile as _tf
+    tmp2 = Path(_tf.mkdtemp()) / "input.root"
+    import numpy as _np
+    input_df = pd.DataFrame({
+        "bin_x": _np.array([0, 1, 2], dtype=_np.int64),
+        "bin_y": _np.array([0, 1, 2], dtype=_np.int64),
+        "x": _np.array([1.0, 2.0, 3.0], dtype=_np.float64),
+    })
+    import uproot
+    with uproot.recreate(str(tmp2)) as uf:
+        uf["input"] = {k: input_df[k].values for k in input_df.columns}
+
+    f2 = ROOT.TFile.Open(str(tmp2), "READ")
+    itree = f2.Get("input")
+    predictions = ROOT.GBE.eval_on_tree(
+        "stub_test", itree,
+        ROOT.std.vector("string")(["bin_x", "bin_y", "x"]))
+    f2.Close()
+
+    print(f"  eval_on_tree returned {len(predictions)} predictions")
+    if len(predictions) != 3:
+        fail(f"expected 3 predictions, got {len(predictions)}")
+
+    # Verify each prediction matches Python reference
+    for i in range(3):
+        bx, by, xv = int(input_df.bin_x[i]), int(input_df.bin_y[i]), float(input_df.x[i])
+        row = df.loc[(df.bin_x == bx) & (df.bin_y == by)]
+        exp = float(row.y_intercept_fit.values[0]) + float(row.y_slope_x_fit.values[0]) * xv
+        got = predictions[i]
+        if abs(got - exp) > 1e-12:
+            fail(f"entry {i} ({bx},{by},{xv}): expected {exp}, got {got}")
+        print(f"  entry {i} ({bx},{by},{xv}): {got} ✓")
+
+    ROOT.GBE.clear_models()
+
     banner("ALL TESTS PASSED")
 
 

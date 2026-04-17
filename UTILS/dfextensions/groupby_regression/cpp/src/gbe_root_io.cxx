@@ -16,6 +16,7 @@
 
 #include <TBranch.h>
 #include <TFile.h>
+#include <TInterpreter.h>
 #include <TKey.h>
 #include <TObjString.h>
 #include <TString.h>
@@ -263,7 +264,8 @@ bool load_model_explicit(
         return false;
     }
 
-    return load_into_registry(model_name, tree, std::move(schema), m, b);
+    return load_into_registry(model_name, tree, std::move(schema), m, b)
+           && declare_eval_stub(model_name);
 }
 
 bool load_model_from_metadata(
@@ -325,7 +327,8 @@ bool load_model_from_metadata(
         return false;
     }
 
-    return load_into_registry(model_name, tree, std::move(schema), m, b);
+    return load_into_registry(model_name, tree, std::move(schema), m, b)
+           && declare_eval_stub(model_name);
 }
 
 bool has_model(const std::string& model_name) {
@@ -362,6 +365,199 @@ void clear_models() {
     auto& R = registry();
     std::lock_guard<std::mutex> lk(R.mu);
     R.models.clear();
+}
+
+// -------------- Turn 7: gInterpreter stub + eval_on_tree --------------
+
+bool declare_eval_stub(const std::string& model_name) {
+    const auto* ev = get_model(model_name);
+    if (!ev) {
+        std::cerr << "GBE::declare_eval_stub: model '" << model_name
+                  << "' not found in registry" << std::endl;
+        return false;
+    }
+
+    const auto& schema = ev->schema();
+    const std::size_t n_gc = schema.group_columns.size();
+    const std::size_t n_pred = schema.predictor_columns.size();
+    const std::size_t arity = n_gc + n_pred;
+
+    // Build the function source string.
+    // Generated function signature:
+    //   double GBE::eval_<model_name>(double a0, double a1, ..., double aN-1)
+    //
+    // For group_columns: args are natural-label values (doubles from
+    // TTree formulas). They are remapped to compact indices via the
+    // model's remap() table. If a natural label is not found in the
+    // remap, NaN is returned (out-of-grid).
+    //
+    // For predictor_columns: args are passed directly as predictor values.
+
+    std::ostringstream src;
+    src << "namespace GBE {\n";
+    src << "double eval_" << model_name << "(";
+    for (std::size_t i = 0; i < arity; ++i) {
+        if (i > 0) src << ", ";
+        src << "double a" << i;
+    }
+    src << ") {\n";
+    src << "  const auto* ev = GBE::get_model(\"" << model_name << "\");\n";
+    src << "  if (!ev) return std::nan(\"\");\n";
+
+    // Remap group columns from natural labels to compact indices
+    src << "  const auto& remap = ev->remap();\n";
+    if (ev->method() == gbe::MethodMode::Lookup) {
+        src << "  std::vector<int64_t> pos(" << n_gc << ");\n";
+        for (std::size_t d = 0; d < n_gc; ++d) {
+            src << "  { auto it = remap[" << d << "].find(static_cast<int64_t>(a" << d << "));\n";
+            src << "    if (it == remap[" << d << "].end()) return std::nan(\"\");\n";
+            src << "    pos[" << d << "] = it->second; }\n";
+        }
+        src << "  std::vector<double> pv = {";
+        for (std::size_t i = 0; i < n_pred; ++i) {
+            if (i > 0) src << ", ";
+            src << "a" << (n_gc + i);
+        }
+        src << "};\n";
+        src << "  auto r = ev->evaluate_lookup(pos, pv);\n";
+    } else {
+        // Linear: positions are floating-point compact indices
+        src << "  std::vector<double> pos(" << n_gc << ");\n";
+        for (std::size_t d = 0; d < n_gc; ++d) {
+            src << "  { auto it = remap[" << d << "].find(static_cast<int64_t>(a" << d << "));\n";
+            src << "    if (it == remap[" << d << "].end()) return std::nan(\"\");\n";
+            src << "    pos[" << d << "] = static_cast<double>(it->second); }\n";
+        }
+        src << "  std::vector<double> pv = {";
+        for (std::size_t i = 0; i < n_pred; ++i) {
+            if (i > 0) src << ", ";
+            src << "a" << (n_gc + i);
+        }
+        src << "};\n";
+        src << "  auto r = ev->evaluate_linear(pos, pv);\n";
+    }
+    src << "  return r.empty() ? std::nan(\"\") : r[0];\n";
+    src << "}\n";
+    src << "} // namespace GBE\n";
+
+    const std::string code = src.str();
+
+    if (!gInterpreter->Declare(code.c_str())) {
+        std::cerr << "GBE::declare_eval_stub: gInterpreter->Declare failed "
+                  << "for model '" << model_name << "'. Generated code:\n"
+                  << code << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+std::vector<double> eval_on_tree(
+    const std::string& model_name,
+    TTree* tree,
+    const std::vector<std::string>& column_names)
+{
+    const auto* ev = get_model(model_name);
+    if (!ev) {
+        std::cerr << "GBE::eval_on_tree: model '" << model_name
+                  << "' not found" << std::endl;
+        return {};
+    }
+    if (!tree) {
+        std::cerr << "GBE::eval_on_tree: null TTree" << std::endl;
+        return {};
+    }
+
+    const auto& schema = ev->schema();
+    const std::size_t n_gc = schema.group_columns.size();
+    const std::size_t n_pred = schema.predictor_columns.size();
+    const std::size_t expected_cols = n_gc + n_pred;
+
+    if (column_names.size() != expected_cols) {
+        std::cerr << "GBE::eval_on_tree: column_names size "
+                  << column_names.size() << " != expected "
+                  << expected_cols << " (group=" << n_gc
+                  << " + pred=" << n_pred << ")" << std::endl;
+        return {};
+    }
+
+    const Long64_t nentries = tree->GetEntries();
+
+    // Bind all columns as double (TTree auto-reads Long64_t -> double
+    // is NOT safe per Turn 6 lesson; but here we read group columns
+    // as double and manually remap, which is fine for the remap lookup).
+    // Actually: group columns are int64 in the tree. Use Long64_t for
+    // those and Double_t for predictor columns, matching Turn 6 pattern.
+    std::vector<Long64_t> gc_bufs(n_gc, 0);
+    std::vector<Double_t> pv_bufs(n_pred, 0.0);
+
+    for (std::size_t d = 0; d < n_gc; ++d) {
+        TBranch* br = tree->GetBranch(column_names[d].c_str());
+        if (!br) {
+            std::cerr << "GBE::eval_on_tree: branch '"
+                      << column_names[d] << "' not found" << std::endl;
+            return {};
+        }
+        tree->SetBranchAddress(column_names[d].c_str(), &gc_bufs[d]);
+    }
+    for (std::size_t i = 0; i < n_pred; ++i) {
+        TBranch* br = tree->GetBranch(column_names[n_gc + i].c_str());
+        if (!br) {
+            std::cerr << "GBE::eval_on_tree: branch '"
+                      << column_names[n_gc + i] << "' not found" << std::endl;
+            return {};
+        }
+        tree->SetBranchAddress(column_names[n_gc + i].c_str(), &pv_bufs[i]);
+    }
+
+    const auto& remap = ev->remap();
+    const double kNaN = std::nan("");
+
+    std::vector<double> result;
+    result.reserve(static_cast<std::size_t>(nentries));
+
+    for (Long64_t entry = 0; entry < nentries; ++entry) {
+        tree->GetEntry(entry);
+
+        // Remap group columns from natural labels to compact indices
+        bool out_of_grid = false;
+
+        if (ev->method() == gbe::MethodMode::Lookup) {
+            std::vector<int64_t> pos(n_gc);
+            for (std::size_t d = 0; d < n_gc; ++d) {
+                auto it = remap[d].find(static_cast<int64_t>(gc_bufs[d]));
+                if (it == remap[d].end()) {
+                    out_of_grid = true; break;
+                }
+                pos[d] = it->second;
+            }
+            if (out_of_grid) {
+                result.push_back(kNaN);
+                continue;
+            }
+            std::vector<double> pv(pv_bufs.begin(), pv_bufs.end());
+            auto r = ev->evaluate_lookup(pos, pv);
+            result.push_back(r.empty() ? kNaN : r[0]);
+        } else {
+            std::vector<double> pos(n_gc);
+            for (std::size_t d = 0; d < n_gc; ++d) {
+                auto it = remap[d].find(static_cast<int64_t>(gc_bufs[d]));
+                if (it == remap[d].end()) {
+                    out_of_grid = true; break;
+                }
+                pos[d] = static_cast<double>(it->second);
+            }
+            if (out_of_grid) {
+                result.push_back(kNaN);
+                continue;
+            }
+            std::vector<double> pv(pv_bufs.begin(), pv_bufs.end());
+            auto r = ev->evaluate_linear(pos, pv);
+            result.push_back(r.empty() ? kNaN : r[0]);
+        }
+    }
+
+    return result;
 }
 
 }  // namespace GBE

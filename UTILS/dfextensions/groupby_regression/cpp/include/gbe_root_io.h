@@ -13,8 +13,8 @@
 //   - unload_model(name) / clear_models()  registry teardown
 //
 // All loaded models live in a process-static registry, addressable by
-// user-chosen string name. This is what Turn 7 will hook the
-// `gInterpreter->Declare` per-model stub into.
+// user-chosen string name. Turn 7 hooks gInterpreter->Declare per-model
+// stubs and adds eval_on_tree tabular entry point.
 //
 // Layer B INCLUDES ROOT headers — DO NOT include this header from
 // Layer A sources or from anything that compiles to WASM. The
@@ -33,6 +33,8 @@
 
 #include <string>
 #include <vector>
+
+class TTree;  // ROOT forward decl at global scope (NOT inside namespace GBE)
 
 namespace gbe {
 class GroupByRegressionEvaluator;
@@ -100,6 +102,38 @@ std::vector<std::string> list_models();
 
 bool unload_model(const std::string& model_name);
 void clear_models();
+
+// -- Turn 7: per-model gInterpreter stub + tabular entry point --
+
+// Generates and JIT-compiles a free function
+//   double GBE::eval_<model_name>(double a0, double a1, ...)
+// via gInterpreter->Declare. Arity = group_columns.size() +
+// predictor_columns.size(). Called automatically by load_model_*.
+// Returns true if the stub compiled successfully.
+//
+// The generated stub looks up the model in the static registry,
+// remaps the double args to compact indices (for group columns) or
+// passes them as predictor values, and calls evaluate_lookup or
+// evaluate_linear. Returns the first target's prediction (or NaN).
+//
+// FP-5: if gInterpreter->Declare fails for arity >= 6, fall back to
+// a vector-arg wrapper and document.
+bool declare_eval_stub(const std::string& model_name);
+
+// Evaluate a loaded model on every entry of an input TTree. Returns
+// a vector<double> of length tree->GetEntries() containing the first
+// target's prediction per entry.
+//
+// column_names: ordered list of branch names in the input tree
+//   corresponding to [group_columns..., predictor_columns...] in that
+//   order. Must have exactly group_columns.size() +
+//   predictor_columns.size() elements.
+//
+// Returns empty vector on error (diagnostic printed to stderr).
+std::vector<double> eval_on_tree(
+    const std::string& model_name,
+    TTree* tree,
+    const std::vector<std::string>& column_names);
 
 }  // namespace GBE
 
