@@ -155,3 +155,302 @@ class TestFitPathPerformanceParity:
             n_dims=1, window=0,
             fit_columns=["y"], linear_columns=["x"],
             fit_intercept=True, rtol=1e-12)
+
+
+# ---- Helper fixtures for T1-7 through T1-13 ----
+
+def _import_swf():
+    """Import make_sliding_window_fit with fallback."""
+    try:
+        from groupby_regression_sliding_window import make_sliding_window_fit
+    except ImportError:
+        from dfextensions.groupby_regression.groupby_regression_sliding_window import make_sliding_window_fit
+    return make_sliding_window_fit
+
+
+def _make_2d_fixture(n_x=4, n_y=4, rows_per_bin=30, seed=123,
+                     drop_bins=None, add_weights=False):
+    """Build a 2D fixture. Optionally drop bins and/or add weight column."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for ix in range(n_x):
+        for iy in range(n_y):
+            if drop_bins and (ix, iy) in drop_bins:
+                continue
+            for _ in range(rows_per_bin):
+                row = {"bin_x": ix, "bin_y": iy}
+                row["x"] = rng.normal(0, 1)
+                row["y"] = 2.0 + 0.5 * row["x"] + rng.normal(0, 0.1)
+                if add_weights:
+                    row["w"] = rng.uniform(0.5, 2.0)
+                rows.append(row)
+    df = pd.DataFrame(rows)
+    df["bin_x"] = df["bin_x"].astype(np.int64)
+    df["bin_y"] = df["bin_y"].astype(np.int64)
+    return df
+
+
+def _numeric_cols_equal(df_a, df_b, dims, rtol=1e-12, skip_cols=None):
+    """Assert all numeric non-dim columns match between two DataFrames."""
+    a = df_a.sort_values(dims).reset_index(drop=True)
+    b = df_b.sort_values(dims).reset_index(drop=True)
+    _skip = set(skip_cols or [])
+    for d in dims:
+        np.testing.assert_array_equal(a[d].values, b[d].values,
+                                       err_msg=f"Bin coords differ: {d}")
+    common = sorted(set(a.columns) & set(b.columns) - set(dims) - _skip)
+    for col in common:
+        if a[col].dtype == object or b[col].dtype == object:
+            continue
+        va = a[col].values.astype(np.float64)
+        vb = b[col].values.astype(np.float64)
+        both_nan = np.isnan(va) & np.isnan(vb)
+        nan_mismatch = (np.isnan(va) | np.isnan(vb)) & ~both_nan
+        assert not nan_mismatch.any(), f"NaN mismatch in {col}"
+        finite = ~np.isnan(va) & ~np.isnan(vb)
+        if finite.any():
+            np.testing.assert_allclose(va[finite], vb[finite], rtol=rtol,
+                                        atol=0, err_msg=f"Mismatch in {col}")
+
+
+# ---- T1-7: boundary parameter silently dropped (v1.2 §5.2.1) ----
+
+class TestV1V2BoundaryDrop:
+    """V1/V2 recompute path silently ignores boundary parameter.
+
+    Parameter-not-propagated class instance #9, pre-existing.
+    This test locks current behavior: V1/V2(symmetric) == V5(full).
+    """
+
+    @pytest.mark.parametrize("fit_intercept", [True, False])
+    def test_v1v2_boundary_parameter_silently_dropped(self, fit_intercept):
+        swf = _import_swf()
+        df = _make_2d_fixture(n_x=4, n_y=4, rows_per_bin=30, seed=777)
+        dims = ["bin_x", "bin_y"]
+        ws = {"bin_x": 2, "bin_y": 2}
+
+        # V1/V2 with boundary='symmetric' — but it ignores boundary
+        result_v1v2_sym = swf(
+            df=df, gb_columns=dims, fit_columns=["y"],
+            linear_columns=["x"], window_spec=ws,
+            boundary='symmetric', algorithm='recompute',
+            backend='numba', fit_intercept=fit_intercept,
+            min_stat=5, suffix='_sw',
+        )
+
+        # V5 with boundary='full' — the behavior V1/V2 actually uses
+        result_v5_full = swf(
+            df=df, gb_columns=dims, fit_columns=["y"],
+            linear_columns=["x"], window_spec=ws,
+            boundary='full', algorithm='incremental',
+            backend='numba', fit_intercept=fit_intercept,
+            min_stat=5, suffix='_sw',
+        )
+
+        # V1/V2(symmetric) should equal V5(full), not V5(symmetric)
+        _numeric_cols_equal(result_v1v2_sym, result_v5_full, dims, rtol=1e-12)
+
+        # Non-triviality guard: V5(full) must differ from V5(symmetric)
+        # at edge bins, or this test proves nothing.
+        result_v5_sym = swf(
+            df=df, gb_columns=dims, fit_columns=["y"],
+            linear_columns=["x"], window_spec=ws,
+            boundary='symmetric', algorithm='incremental',
+            backend='numba', fit_intercept=fit_intercept,
+            min_stat=5, suffix='_sw',
+        )
+        a = result_v5_full.sort_values(dims).reset_index(drop=True)
+        b = result_v5_sym.sort_values(dims).reset_index(drop=True)
+        # Find a numeric coefficient column to compare
+        coeff_col = [c for c in a.columns if c not in dims and a[c].dtype != object][0]
+        with pytest.raises(AssertionError):
+            np.testing.assert_array_equal(a[coeff_col].values, b[coeff_col].values)
+
+
+# ---- T1-8: sparse grid (v1.2 §5.2.2) ----
+
+class TestSparseGrid:
+
+    def test_2d_sparse_grid(self):
+        """Dense lookup handles sparse grids (empty bins → lookup=-1)."""
+        swf = _import_swf()
+        dropped = [(0, 1), (2, 3), (4, 0), (1, 4), (3, 2)]
+        df = _make_2d_fixture(n_x=5, n_y=5, rows_per_bin=40, seed=888,
+                              drop_bins=dropped)
+        dims = ["bin_x", "bin_y"]
+        ws = {"bin_x": 1, "bin_y": 1}
+
+        result_v1v2 = swf(
+            df=df, gb_columns=dims, fit_columns=["y"],
+            linear_columns=["x"], window_spec=ws,
+            algorithm='recompute', backend='numba',
+            min_stat=5, suffix='_sw',
+        )
+        result_v5 = swf(
+            df=df, gb_columns=dims, fit_columns=["y"],
+            linear_columns=["x"], window_spec=ws,
+            algorithm='incremental', backend='numba',
+            min_stat=5, suffix='_sw',
+        )
+        _numeric_cols_equal(result_v1v2, result_v5, dims, rtol=1e-12)
+
+        # Non-triviality: at least one center is adjacent to a dropped bin
+        # (1,1) has neighbor (0,1) which is dropped
+        centers = set(zip(result_v1v2["bin_x"], result_v1v2["bin_y"]))
+        assert (1, 1) in centers, "Center (1,1) missing — fixture broken"
+
+
+# ---- T1-10: output row order (v1.2 §5.2.4) ----
+
+class TestOutputRowOrder:
+
+    def test_output_row_order_sorted_lex(self):
+        """Dense path produces rows in lexicographic bin-coordinate order."""
+        swf = _import_swf()
+        df = _make_2d_fixture(n_x=4, n_y=4, rows_per_bin=20, seed=999)
+        # Deliberately shuffle input
+        df = df.sample(frac=1.0, random_state=42).reset_index(drop=True)
+        dims = ["bin_x", "bin_y"]
+
+        result = swf(
+            df=df, gb_columns=dims, fit_columns=["y"],
+            linear_columns=["x"], window_spec={"bin_x": 1, "bin_y": 1},
+            algorithm='recompute', backend='numba',
+            min_stat=5, suffix='_sw',
+        )
+
+        result_sorted = result.sort_values(dims).reset_index(drop=True)
+        pd.testing.assert_frame_equal(result.reset_index(drop=True),
+                                       result_sorted)
+
+
+# ---- T1-11: selection with out-of-range rows (v1.2 §5.2.5) ----
+
+class TestSelectionOutliers:
+
+    def test_selection_with_out_of_range_rows(self):
+        """_assign_bin_ids_fast handles selection with outlier gb values."""
+        swf = _import_swf()
+        rng = np.random.default_rng(1111)
+        # 100 in-range rows
+        df_good = _make_2d_fixture(n_x=5, n_y=5, rows_per_bin=4, seed=1111)
+        n_good = len(df_good)
+        # 50 outlier rows with extreme bin values
+        outliers = pd.DataFrame({
+            "bin_x": rng.integers(-10000, 10000, size=50).astype(np.int64),
+            "bin_y": rng.integers(-10000, 10000, size=50).astype(np.int64),
+            "x": rng.normal(0, 1, size=50),
+            "y": rng.normal(0, 1, size=50),
+        })
+        df_combined = pd.concat([df_good, outliers], ignore_index=True)
+        selection = pd.Series([True] * n_good + [False] * 50)
+        dims = ["bin_x", "bin_y"]
+
+        result_with_outliers = swf(
+            df=df_combined, gb_columns=dims, fit_columns=["y"],
+            linear_columns=["x"], window_spec={"bin_x": 1, "bin_y": 1},
+            selection=selection, algorithm='recompute', backend='numba',
+            min_stat=3, suffix='_sw',
+        )
+        result_clean = swf(
+            df=df_good, gb_columns=dims, fit_columns=["y"],
+            linear_columns=["x"], window_spec={"bin_x": 1, "bin_y": 1},
+            algorithm='recompute', backend='numba',
+            min_stat=3, suffix='_sw',
+        )
+        _numeric_cols_equal(result_with_outliers, result_clean, dims, rtol=1e-12)
+
+
+# ---- T1-12a/b: NaN handling (v1.2 §5.2.6) ----
+
+class TestNaNHandling:
+
+    def test_nan_in_fit_column(self):
+        """NaN in fit column handled identically by V1/V2 and V5."""
+        swf = _import_swf()
+        df = _make_2d_fixture(n_x=5, n_y=5, rows_per_bin=10, seed=2222)
+        # Inject NaNs at known positions
+        df.loc[5, "y"] = np.nan
+        df.loc[15, "y"] = np.nan
+        df.loc[42, "y"] = np.nan
+        dims = ["bin_x", "bin_y"]
+
+        result_v1v2 = swf(
+            df=df, gb_columns=dims, fit_columns=["y"],
+            linear_columns=["x"], window_spec={"bin_x": 1, "bin_y": 1},
+            algorithm='recompute', backend='numba',
+            min_stat=5, suffix='_sw',
+        )
+        result_v5 = swf(
+            df=df, gb_columns=dims, fit_columns=["y"],
+            linear_columns=["x"], window_spec={"bin_x": 1, "bin_y": 1},
+            algorithm='incremental', backend='numba',
+            min_stat=5, suffix='_sw',
+        )
+        # n_rows_aggregated counts differ between V1/V2 (all rows) and V5
+        # (finite rows only) — pre-existing behavioral difference, not a bug.
+        _skip = {"n_rows_aggregated_sw", "n_neighbors_used_sw",
+                 "effective_window_fraction_sw"}
+        _numeric_cols_equal(result_v1v2, result_v5, dims, rtol=1e-12,
+                            skip_cols=_skip)
+
+    def test_nan_in_weights_column(self):
+        """NaN weights excluded correctly — result matches pre-filtered data."""
+        swf = _import_swf()
+        df = _make_2d_fixture(n_x=5, n_y=5, rows_per_bin=10, seed=3333,
+                              add_weights=True)
+        dims = ["bin_x", "bin_y"]
+
+        # Run with NaN weights injected
+        df_nan = df.copy()
+        df_nan.loc[3, "w"] = np.nan
+        df_nan.loc[20, "w"] = np.nan
+
+        result_with_nan = swf(
+            df=df_nan, gb_columns=dims, fit_columns=["y"],
+            linear_columns=["x"], window_spec={"bin_x": 1, "bin_y": 1},
+            weights="w", algorithm='recompute', backend='numpy',
+            min_stat=5, suffix='_sw',
+        )
+
+        # Run with NaN-weight rows pre-removed
+        df_clean = df.drop([3, 20]).reset_index(drop=True)
+        result_clean = swf(
+            df=df_clean, gb_columns=dims, fit_columns=["y"],
+            linear_columns=["x"], window_spec={"bin_x": 1, "bin_y": 1},
+            weights="w", algorithm='recompute', backend='numpy',
+            min_stat=5, suffix='_sw',
+        )
+
+        # Coefficients should match — NaN weights are excluded from WLS.
+        # Row counts naturally differ (NaN-run has more total rows gathered).
+        _skip = {"n_rows_aggregated_sw", "n_neighbors_used_sw",
+                 "effective_window_fraction_sw"}
+        _numeric_cols_equal(result_with_nan, result_clean, dims, rtol=1e-12,
+                            skip_cols=_skip)
+
+
+# ---- T1-13: numba vs numpy backend (v1.2 §5.2.7) ----
+
+class TestBackendParity:
+
+    def test_dense_numba_equals_numpy(self):
+        """Both backends through the dense path produce same results."""
+        swf = _import_swf()
+        df = _make_2d_fixture(n_x=4, n_y=4, rows_per_bin=30, seed=4444)
+        dims = ["bin_x", "bin_y"]
+        ws = {"bin_x": 2, "bin_y": 2}
+
+        result_numba = swf(
+            df=df, gb_columns=dims, fit_columns=["y"],
+            linear_columns=["x"], window_spec=ws,
+            algorithm='recompute', backend='numba',
+            min_stat=5, suffix='_sw',
+        )
+        result_numpy = swf(
+            df=df, gb_columns=dims, fit_columns=["y"],
+            linear_columns=["x"], window_spec=ws,
+            algorithm='recompute', backend='numpy',
+            min_stat=5, suffix='_sw',
+        )
+        _numeric_cols_equal(result_numba, result_numpy, dims, rtol=1e-12)
