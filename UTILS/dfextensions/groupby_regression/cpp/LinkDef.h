@@ -26,6 +26,7 @@
 #pragma link C++ function GBE::clear_models;
 #pragma link C++ function GBE::declare_eval_stub;
 #pragma link C++ function GBE::eval_on_tree;
+#pragma link C++ function GBE::map_natural_to_compact;
 
 // Layer A class — opaque to PyROOT in Turn 6 (returned as
 // const GroupByRegressionEvaluator* from get_model). Turn 7 will

@@ -135,6 +135,16 @@ std::vector<double> eval_on_tree(
     TTree* tree,
     const std::vector<std::string>& column_names);
 
+// Convert a natural-label position (e.g. sector=15) to its fractional
+// compact index for the given model dimension. Handles bounds mode:
+//   - Lookup + NaN:   exact match required; not-found → NaN
+//   - Lookup + Clamp: exact match or clamp to nearest edge
+//   - Linear + NaN:   interpolated position in [0, N-1]; out-of-range → NaN
+//   - Linear + Clamp: out-of-range clamped to [0, N-1]
+// Used by the gInterpreter stubs and eval_on_tree.
+double map_natural_to_compact(const std::string& model_name,
+                               int dim, double natural_pos);
+
 }  // namespace GBE
 
 #endif  // GBE_ROOT_IO_H

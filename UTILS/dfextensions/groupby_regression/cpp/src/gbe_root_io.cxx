@@ -22,6 +22,7 @@
 #include <TString.h>
 #include <TTree.h>
 
+#include <cmath>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -369,6 +370,67 @@ void clear_models() {
 
 // -------------- Turn 7: gInterpreter stub + eval_on_tree --------------
 
+// Helper: convert natural-label to fractional compact index.
+// Handles lookup vs linear and nan vs clamp bounds modes.
+double map_natural_to_compact(const std::string& model_name,
+                               int dim, double natural_pos)
+{
+    const auto* ev = get_model(model_name);
+    if (!ev) return std::nan("");
+
+    const auto& bc = ev->bin_centers();
+    const std::size_t udim = static_cast<std::size_t>(dim);
+    if (udim >= bc.size()) return std::nan("");
+
+    const auto& centers = bc[udim];
+    const std::size_t N = centers.size();
+    if (N == 0) return std::nan("");
+
+    if (ev->method() == gbe::MethodMode::Lookup) {
+        // Exact integer match via remap
+        int64_t int_pos = static_cast<int64_t>(std::llround(natural_pos));
+        const auto& rm = ev->remap()[udim];
+        auto it = rm.find(int_pos);
+        if (it != rm.end()) {
+            return static_cast<double>(it->second);
+        }
+        // Not found — handle bounds
+        if (ev->bounds() == gbe::BoundsMode::Clamp) {
+            if (natural_pos <= static_cast<double>(centers.front()))
+                return 0.0;
+            return static_cast<double>(N - 1);
+        }
+        return std::nan("");
+    }
+
+    // Linear mode: find fractional position in bin_centers space
+    double first = static_cast<double>(centers.front());
+    double last  = static_cast<double>(centers.back());
+
+    if (natural_pos < first) {
+        if (ev->bounds() == gbe::BoundsMode::Clamp) return 0.0;
+        return std::nan("");
+    }
+    if (natural_pos > last) {
+        if (ev->bounds() == gbe::BoundsMode::Clamp)
+            return static_cast<double>(N - 1);
+        return std::nan("");
+    }
+
+    // Interval search: find i such that centers[i] <= pos <= centers[i+1]
+    for (std::size_t i = 0; i + 1 < N; ++i) {
+        double lo = static_cast<double>(centers[i]);
+        double hi = static_cast<double>(centers[i + 1]);
+        if (natural_pos >= lo && natural_pos <= hi) {
+            double frac = (hi == lo) ? 0.0
+                                     : (natural_pos - lo) / (hi - lo);
+            return static_cast<double>(i) + frac;
+        }
+    }
+    // Exact match with last bin
+    return static_cast<double>(N - 1);
+}
+
 bool declare_eval_stub(const std::string& model_name) {
     const auto* ev = get_model(model_name);
     if (!ev) {
@@ -383,15 +445,9 @@ bool declare_eval_stub(const std::string& model_name) {
     const std::size_t arity = n_gc + n_pred;
 
     // Build the function source string.
-    // Generated function signature:
-    //   double GBE::eval_<model_name>(double a0, double a1, ..., double aN-1)
-    //
-    // For group_columns: args are natural-label values (doubles from
-    // TTree formulas). They are remapped to compact indices via the
-    // model's remap() table. If a natural label is not found in the
-    // remap, NaN is returned (out-of-grid).
-    //
-    // For predictor_columns: args are passed directly as predictor values.
+    // The stub calls map_natural_to_compact for each group dimension,
+    // which handles lookup/linear × nan/clamp correctly (including
+    // fractional positions for linear interpolation).
 
     std::ostringstream src;
     src << "namespace GBE {\n";
@@ -404,34 +460,34 @@ bool declare_eval_stub(const std::string& model_name) {
     src << "  const auto* ev = GBE::get_model(\"" << model_name << "\");\n";
     src << "  if (!ev) return std::nan(\"\");\n";
 
-    // Remap group columns from natural labels to compact indices
-    src << "  const auto& remap = ev->remap();\n";
+    // Map each group column from natural label to compact index
+    for (std::size_t d = 0; d < n_gc; ++d) {
+        src << "  double c" << d << " = GBE::map_natural_to_compact(\""
+            << model_name << "\", " << d << ", a" << d << ");\n";
+        src << "  if (std::isnan(c" << d << ")) return std::nan(\"\");\n";
+    }
+
+    // Predictor values passed through directly
+    src << "  std::vector<double> pv = {";
+    for (std::size_t i = 0; i < n_pred; ++i) {
+        if (i > 0) src << ", ";
+        src << "a" << (n_gc + i);
+    }
+    src << "};\n";
+
     if (ev->method() == gbe::MethodMode::Lookup) {
-        src << "  std::vector<int64_t> pos(" << n_gc << ");\n";
+        src << "  std::vector<int64_t> pos = {";
         for (std::size_t d = 0; d < n_gc; ++d) {
-            src << "  { auto it = remap[" << d << "].find(static_cast<int64_t>(a" << d << "));\n";
-            src << "    if (it == remap[" << d << "].end()) return std::nan(\"\");\n";
-            src << "    pos[" << d << "] = it->second; }\n";
-        }
-        src << "  std::vector<double> pv = {";
-        for (std::size_t i = 0; i < n_pred; ++i) {
-            if (i > 0) src << ", ";
-            src << "a" << (n_gc + i);
+            if (d > 0) src << ", ";
+            src << "static_cast<int64_t>(c" << d << ")";
         }
         src << "};\n";
         src << "  auto r = ev->evaluate_lookup(pos, pv);\n";
     } else {
-        // Linear: positions are floating-point compact indices
-        src << "  std::vector<double> pos(" << n_gc << ");\n";
+        src << "  std::vector<double> pos = {";
         for (std::size_t d = 0; d < n_gc; ++d) {
-            src << "  { auto it = remap[" << d << "].find(static_cast<int64_t>(a" << d << "));\n";
-            src << "    if (it == remap[" << d << "].end()) return std::nan(\"\");\n";
-            src << "    pos[" << d << "] = static_cast<double>(it->second); }\n";
-        }
-        src << "  std::vector<double> pv = {";
-        for (std::size_t i = 0; i < n_pred; ++i) {
-            if (i > 0) src << ", ";
-            src << "a" << (n_gc + i);
+            if (d > 0) src << ", ";
+            src << "c" << d;
         }
         src << "};\n";
         src << "  auto r = ev->evaluate_linear(pos, pv);\n";
@@ -483,11 +539,7 @@ std::vector<double> eval_on_tree(
 
     const Long64_t nentries = tree->GetEntries();
 
-    // Bind all columns as double (TTree auto-reads Long64_t -> double
-    // is NOT safe per Turn 6 lesson; but here we read group columns
-    // as double and manually remap, which is fine for the remap lookup).
-    // Actually: group columns are int64 in the tree. Use Long64_t for
-    // those and Double_t for predictor columns, matching Turn 6 pattern.
+    // Group columns as Long64_t, predictor columns as Double_t
     std::vector<Long64_t> gc_bufs(n_gc, 0);
     std::vector<Double_t> pv_bufs(n_pred, 0.0);
 
@@ -510,7 +562,6 @@ std::vector<double> eval_on_tree(
         tree->SetBranchAddress(column_names[n_gc + i].c_str(), &pv_bufs[i]);
     }
 
-    const auto& remap = ev->remap();
     const double kNaN = std::nan("");
 
     std::vector<double> result;
@@ -519,17 +570,19 @@ std::vector<double> eval_on_tree(
     for (Long64_t entry = 0; entry < nentries; ++entry) {
         tree->GetEntry(entry);
 
-        // Remap group columns from natural labels to compact indices
+        // Map each group column via map_natural_to_compact
         bool out_of_grid = false;
 
         if (ev->method() == gbe::MethodMode::Lookup) {
             std::vector<int64_t> pos(n_gc);
             for (std::size_t d = 0; d < n_gc; ++d) {
-                auto it = remap[d].find(static_cast<int64_t>(gc_bufs[d]));
-                if (it == remap[d].end()) {
+                double compact = map_natural_to_compact(
+                    model_name, static_cast<int>(d),
+                    static_cast<double>(gc_bufs[d]));
+                if (std::isnan(compact)) {
                     out_of_grid = true; break;
                 }
-                pos[d] = it->second;
+                pos[d] = static_cast<int64_t>(compact);
             }
             if (out_of_grid) {
                 result.push_back(kNaN);
@@ -541,11 +594,13 @@ std::vector<double> eval_on_tree(
         } else {
             std::vector<double> pos(n_gc);
             for (std::size_t d = 0; d < n_gc; ++d) {
-                auto it = remap[d].find(static_cast<int64_t>(gc_bufs[d]));
-                if (it == remap[d].end()) {
+                double compact = map_natural_to_compact(
+                    model_name, static_cast<int>(d),
+                    static_cast<double>(gc_bufs[d]));
+                if (std::isnan(compact)) {
                     out_of_grid = true; break;
                 }
-                pos[d] = static_cast<double>(it->second);
+                pos[d] = compact;
             }
             if (out_of_grid) {
                 result.push_back(kNaN);
