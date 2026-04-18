@@ -619,9 +619,204 @@ def _aggregate_window_zerocopy(
     return results
 
 
-# ===============
-# Regression
-# ===============
+def _assign_bin_ids_fast(
+        df: pd.DataFrame,
+        gb_columns: List[str],
+        selection: Optional[pd.Series] = None,
+) -> Tuple[np.ndarray, int, np.ndarray, Dict[str, Tuple[int, int]]]:
+    """Vectorized bin assignment — O(n_rows) numpy, no Python per-row loops.
+
+    Returns
+    -------
+    bin_ids : ndarray[n_rows] int64 — compact bin index per row (0..n_bins-1), -1 if filtered
+    n_bins : int — number of populated bins
+    bin_coords : ndarray[n_bins, n_dims] int64 — grid coordinate per bin
+    bounds : dict[str, (int,int)] — per-dim (min, max) of selected data
+
+    Phase 13.19.GB-PERF: replaces _build_bin_index_map (205s → ~1.6s on 82M rows).
+    Reuses ravel_multi_index logic from _flatten_bins_for_v5 but skips X/Y extraction.
+    """
+    n_rows = len(df)
+    n_dims = len(gb_columns)
+    gb_arrays = [df[c].to_numpy(dtype=np.int64) for c in gb_columns]
+
+    if selection is not None:
+        sel = selection.to_numpy().astype(bool) if hasattr(selection, 'to_numpy') else np.asarray(selection, dtype=bool)
+    else:
+        sel = None
+
+    bounds = {}
+    mins = np.empty(n_dims, dtype=np.int64)
+    sizes = np.empty(n_dims, dtype=np.int64)
+    for d, dim in enumerate(gb_columns):
+        a = gb_arrays[d] if sel is None else gb_arrays[d][sel]
+        if len(a) == 0:
+            return np.full(n_rows, -1, dtype=np.int64), 0, np.empty((0, n_dims), dtype=np.int64), {}
+        lo, hi = int(a.min()), int(a.max())
+        bounds[dim] = (lo, hi)
+        mins[d] = lo
+        sizes[d] = hi - lo + 1
+
+    # Ravel multi-index → flat grid id per row
+    strides = np.ones(n_dims, dtype=np.int64)
+    for d in range(n_dims - 2, -1, -1):
+        strides[d] = strides[d + 1] * sizes[d + 1]
+
+    flat_grid_ids = np.zeros(n_rows, dtype=np.int64)
+    for d in range(n_dims):
+        flat_grid_ids += (gb_arrays[d] - mins[d]) * strides[d]
+    if sel is not None:
+        flat_grid_ids[~sel] = -1
+
+    # Occupied bins → compact remap
+    valid_mask = flat_grid_ids >= 0
+    occupied = np.unique(flat_grid_ids[valid_mask])
+    n_bins = len(occupied)
+    grid_total = int(np.prod(sizes))
+    remap = np.full(grid_total, -1, dtype=np.int64)
+    remap[occupied] = np.arange(n_bins, dtype=np.int64)
+    bin_ids = np.where(valid_mask, remap[flat_grid_ids], -1)
+
+    # Reconstruct bin coordinates
+    bin_coords = np.empty((n_bins, n_dims), dtype=np.int64)
+    for d in range(n_dims):
+        bin_coords[:, d] = (occupied // strides[d]) % sizes[d] + mins[d]
+
+    return bin_ids, n_bins, bin_coords, bounds
+
+
+def _aggregate_window_dense(
+        df: pd.DataFrame,
+        bin_ids: np.ndarray,
+        n_bins: int,
+        bin_coords: np.ndarray,
+        order: np.ndarray,
+        offsets: np.ndarray,
+        lookup: np.ndarray,
+        grid_shape: np.ndarray,
+        lookup_mins: np.ndarray,
+        lookup_strides: np.ndarray,
+        neighbor_offsets: np.ndarray,
+        bounds: Dict[str, Tuple[int, int]],
+        gb_columns: List[str],
+        fit_columns: List[str],
+        weights: Optional[str],
+        agg_columns: Optional[List[str]] = None,
+        agg_median: bool = False,
+) -> List[_AggResult]:
+    """Dense-lookup replacement for _aggregate_window_zerocopy.
+
+    Phase 13.19.GB-PERF: eliminates two profile bottlenecks:
+    - _build_bin_index_map (205s) → replaced by vectorized _assign_bin_ids_fast + _counting_sort_indices
+    - _get_neighbor_bins V3a (152s) → replaced by inline vectorized offset + dense lookup
+
+    Same output contract as _aggregate_window_zerocopy: returns List[_AggResult]
+    consumed by _fit_window_regression_numba/_numpy and _assemble_results.
+    """
+    results: List[_AggResult] = []
+    expected_neighbors = int(neighbor_offsets.shape[0]) if neighbor_offsets.size else 1
+    n_dims = len(gb_columns)
+
+    # Pre-extract numpy arrays ONCE
+    target_arrays = {t: df[t].to_numpy(dtype=np.float64) for t in fit_columns}
+    w_array = df[weights].to_numpy(dtype=np.float64) if weights is not None else None
+    _agg_cols = agg_columns or []
+    agg_arrays = {c: df[c].to_numpy(dtype=np.float64) for c in _agg_cols}
+
+    # Bounds as arrays for vectorized checks
+    bounds_lo = np.array([bounds[dim][0] for dim in gb_columns], dtype=np.int64)
+    bounds_hi = np.array([bounds[dim][1] for dim in gb_columns], dtype=np.int64)
+    lookup_len = len(lookup)
+
+    for bi in range(n_bins):
+        center = tuple(int(bin_coords[bi, d]) for d in range(n_dims))
+        center_arr = bin_coords[bi]  # (n_dims,) int64
+
+        # Vectorized neighbor computation (replaces _get_neighbor_bins V3a)
+        if neighbor_offsets.size > 0:
+            cand = center_arr + neighbor_offsets  # (K, D)
+            mask = np.ones(len(cand), dtype=bool)
+            for j in range(n_dims):
+                mask &= (cand[:, j] >= bounds_lo[j]) & (cand[:, j] <= bounds_hi[j])
+            valid_cand = cand[mask]  # (K', D)
+        else:
+            valid_cand = center_arr.reshape(1, -1)
+
+        # Vectorized dense-lookup: neighbor coords → compact bin indices
+        shifted = valid_cand - lookup_mins  # (K', D)
+        flat_indices = (shifted * lookup_strides).sum(axis=1)  # (K',)
+        in_range = (flat_indices >= 0) & (flat_indices < lookup_len)
+        compact_ids = np.where(in_range, lookup[flat_indices.clip(0, lookup_len - 1)], -1)
+        populated = compact_ids[compact_ids >= 0]
+        n_used = len(populated)
+
+        # Gather row indices from counting-sort output
+        idx_parts = []
+        for cid in populated:
+            start = offsets[cid]
+            end = offsets[cid + 1]
+            if end > start:
+                idx_parts.append(order[start:end])
+
+        if idx_parts:
+            idx_unique = np.unique(np.concatenate(idx_parts))
+        else:
+            idx_unique = np.array([], dtype=np.int64)
+
+        eff_frac = (n_used / expected_neighbors) if expected_neighbors > 0 else np.nan
+        n_rows = int(idx_unique.size)
+
+        stats: Dict[str, Dict[str, float]] = {}
+        agg_st: Optional[Dict[str, Dict[str, float]]] = None
+
+        if n_rows > 0:
+            if w_array is not None:
+                w_win = w_array[idx_unique]
+                w_valid = np.isfinite(w_win) & (w_win >= 0)
+            else:
+                w_win = None
+                w_valid = None
+
+            for t in fit_columns:
+                stats[t] = {}
+
+            if _agg_cols:
+                agg_st = {}
+                for c in _agg_cols:
+                    y = agg_arrays[c][idx_unique]
+                    y_finite = np.isfinite(y)
+                    if weights is None:
+                        x = y[y_finite]
+                        mean, std = _weighted_mean_std(x, None)
+                    else:
+                        valid = y_finite & w_valid
+                        x = y[valid]
+                        ww = w_win[valid]
+                        mean, std = _weighted_mean_std(x, ww)
+                    if agg_median and int(np.sum(y_finite)) > 0:
+                        median = float(np.median(y[y_finite]))
+                    else:
+                        median = np.nan
+                    agg_st[c] = {"mean": mean, "std": std, "median": median}
+        else:
+            for t in fit_columns:
+                stats[t] = {}
+            if _agg_cols:
+                agg_st = {c: {"mean": np.nan, "std": np.nan, "median": np.nan} for c in _agg_cols}
+
+        results.append(
+            _AggResult(
+                center=center,
+                n_neighbors_used=n_used,
+                n_rows_aggregated=n_rows,
+                effective_window_fraction=eff_frac,
+                stats=stats,
+                row_indices=idx_unique,
+                agg_stats=agg_st,
+            )
+        )
+
+    return results
 
 def _sanitize_suffix(name: str) -> str:
     return "".join(ch if ch.isalnum() else "_" for ch in str(name))
@@ -3136,15 +3331,36 @@ def make_sliding_window_fit(
             _backend_used = "incremental_numpy"
 
     else:
-        # V1/V2 path: needs bin_map
-        bin_map = _build_bin_index_map(df, gb_columns, selection)
-        center_bins = list(bin_map.keys())
+        # V1/V2 path: dense lookup (Phase 13.19.GB-PERF replaces _build_bin_index_map)
+        t_binid = time.time()
+        bin_ids, n_bins, bin_coords, _bounds_dense = _assign_bin_ids_fast(df, gb_columns, selection)
 
-        # Row-level aggregation + recompute from raw data
-        agg_results = _aggregate_window_zerocopy(
+        # Build dense N-D lookup: grid coord → compact bin index
+        _lookup, _grid_shape, _mins, _strides = _build_dense_lookup(bin_coords, bounds, gb_columns)
+
+        # Counting sort: O(n_rows) row-to-bin mapping for fast gather
+        _valid_mask = bin_ids >= 0
+        _valid_rows = np.where(_valid_mask)[0]
+        _valid_bin_ids = bin_ids[_valid_mask]
+        _order_local, _offsets = _counting_sort_indices(_valid_bin_ids, n_bins)
+        _order = _valid_rows[_order_local]  # translate to original df indices
+
+        if verbose:
+            print(f"[SW] Dense bin assignment: {n_bins} bins, "
+                  f"{int(_valid_mask.sum())} rows, {time.time()-t_binid:.4f}s")
+
+        # Row-level aggregation using dense lookup (eliminates _get_neighbor_bins V3a)
+        agg_results = _aggregate_window_dense(
             df=df,
-            bin_map=bin_map,
-            center_bins=center_bins,
+            bin_ids=bin_ids,
+            n_bins=n_bins,
+            bin_coords=bin_coords,
+            order=_order,
+            offsets=_offsets,
+            lookup=_lookup,
+            grid_shape=_grid_shape,
+            lookup_mins=_mins,
+            lookup_strides=_strides,
             neighbor_offsets=neighbor_offsets,
             bounds=bounds,
             gb_columns=gb_columns,
@@ -3153,6 +3369,7 @@ def make_sliding_window_fit(
             agg_columns=agg_columns,
             agg_median=agg_median,
         )
+        center_bins = [r.center for r in agg_results]
 
         if verbose:
             print(f"[SW] Aggregation done: {len(agg_results)} bins, "
