@@ -295,6 +295,48 @@ During the 13.17.GB proposal review cycle, Coder Claude22 identified that the ex
 
 ---
 
+## Critical Incident 8: `_fit_window_regression_numba` — `fit_intercept` Hardcoded True (Found Apr 2026, Fixed in Phase 13.19.GB-PERF)
+
+### What Happened
+
+`_fit_window_regression_numba` hardcoded `fit_intercept=True` at the V1/V2 call site, ignoring the caller's `fit_intercept` parameter. Users calling `make_sliding_window_fit(fit_intercept=False, algorithm='recompute', backend='numba')` received results with an intercept term regardless.
+
+### Root Cause
+
+Same failure pattern as Incident 3 (fit_intercept in SW numba): parameter accepted at the API surface but hardcoded at the internal call site.
+
+**Severity:** P1 — production TPC calibration typically uses `fit_intercept=True` (default), so the bug had no impact on production. Users explicitly setting `fit_intercept=False` would get silently wrong results.
+
+**Failure-mode class:** Parameter not propagated — **instance #8**.
+
+### Resolution
+
+`[FOUND-WHILE-IMPLEMENTING-F1]` — discovered by Coder Claude22 while rewiring the V1/V2 dispatch in Phase 13.19.GB-PERF. Fixed inline: `fit_intercept` parameter added to `_fit_window_regression_numba` signature and threaded through. Authorized by architect as an inline fix. Covered by `test_v1v2_boundary_parameter_silently_dropped` with `parametrize(fit_intercept=[True, False])` and `test_2d_ols_no_intercept` in `test_fit_path_perf_invariance.py`.
+
+---
+
+## Critical Incident 9: V1/V2 Recompute Path Silently Ignores `boundary` Parameter (Pre-existing, Surfaced Apr 2026)
+
+### What Happened
+
+`make_sliding_window_fit(boundary='symmetric')` with `algorithm='recompute'` (the default V1/V2 path) silently uses `boundary='full'` regardless of the caller's request. The `boundary` parameter is validated at the entry point (`_resolve_boundary`, line ~341) but never read by `_aggregate_window_zerocopy` (line ~509) or its replacement `_aggregate_window_dense` (Phase 13.19.GB-PERF). Both functions hardcode the full-truncation boundary via their `bounds_lo/hi` mask.
+
+### Root Cause
+
+This is the mirror of **Incident 7** (F1, aggregate path `make_sliding_window_aggregate`): Incident 7 resolved the silent-drop in the aggregate path; Incident 9 records the still-present silent-drop in the parallel fit-path surface. Same failure pattern: parameter accepted at the API surface but silently ignored in the internal code path.
+
+**Severity:** P1 — production TPC calibration uses `algorithm='recompute'` (default) with `boundary='symmetric'` (architect requirement). The `boundary` parameter has no effect on the V1/V2 path. Only users who explicitly set `algorithm='incremental'` (V3/V5) get correct boundary handling.
+
+**Failure-mode class:** Parameter not propagated — **instance #9**.
+
+### Resolution
+
+Deferred to a dedicated follow-up phase (Phase 13.XX.GB-BoundaryV1V2). Phase 13.19.GB-PERF scope was restricted to performance routing ("zero behavioral change"). Adding boundary support would be a behavioral change requiring its own invariance tests. Precedent: Phase 13.17.GB needed 28 tests for boundary in the aggregate path — the 13.XX.GB-BoundaryV1V2 phase should follow the same template, threading the boundary parameter through `_aggregate_window_dense` the same way 13.17.GB threaded it through the aggregate path's kernel.
+
+Regression-locked by `test_v1v2_boundary_parameter_silently_dropped` in `test_fit_path_perf_invariance.py` — test documents the current behaviour and will correctly fail when the fix lands.
+
+---
+
 ## March 2026 Phases
 
 ### Phase 13.10.GB: Non-Linear Sliding Window Fit (Feb 16-17, 2026)
@@ -558,6 +600,34 @@ See **Incident 7** above for the full root cause analysis, the fix strategy (Pat
 
 ---
 
+### Phase 13.19.GB-PERF: Fit Path Performance Parity with Aggregate Path (Apr 18, 2026)
+
+**Commits:** `ae565fd5` (F1 implementation), `180bf206` (T1 tests per v1.2 spec)
+**Proposal:** PHASE_13_19_GB_PERF_v1.0_Proposal.md (Claude23, profile-driven)
+**Implementation spec:** v1.2 (Claude24 + Claude25 consolidated)
+**Profile evidence:** `profile_gr11_tf0.prof` — 82M rows, 1452s total
+
+Routes V1/V2 recompute path (the default in production calibration) through the dense-lookup infrastructure proven in Phase 13.14.GB's aggregate path. Eliminates two profiled bottlenecks:
+
+- `_build_bin_index_map` (205s cumulative, pure-Python dict with tuple hashing per row) → replaced by `_assign_bin_ids_fast` (vectorized numpy ravel_multi_index, ~1.6s)
+- `_get_neighbor_bins` V3a (152s cumulative, 2.5M per-bin Python function calls) → inlined into `_aggregate_window_dense` (vectorized offset + dense array lookup)
+
+Predicted total savings: ~355s on the 82M-row calibration workload (~24% of pipeline). T2 re-profile on alma2 pending (gates `PHASE_13_19_GB_PERF_END` tag).
+
+**`[FOUND-WHILE-IMPLEMENTING-F1]`** `_fit_window_regression_numba` gains `fit_intercept` parameter — was hardcoded `True` at V1/V2 call site. Latent bug fix, parameter-not-propagated class instance #8 (see Incident 8).
+
+**Known Limitation surfaced:** V1/V2 recompute path silently ignores the `boundary` parameter — parameter-not-propagated class instance #9 (see Incident 9). Pre-existing, not introduced by this phase. Regression-locked by `test_v1v2_boundary_parameter_silently_dropped`.
+
+**Behavior change:** output DataFrame row ordering from `make_sliding_window_fit(algorithm='recompute')` is now sorted lexicographically by bin coordinates (was data-encounter order). Values identical; row ordering differs. Locked by `test_output_row_order_sorted_lex`.
+
+**F2 (per-window median batching):** deferred. Proposal author (Claude23) confirmed the original sketch was wrong for the fit-path median (overlapping windows cannot be batched by per-bin pre-sort). Architect: "if not primitive, postpone."
+
+**Tests:** 14 T1 invariance tests in `test_fit_path_perf_invariance.py` (6 original + 8 per v1.2 spec). All 14 passed on alma2. Tolerance: `rtol=1e-12`, max observed divergence `rtol=2.96e-13` in error columns only (accumulation-order rounding). Coefficients unaffected.
+
+**Review panel:** Claude20 (Main), Claude21, Claude23, Claude24 (source-read diff walk, P0-1 finding), Claude25 (BLOCKED then source-read, M-5/M-6 CRR additions). Claude24 produced the strongest source-read review — caught undisclosed `fit_intercept` fix that 3 prior reviewers missed.
+
+---
+
 ## Governance Observations (NEW in v6.1)
 
 ### Observation 1: FIX2 commit-message claim mismatched disk reality
@@ -731,3 +801,4 @@ At the time of the P0 `fit_intercept` fix (Mar 29, 2026), the parameter-not-prop
 | 5.0 | Mar 26, 2026 | Added Phases 13.10.GB–13.15.GB. COG incident. 133 features, 500 tests. New functions: make_nonlinear_sliding_window_fit, make_sliding_window_aggregate, make_sliding_window_aggregate_parallel. Expression-based linear columns. WLS fix, fit_intercept fix, lean output, sigma cut. |
 | 6.0 | Apr 7, 2026 | Phase 13.16.GB (evaluator lookup + scipy methods + per-dimension dict). P0 fit_intercept incident in SW numba (3 locations, 10 cross-fitter tests, governance failure mode #11 added). boundary='symmetric' incident documented (status disputed — architect requirement, commit message claims implementation, architect testimony says only 'full' works). Failure Modes Catalog added (7 entries). makeIterationFit0 performance reference (354s → 18s via per-sector loop). 517 tests, 3 pre-existing failures. |
 | **6.1** | **Apr 9, 2026** | **Phase 13.16.GB-FIX2 retroactive entry** (commit `9e88eacd`, tag `PHASE_13_16_GB_FIX2_END`) — the FIX2 commit claimed this revision but did not actually produce it; v6.1 closes the gap. **Phase 13.17.GB in-progress entry** — Coder Claude22 active at time of this revision, proposal v1.3 APPROVED, commit expected within ~3.5 working days; v6.1a follow-up at commit time will fill in final test counts and outcome narrative. **Incident 4 status changed** from "disputed" to "partially resolved" (fit path confirmed working with 4 invariance tests; aggregate path confirmed broken and split out as Incident 7). **Incident 5 reserved** with placeholder explaining the cross-team numbering gap. **Incident 6 added** — F2 `method=dict` silently drops interpolation orders (fixed in FIX2, parameter-not-propagated class instance #4). **Incident 7 added** — F1 `boundary` silently dropped in `make_sliding_window_aggregate` (in-flight fix in 13.17.GB, parameter-not-propagated class instance #5). **Parameter-not-propagated bug class catalog updated** from 3 to 5 instances; earlier v1.3 proposal draft incorrectly stated "7 instances" (conflation of overall Incident numbers with class instance numbers), corrected here against FIX2 commit message line 81 evidence. **Governance Observations section added** documenting three paper-trail defects surfaced during FIX2 and 13.17.GB review cycles: (1) FIX2 commit-message claim not matching disk, (2) TECHNICAL_SUMMARY v3.3 528/529 arithmetic error carried through despite 3 reviewer flags, (3) fresh-reviewer Claude23 found the T14 cross-backend gap that 4 prior reviewers missed (validates MTTU v1.20 fresh-reviewer rotation discipline; supports the architect's consideration of adding 2 new GPT reviewers). **Failure Modes Catalog expanded** from 7 to 10 entries: #8 false-positive cross-backend test (calls same backend twice), #9 commit-message documentation claim without disk update, #10 multi-reviewer finding not absorbed into committed document. **Key Technical Decisions table expanded** with FIX2 (5 new rows) and 13.17.GB (7 new rows) sections. **Planned Phases updated:** 13.17.GB-MedianFix added as immediate follow-up; two micro-tasks (delete broken `test_aggregate_numba_matches_numpy`, fix `feature_taxonomy.py` discovery gap) added to the scheduled work queue. **Test count metadata corrected to canonical 529** throughout; the 528/529 discrepancy with TECHNICAL_SUMMARY v3.3 is explicitly noted in three places (header metadata, FIX2 phase section, Capability Matrix). **Drafted by Claude23 (GBAI Reviewer) at architect request 2026-04-09 during Phase 13.17.GB implementation. v6.1a revision at 13.17.GB commit time will close the in-flight placeholders.** |
+| **6.2** | **Apr 18, 2026** | **Phase 13.19.GB-PERF landed.** V1/V2 recompute path routed through dense-lookup infrastructure. `_build_bin_index_map` (205s) + `_get_neighbor_bins` V3a (152s) replaced by `_assign_bin_ids_fast` + `_aggregate_window_dense`. **Incident 8 added** — `_fit_window_regression_numba` `fit_intercept` hardcoded True, found while implementing F1, parameter-not-propagated instance #8. **Incident 9 added** — V1/V2 recompute path silently ignores `boundary` parameter, pre-existing, parameter-not-propagated instance #9, deferred to Phase 13.XX.GB-BoundaryV1V2. 14 T1 invariance tests. Coder: Claude22. Reviewers: Claude20, Claude21, Claude23, Claude24, Claude25. |
