@@ -4807,37 +4807,95 @@ class AliasDataFrame:
                 f[treename] = {col: export_df[col].values for col in export_df.columns}
             return
         
-        # Full export mode: existing behavior
+        # Full export mode: two-phase write (Phase 13.20.ADF Fix A)
+        #   Phase 1: write ALL tree data via uproot (single file open)
+        #   Phase 2: write ALL metadata via ROOT (single TFile.Open)
+        # Previous code opened TFile N+1 times for N subframes.
         is_path = isinstance(filename_or_file, str)
 
         if is_path:
-            with uproot.recreate(filename_or_file,compression=compression) as f:
-                self._write_to_uproot(f, treename, dropAliasColumns)
-            self._write_metadata_to_root(filename_or_file, treename)
+            # Phase 1: uproot data write (main tree + all subframes recursively)
+            with uproot.recreate(filename_or_file, compression=compression) as f:
+                self._write_all_data_to_uproot(f, treename, dropAliasColumns)
+            # Phase 2: ROOT metadata write (single TFile.Open for all trees)
+            self._write_all_metadata_to_root(filename_or_file, treename)
         else:
-            self._write_to_uproot(filename_or_file, treename, dropAliasColumns)
-        for subframe_name, entry in self._subframes.items():
-            entry["frame"]._write_metadata_to_root(filename_or_file, f"{treename}__subframe__{subframe_name}")
+            # Called from recursive data-write path — data only, no metadata
+            self._write_all_data_to_uproot(filename_or_file, treename, dropAliasColumns)
 
-    def _write_to_uproot(self, uproot_file, treename, dropAliasColumns):
+    def _write_all_data_to_uproot(self, uproot_file, treename, dropAliasColumns):
+        """Write tree data for self + all subframes recursively. No metadata, no TFile.Open."""
         export_cols = [col for col in self.df.columns if not dropAliasColumns or col not in self.aliases]
         dtype_casts = {col: np.float32 for col in export_cols if self.df[col].dtype == np.float16}
         export_df = self.df[export_cols].astype(dtype_casts)
 
-        #uproot_file[treename] = export_df
         uproot_file[treename] = {col: export_df[col].values for col in export_df.columns}
+        # Recurse for subframes — data only, no metadata
         for subframe_name, entry in self._subframes.items():
-            entry["frame"].export_tree(uproot_file, f"{treename}__subframe__{subframe_name}", dropAliasColumns)
+            sf_treename = f"{treename}__subframe__{subframe_name}"
+            entry["frame"]._write_all_data_to_uproot(uproot_file, sf_treename, dropAliasColumns)
+
+    def _collect_metadata_targets(self, treename):
+        """
+        Recursively collect (adf_instance, treename) pairs for all trees needing metadata.
+
+        Returns a flat list: [(self, treename), (sf1, sf1_treename), (sf2, sf2_treename), ...].
+        Used by _write_all_metadata_to_root to write everything in a single TFile.Open.
+        """
+        targets = [(self, treename)]
+        for sf_name, entry in self._subframes.items():
+            sf_treename = f"{treename}__subframe__{sf_name}"
+            targets.extend(entry["frame"]._collect_metadata_targets(sf_treename))
+        return targets
+
+    def _write_all_metadata_to_root(self, filename, treename):
+        """
+        Write metadata for main tree + all subframes in a single TFile.Open.
+
+        Phase 13.20.ADF Fix A: replaces N+1 separate TFile.Open/Close cycles
+        with 1, saving ~80-130s on production files with 15+ subframes.
+        """
+        targets = self._collect_metadata_targets(treename)
+        f = ROOT.TFile.Open(filename, "UPDATE")
+        try:
+            for adf_instance, tree_name in targets:
+                adf_instance._write_metadata_to_tree(f, tree_name)
+        finally:
+            f.Close()
 
     def _write_metadata_to_root(self, filename, treename):
         """
-        Write schema metadata to ROOT file.
-        
+        Write schema metadata to ROOT file (backward-compatible standalone entry point).
+
+        Opens TFile, writes metadata for this tree only, closes.
+        For batch writing (main + subframes), use _write_all_metadata_to_root instead.
+        """
+        f = ROOT.TFile.Open(filename, "UPDATE")
+        try:
+            self._write_metadata_to_tree(f, treename)
+        finally:
+            f.Close()
+
+    def _write_metadata_to_tree(self, open_tfile, treename):
+        """
+        Write schema metadata to an already-open TFile. No open/close.
+
+        Phase 13.20.ADF Fix A: extracted from _write_metadata_to_root so that
+        _write_all_metadata_to_root can call it N times within a single
+        TFile.Open context.
+
         Phase 4b: Uses unified schema serialization format.
         Also sets TTree aliases for ROOT TTree::Draw compatibility.
         """
-        f = ROOT.TFile.Open(filename, "UPDATE")
-        tree = f.Get(treename)
+        tree = open_tfile.Get(treename)
+        if not tree:
+            import warnings
+            warnings.warn(
+                f"_write_metadata_to_tree: tree '{treename}' not found in file. "
+                f"Metadata for this tree will not be written.",
+                RuntimeWarning
+            )
+            return
         
         # Set TTree aliases for ROOT compatibility
         for alias, expr in self.aliases.items():
@@ -4877,7 +4935,6 @@ class AliasDataFrame:
         jmeta = json.dumps(metadata)
         tree.GetUserInfo().Add(ROOT.TObjString(jmeta))
         tree.Write("", ROOT.TObject.kOverwrite)
-        f.Close()
 
     @staticmethod
     def read_tree(filename, treename="tree", entry_start=None, entry_stop=None, 
