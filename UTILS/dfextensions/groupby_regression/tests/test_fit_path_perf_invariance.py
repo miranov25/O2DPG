@@ -454,3 +454,74 @@ class TestBackendParity:
             min_stat=5, suffix='_sw',
         )
         _numeric_cols_equal(result_numba, result_numpy, dims, rtol=1e-12)
+
+
+# ---- Phase 13.20.GB-PERF: numba kernel vs numpy fallback ----
+
+class TestAggDenseNumbaKernel:
+    """Phase 13.20.GB-PERF invariance: _gather_window_rows_numba kernel
+    produces identical output to the numpy fallback path.
+
+    Tested via GBAI_DISABLE_AGG_DENSE_NUMBA env flag.
+    """
+
+    @pytest.mark.parametrize("window", [1, 2])
+    @pytest.mark.parametrize("fit_intercept", [True, False])
+    def test_numba_kernel_equals_numpy_fallback(self, window, fit_intercept, monkeypatch):
+        swf = _import_swf()
+        df = _make_2d_fixture(n_x=5, n_y=5, rows_per_bin=30, seed=5555)
+        dims = ["bin_x", "bin_y"]
+        ws = {"bin_x": window, "bin_y": window}
+
+        # Run with numba kernel (default)
+        monkeypatch.delenv("GBAI_DISABLE_AGG_DENSE_NUMBA", raising=False)
+        result_numba = swf(
+            df=df, gb_columns=dims, fit_columns=["y"],
+            linear_columns=["x"], window_spec=ws,
+            algorithm='recompute', backend='numba',
+            fit_intercept=fit_intercept,
+            min_stat=5, suffix='_sw',
+        )
+
+        # Run with numpy fallback
+        monkeypatch.setenv("GBAI_DISABLE_AGG_DENSE_NUMBA", "1")
+        result_fallback = swf(
+            df=df, gb_columns=dims, fit_columns=["y"],
+            linear_columns=["x"], window_spec=ws,
+            algorithm='recompute', backend='numba',
+            fit_intercept=fit_intercept,
+            min_stat=5, suffix='_sw',
+        )
+
+        _numeric_cols_equal(result_numba, result_fallback, dims, rtol=1e-12)
+
+    @pytest.mark.parametrize("with_weights", [False, True])
+    def test_numba_kernel_with_agg_columns(self, with_weights, monkeypatch):
+        swf = _import_swf()
+        df = _make_2d_fixture(n_x=4, n_y=4, rows_per_bin=25, seed=6666,
+                              add_weights=with_weights)
+        dims = ["bin_x", "bin_y"]
+        ws = {"bin_x": 1, "bin_y": 1}
+        w = "w" if with_weights else None
+
+        monkeypatch.delenv("GBAI_DISABLE_AGG_DENSE_NUMBA", raising=False)
+        result_numba = swf(
+            df=df, gb_columns=dims, fit_columns=["y"],
+            linear_columns=["x"], window_spec=ws,
+            weights=w, agg_columns=["x"],
+            agg_median=True,
+            algorithm='recompute', backend='numba' if not with_weights else 'numpy',
+            min_stat=5, suffix='_sw',
+        )
+
+        monkeypatch.setenv("GBAI_DISABLE_AGG_DENSE_NUMBA", "1")
+        result_fallback = swf(
+            df=df, gb_columns=dims, fit_columns=["y"],
+            linear_columns=["x"], window_spec=ws,
+            weights=w, agg_columns=["x"],
+            agg_median=True,
+            algorithm='recompute', backend='numba' if not with_weights else 'numpy',
+            min_stat=5, suffix='_sw',
+        )
+
+        _numeric_cols_equal(result_numba, result_fallback, dims, rtol=1e-12)

@@ -685,6 +685,107 @@ def _assign_bin_ids_fast(
     return bin_ids, n_bins, bin_coords, bounds
 
 
+def _get_gather_window_rows_kernel():
+    """Compile numba kernel for gathering window row indices.
+
+    Phase 13.20.GB-PERF: replaces the per-bin Python loop in
+    _aggregate_window_dense (159s self-time, 240s cumulative on 82M rows)
+    with a JIT-compiled two-pass kernel.
+
+    Key insight: rows from different neighbor bins are disjoint (each row
+    belongs to exactly one bin via counting sort), so np.unique is
+    unnecessary — pure concatenation suffices.
+
+    Pass 1: count rows per center bin (neighbor lookup + range sum).
+    Pass 2: fill row indices into preallocated flat array (CSR layout).
+    """
+    import numba as nb
+
+    @nb.njit(cache=True)
+    def _gather_rows(
+            bin_coords,       # (n_bins, n_dims) int64
+            neighbor_offsets, # (K, n_dims) int64
+            bounds_lo,        # (n_dims,) int64
+            bounds_hi,        # (n_dims,) int64
+            lookup,           # (lookup_len,) int64
+            lookup_mins,      # (n_dims,) int64
+            lookup_strides,   # (n_dims,) int64
+            order,            # (n_sorted_rows,) int64
+            cs_offsets,       # (n_compact_bins+1,) int64
+            # outputs (preallocated by caller)
+            out_row_offsets,  # (n_bins+1,) int64  — CSR offsets
+            out_n_neighbors,  # (n_bins,) int64
+            out_eff_frac,     # (n_bins,) float64
+    ):
+        n_bins = bin_coords.shape[0]
+        n_offsets = neighbor_offsets.shape[0]
+        n_dims = bin_coords.shape[1]
+        lookup_len = lookup.shape[0]
+        expected_neighbors = n_offsets if n_offsets > 0 else 1
+
+        # ---- Pass 1: count rows per bin ----
+        for bi in range(n_bins):
+            count = np.int64(0)
+            n_nbrs = np.int64(0)
+            for ni in range(n_offsets):
+                valid = True
+                flat_idx = np.int64(0)
+                for d in range(n_dims):
+                    nb_d = bin_coords[bi, d] + neighbor_offsets[ni, d]
+                    if nb_d < bounds_lo[d] or nb_d > bounds_hi[d]:
+                        valid = False
+                        break
+                    flat_idx += (nb_d - lookup_mins[d]) * lookup_strides[d]
+                if not valid:
+                    continue
+                if flat_idx < 0 or flat_idx >= lookup_len:
+                    continue
+                cid = lookup[flat_idx]
+                if cid < 0:
+                    continue
+                n_nbrs += 1
+                count += cs_offsets[cid + 1] - cs_offsets[cid]
+            out_row_offsets[bi + 1] = count
+            out_n_neighbors[bi] = n_nbrs
+            out_eff_frac[bi] = n_nbrs / expected_neighbors
+
+        # ---- Prefix sum ----
+        for bi in range(n_bins):
+            out_row_offsets[bi + 1] += out_row_offsets[bi]
+
+        total_rows = out_row_offsets[n_bins]
+        out_rows = np.empty(total_rows, dtype=np.int64)
+
+        # ---- Pass 2: fill row indices ----
+        for bi in range(n_bins):
+            pos = out_row_offsets[bi]
+            for ni in range(n_offsets):
+                valid = True
+                flat_idx = np.int64(0)
+                for d in range(n_dims):
+                    nb_d = bin_coords[bi, d] + neighbor_offsets[ni, d]
+                    if nb_d < bounds_lo[d] or nb_d > bounds_hi[d]:
+                        valid = False
+                        break
+                    flat_idx += (nb_d - lookup_mins[d]) * lookup_strides[d]
+                if not valid:
+                    continue
+                if flat_idx < 0 or flat_idx >= lookup_len:
+                    continue
+                cid = lookup[flat_idx]
+                if cid < 0:
+                    continue
+                start = cs_offsets[cid]
+                end = cs_offsets[cid + 1]
+                for ri in range(start, end):
+                    out_rows[pos] = order[ri]
+                    pos += 1
+
+        return out_rows
+
+    return _gather_rows
+
+
 def _aggregate_window_dense(
         df: pd.DataFrame,
         bin_ids: np.ndarray,
@@ -704,15 +805,20 @@ def _aggregate_window_dense(
         agg_columns: Optional[List[str]] = None,
         agg_median: bool = False,
 ) -> List[_AggResult]:
-    """Dense-lookup replacement for _aggregate_window_zerocopy.
+    """Dense-lookup window aggregation for the V1/V2 recompute path.
 
-    Phase 13.19.GB-PERF: eliminates two profile bottlenecks:
-    - _build_bin_index_map (205s) → replaced by vectorized _assign_bin_ids_fast + _counting_sort_indices
-    - _get_neighbor_bins V3a (152s) → replaced by inline vectorized offset + dense lookup
+    Phase 13.19.GB-PERF: initial implementation (dense lookup replaces
+    _build_bin_index_map + _get_neighbor_bins V3a).
 
-    Same output contract as _aggregate_window_zerocopy: returns List[_AggResult]
-    consumed by _fit_window_regression_numba/_numpy and _assemble_results.
+    Phase 13.20.GB-PERF: inner per-bin loop moved to numba kernel
+    (_gather_window_rows_numba). Eliminates 2.35M Python calls to
+    np.unique/clip/ones. Row indices from different neighbor bins are
+    disjoint (counting-sort guarantee), so np.unique is unnecessary.
+
+    Set env GBAI_DISABLE_AGG_DENSE_NUMBA=1 to force numpy fallback
+    (for testing invariance between JIT and Python paths).
     """
+    import os
     results: List[_AggResult] = []
     expected_neighbors = int(neighbor_offsets.shape[0]) if neighbor_offsets.size else 1
     n_dims = len(gb_columns)
@@ -723,34 +829,86 @@ def _aggregate_window_dense(
     _agg_cols = agg_columns or []
     agg_arrays = {c: df[c].to_numpy(dtype=np.float64) for c in _agg_cols}
 
-    # Bounds as arrays for vectorized checks
+    # Bounds as arrays
     bounds_lo = np.array([bounds[dim][0] for dim in gb_columns], dtype=np.int64)
     bounds_hi = np.array([bounds[dim][1] for dim in gb_columns], dtype=np.int64)
-    lookup_len = len(lookup)
 
+    # ---- Dispatch: numba kernel or numpy fallback ----
+    use_numba = (
+        neighbor_offsets.size > 0
+        and os.environ.get("GBAI_DISABLE_AGG_DENSE_NUMBA", "") != "1"
+    )
+
+    if use_numba:
+        try:
+            _gather_kernel = _get_gather_window_rows_kernel()
+
+            out_row_offsets = np.zeros(n_bins + 1, dtype=np.int64)
+            out_n_neighbors = np.zeros(n_bins, dtype=np.int64)
+            out_eff_frac = np.zeros(n_bins, dtype=np.float64)
+
+            out_rows = _gather_kernel(
+                bin_coords, neighbor_offsets,
+                bounds_lo, bounds_hi,
+                lookup, lookup_mins, lookup_strides,
+                order, offsets,
+                out_row_offsets, out_n_neighbors, out_eff_frac,
+            )
+
+            # Assemble _AggResult from CSR output
+            for bi in range(n_bins):
+                center = tuple(int(bin_coords[bi, d]) for d in range(n_dims))
+                r_start = out_row_offsets[bi]
+                r_end = out_row_offsets[bi + 1]
+                idx_unique = out_rows[r_start:r_end]
+                n_used = int(out_n_neighbors[bi])
+                eff_frac = float(out_eff_frac[bi])
+                n_rows = int(idx_unique.size)
+
+                stats, agg_st = _compute_window_stats(
+                    idx_unique, n_rows, fit_columns, target_arrays,
+                    w_array, weights, _agg_cols, agg_arrays, agg_median,
+                )
+
+                results.append(_AggResult(
+                    center=center,
+                    n_neighbors_used=n_used,
+                    n_rows_aggregated=n_rows,
+                    effective_window_fraction=eff_frac,
+                    stats=stats,
+                    row_indices=idx_unique,
+                    agg_stats=agg_st,
+                ))
+            return results
+
+        except Exception:
+            # Fall through to numpy path on JIT failure
+            pass
+
+    # ---- Numpy fallback (original Phase 13.19 code) ----
+    lookup_len = len(lookup)
     for bi in range(n_bins):
         center = tuple(int(bin_coords[bi, d]) for d in range(n_dims))
-        center_arr = bin_coords[bi]  # (n_dims,) int64
+        center_arr = bin_coords[bi]
 
-        # Vectorized neighbor computation (replaces _get_neighbor_bins V3a)
         if neighbor_offsets.size > 0:
-            cand = center_arr + neighbor_offsets  # (K, D)
+            cand = center_arr + neighbor_offsets
             mask = np.ones(len(cand), dtype=bool)
             for j in range(n_dims):
                 mask &= (cand[:, j] >= bounds_lo[j]) & (cand[:, j] <= bounds_hi[j])
-            valid_cand = cand[mask]  # (K', D)
+            valid_cand = cand[mask]
         else:
             valid_cand = center_arr.reshape(1, -1)
 
-        # Vectorized dense-lookup: neighbor coords → compact bin indices
-        shifted = valid_cand - lookup_mins  # (K', D)
-        flat_indices = (shifted * lookup_strides).sum(axis=1)  # (K',)
+        shifted = valid_cand - lookup_mins
+        flat_indices = (shifted * lookup_strides).sum(axis=1)
         in_range = (flat_indices >= 0) & (flat_indices < lookup_len)
-        compact_ids = np.where(in_range, lookup[flat_indices.clip(0, lookup_len - 1)], -1)
+        # F1a: remove redundant clip — bounds mask guarantees in-range
+        safe_idx = np.where(in_range, flat_indices, 0)
+        compact_ids = np.where(in_range, lookup[safe_idx], -1)
         populated = compact_ids[compact_ids >= 0]
         n_used = len(populated)
 
-        # Gather row indices from counting-sort output
         idx_parts = []
         for cid in populated:
             start = offsets[cid]
@@ -759,64 +917,81 @@ def _aggregate_window_dense(
                 idx_parts.append(order[start:end])
 
         if idx_parts:
-            idx_unique = np.unique(np.concatenate(idx_parts))
+            # Rows from different bins are disjoint (counting-sort guarantee),
+            # so np.unique is unnecessary — concatenation suffices.
+            idx_unique = np.concatenate(idx_parts)
         else:
             idx_unique = np.array([], dtype=np.int64)
 
         eff_frac = (n_used / expected_neighbors) if expected_neighbors > 0 else np.nan
         n_rows = int(idx_unique.size)
 
-        stats: Dict[str, Dict[str, float]] = {}
-        agg_st: Optional[Dict[str, Dict[str, float]]] = None
-
-        if n_rows > 0:
-            if w_array is not None:
-                w_win = w_array[idx_unique]
-                w_valid = np.isfinite(w_win) & (w_win >= 0)
-            else:
-                w_win = None
-                w_valid = None
-
-            for t in fit_columns:
-                stats[t] = {}
-
-            if _agg_cols:
-                agg_st = {}
-                for c in _agg_cols:
-                    y = agg_arrays[c][idx_unique]
-                    y_finite = np.isfinite(y)
-                    if weights is None:
-                        x = y[y_finite]
-                        mean, std = _weighted_mean_std(x, None)
-                    else:
-                        valid = y_finite & w_valid
-                        x = y[valid]
-                        ww = w_win[valid]
-                        mean, std = _weighted_mean_std(x, ww)
-                    if agg_median and int(np.sum(y_finite)) > 0:
-                        median = float(np.median(y[y_finite]))
-                    else:
-                        median = np.nan
-                    agg_st[c] = {"mean": mean, "std": std, "median": median}
-        else:
-            for t in fit_columns:
-                stats[t] = {}
-            if _agg_cols:
-                agg_st = {c: {"mean": np.nan, "std": np.nan, "median": np.nan} for c in _agg_cols}
-
-        results.append(
-            _AggResult(
-                center=center,
-                n_neighbors_used=n_used,
-                n_rows_aggregated=n_rows,
-                effective_window_fraction=eff_frac,
-                stats=stats,
-                row_indices=idx_unique,
-                agg_stats=agg_st,
-            )
+        stats, agg_st = _compute_window_stats(
+            idx_unique, n_rows, fit_columns, target_arrays,
+            w_array, weights, _agg_cols, agg_arrays, agg_median,
         )
 
+        results.append(_AggResult(
+            center=center,
+            n_neighbors_used=n_used,
+            n_rows_aggregated=n_rows,
+            effective_window_fraction=eff_frac,
+            stats=stats,
+            row_indices=idx_unique,
+            agg_stats=agg_st,
+        ))
+
     return results
+
+
+def _compute_window_stats(
+        idx_unique, n_rows, fit_columns, target_arrays,
+        w_array, weights, agg_cols, agg_arrays, agg_median,
+):
+    """Compute per-window statistics from gathered row indices.
+
+    Factored out of _aggregate_window_dense so both the numba and
+    numpy paths share the same stats logic.
+    """
+    stats: Dict[str, Dict[str, float]] = {}
+    agg_st: Optional[Dict[str, Dict[str, float]]] = None
+
+    if n_rows > 0:
+        if w_array is not None:
+            w_win = w_array[idx_unique]
+            w_valid = np.isfinite(w_win) & (w_win >= 0)
+        else:
+            w_win = None
+            w_valid = None
+
+        for t in fit_columns:
+            stats[t] = {}
+
+        if agg_cols:
+            agg_st = {}
+            for c in agg_cols:
+                y = agg_arrays[c][idx_unique]
+                y_finite = np.isfinite(y)
+                if weights is None:
+                    x = y[y_finite]
+                    mean, std = _weighted_mean_std(x, None)
+                else:
+                    valid = y_finite & w_valid
+                    x = y[valid]
+                    ww = w_win[valid]
+                    mean, std = _weighted_mean_std(x, ww)
+                if agg_median and int(np.sum(y_finite)) > 0:
+                    median = float(np.median(y[y_finite]))
+                else:
+                    median = np.nan
+                agg_st[c] = {"mean": mean, "std": std, "median": median}
+    else:
+        for t in fit_columns:
+            stats[t] = {}
+        if agg_cols:
+            agg_st = {c: {"mean": np.nan, "std": np.nan, "median": np.nan} for c in agg_cols}
+
+    return stats, agg_st
 
 def _sanitize_suffix(name: str) -> str:
     return "".join(ch if ch.isalnum() else "_" for ch in str(name))
