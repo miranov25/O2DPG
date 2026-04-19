@@ -41,9 +41,10 @@ This file is intended for AI reviewers and human collaborators as a **restart co
 AliasDataFrame is a high-performance data analysis framework for particle physics research at CERN's ALICE experiment. It provides schema-driven, lazy-evaluated columns and hierarchical joins for ROOT/Parquet data.
 
 **Key Metrics:**
-- Performance: 60-770x speedups achieved
-- Test Coverage: 1480+ tests passing (1463 baseline + 31 Phase 13.12 invariance tests; 17 net after ROOT/numba skips)
-- Lines of Code: ~10,000 (AliasDataFrame.py)
+- Performance: 60-770x speedups achieved; production pipeline 2× faster (1452s → 722s)
+- Test Coverage: 1521 tests passing, 125 invariance tests
+- Lines of Code: ~12,800 (AliasDataFrame.py)
+- Features: 44 in taxonomy (26 verified, 14 smoke-only, 3 broken, 1 planned)
 
 **Development Team:**
 - Coordinator: Marian Ivanov (miranov25)
@@ -153,6 +154,83 @@ Mode #11 discipline).
 **Follow-up items** (tracked elsewhere, not blocking phase closure):
 - Technical Summary v1.6 full public API documentation (~90 methods) — deferred to separate future phase per Phase 13.11 decision
 - `draw_lazy=True` default change — pending architect decision (pre-existing, not a 13.12 deliverable)
+
+---
+
+### Phase 13.18.ADF: Regression Metadata Bridge
+**Dates**: 2026-04-12 to 2026-04-13  
+**Status**: ✅ Merged  
+**Commits**: `2bc65bb`, `2662cee`, `d0d020a`
+
+**Deliverables**:
+- 3 new public API methods: `register_regression_metadata()`, `update_regression_metadata()`, `register_evaluator_from_metadata()`
+- `describe_regression()` for lazy-status-aware introspection
+- Schema persistence for regression_metadata (mirrors registered_functions pattern)
+- Natural-label → compact-index remap in `_bridge_eval_func` (cross-team Q&A with GB team)
+- feature_taxonomy.py: +3 entries (FUNC.regression_metadata, FUNC.evaluator_from_metadata, FUNC.regression_persistence), 41 → 44 features
+
+**Tests**: 11/11 passing (7 pass + 4 xfail resolved after bridge fix)
+
+**Key decision**: `_bridge_eval_func` uses `register_function` directly (not `register_evaluator` wrapper) because evaluator requires compact-index input, not natural labels. Bridge handles the remap.
+
+**Lesson learned**: Reviewer-discipline failure — `_eval_lookup` docstring says "raw grid indices" but coder read "raw" as "natural values." Recovery required cross-team Q&A. Future: hand-trace one example through the target method before escalating.
+
+---
+
+### Phase 13.19.ADF.FIX1: Vector Draw Kwarg Diagnostic
+**Dates**: 2026-04-14 to 2026-04-18  
+**Status**: ✅ Merged  
+**Commits**: `f9679f7`, `1fa5145b` (combined with 13.20)
+
+**Problem**: `adf.draw('[y1..y6]:staveITS', group_by='mP3', group_by_bins=6)` produced 421 legend entries instead of 6.
+
+**Diagnostic approach** (architect direction: *"Make tests first"*):
+- K1 tests (boundary diagnostic): monkey-patch DFDraw methods to capture kwargs at ADF→DFDraw boundary. **Conclusion: ADF forwards kwargs correctly. Bug was dfdraw-internal.**
+- K2 tests (end-to-end): count rendered legend entries post-dfdraw FIX1 (`fe007b7c`)
+
+**Tests**: K1 (4 pass, 1 skip) + K2 (4 pass) = 8 permanent regression tests
+
+**Lesson learned**: K1 ruled out wrong hypothesis; K2 (output counting) should have been v0.2 from the start. *"Diagnostic tests must include the user-visible symptom, not just intermediate-layer plumbing."*
+
+---
+
+### Phase 13.20.ADF: export_tree Metadata Batching
+**Dates**: 2026-04-18 to 2026-04-19  
+**Status**: ✅ Merged  
+**Commit**: `1fa5145b` (combined with 13.19.FIX1)
+
+**Problem**: `export_tree` with N subframes opened ROOT file N+1 times for metadata writing. Profile: 159s / 11% of 1452s total.
+
+**Fix**: Separate data-write (uproot) from metadata-write (ROOT). 4 new methods: `_write_all_data_to_uproot`, `_collect_metadata_targets`, `_write_all_metadata_to_root`, `_write_metadata_to_tree`. 1 `TFile.Open` instead of 16+.
+
+**Measured savings**: ~29s (not 80-130s predicted — O2DistAI's single-TF filter reduced file sizes, making each TFile.Open cheaper). Fix is structurally correct; savings scale with file size.
+
+**Tests**: E1 (4 pass) + E2 (3 pass, 1 xfail for pre-existing `read_tree` nested subframe limitation)
+
+---
+
+### Phase 13.21.ADF: Join Index Caching + dematerialize() API
+**Dates**: 2026-04-19  
+**Status**: ✅ Merged  
+**Commits**: `fa7cd11d` (v1.0 caching), `4c269c3c` (v1.1 dematerialize + remove drop_materialized)
+
+**Origin**: PHASE_13_19_ADF_PERF_Summary.md item A1, unanimous ADF team agreement (Claude31, Claude30, Claude32).
+
+**Fix A — Join index caching** (4 changes, +35 lines):
+- Root cause: line 4411 cleared ENTIRE `_join_index_cache` after every `materialize_aliases` call, even though only value columns changed
+- Added `_index_column_signature()` — O(1) content-based cache validation (first/last/dtype)
+- Added targeted cache invalidation in `register_subframe` instead of blanket clear
+- Profile evidence: 56s / 141 cache misses → expected ~5-10s / ~15 misses
+
+**Fix B — `dematerialize(drop=, keep=)` API** (+72 lines):
+- Three modes: `drop=[...]`, `keep=[...]`, no args (drop all)
+- Raw columns always protected. Mutually exclusive drop/keep (`ValueError`)
+- Replaced `drop_materialized()` — strict superset, 3 internal call sites updated
+- Composes with join caching: re-materialization reuses cached indices
+
+**Tests**: J1_1..J1_10 (correctness + dematerialize) + J2_1 (performance gate) = 11 tests. Updated 2 pre-existing `test_join_index_caching.py` tests to expect new cache-survives behavior.
+
+**Test results**: 1521 passed, 7 failed (all pre-existing), 1 error (pre-existing)
 
 ---
 
@@ -557,6 +635,9 @@ All major decisions require consensus from 3+ AI reviewers:
 | Phase 8 | 10.8× | Numba acceleration |
 | Phase 5 | 25× | vs TTree::Draw |
 | Phase 13.9 | 42× | Numba polynomial evaluator vs eval |
+| Phase 13.20 | ~29s saved | export_tree metadata batching (1 TFile.Open vs N+1) |
+| Phase 13.21 | ~40-50s expected | Join cache survives materialize_aliases |
+| **Production** | **2× (1452→722s)** | **Cross-team: GB + ADF + O2DistAI fixes combined** |
 
 ### Memory Savings
 
@@ -590,19 +671,30 @@ Remaining overhead is Python/Pandas framework cost.
 | 13.9.ADF | 26 | 1402 |
 | 13.10.ADF | 24 | 1425 |
 | BUG draw_subframe | 23 | 1392 (at fix time) |
+| BUG fill_value | 7 | 1432 |
+| BUG draw_lazy_compound | 13 | 1441 |
+| 13.11.ADF | infra | 1441 |
+| 13.11.B | taxonomy | 1441 |
+| 13.12.ADF | 31 | 1480 |
+| 13.18.ADF | 11 | 1491 |
+| 13.19.ADF.FIX1 | 8 (K1+K2) | 1499 |
+| 13.20.ADF | 8 (E1+E2) | 1510 |
+| 13.21.ADF | 11 (J1+J2) | 1521 |
 
 ---
 
 ## Pending Items
 
-- [ ] GBAI benchmark: evaluator at 82M rows D=3/D=4 with peak RSS
-- [ ] Fix `register_subframe_lazy()` bug (BUG_AliasDataFrame_20260116)
-- [ ] SCHEMA_VERSION export in `__init__.py`
+- [x] ~~CAPABILITY_MATRIX.md creation~~ (Phase 13.11)
+- [x] ~~PHASE_BEGIN_AliasDataFrame tag~~ (Phase 13.20 close)
+- [ ] A2 — LZ4 default compression (one-line + compat test, ~15-20s savings)
+- [ ] A3 — Batch metadata serialization (~20-30s savings)
+- [ ] `read_tree` recursive subframe loading (line 5172 `load_subframes=False` → `True`)
+- [ ] GB tuple support for `linear_columns` (PolynomialSpec production blocker)
+- [ ] Technical Summary v1.6 full public API documentation (~90 methods)
 - [ ] P1 tests: I2_6, I4_2, I4_3 fixes
-- [ ] CAPABILITY_MATRIX.md creation
-- [ ] PHASE_BEGIN_AliasDataFrame tag
+- [ ] Fix `register_subframe_lazy()` bug (BUG_AliasDataFrame_20260116)
 - [ ] Axis title lookup for subframe columns (`Sub_dy` vs `Side.dy`)
-- [ ] dfdraw `same=True` — awaiting Team 3 response
 
 ---
 

@@ -203,7 +203,7 @@ This is the primary workflow for physics analysis:
 adf = AliasDataFrame.read_tree("clusters.root", "tree")
 
 # Step 2: Drop any previously materialized columns
-adf.drop_materialized_aliases()
+adf.dematerialize()
 
 # Step 3: Register subframes and auto-alias
 adf_tracks = AliasDataFrame.read_tree("tracks.root", "tree")
