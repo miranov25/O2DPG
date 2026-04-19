@@ -162,6 +162,7 @@ adf.register_subframe(name, adf, index_columns)
 | Duplicate child keys | Parent rows expanded (many-to-one replication) |
 | Ordering | Parent row order preserved |
 | Pandas equivalent | `pd.merge(main, sub, on=keys, how='left', sort=False)` |
+| **Cache** | **Join indices cached across `materialize_aliases` calls; invalidated only on `register_subframe` or index-column change (Phase 13.21.ADF). O(1) content-based validation via first/last/dtype signature.** |
 
 ### Function Registration (Phase 13.9/13.10)
 
@@ -460,6 +461,18 @@ class AliasDataFrame:
 
     def describe_aliases(self, verbosity=0x07, pattern=None):
         """Print alias definitions, dependencies, materialization status."""
+
+    def dematerialize(self, drop=None, keep=None) -> list:
+        """Drop materialized alias columns to reclaim memory.
+        
+        Raw columns always protected. Aliases/subframes preserved — 
+        re-materialization via materialize_aliases() recovers values.
+        Three modes: drop=[...], keep=[...], no args (drop all).
+        Mutually exclusive drop/keep (ValueError if both).
+        Composes with join index caching: re-materialization reuses
+        cached join indices since index columns are unchanged.
+        Phase 13.21.ADF. Replaces drop_materialized() (removed).
+        """
 ```
 
 ### 4.4 Schema Management
@@ -1344,17 +1357,18 @@ Vision: automatic conversion of C++ SOA (Structure of Arrays) table definitions 
 
 ## 12. Test Coverage
 
-### 12.1 Current Status (2026-04-02)
+### 12.1 Current Status (2026-04-19)
 
 **Command:** `pytest tests/` (with ROOT enabled, Numba available, PyArrow available)
 
 | Metric | Value |
 |--------|-------|
-| Collected | ~1455 |
-| Passed | 1441 |
-| Failed | 6 |
-| Skipped | 7 |
-| Runtime | ~27s (12 workers) |
+| Collected | ~1537 |
+| Passed | 1521 |
+| Failed | 7 |
+| Skipped | 8 |
+| Runtime | ~26s (12 workers) |
+| Invariance tests | 125 |
 
 **Environment assumptions:** ROOT 6.x installed, `numba` available, `pyarrow` available, `dfdraw` available. Without ROOT, ~50 tests are skipped (ROOT-dependent integration tests).
 
@@ -1570,14 +1584,15 @@ from AliasDataFrameRDF import (setup_rdf_with_friends,
 | v1.3 | 2026-02-19 | **Source-verified corrections** from 4-reviewer consolidated review (CLAUDE3, GPT, GPT3, source verification against 11,557-line AliasDataFrame.py). P0-1: `export_tree()` signature corrected. P0-2: `get_axis_unit()` removed. P1-1: `__getitem__` auto-materialization claim removed. P1-2: `__contains__` corrected. P1-3: schema key `axisLabel` → `title`. P1-4: `save_schema()` simplified. P2-1: `register_subframe(pre_index)` added. P2-2: `read_tree` → `@staticmethod`. |
 | v1.4 | 2026-03-27 | **Phase 13.9/13.10 additions:** NEW §4.15 (register_function, register_polynomial_from_subframe, register_evaluator), NEW §6.5 (Registered Function System with PolynomialSpec architecture, evaluator schema contract). Updated: §1.1 feature list, §1.2 architecture diagram, §1.3 file structure (+PolynomialSpec.py), §1.4 metrics (1425 tests, 42× polynomial speedup), §2 contract snapshot, §4.3 add_alias fill_value, §12 test coverage, §13 bugs (draw_subframe_resolution ✅ fixed), §15.3 schema with registered_functions. |
 | v1.5 | 2026-04-06 | **Phase 13.11/13.11.B + bug fixes.** Updated §1.2–1.4 (12,100 lines, 1441 tests, 41-feature matrix). NEW §12.6 Capability Matrix infrastructure (run_tests.sh, taxonomy-based generator, 41 features, 12 modules). Updated §12.2 (5 new test addition entries). Updated §13.1: fill_value P0 ✅, draw_lazy compound ✅, polynomial persistence ✅. Updated §13.2: CAPABILITY_MATRIX ✅, run_tests.sh ✅, PHASE_BEGIN ✅ resolved; serialization duplication added as tech debt. Updated §14 planned work. |
+| v1.5.2 | 2026-04-19 | **Phase 13.21.ADF additions.** NEW in §4.3: `dematerialize(drop=, keep=)` — memory reclamation with raw-column protection; replaces removed `drop_materialized()`. Updated §2 Join Contract: join index cache row (content-based validation, survives `materialize_aliases`, invalidated on `register_subframe`). Updated §12.1: 1521 tests, 125 invariance. |
 
 ---
 
 **END OF TECHNICAL SUMMARY**
 
-**Document Version:** 1.5  
-**Phase:** 13.11.B (Capability Matrix taxonomy)  
-**Total Source Lines:** ~12,100 (AliasDataFrame.py) + 337 (PolynomialSpec.py) + ~800 (scripts/infrastructure)  
-**Total Test Files:** 48+  
-**Test Results:** 1441 passed, 6 failed, 7 skipped (2026-04-02)  
-**Capability Matrix:** 41 features, 9 verified, 64 invariance tests
+**Document Version:** 1.5.2  
+**Phase:** 13.21.ADF (Join index caching + dematerialize)  
+**Total Source Lines:** ~12,862 (AliasDataFrame.py) + 337 (PolynomialSpec.py) + ~800 (scripts/infrastructure)  
+**Total Test Files:** 55+  
+**Test Results:** 1521 passed, 7 failed, 8 skipped (2026-04-19)  
+**Capability Matrix:** 44 features, 26 verified, 125 invariance tests
