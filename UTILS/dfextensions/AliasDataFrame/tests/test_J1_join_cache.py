@@ -270,6 +270,125 @@ class TestJ1JoinCacheCorrectness:
             err_msg="J1_5: multi-subframe pipeline result mismatch"
         )
 
+    @pytest.mark.invariance
+    def test_J1_6_dematerialize_drop_and_recover(self):
+        """
+        J1_6: dematerialize(drop=[...]) drops the column;
+        re-materialize recovers identical values.
+        """
+        adf = _build_main()
+        sf = _build_coeff_sf()
+        adf.register_subframe('Coeff', sf, index_columns=['sec'])
+        adf.add_alias('correction', 'Coeff.c0 + x', dtype=np.float32)
+        adf.add_alias('scaled', 'Coeff.c1 * y', dtype=np.float32)
+
+        adf.materialize_aliases(names=['correction', 'scaled'])
+        original_correction = adf.df['correction'].values.copy()
+        original_scaled = adf.df['scaled'].values.copy()
+
+        # Drop only 'correction', keep 'scaled'
+        dropped = adf.dematerialize(drop=['correction'])
+        assert dropped == ['correction'], f"Expected ['correction'], got {dropped}"
+        assert 'correction' not in adf.df.columns, "correction should be dropped"
+        assert 'scaled' in adf.df.columns, "scaled should survive"
+
+        # Raw columns must survive
+        assert 'x' in adf.df.columns, "raw column 'x' must survive"
+        assert 'sec' in adf.df.columns, "raw column 'sec' must survive"
+
+        # Re-materialize and verify bit-exact recovery
+        adf.materialize_aliases(names=['correction'])
+        np.testing.assert_array_equal(
+            adf.df['correction'].values, original_correction,
+            err_msg="J1_6: re-materialized values differ from original"
+        )
+
+    @pytest.mark.invariance
+    def test_J1_7_dematerialize_keep(self):
+        """
+        J1_7: dematerialize(keep=[...]) drops all OTHER materialized aliases;
+        raw columns survive; re-materialization recovers values.
+        """
+        adf = _build_main()
+        sf = _build_coeff_sf()
+        adf.register_subframe('Coeff', sf, index_columns=['sec'])
+        adf.add_alias('a1', 'Coeff.c0', dtype=np.float32)
+        adf.add_alias('a2', 'Coeff.c1', dtype=np.float32)
+        adf.add_alias('a3', 'x**2', dtype=np.float32)
+
+        adf.materialize_aliases(names=['a1', 'a2', 'a3'])
+        original_a2 = adf.df['a2'].values.copy()
+        original_a3 = adf.df['a3'].values.copy()
+
+        # Keep only a1; drop a2 and a3
+        dropped = adf.dematerialize(keep=['a1'])
+        assert 'a1' in adf.df.columns, "a1 should survive (in keep list)"
+        assert 'a2' not in adf.df.columns, "a2 should be dropped"
+        assert 'a3' not in adf.df.columns, "a3 should be dropped"
+        assert set(dropped) == {'a2', 'a3'}, f"Expected {{'a2','a3'}}, got {set(dropped)}"
+
+        # Raw columns always survive
+        assert 'x' in adf.df.columns
+        assert 'sec' in adf.df.columns
+
+        # Re-materialize dropped aliases
+        adf.materialize_aliases(names=['a2', 'a3'])
+        np.testing.assert_array_equal(
+            adf.df['a2'].values, original_a2,
+            err_msg="J1_7: re-materialized a2 differs"
+        )
+        np.testing.assert_array_equal(
+            adf.df['a3'].values, original_a3,
+            err_msg="J1_7: re-materialized a3 differs"
+        )
+
+    @pytest.mark.invariance
+    def test_J1_8_dematerialize_all(self):
+        """
+        J1_8: dematerialize() with no args drops ALL materialized alias columns.
+        Raw columns survive.
+        """
+        adf = _build_main()
+        adf.add_alias('x2', 'x**2', dtype=np.float32)
+        adf.add_alias('y2', 'y**2', dtype=np.float32)
+        adf.materialize_aliases(names=['x2', 'y2'])
+
+        raw_cols_before = [c for c in adf.df.columns if c not in adf.aliases]
+
+        dropped = adf.dematerialize()
+        assert 'x2' not in adf.df.columns
+        assert 'y2' not in adf.df.columns
+
+        # All raw columns still present
+        for col in raw_cols_before:
+            assert col in adf.df.columns, f"raw column '{col}' was dropped"
+
+    @pytest.mark.invariance
+    def test_J1_9_dematerialize_ignores_raw_columns(self):
+        """
+        J1_9: dematerialize(drop=['raw_col']) silently ignores raw columns.
+        No crash, no drop.
+        """
+        adf = _build_main()
+        adf.add_alias('a1', 'x**2', dtype=np.float32)
+        adf.materialize_aliases(names=['a1'])
+
+        # Try to drop a raw column — should be silently ignored
+        dropped = adf.dematerialize(drop=['x', 'sec', 'a1'])
+        assert 'a1' not in adf.df.columns, "alias a1 should be dropped"
+        assert 'x' in adf.df.columns, "raw column x must survive"
+        assert 'sec' in adf.df.columns, "raw column sec must survive"
+        assert dropped == ['a1'], f"Only alias columns in drop list: {dropped}"
+
+    @pytest.mark.invariance
+    def test_J1_10_dematerialize_drop_keep_mutual_exclusion(self):
+        """
+        J1_10: specifying both drop and keep raises ValueError.
+        """
+        adf = _build_main()
+        with pytest.raises(ValueError, match="drop or keep, not both"):
+            adf.dematerialize(drop=['x'], keep=['y'])
+
 
 class TestJ2JoinCachePerformance:
     """J2 — cache hit count verification."""

@@ -9878,20 +9878,80 @@ class AliasDataFrame:
         aliases = self.aliases  # {name: expr}
         return {name for name in aliases if name in self.df.columns}
 
-    def drop_materialized(self, aliases):
+    # drop_materialized removed in Phase 13.21.ADF v1.1
+    # Use dematerialize(drop=...) instead — strict superset.
+
+    def dematerialize(self, drop=None, keep=None):
         """
-        Drop materialized alias columns from DataFrame.
-        
-        Args:
-            aliases: Alias names to drop (silently ignores non-existent)
-        
-        Note:
-            Only drops columns that are aliases, never physical columns.
+        Drop materialized alias columns to reclaim memory.
+
+        Aliases and subframes are preserved — dropped columns can be
+        re-materialized on demand via materialize_aliases().
+
+        Raw columns (those without a matching alias) are never dropped,
+        regardless of the drop/keep parameters.
+
+        Phase 13.21.ADF v1.1: composable with join index caching.
+        After dematerialization, re-materialization reuses cached join
+        indices (index columns unchanged), so the round-trip is cheap.
+
+        Parameters
+        ----------
+        drop : list of str, optional
+            Column names to drop. Only alias-backed columns are dropped;
+            raw columns in this list are silently ignored.
+            Mutually exclusive with keep.
+        keep : list of str, optional
+            Column names to preserve. All OTHER materialized alias columns
+            are dropped. Raw columns are always preserved regardless.
+            Mutually exclusive with drop.
+
+        If neither drop nor keep is given, drops ALL materialized alias
+        columns.
+
+        Returns
+        -------
+        list of str
+            Names of columns actually dropped.
+
+        Examples
+        --------
+        >>> # Drop specific columns you know are no longer needed:
+        >>> adf.dematerialize(drop=['dyp_I2', 'ddxp_I2', 'ddzp_I2'])
+        ['dyp_I2', 'ddxp_I2', 'ddzp_I2']
+
+        >>> # Keep only what the next step needs:
+        >>> adf.dematerialize(keep=['dy_I3', 'dz_I3'])
+        ['dyp_I2', 'ddxp_I2', ..., 'weight_trackI1', ...]
+
+        >>> # Drop everything materialized (back to raw + subframes):
+        >>> adf.dematerialize()
+        ['dy_I0', 'dz_I0', 'dyp_I2', ..., 'isNotEdge', ...]
         """
-        alias_names = set(self.aliases.keys())
-        to_drop = [a for a in aliases if a in alias_names and a in self.df.columns]
+        import gc
+
+        if drop is not None and keep is not None:
+            raise ValueError("Specify drop or keep, not both")
+
+        # Materialized alias columns = columns that DO have a matching alias
+        materialized = [c for c in self.df.columns if c in self.aliases]
+
+        if drop is not None:
+            # Drop only the named columns, only if they are alias-backed
+            to_drop = [c for c in drop if c in materialized]
+        elif keep is not None:
+            # Drop all materialized EXCEPT keep
+            keep_set = set(keep)
+            to_drop = [c for c in materialized if c not in keep_set]
+        else:
+            # Drop all materialized
+            to_drop = materialized
+
         if to_drop:
             self.df = self.df.drop(columns=to_drop)
+            gc.collect()
+
+        return to_drop
 
     def _resolve_draw_param(self, param_value, param_name: str):
         """
@@ -10298,7 +10358,7 @@ class AliasDataFrame:
         if cleanup_needed:
             we_added = self._get_materialized_aliases() - already_materialized
             if we_added:
-                self.drop_materialized(we_added)
+                self.dematerialize(drop=list(we_added))
         
         return result
 
@@ -11249,7 +11309,7 @@ class AliasDataFrame:
             if we_added:
                 if verbose:
                     print(f"Clearing {len(we_added)} materialized aliases")
-                self.drop_materialized(we_added)
+                self.dematerialize(drop=list(we_added))
         
         return results
 
@@ -11537,7 +11597,7 @@ class AliasDataFrame:
             if we_added:
                 if verbose:
                     print(f"[draw_figures] Clearing {len(we_added)} materialized aliases")
-                self.drop_materialized(we_added)
+                self.dematerialize(drop=list(we_added))
         
         return results
 
