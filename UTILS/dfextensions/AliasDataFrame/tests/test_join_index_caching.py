@@ -80,15 +80,30 @@ class TestJoinIndexCaching:
         assert adf._join_cache_hits == 2, f"Expected 2 hits, got {adf._join_cache_hits}"
     
     def test_cache_cleared_after_materialize_batch(self, setup_with_subframe):
-        """Cache should be cleared after materialize_aliases completes."""
+        """Cache should SURVIVE after materialize_aliases completes.
+        
+        Phase 13.21.ADF: changed from "cache cleared" to "cache preserved".
+        materialize_aliases only adds value columns — join key columns are
+        unchanged, so cached join indices remain valid. Targeted invalidation
+        happens in register_subframe instead of blanket clear.
+        """
         adf = setup_with_subframe
         adf.add_alias('col_a', 'T.val_a')
         adf.materialize_aliases(pattern=r'col_.*')
         
-        assert adf._join_index_cache == {}, "Cache should be empty after materialize_aliases"
+        assert 'T' in adf._join_index_cache, (
+            "Cache should survive after materialize_aliases (Phase 13.21.ADF). "
+            "Join indices are still valid — only value columns were added."
+        )
     
     def test_cache_stats_reset_on_new_batch(self, setup_with_subframe):
-        """Cache stats should reset at start of each materialize_aliases call."""
+        """Cache stats should reset at start of each materialize_aliases call.
+        
+        Phase 13.21.ADF: cache now survives between materialize_aliases calls.
+        Stats still reset (counters track per-batch diagnostics), but the
+        second call sees cache HITS (not misses) because the join indices
+        from the first call are still valid.
+        """
         adf = setup_with_subframe
         
         adf.add_alias('col_a', 'T.val_a')
@@ -100,8 +115,14 @@ class TestJoinIndexCaching:
         
         adf.materialize_aliases(pattern=r'col_[cd]')
         
-        assert adf._join_cache_misses == 1
-        assert adf._join_cache_hits == 1
+        # Phase 13.21.ADF: cache survives from first call.
+        # Second call: col_c → HIT (T cached), col_d → HIT (T cached).
+        assert adf._join_cache_misses == 0, (
+            f"Expected 0 misses (cache survives), got {adf._join_cache_misses}"
+        )
+        assert adf._join_cache_hits == 2, (
+            f"Expected 2 hits (cache survives), got {adf._join_cache_hits}"
+        )
     
     def test_multiple_subframes_cached_separately(self):
         """Each subframe should have its own cache entry."""

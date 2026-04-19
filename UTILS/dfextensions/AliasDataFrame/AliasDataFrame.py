@@ -1521,6 +1521,10 @@ class AliasDataFrame:
                 for col in adf.df.columns
             }
         
+        # Phase 13.21.ADF: invalidate join cache for this subframe
+        # (new subframe data → old join indices are stale)
+        self._join_index_cache.pop(name, None)
+        
         # Add to runtime registry
         self._subframes.add_subframe(name, adf, index_columns, pre_index=pre_index)
         
@@ -2859,6 +2863,31 @@ class AliasDataFrame:
         
         return values
 
+    def _index_column_signature(self, index_cols):
+        """
+        O(1) content signature for join index columns.
+
+        Phase 13.21.ADF: used to validate join index cache entries.
+        Catches changes to index column content (length, dtype, endpoints)
+        without hashing the full column (~4M values).
+
+        Returns a hashable tuple. Two DataFrames with the same index column
+        content produce the same signature. Returns None if any column
+        is missing (forces cache miss).
+        """
+        parts = []
+        for col in sorted(index_cols):
+            if col not in self.df.columns:
+                return None  # column missing — force cache miss
+            series = self.df[col]
+            n = len(series)
+            parts.append((
+                col, n, series.dtype.str,
+                series.iloc[0] if n > 0 else None,
+                series.iloc[-1] if n > 0 else None,
+            ))
+        return tuple(parts)
+
     def _prepare_subframe_joins(self, expr, warn_missing_keys=True, alias_name=None):
         """
         Prepare subframe joins for expression evaluation.
@@ -2904,9 +2933,12 @@ class AliasDataFrame:
             # Check cache for precomputed join indices
             if sf_name in self._join_index_cache:
                 cache_entry = self._join_index_cache[sf_name]
-                # Validate cache entry (defensive check for future extensibility)
+                # Phase 13.21.ADF: content-based validation.
+                # Cache is valid if: same row count, same subframe object,
+                # and index column content signature matches (first/last/dtype).
                 if (cache_entry['n_rows'] == len(self.df) and 
-                    cache_entry['subframe_id'] == id(sub_adf.df)):
+                    cache_entry['subframe_id'] == id(sub_adf.df) and
+                    cache_entry.get('index_sig') == self._index_column_signature(index_cols)):
                     # CACHE HIT: Use cached indices
                     self._join_cache_hits += 1
                     indices = cache_entry['indices']
@@ -2922,12 +2954,13 @@ class AliasDataFrame:
             self._join_cache_misses += 1
             indices, missing_mask = self._compute_join_indices(sf_name, index_cols)
             
-            # Store in cache
+            # Store in cache (Phase 13.21.ADF: includes index column signature)
             self._join_index_cache[sf_name] = {
                 'indices': indices,
                 'missing_mask': missing_mask,
                 'n_rows': len(self.df),
                 'subframe_id': id(sub_adf.df),
+                'index_sig': self._index_column_signature(index_cols),
             }
             
             # Extract values using cached indices
@@ -4407,8 +4440,10 @@ class AliasDataFrame:
         
         result = self._run_with_profiling(_do_materialize, profile, profile_text, profile_binary)
         
-        # Clear join cache after batch (Phase 4)
-        self._join_index_cache = {}
+        # Phase 13.21.ADF: removed aggressive cache clear.
+        # Join indices depend only on index column content, not value columns.
+        # materialize_aliases only adds value columns, so cache is still valid.
+        # Targeted invalidation happens in register_subframe instead.
         
         return result
 
