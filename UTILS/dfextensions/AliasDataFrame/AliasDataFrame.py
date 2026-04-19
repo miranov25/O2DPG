@@ -5275,12 +5275,13 @@ class AliasDataFrame:
                     last_error = None
                     for sf_treename in tree_names_to_try:
                         try:
-                            # load_subframes=False prevents recursive subframe loading
+                            # Phase 13.22.ADF: recursive subframe loading enabled.
+                            # Subframes of subframes are now loaded automatically.
                             sf = AliasDataFrame.read_tree(
                                 filename,
                                 treename=sf_treename,
                                 num_workers=num_workers,
-                                load_subframes=False
+                                load_subframes=True
                             )
                             break  # Found it!
                         except (ValueError, KeyError) as e:
