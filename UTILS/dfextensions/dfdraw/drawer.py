@@ -1260,9 +1260,6 @@ class DFDraw:
             for name in self._HIST_FORWARDED_NAMES:
                 val = _local.get(name, _MISSING)
                 if val is not _MISSING and val is not None:
-                    # FIX1: auto_title=False is signature default, not user choice.
-                    if name == 'auto_title' and val is False:
-                        continue
                     vector_kwargs.setdefault(name, val)
             return self._draw_vector(
                 y_expr, x_expr, self.hist,
@@ -1677,10 +1674,6 @@ class DFDraw:
             for name in self._PROFILE_FORWARDED_NAMES:
                 val = _local.get(name, _MISSING)
                 if val is not _MISSING and val is not None:
-                    # FIX1: auto_title=False is the SIGNATURE DEFAULT, not a user choice.
-                    # Skip it so _draw_vector's vector-mode default-True logic can inject.
-                    if name == 'auto_title' and val is False:
-                        continue
                     vector_kwargs.setdefault(name, val)
             return self._draw_vector(
                 y_expr, x_expr, self.profile,
@@ -2728,10 +2721,13 @@ class DFDraw:
                         fontsize=get_style_value("axes.titlesize", 14) + 2
                     )
                 
-                # Layout
-                plt.tight_layout()
+                # Layout — tight_layout with reserved space for suptitle
                 if suptitle:
-                    plt.subplots_adjust(top=0.92)
+                    # Reserve top 5% for suptitle; tight_layout arranges
+                    # subplots (including their titles) within the remainder.
+                    plt.tight_layout(rect=[0, 0, 1, 0.95])
+                else:
+                    plt.tight_layout()
                 
                 # Save
                 save_path = None
