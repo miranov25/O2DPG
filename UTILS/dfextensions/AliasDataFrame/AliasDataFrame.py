@@ -11228,7 +11228,11 @@ class AliasDataFrame:
                 expr = merged_spec.get('expr', name)
                 group_by = merged_spec.get('group_by')
                 color = merged_spec.get('color')
-                all_needed.update(self._parse_expr_aliases(expr, group_by, color))
+                # BUG FIX: include selection + weights in alias discovery
+                selection = merged_spec.get('selection')
+                weights = merged_spec.get('weights')
+                all_needed.update(self._parse_expr_aliases(expr, group_by, color,
+                                                           selection=selection, weights=weights))
             
             # Materialize ALL at once
             to_materialize = all_needed - already_materialized
@@ -11421,8 +11425,12 @@ class AliasDataFrame:
                 expr = merged_plot.get('expr', '')
                 group_by = merged_plot.get('group_by')
                 color = merged_plot.get('color')
+                # BUG FIX: include selection + weights in alias discovery
+                selection = merged_plot.get('selection')
+                weights = merged_plot.get('weights')
                 
-                all_needed.update(self._parse_expr_aliases(expr, group_by, color))
+                all_needed.update(self._parse_expr_aliases(expr, group_by, color,
+                                                           selection=selection, weights=weights))
         
         # ═══════════════════════════════════════════════════════════════════
         # PHASE 2: Batch-load branches in lazy reader mode
