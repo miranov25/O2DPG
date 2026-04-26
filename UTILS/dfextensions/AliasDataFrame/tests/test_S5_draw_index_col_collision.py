@@ -89,29 +89,37 @@ class TestDrawIndexColCollision:
         """
         S5_4: values in drawn profile match manual subframe lookup.
         Not just no-crash — correctness check.
+        Uses deterministic fixture to guarantee test point exists.
         """
-        adf = _build_adf_with_index_col_subframe()
-        sf = adf.get_subframe('Stats')
+        # Deterministic: every (sec, tgl) combination present
+        main_df = pd.DataFrame({
+            'sec': np.array([0, 1, 2, 0, 1, 2], dtype=np.int8),
+            'tgl': np.array([0, 0, 0, 1, 1, 1], dtype=np.int8),
+            'x': np.array([1, 2, 3, 4, 5, 6], dtype=np.float32),
+        })
+        sub_df = pd.DataFrame({
+            'sec': np.array([0, 1, 2, 0, 1, 2], dtype=np.int8),
+            'tgl': np.array([0, 0, 0, 1, 1, 1], dtype=np.int8),
+            'dy_median': np.array([10, 20, 30, 40, 50, 60], dtype=np.float32),
+        })
 
-        # Materialize the subframe column via draw's lazy path
-        adf.materialize_aliases()  # ensure all aliases materialized
+        adf = AliasDataFrame(main_df)
+        sf = AliasDataFrame(sub_df)
+        adf.register_subframe('Stats', sf, index_columns=['sec', 'tgl'])
 
-        # The draw resolver creates Stats_dy_median on df_subset via merge.
-        # We verify the merge is correct by checking a few values manually.
-        # Pick sec=5, tgl=10 — look up dy_median from subframe
-        mask_main = (adf.df['sec'] == 5) & (adf.df['tgl'] == 10)
-        mask_sub = (sf.df['sec'] == 5) & (sf.df['tgl'] == 10)
+        adf.add_alias('test_val', 'Stats.dy_median', dtype=np.float32)
+        adf.materialize_aliases(names=['test_val'])
 
-        if mask_main.any() and mask_sub.any():
-            expected = sf.df.loc[mask_sub, 'dy_median'].iloc[0]
-            # Use _prepare_subframe_joins to get the joined column
-            adf.add_alias('test_val', 'Stats.dy_median', dtype=np.float32)
-            adf.materialize_aliases(names=['test_val'])
-            actual = adf.df.loc[mask_main, 'test_val'].iloc[0]
-            np.testing.assert_allclose(
-                actual, expected, rtol=1e-5,
-                err_msg="S5_4: joined value doesn't match subframe lookup"
-            )
+        # sec=1, tgl=0 → dy_median=20
+        mask = (adf.df['sec'] == 1) & (adf.df['tgl'] == 0)
+        assert mask.any(), "fixture must contain test point"
+        actual = adf.df.loc[mask, 'test_val'].iloc[0]
+        assert actual == 20.0, f"S5_4: expected 20.0, got {actual}"
+
+        # sec=2, tgl=1 → dy_median=60
+        mask2 = (adf.df['sec'] == 2) & (adf.df['tgl'] == 1)
+        actual2 = adf.df.loc[mask2, 'test_val'].iloc[0]
+        assert actual2 == 60.0, f"S5_4: expected 60.0, got {actual2}"
 
     def test_S5_5_draw_figures_index_col(self):
         """

@@ -42,8 +42,8 @@ AliasDataFrame is a high-performance data analysis framework for particle physic
 
 **Key Metrics:**
 - Performance: 60-770x speedups achieved; production pipeline 2× faster (1452s → 722s)
-- Test Coverage: 1521 tests passing, 125 invariance tests
-- Lines of Code: ~12,800 (AliasDataFrame.py)
+- Test Coverage: 1538 tests passing, 125 invariance tests
+- Lines of Code: ~12,930 (AliasDataFrame.py)
 - Features: 44 in taxonomy (26 verified, 14 smoke-only, 3 broken, 1 planned)
 
 **Development Team:**
@@ -234,7 +234,65 @@ Mode #11 discipline).
 
 ---
 
+### Phase 13.22.ADF: Recursive Subframe Loading in read_tree
+**Dates**: 2026-04-19  
+**Status**: ✅ Merged  
+**Commit**: `cf62cf33`
+
+**Fix**: One-line change — `read_tree` line 5298 `load_subframes=False` → `True`. `export_tree` already writes nested subframes recursively (Phase 13.20). `read_tree` now loads them recursively too.
+
+**Result**: E2_2 (nested subframe roundtrip) changed from FAILING to PASSING. 1523 passed (+2).
+
+**Out of scope**: Multi-level dotted expression resolution (`Outer.Inner.val`) — deferred to Phase 13.23.ADF proposal. Metadata skip (A3) — reverted, needs minimal-UserInfo approach.
+
+**Test results**: 1523 passed, 6F+1E pre-existing.
+
+---
+
 ## Bug Fixes
+
+### BUG_AliasDataFrame_20260420_draw_selection_alias
+**Dates**: 2026-04-20  
+**Status**: ✅ Fixed  
+**Commit**: `6f93e2d1`
+
+**Problem**: `draw_batch()` and `draw_figures()` do not pass `selection` or `weights` to `_parse_expr_aliases()`. Aliases used only in selections (e.g., `isNotEdge`) are never auto-materialized. `pandas.eval` fails with `name 'isNotEdge' is not defined`.
+
+**Root cause**: Two call sites pass `(expr, group_by, color)` but omit `selection=` and `weights=`. `draw()` was correct (already passes all params).
+
+**Fix**: 2 lines per method — pass `selection` and `weights`.
+
+**Tests**: S1 (xfail — draw lazy=False limitation), S1b, S2, S3, S4.
+
+**Discovered**: Production QA (`makeIterationFit123_QA`) on gr17.
+
+### BUG_AliasDataFrame_20260424_dtype_loss_subframe_join
+**Dates**: 2026-04-24  
+**Status**: ✅ Fixed  
+**Commit**: `bfb4d22f`
+
+**Problem**: Aliases declared with integer/bool dtype lose their dtype through subframe joins. The join produces NaN for missing keys; pandas raises `IntCastingNaNError` on `.astype(int8)`; the cast fails silently; result stays float32. Downstream bool operators (`isPrimITS & isNotEdge`) fail.
+
+**Root cause**: Three `.astype()` calls caught only `AttributeError`, not `IntCastingNaNError`.
+
+**Fix**: New `_safe_dtype_cast()` helper fills NaN with 0 (int) or False (bool) before casting, with `RuntimeWarning`. Replaces all 3 raw `.astype()` calls.
+
+**Tests**: D1-D5 (int8, bool, float unaffected, no-NaN no-warning, bool & bool production pattern).
+
+### BUG_AliasDataFrame_20260426_draw_index_col_collision
+**Dates**: 2026-04-26  
+**Status**: ✅ Fixed  
+**Commit**: `d3188527`
+
+**Problem**: `adf.draw('Sub.col:Sub.index_col')` raises `KeyError` when the plotted column is also one of the subframe's `index_columns`. The draw resolver selects the column twice via `sf.df[index_cols + [col_name]]`, then `.rename()` renames both copies (pandas rename is name-based), destroying the join key.
+
+**Root cause**: No guard for `col_name in index_cols` in two draw resolvers.
+
+**Fix**: 5 lines per resolver — guard `col_name in index_cols`, copy + add instead of select + rename. Two locations: `draw()` and `draw_figures()`. `draw_batch()` uses direct index lookup — not affected.
+
+**Tests**: S5_1-S5_6 (index col on x/y axis, selection, correctness, draw_figures, both axes as index cols).
+
+**Discovered**: O2DistAI Phase 0.3 (`makeTrackPairGB` QA plots).
 
 ### BUG_AliasDataFrame_20260324_draw_subframe_resolution
 **Dates**: 2026-03-25  
@@ -680,6 +738,10 @@ Remaining overhead is Python/Pandas framework cost.
 | 13.19.ADF.FIX1 | 8 (K1+K2) | 1499 |
 | 13.20.ADF | 8 (E1+E2) | 1510 |
 | 13.21.ADF | 11 (J1+J2) | 1521 |
+| 13.22.ADF | 0 (E2_2 fixed) | 1523 |
+| BUG draw_selection_alias | 5 (S1-S4) | 1528 |
+| BUG dtype_loss_subframe | 5 (D1-D5) | 1533 |
+| BUG draw_index_col | 6 (S5_1-S5_6) | 1538 |
 
 ---
 
@@ -687,14 +749,16 @@ Remaining overhead is Python/Pandas framework cost.
 
 - [x] ~~CAPABILITY_MATRIX.md creation~~ (Phase 13.11)
 - [x] ~~PHASE_BEGIN_AliasDataFrame tag~~ (Phase 13.20 close)
+- [x] ~~`read_tree` recursive subframe loading~~ (Phase 13.22)
+- [ ] Phase 13.23.ADF — Multi-level dotted expression resolution (v1.2 approved)
 - [ ] A2 — LZ4 default compression (one-line + compat test, ~15-20s savings)
-- [ ] A3 — Batch metadata serialization (~20-30s savings)
-- [ ] `read_tree` recursive subframe loading (line 5172 `load_subframes=False` → `True`)
+- [ ] A3 — Batch metadata serialization (~50-55s savings, needs minimal-UserInfo approach)
 - [ ] GB tuple support for `linear_columns` (PolynomialSpec production blocker)
 - [ ] Technical Summary v1.6 full public API documentation (~90 methods)
 - [ ] P1 tests: I2_6, I4_2, I4_3 fixes
 - [ ] Fix `register_subframe_lazy()` bug (BUG_AliasDataFrame_20260116)
 - [ ] Axis title lookup for subframe columns (`Sub_dy` vs `Side.dy`)
+- [ ] draw() lazy=False doesn't materialize selection aliases (S1 xfail)
 
 ---
 
