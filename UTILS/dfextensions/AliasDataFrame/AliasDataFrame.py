@@ -1194,6 +1194,62 @@ class AliasDataFrame:
                 self._schema["columns"][name] = {}
             self._schema["columns"][name]["dtype"] = dtype
 
+    def _safe_dtype_cast(self, result, target_dtype, alias_name=None):
+        """
+        Cast result to target_dtype, handling NaN values for integer/bool dtypes.
+        
+        BUG FIX: pandas raises IntCastingNaNError when casting float→int with NaN.
+        Subframe joins produce NaN for missing keys. This method fills NaN with 0
+        (for int) or False (for bool) before casting, emitting a warning.
+        
+        Parameters
+        ----------
+        result : np.ndarray or pd.Series
+            Values to cast.
+        target_dtype : dtype
+            Target numpy dtype.
+        alias_name : str, optional
+            For warning messages.
+        
+        Returns
+        -------
+        np.ndarray or pd.Series
+            Values cast to target_dtype.
+        """
+        import warnings
+        
+        target = np.dtype(target_dtype)
+        
+        # Float/complex dtypes handle NaN natively — direct cast
+        if target.kind in ('f', 'c'):
+            try:
+                return result.astype(target_dtype)
+            except AttributeError:
+                return target_dtype(result)
+        
+        # Integer or bool — NaN must be filled before casting
+        try:
+            arr = np.asarray(result, dtype=np.float64)
+        except (ValueError, TypeError):
+            arr = np.asarray(result)
+        
+        nan_mask = ~np.isfinite(arr)
+        if nan_mask.any():
+            fill = False if target.kind == 'b' else 0
+            arr = np.where(nan_mask, fill, arr)
+            n_filled = int(nan_mask.sum())
+            warnings.warn(
+                f"[dtype_cast] Alias '{alias_name}': {n_filled} NaN values "
+                f"filled with {fill} before casting to {target_dtype}. "
+                f"Set fill_value in add_alias() to control this.",
+                RuntimeWarning
+            )
+        
+        try:
+            return arr.astype(target_dtype)
+        except (AttributeError, TypeError):
+            return target_dtype(arr)
+
     @property
     def constant_aliases(self):
         """
@@ -4127,10 +4183,7 @@ class AliasDataFrame:
                 
                 result_dtype = dtype or self.alias_dtypes.get(name)
                 if result_dtype is not None:
-                    try:
-                        result = result.astype(result_dtype)
-                    except AttributeError:
-                        result = result_dtype(result)
+                    result = self._safe_dtype_cast(result, result_dtype, alias_name=name)
                 self.df[name] = result
                 
                 # Emit aggregated warning BEFORE restoring config (so warn_missing_keys=False takes effect)
@@ -4297,7 +4350,7 @@ class AliasDataFrame:
                             # Apply dtype if specified
                             result_dtype = self.alias_dtypes.get(name)
                             if result_dtype is not None:
-                                arr = arr.astype(result_dtype)
+                                arr = self._safe_dtype_cast(arr, result_dtype, alias_name=name)
                             results[name] = arr
                             added.append(name)
                         arrow_pipeline_succeeded = True
@@ -4391,10 +4444,7 @@ class AliasDataFrame:
                     # Apply dtype if specified
                     result_dtype = self.alias_dtypes.get(name)
                     if result_dtype is not None:
-                        try:
-                            result = result.astype(result_dtype)
-                        except AttributeError:
-                            result = result_dtype(result)
+                        result = self._safe_dtype_cast(result, result_dtype, alias_name=name)
                     
                     results[name] = result
                     added.append(name)
