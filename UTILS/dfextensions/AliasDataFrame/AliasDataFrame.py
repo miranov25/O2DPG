@@ -10376,11 +10376,17 @@ class AliasDataFrame:
                 df_subset = df_subset.copy()
                 for sf_name, col_name, dot_ref, flat_ref, index_cols in refs_to_resolve:
                     sf = self.get_subframe(sf_name)
-                    # Rename subframe column to flat_ref before merge to avoid
-                    # pandas suffix collision (dy_x, dy_y) when names conflict
-                    sf_keys = sf.df[index_cols + [col_name]].rename(
-                        columns={col_name: flat_ref}
-                    )
+                    # BUG FIX: when col_name is also an index column, selecting
+                    # it twice then renaming destroys the index column.
+                    if col_name in index_cols:
+                        sf_keys = sf.df[index_cols].copy()
+                        sf_keys[flat_ref] = sf_keys[col_name]
+                    else:
+                        # Rename subframe column to flat_ref before merge to avoid
+                        # pandas suffix collision (dy_x, dy_y) when names conflict
+                        sf_keys = sf.df[index_cols + [col_name]].rename(
+                            columns={col_name: flat_ref}
+                        )
                     merged = df_subset[index_cols].merge(sf_keys, on=index_cols, how='left')
                     df_subset[flat_ref] = merged[flat_ref].values
             
@@ -11590,9 +11596,15 @@ class AliasDataFrame:
                 df_subset = df_subset.copy()
                 for sf_name, col_name, dot_ref, flat_ref, index_cols in refs_to_resolve:
                     sf = self.get_subframe(sf_name)
-                    sf_keys = sf.df[index_cols + [col_name]].rename(
-                        columns={col_name: flat_ref}
-                    )
+                    # BUG FIX: when col_name is also an index column, selecting
+                    # it twice then renaming destroys the index column.
+                    if col_name in index_cols:
+                        sf_keys = sf.df[index_cols].copy()
+                        sf_keys[flat_ref] = sf_keys[col_name]
+                    else:
+                        sf_keys = sf.df[index_cols + [col_name]].rename(
+                            columns={col_name: flat_ref}
+                        )
                     merged = df_subset[index_cols].merge(sf_keys, on=index_cols, how='left')
                     df_subset[flat_ref] = merged[flat_ref].values
             
