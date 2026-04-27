@@ -3926,34 +3926,71 @@ class AliasDataFrame:
         n_materialized = sum(1 for info in result.values() if info['materialized'])
         print(f"\nTotal: {len(result)} aliases, {n_materialized} materialized, {n_broken} broken")
 
-    def dependency_tree(self, alias, max_depth=None, show_expr=True, _depth=0, _prefix="", _is_last=True):
+    def dependency_tree(self, alias, max_depth=None, show_expr=True, output='text',
+                        file=None, _depth=0, _prefix="", _is_last=True):
         """
-        Print hierarchical dependency tree for an alias.
+        Show hierarchical dependency tree for alias(es).
         
-        Shows the complete dependency structure with visual tree formatting,
-        including DataFrame columns and subframe references.
+        Displays the complete dependency structure with visual tree formatting,
+        including DataFrame columns, subframe references, and registered functions.
         
         Parameters
         ----------
-        alias : str
-            Root alias to show tree for
+        alias : str or list of str
+            Root alias(es) to show tree for. If a list, each alias is a
+            separate root in the tree.
         max_depth : int, optional
             Maximum depth to traverse (None = unlimited)
         show_expr : bool, default=True
             If True, show expression next to each node
+        output : str, default='text'
+            Output format:
+            - 'text': print tree to stdout (default, backward compatible)
+            - 'html': generate interactive collapsible HTML tree
+            - 'list': return flat list of all dependency names (unique, topological)
+        file : str, optional
+            For output='html': write HTML to this file path.
+            If None with output='html', returns the HTML string.
+            
+        Returns
+        -------
+        None
+            For output='text' (prints to stdout)
+        str
+            For output='html' without file (returns HTML string)
+        list of str
+            For output='list' (unique dependency names in resolution order)
             
         Examples
         --------
-        >>> adf.dependency_tree('isOKGBTrackFit0')
-        isOKGBTrackFit0 = (row<152) & (abs(dyC0T)<2) & ...
+        >>> adf.dependency_tree('isOKFit')
+        isOKFit = (row<152) & (abs(dyC0T)<2) & ...
         ├── dyC0T = dy_c - dyC0T_median
-        │   ├── dy_c [column]
         │   └── dyC0T_median = DTrack0.dyC0T_median
-        │       └── DTrack0.dyC0T_median [subframe]
         └── isNotEdge = abs(y+dy)<(x*(pi/18)-1.5)
-            └── dy = T.dy
-                └── T.dy [subframe]
+        
+        >>> adf.dependency_tree(['dy_I5', 'dz_I5'], output='html', file='deps.html')
+        
+        >>> deps = adf.dependency_tree('dy_I5', output='list')
+        ['dy', 'tgSlp', 'row', 'x', 'y', 'z', ...]
         """
+        # Phase 13.23.ADF: support str or list input, multiple output modes
+        if output in ('html', 'list'):
+            aliases = [alias] if isinstance(alias, str) else list(alias)
+            if output == 'html':
+                return self._dependency_tree_html(aliases, max_depth, show_expr, file)
+            else:
+                return self._dependency_tree_list(aliases, max_depth)
+        
+        # ── Original text output (backward compatible) ──
+        # Handle list input for text mode too
+        if isinstance(alias, (list, tuple)):
+            for a in alias:
+                self.dependency_tree(a, max_depth=max_depth, show_expr=show_expr,
+                                     output='text', _depth=0)
+                print()  # blank line between roots
+            return
+        
         # Handle internal recursion parameters
         if _depth == 0:
             # Root call - print the root node
@@ -4020,6 +4057,220 @@ class AliasDataFrame:
                     _prefix=child_prefix,
                     _is_last=is_last
                 )
+
+    def _dependency_tree_build(self, alias, max_depth=None, _depth=0, _visited=None):
+        """
+        Build dependency tree as nested dict structure.
+        
+        Returns dict with keys: name, type, expr, children.
+        Used by _dependency_tree_html and _dependency_tree_list.
+        """
+        if _visited is None:
+            _visited = set()
+        
+        # Cycle guard
+        if alias in _visited:
+            return {'name': alias, 'type': 'cycle', 'expr': None, 'children': []}
+        
+        if alias in self.aliases:
+            node_type = 'alias'
+            expr = self.aliases[alias]
+        elif alias in self.df.columns:
+            return {'name': alias, 'type': 'column', 'expr': None, 'children': []}
+        elif '.' in alias:
+            return {'name': alias, 'type': 'subframe', 'expr': None, 'children': []}
+        else:
+            return {'name': alias, 'type': 'unknown', 'expr': None, 'children': []}
+        
+        if max_depth is not None and _depth >= max_depth:
+            return {'name': alias, 'type': 'alias', 'expr': expr, 'children': []}
+        
+        _visited.add(alias)
+        deps = self._get_alias_dependencies(alias, expr)
+        deps = sorted(deps, key=lambda x: (x[0] != 'alias', x[1]))
+        
+        children = []
+        for dep_type, dep_name in deps:
+            if dep_type == 'alias':
+                children.append(self._dependency_tree_build(
+                    dep_name, max_depth, _depth + 1, _visited.copy()
+                ))
+            elif dep_type == 'column':
+                children.append({'name': dep_name, 'type': 'column', 'expr': None, 'children': []})
+            elif dep_type == 'subframe':
+                children.append({'name': dep_name, 'type': 'subframe', 'expr': None, 'children': []})
+        
+        return {'name': alias, 'type': 'alias', 'expr': expr, 'children': children}
+
+    def _dependency_tree_list(self, aliases, max_depth=None):
+        """
+        Return flat list of unique dependency names in resolution order (leaves first).
+        """
+        result = []
+        seen = set()
+        
+        def _walk(node):
+            for child in node['children']:
+                _walk(child)
+            if node['name'] not in seen:
+                seen.add(node['name'])
+                result.append(node['name'])
+        
+        for alias in aliases:
+            tree = self._dependency_tree_build(alias, max_depth)
+            _walk(tree)
+        
+        return result
+
+    def _dependency_tree_html(self, aliases, max_depth=None, show_expr=True, file=None):
+        """
+        Generate interactive collapsible HTML dependency tree.
+        
+        Self-contained HTML with expand/collapse, depth buttons, dark mode support.
+        """
+        import html as html_module
+        
+        trees = [self._dependency_tree_build(a, max_depth) for a in aliases]
+        
+        def _count(node):
+            n_alias, n_col, n_sf = 0, 0, 0
+            if node['type'] == 'alias': n_alias = 1
+            elif node['type'] == 'column': n_col = 1
+            elif node['type'] == 'subframe': n_sf = 1
+            for c in node['children']:
+                a, co, s = _count(c)
+                n_alias += a; n_col += co; n_sf += s
+            return n_alias, n_col, n_sf
+        
+        total_a, total_c, total_s = 0, 0, 0
+        for t in trees:
+            a, c, s = _count(t)
+            total_a += a; total_c += c; total_s += s
+        
+        node_id = [0]
+        
+        def _render_node(node, depth=0):
+            nid = node_id[0]
+            node_id[0] += 1
+            name_esc = html_module.escape(node['name'])
+            
+            if node['type'] == 'column':
+                return (f'<div class="leaf col" style="padding-left:{depth*20}px">'
+                        f'<span class="tag tag-col">col</span> {name_esc}</div>')
+            elif node['type'] == 'subframe':
+                return (f'<div class="leaf sf" style="padding-left:{depth*20}px">'
+                        f'<span class="tag tag-sf">subframe</span> {name_esc}</div>')
+            elif node['type'] == 'cycle':
+                return (f'<div class="leaf" style="padding-left:{depth*20}px;color:var(--warn)">'
+                        f'&#8635; {name_esc} (cycle)</div>')
+            elif node['type'] == 'unknown':
+                return (f'<div class="leaf" style="padding-left:{depth*20}px;opacity:0.5">'
+                        f'{name_esc} [unknown]</div>')
+            
+            expr_esc = html_module.escape(node['expr'] or '') if show_expr else ''
+            expr_html = f' <span class="expr">= {expr_esc}</span>' if expr_esc else ''
+            
+            if not node['children']:
+                return (f'<div class="leaf alias" style="padding-left:{depth*20}px">'
+                        f'<span class="tag tag-alias">alias</span> '
+                        f'<strong>{name_esc}</strong>{expr_html}</div>')
+            
+            children_html = ''.join(_render_node(c, depth + 1) for c in node['children'])
+            
+            return (f'<div class="node" style="padding-left:{depth*20}px">'
+                    f'<div class="toggle" onclick="toggle(this)">'
+                    f'<span class="arrow">&#9660;</span> '
+                    f'<span class="tag tag-alias">alias</span> '
+                    f'<strong>{name_esc}</strong>{expr_html}</div>'
+                    f'<div class="children">{children_html}</div>'
+                    f'</div>')
+        
+        tree_html = ''.join(_render_node(t) for t in trees)
+        roots_str = ', '.join(aliases)
+        
+        page = f'''<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>Dependency tree: {html_module.escape(roots_str)}</title>
+<style>
+:root {{ --bg: #fff; --fg: #1a1a1a; --fg2: #666; --border: #e0e0e0;
+  --col: #0c447c; --col-bg: #e6f1fb; --sf: #085041; --sf-bg: #e1f5ee;
+  --alias: #3c3489; --alias-bg: #eeedfe; --warn: #993c1d; }}
+@media (prefers-color-scheme:dark) {{
+  :root {{ --bg: #1a1a1a; --fg: #e0e0e0; --fg2: #999; --border: #333;
+    --col: #85b7eb; --col-bg: #042c53; --sf: #5dcaa5; --sf-bg: #04342c;
+    --alias: #afa9ec; --alias-bg: #26215c; --warn: #f0997b; }}
+}}
+* {{ margin:0; padding:0; box-sizing:border-box; }}
+body {{ font-family: -apple-system, "Segoe UI", sans-serif; font-size:13px;
+  color:var(--fg); background:var(--bg); padding:16px; line-height:1.6; }}
+.hdr {{ display:flex; justify-content:space-between; align-items:center;
+  margin-bottom:12px; padding-bottom:8px; border-bottom:1px solid var(--border); }}
+.stats {{ font-size:12px; color:var(--fg2); }}
+.stats span {{ margin-left:12px; }}
+.btns button {{ font-size:12px; padding:3px 10px; cursor:pointer;
+  background:var(--bg); border:1px solid var(--border); border-radius:4px;
+  color:var(--fg); }}
+.btns button:hover {{ background:var(--border); }}
+.node {{ margin:1px 0; }}
+.leaf {{ padding:2px 0; white-space:nowrap; }}
+.toggle {{ cursor:pointer; padding:2px 0; white-space:nowrap; user-select:none; }}
+.toggle:hover {{ background: var(--border); border-radius:3px; }}
+.arrow {{ display:inline-block; width:14px; font-size:10px; color:var(--fg2);
+  transition:transform 0.15s; }}
+.collapsed .arrow {{ transform: rotate(-90deg); }}
+.collapsed > .children {{ display:none; }}
+.tag {{ font-size:10px; padding:1px 5px; border-radius:3px; font-weight:500; }}
+.tag-col {{ background:var(--col-bg); color:var(--col); }}
+.tag-sf {{ background:var(--sf-bg); color:var(--sf); }}
+.tag-alias {{ background:var(--alias-bg); color:var(--alias); }}
+.expr {{ color:var(--fg2); font-size:12px; }}
+strong {{ font-weight:500; }}
+.col {{ color:var(--col); }}
+.sf {{ color:var(--sf); }}
+</style></head><body>
+<div class="hdr">
+  <div class="btns">
+    <button onclick="expandAll()">Expand all</button>
+    <button onclick="collapseAll()">Collapse all</button>
+    <button onclick="collapseDepth(2)">Depth 2</button>
+    <button onclick="collapseDepth(4)">Depth 4</button>
+  </div>
+  <div class="stats">
+    Roots: {len(aliases)}
+    <span>{total_a} aliases</span>
+    <span>{total_c} columns</span>
+    <span>{total_s} subframes</span>
+  </div>
+</div>
+<div id="tree">{tree_html}</div>
+<script>
+function toggle(el) {{
+  el.parentElement.classList.toggle('collapsed');
+}}
+function expandAll() {{
+  document.querySelectorAll('.node').forEach(n => n.classList.remove('collapsed'));
+}}
+function collapseAll() {{
+  document.querySelectorAll('.node').forEach(n => n.classList.add('collapsed'));
+}}
+function collapseDepth(maxD) {{
+  expandAll();
+  document.querySelectorAll('.node').forEach(n => {{
+    let d = 0, p = n.parentElement;
+    while (p && p.id !== 'tree') {{ if (p.classList.contains('node')) d++; p = p.parentElement; }}
+    if (d >= maxD) n.classList.add('collapsed');
+  }});
+}}
+</script></body></html>'''
+        
+        if file is not None:
+            with open(file, 'w', encoding='utf-8') as f:
+                f.write(page)
+            print(f"[dependency_tree] HTML written to {file} "
+                  f"({len(aliases)} roots, {total_a} aliases, "
+                  f"{total_c} columns, {total_s} subframes)")
+            return None
+        return page
     
     def _get_alias_dependencies(self, alias_name, expr):
         """
