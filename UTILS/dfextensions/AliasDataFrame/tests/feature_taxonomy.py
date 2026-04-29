@@ -1,7 +1,7 @@
 """
 Feature Taxonomy — AliasDataFrame
 
-41 features (PHASE_13_11_B approved). Patterns match actual pytest node IDs.
+44 features + 3 new (PHASE_13_23_ADF). Patterns match actual pytest node IDs.
 Updated from .pytest_report.json (2026-04-02, 1456 tests).
 Phase 13.12.ADF (2026-04-12): Added test_I5..I17 patterns for the 31 new
 invariance tests. No new features added — existing features gain
@@ -9,6 +9,9 @@ verification coverage.
 Phase 13.18.ADF (2026-04-13): Added 3 new features under REGISTERED_FUNCTIONS
 category (FUNC.regression_metadata, FUNC.evaluator_from_metadata,
 FUNC.regression_persistence) covered by 11 R-tests. Total features: 41 → 44.
+Phase 13.23.ADF (2026-04-29): Added 3 new features (SUB.multilevel,
+CORE.dependency_tree, CORE.invalidation). Extended 6 existing features
+with new test patterns (J1, K1, K2, E1, E2, S1, D1, S5). Total: 44 → 47.
 """
 
 FEATURES = [
@@ -58,6 +61,8 @@ FEATURES = [
          "test_alias_dataframe.py::TestDtypeRestoration",
          # Phase 13.12.ADF
          "test_I16_dtype_preservation_invariance.py",
+         # BUG FIX 20260424 — dtype loss through subframe join
+         "test_D1_dtype_subframe_join.py",
      ]},
     {"id": "CORE.constructor", "name": "DataFrame creation & initialization", "category": "CORE",
      "test_patterns": [
@@ -100,6 +105,8 @@ FEATURES = [
          "test_invariance_subframe.py",
          # Phase 13.12.ADF
          "test_I14_join_index_invariance.py",
+         # Phase 13.21.ADF — join index caching
+         "test_J1_join_cache.py",
      ]},
     {"id": "SUB.composite_key", "name": "Composite key operations", "category": "SUBFRAMES",
      "test_patterns": [
@@ -120,6 +127,9 @@ FEATURES = [
     {"id": "SUB.nested", "name": "Nested subframe export", "category": "SUBFRAMES",
      "test_patterns": [
          "test_alias_dataframe.py::TestExportTreeColumns",
+         # Phase 13.20/13.22.ADF — export_tree roundtrip + recursive loading
+         "test_E1_export_tree_roundtrip.py",
+         "test_E2_export_tree_fix_a.py",
      ]},
 
     # ── SCHEMA (4) ──
@@ -187,16 +197,23 @@ FEATURES = [
          "test_draw_chain_integration.py",
          # Phase 13.12.ADF
          "test_I7_draw_path_invariance.py",
+         # Phase 13.19.ADF.FIX1 — vector draw kwarg forwarding
+         "test_K1_vector_draw_kwarg_diagnostic.py",
+         "test_K2_vector_draw_end_to_end.py",
      ]},
     {"id": "DRAW.batch", "name": "draw_batch() & draw_figures()", "category": "DRAWING",
      "test_patterns": [
          "test_draw_figures.py",
+         # BUG FIX 20260420 — selection/weights alias materialization
+         "test_S1_draw_selection_alias.py",
      ]},
     {"id": "DRAW.subframe_resolution", "name": "Subframe column resolution in draw", "category": "DRAWING",
      "test_patterns": [
          "test_draw_subframe_resolution.py",
          # Phase 13.12.ADF
          "test_I7_draw_path_invariance.py::TestI7DrawPathEquivalence::test_I7_2_draw_subframe_column_equals_explicit_alias",
+         # BUG FIX 20260426 — index col collision in draw
+         "test_S5_draw_index_col_collision.py",
      ]},
     {"id": "DRAW.compound_expr", "name": "Lazy materialization of compound expressions", "category": "DRAWING",
      "test_patterns": [
@@ -327,5 +344,26 @@ FEATURES = [
      "category": "REGISTERED_FUNCTIONS",
      "test_patterns": [
          "test_R1_2_evaluator_roundtrip_invariance.py",
+     ]},
+
+    # ── Phase 13.23.ADF — New features (3) ──
+    {"id": "SUB.multilevel",
+     "name": "Multi-level dotted subframe resolution (A.B.C.val)",
+     "category": "SUBFRAMES",
+     "test_patterns": [
+         "test_N1_recursive_subframe_invariance.py",
+     ]},
+    {"id": "CORE.dependency_tree",
+     "name": "Dependency tree output (text/html/list)",
+     "category": "CORE",
+     "test_patterns": [
+         "test_T1_dependency_tree.py",
+         "test_dependency_tree.py",
+     ]},
+    {"id": "CORE.invalidation",
+     "name": "Alias invalidation on expression redefine",
+     "category": "CORE",
+     "test_patterns": [
+         "test_V1_alias_invalidation.py",
      ]},
 ]
