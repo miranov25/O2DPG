@@ -3199,6 +3199,12 @@ class AliasDataFrame:
         # Write to schema
         self._schema["columns"][name] = spec
         
+        # BUG FIX: invalidate stale materialized columns.
+        # If this alias (or any alias depending on it) was already materialized,
+        # the old values are now stale. Drop them so next materialize_aliases()
+        # recomputes with the new expression.
+        self._invalidate_alias_cascade(name)
+        
         # Check for cycles (catches indirect cycles like A -> B -> A)
         self._check_for_cycles()
 
@@ -3432,6 +3438,59 @@ class AliasDataFrame:
         if len(result) != len(self.aliases):
             raise ValueError("Cycle detected in alias dependencies")
         return result
+
+    def _invalidate_alias_cascade(self, name):
+        """
+        Drop materialized column for `name` and all aliases that transitively
+        depend on it.
+        
+        Called by add_alias() when an expression is redefined, ensuring no
+        stale materialized values persist in self.df.
+        
+        Parameters
+        ----------
+        name : str
+            The alias whose expression changed.
+            
+        Returns
+        -------
+        list of str
+            Names of columns actually dropped from self.df.
+        """
+        from collections import defaultdict, deque
+        
+        # Nothing to invalidate if not materialized
+        if name not in self.df.columns:
+            return []
+        
+        # Build reverse dependency map: who depends on me?
+        deps = self._resolve_dependencies()  # {alias: set_of_alias_deps}
+        reverse = defaultdict(set)
+        for alias, alias_deps in deps.items():
+            for d in alias_deps:
+                reverse[d].add(alias)
+        
+        # BFS: collect name + all transitive dependents
+        to_invalidate = set()
+        queue = deque([name])
+        while queue:
+            current = queue.popleft()
+            if current not in to_invalidate:
+                to_invalidate.add(current)
+                for dependent in reverse.get(current, []):
+                    if dependent not in to_invalidate:
+                        queue.append(dependent)
+        
+        # Drop only columns that are actually materialized AND are aliases
+        # (never drop raw physical columns)
+        alias_names = set(self.aliases.keys())
+        to_drop = [c for c in to_invalidate 
+                    if c in self.df.columns and c in alias_names]
+        
+        if to_drop:
+            self.df.drop(columns=to_drop, inplace=True)
+        
+        return to_drop
 
     def _analyze_expression(self, expr):
         """
