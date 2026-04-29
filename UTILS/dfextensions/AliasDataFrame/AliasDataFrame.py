@@ -109,6 +109,10 @@ VERBOSE_DEFAULT = (VERBOSITY_BASIC | VERBOSITY_DTYPES | VERBOSITY_ALIASES |
                    VERBOSITY_COMPRESSION | VERBOSITY_SUBFRAMES)
 VERBOSE_FULL = 0xFF  # All flags
 
+# Phase 13.23.ADF: maximum depth for nested subframe chain resolution.
+# Paired with id()-based visited set to prevent cycles.
+MAX_SUBFRAME_DEPTH = 10
+
 
 class SubframeRegistry:
     """
@@ -2944,18 +2948,106 @@ class AliasDataFrame:
             ))
         return tuple(parts)
 
+    def _scatter_subframe_column(self, sf_name, sf_col, entry):
+        """
+        Scatter sf_col from registered subframe into self.df as f"{sf_col}__{sf_name}".
+        
+        Phase 13.23.ADF: factored from _prepare_subframe_joins for reuse at
+        each level of multi-level chain resolution. Idempotent; cache-aware.
+        
+        Parameters
+        ----------
+        sf_name : str
+            Registered subframe name
+        sf_col : str
+            Column name on the subframe's DataFrame. For multi-level chains,
+            this may be a previously-scattered column (e.g., 'val__Inner').
+        entry : dict
+            Subframe registry entry with 'frame' and 'index' keys.
+            
+        Returns
+        -------
+        str or None
+            The materialized column name on self.df (e.g., 'sf_col__sf_name'),
+            or None if sf_col is not present on the subframe's DataFrame.
+        """
+        sub_adf = entry['frame']
+        index_cols = entry['index']
+        if isinstance(index_cols, str):
+            index_cols = [index_cols]
+        
+        col_renamed = f'{sf_col}__{sf_name}'
+        
+        # Idempotent — fast path
+        if col_renamed in self.df.columns:
+            return col_renamed
+        
+        # Source column must exist on the subframe DataFrame.
+        # For multi-level chains, the caller materialized it on the previous iteration.
+        if sf_col not in sub_adf.df.columns:
+            return None
+        
+        # ── Scatter block (was inline in _prepare_subframe_joins) ──
+        # Check cache for precomputed join indices
+        if sf_name in self._join_index_cache:
+            cache_entry = self._join_index_cache[sf_name]
+            # Phase 13.21.ADF: content-based validation.
+            if (cache_entry['n_rows'] == len(self.df) and 
+                cache_entry['subframe_id'] == id(sub_adf.df) and
+                cache_entry.get('index_sig') == self._index_column_signature(index_cols)):
+                # CACHE HIT
+                self._join_cache_hits += 1
+                indices = cache_entry['indices']
+                missing_mask = cache_entry['missing_mask']
+                values = self._extract_subframe_values_cached(
+                    sf_name, sf_col, indices, missing_mask
+                )
+                self.df[col_renamed] = values
+                return col_renamed
+        
+        # CACHE MISS: Compute join indices
+        self._join_cache_misses += 1
+        indices, missing_mask = self._compute_join_indices(sf_name, index_cols)
+        
+        # Store in cache (Phase 13.21.ADF: includes index column signature)
+        self._join_index_cache[sf_name] = {
+            'indices': indices,
+            'missing_mask': missing_mask,
+            'n_rows': len(self.df),
+            'subframe_id': id(sub_adf.df),
+            'index_sig': self._index_column_signature(index_cols),
+        }
+        
+        # Extract values using cached indices
+        values = self._extract_subframe_values_cached(
+            sf_name, sf_col, indices, missing_mask
+        )
+        
+        self.df[col_renamed] = values
+        return col_renamed
+
     def _prepare_subframe_joins(self, expr, warn_missing_keys=True, alias_name=None):
         """
-        Prepare subframe joins for expression evaluation.
+        Resolve subframe column references in expression.
         
-        Detects dotted references like `T.mX` and performs left joins to bring
-        subframe columns into the main DataFrame. Uses join index caching for
-        performance when multiple columns are accessed from the same subframe.
+        Phase 13.23.ADF: multi-level dotted chains (A.B.C.val) now supported.
+        Single-level (T.pt) behavior unchanged — same column name 'pt__T'.
+        
+        Parsing: full dotted chains are captured by regex. For each chain,
+        segments are walked left→right; a segment is treated as a subframe
+        only if it is registered on the current ADF at that level. The first
+        non-subframe segment is the leaf column; any further segments are
+        preserved as a pandas method suffix (e.g., T.pt.round → pt__T.round).
+        
+        Resolution: bottom-up. The leaf is scattered to the deepest subframe
+        first; each outer level then scatters that column one step up, using
+        its own join-index cache. Safety: each chain's walk is bounded by
+        MAX_SUBFRAME_DEPTH and a visited set keyed on id(ADF).
         
         Parameters
         ----------
         expr : str
-            Expression containing potential subframe references (e.g., "x - T.mX")
+            Expression containing potential subframe references
         warn_missing_keys : bool, default=True
             Legacy parameter kept for backward compatibility.
         alias_name : str, optional
@@ -2966,66 +3058,89 @@ class AliasDataFrame:
         str
             Modified expression with subframe references replaced by joined column names
         """
-        tokens = re.findall(r'(\b\w+)\.(\w+)', expr)
+        # Phase 13.23.ADF: capture full dotted chains (was: 2-segment regex)
+        chain_tokens = re.findall(r'\b(\w+(?:\.\w+)+)\b', expr)
         
-        for sf_name, sf_col in tokens:
-            entry = self._subframes.get_entry(sf_name)
-            if not entry:
-                continue
+        for chain_token in chain_tokens:
+            segments = chain_token.split('.')
             
-            sub_adf = entry['frame']
-            index_cols = entry['index']
-            if isinstance(index_cols, str):
-                index_cols = [index_cols]
+            # ── Greedy left→right walk of the subframe chain ──
+            subframe_chain = []
+            current_adf = self
+            visited_ids = {id(self)}
+            leaf_idx = None
             
-            suffix = f'__{sf_name}'
-            col_renamed = f'{sf_col}{suffix}'
-            
-            # Skip if column already exists (idempotent behavior)
-            if col_renamed in self.df.columns:
-                expr = expr.replace(f'{sf_name}.{sf_col}', col_renamed)
-                continue
-            
-            # Check cache for precomputed join indices
-            if sf_name in self._join_index_cache:
-                cache_entry = self._join_index_cache[sf_name]
-                # Phase 13.21.ADF: content-based validation.
-                # Cache is valid if: same row count, same subframe object,
-                # and index column content signature matches (first/last/dtype).
-                if (cache_entry['n_rows'] == len(self.df) and 
-                    cache_entry['subframe_id'] == id(sub_adf.df) and
-                    cache_entry.get('index_sig') == self._index_column_signature(index_cols)):
-                    # CACHE HIT: Use cached indices
-                    self._join_cache_hits += 1
-                    indices = cache_entry['indices']
-                    missing_mask = cache_entry['missing_mask']
-                    values = self._extract_subframe_values_cached(
-                        sf_name, sf_col, indices, missing_mask
+            for k, seg in enumerate(segments):
+                entry = current_adf._subframes.get_entry(seg)
+                if entry is None:
+                    # First non-subframe segment → leaf column
+                    leaf_idx = k
+                    break
+                
+                sub_adf = entry['frame']
+                
+                # Cycle guard
+                if id(sub_adf) in visited_ids:
+                    raise ValueError(
+                        f"Cycle detected in subframe chain '{chain_token}' "
+                        f"(alias={alias_name!r}): subframe '{seg}' re-enters "
+                        f"an ancestor ADF."
                     )
-                    self.df[col_renamed] = values
-                    expr = expr.replace(f'{sf_name}.{sf_col}', col_renamed)
-                    continue
+                
+                # Depth guard
+                if len(subframe_chain) >= MAX_SUBFRAME_DEPTH:
+                    raise ValueError(
+                        f"Subframe chain '{chain_token}' exceeds "
+                        f"MAX_SUBFRAME_DEPTH={MAX_SUBFRAME_DEPTH}."
+                    )
+                
+                subframe_chain.append((current_adf, seg, entry))
+                visited_ids.add(id(sub_adf))
+                current_adf = sub_adf
             
-            # CACHE MISS: Compute join indices
-            self._join_cache_misses += 1
-            indices, missing_mask = self._compute_join_indices(sf_name, index_cols)
+            # Not a subframe reference at all (e.g., 'np.sqrt', 'math.pi')
+            if not subframe_chain:
+                continue
             
-            # Store in cache (Phase 13.21.ADF: includes index column signature)
-            self._join_index_cache[sf_name] = {
-                'indices': indices,
-                'missing_mask': missing_mask,
-                'n_rows': len(self.df),
-                'subframe_id': id(sub_adf.df),
-                'index_sig': self._index_column_signature(index_cols),
-            }
+            # All segments were subframes (no leaf column) — skip
+            if leaf_idx is None:
+                continue
             
-            # Extract values using cached indices
-            values = self._extract_subframe_values_cached(
-                sf_name, sf_col, indices, missing_mask
-            )
+            leaf_col = segments[leaf_idx]
+            method_suffix = '.'.join(segments[leaf_idx + 1:])  # '' if none
             
-            self.df[col_renamed] = values
-            expr = expr.replace(f'{sf_name}.{sf_col}', col_renamed)
+            # ── Bottom-up scatter: leaf → deepest subframe → … → self ──
+            current_col = leaf_col
+            resolution_ok = True
+            for (parent_adf, sf_name, entry) in reversed(subframe_chain):
+                new_col = parent_adf._scatter_subframe_column(
+                    sf_name=sf_name,
+                    sf_col=current_col,
+                    entry=entry,
+                )
+                if new_col is None:
+                    resolution_ok = False
+                    break
+                current_col = new_col
+            
+            if not resolution_ok:
+                # Subframe chain is valid but leaf column doesn't exist.
+                # Raise KeyError to preserve backward compatibility with
+                # tests that expect errors on Sub.nonexistent references.
+                raise KeyError(
+                    f"Subframe '{subframe_chain[-1][1]}' does not contain "
+                    f"column '{leaf_col}'"
+                )
+            
+            # ── Rewrite the expression ──
+            original_prefix = '.'.join(segments[:leaf_idx + 1])
+            if method_suffix:
+                expr = expr.replace(
+                    f'{original_prefix}.{method_suffix}',
+                    f'{current_col}.{method_suffix}',
+                )
+            else:
+                expr = expr.replace(original_prefix, current_col)
         
         return expr
 
@@ -3073,7 +3188,7 @@ class AliasDataFrame:
             # Clean expression: remove subframe.column patterns
             expr_cleaned = expr
             for sf_name in subframe_names:
-                expr_cleaned = re.sub(rf'\b{sf_name}\.\w+', '', expr_cleaned)
+                expr_cleaned = re.sub(rf'\b{sf_name}(?:\.\w+)+', '', expr_cleaned)
             
             # Find tokens that are aliases
             tokens = set(re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b', expr_cleaned))
@@ -3171,7 +3286,7 @@ class AliasDataFrame:
         # Clean expression: remove subframe.column patterns
         expr_cleaned = expression
         for sf_name in subframe_names:
-            expr_cleaned = re.sub(rf'\b{sf_name}\.\w+', '', expr_cleaned)
+            expr_cleaned = re.sub(rf'\b{sf_name}(?:\.\w+)+', '', expr_cleaned)
         
         # Find remaining tokens
         tokens = set(re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b', expr_cleaned))
@@ -3200,9 +3315,6 @@ class AliasDataFrame:
         self._schema["columns"][name] = spec
         
         # BUG FIX: invalidate stale materialized columns.
-        # If this alias (or any alias depending on it) was already materialized,
-        # the old values are now stale. Drop them so next materialize_aliases()
-        # recomputes with the new expression.
         self._invalidate_alias_cascade(name)
         
         # Check for cycles (catches indirect cycles like A -> B -> A)
@@ -3385,7 +3497,7 @@ class AliasDataFrame:
             expr_cleaned = expr
             for sf_name in subframe_names:
                 # Remove "subframe.anything" patterns
-                expr_cleaned = re.sub(rf'\b{sf_name}\.\w+', '', expr_cleaned)
+                expr_cleaned = re.sub(rf'\b{sf_name}(?:\.\w+)+', '', expr_cleaned)
             
             # Now find remaining tokens
             tokens = re.findall(r'\b\w+\b', expr_cleaned)
@@ -10665,22 +10777,68 @@ function collapseDepth(maxD) {{
             
             import re as _re
             refs_to_resolve = []
-            for match in _re.finditer(r'\b(\w+)\.(\w+)\b', all_text):
-                sf_name, col_name = match.group(1), match.group(2)
-                if sf_name in sf_names:
-                    dot_ref = f"{sf_name}.{col_name}"
+            
+            # Phase 13.23.ADF: greedy walk for multi-level chain support
+            chain_tokens = _re.findall(r'\b(\w+(?:\.\w+)+)\b', all_text)
+            for chain_token in chain_tokens:
+                segments = chain_token.split('.')
+                
+                # Greedy walk — same logic as _prepare_subframe_joins
+                current_adf = self
+                subframe_chain = []
+                leaf_idx = None
+                
+                for k, seg in enumerate(segments):
+                    sf_entry = current_adf._subframes.get_entry(seg)
+                    if sf_entry is None:
+                        leaf_idx = k
+                        break
+                    subframe_chain.append((current_adf, seg, sf_entry))
+                    current_adf = sf_entry['frame']
+                
+                if not subframe_chain or leaf_idx is None:
+                    continue
+                
+                leaf_col = segments[leaf_idx]
+                method_suffix = '.'.join(segments[leaf_idx + 1:])
+                dot_ref_prefix = '.'.join(segments[:leaf_idx + 1])
+                
+                if len(subframe_chain) == 1:
+                    # Single-level: existing pd.merge behavior
+                    sf_name = subframe_chain[0][1]
+                    entry = subframe_chain[0][2]
+                    col_name = leaf_col
                     flat_ref = f"{sf_name}_{col_name}"
+                    dot_ref = f"{sf_name}.{col_name}"
                     if flat_ref not in df_subset.columns and dot_ref not in subframe_replacements:
                         try:
                             sf = self.get_subframe(sf_name)
-                            index_cols = self._subframes.get_entry(sf_name)['index']
+                            index_cols = entry['index']
                             if isinstance(index_cols, str):
                                 index_cols = [index_cols]
                             if col_name in sf.df.columns:
                                 refs_to_resolve.append((sf_name, col_name, dot_ref, flat_ref, index_cols))
-                                subframe_replacements[dot_ref] = flat_ref
+                                if method_suffix:
+                                    subframe_replacements[f'{dot_ref}.{method_suffix}'] = f'{flat_ref}.{method_suffix}'
+                                else:
+                                    subframe_replacements[dot_ref] = flat_ref
                         except Exception:
                             pass
+                else:
+                    # Multi-level: pre-materialize on self.df via _prepare_subframe_joins
+                    try:
+                        self._prepare_subframe_joins(dot_ref_prefix, alias_name='__draw__')
+                        # Column is now on self.df with name like val__Inner__Outer
+                        # Build the flat name from the chain
+                        flat_col = leaf_col
+                        for _, sf_n, _ in reversed(subframe_chain):
+                            flat_col = f'{flat_col}__{sf_n}'
+                        if method_suffix:
+                            subframe_replacements[f'{dot_ref_prefix}.{method_suffix}'] = f'{flat_col}.{method_suffix}'
+                        else:
+                            subframe_replacements[dot_ref_prefix] = flat_col
+                    except Exception:
+                        pass
             
             if refs_to_resolve:
                 df_subset = df_subset.copy()
@@ -11630,15 +11788,40 @@ function collapseDepth(maxD) {{
             all_text = ' '.join(all_text_parts)
             
             import re as _re
-            for match in _re.finditer(r'\b(\w+)\.(\w+)\b', all_text):
-                sf_name, col_name = match.group(1), match.group(2)
-                if sf_name in sf_names:
+            # Phase 13.23.ADF: greedy walk for multi-level chain support
+            chain_tokens = _re.findall(r'\b(\w+(?:\.\w+)+)\b', all_text)
+            for chain_token in chain_tokens:
+                segments = chain_token.split('.')
+                
+                current_adf = self
+                subframe_chain = []
+                leaf_idx = None
+                for k, seg in enumerate(segments):
+                    sf_entry = current_adf._subframes.get_entry(seg)
+                    if sf_entry is None:
+                        leaf_idx = k
+                        break
+                    subframe_chain.append((current_adf, seg, sf_entry))
+                    current_adf = sf_entry['frame']
+                
+                if not subframe_chain or leaf_idx is None:
+                    continue
+                
+                leaf_col = segments[leaf_idx]
+                method_suffix = '.'.join(segments[leaf_idx + 1:])
+                dot_ref_prefix = '.'.join(segments[:leaf_idx + 1])
+                
+                if len(subframe_chain) == 1:
+                    # Single-level: existing direct-index behavior
+                    sf_name = subframe_chain[0][1]
+                    entry = subframe_chain[0][2]
+                    col_name = leaf_col
                     dot_ref = f"{sf_name}.{col_name}"
                     flat_ref = f"{sf_name}_{col_name}"
                     if flat_ref not in df_for_plot.columns and dot_ref not in subframe_replacements:
                         try:
                             sf = self.get_subframe(sf_name)
-                            index_cols = self._subframes.get_entry(sf_name)['index']
+                            index_cols = entry['index']
                             if isinstance(index_cols, str):
                                 index_cols = [index_cols]
                             join_idx, missing = self._compute_join_indices(sf_name, index_cols)
@@ -11646,9 +11829,29 @@ function collapseDepth(maxD) {{
                                 if df_for_plot is self.df:
                                     df_for_plot = df_for_plot.copy()
                                 df_for_plot[flat_ref] = sf.df[col_name].values[join_idx]
-                                subframe_replacements[dot_ref] = flat_ref
+                                if method_suffix:
+                                    subframe_replacements[f'{dot_ref}.{method_suffix}'] = f'{flat_ref}.{method_suffix}'
+                                else:
+                                    subframe_replacements[dot_ref] = flat_ref
                         except Exception:
                             pass
+                else:
+                    # Multi-level: pre-materialize on self.df
+                    try:
+                        self._prepare_subframe_joins(dot_ref_prefix, alias_name='__draw_batch__')
+                        flat_col = leaf_col
+                        for _, sf_n, _ in reversed(subframe_chain):
+                            flat_col = f'{flat_col}__{sf_n}'
+                        if df_for_plot is self.df:
+                            df_for_plot = df_for_plot.copy()
+                        if flat_col in self.df.columns:
+                            df_for_plot[flat_col] = self.df[flat_col].values
+                        if method_suffix:
+                            subframe_replacements[f'{dot_ref_prefix}.{method_suffix}'] = f'{flat_col}.{method_suffix}'
+                        else:
+                            subframe_replacements[dot_ref_prefix] = flat_col
+                    except Exception:
+                        pass
             
             # Rewrite all specs: replace Sub.col → Sub_col
             if subframe_replacements:
@@ -11885,22 +12088,68 @@ function collapseDepth(maxD) {{
             import re as _re
             refs_to_resolve = []
             subframe_replacements = {}
-            for match in _re.finditer(r'\b(\w+)\.(\w+)\b', all_text):
-                sf_name, col_name = match.group(1), match.group(2)
-                if sf_name in sf_names:
+            
+            # Phase 13.23.ADF: greedy walk for multi-level chain support
+            chain_tokens = _re.findall(r'\b(\w+(?:\.\w+)+)\b', all_text)
+            for chain_token in chain_tokens:
+                segments = chain_token.split('.')
+                
+                current_adf = self
+                subframe_chain = []
+                leaf_idx = None
+                for k, seg in enumerate(segments):
+                    sf_entry = current_adf._subframes.get_entry(seg)
+                    if sf_entry is None:
+                        leaf_idx = k
+                        break
+                    subframe_chain.append((current_adf, seg, sf_entry))
+                    current_adf = sf_entry['frame']
+                
+                if not subframe_chain or leaf_idx is None:
+                    continue
+                
+                leaf_col = segments[leaf_idx]
+                method_suffix = '.'.join(segments[leaf_idx + 1:])
+                dot_ref_prefix = '.'.join(segments[:leaf_idx + 1])
+                
+                if len(subframe_chain) == 1:
+                    # Single-level: existing pd.merge behavior
+                    sf_name = subframe_chain[0][1]
+                    entry = subframe_chain[0][2]
+                    col_name = leaf_col
                     dot_ref = f"{sf_name}.{col_name}"
                     flat_ref = f"{sf_name}_{col_name}"
                     if flat_ref not in df_subset.columns and dot_ref not in subframe_replacements:
                         try:
                             sf = self.get_subframe(sf_name)
-                            index_cols = self._subframes.get_entry(sf_name)['index']
+                            index_cols = entry['index']
                             if isinstance(index_cols, str):
                                 index_cols = [index_cols]
                             if col_name in sf.df.columns:
                                 refs_to_resolve.append((sf_name, col_name, dot_ref, flat_ref, index_cols))
-                                subframe_replacements[dot_ref] = flat_ref
+                                if method_suffix:
+                                    subframe_replacements[f'{dot_ref}.{method_suffix}'] = f'{flat_ref}.{method_suffix}'
+                                else:
+                                    subframe_replacements[dot_ref] = flat_ref
                         except Exception:
                             pass
+                else:
+                    # Multi-level: pre-materialize on self.df
+                    try:
+                        self._prepare_subframe_joins(dot_ref_prefix, alias_name='__draw_figures__')
+                        flat_col = leaf_col
+                        for _, sf_n, _ in reversed(subframe_chain):
+                            flat_col = f'{flat_col}__{sf_n}'
+                        if flat_col in self.df.columns:
+                            if df_subset is self.df:
+                                df_subset = df_subset.copy()
+                            df_subset[flat_col] = self.df[flat_col].values
+                        if method_suffix:
+                            subframe_replacements[f'{dot_ref_prefix}.{method_suffix}'] = f'{flat_col}.{method_suffix}'
+                        else:
+                            subframe_replacements[dot_ref_prefix] = flat_col
+                    except Exception:
+                        pass
             
             if refs_to_resolve:
                 df_subset = df_subset.copy()
