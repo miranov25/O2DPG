@@ -19,6 +19,125 @@ from ..stats import format_stats_box
 from ._auto_title import build_auto_title, apply_auto_title, parse_auto_title_parts, resolve_auto_title
 
 
+# =============================================================================
+# Phase 13.18.DF: Robust statistics helpers
+# =============================================================================
+
+# Valid group names for stat_fields parameter
+_VALID_STAT_GROUPS = frozenset({'quantiles', 'shape', 'all'})
+
+
+def _parse_stat_fields(stat_fields):
+    """
+    Parse stat_fields parameter into a set of group names to compute.
+    
+    Always includes 'base' and 'robust'. Optional groups added on request.
+    Raises ValueError on unrecognized input.
+    
+    Parameters
+    ----------
+    stat_fields : None, str, or list of str
+    
+    Returns
+    -------
+    set of str — group names to compute
+    """
+    groups = {'base', 'robust'}  # always-on
+    if stat_fields is None:
+        return groups
+    if isinstance(stat_fields, str):
+        stat_fields = [stat_fields]
+    for name in stat_fields:
+        if name == 'all':
+            groups.update({'quantiles', 'shape'})
+        elif name in _VALID_STAT_GROUPS:
+            groups.add(name)
+        else:
+            raise ValueError(
+                f"stat_fields: unrecognized group '{name}'. "
+                f"Valid values: {sorted(_VALID_STAT_GROUPS)}, or a list of them."
+            )
+    return groups
+
+
+def _compute_robust_stats_1d(data, groups, suffix=''):
+    """
+    Compute robust statistics for a 1D array.
+    
+    Parameters
+    ----------
+    data : np.ndarray — cleaned (no NaN) data
+    groups : set of str — which groups to compute
+    suffix : str — key suffix ('_x', '_y', or '' for 1D hist)
+    
+    Returns
+    -------
+    dict — stats keyed as e.g. 'median', 'mad', 'mad_sigma' (1D)
+           or 'median_x', 'mad_x', 'mad_sigma_x' (2D with suffix)
+    
+    Note
+    ----
+    Phase 13.6.G.DF added compute_stats() in stats.py with median/MAD
+    support for stats-box display. This helper computes for the returned
+    dict (always-on, decoupled from display). If stats.py::compute_stats()
+    is refactored to a shared path, this can delegate to it.
+    """
+    result = {}
+    n = len(data)
+    
+    # --- robust (always) ---
+    if n > 0:
+        median = float(np.nanmedian(data))
+        mad = float(np.nanmedian(np.abs(data - median)))
+        mad_sigma = mad * 1.4826
+    else:
+        median = np.nan
+        mad = np.nan
+        mad_sigma = np.nan
+    
+    result[f'median{suffix}'] = median
+    result[f'mad{suffix}'] = mad
+    result[f'mad_sigma{suffix}'] = mad_sigma
+    
+    # --- quantiles (on request) ---
+    if 'quantiles' in groups:
+        if n > 0:
+            pcts = np.nanpercentile(data, [5, 15.87, 25, 50, 75, 84.13, 95])
+            result[f'q05{suffix}'] = float(pcts[0])
+            result[f'q16{suffix}'] = float(pcts[1])
+            result[f'q50{suffix}'] = float(pcts[3])
+            result[f'q84{suffix}'] = float(pcts[5])
+            result[f'q95{suffix}'] = float(pcts[6])
+            result[f'iqr{suffix}'] = float(pcts[4] - pcts[2])  # Q75 - Q25
+        else:
+            for key in ('q05', 'q16', 'q50', 'q84', 'q95', 'iqr'):
+                result[f'{key}{suffix}'] = np.nan
+    
+    # --- shape (on request) ---
+    if 'shape' in groups:
+        if n >= 10:
+            s = float(np.nanstd(data))
+            if s > 0:
+                m = data - np.nanmean(data)
+                skewness = float(np.nanmean(m**3) / s**3)
+                kurtosis = float(np.nanmean(m**4) / s**4 - 3.0)
+                robust_to_std = s / mad_sigma if mad_sigma > 0 else np.nan
+            else:
+                skewness = np.nan
+                kurtosis = np.nan
+                robust_to_std = np.nan
+        else:
+            skewness = np.nan
+            kurtosis = np.nan
+            robust_to_std = np.nan
+        
+        result[f'skewness{suffix}'] = skewness
+        result[f'kurtosis{suffix}'] = kurtosis
+        result[f'robust_to_std{suffix}'] = robust_to_std
+    
+    return result
+
+
 def draw_hist(
     df: pd.DataFrame,
     x: Union[str, pd.Series, np.ndarray],
@@ -42,10 +161,8 @@ def draw_hist(
     # Phase 13.12.DF v1.2: Auto-title
     auto_title: Union[bool, str] = False,
     selection: Optional[Union[str, np.ndarray, callable]] = None,
-    # Phase 13.16.DF FIX1: vector dispatch suppression flags (private).
-    _suppress_legend: bool = False,
-    _suppress_title: bool = False,
-    _suppress_layout: bool = False,
+    # Phase 13.18.DF: Robust statistics extension
+    stat_fields: Optional[Union[str, List[str]]] = None,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -141,6 +258,16 @@ def draw_hist(
         "max": float(np.max(x_data)) if len(x_data) > 0 else np.nan,
     }
     
+    # Phase 13.18.DF: robust + optional stats groups
+    _groups = _parse_stat_fields(stat_fields)
+    stats_dict.update(_compute_robust_stats_1d(x_data, _groups))
+    
+    # Phase 13.16.DF FIX1: strip private _suppress_* kwargs before they
+    # reach matplotlib (injected by _draw_vector for layout/legend/title control).
+    _suppress_legend = kwargs.pop('_suppress_legend', False)
+    _suppress_title = kwargs.pop('_suppress_title', False)
+    _suppress_layout = kwargs.pop('_suppress_layout', False)
+    
     # Normalization
     density = False
     weights = None
@@ -192,11 +319,11 @@ def draw_hist(
     elif isinstance(stats, list):
         _add_stats_box(ax, stats_dict, stats)
     
-    # Legend for grouped (Phase 13.16.DF FIX1: skip when suppressed)
-    if group_by is not None and not _suppress_legend:
-        ax.legend(loc=get_style_value("legend.loc", "best"))
+    # Legend for grouped
+    if not _suppress_legend:
+        if group_by is not None:
+            ax.legend(loc=get_style_value("legend.loc", "best"))
     
-    # Phase 13.16.DF FIX1: skip tight_layout when suppressed
     if not _suppress_layout:
         plt.tight_layout()
     return fig, ax, stats_dict
@@ -295,6 +422,8 @@ def draw_hist2d(
     # Phase 13.12.DF v1.2: Auto-title
     auto_title: Union[bool, str] = False,
     selection: Optional[Union[str, np.ndarray, callable]] = None,
+    # Phase 13.18.DF: Robust statistics extension
+    stat_fields: Optional[Union[str, List[str]]] = None,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -384,7 +513,12 @@ def draw_hist2d(
     y_data = y_data[mask]
     
     # Statistics
-    stats_dict = _compute_hist2d_stats(x_data, y_data)
+    stats_dict = _compute_hist2d_stats(x_data, y_data, stat_fields=stat_fields)
+    
+    # Strip private _suppress_* kwargs (injected by draw_batch/vector dispatch)
+    kwargs.pop('_suppress_legend', None)
+    kwargs.pop('_suppress_title', None)
+    _suppress_layout = kwargs.pop('_suppress_layout', False)
     
     # Normalization
     norm_obj = None
@@ -436,14 +570,16 @@ def draw_hist2d(
     elif isinstance(stats, list):
         _add_stats_box_2d(ax, stats_dict, stats)
     
-    plt.tight_layout()
+    if not _suppress_layout:
+        plt.tight_layout()
     return fig, ax, stats_dict
 
 
-def _compute_hist2d_stats(x_data: np.ndarray, y_data: np.ndarray) -> Dict[str, Any]:
-    """Compute 2D histogram statistics."""
+def _compute_hist2d_stats(x_data: np.ndarray, y_data: np.ndarray,
+                          stat_fields=None) -> Dict[str, Any]:
+    """Compute 2D histogram statistics with robust extensions (Phase 13.18.DF)."""
     n = len(x_data)
-    return {
+    result = {
         "n": n,
         "mean_x": float(np.mean(x_data)) if n > 0 else np.nan,
         "mean_y": float(np.mean(y_data)) if n > 0 else np.nan,
@@ -451,6 +587,11 @@ def _compute_hist2d_stats(x_data: np.ndarray, y_data: np.ndarray) -> Dict[str, A
         "std_y": float(np.std(y_data)) if n > 0 else np.nan,
         "corr": float(np.corrcoef(x_data, y_data)[0, 1]) if n > 1 else np.nan,
     }
+    # Phase 13.18.DF: per-axis robust + optional stats
+    _groups = _parse_stat_fields(stat_fields)
+    result.update(_compute_robust_stats_1d(x_data, _groups, suffix='_x'))
+    result.update(_compute_robust_stats_1d(y_data, _groups, suffix='_y'))
+    return result
 
 
 def _add_stats_box_2d(
@@ -508,6 +649,8 @@ def draw_hexbin(
     # Phase 13.12.DF v1.2: Auto-title
     auto_title: Union[bool, str] = False,
     selection: Optional[Union[str, np.ndarray, callable]] = None,
+    # Phase 13.18.DF: Robust statistics (inherits from _compute_hist2d_stats)
+    stat_fields: Optional[Union[str, List[str]]] = None,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -592,7 +735,12 @@ def draw_hexbin(
     y_data = y_data[mask]
     
     # Statistics
-    stats_dict = _compute_hist2d_stats(x_data, y_data)
+    stats_dict = _compute_hist2d_stats(x_data, y_data, stat_fields=stat_fields)
+    
+    # Strip private _suppress_* kwargs (injected by draw_batch/vector dispatch)
+    kwargs.pop('_suppress_legend', None)
+    kwargs.pop('_suppress_title', None)
+    _suppress_layout = kwargs.pop('_suppress_layout', False)
     
     # Normalization
     bins_arg = None
@@ -640,5 +788,6 @@ def draw_hexbin(
     elif isinstance(stats, list):
         _add_stats_box_2d(ax, stats_dict, stats)
     
-    plt.tight_layout()
+    if not _suppress_layout:
+        plt.tight_layout()
     return fig, ax, stats_dict

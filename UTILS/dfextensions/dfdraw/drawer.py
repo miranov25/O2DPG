@@ -556,6 +556,7 @@ class DFDraw:
         'weights',
         'auto_title',
         'same',
+        'stat_fields',  # Phase 13.18.DF: robust statistics groups
     )
 
     _HIST_FORWARDED_NAMES = (
@@ -564,6 +565,7 @@ class DFDraw:
         'top_k',  # included: histogram.draw_hist accepts top_k as scalar-mode group filter
         'auto_title',
         'same',
+        'stat_fields',  # Phase 13.18.DF: robust statistics groups
     )
 
     _SCATTER_FORWARDED_NAMES = (
@@ -763,7 +765,9 @@ class DFDraw:
             self._set_vector_ylabel(ax, y_list, x_list)
         
         # Phase 13.16.DF FIX1 (B5): single tight_layout call at end.
-        if fig is not None:
+        # Phase 13.16.DF FIX1 (B5): single tight_layout call at end.
+        # Suppressed when called from draw_batch (constrained_layout=True).
+        if fig is not None and not kwargs.get('_suppress_layout', False):
             try:
                 import matplotlib.pyplot as _plt
                 _plt.tight_layout()
@@ -1066,6 +1070,15 @@ class DFDraw:
         tuple
             (fig, ax, stats_dict)
         """
+        # Phase 13.18.DF (AD-42): Reserve 'fit' kwarg for future general fit interface.
+        if 'fit' in kwargs:
+            raise NotImplementedError(
+                "The 'fit=' parameter is reserved for a future general fit interface "
+                "(Phase 13.18.DF v2). For robust summary statistics, use "
+                "stat_fields='all'. For Gaussian core fit, use stat_fields='core' "
+                "(planned)."
+            )
+        
         # Handle figsize: create axes if not provided
         if figsize is not None and ax is None:
             import matplotlib.pyplot as plt
@@ -1187,6 +1200,8 @@ class DFDraw:
         auto_title: Union[bool, str] = False,
         # Phase 13.13.DF: same=True (AD-15)
         same: bool = False,
+        # Phase 13.18.DF: Robust statistics
+        stat_fields: Optional[Union[str, List[str]]] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -1260,6 +1275,9 @@ class DFDraw:
             for name in self._HIST_FORWARDED_NAMES:
                 val = _local.get(name, _MISSING)
                 if val is not _MISSING and val is not None:
+                    # FIX1: auto_title=False is signature default, not user choice.
+                    if name == 'auto_title' and val is False:
+                        continue
                     vector_kwargs.setdefault(name, val)
             return self._draw_vector(
                 y_expr, x_expr, self.hist,
@@ -1322,6 +1340,8 @@ class DFDraw:
                 group_by=group_by, top_k=top_k,
                 # Phase 13.12.DF v1.2: auto-title
                 auto_title=auto_title, selection=selection,
+                # Phase 13.18.DF: robust statistics
+                stat_fields=stat_fields,
                 **kwargs
             )
             axes = ax
@@ -1568,6 +1588,8 @@ class DFDraw:
         auto_title: Union[bool, str] = False,
         # Phase 13.13.DF: same=True (AD-15)
         same: bool = False,
+        # Phase 13.18.DF: Robust statistics
+        stat_fields: Optional[Union[str, List[str]]] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -1674,6 +1696,9 @@ class DFDraw:
             for name in self._PROFILE_FORWARDED_NAMES:
                 val = _local.get(name, _MISSING)
                 if val is not _MISSING and val is not None:
+                    # FIX1: auto_title=False is signature default, not user choice.
+                    if name == 'auto_title' and val is False:
+                        continue
                     vector_kwargs.setdefault(name, val)
             return self._draw_vector(
                 y_expr, x_expr, self.profile,
@@ -1754,6 +1779,8 @@ class DFDraw:
                 sort_groups=sort_groups, weights=weights,
                 # Phase 13.12.DF v1.2: auto-title
                 auto_title=auto_title, selection=selection,
+                # Phase 13.18.DF: robust statistics
+                stat_fields=stat_fields,
                 **kwargs
             )
             axes = ax
@@ -1801,6 +1828,8 @@ class DFDraw:
         auto_title: Union[bool, str] = False,
         # Phase 13.13.DF: same=True (AD-15)
         same: bool = False,
+        # Phase 13.18.DF: Robust statistics
+        stat_fields: Optional[Union[str, List[str]]] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -1928,6 +1957,8 @@ class DFDraw:
                 vmin=vmin, vmax=vmax,
                 # Phase 13.12.DF v1.2: auto-title
                 auto_title=auto_title, selection=selection,
+                # Phase 13.18.DF: robust statistics
+                stat_fields=stat_fields,
                 **kwargs
             )
             axes = ax
@@ -2657,9 +2688,11 @@ class DFDraw:
                     figsize = (base[0] * ncols / 1.5, base[1] * nrows / 1.5)
                 
                 # Create figure — squeeze=False ensures axes is always 2D array (P1-2)
+                # constrained_layout handles suptitle + subplot title spacing automatically
                 fig, axes = plt.subplots(
                     nrows, ncols, figsize=figsize,
-                    squeeze=False, sharex=sharex, sharey=sharey
+                    squeeze=False, sharex=sharex, sharey=sharey,
+                    constrained_layout=True
                 )
                 
                 # Hide empty subplots (P1-3)
@@ -2711,23 +2744,22 @@ class DFDraw:
                         )
                     
                     method = getattr(self, plot_type)
+                    # Suppress per-subplot tight_layout — constrained_layout
+                    # handles the full figure layout automatically.
+                    merged['_suppress_layout'] = True
                     _, _, stats = method(expr, **merged)
                     group_stats.append(stats)
                 
-                # Suptitle
+                # Suptitle — constrained_layout automatically reserves space
                 if suptitle:
                     fig.suptitle(
                         suptitle,
                         fontsize=get_style_value("axes.titlesize", 14) + 2
                     )
                 
-                # Layout — tight_layout with reserved space for suptitle
-                if suptitle:
-                    # Reserve top 5% for suptitle; tight_layout arranges
-                    # subplots (including their titles) within the remainder.
-                    plt.tight_layout(rect=[0, 0, 1, 0.95])
-                else:
-                    plt.tight_layout()
+                # No tight_layout() call — constrained_layout=True (set at
+                # figure creation) handles all spacing including suptitle,
+                # subplot titles, axis labels, and legends automatically.
                 
                 # Save
                 save_path = None

@@ -174,10 +174,9 @@ def draw_profile(
     # Phase 13.12.DF v1.2: Auto-title
     auto_title: Union[bool, str] = False,
     selection: Optional[Union[str, np.ndarray, callable]] = None,
-    # Phase 13.16.DF FIX1: vector dispatch suppression flags (private).
-    # _draw_vector sets these on intermediate iterations to avoid duplicated
-    # legend / title / tight_layout calls. Post-loop, _draw_vector calls
-    # the legend/title/layout helpers exactly once.
+    # Phase 13.18.DF: Robust statistics extension
+    stat_fields=None,
+    # Phase 13.16.DF FIX1: suppress flags for vector dispatch
     _suppress_legend: bool = False,
     _suppress_title: bool = False,
     _suppress_layout: bool = False,
@@ -278,6 +277,12 @@ def draw_profile(
     # Phase 13.12.DF F3: Validate mutual exclusion
     if group_by_bins is not None and group_by_quantiles is not None:
         raise ValueError("Cannot specify both group_by_bins and group_by_quantiles")
+    # Phase 13.18.DF (AD-40): guard against boolean True (must be integer)
+    if isinstance(group_by_quantiles, bool) and group_by_quantiles:
+        raise ValueError(
+            "group_by_quantiles must be an integer (number of quantile bins), "
+            "not True. Example: group_by_quantiles=4"
+        )
     
     # Get style defaults
     if bins is None:
@@ -333,7 +338,7 @@ def draw_profile(
     df_filtered = df[mask].copy() if len(df) == len(mask) else df.copy()
     
     # Compute profile statistics
-    stats_dict = _compute_profile_stats(x_data, y_data)
+    stats_dict = _compute_profile_stats(x_data, y_data, stat_fields=stat_fields)
     
     # Phase 13.12.DF F3: Auto-bin float group_by column
     group_col = group_by
@@ -393,7 +398,7 @@ def draw_profile(
     ax.set_xlabel(xlabel or x_name)
     ax.set_ylabel(ylabel or f"<{y_name}>")
     
-    # Title: explicit > auto > none (Phase 13.16.DF FIX1: skip when suppressed)
+    # Title: explicit > auto > none
     if not _suppress_title:
         if title:
             ax.set_title(title)
@@ -409,12 +414,11 @@ def draw_profile(
     elif isinstance(stats, list):
         _add_stats_box(ax, stats_dict, stats)
     
-    # Legend for grouped (Phase 13.16.DF FIX1: skip when suppressed)
-    if group_col is not None and not _suppress_legend:
-        ax.legend(loc=get_style_value("legend.loc", "best"))
+    # Legend for grouped
+    if not _suppress_legend:
+        if group_col is not None:
+            ax.legend(loc=get_style_value("legend.loc", "best"))
     
-    # Phase 13.16.DF FIX1: skip tight_layout when suppressed (vector path
-    # calls it once at end of _draw_vector instead of N times)
     if not _suppress_layout:
         plt.tight_layout()
     return fig, ax, stats_dict
@@ -538,10 +542,12 @@ def _compute_profile(
     return bin_centers, bin_means, bin_errors, bin_counts, profile_df
 
 
-def _compute_profile_stats(x_data: np.ndarray, y_data: np.ndarray) -> Dict[str, Any]:
-    """Compute overall profile statistics."""
+def _compute_profile_stats(x_data: np.ndarray, y_data: np.ndarray,
+                           stat_fields=None) -> Dict[str, Any]:
+    """Compute overall profile statistics with robust extensions (Phase 13.18.DF)."""
+    from .histogram import _parse_stat_fields, _compute_robust_stats_1d
     n = len(x_data)
-    return {
+    result = {
         "n": n,
         "mean_x": float(np.mean(x_data)) if n > 0 else np.nan,
         "mean_y": float(np.mean(y_data)) if n > 0 else np.nan,
@@ -549,6 +555,11 @@ def _compute_profile_stats(x_data: np.ndarray, y_data: np.ndarray) -> Dict[str, 
         "std_y": float(np.std(y_data)) if n > 0 else np.nan,
         "corr": float(np.corrcoef(x_data, y_data)[0, 1]) if n > 1 else np.nan,
     }
+    # Phase 13.18.DF: per-axis robust + optional stats (same code path as hist2d)
+    _groups = _parse_stat_fields(stat_fields)
+    result.update(_compute_robust_stats_1d(x_data, _groups, suffix='_x'))
+    result.update(_compute_robust_stats_1d(y_data, _groups, suffix='_y'))
+    return result
 
 
 def _draw_profile_grouped(
