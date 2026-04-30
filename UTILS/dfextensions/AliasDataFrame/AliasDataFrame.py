@@ -788,6 +788,110 @@ def _export_subframe_schema_v2(subframe_entry, include_precision_stats=False, in
     return result
 
 
+# ────────────────────────────────────────────────────────────────────────
+# Read-only view wrappers for public properties (Phase 13.24.ADF Part B).
+#
+# These are dict/set subclasses that raise TypeError on mutation while
+# preserving all read semantics, JSON serialization, and isinstance checks.
+# ────────────────────────────────────────────────────────────────────────
+
+_MUTATION_MSG_ALIASES = (
+    "Cannot modify aliases dict directly. "
+    "Use add_alias(name, expr) / remove_alias(name) / "
+    "update_schema({'columns': {...}}) to modify aliases."
+)
+
+_MUTATION_MSG_DTYPES = (
+    "Cannot modify alias_dtypes dict directly. "
+    "Use add_alias(name, expr, dtype=...) to set alias dtype."
+)
+
+_MUTATION_MSG_CONSTANTS = (
+    "Cannot modify constant_aliases set directly. "
+    "Use add_alias(name, expr, is_constant=True) to mark an alias as constant, "
+    "or remove_alias(name) to remove it."
+)
+
+
+class _ReadOnlyAliasDict(dict):
+    """
+    Read-only view over alias-related dict mappings. Inherits from dict so
+    that isinstance(x, dict) and JSON serialization continue to work.
+    Mutation methods raise TypeError with a fix instruction.
+    """
+
+    def __init__(self, data, msg=_MUTATION_MSG_ALIASES):
+        super().__init__(data)
+        self._msg = msg
+
+    def __setitem__(self, key, value):
+        raise TypeError(self._msg)
+
+    def __delitem__(self, key):
+        raise TypeError(self._msg)
+
+    def update(self, *args, **kwargs):
+        raise TypeError(self._msg)
+
+    def pop(self, *args, **kwargs):
+        raise TypeError(self._msg)
+
+    def popitem(self):
+        raise TypeError(self._msg)
+
+    def clear(self):
+        raise TypeError(self._msg)
+
+    def setdefault(self, key, default=None):
+        if key in self:
+            return self[key]
+        raise TypeError(self._msg)
+
+    def __reduce__(self):
+        return (_ReadOnlyAliasDict, (dict(self), self._msg))
+
+
+class _ReadOnlyConstantAliasSet(set):
+    """
+    Read-only view over the set of constant alias names. Inherits from set
+    so that isinstance(x, set), iteration, membership, and length all work.
+    """
+
+    def __init__(self, data, msg=_MUTATION_MSG_CONSTANTS):
+        super().__init__(data)
+        self._msg = msg
+
+    def add(self, elem):
+        raise TypeError(self._msg)
+
+    def remove(self, elem):
+        raise TypeError(self._msg)
+
+    def discard(self, elem):
+        raise TypeError(self._msg)
+
+    def pop(self):
+        raise TypeError(self._msg)
+
+    def clear(self):
+        raise TypeError(self._msg)
+
+    def update(self, *args, **kwargs):
+        raise TypeError(self._msg)
+
+    def intersection_update(self, *args, **kwargs):
+        raise TypeError(self._msg)
+
+    def difference_update(self, *args, **kwargs):
+        raise TypeError(self._msg)
+
+    def symmetric_difference_update(self, *args, **kwargs):
+        raise TypeError(self._msg)
+
+    def __reduce__(self):
+        return (_ReadOnlyConstantAliasSet, (set(self), self._msg))
+
+
 class AliasDataFrame:
     """
     AliasDataFrame allows for defining and evaluating lazy-evaluated column aliases
@@ -1132,10 +1236,16 @@ class AliasDataFrame:
     @property
     def aliases(self):
         """
-        Backward compatible: returns {name: expr} for all aliases.
-        Read-only view over _schema["columns"].
+        Returns a read-only view of {name: expression} for all aliases.
+        
+        Mutating the returned dict (del, __setitem__, .update, .pop, .clear)
+        raises TypeError. Use add_alias(), remove_alias(), or update_schema()
+        to modify aliases.
         """
-        return {k: v["expr"] for k, v in self._schema["columns"].items() if "expr" in v}
+        return _ReadOnlyAliasDict(
+            {k: v["expr"] for k, v in self._schema["columns"].items() if "expr" in v},
+            msg=_MUTATION_MSG_ALIASES,
+        )
 
     @aliases.setter
     def aliases(self, value):
@@ -1167,11 +1277,16 @@ class AliasDataFrame:
     @property
     def alias_dtypes(self):
         """
-        Backward compatible: returns {name: dtype} for aliases with dtype.
-        Read-only view over _schema["columns"].
+        Returns a read-only view of {name: dtype} for aliases with dtype.
+        
+        Mutating the returned dict raises TypeError.
+        Use add_alias(name, expr, dtype=...) to set alias dtype.
         """
-        return {k: v.get("dtype") for k, v in self._schema["columns"].items() 
-                if "expr" in v and "dtype" in v}
+        return _ReadOnlyAliasDict(
+            {k: v.get("dtype") for k, v in self._schema["columns"].items() 
+                if "expr" in v and "dtype" in v},
+            msg=_MUTATION_MSG_DTYPES,
+        )
 
     @alias_dtypes.setter
     def alias_dtypes(self, value):
@@ -1257,11 +1372,17 @@ class AliasDataFrame:
     @property
     def constant_aliases(self):
         """
-        Backward compatible: returns set of constant alias names.
-        Phase 4b: derives only from _schema.
+        Returns a read-only view of names of constant aliases.
+        
+        Mutating the returned set raises TypeError.
+        Use add_alias(name, expr, is_constant=True) to mark as constant,
+        or remove_alias(name) to remove.
         """
-        return {k for k, v in self._schema["columns"].items() 
-                if v.get("constant", False)}
+        return _ReadOnlyConstantAliasSet(
+            {k for k, v in self._schema["columns"].items() 
+                if v.get("constant", False)},
+            msg=_MUTATION_MSG_CONSTANTS,
+        )
 
     @constant_aliases.setter
     def constant_aliases(self, value):

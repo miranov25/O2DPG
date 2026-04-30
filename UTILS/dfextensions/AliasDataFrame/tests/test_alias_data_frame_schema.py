@@ -689,38 +689,43 @@ class TestMutationSafety:
     """Tests ensuring property getters return safe objects that don't mutate _schema."""
 
     def test_aliases_mutation_does_not_affect_schema(self, simple_adf):
-        """Verify mutating returned aliases dict doesn't affect _schema."""
+        """Verify mutating returned aliases dict raises TypeError."""
         simple_adf.add_alias('original', 'x + 1')
         
-        # Get aliases and mutate the returned dict
+        # Get aliases — mutation now raises TypeError (read-only view)
         aliases_copy = simple_adf.aliases
-        aliases_copy['injected'] = 'malicious_expr'
+        with pytest.raises(TypeError):
+            aliases_copy['injected'] = 'malicious_expr'
         
         # _schema should be unaffected
         assert 'injected' not in simple_adf._schema['columns']
         assert 'injected' not in simple_adf.aliases
 
     def test_alias_dtypes_mutation_does_not_affect_schema(self, simple_adf):
-        """Verify mutating returned alias_dtypes dict doesn't affect _schema."""
+        """Verify mutating returned alias_dtypes dict raises TypeError."""
         simple_adf.add_alias('typed', 'x + 1', dtype=np.float32)
         
-        # Get alias_dtypes and mutate the returned dict
+        # Get alias_dtypes — mutation now raises TypeError
         dtypes_copy = simple_adf.alias_dtypes
-        dtypes_copy['typed'] = np.int64
-        dtypes_copy['injected'] = np.float16
+        with pytest.raises(TypeError):
+            dtypes_copy['typed'] = np.int64
+        with pytest.raises(TypeError):
+            dtypes_copy['injected'] = np.float16
         
         # _schema should be unaffected
         assert simple_adf._schema['columns']['typed']['dtype'] == np.float32
         assert 'injected' not in simple_adf._schema['columns']
 
     def test_constant_aliases_mutation_does_not_affect_schema(self, simple_adf):
-        """Verify mutating returned constant_aliases set doesn't affect _schema."""
+        """Verify mutating returned constant_aliases set raises TypeError."""
         simple_adf.add_alias('const', '42', is_constant=True)
         
-        # Get constant_aliases and mutate the returned set
+        # Get constant_aliases — mutation now raises TypeError
         constants_copy = simple_adf.constant_aliases
-        constants_copy.add('injected')
-        constants_copy.discard('const')
+        with pytest.raises(TypeError):
+            constants_copy.add('injected')
+        with pytest.raises(TypeError):
+            constants_copy.discard('const')
         
         # _schema should be unaffected
         assert simple_adf._schema['columns']['const'].get('constant') is True
