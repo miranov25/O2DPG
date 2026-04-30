@@ -9300,7 +9300,7 @@ function collapseDepth(maxD) {{
                         # Column exists physically but schema says it's an alias
                         # Mark as materialized alias
                         if name not in self.aliases:
-                            self.aliases[name] = expr
+                            self._restore_aliases_from_dict({name: expr})
         
         # Update compression info
         if 'compression' in schema:
