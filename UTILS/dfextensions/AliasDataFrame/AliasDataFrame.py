@@ -18,7 +18,6 @@ except ImportError as e:
 import matplotlib.pyplot as plt
 import networkx as nx
 import re
-from types import MappingProxyType
 import ast
 
 # Phase 7.4: Custom exceptions
@@ -1134,14 +1133,9 @@ class AliasDataFrame:
     def aliases(self):
         """
         Backward compatible: returns {name: expr} for all aliases.
-        
-        Returns a read-only view (MappingProxyType). Mutation raises TypeError.
-        Use add_alias(name, expr) to define or redefine.
-        Use remove_alias(name) to delete.
+        Read-only view over _schema["columns"].
         """
-        return MappingProxyType(
-            {k: v["expr"] for k, v in self._schema["columns"].items() if "expr" in v}
-        )
+        return {k: v["expr"] for k, v in self._schema["columns"].items() if "expr" in v}
 
     @aliases.setter
     def aliases(self, value):
