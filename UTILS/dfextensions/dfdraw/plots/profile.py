@@ -176,6 +176,10 @@ def draw_profile(
     selection: Optional[Union[str, np.ndarray, callable]] = None,
     # Phase 13.18.DF: Robust statistics extension
     stat_fields=None,
+    # Phase 13.25.DF (Phase A): Quantile rendering
+    quantiles: Optional[List[float]] = None,
+    central: Optional[str] = None,       # None → get_style_value("quantile.central_default", "mean")
+    quantile_mode: str = "auto",
     # Phase 13.16.DF FIX1: suppress flags for vector dispatch
     _suppress_legend: bool = False,
     _suppress_title: bool = False,
@@ -300,6 +304,68 @@ def draw_profile(
     # Phase 13.12.DF v1.2: auto_title from style if not set per-call
     auto_title = resolve_auto_title(auto_title)
     
+    # Phase 13.25.DF: Resolve central= and validate quantile parameters
+    if central is None:
+        central = get_style_value("quantile.central_default", "mean")
+    if central not in ('mean', 'median', 'both', 'none'):
+        raise ValueError(
+            f"central must be 'mean', 'median', 'both', or 'none', got {central!r}"
+        )
+    
+    _resolved_quantile_mode = None
+    _quantile_pair = None
+    if quantiles is not None:
+        # Validate and auto-detect mode
+        if quantile_mode == 'auto':
+            _resolved_quantile_mode = _detect_quantile_mode(quantiles)
+        elif quantile_mode in ('error_bars', 'band'):
+            _resolved_quantile_mode = quantile_mode
+            # Still validate the list
+            for q in quantiles:
+                if q <= 0 or q >= 1:
+                    raise ValueError(f"quantiles must be in (0, 1), got {q}")
+        elif quantile_mode in ('discrete', 'nested_band'):
+            raise NotImplementedError(
+                f"Phase B: {quantile_mode} mode is not yet implemented."
+            )
+        else:
+            raise ValueError(
+                f"quantile_mode must be 'auto', 'error_bars', or 'band', "
+                f"got {quantile_mode!r}"
+            )
+        
+        # AD-51: central='none' + error_bars is invalid
+        if central == 'none' and _resolved_quantile_mode == 'error_bars':
+            raise ValueError(
+                "central='none' is invalid with quantile_mode='error_bars' — "
+                "error bars require a central line to ride on. "
+                "Use central='mean' or central='median', or switch to "
+                "quantile_mode='band' which supports central='none'."
+            )
+        
+        # Extract the quantile pair (lower, upper) for computation
+        qs = sorted(quantiles)
+        if _resolved_quantile_mode == 'error_bars':
+            _quantile_pair = (qs[0], qs[1])
+        elif _resolved_quantile_mode == 'band':
+            _quantile_pair = (qs[0], qs[2])  # skip 0.5 in the middle
+        
+        # AD-52: default coupling — rebind error="quantile" for error_bars mode
+        # when user did not explicitly set error=
+        if _resolved_quantile_mode == 'error_bars' and error == "sem":
+            error = "quantile"
+        
+        # Weighted quantiles not supported in Phase A
+        if weights is not None:
+            raise NotImplementedError("weighted quantiles deferred to Phase B")
+    
+    # Validate error="quantile" requires quantiles=
+    if error == "quantile" and quantiles is None:
+        raise ValueError(
+            "error='quantile' requires quantiles= parameter. "
+            "Example: profile('y:x', quantiles=[0.16, 0.84], error='quantile')"
+        )
+    
     # Create figure if needed
     if ax is None:
         figsize = get_style_value("figure.figsize", (8, 6))
@@ -375,20 +441,98 @@ def draw_profile(
             stats_dict['profile_data'] = pd.concat(profile_data_list, ignore_index=True)
     else:
         # Single profile
+        # Phase A: compute standard profile (needed for mean line + SEM/STD bars)
+        _error_for_compute = error if error != "quantile" else "sem"
         bin_centers, bin_means, bin_errors, bin_counts, profile_df = _compute_profile(
-            x_data, y_data, bins, x_range, error, return_data=return_data,
+            x_data, y_data, bins, x_range, _error_for_compute, return_data=return_data,
             w_data=w_data  # Phase 13.12.DF v1.1
         )
         
         # Phase 13.12.DF F2: Apply min_entries filter for plotting
         plot_mask = bin_counts >= min_entries
         
-        ax.errorbar(
-            bin_centers[plot_mask], bin_means[plot_mask], yerr=bin_errors[plot_mask],
-            fmt=marker, color=color, markersize=markersize,
-            capsize=capsize, linestyle=linestyle, linewidth=linewidth,
-            label=label, **kwargs
-        )
+        # Phase 13.25.DF: Compute per-bin quantiles if requested
+        _q_lower = _q_upper = None
+        if quantiles is not None and _quantile_pair is not None:
+            _, _q_lower, _q_upper, _ = _compute_per_bin_quantiles(
+                x_data, y_data, bins, x_range, _quantile_pair,
+            )
+            # Add to stats dict
+            stats_dict['q_lower_per_bin'] = _q_lower
+            stats_dict['q_upper_per_bin'] = _q_upper
+        
+        # Phase 13.25.DF: Compute per-bin median if needed
+        _bin_medians = None
+        if central in ('median', 'both'):
+            _bin_medians = _compute_per_bin_median(x_data, y_data, bins, x_range)
+        
+        # Phase 13.25.DF: Determine central values for plotting
+        if central == 'median':
+            _central_values = _bin_medians
+        else:
+            _central_values = bin_means  # 'mean', 'both', 'none' all use mean as primary
+        
+        # Phase 13.25.DF: Render based on quantile_mode
+        if _resolved_quantile_mode == 'error_bars' and error == "quantile":
+            # Quantile-derived asymmetric error bars (zero visual channel cost)
+            _render_quantile_error_bars(
+                ax, bin_centers, _central_values, _q_lower, _q_upper,
+                plot_mask, color, marker, markersize, linestyle, linewidth, label,
+            )
+        elif _resolved_quantile_mode == 'error_bars' and error in ("sem", "std"):
+            # Both: quantile bars AND SEM/STD bars (user explicitly requested both)
+            # Draw SEM/STD bars first (symmetric)
+            ax.errorbar(
+                bin_centers[plot_mask], _central_values[plot_mask],
+                yerr=bin_errors[plot_mask],
+                fmt=marker, color=color, markersize=markersize,
+                capsize=capsize, linestyle=linestyle, linewidth=linewidth,
+                label=label, **kwargs
+            )
+            # Overlay quantile bars (asymmetric, no marker to avoid double-plotting)
+            c = _central_values[plot_mask]
+            lower_delta = c - _q_lower[plot_mask]
+            upper_delta = _q_upper[plot_mask] - c
+            ax.errorbar(
+                bin_centers[plot_mask], c,
+                yerr=np.array([lower_delta, upper_delta]),
+                fmt='none', color=color,
+                capsize=get_style_value("quantile.error_bars.capsize", 3.0),
+                linestyle='none',
+            )
+        elif _resolved_quantile_mode == 'band':
+            # Band mode: render band first (behind), then central line on top
+            if _q_lower is not None and _q_upper is not None:
+                _render_quantile_band(
+                    ax, bin_centers, _q_lower, _q_upper, plot_mask, color,
+                )
+            # Central line (unless central='none')
+            if central != 'none':
+                ax.errorbar(
+                    bin_centers[plot_mask], _central_values[plot_mask],
+                    yerr=bin_errors[plot_mask],
+                    fmt=marker, color=color, markersize=markersize,
+                    capsize=capsize, linestyle=linestyle, linewidth=linewidth,
+                    label=label, **kwargs
+                )
+        else:
+            # No quantiles — standard profile rendering (existing behavior)
+            ax.errorbar(
+                bin_centers[plot_mask], bin_means[plot_mask],
+                yerr=bin_errors[plot_mask],
+                fmt=marker, color=color, markersize=markersize,
+                capsize=capsize, linestyle=linestyle, linewidth=linewidth,
+                label=label, **kwargs
+            )
+        
+        # Phase 13.25.DF: Render second central line for central='both'
+        if central == 'both' and _bin_medians is not None:
+            ax.plot(
+                bin_centers[plot_mask], _bin_medians[plot_mask],
+                color=color, linestyle='--', linewidth=linewidth,
+                marker=marker, markersize=markersize * 0.7,
+                label=f"{label or ''} (median)".strip(),
+            )
         
         # Phase 13.12.DF F1: Add profile data to stats
         if return_data and profile_df is not None:
@@ -698,4 +842,233 @@ def _add_stats_box(
         verticalalignment=va,
         horizontalalignment=ha,
         bbox=dict(boxstyle=boxstyle, facecolor="white", alpha=alpha)
+    )
+
+
+# =============================================================================
+# Phase 13.25.DF (Phase A): Quantile rendering helpers
+# =============================================================================
+
+def _detect_quantile_mode(quantiles: list) -> str:
+    """
+    Auto-detect quantile rendering mode from the shape of the quantiles list.
+    
+    Phase A supports error_bars and band only; other shapes raise
+    NotImplementedError (Phase B) or ValueError.
+    
+    Parameters
+    ----------
+    quantiles : list of float
+        Quantile fractions in (0, 1).
+    
+    Returns
+    -------
+    str
+        'error_bars' or 'band' (Phase A).
+    
+    Raises
+    ------
+    ValueError
+        If quantiles is empty, single-valued, or contains out-of-range values.
+    NotImplementedError
+        If quantiles shape requires Phase B modes (discrete-line, nested-band).
+    """
+    if not quantiles:
+        raise ValueError("quantiles must be non-empty list of fractions in (0, 1)")
+    
+    # Range check
+    for q in quantiles:
+        if q <= 0 or q >= 1:
+            raise ValueError(
+                f"quantiles must be in (0, 1), got {q}. "
+                f"Use fractions like [0.16, 0.84], not percentages."
+            )
+    
+    qs = sorted(quantiles)
+    n = len(qs)
+    
+    if n == 1:
+        raise ValueError(
+            f"quantiles requires at least a symmetric pair (e.g., [0.16, 0.84]), "
+            f"got single value [{qs[0]}]"
+        )
+    
+    # Check if symmetric pair (no 0.5)
+    if n == 2:
+        is_symmetric = abs(qs[0] + qs[1] - 1.0) < 1e-9
+        has_05 = any(abs(q - 0.5) < 1e-9 for q in qs)
+        if is_symmetric and not has_05:
+            return 'error_bars'
+    
+    # Check if symmetric triple with 0.5
+    if n == 3:
+        has_05 = abs(qs[1] - 0.5) < 1e-9
+        is_symmetric = abs(qs[0] + qs[2] - 1.0) < 1e-9
+        if has_05 and is_symmetric:
+            return 'band'
+    
+    # Multi-pair symmetric (Phase B: nested-band)
+    # Check if all non-0.5 entries form symmetric pairs
+    non_05 = [q for q in qs if abs(q - 0.5) > 1e-9]
+    if len(non_05) >= 4:
+        pairs_symmetric = all(
+            abs(non_05[i] + non_05[-(i+1)] - 1.0) < 1e-9
+            for i in range(len(non_05) // 2)
+        )
+        if pairs_symmetric:
+            raise NotImplementedError(
+                "Phase B: nested-band mode is not yet implemented. "
+                "Use a single symmetric pair (Phase A error_bars, e.g., [0.16, 0.84]) "
+                "or a symmetric triple including 0.5 (Phase A band, e.g., [0.16, 0.5, 0.84]) "
+                "until Phase B ships. See brainstorm §8.1."
+            )
+    
+    # Asymmetric / arbitrary → Phase B discrete-line
+    raise NotImplementedError(
+        "Phase B: discrete-line mode is not yet implemented. "
+        "Use a single symmetric pair (Phase A error_bars, e.g., [0.16, 0.84]) "
+        "or a symmetric triple including 0.5 (Phase A band, e.g., [0.16, 0.5, 0.84]) "
+        "until Phase B ships. See brainstorm §8.1."
+    )
+
+
+def _compute_per_bin_quantiles(
+    x_data: np.ndarray,
+    y_data: np.ndarray,
+    bins: int,
+    x_range,
+    quantile_pair: tuple,
+    w_data=None,
+) -> tuple:
+    """
+    Compute per-bin quantiles of y in bins of x.
+    
+    Single source of truth for quantile computation per AD-48.
+    Reuses the same binning algorithm as _compute_profile().
+    
+    Parameters
+    ----------
+    x_data, y_data : arrays
+    bins : int
+    x_range : tuple (min, max) or None
+    quantile_pair : tuple of 2 floats, e.g., (0.16, 0.84)
+    w_data : array, optional — weighted quantiles NOT supported in Phase A.
+    
+    Returns
+    -------
+    (bin_centers, q_lower, q_upper, bin_counts)
+        Arrays of length `bins`.
+    """
+    if w_data is not None:
+        raise NotImplementedError("weighted quantiles deferred to Phase B")
+    
+    if x_range is None:
+        x_range = (np.nanmin(x_data), np.nanmax(x_data))
+    
+    bin_edges = np.linspace(x_range[0], x_range[1], bins + 1)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    bin_indices = np.clip(np.digitize(x_data, bin_edges) - 1, 0, bins - 1)
+    
+    q_lower_frac, q_upper_frac = quantile_pair
+    q_lower = np.full(bins, np.nan)
+    q_upper = np.full(bins, np.nan)
+    bin_counts = np.zeros(bins, dtype=int)
+    
+    for i in range(bins):
+        mask = bin_indices == i
+        y_bin = y_data[mask]
+        y_bin = y_bin[~np.isnan(y_bin)]
+        n = len(y_bin)
+        bin_counts[i] = n
+        if n > 0:
+            q_lower[i] = float(np.nanpercentile(y_bin, q_lower_frac * 100))
+            q_upper[i] = float(np.nanpercentile(y_bin, q_upper_frac * 100))
+    
+    return bin_centers, q_lower, q_upper, bin_counts
+
+
+def _compute_per_bin_median(
+    x_data: np.ndarray,
+    y_data: np.ndarray,
+    bins: int,
+    x_range,
+) -> np.ndarray:
+    """
+    Compute per-bin median of y in bins of x.
+    
+    Used when central='median' or central='both' — the median line
+    is computed even if 0.5 is not in the quantiles list.
+    
+    Returns
+    -------
+    bin_medians : array of length `bins`
+    """
+    if x_range is None:
+        x_range = (np.nanmin(x_data), np.nanmax(x_data))
+    
+    bin_edges = np.linspace(x_range[0], x_range[1], bins + 1)
+    bin_indices = np.clip(np.digitize(x_data, bin_edges) - 1, 0, bins - 1)
+    
+    bin_medians = np.full(bins, np.nan)
+    for i in range(bins):
+        mask = bin_indices == i
+        y_bin = y_data[mask]
+        y_bin = y_bin[~np.isnan(y_bin)]
+        if len(y_bin) > 0:
+            bin_medians[i] = float(np.nanmedian(y_bin))
+    
+    return bin_medians
+
+
+def _render_quantile_error_bars(
+    ax, bin_centers, central_values, q_lower, q_upper,
+    plot_mask, color, marker, markersize, linestyle, linewidth, label,
+    capsize=None, **kwargs
+):
+    """
+    Render quantile-derived asymmetric error bars on the central line.
+    
+    Uses asymmetric yerr=[[lower_deltas], [upper_deltas]] per R3.
+    Capsize read from quantile.error_bars.capsize style key (AD-53).
+    """
+    if capsize is None:
+        capsize = get_style_value("quantile.error_bars.capsize", 3.0)
+    
+    # Asymmetric error bars: yerr = [[lower_deltas], [upper_deltas]]
+    # lower_delta = central - q_lower (positive value = bar extends downward)
+    # upper_delta = q_upper - central (positive value = bar extends upward)
+    c = central_values[plot_mask]
+    lower_delta = c - q_lower[plot_mask]
+    upper_delta = q_upper[plot_mask] - c
+    yerr = np.array([lower_delta, upper_delta])
+    
+    ax.errorbar(
+        bin_centers[plot_mask], c, yerr=yerr,
+        fmt=marker, color=color, markersize=markersize,
+        capsize=capsize, linestyle=linestyle, linewidth=linewidth,
+        label=label, **kwargs
+    )
+
+
+def _render_quantile_band(
+    ax, bin_centers, q_lower, q_upper, plot_mask, color,
+):
+    """
+    Render quantile band via fill_between.
+    
+    Alpha and hatch read from quantile.band.alpha and quantile.band.hatch
+    style keys (AD-53). Band color matches the central line's color.
+    """
+    alpha = get_style_value("quantile.band.alpha", 0.25)
+    hatch = get_style_value("quantile.band.hatch", None)
+    
+    fill_kwargs = dict(alpha=alpha, color=color)
+    if hatch is not None:
+        fill_kwargs['hatch'] = hatch
+    
+    ax.fill_between(
+        bin_centers[plot_mask],
+        q_lower[plot_mask],
+        q_upper[plot_mask],
+        **fill_kwargs
     )

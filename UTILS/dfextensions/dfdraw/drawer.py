@@ -557,6 +557,7 @@ class DFDraw:
         'auto_title',
         'same',
         'stat_fields',  # Phase 13.18.DF: robust statistics groups
+        'quantiles', 'central', 'quantile_mode',  # Phase 13.25.DF: quantile rendering
     )
 
     _HIST_FORWARDED_NAMES = (
@@ -1590,6 +1591,10 @@ class DFDraw:
         same: bool = False,
         # Phase 13.18.DF: Robust statistics
         stat_fields: Optional[Union[str, List[str]]] = None,
+        # Phase 13.25.DF (Phase A): Quantile rendering
+        quantiles: Optional[List[float]] = None,
+        central: Optional[str] = None,
+        quantile_mode: str = "auto",
         **kwargs
     ) -> DrawResult:
         """
@@ -1781,6 +1786,8 @@ class DFDraw:
                 auto_title=auto_title, selection=selection,
                 # Phase 13.18.DF: robust statistics
                 stat_fields=stat_fields,
+                # Phase 13.25.DF: quantile rendering
+                quantiles=quantiles, central=central, quantile_mode=quantile_mode,
                 **kwargs
             )
             axes = ax

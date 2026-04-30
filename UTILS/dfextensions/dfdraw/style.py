@@ -54,6 +54,27 @@ DEFAULT_STYLE: Dict[str, Any] = {
     "profile.marker": "o",
     "profile.markersize": 6,
     "profile.capsize": 3,
+    # Cap size for SEM/STD error bars on profile() central line. Independent of
+    # quantile.error_bars.capsize (which controls quantile-derived asymmetric bars).
+    
+    # Phase 13.25.DF (Phase A): Quantile rendering style keys (AD-53)
+    # These keys are INDEPENDENT — no cascading from profile.* keys.
+    # Matches dfdraw's existing independent-keys pattern:
+    # grid.alpha, scatter.alpha, hist.alpha, stats.alpha (style.py:37,41,48,73).
+    "quantile.band.alpha": 0.25,
+    # Alpha for quantile band rendering (fill_between). dfdraw design choice;
+    # matplotlib's fill_between default is alpha=None (~1.0, fully opaque).
+    "quantile.band.hatch": None,
+    # Hatch pattern for quantile band (e.g., '//' for B&W printing). None = no hatch.
+    "quantile.error_bars.capsize": 3.0,
+    # Cap size for asymmetric error bars rendered when quantile_mode='error_bars'.
+    # Independent of profile.capsize (which controls SEM/STD error bar caps in
+    # non-quantile mode). Set both keys if you want consistent cap sizes across
+    # rendering modes.
+    "quantile.central_default": "mean",
+    # Default central line when quantiles=[...] is set and central= is not
+    # explicitly passed. 'mean' preserves backward compat with existing GB-mean
+    # behavior per AD-45.
     
     # Auto-title (Phase 13.12.DF v1.2)
     "auto_title": False,

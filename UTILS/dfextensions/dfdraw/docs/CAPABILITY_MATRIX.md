@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-04-15 07:10 UTC
+**Generated:** 2026-04-30 20:27 UTC
 **Phase:** 13.15.DF
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -9,12 +9,12 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 7 | 15% |
-| ☑️ Smoke-only | 39 | 85% |
+| ✅ Verified | 7 | 13% |
+| ☑️ Smoke-only | 45 | 87% |
 | 🧨 Broken | 0 | 0% |
 | 📋 Planned | 0 | 0% |
-| **Total features** | **46** | |
-| **Total proof tests** | **170** | |
+| **Total features** | **52** | |
+| **Total proof tests** | **213** | |
 | **Invariance tests** | **28** | |
 
 **Status key:**
@@ -87,6 +87,13 @@
 | ✅ | **VECTOR.kwarg_propagation** — Vector path forwards all scalar-mode kwargs (FIX1) | 7 | 0 |
 | ☑️ | **VECTOR.groupby_polish** — Vector + group_by deduplicated legend, title, layout (FIX1) | 5 | 0 |
 | ☑️ | **VECTOR.kwarg_surface** — Vector dispatch forwards named-parameter surface + facet guard (FIX1) | 6 | 0 |
+| | **QUANTILE** | | |
+| ☑️ | **QUANTILE.error_bars** — Quantile error_bars mode (asymmetric bars from symmetric pair) | 8 | 0 |
+| ☑️ | **QUANTILE.band** — Quantile band mode (fill_between from symmetric triple) | 7 | 0 |
+| ☑️ | **QUANTILE.central** — Quantile central= parameter (mean/median/both/none) | 7 | 0 |
+| ☑️ | **QUANTILE.auto_detection** — Quantile mode auto-detection from list shape | 7 | 0 |
+| ☑️ | **QUANTILE.style_keys** — Quantile style keys (band.alpha, band.hatch, error_bars.capsize, central_default) | 8 | 0 |
+| ☑️ | **QUANTILE.parity** — Quantile parity + backward-compat regression-lock | 6 | 0 |
 
 ---
 
