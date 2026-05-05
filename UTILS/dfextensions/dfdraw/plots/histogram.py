@@ -238,15 +238,18 @@ def draw_hist(
         fig = ax.get_figure()
     
     # Get data
+    # BUG_dfdraw_20260505: cast to float — boolean expressions (==, !=, >, <, &, |, ~)
+    # produce np.bool_ columns; np.histogram cannot subtract boolean edges.
+    # Profile, hist2d, hexbin all already cast to float here; hist was the outlier.
     if isinstance(x, str):
         x_name = x
-        x_data = df[x].values
+        x_data = df[x].values.astype(float)
     else:
         x_name = "x"
-        x_data = np.asarray(x)
+        x_data = np.asarray(x, dtype=float)
     
     # Remove NaN
-    mask = ~np.isnan(x_data.astype(float))
+    mask = ~np.isnan(x_data)
     x_data = x_data[mask]
     
     # Statistics dict
@@ -357,13 +360,15 @@ def _draw_hist_grouped(
     
     if stacked:
         # Stacked histogram
-        data_list = [df[df[group_by] == g][x].dropna().values for g in groups]
+        # BUG_dfdraw_20260505: cast to float for boolean expressions
+        data_list = [df[df[group_by] == g][x].dropna().values.astype(float) for g in groups]
         ax.hist(data_list, label=[str(g) for g in groups], color=colors,
                 stacked=True, **hist_kwargs)
     else:
         # Overlaid histograms
         for i, group in enumerate(groups):
-            group_data = df[df[group_by] == group][x].dropna().values
+            # BUG_dfdraw_20260505: cast to float for boolean expressions
+            group_data = df[df[group_by] == group][x].dropna().values.astype(float)
             ax.hist(group_data, label=str(group), color=colors[i], **hist_kwargs)
 
 

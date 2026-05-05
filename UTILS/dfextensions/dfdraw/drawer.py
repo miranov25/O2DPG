@@ -1564,7 +1564,7 @@ class DFDraw:
         sample: Optional[int] = None,
         bins: Optional[int] = None,
         range: Optional[Tuple[float, float]] = None,
-        error: str = "sem",
+        error: Optional[str] = None,   # FIX1: None → resolve per context
         stats: Optional[Union[bool, List[str]]] = None,
         title: Optional[str] = None,
         xlabel: Optional[str] = None,

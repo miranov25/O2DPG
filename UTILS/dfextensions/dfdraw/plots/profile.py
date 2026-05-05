@@ -149,7 +149,7 @@ def draw_profile(
     ax: Optional[plt.Axes] = None,
     bins: Optional[int] = None,
     x_range: Optional[Tuple[float, float]] = None,
-    error: str = "sem",
+    error: Optional[str] = None,   # Phase 13.25.DF FIX1: None → resolve per context
     stats: Optional[Union[bool, List[str]]] = None,
     title: Optional[str] = None,
     xlabel: Optional[str] = None,
@@ -304,6 +304,13 @@ def draw_profile(
     # Phase 13.12.DF v1.2: auto_title from style if not set per-call
     auto_title = resolve_auto_title(auto_title)
     
+    # Phase 13.25.DF FIX1 (I-1): resolve error=None sentinel.
+    # None means "user did not explicitly set error=".
+    # Mirror R2's central=None pattern (Claude49 P1-1 + Claude37 P1-2 convergent).
+    _error_was_explicit = (error is not None)
+    if error is None:
+        error = "sem"  # backward-compat default
+
     # Phase 13.25.DF: Resolve central= and validate quantile parameters
     if central is None:
         central = get_style_value("quantile.central_default", "mean")
@@ -350,9 +357,11 @@ def draw_profile(
         elif _resolved_quantile_mode == 'band':
             _quantile_pair = (qs[0], qs[2])  # skip 0.5 in the middle
         
-        # AD-52: default coupling — rebind error="quantile" for error_bars mode
-        # when user did not explicitly set error=
-        if _resolved_quantile_mode == 'error_bars' and error == "sem":
+        # AD-52 FIX1: rebind error only when user did NOT explicitly set it.
+        # None (signature default) → rebind to "quantile" for error_bars mode.
+        # Explicit "sem" → keep "sem" → both SEM + quantile bars rendered.
+        # Explicit "none" → keep "none" → quantile bars only (I-2 dispatch).
+        if _resolved_quantile_mode == 'error_bars' and not _error_was_explicit:
             error = "quantile"
         
         # Weighted quantiles not supported in Phase A
@@ -499,6 +508,13 @@ def draw_profile(
                 fmt='none', color=color,
                 capsize=get_style_value("quantile.error_bars.capsize", 3.0),
                 linestyle='none',
+            )
+        elif _resolved_quantile_mode == 'error_bars' and error == "none":
+            # FIX1 I-2 (Claude37 P1-1): error="none" + quantile error_bars
+            # → render quantile bars only on the central line (no SEM/STD)
+            _render_quantile_error_bars(
+                ax, bin_centers, _central_values, _q_lower, _q_upper,
+                plot_mask, color, marker, markersize, linestyle, linewidth, label,
             )
         elif _resolved_quantile_mode == 'band':
             # Band mode: render band first (behind), then central line on top
@@ -1037,9 +1053,12 @@ def _render_quantile_error_bars(
     # Asymmetric error bars: yerr = [[lower_deltas], [upper_deltas]]
     # lower_delta = central - q_lower (positive value = bar extends downward)
     # upper_delta = q_upper - central (positive value = bar extends upward)
+    # Clamp to >= 0: for highly skewed data (e.g., boolean), quantile can
+    # exceed the central value, producing negative deltas. matplotlib
+    # requires yerr >= 0.
     c = central_values[plot_mask]
-    lower_delta = c - q_lower[plot_mask]
-    upper_delta = q_upper[plot_mask] - c
+    lower_delta = np.maximum(0, c - q_lower[plot_mask])
+    upper_delta = np.maximum(0, q_upper[plot_mask] - c)
     yerr = np.array([lower_delta, upper_delta])
     
     ax.errorbar(
