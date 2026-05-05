@@ -555,12 +555,26 @@ def draw_profile(
             _ls_cycle = ['--', '-.', ':', (0, (3, 1, 1, 1))]
             for j, (q_val, q_per_bin) in enumerate(_q_all.items()):
                 q_ls = _ls_cycle[j % len(_ls_cycle)]
-                q_label = f'q={q_val:.0%}' if q_val != 0.5 else 'median'
-                ax.plot(
+                q_label = f'q={q_val:.0%}' if abs(q_val - 0.5) > 1e-9 else 'median'
+                line, = ax.plot(
                     bin_centers[plot_mask], q_per_bin[plot_mask],
                     color=color, linestyle=q_ls, linewidth=linewidth * 0.8,
                     label=q_label,
                 )
+                # On-line annotation: place label at ~40% along the line
+                # (avoid edges where quantile lines converge)
+                valid = plot_mask & ~np.isnan(q_per_bin)
+                n_valid = np.sum(valid)
+                if n_valid > 2:
+                    idx = np.where(valid)[0][int(0.4 * n_valid)]
+                    ax.annotate(
+                        f'{q_val:.0%}',
+                        xy=(bin_centers[idx], q_per_bin[idx]),
+                        fontsize=7, fontweight='bold',
+                        color=line.get_color(),
+                        backgroundcolor='white',
+                        ha='center', va='bottom',
+                    )
         else:
             # No quantiles — standard profile rendering (existing behavior)
             ax.errorbar(
@@ -604,10 +618,13 @@ def draw_profile(
     elif isinstance(stats, list):
         _add_stats_box(ax, stats_dict, stats)
     
-    # Legend for grouped
+    # Legend for grouped or discrete quantiles
     if not _suppress_legend:
         if group_col is not None:
             ax.legend(loc=get_style_value("legend.loc", "best"))
+        elif _resolved_quantile_mode == 'discrete' and quantiles is not None:
+            ax.legend(loc=get_style_value("legend.loc", "best"),
+                      fontsize=get_style_value("legend.fontsize", 9))
     
     if not _suppress_layout:
         plt.tight_layout()
