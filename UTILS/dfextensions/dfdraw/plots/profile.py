@@ -321,23 +321,20 @@ def draw_profile(
     
     _resolved_quantile_mode = None
     _quantile_pair = None
+    _quantile_list = None
     if quantiles is not None:
         # Validate and auto-detect mode
         if quantile_mode == 'auto':
             _resolved_quantile_mode = _detect_quantile_mode(quantiles)
-        elif quantile_mode in ('error_bars', 'band'):
+        elif quantile_mode in ('error_bars', 'band', 'discrete'):
             _resolved_quantile_mode = quantile_mode
             # Still validate the list
             for q in quantiles:
                 if q <= 0 or q >= 1:
                     raise ValueError(f"quantiles must be in (0, 1), got {q}")
-        elif quantile_mode in ('discrete', 'nested_band'):
-            raise NotImplementedError(
-                f"Phase B: {quantile_mode} mode is not yet implemented."
-            )
         else:
             raise ValueError(
-                f"quantile_mode must be 'auto', 'error_bars', or 'band', "
+                f"quantile_mode must be 'auto', 'error_bars', 'band', or 'discrete', "
                 f"got {quantile_mode!r}"
             )
         
@@ -350,12 +347,16 @@ def draw_profile(
                 "quantile_mode='band' which supports central='none'."
             )
         
-        # Extract the quantile pair (lower, upper) for computation
+        # Extract quantile values for computation
         qs = sorted(quantiles)
+        _quantile_pair = None
+        _quantile_list = None
         if _resolved_quantile_mode == 'error_bars':
             _quantile_pair = (qs[0], qs[1])
         elif _resolved_quantile_mode == 'band':
             _quantile_pair = (qs[0], qs[2])  # skip 0.5 in the middle
+        elif _resolved_quantile_mode == 'discrete':
+            _quantile_list = qs  # all quantiles, one line each
         
         # AD-52 FIX1: rebind error only when user did NOT explicitly set it.
         # None (signature default) → rebind to "quantile" for error_bars mode.
@@ -462,6 +463,7 @@ def draw_profile(
         
         # Phase 13.25.DF: Compute per-bin quantiles if requested
         _q_lower = _q_upper = None
+        _q_all = None  # dict {q_value: per_bin_array} for discrete mode
         if quantiles is not None and _quantile_pair is not None:
             _, _q_lower, _q_upper, _ = _compute_per_bin_quantiles(
                 x_data, y_data, bins, x_range, _quantile_pair,
@@ -469,6 +471,13 @@ def draw_profile(
             # Add to stats dict
             stats_dict['q_lower_per_bin'] = _q_lower
             stats_dict['q_upper_per_bin'] = _q_upper
+        elif quantiles is not None and _quantile_list is not None:
+            # Discrete mode: compute per-bin value for EACH quantile
+            _q_all = _compute_per_bin_all_quantiles(
+                x_data, y_data, bins, x_range, _quantile_list,
+            )
+            # Add to stats dict
+            stats_dict['quantiles_per_bin'] = _q_all
         
         # Phase 13.25.DF: Compute per-bin median if needed
         _bin_medians = None
@@ -530,6 +539,27 @@ def draw_profile(
                     fmt=marker, color=color, markersize=markersize,
                     capsize=capsize, linestyle=linestyle, linewidth=linewidth,
                     label=label, **kwargs
+                )
+        elif _resolved_quantile_mode == 'discrete' and _q_all is not None:
+            # Discrete mode: one line per quantile value — the general case.
+            # Central line first (unless central='none')
+            if central != 'none':
+                ax.errorbar(
+                    bin_centers[plot_mask], _central_values[plot_mask],
+                    yerr=bin_errors[plot_mask],
+                    fmt=marker, color=color, markersize=markersize,
+                    capsize=capsize, linestyle=linestyle, linewidth=linewidth,
+                    label=label, **kwargs
+                )
+            # One dashed line per quantile
+            _ls_cycle = ['--', '-.', ':', (0, (3, 1, 1, 1))]
+            for j, (q_val, q_per_bin) in enumerate(_q_all.items()):
+                q_ls = _ls_cycle[j % len(_ls_cycle)]
+                q_label = f'q={q_val:.0%}' if q_val != 0.5 else 'median'
+                ax.plot(
+                    bin_centers[plot_mask], q_per_bin[plot_mask],
+                    color=color, linestyle=q_ls, linewidth=linewidth * 0.8,
+                    label=q_label,
                 )
         else:
             # No quantiles — standard profile rendering (existing behavior)
@@ -869,25 +899,13 @@ def _detect_quantile_mode(quantiles: list) -> str:
     """
     Auto-detect quantile rendering mode from the shape of the quantiles list.
     
-    Phase A supports error_bars and band only; other shapes raise
-    NotImplementedError (Phase B) or ValueError.
-    
-    Parameters
-    ----------
-    quantiles : list of float
-        Quantile fractions in (0, 1).
+    The GENERAL case is discrete (one line per quantile). Error_bars and band
+    are OPTIMIZATIONS for specific symmetric shapes.
     
     Returns
     -------
     str
-        'error_bars' or 'band' (Phase A).
-    
-    Raises
-    ------
-    ValueError
-        If quantiles is empty, single-valued, or contains out-of-range values.
-    NotImplementedError
-        If quantiles shape requires Phase B modes (discrete-line, nested-band).
+        'error_bars', 'band', or 'discrete'.
     """
     if not quantiles:
         raise ValueError("quantiles must be non-empty list of fractions in (0, 1)")
@@ -903,49 +921,26 @@ def _detect_quantile_mode(quantiles: list) -> str:
     qs = sorted(quantiles)
     n = len(qs)
     
+    # Single value → discrete (just one quantile line)
     if n == 1:
-        raise ValueError(
-            f"quantiles requires at least a symmetric pair (e.g., [0.16, 0.84]), "
-            f"got single value [{qs[0]}]"
-        )
+        return 'discrete'
     
-    # Check if symmetric pair (no 0.5)
+    # Check if symmetric pair (no 0.5) → error_bars optimization
     if n == 2:
         is_symmetric = abs(qs[0] + qs[1] - 1.0) < 1e-9
         has_05 = any(abs(q - 0.5) < 1e-9 for q in qs)
         if is_symmetric and not has_05:
             return 'error_bars'
     
-    # Check if symmetric triple with 0.5
+    # Check if symmetric triple with 0.5 → band optimization
     if n == 3:
         has_05 = abs(qs[1] - 0.5) < 1e-9
         is_symmetric = abs(qs[0] + qs[2] - 1.0) < 1e-9
         if has_05 and is_symmetric:
             return 'band'
     
-    # Multi-pair symmetric (Phase B: nested-band)
-    # Check if all non-0.5 entries form symmetric pairs
-    non_05 = [q for q in qs if abs(q - 0.5) > 1e-9]
-    if len(non_05) >= 4:
-        pairs_symmetric = all(
-            abs(non_05[i] + non_05[-(i+1)] - 1.0) < 1e-9
-            for i in range(len(non_05) // 2)
-        )
-        if pairs_symmetric:
-            raise NotImplementedError(
-                "Phase B: nested-band mode is not yet implemented. "
-                "Use a single symmetric pair (Phase A error_bars, e.g., [0.16, 0.84]) "
-                "or a symmetric triple including 0.5 (Phase A band, e.g., [0.16, 0.5, 0.84]) "
-                "until Phase B ships. See brainstorm §8.1."
-            )
-    
-    # Asymmetric / arbitrary → Phase B discrete-line
-    raise NotImplementedError(
-        "Phase B: discrete-line mode is not yet implemented. "
-        "Use a single symmetric pair (Phase A error_bars, e.g., [0.16, 0.84]) "
-        "or a symmetric triple including 0.5 (Phase A band, e.g., [0.16, 0.5, 0.84]) "
-        "until Phase B ships. See brainstorm §8.1."
-    )
+    # Everything else → discrete (one line per quantile)
+    return 'discrete'
 
 
 def _compute_per_bin_quantiles(
@@ -1001,6 +996,43 @@ def _compute_per_bin_quantiles(
             q_upper[i] = float(np.nanpercentile(y_bin, q_upper_frac * 100))
     
     return bin_centers, q_lower, q_upper, bin_counts
+
+
+def _compute_per_bin_all_quantiles(
+    x_data: np.ndarray,
+    y_data: np.ndarray,
+    bins: int,
+    x_range,
+    quantile_list: list,
+    w_data=None,
+) -> dict:
+    """
+    Compute per-bin values for ALL quantiles in the list.
+    
+    The general case: any list of quantile fractions.
+    Returns a dict {q_value: per_bin_array} for discrete-mode rendering.
+    """
+    if w_data is not None:
+        raise NotImplementedError("weighted quantiles deferred to Phase B")
+    
+    if x_range is None:
+        x_range = (np.nanmin(x_data), np.nanmax(x_data))
+    
+    bin_edges = np.linspace(x_range[0], x_range[1], bins + 1)
+    bin_indices = np.clip(np.digitize(x_data, bin_edges) - 1, 0, bins - 1)
+    
+    result = {}
+    for q in quantile_list:
+        q_per_bin = np.full(bins, np.nan)
+        for i in range(bins):
+            mask = bin_indices == i
+            y_bin = y_data[mask]
+            y_bin = y_bin[~np.isnan(y_bin)]
+            if len(y_bin) > 0:
+                q_per_bin[i] = float(np.nanpercentile(y_bin, q * 100))
+        result[q] = q_per_bin
+    
+    return result
 
 
 def _compute_per_bin_median(

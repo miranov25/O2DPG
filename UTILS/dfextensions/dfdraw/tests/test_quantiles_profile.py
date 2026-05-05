@@ -169,17 +169,25 @@ class TestQuantileAutoDetection:
     def test_symmetric_pair_p25_p75_returns_error_bars(self,df_gaussian):
         _,_,s=DFDraw(df_gaussian).profile("y:x",bins=20,quantiles=[.25,.75])
         assert 'q_lower_per_bin' in s; plt.close('all')
-    def test_asymmetric_raises_notimplementederror_phaseb(self,df_gaussian):
-        with pytest.raises(NotImplementedError,match="Phase B"):
-            DFDraw(df_gaussian).profile("y:x",bins=20,quantiles=[.1,.5,.9,.99])
+    def test_asymmetric_returns_discrete(self,df_gaussian):
+        """Asymmetric lists → discrete mode (one line per quantile)."""
+        _,ax,s=DFDraw(df_gaussian).profile("y:x",bins=20,quantiles=[.1,.5,.9,.99])
+        assert 'quantiles_per_bin' in s
+        assert len(s['quantiles_per_bin'])==4  # one array per quantile
+        lines=ax.get_lines()
+        assert len(lines)>=4,f"Expected ≥4 lines (central + 4 quantiles), got {len(lines)}"
         plt.close('all')
-    def test_multi_pair_raises_notimplementederror_phaseb(self,df_gaussian):
-        with pytest.raises(NotImplementedError,match="Phase B"):
-            DFDraw(df_gaussian).profile("y:x",bins=20,quantiles=[.05,.25,.5,.75,.95])
+    def test_multi_pair_returns_discrete(self,df_gaussian):
+        """Multi-pair symmetric → discrete mode (one line per quantile)."""
+        _,ax,s=DFDraw(df_gaussian).profile("y:x",bins=20,quantiles=[.05,.25,.5,.75,.95])
+        assert 'quantiles_per_bin' in s
+        assert len(s['quantiles_per_bin'])==5
         plt.close('all')
-    def test_single_value_raises_valueerror(self,df_gaussian):
-        with pytest.raises(ValueError,match="at least a symmetric pair"):
-            DFDraw(df_gaussian).profile("y:x",bins=20,quantiles=[.5])
+    def test_single_value_returns_discrete(self,df_gaussian):
+        """Single quantile [0.5] → discrete mode (one quantile line)."""
+        _,ax,s=DFDraw(df_gaussian).profile("y:x",bins=20,quantiles=[.5])
+        assert 'quantiles_per_bin' in s
+        assert len(s['quantiles_per_bin'])==1
         plt.close('all')
     def test_out_of_range_raises_valueerror(self,df_gaussian):
         with pytest.raises(ValueError,match="must be in"):
