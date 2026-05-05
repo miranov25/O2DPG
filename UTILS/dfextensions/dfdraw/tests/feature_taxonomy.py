@@ -551,7 +551,7 @@ FEATURES = [
         ],
     },
     # =========================================================================
-    # Phase 13.25.DF: Quantile rendering on profile() (Phase A)
+    # Phase 13.25.DF FIX1: Quantile rendering on profile() (Phase A)
     # =========================================================================
     {
         "id": "QUANTILE.error_bars",
@@ -561,9 +561,9 @@ FEATURES = [
             "test_quantiles_profile.py::TestQuantilePerBinCorrectness::test_q16_q84_per_bin_matches_nanpercentile",
             "test_quantiles_profile.py::TestQuantilePerBinCorrectness::test_q25_q75_per_bin_matches_nanpercentile",
             "test_quantiles_profile.py::TestQuantilePerBinCorrectness::test_q05_q95_per_bin_matches_nanpercentile",
-            "test_quantiles_profile.py::TestQuantileErrorBarsRendering::test_error_bars_yerr_is_asymmetric_tuple",
-            "test_quantiles_profile.py::TestQuantileErrorBarsRendering::test_error_bars_yerr_lower_equals_central_minus_q_lower",
-            "test_quantiles_profile.py::TestQuantileErrorBarsRendering::test_error_bars_yerr_upper_equals_q_upper_minus_central",
+            "test_quantiles_profile.py::TestQuantileErrorBarsRendering::test_error_bars_yerr_is_asymmetric",
+            "test_quantiles_profile.py::TestQuantileErrorBarsRendering::test_error_bars_q_lower_below_mean",
+            "test_quantiles_profile.py::TestQuantileErrorBarsRendering::test_error_bars_q_upper_above_mean",
             "test_quantiles_profile.py::TestQuantileErrorBarsRendering::test_error_bars_with_central_mean",
             "test_quantiles_profile.py::TestQuantileErrorBarsRendering::test_error_bars_with_central_median",
         ],
@@ -575,11 +575,12 @@ FEATURES = [
         "tests": [
             "test_quantiles_profile.py::TestQuantileBandRendering::test_band_renders_polycollection",
             "test_quantiles_profile.py::TestQuantileBandRendering::test_band_alpha_default_is_025",
-            "test_quantiles_profile.py::TestQuantileBandRendering::test_band_y_lower_equals_q_lower_per_bin",
-            "test_quantiles_profile.py::TestQuantileBandRendering::test_band_y_upper_equals_q_upper_per_bin",
-            "test_quantiles_profile.py::TestQuantileBandRendering::test_band_with_central_none_omits_central_line",
-            "test_quantiles_profile.py::TestQuantileBandRendering::test_band_alpha_read_from_style",
-            "test_quantiles_profile.py::TestQuantileBandRendering::test_band_hatch_read_from_style",
+            "test_quantiles_profile.py::TestQuantileBandRendering::test_band_color_matches_central_line",
+            "test_quantiles_profile.py::TestQuantileBandRendering::test_band_y_lower_equals_q_lower",
+            "test_quantiles_profile.py::TestQuantileBandRendering::test_band_y_upper_equals_q_upper",
+            "test_quantiles_profile.py::TestQuantileBandRendering::test_band_with_central_none",
+            "test_quantiles_profile.py::TestQuantileBandRendering::test_band_alpha_from_style",
+            "test_quantiles_profile.py::TestQuantileBandRendering::test_band_hatch_from_style",
         ],
     },
     {
@@ -603,6 +604,7 @@ FEATURES = [
         "tests": [
             "test_quantiles_profile.py::TestQuantileAutoDetection::test_symmetric_pair_no_05_returns_error_bars",
             "test_quantiles_profile.py::TestQuantileAutoDetection::test_symmetric_triple_with_05_returns_band",
+            "test_quantiles_profile.py::TestQuantileAutoDetection::test_symmetric_pair_p25_p75_returns_error_bars",
             "test_quantiles_profile.py::TestQuantileAutoDetection::test_asymmetric_raises_notimplementederror_phaseb",
             "test_quantiles_profile.py::TestQuantileAutoDetection::test_multi_pair_raises_notimplementederror_phaseb",
             "test_quantiles_profile.py::TestQuantileAutoDetection::test_single_value_raises_valueerror",
@@ -615,27 +617,48 @@ FEATURES = [
         "name": "Quantile style keys (band.alpha, band.hatch, error_bars.capsize, central_default)",
         "category": "QUANTILE",
         "tests": [
-            "test_quantiles_profile.py::TestQuantileStyleKeyDefaults::test_quantile_band_alpha_default_is_025",
-            "test_quantiles_profile.py::TestQuantileStyleKeyDefaults::test_quantile_band_hatch_default_is_none",
-            "test_quantiles_profile.py::TestQuantileStyleKeyDefaults::test_quantile_error_bars_capsize_default_is_3",
-            "test_quantiles_profile.py::TestQuantileStyleKeyDefaults::test_quantile_central_default_is_mean",
-            "test_quantiles_profile.py::TestQuantileStyleKeyDefaults::test_set_style_overrides_propagate_to_band_rendering",
-            "test_quantiles_profile.py::TestQuantileStyleKeyDefaults::test_set_style_overrides_propagate_to_error_bars_rendering",
-            "test_quantiles_profile.py::TestQuantileStyleKeyDefaults::test_save_load_style_round_trips_quantile_keys",
-            "test_quantiles_profile.py::TestQuantileStyleKeyDefaults::test_quantile_namespace_integrity",
+            "test_quantiles_profile.py::TestQuantileStyleKeyDefaults::test_band_alpha_default",
+            "test_quantiles_profile.py::TestQuantileStyleKeyDefaults::test_band_hatch_default",
+            "test_quantiles_profile.py::TestQuantileStyleKeyDefaults::test_capsize_default",
+            "test_quantiles_profile.py::TestQuantileStyleKeyDefaults::test_central_default",
+            "test_quantiles_profile.py::TestQuantileStyleKeyDefaults::test_override_band",
+            "test_quantiles_profile.py::TestQuantileStyleKeyDefaults::test_override_capsize",
+            "test_quantiles_profile.py::TestQuantileStyleKeyDefaults::test_save_load_roundtrip",
+            "test_quantiles_profile.py::TestQuantileStyleKeyDefaults::test_namespace_integrity",
         ],
     },
     {
         "id": "QUANTILE.parity",
-        "name": "Quantile parity + backward-compat regression-lock",
+        "name": "Quantile determinism + backward-compat regression-lock",
         "category": "QUANTILE",
         "tests": [
-            "test_quantiles_profile.py::TestQuantileParityFixture::test_parity_error_bars_mean",
-            "test_quantiles_profile.py::TestQuantileParityFixture::test_parity_band_mean",
-            "test_quantiles_profile.py::TestQuantileParityFixture::test_parity_deterministic_quantiles",
-            "test_quantiles_profile.py::TestQuantileBackwardCompat::test_no_quantiles_kwarg_axes_structurally_equal",
-            "test_quantiles_profile.py::TestQuantileBackwardCompat::test_no_quantiles_kwarg_stats_numerically_equal_rtol_1e_12",
-            "test_quantiles_profile.py::TestQuantileBackwardCompat::test_makesmoothmaps_call_unchanged",
+            "test_quantiles_profile.py::TestQuantileDeterminism::test_det_error_bars_mean",
+            "test_quantiles_profile.py::TestQuantileDeterminism::test_det_band_mean",
+            "test_quantiles_profile.py::TestQuantileDeterminism::test_det_quantile_arrays",
+            "test_quantiles_profile.py::TestQuantileBackwardCompat::test_no_quantiles_produces_one_errorbar_container",
+            "test_quantiles_profile.py::TestQuantileBackwardCompat::test_no_quantiles_stats_match_reference",
+            "test_quantiles_profile.py::TestQuantileBackwardCompat::test_production_pattern_unchanged",
+        ],
+    },
+    # =========================================================================
+    # BUG_dfdraw_20260505: Boolean expression crash fix
+    # =========================================================================
+    {
+        "id": "COMPAT.bool_expression",
+        "name": "Boolean expression input (==, !=, >, <, &, |, ~) on all plot functions",
+        "category": "COMPAT",
+        "tests": [
+            "test_quantiles_profile.py::TestBoolExpressionHistogram::test_equality_bool_histogram",
+            "test_quantiles_profile.py::TestBoolExpressionHistogram::test_inequality_bool",
+            "test_quantiles_profile.py::TestBoolExpressionHistogram::test_greater_than_bool",
+            "test_quantiles_profile.py::TestBoolExpressionHistogram::test_logical_and_bool",
+            "test_quantiles_profile.py::TestBoolExpressionHistogram::test_logical_or_bool",
+            "test_quantiles_profile.py::TestBoolExpressionHistogram::test_logical_not_bool",
+            "test_quantiles_profile.py::TestBoolExpressionHistogram::test_bool_group_by",
+            "test_quantiles_profile.py::TestBoolExpressionHistogram::test_bool_values_correct",
+            "test_quantiles_profile.py::TestBoolExpressionProfile::test_bool_y_profile",
+            "test_quantiles_profile.py::TestBoolExpressionProfile::test_bool_x_profile",
+            "test_quantiles_profile.py::TestBoolExpressionProfile::test_bool_y_with_quantiles",
         ],
     },
 ]
