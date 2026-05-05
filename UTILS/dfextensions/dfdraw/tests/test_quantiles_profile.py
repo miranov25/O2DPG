@@ -196,9 +196,14 @@ class TestQuantileErrorBarsRendering:
     """T-1: Real assertions on ErrorbarContainer, yerr, capsize."""
 
     def test_error_bars_yerr_is_asymmetric(self,df_gaussian):
-        _,ax,_=DFDraw(df_gaussian).profile("y:x",bins=20,quantiles=[.16,.84])
+        """R3: ErrorbarContainer with asymmetric quantile error bars."""
+        _,ax,s=DFDraw(df_gaussian).profile("y:x",bins=20,quantiles=[.16,.84])
         ec=[c for c in ax.containers if isinstance(c,ErrorbarContainer)]
-        assert len(ec)>=1,f"Expected ErrorbarContainer, got {ax.containers}"; plt.close('all')
+        assert len(ec)>=1,f"Expected ErrorbarContainer, got {ax.containers}"
+        # Verify error bars rendered (cap lines present) and quantile stats in dict
+        assert len(ec[0][1])>0,"Cap lines must be present"
+        assert 'q_lower_per_bin' in s and 'q_upper_per_bin' in s
+        plt.close('all')
 
     def test_error_bars_q_lower_below_mean(self,df_gaussian):
         _,_,s=DFDraw(df_gaussian).profile("y:x",bins=20,quantiles=[.16,.84])
@@ -233,16 +238,27 @@ class TestQuantileErrorBarsRendering:
         set_style(None)
 
     def test_quantile_capsize_independent_of_profile_capsize(self,df_gaussian):
-        """AD-53 lock: independence verified by rendering with DIFFERENT capsize values."""
+        """AD-53 lock: rendered cap sizes must match each key independently.
+        P2-1 from Claude49+Claude48 convergent: introspect actual capsize values."""
         set_style(None); set_style({"profile.capsize":5,"quantile.error_bars.capsize":7.0})
         d=DFDraw(df_gaussian)
         _,ax1,_=d.profile("y:x",bins=20) # uses profile.capsize=5
         ec1=[c for c in ax1.containers if isinstance(c,ErrorbarContainer)]
         assert len(ec1)>=1,"Non-quantile ErrorbarContainer missing"
+        # matplotlib stores capsize as markersize/2 on cap lines
+        caps1=ec1[0][1]  # cap lines tuple
+        if caps1:
+            sem_capsize=caps1[0].get_markersize()/2.0
+            assert sem_capsize==pytest.approx(5.0,abs=0.5), \
+                f"profile.capsize=5 should propagate to SEM mode, got {sem_capsize}"
         _,ax2,_=d.profile("y:x",bins=20,quantiles=[.16,.84]) # uses quantile.error_bars.capsize=7
         ec2=[c for c in ax2.containers if isinstance(c,ErrorbarContainer)]
         assert len(ec2)>=1,"Quantile ErrorbarContainer missing"
-        # Both render with their respective style keys — independence proven
+        caps2=ec2[0][1]
+        if caps2:
+            q_capsize=caps2[0].get_markersize()/2.0
+            assert q_capsize==pytest.approx(7.0,abs=0.5), \
+                f"quantile.error_bars.capsize=7 should propagate to quantile mode, got {q_capsize}"
         plt.close('all'); set_style(None)
 
 # ── Class 5: Band rendering (8 invariance) — T-2 FIXED: unconditional ──
