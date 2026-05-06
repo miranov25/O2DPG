@@ -1547,6 +1547,67 @@ def make_parallel_fit_v3(
     return df_out, dfGB
 
 
+def _get_batch_mad_kernel():
+    """Compile numba kernel for batch MAD computation.
+
+    Phase 13.21.GB-PERF F3: replaces 1.26M per-bin np.median calls
+    (52s cumulative, 41μs Python dispatch per call) with a single
+    JIT-compiled prange loop over bins.
+
+    MAD(x) = median(|x - median(x)|)
+
+    Each bin: two sorts of a small per-bin scratch buffer (~20 elements).
+    Thread-safe: each prange iteration uses its own local scratch buffer.
+    """
+    import numba as nb
+
+    @nb.njit(cache=True, parallel=True)
+    def _batch_mad(resid_all, resid_offsets, n_groups, n_tgt, out_mad):
+        """Compute MAD for all bins in parallel.
+
+        Parameters
+        ----------
+        resid_all : (total_valid_rows, n_tgt) float64
+            Flat array of valid residuals, packed contiguously by bin.
+        resid_offsets : (n_groups + 1,) int64
+            CSR offsets into resid_all per bin.
+        n_groups : int
+        n_tgt : int
+        out_mad : (n_groups, n_tgt) float64
+            Output array, pre-initialized to NaN.
+        """
+        for gi in nb.prange(n_groups):
+            i0 = resid_offsets[gi]
+            i1 = resid_offsets[gi + 1]
+            m = i1 - i0
+            if m == 0:
+                continue  # out_mad already NaN
+
+            for t in range(n_tgt):
+                # Step 1: copy residuals to scratch, find median
+                buf = np.empty(m, dtype=np.float64)
+                for r in range(m):
+                    buf[r] = resid_all[i0 + r, t]
+                buf.sort()
+                if m % 2 == 1:
+                    med = buf[m // 2]
+                else:
+                    med = (buf[m // 2 - 1] + buf[m // 2]) / 2.0
+
+                # Step 2: compute |resid - median|, find median of that
+                for r in range(m):
+                    buf[r] = abs(resid_all[i0 + r, t] - med)
+                buf.sort()
+                if m % 2 == 1:
+                    mad_val = buf[m // 2]
+                else:
+                    mad_val = (buf[m // 2 - 1] + buf[m // 2]) / 2.0
+
+                out_mad[gi, t] = mad_val
+
+    return _batch_mad
+
+
 def make_parallel_fit_v4(
         *,
         df,
@@ -1806,6 +1867,15 @@ def make_parallel_fit_v4(
     # PROCESS EACH GROUP
     # ========================================================================
     
+    # Phase 13.21.GB-PERF F3: batch MAD computation
+    import os
+    _use_batch_mad = os.environ.get("GBAI_DISABLE_BATCH_MEDIAN", "") != "1"
+    if _use_batch_mad:
+        # Pre-allocate flat residual buffer for post-loop batch MAD
+        _resid_flat = np.empty((N, n_tgt), dtype=np.float64)
+        _resid_offsets = np.zeros(n_groups + 1, dtype=np.int64)
+        _resid_pos = 0
+
     # NumPy fallback (Numba kernel would be similar but JIT-compiled)
     for gi in range(n_groups):
         i0, i1 = offsets[gi], offsets[gi + 1]
@@ -1818,6 +1888,8 @@ def make_parallel_fit_v4(
             n_valid_arr[gi] = 0
             n_filtered_arr[gi] = 0
             status_arr[gi] = 'INSUFFICIENT_DATA'
+            if _use_batch_mad:
+                _resid_offsets[gi + 1] = _resid_pos
             continue
         
         # Extract data for this group
@@ -1848,6 +1920,8 @@ def make_parallel_fit_v4(
         # Check if enough valid data remains
         if n_valid < int(min_stat):
             status_arr[gi] = 'INSUFFICIENT_DATA'
+            if _use_batch_mad:
+                _resid_offsets[gi + 1] = _resid_pos
             continue
         
         # Apply filter
@@ -1918,11 +1992,18 @@ def make_parallel_fit_v4(
             y_pred_unweighted = X1 @ coeffs  # X1 is unweighted design matrix
             resid_unweighted = Yg - y_pred_unweighted
 
-            # Compute MAD for each target
-            for t_idx in range(n_tgt):
-                resid_t = resid_unweighted[:, t_idx]
-                mad_val = np.median(np.abs(resid_t - np.median(resid_t)))
-                mad_arr[gi, t_idx] = mad_val
+            if _use_batch_mad:
+                # Phase 13.21.GB-PERF F3: store residuals for post-loop batch
+                n_v = resid_unweighted.shape[0]
+                _resid_flat[_resid_pos:_resid_pos + n_v, :] = resid_unweighted
+                _resid_pos += n_v
+                _resid_offsets[gi + 1] = _resid_pos
+            else:
+                # Original per-bin MAD (fallback)
+                for t_idx in range(n_tgt):
+                    resid_t = resid_unweighted[:, t_idx]
+                    mad_val = np.median(np.abs(resid_t - np.median(resid_t)))
+                    mad_arr[gi, t_idx] = mad_val
 
             # ================================================================
             # COMPUTE PARAMETER ERRORS
@@ -1942,7 +2023,29 @@ def make_parallel_fit_v4(
             
         except np.linalg.LinAlgError as e:
             status_arr[gi] = f'SINGULAR_MATRIX'
+            if _use_batch_mad:
+                _resid_offsets[gi + 1] = _resid_pos
             continue
+
+    # ========================================================================
+    # BATCH MAD COMPUTATION (Phase 13.21.GB-PERF F3)
+    # ========================================================================
+    if _use_batch_mad:
+        # Forward-fill offsets for skipped bins
+        _resid_offsets = np.maximum.accumulate(_resid_offsets)
+        _resid_flat = _resid_flat[:_resid_pos, :]  # trim to actual size
+        try:
+            _mad_kernel = _get_batch_mad_kernel()
+            _mad_kernel(_resid_flat, _resid_offsets, n_groups, n_tgt, mad_arr)
+        except Exception:
+            # Fallback: per-bin numpy median (should not happen)
+            for gi in range(n_groups):
+                r0 = _resid_offsets[gi]
+                r1 = _resid_offsets[gi + 1]
+                if r1 > r0:
+                    for t in range(n_tgt):
+                        rt = _resid_flat[r0:r1, t]
+                        mad_arr[gi, t] = np.median(np.abs(rt - np.median(rt)))
 
     # ========================================================================
     # VECTORIZED OUTPUT ASSEMBLY
