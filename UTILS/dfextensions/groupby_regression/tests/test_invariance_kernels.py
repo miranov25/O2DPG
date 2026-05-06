@@ -147,6 +147,8 @@ def _allocate_single_outputs(n_groups: int, n_params: int):
         np.empty(n_groups, dtype=np.int64),                      # n_valid
         np.empty(n_groups, dtype=np.int64),                      # n_filtered
         np.empty(n_groups, dtype=np.float64),                    # cond
+        np.empty(n_groups, dtype=np.float64),                    # sum_y (Phase 13.21)
+        np.empty(n_groups, dtype=np.float64),                    # sum_y2 (Phase 13.21)
     )
 
 
@@ -208,7 +210,7 @@ class TestKernelSingleFitTruth:
         out, true_coeffs, X_all, offsets = _run_single_fit(
             n_groups, rows_per_group, n_feat,
         )
-        out_beta, out_errors, out_rms, _, out_status, _, _, _ = out
+        out_beta, out_errors, out_rms, _, out_status, _, _, _, _, _ = out
         n_params = n_feat + 1
 
         # Select OK groups
@@ -360,7 +362,7 @@ class TestKernelNumbaNumpyParity:
         out, _, X_all, offsets = _run_single_fit(
             n_groups, rows_per_group, n_feat,
         )
-        out_beta, out_errors, _, _, out_status, _, _, _ = out
+        out_beta, out_errors, _, _, out_status, _, _, _, _, _ = out
 
         # Regenerate Y for numpy path (same seed)
         _, Y_all, _, _, _ = _generate_kernel_data(

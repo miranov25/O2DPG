@@ -701,7 +701,7 @@ def _get_gather_window_rows_kernel():
     """
     import numba as nb
 
-    @nb.njit(cache=True)
+    @nb.njit(cache=True, parallel=True)
     def _gather_rows(
             bin_coords,       # (n_bins, n_dims) int64
             neighbor_offsets, # (K, n_dims) int64
@@ -723,8 +723,8 @@ def _get_gather_window_rows_kernel():
         lookup_len = lookup.shape[0]
         expected_neighbors = n_offsets if n_offsets > 0 else 1
 
-        # ---- Pass 1: count rows per bin ----
-        for bi in range(n_bins):
+        # ---- Pass 1: count rows per bin (parallel — disjoint writes) ----
+        for bi in nb.prange(n_bins):
             count = np.int64(0)
             n_nbrs = np.int64(0)
             for ni in range(n_offsets):
@@ -749,15 +749,15 @@ def _get_gather_window_rows_kernel():
             out_n_neighbors[bi] = n_nbrs
             out_eff_frac[bi] = n_nbrs / expected_neighbors
 
-        # ---- Prefix sum ----
+        # ---- Prefix sum (sequential — data dependency) ----
         for bi in range(n_bins):
             out_row_offsets[bi + 1] += out_row_offsets[bi]
 
         total_rows = out_row_offsets[n_bins]
         out_rows = np.empty(total_rows, dtype=np.int64)
 
-        # ---- Pass 2: fill row indices ----
-        for bi in range(n_bins):
+        # ---- Pass 2: fill row indices (parallel — disjoint CSR slices) ----
+        for bi in nb.prange(n_bins):
             pos = out_row_offsets[bi]
             for ni in range(n_offsets):
                 valid = True
@@ -1259,30 +1259,36 @@ def _fit_window_regression_numba(
 ) -> Dict[Tuple[int, ...], Dict[str, Dict[str, Any]]]:
     """V2: Batch all window bins into a single Numba kernel call.
 
-    Reshapes the per-bin window data into the kernel's expected format
-    (X_all sorted by group, offsets array) and calls fit_groups_single_numba
-    once for all bins. Eliminates the Python loop entirely.
+    Phase 13.21.GB-PERF: pre-kernel and post-kernel per-bin Python loops
+    eliminated. Pre-kernel: one np.column_stack for all rows, kernel
+    handles NaN via INVALID_FILTER. Post-kernel: vectorized R² from
+    kernel's out_sum_y/out_sum_y2 outputs.
 
     Supports OLS only. WLS falls back to V1 numpy path (see dispatch in
     make_sliding_window_fit). GLM/RLM not supported.
     """
+    import os
     try:
         from groupby_regression_kernels import (
             fit_groups_single_numba as _kernel_single,
+            INVALID_FILTER as _INVALID_FILTER,
             INVALID_DETECT as _INVALID_DETECT,
             STATUS_OK as _STATUS_OK,
+            STATUS_INSUFFICIENT as _STATUS_INSUFFICIENT,
         )
     except ImportError:
         from .groupby_regression_kernels import (
             fit_groups_single_numba as _kernel_single,
+            INVALID_FILTER as _INVALID_FILTER,
             INVALID_DETECT as _INVALID_DETECT,
             STATUS_OK as _STATUS_OK,
+            STATUS_INSUFFICIENT as _STATUS_INSUFFICIENT,
         )
 
     n_pred = len(linear_columns)
     n_params = n_pred + (1 if fit_intercept else 0)
 
-    # Pre-extract arrays
+    # Pre-extract arrays ONCE
     pred_arrays = [df[p].to_numpy(dtype=np.float64) for p in linear_columns]
     target_arrays = {t: df[t].to_numpy(dtype=np.float64) for t in fit_columns}
 
@@ -1292,61 +1298,42 @@ def _fit_window_regression_numba(
     for t in fit_columns:
         y_full = target_arrays[t]
 
-        # Build per-bin valid data: collect (X, Y) arrays and offsets
-        bin_X_list: List[np.ndarray] = []
-        bin_Y_list: List[np.ndarray] = []
+        # --- Phase 13.21.GB-PERF: vectorized pre-kernel ---
+        # Collect all row indices and bin sizes (no per-bin numpy calls)
         bin_centers: List[Tuple[int, ...]] = []
-        bin_n_valid: List[int] = []
-        skip_map: Dict[Tuple[int, ...], Dict[str, Any]] = {}
+        bin_sizes: List[int] = []
+        all_row_indices: List[np.ndarray] = []
 
         for ar in agg_results:
-            if ar.row_indices.size == 0:
-                skip_map[ar.center] = _empty_fit_result("empty_window", 0)
-                continue
-
-            idx = ar.row_indices
-            y = y_full[idx]
-            x_cols = [pa[idx] for pa in pred_arrays]
-
-            # Validity mask
-            valid = np.isfinite(y)
-            for xc in x_cols:
-                valid &= np.isfinite(xc)
-
-            n_valid = int(np.sum(valid))
-            if n_valid < max(1, int(min_stat)):
-                skip_map[ar.center] = _empty_fit_result("insufficient_stats", n_valid)
-                continue
-
-            # Extract valid rows
-            X_v = np.column_stack([xc[valid] for xc in x_cols]) if n_pred > 0 else np.empty((n_valid, 0))
-            Y_v = y[valid]
-
-            bin_X_list.append(X_v)
-            bin_Y_list.append(Y_v)
             bin_centers.append(ar.center)
-            bin_n_valid.append(n_valid)
+            if ar.row_indices.size > 0:
+                all_row_indices.append(ar.row_indices)
+                bin_sizes.append(ar.row_indices.size)
+            else:
+                bin_sizes.append(0)
 
-        n_bins = len(bin_X_list)
+        n_bins = len(bin_centers)
 
-        if n_bins == 0:
-            # All bins skipped
+        if not all_row_indices:
+            # All bins empty
             for ar in agg_results:
                 if ar.center not in out:
                     out[ar.center] = {}
-                out[ar.center][t] = skip_map.get(ar.center,
-                    _empty_fit_result("insufficient_stats", 0))
+                out[ar.center][t] = _empty_fit_result("empty_window", 0)
             continue
 
-        # Concatenate into kernel format
-        X_all = np.vstack(bin_X_list)            # (total_rows, n_feat)
-        Y_all = np.concatenate(bin_Y_list)       # (total_rows,)
-        W_all = np.empty(0, dtype=np.float64)    # unweighted
+        # ONE concatenation, ONE column_stack for all bins
+        all_idx = np.concatenate(all_row_indices)
+        if n_pred > 0:
+            X_all = np.column_stack([pa[all_idx] for pa in pred_arrays])
+        else:
+            X_all = np.empty((len(all_idx), 0), dtype=np.float64)
+        Y_all = y_full[all_idx]
+        W_all = np.empty(0, dtype=np.float64)  # unweighted
 
-        # Build offsets
+        # Build offsets from bin sizes
         offsets = np.zeros(n_bins + 1, dtype=np.int64)
-        for i, nv in enumerate(bin_n_valid):
-            offsets[i + 1] = offsets[i] + nv
+        np.cumsum(bin_sizes, out=offsets[1:])
 
         # Allocate outputs
         out_beta = np.empty((n_bins, n_params), dtype=np.float64)
@@ -1357,20 +1344,34 @@ def _fit_window_regression_numba(
         out_n_valid_arr = np.empty(n_bins, dtype=np.int64)
         out_n_filtered = np.empty(n_bins, dtype=np.int64)
         out_cond = np.empty(n_bins, dtype=np.float64)
+        out_sum_y = np.empty(n_bins, dtype=np.float64)
+        out_sum_y2 = np.empty(n_bins, dtype=np.float64)
 
-        # Single kernel call for all bins
+        # Single kernel call — INVALID_FILTER handles NaN rows internally
         _kernel_single(
             X_all, Y_all, W_all, offsets,
             n_bins, n_pred, n_params,
-            fit_intercept,  # was hardcoded True — P0 bug fix
-            max(1, int(min_stat)),  # min_stat
+            fit_intercept,
+            max(1, int(min_stat)),
             False,  # compute_mad
-            _INVALID_DETECT,
+            _INVALID_FILTER,
             out_beta, out_errors, out_rms, out_mad,
             out_status, out_n_valid_arr, out_n_filtered, out_cond,
+            out_sum_y, out_sum_y2,
         )
 
-        # Unpack results back to per-bin dicts
+        # --- Phase 13.21.GB-PERF: vectorized post-kernel R² ---
+        # R² = 1 - RSS/TSS where TSS = sum_y2 - sum_y²/n
+        n_valid_f = out_n_valid_arr.astype(np.float64)
+        dof = np.maximum(n_valid_f - n_params, 1.0)
+        rss = out_rms ** 2 * dof
+        # TSS via sufficient statistics (no per-bin numpy)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            ss_tot = out_sum_y2 - out_sum_y ** 2 / np.maximum(n_valid_f, 1.0)
+            r2_arr = np.where(ss_tot > 0, 1.0 - rss / ss_tot, np.nan)
+            rmse_arr = np.sqrt(rss / np.maximum(n_valid_f, 1.0))
+
+        # Unpack to per-bin dicts (array indexing only, no numpy per-bin calls)
         for i, center in enumerate(bin_centers):
             if center not in out:
                 out[center] = {}
@@ -1384,40 +1385,25 @@ def _fit_window_regression_numba(
                 coeffs_err = {linear_columns[j]: float(out_errors[i, j + offset])
                               for j in range(n_pred)}
 
-                # RMSE: V1 uses sqrt(RSS/n), kernel gives sqrt(RSS/dof).
-                # Convert: RSS = rms² × dof, RMSE = sqrt(RSS/n)
-                dof = bin_n_valid[i] - n_params
-                if dof > 0:
-                    rss = float(out_rms[i] ** 2 * dof)
-                    rmse = float(np.sqrt(rss / bin_n_valid[i]))
-                else:
-                    rss = float(out_rms[i] ** 2 * bin_n_valid[i])
-                    rmse = float(out_rms[i])
-
-                # R² = 1 - RSS / SS_tot
-                y_bin = Y_all[offsets[i]:offsets[i + 1]]
-                ss_tot = float(np.sum((y_bin - np.mean(y_bin)) ** 2))
-                r2 = 1.0 - rss / ss_tot if ss_tot > 0 else np.nan
-
                 out[center][t] = {
                     "coeffs": coeffs,
                     "coeffs_err": coeffs_err,
                     "intercept": intercept,
                     "intercept_err": intercept_err,
-                    "r_squared": r2,
-                    "rmse": rmse,
-                    "n_fitted": bin_n_valid[i],
+                    "r_squared": float(r2_arr[i]),
+                    "rmse": float(rmse_arr[i]),
+                    "n_fitted": int(out_n_valid_arr[i]),
                     "quality_flag": "",
                 }
             else:
-                out[center][t] = _empty_fit_result(
-                    f"fit_failed_{t}", bin_n_valid[i])
-
-        # Add skipped bins
-        for center, result in skip_map.items():
-            if center not in out:
-                out[center] = {}
-            out[center][t] = result
+                n_valid = int(out_n_valid_arr[i])
+                if bin_sizes[i] == 0:
+                    flag = "empty_window"
+                elif out_status[i] & _STATUS_INSUFFICIENT:
+                    flag = "insufficient_stats"
+                else:
+                    flag = f"fit_failed_{t}"
+                out[center][t] = _empty_fit_result(flag, n_valid)
 
     return out
 

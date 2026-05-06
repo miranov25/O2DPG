@@ -300,9 +300,12 @@ def _fit_one_group_single(
             status |= STATUS_Y_INVALID
     
     # Accumulate XtX, XtY with optional filtering
+    # Phase 13.21.GB-PERF: also accumulate sum_y, sum_y2 for vectorized R²
     XtX = np.zeros((n_params, n_params), dtype=np.float64)
     XtY = np.zeros(n_params, dtype=np.float64)
     n_valid = 0
+    sum_y = 0.0
+    sum_y2 = 0.0
     
     for row in range(m):
         y_val = Y_slice[row]
@@ -334,6 +337,8 @@ def _fit_one_group_single(
                 w_val = 1.0
         
         n_valid += 1
+        sum_y += y_val
+        sum_y2 += y_val * y_val
         sqrt_w = np.sqrt(w_val) if w_val > 0 else 0.0
         
         # Build weighted x vector
@@ -365,18 +370,18 @@ def _fit_one_group_single(
     # Check sufficient data
     if n_valid < min_stat:
         status |= STATUS_INSUFFICIENT
-        return beta, errors, rms, mad, status, n_valid, n_filtered, cond
+        return beta, errors, rms, mad, status, n_valid, n_filtered, cond, sum_y, sum_y2
     
     if n_valid <= n_params:
         status |= STATUS_UNDERDETERMINED
-        return beta, errors, rms, mad, status, n_valid, n_filtered, cond
+        return beta, errors, rms, mad, status, n_valid, n_filtered, cond, sum_y, sum_y2
     
     # Cholesky decomposition
     L, success = _cholesky_numba(XtX)
     
     if not success:
         status |= STATUS_NUMERICAL_ERROR
-        return beta, errors, rms, mad, status, n_valid, n_filtered, cond
+        return beta, errors, rms, mad, status, n_valid, n_filtered, cond, sum_y, sum_y2
     
     # Condition proxy from Cholesky diagonal
     diag_min = L[0, 0]
@@ -399,7 +404,7 @@ def _fit_one_group_single(
         L, success = _cholesky_numba(XtX)
         if not success:
             status |= STATUS_NUMERICAL_ERROR
-            return beta, errors, rms, mad, status, n_valid, n_filtered, cond
+            return beta, errors, rms, mad, status, n_valid, n_filtered, cond, sum_y, sum_y2
         status |= STATUS_SINGULAR
     
     # Solve for coefficients
@@ -411,7 +416,7 @@ def _fit_one_group_single(
     for p in range(n_params):
         if not np.isfinite(beta[p]):
             status |= STATUS_NUMERICAL_ERROR
-            return beta, errors, rms, mad, status, n_valid, n_filtered, cond
+            return beta, errors, rms, mad, status, n_valid, n_filtered, cond, sum_y, sum_y2
     
     # Second pass: compute residuals for RMS and MAD
     rss = 0.0
@@ -493,7 +498,7 @@ def _fit_one_group_single(
         else:
             status |= STATUS_DIAG_INVALID
     
-    return beta, errors, rms, mad, status, n_valid, n_filtered, cond
+    return beta, errors, rms, mad, status, n_valid, n_filtered, cond, sum_y, sum_y2
 
 
 @njit(parallel=True, cache=True)
@@ -503,12 +508,14 @@ def fit_groups_single_numba(
     fit_intercept, min_stat, compute_mad, invalid_handling,
     out_beta, out_errors, out_rms, out_mad,
     out_status, out_n_valid, out_n_filtered, out_cond,
+    out_sum_y, out_sum_y2,
 ):
     """
     Process all groups with single-fit kernel (parallel over groups).
     
-    This kernel processes one target at a time. It supports all invalid_handling
-    modes including 'filter'.
+    Phase 13.21.GB-PERF: extended with out_sum_y / out_sum_y2 outputs
+    for vectorized R² computation (eliminates per-bin np.mean/np.sum
+    in the Python wrapper).
     
     Parameters
     ----------
@@ -536,6 +543,10 @@ def fit_groups_single_numba(
         INVALID_ASSUME_CLEAN, INVALID_DETECT, or INVALID_FILTER
     out_* : ndarray
         Pre-allocated output arrays
+    out_sum_y : ndarray (n_groups,) float64
+        Per-group sum of valid Y values (for R²)
+    out_sum_y2 : ndarray (n_groups,) float64
+        Per-group sum of valid Y² values (for R²)
     """
     has_weights = len(W_all) > 0
     
@@ -551,7 +562,7 @@ def fit_groups_single_numba(
         else:
             W_slice = None
         
-        beta, errors, rms, mad, status, n_valid, n_filtered, cond = _fit_one_group_single(
+        beta, errors, rms, mad, status, n_valid, n_filtered, cond, sum_y, sum_y2 = _fit_one_group_single(
             X_slice, Y_slice, W_slice,
             n_feat, n_params, fit_intercept,
             min_stat, compute_mad, invalid_handling,
@@ -566,6 +577,8 @@ def fit_groups_single_numba(
         out_n_valid[gi] = n_valid
         out_n_filtered[gi] = n_filtered
         out_cond[gi] = cond
+        out_sum_y[gi] = sum_y
+        out_sum_y2[gi] = sum_y2
 
 
 # ============================================================================
@@ -1049,6 +1062,8 @@ def fit_groups_dispatch(
             out_n_valid = np.empty(n_groups, dtype=np.int64)
             out_n_filtered = np.empty(n_groups, dtype=np.int64)
             out_cond = np.empty(n_groups, dtype=np.float64)
+            out_sum_y = np.empty(n_groups, dtype=np.float64)
+            out_sum_y2 = np.empty(n_groups, dtype=np.float64)
             
             fit_groups_single_numba(
                 X_all, Y_1d, W_all, offsets,
@@ -1056,6 +1071,7 @@ def fit_groups_dispatch(
                 fit_intercept, min_stat, compute_mad, invalid_handling,
                 out_beta, out_errors, out_rms, out_mad,
                 out_status, out_n_valid, out_n_filtered, out_cond,
+                out_sum_y, out_sum_y2,
             )
             
             return (out_beta, out_errors, out_rms, out_mad,
@@ -1086,6 +1102,8 @@ def fit_groups_dispatch(
                 n_valid_t = np.empty(n_groups, dtype=np.int64)
                 n_filtered_t = np.empty(n_groups, dtype=np.int64)
                 cond_t = np.empty(n_groups, dtype=np.float64)
+                sum_y_t = np.empty(n_groups, dtype=np.float64)
+                sum_y2_t = np.empty(n_groups, dtype=np.float64)
                 
                 fit_groups_single_numba(
                     X_all, Y_t, W_all, offsets,
@@ -1093,6 +1111,7 @@ def fit_groups_dispatch(
                     fit_intercept, min_stat, compute_mad, invalid_handling,
                     beta_t, errors_t, rms_t, mad_t,
                     status_t, n_valid_t, n_filtered_t, cond_t,
+                    sum_y_t, sum_y2_t,
                 )
                 
                 out_beta[:, t, :] = beta_t
@@ -1224,6 +1243,8 @@ def _warmup_kernels():
     out_n_valid = np.empty(1, dtype=np.int64)
     out_n_filtered = np.empty(1, dtype=np.int64)
     out_cond = np.empty(1, dtype=np.float64)
+    out_sum_y = np.empty(1, dtype=np.float64)
+    out_sum_y2 = np.empty(1, dtype=np.float64)
     
     # Warmup single-fit
     fit_groups_single_numba(
@@ -1231,6 +1252,7 @@ def _warmup_kernels():
         1, 2, 3, True, 2, True, INVALID_DETECT,
         out_beta, out_errors, out_rms, out_mad,
         out_status, out_n_valid, out_n_filtered, out_cond,
+        out_sum_y, out_sum_y2,
     )
     
     # Allocate outputs for multi-fit

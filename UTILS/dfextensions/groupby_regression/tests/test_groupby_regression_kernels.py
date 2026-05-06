@@ -275,12 +275,15 @@ class TestSingleFitCorrectness:
         out_n_filtered = np.empty(n_groups, dtype=np.int64)
         out_cond = np.empty(n_groups, dtype=np.float64)
         
+        out_sum_y = np.empty(n_groups, dtype=np.float64)
+        out_sum_y2 = np.empty(n_groups, dtype=np.float64)
         fit_groups_single_numba(
             X_all, Y_all, W_all, offsets,
             n_groups, n_feat, n_params,
             True, 5, True, INVALID_DETECT,
             out_beta, out_errors, out_rms, out_mad,
             out_status, out_n_valid, out_n_filtered, out_cond,
+            out_sum_y, out_sum_y2,
         )
         
         # All fits should succeed
@@ -317,12 +320,15 @@ class TestSingleFitCorrectness:
         out_n_filtered = np.empty(n_groups, dtype=np.int64)
         out_cond = np.empty(n_groups, dtype=np.float64)
         
+        out_sum_y = np.empty(n_groups, dtype=np.float64)
+        out_sum_y2 = np.empty(n_groups, dtype=np.float64)
         fit_groups_single_numba(
             X_all, Y_all, W_all, offsets,
             n_groups, n_feat, n_params,
             True, 5, True, INVALID_DETECT,
             out_beta, out_errors, out_rms, out_mad,
             out_status, out_n_valid, out_n_filtered, out_cond,
+            out_sum_y, out_sum_y2,
         )
         
         # All fits should succeed
@@ -350,11 +356,14 @@ class TestSingleFitCorrectness:
         out_n_filtered = np.empty(1, dtype=np.int64)
         out_cond = np.empty(1, dtype=np.float64)
         
+        out_sum_y = np.empty(1, dtype=np.float64)
+        out_sum_y2 = np.empty(1, dtype=np.float64)
         fit_groups_single_numba(
             X_all, Y_all, W_all, offsets,
             1, 2, 3, True, 5, True, INVALID_DETECT,
             out_beta, out_errors, out_rms, out_mad,
             out_status, out_n_valid, out_n_filtered, out_cond,
+            out_sum_y, out_sum_y2,
         )
         
         assert out_status[0] & STATUS_INSUFFICIENT, "Should have INSUFFICIENT status"
@@ -379,12 +388,15 @@ class TestSingleFitCorrectness:
         out_n_filtered = np.empty(n_groups, dtype=np.int64)
         out_cond = np.empty(n_groups, dtype=np.float64)
         
+        out_sum_y = np.empty(n_groups, dtype=np.float64)
+        out_sum_y2 = np.empty(n_groups, dtype=np.float64)
         fit_groups_single_numba(
             X_all, Y_all, W_all, offsets,
             n_groups, n_feat, n_params,
             True, 5, True, INVALID_DETECT,
             out_beta, out_errors, out_rms, out_mad,
             out_status, out_n_valid, out_n_filtered, out_cond,
+            out_sum_y, out_sum_y2,
         )
         
         # At least some groups should have Y_INVALID
@@ -410,12 +422,15 @@ class TestSingleFitCorrectness:
         out_n_filtered = np.empty(n_groups, dtype=np.int64)
         out_cond = np.empty(n_groups, dtype=np.float64)
         
+        out_sum_y = np.empty(n_groups, dtype=np.float64)
+        out_sum_y2 = np.empty(n_groups, dtype=np.float64)
         fit_groups_single_numba(
             X_all, Y_all, W_all, offsets,
             n_groups, n_feat, n_params,
             True, 5, True, INVALID_FILTER,
             out_beta, out_errors, out_rms, out_mad,
             out_status, out_n_valid, out_n_filtered, out_cond,
+            out_sum_y, out_sum_y2,
         )
         
         # Results should be valid (NaN rows filtered out)
@@ -538,6 +553,8 @@ class TestKernelParity:
             n_valid_t = np.empty(n_groups, dtype=np.int64)
             n_filtered_t = np.empty(n_groups, dtype=np.int64)
             cond_t = np.empty(n_groups, dtype=np.float64)
+            out_sum_y_t = np.empty(n_groups, dtype=np.float64)
+            out_sum_y2_t = np.empty(n_groups, dtype=np.float64)
             
             fit_groups_single_numba(
                 X_all, Y_t, W_all, offsets,
@@ -545,6 +562,7 @@ class TestKernelParity:
                 True, 5, True, INVALID_DETECT,
                 beta_t, errors_t, rms_t, mad_t,
                 status_t, n_valid_t, n_filtered_t, cond_t,
+                out_sum_y_t, out_sum_y2_t,
             )
             
             out_beta_s[:, t, :] = beta_t
@@ -692,12 +710,15 @@ class TestMCTrueValidation:
         out_n_filtered = np.empty(n_groups, dtype=np.int64)
         out_cond = np.empty(n_groups, dtype=np.float64)
         
+        out_sum_y = np.empty(n_groups, dtype=np.float64)
+        out_sum_y2 = np.empty(n_groups, dtype=np.float64)
         fit_groups_single_numba(
             X_all, Y_all, W_all, offsets,
             n_groups, n_feat, n_params,
             True, 5, True, INVALID_DETECT,
             out_beta, out_errors, out_rms, out_mad,
             out_status, out_n_valid, out_n_filtered, out_cond,
+            out_sum_y, out_sum_y2,
         )
         
         # All should be OK
@@ -736,12 +757,15 @@ class TestMCTrueValidation:
         out_n_filtered = np.empty(n_groups, dtype=np.int64)
         out_cond = np.empty(n_groups, dtype=np.float64)
         
+        out_sum_y = np.empty(n_groups, dtype=np.float64)
+        out_sum_y2 = np.empty(n_groups, dtype=np.float64)
         fit_groups_single_numba(
             X_all, Y_all, W_all, offsets,
             n_groups, n_feat, n_params,
             True, 5, True, INVALID_DETECT,
             out_beta, out_errors, out_rms, out_mad,
             out_status, out_n_valid, out_n_filtered, out_cond,
+            out_sum_y, out_sum_y2,
         )
         
         # All should be OK
@@ -823,12 +847,15 @@ class TestMCTrueValidation:
             out_n_filtered = np.empty(n_groups, dtype=np.int64)
             out_cond = np.empty(n_groups, dtype=np.float64)
             
+            out_sum_y = np.empty(n_groups, dtype=np.float64)
+            out_sum_y2 = np.empty(n_groups, dtype=np.float64)
             fit_groups_single_numba(
                 X_all, Y_all, W_all, offsets,
                 n_groups, n_feat, n_params,
                 True, 5, False, INVALID_DETECT,
                 out_beta, out_errors, out_rms, out_mad,
                 out_status, out_n_valid, out_n_filtered, out_cond,
+                out_sum_y, out_sum_y2,
             )
             
             # Should recover exact coefficients
@@ -894,6 +921,8 @@ class TestNumpyParity:
         out_cond = np.empty(n_groups, dtype=np.float64)
         
         # Run Numba kernel
+        out_sum_y = np.empty(n_groups, dtype=np.float64)
+        out_sum_y2 = np.empty(n_groups, dtype=np.float64)
         fit_groups_single_numba(
             X_all, Y_all, W_all, offsets,
             n_groups, n_feat, n_params,
@@ -903,6 +932,7 @@ class TestNumpyParity:
             INVALID_DETECT,
             out_beta, out_errors, out_rms, out_mad,
             out_status, out_n_valid, out_n_filtered, out_cond,
+            out_sum_y, out_sum_y2,
         )
         
         # Run NumPy reference (np.linalg.lstsq)
@@ -975,12 +1005,15 @@ class TestNumpyParity:
         out_n_filtered = np.empty(n_groups, dtype=np.int64)
         out_cond = np.empty(n_groups, dtype=np.float64)
         
+        out_sum_y = np.empty(n_groups, dtype=np.float64)
+        out_sum_y2 = np.empty(n_groups, dtype=np.float64)
         fit_groups_single_numba(
             X_all, Y_all, W_all, offsets,
             n_groups, n_feat, n_params,
             True, 5, True, INVALID_DETECT,
             out_beta, out_errors, out_rms, out_mad,
             out_status, out_n_valid, out_n_filtered, out_cond,
+            out_sum_y, out_sum_y2,
         )
         
         # Run NumPy reference
@@ -1073,12 +1106,15 @@ class TestLargeScale:
         import time
         t0 = time.perf_counter()
         
+        out_sum_y = np.empty(n_groups, dtype=np.float64)
+        out_sum_y2 = np.empty(n_groups, dtype=np.float64)
         fit_groups_single_numba(
             X_all, Y_all, W_all, offsets,
             n_groups, n_feat, n_params,
             True, 5, True, INVALID_DETECT,
             out_beta, out_errors, out_rms, out_mad,
             out_status, out_n_valid, out_n_filtered, out_cond,
+            out_sum_y, out_sum_y2,
         )
         
         elapsed = time.perf_counter() - t0
@@ -1301,12 +1337,15 @@ class TestStreamingMemory:
             out_n_filtered = np.empty(n_groups_per_chunk, dtype=np.int64)
             out_cond = np.empty(n_groups_per_chunk, dtype=np.float64)
             
+            out_sum_y = np.empty(n_groups_per_chunk, dtype=np.float64)
+            out_sum_y2 = np.empty(n_groups_per_chunk, dtype=np.float64)
             fit_groups_single_numba(
                 X_all, Y_all, W_all, offsets,
                 n_groups_per_chunk, n_feat, n_params,
                 True, 5, True, INVALID_DETECT,
                 out_beta, out_errors, out_rms, out_mad,
                 out_status, out_n_valid, out_n_filtered, out_cond,
+                out_sum_y, out_sum_y2,
             )
         
         # Force garbage collection before baseline
@@ -1338,12 +1377,15 @@ class TestStreamingMemory:
             out_n_filtered = np.empty(n_groups_per_chunk, dtype=np.int64)
             out_cond = np.empty(n_groups_per_chunk, dtype=np.float64)
             
+            out_sum_y = np.empty(n_groups_per_chunk, dtype=np.float64)
+            out_sum_y2 = np.empty(n_groups_per_chunk, dtype=np.float64)
             fit_groups_single_numba(
                 X_all, Y_all, W_all, offsets,
                 n_groups_per_chunk, n_feat, n_params,
                 True, 5, True, INVALID_DETECT,
                 out_beta, out_errors, out_rms, out_mad,
                 out_status, out_n_valid, out_n_filtered, out_cond,
+                out_sum_y, out_sum_y2,
             )
             
             # Measure RSS periodically
@@ -1533,12 +1575,15 @@ class TestPerformance:
         out_cond = np.empty(n_groups, dtype=np.float64)
         
         # Warmup run
+        out_sum_y = np.empty(n_groups, dtype=np.float64)
+        out_sum_y2 = np.empty(n_groups, dtype=np.float64)
         fit_groups_single_numba(
             X_all, Y_all, W_all, offsets,
             n_groups, n_feat, n_params,
             True, 5, True, INVALID_DETECT,
             out_beta, out_errors, out_rms, out_mad,
             out_status, out_n_valid, out_n_filtered, out_cond,
+            out_sum_y, out_sum_y2,
         )
         
         # Time Numba kernel
@@ -1546,12 +1591,15 @@ class TestPerformance:
         numba_times = []
         for _ in range(n_runs):
             t0 = time.perf_counter()
+            out_sum_y = np.empty(n_groups, dtype=np.float64)
+            out_sum_y2 = np.empty(n_groups, dtype=np.float64)
             fit_groups_single_numba(
                 X_all, Y_all, W_all, offsets,
                 n_groups, n_feat, n_params,
                 True, 5, True, INVALID_DETECT,
                 out_beta, out_errors, out_rms, out_mad,
                 out_status, out_n_valid, out_n_filtered, out_cond,
+                out_sum_y, out_sum_y2,
             )
             numba_times.append(time.perf_counter() - t0)
         
@@ -1673,12 +1721,15 @@ class TestPerformance:
         # Warmup single-fit
         for t in range(n_targets):
             Y_t = Y_all[:, t]
+            out_sum_y = np.empty(n_groups, dtype=np.float64)
+            out_sum_y2 = np.empty(n_groups, dtype=np.float64)
             fit_groups_single_numba(
                 X_all, Y_t, W_all, offsets,
                 n_groups, n_feat, n_params,
                 True, 5, False, INVALID_DETECT,
                 out_beta_s, out_errors_s, out_rms_s, out_mad_s,
                 out_status_s, out_n_valid_s, out_n_filtered_s, out_cond_s,
+                out_sum_y, out_sum_y2,
             )
         
         single_times = []
@@ -1686,12 +1737,15 @@ class TestPerformance:
             t0 = time.perf_counter()
             for t in range(n_targets):
                 Y_t = Y_all[:, t]
+                out_sum_y = np.empty(n_groups, dtype=np.float64)
+                out_sum_y2 = np.empty(n_groups, dtype=np.float64)
                 fit_groups_single_numba(
                     X_all, Y_t, W_all, offsets,
                     n_groups, n_feat, n_params,
                     True, 5, False, INVALID_DETECT,
                     out_beta_s, out_errors_s, out_rms_s, out_mad_s,
                     out_status_s, out_n_valid_s, out_n_filtered_s, out_cond_s,
+                    out_sum_y, out_sum_y2,
                 )
             single_times.append(time.perf_counter() - t0)
         
