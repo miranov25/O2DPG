@@ -109,6 +109,51 @@ DEFAULT_STYLE: Dict[str, Any] = {
     # Sampling
     "sample.max_points": None,  # None = no limit
     "sample.random_state": 42,
+
+    # ========================================================================
+    # Phase 13.26.DF (Phase B): N-Channel Framework — channels.* namespace
+    # ========================================================================
+    # Per architect direction chat 2026-05-05: all assignment rules are style
+    # parameters from day one. Defaults reproduce existing 1- and 2-channel
+    # behaviour; 3-channel cases and quantile-touching paths are greenfield
+    # (no production users — verified by grep on makeSmoothMapsWithTPC.py).
+    #
+    # See:
+    #   - dfdraw/channels.py — Algorithm A implementation
+    #   - docs/STYLING_FRAMEWORK_DECISIONS.md — AD-44 through AD-59
+    #   - PHASE_13_26_DF_v1_2_Proposal_NChannelFramework.md §4
+
+    # Priority lists used by Algorithm A Step 3 (greedy fallback for unknown
+    # data-channel combinations). AD-55.
+    "channels.priority.categorical": ["color", "linestyle", "marker"],
+    "channels.priority.ordinal":     ["linestyle", "marker", "color"],
+
+    # Visual-channel cycles. Replace drawer.py:527-528 module constants.
+    # The discrete-quantile rendering path uses [1:] slicing on linestyle to
+    # preserve FIX2's invariant that solid linestyle is reserved for the
+    # central line (see channels.py and v1.2 §11.3).
+    "channels.cycles.linestyle":   ["-", "--", "-.", ":"],
+    "channels.cycles.marker":      ["o", "s", "^", "D", "v", "<", ">", "p"],
+    "channels.cycles.color_count": 10,  # capacity for color overflow check
+
+    # Per-data-channel pinned defaults. None = use Algorithm A explicit-case
+    # rule from EXPLICIT_RULES; non-None = override the rule for this channel.
+    # AD-56.
+    "channels.default.vector":    None,
+    "channels.default.group_by":  None,
+    "channels.default.quantiles": None,
+
+    # Overflow behaviour when a data channel's cardinality exceeds its
+    # assigned visual channel's capacity. AD-58.
+    #   "error" — raise ValueError with actionable suggestions (default)
+    #   "warn"  — emit UserWarning and proceed with cycling
+    "channels.overflow": "error",
+
+    # Legend factoring. AD-59.
+    #   True  — render one section per active data channel; entry count =
+    #           sum of cardinalities (e.g., 5 + 3 + 3 = 11)
+    #   False — flat deduplicated legend (existing FIX1 behaviour)
+    "channels.legend.factored": True,
 }
 
 # =============================================================================

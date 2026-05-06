@@ -643,6 +643,9 @@ FEATURES = [
     # =========================================================================
     # BUG_dfdraw_20260505: Boolean expression crash fix
     # =========================================================================
+    # =========================================================================
+    # BUG_dfdraw_20260505: Boolean expression crash fix (Phase 13.25.DF FIX1)
+    # =========================================================================
     {
         "id": "COMPAT.bool_expression",
         "name": "Boolean expression input (==, !=, >, <, &, |, ~) on all plot functions",
@@ -659,6 +662,82 @@ FEATURES = [
             "test_quantiles_profile.py::TestBoolExpressionProfile::test_bool_y_profile",
             "test_quantiles_profile.py::TestBoolExpressionProfile::test_bool_x_profile",
             "test_quantiles_profile.py::TestBoolExpressionProfile::test_bool_y_with_quantiles",
+        ],
+    },
+    # =========================================================================
+    # Phase 13.26.DF (Phase B): N-Channel Framework — CHANNEL.* features
+    # =========================================================================
+    # Status: Planned (Commit 1 scaffolding; tests are pytest-skip stubs).
+    # Will flip to Verified after Commit 2 implementation lands.
+    {
+        "id": "CHANNEL.assignment",
+        "name": "Algorithm A: automatic visual-channel assignment for N data channels",
+        "category": "CHANNEL",
+        "tests": [
+            "test_channel_assignment.py::TestChannelAssignment1Active::test_1ch_vector_alone_gets_color",
+            "test_channel_assignment.py::TestChannelAssignment1Active::test_1ch_groupby_alone_gets_color",
+            "test_channel_assignment.py::TestChannelAssignment1Active::test_1ch_quantiles_discrete_alone_gets_linestyle",
+            "test_channel_assignment.py::TestChannelAssignment1Active::test_1ch_quantiles_band_no_channel",
+            "test_channel_assignment.py::TestChannelAssignment2Active::test_2ch_vector_groupby",
+            "test_channel_assignment.py::TestChannelAssignment2Active::test_2ch_vector_groupby_unconditional_on_cardinality",
+            "test_channel_assignment.py::TestChannelAssignment2Active::test_2ch_groupby_quantiles_discrete",
+            "test_channel_assignment.py::TestChannelAssignment2Active::test_2ch_vector_quantiles_discrete",
+            "test_channel_assignment.py::TestChannelAssignment2Active::test_2ch_groupby_quantiles_band",
+            "test_channel_assignment.py::TestChannelAssignment2Active::test_2ch_vector_quantiles_band",
+            "test_channel_assignment.py::TestChannelAssignment3Active::test_3ch_default",
+            "test_channel_assignment.py::TestChannelAssignment3Active::test_3ch_with_band_is_2ch",
+            "test_channel_assignment.py::TestChannelAssignment3Active::test_3ch_unconditional_on_cardinality",
+            "test_channel_assignment.py::TestChannelAssignment3Active::test_3ch_renders_correctly",
+            "test_channel_assignment.py::TestChannelAssignment3Active::test_3ch_with_central_mean",
+            "test_channel_assignment.py::TestChannelAssignment3Active::test_3ch_with_central_none",
+            "test_channel_assignment.py::TestChannelCollision::test_collision_vector_group_same_channel",
+            "test_channel_assignment.py::TestChannelCollision::test_collision_vector_quantile_same_channel",
+            "test_channel_assignment.py::TestChannelCollision::test_collision_group_quantile_same_channel",
+            "test_channel_assignment.py::TestChannelCollision::test_no_collision_when_zero_cost",
+            "test_channel_assignment.py::TestChannelCapacity::test_overflow_color_gt_10",
+            "test_channel_assignment.py::TestChannelCapacity::test_overflow_linestyle_gt_4",
+            "test_channel_assignment.py::TestChannelCapacity::test_overflow_marker_gt_8",
+            "test_channel_assignment.py::TestChannelCapacity::test_overflow_warn_mode",
+            "test_channel_assignment.py::TestChannelUserOverride::test_percall_wins_over_style_default",
+            "test_channel_assignment.py::TestChannelUserOverride::test_style_default_wins_over_explicit_rule",
+            "test_channel_assignment.py::TestChannelUserOverride::test_quantile_style_override",
+            "test_channel_assignment.py::TestChannelUserOverride::test_all_three_overridden",
+            "test_channel_assignment.py::TestChannelStyleOverride::test_set_priority_changes_assignment",
+            "test_channel_assignment.py::TestChannelStyleOverride::test_set_cycles_changes_capacity",
+            "test_channel_assignment.py::TestChannelStyleOverride::test_save_load_round_trips_channels_keys",
+            "test_channel_assignment.py::TestChannelStyleOverride::test_set_style_validates_list_values",
+            "test_channel_assignment.py::TestChannelStyleOverride::test_default_style_has_all_10_keys",
+            "test_channel_assignment.py::TestChannelStyleOverride::test_namespace_integrity",
+            "test_channel_assignment.py::TestProductionPatternBackwardCompat::test_groupby_quantiles8_structurally_equal",
+            "test_channel_assignment.py::TestProductionPatternBackwardCompat::test_groupby_quantiles8_stats_rtol_1e_12",
+            "test_channel_assignment.py::TestProductionPatternBackwardCompat::test_simple_profile_with_auto_title_unchanged",
+            "test_channel_assignment.py::TestProductionPatternBackwardCompat::test_quantiles_016_084_error_bars_unchanged",
+            "test_channel_assignment.py::TestProductionPatternBackwardCompat::test_makeSmoothMaps_kwargs_signature_unchanged",
+            "test_channel_assignment.py::TestIdempotency::test_vector_path_calls_assign_once",
+            "test_channel_assignment.py::TestIdempotency::test_scalar_path_calls_assign_once",
+        ],
+    },
+    {
+        "id": "CHANNEL.nested_band",
+        "name": "Nested-band detection (>=2 symmetric pairs, central optional) and rendering",
+        "category": "CHANNEL",
+        "tests": [
+            "test_channel_assignment.py::TestNestedBand::test_nested_band_detection_5_entry",
+            "test_channel_assignment.py::TestNestedBand::test_nested_band_detection_no_central",
+            "test_channel_assignment.py::TestNestedBand::test_nested_band_renders_polycollections",
+            "test_channel_assignment.py::TestNestedBand::test_nested_band_outer_alpha_lt_inner",
+            "test_channel_assignment.py::TestNestedBand::test_nested_band_max_3",
+        ],
+    },
+    {
+        "id": "CHANNEL.factored_legend",
+        "name": "Factored legend with section headers (sum-not-product entry count)",
+        "category": "CHANNEL",
+        "tests": [
+            "test_channel_assignment.py::TestFactoredLegend::test_factored_legend_entry_count_is_sum_not_product",
+            "test_channel_assignment.py::TestFactoredLegend::test_factored_legend_has_section_headers",
+            "test_channel_assignment.py::TestFactoredLegend::test_factored_false_uses_flat_dedup",
+            "test_channel_assignment.py::TestFactoredLegend::test_2ch_legend_also_factored",
         ],
     },
 ]
