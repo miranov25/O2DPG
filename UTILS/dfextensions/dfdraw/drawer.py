@@ -558,6 +558,7 @@ class DFDraw:
         'same',
         'stat_fields',  # Phase 13.18.DF: robust statistics groups
         'quantiles', 'central', 'quantile_mode',  # Phase 13.25.DF: quantile rendering
+        'quantile_style',  # Phase 13.26.DF: channel-aware quantile rendering
     )
 
     _HIST_FORWARDED_NAMES = (
@@ -643,9 +644,89 @@ class DFDraw:
         if not supports_auto_title:
             kwargs.pop('auto_title', None)
         
-        # Context-dependent default for vector_style
-        if vector_style is None:
-            vector_style = 'linestyle' if group_by is not None else 'color'
+        # Phase 13.16.DF FIX1 + 13.26.DF Phase B contract:
+        # Reject obvious user-vs-user channel collisions before Algorithm A,
+        # preserving the existing error message ("cannot both use ..."). This
+        # short-circuit only fires when the user explicitly set
+        # vector_style == group_style; downstream Algorithm A still handles
+        # subtler collisions (e.g., per-call kwarg vs style.default).
+        if (group_by is not None
+            and vector_style is not None
+            and vector_style == group_style):
+            raise ValueError(
+                f"vector_style and group_style cannot both use {vector_style!r}. "
+                f"Choose different channels from {self._VALID_STYLE_CHANNELS}."
+            )
+
+        # Context-dependent default for vector_style.
+        # Phase 13.26.DF Phase B: Algorithm A determines the assignment via
+        # assign_channels() (channels.py). The function takes the active data
+        # channels (vector + optional group_by + optional quantile-discrete)
+        # and returns {channel_name: visual_channel}. Per-call kwargs
+        # (vector_style, group_style) act as DataChannel.requested_style
+        # overrides — Algorithm A's resolution chain handles them.
+        from .channels import DataChannel, assign_channels
+
+        # Determine quantile channel cost (Step 0 — zero-cost modes consume
+        # no visual channel slot). The actual quantile_mode resolution lives
+        # in plots/profile.py:_detect_quantile_mode; we mirror its decision
+        # here only to know whether quantiles add a channel.
+        _quantiles = kwargs.get('quantiles')
+        _quantile_mode = kwargs.get('quantile_mode', 'auto')
+        _quantile_style_kwarg = kwargs.get('quantile_style')
+        _has_quantile_channel = False
+        _q_card = 0
+        if _quantiles is not None and len(_quantiles) > 0:
+            _resolved_mode = _quantile_mode
+            if _resolved_mode == 'auto':
+                from .plots.profile import _detect_quantile_mode
+                _resolved_mode = _detect_quantile_mode(list(_quantiles))
+            if _resolved_mode == 'discrete':
+                _has_quantile_channel = True
+                _q_card = len(_quantiles)
+
+        # Build DataChannel list (vector is always present in _draw_vector;
+        # group_by and quantile are optional cost-bearing channels).
+        # group_style defaults to 'color' in this method's signature; pass
+        # it faithfully so Algorithm A can detect per-call collisions.
+        _channels = [
+            DataChannel(
+                'vector',
+                is_categorical=True,
+                cardinality=len(y_list),
+                requested_style=vector_style,
+                cost=1,
+            ),
+        ]
+        if group_by is not None:
+            _g_card = get_style_value("channels.cycles.color_count", 10)
+            _channels.append(DataChannel(
+                'group_by',
+                is_categorical=True,
+                cardinality=_g_card,
+                # group_style default 'color' aligns with EXPLICIT_RULES
+                # entry for {vector, group_by}; passing it as requested_style
+                # is consistent with the precedence chain.
+                requested_style=group_style,
+                cost=1,
+            ))
+        if _has_quantile_channel:
+            _channels.append(DataChannel(
+                'quantiles',
+                is_categorical=False,
+                cardinality=_q_card,
+                requested_style=_quantile_style_kwarg,
+                cost=1,
+            ))
+
+        _assignment = assign_channels(_channels)
+
+        # Resolve scalar styles from the assignment.
+        vector_style = _assignment.get('vector', vector_style or 'color')
+        if group_by is not None:
+            group_style = _assignment.get('group_by', group_style)
+        if _has_quantile_channel:
+            kwargs['quantile_style'] = _assignment.get('quantiles')
         
         # Validate channel names
         if vector_style not in self._VALID_STYLE_CHANNELS:
@@ -677,18 +758,29 @@ class DFDraw:
             # Apply vector style channel for this iteration
             # Phase 13.16.DF FIX1 B1b: use setdefault so user-supplied
             # linestyle/marker survives instead of being clobbered.
+            # Phase 13.26.DF Phase B: cycles read from style keys
+            # (channels.cycles.linestyle / channels.cycles.marker), replacing
+            # the _LINESTYLE_CYCLE / _MARKER_CYCLE class constants.
             if vector_style == 'linestyle':
+                _ls_cycle = get_style_value(
+                    "channels.cycles.linestyle",
+                    list(self._LINESTYLE_CYCLE),
+                )
                 iter_kwargs.setdefault(
                     'linestyle',
-                    self._LINESTYLE_CYCLE[i % len(self._LINESTYLE_CYCLE)],
+                    _ls_cycle[i % len(_ls_cycle)],
                 )
                 # P1-2: suppress same=True color cycle so group_by colors are preserved
                 if group_by is not None:
                     iter_kwargs['_suppress_color_cycle'] = True
             elif vector_style == 'marker':
+                _mk_cycle = get_style_value(
+                    "channels.cycles.marker",
+                    list(self._MARKER_CYCLE),
+                )
                 iter_kwargs.setdefault(
                     'marker',
-                    self._MARKER_CYCLE[i % len(self._MARKER_CYCLE)],
+                    _mk_cycle[i % len(_mk_cycle)],
                 )
                 if group_by is not None:
                     iter_kwargs['_suppress_color_cycle'] = True
@@ -884,10 +976,19 @@ class DFDraw:
         for i, (y, x) in enumerate(unique_pairs):
             label = f"{y} vs {x}" if x is not None else str(y)
             if vector_style == 'linestyle':
-                ls = self._LINESTYLE_CYCLE[i % len(self._LINESTYLE_CYCLE)]
+                # Phase 13.26.DF Phase B: read cycle from style
+                _ls_cycle = get_style_value(
+                    "channels.cycles.linestyle",
+                    list(self._LINESTYLE_CYCLE),
+                )
+                ls = _ls_cycle[i % len(_ls_cycle)]
                 proxies.append(Line2D([0], [0], color='black', linestyle=ls))
             elif vector_style == 'marker':
-                mk = self._MARKER_CYCLE[i % len(self._MARKER_CYCLE)]
+                _mk_cycle = get_style_value(
+                    "channels.cycles.marker",
+                    list(self._MARKER_CYCLE),
+                )
+                mk = _mk_cycle[i % len(_mk_cycle)]
                 proxies.append(Line2D([0], [0], color='black', marker=mk,
                                      linestyle='', markerfacecolor='black'))
             else:
@@ -1595,6 +1696,8 @@ class DFDraw:
         quantiles: Optional[List[float]] = None,
         central: Optional[str] = None,
         quantile_mode: str = "auto",
+        # Phase 13.26.DF (Phase B): Channel-aware quantile rendering
+        quantile_style: Optional[str] = None,
         **kwargs
     ) -> DrawResult:
         """

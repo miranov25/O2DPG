@@ -180,6 +180,8 @@ def draw_profile(
     quantiles: Optional[List[float]] = None,
     central: Optional[str] = None,       # None → get_style_value("quantile.central_default", "mean")
     quantile_mode: str = "auto",
+    # Phase 13.26.DF (Phase B): Channel-aware quantile rendering
+    quantile_style: Optional[str] = None,
     # Phase 13.16.DF FIX1: suppress flags for vector dispatch
     _suppress_legend: bool = False,
     _suppress_title: bool = False,
@@ -326,7 +328,7 @@ def draw_profile(
         # Validate and auto-detect mode
         if quantile_mode == 'auto':
             _resolved_quantile_mode = _detect_quantile_mode(quantiles)
-        elif quantile_mode in ('error_bars', 'band', 'discrete'):
+        elif quantile_mode in ('error_bars', 'band', 'discrete', 'nested_band'):
             _resolved_quantile_mode = quantile_mode
             # Still validate the list
             for q in quantiles:
@@ -334,8 +336,8 @@ def draw_profile(
                     raise ValueError(f"quantiles must be in (0, 1), got {q}")
         else:
             raise ValueError(
-                f"quantile_mode must be 'auto', 'error_bars', 'band', or 'discrete', "
-                f"got {quantile_mode!r}"
+                f"quantile_mode must be 'auto', 'error_bars', 'band', "
+                f"'discrete', or 'nested_band', got {quantile_mode!r}"
             )
         
         # AD-51: central='none' + error_bars is invalid
@@ -357,6 +359,8 @@ def draw_profile(
             _quantile_pair = (qs[0], qs[2])  # skip 0.5 in the middle
         elif _resolved_quantile_mode == 'discrete':
             _quantile_list = qs  # all quantiles, one line each
+        elif _resolved_quantile_mode == 'nested_band':
+            _quantile_list = qs  # all quantiles, paired into nested bands
         
         # AD-52 FIX1: rebind error only when user did NOT explicitly set it.
         # None (signature default) → rebind to "quantile" for error_bars mode.
@@ -472,7 +476,7 @@ def draw_profile(
             stats_dict['q_lower_per_bin'] = _q_lower
             stats_dict['q_upper_per_bin'] = _q_upper
         elif quantiles is not None and _quantile_list is not None:
-            # Discrete mode: compute per-bin value for EACH quantile
+            # Discrete mode OR nested_band: compute per-bin value for EACH quantile
             _q_all = _compute_per_bin_all_quantiles(
                 x_data, y_data, bins, x_range, _quantile_list,
             )
@@ -540,6 +544,22 @@ def draw_profile(
                     capsize=capsize, linestyle=linestyle, linewidth=linewidth,
                     label=label, **kwargs
                 )
+        elif _resolved_quantile_mode == 'nested_band' and _q_all is not None:
+            # Phase 13.26.DF Phase B (Option A, AD-57): nested alpha-stacked
+            # bands. >=2 symmetric pairs (with or without 0.5). Central line
+            # rendered when central != 'none'. Zero-cost mode (no channel
+            # consumed). Max 3 nested bands (silent truncation, outermost 3).
+            if central != 'none':
+                ax.errorbar(
+                    bin_centers[plot_mask], _central_values[plot_mask],
+                    yerr=bin_errors[plot_mask],
+                    fmt=marker, color=color, markersize=markersize,
+                    capsize=capsize, linestyle=linestyle, linewidth=linewidth,
+                    label=label, **kwargs
+                )
+            _render_quantile_nested_band(
+                ax, bin_centers, _q_all, plot_mask, color,
+            )
         elif _resolved_quantile_mode == 'discrete' and _q_all is not None:
             # Discrete mode: one line per quantile value — the general case.
             # Central line first (unless central='none')
@@ -551,30 +571,75 @@ def draw_profile(
                     capsize=capsize, linestyle=linestyle, linewidth=linewidth,
                     label=label, **kwargs
                 )
-            # One dashed line per quantile
-            _ls_cycle = ['--', '-.', ':', (0, (3, 1, 1, 1))]
+            # Phase 13.26.DF Phase B: channel-aware rendering. quantile_style
+            # picked by Algorithm A (default 'linestyle' per AD-56). The
+            # cycle is read from style keys (channels.cycles.<channel>),
+            # replacing the FIX2 hardcoded local _ls_cycle. Per v1.2 §11.3:
+            # for quantile_style='linestyle', skip solid (index 0) so the
+            # central line's solid stays distinct (FIX2 invariant).
+            _qs_kind = (quantile_style
+                        or get_style_value("channels.default.quantiles")
+                        or 'linestyle')
+            if _qs_kind == 'linestyle':
+                _full_cycle = get_style_value(
+                    "channels.cycles.linestyle", ["-", "--", "-.", ":"])
+                # FIX2 invariant: reserve solid for central line. Slice [1:]
+                # so quantile lines never coincide with central style.
+                _qs_cycle = list(_full_cycle[1:]) if len(_full_cycle) > 1 else list(_full_cycle)
+                if not _qs_cycle:  # degenerate case
+                    _qs_cycle = ["--"]
+            elif _qs_kind == 'marker':
+                _qs_cycle = list(get_style_value(
+                    "channels.cycles.marker",
+                    ["o", "s", "^", "D", "v", "<", ">", "p"]))
+            elif _qs_kind == 'color':
+                # Color cycle managed by matplotlib's color_cycle; we delegate
+                # by passing color=None per quantile line and let the axes
+                # cycle pick the next colour.
+                _qs_cycle = None
+            else:
+                # Unknown channel — fallback to linestyle behaviour.
+                _qs_cycle = ['--', '-.', ':']
+
             for j, (q_val, q_per_bin) in enumerate(_q_all.items()):
-                q_ls = _ls_cycle[j % len(_ls_cycle)]
                 q_label = f'q={q_val:.0%}' if abs(q_val - 0.5) > 1e-9 else 'median'
-                line, = ax.plot(
-                    bin_centers[plot_mask], q_per_bin[plot_mask],
-                    color=color, linestyle=q_ls, linewidth=linewidth * 0.8,
-                    label=q_label,
-                )
-                # On-line annotation: place label at ~40% along the line
-                # (avoid edges where quantile lines converge)
-                valid = plot_mask & ~np.isnan(q_per_bin)
-                n_valid = np.sum(valid)
-                if n_valid > 2:
-                    idx = np.where(valid)[0][int(0.4 * n_valid)]
-                    ax.annotate(
-                        f'{q_val:.0%}',
-                        xy=(bin_centers[idx], q_per_bin[idx]),
-                        fontsize=7, fontweight='bold',
-                        color=line.get_color(),
-                        backgroundcolor='white',
-                        ha='center', va='bottom',
+                if _qs_kind == 'linestyle':
+                    q_ls = _qs_cycle[j % len(_qs_cycle)]
+                    line, = ax.plot(
+                        bin_centers[plot_mask], q_per_bin[plot_mask],
+                        color=color, linestyle=q_ls,
+                        linewidth=linewidth * 0.8, label=q_label,
                     )
+                elif _qs_kind == 'marker':
+                    q_mk = _qs_cycle[j % len(_qs_cycle)]
+                    line, = ax.plot(
+                        bin_centers[plot_mask], q_per_bin[plot_mask],
+                        color=color, marker=q_mk,
+                        linestyle='-', linewidth=linewidth * 0.8,
+                        markersize=markersize * 0.7, label=q_label,
+                    )
+                else:  # color or fallback — let axes color cycle pick
+                    line, = ax.plot(
+                        bin_centers[plot_mask], q_per_bin[plot_mask],
+                        linestyle='-', linewidth=linewidth * 0.8,
+                        label=q_label,
+                    )
+                # On-line annotation (FIX2 behaviour preserved as default UX
+                # for quantile_style='linestyle'; suppressed for other channels
+                # since marker/color don't need disambiguating labels).
+                if _qs_kind == 'linestyle':
+                    valid = plot_mask & ~np.isnan(q_per_bin)
+                    n_valid = np.sum(valid)
+                    if n_valid > 2:
+                        idx = np.where(valid)[0][int(0.4 * n_valid)]
+                        ax.annotate(
+                            f'{q_val:.0%}',
+                            xy=(bin_centers[idx], q_per_bin[idx]),
+                            fontsize=7, fontweight='bold',
+                            color=line.get_color(),
+                            backgroundcolor='white',
+                            ha='center', va='bottom',
+                        )
         else:
             # No quantiles — standard profile rendering (existing behavior)
             ax.errorbar(
@@ -916,13 +981,13 @@ def _detect_quantile_mode(quantiles: list) -> str:
     """
     Auto-detect quantile rendering mode from the shape of the quantiles list.
     
-    The GENERAL case is discrete (one line per quantile). Error_bars and band
-    are OPTIMIZATIONS for specific symmetric shapes.
+    The GENERAL case is discrete (one line per quantile). Error_bars, band,
+    and nested_band are OPTIMIZATIONS for specific symmetric shapes.
     
     Returns
     -------
     str
-        'error_bars', 'band', or 'discrete'.
+        'error_bars', 'band', 'nested_band', or 'discrete'.
     """
     if not quantiles:
         raise ValueError("quantiles must be non-empty list of fractions in (0, 1)")
@@ -955,6 +1020,23 @@ def _detect_quantile_mode(quantiles: list) -> str:
         is_symmetric = abs(qs[0] + qs[2] - 1.0) < 1e-9
         if has_05 and is_symmetric:
             return 'band'
+    
+    # Phase 13.26.DF Phase B (Option A, AD-57): multiple symmetric pairs
+    # form a nested-band, with or without a central 0.5. Per architect F-5
+    # 2026-05-05: central=0.5 is NOT required — the central line is handled
+    # by the central= parameter independently from mode detection.
+    # Detection rule: at least 2 symmetric pairs (non_05_count >= 4).
+    non_05 = [q for q in qs if abs(q - 0.5) > 1e-9]
+    if len(non_05) >= 4:
+        # Check that all non_05 entries form symmetric pairs
+        # (sorted, so qs[i] + qs[-(i+1)] should equal 1.0 for each pair).
+        n_non05 = len(non_05)
+        pairs_symmetric = all(
+            abs(non_05[i] + non_05[n_non05 - 1 - i] - 1.0) < 1e-9
+            for i in range(n_non05 // 2)
+        )
+        if pairs_symmetric:
+            return 'nested_band'
     
     # Everything else → discrete (one line per quantile)
     return 'discrete'
@@ -1140,3 +1222,71 @@ def _render_quantile_band(
         q_upper[plot_mask],
         **fill_kwargs
     )
+
+
+def _render_quantile_nested_band(
+    ax, bin_centers, q_all, plot_mask, color,
+):
+    """
+    Render nested alpha-stacked bands from outermost pair inward.
+
+    Phase 13.26.DF Phase B (Option A, AD-57). Multiple symmetric quantile
+    pairs rendered as fill_between regions with decreasing alpha from outer
+    to inner. Maximum 3 nested bands (silent truncation, outermost 3
+    selected).
+
+    Channel cost: 0 (zero-cost mode — no visual channel slot consumed by
+    Algorithm A; band fills overlay the central line).
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Target axes.
+    bin_centers : np.ndarray
+        Bin centre coordinates.
+    q_all : dict[float, np.ndarray]
+        Mapping ``{q_value: per_bin_quantile_values}`` from
+        ``_compute_per_bin_all_quantiles``.
+    plot_mask : np.ndarray of bool
+        Bins to render (min_entries filter).
+    color : str or RGBA tuple
+        Fill color (matches central line).
+    """
+    qs = sorted(q_all.keys())
+    # Find symmetric pairs (outermost first). Walk from both ends; pair
+    # entries whose sum is 1.0 (within tolerance). Skip 0.5 implicitly
+    # since 0.5 + 0.5 = 1.0 only matches itself.
+    pairs = []
+    left, right = 0, len(qs) - 1
+    while left < right:
+        if abs(qs[left] + qs[right] - 1.0) < 1e-9:
+            pairs.append((qs[left], qs[right]))
+            left += 1
+            right -= 1
+        else:
+            # Asymmetric — skip the entry that overshoots; should not happen
+            # given _detect_quantile_mode validates symmetry, but be safe.
+            if qs[left] + qs[right] < 1.0:
+                left += 1
+            else:
+                right -= 1
+
+    # Max 3 nested bands per AD-57 / v1.2 §7.2 (silent truncation, outermost 3).
+    pairs = pairs[:3]
+    n_pairs = len(pairs)
+    if n_pairs == 0:
+        return
+
+    # Outer band: lowest alpha; inner band: highest alpha.
+    # Alpha range: 0.10 (outermost) to 0.30 (innermost) for n_pairs=3.
+    base_alpha = get_style_value("quantile.band.alpha", 0.25)
+    for i, (q_lo, q_hi) in enumerate(pairs):
+        # Outer (i=0) gets the lowest alpha; inner (i=n_pairs-1) gets base_alpha.
+        # Linear interpolation: alpha = base_alpha * (i + 1) / n_pairs.
+        alpha = base_alpha * (i + 1) / n_pairs
+        ax.fill_between(
+            bin_centers[plot_mask],
+            q_all[q_lo][plot_mask],
+            q_all[q_hi][plot_mask],
+            alpha=alpha, color=color,
+        )

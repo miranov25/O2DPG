@@ -177,11 +177,26 @@ class TestQuantileAutoDetection:
         lines=ax.get_lines()
         assert len(lines)>=4,f"Expected ≥4 lines (central + 4 quantiles), got {len(lines)}"
         plt.close('all')
-    def test_multi_pair_returns_discrete(self,df_gaussian):
-        """Multi-pair symmetric → discrete mode (one line per quantile)."""
+    def test_multi_pair_returns_nested_band(self,df_gaussian):
+        """Multi-pair symmetric (≥2 pairs) → nested_band mode (AD-57, Phase 13.26.DF).
+
+        Was 'discrete' in Phase 13.25.DF (one line per quantile); changed to
+        'nested_band' (alpha-stacked filled regions, max 3 bands) per architect
+        amendment chat 2026-05-05 ("We did not use quentiles yet. We do not need
+        to be back compatible. for quentiles") and v1.2 §8.3 greenfield scope.
+        Pass `quantile_mode='discrete'` explicitly to restore line-per-quantile.
+
+        Note: stats_dict['quantiles_per_bin'] is set for both discrete AND
+        nested_band modes (the underlying _q_all computation fires for both);
+        the visual rendering differs.
+        """
         _,ax,s=DFDraw(df_gaussian).profile("y:x",bins=20,quantiles=[.05,.25,.5,.75,.95])
         assert 'quantiles_per_bin' in s
         assert len(s['quantiles_per_bin'])==5
+        # Verify nested_band rendered: PolyCollections from fill_between
+        from matplotlib.collections import PolyCollection
+        polys=[c for c in ax.collections if isinstance(c,PolyCollection)]
+        assert len(polys)>=2,f"Expected ≥2 nested band PolyCollections, got {len(polys)}"
         plt.close('all')
     def test_single_value_returns_discrete(self,df_gaussian):
         """Single quantile [0.5] → discrete mode (one quantile line)."""

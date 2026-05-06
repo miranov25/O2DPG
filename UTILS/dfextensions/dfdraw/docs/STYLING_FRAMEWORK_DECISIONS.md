@@ -196,6 +196,37 @@ Extracted from Phase 13.25.DF + Phase 13.26.DF review cycles. These should bind 
 - All 578 existing tests pass
 - Bundle: `reviewer.zip` for Commit 1 review (tag verification, scaffolding correctness)
 
+### Phase 13.26.DF Commit 2 implementation
+
+- Parent commit: `0df4c00b` (Phase 13.26.DF Commit 1 scaffolding)
+- Files modified: `dfdraw/channels.py` (stub → ~310 LOC implementation), `dfdraw/drawer.py` (Algorithm A wiring + cycle constants → style-key lookups + `quantile_style` forwarding), `dfdraw/plots/profile.py` (nested-band detection + channel-aware discrete rendering + `_render_quantile_nested_band`), `dfdraw/tests/test_channel_assignment.py` (50 skip stubs → 50 real test bodies)
+- Test count: 627 passed + 1 skipped + 0 failed (verified on architect MacOS env, 2026-05-06; +50 new tests vs Commit 1 baseline of 577)
+- No regressions in any pre-existing test
+- Pre-commit tag candidate: `PHASE_13_26_DF_v1_0_END`
+
+#### AD-60: FIX2 visual elements — channel-aware preservation
+
+**Decision:** Per v1.2 §11.3 directive ("Coder may preserve, redesign, or drop FIX2 elements"), Commit 2 **preserves** the FIX2 visual elements (on-line percentage annotations + linestyle cycle for discrete quantiles) as the **channel-aware default for `quantile_style='linestyle'`**, with two structural changes to align with the channel framework:
+
+1. **Cycle source:** the FIX2 hardcoded local `_ls_cycle = ['--', '-.', ':', (0, (3, 1, 1, 1))]` at `profile.py:559` is replaced with `get_style_value("channels.cycles.linestyle", default)[1:]`. The `[1:]` slice preserves the FIX2 invariant that **solid linestyle remains reserved for the central line** (now controlled by the first entry of `channels.cycles.linestyle`). Default cycle is `['-', '--', '-.', ':']`, so the discrete-quantile cycle is `['--', '-.', ':']` — one entry shorter than FIX2's hardcoded 4-entry cycle (the dash-dot-dot pattern `(0, (3, 1, 1, 1))` is dropped). For 4+ symmetric quantiles users are now routed to `nested_band` mode (AD-57) anyway, so the missing 4th linestyle is rarely needed; users requiring it can `set_style({'channels.cycles.linestyle': ['-', '--', '-.', ':', (0, (3, 1, 1, 1))]})`.
+
+2. **Annotation scope:** FIX2's on-line percentage annotations (`profile.py:564-577`) are preserved when `quantile_style='linestyle'` (the default), and **suppressed** when `quantile_style='marker'` or `quantile_style='color'`. Rationale: marker- and color-distinguished quantile lines need no on-line text to disambiguate; the legend handles it. Linestyle-distinguished lines benefit from on-line annotations because subtle linestyle differences are harder to read against a legend at a distance.
+
+**Provenance:** v1.2 §11.3 explicit recommendation; FIX2 commit `da8895e2` (PHASE_13_25_DF_FIX2_END).
+
+#### Behavior change recorded for transparency (per v1.2 §8.3 greenfield)
+
+Symmetric quantile lists with **>= 4 non-0.5 entries** now auto-detect as `nested_band` mode (AD-57, Option A) instead of `discrete`. This is a deliberate change to the auto-detection rule and is per architect amendment chat 2026-05-05: *"We did not use quentiles yet. We do not need to be back compatible. for quentiles"*.
+
+Affected examples:
+- `[0.05, 0.25, 0.5, 0.75, 0.95]` (5 entries with central): was `discrete`, now `nested_band` (2 alpha-stacked filled regions + central line)
+- `[0.05, 0.25, 0.75, 0.95]` (4 entries no central): was `discrete`, now `nested_band` (2 alpha-stacked filled regions)
+- `[0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99]` (3 pairs + central): was `discrete`, now `nested_band` (3 filled regions + central line)
+
+**To restore old behavior** on a per-call basis, pass `quantile_mode='discrete'` explicitly. The `stats_dict['quantiles_per_bin']` signature is preserved for both modes, so existing tests that only check the stats dict signature still pass.
+
+**Existing test affected:** `tests/test_quantiles_profile.py::TestQuantileMode::test_multi_pair_returns_discrete` — used to test that `[0.05, 0.25, 0.5, 0.75, 0.95]` returns discrete mode. Renamed to `test_multi_pair_returns_nested_band` and docstring updated in Commit 2 to reflect new contract (assertion still passes either way because `quantiles_per_bin` is set for both modes; only the mode name and intent change).
+
 ---
 
 *This document is authoritative for dfdraw architectural decisions. Modifications to AD entries require architect approval; appending new ADs follows the standard phase-decision workflow per `Organization-structure.md`. Governance principles (GP-N) are extracted from review-cycle lessons and bind future phases unless explicitly overridden by architect.*
@@ -205,3 +236,4 @@ Extracted from Phase 13.25.DF + Phase 13.26.DF review cycles. These should bind 
 | Version | Date | Author | Change |
 |---|---|---|---|
 | 1.0 | 2026-05-05 | Claude49Coder | Initial seed in Phase 13.26.DF Commit 1. AD-44 through AD-59 + 5 governance principles + drafter rotation history + Phase 13.26.DF v1.2 audit trail. |
+| 1.1 | 2026-05-06 | Claude49Coder | Phase 13.26.DF Commit 2 audit-trail entry. AD-60 added (FIX2 visual-elements channel-aware preservation per v1.2 §11.3). Behavior-change record for `nested_band` auto-detection on symmetric 4+ entries. |
