@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-05-05 12:33 UTC
+**Generated:** 2026-05-06 11:01 UTC
 **Phase:** 13.15.DF
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -9,12 +9,12 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 7 | 13% |
-| ☑️ Smoke-only | 46 | 87% |
+| ✅ Verified | 7 | 12% |
+| ☑️ Smoke-only | 49 | 88% |
 | 🧨 Broken | 0 | 0% |
 | 📋 Planned | 0 | 0% |
-| **Total features** | **53** | |
-| **Total proof tests** | **226** | |
+| **Total features** | **56** | |
+| **Total proof tests** | **276** | |
 | **Invariance tests** | **28** | |
 
 **Status key:**
@@ -91,11 +91,15 @@
 | ☑️ | **QUANTILE.error_bars** — Quantile error_bars mode (asymmetric bars from symmetric pair) | 8 | 0 |
 | ☑️ | **QUANTILE.band** — Quantile band mode (fill_between from symmetric triple) | 8 | 0 |
 | ☑️ | **QUANTILE.central** — Quantile central= parameter (mean/median/both/none) | 7 | 0 |
-| ☑️ | **QUANTILE.auto_detection** — Quantile mode auto-detection from list shape | 8 | 0 |
+| ☑️ | **QUANTILE.auto_detection** — Quantile mode auto-detection from list shape | 5 | 0 |
 | ☑️ | **QUANTILE.style_keys** — Quantile style keys (band.alpha, band.hatch, error_bars.capsize, central_default) | 8 | 0 |
 | ☑️ | **QUANTILE.parity** — Quantile determinism + backward-compat regression-lock | 6 | 0 |
 | | **COMPAT** | | |
 | ☑️ | **COMPAT.bool_expression** — Boolean expression input (==, !=, >, <, &, |, ~) on all plot functions | 11 | 0 |
+| | **CHANNEL** | | |
+| ☑️ | **CHANNEL.assignment** — Algorithm A: automatic visual-channel assignment for N data channels | 41 | 0 |
+| ☑️ | **CHANNEL.nested_band** — Nested-band detection (>=2 symmetric pairs, central optional) and rendering | 5 | 0 |
+| ☑️ | **CHANNEL.factored_legend** — Factored legend with section headers (sum-not-product entry count) | 4 | 0 |
 
 ---
 
