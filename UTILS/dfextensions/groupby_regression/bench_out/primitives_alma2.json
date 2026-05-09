@@ -1,0 +1,74 @@
+{
+  "schema": "primitives_v1.1",
+  "machine": "alma2",
+  "timestamp": "2026-05-09T21:46:57.943462",
+  "python_version": "3.10.19",
+  "numpy_version": "1.24.2",
+  "numba_version": "0.59.1",
+  "numba_threading_layer": "omp",
+  "numba_num_threads": 12,
+  "primitives": {
+    "M1_stream_read_GBps": {
+      "value": 43.44,
+      "mad": 0.299,
+      "unit": "GB/s",
+      "n_runs": 20,
+      "n_rows": 100000,
+      "source_line": "phase_12_12b A:934"
+    },
+    "M2_gather_GBps": {
+      "value": 16.36,
+      "mad": 0.105,
+      "unit": "GB/s",
+      "n_runs": 20,
+      "n_rows": 100000,
+      "source_line": "phase_12_12b A:935"
+    },
+    "M3w_scatter_write_GBps": {
+      "value": 11.63,
+      "mad": 0.108,
+      "unit": "GB/s",
+      "n_runs": 20,
+      "n_rows": 100000,
+      "source_line": "phase_12_12b A:937"
+    },
+    "C1_XtWX_ns_v4": {
+      "value": 1125.1,
+      "mad": 14.0,
+      "unit": "ns/call",
+      "n_runs": 20,
+      "n_groups": 1000,
+      "rows_per_call": 100,
+      "n_features": 3,
+      "source_line": "phase_12_12b A:938"
+    },
+    "C2_solve_ns": {
+      "value": 2781.8,
+      "mad": 21.5,
+      "unit": "ns/call",
+      "n_runs": 20,
+      "n_groups": 1000,
+      "n_features": 3,
+      "source_line": "phase_12_12b A:939"
+    },
+    "C6_MAD_ns": {
+      "value": 20718.5,
+      "mad": 55.0,
+      "unit": "ns/call",
+      "n_runs": 20,
+      "n_groups": 1000,
+      "rows_per_call": 100,
+      "source_line": "phase_12_12b A:940"
+    },
+    "C1_XtWX_ns_sw": {
+      "value": 9570.6,
+      "mad": 194.4,
+      "unit": "ns/call",
+      "n_runs": 20,
+      "n_groups": 100,
+      "rows_per_call": 2200,
+      "n_features": 3,
+      "source_line": "phase_12_12b A:938"
+    }
+  }
+}

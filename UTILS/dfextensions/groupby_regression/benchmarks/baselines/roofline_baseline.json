@@ -1,0 +1,238 @@
+{
+  "schema_version": "1.0",
+  "phase_anchored": "13.22.GB-RooflineTier1",
+  "calibration_date": "2026-05-09",
+  "commands": {
+    "primitive_calibration": "python benchmarks/scripts/measure_primitives.py",
+    "baseline_consolidation": "python benchmarks/scripts/update_roofline_baseline.py --primitives bench_out/primitives_alma2.json --k-values bench_out/roofline_K_alma2.json --output benchmarks/baselines/roofline_baseline.json"
+  },
+  "machines": {
+    "alma2": {
+      "primitives": {
+        "M1_stream_read_GBps": {
+          "value": 43.44,
+          "mad": 0.299,
+          "unit": "GB/s",
+          "n_runs": 20,
+          "n_rows": 100000,
+          "source_line": "phase_12_12b A:934"
+        },
+        "M2_gather_GBps": {
+          "value": 16.36,
+          "mad": 0.105,
+          "unit": "GB/s",
+          "n_runs": 20,
+          "n_rows": 100000,
+          "source_line": "phase_12_12b A:935"
+        },
+        "M3w_scatter_write_GBps": {
+          "value": 11.63,
+          "mad": 0.108,
+          "unit": "GB/s",
+          "n_runs": 20,
+          "n_rows": 100000,
+          "source_line": "phase_12_12b A:937"
+        },
+        "C1_XtWX_ns_v4": {
+          "value": 1125.1,
+          "mad": 14.0,
+          "unit": "ns/call",
+          "n_runs": 20,
+          "n_groups": 1000,
+          "rows_per_call": 100,
+          "n_features": 3,
+          "source_line": "phase_12_12b A:938"
+        },
+        "C2_solve_ns": {
+          "value": 2781.8,
+          "mad": 21.5,
+          "unit": "ns/call",
+          "n_runs": 20,
+          "n_groups": 1000,
+          "n_features": 3,
+          "source_line": "phase_12_12b A:939"
+        },
+        "C6_MAD_ns": {
+          "value": 20718.5,
+          "mad": 55.0,
+          "unit": "ns/call",
+          "n_runs": 20,
+          "n_groups": 1000,
+          "rows_per_call": 100,
+          "source_line": "phase_12_12b A:940"
+        },
+        "C1_XtWX_ns_sw": {
+          "value": 9570.6,
+          "mad": 194.4,
+          "unit": "ns/call",
+          "n_runs": 20,
+          "n_groups": 100,
+          "rows_per_call": 2200,
+          "n_features": 3,
+          "source_line": "phase_12_12b A:938"
+        }
+      },
+      "cpu": "unknown",
+      "python_version": "3.10.19",
+      "numpy_version": "1.24.2",
+      "numba_version": "0.59.1",
+      "numba_threading_layer": "omp",
+      "numba_num_threads": 12,
+      "calibration_date": "2026-05-09T21:46:57.943462",
+      "test_K_measured": {
+        "test_fit_regression_roofline": {
+          "K_median": 15.02,
+          "K_mad": 0.72,
+          "n_runs": 10,
+          "T_expected_ms": 14.593,
+          "T_observed_ms": 219.3,
+          "K_values": [
+            15.77,
+            14.43,
+            14.38,
+            14.85,
+            15.89,
+            13.88,
+            15.2,
+            15.71,
+            16.79,
+            14.05
+          ]
+        },
+        "test_v4_modeled_roofline": {
+          "K_median": 3.46,
+          "K_mad": 0.03,
+          "n_runs": 10,
+          "T_expected_ms": 25.249,
+          "T_observed_ms": 87.4,
+          "K_values": [
+            4.49,
+            3.56,
+            3.49,
+            3.46,
+            3.47,
+            3.43,
+            3.44,
+            3.46,
+            3.43,
+            3.49
+          ]
+        },
+        "test_assign_bin_ids_modeled_roofline": {
+          "K_median": 2.38,
+          "K_mad": 0.01,
+          "n_runs": 10,
+          "T_expected_ms": 0.491,
+          "T_observed_ms": 1.2,
+          "K_values": [
+            2.38,
+            2.36,
+            5.98,
+            2.45,
+            3.4,
+            2.48,
+            2.38,
+            2.37,
+            2.38,
+            2.37
+          ]
+        },
+        "test_counting_sort_modeled_roofline": {
+          "K_median": 9.32,
+          "K_mad": 0.46,
+          "n_runs": 10,
+          "T_expected_ms": 0.194,
+          "T_observed_ms": 1.8,
+          "K_values": [
+            9.16,
+            8.87,
+            9.79,
+            8.85,
+            8.3,
+            9.48,
+            10.47,
+            14.48,
+            9.04,
+            9.58
+          ]
+        },
+        "test_fit_kernel_modeled_roofline": {
+          "K_median": 17.2,
+          "K_mad": 0.63,
+          "n_runs": 10,
+          "T_expected_ms": 12.649,
+          "T_observed_ms": 217.6,
+          "K_values": [
+            17.42,
+            16.6,
+            15.09,
+            17.68,
+            17.86,
+            16.06,
+            17.02,
+            16.32,
+            17.39,
+            19.5
+          ]
+        },
+        "test_v4_median_dispatch_count": {
+          "t_batch_ms": 88.8,
+          "t_fallback_ms": 90.3,
+          "speedup_ratio": 1.0
+        }
+      },
+      "operation_counts_SW2D": {
+        "n_rows": 100000,
+        "n_groups": 1024,
+        "n_neighbors_eff": 23.2,
+        "rows_per_window": 2247
+      },
+      "operation_counts_S2": {
+        "n_rows": 100000,
+        "n_groups": 1000
+      }
+    }
+  },
+  "thresholds": {
+    "test_assign_bin_ids_modeled_roofline": {
+      "K_floor": 2.4,
+      "derivation_formula": "K_floor + 6 \u00d7 1.4826 \u00d7 MAD(K)",
+      "K_threshold_alma2": 2.5,
+      "sigma_alma2": 0.01,
+      "K_median_alma2": 2.4
+    },
+    "test_counting_sort_modeled_roofline": {
+      "K_floor": 9.3,
+      "derivation_formula": "K_floor + 6 \u00d7 1.4826 \u00d7 MAD(K)",
+      "K_threshold_alma2": 13.4,
+      "sigma_alma2": 0.68,
+      "K_median_alma2": 9.3
+    },
+    "test_fit_kernel_modeled_roofline": {
+      "K_floor": 17.2,
+      "derivation_formula": "K_floor + 6 \u00d7 1.4826 \u00d7 MAD(K)",
+      "K_threshold_alma2": 22.8,
+      "sigma_alma2": 0.93,
+      "K_median_alma2": 17.2
+    },
+    "test_fit_regression_roofline": {
+      "K_floor": 15.0,
+      "derivation_formula": "K_floor + 6 \u00d7 1.4826 \u00d7 MAD(K)",
+      "K_threshold_alma2": 21.4,
+      "sigma_alma2": 1.07,
+      "K_median_alma2": 15.0
+    },
+    "test_v4_median_dispatch_count": {
+      "type": "dispatch_count",
+      "threshold": 1000,
+      "derivation": "Hard limit: \u22641000 np.median calls (was 1.26M pre-Phase 13.21 F3)"
+    },
+    "test_v4_modeled_roofline": {
+      "K_floor": 3.5,
+      "derivation_formula": "K_floor + 6 \u00d7 1.4826 \u00d7 MAD(K)",
+      "K_threshold_alma2": 3.7,
+      "sigma_alma2": 0.04,
+      "K_median_alma2": 3.5
+    }
+  }
+}
