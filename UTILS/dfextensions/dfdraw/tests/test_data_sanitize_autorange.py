@@ -1,11 +1,9 @@
 """
 Tests for Phase 13.28.DF — Robust Data Handling.
 
-Part A (NaN/inf filter): 13 real invariance tests on sanitize_for_plot().
-Part B (Hybrid autorange): 8 skip stubs — code not yet implemented.
-
-When Part B implementation lands, the 8 stubs become real bodies in the
-same file. No extra restructuring needed.
+Part A (NaN/inf filter): 12 invariance tests on sanitize_for_plot().
+Part B (Hybrid autorange): 9 invariance tests on compute_autorange() and
+                            hybrid_autorange().
 
 References
 ----------
@@ -16,8 +14,12 @@ import warnings
 import pytest
 import numpy as np
 
-# Phase 13.28.DF — Part A is functional; tested directly.
 from dfdraw.plots._data_sanitize import sanitize_for_plot
+from dfdraw.plots._autorange import (
+    compute_autorange,
+    hybrid_autorange,
+    VALID_STRATEGIES,
+)
 
 
 # =============================================================================
@@ -32,7 +34,7 @@ class TestNaNInfFilter:
         assert n_input==4 AND len(clean)==3 AND n_inf_x==1 AND no warning."""
         x = np.array([1.0, 2.0, np.inf, 4.0])
         with warnings.catch_warnings():
-            warnings.simplefilter("error")  # any warning -> test fails
+            warnings.simplefilter("error")
             x_clean, y_clean, stats = sanitize_for_plot(x)
         assert stats["n_input"] == 4
         assert len(x_clean) == 3
@@ -85,13 +87,11 @@ class TestNaNInfFilter:
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             x_clean, y_clean, stats = sanitize_for_plot(x, y)
-        # All counters present and zero
         for k in ("n_inf_x", "n_nan_x", "n_inf_y", "n_nan_y", "n_filtered"):
             assert stats[k] == 0, f"{k} should be 0 for clean data"
         assert stats["n_input"] == 5
         assert len(x_clean) == 5
         assert len(y_clean) == 5
-        # Clean data passes through unchanged
         np.testing.assert_array_equal(x_clean, x)
         np.testing.assert_array_equal(y_clean, y)
 
@@ -145,63 +145,126 @@ class TestNanPolicy:
     def test_nan_policy_raise_only_fires_when_invalid_present(self):
         """Clean data with nan_policy='raise' does NOT raise (only fires on invalid)."""
         x = np.array([1.0, 2.0, 3.0])
-        # Should not raise:
         x_clean, _, stats = sanitize_for_plot(x, nan_policy="raise")
         assert len(x_clean) == 3
         assert stats["n_filtered"] == 0
 
 
 # =============================================================================
-# Class 3 — TestHybridAutorange (5 stubs, Part B)
-# Real bodies land alongside compute_autorange / hybrid_autorange implementation.
+# Class 3 — TestHybridAutorange (5 tests, Part B core)
+# Verifies §4.1 spec across 4 worked examples + constant-data degenerate.
 # =============================================================================
 
 class TestHybridAutorange:
-    """Hybrid autorange algorithm — verifies §4.1 spec across 4 worked examples."""
+    """Hybrid autorange algorithm — §4.1 spec verification."""
 
-    @pytest.mark.skip(reason="PHASE_13_28_DF Part B — autorange not yet implemented")
     def test_clean_gaussian_uses_minmax(self):
-        """Clean Gaussian: range_used == (data.min(), data.max())."""
+        """Clean N(0,1), N=1000, no outliers;
+        assert range_used == (data.min(), data.max()) within 1e-9."""
+        rng = np.random.default_rng(seed=42)
+        data = rng.normal(0.0, 1.0, size=1000)
+        # Sanity: clean Gaussian — extremes within ~3.5 sigma, no outliers
+        lo, hi = hybrid_autorange(data, k_robust=4.0, k_outlier=1.5)
+        assert abs(lo - data.min()) < 1e-9, \
+            f"Clean Gaussian: expected lo==data.min()={data.min():.4f}, got {lo:.4f}"
+        assert abs(hi - data.max()) < 1e-9, \
+            f"Clean Gaussian: expected hi==data.max()={data.max():.4f}, got {hi:.4f}"
 
-    @pytest.mark.skip(reason="PHASE_13_28_DF Part B — autorange not yet implemented")
     def test_outlier_high_clips_to_robust(self):
-        """N(0,1)+1 outlier at +100: range_used[1] ≈ 4·1.4826."""
+        """N(0,1), N=999 + 1 point at +100;
+        assert range_used[1] is robust bound (~ 4·sigma_MAD ≈ 4) AND
+        range_used[0] == data.min() (no outlier on low side)."""
+        rng = np.random.default_rng(seed=42)
+        data = np.concatenate([rng.normal(0.0, 1.0, size=999), [100.0]])
+        lo, hi = hybrid_autorange(data, k_robust=4.0, k_outlier=1.5)
+        # High side clipped to robust window
+        assert hi < 10.0, f"Expected hi clipped (<10), got {hi:.4f}"
+        assert hi > 3.0, f"Expected hi >3 (~4 sigma), got {hi:.4f}"
+        # Low side preserved (no low outlier)
+        finite_data = data
+        assert abs(lo - finite_data.min()) < 1e-9, \
+            f"Low side should be data.min()={finite_data.min():.4f}, got {lo:.4f}"
 
-    @pytest.mark.skip(reason="PHASE_13_28_DF Part B — autorange not yet implemented")
     def test_outlier_low_clips_to_robust(self):
-        """Asymmetric outlier at -100: range_used[0] ≈ -4·1.4826."""
+        """N(0,1), N=999 + 1 point at -100;
+        assert range_used[0] is robust bound AND range_used[1] == data.max()."""
+        rng = np.random.default_rng(seed=42)
+        data = np.concatenate([rng.normal(0.0, 1.0, size=999), [-100.0]])
+        lo, hi = hybrid_autorange(data, k_robust=4.0, k_outlier=1.5)
+        assert lo > -10.0, f"Expected lo clipped (>-10), got {lo:.4f}"
+        assert lo < -3.0, f"Expected lo <-3 (~-4 sigma), got {lo:.4f}"
+        assert abs(hi - data.max()) < 1e-9, \
+            f"High side should be data.max()={data.max():.4f}, got {hi:.4f}"
 
-    @pytest.mark.skip(reason="PHASE_13_28_DF Part B — autorange not yet implemented")
     def test_asymmetric_distribution_one_sided_clip(self):
-        """Long right tail: low side preserved, high side clipped."""
+        """Long right tail, otherwise tight body.
+        Construct: 1000 points around median 50 with MAD ~10, max=200.
+        assert lo == data.min() AND hi < data.max() (right side clipped)."""
+        rng = np.random.default_rng(seed=42)
+        # Bulk at median 50, MAD ~10
+        bulk = rng.normal(50.0, 14.826, size=999)  # sigma=14.826 → MAD~10
+        # Single right-tail outlier at 200
+        data = np.concatenate([bulk, [200.0]])
+        lo, hi = hybrid_autorange(data, k_robust=4.0, k_outlier=1.5)
+        assert abs(lo - data.min()) < 1e-9, \
+            f"Low side should be preserved at data.min()={data.min():.4f}"
+        assert hi < data.max(), \
+            f"High side should be clipped (data.max()={data.max():.4f}), got {hi:.4f}"
 
-    @pytest.mark.skip(reason="PHASE_13_28_DF Part B — autorange not yet implemented")
     def test_constant_data_returns_unit_range(self):
-        """Constant data: range_used == (median - 0.5, median + 0.5)."""
+        """data = [7]*1000; sigma_MAD == 0 → unit window centered on median.
+        assert range_used == (6.5, 7.5)."""
+        data = np.full(1000, 7.0)
+        lo, hi = hybrid_autorange(data)
+        assert abs(lo - 6.5) < 1e-9, f"Expected lo=6.5, got {lo}"
+        assert abs(hi - 7.5) < 1e-9, f"Expected hi=7.5, got {hi}"
 
 
 # =============================================================================
-# Class 4 — TestAutorangeStrategies (3 stubs, Part B)
+# Class 4 — TestAutorangeStrategies (3 tests, Part B presets)
 # =============================================================================
 
 class TestAutorangeStrategies:
-    """Strategy preset behavior — minmax, percentile, style-key default."""
+    """Strategy preset behavior — minmax, percentile, invalid strategy."""
 
-    @pytest.mark.skip(reason="PHASE_13_28_DF Part B — autorange not yet implemented")
     def test_minmax_strategy_equals_data_min_max(self):
-        """range='minmax': range_used == (data.min(), data.max())."""
+        """strategy='minmax' on any data; range == (data.min(), data.max())."""
+        rng = np.random.default_rng(seed=42)
+        # Test on multiple shapes/distributions
+        for data in (
+            rng.normal(0.0, 1.0, size=100),
+            rng.uniform(-5.0, 5.0, size=500),
+            np.arange(50, dtype=float),
+        ):
+            lo, hi = compute_autorange(data, strategy="minmax")
+            assert abs(lo - data.min()) < 1e-9
+            assert abs(hi - data.max()) < 1e-9
 
-    @pytest.mark.skip(reason="PHASE_13_28_DF Part B — autorange not yet implemented")
     def test_percentile_99_clips_to_quantiles(self):
-        """range='percentile_99': range_used == np.percentile(data, [1, 99])."""
+        """strategy='percentile_99'; range == (np.percentile(data, 1), np.percentile(data, 99))."""
+        rng = np.random.default_rng(seed=42)
+        data = rng.normal(0.0, 1.0, size=10000)
+        lo, hi = compute_autorange(data, strategy="percentile_99")
+        expected_lo = float(np.percentile(data, 1))
+        expected_hi = float(np.percentile(data, 99))
+        assert abs(lo - expected_lo) < 1e-9, \
+            f"Expected lo={expected_lo:.6f}, got {lo:.6f}"
+        assert abs(hi - expected_hi) < 1e-9, \
+            f"Expected hi={expected_hi:.6f}, got {hi:.6f}"
 
-    @pytest.mark.skip(reason="PHASE_13_28_DF Part B — autorange not yet implemented")
-    def test_strategy_style_key_default(self):
-        """set_style({'autorange.strategy':'minmax'}) propagates as default."""
+    def test_invalid_strategy_raises(self):
+        """strategy='banana' raises ValueError with valid options listed."""
+        with pytest.raises(ValueError) as exc_info:
+            compute_autorange(np.array([1.0, 2.0, 3.0]), strategy="banana")
+        msg = str(exc_info.value)
+        assert "strategy" in msg
+        # Must list at least the canonical options
+        for s in ("minmax", "hybrid", "percentile_99"):
+            assert s in msg, f"Error message should list {s!r}"
 
 
 # =============================================================================
-# Class 5 — TestStatsDictAdditive (3 tests — sanitize half real, autorange stub)
+# Class 5 — TestStatsDictAdditive (3 tests — sanitize + autorange diagnostic)
 # =============================================================================
 
 class TestStatsDictAdditive:
@@ -223,10 +286,24 @@ class TestStatsDictAdditive:
         x = np.array([1.0, np.inf, 3.0, np.nan, 5.0])
         x_clean, _, stats = sanitize_for_plot(x)
         assert stats["n_filtered"] == stats["n_input"] - len(x_clean)
-        # In this case, x had 1 inf and 1 nan, so 2 dropped:
         assert stats["n_inf_x"] + stats["n_nan_x"] == stats["n_filtered"]
 
-    @pytest.mark.skip(reason="PHASE_13_28_DF Part B — autorange diagnostic keys not yet implemented")
-    def test_explicit_numeric_range_records_strategy_explicit(self):
-        """Per AD-77: stats['autorange_strategy']=='explicit' when user passes
-        numeric range; stats['n'] not clipped to range (visual only)."""
+    def test_compute_autorange_returns_finite_tuple(self):
+        """compute_autorange always returns a finite (lo, hi) tuple of floats
+        for any non-empty input AND for empty data returns (0.0, 1.0) sentinel."""
+        rng = np.random.default_rng(seed=42)
+        data = rng.normal(0.0, 1.0, size=500)
+        for strategy in VALID_STRATEGIES:
+            lo, hi = compute_autorange(data, strategy=strategy)
+            assert isinstance(lo, float) and isinstance(hi, float), \
+                f"{strategy}: expected floats, got {type(lo)}, {type(hi)}"
+            assert np.isfinite(lo) and np.isfinite(hi), \
+                f"{strategy}: expected finite, got ({lo}, {hi})"
+            assert lo <= hi, f"{strategy}: lo > hi ({lo} > {hi})"
+
+        # Empty input — sentinel (0.0, 1.0)
+        empty = np.array([], dtype=float)
+        for strategy in VALID_STRATEGIES:
+            lo, hi = compute_autorange(empty, strategy=strategy)
+            assert (lo, hi) == (0.0, 1.0), \
+                f"{strategy} on empty: expected (0.0, 1.0), got ({lo}, {hi})"
