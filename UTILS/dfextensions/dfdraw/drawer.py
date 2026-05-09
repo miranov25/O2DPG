@@ -585,6 +585,7 @@ class DFDraw:
         'selection', 'color', 'size', 'marker',
         'bins', 'stats', 'norm', 'title', 'ax', 'sample', 'save',
         'same',
+        'nan_policy',  # Phase 13.28.DF: NaN/inf filter policy (AD-70)
         # Note: 'type' consumed for routing; 'figsize' deliberately excluded
         # (figure already created); 'facet' caught by R4 guard; 'group_by'
         # passed as explicit named arg to _draw_vector.
@@ -1123,6 +1124,8 @@ class DFDraw:
         figsize: Optional[Tuple[float, float]] = None,
         # Phase 13.13.DF: same=True for superposition (AD-15)
         same: bool = False,
+        # Phase 13.28.DF: NaN/inf filter policy (AD-70)
+        nan_policy: str = "filter",
         **kwargs
     ) -> DrawResult:
         """
@@ -1449,6 +1452,8 @@ class DFDraw:
                 auto_title=auto_title, selection=selection,
                 # Phase 13.18.DF: robust statistics
                 stat_fields=stat_fields,
+                # Phase 13.28.DF: NaN/inf filter policy
+                nan_policy=nan_policy,
                 **kwargs
             )
             axes = ax
@@ -1648,7 +1653,10 @@ class DFDraw:
                 ax=ax, color=color, size=size, marker=marker,
                 stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
                 group_by=group_by, top_k=top_k, cmap=cmap, colorbar=colorbar,
-                clabel=clabel, jitter=jitter, **kwargs
+                clabel=clabel, jitter=jitter,
+                # Phase 13.28.DF: NaN/inf filter policy
+                nan_policy=nan_policy,
+                **kwargs
             )
             axes = ax
             
@@ -1900,6 +1908,8 @@ class DFDraw:
                 stat_fields=stat_fields,
                 # Phase 13.25.DF: quantile rendering
                 quantiles=quantiles, central=central, quantile_mode=quantile_mode,
+                # Phase 13.28.DF: NaN/inf filter policy
+                nan_policy=nan_policy,
                 **kwargs
             )
             axes = ax
@@ -1949,6 +1959,8 @@ class DFDraw:
         same: bool = False,
         # Phase 13.18.DF: Robust statistics
         stat_fields: Optional[Union[str, List[str]]] = None,
+        # Phase 13.28.DF: NaN/inf filter policy (AD-70)
+        nan_policy: str = "filter",
         **kwargs
     ) -> DrawResult:
         """
@@ -2078,6 +2090,8 @@ class DFDraw:
                 auto_title=auto_title, selection=selection,
                 # Phase 13.18.DF: robust statistics
                 stat_fields=stat_fields,
+                # Phase 13.28.DF: NaN/inf filter policy
+                nan_policy=nan_policy,
                 **kwargs
             )
             axes = ax

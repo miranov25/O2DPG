@@ -181,3 +181,127 @@ def compute_autorange(
 
     # Should be unreachable — caught by the VALID_STRATEGIES check above
     raise ValueError(f"Unknown strategy: {strategy!r}")
+
+
+def resolve_range_1d(
+    range_arg,
+    data: np.ndarray,
+    style_strategy: str = "hybrid",
+    style_k_robust: float = 4.0,
+    style_k_outlier: float = 1.5,
+    style_percentile: Tuple[float, float] = (1.0, 99.0),
+) -> Tuple[Tuple[float, float], str]:
+    """
+    Resolve a `range=` parameter for 1D plots into (used_range, strategy_label).
+
+    Accepts:
+        None                         → use style_strategy
+        'auto'                       → use style_strategy
+        '<strategy>' (string)        → use named strategy from VALID_STRATEGIES
+        (lo, hi) tuple of numbers    → use as-is, label='explicit'
+
+    Parameters
+    ----------
+    range_arg : None | str | (float, float)
+        User-supplied range argument.
+    data : np.ndarray
+        Finite 1D data (post-sanitization). Used when computing autorange.
+    style_strategy : str
+        Default strategy when range_arg is None or 'auto'.
+    style_k_robust, style_k_outlier, style_percentile :
+        Tunable parameters from style keys.
+
+    Returns
+    -------
+    (lo, hi) : tuple of float
+    strategy_label : str
+        Strategy actually used (for stats['autorange_strategy']).
+        'explicit' when user passed numeric range.
+    """
+    # Explicit numeric range: pass through
+    if isinstance(range_arg, (tuple, list)) and not isinstance(range_arg, str):
+        if len(range_arg) == 2 and all(isinstance(v, (int, float, np.integer, np.floating)) for v in range_arg):
+            return (float(range_arg[0]), float(range_arg[1])), "explicit"
+
+    # None or 'auto' → use style default
+    if range_arg is None or range_arg == "auto":
+        strategy = style_strategy
+    elif isinstance(range_arg, str):
+        strategy = range_arg
+    else:
+        # Unknown form (not numeric tuple, not string) — let it raise downstream
+        raise ValueError(
+            f"range must be None, 'auto', a strategy name from {VALID_STRATEGIES}, "
+            f"or a (lo, hi) tuple. Got {range_arg!r}."
+        )
+
+    used = compute_autorange(
+        data,
+        strategy=strategy,
+        k_robust=style_k_robust,
+        k_outlier=style_k_outlier,
+        percentile=style_percentile,
+    )
+    return used, strategy
+
+
+def resolve_range_2d(
+    range_arg,
+    x_data: np.ndarray,
+    y_data: np.ndarray,
+    style_strategy: str = "hybrid",
+    style_k_robust: float = 4.0,
+    style_k_outlier: float = 1.5,
+    style_percentile: Tuple[float, float] = (1.0, 99.0),
+) -> Tuple[Tuple[Tuple[float, float], Tuple[float, float]], str]:
+    """
+    Resolve a `range=` parameter for 2D plots (per-axis independent — AD-74).
+
+    Accepts:
+        None                                   → use style_strategy per-axis
+        'auto'                                 → use style_strategy per-axis
+        '<strategy>' (string)                  → use named strategy per-axis
+        ((xlo, xhi), (ylo, yhi)) explicit      → pass through, label='explicit'
+
+    Returns
+    -------
+    ((xlo, xhi), (ylo, yhi)) : tuple of tuples
+    strategy_label : str
+    """
+    # Explicit ((xlo, xhi), (ylo, yhi)): pass through
+    if isinstance(range_arg, (tuple, list)) and not isinstance(range_arg, str):
+        if (
+            len(range_arg) == 2
+            and all(
+                isinstance(side, (tuple, list)) and len(side) == 2
+                and all(isinstance(v, (int, float, np.integer, np.floating)) for v in side)
+                for side in range_arg
+            )
+        ):
+            return (
+                ((float(range_arg[0][0]), float(range_arg[0][1])),
+                 (float(range_arg[1][0]), float(range_arg[1][1]))),
+                "explicit",
+            )
+
+    # None / 'auto' → use style; '<strategy>' → use named strategy
+    if range_arg is None or range_arg == "auto":
+        strategy = style_strategy
+    elif isinstance(range_arg, str):
+        strategy = range_arg
+    else:
+        raise ValueError(
+            f"range for 2D must be None, 'auto', a strategy name from {VALID_STRATEGIES}, "
+            f"or ((xlo,xhi),(ylo,yhi)). Got {range_arg!r}."
+        )
+
+    # AD-74: per-axis independent autorange
+    x_range = compute_autorange(
+        x_data, strategy=strategy,
+        k_robust=style_k_robust, k_outlier=style_k_outlier, percentile=style_percentile,
+    )
+    y_range = compute_autorange(
+        y_data, strategy=strategy,
+        k_robust=style_k_robust, k_outlier=style_k_outlier, percentile=style_percentile,
+    )
+    return (x_range, y_range), strategy

@@ -26,6 +26,9 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from ..style import get_style_value
 from ..stats import format_stats_box
 from ._auto_title import build_auto_title, apply_auto_title, parse_auto_title_parts, resolve_auto_title
+# Phase 13.28.DF: Robust data handling
+from ._data_sanitize import sanitize_for_plot
+from ._autorange import compute_autorange, resolve_range_1d, VALID_STRATEGIES
 
 
 # =============================================================================
@@ -182,6 +185,8 @@ def draw_profile(
     quantile_mode: str = "auto",
     # Phase 13.26.DF (Phase B): Channel-aware quantile rendering
     quantile_style: Optional[str] = None,
+    # Phase 13.28.DF: NaN/inf filter policy (AD-70)
+    nan_policy: str = "filter",
     # Phase 13.16.DF FIX1: suppress flags for vector dispatch
     _suppress_legend: bool = False,
     _suppress_title: bool = False,
@@ -408,17 +413,41 @@ def draw_profile(
     if weights is not None:
         w_data = _eval_weights(df, weights)
     
-    # Remove NaN (include weights in mask if present)
-    mask = ~(np.isnan(x_data) | np.isnan(y_data))
+    # Phase 13.28.DF: NaN/inf sanitization (AD-69, AD-70).
+    # Sanitize counters use x/y only (public contract); apply joint mask
+    # including weights for actual filtering (matches pre-Phase-13.28 semantics).
+    _, _, _sanitize_stats = sanitize_for_plot(
+        x_data, y_data, nan_policy=nan_policy, column_names=(x_name, y_name)
+    )
+    mask = np.isfinite(x_data) & np.isfinite(y_data)
     if w_data is not None:
-        mask &= ~np.isnan(w_data)
+        mask &= np.isfinite(w_data)
         w_data = w_data[mask]
     x_data = x_data[mask]
     y_data = y_data[mask]
     df_filtered = df[mask].copy() if len(df) == len(mask) else df.copy()
-    
+
+    # Phase 13.28.DF: Resolve x_range autorange (AD-73, AD-77)
+    if len(x_data) > 0:
+        _used_xrange, _autorange_strategy = resolve_range_1d(
+            x_range,
+            x_data,
+            style_strategy=get_style_value("autorange.strategy", "hybrid"),
+            style_k_robust=get_style_value("autorange.k_robust", 4.0),
+            style_k_outlier=get_style_value("autorange.k_outlier", 1.5),
+            style_percentile=get_style_value("autorange.percentile", (1.0, 99.0)),
+        )
+    else:
+        _used_xrange = (0.0, 1.0)
+        _autorange_strategy = (x_range if isinstance(x_range, str)
+                                else "explicit" if x_range is not None else "hybrid")
+
     # Compute profile statistics
     stats_dict = _compute_profile_stats(x_data, y_data, stat_fields=stat_fields)
+    # Phase 13.28.DF: Sanitize counters (AD-71) + autorange diagnostics (AD-77)
+    stats_dict.update(_sanitize_stats)
+    stats_dict["autorange_used"] = _used_xrange
+    stats_dict["autorange_strategy"] = _autorange_strategy
     
     # Phase 13.12.DF F3: Auto-bin float group_by column
     group_col = group_by
@@ -439,7 +468,7 @@ def draw_profile(
     if group_col is not None and group_col in df_filtered.columns:
         profile_data_list = _draw_profile_grouped(
             df_filtered, x, y, ax, group_col, top_k,
-            bins=bins, x_range=x_range, error=error,
+            bins=bins, x_range=_used_xrange, error=error,
             marker=marker, markersize=markersize, capsize=capsize,
             linestyle=linestyle, linewidth=linewidth,
             min_entries=min_entries,
@@ -458,7 +487,7 @@ def draw_profile(
         # Phase A: compute standard profile (needed for mean line + SEM/STD bars)
         _error_for_compute = error if error != "quantile" else "sem"
         bin_centers, bin_means, bin_errors, bin_counts, profile_df = _compute_profile(
-            x_data, y_data, bins, x_range, _error_for_compute, return_data=return_data,
+            x_data, y_data, bins, _used_xrange, _error_for_compute, return_data=return_data,
             w_data=w_data  # Phase 13.12.DF v1.1
         )
         
@@ -470,7 +499,7 @@ def draw_profile(
         _q_all = None  # dict {q_value: per_bin_array} for discrete mode
         if quantiles is not None and _quantile_pair is not None:
             _, _q_lower, _q_upper, _ = _compute_per_bin_quantiles(
-                x_data, y_data, bins, x_range, _quantile_pair,
+                x_data, y_data, bins, _used_xrange, _quantile_pair,
             )
             # Add to stats dict
             stats_dict['q_lower_per_bin'] = _q_lower
@@ -478,7 +507,7 @@ def draw_profile(
         elif quantiles is not None and _quantile_list is not None:
             # Discrete mode OR nested_band: compute per-bin value for EACH quantile
             _q_all = _compute_per_bin_all_quantiles(
-                x_data, y_data, bins, x_range, _quantile_list,
+                x_data, y_data, bins, _used_xrange, _quantile_list,
             )
             # Add to stats dict
             stats_dict['quantiles_per_bin'] = _q_all
@@ -904,10 +933,10 @@ def _draw_profile_grouped(
         if weights is not None:
             w_data = _eval_weights(group_df, weights)
         
-        # Remove NaN (include weights in mask if present)
-        mask = ~(np.isnan(x_data) | np.isnan(y_data))
+        # Phase 13.28.DF: catch NaN AND inf via isfinite (consistent with sanitize_for_plot)
+        mask = np.isfinite(x_data) & np.isfinite(y_data)
         if w_data is not None:
-            mask &= ~np.isnan(w_data)
+            mask &= np.isfinite(w_data)
             w_data = w_data[mask]
         x_data = x_data[mask]
         y_data = y_data[mask]

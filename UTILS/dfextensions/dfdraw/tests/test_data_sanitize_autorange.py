@@ -307,3 +307,93 @@ class TestStatsDictAdditive:
             lo, hi = compute_autorange(empty, strategy=strategy)
             assert (lo, hi) == (0.0, 1.0), \
                 f"{strategy} on empty: expected (0.0, 1.0), got ({lo}, {hi})"
+
+
+# =============================================================================
+# Class 6 — TestPlotIntegration (5 tests, integration of Part A + Part B
+# into draw_hist / draw_hist2d / draw_hexbin / draw_scatter / draw_profile)
+# =============================================================================
+
+import matplotlib
+matplotlib.use("Agg")  # headless for CI
+import pandas as pd
+from dfdraw import DFDraw
+
+
+class TestPlotIntegration:
+    """End-to-end integration: real plot calls with inf/NaN data + autorange."""
+
+    def test_hist2d_with_inf_does_not_crash_and_reports_counters(self):
+        """Architect's exact bug case (y/x with x=0 produces inf):
+        previously crashed matplotlib; must now succeed and report n_inf_y."""
+        df = pd.DataFrame({
+            "x":       [1.0, 2.0, 0.0, 4.0, 5.0, 0.0, 7.0, 8.0],
+            "y":       [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            "detType": [0, 0, 0, 0, 1, 1, 1, 1],
+        })
+        d = DFDraw(df)
+
+        fig, ax, stats = d.hist2d("y/x:x", selection="detType==0")
+
+        # No crash — call returned successfully
+        assert "n" in stats
+        # Counters present and report the inf rows
+        assert stats["n_inf_y"] == 1, \
+            f"Expected n_inf_y==1 (the x=0 row produced inf in y/x), got {stats['n_inf_y']}"
+        assert stats["n"] == 3, \
+            f"After filter, expected 3 rows, got {stats['n']}"
+        assert stats["n_input"] == 4, \
+            f"Selected 4 rows before sanitize, got {stats['n_input']}"
+        # Autorange diagnostics present
+        assert "autorange_used" in stats
+        assert "autorange_strategy" in stats
+
+    def test_hist1d_clean_data_autorange_diagnostics(self):
+        """Plain 1D hist on clean data: stats include autorange_used and strategy."""
+        df = pd.DataFrame({"y": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]})
+        d = DFDraw(df)
+
+        fig, ax, stats = d.hist("y")
+
+        assert "autorange_used" in stats
+        lo, hi = stats["autorange_used"]
+        # Hybrid on clean data == minmax
+        assert lo == 1.0 and hi == 8.0, \
+            f"Expected (1.0, 8.0), got ({lo}, {hi})"
+        assert stats["autorange_strategy"] == "hybrid"
+        # Counter keys also populated
+        for k in ("n_input", "n_filtered", "n_inf_x", "n_nan_x"):
+            assert k in stats
+
+    def test_hist1d_explicit_minmax_strategy(self):
+        """range='minmax' explicit string forces minmax behavior; strategy reported."""
+        df = pd.DataFrame({"y": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]})
+        d = DFDraw(df)
+
+        fig, ax, stats = d.hist("y", range="minmax")
+
+        assert stats["autorange_strategy"] == "minmax"
+        assert stats["autorange_used"] == (1.0, 8.0)
+
+    def test_hist1d_explicit_numeric_range_strategy_explicit(self):
+        """Explicit numeric range tuple records strategy='explicit' AND
+        n stats reflect post-sanitize count, NOT range-clipped count (per AD-77 / §6.4)."""
+        df = pd.DataFrame({"y": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]})
+        d = DFDraw(df)
+
+        fig, ax, stats = d.hist("y", range=(2.0, 6.0))
+
+        assert stats["autorange_strategy"] == "explicit"
+        assert stats["autorange_used"] == (2.0, 6.0)
+        # All 8 rows are post-sanitize finite — not clipped to range
+        assert stats["n"] == 8, \
+            f"stats['n'] should be 8 (post-sanitize), not range-clipped. Got {stats['n']}"
+
+    def test_nan_policy_raise_propagates_through_hist(self):
+        """nan_policy='raise' kwarg flows through DFDraw.hist into draw_hist
+        and raises ValueError on inf data."""
+        df = pd.DataFrame({"y": [1.0, 2.0, np.inf, 4.0]})
+        d = DFDraw(df)
+
+        with pytest.raises(ValueError, match="invalid values"):
+            d.hist("y", nan_policy="raise")

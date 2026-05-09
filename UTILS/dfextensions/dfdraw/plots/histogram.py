@@ -17,6 +17,9 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from ..style import get_style_value
 from ..stats import format_stats_box
 from ._auto_title import build_auto_title, apply_auto_title, parse_auto_title_parts, resolve_auto_title
+# Phase 13.28.DF: Robust data handling
+from ._data_sanitize import sanitize_for_plot
+from ._autorange import compute_autorange, VALID_STRATEGIES
 
 
 # =============================================================================
@@ -163,6 +166,8 @@ def draw_hist(
     selection: Optional[Union[str, np.ndarray, callable]] = None,
     # Phase 13.18.DF: Robust statistics extension
     stat_fields: Optional[Union[str, List[str]]] = None,
+    # Phase 13.28.DF: NaN/inf filter policy (AD-70)
+    nan_policy: str = "filter",
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -248,10 +253,25 @@ def draw_hist(
         x_name = "x"
         x_data = np.asarray(x, dtype=float)
     
-    # Remove NaN
-    mask = ~np.isnan(x_data)
-    x_data = x_data[mask]
-    
+    # Phase 13.28.DF: NaN/inf sanitization (AD-69, AD-70)
+    x_data, _, _sanitize_stats = sanitize_for_plot(
+        x_data, y_data=None, nan_policy=nan_policy, column_names=(x_name, "")
+    )
+
+    # Phase 13.28.DF: Resolve autorange (AD-73, AD-77)
+    from ._autorange import resolve_range_1d
+    if len(x_data) > 0:
+        _used_range, _autorange_strategy = resolve_range_1d(
+            range,
+            x_data,
+            style_strategy=get_style_value("autorange.strategy", "hybrid"),
+            style_k_robust=get_style_value("autorange.k_robust", 4.0),
+            style_k_outlier=get_style_value("autorange.k_outlier", 1.5),
+            style_percentile=get_style_value("autorange.percentile", (1.0, 99.0)),
+        )
+    else:
+        _used_range, _autorange_strategy = (0.0, 1.0), (range if isinstance(range, str) else "explicit" if range is not None else "hybrid")
+
     # Statistics dict
     stats_dict = {
         "n": len(x_data),
@@ -260,6 +280,10 @@ def draw_hist(
         "min": float(np.min(x_data)) if len(x_data) > 0 else np.nan,
         "max": float(np.max(x_data)) if len(x_data) > 0 else np.nan,
     }
+    # Phase 13.28.DF: Sanitize counters (AD-71) + autorange diagnostics (AD-77)
+    stats_dict.update(_sanitize_stats)
+    stats_dict["autorange_used"] = _used_range
+    stats_dict["autorange_strategy"] = _autorange_strategy
     
     # Phase 13.18.DF: robust + optional stats groups
     _groups = _parse_stat_fields(stat_fields)
@@ -283,7 +307,7 @@ def draw_hist(
     if group_by is not None and group_by in df.columns:
         _draw_hist_grouped(
             df, x, ax, group_by, top_k, stacked,
-            bins=bins, range=range, density=density, weights=weights,
+            bins=bins, range=_used_range, density=density, weights=weights,
             alpha=alpha, histtype=histtype, edgecolor=edgecolor,
             linewidth=linewidth, **kwargs
         )
@@ -291,7 +315,7 @@ def draw_hist(
     else:
         # Single histogram
         ax.hist(
-            x_data, bins=bins, range=range, density=density, weights=weights,
+            x_data, bins=bins, range=_used_range, density=density, weights=weights,
             color=color, alpha=alpha, histtype=histtype, edgecolor=edgecolor,
             linewidth=linewidth, label=label, **kwargs
         )
@@ -429,6 +453,8 @@ def draw_hist2d(
     selection: Optional[Union[str, np.ndarray, callable]] = None,
     # Phase 13.18.DF: Robust statistics extension
     stat_fields: Optional[Union[str, List[str]]] = None,
+    # Phase 13.28.DF: NaN/inf filter policy (AD-70)
+    nan_policy: str = "filter",
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -512,13 +538,33 @@ def draw_hist2d(
         y_name = "y"
         y_data = np.asarray(y, dtype=float)
     
-    # Remove NaN
-    mask = ~(np.isnan(x_data) | np.isnan(y_data))
-    x_data = x_data[mask]
-    y_data = y_data[mask]
-    
+    # Phase 13.28.DF: NaN/inf sanitization (AD-69, AD-70)
+    x_data, y_data, _sanitize_stats = sanitize_for_plot(
+        x_data, y_data, nan_policy=nan_policy, column_names=(x_name, y_name)
+    )
+
+    # Phase 13.28.DF: Resolve autorange per-axis (AD-73, AD-74, AD-77)
+    from ._autorange import resolve_range_2d
+    if len(x_data) > 0:
+        _used_range, _autorange_strategy = resolve_range_2d(
+            range,
+            x_data, y_data,
+            style_strategy=get_style_value("autorange.strategy", "hybrid"),
+            style_k_robust=get_style_value("autorange.k_robust", 4.0),
+            style_k_outlier=get_style_value("autorange.k_outlier", 1.5),
+            style_percentile=get_style_value("autorange.percentile", (1.0, 99.0)),
+        )
+    else:
+        _used_range = ((0.0, 1.0), (0.0, 1.0))
+        _autorange_strategy = (range if isinstance(range, str)
+                                else "explicit" if range is not None else "hybrid")
+
     # Statistics
     stats_dict = _compute_hist2d_stats(x_data, y_data, stat_fields=stat_fields)
+    # Phase 13.28.DF: Sanitize counters (AD-71) + autorange diagnostics (AD-77)
+    stats_dict.update(_sanitize_stats)
+    stats_dict["autorange_used"] = _used_range
+    stats_dict["autorange_strategy"] = _autorange_strategy
     
     # Strip private _suppress_* kwargs (injected by draw_batch/vector dispatch)
     kwargs.pop('_suppress_legend', None)
@@ -538,7 +584,7 @@ def draw_hist2d(
     h, xedges, yedges, im = ax.hist2d(
         x_data, y_data,
         bins=bins,
-        range=range,
+        range=_used_range,
         density=(norm == "density"),
         cmap=cmap,
         vmin=vmin if norm != "log" else None,
@@ -656,6 +702,8 @@ def draw_hexbin(
     selection: Optional[Union[str, np.ndarray, callable]] = None,
     # Phase 13.18.DF: Robust statistics (inherits from _compute_hist2d_stats)
     stat_fields: Optional[Union[str, List[str]]] = None,
+    # Phase 13.28.DF: NaN/inf filter policy (AD-70)
+    nan_policy: str = "filter",
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -734,13 +782,22 @@ def draw_hexbin(
         y_name = "y"
         y_data = np.asarray(y, dtype=float)
     
-    # Remove NaN
-    mask = ~(np.isnan(x_data) | np.isnan(y_data))
-    x_data = x_data[mask]
-    y_data = y_data[mask]
-    
+    # Phase 13.28.DF: NaN/inf sanitization (AD-69, AD-70)
+    # Note: hexbin uses 'extent' parameter (matplotlib-controlled), not 'range',
+    # so autorange wiring does not apply here. Only sanitize counters added.
+    x_data, y_data, _sanitize_stats = sanitize_for_plot(
+        x_data, y_data, nan_policy=nan_policy, column_names=(x_name, y_name)
+    )
+
     # Statistics
     stats_dict = _compute_hist2d_stats(x_data, y_data, stat_fields=stat_fields)
+    # Phase 13.28.DF: Sanitize counters (AD-71)
+    stats_dict.update(_sanitize_stats)
+    stats_dict["autorange_used"] = extent if extent is not None else (
+        (float(x_data.min()), float(x_data.max()),
+         float(y_data.min()), float(y_data.max())) if len(x_data) > 0 else (0.0, 1.0, 0.0, 1.0)
+    )
+    stats_dict["autorange_strategy"] = "explicit" if extent is not None else "minmax"
     
     # Strip private _suppress_* kwargs (injected by draw_batch/vector dispatch)
     kwargs.pop('_suppress_legend', None)

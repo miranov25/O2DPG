@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ..style import get_style_value
 from ..stats import format_stats_box
+# Phase 13.28.DF: Robust data handling
+from ._data_sanitize import sanitize_for_plot
 
 
 def draw_scatter(
@@ -42,6 +44,8 @@ def draw_scatter(
     group_by: Optional[str] = None,
     top_k: Optional[int] = None,
     jitter: Optional[Union[bool, float, Tuple[float, float]]] = None,
+    # Phase 13.28.DF: NaN/inf filter policy (AD-70)
+    nan_policy: str = "filter",
     # Phase 13.16.DF FIX1: vector dispatch suppression flags (private).
     _suppress_legend: bool = False,
     _suppress_title: bool = False,
@@ -134,14 +138,27 @@ def draw_scatter(
         y_name = "y"
         y_data = np.asarray(y, dtype=float)
     
-    # Remove NaN (need both x and y valid)
-    mask = ~(np.isnan(x_data) | np.isnan(y_data))
+    # Phase 13.28.DF: NaN/inf sanitization (AD-69, AD-70).
+    # Compute counters then build joint mask (so df_filtered + mask align).
+    _, _, _sanitize_stats = sanitize_for_plot(
+        x_data, y_data, nan_policy=nan_policy, column_names=(x_name, y_name)
+    )
+    mask = np.isfinite(x_data) & np.isfinite(y_data)
     x_data = x_data[mask]
     y_data = y_data[mask]
     df_filtered = df[mask] if len(df) == len(mask) else df
     
     # Statistics
     stats_dict = _compute_scatter_stats(x_data, y_data)
+    # Phase 13.28.DF: Sanitize counters (AD-71)
+    stats_dict.update(_sanitize_stats)
+    # Scatter doesn't auto-range; record explicit / matplotlib-default.
+    stats_dict["autorange_used"] = (
+        ((float(x_data.min()), float(x_data.max())),
+         (float(y_data.min()), float(y_data.max())))
+        if len(x_data) > 0 else ((0.0, 1.0), (0.0, 1.0))
+    )
+    stats_dict["autorange_strategy"] = "minmax"
     
     # Apply jitter
     if jitter:
@@ -359,8 +376,8 @@ def _draw_scatter_grouped(
         x_data = group_df[x].values.astype(float)
         y_data = group_df[y].values.astype(float)
         
-        # Remove NaN
-        mask = ~(np.isnan(x_data) | np.isnan(y_data))
+        # Phase 13.28.DF: catch NaN AND inf via isfinite
+        mask = np.isfinite(x_data) & np.isfinite(y_data)
         x_data = x_data[mask]
         y_data = y_data[mask]
         
