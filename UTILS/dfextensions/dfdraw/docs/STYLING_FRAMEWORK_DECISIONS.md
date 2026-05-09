@@ -26,7 +26,7 @@ Per Phase 13.25.DF FIX1 CRR §8 and Phase 13.26.DF v1.2 §8.1: this file's creat
 ## Table of Contents
 
 1. [Architect verbatim quotes](#1-architect-verbatim-quotes)
-2. [Architect Decisions AD-44 through AD-59](#2-architect-decisions)
+2. [Architect Decisions AD-44 through AD-77](#2-architect-decisions)
 3. [Governance principles](#3-governance-principles)
 4. [Drafter rotation history](#4-drafter-rotation-history)
 5. [Audit trail of phase reviews](#5-audit-trail)
@@ -229,6 +229,24 @@ Affected examples:
 
 ---
 
+### Phase 13.28.DF — Robust Data Handling (AD-69 through AD-77)
+
+Reserved range AD-61..AD-68 is held for Phase 13.27.DF (sister phase: selection_vector + weights_vector + facet integration), currently in reviewer panel. Phase 13.28.DF uses AD-69 onward to keep the two phases independent.
+
+| AD | Decision | Source | Notes |
+|---|---|---|---|
+| **AD-69** | Centralized sanitization module `plots/_data_sanitize.py` exposing `sanitize_for_plot()`. Uniform handling across hist / hist2d / hexbin / profile / scatter so every plot type inherits NaN/inf semantics from one place. | Phase 13.28.DF v1.1 §7.1 + brainstorm §6 | Module is callable from any plot path; called once per top-level user call (idempotency contract preserved) |
+| **AD-70** | `nan_policy` parameter — default `'filter'` (silently drops NaN/inf, populates counters). Alternatives `'warn'` (drop + UserWarning) and `'raise'` (ValueError). Per-call kwarg + per-process default via style key `data.nan_policy`. | Phase 13.28.DF v1.0 architect Q1 (2026-05-06) — *"User is not responsible for curating data"* | Default preserves bit-identical behavior on clean data vs Phase 13.26.DF |
+| **AD-71** | Stats dict counter keys (`n_input`, `n_filtered`, `n_inf_x`, `n_nan_x`, `n_inf_y`, `n_nan_y`) always populated regardless of nan_policy. Additive — existing keys unchanged. | Phase 13.28.DF v1.0 §3.3 + architect Q5 (2026-05-06) | New keys live alongside existing `n`, `mean_x`, etc. — flat namespace |
+| **AD-72** | Hybrid autorange algorithm formal definition (proposal §4.1): compute robust window `(median ± k_robust·sigma_MAD)`. Per-side, declare outlier on side S if `data_extreme_S` exceeds median by more than `(k_outlier · k_robust · sigma_MAD)`. Use robust bound when outlier present, else use data extreme. | Phase 13.28.DF v1.0 §4.1 + architect Q3, Q4 (2026-05-06) — *"do not cut PDF without outliers"* | Genuinely novel for plotting libraries — hybrid combines minmax with robust window with per-side outlier detection |
+| **AD-73** | Default autorange strategy `'hybrid'`. Alternatives via style key `autorange.strategy`: `'minmax'` (matplotlib-equivalent, backward compat), `'percentile_99'`, `'percentile_95'`, `'robust_3mad'`, `'robust_4mad'`. | Phase 13.28.DF v1.0 architect Q2 (2026-05-06) | Default change vs Phase 13.26.DF: clean data gets identical bounds; outlier-bearing data gets clipped to robust window |
+| **AD-74** | 2D autorange per-axis independent. `compute_autorange()` runs separately for x and y; no cross-axis correlation in outlier decision. | Phase 13.28.DF v1.0 architect Q7 (2026-05-06) — *"Independent"* | Joint outlier detection deferred (potential Phase 13.30) |
+| **AD-75** | Backward compat lock: existing tests that depend on min/max autorange semantics get explicit `range='minmax'`. Audit performed during Commit 2b; estimated ≤10 tests affected. | Phase 13.28.DF v1.0 architect Q10 (2026-05-06) — *"In old test we can use explicitly old autorange"* | Class TestStatsDictAdditive verifies pass count unchanged after audit |
+| **AD-76** | Strategy parameters (`k_robust=4.0`, `k_outlier=1.5`, `percentile=(1,99)`) tunable via style keys (`autorange.k_robust`, `autorange.k_outlier`, `autorange.percentile`) only in v1.0. Per-call strategy-parameter kwarg override (e.g., `range_kwargs={'k_robust': 5}`) deferred to Phase 13.29 if production usage demonstrates need. | Phase 13.28.DF v1.0 architect Q8 (2026-05-06) — clarified by drafter | Keeps v1.0 surface area minimal; users wanting fine control use a different preset string or set style key globally |
+| **AD-77** | Diagnostic stats keys (`autorange_used`, `autorange_strategy`) always populated. `autorange_used`: `(lo, hi)` for 1D or `((xlo,xhi),(ylo,yhi))` for 2D — the actual numeric range used. `autorange_strategy`: name of strategy applied, or `'explicit'` when user passed numeric `range=(...)`. **`stats['n']` semantics locked: finite count after `selection` AND `sanitize`. Range filtering is VISUAL ONLY — `range` does NOT reduce `stats['n']`.** | Phase 13.28.DF v1.1 §6.4, §3.3 (2026-05-06) — GPT4 #1 + #2 convergent finding; architect override of Claude40 *"no revision"* for spec cleanliness | Without these keys, hybrid autorange is opaque to production QA. The `n` semantics lock prevents future FIX1 churn |
+
+---
+
 *This document is authoritative for dfdraw architectural decisions. Modifications to AD entries require architect approval; appending new ADs follows the standard phase-decision workflow per `Organization-structure.md`. Governance principles (GP-N) are extracted from review-cycle lessons and bind future phases unless explicitly overridden by architect.*
 
 *Maintainer log:*
@@ -237,3 +255,4 @@ Affected examples:
 |---|---|---|---|
 | 1.0 | 2026-05-05 | Claude49Coder | Initial seed in Phase 13.26.DF Commit 1. AD-44 through AD-59 + 5 governance principles + drafter rotation history + Phase 13.26.DF v1.2 audit trail. |
 | 1.1 | 2026-05-06 | Claude49Coder | Phase 13.26.DF Commit 2 audit-trail entry. AD-60 added (FIX2 visual-elements channel-aware preservation per v1.2 §11.3). Behavior-change record for `nested_band` auto-detection on symmetric 4+ entries. |
+| 1.2 | 2026-05-06 | Claude49Coder | Phase 13.28.DF Commit 1 scaffolding. AD-69..AD-77 added (Robust Data Handling: optional NaN/inf filter with counter reporting + hybrid autorange strategy + diagnostic stats keys). Reserved AD-61..AD-68 for Phase 13.27.DF (sister phase in reviewer panel). |

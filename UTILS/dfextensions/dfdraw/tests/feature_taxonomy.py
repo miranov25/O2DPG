@@ -740,4 +740,70 @@ FEATURES = [
             "test_channel_assignment.py::TestFactoredLegend::test_2ch_legend_also_factored",
         ],
     },
+
+    # ── Phase 13.28.DF: Robust Data Handling (NaN/Inf + Hybrid Autorange) ──
+
+    {
+        "id": "DATA.nan_policy",
+        "name": "Optional NaN/inf filter with nan_policy parameter",
+        "category": "DATA",
+        "tests": [
+            "test_data_sanitize_autorange.py::TestNaNInfFilter::test_inf_filtered_silently_with_default_policy",
+            "test_data_sanitize_autorange.py::TestNaNInfFilter::test_nan_filtered_silently_with_default_policy",
+            "test_data_sanitize_autorange.py::TestNanPolicy::test_nan_policy_raise",
+            "test_data_sanitize_autorange.py::TestNanPolicy::test_nan_policy_warn_emits_warning_then_filters",
+            "test_data_sanitize_autorange.py::TestNanPolicy::test_nan_policy_filter_preserves_pre_phase_behavior",
+            "test_data_sanitize_autorange.py::TestNanPolicy::test_nan_policy_invalid_value_raises",
+            "test_data_sanitize_autorange.py::TestNanPolicy::test_nan_policy_style_key_default",
+        ],
+    },
+    {
+        "id": "DATA.counters",
+        "name": "Stats dict counters: n_input, n_filtered, n_inf_*, n_nan_*",
+        "category": "DATA",
+        "tests": [
+            "test_data_sanitize_autorange.py::TestNaNInfFilter::test_inf_y_only_counted_correctly",
+            "test_data_sanitize_autorange.py::TestNaNInfFilter::test_no_finite_data_warns_with_filter_policy",
+            "test_data_sanitize_autorange.py::TestNaNInfFilter::test_clean_data_no_counters_change",
+            "test_data_sanitize_autorange.py::TestStatsDictAdditive::test_pre_phase_keys_unchanged",
+            "test_data_sanitize_autorange.py::TestStatsDictAdditive::test_new_keys_present_when_default_policy",
+        ],
+    },
+    {
+        "id": "AUTORANGE.hybrid",
+        "name": "Hybrid autorange (outlier-aware: robust + minmax combined)",
+        "category": "AUTORANGE",
+        "tests": [
+            "test_data_sanitize_autorange.py::TestHybridAutorange::test_clean_gaussian_uses_minmax",
+            "test_data_sanitize_autorange.py::TestHybridAutorange::test_outlier_high_clips_to_robust",
+            "test_data_sanitize_autorange.py::TestHybridAutorange::test_outlier_low_clips_to_robust",
+            "test_data_sanitize_autorange.py::TestHybridAutorange::test_asymmetric_distribution_one_sided_clip",
+            "test_data_sanitize_autorange.py::TestHybridAutorange::test_constant_data_returns_unit_range",
+        ],
+    },
+    {
+        "id": "AUTORANGE.minmax",
+        "name": "Minmax autorange strategy (backward compat preset)",
+        "category": "AUTORANGE",
+        "tests": [
+            "test_data_sanitize_autorange.py::TestAutorangeStrategies::test_minmax_strategy_equals_data_min_max",
+            "test_data_sanitize_autorange.py::TestAutorangeStrategies::test_strategy_style_key_default",
+        ],
+    },
+    {
+        "id": "AUTORANGE.percentile",
+        "name": "Percentile autorange strategies (percentile_99, percentile_95)",
+        "category": "AUTORANGE",
+        "tests": [
+            "test_data_sanitize_autorange.py::TestAutorangeStrategies::test_percentile_99_clips_to_quantiles",
+        ],
+    },
+    {
+        "id": "AUTORANGE.diagnostics",
+        "name": "Stats keys autorange_used + autorange_strategy (AD-77)",
+        "category": "AUTORANGE",
+        "tests": [
+            "test_data_sanitize_autorange.py::TestStatsDictAdditive::test_explicit_numeric_range_records_strategy_explicit",
+        ],
+    },
 ]

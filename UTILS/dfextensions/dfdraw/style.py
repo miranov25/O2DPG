@@ -154,6 +154,35 @@ DEFAULT_STYLE: Dict[str, Any] = {
     #           sum of cardinalities (e.g., 5 + 3 + 3 = 11)
     #   False — flat deduplicated legend (existing FIX1 behaviour)
     "channels.legend.factored": True,
+
+    # =========================================================================
+    # Phase 13.28.DF: Robust data handling — AD-69 through AD-77
+    # See docs/STYLING_FRAMEWORK_DECISIONS.md and proposal v1.1.
+    # =========================================================================
+
+    # NaN/inf handling policy. AD-70.
+    #   "filter" — drop silently, counters reported in stats (default)
+    #   "warn"   — drop + emit UserWarning with details
+    #   "raise"  — raise ValueError on any NaN/inf
+    "data.nan_policy": "filter",
+
+    # Autorange strategy default. AD-73.
+    # Determines range when range=None or range='auto'.
+    # Options: "minmax", "hybrid" (default), "percentile_99",
+    #          "percentile_95", "robust_3mad", "robust_4mad".
+    "autorange.strategy": "hybrid",
+
+    # Hybrid/robust autorange tunable parameters. AD-72, AD-76.
+    # k_robust : MAD-sigma half-width for the robust window (used by
+    #            'hybrid' and 'robust_*mad' strategies).
+    # k_outlier: tolerance multiplier for outlier declaration on each
+    #            side (used by 'hybrid' strategy only).
+    "autorange.k_robust": 4.0,
+    "autorange.k_outlier": 1.5,
+
+    # Default percentile bounds for 'percentile_99' preset. AD-76.
+    # Tuple form (low, high). 'percentile_95' bakes (2.5, 97.5).
+    "autorange.percentile": (1, 99),
 }
 
 # =============================================================================

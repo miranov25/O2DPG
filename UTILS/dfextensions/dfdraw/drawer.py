@@ -559,6 +559,7 @@ class DFDraw:
         'stat_fields',  # Phase 13.18.DF: robust statistics groups
         'quantiles', 'central', 'quantile_mode',  # Phase 13.25.DF: quantile rendering
         'quantile_style',  # Phase 13.26.DF: channel-aware quantile rendering
+        'nan_policy',  # Phase 13.28.DF: NaN/inf filter policy (AD-70)
     )
 
     _HIST_FORWARDED_NAMES = (
@@ -568,6 +569,7 @@ class DFDraw:
         'auto_title',
         'same',
         'stat_fields',  # Phase 13.18.DF: robust statistics groups
+        'nan_policy',  # Phase 13.28.DF: NaN/inf filter policy (AD-70)
     )
 
     _SCATTER_FORWARDED_NAMES = (
@@ -576,6 +578,7 @@ class DFDraw:
         'top_k',  # included: scatter.draw_scatter accepts top_k as scalar-mode group filter
         'cmap', 'colorbar', 'clabel', 'jitter',
         'same',
+        'nan_policy',  # Phase 13.28.DF: NaN/inf filter policy (AD-70)
     )
 
     _DRAW_FORWARDED_NAMES = (
@@ -1304,6 +1307,8 @@ class DFDraw:
         same: bool = False,
         # Phase 13.18.DF: Robust statistics
         stat_fields: Optional[Union[str, List[str]]] = None,
+        # Phase 13.28.DF: NaN/inf filter policy (AD-70)
+        nan_policy: str = "filter",
         **kwargs
     ) -> DrawResult:
         """
@@ -1487,6 +1492,8 @@ class DFDraw:
         jitter: Optional[Union[bool, float, Tuple[float, float]]] = None,
         # Phase 13.13.DF: same=True (AD-15)
         same: bool = False,
+        # Phase 13.28.DF: NaN/inf filter policy (AD-70)
+        nan_policy: str = "filter",
         **kwargs
     ) -> DrawResult:
         """
@@ -1698,6 +1705,8 @@ class DFDraw:
         quantile_mode: str = "auto",
         # Phase 13.26.DF (Phase B): Channel-aware quantile rendering
         quantile_style: Optional[str] = None,
+        # Phase 13.28.DF: NaN/inf filter policy (AD-70)
+        nan_policy: str = "filter",
         **kwargs
     ) -> DrawResult:
         """
