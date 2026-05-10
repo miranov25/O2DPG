@@ -237,7 +237,7 @@ def main():
         ("test_fit_regression_roofline", call_sw, te_sw, "perf_counter", None),
         ("test_v4_modeled_roofline", call_v4, te_v4, "perf_counter", None),
         ("test_assign_bin_ids_modeled_roofline", call_sw, te_ab, "cprofile", "_assign_bin_ids_fast"),
-        ("test_counting_sort_modeled_roofline", call_sw, te_cs, "cprofile", "_counting_sort_indices"),
+        # counting_sort REMOVED: cProfile unreliable on numba @njit kernel
         ("test_fit_kernel_modeled_roofline", call_sw, te_fk, "perf_counter", None),
     ]
 

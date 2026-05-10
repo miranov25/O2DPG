@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "phase_anchored": "13.22.GB-RooflineTier1",
-  "calibration_date": "2026-05-09",
+  "calibration_date": "2026-05-10",
   "commands": {
     "primitive_calibration": "python benchmarks/scripts/measure_primitives.py",
     "baseline_consolidation": "python benchmarks/scripts/update_roofline_baseline.py --primitives bench_out/primitives_alma2.json --k-values bench_out/roofline_K_alma2.json --output benchmarks/baselines/roofline_baseline.json"
@@ -81,104 +81,85 @@
       "calibration_date": "2026-05-09T21:46:57.943462",
       "test_K_measured": {
         "test_fit_regression_roofline": {
-          "K_median": 15.02,
-          "K_mad": 0.72,
+          "K_median": 2.99,
+          "K_mad": 0.15,
           "n_runs": 10,
           "T_expected_ms": 14.593,
-          "T_observed_ms": 219.3,
+          "T_observed_ms": 43.7,
           "K_values": [
-            15.77,
-            14.43,
-            14.38,
-            14.85,
-            15.89,
-            13.88,
-            15.2,
-            15.71,
-            16.79,
-            14.05
+            8.79,
+            3.17,
+            3.03,
+            3.6,
+            3.15,
+            2.86,
+            2.94,
+            2.73,
+            2.9,
+            2.96
           ]
         },
         "test_v4_modeled_roofline": {
-          "K_median": 3.46,
+          "K_median": 2.54,
           "K_mad": 0.03,
           "n_runs": 10,
           "T_expected_ms": 25.249,
-          "T_observed_ms": 87.4,
+          "T_observed_ms": 64.2,
           "K_values": [
-            4.49,
-            3.56,
-            3.49,
-            3.46,
-            3.47,
-            3.43,
-            3.44,
-            3.46,
-            3.43,
-            3.49
+            2.58,
+            2.54,
+            2.56,
+            2.62,
+            2.55,
+            2.5,
+            2.48,
+            2.52,
+            2.54,
+            2.51
           ]
         },
         "test_assign_bin_ids_modeled_roofline": {
-          "K_median": 2.38,
-          "K_mad": 0.01,
+          "K_median": 2.39,
+          "K_mad": 0.04,
           "n_runs": 10,
           "T_expected_ms": 0.491,
           "T_observed_ms": 1.2,
           "K_values": [
             2.38,
+            2.44,
+            2.33,
             2.36,
-            5.98,
-            2.45,
-            3.4,
             2.48,
-            2.38,
+            2.45,
+            2.39,
             2.37,
-            2.38,
-            2.37
-          ]
-        },
-        "test_counting_sort_modeled_roofline": {
-          "K_median": 9.32,
-          "K_mad": 0.46,
-          "n_runs": 10,
-          "T_expected_ms": 0.194,
-          "T_observed_ms": 1.8,
-          "K_values": [
-            9.16,
-            8.87,
-            9.79,
-            8.85,
-            8.3,
-            9.48,
-            10.47,
-            14.48,
-            9.04,
-            9.58
+            2.26,
+            2.4
           ]
         },
         "test_fit_kernel_modeled_roofline": {
-          "K_median": 17.2,
-          "K_mad": 0.63,
+          "K_median": 3.8,
+          "K_mad": 0.3,
           "n_runs": 10,
           "T_expected_ms": 12.649,
-          "T_observed_ms": 217.6,
+          "T_observed_ms": 48.1,
           "K_values": [
-            17.42,
-            16.6,
-            15.09,
-            17.68,
-            17.86,
-            16.06,
-            17.02,
-            16.32,
-            17.39,
-            19.5
+            4.44,
+            3.82,
+            3.83,
+            3.79,
+            4.08,
+            3.48,
+            3.45,
+            8.26,
+            3.35,
+            3.62
           ]
         },
         "test_v4_median_dispatch_count": {
-          "t_batch_ms": 88.8,
-          "t_fallback_ms": 90.3,
-          "speedup_ratio": 1.0
+          "t_batch_ms": 65.8,
+          "t_fallback_ms": 79.2,
+          "speedup_ratio": 1.2
         }
       },
       "operation_counts_SW2D": {
@@ -197,30 +178,23 @@
     "test_assign_bin_ids_modeled_roofline": {
       "K_floor": 2.4,
       "derivation_formula": "K_floor + 6 \u00d7 1.4826 \u00d7 MAD(K)",
-      "K_threshold_alma2": 2.5,
-      "sigma_alma2": 0.01,
+      "K_threshold_alma2": 2.7,
+      "sigma_alma2": 0.06,
       "K_median_alma2": 2.4
     },
-    "test_counting_sort_modeled_roofline": {
-      "K_floor": 9.3,
-      "derivation_formula": "K_floor + 6 \u00d7 1.4826 \u00d7 MAD(K)",
-      "K_threshold_alma2": 13.4,
-      "sigma_alma2": 0.68,
-      "K_median_alma2": 9.3
-    },
     "test_fit_kernel_modeled_roofline": {
-      "K_floor": 17.2,
+      "K_floor": 3.8,
       "derivation_formula": "K_floor + 6 \u00d7 1.4826 \u00d7 MAD(K)",
-      "K_threshold_alma2": 22.8,
-      "sigma_alma2": 0.93,
-      "K_median_alma2": 17.2
+      "K_threshold_alma2": 6.5,
+      "sigma_alma2": 0.44,
+      "K_median_alma2": 3.8
     },
     "test_fit_regression_roofline": {
-      "K_floor": 15.0,
+      "K_floor": 3.0,
       "derivation_formula": "K_floor + 6 \u00d7 1.4826 \u00d7 MAD(K)",
-      "K_threshold_alma2": 21.4,
-      "sigma_alma2": 1.07,
-      "K_median_alma2": 15.0
+      "K_threshold_alma2": 4.3,
+      "sigma_alma2": 0.22,
+      "K_median_alma2": 3.0
     },
     "test_v4_median_dispatch_count": {
       "type": "dispatch_count",
@@ -228,11 +202,11 @@
       "derivation": "Hard limit: \u22641000 np.median calls (was 1.26M pre-Phase 13.21 F3)"
     },
     "test_v4_modeled_roofline": {
-      "K_floor": 3.5,
+      "K_floor": 2.5,
       "derivation_formula": "K_floor + 6 \u00d7 1.4826 \u00d7 MAD(K)",
-      "K_threshold_alma2": 3.7,
+      "K_threshold_alma2": 2.8,
       "sigma_alma2": 0.04,
-      "K_median_alma2": 3.5
+      "K_median_alma2": 2.5
     }
   }
 }

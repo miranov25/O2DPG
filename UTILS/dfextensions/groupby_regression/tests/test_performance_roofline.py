@@ -364,41 +364,12 @@ class TestRoofline_SWFit:
         else:
             print(f"  [CALIBRATION] No threshold — reporting only")
 
-    def test_counting_sort_modeled_roofline(self, sw2d_fixture, primitives, baseline):
-        """_counting_sort_indices: K vs M1+M3w model."""
-        if primitives is None:
-            pytest.skip("No primitives file")
-        import cProfile, pstats, io
-        swf = _import_swf()
-        df = sw2d_fixture
-
-        call = lambda: swf(
-            df=df, gb_columns=["bin_x", "bin_y"], fit_columns=["y"],
-            linear_columns=["x1", "x2"],
-            window_spec={"bin_x": SW2D_WINDOW_R, "bin_y": SW2D_WINDOW_R},
-            algorithm='recompute', backend='numba', min_stat=5, suffix='_sw')
-
-        _warmup_until_stable(call)
-        T_exp, _ = _T_expected_counting_sort(primitives["primitives"])
-
-        pr = cProfile.Profile()
-        pr.enable()
-        call()
-        pr.disable()
-        stats = pstats.Stats(pr, stream=io.StringIO())
-        T_obs = 0.0
-        for key, (cc, nc, tt, ct, callers) in stats.stats.items():
-            if '_counting_sort_indices' in str(key[2]):
-                T_obs = ct
-                break
-
-        K = T_obs / T_exp if T_exp > 0 else float('inf')
-        thresh = _get_threshold(baseline, "test_counting_sort_modeled_roofline")
-        print(f"\n  K={K:.2f} (T_obs={T_obs*1e3:.1f}ms, T_exp={T_exp*1e3:.2f}ms)")
-        if thresh:
-            assert K <= thresh, f"K={K:.2f} > threshold={thresh:.1f}"
-        else:
-            print(f"  [CALIBRATION] No threshold — reporting only")
+    # test_counting_sort_modeled_roofline REMOVED per Sonnet29 review:
+    # cProfile cumtime on numba @njit kernel is unreliable (same issue as
+    # test_gather_rows_modeled_roofline removed in v1.8 per Sonnet27 P1-4).
+    # T_exp=0.19ms is below timer resolution; cProfile reports 5-7ms
+    # including JIT/cache overhead. Counting-sort regressions are caught
+    # by test_fit_regression_roofline (counting sort is a sub-component).
 
 
 @pytest.mark.slow
@@ -516,7 +487,6 @@ class TestRoofline_Baseline:
             pytest.skip("No baseline — calibration mode")
         expected = {"test_fit_regression_roofline", "test_v4_modeled_roofline",
                     "test_assign_bin_ids_modeled_roofline",
-                    "test_counting_sort_modeled_roofline",
                     "test_fit_kernel_modeled_roofline",
                     "test_v4_median_dispatch_count"}
         assert set(baseline["thresholds"].keys()) >= expected
