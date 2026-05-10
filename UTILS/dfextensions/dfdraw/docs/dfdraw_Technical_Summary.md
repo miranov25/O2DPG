@@ -1,9 +1,11 @@
 # dfdraw Technical Summary
 
-**Version:** Phase 13.16.DF v1.0 (451 tests passing, 43 features, 21 invariance tests)  
-**Date:** 2026-04-09  
-**Audience:** Integration teams (Team2, architects, developers)  
+**Version:** Phase 13.27.DF Commit 1 (663 tests passing, 62 features, 28+ invariance tests, 7 Verified)
+**Date:** 2026-05-09
+**Audience:** Integration teams (Team2, architects, developers)
 **Purpose:** Technical reference for dfdraw capabilities, limitations, and integration
+
+> **What's new since Phase 13.16.DF v1.0** — robust statistics extension (13.18); quantile rendering on profile (13.25, MultiGraph Phase A); N-channel framework with Algorithm A automatic visual-encoding assignment (13.26, MultiGraph Phase B); facet refactor through the channel framework (13.27 Commit 1, MultiGraph Phase D, profile-only); robust data handling with NaN/inf filter and hybrid autorange (13.28). Two FIX1 follow-ups pending (Phase 13.26 + 13.28; same bug class). See Appendix B for full version history.
 
 ---
 
@@ -99,6 +101,137 @@ aDF.draw("[dd_dyITS0,dd_dyITS1,dd_dyITS2,dd_dyITS3,dd_dyITS4,dd_dyITS5]:staveITS
 (line count, colors, linestyles, labels, xdata/ydata) and per-pair stats
 to a scalar `same=True` loop. Verified by 7 A≡B tests in
 `tests/test_vector.py::TestVectorInvariance`.
+
+### 1.4 Quantile Rendering on Profile (Phase 13.25.DF v1.3 — MultiGraph Phase A)
+
+Per-bin quantile rendering on `profile()` for distribution-shape comparison
+beyond mean ± std.
+
+```python
+# error_bars mode: symmetric pair without 0.5 → asymmetric error bars on central line
+d.profile("y:x", quantiles=[0.16, 0.84])
+
+# band mode: symmetric triple with 0.5 → fill_between
+d.profile("y:x", quantiles=[0.16, 0.5, 0.84])
+
+# nested-band auto-detection (Phase 13.26 AD-57): ≥4 non-0.5 entries
+d.profile("y:x", quantiles=[0.05, 0.25, 0.5, 0.75, 0.95])  # 2 alpha-stacked regions
+
+# central= overrides the line plotted under bars/band
+d.profile("y:x", quantiles=[0.16, 0.84], central='median')
+```
+
+**New parameters on `profile()`:**
+- `quantiles: Optional[List[float]]` — list of fractions in (0, 1)
+- `central: Optional[str]` — `'mean'` (default), `'median'`, `'both'`, `'none'`
+- `quantile_mode: str = "auto"` — `'auto'` dispatches via `_detect_quantile_mode()`; explicit override available with `'discrete'`, `'band'`, `'error_bars'`, `'nested_band'`
+
+**New stats dict keys when quantiles set:** `q_lower_per_bin`, `q_upper_per_bin`, `quantiles_per_bin` (per mode).
+
+**New style keys (4):** `quantile.band.alpha`, `quantile.band.hatch`, `quantile.error_bars.capsize`, `quantile.central_default`.
+
+### 1.5 Channel-Aware Visual Encoding (Phase 13.26.DF v1.2 — MultiGraph Phase B)
+
+Algorithm A automatically resolves which visual encoding (color/linestyle/marker)
+each active data channel gets, eliminating channel-collision bugs (e.g., both
+vector and group_by silently landing on `color`).
+
+```python
+# 3-channel call: vector × group_by × quantiles
+d.profile("[y1,y2,y3]:x", group_by="sector",
+          quantiles=[0.16, 0.5, 0.84])
+# Algorithm A assigns: group_by → color, vector → marker, quantiles → linestyle
+# Factored legend: section headers per channel; entries = sum of cardinalities (not product)
+
+# Override per-call
+d.profile("y:x", quantiles=[0.16, 0.84], quantile_style='color')
+
+# Override default via style
+set_style({"channels.priority.categorical": ["color", "marker", "linestyle"]})
+```
+
+**New parameter on `profile()`:**
+- `quantile_style: Optional[str]` — channel for quantile dimension when combined with group_by
+
+**New style keys (10):** `channels.priority.{categorical,ordinal}`, `channels.cycles.{linestyle,marker,color_count}`, `channels.default.{vector,group_by,quantiles}`, `channels.overflow`, `channels.legend.factored`.
+
+**Capacity:** Each channel has a cycle limit (`channels.cycles.color_count=10`, `linestyle` has 4 entries by default, `marker` has 8). Overflow mode is `'error'` by default with actionable suggestions (`top_k=`, `facet=True`, `group_by_bins=`); `'warn'` permits truncation with warning.
+
+**Factored legend** (default `True`): entry count is sum of cardinalities, not product. 3-channel call with `|group|=5, |vector|=3, |quantiles|=5` produces 13 entries factored vs 75 unfactored.
+
+**Nested-band auto-detection (AD-57):** Symmetric quantile lists with ≥4 non-0.5 entries auto-route to `'nested_band'` mode (alpha-stacked filled regions). Central line handled independently via `central=` parameter.
+
+### 1.6 Facet Refactor (Phase 13.27.DF Commit 1 — MultiGraph Phase D, profile-only)
+
+Replaces inline `facet=True` path on `profile()` with a unified
+`_dispatch_faceted_render()` method routing through the channel framework.
+`facet=True` remains as backward-compat alias.
+
+```python
+# Backward compat — facet=True still works (normalized to facet_by='group_by')
+d.profile("y:x", group_by="sector", facet=True)
+
+# New API — facet_by= explicit channel name
+d.profile("y:x", group_by="sector", facet_by="group_by")
+
+# Facet by vector (one subplot per vector y element)
+d.profile("[y1,y2,y3]:x", facet_by="vector")
+
+# Facet by quantile (with quantile_mode='discrete')
+d.profile("y:x", quantiles=[0.25, 0.5, 0.75],
+          quantile_mode="discrete", facet_by="quantiles")
+```
+
+**New parameter on `profile()`:**
+- `facet_by: Optional[str]` — facet channel; valid in Commit 1: `{'group_by', 'vector', 'quantiles'}`. `'selection_delta'` / `'weights_delta'` reserved for Commit 2 (raise `NotImplementedError`).
+
+**Mutual exclusion (architect rule):** `facet_by` and `same=True` raise `ValueError` (`"facet_by and same=True are mutually exclusive"`). Facet creates a new figure; `same=True` overlays on existing axes — semantics conflict.
+
+**Capacity:** Subplot count bounded by `channels.cycles.facet_max=16`. Overflow `'warn'` truncates and warns; `'error'` raises with actionable message.
+
+**Backward-compat invariance:** `facet=True` ≡ `facet_by='group_by'` byte-identical figure output, locked by invariance test `test_facet_true_eqivalent_to_facet_by_groupby`.
+
+**New style keys (6):** `channels.cycles.facet_max`, `channels.legend.facet_position`, plus 4 reserved for Commit 2 (`channels.label.{selection,weights}_truncate`, `channels.default.{selection,weights}_delta`).
+
+**Out of scope for Commit 1 (Commit 2 pending):** `selection_vector` + `weights_vector` parameters; `delta_facet` plot type; hist + scatter facet integration; 50 invariance tests for selection/weights.
+
+### 1.7 Robust Data Handling (Phase 13.28.DF v1.1)
+
+Centralized NaN/inf filter and outlier-aware autorange across all 5 plot types.
+Closes a class of robustness bugs surfaced on real TPC data: `y/x` expressions
+with `x=0` producing `inf` no longer crash matplotlib; NaN-filtered selections
+no longer silently return `n=0` with no diagnostic.
+
+```python
+# Default behaviour (nan_policy='filter'): silent drop + counters
+fig, ax, stats = d.hist2d("y/x:x", selection="detType==0")
+# stats includes: n_input=4, n=3, n_inf_y=1, autorange_used=((1.0, 4.0), (0.5, 1.5)),
+#                 autorange_strategy='hybrid'
+
+# Explicit warn or raise modes
+d.profile("y:x", nan_policy='warn')   # UserWarning when invalid present
+d.profile("y:x", nan_policy='raise')  # ValueError on any NaN/inf
+
+# Strategy override
+d.hist("y", range='minmax')          # backward-compat (matplotlib-equivalent)
+d.hist("y", range='percentile_99')   # 1st-99th percentile clip
+d.hist("y", range='hybrid')          # default — outlier-aware
+```
+
+**New parameter on all 5 plot methods (`draw / hist / hist2d / profile / scatter`):**
+- `nan_policy: str = "filter"` — `'filter'` (silent drop + counters, default), `'warn'` (drop + UserWarning), `'raise'` (ValueError)
+
+**`range=` extended:** Now accepts strategy strings `'hybrid'` (default), `'minmax'`, `'percentile_99'`, `'percentile_95'`, `'robust_3mad'`, `'robust_4mad'` in addition to numeric tuples.
+
+**New stats dict keys (always populated):**
+- Sanitize counters: `n_input`, `n_filtered`, `n_inf_x`, `n_nan_x`, `n_inf_y`, `n_nan_y`
+- Autorange diagnostics: `autorange_used` (the actual numeric range used), `autorange_strategy` (`'hybrid'`, `'minmax'`, etc., or `'explicit'` when user passed numeric range)
+
+**Critical semantics lock (AD-77):** `stats['n']` is the post-sanitize finite count, NOT range-clipped. Range filtering is **VISUAL ONLY** — `range=` does not reduce `stats['n']`.
+
+**New style keys (5):** `data.nan_policy`, `autorange.strategy`, `autorange.k_robust`, `autorange.k_outlier`, `autorange.percentile`.
+
+**Hybrid autorange algorithm:** Computes robust window `(median ± k_robust·sigma_MAD)`. Per-side, declares outlier on side S if data extreme exceeds median by more than `(k_outlier · k_robust · sigma_MAD)`. Uses robust bound when outlier present, else uses data extreme. Clean Gaussians get full `(min, max)`; outlier-bearing data gets clipped only on the affected side. 2D autorange is per-axis independent.
 
 ---
 
@@ -776,7 +909,7 @@ drawer.profile('y:x', weights='w')
 
 ### 11.3 Current Bugs / Issues
 
-**None identified in Phase 13.16.DF** (451/451 tests passing)
+**No tests failing as of Phase 13.27.DF Commit 1** (663/663 tests passing on commit `PHASE_13_27_DF_Commit1_END`).
 
 **Resolved in Phase 13.16.DF:**
 - **AD-37** — AliasDataFrame per-call `DFDraw` instantiation reset the color
@@ -784,6 +917,29 @@ drawer.profile('y:x', weights='w')
   of the expected N. Fixed via vector expression interface: a single `DFDraw`
   instance now handles the full series internally. Invariance test
   `test_vector_through_adf_equivalent_to_direct` confirms the fix.
+
+**Resolved in Phase 13.28.DF:**
+- **`y/x:row` hist2d crash on `x=0` rows** — matplotlib raised
+  `autodetected range of [-inf, inf] is not finite` whenever `inf` reached
+  the histogram bin-edge calculation. Fixed via centralized
+  `sanitize_for_plot()` in `plots/_data_sanitize.py` called by all 5 plot
+  types. Invariance test
+  `TestPlotIntegration::test_hist2d_with_inf_does_not_crash_and_reports_counters`
+  locks the architect's exact reproducer.
+- **Silent `n=0` from NaN selections** — `hist2d` and friends silently
+  returned `n=0` when all rows had NaN in the chosen expression columns. Now
+  `stats['n_input']`, `stats['n_filtered']`, `stats['n_inf_*']`, `stats['n_nan_*']`
+  are always populated; `nan_policy='warn'` or `'raise'` available for
+  per-call escalation.
+
+**Open follow-ups (FIX1 — non-blocking, same bug class):**
+- **Phase 13.26 FIX1** (Claude40-approved, not started) — `group_style='color'`
+  signature default blocks `set_style({"channels.default.group_by": "linestyle"})`
+  from taking effect. Mechanical fix: change default to `None`, resolve from
+  style at runtime.
+- **Phase 13.28 FIX1** (GPT4 #2 finding from closure review) — `nan_policy="filter"`
+  signature default blocks `set_style({"data.nan_policy": "raise"})` for the
+  same structural reason. Recommended bundle with Phase 13.26 FIX1.
 
 **Known integration gap:**
 - AliasDataFrame's `draw_figures()` reimplements the drawing loop independently.
@@ -946,6 +1102,43 @@ sort_groups: bool      # Sort legend order (Phase 13.12.DF)
 weights: str           # Weight column (Phase 13.12.DF v1.1)
 ```
 
+### 14.5 Quantile Rendering (Phase 13.25.DF v1.3)
+
+```python
+quantiles: List[float]            # Fractions in (0, 1) — symmetric pair, triple, or 4+
+central: str                      # 'mean' (default), 'median', 'both', 'none'
+quantile_mode: str                # 'auto' (default), 'discrete', 'band',
+                                  #     'error_bars', 'nested_band'
+```
+
+### 14.6 Channel-Aware Encoding (Phase 13.26.DF v1.2)
+
+```python
+quantile_style: str               # Channel for quantile dimension
+                                  #     ('color', 'linestyle', 'marker')
+                                  # Used when combined with group_by
+                                  # Algorithm A auto-resolves if not set
+```
+
+### 14.7 Facet Routing (Phase 13.27.DF Commit 1, profile-only)
+
+```python
+facet_by: str                     # Facet channel — Commit 1 valid:
+                                  #     'group_by', 'vector', 'quantiles'
+                                  # Reserved for Commit 2 (NotImplementedError):
+                                  #     'selection_delta', 'weights_delta'
+```
+
+### 14.8 Robust Data Handling (Phase 13.28.DF v1.1)
+
+```python
+nan_policy: str                   # 'filter' (default), 'warn', 'raise'
+range: tuple | str                # Numeric (lo, hi) or strategy name:
+                                  #     'hybrid' (default), 'minmax',
+                                  #     'percentile_99', 'percentile_95',
+                                  #     'robust_3mad', 'robust_4mad'
+```
+
 ---
 
 ## 15. Answers to Team 2 Questions
@@ -1050,10 +1243,10 @@ set_style({
 
 ## 16. Testing Coverage
 
-**Test suite:** 451 tests (100% passing)
-**Features:** 43
-**Invariance tests:** 21 (A≡B semantic contracts)
-**Verified features:** 6 (features with at least one invariance test)
+**Test suite:** 663 tests (100% passing as of Phase 13.27.DF Commit 1)
+**Features:** 62
+**Invariance tests:** 28+ (A≡B semantic contracts; §9 markers introduced in Phase 13.27)
+**Verified features:** 7 (features with at least one invariance test)
 
 **Coverage areas:**
 - All plot types: hist, scatter, profile, hist2d, hexbin ✅
@@ -1069,6 +1262,11 @@ set_style({
 - Defaults cascade and verbose levels (Phase 13.14.DF) ✅ **Verified**
 - Profile enhancements: return_data, min_entries, group_by_bins, weights (Phase 13.12.DF) ✅
 - Test infrastructure: feature taxonomy, capability matrix (Phase 13.15.DF) ✅
+- Robust statistics groups: stat_fields parameter (Phase 13.18.DF) ✅
+- Quantile rendering: error_bars + band + nested-band auto-detect (Phase 13.25.DF) ✅
+- N-channel framework: Algorithm A automatic visual-encoding assignment (Phase 13.26.DF) ✅
+- Facet refactor: `_dispatch_faceted_render()`, `facet_by=`, capacity, mutual exclusion (Phase 13.27.DF Commit 1) ✅ **§9-marked invariance tests**
+- Robust data handling: NaN/inf filter, hybrid autorange, sanitize counters, autorange diagnostics (Phase 13.28.DF) ✅
 
 **Verified (A≡B invariance) features:**
 - `SAME.axes_reuse` — `same=True` byte-identical axes reuse
@@ -1077,22 +1275,31 @@ set_style({
 - `BATCH.group_format` — defaults cascade byte-identical to manual merge
 - `PYARROW.input` — PyArrow ≡ pandas parity for all plot types
 - `VECTOR.invariance` — vector path ≡ scalar `same=True` loop (7 strong tests)
+- `VECTOR.kwarg_propagation` — vector path forwards all scalar-mode kwargs (Phase 13.16.DF FIX1, 7 strong tests)
+
+**Phase 13.27.DF Commit 1 invariance tests** (10, with `# §9.<class>.<id>` markers per Coder QRC v1.30 Rule 14):
+- `TestFacetLegacyEquivalence` (3) — `facet=True` ≡ `facet_by='group_by'` byte-identical
+- `TestFacetByChannel` (4) — vector / group_by / quantiles routing + invalid raises
+- `TestFacetCapacity` (2) — capacity error mode + warn mode
+- `TestFacetSameTrueExclusion` (1) — `facet_by` × `same=True` mutual exclusion
 
 **Integration tests:**
 - AliasDataFrame integration ✅
 - Lazy loading ✅
 - Subframe joins ✅
 - ADF vector dispatch (Phase 13.16.DF) ✅
+- Plot-module integration of sanitize_for_plot + autorange (Phase 13.28.DF) ✅
 
 **Performance tests:**
 - Large datasets (100k+ rows) ✅
 - Memory overhead (PyArrow conversion) ✅
 
-**Test infrastructure (Phase 13.15.DF):**
-- `tests/feature_taxonomy.py` — 43 features enumerated
+**Test infrastructure (Phase 13.15.DF, extended through Phase 13.28.DF):**
+- `tests/feature_taxonomy.py` — 62 features enumerated
 - `tests/test_layer_classification.py` — smoke vs invariance classification
 - `scripts/generate_capability_matrix.py` → `docs/CAPABILITY_MATRIX.md`
-- `run_tests.sh` — full/quick/matrix modes + reviewer.zip packaging
+- `run_tests.sh` — full/quick/matrix modes + `reviewer.zip` packaging
+- `_validate_forwarded_names()` — class-load R6 check on forwarder/signature parity (Phase 13.16.DF FIX1; caught Phase 13.28 FIX1 missing-`nan_policy` mid-integration)
 
 ---
 
@@ -1135,6 +1342,162 @@ set_style({
 
 ---
 
+## 19. MultiGraph Framework — Phases 13.25 / 13.26 / 13.27
+
+The MultiGraph Framework is a coordinated three-phase effort that elevates
+`dfdraw` from a per-call plotter to a **systematic visualization grammar**
+for multi-dimensional differential analysis. Each phase locked one piece
+of the grammar; together they let an analyst describe an N-channel plot
+declaratively and let the framework decide how each channel is rendered.
+
+### 19.1 Phase Hierarchy
+
+| Phase | Role | Status |
+|---|---|---|
+| **13.25 Phase A** | Quantile rendering primitive on `profile()` | ✅ Closed (v1.3 + FIX1 + FIX2) |
+| **13.26 Phase B** | N-channel framework, Algorithm A, channel-aware rendering | ✅ Closed (v1.2 implementation; FIX1 pending) |
+| **13.27 Phase D** | Selection / weights vectors + facet refactor + delta facet | 🟡 Commit 1 closed (facet refactor, profile-only); Commit 2 pending |
+
+### 19.2 The Visualization Grammar
+
+A user-facing call now decomposes into three independent dimensions:
+
+```python
+d.profile("[y1,y2,y3]:x",            # vector channel:    3 series
+          group_by="sector",          # group_by channel:  N groups
+          quantiles=[0.16,0.5,0.84])  # quantile channel:  3 quantiles
+```
+
+The framework asks three questions per call:
+
+1. **Which data channels are active?** (vector, group_by, quantiles, selection_delta, weights_delta)
+2. **What is each channel's cardinality?** (counts the unique values)
+3. **Which visual encoding (color / linestyle / marker) does each channel get?** (Algorithm A)
+
+The answer is computed by `assign_channels()` in `dfdraw/channels.py` using
+`EXPLICIT_RULES` (architect-approved overrides per channel-set, append-only
+across phases — see GP-2 in `STYLING_FRAMEWORK_DECISIONS.md` §3) plus a
+priority-list fallback (`channels.priority.categorical` defaults to
+`["color", "linestyle", "marker"]`).
+
+### 19.3 Architectural Properties Locked Across the Three Phases
+
+- **Append-only `EXPLICIT_RULES`** — once a phase locks how channels assign
+  for a particular set, that mapping is preserved. New channels add new
+  list entries, never modify existing.
+- **Style keys land at interface introduction (GP-1)** — every new
+  channel/feature lands its style keys in the same phase as its rendering
+  logic. No deferred Phase-C+ retrofits.
+- **Capacity gates are explicit and actionable** — overflows raise (default)
+  or warn with the suggested mitigation (`top_k=`, `facet=True`, `group_by_bins=`).
+  Silent auto-facet was rejected as hiding intent.
+- **Factored legend** — entry count is sum of cardinalities, not product.
+  3-channel call with `|g|=5, |v|=3, |q|=5` → 11 entries, not 75.
+- **Mutual exclusion at dispatch level** — `same=True` and `facet_by=`
+  are mutually exclusive (Phase 13.27); vector overlay (`_draw_vector`) and
+  vector facet (`_dispatch_faceted_render`) are mutually exclusive (Phase 13.27 vector-entry intercept).
+
+### 19.4 Out of Scope (Phase 13.27 Commit 2)
+
+- `selection_vector` and `weights_vector` parameters
+- `delta_facet` plot type (`facet_by='selection_delta'`, `facet_by='weights_delta'`)
+- hist + scatter facet integration (currently profile-only)
+- ~50 invariance tests for the selection/weights paths
+
+---
+
+## 20. dfdraw as Multidimensional Differential Analysis (MDA) Substrate
+
+Per `Multidimensional_Differential_Analysis-v0_5.md` §"Tooling — dfextensions
+and Companions as MDA Substrate", `dfdraw` is the visualization substrate
+for the MDA methodology. Each phase delivered enables a specific MDA
+operation:
+
+| Phase | dfdraw capability | MDA enabler |
+|---|---|---|
+| 13.16 | Vector dispatch + R6 forwarder validator | Shadow projections across observables in one call |
+| 13.18 | Robust statistics groups (`stat_fields='robust'`) | Detection of outlier-driven mismeasurement (median + MAD beside mean + std) |
+| 13.25 | Quantiles on `profile()` | Per-bin distribution-shape comparison; goes beyond mean ± std |
+| 13.26 | N-Channel framework (Algorithm A) | Visual encoding budget for high-D analysis without channel collisions |
+| 13.27 (Commit 1) | Facet through channel framework | Multi-dimensional differential breakdown into subplot grid |
+| 13.27 (Commit 2 — pending) | `selection_vector` + `weights_vector` + `delta_facet` | The **core MDA operation** — declare M selections × N weight schemes and let the framework render the cross-product as a facet grid |
+| 13.28 | Robust autorange + NaN/inf safety | Reliable plots on raw production data without per-call data hygiene |
+
+The framework's contract — **per-pair invariance, byte-identical axes
+state, factored legends, channel-aware encoding** — is precisely what an
+MDA workflow needs to compare distributions across slicing dimensions
+without rendering artifacts masking real differences.
+
+---
+
+## 21. Governance and Review Discipline
+
+dfdraw development follows a formal phase-lifecycle (proposal → multi-reviewer
+panel → consolidated review → implementation → tag) with versioned governance
+documents. This section summarises the discipline; full text in
+`docs/STYLING_FRAMEWORK_DECISIONS.md` (§3 Governance Principles) and
+`docs/Organization-structure.md`.
+
+### 21.1 Governance Principles (GP-1 through GP-5)
+
+- **GP-1** — Style configurability lands at interface introduction, not deferred.
+- **GP-2** — Internal APIs accepting new data-channel types must be list-based from day one (`EXPLICIT_RULES` is append-only).
+- **GP-3** — Architect signals preserved verbatim with typos. Reformulating quotes has caused production bugs.
+- **GP-4** — Backward-compat scope must be justified by production-usage verification (`grep`/AST against production scripts).
+- **GP-5** — Drafter rotation across phases is healthy (different drafters bring different lenses; precedent: Phase 13.26 v1.0/v1.1 → v1.2 drafter handoff caught a structural improvement).
+
+### 21.2 Coder Quick Reference Card v1.30 — Rule 14 (new in Phase 13.27)
+
+**Binding §9 assertion-marker rule.** Each test class in a phase's invariance
+test file must contain at least one assertion drawn from the proposal's §9
+load-bearing list, marked inline as `# §9.<class>.<id>` (e.g.
+`# §9.LegacyEquiv.1`). This pins each test body to a specific architect-
+locked invariant; reviewers verify against the proposal §9 list.
+
+### 21.3 Cross-Group Review Standard
+
+Phases that touch the user-facing API surface (`DFDraw.draw / .hist / .hist2d /
+.profile / .scatter`) follow a 3+3 cross-group review standard: 3 dfdraw
+reviewers + 3 ADF reviewers (or equivalent cross-subproject). Phase 13.28
+closure (5-0: Claude40 + Claude48 + GPT4×2 + Claude32 ADF) is the most
+recent example.
+
+### 21.4 Multi-Reviewer Model — Empirical Evidence
+
+The multi-reviewer model has caught real defects that single-reviewer
+discipline would have missed:
+
+- **Phase 13.16.DF Rev2 → Rev3** — 6 P0 defects caught by external panel
+  that internal approvers missed (3-colon parsing, paren-inside-bracket,
+  ADF entry test missing, `same=`/`type=` keyword collisions, 7 call sites
+  not 4).
+- **Phase 13.26.DF v1.0 → v1.2** — Drafter handoff (Claude48 → Claude49Coder)
+  caught the G-7 forward-extensibility upgrade that the original drafter
+  did not surface.
+- **Phase 13.28.DF closure** — GPT4 #2 caught the `nan_policy` style-key
+  signature-default blocker that 3 other reviewers (including Claude40
+  and Claude48) missed.
+- **PHASE_HISTORY.md v1.5 review** — Sonet51 caught the stale Overview
+  header (`Phase 13.16.DF FIX1 / 469 tests`) that Claude40 (full git access)
+  and Sonet50 (sources.zip access) both missed. Catch came from the
+  reviewer with the *least* source access.
+
+### 21.5 Two-Commit Patterns
+
+Two patterns now codified:
+
+- **Phase 13.16 FIX1 pattern** — When fixing a regression, ship as two
+  commits: Commit 1 (red baseline reproducing the bug) + Commit 2 (green
+  fix). Preserves diagnostic state in git history; pre-fix `reviewer.zip`
+  becomes a permanent regression-detection artifact.
+- **Phase 13.28 pattern** — When delivering a multi-part feature, each
+  commit ships **working code with passing tests** (no scaffolding-only
+  commits). Phase 13.28 shipped as Part A → Part B → Integration, each
+  with its own passing tests. Phase 13.27 Commit 1 followed the same
+  discipline (10 invariance tests pass at commit time, no skip stubs).
+
+---
+
 ## Appendix A: Quick Decision Matrix
 
 **"Should dfdraw do X?"**
@@ -1156,7 +1519,64 @@ set_style({
 
 ## Appendix B: Version History
 
-**Phase 13.16.DF v1.0 (Current):**
+**Phase 13.27.DF Commit 1 (Current — MultiGraph Phase D, profile-only):**
+- Facet refactor: replaces inline `facet=True` path with unified `_dispatch_faceted_render()` method routing through channel framework
+- New parameter: `facet_by` ∈ `{'group_by', 'vector', 'quantiles'}` (Commit 1 scope; `'selection_delta'` / `'weights_delta'` reserved for Commit 2)
+- Backward compat: `facet=True` normalizes to `facet_by='group_by'` byte-identical (locked by invariance test)
+- Vector-entry intercept: `facet_by='vector'` routes BEFORE `_draw_vector` (vector overlay × vector facet mutually exclusive at dispatch level)
+- Mutual exclusion: `facet_by` × `same=True` raises ValueError (architect rule v1.1 §5.4)
+- Capacity check via `channels.cycles.facet_max=16`; overflow `'warn'` truncates+warns, `'error'` raises
+- 6 new style keys (2 used in Commit 1, 4 reserved for Commit 2)
+- `'facet_by'` added to `_PROFILE_FORWARDED_NAMES` (Phase 13.28 FIX1 lesson applied prospectively)
+- Stale `test_default_style_has_all_10_keys` updated to `*_all_channels_keys` (16 keys grouped by phase with comments)
+- 10 §9-marked invariance tests (TestFacetLegacyEquivalence + TestFacetByChannel + TestFacetCapacity + TestFacetSameTrueExclusion); Coder QRC v1.30 Rule 14 adopted
+- AD-61..AD-68
+- 663 tests passing, 62 features, 28+ invariance tests, 7 Verified
+
+**Phase 13.28.DF v1.1 (closed at commit `8b02d241`, tags `PHASE_13_28_DF_v1_0_END` and `PHASE_13_28_DF_Integration_END`):**
+- Centralized sanitization: `plots/_data_sanitize.py::sanitize_for_plot()` — uniform NaN/inf handling across hist / hist2d / hexbin / profile / scatter
+- New parameter: `nan_policy` ∈ `{'filter', 'warn', 'raise'}`, default `'filter'` (silent drop with counters)
+- New stats keys: `n_input`, `n_filtered`, `n_inf_x`, `n_nan_x`, `n_inf_y`, `n_nan_y` (always populated)
+- Hybrid autorange: `compute_autorange()` with 6 strategies (`'hybrid'` default, `'minmax'`, `'percentile_99'`, `'percentile_95'`, `'robust_3mad'`, `'robust_4mad'`)
+- `range=` now accepts strategy strings in addition to numeric tuples
+- New stats keys: `autorange_used`, `autorange_strategy` (always populated; `'explicit'` when user passed numeric range)
+- `stats['n']` semantics locked: post-sanitize finite count, NOT range-clipped (range is VISUAL ONLY)
+- 5 new style keys: `data.nan_policy`, `autorange.{strategy,k_robust,k_outlier,percentile}`
+- Bug fix: `adf.draw("y/x:row", type='hist2d')` no longer crashes matplotlib on `inf` from `x=0` rows
+- Bug fix: NaN-filtered selections no longer silently return `n=0`
+- 26 new tests (12 sanitize + 9 autorange + 5 integration); 5-0 closure verdict (Claude40 + Claude48 + GPT4×2 + Claude32 ADF)
+- AD-69..AD-77
+- 653 tests passing at closure; +10 in Phase 13.27.DF Commit 1 → current 663
+- FIX1 pending (GPT4 #2): `nan_policy` style-key default blocker; same bug class as Phase 13.26 FIX1
+
+**Phase 13.26.DF v1.2 (MultiGraph Phase B, closed at `PHASE_13_26_DF_v1_0_END`):**
+- N-channel framework: `dfdraw/channels.py` with `assign_channels()` resolving color/linestyle/marker assignment for active data channels (vector / group_by / quantiles)
+- Algorithm A: `EXPLICIT_RULES` (architect-approved per channel-set, append-only) + priority-list fallback (`channels.priority.categorical`)
+- New parameter: `quantile_style` for explicit channel override
+- 10 new `channels.*` style keys: `priority.categorical`, `priority.ordinal`, `cycles.linestyle`, `cycles.marker`, `cycles.color_count`, `default.vector`, `default.group_by`, `default.quantiles`, `overflow`, `legend.factored`
+- Factored legend (default `True`): entry count = sum of cardinalities, not product
+- Nested-band auto-detection (AD-57): symmetric quantile lists with ≥4 non-0.5 entries → `'nested_band'` mode
+- FIX2 visual elements channel-aware preservation: linestyle cycle from style key (`[1:]` slice — solid reserved for central line); on-line annotations preserved for `quantile_style='linestyle'`, suppressed for `'marker'`/`'color'`
+- 50 new tests (TestChannelAssignment{1,2,3}Active, TestChannelCapacity, TestChannelCollision, TestChannelUserOverride, TestChannelStyleOverride, TestFactoredLegend, TestNestedBand, TestIdempotency)
+- AD-55..AD-60; GP-2 / GP-4 / GP-5 governance principles recorded
+- 627 tests passing
+- FIX1 pending (Claude40-approved, not started): `group_style='color'` default + 10 docstrings + CAPABILITY_MATRIX amend
+
+**Phase 13.25.DF v1.3 + FIX1 + FIX2 (MultiGraph Phase A):**
+- Quantile rendering on `profile()`: error_bars (asymmetric bars from symmetric pair without 0.5), band (fill_between from symmetric triple with 0.5), auto-detect via `_detect_quantile_mode()`
+- New parameters: `quantiles` (list of fractions), `central` (`'mean'`/`'median'`/`'both'`/`'none'`), `quantile_mode` (`'auto'`/`'discrete'`/`'band'`/`'error_bars'`/`'nested_band'`)
+- New stats keys: `q_lower_per_bin`, `q_upper_per_bin`, `quantiles_per_bin`
+- 4 new style keys: `quantile.band.alpha`, `quantile.band.hatch`, `quantile.error_bars.capsize`, `quantile.central_default`
+- FIX1: empty quantile dict pruning (caught by 6-reviewer panel as P1)
+- FIX2: linestyle cycle + on-line percentage annotations for discrete quantile rendering
+- 28+ new tests; AD-44..AD-54; GP-1 / GP-3 governance principles recorded
+
+**Phase 13.18.DF (Robust statistics extension, tag `PHASE_13_18_DF_v1_0_END`):**
+- New parameter: `stat_fields` ∈ `{'base', 'robust', 'all', list[str]}` on all 5 plot methods + `DFDraw.draw()`
+- New stats keys when `'robust'` active: `median`, `mad`, `q25`, `q75`, `iqr` (MAD scaled by 1.4826 for Gaussian-equivalent sigma)
+- 2 new STATS.* features in feature_taxonomy: `STATS.robust`, `STATS.range_aware`
+
+**Phase 13.16.DF v1.0:**
 - Vector expression interface: `[y1,y2,y3]:x`, `y:[x1,x2]`, `[y1,y2]:[x1,x2]`
 - Paren-aware comma split: `[max(a,b),max(c,d)]:x`
 - Architectural fix for AD-37 AliasDataFrame color-cycling bug
@@ -1238,7 +1658,8 @@ set_style({
 
 ---
 
-**Document Status:** Ready for GitLab  
-**Maintainer:** Team3-dfdraw  
-**Last Updated:** 2026-04-09  
-**Version:** Phase 13.16.DF v1.0
+**Document Status:** Updated through Phase 13.27.DF Commit 1 (663 tests, 62 features, 28+ invariance tests, 7 Verified)
+**Maintainer:** Team3-dfdraw
+**Last Updated:** 2026-05-09
+**Version:** Phase 13.27.DF Commit 1 + Phase 13.28.DF v1.1 (closed in parallel)
+**Next Update:** After Phase 13.27.DF Commit 2 (selection_vector + weights_vector + delta_facet + hist/scatter integration) closure, or after Phase 13.26/13.28 FIX1 bundle
