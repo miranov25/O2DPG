@@ -685,12 +685,19 @@ def _assign_bin_ids_fast(
     return bin_ids, n_bins, bin_coords, bounds
 
 
+_GATHER_KERNEL_CACHE = None  # Module-level cache: avoids per-call Dispatcher overhead
+
+
 def _get_gather_window_rows_kernel():
     """Compile numba kernel for gathering window row indices.
 
     Phase 13.20.GB-PERF: replaces the per-bin Python loop in
     _aggregate_window_dense (159s self-time, 240s cumulative on 82M rows)
     with a JIT-compiled two-pass kernel.
+
+    Phase 13.23a A1: cached at module level after first call to avoid
+    Dispatcher recreation overhead (~1-2ms per call in steady state).
+    Pattern: _get_numba_v4_kernels() at line 2140.
 
     Key insight: rows from different neighbor bins are disjoint (each row
     belongs to exactly one bin via counting sort), so np.unique is
@@ -699,6 +706,10 @@ def _get_gather_window_rows_kernel():
     Pass 1: count rows per center bin (neighbor lookup + range sum).
     Pass 2: fill row indices into preallocated flat array (CSR layout).
     """
+    global _GATHER_KERNEL_CACHE
+    if _GATHER_KERNEL_CACHE is not None:
+        return _GATHER_KERNEL_CACHE
+
     import numba as nb
 
     @nb.njit(cache=True, parallel=True)
@@ -783,7 +794,8 @@ def _get_gather_window_rows_kernel():
 
         return out_rows
 
-    return _gather_rows
+    _GATHER_KERNEL_CACHE = _gather_rows
+    return _GATHER_KERNEL_CACHE
 
 
 def _aggregate_window_dense(
@@ -1292,6 +1304,13 @@ def _fit_window_regression_numba(
     pred_arrays = [df[p].to_numpy(dtype=np.float64) for p in linear_columns]
     target_arrays = {t: df[t].to_numpy(dtype=np.float64) for t in fit_columns}
 
+    # Phase 13.23a A2: pre-stack predictor matrix once (was listcomp per call)
+    # Collapses M2-bound × n_features fancy-index ops into M2-bound × 1
+    if pred_arrays:
+        pred_matrix = np.column_stack(pred_arrays)  # (n_rows, n_features)
+    else:
+        pred_matrix = np.empty((len(df), 0), dtype=np.float64)
+
     out: Dict[Tuple[int, ...], Dict[str, Dict[str, Any]]] = {}
 
     # Process each target separately (kernel is single-target)
@@ -1322,10 +1341,12 @@ def _fit_window_regression_numba(
                 out[ar.center][t] = _empty_fit_result("empty_window", 0)
             continue
 
-        # ONE concatenation, ONE column_stack for all bins
+        # ONE concatenation, ONE fancy-index for all bins
         all_idx = np.concatenate(all_row_indices)
         if n_pred > 0:
-            X_all = np.column_stack([pa[all_idx] for pa in pred_arrays])
+            X_all = pred_matrix[all_idx]  # Phase 13.23a A2: single M2 op (was listcomp)
+            assert X_all.shape == (len(all_idx), n_pred), \
+                f"X_all shape {X_all.shape} != ({len(all_idx)}, {n_pred})"
         else:
             X_all = np.empty((len(all_idx), 0), dtype=np.float64)
         Y_all = y_full[all_idx]
@@ -3666,31 +3687,38 @@ def _counting_sort_indices(keys, n_groups):
         return order, offsets
 
 
+_CSORT_KERNEL_CACHE = None  # Module-level cache: Phase 13.23a A1
+
+
 def _counting_sort_indices_numba(keys, n_groups):
     """Numba-accelerated O(N) counting sort."""
-    import numba as nb
+    global _CSORT_KERNEL_CACHE
+    if _CSORT_KERNEL_CACHE is None:
+        import numba as nb
 
-    @nb.njit(cache=True)
-    def _csort(keys, n_groups):
-        n = len(keys)
-        # Count occurrences
-        counts = np.zeros(n_groups, dtype=np.int64)
-        for i in range(n):
-            counts[keys[i]] += 1
-        # Cumulative offsets
-        offsets = np.zeros(n_groups + 1, dtype=np.int64)
-        for g in range(n_groups):
-            offsets[g + 1] = offsets[g] + counts[g]
-        # Scatter into output order
-        order = np.empty(n, dtype=np.int64)
-        pos = offsets[:-1].copy()
-        for i in range(n):
-            g = keys[i]
-            order[pos[g]] = i
-            pos[g] += 1
-        return order, offsets
+        @nb.njit(cache=True)
+        def _csort(keys, n_groups):
+            n = len(keys)
+            # Count occurrences
+            counts = np.zeros(n_groups, dtype=np.int64)
+            for i in range(n):
+                counts[keys[i]] += 1
+            # Cumulative offsets
+            offsets = np.zeros(n_groups + 1, dtype=np.int64)
+            for g in range(n_groups):
+                offsets[g + 1] = offsets[g] + counts[g]
+            # Scatter into output order
+            order = np.empty(n, dtype=np.int64)
+            pos = offsets[:-1].copy()
+            for i in range(n):
+                g = keys[i]
+                order[pos[g]] = i
+                pos[g] += 1
+            return order, offsets
 
-    return _csort(keys.astype(np.int64), n_groups)
+        _CSORT_KERNEL_CACHE = _csort
+
+    return _CSORT_KERNEL_CACHE(keys.astype(np.int64), n_groups)
 
 
 def _worker_init():
