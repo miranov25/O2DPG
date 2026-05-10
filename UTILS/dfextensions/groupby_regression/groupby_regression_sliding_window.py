@@ -2888,76 +2888,97 @@ def _assemble_results(
         agg_median: bool = False,
         fit_intercept: bool = True,
 ) -> pd.DataFrame:
-    rows: List[Dict[str, Any]] = []
+    # Phase 13.23a A3: V5-style preallocated arrays (was per-bin dict construction)
+    n_bins = len(agg_results)
+    if n_bins == 0:
+        return pd.DataFrame()
+
     _agg_cols = agg_columns or []
-
-    # Build column order
     pred_suffixes = {p: _sanitize_suffix(p) for p in linear_columns}
+    n_dims = len(gb_columns)
 
-    for ar in agg_results:
-        base: Dict[str, Any] = {dim: ar.center[i] for i, dim in enumerate(gb_columns)}
-        base["n_neighbors_used"] = ar.n_neighbors_used
-        base["n_rows_aggregated"] = ar.n_rows_aggregated
-        base["effective_window_fraction"] = ar.effective_window_fraction
+    # --- Pre-allocate all output arrays ---
+    data: Dict[str, np.ndarray] = {}
 
-        # Agg columns stats (COG etc.) — placed before fit_columns stats
-        if _agg_cols and ar.agg_stats:
-            for c in _agg_cols:
-                cst = ar.agg_stats.get(c, {})
-                base[f"{c}_mean"] = cst.get("mean", np.nan)
-                base[f"{c}_std"] = cst.get("std", np.nan)
-                if agg_median:
-                    base[f"{c}_median"] = cst.get("median", np.nan)
-        elif _agg_cols:
-            for c in _agg_cols:
-                base[f"{c}_mean"] = np.nan
-                base[f"{c}_std"] = np.nan
-                if agg_median:
-                    base[f"{c}_median"] = np.nan
+    # GB columns
+    bin_coords_arr = np.empty((n_bins, n_dims), dtype=np.int64)
+    for bi, ar in enumerate(agg_results):
+        for d in range(n_dims):
+            bin_coords_arr[bi, d] = ar.center[d]
+    for d, dim in enumerate(gb_columns):
+        data[dim] = bin_coords_arr[:, d]
 
-        # fit_columns stats (mean/std/median/entries) NOT emitted by default.
-        # Use agg_columns to opt-in if needed.
+    # Diagnostics
+    n_neighbors_used = np.empty(n_bins, dtype=np.int64)
+    n_rows_aggregated = np.empty(n_bins, dtype=np.int64)
+    eff_frac = np.empty(n_bins, dtype=np.float64)
+    for bi, ar in enumerate(agg_results):
+        n_neighbors_used[bi] = ar.n_neighbors_used
+        n_rows_aggregated[bi] = ar.n_rows_aggregated
+        eff_frac[bi] = ar.effective_window_fraction
 
-        # Fit outputs
+    # Agg columns (COG etc.)
+    if _agg_cols:
+        for c in _agg_cols:
+            arr_mean = np.full(n_bins, np.nan, dtype=np.float64)
+            arr_std = np.full(n_bins, np.nan, dtype=np.float64)
+            arr_median = np.full(n_bins, np.nan, dtype=np.float64) if agg_median else None
+            for bi, ar in enumerate(agg_results):
+                if ar.agg_stats:
+                    cst = ar.agg_stats.get(c, {})
+                    arr_mean[bi] = cst.get("mean", np.nan)
+                    arr_std[bi] = cst.get("std", np.nan)
+                    if agg_median and arr_median is not None:
+                        arr_median[bi] = cst.get("median", np.nan)
+            data[f"{c}_mean"] = arr_mean
+            data[f"{c}_std"] = arr_std
+            if agg_median and arr_median is not None:
+                data[f"{c}_median"] = arr_median
+
+    # Fit outputs — pre-allocate per-target arrays
+    for t in fit_columns:
+        if fit_intercept:
+            data[f"{t}_intercept"] = np.full(n_bins, np.nan, dtype=np.float64)
+            data[f"{t}_intercept_err"] = np.full(n_bins, np.nan, dtype=np.float64)
+        for p, ps in pred_suffixes.items():
+            data[f"{t}_slope_{ps}"] = np.full(n_bins, np.nan, dtype=np.float64)
+            data[f"{t}_slope_{ps}_err"] = np.full(n_bins, np.nan, dtype=np.float64)
+        data[f"{t}_rmse"] = np.full(n_bins, np.nan, dtype=np.float64)
+        data[f"{t}_n_fitted"] = np.zeros(n_bins, dtype=np.int64)
+
+    quality_flags = [""] * n_bins
+
+    # --- Fill arrays from fit_results ---
+    for bi, ar in enumerate(agg_results):
         fit_map = fit_results.get(ar.center, {})
-        # If the entire window was empty and no fit_map entries exist, still mark quality
         empty_window = ar.n_rows_aggregated == 0
-
-        # accumulate quality flags
         qflags: List[str] = []
 
         for t in fit_columns:
             tres = fit_map.get(t)
-            if tres is None:
-                # no fitting requested or not available
+            if tres is not None:
                 if fit_intercept:
-                    base[f"{t}_intercept"] = np.nan
-                    base[f"{t}_intercept_err"] = np.nan
+                    data[f"{t}_intercept"][bi] = tres.get("intercept", np.nan)
+                    data[f"{t}_intercept_err"][bi] = tres.get("intercept_err", np.nan)
                 for p, ps in pred_suffixes.items():
-                    base[f"{t}_slope_{ps}"] = np.nan
-                    base[f"{t}_slope_{ps}_err"] = np.nan
-                base[f"{t}_rmse"] = np.nan
-                base[f"{t}_n_fitted"] = 0
-                continue
-
-            if fit_intercept:
-                base[f"{t}_intercept"] = tres.get("intercept", np.nan)
-                base[f"{t}_intercept_err"] = tres.get("intercept_err", np.nan)
-            for p, ps in pred_suffixes.items():
-                base[f"{t}_slope_{ps}"] = tres.get("coeffs", {}).get(p, np.nan)
-                base[f"{t}_slope_{ps}_err"] = tres.get("coeffs_err", {}).get(p, np.nan)
-            base[f"{t}_rmse"] = tres.get("rmse", np.nan)
-            base[f"{t}_n_fitted"] = tres.get("n_fitted", 0)
-            if tres.get("quality_flag"):
-                qflags.append(str(tres.get("quality_flag")))
+                    data[f"{t}_slope_{ps}"][bi] = tres.get("coeffs", {}).get(p, np.nan)
+                    data[f"{t}_slope_{ps}_err"][bi] = tres.get("coeffs_err", {}).get(p, np.nan)
+                data[f"{t}_rmse"][bi] = tres.get("rmse", np.nan)
+                data[f"{t}_n_fitted"][bi] = tres.get("n_fitted", 0)
+                if tres.get("quality_flag"):
+                    qflags.append(str(tres.get("quality_flag")))
 
         if empty_window:
             qflags.append("empty_window")
+        quality_flags[bi] = ",".join([q for q in qflags if q])
 
-        base["quality_flag"] = ",".join([q for q in qflags if q])
-        rows.append(base)
+    # Diagnostics at end
+    data["quality_flag"] = quality_flags
+    data["n_neighbors_used"] = n_neighbors_used
+    data["n_rows_aggregated"] = n_rows_aggregated
+    data["effective_window_fraction"] = eff_frac
 
-    out = pd.DataFrame(rows)
+    out = pd.DataFrame(data)
     # Ensure group columns are present even if rows empty
     for dim in gb_columns:
         if dim not in out.columns:
