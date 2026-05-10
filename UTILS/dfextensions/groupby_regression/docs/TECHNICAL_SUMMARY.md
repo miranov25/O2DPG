@@ -6,6 +6,26 @@
 **Coder:** Claude22 (GBAI team)
 **Suggested archive filename:** `GroupByRegression_Technical_Summary_PHASE_13_23A_GB_v4_0.md`
 
+---
+
+## Subproject Purpose and Production Context
+
+GroupBy Regression provides high-performance grouped linear regression for CERN/ALICE TPC distortion calibration and related multidimensional differential analysis (MDA) workflows. Production scale: 25M fits per calibration pass, 100K+ groups, strict memory constraints per core, deployed in the ALICE Run 3 data-processing pipeline.
+
+The library is part of the dfextensions ecosystem (AliasDataFrame [ADF], GroupBy Regression, dfdraw, RDataFrameDSL) developed by ALICE DPA. The ecosystem serves as the substrate for MDA — the validation-and-discovery methodology used across TPC calibration, ITS alignment, TRD calibration, TRD+TOF alignment, and parallel track QA workflows. See RootInteractive (arXiv:2403.19330) for the broader context.
+
+**Three primary entry points:**
+
+- `make_parallel_fit_v4` — per-group OLS/WLS regression with numba JIT kernel, PyArrow backend, batch MAD. The main production entry point for flat (non-windowed) grouped regression.
+- `make_sliding_window_fit` — N-D sliding window regression for smoothed calibration maps. Supports recompute (V1/V2) and incremental (V3) algorithms with numba and numpy backends.
+- `make_sliding_window_aggregate` — pure aggregation (mean/std/count) with boundary handling. 300× speedup over fit-with-zero-predictors for aggregation-only use cases.
+
+**Quality discipline:** Source-line-cited multi-AI panel review for all production-affecting changes (12 named reviewer instances across Claude and GPT families). CI-integrated roofline performance metric (K = T_observed / T_expected, where K=1 means hardware roofline). Documented parameter-not-propagated bug class catalog with 11 historical instances and mechanical guards (module-path assertions, per-path × per-backend test matrices) against recurrence. See PHASE_HISTORY v7.0 for the full incident catalog and failure modes.
+
+**Current performance:** Production pipeline 722s on 82M rows (2× improvement from Phases 13.19–13.21). Roofline K=2.9 on the SW fit pipeline (42ms observed, 15ms ideal at 100K rows). Optimization roadmap: BLAS-batched OLS kernel (Phase 13.25), Arrow-based output (future).
+
+---
+
 > **Changes from v3.5:**
 > - **Performance Optimization section (NEW):** Phases 13.20–13.21 pipeline wall time 1452s→722s (2×). CSR gather kernel, SW fit wrapper vectorization, prange gather, batch MAD.
 > - **Roofline Performance Framework section (NEW):** Phase 13.22 K metric (K=2.9 baseline, 10/10 pass). Phase 13.23a profile decomposition: OLS kernel 45%, Python orchestration 36%. cProfile 61ms→45ms (-26%), 63K→37K function calls (-41%).
