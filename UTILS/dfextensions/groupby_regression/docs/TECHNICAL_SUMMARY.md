@@ -1,10 +1,16 @@
 # Technical Summary: GroupBy Regression
 
-**Version:** 3.4
-**Phase:** 13.17.GB
-**Last Updated:** 2026-04-11
+**Version:** 4.0
+**Phase:** 13.23a.GB-RooflineEasyWins
+**Last Updated:** 2026-05-10
 **Coder:** Claude22 (GBAI team)
-**Suggested archive filename:** `GroupByRegression_Technical_Summary_PHASE_13_17_GB_v3_4.md`
+**Suggested archive filename:** `GroupByRegression_Technical_Summary_PHASE_13_23A_GB_v4_0.md`
+
+> **Changes from v3.5:**
+> - **Performance Optimization section (NEW):** Phases 13.20–13.21 pipeline wall time 1452s→722s (2×). CSR gather kernel, SW fit wrapper vectorization, prange gather, batch MAD.
+> - **Roofline Performance Framework section (NEW):** Phase 13.22 K metric (K=2.9 baseline, 10/10 pass). Phase 13.23a profile decomposition: OLS kernel 45%, Python orchestration 36%. cProfile 61ms→45ms (-26%), 63K→37K function calls (-41%).
+> - **Current State v4.0 column:** 575 tests passed, 0 broken, 10 roofline tests (opt-in), K=2.9, pipeline 722s.
+> - **Phase 13.23a K≤2.2 acceptance gate NOT MET** (K=3.0, wall time unchanged at 42ms). Documented: easy wins reduced cProfile overhead, not steady-state wall time. Remaining gap is structural (BLAS kernel + Python orchestration).
 
 > **Changes from v3.3:**
 > - **F1 fixed:** `make_sliding_window_aggregate` and its parallel sibling now honour `boundary='symmetric'` and `boundary='periodic'` for the mean/std/count output columns. Both the primary kernel call and the sigma-cut recompute kernel call thread a Path 2 structure `(valid_offset_mask, wrap_flag, wrap_idx, wrapped_coords)` computed once per call by the new helper `_precompute_aggregate_boundary_mask`. Zero behavioural change on the default `boundary='full'` path (verified strictly by T9 against a captured literal baseline).
@@ -437,18 +443,21 @@ The v3.3 split between fit-path (`⚠️`) and aggregate-path (`🧨 silently br
 
 ## [UPDATED] Current State
 
-| Metric | v2.1 (Feb 2026) | v3.0 (Mar 2026) | v3.2 (Apr 2026) | v3.3 corrected¹ | **v3.4 (Apr 2026)** |
-|--------|-----------------|-----------------|-----------------|-----------------|---------------------|
-| Test count | 338 passed | 500 passed | 517 passed | 529 passed¹ | **556 passed²** |
-| Pre-existing failures | 3 | 4 | 3 | 2 | **3³** |
-| Skipped | — | — | 19 | 19 | **19** |
-| Features | 102 | 133 | 133 | 133 | **133** |
-| Verified (✅) | 25 (24.5%) | 43 (32.3%) | 43 (32.3%) | 43 (32.3%) | **43 (32.3%) + 28 new pytest runs (T1–T17)** |
-| Smoke-only (☑️) | — | — | 89 (66.9%) | 89 (66.9%) | **89 (66.9%)** |
-| Broken (🧨) | 0 | 0 | 2 (F1, F2) | 1 (F1) | **0** |
-| Partial (⚠️) | 0 | 0 | 0 | 0 | **0** (D1 median deferral is recorded as a Known Limitation, not as a Capability Matrix Partial entry, since it does not map to a distinct capability row) |
-| Public functions | 14 | 20 | 20 | 20 | **20** |
-| Evaluator method values | 2 | 3 | 6 | 6 | **6** |
+| Metric | v2.1 (Feb 2026) | v3.0 (Mar 2026) | v3.2 (Apr 2026) | v3.3 corrected¹ | v3.4 (Apr 2026) | **v4.0 (May 2026)** |
+|--------|-----------------|-----------------|-----------------|-----------------|---------------------|---------------------|
+| Test count | 338 passed | 500 passed | 517 passed | 529 passed¹ | 556 passed² | **575 passed** |
+| Pre-existing failures | 3 | 4 | 3 | 2 | 3³ | **3** |
+| Skipped | — | — | 19 | 19 | 19 | **19** |
+| Features | 102 | 133 | 133 | 133 | 133 | **133** |
+| Verified (✅) | 25 (24.5%) | 43 (32.3%) | 43 (32.3%) | 43 (32.3%) | 43 (32.3%) + 28 new | **43 (32.3%)** |
+| Smoke-only (☑️) | — | — | 89 (66.9%) | 89 (66.9%) | 89 (66.9%) | **89 (66.9%)** |
+| Broken (🧨) | 0 | 0 | 2 (F1, F2) | 1 (F1) | 0 | **0** |
+| Partial (⚠️) | 0 | 0 | 0 | 0 | 0 | **0** |
+| Public functions | 14 | 20 | 20 | 20 | 20 | **20** |
+| Evaluator method values | 2 | 3 | 6 | 6 | 6 | **6** |
+| Roofline tests (opt-in) | — | — | — | — | — | **10/10 pass** |
+| Pipeline wall time (82M rows) | — | — | — | — | ~1452s | **~722s (2×)** |
+| Roofline K (SW fit, 100K rows) | — | — | — | — | — | **K=2.9** |
 
 ¹ **v3.3 on disk records 528 passed.** This is an inherited arithmetic error carried over from the FIX2 coder packet: `517 + 11 new = 528` forgot the F5 flip (one failing test moved to passing). Correct arithmetic: `517 + 11 + 1 = 529`. Reference: `SUMMARY_20260409_112129.txt` from the FIX2 reviewer packet. v3.4 corrects this.
 
@@ -564,6 +573,56 @@ Row positions of output are not stable across `algorithm=` values; they were not
 
 **Performance:** V1/V2 recompute path internal routing changed from `_build_bin_index_map` (Python dict, O(n²) for n=rows) to `_assign_bin_ids_fast` (vectorized numpy, O(n)). `_get_neighbor_bins` V3a (2.5M per-bin Python function calls) replaced by inline vectorized offset + dense array lookup in `_aggregate_window_dense`. Predicted savings: ~355s on the 82M-row `makeSmoothMapsWithTPC` calibration workload (profile: `profile_gr11_tf0.prof`). T2 re-profile pending.
 
+## [NEW] Performance Optimization (Phases 13.20–13.21)
+
+Production pipeline wall time reduced from **1452s to 722s (2×)** on the 82M-row TPC calibration workload across two phases:
+
+**Phase 13.20.GB-PERF** — `_aggregate_window_dense` inner loop numba-ized:
+- `_get_gather_window_rows_kernel`: JIT-compiled two-pass CSR kernel (count → prefix sum → fill) replaces per-bin Python gather loop
+- Removed redundant `flat_indices.clip` (16s) and `np.unique(concatenate)` (37s — rows are disjoint by counting-sort guarantee)
+- Numpy fallback: `GBAI_DISABLE_AGG_DENSE_NUMBA=1`
+
+**Phase 13.21.GB-PERF** — SW fit wrapper vectorization + batch MAD:
+- F1: `_fit_window_regression_numba` rewritten — per-bin Python loops eliminated (47.8s self-time → vectorized). One `np.column_stack` for all bins, kernel handles NaN via `INVALID_FILTER`, vectorized R² from kernel `out_sum_y`/`out_sum_y2` sufficient statistics.
+- F2: `_gather_rows` kernel parallelized with `nb.prange`
+- F3: `_get_batch_mad_kernel` replaces 1.26M per-bin `np.median` calls (52s) with one numba prange kernel call in V4 pipeline. Fallback: `GBAI_DISABLE_BATCH_MEDIAN=1`
+
+## [NEW] Roofline Performance Framework (Phase 13.22)
+
+CI-integrated roofline metric measuring distance from ideal compiled code:
+
+```
+K = T_observed / T_expected,  where T_expected = Σ(n_ops × t_primitive)
+```
+
+K=1 means at hardware roofline. K>1 quantifies the optimization gap. Primitives from phase 12.12b Appendix A (M1 stream read, M2 gather, M3w scatter write, C1 XᵀWX, C2 Cholesky solve, C6 MAD), re-measured on target machine at test fixture working-set size.
+
+**Current K values (alma2, 100K rows, 1024 bins):**
+
+| Pipeline | K | T_obs | T_exp | Gap source |
+|---|---|---|---|---|
+| SW fit (`make_sliding_window_fit`) | **2.9** | 42ms | 15ms | OLS kernel 45%, Python orchestration 36% |
+| V4 (`make_parallel_fit_v4`, PyArrow) | **2.5** | 63ms | 25ms | BLAS-vs-numba scalar, pandas overhead |
+| Bin-id assignment | **2.3** | 1.1ms | 0.5ms | At roofline ✓ |
+| Fit kernel (OLS, C1+C2 denom) | **3.3** | 41ms | 13ms | BLAS-vs-numba scalar gap |
+
+**Test suite:** 10 tests (4 K-roofline + 1 dispatch + 5 meta), opt-in via `WITH_ROOFLINE=1` in `run_tests.sh`. Threshold formula: `K_threshold = K_floor + 6 × 1.4826 × MAD(K)`.
+
+**Calibration pipeline:** `measure_primitives.py` → `calibrate_roofline_K.py` → `update_roofline_baseline.py` → `roofline_baseline.json`. Fully automated, no hand-written thresholds.
+
+**Profile decomposition of K=2.9 (Phase 13.23a):**
+
+| Component | Time | % | Optimization target |
+|---|---|---|---|
+| OLS kernel (`fit_groups_single_numba`) | 19ms | 45% | BLAS-batched XtX (Phase 13.25) |
+| Window array build | 7ms | 17% | Memory layout optimization |
+| Other wrapper Python | 8ms | 19% | Vectorized post-kernel assembly |
+| Pandas output (`_assemble_results`) | 3ms | 7% | Arrow-based output (future) |
+| Aggregate orchestration | 2ms | 5% | V5-style numba (Phase 13.24) |
+| Gather + sort + bin-id | 3ms | 7% | At roofline ✓ |
+
+**Phase 13.23a easy wins:** Module-level Dispatcher cache (A1), listcomp vectorization (A2), V5-style preallocated `_assemble_results` (A3). cProfile 61ms→45ms (-26%), 63K→37K function calls (-41%). Wall time unchanged at 42ms — gains are cProfile-overhead reduction, not steady-state wall-time. K=2.9 is structural.
+
 ### Unverified Claims
 
 | Claim | Status | Action |
@@ -589,4 +648,5 @@ Row positions of output are not stable across `algorithm=` values; they were not
 | **3.2** | **2026-04-07** | **Corrections from v3.1 multi-reviewer cycle. Phase references corrected to `13.16.GB-FIX2` and `13.17.GB`. `boundary='symmetric'` split into two rows (⚠️ fit path tested, 🧨 aggregate path silently broken). All three Quick Start examples made runnable with keyword `df=`. `register_fit_model()` correct name in Public Interface Catalog. `'nearest_fast'` added to Evaluator Method Reference. `from_dfGB()` example uses real keyword arguments. F1 and F2 added to Current State "Broken" count. Governance reference updated to Org-structure v1.25. All v3.0 sections preserved verbatim. Drafted by Main Reviewer (Claude20, GBAI) at architect request after v3.1 review cycle.** |
 | **3.3** | **2026-04-07** | **Phase 13.16.GB-FIX2 landed. F2/F3/F4/F5 fixed in source (evaluator method=dict validation, docstring coverage, lookup+extrapolate rejection, stale backend test). C3/C8/C10 addressed as part of the same commit ('nearest'/'nearest_fast' equivalence, runnable docstring examples, unknown-method detection). 11 new tests in `test_evaluator_lookup.py`, all with explicit path parameters per failure mode #11 and `pytest.raises(..., match=...)` per C7. Test count 517 → 528 canonical / 493 → 505 coder-env. Pre-existing failures 3 → 2 (F5 flipped). Broken count 2 → 1 (F2 fixed; F1 remains for 13.17.GB). All v3.0 sections preserved verbatim. Drafted by Coder (Claude21, GBAI) during implementation of PHASE_13_16_GB_FIX2_v1.0 proposal as consolidated in Claude20's review summary.** |
 | **3.4** | **2026-04-11** | **Phase 13.17.GB landed.**
-| **3.5** | **2026-04-18** | **Phase 13.19.GB-PERF landed.** V1/V2 recompute path routed through dense-lookup infrastructure (F1). `_build_bin_index_map` (205s) replaced by `_assign_bin_ids_fast`. `_get_neighbor_bins` V3a (152s) inlined into `_aggregate_window_dense`. `[FOUND-WHILE-IMPLEMENTING-F1]` `_fit_window_regression_numba` gains `fit_intercept` parameter — parameter-not-propagated class instance #8. V1/V2 boundary parameter silently dropped documented as Known Limitation (instance #9, pre-existing). Output row ordering changed to lexicographic (Behavior Changes section added). 14 T1 invariance tests in `test_fit_path_perf_invariance.py`. F2 (median batching) deferred. T2 re-profile pending. Coder: Claude22. Reviewers: Claude20 (Main), Claude21, Claude23, Claude24, Claude25. | F1 fixed for mean/std/count in both the primary kernel call and the sigma-cut recompute kernel call via the new `_precompute_aggregate_boundary_mask` helper (Path 2: mask + per-bin wrap flag + compact per-edge-bin wrapped-coords table). Both numba JIT and numpy fallback receive the new `(valid_offset_mask, wrap_flag, wrap_idx, wrapped_coords)` parameters in identical order at all 4 call sites (verified via signature-chain grep). Zero behavioural change on the default `boundary='full'` path — verified strictly by T9 against a literal baseline array hardcoded in the test file. Parallel wrapper inherits the fix automatically (T10 parallel ≡ serial invariance, 2-D fixture). D1 (median path boundary honouring) deferred to Phase 13.17.GB-MedianFix per architect direction 2026-04-09. **28 new pytest-level test runs** in `tests/test_aggregate_boundary.py` from 16 test functions: T1–T11 (T11 with second invariance assertion block), T13 oracle, T14 cross-backend × 6, T15 shift + topology, T16 window=0 × 3, T17 canary × 6. Unified Claude22 + Claude23 joint plan, **50% invariance ratio** (8/16 functions are invariance-style — up from v1.2's 25%). T12 removed per D1 deferral. **Test count: 528 corrected baseline + 28 new = 556 passed canonical** on alma2 commit `85713774`, branch `feature/groupby-optimization`, `test_logs/SUMMARY_20260411_090322.txt`. Pre-existing failures: 3 (was 2 in v3.3 corrected; +1 from `test_v3_numpy_faster_than_v1_numpy` newly listed). Capability Matrix: 0 broken / 0 partial / 43 verified / 89 smoke-only / 1 planned / 133 total. **Inherited arithmetic correction:** v3.3 records 528 passed canonical (off by one — forgot the F5 flip in FIX2); the *correct* v3.3 baseline is 529, but the *empirical* pre-13.17.GB passed-count was 528 because the timing test was already silently failing. v3.4 surfaces both numbers transparently. **New Known Limitation rows added:** D1 median deferral (with verbatim architect quotes including typos), pre-existing broken `test_aggregate_numba_matches_numpy` (superseded by T14, NOT deleted in-phase), `test_v3_numpy_faster_than_v1_numpy` timing test. **Public Interface Catalog unchanged** — Phase 13.17.GB extends behaviour of an existing parameter (`boundary`) without changing any function signature. **All v3.0 / v3.2 / v3.3 sections marked `[UNCHANGED]` preserved verbatim.** Drafted by Coder Claude22 during Phase 13.17.GB implementation; commit-time Main Reviewer Claude21. Suggested archive filename: `GroupByRegression_Technical_Summary_PHASE_13_17_GB_v3_4.md`. |
+| **3.5** | **2026-04-18** | **Phase 13.19.GB-PERF landed.** V1/V2 recompute path routed through dense-lookup infrastructure (F1). `_build_bin_index_map` (205s) replaced by `_assign_bin_ids_fast`. `_get_neighbor_bins` V3a (152s) inlined into `_aggregate_window_dense`. `[FOUND-WHILE-IMPLEMENTING-F1]` `_fit_window_regression_numba` gains `fit_intercept` parameter — parameter-not-propagated class instance #8. V1/V2 boundary parameter silently dropped documented as Known Limitation (instance #9, pre-existing). Output row ordering changed to lexicographic (Behavior Changes section added). 14 T1 invariance tests in `test_fit_path_perf_invariance.py`. F2 (median batching) deferred. T2 re-profile pending. Coder: Claude22. Reviewers: Claude20 (Main), Claude21, Claude23, Claude24, Claude25. |
+| **4.0** | **2026-05-10** | **Phases 13.20–13.23a performance optimization sequence.** Pipeline wall time 1452s→722s (2×). Phase 13.20: numba-ize `_aggregate_window_dense` (CSR gather kernel). Phase 13.21: vectorize SW fit wrapper + prange gather + batch MAD (F1+F2+F3). Phase 13.22: CI roofline regression tests (K=2.9 baseline, 12-cycle proposal v1.12, 10/10 pass). Phase 13.23a: profile-driven easy wins (cProfile 61ms→45ms, -41% function calls). **New sections:** Performance Optimization (13.20–13.21), Roofline Performance Framework (13.22+13.23a profile decomposition). **Current State updated** to v4.0 column (575 tests, 0 broken, 10 roofline, K=2.9). Parameter-not-propagated instances #10 (calibration wrong-module) and #11 (pytest venv-path) documented in PHASE_HISTORY v7.0. Drafted by Claude22 at architect request 2026-05-10. |
