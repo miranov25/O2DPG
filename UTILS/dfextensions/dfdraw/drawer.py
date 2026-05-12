@@ -8,6 +8,7 @@ Phase 13.16.DF FIX1 (2026-04-14): Vector path kwarg propagation fix.
 import inspect
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .style import get_style, get_style_value
@@ -560,6 +561,7 @@ class DFDraw:
         'quantiles', 'central', 'quantile_mode',  # Phase 13.25.DF: quantile rendering
         'quantile_style',  # Phase 13.26.DF: channel-aware quantile rendering
         'nan_policy',  # Phase 13.28.DF: NaN/inf filter policy (AD-70)
+        'facet_by',  # Phase 13.27.DF: facet routing through channel framework (AD-67)
     )
 
     _HIST_FORWARDED_NAMES = (
@@ -1099,6 +1101,235 @@ class DFDraw:
         
         # Show legend when overlaying
         ax.legend(loc=get_style_value("legend.loc", "best"))
+    
+    # =========================================================================
+    # Phase 13.27.DF (Phase D): Faceted rendering dispatch
+    # =========================================================================
+    
+    # Valid facet_by values for Phase 13.27 Commit 1.
+    # Commit 2 will add 'selection_delta' and 'weights_delta'.
+    _VALID_FACET_BY_VALUES_COMMIT1 = ('group_by', 'vector', 'quantiles')
+
+    def _dispatch_faceted_render(
+        self,
+        df: pd.DataFrame,
+        x_expr: str,
+        y_expr: Union[str, list],
+        facet_by: str,
+        plot_kind: str,
+        ncols: Optional[int] = None,
+        sharex: bool = True,
+        sharey: bool = True,
+        title: Optional[str] = None,
+        group_by: Optional[str] = None,
+        top_k: Optional[int] = None,
+        quantiles: Optional[list] = None,
+        quantile_mode: str = "auto",
+        **plot_kwargs
+    ) -> Tuple[plt.Figure, np.ndarray, Dict[str, Any]]:
+        """
+        Coordinate faceted rendering: validate facet_by, build subplot grid,
+        per-subplot recursion into the appropriate plot module.
+
+        Phase 13.27.DF (Phase D), §5.4 of v1.1 proposal.
+
+        Parameters
+        ----------
+        df : DataFrame
+            Pre-filtered, pre-sampled DataFrame (selection/sample applied
+            by caller).
+        x_expr, y_expr : str or list
+            Column expressions. y_expr may be list (vector y).
+        facet_by : str
+            One of {'group_by', 'vector', 'quantiles'} for Commit 1.
+            Commit 2 extends to {'selection_delta', 'weights_delta'}.
+        plot_kind : str
+            Plot module to dispatch ('profile' for Commit 1; 'hist'/'scatter'
+            in Commit 2).
+        ncols, sharex, sharey, title : standard facet kwargs
+        group_by, top_k, quantiles, quantile_mode : forwarded to per-subplot calls
+        **plot_kwargs : forwarded to per-subplot draw_* call
+
+        Returns
+        -------
+        (fig, axes_flat, combined_stats_dict)
+            stats_dict format:
+                {'n_groups': int, 'groups': list, 'per_group': {...},
+                 'n_total': int, 'faceted': True, 'facet_by': str}
+
+        Raises
+        ------
+        ValueError
+            - On invalid facet_by name
+            - On capacity overflow (when channels.overflow='error')
+            - On 'group_by' facet without group_by parameter set
+            - On 'vector' facet without list-valued y_expr
+            - On 'quantiles' facet without quantile_mode='discrete'
+        """
+        # ---- Validate facet_by ---------------------------------------------
+        if facet_by not in self._VALID_FACET_BY_VALUES_COMMIT1:
+            # Defer 'selection_delta' / 'weights_delta' to Commit 2 with NotImplementedError
+            if facet_by in ('selection_delta', 'weights_delta'):
+                raise NotImplementedError(
+                    f"facet_by={facet_by!r} is reserved for Phase 13.27 Commit 2 "
+                    f"(selection_vector + weights_vector). Currently supported: "
+                    f"{self._VALID_FACET_BY_VALUES_COMMIT1}"
+                )
+            raise ValueError(
+                f"facet_by must be one of {self._VALID_FACET_BY_VALUES_COMMIT1}, "
+                f"got {facet_by!r}"
+            )
+
+        # ---- Determine groups (subplot keys) -------------------------------
+        if facet_by == 'group_by':
+            if group_by is None:
+                raise ValueError(
+                    "facet_by='group_by' requires group_by= parameter to be set"
+                )
+            groups = list(df[group_by].unique())
+            if top_k is not None and len(groups) > top_k:
+                counts = df[group_by].value_counts()
+                groups = counts.head(top_k).index.tolist()
+
+        elif facet_by == 'vector':
+            if not isinstance(y_expr, list):
+                raise ValueError(
+                    "facet_by='vector' requires a list-valued y expression "
+                    f"(got scalar y_expr={y_expr!r})"
+                )
+            groups = list(y_expr)
+
+        elif facet_by == 'quantiles':
+            if quantile_mode != 'discrete':
+                raise ValueError(
+                    "facet_by='quantiles' requires quantile_mode='discrete' "
+                    f"(got quantile_mode={quantile_mode!r})"
+                )
+            if quantiles is None or len(quantiles) == 0:
+                raise ValueError(
+                    "facet_by='quantiles' requires quantiles= parameter "
+                    "with at least one value"
+                )
+            groups = list(quantiles)
+
+        else:
+            # Unreachable due to validation above
+            raise ValueError(f"Unhandled facet_by={facet_by!r}")
+
+        n_groups = len(groups)
+        if n_groups == 0:
+            raise ValueError(f"No groups found for facet_by={facet_by!r}")
+
+        # ---- Capacity check (channels.cycles.facet_max) --------------------
+        facet_max = get_style_value("channels.cycles.facet_max", 16)
+        if n_groups > facet_max:
+            overflow_mode = get_style_value("channels.overflow", "error")
+            msg = (
+                f"facet_by={facet_by!r} produces {n_groups} subplots, exceeding "
+                f"channels.cycles.facet_max={facet_max}. Reduce cardinality, "
+                f"set top_k=, or increase channels.cycles.facet_max."
+            )
+            if overflow_mode == "warn":
+                import warnings
+                warnings.warn(msg, UserWarning, stacklevel=2)
+                # Truncate to facet_max
+                groups = groups[:facet_max]
+                n_groups = facet_max
+            else:
+                raise ValueError(msg)
+
+        # ---- Create subplot grid -------------------------------------------
+        if ncols is None:
+            ncols = min(3, n_groups)
+        nrows = int(np.ceil(n_groups / ncols))
+        base_size = get_style_value("figure.figsize", (8, 6))
+        figsize = (base_size[0] / 1.5 * ncols, base_size[1] / 1.5 * nrows)
+        fig, axes = plt.subplots(
+            nrows, ncols, figsize=figsize,
+            sharex=sharex, sharey=sharey, squeeze=False
+        )
+        axes_flat = axes.flatten()
+        # Hide unused subplots
+        for idx in range(n_groups, len(axes_flat)):
+            axes_flat[idx].set_visible(False)
+
+        # ---- Per-subplot recursion -----------------------------------------
+        # Dispatch based on plot_kind. Commit 1: profile only.
+        if plot_kind == 'profile':
+            from .plots.profile import draw_profile
+            plot_fn = draw_profile
+        else:
+            raise NotImplementedError(
+                f"plot_kind={plot_kind!r} not yet supported in Phase 13.27 Commit 1. "
+                f"Profile-only per architect decision Q5; 'hist' / 'scatter' "
+                f"come in Commit 2."
+            )
+
+        all_stats: Dict[str, Any] = {}
+        for ax_i, group_value in zip(axes_flat[:n_groups], groups):
+            # Filter / specialize per facet_by mode
+            if facet_by == 'group_by':
+                subplot_df = df[df[group_by] == group_value]
+                subplot_y = y_expr
+                subplot_quantiles = quantiles
+            elif facet_by == 'vector':
+                subplot_df = df
+                subplot_y = group_value  # one element of y_expr list
+                subplot_quantiles = quantiles
+            elif facet_by == 'quantiles':
+                subplot_df = df
+                subplot_y = y_expr
+                subplot_quantiles = [group_value]  # one quantile per subplot
+
+            # Strip kwargs that are facet-coordinator-only (don't forward)
+            # AD-68: ax provided per-subplot; selection already applied at top
+            forwarded = dict(plot_kwargs)
+            forwarded.pop('ax', None)
+            forwarded.pop('selection', None)
+            forwarded.pop('save', None)
+            # auto_title: per §5.4, suptitle on figure level; subplot title is
+            # the facet value. Suppress per-subplot auto_title.
+            forwarded['auto_title'] = False
+
+            try:
+                _, _, stats = plot_fn(
+                    subplot_df, x_expr, subplot_y,
+                    ax=ax_i,
+                    quantiles=subplot_quantiles,
+                    quantile_mode=quantile_mode,
+                    group_by=group_by if facet_by != 'group_by' else None,
+                    top_k=None,  # no inner top_k under facet
+                    **forwarded
+                )
+            except Exception as e:
+                # Re-raise with facet context
+                raise type(e)(
+                    f"Error in faceted subplot (facet_by={facet_by!r}, "
+                    f"group={group_value!r}): {e}"
+                ) from e
+
+            # Subplot title from facet value
+            ax_i.set_title(f"{facet_by}={group_value}")
+            all_stats[str(group_value)] = stats
+
+        # ---- Figure-level title (suptitle) ---------------------------------
+        if title:
+            fig.suptitle(title, fontsize=get_style_value("axes.titlesize", 14) + 2)
+
+        plt.tight_layout()
+        if title:
+            plt.subplots_adjust(top=0.92)
+
+        # ---- Combined stats ------------------------------------------------
+        combined_stats = {
+            "n_groups": n_groups,
+            "groups": groups,
+            "per_group": all_stats,
+            "faceted": True,
+            "facet_by": facet_by,
+            "n_total": sum(s.get("n", 0) for s in all_stats.values()),
+        }
+        return fig, axes_flat[:n_groups], combined_stats
     
     # =========================================================================
     # Main Draw Method
@@ -1715,6 +1946,8 @@ class DFDraw:
         quantile_style: Optional[str] = None,
         # Phase 13.28.DF: NaN/inf filter policy (AD-70)
         nan_policy: str = "filter",
+        # Phase 13.27.DF (Phase D): Facet routing through channel framework (AD-61, AD-67)
+        facet_by: Optional[str] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -1814,6 +2047,34 @@ class DFDraw:
                     "Use a scalar expression with facet=True for subplot grids, "
                     "or a vector expression without facet for overlay."
                 )
+            # Phase 13.27.DF: facet_by='vector' on a vector expression splits
+            # into one subplot per vector element (intercept BEFORE _draw_vector
+            # which would otherwise overlay all curves). All other facet_by
+            # values are not yet defined for vector y; route through _draw_vector.
+            if facet_by == 'vector':
+                # Apply selection / sampling at the dispatch level (same as
+                # the scalar branch below) so each subplot sees clean data.
+                df_for_facet = self._apply_selection(self.df, selection)
+                df_for_facet = self._apply_sampling(df_for_facet, sample)
+                # Use scalar x for facet (vector x is not supported for profile)
+                x_for_facet = x_expr[0] if isinstance(x_expr, list) else x_expr
+                return self._dispatch_faceted_render(
+                    df=df_for_facet, x_expr=x_for_facet, y_expr=y_expr,
+                    facet_by='vector', plot_kind='profile',
+                    bins=bins, x_range=range, error=error,
+                    stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
+                    group_by=group_by, top_k=top_k, ncols=ncols,
+                    sharex=sharex, sharey=sharey,
+                    return_data=return_data, min_entries=min_entries,
+                    group_by_bins=group_by_bins, group_by_quantiles=group_by_quantiles,
+                    sort_groups=sort_groups, weights=weights,
+                    auto_title=auto_title, selection=selection,
+                    stat_fields=stat_fields,
+                    quantiles=quantiles, central=central, quantile_mode=quantile_mode,
+                    quantile_style=quantile_style,
+                    nan_policy=nan_policy,
+                    **kwargs
+                )
             # FIX1 B1a: forward every named param via tuple + locals().get(name, _MISSING).
             # _MISSING distinguishes "caller didn't pass" from "caller passed None".
             vector_kwargs = dict(kwargs)
@@ -1877,18 +2138,43 @@ class DFDraw:
             if duck_label is not None:
                 ylabel = duck_label
         
-        # Facet mode (same=True ignored in facet mode)
-        if facet and group_by is not None:
-            from .facet import facet_profile
-            fig, axes, stats_dict = facet_profile(
-                df, x_expr, y_expr, group_by,
-                top_k=top_k, ncols=ncols, sharex=sharex, sharey=sharey,
-                suptitle=title, bins=bins, x_range=range, error=error,
-                stats=stats, xlabel=xlabel, ylabel=ylabel,
-                # Phase 13.12.DF: pass new parameters
+        # Phase 13.27.DF (Phase D): Facet routing through channel framework.
+        # Backward compat: facet=True is normalized to facet_by='group_by' (AD-67).
+        # Mutual exclusion: facet_by + same=True is invalid (architect rule §5.4).
+        _effective_facet_by = facet_by
+        if _effective_facet_by is None and facet and group_by is not None:
+            _effective_facet_by = 'group_by'
+
+        if _effective_facet_by is not None and same:
+            raise ValueError(
+                "facet_by and same=True are mutually exclusive — facet creates "
+                "a new figure; same=True overlays on existing axes"
+            )
+
+        # Facet mode dispatch
+        if _effective_facet_by is not None:
+            fig, axes, stats_dict = self._dispatch_faceted_render(
+                df=df, x_expr=x_expr, y_expr=y_expr,
+                facet_by=_effective_facet_by, plot_kind='profile',
+                # Forwarded to per-subplot draw_profile call
+                bins=bins, x_range=range, error=error,
+                stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
+                group_by=group_by, top_k=top_k, ncols=ncols,
+                sharex=sharex, sharey=sharey,
+                # Phase 13.12.DF
                 return_data=return_data, min_entries=min_entries,
                 group_by_bins=group_by_bins, group_by_quantiles=group_by_quantiles,
                 sort_groups=sort_groups, weights=weights,
+                # Phase 13.12.DF v1.2: auto-title
+                auto_title=auto_title, selection=selection,
+                # Phase 13.18.DF: robust statistics
+                stat_fields=stat_fields,
+                # Phase 13.25.DF: quantile rendering
+                quantiles=quantiles, central=central, quantile_mode=quantile_mode,
+                # Phase 13.26.DF: channel quantile_style
+                quantile_style=quantile_style,
+                # Phase 13.28.DF: nan_policy
+                nan_policy=nan_policy,
                 **kwargs
             )
         else:

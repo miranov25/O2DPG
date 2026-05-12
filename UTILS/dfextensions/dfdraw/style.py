@@ -155,34 +155,31 @@ DEFAULT_STYLE: Dict[str, Any] = {
     #   False — flat deduplicated legend (existing FIX1 behaviour)
     "channels.legend.factored": True,
 
-    # =========================================================================
-    # Phase 13.28.DF: Robust data handling — AD-69 through AD-77
-    # See docs/STYLING_FRAMEWORK_DECISIONS.md and proposal v1.1.
-    # =========================================================================
+    # ========================================================================
+    # Phase 13.27.DF (Phase D): Selection/Weights Vector + Facet Integration
+    # ========================================================================
+    # Adds 'facet' as a 4th visual encoding (spatial). Algorithm A capacity
+    # extends to facet via channels.cycles.facet_max. AD-61..AD-68.
+    #
+    # See:
+    #   - PHASE_13_27_DF_v1_1_Proposal_SelectionWeightDeltaFacet.md §5.4
 
-    # NaN/inf handling policy. AD-70.
-    #   "filter" — drop silently, counters reported in stats (default)
-    #   "warn"   — drop + emit UserWarning with details
-    #   "raise"  — raise ValueError on any NaN/inf
-    "data.nan_policy": "filter",
+    # Facet capacity — bounds subplot count to keep plots readable. AD-61.
+    "channels.cycles.facet_max": 16,
 
-    # Autorange strategy default. AD-73.
-    # Determines range when range=None or range='auto'.
-    # Options: "minmax", "hybrid" (default), "percentile_99",
-    #          "percentile_95", "robust_3mad", "robust_4mad".
-    "autorange.strategy": "hybrid",
+    # Position of the shared figure-level legend in faceted rendering.
+    # AD-62 (NEW IN v1.1 §5.4).
+    "channels.legend.facet_position": "upper right",
 
-    # Hybrid/robust autorange tunable parameters. AD-72, AD-76.
-    # k_robust : MAD-sigma half-width for the robust window (used by
-    #            'hybrid' and 'robust_*mad' strategies).
-    # k_outlier: tolerance multiplier for outlier declaration on each
-    #            side (used by 'hybrid' strategy only).
-    "autorange.k_robust": 4.0,
-    "autorange.k_outlier": 1.5,
+    # Auto-derived label truncation for selection_vector / weights_vector
+    # legend entries. Used by Commit 2 (selection/weights vectors). AD-63, AD-64.
+    "channels.label.selection_truncate": 25,
+    "channels.label.weights_truncate":   25,
 
-    # Default percentile bounds for 'percentile_99' preset. AD-76.
-    # Tuple form (low, high). 'percentile_95' bakes (2.5, 97.5).
-    "autorange.percentile": (1, 99),
+    # Per-data-channel pinned defaults for selection_delta / weights_delta.
+    # Used by Commit 2. AD-65, AD-66.
+    "channels.default.selection_delta": None,
+    "channels.default.weights_delta":   None,
 }
 
 # =============================================================================

@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-05-06 11:01 UTC
+**Generated:** 2026-05-12 04:48 UTC
 **Phase:** 13.15.DF
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -9,12 +9,12 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 7 | 12% |
-| ☑️ Smoke-only | 49 | 88% |
+| ✅ Verified | 7 | 11% |
+| ☑️ Smoke-only | 54 | 87% |
 | 🧨 Broken | 0 | 0% |
-| 📋 Planned | 0 | 0% |
-| **Total features** | **56** | |
-| **Total proof tests** | **276** | |
+| 📋 Planned | 1 | 2% |
+| **Total features** | **62** | |
+| **Total proof tests** | **297** | |
 | **Invariance tests** | **28** | |
 
 **Status key:**
@@ -97,9 +97,17 @@
 | | **COMPAT** | | |
 | ☑️ | **COMPAT.bool_expression** — Boolean expression input (==, !=, >, <, &, |, ~) on all plot functions | 11 | 0 |
 | | **CHANNEL** | | |
-| ☑️ | **CHANNEL.assignment** — Algorithm A: automatic visual-channel assignment for N data channels | 41 | 0 |
+| ☑️ | **CHANNEL.assignment** — Algorithm A: automatic visual-channel assignment for N data channels | 40 | 0 |
 | ☑️ | **CHANNEL.nested_band** — Nested-band detection (>=2 symmetric pairs, central optional) and rendering | 5 | 0 |
 | ☑️ | **CHANNEL.factored_legend** — Factored legend with section headers (sum-not-product entry count) | 4 | 0 |
+| | **DATA** | | |
+| ☑️ | **DATA.nan_policy** — Optional NaN/inf filter with nan_policy parameter | 6 | 0 |
+| ☑️ | **DATA.counters** — Stats dict counters: n_input, n_filtered, n_inf_*, n_nan_* | 3 | 0 |
+| | **AUTORANGE** | | |
+| ☑️ | **AUTORANGE.hybrid** — Hybrid autorange (outlier-aware: robust + minmax combined) | 5 | 0 |
+| ☑️ | **AUTORANGE.minmax** — Minmax autorange strategy (backward compat preset) | 1 | 0 |
+| ☑️ | **AUTORANGE.percentile** — Percentile autorange strategies (percentile_99, percentile_95) | 1 | 0 |
+| 📋 | **AUTORANGE.diagnostics** — Stats keys autorange_used + autorange_strategy (AD-77) | 0 | 0 |
 
 ---
 
