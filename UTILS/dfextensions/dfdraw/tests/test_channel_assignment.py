@@ -428,18 +428,34 @@ class TestChannelStyleOverride:
         set_style({'channels.cycles.linestyle': ['-', '--']})
         assert get_style_value('channels.cycles.linestyle') == ['-', '--']
 
-    def test_default_style_has_all_10_keys(self):
+    def test_default_style_has_all_channels_keys(self):
+        """All channels.* keys present in DEFAULT_STYLE.
+
+        Grouped by phase for traceability. New phases that add channels.*
+        keys must extend this expected set."""
         from dfdraw.style import DEFAULT_STYLE
         expected = {
+            # Phase 13.26.DF (Phase B) — N-Channel Framework (10 keys)
             'channels.priority.categorical', 'channels.priority.ordinal',
             'channels.cycles.linestyle', 'channels.cycles.marker',
             'channels.cycles.color_count',
             'channels.default.vector', 'channels.default.group_by',
             'channels.default.quantiles',
             'channels.overflow', 'channels.legend.factored',
+            # Phase 13.27.DF (Phase D) — Selection/Weights/Facet (6 keys)
+            'channels.cycles.facet_max',
+            'channels.legend.facet_position',
+            'channels.label.selection_truncate',
+            'channels.label.weights_truncate',
+            'channels.default.selection_delta',
+            'channels.default.weights_delta',
         }
         present = {k for k in DEFAULT_STYLE if k.startswith('channels.')}
-        assert expected == present
+        assert expected == present, (
+            f"channels.* keys mismatch.\n"
+            f"  Missing from DEFAULT_STYLE: {expected - present}\n"
+            f"  Unexpected in DEFAULT_STYLE: {present - expected}"
+        )
 
     def test_namespace_integrity(self):
         from dfdraw.style import DEFAULT_STYLE
