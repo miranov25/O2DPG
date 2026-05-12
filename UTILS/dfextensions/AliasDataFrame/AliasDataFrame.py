@@ -10987,6 +10987,18 @@ function collapseDepth(maxD) {{
                     if 'group_by' in kwargs and isinstance(kwargs.get('group_by'), str):
                         kwargs['group_by'] = kwargs['group_by'].replace(dot_ref, flat_ref)
         
+        # ── group_by expression materialization (BUG_ADF_GroupByExpressionMaterialization) ──
+        # dfdraw requires group_by to be a real column (Phase 13.30 contract).
+        # If group_by is a computed expression (e.g., "row%3"), materialize it
+        # as a per-call temp column on df_subset. No persistent alias created.
+        group_by = kwargs.get('group_by')
+        if (group_by is not None
+                and isinstance(group_by, str)
+                and group_by not in df_subset.columns
+                and group_by not in self.aliases):
+            df_subset = df_subset.copy()
+            df_subset[group_by] = df_subset.eval(group_by)
+
         # Create plotter and delegate
         plotter = DFDraw(df_subset)
         
