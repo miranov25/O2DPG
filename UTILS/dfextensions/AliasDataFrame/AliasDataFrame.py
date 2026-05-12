@@ -3838,65 +3838,55 @@ class AliasDataFrame:
     def validate_aliases(self):
         """
         Validate that all aliases can be resolved.
-        
+
         An alias is "broken" if it references variables that don't exist as:
         - DataFrame columns
-        - Other defined aliases  
-        - Subframe columns (T.column syntax)
+        - Other defined aliases
+        - Subframe columns (SubframeName.column, single or multi-level)
         - Known functions/constants (np, pi, etc.)
-        
+
+        Implementation delegates to _analyze_expression() — the same AST-based
+        single-pass walker used by dependency_tree() and the Arrow pipeline.
+        This is correct for all registered functions and subframe reference
+        patterns without regex fragility.
+
         Returns
         -------
         list
             Names of aliases that cannot be resolved
         """
         broken = []
-        
-        # Known functions and constants that are always available
+
         known_names = set(self._default_functions().keys())
-        known_names.update(['np', 'pi', 'abs', 'int', 'float', 'round', 'sqrt', 
-                           'sin', 'cos', 'tan', 'exp', 'log', 'log10', 'atan2',
-                           'sinh', 'cosh', 'tanh', 'arcsin', 'arccos', 'arctan'])
-        
-        # All resolvable names: columns + aliases + known functions
+        known_names.update(['np', 'pd', 'pi', 'abs', 'int', 'float', 'round',
+                            'sqrt', 'clip', 'sin', 'cos', 'tan', 'exp', 'log',
+                            'log10', 'atan2', 'arctan', 'arcsin', 'arccos',
+                            'sinh', 'cosh', 'tanh'])
         resolvable = set(self.df.columns) | set(self.aliases.keys()) | known_names
-        
+
         for name, expr in self.aliases.items():
-            # Extract tokens from expression
-            tokens = re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b', expr)
-            
+            analysis = self._analyze_expression(expr)
             missing = []
-            for token in tokens:
-                # Skip numeric literals that might be partially matched
-                if token.isdigit():
-                    continue
-                    
-                # Check if it's a subframe reference (handled separately)
-                if '.' in expr:
-                    # Check for T.column pattern
-                    subframe_refs = re.findall(r'([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)', expr)
-                    for sf_name, sf_col in subframe_refs:
-                        if sf_name == token:
-                            # This token is a subframe name, check if it exists
-                            sf = self.get_subframe(sf_name)
-                            if sf is None:
-                                missing.append(f"{sf_name} (subframe)")
-                            elif sf_col not in sf.df.columns and sf_col not in sf.aliases:
-                                missing.append(f"{sf_name}.{sf_col}")
-                            continue
-                
-                # Check if token is resolvable
-                if token not in resolvable:
-                    # Check if it's part of a subframe reference
-                    if not any(token == sf_ref[0] for sf_ref in 
-                              re.findall(r'([A-Za-z_][A-Za-z0-9_]*)\.', expr)):
-                        missing.append(token)
-            
+
+            # Bare column refs: must be in df.columns, aliases, or known names
+            for ref in analysis['column_refs']:
+                if ref not in resolvable:
+                    missing.append(ref)
+
+            # Subframe refs: subframe must exist and column must be accessible
+            for sf_name, sf_col in analysis['subframe_refs']:
+                sf = self.get_subframe(sf_name)
+                if sf is None:
+                    missing.append(sf_name)
+                elif (sf_col not in sf.df.columns
+                        and sf_col not in sf.aliases
+                        and sf.get_subframe(sf_col) is None):
+                    missing.append(sf_col)
+
             if missing:
                 broken.append(name)
-        
-        return broken
 
+        return broken
     # Verbosity flags for describe_aliases (bitmask)
     ALIAS_SHOW_CORE   = 0x01  # name, kind, materialized, dtype, expr (always on)
     ALIAS_SHOW_DEPS   = 0x02  # dependency list
