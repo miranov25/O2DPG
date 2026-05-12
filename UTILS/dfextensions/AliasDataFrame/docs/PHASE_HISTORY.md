@@ -1,7 +1,7 @@
 # AliasDataFrame Phase History
 
 > **Purpose**: Development history for architecture reviews and restart prompts.  
-> **Last Updated**: 2026-04-12  
+> **Last Updated**: 2026-05-10  
 > **Maintained By**: Marian Ivanov (miranov25)
 
 ## How to Use This File
@@ -41,10 +41,10 @@ This file is intended for AI reviewers and human collaborators as a **restart co
 AliasDataFrame is a high-performance data analysis framework for particle physics research at CERN's ALICE experiment. It provides schema-driven, lazy-evaluated columns and hierarchical joins for ROOT/Parquet data.
 
 **Key Metrics:**
-- Performance: 60-770x speedups achieved; production pipeline 2× faster (1452s → 722s)
-- Test Coverage: 1538 tests passing, 125 invariance tests
-- Lines of Code: ~12,930 (AliasDataFrame.py)
-- Features: 44 in taxonomy (26 verified, 14 smoke-only, 3 broken, 1 planned)
+- Performance: 60-770x speedups achieved; production pipeline 2.1× faster (1452s → 692s)
+- Test Coverage: 1584 tests passing, 177 invariance tests
+- Lines of Code: ~13,600 (AliasDataFrame.py)
+- Features: 47 in taxonomy (28 verified, 14 smoke-only, 4 broken, 1 planned)
 
 **Development Team:**
 - Coordinator: Marian Ivanov (miranov25)
@@ -55,8 +55,8 @@ AliasDataFrame is a high-performance data analysis framework for particle physic
 
 ## Phase 13: Advanced Features
 
-**Dates**: 2026-03-22 to 2026-03-27  
-**Status**: 🔄 In Progress
+**Dates**: 2026-03-22 to 2026-05-05  
+**Status**: 🔄 In Progress (ADF maintenance mode; dfdraw Phase A active)
 
 ### Phase 13.12.DF: Profile Enhancements
 **Date**: 2026-03-22  
@@ -249,6 +249,85 @@ Mode #11 discipline).
 
 ---
 
+### Phase 13.23.ADF: Multi-Level Dotted Expression Resolution
+**Dates**: 2026-04-27 to 2026-04-29  
+**Status**: ✅ Merged  
+**Commits**: `7c4116e1` (step 1: dependency_tree), `878ee941` (step 2: multi-level + invalidation), `cb33ae66` (close: taxonomy 44→47)
+
+**Proposal**: `PHASE_13_23_ADF_v1.2_Proposal.md` (8-reviewer panel, 5×[OK] 2×[!] 1×[X])
+
+**Step 1 — dependency_tree HTML/list output modes** (`7c4116e1`):
+- `dependency_tree()` enhanced with 3 output modes: `output='text'` (unchanged), `output='html'` (interactive collapsible tree), `output='list'` (flat topological order)
+- Accepts str or list of str for multiple roots
+- 4 new methods: `dependency_tree`, `_dependency_tree_build`, `_dependency_tree_list`, `_dependency_tree_html`
+- Tests T1-T10 (10 tests)
+
+**Step 2 — multi-level dotted expression resolution** (`878ee941`):
+- Enables `A.B.C.val` syntax for nested subframe references
+- `_scatter_subframe_column`: factored helper from `_prepare_subframe_joins` (70 lines)
+- `_prepare_subframe_joins`: greedy left→right walk + bottom-up scatter (85 lines)
+- `MAX_SUBFRAME_DEPTH = 10` + `visited_ids` cycle guard (`ValueError` on cycles)
+- `add_alias` regex fix: `\.\w+` → `(?:\.\w+)+` at 3 locations for multi-segment chains
+- All 3 draw resolvers updated with greedy walk
+- KeyError preserved for confirmed subframe ref with invalid leaf column
+- Tests N1_0-N1_10 (11 invariance tests)
+
+**Also includes**:
+- `_invalidate_alias_cascade()`: alias invalidation bug fix (BUG_20260427, see Bug Fixes)
+- Removed `test_M1_metadata_skip.py` (reverted feature from Phase 13.22)
+
+**Phase close** (`cb33ae66`): feature_taxonomy.py updated 44→47 features (+SUB.multilevel, +CORE.dependency_tree, +CORE.invalidation). CAPABILITY_MATRIX regenerated: 29 verified, 177 invariance tests.
+
+**Test results**: 1566 passed, 7F+1E pre-existing.
+
+---
+
+### Phase 13.24.ADF: Read-Only Aliases Hardening
+**Dates**: 2026-04-29 to 2026-04-30  
+**Status**: ✅ Merged  
+**Commits**: `9fe1e620` (Part A), `99881100` (Part B)
+
+**Proposal**: `PHASE_13_24_ADF_v1.2_Proposal.md` (5-reviewer panel, reviewer-drafted by Claude36 after 2 failed coder attempts)
+
+**Background — two failed attempts** (both reverted):
+- Attempt 1 (`MappingProxyType`): 47 tests broken, 49 errors — `MappingProxyType` is not JSON-serializable, broke `export_tree`
+- Attempt 2 (`_ReadOnlyAliasDict` without internal audit): 15 tests broken — `apply_schema` line 9303 writes through `self.aliases[name] = expr`, a pre-existing silent no-op exposed by the property change
+
+**Root cause**: Internal code path in `apply_schema()` used the public `aliases` property as a write surface. The audit found exactly 1 such site (line 9303).
+
+**Part A — Internal write redirection** (`9fe1e620`, behavior-neutral):
+- Single-line redirect: `self.aliases[name] = expr` → `self._restore_aliases_from_dict({name: expr})`
+- Zero test delta (behavior-neutral)
+
+**Part B — Property hardening** (`99881100`):
+- `_ReadOnlyAliasDict(dict)` subclass: blocks `__setitem__`, `__delitem__`, `update`, `pop`, `popitem`, `clear`; `setdefault` returns existing key value (read path), raises on absent key (write path); `__reduce__` for pickle
+- `_ReadOnlyConstantAliasSet(set)` subclass: blocks `add`, `remove`, `discard`, `pop`, `clear`, `update`, `intersection_update`, `difference_update`, `symmetric_difference_update`; `__reduce__` for pickle
+- Three properties return read-only views: `aliases`, `alias_dtypes`, `constant_aliases`
+- Updated 6 existing MutationSafety tests to assert `TypeError`
+- New tests: V8_1-V8_9 (9 tests), V9_1-V9_3 (3 tests), N1_11+N1_11b (2 tests) = 14 total
+
+**Key decisions**:
+- `dict` subclass (not `MappingProxyType`) preserves `isinstance(x, dict)` and JSON serialization
+- Module-level classes with leading underscore
+- Parameterized mutation message per property
+
+**Test results**: 1579 passed, 6F+1E pre-existing.
+
+---
+
+### Phase 13.25.ADF: Quantiles Pass-Through Tests
+**Dates**: 2026-05-05  
+**Status**: ✅ Merged (informal, test infrastructure only)  
+**Commit**: `16c3ca4c`
+
+No formal phase — test infrastructure verifying ADF correctly forwards `quantiles=`, `central=`, `quantile_mode=` kwargs to dfdraw `profile()`. Added after dfdraw Phase 13.25.DF shipped quantile support.
+
+**Tests**: Q1_1-Q1_5 (5 tests): error_bars via ADF, band via ADF, parity ADF vs dfdraw (stats numerical equality), central='median' forwarded, group_by + quantiles.
+
+**Test results**: 1584 passed, 7F+1E pre-existing.
+
+---
+
 ## Bug Fixes
 
 ### BUG_AliasDataFrame_20260420_draw_selection_alias
@@ -293,6 +372,21 @@ Mode #11 discipline).
 **Tests**: S5_1-S5_6 (index col on x/y axis, selection, correctness, draw_figures, both axes as index cols).
 
 **Discovered**: O2DistAI Phase 0.3 (`makeTrackPairGB` QA plots).
+
+### BUG_AliasDataFrame_20260427_alias_invalidation
+**Dates**: 2026-04-27  
+**Status**: ✅ Fixed (included in Phase 13.23.ADF step 2 commit)  
+**Commit**: `878ee941` (part of Phase 13.23.ADF)
+
+**Problem**: `add_alias()` updates the expression in `_schema["columns"]` but does NOT drop the old materialized column from `self.df`. Stale values persist silently. Aliases that transitively depend on the redefined alias also keep their stale materialized values. Production impact: iterative calibration with coefficient-swap pattern produces wrong corrections.
+
+**Root cause**: No invalidation mechanism — `add_alias()` overwrites the schema entry but never checks if the old value was materialized.
+
+**Fix**: New `_invalidate_alias_cascade(name)` method — builds reverse dependency map via `_resolve_dependencies()`, BFS from changed alias to find all transitive dependents, drops all stale materialized columns. Raw columns never dropped. Called in `add_alias()` after schema write.
+
+**Tests**: V1-V7 (7 invariance tests): basic redefine, cascade, 3-level cascade, unrelated not dropped, raw columns protected, new alias no drop, production pattern (iterative calibration with subframe coefficient swap).
+
+**Severity**: P0 Safety — silent wrong results in iterative calibration workflows.
 
 ### BUG_AliasDataFrame_20260324_draw_subframe_resolution
 **Dates**: 2026-03-25  
@@ -679,6 +773,11 @@ All major decisions require consensus from 3+ AI reviewers:
 | Evaluator schema stores contract only | User must re-register after load; GBAI handles serialization |
 | Multi-predictor requires explicit selection | Silent default on multi-predictor is P1 violation |
 | pd.merge on index columns only | Memory O(N × index_cols), not O(N × all_cols) |
+| `_ReadOnlyAliasDict(dict)` not `MappingProxyType` | JSON-serializable + `isinstance(x, dict)` True; MappingProxyType broke 47 tests |
+| Two-cycle merge for property changes | Audit internal writes (Part A) before changing return type (Part B); validated by 2 failed single-cycle attempts |
+| `_restore_aliases_from_dict` as sanctioned write path | 3 independent reviewers (GPT10, GPT11, Claude37) converged; avoids spreading `setdefault({})["expr"]` across file |
+| Greedy left→right walk for multi-level subframes | `A.B.C.val` parsed segment-by-segment; first non-subframe segment = leaf column |
+| MAX_SUBFRAME_DEPTH = 10 + visited_ids cycle guard | Prevents infinite recursion on self-referential subframe registration |
 
 ---
 
@@ -694,8 +793,8 @@ All major decisions require consensus from 3+ AI reviewers:
 | Phase 5 | 25× | vs TTree::Draw |
 | Phase 13.9 | 42× | Numba polynomial evaluator vs eval |
 | Phase 13.20 | ~29s saved | export_tree metadata batching (1 TFile.Open vs N+1) |
-| Phase 13.21 | ~40-50s expected | Join cache survives materialize_aliases |
-| **Production** | **2× (1452→722s)** | **Cross-team: GB + ADF + O2DistAI fixes combined** |
+| Phase 13.21 | ~37s saved | Join cache survives materialize_aliases (56s → 19.5s) |
+| **Production** | **2.1× (1452→692s)** | **Cross-team: GB + ADF + O2DistAI fixes combined** |
 
 ### Memory Savings
 
@@ -742,6 +841,11 @@ Remaining overhead is Python/Pandas framework cost.
 | BUG draw_selection_alias | 5 (S1-S4) | 1528 |
 | BUG dtype_loss_subframe | 5 (D1-D5) | 1533 |
 | BUG draw_index_col | 6 (S5_1-S5_6) | 1538 |
+| BUG alias_invalidation | 7 (V1-V7) | 1545 |
+| 13.23.ADF step 1 | 10 (T1-T10) | 1548 |
+| 13.23.ADF step 2 | 11 (N1_0-N1_10) | 1566 |
+| 13.24.ADF Part B | 14 (V8+V9+N1_11) | 1579 |
+| 13.25.ADF (Q1) | 5 (Q1_1-Q1_5) | 1584 |
 
 ---
 
@@ -750,15 +854,19 @@ Remaining overhead is Python/Pandas framework cost.
 - [x] ~~CAPABILITY_MATRIX.md creation~~ (Phase 13.11)
 - [x] ~~PHASE_BEGIN_AliasDataFrame tag~~ (Phase 13.20 close)
 - [x] ~~`read_tree` recursive subframe loading~~ (Phase 13.22)
-- [ ] Phase 13.23.ADF — Multi-level dotted expression resolution (v1.2 approved)
+- [x] ~~Phase 13.23.ADF — Multi-level dotted expression resolution~~ (v1.2 approved, merged 2026-04-29)
+- [x] ~~Phase 13.24.ADF — Read-only aliases hardening~~ (v1.2 approved, merged 2026-04-30)
 - [ ] A2 — LZ4 default compression (one-line + compat test, ~15-20s savings)
 - [ ] A3 — Batch metadata serialization (~50-55s savings, needs minimal-UserInfo approach)
-- [ ] GB tuple support for `linear_columns` (PolynomialSpec production blocker)
+- [ ] Phase 14 — ADFStore concept (formal architect review proposal needed)
+- [ ] AD-50 Option C1b — `_cached_last_ax` for Drawer state (~15 lines, deferred, not urgent)
 - [ ] Technical Summary v1.6 full public API documentation (~90 methods)
 - [ ] P1 tests: I2_6, I4_2, I4_3 fixes
 - [ ] Fix `register_subframe_lazy()` bug (BUG_AliasDataFrame_20260116)
 - [ ] Axis title lookup for subframe columns (`Sub_dy` vs `Side.dy`)
 - [ ] draw() lazy=False doesn't materialize selection aliases (S1 xfail)
+- [ ] draw() resolver unification (3 parallel implementations)
+- [ ] Feature taxonomy: 61 unmatched tests remaining (schema-versioning, fill-handling gaps)
 
 ---
 
