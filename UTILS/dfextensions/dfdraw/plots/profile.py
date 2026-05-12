@@ -29,6 +29,8 @@ from ._auto_title import build_auto_title, apply_auto_title, parse_auto_title_pa
 # Phase 13.28.DF: Robust data handling
 from ._data_sanitize import sanitize_for_plot
 from ._autorange import compute_autorange, resolve_range_1d, VALID_STRATEGIES
+# Phase 13.30.DF: Class-2 column-reference parameter validation
+from ._validation import validate_column_references
 
 
 # =============================================================================
@@ -294,7 +296,18 @@ def draw_profile(
             "group_by_quantiles must be an integer (number of quantile bins), "
             "not True. Example: group_by_quantiles=4"
         )
-    
+
+    # Phase 13.30.DF: Validate Class-2 column-reference parameters.
+    # Catches BUG_ADF_GroupBy_Expression_Materialization: caller passed a
+    # computed expression (e.g. "row%3") where a column name is required.
+    # Import tuple from drawer at call time to avoid circular import.
+    from ..drawer import DFDraw as _DFDraw
+    validate_column_references(
+        df, locals(),
+        names=_DFDraw._PROFILE_COLUMN_REFERENCES,
+        context="profile",
+    )
+
     # Get style defaults
     if bins is None:
         bins = get_style_value("hist.bins", 50)

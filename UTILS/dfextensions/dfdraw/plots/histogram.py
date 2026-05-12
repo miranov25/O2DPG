@@ -20,6 +20,8 @@ from ._auto_title import build_auto_title, apply_auto_title, parse_auto_title_pa
 # Phase 13.28.DF: Robust data handling
 from ._data_sanitize import sanitize_for_plot
 from ._autorange import compute_autorange, VALID_STRATEGIES
+# Phase 13.30.DF: Class-2 column-reference parameter validation
+from ._validation import validate_column_references
 
 
 # =============================================================================
@@ -303,6 +305,15 @@ def draw_hist(
     elif norm == "probability":
         weights = np.ones_like(x_data) / len(x_data) if len(x_data) > 0 else None
     
+    # Phase 13.30.DF: Validate Class-2 column-reference parameters.
+    # Catches BUG_ADF_GroupBy_Expression_Materialization (silent fallthrough below).
+    from ..drawer import DFDraw as _DFDraw
+    validate_column_references(
+        df, locals(),
+        names=_DFDraw._HIST_COLUMN_REFERENCES,
+        context="hist",
+    )
+
     # Group-by handling
     if group_by is not None and group_by in df.columns:
         _draw_hist_grouped(

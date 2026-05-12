@@ -596,7 +596,47 @@ class DFDraw:
     # Private kwargs that _draw_vector injects into iter_kwargs to suppress
     # per-iteration legend/title/tight_layout in the underlying plot modules.
     _VECTOR_SUPPRESS_KWARGS = ('_suppress_legend', '_suppress_title', '_suppress_layout')
-    
+
+    # =========================================================================
+    # Phase 13.30.DF v1.0 — Class-2 column-reference parameter tuples.
+    #
+    # Mirror of _*_FORWARDED_NAMES discipline: single source of truth + one
+    # validation loop per plot type. plots/_validation.py iterates these to
+    # enforce that string-valued column-reference parameters name real columns,
+    # raising ValueError instead of silently falling back to ungrouped mode.
+    #
+    # Parameter class taxonomy (Phase 13.30 proposal §3):
+    #   Class 2 — column reference (strict): listed here.
+    #     Examples: group_by (today); selection_vector, weights_vector
+    #     (Phase 13.27 Commit 2 — anticipated by *_COLUMN_REFERENCE_LISTS).
+    #   Class 4 — expression-or-column (permissive): NOT listed here.
+    #     Examples: weights (handled by _eval_weights with df.eval fallback).
+    #
+    # Adding a Class-4 parameter here would break the existing
+    # expression-accepting contract.
+    #
+    # Validated at module import by _validate_forwarded_names() (extended for
+    # this phase): every entry must be a real parameter of the target method.
+    # =========================================================================
+
+    _PROFILE_COLUMN_REFERENCES = ('group_by',)
+    _HIST_COLUMN_REFERENCES    = ('group_by',)
+    _SCATTER_COLUMN_REFERENCES = ('group_by',)
+    _DRAW_COLUMN_REFERENCES    = ('group_by',)
+    # hist2d / hexbin have no group_by parameter — empty tuples document that
+    # explicitly. Adding group_by to those plot types in a future phase requires
+    # also appending here.
+    _HIST2D_COLUMN_REFERENCES  = ()
+    _HEXBIN_COLUMN_REFERENCES  = ()
+
+    # Reserved for Phase 13.27.DF Commit 2 (selection_vector / weights_vector).
+    # Each entry names a parameter that is List[str] of column references.
+    # Empty for v1.0 of Phase 13.30; Commit 2 fills them and adds a list-aware
+    # validator overload.
+    _PROFILE_COLUMN_REFERENCE_LISTS = ()
+    _HIST_COLUMN_REFERENCE_LISTS    = ()
+    _SCATTER_COLUMN_REFERENCE_LISTS = ()
+
     def _draw_vector(self, y_list, x_list, draw_method,
                      vector_style=None, group_style='color',
                      group_by=None, **kwargs):
@@ -3264,6 +3304,12 @@ def _validate_forwarded_names():
         (DFDraw._HIST_FORWARDED_NAMES,    DFDraw.hist,    'hist'),
         (DFDraw._SCATTER_FORWARDED_NAMES, DFDraw.scatter, 'scatter'),
         (DFDraw._DRAW_FORWARDED_NAMES,    DFDraw.draw,    'draw'),
+        # Phase 13.30.DF v1.0 — Class-2 column-reference tuples.
+        # Same validation: every entry must be a real parameter of the target.
+        (DFDraw._PROFILE_COLUMN_REFERENCES, DFDraw.profile, 'profile (col-refs)'),
+        (DFDraw._HIST_COLUMN_REFERENCES,    DFDraw.hist,    'hist (col-refs)'),
+        (DFDraw._SCATTER_COLUMN_REFERENCES, DFDraw.scatter, 'scatter (col-refs)'),
+        (DFDraw._DRAW_COLUMN_REFERENCES,    DFDraw.draw,    'draw (col-refs)'),
     ]
     errors = []
     for tup, method, name in pairs:
@@ -3274,14 +3320,15 @@ def _validate_forwarded_names():
         missing = set(tup) - sig_params
         if missing:
             errors.append(
-                f"_{name.upper()}_FORWARDED_NAMES contains non-signature "
-                f"parameters: {sorted(missing)}"
+                f"_{name.upper().replace(' ', '_').replace('(', '').replace(')', '').replace('-', '_')} "
+                f"contains non-signature parameters: {sorted(missing)}"
             )
     if errors:
         raise RuntimeError(
-            "Phase 13.16.DF FIX1 R6 validation failed at module import:\n"
+            "Phase 13.16.DF FIX1 R6 / Phase 13.30.DF Class-2 validation failed "
+            "at module import:\n"
             + "\n".join("  - " + e for e in errors)
-            + "\n\nUpdate the relevant _*_FORWARDED_NAMES tuple in DFDraw."
+            + "\n\nUpdate the relevant tuple in DFDraw."
         )
 
 

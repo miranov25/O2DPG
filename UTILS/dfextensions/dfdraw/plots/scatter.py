@@ -21,6 +21,8 @@ from ..style import get_style_value
 from ..stats import format_stats_box
 # Phase 13.28.DF: Robust data handling
 from ._data_sanitize import sanitize_for_plot
+# Phase 13.30.DF: Class-2 column-reference parameter validation
+from ._validation import validate_column_references
 
 
 def draw_scatter(
@@ -164,6 +166,15 @@ def draw_scatter(
     if jitter:
         x_data, y_data = _apply_jitter(x_data, y_data, jitter)
     
+    # Phase 13.30.DF: Validate Class-2 column-reference parameters.
+    # Catches BUG_ADF_GroupBy_Expression_Materialization (silent fallthrough below).
+    from ..drawer import DFDraw as _DFDraw
+    validate_column_references(
+        df, locals(),
+        names=_DFDraw._SCATTER_COLUMN_REFERENCES,
+        context="scatter",
+    )
+
     # Group-by handling
     if group_by is not None and group_by in df.columns:
         _draw_scatter_grouped(
