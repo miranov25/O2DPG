@@ -5556,7 +5556,7 @@ function collapseDepth(maxD) {{
 
     @staticmethod
     def read_tree(filename, treename="tree", entry_start=None, entry_stop=None, 
-                  num_workers=8, load_subframes=True):
+                  num_workers=8, load_subframes=True, dtype_overrides=None):
         """
         Read AliasDataFrame from ROOT TTree with optimized memory and speed.
 
@@ -5582,6 +5582,22 @@ function collapseDepth(maxD) {{
             If True (default), automatically load and register subframes defined
             in schema. Tries both Python naming ({treename}__subframe__{name})
             and C++ naming ({name}) conventions.
+        dtype_overrides : dict, optional
+            Regex pattern → numpy dtype mapping for on-the-fly type conversion
+            during read. Patterns are matched against branch names using
+            ``re.fullmatch``. First matching pattern wins. Applied AFTER
+            schema/compression dtype hints (higher priority).
+            
+            Example::
+            
+                dtype_overrides={
+                    r'.*_PIter\\d+$': np.float16,   # iteration coefficients
+                    r'.*_err_.*': np.float32,        # errors stay float32
+                    r'firstTForbit': np.uint32,      # orbit counter
+                }
+            
+            Safety: warns on overflow (finite value → inf after downcast).
+            NaN values are preserved across all float conversions.
 
         Returns
         -------
@@ -5595,6 +5611,7 @@ function collapseDepth(maxD) {{
         - entry_start/entry_stop apply only to main tree, not subframes
         - Subframes are always fully loaded (they contain small calibration data)
         - Backward compatible with files created by older versions
+        - dtype_overrides applies to the current tree only, not subframes
 
         Examples
         --------
@@ -5609,6 +5626,12 @@ function collapseDepth(maxD) {{
         
         >>> # Skip subframe loading (faster, for main tree only)
         >>> adf = AliasDataFrame.read_tree("data.root", "tree", load_subframes=False)
+        
+        >>> # Read with dtype conversion (3GB → 800MB)
+        >>> adf = AliasDataFrame.read_tree("data.root", "tree", dtype_overrides={
+        ...     r'.*_PIter\\d+$': np.float16,
+        ...     r'.*_err_.*': np.float32,
+        ... })
         """
         import warnings
         import concurrent.futures
@@ -5743,11 +5766,34 @@ function collapseDepth(maxD) {{
                         )
 
         # =========================================================================
+        # Step 2c: Apply user-specified dtype_overrides (Phase 13.26.ADF)
+        # Priority: dtype_overrides > compression_info > column_dtypes
+        # =========================================================================
+        if dtype_overrides:
+            # Pre-compile patterns for efficiency
+            compiled_overrides = []
+            for pattern, dtype in dtype_overrides.items():
+                try:
+                    compiled_overrides.append((re.compile(pattern), np.dtype(dtype)))
+                except (re.error, TypeError) as e:
+                    warnings.warn(
+                        f"Invalid dtype_override: pattern={pattern!r}, dtype={dtype}: {e}"
+                    )
+
+        # =========================================================================
         # Step 3: Read branches with uproot (branch-by-branch for memory efficiency)
         # =========================================================================
         with uproot.open(filename) as f:
             tree = f[treename]
             branch_names = list(tree.keys())
+
+            # Apply dtype_overrides: regex match branch names → inject into dtype_hints
+            if dtype_overrides and compiled_overrides:
+                for branch_name in branch_names:
+                    for regex, target_dtype in compiled_overrides:
+                        if regex.fullmatch(branch_name):
+                            dtype_hints[branch_name] = target_dtype
+                            break  # first match wins
 
             if not branch_names:
                 df = pd.DataFrame()
@@ -5765,7 +5811,22 @@ function collapseDepth(maxD) {{
                         if branch_name in dtype_hints:
                             target_dtype = dtype_hints[branch_name]
                             if arr.dtype != target_dtype:
-                                arr = arr.astype(target_dtype)
+                                # Safety: detect overflow on downcast (finite→inf)
+                                if np.issubdtype(arr.dtype, np.floating) and np.issubdtype(target_dtype, np.floating):
+                                    original_dtype = arr.dtype
+                                    finite_before = np.isfinite(arr).sum()
+                                    arr = arr.astype(target_dtype)
+                                    finite_after = np.isfinite(arr).sum()
+                                    if finite_after < finite_before:
+                                        n_overflow = finite_before - finite_after
+                                        warnings.warn(
+                                            f"[read_tree] dtype_overrides: {n_overflow} values overflowed "
+                                            f"to inf in column '{branch_name}' during "
+                                            f"{original_dtype} → {target_dtype} conversion",
+                                            UserWarning,
+                                        )
+                                else:
+                                    arr = arr.astype(target_dtype)
 
                         return branch_name, arr
 
@@ -5807,7 +5868,22 @@ function collapseDepth(maxD) {{
                         if branch_name in dtype_hints:
                             target_dtype = dtype_hints[branch_name]
                             if arr.dtype != target_dtype:
-                                arr = arr.astype(target_dtype)
+                                # Safety: detect overflow on downcast (finite→inf)
+                                if np.issubdtype(arr.dtype, np.floating) and np.issubdtype(target_dtype, np.floating):
+                                    original_dtype = arr.dtype
+                                    finite_before = np.isfinite(arr).sum()
+                                    arr = arr.astype(target_dtype)
+                                    finite_after = np.isfinite(arr).sum()
+                                    if finite_after < finite_before:
+                                        n_overflow = finite_before - finite_after
+                                        warnings.warn(
+                                            f"[read_tree] dtype_overrides: {n_overflow} values overflowed "
+                                            f"to inf in column '{branch_name}' during "
+                                            f"{original_dtype} → {target_dtype} conversion",
+                                            UserWarning,
+                                        )
+                                else:
+                                    arr = arr.astype(target_dtype)
 
                         arrays[branch_name] = arr
 
