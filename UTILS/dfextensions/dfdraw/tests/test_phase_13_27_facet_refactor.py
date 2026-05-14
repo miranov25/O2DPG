@@ -195,16 +195,28 @@ class TestFacetByChannel:
 
     def test_facet_by_invalid_channel_name_raises(self, df_groupby):
         """§9.FacetBy.4 — ValueError on invalid facet_by name; message
-        names valid options."""
+        names valid options.
+
+        Updated 2026-05-14 per AD-78 (Phase 13.31.DF v1.0): facet_by is now
+        a tagged union (channel-name enum OR DataFrame column name), so the
+        error message must mention BOTH alternatives. Old wording
+        "facet_by must be one of (...)" replaced with explicit dual-alternative
+        message — strictly more actionable.
+        """
         d = DFDraw(df_groupby)
         with pytest.raises(ValueError) as exc_info:
             d.profile("y:x", group_by="sector", facet_by="banana")
         msg = str(exc_info.value)
-        # §9.FacetBy.4 — error message mentions valid options
-        assert "facet_by must be one of" in msg, \
-            f"Expected error message naming valid options, got: {msg}"
-        # §9.FacetBy.4 — message lists at least 'group_by' as a valid option
+        # §9.FacetBy.4 — error message mentions BOTH alternatives (AD-78)
+        assert "channel name" in msg.lower(), \
+            f"Expected error message naming channel-name alternative, got: {msg}"
+        assert "column" in msg.lower(), \
+            f"Expected error message naming column alternative (AD-78), got: {msg}"
+        # §9.FacetBy.4 — message lists at least 'group_by' as a valid channel option
         assert "group_by" in msg
+        # §9.FacetBy.4 — offending value preserved in message for actionability
+        assert "banana" in msg, \
+            f"Expected offending value 'banana' in message, got: {msg}"
 
 
 # =============================================================================

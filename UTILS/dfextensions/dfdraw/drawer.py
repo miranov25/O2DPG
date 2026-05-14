@@ -599,6 +599,9 @@ class DFDraw:
 
     # =========================================================================
     # Phase 13.30.DF v1.0 — Class-2 column-reference parameter tuples.
+    # (RESTORED in Phase 13.31 after the initial Phase 13.31 patch was
+    # generated from a pre-Phase-13.30 source snapshot and accidentally
+    # clobbered this block. See Phase 13.31 lesson note in the commit msg.)
     #
     # Mirror of _*_FORWARDED_NAMES discipline: single source of truth + one
     # validation loop per plot type. plots/_validation.py iterates these to
@@ -611,6 +614,12 @@ class DFDraw:
     #     (Phase 13.27 Commit 2 — anticipated by *_COLUMN_REFERENCE_LISTS).
     #   Class 4 — expression-or-column (permissive): NOT listed here.
     #     Examples: weights (handled by _eval_weights with df.eval fallback).
+    #
+    # Phase 13.31.DF (AD-78) NOTE: 'facet_by' is a tagged union (channel-name
+    # enum OR DataFrame column name) and is therefore NOT a Class-2 parameter.
+    # 'facet_by' must NOT be added to these tuples — Sonnet P1 catch in AD-78
+    # cross-review. facet_by validation lives in _dispatch_faceted_render()
+    # via the AD-78 §2 disambiguation algorithm.
     #
     # Adding a Class-4 parameter here would break the existing
     # expression-accepting contract.
@@ -1207,17 +1216,50 @@ class DFDraw:
             - On 'quantiles' facet without quantile_mode='discrete'
         """
         # ---- Validate facet_by ---------------------------------------------
-        if facet_by not in self._VALID_FACET_BY_VALUES_COMMIT1:
-            # Defer 'selection_delta' / 'weights_delta' to Commit 2 with NotImplementedError
+        # Phase 13.31.DF v1.0 (AD-78): facet_by is a tagged union — either a
+        # channel-name enum value (Phase 13.27 Commit 1 semantics, preserved)
+        # OR a DataFrame column name (new direct facet-by-column path).
+        #
+        # Disambiguation (deterministic, channel-enum and df.columns are
+        # disjoint by construction):
+        #   1. None              → no faceting (handled by caller, not here)
+        #   2. channel-name enum → existing path
+        #   3. df column name    → NEW column-name path
+        #   4. else              → ValueError citing BOTH interpretations
+        #
+        # The Phase 13.30 _PROFILE_COLUMN_REFERENCES tuple deliberately does
+        # NOT include facet_by (Sonnet P1, AD-78 cross-review): listing it
+        # there would cause validate_column_references() to reject every
+        # valid channel-name value (e.g. facet_by="group_by") because the
+        # string "group_by" is not a column. Validation lives here instead.
+        _facet_mode = None  # 'channel' | 'column'
+        if facet_by in self._VALID_FACET_BY_VALUES_COMMIT1:
+            _facet_mode = 'channel'
+        elif (df is not None
+              and isinstance(facet_by, str)
+              and facet_by
+              and facet_by in df.columns):
+            _facet_mode = 'column'
+        else:
+            # Defer 'selection_delta' / 'weights_delta' to Commit 2
             if facet_by in ('selection_delta', 'weights_delta'):
                 raise NotImplementedError(
                     f"facet_by={facet_by!r} is reserved for Phase 13.27 Commit 2 "
                     f"(selection_vector + weights_vector). Currently supported: "
-                    f"{self._VALID_FACET_BY_VALUES_COMMIT1}"
+                    f"channel names {self._VALID_FACET_BY_VALUES_COMMIT1} "
+                    f"or DataFrame column names."
                 )
+            # Build a clear error message mentioning BOTH interpretations
+            cols = list(df.columns) if df is not None else []
+            if len(cols) > 10:
+                cols_preview = ", ".join(repr(c) for c in cols[:10]) + f", ... ({len(cols)} total)"
+            else:
+                cols_preview = ", ".join(repr(c) for c in cols)
             raise ValueError(
-                f"facet_by must be one of {self._VALID_FACET_BY_VALUES_COMMIT1}, "
-                f"got {facet_by!r}"
+                f"facet_by={facet_by!r} is neither a recognized channel name "
+                f"nor a DataFrame column. "
+                f"Valid channel names: {self._VALID_FACET_BY_VALUES_COMMIT1}. "
+                f"Available columns: [{cols_preview}]."
             )
 
         # ---- Determine groups (subplot keys) -------------------------------
@@ -1251,6 +1293,23 @@ class DFDraw:
                     "with at least one value"
                 )
             groups = list(quantiles)
+
+        elif _facet_mode == 'column':
+            # Phase 13.31.DF (AD-78): column-name facet — one subplot per
+            # unique value of df[facet_by]. NaN values are dropped (they
+            # represent unobserved combinations of the faceting dimension).
+            # Sorted ascending for deterministic subplot ordering; user can
+            # override behaviour via sort_groups= (existing Phase 13.12 kwarg
+            # on profile() — not consumed at this dispatch level, applies
+            # inside each subplot's group_by).
+            try:
+                groups = sorted(df[facet_by].dropna().unique().tolist())
+            except TypeError:
+                # Mixed/unsortable dtype — fall back to unsorted order
+                groups = df[facet_by].dropna().unique().tolist()
+            if top_k is not None and len(groups) > top_k:
+                counts = df[facet_by].value_counts()
+                groups = counts.head(top_k).index.tolist()
 
         else:
             # Unreachable due to validation above
@@ -1320,6 +1379,15 @@ class DFDraw:
                 subplot_df = df
                 subplot_y = y_expr
                 subplot_quantiles = [group_value]  # one quantile per subplot
+            elif _facet_mode == 'column':
+                # Phase 13.31.DF (AD-78): column-name facet — filter via
+                # boolean mask, same pattern as 'group_by' channel mode. NB:
+                # mask comparison handles numeric AND string dtypes uniformly
+                # (no string-quoting concern that would arise if we extended
+                # the selection string instead — Sonnet implementation note).
+                subplot_df = df[df[facet_by] == group_value]
+                subplot_y = y_expr
+                subplot_quantiles = quantiles
 
             # Strip kwargs that are facet-coordinator-only (don't forward)
             # AD-68: ax provided per-subplot; selection already applied at top
@@ -1331,13 +1399,22 @@ class DFDraw:
             # the facet value. Suppress per-subplot auto_title.
             forwarded['auto_title'] = False
 
+            # Phase 13.31.DF (AD-78): for column-mode facet, KEEP group_by
+            # for inner overlay (orthogonal dimension — that's the whole
+            # point of dual-mode facet_by). The 'group_by' channel mode
+            # still suppresses group_by because the facet IS the group_by.
+            if facet_by == 'group_by':
+                _inner_group_by = None
+            else:
+                _inner_group_by = group_by
+
             try:
                 _, _, stats = plot_fn(
                     subplot_df, x_expr, subplot_y,
                     ax=ax_i,
                     quantiles=subplot_quantiles,
                     quantile_mode=quantile_mode,
-                    group_by=group_by if facet_by != 'group_by' else None,
+                    group_by=_inner_group_by,
                     top_k=None,  # no inner top_k under facet
                     **forwarded
                 )
@@ -1367,6 +1444,9 @@ class DFDraw:
             "per_group": all_stats,
             "faceted": True,
             "facet_by": facet_by,
+            # Phase 13.31.DF (AD-78): expose mode for consumers to discriminate
+            # between channel-name and column-name semantics.
+            "facet_mode": _facet_mode,
             "n_total": sum(s.get("n", 0) for s in all_stats.values()),
         }
         return fig, axes_flat[:n_groups], combined_stats
@@ -3298,7 +3378,8 @@ class DFDraw:
 # =============================================================================
 
 def _validate_forwarded_names():
-    """Validate at module-import that all _*_FORWARDED_NAMES entries match signatures."""
+    """Validate at module-import that all _*_FORWARDED_NAMES and
+    _*_COLUMN_REFERENCES entries match their target method signatures."""
     pairs = [
         (DFDraw._PROFILE_FORWARDED_NAMES, DFDraw.profile, 'profile'),
         (DFDraw._HIST_FORWARDED_NAMES,    DFDraw.hist,    'hist'),
@@ -3306,6 +3387,7 @@ def _validate_forwarded_names():
         (DFDraw._DRAW_FORWARDED_NAMES,    DFDraw.draw,    'draw'),
         # Phase 13.30.DF v1.0 — Class-2 column-reference tuples.
         # Same validation: every entry must be a real parameter of the target.
+        # (Restored in Phase 13.31 after initial Phase 13.31 patch clobbered.)
         (DFDraw._PROFILE_COLUMN_REFERENCES, DFDraw.profile, 'profile (col-refs)'),
         (DFDraw._HIST_COLUMN_REFERENCES,    DFDraw.hist,    'hist (col-refs)'),
         (DFDraw._SCATTER_COLUMN_REFERENCES, DFDraw.scatter, 'scatter (col-refs)'),
