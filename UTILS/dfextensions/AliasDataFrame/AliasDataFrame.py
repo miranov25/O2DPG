@@ -5556,7 +5556,8 @@ function collapseDepth(maxD) {{
 
     @staticmethod
     def read_tree(filename, treename="tree", entry_start=None, entry_stop=None, 
-                  num_workers=8, load_subframes=True, dtype_overrides=None):
+                  num_workers=8, load_subframes=True, dtype_overrides=None,
+                  skip_branches=None):
         """
         Read AliasDataFrame from ROOT TTree with optimized memory and speed.
 
@@ -5598,6 +5599,21 @@ function collapseDepth(maxD) {{
             
             Safety: warns on overflow (finite value → inf after downcast).
             NaN values are preserved across all float conversions.
+        skip_branches : list of str, optional
+            Regex patterns for branches to exclude from reading. Patterns are
+            matched against branch names using ``re.fullmatch``. Matched
+            branches are not read and do not appear in the DataFrame.
+            
+            Example::
+            
+                skip_branches=[
+                    r'quality_flag.*',    # skip 3.48GB object column
+                    r'.*_debug_.*',       # skip debug branches
+                ]
+            
+            Warning: skipping index columns used by subframe joins will cause
+            join failures. Skipping columns referenced by aliases will cause
+            those aliases to show as BROKEN in ``describe_aliases()``.
 
         Returns
         -------
@@ -5794,6 +5810,20 @@ function collapseDepth(maxD) {{
                         if regex.fullmatch(branch_name):
                             dtype_hints[branch_name] = target_dtype
                             break  # first match wins
+
+            # Apply skip_branches: remove matched branches before reading
+            if skip_branches:
+                compiled_skips = []
+                for pattern in skip_branches:
+                    try:
+                        compiled_skips.append(re.compile(pattern))
+                    except re.error as e:
+                        warnings.warn(f"Invalid skip_branches pattern {pattern!r}: {e}")
+                if compiled_skips:
+                    branch_names = [
+                        b for b in branch_names
+                        if not any(rx.fullmatch(b) for rx in compiled_skips)
+                    ]
 
             if not branch_names:
                 df = pd.DataFrame()

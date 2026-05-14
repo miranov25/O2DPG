@@ -1,5 +1,6 @@
 """
-Phase 13.26.ADF — dtype_overrides on read_tree
+Phase 13.26.ADF — dtype_overrides on read_tree (D1-D10)
+Phase 13.27.ADF — skip_branches on read_tree (D11-D14)
 
 D1: regex pattern matching converts float64→float16
 D2: first-match-wins precedence
@@ -8,6 +9,13 @@ D4: overflow detection warns on finite→inf
 D5: NaN preserved across float downcast
 D6: schema dtype_hints not overridden when no override matches
 D7: round-trip: write float64, read with override, values within tolerance
+D8: schema round-trip preserves overridden dtype
+D9: entry_range with overrides consistent
+D10: overflow warning shows correct original→target dtype
+D11: skip_branches excludes branch from DataFrame
+D12: skip reduces column count; remaining data correct
+D13: skip + dtype_override work together independently
+D14: skip with no match is a no-op
 """
 
 import os
@@ -228,3 +236,60 @@ class TestDtypeOverrides:
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v', '-s'])
+
+
+# ===========================================================================
+# Phase 13.27.ADF — skip_branches tests
+# ===========================================================================
+
+@pytest.mark.skipif(not _HAS_ROOT, reason="Requires ROOT + uproot")
+class TestSkipBranches:
+
+    @pytest.mark.invariance
+    def test_D11_skip_branch_not_in_dataframe(self, tmp_root_file):
+        """skip_branches pattern excludes branch from DataFrame entirely."""
+        adf = AliasDataFrame.read_tree(tmp_root_file, "tree", skip_branches=[
+            r'dy_err_PIter1',
+        ])
+        assert 'dy_err_PIter1' not in adf.df.columns, \
+            "D11: skipped branch should not appear in DataFrame"
+        # Other branches still present
+        assert 'dy_intercept_PIter1' in adf.df.columns
+        assert 'x' in adf.df.columns
+
+    @pytest.mark.invariance
+    def test_D12_skip_reduces_column_count(self, tmp_root_file):
+        """Skipping branches reduces column count; remaining data correct."""
+        adf_full = AliasDataFrame.read_tree(tmp_root_file, "tree")
+        adf_skip = AliasDataFrame.read_tree(tmp_root_file, "tree", skip_branches=[
+            r'dy_err_PIter1',
+            r'dz_intercept_PIter2',
+        ])
+        assert len(adf_skip.df.columns) == len(adf_full.df.columns) - 2, \
+            f"D12: expected {len(adf_full.df.columns) - 2} columns, got {len(adf_skip.df.columns)}"
+        # Remaining columns have identical values
+        for col in adf_skip.df.columns:
+            np.testing.assert_array_equal(
+                adf_skip.df[col].values, adf_full.df[col].values,
+                err_msg=f"D12: column {col} values differ after skip")
+
+    @pytest.mark.invariance
+    def test_D13_skip_and_dtype_override_combined(self, tmp_root_file):
+        """skip_branches and dtype_overrides work together independently."""
+        adf = AliasDataFrame.read_tree(tmp_root_file, "tree",
+            dtype_overrides={r'dy_intercept_PIter1': np.float16},
+            skip_branches=[r'dy_err_PIter1'],
+        )
+        assert 'dy_err_PIter1' not in adf.df.columns
+        assert adf.df['dy_intercept_PIter1'].dtype == np.float16
+        # Non-skipped, non-overridden column unchanged
+        assert 'x' in adf.df.columns
+
+    @pytest.mark.invariance
+    def test_D14_skip_no_match_is_noop(self, tmp_root_file):
+        """skip_branches with no matching pattern leaves all columns intact."""
+        adf_full = AliasDataFrame.read_tree(tmp_root_file, "tree")
+        adf_skip = AliasDataFrame.read_tree(tmp_root_file, "tree", skip_branches=[
+            r'nonexistent_column_.*',
+        ])
+        assert list(adf_skip.df.columns) == list(adf_full.df.columns)
