@@ -479,7 +479,11 @@ def draw_profile(
     
     # Group-by handling
     if group_col is not None and group_col in df_filtered.columns:
-        profile_data_list = _draw_profile_grouped(
+        # Phase 13.32.DF Sub-fix 2: forward Phase 13.25 resolved quantile state
+        # (resolved earlier in this function: _resolved_quantile_mode,
+        # _quantile_pair, _quantile_list). The grouped path renders bands or
+        # discrete lines per group color; see _draw_profile_grouped docstring.
+        profile_data_list, _per_group_stats = _draw_profile_grouped(
             df_filtered, x, y, ax, group_col, top_k,
             bins=bins, x_range=_used_xrange, error=error,
             marker=marker, markersize=markersize, capsize=capsize,
@@ -488,9 +492,24 @@ def draw_profile(
             sort_groups=sort_groups,
             return_data=return_data,
             weights=weights,  # Phase 13.12.DF v1.1
+            # Phase 13.32.DF Sub-fix 2: quantile rendering state
+            quantiles=quantiles,
+            quantile_mode=_resolved_quantile_mode,
+            central=central,
+            quantile_pair=_quantile_pair,
+            quantile_list=_quantile_list,
+            quantile_style=quantile_style,
             **kwargs
         )
         stats_dict["grouped"] = True
+        # Phase 13.32.DF Sub-fix 2: surface quantile metadata + per-group stats
+        # in the returned stats_dict per v1.2 §3.2 schema.
+        if quantiles is not None:
+            stats_dict["quantile_mode"] = _resolved_quantile_mode
+            stats_dict["quantile_pair"] = _quantile_pair
+            stats_dict["quantile_list"] = _quantile_list
+            if _per_group_stats is not None:
+                stats_dict["per_group"] = _per_group_stats
         
         # Phase 13.12.DF F1: Combine profile data from all groups
         if return_data and profile_data_list:
@@ -887,27 +906,59 @@ def _draw_profile_grouped(
     sort_groups: bool = True,
     return_data: bool = False,
     weights: Optional[str] = None,  # Phase 13.12.DF v1.1
+    # Phase 13.32.DF Sub-fix 2: per-group quantile rendering parameters
+    quantiles: Optional[list] = None,
+    quantile_mode: Optional[str] = None,
+    central: Optional[str] = None,
+    quantile_pair: Optional[tuple] = None,
+    quantile_list: Optional[list] = None,
+    quantile_style: Optional[str] = None,
     **profile_kwargs
-) -> Optional[List[pd.DataFrame]]:
+) -> tuple:
     """
     Draw grouped profile plots.
-    
+
     Phase 13.12.DF: Added min_entries, sort_groups, return_data parameters.
     Phase 13.12.DF v1.1: Added weights parameter.
-    
+    Phase 13.32.DF Sub-fix 2 (v1.2 C11): Added quantile rendering parameters.
+        Per-group band-mode rendering uses _render_quantile_band with the
+        Sub-fix 2 alpha override. Per-group discrete-mode rendering is inline
+        (option B): group_color + linestyle='--' for quantile lines, deliberately
+        omitting the FIX2 channel-cycle machinery from the single-profile path
+        (cycling linestyle PER QUANTILE on top of group color creates unreadable
+        plots with N groups × M quantiles).
+
+        nested_band mode raises NotImplementedError explicitly — it is the exact
+        silent-drop bug class Phase 13.32 exists to fix.
+
     Returns
     -------
-    list of DataFrame or None
-        If return_data=True, returns list of profile DataFrames (one per group).
+    (profile_data_list, per_group_stats)
+        profile_data_list : list of DataFrame or None
+            One per-group profile DataFrame, if return_data=True; else None.
+        per_group_stats : dict[group_label, dict] or None
+            Per-group quantile diagnostics, populated only when quantiles is
+            not None. Schema per PHASE_13_32_DF_v1_2_Proposal §3.2.
     """
+    # Phase 13.32.DF Sub-fix 2: nested_band + group_by raises early.
+    # Silent fallthrough would mean the quantile_list is computed but never
+    # rendered, reproducing the v1.0-incident A bug class.
+    if quantiles is not None and quantile_mode == 'nested_band':
+        raise NotImplementedError(
+            "quantile_mode='nested_band' is not yet supported with group_by. "
+            "Use quantile_mode='band' or quantile_mode='discrete' instead. "
+            "Nested-band rendering with per-group color coordination is "
+            "scheduled for a future phase."
+        )
+
     # Get groups
     groups = df[group_by].unique()
-    
+
     # Phase 13.12.DF F4: Sort groups
     # Phase 13.14.DF: Use _interval_sort_key for correct negative interval sorting
     if sort_groups:
         groups = sorted(groups, key=_interval_sort_key)
-    
+
     # Top-K filtering
     if top_k is not None and len(groups) > top_k:
         counts = df[group_by].value_counts()
@@ -916,36 +967,43 @@ def _draw_profile_grouped(
         if sort_groups:
             top_groups = sorted(top_groups, key=_interval_sort_key)
         groups = top_groups
-    
+
     # Color palette
     palette_name = get_style_value("colors.palette", "tab10")
     palette = plt.colormaps.get_cmap(palette_name)
-    
+
     # Marker cycle
     markers = get_style_value("markers.cycle", ["o", "s", "^", "D", "P", "X", "v", "<", ">", "h"])
-    
+
     # Extract common kwargs
     bins = profile_kwargs.pop('bins', 50)
     x_range = profile_kwargs.pop('x_range', None)
     error = profile_kwargs.pop('error', 'sem')
+    linewidth = profile_kwargs.get('linewidth', 1.5)
     # Remove marker/markersize from kwargs - we use fmt and dedicated markers
     profile_kwargs.pop('marker', None)
     profile_kwargs.pop('markersize', None)
-    
+
     # Phase 13.12.DF F1: Collect profile data
     profile_data_list = [] if return_data else None
-    
+
+    # Phase 13.32.DF Sub-fix 2: per-group stats (only populated when quantiles is set)
+    per_group_stats = {} if quantiles is not None else None
+
+    # Phase 13.32.DF Sub-fix 2: resolve grouped band alpha once
+    _band_alpha_grouped = get_style_value("quantile.band.alpha_grouped", 0.15)
+
     for i, group in enumerate(groups):
         group_df = df[df[group_by] == group]
         x_data = group_df[x].values.astype(float)
         y_data = group_df[y].values.astype(float)
-        
+
         # Phase 13.12.DF v1.1: Get weights for this group
         # Bugfix: support weight expressions, not just column names
         w_data = None
         if weights is not None:
             w_data = _eval_weights(group_df, weights)
-        
+
         # Phase 13.28.DF: catch NaN AND inf via isfinite (consistent with sanitize_for_plot)
         mask = np.isfinite(x_data) & np.isfinite(y_data)
         if w_data is not None:
@@ -953,32 +1011,81 @@ def _draw_profile_grouped(
             w_data = w_data[mask]
         x_data = x_data[mask]
         y_data = y_data[mask]
-        
+
         if len(x_data) == 0:
             continue
-        
+
         bin_centers, bin_means, bin_errors, bin_counts, profile_df = _compute_profile(
             x_data, y_data, bins, x_range, error, return_data=return_data,
             w_data=w_data  # Phase 13.12.DF v1.1
         )
-        
+
         # Phase 13.12.DF F1: Add group column and collect
         if return_data and profile_df is not None:
             profile_df['group'] = group
             profile_data_list.append(profile_df)
-        
+
         # Phase 13.12.DF F2: Apply min_entries filter for plotting
         plot_mask = bin_counts >= min_entries
-        
+
+        group_color = palette(i % 10)
+
+        # Phase 13.32.DF Sub-fix 2: per-group quantile rendering BEFORE the
+        # central line so the central line stays visually on top.
+        if quantiles is not None:
+            per_group_stats[group] = {'n': int(len(x_data))}
+
+            if quantile_pair is not None and quantile_mode in ('band', 'error_bars'):
+                # Band mode (error_bars in grouped path also renders as a band
+                # because per-group asymmetric error bars would visually clash
+                # with the per-group central marker).
+                _, _q_lower, _q_upper, _ = _compute_per_bin_quantiles(
+                    x_data, y_data, bins, x_range, quantile_pair,
+                )
+                _render_quantile_band(
+                    ax, bin_centers, _q_lower, _q_upper, plot_mask,
+                    color=group_color,
+                    alpha=_band_alpha_grouped,  # Sub-fix 2 override
+                )
+                per_group_stats[group]['q_lower_per_bin'] = _q_lower
+                per_group_stats[group]['q_upper_per_bin'] = _q_upper
+
+            elif quantile_list is not None and quantile_mode == 'discrete':
+                # Phase 13.32 Sub-fix 2 (v1.2 §3.2 option B): inline simplified
+                # discrete rendering. No FIX2 channel cycle (groups already use
+                # color); consistent dashed linestyle for quantile lines under
+                # group_color keeps central line (solid) visually distinct.
+                _q_all = _compute_per_bin_all_quantiles(
+                    x_data, y_data, bins, x_range, quantile_list,
+                )
+                for j, (q_val, q_per_bin) in enumerate(_q_all.items()):
+                    # Per Sonet50 v1.2 P2-1: legend entry shows just the group
+                    # label (not "Group A q=10%") to avoid implying only one
+                    # quantile is shown. One legend entry per group via j==0 guard.
+                    legend_label = str(group) if j == 0 else None
+                    ax.plot(
+                        bin_centers[plot_mask], q_per_bin[plot_mask],
+                        color=group_color,
+                        linestyle='--',
+                        linewidth=linewidth * 0.7,
+                        label=legend_label,
+                    )
+                per_group_stats[group]['quantiles_per_bin'] = _q_all
+
+        # Central line (mean or median) — always rendered last so it sits on top
         ax.errorbar(
             bin_centers[plot_mask], bin_means[plot_mask], yerr=bin_errors[plot_mask],
             fmt=markers[i % len(markers)],
-            color=palette(i % 10),
-            label=str(group),
+            color=group_color,
+            # If quantiles already added a legend entry for this group, suppress
+            # the duplicate central-line legend entry by setting label=None.
+            label=(None if quantiles is not None and quantile_list is not None
+                   and quantile_mode == 'discrete'
+                   else str(group)),
             **profile_kwargs
         )
-    
-    return profile_data_list
+
+    return profile_data_list, per_group_stats
 
 
 def _add_stats_box(
@@ -1244,14 +1351,21 @@ def _render_quantile_error_bars(
 
 def _render_quantile_band(
     ax, bin_centers, q_lower, q_upper, plot_mask, color,
+    alpha=None,  # Phase 13.32.DF Sub-fix 2: optional override of style-key alpha
 ):
     """
     Render quantile band via fill_between.
     
     Alpha and hatch read from quantile.band.alpha and quantile.band.hatch
     style keys (AD-53). Band color matches the central line's color.
+
+    Phase 13.32.DF Sub-fix 2: ``alpha`` parameter allows callers (the grouped
+    path) to override the style-key default with a lower value
+    (``quantile.band.alpha_grouped``) so stacked group-colored bands stay
+    readable.
     """
-    alpha = get_style_value("quantile.band.alpha", 0.25)
+    if alpha is None:
+        alpha = get_style_value("quantile.band.alpha", 0.25)
     hatch = get_style_value("quantile.band.hatch", None)
     
     fill_kwargs = dict(alpha=alpha, color=color)

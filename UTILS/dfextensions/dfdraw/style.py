@@ -72,6 +72,10 @@ DEFAULT_STYLE: Dict[str, Any] = {
     # Matches dfdraw's existing independent-keys pattern:
     # grid.alpha, scatter.alpha, hist.alpha, stats.alpha (style.py:37,41,48,73).
     "quantile.band.alpha": 0.25,
+    # Phase 13.32.DF Sub-fix 2: Lower-alpha default for quantile bands rendered
+    # under group_by overlay. Stacking N group_colored bands at alpha=0.25 each
+    # produces an opaque smear; 0.15 keeps the central lines visually dominant.
+    "quantile.band.alpha_grouped": 0.15,
     # Alpha for quantile band rendering (fill_between). dfdraw design choice;
     # matplotlib's fill_between default is alpha=None (~1.0, fully opaque).
     "quantile.band.hatch": None,

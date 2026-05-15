@@ -12,6 +12,12 @@ import matplotlib.pyplot as plt
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .style import get_style, get_style_value
+# Phase 13.32.DF Sub-fix 1+3: dispatch-level binning needs the same interval-label
+# formatter that plots.profile uses, to keep subplot-key strings identical to the
+# format the per-subplot recursion would have produced. Safe top-level import:
+# plots/profile.py has no top-level dependency on drawer.py (it imports DFDraw
+# inside draw_profile() only).
+from .plots.profile import _format_interval_label
 
 # =============================================================================
 # Phase 13.16.DF FIX1: Sentinel for "parameter was not passed by caller".
@@ -562,6 +568,7 @@ class DFDraw:
         'quantile_style',  # Phase 13.26.DF: channel-aware quantile rendering
         'nan_policy',  # Phase 13.28.DF: NaN/inf filter policy (AD-70)
         'facet_by',  # Phase 13.27.DF: facet routing through channel framework (AD-67)
+        'facet_by_bins', 'facet_by_quantiles',  # Phase 13.32.DF Sub-fix 3 (AD-79)
     )
 
     _HIST_FORWARDED_NAMES = (
@@ -572,6 +579,8 @@ class DFDraw:
         'same',
         'stat_fields',  # Phase 13.18.DF: robust statistics groups
         'nan_policy',  # Phase 13.28.DF: NaN/inf filter policy (AD-70)
+        'facet_by',  # Phase 13.32.DF Sub-fix 3: extend AD-78 column-mode facet_by to hist
+        'facet_by_bins', 'facet_by_quantiles',  # Phase 13.32.DF Sub-fix 3 (AD-79)
     )
 
     _SCATTER_FORWARDED_NAMES = (
@@ -581,6 +590,22 @@ class DFDraw:
         'cmap', 'colorbar', 'clabel', 'jitter',
         'same',
         'nan_policy',  # Phase 13.28.DF: NaN/inf filter policy (AD-70)
+        'facet_by',  # Phase 13.32.DF Sub-fix 3: extend AD-78 column-mode facet_by to scatter
+        'facet_by_bins', 'facet_by_quantiles',  # Phase 13.32.DF Sub-fix 3 (AD-79)
+    )
+
+    # Phase 13.32.DF Sub-fix 3: hist2d gets its own FORWARDED_NAMES tuple
+    # (previously absent — hist2d used inline kwargs handling).
+    _HIST2D_FORWARDED_NAMES = (
+        'selection', 'sample', 'bins', 'range', 'norm', 'stats',
+        'title', 'xlabel', 'ylabel', 'ax', 'save',
+        'top_k',
+        'cmap', 'colorbar', 'clabel', 'vmin', 'vmax',
+        'auto_title',
+        'same',
+        'stat_fields',
+        'nan_policy',
+        'facet_by', 'facet_by_bins', 'facet_by_quantiles',
     )
 
     _DRAW_FORWARDED_NAMES = (
@@ -588,6 +613,8 @@ class DFDraw:
         'bins', 'stats', 'norm', 'title', 'ax', 'sample', 'save',
         'same',
         'nan_policy',  # Phase 13.28.DF: NaN/inf filter policy (AD-70)
+        'facet_by',  # Phase 13.32.DF Sub-fix 3: facet_by reachable from draw() dispatcher
+        'facet_by_bins', 'facet_by_quantiles',  # Phase 13.32.DF Sub-fix 3 (AD-79)
         # Note: 'type' consumed for routing; 'figsize' deliberately excluded
         # (figure already created); 'facet' caught by R4 guard; 'group_by'
         # passed as explicit named arg to _draw_vector.
@@ -596,6 +623,50 @@ class DFDraw:
     # Private kwargs that _draw_vector injects into iter_kwargs to suppress
     # per-iteration legend/title/tight_layout in the underlying plot modules.
     _VECTOR_SUPPRESS_KWARGS = ('_suppress_legend', '_suppress_title', '_suppress_layout')
+
+    # =========================================================================
+    # Phase 13.32.DF Sub-fix 3 (AD-79, v1.2 §3.3): shared validation helper
+    # for facet_by_bins/facet_by_quantiles. Used by profile()/hist()/hist2d()/
+    # scatter() at entry. Ensures the binning kwargs are consistent with the
+    # facet_by tagged union (must be column-mode, must not collide).
+    # =========================================================================
+
+    @staticmethod
+    def _validate_facet_by_binning(facet_by, facet_by_bins, facet_by_quantiles, df):
+        """Validate facet_by_bins/_quantiles inputs at plot-method entry.
+
+        Raises ValueError on:
+          - facet_by_bins/_quantiles set without facet_by= (orphan binning)
+          - both facet_by_bins AND facet_by_quantiles set (mutex)
+          - boolean True passed (must be integer, per AD-40 pattern)
+          - facet_by is not a column name (e.g. channel enum 'group_by')
+        """
+        if facet_by_bins is None and facet_by_quantiles is None:
+            return
+        if facet_by is None:
+            raise ValueError(
+                "facet_by_bins/facet_by_quantiles requires facet_by= to be set"
+            )
+        if facet_by_bins is not None and facet_by_quantiles is not None:
+            raise ValueError(
+                "Cannot specify both facet_by_bins and facet_by_quantiles"
+            )
+        if isinstance(facet_by_bins, bool) and facet_by_bins:
+            raise ValueError(
+                "facet_by_bins must be an integer (number of bins), not True. "
+                "Example: facet_by_bins=5"
+            )
+        if isinstance(facet_by_quantiles, bool) and facet_by_quantiles:
+            raise ValueError(
+                "facet_by_quantiles must be an integer (number of quantile "
+                "bins), not True. Example: facet_by_quantiles=5"
+            )
+        if df is None or facet_by not in df.columns:
+            raise ValueError(
+                f"facet_by_bins/facet_by_quantiles requires facet_by to be a "
+                f"DataFrame column name (got facet_by={facet_by!r} which is a "
+                f"channel name or not in df.columns)"
+            )
 
     # =========================================================================
     # Phase 13.30.DF v1.0 — Class-2 column-reference parameter tuples.
@@ -1268,6 +1339,43 @@ class DFDraw:
                 raise ValueError(
                     "facet_by='group_by' requires group_by= parameter to be set"
                 )
+            # Phase 13.32.DF Sub-fix 1 (v1.2 C1, FIX 1 from v1.0 panel): apply
+            # group_by_bins/_quantiles AT DISPATCH LEVEL before group enumeration.
+            # Without this, dispatch saw the raw column's unique values (e.g.
+            # 60 driftM_bin25 levels) and hit the 16-cap before binning had a
+            # chance to collapse them to 5.
+            #
+            # CRITICAL: also pop group_by/group_by_bins/group_by_quantiles from
+            # plot_kwargs to prevent per-subplot draw_profile recursion from
+            # re-binning the already-filtered slice (which would create N×N
+            # spurious sub-groups inside each subplot — the FIX 1 P1 from
+            # Sonet51/Claude48/GPT1 v1.0 review).
+            _gby_bins = plot_kwargs.pop('group_by_bins', None)
+            _gby_quantiles = plot_kwargs.pop('group_by_quantiles', None)
+            _effective_df = df
+            _effective_group_col = group_by
+            if _gby_bins is not None or _gby_quantiles is not None:
+                _effective_df = df.copy()
+                if df[group_by].dtype == np.float16:
+                    _effective_df[group_by] = _effective_df[group_by].astype(np.float32)
+                if _gby_bins is not None:
+                    intervals = pd.cut(_effective_df[group_by], bins=_gby_bins)
+                else:
+                    intervals = pd.qcut(
+                        _effective_df[group_by], q=_gby_quantiles, duplicates='drop'
+                    )
+                # Phase 13.32.DF v1.2 P2 (collision-safe): __dfdraw_*__ sentinel
+                # name avoids collision with any user column.
+                _effective_df['__dfdraw_group_bin__'] = intervals.map(_format_interval_label)
+                _effective_group_col = '__dfdraw_group_bin__'
+
+            # Pop group_by too — facet_by='group_by' means the facet IS the
+            # group_by; per-subplot calls must not re-introduce an inner overlay.
+            plot_kwargs.pop('group_by', None)
+            # Replace df + group_by for the rest of dispatch:
+            df = _effective_df
+            group_by = _effective_group_col
+
             groups = list(df[group_by].unique())
             if top_k is not None and len(groups) > top_k:
                 counts = df[group_by].value_counts()
@@ -1302,6 +1410,33 @@ class DFDraw:
             # override behaviour via sort_groups= (existing Phase 13.12 kwarg
             # on profile() — not consumed at this dispatch level, applies
             # inside each subplot's group_by).
+            #
+            # Phase 13.32.DF Sub-fix 3 (AD-79, v1.2 §3.3): apply facet_by_bins
+            # / facet_by_quantiles AT DISPATCH LEVEL when the facet column is
+            # a float-typed column. Pop them from plot_kwargs so per-subplot
+            # recursion does not re-bin. Validation that they are mutually
+            # exclusive + require column-mode facet_by happens at the plot
+            # method entry point (_validate_facet_by_binning helper).
+            _fby_bins = plot_kwargs.pop('facet_by_bins', None)
+            _fby_quantiles = plot_kwargs.pop('facet_by_quantiles', None)
+            _effective_df = df
+            _effective_facet_col = facet_by
+            if _fby_bins is not None or _fby_quantiles is not None:
+                _effective_df = df.copy()
+                if df[facet_by].dtype == np.float16:
+                    _effective_df[facet_by] = _effective_df[facet_by].astype(np.float32)
+                if _fby_bins is not None:
+                    intervals = pd.cut(_effective_df[facet_by], bins=_fby_bins)
+                else:
+                    intervals = pd.qcut(
+                        _effective_df[facet_by], q=_fby_quantiles, duplicates='drop'
+                    )
+                _effective_df['__dfdraw_facet_bin__'] = intervals.map(_format_interval_label)
+                _effective_facet_col = '__dfdraw_facet_bin__'
+            # Replace df + facet_by for the rest of dispatch:
+            df = _effective_df
+            facet_by = _effective_facet_col
+
             try:
                 groups = sorted(df[facet_by].dropna().unique().tolist())
             except TypeError:
@@ -1354,14 +1489,27 @@ class DFDraw:
 
         # ---- Per-subplot recursion -----------------------------------------
         # Dispatch based on plot_kind. Commit 1: profile only.
+        # Phase 13.32.DF Sub-fix 3 (AD-79, v1.2 §3.3): full multi-kind dispatch.
+        # Phase 13.27 Commit 1 only routed 'profile'; v1.2 scope extends to
+        # all plot kinds. Each plot has a different signature, so the
+        # per-subplot call must be branched. Deferred imports (function-level)
+        # avoid any circular-import risk from drawer ↔ plots.*.
         if plot_kind == 'profile':
             from .plots.profile import draw_profile
             plot_fn = draw_profile
+        elif plot_kind == 'hist':
+            from .plots.histogram import draw_hist
+            plot_fn = draw_hist
+        elif plot_kind == 'hist2d':
+            from .plots.histogram import draw_hist2d
+            plot_fn = draw_hist2d
+        elif plot_kind == 'scatter':
+            from .plots.scatter import draw_scatter
+            plot_fn = draw_scatter
         else:
             raise NotImplementedError(
-                f"plot_kind={plot_kind!r} not yet supported in Phase 13.27 Commit 1. "
-                f"Profile-only per architect decision Q5; 'hist' / 'scatter' "
-                f"come in Commit 2."
+                f"plot_kind={plot_kind!r} not supported. "
+                f"Valid: 'profile', 'hist', 'hist2d', 'scatter'."
             )
 
         all_stats: Dict[str, Any] = {}
@@ -1396,8 +1544,13 @@ class DFDraw:
             forwarded.pop('selection', None)
             forwarded.pop('save', None)
             # auto_title: per §5.4, suptitle on figure level; subplot title is
-            # the facet value. Suppress per-subplot auto_title.
-            forwarded['auto_title'] = False
+            # the facet value. Suppress per-subplot auto_title — but ONLY on
+            # plot kinds whose draw_* signature accepts auto_title. draw_scatter
+            # does NOT have auto_title; setting it would leak through **kwargs
+            # to ax.scatter() and raise AttributeError (Phase 13.32 FIX1 from
+            # the column-mode scatter test).
+            if plot_kind != 'scatter':
+                forwarded['auto_title'] = False
 
             # Phase 13.31.DF (AD-78): for column-mode facet, KEEP group_by
             # for inner overlay (orthogonal dimension — that's the whole
@@ -1408,16 +1561,51 @@ class DFDraw:
             else:
                 _inner_group_by = group_by
 
+            # Phase 13.32.DF Sub-fix 3 (AD-79, v1.2 §3.3): plot-kind-specific
+            # call. Each plot's signature differs in positional shape and
+            # accepted kwargs; passing profile-only kwargs (quantiles,
+            # quantile_mode) to hist/scatter/hist2d would raise TypeError,
+            # and hist2d does not accept group_by/top_k. Build call args
+            # explicitly per plot_kind.
             try:
-                _, _, stats = plot_fn(
-                    subplot_df, x_expr, subplot_y,
-                    ax=ax_i,
-                    quantiles=subplot_quantiles,
-                    quantile_mode=quantile_mode,
-                    group_by=_inner_group_by,
-                    top_k=None,  # no inner top_k under facet
-                    **forwarded
-                )
+                if plot_kind == 'profile':
+                    _, _, stats = plot_fn(
+                        subplot_df, x_expr, subplot_y,
+                        ax=ax_i,
+                        quantiles=subplot_quantiles,
+                        quantile_mode=quantile_mode,
+                        group_by=_inner_group_by,
+                        top_k=None,
+                        **forwarded
+                    )
+                elif plot_kind == 'hist':
+                    # hist is 1D: takes only x (the variable to histogram).
+                    # Calling method passed col_expr as y_expr, so subplot_y
+                    # is the variable. hist accepts group_by + top_k.
+                    _, _, stats = plot_fn(
+                        subplot_df, subplot_y,
+                        ax=ax_i,
+                        group_by=_inner_group_by,
+                        top_k=None,
+                        **forwarded
+                    )
+                elif plot_kind == 'scatter':
+                    # scatter accepts (x, y), group_by, top_k. No quantiles.
+                    _, _, stats = plot_fn(
+                        subplot_df, x_expr, subplot_y,
+                        ax=ax_i,
+                        group_by=_inner_group_by,
+                        top_k=None,
+                        **forwarded
+                    )
+                elif plot_kind == 'hist2d':
+                    # hist2d accepts (x, y). Does NOT accept group_by or
+                    # top_k — 2D density doesn't overlay groups.
+                    _, _, stats = plot_fn(
+                        subplot_df, x_expr, subplot_y,
+                        ax=ax_i,
+                        **forwarded
+                    )
             except Exception as e:
                 # Re-raise with facet context
                 raise type(e)(
@@ -1477,6 +1665,10 @@ class DFDraw:
         same: bool = False,
         # Phase 13.28.DF: NaN/inf filter policy (AD-70)
         nan_policy: str = "filter",
+        # Phase 13.32.DF Sub-fix 3 (AD-79): reachable from top-level draw() too
+        facet_by: Optional[str] = None,
+        facet_by_bins: Optional[int] = None,
+        facet_by_quantiles: Optional[int] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -1663,6 +1855,10 @@ class DFDraw:
         stat_fields: Optional[Union[str, List[str]]] = None,
         # Phase 13.28.DF: NaN/inf filter policy (AD-70)
         nan_policy: str = "filter",
+        # Phase 13.32.DF Sub-fix 3 (AD-79): extend AD-78 facet_by column-mode to hist
+        facet_by: Optional[str] = None,
+        facet_by_bins: Optional[int] = None,
+        facet_by_quantiles: Optional[int] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -1772,6 +1968,11 @@ class DFDraw:
         # Apply selection and sampling
         df = self._apply_selection(self.df, selection)
         df = self._apply_sampling(df, sample)
+
+        # Phase 13.32.DF Sub-fix 3: validate facet_by_bins/_quantiles at entry
+        self._validate_facet_by_binning(
+            facet_by, facet_by_bins, facet_by_quantiles, df
+        )
         
         # Evaluate expression if needed
         if col_expr not in df.columns:
@@ -1782,9 +1983,30 @@ class DFDraw:
             duck_label = self._get_label(col_expr)
             if duck_label is not None:
                 xlabel = duck_label
-        
-        # Facet mode (same=True ignored in facet mode)
-        if facet and group_by is not None:
+
+        # Phase 13.32.DF Sub-fix 3 (AD-79): facet_by-driven dispatch via the
+        # channel framework. Takes precedence over legacy facet=True path.
+        # x_expr for hist is None (1D), so we pass y_expr=col_expr.
+        _effective_facet_by = facet_by
+        if not _effective_facet_by and facet and group_by is not None:
+            _effective_facet_by = 'group_by'  # AD-67 backward-compat
+        if _effective_facet_by is not None:
+            fig, axes, stats_dict = self._dispatch_faceted_render(
+                df=df, x_expr=None, y_expr=col_expr,
+                facet_by=_effective_facet_by, plot_kind='hist',
+                bins=bins, range=range, norm=norm,
+                stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
+                group_by=group_by, top_k=top_k, ncols=ncols,
+                sharex=sharex, sharey=sharey,
+                auto_title=auto_title, selection=selection,
+                stat_fields=stat_fields,
+                nan_policy=nan_policy,
+                facet_by_bins=facet_by_bins,
+                facet_by_quantiles=facet_by_quantiles,
+                **kwargs
+            )
+        # Facet mode (legacy path, same=True ignored in facet mode)
+        elif facet and group_by is not None:
             from .facet import facet_hist
             fig, axes, stats_dict = facet_hist(
                 df, col_expr, group_by,
@@ -1850,6 +2072,10 @@ class DFDraw:
         same: bool = False,
         # Phase 13.28.DF: NaN/inf filter policy (AD-70)
         nan_policy: str = "filter",
+        # Phase 13.32.DF Sub-fix 3 (AD-79): extend AD-78 facet_by column-mode to scatter
+        facet_by: Optional[str] = None,
+        facet_by_bins: Optional[int] = None,
+        facet_by_quantiles: Optional[int] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -1969,6 +2195,11 @@ class DFDraw:
         # Apply selection and sampling
         df = self._apply_selection(self.df, selection)
         df = self._apply_sampling(df, sample)
+
+        # Phase 13.32.DF Sub-fix 3: validate facet_by_bins/_quantiles at entry
+        self._validate_facet_by_binning(
+            facet_by, facet_by_bins, facet_by_quantiles, df
+        )
         
         # Evaluate expressions if needed
         if y_expr not in df.columns:
@@ -1985,9 +2216,29 @@ class DFDraw:
             duck_label = self._get_label(y_expr)
             if duck_label is not None:
                 ylabel = duck_label
-        
-        # Facet mode (same=True ignored in facet mode)
-        if facet and group_by is not None:
+
+        # Phase 13.32.DF Sub-fix 3 (AD-79): facet_by-driven dispatch via the
+        # channel framework. Takes precedence over legacy facet=True path.
+        _effective_facet_by = facet_by
+        if not _effective_facet_by and facet and group_by is not None:
+            _effective_facet_by = 'group_by'  # AD-67 backward-compat
+        if _effective_facet_by is not None:
+            fig, axes, stats_dict = self._dispatch_faceted_render(
+                df=df, x_expr=x_expr, y_expr=y_expr,
+                facet_by=_effective_facet_by, plot_kind='scatter',
+                color=color, size=size, marker=marker,
+                stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
+                group_by=group_by, top_k=top_k, ncols=ncols,
+                sharex=sharex, sharey=sharey,
+                cmap=cmap, colorbar=colorbar, clabel=clabel, jitter=jitter,
+                selection=selection,
+                nan_policy=nan_policy,
+                facet_by_bins=facet_by_bins,
+                facet_by_quantiles=facet_by_quantiles,
+                **kwargs
+            )
+        # Facet mode (legacy path, same=True ignored in facet mode)
+        elif facet and group_by is not None:
             from .facet import facet_scatter
             fig, axes, stats_dict = facet_scatter(
                 df, x_expr, y_expr, group_by,
@@ -2068,6 +2319,9 @@ class DFDraw:
         nan_policy: str = "filter",
         # Phase 13.27.DF (Phase D): Facet routing through channel framework (AD-61, AD-67)
         facet_by: Optional[str] = None,
+        # Phase 13.32.DF Sub-fix 3 (AD-79): symmetric binning on facet_by axis
+        facet_by_bins: Optional[int] = None,
+        facet_by_quantiles: Optional[int] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -2241,6 +2495,12 @@ class DFDraw:
         # Apply selection and sampling
         df = self._apply_selection(self.df, selection)
         df = self._apply_sampling(df, sample)
+
+        # Phase 13.32.DF Sub-fix 3 (v1.2 §3.3): validate facet_by_bins/_quantiles
+        # against facet_by + df at plot-method entry, BEFORE dispatch.
+        self._validate_facet_by_binning(
+            facet_by, facet_by_bins, facet_by_quantiles, df
+        )
         
         # Evaluate expressions if needed
         if y_expr not in df.columns:
@@ -2295,6 +2555,9 @@ class DFDraw:
                 quantile_style=quantile_style,
                 # Phase 13.28.DF: nan_policy
                 nan_policy=nan_policy,
+                # Phase 13.32.DF Sub-fix 3 (AD-79): symmetric binning on facet axis
+                facet_by_bins=facet_by_bins,
+                facet_by_quantiles=facet_by_quantiles,
                 **kwargs
             )
         else:
@@ -2367,6 +2630,10 @@ class DFDraw:
         stat_fields: Optional[Union[str, List[str]]] = None,
         # Phase 13.28.DF: NaN/inf filter policy (AD-70)
         nan_policy: str = "filter",
+        # Phase 13.32.DF Sub-fix 3 (AD-79): extend AD-78 facet_by column-mode to hist2d
+        facet_by: Optional[str] = None,
+        facet_by_bins: Optional[int] = None,
+        facet_by_quantiles: Optional[int] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -2456,6 +2723,11 @@ class DFDraw:
         # Apply selection and sampling
         df = self._apply_selection(self.df, selection)
         df = self._apply_sampling(df, sample)
+
+        # Phase 13.32.DF Sub-fix 3: validate facet_by_bins/_quantiles at entry
+        self._validate_facet_by_binning(
+            facet_by, facet_by_bins, facet_by_quantiles, df
+        )
         
         # Evaluate expressions if needed
         if y_expr not in df.columns:
@@ -2472,9 +2744,31 @@ class DFDraw:
             duck_label = self._get_label(y_expr)
             if duck_label is not None:
                 ylabel = duck_label
-        
-        # Facet mode (same=True ignored in facet mode)
-        if facet and group_by is not None:
+
+        # Phase 13.32.DF Sub-fix 3 (AD-79): facet_by-driven dispatch via the
+        # channel framework. Takes precedence over legacy facet=True path.
+        _effective_facet_by = facet_by
+        if not _effective_facet_by and facet and group_by is not None:
+            _effective_facet_by = 'group_by'  # AD-67 backward-compat
+        if _effective_facet_by is not None:
+            fig, axes, stats_dict = self._dispatch_faceted_render(
+                df=df, x_expr=x_expr, y_expr=y_expr,
+                facet_by=_effective_facet_by, plot_kind='hist2d',
+                bins=bins, range=range, norm=norm,
+                stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
+                group_by=group_by, top_k=top_k, ncols=ncols,
+                sharex=sharex, sharey=sharey,
+                cmap=cmap, colorbar=colorbar, clabel=clabel,
+                vmin=vmin, vmax=vmax,
+                auto_title=auto_title, selection=selection,
+                stat_fields=stat_fields,
+                nan_policy=nan_policy,
+                facet_by_bins=facet_by_bins,
+                facet_by_quantiles=facet_by_quantiles,
+                **kwargs
+            )
+        # Facet mode (legacy path, same=True ignored in facet mode)
+        elif facet and group_by is not None:
             from .facet import facet_hist2d
             fig, axes, stats_dict = facet_hist2d(
                 df, x_expr, y_expr, group_by,
@@ -3385,6 +3679,8 @@ def _validate_forwarded_names():
         (DFDraw._HIST_FORWARDED_NAMES,    DFDraw.hist,    'hist'),
         (DFDraw._SCATTER_FORWARDED_NAMES, DFDraw.scatter, 'scatter'),
         (DFDraw._DRAW_FORWARDED_NAMES,    DFDraw.draw,    'draw'),
+        # Phase 13.32.DF Sub-fix 3: hist2d's new FORWARDED_NAMES tuple
+        (DFDraw._HIST2D_FORWARDED_NAMES,  DFDraw.hist2d,  'hist2d'),
         # Phase 13.30.DF v1.0 — Class-2 column-reference tuples.
         # Same validation: every entry must be a real parameter of the target.
         # (Restored in Phase 13.31 after initial Phase 13.31 patch clobbered.)

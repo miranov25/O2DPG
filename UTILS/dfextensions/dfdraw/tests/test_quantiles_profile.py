@@ -538,7 +538,7 @@ class TestQuantileStyleKeyDefaults:
         assert get_style_value("quantile.band.alpha")==0.42
         assert get_style_value("quantile.error_bars.capsize")==9.0; Path(path).unlink()
     def test_namespace_integrity(self):
-        qk=[k for k in DEFAULT_STYLE if k.startswith('quantile.')]; assert len(qk)==4
+        qk=[k for k in DEFAULT_STYLE if k.startswith('quantile.')]; assert len(qk)==5  # Phase 13.32.DF: +quantile.band.alpha_grouped (v1.2 §3.2)
         for bad in ('quantiles.','qmode.','q.','band.','errorbars.'):
             assert not [k for k in DEFAULT_STYLE if k.startswith(bad)]
 
