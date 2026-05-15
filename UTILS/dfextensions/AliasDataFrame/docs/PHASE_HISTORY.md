@@ -1,7 +1,7 @@
 # AliasDataFrame Phase History
 
 > **Purpose**: Development history for architecture reviews and restart prompts.  
-> **Last Updated**: 2026-05-10  
+> **Last Updated**: 2026-05-14  
 > **Maintained By**: Marian Ivanov (miranov25)
 
 ## How to Use This File
@@ -42,8 +42,8 @@ AliasDataFrame is a high-performance data analysis framework for particle physic
 
 **Key Metrics:**
 - Performance: 60-770x speedups achieved; production pipeline 2.1× faster (1452s → 692s)
-- Test Coverage: 1584 tests passing, 177 invariance tests
-- Lines of Code: ~13,600 (AliasDataFrame.py)
+- Test Coverage: 1606 tests passing, 177+ invariance tests
+- Lines of Code: ~13,625 (AliasDataFrame.py)
 - Features: 47 in taxonomy (28 verified, 14 smoke-only, 4 broken, 1 planned)
 
 **Development Team:**
@@ -326,9 +326,140 @@ No formal phase — test infrastructure verifying ADF correctly forwards `quanti
 
 **Test results**: 1584 passed, 7F+1E pre-existing.
 
+### Phase 13.26.ADF: `read_tree` dtype_overrides
+**Dates**: 2026-05-13 to 2026-05-14  
+**Status**: ✅ Merged  
+**Commit**: `249fd551` (tag `PHASE_13_26_ADF_END`)  
+**Base**: `b9c28663` (BUG_validate_aliases_false_positives close)
+
+New `dtype_overrides={regex: np.dtype}` parameter on `read_tree()` for on-the-fly type conversion during branch reading. Patterns matched via `re.fullmatch`, first match wins. Applied between uproot read and pandas DataFrame construction — peak memory stays at target dtype size.
+
+**Motivation**: Production calibration files (60M entries, 15 branches) need ~7 GB in float64. Reading directly to float16 cuts to ~2 GB before any post-processing.
+
+**Implementation**: ~50-line addition to `read_tree`. Both threaded and single-threaded paths covered (shared `dtype_hints` dict). Overflow detection: warns when finite values become inf after downcast. NaN preservation verified (IEEE 754).
+
+**Cycle history**:
+- v1.0 first submission: F1 violation (code not committed, in working tree only) — held the line, 30-min rework
+- v1.1 attempted to overload `dtype_overrides={pattern: None}` for branch-skip semantics — rejected on API-overloading P1 + `git commit --amend` forbidden operation. v1.1 work moved to separate Phase 13.27.ADF
+- v1.0 reapproved at `249fd551` after clean commit + full review packet
+
+**Tests**: D1-D10 (10 invariance tests). Regex match, first-match-wins precedence, overflow warning, NaN preservation, schema round-trip, entry_range consistency, warning shows `original→target` dtype.
+
+**Test results**: 1602 passed, 7F+1E (pre-existing baseline preserved).
+
+**Decisions taken** (PHASE_13_26_ADF_v1.0_Proposal §3):
+
+| Question | Answer |
+|---|---|
+| Overflow | `warnings.warn` with `original_dtype → target_dtype` |
+| Schema | Read-time only; export records actual dtype via `column_dtypes` |
+| Precedence | First match wins (ordered dict) |
+| Compression | `dtype_overrides > compression_info` |
+| Entry range | Same `dtype_hints`, no per-chunk divergence |
+| Subframes | Current tree only |
+| NaN | Preserved (IEEE 754) |
+
+### Phase 13.27.ADF: `read_tree` skip_branches
+**Dates**: 2026-05-14  
+**Status**: ✅ Merged  
+**Commit**: `bbedd90b` (tag `PHASE_13_27_ADF_END`)  
+**Base**: `249fd551` (Phase 13.26.ADF close)
+
+New `skip_branches=[regex]` parameter on `read_tree()` — branches matching any pattern are not read and do not appear in the DataFrame. Mirrors uproot's `filter_name` capability. Separate parameter from `dtype_overrides` (single responsibility per parameter, per Phase 13.26 v1.1 review consensus).
+
+**Motivation**: `quality_flag_PIter1` (ROOT string → pandas object) allocates 3.48 GB for 60M rows × 3 unique values. Cannot be reduced by dtype conversion alone; must be excluded at read time.
+
+**Implementation**: 15-line block in `read_tree` after `dtype_overrides` injection. Defensive `try/except re.error` on bad patterns with warning. Order: compile overrides → get branch names → apply overrides → filter skip_branches → read.
+
+**Tests**: D11-D14 (4 invariance tests). Skip exclusion, column count reduction, combined with `dtype_overrides`, no-match no-op.
+
+**Test results**: 1606 passed, 7F+1E (pre-existing baseline preserved; matches Phase 13.26 baseline byte-for-byte).
+
+**Production result (2026-05-14)**: 60M-row × 14-column TPC calibration file reduced to **2.30 GB physical** with dtype_overrides + skip_branches active. 745 MB additional savings identified via regex-pattern tightening (architect's own use case). Further reduction blocked by pandas BlockManager fragmentation — motivates Phase 14 ADFStore (PyArrow-backed storage).
+
+### Phase 13.25.DF FIX1: dfdraw Quantile Test-Quality + AD-52 Sentinel Fix
+**Dates**: 2026-05-14 (proposal drafted)  
+**Status**: 📋 Proposal v1.0 drafted by Claude37; awaiting architect approval to start Coder work  
+**Base commit**: `a11e5121` (Phase 13.25.DF v1.0_END)  
+**Target tag**: `PHASE_13_25_DF_FIX1_END`
+
+Fix cycle against approved spec `PHASE_13_25_DF_v1.3_Proposal.md` (no re-litigation). Closes 4 P1s identified in Claude40 consolidated code review of 2026-04-30 (verdict ❌ REVISION REQUIRED):
+
+- **P1-1 (Claude37 unique)**: `error_bars + error="none"` falls through all dispatch branches → empty figure. Production silent-rendering bug.
+- **P1-2 (Claude49 + Claude37 convergent)**: AD-52 `error="sem"` rebind at `profile.py:143` cannot distinguish explicit-vs-default. "Both rendered" branch unreachable.
+- **P1-3 (3-reviewer convergent)**: Class 6 error-kwarg interaction tests are smoke-only (4 of 5 have no assertions on named identities).
+- **P1-4 (Claude48 + Claude49 convergent)**: Class 4 test 8 (the AD-53 capsize-independence lock) asserts only `plt.close('all')`. The test that locks a 3-iteration converged decision is empty.
+
+**Estimated effort**: 5–6 hr Coder + 2-day review cycle. Proposal §10 recommends Claude48 → Reviewer (paired-test rotation), 4.7 Coder for FIX1.
+
+**Spec authority**: `PHASE_13_25_DF_v1.3_Proposal.md` (approved 2026-04-23). No new public API, no style.py changes (Phase A is closed).
+
+**Age signal**: Open since 2026-04-30 (15 days). Two of the four P1s are correctness issues affecting production users today.
+
 ---
 
 ## Bug Fixes
+
+### BUG_AliasDataFrame_20260512_groupby_expression_materialization
+**Dates**: 2026-05-12 to 2026-05-13  
+**Status**: ✅ Fixed  
+**Commits**: `d377a7b1` (initial fix) → consolidated through to `249fd551` (Phase 13.26.ADF close, where attribution audit closed)  
+**Severity**: P0 — production crash after dfdraw Phase 13.30 deployment  
+**Regression catch attribution**: Sonnet1 + Sonnet2 (matrix-history differential against PHASE_HISTORY baseline)
+
+**Problem**: `adf.draw(..., group_by="row%3")` raised `ValueError` after dfdraw Phase 13.30 added validation that `group_by` must be a real column. Previously silently produced ungrouped output (wrong results). Now crashes loud.
+
+**Root cause**: `ADF.draw()` materializes plot expressions (e.g., `dy_I5T` in `"dy_I5T:row"`) via `_parse_expr_aliases` but has no parallel materialization for `group_by` expressions. Expression like `"row%3"` isn't tokenized as an alias and falls through to dfdraw unchanged.
+
+**Fix**: 12-line surgical insertion in `AliasDataFrame.draw()` at line 10987 (before `DFDraw(df_subset)` construction). Four-guard precondition: `group_by is not None and isinstance(str) and not in df_subset.columns and not in self.aliases`. Materializes via `df_subset.copy() + df_subset.eval(group_by)` — per-call temp column on the copy, no persistent alias pollution.
+
+**Tests**: G1-G4 (4 invariance tests). G1 calls `adf.draw(group_by='row%3')` — exact public API user hit (Failure Mode #12). G4 locks "no persistent alias pollution" with before-and-after assertion (`'row%3' not in adf.aliases`).
+
+**Cycle notes**:
+- Initial Claude37 review approved ✅, missed the differential-against-prior-matrix check
+- Sonnet1 + Sonnet2 caught regression: 3 newly-broken tests (SUB.register `test_save_and_load_integrity` + COMP.roundtrip `test_backward_compatibility_no_compression_info` + `test_roundtrip_save_load`)
+- Verdict overridden to ❌ CHANGES REQUESTED in Main Reviewer consolidation
+- The 3 regressions resolved at commit `b9c28663` (BUG_validate_aliases_false_positives) — root cause attribution: Phase 13.24 `apply_schema()` line 9424 interaction. Cleaned up implicitly with the B1 commit.
+- Reinforces methodology lesson: matrix-history differential is mandatory, not optional
+
+### BUG_AliasDataFrame_20260512_validate_aliases_false_positives (B1)
+**Dates**: 2026-05-12 to 2026-05-13  
+**Status**: ✅ Fixed  
+**Commit**: `b9c28663`  
+**Drafter**: Sonnet1  
+**Severity**: P1 — false positives in `validate_aliases()` annoyance, not data corruption
+
+**Problem**: `describe_aliases()` reported 62 broken aliases; **53 were false positives.** Three false-positive classes:
+- B1_1: `np.pi` and other numpy constants flagged as missing subframes
+- B1_2: `subframe.column` tokens (e.g., `Side.dy`) rechecked as bare unknowns
+- B1_3: Mid-chain multi-level references (alias `A` defined as `B + C` where `B`, `C` are themselves aliases) escaping the guard
+
+**Fix**: `validate_aliases()` rewritten to delegate to `_analyze_expression()` — the same AST-based walker used by `dependency_tree()`. No new logic introduced; eliminates parallel-implementation drift.
+
+**Production result**: **62 broken → 9 broken** (53 false positives eliminated). 9 remaining are genuine (CTPLumi.* — dots in R subframe column names, deferred).
+
+**Tests**: B1_1 through B1_5 (5 invariance tests). All under `tests/test_B1_validate_aliases_false_positives.py`.
+
+**Test results**: At close, 1599 passed, 7F+1E baseline preserved.
+
+### BUG_AliasDataFrame_save_load_compression_regression (resolved en passant)
+**Dates**: Active 2026-05-12 (caught) to 2026-05-13 (resolved)  
+**Status**: ✅ Fixed (no formal bug report — caught by Sonnet1/Sonnet2 during BUG_GroupBy review)  
+**Severity**: P0 — silent regression of 3 documented-passing tests
+
+**Problem**: Between Phase 13.25.ADF baseline (`16c3ca4c`, 1584 passed / 7F+1E) and BUG_GroupBy first-fix submission (`d377a7b1`), 3 tests regressed from passing to failing:
+- `test_save_and_load_integrity` (SUB.register) ✅ → 🧨
+- `test_backward_compatibility_no_compression_info` (COMP.roundtrip) — new failure
+- `test_roundtrip_save_load` (COMP.roundtrip) — new failure
+
+**Root cause (suspected)**: Phase 13.24 Part A change at `apply_schema()` line 9424 — `self._restore_aliases_from_dict({name: expr})` replaced `self.aliases[name] = expr` after read-only property introduction. Interaction with save/load round-trip path was unaudited.
+
+**Resolution**: Resolved by commit `b9c28663` (BUG_validate_aliases_false_positives). Mechanism not formally attributed; the 3 regressions disappeared en passant. Failure count returned to documented 7F+1E baseline.
+
+**Methodology lesson**: This bug was the trigger for several governance recommendations:
+- Bug-fix proposal template must include "Baseline test state vs PHASE_HISTORY" field
+- Reviewer Card Rule 5c proposed: matrix-history differential is mechanically required, not optional
+- Multi-model panel diversity (Sonnet + Claude) caught what same-model panel would have missed
 
 ### BUG_AliasDataFrame_20260420_draw_selection_alias
 **Dates**: 2026-04-20  
@@ -846,6 +977,10 @@ Remaining overhead is Python/Pandas framework cost.
 | 13.23.ADF step 2 | 11 (N1_0-N1_10) | 1566 |
 | 13.24.ADF Part B | 14 (V8+V9+N1_11) | 1579 |
 | 13.25.ADF (Q1) | 5 (Q1_1-Q1_5) | 1584 |
+| BUG_GroupBy_Expression_Materialization | 4 (G1-G4) | 1588 |
+| BUG_validate_aliases_false_positives | 5 (B1_1-B1_5) | 1599 (clean baseline) |
+| 13.26.ADF (dtype_overrides) | 10 (D1-D10) | 1602 |
+| 13.27.ADF (skip_branches) | 4 (D11-D14) | 1606 |
 
 ---
 
@@ -856,17 +991,44 @@ Remaining overhead is Python/Pandas framework cost.
 - [x] ~~`read_tree` recursive subframe loading~~ (Phase 13.22)
 - [x] ~~Phase 13.23.ADF — Multi-level dotted expression resolution~~ (v1.2 approved, merged 2026-04-29)
 - [x] ~~Phase 13.24.ADF — Read-only aliases hardening~~ (v1.2 approved, merged 2026-04-30)
-- [ ] A2 — LZ4 default compression (one-line + compat test, ~15-20s savings)
-- [ ] A3 — Batch metadata serialization (~50-55s savings, needs minimal-UserInfo approach)
-- [ ] Phase 14 — ADFStore concept (formal architect review proposal needed)
-- [ ] AD-50 Option C1b — `_cached_last_ax` for Drawer state (~15 lines, deferred, not urgent)
-- [ ] Technical Summary v1.6 full public API documentation (~90 methods)
-- [ ] P1 tests: I2_6, I4_2, I4_3 fixes
+- [x] ~~BUG_GroupBy_Expression_Materialization~~ (fix at `d377a7b1`; baseline regressions resolved by `b9c28663`)
+- [x] ~~Phase 13.26.ADF — read_tree dtype_overrides~~ (merged 2026-05-13 at `249fd551`)
+- [x] ~~Phase 13.27.ADF — read_tree skip_branches~~ (merged 2026-05-14 at `bbedd90b`)
+
+### Active queue (priority order)
+
+- [ ] **Phase 13.25.DF FIX1** — Quantile test-quality + AD-52 sentinel + `error="none"` dispatch (proposal v1.0 drafted 2026-05-14; **15 days open**, 2 correctness P1s)
+- [ ] **Phase 13.26.ADF P2 follow-ups** — `PHASE_13_26_ADF_v1.0_Proposal.md` upload to docs; D11/D12 compression+subframe interaction tests
+- [ ] **Phase 13.27.ADF P3 follow-ups** — `feature_taxonomy.py` update for G1-G4, B1, D1-D14 (currently in Unmatched Tests)
+- [ ] **A2** — LZ4 default compression (one-line + compat test, ~15-20s savings)
+- [ ] **A3** — Batch metadata serialization (~50-55s savings, needs minimal-UserInfo approach)
+- [ ] **Phase 14** — ADFStore concept (formal architect review proposal needed; PyArrow-backed storage to escape pandas BlockManager fragmentation — see Phase 13.27.ADF production datapoint)
+- [ ] **AD-50 Option C1b** — `_cached_last_ax` for Drawer state (~15 lines, deferred, not urgent)
+- [ ] **Technical Summary v1.6** full public API documentation (~90 methods)
+- [ ] **P1 tests**: I2_6, I4_2, I4_3 fixes
 - [ ] Fix `register_subframe_lazy()` bug (BUG_AliasDataFrame_20260116)
 - [ ] Axis title lookup for subframe columns (`Sub_dy` vs `Side.dy`)
-- [ ] draw() lazy=False doesn't materialize selection aliases (S1 xfail)
-- [ ] draw() resolver unification (3 parallel implementations)
-- [ ] Feature taxonomy: 61 unmatched tests remaining (schema-versioning, fill-handling gaps)
+- [ ] `draw()` lazy=False doesn't materialize selection aliases (S1 xfail)
+- [ ] `draw()` resolver unification (3 parallel implementations)
+- [ ] Feature taxonomy: 84 unmatched tests remaining (B1, D1-D14, G1-G4, N1_11, Q1, V8/V9 + schema-versioning gaps)
+- [ ] `test_K2_3_production_reproducer_mirror` intermittent — investigation pending (B-Q1)
+- [ ] `test_schema_serialization.py` collection error (1E pre-existing in baseline; unattributed)
+
+### Cross-team queue (informational)
+
+- [ ] **dfdraw Phase 13.31.DF** — `facet_by` column-name support (AD-78, commit `f3ca432a` on `feature/groupby-optimization`; pending review packet completion)
+- [ ] **dfdraw Phase 13.27.DF Commit 2** — `selection_delta` / `weights_delta` facet (deferred per current phasing)
+- [ ] **O2DistAI** — LZ4 compression rollout, ITS dematerialization (~2 GB savings)
+- [ ] **GBRegression** — GB V4 median batching (~35–40s)
+
+### Reviewer-quality process items (for next governance-doc revision)
+
+- [ ] Bug-fix proposal template: add mandatory "Baseline test state vs PHASE_HISTORY" field in Evidence Anchor (per BUG_GroupBy methodology lesson)
+- [ ] Reviewer Card Rule 5c: matrix-history differential mechanically required (not judgment-driven)
+- [ ] Reviewer Card Rule "no commit, no review": codify Phase 13.26.ADF F1 enforcement
+- [ ] Anti-Library entry: "merging features without specification" (analogous to existing "Reasoning about performance without profiling")
+- [ ] Claude48 → Reviewer paired-test rotation: Phase 13.25.DF FIX1 is the natural slot
+- [ ] Claude37 anchoring-pattern signal: 3 instances logged across 3 cycles; one-line reminder pre-review recommended
 
 ---
 

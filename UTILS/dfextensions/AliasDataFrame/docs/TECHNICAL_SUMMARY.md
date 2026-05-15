@@ -1,23 +1,28 @@
 # AliasDataFrame Technical Summary
 
-**Document ID:** `AliasDataFrame_Technical_Summary_v13_11_B_ADF_v1_5.md`  
-**Author:** Claude11 (AliasDataFrame Coder)  
-**Date:** 2026-04-06  
-**Version:** 1.5  
-**Phase:** 13.11.B (Capability Matrix taxonomy)  
+**Document ID:** `AliasDataFrame_Technical_Summary_v13_27_ADF_v1_6.md`  
+**Author:** Claude37 (AliasDataFrame Reviewer / Main Reviewer)  
+**Date:** 2026-05-14  
+**Version:** 1.6  
+**Phase:** 13.27.ADF (`read_tree` skip_branches) — base for active queue  
 **Audience:** All teams — architecture reviewers, cross-team coders (ORecoAI, RootInteractive, RDataFrameDSL, GBAI), and direct users  
 **Purpose:** Complete public API reference, data model, hierarchical data representation, dependencies, limitations
 
-**Revision notes (v1.5):** Phases 13.11, 13.9.Fix1, bug fixes:
-- Updated §1.2: Architecture diagram (source lines ~12,100)
-- Updated §1.3: Added scripts/ directory, updated line counts
-- Updated §1.4: Test count 1441, 41-feature Capability Matrix, 64 invariance tests
-- Updated §12: Test coverage with all Phase 13.11 additions
-- **NEW §12.6**: Capability Matrix infrastructure (run_tests.sh, taxonomy, generator v2)
-- Updated §13.1: Bug fixes (fill_value P0 ✅, draw_lazy compound ✅, polynomial persistence ✅)
-- Updated §13.2: Resolved items (CAPABILITY_MATRIX ✅, run_tests.sh ✅, PHASE_BEGIN ✅)
-- Updated §14: Current planned work
-- All v1.4 content retained
+**Revision notes (v1.6):** Phases 13.22 through 13.27, plus bug fixes and FIX1 queue:
+
+- Updated header: version 1.6, date 2026-05-14, phase target 13.27.ADF
+- Updated §1.4: test count **1606** (was 1521), invariance count **177** (was 125), Capability Matrix **47 features / 28 ✅ / 14 ☑️ / 4 🧨 / 1 📋**
+- Updated §4 (`read_tree`): added `dtype_overrides={regex: np.dtype}` and `skip_branches=[regex]` parameters with usage examples
+- Updated §13.1 Bug Fixes: 4 new resolutions (BUG_GroupBy_Expression_Materialization, BUG_validate_aliases_false_positives, BUG_save_load_compression_regression, plus prior pending)
+- Updated §13.2 Resolved Items: G1-G4, B1, D1-D14 tests shipped; baseline preserved
+- Updated §14 Planned Work: Phase 13.25.DF FIX1 (active priority), Phase 14 ADFStore (PyArrow-backed storage, motivated by production fragmentation evidence)
+- NEW §14.3: Methodology/governance lessons from BUG_GroupBy cycle (anti-fabrication firewall validation, multi-model panel diversity, mandatory baseline differential)
+- All v1.5.2 content retained
+
+**Revision notes (v1.5.2):** Phase 13.21.ADF additions:
+- NEW in §4.3: `dematerialize(drop=, keep=)` — memory reclamation with raw-column protection; replaces removed `drop_materialized()`
+- Updated §2 Join Contract: join index cache row (content-based validation, survives `materialize_aliases`, invalidated on `register_subframe`)
+- Updated §12.1: 1521 tests, 125 invariance
 
 ---
 
@@ -290,15 +295,23 @@ class AliasDataFrame:
     @staticmethod
     def read_tree(file_path, tree_name,
                   entry_start=None, entry_stop=None,
-                  num_workers=8, **kwargs) -> 'AliasDataFrame':
+                  num_workers=8, load_subframes=True,
+                  dtype_overrides=None, skip_branches=None) -> 'AliasDataFrame':
         """Read ROOT TTree into eager AliasDataFrame (all branches loaded).
         Uses threaded branch-by-branch reading (Phase 1).
         Auto-restores dtypes from metadata if available (float16 roundtrip).
+
+        Phase 13.26: dtype_overrides={regex: np.dtype} — on-the-fly type
+        conversion during read. First match wins. Overflow warned.
+        Phase 13.27: skip_branches=[regex] — exclude matched branches.
 
         Example
         -------
         >>> adf = AliasDataFrame.read_tree("data.root", "tree")
         >>> adf = AliasDataFrame.read_tree("data.root", "tree", entry_stop=10000)
+        >>> adf = AliasDataFrame.read_tree("data.root", "tree",
+        ...     dtype_overrides={r'.*_PIter\\d+': np.float16},
+        ...     skip_branches=[r'quality_flag.*'])
         """
 
     @classmethod
@@ -1585,14 +1598,46 @@ from AliasDataFrameRDF import (setup_rdf_with_friends,
 | v1.4 | 2026-03-27 | **Phase 13.9/13.10 additions:** NEW §4.15 (register_function, register_polynomial_from_subframe, register_evaluator), NEW §6.5 (Registered Function System with PolynomialSpec architecture, evaluator schema contract). Updated: §1.1 feature list, §1.2 architecture diagram, §1.3 file structure (+PolynomialSpec.py), §1.4 metrics (1425 tests, 42× polynomial speedup), §2 contract snapshot, §4.3 add_alias fill_value, §12 test coverage, §13 bugs (draw_subframe_resolution ✅ fixed), §15.3 schema with registered_functions. |
 | v1.5 | 2026-04-06 | **Phase 13.11/13.11.B + bug fixes.** Updated §1.2–1.4 (12,100 lines, 1441 tests, 41-feature matrix). NEW §12.6 Capability Matrix infrastructure (run_tests.sh, taxonomy-based generator, 41 features, 12 modules). Updated §12.2 (5 new test addition entries). Updated §13.1: fill_value P0 ✅, draw_lazy compound ✅, polynomial persistence ✅. Updated §13.2: CAPABILITY_MATRIX ✅, run_tests.sh ✅, PHASE_BEGIN ✅ resolved; serialization duplication added as tech debt. Updated §14 planned work. |
 | v1.5.2 | 2026-04-19 | **Phase 13.21.ADF additions.** NEW in §4.3: `dematerialize(drop=, keep=)` — memory reclamation with raw-column protection; replaces removed `drop_materialized()`. Updated §2 Join Contract: join index cache row (content-based validation, survives `materialize_aliases`, invalidated on `register_subframe`). Updated §12.1: 1521 tests, 125 invariance. |
+| v1.6 | 2026-05-14 | **Phases 13.22 through 13.27 + bug fixes + FIX1 queue.** Updated §1.4: 1606 tests, 177 invariance, 47-feature matrix (28 ✅ / 14 ☑️ / 4 🧨 / 1 📋). NEW §4 `read_tree` parameters: `dtype_overrides={regex: np.dtype}` (Phase 13.26.ADF, on-the-fly type conversion with overflow detection) and `skip_branches=[regex]` (Phase 13.27.ADF, selective branch exclusion). Updated §13.1: BUG_GroupBy_Expression_Materialization ✅, BUG_validate_aliases_false_positives ✅, BUG_save_load_compression_regression ✅. Updated §14: Phase 13.25.DF FIX1 (active priority, 4 P1s open since 2026-04-30); Phase 14 ADFStore (PyArrow-backed storage motivated by production fragmentation evidence — 60M-row × 14-column dataset at 2.30 GB physical hits BlockManager fragmentation ceiling). NEW §14.3: methodology lessons from BUG_GroupBy review cycle (matrix-history differential mandatory, multi-model panel diversity validated as Anti-Fabrication firewall). |
 
 ---
 
 **END OF TECHNICAL SUMMARY**
 
-**Document Version:** 1.5.2  
-**Phase:** 13.21.ADF (Join index caching + dematerialize)  
-**Total Source Lines:** ~12,862 (AliasDataFrame.py) + 337 (PolynomialSpec.py) + ~800 (scripts/infrastructure)  
-**Total Test Files:** 55+  
-**Test Results:** 1521 passed, 7 failed, 8 skipped (2026-04-19)  
-**Capability Matrix:** 44 features, 26 verified, 125 invariance tests
+**Document Version:** 1.6  
+**Phase:** 13.27.ADF (`read_tree` skip_branches)  
+**Total Source Lines:** ~13,625 (AliasDataFrame.py) + 337 (PolynomialSpec.py) + ~800 (scripts/infrastructure)  
+**Total Test Files:** 60+  
+**Test Results:** 1606 passed, 7 failed, 1 error, 8 skipped (2026-05-14 baseline; matches PHASE_HISTORY documented state)  
+**Capability Matrix:** 47 features — 28 ✅ Verified, 14 ☑️ Smoke-only, 4 🧨 Broken (K2_3 intermittent + 3 pre-existing I2_6/I4_2/I4_3 + 3 RDF.export friend-tree tests), 1 📋 Planned. 177 invariance tests.
+
+---
+
+## v1.6 Addendum: Active Queue + Methodology Notes
+
+### Active phases (priority order)
+
+1. **Phase 13.25.DF FIX1** (dfdraw cross-subproject; spec at `PHASE_13_25_DF_v1.3_Proposal.md`). Proposal `PHASE_13_25_DF_FIX1_v1.0_Proposal.md` drafted 2026-05-14 by Claude37. Closes 4 P1s from Claude40 consolidated code review of 2026-04-30. **15 days open**; two correctness P1s affect production users today (AD-52 silent rebind for `error="sem"`; `error="none"` empty render in `quantile_mode='error_bars'`). Effort: 5–6 hr Coder + 2-day review cycle.
+
+2. **Phase 14 ADFStore** (formal architect-review proposal required). Concept: shared storage layer where AliasDataFrame operates as a view over relational tables with no copies. Motivated by (a) nested subframe export crash, (b) `hadd` file-size problem, (c) **production memory fragmentation evidence** from Phase 13.27.ADF — 60M-row TPC calibration dataset at 2.30 GB physical hits pandas BlockManager fragmentation ceiling that `dtype_overrides` + `skip_branches` cannot escape. PyArrow-backed storage is the structural fix.
+
+### Methodology lessons (from BUG_GroupBy_Expression_Materialization cycle)
+
+This bug-fix cycle (2026-05-12 to 2026-05-13) demonstrated that the Anti-Fabrication firewall works as designed when reviewer panels have model-family diversity:
+
+1. **Internal-consistency-without-external-anchor failure mode.** Initial Claude37 review approved ✅ based on architectural-isolation reasoning (the 12-line `draw()` fix cannot cascade into save/load/compression subsystems) without running the differential against the documented PHASE_HISTORY baseline. The reasoning was correct but incomplete.
+
+2. **Multi-model diversity caught the consensus blind spot.** Sonnet1 + Sonnet2 (different model family, fresh methodology read) independently performed the matrix-history differential and identified 3 newly-broken tests (`test_save_and_load_integrity`, `test_backward_compatibility_no_compression_info`, `test_roundtrip_save_load`). Same-model panels (Claude-only) would have produced consensus on the wrong answer.
+
+3. **Outcome.** Main Reviewer (Claude37) synthesis overrode the initial ✅ to ❌ CHANGES REQUESTED. Regressions resolved during commit `b9c28663` (en passant with B1 fix). Failure count returned to documented 7F+1E baseline.
+
+### Governance recommendations (for next Org-structure / MTTU_Reviewer revision)
+
+| Recommendation | Origin |
+|---|---|
+| Bug-fix proposal template: mandatory "Baseline test state vs PHASE_HISTORY" field in Evidence Anchor | BUG_GroupBy cycle |
+| Reviewer Card Rule 5c: matrix-history differential mechanically required, not judgment-driven | BUG_GroupBy cycle |
+| Reviewer Card Rule: "no commit, no review" — if implementation not in `diff_last_commit_*.txt`, verdict is automatically [X] BLOCKED with no further analysis | Phase 13.26.ADF F1 enforcement |
+| Anti-Library entry: "Merging features without specification" (analogous to existing "Reasoning about performance without profiling") | Phase 13.26.ADF v1.1 cycle |
+| Phase 13.26.ADF v1.0: production datapoint provides quantified Phase 14 motivation (60M-row × 14-column = 2.30 GB physical, ~+1.5–2× RSS overhead from fragmentation) | Production telemetry |
+| Coder rotation: Claude48 → Reviewer paired-test (Phase 13.25.DF FIX1 is the natural slot) | Phase 13.25.DF v1.0_END findings |

@@ -1,6 +1,6 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-04-29 20:27 UTC
+**Generated:** 2026-05-14 10:27 UTC
 **Phase:** 13.11.B
 **Taxonomy:** 47 features (PHASE_13_11_B approved)
 **Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)
@@ -9,15 +9,15 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 29 | 61% |
+| ✅ Verified | 28 | 59% |
 | ☑️ Smoke-only | 14 | 29% |
-| 🧨 Broken | 3 | 6% |
+| 🧨 Broken | 4 | 8% |
 | 📋 Planned | 1 | 2% |
 | **Total features** | **47** | |
 | **Matched tests** | **1614** | |
 | **Invariance tests** | **177** | |
 
-**Unmatched tests:** 44 (not mapped to any feature)
+**Unmatched tests:** 84 (not mapped to any feature)
 
 ## CORE
 
@@ -71,7 +71,7 @@
 
 | Status | Feature | Tests | Pass | Fail | Inv |
 |--------|---------|------:|-----:|-----:|:---:|
-| ✅ | **DRAW.execution** — draw() with auto-materialization | 62 | 61 | 0 | 12 |
+| 🧨 | **DRAW.execution** — draw() with auto-materialization | 62 | 60 | 1 | 12 |
 | ☑️ | **DRAW.batch** — draw_batch() & draw_figures() | 45 | 44 | 0 |  |
 | ✅ | **DRAW.subframe_resolution** — Subframe column resolution in draw | 35 | 35 | 0 | 2 |
 | ✅ | **DRAW.compound_expr** — Lazy materialization of compound expressions | 13 | 13 | 0 | 2 |
@@ -123,6 +123,9 @@
 
 ## 🧨 Broken Features — Details
 
+### DRAW.execution
+- ❌ `test_K2_vector_draw_end_to_end.py::TestK2VectorDrawEndToEnd::test_K2_3_production_reproducer_mirror`
+
 ### COMP.roundtrip
 - ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
 - ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
@@ -131,45 +134,45 @@
 - ❌ `test_invariance_backend.py::TestInvarianceBackend::test_I2_6_chained_subframe_expressions_numba_vs_numpy`
 
 ### RDF.export
-- ❌ `test_AliasDataFrameRDF.py::TestAddDefinesCollision::test_collision_from_friend_tree`
-- ❌ `test_AliasDataFrameRDF.py::TestRDataFrameFriendAccess::test_composite_index_friend`
 - ❌ `test_AliasDataFrameRDF.py::TestTMemFileBranch::test_missing_keys_in_friend`
+- ❌ `test_AliasDataFrameRDF.py::TestRDataFrameFriendAccess::test_composite_index_friend`
+- ❌ `test_AliasDataFrameRDF.py::TestAddDefinesCollision::test_collision_from_friend_tree`
 
 ## Unmatched Tests
 
-44 tests not mapped to any feature.
+84 tests not mapped to any feature.
 
-- `test_M1_metadata_skip.py::TestM1MetadataSkip::test_M1_1_metadata_write_count_reduced`
-- `test_M1_metadata_skip.py::TestM1MetadataSkip::test_M1_2_parent_tree_metadata_preserved`
-- `test_alias_dataframe.py::TestReadTreeOptimized::test_aliases_preserved`
-- `test_alias_dataframe.py::TestReadTreeOptimized::test_backward_compatibility_no_metadata`
-- `test_alias_dataframe.py::TestReadTreeOptimized::test_basic_read`
-- `test_alias_dataframe.py::TestReadTreeOptimized::test_entry_range_start_stop`
-- `test_alias_dataframe.py::TestReadTreeOptimized::test_entry_range_stop`
-- `test_alias_dataframe.py::TestReadTreeOptimized::test_invalid_tree_raises_error`
-- `test_alias_dataframe.py::TestReadTreeOptimized::test_subframe_loaded`
-- `test_alias_dataframe.py::TestReadTreeOptimized::test_subframe_warning_with_entry_range`
-- `test_alias_dataframe.py::TestReadTreeOptimized::test_threaded_vs_unthreaded_equivalence`
-- `test_alias_dataframe.py::TestReadTreeWithCompression::test_compressed_columns_dtype_restored`
-- `test_alias_dataframe.py::TestReadTreeWithCompression::test_compression_info_preserved`
-- `test_alias_dataframe.py::TestReadTreeWithCompression::test_decompression_alias_works`
-- `test_alias_dataframe.py::TestReadTreeWithCompression::test_entry_range_with_compression`
-- `test_alias_dataframe.py::TestSchemaV2Ordering::test_schema_v2_groups_roundtrip`
-- `test_alias_dataframe.py::TestSchemaV2Ordering::test_schema_v2_groups_simple_lists`
-- `test_alias_dataframe.py::TestSchemaV2Ordering::test_schema_v2_order_agnostic_load`
-- `test_alias_dataframe.py::TestSchemaV2Ordering::test_schema_v2_order_canonical`
-- `test_alias_dataframe.py::TestSchemaV2Ordering::test_schema_v2_order_full`
-- `test_alias_dataframe.py::TestSchemaV2Ordering::test_schema_v2_order_strict_positions`
-- `test_alias_dataframe.py::TestSchemaV2Ordering::test_schema_v2_without_groups`
-- `test_fill_handling.py::TestModeComparison::test_direct_and_safe_give_same_values_when_no_missing`
-- `test_fill_handling.py::TestMultipleSubframes::test_different_fill_per_subframe`
-- `test_fill_handling.py::TestSubframeFillConfig::test_clear_subframe_fill`
-- `test_fill_handling.py::TestSubframeFillConfig::test_clear_subframe_fill_validates_subframe`
-- `test_fill_handling.py::TestSubframeFillConfig::test_set_subframe_fill_partial_override`
-- `test_fill_handling.py::TestSubframeFillConfig::test_set_subframe_fill_rejects_unknown_fill_mode`
-- `test_fill_handling.py::TestSubframeFillConfig::test_set_subframe_fill_stores_config`
-- `test_fill_handling.py::TestSubframeFillConfig::test_set_subframe_fill_unknown_subframe_raises`
-- ... +14 more
+- `test_B1_validate_aliases_false_positives.py::TestB1ValidateAliasesFalsePositives::test_B1_1_np_pi_not_broken`
+- `test_B1_validate_aliases_false_positives.py::TestB1ValidateAliasesFalsePositives::test_B1_2_subframe_column_not_broken`
+- `test_B1_validate_aliases_false_positives.py::TestB1ValidateAliasesFalsePositives::test_B1_3_arithmetic_expression_not_broken`
+- `test_B1_validate_aliases_false_positives.py::TestB1ValidateAliasesFalsePositives::test_B1_4_genuinely_broken_still_detected`
+- `test_B1_validate_aliases_false_positives.py::TestB1ValidateAliasesFalsePositives::test_B1_5_truly_missing_bare_token_detected`
+- `test_D1_dtype_overrides.py::TestDtypeOverrides::test_D10_override_warning_shows_correct_dtypes`
+- `test_D1_dtype_overrides.py::TestDtypeOverrides::test_D1_regex_converts_float64_to_float16`
+- `test_D1_dtype_overrides.py::TestDtypeOverrides::test_D2_first_match_wins`
+- `test_D1_dtype_overrides.py::TestDtypeOverrides::test_D3_no_override_columns_unchanged`
+- `test_D1_dtype_overrides.py::TestDtypeOverrides::test_D4_overflow_warns`
+- `test_D1_dtype_overrides.py::TestDtypeOverrides::test_D5_nan_preserved`
+- `test_D1_dtype_overrides.py::TestDtypeOverrides::test_D6_no_overrides_matches_baseline`
+- `test_D1_dtype_overrides.py::TestDtypeOverrides::test_D7_roundtrip_values_within_tolerance`
+- `test_D1_dtype_overrides.py::TestDtypeOverrides::test_D8_schema_roundtrip_preserves_overridden_dtype`
+- `test_D1_dtype_overrides.py::TestDtypeOverrides::test_D9_entry_range_with_overrides`
+- `test_D1_dtype_overrides.py::TestSkipBranches::test_D11_skip_branch_not_in_dataframe`
+- `test_D1_dtype_overrides.py::TestSkipBranches::test_D12_skip_reduces_column_count`
+- `test_D1_dtype_overrides.py::TestSkipBranches::test_D13_skip_and_dtype_override_combined`
+- `test_D1_dtype_overrides.py::TestSkipBranches::test_D14_skip_no_match_is_noop`
+- `test_G1_groupby_expression.py::TestGroupByExpressionMaterialization::test_G1_arithmetic_expression_materializes`
+- `test_G1_groupby_expression.py::TestGroupByExpressionMaterialization::test_G2_existing_column_unchanged`
+- `test_G1_groupby_expression.py::TestGroupByExpressionMaterialization::test_G3_alias_works`
+- `test_G1_groupby_expression.py::TestGroupByExpressionMaterialization::test_G4_no_alias_pollution`
+- `test_N1_11_missing_column_keyerror.py::TestN1_11_MissingColumnKeyError::test_N1_11_two_level_missing_column_raises`
+- `test_N1_11_missing_column_keyerror.py::TestN1_11_MissingColumnKeyError::test_N1_11b_single_level_missing_column_raises`
+- `test_Q1_quantiles_profile_adf.py::TestQ1QuantilesADFPassthrough::test_Q1_1_error_bars_via_adf`
+- `test_Q1_quantiles_profile_adf.py::TestQ1QuantilesADFPassthrough::test_Q1_2_band_via_adf`
+- `test_Q1_quantiles_profile_adf.py::TestQ1QuantilesADFPassthrough::test_Q1_3_parity_adf_vs_dfdraw`
+- `test_Q1_quantiles_profile_adf.py::TestQ1QuantilesADFPassthrough::test_Q1_4_central_median_forwarded`
+- `test_Q1_quantiles_profile_adf.py::TestQ1QuantilesADFPassthrough::test_Q1_5_groupby_with_quantiles`
+- ... +54 more
 
 ---
 *Generated from pytest JSON + feature_taxonomy.py (v2 taxonomy-based).*
