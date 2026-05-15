@@ -56,7 +56,17 @@ DEFAULT_STYLE: Dict[str, Any] = {
     "profile.capsize": 3,
     # Cap size for SEM/STD error bars on profile() central line. Independent of
     # quantile.error_bars.capsize (which controls quantile-derived asymmetric bars).
-    
+
+    # Phase 13.28.DF FIX1: autorange.* style keys (AD-73 / AD-77).
+    # These were referenced by plots/_autorange.py and plots/profile.py + plots/histogram.py
+    # but never registered in DEFAULT_STYLE, which made `set_style({"autorange.k_robust": 8.0})`
+    # raise `ValueError: Unknown style keys: {'autorange.k_robust'}`. Defaults below are the
+    # same fallback values already hard-coded in each get_style_value() call site.
+    "autorange.strategy": "hybrid",         # AD-73 default strategy
+    "autorange.k_robust": 4.0,              # MAD multiplier for robust window
+    "autorange.k_outlier": 1.5,             # IQR multiplier for outlier promotion
+    "autorange.percentile": (1.0, 99.0),    # Low / high percentile for percentile strategy
+
     # Phase 13.25.DF (Phase A): Quantile rendering style keys (AD-53)
     # These keys are INDEPENDENT — no cascading from profile.* keys.
     # Matches dfdraw's existing independent-keys pattern:
