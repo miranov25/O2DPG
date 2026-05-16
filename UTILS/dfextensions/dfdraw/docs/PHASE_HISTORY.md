@@ -4,8 +4,8 @@
 
 This document tracks the development history of the `dfdraw` module, a DataFrame drawing utility with ROOT TTree::Draw-like interface. Part of the dfextensions toolkit for ALICE experiment calibration and QA at CERN.
 
-**Current Status:** Phase 13.27.DF Commit 1 — Facet Refactor (✅ Commit 1 complete; Commit 2 pending)
-**Test Count:** 663 passing (62 features, 28+ invariance tests, 7 Verified)
+**Current Status:** Phase 13.32.DF — `group_by × quantiles` in grouped path + symmetric `facet_by` binning (AD-79) — ✅ Closed (panel-approved, 4 of 5 reviewers on correct source, 0 blocking)
+**Test Count:** 715 passing + 1 skipped (62 features, 28+ invariance tests, 7 Verified)
 **Stability Phase:** Experimental (active development)
 
 ---
@@ -1436,6 +1436,176 @@ Bound by `TestPlotIntegration::test_hist2d_with_inf_does_not_crash_and_reports_c
 
 ---
 
+## Phase 13.28.DF FIX1: Restore autorange.* style keys in DEFAULT_STYLE
+
+**Date:** 2026-05-15 (commit `57576ebf`, tag `PHASE_13_28_DF_FIX1_END`)
+**Status:** ✅ Complete
+**Discovery:** Sonet50 documentation audit of Phase 13.32 v1.0 proposal
+**Review artifacts:** 3-of-3 panel approval (Claude48, Sonet50, Claude40)
+
+### Objectives
+
+Close a silent regression caught by docs audit: Phase 13.28 Part B introduced four `autorange.*` style keys (`strategy`, `k_robust`, `k_outlier`, `percentile`) referenced via `get_style_value(...)` from `plots/_autorange.py + profile.py + histogram.py`, but the keys were **never registered** in `DEFAULT_STYLE`. Calling `set_style({"autorange.k_robust": 8.0})` raised `ValueError("unknown style key")`. Discovered through Phase 13.32 audit, not by any runtime test — production style-customization path was effectively broken since Phase 13.28 introduction.
+
+### Implementation
+
+- 4-key registration in `style.py` after the existing `profile.*` section, with defaults matching the `get_style_value(...)` fallback arguments:
+  - `autorange.strategy = "hybrid"`
+  - `autorange.k_robust = 4.0`
+  - `autorange.k_outlier = 1.5`
+  - `autorange.percentile = (1.0, 99.0)`
+- 9 §9-marked tests in `tests/test_phase_13_28_df_fix1_autorange_style_keys.py` lock: round-trip `set_style → get_style_value`, defaults intact, integration into profile/histogram autorange paths.
+- Test count: **687 → 696** passed, 0 failed.
+
+### Key Decisions
+
+- **Sonet50 P1 (`data.nan_policy` not restored) REJECTED as misclassification.** `nan_policy` is a per-call kwarg with signature default `"filter"`, not a style key (no `get_style_value("data.nan_policy")` exists anywhere). Decision deferred to Phase 13.30 sub-fix 2 if registration is desired.
+
+### Lessons captured
+
+- **Style-key registration regression class** — same bug shape as `nan_policy` (signature default blocks style override). A `get_style_value()` ↔ `DEFAULT_STYLE` cross-check validator (analogous to R6 for `_*_FORWARDED_NAMES`) would prevent this entire class of bug. Folded into Phase 13.30 sub-fix 2 scope.
+
+---
+
+## Phase 13.30.DF v1.0: Column-Reference Parameter Validation (Class-2)
+
+**Date:** 2026-05-12 (commit `e8278531`, tag `PHASE_13_30_DF_ColumnRefValidation_v1_0_END`)
+**Status:** ✅ Complete (sub-fix 1 of "Parameter Class Validation" suite); sub-fix 2 deferred to governance closure
+**Specification:** PHASE_13_30_DF_v1_0_Proposal_ColumnRefValidation.md
+**Review artifacts:** Panel-approved (Claude40 Main, Claude48, Sonet51, GPT1)
+
+### Objectives
+
+Establish formal parameter taxonomy and runtime validation for **Class-2 parameters** — those that must resolve to a literal DataFrame column (the v1.0 tuple is `_PROFILE_COLUMN_REFERENCES = ('group_by',)` — additional Class-2 names like `weights`, `color`, `size` are candidates for future expansion but were *not* in scope for the v1.0 phase). Distinguish from Class-1 (expressions evaluable via `df.eval`) where any token may be a temporary alias. Phase 13.30 ships Class-2 validation only; Class-3 (callable-typed parameters) and Class-5 (style-key cascades) validation are deferred to a future phase.
+
+### Implementation
+
+- New class-level tuple `_PROFILE_COLUMN_REFERENCES = ('group_by',)` enumerating Class-2 params for `profile()` (v1.0 ships a single entry; expansion to `weights`, `color`, `size` deferred pending decisions on their typing semantics).
+- New module-import validator `_validate_column_reference_tuples()` analogous to Phase 13.16 FIX1's R6 — catches signature drift at import time, not silently at runtime.
+- Runtime resolution: when a Class-2 kwarg is non-None, validate it appears as a literal column in `df.columns` before plot logic runs; raise `ValueError` with the column list on miss. Eliminates the silent-pass-through regression where `group_by="typo"` would slip through to `df.groupby("typo")` and surface as an obscure KeyError downstream.
+- 12 §9-marked invariance tests in `tests/test_phase_13_30_df_column_ref_validation.py`.
+- Test count: **663 → 675** passed.
+
+### Key Decisions
+
+- **Class-2 only in v1.0.** Class-1 expression validation requires AST-level expression introspection; deferred to a future phase.
+- **No retroactive change to caller signatures.** Validation lives entirely in dispatch; existing tests unchanged except for the +12 new invariance tests.
+- **AD-78 forward compatibility (Sonnet P1):** NO change to `_PROFILE_COLUMN_REFERENCES` for `facet_by` — Phase 13.31 introduces dual-path (channel-name vs column-name) `facet_by`, and adding it here would break every existing channel-mode usage. Strictly column-resolution params only.
+
+### Code Review Verdict (closure)
+
+| Reviewer | Group | Verdict | P1 |
+|---|---|---|:--:|
+| Claude40 | dfdraw | ✅ | 0 |
+| Claude48 | dfdraw | ✅ | 1 (governance: `feature_taxonomy.py` entry deferred) |
+| Sonet51 | dfdraw | ✅ | 0 |
+| GPT1 | dfdraw | ✅ | 0 |
+
+### Open Follow-Ups (governance closure)
+
+- `tests/feature_taxonomy.py` entry `DATA.column_reference_validation` + classify 12 P13.30 tests under it.
+- `DFDraw.draw()` dispatch test: missing `group_by` raises through dispatch path too (Claude40 P1).
+- Sub-fix 2: register `data.nan_policy` in `DEFAULT_STYLE` (or formally document why not).
+
+---
+
+## Phase 13.31.DF v1.0: `facet_by` Column-Name Support (AD-78)
+
+**Date:** 2026-05-14 (commit `f3ca432a`, tag `PHASE_13_31_DF_FacetByColumn_v1_0_END`)
+**Status:** ✅ Complete
+**Specification:** PHASE_13_31_DF_v1_0_Proposal_FacetByColumn.md
+**Review artifacts:** PHASE_13_31_DF_v1_0_END_CODE_REVIEW_REQUEST.md — panel approval (Claude40 Main, Claude48, Sonet51); BUG_ADF_GroupBy_Expression_Materialization handed off to ADF team
+
+### Objectives
+
+Extend Phase 13.27 Commit 1 `facet_by` from channel-name only (`'group_by'`, `'vector'`, `'quantiles'`) to also accept any literal DataFrame column name. Closes a user-experience gap: `d.profile("y:x", facet_by="quartile_val")` should work without first writing `d.profile("y:x", group_by="quartile_val", facet_by="group_by")`. The two paths are kept structurally separate in dispatch ("dual-path") to preserve channel-mode semantics where `group_by` is *also* set as an overlay dimension.
+
+### Implementation
+
+- `_dispatch_faceted_render` extended with `_facet_mode` selector: `'channel'` (existing) vs `'column'` (new).
+- Column-mode branch: filter df by literal-column equality (`df[facet_by] == group_value`) per subplot; preserves an outer `group_by` for inner overlay (orthogonal-composition test S3.4).
+- Boolean and numeric column dtypes uniformly handled via mask comparison (avoids string-quoting issues that would arise from extending the selection-string path).
+- 12 §9-marked invariance tests in `tests/test_phase_13_31_facet_by_column.py`, covering channel-mode regression, column-mode subplot cardinality, mutual-exclusion guards, and orthogonal `group_by` composition.
+
+### Key Decisions (AD-78)
+
+- **AD-78** — Dual-path `facet_by`: channel-name routing preserved; column-name routing added as parallel branch. Both paths converge in subplot grid layout, legend, and stats aggregation. Architect-signed 2026-05-14.
+
+### Code Review Verdict (closure)
+
+Panel-approved. Sonet51 P1 (governance: `feature_taxonomy.py` entry `FACET.column_mode` deferred) and the AD-78 §0 reviewer-ID typo (`Sonnet` → `Sonet50`) folded into the deferred Phase 13.30+31+32 closure pass.
+
+### Open Follow-Ups (governance closure)
+
+- `tests/feature_taxonomy.py` entry `FACET.column_mode` + test classification.
+- AD-78 §0 reviewer-ID typo.
+
+---
+
+## Phase 13.32.DF v1.0: `group_by × quantiles` in Grouped Path + Symmetric `facet_by` Binning (AD-79)
+
+**Date:** 2026-05-15 (commit `cb6a1aed`, tag `PHASE_13_32_DF_GroupByQuantilesFacet_v1_0_END`)
+**Status:** ✅ Complete; advisory items pending in governance closure pass
+**Specification:** PHASE_13_32_DF_v1_2_Proposal_GroupByQuantilesFacetBinning.md (v1.0 → v1.1 → v1.2 cycle, panel-approved 2026-05-15)
+**Review artifacts:** PHASE_13_32_DF_GroupByQuantilesFacet_v1_0_END_Code_Review_Request.md; consolidated review by Sonet50 — APPROVED (4 of 5 reviewers on correct source, 0 blocking issues)
+
+### Objectives
+
+Close three composition gaps in the grouped + faceted dispatch surface:
+- **Sub-fix 1** — `facet_by='group_by'` + `group_by_bins`/`group_by_quantiles` produced N×N spurious sub-groups in per-subplot recursion (architect's production `In[129]` reproducer: 60 raw `driftM_bin25` levels → cap-overflow before binning → 5 expected subplots, each previously containing 5 ghost lines).
+- **Sub-fix 2** — `group_by` + `quantiles=` (with `quantile_mode ∈ {band, error_bars, discrete}`) silently dropped the quantile rendering in the grouped path (architect's production `In[126]` reproducer).
+- **Sub-fix 3 (AD-79)** — Symmetric `facet_by_bins` / `facet_by_quantiles` counterparts to `group_by_bins` / `group_by_quantiles` on the column-mode `facet_by` path (Phase 13.31 AD-78), available across all four plot kinds (`profile`, `hist`, `scatter`, `hist2d`).
+
+### Implementation
+
+- **Sub-fix 1** — `_dispatch_faceted_render` hoists binning *before* group enumeration when `facet_by='group_by'`; pops `group_by_bins`/`group_by_quantiles` from `plot_kwargs` so per-subplot recursion does not re-bin. Convergent P1 finding from Sonet51, Claude48, GPT1 in the v1.0 panel review.
+- **Sub-fix 2** — `_draw_profile_grouped` extended with `quantiles`, `quantile_mode`, `central`, `quantile_pair`, `quantile_list`, `quantile_style` parameters; per-group `band` / `error_bars` / `discrete` rendering inlined (~25 LOC, option B from v1.2 §3.2). `nested_band` explicitly raises `NotImplementedError` in grouped path (FIX 2 P1, Claude48 / Claude40 / GPT1). New style key `quantile.band.alpha_grouped = 0.15` (renamed from v1.0's `channels.quantile.band_alpha_per_group` per FIX 3 namespace agreement, Sonet50 / Sonet51).
+- **Sub-fix 3 (AD-79)** — Symmetric `_validate_facet_by_binning()` static helper; column-mode dispatch branch with hoisted binning analogous to Sub-fix 1. Per-subplot loop rewritten with **plot-kind-specific dispatch** (each `draw_*` has distinct signature and incompatible kwargs — `hist` takes only `x`; `hist2d` does not accept `group_by`/`top_k`; `scatter` does not accept `auto_title`). New `_HIST2D_FORWARDED_NAMES` tuple created; all five FORWARDED_NAMES tuples extended with `facet_by_bins` / `facet_by_quantiles`; R6 validator AST-equivalent simulated at drafter time before delivery (lesson from session debug cycle).
+- 19 §9-marked invariance tests in `tests/test_phase_13_32_groupby_quantiles_facet.py` across 5 classes (`TestSubfix1`, `TestSubfix2`, `TestSubfix3Profile`, `TestSubfix3AllPlots`, `TestRepro`). One-line bump in `tests/test_quantiles_profile.py::TestQuantileStyleKeyDefaults::test_namespace_integrity` (count 4→5 for new style key).
+- Test count: **696 → 715** passed + 1 skipped.
+
+### Bug Fix — Architect's Reproducers
+
+| Reproducer | Pre-Phase-13.32 | Post-Phase-13.32 |
+|---|---|---|
+| `In[126]` overlay-with-quantiles (`group_by=` + `quantiles=` + `quantile_mode='band'`) | Quantile band silently dropped; only error bars rendered | Per-group color-coordinated band + central line as specified |
+| `In[129]` facet-with-binning (`facet_by='group_by'` + `group_by_bins=5`) | Subplot cap overflow before binning (60 raw groups → matplotlib error or 5 subplots × 5 ghost lines) | 5 binned subplots, exactly 1 profile per subplot |
+
+Bound by `TestRepro::test_in_126_overlay_with_quantiles` and `TestRepro::test_in_129_facet_with_groupby_bins`.
+
+### Key Decisions (AD-79)
+
+- **AD-79** — Symmetric `facet_by_bins` / `facet_by_quantiles` across all four plot kinds (option B from v1.2 §3.3). Architect-signed 2026-05-14.
+
+### Code Review Verdict (closure)
+
+Consolidated by Sonet50 — **APPROVED** (4 of 5 reviewers on correct source, 0 blocking):
+
+| Reviewer | Group | Verdict | Notes |
+|---|---|---|---|
+| Claude40 | dfdraw | ✅ [OK] | Full functionality verified, production reproducers locked |
+| Sonet50 | dfdraw | ✅ [OK] | Diff-level verification |
+| Sonet51 | dfdraw | ✅ [OK] | 7 test bodies sampled, all v1.0 P1s traced |
+| Sonnet52_R1 | dfdraw | [!] | 2 advisory P2 items (`quantile_style` silent drop, `error_bars→band` lock test) |
+| Sonnet53_R2 | dfdraw | [X] | Excluded — reviewed wrong source bundle (`sourcesdf.zip` instead of official `reviewer_20260515_165043.zip`); P0/P1 findings were artifacts of stale source |
+
+### Open Follow-Ups (governance closure pass)
+
+Folded into the deferred Phase 13.30 + 13.31 + 13.32 unified closure pass:
+- **Adv-1** — `NotImplementedError` for `quantile_style` in grouped path (mirroring `nested_band` treatment) — Sonnet52_R1 / Sonet50.
+- **Adv-2** — §9.S2.7 test locking `error_bars → band` intentional degradation in grouped path — Sonnet52_R1 provided test code.
+- `tests/feature_taxonomy.py` entries: `FACET.column_mode_binning` (for Sub-fix 3 coverage).
+- Sonet50 / Sonnet52_R1: nested-band design pass for grouped path → Phase 13.34 (provisional).
+- Weighted-quantile composition (currently raises `NotImplementedError`) → Phase 13.25 Phase B.
+
+### Session governance amendments (proposed for Coder QRC v1.32)
+
+Two binding rules emerged from the debug arc, captured in the Code Review Request §8:
+1. **AST-level R6-equivalent pre-delivery check** when editing any `_*_FORWARDED_NAMES` tuple. Caught Bug 0 in this session (the `DFDraw.draw()` signature/tuple mismatch) only after a failed test run; should have been caught at drafter time.
+2. **No local `sed` patches.** All file edits flow through `present_files` artifacts so the patch is auditable in the chat transcript.
+
+---
+
 ## Statistics Summary
 
 | Phase | Test Count | Delta | Key Feature |
@@ -1461,10 +1631,16 @@ Bound by `TestPlotIntegration::test_hist2d_with_inf_does_not_crash_and_reports_c
 | **13.26.DF v1.2** | 627 | +50 | **N-Channel Framework (MultiGraph Phase B): Algorithm A for visual-channel assignment; 10 `channels.*` style keys; factored legend; nested-band auto-detect; AD-55..AD-60; GP-2/4/5)** |
 | **13.27.DF Commit 1** | 663 | +10 | **Facet refactor (MultiGraph Phase D, profile-only): `_dispatch_faceted_render()`; `facet_by=` API; backward-compat with `facet=True`; mutual exclusion with `same=True`; 6 new `channels.*` keys; 10 §9-marked invariance tests; AD-61..AD-68)** |
 | **13.28.DF v1.1** | 653 | (separate branch — closed pre-Phase-13.27) | **Robust data handling: `sanitize_for_plot()` (NaN/inf filter with `nan_policy`); hybrid autorange (6 strategies, outlier-aware per-side decision); 26 tests (21 unit + 5 integration); AD-69..AD-77)** |
+| **13.30.DF v1.0** | 675 | +12 | **Column-Reference Parameter Validation (Class-2): `_PROFILE_COLUMN_REFERENCES = ('group_by',)`; `_validate_column_reference_tuples()` module-import validator; runtime `ValueError` on missing-column kwargs** |
+| **13.31.DF v1.0** | 687 | +12 | **`facet_by` column-name support (AD-78): dual-path dispatch (channel-mode vs column-mode); orthogonal `group_by` overlay composition; 12 §9-marked invariance tests** |
+| **13.28.DF FIX1** | 696 | +9 | **Restore `autorange.*` style keys in `DEFAULT_STYLE` (4 keys registered post-Phase-13.28-Part-B regression); 9 §9-marked tests** |
+| **13.32.DF v1.0** | 715 | +19 | **`group_by × quantiles` in grouped path + symmetric `facet_by_bins`/`facet_by_quantiles` (AD-79): three sub-fixes; multi-kind plot dispatch (profile/hist/scatter/hist2d); new style key `quantile.band.alpha_grouped`; 19 §9-marked invariance tests across 5 classes** |
 
-**Total Development (as of Phase 13.27.DF Commit 1):** 24 phase entries, **663 tests**, 62 features, 28+ invariance tests, 7 Verified features
+**Total Development (as of Phase 13.32.DF v1.0):** 28 phase entries, **715 tests** + 1 skipped, 62 features, 28+ invariance tests, 7 Verified features
 
 > Note: Phase 13.28.DF closed at 653 tests on commit `8b02d241` (2026-05-09). Phase 13.27.DF Commit 1 then added 10 tests for a current total of 663. Phase 13.28 was developed in parallel with Phase 13.27 design; the two phases used disjoint AD ranges (AD-61..AD-68 vs AD-69..AD-77) so the merge was clean.
+
+> **Phase ordering note (post-13.27 commit 1):** the chronological commit order on `feature/groupby-optimization` is 13.27.DF Commit 1 (663) → 13.30.DF (675) → 13.31.DF (687) → 13.28.DF FIX1 (696) → 13.32.DF (715). The phase-number sequence is non-monotonic because 13.28.DF FIX1 is a follow-up FIX commit that landed *after* the 13.30/13.31 main phases — phase numbers index the *originating* phase, not the commit order. AD ranges remain disjoint across all phases.
 
 ---
 
@@ -1546,6 +1722,9 @@ All APIs subject to change based on user feedback and integration testing with:
 6. **Scaffolding separation (Phase 13.16.DF):** `run_tests.sh` and similar infrastructure should not share commits with feature work
 7. **Tooling-packet hygiene (Phase 13.16.DF FIX1):** `reviewer.zip` was missing `test_full_*.log` until Claude45 caught it mid-cycle; tooling completeness gaps surface only when downstream reviewers actually need the artifact
 8. **Spec inventory accuracy (Phase 13.16.DF FIX1):** v1.4 §3.1 inventory had `top_k` miscategorized as facet-only across 3 methods; 4 source-verifying reviewers approved the proposal without catching it; only implementation source-read caught the categorization error — argues for AST-derived inventories over hand-typed ones
+9. **Style-key registration regression class (Phase 13.28.DF FIX1):** Four `autorange.*` keys referenced via `get_style_value()` from three modules but never registered in `DEFAULT_STYLE` — silently broke `set_style({"autorange.*": ...})` since Phase 13.28 Part B introduction. Caught only by Phase 13.32 documentation audit, not by any runtime test. Argues for a `get_style_value` ↔ `DEFAULT_STYLE` cross-check validator (R6-analogue for style keys) — folded into Phase 13.30 sub-fix 2 scope
+10. **Source freshness as binding rule (Phase 13.32.DF debug cycle):** Two patches built on stale source baselines (drafter held an older `drawer.py` in working memory than the architect's repo). Resolved by Coder QRC Rule N+5: every patch declares its baseline SHA and is rebased only on the architect's committed HEAD
+11. **Wrong-bundle review artifact (Phase 13.32.DF closure):** Sonnet53_R2 reviewed `sourcesdf.zip` (intermediate state) instead of the official `reviewer_20260515_165043.zip` — produced spurious P0/P1 findings invalidated by Sonet50 consolidation. Argues for review-bundle checksum verification before issuing verdicts
 
 ### Best Practices Established
 1. **Expression syntax:** ROOT-like syntax reduces learning curve
@@ -1559,6 +1738,10 @@ All APIs subject to change based on user feedback and integration testing with:
 9. **AST-derived over hand-typed inventories (Phase 13.16.DF FIX1):** When a proposal must enumerate signature parameters, derive via `inspect.signature()` rather than hand-typing; v1.4 §3.1 categorization errors were avoided in implementation by reading source directly
 10. **Scope-positive divergence pattern (Phase 13.16.DF FIX1):** Implementation-time discoveries that improve correctness beyond spec are acceptable when (a) discovered via source-read, (b) inline-documented with rationale, and (c) disclosed in the Review Request deviations table
 11. **Three-level test coverage for cross-subproject features (Phase 13.16.DF FIX1):** Unit-level (dfdraw), integration-level (ADF K2 suite), production-pattern level (synthetic mirror of architect's reproducer) — full pipeline validated
+12. **Dual-path dispatch over signature-merging (Phase 13.31.DF):** When extending a parameter's meaning (e.g., `facet_by` from channel-name to also accept column-name), keep the two paths structurally separate in dispatch instead of widening one parameter's signature. Preserves backward-compat regression tests and makes mutual-exclusion guards trivial
+13. **Multi-kind plot dispatch with explicit signature branching (Phase 13.32.DF Sub-fix 3):** When a coordinator like `_dispatch_faceted_render` must invoke multiple `draw_*` functions with different signatures, branch the per-subplot call explicitly per plot kind rather than rely on `**kwargs` pass-through. `auto_title` (profile/hist/hist2d only, not scatter), `quantiles`/`quantile_mode` (profile only), and `group_by`/`top_k` (no hist2d) each leak via `**kwargs` if not gated
+14. **AST-level R6-equivalent pre-delivery check (Phase 13.32.DF, proposed Coder QRC v1.32):** When the drafter edits any `_*_FORWARDED_NAMES` tuple, simulate the R6 validator (Phase 13.16 FIX1) locally against the AST of the target file before delivery. Caught Bug 0 in Phase 13.32 only after a failed import; should have been caught at drafter time
+15. **Auditable patches over local sed (Phase 13.32.DF, proposed Coder QRC v1.32):** All file edits flow through `present_files` artifacts so the patch is visible in the chat transcript. Local `sed` instructions, however minimal, leave no audit trail and risk divergence between drafter intent and architect-applied result
 
 ---
 
@@ -1572,8 +1755,9 @@ All APIs subject to change based on user feedback and integration testing with:
 | 1.3 | 2026-04-09 | Claude41 | Added Phase 13.15.DF (test infrastructure) and Phase 13.16.DF (vector expression interface, AD-37 fix); updated test count to 451; added 7 lessons learned from Rev2→Rev3 cycle and governance incidents; added source verification discipline and scaffolding-separation best practices |
 | 1.4 | 2026-04-15 | Claude41 | Added Phase 13.16.DF FIX1 (vector path kwarg propagation fix, B1a-B5 + R4 + auto_title forwarding); updated test count to 469; +3 features +7 invariance tests +1 Verified; added 5-iteration source-verification chain (symptom → location → documentation → runtime → pipeline); cross-subproject end-to-end verification via ADF Phase 13.19.ADF.FIX1; added 4 lessons learned (two-commit pattern, fresh-reviewer rule, cross-subproject convergence, class-load validation) and 4 best practices (forwarded-name tuples, AST-derived inventories, scope-positive divergence pattern, three-level test coverage) |
 | 1.5 | 2026-05-09 | Claude49Coder | Backfill of phases that landed between v1.4 and current state. Added Phase 13.18.DF (robust statistics extension), Phase 13.25.DF v1.3 with FIX1 + FIX2 (Quantiles on Profile — MultiGraph Phase A; AD-44..AD-54), Phase 13.26.DF v1.2 (N-Channel Framework — MultiGraph Phase B; Algorithm A; AD-55..AD-60), Phase 13.27.DF Commit 1 (Facet refactor — MultiGraph Phase D, profile-only; AD-61..AD-68), Phase 13.28.DF v1.1 (Robust Data Handling — `sanitize_for_plot` + hybrid autorange; AD-69..AD-77; 5-0 closure verdict). Statistics table updated through Phase 13.27.DF Commit 1 (current 663 tests, 62 features). Governance principles GP-1 through GP-5 summarized in their phase-of-origin sections (full text remains in STYLING_FRAMEWORK_DECISIONS.md §3). |
+| 1.6 | 2026-05-15 | Claude49Coder | Added Phase 13.28.DF FIX1 (autorange.* style key registration; commit `57576ebf`), Phase 13.30.DF v1.0 (Class-2 column-reference parameter validation; commit `e8278531`), Phase 13.31.DF v1.0 (`facet_by` column-name support, AD-78; commit `f3ca432a`), Phase 13.32.DF v1.0 (`group_by × quantiles` in grouped path + symmetric `facet_by` binning, AD-79; commit `cb6a1aed`). Test count 663 → 715. Added 3 lessons learned (style-key registration regression class, source freshness as binding rule, wrong-bundle review artifact) and 4 best practices (dual-path dispatch, multi-kind plot dispatch with explicit signature branching, AST R6-equivalent pre-delivery check, auditable patches over local sed). Statistics Summary table extended with 4 new rows + phase-ordering note. Panel review (Claude40 consolidating Sonet50, Sonet51, Sonnet52_R1, Sonnet53_R2, Claude46, Claude48): approved-with-3-mechanical-fixes — applied pre-commit: (a) Phase 13.30 Class-2 tuple corrected to `('group_by',)` only and Class-1 → Class-3/Class-5 deferral; (b) Phase 13.26 → Phase 13.28 autorange-introduction attribution (FIX1 entry + Lesson #9); (c) Statistics table totals updated to 28 phase entries / 715 tests; transient "Pending push" line removed. |
 
 ---
 
-**Document Status:** Updated through Phase 13.27.DF Commit 1 (commit `PHASE_13_27_DF_Commit1_END`, 2026-05-09). Phase 13.28.DF v1.1 (`8b02d241`, tag `PHASE_13_28_DF_v1_0_END`) closed in parallel and documented.
-**Next Update:** After Phase 13.27.DF Commit 2 (selection_vector + weights_vector + hist/scatter facet) closure, or after Phase 13.26/13.28 FIX1 bundle.
+**Document Status:** Updated through Phase 13.32.DF v1.0 (commit `cb6a1aed`, tag `PHASE_13_32_DF_GroupByQuantilesFacet_v1_0_END`, 2026-05-15). Rolling tag `PHASE_BEGIN_dfdraw` → `cb6a1aed`.
+**Next Update:** After the unified Phase 13.30 + 13.31 + 13.32 governance closure pass (taxonomy entries, `quantile_style` `NotImplementedError`, `error_bars→band` lock test, AD-78 §0 typo, Coder QRC v1.32 amendments), or after Phase 13.33 (provisional: autorange transparency — now unblocked by Phase 13.28 FIX1).
