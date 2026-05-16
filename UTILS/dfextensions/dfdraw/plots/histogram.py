@@ -284,7 +284,9 @@ def draw_hist(
     # Phase 13.28.DF: NaN/inf sanitization (AD-69, AD-70).
     # Use sanitize_for_plot for counters + policy enforcement (raise/warn);
     # apply joint mask manually to align weights with x_data (mirrors profile.py).
-    _, _, _sanitize_stats = sanitize_for_plot(
+    # FIX1.FIX1 (Sonnet53_R2): single call — capture x_clean here, reuse below
+    # to avoid the previous double-call when w_data is None.
+    _x_clean, _, _sanitize_stats = sanitize_for_plot(
         x_data, y_data=None, nan_policy=nan_policy, column_names=(x_name, "")
     )
     if w_data is not None:
@@ -301,11 +303,8 @@ def draw_hist(
         x_data = x_data[_mask]
         w_data = w_data[_mask]
     else:
-        # No weights: keep pre-FIX1 behavior — sanitize_for_plot already
-        # filtered x_data via its returned x_clean.
-        x_data, _, _ = sanitize_for_plot(
-            x_data, y_data=None, nan_policy=nan_policy, column_names=(x_name, "")
-        )
+        # No weights: use the sanitized output directly (no double-call).
+        x_data = _x_clean
 
     # Phase 13.28.DF: Resolve autorange (AD-73, AD-77)
     from ._autorange import resolve_range_1d

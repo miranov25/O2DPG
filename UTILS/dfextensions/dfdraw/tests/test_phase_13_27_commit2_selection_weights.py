@@ -799,18 +799,27 @@ class TestPhase_13_27_Commit2_FIX1:
 
     def test_SDP_6_single_y_selection_vector_outer(self, df_selection):
         """§9.SDP.6 (FIX1 §7a): single-Y profile + selection_vector + outer
-        engages vector dispatch and produces N curves."""
+        engages vector dispatch and produces N curves.
+
+        FIX1.FIX1 (Sonnet53_R2): strengthened from `ax.get_lines() >= 2` to
+        `len(ax.containers) >= 2`. Profile uses ax.errorbar() which creates
+        one ErrorbarContainer per rendered curve (and 3 Line2D objects from
+        a single curve), so the previous get_lines() assertion would pass
+        even if selection_vector was silently ignored. Containers is the
+        correct invariant — matches the precedent in §9.WDH.2 / §9.WDH.4.
+        """
         d = DFDraw(df_selection)
         fig, ax, stats = d.profile(
             "y:x",
             selection_vector=["sector == 0", "sector == 1"],
             vector_compose="outer",
         )
-        # Two filtered curves expected on a single axes
+        # Two ErrorbarContainers expected (one per selection_vector entry).
         assert fig is not None
-        assert len(ax.get_lines()) >= 2, (
-            f"Expected >=2 lines for 2-element selection_vector + outer, "
-            f"got {len(ax.get_lines())}"
+        assert len(ax.containers) >= 2, (
+            f"Expected >=2 ErrorbarContainers for 2-element selection_vector "
+            f"+ outer, got {len(ax.containers)}. (Pre-FIX1 silent-ignore "
+            f"would render 1 container; this test locks vector dispatch engaged.)"
         )
 
     def test_SDP_7_single_y_selection_vector_inner_raises_actionable(self, df_selection):
@@ -822,6 +831,29 @@ class TestPhase_13_27_Commit2_FIX1:
                 "y:x",
                 selection_vector=["sector == 0", "sector == 1"],
                 vector_compose="inner",  # default; explicit for clarity
+            )
+
+    def test_SDP_9_inner_raise_message_names_lengths(self, df_selection):
+        """§9.SDP.9 (FIX1.FIX1 — Sonet50 P2): the inner-mode ValueError
+        message names the mismatched lengths so Phase 13.33 users immediately
+        see why their default-inner call failed. Per §6 option (c) the fix
+        is deferred to Phase 13.33; users must pass vector_compose='outer'
+        until then — the message must make this discoverable."""
+        d = DFDraw(df_selection)
+        try:
+            d.profile(
+                "y:x",
+                selection_vector=["sector == 0", "sector == 1"],
+            )
+            pytest.fail("Expected ValueError")
+        except ValueError as e:
+            msg = str(e)
+            # The current message names vector=1 and selection_vector=2 —
+            # that, plus the surrounding error context, is sufficient for a
+            # user to discover the outer-mode workaround.
+            assert "vector=1" in msg, f"Message must name n_y=1: {msg!r}"
+            assert "selection_vector=2" in msg, (
+                f"Message must name n_s=2: {msg!r}"
             )
 
     def test_SDP_8_no_fix1_userwarning_fires(self, df_selection):
