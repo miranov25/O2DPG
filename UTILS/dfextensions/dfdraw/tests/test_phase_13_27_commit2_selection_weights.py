@@ -105,17 +105,23 @@ class TestSelectionDelta_Profile:
         )
 
     def test_SDP_2_2ch_selection_vector_inner(self, df_selection):
-        """§9.SDP.2: 2-channel inner — curve count == M == len(selection_vector)."""
+        """§9.SDP.2: 2-channel inner — curve count == M == len(selection_vector).
+
+        Note (Phase 13.27 Commit 2 FIX1): single-Y + multi-element
+        selection_vector + inner now raises actionable error (the spec's
+        n_y=1 silent-degrade is not implemented). Use outer for single-Y
+        cardinality verification at the integration level; use the helper
+        directly for inner cardinality verification.
+        """
         d = DFDraw(df_selection)
+        # Outer with single-Y + 2-element selection_vector produces 2 curves
+        # (the integration-level demonstration that selection_vector engages).
         fig, ax, stats = d.profile(
             "y:x",
             selection_vector=["sector == 0", "sector == 1"],
-            vector_compose="inner",
+            vector_compose="outer",
         )
-        # In inner mode with single-Y, M=1 from y_list. Inner requires equal
-        # lengths, so a 2-elem selection_vector would fail. But the proposal
-        # treats single-Y as broadcastable: y_list expands. Verify cardinality
-        # through indices helper directly.
+        # Helper-level: outer index count for n_y=1 + n_s=2 == 2
         indices = DFDraw._compute_vector_iteration_indices(
             n_y=1, selection_vector=["a", "b"], weights_vector=None,
             vector_compose="outer",  # outer = each per-curve gets its own
@@ -288,22 +294,39 @@ class TestWeightsDelta_Hist:
         )
         assert fig is not None
 
-    def test_WDH_2_hist_weights_vector_with_global(self):
-        """§9.WDH.2: hist() signature accepts weights_vector (plumbing).
+    def test_WDH_2_hist_weights_vector_with_global(self, df_selection):
+        """§9.WDH.2 (FIX1 §7b promoted): hist + weights_vector produces
+        per-bin weighted counts bit-identical to np.histogram(weights=...).
 
-        NOTE: actual per-curve histogram weighting requires draw_hist signature
-        extension (add `weights` named parameter + column-eval) which is
-        outside the Phase 13.27 Commit 2 scope. That fix is deferred — tracked
-        as a follow-up.
+        Uses histtype='bar' to expose BarContainer.patches for height extraction.
         """
-        import inspect
-        sig = inspect.signature(DFDraw.hist)
-        assert 'weights_vector' in sig.parameters, (
-            "hist() signature should accept weights_vector kwarg"
+        d = DFDraw(df_selection)
+        # Multi-Y vector path: inner with matched M=2, n_w=2
+        # ("[x,z]" syntax: 2 y-vars, each independently histogrammed)
+        fig, ax, stats = d.hist(
+            "[x,z]",
+            weights_vector=["w_a", "w_b"],
+            vector_compose="inner",
+            bins=10, range=(0, 10), histtype="bar",
         )
-        assert sig.parameters['weights_vector'].default is None, (
-            "weights_vector should default to None for opt-in semantics"
+        # ax.containers should contain 2 BarContainers (one per curve)
+        assert len(ax.containers) == 2, (
+            f"Expected 2 containers (one per weights_vector entry), got {len(ax.containers)}"
         )
+        # Curve 0: hist of x weighted by w_a
+        heights_0 = np.array([p.get_height() for p in ax.containers[0].patches])
+        expected_0, _ = np.histogram(
+            df_selection['x'].values, bins=10, range=(0, 10),
+            weights=df_selection['w_a'].values,
+        )
+        np.testing.assert_allclose(heights_0, expected_0, rtol=1e-12, atol=1e-15)
+        # Curve 1: hist of z weighted by w_b
+        heights_1 = np.array([p.get_height() for p in ax.containers[1].patches])
+        expected_1, _ = np.histogram(
+            df_selection['z'].values, bins=10, range=(0, 10),
+            weights=df_selection['w_b'].values,
+        )
+        np.testing.assert_allclose(heights_1, expected_1, rtol=1e-12, atol=1e-15)
 
     def test_WDH_3_hist2d_with_weights_vector_typeerror(self, df_selection):
         """§9.WDH.3: hist2d does NOT accept weights_vector (signature gate)."""
@@ -745,3 +768,162 @@ class TestNanPolicyPropagation:
                         if issubclass(w.category, UserWarning)
                         and "nan" in str(w.message).lower()]
         assert len(nan_warnings) == 0
+
+
+# =============================================================================
+# TestPhase_13_27_Commit2_FIX1 — single-Y vector dispatch + hist weights
+# =============================================================================
+# Added by Claude48 (Coder seat) as part of Phase 13.27.DF Commit 2 FIX1.
+# Locks the §7(a) single-X vector dispatch trigger broadening and the §7(b)
+# hist column-name weights rendering. See PHASE_13_27_DF_Commit2_FIX1_END_CRR.
+
+class TestPhase_13_27_Commit2_FIX1:
+    """Phase 13.27.DF Commit 2 FIX1 lock-tests.
+
+    Verifies the two FIX1 items from the panel-approved Commit 2 CRR §7:
+      (a) Single-Y / single-X + selection_vector / weights_vector now engages
+          _draw_vector dispatch (was silently ignored + UserWarning).
+      (b) hist() accepts `weights=` as a column name / df.eval expression and
+          renders per-row-weighted bin counts.
+
+    Each test below corresponds to one §9 marker:
+      §9.SDP.6 — single-Y + selection_vector + outer composes correctly
+      §9.SDP.7 — single-Y + selection_vector + inner raises actionable error
+      §9.SDP.8 — FIX1-pending UserWarning no longer fires
+      §9.WDH.4 — single-X + weights_vector + outer renders 2 curves
+      §9.HSW.1 — hist + weights= column renders weighted bin heights
+      §9.HSW.2 — hist + weights= expression renders weighted bin heights
+      §9.HSW.3 — hist + weights= column + norm=probability scales by 1/n
+      §9.HSW.4 — hist + weights= + group_by raises NotImplementedError
+    """
+
+    def test_SDP_6_single_y_selection_vector_outer(self, df_selection):
+        """§9.SDP.6 (FIX1 §7a): single-Y profile + selection_vector + outer
+        engages vector dispatch and produces N curves."""
+        d = DFDraw(df_selection)
+        fig, ax, stats = d.profile(
+            "y:x",
+            selection_vector=["sector == 0", "sector == 1"],
+            vector_compose="outer",
+        )
+        # Two filtered curves expected on a single axes
+        assert fig is not None
+        assert len(ax.get_lines()) >= 2, (
+            f"Expected >=2 lines for 2-element selection_vector + outer, "
+            f"got {len(ax.get_lines())}"
+        )
+
+    def test_SDP_7_single_y_selection_vector_inner_raises_actionable(self, df_selection):
+        """§9.SDP.7 (FIX1 §7a): single-Y + selection_vector + inner raises
+        an actionable ValueError (no longer silently ignored)."""
+        d = DFDraw(df_selection)
+        with pytest.raises(ValueError, match=r"inner requires equal lengths"):
+            d.profile(
+                "y:x",
+                selection_vector=["sector == 0", "sector == 1"],
+                vector_compose="inner",  # default; explicit for clarity
+            )
+
+    def test_SDP_8_no_fix1_userwarning_fires(self, df_selection):
+        """§9.SDP.8 (FIX1 §7a): the FIX1-pending UserWarning no longer fires
+        on single-Y + selection_vector (with outer to avoid the inner-raise)."""
+        d = DFDraw(df_selection)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            d.profile(
+                "y:x",
+                selection_vector=["sector == 0", "sector == 1"],
+                vector_compose="outer",
+            )
+        fix1_warnings = [w for w in caught if "FIX1" in str(w.message)]
+        assert len(fix1_warnings) == 0, (
+            f"FIX1-pending warning should be removed, but found: "
+            f"{[str(w.message) for w in fix1_warnings]}"
+        )
+
+    def test_WDH_4_single_x_weights_vector_outer(self, df_selection):
+        """§9.WDH.4 (FIX1 §7a): single-X hist + weights_vector + outer
+        engages vector dispatch and produces N curves with weighted heights."""
+        d = DFDraw(df_selection)
+        fig, ax, stats = d.hist(
+            "x",
+            weights_vector=["w_a", "w_b"],
+            vector_compose="outer",
+            bins=10, range=(0, 10), histtype="bar",
+        )
+        # Two BarContainers expected (one per weights_vector entry)
+        assert len(ax.containers) == 2, (
+            f"Expected 2 containers for 2-element weights_vector + outer, "
+            f"got {len(ax.containers)}"
+        )
+        # Curve 0: hist of x weighted by w_a
+        heights_0 = np.array([p.get_height() for p in ax.containers[0].patches])
+        expected_0, _ = np.histogram(
+            df_selection['x'].values, bins=10, range=(0, 10),
+            weights=df_selection['w_a'].values,
+        )
+        np.testing.assert_allclose(heights_0, expected_0, rtol=1e-12, atol=1e-15)
+
+    def test_HSW_1_hist_weights_column_renders_weighted(self, df_selection):
+        """§9.HSW.1 (FIX1 §7b): hist + weights= column-name renders per-bin
+        weighted counts bit-identical to np.histogram(weights=...)."""
+        d = DFDraw(df_selection)
+        fig, ax, stats = d.hist(
+            "x", weights="w_a", bins=10, range=(0, 10), histtype="bar",
+        )
+        assert len(ax.containers) == 1
+        heights = np.array([p.get_height() for p in ax.containers[0].patches])
+        expected, _ = np.histogram(
+            df_selection['x'].values, bins=10, range=(0, 10),
+            weights=df_selection['w_a'].values,
+        )
+        np.testing.assert_allclose(heights, expected, rtol=1e-12, atol=1e-15)
+
+    def test_HSW_2_hist_weights_expression_renders_weighted(self, df_selection):
+        """§9.HSW.2 (FIX1 §7b): hist + weights= as df.eval expression
+        renders weighted counts using the evaluated array."""
+        d = DFDraw(df_selection)
+        fig, ax, stats = d.hist(
+            "x", weights="w_a * 2", bins=10, range=(0, 10), histtype="bar",
+        )
+        assert len(ax.containers) == 1
+        heights = np.array([p.get_height() for p in ax.containers[0].patches])
+        expected, _ = np.histogram(
+            df_selection['x'].values, bins=10, range=(0, 10),
+            weights=(df_selection['w_a'].values * 2),
+        )
+        np.testing.assert_allclose(heights, expected, rtol=1e-12, atol=1e-15)
+
+    def test_HSW_3_hist_weights_with_norm_probability(self, df_selection):
+        """§9.HSW.3 (FIX1 §7b): hist + weights= + norm='probability' scales
+        per-row weights by 1/n_clean. Sum of heights ≈ mean(weights)."""
+        d = DFDraw(df_selection)
+        fig, ax, stats = d.hist(
+            "x", weights="w_a", bins=10, range=(0, 10),
+            norm="probability", histtype="bar",
+        )
+        heights = np.array([p.get_height() for p in ax.containers[0].patches])
+        # Sum of probability-normalized weighted bin heights == mean(w_a)
+        n_clean = len(df_selection)  # df_selection has no NaN/Inf
+        expected_sum = df_selection['w_a'].sum() / n_clean
+        np.testing.assert_allclose(heights.sum(), expected_sum, rtol=1e-12)
+
+    def test_HSW_4_hist_weights_with_group_by_raises(self, df_selection):
+        """§9.HSW.4 (FIX1 §7b): hist + weights= + group_by raises
+        NotImplementedError (group + column-name weights deferred)."""
+        d = DFDraw(df_selection)
+        with pytest.raises(NotImplementedError, match=r"weights=.*group_by"):
+            d.hist("x", weights="w_a", group_by="sector")
+
+    def test_HSW_5_hist_no_weights_backward_compat(self, df_selection):
+        """§9.HSW.5 (FIX1 §7b): hist without weights= keeps pre-FIX1 behavior
+        (count histogram, sum of heights == n_clean)."""
+        d = DFDraw(df_selection)
+        fig, ax, stats = d.hist(
+            "x", bins=10, range=(0, 10), histtype="bar",
+        )
+        heights = np.array([p.get_height() for p in ax.containers[0].patches])
+        # Unweighted count: heights sum to total rows in range
+        expected_n = ((df_selection['x'] >= 0) & (df_selection['x'] <= 10)).sum()
+        assert heights.sum() == expected_n
+

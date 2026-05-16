@@ -170,6 +170,12 @@ def draw_hist(
     stat_fields: Optional[Union[str, List[str]]] = None,
     # Phase 13.28.DF: NaN/inf filter policy (AD-70)
     nan_policy: str = "filter",
+    # Phase 13.27.DF Commit 2 FIX1 (§7b): per-row weights as column name or
+    # df.eval-able expression. When set, evaluated to an array, sanitized
+    # in lockstep with x_data (same NaN/inf mask), and passed to ax.hist
+    # via the weights= kwarg. Precedence with norm="probability": explicit
+    # per-row weights win and are additionally scaled by 1/n_clean.
+    weights: Optional[str] = None,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -254,11 +260,52 @@ def draw_hist(
     else:
         x_name = "x"
         x_data = np.asarray(x, dtype=float)
-    
-    # Phase 13.28.DF: NaN/inf sanitization (AD-69, AD-70)
-    x_data, _, _sanitize_stats = sanitize_for_plot(
+
+    # Phase 13.27.DF Commit 2 FIX1 (§7b): evaluate per-row weights column / expression.
+    # Mirrors profile.py's _eval_weights pattern. Sanitized jointly with x_data below.
+    w_data = None
+    if weights is not None:
+        if isinstance(weights, str):
+            if weights in df.columns:
+                w_data = df[weights].values.astype(float)
+            else:
+                try:
+                    w_data = df.eval(weights).values.astype(float)
+                except Exception as e:
+                    raise ValueError(
+                        f"Cannot evaluate weight expression '{weights}': {e}. "
+                        "Weights must be a column name or a valid pandas expression."
+                    )
+        else:
+            # Pre-existing call sites may pass an array directly (e.g. via _draw_vector
+            # plumbing). Accept and pass through.
+            w_data = np.asarray(weights, dtype=float)
+
+    # Phase 13.28.DF: NaN/inf sanitization (AD-69, AD-70).
+    # Use sanitize_for_plot for counters + policy enforcement (raise/warn);
+    # apply joint mask manually to align weights with x_data (mirrors profile.py).
+    _, _, _sanitize_stats = sanitize_for_plot(
         x_data, y_data=None, nan_policy=nan_policy, column_names=(x_name, "")
     )
+    if w_data is not None:
+        # Joint mask: x finite AND w finite. Realigns w_data to surviving rows.
+        # Phase 13.27.DF Commit 2 FIX1 (§7b): group_by + column-name weights is
+        # NotImplementedError — the grouped path would need per-group w slicing.
+        if group_by is not None and group_by in df.columns:
+            raise NotImplementedError(
+                "weights= (column-name / expression) combined with group_by is "
+                "not yet supported. Use group_by alone, or apply your weighting "
+                "filter via selection= and call hist without weights="
+            )
+        _mask = np.isfinite(x_data) & np.isfinite(w_data)
+        x_data = x_data[_mask]
+        w_data = w_data[_mask]
+    else:
+        # No weights: keep pre-FIX1 behavior — sanitize_for_plot already
+        # filtered x_data via its returned x_clean.
+        x_data, _, _ = sanitize_for_plot(
+            x_data, y_data=None, nan_policy=nan_policy, column_names=(x_name, "")
+        )
 
     # Phase 13.28.DF: Resolve autorange (AD-73, AD-77)
     from ._autorange import resolve_range_1d
@@ -298,13 +345,23 @@ def draw_hist(
     _suppress_layout = kwargs.pop('_suppress_layout', False)
     
     # Normalization
+    # Normalization + weights resolution
+    # Phase 13.27.DF Commit 2 FIX1 (§7b): use _hist_weights as the matplotlib
+    # weights= array. When the user passed `weights=` (now in w_data after
+    # sanitize), use it. With norm="probability", scale by 1/n_clean.
     density = False
-    weights = None
+    _hist_weights = w_data  # may be None
     if norm == "density":
         density = True
     elif norm == "probability":
-        weights = np.ones_like(x_data) / len(x_data) if len(x_data) > 0 else None
-    
+        if _hist_weights is not None:
+            # Explicit user weights × probability normalization: per-row weight
+            # multiplied by 1/n. Matches the "probability per row" semantic.
+            _hist_weights = (_hist_weights / len(x_data)) if len(x_data) > 0 else _hist_weights
+        else:
+            # Pre-FIX1 behavior: synthesize uniform 1/n weights.
+            _hist_weights = np.ones_like(x_data) / len(x_data) if len(x_data) > 0 else None
+
     # Phase 13.30.DF: Validate Class-2 column-reference parameters.
     # Catches BUG_ADF_GroupBy_Expression_Materialization (silent fallthrough below).
     from ..drawer import DFDraw as _DFDraw
@@ -316,9 +373,11 @@ def draw_hist(
 
     # Group-by handling
     if group_by is not None and group_by in df.columns:
+        # w_data + group_by raises above; here _hist_weights is either None or
+        # the probability-synthesized 1/n array (pre-FIX1 behavior).
         _draw_hist_grouped(
             df, x, ax, group_by, top_k, stacked,
-            bins=bins, range=_used_range, density=density, weights=weights,
+            bins=bins, range=_used_range, density=density, weights=_hist_weights,
             alpha=alpha, histtype=histtype, edgecolor=edgecolor,
             linewidth=linewidth, **kwargs
         )
@@ -326,7 +385,7 @@ def draw_hist(
     else:
         # Single histogram
         ax.hist(
-            x_data, bins=bins, range=_used_range, density=density, weights=weights,
+            x_data, bins=bins, range=_used_range, density=density, weights=_hist_weights,
             color=color, alpha=alpha, histtype=histtype, edgecolor=edgecolor,
             linewidth=linewidth, label=label, **kwargs
         )

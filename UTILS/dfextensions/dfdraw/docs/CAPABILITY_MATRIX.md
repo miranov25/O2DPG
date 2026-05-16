@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-05-15 14:51 UTC
+**Generated:** 2026-05-16 12:45 UTC
 **Phase:** 13.15.DF
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -9,12 +9,12 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 7 | 11% |
-| ☑️ Smoke-only | 54 | 87% |
+| ✅ Verified | 7 | 10% |
+| ☑️ Smoke-only | 59 | 88% |
 | 🧨 Broken | 0 | 0% |
-| 📋 Planned | 1 | 2% |
-| **Total features** | **62** | |
-| **Total proof tests** | **297** | |
+| 📋 Planned | 1 | 1% |
+| **Total features** | **67** | |
+| **Total proof tests** | **314** | |
 | **Invariance tests** | **28** | |
 
 **Status key:**
@@ -100,6 +100,11 @@
 | ☑️ | **CHANNEL.assignment** — Algorithm A: automatic visual-channel assignment for N data channels | 40 | 0 |
 | ☑️ | **CHANNEL.nested_band** — Nested-band detection (>=2 symmetric pairs, central optional) and rendering | 5 | 0 |
 | ☑️ | **CHANNEL.factored_legend** — Factored legend with section headers (sum-not-product entry count) | 4 | 0 |
+| ☑️ | **CHANNEL.selection_delta** — selection_delta channel (per-curve selection_vector) — AD-61, AD-66, AD-67 | 4 | 0 |
+| ☑️ | **CHANNEL.weights_delta** — weights_delta channel (per-curve weights_vector) — AD-61, AD-66, AD-67 | 4 | 0 |
+| ☑️ | **CHANNEL.compose_inner** — vector_compose='inner' — element-wise pairing (AD-62) | 4 | 0 |
+| ☑️ | **CHANNEL.compose_outer** — vector_compose='outer' — cross-product (AD-62) | 2 | 0 |
+| ☑️ | **CHANNEL.delta_facet_label** — Per-curve label management for selection_delta/weights_delta channels | 3 | 0 |
 | | **DATA** | | |
 | ☑️ | **DATA.nan_policy** — Optional NaN/inf filter with nan_policy parameter | 6 | 0 |
 | ☑️ | **DATA.counters** — Stats dict counters: n_input, n_filtered, n_inf_*, n_nan_* | 3 | 0 |

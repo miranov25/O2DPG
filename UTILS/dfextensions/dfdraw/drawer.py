@@ -584,6 +584,7 @@ class DFDraw:
         'same',
         'stat_fields',  # Phase 13.18.DF: robust statistics groups
         'nan_policy',  # Phase 13.28.DF: NaN/inf filter policy (AD-70)
+        'weights',  # Phase 13.27.DF Commit 2 FIX1 (§7b): column-name / expression weighting on hist
         'facet_by',  # Phase 13.32.DF Sub-fix 3: extend AD-78 column-mode facet_by to hist
         'facet_by_bins', 'facet_by_quantiles',  # Phase 13.32.DF Sub-fix 3 (AD-79)
         # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
@@ -2122,6 +2123,12 @@ class DFDraw:
         stat_fields: Optional[Union[str, List[str]]] = None,
         # Phase 13.28.DF: NaN/inf filter policy (AD-70)
         nan_policy: str = "filter",
+        # Phase 13.27.DF Commit 2 FIX1 (§7b): weights as column name or
+        # df.eval-able expression. Mirrors profile()'s weights= semantics.
+        # If both `weights=` and `norm="probability"` are passed, the
+        # explicit per-row weights win and are additionally scaled by
+        # 1/n_clean for probability normalization.
+        weights: Optional[str] = None,
         # Phase 13.32.DF Sub-fix 3 (AD-79): extend AD-78 facet_by column-mode to hist
         facet_by: Optional[str] = None,
         facet_by_bins: Optional[int] = None,
@@ -2189,32 +2196,44 @@ class DFDraw:
         """
         from .plots.histogram import draw_hist
 
-        # Phase 13.27 Commit 2 FIX1-pending guard (Sonnet52_R1 P1-2 / Hard
-        # Constraint §3): selection_vector / weights_vector require multi-X
-        # syntax to engage vector mode. Single-X 'x' silently takes the
-        # scalar path and these kwargs are ignored — warn loudly to prevent
-        # silent wrong results. Full single-Y dispatch tracked as Phase 13.27
-        # Commit 2 FIX1. The warning fires in vector mode too (benign signal).
-        if ((selection_vector is not None and len(selection_vector) >= 2)
-                or (weights_vector is not None and len(weights_vector) >= 2)):
-            import warnings as _warnings
-            _warnings.warn(
-                "selection_vector / weights_vector require multi-X syntax to "
-                "engage in this phase (e.g., '[x1,x2]' instead of 'x'). "
-                "Single-X paths currently take the scalar path and ignore "
-                "these kwargs. Full single-Y dispatch tracked as Phase 13.27 "
-                "Commit 2 FIX1.",
-                UserWarning,
-                stacklevel=2,
-            )
-
         # Parse expression (take first part only for 1D)
         y_expr, x_expr = self._parse_expr(expr)
-        
+
         # Phase 13.16.DF: Vector dispatch
         # Phase 13.16.DF FIX1: tuple-driven forwarding via _HIST_FORWARDED_NAMES
         # + R4 fail-fast guard on facet=True + vector.
-        if isinstance(y_expr, list):
+        # Phase 13.27.DF Commit 2 FIX1 (§7a): single-X + selection_vector /
+        # weights_vector also engages vector mode (single-X is wrapped as a
+        # 1-element list). The previous silent-ignore + UserWarning guard
+        # has been removed — list-valued selection/weights now compose with
+        # single-X correctly via vector_compose='outer'. With default
+        # vector_compose='inner' on n_y=1 + n_s>=2, the iteration helper
+        # raises an actionable "3-axis inner requires equal lengths" error.
+        _y_is_vector = isinstance(y_expr, list)
+        # Phase 13.27.DF Commit 2 FIX1 (§7a): single-Y vector dispatch is
+        # gated on facet_by being absent or channel-mode 'vector' (which
+        # requires _y_is_vector). When column-mode facet_by is set on
+        # single-Y, defer to the facet path (Phase 13.32 dispatcher);
+        # composition of column-mode facet_by + single-Y vector channels
+        # is a Phase 13.33 concern (spec v1.2 §4.2.4: facet partitions
+        # first, vector composes within each subplot).
+        _column_mode_facet = (facet_by is not None and facet_by != 'vector')
+        _need_vector_dispatch = (
+            _y_is_vector
+            or (
+                not _column_mode_facet
+                and (
+                    (selection_vector is not None and len(selection_vector) >= 2)
+                    or (weights_vector is not None and len(weights_vector) >= 2)
+                )
+            )
+        )
+        if _need_vector_dispatch:
+            if not _y_is_vector:
+                # Wrap single-X as 1-element list so _draw_vector path is uniform.
+                y_expr = [y_expr]
+                if not isinstance(x_expr, list):
+                    x_expr = [x_expr]
             # R4: facet=True + vector is undefined; fail-fast.
             if facet:
                 raise ValueError(
@@ -2297,6 +2316,8 @@ class DFDraw:
                 auto_title=auto_title, selection=selection,
                 stat_fields=stat_fields,
                 nan_policy=nan_policy,
+                # Phase 13.27.DF Commit 2 FIX1 (§7b): forward column-name weights
+                weights=weights,
                 facet_by_bins=facet_by_bins,
                 facet_by_quantiles=facet_by_quantiles,
                 **kwargs
@@ -2323,6 +2344,8 @@ class DFDraw:
                 stat_fields=stat_fields,
                 # Phase 13.28.DF: NaN/inf filter policy
                 nan_policy=nan_policy,
+                # Phase 13.27.DF Commit 2 FIX1 (§7b): column-name weights
+                weights=weights,
                 **kwargs
             )
             axes = ax
@@ -2462,28 +2485,34 @@ class DFDraw:
             weights_vector = None
 
         # Phase 13.27 Commit 2 FIX1-pending guard (Sonnet52_R1 P1-2 / Hard
-        # Constraint §3): selection_vector requires multi-Y syntax to engage
-        # vector mode. Single-Y 'y:x' silently takes the scalar path and the
-        # kwarg is ignored. Warn loudly to prevent silent wrong results.
-        # Full single-Y dispatch tracked as Phase 13.27 Commit 2 FIX1.
-        # (weights_vector is already handled above; only selection_vector here.)
-        if selection_vector is not None and len(selection_vector) >= 2:
-            import warnings as _warnings
-            _warnings.warn(
-                "selection_vector requires multi-Y syntax ('[y1,y2]:x') to "
-                "engage vector mode. With single-Y 'y:x' it is silently "
-                "ignored. Full dispatch tracked as Phase 13.27 Commit 2 FIX1.",
-                UserWarning,
-                stacklevel=2,
-            )
+        # Constraint §3) REMOVED in FIX1 §7a: single-Y + selection_vector now
+        # engages vector mode below. The earlier `weights_vector` warning
+        # block (Phase E deferral — point-size weighting) is preserved.
 
         # Parse expression
         y_expr, x_expr = self._parse_expr(expr)
-        
+
         # Phase 13.16.DF: Vector dispatch
         # Phase 13.16.DF FIX1: tuple-driven forwarding via _SCATTER_FORWARDED_NAMES
         # + R4 fail-fast guard on facet=True + vector.
-        if isinstance(y_expr, list):
+        # Phase 13.27.DF Commit 2 FIX1 (§7a): single-Y + selection_vector
+        # also engages vector mode.
+        _y_is_vector = isinstance(y_expr, list)
+        # Phase 13.27.DF Commit 2 FIX1 (§7a): see note in hist()/profile().
+        _column_mode_facet = (facet_by is not None and facet_by != 'vector')
+        _need_vector_dispatch = (
+            _y_is_vector
+            or (
+                not _column_mode_facet
+                and (selection_vector is not None and len(selection_vector) >= 2)
+            )
+            # weights_vector is already None by here (warn-then-drop above)
+        )
+        if _need_vector_dispatch:
+            if not _y_is_vector:
+                y_expr = [y_expr]
+                if not isinstance(x_expr, list):
+                    x_expr = [x_expr]
             if x_expr[0] is None:
                 raise ValueError(
                     f"Scatter plot requires 'y:x' format, got vector 1D '{expr}'"
@@ -2753,31 +2782,43 @@ class DFDraw:
         from .plots.profile import draw_profile
 
         # Phase 13.27 Commit 2 FIX1-pending guard (Sonnet52_R1 P1-2 / Hard
-        # Constraint §3): selection_vector / weights_vector require multi-Y
-        # syntax to engage vector mode. Single-Y 'y:x' silently takes the
-        # scalar path and these kwargs are ignored — warn loudly to prevent
-        # silent wrong results. Full single-Y dispatch tracked as Phase 13.27
-        # Commit 2 FIX1. The warning fires in vector mode too (benign signal).
-        if ((selection_vector is not None and len(selection_vector) >= 2)
-                or (weights_vector is not None and len(weights_vector) >= 2)):
-            import warnings as _warnings
-            _warnings.warn(
-                "selection_vector / weights_vector require multi-Y syntax to "
-                "engage in this phase (e.g., '[y1,y2]:x' instead of 'y:x'). "
-                "Single-Y paths currently take the scalar path and ignore "
-                "these kwargs. Full single-Y dispatch tracked as Phase 13.27 "
-                "Commit 2 FIX1.",
-                UserWarning,
-                stacklevel=2,
-            )
+        # Constraint §3) REMOVED in FIX1 §7a: single-Y + selection_vector /
+        # weights_vector now engages vector mode below.
 
         # Parse expression
         y_expr, x_expr = self._parse_expr(expr)
-        
+
         # Phase 13.16.DF: Vector dispatch
         # Phase 13.16.DF FIX1: tuple-driven forwarding via _PROFILE_FORWARDED_NAMES
         # + R4 fail-fast guard on facet=True + vector.
-        if isinstance(y_expr, list):
+        # Phase 13.27.DF Commit 2 FIX1 (§7a): single-Y + selection_vector /
+        # weights_vector also engages vector mode. The facet_by='vector'
+        # short-circuit still requires _y_is_vector (it splits subplots per
+        # vector y element — undefined for single-Y).
+        _y_is_vector = isinstance(y_expr, list)
+        # Phase 13.27.DF Commit 2 FIX1 (§7a): single-Y vector dispatch is
+        # gated on facet_by being absent or channel-mode 'vector' (which
+        # requires _y_is_vector). When column-mode facet_by is set on
+        # single-Y, defer to the facet path (Phase 13.32 dispatcher);
+        # composition of column-mode facet_by + single-Y vector channels
+        # is a Phase 13.33 concern (spec v1.2 §4.2.4: facet partitions
+        # first, vector composes within each subplot).
+        _column_mode_facet = (facet_by is not None and facet_by != 'vector')
+        _need_vector_dispatch = (
+            _y_is_vector
+            or (
+                not _column_mode_facet
+                and (
+                    (selection_vector is not None and len(selection_vector) >= 2)
+                    or (weights_vector is not None and len(weights_vector) >= 2)
+                )
+            )
+        )
+        if _need_vector_dispatch:
+            if not _y_is_vector:
+                y_expr = [y_expr]
+                if not isinstance(x_expr, list):
+                    x_expr = [x_expr]
             # Confirm 2D — profile requires x
             if x_expr[0] is None:
                 raise ValueError(
@@ -2794,7 +2835,9 @@ class DFDraw:
             # into one subplot per vector element (intercept BEFORE _draw_vector
             # which would otherwise overlay all curves). All other facet_by
             # values are not yet defined for vector y; route through _draw_vector.
-            if facet_by == 'vector':
+            # FIX1 §7a: gate on _y_is_vector — single-Y wrapped as 1-element
+            # list has no vector channel to split.
+            if facet_by == 'vector' and _y_is_vector:
                 # Apply selection / sampling at the dispatch level (same as
                 # the scalar branch below) so each subplot sees clean data.
                 df_for_facet = self._apply_selection(self.df, selection)
