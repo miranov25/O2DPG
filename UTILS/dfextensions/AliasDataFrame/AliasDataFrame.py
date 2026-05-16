@@ -5388,7 +5388,7 @@ function collapseDepth(maxD) {{
         
         return adf
 
-    def export_tree(self, filename_or_file, treename="tree", dropAliasColumns=True, compression=uproot.ZLIB(level=1), columns=None):
+    def export_tree(self, filename_or_file, treename="tree", dropAliasColumns=True, compression=uproot.LZ4(level=1), columns=None):
         """
         Export DataFrame to ROOT TTree.
         
@@ -5401,7 +5401,7 @@ function collapseDepth(maxD) {{
         dropAliasColumns : bool
             If True, don't export columns that are aliases
         compression : uproot compression
-            Compression algorithm (default: ZLIB level 1)
+            Compression algorithm (default: LZ4 level 1)
         columns : list of str, optional
             If provided, export only these columns (snapshot/cache mode).
             WARNING: Schema, aliases, and subframes are NOT exported.
