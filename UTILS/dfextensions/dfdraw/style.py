@@ -194,6 +194,12 @@ DEFAULT_STYLE: Dict[str, Any] = {
     # Used by Commit 2. AD-65, AD-66.
     "channels.default.selection_delta": None,
     "channels.default.weights_delta":   None,
+
+    # Per-curve label joiner when multiple list-valued channels are active
+    # (3-axis outer compose: vector × selection_vector × weights_vector). The
+    # auto-derived label format is "{y} {sep} {selection} {sep} {weights}".
+    # Phase 13.27.DF Commit 2, proposal §4.3 + §5.7.
+    "channels.label.delta_separator": " | ",
 }
 
 # =============================================================================

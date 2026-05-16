@@ -449,6 +449,8 @@ class TestChannelStyleOverride:
             'channels.label.weights_truncate',
             'channels.default.selection_delta',
             'channels.default.weights_delta',
+            # Phase 13.27.DF Commit 2 — per-curve label joiner (proposal §5.7)
+            'channels.label.delta_separator',
         }
         present = {k for k in DEFAULT_STYLE if k.startswith('channels.')}
         assert expected == present, (

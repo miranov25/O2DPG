@@ -741,6 +741,61 @@ FEATURES = [
         ],
     },
 
+    # ── Phase 13.27.DF Commit 2 (Phase D): Selection/Weights Vectors + delta_facet ──
+
+    {
+        "id": "CHANNEL.selection_delta",
+        "name": "selection_delta channel (per-curve selection_vector) — AD-61, AD-66, AD-67",
+        "category": "CHANNEL",
+        "tests": [
+            "test_phase_13_27_commit2_selection_weights.py::TestSelectionDelta_Profile::test_SDP_1_1ch_selection_alone_gets_color",
+            "test_phase_13_27_commit2_selection_weights.py::TestSelectionDelta_Profile::test_SDP_2_2ch_selection_vector_inner",
+            "test_phase_13_27_commit2_selection_weights.py::TestSelectionDelta_Profile::test_SDP_3_selection_vector_with_global_selection",
+            "test_phase_13_27_commit2_selection_weights.py::TestSelectionDelta_Hist::test_SDH_3_hist2d_with_selection_vector_typeerror",
+        ],
+    },
+    {
+        "id": "CHANNEL.weights_delta",
+        "name": "weights_delta channel (per-curve weights_vector) — AD-61, AD-66, AD-67",
+        "category": "CHANNEL",
+        "tests": [
+            "test_phase_13_27_commit2_selection_weights.py::TestWeightsDelta_Profile::test_WDP_1_1ch_weights_alone_gets_color",
+            "test_phase_13_27_commit2_selection_weights.py::TestWeightsDelta_Profile::test_WDP_3_weights_vector_with_global_weights",
+            "test_phase_13_27_commit2_selection_weights.py::TestWeightsDelta_Scatter::test_WDS_1_scatter_weights_vector_warns_once",
+            "test_phase_13_27_commit2_selection_weights.py::TestWeightsDelta_Hist::test_WDH_3_hist2d_with_weights_vector_typeerror",
+        ],
+    },
+    {
+        "id": "CHANNEL.compose_inner",
+        "name": "vector_compose='inner' — element-wise pairing (AD-62)",
+        "category": "CHANNEL",
+        "tests": [
+            "test_phase_13_27_commit2_selection_weights.py::TestComposeInnerOuter::test_CIO_1_2axis_inner_matched_lengths",
+            "test_phase_13_27_commit2_selection_weights.py::TestComposeInnerOuter::test_CIO_2_2axis_inner_mismatched_raises",
+            "test_phase_13_27_commit2_selection_weights.py::TestComposeInnerOuter::test_CIO_4_3axis_inner_all_equal",
+            "test_phase_13_27_commit2_selection_weights.py::TestComposeInnerOuter::test_CIO_5_3axis_inner_mismatched_raises",
+        ],
+    },
+    {
+        "id": "CHANNEL.compose_outer",
+        "name": "vector_compose='outer' — cross-product (AD-62)",
+        "category": "CHANNEL",
+        "tests": [
+            "test_phase_13_27_commit2_selection_weights.py::TestComposeInnerOuter::test_CIO_3_2axis_outer_creates_mxn",
+            "test_phase_13_27_commit2_selection_weights.py::TestComposeInnerOuter::test_CIO_6_3axis_outer_creates_mxnxp",
+        ],
+    },
+    {
+        "id": "CHANNEL.delta_facet_label",
+        "name": "Per-curve label management for selection_delta/weights_delta channels",
+        "category": "CHANNEL",
+        "tests": [
+            "test_phase_13_27_commit2_selection_weights.py::TestSelectionDelta_Profile::test_SDP_4_selection_labels_override_accepted",
+            "test_phase_13_27_commit2_selection_weights.py::TestSelectionDelta_Profile::test_SDP_5_selection_truncate_style_key_registered",
+            "test_phase_13_27_commit2_selection_weights.py::TestWeightsDelta_Profile::test_WDP_4_weights_labels_kwarg_plumbed",
+        ],
+    },
+
     # ── Phase 13.28.DF: Robust Data Handling (NaN/Inf + Hybrid Autorange) ──
 
     {

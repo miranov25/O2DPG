@@ -110,6 +110,50 @@ EXPLICIT_RULES: "dict[frozenset, dict[str, str]]" = {
     # 3-channel case (AD-56)
     frozenset({'vector', 'group_by', 'quantiles'}):
         {'group_by': 'color', 'vector': 'marker', 'quantiles': 'linestyle'},
+
+    # ========================================================================
+    # Phase 13.27.DF Commit 2 (Phase D): selection_delta + weights_delta
+    # ========================================================================
+    # AD-61: selection_delta and weights_delta are introduced as new
+    # DataChannel names by _draw_vector when selection_vector / weights_vector
+    # kwargs are non-None with length >= 2. Default is_categorical=False
+    # (ordinal: linestyle-preferred greedy fallback). See proposal §3.1.
+    # AD-62: composition rule (inner default / outer opt-in) governs how the
+    # vector loop iterates; not encoded here.
+    # AD-65/66/67: 4-channel non-facet cases intentionally omitted — they
+    # require facet_by to free a slot per the visual-channel budget rule.
+
+    # === 1-channel new ===
+    frozenset({'selection_delta'}):
+        {'selection_delta': 'color'},
+    frozenset({'weights_delta'}):
+        {'weights_delta': 'color'},
+
+    # === 2-channel selection_delta combinations ===
+    frozenset({'vector', 'selection_delta'}):
+        {'vector': 'linestyle', 'selection_delta': 'color'},
+    frozenset({'group_by', 'selection_delta'}):
+        {'group_by': 'color', 'selection_delta': 'linestyle'},
+    frozenset({'quantiles', 'selection_delta'}):
+        {'quantiles': 'linestyle', 'selection_delta': 'color'},
+
+    # === 2-channel weights_delta combinations ===
+    frozenset({'vector', 'weights_delta'}):
+        {'vector': 'linestyle', 'weights_delta': 'color'},
+    frozenset({'group_by', 'weights_delta'}):
+        {'group_by': 'color', 'weights_delta': 'linestyle'},
+    frozenset({'quantiles', 'weights_delta'}):
+        {'quantiles': 'linestyle', 'weights_delta': 'color'},
+
+    # === 2-channel selection_delta + weights_delta ===
+    frozenset({'selection_delta', 'weights_delta'}):
+        {'selection_delta': 'color', 'weights_delta': 'linestyle'},
+
+    # === 3-channel most-common cases (production-driven) ===
+    frozenset({'vector', 'group_by', 'selection_delta'}):
+        {'group_by': 'color', 'vector': 'linestyle', 'selection_delta': 'marker'},
+    frozenset({'vector', 'group_by', 'weights_delta'}):
+        {'group_by': 'color', 'vector': 'linestyle', 'weights_delta': 'marker'},
     # Phase D: append 'selection_delta' combinations here.
 }
 

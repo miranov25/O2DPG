@@ -569,6 +569,11 @@ class DFDraw:
         'nan_policy',  # Phase 13.28.DF: NaN/inf filter policy (AD-70)
         'facet_by',  # Phase 13.27.DF: facet routing through channel framework (AD-67)
         'facet_by_bins', 'facet_by_quantiles',  # Phase 13.32.DF Sub-fix 3 (AD-79)
+        # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
+        'selection_vector', 'weights_vector',
+        'selection_labels', 'weights_labels',
+        'selection_categorical', 'weights_categorical',
+        'vector_compose', 'delta_facet',
     )
 
     _HIST_FORWARDED_NAMES = (
@@ -581,6 +586,11 @@ class DFDraw:
         'nan_policy',  # Phase 13.28.DF: NaN/inf filter policy (AD-70)
         'facet_by',  # Phase 13.32.DF Sub-fix 3: extend AD-78 column-mode facet_by to hist
         'facet_by_bins', 'facet_by_quantiles',  # Phase 13.32.DF Sub-fix 3 (AD-79)
+        # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
+        'selection_vector', 'weights_vector',
+        'selection_labels', 'weights_labels',
+        'selection_categorical', 'weights_categorical',
+        'vector_compose', 'delta_facet',
     )
 
     _SCATTER_FORWARDED_NAMES = (
@@ -592,6 +602,13 @@ class DFDraw:
         'nan_policy',  # Phase 13.28.DF: NaN/inf filter policy (AD-70)
         'facet_by',  # Phase 13.32.DF Sub-fix 3: extend AD-78 column-mode facet_by to scatter
         'facet_by_bins', 'facet_by_quantiles',  # Phase 13.32.DF Sub-fix 3 (AD-79)
+        # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
+        # NB: weights_vector accepted by scatter() but the per-curve weights have no
+        # effect on scatter rendering — proposal §5.5; one-time UserWarning emitted.
+        'selection_vector', 'weights_vector',
+        'selection_labels', 'weights_labels',
+        'selection_categorical', 'weights_categorical',
+        'vector_compose', 'delta_facet',
     )
 
     # Phase 13.32.DF Sub-fix 3: hist2d gets its own FORWARDED_NAMES tuple
@@ -615,6 +632,11 @@ class DFDraw:
         'nan_policy',  # Phase 13.28.DF: NaN/inf filter policy (AD-70)
         'facet_by',  # Phase 13.32.DF Sub-fix 3: facet_by reachable from draw() dispatcher
         'facet_by_bins', 'facet_by_quantiles',  # Phase 13.32.DF Sub-fix 3 (AD-79)
+        # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
+        'selection_vector', 'weights_vector',
+        'selection_labels', 'weights_labels',
+        'selection_categorical', 'weights_categorical',
+        'vector_compose', 'delta_facet',
         # Note: 'type' consumed for routing; 'figsize' deliberately excluded
         # (figure already created); 'facet' caught by R4 guard; 'group_by'
         # passed as explicit named arg to _draw_vector.
@@ -667,6 +689,112 @@ class DFDraw:
                 f"DataFrame column name (got facet_by={facet_by!r} which is a "
                 f"channel name or not in df.columns)"
             )
+
+    # =========================================================================
+    # Phase 13.27.DF Commit 2 (Phase D, v1.2 §5.2 + §4.4): helpers for
+    # selection_vector / weights_vector composition. Used by _draw_vector to
+    # build per-curve iter_kwargs.
+    # =========================================================================
+
+    @staticmethod
+    def _compute_vector_iteration_indices(n_y, selection_vector, weights_vector,
+                                          vector_compose):
+        """Phase 13.27.DF Commit 2 (v1.2 §4.2 + §5.2): compute the per-curve
+        index triples (y_idx, sel_idx, w_idx) for the _draw_vector loop.
+
+        Returns a list of length n_curves. Each entry is a 3-tuple of indices:
+            y_idx   — index into y_list / x_list (always set)
+            sel_idx — index into selection_vector (None if not active)
+            w_idx   — index into weights_vector (None if not active)
+
+        When both selection_vector and weights_vector are None or have length
+        <= 1 (per AD-67: 1-element silently degrades to scalar), the result is
+        bit-identical to the pre-Commit-2 zip(y_list, x_list) iteration:
+            [(0, None, None), (1, None, None), ..., (n_y-1, None, None)]
+
+        Raises ValueError per proposal §4.2 edge cases:
+          - empty list anywhere
+          - inner with mismatched lengths
+          - invalid vector_compose value
+        """
+        # AD-67: 1-element silently degrades to scalar (cost-0 channel).
+        # Treat as if the vector were None for iteration-count purposes.
+        n_s = 0 if not selection_vector else len(selection_vector)
+        n_w = 0 if not weights_vector else len(weights_vector)
+
+        # §4.2.2 edge case — empty list raises
+        if selection_vector is not None and n_s == 0:
+            raise ValueError("selection_vector must be non-empty (use None to omit)")
+        if weights_vector is not None and n_w == 0:
+            raise ValueError("weights_vector must be non-empty (use None to omit)")
+
+        # 1-element degrades — treat as "not active" for cardinality purposes
+        sel_active = n_s >= 2
+        w_active = n_w >= 2
+
+        # No active list-valued channels → backward-compat zip behavior
+        if not sel_active and not w_active:
+            return [(i, None, None) for i in range(n_y)]
+
+        if vector_compose == "inner":
+            # All active axes must match length (n_y is always active)
+            active_lengths = {n_y}
+            if sel_active:
+                active_lengths.add(n_s)
+            if w_active:
+                active_lengths.add(n_w)
+            if len(active_lengths) > 1:
+                raise ValueError(
+                    f"3-axis inner requires equal lengths: vector={n_y}, "
+                    f"selection_vector={n_s or 'unused'}, "
+                    f"weights_vector={n_w or 'unused'}"
+                )
+            n_curves = n_y
+            return [
+                (i,
+                 i if sel_active else None,
+                 i if w_active else None)
+                for i in range(n_curves)
+            ]
+        elif vector_compose == "outer":
+            # Cross-product over active axes; 1-element degrades to a single
+            # "None" index for that dimension.
+            sel_range = range(n_s) if sel_active else [None]
+            w_range = range(n_w) if w_active else [None]
+            out = []
+            for y_i in range(n_y):
+                for s_i in sel_range:
+                    for w_i in w_range:
+                        out.append((y_i, s_i, w_i))
+            return out
+        else:
+            raise ValueError(
+                f"vector_compose must be 'inner' or 'outer', got "
+                f"{vector_compose!r}"
+            )
+
+    @staticmethod
+    def _combine_selections(global_sel, per_curve_sel):
+        """Phase 13.27.DF Commit 2 (v1.2 §4.4): logical-AND composition of
+        global `selection` with per-curve `selection_vector[i]`.
+
+        Returns a string expression suitable for df.eval (per Class-1 contract).
+        None propagates: combine(None, None) → None; combine(s, None) → s.
+        """
+        if global_sel and per_curve_sel:
+            return f"({global_sel}) & ({per_curve_sel})"
+        return global_sel or per_curve_sel  # None-safe
+
+    @staticmethod
+    def _combine_weights(global_w, per_curve_w):
+        """Phase 13.27.DF Commit 2 (v1.2 §4.4): multiplicative composition of
+        global `weights` with per-curve `weights_vector[i]`.
+
+        Returns a string expression suitable for df.eval. None propagates.
+        """
+        if global_w and per_curve_w:
+            return f"({global_w}) * ({per_curve_w})"
+        return global_w or per_curve_w
 
     # =========================================================================
     # Phase 13.30.DF v1.0 — Class-2 column-reference parameter tuples.
@@ -748,7 +876,27 @@ class DFDraw:
         """
         # P0-4: extract 'same' from outer kwargs to avoid collision
         outer_same = kwargs.pop('same', False)
-        
+
+        # =====================================================================
+        # Phase 13.27.DF Commit 2 (Phase D, v1.2 §5.2): extract list-valued
+        # selection/weights kwargs and per-curve label management kwargs.
+        # These never propagate as scalar kwargs to draw_method — they govern
+        # the per-iteration composition (see §4.2 + §4.4).
+        # =====================================================================
+        _selection_vector  = kwargs.pop('selection_vector',  None)
+        _weights_vector    = kwargs.pop('weights_vector',    None)
+        _selection_labels  = kwargs.pop('selection_labels',  None)
+        _weights_labels    = kwargs.pop('weights_labels',    None)
+        _selection_categorical = kwargs.pop('selection_categorical', False)
+        _weights_categorical   = kwargs.pop('weights_categorical',   False)
+        _vector_compose    = kwargs.pop('vector_compose',    'inner')
+        _delta_facet       = kwargs.pop('delta_facet',       None)
+
+        # NB: scatter() emits UserWarning + drops weights_vector at its method
+        # entry (proposal §5.5). By the time we get here in scatter's vector
+        # path, weights_vector has already been forced to None. No additional
+        # check needed in _draw_vector.
+
         # P1-1 + GPT5 fix: only reset color cycle when NOT chaining onto existing overlay
         if not outer_same:
             self._reset_color_cycle()
@@ -845,6 +993,30 @@ class DFDraw:
                 cost=1,
             ))
 
+        # Phase 13.27.DF Commit 2 (v1.2 §3.1): selection_delta / weights_delta
+        # channels. AD-67: 1-element list silently degrades to scalar (cost 0,
+        # not added to _channels). AD-61: is_categorical controlled by
+        # _selection_categorical / _weights_categorical kwarg (default False
+        # = ordinal, linestyle-preferred greedy fallback).
+        _sel_active = _selection_vector is not None and len(_selection_vector) >= 2
+        _w_active   = _weights_vector   is not None and len(_weights_vector)   >= 2
+        if _sel_active:
+            _channels.append(DataChannel(
+                'selection_delta',
+                is_categorical=_selection_categorical,
+                cardinality=len(_selection_vector),
+                requested_style=None,  # resolved via Algorithm A (EXPLICIT_RULES)
+                cost=1,
+            ))
+        if _w_active:
+            _channels.append(DataChannel(
+                'weights_delta',
+                is_categorical=_weights_categorical,
+                cardinality=len(_weights_vector),
+                requested_style=None,
+                cost=1,
+            ))
+
         _assignment = assign_channels(_channels)
 
         # Resolve scalar styles from the assignment.
@@ -874,19 +1046,56 @@ class DFDraw:
             )
         
         stats_list = []
+        per_curve_sanitize = []  # Phase 13.27.DF Commit 2 v1.2 §5.2.1
         fig, ax = None, None
-        n_iter = len(y_list)
-        
-        for i, (y, x) in enumerate(zip(y_list, x_list)):
+
+        # Phase 13.27.DF Commit 2 (v1.2 §5.2): compute iteration indices.
+        # When selection_vector/weights_vector are None or 1-element, this is
+        # bit-identical to the pre-Commit-2 zip(y_list, x_list) iteration:
+        # [(0, None, None), (1, None, None), ..., (n_y-1, None, None)].
+        iteration_indices = self._compute_vector_iteration_indices(
+            n_y=len(y_list),
+            selection_vector=_selection_vector,
+            weights_vector=_weights_vector,
+            vector_compose=_vector_compose,
+        )
+        n_iter = len(iteration_indices)
+
+        # Phase 13.27.DF Commit 2 (v1.2 §3.1): assigned visual channels for
+        # the per-curve delta channels. None when the channel is not active.
+        _selection_visual = _assignment.get('selection_delta')
+        _weights_visual   = _assignment.get('weights_delta')
+
+        for i, (y_idx, sel_idx, w_idx) in enumerate(iteration_indices):
+            y = y_list[y_idx]
+            x = x_list[y_idx]
             expr = f"{y}:{x}" if x is not None else y
             iter_kwargs = dict(kwargs)
-            
-            # Apply vector style channel for this iteration
+
+            # Phase 13.27.DF Commit 2 (v1.2 §4.4): logical AND composition of
+            # global selection with per-curve selection_vector[sel_idx];
+            # multiplicative composition of global weights with per-curve
+            # weights_vector[w_idx]. Done at string level — draw_method sees
+            # a single composed selection/weights string per iteration.
+            if _sel_active and sel_idx is not None:
+                iter_kwargs['selection'] = self._combine_selections(
+                    kwargs.get('selection'), _selection_vector[sel_idx]
+                )
+            if _w_active and w_idx is not None:
+                iter_kwargs['weights'] = self._combine_weights(
+                    kwargs.get('weights'), _weights_vector[w_idx]
+                )
+
+            # Apply vector style channel for this iteration.
             # Phase 13.16.DF FIX1 B1b: use setdefault so user-supplied
             # linestyle/marker survives instead of being clobbered.
             # Phase 13.26.DF Phase B: cycles read from style keys
             # (channels.cycles.linestyle / channels.cycles.marker), replacing
             # the _LINESTYLE_CYCLE / _MARKER_CYCLE class constants.
+            # Phase 13.27.DF Commit 2: use y_idx (NOT loop counter i) for the
+            # cycle position — preserves bit-identical behavior in the no-vec
+            # case (y_idx == i then) and produces stable styling per y in the
+            # outer-compose case.
             if vector_style == 'linestyle':
                 _ls_cycle = get_style_value(
                     "channels.cycles.linestyle",
@@ -894,7 +1103,7 @@ class DFDraw:
                 )
                 iter_kwargs.setdefault(
                     'linestyle',
-                    _ls_cycle[i % len(_ls_cycle)],
+                    _ls_cycle[y_idx % len(_ls_cycle)],
                 )
                 # P1-2: suppress same=True color cycle so group_by colors are preserved
                 if group_by is not None:
@@ -906,18 +1115,62 @@ class DFDraw:
                 )
                 iter_kwargs.setdefault(
                     'marker',
-                    _mk_cycle[i % len(_mk_cycle)],
+                    _mk_cycle[y_idx % len(_mk_cycle)],
                 )
                 if group_by is not None:
                     iter_kwargs['_suppress_color_cycle'] = True
             # vector_style == 'color': rely on existing same=True color cycle
-            
+
+            # Phase 13.27.DF Commit 2 (v1.2 §3.1): apply selection_delta /
+            # weights_delta visual channels independently. Algorithm A
+            # guarantees disjoint visual assignments — these branches never
+            # clobber the vector_style branch above.
+            if _sel_active and sel_idx is not None:
+                if _selection_visual == 'linestyle':
+                    _ls_cycle = get_style_value(
+                        "channels.cycles.linestyle",
+                        list(self._LINESTYLE_CYCLE),
+                    )
+                    iter_kwargs.setdefault(
+                        'linestyle',
+                        _ls_cycle[sel_idx % len(_ls_cycle)],
+                    )
+                elif _selection_visual == 'marker':
+                    _mk_cycle = get_style_value(
+                        "channels.cycles.marker",
+                        list(self._MARKER_CYCLE),
+                    )
+                    iter_kwargs.setdefault(
+                        'marker',
+                        _mk_cycle[sel_idx % len(_mk_cycle)],
+                    )
+                # 'color' relies on same=True color cycle (advances per-iteration)
+            if _w_active and w_idx is not None:
+                if _weights_visual == 'linestyle':
+                    _ls_cycle = get_style_value(
+                        "channels.cycles.linestyle",
+                        list(self._LINESTYLE_CYCLE),
+                    )
+                    iter_kwargs.setdefault(
+                        'linestyle',
+                        _ls_cycle[w_idx % len(_ls_cycle)],
+                    )
+                elif _weights_visual == 'marker':
+                    _mk_cycle = get_style_value(
+                        "channels.cycles.marker",
+                        list(self._MARKER_CYCLE),
+                    )
+                    iter_kwargs.setdefault(
+                        'marker',
+                        _mk_cycle[w_idx % len(_mk_cycle)],
+                    )
+
             if group_by is not None:
                 iter_kwargs['group_by'] = group_by
-            
+
             # First iteration uses outer same; subsequent always same=True
             iter_kwargs['same'] = outer_same if i == 0 else True
-            
+
             # Phase 13.16.DF FIX1 (B2-B5): suppress per-iteration legend / title /
             # tight_layout in the underlying plot modules. We perform a single
             # post-loop pass below for legend and layout.
@@ -928,9 +1181,13 @@ class DFDraw:
             iter_kwargs['_suppress_legend'] = True
             iter_kwargs['_suppress_title'] = (i < n_iter - 1)
             iter_kwargs['_suppress_layout'] = True
-            
+
             fig, ax, stats = draw_method(expr, **iter_kwargs)
             stats_list.append(stats)
+
+            # Phase 13.27.DF Commit 2 v1.2 §5.2.1: aggregate per-curve sanitize stats
+            if isinstance(stats, dict) and 'sanitize_stats' in stats:
+                per_curve_sanitize.append(stats['sanitize_stats'])
         
         # Phase 13.16.DF FIX1 (B2): post-loop main-group legend dedup.
         # Underlying plot modules collected handles via ax.scatter/plot label= but
@@ -1669,6 +1926,16 @@ class DFDraw:
         facet_by: Optional[str] = None,
         facet_by_bins: Optional[int] = None,
         facet_by_quantiles: Optional[int] = None,
+        # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
+        # AD-61, AD-62, AD-65, AD-66, AD-67. Method body wiring lands in Turn 3.
+        selection_vector: Optional[List[str]] = None,
+        weights_vector: Optional[List[str]] = None,
+        selection_labels: Optional[List[str]] = None,
+        weights_labels: Optional[List[str]] = None,
+        selection_categorical: bool = False,
+        weights_categorical: bool = False,
+        vector_compose: str = "inner",
+        delta_facet: Optional[str] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -1859,6 +2126,16 @@ class DFDraw:
         facet_by: Optional[str] = None,
         facet_by_bins: Optional[int] = None,
         facet_by_quantiles: Optional[int] = None,
+        # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
+        # AD-61, AD-62, AD-65, AD-66, AD-67. Method body wiring lands in Turn 3.
+        selection_vector: Optional[List[str]] = None,
+        weights_vector: Optional[List[str]] = None,
+        selection_labels: Optional[List[str]] = None,
+        weights_labels: Optional[List[str]] = None,
+        selection_categorical: bool = False,
+        weights_categorical: bool = False,
+        vector_compose: str = "inner",
+        delta_facet: Optional[str] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -2076,6 +2353,19 @@ class DFDraw:
         facet_by: Optional[str] = None,
         facet_by_bins: Optional[int] = None,
         facet_by_quantiles: Optional[int] = None,
+        # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
+        # AD-61, AD-62, AD-65, AD-66, AD-67. Method body wiring lands in Turn 3.
+        # NB: weights_vector is accepted to honor uniform-API contract (A-1), but
+        # has no rendering effect on scatter — proposal §5.5; one-time UserWarning
+        # emitted in Turn 3 implementation.
+        selection_vector: Optional[List[str]] = None,
+        weights_vector: Optional[List[str]] = None,
+        selection_labels: Optional[List[str]] = None,
+        weights_labels: Optional[List[str]] = None,
+        selection_categorical: bool = False,
+        weights_categorical: bool = False,
+        vector_compose: str = "inner",
+        delta_facet: Optional[str] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -2136,7 +2426,22 @@ class DFDraw:
             (fig, ax, stats_dict)
         """
         from .plots.scatter import draw_scatter
-        
+
+        # Phase 13.27.DF Commit 2 (v1.2 §5.5, §9.WDS.1): weights_vector has no
+        # effect on scatter (point-size weighting deferred to Phase E). Emit
+        # one-time UserWarning at method entry — fires for both single-Y scalar
+        # path AND vector path, ensuring users see the message regardless of
+        # whether _draw_vector is engaged. The kwarg is silently dropped after.
+        if weights_vector is not None:
+            import warnings as _warnings
+            _warnings.warn(
+                "weights_vector has no effect on scatter (point-size weighting "
+                "deferred to Phase E)",
+                UserWarning,
+                stacklevel=2,
+            )
+            weights_vector = None
+
         # Parse expression
         y_expr, x_expr = self._parse_expr(expr)
         
@@ -2322,6 +2627,16 @@ class DFDraw:
         # Phase 13.32.DF Sub-fix 3 (AD-79): symmetric binning on facet_by axis
         facet_by_bins: Optional[int] = None,
         facet_by_quantiles: Optional[int] = None,
+        # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
+        # AD-61, AD-62, AD-65, AD-66, AD-67. Method body wiring lands in Turn 3.
+        selection_vector: Optional[List[str]] = None,
+        weights_vector: Optional[List[str]] = None,
+        selection_labels: Optional[List[str]] = None,
+        weights_labels: Optional[List[str]] = None,
+        selection_categorical: bool = False,
+        weights_categorical: bool = False,
+        vector_compose: str = "inner",
+        delta_facet: Optional[str] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -2699,6 +3014,19 @@ class DFDraw:
         # Parse expression
         y_expr, x_expr = self._parse_expr(expr)
         
+        # Phase 13.27.DF Commit 2 (v1.2 §4.1.1, §5.5): hist2d does not support
+        # per-curve selection/weights vectors (2D density is single-surface).
+        # The _HIST2D_FORWARDED_NAMES tuple already excludes them, but **kwargs
+        # catch-all permits direct calls — surface a clear TypeError before
+        # the kwargs leak through matplotlib's QuadMesh.set().
+        for _bad in ('selection_vector', 'weights_vector'):
+            if _bad in kwargs:
+                raise TypeError(
+                    f"hist2d() got an unexpected keyword argument {_bad!r} "
+                    f"(Phase 13.27 Commit 2: hist2d does not support per-curve "
+                    f"selection/weights vectors; use hist or profile instead)"
+                )
+
         # Phase 13.16.DF: vector not supported in hist2d (2D density is single-surface)
         if isinstance(y_expr, list):
             raise ValueError(
