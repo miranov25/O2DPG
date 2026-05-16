@@ -2188,7 +2188,26 @@ class DFDraw:
             (fig, ax, stats_dict)
         """
         from .plots.histogram import draw_hist
-        
+
+        # Phase 13.27 Commit 2 FIX1-pending guard (Sonnet52_R1 P1-2 / Hard
+        # Constraint §3): selection_vector / weights_vector require multi-X
+        # syntax to engage vector mode. Single-X 'x' silently takes the
+        # scalar path and these kwargs are ignored — warn loudly to prevent
+        # silent wrong results. Full single-Y dispatch tracked as Phase 13.27
+        # Commit 2 FIX1. The warning fires in vector mode too (benign signal).
+        if ((selection_vector is not None and len(selection_vector) >= 2)
+                or (weights_vector is not None and len(weights_vector) >= 2)):
+            import warnings as _warnings
+            _warnings.warn(
+                "selection_vector / weights_vector require multi-X syntax to "
+                "engage in this phase (e.g., '[x1,x2]' instead of 'x'). "
+                "Single-X paths currently take the scalar path and ignore "
+                "these kwargs. Full single-Y dispatch tracked as Phase 13.27 "
+                "Commit 2 FIX1.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         # Parse expression (take first part only for 1D)
         y_expr, x_expr = self._parse_expr(expr)
         
@@ -2441,6 +2460,22 @@ class DFDraw:
                 stacklevel=2,
             )
             weights_vector = None
+
+        # Phase 13.27 Commit 2 FIX1-pending guard (Sonnet52_R1 P1-2 / Hard
+        # Constraint §3): selection_vector requires multi-Y syntax to engage
+        # vector mode. Single-Y 'y:x' silently takes the scalar path and the
+        # kwarg is ignored. Warn loudly to prevent silent wrong results.
+        # Full single-Y dispatch tracked as Phase 13.27 Commit 2 FIX1.
+        # (weights_vector is already handled above; only selection_vector here.)
+        if selection_vector is not None and len(selection_vector) >= 2:
+            import warnings as _warnings
+            _warnings.warn(
+                "selection_vector requires multi-Y syntax ('[y1,y2]:x') to "
+                "engage vector mode. With single-Y 'y:x' it is silently "
+                "ignored. Full dispatch tracked as Phase 13.27 Commit 2 FIX1.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         # Parse expression
         y_expr, x_expr = self._parse_expr(expr)
@@ -2716,7 +2751,26 @@ class DFDraw:
             and 'group' if group_by is used.
         """
         from .plots.profile import draw_profile
-        
+
+        # Phase 13.27 Commit 2 FIX1-pending guard (Sonnet52_R1 P1-2 / Hard
+        # Constraint §3): selection_vector / weights_vector require multi-Y
+        # syntax to engage vector mode. Single-Y 'y:x' silently takes the
+        # scalar path and these kwargs are ignored — warn loudly to prevent
+        # silent wrong results. Full single-Y dispatch tracked as Phase 13.27
+        # Commit 2 FIX1. The warning fires in vector mode too (benign signal).
+        if ((selection_vector is not None and len(selection_vector) >= 2)
+                or (weights_vector is not None and len(weights_vector) >= 2)):
+            import warnings as _warnings
+            _warnings.warn(
+                "selection_vector / weights_vector require multi-Y syntax to "
+                "engage in this phase (e.g., '[y1,y2]:x' instead of 'y:x'). "
+                "Single-Y paths currently take the scalar path and ignore "
+                "these kwargs. Full single-Y dispatch tracked as Phase 13.27 "
+                "Commit 2 FIX1.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         # Parse expression
         y_expr, x_expr = self._parse_expr(expr)
         
