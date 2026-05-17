@@ -11039,8 +11039,8 @@ function collapseDepth(maxD) {{
                                     subframe_replacements[f'{dot_ref}.{method_suffix}'] = f'{flat_ref}.{method_suffix}'
                                 else:
                                     subframe_replacements[dot_ref] = flat_ref
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            warnings.warn(f"[draw] Failed to resolve subframe ref '{dot_ref}': {e}")
                 else:
                     # Multi-level: pre-materialize on self.df via _prepare_subframe_joins
                     try:
@@ -11054,8 +11054,8 @@ function collapseDepth(maxD) {{
                             subframe_replacements[f'{dot_ref_prefix}.{method_suffix}'] = f'{flat_col}.{method_suffix}'
                         else:
                             subframe_replacements[dot_ref_prefix] = flat_col
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        warnings.warn(f"[draw] Failed to resolve multi-level ref '{dot_ref_prefix}': {e}")
             
             if refs_to_resolve:
                 df_subset = df_subset.copy()
@@ -11072,6 +11072,9 @@ function collapseDepth(maxD) {{
                         sf_keys = sf.df[index_cols + [col_name]].rename(
                             columns={col_name: flat_ref}
                         )
+                    # BUG FIX: deduplicate subframe keys to prevent merge expansion
+                    # when subframe has duplicate index entries (e.g., quantile bins)
+                    sf_keys = sf_keys.drop_duplicates(subset=index_cols, keep='first')
                     merged = df_subset[index_cols].merge(sf_keys, on=index_cols, how='left')
                     df_subset[flat_ref] = merged[flat_ref].values
             
