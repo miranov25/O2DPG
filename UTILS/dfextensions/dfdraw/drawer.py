@@ -1838,12 +1838,11 @@ class DFDraw:
                 f"group_by={group_by!r} not in DataFrame columns "
                 f"(got {list(df_outer.columns)[:10]}...)"
             )
-        # Preserve first-appearance order (matches existing _draw_vector convention)
-        seen = []
-        for v in df_outer[group_by]:
-            if v not in seen:
-                seen.append(v)
-        group_values = seen
+        # P2 perf fix (Sonnet53_R2): pd.unique() is O(N) in C and preserves
+        # first-appearance order — semantically equivalent to the previous
+        # Python-level seen-list loop, ~100x faster on ITS-scale DataFrames
+        # (4M rows × K groups → 12M Python comparisons -> single C pass).
+        group_values = list(pd.unique(df_outer[group_by]))
         if len(group_values) == 0:
             raise ValueError(
                 f"group_by={group_by!r}: no groups found in DataFrame"
@@ -2126,14 +2125,17 @@ class DFDraw:
         # specifies these as Phase 13.33.DF + future-phase scope.)
         if facet_by_bins is not None or facet_by_quantiles is not None:
             raise NotImplementedError(
-                "facet_by_bins / facet_by_quantiles composing with normalize "
-                "is deferred. Use a categorical facet_by column for M2."
+                "facet_by_bins / facet_by_quantiles composing with normalize= "
+                "is not yet supported in Phase 13.33.DF v1.0 (M2). "
+                "Workaround: use a categorical facet_by column directly "
+                "(pre-bin the facet variable into a discrete column on the "
+                "DataFrame, then pass facet_by='<that column>' without "
+                "facet_by_bins / facet_by_quantiles). The auto-binning "
+                "composition is reserved for a future fix-up phase."
             )
-        seen = []
-        for v in df_outer[facet_by]:
-            if v not in seen:
-                seen.append(v)
-        facet_values = seen
+        # P2 perf fix (Sonnet53_R2): pd.unique() — see _dispatch_normalize_grouped_render
+        # for rationale. Same O(N) C-level path, same first-appearance order.
+        facet_values = list(pd.unique(df_outer[facet_by]))
         K = len(facet_values)
         if K == 0:
             raise ValueError(f"facet_by={facet_by!r}: no facet values found")
@@ -2146,9 +2148,11 @@ class DFDraw:
         if normalize_layout == "diff_only":
             gs = GridSpec(1, K, hspace=0.05, wspace=0.2)
             ax_tops = [None] * K
-            ax_diffs = [fig.add_subplot(gs[0, i],
-                                       sharey=(None if i == 0 else None))
-                        for i in range(K)]
+            # P2 cleanup (Sonnet52_R1, Sonnet53_R2): sharey is applied
+            # explicitly in the loop below across all K diff panels (not
+            # just the first). The previous ternary was dead code (both
+            # branches yielded None).
+            ax_diffs = [fig.add_subplot(gs[0, i]) for i in range(K)]
         else:  # overlay+diff
             gs = GridSpec(
                 2, K,

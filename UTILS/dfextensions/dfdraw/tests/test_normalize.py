@@ -940,3 +940,49 @@ class TestNormalizeFacetBy:
         finally:
             plt.close(fig)
 
+    def test_NF_3_facet_by_bins_with_normalize_raises_with_workaround_hint(
+        self, df_three_fills_two_sectors
+    ):
+        """§9.NF.3 (M2 v1.0 deferred-behavior lock — closes Coder QRC Rule 14
+        gap caught by Sonnet52_R1 + Sonnet53_R2 panel review).
+
+        Combining ``normalize=`` with ``facet_by_bins`` or
+        ``facet_by_quantiles`` raises NotImplementedError rather than
+        silently falling back to categorical facets or producing incorrect
+        output. M2 v1.0 supports categorical-column facets only; auto-binning
+        of the facet variable composing with normalize is reserved for a
+        future fix-up phase.
+
+        The error message must direct the user to the available workaround
+        (pre-bin into a categorical column) so they aren't left guessing —
+        Phase 13.16.DF actionable-error convention. This second assertion
+        protects against silent message regression in future refactors.
+        """
+        d = DFDraw(df_three_fills_two_sectors)
+        with pytest.raises(NotImplementedError, match=r"facet_by_bins") as exc:
+            d.profile(
+                "y:x",
+                selection_vector=["sector == 0", "sector == 1"],
+                normalize="delta",
+                facet_by="fill_id",
+                facet_by_bins=3,
+            )
+        msg = str(exc.value)
+        # Workaround-hint lock: message must name the categorical workaround
+        # so users discover the path forward from the error alone.
+        assert "categorical" in msg.lower(), (
+            f"NotImplementedError must direct user to the categorical-column "
+            f"workaround; got message: {msg!r}"
+        )
+
+        # Same lock for facet_by_quantiles (the other auto-binning path).
+        with pytest.raises(NotImplementedError, match=r"facet_by_quantiles") as exc:
+            d.profile(
+                "y:x",
+                selection_vector=["sector == 0", "sector == 1"],
+                normalize="delta",
+                facet_by="fill_id",
+                facet_by_quantiles=3,
+            )
+        assert "categorical" in str(exc.value).lower()
+

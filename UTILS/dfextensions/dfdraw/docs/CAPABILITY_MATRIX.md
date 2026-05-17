@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-05-17 06:28 UTC
+**Generated:** 2026-05-17 07:03 UTC
 **Phase:** 13.15.DF
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
