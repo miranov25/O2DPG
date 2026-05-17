@@ -1759,6 +1759,552 @@ class DFDraw:
         return fig, (ax_top if ax_top is not None else ax_diff), stats_dict
 
     # =========================================================================
+    # Phase 13.33.DF M2: group_by composition (AD-81)
+    # =========================================================================
+    # Per-group differential — each group gets its own 2-curve render and its
+    # own differential curve. All groups share one ax_top + one ax_diff, with
+    # colors distinguishing groups and linestyles distinguishing signal/ref
+    # within group.
+    #
+    # M2 design choice: separate method instead of refactoring the M1 path.
+    # The two paths share ~40 lines of inner curve-loop logic — this is
+    # accepted duplication for M2 in exchange for not perturbing the
+    # panel-approved M1 implementation. A unifying refactor is a candidate
+    # for a later structural fix-up phase (flagged in CRR §11).
+
+    def _dispatch_normalize_grouped_render(
+        self,
+        y_list,
+        x_list,
+        *,
+        normalize,
+        normalize_layout,
+        group_by,
+        selection,
+        sample,
+        selection_vector,
+        weights_vector,
+        vector_compose,
+        bins,
+        x_range,
+        error,
+        central,
+        title,
+        xlabel,
+        ylabel,
+        weights,
+        nan_policy,
+        **passthrough,
+    ):
+        """Phase 13.33.DF M2 — group_by + normalize composition."""
+        import matplotlib.pyplot as plt
+        from matplotlib.gridspec import GridSpec
+        from .plots.profile import (
+            draw_profile, _compute_normalize_transform,
+            _render_normalize_panel, _compute_per_bin_mad_sigma,
+        )
+        from .style import get_style_value
+
+        # --- 1. Resolve 2-curve plan (same as M1) ------------------------------
+        n_y = len(y_list)
+        indices = self._compute_vector_iteration_indices(
+            n_y, selection_vector, weights_vector, vector_compose
+        )
+        if len(indices) != 2:
+            raise ValueError(
+                f"normalize= requires exactly 2 curves; got {len(indices)}."
+            )
+
+        # --- 2. Outer selection + sampling -------------------------------------
+        df_outer = self._apply_selection(self.df, selection)
+        df_outer = self._apply_sampling(df_outer, sample)
+
+        # --- 3. Resolve x_range from full sample (shared across groups+curves)-
+        if x_range is None:
+            try:
+                x_full = (df_outer[x_list[0]]
+                          if x_list[0] in df_outer.columns
+                          else self._eval_column(x_list[0], df=df_outer))
+                x_arr = pd.Series(x_full).to_numpy()
+                x_arr = x_arr[np.isfinite(x_arr)]
+                if x_arr.size > 0:
+                    x_range = (float(np.min(x_arr)), float(np.max(x_arr)))
+            except Exception:
+                pass  # fall through; per-curve auto-detect
+
+        # --- 4. Determine groups (preserved order) -----------------------------
+        if group_by not in df_outer.columns:
+            raise ValueError(
+                f"group_by={group_by!r} not in DataFrame columns "
+                f"(got {list(df_outer.columns)[:10]}...)"
+            )
+        # Preserve first-appearance order (matches existing _draw_vector convention)
+        seen = []
+        for v in df_outer[group_by]:
+            if v not in seen:
+                seen.append(v)
+        group_values = seen
+        if len(group_values) == 0:
+            raise ValueError(
+                f"group_by={group_by!r}: no groups found in DataFrame"
+            )
+
+        # --- 5. Build figure ---------------------------------------------------
+        figsize = passthrough.pop('figsize', None) or get_style_value("figure.figsize", (8, 6))
+        if normalize_layout == "overlay+diff":
+            fig = plt.figure(figsize=figsize)
+            gs = GridSpec(
+                2, 1,
+                height_ratios=get_style_value("normalize.panel.height_ratio", [3, 1]),
+                hspace=get_style_value("normalize.panel.hspace", 0.05),
+            )
+            ax_top = fig.add_subplot(gs[0])
+            ax_diff = fig.add_subplot(gs[1], sharex=ax_top)
+            plt.setp(ax_top.get_xticklabels(), visible=False)
+        else:  # diff_only
+            fig, ax_diff = plt.subplots(figsize=figsize)
+            ax_top = None
+
+        # --- 6. Resolve color cycle for groups ---------------------------------
+        # One color per group; signal/ref distinguished by linestyle within group.
+        import itertools
+        cycle = plt.rcParams['axes.prop_cycle'].by_key().get(
+            'color', ['C0', 'C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7']
+        )
+        group_colors = list(itertools.islice(itertools.cycle(cycle), len(group_values)))
+
+        per_group_stats = {}  # group_value → stats_dict
+
+        # --- 7. Loop groups ----------------------------------------------------
+        for g_idx, g_val in enumerate(group_values):
+            g_color = group_colors[g_idx]
+            df_group = df_outer[df_outer[group_by] == g_val]
+
+            # Inner 2-curve loop (mirrors M1 _dispatch_normalize_render step 5)
+            per_curve_stats = []
+            for curve_idx, (y_idx, sel_idx, w_idx) in enumerate(indices):
+                y_expr = y_list[y_idx]
+                x_expr = x_list[y_idx]
+
+                curve_sel = None
+                if sel_idx is not None and selection_vector is not None:
+                    curve_sel = selection_vector[sel_idx]
+                curve_weights = weights
+                if w_idx is not None and weights_vector is not None:
+                    curve_weights = weights_vector[w_idx]
+
+                curve_df = df_group
+                if curve_sel is not None:
+                    curve_df = self._apply_selection(curve_df, curve_sel)
+
+                # Per-curve label: "{group_value} signal/ref"
+                role = "signal" if curve_idx == 0 else "ref"
+                curve_label = f"{g_val} {role}"
+                # Signal solid, reference dashed; group color shared.
+                curve_linestyle = "-" if curve_idx == 0 else "--"
+
+                target_ax = ax_top
+                # Use ax.errorbar directly for fine color/linestyle control
+                # rather than draw_profile, since draw_profile is more rigid
+                # about color cycle. We still call draw_profile via ax= to
+                # capture per-bin stats, then re-style the rendered artists.
+                f_local, ax_ret, sd = draw_profile(
+                    curve_df, x_expr, y_expr,
+                    ax=target_ax,
+                    bins=bins, x_range=x_range, error=error,
+                    title=None,
+                    xlabel=None, ylabel=None,
+                    label=curve_label,
+                    return_data=True,
+                    central=central,
+                    weights=curve_weights,
+                    nan_policy=nan_policy,
+                    color=g_color,
+                    linestyle=curve_linestyle,
+                    _suppress_legend=True,
+                    _suppress_title=True,
+                    _suppress_layout=True,
+                )
+                if target_ax is None and f_local is not None:
+                    plt.close(f_local)
+
+                df_bin = sd.get('profile_data')
+                if df_bin is None:
+                    raise RuntimeError(
+                        "_dispatch_normalize_grouped_render: profile_data "
+                        "missing despite return_data=True"
+                    )
+
+                if central == 'median':
+                    x_raw = (curve_df[x_expr].to_numpy()
+                             if x_expr in curve_df.columns
+                             else self._eval_column(x_expr, df=curve_df).to_numpy())
+                    y_raw = (curve_df[y_expr].to_numpy()
+                             if y_expr in curve_df.columns
+                             else self._eval_column(y_expr, df=curve_df).to_numpy())
+                    finite_mask = np.isfinite(x_raw) & np.isfinite(y_raw)
+                    x_raw = x_raw[finite_mask]
+                    y_raw = y_raw[finite_mask]
+                    sigma_arr = _compute_per_bin_mad_sigma(
+                        x_raw, y_raw, bins=len(df_bin), x_range=x_range
+                    )
+                else:
+                    sigma_arr = df_bin['y_std'].to_numpy()
+
+                per_curve_stats.append({
+                    'bin_centers': df_bin['x_center'].to_numpy(),
+                    'central':     df_bin['y_mean'].to_numpy(),
+                    'sigma':       sigma_arr,
+                    'counts':      df_bin['count'].to_numpy(),
+                })
+
+            # Compute transform for this group
+            values, errors, mask_undef = _compute_normalize_transform(
+                per_curve_stats[0], per_curve_stats[1],
+                mode=normalize, central=(central or 'mean'),
+            )
+
+            # Render this group's diff curve on shared ax_diff with group color
+            ax_diff.errorbar(
+                per_curve_stats[0]['bin_centers'], values,
+                yerr=errors if errors is not None else None,
+                fmt='o', markersize=get_style_value("profile.markersize", 6),
+                capsize=get_style_value("profile.capsize", 3),
+                color=g_color, label=str(g_val),
+                zorder=3,
+            )
+
+            per_group_stats[str(g_val)] = {
+                'values': values,
+                'errors': errors if errors is not None else np.full_like(values, np.nan),
+                'mask_undefined': mask_undef,
+                'n_masked_bins': int(mask_undef.sum()),
+                'bin_centers': per_curve_stats[0]['bin_centers'],
+                'signal_central':    per_curve_stats[0]['central'],
+                'signal_sigma':      per_curve_stats[0]['sigma'],
+                'signal_count':      per_curve_stats[0]['counts'],
+                'reference_central': per_curve_stats[1]['central'],
+                'reference_sigma':   per_curve_stats[1]['sigma'],
+                'reference_count':   per_curve_stats[1]['counts'],
+            }
+
+        # --- 8. Render bands + reference line (ONCE across all groups) ---------
+        # Pull mode: bands. All modes: reference line.
+        if normalize == "pull":
+            a1 = get_style_value("normalize.pull.band_1sigma_alpha", 0.15)
+            a2 = get_style_value("normalize.pull.band_2sigma_alpha", 0.08)
+            ax_diff.axhspan(-1.0,  1.0, alpha=a1, color="gray", zorder=0)
+            ax_diff.axhspan(-2.0, -1.0, alpha=a2, color="gray", zorder=0)
+            ax_diff.axhspan( 1.0,  2.0, alpha=a2, color="gray", zorder=0)
+        if get_style_value("normalize.panel.reference_line", True):
+            ref_y = 1.0 if normalize == "ratio" else 0.0
+            ax_diff.axhline(
+                ref_y,
+                color=get_style_value("normalize.panel.ref_line_color", "gray"),
+                linestyle=get_style_value("normalize.panel.ref_line_style", "--"),
+                linewidth=1.0, zorder=1,
+            )
+
+        # --- 9. Bottom panel labelling ----------------------------------------
+        diff_ylabel_map = {
+            'delta':     'Δ (signal − reference)',
+            'ratio':     'signal / reference',
+            'log_ratio': 'ln(signal / reference)',
+            'pull':      '(s − r) / σ',
+        }
+        ax_diff.set_ylabel(
+            diff_ylabel_map.get(normalize, 'normalize')
+            if isinstance(normalize, str) else 'normalize(s, r)'
+        )
+        if xlabel is not None:
+            ax_diff.set_xlabel(xlabel)
+
+        # --- 10. Figure-level adornments --------------------------------------
+        if ax_top is not None:
+            if ylabel is not None:
+                ax_top.set_ylabel(ylabel)
+            if ax_top.get_legend_handles_labels()[1]:
+                ax_top.legend(loc='best', fontsize=get_style_value('legend.fontsize', 10))
+        # Bottom panel: small legend for the differential per group
+        if len(group_values) > 1:
+            ax_diff.legend(loc='best', fontsize=get_style_value('legend.fontsize', 9),
+                           title=group_by)
+        if title is not None:
+            (ax_top if ax_top is not None else ax_diff).set_title(title)
+
+        # --- 11. Build stats dict (M2 grouped contract) -----------------------
+        stats_dict: Dict[str, Any] = {
+            'normalize_mode': normalize if isinstance(normalize, str) else 'callable',
+            'normalize_layout': normalize_layout,
+            'group_by': group_by,
+            'n_groups': len(group_values),
+            'n_masked_bins': int(sum(s['n_masked_bins'] for s in per_group_stats.values())),
+            'ax_diff': ax_diff,
+            'normalize_data_grouped': per_group_stats,  # dict by group value
+        }
+        return fig, (ax_top if ax_top is not None else ax_diff), stats_dict
+
+    # =========================================================================
+    # Phase 13.33.DF M2: facet_by composition — K×2 grid (AD-81)
+    # =========================================================================
+    # Each facet gets its own (top, diff) panel pair. Facets share x-axis
+    # within their column; the diff panels share y-axis across columns for
+    # easier cross-facet comparison.
+
+    def _dispatch_normalize_faceted_render(
+        self,
+        y_list,
+        x_list,
+        *,
+        normalize,
+        normalize_layout,
+        facet_by,
+        facet_by_bins,
+        facet_by_quantiles,
+        selection,
+        sample,
+        selection_vector,
+        weights_vector,
+        vector_compose,
+        bins,
+        x_range,
+        error,
+        central,
+        title,
+        xlabel,
+        ylabel,
+        weights,
+        nan_policy,
+        ncols=None,
+        **passthrough,
+    ):
+        """Phase 13.33.DF M2 — facet_by + normalize composition (K×2 grid)."""
+        import matplotlib.pyplot as plt
+        from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
+        from .plots.profile import (
+            draw_profile, _compute_normalize_transform,
+            _render_normalize_panel, _compute_per_bin_mad_sigma,
+        )
+        from .style import get_style_value
+
+        # --- 1. Resolve 2-curve plan ------------------------------------------
+        n_y = len(y_list)
+        indices = self._compute_vector_iteration_indices(
+            n_y, selection_vector, weights_vector, vector_compose
+        )
+        if len(indices) != 2:
+            raise ValueError(
+                f"normalize= requires exactly 2 curves; got {len(indices)}."
+            )
+
+        # --- 2. Outer selection + sampling ------------------------------------
+        df_outer = self._apply_selection(self.df, selection)
+        df_outer = self._apply_sampling(df_outer, sample)
+
+        # --- 3. Resolve x_range -----------------------------------------------
+        if x_range is None:
+            try:
+                x_full = (df_outer[x_list[0]]
+                          if x_list[0] in df_outer.columns
+                          else self._eval_column(x_list[0], df=df_outer))
+                x_arr = pd.Series(x_full).to_numpy()
+                x_arr = x_arr[np.isfinite(x_arr)]
+                if x_arr.size > 0:
+                    x_range = (float(np.min(x_arr)), float(np.max(x_arr)))
+            except Exception:
+                pass
+
+        # --- 4. Resolve facet bin edges + labels via the existing helper -----
+        if facet_by not in df_outer.columns:
+            raise ValueError(
+                f"facet_by={facet_by!r} not in DataFrame columns"
+            )
+        # For M2 simplicity, use a 'column' facet — facet_by is a column name
+        # whose unique values define the K facets. (Other facet_by modes —
+        # 'group_by' / 'vector' / 'quantiles' — composing with normalize are
+        # NOT supported in M2 v1.0 and raise at the public entry. v1.1 §3.7
+        # specifies these as Phase 13.33.DF + future-phase scope.)
+        if facet_by_bins is not None or facet_by_quantiles is not None:
+            raise NotImplementedError(
+                "facet_by_bins / facet_by_quantiles composing with normalize "
+                "is deferred. Use a categorical facet_by column for M2."
+            )
+        seen = []
+        for v in df_outer[facet_by]:
+            if v not in seen:
+                seen.append(v)
+        facet_values = seen
+        K = len(facet_values)
+        if K == 0:
+            raise ValueError(f"facet_by={facet_by!r}: no facet values found")
+
+        # --- 5. Build figure with K columns, 2 rows (top + diff) --------------
+        # Figsize scales with K.
+        default_fig = get_style_value("figure.figsize", (8, 6))
+        figsize = (default_fig[0] * K, default_fig[1])
+        fig = plt.figure(figsize=figsize)
+        if normalize_layout == "diff_only":
+            gs = GridSpec(1, K, hspace=0.05, wspace=0.2)
+            ax_tops = [None] * K
+            ax_diffs = [fig.add_subplot(gs[0, i],
+                                       sharey=(None if i == 0 else None))
+                        for i in range(K)]
+        else:  # overlay+diff
+            gs = GridSpec(
+                2, K,
+                height_ratios=get_style_value("normalize.panel.height_ratio", [3, 1]),
+                hspace=get_style_value("normalize.panel.hspace", 0.05),
+                wspace=0.2,
+            )
+            ax_tops, ax_diffs = [], []
+            for i in range(K):
+                ax_top_i = fig.add_subplot(gs[0, i])
+                ax_diff_i = fig.add_subplot(gs[1, i], sharex=ax_top_i)
+                plt.setp(ax_top_i.get_xticklabels(), visible=False)
+                ax_tops.append(ax_top_i)
+                ax_diffs.append(ax_diff_i)
+
+        # Share y-axis across all diff panels for easier cross-facet comparison.
+        for j in range(1, K):
+            ax_diffs[j].sharey(ax_diffs[0])
+
+        # --- 6. Loop facets ----------------------------------------------------
+        per_facet_stats = {}
+        for f_idx, f_val in enumerate(facet_values):
+            ax_top_i = ax_tops[f_idx]
+            ax_diff_i = ax_diffs[f_idx]
+            df_facet = df_outer[df_outer[facet_by] == f_val]
+
+            # Inner 2-curve loop (M1 pattern, scoped to this facet)
+            per_curve_stats = []
+            for curve_idx, (y_idx, sel_idx, w_idx) in enumerate(indices):
+                y_expr = y_list[y_idx]
+                x_expr = x_list[y_idx]
+
+                curve_sel = None
+                if sel_idx is not None and selection_vector is not None:
+                    curve_sel = selection_vector[sel_idx]
+                curve_weights = weights
+                if w_idx is not None and weights_vector is not None:
+                    curve_weights = weights_vector[w_idx]
+
+                curve_df = df_facet
+                if curve_sel is not None:
+                    curve_df = self._apply_selection(curve_df, curve_sel)
+
+                role = "signal" if curve_idx == 0 else "reference"
+                curve_label = curve_sel if curve_sel is not None else f"{y_expr} ({role})"
+
+                target_ax = ax_top_i
+                f_local, _, sd = draw_profile(
+                    curve_df, x_expr, y_expr,
+                    ax=target_ax,
+                    bins=bins, x_range=x_range, error=error,
+                    title=None,
+                    xlabel=None, ylabel=None,
+                    label=curve_label,
+                    return_data=True,
+                    central=central,
+                    weights=curve_weights,
+                    nan_policy=nan_policy,
+                    _suppress_legend=True,
+                    _suppress_title=True,
+                    _suppress_layout=True,
+                )
+                if target_ax is None and f_local is not None:
+                    plt.close(f_local)
+
+                df_bin = sd.get('profile_data')
+                if df_bin is None:
+                    raise RuntimeError(
+                        "_dispatch_normalize_faceted_render: profile_data "
+                        "missing despite return_data=True"
+                    )
+
+                if central == 'median':
+                    x_raw = (curve_df[x_expr].to_numpy()
+                             if x_expr in curve_df.columns
+                             else self._eval_column(x_expr, df=curve_df).to_numpy())
+                    y_raw = (curve_df[y_expr].to_numpy()
+                             if y_expr in curve_df.columns
+                             else self._eval_column(y_expr, df=curve_df).to_numpy())
+                    finite_mask = np.isfinite(x_raw) & np.isfinite(y_raw)
+                    sigma_arr = _compute_per_bin_mad_sigma(
+                        x_raw[finite_mask], y_raw[finite_mask],
+                        bins=len(df_bin), x_range=x_range
+                    )
+                else:
+                    sigma_arr = df_bin['y_std'].to_numpy()
+
+                per_curve_stats.append({
+                    'bin_centers': df_bin['x_center'].to_numpy(),
+                    'central':     df_bin['y_mean'].to_numpy(),
+                    'sigma':       sigma_arr,
+                    'counts':      df_bin['count'].to_numpy(),
+                })
+
+            # Compute transform for this facet
+            values, errors, mask_undef = _compute_normalize_transform(
+                per_curve_stats[0], per_curve_stats[1],
+                mode=normalize, central=(central or 'mean'),
+            )
+
+            # Render facet's diff panel
+            _render_normalize_panel(
+                ax_diff_i,
+                bin_centers=per_curve_stats[0]['bin_centers'],
+                values=values, errors=errors,
+                mode=normalize, label=None,
+            )
+
+            # Per-facet title (small) — only on top panel
+            if ax_top_i is not None:
+                ax_top_i.set_title(f"{facet_by}={f_val}",
+                                   fontsize=get_style_value('axes.titlesize', 10))
+            # x-label on diff panel
+            if xlabel is not None:
+                ax_diff_i.set_xlabel(xlabel)
+
+            per_facet_stats[str(f_val)] = {
+                'values': values,
+                'errors': errors if errors is not None else np.full_like(values, np.nan),
+                'mask_undefined': mask_undef,
+                'bin_centers': per_curve_stats[0]['bin_centers'],
+            }
+
+        # --- 7. Y-labels: only on leftmost column to avoid clutter ------------
+        diff_ylabel_map = {
+            'delta':     'Δ',
+            'ratio':     'ratio',
+            'log_ratio': 'ln-ratio',
+            'pull':      'pull',
+        }
+        ax_diffs[0].set_ylabel(
+            diff_ylabel_map.get(normalize, 'normalize')
+            if isinstance(normalize, str) else 'normalize(s, r)'
+        )
+        if ylabel is not None and ax_tops[0] is not None:
+            ax_tops[0].set_ylabel(ylabel)
+
+        # Figure-level title spans all facets
+        if title is not None:
+            fig.suptitle(title)
+
+        # --- 8. Stats dict ----------------------------------------------------
+        stats_dict: Dict[str, Any] = {
+            'normalize_mode': normalize if isinstance(normalize, str) else 'callable',
+            'normalize_layout': normalize_layout,
+            'facet_by': facet_by,
+            'n_facets': K,
+            'ax_diffs': ax_diffs,  # list, one per facet
+            'normalize_data_faceted': per_facet_stats,
+        }
+        # M2 contract: when faceted, the returned ax_top is a LIST (one per
+        # facet) instead of a single axes. Caller can iterate.
+        returned_top = ax_tops if normalize_layout == "overlay+diff" else ax_diffs
+        return fig, returned_top, stats_dict
+
+    # =========================================================================
     # Phase 13.27.DF (Phase D): Faceted rendering dispatch
     # =========================================================================
     
@@ -3154,8 +3700,15 @@ class DFDraw:
         # is a Phase 13.33 concern (spec v1.2 §4.2.4: facet partitions
         # first, vector composes within each subplot).
         _column_mode_facet = (facet_by is not None and facet_by != 'vector')
+        # Phase 13.33.DF M2: normalize= always engages vector dispatch
+        # (regardless of facet_by). The normalize routing fork below then
+        # picks the appropriate dispatcher (faceted / grouped / single).
+        # This pre-empts the _column_mode_facet short-circuit that would
+        # otherwise route to the regular faceted path which knows nothing
+        # about normalize.
         _need_vector_dispatch = (
             _y_is_vector
+            or (normalize is not None)
             or (
                 not _column_mode_facet
                 and (
@@ -3226,9 +3779,13 @@ class DFDraw:
             # orchestrator instead of the standard _draw_vector overlay path.
             # The orchestrator handles signal/reference roles, gridspec layout,
             # transform computation, and bottom-panel rendering atomically.
+            #
+            # M2 (group_by / facet_by composition): when group_by is set,
+            # route to _dispatch_normalize_grouped_render (per-group differential).
+            # When facet_by is set, route to _dispatch_normalize_faceted_render
+            # (K×2 grid). When both are set, the panel approved facet_by as
+            # the outer dimension — facet wins.
             if normalize is not None:
-                # Hand the orchestrator only the kwargs it consumes; the rest
-                # ride along in **passthrough for forward compatibility.
                 _consumed = {
                     'normalize', 'normalize_layout',
                     'selection', 'sample',
@@ -3236,20 +3793,55 @@ class DFDraw:
                     'bins', 'range', 'error', 'central',
                     'title', 'xlabel', 'ylabel',
                     'weights', 'nan_policy',
-                    # Forwarded-but-not-consumed-by-orchestrator (drop to
-                    # avoid double-pass; _dispatch_normalize_render will not
-                    # forward these to draw_profile either).
+                    'group_by', 'facet_by', 'facet_by_bins', 'facet_by_quantiles',
                     'auto_title', 'same', 'return_data', 'min_entries',
                     'stats', 'stat_fields', 'top_k', 'group_by_bins',
                     'group_by_quantiles', 'sort_groups', 'ax', 'save',
                     'quantiles', 'quantile_mode', 'quantile_style',
-                    'facet_by', 'facet_by_bins', 'facet_by_quantiles',
                     'selection_labels', 'weights_labels',
                     'selection_categorical', 'weights_categorical',
                     'delta_facet',
                 }
                 _passthrough = {k: v for k, v in vector_kwargs.items()
                                 if k not in _consumed}
+
+                # Route hierarchy (panel-decided priority):
+                #   facet_by → faceted dispatcher (K×2 grid, outer dimension)
+                #   group_by → grouped dispatcher (per-group diff curves)
+                #   else    → M1 single-render dispatcher
+                if facet_by is not None:
+                    return self._dispatch_normalize_faceted_render(
+                        y_expr, x_expr,
+                        normalize=normalize, normalize_layout=normalize_layout,
+                        facet_by=facet_by,
+                        facet_by_bins=facet_by_bins,
+                        facet_by_quantiles=facet_by_quantiles,
+                        selection=selection, sample=sample,
+                        selection_vector=selection_vector,
+                        weights_vector=weights_vector,
+                        vector_compose=vector_compose,
+                        bins=bins, x_range=range, error=error,
+                        central=central, title=title,
+                        xlabel=xlabel, ylabel=ylabel,
+                        weights=weights, nan_policy=nan_policy,
+                        ncols=ncols,
+                        **_passthrough,
+                    )
+                if group_by is not None:
+                    return self._dispatch_normalize_grouped_render(
+                        y_expr, x_expr,
+                        normalize=normalize, normalize_layout=normalize_layout,
+                        group_by=group_by,
+                        selection=selection, sample=sample,
+                        selection_vector=selection_vector,
+                        weights_vector=weights_vector,
+                        vector_compose=vector_compose,
+                        bins=bins, x_range=range, error=error,
+                        central=central, title=title,
+                        xlabel=xlabel, ylabel=ylabel,
+                        weights=weights, nan_policy=nan_policy,
+                        **_passthrough,
+                    )
                 return self._dispatch_normalize_render(
                     y_expr, x_expr,
                     normalize=normalize,

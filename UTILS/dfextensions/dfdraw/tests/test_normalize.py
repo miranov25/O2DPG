@@ -748,3 +748,195 @@ class TestNormalizeSingleYConvention:
         finally:
             plt.close(fig_a)
             plt.close(fig_b)
+
+
+# =============================================================================
+# Phase 13.33.DF M2 — group_by + normalize composition
+# =============================================================================
+
+@pytest.fixture
+def df_three_fills_two_sectors():
+    """Synthetic data: 3 fills × 2 sectors. Same per-sector shift across fills.
+
+    Within each fill_id, sector 1 mean is +0.5 above sector 0.
+    Therefore delta = sector0 − sector1 ≈ −0.5 for EVERY fill.
+    Different from df_two_sectors fixture in that it has the group_by column.
+    """
+    np.random.seed(7)
+    n_per_cell = 1000
+    records = []
+    for fill_id in (41, 42, 43):
+        for sector in (0, 1):
+            x_arr = np.random.uniform(0, 10, n_per_cell)
+            y_arr = (
+                2.0 * x_arr
+                + (0.5 if sector == 1 else 0.0)
+                + np.random.normal(0, 1, n_per_cell)
+            )
+            for x_v, y_v in zip(x_arr, y_arr):
+                records.append({
+                    "x": x_v, "y": y_v,
+                    "sector": sector,
+                    "fill_id": fill_id,
+                })
+    return pd.DataFrame(records)
+
+
+class TestNormalizeGroupBy:
+    """§9.NG.* — group_by + normalize composition (Phase 13.33.DF M2)."""
+
+    def test_NG_1_basic_group_by_3_fills(self, df_three_fills_two_sectors):
+        """§9.NG.1: group_by='fill_id' on 3-fill dataset produces 3 differential
+        curves (one per group) and 3-entry per-group stats dict."""
+        d = DFDraw(df_three_fills_two_sectors)
+        fig, _, stats = d.profile(
+            "y:x",
+            selection_vector=["sector == 0", "sector == 1"],
+            normalize="delta",
+            group_by="fill_id",
+            bins=20,
+        )
+        try:
+            assert stats["n_groups"] == 3, (
+                f"expected 3 groups, got {stats['n_groups']}"
+            )
+            grouped = stats["normalize_data_grouped"]
+            assert isinstance(grouped, dict)
+            assert len(grouped) == 3
+            # Each group must have per-bin values + errors arrays
+            for g_key, g_stats in grouped.items():
+                for arr_key in (
+                    "values", "errors", "mask_undefined", "bin_centers",
+                    "signal_central", "signal_sigma", "signal_count",
+                    "reference_central", "reference_sigma", "reference_count",
+                ):
+                    assert arr_key in g_stats, (
+                        f"group {g_key!r} missing key {arr_key!r}"
+                    )
+        finally:
+            plt.close(fig)
+
+    def test_NG_2_per_group_delta_recovers_offset(
+        self, df_three_fills_two_sectors
+    ):
+        """§9.NG.2: each group's delta mean should recover the same per-sector
+        offset (≈ −0.5) — the differential machinery applied per-group must
+        produce per-group physics consistent with the data construction."""
+        d = DFDraw(df_three_fills_two_sectors)
+        fig, _, stats = d.profile(
+            "y:x",
+            selection_vector=["sector == 0", "sector == 1"],
+            normalize="delta",
+            group_by="fill_id",
+            bins=20,
+        )
+        try:
+            for g_key, g_stats in stats["normalize_data_grouped"].items():
+                v = g_stats["values"]
+                v_mean = np.nanmean(v)
+                # Per-fill delta should track the −0.5 sector offset within
+                # statistical noise (n=1000/sector → SEM ≈ 0.03 per fill).
+                assert -0.8 < v_mean < -0.2, (
+                    f"group {g_key!r}: per-group delta mean {v_mean:.4f} "
+                    f"not in [-0.8, -0.2] (expected ≈ -0.5)"
+                )
+        finally:
+            plt.close(fig)
+
+    def test_NG_3_stats_dict_grouped_structure(
+        self, df_three_fills_two_sectors
+    ):
+        """§9.NG.3: M2 grouped stats dict structure.
+
+        Required keys differ from M1: 'group_by', 'n_groups',
+        'normalize_data_grouped' instead of 'normalize_data'.
+        Per-group entries are themselves dicts containing the same per-bin
+        arrays as M1's normalize_data DataFrame (but as numpy arrays, not
+        DataFrame — caller can construct DataFrame from any group's entry)."""
+        d = DFDraw(df_three_fills_two_sectors)
+        fig, _, stats = d.profile(
+            "y:x",
+            selection_vector=["sector == 0", "sector == 1"],
+            normalize="delta",
+            group_by="fill_id",
+            bins=20,
+        )
+        try:
+            for key in (
+                "group_by", "n_groups", "normalize_data_grouped",
+                "normalize_mode", "normalize_layout", "ax_diff",
+            ):
+                assert key in stats, f"M2 grouped stats missing {key!r}"
+            assert stats["group_by"] == "fill_id"
+            # M1's flat 'normalize_data' key must NOT appear in grouped mode
+            # (different contract).
+            assert "normalize_data" not in stats, (
+                "M1 flat normalize_data must not appear in grouped contract"
+            )
+        finally:
+            plt.close(fig)
+
+
+# =============================================================================
+# Phase 13.33.DF M2 — facet_by + normalize composition
+# =============================================================================
+
+class TestNormalizeFacetBy:
+    """§9.NF.* — facet_by + normalize composition (Phase 13.33.DF M2)."""
+
+    def test_NF_1_k_by_2_grid(self, df_three_fills_two_sectors):
+        """§9.NF.1: facet_by='fill_id' (3 fills) produces a K×2 grid →
+        2*K = 6 axes total in the figure. Each facet column has a top panel
+        (signal+reference overlay) and a diff panel."""
+        d = DFDraw(df_three_fills_two_sectors)
+        fig, returned_top, stats = d.profile(
+            "y:x",
+            selection_vector=["sector == 0", "sector == 1"],
+            normalize="delta",
+            facet_by="fill_id",
+            bins=20,
+        )
+        try:
+            assert stats["n_facets"] == 3
+            assert len(fig.axes) == 6, (
+                f"K=3 facets × 2 panels each = 6 axes; got {len(fig.axes)}"
+            )
+            # Returned top is a list of top-panel axes, one per facet.
+            assert isinstance(returned_top, list), (
+                "facet+normalize must return a LIST of top axes"
+            )
+            assert len(returned_top) == 3
+            # The stats dict's ax_diffs is a parallel list.
+            assert isinstance(stats["ax_diffs"], list)
+            assert len(stats["ax_diffs"]) == 3
+        finally:
+            plt.close(fig)
+
+    def test_NF_2_per_facet_independent_computation(
+        self, df_three_fills_two_sectors
+    ):
+        """§9.NF.2: each facet's differential is computed from its OWN
+        subset, not from the union. The construction guarantees ≈ −0.5
+        within every fill; verifying the per-facet delta means cluster
+        around −0.5 confirms that the facet partitioning happens BEFORE
+        the normalize computation (not after)."""
+        d = DFDraw(df_three_fills_two_sectors)
+        fig, _, stats = d.profile(
+            "y:x",
+            selection_vector=["sector == 0", "sector == 1"],
+            normalize="delta",
+            facet_by="fill_id",
+            bins=20,
+        )
+        try:
+            faceted = stats["normalize_data_faceted"]
+            assert len(faceted) == 3
+            for f_key, f_stats in faceted.items():
+                v_mean = np.nanmean(f_stats["values"])
+                assert -0.8 < v_mean < -0.2, (
+                    f"facet {f_key!r}: per-facet delta mean {v_mean:.4f} "
+                    f"not in expected range [-0.8, -0.2]"
+                )
+        finally:
+            plt.close(fig)
+
