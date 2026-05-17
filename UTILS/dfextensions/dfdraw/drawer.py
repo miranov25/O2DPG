@@ -574,6 +574,8 @@ class DFDraw:
         'selection_labels', 'weights_labels',
         'selection_categorical', 'weights_categorical',
         'vector_compose', 'delta_facet',
+        # Phase 13.33.DF: Normalized differential profiles (AD-80/81/82)
+        'normalize', 'normalize_layout',
     )
 
     _HIST_FORWARDED_NAMES = (
@@ -641,6 +643,13 @@ class DFDraw:
         # Note: 'type' consumed for routing; 'figsize' deliberately excluded
         # (figure already created); 'facet' caught by R4 guard; 'group_by'
         # passed as explicit named arg to _draw_vector.
+        # Phase 13.33.DF (AD-80/81/82): normalize / normalize_layout are
+        # profile-only and intentionally NOT in this tuple — auto-forwarding
+        # them would leak the kwargs to hist/scatter dispatch paths (and
+        # bomb on matplotlib's `ax.hist(**kwargs)` since Polygon doesn't
+        # accept normalize_layout). They remain in the draw() signature
+        # for users routing via d.draw(type='profile', normalize='delta'),
+        # and reach profile() via **kwargs in the routing dispatch.
     )
 
     # Private kwargs that _draw_vector injects into iter_kwargs to suppress
@@ -1481,6 +1490,275 @@ class DFDraw:
         ax.legend(loc=get_style_value("legend.loc", "best"))
     
     # =========================================================================
+    # Phase 13.33.DF: Normalized differential profile dispatch (AD-80/81/82)
+    # =========================================================================
+    # Two-pass orchestrator — fundamentally different from _draw_vector's
+    # iterate-and-render: we must complete BOTH curves before computing the
+    # differential transform that drives the bottom panel.
+    #
+    # M1 scope: exactly 2 curves (validated at entry in profile()); no group_by
+    # or facet_by composition (M2). Supports overlay+diff and diff_only layouts.
+
+    def _dispatch_normalize_render(
+        self,
+        y_list,
+        x_list,
+        *,
+        normalize,
+        normalize_layout,
+        # Per-curve composition inputs (already validated to yield exactly 2)
+        selection,
+        sample,
+        selection_vector,
+        weights_vector,
+        vector_compose,
+        # Profile-specific inputs (forwarded to draw_profile per curve)
+        bins,
+        x_range,
+        error,
+        central,
+        title,
+        xlabel,
+        ylabel,
+        weights,
+        nan_policy,
+        # Pass-through bag for less-common kwargs
+        **passthrough,
+    ):
+        """Phase 13.33.DF — two-pass orchestrator for normalize-mode profile().
+
+        Renders signal and reference profiles on the top panel, computes the
+        differential transform per v1.1 §3.3, then renders the bottom panel.
+
+        Returns ``(fig, ax_top, stats_dict)``. ``stats_dict['ax_diff']`` is the
+        bottom panel Axes (or None for ``normalize_layout='diff_only'`` where
+        the diff IS the only panel and the user reads it as the returned
+        ``ax_top``-equivalent slot — see AD-81 stats contract).
+        """
+        import matplotlib.pyplot as plt
+        from matplotlib.gridspec import GridSpec
+        from .plots.profile import (
+            draw_profile, _compute_normalize_transform, _render_normalize_panel,
+            _compute_per_bin_mad_sigma, NORMALIZE_MODES,
+        )
+        from .style import get_style_value
+
+        # --- 1. Resolve the 2-curve iteration plan -------------------------------
+        n_y = len(y_list)
+        indices = self._compute_vector_iteration_indices(
+            n_y, selection_vector, weights_vector, vector_compose
+        )
+        if len(indices) != 2:
+            # Defensive — entry validation should have caught this.
+            raise ValueError(
+                f"normalize= requires exactly 2 curves; got {len(indices)}. "
+                f"(This is a logic bug — entry validation should have raised first.)"
+            )
+
+        # --- 2. Apply the outer selection + sampling (same as scalar path) ------
+        df_full = self._apply_selection(self.df, selection)
+        df_full = self._apply_sampling(df_full, sample)
+
+        # --- 3. Determine common x_range so both curves share binning -----------
+        # If user supplied x_range, both curves use it (already exact). If not,
+        # we must derive it BEFORE the per-curve filtering so the two
+        # selection-filtered subsets share bin edges. Use the full (post-outer-
+        # selection) sample's x range — both per-curve subsets are subsets of it.
+        if x_range is None:
+            # Use the union across both per-curve subsets; equivalent to using
+            # the full df range since each subset's x ⊆ df_full's x.
+            x0 = y_list[0]  # placeholder — actual x is x_list[0]
+            try:
+                x_full = (df_full[x_list[0]]
+                          if x_list[0] in df_full.columns
+                          else self._eval_column(x_list[0], df=df_full))
+            except Exception:
+                # Fall through; draw_profile will compute its own per-curve
+                # range and bin centers may differ slightly. Logged in CRR §11.
+                x_full = None
+            if x_full is not None:
+                x_arr = pd.Series(x_full).to_numpy()
+                x_arr = x_arr[np.isfinite(x_arr)]
+                if x_arr.size > 0:
+                    x_range = (float(np.min(x_arr)), float(np.max(x_arr)))
+
+        # --- 4. Build figure with gridspec layout -------------------------------
+        figsize = passthrough.pop('figsize', None) or get_style_value("figure.figsize", (8, 6))
+        if normalize_layout == "overlay+diff":
+            fig = plt.figure(figsize=figsize)
+            gs = GridSpec(
+                2, 1,
+                height_ratios=get_style_value("normalize.panel.height_ratio", [3, 1]),
+                hspace=get_style_value("normalize.panel.hspace", 0.05),
+            )
+            ax_top = fig.add_subplot(gs[0])
+            ax_diff = fig.add_subplot(gs[1], sharex=ax_top)
+            # Hide x-tick-labels on the top panel — they belong to ax_diff
+            # (which inherits the formatter via sharex; sidesteps BUG-004).
+            plt.setp(ax_top.get_xticklabels(), visible=False)
+        else:  # 'diff_only' (validated at entry)
+            fig, ax_diff = plt.subplots(figsize=figsize)
+            ax_top = None
+
+        # --- 5. Loop the 2 curves: render top panel + capture per-bin stats ----
+        # Reset color cycle so signal and reference get curve-cycle colors 0/1.
+        self._reset_color_cycle()
+        per_curve_stats = []
+
+        for curve_idx, (y_idx, sel_idx, w_idx) in enumerate(indices):
+            y_expr = y_list[y_idx]
+            x_expr = x_list[y_idx]
+
+            # Resolve per-curve selection (compose outer selection ∧ vector entry).
+            curve_sel = None
+            if sel_idx is not None and selection_vector is not None:
+                curve_sel = selection_vector[sel_idx]
+
+            # Resolve per-curve weights expression.
+            curve_weights = weights
+            if w_idx is not None and weights_vector is not None:
+                curve_weights = weights_vector[w_idx]
+
+            # Filter for this curve.
+            curve_df = df_full
+            if curve_sel is not None:
+                curve_df = self._apply_selection(curve_df, curve_sel)
+
+            # Per-curve label: AD-80 — signal first, reference second.
+            role = "signal" if curve_idx == 0 else "reference"
+            curve_label = curve_sel if curve_sel is not None else f"{y_expr} ({role})"
+
+            # Render on top panel (skipped for diff_only layout).
+            target_ax = ax_top  # may be None
+            f_local, ax_returned, sd = draw_profile(
+                curve_df, x_expr, y_expr,
+                ax=target_ax,
+                bins=bins, x_range=x_range, error=error,
+                title=None,  # title applied to fig at end
+                xlabel=xlabel, ylabel=ylabel,
+                label=curve_label,
+                return_data=True,  # M1 §10.2 directive #5: force capture
+                central=central,
+                weights=curve_weights,
+                nan_policy=nan_policy,
+                _suppress_legend=True,  # legend drawn once at fig level
+                _suppress_title=True,
+                _suppress_layout=True,
+            )
+
+            # If target_ax was None (diff_only), close the figure draw_profile
+            # opened so it doesn't leak. Per-bin stats are still in sd.
+            if target_ax is None and f_local is not None:
+                plt.close(f_local)
+
+            # Extract per-bin arrays from profile_data DataFrame.
+            df_bin = sd.get('profile_data')
+            if df_bin is None:
+                raise RuntimeError(
+                    "_dispatch_normalize_render: profile_data missing despite "
+                    "return_data=True — implementation bug in draw_profile?"
+                )
+
+            # For central='median', y_mean column carries the medians (existing
+            # profile.py contract); std/sem are mean-based and would be wrong
+            # for the normalize error formula. Compute MAD-sigma separately.
+            if central == 'median':
+                # Need raw arrays to compute MAD per bin. Pull from curve_df.
+                x_raw = (curve_df[x_expr].to_numpy()
+                         if x_expr in curve_df.columns
+                         else self._eval_column(x_expr, df=curve_df).to_numpy())
+                y_raw = (curve_df[y_expr].to_numpy()
+                         if y_expr in curve_df.columns
+                         else self._eval_column(y_expr, df=curve_df).to_numpy())
+                # Drop NaN/inf jointly (mirrors draw_profile's sanitize step).
+                finite_mask = np.isfinite(x_raw) & np.isfinite(y_raw)
+                x_raw = x_raw[finite_mask]
+                y_raw = y_raw[finite_mask]
+                mad_sig = _compute_per_bin_mad_sigma(
+                    x_raw, y_raw, bins=len(df_bin), x_range=x_range
+                )
+                sigma_arr = mad_sig
+            else:
+                sigma_arr = df_bin['y_std'].to_numpy()
+
+            per_curve_stats.append({
+                'bin_centers': df_bin['x_center'].to_numpy(),
+                'central':     df_bin['y_mean'].to_numpy(),
+                'sigma':       sigma_arr,
+                'counts':      df_bin['count'].to_numpy(),
+            })
+
+        # --- 6. Compute the normalize transform --------------------------------
+        values, errors, mask_undef = _compute_normalize_transform(
+            per_curve_stats[0], per_curve_stats[1],
+            mode=normalize, central=(central or 'mean'),
+        )
+
+        # --- 7. Render bottom panel --------------------------------------------
+        _render_normalize_panel(
+            ax_diff,
+            bin_centers=per_curve_stats[0]['bin_centers'],
+            values=values, errors=errors,
+            mode=normalize,
+            label=None,
+        )
+
+        # Bottom panel labelling: y-axis name derived from mode.
+        diff_ylabel_map = {
+            'delta':     'Δ (signal − reference)',
+            'ratio':     'signal / reference',
+            'log_ratio': 'ln(signal / reference)',
+            'pull':      '(s − r) / σ',
+        }
+        ax_diff.set_ylabel(
+            diff_ylabel_map.get(normalize, 'normalize')
+            if isinstance(normalize, str) else 'normalize(s, r)'
+        )
+        # The x-axis label goes on the bottom panel (it's the visible row).
+        if xlabel is not None:
+            ax_diff.set_xlabel(xlabel)
+
+        # --- 8. Figure-level adornments -----------------------------------------
+        # Top panel: legend (signal vs reference), ylabel.
+        if ax_top is not None:
+            if ylabel is not None:
+                ax_top.set_ylabel(ylabel)
+            # Show legend on top panel only.
+            if ax_top.get_legend_handles_labels()[1]:
+                ax_top.legend(loc='best', fontsize=get_style_value('legend.fontsize', 10))
+        if title is not None:
+            (ax_top if ax_top is not None else ax_diff).set_title(title)
+
+        # --- 9. Build stats dict (M1 scope per v1.1 §7) ------------------------
+        # Drop profile_data from user-facing stats — internal-only.
+        # Provide normalize-specific keys per the AD-81 stats contract.
+        stats_dict: Dict[str, Any] = {
+            'normalize_mode': normalize if isinstance(normalize, str) else 'callable',
+            'normalize_layout': normalize_layout,
+            'n_masked_bins': int(mask_undef.sum()),
+            'n_total_bins': int(len(values)),
+            'ax_diff': ax_diff,
+            # Per-bin differential data as DataFrame (parallel to profile_data).
+            'normalize_data': pd.DataFrame({
+                'x_center':     per_curve_stats[0]['bin_centers'],
+                'value':        values,
+                'error':        errors if errors is not None else np.full_like(values, np.nan),
+                'mask_undefined': mask_undef.astype(bool),
+                'signal_central':    per_curve_stats[0]['central'],
+                'signal_sigma':      per_curve_stats[0]['sigma'],
+                'signal_count':      per_curve_stats[0]['counts'],
+                'reference_central': per_curve_stats[1]['central'],
+                'reference_sigma':   per_curve_stats[1]['sigma'],
+                'reference_count':   per_curve_stats[1]['counts'],
+            }),
+        }
+
+        # M1 closing — return signal panel as the "top" ax (for diff_only this
+        # is ax_diff itself, matching the AD-81 contract that the returned
+        # ax is the panel the user reads as primary).
+        return fig, (ax_top if ax_top is not None else ax_diff), stats_dict
+
+    # =========================================================================
     # Phase 13.27.DF (Phase D): Faceted rendering dispatch
     # =========================================================================
     
@@ -1937,6 +2215,12 @@ class DFDraw:
         weights_categorical: bool = False,
         vector_compose: str = "inner",
         delta_facet: Optional[str] = None,
+        # Phase 13.33.DF: Normalized differential profiles (AD-80/81/82) —
+        # forwarded to profile() when type='profile'; other type values
+        # (hist/scatter/hist2d) silently ignore these per the universal-
+        # dispatch contract on _DRAW_FORWARDED_NAMES.
+        normalize: Optional[Union[str, "callable"]] = None,
+        normalize_layout: str = "overlay+diff",
         **kwargs
     ) -> DrawResult:
         """
@@ -2701,6 +2985,14 @@ class DFDraw:
         weights_categorical: bool = False,
         vector_compose: str = "inner",
         delta_facet: Optional[str] = None,
+        # Phase 13.33.DF: Normalized differential profiles (AD-80/81/82)
+        # When set, profile() requires exactly 2 vector elements (vector[0]=signal,
+        # vector[1]=reference per AD-80) and renders a bottom panel showing the
+        # differential transform of the two. Mutually exclusive with same=True
+        # (the diff panel can't share an existing figure). See
+        # PHASE_13_33_DF_v1_1_Proposal_NormalizedDifferentialProfiles.md.
+        normalize: Optional[Union[str, "callable"]] = None,
+        normalize_layout: str = "overlay+diff",
         **kwargs
     ) -> DrawResult:
         """
@@ -2796,6 +3088,64 @@ class DFDraw:
         # short-circuit still requires _y_is_vector (it splits subplots per
         # vector y element — undefined for single-Y).
         _y_is_vector = isinstance(y_expr, list)
+
+        # =====================================================================
+        # Phase 13.33.DF (AD-80/81/82): normalize= validation + §6 directive.
+        # =====================================================================
+        # Validation block runs BEFORE vector-dispatch decision so error
+        # messages are actionable at the public API entry. The §6 directive
+        # (Phase 13.27 FIX1.FIX1 deferral, option c) follows.
+        if normalize is not None:
+            # (a) Mode validation — string in NORMALIZE_MODES or callable.
+            from .plots.profile import NORMALIZE_MODES
+            if not callable(normalize) and normalize not in NORMALIZE_MODES:
+                raise ValueError(
+                    f"normalize must be one of {NORMALIZE_MODES} or a callable, "
+                    f"got {normalize!r}."
+                )
+            # (b) Layout validation.
+            if normalize_layout not in ("overlay+diff", "diff_only"):
+                raise ValueError(
+                    f"normalize_layout must be 'overlay+diff' or 'diff_only', "
+                    f"got {normalize_layout!r}."
+                )
+            # (c) same=True is incompatible — the diff panel needs its own
+            # figure and gridspec; cannot overlay on existing axes.
+            if same:
+                raise ValueError(
+                    "normalize= is mutually exclusive with same=True — the "
+                    "differential bottom panel requires a new figure. Either "
+                    "drop same=True or call normalize-mode profile() in its "
+                    "own figure."
+                )
+            # (d) Exactly 2 vector elements required (AD-80: vector[0]=signal,
+            # vector[1]=reference). The vector source is either y (multi-Y),
+            # selection_vector, or weights_vector.
+            n_y_eff = len(y_expr) if _y_is_vector else 1
+            n_sel = len(selection_vector) if selection_vector is not None else 0
+            n_w = len(weights_vector) if weights_vector is not None else 0
+            # The "effective vector length" is the max of these three.
+            n_vec = max(n_y_eff, n_sel, n_w)
+            if n_vec != 2:
+                raise ValueError(
+                    f"normalize= requires exactly 2 vector elements (signal + "
+                    f"reference per AD-80). Got n_y={n_y_eff}, "
+                    f"n_selection_vector={n_sel}, n_weights_vector={n_w} "
+                    f"(effective vector length {n_vec})."
+                )
+            # (e) §6 directive — Phase 13.27 FIX1.FIX1 deferred closure
+            # (option c, panel vote 3/5 incl. Main Reviewer). When normalize
+            # is set with single-Y + 2-element selection_vector, force
+            # vector_compose='outer' transparently. The normalize= API hides
+            # vector_compose mechanics — user writes normalize='delta' and
+            # gets the right result without touching compose semantics. This
+            # is convention application, not a workaround.
+            if (not _y_is_vector
+                    and selection_vector is not None
+                    and len(selection_vector) == 2):
+                vector_compose = "outer"
+        # =====================================================================
+
         # Phase 13.27.DF Commit 2 FIX1 (§7a): single-Y vector dispatch is
         # gated on facet_by being absent or channel-mode 'vector' (which
         # requires _y_is_vector). When column-mode facet_by is set on
@@ -2872,6 +3222,54 @@ class DFDraw:
                     if name == 'auto_title' and val is False:
                         continue
                     vector_kwargs.setdefault(name, val)
+            # Phase 13.33.DF: Normalize-mode dispatch routes to two-pass
+            # orchestrator instead of the standard _draw_vector overlay path.
+            # The orchestrator handles signal/reference roles, gridspec layout,
+            # transform computation, and bottom-panel rendering atomically.
+            if normalize is not None:
+                # Hand the orchestrator only the kwargs it consumes; the rest
+                # ride along in **passthrough for forward compatibility.
+                _consumed = {
+                    'normalize', 'normalize_layout',
+                    'selection', 'sample',
+                    'selection_vector', 'weights_vector', 'vector_compose',
+                    'bins', 'range', 'error', 'central',
+                    'title', 'xlabel', 'ylabel',
+                    'weights', 'nan_policy',
+                    # Forwarded-but-not-consumed-by-orchestrator (drop to
+                    # avoid double-pass; _dispatch_normalize_render will not
+                    # forward these to draw_profile either).
+                    'auto_title', 'same', 'return_data', 'min_entries',
+                    'stats', 'stat_fields', 'top_k', 'group_by_bins',
+                    'group_by_quantiles', 'sort_groups', 'ax', 'save',
+                    'quantiles', 'quantile_mode', 'quantile_style',
+                    'facet_by', 'facet_by_bins', 'facet_by_quantiles',
+                    'selection_labels', 'weights_labels',
+                    'selection_categorical', 'weights_categorical',
+                    'delta_facet',
+                }
+                _passthrough = {k: v for k, v in vector_kwargs.items()
+                                if k not in _consumed}
+                return self._dispatch_normalize_render(
+                    y_expr, x_expr,
+                    normalize=normalize,
+                    normalize_layout=normalize_layout,
+                    selection=selection,
+                    sample=sample,
+                    selection_vector=selection_vector,
+                    weights_vector=weights_vector,
+                    vector_compose=vector_compose,
+                    bins=bins,
+                    x_range=range,
+                    error=error,
+                    central=central,
+                    title=title,
+                    xlabel=xlabel,
+                    ylabel=ylabel,
+                    weights=weights,
+                    nan_policy=nan_policy,
+                    **_passthrough,
+                )
             return self._draw_vector(
                 y_expr, x_expr, self.profile,
                 group_by=group_by, **vector_kwargs

@@ -1316,6 +1316,75 @@ def _compute_per_bin_median(
     return bin_medians
 
 
+# =============================================================================
+# Phase 13.33.DF: Normalized differential profiles — helpers (AD-80/81/82)
+# =============================================================================
+# These three helpers are used by drawer.DFDraw._dispatch_normalize_render()
+# to power the normalize= kwarg on profile(). They are pure functions —
+# fully testable in isolation, no matplotlib state dependency beyond the
+# Axes passed to _render_normalize_panel.
+
+# Median Absolute Deviation scale factor: 1.4826 makes MAD a consistent
+# estimator of σ for normally-distributed data. Same constant used in
+# plots/_autorange.py for the robust window strategy (single source of truth
+# kept here as a module-local since the dependency direction is
+# profile.py → _autorange.py, never the reverse).
+_MAD_TO_SIGMA = 1.4826
+
+
+def _compute_per_bin_mad_sigma(
+    x_data: np.ndarray,
+    y_data: np.ndarray,
+    bins: int,
+    x_range,
+) -> np.ndarray:
+    """
+    Compute per-bin MAD-sigma of y in bins of x (Phase 13.33.DF AD-80).
+
+    MAD-sigma = 1.4826 × median(|y - median(y)|) per bin — a robust
+    dispersion estimate that pairs naturally with central='median' for
+    normalize-mode error propagation.
+
+    Mirrors the structure of _compute_per_bin_median above (same binning,
+    same NaN handling) so the two arrays index identically by bin.
+
+    For bins with fewer than 2 entries, MAD is undefined (a single point
+    has zero deviation by construction); we return NaN in those bins so
+    downstream code can mask them consistently.
+
+    Parameters
+    ----------
+    x_data, y_data : array
+        Sanitized 1D arrays (NaN/inf already removed by upstream sanitize).
+    bins : int
+        Number of x bins.
+    x_range : tuple or None
+        (min, max) binning range; auto-detected from x_data if None.
+
+    Returns
+    -------
+    bin_mad_sigma : array of length `bins`
+        Per-bin MAD-sigma estimate. NaN for empty or singleton bins.
+    """
+    if x_range is None:
+        x_range = (np.nanmin(x_data), np.nanmax(x_data))
+
+    bin_edges = np.linspace(x_range[0], x_range[1], bins + 1)
+    bin_indices = np.clip(np.digitize(x_data, bin_edges) - 1, 0, bins - 1)
+
+    bin_mad_sigma = np.full(bins, np.nan)
+    for i in range(bins):
+        mask = bin_indices == i
+        y_bin = y_data[mask]
+        y_bin = y_bin[~np.isnan(y_bin)]
+        if len(y_bin) >= 2:
+            med = np.nanmedian(y_bin)
+            mad = np.nanmedian(np.abs(y_bin - med))
+            bin_mad_sigma[i] = float(_MAD_TO_SIGMA * mad)
+
+    return bin_mad_sigma
+
+
 def _render_quantile_error_bars(
     ax, bin_centers, central_values, q_lower, q_upper,
     plot_mask, color, marker, markersize, linestyle, linewidth, label,
@@ -1446,3 +1515,281 @@ def _render_quantile_nested_band(
             q_all[q_hi][plot_mask],
             alpha=alpha, color=color,
         )
+
+
+# =============================================================================
+# Phase 13.33.DF: Normalize transform — math kernel (AD-80, all 5 modes)
+# =============================================================================
+# Pure function. Called by drawer.DFDraw._dispatch_normalize_render after both
+# top-panel profiles have been computed. Returns the bottom-panel arrays
+# (values + errors per bin) plus a mask of bins where the transform is undefined.
+
+# Allowed string modes for normalize=. Anything outside this set + non-callable
+# raises ValueError at the public API entry (drawer.profile validation block).
+NORMALIZE_MODES = ("delta", "ratio", "log_ratio", "pull")
+
+
+def _compute_normalize_transform(
+    stats_0: Dict[str, np.ndarray],
+    stats_1: Dict[str, np.ndarray],
+    mode,
+    central: str = "mean",
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Apply the normalize transform to two per-bin profile statistics.
+
+    AD-80 sign convention: stats_0 is the signal (vector[0]), stats_1 is the
+    reference (vector[1]). `delta = signal − reference` (signed; positive
+    means signal is above reference).
+
+    Parameters
+    ----------
+    stats_0, stats_1 : dict
+        Per-bin arrays from the two profile curves. Required keys:
+          - 'bin_centers': array of bin midpoints (must be identical between
+            the two — caller is responsible for ensuring matched binning).
+          - 'central':     per-bin central estimator (mean if central='mean',
+                           median if central='median').
+          - 'sigma':       per-bin dispersion (std if central='mean',
+                           MAD-sigma if central='median').
+          - 'counts':      per-bin n (used in SEM-based error propagation).
+    mode : str or callable
+        Transform mode. If callable, receives (stats_0, stats_1) and must
+        return either (values, errors) or values alone (errors → None,
+        bottom-panel rendered without error bars).
+        String modes: "delta", "ratio", "log_ratio", "pull".
+    central : str
+        "mean" or "median". Determines which dispersion enters the error
+        formula — std/sem for mean mode, MAD-sigma for median mode. Phase
+        13.33 §3.4 implements all 8 cells (mean/median × delta/ratio/
+        log_ratio/pull); no NotImplementedError.
+
+    Returns
+    -------
+    values : array
+        Per-bin transform output (delta, ratio, log_ratio, pull, or callable
+        return). Length matches stats_0['bin_centers'].
+    errors : array or None
+        Per-bin propagated error (or None for callable returning values only).
+    mask_undefined : array of bool
+        True for bins where the transform is undefined (e.g. ratio with zero
+        denominator, log_ratio with non-positive input, callable returned NaN).
+        Caller masks both values and errors to NaN at these positions.
+
+    Notes
+    -----
+    Error propagation uses standard error of mean (SEM-based):
+        SEM = σ / √n   per bin
+
+    Per v1.1 §3.3:
+      delta_err   = √(σ₀²/n₀ + σ₁²/n₁)
+      ratio_err   = |μ₀/μ₁| · √(σ₀²/(n₀·μ₀²) + σ₁²/(n₁·μ₁²))
+      log_ratio_err = √(σ₀²/(n₀·μ₀²) + σ₁²/(n₁·μ₁²))     (derived via log)
+      pull        = (μ₀ − μ₁) / √(σ₀²/n₀ + σ₁²/n₁)        (errors = 1 by def.)
+
+    For median mode, σ in the formulas above is MAD-sigma. Pre-existing
+    inconsistency: profile(central='median') currently renders mean-based
+    errors on the central line itself; this is NOT touched in Phase 13.33
+    (flagged in CRR §11 as a candidate for a separate fix-up phase).
+    """
+    mu_0 = stats_0['central']
+    mu_1 = stats_1['central']
+    sig_0 = stats_0['sigma']
+    sig_1 = stats_1['sigma']
+    n_0 = stats_0['counts']
+    n_1 = stats_1['counts']
+
+    # Bins where either side is empty → undefined for every mode.
+    base_undefined = (n_0 < 1) | (n_1 < 1)
+
+    # Suppress numpy warnings inside the math — we explicitly mask afterwards.
+    with np.errstate(divide='ignore', invalid='ignore'):
+        # SEM² per side (used by every mode that propagates error).
+        sem2_0 = (sig_0 ** 2) / np.where(n_0 > 0, n_0, 1)
+        sem2_1 = (sig_1 ** 2) / np.where(n_1 > 0, n_1, 1)
+
+        if callable(mode):
+            result = mode(stats_0, stats_1)
+            # Accept (values, errors) tuple OR values alone (errors=None).
+            if isinstance(result, tuple) and len(result) == 2:
+                values, errors = result
+                values = np.asarray(values, dtype=float)
+                errors = np.asarray(errors, dtype=float) if errors is not None else None
+            else:
+                values = np.asarray(result, dtype=float)
+                errors = None
+            mask_undefined = base_undefined | ~np.isfinite(values)
+
+        elif mode == "delta":
+            values = mu_0 - mu_1
+            errors = np.sqrt(sem2_0 + sem2_1)
+            mask_undefined = base_undefined
+
+        elif mode == "ratio":
+            # Undefined where reference (mu_1) is zero.
+            mask_zero_ref = (mu_1 == 0) | ~np.isfinite(mu_1)
+            mask_undefined = base_undefined | mask_zero_ref
+            values = mu_0 / mu_1
+            # |μ₀/μ₁| · √(σ₀²/(n₀·μ₀²) + σ₁²/(n₁·μ₁²))
+            # The factor μ_i² in the denominator makes ratio_err undefined
+            # where μ_i=0; we mask the result there.
+            mask_zero_either = mask_zero_ref | (mu_0 == 0)
+            rel_var_0 = np.where(
+                (mu_0 != 0) & np.isfinite(mu_0),
+                sem2_0 / (mu_0 ** 2),
+                0.0,
+            )
+            rel_var_1 = np.where(
+                (mu_1 != 0) & np.isfinite(mu_1),
+                sem2_1 / (mu_1 ** 2),
+                0.0,
+            )
+            errors = np.abs(values) * np.sqrt(rel_var_0 + rel_var_1)
+            # If either side is zero we still report value (∞ or 0) but error
+            # cannot be propagated → mask both at undefined positions.
+            mask_undefined = mask_undefined | mask_zero_either
+
+        elif mode == "log_ratio":
+            # ln(μ₀ / μ₁) is defined only where both means are strictly positive.
+            mask_nonpos = (mu_0 <= 0) | (mu_1 <= 0) | ~np.isfinite(mu_0) | ~np.isfinite(mu_1)
+            mask_undefined = base_undefined | mask_nonpos
+            values = np.log(np.where(mask_nonpos, np.nan, mu_0 / mu_1))
+            # d(ln(μ₀/μ₁)) = dμ₀/μ₀ − dμ₁/μ₁ → variance = σ₀²/(n₀ μ₀²) + σ₁²/(n₁ μ₁²)
+            rel_var_0 = np.where(
+                (mu_0 > 0) & np.isfinite(mu_0),
+                sem2_0 / (mu_0 ** 2),
+                0.0,
+            )
+            rel_var_1 = np.where(
+                (mu_1 > 0) & np.isfinite(mu_1),
+                sem2_1 / (mu_1 ** 2),
+                0.0,
+            )
+            errors = np.sqrt(rel_var_0 + rel_var_1)
+
+        elif mode == "pull":
+            # pull = (μ₀ − μ₁) / √(σ₀²/n₀ + σ₁²/n₁)
+            denom_var = sem2_0 + sem2_1
+            mask_zero_denom = (denom_var == 0) | ~np.isfinite(denom_var)
+            mask_undefined = base_undefined | mask_zero_denom
+            denom = np.sqrt(np.where(mask_zero_denom, np.nan, denom_var))
+            values = (mu_0 - mu_1) / denom
+            # Pull is by construction in units of σ → "error" is 1.0
+            # in those units. We return np.ones() so error bars can show
+            # the statistical 1σ on the pull plot (matches HEP convention
+            # for residual / pull plots — vertical bar = 1σ uncertainty
+            # on the pull value itself).
+            errors = np.ones_like(values, dtype=float)
+
+        else:
+            raise ValueError(
+                f"Unknown normalize mode {mode!r}. Expected one of "
+                f"{NORMALIZE_MODES} or a callable."
+            )
+
+    # Apply mask: NaN out undefined bins so downstream rendering skips them.
+    values = np.where(mask_undefined, np.nan, values)
+    if errors is not None:
+        errors = np.where(mask_undefined, np.nan, errors)
+
+    return values, errors, mask_undefined
+
+
+# =============================================================================
+# Phase 13.33.DF: Normalize-panel rendering (AD-82 pull bands; AD-80 ref line)
+# =============================================================================
+
+def _render_normalize_panel(
+    ax,
+    bin_centers: np.ndarray,
+    values: np.ndarray,
+    errors,
+    mode,
+    *,
+    color: Optional[str] = None,
+    marker: Optional[str] = None,
+    markersize: Optional[float] = None,
+    capsize: Optional[float] = None,
+    label: Optional[str] = None,
+) -> None:
+    """
+    Render the bottom panel of a normalize plot.
+
+    Draws (in order, per v1.1 §6):
+      1. Pull bands (±1σ, ±2σ) if mode == 'pull'
+      2. Reference line (y=0 for delta/log_ratio/pull; y=1 for ratio)
+         — gated on style key 'normalize.panel.reference_line'
+      3. The differential curve with error bars
+      4. Pull-anomaly highlighting (|pull| > threshold) for mode='pull'
+
+    Caller (drawer._dispatch_normalize_render) supplies ax pre-built from
+    gridspec with sharex=True against the top panel — formatter and limits
+    inherit automatically (sidesteps BUG-004 per Claude40 awareness note).
+
+    NaN values in `values` are skipped by errorbar (matplotlib treats them
+    as missing — no markers drawn at those bin centers). This matches the
+    upstream convention for empty bins in profile().
+    """
+    # ---- 1. Pull bands ------------------------------------------------------
+    if mode == "pull":
+        a1 = get_style_value("normalize.pull.band_1sigma_alpha", 0.15)
+        a2 = get_style_value("normalize.pull.band_2sigma_alpha", 0.08)
+        # Bands span the full x range of the panel — use axhspan-style fill
+        # across the visible bin_centers range (sharex copies the actual limits).
+        # We use ax.axhspan for infinite-width bands so they stay flush against
+        # the panel edges regardless of bin layout.
+        ax.axhspan(-1.0,  1.0, alpha=a1, color="gray", zorder=0)
+        ax.axhspan(-2.0, -1.0, alpha=a2, color="gray", zorder=0)
+        ax.axhspan( 1.0,  2.0, alpha=a2, color="gray", zorder=0)
+
+    # ---- 2. Reference line --------------------------------------------------
+    if get_style_value("normalize.panel.reference_line", True):
+        ref_y = 1.0 if mode == "ratio" else 0.0
+        ax.axhline(
+            ref_y,
+            color=get_style_value("normalize.panel.ref_line_color", "gray"),
+            linestyle=get_style_value("normalize.panel.ref_line_style", "--"),
+            linewidth=1.0,
+            zorder=1,
+        )
+
+    # ---- 3. The differential curve -----------------------------------------
+    if marker is None:
+        marker = get_style_value("profile.marker", "o")
+    if markersize is None:
+        markersize = get_style_value("profile.markersize", 6)
+    if capsize is None:
+        capsize = get_style_value("profile.capsize", 3)
+
+    # errorbar with yerr=None when errors is None (callable mode returning
+    # values only).
+    yerr = errors if errors is not None else None
+    ax.errorbar(
+        bin_centers, values,
+        yerr=yerr,
+        fmt=marker,
+        markersize=markersize,
+        capsize=capsize,
+        color=color,
+        label=label,
+        zorder=3,
+    )
+
+    # ---- 4. Pull anomaly highlighting --------------------------------------
+    if mode == "pull":
+        threshold = get_style_value("normalize.pull.highlight_threshold", 3.0)
+        anomaly_mask = np.abs(values) > threshold
+        # Only draw highlights where defined (mask out NaN to avoid the
+        # all-NaN-comparison warning that np.abs raises on masked arrays).
+        anomaly_mask = anomaly_mask & np.isfinite(values)
+        if anomaly_mask.any():
+            ax.scatter(
+                bin_centers[anomaly_mask],
+                values[anomaly_mask],
+                s=(markersize ** 2) * 2.5,  # larger than errorbar marker
+                facecolors="none",
+                edgecolors="red",
+                linewidths=1.5,
+                zorder=4,
+                label=None,  # don't pollute legend
+            )

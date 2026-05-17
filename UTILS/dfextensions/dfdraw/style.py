@@ -200,6 +200,51 @@ DEFAULT_STYLE: Dict[str, Any] = {
     # auto-derived label format is "{y} {sep} {selection} {sep} {weights}".
     # Phase 13.27.DF Commit 2, proposal §4.3 + §5.7.
     "channels.label.delta_separator": " | ",
+
+    # ========================================================================
+    # Phase 13.33.DF: Normalized Differential Profiles (AD-80, AD-81, AD-82)
+    # ========================================================================
+    # Adds normalize= kwarg to profile() for residual / ratio / log-ratio / pull
+    # rendering between two curves. AD-80 fixes sign convention (vector[0]=signal,
+    # vector[1]=reference; delta = v[0] − v[1]). AD-81 covers group_by + facet_by
+    # composition (per-group differential, K×2 facet grid). AD-82 covers pull
+    # mode bands. See PHASE_13_33_DF_v1_1_Proposal_NormalizedDifferentialProfiles.md.
+    #
+    # Phase 13.27 FIX1.FIX1 §6 deferral (option c): when normalize is set and
+    # the user passes a 2-element selection_vector on a single-Y expression,
+    # vector_compose is forced to "outer" transparently — the normalize= API
+    # hides compose mechanics from the user.
+
+    # Two-panel layout: ratio of top:bottom panel heights for overlay+diff mode.
+    # Diff panel is shorter than the overlay since it carries one curve, not N.
+    # Format: 2-tuple/list of positive numbers. Default [3, 1] gives 75:25 split.
+    "normalize.panel.height_ratio": [3, 1],
+
+    # Vertical spacing between top and bottom panels. Lower hspace keeps the
+    # diff panel visually attached to the overlay (signaling "this comes from
+    # that"). Matplotlib default is 0.2; we use 0.05 for the tight pairing.
+    "normalize.panel.hspace": 0.05,
+
+    # Reference line (y=0 for delta/log_ratio/pull; y=1 for ratio) on the diff
+    # panel. True draws the line; False suppresses. Some users prefer minimal
+    # decoration when the y-axis already includes the reference value.
+    "normalize.panel.reference_line": True,
+
+    # Visual style of the reference line. Matches matplotlib axhline kwargs.
+    "normalize.panel.ref_line_color": "gray",
+    "normalize.panel.ref_line_style": "--",
+
+    # Pull-mode bands (AD-82): ±1σ and ±2σ shaded regions around the y=0
+    # reference. Standard normal interpretation — points outside ±2σ are
+    # >95% confidence anomalies. Alpha tuned to be visible without dominating
+    # the data markers.
+    "normalize.pull.band_1sigma_alpha": 0.15,
+    "normalize.pull.band_2sigma_alpha": 0.08,
+
+    # Highlight threshold for pull anomalies. Pull values exceeding this in
+    # absolute value get rendered with a more visible marker. Default 3.0σ
+    # matches the conventional "three-sigma" anomaly threshold in physics.
+    "normalize.pull.highlight_threshold": 3.0,
 }
 
 # =============================================================================
