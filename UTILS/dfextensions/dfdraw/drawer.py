@@ -17,7 +17,7 @@ from .style import get_style, get_style_value
 # format the per-subplot recursion would have produced. Safe top-level import:
 # plots/profile.py has no top-level dependency on drawer.py (it imports DFDraw
 # inside draw_profile() only).
-from .plots.profile import _format_interval_label
+from .plots.profile import _format_interval_label, _interval_sort_key
 
 # =============================================================================
 # Phase 13.16.DF FIX1: Sentinel for "parameter was not passed by caller".
@@ -2390,6 +2390,16 @@ class DFDraw:
         # valid channel-name value (e.g. facet_by="group_by") because the
         # string "group_by" is not a column. Validation lives here instead.
         _facet_mode = None  # 'channel' | 'column'
+        # Phase 13.32.DF FIX1 BUG-001: save the original facet_by string at
+        # function entry, BEFORE any rebinding can happen at line 2524
+        # (column-mode binning replaces facet_by with '__dfdraw_facet_bin__').
+        # _facet_display_name is used in subplot titles (line 2703), stats
+        # dict (line 2720), and the auto_title suptitle block (BUG-002 fix).
+        # It must be defined for ALL facet modes (channel + column) since
+        # those code paths run unconditionally. Placement at function entry
+        # rather than inside the column-mode branch closes the v1.5 scoping
+        # gap (Sonet51 + Sonnet52_R1 P1 catch).
+        _facet_display_name = facet_by
         if facet_by in self._VALID_FACET_BY_VALUES_COMMIT1:
             _facet_mode = 'channel'
         elif (df is not None
@@ -2523,11 +2533,23 @@ class DFDraw:
             df = _effective_df
             facet_by = _effective_facet_col
 
-            try:
-                groups = sorted(df[facet_by].dropna().unique().tolist())
-            except TypeError:
-                # Mixed/unsortable dtype — fall back to unsorted order
-                groups = df[facet_by].dropna().unique().tolist()
+            # Phase 13.32.DF FIX1 BUG-003: numeric sort using _interval_sort_key
+            # (already in profile.py). Without this, string labels produced by
+            # _format_interval_label sort lexicographically: "12.0-16.0" <
+            # "4.0-8.0" because "1" < "4". _interval_sort_key extracts the
+            # numeric left boundary for correct ordering. _fby_bins and
+            # _fby_quantiles are set at lines 2506-2507 (same scope, in range).
+            if _fby_bins is not None or _fby_quantiles is not None:
+                groups = sorted(
+                    df[facet_by].dropna().unique().tolist(),
+                    key=_interval_sort_key
+                )
+            else:
+                try:
+                    groups = sorted(df[facet_by].dropna().unique().tolist())
+                except TypeError:
+                    # Mixed/unsortable dtype — fall back to unsorted order
+                    groups = df[facet_by].dropna().unique().tolist()
             if top_k is not None and len(groups) > top_k:
                 counts = df[facet_by].value_counts()
                 groups = counts.head(top_k).index.tolist()
@@ -2700,12 +2722,56 @@ class DFDraw:
                 ) from e
 
             # Subplot title from facet value
-            ax_i.set_title(f"{facet_by}={group_value}")
+            # Phase 13.32.DF FIX1 BUG-001: use _facet_display_name (the
+            # original facet_by string saved at function entry) rather than
+            # the possibly-rebinded facet_by. For column-mode + binning, the
+            # rebinded value is the internal '__dfdraw_facet_bin__' name.
+            ax_i.set_title(f"{_facet_display_name}={group_value}")
             all_stats[str(group_value)] = stats
 
         # ---- Figure-level title (suptitle) ---------------------------------
         if title:
             fig.suptitle(title, fontsize=get_style_value("axes.titlesize", 14) + 2)
+
+        # Phase 13.32.DF FIX1 BUG-002: figure-level suptitle when auto_title=True.
+        # Per-subplot calls run with auto_title=False (line 2639 — correct,
+        # prevents per-subplot title collision). Figure level was missing.
+        # build_auto_title signature verified against drawer.py:1329-1333.
+        # Return dict keys verified against _auto_title.py:97:
+        #     return {"main": main, "sub": sub}   (no 'title' key)
+        _auto_title_val = plot_kwargs.get('auto_title', False)
+        if _auto_title_val and not title:
+            try:
+                from .plots._auto_title import (
+                    parse_auto_title_parts, build_auto_title, resolve_auto_title
+                )
+                _at = resolve_auto_title(_auto_title_val)
+                if _at:
+                    parts = parse_auto_title_parts(_at)
+                    td = build_auto_title(
+                        x_expr or '',
+                        str(y_expr) if isinstance(y_expr, str) else str(y_expr[0]),
+                        group_by=group_by if _facet_display_name != 'group_by' else None,
+                        selection=plot_kwargs.get('selection'),
+                        weights=None,
+                        parts=parts,
+                    )
+                    _main = td.get('main', '')
+                    _sub = td.get('sub')
+                    fig.suptitle(
+                        f"{_main}\n{_sub}" if _sub else _main,
+                        fontsize=get_style_value("axes.titlesize", 14),
+                    )
+                    plt.subplots_adjust(top=0.92)
+            except Exception:
+                # Failsafe: minimal title — prevents auto_title import/build
+                # errors from crashing the plot. Same defensive pattern as
+                # _draw_vector failsafe (line ~1230).
+                y_str = (y_expr if isinstance(y_expr, str)
+                         else f"[{','.join(y_expr)}]")
+                fig.suptitle(f"{y_str} vs {x_expr}",
+                             fontsize=get_style_value("axes.titlesize", 14))
+                plt.subplots_adjust(top=0.92)
 
         plt.tight_layout()
         if title:
@@ -2717,7 +2783,9 @@ class DFDraw:
             "groups": groups,
             "per_group": all_stats,
             "faceted": True,
-            "facet_by": facet_by,
+            # Phase 13.32.DF FIX1 BUG-001: expose ORIGINAL facet_by name to
+            # consumers, not the possibly-rebinded internal temp column name.
+            "facet_by": _facet_display_name,
             # Phase 13.31.DF (AD-78): expose mode for consumers to discriminate
             # between channel-name and column-name semantics.
             "facet_mode": _facet_mode,
