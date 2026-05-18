@@ -135,7 +135,7 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
     GIT_BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
 
     # Last commit diff (scoped to this subproject)
-    git diff HEAD~1..HEAD -- "$PROJECT_ROOT" > "$DIFF_COMMIT" 2>/dev/null || \
+    git diff HEAD -- "$PROJECT_ROOT" > "$DIFF_COMMIT" 2>/dev/null || \
         echo "(could not generate)" > "$DIFF_COMMIT"
     echo "  Last commit diff: $(realpath "$DIFF_COMMIT" 2>/dev/null || echo "$DIFF_COMMIT")"
 
@@ -149,7 +149,7 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
     done
 
     if [[ -n "$PHASE_TAG" ]]; then
-        git diff "$PHASE_TAG"..HEAD -- "$PROJECT_ROOT" > "$DIFF_PHASE" 2>/dev/null || true
+        git diff "$PHASE_TAG" -- "$PROJECT_ROOT" > "$DIFF_PHASE" 2>/dev/null || true
         echo "  Phase tag: $PHASE_TAG"
     else
         echo "(No PHASE_BEGIN_AliasDataFrame tag found)" > "$DIFF_PHASE"
