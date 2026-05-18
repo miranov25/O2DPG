@@ -1,7 +1,7 @@
 # AliasDataFrame Phase History
 
 > **Purpose**: Development history for architecture reviews and restart prompts.  
-> **Last Updated**: 2026-05-17  
+> **Last Updated**: 2026-05-18  
 > **Maintained By**: Marian Ivanov (miranov25)
 
 ## How to Use This File
@@ -42,7 +42,7 @@ AliasDataFrame is a high-performance data analysis framework for particle physic
 
 **Key Metrics:**
 - Performance: 60-770x speedups achieved; production pipeline 2.1× faster (1452s → 692s)
-- Test Coverage: 1606 tests passing, 177+ invariance tests
+- Test Coverage: 1625 tests passing, 199 invariance tests
 - Lines of Code: ~13,625 (AliasDataFrame.py)
 - Features: 47 in taxonomy (28 verified, 14 smoke-only, 4 broken, 1 planned)
 
@@ -401,6 +401,62 @@ One-line signature change to `export_tree`: default `compression=uproot.LZ4(leve
 
 **Risk profile**: Low — single default value flip, all existing files remain readable, ROOT-native algorithm choice. The only behavior change is faster I/O on freshly-written files.
 
+### Phase 13.35.ADF: Vector Kwargs Alias Pre-Materialization + `vector_compose` Auto-Force
+**Dates**: 2026-05-18  
+**Status**: ✅ Merged  
+**Commit**: `879a0835`  
+**Base**: `a6a5b6e8` (BUG_AliasDataFrame_20260518 Phase A close)  
+**Tag**: `PHASE_13_35_ADF_END`  
+**Coder**: Claude36 (Opus 4.7)  
+**Sister phase**: dfdraw Phase 13.27.DF Commit 2
+
+Two coupled fixes at the ADF→dfdraw boundary, both producing failures-of-the-week in production calibration workflows:
+
+1. **Vector-kwarg alias pre-materialization** — `selection_vector` / `weights_vector` / `facet_by` expressions referencing ADF aliases (e.g. `selection_vector=["(abs(sector-13)<2)", "(abs(sector-13)>=2)&(sector<36)"]` where `sector` is an alias) raised `UndefinedVariableError` because `draw()` / `draw_batch()` / `draw_figures()` forwarded kwargs to dfdraw without materializing the referenced aliases first. `pandas.eval` inside dfdraw then failed on the un-resolved alias name.
+
+2. **`vector_compose="outer"` auto-force** — even after (1) is fixed, dfdraw's inner-compose 3-axis check (AD-67, `drawer.py:757`) raises `ValueError: 3-axis inner requires equal lengths` whenever expr is single-Y (e.g. `"nClITS:time_s"`) and `selection_vector` (or `weights_vector`) has >1 element. The architect's production §1.4 call works only because `normalize="delta"` silently sets `vector_compose="outer"` inside dfdraw — a fragile coupling that users without `normalize=` keyword hit hard. Spec v1.2 §6 row #3 deferred this auto-force to "Phase 13.33.DF or FIX2"; landed here instead at architect direction after production validation showed the §1.4 reproducer needs both fixes together.
+
+**Implementation**: two sibling helpers in `AliasDataFrame.py`:
+- `_ensure_vector_kwargs_aliases(kwargs)` — regex-tokenizes selection_vector / weights_vector expressions, filters tokens against `self.aliases`, materializes missing. Channel-enum guard (`{'group_by', 'vector', 'quantiles'}`) prevents pathological facet_by materialization. Idempotent.
+- `_normalize_vector_compose_kwargs(kwargs, expr)` — auto-forces `vector_compose="outer"` when expr is single-Y AND (`selection_vector` OR `weights_vector` has >1 element). Respects user opt-out (no overwrite if user passed `vector_compose` explicitly). No-op for multi-Y expressions.
+
+Both helpers wired into all 3 draw entry points (`draw()` at method entry; `draw_batch()` / `draw_figures()` per-spec/per-plot). For batch methods, helpers mutate the ORIGINAL spec dict (not `_merged_spec`) — follows the existing in-place mutation pattern at `AliasDataFrame.py:12121` (subframe replacement loop).
+
+**Tests**: 8 invariance tests V1.1–V1.8 (`test_V1_vector_kwargs_alias_materialization.py`):
+- V1.1: production §1.4 reproducer (single-Y + 2-element selection_vector with `sector` alias)
+- V1.2: selection_vector + weights_vector combined
+- V1.3: facet_by alias column materialized
+- V1.4: idempotent repeated draw
+- V1.5: draw_batch per-spec materialization (uses `clear_after=False` to make materialization observable post-call — `draw_batch` defaults drop materialized aliases after the batch completes)
+- V1.6: draw_figures per-plot materialization (same `clear_after=False`)
+- V1.7: facet_by channel-enum negative branch — must NOT materialize (guard test)
+- V1.8: auto-force helper direct unit test — positive (sel + weights), negative (multi-Y), user-explicit-inner respect, 1-element no-op
+
+**Production validation**: real ALICE TPC data, ~9.86M tracks, on alma2 (2026-05-18 13:34). All draw call patterns in `drawTest(adfVertex, adf)` rendered without `UndefinedVariableError` or 3-axis `ValueError`. Two downstream dfdraw-layer bugs surfaced but are not Phase 13.35.ADF scope:
+- `auto_title=True` not honored — figure shows matplotlib default title across all renders  
+- `normalize="ratio"` returns 1.0 instead of the computed early/late ratio  
+Both handed to dfdraw team for separate bug filing.
+
+**Test count**: 1625 passed, 10F+1E, 8 skipped at commit-time. The +3 failures vs Phase A's 7F+1E baseline (`test_save_and_load_integrity`, `test_backward_compatibility_no_compression_info`, `test_roundtrip_save_load`) are the documented parallel-execution flake cluster — same pattern noted at Phase 13.27.ADF (`bbedd90b`) commit message. Diagnostic 2026-05-18: `pytest <3 tests> -p no:xdist` → **15/15 pass in isolation**, confirming parallel-worker artifact, not Phase 13.35.ADF regression.
+
+**Reviewer cycle notes**:
+- v1.0 proposal (Sonnet1) → Claude36 reviewed with `[!]` (P1 scope gap: only `draw()` patched, missing `draw_batch` / `draw_figures`)
+- v1.1 (Claude36 drafted, 3-call-site scope) → 5-reviewer panel found 2 P1s (V4 channel-enum negative test missing; §9 audit incomplete)
+- v1.2 (Claude36 drafted, V4 added, honest §9 two-stage audit) → architect-approved
+- Mid-implementation scope expansion (auto-force) — architect verbal direction, CRR §5 documented honestly
+- Commit-time review: 4 reviewers issued `[X]` flagging 3 regressions; diagnostic disproved the in-place-mutation root cause hypothesis; architect closed on authority
+
+**Methodology lessons** (for next Coder/Reviewer QRC revision):
+- **Verbal scope expansion during implementation needs a spec amendment.** Spec v1.2 §6 row #3 explicitly deferred auto-force; landing it here via verbal direction-of-the-day was correct architecturally but bypassed the spec-amendment loop. CRR §5 documented honestly, but for future: produce spec v1.3 amendment BEFORE coding, not as post-hoc CRR note.
+- **Coder post-hoc baseline revision is a Failure Mode.** When CRR §3 predicted `1627 pass / 7F+1E` and got `1625 / 10F+1E`, Claude36 changed the baseline number in §3 (7→10) instead of investigating the -2 delta. Reviewers caught it and demanded diagnostic. Diagnostic vindicated the result but the process was wrong: investigate first, narrate second. Candidate Failure Mode for Coder QRC: *"Numbers-revised-to-fit."*
+- **Reviewer panel discipline was correct.** Sonnet1/2/3/4 demanded diagnostic before approval — exactly the right call. Their P0-1 hypothesis (in-place mutation) was disproven, but the gate (don't approve before root-cause) is the value, not the hypothesis. Worth a Reviewer QRC note: *"verdict on diagnostic, not on hypothesis"*.
+- **Documented parallel-execution flake pattern recurring.** Third independent recurrence of the `test_alias_dataframe.py` save/load + compression intermittent failures under 12-worker xdist (Phase 13.27.ADF + Phase 13.35.ADF + the 2026-04 incident referenced in Phase 13.27 commit). Pattern is consistent: pass deterministically in isolation, fail intermittently under parallelism. Worth formal bug-filing on next recurrence; consider `@pytest.mark.serial` or worker-count cap.
+
+**Closed deferred items** (from spec v1.2 §6):
+- Row #3 — `vector_compose='outer'` auto-forcing for single-Y + N-element selection_vector → CLOSED by this phase.
+
+**Phase B marker**: Both helpers carry inline `Phase B marker` comments — regex tokenizer in `_ensure_vector_kwargs_aliases` and Y-count parser in `_normalize_vector_compose_kwargs` should be folded into AST resolver consolidation when that phase lands.
+
 ### Phase 13.25.DF FIX1: dfdraw Quantile Test-Quality + AD-52 Sentinel Fix
 **Dates**: 2026-05-14 (proposal drafted)  
 **Status**: 📋 Proposal v1.0 drafted by Claude37; awaiting architect approval to start Coder work  
@@ -423,6 +479,45 @@ Fix cycle against approved spec `PHASE_13_25_DF_v1.3_Proposal.md` (no re-litigat
 ---
 
 ## Bug Fixes
+
+### BUG_AliasDataFrame_20260518_draw_subframe_alias_not_materialized (Phase A, S10–S19)
+**Dates**: 2026-05-18  
+**Status**: ✅ Fixed  
+**Commit**: `a6a5b6e8`  
+**Predecessor**: `c1f77b06` (BUG_draw_silent_swallow)  
+**Severity**: P0 — cold draw of `Subframe.aliased_column` raised `UndefinedVariableError` whenever the subframe column was an ADF alias not yet materialized into the subframe's DataFrame. Production reproducer: `adfVertex.draw("vertex_x_intercept:vC.vertex_x_intercept_decomp")` — fails cold because `vC.vertex_x_intercept_decomp` is an alias on the vC subframe, not a raw column.
+
+**Problem**: Four draw-time resolver sites assumed that any `Subframe.col` reference resolves to a raw column on the subframe's DataFrame. When `col` is an ADF alias on that subframe (the common pattern for compressed/decompressed columns in calibration QA), the lookup miss propagated as `UndefinedVariableError`. The error pointed at the rewritten flat reference (e.g. `vertex_x_intercept_decomp__vC`), never at the actual cause (the column needed lazy materialization on the subframe).
+
+**Sites patched** (all in `AliasDataFrame.py`):
+| Method | Source line (approx) | Level |
+|---|---|---|
+| `draw()` | 11036 | Single-level |
+| `draw_batch()` | 12060 | Single-level |
+| `draw_figures()` | 12360 | Single-level |
+| `_scatter_subframe_column` | 3108 | Multi-level |
+
+Each site now calls `sf_adf.materialize_aliases([col_name])` on the subframe before the join.
+
+**Silent-swallow cleanup** (completes the remediation begun at `c1f77b06`): 4× `except Exception: pass` blocks in the draw resolver paths were replaced with `warnings.warn(...)` to surface previously-masked errors. Aligns with the diagnostic-improvement direction of BUG_20260517 — drawer paths no longer hide their failures.
+
+**Tests**: S10–S19 (10 invariance tests in `tests/test_S10_draw_subframe_alias.py`):
+- S10–S12: single-level / multi-level / compound-expression alias resolution
+- S13–S14: alias in arithmetic / alias in selection
+- S15: raw column still works (regression guard)
+- S16–S17: `draw_batch` / `draw_figures` paths
+- S18: multilevel alias on inner subframe
+- S19: cold draw, no workaround (production reproducer)
+
+10/10 pass in 6.45s parallel.
+
+**Production validation**: cold draw on alma2 with real ALICE TPC data (~9.86M tracks, 986 quantile bins) — `adfVertex.draw("vertex_x_intercept:vC.vertex_x_intercept_decomp")` produces correlation 0.9999 between signal and decompressed reference, no workaround (no pre-call `materialize_aliases([...])` needed).
+
+**Taxonomy**: `DRAW.subframe_resolution` 33→49 tests, 2→16 invariance.
+
+**Test count delta**: 1606 → 1620 passed (+14 — 10 new S10–S19 + 4 indirect from taxonomy regrouping). 7F+1E baseline identical (no regressions).
+
+**Reviewer cycle**: Sonnet1 (MainReviewer), Sonnet2, Sonnet3, GPT7 — all `[!]` APPROVED WITH COMMENTS. P1 items addressed pre-commit: test file `git add`'d, feature_taxonomy.py updated, `_scatter_subframe_column` docstring revised. P2 items deferred to Phase B (AST resolver consolidation).
 
 ### BUG_AliasDataFrame_20260517_draw_silent_swallow (S6–S9)
 **Dates**: 2026-05-17  
@@ -1040,6 +1135,8 @@ Remaining overhead is Python/Pandas framework cost.
 | BUG_validate_aliases_false_positives | 5 (B1_1-B1_5) | 1599 (clean baseline) |
 | 13.26.ADF (dtype_overrides) | 10 (D1-D10) | 1602 |
 | 13.27.ADF (skip_branches) | 4 (D11-D14) | 1606 |
+| BUG_draw_subframe_alias (Phase A) | 10 (S10-S19) | 1620 |
+| 13.35.ADF (vector kwargs + compose auto-force) | 8 (V1.1-V1.8) | 1625 |
 
 ---
 
@@ -1053,10 +1150,15 @@ Remaining overhead is Python/Pandas framework cost.
 - [x] ~~BUG_GroupBy_Expression_Materialization~~ (fix at `d377a7b1`; baseline regressions resolved by `b9c28663`)
 - [x] ~~Phase 13.26.ADF — read_tree dtype_overrides~~ (merged 2026-05-13 at `249fd551`)
 - [x] ~~Phase 13.27.ADF — read_tree skip_branches~~ (merged 2026-05-14 at `bbedd90b`)
+- [x] ~~BUG_AliasDataFrame_20260518 (Phase A) — draw subframe alias not materialized~~ (merged 2026-05-18 at `a6a5b6e8`)
+- [x] ~~Phase 13.35.ADF — vector kwargs alias pre-materialization + `vector_compose` auto-force~~ (merged 2026-05-18 at `879a0835`; closes spec v1.2 §6 row #3)
 
 ### Active queue (priority order)
 
-- [ ] **Phase 13.25.DF FIX1** — Quantile test-quality + AD-52 sentinel + `error="none"` dispatch (proposal v1.0 drafted 2026-05-14; **15 days open**, 2 correctness P1s)
+- [ ] **Phase 13.25.DF FIX1** — Quantile test-quality + AD-52 sentinel + `error="none"` dispatch (proposal v1.0 drafted 2026-05-14; **19 days open**, 2 correctness P1s)
+- [ ] **dfdraw `auto_title` not honored** — Phase 13.35.ADF production validation surfaced this; figure shows matplotlib default title across all renders despite `auto_title=True` kwarg passed (handed to dfdraw team for separate bug filing as `BUG_dfdraw_20260518_auto_title_not_honored.md`)
+- [ ] **dfdraw `normalize="ratio"` returns 1.0** — same Phase 13.35.ADF production session; bottom panel shows exactly 1.0 instead of computed early/late ratio (handed to dfdraw team as `BUG_dfdraw_20260518_normalize_ratio_returns_one.md`)
+- [ ] **Parallel-execution flake cluster** — `test_save_and_load_integrity`, `test_backward_compatibility_no_compression_info`, `test_roundtrip_save_load` intermittently fail under 12-worker xdist (third documented recurrence; pass deterministically in isolation). Consider `BUG_AliasDataFrame_20260518_compression_save_load_parallel_flake.md` and/or `@pytest.mark.serial` or worker-count cap.
 - [ ] **Phase 13.26.ADF P2 follow-ups** — `PHASE_13_26_ADF_v1.0_Proposal.md` upload to docs; D11/D12 compression+subframe interaction tests
 - [ ] **Phase 13.27.ADF P3 follow-ups** — `feature_taxonomy.py` update for G1-G4, B1, D1-D14 (currently in Unmatched Tests)
 - [ ] **A2** — LZ4 default compression (one-line + compat test, ~15-20s savings)
@@ -1088,6 +1190,9 @@ Remaining overhead is Python/Pandas framework cost.
 - [ ] Anti-Library entry: "merging features without specification" (analogous to existing "Reasoning about performance without profiling")
 - [ ] Claude48 → Reviewer paired-test rotation: Phase 13.25.DF FIX1 is the natural slot
 - [ ] Claude37 anchoring-pattern signal: 3 instances logged across 3 cycles; one-line reminder pre-review recommended
+- [ ] **Coder QRC Failure Mode candidate (from Phase 13.35.ADF)**: *"Numbers-revised-to-fit"* — when CRR-predicted test count misses actual, do not rewrite the prediction to match the result; investigate the delta first, narrate second. Phase 13.35.ADF: Claude36 changed baseline 7F+1E → 10F+1E in CRR §3 to match the observed result instead of investigating why the prediction missed. Reviewer panel correctly caught it.
+- [ ] **Coder QRC reminder (from Phase 13.35.ADF)**: verbal architect direction mid-implementation that expands scope beyond the approved spec should produce a spec amendment (v1.x → v1.x+1) BEFORE coding, not as a post-hoc CRR §5 note. Phase 13.35.ADF auto-force was architecturally correct but the process bypassed the spec-amendment loop.
+- [ ] **Reviewer QRC reminder (from Phase 13.35.ADF)**: "verdict on diagnostic, not on hypothesis" — when reviewers hypothesize a root cause for an anomaly, the gate is the diagnostic that confirms/refutes it, not the hypothesis itself. Phase 13.35.ADF: Sonnet4 hypothesized in-place mutation; diagnostic disproved it; reviewer discipline (demanding diagnostic before approval) was the value, not the specific hypothesis.
 
 ---
 
