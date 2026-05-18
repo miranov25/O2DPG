@@ -326,6 +326,50 @@ fi
 } | tee "$SUMMARY_FILE"
 
 # =============================================================================
+# Pre-bundle staging check (Phase 13.34.DF FIX2 / BUG-011)
+# =============================================================================
+# Catches a class of bugs where new test files are created in the working tree,
+# pytest finds them and reports "all tests pass", but the file is untracked and
+# never enters the commit. The bundle then ships a gate (e.g., 822/0/0) that
+# doesn't match the committed test count (e.g., 817).
+#
+# Discovered: Phase 13.34.DF FIX1 BUG-010 (2026-05-18). Sonet50 caught it in
+# review by inspecting git_status_*.txt in the reviewer bundle. The cost was
+# 1 lost review cycle.
+#
+# This check blocks BUNDLE creation when any *.py file in tests/ is untracked.
+# Test results are still saved to test_logs/ (already written above) — only
+# the .zip artifact is prevented. That's the artifact reviewers consume.
+#
+# Override: DFDRAW_SKIP_STAGING_CHECK=1 bash run_tests.sh
+#   (for development runs where untracked test files are intentional).
+
+if git rev-parse --is-inside-work-tree &>/dev/null; then
+    UNTRACKED_TESTS=$(git status --porcelain tests/ 2>/dev/null | grep "^?? " | grep "\.py$" || true)
+    if [[ -n "$UNTRACKED_TESTS" ]] && [[ -z "$DFDRAW_SKIP_STAGING_CHECK" ]]; then
+        echo ""
+        echo "${RED}${BOLD}❌ BUNDLE BLOCKED — untracked Python files in tests/:${RESET}"
+        echo "$UNTRACKED_TESTS" | sed 's/^/    /'
+        echo ""
+        echo "${YELLOW}These files exist in the working tree but are NOT in any commit.${RESET}"
+        echo "${YELLOW}pytest found and ran them (gate above), but the committed test count${RESET}"
+        echo "${YELLOW}does not include them. Shipping this bundle is a false positive.${RESET}"
+        echo ""
+        echo "Stage them before bundling:"
+        echo "    git add tests/<file>.py"
+        echo ""
+        echo "Or, if intentionally local for development, add to .gitignore."
+        echo ""
+        echo "Override (development only): DFDRAW_SKIP_STAGING_CHECK=1 bash run_tests.sh"
+        echo ""
+        echo "Test results from this run are saved to:"
+        echo "    $LOG_DIR/"
+        echo "Bundle .zip was NOT created."
+        exit 1
+    fi
+fi
+
+# =============================================================================
 # Package reviewer.zip
 # =============================================================================
 
