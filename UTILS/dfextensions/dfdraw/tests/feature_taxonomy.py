@@ -706,7 +706,7 @@ FEATURES = [
             "test_channel_assignment.py::TestChannelStyleOverride::test_set_cycles_changes_capacity",
             "test_channel_assignment.py::TestChannelStyleOverride::test_save_load_round_trips_channels_keys",
             "test_channel_assignment.py::TestChannelStyleOverride::test_set_style_validates_list_values",
-            "test_channel_assignment.py::TestChannelStyleOverride::test_default_style_has_all_10_keys",
+            "test_channel_assignment.py::TestChannelStyleOverride::test_default_style_has_all_channels_keys",
             "test_channel_assignment.py::TestChannelStyleOverride::test_namespace_integrity",
             "test_channel_assignment.py::TestProductionPatternBackwardCompat::test_groupby_quantiles8_structurally_equal",
             "test_channel_assignment.py::TestProductionPatternBackwardCompat::test_groupby_quantiles8_stats_rtol_1e_12",
@@ -820,8 +820,8 @@ FEATURES = [
             "test_data_sanitize_autorange.py::TestNaNInfFilter::test_inf_y_only_counted_correctly",
             "test_data_sanitize_autorange.py::TestNaNInfFilter::test_no_finite_data_warns_with_filter_policy",
             "test_data_sanitize_autorange.py::TestNaNInfFilter::test_clean_data_no_counters_change",
-            "test_data_sanitize_autorange.py::TestStatsDictAdditive::test_pre_phase_keys_unchanged",
-            "test_data_sanitize_autorange.py::TestStatsDictAdditive::test_new_keys_present_when_default_policy",
+            "test_data_sanitize_autorange.py::TestStatsDictAdditive::test_sanitize_stats_keys_present_and_well_typed",
+            "test_data_sanitize_autorange.py::TestStatsDictAdditive::test_sanitize_counters_arithmetic_consistent",
         ],
     },
     {
@@ -842,7 +842,7 @@ FEATURES = [
         "category": "AUTORANGE",
         "tests": [
             "test_data_sanitize_autorange.py::TestAutorangeStrategies::test_minmax_strategy_equals_data_min_max",
-            "test_data_sanitize_autorange.py::TestAutorangeStrategies::test_strategy_style_key_default",
+            "test_data_sanitize_autorange.py::TestAutorangeStrategies::test_invalid_strategy_raises",
         ],
     },
     {
@@ -858,7 +858,273 @@ FEATURES = [
         "name": "Stats keys autorange_used + autorange_strategy (AD-77)",
         "category": "AUTORANGE",
         "tests": [
-            "test_data_sanitize_autorange.py::TestStatsDictAdditive::test_explicit_numeric_range_records_strategy_explicit",
+            "test_data_sanitize_autorange.py::TestStatsDictAdditive::test_compute_autorange_returns_finite_tuple",
+        ],
+    },
+
+    # ── Phase 13.27.DF Commit 2 FIX1 — Histogram weights (HSW) ──
+
+    {
+        "id": "HIST.weights",
+        "name": "hist() weights= column or expression — Phase 13.27 Commit 2 FIX1",
+        "category": "DATA",
+        "tests": [
+            "test_phase_13_27_commit2_selection_weights.py::TestPhase_13_27_Commit2_FIX1::test_HSW_1_hist_weights_column_renders_weighted",
+            "test_phase_13_27_commit2_selection_weights.py::TestPhase_13_27_Commit2_FIX1::test_HSW_2_hist_weights_expression_renders_weighted",
+            "test_phase_13_27_commit2_selection_weights.py::TestPhase_13_27_Commit2_FIX1::test_HSW_3_hist_weights_with_norm_probability",
+            "test_phase_13_27_commit2_selection_weights.py::TestPhase_13_27_Commit2_FIX1::test_HSW_4_hist_weights_with_group_by_raises",
+            "test_phase_13_27_commit2_selection_weights.py::TestPhase_13_27_Commit2_FIX1::test_HSW_5_hist_no_weights_backward_compat",
+        ],
+    },
+
+    # ── Phase 13.30.DF — Column reference parameter validation (Class-2) ──
+
+    {
+        "id": "COLUMN_REF.validation",
+        "name": "Column-reference parameter validation (Class-2 actionable errors) — Phase 13.30",
+        "category": "COLUMN_REF",
+        "tests": [
+            "test_phase_13_30_column_reference_validation.py::TestColumnReferenceValidation_Profile::test_groupby_missing_column_raises_clear_error",
+            "test_phase_13_30_column_reference_validation.py::TestColumnReferenceValidation_Profile::test_groupby_existing_column_unchanged",
+            "test_phase_13_30_column_reference_validation.py::TestColumnReferenceValidation_Profile::test_groupby_none_unchanged",
+            "test_phase_13_30_column_reference_validation.py::TestColumnReferenceValidation_Profile::test_weights_expression_still_works",
+            "test_phase_13_30_column_reference_validation.py::TestColumnReferenceValidation_Hist::test_hist_groupby_missing_raises",
+            "test_phase_13_30_column_reference_validation.py::TestColumnReferenceValidation_Hist::test_hist_groupby_existing_unchanged",
+            "test_phase_13_30_column_reference_validation.py::TestColumnReferenceValidation_Hist::test_hist2d_no_groupby_param_unchanged",
+            "test_phase_13_30_column_reference_validation.py::TestColumnReferenceValidation_Scatter::test_scatter_groupby_missing_raises",
+            "test_phase_13_30_column_reference_validation.py::TestColumnReferenceValidation_Scatter::test_scatter_groupby_existing_unchanged",
+            "test_phase_13_30_column_reference_validation.py::TestR6ColumnReferenceValidator::test_r6_catches_invented_param_in_tuple",
+            "test_phase_13_30_column_reference_validation.py::TestR6ColumnReferenceValidator::test_r6_tuples_are_subset_of_forwarded",
+            "test_phase_13_30_column_reference_validation.py::TestProductionReproducer::test_production_reproducer_now_raises_not_silent",
+        ],
+    },
+
+    # ── Phase 13.31.DF — facet_by column-name mode (AD-78) ──
+
+    {
+        "id": "FACET.column_mode",
+        "name": "facet_by accepts DataFrame column name (AD-78) — Phase 13.31",
+        "category": "FACET",
+        "tests": [
+            "test_phase_13_31_facet_by_column.py::TestPhase1330Safe::test_channel_facet_by_group_by_does_not_raise_p1330",
+            "test_phase_13_31_facet_by_column.py::TestPhase1330Safe::test_channel_facet_by_quantiles_does_not_raise_p1330",
+            "test_phase_13_31_facet_by_column.py::TestPhase1330Safe::test_channel_facet_by_vector_does_not_raise_p1330",
+            "test_phase_13_31_facet_by_column.py::TestColumnNameMode_Numeric::test_int_column_facet_produces_n_subplots",
+            "test_phase_13_31_facet_by_column.py::TestColumnNameMode_Numeric::test_float_column_facet_works",
+            "test_phase_13_31_facet_by_column.py::TestColumnNameMode_Numeric::test_subplot_titles_show_facet_value",
+            "test_phase_13_31_facet_by_column.py::TestColumnNameMode_String::test_string_column_facet_works_without_quoting_issue",
+            "test_phase_13_31_facet_by_column.py::TestOrthogonalComposition::test_facet_by_column_AND_group_by_compose",
+            "test_phase_13_31_facet_by_column.py::TestAmbiguityError::test_typo_facet_by_raises_with_both_alternatives",
+            "test_phase_13_31_facet_by_column.py::TestAmbiguityError::test_error_message_lists_available_columns",
+            "test_phase_13_31_facet_by_column.py::TestCardinalityCap::test_column_facet_too_many_unique_values_triggers_cap",
+            "test_phase_13_31_facet_by_column.py::TestRegressionCommit1::test_channel_group_by_mode_suppresses_inner_group_by",
+        ],
+    },
+
+    # ── Phase 13.32.DF — group_by × quantiles × facet_by binning (AD-79) ──
+
+    {
+        "id": "FACET.column_mode_binning",
+        "name": "facet_by_bins / facet_by_quantiles auto-binning of float column facets (AD-79) — Phase 13.32 Sub-fix 3",
+        "category": "FACET",
+        "tests": [
+            "test_phase_13_32_groupby_quantiles_facet.py::TestSubfix3Profile::test_facet_by_bins_on_column_facet",
+            "test_phase_13_32_groupby_quantiles_facet.py::TestSubfix3Profile::test_facet_by_quantiles_on_column_facet",
+            "test_phase_13_32_groupby_quantiles_facet.py::TestSubfix3Profile::test_facet_by_bins_on_channel_facet_raises",
+            "test_phase_13_32_groupby_quantiles_facet.py::TestSubfix3Profile::test_facet_by_bins_quantiles_mutual_exclusion",
+            "test_phase_13_32_groupby_quantiles_facet.py::TestSubfix3Profile::test_facet_by_bins_without_facet_by_raises",
+            "test_phase_13_32_groupby_quantiles_facet.py::TestSubfix3AllPlots::test_facet_by_bins_for_hist",
+            "test_phase_13_32_groupby_quantiles_facet.py::TestSubfix3AllPlots::test_facet_by_bins_for_hist2d",
+            "test_phase_13_32_groupby_quantiles_facet.py::TestSubfix3AllPlots::test_facet_by_bins_for_scatter",
+        ],
+    },
+    {
+        "id": "PROFILE.quantiles_grouped",
+        "name": "Per-group quantile band/discrete rendering on profile() — Phase 13.32 Sub-fix 2",
+        "category": "QUANTILE",
+        "tests": [
+            "test_phase_13_32_groupby_quantiles_facet.py::TestSubfix2::test_quantile_band_per_group_color",
+            "test_phase_13_32_groupby_quantiles_facet.py::TestSubfix2::test_quantile_discrete_per_group",
+            "test_phase_13_32_groupby_quantiles_facet.py::TestSubfix2::test_stats_dict_quantile_keys_present",
+            "test_phase_13_32_groupby_quantiles_facet.py::TestSubfix2::test_weights_compose_with_groupby_quantiles",
+            "test_phase_13_32_groupby_quantiles_facet.py::TestSubfix2::test_nested_band_with_groupby_raises",
+            "test_phase_13_32_groupby_quantiles_facet.py::TestSubfix2::test_discrete_grouped_uses_group_color_dashed",
+        ],
+    },
+
+    # ── Phase 13.32.DF FIX1 — Faceted rendering bug fixes (BUG-001/002/003) ──
+
+    {
+        "id": "FACET.title_display_name",
+        "name": "Subplot titles show original facet_by name, never internal __dfdraw_facet_bin__ (BUG-001) — Phase 13.32 FIX1",
+        "category": "FACET",
+        "tests": [
+            "test_phase_13_32_df_fix1.py::TestBUG001FacetBinNameLeak::test_BUG001_facet_bin_col_name_not_in_subplot_titles",
+        ],
+    },
+    {
+        "id": "FACET.auto_title",
+        "name": "auto_title=True produces fig.suptitle in faceted mode (BUG-002) — Phase 13.32 FIX1",
+        "category": "FACET",
+        "tests": [
+            "test_phase_13_32_df_fix1.py::TestBUG002AutoTitleInFacetedMode::test_BUG002_auto_title_sets_suptitle_in_faceted_mode",
+            "test_phase_13_32_df_fix1.py::TestBUG002AutoTitleInFacetedMode::test_BUG002_auto_title_channel_mode_facet_no_NameError",
+        ],
+    },
+    {
+        "id": "FACET.numeric_bin_sort",
+        "name": "Facet bin panels in numeric order, not lexicographic (BUG-003) — Phase 13.32 FIX1",
+        "category": "FACET",
+        "tests": [
+            "test_phase_13_32_df_fix1.py::TestBUG003FacetBinNumericSort::test_BUG003_facet_bins_sorted_numerically_not_lexicographically",
+        ],
+    },
+
+    # ── Phase 13.33.DF — Normalized Differential Profiles (AD-80/81/82) ──
+
+    {
+        "id": "NORMALIZE.delta",
+        "name": "normalize='delta': v[0]-v[1] per bin with SEM error propagation — Phase 13.33 M1",
+        "category": "NORMALIZE",
+        "tests": [
+            "test_normalize.py::TestNormalizeDelta::test_ND_1_basic_delta",
+            "test_normalize.py::TestNormalizeDelta::test_ND_2_delta_error_formula",
+            "test_normalize.py::TestNormalizeDelta::test_ND_3_stats_dict_structure",
+        ],
+    },
+    {
+        "id": "NORMALIZE.ratio",
+        "name": "normalize='ratio': v[0]/v[1] with delta-method error, zero-denom mask — Phase 13.33 M1",
+        "category": "NORMALIZE",
+        "tests": [
+            "test_normalize.py::TestNormalizeRatio::test_NR_1_basic_ratio",
+            "test_normalize.py::TestNormalizeRatio::test_NR_2_zero_denominator_masked",
+            "test_normalize.py::TestNormalizeRatio::test_NR_3_ratio_error_formula",
+        ],
+    },
+    {
+        "id": "NORMALIZE.log_ratio",
+        "name": "normalize='log_ratio': ln(v[0]/v[1]) with non-positive mean mask — Phase 13.33 M1",
+        "category": "NORMALIZE",
+        "tests": [
+            "test_normalize.py::TestNormalizeLogRatio::test_NL_1_basic_log_ratio",
+            "test_normalize.py::TestNormalizeLogRatio::test_NL_2_non_positive_mean_masked",
+        ],
+    },
+    {
+        "id": "NORMALIZE.pull",
+        "name": "normalize='pull': (v[0]-v[1])/sigma with +/-1sigma/+/-2sigma bands (AD-82) — Phase 13.33 M1",
+        "category": "NORMALIZE",
+        "tests": [
+            "test_normalize.py::TestNormalizePull::test_NP_1_basic_pull_dimensionless",
+            "test_normalize.py::TestNormalizePull::test_NP_2_pull_bands_rendered",
+        ],
+    },
+    {
+        "id": "NORMALIZE.callable",
+        "name": "normalize=callable: user-supplied f(stats_0, stats_1) -> (values, errors) — Phase 13.33 M1",
+        "category": "NORMALIZE",
+        "tests": [
+            "test_normalize.py::TestNormalizeCallable::test_NC_1_callable_with_errors",
+            "test_normalize.py::TestNormalizeCallable::test_NC_2_callable_values_only",
+        ],
+    },
+    {
+        "id": "NORMALIZE.layout",
+        "name": "normalize_layout: overlay+diff (2-panel) vs diff_only (single panel) — Phase 13.33 M1",
+        "category": "NORMALIZE",
+        "tests": [
+            "test_normalize.py::TestNormalizeLayout::test_NLY_1_overlay_diff_creates_two_panels",
+            "test_normalize.py::TestNormalizeLayout::test_NLY_2_diff_only_single_panel",
+            "test_normalize.py::TestNormalizeLayout::test_NLY_3_height_ratio_style_respected",
+        ],
+    },
+    {
+        "id": "NORMALIZE.sign_convention",
+        "name": "AD-80 sign convention: vector[0]=signal, vector[1]=reference; delta=signal-reference — Phase 13.33 M1",
+        "category": "NORMALIZE",
+        "tests": [
+            "test_normalize.py::TestNormalizeSignConvention::test_NSC_1_signal_above_reference_delta_positive",
+        ],
+    },
+    {
+        "id": "NORMALIZE.single_y_convention",
+        "name": "Single-Y + selection_vector + normalize forces vector_compose='outer' internally (§6 directive) — Phase 13.33 M1",
+        "category": "NORMALIZE",
+        "tests": [
+            "test_normalize.py::TestNormalizeSingleYConvention::test_NSY_1_single_y_default_inner_works",
+            "test_normalize.py::TestNormalizeSingleYConvention::test_NSY_2_single_y_explicit_outer_equivalent",
+        ],
+    },
+    {
+        "id": "NORMALIZE.backward_compat",
+        "name": "normalize=None preserves pre-Phase-13.33 behavior bit-identical — Phase 13.33 M1",
+        "category": "NORMALIZE",
+        "tests": [
+            "test_normalize.py::TestNormalizeBackwardCompat::test_NBC_1_default_normalize_none_unchanged",
+        ],
+    },
+    {
+        "id": "NORMALIZE.validation",
+        "name": "normalize input validation: wrong vector count, invalid mode, same=True conflict — Phase 13.33 M1",
+        "category": "NORMALIZE",
+        "tests": [
+            "test_normalize.py::TestNormalizeValidation::test_NV_1_wrong_vector_count_raises",
+            "test_normalize.py::TestNormalizeValidation::test_NV_2_invalid_mode_string_raises",
+            "test_normalize.py::TestNormalizeValidation::test_NV_3_same_true_with_normalize_raises",
+        ],
+    },
+    {
+        "id": "NORMALIZE.group_by_compose",
+        "name": "group_by + normalize: per-group differential rendering — Phase 13.33 M2",
+        "category": "NORMALIZE",
+        "tests": [
+            "test_normalize.py::TestNormalizeGroupBy::test_NG_1_basic_group_by_3_fills",
+            "test_normalize.py::TestNormalizeGroupBy::test_NG_2_per_group_delta_recovers_offset",
+            "test_normalize.py::TestNormalizeGroupBy::test_NG_3_stats_dict_grouped_structure",
+        ],
+    },
+    {
+        "id": "NORMALIZE.facet_by_compose",
+        "name": "facet_by + normalize: K x 2 grid with per-facet independent differential; facet_by_bins/_quantiles raises (NF.3 workaround-hint lock) — Phase 13.33 M2 + FIX1",
+        "category": "NORMALIZE",
+        "tests": [
+            "test_normalize.py::TestNormalizeFacetBy::test_NF_1_k_by_2_grid",
+            "test_normalize.py::TestNormalizeFacetBy::test_NF_2_per_facet_independent_computation",
+            "test_normalize.py::TestNormalizeFacetBy::test_NF_3_facet_by_bins_with_normalize_raises_with_workaround_hint",
+        ],
+    },
+
+    # ── Phase 13.34.DF M2 — Robustness gap invariance tests ──
+
+    {
+        "id": "ROBUSTNESS.median_mad_sigma",
+        "name": "central='median' must use MAD-sigma error bars (Phase 13.33 CRR §11 pre-existing inconsistency lock; xfail until source-side fix) — Phase 13.34 M2",
+        "category": "ROBUSTNESS",
+        "tests": [
+            "test_phase_13_34_df_m2_robustness.py::TestMedianMADSigma::test_MED_1_median_uses_mad_sigma_for_errors",
+        ],
+    },
+    {
+        "id": "ROBUSTNESS.stats_schema",
+        "name": "Stats dict key contract per plot kind — locks against silent renames breaking ADF/RootInteractive — Phase 13.34 M2",
+        "category": "ROBUSTNESS",
+        "tests": [
+            "test_phase_13_34_df_m2_robustness.py::TestStatsDictSchema::test_STATS_profile_keys_present",
+            "test_phase_13_34_df_m2_robustness.py::TestStatsDictSchema::test_STATS_normalize_keys_single_curve",
+            "test_phase_13_34_df_m2_robustness.py::TestStatsDictSchema::test_STATS_normalize_keys_grouped",
+        ],
+    },
+    {
+        "id": "ROBUSTNESS.kwarg_composition",
+        "name": "Feature interaction tests — would have caught BUG-001/002/003 at delivery; locks 5 known kwarg interaction pairs — Phase 13.34 M2",
+        "category": "ROBUSTNESS",
+        "tests": [
+            "test_phase_13_34_df_m2_robustness.py::TestKwargComposition::test_X_facet_bins_with_auto_title",
+            "test_phase_13_34_df_m2_robustness.py::TestKwargComposition::test_X_facet_bins_with_subplot_titles",
+            "test_phase_13_34_df_m2_robustness.py::TestKwargComposition::test_X_facet_bins_with_group_by_composition",
+            "test_phase_13_34_df_m2_robustness.py::TestKwargComposition::test_X_normalize_with_facet_by_column_mode",
+            "test_phase_13_34_df_m2_robustness.py::TestKwargComposition::test_X_channel_mode_facet_with_auto_title",
         ],
     },
 ]

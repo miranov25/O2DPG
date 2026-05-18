@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-05-18 07:40 UTC
+**Generated:** 2026-05-18 10:53 UTC
 **Phase:** 13.15.DF
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -9,13 +9,13 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 7 | 10% |
-| ☑️ Smoke-only | 59 | 88% |
+| ✅ Verified | 34 | 38% |
+| ☑️ Smoke-only | 55 | 61% |
 | 🧨 Broken | 0 | 0% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **67** | |
-| **Total proof tests** | **314** | |
-| **Invariance tests** | **28** | |
+| **Total features** | **90** | |
+| **Total proof tests** | **398** | |
+| **Invariance tests** | **193** | |
 
 **Status key:**
 - ✅ Verified — has at least one invariance test (A ≡ B check)
@@ -97,22 +97,52 @@
 | | **COMPAT** | | |
 | ☑️ | **COMPAT.bool_expression** — Boolean expression input (==, !=, >, <, &, |, ~) on all plot functions | 11 | 0 |
 | | **CHANNEL** | | |
-| ☑️ | **CHANNEL.assignment** — Algorithm A: automatic visual-channel assignment for N data channels | 40 | 0 |
+| ☑️ | **CHANNEL.assignment** — Algorithm A: automatic visual-channel assignment for N data channels | 41 | 0 |
 | ☑️ | **CHANNEL.nested_band** — Nested-band detection (>=2 symmetric pairs, central optional) and rendering | 5 | 0 |
 | ☑️ | **CHANNEL.factored_legend** — Factored legend with section headers (sum-not-product entry count) | 4 | 0 |
-| ☑️ | **CHANNEL.selection_delta** — selection_delta channel (per-curve selection_vector) — AD-61, AD-66, AD-67 | 4 | 0 |
-| ☑️ | **CHANNEL.weights_delta** — weights_delta channel (per-curve weights_vector) — AD-61, AD-66, AD-67 | 4 | 0 |
-| ☑️ | **CHANNEL.compose_inner** — vector_compose='inner' — element-wise pairing (AD-62) | 4 | 0 |
-| ☑️ | **CHANNEL.compose_outer** — vector_compose='outer' — cross-product (AD-62) | 2 | 0 |
-| ☑️ | **CHANNEL.delta_facet_label** — Per-curve label management for selection_delta/weights_delta channels | 3 | 0 |
+| ✅ | **CHANNEL.selection_delta** — selection_delta channel (per-curve selection_vector) — AD-61, AD-66, AD-67 | 4 | 0 |
+| ✅ | **CHANNEL.weights_delta** — weights_delta channel (per-curve weights_vector) — AD-61, AD-66, AD-67 | 4 | 0 |
+| ✅ | **CHANNEL.compose_inner** — vector_compose='inner' — element-wise pairing (AD-62) | 4 | 0 |
+| ✅ | **CHANNEL.compose_outer** — vector_compose='outer' — cross-product (AD-62) | 2 | 0 |
+| ✅ | **CHANNEL.delta_facet_label** — Per-curve label management for selection_delta/weights_delta channels | 3 | 0 |
 | | **DATA** | | |
 | ☑️ | **DATA.nan_policy** — Optional NaN/inf filter with nan_policy parameter | 6 | 0 |
-| ☑️ | **DATA.counters** — Stats dict counters: n_input, n_filtered, n_inf_*, n_nan_* | 3 | 0 |
+| ☑️ | **DATA.counters** — Stats dict counters: n_input, n_filtered, n_inf_*, n_nan_* | 5 | 0 |
 | | **AUTORANGE** | | |
 | ☑️ | **AUTORANGE.hybrid** — Hybrid autorange (outlier-aware: robust + minmax combined) | 5 | 0 |
-| ☑️ | **AUTORANGE.minmax** — Minmax autorange strategy (backward compat preset) | 1 | 0 |
+| ☑️ | **AUTORANGE.minmax** — Minmax autorange strategy (backward compat preset) | 2 | 0 |
 | ☑️ | **AUTORANGE.percentile** — Percentile autorange strategies (percentile_99, percentile_95) | 1 | 0 |
-| 📋 | **AUTORANGE.diagnostics** — Stats keys autorange_used + autorange_strategy (AD-77) | 0 | 0 |
+| ☑️ | **AUTORANGE.diagnostics** — Stats keys autorange_used + autorange_strategy (AD-77) | 1 | 0 |
+| | **DATA** | | |
+| ✅ | **HIST.weights** — hist() weights= column or expression — Phase 13.27 Commit 2 FIX1 | 5 | 0 |
+| | **COLUMN_REF** | | |
+| ✅ | **COLUMN_REF.validation** — Column-reference parameter validation (Class-2 actionable errors) — Phase 13.30 | 12 | 0 |
+| | **FACET** | | |
+| ✅ | **FACET.column_mode** — facet_by accepts DataFrame column name (AD-78) — Phase 13.31 | 12 | 0 |
+| ✅ | **FACET.column_mode_binning** — facet_by_bins / facet_by_quantiles auto-binning of float column facets (AD-79) — Phase 13.32 Sub-fix 3 | 8 | 0 |
+| | **QUANTILE** | | |
+| ✅ | **PROFILE.quantiles_grouped** — Per-group quantile band/discrete rendering on profile() — Phase 13.32 Sub-fix 2 | 6 | 0 |
+| | **FACET** | | |
+| ✅ | **FACET.title_display_name** — Subplot titles show original facet_by name, never internal __dfdraw_facet_bin__ (BUG-001) — Phase 13.32 FIX1 | 1 | 0 |
+| ✅ | **FACET.auto_title** — auto_title=True produces fig.suptitle in faceted mode (BUG-002) — Phase 13.32 FIX1 | 2 | 0 |
+| ✅ | **FACET.numeric_bin_sort** — Facet bin panels in numeric order, not lexicographic (BUG-003) — Phase 13.32 FIX1 | 1 | 0 |
+| | **NORMALIZE** | | |
+| ✅ | **NORMALIZE.delta** — normalize='delta': v[0]-v[1] per bin with SEM error propagation — Phase 13.33 M1 | 3 | 0 |
+| ✅ | **NORMALIZE.ratio** — normalize='ratio': v[0]/v[1] with delta-method error, zero-denom mask — Phase 13.33 M1 | 3 | 0 |
+| ✅ | **NORMALIZE.log_ratio** — normalize='log_ratio': ln(v[0]/v[1]) with non-positive mean mask — Phase 13.33 M1 | 2 | 0 |
+| ✅ | **NORMALIZE.pull** — normalize='pull': (v[0]-v[1])/sigma with +/-1sigma/+/-2sigma bands (AD-82) — Phase 13.33 M1 | 2 | 0 |
+| ✅ | **NORMALIZE.callable** — normalize=callable: user-supplied f(stats_0, stats_1) -> (values, errors) — Phase 13.33 M1 | 2 | 0 |
+| ✅ | **NORMALIZE.layout** — normalize_layout: overlay+diff (2-panel) vs diff_only (single panel) — Phase 13.33 M1 | 3 | 0 |
+| ✅ | **NORMALIZE.sign_convention** — AD-80 sign convention: vector[0]=signal, vector[1]=reference; delta=signal-reference — Phase 13.33 M1 | 1 | 0 |
+| ✅ | **NORMALIZE.single_y_convention** — Single-Y + selection_vector + normalize forces vector_compose='outer' internally (§6 directive) — Phase 13.33 M1 | 2 | 0 |
+| ✅ | **NORMALIZE.backward_compat** — normalize=None preserves pre-Phase-13.33 behavior bit-identical — Phase 13.33 M1 | 1 | 0 |
+| ✅ | **NORMALIZE.validation** — normalize input validation: wrong vector count, invalid mode, same=True conflict — Phase 13.33 M1 | 3 | 0 |
+| ✅ | **NORMALIZE.group_by_compose** — group_by + normalize: per-group differential rendering — Phase 13.33 M2 | 3 | 0 |
+| ✅ | **NORMALIZE.facet_by_compose** — facet_by + normalize: K x 2 grid with per-facet independent differential; facet_by_bins/_quantiles raises (NF.3 workaround-hint lock) — Phase 13.33 M2 + FIX1 | 3 | 0 |
+| | **ROBUSTNESS** | | |
+| 📋 | **ROBUSTNESS.median_mad_sigma** — central='median' must use MAD-sigma error bars (Phase 13.33 CRR §11 pre-existing inconsistency lock; xfail until source-side fix) — Phase 13.34 M2 | 0 | 0 |
+| ✅ | **ROBUSTNESS.stats_schema** — Stats dict key contract per plot kind — locks against silent renames breaking ADF/RootInteractive — Phase 13.34 M2 | 3 | 0 |
+| ✅ | **ROBUSTNESS.kwarg_composition** — Feature interaction tests — would have caught BUG-001/002/003 at delivery; locks 5 known kwarg interaction pairs — Phase 13.34 M2 | 5 | 0 |
 
 ---
 
