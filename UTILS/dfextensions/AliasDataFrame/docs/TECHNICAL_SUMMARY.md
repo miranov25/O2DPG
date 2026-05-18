@@ -1,12 +1,20 @@
 # AliasDataFrame Technical Summary
 
-**Document ID:** `AliasDataFrame_Technical_Summary_v13_27_ADF_v1_6.md`  
-**Author:** Claude37 (AliasDataFrame Reviewer / Main Reviewer)  
-**Date:** 2026-05-14  
-**Version:** 1.6  
-**Phase:** 13.27.ADF (`read_tree` skip_branches) — base for active queue  
+**Document ID:** `AliasDataFrame_Technical_Summary_v13_28_ADF_v1_7.md`  
+**Author:** Claude36 (AliasDataFrame Coder, this revision); Claude37 (Main Reviewer, prior revisions)  
+**Date:** 2026-05-17  
+**Version:** 1.7  
+**Phase:** 13.28.ADF (`export_tree` LZ4 default) — base for active queue  
 **Audience:** All teams — architecture reviewers, cross-team coders (ORecoAI, RootInteractive, RDataFrameDSL, GBAI), and direct users  
 **Purpose:** Complete public API reference, data model, hierarchical data representation, dependencies, limitations
+
+**Revision notes (v1.7):** Phase 13.28.ADF + BUG_draw_silent_swallow:
+
+- Updated header: version 1.7, date 2026-05-17, phase target 13.28.ADF, document ID rolled to v13_28_ADF_v1_7
+- Updated §4.2 (`export_tree`): default `compression` changed from `uproot.ZLIB(level=1)` to `uproot.LZ4(level=1)`. Docstring + parameter description updated. Pre-A2 ZLIB files remain readable.
+- Updated §13.1 Bug Fixes: added **BUG_AliasDataFrame_20260517_draw_silent_swallow** (`c1f77b06`, P0 silent miscomputation, ✅ Fixed). Two-part fix: warnings.warn instead of bare `except Exception: pass`; drop_duplicates before subframe merge.
+- Test count delta: +4 invariance tests (S6, S7, S8, S9 in `tests/test_S6_draw_subframe_expression.py`). §1.4 Key Metrics table not touched — it tracks specific benchmark-run snapshots (2026-04-02), not live counts.
+- All v1.6 content retained
 
 **Revision notes (v1.6):** Phases 13.22 through 13.27, plus bug fixes and FIX1 queue:
 
@@ -370,7 +378,7 @@ class AliasDataFrame:
 ```python
     # ── ROOT TTree Export ──
     def export_tree(self, filename_or_file, treename='tree',
-                    dropAliasColumns=True, compression=uproot.ZLIB(level=1),
+                    dropAliasColumns=True, compression=uproot.LZ4(level=1),
                     columns=None):
         """
         Export to ROOT TTree via uproot. Requires uproot.
@@ -385,8 +393,11 @@ class AliasDataFrame:
         dropAliasColumns : bool, default True
             If True, exclude alias columns from export (only physical columns).
             Set False to include materialized aliases in output.
-        compression : uproot compression, default uproot.ZLIB(level=1)
-            ROOT compression algorithm and level
+        compression : uproot compression, default uproot.LZ4(level=1)
+            ROOT compression algorithm and level.
+            Changed from ZLIB(1) to LZ4(1) in Phase 13.28.ADF (commit `7ffae071`)
+            for ~3× faster compress/decompress at comparable ratio.
+            All ROOT 6.x readers support LZ4; pre-A2 ZLIB files remain readable.
         columns : list[str], optional
             Subset of columns to export. Default: all columns in .df
 
@@ -1474,6 +1485,7 @@ Vision: automatic conversion of C++ SOA (Structure of Arrays) table definitions 
 | BUG_AliasDataFrame_20260324_draw_subframe_resolution | — | `draw("Sub.col")` failed | — | ✅ Fixed |
 | BUG_AliasDataFrame_20260331_fill_value_dependency | P0 | fill_value skipped in batch dependency chain (7.4% NaN in production) | — | ✅ Fixed (`06d2d611`) |
 | BUG_AliasDataFrame_20260401_draw_lazy_compound | P1 | Aliases in abs()/sqrt() not auto-materialized by draw_lazy | materialize before draw | ✅ Fixed (`ef9d263c`) |
+| BUG_AliasDataFrame_20260517_draw_silent_swallow | P0 | `draw()` swallowed subframe resolution errors as misleading `UndefinedVariableError`; duplicate-index subframes caused Cartesian merge expansion | — | ✅ Fixed (`c1f77b06`, S6–S9) |
 | Phase 13.9.Fix1 polynomial persistence | P1 | registered_functions lost on export_tree/read_tree | Manual re-registration | ✅ Fixed (`189b7682` + fix1b) |
 | describe_aliases false BROKEN | P2 | Subframe columns reported as missing (cosmetic) | Aliases work when materialized | Open |
 | I2_6 | P2 | Chained subframe Numba/NumPy mismatch | Use single backend | Open |

@@ -1,7 +1,7 @@
 # AliasDataFrame Phase History
 
 > **Purpose**: Development history for architecture reviews and restart prompts.  
-> **Last Updated**: 2026-05-14  
+> **Last Updated**: 2026-05-17  
 > **Maintained By**: Marian Ivanov (miranov25)
 
 ## How to Use This File
@@ -377,6 +377,30 @@ New `skip_branches=[regex]` parameter on `read_tree()` — branches matching any
 
 **Production result (2026-05-14)**: 60M-row × 14-column TPC calibration file reduced to **2.30 GB physical** with dtype_overrides + skip_branches active. 745 MB additional savings identified via regex-pattern tightening (architect's own use case). Further reduction blocked by pandas BlockManager fragmentation — motivates Phase 14 ADFStore (PyArrow-backed storage).
 
+### Phase 13.28.ADF: `export_tree` Default Compression LZ4 (A2)
+**Dates**: 2026-05-16  
+**Status**: ✅ Merged  
+**Commit**: `7ffae071`  
+**Base**: `bbedd90b` (Phase 13.27.ADF close)
+
+One-line signature change to `export_tree`: default `compression=uproot.LZ4(level=1)` (was `uproot.ZLIB(level=1)`).
+
+**Rationale**: LZ4 ~3× faster compress/decompress vs ZLIB at comparable compression ratio. All ROOT 6.x readers support LZ4 natively. Pre-A2 ZLIB files remain readable (ROOT auto-detects compression algorithm per branch).
+
+**Implementation**: Single line change — keyword default in function signature at `AliasDataFrame.py:5391`. Body unchanged — `uproot.recreate(filename, compression=compression)` passes through the caller's choice; only the default value changed. Docstring updated to reflect new default.
+
+**Backward compatibility**:
+- New writes default to LZ4 (no caller code change needed)
+- Old ZLIB files read unchanged
+- Explicit `compression=uproot.ZLIB(level=1)` kwarg still works for any caller pinned to ZLIB
+- No invariance tests changed; no production code path altered
+
+**Tests**: No new tests added — parameter-default-only change; existing compression invariance tests already exercise both algorithms via explicit kwarg, plus the Phase 13.20.ADF metadata-batching tests round-trip `export_tree`/`read_tree` with the new default.
+
+**Production impact (estimated)**: ~20 s saving per O2DistAI pipeline run (export_tree called 5×/run; decompression on subsequent read_tree calls cumulatively faster). At 10 parallel groups per fill: ~3 minutes wall-time per fill. Roofline-aligned target — addresses the `P_lz4_decompress` vs `P_zlib_decompress` primitive gap identified in the ADF Phase 13.23 roofline scoping discussion.
+
+**Risk profile**: Low — single default value flip, all existing files remain readable, ROOT-native algorithm choice. The only behavior change is faster I/O on freshly-written files.
+
 ### Phase 13.25.DF FIX1: dfdraw Quantile Test-Quality + AD-52 Sentinel Fix
 **Dates**: 2026-05-14 (proposal drafted)  
 **Status**: 📋 Proposal v1.0 drafted by Claude37; awaiting architect approval to start Coder work  
@@ -399,6 +423,41 @@ Fix cycle against approved spec `PHASE_13_25_DF_v1.3_Proposal.md` (no re-litigat
 ---
 
 ## Bug Fixes
+
+### BUG_AliasDataFrame_20260517_draw_silent_swallow (S6–S9)
+**Dates**: 2026-05-17  
+**Status**: ✅ Fixed  
+**Commit**: `c1f77b06`  
+**Severity**: P0 — silent miscomputation (subframe merge failures hidden as misleading `UndefinedVariableError`) plus length-unstable joins on duplicate-index subframes
+
+**Problem**: Two failure modes in `draw()` subframe resolution, both producing wrong-looking output without surfacing the real cause:
+
+1. **Silent swallow of subframe-resolution exceptions.** Two `try/except Exception: pass` blocks (single-level subframe ref at `AliasDataFrame.py:11042`; multi-level at `:11057`) swallowed every exception raised during subframe lookup. Downstream `pandas.eval` then failed with `UndefinedVariableError` because the unresolved alias never got rewritten — the surfaced error pointed at the symptom (alias not in df), never at the cause (e.g., schema mismatch, missing index column, dtype-loss at join boundary).
+
+2. **Cartesian merge expansion on duplicate-index subframes.** `df_subset[index_cols].merge(sf_keys, on=index_cols, how='left')` did not deduplicate the subframe side before merging. Subframes with duplicate index entries (quantile-bin subframes; per-iteration coefficient tables before deduplication; certain `register_subframe` callers that don't pre-dedupe) produced row-count expansion → length-mismatch when the merged column was assigned back. Users saw silently-inflated downstream draw results before catching the row-count drift.
+
+**Root cause**: 
+- For (1): bare `pass` made every subframe-resolution failure indistinguishable. Conservative `try/except` placed defensively to keep draw resilient to schema mismatches, but the absence of any warning made debug intractable.
+- For (2): assumption that subframes are unique on their declared index columns. Holds for most subframes but not all — particularly not for QA/diagnostic subframes registered with multi-row-per-key intentional grouping.
+
+**Fix**: 
+1. Both `except Exception: pass` replaced with `except Exception as e: warnings.warn(f"[draw] Failed to resolve subframe ref '...': {e}")`. Real errors now surfaced as warnings; draw continues with best-effort resolution (preserves existing resilience while making cause visible).
+2. `sf_keys = sf_keys.drop_duplicates(subset=index_cols, keep='first')` inserted immediately before the merge. Subframes with duplicate index keys now produce length-stable joins (first occurrence wins, consistent with `set_subframe_fill` semantics).
+
+**Tests**: S6, S7, S8, S9 (4 invariance tests in `tests/test_S6_draw_subframe_expression.py`):
+- **S6**: `draw()` resolves dotted subframe ref inside arithmetic expression — calls public `adf.draw()` API (entry-point rule, Failure Mode #12)
+- **S7**: Same for selection arithmetic (`selection="Sub.col > 0"` patterns)
+- **S8**: Standalone dotted subframe ref still resolves — regression guard against the fix breaking pre-existing single-ref usage
+- **S9**: Duplicate index keys in subframe → no merge expansion (length-stable assertion: `len(result_df) == len(input_df)`)
+
+**Production impact**: Two classes of bug closed simultaneously:
+- Silent miscomputation (the duplicate-index expansion) previously produced silently inflated result sets in some O2DistAI calibration QA workflows — the kind of bias that takes weeks to detect (echoes the ADF parser bracket-bug pattern documented by O2DistAI coder feedback 2026-05-15)
+- Misleading-error class (the swallowed exception) routinely wasted developer debug time across multiple teams. The new `warnings.warn` surface gives the real exception text immediately.
+
+**Methodology notes**:
+- Both fixes are minimal and localized — the diagnostic-improvement fix (1) and the correctness fix (2) are independent and could ship separately if needed; bundled because both touch the same merge path.
+- S6/S9 are entry-point tests (call `adf.draw()` directly); S7/S8 are entry-point + regression guards. Pattern aligns with bug-fix-test entry-point rule.
+- Future work: production sites that depend on subframe-uniqueness (now defensively dedupe'd by draw) should declare uniqueness explicitly via `register_subframe(..., unique=True)` once that API lands — to convert "silent dedupe with warning" into "fail-loud on contract violation". Tracked as a candidate API enhancement, no commitment yet.
 
 ### BUG_AliasDataFrame_20260512_groupby_expression_materialization
 **Dates**: 2026-05-12 to 2026-05-13  
