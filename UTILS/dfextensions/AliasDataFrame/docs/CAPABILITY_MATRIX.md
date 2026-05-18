@@ -1,6 +1,6 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-05-14 10:27 UTC
+**Generated:** 2026-05-18 09:51 UTC
 **Phase:** 13.11.B
 **Taxonomy:** 47 features (PHASE_13_11_B approved)
 **Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)
@@ -14,8 +14,8 @@
 | 🧨 Broken | 4 | 8% |
 | 📋 Planned | 1 | 2% |
 | **Total features** | **47** | |
-| **Matched tests** | **1614** | |
-| **Invariance tests** | **177** | |
+| **Matched tests** | **1628** | |
+| **Invariance tests** | **191** | |
 
 **Unmatched tests:** 84 (not mapped to any feature)
 
@@ -73,7 +73,7 @@
 |--------|---------|------:|-----:|-----:|:---:|
 | 🧨 | **DRAW.execution** — draw() with auto-materialization | 62 | 60 | 1 | 12 |
 | ☑️ | **DRAW.batch** — draw_batch() & draw_figures() | 45 | 44 | 0 |  |
-| ✅ | **DRAW.subframe_resolution** — Subframe column resolution in draw | 35 | 35 | 0 | 2 |
+| ✅ | **DRAW.subframe_resolution** — Subframe column resolution in draw | 49 | 49 | 0 | 16 |
 | ✅ | **DRAW.compound_expr** — Lazy materialization of compound expressions | 13 | 13 | 0 | 2 |
 | ✅ | **DRAW.invariance** — Draw vs materialize invariance | 18 | 18 | 0 | 15 |
 
@@ -127,16 +127,16 @@
 - ❌ `test_K2_vector_draw_end_to_end.py::TestK2VectorDrawEndToEnd::test_K2_3_production_reproducer_mirror`
 
 ### COMP.roundtrip
-- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
 - ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
+- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
 
 ### BACK.invariance
 - ❌ `test_invariance_backend.py::TestInvarianceBackend::test_I2_6_chained_subframe_expressions_numba_vs_numpy`
 
 ### RDF.export
-- ❌ `test_AliasDataFrameRDF.py::TestTMemFileBranch::test_missing_keys_in_friend`
-- ❌ `test_AliasDataFrameRDF.py::TestRDataFrameFriendAccess::test_composite_index_friend`
 - ❌ `test_AliasDataFrameRDF.py::TestAddDefinesCollision::test_collision_from_friend_tree`
+- ❌ `test_AliasDataFrameRDF.py::TestRDataFrameFriendAccess::test_composite_index_friend`
+- ❌ `test_AliasDataFrameRDF.py::TestTMemFileBranch::test_missing_keys_in_friend`
 
 ## Unmatched Tests
 

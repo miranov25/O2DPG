@@ -214,6 +214,10 @@ FEATURES = [
          "test_I7_draw_path_invariance.py::TestI7DrawPathEquivalence::test_I7_2_draw_subframe_column_equals_explicit_alias",
          # BUG FIX 20260426 — index col collision in draw
          "test_S5_draw_index_col_collision.py",
+         # BUG_AliasDataFrame_20260517_draw_silent_swallow (commit c1f77b06)
+         "test_S6_draw_subframe_expression.py",
+         # BUG_AliasDataFrame_20260518_draw_subframe_alias_not_materialized (Phase A)
+         "test_S10_draw_subframe_alias.py",
      ]},
     {"id": "DRAW.compound_expr", "name": "Lazy materialization of compound expressions", "category": "DRAWING",
      "test_patterns": [

@@ -3090,7 +3090,8 @@ class AliasDataFrame:
         -------
         str or None
             The materialized column name on self.df (e.g., 'sf_col__sf_name'),
-            or None if sf_col is not present on the subframe's DataFrame.
+            or None if sf_col is not present on the subframe's DataFrame,
+            or if alias materialization fails.
         """
         sub_adf = entry['frame']
         index_cols = entry['index']
@@ -3106,7 +3107,18 @@ class AliasDataFrame:
         # Source column must exist on the subframe DataFrame.
         # For multi-level chains, the caller materialized it on the previous iteration.
         if sf_col not in sub_adf.df.columns:
-            return None
+            # BUG_20260518 Phase A: also try materializing if sf_col is an alias on the subframe.
+            # Phase B will fold this into the AST resolver consolidation.
+            if sf_col in sub_adf.aliases:
+                try:
+                    sub_adf.materialize_aliases(names=[sf_col])
+                except Exception as e:
+                    warnings.warn(
+                        f"[_scatter_subframe_column] Failed to materialize "
+                        f"subframe alias '{sf_col}' on '{sf_name}': {e}"
+                    )
+            if sf_col not in sub_adf.df.columns:
+                return None
         
         # ── Scatter block (was inline in _prepare_subframe_joins) ──
         # Check cache for precomputed join indices
@@ -11033,6 +11045,16 @@ function collapseDepth(maxD) {{
                             index_cols = entry['index']
                             if isinstance(index_cols, str):
                                 index_cols = [index_cols]
+                            # BUG_20260518 Phase A: materialize subframe alias on demand.
+                            # Phase B will fold this into the AST resolver consolidation.
+                            if col_name not in sf.df.columns and col_name in sf.aliases:
+                                try:
+                                    sf.materialize_aliases(names=[col_name])
+                                except Exception as e:
+                                    warnings.warn(
+                                        f"[draw] Failed to materialize "
+                                        f"subframe alias '{dot_ref}': {e}"
+                                    )
                             if col_name in sf.df.columns:
                                 refs_to_resolve.append((sf_name, col_name, dot_ref, flat_ref, index_cols))
                                 if method_suffix:
@@ -12057,6 +12079,16 @@ function collapseDepth(maxD) {{
                             if isinstance(index_cols, str):
                                 index_cols = [index_cols]
                             join_idx, missing = self._compute_join_indices(sf_name, index_cols)
+                            # BUG_20260518 Phase A: materialize subframe alias on demand.
+                            # Phase B will fold this into the AST resolver consolidation.
+                            if col_name not in sf.df.columns and col_name in sf.aliases:
+                                try:
+                                    sf.materialize_aliases(names=[col_name])
+                                except Exception as e:
+                                    warnings.warn(
+                                        f"[draw_batch] Failed to materialize "
+                                        f"subframe alias '{dot_ref}': {e}"
+                                    )
                             if col_name in sf.df.columns:
                                 if df_for_plot is self.df:
                                     df_for_plot = df_for_plot.copy()
@@ -12065,8 +12097,8 @@ function collapseDepth(maxD) {{
                                     subframe_replacements[f'{dot_ref}.{method_suffix}'] = f'{flat_ref}.{method_suffix}'
                                 else:
                                     subframe_replacements[dot_ref] = flat_ref
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            warnings.warn(f"[draw_batch] Failed to resolve subframe ref '{dot_ref}': {e}")
                 else:
                     # Multi-level: pre-materialize on self.df
                     try:
@@ -12082,8 +12114,8 @@ function collapseDepth(maxD) {{
                             subframe_replacements[f'{dot_ref_prefix}.{method_suffix}'] = f'{flat_col}.{method_suffix}'
                         else:
                             subframe_replacements[dot_ref_prefix] = flat_col
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        warnings.warn(f"[draw_batch] Failed to resolve subframe ref '{dot_ref_prefix}': {e}")
             
             # Rewrite all specs: replace Sub.col → Sub_col
             if subframe_replacements:
@@ -12357,14 +12389,24 @@ function collapseDepth(maxD) {{
                             index_cols = entry['index']
                             if isinstance(index_cols, str):
                                 index_cols = [index_cols]
+                            # BUG_20260518 Phase A: materialize subframe alias on demand.
+                            # Phase B will fold this into the AST resolver consolidation.
+                            if col_name not in sf.df.columns and col_name in sf.aliases:
+                                try:
+                                    sf.materialize_aliases(names=[col_name])
+                                except Exception as e:
+                                    warnings.warn(
+                                        f"[draw_figures] Failed to materialize "
+                                        f"subframe alias '{dot_ref}': {e}"
+                                    )
                             if col_name in sf.df.columns:
                                 refs_to_resolve.append((sf_name, col_name, dot_ref, flat_ref, index_cols))
                                 if method_suffix:
                                     subframe_replacements[f'{dot_ref}.{method_suffix}'] = f'{flat_ref}.{method_suffix}'
                                 else:
                                     subframe_replacements[dot_ref] = flat_ref
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            warnings.warn(f"[draw_figures] Failed to resolve subframe ref '{dot_ref}': {e}")
                 else:
                     # Multi-level: pre-materialize on self.df
                     try:
@@ -12380,8 +12422,8 @@ function collapseDepth(maxD) {{
                             subframe_replacements[f'{dot_ref_prefix}.{method_suffix}'] = f'{flat_col}.{method_suffix}'
                         else:
                             subframe_replacements[dot_ref_prefix] = flat_col
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        warnings.warn(f"[draw_figures] Failed to resolve subframe ref '{dot_ref_prefix}': {e}")
             
             if refs_to_resolve:
                 df_subset = df_subset.copy()
