@@ -10795,6 +10795,108 @@ function collapseDepth(maxD) {{
         alias_names = set(self.aliases.keys())
         return {c for c in tokens if c in alias_names}
 
+    def _ensure_vector_kwargs_aliases(self, kwargs: dict) -> None:
+        """Pre-materialize ADF aliases referenced in selection_vector,
+        weights_vector, and facet_by before forwarding to dfdraw.
+
+        Called by draw() at method entry, and by draw_batch() / draw_figures()
+        once per spec dict in their specs= argument.
+
+        Phase 13.35.ADF — Phase B marker: the regex tokenizer below should be
+        replaced by _analyze_expression() (AST-based, B1-validated) when the
+        resolver consolidation phase lands. Regex is acceptable here because
+        results are filtered against self.aliases.keys() — false positives
+        (Python builtins, numeric literals) are harmless no-ops.
+
+        Parameters
+        ----------
+        kwargs : dict
+            The kwargs dict (or per-spec dict) that will be forwarded to dfdraw.
+            Modified in-place only via self.df (column materialization);
+            kwargs itself unchanged.
+
+        Idempotent: if all referenced aliases are already in self.df.columns,
+        no work is performed.
+        """
+        import re as _re
+        needed: set = set()
+
+        # selection_vector / weights_vector: scan each expression for alias tokens
+        for kwarg_name in ('selection_vector', 'weights_vector'):
+            for expr in (kwargs.get(kwarg_name) or []):
+                if isinstance(expr, str):
+                    tokens = set(_re.findall(r'\b([a-zA-Z_]\w*)\b', expr))
+                    needed |= tokens & set(self.aliases.keys())
+
+        # facet_by: if it's a column-name string (not a channel enum), materialize
+        # Channel enums: 'group_by', 'vector', 'quantiles' (Phase 13.31.DF AD-78 §2).
+        # Hardcoded to avoid circular ADF->dfdraw import; values are stable.
+        _FACET_BY_CHANNEL_ENUMS = {'group_by', 'vector', 'quantiles'}
+        facet_by = kwargs.get('facet_by')
+        if (isinstance(facet_by, str)
+                and facet_by not in _FACET_BY_CHANNEL_ENUMS
+                and facet_by in self.aliases):
+            needed.add(facet_by)
+
+        missing = needed - set(self.df.columns)
+        if missing:
+            self.materialize_aliases(names=list(missing))
+
+    def _normalize_vector_compose_kwargs(self, kwargs: dict, expr: str = None) -> None:
+        """Auto-force vector_compose='outer' for single-Y + N-element vector kwargs.
+
+        Phase 13.35.ADF: ergonomic bridge for the architect's production
+        pattern (§1.4) where users pass single-Y + N-element selection_vector
+        (and/or weights_vector). Without this, dfdraw's inner-compose 3-axis
+        check (AD-67, dfdraw/drawer.py:757) raises:
+
+            ValueError: 3-axis inner requires equal lengths
+
+        on what is intended as valid production usage. The architect's actual
+        production call works only because normalize='delta' silently sets
+        vector_compose='outer' inside dfdraw — a fragile coupling.
+
+        Modifies kwargs (or spec dict) in-place. Idempotent and minimal:
+          - No-op if user already set vector_compose (explicit choice respected)
+          - No-op if neither selection_vector nor weights_vector has >1 items
+          - No-op if expr has >1 Y expressions (multi-Y handles inner natively)
+
+        Phase B marker: fold into AST resolver consolidation alongside
+        _ensure_vector_kwargs_aliases.
+
+        Parameters
+        ----------
+        kwargs : dict
+            Kwargs dict (or per-spec/per-plot dict) forwarded to dfdraw.
+            Mutated in-place when auto-force conditions match.
+        expr : str, optional
+            Plot expression. If None, taken from kwargs.get('expr', '').
+        """
+        # User opt-out: respect explicit vector_compose
+        if 'vector_compose' in kwargs:
+            return
+
+        n_sel = len(kwargs.get('selection_vector') or [])
+        n_w = len(kwargs.get('weights_vector') or [])
+
+        # No multi-element vector kwargs → no compose decision needed
+        if n_sel <= 1 and n_w <= 1:
+            return
+
+        # Resolve expr
+        if expr is None:
+            expr = kwargs.get('expr', '')
+        if not isinstance(expr, str):
+            return
+
+        # Count Y expressions: y-axis is everything before first ':'
+        y_part = expr.split(':', 1)[0] if ':' in expr else expr
+        n_y = len([s for s in y_part.split(',') if s.strip()]) if y_part else 1
+
+        # Single-Y + multi-selection or multi-weights → force outer
+        if n_y == 1:
+            kwargs['vector_compose'] = 'outer'
+
     def _eval_alias_on_df(self, alias_name: str, df: pd.DataFrame) -> pd.DataFrame:
         """
         Evaluate an alias expression on an arbitrary DataFrame.
@@ -10927,6 +11029,17 @@ function collapseDepth(maxD) {{
         # Resolve parameters with 3-level precedence
         effective_lazy = self._resolve_draw_param(lazy, 'lazy')
         effective_keep = self._resolve_draw_param(keep_materialized, 'keep_materialized')
+        
+        # Phase 13.35.ADF: pre-materialize aliases referenced in vector kwargs
+        # (selection_vector / weights_vector / facet_by). MUST be early — before
+        # any df_subset construction or DFDraw(df_subset) init — otherwise
+        # downstream copies of self.df won't see the materialized columns.
+        # Phase B will fold this into AST resolver consolidation.
+        self._ensure_vector_kwargs_aliases(kwargs)
+        # Phase 13.35.ADF: auto-force vector_compose='outer' for single-Y +
+        # N-element selection_vector/weights_vector. Closes the §1.4 production
+        # ergonomic gap (otherwise users hit dfdraw AD-67 ValueError).
+        self._normalize_vector_compose_kwargs(kwargs, expr=expr)
         
         # =================================================================
         # Phase 7.3: Auto-load branches in lazy mode
@@ -12019,6 +12132,22 @@ function collapseDepth(maxD) {{
                     print(f"Materializing {len(to_materialize)} aliases: {sorted(to_materialize)}")
                 self.materialize_aliases(names=list(to_materialize))
         
+        # Phase 13.35.ADF: pre-materialize aliases referenced in per-spec
+        # selection_vector / weights_vector / facet_by — before subframe
+        # resolution and dfdraw delegation. Phase B will fold this into
+        # AST resolver consolidation.
+        merged_defaults_v = {**(defaults or {}), **kwargs}
+        for _name, _spec in specs.items():
+            _merged_spec = {**merged_defaults_v, **_spec}
+            self._ensure_vector_kwargs_aliases(_merged_spec)
+            # Phase 13.35.ADF: auto-force vector_compose='outer' on the
+            # ORIGINAL spec (not merged) so dfdraw.draw_batch sees it per-spec.
+            # Follows existing in-place spec mutation pattern (subframe
+            # replacement loop at line 12121).
+            self._normalize_vector_compose_kwargs(
+                _spec, expr=_merged_spec.get('expr', _name)
+            )
+        
         # =================================================================
         # Subframe column resolution for draw_batch
         # Same logic as draw() — detect Subframe.column patterns across
@@ -12305,6 +12434,22 @@ function collapseDepth(maxD) {{
                 if verbose:
                     print(f"[draw_figures] Materializing {len(to_materialize)} aliases")
                 self.materialize_aliases(names=list(to_materialize))
+        
+        # Phase 13.35.ADF: pre-materialize aliases referenced in per-plot
+        # selection_vector / weights_vector / facet_by — before df_subset
+        # construction in PHASE 4 and dfdraw delegation. Phase B will fold
+        # this into AST resolver consolidation.
+        for _fig_spec in specs:
+            for _plot_spec in _fig_spec.get('plots', []):
+                if isinstance(_plot_spec, str):
+                    continue  # short-form 'column' — no vector kwargs possible
+                _merged_plot = {**merged_defaults, **_plot_spec}
+                self._ensure_vector_kwargs_aliases(_merged_plot)
+                # Phase 13.35.ADF: auto-force vector_compose='outer' on the
+                # ORIGINAL plot spec so dfdraw sees it per-plot.
+                self._normalize_vector_compose_kwargs(
+                    _plot_spec, expr=_merged_plot.get('expr', '')
+                )
         
         # ═══════════════════════════════════════════════════════════════════
         # PHASE 4: Prepare DataFrame (with entry selection if specified)

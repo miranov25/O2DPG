@@ -200,6 +200,8 @@ FEATURES = [
          # Phase 13.19.ADF.FIX1 — vector draw kwarg forwarding
          "test_K1_vector_draw_kwarg_diagnostic.py",
          "test_K2_vector_draw_end_to_end.py",
+         # PHASE_13_35_ADF — vector kwargs alias pre-materialization
+         "test_V1_vector_kwargs_alias_materialization.py",
      ]},
     {"id": "DRAW.batch", "name": "draw_batch() & draw_figures()", "category": "DRAWING",
      "test_patterns": [
