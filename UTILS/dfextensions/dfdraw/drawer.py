@@ -1729,6 +1729,53 @@ class DFDraw:
         if title is not None:
             (ax_top if ax_top is not None else ax_diff).set_title(title)
 
+        # Phase 13.34.DF FIX1 BUG-010: figure-level suptitle when auto_title=True
+        # for normalize= single-curve path. Same bug class as Phase 13.32 FIX1
+        # BUG-002 (faceted path); different dispatcher.
+        # Pattern copied from BUG-002 fix in _dispatch_faceted_render
+        # (drawer.py:2736-2774). Verifications applied:
+        #   - dispatcher local vars: y_list/x_list (not y_expr/x_expr),
+        #     passthrough (not plot_kwargs), selection is explicit arg.
+        #   - group_by=None (single-curve normalize has no group_by param).
+        #   - top=0.92 (matches BUG-002, not 0.88 from initial bug report).
+        #   - _auto_title.py:97 return dict keys: 'main'/'sub' (no 'title').
+        _auto_title_val = passthrough.get('auto_title', False)
+        if _auto_title_val and not title:
+            try:
+                from .plots._auto_title import (
+                    parse_auto_title_parts, build_auto_title, resolve_auto_title
+                )
+                _at = resolve_auto_title(_auto_title_val)
+                if _at:
+                    parts = parse_auto_title_parts(_at)
+                    _y_str = (y_list if isinstance(y_list, str)
+                              else (str(y_list[0]) if y_list else ''))
+                    _x_str = (x_list if isinstance(x_list, str)
+                              else (str(x_list[0]) if x_list else ''))
+                    td = build_auto_title(
+                        _x_str, _y_str,
+                        group_by=None,  # no group_by in single-curve normalize
+                        selection=selection,
+                        weights=None,
+                        parts=parts,
+                    )
+                    _main = td.get('main', '')
+                    _sub = td.get('sub')
+                    fig.suptitle(
+                        f"{_main}\n{_sub}" if _sub else _main,
+                        fontsize=get_style_value("axes.titlesize", 14),
+                    )
+                    plt.subplots_adjust(top=0.92)
+            except Exception:
+                # Failsafe — same defensive pattern as BUG-002 fix.
+                _y_str = (y_list if isinstance(y_list, str)
+                          else f"[{','.join(map(str, y_list))}]")
+                _x_str = (x_list if isinstance(x_list, str)
+                          else str(x_list[0] if x_list else ''))
+                fig.suptitle(f"{_y_str} vs {_x_str}",
+                             fontsize=get_style_value("axes.titlesize", 14))
+                plt.subplots_adjust(top=0.92)
+
         # --- 9. Build stats dict (M1 scope per v1.1 §7) ------------------------
         # Drop profile_data from user-facing stats — internal-only.
         # Provide normalize-specific keys per the AD-81 stats contract.
@@ -2031,6 +2078,46 @@ class DFDraw:
         if title is not None:
             (ax_top if ax_top is not None else ax_diff).set_title(title)
 
+        # Phase 13.34.DF FIX1 BUG-010: figure-level suptitle for normalize+group_by.
+        # Same pattern as fix in _dispatch_normalize_render (single-curve) and
+        # in _dispatch_faceted_render (BUG-002). Difference: group_by IS a
+        # parameter of this dispatcher, so pass it to build_auto_title.
+        _auto_title_val = passthrough.get('auto_title', False)
+        if _auto_title_val and not title:
+            try:
+                from .plots._auto_title import (
+                    parse_auto_title_parts, build_auto_title, resolve_auto_title
+                )
+                _at = resolve_auto_title(_auto_title_val)
+                if _at:
+                    parts = parse_auto_title_parts(_at)
+                    _y_str = (y_list if isinstance(y_list, str)
+                              else (str(y_list[0]) if y_list else ''))
+                    _x_str = (x_list if isinstance(x_list, str)
+                              else (str(x_list[0]) if x_list else ''))
+                    td = build_auto_title(
+                        _x_str, _y_str,
+                        group_by=group_by,
+                        selection=selection,
+                        weights=None,
+                        parts=parts,
+                    )
+                    _main = td.get('main', '')
+                    _sub = td.get('sub')
+                    fig.suptitle(
+                        f"{_main}\n{_sub}" if _sub else _main,
+                        fontsize=get_style_value("axes.titlesize", 14),
+                    )
+                    plt.subplots_adjust(top=0.92)
+            except Exception:
+                _y_str = (y_list if isinstance(y_list, str)
+                          else f"[{','.join(map(str, y_list))}]")
+                _x_str = (x_list if isinstance(x_list, str)
+                          else str(x_list[0] if x_list else ''))
+                fig.suptitle(f"{_y_str} vs {_x_str}",
+                             fontsize=get_style_value("axes.titlesize", 14))
+                plt.subplots_adjust(top=0.92)
+
         # --- 11. Build stats dict (M2 grouped contract) -----------------------
         stats_dict: Dict[str, Any] = {
             'normalize_mode': normalize if isinstance(normalize, str) else 'callable',
@@ -2293,6 +2380,49 @@ class DFDraw:
         # Figure-level title spans all facets
         if title is not None:
             fig.suptitle(title)
+
+        # Phase 13.34.DF FIX1 BUG-010: figure-level suptitle for normalize+facet_by.
+        # Same pattern as fixes in _dispatch_normalize_render and
+        # _dispatch_normalize_grouped_render. Note: this dispatcher ALREADY
+        # had fig.suptitle(title) for explicit title (line above) — auto_title
+        # block runs only when title is None. group_by=None: each facet is its
+        # own panel, facet identity is in subplot titles via subplot_titles,
+        # not folded into the figure-level suptitle.
+        _auto_title_val = passthrough.get('auto_title', False)
+        if _auto_title_val and title is None:
+            try:
+                from .plots._auto_title import (
+                    parse_auto_title_parts, build_auto_title, resolve_auto_title
+                )
+                _at = resolve_auto_title(_auto_title_val)
+                if _at:
+                    parts = parse_auto_title_parts(_at)
+                    _y_str = (y_list if isinstance(y_list, str)
+                              else (str(y_list[0]) if y_list else ''))
+                    _x_str = (x_list if isinstance(x_list, str)
+                              else (str(x_list[0]) if x_list else ''))
+                    td = build_auto_title(
+                        _x_str, _y_str,
+                        group_by=None,  # facet_by is in subplot titles, not figure title
+                        selection=selection,
+                        weights=None,
+                        parts=parts,
+                    )
+                    _main = td.get('main', '')
+                    _sub = td.get('sub')
+                    fig.suptitle(
+                        f"{_main}\n{_sub}" if _sub else _main,
+                        fontsize=get_style_value("axes.titlesize", 14),
+                    )
+                    plt.subplots_adjust(top=0.92)
+            except Exception:
+                _y_str = (y_list if isinstance(y_list, str)
+                          else f"[{','.join(map(str, y_list))}]")
+                _x_str = (x_list if isinstance(x_list, str)
+                          else str(x_list[0] if x_list else ''))
+                fig.suptitle(f"{_y_str} vs {_x_str}",
+                             fontsize=get_style_value("axes.titlesize", 14))
+                plt.subplots_adjust(top=0.92)
 
         # --- 8. Stats dict ----------------------------------------------------
         stats_dict: Dict[str, Any] = {
@@ -3866,7 +3996,12 @@ class DFDraw:
                     'title', 'xlabel', 'ylabel',
                     'weights', 'nan_policy',
                     'group_by', 'facet_by', 'facet_by_bins', 'facet_by_quantiles',
-                    'auto_title', 'same', 'return_data', 'min_entries',
+                    # Phase 13.34.DF FIX1 BUG-010: 'auto_title' REMOVED from _consumed.
+                    # The 3 normalize dispatchers (_dispatch_normalize_render,
+                    # _grouped_render, _faceted_render) now read auto_title from
+                    # **passthrough to handle the figure-level suptitle, matching
+                    # the Phase 13.32 FIX1 BUG-002 pattern in _dispatch_faceted_render.
+                    'same', 'return_data', 'min_entries',
                     'stats', 'stat_fields', 'top_k', 'group_by_bins',
                     'group_by_quantiles', 'sort_groups', 'ax', 'save',
                     'quantiles', 'quantile_mode', 'quantile_style',
