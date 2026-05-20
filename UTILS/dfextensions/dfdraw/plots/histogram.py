@@ -288,7 +288,26 @@ def draw_hist(
         linewidth = get_style_value("hist.linewidth", 1.0)
     # Phase 13.12.DF v1.2: auto_title from style if not set per-call
     auto_title = resolve_auto_title(auto_title)
-    
+
+    # Phase 13.36.DF: pop 'marker' from kwargs BEFORE any rendering path.
+    # 'marker' flows in here via _HIST_FORWARDED_NAMES (Phase 13.36 added it
+    # to the tuple). matplotlib's ax.hist() does NOT accept marker — would
+    # raise AttributeError on every hist render (vector path, non-grouped
+    # path, grouped path). The pop must happen at draw_hist top, not deeper
+    # inside _draw_hist_grouped (which is only reached for the grouped path).
+    # markersize is NOT in _HIST_FORWARDED_NAMES (Sonet51 P1 from v1.2 review)
+    # so it cannot arrive here via the vector path. No pop needed for it.
+    _user_marker = kwargs.pop('marker', None)
+    if _user_marker is not None:
+        import warnings
+        _ht_hint = histtype if histtype is not None else 'bar'
+        warnings.warn(
+            f"marker={_user_marker!r} has no effect on histograms "
+            f"(histtype={_ht_hint!r} — ax.hist does not render markers). "
+            f"Use color= to distinguish groups instead.",
+            UserWarning, stacklevel=3
+        )
+
     # Create figure if needed
     if ax is None:
         figsize = get_style_value("figure.figsize", (8, 6))
@@ -469,6 +488,12 @@ def draw_hist(
             bin_edges=shared_edges,
             hist_norm=hist_norm,
             min_entries=min_entries,
+            # Phase 13.36.DF: forward user color from draw_hist's local variable
+            # (consumed by explicit signature at line ~157, NOT in **kwargs).
+            # Without this, the user's color= silently no-ops in the grouped path
+            # (v1.0 P1-A pattern). marker= still flows through **kwargs to
+            # _draw_hist_grouped where it's popped + warned.
+            _user_color=color,
             density=density, weights=_hist_weights,
             alpha=alpha, histtype=histtype, edgecolor=edgecolor,
             linewidth=linewidth,
@@ -530,14 +555,23 @@ def _draw_hist_grouped(
     bin_edges: Optional[np.ndarray] = None,   # Phase 13.35.DF: shared edges from full dataset
     hist_norm: Optional[str] = None,          # Phase 13.35.DF: None | "probability" | "density"
     min_entries: int = 0,                     # Phase 13.35.DF: skip groups below threshold
+    # Phase 13.36.DF: user color override (None = use per-group palette cycle).
+    # 'color' is consumed by draw_hist()'s explicit signature — must be passed
+    # as a named param from there (not via **kwargs which doesn't contain it).
+    _user_color: Optional[str] = None,
     **hist_kwargs
 ) -> int:
     """Draw grouped/overlaid histograms.
 
     Phase 13.35.DF: extended for float group_by binning + per-group normalization.
+    Phase 13.36.DF: extended for user color override + marker UserWarning.
     Returns the number of groups actually rendered (post min_entries filter).
     """
     import matplotlib.pyplot as plt
+
+    # Phase 13.36.DF: 'marker' is popped earlier in draw_hist() body, so it
+    # cannot arrive here in hist_kwargs. The UserWarning fires once at the
+    # draw_hist level regardless of grouped/non-grouped routing.
 
     # Phase 13.35.DF: pop 'weights' from hist_kwargs — the grouped path uses
     # per-group hist_norm weights (from _group_weights), not the routing
@@ -564,6 +598,17 @@ def _draw_hist_grouped(
     # Use shared edges if provided; fall back to matplotlib auto-bin (or kwarg)
     bins_arg = bin_edges if bin_edges is not None else hist_kwargs.pop('bins', 100)
 
+    # Phase 13.36.DF: warn ONCE per call when user color= makes all groups
+    # indistinguishable. Fires before either render branch.
+    if _user_color is not None and len(groups) > 1:
+        import warnings
+        warnings.warn(
+            f"color={_user_color!r} applied uniformly to all {len(groups)} groups. "
+            f"Groups will be indistinguishable by color. "
+            f"Omit color= to use per-group colors (default behavior).",
+            UserWarning, stacklevel=3
+        )
+
     if stacked:
         # One-pass loop: build data_list, labels, AND surviving_colors in lockstep
         # so all three stay aligned when min_entries filters drop groups.
@@ -573,6 +618,8 @@ def _draw_hist_grouped(
         # P3 (color-shift) also fixed here: pre-Phase 13.35.DF, colors[:M] gave
         # sequential tab10 colors, not the original-index color per surviving
         # group; surviving_colors[i] preserves the original colors[i] mapping.
+        # Phase 13.36.DF: when _user_color is set, surviving_colors becomes
+        # uniform (user wants all groups same color — already warned above).
         data_list, labels, surviving_colors = [], [], []
         for i, g in enumerate(groups):
             d = df[df[group_by] == g][x].dropna().values.astype(float)
@@ -582,7 +629,10 @@ def _draw_hist_grouped(
                 # _format_interval_label is defined in profile.py and NOT
                 # imported here. (v1.1 P1-A from review panel.)
                 labels.append(str(g))
-                surviving_colors.append(colors[i])
+                # Phase 13.36.DF: user override > palette.
+                surviving_colors.append(
+                    colors[i] if _user_color is None else _user_color
+                )
         if not data_list:
             return 0
         ax.hist(data_list, bins=bins_arg, label=labels,
@@ -592,6 +642,7 @@ def _draw_hist_grouped(
         # Overlaid histograms — one ax.hist call per surviving group.
         # colors[i] preserves original-index color when groups are skipped
         # (overlaid branch was already correct in baseline; documented for parity).
+        # Phase 13.36.DF: user override > palette per group.
         n_rendered = 0
         for i, group in enumerate(groups):
             # BUG_dfdraw_20260505: cast to float for boolean expressions
@@ -599,9 +650,11 @@ def _draw_hist_grouped(
             if len(group_data) < min_entries:
                 continue
             weights = _group_weights(group_data, bin_edges, hist_norm)
+            # Phase 13.36.DF: user override > palette
+            group_color = colors[i] if _user_color is None else _user_color
             # Label via str(group) — not _format_interval_label. (v1.1 P1-A)
             ax.hist(group_data, bins=bins_arg,
-                    label=str(group), color=colors[i],
+                    label=str(group), color=group_color,
                     weights=weights, **hist_kwargs)
             n_rendered += 1   # count post-skip (v1.1 P1-C from review panel)
         if n_rendered > 0:

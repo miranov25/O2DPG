@@ -576,6 +576,10 @@ class DFDraw:
         'vector_compose', 'delta_facet',
         # Phase 13.33.DF: Normalized differential profiles (AD-80/81/82)
         'normalize', 'normalize_layout',
+        # Phase 13.36.DF: user style override kwargs (BUG-013 fix).
+        # draw_profile() has all 3 as explicit params at lines 162-164;
+        # adding to FORWARDED_NAMES lets vector-dispatch path forward them.
+        'marker', 'color', 'markersize',
     )
 
     _HIST_FORWARDED_NAMES = (
@@ -601,6 +605,16 @@ class DFDraw:
         'group_by_bins', 'group_by_quantiles',
         'hist_norm',
         'min_entries',
+        # Phase 13.36.DF: user style override kwargs (BUG-013 fix).
+        # draw_hist() has 'color' as explicit param (consumed by signature);
+        # 'marker' is NOT explicit — flows through **kwargs to _draw_hist_grouped()
+        # where it gets popped + a UserWarning is issued (markers are meaningless
+        # for histograms).
+        # NOTE: 'markersize' deliberately NOT added — draw_hist() has no
+        # markersize explicit param, so adding it would let it flow to ax.hist()
+        # via vector dispatch and crash (matplotlib rejects markersize). Sonet51
+        # P1 from v1.2 review.
+        'marker', 'color',
     )
 
     _SCATTER_FORWARDED_NAMES = (
@@ -3190,6 +3204,16 @@ class DFDraw:
         group_by_quantiles: Optional[int] = None,
         hist_norm: Optional[str] = None,
         min_entries: int = 0,
+        # Phase 13.36.DF: user style overrides for group_by path (BUG-013 fix).
+        # color applies uniformly to all groups. marker is consumed inside
+        # _draw_hist_grouped() with a UserWarning (matplotlib's ax.hist does
+        # not render markers — markers are meaningless for histograms).
+        # NOTE: 'markersize' deliberately absent — draw_hist() has no
+        # corresponding draw_hist() explicit param; adding it to
+        # _HIST_FORWARDED_NAMES would crash ax.hist via vector dispatch.
+        # See PHASE_13_36_DF_v1_2_Proposal §3.3 + Sonet51 P1.
+        color: Optional[str] = None,
+        marker: Optional[str] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -3315,11 +3339,18 @@ class DFDraw:
         
         # Phase 13.13.DF: Inject color and label for same=True
         # Phase 13.16.DF: _suppress_color_cycle flag (P1-2)
+        # Phase 13.36.DF: color is now explicit param. Two changes:
+        # (1) Assign to local `color`, not `kwargs['color']` (collision with
+        #     explicit forwarding to draw_hist below).
+        # (2) Skip auto-color when group_by is active — same rationale as
+        #     DFDraw.profile() (preserves effective pre-13.36 behavior where
+        #     auto-color was silently dropped in the grouped path).
         _suppress_color_cycle = kwargs.pop('_suppress_color_cycle', False)
         save_auto_title = auto_title
         if same:
-            if 'color' not in kwargs and not _suppress_color_cycle:
-                kwargs['color'] = self._get_next_color()
+            if (color is None and not _suppress_color_cycle
+                    and group_by is None):
+                color = self._get_next_color()
             if 'label' not in kwargs and group_by is None:
                 kwargs['label'] = self._auto_label(col_expr)
             # Suppress title handling — we do it in _handle_same_post
@@ -3408,6 +3439,12 @@ class DFDraw:
                 group_by_quantiles=group_by_quantiles,
                 hist_norm=hist_norm,
                 min_entries=min_entries,
+                # Phase 13.36.DF: user style overrides (color → draw_hist;
+                # marker flows via **kwargs after FORWARDED_NAMES, popped at
+                # _draw_hist_grouped first line). Without explicit forward,
+                # consumed by DFDraw.hist signature and lost.
+                color=color,
+                marker=marker,
                 **kwargs
             )
             axes = ax
@@ -3771,6 +3808,13 @@ class DFDraw:
         # PHASE_13_33_DF_v1_1_Proposal_NormalizedDifferentialProfiles.md.
         normalize: Optional[Union[str, "callable"]] = None,
         normalize_layout: str = "overlay+diff",
+        # Phase 13.36.DF: user style overrides for group_by path (BUG-013 fix).
+        # When passed, applies uniformly to ALL groups in the call (overrides
+        # the per-group auto-cycle). None = use auto-cycle (default).
+        # See PHASE_13_36_DF_v1_2_Proposal_UserStyleOverride.md.
+        color: Optional[str] = None,
+        marker: Optional[str] = None,
+        markersize: Optional[float] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -4119,11 +4163,22 @@ class DFDraw:
         
         # Phase 13.13.DF: Inject color and label for same=True
         # Phase 13.16.DF: _suppress_color_cycle flag (P1-2)
+        # Phase 13.36.DF: color is now explicit param of DFDraw.profile().
+        # Two changes vs pre-13.36:
+        # (1) Assign auto-color to local `color`, not `kwargs['color']`
+        #     (would collide with explicit forwarding at line ~4262).
+        # (2) Skip auto-color injection when group_by is active. Pre-13.36
+        #     dropped auto-color silently in the grouped path; post-13.36
+        #     it would flow through and force all groups uniform, defeating
+        #     the per-group color cycle. The cycle already distinguishes
+        #     groups; same=True overlay distinguishes via marker (cycle or
+        #     user-passed). This preserves the effective pre-13.36 behavior.
         _suppress_color_cycle = kwargs.pop('_suppress_color_cycle', False)
         save_auto_title = auto_title
         if same:
-            if 'color' not in kwargs and not _suppress_color_cycle:
-                kwargs['color'] = self._get_next_color()
+            if (color is None and not _suppress_color_cycle
+                    and group_by is None):
+                color = self._get_next_color()
             if 'label' not in kwargs and group_by is None:
                 kwargs['label'] = self._auto_label(y_expr, x_expr)
             # Suppress title — handled in _handle_same_post
@@ -4218,6 +4273,11 @@ class DFDraw:
                 quantiles=quantiles, central=central, quantile_mode=quantile_mode,
                 # Phase 13.28.DF: NaN/inf filter policy
                 nan_policy=nan_policy,
+                # Phase 13.36.DF: user style overrides — all three forwarded
+                # from DFDraw.profile() explicit signature. draw_profile() has
+                # all three as explicit params at lines 162-164. Without these,
+                # consumed by DFDraw.profile() signature and lost.
+                color=color, marker=marker, markersize=markersize,
                 **kwargs
             )
             axes = ax

@@ -308,6 +308,16 @@ def draw_profile(
         context="profile",
     )
 
+    # Phase 13.36.DF: capture user-explicit marker/markersize BEFORE the style
+    # fill-in below (which sets marker='o', markersize=6 when user passed None).
+    # We need to distinguish "user explicitly passed marker='s'" from "user
+    # passed nothing; style filled in default 'o'". The grouped path uses
+    # these to decide between uniform-override vs per-group cycle.
+    # color is NOT filled in by style (matplotlib handles None directly).
+    _ud_user_marker = marker          # None or user's value
+    _ud_user_markersize = markersize  # None or user's value
+    _ud_user_color = color            # None or user's value
+
     # Get style defaults
     if bins is None:
         bins = get_style_value("hist.bins", 50)
@@ -485,8 +495,20 @@ def draw_profile(
         # discrete lines per group color; see _draw_profile_grouped docstring.
         profile_data_list, _per_group_stats = _draw_profile_grouped(
             df_filtered, x, y, ax, group_col, top_k,
+            # Phase 13.36.DF: forward user style overrides as named params
+            # (BUG-013 fix). The user's marker/markersize/color values live in
+            # draw_profile()'s LOCAL VARIABLES — but the style fill-in above
+            # at lines 314-317 replaces None with style defaults BEFORE this
+            # call. Use the _ud_user_* captures (None when user passed nothing)
+            # to correctly distinguish explicit-pass from style-fill.
+            _user_marker=_ud_user_marker,
+            _user_markersize=_ud_user_markersize,
+            _user_color=_ud_user_color,
             bins=bins, x_range=_used_xrange, error=error,
-            marker=marker, markersize=markersize, capsize=capsize,
+            # Phase 13.36.DF: marker= and markersize= REMOVED from this call.
+            # They are now forwarded via _user_marker / _user_markersize above.
+            # The previous pops at lines 984-985 are also deleted (nothing to pop).
+            capsize=capsize,
             linestyle=linestyle, linewidth=linewidth,
             min_entries=min_entries,
             sort_groups=sort_groups,
@@ -913,6 +935,13 @@ def _draw_profile_grouped(
     quantile_pair: Optional[tuple] = None,
     quantile_list: Optional[list] = None,
     quantile_style: Optional[str] = None,
+    # Phase 13.36.DF: user style overrides (BUG-013 fix).
+    # None = "user did not pass" (matches matplotlib default-color semantics).
+    # Non-None = apply uniformly to all groups, override the auto-cycle.
+    # See module-level docstring for design rationale.
+    _user_marker: Optional[str] = None,
+    _user_markersize: Optional[float] = None,
+    _user_color: Optional[str] = None,
     **profile_kwargs
 ) -> tuple:
     """
@@ -980,9 +1009,13 @@ def _draw_profile_grouped(
     x_range = profile_kwargs.pop('x_range', None)
     error = profile_kwargs.pop('error', 'sem')
     linewidth = profile_kwargs.get('linewidth', 1.5)
-    # Remove marker/markersize from kwargs - we use fmt and dedicated markers
-    profile_kwargs.pop('marker', None)
-    profile_kwargs.pop('markersize', None)
+    # Phase 13.36.DF: pops for 'marker' and 'markersize' DELETED. These values
+    # are now forwarded as _user_marker / _user_markersize named params from
+    # draw_profile() (the local variables where the user's values live after
+    # consumption by draw_profile()'s explicit signature). The call site at
+    # line 489 no longer passes marker=marker / markersize=markersize.
+    # Both vector and non-vector paths route the values through _user_* params.
+    # → Nothing reaches profile_kwargs to pop.
 
     # Phase 13.12.DF F1: Collect profile data
     profile_data_list = [] if return_data else None
@@ -1028,7 +1061,22 @@ def _draw_profile_grouped(
         # Phase 13.12.DF F2: Apply min_entries filter for plotting
         plot_mask = bin_counts >= min_entries
 
-        group_color = palette(i % 10)
+        # Phase 13.36.DF: user color override > palette cycle.
+        # None = "user did not pass" (matches matplotlib default-color semantics).
+        group_color = (palette(i % 10)
+                       if _user_color is None
+                       else _user_color)
+
+        # Phase 13.36.DF: warn ONCE per call (i == 0) when color= makes all
+        # groups indistinguishable. Architect decision 2026-05-20.
+        if i == 0 and _user_color is not None and len(groups) > 1:
+            import warnings
+            warnings.warn(
+                f"color={_user_color!r} applied uniformly to all {len(groups)} groups. "
+                f"Groups will be indistinguishable by color. "
+                f"Omit color= to use per-group colors (default behavior).",
+                UserWarning, stacklevel=4
+            )
 
         # Phase 13.32.DF Sub-fix 2: per-group quantile rendering BEFORE the
         # central line so the central line stays visually on top.
@@ -1073,10 +1121,16 @@ def _draw_profile_grouped(
                 per_group_stats[group]['quantiles_per_bin'] = _q_all
 
         # Central line (mean or median) — always rendered last so it sits on top
+        # Phase 13.36.DF: user marker/markersize override > cycle.
+        # None on either passes through to matplotlib defaults (correct).
+        group_marker = (markers[i % len(markers)]
+                        if _user_marker is None
+                        else _user_marker)
         ax.errorbar(
             bin_centers[plot_mask], bin_means[plot_mask], yerr=bin_errors[plot_mask],
-            fmt=markers[i % len(markers)],
+            fmt=group_marker,
             color=group_color,
+            markersize=_user_markersize,   # None → matplotlib default
             # If quantiles already added a legend entry for this group, suppress
             # the duplicate central-line legend entry by setting label=None.
             label=(None if quantiles is not None and quantile_list is not None
