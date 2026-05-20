@@ -143,6 +143,43 @@ def _compute_robust_stats_1d(data, groups, suffix=''):
     return result
 
 
+def _group_weights(
+    x_group: np.ndarray,
+    bin_edges: Optional[np.ndarray],
+    hist_norm: Optional[str],
+) -> Optional[np.ndarray]:
+    """Per-group histogram weights for hist_norm normalization (Phase 13.35.DF).
+
+    Returns
+    -------
+    None  if hist_norm is None (raw counts — pass-through to ax.hist)
+    ndarray of length len(x_group) otherwise:
+      'probability'  : weights = 1/n        → sum(heights) = 1.0
+      'density'      : weights = 1/(n × Δx) → ∫ heights dx = 1.0
+
+    Raises
+    ------
+    ValueError if hist_norm is not None / 'probability' / 'density'.
+    """
+    if hist_norm is None:
+        return None
+    n = len(x_group)
+    if n == 0:
+        return None
+    if hist_norm == "probability":
+        return np.ones(n) / n
+    if hist_norm == "density":
+        if bin_edges is not None:
+            bin_width = float(np.diff(bin_edges).mean())
+        else:
+            bin_width = 1.0
+        return np.ones(n) / (n * bin_width)
+    raise ValueError(
+        f"hist_norm must be None, 'probability', or 'density'; "
+        f"got {hist_norm!r}"
+    )
+
+
 def draw_hist(
     df: pd.DataFrame,
     x: Union[str, pd.Series, np.ndarray],
@@ -176,6 +213,15 @@ def draw_hist(
     # via the weights= kwarg. Precedence with norm="probability": explicit
     # per-row weights win and are additionally scaled by 1/n_clean.
     weights: Optional[str] = None,
+    # Phase 13.35.DF: float group_by binning + per-group normalization (BUG-013 fix).
+    # group_by_bins / group_by_quantiles: bin a float group_by column via pd.cut/qcut
+    # before the per-group rendering loop. min_entries: skip groups below threshold.
+    # hist_norm: per-group normalization (None=raw counts, "probability"=sum=1,
+    # "density"=area=1). Independent of single-histogram norm= parameter.
+    group_by_bins: Optional[int] = None,
+    group_by_quantiles: Optional[int] = None,
+    hist_norm: Optional[str] = None,
+    min_entries: int = 0,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -374,13 +420,62 @@ def draw_hist(
     if group_by is not None and group_by in df.columns:
         # w_data + group_by raises above; here _hist_weights is either None or
         # the probability-synthesized 1/n array (pre-FIX1 behavior).
-        _draw_hist_grouped(
+        #
+        # Phase 13.35.DF (BUG-013 fix): float group_by + binning + per-group norm.
+
+        col = df[group_by]
+
+        # BUG-012 protection: float column with high cardinality and no bins.
+        # Threshold 20 is a heuristic — see BUG-012 report for rationale.
+        # Catches the silent-explosion case where group_by='z' on a continuous
+        # float column produces hundreds of one-entry groups.
+        if (col.dtype.kind == 'f'
+                and group_by_bins is None
+                and group_by_quantiles is None
+                and col.nunique() > 20):
+            raise ValueError(
+                f"group_by='{group_by}' is a float column with "
+                f"{col.nunique()} unique values. "
+                f"Add group_by_bins=N or group_by_quantiles=N to bin it. "
+                f"Example: group_by_bins=5 or group_by_quantiles=5."
+            )
+
+        # Float binning: replace group_by column values with pd.Interval labels.
+        # Use df.copy() to avoid modifying the caller's DataFrame.
+        if group_by_bins is not None or group_by_quantiles is not None:
+            df = df.copy()
+            if col.dtype == np.float16:
+                # Match profile path pattern (drawer.py:2585): pd.cut/qcut
+                # don't accept float16 directly; upcast.
+                df[group_by] = df[group_by].astype(np.float32)
+            if group_by_bins is not None:
+                df[group_by] = pd.cut(df[group_by], bins=group_by_bins)
+            else:
+                df[group_by] = pd.qcut(
+                    df[group_by], q=group_by_quantiles, duplicates='drop'
+                )
+
+        # Shared bin edges computed from sanitized x_data.
+        # x_data is fully sanitized (nan_policy applied) at lines 259-307.
+        # Do NOT use df[x].dropna() here — that would bypass the nan_policy
+        # sanitization already applied. (v1.1 P1-B from review panel.)
+        _bins_for_edges = bins if bins is not None else 100
+        _, shared_edges = np.histogram(
+            x_data, bins=_bins_for_edges, range=_used_range
+        )
+
+        n_rendered = _draw_hist_grouped(
             df, x, ax, group_by, top_k, stacked,
-            bins=bins, range=_used_range, density=density, weights=_hist_weights,
+            bin_edges=shared_edges,
+            hist_norm=hist_norm,
+            min_entries=min_entries,
+            density=density, weights=_hist_weights,
             alpha=alpha, histtype=histtype, edgecolor=edgecolor,
-            linewidth=linewidth, **kwargs
+            linewidth=linewidth,
+            **kwargs   # group_by_bins/hist_norm/min_entries already consumed
         )
         stats_dict["grouped"] = True
+        stats_dict["n_groups"] = n_rendered   # was missing — T1 observation
     else:
         # Single histogram
         ax.hist(
@@ -432,37 +527,86 @@ def _draw_hist_grouped(
     group_by: str,
     top_k: Optional[int],
     stacked: bool,
+    bin_edges: Optional[np.ndarray] = None,   # Phase 13.35.DF: shared edges from full dataset
+    hist_norm: Optional[str] = None,          # Phase 13.35.DF: None | "probability" | "density"
+    min_entries: int = 0,                     # Phase 13.35.DF: skip groups below threshold
     **hist_kwargs
-) -> None:
-    """Draw grouped/overlaid histograms."""
+) -> int:
+    """Draw grouped/overlaid histograms.
+
+    Phase 13.35.DF: extended for float group_by binning + per-group normalization.
+    Returns the number of groups actually rendered (post min_entries filter).
+    """
     import matplotlib.pyplot as plt
-    
-    # Get groups
+
+    # Phase 13.35.DF: pop 'weights' from hist_kwargs — the grouped path uses
+    # per-group hist_norm weights (from _group_weights), not the routing
+    # block's _hist_weights (which is None on this path anyway because
+    # group_by + column-name weights raises NotImplementedError earlier).
+    # Without this pop, ax.hist sees 'weights' twice (TypeError).
+    hist_kwargs.pop('weights', None)
+
+    # Get groups (pd.Interval objects when group_by_bins/_quantiles was used;
+    # scalar values otherwise).
     groups = df[group_by].unique()
-    
-    # Top-K filtering
+
+    # Top-K filtering (existing behavior)
     if top_k is not None and len(groups) > top_k:
         counts = df[group_by].value_counts()
         top_groups = counts.head(top_k).index.tolist()
         groups = top_groups
-    
-    # Color palette
+
+    # Color palette (existing behavior)
     palette_name = get_style_value("colors.palette", "tab10")
     palette = plt.colormaps.get_cmap(palette_name)
     colors = [palette(i % 10) for i in range(len(groups))]
-    
+
+    # Use shared edges if provided; fall back to matplotlib auto-bin (or kwarg)
+    bins_arg = bin_edges if bin_edges is not None else hist_kwargs.pop('bins', 100)
+
     if stacked:
-        # Stacked histogram
-        # BUG_dfdraw_20260505: cast to float for boolean expressions
-        data_list = [df[df[group_by] == g][x].dropna().values.astype(float) for g in groups]
-        ax.hist(data_list, label=[str(g) for g in groups], color=colors,
-                stacked=True, **hist_kwargs)
+        # One-pass loop: build data_list, labels, AND surviving_colors in lockstep
+        # so all three stay aligned when min_entries filters drop groups.
+        # v1.2 used two-pass list comprehensions (data_list filtered, then labels
+        # zipped against UNFILTERED groups) → misaligned labels.
+        # That was v1.2 P1-D — Hard Constraint §3 silent wrong result.
+        # P3 (color-shift) also fixed here: pre-Phase 13.35.DF, colors[:M] gave
+        # sequential tab10 colors, not the original-index color per surviving
+        # group; surviving_colors[i] preserves the original colors[i] mapping.
+        data_list, labels, surviving_colors = [], [], []
+        for i, g in enumerate(groups):
+            d = df[df[group_by] == g][x].dropna().values.astype(float)
+            if len(d) >= min_entries:
+                data_list.append(d)
+                # Label: str(g) handles both scalars and pd.Interval objects.
+                # _format_interval_label is defined in profile.py and NOT
+                # imported here. (v1.1 P1-A from review panel.)
+                labels.append(str(g))
+                surviving_colors.append(colors[i])
+        if not data_list:
+            return 0
+        ax.hist(data_list, bins=bins_arg, label=labels,
+                color=surviving_colors, stacked=True, **hist_kwargs)
+        return len(data_list)
     else:
-        # Overlaid histograms
+        # Overlaid histograms — one ax.hist call per surviving group.
+        # colors[i] preserves original-index color when groups are skipped
+        # (overlaid branch was already correct in baseline; documented for parity).
+        n_rendered = 0
         for i, group in enumerate(groups):
             # BUG_dfdraw_20260505: cast to float for boolean expressions
             group_data = df[df[group_by] == group][x].dropna().values.astype(float)
-            ax.hist(group_data, label=str(group), color=colors[i], **hist_kwargs)
+            if len(group_data) < min_entries:
+                continue
+            weights = _group_weights(group_data, bin_edges, hist_norm)
+            # Label via str(group) — not _format_interval_label. (v1.1 P1-A)
+            ax.hist(group_data, bins=bins_arg,
+                    label=str(group), color=colors[i],
+                    weights=weights, **hist_kwargs)
+            n_rendered += 1   # count post-skip (v1.1 P1-C from review panel)
+        if n_rendered > 0:
+            ax.legend()
+        return n_rendered
 
 
 def _add_stats_box(

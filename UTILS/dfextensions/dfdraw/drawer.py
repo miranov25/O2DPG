@@ -594,6 +594,13 @@ class DFDraw:
         'selection_labels', 'weights_labels',
         'selection_categorical', 'weights_categorical',
         'vector_compose', 'delta_facet',
+        # Phase 13.35.DF: float group_by binning + per-group normalization (BUG-013 fix).
+        # Without these, group_by_bins/quantiles/hist_norm/min_entries fall into
+        # **kwargs → forwarded to _draw_hist_grouped() **hist_kwargs → reach
+        # ax.hist() which raises AttributeError (T2/T3/T4 from v1.3 §3.2).
+        'group_by_bins', 'group_by_quantiles',
+        'hist_norm',
+        'min_entries',
     )
 
     _SCATTER_FORWARDED_NAMES = (
@@ -3175,6 +3182,14 @@ class DFDraw:
         weights_categorical: bool = False,
         vector_compose: str = "inner",
         delta_facet: Optional[str] = None,
+        # Phase 13.35.DF: float group_by binning + per-group normalization
+        # (BUG-013 fix). group_by_bins / group_by_quantiles bin a float
+        # group_by column via pd.cut/qcut. min_entries skips groups below
+        # threshold. hist_norm: None | "probability" | "density" (per-group).
+        group_by_bins: Optional[int] = None,
+        group_by_quantiles: Optional[int] = None,
+        hist_norm: Optional[str] = None,
+        min_entries: int = 0,
         **kwargs
     ) -> DrawResult:
         """
@@ -3352,6 +3367,16 @@ class DFDraw:
                 weights=weights,
                 facet_by_bins=facet_by_bins,
                 facet_by_quantiles=facet_by_quantiles,
+                # Phase 13.35.DF: forward float group_by binning + per-group
+                # normalization to per-subplot draw_hist (BUG-013 fix T3).
+                # Without these, the architect's call
+                #   d.hist('x', group_by='z', group_by_bins=5, facet_by='sec')
+                # loses group_by_bins between method-level explicit-param
+                # consumption and per-subplot draw_hist invocation.
+                group_by_bins=group_by_bins,
+                group_by_quantiles=group_by_quantiles,
+                hist_norm=hist_norm,
+                min_entries=min_entries,
                 **kwargs
             )
         # Facet mode (legacy path, same=True ignored in facet mode)
@@ -3378,6 +3403,11 @@ class DFDraw:
                 nan_policy=nan_policy,
                 # Phase 13.27.DF Commit 2 FIX1 (§7b): column-name weights
                 weights=weights,
+                # Phase 13.35.DF: float group_by binning + per-group normalization
+                group_by_bins=group_by_bins,
+                group_by_quantiles=group_by_quantiles,
+                hist_norm=hist_norm,
+                min_entries=min_entries,
                 **kwargs
             )
             axes = ax
