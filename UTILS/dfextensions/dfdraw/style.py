@@ -49,6 +49,11 @@ DEFAULT_STYLE: Dict[str, Any] = {
     "hist.histtype": "stepfilled",
     "hist.edgecolor": "black",
     "hist.linewidth": 1.0,
+    # Phase 13.37.DF: Poisson error-bar overlay styling for hist_errors=True.
+    # error_capsize: cap length in points (matplotlib default 0 → invisible).
+    # error_elinewidth: error bar line width (matplotlib default 1.0).
+    "hist.error_capsize": 2,
+    "hist.error_elinewidth": 1.0,
     
     # Profile
     "profile.marker": "o",

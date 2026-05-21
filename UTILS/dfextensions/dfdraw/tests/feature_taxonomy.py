@@ -1127,4 +1127,66 @@ FEATURES = [
             "test_phase_13_34_df_m2_robustness.py::TestKwargComposition::test_X_channel_mode_facet_with_auto_title",
         ],
     },
+
+    # ── Phase 13.37.DF — Histogram Robustness (BUG-014/015/016 + hist_errors + linestyle_cycle) ──
+
+    {
+        "id": "HIST.step_per_group_color",
+        "name": "histtype='step' renders distinct per-group edgecolors (BUG-014 closed; extends Phase 13.36 sentinel to edgecolor) — Phase 13.37.DF",
+        "category": "HIST",
+        "tests": [
+            "test_phase_13_37_df_hist_robustness.py::TestBUG014StepColor::test_STEP1_default_per_group_step_colors",
+            "test_phase_13_37_df_hist_robustness.py::TestBUG014StepColor::test_STEP2_bar_histtype_unchanged",
+            "test_phase_13_37_df_hist_robustness.py::TestBUG014StepColor::test_STEP3_user_edgecolor_wins_over_step_cycle",
+            "test_phase_13_37_df_hist_robustness.py::TestBUG014StepColor::test_STEP4_stepfilled_edgecolor_untouched",
+        ],
+    },
+    {
+        "id": "PROFILE.float_group_by_guard",
+        "name": "profile() float group_by with no bins + nunique>20 raises ValueError with group_by_bins=N guidance (BUG-015; mirrors Phase 13.35 hist BUG-012) — Phase 13.37.DF",
+        "category": "PROFILE",
+        "tests": [
+            "test_phase_13_37_df_hist_robustness.py::TestBUG015ProfileGuard::test_GUARD1_float_no_bins_raises",
+            "test_phase_13_37_df_hist_robustness.py::TestBUG015ProfileGuard::test_GUARD2_with_bins_no_error",
+        ],
+    },
+    {
+        "id": "HIST.interval_sort_numeric",
+        "name": "pd.Interval group legend sorted by numeric .left (BUG-016; hasattr-guard extension of _interval_sort_key) — Phase 13.37.DF",
+        "category": "HIST",
+        "tests": [
+            "test_phase_13_37_df_hist_robustness.py::TestBUG016IntervalSort::test_SORT1_bins_crossing_10_numeric_order",
+            "test_phase_13_37_df_hist_robustness.py::TestBUG016IntervalSort::test_SORT2_positive_control_lexicographic_would_fail",
+            "test_phase_13_37_df_hist_robustness.py::TestBUG016IntervalSort::test_SORT3_categorical_string_groups_unaffected",
+        ],
+    },
+    {
+        "id": "HIST.hist_errors",
+        "name": "Poisson error bar overlay (hist_errors=True): √n raw / √n/N probability / √n/(N·bw_i) density (per-bin); weighted Poisson via Σw²; zero-bin masking; ungrouped+bins=int safe; Phase 13.36 color sentinel preserved — Phase 13.37.DF",
+        "category": "HIST",
+        "tests": [
+            "test_phase_13_37_df_hist_robustness.py::TestHistErrors::test_HE1_unnormalized_sqrt_n",
+            "test_phase_13_37_df_hist_robustness.py::TestHistErrors::test_HE2_probability_norm",
+            "test_phase_13_37_df_hist_robustness.py::TestHistErrors::test_HE3_density_equal_width",
+            "test_phase_13_37_df_hist_robustness.py::TestHistErrors::test_HE4_default_no_errorbars",
+            "test_phase_13_37_df_hist_robustness.py::TestHistErrors::test_HE5_zero_count_bins_skipped",
+            "test_phase_13_37_df_hist_robustness.py::TestHistErrors::test_HE6_color_override_phase_13_36",
+            "test_phase_13_37_df_hist_robustness.py::TestHistErrors::test_HE7_min_entries_filters_errorbars",
+            "test_phase_13_37_df_hist_robustness.py::TestHistErrors::test_HE8_density_variable_bin_widths",
+            "test_phase_13_37_df_hist_robustness.py::TestHistErrors::test_HE9_ungrouped_bins_int_no_crash",
+            "test_phase_13_37_df_hist_robustness.py::TestHistErrors::test_HEstyle_keys_registered",
+        ],
+    },
+    {
+        "id": "PROFILE_HIST.linestyle_cycle",
+        "name": "linestyle_cycle=True cycles per-group linestyles from channels.cycles.linestyle on profile() and hist(); user-explicit linestyle= wins via _ud_user_linestyle sentinel (extends Phase 13.36 Edit 17 pattern) — Phase 13.37.DF",
+        "category": "PROFILE",
+        "tests": [
+            "test_phase_13_37_df_hist_robustness.py::TestLinestyleCycle::test_LC1_profile_distinct_linestyles",
+            "test_phase_13_37_df_hist_robustness.py::TestLinestyleCycle::test_LC2_default_unchanged",
+            "test_phase_13_37_df_hist_robustness.py::TestLinestyleCycle::test_LC3_user_linestyle_wins_over_cycle",
+            "test_phase_13_37_df_hist_robustness.py::TestLinestyleCycle::test_LC4_same_true_overlay_distinct_linestyles",
+            "test_phase_13_37_df_hist_robustness.py::TestLinestyleCycle::test_LC5_hist_step_per_group_linestyle",
+        ],
+    },
 ]

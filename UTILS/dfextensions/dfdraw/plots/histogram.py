@@ -22,6 +22,11 @@ from ._data_sanitize import sanitize_for_plot
 from ._autorange import compute_autorange, VALID_STRATEGIES
 # Phase 13.30.DF: Class-2 column-reference parameter validation
 from ._validation import validate_column_references
+# Phase 13.37.DF (BUG-016): pd.Interval-aware sort key for legend ordering.
+# _interval_sort_key was extended in Phase 13.37 to handle pd.Interval objects
+# via hasattr(label, 'left'). Imported here so _draw_hist_grouped can sort raw
+# pd.Interval groups from pd.cut() in numeric order, not lexicographic.
+from .profile import _interval_sort_key
 
 
 # =============================================================================
@@ -222,6 +227,17 @@ def draw_hist(
     group_by_quantiles: Optional[int] = None,
     hist_norm: Optional[str] = None,
     min_entries: int = 0,
+    # Phase 13.37.DF: Poisson error bar overlay on histogram bars.
+    # When True, computes per-bin √n / N error bars and overlays via
+    # ax.errorbar. Composes with hist_norm (probability, density). Composes
+    # with weights= column via weighted Poisson (yerr = sqrt(Σw²)). Zero-count
+    # bins are skipped (mask = counts > 0).
+    hist_errors: bool = False,
+    # Phase 13.37.DF: per-group linestyle cycling mode flag. When True and
+    # user did not pass linestyle= explicitly, cycle through
+    # channels.cycles.linestyle per group. User-explicit linestyle= takes
+    # precedence (Phase 13.36 sentinel pattern).
+    linestyle_cycle: bool = False,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -282,6 +298,17 @@ def draw_hist(
         alpha = get_style_value("hist.alpha", 0.7)
     if histtype is None:
         histtype = get_style_value("hist.histtype", "stepfilled")
+    # Phase 13.37.DF (BUG-014): capture user-explicit edgecolor BEFORE the
+    # style fill-in below. Pattern mirrors Phase 13.36 Edit 17 (the lesson:
+    # style fill-in replaces None with default; sentinels must capture pre-
+    # fill-in to distinguish "user passed nothing" from "user explicitly
+    # passed 'red'"). Used in _draw_hist_grouped step-mode branch.
+    _ud_user_edgecolor = edgecolor
+    # Phase 13.37.DF: capture user-explicit linestyle for linestyle_cycle
+    # priority logic. linestyle is NOT in draw_hist's explicit signature
+    # (lives in **kwargs); peek without popping so any non-cycle path still
+    # receives it via **kwargs → ax.hist.
+    _ud_user_linestyle = kwargs.get('linestyle', None)
     if edgecolor is None:
         edgecolor = get_style_value("hist.edgecolor", "black")
     if linewidth is None:
@@ -494,6 +521,15 @@ def draw_hist(
             # (v1.0 P1-A pattern). marker= still flows through **kwargs to
             # _draw_hist_grouped where it's popped + warned.
             _user_color=color,
+            # Phase 13.37.DF: forward user-explicit edgecolor sentinel (captured
+            # BEFORE the style fill-in above per Phase 13.36 Edit 17 pattern),
+            # hist_errors flag, linestyle_cycle flag + user linestyle sentinel,
+            # and pre-computed weights for weighted-Poisson errors.
+            _user_edgecolor=_ud_user_edgecolor,
+            hist_errors=hist_errors,
+            linestyle_cycle=linestyle_cycle,
+            _user_linestyle=_ud_user_linestyle,
+            _hist_weights_arr=_hist_weights,
             density=density, weights=_hist_weights,
             alpha=alpha, histtype=histtype, edgecolor=edgecolor,
             linewidth=linewidth,
@@ -508,6 +544,53 @@ def draw_hist(
             color=color, alpha=alpha, histtype=histtype, edgecolor=edgecolor,
             linewidth=linewidth, label=label, **kwargs
         )
+        # Phase 13.37.DF: Poisson error bar overlay for ungrouped path.
+        # CP1-7: use edges from np.histogram() return (bins= may be int).
+        # CP1-6: weighted Poisson via Σw² when weights= column is set.
+        # CP1-8: per-bin density formula (vectorized np.diff(edges)).
+        if hist_errors:
+            if _hist_weights is not None:
+                _w = np.asarray(_hist_weights)
+                sum_w, _edges = np.histogram(x_data, bins=bins, range=_used_range,
+                                             weights=_w)
+                sum_w2, _ = np.histogram(x_data, bins=bins, range=_used_range,
+                                         weights=_w**2)
+                total_w = float(_w.sum()) if len(_w) > 0 else 1.0
+                if norm == "probability":
+                    heights = sum_w / total_w
+                    errs = np.sqrt(sum_w2) / total_w
+                elif norm == "density" or density:
+                    bws = np.diff(_edges)
+                    heights = sum_w / (total_w * bws)
+                    errs = np.sqrt(sum_w2) / (total_w * bws)
+                else:
+                    heights = sum_w.astype(float)
+                    errs = np.sqrt(sum_w2)
+                counts_for_mask = sum_w
+            else:
+                counts, _edges = np.histogram(x_data, bins=bins, range=_used_range)
+                n_total = len(x_data)
+                if norm == "probability":
+                    heights = counts / n_total
+                    errs = np.sqrt(counts) / n_total
+                elif norm == "density" or density:
+                    bws = np.diff(_edges)
+                    heights = counts / (n_total * bws)
+                    errs = np.sqrt(counts) / (n_total * bws)
+                else:
+                    heights = counts.astype(float)
+                    errs = np.sqrt(counts)
+                counts_for_mask = counts
+            bin_centers = 0.5 * (_edges[:-1] + _edges[1:])
+            mask = counts_for_mask > 0
+            # Phase 13.37.DF: error bar color matches bars (color is the local
+            # variable; for single-hist ungrouped path, it's either the user's
+            # explicit color or matplotlib's default — both fine).
+            ax.errorbar(bin_centers[mask], heights[mask], yerr=errs[mask],
+                        fmt='none', color=color,
+                        elinewidth=get_style_value("hist.error_elinewidth", 1.0),
+                        capsize=get_style_value("hist.error_capsize", 2),
+                        zorder=3)
     
     # Labels
     ax.set_xlabel(xlabel or x_name)
@@ -559,12 +642,28 @@ def _draw_hist_grouped(
     # 'color' is consumed by draw_hist()'s explicit signature — must be passed
     # as a named param from there (not via **kwargs which doesn't contain it).
     _user_color: Optional[str] = None,
+    # Phase 13.37.DF (BUG-014): user edgecolor override sentinel. None = "user
+    # did not pass edgecolor; use group_color as step-line color when
+    # histtype='step'". Non-None = "user explicitly passed; uniform override".
+    # Same Edit 17 architectural pattern as _user_color.
+    _user_edgecolor: Optional[str] = None,
+    # Phase 13.37.DF: Poisson error bar overlay flag.
+    hist_errors: bool = False,
+    # Phase 13.37.DF: per-group linestyle cycling mode flag (composes with
+    # _user_linestyle sentinel: user explicit > cycle > style default).
+    linestyle_cycle: bool = False,
+    _user_linestyle: Optional[str] = None,
+    # Phase 13.37.DF: pre-computed per-row weights (forwarded from draw_hist
+    # for hist_errors weighted-Poisson computation in the grouped path).
+    _hist_weights_arr: Optional[np.ndarray] = None,
     **hist_kwargs
 ) -> int:
     """Draw grouped/overlaid histograms.
 
     Phase 13.35.DF: extended for float group_by binning + per-group normalization.
     Phase 13.36.DF: extended for user color override + marker UserWarning.
+    Phase 13.37.DF: extended for step edgecolor sentinel, hist_errors,
+                    linestyle_cycle.
     Returns the number of groups actually rendered (post min_entries filter).
     """
     import matplotlib.pyplot as plt
@@ -582,7 +681,12 @@ def _draw_hist_grouped(
 
     # Get groups (pd.Interval objects when group_by_bins/_quantiles was used;
     # scalar values otherwise).
-    groups = df[group_by].unique()
+    # Phase 13.37.DF (BUG-016): sort by _interval_sort_key so pd.Interval groups
+    # appear in numeric order in the legend (not lexicographic). Without this,
+    # bins crossing 10 render legend as "(0.04, 0.83], (10.0, 12.0], (2.0, 4.0]"
+    # because '(1' < '(2' lexicographically. Categorical string groups are
+    # unaffected — _interval_sort_key falls through to string order for those.
+    groups = sorted(df[group_by].unique(), key=_interval_sort_key)
 
     # Top-K filtering (existing behavior)
     if top_k is not None and len(groups) > top_k:
@@ -609,6 +713,15 @@ def _draw_hist_grouped(
             UserWarning, stacklevel=3
         )
 
+    # Phase 13.37.DF: resolve linestyle cycle list (Phase 13.26 style key).
+    # Only used when linestyle_cycle=True AND user did not pass linestyle=.
+    _ls_cycle = get_style_value("channels.cycles.linestyle", ['-', '--', '-.', ':'])
+
+    # Phase 13.37.DF: peek at histtype for step-mode edgecolor logic.
+    # 'histtype' is in hist_kwargs (passed explicitly from draw_hist body),
+    # so use get() not pop() — ax.hist still needs it.
+    _histtype = hist_kwargs.get('histtype', 'bar')
+
     if stacked:
         # One-pass loop: build data_list, labels, AND surviving_colors in lockstep
         # so all three stay aligned when min_entries filters drop groups.
@@ -620,6 +733,9 @@ def _draw_hist_grouped(
         # group; surviving_colors[i] preserves the original colors[i] mapping.
         # Phase 13.36.DF: when _user_color is set, surviving_colors becomes
         # uniform (user wants all groups same color — already warned above).
+        # Phase 13.37.DF: hist_errors not currently supported in stacked mode
+        # (semantically unclear — error of which stack layer?). Linestyle_cycle
+        # also skipped in stacked mode (one ax.hist call shared across stacks).
         data_list, labels, surviving_colors = [], [], []
         for i, g in enumerate(groups):
             d = df[df[group_by] == g][x].dropna().values.astype(float)
@@ -635,27 +751,118 @@ def _draw_hist_grouped(
                 )
         if not data_list:
             return 0
+        # Phase 13.37.DF (BUG-014): for stacked + step mode, mirror the
+        # edgecolor sentinel. User explicit > group_color (matches the bars).
+        if _histtype == 'step' and _user_edgecolor is None:
+            # Step lines use surviving_colors (parallel to the fill colors).
+            # ax.hist with stacked=True uses 'edgecolor' kwarg as list-of-N.
+            _stacked_ec = surviving_colors
+        else:
+            # User-explicit edgecolor (uniform) OR bar/stepfilled (use style default)
+            _stacked_ec = _user_edgecolor if _user_edgecolor is not None else hist_kwargs.pop('edgecolor', None)
+        # Strip 'edgecolor' from hist_kwargs to avoid passing twice
+        hist_kwargs.pop('edgecolor', None)
         ax.hist(data_list, bins=bins_arg, label=labels,
-                color=surviving_colors, stacked=True, **hist_kwargs)
+                color=surviving_colors, edgecolor=_stacked_ec,
+                stacked=True, **hist_kwargs)
         return len(data_list)
     else:
         # Overlaid histograms — one ax.hist call per surviving group.
         # colors[i] preserves original-index color when groups are skipped
         # (overlaid branch was already correct in baseline; documented for parity).
         # Phase 13.36.DF: user override > palette per group.
+        # Phase 13.37.DF: per-group edgecolor (BUG-014), linestyle_cycle,
+        # and hist_errors Poisson overlay.
+
+        # Pop edgecolor from hist_kwargs so we can override per group.
+        # Original value preserved in _style_edgecolor for non-step paths.
+        _style_edgecolor = hist_kwargs.pop('edgecolor', None)
+
         n_rendered = 0
         for i, group in enumerate(groups):
             # BUG_dfdraw_20260505: cast to float for boolean expressions
-            group_data = df[df[group_by] == group][x].dropna().values.astype(float)
+            group_mask = df[group_by] == group
+            group_data = df[group_mask][x].dropna().values.astype(float)
             if len(group_data) < min_entries:
                 continue
             weights = _group_weights(group_data, bin_edges, hist_norm)
             # Phase 13.36.DF: user override > palette
             group_color = colors[i] if _user_color is None else _user_color
-            # Label via str(group) — not _format_interval_label. (v1.1 P1-A)
-            ax.hist(group_data, bins=bins_arg,
-                    label=str(group), color=group_color,
-                    weights=weights, **hist_kwargs)
+
+            # Phase 13.37.DF (BUG-014): step-mode edgecolor sentinel.
+            # User explicit > group_color (when step) > style default (when bar).
+            if _histtype == 'step' and _user_edgecolor is None:
+                _ec = group_color
+            else:
+                # User explicit OR non-step mode → use captured/style value.
+                _ec = _user_edgecolor if _user_edgecolor is not None else _style_edgecolor
+
+            # Phase 13.37.DF: linestyle_cycle priority — user explicit > cycle.
+            # _ud_user_linestyle was peeked from kwargs in draw_hist (not popped),
+            # so it's still in hist_kwargs and ax.hist receives it via **hist_kwargs.
+            # When cycle mode is active AND user did not pass linestyle, override
+            # by popping from kwargs and passing explicitly.
+            if linestyle_cycle and _user_linestyle is None:
+                # User did NOT pass linestyle → safe to override
+                hist_kwargs.pop('linestyle', None)   # idempotent
+                _per_group_ls = _ls_cycle[i % len(_ls_cycle)]
+                ax.hist(group_data, bins=bins_arg,
+                        label=str(group), color=group_color,
+                        edgecolor=_ec, linestyle=_per_group_ls,
+                        weights=weights, **hist_kwargs)
+            else:
+                # No cycle OR user explicit → existing flow (linestyle in **kwargs)
+                ax.hist(group_data, bins=bins_arg,
+                        label=str(group), color=group_color,
+                        edgecolor=_ec,
+                        weights=weights, **hist_kwargs)
+
+            # Phase 13.37.DF: Poisson error bar overlay (CP1-1/CP1-2 fix:
+            # color=group_color follows Phase 13.36 sentinel, NOT colors[i]).
+            if hist_errors:
+                if _hist_weights_arr is not None:
+                    # Weighted Poisson: variance per bin = Σw² (CP1-6 fix)
+                    _w = np.asarray(_hist_weights_arr)[group_mask.values]
+                    # Sanitize to match group_data
+                    _w = _w[~np.isnan(_w)][:len(group_data)] if len(_w) >= len(group_data) else _w
+                    sum_w, _edges = np.histogram(group_data, bins=bins_arg, weights=_w)
+                    sum_w2, _ = np.histogram(group_data, bins=bins_arg, weights=_w**2)
+                    total_w = float(_w.sum()) if len(_w) > 0 else 1.0
+                    if hist_norm == "probability":
+                        heights = sum_w / total_w
+                        errs = np.sqrt(sum_w2) / total_w
+                    elif hist_norm == "density":
+                        bws = np.diff(_edges)
+                        heights = sum_w / (total_w * bws)
+                        errs = np.sqrt(sum_w2) / (total_w * bws)
+                    else:
+                        heights = sum_w.astype(float)
+                        errs = np.sqrt(sum_w2)
+                    counts_for_mask = sum_w
+                else:
+                    counts, _edges = np.histogram(group_data, bins=bins_arg)
+                    n_total = len(group_data)
+                    if hist_norm == "probability":
+                        heights = counts / n_total
+                        errs = np.sqrt(counts) / n_total
+                    elif hist_norm == "density":
+                        # Per-bin width (CP1-8 fix — was mean width in v1.0)
+                        bws = np.diff(_edges)
+                        heights = counts / (n_total * bws)
+                        errs = np.sqrt(counts) / (n_total * bws)
+                    else:
+                        heights = counts.astype(float)
+                        errs = np.sqrt(counts)
+                    counts_for_mask = counts
+                bin_centers = 0.5 * (_edges[:-1] + _edges[1:])
+                mask = counts_for_mask > 0
+                ax.errorbar(bin_centers[mask], heights[mask], yerr=errs[mask],
+                            fmt='none',
+                            color=group_color,   # Phase 13.36 sentinel — CP1-2 fix
+                            elinewidth=get_style_value("hist.error_elinewidth", 1.0),
+                            capsize=get_style_value("hist.error_capsize", 2),
+                            zorder=3)
+
             n_rendered += 1   # count post-skip (v1.1 P1-C from review panel)
         if n_rendered > 0:
             ax.legend()

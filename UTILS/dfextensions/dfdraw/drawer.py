@@ -580,6 +580,9 @@ class DFDraw:
         # draw_profile() has all 3 as explicit params at lines 162-164;
         # adding to FORWARDED_NAMES lets vector-dispatch path forward them.
         'marker', 'color', 'markersize',
+        # Phase 13.37.DF: per-group linestyle cycling mode flag. Explicit
+        # param of draw_profile() — R6 validator passes.
+        'linestyle_cycle',
     )
 
     _HIST_FORWARDED_NAMES = (
@@ -615,6 +618,10 @@ class DFDraw:
         # via vector dispatch and crash (matplotlib rejects markersize). Sonet51
         # P1 from v1.2 review.
         'marker', 'color',
+        # Phase 13.37.DF: hist_errors (Poisson overlay flag) + linestyle_cycle
+        # (per-group linestyle mode flag). Both are explicit params of
+        # draw_hist() — R6 validator passes.
+        'hist_errors', 'linestyle_cycle',
     )
 
     _SCATTER_FORWARDED_NAMES = (
@@ -3214,6 +3221,10 @@ class DFDraw:
         # See PHASE_13_36_DF_v1_2_Proposal §3.3 + Sonet51 P1.
         color: Optional[str] = None,
         marker: Optional[str] = None,
+        # Phase 13.37.DF: hist_errors (Poisson overlay) + linestyle_cycle
+        # (per-group linestyle mode). Both forwarded explicitly to draw_hist().
+        hist_errors: bool = False,
+        linestyle_cycle: bool = False,
         **kwargs
     ) -> DrawResult:
         """
@@ -3445,6 +3456,9 @@ class DFDraw:
                 # consumed by DFDraw.hist signature and lost.
                 color=color,
                 marker=marker,
+                # Phase 13.37.DF: Poisson error bars + linestyle cycle mode.
+                hist_errors=hist_errors,
+                linestyle_cycle=linestyle_cycle,
                 **kwargs
             )
             axes = ax
@@ -3815,6 +3829,10 @@ class DFDraw:
         color: Optional[str] = None,
         marker: Optional[str] = None,
         markersize: Optional[float] = None,
+        # Phase 13.37.DF: per-group linestyle cycling mode flag. Composes with
+        # Phase 13.36 sentinel (user explicit linestyle= wins via
+        # _ud_user_linestyle capture).
+        linestyle_cycle: bool = False,
         **kwargs
     ) -> DrawResult:
         """
@@ -4278,6 +4296,8 @@ class DFDraw:
                 # all three as explicit params at lines 162-164. Without these,
                 # consumed by DFDraw.profile() signature and lost.
                 color=color, marker=marker, markersize=markersize,
+                # Phase 13.37.DF: per-group linestyle cycle mode flag.
+                linestyle_cycle=linestyle_cycle,
                 **kwargs
             )
             axes = ax

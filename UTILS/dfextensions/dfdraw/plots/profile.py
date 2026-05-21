@@ -91,6 +91,16 @@ def _interval_sort_key(label):
     """
     if pd.isna(label):
         return (2, 0)
+    # Phase 13.37.DF (BUG-016): pd.Interval objects from histogram grouped path.
+    # _draw_hist_grouped() receives raw pd.Interval values from pd.cut() in the
+    # routing block (post-Phase 13.35). str(Interval(10.0, 12.0)) is "(10.0, 12.0]"
+    # — the leading '(' defeats both float() parse and the digit-dash detector
+    # below, falling through to (1, s) lexicographic sort. This guard short-
+    # circuits with the numeric .left boundary BEFORE the string-based logic.
+    # Profile path (string labels from _format_interval_label) is unaffected
+    # (strings don't have a .left attribute).
+    if hasattr(label, 'left'):
+        return (0, float(label.left))
     s = str(label)
     # Try plain number first
     try:
@@ -193,6 +203,11 @@ def draw_profile(
     _suppress_legend: bool = False,
     _suppress_title: bool = False,
     _suppress_layout: bool = False,
+    # Phase 13.37.DF: per-group linestyle cycling mode flag. When True and
+    # user did not pass linestyle= explicitly, cycle through
+    # channels.cycles.linestyle per group. User-explicit linestyle= wins
+    # (Phase 13.36 sentinel pattern via _ud_user_linestyle capture above).
+    linestyle_cycle: bool = False,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -317,6 +332,12 @@ def draw_profile(
     _ud_user_marker = marker          # None or user's value
     _ud_user_markersize = markersize  # None or user's value
     _ud_user_color = color            # None or user's value
+    # Phase 13.37.DF: capture user-explicit linestyle BEFORE the style fill-in
+    # at line 340 (which sets linestyle = "-" when None). Same Edit 17 pattern.
+    # _ud_user_linestyle = None means "use cycle if linestyle_cycle=True, else
+    # style default". Non-None means "user explicitly passed; uniform override
+    # wins over cycle".
+    _ud_user_linestyle = linestyle    # None or user's value
 
     # Get style defaults
     if bins is None:
@@ -475,6 +496,24 @@ def draw_profile(
     # Phase 13.12.DF F3: Auto-bin float group_by column
     group_col = group_by
     if group_by is not None and group_by in df_filtered.columns:
+        _col = df_filtered[group_by]
+        # Phase 13.37.DF (BUG-015): float column + no bins + high cardinality
+        # → memory hang/OOM. Mirrors Phase 13.35 hist() BUG-012 guard. Fires
+        # before the float16 upcast so users get a clear error instead of an
+        # unhelpful crash. Categorical/int columns skip the guard (any value
+        # of nunique() is acceptable). Limitation: expression-string group_by
+        # like "abs(tgl)" is NOT in df.columns → guard is skipped (same gap as
+        # Phase 13.35; deferred to df.eval() path phase — see §8 Out of scope).
+        if (_col.dtype.kind == 'f'
+                and group_by_bins is None
+                and group_by_quantiles is None
+                and _col.nunique() > 20):
+            raise ValueError(
+                f"group_by='{group_by}' is a float column with "
+                f"{_col.nunique()} unique values. "
+                f"Add group_by_bins=N or group_by_quantiles=N to bin it. "
+                f"Example: group_by_bins=5 or group_by_quantiles=5."
+            )
         # float16 not supported by pd.cut/pd.qcut (pandas Index limitation)
         if df_filtered[group_by].dtype == np.float16:
             df_filtered[group_by] = df_filtered[group_by].astype(np.float32)
@@ -504,6 +543,9 @@ def draw_profile(
             _user_marker=_ud_user_marker,
             _user_markersize=_ud_user_markersize,
             _user_color=_ud_user_color,
+            # Phase 13.37.DF: user linestyle sentinel + cycle mode flag.
+            _user_linestyle=_ud_user_linestyle,
+            linestyle_cycle=linestyle_cycle,
             bins=bins, x_range=_used_xrange, error=error,
             # Phase 13.36.DF: marker= and markersize= REMOVED from this call.
             # They are now forwarded via _user_marker / _user_markersize above.
@@ -942,6 +984,13 @@ def _draw_profile_grouped(
     _user_marker: Optional[str] = None,
     _user_markersize: Optional[float] = None,
     _user_color: Optional[str] = None,
+    # Phase 13.37.DF: user linestyle sentinel + cycle mode flag.
+    # _user_linestyle is captured BEFORE style fill-in at profile.py:340
+    # (same Phase 13.36 Edit 17 pattern). linestyle_cycle=True with user
+    # passing nothing → cycle through channels.cycles.linestyle. User
+    # explicit always wins (CP1-3 lock).
+    _user_linestyle: Optional[str] = None,
+    linestyle_cycle: bool = False,
     **profile_kwargs
 ) -> tuple:
     """
@@ -1025,6 +1074,22 @@ def _draw_profile_grouped(
 
     # Phase 13.32.DF Sub-fix 2: resolve grouped band alpha once
     _band_alpha_grouped = get_style_value("quantile.band.alpha_grouped", 0.15)
+
+    # Phase 13.37.DF: linestyle_cycle setup. When active AND user didn't pass
+    # linestyle explicitly, pop linestyle from profile_kwargs ONCE (out-of-loop)
+    # and set per-group linestyle inside the loop. If linestyle_cycle=False OR
+    # user passed linestyle, leave profile_kwargs untouched (existing flow).
+    # Priority: user explicit > cycle > style default (CP1-3 contract).
+    _ls_cycle = None
+    if linestyle_cycle and _user_linestyle is None:
+        # Pop linestyle so per-group cycle linestyle can be passed explicitly
+        # without **profile_kwargs double-keying it. Style fill-in in
+        # draw_profile already filled linestyle to "-"; popping the post-fill
+        # value is fine (we don't reuse it).
+        profile_kwargs.pop('linestyle', None)
+        _ls_cycle = get_style_value(
+            "channels.cycles.linestyle", ['-', '--', '-.', ':']
+        )
 
     for i, group in enumerate(groups):
         group_df = df[df[group_by] == group]
@@ -1126,18 +1191,36 @@ def _draw_profile_grouped(
         group_marker = (markers[i % len(markers)]
                         if _user_marker is None
                         else _user_marker)
-        ax.errorbar(
-            bin_centers[plot_mask], bin_means[plot_mask], yerr=bin_errors[plot_mask],
-            fmt=group_marker,
-            color=group_color,
-            markersize=_user_markersize,   # None → matplotlib default
-            # If quantiles already added a legend entry for this group, suppress
-            # the duplicate central-line legend entry by setting label=None.
-            label=(None if quantiles is not None and quantile_list is not None
-                   and quantile_mode == 'discrete'
-                   else str(group)),
-            **profile_kwargs
-        )
+        # Phase 13.37.DF: per-group linestyle from cycle when active.
+        # _ls_cycle is None except when (linestyle_cycle=True AND user didn't
+        # pass linestyle). When None, profile_kwargs still has linestyle from
+        # the existing flow (user explicit OR style default "-").
+        if _ls_cycle is not None:
+            _per_group_ls = _ls_cycle[i % len(_ls_cycle)]
+            ax.errorbar(
+                bin_centers[plot_mask], bin_means[plot_mask], yerr=bin_errors[plot_mask],
+                fmt=group_marker,
+                color=group_color,
+                markersize=_user_markersize,
+                linestyle=_per_group_ls,   # Phase 13.37.DF cycle
+                label=(None if quantiles is not None and quantile_list is not None
+                       and quantile_mode == 'discrete'
+                       else str(group)),
+                **profile_kwargs
+            )
+        else:
+            ax.errorbar(
+                bin_centers[plot_mask], bin_means[plot_mask], yerr=bin_errors[plot_mask],
+                fmt=group_marker,
+                color=group_color,
+                markersize=_user_markersize,   # None → matplotlib default
+                # If quantiles already added a legend entry for this group, suppress
+                # the duplicate central-line legend entry by setting label=None.
+                label=(None if quantiles is not None and quantile_list is not None
+                       and quantile_mode == 'discrete'
+                       else str(group)),
+                **profile_kwargs
+            )
 
     return profile_data_list, per_group_stats
 
