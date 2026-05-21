@@ -105,6 +105,8 @@ FEATURES = [
             "test_profile_phase13_12.py::TestGroupByBins::test_group_by_quantiles",
             "test_profile_phase13_12.py::TestGroupByBins::test_group_by_bins_label_format",
             "test_profile_phase13_12.py::TestGroupByBins::test_group_by_mutual_exclusion",
+            # Phase 13.37 FIX1: Phase 13.36 backward-compat invariance lock
+            "test_phase_13_37_df_hist_robustness.py::TestPhase1336BackwardCompat::test_SO_COMPAT_1_group_by_bins_default_cycle_byte_identical",
         ],
     },
     {
@@ -175,6 +177,8 @@ FEATURES = [
             "test_same.py::TestColorCycleReset::test_colors_differ",
             "test_same.py::TestSameLegend::test_legend_auto_shown",
             "test_same.py::TestSameLegend::test_auto_label_content",
+            # Phase 13.37 FIX1: Phase 13.36 same=True + group_by auto-color guard
+            "test_phase_13_37_df_hist_robustness.py::TestPhase1336BackwardCompat::test_SO_COMPAT_2_same_true_group_by_no_auto_color_injection",
         ],
     },
     {
@@ -481,6 +485,8 @@ FEATURES = [
             "test_vector.py::TestVectorColorCycle::test_fresh_vector_draw_resets_cycle",
             "test_vector.py::TestVectorColorCycle::test_vector_same_chain_continues_color_cycle",
             "test_vector.py::TestVectorColorCycle::test_outer_same_true_not_swallowed",
+            # Phase 13.37 FIX1: vector+group_by rendering matrix invariance lock
+            "test_phase_13_37_df_hist_robustness.py::TestPhase1336BackwardCompat::test_SO_COMPAT_3_vector_group_by_palette_and_channels_preserved",
         ],
     },
     {

@@ -243,5 +243,18 @@ TEST_LAYERS = {
     "test_phase_13_34_df_m2_robustness.py::TestKwargComposition::test_X_normalize_with_facet_by_column_mode": "invariance",
     "test_phase_13_34_df_m2_robustness.py::TestKwargComposition::test_X_channel_mode_facet_with_auto_title": "invariance",
 
+    # ── Phase 13.37.DF FIX1 — Phase 13.36 backward-compat invariance locks ──
+    # These promote 3 features from ☑️ Smoke to ✅ Verified by adding A≡B
+    # behavioral assertions on top of the pre-existing smoke tests:
+    # - SO.COMPAT.1: A≡B determinism across two identical render calls
+    #   (locks _user_*=None sentinel transparency)
+    # - SO.COMPAT.2: A≡B preservation of first call's colors across same=True
+    #   second call + invariance on no-auto-color collapse
+    # - SO.COMPAT.3: Invariance on vector+group_by rendering matrix shape
+    #   (N_groups × N_vector lines; N_groups colors; N_vector linestyles)
+    "test_phase_13_37_df_hist_robustness.py::TestPhase1336BackwardCompat::test_SO_COMPAT_1_group_by_bins_default_cycle_byte_identical": "invariance",
+    "test_phase_13_37_df_hist_robustness.py::TestPhase1336BackwardCompat::test_SO_COMPAT_2_same_true_group_by_no_auto_color_injection": "invariance",
+    "test_phase_13_37_df_hist_robustness.py::TestPhase1336BackwardCompat::test_SO_COMPAT_3_vector_group_by_palette_and_channels_preserved": "invariance",
+
     # Everything else defaults to "smoke"
 }

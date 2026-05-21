@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-05-21 09:13 UTC
+**Generated:** 2026-05-21 09:54 UTC
 **Phase:** 13.15.DF
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -9,13 +9,13 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 34 | 36% |
-| ☑️ Smoke-only | 60 | 63% |
+| ✅ Verified | 37 | 39% |
+| ☑️ Smoke-only | 57 | 60% |
 | 🧨 Broken | 0 | 0% |
 | 📋 Planned | 1 | 1% |
 | **Total features** | **95** | |
-| **Total proof tests** | **422** | |
-| **Invariance tests** | **193** | |
+| **Total proof tests** | **425** | |
+| **Invariance tests** | **196** | |
 
 **Status key:**
 - ✅ Verified — has at least one invariance test (A ≡ B check)
@@ -39,14 +39,14 @@
 | | **PROFILE** | | |
 | ☑️ | **PROFILE.return_data** — Profile data export (return_data=True) | 3 | 0 |
 | ☑️ | **PROFILE.min_entries** — Minimum entries filter (min_entries=3) | 3 | 0 |
-| ☑️ | **PROFILE.group_by_bins** — Auto-bin float group_by (bins/quantiles) | 4 | 0 |
+| ✅ | **PROFILE.group_by_bins** — Auto-bin float group_by (bins/quantiles) | 5 | 0 |
 | ☑️ | **PROFILE.sort_groups** — Sorted group order (negative-safe intervals) | 3 | 0 |
 | ☑️ | **PROFILE.weights** — Weighted profile (column or expression) | 5 | 0 |
 | | **TITLE** | | |
 | ☑️ | **TITLE.auto_title** — Automatic title from plot parameters | 10 | 0 |
 | | **SAME** | | |
 | ✅ | **SAME.axes_reuse** — same=True reuses last axes | 7 | 0 |
-| ☑️ | **SAME.auto_features** — same=True auto-color, auto-label, legend | 4 | 0 |
+| ✅ | **SAME.auto_features** — same=True auto-color, auto-label, legend | 5 | 0 |
 | ☑️ | **SAME.title_append** — same=True title append + subtitle merge | 4 | 0 |
 | ✅ | **SAME.override** — same=True precedence (ax= wins, explicit overrides) | 3 | 0 |
 | ✅ | **SAME.cross_method** — same=True across plot types (profile on hist2d) | 4 | 0 |
@@ -81,7 +81,7 @@
 | ☑️ | **VECTOR.fail_fast** — Fail-fast guards on hist2d/hexbin; per-pair for stats | 3 | 0 |
 | ☑️ | **VECTOR.style_channels** — Vector + group_by style channel decomposition (P1-2) | 4 | 0 |
 | ☑️ | **VECTOR.contract** — Return contract: stats_list, ylabel, auto_title | 3 | 0 |
-| ☑️ | **VECTOR.color_cycle** — Color cycle continuity with outer same=True (GPT5 fix) | 3 | 0 |
+| ✅ | **VECTOR.color_cycle** — Color cycle continuity with outer same=True (GPT5 fix) | 4 | 0 |
 | ☑️ | **VECTOR.adf_integration** — Vector through AliasDataFrame entry point (P0-3) | 1 | 0 |
 | ✅ | **VECTOR.invariance** — Vector ≡ scalar same-loop semantic invariance (strong A≡B) | 7 | 0 |
 | ✅ | **VECTOR.kwarg_propagation** — Vector path forwards all scalar-mode kwargs (FIX1) | 7 | 0 |

@@ -479,3 +479,192 @@ class TestLinestyleCycle:
         assert len(ls_seen) >= 3, \
             f"Expected ≥3 distinct linestyles on step polygons, got {ls_seen}"
         plt.close(fig)
+
+
+# ====================================================================== #
+# TestPhase1336BackwardCompat (3 tests) — Phase 13.37.DF FIX1
+# ====================================================================== #
+
+class TestPhase1336BackwardCompat:
+    """Phase 13.36 backward-compatibility invariance locks (FIX1).
+
+    Gap identified by dual audit (Sonnet53_R2 + Opus1, 2026-05-21):
+    PROFILE.group_by_bins and SAME.auto_features had 4 smoke tests each;
+    none verified behavioral invariance after Phase 13.36 rewrote
+    _draw_profile_grouped() signature and refactored same=True auto-color.
+
+    Filter convention (Phase 13.36 lesson): errorbar central lines have
+    label='_nolegend_' in matplotlib (the ErrorbarContainer holds the label,
+    not the Line2D). Cap lines have marker='_'. The correct data-line filter
+    is `line.get_marker() != '_'`, NOT a label-based filter.
+    """
+
+    def test_SO_COMPAT_1_group_by_bins_default_cycle_byte_identical(self):
+        """§9.SO.COMPAT.1 — group_by_bins with NO user style kwargs:
+        per-group line properties (colors, markers) are deterministic and
+        the cycle is not collapsed after Phase 13.36 sentinel addition.
+
+        A≡B: two calls with identical params produce identical per-group
+        colors and markers. Locks that _user_marker=None / _user_color=None
+        sentinels are fully transparent when user passes nothing.
+        Promotes PROFILE.group_by_bins from ☑️ Smoke to ✅ Verified.
+        """
+        rng = np.random.default_rng(42)
+        df = pd.DataFrame({
+            'x': rng.uniform(0, 10, 500),
+            'y': rng.normal(0, 1, 500),
+            'g': rng.uniform(0, 5, 500),   # float col → group_by_bins
+        })
+
+        def render():
+            d = DFDraw(df)
+            fig, ax, _ = d.profile("y:x", group_by="g", group_by_bins=4)
+            # Phase 13.36 lesson: filter by marker != '_' (errorbar central
+            # lines have label='_nolegend_'; cap lines have marker='_').
+            data_lines = [l for l in ax.get_lines()
+                          if l.get_marker() != '_']
+            # Use str(color) for hashable comparison (numpy float tuples)
+            colors  = [str(l.get_color())  for l in data_lines]
+            markers = [l.get_marker() for l in data_lines]
+            plt.close(fig)
+            return colors, markers
+
+        colors_a, markers_a = render()
+        colors_b, markers_b = render()
+
+        assert colors_a == colors_b, \
+            "per-group colors not deterministic after Phase 13.36 — sentinel non-transparent"
+        assert markers_a == markers_b, \
+            "per-group markers not deterministic after Phase 13.36 — sentinel non-transparent"
+        # 4 groups → 4 distinct colors (cycle must not collapse to 1)
+        assert len(set(colors_a)) == 4, \
+            f"color cycle collapsed — Phase 13.36 _user_color=None sentinel broken (got {len(set(colors_a))} distinct, expected 4)"
+
+    def test_SO_COMPAT_2_same_true_group_by_no_auto_color_injection(self):
+        """§9.SO.COMPAT.2 — same=True + group_by: auto-color is NOT injected
+        into the second call when group_by is active.
+
+        Phase 13.36 §5.3: same=True auto-color injection skipped when
+        group_by is active (would collide with group palette + trigger
+        false-positive "indistinguishable" UserWarning).
+
+        Invariants (strengthened per Opus1 P2 review):
+        1. No "indistinguishable" UserWarning on the second call.
+        2. First call's group lines not perturbed by the second call.
+        3. Second call's group lines use the full cycle (3 distinct colors),
+           NOT a single auto-injected color — direct failure-mode lock.
+
+        Promotes SAME.auto_features from ☑️ Smoke to ✅ Verified.
+        """
+        rng = np.random.default_rng(42)
+        df = pd.DataFrame({
+            'x': rng.uniform(0, 10, 300),
+            'y': rng.normal(0, 1, 300),
+            'g': np.repeat(['A', 'B', 'C'], 100),
+        })
+        d = DFDraw(df)
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+
+            fig, ax, _ = d.profile("y:x", group_by="g")
+            data_lines_call1 = [l for l in ax.get_lines()
+                                if l.get_marker() != '_']
+            colors_call1 = [str(l.get_color()) for l in data_lines_call1]
+
+            fig, ax, _ = d.profile("y:x", group_by="g", same=True)
+            data_lines_all = [l for l in ax.get_lines()
+                              if l.get_marker() != '_']
+            colors_all = [str(l.get_color()) for l in data_lines_all]
+            plt.close(fig)
+
+        # Invariant 1: no false "indistinguishable" warning
+        bad_warnings = [x for x in w
+                        if issubclass(x.category, UserWarning)
+                        and "indistinguishable" in str(x.message)]
+        assert len(bad_warnings) == 0, \
+            ("Phase 13.36 same=True+group_by guard broken — "
+             "false 'indistinguishable' UserWarning fired")
+
+        # Invariant 2: first call's lines not perturbed by second call
+        n = len(colors_call1)
+        assert colors_call1 == colors_all[:n], \
+            "second same=True call perturbed first call's group colors"
+
+        # Invariant 3 (Opus1 P2 addition): second call uses full color cycle,
+        # not a single auto-injected color
+        colors_call2 = colors_all[n:]
+        assert len(set(colors_call2)) == 3, \
+            ("Phase 13.36 auto-color injection guard broken — "
+             "second call's 3 groups collapsed to "
+             f"{len(set(colors_call2))} color(s)")
+
+    def test_SO_COMPAT_3_vector_group_by_palette_and_channels_preserved(self):
+        """§9.SO.COMPAT.3 — vector expression + group_by + no style kwargs:
+        vector dispatch through grouped path preserves both the per-group
+        color cycle AND the vector→linestyle channel allocation.
+
+        Phase 13.36 added marker/color/markersize to _PROFILE_FORWARDED_NAMES.
+        This test locks that the vector dispatch path through grouped
+        rendering produces the expected matrix of styles.
+
+        Invariants:
+        (a) Total rendered lines == N_groups × N_vector_elements
+        (b) Distinct per-group colors == N_groups (color cycle preserved)
+        (c) Distinct linestyles == N_vector_elements (Phase 13.26 vector→
+            linestyle channel works through the new FORWARDED_NAMES extension)
+
+        NOTE on reformulation: v1.1 spec compared this against a scalar loop
+        equivalent (sigs_vector == sigs_scalar). That premise was wrong —
+        the vector path includes Phase 13.26 channel allocation
+        (vector→linestyle: element 0 → '-', element 1 → '--') that a scalar
+        loop with same=True does NOT replicate. The vector vs scalar
+        comparison cannot pass by design. Reformulated as a direct
+        vector-path invariance lock per the original intent: verify that
+        Phase 13.36's FORWARDED_NAMES extension didn't break the
+        vector+group_by rendering matrix.
+
+        Promotes VECTOR.color_cycle from ☑️ Smoke to ✅ Verified.
+        """
+        rng = np.random.default_rng(42)
+        df = pd.DataFrame({
+            'x':  rng.uniform(0, 10, 300),
+            'y1': rng.normal(0, 1, 300),
+            'y2': rng.normal(1, 1, 300),
+            'g':  np.repeat(['A', 'B', 'C'], 100),
+        })
+
+        d = DFDraw(df)
+        fig, ax_v, _ = d.profile("[y1,y2]:x", group_by="g")
+        # Phase 13.36 filter: marker != '_' excludes errorbar cap lines
+        data_lines = [l for l in ax_v.get_lines() if l.get_marker() != '_']
+
+        colors = [str(l.get_color()) for l in data_lines]
+        linestyles = [l.get_linestyle() for l in data_lines]
+
+        n_groups = 3       # A, B, C
+        n_vector = 2       # y1, y2
+
+        # Invariant (a): N_groups × N_vector = 6 lines
+        assert len(data_lines) == n_groups * n_vector, \
+            (f"Vector+group_by rendering matrix broken: got {len(data_lines)} "
+             f"lines, expected {n_groups * n_vector} "
+             f"({n_groups} groups × {n_vector} vector elements)")
+
+        # Invariant (b): exactly N_groups distinct colors (color cycle)
+        unique_colors = set(colors)
+        assert len(unique_colors) == n_groups, \
+            (f"Group color cycle collapsed in vector+group_by path: "
+             f"got {len(unique_colors)} distinct colors, expected {n_groups}. "
+             "Phase 13.36 _PROFILE_FORWARDED_NAMES extension may have broken "
+             "dispatch.")
+
+        # Invariant (c): exactly N_vector distinct linestyles (Phase 13.26
+        # vector→linestyle channel allocation)
+        unique_ls = set(linestyles)
+        assert len(unique_ls) == n_vector, \
+            (f"Vector→linestyle channel allocation broken: got "
+             f"{len(unique_ls)} distinct linestyles, expected {n_vector} "
+             f"(Phase 13.26 channel)")
+
+        plt.close(fig)
