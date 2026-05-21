@@ -2021,6 +2021,145 @@ adf.draw('y:row', group_by='drift', group_by_bins=5,
 
 ---
 
+
+---
+
+## Phase 13.37.DF v1.1: Histogram Robustness — BUG-014 / BUG-015 / BUG-016 + `hist_errors` + `linestyle_cycle`
+
+**Date:** 2026-05-21
+**Commit:** `67fccf3d16dc60a123f6d4b84fd5e9042b148635`
+**Tag:** `PHASE_13_37_DF_END`
+**Gate:** 843 → **867** (+24 §9 invariance tests)
+
+**Five items closed in the histogram / profile grouped path.** Items 1–3 are bug fixes; items 4–5 are new features. All extend the Phase 13.36 sentinel pattern (capture user-explicit value BEFORE style fill-in) from 3 kwargs (color/marker/markersize) to 5 (adds edgecolor and linestyle).
+
+### BUG-014: `histtype='step'` all-black lines
+`edgecolor` style default (`"black"`) overrode the per-group `color=` for step histograms in matplotlib. Fix: capture `_ud_user_edgecolor` before style fill-in at `draw_hist` line 290; when `_histtype=='step'` and user did not pass `edgecolor`, use `group_color` as edgecolor. User-explicit `edgecolor='red'` wins uniformly. Bar and stepfilled modes use style default (`"black"`) unchanged.
+
+### BUG-015: Profile `group_by` float without bins — memory hang / OOM
+Mirrors Phase 13.35 hist BUG-012 fix. Guard at `profile.py:477` before `pd.cut`: `nunique() > 20` → `ValueError` with `group_by_bins=N` guidance. Same limitation: expression-string `group_by='abs(tgl)'` falls through (not a column name) — deferred.
+
+### BUG-016: `_interval_sort_key` was a no-op for `pd.Interval` objects
+Post-Phase-13.35, `_draw_hist_grouped` receives raw `pd.Interval` values from `pd.cut()`; `str(Interval(10.0, 12.0))` is `'(10.0, 12.0]'` which defeated the digit-dash detector and fell through to lexicographic sort → wrong legend order for bins crossing 10. Fix: `hasattr(label, 'left')` guard at function entry returns `(0, float(label.left))`. **Behaviorally verified by execution** (per Opus2 QRC lesson — three Sonnet reviewers had marked "10/10 checklist ✅" without executing the function and all missed it). Backward compat: string labels unaffected.
+
+### `hist_errors=True`: Poisson error bar overlay
+Raw counts: `yerr=√n`. Probability: `yerr=√n/N`. Density: per-bin `yerr=√n/(N·bw_i)` (vectorized `np.diff(edges)`, NOT mean width — CP1-8). Weighted Poisson via `Σw²` when `weights=` column is set. Zero-count bins skipped. Ungrouped path uses edges from `np.histogram()` return, not `bins=` int (CP1-7). Error bar color follows Phase 13.36 sentinel: `group_color` not `colors[i]`. Two new style keys: `hist.error_capsize=2`, `hist.error_elinewidth=1.0`.
+
+### `linestyle_cycle=True`: per-group linestyle from channels
+Phase 13.26 `channels.cycles.linestyle` style key. Sentinel extended to linestyle — `_ud_user_linestyle` capture before style fill-in. When `linestyle_cycle=True` AND `_user_linestyle` is None → cycle per group. Explicit `linestyle='--'` always wins. Composable with `same=True`.
+
+**Spec history:** v1.0 (Sonnet52_R1): 2 P0 + 11 P1 + 3 P2 → Opus2 consolidated [X]. v1.1: all 13 P0+P1 findings addressed → Approved.
+
+**Tests (+24):** TestBUG014StepColor (4), TestBUG015ProfileGuard (2), TestBUG016IntervalSort (3), TestHistErrors (10: HE.1-9 + HE.style), TestLinestyleCycle (5)
+
+- Architect's Mac Py 3.9.6: **867 / 0 / 1 skipped / 1 xfailed** (commit `67fccf3d`)
+- Linux Py 3.12 (Coder env): 834 / 1 / 33 — pre-existing failures unchanged
+
+---
+
+## Phase 13.37.DF FIX1: Test Expansion — Phase 13.36 Backward Compat Locks
+
+**Date:** 2026-05-21
+**Commit:** `095d6f28` (staged at docs commit `2e5c83df` during bundle generation)
+**Tag:** `PHASE_13_37_DF_FIX1_END`
+**Gate:** 867 → **870** (+3 §9 invariance tests)
+**Source changes: ZERO** (test-only phase)
+
+**Gap identified by dual independent audit (Sonnet53_R2 + Opus2, 2026-05-21):** Phase 13.36 rewrote `_draw_profile_grouped()` signature (added `_user_marker`, `_user_markersize`, `_user_color` sentinel params) and refactored `same=True` auto-color injection (added `group_by-is-None` guard preventing false-positive `'indistinguishable'` UserWarning). Existing smoke tests did not lock behavioral invariance after these Phase 13.36 changes.
+
+**Two spec bugs caught at code time (fix-at-code-time per Phase 13.36 precedent):**
+- **Filter bug:** spec used `label != '_nolegend_'` filter; matplotlib errorbar central `Line2D` has `label='_nolegend_'`. Fix: `marker != '_'` filter (Phase 13.36 convention). This anti-pattern appeared in the v1.0 spec by Sonnet53_R2 despite the existing convention.
+- **SO.COMPAT.3 premise bug:** vector-vs-scalar A≡B comparison was wrong — vector path applies Phase 13.26 vector→linestyle channel; scalar `same=True` does not replicate this. Verified by execution: `MATCH? False`. Reformulated as 3 direct vector-path invariants: (a) N_groups × N_vector lines, (b) N_groups distinct colors, (c) N_vector distinct linestyles.
+
+**Feature promotions (capability matrix):**
+
+| Feature | Before | After | Tests |
+|---|---|---|---|
+| `PROFILE.group_by_bins` | ☑️ Smoke | ✅ Verified | 4 → 5 |
+| `SAME.auto_features` | ☑️ Smoke | ✅ Verified | 4 → 5 |
+| `VECTOR.color_cycle` | ☑️ Smoke | ✅ Verified | 3 → 4 |
+
+**Verified count: 34 → 37**. Invariance: 193 → 196. Proof tests: 422 → 425.
+
+**Panel:** Sonet50 [OK] + Sonet51 [OK] + Sonnet52_R1 [!] — all approved.
+
+- Architect's Mac Py 3.9.6: **870 / 0 / 1 skipped / 1 xfailed** (commit `095d6f28`)
+
+---
+
+## Phase 13.38.DF v1.1: Scatter Enhancements — BUG-017 + `xerr`/`yerr` + Expression `color`/`marker`
+
+**Date:** 2026-05-21
+**Commit:** `0f5257435124b88b02a556c826a0f43345f1e46c`
+**Tag:** `PHASE_13_38_DF_END`
+**Gate:** 870 → **889** (+19 §9 invariance tests)
+
+**Three independent items, all surface-adjacent:**
+
+### BUG-017: `facet_by` float column without bins — memory hang / OOM
+Third instance of the BUG-012/BUG-015 float-guard class (hist Phase 13.35, profile Phase 13.37, `facet_by` dispatch this phase). Guard at `_dispatch_faceted_render` column-mode groups block (`drawer.py:~2571`): `nunique() > 20` + no `facet_by_bins`/`facet_by_quantiles` → `ValueError` with `facet_by_bins=N` guidance. **Fix-at-code-time discovery:** `facet_by_bins`/`facet_by_quantiles` arrive via `**plot_kwargs`, NOT direct named params — spec assumed direct params (CRR §2.1).
+
+### `xerr=` / `yerr=` on `scatter()`: per-point error bars
+Column name or `df.eval()` expression. `_eval_error()` helper with explicit three-tier NaN policy: raise on 100% non-finite (programming error), warn at >50% (data quality), silent zeroing at ≤50% (per-point safety). `nanfrac` written to stats dict. When `xerr`/`yerr` provided: render via `ax.errorbar()`; otherwise `ax.scatter()` path unchanged (dispatch invariance locked by §9.SE.5). Three new style keys: `scatter.error_capsize=2`, `scatter.error_elinewidth=1.0`, `scatter.error_ecolor=None`.
+
+### Expression `color=` and `marker=` for scatter
+**`_process_color()` dispatch order reordered (CP0-1):** None → array → **column-name** → fixed-color (`to_rgba`) → `df.eval()` → terminal. Column-name check precedes `to_rgba()` to preserve backward compat for column names that are also matplotlib colors (`'b'`, `'r'`, `'k'`). Regression-lock: §9.ECM.6 (column `'b'` → colormap, NOT fixed blue). **Fix-at-code-time discovery:** `get_facecolor()` returns the base color until `fig.canvas.draw()` — tests must use `get_array()` which directly probes the dispatch decision (promotes to QRC v1.32 carry-forward).
+
+Boolean `marker=` expression (`'ncl > 100'`) → two-marker encoding (True → `'s'`, False → `'o'`). Per-point rendering via `np.unique` loop with `label='_nolegend_'` (no spurious legend duplication). Single-path scatter only (group_by + expression raises clean error — §9.ECM.7).
+
+**v1.0 panel (Opus2 [X], 15 findings):** CP0-1 dispatch order (P0, 3/4 reviewers converged). v1.1 applied all 7 panel fixes + 4 strengthening tests.
+
+**Tests (+19):** FBGUARD.1-2 (BUG-017 float guard), SE.1-9 (error bars: extents/expressions/NaN/style/group_by/facet), ECM.1-8 (expression color+marker: colormap/backward-compat/error/CP0-1-regression/group_by-scope/2-marker/compose/legend)
+
+**Fix-at-code-time disclosures (CRR §2):** BUG-017 `plot_kwargs` scope; ECM.1/6 `get_facecolor` → `get_array()`; SE.8 DataFrame length mismatch.
+
+**Capability matrix:** Verified 37 → 42 (+5). Invariance 196 → 215 (+19). Proof tests 425 → 444 (+19). Features 100.
+
+- Architect's Mac Py 3.9.6: **889 / 0 / 1 skipped / 1 xfailed** (commit `0f525743`)
+
+---
+
+## Phase 13.39.DF v1.2: 2D Profile (`profcolz`) + Time Axis + Scatter3D
+
+**Date:** 2026-05-21
+**Commits:** `b024414ec14432eeee51ba19397e908622fe1874` (main), `3c5d45474dcbdd0683969adde76342fa904f5059` (docs/tag)
+**Tag:** `PHASE_13_39_DF_END`
+**Gate:** 889 → **913** (+24 §9 invariance tests)
+
+**Three items using the new `z:y:x` expression infrastructure:**
+
+### Item 1: 2D Profile — `draw_profile2d()` via `z:y:x` expression
+Expression `'z:y:x'` (`colon_count == 2`) intercepted at `DFDraw.profile()` entry AFTER selection/sampling, BEFORE `_parse_expr()` (CP1-5 — exact insertion point). New helper `_split_top_level_colons_3()` alongside existing `_split_top_level_colon()`. Algorithm: `scipy.stats.binned_statistic_2d` for per-cell mean/median; `min_entries=N` masks low-count cells → NaN; `pcolormesh` + colorbar mirrors `draw_hist2d` pattern. `bins=[nx,ny]` list form OR `bins=nx + bins2=ny` scalar form. `vmin`/`vmax`/`cmap`/`clabel`/`colorbar`/`norm='log'` supported. z/y/x accept column names or `df.eval()` expressions. Backward compat: `'y:x'` (`colon_count == 1`) routes unchanged to 1D profile — locked by §9.P2D.8.
+
+ROOT equivalent: `TProfile2D::Draw("colz")`.
+
+### Item 2: Time Axis — `time_format=` kwarg
+Pre-conversion approach (N3): `x_data` converted to matplotlib date numbers via `mdates.date2num()` BEFORE any `ax.*` render call. **CP1-4 auto-detect:** `datetime64` column dtype detected BEFORE `astype(float)` — else int64-nanosecond cast becomes ~1.76e15 → `pd.to_datetime(unit='s')` crashes "year 56003119 out of range" (**discovered at code time — §2.1 disclosure**). Auto-detect branches: `datetime64*` → `mdates.date2num(x_arr)` directly; else → `pd.to_datetime(unit='s').to_pydatetime()`. Applied to `draw_profile`, `draw_hist`, `draw_scatter`, `draw_profile2d`. DateFormatter/AutoDateFormatter applied post-render. `time_format='auto'` → `AutoDateFormatter`; any strftime string → `DateFormatter`. `unit='s'` assumption: Unix epoch seconds (TPC/ITS `time_s` columns) — a `time_unit='s'` companion parameter is a future generalization.
+
+**§9.TA.5 regression lock:** uses realistic 2024-epoch timestamps (~1.7e9) so `ticks[0] < 100000` distinguishes pre-converted matplotlib date numbers (~19723) from raw Unix timestamps (~1.7e9). Epoch-0 data would make both paths pass — CP1-1 fix.
+
+### Item 3: Scatter3D — `type='scatter3d'`
+Explicit `type='scatter3d'` (AD-SC3D-1: less surprising than auto-routing; recommended by Sonet50 + Sonet51 independently). `z:y:x` expression → 3D scatter via `mpl_toolkits.mplot3d`. Reuses Phase 13.38 `_process_color()` + `_process_size()` unchanged. `color=`/`size=` accept column names or `df.eval()` expressions. `elev=`/`azim=` forwarded to `ax.view_init()`. `same=True` guard: raises `ValueError` if existing axes is not `Axes3D`. `group_by` + `scatter3d` raises (scope boundary locked by §9.SC3D.7). Stats dict: `{n, mean_x, mean_y, mean_z, std_x, std_y, std_z, n_filtered}` — all 3 means locked to 1e-9 (§9.SC3D.6).
+
+**Fix-at-code-time disclosures (CRR §2):**
+- §2.1: `_x_is_datetime` detection BEFORE `astype(float)` (spec put check too late)
+- §2.2: named params `bins2=bins2` / `time_format=time_format` (not `kwargs.get`) — R6 validator promotes FORWARDED_NAMES entries to named params on parent method
+- §2.3: scatter3d dispatch BEFORE `_parse_expr()` in `DFDraw.draw()` — else colon_count > 1 rejects `"z:y:x"` before type dispatch
+- §2.4: `elev`/`azim` removed from `_SCATTER_FORWARDED_NAMES` — scatter3D-only params not on `DFDraw.scatter` signature
+
+**v1.1 → v1.2 changes (6 fixes from Sonet50 consolidated panel, 6 reviewers):** CP1-1 (TA.5 realistic timestamps), CP1-2 (scipy `range` fix — 3-level nested → 2-level), CP1-3 (SC3D.6 locks all 3 means), CP1-4 (datetime64 auto-detect), CP1-5 (dispatch insertion point), CP1-6 (scipy required, fallback dropped), CP2-1 (group_by scope locks), CP2-2 (same=True 3D guard).
+
+**Tests (+24):** P2D.1-8+10 (9 profile2d tests), TA.1-7 (7 time-axis tests: profile/scatter/hist/profile2d + datetime64 no-crash), SC3D.1-8 (8 scatter3d tests: basic/color-expr/size-col/selection/backward-compat/stats-all-3-means/group_by-scope/same-true-guard)
+
+**Capability matrix:** Verified 42 → **47** (+5). Invariance 215 → **239** (+24). Proof tests 444 → **468** (+24). Features **105** (+5).
+
+**QRC v1.32 carry-forward items (2 new, now 6 total):**
+- "Dtype-preserving transforms must run BEFORE blanket `astype(float)`" (datetime64, categorical, decimal columns silently destroyed otherwise)
+- "Named param ≠ kwarg after FORWARDED_NAMES promotion" (R6 validator promotes → access by name, not `kwargs.get`)
+
+- Architect's Mac Py 3.9.6: **913 / 0 / 1 skipped / 1 xfailed** (commit `b024414e`)
+- Pre-existing failure (Linux Py3.12 only): `test_vector_draw_kwarg_surface_enumeration` — pandas `StringDtype` not matched in `_process_color` (Phase 13.38 debt). Mac Py3.9.6 unaffected. Tracked as Phase 13.40 candidate.
+
 ## Statistics Summary
 
 | Phase | Test Count | Delta | Key Feature |
@@ -2063,7 +2202,13 @@ adf.draw('y:row', group_by='drift', group_by_bins=5,
 | **13.35.DF v1.3** | 833 | +11 | **`group_by_bins` + `hist_norm` for `hist()` (BUG-013 hist side): adds 4 explicit params to draw_hist + DFDraw.hist signatures + `_HIST_FORWARDED_NAMES`; BUG-012 guard; shared bin edges; per-group normalization; `_group_weights` helper; 7 edits across drawer.py + histogram.py; architect TPC/ITS reproducer green** |
 | **13.36.DF v1.2** | **843** | **+10** | **User style kwargs override auto-cycle (BUG-013 style-override side): `_ud_user_*` sentinel capture before style fill-in; `_user_marker`/`_user_markersize`/`_user_color` forwarded to `_draw_profile_grouped`; `_user_color` to `_draw_hist_grouped`; per-group cycle gated on `is None`; "indistinguishable" UserWarning; `_*_FORWARDED_NAMES` extended (`markersize` omitted from hist per Sonet51 P1); architect priority rule: user kwarg > channel cycle > style default** |
 
-**Total Development (as of Phase 13.36.DF v1.2):** 37 phase entries, **843 tests** + 1 skipped + 1 xfailed, 90 features, 193 invariance tests, 33 Verified features
+| **13.37.DF v1.1** | 867 | +24 | **Histogram robustness: BUG-014 (`histtype='step'` all-black — edgecolor sentinel), BUG-015 (profile float group_by guard), BUG-016 (`_interval_sort_key` no-op for pd.Interval — hasattr guard; verified by execution), `hist_errors=True` (Poisson error bars with 3-tier Σw² support), `linestyle_cycle=True` (Phase 13.26 channels extension). Sentinel pattern extended to edgecolor + linestyle. Spec: 2 P0 rounds (v1.0 → v1.1)** |
+| **13.37.DF FIX1** | 870 | +3 | **Test expansion: Phase 13.36 backward-compat locks. Promoted PROFILE.group_by_bins, SAME.auto_features, VECTOR.color_cycle to ✅ Verified (34 → 37). 2 spec bugs caught at code time: label filter anti-pattern + SO.COMPAT.3 vector-vs-scalar wrong premise. Verified: 34 → 37, Invariance: 193 → 196** |
+| **13.38.DF v1.1** | 889 | +19 | **Scatter enhancements: BUG-017 (`facet_by` float guard — 3rd instance of BUG-012/015 class), `xerr`/`yerr` error bars (3-tier NaN policy), expression `color=`/`marker=` (`_process_color` CP0-1 dispatch reorder: column before `to_rgba`; regression-lock ECM.6). `get_array()` over `get_facecolor()` for colormap dispatch (QRC v1.32 carry-forward). Verified: 37 → 42, Invariance: 196 → 215** |
+| **13.39.DF v1.2** | **913** | **+24** | **2D Profile (`profcolz`): `draw_profile2d()` via `z:y:x` expression; `scipy.stats.binned_statistic_2d`; `min_entries=` masking; pcolormesh + colorbar; ROOT TProfile2D equivalent. Time Axis: `time_format=` kwarg on 4 plot types; datetime64 auto-detect before `astype(float)` (QRC v1.32 carry-forward). Scatter3D: `type='scatter3d'`; `mpl_toolkits.mplot3d`; reuses Phase 13.38 `_process_color`/`_process_size`. 4 fix-at-code-time disclosures. Verified: 42 → 47, Invariance: 215 → 239** |
+
+**Total Development (as of Phase 13.39.DF v1.2):** 41 phase entries, **913 tests** + 1 skipped + 1 xfailed, **105 features**, **239 invariance tests**, **47 Verified features**
+
 
 > **Phase ordering note (post-13.32 v1.0):** the chronological commit order on `feature/groupby-optimization` from 2026-05-16 onward is 13.27.DF Commit 2 v1.0 (`84dcf916`) → Commit 2 FIX1 (`ba42fcde`) → Commit 2 FIX1.FIX1 (`b929ccb9`) → 13.33.DF v1.0 M1 (`61460df5`) → 13.33.DF v1.0 M2 (`c6a3245f`) → 13.33.DF v1.0 FIX1 (`94594f89`) → 13.32.DF FIX1 (`195ab4ea` / `d0b04f88`) → 13.34.DF v1.0 (`463deb36` / `abf5fe40`) → 13.34.DF FIX1 (`379f26bd`) → 13.34.DF FIX2 (`b38395db`) → 13.35.DF (`3b910aec`) → 13.36.DF (`2f4d959f`). Phase numbers are NON-monotonic vs commit date: 13.27 Commit 2 series lands after the 13.32 v1.0 entry above, and 13.32 FIX1 chronologically follows 13.33 v1.0 FIX1. Phase numbers index the *originating* phase, not the commit order — consistent with the post-13.27 Commit 1 phase ordering note above.
 
@@ -2186,8 +2331,9 @@ All APIs subject to change based on user feedback and integration testing with:
 | 1.5 | 2026-05-09 | Claude49Coder | Backfill of phases that landed between v1.4 and current state. Added Phase 13.18.DF (robust statistics extension), Phase 13.25.DF v1.3 with FIX1 + FIX2 (Quantiles on Profile — MultiGraph Phase A; AD-44..AD-54), Phase 13.26.DF v1.2 (N-Channel Framework — MultiGraph Phase B; Algorithm A; AD-55..AD-60), Phase 13.27.DF Commit 1 (Facet refactor — MultiGraph Phase D, profile-only; AD-61..AD-68), Phase 13.28.DF v1.1 (Robust Data Handling — `sanitize_for_plot` + hybrid autorange; AD-69..AD-77; 5-0 closure verdict). Statistics table updated through Phase 13.27.DF Commit 1 (current 663 tests, 62 features). Governance principles GP-1 through GP-5 summarized in their phase-of-origin sections (full text remains in STYLING_FRAMEWORK_DECISIONS.md §3). |
 | 1.6 | 2026-05-15 | Claude49Coder | Added Phase 13.28.DF FIX1 (autorange.* style key registration; commit `57576ebf`), Phase 13.30.DF v1.0 (Class-2 column-reference parameter validation; commit `e8278531`), Phase 13.31.DF v1.0 (`facet_by` column-name support, AD-78; commit `f3ca432a`), Phase 13.32.DF v1.0 (`group_by × quantiles` in grouped path + symmetric `facet_by` binning, AD-79; commit `cb6a1aed`). Test count 663 → 715. Added 3 lessons learned (style-key registration regression class, source freshness as binding rule, wrong-bundle review artifact) and 4 best practices (dual-path dispatch, multi-kind plot dispatch with explicit signature branching, AST R6-equivalent pre-delivery check, auditable patches over local sed). Statistics Summary table extended with 4 new rows + phase-ordering note. Panel review (Claude40 consolidating Sonet50, Sonet51, Sonnet52_R1, Sonnet53_R2, Claude46, Claude48): approved-with-3-mechanical-fixes — applied pre-commit: (a) Phase 13.30 Class-2 tuple corrected to `('group_by',)` only and Class-1 → Class-3/Class-5 deferral; (b) Phase 13.26 → Phase 13.28 autorange-introduction attribution (FIX1 entry + Lesson #9); (c) Statistics table totals updated to 28 phase entries / 715 tests; transient "Pending push" line removed. |
 | 1.7 | 2026-05-21 | Opus1 (Reviewer) at architect request | **Backfill of 9 phase events that landed between Phase 13.32.DF v1.0 closure (`cb6a1aed`, 2026-05-15) and current HEAD (`2f4d959f`, 2026-05-20).** Added strictly append-only — every existing entry preserved verbatim per architect's "Previous coders removed history, which was completely wrong" directive. New H2 sections (in phase-number order, inserted before § Statistics Summary): Phase 13.27.DF Commit 2 v1.0 (`84dcf916`, +52 tests, Phase D completion: `selection_vector` + `weights_vector` + `delta_facet`), Phase 13.27.DF Commit 2 FIX1 (`ba42fcde`, +9), Phase 13.27.DF Commit 2 FIX1.FIX1 (`b929ccb9`, +1), Phase 13.33.DF v1.0 M1 (`61460df5`, +22, Normalized differential profiles, AD-80/81/82), Phase 13.33.DF v1.0 M2 (`c6a3245f`, +5, group_by/facet_by composition), Phase 13.33.DF v1.0 FIX1 (`94594f89`, +1, tag `PHASE_13_33_DF_v1_0_FIX1_END`), Phase 13.32.DF FIX1 (`195ab4ea` / `d0b04f88`, +4, BUG-001/002/003 faceted rendering bugs caught in real-data TPC/ITS QA, tag `PHASE_13_32_DF_FIX1_END`), Phase 13.34.DF v1.0 (`463deb36` / `abf5fe40`, +8, Capability Matrix taxonomy refresh + M2 robustness gaps, tag `PHASE_13_34_DF_END`), Phase 13.34.DF FIX1 (`379f26bd` + `14851d42`, +5, BUG-010 untracked test file, tag `PHASE_13_34_DF_FIX1_END`), Phase 13.34.DF FIX2 (`b38395db`, +0, BUG-011 run_tests.sh pre-bundle staging check, tag `PHASE_13_34_DF_FIX2_END`), Phase 13.35.DF v1.3 (`3b910aec`, +11, `group_by_bins` + `hist_norm` for `hist()`, BUG-013 hist side, tag `PHASE_13_35_DF_END`), Phase 13.36.DF v1.2 (`2f4d959f`, +10, user style kwargs override auto-cycle, BUG-013 style-override side, tag `PHASE_13_36_DF_END`). Test count 715 → **843**. Statistics Summary table extended with 13 new rows (one per phase event) + extended phase-ordering note covering the non-monotonic commit order from 2026-05-16 onward. Totals updated: 28 → 37 phase entries; 715 → 843 tests; 62 → 90 features; 28+ → 193 invariance tests; 7 → 33 Verified features. Source: `gitlog.txt` (commits cb6a1aed..2f4d959f), `reviewer_20260521_092254.zip` (843/0/1 confirmed at HEAD), `CAPABILITY_MATRIX_20260521_092254.md` (90 features / 33 Verified confirmed). Note: backfilled entries derive from commit messages (verbatim phrasing preserved where present); each new entry cites its commit hash and tag per Org v1.30 § Source-Line Evidence Standard `[MUST]`. No existing line of this document was removed or shortened. Standalone review of this PHASE_HISTORY backfill not performed — architect-directed governance closure, awaiting panel review. |
+| **1.8** | **2026-05-21** | **Sonet50 (consolidated panel review)** | **Added 4 new phase sections (Phases 13.37.DF v1.1, 13.37.DF FIX1, 13.38.DF v1.1, 13.39.DF v1.2) and 4 new Statistics Summary rows. Strictly append-only. Commits: `67fccf3d` (13.37), `095d6f28` (13.37 FIX1), `0f525743` (13.38), `b024414e`+`3c5d4547` (13.39). Test count 843 → 913 (+70). Verified 33 → 47 (+14). Invariance 193 → 239 (+46). Features 90 → 105 (+15). Phase entries 37 → 41 (+4). Sources: gitlog.txt (commits `2f4d959f`..`3c5d4547`), session approval summaries (Sonet50_PHASE_13_37/38/39_*_ReviewSummary_AllReviewers_20260521.md), CAPABILITY_MATRIX.md (47 Verified / 239 invariance / 913 tests confirmed). All pre-existing content preserved verbatim.** |
 
 ---
 
-**Document Status:** Updated through Phase 13.36.DF v1.2 (commit `2f4d959f`, tag `PHASE_13_36_DF_END`, 2026-05-20). Rolling tag `PHASE_BEGIN_dfdraw` → `2f4d959f`. Backfill of 9 phase events (Phase 13.27 Commit 2 series, Phase 13.32 FIX1, Phase 13.33 v1.0 M1/M2/FIX1, Phase 13.34 v1.0/FIX1/FIX2, Phase 13.35, Phase 13.36) recorded in revision history row 1.7. **Previous "Updated through Phase 13.32.DF v1.0" baseline preserved verbatim above for audit traceability per architect's append-only directive.**
-**Next Update:** After Phase 13.37 (Histogram Robustness: BUG-014 step color, BUG-015 profile float-groupby guard, `hist_errors=True`, `linestyle_cycle=True`; proposal v1.0 by Sonnet52_R1 currently in panel review).
+**Document Status:** Updated through Phase 13.39.DF v1.2 (commit `b024414e` / `3c5d4547`, tag `PHASE_13_39_DF_END`, 2026-05-21). Rolling tag `PHASE_BEGIN_dfdraw` → `3c5d4547`. **Previous "Updated through Phase 13.36.DF v1.2" baseline preserved verbatim above for audit traceability per architect's append-only directive.**
+**Next Update:** After Phase 13.40.DF (cumulative histogram; 922 tests predicted).
