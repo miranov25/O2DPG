@@ -1606,6 +1606,421 @@ Two binding rules emerged from the debug arc, captured in the Code Review Reques
 
 ---
 
+## Phase 13.27.DF Commit 2 v1.0: `selection_vector` + `weights_vector` + `delta_facet` (Phase D completion)
+
+**Date:** 2026-05-16 (commit `84dcf916`; first commit `bd35ea5d` 2026-05-16 12:20 then re-committed 12:45 with Sonnet52_R1 P1-2 guard appended; both messages identical title)
+**Status:** ✅ v1.0 closed; FIX1 / FIX1.FIX1 follow-ups documented below
+**Specification:** PHASE_13_27_DF_Commit2_v1_0_Proposal.md (panel-conditional APPROVAL converted to APPROVAL by panel-requested Hard Constraint §3 guard)
+
+### Objectives
+
+Complete Phase D (MultiGraph) Commit 2: per-curve `selection_vector` and `weights_vector` channels with `delta_facet` label management. Closes the cross-curve composition story started by Phase 13.27.DF Commit 1 (facet refactor) and Phase 13.26.DF v1.2 (N-Channel Framework / Algorithm A).
+
+### Implementation
+
+- 11 new `EXPLICIT_RULES` entries (`selection_delta` / `weights_delta` combinations)
+- 1 new style key: `channels.label.delta_separator`
+- 8 new kwargs on `profile()` / `hist()` / `scatter()` / `draw()` uniformly (per A-1 surface convention)
+- `hist2d()` signature gate: explicit `TypeError` for vector kwargs (per-pixel density has no meaningful overlay)
+- `scatter()` `weights_vector` UserWarning at entry: per-row weights have no rendering effect on scatter (point-size weighting deferred to Phase E)
+- 3 new static helpers: `_compute_vector_iteration_indices`, `_combine_selections`, `_combine_weights`
+- `_draw_vector` iteration-loop refactor with per-curve selection/weights composition
+- **Hard Constraint §3 guard** (Sonnet52_R1 P1-2): `UserWarning` when single-Y + multi-element `selection_vector` / `weights_vector` (silent-degrade prevention). FIX1 enables full single-Y dispatch.
+- 52 §9 invariance tests across 12 classes (load-bearing assertions per Coder QRC Rule 14)
+- `feature_taxonomy.py`: +5 CHANNEL entries (62 → 67 features)
+
+**ADs realized:** AD-61, AD-62, AD-65, AD-66, AD-67 (AD-63, AD-64, AD-68 realized in earlier phases). Phase D complete except FIX1 (single-Y full dispatch + hist weights rendering).
+
+### Tests
+
+**Gate:** 715 → **767** / 0 / 1 skipped (+52 §9 invariance).
+
+---
+
+## Phase 13.27.DF Commit 2 FIX1: Single-Y vector dispatch + hist weights rendering
+
+**Date:** 2026-05-16 (commit `ba42fcde`)
+**Status:** ✅ Closed
+**Specification:** PHASE_13_27_DF_Commit2_FIX1.md
+
+### Objectives
+
+Replace the v1.0 Hard Constraint §3 UserWarning guard with full functional dispatch, and add column-name/expression `weights=` to `hist()`.
+
+### Implementation
+
+- **§7(a) Single-Y vector dispatch:** Single-Y / single-X + `selection_vector` / `weights_vector` now engages `_draw_vector` dispatch (was silent-ignore + UserWarning guard). The 3 FIX1-pending UserWarning blocks in `hist()` / `scatter()` / `profile()` have been removed. Trigger gated on `not _column_mode_facet` to preserve facet path for single-Y + column-mode `facet_by` composition (a Phase 13.33 concern per spec §4.2.4).
+- **§7(b) hist weights:** `draw_hist()` accepts `weights=` as column name or `df.eval()` expression. Joint NaN/inf sanitize mask aligns weights with `x_data`. Composes with `norm='probability'` (per-row weights × 1/n_clean). `group_by` + column-name weights raises `NotImplementedError` (clean FIX1 scope).
+- Coder QRC v1.28 binding + v1.32 amendments exercised.
+
+### Tests
+
+**Gate:** 767 → **776** / 0 / 1 skipped (+9 new §9-marked lock-tests in `TestPhase_13_27_Commit2_FIX1` class; `§9.WDH.2` promoted from signature-plumbing to rendering invariance; `§9.SDP.2` updated `vector_compose='inner'` → `vector_compose='outer'`; `§9.HW.*` for weights added).
+
+---
+
+## Phase 13.27.DF Commit 2 FIX1.FIX1: Assertion strengthen + sanitize cleanup
+
+**Date:** 2026-05-16 (commit `b929ccb9`)
+**Status:** ✅ Closed
+**Review:** PHASE_13_27_DF_Commit2_FIX1_END panel (Sonnet53_R2 P1; Sonet50 P2; Sonnet53_R2 P2; §6 vote 3/5 for option (c) including Main Reviewer — defer n_y=1 silent-degrade to Phase 13.33)
+
+### Objectives
+
+Address panel feedback from PHASE_13_27_DF_Commit2_FIX1_END review without behavior change to production code paths.
+
+### Implementation
+
+- **P1 (Sonnet53_R2):** `§9.SDP.6` assertion was too weak. `ax.get_lines() >= 2` passed even on a single profile curve because `ax.errorbar()` creates ≥2 Line2D objects per curve (main line + caplines). Switched to `len(ax.containers) >= 2` — one `ErrorbarContainer` per rendered curve. Matches the precedent in `WDH.2` / `WDH.4`.
+- **P2 (Sonet50) `§9.SDP.9` NEW:** Locks that the inner-mode `ValueError` message names the mismatched lengths (`vector=1, selection_vector=2`) so Phase 13.33 users immediately see why their default-inner call failed. Per §6 option (c), the n_y=1 silent-degrade fix is deferred to Phase 13.33; users must pass `vector_compose='outer'` until then — this test ensures the message makes the workaround discoverable.
+- **P2 (Sonnet53_R2):** `histogram.py` `sanitize_for_plot` was called twice when `w_data is None`. Captured `x_clean` from the first call and reused.
+
+### Tests
+
+**Gate:** 776 → **777** / 0 / 1 skipped (+1 `§9.SDP.9` lock test).
+
+---
+
+## Phase 13.33.DF v1.0 M1: Normalized differential profiles (single-curve modes)
+
+**Date:** 2026-05-17 (commit `61460df5`)
+**Status:** ✅ M1 complete (M2 + FIX1 below; closure verdict at end of FIX1)
+**Specification:** PHASE_13_33_DF_v1_1_Proposal_NormalizedDifferentialProfiles.md (v1.0 → v1.1 with M1/M2 milestone split per Coder/architect agreement)
+**ADs:** AD-80 (sign convention), AD-81 (stats dict), AD-82 (pull bands)
+
+### Objectives
+
+Implement Milestone 1 of the 2-milestone split: single-curve `normalize=` modes complete; `group_by` / `facet_by` composition deferred to M2. Five differential normalization modes (`delta`, `ratio`, `log_ratio`, `pull`, callable) with two layouts (`overlay+diff`, `diff_only`) and 8 style keys for panel geometry + pull bands.
+
+### Implementation
+
+- **`profile()` gains `normalize=` and `normalize_layout=` kwargs** (AD-80/81/82).
+- **5 modes:** `delta` (`v[0]−v[1]` with SEM error propagation), `ratio` (`v[0]/v[1]` with delta-method error and zero-denom mask), `log_ratio` (`ln(v[0]/v[1])` with non-positive-mean mask), `pull` (`(v[0]−v[1])/σ` with ±1σ/±2σ bands per AD-82), `callable` (user-supplied `f(stats_0, stats_1) → (values, errors)`).
+- **2 layouts:** `overlay+diff` (default, 2-panel), `diff_only` (single panel).
+- **8 new style keys** for panel geometry + pull bands.
+
+**Architecture:**
+- New `_dispatch_normalize_render` method orchestrates the two-pass rendering (top panel: signal + reference; bottom panel: differential). Architecturally a sibling of `_dispatch_faceted_render` — two-pass rendering is fundamentally different from `_draw_vector`'s iterate-and-render.
+- `_compute_per_bin_mad_sigma` added (15 lines mirroring `_compute_per_bin_median`). All 8 cells of the 2×4 interaction matrix (mean/median × 4 modes) work.
+- `_compute_normalize_transform` handles all 5 modes + masks for undefined bins (zero denominator, non-positive log argument, empty bin).
+
+**§6 directive (Phase 13.27 FIX1.FIX1 deferred closure, option c):** Single-Y + `selection_vector` + default `vector_compose='inner'` is auto-rewritten to `vector_compose='outer'` per the §6 directive. This is a clean dispatcher convention (Q1), not a deferral or workaround — same scalar→vector convention validated in Phase 13.27 FIX1. Locked by `§9.NSY.1`, `§9.NSY.2`.
+
+**Forwarding chain (Q2):** `_DRAW_FORWARDED_NAMES` and `_PROFILE_FORWARDED_NAMES` extended with `normalize` and `normalize_layout`; `_HIST_FORWARDED_NAMES` intentionally NOT extended (profile-only kwargs; auto-forwarding caused `hist()` crash via `Polygon.set()` — self-caught pre-delivery via regression).
+
+**Pre-existing inconsistencies flagged for separate fix-up (not Phase 13.33 scope per Main Architect):** `central='median'` continues to use mean-based errors. `_compute_per_bin_mad_sigma` was added as a helper that a future fix-up can wire into the regular median path (locked by xfail `§9.MED.1` in Phase 13.34 M2).
+
+### Tests
+
+**Gate:** 777 → **799** / 0 / 1 skipped (+22 `§9` invariance tests). Locks AD-80 sign convention, AD-81 stats dict, AD-82 pull bands, §6 directive idempotency, and 3 validation paths. R6 validator green.
+
+**Deferred to M2:** `group_by` + `normalize` composition (per-group differential), `facet_by` + `normalize` composition (K × 2 grid), 5 more tests.
+
+---
+
+## Phase 13.33.DF v1.0 M2: `group_by` + `facet_by` + `normalize` composition
+
+**Date:** 2026-05-17 (commit `c6a3245f`)
+**Status:** ✅ M2 complete
+
+### Objectives
+
+Close Phase 13.33.DF v1.0 by adding `group_by` and `facet_by` composition with `normalize=`.
+
+### Implementation
+
+- **`group_by` + `normalize`:** Per-group differential rendering. Each group gets its own signal+reference top-panel pair and its own differential bottom-panel curve. Colors distinguish groups; signal/reference distinguished by linestyle within group.
+- **`facet_by` + `normalize`:** K × 2 grid where each facet column is an independent (top, diff) panel pair. Diff panels share y-axis across facets for cross-facet comparison. M2 v1.0 restriction: categorical column facets only; `facet_by_bins` / `facet_by_quantiles` + `normalize` raises `NotImplementedError` (CRR §11 flag for future fix-up).
+- **Self-caught bug fix:** extended `_need_vector_dispatch` to fire on `normalize=`, pre-empting the `_column_mode_facet` short-circuit that would otherwise route facet+normalize to the regular facet path.
+- Two new dispatchers added: `_dispatch_normalize_grouped_render` (~225 LOC), `_dispatch_normalize_faceted_render` (~225 LOC). Code duplication ~40 LOC of the inner 2-curve loop body is accepted for M2 in exchange for not touching the panel-approved M1 implementation. A unifying refactor is a candidate for a later structural fix-up phase (CRR §11).
+- Both dispatchers reuse M1's helpers (`_compute_normalize_transform`, `_render_normalize_panel`, `_compute_per_bin_mad_sigma`, `NORMALIZE_MODES`) unchanged.
+
+**Dispatch hierarchy when `normalize` is set** (panel-decided in v1.1 §3.7):
+- `facet_by` → faceted dispatcher (K×2 grid, outer dimension)
+- `group_by` → grouped dispatcher (per-group differentials)
+- else → M1 single-render (preserved unchanged)
+
+### Tests
+
+**Gate:** 799 → **804** / 0 / 1 skipped (+5 new `§9.NG.1/2/3`, `§9.NF.1/2`; plus new fixture `df_three_fills_two_sectors`. M1's 22 tests untouched. 27 normalize tests total).
+
+---
+
+## Phase 13.33.DF v1.0 FIX1: Panel-feedback fixup
+
+**Date:** 2026-05-17 (commit `94594f89`)
+**Status:** ✅ Closed (panel: Claude40 [OK], Sonet50/51 [OK], Sonnet52_R1 [!], Sonnet53_R2 [!])
+**Tag:** `PHASE_13_33_DF_v1_0_FIX1_END`
+
+### Objectives
+
+Address 1 P1 + 2 P2 surfaced in the v1.0 closure panel. Architect approved fixing all three in one commit.
+
+### Implementation
+
+- **P1 (Sonnet52_R1 + Sonnet53_R2 convergent — Coder QRC Rule 14 gap):** `§9.NF.3` — locks that `facet_by_bins` / `facet_by_quantiles` composing with `normalize=` raises `NotImplementedError` (instead of silently falling back to categorical facets or producing incorrect output). Tests BOTH paths (bins + quantiles) and BOTH the raise itself AND that the error message names the categorical-column workaround per Phase 13.16.DF actionable-error convention. Protects against silent message regression in future refactors.
+- **P2a (Sonnet52_R1 + Sonnet53_R2 + Sonet51):** Dead code in `_dispatch_normalize_faceted_render` `diff_only` branch — `sharey=(None if i == 0 else None)` ternary always evaluated to `None`; actual `sharey` applied in the explicit loop below. Removed the no-op ternary.
+- **P2b (Sonnet53_R2 — relevant for production validation on real ITS/TPC data):** First-pass performance optimization on `_dispatch_normalize_grouped_render` group enumeration — replaces a Python-side filter with a single pandas C-pass for large DataFrames (e.g., 4M-row ITS DataFrames: 12M Python comparisons → single C pass).
+- **Bonus:** Error messages on `facet_by_bins` / `_quantiles` + `normalize` now explicitly name the "pre-bin into a categorical column" workaround so users discover the path forward from the error alone.
+
+### Tests
+
+**Gate:** 804 → **805** / 0 / 1 skipped (+1 new `§9.NF.3` locking 4 invariants: bins raises, bins message has workaround hint, quantiles raises, quantiles message has workaround hint).
+
+---
+
+## Phase 13.32.DF FIX1: Faceted rendering bug fixes (BUG-001 / BUG-002 / BUG-003)
+
+**Date:** 2026-05-17 → 2026-05-18 (initial commit `195ab4ea` 2026-05-17 10:48; final commit `d0b04f88` 2026-05-18 09:40; tag `PHASE_13_32_DF_FIX1_END`)
+**Status:** ✅ Closed
+**Discovery:** Real-data validation on `time_series_tracks_0.root` (TPC/ITS QA, 2026-05-16) revealed three P1 bugs in `_dispatch_faceted_render` (`drawer.py`).
+**Note:** Phase numbering follows the originating phase (13.32) rather than commit date — the FIX1 commits chronologically follow Phase 13.33 v1.0 M2 / FIX1. This is consistent with the post-13.27 Commit 1 phase ordering note.
+
+### Bugs
+
+- **BUG-001** (function entry + lines 2703, 2720): `__dfdraw_facet_bin__` internal column name leaked to subplot titles and `stats['facet_by']`. Root: line 2524 rebinds `facet_by` to `_effective_facet_col` (the temp `'__dfdraw_facet_bin__'` column name) before title generation. Fix: save `_facet_display_name = facet_by` at FUNCTION ENTRY (before `_facet_mode` is determined at line 2392) so it is defined for ALL facet modes (channel + column). Use the saved display name at `set_title()` and in `combined_stats['facet_by']`. Placement at function entry rather than inside the column-mode branch closes the v1.5 spec scoping gap (Sonet51 + Sonnet52_R1 P1) where channel-mode calls would have raised `NameError`. **Locks:** `§9.F001.1` + `§9.F002.2`.
+- **BUG-002** (after per-subplot loop): `auto_title=True` ignored in faceted mode. Root: only the explicit `title=` kwarg (line 2329) triggered `fig.suptitle()`; `auto_title` in `**plot_kwargs` was correctly suppressed per-subplot but never used at the figure level. Fix: extract `auto_title` from `plot_kwargs` after the per-subplot loop; call `fig.suptitle()` via the `resolve_auto_title` + `parse_auto_title_parts` + `build_auto_title` pattern (verified against `drawer.py:1329-1333` authoritative call site). Uses `td['main']` / `td['sub']` per the actual return shape (verified against `_auto_title.py:97`; the spec evolution v1.3 → v1.4 → v1.5 surfaced repeatedly that `build_auto_title` returns `{'main', 'sub'}`, not `{'title'}`). `try/except` failsafe preserves the plot on `auto_title` import/build errors (same defensive pattern as `_draw_vector` failsafe at ~line 1230). **Lock:** `§9.F002.1`.
+- **BUG-003** (line 20 import + lines 2526-2533): Facet bins sorted lexicographically not numerically. Root: `_format_interval_label` converts `pd.Interval` objects to strings at line 2520 (`'12.0-16.0'`); `sorted()` on these strings is lexicographic (`'1' < '4'`, so `'12.0-16.0' < '4.0-8.0'`). Fix: extend the line-20 import to include `_interval_sort_key` (already exists at `profile.py:71` — handles the exact label format produced by `_format_interval_label`); use as sort key when binning was applied (`_fby_bins` or `_fby_quantiles` set). **Lock:** `§9.F003.1`.
+
+### Implementation Discipline
+
+After 5 spec revisions each introducing new issues, switched to direct coding with source verification at every call site (per architect "faster way" directive). Each fix was smoke-tested before moving to the next; channel-mode `auto_title` (`§9.F002.2`) verified mid-flight before being locked by the test.
+
+### Tests
+
+**Gate:** 805 → **809** / 0 / 1 skipped (+4 new). New `tests/test_phase_13_32_df_fix1.py` with shared fixture `make_facet_test_df()` using `rng.uniform(0, 20, n)` to produce 5 populated bins whose labels diverge in lex vs numeric sort.
+
+---
+
+## Phase 13.34.DF v1.0: Capability Matrix taxonomy refresh + robustness gap tests
+
+**Date:** 2026-05-18 (commit `463deb36`; re-committed as `abf5fe40` with identical title)
+**Status:** ✅ Closed
+**Tag:** `PHASE_13_34_DF_END`
+
+### Objectives
+
+Close 6-phase taxonomy drift (Phase 13.27 Commit 2 → Phase 13.32 FIX1) and add 3 robustness invariance test areas surfaced during the audit.
+
+### Implementation
+
+**M1 — Taxonomy refresh (no source code changes):**
+
+- `feature_taxonomy.py`: +20 new feature entries across 7 sections:
+  - `COLUMN_REF` (new): Phase 13.30 column-reference validation (12 paths)
+  - `FACET` (5 new): `column_mode` (13.31), binning (13.32), `title` / `sort` / `auto_title` (13.32 FIX1)
+  - `PROFILE` (1 new) / `QUANTILE` (1 new): `quantiles_grouped` (13.32), `single_y_dispatch` (13.27 FIX1)
+  - `HIST` / `DATA` (1 new): hist `weights` parameter (13.27 FIX1)
+  - `NORMALIZE` (11 new, entire section): all of Phase 13.33 M1+M2
+- `test_layer_classification.py`: +156 §9-marked tests reclassified from default `smoke` to `invariance`. Generated via §9 marker grep.
+- Fixed 4 stale references (1 from Sonnet52_R1 audit + 3 more caught by deterministic A.1 verification — `test_pre_phase_keys_unchanged`, `test_new_keys_present_when_default_policy`, `test_strategy_style_key_default`, `test_explicit_numeric_range_records_strategy_explicit` — all in Phase 13.28 entries pointing at renamed/removed tests).
+
+**M2 — Robustness gap tests (1 new file, +8 §9 tests + 1 xfail):**
+
+`tests/test_phase_13_34_df_m2_robustness.py`:
+- `§9.MED.1` (xfail strict=False) — `central='median'` should use MAD-sigma error bars; locks the Phase 13.33 CRR §11 inconsistency until source-side fix lands. Converts to XPASS if/when fixed.
+- `§9.STATS.1-3` — stats dict key contracts per plot kind. Catches silent renames that would break ADF / RootInteractive integration.
+- `§9.X.1-5` — feature interaction tests for kwarg pairs. A single test per pair at Phase 13.32 delivery would have caught BUG-001/002/003.
+
+### Matrix Snapshot
+
+| Metric | Before | After |
+|---|---|---|
+| Features | 67 | **90** |
+| Verified (✅) | 7 (10%) | **33 (37%)** |
+| Invariance tests | 28 | **193** |
+| Capability Matrix header phase | 13.15.DF *(stale auto-generated)* | 13.34.DF |
+
+> Note (2026-05-21): The `CAPABILITY_MATRIX.md` header still auto-generates as `**Phase:** 13.15.DF`. This is a known generator-side staleness — the header variable in `scripts/generate_capability_matrix.py` has not been updated since Phase 13.15. Content (feature entries) is current through Phase 13.34 M2. Header drift to be fixed in a future tooling pass.
+
+### Audits Consolidated
+
+Claude48 (quantification + process framing + extra stale-ref catch), Sonnet52_R1 (implementation catalog + 1 stale-ref catch), Sonet50 (proposal structure + reclassification evidence).
+
+### Tests
+
+**Gate:** 809 → **817** / 0 / 1 skipped (+8 `§9` invariance tests in M2; M1 added no tests, only reclassified existing ones).
+
+---
+
+## Phase 13.34.DF FIX1 (BUG-010): Untracked test file caught by run_tests.sh staging check
+
+**Date:** 2026-05-18 (commit `379f26bd` adds the missing test file; cleanup commit `14851d42` regens matrix timestamp + minor `drawer.py` touch-up)
+**Status:** ✅ Closed
+**Tag:** `PHASE_13_34_DF_FIX1_END`
+
+### Bug
+
+`BUG-010`: A pre-amend Phase 13.34 commit (`879a0835`) contained `drawer.py` only; `tests/test_phase_13_34_df_fix1_bug010.py` was untracked but `pytest` ran it (because it was in the working tree), producing an 822/0/0 gate over a 817-test commit. Bundle shipped with the inflated gate; reviewer caught it via diff inspection (Rule 8). Cost: 1 review cycle.
+
+### Fix
+
+Add the missing test file (`tests/test_phase_13_34_df_fix1_bug010.py`, 5 §9 tests locking the bug class). Matrix timestamp regen + `drawer.py` cleanup committed separately.
+
+### Tests
+
+**Gate:** 817 → **822** / 0 / 1 skipped (+5 `§9` tests locking BUG-010 invariants).
+
+---
+
+## Phase 13.34.DF FIX2 (BUG-011): `run_tests.sh` pre-bundle staging check
+
+**Date:** 2026-05-18 (commit `b38395db`)
+**Status:** ✅ Closed
+**Tag:** `PHASE_13_34_DF_FIX2_END`
+**Discovered by:** Sonet50 in PHASE_13_34_DF_FIX1_BUG010 review.
+
+### Bug
+
+`BUG-011` (process-class bug): the BUG-010 incident represents an entire class — new `.py` files in `tests/` are created in the working tree but never staged. `pytest` finds them and reports a green gate; the bundle ships with that gate; reviewers read it as trustworthy; but the commit has fewer tests than the gate claims.
+
+### Fix
+
+~35 LOC inserted in `run_tests.sh` between the test-summary section and the bundle-packaging section. Blocks bundle creation (exit 1) when `git status --porcelain tests/ | grep '^??' | grep '\.py$'` is non-empty. Override: `DFDRAW_SKIP_STAGING_CHECK=1 bash run_tests.sh`. Test results from the blocked run are still saved to `test_logs/` — only the `reviewer.zip` artifact is prevented.
+
+### Validation
+
+Manual reproduction of 5 scenarios (clean, untracked, override, non-py untracked, modified-tracked).
+
+### Tests
+
+**Gate:** 822 / 0 / 1 skipped (no test count change — tooling-only).
+
+---
+
+## Phase 13.35.DF v1.3: `group_by_bins` + `hist_norm` for `hist()` (BUG-013 — hist side)
+
+**Date:** 2026-05-20 (commit `3b910aec`)
+**Status:** ✅ Closed
+**Tag:** `PHASE_13_35_DF_END`
+**Specification:** PHASE_13_35_DF_v1_3_Proposal_HistGroupByNorm.md (notes repo). v1.0 → v1.1: 5 factual source errors (Claude40 panel). v1.1 → v1.2: 3 P1s (Sonet50 / Sonnet52_R1 / Sonnet53_R2 panel). v1.2 → v1.3: 1 P1 stacked branch + 1 P2 comment + 1 §9 test add.
+
+### Objectives
+
+Fix 3 `AttributeError` crashes confirmed in 2026-05-20 live testing (T2: `group_by_bins` leaks to `ax.hist()` (no facet); T3: same crash in faceted subplot path; T4: `hist_norm` leaks to `ax.hist()`). These are the hist-side instance of BUG-013 — the same kwarg-propagation bug class as Phase 13.16.DF FIX1, here on the histogram path.
+
+### Root Cause
+
+`group_by_bins`, `group_by_quantiles`, `hist_norm`, `min_entries` absent from BOTH `DFDraw.hist()` method signature AND `draw_hist()` function signature AND `_HIST_FORWARDED_NAMES` → fall into `**kwargs` → forwarded to `_draw_hist_grouped()` `**hist_kwargs` → reach `ax.hist()` which rejects.
+
+### Implementation (7 edits, ~300 LOC source + 384 LOC tests)
+
+1. `_HIST_FORWARDED_NAMES`: add `group_by_bins`, `group_by_quantiles`, `hist_norm`, `min_entries` (`drawer.py`).
+2. `draw_hist()` signature: add the 4 as explicit params (`histogram.py`).
+3. `group_by` routing block: BUG-012 guard (float + `nunique() > 20` + no bins → `ValueError` with `'group_by_bins=N'` guidance), `pd.cut` / `pd.qcut` binning with float16 → float32 upcast, `df.copy()` to avoid caller mutation, shared bin edges from `x_data` (sanitized at lines 259-307, NOT `df[x].dropna()` which would bypass `nan_policy`), `stats_dict['n_groups']` population (was missing — T1 observation).
+4. `_draw_hist_grouped()`: pop `'weights'` from `hist_kwargs` to avoid `ax.hist()` double-weights `TypeError`; one-pass stacked loop building `data_list` + `labels` + `surviving_colors` in lockstep (fixes v1.2 P1-D label misalignment AND P3 color-shift); `n_rendered` counter in overlaid branch (v1.1 P1-C); `str(group)` labels (no `_format_interval_label` import — v1.1 P1-A); return → `int`.
+5. `_group_weights()`: new module-level helper (probability / density).
+6. `DFDraw.hist()` signature: add the 4 params (required by R6 module-import validator — discovered during implementation).
+7. `_dispatch_faceted_render()` call: forward the 4 params explicitly (required after Edit 6 consumes them off `**kwargs` — discovered when T3 architect-call test initially failed).
+
+### Architect Production Reproducer (now works end-to-end)
+
+```python
+adf.draw('dyp_I6-dyp_recoV2', type='hist',
+         group_by='z', group_by_bins=5,
+         min_entries=25, facet_by='sec')
+```
+
+Live-tested: 9 sector panels × 5 drift-coordinate bins each.
+
+### Tests
+
+**Gate:** 822 → **833** / 0 / 1 skipped (+11 `§9` invariance):
+
+- `HGB.1-3` — `group_by_bins` + `facet_by` + shared bin edges
+- `HN.1-3` — `hist_norm` probability / None / density (math at data layer)
+- `HGS.1-2` — `stats['n_groups']` + BUG-012 guard with actionable error
+- `HGSt.1` — stacked + `min_entries` label alignment (regression lock for v1.2 P1-D, verified by failure injection)
+- `HGBC.1-2` — backward compat (single-hist path; categorical `group_by`)
+
+---
+
+## Phase 13.36.DF v1.2: User style kwargs override auto-cycle in `group_by` path (BUG-013 — style-override side)
+
+**Date:** 2026-05-20 (commit `2f4d959f`)
+**Status:** ✅ Closed
+**Tag:** `PHASE_13_36_DF_END`
+**Rolling tag:** `PHASE_BEGIN_dfdraw` → `2f4d959f`
+**Specification:** PHASE_13_36_DF_v1_2_Proposal_UserStyleOverride.md
+**Review:** v1.2 panel — Sonet50 [OK], Sonet51 [!] (P1 markersize crash in hist vector path — fixed at code time per architect "no v1.3" directive), Claude40 [✅ APPROVED]
+
+### Bug Closed
+
+`BUG-013` (style-override side): `marker='s'`, `color='red'`, `markersize=10` silently ignored when `group_by` was active. The grouped rendering path (profile + hist) used the per-group color/marker cycle unconditionally, discarding user style kwargs. Architect's primary use case (TPC/ITS calibration overlay, same=True second call):
+
+```python
+adf.draw('y:row', group_by='drift', group_by_bins=5)
+adf.draw('y:row', group_by='drift', group_by_bins=5,
+         same=True, marker='s')
+```
+
+### Architect Priority Rule (2026-05-20)
+
+> **user kwarg > channel auto-cycle > style default**
+>
+> `None` = "user did not pass" (matches matplotlib default-color semantics).
+
+### Profile Fix (`plots/profile.py`)
+
+- `_draw_profile_grouped()` signature: add `_user_marker`, `_user_markersize`, `_user_color` named params (default `None`).
+- `draw_profile()` captures `_ud_user_marker`, `_ud_user_markersize`, `_ud_user_color` at lines 311-321 **BEFORE** the style fill-in (which replaces `None` with style defaults). Without pre-fill-in capture, the sentinel arrives as `'o'` even when user passed nothing → cycle override (CODER NOTE §5.1).
+- `draw_profile()` call to `_draw_profile_grouped()`: pass `_user_marker=_ud_user_marker` etc. (the pre-fill-in captures).
+- REMOVED: `marker=marker`, `markersize=markersize` from the call.
+- REMOVED: `profile_kwargs.pop('marker' / 'markersize')` (nothing left to pop).
+- Per-group loop: `is None` check before palette / marker cycle.
+- `UserWarning` fires ONCE per call (`i == 0`) when `color=` makes all groups uniform ("indistinguishable").
+
+### Hist Fix (`plots/histogram.py`)
+
+- `_draw_hist_grouped()` signature: add `_user_color` named param (default `None`).
+- `draw_hist()` call to `_draw_hist_grouped()`: pass `_user_color=color`.
+- `draw_hist()` body (early, before routing): pop `'marker'` from `kwargs` + issue `UserWarning`. v1.2 spec said pop inside `_draw_hist_grouped`, but that path is only reached for grouped hist — non-grouped / vector path would crash `ax.hist` (`AttributeError` on `marker`). Single source of truth at `draw_hist` top (CODER NOTE §5.2).
+- Per-group color: sentinel checked in BOTH stacked + overlaid branches.
+
+### `_*_FORWARDED_NAMES` (`drawer.py`)
+
+- `_PROFILE_FORWARDED_NAMES` += `marker`, `color`, `markersize` (all 3 are explicit params of `draw_profile()`).
+- `_HIST_FORWARDED_NAMES` += `marker`, `color` ONLY (NOT `markersize` — `draw_hist()` has no `markersize` explicit param; adding it would crash `ax.hist` via vector path — Sonet51 P1 from v1.2 review).
+
+### `DFDraw` Method Signatures + Bodies (`drawer.py`)
+
+- `DFDraw.profile()` += `color`, `marker`, `markersize` params (R6 validator).
+- `DFDraw.hist()` += `color`, `marker` params (R6 validator).
+- Both bodies forward the params explicitly to `draw_profile` / `draw_hist`.
+- `same=True` auto-color injection refactored: (a) assign to local `color` var not `kwargs['color']` (collision); (b) skip auto-color when `group_by` is active — preserves pre-13.36 behavior (auto-color was silently dropped in grouped path) and prevents false-positive "indistinguishable" `UserWarning` (CODER NOTE §5.3).
+
+### Scope Boundary
+
+`linestyle`: out of scope — already works (brainstorm + v0 / v1 panel live tests, 2026-05-20). `§9.LS.1` locks current behavior.
+
+### Implementation Deviations from v1.2 Spec (Mandatory Disclosure)
+
+- Edit 17 (NEW): pre-fill-in capture for `_ud_user_*` — caught at smoke test, not anticipated in spec. §5.1.
+- Edit 18: `marker` pop moved from `_draw_hist_grouped` to `draw_hist` top — caught by full regression (96 vector hist failures). §5.2.
+- Edit 15/16: `same=True` + `group_by` guard — caught at smoke test, false-positive `UserWarning`. §5.3.
+
+### Spec History
+
+- **v1.0 (Sonet50):** 3 P1s including "color not forwarded to grouped path".
+- **v1.1 (Sonet50):** attempted P1-A fix via `profile_kwargs.pop`, returns `_UNSET` unconditionally (color / marker / markersize consumed by explicit signature, not in `**kwargs`). Sonnet53_R2 [X], Claude48Coder [X].
+- **v1.2 (Claude48Coder, architect-greenlit takeover):** Sonnet53_R2 Option A — local variables, `None` sentinel.
+
+### Tests
+
+**Gate:** 833 → **843** / 0 / 1 skipped (+10 `§9` invariance: `SO.1-5`, `SOH.1-2`, `LS.1`, `SC.1`, `VF.1`).
+
+- `SO.1-5` — TestUserStyleOverride (marker, color+warning, markersize, default cycle preserved, architect primary use case)
+- `SOH.1-2` — TestHistStyleOverride (marker triggers warning, color uniform on step histtype)
+- `LS.1` — TestLinestyleDocumentationLock (linestyle='None' regression lock; OUT-OF-SCOPE behavior locked)
+- `SC.1` — TestScatterUntouched (scatter color / marker unaffected)
+- `VF.1` — TestVectorPathForwarding (vector expression + marker uniform via `_PROFILE_FORWARDED_NAMES`)
+
+**Run platforms:**
+- Architect's Mac Py 3.9.6: **843 / 0 / 1 skipped / 1 xfailed** (per `SUMMARY_20260521_092254.txt`, commit `2f4d959f`)
+- Linux Py 3.12 (Coder env): 810 / 1 / 33 — 1 fail + 33 skipped are pre-existing per Phase 13.35.DF conversation summary, NOT caused by Phase 13.36.
+
+---
+
 ## Statistics Summary
 
 | Phase | Test Count | Delta | Key Feature |
@@ -1635,8 +2050,22 @@ Two binding rules emerged from the debug arc, captured in the Code Review Reques
 | **13.31.DF v1.0** | 687 | +12 | **`facet_by` column-name support (AD-78): dual-path dispatch (channel-mode vs column-mode); orthogonal `group_by` overlay composition; 12 §9-marked invariance tests** |
 | **13.28.DF FIX1** | 696 | +9 | **Restore `autorange.*` style keys in `DEFAULT_STYLE` (4 keys registered post-Phase-13.28-Part-B regression); 9 §9-marked tests** |
 | **13.32.DF v1.0** | 715 | +19 | **`group_by × quantiles` in grouped path + symmetric `facet_by_bins`/`facet_by_quantiles` (AD-79): three sub-fixes; multi-kind plot dispatch (profile/hist/scatter/hist2d); new style key `quantile.band.alpha_grouped`; 19 §9-marked invariance tests across 5 classes** |
+| **13.27.DF Commit 2 v1.0** | 767 | +52 | **Phase D completion: `selection_vector` + `weights_vector` + `delta_facet`; 11 EXPLICIT_RULES; channels.label.delta_separator style key; 8 new kwargs uniformly on profile/hist/scatter/draw; hist2d signature gate; Hard Constraint §3 guard; 52 §9 tests across 12 classes (AD-61/62/65/66/67)** |
+| **13.27.DF Commit 2 FIX1** | 776 | +9 | **Single-Y vector dispatch (replaces v1.0 UserWarning guard) + hist `weights=` column/expression rendering (§7a + §7b)** |
+| **13.27.DF Commit 2 FIX1.FIX1** | 777 | +1 | **Assertion strengthen (`§9.SDP.6` ErrorbarContainer count) + sanitize cleanup + `§9.SDP.9` lock on inner-mode actionable error message** |
+| **13.33.DF v1.0 M1** | 799 | +22 | **Normalized differential profiles: `normalize=` + `normalize_layout=` on `profile()`; 5 modes (delta/ratio/log_ratio/pull/callable); 2 layouts; 8 style keys; `_dispatch_normalize_render` (AD-80/81/82)** |
+| **13.33.DF v1.0 M2** | 804 | +5 | **`group_by` + `normalize` (per-group differential) + `facet_by` + `normalize` (K×2 grid); two new dispatchers; M2 v1.0 restriction: `facet_by_bins/_quantiles` + `normalize` raises** |
+| **13.33.DF v1.0 FIX1** | 805 | +1 | **`§9.NF.3` lock on `facet_by_bins/_quantiles` + `normalize` NotImplementedError with categorical-column workaround hint; dead-code cleanup; 4M-row pandas C-pass optimization** |
+| **13.32.DF FIX1** | 809 | +4 | **Real-data faceted rendering bug fixes: BUG-001 (`__dfdraw_facet_bin__` leaks to titles), BUG-002 (`auto_title=True` ignored in faceted mode), BUG-003 (facet bins lexicographic sort); discovered in `time_series_tracks_0.root` TPC/ITS QA** |
+| **13.34.DF v1.0** | 817 | +8 | **Capability Matrix taxonomy refresh (6-phase drift closure: +20 feature entries + 156 §9 reclassifications); M2 robustness gaps: `§9.MED.1` xfail (median MAD-sigma), `§9.STATS.1-3` (stats dict schema), `§9.X.1-5` (kwarg-composition feature-interaction)** |
+| **13.34.DF FIX1** | 822 | +5 | **BUG-010: untracked test file inflated 822/0 gate over 817-test commit; +5 §9 tests locking the bug class (`test_phase_13_34_df_fix1_bug010.py`)** |
+| **13.34.DF FIX2** | 822 | 0 | **BUG-011: `run_tests.sh` pre-bundle staging check blocks `reviewer.zip` when untracked `.py` files in `tests/`; override via `DFDRAW_SKIP_STAGING_CHECK=1`; tooling-only, no test count change** |
+| **13.35.DF v1.3** | 833 | +11 | **`group_by_bins` + `hist_norm` for `hist()` (BUG-013 hist side): adds 4 explicit params to draw_hist + DFDraw.hist signatures + `_HIST_FORWARDED_NAMES`; BUG-012 guard; shared bin edges; per-group normalization; `_group_weights` helper; 7 edits across drawer.py + histogram.py; architect TPC/ITS reproducer green** |
+| **13.36.DF v1.2** | **843** | **+10** | **User style kwargs override auto-cycle (BUG-013 style-override side): `_ud_user_*` sentinel capture before style fill-in; `_user_marker`/`_user_markersize`/`_user_color` forwarded to `_draw_profile_grouped`; `_user_color` to `_draw_hist_grouped`; per-group cycle gated on `is None`; "indistinguishable" UserWarning; `_*_FORWARDED_NAMES` extended (`markersize` omitted from hist per Sonet51 P1); architect priority rule: user kwarg > channel cycle > style default** |
 
-**Total Development (as of Phase 13.32.DF v1.0):** 28 phase entries, **715 tests** + 1 skipped, 62 features, 28+ invariance tests, 7 Verified features
+**Total Development (as of Phase 13.36.DF v1.2):** 37 phase entries, **843 tests** + 1 skipped + 1 xfailed, 90 features, 193 invariance tests, 33 Verified features
+
+> **Phase ordering note (post-13.32 v1.0):** the chronological commit order on `feature/groupby-optimization` from 2026-05-16 onward is 13.27.DF Commit 2 v1.0 (`84dcf916`) → Commit 2 FIX1 (`ba42fcde`) → Commit 2 FIX1.FIX1 (`b929ccb9`) → 13.33.DF v1.0 M1 (`61460df5`) → 13.33.DF v1.0 M2 (`c6a3245f`) → 13.33.DF v1.0 FIX1 (`94594f89`) → 13.32.DF FIX1 (`195ab4ea` / `d0b04f88`) → 13.34.DF v1.0 (`463deb36` / `abf5fe40`) → 13.34.DF FIX1 (`379f26bd`) → 13.34.DF FIX2 (`b38395db`) → 13.35.DF (`3b910aec`) → 13.36.DF (`2f4d959f`). Phase numbers are NON-monotonic vs commit date: 13.27 Commit 2 series lands after the 13.32 v1.0 entry above, and 13.32 FIX1 chronologically follows 13.33 v1.0 FIX1. Phase numbers index the *originating* phase, not the commit order — consistent with the post-13.27 Commit 1 phase ordering note above.
 
 > Note: Phase 13.28.DF closed at 653 tests on commit `8b02d241` (2026-05-09). Phase 13.27.DF Commit 1 then added 10 tests for a current total of 663. Phase 13.28 was developed in parallel with Phase 13.27 design; the two phases used disjoint AD ranges (AD-61..AD-68 vs AD-69..AD-77) so the merge was clean.
 
@@ -1756,8 +2185,9 @@ All APIs subject to change based on user feedback and integration testing with:
 | 1.4 | 2026-04-15 | Claude41 | Added Phase 13.16.DF FIX1 (vector path kwarg propagation fix, B1a-B5 + R4 + auto_title forwarding); updated test count to 469; +3 features +7 invariance tests +1 Verified; added 5-iteration source-verification chain (symptom → location → documentation → runtime → pipeline); cross-subproject end-to-end verification via ADF Phase 13.19.ADF.FIX1; added 4 lessons learned (two-commit pattern, fresh-reviewer rule, cross-subproject convergence, class-load validation) and 4 best practices (forwarded-name tuples, AST-derived inventories, scope-positive divergence pattern, three-level test coverage) |
 | 1.5 | 2026-05-09 | Claude49Coder | Backfill of phases that landed between v1.4 and current state. Added Phase 13.18.DF (robust statistics extension), Phase 13.25.DF v1.3 with FIX1 + FIX2 (Quantiles on Profile — MultiGraph Phase A; AD-44..AD-54), Phase 13.26.DF v1.2 (N-Channel Framework — MultiGraph Phase B; Algorithm A; AD-55..AD-60), Phase 13.27.DF Commit 1 (Facet refactor — MultiGraph Phase D, profile-only; AD-61..AD-68), Phase 13.28.DF v1.1 (Robust Data Handling — `sanitize_for_plot` + hybrid autorange; AD-69..AD-77; 5-0 closure verdict). Statistics table updated through Phase 13.27.DF Commit 1 (current 663 tests, 62 features). Governance principles GP-1 through GP-5 summarized in their phase-of-origin sections (full text remains in STYLING_FRAMEWORK_DECISIONS.md §3). |
 | 1.6 | 2026-05-15 | Claude49Coder | Added Phase 13.28.DF FIX1 (autorange.* style key registration; commit `57576ebf`), Phase 13.30.DF v1.0 (Class-2 column-reference parameter validation; commit `e8278531`), Phase 13.31.DF v1.0 (`facet_by` column-name support, AD-78; commit `f3ca432a`), Phase 13.32.DF v1.0 (`group_by × quantiles` in grouped path + symmetric `facet_by` binning, AD-79; commit `cb6a1aed`). Test count 663 → 715. Added 3 lessons learned (style-key registration regression class, source freshness as binding rule, wrong-bundle review artifact) and 4 best practices (dual-path dispatch, multi-kind plot dispatch with explicit signature branching, AST R6-equivalent pre-delivery check, auditable patches over local sed). Statistics Summary table extended with 4 new rows + phase-ordering note. Panel review (Claude40 consolidating Sonet50, Sonet51, Sonnet52_R1, Sonnet53_R2, Claude46, Claude48): approved-with-3-mechanical-fixes — applied pre-commit: (a) Phase 13.30 Class-2 tuple corrected to `('group_by',)` only and Class-1 → Class-3/Class-5 deferral; (b) Phase 13.26 → Phase 13.28 autorange-introduction attribution (FIX1 entry + Lesson #9); (c) Statistics table totals updated to 28 phase entries / 715 tests; transient "Pending push" line removed. |
+| 1.7 | 2026-05-21 | Opus1 (Reviewer) at architect request | **Backfill of 9 phase events that landed between Phase 13.32.DF v1.0 closure (`cb6a1aed`, 2026-05-15) and current HEAD (`2f4d959f`, 2026-05-20).** Added strictly append-only — every existing entry preserved verbatim per architect's "Previous coders removed history, which was completely wrong" directive. New H2 sections (in phase-number order, inserted before § Statistics Summary): Phase 13.27.DF Commit 2 v1.0 (`84dcf916`, +52 tests, Phase D completion: `selection_vector` + `weights_vector` + `delta_facet`), Phase 13.27.DF Commit 2 FIX1 (`ba42fcde`, +9), Phase 13.27.DF Commit 2 FIX1.FIX1 (`b929ccb9`, +1), Phase 13.33.DF v1.0 M1 (`61460df5`, +22, Normalized differential profiles, AD-80/81/82), Phase 13.33.DF v1.0 M2 (`c6a3245f`, +5, group_by/facet_by composition), Phase 13.33.DF v1.0 FIX1 (`94594f89`, +1, tag `PHASE_13_33_DF_v1_0_FIX1_END`), Phase 13.32.DF FIX1 (`195ab4ea` / `d0b04f88`, +4, BUG-001/002/003 faceted rendering bugs caught in real-data TPC/ITS QA, tag `PHASE_13_32_DF_FIX1_END`), Phase 13.34.DF v1.0 (`463deb36` / `abf5fe40`, +8, Capability Matrix taxonomy refresh + M2 robustness gaps, tag `PHASE_13_34_DF_END`), Phase 13.34.DF FIX1 (`379f26bd` + `14851d42`, +5, BUG-010 untracked test file, tag `PHASE_13_34_DF_FIX1_END`), Phase 13.34.DF FIX2 (`b38395db`, +0, BUG-011 run_tests.sh pre-bundle staging check, tag `PHASE_13_34_DF_FIX2_END`), Phase 13.35.DF v1.3 (`3b910aec`, +11, `group_by_bins` + `hist_norm` for `hist()`, BUG-013 hist side, tag `PHASE_13_35_DF_END`), Phase 13.36.DF v1.2 (`2f4d959f`, +10, user style kwargs override auto-cycle, BUG-013 style-override side, tag `PHASE_13_36_DF_END`). Test count 715 → **843**. Statistics Summary table extended with 13 new rows (one per phase event) + extended phase-ordering note covering the non-monotonic commit order from 2026-05-16 onward. Totals updated: 28 → 37 phase entries; 715 → 843 tests; 62 → 90 features; 28+ → 193 invariance tests; 7 → 33 Verified features. Source: `gitlog.txt` (commits cb6a1aed..2f4d959f), `reviewer_20260521_092254.zip` (843/0/1 confirmed at HEAD), `CAPABILITY_MATRIX_20260521_092254.md` (90 features / 33 Verified confirmed). Note: backfilled entries derive from commit messages (verbatim phrasing preserved where present); each new entry cites its commit hash and tag per Org v1.30 § Source-Line Evidence Standard `[MUST]`. No existing line of this document was removed or shortened. Standalone review of this PHASE_HISTORY backfill not performed — architect-directed governance closure, awaiting panel review. |
 
 ---
 
-**Document Status:** Updated through Phase 13.32.DF v1.0 (commit `cb6a1aed`, tag `PHASE_13_32_DF_GroupByQuantilesFacet_v1_0_END`, 2026-05-15). Rolling tag `PHASE_BEGIN_dfdraw` → `cb6a1aed`.
-**Next Update:** After the unified Phase 13.30 + 13.31 + 13.32 governance closure pass (taxonomy entries, `quantile_style` `NotImplementedError`, `error_bars→band` lock test, AD-78 §0 typo, Coder QRC v1.32 amendments), or after Phase 13.33 (provisional: autorange transparency — now unblocked by Phase 13.28 FIX1).
+**Document Status:** Updated through Phase 13.36.DF v1.2 (commit `2f4d959f`, tag `PHASE_13_36_DF_END`, 2026-05-20). Rolling tag `PHASE_BEGIN_dfdraw` → `2f4d959f`. Backfill of 9 phase events (Phase 13.27 Commit 2 series, Phase 13.32 FIX1, Phase 13.33 v1.0 M1/M2/FIX1, Phase 13.34 v1.0/FIX1/FIX2, Phase 13.35, Phase 13.36) recorded in revision history row 1.7. **Previous "Updated through Phase 13.32.DF v1.0" baseline preserved verbatim above for audit traceability per architect's append-only directive.**
+**Next Update:** After Phase 13.37 (Histogram Robustness: BUG-014 step color, BUG-015 profile float-groupby guard, `hist_errors=True`, `linestyle_cycle=True`; proposal v1.0 by Sonnet52_R1 currently in panel review).
