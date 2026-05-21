@@ -1195,4 +1195,61 @@ FEATURES = [
             "test_phase_13_37_df_hist_robustness.py::TestLinestyleCycle::test_LC5_hist_step_per_group_linestyle",
         ],
     },
+    # ====================================================================== #
+    # Phase 13.38.DF — Scatter enhancements: BUG-017 + xerr/yerr + expression #
+    # ====================================================================== #
+    {
+        "id": "FACET.float_facet_by_guard",
+        "name": "_dispatch_faceted_render() float facet_by + no bins + nunique>20 raises ValueError with facet_by_bins=N / facet_by_quantiles=N guidance (BUG-017; third instance of BUG-012/BUG-015 float-guard class) — Phase 13.38.DF",
+        "category": "FACET",
+        "tests": [
+            "test_phase_13_38_df_scatter_enhancements.py::TestFacetByFloatGuard::test_FBGUARD_1_float_facet_by_no_bins_raises",
+            "test_phase_13_38_df_scatter_enhancements.py::TestFacetByFloatGuard::test_FBGUARD_2_float_facet_by_with_bins_no_error",
+        ],
+    },
+    {
+        "id": "SCATTER.xerr_yerr",
+        "name": "scatter() xerr/yerr from column name or df.eval() expression. Render via ax.errorbar() when either provided; ax.scatter() otherwise (dispatch invariance). Three-tier NaN policy: raise on 100%, warn at >50%, silent zeroing at ≤50%. nanfrac in stats dict. Style keys: scatter.error_capsize=2, scatter.error_elinewidth=1.0, scatter.error_ecolor=None — Phase 13.38.DF",
+        "category": "SCATTER",
+        "tests": [
+            "test_phase_13_38_df_scatter_enhancements.py::TestScatterErrorBars::test_SE_1_yerr_column_extents_match",
+            "test_phase_13_38_df_scatter_enhancements.py::TestScatterErrorBars::test_SE_2_xerr_column_extents_match",
+            "test_phase_13_38_df_scatter_enhancements.py::TestScatterErrorBars::test_SE_3_both_xerr_yerr_simultaneously",
+            "test_phase_13_38_df_scatter_enhancements.py::TestScatterErrorBars::test_SE_4_yerr_dfeval_expression",
+            "test_phase_13_38_df_scatter_enhancements.py::TestScatterErrorBars::test_SE_5_default_dispatch_invariance",
+            "test_phase_13_38_df_scatter_enhancements.py::TestScatterErrorBars::test_SE_6_nan_policy_three_tiers",
+            "test_phase_13_38_df_scatter_enhancements.py::TestScatterErrorBars::test_SE_7_style_keys_registered",
+            "test_phase_13_38_df_scatter_enhancements.py::TestScatterErrorBars::test_SE_8_group_by_plus_yerr",
+            "test_phase_13_38_df_scatter_enhancements.py::TestScatterErrorBars::test_SE_9_xerr_plus_facet_by",
+        ],
+    },
+    {
+        "id": "SCATTER.expression_color",
+        "name": "scatter() color= accepts df.eval() expression (e.g. color='abs(tgl)'). _process_color() dispatch reordered (CP0-1): None → array → column → fixed-color (to_rgba) → df.eval → terminal. Column-name check precedes to_rgba() to preserve backward compat for columns named after matplotlib colors ('b', 'r', 'k') — Phase 13.38.DF",
+        "category": "SCATTER",
+        "tests": [
+            "test_phase_13_38_df_scatter_enhancements.py::TestScatterExpressionColor::test_ECM_1_expression_color_colormap_applied",
+            "test_phase_13_38_df_scatter_enhancements.py::TestScatterExpressionColor::test_ECM_2_column_color_byte_identical_backward_compat",
+            "test_phase_13_38_df_scatter_enhancements.py::TestScatterExpressionColor::test_ECM_3_invalid_expression_actionable_error",
+            "test_phase_13_38_df_scatter_enhancements.py::TestScatterExpressionColor::test_ECM_6_column_name_collision_with_named_color",
+            "test_phase_13_38_df_scatter_enhancements.py::TestScatterExpressionColor::test_ECM_7_expression_color_plus_group_by_behavior_locked",
+        ],
+    },
+    {
+        "id": "SCATTER.expression_marker",
+        "name": "scatter() marker= accepts boolean df.eval() expression (e.g. marker='ncl > 100'); True → 's', False → 'o'. Per-point rendering via np.unique loop with label='_nolegend_' (no spurious legend entries) — Phase 13.38.DF",
+        "category": "SCATTER",
+        "tests": [
+            "test_phase_13_38_df_scatter_enhancements.py::TestScatterExpressionMarker::test_ECM_4_boolean_marker_two_marker_encoding",
+            "test_phase_13_38_df_scatter_enhancements.py::TestScatterExpressionMarker::test_ECM_8_per_point_marker_legend_no_duplicates",
+        ],
+    },
+    {
+        "id": "SCATTER.expr_compose",
+        "name": "scatter() expression color + expression marker composition: both encodings simultaneously on single-path scatter. Each marker subgroup carries its own colormap array — Phase 13.38.DF",
+        "category": "SCATTER",
+        "tests": [
+            "test_phase_13_38_df_scatter_enhancements.py::TestScatterExpressionMarker::test_ECM_5_expression_color_plus_expression_marker_compose",
+        ],
+    },
 ]

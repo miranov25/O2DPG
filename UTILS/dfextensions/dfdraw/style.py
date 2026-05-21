@@ -42,6 +42,10 @@ DEFAULT_STYLE: Dict[str, Any] = {
     "scatter.edgecolors": "black",
     "scatter.linewidths": 0.5,
     "scatter.size": 50,
+    # Phase 13.38.DF — scatter error bars (xerr/yerr) — CP1-4 NaN policy
+    "scatter.error_capsize": 2,
+    "scatter.error_elinewidth": 1.0,
+    "scatter.error_ecolor": None,  # None = inherit from line color
     
     # Histogram
     "hist.bins": 50,

@@ -256,5 +256,35 @@ TEST_LAYERS = {
     "test_phase_13_37_df_hist_robustness.py::TestPhase1336BackwardCompat::test_SO_COMPAT_2_same_true_group_by_no_auto_color_injection": "invariance",
     "test_phase_13_37_df_hist_robustness.py::TestPhase1336BackwardCompat::test_SO_COMPAT_3_vector_group_by_palette_and_channels_preserved": "invariance",
 
+    # ── Phase 13.38.DF — Scatter enhancements: BUG-017 + xerr/yerr + expression ──
+    # All 19 new tests are A≡B invariance locks (not smoke). Coverage:
+    # - BUG-017 facet_by float guard (positive + negative)
+    # - xerr/yerr extents ≡ column/eval values to 1e-9
+    # - SE.5 dispatch invariance (PathCollection vs ErrorbarContainer)
+    # - SE.6 three-tier NaN policy (silent/warn/raise)
+    # - ECM.1/6 colormap array ≡ expression/column values
+    # - ECM.6 CP0-1 BACKWARD-COMPAT LOCK (column 'b' wins over named-color)
+    # - ECM.4 concrete marker-path comparison + point count
+    # - ECM.8 no-spurious-legend invariant for per-point marker rendering
+    "test_phase_13_38_df_scatter_enhancements.py::TestFacetByFloatGuard::test_FBGUARD_1_float_facet_by_no_bins_raises": "invariance",
+    "test_phase_13_38_df_scatter_enhancements.py::TestFacetByFloatGuard::test_FBGUARD_2_float_facet_by_with_bins_no_error": "invariance",
+    "test_phase_13_38_df_scatter_enhancements.py::TestScatterErrorBars::test_SE_1_yerr_column_extents_match": "invariance",
+    "test_phase_13_38_df_scatter_enhancements.py::TestScatterErrorBars::test_SE_2_xerr_column_extents_match": "invariance",
+    "test_phase_13_38_df_scatter_enhancements.py::TestScatterErrorBars::test_SE_3_both_xerr_yerr_simultaneously": "invariance",
+    "test_phase_13_38_df_scatter_enhancements.py::TestScatterErrorBars::test_SE_4_yerr_dfeval_expression": "invariance",
+    "test_phase_13_38_df_scatter_enhancements.py::TestScatterErrorBars::test_SE_5_default_dispatch_invariance": "invariance",
+    "test_phase_13_38_df_scatter_enhancements.py::TestScatterErrorBars::test_SE_6_nan_policy_three_tiers": "invariance",
+    "test_phase_13_38_df_scatter_enhancements.py::TestScatterErrorBars::test_SE_7_style_keys_registered": "invariance",
+    "test_phase_13_38_df_scatter_enhancements.py::TestScatterErrorBars::test_SE_8_group_by_plus_yerr": "invariance",
+    "test_phase_13_38_df_scatter_enhancements.py::TestScatterErrorBars::test_SE_9_xerr_plus_facet_by": "invariance",
+    "test_phase_13_38_df_scatter_enhancements.py::TestScatterExpressionColor::test_ECM_1_expression_color_colormap_applied": "invariance",
+    "test_phase_13_38_df_scatter_enhancements.py::TestScatterExpressionColor::test_ECM_2_column_color_byte_identical_backward_compat": "invariance",
+    "test_phase_13_38_df_scatter_enhancements.py::TestScatterExpressionColor::test_ECM_3_invalid_expression_actionable_error": "invariance",
+    "test_phase_13_38_df_scatter_enhancements.py::TestScatterExpressionColor::test_ECM_6_column_name_collision_with_named_color": "invariance",
+    "test_phase_13_38_df_scatter_enhancements.py::TestScatterExpressionColor::test_ECM_7_expression_color_plus_group_by_behavior_locked": "invariance",
+    "test_phase_13_38_df_scatter_enhancements.py::TestScatterExpressionMarker::test_ECM_4_boolean_marker_two_marker_encoding": "invariance",
+    "test_phase_13_38_df_scatter_enhancements.py::TestScatterExpressionMarker::test_ECM_5_expression_color_plus_expression_marker_compose": "invariance",
+    "test_phase_13_38_df_scatter_enhancements.py::TestScatterExpressionMarker::test_ECM_8_per_point_marker_legend_no_duplicates": "invariance",
+
     # Everything else defaults to "smoke"
 }

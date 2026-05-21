@@ -13,6 +13,7 @@ Supports:
 
 import numpy as np
 import pandas as pd
+import warnings
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -48,6 +49,12 @@ def draw_scatter(
     jitter: Optional[Union[bool, float, Tuple[float, float]]] = None,
     # Phase 13.28.DF: NaN/inf filter policy (AD-70)
     nan_policy: str = "filter",
+    # Phase 13.38.DF: scatter error bars (column name or df.eval() expression).
+    # When either is set, render via ax.errorbar() instead of ax.scatter().
+    # NaN/inf policy in _eval_error(): raise on 100% non-finite, warn at >50%,
+    # silent zeroing at ≤50%. Locked by §9.SE.6.
+    xerr: Optional[str] = None,
+    yerr: Optional[str] = None,
     # Phase 13.16.DF FIX1: vector dispatch suppression flags (private).
     _suppress_legend: bool = False,
     _suppress_title: bool = False,
@@ -191,25 +198,98 @@ def draw_scatter(
         
         # Process size
         s = _process_size(df_filtered, size, default_size, mask, len(x_data))
-        
-        # Draw scatter
-        scatter = ax.scatter(
-            x_data, y_data,
-            c=c, s=s, alpha=alpha,
-            edgecolors=edgecolors, linewidths=linewidths,
-            cmap=cmap_used if not is_categorical else None,
-            marker=marker if isinstance(marker, str) else 'o',
-            **kwargs
+
+        # ============================================================== #
+        # Phase 13.38.DF: scatter error bars + per-point marker resolution #
+        # ============================================================== #
+        xerr_arr, xerr_nanfrac = _eval_error(df_filtered, xerr, mask, 'xerr')
+        yerr_arr, yerr_nanfrac = _eval_error(df_filtered, yerr, mask, 'yerr')
+        if xerr is not None:
+            stats_dict['xerr_nanfrac'] = xerr_nanfrac
+        if yerr is not None:
+            stats_dict['yerr_nanfrac'] = yerr_nanfrac
+
+        resolved_marker, marker_is_scalar = _resolve_marker_per_point(
+            df_filtered, marker, mask
         )
-        
-        # Colorbar for continuous color
-        if c is not None and not is_categorical and colorbar:
-            cbar = plt.colorbar(scatter, ax=ax)
-            if clabel:
-                cbar.set_label(clabel)
-            elif isinstance(color, str) and color in df.columns:
-                cbar.set_label(color)
-        
+
+        # Branch A: error bars present → ax.errorbar() dispatch
+        if xerr_arr is not None or yerr_arr is not None:
+            # fmt determines point marker; default to first marker if per-point
+            fmt = resolved_marker if marker_is_scalar else (
+                resolved_marker[0] if len(resolved_marker) > 0 else 'o'
+            )
+            # Resolve color for errorbar (scalar only — c=array goes via
+            # post-render path; eval-color + xerr/yerr is documented composition)
+            resolved_color = c if isinstance(c, str) else None
+            scatter = ax.errorbar(
+                x_data, y_data,
+                xerr=xerr_arr, yerr=yerr_arr,
+                fmt=fmt if isinstance(fmt, str) else 'o',
+                color=resolved_color,
+                alpha=alpha,
+                elinewidth=get_style_value("scatter.error_elinewidth", 1.0),
+                capsize=get_style_value("scatter.error_capsize", 2),
+                ecolor=get_style_value("scatter.error_ecolor", None),
+                **kwargs
+            )
+            # No colorbar in errorbar branch (errorbar doesn't return ScalarMappable)
+        # Branch B: per-point marker → np.unique loop with _nolegend_
+        elif not marker_is_scalar:
+            scatter = None
+            for m in np.unique(resolved_marker):
+                idx = resolved_marker == m
+                if not np.any(idx):
+                    continue
+                # Subset color array if continuous (np.ndarray)
+                if isinstance(c, np.ndarray):
+                    c_sub = c[idx]
+                elif c is not None:
+                    c_sub = c  # fixed color string
+                else:
+                    c_sub = None
+                # Subset size if it's an array
+                s_sub = s[idx] if isinstance(s, np.ndarray) else s
+                _scat = ax.scatter(
+                    x_data[idx], y_data[idx],
+                    c=c_sub, s=s_sub, alpha=alpha,
+                    edgecolors=edgecolors, linewidths=linewidths,
+                    cmap=cmap_used if not is_categorical else None,
+                    marker=m,
+                    label='_nolegend_',  # §9.ECM.8: prevent duplicate legend entries
+                    **kwargs
+                )
+                # Keep the last collection for colorbar attachment
+                scatter = _scat
+            # Colorbar (continuous expression color + per-point markers compose)
+            if scatter is not None and isinstance(c, np.ndarray) and not is_categorical and colorbar:
+                cbar = plt.colorbar(scatter, ax=ax)
+                if clabel:
+                    cbar.set_label(clabel)
+                elif isinstance(color, str) and color not in df.columns:
+                    # Expression color — label with the expression itself
+                    cbar.set_label(color)
+        # Branch C: existing scalar-marker ax.scatter (dispatch invariance §9.SE.5)
+        else:
+            scatter = ax.scatter(
+                x_data, y_data,
+                c=c, s=s, alpha=alpha,
+                edgecolors=edgecolors, linewidths=linewidths,
+                cmap=cmap_used if not is_categorical else None,
+                marker=marker if isinstance(marker, str) else 'o',
+                **kwargs
+            )
+            # Colorbar for continuous color
+            if c is not None and not is_categorical and colorbar and not isinstance(c, str):
+                cbar = plt.colorbar(scatter, ax=ax)
+                if clabel:
+                    cbar.set_label(clabel)
+                elif isinstance(color, str) and color in df.columns:
+                    cbar.set_label(color)
+                elif isinstance(color, str) and color not in df.columns:
+                    # Phase 13.38.DF: expression color label
+                    cbar.set_label(color)
+
         # Legend for categorical color (Phase 13.16.DF FIX1: skip when suppressed)
         if is_categorical and isinstance(color, str) and not _suppress_legend:
             ax.legend(loc=get_style_value("legend.loc", "best"))
@@ -266,7 +346,18 @@ def _process_color(
 ) -> Tuple[Optional[np.ndarray], Optional[str], bool]:
     """
     Process color specification.
-    
+
+    Dispatch order (Phase 13.38.DF CP0-1):
+        None → array → column-name → fixed-color (to_rgba) → df.eval() → terminal
+
+    Column-name check precedes the matplotlib `to_rgba()` heuristic to preserve
+    the backward-compat property that column names win over named-color
+    collisions. E.g. a column named 'b' (also matplotlib blue) renders as a
+    colormap from the column values, NOT as fixed blue. Locked by §9.ECM.6.
+
+    The new df.eval() branch (added Phase 13.38.DF) supports expressions like
+    color='abs(tgl)' — evaluated against df, mapped via colormap.
+
     Returns
     -------
     tuple
@@ -274,29 +365,44 @@ def _process_color(
     """
     if color is None:
         return None, None, False
-    
-    # Fixed color string (e.g., "blue", "#FF0000")
-    if isinstance(color, str) and color not in df.columns:
-        return color, None, False
-    
-    # Array provided directly
+
+    # (1) Array provided directly (no string ambiguity)
     if isinstance(color, np.ndarray):
         return color, cmap or "viridis", False
-    
-    # Column name
+
+    # (2) Column name — wins over named-color collisions (BACKWARD-COMPAT LOCK §9.ECM.6)
     if isinstance(color, str) and color in df.columns:
         color_data = df[color].values
         if len(mask) == len(color_data):
             color_data = color_data[mask]
-        
         # Check if categorical
         if color_data.dtype == object or isinstance(color_data.dtype, pd.CategoricalDtype):
-            # Categorical - will be handled separately
             return None, None, True
-        else:
-            # Continuous
-            return color_data.astype(float), cmap or "viridis", False
-    
+        return color_data.astype(float), cmap or "viridis", False
+
+    # (3) Fixed color string via matplotlib heuristic
+    if isinstance(color, str):
+        try:
+            import matplotlib.colors as mc
+            mc.to_rgba(color)
+            return color, None, False
+        except (ValueError, TypeError):
+            pass
+
+        # (4) Phase 13.38.DF: df.eval() expression — last string fallback
+        try:
+            color_data = df.eval(color).values
+        except Exception as e:
+            raise ValueError(
+                f"color={color!r} is not a column name, valid color string, "
+                f"or valid df.eval() expression. Error: {e}"
+            ) from e
+        if len(mask) == len(color_data):
+            color_data = color_data[mask]
+        if color_data.dtype == object or isinstance(color_data.dtype, pd.CategoricalDtype):
+            return None, None, True
+        return color_data.astype(float), cmap or "viridis", False
+
     return None, None, False
 
 
@@ -329,6 +435,137 @@ def _process_size(
         return default_size
     
     return default_size
+
+
+# ====================================================================== #
+# Phase 13.38.DF — error bar evaluation + per-point marker resolution      #
+# ====================================================================== #
+
+def _eval_error(
+    df: pd.DataFrame,
+    expr: Optional[str],
+    mask: np.ndarray,
+    name: str = 'yerr',
+) -> Tuple[Optional[np.ndarray], float]:
+    """Evaluate xerr/yerr column name or df.eval() expression.
+
+    NaN/inf policy (Phase 13.38.DF CP1-4, three-tier):
+      - nanfrac == 1.0  → ValueError (programming error; all errors invalid)
+      - nanfrac >  0.5  → UserWarning (likely data quality issue)
+      - nanfrac >  0    → silent zeroing (per-point safety; matplotlib needs finite)
+      - nanfrac == 0    → no-op
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Source DataFrame.
+    expr : str or None
+        Column name or df.eval() expression. Returns (None, 0.0) for None.
+    mask : np.ndarray
+        Boolean mask applied to evaluated values (Phase 13.28 sanitize mask).
+    name : str
+        Parameter name ('xerr' or 'yerr') for error messages.
+
+    Returns
+    -------
+    (arr, nanfrac) : tuple of (np.ndarray or None, float)
+        arr has non-finite values zeroed to 0.0. nanfrac is the fraction of
+        non-finite values BEFORE zeroing — write into stats dict for
+        observability.
+
+    Raises
+    ------
+    ValueError
+        If expr is not None, not a column name, and not a valid df.eval()
+        expression. Also raised if ALL values are non-finite.
+    """
+    if expr is None:
+        return None, 0.0
+
+    if expr in df.columns:
+        arr = df[expr].values
+    else:
+        try:
+            arr = df.eval(expr).values
+        except Exception as e:
+            raise ValueError(
+                f"{name}={expr!r} is neither a column name nor a "
+                f"valid df.eval() expression. Error: {e}"
+            ) from e
+
+    arr = arr[mask].astype(float)
+
+    # Compute nanfrac BEFORE zeroing (for stats + policy enforcement)
+    n_total = len(arr)
+    if n_total == 0:
+        return arr, 0.0
+    finite_mask = np.isfinite(arr)
+    n_nonfinite = int((~finite_mask).sum())
+    nanfrac = n_nonfinite / n_total
+
+    # CP1-4 three-tier policy
+    if nanfrac == 1.0:
+        raise ValueError(
+            f"{name}={expr!r}: ALL {n_total} values are non-finite "
+            f"(NaN/inf). This is a programming error — error bars cannot "
+            f"be rendered with no finite values."
+        )
+    if nanfrac > 0.5:
+        warnings.warn(
+            f"{name}={expr!r}: {nanfrac:.1%} of values ({n_nonfinite}/"
+            f"{n_total}) are non-finite. Zeroed to 0.0 for rendering "
+            f"(error bars will be invisible for those points).",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    # Sanitize: NaN/inf → 0.0 (silent at nanfrac ≤ 0.5)
+    arr = np.where(finite_mask, arr, 0.0)
+    return arr, nanfrac
+
+
+def _resolve_marker_per_point(
+    df: pd.DataFrame,
+    marker: Optional[Union[str, List[str]]],
+    mask: np.ndarray,
+) -> Tuple[Any, bool]:
+    """Resolve marker to per-point array if it's a column name or boolean expression.
+
+    Phase 13.38.DF: extends marker= to support boolean df.eval() expressions
+    (True → 's', False → 'o'), in addition to existing column-name and
+    fixed-string support.
+
+    Returns
+    -------
+    (resolved, is_scalar) : tuple
+        - If is_scalar=True: `resolved` is a fixed string (or None) for the
+          scalar fast path.
+        - If is_scalar=False: `resolved` is a numpy array of per-point markers
+          for the per-point rendering loop.
+    """
+    if marker is None or not isinstance(marker, str):
+        return marker, True
+
+    # (1) Column name → per-point marker array
+    if marker in df.columns:
+        markers = df[marker].values
+        if len(mask) == len(markers):
+            markers = markers[mask]
+        return markers, False
+
+    # (2) df.eval() boolean expression → two-marker encoding
+    try:
+        result = df.eval(marker).values
+        if len(mask) == len(result):
+            result = result[mask]
+        if result.dtype == bool or result.dtype == np.bool_:
+            markers = np.where(result, 's', 'o')
+            return markers, False
+    except Exception:
+        pass
+
+    # (3) Fixed marker string → scalar fast path
+    return marker, True
 
 
 def _apply_jitter(

@@ -633,6 +633,7 @@ class DFDraw:
         'nan_policy',  # Phase 13.28.DF: NaN/inf filter policy (AD-70)
         'facet_by',  # Phase 13.32.DF Sub-fix 3: extend AD-78 column-mode facet_by to scatter
         'facet_by_bins', 'facet_by_quantiles',  # Phase 13.32.DF Sub-fix 3 (AD-79)
+        'xerr', 'yerr',  # Phase 13.38.DF: scatter error bars (column name or df.eval())
         # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
         # NB: weights_vector accepted by scatter() but the per-curve weights have no
         # effect on scatter rendering — proposal §5.5; one-time UserWarning emitted.
@@ -2565,6 +2566,29 @@ class DFDraw:
               and facet_by
               and facet_by in df.columns):
             _facet_mode = 'column'
+            # Phase 13.38.DF (BUG-017): float facet_by column + no bins +
+            # high cardinality → memory hang/OOM. Mirrors BUG-012 (hist,
+            # Phase 13.35) and BUG-015 (profile, Phase 13.37). Fires BEFORE
+            # the unique() enumeration below so users get a clear error
+            # instead of an unhelpful crash. facet_by_bins/_quantiles are
+            # passed via **plot_kwargs (not direct named params on this
+            # method). Limitation: expression-string facet_by="z/250." is
+            # NOT in df.columns → this branch is not entered → guard is
+            # skipped (same gap as Phase 13.35/13.37; deferred to df.eval()
+            # path phase).
+            _facet_col = df[facet_by]
+            _fbb = plot_kwargs.get('facet_by_bins', None)
+            _fbq = plot_kwargs.get('facet_by_quantiles', None)
+            if (_facet_col.dtype.kind == 'f'
+                    and _fbb is None
+                    and _fbq is None
+                    and _facet_col.nunique() > 20):
+                raise ValueError(
+                    f"facet_by={facet_by!r} is a float column with "
+                    f"{_facet_col.nunique()} unique values. "
+                    f"Add facet_by_bins=N or facet_by_quantiles=N to bin it. "
+                    f"Example: facet_by_bins=9 or facet_by_quantiles=5."
+                )
         else:
             # Defer 'selection_delta' / 'weights_delta' to Commit 2
             if facet_by in ('selection_delta', 'weights_delta'):
@@ -3508,6 +3532,12 @@ class DFDraw:
         facet_by: Optional[str] = None,
         facet_by_bins: Optional[int] = None,
         facet_by_quantiles: Optional[int] = None,
+        # Phase 13.38.DF: scatter error bars (column name or df.eval() expression).
+        # When either is set, render via ax.errorbar() instead of ax.scatter().
+        # NaN/inf policy in _eval_error(): raise on 100% non-finite, warn at >50%,
+        # silent zeroing at <=50%. Locked by §9.SE.6 (3-part).
+        xerr: Optional[str] = None,
+        yerr: Optional[str] = None,
         # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
         # AD-61, AD-62, AD-65, AD-66, AD-67. Method body wiring lands in Turn 3.
         # NB: weights_vector is accepted to honor uniform-API contract (A-1), but
@@ -3740,6 +3770,8 @@ class DFDraw:
                 clabel=clabel, jitter=jitter,
                 # Phase 13.28.DF: NaN/inf filter policy
                 nan_policy=nan_policy,
+                # Phase 13.38.DF: scatter error bars
+                xerr=xerr, yerr=yerr,
                 **kwargs
             )
             axes = ax

@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-05-21 09:54 UTC
+**Generated:** 2026-05-21 13:57 UTC
 **Phase:** 13.15.DF
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -9,13 +9,13 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 37 | 39% |
-| ☑️ Smoke-only | 57 | 60% |
+| ✅ Verified | 42 | 42% |
+| ☑️ Smoke-only | 57 | 57% |
 | 🧨 Broken | 0 | 0% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **95** | |
-| **Total proof tests** | **425** | |
-| **Invariance tests** | **196** | |
+| **Total features** | **100** | |
+| **Total proof tests** | **444** | |
+| **Invariance tests** | **215** | |
 
 **Status key:**
 - ✅ Verified — has at least one invariance test (A ≡ B check)
@@ -152,6 +152,13 @@
 | ☑️ | **HIST.hist_errors** — Poisson error bar overlay (hist_errors=True): √n raw / √n/N probability / √n/(N·bw_i) density (per-bin); weighted Poisson via Σw²; zero-bin masking; ungrouped+bins=int safe; Phase 13.36 color sentinel preserved — Phase 13.37.DF | 10 | 0 |
 | | **PROFILE** | | |
 | ☑️ | **PROFILE_HIST.linestyle_cycle** — linestyle_cycle=True cycles per-group linestyles from channels.cycles.linestyle on profile() and hist(); user-explicit linestyle= wins via _ud_user_linestyle sentinel (extends Phase 13.36 Edit 17 pattern) — Phase 13.37.DF | 5 | 0 |
+| | **FACET** | | |
+| ✅ | **FACET.float_facet_by_guard** — _dispatch_faceted_render() float facet_by + no bins + nunique>20 raises ValueError with facet_by_bins=N / facet_by_quantiles=N guidance (BUG-017; third instance of BUG-012/BUG-015 float-guard class) — Phase 13.38.DF | 2 | 0 |
+| | **SCATTER** | | |
+| ✅ | **SCATTER.xerr_yerr** — scatter() xerr/yerr from column name or df.eval() expression. Render via ax.errorbar() when either provided; ax.scatter() otherwise (dispatch invariance). Three-tier NaN policy: raise on 100%, warn at >50%, silent zeroing at ≤50%. nanfrac in stats dict. Style keys: scatter.error_capsize=2, scatter.error_elinewidth=1.0, scatter.error_ecolor=None — Phase 13.38.DF | 9 | 0 |
+| ✅ | **SCATTER.expression_color** — scatter() color= accepts df.eval() expression (e.g. color='abs(tgl)'). _process_color() dispatch reordered (CP0-1): None → array → column → fixed-color (to_rgba) → df.eval → terminal. Column-name check precedes to_rgba() to preserve backward compat for columns named after matplotlib colors ('b', 'r', 'k') — Phase 13.38.DF | 5 | 0 |
+| ✅ | **SCATTER.expression_marker** — scatter() marker= accepts boolean df.eval() expression (e.g. marker='ncl > 100'); True → 's', False → 'o'. Per-point rendering via np.unique loop with label='_nolegend_' (no spurious legend entries) — Phase 13.38.DF | 2 | 0 |
+| ✅ | **SCATTER.expr_compose** — scatter() expression color + expression marker composition: both encodings simultaneously on single-path scatter. Each marker subgroup carries its own colormap array — Phase 13.38.DF | 1 | 0 |
 
 ---
 
