@@ -46,6 +46,10 @@ DEFAULT_STYLE: Dict[str, Any] = {
     "scatter.error_capsize": 2,
     "scatter.error_elinewidth": 1.0,
     "scatter.error_ecolor": None,  # None = inherit from line color
+    # Phase 13.39.DF — 2D profile (z:y:x → pcolormesh)
+    "profile2d.cmap": "viridis",
+    "profile2d.colorbar": True,
+    "profile2d.min_entries": 0,
     
     # Histogram
     "hist.bins": 50,

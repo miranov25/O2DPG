@@ -238,6 +238,8 @@ def draw_hist(
     # channels.cycles.linestyle per group. User-explicit linestyle= takes
     # precedence (Phase 13.36 sentinel pattern).
     linestyle_cycle: bool = False,
+    # Phase 13.39.DF: time-axis formatting (pre-conversion approach, CP1-4 auto-detect).
+    time_format: Optional[str] = None,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -346,9 +348,17 @@ def draw_hist(
     # BUG_dfdraw_20260505: cast to float — boolean expressions (==, !=, >, <, &, |, ~)
     # produce np.bool_ columns; np.histogram cannot subtract boolean edges.
     # Profile, hist2d, hexbin all already cast to float here; hist was the outlier.
+    # Phase 13.39.DF CP1-4: detect datetime64 column BEFORE astype(float)
+    _x_is_datetime = (
+        isinstance(x, str) and x in df.columns
+        and np.issubdtype(df[x].dtype, np.datetime64)
+    )
     if isinstance(x, str):
         x_name = x
-        x_data = df[x].values.astype(float)
+        if _x_is_datetime:
+            x_data = df[x].values   # keep datetime64
+        else:
+            x_data = df[x].values.astype(float)
     else:
         x_name = "x"
         x_data = np.asarray(x, dtype=float)
@@ -397,6 +407,21 @@ def draw_hist(
     else:
         # No weights: use the sanitized output directly (no double-call).
         x_data = _x_clean
+
+    # Phase 13.39.DF (CP1-4): time_format pre-conversion with dtype auto-detect.
+    # Convert x_data to matplotlib date numbers BEFORE ax.hist binning so bin
+    # edges come out as date numbers. CRITICAL: post-hoc rewrite of ax.get_lines()
+    # is a NO-OP for hist (creates Patch objects, not Line2D) — pre-conversion
+    # is the only correct approach. Locked by §9.TA.5.
+    if time_format is not None:
+        import matplotlib.dates as mdates
+        _x_arr = np.asarray(x_data)
+        if np.issubdtype(_x_arr.dtype, np.datetime64):
+            x_data = mdates.date2num(_x_arr)
+        else:
+            x_data = mdates.date2num(
+                pd.to_datetime(_x_arr, unit='s').to_pydatetime()
+            )
 
     # Phase 13.28.DF: Resolve autorange (AD-73, AD-77)
     from ._autorange import resolve_range_1d
@@ -625,6 +650,19 @@ def draw_hist(
     
     if not _suppress_layout:
         plt.tight_layout()
+
+    # Phase 13.39.DF: apply time_format formatter AFTER render (pre-conversion
+    # already happened upstream, line ~404 area). Locked by §9.TA.5 (realistic
+    # timestamps) and §9.TA.7 (datetime64[ns] no-crash).
+    if time_format is not None:
+        import matplotlib.dates as mdates
+        if time_format == "auto":
+            ax.xaxis.set_major_formatter(
+                mdates.AutoDateFormatter(mdates.AutoDateLocator()))
+        else:
+            ax.xaxis.set_major_formatter(mdates.DateFormatter(time_format))
+        fig.autofmt_xdate()
+
     return fig, ax, stats_dict
 
 

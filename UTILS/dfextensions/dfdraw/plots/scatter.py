@@ -55,6 +55,8 @@ def draw_scatter(
     # silent zeroing at ≤50%. Locked by §9.SE.6.
     xerr: Optional[str] = None,
     yerr: Optional[str] = None,
+    # Phase 13.39.DF: time-axis formatting (pre-conversion approach, CP1-4 auto-detect).
+    time_format: Optional[str] = None,
     # Phase 13.16.DF FIX1: vector dispatch suppression flags (private).
     _suppress_legend: bool = False,
     _suppress_title: bool = False,
@@ -133,9 +135,17 @@ def draw_scatter(
         fig = ax.get_figure()
     
     # Get data
+    # Phase 13.39.DF CP1-4: detect datetime64 column BEFORE astype(float)
+    _x_is_datetime = (
+        isinstance(x, str) and x in df.columns
+        and np.issubdtype(df[x].dtype, np.datetime64)
+    )
     if isinstance(x, str):
         x_name = x
-        x_data = df[x].values.astype(float)
+        if _x_is_datetime:
+            x_data = df[x].values   # keep datetime64
+        else:
+            x_data = df[x].values.astype(float)
     else:
         x_name = "x"
         x_data = np.asarray(x, dtype=float)
@@ -156,6 +166,19 @@ def draw_scatter(
     x_data = x_data[mask]
     y_data = y_data[mask]
     df_filtered = df[mask] if len(df) == len(mask) else df
+
+    # Phase 13.39.DF (CP1-4): time_format pre-conversion with dtype auto-detect.
+    # Convert x_data to matplotlib date numbers BEFORE ax.scatter/ax.errorbar
+    # so plotted x positions are date floats, not raw Unix ints.
+    if time_format is not None:
+        import matplotlib.dates as mdates
+        _x_arr = np.asarray(x_data)
+        if np.issubdtype(_x_arr.dtype, np.datetime64):
+            x_data = mdates.date2num(_x_arr)
+        else:
+            x_data = mdates.date2num(
+                pd.to_datetime(_x_arr, unit='s').to_pydatetime()
+            )
     
     # Statistics
     stats_dict = _compute_scatter_stats(x_data, y_data)
@@ -314,6 +337,17 @@ def draw_scatter(
     # Phase 13.16.DF FIX1: skip tight_layout when suppressed
     if not _suppress_layout:
         plt.tight_layout()
+
+    # Phase 13.39.DF: apply time_format formatter AFTER render
+    if time_format is not None:
+        import matplotlib.dates as mdates
+        if time_format == "auto":
+            ax.xaxis.set_major_formatter(
+                mdates.AutoDateFormatter(mdates.AutoDateLocator()))
+        else:
+            ax.xaxis.set_major_formatter(mdates.DateFormatter(time_format))
+        fig.autofmt_xdate()
+
     return fig, ax, stats_dict
 
 
@@ -670,3 +704,121 @@ def _add_stats_box(
         horizontalalignment=ha,
         bbox=dict(boxstyle=boxstyle, facecolor="white", alpha=alpha)
     )
+
+
+# ====================================================================== #
+# Phase 13.39.DF — draw_scatter3d (3D point cloud via z:y:x expression)   #
+# ====================================================================== #
+
+def draw_scatter3d(
+    df: pd.DataFrame,
+    z_expr: str,
+    y_expr: str,
+    x_expr: str,
+    ax=None,
+    selection: Optional[Union[str, np.ndarray, callable]] = None,
+    sample: Optional[int] = None,
+    color: Optional[Union[str, np.ndarray]] = None,
+    size: Optional[Union[str, float, np.ndarray]] = None,
+    cmap: str = 'viridis',
+    alpha: Optional[float] = None,
+    nan_policy: str = 'filter',
+    elev: Optional[float] = None,
+    azim: Optional[float] = None,
+    auto_title: Union[bool, str] = False,
+    title: Optional[str] = None,
+    xlabel: Optional[str] = None,
+    ylabel: Optional[str] = None,
+    zlabel: Optional[str] = None,
+    same: bool = False,
+    **kwargs,
+) -> Tuple[Any, Any, Dict[str, Any]]:
+    """Draw 3D scatter plot (z:y:x expression).
+
+    Phase 13.39.DF — invoked when DFDraw.draw() detects type='scatter3d'
+    AND colon_count == 2. Reuses Phase 13.38 _process_color() and
+    _process_size() unchanged.
+    """
+    # Function-local import (mpl_toolkits.mplot3d is standard matplotlib —
+    # N6: not a soft-dep; placement is for readability only)
+    from mpl_toolkits.mplot3d import Axes3D
+
+    # same=True dimensionality guard (CP2-2 / §9.SC3D.8)
+    if same and ax is not None and not isinstance(ax, Axes3D):
+        raise ValueError(
+            "type='scatter3d' with same=True requires existing axes to be "
+            "3D projection (Axes3D). Got 2D axes — cannot overlay 3D on 2D."
+        )
+
+    # Evaluate expressions
+    def _eval(expr):
+        if expr in df.columns:
+            return df[expr].values
+        return df.eval(expr).values
+
+    x_data = _eval(x_expr)
+    y_data = _eval(y_expr)
+    z_data = _eval(z_expr)
+
+    # Joint NaN/inf mask across all 3 axes
+    mask = (np.isfinite(x_data) & np.isfinite(y_data) & np.isfinite(z_data))
+    n_filtered = int((~mask).sum())
+    x_data = x_data[mask].astype(float)
+    y_data = y_data[mask].astype(float)
+    z_data = z_data[mask].astype(float)
+
+    # Reuse Phase 13.38 helpers — pass the mask that recovers original df indices
+    # For Phase 13.39, the simpler contract: mask aligns with df rows; we
+    # construct a boolean array matching df length.
+    df_mask = np.zeros(len(df), dtype=bool)
+    df_mask[np.where(mask)[0]] = True   # not strictly needed but documents intent
+    color_values, color_cmap, is_categorical = _process_color(
+        df, color, cmap, mask, len(x_data),
+    )
+    size_values = _process_size(df, size, get_style_value("scatter.size", 50),
+                                mask, len(x_data))
+
+    # Create axes if not provided
+    if ax is None:
+        import matplotlib.pyplot as plt
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+    else:
+        fig = ax.get_figure()
+
+    # Render
+    scatter = ax.scatter(
+        x_data, y_data, z_data,
+        c=color_values if color_values is not None else None,
+        cmap=color_cmap if (color_values is not None and not is_categorical) else None,
+        s=size_values,
+        alpha=alpha,
+        **kwargs,
+    )
+
+    if elev is not None or azim is not None:
+        ax.view_init(
+            elev=elev if elev is not None else ax.elev,
+            azim=azim if azim is not None else ax.azim,
+        )
+
+    ax.set_xlabel(xlabel or x_expr)
+    ax.set_ylabel(ylabel or y_expr)
+    ax.set_zlabel(zlabel or z_expr)
+    if title:
+        ax.set_title(title)
+    elif auto_title:
+        ax.set_title(f"{z_expr} vs ({y_expr}, {x_expr})")
+
+    # Stats dict (CP1-3: SC3D.6 locks all 3 means)
+    stats: Dict[str, Any] = {
+        'n': int(mask.sum()),
+        'n_filtered': n_filtered,
+        'mean_x': float(np.mean(x_data)) if len(x_data) > 0 else float('nan'),
+        'mean_y': float(np.mean(y_data)) if len(y_data) > 0 else float('nan'),
+        'mean_z': float(np.mean(z_data)) if len(z_data) > 0 else float('nan'),
+        'std_x': float(np.std(x_data)) if len(x_data) > 0 else float('nan'),
+        'std_y': float(np.std(y_data)) if len(y_data) > 0 else float('nan'),
+        'std_z': float(np.std(z_data)) if len(z_data) > 0 else float('nan'),
+    }
+    return fig, ax, stats

@@ -316,6 +316,32 @@ class DFDraw:
             elif ch == ':' and depth == 0:
                 return expr[:i], expr[i+1:]
         raise ValueError(f"No top-level ':' found in '{expr}'")
+
+    def _split_top_level_colons_3(self, expr: str):
+        """Split on exactly TWO top-level ':' — returns (z, y, x).
+
+        Phase 13.39.DF: supports 'z:y:x' expressions for draw_profile2d
+        (2D profile heatmap) and draw_scatter3d (3D scatter).
+
+        Caller must verify colon_count == 2 before calling — this method
+        assumes the contract.
+        """
+        depth = 0
+        positions = []
+        for i, ch in enumerate(expr):
+            if ch in '([':
+                depth += 1
+            elif ch in ')]':
+                depth -= 1
+            elif ch == ':' and depth == 0:
+                positions.append(i)
+        if len(positions) != 2:
+            raise ValueError(
+                f"Expected exactly 2 top-level ':' in '{expr}', "
+                f"got {len(positions)}."
+            )
+        p0, p1 = positions
+        return expr[:p0], expr[p0+1:p1], expr[p1+1:]
     
     def _eval_column(self, expr: str) -> pd.Series:
         """
@@ -583,6 +609,8 @@ class DFDraw:
         # Phase 13.37.DF: per-group linestyle cycling mode flag. Explicit
         # param of draw_profile() — R6 validator passes.
         'linestyle_cycle',
+        # Phase 13.39.DF: time-axis formatting (pre-conversion approach)
+        'time_format',
     )
 
     _HIST_FORWARDED_NAMES = (
@@ -622,6 +650,8 @@ class DFDraw:
         # (per-group linestyle mode flag). Both are explicit params of
         # draw_hist() — R6 validator passes.
         'hist_errors', 'linestyle_cycle',
+        # Phase 13.39.DF: time-axis formatting (pre-conversion approach)
+        'time_format',
     )
 
     _SCATTER_FORWARDED_NAMES = (
@@ -634,6 +664,7 @@ class DFDraw:
         'facet_by',  # Phase 13.32.DF Sub-fix 3: extend AD-78 column-mode facet_by to scatter
         'facet_by_bins', 'facet_by_quantiles',  # Phase 13.32.DF Sub-fix 3 (AD-79)
         'xerr', 'yerr',  # Phase 13.38.DF: scatter error bars (column name or df.eval())
+        'time_format',  # Phase 13.39.DF: time-axis formatting (pre-conversion)
         # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
         # NB: weights_vector accepted by scatter() but the per-curve weights have no
         # effect on scatter rendering — proposal §5.5; one-time UserWarning emitted.
@@ -3086,7 +3117,40 @@ class DFDraw:
         if figsize is not None and ax is None:
             import matplotlib.pyplot as plt
             fig, ax = plt.subplots(figsize=figsize)
-        
+
+        # Phase 13.39.DF Item 3: scatter3d dispatch BEFORE _parse_expr,
+        # because _parse_expr rejects colon_count > 1 (z:y:x has 2).
+        if type == "scatter3d":
+            colon_count = self._count_colons_outside_brackets(expr)
+            if colon_count != 2:
+                raise ValueError(
+                    f"type='scatter3d' requires a 3-variable expression "
+                    f"'z:y:x', got {expr!r} with {colon_count} top-level "
+                    f"colon(s)."
+                )
+            if group_by is not None:
+                # CP2-1 (§9.SC3D.7) scope boundary
+                raise ValueError(
+                    "group_by is not supported with type='scatter3d' "
+                    "(deferred to future phase). Got: group_by={!r}".format(
+                        group_by)
+                )
+            z_part, y_part, x_part = self._split_top_level_colons_3(expr)
+            _df_3d = self._apply_selection(self.df, selection)
+            _df_3d = self._apply_sampling(_df_3d, sample)
+            from .plots.scatter import draw_scatter3d
+            _allowed = {
+                'cmap', 'alpha', 'auto_title', 'title',
+                'xlabel', 'ylabel', 'zlabel',
+                'nan_policy', 'elev', 'azim',
+            }
+            _sc3d_kwargs = {k: v for k, v in kwargs.items() if k in _allowed}
+            return draw_scatter3d(
+                _df_3d, z_part, y_part, x_part,
+                ax=ax, color=color, size=size,
+                same=same, **_sc3d_kwargs,
+            )
+
         # Parse expression to determine dimensionality
         y_expr, x_expr = self._parse_expr(expr)
         
@@ -3172,7 +3236,7 @@ class DFDraw:
         else:
             raise ValueError(
                 f"Unknown plot type '{type}'. "
-                "Expected: scatter, hist, hist2d, profile"
+                "Expected: scatter, hist, hist2d, profile, scatter3d"
             )
     
     # =========================================================================
@@ -3207,6 +3271,8 @@ class DFDraw:
         stat_fields: Optional[Union[str, List[str]]] = None,
         # Phase 13.28.DF: NaN/inf filter policy (AD-70)
         nan_policy: str = "filter",
+        # Phase 13.39.DF: time-axis formatting (pre-conversion approach)
+        time_format: Optional[str] = None,
         # Phase 13.27.DF Commit 2 FIX1 (§7b): weights as column name or
         # df.eval-able expression. Mirrors profile()'s weights= semantics.
         # If both `weights=` and `norm="probability"` are passed, the
@@ -3483,6 +3549,8 @@ class DFDraw:
                 # Phase 13.37.DF: Poisson error bars + linestyle cycle mode.
                 hist_errors=hist_errors,
                 linestyle_cycle=linestyle_cycle,
+                # Phase 13.39.DF: time-axis formatting
+                time_format=time_format,
                 **kwargs
             )
             axes = ax
@@ -3538,6 +3606,7 @@ class DFDraw:
         # silent zeroing at <=50%. Locked by §9.SE.6 (3-part).
         xerr: Optional[str] = None,
         yerr: Optional[str] = None,
+        time_format: Optional[str] = None,  # Phase 13.39.DF: time-axis formatting
         # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
         # AD-61, AD-62, AD-65, AD-66, AD-67. Method body wiring lands in Turn 3.
         # NB: weights_vector is accepted to honor uniform-API contract (A-1), but
@@ -3772,6 +3841,8 @@ class DFDraw:
                 nan_policy=nan_policy,
                 # Phase 13.38.DF: scatter error bars
                 xerr=xerr, yerr=yerr,
+                # Phase 13.39.DF: time-axis formatting
+                time_format=time_format,
                 **kwargs
             )
             axes = ax
@@ -3794,7 +3865,9 @@ class DFDraw:
         expr: str,
         selection: Optional[Union[str, np.ndarray, callable]] = None,
         sample: Optional[int] = None,
-        bins: Optional[int] = None,
+        bins: Optional[Union[int, List[int]]] = None,
+        bins2: Optional[int] = None,  # Phase 13.39.DF: y-axis bin count for 2D profile
+        time_format: Optional[str] = None,  # Phase 13.39.DF: time-axis formatting
         range: Optional[Tuple[float, float]] = None,
         error: Optional[str] = None,   # FIX1: None → resolve per context
         stats: Optional[Union[bool, List[str]]] = None,
@@ -3948,6 +4021,45 @@ class DFDraw:
         # Phase 13.27 Commit 2 FIX1-pending guard (Sonnet52_R1 P1-2 / Hard
         # Constraint §3) REMOVED in FIX1 §7a: single-Y + selection_vector /
         # weights_vector now engages vector mode below.
+
+        # =====================================================================
+        # Phase 13.39.DF CP1-5: 2D Profile dispatch (z:y:x expression).
+        # Intercept BEFORE _parse_expr() rejects colon_count > 1 at line ~210.
+        # =====================================================================
+        colon_count = self._count_colons_outside_brackets(expr)
+        if colon_count == 2:
+            # CP2-1 (§9.P2D.10) scope boundary: group_by + profile2d raises
+            if group_by is not None:
+                raise ValueError(
+                    "group_by is not supported with 2D profile (z:y:x) "
+                    "expression. Use 1D profile (y:x) with group_by, or wait "
+                    "for a future phase. Got: expr={!r}, group_by={!r}".format(
+                        expr, group_by)
+                )
+            # Apply selection + sampling before dispatching (mirrors how
+            # draw_profile would do internally; needed because draw_profile2d
+            # expects pre-filtered df).
+            _df_2d = self._apply_selection(self.df, selection)
+            _df_2d = self._apply_sampling(_df_2d, sample)
+            z_part, y_part, x_part = self._split_top_level_colons_3(expr)
+            from .plots.profile import draw_profile2d
+            # Surface kwargs accepted by draw_profile2d; ignore unknown.
+            _allowed = {
+                'cmap', 'vmin', 'vmax', 'clabel', 'colorbar', 'norm',
+                'auto_title', 'title', 'xlabel', 'ylabel',
+                'nan_policy', 'x_range', 'y_range', 'central',
+            }
+            _profile2d_kwargs = {k: v for k, v in kwargs.items() if k in _allowed}
+            # min_entries_2d is via kwargs (separate from 1D min_entries semantics)
+            _min_entries_2d = kwargs.get('min_entries_2d', 0)
+            return draw_profile2d(
+                _df_2d, z_part, y_part, x_part,
+                ax=ax, bins=bins if bins is not None else 50,
+                bins2=bins2, min_entries=_min_entries_2d,
+                time_format=time_format,
+                **_profile2d_kwargs,
+            )
+        # =====================================================================
 
         # Parse expression
         y_expr, x_expr = self._parse_expr(expr)
@@ -4330,6 +4442,8 @@ class DFDraw:
                 color=color, marker=marker, markersize=markersize,
                 # Phase 13.37.DF: per-group linestyle cycle mode flag.
                 linestyle_cycle=linestyle_cycle,
+                # Phase 13.39.DF: time-axis formatting
+                time_format=time_format,
                 **kwargs
             )
             axes = ax

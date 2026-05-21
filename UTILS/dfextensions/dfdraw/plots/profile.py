@@ -208,6 +208,8 @@ def draw_profile(
     # channels.cycles.linestyle per group. User-explicit linestyle= wins
     # (Phase 13.36 sentinel pattern via _ud_user_linestyle capture above).
     linestyle_cycle: bool = False,
+    # Phase 13.39.DF: time-axis formatting (pre-conversion approach, CP1-4 auto-detect).
+    time_format: Optional[str] = None,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -437,9 +439,22 @@ def draw_profile(
         fig = ax.get_figure()
     
     # Get data
+    # Phase 13.39.DF: detect datetime64 column BEFORE astype(float).
+    # If x is a column name and df[x] is datetime64[ns], we must
+    # convert to date numbers via mdates.date2num() directly, NOT via
+    # pd.to_datetime(..., unit='s') (which would re-interpret the int64
+    # nanosecond representation as seconds → year out of range crash).
+    _x_is_datetime = (
+        isinstance(x, str) and x in df.columns
+        and np.issubdtype(df[x].dtype, np.datetime64)
+    )
     if isinstance(x, str):
         x_name = x
-        x_data = df[x].values.astype(float)
+        if _x_is_datetime:
+            # Keep datetime64 — astype(float) would convert to ns count
+            x_data = df[x].values
+        else:
+            x_data = df[x].values.astype(float)
     else:
         x_name = "x"
         x_data = np.asarray(x, dtype=float)
@@ -470,6 +485,21 @@ def draw_profile(
     x_data = x_data[mask]
     y_data = y_data[mask]
     df_filtered = df[mask].copy() if len(df) == len(mask) else df.copy()
+
+    # Phase 13.39.DF (CP1-4): time_format pre-conversion with dtype auto-detect.
+    # Convert x_data to matplotlib date numbers BEFORE binning so bin centers
+    # come out as date numbers automatically (same axis units throughout).
+    # Auto-detect: datetime64 dtype → direct convert; else assume Unix epoch
+    # seconds (the standard ROOT/legacy convention).
+    if time_format is not None:
+        import matplotlib.dates as mdates
+        _x_arr = np.asarray(x_data)
+        if np.issubdtype(_x_arr.dtype, np.datetime64):
+            x_data = mdates.date2num(_x_arr)
+        else:
+            x_data = mdates.date2num(
+                pd.to_datetime(_x_arr, unit='s').to_pydatetime()
+            )
 
     # Phase 13.28.DF: Resolve x_range autorange (AD-73, AD-77)
     if len(x_data) > 0:
@@ -818,6 +848,19 @@ def draw_profile(
     
     if not _suppress_layout:
         plt.tight_layout()
+
+    # Phase 13.39.DF: apply time_format formatter AFTER render. The
+    # date-number conversion already happened upstream (line ~485 area);
+    # this just installs the DateFormatter on the x-axis.
+    if time_format is not None:
+        import matplotlib.dates as mdates
+        if time_format == "auto":
+            ax.xaxis.set_major_formatter(
+                mdates.AutoDateFormatter(mdates.AutoDateLocator()))
+        else:
+            ax.xaxis.set_major_formatter(mdates.DateFormatter(time_format))
+        fig.autofmt_xdate()
+
     return fig, ax, stats_dict
 
 
@@ -1930,3 +1973,176 @@ def _render_normalize_panel(
                 zorder=4,
                 label=None,  # don't pollute legend
             )
+
+
+# ====================================================================== #
+# Phase 13.39.DF — draw_profile2d (2D mean heatmap via z:y:x expression)  #
+# ====================================================================== #
+
+def draw_profile2d(
+    df: pd.DataFrame,
+    z_expr: str,
+    y_expr: str,
+    x_expr: str,
+    ax: Optional[plt.Axes] = None,
+    bins: Union[int, List[int]] = 50,
+    bins2: Optional[int] = None,
+    x_range: Optional[Tuple[float, float]] = None,
+    y_range: Optional[Tuple[float, float]] = None,
+    central: str = 'mean',
+    cmap: str = 'viridis',
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    clabel: Optional[str] = None,
+    colorbar: bool = True,
+    min_entries: int = 0,
+    norm: Optional[str] = None,
+    time_format: Optional[str] = None,
+    auto_title: Union[bool, str] = False,
+    title: Optional[str] = None,
+    xlabel: Optional[str] = None,
+    ylabel: Optional[str] = None,
+    nan_policy: str = 'filter',
+    **kwargs,
+) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
+    """Draw 2D profile (mean of z in bins of x and y).
+
+    Phase 13.39.DF — invoked when DFDraw.profile() detects a 'z:y:x'
+    expression (colon_count == 2). Uses scipy.stats.binned_statistic_2d
+    for per-cell statistics, renders via ax.pcolormesh.
+
+    Parameters
+    ----------
+    df : DataFrame
+        Pre-filtered (selection + sample applied by caller).
+    z_expr, y_expr, x_expr : str
+        Column names or df.eval() expressions.
+    bins : int or [int, int]
+        x-axis bin count (scalar) or [n_x, n_y].
+    bins2 : int, optional
+        y-axis bin count (overrides bins[1] if both passed).
+    central : str
+        'mean' (default) or 'median' (scipy statistic).
+    min_entries : int
+        Cells with count < min_entries are masked (set to NaN).
+    norm : str, optional
+        'log' for LogNorm; None for linear.
+    time_format : str, optional
+        x-axis time format. 'auto' → AutoDateFormatter; else DateFormatter
+        with the given strftime string. Phase 13.39 CP1-4: auto-detects
+        datetime64 dtype to avoid pd.to_datetime unit='s' crash.
+    """
+    import matplotlib.pyplot as plt
+    from scipy.stats import binned_statistic_2d  # Phase 13.39 CP1-6: required dep
+
+    # Evaluate expressions (column name OR df.eval)
+    def _eval(expr):
+        if expr in df.columns:
+            return df[expr].values
+        return df.eval(expr).values
+
+    x_data = _eval(x_expr)
+    y_data = _eval(y_expr)
+    z_data = _eval(z_expr)
+
+    # Drop rows where any of x/y/z is non-finite (joint mask)
+    mask = (np.isfinite(x_data) & np.isfinite(y_data) & np.isfinite(z_data))
+    x_data = x_data[mask].astype(float)
+    y_data = y_data[mask].astype(float)
+    z_data = z_data[mask].astype(float)
+
+    # Resolve bin counts
+    if isinstance(bins, (list, tuple)):
+        n_x = bins[0]
+        n_y_default = bins[1] if len(bins) > 1 else bins[0]
+    else:
+        n_x = bins
+        n_y_default = bins
+    n_y = bins2 if bins2 is not None else n_y_default
+
+    # CP1-2: range is single-level outer list (NOT 3-level nested)
+    if len(x_data) == 0:
+        raise ValueError("draw_profile2d: no data points after sanitization")
+    _range = [
+        list(x_range) if x_range else [float(np.min(x_data)), float(np.max(x_data))],
+        list(y_range) if y_range else [float(np.min(y_data)), float(np.max(y_data))],
+    ]
+
+    # Compute per-cell mean (or median) via scipy
+    z_mean, x_edges, y_edges, _ = binned_statistic_2d(
+        x_data, y_data, z_data,
+        statistic=central, bins=[n_x, n_y], range=_range,
+    )
+    z_count, _, _, _ = binned_statistic_2d(
+        x_data, y_data, z_data,
+        statistic='count', bins=[n_x, n_y], range=_range,
+    )
+    # Mask low-count cells
+    z_mean[z_count < min_entries] = np.nan
+    n_masked = int((z_count < min_entries).sum())
+
+    # Log norm (mirrors draw_hist2d pattern)
+    norm_obj = None
+    if norm == 'log':
+        from matplotlib.colors import LogNorm
+        positive_vmin = vmin if (vmin is not None and vmin > 0) else None
+        norm_obj = LogNorm(vmin=positive_vmin, vmax=vmax)
+
+    # time_format pre-conversion (CP1-4 auto-detect)
+    if time_format is not None:
+        import matplotlib.dates as mdates
+        x_edges_arr = np.asarray(x_edges)
+        if np.issubdtype(x_edges_arr.dtype, np.datetime64):
+            x_edges = mdates.date2num(x_edges_arr)
+        else:
+            x_edges = mdates.date2num(
+                pd.to_datetime(x_edges_arr, unit='s').to_pydatetime()
+            )
+
+    # Set up axes
+    if ax is None:
+        fig, ax = plt.subplots()
+    else:
+        fig = ax.get_figure()
+
+    # Render via pcolormesh — z_mean.T because scipy returns shape (n_x, n_y)
+    # but pcolormesh expects shape (n_y, n_x) for proper orientation
+    im = ax.pcolormesh(
+        x_edges, y_edges, z_mean.T,
+        cmap=cmap, vmin=vmin, vmax=vmax, norm=norm_obj,
+    )
+
+    if colorbar:
+        cbar = plt.colorbar(im, ax=ax)
+        if clabel:
+            cbar.set_label(clabel)
+
+    # time_format formatter applied after render
+    if time_format is not None:
+        import matplotlib.dates as mdates
+        if time_format == "auto":
+            ax.xaxis.set_major_formatter(
+                mdates.AutoDateFormatter(mdates.AutoDateLocator()))
+        else:
+            ax.xaxis.set_major_formatter(mdates.DateFormatter(time_format))
+        fig.autofmt_xdate()
+
+    # Labels
+    ax.set_xlabel(xlabel or x_expr)
+    ax.set_ylabel(ylabel or y_expr)
+    if title:
+        ax.set_title(title)
+    elif auto_title:
+        ax.set_title(f"{z_expr} vs ({y_expr}, {x_expr})")
+
+    stats: Dict[str, Any] = {
+        'n': int(mask.sum()),
+        'n_cells': n_x * n_y,
+        'n_masked_cells': n_masked,
+        'z_mean': z_mean,
+        'z_count': z_count,
+        'clabel': clabel,
+        'x_edges': x_edges,
+        'y_edges': y_edges,
+    }
+    return fig, ax, stats
