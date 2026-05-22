@@ -240,6 +240,11 @@ def draw_hist(
     linestyle_cycle: bool = False,
     # Phase 13.39.DF: time-axis formatting (pre-conversion approach, CP1-4 auto-detect).
     time_format: Optional[str] = None,
+    # Phase 13.40.DF: cumulative histogram (CDF/ECDF/survival).
+    # False (default) → regular histogram (byte-identical backward compat)
+    # True → ascending cumulative (each bin = count ≤ right edge)
+    # -1 → descending / survival (ROOT convention)
+    cumulative: Union[bool, int] = False,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -353,6 +358,20 @@ def draw_hist(
         isinstance(x, str) and x in df.columns
         and np.issubdtype(df[x].dtype, np.datetime64)
     )
+
+    # Phase 13.40.DF M5 correctness guard: hist_errors + cumulative is
+    # statistically wrong. Poisson per-bin errors assume independent counts;
+    # cumulative counts have correlated uncertainty. Locked by §9.CH.6.
+    if hist_errors and cumulative:
+        raise NotImplementedError(
+            "hist_errors=True and cumulative=True cannot be composed: "
+            "Poisson per-bin errors assume independent counts; cumulative "
+            "counts have correlated uncertainty (each bin's error depends "
+            "on all prior bins). Use cumulative=True without "
+            "hist_errors=True, or use a single-bin approach for the "
+            "threshold of interest."
+        )
+
     if isinstance(x, str):
         x_name = x
         if _x_is_datetime:
@@ -558,6 +577,11 @@ def draw_hist(
             density=density, weights=_hist_weights,
             alpha=alpha, histtype=histtype, edgecolor=edgecolor,
             linewidth=linewidth,
+            # Phase 13.40.DF CP1-2: cumulative forwarded explicitly to the
+            # grouped path (covers BOTH stacked branch at ~line 803 AND the
+            # 2 overlaid branches at ~847/853). Without this, all 3 grouped
+            # call sites silently drop cumulative.
+            cumulative=cumulative,
             **kwargs   # group_by_bins/hist_norm/min_entries already consumed
         )
         stats_dict["grouped"] = True
@@ -567,7 +591,10 @@ def draw_hist(
         ax.hist(
             x_data, bins=bins, range=_used_range, density=density, weights=_hist_weights,
             color=color, alpha=alpha, histtype=histtype, edgecolor=edgecolor,
-            linewidth=linewidth, label=label, **kwargs
+            linewidth=linewidth, label=label,
+            # Phase 13.40.DF: cumulative histogram (explicit forward — call site 1/4)
+            cumulative=cumulative,
+            **kwargs
         )
         # Phase 13.37.DF: Poisson error bar overlay for ungrouped path.
         # CP1-7: use edges from np.histogram() return (bins= may be int).
@@ -694,6 +721,10 @@ def _draw_hist_grouped(
     # Phase 13.37.DF: pre-computed per-row weights (forwarded from draw_hist
     # for hist_errors weighted-Poisson computation in the grouped path).
     _hist_weights_arr: Optional[np.ndarray] = None,
+    # Phase 13.40.DF CP1-2: cumulative histogram. Recursive named-param
+    # forwarding per QRC v1.32 #6 — DFDraw.hist → draw_hist → _draw_hist_grouped
+    # → ax.hist. NEVER access via kwargs.get/**hist_kwargs.
+    cumulative: Union[bool, int] = False,
     **hist_kwargs
 ) -> int:
     """Draw grouped/overlaid histograms.
@@ -802,7 +833,12 @@ def _draw_hist_grouped(
         hist_kwargs.pop('edgecolor', None)
         ax.hist(data_list, bins=bins_arg, label=labels,
                 color=surviving_colors, edgecolor=_stacked_ec,
-                stacked=True, **hist_kwargs)
+                stacked=True,
+                # Phase 13.40.DF CP1-1: cumulative forwarded explicitly (call
+                # site 2/4 — stacked branch). v1.1 spec missed this site;
+                # added in v1.2 per Sonet50 panel. Locked by §9.CH.10.
+                cumulative=cumulative,
+                **hist_kwargs)
         return len(data_list)
     else:
         # Overlaid histograms — one ax.hist call per surviving group.
@@ -847,13 +883,22 @@ def _draw_hist_grouped(
                 ax.hist(group_data, bins=bins_arg,
                         label=str(group), color=group_color,
                         edgecolor=_ec, linestyle=_per_group_ls,
-                        weights=weights, **hist_kwargs)
+                        weights=weights,
+                        # Phase 13.40.DF: cumulative (call site 3/4 — overlaid
+                        # linestyle_cycle path. Phase 13.37 split overlaid into
+                        # 2 branches; both need explicit forward.)
+                        cumulative=cumulative,
+                        **hist_kwargs)
             else:
                 # No cycle OR user explicit → existing flow (linestyle in **kwargs)
                 ax.hist(group_data, bins=bins_arg,
                         label=str(group), color=group_color,
                         edgecolor=_ec,
-                        weights=weights, **hist_kwargs)
+                        weights=weights,
+                        # Phase 13.40.DF: cumulative (call site 4/4 — overlaid
+                        # default path).
+                        cumulative=cumulative,
+                        **hist_kwargs)
 
             # Phase 13.37.DF: Poisson error bar overlay (CP1-1/CP1-2 fix:
             # color=group_color follows Phase 13.36 sentinel, NOT colors[i]).

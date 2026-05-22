@@ -1312,4 +1312,22 @@ FEATURES = [
             "test_phase_13_39_df_profile2d_timeaxis.py::TestScatter3D::test_SC3D_8_same_true_non_3d_axes_raises",
         ],
     },
+    # ── Phase 13.40.DF: Cumulative Histogram ──
+    {
+        "id": "HIST.cumulative",
+        "name": "hist() cumulative=True/-1/False — ROOT TH1::Draw('cumulative') equivalent. Three values: True (ascending CDF/ECDF), False (default, byte-identical backward compat), -1 (descending/survival, ROOT convention). matplotlib native cumulative= forwarded explicitly at 4 internal call sites (Phase 13.39 §2.2 lesson applied recursively: DFDraw.hist → draw_hist → _draw_hist_grouped → ax.hist; ALSO through _dispatch_faceted_render for facet_by composition). Composes with: norm='probability' (→ ECDF 0-1), group_by overlaid (per-group ECDFs), group_by stacked (CP2-1 regression lock for 3rd call site), facet_by (per-facet cumulative), histtype='step' (HEP-standard step ECDF). Correctness guard (M5): hist_errors+cumulative → NotImplementedError (Poisson per-bin errors are independent; cumulative counts are correlated). Vector dispatch [x,y] propagates cumulative correctly (Phase 13.16.DF FIX1 bug class lock) — Phase 13.40.DF",
+        "category": "HIST",
+        "tests": [
+            "test_phase_13_40_df_cumulative_hist.py::TestCumulativeHist::test_CH_1_monotone_and_total_N_lock",
+            "test_phase_13_40_df_cumulative_hist.py::TestCumulativeHist::test_CH_2_ECDF_last_value_is_one",
+            "test_phase_13_40_df_cumulative_hist.py::TestCumulativeHist::test_CH_3_survival_starts_at_one",
+            "test_phase_13_40_df_cumulative_hist.py::TestCumulativeHist::test_CH_4_cumulative_false_backward_compat",
+            "test_phase_13_40_df_cumulative_hist.py::TestCumulativeHist::test_CH_5_group_by_per_group_ecdf",
+            "test_phase_13_40_df_cumulative_hist.py::TestCumulativeHist::test_CH_6_hist_errors_plus_cumulative_raises",
+            "test_phase_13_40_df_cumulative_hist.py::TestCumulativeHist::test_CH_7_vector_dispatch_propagates_cumulative",
+            "test_phase_13_40_df_cumulative_hist.py::TestCumulativeHist::test_CH_8_facet_by_per_facet_ecdf",
+            "test_phase_13_40_df_cumulative_hist.py::TestCumulativeHist::test_CH_9_histtype_step_plus_cumulative_polygon_safe",
+            "test_phase_13_40_df_cumulative_hist.py::TestCumulativeHist::test_CH_10_group_by_stacked_cumulative_regression_lock",
+        ],
+    },
 ]

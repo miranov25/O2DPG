@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-05-21 20:47 UTC
+**Generated:** 2026-05-21 22:27 UTC
 **Phase:** 13.15.DF
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -9,13 +9,13 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 47 | 45% |
+| ✅ Verified | 48 | 45% |
 | ☑️ Smoke-only | 57 | 54% |
 | 🧨 Broken | 0 | 0% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **105** | |
-| **Total proof tests** | **468** | |
-| **Invariance tests** | **239** | |
+| **Total features** | **106** | |
+| **Total proof tests** | **478** | |
+| **Invariance tests** | **249** | |
 
 **Status key:**
 - ✅ Verified — has at least one invariance test (A ≡ B check)
@@ -167,6 +167,8 @@
 | | **SCATTER** | | |
 | ✅ | **SCATTER.time_axis** — scatter() time_format= pre-conversion: x_data → matplotlib date numbers BEFORE ax.scatter/ax.errorbar — Phase 13.39.DF | 1 | 0 |
 | ✅ | **SCATTER.scatter3d** — draw('z:y:x', type='scatter3d') → 3D point cloud via mpl_toolkits.mplot3d. Reuses Phase 13.38 _process_color() + _process_size() unchanged. color=/size= accept column names or df.eval() expressions. elev=/azim= for ax.view_init(). Stats dict locks mean_x AND mean_y AND mean_z to 1e-9 (CP1-3). Scope boundaries: group_by + scatter3d raises (CP2-1); same=True onto non-3D axes raises (CP2-2). 'y:x' (colon!=2) with type='scatter3d' raises with actionable message — Phase 13.39.DF | 8 | 0 |
+| | **HIST** | | |
+| ✅ | **HIST.cumulative** — hist() cumulative=True/-1/False — ROOT TH1::Draw('cumulative') equivalent. Three values: True (ascending CDF/ECDF), False (default, byte-identical backward compat), -1 (descending/survival, ROOT convention). matplotlib native cumulative= forwarded explicitly at 4 internal call sites (Phase 13.39 §2.2 lesson applied recursively: DFDraw.hist → draw_hist → _draw_hist_grouped → ax.hist; ALSO through _dispatch_faceted_render for facet_by composition). Composes with: norm='probability' (→ ECDF 0-1), group_by overlaid (per-group ECDFs), group_by stacked (CP2-1 regression lock for 3rd call site), facet_by (per-facet cumulative), histtype='step' (HEP-standard step ECDF). Correctness guard (M5): hist_errors+cumulative → NotImplementedError (Poisson per-bin errors are independent; cumulative counts are correlated). Vector dispatch [x,y] propagates cumulative correctly (Phase 13.16.DF FIX1 bug class lock) — Phase 13.40.DF | 10 | 0 |
 
 ---
 

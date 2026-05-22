@@ -652,6 +652,8 @@ class DFDraw:
         'hist_errors', 'linestyle_cycle',
         # Phase 13.39.DF: time-axis formatting (pre-conversion approach)
         'time_format',
+        # Phase 13.40.DF: cumulative histogram (CDF/ECDF/survival)
+        'cumulative',
     )
 
     _SCATTER_FORWARDED_NAMES = (
@@ -3082,7 +3084,9 @@ class DFDraw:
         stats : bool or list, optional
             Show statistics box. True for defaults, or list of stat names.
         norm : str, optional
-            Histogram normalization: "count", "density", "probability", "cumulative".
+            Histogram normalization: "count", "density", "probability".
+            For cumulative distributions, use the `cumulative=True` parameter
+            (Phase 13.40.DF) — NOT norm="cumulative" (raises ValueError).
         title : str, optional
             Plot title.
         ax : matplotlib Axes, optional
@@ -3273,6 +3277,8 @@ class DFDraw:
         nan_policy: str = "filter",
         # Phase 13.39.DF: time-axis formatting (pre-conversion approach)
         time_format: Optional[str] = None,
+        # Phase 13.40.DF: cumulative histogram (CDF/ECDF/survival)
+        cumulative: Union[bool, int] = False,
         # Phase 13.27.DF Commit 2 FIX1 (§7b): weights as column name or
         # df.eval-able expression. Mirrors profile()'s weights= semantics.
         # If both `weights=` and `norm="probability"` are passed, the
@@ -3509,6 +3515,10 @@ class DFDraw:
                 group_by_quantiles=group_by_quantiles,
                 hist_norm=hist_norm,
                 min_entries=min_entries,
+                # Phase 13.40.DF: cumulative must be explicit through faceted
+                # dispatch (recursive QRC v1.32 #6 — every forwarding layer
+                # must pass the named param explicitly). Locked by §9.CH.8.
+                cumulative=cumulative,
                 **kwargs
             )
         # Facet mode (legacy path, same=True ignored in facet mode)
@@ -3551,6 +3561,8 @@ class DFDraw:
                 linestyle_cycle=linestyle_cycle,
                 # Phase 13.39.DF: time-axis formatting
                 time_format=time_format,
+                # Phase 13.40.DF: cumulative histogram (explicit forward)
+                cumulative=cumulative,
                 **kwargs
             )
             axes = ax
