@@ -819,6 +819,10 @@ class DFDraw:
         'nan_policy',  # Phase 13.28.DF: NaN/inf filter policy (AD-70)
         'facet_by',  # Phase 13.27.DF: facet routing through channel framework (AD-67)
         'facet_by_bins', 'facet_by_quantiles',  # Phase 13.32.DF Sub-fix 3 (AD-79)
+        # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
+        'share_x', 'share_y', 'share_across_figures',
+        # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
+        'share_x', 'share_y', 'share_across_figures',
         # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
         'selection_vector', 'weights_vector',
         'selection_labels', 'weights_labels',
@@ -848,6 +852,10 @@ class DFDraw:
         'weights',  # Phase 13.27.DF Commit 2 FIX1 (§7b): column-name / expression weighting on hist
         'facet_by',  # Phase 13.32.DF Sub-fix 3: extend AD-78 column-mode facet_by to hist
         'facet_by_bins', 'facet_by_quantiles',  # Phase 13.32.DF Sub-fix 3 (AD-79)
+        # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
+        'share_x', 'share_y', 'share_across_figures',
+        # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
+        'share_x', 'share_y', 'share_across_figures',
         # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
         'selection_vector', 'weights_vector',
         'selection_labels', 'weights_labels',
@@ -889,6 +897,10 @@ class DFDraw:
         'nan_policy',  # Phase 13.28.DF: NaN/inf filter policy (AD-70)
         'facet_by',  # Phase 13.32.DF Sub-fix 3: extend AD-78 column-mode facet_by to scatter
         'facet_by_bins', 'facet_by_quantiles',  # Phase 13.32.DF Sub-fix 3 (AD-79)
+        # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
+        'share_x', 'share_y', 'share_across_figures',
+        # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
+        'share_x', 'share_y', 'share_across_figures',
         'xerr', 'yerr',  # Phase 13.38.DF: scatter error bars (column name or df.eval())
         'time_format',  # Phase 13.39.DF: time-axis formatting (pre-conversion)
         # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
@@ -912,6 +924,8 @@ class DFDraw:
         'stat_fields',
         'nan_policy',
         'facet_by', 'facet_by_bins', 'facet_by_quantiles',
+        # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
+        'share_x', 'share_y', 'share_across_figures',
     )
 
     _DRAW_FORWARDED_NAMES = (
@@ -921,6 +935,10 @@ class DFDraw:
         'nan_policy',  # Phase 13.28.DF: NaN/inf filter policy (AD-70)
         'facet_by',  # Phase 13.32.DF Sub-fix 3: facet_by reachable from draw() dispatcher
         'facet_by_bins', 'facet_by_quantiles',  # Phase 13.32.DF Sub-fix 3 (AD-79)
+        # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
+        'share_x', 'share_y', 'share_across_figures',
+        # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
+        'share_x', 'share_y', 'share_across_figures',
         # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
         'selection_vector', 'weights_vector',
         'selection_labels', 'weights_labels',
@@ -2832,8 +2850,11 @@ class DFDraw:
             plot_kwargs.pop('sharey', None)
             plot_kwargs.pop('facet', None)
             # auto_title: scatter doesn't accept it (drawer.py:1198), so always
-            # pop and re-add per plot_kind inside _dispatch_inner_per_cell
-            plot_kwargs.pop('auto_title', None)
+            # pop and re-add per plot_kind inside _dispatch_inner_per_cell.
+            # Phase 13.41 FIX1 (Sonnet54 P2): capture user's choice; default
+            # False matches the DFDraw.hist/profile defaults. v1.6 hardcoded
+            # False unconditionally — user's auto_title=True was silently dropped.
+            _user_auto_title = plot_kwargs.pop('auto_title', False)
             
             n_dims = len(facet_list)
             if n_dims == 1:
@@ -2844,6 +2865,9 @@ class DFDraw:
                     plot_kwargs['facet_by_bins'] = bins_list[0]
                 if quantiles_list[0] is not None:
                     plot_kwargs['facet_by_quantiles'] = quantiles_list[0]
+                # Restore auto_title for 1D fall-through (1D path expects it in kwargs)
+                if _user_auto_title:
+                    plot_kwargs['auto_title'] = _user_auto_title
                 # Fall through to existing 1D logic
             elif n_dims == 2:
                 # Pop bins/quantiles from plot_kwargs (now in lists)
@@ -2854,7 +2878,9 @@ class DFDraw:
                     plot_kind, share_x=share_x, share_y=share_y,
                     title=title, group_by=group_by, top_k=top_k,
                     quantiles=quantiles, quantile_mode=quantile_mode,
-                    _lock_x_range=None, _lock_y_range=None, **plot_kwargs)
+                    _lock_x_range=None, _lock_y_range=None,
+                    _user_auto_title=_user_auto_title,
+                    **plot_kwargs)
             elif n_dims == 3:
                 # 3D: loop over figID dimension, dispatch 2D per figID
                 plot_kwargs.pop('facet_by_bins', None)
@@ -2865,6 +2891,7 @@ class DFDraw:
                     share_across_figures=share_across_figures,
                     title=title, group_by=group_by, top_k=top_k,
                     quantiles=quantiles, quantile_mode=quantile_mode,
+                    _user_auto_title=_user_auto_title,
                     **plot_kwargs)
         # =====================================================================
         # End Phase 13.41 N-D branch — existing 1D code follows unchanged
@@ -3319,7 +3346,8 @@ class DFDraw:
     # =========================================================================
     
     def _dispatch_inner_per_cell(self, sub_df, x_expr, y_expr, plot_kind,
-                                  ax_ij, _lock_x_range, _lock_y_range, **plot_kwargs):
+                                  ax_ij, _lock_x_range, _lock_y_range,
+                                  _user_auto_title=False, **plot_kwargs):
         """Per-plot-kind inner dispatch within a 2D facet cell.
         
         Phase 13.41.DF v1.4 CP1-1 — corrected per-function range params:
@@ -3330,6 +3358,9 @@ class DFDraw:
         
         _lock_x_range/_lock_y_range: internal cross-figure ranges; user-supplied
         range (hist) / x_range (profile) come via plot_kwargs and take precedence.
+        
+        _user_auto_title: Phase 13.41 FIX1 (Sonnet54 P2) — user's auto_title
+        choice; respected for hist/profile (scatter has no auto_title param).
         """
         # Build the y:x or just x expression for the inner call
         if isinstance(y_expr, str) and y_expr:
@@ -3361,6 +3392,8 @@ class DFDraw:
         
         if plot_kind == 'hist':
             # DFDraw.hist uses range= (matches matplotlib convention)
+            # auto_title is handled at figure level (suptitle) in 2D facet mode,
+            # not per-cell (cell titles are reserved for facet labels).
             _, _, stats_ij = sub_adf.hist(
                 inner_expr, ax=ax_ij,
                 range=effective_range,
@@ -3405,6 +3438,7 @@ class DFDraw:
                             quantiles_list, plot_kind,
                             share_x='all', share_y='all',
                             _lock_x_range=None, _lock_y_range=None,
+                            _user_auto_title=False,
                             title=None, group_by=None, top_k=None,
                             quantiles=None, quantile_mode='auto',
                             **plot_kwargs):
@@ -3454,7 +3488,9 @@ class DFDraw:
                 
                 stats_ij = self._dispatch_inner_per_cell(
                     sub_df, x_expr, y_expr, plot_kind, ax_ij,
-                    _lock_x_range, _lock_y_range, **inner_kwargs)
+                    _lock_x_range, _lock_y_range,
+                    _user_auto_title=_user_auto_title,
+                    **inner_kwargs)
                 stats_grid[(row_v, col_v)] = stats_ij
                 
                 # Edge labels (top row = col headers; left col = row labels)
@@ -3466,6 +3502,19 @@ class DFDraw:
         
         if title:
             fig.suptitle(title, fontsize=12)
+        elif _user_auto_title:
+            # Phase 13.41 FIX1 (Sonnet54 P2): in 2D facet mode, auto_title=True
+            # sets a figure-level suptitle (cell titles are reserved for facet
+            # labels). Title summarizes the plot expression + facet dimensions.
+            if isinstance(y_expr, str) and y_expr and x_expr:
+                _auto_expr = f"{y_expr} vs {x_expr}"
+            elif isinstance(y_expr, str) and y_expr:
+                _auto_expr = y_expr
+            else:
+                _auto_expr = x_expr or 'data'
+            fig.suptitle(
+                f"{_auto_expr}  [faceted by {facet_list[0]} × {facet_list[1]}]",
+                fontsize=11)
         fig.tight_layout()
         return fig, axes, stats_grid
     
@@ -3473,6 +3522,7 @@ class DFDraw:
                             quantiles_list, plot_kind,
                             share_x='all', share_y='all',
                             share_across_figures=True,
+                            _user_auto_title=False,
                             title=None, group_by=None, top_k=None,
                             quantiles=None, quantile_mode='auto',
                             **plot_kwargs):
@@ -3502,6 +3552,7 @@ class DFDraw:
                 quantiles_list[:2], plot_kind,
                 share_x=share_x, share_y=share_y,
                 _lock_x_range=global_x_range, _lock_y_range=global_y_range,
+                _user_auto_title=_user_auto_title,
                 title=None, group_by=group_by, top_k=top_k,
                 quantiles=quantiles, quantile_mode=quantile_mode,
                 **plot_kwargs)
@@ -3542,9 +3593,13 @@ class DFDraw:
         # Phase 13.28.DF: NaN/inf filter policy (AD-70)
         nan_policy: str = "filter",
         # Phase 13.32.DF Sub-fix 3 (AD-79): reachable from top-level draw() too
-        facet_by: Optional[str] = None,
-        facet_by_bins: Optional[int] = None,
-        facet_by_quantiles: Optional[int] = None,
+        facet_by: Optional[Union[str, List[str]]] = None,
+        facet_by_bins: Optional[Union[int, List[Optional[int]]]] = None,
+        facet_by_quantiles: Optional[Union[int, List]] = None,
+        # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
+        share_x: str = 'all',
+        share_y: str = 'all',
+        share_across_figures: bool = True,
         # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
         # AD-61, AD-62, AD-65, AD-66, AD-67. Method body wiring lands in Turn 3.
         selection_vector: Optional[List[str]] = None,
@@ -3793,9 +3848,13 @@ class DFDraw:
         # 1/n_clean for probability normalization.
         weights: Optional[str] = None,
         # Phase 13.32.DF Sub-fix 3 (AD-79): extend AD-78 facet_by column-mode to hist
-        facet_by: Optional[str] = None,
-        facet_by_bins: Optional[int] = None,
-        facet_by_quantiles: Optional[int] = None,
+        facet_by: Optional[Union[str, List[str]]] = None,
+        facet_by_bins: Optional[Union[int, List[Optional[int]]]] = None,
+        facet_by_quantiles: Optional[Union[int, List]] = None,
+        # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
+        share_x: str = 'all',
+        share_y: str = 'all',
+        share_across_figures: bool = True,
         # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
         # AD-61, AD-62, AD-65, AD-66, AD-67. Method body wiring lands in Turn 3.
         selection_vector: Optional[List[str]] = None,
@@ -4012,6 +4071,10 @@ class DFDraw:
                 weights=weights,
                 facet_by_bins=facet_by_bins,
                 facet_by_quantiles=facet_by_quantiles,
+                # Phase 13.41.DF v1.6 + FIX1: forward N-D axis-sharing controls
+                share_x=share_x,
+                share_y=share_y,
+                share_across_figures=share_across_figures,
                 # Phase 13.35.DF: forward float group_by binning + per-group
                 # normalization to per-subplot draw_hist (BUG-013 fix T3).
                 # Without these, the architect's call
@@ -4116,9 +4179,13 @@ class DFDraw:
         # Phase 13.28.DF: NaN/inf filter policy (AD-70)
         nan_policy: str = "filter",
         # Phase 13.32.DF Sub-fix 3 (AD-79): extend AD-78 facet_by column-mode to scatter
-        facet_by: Optional[str] = None,
-        facet_by_bins: Optional[int] = None,
-        facet_by_quantiles: Optional[int] = None,
+        facet_by: Optional[Union[str, List[str]]] = None,
+        facet_by_bins: Optional[Union[int, List[Optional[int]]]] = None,
+        facet_by_quantiles: Optional[Union[int, List]] = None,
+        # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
+        share_x: str = 'all',
+        share_y: str = 'all',
+        share_across_figures: bool = True,
         # Phase 13.38.DF: scatter error bars (column name or df.eval() expression).
         # When either is set, render via ax.errorbar() instead of ax.scatter().
         # NaN/inf policy in _eval_error(): raise on 100% non-finite, warn at >50%,
@@ -4335,6 +4402,10 @@ class DFDraw:
                 nan_policy=nan_policy,
                 facet_by_bins=facet_by_bins,
                 facet_by_quantiles=facet_by_quantiles,
+                # Phase 13.41.DF v1.6 + FIX1: forward N-D axis-sharing controls
+                share_x=share_x,
+                share_y=share_y,
+                share_across_figures=share_across_figures,
                 **kwargs
             )
         # Facet mode (legacy path, same=True ignored in facet mode)
@@ -4424,10 +4495,14 @@ class DFDraw:
         # Phase 13.28.DF: NaN/inf filter policy (AD-70)
         nan_policy: str = "filter",
         # Phase 13.27.DF (Phase D): Facet routing through channel framework (AD-61, AD-67)
-        facet_by: Optional[str] = None,
+        facet_by: Optional[Union[str, List[str]]] = None,
         # Phase 13.32.DF Sub-fix 3 (AD-79): symmetric binning on facet_by axis
-        facet_by_bins: Optional[int] = None,
-        facet_by_quantiles: Optional[int] = None,
+        facet_by_bins: Optional[Union[int, List[Optional[int]]]] = None,
+        facet_by_quantiles: Optional[Union[int, List]] = None,
+        # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
+        share_x: str = 'all',
+        share_y: str = 'all',
+        share_across_figures: bool = True,
         # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
         # AD-61, AD-62, AD-65, AD-66, AD-67. Method body wiring lands in Turn 3.
         selection_vector: Optional[List[str]] = None,
@@ -4763,6 +4838,14 @@ class DFDraw:
                     'selection_labels', 'weights_labels',
                     'selection_categorical', 'weights_categorical',
                     'delta_facet',
+                    # Phase 13.41.DF FIX1.1: filter N-D axis-sharing controls
+                    # from _passthrough sent to legacy normalize dispatchers
+                    # (_render / _grouped / _faceted use their own GridSpec
+                    # layout and don't accept share_x/y/across_figures). The
+                    # K×2 normalize+facet grid pre-dates Phase 13.41's N-D
+                    # faceting; future phase may add N-D support to normalize
+                    # dispatcher. Until then, params silently ignored.
+                    'share_x', 'share_y', 'share_across_figures',
                 }
                 _passthrough = {k: v for k, v in vector_kwargs.items()
                                 if k not in _consumed}
@@ -4933,6 +5016,10 @@ class DFDraw:
                 # Phase 13.32.DF Sub-fix 3 (AD-79): symmetric binning on facet axis
                 facet_by_bins=facet_by_bins,
                 facet_by_quantiles=facet_by_quantiles,
+                # Phase 13.41.DF v1.6 + FIX1: forward N-D axis-sharing controls
+                share_x=share_x,
+                share_y=share_y,
+                share_across_figures=share_across_figures,
                 **kwargs
             )
         else:
@@ -5015,9 +5102,13 @@ class DFDraw:
         # Phase 13.28.DF: NaN/inf filter policy (AD-70)
         nan_policy: str = "filter",
         # Phase 13.32.DF Sub-fix 3 (AD-79): extend AD-78 facet_by column-mode to hist2d
-        facet_by: Optional[str] = None,
-        facet_by_bins: Optional[int] = None,
-        facet_by_quantiles: Optional[int] = None,
+        facet_by: Optional[Union[str, List[str]]] = None,
+        facet_by_bins: Optional[Union[int, List[Optional[int]]]] = None,
+        facet_by_quantiles: Optional[Union[int, List]] = None,
+        # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
+        share_x: str = 'all',
+        share_y: str = 'all',
+        share_across_figures: bool = True,
         **kwargs
     ) -> DrawResult:
         """
@@ -5162,6 +5253,10 @@ class DFDraw:
                 nan_policy=nan_policy,
                 facet_by_bins=facet_by_bins,
                 facet_by_quantiles=facet_by_quantiles,
+                # Phase 13.41.DF v1.6 + FIX1: forward N-D axis-sharing controls
+                share_x=share_x,
+                share_y=share_y,
+                share_across_figures=share_across_figures,
                 **kwargs
             )
         # Facet mode (legacy path, same=True ignored in facet mode)

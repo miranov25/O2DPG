@@ -409,10 +409,21 @@ def _process_color(
         color_data = df[color].values
         if len(mask) == len(color_data):
             color_data = color_data[mask]
-        # Check if categorical
+        # Phase 13.41.DF FIX1 (Sonnet54 P2 carry-forward): broaden categorical
+        # detection to cover pandas StringDtype + ArrowStringDtype + any
+        # ExtensionDtype that doesn't convert to float. The original check
+        # (object dtype + CategoricalDtype) missed pd.StringDtype which is
+        # common in newer pandas (Py3.12 default) — caused Linux CI fail in
+        # test_vector.py::test_vector_draw_kwarg_surface_enumeration since
+        # Phase 13.38.
         if color_data.dtype == object or isinstance(color_data.dtype, pd.CategoricalDtype):
             return None, None, True
-        return color_data.astype(float), cmap or "viridis", False
+        # Try numeric conversion; if it fails (e.g. StringDtype 'A','B','C'),
+        # fall back to categorical mode for safe rendering with discrete cmap.
+        try:
+            return color_data.astype(float), cmap or "viridis", False
+        except (ValueError, TypeError):
+            return None, None, True
 
     # (3) Fixed color string via matplotlib heuristic
     if isinstance(color, str):

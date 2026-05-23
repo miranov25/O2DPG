@@ -488,3 +488,110 @@ class TestFacetByListGrid:
             f"when data ranges differ. Got col0={col0_xlim}, col1={col1_xlim}."
         )
         plt.close(fig)
+
+    # ── Phase 13.41.DF FIX1 — 3 additional regression locks ──
+
+    def test_FBY_20_share_y_row_symmetry(self):
+        """§9.FBY.20 — FIX1: share_y='row' symmetric to FBY.12 (Sonnet55 advisory).
+        
+        FBY.12 locks share_x='row'; FBY.20 mirrors for share_y. Together they
+        prove _to_mpl_share dispatch dict is symmetric across both axes.
+        """
+        rng = np.random.default_rng(42)
+        # Different y-data ranges per ROW (matrix-shape: row=a, col=b)
+        df = pd.DataFrame({
+            'x': rng.normal(0, 1, 800),
+            'y': np.concatenate([
+                rng.uniform(0, 5, 400),       # row A0 → y in [0,5]
+                rng.uniform(50, 100, 400),    # row A1 → y in [50,100]
+            ]),
+            'a': ['A0']*400 + ['A1']*400,         # 2 rows
+            'b': (['B0']*200 + ['B1']*200) * 2,    # 2 cols
+        })
+        fig, axes, _ = DFDraw(df).scatter(
+            'y:x', facet_by=['a', 'b'], share_y='row')
+        fig.canvas.draw()
+        # For share_y='row': cells in same ROW (any col) share y
+        for i in range(axes.shape[0]):
+            row_ylims = [axes[i, j].get_ylim() for j in range(axes.shape[1])]
+            assert all(yl == row_ylims[0] for yl in row_ylims), (
+                f"Row {i} cells don't share y-limits with share_y='row'. "
+                f"Got: {row_ylims}. _to_mpl_share dispatch dict asymmetric "
+                "between x and y axes."
+            )
+        # Sanity: different rows should have different ylim
+        row0_ylim = axes[0, 0].get_ylim()
+        row1_ylim = axes[1, 0].get_ylim()
+        assert row0_ylim[1] < row1_ylim[0] + 10, (
+            f"share_y='row': different rows should have different ylim "
+            f"when data ranges differ. Got row0={row0_ylim}, row1={row1_ylim}."
+        )
+        plt.close(fig)
+
+    def test_FBY_21_share_x_invalid_raises(self):
+        """§9.FBY.21 — FIX1: share_x='invalid' raises ValueError (Sonet51 advisory).
+        
+        Locks the _validate_share_axis_value enum guard. Without it, an invalid
+        value would fall through to _to_mpl_share's dispatch dict and raise
+        KeyError instead of a clear, actionable ValueError.
+        """
+        rng = np.random.default_rng(42)
+        df = pd.DataFrame({
+            'x': rng.normal(0, 1, 200),
+            'y': rng.normal(0, 1, 200),
+            'a': np.repeat(['A0', 'A1'], 100),
+            'b': np.tile(['B0', 'B1'], 100),
+        })
+        # Note: regex matches error message from _validate_share_axis_value
+        with pytest.raises(ValueError, match="share_x must be one of"):
+            DFDraw(df).scatter(
+                'y:x', facet_by=['a', 'b'], share_x='invalid')
+        # Symmetric: share_y also validated
+        with pytest.raises(ValueError, match="share_y must be one of"):
+            DFDraw(df).scatter(
+                'y:x', facet_by=['a', 'b'], share_y='diagonal')
+
+    def test_FBY_22_auto_title_suptitle_lock(self):
+        """§9.FBY.22 — FIX1: auto_title=True sets figure suptitle (Sonnet54 P2).
+        
+        Locks the Phase 13.41 FIX1 fix for Sonnet54's P2 finding. In v1.6 the
+        list-handling branch hardcoded auto_title=False inside cells, silently
+        dropping the user's choice. FIX1 routes auto_title=True to fig.suptitle
+        (cell titles are reserved for facet labels).
+        """
+        rng = np.random.default_rng(42)
+        df = pd.DataFrame({
+            'x': rng.normal(0, 1, 400),
+            'a': np.repeat(['A0', 'A1'], 200),
+            'b': np.tile(['B0', 'B1'], 200),
+        })
+        # Case 1: auto_title=False — no suptitle
+        fig_false, _, _ = DFDraw(df).hist(
+            'x', facet_by=['a', 'b'], auto_title=False)
+        assert fig_false._suptitle is None, (
+            "auto_title=False should NOT produce a suptitle"
+        )
+        plt.close(fig_false)
+        
+        # Case 2: auto_title=True — figure has suptitle mentioning expression
+        # and facet dimensions
+        fig_true, _, _ = DFDraw(df).hist(
+            'x', facet_by=['a', 'b'], auto_title=True)
+        assert fig_true._suptitle is not None, (
+            "auto_title=True must produce a suptitle in 2D facet mode. "
+            "Sonnet54 P2 regression: v1.6 silently dropped user's choice."
+        )
+        suptitle_text = fig_true._suptitle.get_text()
+        assert 'x' in suptitle_text and 'a' in suptitle_text and 'b' in suptitle_text, (
+            f"Suptitle should mention expression + facet dims; got: '{suptitle_text}'"
+        )
+        plt.close(fig_true)
+        
+        # Case 3: user-supplied title= takes precedence over auto_title=True
+        fig_user, _, _ = DFDraw(df).hist(
+            'x', facet_by=['a', 'b'],
+            auto_title=True, title="Custom Title")
+        assert fig_user._suptitle.get_text() == "Custom Title", (
+            "User-supplied title= must override auto_title=True suptitle"
+        )
+        plt.close(fig_user)

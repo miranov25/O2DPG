@@ -1355,6 +1355,10 @@ FEATURES = [
             "test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_17_3d_share_across_profile_dispatch",
             "test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_18_share_across_figures_false_independence",
             "test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_19_share_x_col_symmetry",
+            # Phase 13.41.DF FIX1 (3 additional regression locks)
+            "test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_20_share_y_row_symmetry",
+            "test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_21_share_x_invalid_raises",
+            "test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_22_auto_title_suptitle_lock",
         ],
     },
 ]
