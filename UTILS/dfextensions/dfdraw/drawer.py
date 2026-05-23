@@ -821,8 +821,6 @@ class DFDraw:
         'facet_by_bins', 'facet_by_quantiles',  # Phase 13.32.DF Sub-fix 3 (AD-79)
         # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
         'share_x', 'share_y', 'share_across_figures',
-        # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
-        'share_x', 'share_y', 'share_across_figures',
         # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
         'selection_vector', 'weights_vector',
         'selection_labels', 'weights_labels',
@@ -852,8 +850,6 @@ class DFDraw:
         'weights',  # Phase 13.27.DF Commit 2 FIX1 (§7b): column-name / expression weighting on hist
         'facet_by',  # Phase 13.32.DF Sub-fix 3: extend AD-78 column-mode facet_by to hist
         'facet_by_bins', 'facet_by_quantiles',  # Phase 13.32.DF Sub-fix 3 (AD-79)
-        # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
-        'share_x', 'share_y', 'share_across_figures',
         # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
         'share_x', 'share_y', 'share_across_figures',
         # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
@@ -899,8 +895,6 @@ class DFDraw:
         'facet_by_bins', 'facet_by_quantiles',  # Phase 13.32.DF Sub-fix 3 (AD-79)
         # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
         'share_x', 'share_y', 'share_across_figures',
-        # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
-        'share_x', 'share_y', 'share_across_figures',
         'xerr', 'yerr',  # Phase 13.38.DF: scatter error bars (column name or df.eval())
         'time_format',  # Phase 13.39.DF: time-axis formatting (pre-conversion)
         # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
@@ -935,8 +929,6 @@ class DFDraw:
         'nan_policy',  # Phase 13.28.DF: NaN/inf filter policy (AD-70)
         'facet_by',  # Phase 13.32.DF Sub-fix 3: facet_by reachable from draw() dispatcher
         'facet_by_bins', 'facet_by_quantiles',  # Phase 13.32.DF Sub-fix 3 (AD-79)
-        # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
-        'share_x', 'share_y', 'share_across_figures',
         # Phase 13.41.DF v1.6 + FIX1: N-D faceting axis-sharing controls
         'share_x', 'share_y', 'share_across_figures',
         # Phase 13.27.DF Commit 2 (Phase D): selection/weights vectors + per-curve label management
@@ -3347,7 +3339,7 @@ class DFDraw:
     
     def _dispatch_inner_per_cell(self, sub_df, x_expr, y_expr, plot_kind,
                                   ax_ij, _lock_x_range, _lock_y_range,
-                                  _user_auto_title=False, **plot_kwargs):
+                                  **plot_kwargs):
         """Per-plot-kind inner dispatch within a 2D facet cell.
         
         Phase 13.41.DF v1.4 CP1-1 — corrected per-function range params:
@@ -3359,8 +3351,10 @@ class DFDraw:
         _lock_x_range/_lock_y_range: internal cross-figure ranges; user-supplied
         range (hist) / x_range (profile) come via plot_kwargs and take precedence.
         
-        _user_auto_title: Phase 13.41 FIX1 (Sonnet54 P2) — user's auto_title
-        choice; respected for hist/profile (scatter has no auto_title param).
+        Per-cell `auto_title` is ALWAYS False — cell titles are reserved for facet
+        labels (row_col=val, col_col=val). User's auto_title=True is honored at
+        the figure level (suptitle) in _dispatch_2d_facet (Phase 13.41 FIX1 +
+        FIX2 item 5: dead `_user_auto_title` param removed from this signature).
         """
         # Build the y:x or just x expression for the inner call
         if isinstance(y_expr, str) and y_expr:
@@ -3489,7 +3483,6 @@ class DFDraw:
                 stats_ij = self._dispatch_inner_per_cell(
                     sub_df, x_expr, y_expr, plot_kind, ax_ij,
                     _lock_x_range, _lock_y_range,
-                    _user_auto_title=_user_auto_title,
                     **inner_kwargs)
                 stats_grid[(row_v, col_v)] = stats_ij
                 
@@ -3547,18 +3540,39 @@ class DFDraw:
             sub_df = _filter_facet_value(df, figid_col, figid_v,
                                           bins_list[2], quantiles_list[2])
             
+            # Phase 13.41 FIX2 item 2 (Sonnet54 P2): in 3D mode, the 2D dispatch's
+            # auto_title suptitle would be overwritten by the figID label below.
+            # Don't forward _user_auto_title to 2D — handle the combined suptitle
+            # here so auto_title=True isn't a silent no-op in 3D.
             fig, axes, stats = self._dispatch_2d_facet(
                 sub_df, x_expr, y_expr, facet_list[:2], bins_list[:2],
                 quantiles_list[:2], plot_kind,
                 share_x=share_x, share_y=share_y,
                 _lock_x_range=global_x_range, _lock_y_range=global_y_range,
-                _user_auto_title=_user_auto_title,
+                _user_auto_title=False,    # 3D handles auto_title at fig-level (see below)
                 title=None, group_by=group_by, top_k=top_k,
                 quantiles=quantiles, quantile_mode=quantile_mode,
                 **plot_kwargs)
             
-            # Set per-figure title (figID value)
-            fig.suptitle(f"{figid_col} = {figid_v}", fontsize=12)
+            # Set per-figure title — 3 cases per Phase 13.41 FIX2 item 2 design:
+            #   1. user title=    → "{user_title} ({figid_col} = {figid_v})"
+            #   2. auto_title=True → "{expr} [faceted by {r}×{c}×{f} = {figid_v}]"
+            #   3. default         → "{figid_col} = {figid_v}"  (Phase 13.41 v1.6)
+            if title:
+                fig.suptitle(f"{title} ({figid_col} = {figid_v})", fontsize=12)
+            elif _user_auto_title:
+                if isinstance(y_expr, str) and y_expr and x_expr:
+                    _auto_expr = f"{y_expr} vs {x_expr}"
+                elif isinstance(y_expr, str) and y_expr:
+                    _auto_expr = y_expr
+                else:
+                    _auto_expr = x_expr or 'data'
+                fig.suptitle(
+                    f"{_auto_expr}  [faceted by {facet_list[0]} × {facet_list[1]} "
+                    f"× {facet_list[2]} = {figid_v}]",
+                    fontsize=11)
+            else:
+                fig.suptitle(f"{figid_col} = {figid_v}", fontsize=12)
             
             figures.append(fig)
             all_axes.append(axes)
@@ -4838,13 +4852,24 @@ class DFDraw:
                     'selection_labels', 'weights_labels',
                     'selection_categorical', 'weights_categorical',
                     'delta_facet',
-                    # Phase 13.41.DF FIX1.1: filter N-D axis-sharing controls
-                    # from _passthrough sent to legacy normalize dispatchers
-                    # (_render / _grouped / _faceted use their own GridSpec
-                    # layout and don't accept share_x/y/across_figures). The
-                    # K×2 normalize+facet grid pre-dates Phase 13.41's N-D
-                    # faceting; future phase may add N-D support to normalize
-                    # dispatcher. Until then, params silently ignored.
+                    # ────────────────────────────────────────────────────────
+                    # Phase 13.41.DF FIX1.1 + FIX2 item 3 (Sonnet51/52/54 P2):
+                    # When normalize= AND facet_by= are BOTH set, routing goes
+                    # to the legacy K×2 normalize+facet dispatcher (predates
+                    # Phase 13.41 N-D faceting). That dispatcher uses its own
+                    # GridSpec layout and does NOT honor share_x/share_y/
+                    # share_across_figures. We filter these out of _passthrough
+                    # so they don't reach _dispatch_normalize_faceted_render
+                    # via **passthrough (which would silently swallow them
+                    # anyway — but explicit filtering documents intent and
+                    # avoids surprise in future maintenance).
+                    #
+                    # BEHAVIOR: d.profile(normalize=..., facet_by=['a','b'],
+                    # share_x='row')  →  K×2 grid, share_x SILENTLY IGNORED.
+                    # WORKAROUND: use normalize= or facet_by=List[str], not both.
+                    # FIX2 BACKLOG: add N-D faceting support to normalize
+                    # dispatcher (or raise NotImplementedError with hint).
+                    # ────────────────────────────────────────────────────────
                     'share_x', 'share_y', 'share_across_figures',
                 }
                 _passthrough = {k: v for k, v in vector_kwargs.items()

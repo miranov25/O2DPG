@@ -37,6 +37,19 @@ import matplotlib.pyplot as plt
 from dfextensions.dfdraw import DFDraw
 
 
+def _get_suptitle(fig):
+    """Get suptitle text using public API (matplotlib 3.8+) with fallback.
+    
+    FIX2 item 4 (Sonnet55 advisory): avoid private fig._suptitle attribute.
+    Returns '' when no suptitle is set.
+    """
+    if hasattr(fig, 'get_suptitle'):
+        return fig.get_suptitle()
+    # matplotlib < 3.8 fallback
+    _s = getattr(fig, '_suptitle', None)
+    return _s.get_text() if _s is not None else ''
+
+
 def _max_y_in_axes(ax):
     """Polygon-safe max y (handles default histtype='stepfilled')."""
     max_y = 0.0
@@ -558,6 +571,9 @@ class TestFacetByListGrid:
         list-handling branch hardcoded auto_title=False inside cells, silently
         dropping the user's choice. FIX1 routes auto_title=True to fig.suptitle
         (cell titles are reserved for facet labels).
+        
+        FIX2 item 4 (Sonnet55 advisory): use public _get_suptitle(fig) instead
+        of private fig._suptitle attribute (future-proof for matplotlib API).
         """
         rng = np.random.default_rng(42)
         df = pd.DataFrame({
@@ -568,7 +584,7 @@ class TestFacetByListGrid:
         # Case 1: auto_title=False — no suptitle
         fig_false, _, _ = DFDraw(df).hist(
             'x', facet_by=['a', 'b'], auto_title=False)
-        assert fig_false._suptitle is None, (
+        assert _get_suptitle(fig_false) == '', (
             "auto_title=False should NOT produce a suptitle"
         )
         plt.close(fig_false)
@@ -577,11 +593,11 @@ class TestFacetByListGrid:
         # and facet dimensions
         fig_true, _, _ = DFDraw(df).hist(
             'x', facet_by=['a', 'b'], auto_title=True)
-        assert fig_true._suptitle is not None, (
+        suptitle_text = _get_suptitle(fig_true)
+        assert suptitle_text != '', (
             "auto_title=True must produce a suptitle in 2D facet mode. "
             "Sonnet54 P2 regression: v1.6 silently dropped user's choice."
         )
-        suptitle_text = fig_true._suptitle.get_text()
         assert 'x' in suptitle_text and 'a' in suptitle_text and 'b' in suptitle_text, (
             f"Suptitle should mention expression + facet dims; got: '{suptitle_text}'"
         )
@@ -591,7 +607,73 @@ class TestFacetByListGrid:
         fig_user, _, _ = DFDraw(df).hist(
             'x', facet_by=['a', 'b'],
             auto_title=True, title="Custom Title")
-        assert fig_user._suptitle.get_text() == "Custom Title", (
+        assert _get_suptitle(fig_user) == "Custom Title", (
             "User-supplied title= must override auto_title=True suptitle"
         )
         plt.close(fig_user)
+
+    def test_FBY_23_3d_auto_title_combined_suptitle(self):
+        """§9.FBY.23 — FIX2 item 2: 3D + auto_title=True combined suptitle.
+        
+        v1.6 + FIX1 baseline: 3D + auto_title=True was a silent no-op
+        (Sonnet54 P2 v1.6 END). The 2D dispatch's auto_title suptitle was
+        immediately overwritten by `_dispatch_3d_facet`'s figID label.
+        
+        FIX2 design: 3 per-figure suptitle cases:
+          1. user title=      → "{title} ({figid_col} = {v})"
+          2. auto_title=True  → "{expr}  [faceted by {r} × {c} × {f} = {v}]"
+          3. default          → "{figid_col} = {v}"  (Phase 13.41 v1.6 baseline)
+        Default behavior also locked by FBY.11.
+        """
+        rng = np.random.default_rng(42)
+        df = pd.DataFrame({
+            'x': rng.normal(0, 1, 600),
+            'y': rng.normal(0, 1, 600),
+            'sec': np.tile(np.repeat(['S0', 'S1', 'S2'], 100), 2),
+            'drift': np.tile(np.repeat([0, 1, 2, 3], 25), 6),
+            'period': np.repeat(['P0', 'P1'], 300),
+        })
+        
+        # Case 1: user title= → "{title} ({figid_col} = {v})"
+        figs1, _, _ = DFDraw(df).scatter(
+            'y:x', facet_by=['sec', 'drift', 'period'],
+            title="Run 12345")
+        assert len(figs1) == 2
+        for fig, expected_v in zip(figs1, ['P0', 'P1']):
+            s = _get_suptitle(fig)
+            assert s == f"Run 12345 (period = {expected_v})", (
+                f"user title= case: got '{s}', expected 'Run 12345 (period = {expected_v})'"
+            )
+            plt.close(fig)
+        
+        # Case 2: auto_title=True → combined suptitle with all 3 dims + figid_v
+        figs2, _, _ = DFDraw(df).scatter(
+            'y:x', facet_by=['sec', 'drift', 'period'],
+            auto_title=True)
+        assert len(figs2) == 2
+        for fig, expected_v in zip(figs2, ['P0', 'P1']):
+            s = _get_suptitle(fig)
+            # Regression lock against Sonnet54 P2: must NOT be the v1.6 silent
+            # no-op (which would have produced "period = P0" — same as case 3).
+            assert s != f"period = {expected_v}", (
+                f"auto_title=True must NOT produce default figID-only suptitle. "
+                f"Sonnet54 P2 regression: got '{s}'."
+            )
+            # Must contain expression, all 3 facet dims, and the figid value
+            for token in ['y', 'x', 'sec', 'drift', 'period', expected_v]:
+                assert token in s, (
+                    f"3D auto_title suptitle missing '{token}'. Got: '{s}'"
+                )
+            plt.close(fig)
+        
+        # Case 3 (default): figID-only suptitle (Phase 13.41 v1.6 baseline,
+        # also locked by FBY.11 — verified here for symmetry with cases 1+2).
+        figs3, _, _ = DFDraw(df).scatter(
+            'y:x', facet_by=['sec', 'drift', 'period'])
+        for fig, expected_v in zip(figs3, ['P0', 'P1']):
+            s = _get_suptitle(fig)
+            assert s == f"period = {expected_v}", (
+                f"default 3D suptitle should be figID-only (v1.6 baseline); "
+                f"got: '{s}'"
+            )
+            plt.close(fig)

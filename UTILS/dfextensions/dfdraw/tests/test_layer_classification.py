@@ -348,6 +348,8 @@ TEST_LAYERS = {
     "test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_20_share_y_row_symmetry": "invariance",
     "test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_21_share_x_invalid_raises": "invariance",
     "test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_22_auto_title_suptitle_lock": "invariance",
+    # Phase 13.41.DF FIX2 (1 additional regression lock)
+    "test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_23_3d_auto_title_combined_suptitle": "invariance",
 
     # Everything else defaults to "smoke"
 }
