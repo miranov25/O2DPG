@@ -48,6 +48,230 @@ def _is_pyarrow_table(obj) -> bool:
 DrawResult = Tuple[Any, Any, Dict[str, Any]]  # (fig, ax, stats)
 
 
+# =============================================================================
+# Phase 13.41.DF v1.6 — Multi-dimensional faceting helpers
+# =============================================================================
+# Convention LOCKED (matches numpy/pandas (n_rows, n_cols, ...) shape):
+#   facet_by[0] = ROW dimension     (vertical within each figure)
+#   facet_by[1] = COLUMN dimension  (horizontal within each figure)
+#   facet_by[2] = FIGID dimension   (separate figures, one per value)
+#   facet_by[3+] → NotImplementedError
+#
+# Locked by §9.FBY.6 (2D row/col convention) + §9.FBY.11 (3D figID).
+# =============================================================================
+
+def _validate_share_axis_value(share, name):
+    """Validate share_x / share_y values per Phase 13.41 v1.2 CP0-2.
+    
+    Valid values: 'all', 'row', 'col', 'none'.
+    """
+    if share not in ('all', 'row', 'col', 'none'):
+        raise ValueError(
+            f"{name} must be one of 'all'/'row'/'col'/'none', got {share!r}"
+        )
+
+
+def _to_mpl_share(share):
+    """Map dfdraw share_x/share_y value → matplotlib plt.subplots(sharex/sharey).
+    
+    Phase 13.41.DF v1.2 CP0-1 — symmetric for both axes (was BUGGY in v1.1):
+      'all'  → True   (all cells share)
+      'row'  → 'row'  (cells in same row share)
+      'col'  → 'col'  (cells in same column share)
+      'none' → False  (no sharing)
+    
+    Verified by execution: plt.subplots(sharex='row') correctly links cells
+    in the same row; sharex=False links nothing. The v1.1 bug ({'row': False})
+    caused share_x='row' to silently disable sharing — Hard Constraint #3.
+    Locked by §9.FBY.12 (share_x='row') + §9.FBY.19 (share_x='col' symmetry).
+    """
+    return {'all': True, 'row': 'row', 'col': 'col', 'none': False}[share]
+
+
+def _normalize_facet_args(facet_by, facet_by_bins, facet_by_quantiles):
+    """Convert all facet_by forms to canonical list-of-N representation.
+    
+    Phase 13.41.DF v1.6 (matches §4 spec).
+    
+    Returns: (facet_list, bins_list, quantiles_list) — all lists of length N.
+    
+    Raises:
+      NotImplementedError for N > 3 (visualization deferred)
+      ValueError on length mismatch between facet_by and bins/quantiles lists
+    """
+    # Coerce facet_by to list
+    if isinstance(facet_by, str):
+        facet_list = [facet_by]
+    elif isinstance(facet_by, list):
+        facet_list = list(facet_by)
+    else:
+        raise ValueError(
+            f"facet_by must be str or list of str, got {type(facet_by).__name__}: "
+            f"{facet_by!r}"
+        )
+    n = len(facet_list)
+    
+    if n == 0:
+        raise ValueError("facet_by list cannot be empty")
+    if n > 3:
+        raise NotImplementedError(
+            f"facet_by length {n} > 3. Up to 3 dimensions supported: "
+            f"[row, col, figID]. For more dimensions, use group_by overlay "
+            f"inside cells. Got: facet_by={facet_by!r}"
+        )
+    
+    # Coerce bins (CP2-A v1.4 note: int broadcasts to first dim only)
+    if facet_by_bins is None:
+        bins_list = [None] * n
+    elif isinstance(facet_by_bins, (int, np.integer)) and not isinstance(facet_by_bins, bool):
+        # int form: apply to first dim, others None
+        bins_list = [int(facet_by_bins)] + [None] * (n - 1)
+    elif isinstance(facet_by_bins, list):
+        bins_list = list(facet_by_bins)
+        if len(bins_list) != n:
+            raise ValueError(
+                f"facet_by has {n} dimensions; facet_by_bins must have {n} "
+                f"elements (got {len(bins_list)}). "
+                f"Got: facet_by={facet_by!r}, facet_by_bins={facet_by_bins!r}"
+            )
+    else:
+        raise ValueError(
+            f"facet_by_bins must be int, list, or None; got "
+            f"{type(facet_by_bins).__name__}: {facet_by_bins!r}"
+        )
+    
+    # Coerce quantiles
+    if facet_by_quantiles is None:
+        quantiles_list = [None] * n
+    elif isinstance(facet_by_quantiles, list):
+        # Could be List[float] (1D form) or List[List[float]] (per-dim form)
+        if n == 1:
+            # 1D — accept either form for backward compat
+            if all(isinstance(q, (int, float, np.number)) for q in facet_by_quantiles):
+                quantiles_list = [facet_by_quantiles]
+            else:
+                quantiles_list = list(facet_by_quantiles)
+        else:
+            # N-D — must be List[List[float]] or List[None]
+            quantiles_list = list(facet_by_quantiles)
+            if len(quantiles_list) != n:
+                raise ValueError(
+                    f"facet_by has {n} dimensions; facet_by_quantiles must "
+                    f"have {n} elements (got {len(quantiles_list)}). "
+                    f"Got: facet_by={facet_by!r}, "
+                    f"facet_by_quantiles={facet_by_quantiles!r}"
+                )
+    else:
+        raise ValueError(
+            f"facet_by_quantiles must be list or None; got "
+            f"{type(facet_by_quantiles).__name__}: {facet_by_quantiles!r}"
+        )
+    
+    return facet_list, bins_list, quantiles_list
+
+
+def _resolve_facet_values(df, col, bins=None, quantiles=None):
+    """Resolve a facet dimension's column + binning into a list of value-groups.
+    
+    Phase 13.41.DF v1.6 §4 (CP2-A: NEW helper, not pre-existing).
+    
+    Returns: list of values (scalars for discrete; pd.Interval objects for binned).
+    """
+    if bins is None and quantiles is None:
+        # Discrete column — sorted unique values
+        return sorted(df[col].dropna().unique().tolist())
+    
+    if quantiles is not None:
+        bin_series = pd.qcut(df[col], q=quantiles, duplicates='drop')
+    else:
+        bin_series = pd.cut(df[col], bins=bins)
+    
+    # Return the Categorical's categories (Intervals) in sorted order
+    return list(bin_series.cat.categories)
+
+
+def _filter_facet_value(df, col, value, bins=None, quantiles=None):
+    """Filter df to rows matching a single facet value.
+    
+    Phase 13.41.DF v1.2 CP1-3 — discrete vs binned distinction:
+    - Discrete (bins+quantiles both None): df[df[col] == value]
+    - Binned (one of them set): reconstruct cut series, filter by Interval
+    """
+    if bins is None and quantiles is None:
+        return df[df[col] == value]
+    
+    if quantiles is not None:
+        bin_series = pd.qcut(df[col], q=quantiles, duplicates='drop')
+    else:
+        bin_series = pd.cut(df[col], bins=bins)
+    
+    mask = (bin_series == value)
+    return df[mask.fillna(False) if mask.dtype == object else mask]
+
+
+def _compute_global_ranges(df, x_expr, y_expr, plot_kind):
+    """For 3D share_across_figures=True, compute global x/y ranges.
+    
+    Phase 13.41.DF v1.2 CP1-2 — per-plot-kind logic:
+      scatter:  lock both x AND y (raw data on both axes)
+      hist:     lock x only; x-axis data is in y_expr (hist convention has
+                x_expr=None and the histogrammed column in y_expr)
+      profile:  lock x only; y is aggregate (auto-scales per figure)
+      hist2d / profile2d: no global lock (per-cell auto-scale)
+    
+    Rationale: locking y for hist/profile would crush sparse figID values
+    to invisibility when N-per-figID varies by ≥10× (common in ALICE
+    cross-run comparisons).
+    """
+    def _eval_expr(expr):
+        """Evaluate expression — column name or df.eval expression."""
+        if expr is None:
+            return None
+        if isinstance(expr, str) and expr in df.columns:
+            return df[expr].values
+        if isinstance(expr, str):
+            try:
+                return df.eval(expr).values
+            except Exception:
+                return None
+        return None
+    
+    if plot_kind == 'hist':
+        # Hist convention: x_expr=None, y_expr=column being histogrammed.
+        # The histogrammed column appears on the x-axis of the plot.
+        data = _eval_expr(y_expr)
+        if data is None or len(data) == 0:
+            return None, None
+        try:
+            x_range = (float(np.nanmin(data)), float(np.nanmax(data)))
+        except (ValueError, TypeError):
+            x_range = None
+        return x_range, None    # y is bin count → auto-scale per figure
+    
+    x_data = _eval_expr(x_expr)
+    if x_data is None or len(x_data) == 0:
+        return None, None
+    
+    try:
+        x_range = (float(np.nanmin(x_data)), float(np.nanmax(x_data)))
+    except (ValueError, TypeError):
+        x_range = None
+    
+    if plot_kind == 'scatter':
+        y_data = _eval_expr(y_expr)
+        if y_data is None or len(y_data) == 0:
+            return x_range, None
+        try:
+            y_range = (float(np.nanmin(y_data)), float(np.nanmax(y_data)))
+        except (ValueError, TypeError):
+            y_range = None
+        return x_range, y_range
+    elif plot_kind == 'profile':
+        return x_range, None   # x only; y aggregate auto-scales (CP1-2 design)
+    else:
+        return None, None       # hist2d / profile2d / unknown
+
+
 class DFDraw:
     """
     DataFrame drawing class with TTree::Draw-like interface.
@@ -734,7 +958,16 @@ class DFDraw:
           - both facet_by_bins AND facet_by_quantiles set (mutex)
           - boolean True passed (must be integer, per AD-40 pattern)
           - facet_by is not a column name (e.g. channel enum 'group_by')
+        
+        Phase 13.41.DF v1.3 CP1-1 (Sonnet54 P1-A): list-form facet_by is
+        validated by _normalize_facet_args in _dispatch_faceted_render.
+        This str-only validator must early-return on list input to avoid
+        `facet_by not in df.columns` raising TypeError: unhashable type 'list'.
         """
+        # Phase 13.41.DF v1.3 CP1-1: list-form deferred to _normalize_facet_args
+        if isinstance(facet_by, list):
+            return
+        
         if facet_by_bins is None and facet_by_quantiles is None:
             return
         if facet_by is None:
@@ -2513,7 +2746,7 @@ class DFDraw:
         df: pd.DataFrame,
         x_expr: str,
         y_expr: Union[str, list],
-        facet_by: str,
+        facet_by,                            # Phase 13.41.DF v1.6: Union[str, List[str]]
         plot_kind: str,
         ncols: Optional[int] = None,
         sharex: bool = True,
@@ -2523,6 +2756,10 @@ class DFDraw:
         top_k: Optional[int] = None,
         quantiles: Optional[list] = None,
         quantile_mode: str = "auto",
+        # Phase 13.41.DF v1.6: N-D faceting (list-form facet_by) params
+        share_x: str = 'all',                # 'all' | 'row' | 'col' | 'none'
+        share_y: str = 'all',                # same
+        share_across_figures: bool = True,   # 3D only
         **plot_kwargs
     ) -> Tuple[plt.Figure, np.ndarray, Dict[str, Any]]:
         """
@@ -2564,6 +2801,75 @@ class DFDraw:
             - On 'vector' facet without list-valued y_expr
             - On 'quantiles' facet without quantile_mode='discrete'
         """
+        # =====================================================================
+        # Phase 13.41.DF v1.6 — N-D faceting entry point
+        # =====================================================================
+        # Convention LOCKED: facet_by[0]=row, [1]=col, [2]=figID (numpy shape)
+        # 
+        # List-form facet_by routing:
+        #   length 1 (or str) → unwrap to scalar, fall through to 1D path
+        #                       (Phase 13.32 backward compat, byte-identical)
+        #   length 2          → 2D row × col grid (NEW)
+        #   length 3          → 3D via figID multi-figure (NEW)
+        #   length 4+         → NotImplementedError via _normalize_facet_args
+        # =====================================================================
+        if isinstance(facet_by, list):
+            _facet_by_bins_raw = plot_kwargs.get('facet_by_bins')
+            _facet_by_quantiles_raw = plot_kwargs.get('facet_by_quantiles')
+            facet_list, bins_list, quantiles_list = _normalize_facet_args(
+                facet_by, _facet_by_bins_raw, _facet_by_quantiles_raw)
+            
+            # Validate share_x / share_y
+            _validate_share_axis_value(share_x, 'share_x')
+            _validate_share_axis_value(share_y, 'share_y')
+            
+            # Phase 13.41.DF v1.6: pop outer-only kwargs that conflict with
+            # inner call signatures or N-D dispatch semantics. User-supplied
+            # range/x_range stay in plot_kwargs and are reconciled inside
+            # _dispatch_inner_per_cell via user_range / user_x_range pop.
+            plot_kwargs.pop('ncols', None)
+            plot_kwargs.pop('sharex', None)
+            plot_kwargs.pop('sharey', None)
+            plot_kwargs.pop('facet', None)
+            # auto_title: scatter doesn't accept it (drawer.py:1198), so always
+            # pop and re-add per plot_kind inside _dispatch_inner_per_cell
+            plot_kwargs.pop('auto_title', None)
+            
+            n_dims = len(facet_list)
+            if n_dims == 1:
+                # List of length 1 — unwrap and fall through to 1D path below
+                facet_by = facet_list[0]
+                # Update plot_kwargs to also unwrap bins/quantiles to scalar/list
+                if bins_list[0] is not None:
+                    plot_kwargs['facet_by_bins'] = bins_list[0]
+                if quantiles_list[0] is not None:
+                    plot_kwargs['facet_by_quantiles'] = quantiles_list[0]
+                # Fall through to existing 1D logic
+            elif n_dims == 2:
+                # Pop bins/quantiles from plot_kwargs (now in lists)
+                plot_kwargs.pop('facet_by_bins', None)
+                plot_kwargs.pop('facet_by_quantiles', None)
+                return self._dispatch_2d_facet(
+                    df, x_expr, y_expr, facet_list, bins_list, quantiles_list,
+                    plot_kind, share_x=share_x, share_y=share_y,
+                    title=title, group_by=group_by, top_k=top_k,
+                    quantiles=quantiles, quantile_mode=quantile_mode,
+                    _lock_x_range=None, _lock_y_range=None, **plot_kwargs)
+            elif n_dims == 3:
+                # 3D: loop over figID dimension, dispatch 2D per figID
+                plot_kwargs.pop('facet_by_bins', None)
+                plot_kwargs.pop('facet_by_quantiles', None)
+                return self._dispatch_3d_facet(
+                    df, x_expr, y_expr, facet_list, bins_list, quantiles_list,
+                    plot_kind, share_x=share_x, share_y=share_y,
+                    share_across_figures=share_across_figures,
+                    title=title, group_by=group_by, top_k=top_k,
+                    quantiles=quantiles, quantile_mode=quantile_mode,
+                    **plot_kwargs)
+        # =====================================================================
+        # End Phase 13.41 N-D branch — existing 1D code follows unchanged
+        # =====================================================================
+        
         # ---- Validate facet_by ---------------------------------------------
         # Phase 13.31.DF v1.0 (AD-78): facet_by is a tagged union — either a
         # channel-name enum value (Phase 13.27 Commit 1 semantics, preserved)
@@ -3007,6 +3313,207 @@ class DFDraw:
             "n_total": sum(s.get("n", 0) for s in all_stats.values()),
         }
         return fig, axes_flat[:n_groups], combined_stats
+
+    # =========================================================================
+    # Phase 13.41.DF v1.6 — N-D faceting dispatch (2D row × col, 3D figID)
+    # =========================================================================
+    
+    def _dispatch_inner_per_cell(self, sub_df, x_expr, y_expr, plot_kind,
+                                  ax_ij, _lock_x_range, _lock_y_range, **plot_kwargs):
+        """Per-plot-kind inner dispatch within a 2D facet cell.
+        
+        Phase 13.41.DF v1.4 CP1-1 — corrected per-function range params:
+          hist:     range=x_range  (matplotlib convention — NOT x_range=)
+          profile:  x_range=x_range  (per profile.py:166)
+          scatter:  ax.set_xlim/set_ylim post-draw (no native range params)
+          hist2d/profile2d: no range params (auto-scale per cell)
+        
+        _lock_x_range/_lock_y_range: internal cross-figure ranges; user-supplied
+        range (hist) / x_range (profile) come via plot_kwargs and take precedence.
+        """
+        # Build the y:x or just x expression for the inner call
+        if isinstance(y_expr, str) and y_expr:
+            inner_expr = f"{y_expr}:{x_expr}"
+        else:
+            inner_expr = x_expr
+        
+        # Empty cell handling (CP2-2)
+        if len(sub_df) == 0:
+            ax_ij.text(0.5, 0.5, "(no data)",
+                       ha='center', va='center',
+                       transform=ax_ij.transAxes,
+                       color='gray', fontsize=8)
+            return {'n': 0, 'empty': True}
+        
+        # Create per-cell DFDraw view; matplotlib will use its defaults
+        sub_adf = DFDraw(sub_df)
+        
+        # Phase 13.41.DF v1.6: reconcile user-supplied range kwargs.
+        # NOTE: BOTH DFDraw.hist AND DFDraw.profile use `range:` at the
+        # DFDraw layer (DFDraw.profile internally remaps to x_range when
+        # calling draw_profile per drawer.py:329/404/420/436).
+        # User-supplied range wins; otherwise apply our lock range.
+        user_range = plot_kwargs.pop('range', None)
+        # Defensive: also pop x_range (some call paths use it; we map back below)
+        user_x_range = plot_kwargs.pop('x_range', None)
+        effective_range = user_range if user_range is not None else (
+            user_x_range if user_x_range is not None else _lock_x_range)
+        
+        if plot_kind == 'hist':
+            # DFDraw.hist uses range= (matches matplotlib convention)
+            _, _, stats_ij = sub_adf.hist(
+                inner_expr, ax=ax_ij,
+                range=effective_range,
+                auto_title=False,
+                **plot_kwargs)
+            # range= sets bin range; also lock xlim for share_across_figures
+            if _lock_x_range is not None and user_range is None and user_x_range is None:
+                ax_ij.set_xlim(_lock_x_range)
+        elif plot_kind == 'profile':
+            # DFDraw.profile also uses range= (it remaps to x_range internally
+            # when calling draw_profile — see drawer.py:329/404/420/436)
+            _, _, stats_ij = sub_adf.profile(
+                inner_expr, ax=ax_ij,
+                range=effective_range,
+                auto_title=False,
+                **plot_kwargs)
+            # range= sets bin range; also lock xlim for share_across_figures
+            if _lock_x_range is not None and user_range is None and user_x_range is None:
+                ax_ij.set_xlim(_lock_x_range)
+        elif plot_kind == 'scatter':
+            # scatter has no range params; apply ranges via ax post-draw
+            _, _, stats_ij = sub_adf.scatter(
+                inner_expr, ax=ax_ij, **plot_kwargs)
+            if _lock_x_range is not None and user_range is None and user_x_range is None:
+                ax_ij.set_xlim(_lock_x_range)
+            if _lock_y_range is not None:
+                ax_ij.set_ylim(_lock_y_range)
+        elif plot_kind == 'hist2d':
+            _, _, stats_ij = sub_adf.hist2d(
+                inner_expr, ax=ax_ij, **plot_kwargs)
+        elif plot_kind == 'profile2d':
+            _, _, stats_ij = sub_adf.profile(
+                inner_expr, ax=ax_ij, **plot_kwargs)
+        else:
+            raise ValueError(
+                f"facet_by composition with plot_kind={plot_kind!r} not supported"
+            )
+        
+        return stats_ij
+    
+    def _dispatch_2d_facet(self, df, x_expr, y_expr, facet_list, bins_list,
+                            quantiles_list, plot_kind,
+                            share_x='all', share_y='all',
+                            _lock_x_range=None, _lock_y_range=None,
+                            title=None, group_by=None, top_k=None,
+                            quantiles=None, quantile_mode='auto',
+                            **plot_kwargs):
+        """2D row × col grid faceting. Phase 13.41.DF v1.6 §4.
+        
+        _lock_x_range/_lock_y_range: internal lock from 3D share_across_figures
+        (not user-facing; user's hist range / profile x_range come via plot_kwargs).
+        Returns: (fig, axes_2d, stats_grid_dict)
+        """
+        row_col = facet_list[0]
+        col_col = facet_list[1]
+        row_values = _resolve_facet_values(df, row_col, bins_list[0], quantiles_list[0])
+        col_values = _resolve_facet_values(df, col_col, bins_list[1], quantiles_list[1])
+        
+        n_rows = len(row_values)
+        n_cols = len(col_values)
+        
+        # Build figure with axis sharing
+        figsize = (4 * n_cols, 3 * n_rows)
+        fig, axes = plt.subplots(
+            n_rows, n_cols,
+            figsize=figsize,
+            sharex=_to_mpl_share(share_x),
+            sharey=_to_mpl_share(share_y),
+            squeeze=False,        # always 2D for consistent indexing
+        )
+        
+        stats_grid = {}
+        for i, row_v in enumerate(row_values):
+            for j, col_v in enumerate(col_values):
+                # CP1-3: discrete vs binned filtering
+                sub_df = _filter_facet_value(df, row_col, row_v,
+                                              bins_list[0], quantiles_list[0])
+                sub_df = _filter_facet_value(sub_df, col_col, col_v,
+                                              bins_list[1], quantiles_list[1])
+                
+                ax_ij = axes[i, j]
+                
+                # Forward group_by, top_k, quantiles into inner if set
+                inner_kwargs = dict(plot_kwargs)
+                if group_by is not None:
+                    inner_kwargs['group_by'] = group_by
+                if top_k is not None:
+                    inner_kwargs['top_k'] = top_k
+                if quantiles is not None:
+                    inner_kwargs['quantiles'] = quantiles
+                
+                stats_ij = self._dispatch_inner_per_cell(
+                    sub_df, x_expr, y_expr, plot_kind, ax_ij,
+                    _lock_x_range, _lock_y_range, **inner_kwargs)
+                stats_grid[(row_v, col_v)] = stats_ij
+                
+                # Edge labels (top row = col headers; left col = row labels)
+                if i == 0:
+                    ax_ij.set_title(f"{col_col}={col_v}", fontsize=10)
+                if j == 0:
+                    cur_ylabel = ax_ij.get_ylabel()
+                    ax_ij.set_ylabel(f"{row_col}={row_v}\n{cur_ylabel}".rstrip())
+        
+        if title:
+            fig.suptitle(title, fontsize=12)
+        fig.tight_layout()
+        return fig, axes, stats_grid
+    
+    def _dispatch_3d_facet(self, df, x_expr, y_expr, facet_list, bins_list,
+                            quantiles_list, plot_kind,
+                            share_x='all', share_y='all',
+                            share_across_figures=True,
+                            title=None, group_by=None, top_k=None,
+                            quantiles=None, quantile_mode='auto',
+                            **plot_kwargs):
+        """3D faceting via multi-figure output. Phase 13.41.DF v1.6 §4.
+        
+        facet_list = [row_col, col_col, figid_col]; bins/quantiles same shape.
+        Returns: (List[Figure], List[axes_2d], List[stats_grid])
+        """
+        figid_col = facet_list[2]
+        figid_values = _resolve_facet_values(df, figid_col,
+                                              bins_list[2], quantiles_list[2])
+        
+        # CP1-2 v1.2 + CP2-C v1.4: compute global x/y ranges
+        # using existing x_expr / y_expr named params (no plot_kwargs extraction)
+        global_x_range = global_y_range = None
+        if share_across_figures:
+            global_x_range, global_y_range = _compute_global_ranges(
+                df, x_expr, y_expr, plot_kind)
+        
+        figures, all_axes, all_stats = [], [], []
+        for figid_v in figid_values:
+            sub_df = _filter_facet_value(df, figid_col, figid_v,
+                                          bins_list[2], quantiles_list[2])
+            
+            fig, axes, stats = self._dispatch_2d_facet(
+                sub_df, x_expr, y_expr, facet_list[:2], bins_list[:2],
+                quantiles_list[:2], plot_kind,
+                share_x=share_x, share_y=share_y,
+                _lock_x_range=global_x_range, _lock_y_range=global_y_range,
+                title=None, group_by=group_by, top_k=top_k,
+                quantiles=quantiles, quantile_mode=quantile_mode,
+                **plot_kwargs)
+            
+            # Set per-figure title (figID value)
+            fig.suptitle(f"{figid_col} = {figid_v}", fontsize=12)
+            
+            figures.append(fig)
+            all_axes.append(axes)
+            all_stats.append({'figid_value': figid_v, 'cells': stats})
+        
+        return figures, all_axes, all_stats
     
     # =========================================================================
     # Main Draw Method
