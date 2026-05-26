@@ -1,6 +1,6 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-05-26 11:51 UTC
+**Generated:** 2026-05-26 13:09 UTC
 **Phase:** 13.11.B
 **Taxonomy:** 47 features (PHASE_13_11_B approved)
 **Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)
@@ -38,8 +38,8 @@
 
 | Status | Feature | Tests | Pass | Fail | Inv |
 |--------|---------|------:|-----:|-----:|:---:|
-| 🧨 | **SUB.register** — Subframe registration | 50 | 49 | 1 | 3 |
-| ✅ | **SUB.join** — Subframe join & column resolution | 70 | 70 | 0 | 22 |
+| ✅ | **SUB.register** — Subframe registration | 50 | 50 | 0 | 3 |
+| 🧨 | **SUB.join** — Subframe join & column resolution | 70 | 69 | 1 | 22 |
 | ✅ | **SUB.composite_key** — Composite key operations | 38 | 38 | 0 | 2 |
 | ✅ | **SUB.auto_alias** — Auto-aliasing subframe columns | 11 | 10 | 0 | 1 |
 | 📋 | **SUB.clone** — Clone with selection (planned) | 0 | 0 | 0 |  |
@@ -81,7 +81,7 @@
 
 | Status | Feature | Tests | Pass | Fail | Inv |
 |--------|---------|------:|-----:|-----:|:---:|
-| 🧨 | **COMP.roundtrip** — Compress/decompress roundtrip | 72 | 68 | 4 | 10 |
+| 🧨 | **COMP.roundtrip** — Compress/decompress roundtrip | 72 | 70 | 2 | 10 |
 | ☑️ | **COMP.selection** — Compression method selection | 10 | 10 | 0 |  |
 | ☑️ | **COMP.monitoring** — Compression quality monitoring | 15 | 15 | 0 |  |
 
@@ -123,25 +123,23 @@
 
 ## 🧨 Broken Features — Details
 
-### SUB.register
-- ❌ `test_alias_dataframe.py::TestAliasDataFrameWithSubframes::test_save_and_load_integrity`
+### SUB.join
+- ❌ `test_alias_subframe.py::TestSubframeRoundtrip::test_parquet_roundtrip`
 
 ### DRAW.execution
 - ❌ `test_K2_vector_draw_end_to_end.py::TestK2VectorDrawEndToEnd::test_K2_3_production_reproducer_mirror`
 
 ### COMP.roundtrip
-- ❌ `test_alias_dataframe.py::TestAliasDataFrameCompression::test_roundtrip_save_load`
-- ❌ `test_alias_dataframe.py::TestAliasDataFrameCompression::test_backward_compatibility_no_compression_info`
-- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
 - ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
+- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
 
 ### BACK.invariance
 - ❌ `test_invariance_backend.py::TestInvarianceBackend::test_I2_6_chained_subframe_expressions_numba_vs_numpy`
 
 ### RDF.export
+- ❌ `test_AliasDataFrameRDF.py::TestTMemFileBranch::test_missing_keys_in_friend`
 - ❌ `test_AliasDataFrameRDF.py::TestAddDefinesCollision::test_collision_from_friend_tree`
 - ❌ `test_AliasDataFrameRDF.py::TestRDataFrameFriendAccess::test_composite_index_friend`
-- ❌ `test_AliasDataFrameRDF.py::TestTMemFileBranch::test_missing_keys_in_friend`
 
 ## Unmatched Tests
 

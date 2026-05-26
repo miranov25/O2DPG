@@ -1,7 +1,7 @@
 # AliasDataFrame Phase History
 
 > **Purpose**: Development history for architecture reviews and restart prompts.  
-> **Last Updated**: 2026-05-18  
+> **Last Updated**: 2026-05-26  
 > **Maintained By**: Marian Ivanov (miranov25)
 
 ## How to Use This File
@@ -42,9 +42,9 @@ AliasDataFrame is a high-performance data analysis framework for particle physic
 
 **Key Metrics:**
 - Performance: 60-770x speedups achieved; production pipeline 2.1× faster (1452s → 692s)
-- Test Coverage: 1625 tests passing, 199 invariance tests
-- Lines of Code: ~13,625 (AliasDataFrame.py)
-- Features: 47 in taxonomy (28 verified, 14 smoke-only, 4 broken, 1 planned)
+- Test Coverage: 1633 tests passing (deterministic baseline; reviewer-package re-runs may show 1631–1634 depending on which known parallel-execution flakes fire), 205 invariance tests
+- Lines of Code: ~14,050 (AliasDataFrame.py)
+- Features: 47 in taxonomy (27 verified, 14 smoke-only, 5 broken, 1 planned)
 
 **Development Team:**
 - Coordinator: Marian Ivanov (miranov25)
@@ -457,6 +457,73 @@ Both handed to dfdraw team for separate bug filing.
 
 **Phase B marker**: Both helpers carry inline `Phase B marker` comments — regex tokenizer in `_ensure_vector_kwargs_aliases` and Y-count parser in `_normalize_vector_compose_kwargs` should be folded into AST resolver consolidation when that phase lands.
 
+### Phase 13.36.ADF: Subframe Metadata Propagation to Drawing
+**Dates**: 2026-05-26  
+**Status**: ✅ Merged  
+**Commits**: `de6652a0` (main implementation) → `a1071361` (P1-fix: matrix regen, X6 strengthening, docstring corner case)  
+**Tag**: `PHASE_13_36_ADF_END`  
+**Coder**: Claude36 (Opus 4.7)  
+**Sister phases**: Phase A (`a6a5b6e8`, BUG_20260518) + Phase 13.35.ADF (`879a0835`) — completes the subframe-aware drawing chain: resolver flattens references (Phase A), vector kwargs aliases materialize before forwarding (Phase 13.35.ADF), and now metadata follows the flatten through dispatch (Phase 13.36.ADF).
+
+**Motivation**: production screenshot 2026-05-18 (the same calibration QA session that produced BUG_20260518 and Phase 13.35.ADF) showed Y-axis label `vC_vertex_x_intercept_decomp` — the raw Phase A flattened name — instead of a human-readable title from the vC subframe's schema. Investigation: `AliasDataFrame.get_axis_title()` only looked up `self._schema['columns']`, never dispatching to subframes where the metadata actually lived. dfdraw consumes `get_axis_title()` via duck typing for axis labels, so this gap surfaced as raw column names on every plot involving subframe-dotted references.
+
+**Implementation**: one helper + two method updates in `AliasDataFrame.py`:
+- `_resolve_subframe_flat_name(column)` — new helper (~85 lines). Parses Phase A's two flatten patterns:
+  - Single-level: `f"{sf_name}_{col_name}"` — scans registered subframes by name prefix, longest-prefix tie-break for collision determinism
+  - Multi-level: `f"{leaf}__{innermost}__...__{outermost}"` — walks chain via `_subframes.has_subframe()` / `.get()`
+  - Returns `(sub_adf, leaf_col)` or `(None, None)` if no match. Safe defensive guards: non-string input, empty string, missing `_subframes`, missing subframes in chain.
+- `get_axis_title(column)` — direct parent schema lookup first (precedence rule), then subframe dispatch via helper on miss
+- `get_column_metadata(column)` — same dispatch pattern, returns full metadata dict (title, unit, axisLabel, description, range)
+
+**Precedence rule** (locked by X4): parent's explicit metadata on the flat name always wins. Subframe dispatch is fallback, never a hijack. User can override subframe metadata by calling `parent.set_axis_title('vC_decomp_val', 'my override')` explicitly. Corner case documented in helper docstring: parent columns without explicit schema metadata matching a registered subframe-name prefix will receive subframe title via dispatch silently (set parent metadata explicitly to override).
+
+**Tests**: 6 invariance tests X1–X6 in `tests/test_X1_subframe_metadata_propagation.py`:
+- X1: single-level `f"{sf}_{col}"` → subframe schema title
+- X2: multi-level `f"{leaf}__C__B__A"` walks 3 subframes deep → deepest's title
+- X3: full metadata dict (title, unit, axisLabel, description, range) all propagate
+- X4: parent explicit override on flat name wins over subframe dispatch (precedence rule lock)
+- X5: negative branch — unknown / unregistered / empty / malformed → None / `{}` safely
+- X6: **end-to-end via `draw()`** exercising Phase A resolver → Phase 13.36 dispatch → dfdraw duck-typed `_data_source.get_axis_title()` → `ax.set_ylabel()`. Strict load-bearing assertion on `ax.get_ylabel()`. Skip-vs-fail discipline: env unavailable → SKIP, draw() raises → FAIL, ylabel mismatch → FAIL with diagnostic.
+
+**Production validation**: Mac orbstack (Linux aarch64) — strengthened X6 confirmed passing end-to-end against real dfdraw. Verifies the duck-typed `_data_source.get_axis_title()` lookup AND propagation to `ax.set_ylabel()` both work. The user-visible bug from the 2026-05-18 screenshot is fixed end-to-end.
+
+**Test count history across this review cycle** (all variations reconcile per `1628 baseline + 6 X1–X6 − N flakes`):
+| Run | Commit | Pass | Fail | Flake fired |
+|---|---|---|---|---|
+| 10:04 first apply | `38aed2d8` worktree | 1634 | 7 | none |
+| 11:09 commit-time | `de6652a0` | 1631 | 10 | 3-cluster (save_load + 2× compression) |
+| 13:51 v1.1 verify | `de6652a0` | 1631 | 10 | 3-cluster |
+| **15:09 P1-fix verify** | **`a1071361`** | **1633** | **8** | parquet (1 test, different known flake) |
+
+Deterministic baseline `1633 / 7F+1E` (7 pre-existing failures + 1 collection error, all pre-Phase-13.36).
+
+**Capability Matrix**: 28→27 Verified, 4→5 Broken, 1636→1642 matched tests, 199→205 invariance. `DRAW.subframe_resolution` 49→55 tests, 16→22 invariance. The Verified→Broken delta of one is the `test_parquet_roundtrip` flake being newly registered, not a Phase 13.36 regression.
+
+**X6 strengthening cycle** (CRR v1.0 → v1.1 → v1.2, Claude37 review):
+- v1.0 X6 was smoke-disguised-as-invariance (try/except + warn-and-pass — only assertion was `get_axis_title()` which X1 already covers). Claude37 flagged per v1.6.1 §3.5 FM#11b.
+- v1.1 strengthening attempt 1: `expr='vertex_x_intercept:vC.vertex_x_intercept_decomp'` with `assert subframe_title in ax.get_ylabel()` — **failed in production**: ylabel was `'vertex x intercept [cm]'` (parent's title for LHS column). Diagnostic revealed dfdraw labels Y from the first Y column only, so X6 was checking the wrong axis. This was a diagnostic-by-design failure — proved dfdraw IS calling `get_axis_title` via duck typing (otherwise ylabel would be the raw flat name).
+- v1.2 strengthening attempt 2: expr changed to `'vC.vertex_x_intercept_decomp:idx'` (subframe column AS Y axis) — passes on Mac orbstack. Empirical-expr-verification documented inline in test docstring (Claude37 cited as exemplary test-design discipline).
+
+**Reviewer cycle notes**:
+- v1.0 CRR (Claude36) → Claude37 review `[!]` with 3 P1s (P1-1 disclosure gap, P1-2 time_series_TroubleShooting.py scope, P1-3 X6 smoke) + MainReviewer Sonnet1 added P1-4 (parallel flake formal tracking)
+- v1.1 CRR (Claude36 amendments) → Claude37 re-review `[!]` with new P1-A via Rule 14 full-diff audit (committed CAPABILITY_MATRIX.md was stale from 10:04 wrong-venv run showing 13 verified / 20 broken; diff was `+99/-33`, not the claimed `+6/-5 mechanical`)
+- v1.2 CRR (Claude36 with P1-A fix commit `a1071361`) → architect approved
+
+**Methodology lessons** (for Coder/Reviewer QRC revisions):
+- **Rule 14 (full-diff audit) caught the matrix-stale finding.** Without it, the inaccurate "+6/-5 mechanical replacements" claim in CRR v1.1 §6 would have passed inspection. Cycle 2 dogfooding successful — the discipline added at v1.6.1/QRC v1.30 worked exactly as designed (§3.5 item 5 pattern: "4 of 5 reviewers stopped at §2.4 disclosure; one read the next line and found the gap").
+- **Empirical expr verification before locking a test assertion.** Coder ran the actual draw call, observed labeling behavior (`vertex x intercept [cm]` for LHS-on-Y), then chose the expr that puts the subframe column where its title surfaces. Without this verification, X6 would have tested the wrong axis. Candidate positive-example for Coder QRC: *"for end-to-end UI tests, run the call first, then write the assertion against observed behavior."*
+- **`run_tests.sh` regenerates tracked files silently.** The P1-A root cause was that `run_tests.sh` regenerated `CAPABILITY_MATRIX.md` in the working tree, but Marian's earlier `git add` had committed a stale version from a wrong-venv run. Candidate Cycle 3 rule (Coder QRC + harness improvement): *"if the test harness regenerates a tracked file, the harness should either (a) auto-commit, (b) refuse to leave a dirty tree, or (c) emit a loud warning."*
+- **Two-commit pattern (main + fix) avoids `--amend` per architect's standing rule.** P1-A was addressed in a follow-up commit `a1071361` instead of amending `de6652a0`. Preserves audit trail and is safe with parallel branches.
+
+**Closed deferred items**: none (Phase 13.36 was self-contained; no follow-up phases needed for its own scope).
+
+**Adjacent items handled separately**:
+- `BUG_AliasDataFrame_20260526_parallel_flake_compression` filed for the recurring 3-test xdist flake cluster (P1-4); Path A recommendation (`@pytest.mark.xdist_group`) deferred to a future small phase
+- dfdraw `auto_title=True` not honored (cosmetic) — dfdraw team
+- dfdraw `normalize="ratio"` returns 1.0 (silent miscompute, P0-class for dfdraw) — dfdraw team
+
+**Phase B marker**: `_resolve_subframe_flat_name` carries inline marker — joins `_ensure_vector_kwargs_aliases` (Phase 13.35.ADF) and `_normalize_vector_compose_kwargs` (Phase 13.35.ADF) as candidates for AST resolver consolidation when Phase B lands.
+
 ### Phase 13.25.DF FIX1: dfdraw Quantile Test-Quality + AD-52 Sentinel Fix
 **Dates**: 2026-05-14 (proposal drafted)  
 **Status**: 📋 Proposal v1.0 drafted by Claude37; awaiting architect approval to start Coder work  
@@ -479,6 +546,32 @@ Fix cycle against approved spec `PHASE_13_25_DF_v1.3_Proposal.md` (no re-litigat
 ---
 
 ## Bug Fixes
+
+### BUG_AliasDataFrame_20260526_parallel_flake_compression
+**Dates**: 2026-05-26 (formal filing); first documented 2026-05-14 at Phase 13.27.ADF `bbedd90b`  
+**Status**: ⚠️ Tracked (no code fix yet); Path A recommended  
+**Severity**: P2 — pre-existing intermittent flake under `pytest -n 12` (xdist parallel); tests pass deterministically in isolation (`-p no:xdist`). No production correctness impact.  
+**Detected via**: 4 consecutive review packages this month surfaced the cluster
+
+**Cluster** (3 tests in `tests/test_alias_dataframe.py`):
+1. `TestAliasDataFrameWithSubframes::test_save_and_load_integrity`
+2. `TestAliasDataFrameCompression::test_backward_compatibility_no_compression_info`
+3. `TestAliasDataFrameCompression::test_roundtrip_save_load`
+
+**Recurrence pattern**: ~30–50% of parallel runs on alma2 Linux aarch64. Failure rate non-deterministic.
+
+**Diagnostic confirmation** (Phase 13.35.ADF closure, 2026-05-18): `pytest <3 tests> -p no:xdist` → 15/15 pass in isolation. Phase 13.36.ADF cycle showed the cluster fire in `reviewer_20260526_110908.zip` and `reviewer_20260526_135123.zip` (commit-time + v1.1 verify) but not in `reviewer_20260526_100433.zip` or `reviewer_20260526_150919.zip` — same source, same alma2 environment, different run outcomes.
+
+**Recommended resolution paths** (architect's call):
+- **Path A** (~15 min, recommended): add `@pytest.mark.xdist_group(name="alias_dataframe_save_load")` to all 3 tests — pins them to the same xdist worker, eliminating the race
+- **Path B**: investigate root cause (suspects: shared temp dirs, parquet write-then-read races, pandas global state, uproot file-handle sharing) — 2–4 hr debug session
+- **Path C**: document and accept; add reviewer-card rule for fast recognition
+
+**Review-process impact**: estimated 2–4 review-hours wasted across ~4 recurrences (each forces a context-less reviewer to investigate as potential regression). Path A's 15-min investment pays back immediately.
+
+**Filed**: `BUG_AliasDataFrame_20260526_parallel_flake_compression.md` (separate doc with reproducer + evidence anchor + 3 resolution paths)
+
+**Tracked from**: Phase 13.36.ADF review cycle (Claude37 P1-4, Sonnet1 MainReviewer summary P1-4)
 
 ### BUG_AliasDataFrame_20260518_draw_subframe_alias_not_materialized (Phase A, S10–S19)
 **Dates**: 2026-05-18  
@@ -1158,7 +1251,7 @@ Remaining overhead is Python/Pandas framework cost.
 - [ ] **Phase 13.25.DF FIX1** — Quantile test-quality + AD-52 sentinel + `error="none"` dispatch (proposal v1.0 drafted 2026-05-14; **19 days open**, 2 correctness P1s)
 - [ ] **dfdraw `auto_title` not honored** — Phase 13.35.ADF production validation surfaced this; figure shows matplotlib default title across all renders despite `auto_title=True` kwarg passed (handed to dfdraw team for separate bug filing as `BUG_dfdraw_20260518_auto_title_not_honored.md`)
 - [ ] **dfdraw `normalize="ratio"` returns 1.0** — same Phase 13.35.ADF production session; bottom panel shows exactly 1.0 instead of computed early/late ratio (handed to dfdraw team as `BUG_dfdraw_20260518_normalize_ratio_returns_one.md`)
-- [ ] **Parallel-execution flake cluster** — `test_save_and_load_integrity`, `test_backward_compatibility_no_compression_info`, `test_roundtrip_save_load` intermittently fail under 12-worker xdist (third documented recurrence; pass deterministically in isolation). Consider `BUG_AliasDataFrame_20260518_compression_save_load_parallel_flake.md` and/or `@pytest.mark.serial` or worker-count cap.
+- [ ] **Parallel-execution flake cluster** — `test_save_and_load_integrity`, `test_backward_compatibility_no_compression_info`, `test_roundtrip_save_load` intermittently fail under 12-worker xdist; pass deterministically in isolation. Formally tracked as `BUG_AliasDataFrame_20260526_parallel_flake_compression.md` (filed 2026-05-26 from Phase 13.36.ADF review P1-4); Path A `@pytest.mark.xdist_group` recommended.
 - [ ] **Phase 13.26.ADF P2 follow-ups** — `PHASE_13_26_ADF_v1.0_Proposal.md` upload to docs; D11/D12 compression+subframe interaction tests
 - [ ] **Phase 13.27.ADF P3 follow-ups** — `feature_taxonomy.py` update for G1-G4, B1, D1-D14 (currently in Unmatched Tests)
 - [ ] **A2** — LZ4 default compression (one-line + compat test, ~15-20s savings)
@@ -1168,7 +1261,7 @@ Remaining overhead is Python/Pandas framework cost.
 - [ ] **Technical Summary v1.6** full public API documentation (~90 methods)
 - [ ] **P1 tests**: I2_6, I4_2, I4_3 fixes
 - [ ] Fix `register_subframe_lazy()` bug (BUG_AliasDataFrame_20260116)
-- [ ] Axis title lookup for subframe columns (`Sub_dy` vs `Side.dy`)
+- [x] ~~Axis title lookup for subframe columns~~ (closed by Phase 13.36.ADF at `de6652a0` + `a1071361`, `Subframe.col` titles now propagate through `get_axis_title` / `get_column_metadata` dispatch)
 - [ ] `draw()` lazy=False doesn't materialize selection aliases (S1 xfail)
 - [ ] `draw()` resolver unification (3 parallel implementations)
 - [ ] Feature taxonomy: 84 unmatched tests remaining (B1, D1-D14, G1-G4, N1_11, Q1, V8/V9 + schema-versioning gaps)
