@@ -1,6 +1,6 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-05-18 09:51 UTC
+**Generated:** 2026-05-26 11:51 UTC
 **Phase:** 13.11.B
 **Taxonomy:** 47 features (PHASE_13_11_B approved)
 **Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)
@@ -9,13 +9,13 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 28 | 59% |
+| ✅ Verified | 27 | 57% |
 | ☑️ Smoke-only | 14 | 29% |
-| 🧨 Broken | 4 | 8% |
+| 🧨 Broken | 5 | 10% |
 | 📋 Planned | 1 | 2% |
 | **Total features** | **47** | |
-| **Matched tests** | **1628** | |
-| **Invariance tests** | **191** | |
+| **Matched tests** | **1642** | |
+| **Invariance tests** | **205** | |
 
 **Unmatched tests:** 84 (not mapped to any feature)
 
@@ -38,7 +38,7 @@
 
 | Status | Feature | Tests | Pass | Fail | Inv |
 |--------|---------|------:|-----:|-----:|:---:|
-| ✅ | **SUB.register** — Subframe registration | 50 | 50 | 0 | 3 |
+| 🧨 | **SUB.register** — Subframe registration | 50 | 49 | 1 | 3 |
 | ✅ | **SUB.join** — Subframe join & column resolution | 70 | 70 | 0 | 22 |
 | ✅ | **SUB.composite_key** — Composite key operations | 38 | 38 | 0 | 2 |
 | ✅ | **SUB.auto_alias** — Auto-aliasing subframe columns | 11 | 10 | 0 | 1 |
@@ -71,9 +71,9 @@
 
 | Status | Feature | Tests | Pass | Fail | Inv |
 |--------|---------|------:|-----:|-----:|:---:|
-| 🧨 | **DRAW.execution** — draw() with auto-materialization | 62 | 60 | 1 | 12 |
+| 🧨 | **DRAW.execution** — draw() with auto-materialization | 70 | 68 | 1 | 20 |
 | ☑️ | **DRAW.batch** — draw_batch() & draw_figures() | 45 | 44 | 0 |  |
-| ✅ | **DRAW.subframe_resolution** — Subframe column resolution in draw | 49 | 49 | 0 | 16 |
+| ✅ | **DRAW.subframe_resolution** — Subframe column resolution in draw | 55 | 55 | 0 | 22 |
 | ✅ | **DRAW.compound_expr** — Lazy materialization of compound expressions | 13 | 13 | 0 | 2 |
 | ✅ | **DRAW.invariance** — Draw vs materialize invariance | 18 | 18 | 0 | 15 |
 
@@ -81,7 +81,7 @@
 
 | Status | Feature | Tests | Pass | Fail | Inv |
 |--------|---------|------:|-----:|-----:|:---:|
-| 🧨 | **COMP.roundtrip** — Compress/decompress roundtrip | 72 | 70 | 2 | 10 |
+| 🧨 | **COMP.roundtrip** — Compress/decompress roundtrip | 72 | 68 | 4 | 10 |
 | ☑️ | **COMP.selection** — Compression method selection | 10 | 10 | 0 |  |
 | ☑️ | **COMP.monitoring** — Compression quality monitoring | 15 | 15 | 0 |  |
 
@@ -123,12 +123,17 @@
 
 ## 🧨 Broken Features — Details
 
+### SUB.register
+- ❌ `test_alias_dataframe.py::TestAliasDataFrameWithSubframes::test_save_and_load_integrity`
+
 ### DRAW.execution
 - ❌ `test_K2_vector_draw_end_to_end.py::TestK2VectorDrawEndToEnd::test_K2_3_production_reproducer_mirror`
 
 ### COMP.roundtrip
-- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
+- ❌ `test_alias_dataframe.py::TestAliasDataFrameCompression::test_roundtrip_save_load`
+- ❌ `test_alias_dataframe.py::TestAliasDataFrameCompression::test_backward_compatibility_no_compression_info`
 - ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
+- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
 
 ### BACK.invariance
 - ❌ `test_invariance_backend.py::TestInvarianceBackend::test_I2_6_chained_subframe_expressions_numba_vs_numpy`

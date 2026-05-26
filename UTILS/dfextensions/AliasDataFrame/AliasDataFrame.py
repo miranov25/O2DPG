@@ -10588,6 +10588,16 @@ function collapseDepth(maxD) {{
         prefers the LONGEST matching prefix (deterministic when names like
         ``vC`` and ``vC_extra`` both exist).
 
+        Corner case (P2-1 from Phase 13.36.ADF review):
+        a parent column without explicit schema metadata whose name happens
+        to begin with a registered subframe name (e.g. parent has a column
+        ``vC_total`` with no schema entry, and subframe ``vC`` has a column
+        ``total`` with a title) will receive the subframe's title via this
+        dispatch — the precedence rule (parent direct schema entry wins)
+        only applies when the parent HAS explicit metadata. To override:
+        call ``parent.set_axis_title('vC_total', ...)`` to make the parent
+        entry explicit; subframe dispatch will then defer.
+
         Phase B marker: this will fold into AST resolver consolidation
         alongside Phase A's draw resolver and Phase 13.35.ADF's helpers.
         """

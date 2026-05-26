@@ -1,0 +1,280 @@
+from  time_series import *
+from  time_series_TroubleShooting import *
+
+def checkEffiecnyADFQA(adf):
+    #
+    return adf
+
+
+
+def checkDCAQA(adf):
+    """
+    Plats for the DCA bias
+    :param adf:
+    :return:
+    """
+
+
+    """
+    FIGURE1
+    
+    We need  mult/occupancy as parameter for fitting 
+    Sector edge bias vs. occupancy – new dfextension example for time series interactive queries:
+I suspected this for a long time; now it is easy to evaluate systematically.
+In the time series plot query below, you can see the sector edge bias as a function of track occupancy. This is a preliminary result for the time series:
+
+    """
+    fig, ax, stats = adf.draw("dcar_tpc_vertex:dsector",selection="(ncl>60)&(abs(dcar_tpc_vertex)<10)&(hasITSTPC)&(abs(qpt)<1)&abs(tgl)<1.2",type="profile",bins=25,group_by="mult",
+                              group_by_bins=5,auto_title=True,
+                              facet_by="tgl", facet_by_bins=3,  min_entries=20)
+    fig.savefig("dcaZFromDeltaTime_tgl.png", dpi=150, bbox_inches='tight')
+    """
+    FIGUERE2
+    Problem at the A side/C side crossing
+    Track z validation.
+    The large radial distortion above tgl > 0.8 was discussed, but it was not clear to me that the effect is so significant. What I wanted to see is the extent of the effect – the effect is enormous and should be corrected in the calibration procedure, as it defines efficiency loss.
+    The vertex z dependence of the dcaZ (and track tgl bias) is particularly striking. It is not surprising that we lose connection to ITS with such a bias.
+    """
+
+    fig, ax, stats = adf.draw(
+        "dcaZFromDeltaTime:tgl",
+        selection="(ncl>50)&(abs(dcar_tpc_vertex)<10)&(hasITSTPC)&(abs(qpt)<5)&abs(tgl)<1.4",
+        type="profile", bins=50,
+        group_by="vertex_z", group_by_quantiles=5,
+        facet_by="qpt", facet_by_bins=3,
+        auto_title=True, min_entries=20,
+        linestyle='none',   # no connecting line
+        markersize=10,      # larger markers (default ≈ 4)
+    )
+    fig.savefig("dcaZFromDeltaTime_tgl.png", dpi=150, bbox_inches='tight')
+
+    """
+    Figure 3 — DCA_r bias for tracks crossing the A/C side boundary
+    
+    A ±0.6 cm bias in DCA_r appears near the central electrode (CE),
+    vertex-drift dependent on (vertex_z + tgl) combination — consistent
+    with an uncorrected drift-velocity offset at the A/C boundary.
+    The intrinsic DCA_r resolution at high pT is ~0.1 cm; the observed
+    bias is 6× larger and cannot be ignored.
+    
+    Tracks crossing the A/C side boundary receive a strong extra kick
+    requiring dedicated calibration at the CE boundary.
+    """
+    fig, ax, stats = adf.draw(
+        "dcar_tpc:tgl",
+        selection="(ncl>50)&(abs(dcar_tpc_vertex)<10)&(hasITSTPC)&(abs(qpt)<3)&abs(tgl)<1.4",
+        type="profile", bins=50,
+        group_by="vertex_z", group_by_quantiles=5,
+        facet_by="qpt", facet_by_bins=3,
+        auto_title=True, min_entries=20,
+        linestyle='none',   # no connecting line
+        markersize=10,      # larger markers (default ≈ 4)
+    )
+    fig.savefig("dcar_tpc_tgl_vertxz_qpt.png", dpi=150, bbox_inches='tight')
+
+    """
+    FIGURE4
+    DCA bias  - qpt correction   
+    **Imperfect calibration at CE — $\mathrm{DCA}_{r}$ bias for tracks crossing the A/C side boundary**
+    A ±0.6 cm bias in $\mathrm{DCA}_{r}$ appears near the central electrode (CE), with a vertex-drift dependence on the ($z_{\mathrm{vtx}}$, $\tan\lambda$) combination — consistent with an uncorrected drift-velocity offset at the A/C boundary. The intrinsic $\mathrm{DCA}_{r}$ resolution at high $p_{T}$ is ~0.1 cm; the observed bias is 6× larger.
+    **The calibration must be performed as a function of drift length (as in my calibration procedure),   NOT as a function of $\tan\lambda$ as in the current reconstruction procedure.** Tracks crossing the A/C boundary receive a strong extra kick requiring dedicated calibration at the CE boundary. This is a standard QA plot for the new distortion map creation.
+    Note: positive and negative tracks are affected differently due to the $\mathbf{E}\times\mathbf{B}$ effect — a miscalibration in $r$ and in $r\varphi$ can either compensate or enhance the bias depending on track charge sign.
+    """
+    fig, ax, stats = adf.draw("deltaPar4:dcar_tpc_vertex",selection="( ncl>60 )&(abs(dcar_tpc_vertex)<10)&(hasITSTPC)&(abs(qpt)<2)&abs(tgl)<1.4",type="profile",bins=50,group_by="qpt_ITSTPC",
+                              group_by_quantiles=5,facet_by="dsector",facet_by_bins=16,auto_title=True,min_entries=20,linestyle='none',markersize=10,ncols=4,range=(-4,4))
+    for a in fig.axes: a.set_ylim(-0.4, 0.4)
+    for a in fig.axes: a.set_xlim(-4, 4)
+    fig.savefig("dca_bias_qpt_sector_edge.png", dpi=150, bbox_inches='tight')
+    fig.set_size_inches(20, 12); fig.tight_layout(); plt.draw()
+    #
+    """
+    Figure 5 Sector edge q/pT bias — correction feasible in past data
+    
+    TPC intrinsic resolution: ~0.006 1/GeV; TPC+ITS: ~0.0005 1/GeV.
+    The sector edge bias is a significant fraction of the TPC standalone resolution
+    and must be corrected to exploit the full ITS+TPC momentum resolution.
+    
+    The q/pT bias at the sector edges is determined by the fraction of track
+    length spent near the edge and the local occupancy. It can be characterised
+    and corrected using the DCA of TPC-only tracks as the sole calibration
+    observable — no separate occupancy correction is required.
+    
+    Some modelling will be needed to emulate a Kalman filter update, but the
+    correction function itself is straightforward. The affected fiducial volume
+    is 10–20% of the total. Correcting it would restore the edge bias in past
+    data and is both feasible and worthwhile.
+    """
+    fig, ax, stats = adf.draw("deltaPar4:dcar_tpc_vertex",selection="( ncl>60 )&(abs(dcar_tpc_vertex)<10)&(hasITSTPC)&(abs(qpt)<2)&abs(tgl)<1.4",type="profile",bins=50,group_by="mult",
+                              group_by_quantiles=5,facet_by="dsector",facet_by_bins=16,auto_title=True,min_entries=20,linestyle='none',markersize=10,ncols=4,range=(-4,4))
+    for a in fig.axes: a.set_ylim(-0.4, 0.4)
+    for a in fig.axes: a.set_xlim(-4, 4)
+    fig.set_size_inches(20, 12); fig.tight_layout(); plt.draw()
+    fig.savefig("dca_bias_qpt_sector_edge_mult.png", dpi=150, bbox_inches='tight')
+
+    return adf
+
+def dcaBiasResol(adf):
+    """
+
+    :return:
+    """
+    """
+    Figures 1.a–1.d — TPC DCA_r distribution vs q/pT: sector edge vs sector centre
+    
+    Quantile plots (10%, 20%, 50%, 80%, 90%) showing the full DCA_r distribution
+    shape, not just the mean. Compares two regions:
+    
+      Fig 1.a — tracks far from sector edge (dsector > 0.75):
+        Distribution centred at zero, width dominated by multiple scattering.
+        MAD ~ 0.2 cm at high pT — approximately 2× the intrinsic TPC resolution
+        (~0.1 cm). The spread is consistent with expected multiple scattering.
+    
+      Fig 1.b — tracks near sector centre (|dsector - 0.5| < 0.25):
+        Reference region away from both edge and boundary.
+    
+      Fig 1.c — |DCA_r| mean vs q/pT, grouped by dsector (5 bins):
+        Shows the absolute radial bias as a function of momentum and
+        distance to the sector boundary.
+    
+      Fig 1.d — |DCA_r| / sqrt(1 + q/pT^2) vs q/pT, grouped by dsector:
+        Normalised radial bias — removes the leading momentum dependence
+        to isolate the geometric (sector-edge) component.
+    """
+    fig, ax, stats =adf.draw("dcar_tpc:qpt_ITSTPC",selection="(baseITSTPCCut0)&(abs(qpt_ITSTPC)<5)&((dsector)>0.75)",type="profile",
+             quantiles=[0.1,0.2,0.5,0.8,0.9],facet_by="tgl",facet_by_bins=9,auto_title=True,min_entries=50)
+    fig.set_size_inches(16, 8); fig.tight_layout(); plt.draw()
+    fig.savefig("dcar_tpc_qptITSTPC_quantile_dsectorB75.png", dpi=150, bbox_inches='tight')
+    #
+    fig, ax, stats =adf.draw("dcar_tpc:qpt_ITSTPC",selection="(baseITSTPCCut0)&(abs(qpt_ITSTPC)<5)&(abs(dsector-0.5)<0.25)",type="profile",
+                             quantiles=[0.1,0.2,0.5,0.8,0.9],facet_by="tgl",facet_by_bins=9,auto_title=True,min_entries=50)
+    fig.set_size_inches(16, 8); fig.tight_layout(); plt.draw()
+    fig.savefig("dcar_tpc_qptITSTPC_quantile_dsector05.png", dpi=150, bbox_inches='tight')
+    #
+    fig, ax, stats =adf.draw("abs(dcar_tpc):qpt_ITSTPC",selection="(baseITSTPCCut0)&(abs(qpt_ITSTPC)<5)",type="profile",
+                             group_by="dsector",group_by_bins=5,auto_title=True,min_entries=50)
+    fig.savefig("adcar_tpc_qptITSTPC_dsector.png", dpi=150, bbox_inches='tight')
+    #
+    fig, ax, stats =adf.draw("abs(dcar_tpc)/sqrt(1+qpt_ITSTPC**2):qpt_ITSTPC",selection="(baseITSTPCCut0)&(abs(qpt_ITSTPC)<5)",type="profile",
+                             group_by="dsector",group_by_bins=5,auto_title=True,min_entries=50)
+    fig.savefig("adcar_tpcNorm_qptITSTPC_dsector.png", dpi=150, bbox_inches='tight')
+    #
+    fig, ax, stats =adf.draw("abs(dcar_tpc)/sqrt(1+qpt_ITSTPC**2):qpt_ITSTPC",selection="(baseITSTPCCut0)&(abs(qpt_ITSTPC)<5)&((abs(dsector-0.5)<0.25))",type="profile",
+                             group_by="tgl",group_by_bins=5,auto_title=True,min_entries=50)
+    fig.savefig("adcar_tpcNorm_qptITSTPC_mult.png", dpi=150, bbox_inches='tight')
+
+    fig, ax, stats =adf.draw("abs(dcar_tpc)/sqrt(1+qpt_ITSTPC**2):qpt_ITSTPC",selection="(baseITSTPCCut0)&(abs(qpt_ITSTPC)<5)&((abs(dsector-0.5)<0.25)&(abs(tgl)<1))",type="profile",
+                             group_by="abs(tgl)",group_by_bins=8,auto_title=True,min_entries=50)
+    fig.savefig("adcar_tpcNorm_qptITSTPC_tgl.png", dpi=150, bbox_inches='tight')
+    #
+    """
+    Figure 1.e — Normalised |DCA_r| / sqrt(1 + q/pT²) vs q/pT
+                 Tracks near sector centre (|dsector-0.5| < 0.35), |tgl| < 1
+                 Grouped by tgl (5 bins), faceted by vertex_z (6 quantile panels)
+    Observed in plot:
+      - Tracks with tgl ≈ 0 (green, -0.20 to 0.20) — crossing the A/C
+        central electrode — show  at q/pT ≈ 0
+        (normalised DCA_r ~ 0.15 cm) with peaks at |q/pT| ~ 1–2
+        (~ 0.30–0.35 cm). This structure is visible in all 6 vertex_z panels,
+        confirming it is not vertex-position dependent.
+      - All other tgl groups lie in the band 0.20–0.27 cm across the full
+        q/pT range — consistent with ~2–3× the intrinsic TPC resolution
+        (~0.1 cm), as expected from multiple scattering.
+      - No significant vertex_z dependence is observed for tracks not crossing the A/C boundary.
+    """
+    fig, ax, stats =adf.draw("abs(dcar_tpc)/sqrt(1+qpt_ITSTPC**2):qpt_ITSTPC",selection="(baseITSTPCCut0)&(abs(qpt_ITSTPC)<5)&((abs(dsector-0.5)<0.35)&(abs(tgl)<1))",type="profile",
+                             group_by="tgl",group_by_bins=7,auto_title=True,min_entries=20,bins=50,facet_by="vertex_z",facet_by_quantiles=6)
+    fig.set_size_inches(16, 8); fig.tight_layout(); plt.draw()
+    fig.savefig("adcar_tpcNorm_qptITSTPC_tgl_vertex.png", dpi=150, bbox_inches='tight')
+
+    """
+    Figure 2 — DCA_r bias vs q/pT, faceted by tgl, grouped by sector edge distance
+    Diagnoses radial DCA bias as a function of momentum and detector geometry:
+      1. q/pT splitting at sector edges (group_by=dsector, 5 bins):
+         the radial DCA bias changes sign across the sector boundary —
+      2. DCA_r scaling with tgl (facet_by=tgl, 9 panels):
+         the radial bias grows at large |tgl|, confirming a drift-length
+         dependent component. Complements Figure 3 (delta q/pT) —
+         the same miscalibration manifests as both a radial displacement
+         and a momentum bias.
+    """
+    fig, ax, stats =adf.draw("dcar_tpc:qpt_ITSTPC",selection="(baseITSTPCCut0)&(abs(qpt_ITSTPC)<5)",type="profile", group_by="dsector",bins=50,
+             group_by_bins=5,facet_by="tgl",facet_by_bins=9,auto_title=True,min_entries=20,linestyle='none')
+    fig.set_size_inches(20, 10); fig.tight_layout(); plt.draw()
+    fig.savefig("dcar_tpc_qptITSTPC_dsector_tgl.png", dpi=150, bbox_inches='tight')
+    #
+    """
+    Figure 3 — Delta q/pT (ITS-TPC outer match) vs q/pT, faceted by tgl, grouped by sector edge distance
+    Diagnoses two effects simultaneously:
+      1. q/pT splitting at sector edges (group_by=dsector, 5 bins):
+         tracks near the sector boundary show a systematic q/pT bias
+         — sign and magnitude encode the local ExB + space-charge miscalibration.
+      2. q/pT scaling at |tgl| > 0.8 (facet_by=tgl, 9 panels):
+         the bias grows toward the A/C side boundary, indicating
+         drift-length-dependent calibration error at large pseudorapidity.
+    """
+    fig, ax, stats =adf.draw("deltaP4OuterITS:qpt_ITSTPC",selection="(baseITSTPCCut0)&(abs(qpt_ITSTPC)<5)&(abs(deltaP4OuterITS)<1)",type="profile", group_by="dsector",bins=50,
+                             group_by_bins=5,facet_by="tgl",facet_by_bins=9,auto_title=True,min_entries=10,linestyle='none')
+    fig.set_size_inches(16, 8); fig.tight_layout(); plt.draw()
+    fig.savefig("deltaP4OuterITS_qptITSTPC_dsector_tgl.png", dpi=150, bbox_inches='tight')
+
+
+def checkEffiecincyQA(adf):
+    """
+
+    :param adf:
+    :return:
+    """
+
+    """
+    FIGURE 1:
+    ITS-TPC matching efficiency vs time — A/C side comparison
+    
+    Track matching efficiency is stable over the selected pp run interval,
+    but not necessarily in general. Tracks crossing the A/C side boundary
+    have significantly lower matching efficiency. Track matching should be
+    performed from the TPC side toward ITS and joined with the other side
+    subsequently.
+    """
+
+    fig, ax, stats = adf.draw("(hasITSTPC>0):time_s",selection="( ncl>60 )&(abs(dcar_tpc)<5)&(abs(qpt)<5)&(abs(tgl)<1.4)",type="profile",bins=30,group_by="qpt",
+                              group_by_quantiles=5,facet_by="side_type",auto_title=True,min_entries=20,linestyle='none',markersize=5,range="minmax")
+    fig.savefig("fig/eff_vstime_vsqpt_vsside.png", dpi=150, bbox_inches='tight')
+
+    """
+    """
+
+    fig, ax, stats = adf.draw("(hasITSTPC>0):qpt",selection="( ncl>60 )&(abs(dcar_tpc)<5)&(abs(qpt)<2)&(abs(tgl)<1.4)",type="profile",bins=25,group_by="abs(tgl)",
+                              group_by_quantiles=4,facet_by="dsector",facet_by_bins=16,auto_title=True,min_entries=20,linestyle='none',markersize=10,ncols=4,range="minmax")
+    for a in fig.axes: a.set_ylim(0.7, 1.00)
+    for a in fig.axes: a.set_xlim(-3, 3)
+    fig.set_size_inches(20, 12); fig.tight_layout(); plt.draw()
+    fig.savefig("eff_qpt_tgl_dsector.png", dpi=150, bbox_inches='tight')
+
+
+def effieciencyQA(adf):
+    """
+
+    :param adf:
+    :return:
+    """
+    fig, ax, stats = adf.draw("ncl:sector",selection="(ncl>60)&(abs(dcar_tpc_vertex)<10)&(hasITSTPC)",type="profile",bins=100,auto_title=True, group_by="abs(tgl)",
+                                group_by_bins=2, quantiles=[0.1,0.5, 0.9], facet_by="time_s",facet_by_bins=9, min_entries=200)
+    fig, ax, stats = adf.draw("sector",selection="(ncl>60)&(abs(dcar_tpc_vertex)<10)&(hasITSTPC)&(abs(qpt)>0.2)",bins=100,auto_title=True, group_by="abs(tgl)",
+                            group_by_bins=3, facet_by="time_s",facet_by_bins=6, min_entries=200,    hist_norm="probability")
+
+
+
+
+def drawCECross(adf):
+    # mising clusters at the CE crossing
+    fig, ax, stats = adf.draw("ncl:tgl", selection="(abs(qpt)<2.5)&(abs(tgl)<0.5)&(abs(dcar_tpc)<6)", type="profile", min_entries=100, auto_title=True,
+             quantiles=[0.1, 0.2, 0.3, 0.5, 0.7, 0.8, 0.9], facet_by="vertex_z", facet_by_quantiles=12, quantile_mode='discrete',bins=100,linewidth=2,ncols=3)
+    fig.set_size_inches(16, 10); fig.tight_layout(); plt.draw()
+    # chi2match_ITSTPC
+    fig, ax, stats = adf.draw("chi2match_ITSTPC:tgl", selection="(abs(qpt)<2.5)&(abs(tgl)<1)&(abs(dcar_tpc)<6)&(abs(vertex_z)<12)", type="profile", min_entries=100, auto_title=True,
+                              quantiles=[0.1, 0.5, 0.9], facet_by="vertex_z", facet_by_quantiles=9, quantile_mode='discrete',bins=100,linewidth=2,ncols=3)
+    fig.set_size_inches(16, 10); fig.tight_layout(); plt.draw()
+    #
+    fig, ax, stats = adf.draw("chi2match_ITSTPC:tgl", selection="(abs(qpt)<2.5)&(abs(tgl)<1)&(abs(dcar_tpc)<6)&(abs(vertex_z)<12)", type="profile", min_entries=100, auto_title=True,
+                              quantiles=[0.1, 0.5, 0.9], facet_by="vertex_z", facet_by_quantiles=9, quantile_mode='discrete',bins=100,linewidth=2,ncols=3)
+    fig.set_size_inches(16, 10); fig.tight_layout(); plt.draw()

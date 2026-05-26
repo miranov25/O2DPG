@@ -29,8 +29,6 @@ is exercised indirectly through the dispatch path inside the public
 methods.
 """
 
-import warnings
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -194,18 +192,40 @@ class TestX5_NegativeBranch:
 
 
 # ---------------------------------------------------------------------------
-# X6 — end-to-end through draw()
+# X6 — end-to-end through draw(): subframe title flows to matplotlib axis label
 # ---------------------------------------------------------------------------
 
 class TestX6_EndToEndDraw:
     @pytest.mark.invariance
     def test_X6_draw_axis_label_from_subframe(self, parent_with_single_subframe):
-        """Calling draw('parent_col:vC.subframe_col') routes through Phase A's
+        """End-to-end load-bearing test for Phase 13.36.ADF.
+
+        Calling ``draw('parent_col:vC.subframe_col')`` routes through Phase A's
         resolver, which rewrites the RHS to ``vC_subframe_col`` on df_subset
-        and passes it to dfdraw. dfdraw then calls
+        and passes it to dfdraw. dfdraw calls
         ``_data_source.get_axis_title('vC_subframe_col')`` via duck typing.
-        With Phase 13.36.ADF dispatch, this returns the subframe-stored
-        title rather than None."""
+        With Phase 13.36.ADF dispatch, this returns the subframe-stored title.
+
+        STRICT ASSERTION (per CRR v1.0 P1-3 fix, reviewer Claude37 option (a)):
+        after ``draw()`` returns successfully, this test inspects
+        ``ax.get_ylabel()`` and asserts the subframe-stored title appears.
+        This actually tests the dfdraw duck-typed lookup path that motivated
+        Phase 13.36 in the first place — not just the parent-side dispatch
+        (which X1 already covers).
+
+        Skip vs Fail discipline:
+          - matplotlib not available → SKIP (env-level)
+          - dfdraw not installed → SKIP (env-level)
+          - draw() raises any OTHER exception → FAIL (load-bearing)
+          - draw() succeeds but ylabel doesn't reflect subframe title → FAIL
+            (this is the failure mode Phase 13.36 was designed to prevent)
+
+        If this test fails in production while X1 passes, the gap is in the
+        dfdraw layer (dfdraw isn't calling get_axis_title via duck typing, OR
+        isn't propagating the result to ax.set_ylabel). That's a separate
+        bug for the dfdraw team, not a Phase 13.36 defect — X1 still locks
+        the ADF-side dispatch contract.
+        """
         try:
             import matplotlib
             matplotlib.use('Agg')  # headless
@@ -214,24 +234,64 @@ class TestX6_EndToEndDraw:
             pytest.skip('matplotlib not available')
 
         adf = parent_with_single_subframe
-        # Smoke-call draw — the goal is to exercise the resolver+dispatch path.
-        # The strict assertion is on get_axis_title, not on dfdraw rendering
-        # (stub dfdraw may not actually set the axis label, but the duck-typed
-        # call path is what matters for the propagation invariance).
+        subframe_title = 'v_C vertex x intercept (decompressed) [cm]'
+
+        # draw() must succeed. If dfdraw isn't installed, skip; any other
+        # exception is a real failure.
+        #
+        # NOTE on expr choice: use the subframe column AS the Y axis, not as
+        # the X axis. dfdraw labels the Y axis with the FIRST Y column's
+        # title (verified empirically 2026-05-26 — when expr was
+        # 'vertex_x_intercept:vC.vertex_x_intercept_decomp', ylabel was
+        # 'vertex x intercept [cm]' i.e. parent's title for the LHS column).
+        # The cleanest direct test of Phase 13.36 dispatch is to put the
+        # subframe column on Y where its title surfaces directly.
         try:
             result = adf.draw(
-                'vertex_x_intercept:vC.vertex_x_intercept_decomp',
+                'vC.vertex_x_intercept_decomp:idx',
                 type='scatter',
             )
-        except Exception as e:
-            # Stub dfdraw may not handle every call shape — that's OK; the
-            # core invariance (get_axis_title returns subframe title) is
-            # checked below regardless.
-            warnings.warn(f'[X6] draw() smoke call raised: {e}')
+        except ImportError as e:
+            pytest.skip(f'dfdraw not available in this environment: {e}')
 
-        # Direct invariance check on the resolver-flattened name dfdraw
-        # would query:
-        flat_name = 'vC_vertex_x_intercept_decomp'
-        assert adf.get_axis_title(flat_name) == 'v_C vertex x intercept (decompressed) [cm]'
+        # draw() returns either (fig, ax, stats) tuple or a single object —
+        # accommodate both shapes.
+        fig = None
+        ax = None
+        if isinstance(result, tuple) and len(result) >= 2:
+            fig, ax = result[0], result[1]
+        elif hasattr(result, 'axes'):
+            fig = result
+
+        # If we couldn't recover an axes object, skip the strict assertion
+        # but verify the dispatch path is still wired (sanity).
+        if fig is None and ax is None:
+            pytest.skip(
+                "draw() did not return a recognizable (fig, ax) shape — "
+                "cannot inspect ylabel. Dispatch path verified by X1."
+            )
+
+        # Strict assertion: the subframe-stored title must appear in the
+        # y-axis label of the rendered figure.
+        ax_obj = ax
+        if ax_obj is None and fig is not None and hasattr(fig, 'axes') and fig.axes:
+            ax_obj = fig.axes[0]
+        ylabel = ax_obj.get_ylabel() if (ax_obj is not None and hasattr(ax_obj, 'get_ylabel')) else ''
+
+        # Phase 13.36.ADF success criterion: the title flows through to the
+        # figure y-axis. Accept either exact match or substring (different
+        # dfdraw versions may decorate the label with units).
+        match = (subframe_title in ylabel) or (ylabel == subframe_title)
+        assert match, (
+            f"Phase 13.36.ADF end-to-end failure: y-axis label does not reflect "
+            f"subframe-stored title.\n"
+            f"  Expected: {subframe_title!r}\n"
+            f"  Got ylabel: {ylabel!r}\n"
+            f"Diagnostic: this means dfdraw is either (a) not calling "
+            f"_data_source.get_axis_title() via duck typing, or (b) not "
+            f"propagating the returned title to ax.set_ylabel(). X1 confirms "
+            f"the ADF-side dispatch works; this assertion exposes a gap in "
+            f"the dfdraw integration layer."
+        )
 
         plt.close('all')
