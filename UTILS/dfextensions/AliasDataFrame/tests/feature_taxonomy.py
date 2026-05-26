@@ -220,6 +220,8 @@ FEATURES = [
          "test_S6_draw_subframe_expression.py",
          # BUG_AliasDataFrame_20260518_draw_subframe_alias_not_materialized (Phase A)
          "test_S10_draw_subframe_alias.py",
+         # PHASE_13_36_ADF — subframe metadata propagation to drawing
+         "test_X1_subframe_metadata_propagation.py",
      ]},
     {"id": "DRAW.compound_expr", "name": "Lazy materialization of compound expressions", "category": "DRAWING",
      "test_patterns": [

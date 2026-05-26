@@ -9077,10 +9077,24 @@ function collapseDepth(maxD) {{
         -------
         dict
             Column metadata (excluding dtype and expr)
+
+        Notes
+        -----
+        Phase 13.36.ADF: if ``column`` is a flattened subframe-column name
+        produced by the draw() resolver (e.g. ``vC_decomp_val`` or
+        ``val__C__B__A``), and the parent schema has no entry for that flat
+        name, dispatches to the source subframe's schema. Parent metadata
+        (if explicitly set on the flat name) takes precedence.
         """
         col_info = self._schema.get('columns', {}).get(column, {})
-        # Return all fields except dtype and expr
-        return {k: v for k, v in col_info.items() if k not in ('dtype', 'expr', 'constant')}
+        if col_info:
+            # Direct hit on parent — return parent's metadata (precedence rule)
+            return {k: v for k, v in col_info.items() if k not in ('dtype', 'expr', 'constant')}
+        # Phase 13.36.ADF: dispatch to subframe for flattened subframe-column names
+        sf_adf, leaf_col = self._resolve_subframe_flat_name(column)
+        if sf_adf is not None and leaf_col is not None:
+            return sf_adf.get_column_metadata(leaf_col)
+        return {}
 
     def export_schema_v2(self, include_precision_stats=False, include_state=True,
                          include_subframes=True, within_group_sort="schema"):
@@ -10534,6 +10548,107 @@ function collapseDepth(maxD) {{
     #
     # =========================================================================
 
+    def _resolve_subframe_flat_name(self, column: str):
+        """Parse a flattened subframe-column name and return the source (sub-ADF, leaf_col).
+
+        Phase 13.36.ADF — metadata propagation from subframes to drawing.
+
+        The draw() resolver produces two flatten patterns when rewriting
+        ``Subframe.col`` references:
+
+        * Single-level: ``f"{sf_name}_{col_name}"``
+            e.g. ``vC.vertex_x_intercept_decomp`` → ``vC_vertex_x_intercept_decomp``
+        * Multi-level: ``f"{leaf}__{innermost}__...__{outermost}"``
+            e.g. ``A.B.C.val`` → ``val__C__B__A``
+
+        This helper reverses that mapping so metadata accessors
+        (get_axis_title, get_column_metadata) can dispatch to the correct
+        sub-ADF schema.
+
+        Parameters
+        ----------
+        column : str
+            Column name as passed to a metadata accessor (typically by dfdraw
+            after Phase A rewrite).
+
+        Returns
+        -------
+        (sub_adf, leaf_col) : tuple
+            sub_adf is the deepest AliasDataFrame whose schema may carry
+            metadata for leaf_col. Both are None if column does not match
+            any flatten pattern.
+
+        Notes
+        -----
+        Multi-level resolution walks the chain greedily. If any sub-name in
+        the chain is not a registered subframe, the helper falls back to
+        single-level matching.
+
+        Single-level matching scans registered subframes by name prefix and
+        prefers the LONGEST matching prefix (deterministic when names like
+        ``vC`` and ``vC_extra`` both exist).
+
+        Phase B marker: this will fold into AST resolver consolidation
+        alongside Phase A's draw resolver and Phase 13.35.ADF's helpers.
+        """
+        if not isinstance(column, str) or not column:
+            return None, None
+        if not hasattr(self, '_subframes') or not hasattr(self._subframes, 'subframes'):
+            return None, None
+
+        # Multi-level pattern: leaf__innermost__...__outermost
+        if '__' in column:
+            parts = column.split('__')
+            if len(parts) >= 2:
+                leaf_col = parts[0]
+                # parts[1:] = [innermost, mid, ..., outermost]
+                # Walk: self → outermost → ... → innermost
+                sf_chain = list(reversed(parts[1:]))
+                adf = self
+                walked = True
+                for sf_name in sf_chain:
+                    if not (hasattr(adf, '_subframes')
+                            and adf._subframes.has_subframe(sf_name)):
+                        walked = False
+                        break
+                    adf = adf._subframes.get(sf_name)
+                    if adf is None:
+                        walked = False
+                        break
+                if walked and adf is not None:
+                    # leaf_col must exist either as a real column or in schema
+                    if (leaf_col in getattr(adf, 'df', None).columns
+                            if getattr(adf, 'df', None) is not None else False) \
+                            or leaf_col in adf._schema.get('columns', {}):
+                        return adf, leaf_col
+
+        # Single-level pattern: f"{sf_name}_{col_name}"
+        # Scan subframes; prefer longest matching prefix to disambiguate
+        # collisions (e.g. subframes 'vC' and 'vC_extra').
+        candidates = []
+        for sf_name in self._subframes.subframes.keys():
+            prefix = f"{sf_name}_"
+            if column.startswith(prefix):
+                real_col = column[len(prefix):]
+                sf = self._subframes.get(sf_name)
+                if sf is None:
+                    continue
+                # Match only if real_col is actually known to the subframe
+                # (either as a real column, an alias, or has schema metadata).
+                sf_cols = set(getattr(sf, 'df', None).columns
+                              if getattr(sf, 'df', None) is not None else [])
+                sf_schema_cols = set(sf._schema.get('columns', {}).keys())
+                sf_alias_names = set(getattr(sf, 'aliases', {}).keys())
+                if real_col in (sf_cols | sf_schema_cols | sf_alias_names):
+                    candidates.append((sf_name, real_col, sf))
+        if candidates:
+            # Longest prefix wins (deterministic)
+            candidates.sort(key=lambda t: len(t[0]), reverse=True)
+            _, real_col, sf = candidates[0]
+            return sf, real_col
+
+        return None, None
+
     def set_axis_title(self, column: str, title: str) -> None:
         """
         Set display title for a column/alias.
@@ -10564,8 +10679,23 @@ function collapseDepth(maxD) {{
         
         Note:
             Used by dfdraw via duck typing for automatic axis labels.
+
+            Phase 13.36.ADF: if the column is a flattened subframe-column
+            name produced by the draw() resolver (e.g. ``vC_decomp`` or
+            ``val__C__B__A``), and the parent schema has no entry for that
+            flat name, this method dispatches to the source subframe's
+            schema. Parent metadata for the flat name (if explicitly set)
+            takes precedence over subframe metadata — caller can override.
         """
-        return self._schema.get('columns', {}).get(column, {}).get('title')
+        # 1. Direct lookup on parent schema (Phase 13.36.ADF: parent precedence rule)
+        title = self._schema.get('columns', {}).get(column, {}).get('title')
+        if title is not None:
+            return title
+        # 2. Phase 13.36.ADF: dispatch to subframe if column is a flattened subframe-column name
+        sf_adf, leaf_col = self._resolve_subframe_flat_name(column)
+        if sf_adf is not None and leaf_col is not None:
+            return sf_adf.get_axis_title(leaf_col)
+        return None
 
     def _get_materialized_aliases(self):
         """
