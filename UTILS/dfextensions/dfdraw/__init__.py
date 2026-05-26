@@ -33,6 +33,8 @@ from .facet import (
     facet_hist2d,
     facet_hexbin,
 )
+# Phase 13.42.DF: Inline fits — public registry interface (CP1-6).
+from .plots.fits import register_fit, available_fits
 
 # Functional API (convenience wrappers)
 def draw(data, expr, **kwargs):
@@ -70,6 +72,8 @@ __all__ = [
     # Style
     "get_style", "set_style", "save_style", "load_style", "list_styles",
     "DEFAULT_STYLE",
+    # Phase 13.42.DF: Inline fits registry interface
+    "register_fit", "available_fits",
 ]
 
 __version__ = "0.1.0"

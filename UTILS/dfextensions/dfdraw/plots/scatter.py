@@ -16,7 +16,7 @@ import pandas as pd
 import warnings
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from ..style import get_style_value
 from ..stats import format_stats_box
@@ -24,6 +24,9 @@ from ..stats import format_stats_box
 from ._data_sanitize import sanitize_for_plot
 # Phase 13.30.DF: Class-2 column-reference parameter validation
 from ._validation import validate_column_references
+# Phase 13.42.DF: Inline fits
+from .fits import normalize_fit_spec, dispatch_fit
+from ._fit_render import render_fit_overlays, render_fit_textbox
 
 
 def draw_scatter(
@@ -61,6 +64,8 @@ def draw_scatter(
     _suppress_legend: bool = False,
     _suppress_title: bool = False,
     _suppress_layout: bool = False,
+    # Phase 13.42.DF: Inline fit specification
+    fit: Optional[Union[str, Dict, Callable, List]] = None,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -316,7 +321,32 @@ def draw_scatter(
         # Legend for categorical color (Phase 13.16.DF FIX1: skip when suppressed)
         if is_categorical and isinstance(color, str) and not _suppress_legend:
             ax.legend(loc=get_style_value("legend.loc", "best"))
-    
+
+        # ====================================================================
+        # Phase 13.42.DF: Inline fits (ungrouped scatter path).
+        # Uses filtered raw (x_data, y_data) arrays per §4.3. No yerr by
+        # default for scatter (use_errors defaults False per §3.3).
+        # ====================================================================
+        if fit is not None:
+            mask_finite = np.isfinite(x_data) & np.isfinite(y_data)
+            curve = {
+                'x_data':    x_data[mask_finite],
+                'y_data':    y_data[mask_finite],
+                'yerr_data': None,
+                'color':     color if isinstance(color, str) and color not in df.columns else None,
+                'label':     None,
+            }
+            normalized_fit = normalize_fit_spec(fit, 1)
+            curve_fits = [
+                dispatch_fit(curve['x_data'], curve['y_data'], fd,
+                             yerr=None, plot_kind='scatter')
+                for fd in normalized_fit[0]
+            ]
+            fits_per_curve = [curve_fits]
+            render_fit_overlays(ax, [curve], fits_per_curve)
+            render_fit_textbox(ax, [curve], fits_per_curve)
+            stats_dict['fit'] = fits_per_curve
+
     # Labels
     ax.set_xlabel(xlabel or x_name)
     ax.set_ylabel(ylabel or y_name)

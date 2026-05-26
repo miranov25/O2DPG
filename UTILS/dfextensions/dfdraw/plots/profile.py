@@ -21,13 +21,16 @@ Phase 13.12.DF additions:
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from ..style import get_style_value
 from ..stats import format_stats_box
 from ._auto_title import build_auto_title, apply_auto_title, parse_auto_title_parts, resolve_auto_title
 # Phase 13.28.DF: Robust data handling
 from ._data_sanitize import sanitize_for_plot
+# Phase 13.42.DF: Inline fits (lazy import to avoid circular: _fit_render imports nothing from profile)
+from .fits import normalize_fit_spec, dispatch_fit
+from ._fit_render import render_fit_overlays, render_fit_textbox
 from ._autorange import compute_autorange, resolve_range_1d, VALID_STRATEGIES
 # Phase 13.30.DF: Class-2 column-reference parameter validation
 from ._validation import validate_column_references
@@ -210,6 +213,8 @@ def draw_profile(
     linestyle_cycle: bool = False,
     # Phase 13.39.DF: time-axis formatting (pre-conversion approach, CP1-4 auto-detect).
     time_format: Optional[str] = None,
+    # Phase 13.42.DF: Inline fit specification (architect 2026-05-22).
+    fit: Optional[Union[str, Dict, Callable, List]] = None,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -608,6 +613,73 @@ def draw_profile(
         # Phase 13.12.DF F1: Combine profile data from all groups
         if return_data and profile_data_list:
             stats_dict['profile_data'] = pd.concat(profile_data_list, ignore_index=True)
+
+        # ====================================================================
+        # Phase 13.42.DF P1-B (CRR §2 D7, Sonnet54 finding): grouped path fit.
+        # Per-group fit → stats['fit'] dict keyed by group_val (canonical
+        # list-of-lists per §3.5). Mirrors histogram.py grouped fit pattern
+        # for consistent UX across hist/profile/scatter.
+        # ====================================================================
+        if fit is not None:
+            fits_dict_grouped = {}
+            groups_for_fit = df_filtered[group_col].unique().tolist()
+            if top_k is not None and len(groups_for_fit) > top_k:
+                vc = df_filtered[group_col].value_counts()
+                groups_for_fit = vc.head(top_k).index.tolist()
+            # Sort to match grouped-render order when sort_groups=True
+            if sort_groups:
+                try:
+                    groups_for_fit = sorted(groups_for_fit, key=_interval_sort_key)
+                except Exception:
+                    pass
+            _error_for_fit = error if error != "quantile" else "sem"
+            for g_val in groups_for_fit:
+                gmask = df_filtered[group_col] == g_val
+                if not gmask.any():
+                    continue
+                gx = df_filtered.loc[gmask, x].values.astype(float) if isinstance(x, str) else np.asarray(x_data[gmask.values], dtype=float)
+                gy = df_filtered.loc[gmask, y].values.astype(float) if isinstance(y, str) else np.asarray(y_data[gmask.values], dtype=float)
+                gw = None
+                if w_data is not None and len(w_data) == len(df_filtered):
+                    gw = np.asarray(w_data)[gmask.values]
+                try:
+                    g_centers, g_means, g_errs, g_counts, _ = _compute_profile(
+                        gx, gy, bins, _used_xrange, _error_for_fit,
+                        return_data=False, w_data=gw
+                    )
+                except Exception:
+                    continue
+                g_mask_min = g_counts >= max(min_entries or 1, 1)
+                if not g_mask_min.any():
+                    continue
+                curve_g = {
+                    'x_data':    g_centers[g_mask_min],
+                    'y_data':    g_means[g_mask_min],
+                    'yerr_data': g_errs[g_mask_min],
+                    'color':     None,
+                    'label':     str(g_val),
+                }
+                normalized_g = normalize_fit_spec(fit, 1)
+                curve_fits_g = [
+                    dispatch_fit(curve_g['x_data'], curve_g['y_data'], fd,
+                                 yerr=curve_g['yerr_data'], plot_kind='profile')
+                    for fd in normalized_g[0]
+                ]
+                fits_dict_grouped[g_val] = [curve_fits_g]
+                render_fit_overlays(ax, [curve_g], [curve_fits_g])
+            # Single combined textbox covering all groups
+            if fits_dict_grouped:
+                all_curves_combined = []
+                all_fits_combined = []
+                for gv, group_fits in fits_dict_grouped.items():
+                    for curve_fits in group_fits:
+                        all_curves_combined.append({
+                            'label': str(gv), 'color': None,
+                            'x_data': np.array([]), 'y_data': np.array([])
+                        })
+                        all_fits_combined.append(curve_fits)
+                render_fit_textbox(ax, all_curves_combined, all_fits_combined)
+            stats_dict['fit'] = fits_dict_grouped
     else:
         # Single profile
         # Phase A: compute standard profile (needed for mean line + SEM/STD bars)
@@ -817,7 +889,32 @@ def draw_profile(
         # Phase 13.12.DF F1: Add profile data to stats
         if return_data and profile_df is not None:
             stats_dict['profile_data'] = profile_df
-    
+
+        # ====================================================================
+        # Phase 13.42.DF: Inline fits (ungrouped path).
+        # Reuse already-computed (bin_centers, bin_means, bin_errors) arrays.
+        # use_errors defaults True for profile per §3.3.
+        # ====================================================================
+        if fit is not None:
+            curve = {
+                'x_data':    bin_centers[plot_mask],
+                'y_data':    bin_means[plot_mask],
+                'yerr_data': bin_errors[plot_mask],
+                'color':     color,
+                'label':     label,
+            }
+            curves_list_fit = [curve]
+            normalized_fit = normalize_fit_spec(fit, 1)
+            curve_fits = [
+                dispatch_fit(curve['x_data'], curve['y_data'], fd,
+                             yerr=curve['yerr_data'], plot_kind='profile')
+                for fd in normalized_fit[0]
+            ]
+            fits_per_curve = [curve_fits]
+            render_fit_overlays(ax, curves_list_fit, fits_per_curve)
+            render_fit_textbox(ax, curves_list_fit, fits_per_curve)
+            stats_dict['fit'] = fits_per_curve
+
     # Labels
     ax.set_xlabel(xlabel or x_name)
     ax.set_ylabel(ylabel or f"<{y_name}>")

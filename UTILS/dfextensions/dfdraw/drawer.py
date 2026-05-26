@@ -9,7 +9,7 @@ import inspect
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from .style import get_style, get_style_value
 # Phase 13.32.DF Sub-fix 1+3: dispatch-level binning needs the same interval-label
@@ -837,6 +837,8 @@ class DFDraw:
         'linestyle_cycle',
         # Phase 13.39.DF: time-axis formatting (pre-conversion approach)
         'time_format',
+        # Phase 13.42.DF: Inline fits
+        'fit',
     )
 
     _HIST_FORWARDED_NAMES = (
@@ -882,6 +884,8 @@ class DFDraw:
         'time_format',
         # Phase 13.40.DF: cumulative histogram (CDF/ECDF/survival)
         'cumulative',
+        # Phase 13.42.DF: Inline fits
+        'fit',
     )
 
     _SCATTER_FORWARDED_NAMES = (
@@ -904,6 +908,8 @@ class DFDraw:
         'selection_labels', 'weights_labels',
         'selection_categorical', 'weights_categorical',
         'vector_compose', 'delta_facet',
+        # Phase 13.42.DF: Inline fits
+        'fit',
     )
 
     # Phase 13.32.DF Sub-fix 3: hist2d gets its own FORWARDED_NAMES tuple
@@ -936,6 +942,8 @@ class DFDraw:
         'selection_labels', 'weights_labels',
         'selection_categorical', 'weights_categorical',
         'vector_compose', 'delta_facet',
+        # Phase 13.42.DF: Inline fits
+        'fit',
         # Note: 'type' consumed for routing; 'figsize' deliberately excluded
         # (figure already created); 'facet' caught by R4 guard; 'group_by'
         # passed as explicit named arg to _draw_vector.
@@ -3630,6 +3638,8 @@ class DFDraw:
         # dispatch contract on _DRAW_FORWARDED_NAMES.
         normalize: Optional[Union[str, "callable"]] = None,
         normalize_layout: str = "overlay+diff",
+        # Phase 13.42.DF: Inline fit specification (architect 2026-05-22).
+        fit: Optional[Union[str, Dict, Callable, List]] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -3684,15 +3694,10 @@ class DFDraw:
         tuple
             (fig, ax, stats_dict)
         """
-        # Phase 13.18.DF (AD-42): Reserve 'fit' kwarg for future general fit interface.
-        if 'fit' in kwargs:
-            raise NotImplementedError(
-                "The 'fit=' parameter is reserved for a future general fit interface "
-                "(Phase 13.18.DF v2). For robust summary statistics, use "
-                "stat_fields='all'. For Gaussian core fit, use stat_fields='core' "
-                "(planned)."
-            )
-        
+        # Phase 13.42.DF: AD-42 guard removed; 'fit=' is now the inline-fit
+        # specification per the unified str/dict/callable/list grammar
+        # (see plots/fits.py and PHASE_13_42_DF v1.4 §3).
+
         # Handle figsize: create axes if not provided
         if figsize is not None and ax is None:
             import matplotlib.pyplot as plt
@@ -3901,6 +3906,8 @@ class DFDraw:
         # (per-group linestyle mode). Both forwarded explicitly to draw_hist().
         hist_errors: bool = False,
         linestyle_cycle: bool = False,
+        # Phase 13.42.DF: Inline fit specification
+        fit: Optional[Union[str, Dict, Callable, List]] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -4103,6 +4110,8 @@ class DFDraw:
                 # dispatch (recursive QRC v1.32 #6 — every forwarding layer
                 # must pass the named param explicitly). Locked by §9.CH.8.
                 cumulative=cumulative,
+                # Phase 13.42.DF: inline fits — recursive forwarding through facet
+                fit=fit,
                 **kwargs
             )
         # Facet mode (legacy path, same=True ignored in facet mode)
@@ -4147,6 +4156,8 @@ class DFDraw:
                 time_format=time_format,
                 # Phase 13.40.DF: cumulative histogram (explicit forward)
                 cumulative=cumulative,
+                # Phase 13.42.DF: inline fits (QRC v1.32 #6 recursive forwarding)
+                fit=fit,
                 **kwargs
             )
             axes = ax
@@ -4220,6 +4231,8 @@ class DFDraw:
         weights_categorical: bool = False,
         vector_compose: str = "inner",
         delta_facet: Optional[str] = None,
+        # Phase 13.42.DF: Inline fit specification
+        fit: Optional[Union[str, Dict, Callable, List]] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -4420,6 +4433,8 @@ class DFDraw:
                 share_x=share_x,
                 share_y=share_y,
                 share_across_figures=share_across_figures,
+                # Phase 13.42.DF: inline fits
+                fit=fit,
                 **kwargs
             )
         # Facet mode (legacy path, same=True ignored in facet mode)
@@ -4447,6 +4462,8 @@ class DFDraw:
                 xerr=xerr, yerr=yerr,
                 # Phase 13.39.DF: time-axis formatting
                 time_format=time_format,
+                # Phase 13.42.DF: inline fits
+                fit=fit,
                 **kwargs
             )
             axes = ax
@@ -4546,6 +4563,8 @@ class DFDraw:
         # Phase 13.36 sentinel (user explicit linestyle= wins via
         # _ud_user_linestyle capture).
         linestyle_cycle: bool = False,
+        # Phase 13.42.DF: Inline fit specification
+        fit: Optional[Union[str, Dict, Callable, List]] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -4871,6 +4890,12 @@ class DFDraw:
                     # dispatcher (or raise NotImplementedError with hint).
                     # ────────────────────────────────────────────────────────
                     'share_x', 'share_y', 'share_across_figures',
+                    # Phase 13.42.DF §4.2b (CP1-5): fit silently consumed when
+                    # normalize is active. The legacy normalize dispatcher
+                    # predates inline fits and doesn't honor fit=. Workaround:
+                    # compute the normalized values into an alias column with
+                    # adf.add_alias(), then call draw() on the alias with fit=.
+                    'fit',
                 }
                 _passthrough = {k: v for k, v in vector_kwargs.items()
                                 if k not in _consumed}
@@ -5045,6 +5070,8 @@ class DFDraw:
                 share_x=share_x,
                 share_y=share_y,
                 share_across_figures=share_across_figures,
+                # Phase 13.42.DF: inline fits
+                fit=fit,
                 **kwargs
             )
         else:
@@ -5075,6 +5102,8 @@ class DFDraw:
                 linestyle_cycle=linestyle_cycle,
                 # Phase 13.39.DF: time-axis formatting
                 time_format=time_format,
+                # Phase 13.42.DF: inline fits
+                fit=fit,
                 **kwargs
             )
             axes = ax

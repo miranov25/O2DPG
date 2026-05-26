@@ -1363,4 +1363,49 @@ FEATURES = [
             "test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_23_3d_auto_title_combined_suptitle",
         ],
     },
+
+    # ── Phase 13.42.DF: Inline fits ──
+
+    {
+        "id": "FIT.inline",
+        "name": "Inline fits (fit= parameter on hist/profile/scatter/draw)",
+        "category": "FIT",
+        "tests": [
+            # Numerical correctness (TestFitsNumericalCorrectness — includes f23)
+            "test_phase_13_42_df_inline_fits.py::TestFitsNumericalCorrectness::test_f1_gauss_recovers_center_sigma",
+            "test_phase_13_42_df_inline_fits.py::TestFitsNumericalCorrectness::test_f2_pol2_recovers_coefficients",
+            "test_phase_13_42_df_inline_fits.py::TestFitsNumericalCorrectness::test_f3_user_callable_with_initial",
+            "test_phase_13_42_df_inline_fits.py::TestFitsNumericalCorrectness::test_f4_pol1_alias_equals_linear",
+            "test_phase_13_42_df_inline_fits.py::TestFitsNumericalCorrectness::test_f5_gauss_registry_heuristic_converges",
+            "test_phase_13_42_df_inline_fits.py::TestFitsNumericalCorrectness::test_f23_user_guess_callable",
+            # Spec normalization (actual implemented names per source)
+            "test_phase_13_42_df_inline_fits.py::TestFitsSpecNormalization::test_f6_str_shorthand_equiv_to_dict",
+            "test_phase_13_42_df_inline_fits.py::TestFitsSpecNormalization::test_f7_callable_shorthand_equiv_to_dict",
+            "test_phase_13_42_df_inline_fits.py::TestFitsSpecNormalization::test_f8_length1_list_broadcasts",
+            "test_phase_13_42_df_inline_fits.py::TestFitsSpecNormalization::test_f9_length_match_pair_per_channel",
+            "test_phase_13_42_df_inline_fits.py::TestFitsSpecNormalization::test_f10_length_mismatch_raises",
+            # Composition (vector / group_by / facet_by)
+            "test_phase_13_42_df_inline_fits.py::TestFitsComposition::test_f11_vector_expr_scalar_fit_broadcast",
+            "test_phase_13_42_df_inline_fits.py::TestFitsComposition::test_f12_vector_expr_vector_fit_pair",
+            "test_phase_13_42_df_inline_fits.py::TestFitsComposition::test_f13_compound_on_single_curve",
+            "test_phase_13_42_df_inline_fits.py::TestFitsComposition::test_f14_group_by_list_of_lists_per_group",
+            "test_phase_13_42_df_inline_fits.py::TestFitsComposition::test_f15_facet_by_2d_tuple_keys",
+            # Dict-key parsing
+            "test_phase_13_42_df_inline_fits.py::TestFitsDictKeyParsing::test_f16_range_restricts_fit_domain",
+            "test_phase_13_42_df_inline_fits.py::TestFitsDictKeyParsing::test_f17_bounds_constrain_params",
+            "test_phase_13_42_df_inline_fits.py::TestFitsDictKeyParsing::test_f18_unknown_dict_key_raises",
+            # Display rendering
+            "test_phase_13_42_df_inline_fits.py::TestFitsDisplayRendering::test_f19_show_params_false_hides_one_block",
+            "test_phase_13_42_df_inline_fits.py::TestFitsDisplayRendering::test_f20_multi_fit_distinct_linestyles",
+            # Failure handling (only f21, f22; f23 lives in NumericalCorrectness)
+            "test_phase_13_42_df_inline_fits.py::TestFitsFailureHandling::test_f21_default_failure_does_not_raise",
+            "test_phase_13_42_df_inline_fits.py::TestFitsFailureHandling::test_f22_raise_on_failure_true_raises",
+            # Panel closures
+            "test_phase_13_42_df_inline_fits.py::TestFitsPanelClosures::test_f24_register_fit_public_export",
+            "test_phase_13_42_df_inline_fits.py::TestFitsPanelClosures::test_f25_groupby_facet_fit_deep_composition",
+            "test_phase_13_42_df_inline_fits.py::TestFitsPanelClosures::test_f26_normalize_plus_fit_silent_consume",
+            # Phase 13.42.DF P1-B regression (Sonnet54 finding, CRR §2 D7)
+            "test_phase_13_42_df_inline_fits.py::TestFitsP1BProfileGroupedRegression::test_f27_profile_group_by_fit_returns_dict_keyed_by_group",
+        ],
+    },
 ]

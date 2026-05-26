@@ -121,6 +121,20 @@ DEFAULT_STYLE: Dict[str, Any] = {
     "stats.alpha": 0.8,
     "stats.boxstyle": "round",
     "stats.robust": False,  # Phase 13.6.G.DF: Use robust stats (median, MAD) for 1D
+
+    # ========================================================================
+    # Phase 13.42.DF: Inline-fit textbox + overlay style keys
+    # ========================================================================
+    # Per CP2-2 (panel review v1.2 → v1.3): fit.position default 'upper left'
+    # separates the fit textbox from stats.position ('upper right' default)
+    # and matplotlib's legend (legend.loc='best' often picks upper right).
+    "fit.linewidth":             1.5,
+    "fit.linestyle_cycle":       ["-", "--", "-.", ":"],   # multi-fit on same curve
+    "fit.text_fontsize_default": 9,
+    "fit.text_fontsize_facet":   7,
+    "fit.text_format":           ".4g",
+    "fit.text_padding":          0.4,
+    "fit.position":              "upper left",
     
     # Legend
     "legend.outside": False,

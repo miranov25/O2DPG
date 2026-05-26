@@ -12,7 +12,7 @@ Supports:
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from ..style import get_style_value
 from ..stats import format_stats_box
@@ -27,6 +27,9 @@ from ._validation import validate_column_references
 # via hasattr(label, 'left'). Imported here so _draw_hist_grouped can sort raw
 # pd.Interval groups from pd.cut() in numeric order, not lexicographic.
 from .profile import _interval_sort_key
+# Phase 13.42.DF: Inline fits
+from .fits import normalize_fit_spec, dispatch_fit
+from ._fit_render import render_fit_overlays, render_fit_textbox
 
 
 # =============================================================================
@@ -245,6 +248,8 @@ def draw_hist(
     # True → ascending cumulative (each bin = count ≤ right edge)
     # -1 → descending / survival (ROOT convention)
     cumulative: Union[bool, int] = False,
+    # Phase 13.42.DF: Inline fit specification (architect 2026-05-22).
+    fit: Optional[Union[str, Dict, Callable, List]] = None,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -643,7 +648,80 @@ def draw_hist(
                         elinewidth=get_style_value("hist.error_elinewidth", 1.0),
                         capsize=get_style_value("hist.error_capsize", 2),
                         zorder=3)
-    
+
+    # ========================================================================
+    # Phase 13.42.DF: Inline fits — apply AFTER ax.hist. curves_list uses dict
+    # form per CRR §2 D2 (panel consensus on N1 from v1.4 review).
+    # ========================================================================
+    if fit is not None:
+        if group_by is not None and not stacked:
+            # Per-group fits → stats['fit'] dict keyed by group_val per §3.5
+            fits_dict = {}
+            x_name_for_groupby = x if isinstance(x, str) else x_name
+            groups_for_fit = df[group_by].unique().tolist()
+            if top_k is not None and len(groups_for_fit) > top_k:
+                vc = df[group_by].value_counts()
+                groups_for_fit = vc.head(top_k).index.tolist()
+            for g in groups_for_fit:
+                gdata_raw = df[df[group_by] == g][x_name_for_groupby].dropna()
+                gdata = gdata_raw.values.astype(float) if hasattr(gdata_raw, 'values') else np.asarray(gdata_raw, dtype=float)
+                if gdata.size == 0:
+                    continue
+                counts_g, edges_g = np.histogram(gdata, bins=bins, range=_used_range, density=False)
+                centers_g = 0.5 * (edges_g[:-1] + edges_g[1:])
+                yerr_g = np.sqrt(np.maximum(counts_g, 0)) if hist_errors else None
+                curve_g = {
+                    'x_data': centers_g,
+                    'y_data': counts_g.astype(float),
+                    'yerr_data': yerr_g,
+                    'color': None,
+                    'label': str(g),
+                }
+                normalized_g = normalize_fit_spec(fit, 1)
+                curve_fits_g = [
+                    dispatch_fit(curve_g['x_data'], curve_g['y_data'], fd,
+                                 yerr=curve_g['yerr_data'], plot_kind='hist')
+                    for fd in normalized_g[0]
+                ]
+                fits_dict[g] = [curve_fits_g]
+                render_fit_overlays(ax, [curve_g], [curve_fits_g])
+            # Single combined textbox covering all groups
+            if fits_dict:
+                all_curves_combined = []
+                all_fits_combined = []
+                for g, group_fits in fits_dict.items():
+                    for curve_fits in group_fits:
+                        all_curves_combined.append({'label': str(g), 'color': None,
+                                                    'x_data': np.array([]), 'y_data': np.array([])})
+                        all_fits_combined.append(curve_fits)
+                render_fit_textbox(ax, all_curves_combined, all_fits_combined)
+            stats_dict['fit'] = fits_dict
+        elif group_by is None:
+            # Ungrouped path — single curve, fit per §3.5 list-of-lists
+            counts_fit, edges_fit = np.histogram(x_data, bins=bins, range=_used_range,
+                                                  weights=_hist_weights, density=False)
+            bin_centers_fit = 0.5 * (edges_fit[:-1] + edges_fit[1:])
+            yerr_hist = np.sqrt(np.maximum(counts_fit, 0)) if hist_errors else None
+            curve = {
+                'x_data': bin_centers_fit,
+                'y_data': counts_fit.astype(float),
+                'yerr_data': yerr_hist,
+                'color': color,
+                'label': label,
+            }
+            curves_list_fit = [curve]
+            normalized = normalize_fit_spec(fit, 1)
+            curve_fits = [
+                dispatch_fit(curve['x_data'], curve['y_data'], fd,
+                             yerr=curve['yerr_data'], plot_kind='hist')
+                for fd in normalized[0]
+            ]
+            fits_per_curve = [curve_fits]
+            render_fit_overlays(ax, curves_list_fit, fits_per_curve)
+            render_fit_textbox(ax, curves_list_fit, fits_per_curve)
+            stats_dict['fit'] = fits_per_curve
+        # NOTE: stacked + group_by + fit not in v1.0 scope.
+
     # Labels
     ax.set_xlabel(xlabel or x_name)
     if ylabel:

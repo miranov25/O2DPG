@@ -351,5 +351,40 @@ TEST_LAYERS = {
     # Phase 13.41.DF FIX2 (1 additional regression lock)
     "test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_23_3d_auto_title_combined_suptitle": "invariance",
 
+    # ── Phase 13.42.DF: Inline fits — invariance battery (F.1–F.27) ──
+    # All 27 F.* tests assert canonical contracts (§3.5 list-of-lists,
+    # numerical recovery within tolerance, propagation through dispatch,
+    # silent-consume policy, etc.) and are invariance tests by construction.
+    # NB v2-fix1: 6 names corrected after Sonnet54 caught taxonomy mismatch
+    # (proposed names from v1.4 spec did not match implementation).
+    "test_phase_13_42_df_inline_fits.py::TestFitsNumericalCorrectness::test_f1_gauss_recovers_center_sigma": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsNumericalCorrectness::test_f2_pol2_recovers_coefficients": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsNumericalCorrectness::test_f3_user_callable_with_initial": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsNumericalCorrectness::test_f4_pol1_alias_equals_linear": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsNumericalCorrectness::test_f5_gauss_registry_heuristic_converges": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsNumericalCorrectness::test_f23_user_guess_callable": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsSpecNormalization::test_f6_str_shorthand_equiv_to_dict": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsSpecNormalization::test_f7_callable_shorthand_equiv_to_dict": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsSpecNormalization::test_f8_length1_list_broadcasts": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsSpecNormalization::test_f9_length_match_pair_per_channel": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsSpecNormalization::test_f10_length_mismatch_raises": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsComposition::test_f11_vector_expr_scalar_fit_broadcast": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsComposition::test_f12_vector_expr_vector_fit_pair": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsComposition::test_f13_compound_on_single_curve": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsComposition::test_f14_group_by_list_of_lists_per_group": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsComposition::test_f15_facet_by_2d_tuple_keys": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsDictKeyParsing::test_f16_range_restricts_fit_domain": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsDictKeyParsing::test_f17_bounds_constrain_params": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsDictKeyParsing::test_f18_unknown_dict_key_raises": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsDisplayRendering::test_f19_show_params_false_hides_one_block": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsDisplayRendering::test_f20_multi_fit_distinct_linestyles": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsFailureHandling::test_f21_default_failure_does_not_raise": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsFailureHandling::test_f22_raise_on_failure_true_raises": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsPanelClosures::test_f24_register_fit_public_export": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsPanelClosures::test_f25_groupby_facet_fit_deep_composition": "invariance",
+    "test_phase_13_42_df_inline_fits.py::TestFitsPanelClosures::test_f26_normalize_plus_fit_silent_consume": "invariance",
+    # Phase 13.42.DF P1-B regression lock (Sonnet54 finding, CRR §2 D7)
+    "test_phase_13_42_df_inline_fits.py::TestFitsP1BProfileGroupedRegression::test_f27_profile_group_by_fit_returns_dict_keyed_by_group": "invariance",
+
     # Everything else defaults to "smoke"
 }
