@@ -711,7 +711,7 @@ def draw_hist(
                         'params': np.array([], dtype=float),
                         'param_names': [],
                         'param_errors': np.array([], dtype=float),
-                        'pcov': np.array([], shape=(0, 0), dtype=float),
+                        'pcov': np.zeros((0, 0), dtype=float),
                         'chi2': float('nan'),
                         'ndf': 0,
                         'redchi': float('nan'),

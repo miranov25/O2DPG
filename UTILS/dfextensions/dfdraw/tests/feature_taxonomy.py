@@ -1406,6 +1406,15 @@ FEATURES = [
             "test_phase_13_42_df_inline_fits.py::TestFitsPanelClosures::test_f26_normalize_plus_fit_silent_consume",
             # Phase 13.42.DF P1-B regression (Sonnet54 finding, CRR §2 D7)
             "test_phase_13_42_df_inline_fits.py::TestFitsP1BProfileGroupedRegression::test_f27_profile_group_by_fit_returns_dict_keyed_by_group",
+            # Phase 13.42.DF FIX1 production-gate regressions (B1-B7, D5/D8/D9)
+            "test_phase_13_42_df_inline_fits.py::TestPhase1342FIX1Regressions::test_f28_grouped_fit_quantile_binning",
+            "test_phase_13_42_df_inline_fits.py::TestPhase1342FIX1Regressions::test_f28b_skipped_empty_does_not_crash",
+            "test_phase_13_42_df_inline_fits.py::TestPhase1342FIX1Regressions::test_f29_hist_fit_redchi_physically_correct",
+            "test_phase_13_42_df_inline_fits.py::TestPhase1342FIX1Regressions::test_f30_set_style_fit_textbox_fontsize_facet",
+            "test_phase_13_42_df_inline_fits.py::TestPhase1342FIX1Regressions::test_f31_vector_fit_pairing",
+            "test_phase_13_42_df_inline_fits.py::TestPhase1342FIX1Regressions::test_f32_stacked_hist_per_group_fits",
+            "test_phase_13_42_df_inline_fits.py::TestPhase1342FIX1Regressions::test_f33_fit_textbox_kwargs_fontsize_override",
+            "test_phase_13_42_df_inline_fits.py::TestPhase1342FIX1Regressions::test_f33_fit_textbox_kwargs_precedence_over_style",
         ],
     },
 ]

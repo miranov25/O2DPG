@@ -777,6 +777,53 @@ class TestPhase1342FIX1Regressions:
             )
         plt.close(fig)
 
+    def test_f28b_skipped_empty_does_not_crash(self):
+        """B4 / Sonnet55 P1-A regression: when a quantile group has zero
+        data points after masking (e.g., all y-values are NaN for that
+        group), the skipped_empty path produces a clean fit_status entry
+        WITHOUT crashing.
+
+        v1.0 of FIX1 had `np.array([], shape=(0,0))` which raises
+        TypeError (np.array does not accept shape kwarg).
+        Fixed to np.zeros((0,0), dtype=float).
+
+        Triggers the path that F.28 cannot exercise (its 3000-sample
+        uniform data leaves no group empty)."""
+        rng = np.random.default_rng(287)
+        n = 200
+        g_col = rng.uniform(-1, 1, n)
+        y_col = rng.normal(0, 1, n)
+        # Top-quantile rows have NaN y → after dropna, that group has 0 data
+        y_col[g_col > 0.5] = np.nan
+        df = pd.DataFrame({'y': y_col, 'x_for_gb': g_col})
+        d = DFDraw(df)
+        # Must not raise:
+        fig, ax, stats = d.hist(
+            'y', bins=40, group_by='x_for_gb',
+            group_by_quantiles=4, fit='gauss',
+        )
+        # Expect 4 group entries; one should be skipped_empty, others 'ok'
+        assert len(stats['fit']) == 4
+        statuses = [gf[0][0]['fit_status'] for gf in stats['fit'].values()]
+        assert 'skipped_empty' in statuses, (
+            f"expected at least one skipped_empty status, got {statuses}"
+        )
+        assert statuses.count('ok') == 3, (
+            f"expected 3 ok statuses, got {statuses.count('ok')}: {statuses}"
+        )
+        # Verify the skipped_empty dict has the right shape (was the crash)
+        for g_val, group_fits in stats['fit'].items():
+            fit_d = group_fits[0][0]
+            if fit_d['fit_status'] == 'skipped_empty':
+                assert fit_d['n_data'] == 0
+                assert fit_d['pcov'].shape == (0, 0), (
+                    f"P1-A: pcov.shape must be (0,0), got {fit_d['pcov'].shape}"
+                )
+                assert fit_d['ndf'] == 0
+                assert np.isnan(fit_d['chi2'])
+                assert np.isnan(fit_d['redchi'])
+        plt.close(fig)
+
     def test_f29_hist_fit_redchi_physically_correct(self):
         """B5: clean Gaussian on histogram → redchi ∈ [0.5, 2.5]. v1.0
         defaulted yerr=None for hist (gated by hist_errors), making
