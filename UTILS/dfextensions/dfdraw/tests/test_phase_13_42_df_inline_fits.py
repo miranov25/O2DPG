@@ -291,25 +291,30 @@ class TestFitsComposition:
     # I.e., both curves get [gauss, pol2] overlay. Per-channel PAIRING in
     # vector mode is a Phase 13.42 FIX1 candidate (CRR §2 D5).
     def test_f12_vector_expr_vector_fit_pair(self, two_curve_profile_df):
+        """v1.2/D5: vector pairing — fit=['gauss','pol2'] on [y_a,y_b]:x
+        pairs gauss with y_a and pol2 with y_b. Phase 13.42 v1.0 had
+        compound-broadcast (deviation from v1.4 §6.3 verbatim spec);
+        FIX1 restored pairing per architect 2026-05-26 verbal ratification.
+        F.12 assertions flipped from compound-broadcast to pairing."""
         d = DFDraw(two_curve_profile_df)
         fig, ax, stats = d.profile('[y_a,y_b]:x', bins=20,
                                     fit=['gauss', 'pol2'])
-        if isinstance(stats, list):
-            # Vector dispatch returns per-curve stats list. Each curve gets
-            # the compound fit (gauss + pol2 both applied).
-            assert len(stats) == 2
-            # Per-curve fit shape: [[fit0, fit1]] — list-of-lists per §3.5
-            for per_curve in stats:
-                assert isinstance(per_curve['fit'], list)
-                inner = per_curve['fit'][0]
-                assert isinstance(inner, list)
-                assert inner[0]['fit_name'] == 'gauss'
-                assert inner[1]['fit_name'] == 'pol2'
-        else:
-            assert len(stats['fit']) == 2
-            # Pairing-mode spec (if dispatch ever supports it):
-            assert stats['fit'][0][0]['fit_name'] == 'gauss'
-            assert stats['fit'][1][0]['fit_name'] == 'pol2'
+        # Vector dispatch returns per-curve stats list. Pairing (FIX1):
+        #   stats[0] (y_a) → fit = [[gauss]] (one fit, paired with fit[0])
+        #   stats[1] (y_b) → fit = [[pol2]]  (one fit, paired with fit[1])
+        assert isinstance(stats, list), \
+            f"vector dispatch must return list, got {type(stats).__name__}"
+        assert len(stats) == 2
+        # y_a (channel 0) → gauss only
+        assert stats[0]['fit'][0][0]['fit_name'] == 'gauss', \
+            "D5 pairing: y_a should be paired with fit[0]=gauss"
+        assert len(stats[0]['fit'][0]) == 1, \
+            "D5 pairing: y_a should have ONE fit, not compound"
+        # y_b (channel 1) → pol2 only
+        assert stats[1]['fit'][0][0]['fit_name'] == 'pol2', \
+            "D5 pairing: y_b should be paired with fit[1]=pol2"
+        assert len(stats[1]['fit'][0]) == 1, \
+            "D5 pairing: y_b should have ONE fit, not compound"
         plt.close(fig)
 
     # F.13 — compound on single curve: fit=["gauss","pol2"] with scalar expr
@@ -719,3 +724,246 @@ class TestFitsP1BProfileGroupedRegression:
             f"expected ≥2 groups to converge, got {ok_count} ok statuses"
         )
         plt.close(fig)
+
+
+# ============================================================================
+# Phase 13.42.DF FIX1 (v1.2) — new regression tests F.28–F.33
+#
+# F.28 — B4: grouped fit on quantile binning (was: half of fits silently corrupt)
+# F.29 — B5: histogram fit redchi physically correct (was: ~1e7 garbage)
+# F.30 — B1: set_style facet font round-trip (was: silently ignored)
+# F.31 — D5: vector fit pairing (was: compound-broadcast deviated from v1.4 §6.3)
+# F.32 — D9: stacked + group_by + fit → per-group fits, R4 (was: silent skip)
+# F.33 — R5: per-call fit_textbox_kwargs.fontsize override (NEW interface)
+# ============================================================================
+
+class TestPhase1342FIX1Regressions:
+    """v1.2 regression locks — see PHASE_13_42_DF_FIX1_v1_2_Proposal.md §5."""
+
+    def test_f28_grouped_fit_quantile_binning(self):
+        """B4: group_by + group_by_quantiles + fit → ALL groups must have
+        n_data > 0 AND fit_status='ok'. v1.0 used df[df[group_by]==g] which
+        silently mis-matched some Interval keys (Sonnet55 extension: same
+        pattern affected top_k/sort_groups). FIX1 reuses main-path masks."""
+        rng = np.random.default_rng(28)
+        df = pd.DataFrame({
+            'y': rng.normal(0, 1, 3000),
+            'x_for_gb': rng.uniform(-2, 2, 3000),
+        })
+        d = DFDraw(df)
+        fig, ax, stats = d.hist(
+            'y', bins=80,
+            group_by='x_for_gb', group_by_quantiles=3,
+            fit='gauss',
+        )
+        assert 'fit' in stats
+        assert isinstance(stats['fit'], dict), (
+            "B4 regression: grouped fit must return dict (per-group), "
+            f"got {type(stats['fit']).__name__}"
+        )
+        assert len(stats['fit']) == 3, (
+            f"B4: expected 3 groups, got {len(stats['fit'])}"
+        )
+        for g_val, group_fits in stats['fit'].items():
+            assert isinstance(group_fits, list) and len(group_fits) == 1
+            fit_d = group_fits[0][0]
+            assert fit_d['n_data'] > 0, (
+                f"B4 regression: group {g_val!r} got n_data=0 — "
+                f"main-path masks not properly reused"
+            )
+            assert fit_d['fit_status'] == 'ok', (
+                f"B4 regression: group {g_val!r} fit_status="
+                f"{fit_d['fit_status']!r}; expected 'ok'"
+            )
+        plt.close(fig)
+
+    def test_f29_hist_fit_redchi_physically_correct(self):
+        """B5: clean Gaussian on histogram → redchi ∈ [0.5, 2.5]. v1.0
+        defaulted yerr=None for hist (gated by hist_errors), making
+        chi² scale with N². FIX1: Poisson default sqrt(max(counts, 1))
+        always; ROOT TH1::Fit Neyman convention."""
+        rng = np.random.default_rng(29)
+        df = pd.DataFrame({'x': rng.normal(0.0, 1.0, 50000)})
+        d = DFDraw(df)
+        fig, ax, stats = d.hist('x', bins=80, range=(-4, 4), fit='gauss')
+        fit_d = stats['fit'][0][0]
+        assert fit_d['fit_status'] == 'ok'
+        assert 0.5 <= fit_d['redchi'] <= 2.5, (
+            f"B5 regression: redchi={fit_d['redchi']:.3f} not in [0.5, 2.5]. "
+            f"yerr likely not Poisson-default."
+        )
+        plt.close(fig)
+
+    def test_f30_set_style_fit_textbox_fontsize_facet(self):
+        """B1: set_style({'fit.text_fontsize_facet': N}) must take effect on
+        rendered textbox in faceted mode. v1.0 had two-layer defect:
+        (a) render_fit_textbox call sites didn't pass facet_mode (Sonet51
+        diagnosis), and (b) _style_get called get_style(key) but get_style
+        takes no args, so all style reads silently returned defaults.
+        FIX1 closes both layers."""
+        # Use dfdraw.* import path consistent with test file convention
+        # (conftest adds two sys.path entries → dfdraw and dfextensions.dfdraw
+        # are separate module instances with separate _current_style dicts;
+        # all imports in this test must use the SAME path to share state).
+        from dfdraw import set_style
+        set_style({'fit.text_fontsize_facet': 3})
+        try:
+            rng = np.random.default_rng(30)
+            df = pd.DataFrame({
+                'x': rng.normal(0, 1, 2000),
+                'g': rng.choice(list('ABCD'), 2000),
+            })
+            d = DFDraw(df)
+            fig, axes, stats = d.hist('x', bins=40, facet_by='g', fit='gauss')
+            checked = 0
+            for ax in (axes if hasattr(axes, '__iter__') else [axes]):
+                for ta in ax.texts:
+                    if 'gauss' in ta.get_text().lower():
+                        assert ta.get_fontsize() == 3, (
+                            f"B1 regression: textbox fontsize="
+                            f"{ta.get_fontsize()!r}, expected 3 from "
+                            f"set_style. facet_mode not plumbed or "
+                            f"_style_get broken?"
+                        )
+                        checked += 1
+            assert checked > 0, "no fit textbox found in any facet cell"
+        finally:
+            set_style({'fit.text_fontsize_facet': 7})  # restore default
+            plt.close(fig)
+
+    def test_f31_vector_fit_pairing(self):
+        """D5/R2: fit=['gauss','pol2'] on [y_a,y_b]:x → pairing per channel,
+        NOT compound-broadcast on each. v1.4 §6.3 verbatim spec. Phase 13.42
+        v1.0 implementation deviated (compound-broadcast); FIX1 restores
+        pairing per architect 2026-05-26 ratification."""
+        rng = np.random.default_rng(31)
+        n = 2000
+        x = rng.uniform(-3, 3, n)
+        y_a = 50.0 * np.exp(-x**2 / 2.0) + rng.normal(0, 1.0, n)  # Gaussian
+        y_b = 1.5 * x + 0.5 + rng.normal(0, 0.3, n)              # linear
+        df = pd.DataFrame({'x': x, 'y_a': y_a, 'y_b': y_b})
+        d = DFDraw(df)
+        fig, ax, stats = d.profile('[y_a,y_b]:x', bins=20,
+                                    fit=['gauss', 'pol2'])
+        # I-1 fix: assert isinstance (not 'if isinstance' silent-pass guard)
+        assert isinstance(stats, list), (
+            f"D5: vector dispatch must return list of per-channel stats, "
+            f"got {type(stats).__name__}"
+        )
+        assert len(stats) == 2, f"D5: expected 2 channels, got {len(stats)}"
+        # y_a (channel 0) → gauss only (paired with fit[0])
+        assert stats[0]['fit'][0][0]['fit_name'] == 'gauss', (
+            "D5 pairing: y_a must be paired with fit[0]=gauss"
+        )
+        assert len(stats[0]['fit'][0]) == 1, (
+            "D5 pairing: y_a must have ONE fit (gauss), not compound"
+        )
+        # y_b (channel 1) → pol2 only (paired with fit[1])
+        assert stats[1]['fit'][0][0]['fit_name'] == 'pol2', (
+            "D5 pairing: y_b must be paired with fit[1]=pol2"
+        )
+        assert len(stats[1]['fit'][0]) == 1, (
+            "D5 pairing: y_b must have ONE fit (pol2), not compound"
+        )
+        plt.close(fig)
+
+    def test_f32_stacked_hist_per_group_fits(self):
+        """D9/R4: stacked=True + group_by + fit → N per-group fits, NOT
+        fit-the-total. Stacking is purely visual; fits remain per-group.
+        v1.0 had silent-skip (guarded by `and not stacked`); FIX1 removes
+        guard. v1.1 spec was 'single fit on combined'; v1.2 (architect
+        2026-05-26 'fit all figures all gb') = per-group dict."""
+        rng = np.random.default_rng(32)
+        df = pd.DataFrame({
+            'x': rng.normal(0, 1, 3000),
+            'group': rng.choice(['signal', 'background'], 3000),
+        })
+        d = DFDraw(df)
+        fig, ax, stats = d.hist(
+            'x', bins=50, range=(-3, 3),
+            group_by='group', stacked=True, fit='gauss',
+        )
+        assert 'fit' in stats, (
+            "D9 regression: stacked=True + group_by + fit must produce "
+            "stats['fit']; silent skip is the v1.0 bug."
+        )
+        # v1.2: per-group dict (NOT single fit on combined total)
+        assert isinstance(stats['fit'], dict), (
+            f"D9/R4 v1.2: stats['fit'] must be dict (per-group) when "
+            f"stacked=True + group_by + fit, got "
+            f"{type(stats['fit']).__name__}. Stacking is visual only."
+        )
+        assert len(stats['fit']) == 2, (
+            f"D9: expected 2 group fits, got {len(stats['fit'])}"
+        )
+        for group_key, group_fits in stats['fit'].items():
+            fit_d = group_fits[0][0]
+            assert fit_d['fit_status'] == 'ok', (
+                f"D9: group {group_key!r} fit_status="
+                f"{fit_d['fit_status']!r}"
+            )
+            assert fit_d['fit_name'] == 'gauss'
+            # I-4 fix: >= 40 not == 50 (dispatch_fit filters empty bins)
+            assert fit_d['n_data'] >= 40, (
+                f"D9: group {group_key!r} n_data={fit_d['n_data']}, "
+                f"expected >= 40"
+            )
+        plt.close(fig)
+
+    def test_f33_fit_textbox_kwargs_fontsize_override(self):
+        """R5: per-call fit_textbox_kwargs={'fontsize': N} must take effect.
+        Parallel lock to F.30 (set_style path). Architect 2026-05-26:
+        'Yes, but font size must work.'"""
+        rng = np.random.default_rng(33)
+        df = pd.DataFrame({'x': rng.normal(0, 1, 2000)})
+        d = DFDraw(df)
+        fig, ax, stats = d.hist(
+            'x', bins=40, fit='gauss',
+            fit_textbox_kwargs={'fontsize': 5},
+        )
+        try:
+            fit_text_artists = [t for t in ax.texts
+                                if 'gauss' in t.get_text().lower()]
+            assert len(fit_text_artists) > 0, (
+                "R5: fit textbox not rendered; expected at least one text "
+                "artist containing 'gauss'"
+            )
+            for ta in fit_text_artists:
+                assert ta.get_fontsize() == 5, (
+                    f"R5 regression: fit_textbox_kwargs={{'fontsize': 5}} "
+                    f"ignored; rendered fontsize={ta.get_fontsize()!r}. "
+                    f"Per-call kwarg override must take precedence."
+                )
+        finally:
+            plt.close(fig)
+
+    def test_f33_fit_textbox_kwargs_precedence_over_style(self):
+        """R5 part 2: per-call fit_textbox_kwargs.fontsize takes precedence
+        over set_style({'fit.text_fontsize_*': N}) when both are set."""
+        # Use dfdraw.* import path (see F.30 note on conftest dual-path).
+        from dfdraw import set_style
+        # Use facet_mode path so set_style({'fit.text_fontsize_facet': 9})
+        # is unambiguously the value being overridden.
+        set_style({'fit.text_fontsize_facet': 9})
+        try:
+            rng = np.random.default_rng(33)
+            df = pd.DataFrame({
+                'x': rng.normal(0, 1, 2000),
+                'g': rng.choice(['A', 'B'], 2000),
+            })
+            d = DFDraw(df)
+            fig, axes, stats = d.hist(
+                'x', bins=40, facet_by='g', fit='gauss',
+                fit_textbox_kwargs={'fontsize': 4},  # override → 4, not 9
+            )
+            for ax in (axes if hasattr(axes, '__iter__') else [axes]):
+                for ta in ax.texts:
+                    if 'gauss' in ta.get_text().lower():
+                        assert ta.get_fontsize() == 4, (
+                            f"R5 precedence: per-call fontsize=4 must win "
+                            f"over set_style fontsize=9; got "
+                            f"{ta.get_fontsize()!r}."
+                        )
+        finally:
+            set_style({'fit.text_fontsize_facet': 7})  # restore default
+            plt.close(fig)

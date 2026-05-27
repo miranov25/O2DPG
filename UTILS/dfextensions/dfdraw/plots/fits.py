@@ -466,7 +466,11 @@ def dispatch_fit(x_data, y_data, fit_dict, *,
                     UserWarning, stacklevel=3)
 
     # ----- Per-bin error weighting -----
-    use_errors = fit_dict.get('use_errors', plot_kind == 'profile')
+    # Phase 13.42.DF FIX1 (B5/R1): use_errors defaults True for both profile AND hist
+    # (was: True only for profile). Histogram fit must use Poisson per-bin errors
+    # by default — otherwise reported χ² is meaningless (scales with N²). Scatter
+    # stays opt-in (its yerr is user-supplied, not auto-Poisson).
+    use_errors = fit_dict.get('use_errors', plot_kind in ('profile', 'hist'))
     sigma = yerr_fit if (use_errors and yerr_fit is not None) else None
 
     # ----- Compose scipy.curve_fit kwargs -----

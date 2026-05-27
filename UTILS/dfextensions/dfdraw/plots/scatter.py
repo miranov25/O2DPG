@@ -64,6 +64,12 @@ def draw_scatter(
     _suppress_legend: bool = False,
     _suppress_title: bool = False,
     _suppress_layout: bool = False,
+    # Phase 13.42.DF FIX1 (B1/Sonet51): facet_mode sentinel set by the facet
+    # dispatcher (drawer.py per-cell calls). Plumbed to render_fit_textbox so
+    # it picks fit.text_fontsize_facet instead of fit.text_fontsize_default.
+    _facet_mode: bool = False,
+    # Phase 13.42.DF FIX1 (B2/R5): per-call fit textbox formatting overrides.
+    fit_textbox_kwargs: Optional[Dict[str, Any]] = None,
     # Phase 13.42.DF: Inline fit specification
     fit: Optional[Union[str, Dict, Callable, List]] = None,
     **kwargs
@@ -324,27 +330,46 @@ def draw_scatter(
 
         # ====================================================================
         # Phase 13.42.DF: Inline fits (ungrouped scatter path).
-        # Uses filtered raw (x_data, y_data) arrays per §4.3. No yerr by
-        # default for scatter (use_errors defaults False per §3.3).
+        # Phase 13.42.DF FIX1 (D8/R3): scatter fit honors yerr= column param.
+        # v1.0 hardcoded yerr=None ⇒ use_errors=True was silent no-op. R3
+        # architect ratification 2026-05-26: "optional, used if provided".
+        # Presence of yerr= column IS the opt-in; no second flag needed.
+        # When yerr= is None (default), fit is unweighted silently.
         # ====================================================================
         if fit is not None:
             mask_finite = np.isfinite(x_data) & np.isfinite(y_data)
+            # D8: resolve yerr_data from yerr= named param (mirrors Phase 13.38
+            # errorbar pattern, line 240 above: _eval_error did the column
+            # lookup or df.eval). yerr_arr is None if yerr= not provided.
+            if yerr_arr is not None:
+                # yerr_arr is full-length per Phase 13.38; downselect by mask.
+                _scatter_fit_yerr = np.asarray(yerr_arr, dtype=float)
+                if len(_scatter_fit_yerr) == len(mask_finite):
+                    _scatter_fit_yerr = _scatter_fit_yerr[mask_finite]
+                # Replace non-finite yerr values with 1.0 to avoid zero-weight
+                # division inside dispatch_fit; mirrors Poisson safety pattern.
+                _scatter_fit_yerr = np.where(
+                    np.isfinite(_scatter_fit_yerr) & (_scatter_fit_yerr > 0),
+                    _scatter_fit_yerr, 1.0
+                )
+            else:
+                _scatter_fit_yerr = None
             curve = {
                 'x_data':    x_data[mask_finite],
                 'y_data':    y_data[mask_finite],
-                'yerr_data': None,
+                'yerr_data': _scatter_fit_yerr,
                 'color':     color if isinstance(color, str) and color not in df.columns else None,
                 'label':     None,
             }
             normalized_fit = normalize_fit_spec(fit, 1)
             curve_fits = [
                 dispatch_fit(curve['x_data'], curve['y_data'], fd,
-                             yerr=None, plot_kind='scatter')
+                             yerr=curve['yerr_data'], plot_kind='scatter')
                 for fd in normalized_fit[0]
             ]
             fits_per_curve = [curve_fits]
             render_fit_overlays(ax, [curve], fits_per_curve)
-            render_fit_textbox(ax, [curve], fits_per_curve)
+            render_fit_textbox(ax, [curve], fits_per_curve, facet_mode=_facet_mode, textbox_kwargs=fit_textbox_kwargs)
             stats_dict['fit'] = fits_per_curve
 
     # Labels

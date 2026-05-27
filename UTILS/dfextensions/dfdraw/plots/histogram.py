@@ -250,6 +250,11 @@ def draw_hist(
     cumulative: Union[bool, int] = False,
     # Phase 13.42.DF: Inline fit specification (architect 2026-05-22).
     fit: Optional[Union[str, Dict, Callable, List]] = None,
+    # Phase 13.42.DF FIX1 (B2/R5): per-call fit textbox formatting overrides.
+    # Sub-keys: 'fontsize' (int), 'format' ('multiline'|'compact'|'auto'),
+    # 'show_fields' (list of str). None → use style defaults. Sub-key names +
+    # accepted enum values are LOCKED at FIX1 close.
+    fit_textbox_kwargs: Optional[Dict[str, Any]] = None,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -483,6 +488,12 @@ def draw_hist(
     _suppress_legend = kwargs.pop('_suppress_legend', False)
     _suppress_title = kwargs.pop('_suppress_title', False)
     _suppress_layout = kwargs.pop('_suppress_layout', False)
+    # Phase 13.42.DF FIX1 (B1/Sonet51): _facet_mode is set by the facet
+    # dispatcher in drawer.py per-cell calls. Plumbed to render_fit_textbox so
+    # it picks fit.text_fontsize_facet (default 7) instead of
+    # fit.text_fontsize_default (default 9). Without this, the facet branch in
+    # render_fit_textbox was permanently unreachable (v1.0 silent gap).
+    _facet_mode = kwargs.pop('_facet_mode', False)
     
     # Normalization
     # Normalization + weights resolution
@@ -652,24 +663,70 @@ def draw_hist(
     # ========================================================================
     # Phase 13.42.DF: Inline fits — apply AFTER ax.hist. curves_list uses dict
     # form per CRR §2 D2 (panel consensus on N1 from v1.4 review).
+    #
+    # FIX1 (B4/Sonnet55 + D9/R4 + B5/R1):
+    #   - B4: previous block used `df[df[group_by] == g][x_name].dropna()` which
+    #     silently returned empty for some group keys (Sonnet55 generalized:
+    #     re-filtering is structurally fragile; also affected top_k/sort_groups).
+    #     Fix: reuse the same df + group_by column the main path operates on
+    #     (already pd.Interval-categorized by the upstream pd.qcut/pd.cut at
+    #     line ~547). Use Series.eq for Interval-safe comparison and dropna()
+    #     to skip NaN-binned rows.
+    #   - D9/R4: previous block had `if group_by is not None and not stacked`.
+    #     Per architect 2026-05-26: stacked + group_by + fit → per-group fits
+    #     (same as unstacked). Stacking is purely visual. Removed `not stacked`
+    #     guard.
+    #   - B5/R1: yerr = sqrt(max(counts, 1)) ALWAYS (ROOT TH1::Fit Neyman
+    #     convention). hist_errors flag controls display errorbars only.
     # ========================================================================
     if fit is not None:
-        if group_by is not None and not stacked:
-            # Per-group fits → stats['fit'] dict keyed by group_val per §3.5
+        if group_by is not None:
+            # Per-group fits → stats['fit'] dict keyed by group_val per §3.5.
+            # D9/R4: applies regardless of stacked (was guarded).
             fits_dict = {}
             x_name_for_groupby = x if isinstance(x, str) else x_name
-            groups_for_fit = df[group_by].unique().tolist()
+            # B4: read groups from the SAME df that the main path used. By the
+            # time we reach here, pd.qcut/pd.cut (line ~547) has already
+            # replaced df[group_by] with Interval categorical values. dropna()
+            # skips NaN-binned rows (quantile edge effects).
+            _gb_series = df[group_by].dropna()
+            groups_for_fit = _gb_series.unique().tolist()
             if top_k is not None and len(groups_for_fit) > top_k:
-                vc = df[group_by].value_counts()
+                vc = _gb_series.value_counts()
                 groups_for_fit = vc.head(top_k).index.tolist()
             for g in groups_for_fit:
-                gdata_raw = df[df[group_by] == g][x_name_for_groupby].dropna()
+                # B4: Series.eq is Interval-safe; df[df[group_by]==g] was the
+                # v1.0 form which silently mis-matched some Intervals.
+                # We use .eq() then explicitly select rows with True, matching
+                # main-path masking semantics.
+                _group_mask = df[group_by].eq(g)
+                gdata_raw = df.loc[_group_mask, x_name_for_groupby].dropna()
                 gdata = gdata_raw.values.astype(float) if hasattr(gdata_raw, 'values') else np.asarray(gdata_raw, dtype=float)
                 if gdata.size == 0:
+                    # NEW status value per CRR §2 disclosure (I-7):
+                    # 'skipped_empty' surfaces empty-after-mask cases cleanly
+                    # instead of silently failing inside curve_fit.
+                    fits_dict[g] = [[{
+                        'fit_name': fit if isinstance(fit, str) else 'unknown',
+                        'params': np.array([], dtype=float),
+                        'param_names': [],
+                        'param_errors': np.array([], dtype=float),
+                        'pcov': np.array([], shape=(0, 0), dtype=float),
+                        'chi2': float('nan'),
+                        'ndf': 0,
+                        'redchi': float('nan'),
+                        'function': None,
+                        'x_range': (float('nan'), float('nan')),
+                        'n_data': 0,
+                        'fit_status': 'skipped_empty',
+                        'fit_error': 'group has no data points after masking',
+                        'fit_spec': fit if isinstance(fit, dict) else {'fun': fit},
+                    }]]
                     continue
                 counts_g, edges_g = np.histogram(gdata, bins=bins, range=_used_range, density=False)
                 centers_g = 0.5 * (edges_g[:-1] + edges_g[1:])
-                yerr_g = np.sqrt(np.maximum(counts_g, 0)) if hist_errors else None
+                # B5/R1: Poisson always (max(counts, 1) per ROOT)
+                yerr_g = np.sqrt(np.maximum(counts_g, 1))
                 curve_g = {
                     'x_data': centers_g,
                     'y_data': counts_g.astype(float),
@@ -694,14 +751,19 @@ def draw_hist(
                         all_curves_combined.append({'label': str(g), 'color': None,
                                                     'x_data': np.array([]), 'y_data': np.array([])})
                         all_fits_combined.append(curve_fits)
-                render_fit_textbox(ax, all_curves_combined, all_fits_combined)
+                render_fit_textbox(ax, all_curves_combined, all_fits_combined, facet_mode=_facet_mode, textbox_kwargs=fit_textbox_kwargs)
             stats_dict['fit'] = fits_dict
-        elif group_by is None:
+        else:
             # Ungrouped path — single curve, fit per §3.5 list-of-lists
             counts_fit, edges_fit = np.histogram(x_data, bins=bins, range=_used_range,
                                                   weights=_hist_weights, density=False)
             bin_centers_fit = 0.5 * (edges_fit[:-1] + edges_fit[1:])
-            yerr_hist = np.sqrt(np.maximum(counts_fit, 0)) if hist_errors else None
+            # Phase 13.42.DF FIX1 (B5/R1): Poisson default per ROOT TH1::Fit Neyman
+            # convention. v1.0's `hist_errors` gating made χ² meaningless (yerr=None
+            # → curve_fit minimizes Σresid² as if yerr=1; reported χ² scales with N²).
+            # `hist_errors` now controls *display* errorbars only, NOT fit yerr.
+            # max(counts, 1) matches ROOT precisely for empty bins.
+            yerr_hist = np.sqrt(np.maximum(counts_fit, 1))
             curve = {
                 'x_data': bin_centers_fit,
                 'y_data': counts_fit.astype(float),
@@ -718,9 +780,8 @@ def draw_hist(
             ]
             fits_per_curve = [curve_fits]
             render_fit_overlays(ax, curves_list_fit, fits_per_curve)
-            render_fit_textbox(ax, curves_list_fit, fits_per_curve)
+            render_fit_textbox(ax, curves_list_fit, fits_per_curve, facet_mode=_facet_mode, textbox_kwargs=fit_textbox_kwargs)
             stats_dict['fit'] = fits_per_curve
-        # NOTE: stacked + group_by + fit not in v1.0 scope.
 
     # Labels
     ax.set_xlabel(xlabel or x_name)

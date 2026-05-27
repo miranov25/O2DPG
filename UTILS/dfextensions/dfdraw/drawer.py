@@ -1395,6 +1395,36 @@ class DFDraw:
             expr = f"{y}:{x}" if x is not None else y
             iter_kwargs = dict(kwargs)
 
+            # Phase 13.42.DF FIX1 (D5/R2): vector fit pairing. v1.0 passed the
+            # full fit list to each Y-channel iteration ⇒ compound-broadcast
+            # on every curve, deviating from v1.4 §6.3 verbatim spec. Per
+            # architect 2026-05-26 ("Pairs yes or vector-scalar"): slice the
+            # fit list per channel (pairing); scalar broadcasts to all
+            # channels (v1.0 behavior preserved for scalar input).
+            _user_fit = iter_kwargs.get('fit', None)
+            if _user_fit is not None and isinstance(_user_fit, list):
+                n_channels = len(y_list)
+                if len(_user_fit) != n_channels:
+                    raise ValueError(
+                        f"[vector_fit] length mismatch: {len(_user_fit)} fits "
+                        f"vs {n_channels} channels. Fix: provide list of length "
+                        f"{n_channels} (per-channel pairing) or a single fit "
+                        f"(broadcast)."
+                    )
+                # D5/I-2 (v1.1): nested-list form e.g. fit=[[a],[b,c]] is
+                # explicitly NOT in FIX1 scope; defer to FIX2. Each pairing
+                # slot is one fit spec.
+                _slot = _user_fit[y_idx]
+                if isinstance(_slot, list):
+                    raise ValueError(
+                        "[vector_fit] nested list fit spec (e.g. "
+                        "[[fit_a],[fit_b,fit_c]]) is not supported in FIX1. "
+                        "Fix: use scalar fit (broadcast) or flat list of "
+                        "length N (pairing). FIX2 may add nested-list compound."
+                    )
+                iter_kwargs['fit'] = _slot
+            # Scalar (str/dict/callable) → keep as-is; downstream broadcasts.
+
             # Phase 13.27.DF Commit 2 (v1.2 §4.4): logical AND composition of
             # global selection with per-curve selection_vector[sel_idx];
             # multiplicative composition of global weights with per-curve
@@ -3207,6 +3237,18 @@ class DFDraw:
             # the column-mode scatter test).
             if plot_kind != 'scatter':
                 forwarded['auto_title'] = False
+
+            # Phase 13.42.DF FIX1 (B1/Sonet51): facet_mode sentinel — informs
+            # per-cell draw call that it is rendering inside a facet grid, so
+            # render_fit_textbox uses fit.text_fontsize_facet instead of
+            # fit.text_fontsize_default. v1.0 missed this plumbing: render_fit_textbox
+            # signature had facet_mode but all 3 call sites passed nothing, so the
+            # facet font branch was permanently unreachable.
+            # Only forward to plot kinds that support fit= (hist/profile/scatter);
+            # other kinds (hist2d/scatter3d/hexbin/profile2d) would leak the
+            # sentinel into matplotlib via **kwargs.
+            if plot_kind in ('hist', 'profile', 'scatter'):
+                forwarded['_facet_mode'] = True
 
             # Phase 13.31.DF (AD-78): for column-mode facet, KEEP group_by
             # for inner overlay (orthogonal dimension — that's the whole

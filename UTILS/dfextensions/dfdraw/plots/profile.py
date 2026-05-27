@@ -206,6 +206,12 @@ def draw_profile(
     _suppress_legend: bool = False,
     _suppress_title: bool = False,
     _suppress_layout: bool = False,
+    # Phase 13.42.DF FIX1 (B1/Sonet51): facet_mode sentinel set by the facet
+    # dispatcher (drawer.py per-cell calls). Plumbed to render_fit_textbox so
+    # it picks fit.text_fontsize_facet instead of fit.text_fontsize_default.
+    _facet_mode: bool = False,
+    # Phase 13.42.DF FIX1 (B2/R5): per-call fit textbox formatting overrides.
+    fit_textbox_kwargs: Optional[Dict[str, Any]] = None,
     # Phase 13.37.DF: per-group linestyle cycling mode flag. When True and
     # user did not pass linestyle= explicitly, cycle through
     # channels.cycles.linestyle per group. User-explicit linestyle= wins
@@ -678,7 +684,7 @@ def draw_profile(
                             'x_data': np.array([]), 'y_data': np.array([])
                         })
                         all_fits_combined.append(curve_fits)
-                render_fit_textbox(ax, all_curves_combined, all_fits_combined)
+                render_fit_textbox(ax, all_curves_combined, all_fits_combined, facet_mode=_facet_mode, textbox_kwargs=fit_textbox_kwargs)
             stats_dict['fit'] = fits_dict_grouped
     else:
         # Single profile
@@ -912,7 +918,7 @@ def draw_profile(
             ]
             fits_per_curve = [curve_fits]
             render_fit_overlays(ax, curves_list_fit, fits_per_curve)
-            render_fit_textbox(ax, curves_list_fit, fits_per_curve)
+            render_fit_textbox(ax, curves_list_fit, fits_per_curve, facet_mode=_facet_mode, textbox_kwargs=fit_textbox_kwargs)
             stats_dict['fit'] = fits_per_curve
 
     # Labels
