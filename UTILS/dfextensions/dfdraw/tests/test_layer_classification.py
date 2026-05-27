@@ -402,5 +402,35 @@ TEST_LAYERS = {
     "test_phase_13_42_df_inline_fits.py::TestPhase1342FIX2Regressions::test_f62_stacked_selection_vector_fit_raises": "invariance",
     "test_phase_13_42_df_inline_fits.py::TestPhase1342FIX2Regressions::test_f63_fit_textbox_kwargs_signature_and_forwarded_names": "invariance",
 
+    # Phase 13.43.DF v1.2 — Summary Fit (26 tests: F.34-F.48 + F.38a +
+    # F.47b + F.49-F.56 + F.56b)
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f34_summary_fit_table": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f35_summary_fit_figure": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f36_summary_fit_both": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f37_summary_fit_omitted_is_scenario_a": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f38_table_row_count": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f38a_selection_vector_composition": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f39_params_figure_auto_layout": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f40_overlay_mode": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f41_annotate_mode": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f42_no_group_no_facet_figure_is_scenario_e": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f43_precision_in_table_cells": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f44_2d_facet_composition": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f45_normalize_plus_summary_fit_is_scenario_e": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f46_quantile_band_profile_is_scenario_e": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f47_cumulative_hist": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f47b_stacked_grouped_fit": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f48_summary_fit_without_fit": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f49_auto_title_content": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f50_title_overflow_truncate": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f51_default_data_format_is_list_dict": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f52_pandas_via_style_key": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f53_per_call_data_format": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f54_same_true_replace_mode": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f55_placement_invariants": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f56_faceted_aggregation_shape3": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f56b_faceted_no_group_by": "invariance",
+    "test_phase_13_43.py::TestPhase1343SummaryFit::test_f56c_draw_scalar_forwards_fit_and_summary_fit": "invariance",
+
     # Everything else defaults to "smoke"
 }

@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-05-27 11:43 UTC
+**Generated:** 2026-05-27 18:36 UTC
 **Phase:** 13.15.DF
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -9,13 +9,13 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 50 | 46% |
-| ☑️ Smoke-only | 57 | 53% |
+| ✅ Verified | 51 | 47% |
+| ☑️ Smoke-only | 57 | 52% |
 | 🧨 Broken | 0 | 0% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **108** | |
-| **Total proof tests** | **542** | |
-| **Invariance tests** | **313** | |
+| **Total features** | **109** | |
+| **Total proof tests** | **569** | |
+| **Invariance tests** | **340** | |
 
 **Status key:**
 - ✅ Verified — has at least one invariance test (A ≡ B check)
@@ -173,6 +173,7 @@
 | ✅ | **FACET.list_grid** — facet_by accepts Union[str, List[str]] for 1D/2D/3D faceting. Convention LOCKED matching numpy/pandas (n_rows, n_cols, ...) shape: facet_by[0]=ROW (vertical within figure), facet_by[1]=COLUMN (horizontal within figure), facet_by[2]=FIGID (separate figures, one per value). facet_by[3+] raises NotImplementedError. 3D returns (List[Figure], List[axes_2d], List[stats_dict]) — DEVIATES from standard (fig, ax, stats) contract; documented prominently in inline help. New params: share_x/share_y ∈ {'all','row','col','none'} (within-figure axis sharing), share_across_figures: bool (3D global range lock). Per-plot-kind lock for share_across_figures (CP1-2): scatter locks x AND y; hist/profile locks x only (y auto-scales per figure to handle sparse-figID variance). New helpers: _normalize_facet_args, _to_mpl_share (symmetric {'all':True,'row':'row','col':'col','none':False} — v1.2 CP0-1 fix for Hard Constraint #3), _validate_share_axis_value, _resolve_facet_values (discrete or pd.cut/qcut Interval), _filter_facet_value (CP1-3 discrete vs binned), _compute_global_ranges. dfdraw is FIRST major plotting library with unified API where Nth faceting dimension generates separate figures (seaborn/ggplot2/plotly/altair all require manual loops). _validate_facet_by_binning guard for list input (v1.3 P1-A). Per-plot-kind dispatch: hist uses range= (matplotlib convention); profile uses range= which DFDraw.profile remaps to draw_profile's x_range= internally; scatter uses ax.set_xlim/set_ylim post-draw (no native range params); hist also locks ax.set_xlim post-draw (range= only locks bins, not axis xlim). Empty cell handling: '(no data)' diagnostic + stats={'n':0,'empty':True} — Phase 13.41.DF | 23 | 0 |
 | | **FIT** | | |
 | ✅ | **FIT.inline** — Inline fits (fit= parameter on hist/profile/scatter/draw) | 41 | 0 |
+| ✅ | **FIT.summary** — Summary fit — standalone table + params figure | 27 | 0 |
 
 ---
 

@@ -272,6 +272,41 @@ DEFAULT_STYLE: Dict[str, Any] = {
     # absolute value get rendered with a more visible marker. Default 3.0σ
     # matches the conventional "three-sigma" anomaly threshold in physics.
     "normalize.pull.highlight_threshold": 3.0,
+
+    # =========================================================================
+    # Phase 13.43.DF v1.2 — Summary Fit (§4.3 + §3.10)
+    # =========================================================================
+
+    # Data format inside stats['summary_fit']['data']:
+    #   'dict' (default) — list[dict] matching _make_row output (zero deps).
+    #   'pandas'         — pd.DataFrame.from_records(rows) (opt-in).
+    # Override globally via set_style({'summary_fit.data_format': 'pandas'}),
+    # or per-call via summary_fit={'kind': 'table', 'data_format': 'pandas'}.
+    "summary_fit.data_format": "dict",
+
+    # Title-overflow behavior at font_size_min (§3.9):
+    #   'shrink'   — keep shrinking past min (default).
+    #   'truncate' — cap at font_size_min; ellipsis the title.
+    #   'wrap'     — cap at font_size_min; wrap to 2 lines.
+    "summary_fit.title_overflow": "shrink",
+
+    # Title font-size bounds (§3.9 auto-fit loop).
+    "summary_fit.title.font_size_max": 12,
+    "summary_fit.title.font_size_min": 8,
+
+    # Table figure sizing (§4.3).
+    "summary_fit.table.figsize_per_row": 0.35,    # inches per row
+    "summary_fit.table.figsize_per_col": 1.20,    # inches per column
+    "summary_fit.table.font_size_max": 10,
+    "summary_fit.table.font_size_min": 7,
+    "summary_fit.table.row_color_alpha": 0.3,
+
+    # Params figure sizing (§4.3).
+    "summary_fit.figure.subplot_width": 4.0,
+    "summary_fit.figure.subplot_height": 3.0,
+    "summary_fit.figure.errorbar_capsize": 2.5,
+    "summary_fit.figure.annotate_fontsize": 8,
+    "summary_fit.figure.annotate_offset": (5, 5),
 }
 
 # =============================================================================

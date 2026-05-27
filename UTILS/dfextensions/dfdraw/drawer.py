@@ -418,6 +418,168 @@ class DFDraw:
         return info
     
     # =========================================================================
+    # Phase 13.43.DF v1.2 — Summary Fit (outer-layer consume)
+    # =========================================================================
+
+    def _maybe_attach_summary_fit(self, stats, summary_fit_spec, *,
+                                  group_by=None, facet_by=None,
+                                  expr_for_auto_title=None,
+                                  consumed_by_normalize=False):
+        """Phase 13.43.DF v1.2 §4.2: attach summary_fit results to stats.
+
+        Called AT EACH return site of DFDraw.{hist,profile,scatter,draw}
+        AFTER the dispatch returns. Modifies ``stats`` in place — adds
+        ``stats['summary_fit']`` (dict of Figures + 'data') OR Scenario E
+        empty dict + ``stats['summary_fit_note']`` diagnostic.
+
+        Parameters
+        ----------
+        stats : dict
+            The stats dict the outer method is about to return.
+        summary_fit_spec : str | list | dict | None
+            User's summary_fit= kwarg. None → no-op (Scenario A unchanged).
+        group_by, facet_by : optional
+            Column name(s) the call used; passed through for axis logic
+            and table column-key construction.
+        expr_for_auto_title : optional
+            Original expression string for §3.9 auto-title.
+        consumed_by_normalize : bool
+            True when normalize= was active and consumed fit/summary_fit.
+            Forces Scenario E with a normalize-specific note even if a
+            stale stats['fit'] would otherwise look renderable.
+        """
+        if summary_fit_spec is None:
+            return  # Scenario A: kwarg absent, no key added.
+
+        # ------------------------------------------------------------------
+        # Vector dispatch path: _draw_vector returns stats as a list of
+        # per-iteration dicts (one per channel × selection × weights iter).
+        # Aggregate the per-iteration stats['fit'] entries into a synthetic
+        # Shape 3 dict (keyed by iteration tuple) so _flatten_to_rows
+        # produces the right per-(selection × group × cell) rows, then
+        # write the rendered summary_fit back into the FIRST iter dict so
+        # callers can access it via stats[0]['summary_fit'].
+        # CRR §2 disclosure: vector-dispatch summary_fit lives on the first
+        # iter dict, not at top level — there is no top level when stats
+        # is a list. This is documented in the proposal as the natural
+        # location given the per-iteration list contract.
+        # ------------------------------------------------------------------
+        if isinstance(stats, list):
+            if not stats:
+                return
+            aggregated_fits: Dict[Tuple[Any, ...], Any] = {}
+            for i, iter_stats in enumerate(stats):
+                if not isinstance(iter_stats, dict):
+                    continue
+                cell_fit = iter_stats.get('fit')
+                if cell_fit:
+                    aggregated_fits[(i,)] = cell_fit
+            # Render into a wrapper, then deposit on stats[0].
+            wrapper: Dict[str, Any] = {'fit': aggregated_fits}
+            self._maybe_attach_summary_fit(
+                wrapper, summary_fit_spec,
+                group_by=group_by, facet_by=facet_by,
+                expr_for_auto_title=expr_for_auto_title,
+                consumed_by_normalize=consumed_by_normalize,
+            )
+            target = next((d for d in stats if isinstance(d, dict)), None)
+            if target is not None:
+                if 'summary_fit' in wrapper:
+                    target['summary_fit'] = wrapper['summary_fit']
+                if 'summary_fit_note' in wrapper:
+                    target['summary_fit_note'] = wrapper['summary_fit_note']
+            return
+
+        if not isinstance(stats, dict):
+            return  # Defensive: unexpected return shape.
+
+        from .plots._summary_fit import (
+            _normalize_summary_fit_spec,
+            render_summary_fit,
+        )
+
+        try:
+            spec = _normalize_summary_fit_spec(summary_fit_spec)
+        except ValueError:
+            raise  # §3.8 error grammar — surface to user.
+
+        if consumed_by_normalize:
+            stats['summary_fit'] = {}
+            stats['summary_fit_note'] = (
+                "summary_fit consumed: normalize= active. The legacy normalize "
+                "dispatcher predates inline fits; fit= and summary_fit= are "
+                "silently consumed. Workaround: compute normalized residuals "
+                "into an alias column with adf.add_alias(), then call draw() "
+                "on the alias with fit= and summary_fit=."
+            )
+            return
+
+        stats_fit = stats.get('fit')
+        if not stats_fit:
+            stats['summary_fit'] = {}
+            stats['summary_fit_note'] = (
+                "summary_fit requested but stats['fit'] is empty. Causes: "
+                "fit= kwarg was not provided; or quantile-band profile mode "
+                "(no fit-target curves); or the combination consumed fit "
+                "upstream. No figures rendered."
+            )
+            return
+
+        # Normalize facet_by to a list-of-strings for display.
+        if isinstance(facet_by, str):
+            facet_cols = [facet_by]
+        elif isinstance(facet_by, (list, tuple)):
+            facet_cols = list(facet_by)
+        else:
+            facet_cols = None
+
+        # Resolve data_format precedence: per-call spec > module style > default.
+        from .style import get_style_value as _get_style_value
+        _data_format = spec.get('data_format')
+        if _data_format is None:
+            _data_format = _get_style_value('summary_fit.data_format', 'dict')
+
+        # Build a style accessor closure for render_summary_fit. The renderer
+        # treats this as a mapping; get_style_value semantics give us per-key
+        # default fallback.
+        class _ModuleStyleProxy:
+            def get(self, key, default=None):
+                return _get_style_value(key, default)
+            def __contains__(self, key):
+                return _get_style_value(key, None) is not None
+            def __getitem__(self, key):
+                v = _get_style_value(key, None)
+                if v is None:
+                    raise KeyError(key)
+                return v
+        _style = _ModuleStyleProxy()
+
+        figs, data, note = render_summary_fit(
+            stats_fit,
+            kinds=spec['kinds'],
+            group_by_col=group_by,
+            facet_by_cols=facet_cols,
+            params=spec.get('params'),
+            mode=spec.get('mode', 'subplots'),
+            annotate=spec.get('annotate', False),
+            precision=spec.get('precision', 2),
+            columns=spec.get('columns'),
+            data_format=_data_format,
+            title=spec.get('title', 'auto'),
+            title_overflow=spec.get('title_overflow', 'shrink'),
+            style=_style,
+            expr_for_auto_title=expr_for_auto_title,
+        )
+
+        if figs:
+            stats['summary_fit'] = {**figs, 'data': data}
+        else:
+            stats['summary_fit'] = {}
+            stats['summary_fit_note'] = note or (
+                "summary_fit requested but no figures rendered."
+            )
+
+    # =========================================================================
     # Expression Parsing
     # =========================================================================
     
@@ -3410,6 +3572,25 @@ class DFDraw:
             "facet_mode": _facet_mode,
             "n_total": sum(s.get("n", 0) for s in all_stats.values()),
         }
+
+        # ====================================================================
+        # Phase 13.43.DF v1.2 §4.2.0 — Faceted fit aggregation (Option A).
+        # ────────────────────────────────────────────────────────────────────
+        # 1D facet case: per-cell stats live at combined_stats['per_group'][k];
+        # aggregate per-cell 'fit' into a top-level combined_stats['fit'] as
+        # Shape 3 with 1-tuple keys. Phase 13.42 D4 per-cell contract is
+        # PRESERVED — combined_stats['per_group'][k] still has 'fit' under it.
+        # ====================================================================
+        _aggregated_fits = {}
+        for _gval, _cell_stats in all_stats.items():
+            if not isinstance(_cell_stats, dict):
+                continue
+            _cell_fit = _cell_stats.get('fit')
+            if _cell_fit:
+                _aggregated_fits[(_gval,)] = _cell_fit
+        if _aggregated_fits:
+            combined_stats['fit'] = _aggregated_fits
+
         return fig, axes_flat[:n_groups], combined_stats
 
     # =========================================================================
@@ -3588,6 +3769,31 @@ class DFDraw:
                 f"{_auto_expr}  [faceted by {facet_list[0]} × {facet_list[1]}]",
                 fontsize=11)
         fig.tight_layout()
+
+        # ====================================================================
+        # Phase 13.43.DF v1.2 §4.2.0 — Faceted fit aggregation (Option A).
+        # ────────────────────────────────────────────────────────────────────
+        # Aggregate per-cell stats[(row,col)]['fit'] into a top-level
+        # stats['fit'] as Shape 3 (tuple keys), so Phase 13.43 summary_fit and
+        # any other downstream consumer can access fits without iterating the
+        # per-cell dict structure. Phase 13.42 D4 per-cell contract is
+        # PRESERVED — stats_grid[(row,col)] still has 'fit' under it; this
+        # only ADDS a convenience top-level key.
+        # See PHASE_13_43_DF_v1_2_SummaryFit_Proposal.md §4.2.0 and F.56.
+        # ====================================================================
+        if any(isinstance(k, tuple) for k in stats_grid):
+            aggregated_fits = {}
+            for cell_key, cell_stats in stats_grid.items():
+                if not isinstance(cell_key, tuple):
+                    continue
+                if not isinstance(cell_stats, dict):
+                    continue
+                _cell_fit = cell_stats.get('fit')
+                if _cell_fit:
+                    aggregated_fits[cell_key] = _cell_fit
+            if aggregated_fits:
+                stats_grid['fit'] = aggregated_fits
+
         return fig, axes, stats_grid
     
     def _dispatch_3d_facet(self, df, x_expr, y_expr, facet_list, bins_list,
@@ -3716,6 +3922,13 @@ class DFDraw:
         # forwarded inward; consumed by inner draw_hist/profile/scatter
         # via render_fit_textbox.
         fit_textbox_kwargs: Optional[Dict] = None,
+        # Phase 13.43.DF v1.2 (architect OQ-A1): standalone summary fit
+        # figures (table + params trend). Pattern A — outer-layer
+        # consume: popped from kwargs at THIS layer and rendered AFTER
+        # _dispatch_faceted_render returns, NEVER forwarded into the
+        # faceted renderer. NOT in _*_FORWARDED_NAMES (would fail R6
+        # validator). See §4.2 / §9.1 of the v1.2 proposal.
+        summary_fit: Optional[Union[str, List[str], Dict]] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -3855,10 +4068,15 @@ class DFDraw:
                 if val is not _MISSING and val is not None:
                     vector_kwargs.setdefault(name, val)
             
-            return self._draw_vector(
+            _fig_sf, _axes_sf, _stats_sf = self._draw_vector(
                 y_expr, x_expr, method_map[type],
                 group_by=group_by, **vector_kwargs
             )
+            self._maybe_attach_summary_fit(
+                _stats_sf, summary_fit,
+                group_by=group_by, facet_by=facet_by,
+                expr_for_auto_title=expr)
+            return _fig_sf, _axes_sf, _stats_sf
         
         # Auto-detect type (scalar path)
         if type is None:
@@ -3868,19 +4086,32 @@ class DFDraw:
                 type = "scatter"
         
         # Dispatch to specific plot method
+        # Phase 13.43.DF v1.0 R-2 (Sonnet54 panel finding): explicitly
+        # forward fit / fit_textbox_kwargs / summary_fit at scalar dispatch.
+        # These are NAMED params on DFDraw.draw (Phase 13.42 + 13.43), so
+        # they are NOT in **kwargs after Python signature binding. The bug
+        # was pre-existing for fit (Phase 13.42) and fit_textbox_kwargs
+        # (Phase 13.42 FIX2 ADV-3); summary_fit (Phase 13.43) would have
+        # silently dropped via the same route. Fixed all 3 together.
         if type == "hist":
             return self.hist(
                 expr, selection=selection, bins=bins, stats=stats,
                 norm=norm, title=title, ax=ax, sample=sample, 
                 save=save, group_by=group_by, facet=facet,
-                same=same, **kwargs
+                same=same,
+                fit=fit, fit_textbox_kwargs=fit_textbox_kwargs,
+                summary_fit=summary_fit,
+                **kwargs
             )
         elif type == "scatter":
             return self.scatter(
                 expr, selection=selection, color=color, size=size,
                 marker=marker, stats=stats, title=title, ax=ax,
                 sample=sample, save=save, group_by=group_by, 
-                facet=facet, same=same, **kwargs
+                facet=facet, same=same,
+                fit=fit, fit_textbox_kwargs=fit_textbox_kwargs,
+                summary_fit=summary_fit,
+                **kwargs
             )
         elif type == "hist2d":
             return self.hist2d(
@@ -3892,7 +4123,10 @@ class DFDraw:
             return self.profile(
                 expr, selection=selection, bins=bins, stats=stats,
                 title=title, ax=ax, sample=sample, save=save,
-                group_by=group_by, same=same, **kwargs
+                group_by=group_by, same=same,
+                fit=fit, fit_textbox_kwargs=fit_textbox_kwargs,
+                summary_fit=summary_fit,
+                **kwargs
             )
         else:
             raise ValueError(
@@ -3989,6 +4223,13 @@ class DFDraw:
         # forwarded inward; consumed by inner draw_hist/profile/scatter
         # via render_fit_textbox.
         fit_textbox_kwargs: Optional[Dict] = None,
+        # Phase 13.43.DF v1.2 (architect OQ-A1): standalone summary fit
+        # figures (table + params trend). Pattern A — outer-layer
+        # consume: popped from kwargs at THIS layer and rendered AFTER
+        # _dispatch_faceted_render returns, NEVER forwarded into the
+        # faceted renderer. NOT in _*_FORWARDED_NAMES (would fail R6
+        # validator). See §4.2 / §9.1 of the v1.2 proposal.
+        summary_fit: Optional[Union[str, List[str], Dict]] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -4128,10 +4369,15 @@ class DFDraw:
                     if name == 'auto_title' and val is False:
                         continue
                     vector_kwargs.setdefault(name, val)
-            return self._draw_vector(
+            _fig_sf, _axes_sf, _stats_sf = self._draw_vector(
                 y_expr, x_expr, self.hist,
                 group_by=group_by, **vector_kwargs
             )
+            self._maybe_attach_summary_fit(
+                _stats_sf, summary_fit,
+                group_by=group_by, facet_by=facet_by,
+                expr_for_auto_title=expr)
+            return _fig_sf, _axes_sf, _stats_sf
         
         col_expr = y_expr  # Use y (first part) as the variable
         
@@ -4289,6 +4535,10 @@ class DFDraw:
             fig.savefig(save, dpi=get_style_value("figure.dpi", 100), 
                        bbox_inches="tight")
         
+        self._maybe_attach_summary_fit(
+            stats_dict, summary_fit,
+            group_by=group_by, facet_by=facet_by,
+            expr_for_auto_title=expr)
         return fig, axes, stats_dict
     
     def scatter(
@@ -4354,6 +4604,13 @@ class DFDraw:
         # forwarded inward; consumed by inner draw_hist/profile/scatter
         # via render_fit_textbox.
         fit_textbox_kwargs: Optional[Dict] = None,
+        # Phase 13.43.DF v1.2 (architect OQ-A1): standalone summary fit
+        # figures (table + params trend). Pattern A — outer-layer
+        # consume: popped from kwargs at THIS layer and rendered AFTER
+        # _dispatch_faceted_render returns, NEVER forwarded into the
+        # faceted renderer. NOT in _*_FORWARDED_NAMES (would fail R6
+        # validator). See §4.2 / §9.1 of the v1.2 proposal.
+        summary_fit: Optional[Union[str, List[str], Dict]] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -4477,10 +4734,15 @@ class DFDraw:
                 val = _local.get(name, _MISSING)
                 if val is not _MISSING and val is not None:
                     vector_kwargs.setdefault(name, val)
-            return self._draw_vector(
+            _fig_sf, _axes_sf, _stats_sf = self._draw_vector(
                 y_expr, x_expr, self.scatter,
                 group_by=group_by, **vector_kwargs
             )
+            self._maybe_attach_summary_fit(
+                _stats_sf, summary_fit,
+                group_by=group_by, facet_by=facet_by,
+                expr_for_auto_title=expr)
+            return _fig_sf, _axes_sf, _stats_sf
         
         if x_expr is None:
             raise ValueError(
@@ -4602,6 +4864,10 @@ class DFDraw:
             fig.savefig(save, dpi=get_style_value("figure.dpi", 100),
                        bbox_inches="tight")
         
+        self._maybe_attach_summary_fit(
+            stats_dict, summary_fit,
+            group_by=group_by, facet_by=facet_by,
+            expr_for_auto_title=expr)
         return fig, axes, stats_dict
     
     def profile(
@@ -4693,6 +4959,13 @@ class DFDraw:
         # forwarded inward; consumed by inner draw_hist/profile/scatter
         # via render_fit_textbox.
         fit_textbox_kwargs: Optional[Dict] = None,
+        # Phase 13.43.DF v1.2 (architect OQ-A1): standalone summary fit
+        # figures (table + params trend). Pattern A — outer-layer
+        # consume: popped from kwargs at THIS layer and rendered AFTER
+        # _dispatch_faceted_render returns, NEVER forwarded into the
+        # faceted renderer. NOT in _*_FORWARDED_NAMES (would fail R6
+        # validator). See §4.2 / §9.1 of the v1.2 proposal.
+        summary_fit: Optional[Union[str, List[str], Dict]] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -4940,7 +5213,7 @@ class DFDraw:
                 df_for_facet = self._apply_sampling(df_for_facet, sample)
                 # Use scalar x for facet (vector x is not supported for profile)
                 x_for_facet = x_expr[0] if isinstance(x_expr, list) else x_expr
-                return self._dispatch_faceted_render(
+                _fig_sf, _axes_sf, _stats_sf = self._dispatch_faceted_render(
                     df=df_for_facet, x_expr=x_for_facet, y_expr=y_expr,
                     facet_by='vector', plot_kind='profile',
                     bins=bins, x_range=range, error=error,
@@ -4957,6 +5230,11 @@ class DFDraw:
                     nan_policy=nan_policy,
                     **kwargs
                 )
+                self._maybe_attach_summary_fit(
+                    _stats_sf, summary_fit,
+                    group_by=group_by, facet_by=facet_by,
+                    expr_for_auto_title=expr)
+                return _fig_sf, _axes_sf, _stats_sf
             # FIX1 B1a: forward every named param via tuple + locals().get(name, _MISSING).
             # _MISSING distinguishes "caller didn't pass" from "caller passed None".
             vector_kwargs = dict(kwargs)
@@ -5024,6 +5302,17 @@ class DFDraw:
                     # compute the normalized values into an alias column with
                     # adf.add_alias(), then call draw() on the alias with fit=.
                     'fit',
+                    # Phase 13.43.DF v1.2 §4.6 (C-3 lock): summary_fit also
+                    # consumed when normalize= is active — there's no fit to
+                    # summarize. The outer dispatch detects "summary_fit
+                    # requested but stats['fit'] empty" and produces
+                    # Scenario E: stats['summary_fit'] = {} +
+                    # stats['summary_fit_note'].
+                    # Also consume fit_textbox_kwargs (Phase 13.42 FIX2 ADV-3
+                    # promoted to outer-named param): no fit textbox to format
+                    # when fit is consumed.
+                    'summary_fit',
+                    'fit_textbox_kwargs',
                 }
                 _passthrough = {k: v for k, v in vector_kwargs.items()
                                 if k not in _consumed}
@@ -5033,7 +5322,7 @@ class DFDraw:
                 #   group_by → grouped dispatcher (per-group diff curves)
                 #   else    → M1 single-render dispatcher
                 if facet_by is not None:
-                    return self._dispatch_normalize_faceted_render(
+                    _fig_sf, _ax_sf, _stats_sf = self._dispatch_normalize_faceted_render(
                         y_expr, x_expr,
                         normalize=normalize, normalize_layout=normalize_layout,
                         facet_by=facet_by,
@@ -5050,8 +5339,14 @@ class DFDraw:
                         ncols=ncols,
                         **_passthrough,
                     )
+                    self._maybe_attach_summary_fit(
+                        _stats_sf, summary_fit,
+                        group_by=group_by, facet_by=facet_by,
+                        expr_for_auto_title=expr,
+                        consumed_by_normalize=True)
+                    return _fig_sf, _ax_sf, _stats_sf
                 if group_by is not None:
-                    return self._dispatch_normalize_grouped_render(
+                    _fig_sf, _ax_sf, _stats_sf = self._dispatch_normalize_grouped_render(
                         y_expr, x_expr,
                         normalize=normalize, normalize_layout=normalize_layout,
                         group_by=group_by,
@@ -5065,7 +5360,13 @@ class DFDraw:
                         weights=weights, nan_policy=nan_policy,
                         **_passthrough,
                     )
-                return self._dispatch_normalize_render(
+                    self._maybe_attach_summary_fit(
+                        _stats_sf, summary_fit,
+                        group_by=group_by, facet_by=facet_by,
+                        expr_for_auto_title=expr,
+                        consumed_by_normalize=True)
+                    return _fig_sf, _ax_sf, _stats_sf
+                _fig_sf, _ax_sf, _stats_sf = self._dispatch_normalize_render(
                     y_expr, x_expr,
                     normalize=normalize,
                     normalize_layout=normalize_layout,
@@ -5085,10 +5386,21 @@ class DFDraw:
                     nan_policy=nan_policy,
                     **_passthrough,
                 )
-            return self._draw_vector(
+                self._maybe_attach_summary_fit(
+                    _stats_sf, summary_fit,
+                    group_by=group_by, facet_by=facet_by,
+                    expr_for_auto_title=expr,
+                    consumed_by_normalize=True)
+                return _fig_sf, _ax_sf, _stats_sf
+            _fig_sf, _axes_sf, _stats_sf = self._draw_vector(
                 y_expr, x_expr, self.profile,
                 group_by=group_by, **vector_kwargs
             )
+            self._maybe_attach_summary_fit(
+                _stats_sf, summary_fit,
+                group_by=group_by, facet_by=facet_by,
+                expr_for_auto_title=expr)
+            return _fig_sf, _axes_sf, _stats_sf
         
         if x_expr is None:
             raise ValueError(
@@ -5250,6 +5562,10 @@ class DFDraw:
             fig.savefig(save, dpi=get_style_value("figure.dpi", 100),
                        bbox_inches="tight")
         
+        self._maybe_attach_summary_fit(
+            stats_dict, summary_fit,
+            group_by=group_by, facet_by=facet_by,
+            expr_for_auto_title=expr)
         return fig, axes, stats_dict
     
     def hist2d(

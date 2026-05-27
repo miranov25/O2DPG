@@ -1424,4 +1424,53 @@ FEATURES = [
             "test_phase_13_42_df_inline_fits.py::TestPhase1342FIX2Regressions::test_f63_fit_textbox_kwargs_signature_and_forwarded_names",
         ],
     },
+    # ========================================================================
+    # Phase 13.43.DF — Summary Fit (standalone figures for fit results)
+    # ========================================================================
+    {
+        "id": "FIT.summary",
+        "name": "Summary fit — standalone table + params figure",
+        "category": "FIT",
+        "tests": [
+            # Basic scenarios A/B/C/D
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f34_summary_fit_table",
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f35_summary_fit_figure",
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f36_summary_fit_both",
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f37_summary_fit_omitted_is_scenario_a",
+            # Row count + composition
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f38_table_row_count",
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f38a_selection_vector_composition",
+            # Params figure layout
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f39_params_figure_auto_layout",
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f40_overlay_mode",
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f41_annotate_mode",
+            # Scenario E edge cases
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f42_no_group_no_facet_figure_is_scenario_e",
+            # Precision
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f43_precision_in_table_cells",
+            # Faceted composition
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f44_2d_facet_composition",
+            # Composition with other modes
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f45_normalize_plus_summary_fit_is_scenario_e",
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f46_quantile_band_profile_is_scenario_e",
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f47_cumulative_hist",
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f47b_stacked_grouped_fit",
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f48_summary_fit_without_fit",
+            # Title
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f49_auto_title_content",
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f50_title_overflow_truncate",
+            # Data format
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f51_default_data_format_is_list_dict",
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f52_pandas_via_style_key",
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f53_per_call_data_format",
+            # same=True Replace mode
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f54_same_true_replace_mode",
+            # Placement invariants
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f55_placement_invariants",
+            # Faceted aggregation §4.2.0
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f56_faceted_aggregation_shape3",
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f56b_faceted_no_group_by",
+            "test_phase_13_43.py::TestPhase1343SummaryFit::test_f56c_draw_scalar_forwards_fit_and_summary_fit",
+        ],
+    },
 ]
