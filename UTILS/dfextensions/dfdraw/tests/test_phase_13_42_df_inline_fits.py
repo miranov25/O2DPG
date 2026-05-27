@@ -1014,3 +1014,171 @@ class TestPhase1342FIX1Regressions:
         finally:
             set_style({'fit.text_fontsize_facet': 7})  # restore default
             plt.close(fig)
+
+
+# ============================================================================
+# Phase 13.42.DF FIX2 (v1.0) — close items deferred at FIX1 close
+#
+# F.59 — B6: suptitle padding adapts to title line count (multi-line titles)
+# F.60 — B7: x-axis cascade verify on faceted+fit (smoke, no crashes/warnings)
+# F.61 — I-8: UserWarning when fit= combined with weights= on hist
+# F.62 — ADV-1: NotImplementedError on stacked+selection_vector+fit
+# F.63 — ADV-3: fit_textbox_kwargs in DFDraw.{hist,profile,scatter,draw} signatures
+#                AND in _HIST/PROFILE/SCATTER_FORWARDED_NAMES (R6 validator passes)
+# ============================================================================
+
+class TestPhase1342FIX2Regressions:
+    """v1.0 FIX2 regression locks. See Claude48_Feedback_FIX1_Defer_Anti_Pattern_
+    20260527.md for context on why these were deferred; they shouldn't have been.
+    """
+
+    def test_f59_suptitle_top_for_title_helper(self):
+        """B6: helper produces line-count-aware top values; multi-line titles
+        get more headroom than single-line. Locks the formula so future code
+        changes can't silently regress to a fixed-fraction layout."""
+        from dfextensions.dfdraw.drawer import _suptitle_top_for_title
+        single = _suptitle_top_for_title("Single line title")
+        two = _suptitle_top_for_title("line one\nline two")
+        three = _suptitle_top_for_title("l1\nl2\nl3")
+        many = _suptitle_top_for_title("a\nb\nc\nd\ne")
+        empty = _suptitle_top_for_title("")
+        none = _suptitle_top_for_title(None)
+        # Single line: original behavior preserved (close to 0.92)
+        assert 0.92 <= single <= 0.94, f"single line top={single}"
+        # Multi-line: more headroom (lower top)
+        assert two < single, f"two-line {two} should give less top than single {single}"
+        assert three < two, f"three-line {three} should give less top than two-line {two}"
+        # Clamp at 0.84 — never pin top below this even with many lines
+        assert many >= 0.84, f"many-line top must clamp at >= 0.84, got {many}"
+        # None / empty falls back to 0.92 (FIX1 baseline behavior)
+        assert empty == 0.92
+        assert none == 0.92
+
+    def test_f60_facet_fit_no_crash(self):
+        """B7: x-axis cascade verify — faceted draw with fit on several cells
+        should complete without crash and without spurious UserWarnings about
+        layout. Closes B7 as cascade from B2 compact format per CRR §2.7."""
+        rng = np.random.default_rng(60)
+        df = pd.DataFrame({
+            'x':  rng.normal(0, 1, 5000),
+            'g':  rng.choice(['A', 'B'], 5000),
+            'f1': rng.choice(['r', 's'], 5000),
+        })
+        d = DFDraw(df)
+        import warnings as _w
+        with _w.catch_warnings(record=True) as w_list:
+            _w.simplefilter("always")
+            fig, axes, stats = d.hist('x', bins=40, facet_by='f1',
+                                      group_by='g', fit='gauss')
+        # No matplotlib tight_layout warning (was a v1.0 concern with overflow)
+        layout_warns = [w for w in w_list
+                        if 'tight_layout' in str(w.message).lower()
+                        or 'layout' in str(w.message).lower()]
+        # B7 closure assertion: tight_layout didn't fall over
+        assert len(layout_warns) == 0, (
+            f"B7 regression: tight_layout warnings on faceted+fit: "
+            f"{[str(w.message) for w in layout_warns]}"
+        )
+        plt.close(fig)
+
+    def test_f61_weighted_hist_fit_userwarning(self):
+        """I-8 / Sonnet53_R2 v1.0 panel finding (v1.2 §8 B5(c) commitment):
+        when user combines fit= with weights= on hist, emit a UserWarning
+        stating that χ²/ndf uses sqrt(counts) Neyman, not sqrt(Σw²) weighted
+        Poisson. This is a known limitation; the warning informs the user
+        so they don't quietly trust a numerically wrong chi²."""
+        rng = np.random.default_rng(61)
+        n = 3000
+        df = pd.DataFrame({
+            'x': rng.normal(0, 1, n),
+            'w': rng.uniform(0.5, 1.5, n),
+        })
+        d = DFDraw(df)
+        import warnings as _w
+        with _w.catch_warnings(record=True) as w_list:
+            _w.simplefilter("always")
+            fig, ax, stats = d.hist('x', bins=40, weights='w', fit='gauss')
+        plt.close(fig)
+        # At least one UserWarning mentioning FIX2 I-8 / sum-of-weights / Σw²
+        found = [w for w in w_list
+                 if issubclass(w.category, UserWarning)
+                 and ('I-8' in str(w.message)
+                      or 'sqrt(Σw²)' in str(w.message)
+                      or 'Σw²' in str(w.message))]
+        assert len(found) >= 1, (
+            f"I-8 regression: expected UserWarning on hist + weights + fit; "
+            f"got {len(w_list)} warnings, none mentioning I-8 or Σw². "
+            f"Messages: {[str(w.message)[:80] for w in w_list]}"
+        )
+
+    def test_f61_unweighted_hist_fit_no_warning(self):
+        """I-8 negative: fit= WITHOUT weights= must NOT emit the FIX2 I-8
+        warning. Locks the gating so future code doesn't broadcast the
+        warning to all hist+fit users."""
+        rng = np.random.default_rng(611)
+        df = pd.DataFrame({'x': rng.normal(0, 1, 3000)})
+        d = DFDraw(df)
+        import warnings as _w
+        with _w.catch_warnings(record=True) as w_list:
+            _w.simplefilter("always")
+            fig, ax, stats = d.hist('x', bins=40, fit='gauss')
+        plt.close(fig)
+        bad = [w for w in w_list
+               if issubclass(w.category, UserWarning)
+               and 'I-8' in str(w.message)]
+        assert len(bad) == 0, (
+            f"I-8 false positive: warning fired with no weights=. "
+            f"Messages: {[str(w.message)[:80] for w in bad]}"
+        )
+
+    def test_f62_stacked_selection_vector_fit_raises(self):
+        """ADV-1 / Sonnet55 v1.2 panel finding (v1.2 §8 D9(d) commitment):
+        stacked=True + selection_vector + fit= raises NotImplementedError
+        with an actionable message. Architect did not ratify semantics for
+        this combination; silent execution would produce wrong output."""
+        rng = np.random.default_rng(62)
+        df = pd.DataFrame({
+            'x':   rng.normal(0, 1, 5000),
+            'g':   rng.choice(['A', 'B'], 5000),
+            'tag': rng.choice([0, 1, 2], 5000),
+        })
+        d = DFDraw(df)
+        with pytest.raises(NotImplementedError) as exc_info:
+            d.hist('x', bins=40, group_by='g',
+                   stacked=True,
+                   selection_vector=['tag==0', 'tag==1'],
+                   fit='gauss')
+        msg = str(exc_info.value)
+        # Message must mention the combination AND offer at least one fix option
+        assert 'stacked' in msg.lower()
+        assert 'selection_vector' in msg.lower()
+        assert 'fit' in msg.lower()
+        # Actionable: at least one of (a)(b)(c) options listed
+        assert 'Fix' in msg or 'fix' in msg, f"actionable hint missing: {msg!r}"
+
+    def test_f63_fit_textbox_kwargs_signature_and_forwarded_names(self):
+        """ADV-3 / Sonnet55 P2-2 FIX1 carry-forward: fit_textbox_kwargs is
+        a named parameter on DFDraw.{hist,profile,scatter,draw} AND in
+        _HIST/_PROFILE/_SCATTER_FORWARDED_NAMES. R6 validator (Phase 13.16
+        FIX1) confirms inner draw_*() signatures match — implicit at import."""
+        import inspect
+        from dfextensions.dfdraw import DFDraw
+        # Pattern B (forwarded inward): named at outer layer
+        for name in ['hist', 'profile', 'scatter', 'draw']:
+            method = getattr(DFDraw, name)
+            params = inspect.signature(method).parameters
+            assert 'fit_textbox_kwargs' in params, (
+                f"ADV-3: DFDraw.{name} signature must have fit_textbox_kwargs "
+                f"(Pattern B per Phase 13.43 v1.2 §9.1)"
+            )
+        # FORWARDED_NAMES tuples — R6 validator already passed at import,
+        # but lock it explicitly here.
+        for tup_name, tup in [
+            ('_HIST_FORWARDED_NAMES', DFDraw._HIST_FORWARDED_NAMES),
+            ('_PROFILE_FORWARDED_NAMES', DFDraw._PROFILE_FORWARDED_NAMES),
+            ('_SCATTER_FORWARDED_NAMES', DFDraw._SCATTER_FORWARDED_NAMES),
+        ]:
+            assert 'fit_textbox_kwargs' in tup, (
+                f"ADV-3: {tup_name} must contain fit_textbox_kwargs "
+                f"(R6 validator should already catch absence, but lock here)"
+            )

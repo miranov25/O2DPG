@@ -209,6 +209,26 @@ def _filter_facet_value(df, col, value, bins=None, quantiles=None):
     return df[mask.fillna(False) if mask.dtype == object else mask]
 
 
+def _suptitle_top_for_title(title_text):
+    """Phase 13.42.DF FIX2 (B6): compute a reasonable subplots_adjust top= value
+    based on suptitle line count, so multi-line titles or dense facet grids
+    don't overlap subplot titles.
+
+    Production-gate B6 finding (Phase 13.42 close): single-line auto_title +
+    long-facet-tuple subtitle frequently overlapped the row-0 subplot titles
+    when facet_by was 2D. The fixed top=0.92 reserved 8% for the suptitle
+    block, which is insufficient for 2-3 line titles.
+
+    Returns top fraction in [0.84, 0.94] depending on the number of newlines
+    in title_text. None → falls back to 0.92 (existing behavior).
+    """
+    if not title_text:
+        return 0.92
+    n_lines = str(title_text).count('\n') + 1
+    # 1 line → 0.93; 2 lines → 0.89; 3 lines → 0.86; 4+ → 0.84
+    return max(0.84, 0.93 - 0.035 * max(0, n_lines - 1))
+
+
 def _compute_global_ranges(df, x_expr, y_expr, plot_kind):
     """For 3D share_across_figures=True, compute global x/y ranges.
     
@@ -839,6 +859,11 @@ class DFDraw:
         'time_format',
         # Phase 13.42.DF: Inline fits
         'fit',
+        # Phase 13.42.DF FIX2 (ADV-3, Sonnet55 P2-2 carry-forward): per-call
+        # fit textbox formatting overrides. Pattern B (forwarded inward):
+        # draw_profile() has fit_textbox_kwargs as an explicit parameter
+        # since FIX1 and consumes it via render_fit_textbox.
+        'fit_textbox_kwargs',
     )
 
     _HIST_FORWARDED_NAMES = (
@@ -886,6 +911,9 @@ class DFDraw:
         'cumulative',
         # Phase 13.42.DF: Inline fits
         'fit',
+        # Phase 13.42.DF FIX2 (ADV-3, Sonnet55 P2-2 carry-forward): per-call
+        # fit textbox formatting overrides. See _PROFILE_FORWARDED_NAMES note.
+        'fit_textbox_kwargs',
     )
 
     _SCATTER_FORWARDED_NAMES = (
@@ -910,9 +938,10 @@ class DFDraw:
         'vector_compose', 'delta_facet',
         # Phase 13.42.DF: Inline fits
         'fit',
+        # Phase 13.42.DF FIX2 (ADV-3, Sonnet55 P2-2 carry-forward): per-call
+        # fit textbox formatting overrides. See _PROFILE_FORWARDED_NAMES note.
+        'fit_textbox_kwargs',
     )
-
-    # Phase 13.32.DF Sub-fix 3: hist2d gets its own FORWARDED_NAMES tuple
     # (previously absent — hist2d used inline kwargs handling).
     _HIST2D_FORWARDED_NAMES = (
         'selection', 'sample', 'bins', 'range', 'norm', 'stats',
@@ -2108,7 +2137,7 @@ class DFDraw:
                         f"{_main}\n{_sub}" if _sub else _main,
                         fontsize=get_style_value("axes.titlesize", 14),
                     )
-                    plt.subplots_adjust(top=0.92)
+                    plt.subplots_adjust(top=_suptitle_top_for_title(fig._suptitle.get_text() if getattr(fig, '_suptitle', None) else None))
             except Exception:
                 # Failsafe — same defensive pattern as BUG-002 fix.
                 _y_str = (y_list if isinstance(y_list, str)
@@ -2117,7 +2146,7 @@ class DFDraw:
                           else str(x_list[0] if x_list else ''))
                 fig.suptitle(f"{_y_str} vs {_x_str}",
                              fontsize=get_style_value("axes.titlesize", 14))
-                plt.subplots_adjust(top=0.92)
+                plt.subplots_adjust(top=_suptitle_top_for_title(fig._suptitle.get_text() if getattr(fig, '_suptitle', None) else None))
 
         # --- 9. Build stats dict (M1 scope per v1.1 §7) ------------------------
         # Drop profile_data from user-facing stats — internal-only.
@@ -2451,7 +2480,7 @@ class DFDraw:
                         f"{_main}\n{_sub}" if _sub else _main,
                         fontsize=get_style_value("axes.titlesize", 14),
                     )
-                    plt.subplots_adjust(top=0.92)
+                    plt.subplots_adjust(top=_suptitle_top_for_title(fig._suptitle.get_text() if getattr(fig, '_suptitle', None) else None))
             except Exception:
                 _y_str = (y_list if isinstance(y_list, str)
                           else f"[{','.join(map(str, y_list))}]")
@@ -2459,7 +2488,7 @@ class DFDraw:
                           else str(x_list[0] if x_list else ''))
                 fig.suptitle(f"{_y_str} vs {_x_str}",
                              fontsize=get_style_value("axes.titlesize", 14))
-                plt.subplots_adjust(top=0.92)
+                plt.subplots_adjust(top=_suptitle_top_for_title(fig._suptitle.get_text() if getattr(fig, '_suptitle', None) else None))
 
         # --- 11. Build stats dict (M2 grouped contract) -----------------------
         stats_dict: Dict[str, Any] = {
@@ -2757,7 +2786,7 @@ class DFDraw:
                         f"{_main}\n{_sub}" if _sub else _main,
                         fontsize=get_style_value("axes.titlesize", 14),
                     )
-                    plt.subplots_adjust(top=0.92)
+                    plt.subplots_adjust(top=_suptitle_top_for_title(fig._suptitle.get_text() if getattr(fig, '_suptitle', None) else None))
             except Exception:
                 _y_str = (y_list if isinstance(y_list, str)
                           else f"[{','.join(map(str, y_list))}]")
@@ -2765,7 +2794,7 @@ class DFDraw:
                           else str(x_list[0] if x_list else ''))
                 fig.suptitle(f"{_y_str} vs {_x_str}",
                              fontsize=get_style_value("axes.titlesize", 14))
-                plt.subplots_adjust(top=0.92)
+                plt.subplots_adjust(top=_suptitle_top_for_title(fig._suptitle.get_text() if getattr(fig, '_suptitle', None) else None))
 
         # --- 8. Stats dict ----------------------------------------------------
         stats_dict: Dict[str, Any] = {
@@ -3352,7 +3381,7 @@ class DFDraw:
                         f"{_main}\n{_sub}" if _sub else _main,
                         fontsize=get_style_value("axes.titlesize", 14),
                     )
-                    plt.subplots_adjust(top=0.92)
+                    plt.subplots_adjust(top=_suptitle_top_for_title(fig._suptitle.get_text() if getattr(fig, '_suptitle', None) else None))
             except Exception:
                 # Failsafe: minimal title — prevents auto_title import/build
                 # errors from crashing the plot. Same defensive pattern as
@@ -3361,11 +3390,11 @@ class DFDraw:
                          else f"[{','.join(y_expr)}]")
                 fig.suptitle(f"{y_str} vs {x_expr}",
                              fontsize=get_style_value("axes.titlesize", 14))
-                plt.subplots_adjust(top=0.92)
+                plt.subplots_adjust(top=_suptitle_top_for_title(fig._suptitle.get_text() if getattr(fig, '_suptitle', None) else None))
 
         plt.tight_layout()
         if title:
-            plt.subplots_adjust(top=0.92)
+            plt.subplots_adjust(top=_suptitle_top_for_title(fig._suptitle.get_text() if getattr(fig, '_suptitle', None) else None))
 
         # ---- Combined stats ------------------------------------------------
         combined_stats = {
@@ -3682,6 +3711,11 @@ class DFDraw:
         normalize_layout: str = "overlay+diff",
         # Phase 13.42.DF: Inline fit specification (architect 2026-05-22).
         fit: Optional[Union[str, Dict, Callable, List]] = None,
+        # Phase 13.42.DF FIX2 (ADV-3, Sonnet55 P2-2 carry-forward):
+        # per-call fit textbox formatting overrides. Pattern B —
+        # forwarded inward; consumed by inner draw_hist/profile/scatter
+        # via render_fit_textbox.
+        fit_textbox_kwargs: Optional[Dict] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -3950,6 +3984,11 @@ class DFDraw:
         linestyle_cycle: bool = False,
         # Phase 13.42.DF: Inline fit specification
         fit: Optional[Union[str, Dict, Callable, List]] = None,
+        # Phase 13.42.DF FIX2 (ADV-3, Sonnet55 P2-2 carry-forward):
+        # per-call fit textbox formatting overrides. Pattern B —
+        # forwarded inward; consumed by inner draw_hist/profile/scatter
+        # via render_fit_textbox.
+        fit_textbox_kwargs: Optional[Dict] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -4005,6 +4044,37 @@ class DFDraw:
 
         # Parse expression (take first part only for 1D)
         y_expr, x_expr = self._parse_expr(expr)
+
+        # Phase 13.42.DF FIX2 (ADV-1, Sonnet55 v1.2 panel finding, v1.2 §8
+        # D9(d) commitment): stacked=True + selection_vector (>1 selection)
+        # + fit= has ambiguous semantics in the current architecture (does
+        # each selection get its own stack? overlay without sum? fit per
+        # selection or per-stack-component or on the stacked total?).
+        # Architect did not ratify any of these in v1.2. Until a concrete
+        # use case drives the design, raise NotImplementedError with a clear
+        # actionable suggestion so users don't get silently wrong output.
+        # Placed BEFORE vector dispatch so the 3-axis-inner length-equality
+        # validator inside _compute_vector_iteration_indices does not pre-empt
+        # this more-specific architectural error.
+        # Note: `stacked` is forwarded via **kwargs on DFDraw.hist (not a
+        # named outer param), so we read it from kwargs.
+        if (kwargs.get('stacked') is True
+                and selection_vector is not None and len(selection_vector) > 1
+                and fit is not None):
+            raise NotImplementedError(
+                "Phase 13.42.DF FIX2 (ADV-1): the combination "
+                "stacked=True + selection_vector (>1 selection) + fit= is not "
+                "supported. Selection-vector semantics for stacked-hist fits "
+                "were not ratified in Phase 13.42 (v1.2 §8 D9(d) — coder did "
+                "not specify which of {per-selection fit, per-stack-component "
+                "fit, fit on the stacked total} applies). "
+                "Fix options: "
+                "(a) drop stacked=True (per-group fits work via D9/R4); or "
+                "(b) loop over selections in user code with separate hist() "
+                "calls; or "
+                "(c) drop fit= and use Phase 13.43 summary_fit= when "
+                "available."
+            )
 
         # Phase 13.16.DF: Vector dispatch
         # Phase 13.16.DF FIX1: tuple-driven forwarding via _HIST_FORWARDED_NAMES
@@ -4154,6 +4224,9 @@ class DFDraw:
                 cumulative=cumulative,
                 # Phase 13.42.DF: inline fits — recursive forwarding through facet
                 fit=fit,
+                # Phase 13.42.DF FIX2 (ADV-3): fit_textbox_kwargs paired
+                # with fit= (R6 validator now requires explicit forwarding).
+                fit_textbox_kwargs=fit_textbox_kwargs,
                 **kwargs
             )
         # Facet mode (legacy path, same=True ignored in facet mode)
@@ -4200,6 +4273,7 @@ class DFDraw:
                 cumulative=cumulative,
                 # Phase 13.42.DF: inline fits (QRC v1.32 #6 recursive forwarding)
                 fit=fit,
+                fit_textbox_kwargs=fit_textbox_kwargs,
                 **kwargs
             )
             axes = ax
@@ -4275,6 +4349,11 @@ class DFDraw:
         delta_facet: Optional[str] = None,
         # Phase 13.42.DF: Inline fit specification
         fit: Optional[Union[str, Dict, Callable, List]] = None,
+        # Phase 13.42.DF FIX2 (ADV-3, Sonnet55 P2-2 carry-forward):
+        # per-call fit textbox formatting overrides. Pattern B —
+        # forwarded inward; consumed by inner draw_hist/profile/scatter
+        # via render_fit_textbox.
+        fit_textbox_kwargs: Optional[Dict] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -4477,6 +4556,7 @@ class DFDraw:
                 share_across_figures=share_across_figures,
                 # Phase 13.42.DF: inline fits
                 fit=fit,
+                fit_textbox_kwargs=fit_textbox_kwargs,
                 **kwargs
             )
         # Facet mode (legacy path, same=True ignored in facet mode)
@@ -4506,6 +4586,7 @@ class DFDraw:
                 time_format=time_format,
                 # Phase 13.42.DF: inline fits
                 fit=fit,
+                fit_textbox_kwargs=fit_textbox_kwargs,
                 **kwargs
             )
             axes = ax
@@ -4607,6 +4688,11 @@ class DFDraw:
         linestyle_cycle: bool = False,
         # Phase 13.42.DF: Inline fit specification
         fit: Optional[Union[str, Dict, Callable, List]] = None,
+        # Phase 13.42.DF FIX2 (ADV-3, Sonnet55 P2-2 carry-forward):
+        # per-call fit textbox formatting overrides. Pattern B —
+        # forwarded inward; consumed by inner draw_hist/profile/scatter
+        # via render_fit_textbox.
+        fit_textbox_kwargs: Optional[Dict] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -5114,6 +5200,7 @@ class DFDraw:
                 share_across_figures=share_across_figures,
                 # Phase 13.42.DF: inline fits
                 fit=fit,
+                fit_textbox_kwargs=fit_textbox_kwargs,
                 **kwargs
             )
         else:
@@ -5146,6 +5233,7 @@ class DFDraw:
                 time_format=time_format,
                 # Phase 13.42.DF: inline fits
                 fit=fit,
+                fit_textbox_kwargs=fit_textbox_kwargs,
                 **kwargs
             )
             axes = ax

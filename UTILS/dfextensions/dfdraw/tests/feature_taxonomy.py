@@ -1415,6 +1415,13 @@ FEATURES = [
             "test_phase_13_42_df_inline_fits.py::TestPhase1342FIX1Regressions::test_f32_stacked_hist_per_group_fits",
             "test_phase_13_42_df_inline_fits.py::TestPhase1342FIX1Regressions::test_f33_fit_textbox_kwargs_fontsize_override",
             "test_phase_13_42_df_inline_fits.py::TestPhase1342FIX1Regressions::test_f33_fit_textbox_kwargs_precedence_over_style",
+            # Phase 13.42.DF FIX2 regressions (close items deferred at FIX1 close)
+            "test_phase_13_42_df_inline_fits.py::TestPhase1342FIX2Regressions::test_f59_suptitle_top_for_title_helper",
+            "test_phase_13_42_df_inline_fits.py::TestPhase1342FIX2Regressions::test_f60_facet_fit_no_crash",
+            "test_phase_13_42_df_inline_fits.py::TestPhase1342FIX2Regressions::test_f61_weighted_hist_fit_userwarning",
+            "test_phase_13_42_df_inline_fits.py::TestPhase1342FIX2Regressions::test_f61_unweighted_hist_fit_no_warning",
+            "test_phase_13_42_df_inline_fits.py::TestPhase1342FIX2Regressions::test_f62_stacked_selection_vector_fit_raises",
+            "test_phase_13_42_df_inline_fits.py::TestPhase1342FIX2Regressions::test_f63_fit_textbox_kwargs_signature_and_forwarded_names",
         ],
     },
 ]

@@ -763,6 +763,28 @@ def draw_hist(
             # → curve_fit minimizes Σresid² as if yerr=1; reported χ² scales with N²).
             # `hist_errors` now controls *display* errorbars only, NOT fit yerr.
             # max(counts, 1) matches ROOT precisely for empty bins.
+            #
+            # Phase 13.42.DF FIX2 (I-8, Sonnet53_R2 v1.0 panel finding, v1.2 §8
+            # B5(c) commitment): when user has weights= AND fit=, χ² uses
+            # sqrt(counts) (UNWEIGHTED Neyman) not sqrt(Σw²) (weighted Poisson).
+            # The errorbar display path (Phase 13.37 CP1-6) DOES use Σw², but
+            # the fit path does not — that's a known limitation. Emit a
+            # one-time UserWarning so analysts choosing weighted hist for QA
+            # know the reported chi² treats weights as if they were counts.
+            if _hist_weights is not None:
+                import warnings as _warnings
+                _warnings.warn(
+                    "Phase 13.42.DF FIX2 (I-8): fit= combined with weights= "
+                    "uses sqrt(counts) Neyman errors, NOT sqrt(Σw²) weighted "
+                    "Poisson. The reported χ²/ndf treats weighted bin contents "
+                    "as if they were raw counts; if you need the weighted "
+                    "Poisson formula, compute it manually from stats['fit'] "
+                    "params and a separate np.histogram(weights=w**2, ...) "
+                    "call. (FIX2 limitation; full sum-of-weights fit deferred "
+                    "to a later phase.)",
+                    UserWarning,
+                    stacklevel=2,
+                )
             yerr_hist = np.sqrt(np.maximum(counts_fit, 1))
             curve = {
                 'x_data': bin_centers_fit,
