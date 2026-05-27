@@ -4,8 +4,8 @@
 
 This document tracks the development history of the `dfdraw` module, a DataFrame drawing utility with ROOT TTree::Draw-like interface. Part of the dfextensions toolkit for ALICE experiment calibration and QA at CERN.
 
-**Current Status:** Phase 13.32.DF — `group_by × quantiles` in grouped path + symmetric `facet_by` binning (AD-79) — ✅ Closed (panel-approved, 4 of 5 reviewers on correct source, 0 blocking)
-**Test Count:** 715 passing + 1 skipped (62 features, 28+ invariance tests, 7 Verified)
+**Current Status:** Phase 13.42.DF FIX1 — Production-gate bug closure + interface lock (Inline fits) — ✅ Closed (panel-approved 4 reviewers; 2 [BREACH] disclosures D-1/D-2 ratified; gate 981/0/1 skipped/1 xfailed at `28f7f3ce`, tag `PHASE_13_42_DF_FIX1_END`)
+**Test Count:** 981 passing + 1 skipped + 1 xfailed (108 features, 307 invariance tests, 50 Verified)
 **Stability Phase:** Experimental (active development)
 
 ---
@@ -2160,6 +2160,218 @@ Explicit `type='scatter3d'` (AD-SC3D-1: less surprising than auto-routing; recom
 - Architect's Mac Py 3.9.6: **913 / 0 / 1 skipped / 1 xfailed** (commit `b024414e`)
 - Pre-existing failure (Linux Py3.12 only): `test_vector_draw_kwarg_surface_enumeration` — pandas `StringDtype` not matched in `_process_color` (Phase 13.38 debt). Mac Py3.9.6 unaffected. Tracked as Phase 13.40 candidate.
 
+## Phase 13.40.DF v1.0: Cumulative Histogram (`cumulative=True/-1/False`)
+
+**Date:** 2026-05-22
+**Commit:** `67d125e2`
+**Tag:** `PHASE_13_40_DF_END`
+**Status:** ✅ Complete (923 / 0 / 1 skipped / 1 xfailed)
+
+### Objectives
+- Add ROOT `TH1::Draw("cumulative")` equivalent to `hist()`
+- Three accepted values: `True` (ascending CDF/ECDF), `False` (default, byte-identical backward compat), `-1` (descending / survival, ROOT convention)
+- Compose with existing axes: `norm='probability'` → 0-1 ECDF; per-group overlay AND stacked; `facet_by`; `histtype='step'` (HEP-standard step ECDF)
+- Correctness guard: `hist_errors=True + cumulative` → `NotImplementedError` (Poisson per-bin errors are independent; cumulative bins are correlated)
+
+### Implementation
+**Files modified:** `plots/histogram.py`, `drawer.py` (4 internal call sites threaded), `_HIST_FORWARDED_NAMES` (added `cumulative`)
+
+**Architecture:**
+- matplotlib native `cumulative=` forwarded explicitly at 4 internal call sites — Phase 13.39 §2.2 lesson applied recursively: `DFDraw.hist → draw_hist → _draw_hist_grouped → ax.hist`; **also through `_dispatch_faceted_render` for `facet_by` composition** (CP2-1 regression-lock on 3rd call site)
+- Vector dispatch `[x,y]` propagates `cumulative` correctly (Phase 13.16.DF FIX1 bug class lock)
+
+### Testing
+- **+10** invariance tests under `HIST.cumulative` (CDF byte-equality, descending sign convention, group_by+stacked, facet_by per-cell, histtype='step', M5 NotImplementedError guard)
+- Test count: 913 → **923** (+10)
+
+### Carry-Forward Lesson
+- Per-feature regression matrix should include `_dispatch_faceted_render` as a mandatory call site for any new `**kwargs`-eligible parameter — the 3rd-call-site bug from Phase 13.16.DF FIX1 keeps recurring
+
+---
+
+## Phase 13.41.DF v1.0: N-D Faceting via `facet_by=List[str]` (1D/2D/3D)
+
+**Date:** 2026-05-23
+**Commit:** `530954d1`
+**Tag:** `PHASE_13_41_DF_END`
+**Status:** ✅ Complete (initial gate 942; FIX1 + FIX2 carry to 946)
+
+### Objectives
+- Extend `facet_by` from `Union[str, None]` to `Union[str, List[str]]` for 1D/2D/3D faceting
+- Convention LOCKED matching numpy/pandas `(n_rows, n_cols, ...)` shape:
+  - `facet_by[0]` → **ROW** (vertical within figure)
+  - `facet_by[1]` → **COLUMN** (horizontal within figure)
+  - `facet_by[2]` → **FIGID** (separate figures, one per value)
+  - `facet_by[3+]` → `NotImplementedError`
+- New params: `share_x`, `share_y` ∈ `{'all','row','col','none'}`; `share_across_figures: bool` (3D global range lock)
+- 3D returns `(List[Figure], List[axes_2d], List[stats_dict])` — **DEVIATES** from standard `(fig, ax, stats)` contract; documented prominently in inline help
+
+### Implementation
+**New helpers:** `_normalize_facet_args`, `_to_mpl_share`, `_validate_share_axis_value`, `_resolve_facet_values`, `_filter_facet_value`, `_compute_global_ranges`
+
+**Per-plot-kind lock for `share_across_figures` (CP1-2):**
+- `scatter` locks x AND y
+- `hist`/`profile` locks x only (y auto-scales per figure to handle sparse-figID variance)
+
+**Per-plot-kind dispatch for x-range:**
+- `hist` uses `range=` (matplotlib convention)
+- `profile` uses `range=` which `DFDraw.profile` remaps to `draw_profile`'s `x_range=` internally
+- `scatter` uses `ax.set_xlim`/`set_ylim` post-draw (no native `range` params)
+- `hist` also locks `ax.set_xlim` post-draw (`range=` only locks bins, not axis xlim)
+
+**Empty cell handling:** `'(no data)'` diagnostic + `stats={'n':0, 'empty':True}`
+
+### Architectural Significance
+**dfdraw is the FIRST major plotting library with a unified API where the Nth faceting dimension generates separate figures.** seaborn / ggplot2 / plotly / altair all require manual loops for the 3+ dimension case.
+
+### Testing
+- **+23** invariance tests under `FACET.list_grid`
+- Test count: 923 → **942** (+19; FIX1 + FIX2 carry forward to gate 946)
+
+---
+
+## Phase 13.41.DF FIX1: 3 bug fixes carried forward from v1.6 panel
+
+**Date:** 2026-05-23
+**Commit:** `b84576a0`
+**Tag:** `PHASE_13_41_DF_FIX1_END`
+**Status:** ✅ Complete (predecessor `530954d1`)
+
+### Bugs Fixed
+- Three bugs flagged in v1.6 panel review of Phase 13.41.DF — closed in FIX1 commit (commit message terse; see panel review summary for details)
+
+### Testing
+- Test count: 942 → **945** (+3) per panel-confirmed tally
+
+---
+
+## Phase 13.41.DF FIX2: 5 panel-flagged P2/P3 items + FBY.23 lock
+
+**Date:** 2026-05-23
+**Commit:** `70b94a3e`
+**Tag:** `PHASE_13_41_DF_FIX2_END`
+**Status:** ✅ Complete (gate 946; predecessor `b84576a0`)
+
+### Items Closed
+- 5 panel-flagged P2/P3 items from v1.6 close panel
+- `FBY.23` lock added to lock the N-D faceting feature shape
+
+### Testing
+- Test count: 945 → **946** (+1)
+
+---
+
+## Phase 13.42.DF v1.0: Inline Fits (`fit=` parameter on hist/profile/scatter/draw)
+
+**Date:** 2026-05-26
+**Commit:** `38aed2d8`
+**Tag:** `PHASE_13_42_DF_END`
+**Status:** ✅ Closed (973 / 0 / 1 skipped / 1 xfailed)
+
+### Objectives
+- Inline ROOT-style fits as a first-class parameter on hist/profile/scatter/draw — implements `PHASE_13_42_DF_v1_4_Proposal_InlineFits.md`
+- Predecessor: `PHASE_13_41_DF_FIX2_END` (gate 946)
+- Three input forms: `str` shorthand (`fit='gauss'`), `dict` spec (`fit={'fun':'gauss','initial_guess':[...],'bounds':...}`), `Callable`
+- List form for vector dispatch (compound on single curve OR per-channel pair — see v1.4 §6.3)
+- Per-channel `linestyle_cycle` for multi-fit overlays
+- Stats dict integration: `stats['fit']` is `List[List[Dict]]` (list of fit-result dicts per curve)
+- Composition with `group_by`, `facet_by`, `vector_expr`, `normalize=` (silent consume per CP1-5)
+
+### Implementation
+**New module:** `plots/fits.py` (registry-based dispatch, scipy.optimize.curve_fit, fail-soft default)
+**New module:** `plots/_fit_render.py` (ROOT-style param textbox + overlay rendering)
+**Modified:** `plots/histogram.py`, `plots/profile.py`, `plots/scatter.py`, `drawer.py`
+
+**Registry:**
+- Built-in fits: `gauss`, `pol0` … `pol5`, `linear` (alias `pol1`), `landau` (placeholder), `expo`
+- Public `register_fit(name, function, n_params, guess_fn)` for user-defined
+
+**Style keys (7 new):** `fit.linewidth`, `fit.linestyle_cycle`, `fit.position`, `fit.text_format`, `fit.text_padding`, `fit.text_fontsize_default`, `fit.text_fontsize_facet` — see Phase 13.42 FIX1 D-2 disclosure for v1.0 silent-no-op defect
+
+**CP1-5 — `normalize=` + `fit=`:** `normalize` is consumed first; `fit=` silently no-op when both set. Documented behavior; F.26 lock.
+
+**P1-B (Sonnet54 finding, fixed pre-tag):** profile grouped fit path returned single fit on combined data instead of per-group dict. Fix at `plots/profile.py` grouped block — F.27 lock.
+
+### Testing
+- **+27** invariance tests under `FIT.inline` (F.1 - F.27, with F.23 in NumericalCorrectness class)
+- Test count: 946 → **973** (+27)
+
+### Panel Verdict
+v1.4 proposal: 5-reviewer panel [!] APPROVED WITH COMMENTS through 4 versions (v1.0 → v1.4); close panel 5-reviewer [OK]. CRR v2 closed by Sonet50 [!] post-Sonnet54 P1-B fix.
+
+---
+
+## Phase 13.42.DF FIX1: Production-Gate Bug Closure + Interface Lock
+
+**Date:** 2026-05-27
+**Commits:** `82aaa903` (main) + `28f7f3ce` (P1 follow-up from Sonet50 panel `[X]`)
+**Tag:** `PHASE_13_42_DF_FIX1_END`
+**Status:** ✅ Closed (**981 / 0 / 1 skipped / 1 xfailed**)
+
+### Objectives
+- Close 7 production-gate bugs (B1-B7) found within 30 minutes of running real TPC ITS-TPC calibration data through Phase 13.42 v1.0 (5 P1 silently-wrong-output bugs that 5 reviewers + 27 invariance tests missed)
+- Close 3 CRR §2 backlog items (D5, D8, D9) disclosed at v1.0 close
+- Surface 2 `[BREACH]` disclosures (D-1, D-2) flagged under proposed Coder QRC #10
+- Lock the fit interface (`fit=`, `fit_textbox_kwargs=`) before production user adoption — architect 2026-05-26: *"we will need to keep the interface for later, once we use it"*
+
+### Correctness Fixes
+- **B4:** Grouped fit reuses main-path masks (`df[group_by].eq(g)` Interval-safe, not v1.0's broken `df[df[group_by] == g]`). Sonnet55 extension: same fix prevents top_k / sort_groups divergence. New `fit_status='skipped_empty'` for empty-after-mask groups.
+- **B5:** Histogram fit χ² Poisson default (`yerr = sqrt(max(counts, 1))` always; `hist_errors` flag now controls display only). Matches ROOT `TH1::Fit` Neyman convention. **D-1 [BREACH]:** required companion fix at `dispatch_fit` (`use_errors` default flipped `False → True` for hist) — not in proposal §3.1 but needed alongside the formula change.
+- **D5:** Vector fit pairing per v1.4 §6.3 verbatim spec (architect 2026-05-26 ratification `R2`). `fit=['gauss','pol2']` on `[y_a,y_b]:x` now pairs gauss→y_a, pol2→y_b. F.12 assertions flipped from compound-broadcast (v1.0 deviation) to pairing.
+- **D9/R4:** `stacked=True + group_by + fit` produces **N per-group fits** (architect 2026-05-26: *"fit all figures, all gb"*). Stacking is purely visual; fits remain per-group.
+
+### Rendering Fixes
+- **B1:** `facet_mode` plumbed at 3 `render_fit_textbox` call sites (Sonet51 diagnosis). **D-2 [BREACH]:** deeper second root cause — `_fit_render._style_get` called `get_style(key)` but `get_style()` takes no args → TypeError silently caught → **ALL `fit.*` style keys were silently ignored since Phase 13.42 v1.0**. Fixed to `get_style_value(key, default)`.
+- **B2/B3:** New per-call kwarg `fit_textbox_kwargs={'fontsize': int, 'format': 'multiline'|'compact'|'auto', 'show_fields': List[str]}` with sub-key validation and accepted enum values **LOCKED at FIX1 close**. Compact format = one line per fit; auto = compact if facet_mode & n_blocks>1. `show_fields` filters from `{amplitude, center, sigma, slope, intercept, chi2, ndf, redchi, fit_name, x_range}`.
+- **B6/B7:** Deferred to FIX2 (cosmetic; no regression test added in FIX1).
+
+### Interface Additions (LOCKED at FIX1 close)
+- `fit_textbox_kwargs` sub-keys + accepted enum values
+- **D8/R3 (simplified per architect):** `scatter` honors `yerr=` column param; presence of `yerr=` is the opt-in (`use_errors=True` flag becomes redundant — no second gating signal needed)
+- **D9/R4:** `stacked + group_by + fit` per-group fits (visual stack independent of fit semantics)
+
+### Tests
+- **+8** new tests under `TestPhase1342FIX1Regressions`: F.28 (B4 expression+quantile), F.28b (skipped_empty path — Sonet50 P1-A regression lock added during FIX1 panel revision), F.29 (B5 redchi ∈ [0.5, 2.5]), F.30 (B1 `set_style` round-trip), F.31 (D5 pairing), F.32 (D9 per-group dict), F.33 (`fit_textbox_kwargs.fontsize` override + precedence over `set_style`)
+- F.12 inverted (compound-broadcast → pairing)
+- Test count: 973 → **981** (+8)
+- FIT.inline count: 27 → **35** tests
+- Invariance: 299 → **307**
+
+### Panel Verdict & Path
+1. **v1.0 proposal** (Claude48 drafted; 6-reviewer panel `[!]` APPROVED WITH COMMENTS — 2 P1s I-1 (F.31 silent-pass) + I-2 (D5 nested-list scope))
+2. **v1.1 proposal** (panel corrections incorporated; minor refinements I-4/I-5/I-9/I-10)
+3. **v1.2 proposal** (4-reviewer second-round panel `[!]` APPROVED WITH COMMENTS — only gate arithmetic GA-1 + D9+selection_vector ADV-1 + plt.close ADV-2 carry-over; architect-driven R3/R4/R5 modifications)
+4. **CRR v1** (Sonet50 [X] REVISION_REQUESTED — Sonnet55 found P1-A `np.array(shape=...)` crash; 4/4 found P1-B taxonomy not staged for the **third consecutive phase**)
+5. **CRR v2** (P1-A 1-line fix `np.array → np.zeros` + F.28b regression lock; P1-B taxonomy + layer classification + matrix updated; commit `28f7f3ce`)
+
+### [BREACH] Disclosures (proposed Coder QRC #10)
+Two findings emerged during implementation that the v1.2 proposal did not anticipate. Both are 1-line fixes but both deviate from defaults the architect ratified verbatim:
+- **D-1** (`fits.py:469`): `use_errors` default `False → True` for hist (needed alongside B5 Poisson formula change; proposal §3.1 specified only the formula)
+- **D-2** (`_fit_render.py:25-36`): `_style_get` used broken `get_style(key)` API; all `fit.*` style keys silently ignored since Phase 13.42. Backward compat: users who tried to override and silently got defaults now actually see their overrides honored.
+
+Both flagged in CRR §2 as `[BREACH — requires architect ratification]` per proposed QRC #10 wording (governance learning §7 of v1.2 proposal, ratified by architect as R6).
+
+### Recurring Class Captured
+**Third consecutive phase to miss `feature_taxonomy.py` + `test_layer_classification.py` staging.** Sonet50 governance note recommends adding pre-bundle taxonomy-count check to `run_tests.sh` (analogous to Phase 13.34.DF FIX2 BUG-011 staging check). Tracked in `Claude48_Feedback_to_Organization_Team_20260526.md` Item 2 for Org-team adoption.
+
+### Cross-Cutting Process Wins
+- **Production gate methodology validated:** real-data testing on TPC ITS-TPC calibration found 5 P1 silently-wrong-output bugs that 5 reviewers + 27 synthetic invariance tests missed (B4 silent failure on expression+quantile binning; B5 χ² ~7 orders of magnitude wrong by default). Synthesized into `PHASE_13_42_DF_PROD_GATE_Bugs_v1_0.md` + `PHASE_13_42_DF_POST_GATE_Audit_Questions_v1_0.md` for post-FIX1 process-improvement audit.
+- **QRC #10 governance rule** (verbatim-spec deviation escalation) drafted and architect-ratified during FIX1 cycle; encoded as proposed Coder QRC v1.32 → v1.33 update; submitted to Org team feedback memo.
+- **Declarative-composition architectural commitment** (architect 2026-05-26: *"Custom macros are practically not debuggable. Declarative coding is more manageable."*) — rejects refactor-to-macros path; recorded for Architectural Decision Record AD-N in Org team feedback Item 6.
+
+### Deferred to FIX2
+- B6 suptitle padding (cosmetic)
+- B7 x-axis cascade visual verification on production data (likely closed by B2 compact format)
+- I-8 weighted hist `sum(w²)` UserWarning at draw time
+- ADV-1 D9 + `selection_vector` → explicit `NotImplementedError`
+- ADV-3 `fit_textbox_kwargs` in `_HIST/PROFILE/SCATTER_FORWARDED_NAMES` (Sonnet55 P2-2)
+
+### Statistics
+- Test count: 973 → **981** (+8)
+- Verified features: 47 → **50** (+3: FIT.inline promoted to 35 tests; HIST.cumulative + FACET.list_grid already verified post-Phase 13.40/13.41)
+- Invariance tests: 299 → **307** (+8)
+- Features: 105 → **108**
+
 ## Statistics Summary
 
 | Phase | Test Count | Delta | Key Feature |
@@ -2206,8 +2418,16 @@ Explicit `type='scatter3d'` (AD-SC3D-1: less surprising than auto-routing; recom
 | **13.37.DF FIX1** | 870 | +3 | **Test expansion: Phase 13.36 backward-compat locks. Promoted PROFILE.group_by_bins, SAME.auto_features, VECTOR.color_cycle to ✅ Verified (34 → 37). 2 spec bugs caught at code time: label filter anti-pattern + SO.COMPAT.3 vector-vs-scalar wrong premise. Verified: 34 → 37, Invariance: 193 → 196** |
 | **13.38.DF v1.1** | 889 | +19 | **Scatter enhancements: BUG-017 (`facet_by` float guard — 3rd instance of BUG-012/015 class), `xerr`/`yerr` error bars (3-tier NaN policy), expression `color=`/`marker=` (`_process_color` CP0-1 dispatch reorder: column before `to_rgba`; regression-lock ECM.6). `get_array()` over `get_facecolor()` for colormap dispatch (QRC v1.32 carry-forward). Verified: 37 → 42, Invariance: 196 → 215** |
 | **13.39.DF v1.2** | **913** | **+24** | **2D Profile (`profcolz`): `draw_profile2d()` via `z:y:x` expression; `scipy.stats.binned_statistic_2d`; `min_entries=` masking; pcolormesh + colorbar; ROOT TProfile2D equivalent. Time Axis: `time_format=` kwarg on 4 plot types; datetime64 auto-detect before `astype(float)` (QRC v1.32 carry-forward). Scatter3D: `type='scatter3d'`; `mpl_toolkits.mplot3d`; reuses Phase 13.38 `_process_color`/`_process_size`. 4 fix-at-code-time disclosures. Verified: 42 → 47, Invariance: 215 → 239** |
+| **13.40.DF v1.0** | 923 | +10 | **Cumulative histogram (`cumulative=True/-1/False`) — ROOT TH1::Draw('cumulative') equivalent. 3 values: True (ascending CDF/ECDF), False (default, byte-identical backward compat), -1 (descending/survival, ROOT convention). matplotlib native `cumulative=` forwarded at 4 internal call sites (incl. `_dispatch_faceted_render` — Phase 13.16.DF FIX1 lesson applied recursively; CP2-1 lock for 3rd site). Composes with: `norm='probability'`, group_by overlaid+stacked, facet_by, histtype='step'. M5 correctness guard: `hist_errors+cumulative` → `NotImplementedError` (Poisson per-bin errors independent; cumulative bins correlated). Vector dispatch `[x,y]` propagation lock — Phase 13.16.DF FIX1 bug class** |
+| **13.41.DF v1.0** | 942 | +19 | **N-D Faceting via `facet_by=List[str]` for 1D/2D/3D — `facet_by[0]=ROW`, `[1]=COL`, `[2]=FIGID` (numpy/pandas shape convention LOCKED). 3D returns `(List[Figure], List[axes_2d], List[stats_dict])` — DEVIATES from `(fig, ax, stats)` contract; documented in inline help. New params: `share_x`, `share_y` ∈ {'all','row','col','none'}, `share_across_figures`. New helpers: `_normalize_facet_args`, `_to_mpl_share`, `_validate_share_axis_value`, `_resolve_facet_values`, `_filter_facet_value`, `_compute_global_ranges`. Per-plot-kind lock for `share_across_figures` (CP1-2): scatter locks x AND y; hist/profile locks x only. Per-plot-kind x-range dispatch: hist `range=`, profile `range=` remapped to `x_range=`, scatter `ax.set_xlim` post-draw. Empty-cell `'(no data)'` diagnostic + `stats={'n':0,'empty':True}`. dfdraw FIRST major plotting library with unified API for Nth-dimension separate-figures faceting (seaborn/ggplot2/plotly/altair require manual loops)** |
+| **13.41.DF FIX1** | 945 | +3 | **3 bugs from v1.6 panel review — closed in FIX1 commit (predecessor `530954d1`)** |
+| **13.41.DF FIX2** | 946 | +1 | **5 panel-flagged P2/P3 items + FBY.23 lock — closes the N-D faceting feature shape** |
+| **13.42.DF v1.0** | **973** | **+27** | **Inline fits (`fit=` parameter on hist/profile/scatter/draw). Three input forms: `str` shorthand, `dict` spec (initial_guess/bounds/range/use_errors/raise_on_failure), `Callable`. Vector dispatch list form. Per-channel `linestyle_cycle`. Stats integration: `stats['fit']` = `List[List[Dict]]`. Composes with `group_by` (dict keyed by group), `facet_by` (per-cell), `vector_expr`. `normalize=` + `fit=` silent consume (CP1-5; F.26 lock). New `plots/fits.py` registry (gauss/pol0-5/linear/expo); public `register_fit(name, function, n_params, guess_fn)`. New `plots/_fit_render.py` (ROOT-style param textbox + overlay). 7 new style keys: `fit.linewidth/linestyle_cycle/position/text_format/text_padding/text_fontsize_default/text_fontsize_facet` (NOTE: all silently no-op in v1.0 due to D-2 `_style_get` defect; fixed in FIX1). Sonnet54 P1-B at close (CRR v2): profile grouped fit returned single fit on combined data instead of per-group dict; fixed pre-tag (F.27 lock). Predecessor: `PHASE_13_41_DF_FIX2_END` (gate 946)** |
+| **13.42.DF FIX1** | **981** | **+8** | **Production-gate bug closure + interface lock. 30 minutes of real TPC ITS-TPC calibration data surfaced 7 bugs (5 P1 silently-wrong-output) that 5 reviewers + 27 invariance tests missed. Correctness: B4 (grouped fit reuses main-path masks; `.eq()` Interval-safe; Sonnet55 extension to top_k/sort_groups; new `fit_status='skipped_empty'`), B5 (χ² Poisson default `sqrt(max(counts,1))`; matches ROOT TH1::Fit Neyman convention; **D-1 [BREACH]** companion fix at `dispatch_fit` use_errors default flip False→True for hist), D5 (vector fit pairing per v1.4 §6.3 verbatim; F.12 inverted), D9/R4 (stacked+group_by+fit → N per-group fits, stacking purely visual). Rendering: B1 (facet_mode plumbed at 3 call sites; **D-2 [BREACH]** deeper root cause — `_style_get` used broken `get_style(key)` API → ALL `fit.*` style keys silently ignored since Phase 13.42 v1.0; fixed to `get_style_value(key, default)`), B2/B3 (new `fit_textbox_kwargs={'fontsize','format','show_fields'}` per-call kwarg with sub-key validation; compact format = one line per fit; format='auto' = compact if facet & n_blocks>1). Interface LOCKED at close: `fit_textbox_kwargs` sub-keys + enum values; D8/R3 (scatter `yerr=` column as opt-in; `use_errors` redundant); D9/R4 (per-group dict shape). Tests: F.28+F.28b (B4 expression+quantile + skipped_empty), F.29 (B5 redchi ∈ [0.5,2.5]), F.30 (B1 set_style round-trip), F.31 (D5 pairing), F.32 (D9 per-group dict), F.33×2 (override + precedence over set_style). FIT.inline count 27 → 35. **Two `[BREACH]` disclosures (D-1, D-2)** flagged per proposed Coder QRC #10 (verbatim-spec deviation escalation rule, architect-ratified R6). Third consecutive phase to miss taxonomy staging (Sonet50 governance note → run_tests.sh pre-bundle taxonomy-count check proposed). Production gate methodology validated; `PHASE_13_42_DF_PROD_GATE_Bugs_v1_0.md` + `PHASE_13_42_DF_POST_GATE_Audit_Questions_v1_0.md` shipped for post-FIX1 process-improvement audit** |
 
-**Total Development (as of Phase 13.39.DF v1.2):** 41 phase entries, **913 tests** + 1 skipped + 1 xfailed, **105 features**, **239 invariance tests**, **47 Verified features**
+**Total Development (as of Phase 13.42.DF FIX1):** 47 phase entries, **981 tests** + 1 skipped + 1 xfailed, **108 features**, **307 invariance tests**, **50 Verified features**
+
+> **Phase ordering note (post-13.39):** chronological commit order is 13.39 v1.2 (`b024414e` / `3c5d4547`) → 13.40 v1.0 (`67d125e2`) → 13.41 v1.0 (`530954d1`) → 13.41 FIX1 (`b84576a0`) → 13.41 FIX2 (`70b94a3e`) → 13.42 v1.0 (`38aed2d8`) → 13.42 FIX1 main (`82aaa903`) → 13.42 FIX1 P1 follow-up (`28f7f3ce`). Phase numbers monotonic in this window. Tag `PHASE_BEGIN_dfdraw` was at `38aed2d8` at Phase 13.42.DF close; moved to `28f7f3ce` at Phase 13.42.DF FIX1 close.
 
 
 > **Phase ordering note (post-13.32 v1.0):** the chronological commit order on `feature/groupby-optimization` from 2026-05-16 onward is 13.27.DF Commit 2 v1.0 (`84dcf916`) → Commit 2 FIX1 (`ba42fcde`) → Commit 2 FIX1.FIX1 (`b929ccb9`) → 13.33.DF v1.0 M1 (`61460df5`) → 13.33.DF v1.0 M2 (`c6a3245f`) → 13.33.DF v1.0 FIX1 (`94594f89`) → 13.32.DF FIX1 (`195ab4ea` / `d0b04f88`) → 13.34.DF v1.0 (`463deb36` / `abf5fe40`) → 13.34.DF FIX1 (`379f26bd`) → 13.34.DF FIX2 (`b38395db`) → 13.35.DF (`3b910aec`) → 13.36.DF (`2f4d959f`). Phase numbers are NON-monotonic vs commit date: 13.27 Commit 2 series lands after the 13.32 v1.0 entry above, and 13.32 FIX1 chronologically follows 13.33 v1.0 FIX1. Phase numbers index the *originating* phase, not the commit order — consistent with the post-13.27 Commit 1 phase ordering note above.
@@ -2332,8 +2552,9 @@ All APIs subject to change based on user feedback and integration testing with:
 | 1.6 | 2026-05-15 | Claude49Coder | Added Phase 13.28.DF FIX1 (autorange.* style key registration; commit `57576ebf`), Phase 13.30.DF v1.0 (Class-2 column-reference parameter validation; commit `e8278531`), Phase 13.31.DF v1.0 (`facet_by` column-name support, AD-78; commit `f3ca432a`), Phase 13.32.DF v1.0 (`group_by × quantiles` in grouped path + symmetric `facet_by` binning, AD-79; commit `cb6a1aed`). Test count 663 → 715. Added 3 lessons learned (style-key registration regression class, source freshness as binding rule, wrong-bundle review artifact) and 4 best practices (dual-path dispatch, multi-kind plot dispatch with explicit signature branching, AST R6-equivalent pre-delivery check, auditable patches over local sed). Statistics Summary table extended with 4 new rows + phase-ordering note. Panel review (Claude40 consolidating Sonet50, Sonet51, Sonnet52_R1, Sonnet53_R2, Claude46, Claude48): approved-with-3-mechanical-fixes — applied pre-commit: (a) Phase 13.30 Class-2 tuple corrected to `('group_by',)` only and Class-1 → Class-3/Class-5 deferral; (b) Phase 13.26 → Phase 13.28 autorange-introduction attribution (FIX1 entry + Lesson #9); (c) Statistics table totals updated to 28 phase entries / 715 tests; transient "Pending push" line removed. |
 | 1.7 | 2026-05-21 | Opus1 (Reviewer) at architect request | **Backfill of 9 phase events that landed between Phase 13.32.DF v1.0 closure (`cb6a1aed`, 2026-05-15) and current HEAD (`2f4d959f`, 2026-05-20).** Added strictly append-only — every existing entry preserved verbatim per architect's "Previous coders removed history, which was completely wrong" directive. New H2 sections (in phase-number order, inserted before § Statistics Summary): Phase 13.27.DF Commit 2 v1.0 (`84dcf916`, +52 tests, Phase D completion: `selection_vector` + `weights_vector` + `delta_facet`), Phase 13.27.DF Commit 2 FIX1 (`ba42fcde`, +9), Phase 13.27.DF Commit 2 FIX1.FIX1 (`b929ccb9`, +1), Phase 13.33.DF v1.0 M1 (`61460df5`, +22, Normalized differential profiles, AD-80/81/82), Phase 13.33.DF v1.0 M2 (`c6a3245f`, +5, group_by/facet_by composition), Phase 13.33.DF v1.0 FIX1 (`94594f89`, +1, tag `PHASE_13_33_DF_v1_0_FIX1_END`), Phase 13.32.DF FIX1 (`195ab4ea` / `d0b04f88`, +4, BUG-001/002/003 faceted rendering bugs caught in real-data TPC/ITS QA, tag `PHASE_13_32_DF_FIX1_END`), Phase 13.34.DF v1.0 (`463deb36` / `abf5fe40`, +8, Capability Matrix taxonomy refresh + M2 robustness gaps, tag `PHASE_13_34_DF_END`), Phase 13.34.DF FIX1 (`379f26bd` + `14851d42`, +5, BUG-010 untracked test file, tag `PHASE_13_34_DF_FIX1_END`), Phase 13.34.DF FIX2 (`b38395db`, +0, BUG-011 run_tests.sh pre-bundle staging check, tag `PHASE_13_34_DF_FIX2_END`), Phase 13.35.DF v1.3 (`3b910aec`, +11, `group_by_bins` + `hist_norm` for `hist()`, BUG-013 hist side, tag `PHASE_13_35_DF_END`), Phase 13.36.DF v1.2 (`2f4d959f`, +10, user style kwargs override auto-cycle, BUG-013 style-override side, tag `PHASE_13_36_DF_END`). Test count 715 → **843**. Statistics Summary table extended with 13 new rows (one per phase event) + extended phase-ordering note covering the non-monotonic commit order from 2026-05-16 onward. Totals updated: 28 → 37 phase entries; 715 → 843 tests; 62 → 90 features; 28+ → 193 invariance tests; 7 → 33 Verified features. Source: `gitlog.txt` (commits cb6a1aed..2f4d959f), `reviewer_20260521_092254.zip` (843/0/1 confirmed at HEAD), `CAPABILITY_MATRIX_20260521_092254.md` (90 features / 33 Verified confirmed). Note: backfilled entries derive from commit messages (verbatim phrasing preserved where present); each new entry cites its commit hash and tag per Org v1.30 § Source-Line Evidence Standard `[MUST]`. No existing line of this document was removed or shortened. Standalone review of this PHASE_HISTORY backfill not performed — architect-directed governance closure, awaiting panel review. |
 | **1.8** | **2026-05-21** | **Sonet50 (consolidated panel review)** | **Added 4 new phase sections (Phases 13.37.DF v1.1, 13.37.DF FIX1, 13.38.DF v1.1, 13.39.DF v1.2) and 4 new Statistics Summary rows. Strictly append-only. Commits: `67fccf3d` (13.37), `095d6f28` (13.37 FIX1), `0f525743` (13.38), `b024414e`+`3c5d4547` (13.39). Test count 843 → 913 (+70). Verified 33 → 47 (+14). Invariance 193 → 239 (+46). Features 90 → 105 (+15). Phase entries 37 → 41 (+4). Sources: gitlog.txt (commits `2f4d959f`..`3c5d4547`), session approval summaries (Sonet50_PHASE_13_37/38/39_*_ReviewSummary_AllReviewers_20260521.md), CAPABILITY_MATRIX.md (47 Verified / 239 invariance / 913 tests confirmed). All pre-existing content preserved verbatim.** |
+| **1.9** | **2026-05-27** | **Claude48 (coder seat) at architect request** | **Backfill of 6 phase events that landed between Phase 13.39.DF v1.2 closure (`3c5d4547`, 2026-05-21) and current HEAD (`28f7f3ce`, 2026-05-27). Added strictly append-only — every existing entry preserved verbatim per architect's append-only directive. New H2 sections (chronological commit order, inserted before § Statistics Summary): Phase 13.40.DF v1.0 (`67d125e2`, +10, Cumulative histogram `cumulative=True/-1/False`; ROOT `TH1::Draw("cumulative")` equivalent; 4 call sites threaded incl. `_dispatch_faceted_render`; M5 `hist_errors+cumulative` NotImplementedError guard; tag `PHASE_13_40_DF_END`), Phase 13.41.DF v1.0 (`530954d1`, +19, N-D Faceting via `facet_by=List[str]` for 1D/2D/3D; ROW/COL/FIGID convention LOCKED; 3D returns `(List[Figure], List[axes_2d], List[stats_dict])`; `share_x`/`share_y`/`share_across_figures` new params; dfdraw FIRST major plotting library with unified Nth-dimension-figure API; tag `PHASE_13_41_DF_END`), Phase 13.41.DF FIX1 (`b84576a0`, +3, 3 bugs from v1.6 panel; tag `PHASE_13_41_DF_FIX1_END`), Phase 13.41.DF FIX2 (`70b94a3e`, +1, 5 P2/P3 items + FBY.23 lock; tag `PHASE_13_41_DF_FIX2_END`; gate 946), Phase 13.42.DF v1.0 (`38aed2d8`, +27, Inline fits `fit=` parameter on hist/profile/scatter/draw; new `plots/fits.py` registry + `plots/_fit_render.py`; str/dict/callable/list forms; 7 fit.* style keys; stats integration; group_by/facet_by/vector composition; Sonnet54 P1-B fixed pre-tag for profile grouped path; tag `PHASE_13_42_DF_END`; gate 973), Phase 13.42.DF FIX1 (`82aaa903` + `28f7f3ce`, +8, Production-gate bug closure + interface lock; 7 production-gate bugs B1-B7 surfaced within 30 minutes of real TPC ITS-TPC calibration data testing; 5 P1 silently-wrong-output bugs that 5 reviewers + 27 invariance tests missed; D-1 [BREACH] use_errors default flip + D-2 [BREACH] `_style_get` broken since Phase 13.42 v1.0 → ALL `fit.*` style keys silently ignored; D5 vector pairing per v1.4 §6.3 verbatim; D9/R4 stacked+group_by+fit per-group dict; new `fit_textbox_kwargs={'fontsize','format','show_fields'}` LOCKED at close; F.28-F.33 + F.28b (8 new tests); FIT.inline 27 → 35; Sonet50 CRR `[X]` REVISION_REQUESTED → CRR v2 P1-A `np.array(shape=) → np.zeros((0,0))` + P1-B taxonomy staging; THIRD consecutive phase to miss taxonomy staging — Sonet50 governance note recommends `run_tests.sh` pre-bundle taxonomy-count check; tag `PHASE_13_42_DF_FIX1_END`). Test count 913 → **981** (+68 across 6 phases). Verified 47 → 50. Invariance 239 → 307 (+68). Features 105 → 108 (+3). Phase entries 41 → 47 (+6). Statistics Summary table extended with 6 new rows + new phase-ordering note for the post-13.39 window. Sources: gitlog.txt (commits `3c5d45474dcbdd0683969adde76342fa904f5059`..`28f7f3ce640c2c3a0b6b839ddde8ad171ca16c73`), CAPABILITY_MATRIX.md (50 Verified / 108 features / FIT.inline 35 / FACET.list_grid 23 / HIST.cumulative 10 confirmed), `PHASE_13_42_DF_PROD_GATE_Bugs_v1_0.md`, `PHASE_13_42_DF_FIX1_v1_2_Proposal.md`, `PHASE_13_42_DF_FIX1_Code_Review_Request_v1.md`. Phase 13.42.DF FIX1 process-improvement audit deliverables (`PHASE_13_42_DF_POST_GATE_Audit_Questions_v1_0.md`, `Claude48_Feedback_to_Organization_Team_20260526.md`) shipped to Org team for QRC #10 + production-gate policy adoption. All pre-existing content preserved verbatim per append-only directive.** |
 
 ---
 
-**Document Status:** Updated through Phase 13.39.DF v1.2 (commit `b024414e` / `3c5d4547`, tag `PHASE_13_39_DF_END`, 2026-05-21). Rolling tag `PHASE_BEGIN_dfdraw` → `3c5d4547`. **Previous "Updated through Phase 13.36.DF v1.2" baseline preserved verbatim above for audit traceability per architect's append-only directive.**
-**Next Update:** After Phase 13.40.DF (cumulative histogram; 922 tests predicted).
+**Document Status:** Updated through Phase 13.42.DF FIX1 (commits `82aaa903` + `28f7f3ce`, tag `PHASE_13_42_DF_FIX1_END`, 2026-05-27). Rolling tag `PHASE_BEGIN_dfdraw` → `28f7f3ce`. **Previous "Updated through Phase 13.39.DF v1.2" baseline preserved verbatim above for audit traceability per architect's append-only directive.**
+**Next Update:** After Phase 13.43.DF (or Phase 13.42.DF FIX2 if process-improvement audit drives FIX2 scope; ~990 tests predicted).
