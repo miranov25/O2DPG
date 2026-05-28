@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-05-28 13:04 UTC
+**Generated:** 2026-05-28 17:45 UTC
 **Phase:** 13.15.DF
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -9,12 +9,12 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 56 | 49% |
-| ☑️ Smoke-only | 57 | 50% |
+| ✅ Verified | 56 | 47% |
+| ☑️ Smoke-only | 63 | 52% |
 | 🧨 Broken | 0 | 0% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **114** | |
-| **Total proof tests** | **578** | |
+| **Total features** | **120** | |
+| **Total proof tests** | **589** | |
 | **Invariance tests** | **349** | |
 
 **Status key:**
@@ -182,6 +182,13 @@
 | ✅ | **RANGE.scatter_filter** — range= on scatter removes out-of-range points (FIX1 semantic) | 1 | 0 |
 | | **TITLE** | | |
 | ✅ | **TITLE.get_suptitle** — _get_suptitle public-API helper (mpl >= 3.8 + fallback) | 1 | 0 |
+| | **VISUAL** | | |
+| ☑️ | **VISUAL.data_bounds** — plotted points lie within axes limits (C-9 regression lock) | 1 | 0 |
+| ☑️ | **VISUAL.cell_population** — every visible facet cell drew data; ragged-grid padding excluded | 2 | 0 |
+| ☑️ | **VISUAL.artist_count** — per-cell data-series / legend count matches per-cell filtered groups | 2 | 0 |
+| ☑️ | **VISUAL.color_distinct** — per-group colors distinct — color-cycle not reset (AD-37 class) | 2 | 0 |
+| ☑️ | **VISUAL.facet_grid** — facet grid shape + shared-axis consistency (figure-derived) | 2 | 0 |
+| ☑️ | **VISUAL.title** — suptitle populated, not duplicated per-cell (C-3); content (I-4) | 2 | 0 |
 
 ---
 

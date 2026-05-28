@@ -443,5 +443,23 @@ TEST_LAYERS = {
     "test_phase_13_46_df_audit_fixes.py::TestPhase1346AuditFixes::test_f70_get_suptitle_live_path": "invariance",
     "test_phase_13_46_df_audit_fixes.py::TestPhase1346AuditFixes::test_f71_scatter_range_removes_out_of_range_points": "invariance",
 
+    # ── Phase 13.48.DF — visual_primitive layer (renderer-free figure checks) ──
+    # A distinct layer from invariance/smoke: these assert structural properties
+    # of the rendered figure (points in bounds, per-cell artist counts, color
+    # distinctness, grid shape, title de-duplication) against figure-derived /
+    # filtered-df oracles. The matrix currently displays these as Smoke-only;
+    # a dedicated "visually checked" status is the deferred §3 schema task.
+    "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v1_scatter_points_in_bounds": "visual_primitive",
+    "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v2_every_visible_cell_nonempty": "visual_primitive",
+    "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v2_padding_safe_on_ragged_grid": "visual_primitive",
+    "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v3_artist_count_matches_groups": "visual_primitive",
+    "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v4_per_group_colors_distinct": "visual_primitive",
+    "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v5_facet_grid_shape": "visual_primitive",
+    "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v6_shared_axis_consistency": "visual_primitive",
+    "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v7_legend_entries_match_groups": "visual_primitive",
+    "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v8_color_cycle_distinct": "visual_primitive",
+    "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v9_auto_title_not_duplicated": "visual_primitive",
+    "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v10_title_content": "visual_primitive",
+
     # Everything else defaults to "smoke"
 }

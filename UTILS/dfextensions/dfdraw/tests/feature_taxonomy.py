@@ -1517,4 +1517,58 @@ FEATURES = [
             "test_phase_13_46_df_audit_fixes.py::TestPhase1346AuditFixes::test_f70_get_suptitle_live_path",
         ],
     },
+    # ── Phase 13.48.DF — Tier-1 automated visual checks (visual_primitive) ──
+    {
+        "id": "VISUAL.data_bounds",
+        "name": "plotted points lie within axes limits (C-9 regression lock)",
+        "category": "VISUAL",
+        "tests": [
+            "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v1_scatter_points_in_bounds",
+        ],
+    },
+    {
+        "id": "VISUAL.cell_population",
+        "name": "every visible facet cell drew data; ragged-grid padding excluded",
+        "category": "VISUAL",
+        "tests": [
+            "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v2_every_visible_cell_nonempty",
+            "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v2_padding_safe_on_ragged_grid",
+        ],
+    },
+    {
+        "id": "VISUAL.artist_count",
+        "name": "per-cell data-series / legend count matches per-cell filtered groups",
+        "category": "VISUAL",
+        "tests": [
+            "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v3_artist_count_matches_groups",
+            "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v7_legend_entries_match_groups",
+        ],
+    },
+    {
+        "id": "VISUAL.color_distinct",
+        "name": "per-group colors distinct — color-cycle not reset (AD-37 class)",
+        "category": "VISUAL",
+        "tests": [
+            "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v4_per_group_colors_distinct",
+            "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v8_color_cycle_distinct",
+        ],
+    },
+    {
+        "id": "VISUAL.facet_grid",
+        "name": "facet grid shape + shared-axis consistency (figure-derived)",
+        "category": "VISUAL",
+        "tests": [
+            "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v5_facet_grid_shape",
+            "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v6_shared_axis_consistency",
+        ],
+    },
+    {
+        "id": "VISUAL.title",
+        "name": "suptitle populated, not duplicated per-cell (C-3); content (I-4)",
+        "category": "VISUAL",
+        "tests": [
+            "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v9_auto_title_not_duplicated",
+            "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v10_title_content",
+        ],
+    },
 ]
