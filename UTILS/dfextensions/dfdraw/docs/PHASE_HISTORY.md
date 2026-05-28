@@ -4,8 +4,8 @@
 
 This document tracks the development history of the `dfdraw` module, a DataFrame drawing utility with ROOT TTree::Draw-like interface. Part of the dfextensions toolkit for ALICE experiment calibration and QA at CERN.
 
-**Current Status:** Phase 13.42.DF FIX1 — Production-gate bug closure + interface lock (Inline fits) — ✅ Closed (panel-approved 4 reviewers; 2 [BREACH] disclosures D-1/D-2 ratified; gate 981/0/1 skipped/1 xfailed at `28f7f3ce`, tag `PHASE_13_42_DF_FIX1_END`)
-**Test Count:** 981 passing + 1 skipped + 1 xfailed (108 features, 307 invariance tests, 50 Verified)
+**Current Status:** Phase 13.46.DF FIX1 — Scatter `range=` point-filtering (audit bucket ① closure) — ✅ Closed (panel-approved; gate 1023/0/1 skipped/1 xfailed at `ad91e251`, tag `PHASE_13_46_DF_FIX1_END`)
+**Test Count:** 1023 passing + 1 skipped + 1 xfailed (114 features, 349 invariance tests, 56 Verified)
 **Stability Phase:** Experimental (active development)
 
 ---
@@ -2372,6 +2372,154 @@ Both flagged in CRR §2 as `[BREACH — requires architect ratification]` per pr
 - Invariance tests: 299 → **307** (+8)
 - Features: 105 → **108**
 
+## Phase 13.42.DF FIX2: Close 5 items deferred at FIX1
+
+**Date:** 2026-05-27
+**Commit:** `79d449c3`
+**Tag:** `PHASE_13_42_DF_FIX2_END`
+**Status:** ✅ Closed (987 / 0 / 1 skipped / 1 xfailed)
+**Predecessor:** `PHASE_13_42_DF_FIX1_END` @ `28f7f3ce` (gate 981)
+
+### Objectives
+
+Close the 5 items wrongly deferred at Phase 13.42.DF FIX1. See companion governance memo `Claude48_Feedback_FIX1_Defer_Anti_Pattern_20260527.md` for the process-gap analysis and the proposed QRC #11 + Reviewer supplement that arose from this defer-anti-pattern.
+
+### Items Closed
+
+- **B6** — suptitle padding adapts to title line count (per v1.2 §4 cosmetic backlog).
+- **B7** — faceted + fit no-crash smoke verification (per v1.2 §4; cascade from B2 compact format).
+- **I-8** — hist + weights + fit emits a `UserWarning` (per v1.2 §8 B5(c) commitment; weighted-hist `sum(w²)` advisory at draw time).
+- **ADV-1** — stacked + `selection_vector` (>1) + fit raises `NotImplementedError` (per v1.2 §8 D9(d) commitment).
+- **ADV-3** — `fit_textbox_kwargs` threaded into the 3 `_HIST/PROFILE/SCATTER_FORWARDED_NAMES` tuples + outer `DFDraw` signatures + explicit forwarding sites (per Sonnet55 v1.2 P2-2; also satisfies the Phase 13.43 v1.2 §9 carry-forward checklist).
+
+### Tests
+
+**Gate:** 981 → **987** / 0 / 1 skipped (+6: F.59, F.60, F.61, F.61b, F.62, F.63 in `TestPhase1342FIX2Regressions`). FIT.inline count 35 → 41. Taxonomy staged in-commit.
+
+### Governance
+
+The defer-anti-pattern (items B6/B7/I-8/ADV-1/ADV-3 deferred at FIX1 without explicit architect ratification of the deferral) was flagged as a recurring class. Proposed Coder QRC #11 + a Reviewer supplement memo were drafted to require explicit defer-ratification rather than silent carry-forward.
+
+---
+
+## Phase 13.43.DF v1.0: `summary_fit` — Standalone Fit-Result Figures
+
+**Date:** 2026-05-27
+**Commit:** `0e0d79f7`
+**Tag:** `PHASE_13_43_DF_END`
+**Status:** ✅ Closed (**1014 / 0 / 0 / 1 skipped**)
+**Specification:** `PHASE_13_43_DF_v1_2_SummaryFit_Proposal.md` (LOCKED 2026-05-27)
+**Predecessor:** `PHASE_13_42_DF_FIX2_END` @ `79d449c3` (gate 987)
+
+### Objectives
+
+Add `summary_fit=` to produce standalone fit-result figures (parameter tables / fit summaries rendered as their own figure) consumed at the outer `DFDraw` layer, composing with faceted dispatch.
+
+### Implementation
+
+- New module `plots/_summary_fit.py` (~650 LOC) plus an outer-layer consume wired through `DFDraw.{hist,profile,scatter,draw}`.
+- Faceted aggregation in `_dispatch_2d_facet` and `_dispatch_faceted_render` per v1.2 §4.2.0.
+- `_consumed` normalize-set extended to include `summary_fit` per §4.6 / C-3.
+- 13 `summary_fit.*` keys added to `DEFAULT_STYLE` per §4.3.
+
+**CRR §2 disclosures:** vector-dispatch `summary_fit` attaches to `stats[0]`; 3D-facet `summary_fit` deferred to a future FIX1; module-level `set_style` replaces v1.2 §3.10 instance-style language; `_make_row` extracts from the `(params, param_names, param_errors)` triplet; `_all_param_names` excludes `n_data`; title auto-fit uses a char-count approximation.
+
+### R-2 fix at END (scalar delegation drop)
+
+During closure, `DFDraw.draw()`'s scalar delegations were found to drop `fit` / `fit_textbox_kwargs` / `summary_fit` (named params not present in `**kwargs`) at the hist/scatter/profile sites. Fixed at all 3 sites; locked by **F.56c**. (`feature_taxonomy.py` `name`-schema fix also applied — a stale `title` key crashed the matrix generator.)
+
+### Tests
+
+**Gate:** 987 → **1014** / 0 / 0 / 1 skipped. +26 summary_fit invariance tests (F.34–F.56 + F.38a + F.47b) in `TestPhase1343SummaryFit` (commit-message body states the pre-R-2 count of 1013 / +26); the END gate is **1014** after the R-2 F.56c regression lock. New feature `FIT.summary` (Verified). Invariance 313 → 340. Taxonomy staged in-commit.
+
+---
+
+## Tooling: `run_tests.sh` PHASE_HISTORY ↔ git-tag drift check
+
+**Date:** 2026-05-28
+**Commit:** `02510a20`
+**Status:** ✅ Committed (tooling-only; no test-count change — gate 1014)
+**Tag:** `PHASE_13_46_DF_BEGIN` placed here (predecessor marker for Phase 13.46)
+
+### Objectives
+
+Catch the doc-vs-repo drift class where `PHASE_*_END` entries claimed in `docs/PHASE_HISTORY.md` do not exist as git tags (or vice-versa) — the same disease as stale-backlog tracking. Analogous to the Phase 13.34.DF FIX2 BUG-011 staging check, applied to phase-tag traceability.
+
+### Implementation
+
+~96-line block inserted in `run_tests.sh` after the BUG-011 staging check. Two behaviors:
+1. **BLOCK (exit 1):** any `PHASE_*_END` grep'd from `docs/PHASE_HISTORY.md` that is not in `git tag --list 'PHASE_*_END'`. Override: `DFDRAW_SKIP_TAG_DRIFT_CHECK=1`.
+2. **WARN (heuristic):** a `FIX<N>_END` tag whose tagged-commit subject mentions a different `FIX<M>` (misplaced-tag detector).
+
+The reverse direction (repo tags ahead of the doc, e.g. a freshly-tagged phase not yet backfilled) is intentionally NOT blocked — it is the expected transient during a backfill pass. Two-way tested (clean → exit 0; injected fake `PHASE_99_DF_END` → exit 1); `bash -n` clean. Sonet50 panel `[!]` APPROVED.
+
+### Incident found by the new check
+
+The drift `diff` immediately surfaced a Phase 13.25 tag incident: `PHASE_13_25_DF_FIX2_END` was claimed in the doc at `da8895e2` but did not exist as a tag (created), and `PHASE_13_25_DF_FIX1_END` was misplaced ON `da8895e2` (the FIX2 commit) instead of the real FIX1 commit `06f84ff8` (deleted + recreated on `06f84ff8`; verified `06f84ff8` is an ancestor of `da8895e2`). All-local, no remote rewrite. **Lesson: phase open/closed status is determined SOLELY by git tags, never by memory or backlog notes.**
+
+---
+
+## Phase 13.46.DF v1.0: Audit Bucket ① Fixes (C-1 / C-2 / C-4 / C-7 / C-9)
+
+**Date:** 2026-05-28
+**Commit:** `1d77702e`
+**Status:** ✅ Implementation closed (superseded by FIX1; closure tag is `PHASE_13_46_DF_FIX1_END`)
+**Specification:** `PHASE_13_46_DF_v1_3_AuditFixes_Proposal.md` (panel-approved)
+**Predecessor:** `PHASE_13_43_DF_END` @ `0e0d79f7` (gate 1014)
+**Source:** `PHASE_13_45_dfdraw_Audit_Findings.md` (audit defining the bucket-① items)
+
+### Objectives
+
+Close audit bucket ① — five independent fixes surfaced by the Phase 13.45 audit:
+
+- **C-1** — ROOT TF1 alias `fit='gaus'`: `register_fit('gaus', _gaussian, _gaussian_guess)` in `plots/fits.py`. Lock F.64.
+- **C-2** — ROOT type alias `type='histo'`: module-level `_TYPE_ALIASES = {'histo':'hist'}` applied before the dispatch ladder in `drawer.py`. Lock F.65.
+- **C-4** — source `_get_suptitle(fig)` helper (public `get_suptitle()` for mpl ≥ 3.8 + private fallback); replaced all 9 inline `fig._suptitle.get_text()` sites. Retires Claude's own Phase 13.42 FIX2 §2.2 private-access disclosure. (The audit premise was partly wrong — the helper existed only as a test helper, not in the code path.) Lock F.70.
+- **C-7** — kwarg-typo guard at `DFDraw.draw()` entry: `difflib.get_close_matches(cutoff=0.8)` did-you-mean; the known-key set K = union of all 6 method signatures (draw/hist/scatter/profile/hist2d/hexbin) ∪ the 5 `_*_FORWARDED_NAMES` tuples (reviewer note N-1). Near-miss → raise with suggestion; far-unknown → warn. Lock F.66.
+- **C-9** — `range=` on `scatter()` resolved through the shared `resolve_range_2d` (AD-74 per-axis), identical handling to hist/profile/2D. v1.0 applied it as a **view clip** (`set_xlim`/`set_ylim`); non-faceted exact, all strategies, honest stats; original profile/hist unpack bug fixed. Locks F.67/F.68/F.69a/F.69b. (Superseded by FIX1 point-filtering — see below.)
+
+**Excluded:** C-3 (faceted `auto_title=False`) — intentional per `drawer.py` comment ("faceted plots share one selection → show once, not per-cell") → deferred to Phase 13.47.
+
+### §2.1 architect ruling (faceted scatter `range=`)
+
+Panel-decided **Option 1 (shared-global):** faceted scatter `range=` applies at the shared-axis / global level (consistent with faceted hist), NOT per-cell, because facet grids use matplotlib shared axes. Per-cell ranges remain available to users via `facet_by=[list] + share_x='none'`. Per-cell tightened-strategy windows and the `facet_by='string'` + `share_x='none'` gap were recorded as FIX1 candidates.
+
+### Tests
+
+**Gate:** 1014 → **1022** / 0 / 0 / 1 skipped. +8 invariance tests F.64–F.70 (F.69 split a/b) in `TestPhase1346AuditFixes`. +4 features (`FIT.root_aliases`, `API.kwarg_typo_guard`, `RANGE.scatter`, `TITLE.get_suptitle`). Invariance 340 → 348; Verified 51 → 55. Taxonomy staged in-commit. Panel: Sonet50 5-reviewer `[!]` APPROVED.
+
+---
+
+## Phase 13.46.DF FIX1: Scatter `range=` Removes Out-of-Range Points
+
+**Date:** 2026-05-28
+**Commit:** `ad91e251`
+**Tag:** `PHASE_13_46_DF_FIX1_END`
+**Rolling tag:** `PHASE_BEGIN_dfdraw` → `ad91e251`
+**Status:** ✅ Closed (**1023 / 0 / 0 / 1 skipped**)
+**Predecessor:** Phase 13.46.DF v1.0 @ `1d77702e` (gate 1022)
+**Specification:** `PHASE_13_46_DF_FIX1_Code_Review_Request.md`
+
+### Trigger
+
+v1.0 set the **view window** (`set_xlim`/`set_ylim`) — out-of-range points stayed in the collection, off-screen. Architect 2026-05-28: scatter `range=` must **DROP** the points (a point filter), consistent with how hist/profile `range=` exclude points from binning. Without filtering, `percentile_99`/`hybrid` strategies are cosmetic; with filtering they do their job.
+
+### Implementation (`plots/scatter.py`, ~30 LOC net)
+
+- **Point filter (before stats + plotting):** resolve range via `resolve_range_2d`; build an in-range mask `_rmask` over `x_data`/`y_data`; filter `x_data`, `y_data`, AND `df_filtered` by the **same** mask. Alignment is automatic — color/size/marker/error-bar helpers all derive from `df_filtered`, so filtering it keeps every parallel array aligned (the helpers' `mask` param is a defensive no-op when `df` is pre-filtered).
+- **Stats honesty:** computed after the filter → point counts reflect in-range data; `autorange_used` / `autorange_strategy` record the resolved window + strategy.
+- **View (non-facet only):** tight exact `set_xlim`/`set_ylim` to the resolved window so F.67's exact-view assertion holds; faceted skips it (shared axes autoscale to the union of filtered data — no last-cell-wins). The v1.0 re-resolve block is removed.
+
+### Behavior
+
+`range="minmax"` → window == full data → nothing removed (no-op, view unchanged). `range="percentile_99"` / explicit tuple → out-of-range points dropped + tight exact view (non-facet). Faceted: each cell filters and the shared axes autoscale to the union. The v1.0 §2.1 shared-global disclosure becomes largely moot — the points are gone, so the shared axes reflect filtered data.
+
+### Tests
+
+**Gate:** 1022 → **1023** / 0 / 0 / 1 skipped. +1 invariance test **F.71** (`test_f71_scatter_range_removes_out_of_range_points`: percentile_99 & explicit-tuple drop points; minmax removes nothing; parallel color array stays aligned). +1 feature `RANGE.scatter_filter`. Invariance 348 → 349; Verified 55 → 56. Taxonomy staged in-commit.
+
+---
+
 ## Statistics Summary
 
 | Phase | Test Count | Delta | Key Feature |
@@ -2425,9 +2573,17 @@ Both flagged in CRR §2 as `[BREACH — requires architect ratification]` per pr
 | **13.42.DF v1.0** | **973** | **+27** | **Inline fits (`fit=` parameter on hist/profile/scatter/draw). Three input forms: `str` shorthand, `dict` spec (initial_guess/bounds/range/use_errors/raise_on_failure), `Callable`. Vector dispatch list form. Per-channel `linestyle_cycle`. Stats integration: `stats['fit']` = `List[List[Dict]]`. Composes with `group_by` (dict keyed by group), `facet_by` (per-cell), `vector_expr`. `normalize=` + `fit=` silent consume (CP1-5; F.26 lock). New `plots/fits.py` registry (gauss/pol0-5/linear/expo); public `register_fit(name, function, n_params, guess_fn)`. New `plots/_fit_render.py` (ROOT-style param textbox + overlay). 7 new style keys: `fit.linewidth/linestyle_cycle/position/text_format/text_padding/text_fontsize_default/text_fontsize_facet` (NOTE: all silently no-op in v1.0 due to D-2 `_style_get` defect; fixed in FIX1). Sonnet54 P1-B at close (CRR v2): profile grouped fit returned single fit on combined data instead of per-group dict; fixed pre-tag (F.27 lock). Predecessor: `PHASE_13_41_DF_FIX2_END` (gate 946)** |
 | **13.42.DF FIX1** | **981** | **+8** | **Production-gate bug closure + interface lock. 30 minutes of real TPC ITS-TPC calibration data surfaced 7 bugs (5 P1 silently-wrong-output) that 5 reviewers + 27 invariance tests missed. Correctness: B4 (grouped fit reuses main-path masks; `.eq()` Interval-safe; Sonnet55 extension to top_k/sort_groups; new `fit_status='skipped_empty'`), B5 (χ² Poisson default `sqrt(max(counts,1))`; matches ROOT TH1::Fit Neyman convention; **D-1 [BREACH]** companion fix at `dispatch_fit` use_errors default flip False→True for hist), D5 (vector fit pairing per v1.4 §6.3 verbatim; F.12 inverted), D9/R4 (stacked+group_by+fit → N per-group fits, stacking purely visual). Rendering: B1 (facet_mode plumbed at 3 call sites; **D-2 [BREACH]** deeper root cause — `_style_get` used broken `get_style(key)` API → ALL `fit.*` style keys silently ignored since Phase 13.42 v1.0; fixed to `get_style_value(key, default)`), B2/B3 (new `fit_textbox_kwargs={'fontsize','format','show_fields'}` per-call kwarg with sub-key validation; compact format = one line per fit; format='auto' = compact if facet & n_blocks>1). Interface LOCKED at close: `fit_textbox_kwargs` sub-keys + enum values; D8/R3 (scatter `yerr=` column as opt-in; `use_errors` redundant); D9/R4 (per-group dict shape). Tests: F.28+F.28b (B4 expression+quantile + skipped_empty), F.29 (B5 redchi ∈ [0.5,2.5]), F.30 (B1 set_style round-trip), F.31 (D5 pairing), F.32 (D9 per-group dict), F.33×2 (override + precedence over set_style). FIT.inline count 27 → 35. **Two `[BREACH]` disclosures (D-1, D-2)** flagged per proposed Coder QRC #10 (verbatim-spec deviation escalation rule, architect-ratified R6). Third consecutive phase to miss taxonomy staging (Sonet50 governance note → run_tests.sh pre-bundle taxonomy-count check proposed). Production gate methodology validated; `PHASE_13_42_DF_PROD_GATE_Bugs_v1_0.md` + `PHASE_13_42_DF_POST_GATE_Audit_Questions_v1_0.md` shipped for post-FIX1 process-improvement audit** |
 
-**Total Development (as of Phase 13.42.DF FIX1):** 47 phase entries, **981 tests** + 1 skipped + 1 xfailed, **108 features**, **307 invariance tests**, **50 Verified features**
+| **13.42.DF FIX2** | **987** | **+6** | **Close 5 items deferred at FIX1: B6 (suptitle padding adapts to title line count), B7 (faceted+fit no-crash smoke), I-8 (hist+weights+fit UserWarning), ADV-1 (stacked+selection_vector(>1)+fit → NotImplementedError), ADV-3 (`fit_textbox_kwargs` threaded into 3 FORWARDED_NAMES tuples + outer signatures + explicit forwarding). F.59-F.63 + F.61b. FIT.inline 35 → 41. Defer-anti-pattern → proposed QRC #11 + Reviewer supplement (`Claude48_Feedback_FIX1_Defer_Anti_Pattern_20260527.md`). Tag `PHASE_13_42_DF_FIX2_END`** |
+| **13.43.DF v1.0** | **1014** | **+27** | **`summary_fit=` standalone fit-result figures. New `plots/_summary_fit.py` (~650 LOC); outer-layer consume through `DFDraw.{hist,profile,scatter,draw}`; faceted aggregation in `_dispatch_2d_facet` + `_dispatch_faceted_render`; `_consumed` normalize-set extended; 13 `summary_fit.*` style keys. 26 invariance tests F.34-F.56 (+F.38a/F.47b) in `TestPhase1343SummaryFit` (FIT.summary feature, Verified). R-2 fix at END: `DFDraw.draw()` scalar delegations dropped `fit`/`fit_textbox_kwargs`/`summary_fit` (named params not in `**kwargs`) at 3 sites — fixed, locked by F.56c; `feature_taxonomy.py` `name`-schema fix (stale `title` key crashed matrix). CRR §2: vector summary_fit → stats[0]; 3D-facet deferred. Commit body states pre-R-2 1013/+26; END gate 1014. Invariance 313 → 340. Tag `PHASE_13_43_DF_END`** |
+| **run_tests.sh (tooling)** | 1014 | 0 | **PHASE_HISTORY ↔ git-tag drift check. ~96 LOC after BUG-011 staging check: BLOCK (exit 1) on any `PHASE_*_END` in `docs/PHASE_HISTORY.md` not in `git tag --list 'PHASE_*_END'` (override `DFDRAW_SKIP_TAG_DRIFT_CHECK=1`); WARN heuristic for misplaced `FIX<N>_END` tags. Reverse direction (repo ahead of doc) intentionally not blocked (expected backfill transient). Surfaced + resolved the Phase 13.25 tag incident (`PHASE_13_25_DF_FIX1_END` misplaced on `da8895e2` → moved to `06f84ff8`; `PHASE_13_25_DF_FIX2_END` created on `da8895e2`). Lesson: phase status = git tags ONLY. Tooling-only, no test-count change. `PHASE_13_46_DF_BEGIN` placed here (`02510a20`). Sonet50 panel `[!]` APPROVED** |
+| **13.46.DF v1.0** | **1022** | **+8** | **Audit bucket ① fixes (C-1/C-2/C-4/C-7/C-9). C-1 `fit='gaus'` ROOT TF1 alias (`register_fit`); C-2 `type='histo'` ROOT alias (`_TYPE_ALIASES`); C-4 source `_get_suptitle` helper (public `get_suptitle()` mpl≥3.8 + private fallback) replacing 9 inline `fig._suptitle` sites (retires Phase 13.42 FIX2 §2.2 disclosure); C-7 kwarg-typo guard at `draw()` entry (`difflib.get_close_matches(cutoff=0.8)` did-you-mean; K = 6 method sigs ∪ 5 FORWARDED_NAMES, reviewer note N-1); C-9 `range=` on scatter via shared `resolve_range_2d` (v1.0 view-clip, all strategies, honest stats; original profile/hist unpack bug fixed). C-3 (faceted auto_title) intentionally excluded → Phase 13.47. F.64-F.70 (F.69 a/b). +4 features (FIT.root_aliases, API.kwarg_typo_guard, RANGE.scatter, TITLE.get_suptitle). §2.1 ruling: Option 1 shared-global faceted scatter range (per-cell available via `facet_by=[list]+share_x='none'`). Invariance 340 → 348, Verified 51 → 55. Spec `PHASE_13_46_DF_v1_3_AuditFixes_Proposal.md`; audit `PHASE_13_45_dfdraw_Audit_Findings.md`. Predecessor `PHASE_13_43_DF_END` @ gate 1014. Closure tag is FIX1_END (no separate v1.0 END tag)** |
+| **13.46.DF FIX1** | **1023** | **+1** | **Scatter `range=` REMOVES out-of-range points (point filter), per architect 2026-05-28 — consistent with hist/profile range= excluding points from binning. v1.0 only view-clipped (`set_xlim`); FIX1 filters `x_data`/`y_data`/`df_filtered` by one mask before stats+plotting (parallel color/size/marker/error arrays derive from `df_filtered` → stay aligned automatically). Stats computed post-filter (honest counts). Non-facet keeps exact tight view; faceted cells filter and shared axes autoscale to the union (no last-cell-wins). F.71 locks the point-removal invariant (percentile_99 & explicit-tuple drop points; minmax removes nothing; color array stays aligned). +1 feature `RANGE.scatter_filter`. Invariance 348 → 349, Verified 55 → 56. Predecessor v1.0 @ `1d77702e`. Tag `PHASE_13_46_DF_FIX1_END`; rolling `PHASE_BEGIN_dfdraw` → `ad91e251`** |
+
+**Total Development (as of Phase 13.46.DF FIX1):** 52 phase entries, **1023 tests** + 1 skipped + 1 xfailed, **114 features**, **349 invariance tests**, **56 Verified features**
 
 > **Phase ordering note (post-13.39):** chronological commit order is 13.39 v1.2 (`b024414e` / `3c5d4547`) → 13.40 v1.0 (`67d125e2`) → 13.41 v1.0 (`530954d1`) → 13.41 FIX1 (`b84576a0`) → 13.41 FIX2 (`70b94a3e`) → 13.42 v1.0 (`38aed2d8`) → 13.42 FIX1 main (`82aaa903`) → 13.42 FIX1 P1 follow-up (`28f7f3ce`). Phase numbers monotonic in this window. Tag `PHASE_BEGIN_dfdraw` was at `38aed2d8` at Phase 13.42.DF close; moved to `28f7f3ce` at Phase 13.42.DF FIX1 close.
+
+> **Phase ordering note (post-13.42 FIX1):** chronological commit order is 13.42 FIX1 P1 follow-up (`28f7f3ce`) → PHASE_HISTORY v1.9 doc (`e463161c`) → 13.42 FIX2 (`79d449c3`, tag `PHASE_13_42_DF_FIX2_END`, gate 987) → 13.43 v1.0 (`0e0d79f7`, tag `PHASE_13_43_DF_END`, gate 1014) → run_tests.sh tag-drift check (`02510a20`, tag `PHASE_13_46_DF_BEGIN`) → 13.46 v1.0 (`1d77702e`, gate 1022) → 13.46 FIX1 (`ad91e251`, tag `PHASE_13_46_DF_FIX1_END`, gate 1023). Phase numbers monotonic in this window. Note: the v1.9 doc commit (`e463161c`) predates 13.42 FIX2, so v1.9 did not yet record FIX2 — this v1.10 backfill adds it. Phase 13.46.DF v1.0 was committed (`1d77702e`) but not separately END-tagged; its closure tag is `PHASE_13_46_DF_FIX1_END` at `ad91e251`. Tag `PHASE_BEGIN_dfdraw` moved `28f7f3ce` → `ad91e251` across this window.
 
 
 > **Phase ordering note (post-13.32 v1.0):** the chronological commit order on `feature/groupby-optimization` from 2026-05-16 onward is 13.27.DF Commit 2 v1.0 (`84dcf916`) → Commit 2 FIX1 (`ba42fcde`) → Commit 2 FIX1.FIX1 (`b929ccb9`) → 13.33.DF v1.0 M1 (`61460df5`) → 13.33.DF v1.0 M2 (`c6a3245f`) → 13.33.DF v1.0 FIX1 (`94594f89`) → 13.32.DF FIX1 (`195ab4ea` / `d0b04f88`) → 13.34.DF v1.0 (`463deb36` / `abf5fe40`) → 13.34.DF FIX1 (`379f26bd`) → 13.34.DF FIX2 (`b38395db`) → 13.35.DF (`3b910aec`) → 13.36.DF (`2f4d959f`). Phase numbers are NON-monotonic vs commit date: 13.27 Commit 2 series lands after the 13.32 v1.0 entry above, and 13.32 FIX1 chronologically follows 13.33 v1.0 FIX1. Phase numbers index the *originating* phase, not the commit order — consistent with the post-13.27 Commit 1 phase ordering note above.
@@ -2553,8 +2709,9 @@ All APIs subject to change based on user feedback and integration testing with:
 | 1.7 | 2026-05-21 | Opus1 (Reviewer) at architect request | **Backfill of 9 phase events that landed between Phase 13.32.DF v1.0 closure (`cb6a1aed`, 2026-05-15) and current HEAD (`2f4d959f`, 2026-05-20).** Added strictly append-only — every existing entry preserved verbatim per architect's "Previous coders removed history, which was completely wrong" directive. New H2 sections (in phase-number order, inserted before § Statistics Summary): Phase 13.27.DF Commit 2 v1.0 (`84dcf916`, +52 tests, Phase D completion: `selection_vector` + `weights_vector` + `delta_facet`), Phase 13.27.DF Commit 2 FIX1 (`ba42fcde`, +9), Phase 13.27.DF Commit 2 FIX1.FIX1 (`b929ccb9`, +1), Phase 13.33.DF v1.0 M1 (`61460df5`, +22, Normalized differential profiles, AD-80/81/82), Phase 13.33.DF v1.0 M2 (`c6a3245f`, +5, group_by/facet_by composition), Phase 13.33.DF v1.0 FIX1 (`94594f89`, +1, tag `PHASE_13_33_DF_v1_0_FIX1_END`), Phase 13.32.DF FIX1 (`195ab4ea` / `d0b04f88`, +4, BUG-001/002/003 faceted rendering bugs caught in real-data TPC/ITS QA, tag `PHASE_13_32_DF_FIX1_END`), Phase 13.34.DF v1.0 (`463deb36` / `abf5fe40`, +8, Capability Matrix taxonomy refresh + M2 robustness gaps, tag `PHASE_13_34_DF_END`), Phase 13.34.DF FIX1 (`379f26bd` + `14851d42`, +5, BUG-010 untracked test file, tag `PHASE_13_34_DF_FIX1_END`), Phase 13.34.DF FIX2 (`b38395db`, +0, BUG-011 run_tests.sh pre-bundle staging check, tag `PHASE_13_34_DF_FIX2_END`), Phase 13.35.DF v1.3 (`3b910aec`, +11, `group_by_bins` + `hist_norm` for `hist()`, BUG-013 hist side, tag `PHASE_13_35_DF_END`), Phase 13.36.DF v1.2 (`2f4d959f`, +10, user style kwargs override auto-cycle, BUG-013 style-override side, tag `PHASE_13_36_DF_END`). Test count 715 → **843**. Statistics Summary table extended with 13 new rows (one per phase event) + extended phase-ordering note covering the non-monotonic commit order from 2026-05-16 onward. Totals updated: 28 → 37 phase entries; 715 → 843 tests; 62 → 90 features; 28+ → 193 invariance tests; 7 → 33 Verified features. Source: `gitlog.txt` (commits cb6a1aed..2f4d959f), `reviewer_20260521_092254.zip` (843/0/1 confirmed at HEAD), `CAPABILITY_MATRIX_20260521_092254.md` (90 features / 33 Verified confirmed). Note: backfilled entries derive from commit messages (verbatim phrasing preserved where present); each new entry cites its commit hash and tag per Org v1.30 § Source-Line Evidence Standard `[MUST]`. No existing line of this document was removed or shortened. Standalone review of this PHASE_HISTORY backfill not performed — architect-directed governance closure, awaiting panel review. |
 | **1.8** | **2026-05-21** | **Sonet50 (consolidated panel review)** | **Added 4 new phase sections (Phases 13.37.DF v1.1, 13.37.DF FIX1, 13.38.DF v1.1, 13.39.DF v1.2) and 4 new Statistics Summary rows. Strictly append-only. Commits: `67fccf3d` (13.37), `095d6f28` (13.37 FIX1), `0f525743` (13.38), `b024414e`+`3c5d4547` (13.39). Test count 843 → 913 (+70). Verified 33 → 47 (+14). Invariance 193 → 239 (+46). Features 90 → 105 (+15). Phase entries 37 → 41 (+4). Sources: gitlog.txt (commits `2f4d959f`..`3c5d4547`), session approval summaries (Sonet50_PHASE_13_37/38/39_*_ReviewSummary_AllReviewers_20260521.md), CAPABILITY_MATRIX.md (47 Verified / 239 invariance / 913 tests confirmed). All pre-existing content preserved verbatim.** |
 | **1.9** | **2026-05-27** | **Claude48 (coder seat) at architect request** | **Backfill of 6 phase events that landed between Phase 13.39.DF v1.2 closure (`3c5d4547`, 2026-05-21) and current HEAD (`28f7f3ce`, 2026-05-27). Added strictly append-only — every existing entry preserved verbatim per architect's append-only directive. New H2 sections (chronological commit order, inserted before § Statistics Summary): Phase 13.40.DF v1.0 (`67d125e2`, +10, Cumulative histogram `cumulative=True/-1/False`; ROOT `TH1::Draw("cumulative")` equivalent; 4 call sites threaded incl. `_dispatch_faceted_render`; M5 `hist_errors+cumulative` NotImplementedError guard; tag `PHASE_13_40_DF_END`), Phase 13.41.DF v1.0 (`530954d1`, +19, N-D Faceting via `facet_by=List[str]` for 1D/2D/3D; ROW/COL/FIGID convention LOCKED; 3D returns `(List[Figure], List[axes_2d], List[stats_dict])`; `share_x`/`share_y`/`share_across_figures` new params; dfdraw FIRST major plotting library with unified Nth-dimension-figure API; tag `PHASE_13_41_DF_END`), Phase 13.41.DF FIX1 (`b84576a0`, +3, 3 bugs from v1.6 panel; tag `PHASE_13_41_DF_FIX1_END`), Phase 13.41.DF FIX2 (`70b94a3e`, +1, 5 P2/P3 items + FBY.23 lock; tag `PHASE_13_41_DF_FIX2_END`; gate 946), Phase 13.42.DF v1.0 (`38aed2d8`, +27, Inline fits `fit=` parameter on hist/profile/scatter/draw; new `plots/fits.py` registry + `plots/_fit_render.py`; str/dict/callable/list forms; 7 fit.* style keys; stats integration; group_by/facet_by/vector composition; Sonnet54 P1-B fixed pre-tag for profile grouped path; tag `PHASE_13_42_DF_END`; gate 973), Phase 13.42.DF FIX1 (`82aaa903` + `28f7f3ce`, +8, Production-gate bug closure + interface lock; 7 production-gate bugs B1-B7 surfaced within 30 minutes of real TPC ITS-TPC calibration data testing; 5 P1 silently-wrong-output bugs that 5 reviewers + 27 invariance tests missed; D-1 [BREACH] use_errors default flip + D-2 [BREACH] `_style_get` broken since Phase 13.42 v1.0 → ALL `fit.*` style keys silently ignored; D5 vector pairing per v1.4 §6.3 verbatim; D9/R4 stacked+group_by+fit per-group dict; new `fit_textbox_kwargs={'fontsize','format','show_fields'}` LOCKED at close; F.28-F.33 + F.28b (8 new tests); FIT.inline 27 → 35; Sonet50 CRR `[X]` REVISION_REQUESTED → CRR v2 P1-A `np.array(shape=) → np.zeros((0,0))` + P1-B taxonomy staging; THIRD consecutive phase to miss taxonomy staging — Sonet50 governance note recommends `run_tests.sh` pre-bundle taxonomy-count check; tag `PHASE_13_42_DF_FIX1_END`). Test count 913 → **981** (+68 across 6 phases). Verified 47 → 50. Invariance 239 → 307 (+68). Features 105 → 108 (+3). Phase entries 41 → 47 (+6). Statistics Summary table extended with 6 new rows + new phase-ordering note for the post-13.39 window. Sources: gitlog.txt (commits `3c5d45474dcbdd0683969adde76342fa904f5059`..`28f7f3ce640c2c3a0b6b839ddde8ad171ca16c73`), CAPABILITY_MATRIX.md (50 Verified / 108 features / FIT.inline 35 / FACET.list_grid 23 / HIST.cumulative 10 confirmed), `PHASE_13_42_DF_PROD_GATE_Bugs_v1_0.md`, `PHASE_13_42_DF_FIX1_v1_2_Proposal.md`, `PHASE_13_42_DF_FIX1_Code_Review_Request_v1.md`. Phase 13.42.DF FIX1 process-improvement audit deliverables (`PHASE_13_42_DF_POST_GATE_Audit_Questions_v1_0.md`, `Claude48_Feedback_to_Organization_Team_20260526.md`) shipped to Org team for QRC #10 + production-gate policy adoption. All pre-existing content preserved verbatim per append-only directive.** |
+| **1.10** | **2026-05-28** | **Claude48 (coder seat) at architect request** | **Backfill of 5 phase events that landed between the v1.9 doc commit (`e463161c`, 2026-05-27) and current HEAD (`ad91e251`, 2026-05-28). Strictly append-only — every existing entry preserved verbatim. New H2 sections (chronological commit order, before § Statistics Summary): Phase 13.42.DF FIX2 (`79d449c3`, +6, close 5 items deferred at FIX1: B6/B7/I-8/ADV-1/ADV-3; F.59-F.63+F.61b; FIT.inline 35→41; tag `PHASE_13_42_DF_FIX2_END`, gate 987 — landed AFTER the v1.9 doc commit so v1.9 did not record it), Phase 13.43.DF v1.0 (`0e0d79f7`, +27, `summary_fit` standalone fit-result figures; new `plots/_summary_fit.py`; 13 `summary_fit.*` keys; F.34-F.56 + R-2/F.56c END fix for scalar-delegation drop of fit/fit_textbox_kwargs/summary_fit; FIT.summary feature; tag `PHASE_13_43_DF_END`, gate 1014 — commit body states pre-R-2 1013/+26), run_tests.sh PHASE_HISTORY↔git-tag drift check (`02510a20`, tooling-only, gate 1014; surfaced+resolved the Phase 13.25 tag incident; `PHASE_13_46_DF_BEGIN` placed here), Phase 13.46.DF v1.0 (`1d77702e`, +8, audit bucket ① C-1/C-2/C-4/C-7/C-9; F.64-F.70; +4 features; §2.1 Option-1 shared-global ruling; closure tag is FIX1_END — no separate v1.0 END tag; gate 1022), Phase 13.46.DF FIX1 (`ad91e251`, +1, scatter range= point-filtering — removes out-of-range points per architect 2026-05-28; F.71; +1 feature RANGE.scatter_filter; tag `PHASE_13_46_DF_FIX1_END`; rolling `PHASE_BEGIN_dfdraw` → `ad91e251`; gate 1023). Test count 981 → **1023** (+42 across 5 phases). Verified 50 → 56. Invariance 307 → 349 (+42). Features 108 → 114 (+6). Phase entries 47 → 52 (+5). Statistics Summary table extended with 5 new rows + post-13.42-FIX1 phase-ordering note. Overview header updated to Phase 13.46.DF FIX1 / 1023 / 114 / 349 / 56. Sources: git.log (commits `28f7f3ce`..`ad91e251`), CAPABILITY_MATRIX.md (56 Verified / 114 features / 578 proof / 349 invariance at HEAD `ad91e251`), `PHASE_13_46_DF_v1_3_AuditFixes_Proposal.md`, `PHASE_13_46_DF_FIX1_Code_Review_Request.md`, `PHASE_13_45_dfdraw_Audit_Findings.md`. New run_tests.sh tag-drift check passes after this backfill (the 5 tags were the intentionally-non-blocking repo-ahead-of-doc transient). All pre-existing content preserved verbatim per append-only directive.** |
 
 ---
 
-**Document Status:** Updated through Phase 13.42.DF FIX1 (commits `82aaa903` + `28f7f3ce`, tag `PHASE_13_42_DF_FIX1_END`, 2026-05-27). Rolling tag `PHASE_BEGIN_dfdraw` → `28f7f3ce`. **Previous "Updated through Phase 13.39.DF v1.2" baseline preserved verbatim above for audit traceability per architect's append-only directive.**
+**Document Status:** Updated through Phase 13.46.DF FIX1 (commit `ad91e251`, tag `PHASE_13_46_DF_FIX1_END`, 2026-05-28; gate 1023/0/1 skipped/1 xfailed). Rolling tag `PHASE_BEGIN_dfdraw` → `ad91e251`. **Previous "Updated through Phase 13.42.DF FIX1" and "Updated through Phase 13.39.DF v1.2" baselines preserved verbatim above for audit traceability per architect's append-only directive.**
 **Next Update:** After Phase 13.43.DF (or Phase 13.42.DF FIX2 if process-improvement audit drives FIX2 scope; ~990 tests predicted).
