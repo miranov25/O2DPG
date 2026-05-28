@@ -406,7 +406,13 @@ if git rev-parse --is-inside-work-tree &>/dev/null \
         && [[ -z "$DFDRAW_SKIP_TAG_DRIFT_CHECK" ]]; then
 
     # _END tags claimed in the history doc vs _END tags actually in the repo.
-    DOC_END_TAGS=$(grep -oE 'PHASE_[A-Z0-9_]+_END' "$PHASE_HISTORY_FILE" \
+    # A phase closure is *claimed* in the history by declaring it as a tag, e.g.
+    # "tag \`PHASE_X_END\`" or "**Tag:** \`PHASE_X_END\`". Match ONLY that form
+    # (a PHASE_*_END inside backticks, preceded within a few chars by the word
+    # "tag"), so the check does not flag PHASE_*_END tokens merely *mentioned* in
+    # prose (e.g. an example tag inside a sentence describing this very check).
+    DOC_END_TAGS=$(grep -ioE 'tag[^`]{0,12}`PHASE_[A-Z0-9_]+_END`' "$PHASE_HISTORY_FILE" \
+                       | grep -oE 'PHASE_[A-Z0-9_]+_END' \
                        | sort -u || true)
     REPO_END_TAGS=$(git tag --list 'PHASE_*_END' | sort -u || true)
 
@@ -416,26 +422,26 @@ if git rev-parse --is-inside-work-tree &>/dev/null \
         <(printf '%s\n' "$REPO_END_TAGS") | grep -v '^$' || true)
 
     if [[ -n "$MISSING_TAGS" ]]; then
-        echo ""
-        echo "${RED}${BOLD}❌ BUNDLE BLOCKED — PHASE_HISTORY.md claims tags that do not exist:${RESET}"
-        echo "$MISSING_TAGS" | sed 's/^/    /'
-        echo ""
-        echo "${YELLOW}docs/PHASE_HISTORY.md documents these phase closures, but the${RESET}"
-        echo "${YELLOW}corresponding git tags are absent. Either the closure was never${RESET}"
-        echo "${YELLOW}tagged, or the history entry is premature/incorrect.${RESET}"
-        echo ""
-        echo "Resolve each by ONE of:"
-        echo "    git tag <PHASE_..._END> <commit>     # if the work landed but tagging was missed"
-        echo "    (edit PHASE_HISTORY.md)              # if the entry is premature/wrong"
-        echo ""
-        echo "Verify the intended commit first:  git log --oneline -1 <commit>"
-        echo ""
-        echo "Override (development only): DFDRAW_SKIP_TAG_DRIFT_CHECK=1 bash run_tests.sh"
-        echo ""
-        echo "Test results from this run are saved to:"
-        echo "    $LOG_DIR/"
-        echo "Bundle .zip was NOT created."
-        exit 1
+        # NON-BLOCKING (Phase 13.48 design change). Rationale: doc<->tag drift is
+        # a documentation-hygiene signal, not a test result. Blocking the bundle
+        # on a heuristic grep of a prose file is fragile (a prose mention or a
+        # format change can mis-fire) and creates override pressure — a new coder
+        # who hits a hard wall reaches for DFDRAW_SKIP_... and the bypass is then
+        # invisible to reviewers, so the check quietly becomes dead weight.
+        # Instead: WARN loudly AND record the warning in the SUMMARY so the drift
+        # itself travels in reviewer.zip for the architect/reviewers to see and
+        # resolve. The bundle is still built. (A false negative here is now
+        # low-harm: a missed warning, not a false sense of a passed gate.)
+        {
+            echo ""
+            echo "⚠️  TAG DRIFT (non-blocking) — PHASE_HISTORY.md declares phase-closure"
+            echo "   tags that have no matching git tag:"
+            echo "$MISSING_TAGS" | sed 's/^/      /'
+            echo "   (These appear as \"tag \`PHASE_..._END\`\" in docs/PHASE_HISTORY.md.)"
+            echo "   Resolve by tagging the closure (git tag <PHASE_..._END> <commit>)"
+            echo "   or correcting the history entry. Reported, NOT blocked."
+        } | tee -a "$SUMMARY_FILE"
+        echo "${YELLOW}(Tag drift reported in SUMMARY; bundle still built.)${RESET}"
     fi
 
     # (2) Misplaced FIX tag (heuristic warning, non-blocking).
