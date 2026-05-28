@@ -441,6 +441,7 @@ TEST_LAYERS = {
     "test_phase_13_46_df_audit_fixes.py::TestPhase1346AuditFixes::test_f69a_scatter_range_strategy_parity": "invariance",
     "test_phase_13_46_df_audit_fixes.py::TestPhase1346AuditFixes::test_f69b_profile_hist_range_minmax_no_unpack_error": "invariance",
     "test_phase_13_46_df_audit_fixes.py::TestPhase1346AuditFixes::test_f70_get_suptitle_live_path": "invariance",
+    "test_phase_13_46_df_audit_fixes.py::TestPhase1346AuditFixes::test_f71_scatter_range_removes_out_of_range_points": "invariance",
 
     # Everything else defaults to "smoke"
 }

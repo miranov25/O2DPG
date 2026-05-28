@@ -1502,6 +1502,14 @@ FEATURES = [
         ],
     },
     {
+        "id": "RANGE.scatter_filter",
+        "name": "range= on scatter removes out-of-range points (FIX1 semantic)",
+        "category": "RANGE",
+        "tests": [
+            "test_phase_13_46_df_audit_fixes.py::TestPhase1346AuditFixes::test_f71_scatter_range_removes_out_of_range_points",
+        ],
+    },
+    {
         "id": "TITLE.get_suptitle",
         "name": "_get_suptitle public-API helper (mpl >= 3.8 + fallback)",
         "category": "TITLE",

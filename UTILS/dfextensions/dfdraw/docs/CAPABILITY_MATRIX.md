@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-05-28 10:51 UTC
+**Generated:** 2026-05-28 13:04 UTC
 **Phase:** 13.15.DF
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -9,13 +9,13 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 55 | 49% |
+| ✅ Verified | 56 | 49% |
 | ☑️ Smoke-only | 57 | 50% |
 | 🧨 Broken | 0 | 0% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **113** | |
-| **Total proof tests** | **577** | |
-| **Invariance tests** | **348** | |
+| **Total features** | **114** | |
+| **Total proof tests** | **578** | |
+| **Invariance tests** | **349** | |
 
 **Status key:**
 - ✅ Verified — has at least one invariance test (A ≡ B check)
@@ -179,6 +179,7 @@
 | ✅ | **API.kwarg_typo_guard** — Kwarg-typo guard (difflib did-you-mean at draw() entry) | 1 | 0 |
 | | **RANGE** | | |
 | ✅ | **RANGE.scatter** — range= on scatter via shared 2D resolver | 4 | 0 |
+| ✅ | **RANGE.scatter_filter** — range= on scatter removes out-of-range points (FIX1 semantic) | 1 | 0 |
 | | **TITLE** | | |
 | ✅ | **TITLE.get_suptitle** — _get_suptitle public-API helper (mpl >= 3.8 + fallback) | 1 | 0 |
 

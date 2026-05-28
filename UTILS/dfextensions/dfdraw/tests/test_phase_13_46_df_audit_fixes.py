@@ -209,3 +209,45 @@ class TestPhase1346AuditFixes:
         fig2 = plt.figure()
         assert _get_suptitle(fig2) == ""
         plt.close(fig2)
+
+    # -- F.71 — C-9 FIX1: scatter range REMOVES out-of-range points ------
+
+    def test_f71_scatter_range_removes_out_of_range_points(self):
+        """Phase 13.46.DF FIX1: scatter range= must DROP out-of-range points
+        (point filter), not merely clip the view. Consistent with hist/profile
+        range= excluding points from binning.
+
+        With explicit outliers, range='percentile_99' (and an explicit tuple)
+        must reduce the plotted point count; range='minmax' (window == full
+        data) must remove nothing."""
+        rs = np.random.RandomState(0)
+        x = np.concatenate([rs.normal(0, 1, 990),
+                            np.array([100., -100, 200, -200, 300,
+                                      150, -150, 180, -180, 120])])
+        df = pd.DataFrame({'x': x, 'y': rs.normal(0, 1, 1000),
+                           'c': rs.rand(1000)})
+        n_in = len(df)
+
+        # percentile_99 drops outliers
+        fig, ax, st = DFDraw(df).scatter('y:x', range="percentile_99")
+        n_pct = len(ax.collections[0].get_offsets())
+        assert n_pct < n_in, "percentile_99 must remove out-of-range points"
+        plt.close(fig)
+
+        # explicit tuple drops points outside the window
+        fig, ax, st = DFDraw(df).scatter('y:x', range=((-3, 3), (-3, 3)))
+        n_tup = len(ax.collections[0].get_offsets())
+        assert n_tup < n_in, "explicit-tuple range must remove out-of-range points"
+        plt.close(fig)
+
+        # minmax window == full data → nothing removed
+        df_in = df.iloc[:990]  # inliers only, no extreme outliers
+        fig, ax, st = DFDraw(df_in).scatter('y:x', range="minmax")
+        assert len(ax.collections[0].get_offsets()) == len(df_in), \
+            "minmax must not remove any points"
+        plt.close(fig)
+
+        # parallel color array stays aligned through filtering (no length crash)
+        fig, ax, st = DFDraw(df).scatter('y:x', color='c', range="percentile_99")
+        assert len(ax.collections[0].get_offsets()) < n_in
+        plt.close(fig)

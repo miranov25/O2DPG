@@ -196,6 +196,36 @@ def draw_scatter(
                 pd.to_datetime(_x_arr, unit='s').to_pydatetime()
             )
     
+    # Phase 13.46.DF FIX1 — range= REMOVES out-of-range points (point filter),
+    # consistent with how hist/profile range= excludes points from binning. The
+    # previous v1.0 set_xlim/set_ylim only clipped the VIEW (out-of-range points
+    # stayed in the collection, off-screen) — architect 2026-05-28: scatter
+    # range must drop the points. Done here (before stats + plotting) so the
+    # filtered count is reflected in stats and every parallel array (color,
+    # size, marker, error bars) — all derived from df_filtered — stays aligned.
+    _range_xr = _range_yr = None
+    _range_strategy = None
+    if range is not None:
+        from ._autorange import resolve_range_2d
+        (_range_xr, _range_yr), _range_strategy = resolve_range_2d(
+            range, x_data, y_data,
+            style_strategy=get_style_value("autorange.strategy", "hybrid"),
+            style_k_robust=get_style_value("autorange.k_robust", 4.0),
+            style_k_outlier=get_style_value("autorange.k_outlier", 1.5),
+            style_percentile=get_style_value("autorange.percentile", (1.0, 99.0)),
+        )
+        _rmask = np.ones(len(x_data), dtype=bool)
+        if np.all(np.isfinite(_range_xr)) and _range_xr[0] < _range_xr[1]:
+            _rmask &= (x_data >= _range_xr[0]) & (x_data <= _range_xr[1])
+        if np.all(np.isfinite(_range_yr)) and _range_yr[0] < _range_yr[1]:
+            _rmask &= (y_data >= _range_yr[0]) & (y_data <= _range_yr[1])
+        # Filter x/y and df_filtered by the SAME mask so downstream color/size/
+        # marker/error helpers (which derive from df_filtered) stay aligned.
+        x_data = x_data[_rmask]
+        y_data = y_data[_rmask]
+        if len(df_filtered) == len(_rmask):
+            df_filtered = df_filtered[_rmask]
+
     # Statistics
     stats_dict = _compute_scatter_stats(x_data, y_data)
     # Phase 13.28.DF: Sanitize counters (AD-71)
@@ -207,6 +237,11 @@ def draw_scatter(
         if len(x_data) > 0 else ((0.0, 1.0), (0.0, 1.0))
     )
     stats_dict["autorange_strategy"] = "minmax"
+    # Honest stats when range= was applied: record the resolved strategy +
+    # window actually used to filter (overrides the default above).
+    if _range_strategy is not None:
+        stats_dict["autorange_used"] = (_range_xr, _range_yr)
+        stats_dict["autorange_strategy"] = _range_strategy
     
     # Apply jitter
     if jitter:
@@ -408,36 +443,15 @@ def draw_scatter(
             ax.xaxis.set_major_formatter(mdates.DateFormatter(time_format))
         fig.autofmt_xdate()
 
-    # Phase 13.46.DF C-9: range= support via the SHARED 2D resolver (AD-74
-    # per-axis), identical handling to hist/profile/2D — only the application
-    # differs (set_xlim/set_ylim vs binning, because scatter has no bins).
-    # Applied AFTER plotting so ax.scatter()'s autoscale cannot override it.
-    if range is not None:
-        from ._autorange import resolve_range_2d
-        (_xr, _yr), _strategy = resolve_range_2d(
-            range, x_data, y_data,
-            style_strategy=get_style_value("autorange.strategy", "hybrid"),
-            style_k_robust=get_style_value("autorange.k_robust", 4.0),
-            style_k_outlier=get_style_value("autorange.k_outlier", 1.5),
-            style_percentile=get_style_value("autorange.percentile", (1.0, 99.0)),
-        )
-        # Per-cell limit application is suppressed in facet mode: faceted axes
-        # are SHARED (sharex/sharey), so a per-cell set_xlim would propagate
-        # and the last cell would clobber all others (silently wrong). In a
-        # facet grid the shared axes autoscale to the global data extent
-        # instead. Per-cell strategy tightening under faceting (non-minmax)
-        # is a Phase 13.46.DF FIX1 item — see CRR §2.
-        if not _facet_mode:
-            # Degenerate/empty guard (single point, all-filtered, min==max,
-            # non-finite): skip set_*lim and let matplotlib autoscale.
-            if np.all(np.isfinite(_xr)) and _xr[0] < _xr[1]:
-                ax.set_xlim(_xr)
-            if np.all(np.isfinite(_yr)) and _yr[0] < _yr[1]:
-                ax.set_ylim(_yr)
-        # Honest stats: record the strategy actually resolved (not the
-        # unconditional "minmax" the default path records above).
-        stats_dict["autorange_used"] = (_xr, _yr)
-        stats_dict["autorange_strategy"] = _strategy
+    # Phase 13.46.DF FIX1 — points are already filtered to the resolved range
+    # above. Here we only tighten the VIEW to the exact resolved window in the
+    # non-faceted case (faceted axes are SHARED, so a per-cell set_xlim would
+    # clobber siblings — those autoscale to the union of filtered data instead).
+    if _range_strategy is not None and not _facet_mode:
+        if _range_xr is not None and np.all(np.isfinite(_range_xr)) and _range_xr[0] < _range_xr[1]:
+            ax.set_xlim(_range_xr)
+        if _range_yr is not None and np.all(np.isfinite(_range_yr)) and _range_yr[0] < _range_yr[1]:
+            ax.set_ylim(_range_yr)
 
     return fig, ax, stats_dict
 
