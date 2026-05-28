@@ -1473,4 +1473,40 @@ FEATURES = [
             "test_phase_13_43.py::TestPhase1343SummaryFit::test_f56c_draw_scalar_forwards_fit_and_summary_fit",
         ],
     },
+    {
+        "id": "FIT.root_aliases",
+        "name": "ROOT-convention aliases (fit='gaus', type='histo')",
+        "category": "FIT",
+        "tests": [
+            "test_phase_13_46_df_audit_fixes.py::TestPhase1346AuditFixes::test_f64_gaus_root_alias",
+            "test_phase_13_46_df_audit_fixes.py::TestPhase1346AuditFixes::test_f65_histo_type_alias",
+        ],
+    },
+    {
+        "id": "API.kwarg_typo_guard",
+        "name": "Kwarg-typo guard (difflib did-you-mean at draw() entry)",
+        "category": "API",
+        "tests": [
+            "test_phase_13_46_df_audit_fixes.py::TestPhase1346AuditFixes::test_f66_kwarg_typo_guard",
+        ],
+    },
+    {
+        "id": "RANGE.scatter",
+        "name": "range= on scatter via shared 2D resolver",
+        "category": "RANGE",
+        "tests": [
+            "test_phase_13_46_df_audit_fixes.py::TestPhase1346AuditFixes::test_f67_scatter_range_minmax_nonfaceted",
+            "test_phase_13_46_df_audit_fixes.py::TestPhase1346AuditFixes::test_f68_scatter_range_minmax_faceted",
+            "test_phase_13_46_df_audit_fixes.py::TestPhase1346AuditFixes::test_f69a_scatter_range_strategy_parity",
+            "test_phase_13_46_df_audit_fixes.py::TestPhase1346AuditFixes::test_f69b_profile_hist_range_minmax_no_unpack_error",
+        ],
+    },
+    {
+        "id": "TITLE.get_suptitle",
+        "name": "_get_suptitle public-API helper (mpl >= 3.8 + fallback)",
+        "category": "TITLE",
+        "tests": [
+            "test_phase_13_46_df_audit_fixes.py::TestPhase1346AuditFixes::test_f70_get_suptitle_live_path",
+        ],
+    },
 ]

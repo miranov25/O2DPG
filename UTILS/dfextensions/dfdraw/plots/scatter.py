@@ -72,6 +72,11 @@ def draw_scatter(
     fit_textbox_kwargs: Optional[Dict[str, Any]] = None,
     # Phase 13.42.DF: Inline fit specification
     fit: Optional[Union[str, Dict, Callable, List]] = None,
+    # Phase 13.46.DF C-9: range= support for scatter, resolved through the
+    # SAME shared 2D resolver hist/profile/2D use (no scatter special-case).
+    # Accepts a strategy name ('minmax'/'hybrid'/'percentile_99'/...) or an
+    # explicit ((xlo,xhi),(ylo,yhi)) tuple. Applied after plotting.
+    range: Optional[Union[str, Tuple]] = None,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -402,6 +407,37 @@ def draw_scatter(
         else:
             ax.xaxis.set_major_formatter(mdates.DateFormatter(time_format))
         fig.autofmt_xdate()
+
+    # Phase 13.46.DF C-9: range= support via the SHARED 2D resolver (AD-74
+    # per-axis), identical handling to hist/profile/2D — only the application
+    # differs (set_xlim/set_ylim vs binning, because scatter has no bins).
+    # Applied AFTER plotting so ax.scatter()'s autoscale cannot override it.
+    if range is not None:
+        from ._autorange import resolve_range_2d
+        (_xr, _yr), _strategy = resolve_range_2d(
+            range, x_data, y_data,
+            style_strategy=get_style_value("autorange.strategy", "hybrid"),
+            style_k_robust=get_style_value("autorange.k_robust", 4.0),
+            style_k_outlier=get_style_value("autorange.k_outlier", 1.5),
+            style_percentile=get_style_value("autorange.percentile", (1.0, 99.0)),
+        )
+        # Per-cell limit application is suppressed in facet mode: faceted axes
+        # are SHARED (sharex/sharey), so a per-cell set_xlim would propagate
+        # and the last cell would clobber all others (silently wrong). In a
+        # facet grid the shared axes autoscale to the global data extent
+        # instead. Per-cell strategy tightening under faceting (non-minmax)
+        # is a Phase 13.46.DF FIX1 item — see CRR §2.
+        if not _facet_mode:
+            # Degenerate/empty guard (single point, all-filtered, min==max,
+            # non-finite): skip set_*lim and let matplotlib autoscale.
+            if np.all(np.isfinite(_xr)) and _xr[0] < _xr[1]:
+                ax.set_xlim(_xr)
+            if np.all(np.isfinite(_yr)) and _yr[0] < _yr[1]:
+                ax.set_ylim(_yr)
+        # Honest stats: record the strategy actually resolved (not the
+        # unconditional "minmax" the default path records above).
+        stats_dict["autorange_used"] = (_xr, _yr)
+        stats_dict["autorange_strategy"] = _strategy
 
     return fig, ax, stats_dict
 

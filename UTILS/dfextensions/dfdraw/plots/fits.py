@@ -247,6 +247,7 @@ def _init_registry():
     """Populate the predefined registry (called once at module import)."""
     register_fit('gauss',       _gaussian,    _gaussian_guess)
     register_fit('gaussian',    _gaussian,    _gaussian_guess)
+    register_fit('gaus',        _gaussian,    _gaussian_guess)  # Phase 13.46 C-1: ROOT TF1 convention
     register_fit('linear',      _linear,      _linear_guess)
     register_fit('pol1',        _linear,      _linear_guess)
     register_fit(

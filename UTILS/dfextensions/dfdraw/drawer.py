@@ -209,6 +209,29 @@ def _filter_facet_value(df, col, value, bins=None, quantiles=None):
     return df[mask.fillna(False) if mask.dtype == object else mask]
 
 
+# Phase 13.46.DF C-2: ROOT-convention plot-type aliases. Applied before the
+# type-dispatch ladder in DFDraw.draw so e.g. ROOT's "histo" maps to "hist".
+# Kept as a module-level dict so it is greppable and trivially extensible.
+_TYPE_ALIASES = {'histo': 'hist'}
+
+
+def _get_suptitle(fig):
+    """Phase 13.46.DF C-4: public-API suptitle text (matplotlib >= 3.8) with a
+    private-attribute fallback for older matplotlib.
+
+    Returns the suptitle string, or '' when the figure has no suptitle.
+    Source-level counterpart to the test helper that already used the public
+    API; replaces 9 inline ``fig._suptitle.get_text()`` expressions so the
+    source no longer depends on the private ``_suptitle`` attribute.
+    """
+    try:
+        t = fig.get_suptitle()          # public API, matplotlib >= 3.8
+        return t if t else ''
+    except AttributeError:
+        st = getattr(fig, '_suptitle', None)
+        return st.get_text() if st else ''
+
+
 def _suptitle_top_for_title(title_text):
     """Phase 13.42.DF FIX2 (B6): compute a reasonable subplots_adjust top= value
     based on suptitle line count, so multi-line titles or dense facet grids
@@ -2299,7 +2322,7 @@ class DFDraw:
                         f"{_main}\n{_sub}" if _sub else _main,
                         fontsize=get_style_value("axes.titlesize", 14),
                     )
-                    plt.subplots_adjust(top=_suptitle_top_for_title(fig._suptitle.get_text() if getattr(fig, '_suptitle', None) else None))
+                    plt.subplots_adjust(top=_suptitle_top_for_title(_get_suptitle(fig) or None))
             except Exception:
                 # Failsafe — same defensive pattern as BUG-002 fix.
                 _y_str = (y_list if isinstance(y_list, str)
@@ -2308,7 +2331,7 @@ class DFDraw:
                           else str(x_list[0] if x_list else ''))
                 fig.suptitle(f"{_y_str} vs {_x_str}",
                              fontsize=get_style_value("axes.titlesize", 14))
-                plt.subplots_adjust(top=_suptitle_top_for_title(fig._suptitle.get_text() if getattr(fig, '_suptitle', None) else None))
+                plt.subplots_adjust(top=_suptitle_top_for_title(_get_suptitle(fig) or None))
 
         # --- 9. Build stats dict (M1 scope per v1.1 §7) ------------------------
         # Drop profile_data from user-facing stats — internal-only.
@@ -2642,7 +2665,7 @@ class DFDraw:
                         f"{_main}\n{_sub}" if _sub else _main,
                         fontsize=get_style_value("axes.titlesize", 14),
                     )
-                    plt.subplots_adjust(top=_suptitle_top_for_title(fig._suptitle.get_text() if getattr(fig, '_suptitle', None) else None))
+                    plt.subplots_adjust(top=_suptitle_top_for_title(_get_suptitle(fig) or None))
             except Exception:
                 _y_str = (y_list if isinstance(y_list, str)
                           else f"[{','.join(map(str, y_list))}]")
@@ -2650,7 +2673,7 @@ class DFDraw:
                           else str(x_list[0] if x_list else ''))
                 fig.suptitle(f"{_y_str} vs {_x_str}",
                              fontsize=get_style_value("axes.titlesize", 14))
-                plt.subplots_adjust(top=_suptitle_top_for_title(fig._suptitle.get_text() if getattr(fig, '_suptitle', None) else None))
+                plt.subplots_adjust(top=_suptitle_top_for_title(_get_suptitle(fig) or None))
 
         # --- 11. Build stats dict (M2 grouped contract) -----------------------
         stats_dict: Dict[str, Any] = {
@@ -2948,7 +2971,7 @@ class DFDraw:
                         f"{_main}\n{_sub}" if _sub else _main,
                         fontsize=get_style_value("axes.titlesize", 14),
                     )
-                    plt.subplots_adjust(top=_suptitle_top_for_title(fig._suptitle.get_text() if getattr(fig, '_suptitle', None) else None))
+                    plt.subplots_adjust(top=_suptitle_top_for_title(_get_suptitle(fig) or None))
             except Exception:
                 _y_str = (y_list if isinstance(y_list, str)
                           else f"[{','.join(map(str, y_list))}]")
@@ -2956,7 +2979,7 @@ class DFDraw:
                           else str(x_list[0] if x_list else ''))
                 fig.suptitle(f"{_y_str} vs {_x_str}",
                              fontsize=get_style_value("axes.titlesize", 14))
-                plt.subplots_adjust(top=_suptitle_top_for_title(fig._suptitle.get_text() if getattr(fig, '_suptitle', None) else None))
+                plt.subplots_adjust(top=_suptitle_top_for_title(_get_suptitle(fig) or None))
 
         # --- 8. Stats dict ----------------------------------------------------
         stats_dict: Dict[str, Any] = {
@@ -3543,7 +3566,7 @@ class DFDraw:
                         f"{_main}\n{_sub}" if _sub else _main,
                         fontsize=get_style_value("axes.titlesize", 14),
                     )
-                    plt.subplots_adjust(top=_suptitle_top_for_title(fig._suptitle.get_text() if getattr(fig, '_suptitle', None) else None))
+                    plt.subplots_adjust(top=_suptitle_top_for_title(_get_suptitle(fig) or None))
             except Exception:
                 # Failsafe: minimal title — prevents auto_title import/build
                 # errors from crashing the plot. Same defensive pattern as
@@ -3552,11 +3575,11 @@ class DFDraw:
                          else f"[{','.join(y_expr)}]")
                 fig.suptitle(f"{y_str} vs {x_expr}",
                              fontsize=get_style_value("axes.titlesize", 14))
-                plt.subplots_adjust(top=_suptitle_top_for_title(fig._suptitle.get_text() if getattr(fig, '_suptitle', None) else None))
+                plt.subplots_adjust(top=_suptitle_top_for_title(_get_suptitle(fig) or None))
 
         plt.tight_layout()
         if title:
-            plt.subplots_adjust(top=_suptitle_top_for_title(fig._suptitle.get_text() if getattr(fig, '_suptitle', None) else None))
+            plt.subplots_adjust(top=_suptitle_top_for_title(_get_suptitle(fig) or None))
 
         # ---- Combined stats ------------------------------------------------
         combined_stats = {
@@ -3983,6 +4006,51 @@ class DFDraw:
         tuple
             (fig, ax, stats_dict)
         """
+        # Phase 13.46.DF C-7: kwarg-typo guard (difflib "did you mean",
+        # industry standard — argparse/click/plotly). A kwarg that is a near
+        # miss for a known parameter raises with a suggestion (catches the
+        # silent facet_by_bin -> facet_by_bins class); a genuinely-unknown
+        # kwarg only warns (matplotlib passthrough still works, but the user
+        # now SEES it). The known set K is built from the signatures of draw()
+        # and every typed plot method PLUS the _*_FORWARDED_NAMES tuples
+        # (N-1, Claude48): inner-method-specific kwargs forwarded via **kwargs
+        # are legitimate and must not warn.
+        if kwargs:
+            import difflib
+            import warnings
+            _known_kwargs = set()
+            for _m in (self.draw, self.hist, self.scatter, self.profile,
+                       self.hist2d, self.hexbin):
+                for _pname, _p in inspect.signature(_m).parameters.items():
+                    if _pname == 'self':
+                        continue
+                    if _p.kind in (_p.VAR_KEYWORD, _p.VAR_POSITIONAL):
+                        continue
+                    _known_kwargs.add(_pname)
+            for _tup in (self._DRAW_FORWARDED_NAMES, self._HIST_FORWARDED_NAMES,
+                         self._SCATTER_FORWARDED_NAMES,
+                         self._PROFILE_FORWARDED_NAMES,
+                         self._HIST2D_FORWARDED_NAMES):
+                _known_kwargs.update(_tup)
+            for _name in list(kwargs):
+                if _name in _known_kwargs:
+                    continue
+                _near = difflib.get_close_matches(
+                    _name, _known_kwargs, n=1, cutoff=0.8)
+                if _near:
+                    raise ValueError(
+                        f"Unknown keyword argument {_name!r}. "
+                        f"Did you mean {_near[0]!r}? "
+                        f"(dfdraw Phase 13.46.DF C-7 typo guard.)"
+                    )
+                else:
+                    warnings.warn(
+                        f"Unknown keyword argument {_name!r} — forwarded to "
+                        f"matplotlib or ignored. If this is a dfdraw typo, "
+                        f"check the API.",
+                        UserWarning, stacklevel=2,
+                    )
+
         # Phase 13.42.DF: AD-42 guard removed; 'fit=' is now the inline-fit
         # specification per the unified str/dict/callable/list grammar
         # (see plots/fits.py and PHASE_13_42_DF v1.4 §3).
@@ -4086,6 +4154,9 @@ class DFDraw:
                 type = "scatter"
         
         # Dispatch to specific plot method
+        # Phase 13.46.DF C-2: normalize ROOT-convention type aliases (e.g.
+        # "histo" -> "hist") before the dispatch ladder.
+        type = _TYPE_ALIASES.get(type, type)
         # Phase 13.43.DF v1.0 R-2 (Sonnet54 panel finding): explicitly
         # forward fit / fit_textbox_kwargs / summary_fit at scalar dispatch.
         # These are NAMED params on DFDraw.draw (Phase 13.42 + 13.43), so
