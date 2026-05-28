@@ -370,6 +370,102 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
 fi
 
 # =============================================================================
+# Pre-bundle PHASE_HISTORY <-> git-tag drift check (Phase 13.46.DF candidate)
+# =============================================================================
+# Catches a class of bugs where docs/PHASE_HISTORY.md and the actual git tags
+# disagree about phase closures. Two real incidents motivated this (both found
+# 2026-05-27 while triaging Phase 13.25.DF):
+#
+#   (1) DOCUMENTED-BUT-UNTAGGED: PHASE_HISTORY.md recorded
+#       "FIX2 ... tag PHASE_13_25_DF_FIX2_END" but no such tag existed in the
+#       repo (the FIX2 commit existed; the tag was never created). The history
+#       claimed a closure the repo could not prove.
+#
+#   (2) MISPLACED FIX TAG: PHASE_13_25_DF_FIX1_END was sitting on the FIX2
+#       commit (subject "Phase 13.25.DF FIX2: ...") instead of the FIX1 commit.
+#       Anyone checking out the FIX1 tag would have gotten FIX2 code.
+#
+# Check (1) is a BLOCK: any PHASE_*_END string mentioned in PHASE_HISTORY.md
+#   that is NOT a real git tag stops bundle creation. This is unambiguous —
+#   the doc asserts a closure the repo doesn't have.
+# Check (2) is a WARNING (heuristic): for each repo PHASE_*_FIX<N>_END tag,
+#   if the tagged commit's subject line mentions a DIFFERENT FIX<M> (M != N),
+#   the tag is likely on the wrong commit. Warn (don't block) because commit
+#   subjects are free-form; promote to a block later if it proves reliable.
+#
+# Note: the reverse direction (repo tags NOT cited in PHASE_HISTORY.md) is NOT
+# flagged — many tags (GB/ADF/older phases) are intentionally not cited by
+# exact string in the dfdraw history narrative. That direction is noise.
+#
+# Override: DFDRAW_SKIP_TAG_DRIFT_CHECK=1 bash run_tests.sh
+#   (for development runs before PHASE_HISTORY.md has been updated).
+
+PHASE_HISTORY_FILE="docs/PHASE_HISTORY.md"
+if git rev-parse --is-inside-work-tree &>/dev/null \
+        && [[ -f "$PHASE_HISTORY_FILE" ]] \
+        && [[ -z "$DFDRAW_SKIP_TAG_DRIFT_CHECK" ]]; then
+
+    # _END tags claimed in the history doc vs _END tags actually in the repo.
+    DOC_END_TAGS=$(grep -oE 'PHASE_[A-Z0-9_]+_END' "$PHASE_HISTORY_FILE" \
+                       | sort -u || true)
+    REPO_END_TAGS=$(git tag --list 'PHASE_*_END' | sort -u || true)
+
+    # (1) Documented-but-untagged: lines in DOC not in REPO.
+    MISSING_TAGS=$(comm -23 \
+        <(printf '%s\n' "$DOC_END_TAGS") \
+        <(printf '%s\n' "$REPO_END_TAGS") | grep -v '^$' || true)
+
+    if [[ -n "$MISSING_TAGS" ]]; then
+        echo ""
+        echo "${RED}${BOLD}❌ BUNDLE BLOCKED — PHASE_HISTORY.md claims tags that do not exist:${RESET}"
+        echo "$MISSING_TAGS" | sed 's/^/    /'
+        echo ""
+        echo "${YELLOW}docs/PHASE_HISTORY.md documents these phase closures, but the${RESET}"
+        echo "${YELLOW}corresponding git tags are absent. Either the closure was never${RESET}"
+        echo "${YELLOW}tagged, or the history entry is premature/incorrect.${RESET}"
+        echo ""
+        echo "Resolve each by ONE of:"
+        echo "    git tag <PHASE_..._END> <commit>     # if the work landed but tagging was missed"
+        echo "    (edit PHASE_HISTORY.md)              # if the entry is premature/wrong"
+        echo ""
+        echo "Verify the intended commit first:  git log --oneline -1 <commit>"
+        echo ""
+        echo "Override (development only): DFDRAW_SKIP_TAG_DRIFT_CHECK=1 bash run_tests.sh"
+        echo ""
+        echo "Test results from this run are saved to:"
+        echo "    $LOG_DIR/"
+        echo "Bundle .zip was NOT created."
+        exit 1
+    fi
+
+    # (2) Misplaced FIX tag (heuristic warning, non-blocking).
+    TAG_PLACEMENT_WARNINGS=""
+    while IFS= read -r tag; do
+        [[ -z "$tag" ]] && continue
+        # Extract FIX<N> from the tag name, if present.
+        tag_fix=$(printf '%s' "$tag" | grep -oE 'FIX[0-9]+' | head -1 || true)
+        [[ -z "$tag_fix" ]] && continue
+        subject=$(git log -1 --format='%s' "$tag" 2>/dev/null || true)
+        # Find any FIX<M> mentioned in the tagged commit's subject.
+        subj_fix=$(printf '%s' "$subject" | grep -oE 'FIX[0-9]+' | head -1 || true)
+        if [[ -n "$subj_fix" ]] && [[ "$subj_fix" != "$tag_fix" ]]; then
+            TAG_PLACEMENT_WARNINGS+="    $tag -> commit subject mentions $subj_fix (\"$subject\")"$'\n'
+        fi
+    done <<< "$REPO_END_TAGS"
+
+    if [[ -n "$TAG_PLACEMENT_WARNINGS" ]]; then
+        echo ""
+        echo "${YELLOW}${BOLD}⚠️  TAG PLACEMENT WARNING — FIX tag(s) may be on the wrong commit:${RESET}"
+        printf '%s' "$TAG_PLACEMENT_WARNINGS"
+        echo ""
+        echo "${YELLOW}The tag name's FIX number does not match the tagged commit's${RESET}"
+        echo "${YELLOW}subject. Verify with:  git log --oneline -1 <tag>${RESET}"
+        echo "${YELLOW}(Warning only — bundle still created.)${RESET}"
+        echo ""
+    fi
+fi
+
+# =============================================================================
 # Package reviewer.zip
 # =============================================================================
 
