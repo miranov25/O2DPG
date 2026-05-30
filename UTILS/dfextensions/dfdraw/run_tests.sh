@@ -266,6 +266,18 @@ if [[ "$MODE" != "quick" ]]; then
         MATRIX_ARGS=""
         [[ -f "$JSON_REPORT" ]] && MATRIX_ARGS="--test-results $JSON_REPORT"
 
+        # Phase 13.49.DF §9 D-B: derive --phase from the most recent _END tag.
+        # NB: the glob is 'PHASE_[0-9]*_DF*_END' (no underscore between _DF and *).
+        # The natural-looking pattern '_DF_*_END' would require >=1 char between
+        # _DF_ and _END and silently miss the plain _END tags (most phases).
+        # Verified at v1.2 implementation against the real tag set.
+        PHASE_FOR_MATRIX=$(git tag --list 'PHASE_[0-9]*_DF*_END' --sort=-creatordate 2>/dev/null | head -1)
+        if [[ -n "$PHASE_FOR_MATRIX" ]]; then
+            MATRIX_ARGS="$MATRIX_ARGS --phase $PHASE_FOR_MATRIX"
+        else
+            MATRIX_ARGS="$MATRIX_ARGS --phase unknown"
+        fi
+
         python3 "$MATRIX_SCRIPT" $MATRIX_ARGS 2>&1 || \
             echo "⚠️  Capability matrix generation had errors"
 
@@ -406,11 +418,11 @@ if git rev-parse --is-inside-work-tree &>/dev/null \
         && [[ -z "$DFDRAW_SKIP_TAG_DRIFT_CHECK" ]]; then
 
     # _END tags claimed in the history doc vs _END tags actually in the repo.
-    # A phase closure is *claimed* in the history by declaring it as a tag, e.g.
-    # "tag \`PHASE_X_END\`" or "**Tag:** \`PHASE_X_END\`". Match ONLY that form
-    # (a PHASE_*_END inside backticks, preceded within a few chars by the word
-    # "tag"), so the check does not flag PHASE_*_END tokens merely *mentioned* in
-    # prose (e.g. an example tag inside a sentence describing this very check).
+    # Phase 13.48 grep tightening — scope to tag-DECLARATION context only.
+    # A phase closure is *claimed* by writing "tag `PHASE_X_END`" or
+    # "**Tag:** `PHASE_X_END`". The earlier loose grep matched any PHASE_*_END
+    # token anywhere in the doc, including prose mentions (e.g. an example tag
+    # in a sentence describing this very check) -> false positives.
     DOC_END_TAGS=$(grep -ioE 'tag[^`]{0,12}`PHASE_[A-Z0-9_]+_END`' "$PHASE_HISTORY_FILE" \
                        | grep -oE 'PHASE_[A-Z0-9_]+_END' \
                        | sort -u || true)
@@ -422,16 +434,14 @@ if git rev-parse --is-inside-work-tree &>/dev/null \
         <(printf '%s\n' "$REPO_END_TAGS") | grep -v '^$' || true)
 
     if [[ -n "$MISSING_TAGS" ]]; then
-        # NON-BLOCKING (Phase 13.48 design change). Rationale: doc<->tag drift is
-        # a documentation-hygiene signal, not a test result. Blocking the bundle
-        # on a heuristic grep of a prose file is fragile (a prose mention or a
-        # format change can mis-fire) and creates override pressure — a new coder
-        # who hits a hard wall reaches for DFDRAW_SKIP_... and the bypass is then
-        # invisible to reviewers, so the check quietly becomes dead weight.
-        # Instead: WARN loudly AND record the warning in the SUMMARY so the drift
-        # itself travels in reviewer.zip for the architect/reviewers to see and
-        # resolve. The bundle is still built. (A false negative here is now
-        # low-harm: a missed warning, not a false sense of a passed gate.)
+        # NON-BLOCKING (Phase 13.48 design — committed as df3057a3): doc<->tag drift
+        # is a documentation-hygiene signal, not a test result. Hard-blocking the
+        # bundle on a heuristic grep of a prose file is fragile and creates override
+        # pressure (the bypass would become invisible -> dead-weight check). Instead:
+        # WARN loudly AND record the warning in SUMMARY so the drift itself travels
+        # in reviewer.zip for architect/reviewers to see and resolve. Bundle still
+        # builds. A false negative here is low-harm — a missed warning, not a false
+        # sense of a passed gate. (Restored at 13.49 implementation after a regression.)
         {
             echo ""
             echo "⚠️  TAG DRIFT (non-blocking) — PHASE_HISTORY.md declares phase-closure"

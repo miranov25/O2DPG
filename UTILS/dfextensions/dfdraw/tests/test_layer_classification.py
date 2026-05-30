@@ -443,6 +443,15 @@ TEST_LAYERS = {
     "test_phase_13_46_df_audit_fixes.py::TestPhase1346AuditFixes::test_f70_get_suptitle_live_path": "invariance",
     "test_phase_13_46_df_audit_fixes.py::TestPhase1346AuditFixes::test_f71_scatter_range_removes_out_of_range_points": "invariance",
 
+    # ── Phase 13.49.DF — meta-tests for the capability matrix ──
+    # Invariance: assert structural properties of the taxonomy/classification/
+    # generator (every claimed test resolves, classification coverage, HTML
+    # emitter integrity, no orphan visual tests). See PHASE_13_49_DF v1.2 §5.
+    "test_meta_capability_matrix.py::test_taxonomy_tests_resolve": "invariance",
+    "test_meta_capability_matrix.py::test_classification_coverage": "invariance",
+    "test_meta_capability_matrix.py::test_html_emitter_parseable": "invariance",
+    "test_meta_capability_matrix.py::test_no_orphan_visual_tests": "invariance",
+
     # ── Phase 13.48.DF — visual_primitive layer (renderer-free figure checks) ──
     # A distinct layer from invariance/smoke: these assert structural properties
     # of the rendered figure (points in bounds, per-cell artist counts, color

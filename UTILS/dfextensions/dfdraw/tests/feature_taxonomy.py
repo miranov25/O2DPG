@@ -611,9 +611,9 @@ FEATURES = [
             "test_quantiles_profile.py::TestQuantileAutoDetection::test_symmetric_pair_no_05_returns_error_bars",
             "test_quantiles_profile.py::TestQuantileAutoDetection::test_symmetric_triple_with_05_returns_band",
             "test_quantiles_profile.py::TestQuantileAutoDetection::test_symmetric_pair_p25_p75_returns_error_bars",
-            "test_quantiles_profile.py::TestQuantileAutoDetection::test_asymmetric_raises_notimplementederror_phaseb",
-            "test_quantiles_profile.py::TestQuantileAutoDetection::test_multi_pair_raises_notimplementederror_phaseb",
-            "test_quantiles_profile.py::TestQuantileAutoDetection::test_single_value_raises_valueerror",
+            "test_quantiles_profile.py::TestQuantileAutoDetection::test_asymmetric_returns_discrete",
+            "test_quantiles_profile.py::TestQuantileAutoDetection::test_multi_pair_returns_nested_band",
+            "test_quantiles_profile.py::TestQuantileAutoDetection::test_single_value_returns_discrete",
             "test_quantiles_profile.py::TestQuantileAutoDetection::test_out_of_range_raises_valueerror",
             "test_quantiles_profile.py::TestQuantileAutoDetection::test_empty_list_raises_valueerror",
         ],
@@ -815,7 +815,6 @@ FEATURES = [
             "test_data_sanitize_autorange.py::TestNanPolicy::test_nan_policy_warn_emits_warning_then_filters",
             "test_data_sanitize_autorange.py::TestNanPolicy::test_nan_policy_filter_preserves_pre_phase_behavior",
             "test_data_sanitize_autorange.py::TestNanPolicy::test_nan_policy_invalid_value_raises",
-            "test_data_sanitize_autorange.py::TestNanPolicy::test_nan_policy_style_key_default",
         ],
     },
     {
@@ -1569,6 +1568,18 @@ FEATURES = [
         "tests": [
             "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v9_auto_title_not_duplicated",
             "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v10_title_content",
+        ],
+    },
+    # ── Phase 13.49.DF — meta-tests for the capability matrix itself ──
+    {
+        "id": "META.capability_matrix",
+        "name": "capability matrix integrity (taxonomy resolves; coverage; HTML; no orphan visuals)",
+        "category": "META",
+        "tests": [
+            "test_meta_capability_matrix.py::test_taxonomy_tests_resolve",
+            "test_meta_capability_matrix.py::test_classification_coverage",
+            "test_meta_capability_matrix.py::test_html_emitter_parseable",
+            "test_meta_capability_matrix.py::test_no_orphan_visual_tests",
         ],
     },
 ]
