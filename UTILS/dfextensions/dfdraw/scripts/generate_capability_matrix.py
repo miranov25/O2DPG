@@ -155,7 +155,12 @@ def generate_matrix(test_results, phase="unknown", output_path=None,
 
     counts = {"Verified": 0, "Smoke-only": 0, "Broken": 0, "Planned": 0}
     feature_stats = []
-    for feature in FEATURES:
+    # H-3 fix: stable-sort by category so each category appears once. FEATURES
+    # is stored in chronological commit order across categories; without the
+    # sort, the per-category-transition header is emitted on every transition,
+    # producing duplicates (FACET 5x, PROFILE 4x, HIST 4x in the v1.0 output).
+    sorted_features = sorted(FEATURES, key=lambda f: f.get("category", ""))
+    for feature in sorted_features:
         s = compute_feature_stats(feature, test_results)
         counts[s["status"]] += 1
         feature_stats.append((feature, s))
@@ -316,7 +321,10 @@ def generate_html_matrix(test_results, features=None, test_layers=None,
     rows = []
     categories = []
     seen_cat = set()
-    for f in features:
+    # H-3 fix: stable-sort by category (same fix as the MD path) so each
+    # category header is emitted exactly once.
+    sorted_features = sorted(features, key=lambda f: f.get("category", ""))
+    for f in sorted_features:
         s = compute_feature_stats(f, test_results)
         counts[s["status"]] += 1
         rows.append((f, s))
@@ -612,17 +620,17 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
     if (lastCatRow) lastCatRow.style.display = anyInCat ? '' : 'none';
   }
 
-  document.querySelectorAll('[data-status]').forEach(function(b) {
+  document.querySelectorAll('.filter-group [data-status]').forEach(function(b) {
     b.addEventListener('click', function() {
-      document.querySelectorAll('[data-status]').forEach(x => x.classList.remove('active'));
+      document.querySelectorAll('.filter-group [data-status]').forEach(x => x.classList.remove('active'));
       b.classList.add('active');
       state.status = b.dataset.status;
       applyFilters();
     });
   });
-  document.querySelectorAll('[data-visual]').forEach(function(b) {
+  document.querySelectorAll('.filter-group [data-visual]').forEach(function(b) {
     b.addEventListener('click', function() {
-      document.querySelectorAll('[data-visual]').forEach(x => x.classList.remove('active'));
+      document.querySelectorAll('.filter-group [data-visual]').forEach(x => x.classList.remove('active'));
       b.classList.add('active');
       state.visual = b.dataset.visual;
       applyFilters();

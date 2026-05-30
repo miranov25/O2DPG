@@ -1,7 +1,7 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-05-29 20:19 UTC
-**Phase:** PHASE_13_48_DF_END
+**Generated:** 2026-05-30 05:52 UTC
+**Phase:** PHASE_13_49_DF_END
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
 
@@ -29,29 +29,18 @@
 
 | Status | Feature | Tests | Pass | Fail | Inv | Visual |
 |--------|---------|------:|-----:|-----:|----:|-------:|
-| | **CORE** | | | | | |
-| ☑️ | **CORE.constructor** — DFDraw constructor and data normalization | 1 | 1 | 0 | 0 |  |
-| ☑️ | **CORE.sampling** — Random sampling (reproducible) | 1 | 1 | 0 | 0 |  |
-| | **PLOT** | | | | | |
-| ☑️ | **PLOT.histogram** — 1D histogram | 2 | 2 | 0 | 0 |  |
-| ☑️ | **PLOT.scatter** — Scatter plot | 1 | 1 | 0 | 0 |  |
-| ☑️ | **PLOT.profile** — Profile plot (mean per bin) | 1 | 1 | 0 | 0 |  |
-| ☑️ | **PLOT.hist2d** — 2D histogram (density heatmap) | 1 | 1 | 0 | 0 |  |
-| ☑️ | **PLOT.hexbin** — Hexbin plot (hexagonal binning) | 1 | 1 | 0 | 0 |  |
-| | **PROFILE** | | | | | |
-| ☑️ | **PROFILE.return_data** — Profile data export (return_data=True) | 3 | 3 | 0 | 0 |  |
-| ☑️ | **PROFILE.min_entries** — Minimum entries filter (min_entries=3) | 3 | 3 | 0 | 0 |  |
-| ✅ | **PROFILE.group_by_bins** — Auto-bin float group_by (bins/quantiles) | 5 | 5 | 0 | 1 |  |
-| ☑️ | **PROFILE.sort_groups** — Sorted group order (negative-safe intervals) | 3 | 3 | 0 | 0 |  |
-| ☑️ | **PROFILE.weights** — Weighted profile (column or expression) | 5 | 5 | 0 | 0 |  |
-| | **TITLE** | | | | | |
-| ☑️ | **TITLE.auto_title** — Automatic title from plot parameters | 10 | 10 | 0 | 0 |  |
-| | **SAME** | | | | | |
-| ✅ | **SAME.axes_reuse** — same=True reuses last axes | 7 | 7 | 0 | 3 |  |
-| ✅ | **SAME.auto_features** — same=True auto-color, auto-label, legend | 5 | 5 | 0 | 1 |  |
-| ☑️ | **SAME.title_append** — same=True title append + subtitle merge | 4 | 4 | 0 | 0 |  |
-| ✅ | **SAME.override** — same=True precedence (ax= wins, explicit overrides) | 3 | 3 | 0 | 1 |  |
-| ✅ | **SAME.cross_method** — same=True across plot types (profile on hist2d) | 4 | 4 | 0 | 4 |  |
+| | **ADF** | | | | | |
+| ☑️ | **ADF.axis_titles** — Duck-typed axis titles from AliasDataFrame | 5 | 5 | 0 | 0 |  |
+| | **ANNOT** | | | | | |
+| ☑️ | **ANNOT.statistics_box** — Statistics annotation box | 3 | 3 | 0 | 0 |  |
+| ☑️ | **ANNOT.reference_overlay** — Reference function overlay (Gaussian, callable) | 4 | 4 | 0 | 0 |  |
+| | **API** | | | | | |
+| ✅ | **API.kwarg_typo_guard** — Kwarg-typo guard (difflib did-you-mean at draw() entry) | 1 | 1 | 0 | 1 |  |
+| | **AUTORANGE** | | | | | |
+| ☑️ | **AUTORANGE.hybrid** — Hybrid autorange (outlier-aware: robust + minmax combined) | 5 | 5 | 0 | 0 |  |
+| ☑️ | **AUTORANGE.minmax** — Minmax autorange strategy (backward compat preset) | 2 | 2 | 0 | 0 |  |
+| ☑️ | **AUTORANGE.percentile** — Percentile autorange strategies (percentile_99, percentile_95) | 1 | 1 | 0 | 0 |  |
+| ☑️ | **AUTORANGE.diagnostics** — Stats keys autorange_used + autorange_strategy (AD-77) | 1 | 1 | 0 | 0 |  |
 | | **BATCH** | | | | | |
 | ☑️ | **BATCH.dict_format** — draw_batch dict format (original) | 5 | 5 | 0 | 0 |  |
 | ✅ | **BATCH.group_format** — draw_batch group format with defaults hierarchy | 6 | 6 | 0 | 1 |  |
@@ -59,45 +48,6 @@
 | ☑️ | **BATCH.same_in_group** — same=True within batch groups | 2 | 2 | 0 | 0 |  |
 | ☑️ | **BATCH.verbose** — Verbose levels (0/1/2) | 3 | 3 | 0 | 0 |  |
 | ☑️ | **BATCH.save** — Batch save and close figures | 2 | 2 | 0 | 0 |  |
-| | **STYLE** | | | | | |
-| ☑️ | **STYLE.predefined** — Predefined styles (default, publication, presentation) | 3 | 3 | 0 | 0 |  |
-| ☑️ | **STYLE.custom** — Custom style dict and JSON persistence | 4 | 4 | 0 | 0 |  |
-| | **STATS** | | | | | |
-| ☑️ | **STATS.default_fields** — Auto-detect default stats fields by plot type | 1 | 1 | 0 | 0 |  |
-| ☑️ | **STATS.range_aware** — Range-aware statistics (range_x, range_y) | 3 | 3 | 0 | 0 |  |
-| ☑️ | **STATS.robust** — Robust statistics (median, MAD) | 2 | 2 | 0 | 0 |  |
-| | **ANNOT** | | | | | |
-| ☑️ | **ANNOT.statistics_box** — Statistics annotation box | 3 | 3 | 0 | 0 |  |
-| ☑️ | **ANNOT.reference_overlay** — Reference function overlay (Gaussian, callable) | 4 | 4 | 0 | 0 |  |
-| | **ADF** | | | | | |
-| ☑️ | **ADF.axis_titles** — Duck-typed axis titles from AliasDataFrame | 5 | 5 | 0 | 0 |  |
-| | **PYARROW** | | | | | |
-| ✅ | **PYARROW.input** — PyArrow Table input support | 7 | 7 | 0 | 5 |  |
-| | **FACET** | | | | | |
-| ☑️ | **FACET.grid** — Facet subplot grids (group_by + facet=True) | 1 | 1 | 0 | 0 |  |
-| | **COMPAT** | | | | | |
-| ☑️ | **COMPAT.profile** — Profile backward compatibility | 2 | 2 | 0 | 0 |  |
-| | **VECTOR** | | | | | |
-| ☑️ | **VECTOR.parse** — Bracket syntax parsing with paren-aware split | 8 | 8 | 0 | 0 |  |
-| ☑️ | **VECTOR.dispatch** — Vector dispatch across profile/hist/scatter/draw | 5 | 5 | 0 | 0 |  |
-| ☑️ | **VECTOR.fail_fast** — Fail-fast guards on hist2d/hexbin; per-pair for stats | 3 | 3 | 0 | 0 |  |
-| ☑️ | **VECTOR.style_channels** — Vector + group_by style channel decomposition (P1-2) | 4 | 4 | 0 | 0 |  |
-| ☑️ | **VECTOR.contract** — Return contract: stats_list, ylabel, auto_title | 3 | 3 | 0 | 0 |  |
-| ✅ | **VECTOR.color_cycle** — Color cycle continuity with outer same=True (GPT5 fix) | 4 | 4 | 0 | 1 |  |
-| ☑️ | **VECTOR.adf_integration** — Vector through AliasDataFrame entry point (P0-3) | 1 | 1 | 0 | 0 |  |
-| ✅ | **VECTOR.invariance** — Vector ≡ scalar same-loop semantic invariance (strong A≡B) | 7 | 7 | 0 | 7 |  |
-| ✅ | **VECTOR.kwarg_propagation** — Vector path forwards all scalar-mode kwargs (FIX1) | 7 | 7 | 0 | 7 |  |
-| ☑️ | **VECTOR.groupby_polish** — Vector + group_by deduplicated legend, title, layout (FIX1) | 5 | 5 | 0 | 0 |  |
-| ☑️ | **VECTOR.kwarg_surface** — Vector dispatch forwards named-parameter surface + facet guard (FIX1) | 6 | 6 | 0 | 0 |  |
-| | **QUANTILE** | | | | | |
-| ☑️ | **QUANTILE.error_bars** — Quantile error_bars mode (asymmetric bars from symmetric pair) | 8 | 8 | 0 | 0 |  |
-| ☑️ | **QUANTILE.band** — Quantile band mode (fill_between from symmetric triple) | 8 | 8 | 0 | 0 |  |
-| ☑️ | **QUANTILE.central** — Quantile central= parameter (mean/median/both/none) | 7 | 7 | 0 | 0 |  |
-| ☑️ | **QUANTILE.auto_detection** — Quantile mode auto-detection from list shape | 8 | 8 | 0 | 0 |  |
-| ☑️ | **QUANTILE.style_keys** — Quantile style keys (band.alpha, band.hatch, error_bars.capsize, central_default) | 8 | 8 | 0 | 0 |  |
-| ☑️ | **QUANTILE.parity** — Quantile determinism + backward-compat regression-lock | 6 | 6 | 0 | 0 |  |
-| | **COMPAT** | | | | | |
-| ☑️ | **COMPAT.bool_expression** — Boolean expression input (==, !=, >, <, &, |, ~) on all plot functions | 11 | 11 | 0 | 0 |  |
 | | **CHANNEL** | | | | | |
 | ☑️ | **CHANNEL.assignment** — Algorithm A: automatic visual-channel assignment for N data channels | 41 | 41 | 0 | 0 |  |
 | ☑️ | **CHANNEL.nested_band** — Nested-band detection (>=2 symmetric pairs, central optional) and rendering | 5 | 5 | 0 | 0 |  |
@@ -107,27 +57,39 @@
 | ✅ | **CHANNEL.compose_inner** — vector_compose='inner' — element-wise pairing (AD-62) | 4 | 4 | 0 | 4 |  |
 | ✅ | **CHANNEL.compose_outer** — vector_compose='outer' — cross-product (AD-62) | 2 | 2 | 0 | 2 |  |
 | ✅ | **CHANNEL.delta_facet_label** — Per-curve label management for selection_delta/weights_delta channels | 3 | 3 | 0 | 3 |  |
+| | **COLUMN_REF** | | | | | |
+| ✅ | **COLUMN_REF.validation** — Column-reference parameter validation (Class-2 actionable errors) — Phase 13.30 | 12 | 12 | 0 | 12 |  |
+| | **COMPAT** | | | | | |
+| ☑️ | **COMPAT.profile** — Profile backward compatibility | 2 | 2 | 0 | 0 |  |
+| ☑️ | **COMPAT.bool_expression** — Boolean expression input (==, !=, >, <, &, |, ~) on all plot functions | 11 | 11 | 0 | 0 |  |
+| | **CORE** | | | | | |
+| ☑️ | **CORE.constructor** — DFDraw constructor and data normalization | 1 | 1 | 0 | 0 |  |
+| ☑️ | **CORE.sampling** — Random sampling (reproducible) | 1 | 1 | 0 | 0 |  |
 | | **DATA** | | | | | |
 | ☑️ | **DATA.nan_policy** — Optional NaN/inf filter with nan_policy parameter | 6 | 6 | 0 | 0 |  |
 | ☑️ | **DATA.counters** — Stats dict counters: n_input, n_filtered, n_inf_*, n_nan_* | 5 | 5 | 0 | 0 |  |
-| | **AUTORANGE** | | | | | |
-| ☑️ | **AUTORANGE.hybrid** — Hybrid autorange (outlier-aware: robust + minmax combined) | 5 | 5 | 0 | 0 |  |
-| ☑️ | **AUTORANGE.minmax** — Minmax autorange strategy (backward compat preset) | 2 | 2 | 0 | 0 |  |
-| ☑️ | **AUTORANGE.percentile** — Percentile autorange strategies (percentile_99, percentile_95) | 1 | 1 | 0 | 0 |  |
-| ☑️ | **AUTORANGE.diagnostics** — Stats keys autorange_used + autorange_strategy (AD-77) | 1 | 1 | 0 | 0 |  |
-| | **DATA** | | | | | |
 | ✅ | **HIST.weights** — hist() weights= column or expression — Phase 13.27 Commit 2 FIX1 | 5 | 5 | 0 | 5 |  |
-| | **COLUMN_REF** | | | | | |
-| ✅ | **COLUMN_REF.validation** — Column-reference parameter validation (Class-2 actionable errors) — Phase 13.30 | 12 | 12 | 0 | 12 |  |
 | | **FACET** | | | | | |
+| ☑️ | **FACET.grid** — Facet subplot grids (group_by + facet=True) | 1 | 1 | 0 | 0 |  |
 | ✅ | **FACET.column_mode** — facet_by accepts DataFrame column name (AD-78) — Phase 13.31 | 12 | 12 | 0 | 12 |  |
 | ✅ | **FACET.column_mode_binning** — facet_by_bins / facet_by_quantiles auto-binning of float column facets (AD-79) — Phase 13.32 Sub-fix 3 | 8 | 8 | 0 | 8 |  |
-| | **QUANTILE** | | | | | |
-| ✅ | **PROFILE.quantiles_grouped** — Per-group quantile band/discrete rendering on profile() — Phase 13.32 Sub-fix 2 | 6 | 6 | 0 | 6 |  |
-| | **FACET** | | | | | |
 | ✅ | **FACET.title_display_name** — Subplot titles show original facet_by name, never internal __dfdraw_facet_bin__ (BUG-001) — Phase 13.32 FIX1 | 1 | 1 | 0 | 1 |  |
 | ✅ | **FACET.auto_title** — auto_title=True produces fig.suptitle in faceted mode (BUG-002) — Phase 13.32 FIX1 | 2 | 2 | 0 | 2 |  |
 | ✅ | **FACET.numeric_bin_sort** — Facet bin panels in numeric order, not lexicographic (BUG-003) — Phase 13.32 FIX1 | 1 | 1 | 0 | 1 |  |
+| ✅ | **FACET.float_facet_by_guard** — _dispatch_faceted_render() float facet_by + no bins + nunique>20 raises ValueError with facet_by_bins=N / facet_by_quantiles=N guidance (BUG-017; third instance of BUG-012/BUG-015 float-guard class) — Phase 13.38.DF | 2 | 2 | 0 | 2 |  |
+| ✅ | **FACET.list_grid** — facet_by accepts Union[str, List[str]] for 1D/2D/3D faceting. Convention LOCKED matching numpy/pandas (n_rows, n_cols, ...) shape: facet_by[0]=ROW (vertical within figure), facet_by[1]=COLUMN (horizontal within figure), facet_by[2]=FIGID (separate figures, one per value). facet_by[3+] raises NotImplementedError. 3D returns (List[Figure], List[axes_2d], List[stats_dict]) — DEVIATES from standard (fig, ax, stats) contract; documented prominently in inline help. New params: share_x/share_y ∈ {'all','row','col','none'} (within-figure axis sharing), share_across_figures: bool (3D global range lock). Per-plot-kind lock for share_across_figures (CP1-2): scatter locks x AND y; hist/profile locks x only (y auto-scales per figure to handle sparse-figID variance). New helpers: _normalize_facet_args, _to_mpl_share (symmetric {'all':True,'row':'row','col':'col','none':False} — v1.2 CP0-1 fix for Hard Constraint #3), _validate_share_axis_value, _resolve_facet_values (discrete or pd.cut/qcut Interval), _filter_facet_value (CP1-3 discrete vs binned), _compute_global_ranges. dfdraw is FIRST major plotting library with unified API where Nth faceting dimension generates separate figures (seaborn/ggplot2/plotly/altair all require manual loops). _validate_facet_by_binning guard for list input (v1.3 P1-A). Per-plot-kind dispatch: hist uses range= (matplotlib convention); profile uses range= which DFDraw.profile remaps to draw_profile's x_range= internally; scatter uses ax.set_xlim/set_ylim post-draw (no native range params); hist also locks ax.set_xlim post-draw (range= only locks bins, not axis xlim). Empty cell handling: '(no data)' diagnostic + stats={'n':0,'empty':True} — Phase 13.41.DF | 23 | 23 | 0 | 23 |  |
+| | **FIT** | | | | | |
+| ✅ | **FIT.inline** — Inline fits (fit= parameter on hist/profile/scatter/draw) | 41 | 41 | 0 | 41 |  |
+| ✅ | **FIT.summary** — Summary fit — standalone table + params figure | 27 | 27 | 0 | 27 |  |
+| ✅ | **FIT.root_aliases** — ROOT-convention aliases (fit='gaus', type='histo') | 2 | 2 | 0 | 2 |  |
+| | **HIST** | | | | | |
+| ☑️ | **HIST.step_per_group_color** — histtype='step' renders distinct per-group edgecolors (BUG-014 closed; extends Phase 13.36 sentinel to edgecolor) — Phase 13.37.DF | 4 | 4 | 0 | 0 |  |
+| ☑️ | **HIST.interval_sort_numeric** — pd.Interval group legend sorted by numeric .left (BUG-016; hasattr-guard extension of _interval_sort_key) — Phase 13.37.DF | 3 | 3 | 0 | 0 |  |
+| ☑️ | **HIST.hist_errors** — Poisson error bar overlay (hist_errors=True): √n raw / √n/N probability / √n/(N·bw_i) density (per-bin); weighted Poisson via Σw²; zero-bin masking; ungrouped+bins=int safe; Phase 13.36 color sentinel preserved — Phase 13.37.DF | 10 | 10 | 0 | 0 |  |
+| ✅ | **HIST.time_axis** — hist() time_format= pre-conversion: x_data → matplotlib date numbers BEFORE ax.hist(). Post-hoc rewrite would be no-op for Patches (lesson from Phase 13.39 v1.0 P1). CP1-1 regression-lock: §9.TA.5 uses realistic timestamps (~1.7e9), as epoch-0 made both pre-conv (0.0) and raw (0) paths pass — Phase 13.39.DF | 1 | 1 | 0 | 1 |  |
+| ✅ | **HIST.cumulative** — hist() cumulative=True/-1/False — ROOT TH1::Draw('cumulative') equivalent. Three values: True (ascending CDF/ECDF), False (default, byte-identical backward compat), -1 (descending/survival, ROOT convention). matplotlib native cumulative= forwarded explicitly at 4 internal call sites (Phase 13.39 §2.2 lesson applied recursively: DFDraw.hist → draw_hist → _draw_hist_grouped → ax.hist; ALSO through _dispatch_faceted_render for facet_by composition). Composes with: norm='probability' (→ ECDF 0-1), group_by overlaid (per-group ECDFs), group_by stacked (CP2-1 regression lock for 3rd call site), facet_by (per-facet cumulative), histtype='step' (HEP-standard step ECDF). Correctness guard (M5): hist_errors+cumulative → NotImplementedError (Poisson per-bin errors are independent; cumulative counts are correlated). Vector dispatch [x,y] propagates cumulative correctly (Phase 13.16.DF FIX1 bug class lock) — Phase 13.40.DF | 10 | 10 | 0 | 10 |  |
+| | **META** | | | | | |
+| ✅ | **META.capability_matrix** — capability matrix integrity (taxonomy resolves; coverage; HTML; no orphan visuals) | 4 | 4 | 0 | 4 |  |
 | | **NORMALIZE** | | | | | |
 | ✅ | **NORMALIZE.delta** — normalize='delta': v[0]-v[1] per bin with SEM error propagation — Phase 13.33 M1 | 3 | 3 | 0 | 3 |  |
 | ✅ | **NORMALIZE.ratio** — normalize='ratio': v[0]/v[1] with delta-method error, zero-denom mask — Phase 13.33 M1 | 3 | 3 | 0 | 3 |  |
@@ -141,49 +103,74 @@
 | ✅ | **NORMALIZE.validation** — normalize input validation: wrong vector count, invalid mode, same=True conflict — Phase 13.33 M1 | 3 | 3 | 0 | 3 |  |
 | ✅ | **NORMALIZE.group_by_compose** — group_by + normalize: per-group differential rendering — Phase 13.33 M2 | 3 | 3 | 0 | 3 |  |
 | ✅ | **NORMALIZE.facet_by_compose** — facet_by + normalize: K x 2 grid with per-facet independent differential; facet_by_bins/_quantiles raises (NF.3 workaround-hint lock) — Phase 13.33 M2 + FIX1 | 3 | 3 | 0 | 3 |  |
+| | **PLOT** | | | | | |
+| ☑️ | **PLOT.histogram** — 1D histogram | 2 | 2 | 0 | 0 |  |
+| ☑️ | **PLOT.scatter** — Scatter plot | 1 | 1 | 0 | 0 |  |
+| ☑️ | **PLOT.profile** — Profile plot (mean per bin) | 1 | 1 | 0 | 0 |  |
+| ☑️ | **PLOT.hist2d** — 2D histogram (density heatmap) | 1 | 1 | 0 | 0 |  |
+| ☑️ | **PLOT.hexbin** — Hexbin plot (hexagonal binning) | 1 | 1 | 0 | 0 |  |
+| | **PROFILE** | | | | | |
+| ☑️ | **PROFILE.return_data** — Profile data export (return_data=True) | 3 | 3 | 0 | 0 |  |
+| ☑️ | **PROFILE.min_entries** — Minimum entries filter (min_entries=3) | 3 | 3 | 0 | 0 |  |
+| ✅ | **PROFILE.group_by_bins** — Auto-bin float group_by (bins/quantiles) | 5 | 5 | 0 | 1 |  |
+| ☑️ | **PROFILE.sort_groups** — Sorted group order (negative-safe intervals) | 3 | 3 | 0 | 0 |  |
+| ☑️ | **PROFILE.weights** — Weighted profile (column or expression) | 5 | 5 | 0 | 0 |  |
+| ☑️ | **PROFILE.float_group_by_guard** — profile() float group_by with no bins + nunique>20 raises ValueError with group_by_bins=N guidance (BUG-015; mirrors Phase 13.35 hist BUG-012) — Phase 13.37.DF | 2 | 2 | 0 | 0 |  |
+| ☑️ | **PROFILE_HIST.linestyle_cycle** — linestyle_cycle=True cycles per-group linestyles from channels.cycles.linestyle on profile() and hist(); user-explicit linestyle= wins via _ud_user_linestyle sentinel (extends Phase 13.36 Edit 17 pattern) — Phase 13.37.DF | 5 | 5 | 0 | 0 |  |
+| ✅ | **PROFILE.profile2d** — profile('z:y:x') → 2D mean heatmap via scipy.stats.binned_statistic_2d + ax.pcolormesh. Supports bins=[nx,ny] or bins=nx+bins2=ny, min_entries_2d=N masking, norm='log', colorbar+clabel. Dispatch in DFDraw.profile() at colon_count==2 (CP1-5: after _apply_selection/_apply_sampling, before _parse_expr). z/y/x accept column names or df.eval() expressions. Backward compat: 'y:x' (colon_count==1) unchanged — Phase 13.39.DF | 9 | 9 | 0 | 9 |  |
+| ✅ | **PROFILE.time_axis** — profile() time_format= pre-conversion: x_data converted to matplotlib date numbers via mdates.date2num() before binning. CP1-4 auto-detect: datetime64 column dtype detected BEFORE astype(float) (else int64-nanosecond cast becomes ~1.7e15 → pd.to_datetime crashes 'year out of range'). DateFormatter / AutoDateFormatter applied post-render — Phase 13.39.DF | 5 | 5 | 0 | 5 |  |
+| | **PYARROW** | | | | | |
+| ✅ | **PYARROW.input** — PyArrow Table input support | 7 | 7 | 0 | 5 |  |
+| | **QUANTILE** | | | | | |
+| ☑️ | **QUANTILE.error_bars** — Quantile error_bars mode (asymmetric bars from symmetric pair) | 8 | 8 | 0 | 0 |  |
+| ☑️ | **QUANTILE.band** — Quantile band mode (fill_between from symmetric triple) | 8 | 8 | 0 | 0 |  |
+| ☑️ | **QUANTILE.central** — Quantile central= parameter (mean/median/both/none) | 7 | 7 | 0 | 0 |  |
+| ☑️ | **QUANTILE.auto_detection** — Quantile mode auto-detection from list shape | 8 | 8 | 0 | 0 |  |
+| ☑️ | **QUANTILE.style_keys** — Quantile style keys (band.alpha, band.hatch, error_bars.capsize, central_default) | 8 | 8 | 0 | 0 |  |
+| ☑️ | **QUANTILE.parity** — Quantile determinism + backward-compat regression-lock | 6 | 6 | 0 | 0 |  |
+| ✅ | **PROFILE.quantiles_grouped** — Per-group quantile band/discrete rendering on profile() — Phase 13.32 Sub-fix 2 | 6 | 6 | 0 | 6 |  |
+| | **RANGE** | | | | | |
+| ✅ | **RANGE.scatter** — range= on scatter via shared 2D resolver | 4 | 4 | 0 | 4 |  |
+| ✅ | **RANGE.scatter_filter** — range= on scatter removes out-of-range points (FIX1 semantic) | 1 | 1 | 0 | 1 |  |
 | | **ROBUSTNESS** | | | | | |
 | 📋 | **ROBUSTNESS.median_mad_sigma** — central='median' must use MAD-sigma error bars (Phase 13.33 CRR §11 pre-existing inconsistency lock; xfail until source-side fix) — Phase 13.34 M2 | 1 | 0 | 0 | 0 |  |
 | ✅ | **ROBUSTNESS.stats_schema** — Stats dict key contract per plot kind — locks against silent renames breaking ADF/RootInteractive — Phase 13.34 M2 | 3 | 3 | 0 | 3 |  |
 | ✅ | **ROBUSTNESS.kwarg_composition** — Feature interaction tests — would have caught BUG-001/002/003 at delivery; locks 5 known kwarg interaction pairs — Phase 13.34 M2 | 5 | 5 | 0 | 5 |  |
-| | **HIST** | | | | | |
-| ☑️ | **HIST.step_per_group_color** — histtype='step' renders distinct per-group edgecolors (BUG-014 closed; extends Phase 13.36 sentinel to edgecolor) — Phase 13.37.DF | 4 | 4 | 0 | 0 |  |
-| | **PROFILE** | | | | | |
-| ☑️ | **PROFILE.float_group_by_guard** — profile() float group_by with no bins + nunique>20 raises ValueError with group_by_bins=N guidance (BUG-015; mirrors Phase 13.35 hist BUG-012) — Phase 13.37.DF | 2 | 2 | 0 | 0 |  |
-| | **HIST** | | | | | |
-| ☑️ | **HIST.interval_sort_numeric** — pd.Interval group legend sorted by numeric .left (BUG-016; hasattr-guard extension of _interval_sort_key) — Phase 13.37.DF | 3 | 3 | 0 | 0 |  |
-| ☑️ | **HIST.hist_errors** — Poisson error bar overlay (hist_errors=True): √n raw / √n/N probability / √n/(N·bw_i) density (per-bin); weighted Poisson via Σw²; zero-bin masking; ungrouped+bins=int safe; Phase 13.36 color sentinel preserved — Phase 13.37.DF | 10 | 10 | 0 | 0 |  |
-| | **PROFILE** | | | | | |
-| ☑️ | **PROFILE_HIST.linestyle_cycle** — linestyle_cycle=True cycles per-group linestyles from channels.cycles.linestyle on profile() and hist(); user-explicit linestyle= wins via _ud_user_linestyle sentinel (extends Phase 13.36 Edit 17 pattern) — Phase 13.37.DF | 5 | 5 | 0 | 0 |  |
-| | **FACET** | | | | | |
-| ✅ | **FACET.float_facet_by_guard** — _dispatch_faceted_render() float facet_by + no bins + nunique>20 raises ValueError with facet_by_bins=N / facet_by_quantiles=N guidance (BUG-017; third instance of BUG-012/BUG-015 float-guard class) — Phase 13.38.DF | 2 | 2 | 0 | 2 |  |
+| | **SAME** | | | | | |
+| ✅ | **SAME.axes_reuse** — same=True reuses last axes | 7 | 7 | 0 | 3 |  |
+| ✅ | **SAME.auto_features** — same=True auto-color, auto-label, legend | 5 | 5 | 0 | 1 |  |
+| ☑️ | **SAME.title_append** — same=True title append + subtitle merge | 4 | 4 | 0 | 0 |  |
+| ✅ | **SAME.override** — same=True precedence (ax= wins, explicit overrides) | 3 | 3 | 0 | 1 |  |
+| ✅ | **SAME.cross_method** — same=True across plot types (profile on hist2d) | 4 | 4 | 0 | 4 |  |
 | | **SCATTER** | | | | | |
 | ✅ | **SCATTER.xerr_yerr** — scatter() xerr/yerr from column name or df.eval() expression. Render via ax.errorbar() when either provided; ax.scatter() otherwise (dispatch invariance). Three-tier NaN policy: raise on 100%, warn at >50%, silent zeroing at ≤50%. nanfrac in stats dict. Style keys: scatter.error_capsize=2, scatter.error_elinewidth=1.0, scatter.error_ecolor=None — Phase 13.38.DF | 9 | 9 | 0 | 9 |  |
 | ✅ | **SCATTER.expression_color** — scatter() color= accepts df.eval() expression (e.g. color='abs(tgl)'). _process_color() dispatch reordered (CP0-1): None → array → column → fixed-color (to_rgba) → df.eval → terminal. Column-name check precedes to_rgba() to preserve backward compat for columns named after matplotlib colors ('b', 'r', 'k') — Phase 13.38.DF | 5 | 5 | 0 | 5 |  |
 | ✅ | **SCATTER.expression_marker** — scatter() marker= accepts boolean df.eval() expression (e.g. marker='ncl > 100'); True → 's', False → 'o'. Per-point rendering via np.unique loop with label='_nolegend_' (no spurious legend entries) — Phase 13.38.DF | 2 | 2 | 0 | 2 |  |
 | ✅ | **SCATTER.expr_compose** — scatter() expression color + expression marker composition: both encodings simultaneously on single-path scatter. Each marker subgroup carries its own colormap array — Phase 13.38.DF | 1 | 1 | 0 | 1 |  |
-| | **PROFILE** | | | | | |
-| ✅ | **PROFILE.profile2d** — profile('z:y:x') → 2D mean heatmap via scipy.stats.binned_statistic_2d + ax.pcolormesh. Supports bins=[nx,ny] or bins=nx+bins2=ny, min_entries_2d=N masking, norm='log', colorbar+clabel. Dispatch in DFDraw.profile() at colon_count==2 (CP1-5: after _apply_selection/_apply_sampling, before _parse_expr). z/y/x accept column names or df.eval() expressions. Backward compat: 'y:x' (colon_count==1) unchanged — Phase 13.39.DF | 9 | 9 | 0 | 9 |  |
-| ✅ | **PROFILE.time_axis** — profile() time_format= pre-conversion: x_data converted to matplotlib date numbers via mdates.date2num() before binning. CP1-4 auto-detect: datetime64 column dtype detected BEFORE astype(float) (else int64-nanosecond cast becomes ~1.7e15 → pd.to_datetime crashes 'year out of range'). DateFormatter / AutoDateFormatter applied post-render — Phase 13.39.DF | 5 | 5 | 0 | 5 |  |
-| | **HIST** | | | | | |
-| ✅ | **HIST.time_axis** — hist() time_format= pre-conversion: x_data → matplotlib date numbers BEFORE ax.hist(). Post-hoc rewrite would be no-op for Patches (lesson from Phase 13.39 v1.0 P1). CP1-1 regression-lock: §9.TA.5 uses realistic timestamps (~1.7e9), as epoch-0 made both pre-conv (0.0) and raw (0) paths pass — Phase 13.39.DF | 1 | 1 | 0 | 1 |  |
-| | **SCATTER** | | | | | |
 | ✅ | **SCATTER.time_axis** — scatter() time_format= pre-conversion: x_data → matplotlib date numbers BEFORE ax.scatter/ax.errorbar — Phase 13.39.DF | 1 | 1 | 0 | 1 |  |
 | ✅ | **SCATTER.scatter3d** — draw('z:y:x', type='scatter3d') → 3D point cloud via mpl_toolkits.mplot3d. Reuses Phase 13.38 _process_color() + _process_size() unchanged. color=/size= accept column names or df.eval() expressions. elev=/azim= for ax.view_init(). Stats dict locks mean_x AND mean_y AND mean_z to 1e-9 (CP1-3). Scope boundaries: group_by + scatter3d raises (CP2-1); same=True onto non-3D axes raises (CP2-2). 'y:x' (colon!=2) with type='scatter3d' raises with actionable message — Phase 13.39.DF | 8 | 8 | 0 | 8 |  |
-| | **HIST** | | | | | |
-| ✅ | **HIST.cumulative** — hist() cumulative=True/-1/False — ROOT TH1::Draw('cumulative') equivalent. Three values: True (ascending CDF/ECDF), False (default, byte-identical backward compat), -1 (descending/survival, ROOT convention). matplotlib native cumulative= forwarded explicitly at 4 internal call sites (Phase 13.39 §2.2 lesson applied recursively: DFDraw.hist → draw_hist → _draw_hist_grouped → ax.hist; ALSO through _dispatch_faceted_render for facet_by composition). Composes with: norm='probability' (→ ECDF 0-1), group_by overlaid (per-group ECDFs), group_by stacked (CP2-1 regression lock for 3rd call site), facet_by (per-facet cumulative), histtype='step' (HEP-standard step ECDF). Correctness guard (M5): hist_errors+cumulative → NotImplementedError (Poisson per-bin errors are independent; cumulative counts are correlated). Vector dispatch [x,y] propagates cumulative correctly (Phase 13.16.DF FIX1 bug class lock) — Phase 13.40.DF | 10 | 10 | 0 | 10 |  |
-| | **FACET** | | | | | |
-| ✅ | **FACET.list_grid** — facet_by accepts Union[str, List[str]] for 1D/2D/3D faceting. Convention LOCKED matching numpy/pandas (n_rows, n_cols, ...) shape: facet_by[0]=ROW (vertical within figure), facet_by[1]=COLUMN (horizontal within figure), facet_by[2]=FIGID (separate figures, one per value). facet_by[3+] raises NotImplementedError. 3D returns (List[Figure], List[axes_2d], List[stats_dict]) — DEVIATES from standard (fig, ax, stats) contract; documented prominently in inline help. New params: share_x/share_y ∈ {'all','row','col','none'} (within-figure axis sharing), share_across_figures: bool (3D global range lock). Per-plot-kind lock for share_across_figures (CP1-2): scatter locks x AND y; hist/profile locks x only (y auto-scales per figure to handle sparse-figID variance). New helpers: _normalize_facet_args, _to_mpl_share (symmetric {'all':True,'row':'row','col':'col','none':False} — v1.2 CP0-1 fix for Hard Constraint #3), _validate_share_axis_value, _resolve_facet_values (discrete or pd.cut/qcut Interval), _filter_facet_value (CP1-3 discrete vs binned), _compute_global_ranges. dfdraw is FIRST major plotting library with unified API where Nth faceting dimension generates separate figures (seaborn/ggplot2/plotly/altair all require manual loops). _validate_facet_by_binning guard for list input (v1.3 P1-A). Per-plot-kind dispatch: hist uses range= (matplotlib convention); profile uses range= which DFDraw.profile remaps to draw_profile's x_range= internally; scatter uses ax.set_xlim/set_ylim post-draw (no native range params); hist also locks ax.set_xlim post-draw (range= only locks bins, not axis xlim). Empty cell handling: '(no data)' diagnostic + stats={'n':0,'empty':True} — Phase 13.41.DF | 23 | 23 | 0 | 23 |  |
-| | **FIT** | | | | | |
-| ✅ | **FIT.inline** — Inline fits (fit= parameter on hist/profile/scatter/draw) | 41 | 41 | 0 | 41 |  |
-| ✅ | **FIT.summary** — Summary fit — standalone table + params figure | 27 | 27 | 0 | 27 |  |
-| ✅ | **FIT.root_aliases** — ROOT-convention aliases (fit='gaus', type='histo') | 2 | 2 | 0 | 2 |  |
-| | **API** | | | | | |
-| ✅ | **API.kwarg_typo_guard** — Kwarg-typo guard (difflib did-you-mean at draw() entry) | 1 | 1 | 0 | 1 |  |
-| | **RANGE** | | | | | |
-| ✅ | **RANGE.scatter** — range= on scatter via shared 2D resolver | 4 | 4 | 0 | 4 |  |
-| ✅ | **RANGE.scatter_filter** — range= on scatter removes out-of-range points (FIX1 semantic) | 1 | 1 | 0 | 1 |  |
+| | **STATS** | | | | | |
+| ☑️ | **STATS.default_fields** — Auto-detect default stats fields by plot type | 1 | 1 | 0 | 0 |  |
+| ☑️ | **STATS.range_aware** — Range-aware statistics (range_x, range_y) | 3 | 3 | 0 | 0 |  |
+| ☑️ | **STATS.robust** — Robust statistics (median, MAD) | 2 | 2 | 0 | 0 |  |
+| | **STYLE** | | | | | |
+| ☑️ | **STYLE.predefined** — Predefined styles (default, publication, presentation) | 3 | 3 | 0 | 0 |  |
+| ☑️ | **STYLE.custom** — Custom style dict and JSON persistence | 4 | 4 | 0 | 0 |  |
 | | **TITLE** | | | | | |
+| ☑️ | **TITLE.auto_title** — Automatic title from plot parameters | 10 | 10 | 0 | 0 |  |
 | ✅ | **TITLE.get_suptitle** — _get_suptitle public-API helper (mpl >= 3.8 + fallback) | 1 | 1 | 0 | 1 |  |
+| | **VECTOR** | | | | | |
+| ☑️ | **VECTOR.parse** — Bracket syntax parsing with paren-aware split | 8 | 8 | 0 | 0 |  |
+| ☑️ | **VECTOR.dispatch** — Vector dispatch across profile/hist/scatter/draw | 5 | 5 | 0 | 0 |  |
+| ☑️ | **VECTOR.fail_fast** — Fail-fast guards on hist2d/hexbin; per-pair for stats | 3 | 3 | 0 | 0 |  |
+| ☑️ | **VECTOR.style_channels** — Vector + group_by style channel decomposition (P1-2) | 4 | 4 | 0 | 0 |  |
+| ☑️ | **VECTOR.contract** — Return contract: stats_list, ylabel, auto_title | 3 | 3 | 0 | 0 |  |
+| ✅ | **VECTOR.color_cycle** — Color cycle continuity with outer same=True (GPT5 fix) | 4 | 4 | 0 | 1 |  |
+| ☑️ | **VECTOR.adf_integration** — Vector through AliasDataFrame entry point (P0-3) | 1 | 1 | 0 | 0 |  |
+| ✅ | **VECTOR.invariance** — Vector ≡ scalar same-loop semantic invariance (strong A≡B) | 7 | 7 | 0 | 7 |  |
+| ✅ | **VECTOR.kwarg_propagation** — Vector path forwards all scalar-mode kwargs (FIX1) | 7 | 7 | 0 | 7 |  |
+| ☑️ | **VECTOR.groupby_polish** — Vector + group_by deduplicated legend, title, layout (FIX1) | 5 | 5 | 0 | 0 |  |
+| ☑️ | **VECTOR.kwarg_surface** — Vector dispatch forwards named-parameter surface + facet guard (FIX1) | 6 | 6 | 0 | 0 |  |
 | | **VISUAL** | | | | | |
 | ☑️ | **VISUAL.data_bounds** — plotted points lie within axes limits (C-9 regression lock) 👁 | 1 | 1 | 0 | 0 | 1 |
 | ☑️ | **VISUAL.cell_population** — every visible facet cell drew data; ragged-grid padding excluded 👁 | 2 | 2 | 0 | 0 | 2 |
@@ -191,8 +178,6 @@
 | ☑️ | **VISUAL.color_distinct** — per-group colors distinct — color-cycle not reset (AD-37 class) 👁 | 2 | 2 | 0 | 0 | 2 |
 | ☑️ | **VISUAL.facet_grid** — facet grid shape + shared-axis consistency (figure-derived) 👁 | 2 | 2 | 0 | 0 | 2 |
 | ☑️ | **VISUAL.title** — suptitle populated, not duplicated per-cell (C-3); content (I-4) 👁 | 2 | 2 | 0 | 0 | 2 |
-| | **META** | | | | | |
-| ✅ | **META.capability_matrix** — capability matrix integrity (taxonomy resolves; coverage; HTML; no orphan visuals) | 4 | 4 | 0 | 4 |  |
 
 ## Unmatched Tests (448)
 

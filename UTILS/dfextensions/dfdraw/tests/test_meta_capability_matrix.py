@@ -308,6 +308,38 @@ def test_html_emitter_parseable():
         f"HTML has {n_panels} test-panels, expected >= {len(FEATURES)}"
     )
 
+    # H-3 lock: each category should appear as a category-row header EXACTLY
+    # once. Duplicates indicate the features-by-category sort regressed and
+    # the v1.0 H-3 bug is back (FACET 5x, PROFILE 4x in the original output).
+    import re as _re
+    cat_headers = _re.findall(r'class="category-row"><td colspan="\d+">([^<]+)<', html)
+    dup = [c for c in set(cat_headers) if cat_headers.count(c) > 1]
+    assert not dup, (
+        f"HTML emits {len(dup)} duplicated category header(s): {dup} — "
+        "features must be sorted by category before emit (H-3 regression)"
+    )
+
+    # H-1 lock: HTML status counts must agree with MD/MD-equivalent status
+    # counts computed from the same test_results. A divergence means a stale
+    # HTML artifact was committed without re-running the generator, or the
+    # HTML path silently uses different data than the MD path.
+    import generate_capability_matrix as _gen
+    md_counts = {"Verified": 0, "Smoke-only": 0, "Broken": 0, "Planned": 0}
+    for f in FEATURES:
+        st = _gen.compute_feature_stats(f, test_results)
+        md_counts[st["status"]] += 1
+    html_status_counts = {
+        s: len(_re.findall(rf'data-status="{s}"', html))
+        for s in md_counts
+    }
+    # Filter buttons also carry data-status (one per status); subtract them
+    # (the buttons exist for Verified/Smoke-only/Broken/Planned + "all").
+    html_status_counts = {s: max(0, c - 1) for s, c in html_status_counts.items()}
+    assert html_status_counts == md_counts, (
+        f"HTML status counts {html_status_counts} disagree with MD-equivalent "
+        f"{md_counts} — stale HTML artifact or divergent compute path (H-1 class)"
+    )
+
 
 # ---------------------------------------------------------------------------
 # M.4 — every visual_primitive test claimed by some feature; never allow-listed
