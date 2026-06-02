@@ -37,6 +37,61 @@ def _style_get(key: str, default):
 
 
 # ---------------------------------------------------------------------------
+# Phase 13.50.DF — Display-name map (render-only)
+# ---------------------------------------------------------------------------
+# Canonical Python identifiers in plots/fits.py (slope, intercept, amplitude,
+# center, sigma, decay) are UNCHANGED. This map is consulted ONLY at render
+# time to produce shorter / mathtext display names in fit textboxes and
+# summary_fit tables. The _valid_fields whitelist (below at ~line 190) still
+# accepts canonical names, so users pass show_fields=['slope','chi2'] etc. by
+# canonical name; the renderer alone does the display swap.
+#
+# Rationale for p0/p1: _polynomial_factory in plots/fits.py builds ascending
+# powers (c0 + c1*x + c2*x^2 + ...), so c0=constant=intercept and
+# c1=x-coefficient=slope. The linear mapping follows the same convention:
+# intercept → p0 (constant), slope → p1 (x-coefficient).
+_DISPLAY_NAMES = {
+    'slope':     'p1',
+    'intercept': 'p0',
+    'amplitude': 'A',
+    'center':    r'$\mu$',
+    'sigma':     r'$\sigma$',
+    'decay':     r'$\tau$',
+}
+
+
+def _resolve_display_name(canonical, rename_params=None):
+    """Map a canonical param name to its display form.
+
+    Resolution order (highest priority first):
+      1. ``rename_params={old: new}`` — per-call override from
+         ``fit_textbox_kwargs`` (wired in Phase 13.50 step 3; for step 1 the
+         arg is always None and the branch is unused).
+      2. ``_DISPLAY_NAMES`` — module-level short/Greek-mathtext map.
+      3. The literal canonical name — for callable-fit param names or any
+         identifier not in the map.
+
+    Parameters
+    ----------
+    canonical : str
+        The canonical Python identifier (as supplied by ``param_names`` from
+        ``dispatch_fit`` results — same names as in ``fits.py`` function
+        signatures).
+    rename_params : dict or None
+        Optional ``{canonical_name: display_name}`` override map. Wired by
+        Phase 13.50 step 3 from ``fit_textbox_kwargs={'rename_params': ...}``.
+
+    Returns
+    -------
+    str
+        The display name to render in the textbox or table.
+    """
+    if rename_params and canonical in rename_params:
+        return rename_params[canonical]
+    return _DISPLAY_NAMES.get(canonical, canonical)
+
+
+# ---------------------------------------------------------------------------
 # Overlay rendering
 # ---------------------------------------------------------------------------
 
@@ -249,9 +304,13 @@ def render_fit_textbox(ax,
                 # B2: one line per fit. Pack params + chi²/ndf inline.
                 pieces = []
                 for i, val in enumerate(params):
-                    name_s = names[i] if i < len(names) else f'p{i}'
-                    if not _field_allowed(name_s):
+                    canonical = names[i] if i < len(names) else f'p{i}'
+                    if not _field_allowed(canonical):
                         continue
+                    # Phase 13.50: canonical name preserved for _field_allowed
+                    # check; display name (short/Greek) used in user-facing
+                    # output only. rename_params wired in step 3.
+                    name_s = _resolve_display_name(canonical)
                     error = perr[i] if i < len(perr) else float('nan')
                     val_s = format(val, text_format)
                     if np.isfinite(error):
@@ -271,9 +330,12 @@ def render_fit_textbox(ax,
                 # multiline (v1.0 default)
                 block_lines = [header]
                 for i, val in enumerate(params):
-                    name_s = names[i] if i < len(names) else f'p{i}'
-                    if not _field_allowed(name_s):
+                    canonical = names[i] if i < len(names) else f'p{i}'
+                    if not _field_allowed(canonical):
                         continue
+                    # Phase 13.50: canonical name preserved for _field_allowed;
+                    # display name (short/Greek) used in user-facing output.
+                    name_s = _resolve_display_name(canonical)
                     error = perr[i] if i < len(perr) else float('nan')
                     val_s = format(val, text_format)
                     err_s = format(error, text_format) if np.isfinite(error) else '—'

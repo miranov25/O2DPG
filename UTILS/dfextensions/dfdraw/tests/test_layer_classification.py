@@ -470,5 +470,14 @@ TEST_LAYERS = {
     "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v9_auto_title_not_duplicated": "visual_primitive",
     "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v10_title_content": "visual_primitive",
 
+    # Phase 13.50.DF — Fit-rendering visual primitives (step 1 of 7).
+    # F1-F3 lock the _DISPLAY_NAMES map in plots/_fit_render.py:
+    #   slope→p1, intercept→p0, center→$\mu$, sigma→$\sigma$, decay→$\tau$.
+    # Steps 2-6 will add F4-F16 (visual_primitive layer) and step 4 will add
+    # F17, F18, test_normalize_legend_spec_idempotent (invariance layer).
+    "test_phase_13_50_df_fit_visual.py::TestPhase1350FitDisplayNames::test_F1_linear_short_names": "visual_primitive",
+    "test_phase_13_50_df_fit_visual.py::TestPhase1350FitDisplayNames::test_F2_gauss_mu_mathtext": "visual_primitive",
+    "test_phase_13_50_df_fit_visual.py::TestPhase1350FitDisplayNames::test_F3_exponential_tau_mathtext": "visual_primitive",
+
     # Everything else defaults to "smoke"
 }

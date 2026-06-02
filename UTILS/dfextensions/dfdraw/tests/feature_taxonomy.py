@@ -1482,6 +1482,23 @@ FEATURES = [
         ],
     },
     {
+        # Phase 13.50.DF — Display-name map (render-only): canonical names in
+        # plots/fits.py (slope, intercept, amplitude, center, sigma, decay) are
+        # unchanged; renderer consults _DISPLAY_NAMES in plots/_fit_render.py
+        # to produce short (p0/p1/A) or Greek-mathtext ($\mu$/$\sigma$/$\tau$)
+        # display strings. Layer: visual_primitive (F1-F3 added in step 1;
+        # full set F1-F6 will land by step 3 once fit_textbox_kwargs is
+        # extended with the rename_params override sub-key).
+        "id": "FIT.display_names",
+        "name": "Display-name map for fit parameters (render-only short/Greek names)",
+        "category": "FIT",
+        "tests": [
+            "test_phase_13_50_df_fit_visual.py::TestPhase1350FitDisplayNames::test_F1_linear_short_names",
+            "test_phase_13_50_df_fit_visual.py::TestPhase1350FitDisplayNames::test_F2_gauss_mu_mathtext",
+            "test_phase_13_50_df_fit_visual.py::TestPhase1350FitDisplayNames::test_F3_exponential_tau_mathtext",
+        ],
+    },
+    {
         "id": "API.kwarg_typo_guard",
         "name": "Kwarg-typo guard (difflib did-you-mean at draw() entry)",
         "category": "API",
