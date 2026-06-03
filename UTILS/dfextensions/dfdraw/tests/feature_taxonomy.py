@@ -1600,15 +1600,20 @@ FEATURES = [
     },
     {
         # Phase 13.50.DF step 6 — summary_fit.orientation axis: table layout
-        # direction (horizontal default vs vertical transpose). Honored by
-        # the in-slot renderer (_render_table_in_axes in plots/_summary_fit.py).
-        # Phase 13.43 'figure' placement renderer currently ignores
-        # orientation (its layout is controlled by mode='subplots'|'overlay'
-        # instead); broadening orientation to the 'figure' path is FIX1 work.
+        # direction. Default 'row' (one row per fit, columns = id keys + params)
+        # preserves the Phase 13.43 table shape; 'column' transposes (one row
+        # per id key + param, columns = fits). Honored by BOTH the in-slot
+        # renderer (_render_table_in_axes — placements 'pad' and 'subfigure')
+        # AND the Phase 13.43 'figure' placement renderer (_render_table_figure).
+        # Phase 13.50.DF step 7b spec-conformance: token rename
+        # ('horizontal'/'vertical' → 'row'/'column') per v2.5 §3.4(b) canonical
+        # naming. Step 7b R1: orientation extended to the 'figure' placement
+        # path; v2.5 §3.4(b) put no placement restriction on orientation, the
+        # original step-6 limitation to slot-renderer was an undisclosed partial.
         # Layer: visual_primitive — F14/F15 inspect the matplotlib Table
         # object's cell shape via table.get_celld(), no rasterization needed.
         "id": "SUMMARY_FIT.orientation",
-        "name": "summary_fit.orientation axis: horizontal (default) / vertical (transpose) — in-slot renderer only",
+        "name": "summary_fit.orientation axis: row (default) / column (transpose) — honored by all placements (figure, pad, subfigure)",
         "category": "SUMMARY_FIT",
         "tests": [
             "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitOrientation::test_F14_orientation_row_default_unchanged",

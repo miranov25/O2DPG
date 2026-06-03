@@ -1,7 +1,7 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-06-03 09:22 UTC
-**Phase:** PHASE_13_49_DF_FIX1_END
+**Generated:** 2026-06-03 10:07 UTC
+**Phase:** PHASE_13_50_DF_END
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
 
@@ -163,7 +163,7 @@
 | ☑️ | **STYLE.custom** — Custom style dict and JSON persistence | 4 | 4 | 0 | 0 |  |
 | | **SUMMARY_FIT** | | | | | |
 | ✅ | **SUMMARY_FIT.placement** — summary_fit.placement axis: figure (default) / subfigure / pad with GridSpec pre-planning 👁 | 4 | 4 | 0 | 1 | 3 |
-| ☑️ | **SUMMARY_FIT.orientation** — summary_fit.orientation axis: horizontal (default) / vertical (transpose) — in-slot renderer only 👁 | 2 | 2 | 0 | 0 | 2 |
+| ☑️ | **SUMMARY_FIT.orientation** — summary_fit.orientation axis: row (default) / column (transpose) — honored by all placements (figure, pad, subfigure) 👁 | 2 | 2 | 0 | 0 | 2 |
 | | **TITLE** | | | | | |
 | ☑️ | **TITLE.auto_title** — Automatic title from plot parameters | 10 | 10 | 0 | 0 |  |
 | ✅ | **TITLE.get_suptitle** — _get_suptitle public-API helper (mpl >= 3.8 + fallback) | 1 | 1 | 0 | 1 |  |

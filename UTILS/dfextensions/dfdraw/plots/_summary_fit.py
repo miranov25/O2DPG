@@ -169,11 +169,13 @@ _ALLOWED_DICT_KEYS = {
     # is rendered: separate figure, or inside the main fig as a SubFigure /
     # GridSpec pad slot). Default 'figure' preserves Phase 13.43 behavior.
     'placement',
-    # Phase 13.50.DF step 6 — orientation axis (table layout: horizontal
-    # default = one row per fit, columns = params; 'vertical' transposes,
-    # one row per param). Affects the slot renderer; the Phase 13.43
-    # 'figure' renderer ignores it (its layout is set by mode='subplots'
-    # vs 'overlay' instead — see FIX1 backlog).
+    # Phase 13.50.DF step 6 — orientation axis (table layout direction).
+    # Post step 7b rename: 'row' (default) = one row per fit, columns =
+    # id keys + params; 'column' transposes (one row per id key + param,
+    # columns = fits). Honored by BOTH the slot renderer
+    # (_render_table_in_axes — placements 'pad' / 'subfigure') AND the
+    # Phase 13.43 'figure' placement renderer (_render_table_figure, per
+    # step 7b R1: v2.5 §3.4(b) put no placement restriction on orientation).
     'orientation',
     # Phase 13.50.DF step 7c spec-conformance — placement sub-keys per
     # v2.5 §3.5 (missing in step 5 ship). 'pad_location' selects which
@@ -211,8 +213,8 @@ _ALLOWED_PLACEMENTS = {'figure', 'subfigure', 'pad'}
 #            v2.5 §3.4(b) canonical naming, aligns with pandas .melt(),
 #            seaborn 'orient', and matplotlib table mental model)
 # 'column' → transposed: one row per identifying key + param, columns = fits
-#            (useful when there are many params and few fits — vertical
-#            avoids horizontal scrolling)
+#            (useful when there are many params and few fits — column
+#            orientation avoids the wide-table scroll problem in that regime)
 # Phase 13.50.DF step 7b spec-conformance: renamed from {'horizontal',
 # 'vertical'} to match v2.5 §3.4(b) exact naming. The shipped step-6 names
 # were equivalent in behavior but deviated from spec; corrected here.
