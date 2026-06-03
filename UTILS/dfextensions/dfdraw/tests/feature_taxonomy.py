@@ -1499,6 +1499,23 @@ FEATURES = [
         ],
     },
     {
+        # Phase 13.50.DF step 2 — Precision keys replace single fit.text_format
+        # ([BREACH] under Coder QRC R14; architect approval in v2.5 §3.3).
+        # New style keys: fit.value_format='.2g', fit.error_format='.1g',
+        # fit.precision_mode=None|'physics'|'uniform'. _format_value_error_pair
+        # helper in plots/_fit_render.py performs the physics-mode alignment.
+        # Layer: visual_primitive. F16 (per-call override via
+        # fit_textbox_kwargs={'value_format': ...}) will be added in step 3
+        # and will live on FIT.textbox_kwargs_extensions per panel decision.
+        "id": "FIT.precision_modes",
+        "name": "Separate value/error precision keys + physics alignment mode",
+        "category": "FIT",
+        "tests": [
+            "test_phase_13_50_df_fit_visual.py::TestPhase1350FitPrecision::test_F4_default_precision",
+            "test_phase_13_50_df_fit_visual.py::TestPhase1350FitPrecision::test_F5_precision_mode_physics",
+        ],
+    },
+    {
         "id": "API.kwarg_typo_guard",
         "name": "Kwarg-typo guard (difflib did-you-mean at draw() entry)",
         "category": "API",

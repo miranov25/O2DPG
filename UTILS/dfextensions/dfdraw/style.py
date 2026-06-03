@@ -132,7 +132,13 @@ DEFAULT_STYLE: Dict[str, Any] = {
     "fit.linestyle_cycle":       ["-", "--", "-.", ":"],   # multi-fit on same curve
     "fit.text_fontsize_default": 9,
     "fit.text_fontsize_facet":   7,
-    "fit.text_format":           ".4g",
+    # Phase 13.50.DF — fit.text_format REMOVED [BREACH under Coder QRC R14],
+    # replaced by separate value/error precision keys + optional physics mode.
+    # Architect approval: PHASE_13_50_DF_v2_5_FitRenderingOverhaul_Proposal.md §3.3.
+    # Users with set_style({'fit.text_format': X}) migrate to two-key form.
+    "fit.value_format":          ".2g",          # default value precision (2 sig figs)
+    "fit.error_format":          ".1g",          # default error precision (1 sf — physics convention)
+    "fit.precision_mode":        None,           # None | 'physics' (auto-align value decimals to error) | 'uniform'
     "fit.text_padding":          0.4,
     "fit.position":              "upper left",
     

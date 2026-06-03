@@ -63,18 +63,18 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 </head>
 <body>
 <h1>Capability Matrix — dfdraw</h1>
-<p class="meta">Generated: <span class="mono">2026-05-30 05:52 UTC</span> · Phase: <span class="mono">PHASE_13_49_DF_END</span></p>
+<p class="meta">Generated: <span class="mono">2026-06-03 03:59 UTC</span> · Phase: <span class="mono">PHASE_13_49_DF_FIX1_END</span></p>
 <section class="summary">
 <h2>Summary</h2>
 <table>
-<tr><th>✅ Verified</th><td class="n">57</td><td class="n">47%</td></tr>
-<tr><th>☑️ Smoke-only</th><td class="n">63</td><td class="n">52%</td></tr>
+<tr><th>✅ Verified</th><td class="n">57</td><td class="n">46%</td></tr>
+<tr><th>☑️ Smoke-only</th><td class="n">65</td><td class="n">53%</td></tr>
 <tr><th>🧨 Broken</th><td class="n">0</td><td class="n">0%</td></tr>
 <tr><th>📋 Planned</th><td class="n">1</td><td class="n">1%</td></tr>
-<tr><th>Total features</th><td class="n"><strong>121</strong></td><td></td></tr>
-<tr><th>Total proof tests</th><td class="n"><strong>592</strong></td><td></td></tr>
+<tr><th>Total features</th><td class="n"><strong>123</strong></td><td></td></tr>
+<tr><th>Total proof tests</th><td class="n"><strong>597</strong></td><td></td></tr>
 <tr><th>Invariance tests</th><td class="n"><strong>353</strong></td><td></td></tr>
-<tr><th>Visual tests</th><td class="n"><strong>11</strong></td><td></td></tr>
+<tr><th>Visual tests</th><td class="n"><strong>16</strong></td><td></td></tr>
 </table>
 </section>
 <section class="filters">
@@ -649,6 +649,23 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <ul>
 <li><span class="layer-marker">✓</span><code>test_phase_13_46_df_audit_fixes.py::TestPhase1346AuditFixes::test_f64_gaus_root_alias</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">✓</span><code>test_phase_13_46_df_audit_fixes.py::TestPhase1346AuditFixes::test_f65_histo_type_alias</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-FIT.display_names" class="feature-row" data-status="Smoke-only" data-visual="yes" data-category="FIT"><td><span class="expand-toggle">▶</span></td><td>☑️</td><td><strong class="mono">FIT.display_names</strong> — Display-name map for fit parameters (render-only short/Greek names) <span class="eye-badge">👁</span></td><td class="n">3</td><td class="n">3</td><td class="n">0</td><td class="n">0</td><td class="n">3</td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">👁</span><code>test_phase_13_50_df_fit_visual.py::TestPhase1350FitDisplayNames::test_F1_linear_short_names</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_50_df_fit_visual.py::TestPhase1350FitDisplayNames::test_F2_gauss_mu_mathtext</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_50_df_fit_visual.py::TestPhase1350FitDisplayNames::test_F3_exponential_tau_mathtext</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-FIT.precision_modes" class="feature-row" data-status="Smoke-only" data-visual="yes" data-category="FIT"><td><span class="expand-toggle">▶</span></td><td>☑️</td><td><strong class="mono">FIT.precision_modes</strong> — Separate value/error precision keys + physics alignment mode <span class="eye-badge">👁</span></td><td class="n">2</td><td class="n">2</td><td class="n">0</td><td class="n">0</td><td class="n">2</td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">👁</span><code>test_phase_13_50_df_fit_visual.py::TestPhase1350FitPrecision::test_F4_default_precision</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_50_df_fit_visual.py::TestPhase1350FitPrecision::test_F5_precision_mode_physics</code><span class="outcome passed">passed</span></li>
 </ul>
 </div></td></tr>
 <tr class="category-row"><td colspan="8">HIST</td></tr>

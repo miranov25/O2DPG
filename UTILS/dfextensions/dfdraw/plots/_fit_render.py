@@ -92,6 +92,37 @@ def _resolve_display_name(canonical, rename_params=None):
 
 
 # ---------------------------------------------------------------------------
+# Phase 13.50.DF — Precision pair formatter
+# ---------------------------------------------------------------------------
+# Replaces the single ``fit.text_format`` (removed in step 2 [BREACH]) with
+# separate value/error precision keys + optional physics mode.
+#
+# Physics mode: error → 1 sig fig (standard convention), then value's decimal
+# place is aligned to error's. Example: error=0.045 (formatted as '0.05',
+# 2 decimal places) → value=1.234 rendered as '1.23' (matched 2 decimals),
+# not '1.2' (which is plain '.2g').
+#
+# Edge cases (error ≤ 0, NaN, ±inf) fall back to ``value_format`` / sentinel.
+def _format_value_error_pair(val, error, value_format, error_format, precision_mode):
+    """Return ``(value_str, error_str_or_None)`` per current precision mode.
+
+    Caller checks ``error_str is None`` to decide whether to render
+    ``"name=val±err"`` vs ``"name=val"`` (matches the pre-Phase-13.50 branch on
+    ``np.isfinite(error)``).
+    """
+    if not np.isfinite(error):
+        return format(val, value_format), None
+    if precision_mode == 'physics' and error > 0:
+        err_s = format(error, error_format)
+        # Decimal place of the leading digit of error (after .1g rounding):
+        # n_decimals = max(0, -floor(log10(abs(error))))
+        n_decimals = max(0, -int(np.floor(np.log10(abs(error)))))
+        val_s = f"{val:.{n_decimals}f}"
+        return val_s, err_s
+    return format(val, value_format), format(error, error_format)
+
+
+# ---------------------------------------------------------------------------
 # Overlay rendering
 # ---------------------------------------------------------------------------
 
@@ -208,7 +239,13 @@ def render_fit_textbox(ax,
             )
 
     position = _style_get('fit.position', 'upper left')
-    text_format = _style_get('fit.text_format', '.4g')
+    # Phase 13.50.DF — separate value/error precision keys replace fit.text_format
+    # (text_format read removed; the [BREACH] was disclosed in style.py + this
+    # phase's CRR §2). precision_mode='physics' wires _format_value_error_pair
+    # to auto-align value decimals to error's place.
+    value_format = _style_get('fit.value_format', '.2g')
+    error_format = _style_get('fit.error_format', '.1g')
+    precision_mode = _style_get('fit.precision_mode', None)
     padding = _style_get('fit.text_padding', 0.4)
 
     # B1/R5 fontsize resolution: per-call override > facet/default style.
@@ -312,18 +349,22 @@ def render_fit_textbox(ax,
                     # output only. rename_params wired in step 3.
                     name_s = _resolve_display_name(canonical)
                     error = perr[i] if i < len(perr) else float('nan')
-                    val_s = format(val, text_format)
-                    if np.isfinite(error):
-                        err_s = format(error, text_format)
-                        pieces.append(f"{name_s}={val_s}±{err_s}")
+                    # Phase 13.50 step 2: value/error formatted with separate
+                    # precision keys (and physics-mode auto-alignment via the
+                    # helper). err_s_or_None signals "no finite error".
+                    val_s, err_s_or_None = _format_value_error_pair(
+                        val, error, value_format, error_format, precision_mode)
+                    if err_s_or_None is not None:
+                        pieces.append(f"{name_s}={val_s}±{err_s_or_None}")
                     else:
                         pieces.append(f"{name_s}={val_s}")
                 if np.isfinite(chi2) and ndf > 0 and (
                     _field_allowed('chi2') or _field_allowed('ndf') or _field_allowed('redchi')
                 ):
+                    # chi²/ndf/redchi are value-like (no paired error) → value_format
                     pieces.append(
-                        f"χ²/ndf={format(chi2, text_format)}/{ndf}"
-                        f"={format(redchi, text_format)}"
+                        f"χ²/ndf={format(chi2, value_format)}/{ndf}"
+                        f"={format(redchi, value_format)}"
                     )
                 blocks.append(f"{header}: " + "  ".join(pieces) if pieces else header)
             else:
@@ -337,16 +378,17 @@ def render_fit_textbox(ax,
                     # display name (short/Greek) used in user-facing output.
                     name_s = _resolve_display_name(canonical)
                     error = perr[i] if i < len(perr) else float('nan')
-                    val_s = format(val, text_format)
-                    err_s = format(error, text_format) if np.isfinite(error) else '—'
+                    val_s, err_s_or_None = _format_value_error_pair(
+                        val, error, value_format, error_format, precision_mode)
+                    err_s = err_s_or_None if err_s_or_None is not None else '—'
                     block_lines.append(f"  {name_s} = {val_s} ± {err_s}")
 
                 if np.isfinite(chi2) and ndf > 0 and (
                     _field_allowed('chi2') or _field_allowed('ndf') or _field_allowed('redchi')
                 ):
                     block_lines.append(
-                        f"  χ²/ndf = {format(chi2, text_format)}/{ndf} "
-                        f"= {format(redchi, text_format)}"
+                        f"  χ²/ndf = {format(chi2, value_format)}/{ndf} "
+                        f"= {format(redchi, value_format)}"
                     )
                 blocks.append('\n'.join(block_lines))
 

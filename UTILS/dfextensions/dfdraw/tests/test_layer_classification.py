@@ -478,6 +478,9 @@ TEST_LAYERS = {
     "test_phase_13_50_df_fit_visual.py::TestPhase1350FitDisplayNames::test_F1_linear_short_names": "visual_primitive",
     "test_phase_13_50_df_fit_visual.py::TestPhase1350FitDisplayNames::test_F2_gauss_mu_mathtext": "visual_primitive",
     "test_phase_13_50_df_fit_visual.py::TestPhase1350FitDisplayNames::test_F3_exponential_tau_mathtext": "visual_primitive",
+    # Phase 13.50.DF step 2 — precision keys (visual_primitive layer)
+    "test_phase_13_50_df_fit_visual.py::TestPhase1350FitPrecision::test_F4_default_precision": "visual_primitive",
+    "test_phase_13_50_df_fit_visual.py::TestPhase1350FitPrecision::test_F5_precision_mode_physics": "visual_primitive",
 
     # Everything else defaults to "smoke"
 }

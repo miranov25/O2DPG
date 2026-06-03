@@ -55,6 +55,54 @@ def display_names_in_textbox(ax, name_set):
     return {n for n in name_set if n in blob}
 
 
+# Phase 13.50 step 2 — value/error precision parsing helpers.
+
+import re
+
+# Tolerant of mathtext names (e.g. '$\mu$=1.23±0.05'): allow $...$ + alnum +
+# underscores in the name portion. ± may be the literal or fallback '+-'.
+_VAL_ERR_PATTERN = re.compile(
+    r'(?P<name>\S+?)\s*=\s*'
+    r'(?P<val>[-+]?[0-9.eE+\-]+)'
+    r'\s*[±]\s*'
+    r'(?P<err>[-+]?[0-9.eE+\-]+)'
+)
+
+
+def parse_value_error(text):
+    """Extract list of ``(name_str, value_str, error_str)`` tuples from textbox text.
+
+    Returns the raw strings as rendered (not floats) — F4/F5 assertions are
+    on the rendered format itself, not on numerical accuracy of the fit.
+    """
+    return [(m.group('name'), m.group('val'), m.group('err'))
+            for m in _VAL_ERR_PATTERN.finditer(text)]
+
+
+def _count_sig_figs(s):
+    """Count significant figures in a number string like '1.23' or '0.045' or '1.2e-3'."""
+    s = s.strip().lower()
+    if 'e' in s:
+        s = s.split('e')[0]
+    # Strip sign, decimal point, and leading zeros
+    digits = s.replace('.', '').replace('-', '').replace('+', '').lstrip('0')
+    return len(digits)
+
+
+def _decimal_places(s):
+    """Count digits after the decimal point in a number string.
+
+    For 'NeM' scientific notation, returns 0 (rare in dfdraw outputs since
+    .2g/.1g default formats prefer plain decimals for moderate magnitudes).
+    """
+    s = s.strip().lower()
+    if 'e' in s:
+        return 0
+    if '.' not in s:
+        return 0
+    return len(s.split('.')[1])
+
+
 # --------------------------------------------------------------------------- #
 # FitVisualCheck — sibling to Phase 13.48 VisualCheck
 # --------------------------------------------------------------------------- #
@@ -112,6 +160,51 @@ class FitVisualCheck:
         if 'decay' in blob:
             self.fail("F3.canonical_leak",
                       f"canonical 'decay' leaked into expo textbox: {blob!r}")
+        return self
+
+    # ------------------------------------------------------------------ #
+    # Phase 13.50 step 2 — precision-key checks
+    # ------------------------------------------------------------------ #
+
+    def check_default_precision_value_2g_error_1g(self, ax):
+        """F4 — default render: every parsed value has ≤2 sig figs, every
+        error has ≤1 sig fig (matches ``fit.value_format='.2g'`` /
+        ``fit.error_format='.1g'`` defaults). Locks the [BREACH] migration
+        from single ``fit.text_format`` to the separate keys."""
+        blob = textbox_text(ax)
+        pairs = parse_value_error(blob)
+        if not pairs:
+            self.fail("F4.no_pairs",
+                      f"no value±error pairs found in textbox: {blob!r}")
+            return self
+        for (name, val_s, err_s) in pairs:
+            val_sf = _count_sig_figs(val_s)
+            err_sf = _count_sig_figs(err_s)
+            if val_sf > 2:
+                self.fail("F4.value_sf",
+                          f"{name}: value '{val_s}' has {val_sf} sf, expected ≤2 (.2g)")
+            if err_sf > 1:
+                self.fail("F4.error_sf",
+                          f"{name}: error '{err_s}' has {err_sf} sf, expected ≤1 (.1g)")
+        return self
+
+    def check_precision_mode_physics_aligns_value_to_error(self, ax):
+        """F5 — with ``fit.precision_mode='physics'``: every parsed pair has
+        the same number of digits after the decimal point in value and error
+        (error rounded to 1 sf, value matched to error's decimal place)."""
+        blob = textbox_text(ax)
+        pairs = parse_value_error(blob)
+        if not pairs:
+            self.fail("F5.no_pairs",
+                      f"no value±error pairs found in physics-mode textbox: {blob!r}")
+            return self
+        for (name, val_s, err_s) in pairs:
+            val_dec = _decimal_places(val_s)
+            err_dec = _decimal_places(err_s)
+            if val_dec != err_dec:
+                self.fail("F5.misaligned",
+                          f"{name}: value '{val_s}' has {val_dec} decimals, "
+                          f"error '{err_s}' has {err_dec}; should match in physics mode")
         return self
 
     def assert_clean(self):
@@ -207,3 +300,58 @@ class TestPhase1350FitDisplayNames:
             .check_textbox_uses_mathtext_tau_for_exponential(ax) \
             .assert_clean()
         plt.close(fig)
+
+
+# --------------------------------------------------------------------------- #
+# Phase 13.50 step 2 — Tests F4, F5 (precision keys)
+# --------------------------------------------------------------------------- #
+
+class TestPhase1350FitPrecision:
+    """Phase 13.50 step 2: precision keys replace single fit.text_format.
+
+    EXPECTED · WHY · APPROVE · FAIL_MODE per V-check:
+
+      F4: EXPECTED default-style render produces value with ≤2 sig figs
+          and error with ≤1 sig fig;
+          WHY single .4g is wasteful in faceted figures; physics convention
+          rounds error to 1 sf and values to match;
+          APPROVE every parsed (value, error) pair has val_sf ≤ 2 AND
+          err_sf ≤ 1;
+          FAIL_MODE _style_get('fit.value_format'/'fit.error_format') not
+          wired, or format() calls in _fit_render.py still use old single
+          text_format key.
+
+      F5: EXPECTED with set_style({'fit.precision_mode': 'physics'}),
+          every parsed pair has identical decimal places in value and
+          error (error rounded to 1 sf, value matched to error's place);
+          WHY physics convention for reporting fit uncertainties;
+          APPROVE _decimal_places(val) == _decimal_places(err) for every
+          pair;
+          FAIL_MODE _format_value_error_pair's physics branch not reached,
+          or precision_mode not read from style.
+    """
+
+    def test_F4_default_precision(self, df_linear):
+        """F4 — default render: value '.2g', error '.1g' for fit='linear'."""
+        fig, ax, stats = DFDraw(df_linear).profile('y:x', bins=20, fit='linear')
+        FitVisualCheck(fig, stats, df_linear) \
+            .check_default_precision_value_2g_error_1g(ax) \
+            .assert_clean()
+        plt.close(fig)
+
+    def test_F5_precision_mode_physics(self, df_linear):
+        """F5 — precision_mode='physics' aligns value's decimal place to error's.
+
+        Uses set_style for the global key (fit_textbox_kwargs per-call override
+        is wired in step 3, not yet). Restores default in finally to keep the
+        rest of the gate uncontaminated."""
+        from dfextensions.dfdraw.style import set_style
+        set_style({'fit.precision_mode': 'physics'})
+        try:
+            fig, ax, stats = DFDraw(df_linear).profile('y:x', bins=20, fit='linear')
+            FitVisualCheck(fig, stats, df_linear) \
+                .check_precision_mode_physics_aligns_value_to_error(ax) \
+                .assert_clean()
+            plt.close(fig)
+        finally:
+            set_style({'fit.precision_mode': None})
