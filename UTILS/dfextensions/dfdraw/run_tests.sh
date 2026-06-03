@@ -501,7 +501,8 @@ REVIEWER_ZIP="$LOG_DIR/reviewer_${TS}.zip"
         "$DIFF_COMMIT" \
         "$DIFF_PHASE" \
         "$GIT_STATUS" \
-        "docs/CAPABILITY_MATRIX.md"
+        "docs/CAPABILITY_MATRIX.md" \
+        "docs/CAPABILITY_MATRIX.html"
     do
         [[ -f "$f" ]] && ZIP_FILES="$ZIP_FILES $f"
     done
@@ -509,6 +510,15 @@ REVIEWER_ZIP="$LOG_DIR/reviewer_${TS}.zip"
     if [[ -n "$ZIP_FILES" ]]; then
         zip -q "$REVIEWER_ZIP" $ZIP_FILES 2>/dev/null || true
         echo "  Reviewer package: $REVIEWER_ZIP"
+
+        # Phase 13.50.DF FIX2 (panel finding P2-2): assert the HTML matrix
+        # made it into the zip. Three consecutive phases (13.49, 13.49-FIX1,
+        # 13.50) shipped reviewer.zip without docs/CAPABILITY_MATRIX.html
+        # because the file list above forgot the .html line. Mechanical
+        # guard so voluntary discipline isn't relied on for a fourth time.
+        if ! unzip -l "$REVIEWER_ZIP" 2>/dev/null | grep -q 'docs/CAPABILITY_MATRIX\.html$'; then
+            echo "${YELLOW}${BOLD}⚠️  $REVIEWER_ZIP missing docs/CAPABILITY_MATRIX.html — reviewers cannot navigate the rendered matrix${RESET}"
+        fi
     fi
 )
 
