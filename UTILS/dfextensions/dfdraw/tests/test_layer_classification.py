@@ -501,9 +501,14 @@ TEST_LAYERS = {
     # invariance because the assertion is on dict equality of topology dicts
     # rendered from the SAME dispatch, no per-pixel rasterization.
     "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F11_placement_figure_default_unchanged": "visual_primitive",
-    "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F12_placement_subfigure_uses_subfigure_api": "visual_primitive",
+    "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F12_placement_subfigure_per_panel_inset_table": "visual_primitive",
     "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F13_placement_pad_uses_extra_row_axes": "visual_primitive",
-    "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F17_placement_topology_keyed_dict_invariance": "invariance",
+    "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F17_placement_variants_produce_equivalent_tables": "invariance",
+    # Phase 13.50.DF step 6 — summary_fit.orientation axis. F14/F15 inspect
+    # the matplotlib Table object's cell shape via table.get_celld() →
+    # renderer-free primitive checks → visual_primitive.
+    "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitOrientation::test_F14_orientation_row_default_unchanged": "visual_primitive",
+    "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitOrientation::test_F15_orientation_column_transposes_shape": "visual_primitive",
 
     # Everything else defaults to "smoke"
 }

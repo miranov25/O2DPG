@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-06-03 06:44 UTC
+**Generated:** 2026-06-03 09:22 UTC
 **Phase:** PHASE_13_49_DF_FIX1_END
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -9,14 +9,14 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 59 | 47% |
-| ☑️ Smoke-only | 66 | 52% |
+| ✅ Verified | 59 | 46% |
+| ☑️ Smoke-only | 67 | 53% |
 | 🧨 Broken | 0 | 0% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **126** | |
-| **Total proof tests** | **609** | |
+| **Total features** | **127** | |
+| **Total proof tests** | **611** | |
 | **Invariance tests** | **356** | |
-| **Visual tests** | **25** | |
+| **Visual tests** | **27** | |
 
 **Status key:**
 - ✅ Verified — has at least one passing invariance test (A ≡ B check)
@@ -163,6 +163,7 @@
 | ☑️ | **STYLE.custom** — Custom style dict and JSON persistence | 4 | 4 | 0 | 0 |  |
 | | **SUMMARY_FIT** | | | | | |
 | ✅ | **SUMMARY_FIT.placement** — summary_fit.placement axis: figure (default) / subfigure / pad with GridSpec pre-planning 👁 | 4 | 4 | 0 | 1 | 3 |
+| ☑️ | **SUMMARY_FIT.orientation** — summary_fit.orientation axis: horizontal (default) / vertical (transpose) — in-slot renderer only 👁 | 2 | 2 | 0 | 0 | 2 |
 | | **TITLE** | | | | | |
 | ☑️ | **TITLE.auto_title** — Automatic title from plot parameters | 10 | 10 | 0 | 0 |  |
 | ✅ | **TITLE.get_suptitle** — _get_suptitle public-API helper (mpl >= 3.8 + fallback) | 1 | 1 | 0 | 1 |  |

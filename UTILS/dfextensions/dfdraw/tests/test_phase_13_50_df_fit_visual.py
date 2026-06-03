@@ -148,6 +148,83 @@ def legend_topology(fig):
     return (n_fig_level, n_per_axes, frozenset(labels), loc_string)
 
 
+# Phase 13.50 step 6 — table_shape helper for orientation tests.
+# matplotlib's ax.table() produces a Table whose cells are addressable via
+# table.get_celld(): a dict {(row_idx, col_idx): Cell}. Header row is at
+# row_idx == 0 (when colLabels= is set) and data rows are 1..N. Cell
+# columns are 0..M.
+def table_shape(ax):
+    """Return ``(n_rows, n_cols)`` of the first matplotlib Table on ``ax``,
+    counting the header row when colLabels was set.
+
+    Returns ``(0, 0)`` if no table is present (e.g. early-exit when no rows
+    were produced by ``_flatten_to_rows``).
+    """
+    if not ax.tables:
+        return (0, 0)
+    cells = ax.tables[0].get_celld()
+    if not cells:
+        return (0, 0)
+    n_rows = max(r for (r, c) in cells.keys()) + 1
+    n_cols = max(c for (r, c) in cells.keys()) + 1
+    return (n_rows, n_cols)
+
+
+# Phase 13.50.DF step 7e — table_cells_keyed: keyed cell extraction helper.
+# Per v2.4 P2-NEW-1 (Claude36 ADF panel finding), the F17 cross-variant
+# equivalence check needs a key-based comparison so that a placement bug
+# that permutes which fit's value goes where is detected. A flat set or
+# count would be permutation-blind.
+#
+# Phase 13.50.DF step 7e FIX2 (post-step-7 F17 failure): returns a SET of
+# frozensets — one frozenset per data row, holding (col_label, cell_text)
+# pairs. Set-equality is collision-safe AND order-independent: identical
+# row contents collapse to one (semantic dedupe, fine for placement
+# equivalence); per-panel inset union is just ``set_a | set_b | ...``.
+# The pre-fix dict-keyed-by-(col0_value, col_label) approach lost rows
+# whose col-0 value collided (e.g., multiple fits with same 'group' value).
+def table_cells_keyed(ax):
+    """Return ``set[frozenset[tuple[col_label, cell_text]]]`` for the first
+    matplotlib Table on ``ax``.
+
+    Each frozenset is one data row's (column_label, cell_text) pairs.
+    Set-based equality is the comparator: ``A == B`` iff both tables hold
+    the same data rows (regardless of row order, and tolerant of single-row
+    duplicates which are semantically a no-op for placement equivalence).
+
+    For per-panel insets (placement='subfigure'), the cross-variant union
+    is ``set.union(*per_panel_sets)``.
+
+    Returns ``set()`` if no table is present or it has no data rows.
+    """
+    if not ax.tables:
+        return set()
+    cells = ax.tables[0].get_celld()
+    if not cells:
+        return set()
+    # Build col_labels from row 0 (matplotlib convention: col headers at r=0,
+    # data rows at r=1, r=2, ...).
+    col_labels = {}
+    for (r, c), cell in cells.items():
+        if r == 0:
+            col_labels[c] = cell.get_text().get_text().strip()
+    if not col_labels:
+        return set()
+    max_row = max(r for (r, c) in cells.keys())
+    result = set()
+    for data_r in range(1, max_row + 1):
+        row_pairs = []
+        for c, label in col_labels.items():
+            cell = cells.get((data_r, c))
+            if cell is None:
+                continue
+            text = cell.get_text().get_text().strip()
+            row_pairs.append((label, text))
+        if row_pairs:
+            result.add(frozenset(row_pairs))
+    return result
+
+
 # Phase 13.50 step 5 — placement_topology helper (per v2.4 P2-NEW-1: keyed
 # dict catches permutation bugs that a count-tuple misses; if placement='pad'
 # and placement='subfigure' get swapped, the topology dict's two values
@@ -981,30 +1058,78 @@ class TestPhase1350SummaryFitPlacement:
             if hasattr(sub, 'number'):
                 plt.close(sub)
 
-    def test_F12_placement_subfigure_uses_subfigure_api(self, df_faceted):
-        """F12 — placement='subfigure' creates a real SubFigure inside main fig
-        and hosts the table axes there."""
+    def test_F12_placement_subfigure_per_panel_inset_table(self, df_faceted):
+        """F12 — placement='subfigure' attaches per-panel inset_axes() to each
+        visible facet panel, each hosting only that panel's fits.
+
+        v2.5 spec §3.5 + P2-NEW-3 (Claude36 ADF panel finding folded into
+        v2.4): subfigure insets are per-panel slices, NOT redundant full-table
+        copies on every panel. The architect's stated rationale was to save
+        space in 9-panel GB-fit — 9 small per-panel tables, each with just
+        the 1-3 fits relevant to that panel.
+
+        Phase 13.50.DF step 7d spec-conformance — previous (step-5) ship used a
+        single fig.add_subfigure() with the full table, which contradicted the
+        spec. This test locks the corrected per-panel semantics.
+
+        EXPECTED · WHY · APPROVE · FAIL_MODE:
+          EXPECTED ``stats['summary_fit']['placement'] == 'subfigure'`` with an
+                   ``'insets'`` list whose length equals the number of visible
+                   facet panels that produced fits, and a ``'per_panel_keyed'``
+                   dict mapping facet keys to inset axes;
+          WHY this is the cross-variant behavioural contract — every visible
+              panel gets exactly one inset, no more, no less;
+          APPROVE len(insets) > 0 AND insets ⊆ axes whose parent is a facet
+                  axes (i.e., inset.get_axes_locator() / containing axes is
+                  one of the visible facet axes);
+          FAIL_MODE single-SubFigure regression (one inset for the whole
+                    figure), or full-table copies in each inset (each inset
+                    has the same row count as the figure-placement table).
+        """
         fig, axes, stats = self._profile_faceted(
             df_faceted,
             summary_fit={'kind': 'table', 'placement': 'subfigure'},
         )
-        topology = placement_topology(fig, stats)
-        assert topology['placement'] == 'subfigure', (
-            f"expected placement='subfigure', got {topology['placement']!r}")
-        # SubFigure detection: do NOT inspect ``fig.subfigures`` directly —
-        # that's a CREATION METHOD on matplotlib Figure, not an iterable.
-        # Use the stash that ``render_summary_fit_into_slot`` sets when it
-        # materializes the SubFigure for placement='subfigure'.
-        stashed_subfig = getattr(fig, '_dfdraw_summary_fit_subfigure', None)
-        assert stashed_subfig is not None, (
-            f"placement='subfigure' must stash the SubFigure on "
-            f"fig._dfdraw_summary_fit_subfigure for downstream introspection; "
-            f"attribute is missing")
-        assert topology['in_subfigure'] is True, (
-            f"host axes must be inside the SubFigure; topology={topology!r}")
-        assert topology['host_kind'] == 'axes', (
-            f"host_kind should be 'axes' for in-slot rendering, got "
-            f"{topology['host_kind']!r}")
+        sf = stats.get('summary_fit', {})
+        assert sf.get('placement') == 'subfigure', (
+            f"expected placement='subfigure' in stats; got {sf!r}")
+        insets = sf.get('insets')
+        assert isinstance(insets, list) and len(insets) > 0, (
+            f"placement='subfigure' must produce a non-empty 'insets' list "
+            f"(per-panel inset_axes); got {insets!r}")
+        per_panel = sf.get('per_panel_keyed')
+        assert isinstance(per_panel, dict) and len(per_panel) == len(insets), (
+            f"per_panel_keyed dict length must equal insets list length "
+            f"({len(insets)}); got per_panel_keyed={per_panel!r}")
+        # Each inset must be hosted by ONE of the visible facet axes (the
+        # axes that carry the dispatcher-stashed _dfdraw_facet_key marker).
+        facet_axes = [ax for ax in fig.axes
+                      if ax.get_visible() and hasattr(ax, '_dfdraw_facet_key')]
+        facet_axes_set = set(id(ax) for ax in facet_axes)
+        for inset in insets:
+            # inset's host axes is its parent in matplotlib's container
+            # hierarchy; identify by walking _axes_hosting OR by spatial
+            # containment (any visible facet axes whose bbox contains the
+            # inset's bbox).
+            inset_pos = inset.get_position()
+            host_id = None
+            for fa in facet_axes:
+                fa_pos = fa.get_position()
+                if (fa_pos.x0 <= inset_pos.x0 and fa_pos.y0 <= inset_pos.y0
+                        and fa_pos.x1 >= inset_pos.x1
+                        and fa_pos.y1 >= inset_pos.y1):
+                    host_id = id(fa)
+                    break
+            assert host_id is not None and host_id in facet_axes_set, (
+                f"inset axes at position {inset_pos} is not contained by any "
+                f"visible facet axes; per-panel slice semantic violated")
+        # NO SubFigure should have been created — step 7d eliminates the
+        # single-SubFigure approach. The step-5 stash attribute must be
+        # absent (or None) on the fig.
+        assert getattr(fig, '_dfdraw_summary_fit_subfigure', None) is None, (
+            "placement='subfigure' must NOT create a fig.add_subfigure() "
+            "container (step-5 single-SubFigure regression); use per-panel "
+            "inset_axes() per v2.5 §3.5")
         plt.close(fig)
 
     def test_F13_placement_pad_uses_extra_row_axes(self, df_faceted):
@@ -1032,43 +1157,214 @@ class TestPhase1350SummaryFitPlacement:
             f"count ({n_facet_axes}); got len(fig.axes)={len(fig.axes)}")
         plt.close(fig)
 
-    def test_F17_placement_topology_keyed_dict_invariance(self, df_faceted):
-        """F17 — all 3 placements produce DISTINCT placement_topology dicts.
+    def test_F17_placement_variants_produce_equivalent_tables(self, df_faceted):
+        """F17 — same data rendered via placement='figure', 'pad', 'subfigure'
+        produces equivalent keyed cell dicts (cross-variant invariance).
 
-        Per v2.4 panel P2-NEW-1: keyed dict (not count tuple) catches a
-        permutation bug where 'pad' and 'subfigure' get their renderers
-        swapped — both produce one host axes, so a count-based topology
-        would consider them equal. The keyed dict distinguishes them via
-        in_main_fig_axes vs in_subfigure.
+        v2.5 §3.8 + v2.4 P2-NEW-1 (Claude36 ADF panel): the cross-variant
+        equivalence test is the headline behavioural invariant — if the user
+        switches placement, the SAME data must show up, just in a different
+        container. Keyed comparison (dict[(row_label, col_label), cell_text])
+        is permutation-safe; a placement bug that swaps which fit's value
+        ends up where would show up as a key mismatch.
+
+        Per P2-NEW-3 subfigure semantics: insets are per-panel slices, so
+        union(table_cells_keyed(inset) for inset in subfigure_insets) must
+        equal the figure/pad keyed dict (each inset contributes its panel's
+        share; the union covers the full data set).
+
+        Phase 13.50.DF step 7e spec-conformance — the step-5 ship implemented
+        F17 as topology DISTINCTNESS (opposite invariant). This rewrite
+        ships the v2.5-spec'd cross-variant EQUIVALENCE check.
+
+        EXPECTED · WHY · APPROVE · FAIL_MODE:
+          EXPECTED ``table_cells_keyed(figure_table) == table_cells_keyed(
+                   pad_table) == union(table_cells_keyed(i) for i in
+                   subfigure_insets)`` for the SAME (group_by, facet_by, fit)
+                   call;
+          WHY user-perceived equivalence is the spec promise — switching
+              placement is a layout choice, not a data transform;
+          APPROVE all three keyed dicts equal as Python dicts (header rows
+                  excluded; cell text whitespace-stripped);
+          FAIL_MODE renderer permutes rows / drops cells / changes formatting
+                    between placements — typically a regression where one
+                    placement uses a stale spec branch.
         """
-        topo = {}
-        figs_to_close = []
-        for placement in ('figure', 'subfigure', 'pad'):
-            fig, axes, stats = self._profile_faceted(
-                df_faceted,
-                summary_fit={'kind': 'table', 'placement': placement},
-            )
-            topo[placement] = placement_topology(fig, stats)
-            figs_to_close.append(fig)
-            # Also collect separate figures for placement='figure'.
-            if placement == 'figure':
-                for k in ('table', 'figure'):
-                    sub = stats.get('summary_fit', {}).get(k)
-                    if hasattr(sub, 'number'):
-                        figs_to_close.append(sub)
+        # 'figure' placement — table is a separate matplotlib Figure.
+        fig_fig, _, stats_fig = self._profile_faceted(
+            df_faceted,
+            summary_fit={'kind': 'table', 'placement': 'figure'},
+        )
+        sep_fig = stats_fig['summary_fit'].get('table')
+        assert hasattr(sep_fig, 'axes'), (
+            f"placement='figure' should produce a separate Figure with a "
+            f"table axes; got {sep_fig!r}")
+        figure_keyed = table_cells_keyed(sep_fig.axes[0])
+        plt.close(sep_fig)
+        plt.close(fig_fig)
 
-        # All three placements must produce DISTINCT topology dicts.
-        assert topo['figure']    != topo['subfigure'], \
-            f"'figure' and 'subfigure' topologies collapsed: {topo!r}"
-        assert topo['subfigure'] != topo['pad'], \
-            f"'subfigure' and 'pad' topologies collapsed (mode-swap risk): {topo!r}"
-        assert topo['figure']    != topo['pad'], \
-            f"'figure' and 'pad' topologies collapsed: {topo!r}"
+        # 'pad' placement — table is an axes inside the main fig.
+        fig_pad, _, stats_pad = self._profile_faceted(
+            df_faceted,
+            summary_fit={'kind': 'table', 'placement': 'pad'},
+        )
+        pad_host = stats_pad['summary_fit']['table']
+        pad_keyed = table_cells_keyed(pad_host)
+        plt.close(fig_pad)
 
-        # Individual mode invariants.
-        assert topo['figure']['separate_figure'] is True
-        assert topo['subfigure']['in_subfigure'] is True
-        assert topo['pad']['in_main_fig_axes'] is True
+        # 'subfigure' placement — per-panel insets; union of their keyed
+        # sets equals the figure/pad keyed set (P2-NEW-3 per-panel
+        # slicing semantic). Each inset contributes the rows for its
+        # panel; the union is the full data set.
+        fig_sub, _, stats_sub = self._profile_faceted(
+            df_faceted,
+            summary_fit={'kind': 'table', 'placement': 'subfigure'},
+        )
+        insets = stats_sub['summary_fit'].get('insets', [])
+        subfig_keyed_union = set()
+        for inset in insets:
+            subfig_keyed_union |= table_cells_keyed(inset)
+        plt.close(fig_sub)
 
-        for f in figs_to_close:
-            plt.close(f)
+        # Invariance: all three keyed sets must agree.
+        assert figure_keyed, (
+            f"placement='figure' keyed set is empty — fixture didn't "
+            f"produce a populated table")
+        assert figure_keyed == pad_keyed, (
+            f"placement='figure' vs 'pad' keyed sets diverge:\n"
+            f"  |figure|={len(figure_keyed)}, |pad|={len(pad_keyed)}\n"
+            f"  rows in figure not in pad: "
+            f"{len(figure_keyed - pad_keyed)} (first: "
+            f"{next(iter(figure_keyed - pad_keyed), None)})\n"
+            f"  rows in pad not in figure: "
+            f"{len(pad_keyed - figure_keyed)} (first: "
+            f"{next(iter(pad_keyed - figure_keyed), None)})")
+        assert figure_keyed == subfig_keyed_union, (
+            f"placement='figure' vs 'subfigure' (union of per-panel insets) "
+            f"keyed sets diverge:\n"
+            f"  |figure|={len(figure_keyed)}, "
+            f"|subfig_union|={len(subfig_keyed_union)}, "
+            f"insets count: {len(insets)}\n"
+            f"  rows in figure not in subfig: "
+            f"{len(figure_keyed - subfig_keyed_union)} (first: "
+            f"{next(iter(figure_keyed - subfig_keyed_union), None)})\n"
+            f"  rows in subfig not in figure: "
+            f"{len(subfig_keyed_union - figure_keyed)} (first: "
+            f"{next(iter(subfig_keyed_union - figure_keyed), None)})")
+
+
+# --------------------------------------------------------------------------- #
+# Phase 13.50 step 6 — summary_fit.orientation axis
+# Tests F14 (default 'row' locks shape), F15 ('column' transposes shape).
+# Both visual_primitive layer.
+# --------------------------------------------------------------------------- #
+
+class TestPhase1350SummaryFitOrientation:
+    """Phase 13.50 step 6 visual-primitive checks for the ``summary_fit``
+    orientation axis (table layout direction).
+
+    EXPECTED · WHY · APPROVE · FAIL_MODE per V-check:
+
+      F14 (orientation default 'row'): EXPECTED the in-slot table
+          renders with rows=fits, columns=id_keys+params (Phase 13.43
+          layout shape preserved);
+          WHY default MUST be backwards compatible — users have seen the
+          row-oriented table since Phase 13.43; orientation='row'
+          (default) must produce identical row/column counts to a call
+          with NO orientation kwarg;
+          APPROVE table_shape(no-kwarg) == table_shape(orientation='row');
+          FAIL_MODE normalizer default drifted to 'column', or the
+          row-branch logic accidentally transposes.
+
+      F15 (orientation='column'): EXPECTED the transposed table shape
+          where original DATA COLUMNS become DATA ROWS (each prefixed by
+          a label cell containing the original column's header) and
+          original DATA ROWS become DATA COLUMNS (prefixed by the new
+          "fit_0", "fit_1", ... header row);
+          WHY transposing is the headline feature: when params > fits the
+          row layout becomes uncomfortably wide; column fixes
+          this. Must verify a TRUE transpose, not e.g. a no-op or a
+          partial rearrangement;
+          APPROVE shape_col == (1 + shape_row[1], shape_row[0])
+          — accounts for the label column inserted in column orientation
+          (carrying the original column headers as row labels);
+          FAIL_MODE transpose logic skipped (column falls through to
+          row renderer), or wrong axis transposed (e.g. header
+          rotated but data not), or off-by-one in row/col counts.
+    """
+
+    def _profile_with_orientation(self, df, orientation_kwarg):
+        """Shared dispatch helper. placement='pad' is used so the in-slot
+        renderer (which honors orientation in step 6) fires. group_by + facet_by
+        are required for the dispatcher (same constraint as step 5)."""
+        sf_spec = {'kind': 'table', 'placement': 'pad'}
+        if orientation_kwarg is not None:
+            sf_spec['orientation'] = orientation_kwarg
+        return DFDraw(df).profile(
+            'y:x', bins=10, group_by='g', facet_by='sec',
+            fit='linear', summary_fit=sf_spec,
+        )
+
+    def test_F14_orientation_row_default_unchanged(self, df_faceted):
+        """F14 — default and explicit 'row' produce identical table shape."""
+        fig_default, _, stats_default = self._profile_with_orientation(
+            df_faceted, orientation_kwarg=None)
+        sf_default = stats_default.get('summary_fit', {})
+        host_default = sf_default.get('table')
+        assert host_default is not None, (
+            f"placement='pad' should render a table host axes; "
+            f"stats['summary_fit']={sf_default!r}")
+        shape_default = table_shape(host_default)
+        plt.close(fig_default)
+
+        fig_explicit, _, stats_explicit = self._profile_with_orientation(
+            df_faceted, orientation_kwarg='row')
+        host_explicit = stats_explicit['summary_fit']['table']
+        shape_explicit = table_shape(host_explicit)
+        plt.close(fig_explicit)
+
+        assert shape_default == shape_explicit, (
+            f"orientation default and explicit 'row' must produce "
+            f"identical table shapes; default={shape_default}, "
+            f"explicit={shape_explicit}")
+        # And: it must be a non-trivial table — at least 1 data row + 1 column
+        # (otherwise we're not actually exercising the renderer).
+        assert shape_default[0] >= 2 and shape_default[1] >= 2, (
+            f"degenerate table shape {shape_default} — fixture didn't produce "
+            f"enough fit rows for a meaningful orientation test")
+
+    def test_F15_orientation_column_transposes_shape(self, df_faceted):
+        """F15 — orientation='column' produces a TRUE transpose of the
+        row-oriented table.
+
+        Shape relationship (accounts for impl detail: original column headers
+        become a leading label column in column mode):
+            shape_col == (1 + shape_row[1], shape_row[0])
+        Validated by /home/claude/p1350 smoke test with controlled rows:
+            R=2 data rows × N=3 cols  →  shape_row=(3,3), shape_col=(4,3)
+                                    →  1+3 == 4 ✓  AND  3 == 3 ✓
+        """
+        fig_h, _, stats_h = self._profile_with_orientation(
+            df_faceted, orientation_kwarg='row')
+        host_h = stats_h['summary_fit']['table']
+        shape_h = table_shape(host_h)
+        plt.close(fig_h)
+
+        fig_v, _, stats_v = self._profile_with_orientation(
+            df_faceted, orientation_kwarg='column')
+        host_v = stats_v['summary_fit']['table']
+        shape_v = table_shape(host_v)
+        plt.close(fig_v)
+
+        expected_v = (1 + shape_h[1], shape_h[0])
+        assert shape_v == expected_v, (
+            f"orientation='column' should produce shape {expected_v} "
+            f"(transpose of row {shape_h} with +1 row for the "
+            f"label-column header); got {shape_v}")
+        # Sanity: shapes must differ — otherwise transpose was a no-op
+        # (could happen on a degenerate square table; F14 already locks
+        # min shape ≥ (2,2) so this is a defensive belt-check).
+        assert shape_v != shape_h, (
+            f"orientation='column' produced same shape as 'row' "
+            f"({shape_h}); transpose may have been a no-op (fixture must "
+            f"produce a non-square table for F15 to be discriminating)")

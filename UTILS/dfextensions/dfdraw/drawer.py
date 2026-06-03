@@ -602,11 +602,11 @@ class DFDraw:
         #   user knows the placement requires faceted dispatch.
         # ------------------------------------------------------------------
         _placement = spec.get('placement', 'figure')
-        if _placement in ('pad', 'subfigure'):
+        if _placement == 'pad':
             _slot = getattr(fig, '_dfdraw_summary_fit_slot', None) if fig is not None else None
             if _slot is None:
                 raise ValueError(
-                    f"summary_fit placement={_placement!r} requires a faceted "
+                    f"summary_fit placement='pad' requires a faceted "
                     f"dispatch path (group_by or facet_by) so the dispatcher "
                     f"can pre-plan a GridSpec slot before plt.subplots. "
                     f"This call did not go through _dispatch_faceted_render "
@@ -623,16 +623,46 @@ class DFDraw:
                 style=_style,
             )
             if slot_result:
-                # Tests inspect stats['summary_fit'] for the host axes +
-                # placement label. 'data' is omitted here (the renderer
-                # emits visual content only; data extraction is a separate
-                # concern for placement='figure' alone in this phase).
                 stats['summary_fit'] = slot_result
             else:
                 stats['summary_fit'] = {}
                 stats['summary_fit_note'] = (
-                    f"summary_fit placement={_placement!r} requested but no "
-                    f"rows were produced. Slot reserved but unpopulated."
+                    "summary_fit placement='pad' requested but no "
+                    "rows were produced. Slot reserved but unpopulated."
+                )
+            return
+
+        if _placement == 'subfigure':
+            # Phase 13.50.DF step 7d spec-conformance — per-panel inset
+            # rendering. Each visible facet axes gets its own
+            # Axes.inset_axes(inset_bbox) showing ONLY that panel's fits
+            # (v2.5 §3.5 + P2-NEW-3: per-panel slices, not redundant
+            # full-table copies). Requires faceted dispatch (the per-panel
+            # mapping comes from ax._dfdraw_facet_key stashed by the
+            # dispatcher loop).
+            if fig is None or not getattr(fig, '_dfdraw_summary_fit_per_panel', False):
+                raise ValueError(
+                    "summary_fit placement='subfigure' requires a faceted "
+                    "dispatch path (group_by or facet_by) so each facet "
+                    "panel can host its per-panel inset table. This call "
+                    "did not go through _dispatch_faceted_render. "
+                    "Fix: add group_by= or facet_by= to enable faceting, "
+                    "or use placement='figure' (default) for non-faceted plots."
+                )
+            from .plots._summary_fit import render_summary_fit_per_panel_insets
+            inset_result = render_summary_fit_per_panel_insets(
+                fig, stats_fit, spec,
+                group_by_col=group_by,
+                facet_by_cols=facet_cols,
+                style=_style,
+            )
+            if inset_result:
+                stats['summary_fit'] = inset_result
+            else:
+                stats['summary_fit'] = {}
+                stats['summary_fit_note'] = (
+                    "summary_fit placement='subfigure' requested but no "
+                    "rows were produced. Insets not attached."
                 )
             return
 
@@ -644,13 +674,20 @@ class DFDraw:
             params=spec.get('params'),
             mode=spec.get('mode', 'subplots'),
             annotate=spec.get('annotate', False),
-            precision=spec.get('precision', 2),
+            # Phase 13.50.DF step 7a [BREACH] — precision int removed;
+            # replaced by value_format / error_format strings.
+            value_format=spec.get('value_format', '.2g'),
+            error_format=spec.get('error_format', '.1g'),
             columns=spec.get('columns'),
             data_format=_data_format,
             title=spec.get('title', 'auto'),
             title_overflow=spec.get('title_overflow', 'shrink'),
             style=_style,
             expr_for_auto_title=expr_for_auto_title,
+            # Phase 13.50.DF step 7b R1 — propagate orientation to 'figure'
+            # placement renderer (was undisclosed partial: step 6 honored
+            # orientation only in the slot renderer).
+            orientation=spec.get('orientation', 'row'),
         )
 
         if figs:
@@ -3461,30 +3498,83 @@ class DFDraw:
         # via the explicit call-site forwarding, NOT via plot_kwargs.
         _sf_kwarg = plot_kwargs.pop('summary_fit', None)
         _sf_placement = 'figure'  # default — preserves Phase 13.43 behavior
+        _sf_pad_location = 'bottom'  # default per v2.5 §3.5
+        _sf_pad_size = 0.25  # default per v2.5 §3.5
         if _sf_kwarg is not None:
             try:
                 from .plots._summary_fit import _normalize_summary_fit_spec
-                _sf_placement = _normalize_summary_fit_spec(_sf_kwarg)['placement']
+                _sf_canonical = _normalize_summary_fit_spec(_sf_kwarg)
+                _sf_placement = _sf_canonical['placement']
+                # Phase 13.50.DF step 7c — read placement sub-keys for the
+                # GridSpec geometry below. Defaults are baked in the
+                # canonical dict; only 'pad' placement consumes them
+                # (subfigure uses inset_bbox in step 7d).
+                _sf_pad_location = _sf_canonical['pad_location']
+                _sf_pad_size = _sf_canonical['pad_size']
             except ValueError:
                 _sf_placement = 'figure'  # bad spec: re-fires at attach time
 
-        if _sf_placement in ('pad', 'subfigure'):
-            # P3-NEW-1 (v2.4 panel): use height_ratios so the reserved slot
-            # is smaller than a facet row. 'pad' = single axes (narrower);
-            # 'subfigure' = SubFigure region (slightly taller for sub-layout).
-            _sf_height_ratio = 0.4 if _sf_placement == 'pad' else 0.6
-            _augmented_figsize = (
-                figsize[0],
-                figsize[1] * (1.0 + _sf_height_ratio / max(nrows, 1)),
-            )
+        if _sf_placement == 'pad':
+            # Phase 13.50.DF step 7c — GridSpec geometry now honors
+            # pad_location ('bottom'|'right'|'top'|'left') and pad_size
+            # (fraction of total figure dimension). Each location adds an
+            # extra row or column; the per-cell ratio for the pad cell is
+            # computed so the pad takes pad_size of the figure dimension.
+            #
+            # Formula: with n_main_units main cells (= nrows for top/bottom,
+            # = ncols for left/right) each at unit ratio 1.0, the pad ratio
+            # is  pad_size * n_main_units / (1 - pad_size)  so total ratios
+            # sum to  n_main_units / (1 - pad_size)  and the pad fraction
+            # equals pad_size as advertised.
+            if _sf_pad_location in ('bottom', 'top'):
+                n_main_units = nrows
+                _pad_ratio = (_sf_pad_size * n_main_units
+                              / max(1.0 - _sf_pad_size, 1e-6))
+                gs_nrows, gs_ncols = nrows + 1, ncols
+                _augmented_figsize = (
+                    figsize[0],
+                    figsize[1] / max(1.0 - _sf_pad_size, 1e-6),
+                )
+                if _sf_pad_location == 'bottom':
+                    height_ratios = [1.0] * nrows + [_pad_ratio]
+                    _main_row_offset, _pad_row_index = 0, nrows
+                else:  # top
+                    height_ratios = [_pad_ratio] + [1.0] * nrows
+                    _main_row_offset, _pad_row_index = 1, 0
+                width_ratios = None
+                _main_col_offset = 0
+                _pad_col_index = slice(0, ncols)  # full width
+                _pad_row_slice = _pad_row_index
+            else:  # 'right' or 'left'
+                n_main_units = ncols
+                _pad_ratio = (_sf_pad_size * n_main_units
+                              / max(1.0 - _sf_pad_size, 1e-6))
+                gs_nrows, gs_ncols = nrows, ncols + 1
+                _augmented_figsize = (
+                    figsize[0] / max(1.0 - _sf_pad_size, 1e-6),
+                    figsize[1],
+                )
+                if _sf_pad_location == 'right':
+                    width_ratios = [1.0] * ncols + [_pad_ratio]
+                    _main_col_offset, _pad_col_index = 0, ncols
+                else:  # left
+                    width_ratios = [_pad_ratio] + [1.0] * ncols
+                    _main_col_offset, _pad_col_index = 1, 0
+                height_ratios = None
+                _main_row_offset = 0
+                _pad_row_slice = slice(0, nrows)  # full height
+
             fig = plt.figure(figsize=_augmented_figsize)
-            _gs = fig.add_gridspec(
-                nrows + 1, ncols,
-                height_ratios=[1.0] * nrows + [_sf_height_ratio],
-            )
+            _gs_kwargs = {}
+            if height_ratios is not None:
+                _gs_kwargs['height_ratios'] = height_ratios
+            if width_ratios is not None:
+                _gs_kwargs['width_ratios'] = width_ratios
+            _gs = fig.add_gridspec(gs_nrows, gs_ncols, **_gs_kwargs)
             axes = np.empty((nrows, ncols), dtype=object)
-            # Build axes with sharex/sharey relationships matching the
-            # plt.subplots() default behavior.
+            # Build main-plot axes with sharex/sharey relationships matching
+            # the plt.subplots() default behavior, indexing into the main
+            # rectangle of the GridSpec (offset by location).
             _ref_ax = None
             for _i in range(nrows):
                 for _j in range(ncols):
@@ -3494,16 +3584,40 @@ class DFDraw:
                             _kw['sharex'] = _ref_ax
                         if sharey:
                             _kw['sharey'] = _ref_ax
-                    _new_ax = fig.add_subplot(_gs[_i, _j], **_kw)
+                    _new_ax = fig.add_subplot(
+                        _gs[_main_row_offset + _i, _main_col_offset + _j],
+                        **_kw,
+                    )
                     if _ref_ax is None:
                         _ref_ax = _new_ax
                     axes[_i, _j] = _new_ax
+            # Build the pad SubplotSpec slice. For bottom/top the pad is a
+            # full-width row slice; for right/left it is a full-height
+            # column slice. Indexing into _gs returns a SubplotSpec; the
+            # slot renderer then either adds an axes there (placement=
+            # 'pad') or creates a SubFigure (placement='subfigure').
+            if _sf_pad_location in ('bottom', 'top'):
+                _pad_slot = _gs[_pad_row_slice, :]
+            else:
+                _pad_slot = _gs[:, _pad_col_index]
             # Stash the reserved SubplotSpec + placement mode on the fig.
             # _maybe_attach_summary_fit reads this attribute to route to
             # the in-slot rendering helper instead of creating a new fig.
-            # Private prefix avoids namespace pollution; only the attach
-            # path reads it.
-            fig._dfdraw_summary_fit_slot = (_gs[nrows, :], _sf_placement)
+            fig._dfdraw_summary_fit_slot = (_pad_slot, _sf_placement)
+        elif _sf_placement == 'subfigure':
+            # Phase 13.50.DF step 7d — placement='subfigure' DOES NOT
+            # pre-plan a GridSpec slot. Per v2.5 §3.5 + P2-NEW-3, the
+            # subfigure mode adds per-panel Axes.inset_axes() in the
+            # attach phase, with each inset showing ONLY that panel's
+            # fits. No extra row/column is reserved; insets sit inside
+            # the existing facet axes. The marker below lets the attach
+            # phase distinguish "subfigure mode requested" from the
+            # default 'figure' path that creates a separate Figure.
+            fig, axes = plt.subplots(
+                nrows, ncols, figsize=figsize,
+                sharex=sharex, sharey=sharey, squeeze=False
+            )
+            fig._dfdraw_summary_fit_per_panel = True
         else:
             # Original path (placement='figure' or no summary_fit) — unchanged.
             fig, axes = plt.subplots(
@@ -3542,6 +3656,14 @@ class DFDraw:
 
         all_stats: Dict[str, Any] = {}
         for ax_i, group_value in zip(axes_flat[:n_groups], groups):
+            # Phase 13.50.DF step 7d — stash the facet key on the axes so the
+            # post-dispatch per-panel inset renderer (placement='subfigure')
+            # can slice stats_fit by panel. group_value is the per-panel
+            # discriminator: for facet_by='group_by'/'column' it's the
+            # filter value, for 'vector' it's the y-expression, for
+            # 'quantiles' it's the quantile tuple. The attach phase matches
+            # this against stats_fit's keys.
+            ax_i._dfdraw_facet_key = group_value
             # Filter / specialize per facet_by mode
             if facet_by == 'group_by':
                 subplot_df = df[df[group_by] == group_value]
@@ -5885,6 +6007,17 @@ class DFDraw:
         share_x: str = 'all',
         share_y: str = 'all',
         share_across_figures: bool = True,
+        # Phase 13.50.DF step 7f R4 spec-conformance — summary_fit kwarg
+        # exposed on hist2d. v2.5 §2 IN-scope listed summary_fit.placement
+        # with no exclusion for hist2d; the step-5 ship omitted forwarding
+        # at the hist2d dispatch call site (drawer.py:6140), which was an
+        # undisclosed partial implementation. R4 of the v2.5 panel feedback
+        # called this out as a should-have-been-in-scope miss. Pattern A
+        # discipline: named param here, explicit forwarding below at
+        # _dispatch_faceted_render call site, NEVER in
+        # _HIST2D_FORWARDED_NAMES (would leak through to ax.hist2d() and
+        # raise an unexpected-kwarg error).
+        summary_fit: Optional[Union[str, List[str], Dict]] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -6033,6 +6166,12 @@ class DFDraw:
                 share_x=share_x,
                 share_y=share_y,
                 share_across_figures=share_across_figures,
+                # Phase 13.50.DF step 7f R4 — explicit summary_fit forwarding
+                # (Pattern A: named here, never in _HIST2D_FORWARDED_NAMES;
+                # _dispatch_faceted_render.pop()s it out of plot_kwargs and
+                # routes via _maybe_attach_summary_fit AFTER per-subplot
+                # render returns). This call site was the v2.5 §2 / R4 miss.
+                summary_fit=summary_fit,
                 **kwargs
             )
         # Facet mode (legacy path, same=True ignored in facet mode)

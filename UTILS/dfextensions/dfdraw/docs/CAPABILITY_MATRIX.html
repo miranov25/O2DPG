@@ -63,18 +63,18 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 </head>
 <body>
 <h1>Capability Matrix — dfdraw</h1>
-<p class="meta">Generated: <span class="mono">2026-06-03 06:44 UTC</span> · Phase: <span class="mono">PHASE_13_49_DF_FIX1_END</span></p>
+<p class="meta">Generated: <span class="mono">2026-06-03 09:22 UTC</span> · Phase: <span class="mono">PHASE_13_49_DF_FIX1_END</span></p>
 <section class="summary">
 <h2>Summary</h2>
 <table>
-<tr><th>✅ Verified</th><td class="n">59</td><td class="n">47%</td></tr>
-<tr><th>☑️ Smoke-only</th><td class="n">66</td><td class="n">52%</td></tr>
+<tr><th>✅ Verified</th><td class="n">59</td><td class="n">46%</td></tr>
+<tr><th>☑️ Smoke-only</th><td class="n">67</td><td class="n">53%</td></tr>
 <tr><th>🧨 Broken</th><td class="n">0</td><td class="n">0%</td></tr>
 <tr><th>📋 Planned</th><td class="n">1</td><td class="n">1%</td></tr>
-<tr><th>Total features</th><td class="n"><strong>126</strong></td><td></td></tr>
-<tr><th>Total proof tests</th><td class="n"><strong>609</strong></td><td></td></tr>
+<tr><th>Total features</th><td class="n"><strong>127</strong></td><td></td></tr>
+<tr><th>Total proof tests</th><td class="n"><strong>611</strong></td><td></td></tr>
 <tr><th>Invariance tests</th><td class="n"><strong>356</strong></td><td></td></tr>
-<tr><th>Visual tests</th><td class="n"><strong>25</strong></td><td></td></tr>
+<tr><th>Visual tests</th><td class="n"><strong>27</strong></td><td></td></tr>
 </table>
 </section>
 <section class="filters">
@@ -1316,9 +1316,17 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <div class="tests-panel">
 <ul>
 <li><span class="layer-marker">👁</span><code>test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F11_placement_figure_default_unchanged</code><span class="outcome passed">passed</span></li>
-<li><span class="layer-marker">👁</span><code>test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F12_placement_subfigure_uses_subfigure_api</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F12_placement_subfigure_per_panel_inset_table</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">👁</span><code>test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F13_placement_pad_uses_extra_row_axes</code><span class="outcome passed">passed</span></li>
-<li><span class="layer-marker">✓</span><code>test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F17_placement_topology_keyed_dict_invariance</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F17_placement_variants_produce_equivalent_tables</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-SUMMARY_FIT.orientation" class="feature-row" data-status="Smoke-only" data-visual="yes" data-category="SUMMARY_FIT"><td><span class="expand-toggle">▶</span></td><td>☑️</td><td><strong class="mono">SUMMARY_FIT.orientation</strong> — summary_fit.orientation axis: horizontal (default) / vertical (transpose) — in-slot renderer only <span class="eye-badge">👁</span></td><td class="n">2</td><td class="n">2</td><td class="n">0</td><td class="n">0</td><td class="n">2</td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">👁</span><code>test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitOrientation::test_F14_orientation_row_default_unchanged</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitOrientation::test_F15_orientation_column_transposes_shape</code><span class="outcome passed">passed</span></li>
 </ul>
 </div></td></tr>
 <tr class="category-row"><td colspan="8">TITLE</td></tr>

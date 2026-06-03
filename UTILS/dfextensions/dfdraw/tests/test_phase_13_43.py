@@ -237,14 +237,26 @@ class TestPhase1343SummaryFit:
     # -- F.43 — precision option ----------------------------------------
 
     def test_f43_precision_in_table_cells(self):
-        """precision=3 produces more digits in numeric cells than precision=1."""
+        """value_format/error_format produces more digits in numeric cells
+        at higher significant-figure counts.
+
+        Phase 13.50.DF step 7a [BREACH] migration: this test previously used
+        the removed ``summary_fit={'precision': N}`` int field. Migrated to
+        the replacement string keys: ``value_format='.{N}g'`` and matching
+        ``error_format='.{N}g'``. Test logic (more sig figs → wider cells)
+        is preserved.
+        """
         d = DFDraw(_gauss_df())
-        # Render at precision=1 and precision=3, compare cell text widths.
+        # Render at 1-sigfig and 3-sigfig configs, compare cell text widths.
         cell_text_lens = {}
         for prec in (1, 3):
             fig, ax, stats = d.hist(
                 'x', bins=40, group_by='g', fit='gauss',
-                summary_fit={'kind': 'table', 'precision': prec},
+                summary_fit={
+                    'kind': 'table',
+                    'value_format': f'.{prec}g',
+                    'error_format': f'.{prec}g',
+                },
             )
             table_fig = stats['summary_fit']['table']
             ax_t = table_fig.axes[0]

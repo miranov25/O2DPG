@@ -1593,9 +1593,26 @@ FEATURES = [
         "category": "SUMMARY_FIT",
         "tests": [
             "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F11_placement_figure_default_unchanged",
-            "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F12_placement_subfigure_uses_subfigure_api",
+            "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F12_placement_subfigure_per_panel_inset_table",
             "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F13_placement_pad_uses_extra_row_axes",
-            "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F17_placement_topology_keyed_dict_invariance",
+            "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F17_placement_variants_produce_equivalent_tables",
+        ],
+    },
+    {
+        # Phase 13.50.DF step 6 — summary_fit.orientation axis: table layout
+        # direction (horizontal default vs vertical transpose). Honored by
+        # the in-slot renderer (_render_table_in_axes in plots/_summary_fit.py).
+        # Phase 13.43 'figure' placement renderer currently ignores
+        # orientation (its layout is controlled by mode='subplots'|'overlay'
+        # instead); broadening orientation to the 'figure' path is FIX1 work.
+        # Layer: visual_primitive — F14/F15 inspect the matplotlib Table
+        # object's cell shape via table.get_celld(), no rasterization needed.
+        "id": "SUMMARY_FIT.orientation",
+        "name": "summary_fit.orientation axis: horizontal (default) / vertical (transpose) — in-slot renderer only",
+        "category": "SUMMARY_FIT",
+        "tests": [
+            "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitOrientation::test_F14_orientation_row_default_unchanged",
+            "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitOrientation::test_F15_orientation_column_transposes_shape",
         ],
     },
     {

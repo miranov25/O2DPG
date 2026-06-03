@@ -36,13 +36,21 @@ def render_summary_fit(
     params: Optional[List[str]] = None,
     mode: str = 'subplots',
     annotate: Union[bool, str] = False,
-    precision: int = 2,
+    # Phase 13.50.DF step 7a [BREACH] — precision int REMOVED; replaced by
+    # value_format / error_format strings (architect v2.5 §3.3 + §9: clean
+    # removal, no alias). Defaults mirror the style.py step-2 keys.
+    value_format: str = '.2g',
+    error_format: str = '.1g',
     columns: Optional[List[str]] = None,
     data_format: str = 'dict',
     title: Union[str, None] = 'auto',
     title_overflow: str = 'shrink',
     style: Optional[Any] = None,
     expr_for_auto_title: Optional[str] = None,
+    # Phase 13.50.DF step 7b R1 — orientation axis for Phase 13.43 'figure'
+    # placement renderer (was an undisclosed partial in step 6: orientation
+    # was honored only by the slot renderer). 'row' default preserves layout.
+    orientation: str = 'row',
 ) -> Tuple[Dict[str, plt.Figure], Any, Optional[str]]:
     """Render the requested summary fits as standalone figures.
 
@@ -66,8 +74,14 @@ def render_summary_fit(
     annotate : bool | 'always'
         Annotate-numeric-value-at-each-point flag (§3.6). Auto-suppressed
         above 15 points unless 'always'.
-    precision : 1 | 2 | 3
-        Significant digits in numeric formatting (§3.7).
+    value_format : str, default '.2g'
+        Python format-spec string for numeric values in table cells and
+        figure annotations (Phase 13.50.DF step 7a). Mirrors the
+        style.py 'fit.value_format' key.
+    error_format : str, default '.1g'
+        Python format-spec string for numeric ERRORS in table cells.
+        Default '.1g' matches the physics convention (errors at 1 sig
+        fig, values matched to error's decimal place).
     columns : optional list[str]
         Subset of fit-param + metric columns to show in the table.
     data_format : 'dict' (default) | 'pandas'
@@ -112,15 +126,22 @@ def render_summary_fit(
 
     if 'table' in kinds:
         figs['table'] = _render_table_figure(
-            rows, columns=columns, precision=precision,
+            rows, columns=columns,
+            value_format=value_format, error_format=error_format,
             title=title, title_overflow=title_overflow,
             expr_for_auto_title=expr_for_auto_title, style=style,
+            # Phase 13.50.DF step 7b R1 — propagate orientation kwarg to the
+            # Phase 13.43 'figure' placement renderer (was an undisclosed
+            # partial in step 6: orientation was honored only by the slot
+            # renderer, not by the standalone-Figure path).
+            orientation=orientation,
         )
 
     if 'figure' in kinds:
         params_fig = _render_params_figure(
             rows, params=params, mode=mode, annotate=annotate,
-            precision=precision, group_by_col=group_by_col,
+            value_format=value_format,
+            group_by_col=group_by_col,
             facet_by_cols=facet_by_cols,
             title=title, title_overflow=title_overflow,
             expr_for_auto_title=expr_for_auto_title, style=style,
@@ -142,15 +163,40 @@ def render_summary_fit(
 
 _ALLOWED_KIND_STRINGS = {'table', 'figure', 'both'}
 _ALLOWED_DICT_KEYS = {
-    'kind', 'params', 'mode', 'annotate', 'precision', 'columns',
+    'kind', 'params', 'mode', 'annotate', 'columns',
     'data_format', 'title', 'title_overflow',
     # Phase 13.50.DF step 5 — placement axis (where the summary_fit content
     # is rendered: separate figure, or inside the main fig as a SubFigure /
     # GridSpec pad slot). Default 'figure' preserves Phase 13.43 behavior.
     'placement',
+    # Phase 13.50.DF step 6 — orientation axis (table layout: horizontal
+    # default = one row per fit, columns = params; 'vertical' transposes,
+    # one row per param). Affects the slot renderer; the Phase 13.43
+    # 'figure' renderer ignores it (its layout is set by mode='subplots'
+    # vs 'overlay' instead — see FIX1 backlog).
+    'orientation',
+    # Phase 13.50.DF step 7c spec-conformance — placement sub-keys per
+    # v2.5 §3.5 (missing in step 5 ship). 'pad_location' selects which
+    # edge of the main fig the GridSpec pad attaches to ('bottom'|'right'
+    # |'top'|'left'); 'pad_size' is the fraction of the figure dim the
+    # pad consumes (uses GridSpec width_ratios/height_ratios when the
+    # fraction doesn't match equal-cell allocation per v2.4 P3-NEW-1);
+    # 'inset_bbox' is the (x, y, w, h) axes-coords bbox for the per-panel
+    # inset_axes used by placement='subfigure' (consumed in step 7d).
+    'pad_location',
+    'pad_size',
+    'inset_bbox',
+    # Phase 13.50.DF step 7a [BREACH] — precision int field REMOVED;
+    # replaced by separate value_format / error_format string keys to mirror
+    # the fit.value_format / fit.error_format style keys introduced in
+    # step 2. Per v2.5 §3.3 + §9 architect direction: clean removal, no
+    # deprecation alias. value_format defaults to '.2g' (2 sig figs for
+    # values); error_format defaults to '.1g' (1 sig fig for errors, the
+    # physics convention).
+    'value_format',
+    'error_format',
 }
 _ALLOWED_MODES = {'subplots', 'overlay'}
-_ALLOWED_PRECISIONS = {1, 2, 3}
 _ALLOWED_DATA_FORMATS = {'dict', 'pandas'}
 # Phase 13.50.DF step 5 — accepted placement values.
 # 'figure'    → render to a separate matplotlib Figure (Phase 13.43 default).
@@ -159,6 +205,23 @@ _ALLOWED_DATA_FORMATS = {'dict', 'pandas'}
 # 'pad'       → render inside the main fig in a single reserved axes (extra
 #               GridSpec row, height_ratio < 1.0); same pre-planning constraint.
 _ALLOWED_PLACEMENTS = {'figure', 'subfigure', 'pad'}
+# Phase 13.50.DF step 6 — accepted orientation values.
+# 'row'    → one row per fit, columns = identifying keys + params (default;
+#            preserves the table layout users have seen since Phase 13.43;
+#            v2.5 §3.4(b) canonical naming, aligns with pandas .melt(),
+#            seaborn 'orient', and matplotlib table mental model)
+# 'column' → transposed: one row per identifying key + param, columns = fits
+#            (useful when there are many params and few fits — vertical
+#            avoids horizontal scrolling)
+# Phase 13.50.DF step 7b spec-conformance: renamed from {'horizontal',
+# 'vertical'} to match v2.5 §3.4(b) exact naming. The shipped step-6 names
+# were equivalent in behavior but deviated from spec; corrected here.
+_ALLOWED_ORIENTATIONS = {'row', 'column'}
+# Phase 13.50.DF step 7c spec-conformance — placement sub-key value sets.
+# 'pad_location' picks the edge the pad attaches to. The four cardinal
+# edges are the v2.5 §3.5 sub-key values; the dispatcher in drawer.py
+# translates these to GridSpec (extra row vs extra column, slice side).
+_ALLOWED_PAD_LOCATIONS = {'bottom', 'right', 'top', 'left'}
 _ALLOWED_TITLE_OVERFLOWS = {'shrink', 'truncate', 'wrap'}
 
 
@@ -173,8 +236,9 @@ def _normalize_summary_fit_spec(value: Any) -> Dict[str, Any]:
 
     Returns canonical form:
         {'kinds': List[str], 'params': ..., 'mode': ..., 'annotate': ...,
-         'precision': ..., 'columns': ..., 'data_format': ...,
-         'title': ..., 'title_overflow': ...}
+         'value_format': '.2g', 'error_format': '.1g', 'columns': ...,
+         'data_format': ..., 'title': ..., 'title_overflow': ...,
+         'placement': ..., 'orientation': ...}
 
     Raises ValueError with §3.8 error grammar on unknown values.
     """
@@ -183,7 +247,13 @@ def _normalize_summary_fit_spec(value: Any) -> Dict[str, Any]:
         'params': None,
         'mode': 'subplots',
         'annotate': False,
-        'precision': 2,
+        # Phase 13.50.DF step 7a [BREACH] — precision int REMOVED; replaced
+        # by separate value_format / error_format strings (architect direction
+        # v2.5 §3.3 + §9: clean removal, no deprecation alias). Defaults
+        # match the style.py step-2 keys: '.2g' values (2 sig figs),
+        # '.1g' errors (1 sig fig, physics convention).
+        'value_format': '.2g',
+        'error_format': '.1g',
         'columns': None,
         'data_format': None,
         'title': 'auto',
@@ -194,6 +264,24 @@ def _normalize_summary_fit_spec(value: Any) -> Dict[str, Any]:
         # caller to have pre-planned a GridSpec slot before plt.subplots()
         # (immutable post-creation per v2.3 panel P1-A).
         'placement': 'figure',
+        # Phase 13.50.DF step 6 — orientation axis: table layout direction.
+        # 'row' (default) preserves Phase 13.43 table shape (rows = fits,
+        # columns = id keys + params). 'column' transposes — rows become
+        # param names, columns become fit instances. Honored by BOTH the
+        # in-slot renderer (placement='pad'/'subfigure') AND the Phase 13.43
+        # 'figure' placement renderer (step 7b R1 spec-conformance fix:
+        # v2.5 §3.4(b) put no placement restriction on orientation; the
+        # original step-6 limitation was an undisclosed partial impl).
+        'orientation': 'row',
+        # Phase 13.50.DF step 7c spec-conformance — placement sub-keys per
+        # v2.5 §3.5. Defaults preserve the step-5 baseline (pad at bottom,
+        # ~25% of fig height, no per-panel inset bbox until placement=
+        # 'subfigure' is asked for). Consumed in drawer.py's
+        # _compute_pad_allocation (pad_location, pad_size) and in the
+        # 'subfigure' slot renderer (inset_bbox, step 7d).
+        'pad_location': 'bottom',
+        'pad_size': 0.25,
+        'inset_bbox': (0.55, 0.02, 0.43, 0.30),
     }
 
     if isinstance(value, str):
@@ -227,7 +315,7 @@ def _normalize_summary_fit_spec(value: Any) -> Dict[str, Any]:
         if 'kind' not in value:
             raise ValueError(
                 "summary_fit dict requires 'kind' key. "
-                "Fix: summary_fit={'kind': 'table', 'precision': 3}."
+                "Fix: summary_fit={'kind': 'table', 'value_format': '.2g'}."
             )
         unknown = set(value) - _ALLOWED_DICT_KEYS
         if unknown:
@@ -289,14 +377,44 @@ def _normalize_summary_fit_spec(value: Any) -> Dict[str, Any]:
                     f"Fix: 'annotate': True."
                 )
             canonical['annotate'] = a
-        if 'precision' in value:
-            if value['precision'] not in _ALLOWED_PRECISIONS:
+        # Phase 13.50.DF step 7a [BREACH] — precision int validation REMOVED;
+        # replaced by value_format / error_format string validation. The
+        # validation tries the format on a sample float to catch malformed
+        # spec strings at normalization time, not at render time.
+        if 'value_format' in value:
+            vf = value['value_format']
+            if not isinstance(vf, str):
                 raise ValueError(
-                    f"summary_fit precision must be 1, 2, or 3 "
-                    f"(got {value['precision']!r}). "
-                    f"Fix: 'precision': 2."
+                    f"summary_fit 'value_format' must be a format-spec str "
+                    f"(got {type(vf).__name__}). "
+                    f"Fix: 'value_format': '.2g'."
                 )
-            canonical['precision'] = value['precision']
+            try:
+                format(1.23, vf)
+            except (ValueError, TypeError) as exc:
+                raise ValueError(
+                    f"summary_fit 'value_format' {vf!r} is not a valid "
+                    f"format-spec ({exc}). "
+                    f"Fix: 'value_format': '.2g' (or '.3f', '.4e', etc.)."
+                ) from None
+            canonical['value_format'] = vf
+        if 'error_format' in value:
+            ef = value['error_format']
+            if not isinstance(ef, str):
+                raise ValueError(
+                    f"summary_fit 'error_format' must be a format-spec str "
+                    f"(got {type(ef).__name__}). "
+                    f"Fix: 'error_format': '.1g'."
+                )
+            try:
+                format(1.23, ef)
+            except (ValueError, TypeError) as exc:
+                raise ValueError(
+                    f"summary_fit 'error_format' {ef!r} is not a valid "
+                    f"format-spec ({exc}). "
+                    f"Fix: 'error_format': '.1g'."
+                ) from None
+            canonical['error_format'] = ef
         if 'columns' in value:
             c = value['columns']
             if c is not None and not isinstance(c, list):
@@ -343,6 +461,70 @@ def _normalize_summary_fit_spec(value: Any) -> Dict[str, Any]:
                     f"Fix: 'placement': 'figure' (default), 'subfigure', or 'pad'."
                 )
             canonical['placement'] = p
+        # Phase 13.50.DF step 6 — orientation axis.
+        if 'orientation' in value:
+            o = value['orientation']
+            if o not in _ALLOWED_ORIENTATIONS:
+                raise ValueError(
+                    f"summary_fit orientation must be one of "
+                    f"{sorted(_ALLOWED_ORIENTATIONS)!r} "
+                    f"(got {o!r}). "
+                    f"Fix: 'orientation': 'row' (default) or 'column'."
+                )
+            canonical['orientation'] = o
+        # Phase 13.50.DF step 7c spec-conformance — placement sub-keys.
+        # Validated even when placement is the default 'figure' (per
+        # v2.5 §3.5 they're inputs to the dispatcher's pad allocator, not
+        # implicit to a particular placement). Out-of-range values raise
+        # at normalization time rather than mid-render.
+        if 'pad_location' in value:
+            pl = value['pad_location']
+            if pl not in _ALLOWED_PAD_LOCATIONS:
+                raise ValueError(
+                    f"summary_fit pad_location must be one of "
+                    f"{sorted(_ALLOWED_PAD_LOCATIONS)!r} "
+                    f"(got {pl!r}). "
+                    f"Fix: 'pad_location': 'bottom' (default), 'right', "
+                    f"'top', or 'left'."
+                )
+            canonical['pad_location'] = pl
+        if 'pad_size' in value:
+            ps = value['pad_size']
+            if not isinstance(ps, (int, float)):
+                raise ValueError(
+                    f"summary_fit pad_size must be a number in (0, 1) "
+                    f"(got {type(ps).__name__}). "
+                    f"Fix: 'pad_size': 0.25."
+                )
+            ps_f = float(ps)
+            if not (0.0 < ps_f < 1.0):
+                raise ValueError(
+                    f"summary_fit pad_size must be in (0, 1) "
+                    f"(got {ps!r}). "
+                    f"Fix: 'pad_size': 0.25."
+                )
+            canonical['pad_size'] = ps_f
+        if 'inset_bbox' in value:
+            ib = value['inset_bbox']
+            if (not isinstance(ib, (tuple, list))
+                    or len(ib) != 4
+                    or not all(isinstance(v, (int, float)) for v in ib)):
+                raise ValueError(
+                    f"summary_fit inset_bbox must be a 4-tuple "
+                    f"(x, y, w, h) of numbers in [0, 1] (got {ib!r}). "
+                    f"Fix: 'inset_bbox': (0.55, 0.02, 0.43, 0.30)."
+                )
+            x, y, w, h = (float(v) for v in ib)
+            if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0
+                    and 0.0 < w <= 1.0 and 0.0 < h <= 1.0
+                    and x + w <= 1.0 and y + h <= 1.0):
+                raise ValueError(
+                    f"summary_fit inset_bbox out of axes-coords range "
+                    f"(got {ib!r}); each value in [0, 1] and x+w, y+h "
+                    f"≤ 1.0. "
+                    f"Fix: 'inset_bbox': (0.55, 0.02, 0.43, 0.30)."
+                )
+            canonical['inset_bbox'] = (x, y, w, h)
         return canonical
 
     raise ValueError(
@@ -537,32 +719,66 @@ def _format_data(rows, data_format):
 # ============================================================================
 
 def _render_table_figure(
-    rows, *, columns, precision, title, title_overflow,
-    expr_for_auto_title, style,
+    rows, *, columns, value_format, error_format, title, title_overflow,
+    expr_for_auto_title, style, orientation='row',
 ) -> plt.Figure:
-    """Render a pure-table figure: each row = one fit; cells = formatted values."""
+    """Render a pure-table figure: each row = one fit; cells = formatted values.
+
+    Phase 13.50.DF step 7a [BREACH]: precision int parameter removed.
+    Replaced by value_format / error_format format-spec strings (e.g., '.2g',
+    '.1g'). Cells with a paired error (col + col+'_err') render as
+    "value ± err" using the two formats; cells without an error use
+    value_format only.
+
+    Phase 13.50.DF step 7b R1 spec-conformance: ``orientation`` parameter
+    added (was previously ignored on the 'figure' placement path; v2.5
+    §3.4(b) put no placement restriction on orientation). Default 'row'
+    preserves Phase 13.43 layout. 'column' transposes — original column
+    headers become the first column (acting as row labels); each original
+    data row becomes a column of the transposed table.
+    """
     columns_to_show = columns or _default_columns(rows)
 
-    # Figure size scales with row/col count.
+    # Figure size scales with row/col count. Compute pre-transpose first
+    # so 'row' (default) keeps the existing dimensions exactly.
     figsize_per_row = _style_get(style, 'summary_fit.table.figsize_per_row', 0.35)
     figsize_per_col = _style_get(style, 'summary_fit.table.figsize_per_col', 1.20)
-    fig_w = max(6.0, len(columns_to_show) * figsize_per_col)
-    fig_h = max(2.0, 0.7 + len(rows) * figsize_per_row + 0.6)
 
-    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
-    ax.set_axis_off()
-
-    # Format cells.
+    # Format cells in row-orientation first; transpose later if requested.
     cell_text: List[List[str]] = []
     for r in rows:
         row_cells = []
         for col in columns_to_show:
-            row_cells.append(_format_cell(r, col, precision))
+            row_cells.append(_format_cell(r, col, value_format, error_format))
         cell_text.append(row_cells)
+
+    col_labels = list(columns_to_show)
+
+    # Phase 13.50.DF step 7b R1 — orientation transpose for Phase 13.43 path.
+    # Mirrors the slot renderer's transpose logic so 'figure' and 'pad'
+    # placements with orientation='column' produce equivalent table content
+    # (the F17 cross-variant equivalence invariant from v2.5 §3.8).
+    if orientation == 'column':
+        transposed: List[List[str]] = []
+        for col_idx, header in enumerate(col_labels):
+            new_row = [str(header)]
+            for orig_row in cell_text:
+                new_row.append(orig_row[col_idx] if col_idx < len(orig_row) else "")
+            transposed.append(new_row)
+        col_labels = [""] + [f"fit_{i}" for i in range(len(cell_text))]
+        cell_text = transposed
+
+    # Re-compute figsize using post-transpose dimensions so the figure
+    # actually fits the visible table.
+    fig_w = max(6.0, len(col_labels) * figsize_per_col)
+    fig_h = max(2.0, 0.7 + len(cell_text) * figsize_per_row + 0.6)
+
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    ax.set_axis_off()
 
     table = ax.table(
         cellText=cell_text,
-        colLabels=columns_to_show,
+        colLabels=col_labels,
         cellLoc='center',
         loc='upper center',
     )
@@ -593,8 +809,12 @@ def _default_columns(rows):
     return [c for c in cols if not all_none(c)]
 
 
-def _format_cell(row, col, precision):
-    """Format one cell — paired value/err combined when both present."""
+def _format_cell(row, col, value_format, error_format):
+    """Format one cell — paired value/err combined when both present.
+
+    Phase 13.50.DF step 7a [BREACH]: signature changed from
+    (row, col, precision) to (row, col, value_format, error_format).
+    """
     val = row.get(col)
     if val is None:
         return ''
@@ -604,20 +824,25 @@ def _format_cell(row, col, precision):
         return str(int(val))
     if isinstance(val, (float, np.floating)):
         if err is not None and isinstance(err, (float, int, np.number)):
-            return f"{_fmt_num(val, precision)} ± {_fmt_num(err, precision)}"
-        return _fmt_num(val, precision)
+            return f"{_fmt_num(val, value_format)} ± {_fmt_num(err, error_format)}"
+        return _fmt_num(val, value_format)
     return str(val)
 
 
-def _fmt_num(x, precision):
-    """Sig-digit numeric format. precision ∈ {1, 2, 3}."""
+def _fmt_num(x, fmt):
+    """Format a numeric value using a Python format-spec string.
+
+    Phase 13.50.DF step 7a [BREACH]: signature changed from (x, precision: int)
+    to (x, fmt: str). Caller supplies format-spec like '.2g', '.3f', '.4e'.
+    Non-finite values fall back to str(x) (unchanged behavior).
+    """
     try:
         x = float(x)
     except (TypeError, ValueError):
         return str(x)
-    if x == 0 or not np.isfinite(x):
-        return f"{x:.{precision}g}" if np.isfinite(x) else str(x)
-    return f"{x:.{precision}g}"
+    if not np.isfinite(x):
+        return str(x)
+    return f"{x:{fmt}}"
 
 
 # ============================================================================
@@ -625,7 +850,7 @@ def _fmt_num(x, precision):
 # ============================================================================
 
 def _render_params_figure(
-    rows, *, params, mode, annotate, precision,
+    rows, *, params, mode, annotate, value_format,
     group_by_col, facet_by_cols,
     title, title_overflow, expr_for_auto_title, style,
 ) -> Optional[plt.Figure]:
@@ -649,7 +874,7 @@ def _render_params_figure(
                                           max(4.0, subplot_h * 1.2)))
         for p in param_names:
             _plot_param_overlay(ax, rows, p, group_by_col, facet_by_cols,
-                                annotate, precision, style)
+                                annotate, value_format, style)
         ax.legend(loc='best', fontsize=8)
     else:
         nrows = int(np.ceil(np.sqrt(n_params)))
@@ -662,7 +887,7 @@ def _render_params_figure(
         for idx, p in enumerate(param_names):
             ax = axes.flat[idx]
             _plot_param_subplot(ax, rows, p, group_by_col, facet_by_cols,
-                                annotate, precision, style)
+                                annotate, value_format, style)
         for idx in range(n_params, nrows * ncols):
             axes.flat[idx].set_visible(False)
 
@@ -686,7 +911,7 @@ def _all_param_names(rows):
 
 
 def _plot_param_subplot(ax, rows, param, group_by_col, facet_by_cols,
-                        annotate, precision, style):
+                        annotate, value_format, style):
     """One subplot per param: X = facet (or group), Y = param value."""
     use_facet_x = bool(facet_by_cols)
     color_by_group = use_facet_x and group_by_col is not None
@@ -708,7 +933,7 @@ def _plot_param_subplot(ax, rows, param, group_by_col, facet_by_cols,
                                fontsize=8)
             if _should_annotate(annotate, len(xs)):
                 for i, (y, e) in enumerate(zip(ys, errs)):
-                    ax.annotate(_fmt_num(y, precision), (i, y),
+                    ax.annotate(_fmt_num(y, value_format), (i, y),
                                 fontsize=_style_get(style, 'summary_fit.figure.annotate_fontsize', 8),
                                 xytext=_style_get(style, 'summary_fit.figure.annotate_offset', (5, 5)),
                                 textcoords='offset points')
@@ -723,7 +948,7 @@ def _plot_param_subplot(ax, rows, param, group_by_col, facet_by_cols,
                                fontsize=8)
             if _should_annotate(annotate, len(xs)):
                 for i, y in enumerate(ys):
-                    ax.annotate(_fmt_num(y, precision), (i, y), fontsize=8,
+                    ax.annotate(_fmt_num(y, value_format), (i, y), fontsize=8,
                                 xytext=(5, 5), textcoords='offset points')
     else:
         # group only (no facet): X = group.
@@ -736,7 +961,7 @@ def _plot_param_subplot(ax, rows, param, group_by_col, facet_by_cols,
                                fontsize=8)
             if _should_annotate(annotate, len(xs)):
                 for i, y in enumerate(ys):
-                    ax.annotate(_fmt_num(y, precision), (i, y), fontsize=8,
+                    ax.annotate(_fmt_num(y, value_format), (i, y), fontsize=8,
                                 xytext=(5, 5), textcoords='offset points')
 
     ax.set_title(param, fontsize=10)
@@ -745,7 +970,7 @@ def _plot_param_subplot(ax, rows, param, group_by_col, facet_by_cols,
 
 
 def _plot_param_overlay(ax, rows, param, group_by_col, facet_by_cols,
-                        annotate, precision, style):
+                        annotate, value_format, style):
     """Overlay mode: all params share one axes (single y-scale)."""
     use_facet_x = bool(facet_by_cols)
     xs, ys, errs = _series_for(rows, param,
@@ -985,61 +1210,227 @@ def _render_table_in_axes(ax, rows, spec):
     """Render the summary_fit table into a host axes using ax.table().
 
     Single axes inside a GridSpec slot — table fills the axes. The
-    `params` and `precision` settings from spec control which columns
-    appear and their formatting.
+    `params`, `value_format`, and `error_format` settings from spec control
+    which columns appear and their formatting (Phase 13.50.DF step 7a
+    [BREACH]: precision int parameter replaced by format-spec strings).
+
+    Phase 13.50.DF step 7e FIX1 (post-step-7 F17 failure): column
+    discovery + cell formatting now mirror ``_render_table_figure``
+    exactly — uses ``_default_columns(rows)`` for the column list and
+    ``_format_cell`` for paired ``value ± err`` cells. The pre-fix logic
+    looked for a nested ``row['params']`` sub-dict that ``_make_row``
+    never produces (params are flattened to top-level row keys), so only
+    id_keys (group, facet, fit_name) survived to the rendered table. This
+    made the 'pad'-placement table look like a stub vs the 'figure'-
+    placement table's full column set, breaking the F17 cross-variant
+    equivalence invariant (v2.5 §3.8). Cross-variant content equivalence
+    is the v2.5 headline guarantee for the placement axis — switching
+    placement must not change which cells render.
     """
     if not rows:
         ax.axis('off')
         return
 
-    # Build column list: identifying keys + the param values.
-    # Identify which keys consistently appear in every row.
-    sample = rows[0]
-    id_keys = [k for k in ('group', 'facet', 'fit_name') if k in sample]
-    # Collect all distinct param names from the rows.
-    all_params = []
-    for row in rows:
-        for pname in (row.get('params') or {}):
-            if pname not in all_params:
-                all_params.append(pname)
-    # Filter by spec.params if user restricted the set.
+    # Mirror the figure renderer's column discovery.
+    columns_to_show = _default_columns(rows)
+
+    # Apply user's params= subset filter, preserving id-keys + per-param
+    # error columns (`<name>_err`) for any param the user kept.
     requested = spec.get('params')
     if requested is not None:
-        all_params = [p for p in all_params if p in requested]
+        id_key_set = {'group', 'facet', 'fit_name'}
+        metric_keys = {'chi2', 'ndf', 'redchi', 'fit_status', 'n_data'}
+        keep = set(requested)
+        # Include the *_err sibling for any kept param.
+        keep_err = {f"{p}_err" for p in requested}
+        columns_to_show = [
+            c for c in columns_to_show
+            if c in id_key_set or c in metric_keys
+            or c in keep or c in keep_err
+        ]
 
-    precision = spec.get('precision', 2)
-    fmt = f"{{:.{precision}g}}"
+    # Mirror the figure renderer's cell formatting (value ± err pairing).
+    value_format = spec.get('value_format', '.2g')
+    error_format = spec.get('error_format', '.1g')
 
-    headers = list(id_keys) + all_params
+    headers = list(columns_to_show)
     cell_rows = []
     for row in rows:
-        cells = []
-        for k in id_keys:
-            v = row.get(k)
-            cells.append("" if v is None else str(v))
-        params_dict = row.get('params') or {}
-        for pname in all_params:
-            pval = params_dict.get(pname)
-            if isinstance(pval, dict):  # value + error sub-dict
-                v = pval.get('value', float('nan'))
-                try:
-                    cells.append(fmt.format(v))
-                except (ValueError, TypeError):
-                    cells.append(str(v))
-            elif pval is None:
-                cells.append("")
-            else:
-                try:
-                    cells.append(fmt.format(pval))
-                except (ValueError, TypeError):
-                    cells.append(str(pval))
-        cell_rows.append(cells)
+        row_cells = []
+        for col in columns_to_show:
+            row_cells.append(_format_cell(row, col, value_format, error_format))
+        cell_rows.append(row_cells)
 
     ax.axis('off')
     if not cell_rows or not headers:
         return
+
+    # Phase 13.50.DF step 6 — orientation axis (step 7b naming alignment).
+    # 'row'    (default): one row per fit, columns = id keys + params
+    #                     (cell_rows[i] = row i, headers as colLabels)
+    # 'column' (step 7b rename, was 'vertical'): transpose — one row per
+    #          (id key OR param), columns = fits. The original `headers`
+    #          list becomes the first column of the transposed table
+    #          (acting as row labels); each cell_rows[i] becomes a column.
+    #          New colLabels = generic "fit_0", "fit_1", ... since the
+    #          original fits don't have a single short identifier (they're
+    #          characterized by the id_keys composition).
+    orientation = spec.get('orientation', 'row')
+    if orientation == 'column':
+        # Build transposed: each ORIGINAL column becomes a row whose first
+        # cell is the original header label and remaining cells are the
+        # values from each original row at that column index.
+        transposed_rows = []
+        for col_idx, header in enumerate(headers):
+            new_row = [str(header)]
+            for orig_row in cell_rows:
+                new_row.append(orig_row[col_idx] if col_idx < len(orig_row) else "")
+            transposed_rows.append(new_row)
+        # First column header is empty (row label position); remaining are
+        # generic indices for the original fits.
+        new_headers = [""] + [f"fit_{i}" for i in range(len(cell_rows))]
+        cell_rows = transposed_rows
+        headers = new_headers
+
     table = ax.table(cellText=cell_rows, colLabels=headers,
                      loc='center', cellLoc='center')
     table.auto_set_font_size(False)
     table.set_fontsize(7)
     table.scale(1.0, 1.0)
+
+
+# ============================================================================
+# Phase 13.50.DF step 7d — Per-panel inset renderer for placement='subfigure'
+# ============================================================================
+# Per v2.5 §3.5 + P2-NEW-3 (Claude36 ADF panel finding folded into v2.4):
+# placement='subfigure' means each facet panel hosts its OWN inset_axes()
+# showing ONLY that panel's fits — per-panel slices, not a redundant
+# full-table copy on every panel. The v1.0 step-5 ship was wrong (single
+# SubFigure with the entire table); this step ships the spec'd semantic.
+
+def render_summary_fit_per_panel_insets(
+    fig, stats_fit, spec, *,
+    group_by_col=None, facet_by_cols=None, style=None,
+):
+    """Render per-panel summary_fit insets (placement='subfigure').
+
+    For each visible facet axes carrying a ``_dfdraw_facet_key`` marker,
+    add an ``Axes.inset_axes(inset_bbox)`` inset and render that panel's
+    fit subset into the inset table. Panels with no fit rows get no inset.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+        Main figure with facet axes laid out by ``_dispatch_faceted_render``.
+        Each candidate axes is identified via the ``_dfdraw_facet_key``
+        attribute stashed during the dispatch loop (step 7d wiring).
+    stats_fit : any
+        Phase 13.42 stats['fit'] container. Shape 3 (faceted) is the
+        normal case; shape 1/2 produce one inset on the first visible
+        axes only.
+    spec : dict
+        Canonical spec from ``_normalize_summary_fit_spec``. Reads
+        ``inset_bbox`` for the per-panel inset placement (defaulted to
+        ``(0.55, 0.02, 0.43, 0.30)`` per v2.5 §3.5).
+    group_by_col, facet_by_cols : optional
+        Echo of the call-site faceting axis names — passed to
+        ``_flatten_to_rows`` per-panel.
+    style : optional
+        Style proxy (unused in this renderer; the table fontsize and
+        scale are fixed for in-axes insets).
+
+    Returns
+    -------
+    dict
+        ``{'insets': [list of inset axes],
+           'per_panel_keyed': {facet_key: inset_axes, ...},
+           'placement': 'subfigure'}``
+        when at least one panel got an inset. Empty dict if no panels
+        produced fits (caller treats this as "rows were produced=False").
+    """
+    inset_bbox = spec.get('inset_bbox') or (0.55, 0.02, 0.43, 0.30)
+
+    # Iterate over candidate axes. Visible-axes filter keeps us off the
+    # hidden-spare cells; the facet-key marker keeps us off non-dispatch
+    # axes (legends, colorbars, etc.). Shape-3 stats_fit is the normal
+    # case here; shapes 1/2 are handled by the single-axes fallback below.
+    candidates = [ax for ax in fig.axes
+                  if ax.get_visible()
+                  and hasattr(ax, '_dfdraw_facet_key')]
+    if not candidates:
+        return {}
+
+    insets: list = []
+    per_panel_keyed: Dict[Any, plt.Axes] = {}
+
+    # If stats_fit is a dict, treat each top-level key as a panel.
+    # Otherwise (list-of-lists), fall back to attaching one inset to the
+    # first visible axes only (degenerate "1 fit, 1 panel" case).
+    if isinstance(stats_fit, dict):
+        for ax in candidates:
+            panel_key = ax._dfdraw_facet_key
+            panel_stats = _select_panel_stats(stats_fit, panel_key)
+            if panel_stats is None:
+                continue
+            panel_rows = _flatten_to_rows(
+                panel_stats, group_by_col, facet_by_cols,
+            )
+            if not panel_rows:
+                continue
+            inset = ax.inset_axes(list(inset_bbox))
+            _render_table_in_axes(inset, panel_rows, spec)
+            insets.append(inset)
+            per_panel_keyed[panel_key] = inset
+    else:
+        # Non-dict stats_fit: attach to first visible facet axes only.
+        rows = _flatten_to_rows(stats_fit, group_by_col, facet_by_cols)
+        if rows:
+            ax = candidates[0]
+            inset = ax.inset_axes(list(inset_bbox))
+            _render_table_in_axes(inset, rows, spec)
+            insets.append(inset)
+            per_panel_keyed[ax._dfdraw_facet_key] = inset
+
+    if not insets:
+        return {}
+    return {
+        'insets': insets,
+        'per_panel_keyed': per_panel_keyed,
+        'placement': 'subfigure',
+    }
+
+
+def _select_panel_stats(stats_fit_dict, panel_key):
+    """Return the subset of stats_fit_dict matching panel_key, or None.
+
+    Phase 13.50.DF step 7d FIX2 (post-step-7 F12 failure): the dispatcher
+    keys per-facet stats with ``str(group_value)`` at drawer.py:3784, and
+    aggregates faceted fits as ``{(str(_gval),): _cell_fit}`` at drawer.py:
+    3863. The dispatch loop, however, stashes the RAW ``group_value`` on
+    ``ax._dfdraw_facet_key``. So a panel_key like int ``3`` will not match
+    a stats_fit key like ``('3',)`` via the raw membership check. This
+    function now tries both raw and stringified forms:
+
+      1. ``panel_key in stats_fit_dict``         (raw scalar key)
+      2. ``str(panel_key) in stats_fit_dict``    (stringified scalar key)
+      3. tuple-key containing raw panel_key      (faceted_by='quantiles' /
+         vector y modes — raw types preserved)
+      4. tuple-key containing stringified key    (faceted_by='column' /
+         'group_by' modes — dispatcher stringifies before keying)
+
+    Wraps the matched entry in a single-key dict so ``_flatten_to_rows``
+    sees the canonical Shape-2-like container.
+    """
+    panel_key_str = str(panel_key)
+    if panel_key in stats_fit_dict:
+        return {panel_key: stats_fit_dict[panel_key]}
+    if panel_key_str in stats_fit_dict:
+        return {panel_key_str: stats_fit_dict[panel_key_str]}
+    for k in stats_fit_dict:
+        if not isinstance(k, tuple):
+            continue
+        if panel_key in k:
+            return {k: stats_fit_dict[k]}
+        if any(str(x) == panel_key_str for x in k):
+            return {k: stats_fit_dict[k]}
+    return None
