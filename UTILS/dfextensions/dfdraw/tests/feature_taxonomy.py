@@ -1564,6 +1564,41 @@ FEATURES = [
         ],
     },
     {
+        # Phase 13.50.DF step 5 — summary_fit.placement axis: where the
+        # summary_fit content is rendered.
+        #   'figure'    → separate matplotlib Figure (default; Phase 13.43
+        #                 behavior preserved exactly)
+        #   'subfigure' → SubFigure inside the main fig
+        #   'pad'       → extra GridSpec row inside the main fig (single axes)
+        #
+        # GridSpec is immutable post-creation (v2.3 panel P1-A), so the
+        # dispatcher MUST pre-plan the slot before plt.subplots(). The
+        # pre-planning intercept is at the top of _dispatch_faceted_render;
+        # the slot SubplotSpec is stashed on fig._dfdraw_summary_fit_slot
+        # for _maybe_attach_summary_fit to consume.
+        #
+        # Mixed-layer feature row: F11/F12/F13 are visual_primitive
+        # (renderer-free placement_topology inspection); F17 is invariance
+        # (keyed-dict comparison across all 3 placements per v2.4 P2-NEW-1
+        # — count-tuple insufficient because 'pad' and 'subfigure' both
+        # produce one host axes; keyed dict catches the mode-swap bug).
+        #
+        # Non-faceted callers: placement='pad'/'subfigure' currently
+        # requires a faceted dispatch path (group_by or facet_by). Calls
+        # without faceting raise ValueError with a clear fix message at
+        # _maybe_attach_summary_fit time. Broader N-D faceting + non-
+        # faceted support is deferred to Phase 13.50 FIX1 if requested.
+        "id": "SUMMARY_FIT.placement",
+        "name": "summary_fit.placement axis: figure (default) / subfigure / pad with GridSpec pre-planning",
+        "category": "SUMMARY_FIT",
+        "tests": [
+            "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F11_placement_figure_default_unchanged",
+            "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F12_placement_subfigure_uses_subfigure_api",
+            "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F13_placement_pad_uses_extra_row_axes",
+            "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F17_placement_topology_keyed_dict_invariance",
+        ],
+    },
+    {
         "id": "API.kwarg_typo_guard",
         "name": "Kwarg-typo guard (difflib did-you-mean at draw() entry)",
         "category": "API",

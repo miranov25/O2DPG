@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-06-03 05:10 UTC
+**Generated:** 2026-06-03 06:44 UTC
 **Phase:** PHASE_13_49_DF_FIX1_END
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -9,14 +9,14 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 58 | 46% |
-| ☑️ Smoke-only | 66 | 53% |
+| ✅ Verified | 59 | 47% |
+| ☑️ Smoke-only | 66 | 52% |
 | 🧨 Broken | 0 | 0% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **125** | |
-| **Total proof tests** | **605** | |
-| **Invariance tests** | **355** | |
-| **Visual tests** | **22** | |
+| **Total features** | **126** | |
+| **Total proof tests** | **609** | |
+| **Invariance tests** | **356** | |
+| **Visual tests** | **25** | |
 
 **Status key:**
 - ✅ Verified — has at least one passing invariance test (A ≡ B check)
@@ -161,6 +161,8 @@
 | | **STYLE** | | | | | |
 | ☑️ | **STYLE.predefined** — Predefined styles (default, publication, presentation) | 3 | 3 | 0 | 0 |  |
 | ☑️ | **STYLE.custom** — Custom style dict and JSON persistence | 4 | 4 | 0 | 0 |  |
+| | **SUMMARY_FIT** | | | | | |
+| ✅ | **SUMMARY_FIT.placement** — summary_fit.placement axis: figure (default) / subfigure / pad with GridSpec pre-planning 👁 | 4 | 4 | 0 | 1 | 3 |
 | | **TITLE** | | | | | |
 | ☑️ | **TITLE.auto_title** — Automatic title from plot parameters | 10 | 10 | 0 | 0 |  |
 | ✅ | **TITLE.get_suptitle** — _get_suptitle public-API helper (mpl >= 3.8 + fallback) | 1 | 1 | 0 | 1 |  |

@@ -148,6 +148,101 @@ def legend_topology(fig):
     return (n_fig_level, n_per_axes, frozenset(labels), loc_string)
 
 
+# Phase 13.50 step 5 — placement_topology helper (per v2.4 P2-NEW-1: keyed
+# dict catches permutation bugs that a count-tuple misses; if placement='pad'
+# and placement='subfigure' get swapped, the topology dict's two values
+# differ in shape).
+def placement_topology(fig, stats):
+    """Return a keyed dict describing how summary_fit was placed.
+
+    Keys
+    ----
+    - 'placement'        : str — the placement label the renderer reports
+                           ('figure' is inferred when no slot was used).
+    - 'in_main_fig_axes' : bool — is the host axes one of ``fig.axes``?
+                           True only for placement='pad'.
+    - 'in_subfigure'     : bool — is the host axes inside the SubFigure
+                           stashed on ``fig._dfdraw_summary_fit_subfigure``?
+                           True only for placement='subfigure'.
+    - 'separate_figure'  : bool — does ``stats['summary_fit']`` contain a
+                           ``matplotlib.figure.Figure`` distinct from ``fig``?
+                           True only for placement='figure'.
+    - 'host_kind'        : str — what kind of object hosts the rendered
+                           content: 'axes' | 'figure' | 'absent'.
+
+    Permutation safety: for the three accepted placements (figure, subfigure,
+    pad), the four-bool combinations are all distinct, so a placement→topology
+    mapping bug (e.g. 'pad' renders to a SubFigure or 'figure' renders to the
+    main fig) shows up as a topology mismatch.
+
+    FIX1 of step 5: ``fig.subfigures`` is a CREATION METHOD on
+    matplotlib.figure.Figure (used as ``fig.subfigures(nrows, ncols, ...)``),
+    NOT an iterable property — iterating it raises ``TypeError: 'method'
+    object is not iterable``. SubFigure detection here uses the renderer's
+    stash on ``fig._dfdraw_summary_fit_subfigure``, which is set whenever
+    ``render_summary_fit_into_slot`` materializes a SubFigure.
+    """
+    import matplotlib.figure as _mpl_fig
+    import matplotlib.axes as _mpl_axes
+
+    sf = stats.get('summary_fit') if isinstance(stats, dict) else None
+    if not sf:
+        return {
+            'placement':        'absent',
+            'in_main_fig_axes': False,
+            'in_subfigure':     False,
+            'separate_figure':  False,
+            'host_kind':        'absent',
+        }
+
+    placement = sf.get('placement', 'figure')
+    in_main_fig_axes = False
+    in_subfigure = False
+    separate_figure = False
+    host_kind = 'absent'
+
+    # The 'table' key holds the rendered content. In Phase 13.43 'figure'
+    # placement it's a separate matplotlib Figure; in 'pad'/'subfigure' it's
+    # the host Axes inside the main fig.
+    host = sf.get('table')
+    if isinstance(host, _mpl_fig.Figure):
+        # 'figure' placement path: sf['table'] is a separate Figure.
+        if host is not fig:
+            separate_figure = True
+            host_kind = 'figure'
+    elif isinstance(host, _mpl_axes.Axes):
+        # 'pad' or 'subfigure' placement: sf['table'] is the host axes.
+        # IMPORTANT: matplotlib aggregates SubFigure-hosted axes into the
+        # PARENT fig.axes list as well as the SubFigure's own axes list.
+        # So we MUST check the stashed SubFigure first; otherwise the
+        # subfigure path always misroutes to in_main_fig_axes=True and
+        # placement='subfigure' looks indistinguishable from 'pad'.
+        stashed_subfig = getattr(fig, '_dfdraw_summary_fit_subfigure', None)
+        if stashed_subfig is not None and host in stashed_subfig.axes:
+            in_subfigure = True
+            host_kind = 'axes'
+        elif host in fig.axes:
+            in_main_fig_axes = True
+            host_kind = 'axes'
+    else:
+        # Fallback: Phase 13.43 'figure' kind may sit under sf['figure']
+        # instead of sf['table'] when only 'figure' kind was requested.
+        for k in ('table', 'figure'):
+            f = sf.get(k)
+            if isinstance(f, _mpl_fig.Figure) and f is not fig:
+                separate_figure = True
+                host_kind = 'figure'
+                break
+
+    return {
+        'placement':        placement,
+        'in_main_fig_axes': in_main_fig_axes,
+        'in_subfigure':     in_subfigure,
+        'separate_figure':  separate_figure,
+        'host_kind':        host_kind,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # FitVisualCheck — sibling to Phase 13.48 VisualCheck
 # --------------------------------------------------------------------------- #
@@ -785,3 +880,195 @@ class TestPhase1350LegendNormalizerInvariance:
                 f"non-idempotent for (legend={legend!r}, show_legend={show_legend!r}): "
                 f"once={once!r}  twice={twice!r}"
             )
+
+
+# --------------------------------------------------------------------------- #
+# Phase 13.50 step 5 — summary_fit.placement axis
+# Tests F11, F12, F13 (visual_primitive) + F17 (invariance — placement_topology
+# keyed dict catches mode-swap bugs per v2.4 P2-NEW-1).
+# --------------------------------------------------------------------------- #
+
+class TestPhase1350SummaryFitPlacement:
+    """Phase 13.50 step 5 visual-primitive checks for ``summary_fit`` placement
+    axis (where the summary content is rendered: separate figure / subfigure
+    inside the main fig / pad-slot inside the main fig).
+
+    EXPECTED · WHY · APPROVE · FAIL_MODE per V-check:
+
+      F11 (placement='figure', default): EXPECTED ``stats['summary_fit']``
+          contains a separate Figure object distinct from the main fig;
+          ``fig._dfdraw_summary_fit_slot`` is absent;
+          WHY default behavior MUST be preserved exactly — Phase 13.43
+          callers rely on the standalone-Figure semantics;
+          APPROVE topology['separate_figure'] True AND
+          topology['in_main_fig_axes'] False AND
+          getattr(fig, '_dfdraw_summary_fit_slot', None) is None;
+          FAIL_MODE normalizer default drifted to 'pad'/'subfigure', or
+          dispatcher unconditionally pre-plans the slot.
+
+      F12 (placement='subfigure'): EXPECTED a SubFigure exists in
+          ``fig.subfigures`` and the host axes is inside it;
+          WHY subfigure placement is the integrated-in-main-fig path —
+          must use matplotlib's SubFigure API, not just a regular axes;
+          APPROVE len(fig.subfigures) >= 1 AND
+          topology['in_subfigure'] True AND topology['host_kind']=='axes';
+          FAIL_MODE renderer used add_subplot instead of add_subfigure;
+          slot SubplotSpec not stashed; or placement got downgraded
+          silently to 'figure' or 'pad'.
+
+      F13 (placement='pad'): EXPECTED the host axes is an extra axes in
+          ``fig.axes`` (beyond the facet count);
+          WHY pad placement uses the simpler GridSpec extra-row strategy
+          and the host must be a normal axes in the main fig;
+          APPROVE topology['in_main_fig_axes'] True AND
+          len(fig.axes) == n_facet_axes + 1;
+          FAIL_MODE renderer accidentally used SubFigure (wrong API for
+          'pad'), or pre-planning failed to add the extra row.
+
+      F17 (placement_topology keyed dict invariance per v2.4 P2-NEW-1):
+          EXPECTED running all 3 placements and collecting their topologies
+          into a keyed dict yields three DISTINCT topology dicts;
+          WHY a count-tuple alone (the early F17 draft) would have missed
+          a swap bug where 'pad' and 'subfigure' renderers got crossed,
+          since both produce one host axes — but the keyed dict makes
+          ``in_main_fig_axes`` vs ``in_subfigure`` distinguish them
+          unambiguously;
+          APPROVE topo['pad'] != topo['subfigure'] != topo['figure'];
+          FAIL_MODE any two placements collapse to the same topology dict
+          (mode collapse / swap / drift).
+    """
+
+    def _profile_faceted(self, df, **profile_kwargs):
+        """Shared dispatch helper. ``facet_by='sec'`` triggers
+        ``_dispatch_faceted_render`` (the path that pre-plans the GridSpec
+        slot for placement='pad'/'subfigure'); ``group_by='g'`` adds within-
+        panel grouping for richer stats['fit'] rows. Both faceting params
+        are required — group_by ALONE does not invoke the dispatcher (it
+        produces a single-axes grouped plot), so the slot is never
+        pre-planned and placement='pad'/'subfigure' raises."""
+        return DFDraw(df).profile(
+            'y:x', bins=10, group_by='g', facet_by='sec',
+            fit='linear', **profile_kwargs,
+        )
+
+    def test_F11_placement_figure_default_unchanged(self, df_faceted):
+        """F11 — placement='figure' (default) preserves Phase 13.43 standalone
+        Figure semantics. No slot pre-planning on the main fig."""
+        fig, axes, stats = self._profile_faceted(
+            df_faceted,
+            summary_fit={'kind': 'table'},  # placement defaults to 'figure'
+        )
+        topology = placement_topology(fig, stats)
+        # Topology must reflect separate-figure semantics.
+        assert topology['placement'] == 'figure', (
+            f"expected placement='figure' (default), got {topology['placement']!r}")
+        assert topology['separate_figure'] is True, (
+            f"expected separate_figure=True for placement='figure', "
+            f"got topology={topology!r}")
+        assert topology['in_main_fig_axes'] is False, (
+            f"placement='figure' must not host into main fig.axes; "
+            f"topology={topology!r}")
+        assert topology['in_subfigure'] is False, (
+            f"placement='figure' must not host into a SubFigure; "
+            f"topology={topology!r}")
+        # Slot attribute must be absent for default placement.
+        assert getattr(fig, '_dfdraw_summary_fit_slot', None) is None, (
+            "placement='figure' must not pre-plan a slot")
+        plt.close(fig)
+        # Close the separate Figure too.
+        for k in ('table', 'figure'):
+            sub = stats.get('summary_fit', {}).get(k)
+            if hasattr(sub, 'number'):
+                plt.close(sub)
+
+    def test_F12_placement_subfigure_uses_subfigure_api(self, df_faceted):
+        """F12 — placement='subfigure' creates a real SubFigure inside main fig
+        and hosts the table axes there."""
+        fig, axes, stats = self._profile_faceted(
+            df_faceted,
+            summary_fit={'kind': 'table', 'placement': 'subfigure'},
+        )
+        topology = placement_topology(fig, stats)
+        assert topology['placement'] == 'subfigure', (
+            f"expected placement='subfigure', got {topology['placement']!r}")
+        # SubFigure detection: do NOT inspect ``fig.subfigures`` directly —
+        # that's a CREATION METHOD on matplotlib Figure, not an iterable.
+        # Use the stash that ``render_summary_fit_into_slot`` sets when it
+        # materializes the SubFigure for placement='subfigure'.
+        stashed_subfig = getattr(fig, '_dfdraw_summary_fit_subfigure', None)
+        assert stashed_subfig is not None, (
+            f"placement='subfigure' must stash the SubFigure on "
+            f"fig._dfdraw_summary_fit_subfigure for downstream introspection; "
+            f"attribute is missing")
+        assert topology['in_subfigure'] is True, (
+            f"host axes must be inside the SubFigure; topology={topology!r}")
+        assert topology['host_kind'] == 'axes', (
+            f"host_kind should be 'axes' for in-slot rendering, got "
+            f"{topology['host_kind']!r}")
+        plt.close(fig)
+
+    def test_F13_placement_pad_uses_extra_row_axes(self, df_faceted):
+        """F13 — placement='pad' adds an extra axes to the main fig (extra
+        GridSpec row, height_ratio < 1)."""
+        # Baseline: same dispatch without summary_fit → just facet axes.
+        fig_baseline, axes_baseline, _ = self._profile_faceted(df_faceted)
+        n_facet_axes = len(fig_baseline.axes)
+        plt.close(fig_baseline)
+
+        fig, axes, stats = self._profile_faceted(
+            df_faceted,
+            summary_fit={'kind': 'table', 'placement': 'pad'},
+        )
+        topology = placement_topology(fig, stats)
+        assert topology['placement'] == 'pad', (
+            f"expected placement='pad', got {topology['placement']!r}")
+        assert topology['in_main_fig_axes'] is True, (
+            f"host axes must be in fig.axes for 'pad'; topology={topology!r}")
+        assert topology['in_subfigure'] is False, (
+            f"'pad' must NOT use a SubFigure; topology={topology!r}")
+        # The pad placement adds exactly one axes (the slot) to the facet count.
+        assert len(fig.axes) == n_facet_axes + 1, (
+            f"placement='pad' should add exactly 1 axes to the baseline facet "
+            f"count ({n_facet_axes}); got len(fig.axes)={len(fig.axes)}")
+        plt.close(fig)
+
+    def test_F17_placement_topology_keyed_dict_invariance(self, df_faceted):
+        """F17 — all 3 placements produce DISTINCT placement_topology dicts.
+
+        Per v2.4 panel P2-NEW-1: keyed dict (not count tuple) catches a
+        permutation bug where 'pad' and 'subfigure' get their renderers
+        swapped — both produce one host axes, so a count-based topology
+        would consider them equal. The keyed dict distinguishes them via
+        in_main_fig_axes vs in_subfigure.
+        """
+        topo = {}
+        figs_to_close = []
+        for placement in ('figure', 'subfigure', 'pad'):
+            fig, axes, stats = self._profile_faceted(
+                df_faceted,
+                summary_fit={'kind': 'table', 'placement': placement},
+            )
+            topo[placement] = placement_topology(fig, stats)
+            figs_to_close.append(fig)
+            # Also collect separate figures for placement='figure'.
+            if placement == 'figure':
+                for k in ('table', 'figure'):
+                    sub = stats.get('summary_fit', {}).get(k)
+                    if hasattr(sub, 'number'):
+                        figs_to_close.append(sub)
+
+        # All three placements must produce DISTINCT topology dicts.
+        assert topo['figure']    != topo['subfigure'], \
+            f"'figure' and 'subfigure' topologies collapsed: {topo!r}"
+        assert topo['subfigure'] != topo['pad'], \
+            f"'subfigure' and 'pad' topologies collapsed (mode-swap risk): {topo!r}"
+        assert topo['figure']    != topo['pad'], \
+            f"'figure' and 'pad' topologies collapsed: {topo!r}"
+
+        # Individual mode invariants.
+        assert topo['figure']['separate_figure'] is True
+        assert topo['subfigure']['in_subfigure'] is True
+        assert topo['pad']['in_main_fig_axes'] is True
+
+        for f in figs_to_close:
+            plt.close(f)

@@ -453,8 +453,16 @@ class DFDraw:
     def _maybe_attach_summary_fit(self, stats, summary_fit_spec, *,
                                   group_by=None, facet_by=None,
                                   expr_for_auto_title=None,
-                                  consumed_by_normalize=False):
+                                  consumed_by_normalize=False,
+                                  fig=None):
         """Phase 13.43.DF v1.2 §4.2: attach summary_fit results to stats.
+
+        Phase 13.50.DF step 5 addition: ``fig`` kwarg routes to in-slot
+        rendering when ``fig._dfdraw_summary_fit_slot`` was pre-planned by
+        the dispatcher (placement='pad' or 'subfigure'). When ``fig`` is
+        None or the attribute is absent, the path falls through to the
+        Phase 13.43 'figure' placement (separate Figure attached to
+        ``stats['summary_fit']``).
 
         Called AT EACH return site of DFDraw.{hist,profile,scatter,draw}
         AFTER the dispatch returns. Modifies ``stats`` in place — adds
@@ -582,6 +590,51 @@ class DFDraw:
                     raise KeyError(key)
                 return v
         _style = _ModuleStyleProxy()
+
+        # ------------------------------------------------------------------
+        # Phase 13.50.DF step 5 — placement axis routing.
+        # placement='figure' (default): falls through to render_summary_fit
+        #   below (Phase 13.43 path; creates new Figure objects).
+        # placement='pad' / 'subfigure': requires fig with a pre-reserved
+        #   GridSpec slot (stashed on fig._dfdraw_summary_fit_slot by
+        #   _dispatch_faceted_render). If no fig was passed, or no slot is
+        #   present (non-faceted call path), raises a clear error so the
+        #   user knows the placement requires faceted dispatch.
+        # ------------------------------------------------------------------
+        _placement = spec.get('placement', 'figure')
+        if _placement in ('pad', 'subfigure'):
+            _slot = getattr(fig, '_dfdraw_summary_fit_slot', None) if fig is not None else None
+            if _slot is None:
+                raise ValueError(
+                    f"summary_fit placement={_placement!r} requires a faceted "
+                    f"dispatch path (group_by or facet_by) so the dispatcher "
+                    f"can pre-plan a GridSpec slot before plt.subplots. "
+                    f"This call did not go through _dispatch_faceted_render "
+                    f"(no faceting). "
+                    f"Fix: add group_by= or facet_by= to enable faceting, "
+                    f"or use placement='figure' (default) for non-faceted plots."
+                )
+            from .plots._summary_fit import render_summary_fit_into_slot
+            slot_result = render_summary_fit_into_slot(
+                _slot, fig, stats_fit, spec,
+                group_by_col=group_by,
+                facet_by_cols=facet_cols,
+                expr_for_auto_title=expr_for_auto_title,
+                style=_style,
+            )
+            if slot_result:
+                # Tests inspect stats['summary_fit'] for the host axes +
+                # placement label. 'data' is omitted here (the renderer
+                # emits visual content only; data extraction is a separate
+                # concern for placement='figure' alone in this phase).
+                stats['summary_fit'] = slot_result
+            else:
+                stats['summary_fit'] = {}
+                stats['summary_fit_note'] = (
+                    f"summary_fit placement={_placement!r} requested but no "
+                    f"rows were produced. Slot reserved but unpopulated."
+                )
+            return
 
         figs, data, note = render_summary_fit(
             stats_fit,
@@ -3384,10 +3437,79 @@ class DFDraw:
         nrows = int(np.ceil(n_groups / ncols))
         base_size = get_style_value("figure.figsize", (8, 6))
         figsize = (base_size[0] / 1.5 * ncols, base_size[1] / 1.5 * nrows)
-        fig, axes = plt.subplots(
-            nrows, ncols, figsize=figsize,
-            sharex=sharex, sharey=sharey, squeeze=False
-        )
+
+        # ----------------------------------------------------------------
+        # Phase 13.50.DF step 5 — summary_fit.placement GridSpec pre-planning
+        # ----------------------------------------------------------------
+        # If the user requested placement='pad' or 'subfigure', we MUST
+        # reserve a GridSpec slot here BEFORE plt.subplots is called.
+        # GridSpec is immutable post-creation (v2.3 panel P1-A); there is
+        # no post-hoc way to insert a row/column into an existing GridSpec.
+        # For placement='figure' (default) or no summary_fit kwarg, the
+        # path below is unchanged. Pre-planning peeks at the spec via the
+        # normalizer; any ValueError from a bad spec re-fires downstream at
+        # _maybe_attach_summary_fit time, where it produces the user-facing
+        # error.
+        #
+        # FIX2 of step 5: use .pop() (not .get()) so summary_fit is CONSUMED
+        # at the dispatcher level. Leaving it in plot_kwargs leaks the kwarg
+        # through to the per-subplot renderer (draw_profile / draw_hist /
+        # draw_scatter), which forwards via **kwargs to matplotlib —
+        # Line2D.set() then raises "unexpected keyword argument 'summary_fit'".
+        # The outer hist/scatter/profile method still has summary_fit in scope
+        # (it's a named param there), so _maybe_attach_summary_fit gets it
+        # via the explicit call-site forwarding, NOT via plot_kwargs.
+        _sf_kwarg = plot_kwargs.pop('summary_fit', None)
+        _sf_placement = 'figure'  # default — preserves Phase 13.43 behavior
+        if _sf_kwarg is not None:
+            try:
+                from .plots._summary_fit import _normalize_summary_fit_spec
+                _sf_placement = _normalize_summary_fit_spec(_sf_kwarg)['placement']
+            except ValueError:
+                _sf_placement = 'figure'  # bad spec: re-fires at attach time
+
+        if _sf_placement in ('pad', 'subfigure'):
+            # P3-NEW-1 (v2.4 panel): use height_ratios so the reserved slot
+            # is smaller than a facet row. 'pad' = single axes (narrower);
+            # 'subfigure' = SubFigure region (slightly taller for sub-layout).
+            _sf_height_ratio = 0.4 if _sf_placement == 'pad' else 0.6
+            _augmented_figsize = (
+                figsize[0],
+                figsize[1] * (1.0 + _sf_height_ratio / max(nrows, 1)),
+            )
+            fig = plt.figure(figsize=_augmented_figsize)
+            _gs = fig.add_gridspec(
+                nrows + 1, ncols,
+                height_ratios=[1.0] * nrows + [_sf_height_ratio],
+            )
+            axes = np.empty((nrows, ncols), dtype=object)
+            # Build axes with sharex/sharey relationships matching the
+            # plt.subplots() default behavior.
+            _ref_ax = None
+            for _i in range(nrows):
+                for _j in range(ncols):
+                    _kw = {}
+                    if _ref_ax is not None:
+                        if sharex:
+                            _kw['sharex'] = _ref_ax
+                        if sharey:
+                            _kw['sharey'] = _ref_ax
+                    _new_ax = fig.add_subplot(_gs[_i, _j], **_kw)
+                    if _ref_ax is None:
+                        _ref_ax = _new_ax
+                    axes[_i, _j] = _new_ax
+            # Stash the reserved SubplotSpec + placement mode on the fig.
+            # _maybe_attach_summary_fit reads this attribute to route to
+            # the in-slot rendering helper instead of creating a new fig.
+            # Private prefix avoids namespace pollution; only the attach
+            # path reads it.
+            fig._dfdraw_summary_fit_slot = (_gs[nrows, :], _sf_placement)
+        else:
+            # Original path (placement='figure' or no summary_fit) — unchanged.
+            fig, axes = plt.subplots(
+                nrows, ncols, figsize=figsize,
+                sharex=sharex, sharey=sharey, squeeze=False
+            )
         axes_flat = axes.flatten()
         # Hide unused subplots
         for idx in range(n_groups, len(axes_flat)):
@@ -4571,6 +4693,12 @@ class DFDraw:
                 # Phase 13.42.DF FIX2 (ADV-3): fit_textbox_kwargs paired
                 # with fit= (R6 validator now requires explicit forwarding).
                 fit_textbox_kwargs=fit_textbox_kwargs,
+                # Phase 13.50.DF step 5 R-2 fix: summary_fit is a named param
+                # on hist, so NOT in **kwargs after Python binding. Without
+                # explicit forwarding, _dispatch_faceted_render never sees the
+                # spec and the GridSpec slot for placement='pad'/'subfigure'
+                # is never pre-planned.
+                summary_fit=summary_fit,
                 **kwargs
             )
         # Facet mode (legacy path, same=True ignored in facet mode)
@@ -4636,7 +4764,10 @@ class DFDraw:
         self._maybe_attach_summary_fit(
             stats_dict, summary_fit,
             group_by=group_by, facet_by=facet_by,
-            expr_for_auto_title=expr)
+            expr_for_auto_title=expr,
+            # Phase 13.50 step 5: route to in-slot renderer when
+            # placement="pad"/"subfigure" pre-planned a GridSpec slot.
+            fig=fig)
         # Phase 13.50.DF step 4 — apply legend mode AFTER dispatch +
         # summary_fit. Both legend= and show_legend= are Pattern A
         # (popped at this layer; NOT in _*_FORWARDED_NAMES). Normalizer
@@ -4925,6 +5056,14 @@ class DFDraw:
                 # Phase 13.42.DF: inline fits
                 fit=fit,
                 fit_textbox_kwargs=fit_textbox_kwargs,
+                # Phase 13.50.DF step 5 R-2 fix: summary_fit MUST be
+                # explicitly forwarded — it is a named param on
+                # hist/scatter/profile, so it is NOT in **kwargs after
+                # Python signature binding. Without this, _dispatch_faceted_render
+                # never sees the spec and cannot pre-plan the GridSpec slot for
+                # placement="pad"/"subfigure". Same fix shape as Phase 13.43 R-2
+                # at the outer draw→inner-dispatch boundary.
+                summary_fit=summary_fit,
                 **kwargs
             )
         # Facet mode (legacy path, same=True ignored in facet mode)
@@ -4973,7 +5112,10 @@ class DFDraw:
         self._maybe_attach_summary_fit(
             stats_dict, summary_fit,
             group_by=group_by, facet_by=facet_by,
-            expr_for_auto_title=expr)
+            expr_for_auto_title=expr,
+            # Phase 13.50 step 5: route to in-slot renderer when
+            # placement="pad"/"subfigure" pre-planned a GridSpec slot.
+            fig=fig)
         # Phase 13.50.DF step 4 — apply legend mode AFTER dispatch +
         # summary_fit. Both legend= and show_legend= are Pattern A
         # (popped at this layer; NOT in _*_FORWARDED_NAMES). Normalizer
@@ -5342,10 +5484,14 @@ class DFDraw:
                     quantiles=quantiles, central=central, quantile_mode=quantile_mode,
                     quantile_style=quantile_style,
                     nan_policy=nan_policy,
+                    # Phase 13.50.DF step 5 R-2 fix: see scatter/profile-regular
+                    # sites above for rationale.
+                    summary_fit=summary_fit,
                     **kwargs
                 )
                 self._maybe_attach_summary_fit(
                     _stats_sf, summary_fit,
+                    fig=_fig_sf,
                     group_by=group_by, facet_by=facet_by,
                     expr_for_auto_title=expr)
                 return _fig_sf, _axes_sf, _stats_sf
@@ -5627,6 +5773,14 @@ class DFDraw:
                 # Phase 13.42.DF: inline fits
                 fit=fit,
                 fit_textbox_kwargs=fit_textbox_kwargs,
+                # Phase 13.50.DF step 5 R-2 fix: summary_fit MUST be
+                # explicitly forwarded — it is a named param on
+                # hist/scatter/profile, so it is NOT in **kwargs after
+                # Python signature binding. Without this, _dispatch_faceted_render
+                # never sees the spec and cannot pre-plan the GridSpec slot for
+                # placement="pad"/"subfigure". Same fix shape as Phase 13.43 R-2
+                # at the outer draw→inner-dispatch boundary.
+                summary_fit=summary_fit,
                 **kwargs
             )
         else:
@@ -5679,7 +5833,10 @@ class DFDraw:
         self._maybe_attach_summary_fit(
             stats_dict, summary_fit,
             group_by=group_by, facet_by=facet_by,
-            expr_for_auto_title=expr)
+            expr_for_auto_title=expr,
+            # Phase 13.50 step 5: route to in-slot renderer when
+            # placement="pad"/"subfigure" pre-planned a GridSpec slot.
+            fig=fig)
         # Phase 13.50.DF step 4 — apply legend mode AFTER dispatch +
         # summary_fit. Both legend= and show_legend= are Pattern A
         # (popped at this layer; NOT in _*_FORWARDED_NAMES). Normalizer

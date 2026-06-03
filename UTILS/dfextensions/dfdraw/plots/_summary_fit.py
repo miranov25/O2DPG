@@ -144,10 +144,21 @@ _ALLOWED_KIND_STRINGS = {'table', 'figure', 'both'}
 _ALLOWED_DICT_KEYS = {
     'kind', 'params', 'mode', 'annotate', 'precision', 'columns',
     'data_format', 'title', 'title_overflow',
+    # Phase 13.50.DF step 5 — placement axis (where the summary_fit content
+    # is rendered: separate figure, or inside the main fig as a SubFigure /
+    # GridSpec pad slot). Default 'figure' preserves Phase 13.43 behavior.
+    'placement',
 }
 _ALLOWED_MODES = {'subplots', 'overlay'}
 _ALLOWED_PRECISIONS = {1, 2, 3}
 _ALLOWED_DATA_FORMATS = {'dict', 'pandas'}
+# Phase 13.50.DF step 5 — accepted placement values.
+# 'figure'    → render to a separate matplotlib Figure (Phase 13.43 default).
+# 'subfigure' → render inside the main fig in a reserved SubFigure region;
+#               requires GridSpec pre-planning at the dispatcher entry.
+# 'pad'       → render inside the main fig in a single reserved axes (extra
+#               GridSpec row, height_ratio < 1.0); same pre-planning constraint.
+_ALLOWED_PLACEMENTS = {'figure', 'subfigure', 'pad'}
 _ALLOWED_TITLE_OVERFLOWS = {'shrink', 'truncate', 'wrap'}
 
 
@@ -177,6 +188,12 @@ def _normalize_summary_fit_spec(value: Any) -> Dict[str, Any]:
         'data_format': None,
         'title': 'auto',
         'title_overflow': 'shrink',
+        # Phase 13.50.DF step 5 — placement axis: where the summary_fit content
+        # is rendered. Default 'figure' = separate matplotlib Figure (Phase
+        # 13.43 behavior preserved exactly). 'subfigure'/'pad' require the
+        # caller to have pre-planned a GridSpec slot before plt.subplots()
+        # (immutable post-creation per v2.3 panel P1-A).
+        'placement': 'figure',
     }
 
     if isinstance(value, str):
@@ -315,6 +332,17 @@ def _normalize_summary_fit_spec(value: Any) -> Dict[str, Any]:
                     f"Fix: 'title_overflow': 'shrink'."
                 )
             canonical['title_overflow'] = value['title_overflow']
+        # Phase 13.50.DF step 5 — placement axis.
+        if 'placement' in value:
+            p = value['placement']
+            if p not in _ALLOWED_PLACEMENTS:
+                raise ValueError(
+                    f"summary_fit placement must be one of "
+                    f"{sorted(_ALLOWED_PLACEMENTS)!r} "
+                    f"(got {p!r}). "
+                    f"Fix: 'placement': 'figure' (default), 'subfigure', or 'pad'."
+                )
+            canonical['placement'] = p
         return canonical
 
     raise ValueError(
@@ -853,3 +881,165 @@ def _style_get(style, key, default):
         return default if v is None else v
     except (AttributeError, TypeError):
         return default
+
+
+# ============================================================================
+# Phase 13.50.DF step 5 — Slot-based renderer for placement='pad'/'subfigure'
+# ============================================================================
+# When the dispatcher pre-plans a GridSpec slot (via fig._dfdraw_summary_fit_slot),
+# the attach path skips the new-Figure rendering of render_summary_fit() and
+# routes through render_summary_fit_into_slot() below. The implementation is
+# intentionally lightweight: it produces a single axes (for 'pad') or a single
+# SubFigure containing one axes (for 'subfigure'), and renders the FIT TABLE
+# into it. The params-trend FIGURE kind, when requested under 'pad'/'subfigure',
+# is rendered in the SAME slot beneath/beside the table — single axes per slot.
+# Full multi-axes layouts inside the subfigure are deferred to Phase 13.50 FIX1.
+
+def render_summary_fit_into_slot(slot_spec, fig, stats_fit, spec, *,
+                                 group_by_col=None, facet_by_cols=None,
+                                 expr_for_auto_title=None, style=None):
+    """Phase 13.50.DF step 5 — render summary_fit content into a pre-reserved
+    GridSpec slot instead of creating a new Figure.
+
+    Parameters
+    ----------
+    slot_spec : tuple (SubplotSpec, placement_mode_str)
+        The slot reserved by ``_dispatch_faceted_render`` and stashed on
+        ``fig._dfdraw_summary_fit_slot``. The placement_mode_str is one of
+        {'pad', 'subfigure'} and selects the slot fill strategy.
+    fig : matplotlib.figure.Figure
+        The main figure with the reserved slot.
+    stats_fit : any
+        Phase 13.42 stats['fit'] structure (Shape 1/2/3 per
+        ``_flatten_to_rows``).
+    spec : dict
+        Canonical spec from ``_normalize_summary_fit_spec``.
+    group_by_col, facet_by_cols : optional
+        Passed through for table row keying (same semantics as in
+        ``render_summary_fit``).
+    expr_for_auto_title : optional
+        Original expression for auto-title rendering.
+    style : optional
+        ``_ModuleStyleProxy`` instance (or any get/__contains__/__getitem__
+        protocol).
+
+    Returns
+    -------
+    dict
+        ``{'table': ax, 'placement': 'pad' | 'subfigure'}`` when the slot
+        was populated; ``{}`` if no rows produced. ``ax`` is the axes
+        actually used to host the table (either a direct ``fig.add_subplot``
+        on the slot for 'pad', or a single subplot inside the SubFigure
+        for 'subfigure'). Tests use this for placement_topology inspection.
+    """
+    if slot_spec is None:
+        return {}
+    subplot_spec, placement_mode = slot_spec
+
+    rows = _flatten_to_rows(stats_fit, group_by_col, facet_by_cols)
+    if not rows:
+        return {}
+
+    # Materialize the slot per placement_mode.
+    if placement_mode == 'pad':
+        host_axes = fig.add_subplot(subplot_spec)
+    elif placement_mode == 'subfigure':
+        # fig.add_subfigure(subplotspec) reserves a SubFigure region; one
+        # subplot inside it hosts the table. Multi-axes sub-layouts (table
+        # + trend in separate axes within the same SubFigure) are FIX1 work.
+        subfig = fig.add_subfigure(subplot_spec)
+        host_axes = subfig.subplots(1, 1)
+        # FIX1 of step 5: stash the SubFigure on fig so placement_topology
+        # can detect "host_axes lives inside a SubFigure" without relying on
+        # fig.subfigures (which is a CREATION METHOD on matplotlib Figure,
+        # NOT an iterable property — iterating it raises TypeError).
+        fig._dfdraw_summary_fit_subfigure = subfig
+    else:
+        raise ValueError(
+            f"render_summary_fit_into_slot: unknown placement_mode "
+            f"{placement_mode!r}; expected 'pad' or 'subfigure'."
+        )
+
+    # Render table into host_axes.
+    # Table cells: one row per stats row; columns = group + facet keys + params.
+    kinds = spec.get('kinds') or []
+    if 'table' in kinds or 'both' in kinds:
+        _render_table_in_axes(host_axes, rows, spec)
+    else:
+        # 'figure'-only kind requested in 'pad'/'subfigure' slot: fall back to
+        # a single text annotation since the trend-figure layout doesn't fit
+        # in a single axes well. FIX1 will broaden this.
+        host_axes.axis('off')
+        host_axes.text(0.5, 0.5,
+                       "summary_fit 'figure' kind in placement='pad'/'subfigure': "
+                       "rendered as table fallback (FIX1 work — full multi-axes "
+                       "layout in the subfigure region).",
+                       ha='center', va='center',
+                       transform=host_axes.transAxes,
+                       fontsize=7, wrap=True)
+
+    return {'table': host_axes, 'placement': placement_mode}
+
+
+def _render_table_in_axes(ax, rows, spec):
+    """Render the summary_fit table into a host axes using ax.table().
+
+    Single axes inside a GridSpec slot — table fills the axes. The
+    `params` and `precision` settings from spec control which columns
+    appear and their formatting.
+    """
+    if not rows:
+        ax.axis('off')
+        return
+
+    # Build column list: identifying keys + the param values.
+    # Identify which keys consistently appear in every row.
+    sample = rows[0]
+    id_keys = [k for k in ('group', 'facet', 'fit_name') if k in sample]
+    # Collect all distinct param names from the rows.
+    all_params = []
+    for row in rows:
+        for pname in (row.get('params') or {}):
+            if pname not in all_params:
+                all_params.append(pname)
+    # Filter by spec.params if user restricted the set.
+    requested = spec.get('params')
+    if requested is not None:
+        all_params = [p for p in all_params if p in requested]
+
+    precision = spec.get('precision', 2)
+    fmt = f"{{:.{precision}g}}"
+
+    headers = list(id_keys) + all_params
+    cell_rows = []
+    for row in rows:
+        cells = []
+        for k in id_keys:
+            v = row.get(k)
+            cells.append("" if v is None else str(v))
+        params_dict = row.get('params') or {}
+        for pname in all_params:
+            pval = params_dict.get(pname)
+            if isinstance(pval, dict):  # value + error sub-dict
+                v = pval.get('value', float('nan'))
+                try:
+                    cells.append(fmt.format(v))
+                except (ValueError, TypeError):
+                    cells.append(str(v))
+            elif pval is None:
+                cells.append("")
+            else:
+                try:
+                    cells.append(fmt.format(pval))
+                except (ValueError, TypeError):
+                    cells.append(str(pval))
+        cell_rows.append(cells)
+
+    ax.axis('off')
+    if not cell_rows or not headers:
+        return
+    table = ax.table(cellText=cell_rows, colLabels=headers,
+                     loc='center', cellLoc='center')
+    table.auto_set_font_size(False)
+    table.set_fontsize(7)
+    table.scale(1.0, 1.0)

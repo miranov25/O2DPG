@@ -494,6 +494,16 @@ TEST_LAYERS = {
     "test_phase_13_50_df_fit_visual.py::TestPhase1350LegendModes::test_F10_dict_forwards_loc_and_ncol": "visual_primitive",
     "test_phase_13_50_df_fit_visual.py::TestPhase1350LegendModes::test_F18_show_legend_legend_behavioral_equivalence": "invariance",
     "test_phase_13_50_df_fit_visual.py::TestPhase1350LegendNormalizerInvariance::test_normalize_legend_spec_idempotent": "invariance",
+    # Phase 13.50.DF step 5 — summary_fit.placement axis.
+    # F11/F12/F13 inspect placement_topology via fig.axes / fig.subfigures /
+    # stats['summary_fit'] keys → renderer-free → visual_primitive.
+    # F17 compares the keyed-dict topologies across all 3 placements;
+    # invariance because the assertion is on dict equality of topology dicts
+    # rendered from the SAME dispatch, no per-pixel rasterization.
+    "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F11_placement_figure_default_unchanged": "visual_primitive",
+    "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F12_placement_subfigure_uses_subfigure_api": "visual_primitive",
+    "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F13_placement_pad_uses_extra_row_axes": "visual_primitive",
+    "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitPlacement::test_F17_placement_topology_keyed_dict_invariance": "invariance",
 
     # Everything else defaults to "smoke"
 }
