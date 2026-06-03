@@ -1516,6 +1516,25 @@ FEATURES = [
         ],
     },
     {
+        # Phase 13.50.DF step 3 — fit_textbox_kwargs gets four new sub-keys:
+        # rename_params (dict per-call override of _DISPLAY_NAMES),
+        # value_format / error_format (per-call format-spec overrides of the
+        # style defaults), precision_mode (per-call physics/uniform/None).
+        # _allowed_sub_keys in plots/_fit_render.py extended; per-call values
+        # take precedence over style defaults (same precedence as the existing
+        # 'fontsize' sub-key from Phase 13.42 FIX1). Layer: visual_primitive.
+        # F16 (value_format override) lives here per panel P2-6 decision in v2.4
+        # review — per-call override tests belong with the kwarg surface they
+        # test, not with the underlying style key.
+        "id": "FIT.textbox_kwargs_extensions",
+        "name": "fit_textbox_kwargs extensions: rename_params / value_format / error_format / precision_mode",
+        "category": "FIT",
+        "tests": [
+            "test_phase_13_50_df_fit_visual.py::TestPhase1350FitTextboxKwargsExtensions::test_F6_rename_params_overrides_display_map",
+            "test_phase_13_50_df_fit_visual.py::TestPhase1350FitTextboxKwargsExtensions::test_F16_value_format_per_call_override",
+        ],
+    },
+    {
         "id": "API.kwarg_typo_guard",
         "name": "Kwarg-typo guard (difflib did-you-mean at draw() entry)",
         "category": "API",

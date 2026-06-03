@@ -207,6 +207,50 @@ class FitVisualCheck:
                           f"error '{err_s}' has {err_dec}; should match in physics mode")
         return self
 
+    # ------------------------------------------------------------------ #
+    # Phase 13.50 step 3 — fit_textbox_kwargs extension checks
+    # ------------------------------------------------------------------ #
+
+    def check_rename_params_overrides_display_map(self, ax,
+                                                  expected_literal='sigma_x',
+                                                  forbidden_default=r'$\sigma$'):
+        """F6 — ``fit_textbox_kwargs={'rename_params': {canonical: display}}``
+        beats the ``_DISPLAY_NAMES`` map for the listed canonical name(s)."""
+        blob = textbox_text(ax)
+        if expected_literal not in blob:
+            self.fail("F6.override_missing",
+                      f"'{expected_literal}' (rename_params override) missing "
+                      f"from textbox: {blob!r}")
+        if forbidden_default in blob:
+            self.fail("F6.default_leaked",
+                      f"'{forbidden_default}' (default display) leaked despite "
+                      f"rename_params override: {blob!r}")
+        return self
+
+    def check_value_error_format_per_call_override(self, ax, min_sf_required=3):
+        """F16 — ``fit_textbox_kwargs={'value_format': '.4g'}`` grants more
+        precision than the ``.2g`` style default.
+
+        Assertion: at least one parsed value has more than 2 sig figs
+        (impossible under the default ``.2g``). If the fitted values happen
+        to all round to ≤2 sf even under ``.4g``, the fixture isn't
+        discriminating — test would fail loud and the fixture must be
+        retuned to non-round true coefficients.
+        """
+        blob = textbox_text(ax)
+        pairs = parse_value_error(blob)
+        if not pairs:
+            self.fail("F16.no_pairs",
+                      f"no value±error pairs found in textbox: {blob!r}")
+            return self
+        max_sf = max(_count_sig_figs(val_s) for (_, val_s, _) in pairs)
+        if max_sf < min_sf_required:
+            self.fail("F16.no_override_effect",
+                      f"max value sig figs = {max_sf}, expected ≥{min_sf_required} "
+                      f"(per-call '.4g' override should grant more precision than "
+                      f"default '.2g'). Pairs: {pairs!r}")
+        return self
+
     def assert_clean(self):
         if self.defects:
             raise AssertionError(
@@ -342,8 +386,10 @@ class TestPhase1350FitPrecision:
     def test_F5_precision_mode_physics(self, df_linear):
         """F5 — precision_mode='physics' aligns value's decimal place to error's.
 
-        Uses set_style for the global key (fit_textbox_kwargs per-call override
-        is wired in step 3, not yet). Restores default in finally to keep the
+        Uses set_style for the global key. The per-call override
+        (fit_textbox_kwargs={'precision_mode': 'physics'}) is also valid
+        in step 3 onwards; F5 stays on the global form to keep the
+        global-key path exercised. Restores default in finally to keep the
         rest of the gate uncontaminated."""
         from dfextensions.dfdraw.style import set_style
         set_style({'fit.precision_mode': 'physics'})
@@ -355,3 +401,58 @@ class TestPhase1350FitPrecision:
             plt.close(fig)
         finally:
             set_style({'fit.precision_mode': None})
+
+
+# --------------------------------------------------------------------------- #
+# Phase 13.50 step 3 — Tests F6, F16 (fit_textbox_kwargs extensions)
+# --------------------------------------------------------------------------- #
+
+class TestPhase1350FitTextboxKwargsExtensions:
+    """Phase 13.50 step 3: fit_textbox_kwargs gets four new sub-keys
+    (rename_params, value_format, error_format, precision_mode). F6 and F16
+    are the visual-primitive locks; F16 is the per-call override for
+    value_format. precision_mode + error_format per-call overrides are
+    smoke-covered by the validation block in _fit_render.py (raise on bad
+    type/value) and the existing F4/F5 style-default coverage.
+
+    EXPECTED · WHY · APPROVE · FAIL_MODE per V-check:
+
+      F6: EXPECTED textbox shows 'sigma_x' (user override) for fit='gauss',
+          with no '$\\sigma$' (default) appearing;
+          WHY users sometimes need ad-hoc labels (e.g. 'σ_x' vs 'σ_y' for
+          asymmetric Gaussians) without editing the global _DISPLAY_NAMES;
+          APPROVE 'sigma_x' substring present AND '$\\sigma$' absent;
+          FAIL_MODE rename_params not in _allowed_sub_keys, or not threaded
+          into _resolve_display_name() at the render site.
+
+      F16: EXPECTED textbox values have >2 sig figs for fit='linear' with
+           fit_textbox_kwargs={'value_format': '.4g'};
+           WHY per-call precision override lets a user request more digits
+           for a specific figure without globally widening style defaults;
+           APPROVE max(count_sig_figs(val)) ≥ 3 across parsed pairs;
+           FAIL_MODE value_format not in _allowed_sub_keys, or override
+           layer doesn't take precedence over the style default at the
+           value_format = _style_get(...) site.
+    """
+
+    def test_F6_rename_params_overrides_display_map(self, df_gauss):
+        """F6 — rename_params override beats _DISPLAY_NAMES default."""
+        fig, ax, stats = DFDraw(df_gauss).hist(
+            'x', bins=40, fit='gauss',
+            fit_textbox_kwargs={'rename_params': {'sigma': 'sigma_x'}},
+        )
+        FitVisualCheck(fig, stats, df_gauss) \
+            .check_rename_params_overrides_display_map(ax) \
+            .assert_clean()
+        plt.close(fig)
+
+    def test_F16_value_format_per_call_override(self, df_linear):
+        """F16 — per-call value_format='.4g' grants more precision than '.2g' default."""
+        fig, ax, stats = DFDraw(df_linear).profile(
+            'y:x', bins=20, fit='linear',
+            fit_textbox_kwargs={'value_format': '.4g'},
+        )
+        FitVisualCheck(fig, stats, df_linear) \
+            .check_value_error_format_per_call_override(ax) \
+            .assert_clean()
+        plt.close(fig)

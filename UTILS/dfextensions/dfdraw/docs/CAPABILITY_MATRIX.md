@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-06-03 03:59 UTC
+**Generated:** 2026-06-03 04:27 UTC
 **Phase:** PHASE_13_49_DF_FIX1_END
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -10,13 +10,13 @@
 | Status | Count | % |
 |--------|------:|--:|
 | ✅ Verified | 57 | 46% |
-| ☑️ Smoke-only | 65 | 53% |
+| ☑️ Smoke-only | 66 | 53% |
 | 🧨 Broken | 0 | 0% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **123** | |
-| **Total proof tests** | **597** | |
+| **Total features** | **124** | |
+| **Total proof tests** | **599** | |
 | **Invariance tests** | **353** | |
-| **Visual tests** | **16** | |
+| **Visual tests** | **18** | |
 
 **Status key:**
 - ✅ Verified — has at least one passing invariance test (A ≡ B check)
@@ -84,6 +84,7 @@
 | ✅ | **FIT.root_aliases** — ROOT-convention aliases (fit='gaus', type='histo') | 2 | 2 | 0 | 2 |  |
 | ☑️ | **FIT.display_names** — Display-name map for fit parameters (render-only short/Greek names) 👁 | 3 | 3 | 0 | 0 | 3 |
 | ☑️ | **FIT.precision_modes** — Separate value/error precision keys + physics alignment mode 👁 | 2 | 2 | 0 | 0 | 2 |
+| ☑️ | **FIT.textbox_kwargs_extensions** — fit_textbox_kwargs extensions: rename_params / value_format / error_format / precision_mode 👁 | 2 | 2 | 0 | 0 | 2 |
 | | **HIST** | | | | | |
 | ☑️ | **HIST.step_per_group_color** — histtype='step' renders distinct per-group edgecolors (BUG-014 closed; extends Phase 13.36 sentinel to edgecolor) — Phase 13.37.DF | 4 | 4 | 0 | 0 |  |
 | ☑️ | **HIST.interval_sort_numeric** — pd.Interval group legend sorted by numeric .left (BUG-016; hasattr-guard extension of _interval_sort_key) — Phase 13.37.DF | 3 | 3 | 0 | 0 |  |

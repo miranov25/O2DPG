@@ -481,6 +481,9 @@ TEST_LAYERS = {
     # Phase 13.50.DF step 2 — precision keys (visual_primitive layer)
     "test_phase_13_50_df_fit_visual.py::TestPhase1350FitPrecision::test_F4_default_precision": "visual_primitive",
     "test_phase_13_50_df_fit_visual.py::TestPhase1350FitPrecision::test_F5_precision_mode_physics": "visual_primitive",
+    # Phase 13.50.DF step 3 — fit_textbox_kwargs extensions (visual_primitive layer)
+    "test_phase_13_50_df_fit_visual.py::TestPhase1350FitTextboxKwargsExtensions::test_F6_rename_params_overrides_display_map": "visual_primitive",
+    "test_phase_13_50_df_fit_visual.py::TestPhase1350FitTextboxKwargsExtensions::test_F16_value_format_per_call_override": "visual_primitive",
 
     # Everything else defaults to "smoke"
 }

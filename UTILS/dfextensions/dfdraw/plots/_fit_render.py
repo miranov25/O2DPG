@@ -218,7 +218,10 @@ def render_fit_textbox(ax,
         default 7). Otherwise use ``fit.text_fontsize_default`` (default 9).
     textbox_kwargs : dict, optional
         Per-call overrides for textbox formatting. Phase 13.42.DF FIX1
-        (B2/B3/R5). Accepted sub-keys (names + enum values LOCKED at FIX1 close):
+        (B2/B3/R5) introduced fontsize/format/show_fields. Phase 13.50.DF
+        step 3 added rename_params/value_format/error_format/precision_mode.
+
+        Accepted sub-keys (names + enum values LOCKED):
         - 'fontsize' (int): overrides facet/default fontsize style key
         - 'format' (str): 'multiline' | 'compact' | 'auto' (default 'auto').
             'multiline' = one block per fit (header + per-param lines + chi²/ndf)
@@ -226,11 +229,27 @@ def render_fit_textbox(ax,
             'auto'      = compact if facet_mode AND more than 1 fit, else multiline
         - 'show_fields' (list[str]): subset of {'amplitude','center','sigma',
             'slope','intercept','chi2','ndf','redchi','fit_name','x_range'}.
-            None or absent → all available fields rendered.
+            None or absent → all available fields rendered. CANONICAL names —
+            the _DISPLAY_NAMES map (Phase 13.50 step 1) transforms display only.
+        - 'rename_params' (dict[str, str]): override _DISPLAY_NAMES per-call.
+            E.g. ``{'sigma': 'sigma_x'}`` → textbox shows ``'sigma_x'`` instead
+            of the default ``'$\\sigma$'`` mathtext. Keys are canonical names;
+            values are display strings.
+        - 'value_format' (str): format-spec for fit param VALUES (e.g. '.4g').
+            Overrides ``fit.value_format`` style key for this call only.
+        - 'error_format' (str): format-spec for param ERRORS (e.g. '.2g').
+            Overrides ``fit.error_format`` style key for this call only.
+        - 'precision_mode' (str|None): None | 'physics' | 'uniform'.
+            Overrides ``fit.precision_mode`` for this call. 'physics' aligns
+            value's decimal place to error's place (after error → 1 sf).
     """
     # ---- Resolve overrides from textbox_kwargs vs style defaults -------
     textbox_kwargs = textbox_kwargs or {}
-    _allowed_sub_keys = {'fontsize', 'format', 'show_fields'}
+    _allowed_sub_keys = {
+        'fontsize', 'format', 'show_fields',
+        # Phase 13.50 step 3 — fit-rendering overhaul extensions
+        'rename_params', 'value_format', 'error_format', 'precision_mode',
+    }
     for _k in textbox_kwargs:
         if _k not in _allowed_sub_keys:
             raise ValueError(
@@ -247,6 +266,53 @@ def render_fit_textbox(ax,
     error_format = _style_get('fit.error_format', '.1g')
     precision_mode = _style_get('fit.precision_mode', None)
     padding = _style_get('fit.text_padding', 0.4)
+
+    # Phase 13.50 step 3 — per-call overrides from fit_textbox_kwargs.
+    # Override-then-style precedence (same as 'fontsize' override below).
+    _override_value_format = textbox_kwargs.get('value_format')
+    if _override_value_format is not None:
+        if not isinstance(_override_value_format, str):
+            raise ValueError(
+                f"[fit_textbox_kwargs] value_format must be a format-spec "
+                f"string (e.g. '.4g'), got {_override_value_format!r}."
+            )
+        value_format = _override_value_format
+
+    _override_error_format = textbox_kwargs.get('error_format')
+    if _override_error_format is not None:
+        if not isinstance(_override_error_format, str):
+            raise ValueError(
+                f"[fit_textbox_kwargs] error_format must be a format-spec "
+                f"string (e.g. '.2g'), got {_override_error_format!r}."
+            )
+        error_format = _override_error_format
+
+    _override_precision_mode = textbox_kwargs.get('precision_mode')
+    if _override_precision_mode is not None:
+        if _override_precision_mode not in ('physics', 'uniform'):
+            raise ValueError(
+                f"[fit_textbox_kwargs] precision_mode must be "
+                f"'physics'|'uniform'|None, got {_override_precision_mode!r}."
+            )
+        precision_mode = _override_precision_mode
+
+    # rename_params is threaded into _resolve_display_name() calls below.
+    # No style fallback — it's per-call only (the _DISPLAY_NAMES map is the
+    # global default; rename_params is the per-call override layer).
+    _rename_params = textbox_kwargs.get('rename_params')
+    if _rename_params is not None:
+        if not isinstance(_rename_params, dict):
+            raise ValueError(
+                f"[fit_textbox_kwargs] rename_params must be a dict mapping "
+                f"canonical names to display strings, got {type(_rename_params).__name__}."
+            )
+        # Lightweight value-type check: dict[str, str]. Empty dict is fine.
+        for _k, _v in _rename_params.items():
+            if not isinstance(_k, str) or not isinstance(_v, str):
+                raise ValueError(
+                    f"[fit_textbox_kwargs] rename_params keys and values "
+                    f"must be strings, got ({_k!r}: {_v!r})."
+                )
 
     # B1/R5 fontsize resolution: per-call override > facet/default style.
     _override_fontsize = textbox_kwargs.get('fontsize')
@@ -346,8 +412,9 @@ def render_fit_textbox(ax,
                         continue
                     # Phase 13.50: canonical name preserved for _field_allowed
                     # check; display name (short/Greek) used in user-facing
-                    # output only. rename_params wired in step 3.
-                    name_s = _resolve_display_name(canonical)
+                    # output only. Step 3 wires rename_params (per-call
+                    # override) on top of the _DISPLAY_NAMES default map.
+                    name_s = _resolve_display_name(canonical, rename_params=_rename_params)
                     error = perr[i] if i < len(perr) else float('nan')
                     # Phase 13.50 step 2: value/error formatted with separate
                     # precision keys (and physics-mode auto-alignment via the
@@ -376,7 +443,8 @@ def render_fit_textbox(ax,
                         continue
                     # Phase 13.50: canonical name preserved for _field_allowed;
                     # display name (short/Greek) used in user-facing output.
-                    name_s = _resolve_display_name(canonical)
+                    # Step 3 threads rename_params (per-call override).
+                    name_s = _resolve_display_name(canonical, rename_params=_rename_params)
                     error = perr[i] if i < len(perr) else float('nan')
                     val_s, err_s_or_None = _format_value_error_pair(
                         val, error, value_format, error_format, precision_mode)
