@@ -4,8 +4,8 @@
 
 This document tracks the development history of the `dfdraw` module, a DataFrame drawing utility with ROOT TTree::Draw-like interface. Part of the dfextensions toolkit for ALICE experiment calibration and QA at CERN.
 
-**Current Status:** Phase 13.46.DF FIX1 — Scatter `range=` point-filtering (audit bucket ① closure) — ✅ Closed (panel-approved; gate 1023/0/1 skipped/1 xfailed at `ad91e251`, tag `PHASE_13_46_DF_FIX1_END`)
-**Test Count:** 1023 passing + 1 skipped + 1 xfailed (114 features, 349 invariance tests, 56 Verified)
+**Current Status:** Phase 13.50.DF FIX2 — `run_tests.sh` HTML packaging enforcement (closes P2-2 after 3 consecutive recurrences) — ✅ Closed (panel-approved; gate 1057/0/1 skipped/1 xfailed at `07606c02`, tag `PHASE_13_50_DF_FIX2_END`)
+**Test Count:** 1057 passing + 1 skipped + 1 xfailed (127 features, 356 invariance tests, 27 visual_primitive tests, 59 Verified)
 **Stability Phase:** Experimental (active development)
 
 ---
@@ -2520,6 +2520,363 @@ v1.0 set the **view window** (`set_xlim`/`set_ylim`) — out-of-range points sta
 
 ---
 
+## run_tests.sh: Tag-Drift Check Downgraded to Non-Blocking WARNING
+
+**Date:** 2026-05-28
+**Commit:** `df3057a3`
+**Status:** ✅ Closed (tooling-only; no test count / feature / invariance change)
+**Predecessor:** Phase 13.46.DF FIX1 @ `ad91e251` (gate 1023)
+
+### Trigger
+
+The tag-drift check added in v1.10's `02510a20` (Phase 13.43 / `PHASE_13_46_DF_BEGIN` window) hard-blocked the reviewer bundle on a heuristic `grep` over `PHASE_HISTORY.md` prose. Two failure modes surfaced in practice:
+
+- **False positives:** the heuristic matched prose mentions of phase numbers (e.g., "Phase 13.42 is referenced in Phase 13.43") as tag declarations, so docs that were correct still failed the check.
+- **Override pressure:** when the heuristic falsely fired, operators had no good remediation path except to bypass the check invisibly. A check that gets bypassed silently degrades into dead-weight that no longer protects against the original drift class.
+
+### Implementation (tooling-only)
+
+- **Scope narrowed:** the `grep` now matches only declarative `` 'tag `PHASE_X_END`' `` references, which is the actual fingerprint of an undocumented tag. Prose mentions of phase numbers no longer trigger.
+- **Severity demoted:** drift no longer blocks bundle creation. Instead, drift is recorded as a **non-fatal WARNING** in the `SUMMARY` artifact that travels in `reviewer.zip` — drift stays visible to every panel reviewer, the bundle always builds, and the operator cannot silently bypass.
+
+Lands as a standalone tooling commit between Phase 13.46.DF FIX1 and Phase 13.48.DF v1.0. Parallels the earlier `02510a20` event (also tooling-only, also recorded as its own Statistics Summary row in v1.10).
+
+### Testing
+
+- **+0** new tests (tooling-only)
+- Test count: 1023 → **1023** (unchanged)
+- Features unchanged at 114; Verified unchanged at 56; invariance unchanged at 349
+
+### Lesson Recorded
+
+**Heuristic gate-blocks need a non-blocking off-ramp.** When a gate check is heuristic (rather than mechanical), false-positive cost compounds with each silent bypass. The fix template that emerged here: tighten the scope to a declarative fingerprint where possible, AND demote severity to a visible WARNING when the operator can't otherwise act on the false positive. Both are necessary; tightening alone leaves the override-pressure failure mode, demotion alone leaves the noise.
+
+---
+
+## Phase 13.48.DF v1.0: Tier-1 Automated Visual Testing
+
+**Date:** 2026-05-28
+**Commit:** `9f612601`
+**Tag:** `PHASE_13_48_DF_END`
+**Status:** ✅ Closed (**1034 / 0 / 0 / 1 skipped / 1 xfailed**)
+**Predecessor:** `run_tests.sh` WARN downgrade @ `df3057a3` (gate 1023, tooling-only); architectural predecessor Phase 13.46.DF FIX1 @ `ad91e251` (gate 1023)
+**Specification:** `PHASE_13_48_DF_v1_4_VisualTesting_Proposal.md` (4-reviewer panel `[!]` APPROVED WITH COMMENTS through v1.4)
+
+### Objectives
+
+Open a new test layer (`visual_primitive`) for renderer-free, deterministic, backend-independent visual assertions over already-rendered matplotlib figures. Phase 13.48 ships the framework + 10 V-checks (V.1–V.10) + V.2 ragged-padding-safety lock, deliberately scoped narrow to validate the framework before broader catalog work. The motivating gap: the existing test suite asserts on `stats` dicts and component shapes but cannot catch a class of bugs where the dispatcher produces structurally correct stats but the matplotlib figure itself is visually wrong (missing series, wrong cell, color collision, hidden cell counted as visible).
+
+### Implementation
+
+**New test module:** `tests/test_phase_13_48_df_visual_testing.py` (test-only; no library source change).
+
+**Framework — `VisualCheck(fig, stats, df)`:**
+- Collect-all-then-assert pattern: all checks accumulate; final assertion produces a structured failure report listing every assertion that failed
+- Cell iteration via `fig.axes` (dispatcher-agnostic) rather than via `stats[(row,col)]` keying (which depends on dispatcher internals)
+- `visible_cell_axes` helper excludes hidden padding cells (the n_groups < nrows·ncols case)
+- Series counts via `ax.containers`, not `len(ax.lines)` — the errorbar-cap trap: errorbar caps populate `ax.lines` but aren't series
+- Distinct-RGBA distinctness for color-coded series
+- Cell-to-value via `zip(sorted_unique(...))` (dtype-safe across int / str / pd.Interval categorical types)
+
+**Backend hygiene:** `matplotlib.use("Agg")` at module import; checks operate on persistent in-memory figure state, no renderer draw cycle required.
+
+**V-checks shipped (V.1–V.10 + V.2 ragged-padding-safety lock = 11 visual_primitive tests under `TestPhase1348VisualPrimitive`).** Six new `VISUAL.*` features (`VISUAL.framework`, `VISUAL.cell_iteration`, `VISUAL.series_count`, `VISUAL.distinct_colors`, `VISUAL.shared_axes`, `VISUAL.layout_visibility`) claim them.
+
+**Taxonomy posture (architect direction pre-merge):** the new `visual_primitive` layer ships with all 6 new `VISUAL.*` features marked **Smoke-only** rather than Verified. The Phase 13.48 spec explicitly defers the matrix Verified-promotion mechanism (the orthogonal Visual column + 👁 badge) to the matrix-traceability work that becomes Phase 13.49 — the visual_primitive layer is dedicated-status pending that infrastructure.
+
+### Testing
+
+- **+11** visual_primitive tests (V.1–V.10 + V.2 padding-safety lock)
+- Test count: 1023 → **1034**
+- +6 features (`VISUAL.*` set above) — all Smoke-only at close
+- **visual_primitive layer NEW:** 0 → 11
+- Verified count: 56 unchanged (V-checks are visual_primitive layer, not invariance → no Verified promotion at 13.48 close)
+- Invariance count: 349 unchanged
+
+### Panel Verdict
+
+Spec v1.4: 4-reviewer panel `[!]` APPROVED WITH COMMENTS (Sonet51 closed at v1.4 with one-line `ax.get_visible()` filter folded into CRR §2). CRR v1.0: 5-reviewer panel — Opus2 `[!]` (one P2 hardening advisory: `check_counts` should zip `visible_cell_axes` before extended-graphics on real data; currently safe under N-2 precondition); remaining reviewers `[OK]`/`[!]`. Architect approval at commit.
+
+### Architectural Posture
+
+**Tier 1 (renderer-free) vs Tier 2 (renderer-driven) split established here.** Tier 1 reads stored figure state (`Text.get_text()` returns input string not rendered glyph; `Patch.get_facecolor()` returns RGBA tuple; `Table._cells` is a dict of cells with text). Tier 2 requires `fig.canvas.get_renderer()` and a draw cycle for `get_window_extent()`-class assertions (text-vs-data overlap, label clipping). Tier 2 is deferred to a future framework increment (eventually scoped as Phase 13.5X with F19 textbox-bbox-overlap as the architect-flagged spacing-bug proof — see Phase 13.50 §Architectural Posture).
+
+---
+
+## Phase 13.49.DF v1.0: Capability Matrix Traceability (Link + HTML + Visual)
+
+**Date:** 2026-05-29
+**Commit:** `89bc63c6`
+**Tag:** `PHASE_13_49_DF_END`
+**Status:** ✅ Closed (**1038 / 0 / 0 / 1 skipped / 1 xfailed**)
+**Predecessor:** Phase 13.48.DF v1.0 @ `9f612601` (gate 1034)
+**Specification:** `PHASE_13_49_DF_v1_2_CapabilityMatrixTraceability_Proposal.md` (Sonet50 v1.2 `[!]` APPROVED; Sonet51 CRR v1.1 `[!]` APPROVED 8/8)
+
+### Objectives
+
+The capability matrix at Phase 13.48 close listed 120 features but provided no traceability from a feature to the specific test(s) that prove it (no "Verified" claim could be followed to its proof). The architect's challenge: a reviewer must be able to navigate matrix entry → test list → file:lineno → assertion. Phase 13.49 ships the link infrastructure, the HTML rendering, the orthogonal Visual column with 👁 badge, the 4 M-tests (M.1–M.4) that enforce taxonomy integrity, and `KNOWN_UNCLAIMED` governance for legacy unclaimed tests.
+
+### Implementation
+
+**Spec changes (test / tooling only):**
+- `tests/feature_taxonomy.py`: each feature row gains a `tests: [List[str]]` field (explicit test-method names per feature; dfdraw-canonical, more powerful than ADF's `test_patterns` which match by regex — Marian's plan: unify dfdraw-canonical first, port ADF later)
+- `tests/test_layer_classification.py`: `TEST_LAYERS` dict maps each test ID to its layer (`visual_primitive` | `invariance` | `proof` | `meta`)
+- `scripts/generate_capability_matrix.py`: extended to compute per-feature Verified/Smoke-only/Broken/Planned status from `test_results` + emit both MD and HTML; **new** orthogonal `Visual` column with 👁 badge for features with at least one passing visual_primitive test (orthogonal to status — a Smoke-only feature with a 👁 is still Smoke-only)
+- `docs/CAPABILITY_MATRIX.html`: per-feature expandable tests-panel; status × visual × category filters AND-combined; expansion-state preserved across filter changes
+
+**M-tests (4 new meta-tests, invariance layer):**
+- **M.1** (`test_taxonomy_tests_resolve`): every `FEATURES[*].tests` entry resolves to a real pytest node ID at collection time. No-grandfathering: 4 dangling test refs from prior phases repaired in this commit.
+- **M.2** (`test_classification_coverage`): every test in `TEST_LAYERS` is claimed by at least one feature (no orphan tests).
+- **M.3** (`test_html_matrix_locks`): HTML generator output structural locks (category-row presence, data-status attribute integrity). Extended in Phase 13.49 FIX1 with H-1/H-3 invariants.
+- **M.4** (`test_no_orphan_visual_tests`): every visual_primitive test is claimed by a feature.
+
+**KNOWN_UNCLAIMED governance (`tests/test_meta_capability_matrix.py`):**
+- Spec §3.7: location-fixed file holds a list of pytest node IDs explicitly waived from M.2/M.4 enforcement.
+- Required fields per entry: `test_id` + `reason` (≥10 chars) + `target_phase` (the phase that will claim the test).
+- Seeded at phase open with **64 entries** distributed across source phases per the actual gap: Phase 13.27.DF=50, Phase 13.28.DF=9, Phase 13.32.DF=5 (per Opus48_1 P2-A advisory adopted at this phase: use SPECIFIC target phases not blanket "OPEN").
+- Growth in `KNOWN_UNCLAIMED` raises a warning; missing fields fail the gate. HTML audit hook lists every entry with its target phase for reviewer visibility.
+
+**run_tests.sh:** `--phase` derivation from latest `_END` tag (corrected glob `PHASE_[0-9]*_DF*_END` — the v1.2 spec text had a broken middle-underscore glob; fix verified against the real tag set). Phase 13.48 prose-grep tightening + BLOCK→WARN for the taxonomy-uncommitted check (bundled).
+
+**Source-defect normalization fixes (D-K, D-L per Opus2 + Sonnet53_R2 panel finding on v1.0 [X] rejection):**
+- v1.0 CRR was **REJECTED by Opus2** with 3 P0s — most consequential was P0-1: `load_test_results` normalization regression (`if startswith("tests/"):` skip; but real node-IDs are `dfextensions/dfdraw/tests/...` when pytest rootdir is the O2DPG repo). Matched 0 features → ALL 121 features showed Planned vs prior 56 Verified.
+- v1.1 (resubmission, accepted `[!]`): D-K + D-L fixed at 3 sites via robust `basename = path.split('/')[-1]` normalization (`load_test_results`, `load_collected_tests`, `_collected_test_ids`). **D-L was self-discovered** — Claude48 found the same pattern in `_collected_test_ids` while fixing D-K and disclosed it under proposed Coder QRC R7 self-discovery wording.
+
+### Testing
+
+- **+4** invariance tests M.1–M.4 in `tests/test_meta_capability_matrix.py`
+- Test count: 1034 → **1038**
+- +1 feature `META.capability_matrix` claiming the 4 M-tests
+- Features: 120 → 121
+- Verified: 56 → 57 (META.capability_matrix has 4 passing invariance tests → Verified)
+- Invariance: 349 → 353
+- visual_primitive count unchanged at 11 (Phase 13.48's V-checks); the 6 `VISUAL.*` features remain Smoke-only at this phase close (no new invariance tests for them)
+
+### Panel Verdict & Path
+
+1. **v1.0 proposal** (Sonet50 + 8-reviewer panel `[!]` APPROVED through v1.2 with `tests: [explicit list]` per-feature locked as the link mechanism)
+2. **CRR v1.0** (Opus2 `[X]` REJECTED — 3 P0s: P0-1 normalization regression; P0-2 missing meta-test file `tests/test_meta_capability_matrix.py`; P0-3 gate reported at 1034 not 1038)
+3. **CRR v1.1** (Claude48 fixed all 3 P0s including D-L self-discovery; 5-reviewer panel `[!]` APPROVED; one missing D-M target_phase deviation disclosure noted as P2)
+
+### Recurring Class Captured
+
+**Normalization regression class:** pytest node-ID prefix assumptions break when running from a higher rootdir (O2DPG repo vs dfdraw subdir). Confirmed across three sites in Phase 13.49 v1.0 → v1.1, then again as a pattern in Phase 13.50 proposal-review work where one reviewer's confused source-grep produced a cascade error through subsequent revisions until source-grepping reviewer broke the chain. Corrective discipline: always source-verify line refs and test paths against the actual file, not against working memory or another reviewer's claim.
+
+---
+
+## Phase 13.49.DF FIX1: HTML Rendering Fixes (H-1 / H-2 / H-3) + M.3 Lock
+
+**Date:** 2026-05-30
+**Commit:** `a6ddc753`
+**Tag:** `PHASE_13_49_DF_FIX1_END`
+**Status:** ✅ Closed (**1038 / 0 / 0 / 1 skipped / 1 xfailed** — same-test stricter, no test count change)
+**Predecessor:** Phase 13.49.DF v1.0 @ `89bc63c6` (gate 1038)
+**Specification:** `PHASE_13_49_DF_FIX1_Code_Review_Request.md`
+
+### Trigger
+
+After v1.0 commit, the architect rendered `docs/CAPABILITY_MATRIX.html` in a browser and found three bugs the 8-reviewer v1.1 panel had not caught:
+- **H-1:** `META.capability_matrix` showed `Broken` in HTML but `Verified` in MD — content divergence
+- **H-2:** clicking a feature `<tr>` row hijacked filter state — the JS selector `[data-status]` was too broad and matched both filter buttons AND feature rows (both carry `data-status` for `applyFilters` correctness)
+- **H-3:** 15 duplicate category headers (FACET appearing 5×, PROFILE 4×, HIST 4×) — `FEATURES` is in chronological commit order; the emitter wrote a per-transition header without first sorting by category
+
+The meta-lesson: the v1.1 panel approved without rendering the HTML in a browser. Same failure class as Phase 13.45 audit PR-3 at the meta level. **Reviewer QRC v1.31 Rule 14 caveat** (*"diff-read does not discharge visual-render verification; Q6 trigger applies independently; both required"*) was drafted during this round in direct response.
+
+### Implementation
+
+- **H-2:** scope the JS filter selectors to `.filter-group [data-status]` and `.filter-group [data-visual]` (8 occurrences updated in `generate_capability_matrix.py`). The broad selector previously matched the 121 feature `<tr>` rows; clicking a row hijacked filter state.
+- **H-3:** sort `FEATURES` by category (stable) before emit, in BOTH MD and HTML paths. Alphabetic regrouping in the diff confirms the fix.
+- **H-1:** could not reproduce in the container post-D-L. Same `test_results` + same `compute_feature_stats` produces `Verified` in both MD and HTML outputs. Hypothesis: the committed HTML was a **stale artifact** (generated pre-D-L when M.1 was failing → META showed Broken at that snapshot, then never regenerated). Resolved by regeneration in this commit; locked against future stale-or-divergent recurrence by the M.3 extension below.
+- **M.3 extension (same test, stricter assertions — no test count change):** locks two invariants on the HTML output:
+  - (a) each category appears as a `category-row` header exactly once (catches H-3 class)
+  - (b) HTML `data-status` counts agree with MD-computed status counts on the same `test_results` (catches H-1 class whether stale-artifact or divergent-compute)
+
+  Both fail on the original buggy emitter; pass on this commit's. Gate unchanged at 1038.
+
+### Testing
+
+- **+0** new tests (M.3 same-test stricter)
+- Test count: 1038 → **1038**
+- Features unchanged at 121
+- Verified unchanged at 57
+- Invariance unchanged at 353
+
+### Panel Verdict
+
+Sonet51 `[!]` APPROVED WITH COMMENTS consolidating 5 reviewers (Sonnet54, Sonnet55, Sonnet52_R1, Opus2, Sonet51). Two P2 FIX2 candidates noted: P2-1 HTML still missing from reviewer zip (**first** recorded occurrence of what became a 3× recurring packaging gap, closed in Phase 13.50 FIX2 below); P2-2 expand-after-filter JS bug — `removeAttribute('hidden')` doesn't clear `style.display = 'none'` set by filter — Sonnet52_R1 found via actual click testing in their browser.
+
+### Process Lesson
+
+**"Render the artifact; don't trust the diff."** The Reviewer QRC v1.31 Rule 14 caveat — that diff-reading does not discharge visual-render verification when the artifact is itself a rendered output — landed in this round as a direct response to the H-1/H-2/H-3 miss. First operational success of the rule: in the FIX1 review round, 3 of 5 reviewers rendered the HTML, and Sonnet52_R1's hand-click test surfaced P2-2 (expand-after-filter behavior bug) — exactly the class Rule 14 exists to catch. Rule worked once applied.
+
+---
+
+## Phase 13.50.DF: Fit-Rendering Overhaul + V-Test Coverage (Proposal v2.5)
+
+**Date:** 2026-06-03
+**Commit:** `f3034153`
+**Tag:** `PHASE_13_50_DF_END`
+**Status:** ✅ Closed (**1057 / 0 / 0 / 1 skipped / 1 xfailed**)
+**Predecessor:** Phase 13.49.DF FIX1 @ `a6ddc753` (gate 1038)
+**Specification:** `PHASE_13_50_DF_v2_5_FitRenderingOverhaul_Proposal.md` (architect-approved after 4-round panel convergence v2.2 → v2.3 → v2.4 → v2.5)
+**Intermediate step commits (preserved on `feature/groupby-optimization`):** step 1 `c029b405`, step 2 `e904ccec`, step 3 `181c2366`, step 4 `ccd8243d`, step 5 `068da47f`, step 7 `f3034153` (closing — covers sub-steps 7a–7f + folded step-7 FIX1).
+
+### Trigger
+
+92 production `.draw()` call sites surveyed across `time_series.py`, `time_series_TroubleShooting.py`, and `makeSmoothMapsWithTPC.py` showed five UX gaps in fit rendering: long parameter names rendered verbatim, fixed `.4g` precision (errors not 1-sig-fig physics-convention), no shared-legend mode, no per-panel or pad placement for `summary_fit` tables, and no orientation control. Plus the architect-flagged motivating bug — *"problems only with spacing of the fits in the latest test"* (2026-05-30) — which is the textbox-bbox-overlap class. **Phase 13.50 ships the API surface to fix the spacing class**; the test that proves it's fixed (F19, Tier 2 renderer-driven) is deferred to Phase 13.5X. F1–F18 green is necessary but not sufficient evidence — framed explicitly in CRR §1 / §6 risks.
+
+### Implementation (7 sub-steps; closing step is single commit)
+
+- **Step 1 — display-name map** (`plots/_fit_render.py`): new `_DISPLAY_NAMES` render-only dict (`slope→p1`, `intercept→p0` matching `_polynomial_factory` ascending-powers convention `c0 + c1·x + c2·x² + ...`; `center→$\mu$`, `sigma→$\sigma$`, `decay→$\tau$`, `amplitude→A`). `plots/fits.py` UNCHANGED — render-time substitution only. F1, F2, F3 lock textbox content via `Text.get_text()` (Tier 1 sees stored string, not rendered glyph).
+- **Step 2 — precision keys** (`style.py`, `plots/_fit_render.py`): **[BREACH]** `fit.text_format` style key REMOVED (v2.5 §5 + §3.3 + §9 authorize). Replaced by `fit.value_format` (default `'.2g'`), `fit.error_format` (default `'.1g'`), `fit.precision_mode` (`None | 'physics' | 'uniform'`). `precision_mode='physics'`: error → 1 sig fig (standard convention), value's decimal aligned to error's place. Edge cases (error≤0, NaN, ±inf) fall back to `value_format`. F4, F5 locks.
+- **Step 3 — `fit_textbox_kwargs` extensions** (`plots/_fit_render.py`): `_allowed_sub_keys` extended with `rename_params`, `value_format`, `error_format`, `precision_mode` (all per-call overrides of style defaults). Additive — existing keys (`fontsize`, `format`, `show_fields`) unchanged. F6, F16 locks.
+- **Step 4 — polymorphic `legend=` kwarg** (new `plots/_legend.py` + `drawer.py` hook): `legend=` accepts `bool | str | dict | None` polymorphically (`True`/`False`/`'shared'`/`'first'`/dict). `show_legend=` retained as **permanent back-compat parallel** (NOT deprecated; no `DeprecationWarning`; no removal scheduled). Both reach `_normalize_legend_spec(spec) → canonical dict`. **Pattern A for both** (popped at top-level dispatcher entry, never in `*_FORWARDED_NAMES` tuples — same discipline as Phase 13.43 §9.1 for `summary_fit=`). `show_legend=` newly added as named param in `draw()` signature (previously absent — would have tripped the Phase 13.46 C-7 kwarg-typo guard). `_apply_legend_mode` (~50 LOC) hook in `drawer.py` after `_dispatch_faceted_render`: `mode='shared'` consolidates per-panel legends to a single `fig.legend()`; `mode='first'` keeps only `axes.flat[0]`. F7, F8, F9, F10, F18, `test_normalize_legend_spec_idempotent` invariance test.
+- **Step 5 — `summary_fit.placement` axis + GridSpec pre-planning** (`plots/_summary_fit.py`, `drawer.py`): three modes — `'figure'` (default, preserves Phase 13.43 behavior; separate `Figure` in `stats['summary_fit']`), `'subfigure'` (per-panel `Axes.inset_axes()` per visible facet panel — **each inset shows only that panel's fits**, per Claude36 ADF panel finding v2.4 P2-NEW-3), `'pad'` (new GridSpec cell in same `Figure`, **pre-planned at top of `_dispatch_faceted_render` BEFORE `plt.subplots()`** because `gridspec.GridSpec` is immutable post-construction, per Sonnet52_R1 v2.3 panel finding P1-A). Sub-keys: `pad_location` (4 cardinal edges), `pad_size` (fraction of figure dim; non-uniform sizes use proportional `width_ratios`/`height_ratios` per P3-NEW-1), `inset_bbox` (per-panel inset positioning). `ax` return contract: always main-plot axes array; pad axes reachable only via `stats['summary_fit']` or `fig.axes`. F11, F12, F13, F17 locks.
+- **Step 6 → renamed in step 7b — `summary_fit.orientation` axis** (`plots/_summary_fit.py`): two modes — `'row'` (default; one row per fit, columns are params) and `'column'` (transposed; one column per fit, rows are params). Step 6 initial ship used `'horizontal'`/`'vertical'` tokens; step 7b spec-conformance renamed to `'row'`/`'column'` per v2.5 §3.4(b) canonical. Step 7b R1 extended orientation honoring to the `placement='figure'` renderer (`_render_table_figure` transposes when `orientation='column'`) — step 6 had been an undisclosed partial implementation (in-slot renderer only). F14, F15 locks.
+- **Step 7 — closing step, single commit, covers sub-steps 7a–7f + folded step-7 FIX1:**
+  - **7a [BREACH]** `summary_fit.precision` int field REMOVED (v2.5 §5 + §3.3 + §9). Replaced by `value_format` / `error_format` format-spec strings mirroring step 2's `fit.*` style keys. **11 sites** updated in `plots/_summary_fit.py` (8 behavioral: signature, allowed-keys, validation, default dict, pass-throughs; + 3 documentation: docstring example, error message body, downstream helper signature — sweep coverage per Opus2 v2.3 P2-B). `tests/test_phase_13_43.py::test_f43_precision_in_table_cells` migrated.
+  - **7b** orientation token rename (above) + R1 figure-renderer extension.
+  - **7c** pad sub-keys (`pad_location`, `pad_size`, `inset_bbox`) — normalizer + drawer.py pad allocator with proportional GridSpec ratios.
+  - **7d** subfigure semantic flip from single `fig.add_subfigure()` (step 5 ship) to per-panel `Axes.inset_axes()` (v2.5 §3.5 + P2-NEW-3 spec). `render_summary_fit_per_panel_insets()` new in `_summary_fit.py`; dispatch loop stashes `_dfdraw_facet_key` on each axes; `_maybe_attach_summary_fit` split-routes `'pad'` vs `'subfigure'`. F12 test body rewritten. `stats['summary_fit']` shape change for subfigure: now `{'insets': List[Axes], 'per_panel_keyed': Dict[facet_key → Axes], 'placement': 'subfigure'}` (was `{'table': Axes, 'placement': 'subfigure'}`).
+  - **7e** `table_cells_keyed(ax) → set[frozenset[(col_label, cell_text)]]` helper (collision-safe + set-union-friendly for subfigure mode's per-panel slices, per Claude36 v2.4 P2-NEW-1 keyed-comparison upgrade from v2.3's permutation-blind `set[str]`). **F17 test body rewritten** from step-5's topology-distinctness (the opposite invariant) to v2.5-spec'd cross-variant table-content **equivalence**: same draw via `placement='figure'`, `'pad'`, `'subfigure'` produces identical keyed cell dicts (subfigure uses set-union across per-panel insets).
+  - **7f hist2d `summary_fit=` forwarding** (`drawer.py:~6155` call site; new `summary_fit: Optional[Union[str, List[str], Dict]] = None` named param on `DFDraw.hist2d()`): v2.5 §2 IN-scope listed `summary_fit.placement` with no plot-kind exclusion, but the step-5 ship omitted forwarding at the hist2d dispatcher call site (kwarg was silently dropped). R4 panel feedback called this out as a should-have-been-in-scope miss; promoted into Phase 13.50 scope. Pattern A verified: `summary_fit` NOT in `_HIST2D_FORWARDED_NAMES`.
+  - **Folded step-7 FIX1 cycle (post-step-7 deploy, 3 bugs surfaced and fixed in the same commit):**
+    1. **`_select_panel_stats` type mismatch:** dispatcher stringifies `group_value` at `drawer.py:3784` (`all_stats[str(group_value)] = ...`); dispatch loop stashed raw value on `ax._dfdraw_facet_key`. Membership check `3 in ('3',)` is False → every panel resolved to None → F12 returned empty insets. Fixed by accepting raw + stringified scalar + tuple-of-stringified-element forms.
+    2. **`_render_table_in_axes` pre-existing column-selection bug:** looked for `row.get('params')` as a nested sub-dict that `_make_row` never produces (params flattened to top-level row keys). Pad-placement table dropped all params/metrics columns → F17 cross-variant equivalence broke. Fixed by mirroring `_render_table_figure` exactly: `_default_columns(rows)` + `_format_cell` with paired error formatting.
+    3. **Registry split-deploy:** `tests/test_layer_classification.py` was missed in first FIX1 deploy (renames synced only in `feature_taxonomy.py`). Asymmetric meta-failures (`test_taxonomy_tests_resolve` passing + `test_classification_coverage` + `test_no_orphan_visual_tests` failing) is the diagnostic fingerprint — codified in CRR §9 QRC backlog item 4.
+
+### Testing
+
+- **+19** new tests under `tests/test_phase_13_50_df_fit_visual.py` (new file with `FitVisualCheck` sibling-of-`VisualCheck` class):
+  - **+16 visual_primitive** (F1–F16)
+  - **+3 invariance** (F17 cross-variant equivalence; F18 `show_legend`/`legend` behavioral equivalence via 4-tuple `legend_topology = (n_fig_level, n_per_axes, frozenset(labels), loc_string)` per Claude36 v2.4 P2-NEW-2; `test_normalize_legend_spec_idempotent`)
+- Test count: 1038 → **1057** (+19)
+- Features: 121 → 127 (+6: `FIT.display_names`, `FIT.precision_modes`, `FIT.textbox_kwargs_extensions`, `LEGEND.modes`, `SUMMARY_FIT.placement`, `SUMMARY_FIT.orientation`)
+- visual_primitive layer: 11 → 27 (+16)
+- Invariance: 353 → 356 (+3)
+- Verified: 57 → 59 (+2 — `LEGEND.modes` and `SUMMARY_FIT.placement` have invariance tests via F18 and F17 → Verified; other 4 new features remain Smoke-only at close)
+- **Tier 2 deferred (NOT in gate): F19** `check_textbox_does_not_overlap_data_bbox` — the test that proves the architect-flagged motivating spacing bug is cured. Requires `fig.canvas.get_renderer()` draw cycle; lands in Phase 13.5X with the Tier 2 framework.
+
+### [BREACH] Disclosures (Coder QRC v1.29 R14)
+
+Two architect-authorized removals (v2.5 §5 + §3.3 + §9 explicitly authorize; no aliases; clean cut):
+- **§2.1** — `fit.text_format` style key REMOVED. Migration: `set_style({'fit.text_format': X})` → two-key form `set_style({'fit.value_format': '.2g', 'fit.error_format': '.1g'})`. Old style sheets that set `text_format` raise `KeyError` at style-load time.
+- **§2.2** — `summary_fit.precision` int field REMOVED. Migration: `summary_fit={'precision': N}` → `summary_fit={'value_format': '.Ng', 'error_format': '.Ng'}`. 11 sites in `_summary_fit.py` cleared (8 behavioral + 3 documentation, all enumerated in CRR §5).
+
+Two narrow-window non-[BREACH] disclosures:
+- **§2.3** — `summary_fit.orientation` token rename `'horizontal'`/`'vertical'` → `'row'`/`'column'` (step 7b spec-conformance; narrow window between step 6 commit and step 7 commit; not strictly [BREACH] because step 6 was not released externally per architect confirmation).
+- **§2.4** — `placement='subfigure'` stats structure flip (step 7d; was `{'table': Axes, 'placement': 'subfigure'}` in step 5 initial ship; now `{'insets': List[Axes], 'per_panel_keyed': Dict[facet_key → Axes], 'placement': 'subfigure'}`).
+
+### Panel Verdict & Path
+
+1. **v2.2 proposal** (Claude48 drafted; Sonet51 8-reviewer panel `[!]` APPROVED WITH COMMENTS — 2 P1s + 6 P2s + 1 P3 pair; key finding P1-A GridSpec immutability from Sonnet52_R1)
+2. **v2.3 proposal** (folded 9 panel findings; Opus2 `[!]` with 2 new findings: P2-A visual count arithmetic off by 2; P2-B precision-removal site count understated)
+3. **v2.4 proposal** (folded 9 more findings including **Claude36 ADF cross-team's three substantive test-design upgrades**: P2-NEW-1 keyed-dict cross-variant comparison, P2-NEW-2 extended legend topology 4-tuple, P2-NEW-3 subfigure per-panel-slice semantics; Opus2 caught the cascade-error in §3.1 line ref — v2.3 P3-1 had incorrectly "corrected" `_normalize_one_fit` from `fits.py:330` to `:276`; line 276 is the DIFFERENT function `normalize_fit_spec`. Sonnet55's earlier source claim had conflated the two; v2.4 P3-1 propagated the error; Opus2's Rule-16 source-grep this round caught it)
+4. **v2.5 proposal** (closed Sonnet54 P2-1 orphan-normalizer-test M.2 risk; Opus2 P2-2 line-ref cascade-error correction; 3 P3 risk notes including private mpl `_loc_real` attribute and `frozenset(labels)` deduplication; **architect-approved**)
+5. **Implementation step commits 1–6** landed in earlier sessions per §10 implementation order
+6. **CRR v1.0** (Claude48 introduced the **§0 pre-CRR gap-audit attestation pattern** — when architect's "Was all functionality from spec implemented?" challenge caught 4 undisclosed partials in v1.0-draft, draft was scrapped, §0 audit table cross-checked all 20 v2.5 in-scope items, second sweep confirmed conformance, THEN the CRR was drafted; Sonnet53_R2 consolidating 6-reviewer panel `[!]` APPROVED WITH COMMENTS)
+
+### Process Wins Captured (CRR §9 QRC Backlog Additions)
+
+1. **Pre-CRR source-vs-spec audit pattern (§0 attestation):** the architect's "Was all functionality implemented?" challenge → coder scraps draft → §0 audit table written → second sweep confirms zero remaining partials → THEN the CRR is drafted. Proposed adoption as **Coder QRC R17**.
+2. **Cross-variant equivalence tests need collision-safe keying** (set-of-frozensets, not dict-keyed-by-(col_0_value, col_label) which silently drops duplicate-col-0 rows).
+3. **Dispatcher key-form discipline:** when the dispatcher stringifies `group_value` for stats aggregation, any per-axes marker downstream must also be stringified or membership checks silently fail.
+4. **Split-deploy detection via asymmetric meta failures:** `test_taxonomy_tests_resolve` passing + `test_classification_coverage` + `test_no_orphan_visual_tests` failing is the fingerprint identifying which of the two registry files was missed in the first deploy.
+
+### Architectural Posture
+
+**This phase ships the API surface to fix the architect-flagged spacing bug; F19 in Phase 13.5X is the test that proves it's fixed.** F1–F18 green is necessary but not sufficient evidence. The Tier 1 / Tier 2 distinction established in Phase 13.48 is now load-bearing: Tier 1 covers structural correctness (textbox content, axes counts, table shapes, legend topology); Tier 2 will cover visual-layout correctness (textbox overlap with data, label clipping, legend covering data) once `fig.canvas.get_renderer()` framework support lands.
+
+---
+
+## Phase 13.50.DF FIX1: P2-1 Taxonomy Fix + Matrix Regen + CRR Documentation Corrections
+
+**Date:** 2026-06-03
+**Commit:** `5010cf78`
+**Tag:** `PHASE_13_50_DF_FIX1_END`
+**Status:** ✅ Closed (**1057 / 0 / 0 / 1 skipped / 1 xfailed** — documentation-only at runtime)
+**Predecessor:** Phase 13.50.DF v1.0 END @ `f3034153` (gate 1057)
+**Specification:** `PHASE_13_50_DF_FIX1_CRR_v1_0.md` (delta amendment against CRR v1.0)
+
+### Trigger
+
+Sonet51-led 6-reviewer panel verdict on `PHASE_13_50_DF_CRR_v1_0` (Sonnet53_R2 main; panel members Sonnet54, Sonnet55, Sonnet56, Sonnet57, Opus2 contributing): `[!]` APPROVED WITH COMMENTS. Required pre-tag actions:
+- **P2-1** (Sonnet56, Sonnet57, Sonnet54 — 3/5 independent finds): `SUMMARY_FIT.orientation` feature description in `tests/feature_taxonomy.py` doubly stale — tokens still `'horizontal'`/`'vertical'` and scope still says `"in-slot renderer only"`. Step 7b renamed the tokens; step 7b R1 extended orientation to `placement='figure'`. The targeted sed-rename for test-method names did NOT cover the feature description text. Propagates into `CAPABILITY_MATRIX.md/.html` verbatim → user-facing documentation misrepresented shipped behavior.
+- **P3-1** (Sonnet53_R2, Sonnet57): CRR v1.0 §4.4 cited `test_f54` Path C; actual skipped test is `test_adf_cached_last_ax` (Phase 13.25 pre-existing). `test_f54` passed in delivery.
+- **P3-2** (Sonnet57): CRR v1.0 §4.1 gate format omits `1 xfailed` (Phase 13.34 deferred feature `test_MED_1_median_uses_mad_sigma_for_errors`; exit 0 unchanged).
+- **P3-3** (Opus2): CRR v1.0 §10 cited `reviewer_20260603_122216.zip`; actual delivery `reviewer_20260603_123615.zip` (~14 min timestamp drift).
+
+### Implementation
+
+**Source changes (P2-1 fix):**
+- `tests/feature_taxonomy.py` — `SUMMARY_FIT.orientation` block (~lines 1600–1617):
+  - `"name"` field updated from `"summary_fit.orientation axis: horizontal (default) / vertical (transpose) — in-slot renderer only"` to `"summary_fit.orientation axis: row (default) / column (transpose) — honored by all placements (figure, pad, subfigure)"`
+  - Rationale comment block above the entry rewritten with canonical token names per v2.5 §3.4(b), step 7b rename heritage, and step 7b R1 extension scope (in-slot framing removed).
+- `plots/_summary_fit.py` — two stale-token mop-up sites surfaced by parallel-sweep follow-on:
+  - `_ALLOWED_DICT_KEYS` rationale comment (line ~172): tokens + scope aligned to `'row'`/`'column'` + all-placements semantic.
+  - `_ALLOWED_ORIENTATIONS` use-case comment (line ~216): replaced flow text `"vertical avoids horizontal scrolling"` (legacy token leak) with `"column orientation avoids the wide-table scroll problem in that regime"`.
+  - Heritage rename notes (`was 'vertical'`, `renamed from {'horizontal','vertical'}`) preserved intentionally as cross-rename traceability.
+- `docs/CAPABILITY_MATRIX.md` + `docs/CAPABILITY_MATRIX.html` regenerated via `run_tests.sh` (matrix shows `PHASE_13_50_DF_END` phase header reflecting the now-applied tag).
+
+**Documentation corrections (in FIX1 CRR §A.2, no code impact at runtime):**
+- v1.0 §4.4 → corrected: actual skipped test is `test_adf_cached_last_ax`; `test_f54` passed.
+- v1.0 §4.1 → corrected: actual gate is `1057 passed / 1 skipped / 1 xfailed / exit 0`. Gate-declaration format standard updated to include `xfailed` row going forward.
+- v1.0 §10 → corrected: `reviewer_20260603_123615.zip`.
+
+### Testing
+
+- **+0** new tests (taxonomy-description + comment-block text only at runtime)
+- Test count: 1057 → **1057** (unchanged)
+- Features unchanged at 127
+- Verified unchanged at 59
+- Invariance unchanged at 356
+
+### QRC Backlog Additions (FIX1 CRR §A.4)
+
+The pre-CRR audit pattern Claude48 introduced in CRR v1.0 (§0 attestation, proposed as Coder QRC R17) covered **spec-vs-shipped-code** conformance but not **shipped-code-vs-documentation** conformance. P2-1 was a direct consequence: source-side step 7b rename was complete, but `feature_taxonomy.py` `"name"` field text was outside the audit scope. Two additions for the next QRC governance cycle:
+- **R17 extension** — when a pre-CRR audit covers a rename or scope change, it MUST include a parallel sweep across documentation surfaces: `feature_taxonomy.py` `"name"` fields + rationale comments, `CAPABILITY_MATRIX.md/.html` generated content, inline source comments describing the feature. Fingerprint command: `grep -rn "OLD_TOKEN" tests/feature_taxonomy.py plots/ docs/`. Expected output: only heritage rename notes ("was X, now Y"); current-form descriptions using OLD_TOKEN are stale.
+- **§4-facts-from-logs rule** — CRR §4 gate counts and test identity claims (skipped / xfailed test IDs) MUST be sourced from delivery-run `test_logs/test_full_*.log` and `test_logs/SUMMARY_*.txt`, NOT from working memory or compaction summaries. P3-1's `test_f54` vs `test_adf_cached_last_ax` confusion was a memory-carryover failure.
+
+### Panel Verdict
+
+Opus2 `[OK]` (source-verified the taxonomy `"name"` field update, the two `_summary_fit.py` mop-up sites, and the parallel-sweep coverage; confirmed only remaining stale-token grep hit is `FACET.list_grid` at `CAPABILITY_MATRIX.md:80` which is matplotlib subplot grid row/column terminology — out of `SUMMARY_FIT.orientation` scope per amendment §A.1).
+
+**P2-2 (HTML missing from reviewer zip — third consecutive phase) deferred to Phase 13.51 scope** per panel direction. Needs `run_tests.sh` zip-builder enforcement (~5–10 lines bash, infrastructure not dfdraw source). Closed in Phase 13.50 FIX2 below.
+
+---
+
+## Phase 13.50.DF FIX2: run_tests.sh HTML Packaging Enforcement (Closes P2-2)
+
+**Date:** 2026-06-03
+**Commit:** `07606c02`
+**Tag:** `PHASE_13_50_DF_FIX2_END`
+**Status:** ✅ Closed (**1057 / 0 / 0 / 1 skipped / 1 xfailed** — tooling-only)
+**Predecessor:** Phase 13.50.DF FIX1 @ `5010cf78`
+
+### Trigger
+
+`docs/CAPABILITY_MATRIX.html` had been absent from the reviewer zip across **three consecutive phases**: Phase 13.49 P2-1 (first occurrence), Phase 13.49 FIX1 P2-1 (reoccurrence), Phase 13.50 v1.0 P2-2 (third occurrence). Each round, the panel had flagged it as a FIX2 candidate; each round, voluntary discipline failed to prevent the next recurrence. The root cause was that `run_tests.sh`'s explicit file list in the reviewer-zip packaging block had `docs/CAPABILITY_MATRIX.md` but not `docs/CAPABILITY_MATRIX.html`. Panel direction (Sonet51 + Opus2 v1.0 CRR review): apply a mechanical guard, not another voluntary-discipline round.
+
+### Implementation (~2 lines net + mechanical guard)
+
+- Added `docs/CAPABILITY_MATRIX.html` to the file list in `run_tests.sh`'s reviewer-zip packaging block (root-cause fix).
+- Added post-zip presence assertion: `unzip -l "$ZIPFILE" | grep -q '\.html'` warning if absent. Warning is **non-fatal** (matches the severity of the existing `.md`-unstaged warning at lines 524–533 — both flag a likely-but-not-certain miss to the operator without blocking the bundle).
+- `bash -n run_tests.sh` verified.
+
+### Testing
+
+- **+0** new tests (tooling-only; no library / test-suite changes)
+- Test count: 1057 → **1057** (unchanged)
+- Features unchanged at 127
+- Verified unchanged at 59
+- Invariance unchanged at 356
+
+### Lesson Recorded
+
+**Voluntary discipline ≠ recurring-class prevention.** Three consecutive phases is the threshold where the same gap warrants infrastructure enforcement, not another flag-and-promise cycle. The 2-line `run_tests.sh` fix closes the entire class. Worth recording as a governance pattern: when a P2 recurs 3× across phases despite each occurrence being flagged, escalate to mechanical guard rather than continue advisory flagging.
+
+---
+
 ## Statistics Summary
 
 | Phase | Test Count | Delta | Key Feature |
@@ -2578,8 +2935,17 @@ v1.0 set the **view window** (`set_xlim`/`set_ylim`) — out-of-range points sta
 | **run_tests.sh (tooling)** | 1014 | 0 | **PHASE_HISTORY ↔ git-tag drift check. ~96 LOC after BUG-011 staging check: BLOCK (exit 1) on any `PHASE_*_END` in `docs/PHASE_HISTORY.md` not in `git tag --list 'PHASE_*_END'` (override `DFDRAW_SKIP_TAG_DRIFT_CHECK=1`); WARN heuristic for misplaced `FIX<N>_END` tags. Reverse direction (repo ahead of doc) intentionally not blocked (expected backfill transient). Surfaced + resolved the Phase 13.25 tag incident (`PHASE_13_25_DF_FIX1_END` misplaced on `da8895e2` → moved to `06f84ff8`; `PHASE_13_25_DF_FIX2_END` created on `da8895e2`). Lesson: phase status = git tags ONLY. Tooling-only, no test-count change. `PHASE_13_46_DF_BEGIN` placed here (`02510a20`). Sonet50 panel `[!]` APPROVED** |
 | **13.46.DF v1.0** | **1022** | **+8** | **Audit bucket ① fixes (C-1/C-2/C-4/C-7/C-9). C-1 `fit='gaus'` ROOT TF1 alias (`register_fit`); C-2 `type='histo'` ROOT alias (`_TYPE_ALIASES`); C-4 source `_get_suptitle` helper (public `get_suptitle()` mpl≥3.8 + private fallback) replacing 9 inline `fig._suptitle` sites (retires Phase 13.42 FIX2 §2.2 disclosure); C-7 kwarg-typo guard at `draw()` entry (`difflib.get_close_matches(cutoff=0.8)` did-you-mean; K = 6 method sigs ∪ 5 FORWARDED_NAMES, reviewer note N-1); C-9 `range=` on scatter via shared `resolve_range_2d` (v1.0 view-clip, all strategies, honest stats; original profile/hist unpack bug fixed). C-3 (faceted auto_title) intentionally excluded → Phase 13.47. F.64-F.70 (F.69 a/b). +4 features (FIT.root_aliases, API.kwarg_typo_guard, RANGE.scatter, TITLE.get_suptitle). §2.1 ruling: Option 1 shared-global faceted scatter range (per-cell available via `facet_by=[list]+share_x='none'`). Invariance 340 → 348, Verified 51 → 55. Spec `PHASE_13_46_DF_v1_3_AuditFixes_Proposal.md`; audit `PHASE_13_45_dfdraw_Audit_Findings.md`. Predecessor `PHASE_13_43_DF_END` @ gate 1014. Closure tag is FIX1_END (no separate v1.0 END tag)** |
 | **13.46.DF FIX1** | **1023** | **+1** | **Scatter `range=` REMOVES out-of-range points (point filter), per architect 2026-05-28 — consistent with hist/profile range= excluding points from binning. v1.0 only view-clipped (`set_xlim`); FIX1 filters `x_data`/`y_data`/`df_filtered` by one mask before stats+plotting (parallel color/size/marker/error arrays derive from `df_filtered` → stay aligned automatically). Stats computed post-filter (honest counts). Non-facet keeps exact tight view; faceted cells filter and shared axes autoscale to the union (no last-cell-wins). F.71 locks the point-removal invariant (percentile_99 & explicit-tuple drop points; minmax removes nothing; color array stays aligned). +1 feature `RANGE.scatter_filter`. Invariance 348 → 349, Verified 55 → 56. Predecessor v1.0 @ `1d77702e`. Tag `PHASE_13_46_DF_FIX1_END`; rolling `PHASE_BEGIN_dfdraw` → `ad91e251`** |
+| **run_tests.sh WARN downgrade** | **1023** | **+0** | **Tag-drift check downgraded to non-blocking WARNING (commit `df3057a3`, tooling-only). Hard-blocking the reviewer bundle on heuristic `grep` of PHASE_HISTORY prose was fragile and created override pressure (silent bypass → dead-weight check). Two-part fix: (1) `grep` scope narrowed to declarative `` 'tag `PHASE_X_END`' `` references only (not prose mentions); (2) severity demoted to non-fatal WARNING in `SUMMARY` artifact in `reviewer.zip` — drift stays visible, bundle always builds, operator cannot silently bypass. Parallels the earlier `02510a20` tag-drift check addition recorded in v1.10. Lesson: heuristic gate-blocks need a non-blocking off-ramp — tighten scope AND demote severity together; either alone leaves a failure mode. Features unchanged at 114; Verified unchanged at 56; invariance unchanged at 349** |
+| **13.48.DF v1.0** | **1034** | **+11** | **Tier-1 automated visual testing — new `visual_primitive` test layer. `VisualCheck(fig, stats, df)` framework with collect-all-then-assert pattern; cell iteration via `fig.axes` (dispatcher-agnostic); `visible_cell_axes` excludes hidden padding; series counts via `ax.containers` (not `len(ax.lines)` — errorbar caps populate `ax.lines` but aren't series); distinct-RGBA distinctness; dtype-safe `zip(sorted_unique(...))`. 11 V-checks V.1-V.10 + V.2 ragged-padding-safety lock under `TestPhase1348VisualPrimitive`. +6 features (`VISUAL.framework`, `VISUAL.cell_iteration`, `VISUAL.series_count`, `VISUAL.distinct_colors`, `VISUAL.shared_axes`, `VISUAL.layout_visibility`) — all Smoke-only at close pending Phase 13.49 matrix-traceability work. Verified 56 unchanged; invariance 349 unchanged; **visual_primitive layer NEW: 0 → 11**. Tier 1 / Tier 2 split established here. Predecessor `PHASE_13_46_DF_FIX1_END @ ad91e251` (gate 1023). Tag `PHASE_13_48_DF_END`** |
+| **13.49.DF v1.0** | **1038** | **+4** | **Capability Matrix Traceability — link infrastructure (per-feature `tests: [List[str]]` field in `feature_taxonomy.py`; `TEST_LAYERS` dict in `test_layer_classification.py`); HTML matrix with per-feature expandable tests-panel, status × visual × category filters; orthogonal Visual column with 👁 badge. 4 M-tests M.1-M.4 (`test_taxonomy_tests_resolve`, `test_classification_coverage`, `test_html_matrix_locks`, `test_no_orphan_visual_tests`) + `META.capability_matrix` feature (Verified — claims the 4 M-tests). KNOWN_UNCLAIMED §3.7 governance: 64 seeded entries with SPECIFIC target_phases (13.27.DF=50, 13.28.DF=9, 13.32.DF=5 per Opus48_1 P2-A advisory adopted). D-K + D-L normalization fixes at 3 sites (basename `split('/')[-1]`): v1.0 CRR was [X] REJECTED by Opus2 for `if startswith("tests/"):` regression matching 0 features → all 121 Planned. v1.1 resubmission [!] APPROVED 8/8; D-L was Claude48 self-discovery under proposed Coder QRC R7. Features 120 → 121 (+1 META); Verified 56 → 57; invariance 349 → 353. Predecessor `PHASE_13_48_DF_END @ 9f612601`. Tag `PHASE_13_49_DF_END`** |
+| **13.49.DF FIX1** | **1038** | **+0** | **HTML rendering fixes (H-1/H-2/H-3) + M.3 lock (same-test stricter, no test count change). Architect rendered HTML and found 3 bugs the 8-reviewer v1.1 panel missed: H-1 META Broken in HTML vs Verified in MD (stale-artifact hypothesis); H-2 JS selector `[data-status]` too broad — clicking feature `<tr>` row hijacked filter state (8 selectors scoped to `.filter-group [data-status]`); H-3 15 duplicate category headers (FACET 5×, PROFILE 4×, HIST 4×) — FEATURES in chronological commit order needed sort-by-category before emit in BOTH MD and HTML. M.3 extended with two gate-locked invariants on HTML: (a) each category-row appears exactly once; (b) HTML data-status counts match MD-computed counts on same test_results. Both fail on original buggy emitter; pass on this commit. Meta-lesson: v1.1 panel approved without rendering the HTML — direct trigger for **Reviewer QRC v1.31 Rule 14 caveat** ("diff-read does not discharge visual-render verification; Q6 trigger applies independently"). P2-1 HTML still missing from reviewer zip recorded as first occurrence of what became 3× recurring packaging gap (closed in Phase 13.50 FIX2). Features unchanged at 121; Verified unchanged at 57; invariance unchanged at 353. Tag `PHASE_13_49_DF_FIX1_END`** |
+| **13.50.DF v1.0** | **1057** | **+19** | **Fit-rendering overhaul (proposal v2.5 after 4-round panel convergence v2.2→v2.3→v2.4→v2.5). Six features added: `FIT.display_names` (render-only `_DISPLAY_NAMES` map — `slope→p1`/`intercept→p0`/`center→$\mu$`/`sigma→$\sigma$`/`decay→$\tau$`/`amplitude→A`; `plots/fits.py` UNCHANGED); `FIT.precision_modes` (**[BREACH]** `fit.text_format` REMOVED; replaced by `fit.value_format`/`fit.error_format`/`fit.precision_mode='physics'` — error 1sf, value aligned to error's decimal); `FIT.textbox_kwargs_extensions` (`rename_params`/`value_format`/`error_format`/`precision_mode` per-call overrides); `LEGEND.modes` (polymorphic `legend=` kwarg `bool|str|dict|None` with `'shared'`/`'first'` modes; `show_legend=` permanent back-compat parallel — both Pattern A); `SUMMARY_FIT.placement` axis (`'figure'`/`'subfigure'`/`'pad'`; subfigure insets are PER-PANEL slices per Claude36 ADF P2-NEW-3; pad pre-planned at GridSpec construction per Sonnet52_R1 P1-A — GridSpec is immutable post-creation); `SUMMARY_FIT.orientation` axis (`'row'`/`'column'`; honored by all placements). **[BREACH]** `summary_fit.precision` int REMOVED (11 sites: 8 behavioral + 3 documentation). 19 new tests in `tests/test_phase_13_50_df_fit_visual.py`: F1-F16 visual_primitive + F17 cross-variant table-content equivalence (via collision-safe `table_cells_keyed → set[frozenset[(col, val)]]`) + F18 `show_legend↔legend` 4-tuple `legend_topology` behavioral equivalence + `test_normalize_legend_spec_idempotent`. CRR introduces **§0 pre-CRR gap-audit attestation pattern** (proposed Coder QRC R17). Features 121 → 127; Verified 57 → 59; invariance 353 → 356; **visual_primitive 11 → 27** (+16). **F19 textbox-bbox-overlap deferred to Phase 13.5X Tier 2** — F1-F18 green is necessary but not sufficient evidence for the architect-flagged spacing bug being cured. Predecessor `PHASE_13_49_DF_FIX1_END @ a6ddc753`. Tag `PHASE_13_50_DF_END`** |
+| **13.50.DF FIX1** | **1057** | **+0** | **P2-1 stale-taxonomy fix (Sonnet56/57/54 — 3/5 independent finds in 6-reviewer panel on CRR v1.0) + matrix regen + CRR v1.0 documentation corrections (P3-1/P3-2/P3-3). `SUMMARY_FIT.orientation` feature description in `tests/feature_taxonomy.py` was doubly stale — tokens still `'horizontal'`/`'vertical'` and scope still `"in-slot renderer only"` despite step 7b rename + step 7b R1 figure-renderer extension; targeted sed-rename did not cover the description text → propagated into CAPABILITY_MATRIX verbatim. `"name"` field updated to `"summary_fit.orientation axis: row (default) / column (transpose) — honored by all placements (figure, pad, subfigure)"`; rationale comment block rewritten; two stale-token mop-up sites in `plots/_summary_fit.py` (`_ALLOWED_DICT_KEYS` line ~172, `_ALLOWED_ORIENTATIONS` line ~216) caught by parallel-sweep follow-on; heritage rename notes preserved. CRR v1.0 §4.4 corrected: actual skipped test is `test_adf_cached_last_ax` (Phase 13.25 pre-existing) not `test_f54`. §4.1 gate format corrected to include `1 xfailed` (Phase 13.34 deferred). §10 zip filename corrected. **QRC backlog items 5+6 added**: R17 EXTENSION (parallel doc-surface sweep on rename/scope-change events; fingerprint `grep -rn "OLD_TOKEN" tests/feature_taxonomy.py plots/ docs/` returning only heritage rename notes); §4-facts-from-logs rule (CRR §4 from `test_logs/test_full_*.log`, not working memory). Documentation-only at runtime: features/Verified/invariance unchanged. Tag `PHASE_13_50_DF_FIX1_END`** |
+| **13.50.DF FIX2** | **1057** | **+0** | **`run_tests.sh` HTML packaging enforcement — closes P2-2 (HTML missing from reviewer zip) after 3 consecutive recurrences (Phase 13.49 P2-1, Phase 13.49 FIX1 P2-1, Phase 13.50 v1.0 P2-2). Voluntary discipline failed 3× in a row; panel direction (Sonet51 + Opus2) was mechanical guard not another flag-and-promise cycle. Two-line change: added `docs/CAPABILITY_MATRIX.html` to the explicit file list in the reviewer-zip packaging block (root-cause fix); added post-zip presence assertion `unzip -l "$ZIPFILE" | grep -q '\.html'` as non-fatal warning (matches severity of existing `.md`-unstaged warning at lines 524-533). `bash -n run_tests.sh` verified. Tooling-only: features/Verified/invariance unchanged. **Lesson recorded**: 3 consecutive phases is the threshold where a recurring P2 warrants infrastructure enforcement, not another flag-and-promise cycle. Tag `PHASE_13_50_DF_FIX2_END`** |
 
-**Total Development (as of Phase 13.46.DF FIX1):** 52 phase entries, **1023 tests** + 1 skipped + 1 xfailed, **114 features**, **349 invariance tests**, **56 Verified features**
+**Total Development (as of Phase 13.50.DF FIX2):** 59 phase entries, **1057 tests** + 1 skipped + 1 xfailed, **127 features**, **356 invariance tests**, **27 visual_primitive tests**, **59 Verified features**
+
+> **Phase ordering note (post-13.46 FIX1):** chronological commit order is 13.46 FIX1 (`ad91e251`, tag `PHASE_13_46_DF_FIX1_END`, gate 1023) → PHASE_HISTORY v1.10 doc commit (`89884f81`, tooling) → `run_tests.sh` WARN downgrade (`df3057a3`, tooling-only — tag-drift check hard-block → non-blocking WARNING) → 13.48 v1.0 (`9f612601`, tag `PHASE_13_48_DF_END`, gate 1034) → 13.49 v1.0 (`89bc63c6`, tag `PHASE_13_49_DF_END`, gate 1038) → 13.49 FIX1 (`a6ddc753`, tag `PHASE_13_49_DF_FIX1_END`, gate 1038 same-test stricter) → 13.50 step 1 (`c029b405`) → step 2 (`e904ccec`) → step 3 (`181c2366`) → step 4 (`ccd8243d`) → step 5 (`068da47f`) → 13.50 step 7 closing commit (`f3034153`, tag `PHASE_13_50_DF_END`, gate 1057) → 13.50 FIX1 (`5010cf78`, tag `PHASE_13_50_DF_FIX1_END`, gate 1057) → 13.50 FIX2 (`07606c02`, tag `PHASE_13_50_DF_FIX2_END`, gate 1057). Phase numbers monotonic across this window. Phase 13.47 (slim bucket) intentionally skipped — pending in queue per architect priority direction toward extended-graphics work (13.48+). The `df3057a3` tooling commit is recorded as a phase entry in the Statistics Summary table parallel to the earlier `02510a20` tag-drift check addition (v1.10). Phase 13.50.DF v1.0 step commits 1-6 land separately on the branch but the END tag is at the closing step-7 commit (`f3034153`); steps 1-6 do not have separate END tags (parallel to Phase 13.46 v1.0 / FIX1 single-END-tag pattern). Tag `PHASE_BEGIN_dfdraw` rolled `ad91e251` → `07606c02` across this window.
 
 > **Phase ordering note (post-13.39):** chronological commit order is 13.39 v1.2 (`b024414e` / `3c5d4547`) → 13.40 v1.0 (`67d125e2`) → 13.41 v1.0 (`530954d1`) → 13.41 FIX1 (`b84576a0`) → 13.41 FIX2 (`70b94a3e`) → 13.42 v1.0 (`38aed2d8`) → 13.42 FIX1 main (`82aaa903`) → 13.42 FIX1 P1 follow-up (`28f7f3ce`). Phase numbers monotonic in this window. Tag `PHASE_BEGIN_dfdraw` was at `38aed2d8` at Phase 13.42.DF close; moved to `28f7f3ce` at Phase 13.42.DF FIX1 close.
 
@@ -2710,8 +3076,9 @@ All APIs subject to change based on user feedback and integration testing with:
 | **1.8** | **2026-05-21** | **Sonet50 (consolidated panel review)** | **Added 4 new phase sections (Phases 13.37.DF v1.1, 13.37.DF FIX1, 13.38.DF v1.1, 13.39.DF v1.2) and 4 new Statistics Summary rows. Strictly append-only. Commits: `67fccf3d` (13.37), `095d6f28` (13.37 FIX1), `0f525743` (13.38), `b024414e`+`3c5d4547` (13.39). Test count 843 → 913 (+70). Verified 33 → 47 (+14). Invariance 193 → 239 (+46). Features 90 → 105 (+15). Phase entries 37 → 41 (+4). Sources: gitlog.txt (commits `2f4d959f`..`3c5d4547`), session approval summaries (Sonet50_PHASE_13_37/38/39_*_ReviewSummary_AllReviewers_20260521.md), CAPABILITY_MATRIX.md (47 Verified / 239 invariance / 913 tests confirmed). All pre-existing content preserved verbatim.** |
 | **1.9** | **2026-05-27** | **Claude48 (coder seat) at architect request** | **Backfill of 6 phase events that landed between Phase 13.39.DF v1.2 closure (`3c5d4547`, 2026-05-21) and current HEAD (`28f7f3ce`, 2026-05-27). Added strictly append-only — every existing entry preserved verbatim per architect's append-only directive. New H2 sections (chronological commit order, inserted before § Statistics Summary): Phase 13.40.DF v1.0 (`67d125e2`, +10, Cumulative histogram `cumulative=True/-1/False`; ROOT `TH1::Draw("cumulative")` equivalent; 4 call sites threaded incl. `_dispatch_faceted_render`; M5 `hist_errors+cumulative` NotImplementedError guard; tag `PHASE_13_40_DF_END`), Phase 13.41.DF v1.0 (`530954d1`, +19, N-D Faceting via `facet_by=List[str]` for 1D/2D/3D; ROW/COL/FIGID convention LOCKED; 3D returns `(List[Figure], List[axes_2d], List[stats_dict])`; `share_x`/`share_y`/`share_across_figures` new params; dfdraw FIRST major plotting library with unified Nth-dimension-figure API; tag `PHASE_13_41_DF_END`), Phase 13.41.DF FIX1 (`b84576a0`, +3, 3 bugs from v1.6 panel; tag `PHASE_13_41_DF_FIX1_END`), Phase 13.41.DF FIX2 (`70b94a3e`, +1, 5 P2/P3 items + FBY.23 lock; tag `PHASE_13_41_DF_FIX2_END`; gate 946), Phase 13.42.DF v1.0 (`38aed2d8`, +27, Inline fits `fit=` parameter on hist/profile/scatter/draw; new `plots/fits.py` registry + `plots/_fit_render.py`; str/dict/callable/list forms; 7 fit.* style keys; stats integration; group_by/facet_by/vector composition; Sonnet54 P1-B fixed pre-tag for profile grouped path; tag `PHASE_13_42_DF_END`; gate 973), Phase 13.42.DF FIX1 (`82aaa903` + `28f7f3ce`, +8, Production-gate bug closure + interface lock; 7 production-gate bugs B1-B7 surfaced within 30 minutes of real TPC ITS-TPC calibration data testing; 5 P1 silently-wrong-output bugs that 5 reviewers + 27 invariance tests missed; D-1 [BREACH] use_errors default flip + D-2 [BREACH] `_style_get` broken since Phase 13.42 v1.0 → ALL `fit.*` style keys silently ignored; D5 vector pairing per v1.4 §6.3 verbatim; D9/R4 stacked+group_by+fit per-group dict; new `fit_textbox_kwargs={'fontsize','format','show_fields'}` LOCKED at close; F.28-F.33 + F.28b (8 new tests); FIT.inline 27 → 35; Sonet50 CRR `[X]` REVISION_REQUESTED → CRR v2 P1-A `np.array(shape=) → np.zeros((0,0))` + P1-B taxonomy staging; THIRD consecutive phase to miss taxonomy staging — Sonet50 governance note recommends `run_tests.sh` pre-bundle taxonomy-count check; tag `PHASE_13_42_DF_FIX1_END`). Test count 913 → **981** (+68 across 6 phases). Verified 47 → 50. Invariance 239 → 307 (+68). Features 105 → 108 (+3). Phase entries 41 → 47 (+6). Statistics Summary table extended with 6 new rows + new phase-ordering note for the post-13.39 window. Sources: gitlog.txt (commits `3c5d45474dcbdd0683969adde76342fa904f5059`..`28f7f3ce640c2c3a0b6b839ddde8ad171ca16c73`), CAPABILITY_MATRIX.md (50 Verified / 108 features / FIT.inline 35 / FACET.list_grid 23 / HIST.cumulative 10 confirmed), `PHASE_13_42_DF_PROD_GATE_Bugs_v1_0.md`, `PHASE_13_42_DF_FIX1_v1_2_Proposal.md`, `PHASE_13_42_DF_FIX1_Code_Review_Request_v1.md`. Phase 13.42.DF FIX1 process-improvement audit deliverables (`PHASE_13_42_DF_POST_GATE_Audit_Questions_v1_0.md`, `Claude48_Feedback_to_Organization_Team_20260526.md`) shipped to Org team for QRC #10 + production-gate policy adoption. All pre-existing content preserved verbatim per append-only directive.** |
 | **1.10** | **2026-05-28** | **Claude48 (coder seat) at architect request** | **Backfill of 5 phase events that landed between the v1.9 doc commit (`e463161c`, 2026-05-27) and current HEAD (`ad91e251`, 2026-05-28). Strictly append-only — every existing entry preserved verbatim. New H2 sections (chronological commit order, before § Statistics Summary): Phase 13.42.DF FIX2 (`79d449c3`, +6, close 5 items deferred at FIX1: B6/B7/I-8/ADV-1/ADV-3; F.59-F.63+F.61b; FIT.inline 35→41; tag `PHASE_13_42_DF_FIX2_END`, gate 987 — landed AFTER the v1.9 doc commit so v1.9 did not record it), Phase 13.43.DF v1.0 (`0e0d79f7`, +27, `summary_fit` standalone fit-result figures; new `plots/_summary_fit.py`; 13 `summary_fit.*` keys; F.34-F.56 + R-2/F.56c END fix for scalar-delegation drop of fit/fit_textbox_kwargs/summary_fit; FIT.summary feature; tag `PHASE_13_43_DF_END`, gate 1014 — commit body states pre-R-2 1013/+26), run_tests.sh PHASE_HISTORY↔git-tag drift check (`02510a20`, tooling-only, gate 1014; surfaced+resolved the Phase 13.25 tag incident; `PHASE_13_46_DF_BEGIN` placed here), Phase 13.46.DF v1.0 (`1d77702e`, +8, audit bucket ① C-1/C-2/C-4/C-7/C-9; F.64-F.70; +4 features; §2.1 Option-1 shared-global ruling; closure tag is FIX1_END — no separate v1.0 END tag; gate 1022), Phase 13.46.DF FIX1 (`ad91e251`, +1, scatter range= point-filtering — removes out-of-range points per architect 2026-05-28; F.71; +1 feature RANGE.scatter_filter; tag `PHASE_13_46_DF_FIX1_END`; rolling `PHASE_BEGIN_dfdraw` → `ad91e251`; gate 1023). Test count 981 → **1023** (+42 across 5 phases). Verified 50 → 56. Invariance 307 → 349 (+42). Features 108 → 114 (+6). Phase entries 47 → 52 (+5). Statistics Summary table extended with 5 new rows + post-13.42-FIX1 phase-ordering note. Overview header updated to Phase 13.46.DF FIX1 / 1023 / 114 / 349 / 56. Sources: git.log (commits `28f7f3ce`..`ad91e251`), CAPABILITY_MATRIX.md (56 Verified / 114 features / 578 proof / 349 invariance at HEAD `ad91e251`), `PHASE_13_46_DF_v1_3_AuditFixes_Proposal.md`, `PHASE_13_46_DF_FIX1_Code_Review_Request.md`, `PHASE_13_45_dfdraw_Audit_Findings.md`. New run_tests.sh tag-drift check passes after this backfill (the 5 tags were the intentionally-non-blocking repo-ahead-of-doc transient). All pre-existing content preserved verbatim per append-only directive.** |
+| **1.11** | **2026-06-03** | **Opus2 (Reviewer) at architect request; Sonnet53_R2 panel P2-1 amendment applied pre-commit** | **Backfill of 7 phase events that landed between Phase 13.46.DF FIX1 closure (`ad91e251`, 2026-05-28) and current HEAD (`07606c02`, 2026-06-03). Added strictly append-only — every existing entry preserved verbatim per architect's append-only directive. New H2 sections (chronological commit order, inserted before § Statistics Summary): `run_tests.sh` tag-drift WARN downgrade (`df3057a3`, tooling-only, gate 1023 unchanged — heuristic-gate hard-block → non-blocking WARNING in SUMMARY artifact; scope narrowed to declarative tag references only; **added per Sonnet53_R2-led panel P2-1 amendment** after initial v1.11 draft omitted this commit, parallels v1.10's earlier `02510a20` tag-drift addition), Phase 13.48.DF v1.0 (`9f612601`, +11, Tier-1 automated visual testing framework `VisualCheck` + 10 V-checks V.1-V.10 + V.2 ragged-padding-safety lock, new `visual_primitive` test layer, +6 `VISUAL.*` features Smoke-only at close, Tier 1 / Tier 2 split established; tag `PHASE_13_48_DF_END`, gate 1034), Phase 13.49.DF v1.0 (`89bc63c6`, +4, Capability Matrix Traceability link infrastructure + HTML rendering + orthogonal Visual column with 👁 badge + M.1-M.4 meta-tests + KNOWN_UNCLAIMED §3.7 governance with 64 seeded entries SPECIFIC target_phases, D-K + D-L normalization fixes after Opus2 [X] rejection of v1.0 CRR for `startswith("tests/")` regression; tag `PHASE_13_49_DF_END`, gate 1038, +1 feature META.capability_matrix, Verified 56→57), Phase 13.49.DF FIX1 (`a6ddc753`, +0 same-test stricter, HTML rendering fixes H-1/H-2/H-3 after architect rendered the HTML in browser and found 3 bugs the 8-reviewer v1.1 panel missed; M.3 extended with category-uniqueness + MD↔HTML count agreement invariants; direct trigger for Reviewer QRC v1.31 Rule 14 caveat; tag `PHASE_13_49_DF_FIX1_END`, gate 1038), Phase 13.50.DF v1.0 (`f3034153`, +19, fit-rendering overhaul proposal v2.5 after 4-round panel convergence v2.2→v2.3→v2.4→v2.5; six features `FIT.display_names`/`FIT.precision_modes`/`FIT.textbox_kwargs_extensions`/`LEGEND.modes`/`SUMMARY_FIT.placement`/`SUMMARY_FIT.orientation`; two [BREACH]es `fit.text_format` style key + `summary_fit.precision` int field both architect-authorized clean removals; F1-F18 visual_primitive + F17 cross-variant equivalence + F18 4-tuple legend_topology + normalizer idempotency; Claude48 introduced **§0 pre-CRR gap-audit attestation pattern** proposed as Coder QRC R17 after architect's "Was all functionality from spec implemented?" challenge caught 4 undisclosed partials in v1.0-draft; F19 textbox-bbox-overlap deferred to Tier 2 Phase 13.5X — the test that proves the architect-flagged motivating spacing bug is cured; tag `PHASE_13_50_DF_END`, gate 1057, +6 features Verified 57→59 visual_primitive 11→27 invariance 353→356), Phase 13.50.DF FIX1 (`5010cf78`, +0, P2-1 stale-taxonomy fix `SUMMARY_FIT.orientation` "name" field + scope + two `_summary_fit.py` mop-up sites via parallel-sweep follow-on; CRR v1.0 documentation corrections P3-1/P3-2/P3-3; QRC backlog items 5+6 added — R17 EXTENSION parallel doc-surface sweep + §4-facts-from-logs rule; tag `PHASE_13_50_DF_FIX1_END`, gate 1057), Phase 13.50.DF FIX2 (`07606c02`, +0, `run_tests.sh` HTML packaging enforcement closing P2-2 after 3 consecutive recurrences; mechanical guard `unzip -l ... | grep -q '\.html'` non-fatal; lesson recorded as governance pattern — 3 consecutive recurrences is the threshold for infrastructure enforcement vs another flag-and-promise cycle; tag `PHASE_13_50_DF_FIX2_END`, gate 1057). Test count 1023 → **1057** (+34 across 7 phase events). Verified 56 → 59 (+3). Invariance 349 → 356 (+7: +4 from 13.49 M-tests + 3 from 13.50 F17/F18/normalizer). **visual_primitive layer NEW (introduced in 13.48): 0 → 27** (+11 from 13.48 V-checks + 16 from 13.50 F1-F16). Features 114 → 127 (+13: +6 VISUAL.* from 13.48 + 1 META from 13.49 + 6 FIT/LEGEND/SUMMARY_FIT from 13.50). Phase entries 52 → **59** (+7). Statistics Summary table extended with 7 new rows + post-13.46-FIX1 phase-ordering note. Overview header updated to Phase 13.50.DF FIX2 / 1057 / 127 / 356 / 59. Sources: gitlog.txt (commits `ad91e251`..`07606c02`), reviewer.zip artifacts from each phase, `PHASE_13_50_DF_CRR_v1_0.md` + `PHASE_13_50_DF_FIX1_CRR_v1_0.md` (substantive content), `Sonnet53_R2_PHASE_13_50_DF_CRR_v1_0_Summary_Review_20260603.md` (panel verdict), `PHASE_13_49_DF_v1_2_CapabilityMatrixTraceability_Proposal.md`, `PHASE_13_48_DF_v1_4_VisualTesting_Proposal.md`, `PHASE_13_49_DF_FIX1_Code_Review_Request.md`, **Sonnet53_R2-led 3-reviewer panel verdict on Diff A vs Diff B (2026-06-03, [!] APPROVED WITH COMMENTS): Diff B (Opus2) adopted as base; P2-1 (`df3057a3` event missing) applied pre-commit; P2-2 (`VISUAL.*` feature IDs in Phase 13.48 section may diverge from canonical IDs in `feature_taxonomy.py` at HEAD `07606c02` — flagged as source-verification gate before final commit; if mismatch, one-line `sed` correction will be shipped without re-versioning)**. Author note: Opus2 reviewed each of these phases as a panel member in real time (13.48 CRR v1.0, 13.49 v1.0 [X] reject + v1.1 [!] approve + FIX1 [!], 13.50 v2.2/v2.3/v2.4/v2.5 + CRR v1.0 + FIX1 [OK]) — not reconstructing from commit messages alone. All pre-existing content preserved verbatim per append-only directive.** |
 
 ---
 
-**Document Status:** Updated through Phase 13.46.DF FIX1 (commit `ad91e251`, tag `PHASE_13_46_DF_FIX1_END`, 2026-05-28; gate 1023/0/1 skipped/1 xfailed). Rolling tag `PHASE_BEGIN_dfdraw` → `ad91e251`. **Previous "Updated through Phase 13.42.DF FIX1" and "Updated through Phase 13.39.DF v1.2" baselines preserved verbatim above for audit traceability per architect's append-only directive.**
-**Next Update:** After Phase 13.43.DF (or Phase 13.42.DF FIX2 if process-improvement audit drives FIX2 scope; ~990 tests predicted).
+**Document Status:** Updated through Phase 13.50.DF FIX2 (commit `07606c02`, tag `PHASE_13_50_DF_FIX2_END`, 2026-06-03; gate 1057/0/1 skipped/1 xfailed). Rolling tag `PHASE_BEGIN_dfdraw` → `07606c02`. **Previous "Updated through Phase 13.46.DF FIX1", "Updated through Phase 13.42.DF FIX1", and "Updated through Phase 13.39.DF v1.2" baselines preserved verbatim above for audit traceability per architect's append-only directive.**
+**Next Update:** After Phase 13.51 (broader V-test catalog for non-fit kwargs; queued) or Phase 13.5X (Tier 2 renderer-driven framework + F19 textbox-bbox-overlap — the test that proves the architect-flagged motivating spacing bug from 2026-05-30 is cured).
