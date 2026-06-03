@@ -1535,6 +1535,35 @@ FEATURES = [
         ],
     },
     {
+        # Phase 13.50.DF step 4 — legend= polymorphic kwarg + show_legend= bool
+        # parallel kwarg. Both Pattern A (popped at top-level dispatcher entry
+        # in plots/_legend.py:_normalize_legend_spec, never in
+        # _*_FORWARDED_NAMES). The applier (_apply_legend_mode) is hooked at
+        # the main return of hist/scatter/profile in drawer.py.
+        #
+        # show_legend= is technically NEW at the public dispatcher level
+        # (R16 verified: previously only on add_reference_overlay helper);
+        # the v2.5 proposal's "back-compat parallel" framing meant
+        # "alongside legend=", not "preserves existing surface".
+        #
+        # Mixed-layer feature row per v2.4 P2-NEW-1 panel decision:
+        # F7/F8/F9/F10 are visual_primitive (renderer-free fig.legends /
+        # ax.get_legend() inspection); F18 + normalizer idempotency are
+        # invariance (no fig needed for the normalizer; F18 compares two
+        # legend_topology 4-tuples).
+        "id": "LEGEND.modes",
+        "name": "legend= polymorphic kwarg (bool|str|dict) + show_legend= bool parallel + four modes (all|none|shared|first)",
+        "category": "LEGEND",
+        "tests": [
+            "test_phase_13_50_df_fit_visual.py::TestPhase1350LegendModes::test_F7_shared_one_fig_zero_per_axes",
+            "test_phase_13_50_df_fit_visual.py::TestPhase1350LegendModes::test_F8_first_only_axes_0_kept",
+            "test_phase_13_50_df_fit_visual.py::TestPhase1350LegendModes::test_F9_false_no_legends",
+            "test_phase_13_50_df_fit_visual.py::TestPhase1350LegendModes::test_F10_dict_forwards_loc_and_ncol",
+            "test_phase_13_50_df_fit_visual.py::TestPhase1350LegendModes::test_F18_show_legend_legend_behavioral_equivalence",
+            "test_phase_13_50_df_fit_visual.py::TestPhase1350LegendNormalizerInvariance::test_normalize_legend_spec_idempotent",
+        ],
+    },
+    {
         "id": "API.kwarg_typo_guard",
         "name": "Kwarg-typo guard (difflib did-you-mean at draw() entry)",
         "category": "API",

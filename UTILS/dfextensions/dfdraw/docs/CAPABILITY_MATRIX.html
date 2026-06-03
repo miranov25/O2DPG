@@ -63,18 +63,18 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 </head>
 <body>
 <h1>Capability Matrix — dfdraw</h1>
-<p class="meta">Generated: <span class="mono">2026-06-03 04:27 UTC</span> · Phase: <span class="mono">PHASE_13_49_DF_FIX1_END</span></p>
+<p class="meta">Generated: <span class="mono">2026-06-03 05:10 UTC</span> · Phase: <span class="mono">PHASE_13_49_DF_FIX1_END</span></p>
 <section class="summary">
 <h2>Summary</h2>
 <table>
-<tr><th>✅ Verified</th><td class="n">57</td><td class="n">46%</td></tr>
+<tr><th>✅ Verified</th><td class="n">58</td><td class="n">46%</td></tr>
 <tr><th>☑️ Smoke-only</th><td class="n">66</td><td class="n">53%</td></tr>
 <tr><th>🧨 Broken</th><td class="n">0</td><td class="n">0%</td></tr>
 <tr><th>📋 Planned</th><td class="n">1</td><td class="n">1%</td></tr>
-<tr><th>Total features</th><td class="n"><strong>124</strong></td><td></td></tr>
-<tr><th>Total proof tests</th><td class="n"><strong>599</strong></td><td></td></tr>
-<tr><th>Invariance tests</th><td class="n"><strong>353</strong></td><td></td></tr>
-<tr><th>Visual tests</th><td class="n"><strong>18</strong></td><td></td></tr>
+<tr><th>Total features</th><td class="n"><strong>125</strong></td><td></td></tr>
+<tr><th>Total proof tests</th><td class="n"><strong>605</strong></td><td></td></tr>
+<tr><th>Invariance tests</th><td class="n"><strong>355</strong></td><td></td></tr>
+<tr><th>Visual tests</th><td class="n"><strong>22</strong></td><td></td></tr>
 </table>
 </section>
 <section class="filters">
@@ -95,6 +95,7 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <option value="FACET">FACET</option>
 <option value="FIT">FIT</option>
 <option value="HIST">HIST</option>
+<option value="LEGEND">LEGEND</option>
 <option value="META">META</option>
 <option value="NORMALIZE">NORMALIZE</option>
 <option value="PLOT">PLOT</option>
@@ -733,6 +734,19 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <li><span class="layer-marker">✓</span><code>test_phase_13_40_df_cumulative_hist.py::TestCumulativeHist::test_CH_8_facet_by_per_facet_ecdf</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">✓</span><code>test_phase_13_40_df_cumulative_hist.py::TestCumulativeHist::test_CH_9_histtype_step_plus_cumulative_polygon_safe</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">✓</span><code>test_phase_13_40_df_cumulative_hist.py::TestCumulativeHist::test_CH_10_group_by_stacked_cumulative_regression_lock</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr class="category-row"><td colspan="8">LEGEND</td></tr>
+<tr id="feature-LEGEND.modes" class="feature-row" data-status="Verified" data-visual="yes" data-category="LEGEND"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">LEGEND.modes</strong> — legend= polymorphic kwarg (bool|str|dict) + show_legend= bool parallel + four modes (all|none|shared|first) <span class="eye-badge">👁</span></td><td class="n">6</td><td class="n">6</td><td class="n">0</td><td class="n">2</td><td class="n">4</td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">👁</span><code>test_phase_13_50_df_fit_visual.py::TestPhase1350LegendModes::test_F7_shared_one_fig_zero_per_axes</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_50_df_fit_visual.py::TestPhase1350LegendModes::test_F8_first_only_axes_0_kept</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_50_df_fit_visual.py::TestPhase1350LegendModes::test_F9_false_no_legends</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_50_df_fit_visual.py::TestPhase1350LegendModes::test_F10_dict_forwards_loc_and_ncol</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_50_df_fit_visual.py::TestPhase1350LegendModes::test_F18_show_legend_legend_behavioral_equivalence</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_50_df_fit_visual.py::TestPhase1350LegendNormalizerInvariance::test_normalize_legend_spec_idempotent</code><span class="outcome passed">passed</span></li>
 </ul>
 </div></td></tr>
 <tr class="category-row"><td colspan="8">META</td></tr>

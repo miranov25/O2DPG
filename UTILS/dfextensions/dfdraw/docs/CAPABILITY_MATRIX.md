@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-06-03 04:27 UTC
+**Generated:** 2026-06-03 05:10 UTC
 **Phase:** PHASE_13_49_DF_FIX1_END
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -9,14 +9,14 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 57 | 46% |
+| ✅ Verified | 58 | 46% |
 | ☑️ Smoke-only | 66 | 53% |
 | 🧨 Broken | 0 | 0% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **124** | |
-| **Total proof tests** | **599** | |
-| **Invariance tests** | **353** | |
-| **Visual tests** | **18** | |
+| **Total features** | **125** | |
+| **Total proof tests** | **605** | |
+| **Invariance tests** | **355** | |
+| **Visual tests** | **22** | |
 
 **Status key:**
 - ✅ Verified — has at least one passing invariance test (A ≡ B check)
@@ -91,6 +91,8 @@
 | ☑️ | **HIST.hist_errors** — Poisson error bar overlay (hist_errors=True): √n raw / √n/N probability / √n/(N·bw_i) density (per-bin); weighted Poisson via Σw²; zero-bin masking; ungrouped+bins=int safe; Phase 13.36 color sentinel preserved — Phase 13.37.DF | 10 | 10 | 0 | 0 |  |
 | ✅ | **HIST.time_axis** — hist() time_format= pre-conversion: x_data → matplotlib date numbers BEFORE ax.hist(). Post-hoc rewrite would be no-op for Patches (lesson from Phase 13.39 v1.0 P1). CP1-1 regression-lock: §9.TA.5 uses realistic timestamps (~1.7e9), as epoch-0 made both pre-conv (0.0) and raw (0) paths pass — Phase 13.39.DF | 1 | 1 | 0 | 1 |  |
 | ✅ | **HIST.cumulative** — hist() cumulative=True/-1/False — ROOT TH1::Draw('cumulative') equivalent. Three values: True (ascending CDF/ECDF), False (default, byte-identical backward compat), -1 (descending/survival, ROOT convention). matplotlib native cumulative= forwarded explicitly at 4 internal call sites (Phase 13.39 §2.2 lesson applied recursively: DFDraw.hist → draw_hist → _draw_hist_grouped → ax.hist; ALSO through _dispatch_faceted_render for facet_by composition). Composes with: norm='probability' (→ ECDF 0-1), group_by overlaid (per-group ECDFs), group_by stacked (CP2-1 regression lock for 3rd call site), facet_by (per-facet cumulative), histtype='step' (HEP-standard step ECDF). Correctness guard (M5): hist_errors+cumulative → NotImplementedError (Poisson per-bin errors are independent; cumulative counts are correlated). Vector dispatch [x,y] propagates cumulative correctly (Phase 13.16.DF FIX1 bug class lock) — Phase 13.40.DF | 10 | 10 | 0 | 10 |  |
+| | **LEGEND** | | | | | |
+| ✅ | **LEGEND.modes** — legend= polymorphic kwarg (bool|str|dict) + show_legend= bool parallel + four modes (all|none|shared|first) 👁 | 6 | 6 | 0 | 2 | 4 |
 | | **META** | | | | | |
 | ✅ | **META.capability_matrix** — capability matrix integrity (taxonomy resolves; coverage; HTML; no orphan visuals) | 4 | 4 | 0 | 4 |  |
 | | **NORMALIZE** | | | | | |

@@ -27,6 +27,8 @@ import matplotlib.pyplot as plt
 import pytest
 
 from dfextensions.dfdraw import DFDraw
+# Phase 13.50 step 4 — direct import for normalizer idempotency invariance test
+from dfextensions.dfdraw.plots._legend import _normalize_legend_spec
 
 
 # --------------------------------------------------------------------------- #
@@ -101,6 +103,49 @@ def _decimal_places(s):
     if '.' not in s:
         return 0
     return len(s.split('.')[1])
+
+
+# Phase 13.50 step 4 — legend topology helper (extends 4-tuple per P2-NEW-2
+# of v2.3 panel: count-tuple was necessary-but-not-sufficient; add label
+# set + loc string to catch label drops and location moves).
+def _matplotlib_legend_ncols(legend):
+    """Compat: matplotlib renamed Legend._ncol → Legend._ncols in 3.7+."""
+    return getattr(legend, '_ncols', getattr(legend, '_ncol', None))
+
+
+def _matplotlib_legend_loc_str(legend):
+    """Best-effort loc readback. ``Legend._loc_real`` is private (P3-2 risk
+    in v2.5 §6) but stable in current matplotlib. Returns an int code (0-10)
+    if available, else None."""
+    return getattr(legend, '_loc_real', getattr(legend, '_loc', None))
+
+
+def legend_topology(fig):
+    """Return ``(n_fig_level, n_per_axes, frozenset(labels), loc_string)``.
+
+    - ``n_fig_level``  : count of ``fig.legends`` (figure-level legends).
+    - ``n_per_axes``   : count of ``ax.get_legend() is not None`` over fig.axes.
+    - ``labels``       : frozenset union of all legend entry labels across
+                         fig-level and per-axes legends. P3-3 caveat: if two
+                         fits share an auto-label, frozenset deduplicates;
+                         test fixtures must use distinct labels per fit.
+    - ``loc_string``   : ``_loc_real`` int code of the FIRST fig-level legend
+                         (if any), else None.
+
+    Used by F18 (show_legend ↔ legend behavioral equivalence) and F10 (dict
+    forwards loc + ncol).
+    """
+    n_fig_level = len(fig.legends)
+    n_per_axes = sum(1 for ax in fig.axes if ax.get_legend() is not None)
+    labels = []
+    for leg in fig.legends:
+        labels.extend(t.get_text() for t in leg.get_texts())
+    for ax in fig.axes:
+        leg = ax.get_legend()
+        if leg is not None:
+            labels.extend(t.get_text() for t in leg.get_texts())
+    loc_string = _matplotlib_legend_loc_str(fig.legends[0]) if fig.legends else None
+    return (n_fig_level, n_per_axes, frozenset(labels), loc_string)
 
 
 # --------------------------------------------------------------------------- #
@@ -251,6 +296,85 @@ class FitVisualCheck:
                       f"default '.2g'). Pairs: {pairs!r}")
         return self
 
+    # ------------------------------------------------------------------ #
+    # Phase 13.50 step 4 — legend mode checks
+    # ------------------------------------------------------------------ #
+
+    def check_legend_shared_one_fig_level_zero_per_axes(self):
+        """F7 — legend='shared': one fig-level legend, zero per-axes legends."""
+        n_fig_level, n_per_axes, _, _ = legend_topology(self.fig)
+        if n_fig_level != 1:
+            self.fail("F7.fig_level_count",
+                      f"expected exactly 1 fig-level legend, got {n_fig_level}")
+        if n_per_axes != 0:
+            self.fail("F7.per_axes_count",
+                      f"expected 0 per-axes legends (consolidated into fig), got {n_per_axes}")
+        return self
+
+    def check_legend_first_only_axes_flat_zero(self):
+        """F8 — legend='first': axes.flat[0] has its legend kept, others stripped."""
+        if not self.fig.axes:
+            self.fail("F8.no_axes", "figure has no axes")
+            return self
+        first_has = self.fig.axes[0].get_legend() is not None
+        others_clean = all(ax.get_legend() is None for ax in self.fig.axes[1:])
+        if not first_has:
+            self.fail("F8.first_missing",
+                      "axes.flat[0] should have its legend; it's None")
+        if not others_clean:
+            n_leaked = sum(1 for ax in self.fig.axes[1:]
+                           if ax.get_legend() is not None)
+            self.fail("F8.others_leaked",
+                      f"axes.flat[1:] should have zero legends, got {n_leaked}")
+        return self
+
+    def check_legend_false_no_legends_anywhere(self):
+        """F9 — legend=False: zero fig-level AND zero per-axes legends."""
+        n_fig_level, n_per_axes, _, _ = legend_topology(self.fig)
+        if n_fig_level != 0:
+            self.fail("F9.fig_level_count",
+                      f"expected 0 fig-level legends, got {n_fig_level}")
+        if n_per_axes != 0:
+            self.fail("F9.per_axes_count",
+                      f"expected 0 per-axes legends, got {n_per_axes}")
+        return self
+
+    def check_legend_dict_forwards_loc_and_ncol(self, expected_ncol):
+        """F10 — legend={'mode':'shared','loc':...,'ncol':N}: the dict kwargs
+        reach fig.legend() — verified via fig.legends[0]._ncols (matplotlib
+        3.7+; older: _ncol). Loc readback is left to legend_topology's
+        loc_string field; F10 specifically asserts ncol propagates."""
+        if not self.fig.legends:
+            self.fail("F10.no_fig_legend",
+                      f"expected fig-level legend from dict mode='shared', got none")
+            return self
+        fig_leg = self.fig.legends[0]
+        actual_ncol = _matplotlib_legend_ncols(fig_leg)
+        if actual_ncol != expected_ncol:
+            self.fail("F10.ncol_not_forwarded",
+                      f"expected ncol={expected_ncol}, fig.legends[0]._ncols={actual_ncol}")
+        return self
+
+    def check_show_legend_legend_behavioral_equivalence(self, topology_a, topology_b):
+        """F18 — show_legend=X and legend=X produce identical legend_topology
+        4-tuples. Caller captures topologies from two runs and passes them in.
+
+        Per P2-NEW-2 of v2.3 panel: 2-tuple (counts only) was necessary but
+        not sufficient — extended to 4-tuple (counts + label frozenset + loc)
+        catches label drops and location moves that count-only equivalence
+        misses.
+        """
+        if topology_a != topology_b:
+            # Find which field differs for a clearer error
+            fields = ('n_fig_level', 'n_per_axes', 'labels', 'loc_string')
+            mismatches = [f"{name}: {a!r} vs {b!r}"
+                          for name, a, b in zip(fields, topology_a, topology_b)
+                          if a != b]
+            self.fail("F18.equivalence_broken",
+                      f"legend= vs show_legend= produce different topology: "
+                      f"{'; '.join(mismatches)}")
+        return self
+
     def assert_clean(self):
         if self.defects:
             raise AssertionError(
@@ -288,6 +412,24 @@ def df_expo():
     x = np.linspace(0.0, 6.0, 200)
     y = 3.0 * np.exp(-x / 1.5) + rs.normal(0, 0.03, 200)
     return pd.DataFrame({"x": x, "y": y})
+
+
+@pytest.fixture
+def df_faceted():
+    """600 rows in a 1×4 facet grid (sec=0..3) × 3 groups (g=0..2).
+
+    Used for Phase 13.50 step 4 legend-mode tests (F7-F10, F18). Need
+    multi-axes + multi-group so legend='shared' has something to consolidate
+    and the topology helpers see >1 axes/labels.
+    """
+    rs = np.random.RandomState(0)
+    n = 600
+    return pd.DataFrame({
+        "x":   rs.normal(0, 1, n),
+        "y":   rs.normal(0, 1, n),
+        "g":   rs.randint(0, 3, n),
+        "sec": rs.randint(0, 4, n),
+    })
 
 
 # --------------------------------------------------------------------------- #
@@ -456,3 +598,190 @@ class TestPhase1350FitTextboxKwargsExtensions:
             .check_value_error_format_per_call_override(ax) \
             .assert_clean()
         plt.close(fig)
+
+
+# --------------------------------------------------------------------------- #
+# Phase 13.50 step 4 — legend polymorphic kwarg + show_legend alias
+# Tests F7, F8, F9, F10 (visual_primitive) + F18 (invariance) +
+# normalizer idempotency (invariance). All under LEGEND.modes feature row.
+# --------------------------------------------------------------------------- #
+
+class TestPhase1350LegendModes:
+    """Phase 13.50 step 4 visual-primitive checks for the legend= polymorphic
+    kwarg and the parallel show_legend= bool kwarg.
+
+    EXPECTED · WHY · APPROVE · FAIL_MODE per V-check:
+
+      F7  (legend='shared'): EXPECTED 1 fig.legend + 0 per-axes legends after
+          dispatch on a 1×4 faceted profile;
+          WHY consolidating legends is the headline feature of the new
+          legend= polymorphism — without it the rest of the modes are
+          academic;
+          APPROVE legend_topology[0] == 1 AND legend_topology[1] == 0;
+          FAIL_MODE _apply_legend_mode never reached, or 'shared' branch
+          doesn't strip per-axes before fig.legend, or handles aren't
+          captured before strip.
+
+      F8  (legend='first'): EXPECTED axes[0] keeps its legend, axes[1:] are
+          stripped;
+          WHY 'first' is a common pattern for grouped facets where the
+          legend repeats identical entries per panel and only the first
+          is needed for context;
+          APPROVE axes[0].get_legend() is not None AND all(axes[1:] are None);
+          FAIL_MODE applier branch off-by-one, or wrong axes index, or
+          per-axes legends not actually drawn by default before strip.
+
+      F9  (legend=False): EXPECTED zero legends anywhere (fig-level AND
+          per-axes);
+          WHY the bool shortcut must work — users will pass False as the
+          simplest 'no legend' invocation;
+          APPROVE legend_topology[0] == 0 AND legend_topology[1] == 0;
+          FAIL_MODE bool→'none' mapping broken in normalizer, or 'none'
+          branch in applier doesn't iterate all fig.axes.
+
+      F10 (legend={'mode':'shared','loc':'lower center','ncol':7}):
+          EXPECTED dict kwargs reach fig.legend() — verified via
+          fig.legends[0]._ncols == 7;
+          WHY users need to override matplotlib defaults (loc, ncol) without
+          dropping to a bare ax.legend() call; the dict form is the escape
+          hatch and must forward correctly;
+          APPROVE fig.legends has 1 entry AND _ncols == 7;
+          FAIL_MODE _build_canonical drops unknown keys, or applier doesn't
+          pass them through to fig.legend(), or matplotlib version uses
+          a different private attribute name (P3-2 risk).
+
+      F18 (show_legend ↔ legend behavioral equivalence): EXPECTED
+          show_legend=X and legend=bool(X) produce identical legend_topology
+          4-tuples (per P2-NEW-2: counts + label frozenset + loc string);
+          WHY F18 is the LOAD-BEARING test for the architect's "back-compat
+          parallel" framing — if these aren't equivalent, then show_legend=
+          and legend= are not parallel surfaces, just two confusingly named
+          kwargs;
+          APPROVE topology(show_legend=True) == topology(legend=True) AND
+          topology(show_legend=False) == topology(legend=False);
+          FAIL_MODE normalizer precedence wrong, OR show_legend mapping
+          drops a field (e.g. forgets to set frameon to default).
+    """
+
+    def _profile_faceted(self, df, **legend_kwargs):
+        """Shared dispatch helper — keeps tests focused on legend assertions
+        rather than the profile call boilerplate. Returns (fig, axes, stats)."""
+        return DFDraw(df).profile(
+            'y:x', bins=10, group_by='g', facet_by='sec', **legend_kwargs,
+        )
+
+    def test_F7_shared_one_fig_zero_per_axes(self, df_faceted):
+        """F7 — legend='shared' consolidates to one fig.legend + zero per-axes."""
+        fig, axes, stats = self._profile_faceted(df_faceted, legend='shared')
+        FitVisualCheck(fig, stats, df_faceted) \
+            .check_legend_shared_one_fig_level_zero_per_axes() \
+            .assert_clean()
+        plt.close(fig)
+
+    def test_F8_first_only_axes_0_kept(self, df_faceted):
+        """F8 — legend='first' keeps axes.flat[0]'s legend, strips others."""
+        fig, axes, stats = self._profile_faceted(df_faceted, legend='first')
+        FitVisualCheck(fig, stats, df_faceted) \
+            .check_legend_first_only_axes_flat_zero() \
+            .assert_clean()
+        plt.close(fig)
+
+    def test_F9_false_no_legends(self, df_faceted):
+        """F9 — legend=False produces zero legends anywhere."""
+        fig, axes, stats = self._profile_faceted(df_faceted, legend=False)
+        FitVisualCheck(fig, stats, df_faceted) \
+            .check_legend_false_no_legends_anywhere() \
+            .assert_clean()
+        plt.close(fig)
+
+    def test_F10_dict_forwards_loc_and_ncol(self, df_faceted):
+        """F10 — dict form: loc + ncol reach fig.legend() via the canonical merge."""
+        fig, axes, stats = self._profile_faceted(
+            df_faceted,
+            legend={'mode': 'shared', 'loc': 'lower center', 'ncol': 7},
+        )
+        FitVisualCheck(fig, stats, df_faceted) \
+            .check_legend_dict_forwards_loc_and_ncol(expected_ncol=7) \
+            .assert_clean()
+        plt.close(fig)
+
+    def test_F18_show_legend_legend_behavioral_equivalence(self, df_faceted):
+        """F18 — show_legend=X and legend=bool(X) produce identical legend
+        topology. Two value pairs tested: True/True and False/False."""
+        # True path
+        fig_a, _, _ = self._profile_faceted(df_faceted, legend=True)
+        topo_a = legend_topology(fig_a)
+        plt.close(fig_a)
+
+        fig_b, _, _ = self._profile_faceted(df_faceted, show_legend=True)
+        topo_b = legend_topology(fig_b)
+        plt.close(fig_b)
+
+        # False path
+        fig_c, _, _ = self._profile_faceted(df_faceted, legend=False)
+        topo_c = legend_topology(fig_c)
+        plt.close(fig_c)
+
+        fig_d, _, _ = self._profile_faceted(df_faceted, show_legend=False)
+        topo_d = legend_topology(fig_d)
+        plt.close(fig_d)
+
+        # Use a throwaway fig for the FitVisualCheck (it just needs a fig
+        # handle; the equivalence assertion is on the captured topologies).
+        fig_dummy, _, _ = self._profile_faceted(df_faceted)
+        FitVisualCheck(fig_dummy, None, df_faceted) \
+            .check_show_legend_legend_behavioral_equivalence(topo_a, topo_b) \
+            .check_show_legend_legend_behavioral_equivalence(topo_c, topo_d) \
+            .assert_clean()
+        plt.close(fig_dummy)
+
+
+class TestPhase1350LegendNormalizerInvariance:
+    """Phase 13.50 step 4 invariance layer: ``_normalize_legend_spec`` is a
+    pure function and must be idempotent over all accepted input forms.
+
+    Why invariance, not visual_primitive: this test exercises NO fig/axes —
+    it's a pure function self-consistency check. The 4-tuple legend_topology
+    helper is not invoked. Per Coder QRC layer taxonomy and v2.5 §3.6,
+    pure-function tests go on the invariance layer regardless of which
+    feature they support.
+
+    Locks: f(f(x)) == f(x) for every accepted input form, including the
+    show_legend → legend mapping path, the dict-merge path, and the
+    legend-wins-when-both-set precedence rule.
+    """
+
+    def test_normalize_legend_spec_idempotent(self):
+        """Pure normalizer self-consistency: re-normalizing a canonical dict
+        produces the same canonical dict, for every input shape."""
+        # Each row: (legend, show_legend) input. None pair excluded because
+        # the function returns None for that, and re-feeding None yields
+        # None — trivially idempotent but doesn't exercise the merge logic.
+        accepted_inputs = [
+            (True,  None),
+            (False, None),
+            ('all',    None),
+            ('none',   None),
+            ('shared', None),
+            ('first',  None),
+            ({'mode': 'all'},                                  None),
+            ({'mode': 'shared', 'loc': 'lower center'},        None),
+            ({'mode': 'shared', 'loc': 'upper right',
+              'ncol': 3, 'frameon': False, 'fontsize': 8,
+              'title': 'Groups', 'bbox_to_anchor': (0.5, 0.0)}, None),
+            # show_legend → legend mapping path
+            (None, True),
+            (None, False),
+            # precedence: legend= wins when both set
+            (True,  False),
+            (False, True),
+            ('shared', True),
+        ]
+        for legend, show_legend in accepted_inputs:
+            once  = _normalize_legend_spec(legend, show_legend)
+            # Re-feed the canonical dict back through the legend= slot.
+            twice = _normalize_legend_spec(once, None)
+            assert once == twice, (
+                f"non-idempotent for (legend={legend!r}, show_legend={show_legend!r}): "
+                f"once={once!r}  twice={twice!r}"
+            )

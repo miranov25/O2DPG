@@ -19,6 +19,12 @@ from .style import get_style, get_style_value
 # inside draw_profile() only).
 from .plots.profile import _format_interval_label, _interval_sort_key
 
+# Phase 13.50.DF step 4 — legend polymorphism normalizer + applier.
+# Both legend= and show_legend= are Pattern A (popped at top-level dispatcher
+# entry, never in *_FORWARDED_NAMES). Hook is called at the main return of
+# hist/profile/scatter; draw() forwards both explicitly to inner dispatch.
+from .plots._legend import _normalize_legend_spec, _apply_legend_mode
+
 # =============================================================================
 # Phase 13.16.DF FIX1: Sentinel for "parameter was not passed by caller".
 # Used by vector dispatch tuple-driven forwarding so that we can distinguish
@@ -3952,6 +3958,18 @@ class DFDraw:
         # faceted renderer. NOT in _*_FORWARDED_NAMES (would fail R6
         # validator). See §4.2 / §9.1 of the v1.2 proposal.
         summary_fit: Optional[Union[str, List[str], Dict]] = None,
+        # Phase 13.50.DF step 4 (architect 2026-05-31): legend polymorphic
+        # kwarg + bool show_legend= alias. Both Pattern A — popped at this
+        # outer layer (named params here, never in _DRAW_FORWARDED_NAMES) and
+        # forwarded EXPLICITLY to inner self.hist/scatter/profile per the
+        # Phase 13.43 R-2 fix (named params don't flow through **kwargs).
+        # show_legend= is technically NEW at the public dispatcher level
+        # (R16 verified: previously only existed on add_reference_overlay);
+        # the v2.5 proposal's "back-compat" framing meant "parallel to
+        # legend=", not "preserves existing kwarg". Both reach
+        # _normalize_legend_spec at the inner dispatcher entry.
+        legend: Optional[Union[bool, str, Dict]] = None,
+        show_legend: Optional[bool] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -4172,6 +4190,8 @@ class DFDraw:
                 same=same,
                 fit=fit, fit_textbox_kwargs=fit_textbox_kwargs,
                 summary_fit=summary_fit,
+                # Phase 13.50 step 4: explicit forwarding (R-2 pattern)
+                legend=legend, show_legend=show_legend,
                 **kwargs
             )
         elif type == "scatter":
@@ -4182,6 +4202,8 @@ class DFDraw:
                 facet=facet, same=same,
                 fit=fit, fit_textbox_kwargs=fit_textbox_kwargs,
                 summary_fit=summary_fit,
+                # Phase 13.50 step 4: explicit forwarding (R-2 pattern)
+                legend=legend, show_legend=show_legend,
                 **kwargs
             )
         elif type == "hist2d":
@@ -4197,6 +4219,8 @@ class DFDraw:
                 group_by=group_by, same=same,
                 fit=fit, fit_textbox_kwargs=fit_textbox_kwargs,
                 summary_fit=summary_fit,
+                # Phase 13.50 step 4: explicit forwarding (R-2 pattern)
+                legend=legend, show_legend=show_legend,
                 **kwargs
             )
         else:
@@ -4301,6 +4325,9 @@ class DFDraw:
         # faceted renderer. NOT in _*_FORWARDED_NAMES (would fail R6
         # validator). See §4.2 / §9.1 of the v1.2 proposal.
         summary_fit: Optional[Union[str, List[str], Dict]] = None,
+        # Phase 13.50.DF step 4 — see draw() signature for full rationale.
+        legend: Optional[Union[bool, str, Dict]] = None,
+        show_legend: Optional[bool] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -4610,6 +4637,11 @@ class DFDraw:
             stats_dict, summary_fit,
             group_by=group_by, facet_by=facet_by,
             expr_for_auto_title=expr)
+        # Phase 13.50.DF step 4 — apply legend mode AFTER dispatch +
+        # summary_fit. Both legend= and show_legend= are Pattern A
+        # (popped at this layer; NOT in _*_FORWARDED_NAMES). Normalizer
+        # returns None for "no override", in which case applier no-ops.
+        _apply_legend_mode(fig, _normalize_legend_spec(legend, show_legend))
         return fig, axes, stats_dict
     
     def scatter(
@@ -4682,6 +4714,9 @@ class DFDraw:
         # faceted renderer. NOT in _*_FORWARDED_NAMES (would fail R6
         # validator). See §4.2 / §9.1 of the v1.2 proposal.
         summary_fit: Optional[Union[str, List[str], Dict]] = None,
+        # Phase 13.50.DF step 4 — see draw() signature for full rationale.
+        legend: Optional[Union[bool, str, Dict]] = None,
+        show_legend: Optional[bool] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -4939,6 +4974,11 @@ class DFDraw:
             stats_dict, summary_fit,
             group_by=group_by, facet_by=facet_by,
             expr_for_auto_title=expr)
+        # Phase 13.50.DF step 4 — apply legend mode AFTER dispatch +
+        # summary_fit. Both legend= and show_legend= are Pattern A
+        # (popped at this layer; NOT in _*_FORWARDED_NAMES). Normalizer
+        # returns None for "no override", in which case applier no-ops.
+        _apply_legend_mode(fig, _normalize_legend_spec(legend, show_legend))
         return fig, axes, stats_dict
     
     def profile(
@@ -5037,6 +5077,9 @@ class DFDraw:
         # faceted renderer. NOT in _*_FORWARDED_NAMES (would fail R6
         # validator). See §4.2 / §9.1 of the v1.2 proposal.
         summary_fit: Optional[Union[str, List[str], Dict]] = None,
+        # Phase 13.50.DF step 4 — see draw() signature for full rationale.
+        legend: Optional[Union[bool, str, Dict]] = None,
+        show_legend: Optional[bool] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -5637,6 +5680,11 @@ class DFDraw:
             stats_dict, summary_fit,
             group_by=group_by, facet_by=facet_by,
             expr_for_auto_title=expr)
+        # Phase 13.50.DF step 4 — apply legend mode AFTER dispatch +
+        # summary_fit. Both legend= and show_legend= are Pattern A
+        # (popped at this layer; NOT in _*_FORWARDED_NAMES). Normalizer
+        # returns None for "no override", in which case applier no-ops.
+        _apply_legend_mode(fig, _normalize_legend_spec(legend, show_legend))
         return fig, axes, stats_dict
     
     def hist2d(

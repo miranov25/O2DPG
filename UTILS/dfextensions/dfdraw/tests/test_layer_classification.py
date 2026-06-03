@@ -484,6 +484,16 @@ TEST_LAYERS = {
     # Phase 13.50.DF step 3 — fit_textbox_kwargs extensions (visual_primitive layer)
     "test_phase_13_50_df_fit_visual.py::TestPhase1350FitTextboxKwargsExtensions::test_F6_rename_params_overrides_display_map": "visual_primitive",
     "test_phase_13_50_df_fit_visual.py::TestPhase1350FitTextboxKwargsExtensions::test_F16_value_format_per_call_override": "visual_primitive",
+    # Phase 13.50.DF step 4 — legend= polymorphic kwarg + show_legend= parallel.
+    # F7/F8/F9/F10 inspect fig.legends + ax.get_legend() → renderer-free
+    # primitive checks → visual_primitive. F18 compares two legend_topology
+    # 4-tuples + the normalizer test is a pure function → both invariance.
+    "test_phase_13_50_df_fit_visual.py::TestPhase1350LegendModes::test_F7_shared_one_fig_zero_per_axes": "visual_primitive",
+    "test_phase_13_50_df_fit_visual.py::TestPhase1350LegendModes::test_F8_first_only_axes_0_kept": "visual_primitive",
+    "test_phase_13_50_df_fit_visual.py::TestPhase1350LegendModes::test_F9_false_no_legends": "visual_primitive",
+    "test_phase_13_50_df_fit_visual.py::TestPhase1350LegendModes::test_F10_dict_forwards_loc_and_ncol": "visual_primitive",
+    "test_phase_13_50_df_fit_visual.py::TestPhase1350LegendModes::test_F18_show_legend_legend_behavioral_equivalence": "invariance",
+    "test_phase_13_50_df_fit_visual.py::TestPhase1350LegendNormalizerInvariance::test_normalize_legend_spec_idempotent": "invariance",
 
     # Everything else defaults to "smoke"
 }
