@@ -1,7 +1,7 @@
 # ARCHITECT_DECISIONS.md
 # dfdraw — Architect Decision Registry
-# Version: 1.0.1 (touch-ups applied per Org panel review)
-# Date: 2026-06-04 (v1.0) / 2026-06-04 (v1.0.1)
+# Version: 1.1.0 (TS v6 governance cycle — GP-9 added; AD-1/TS_v6.DF + AD-2/TS_v6.DF added)
+# Date: 2026-06-06 (v1.1.0); 2026-06-04 (v1.0 / v1.0.1)
 # Maintainer: Marian Ivanov (architect)
 #
 # This document is the canonical AD registry for the dfdraw project.
@@ -11,7 +11,7 @@
 #   AD-N          — legacy format, Phases 13.12–13.33 (single sequential counter)
 #   AD-N/PHASE    — current format, Phase 13.34+ (counter restarts per phase)
 #   AD-N/BUG-ID   — bug-driven decisions
-#   GP-N          — General Principles (frozen set GP-1..GP-8 as of v1.0)
+#   GP-N          — General Principles (frozen set GP-1..GP-9 as of v1.1.0)
 #
 # Note on AD-39b: legacy letter-suffix grandfathered. New AD-N/PHASE format uses integer N only.
 #
@@ -153,6 +153,44 @@ GPs are distinct from Architect Decisions (AD-N): ADs record what was decided ab
 **Statement:** When a governance failure recurs three times in consecutive phases despite flag-and-promise resolutions, the correct response is infrastructure enforcement — a mechanical check that makes the failure impossible — not another verbal commitment.
 
 **Implementation:** `unzip -l reviewer_bundle.zip | grep -q '\.html'` non-fatal check added to `run_tests.sh`. Closes the gap mechanically at commit df3057a3 + gate enforcement at 07606c02.
+
+---
+
+### GP-9 — Archive Substantive Deliberation Before Phase Close
+
+**Date:** 2026-06-06 (Phase TS_v6 cycle close) | **Scope:** dfdraw, AliasDataFrame, GBAI
+
+**Origin:** Phase TS_v6 governance cycle (2026-06-05 / 2026-06-06) — motivation framing for the dfdraw Technical Summary lived only in chat transcripts across multiple sessions until the 2026-06-06 session exposed the gap. The architect's verbal context (Run 1/2 vs Run 3 history; 2026-06-05 causal-chain quote; political reformulation framing) was repeated across multiple governance sessions without a permanent home before this codification landed.
+
+**Statement:** Substantive design rationale, source materials, and architect-originated content produced during ephemeral sessions (chat, voice, draft documents) must be migrated to permanently-tracked artifacts before the originating phase closes. Chat transcripts are not durable governance media.
+
+**Substantive threshold** (architect, 2026-06-06):
+
+> *"I think a substantive threshold is when I have to vote against the reviewers — something that is not trivial. Usually, if it is not stored, it means that in the next review or refactoring, the problem will reappear."*
+> — M. Ivanov, dfdraw governance session, 2026-06-06
+
+This gives two operational triggers:
+
+1. **Architect override** — the architect had to vote against, override, or correct a reviewer recommendation. This is not trivial.
+2. **Recurrence test** — if not stored, the same problem (decision, finding, correction) will reappear in the next review or refactoring.
+
+A decision meeting **either** trigger is substantive and must be migrated to a permanently-tracked artifact before phase close.
+
+**Routing by content type:**
+
+1. **Decisions** → `ARCHITECT_DECISIONS.md` (AD registry, machine-citable, append-only)
+2. **Source materials** — verbatim quotes, quantifications, foundational principles → vision / foundations doc (e.g., `dfextensions_VISION.md` when it lands). Until `dfextensions_VISION.md` exists, store in `~/dfdraw_governance/phase_NN/` alongside process history (item 3).
+3. **Process history** — drafting alternatives, panel deliberation, rejected paths → `~/dfdraw_governance/phase_NN/`
+4. **Technical specifications** — the relevant Technical Summary or API doc
+
+**Audit point:** Phase close checklist — before tagging `PHASE_NN_END`, audit the session for chat-only content meeting the substantive threshold. Anything found is migrated; if migration is deferred, an open AD item logs it.
+
+**Cross-references:**
+- GP-3 — verbatim quote preservation (what to preserve; this GP handles where to store)
+- GP-6 — rendered-artifact validation (visual artifacts; this GP handles substantive content)
+- GP-8 — three-recurrence threshold (infrastructure enforcement when archiving gaps recur)
+- AD-1/TS_v6.DF — first concrete decision logged under this principle
+- AD-2/TS_v6.DF — quantification-deferral policy logged under this principle
 
 ---
 
@@ -1970,7 +2008,46 @@ adf.draw("dyp_I0:row", group_by="sec", color="red")
 
 ---
 
-*dfdraw ARCHITECT_DECISIONS.md v1.0.1 — 2026-06-04*
-*v1.0 committed same day; v1.0.1 applies Org panel convergent touch-ups (header, AD-37/50 supersession, GP transitional authority, GP Date fields, About additions)*
+## Phase TS_v6 — Technical Summary v6 governance cycle (AD-1/TS_v6.DF to AD-2/TS_v6.DF)
+
+**Phase trigger:** Multi-session restructure of `dfdraw_Technical_Summary.md` (v6.0 → v6.3) and `dfdraw_PLOTTING_LIBRARY_COMPARISON.md` (v1.2 → v2.1) to align with the architect's December 2025 dfextensions presentation and 2026-06-05 verbal context. Cycle close formalized retroactively per GP-9.
+
+---
+
+## AD-1/TS_v6.DF — Executive Summary thesis-first structure with GP-3 verbatim preservation
+
+**Phase:** TS_v6 | **Date:** 2026-06-05 | **Original notation:** `Opus1_TS_v6_3_ExecutiveSummary_FinalDraft_v3_20260605.md`
+
+**Decision:** The dfdraw Technical Summary Executive Summary is restructured to thesis-first across 8 subsections in this order: (1) The thesis (slide-2 verbatim + 2026-06-05 causal-chain verbatim); (2) Why this stack exists (Run 1/2 downsampling layer, industry-general framing, Run 3 transition, pain triad, architect principle verbatim, O2CCDBAI + dfextensions parallel framing); (3) The measurable consequence (×2.4 only — see AD-2/TS_v6.DF); (4) The discovery goal (slide-7 verbatim with collective-voice adaptation); (5) What dfdraw is; (6) The stack; (7) Core characteristics; (8) Comparison + Cross-references. GP-3 verbatim preservation: 4 character-exact blocks + 1 documented collective-voice adaptation with `(collective voice adaptation)` disclosure in attribution line.
+
+**Motivation:** Through v6.2, 5 of 6 internal reviewers convergently flagged that the Executive Summary was solution-first and missing motivation framing. The thesis-first restructure imports architect-authored framing (slide-2 thesis, slide-7 discovery goal, 2026-06-05 verbal context) so motivation is the spine, not a paragraph the reader can skim past. Political reformulation (analyst-bandwidth vs developer-bandwidth; no verdict language) lives in document text; sharper verdict framing carries via separate architect cover note to cross-team audiences.
+
+**Ratification:** `dfdraw_Technical_Summary.md` v6.3 (commit `5c9284c5`); 4 panel rounds across v6.0 → v6.1 → v6.2 → v6.3 (Sonnet54-59 + Opus1 Main Reviewer); commit decision `Sonnet54_TS_v6_3_CommitSummary_20260606.md` 4/4 approved.
+
+**Source:** `docs/dfdraw_Technical_Summary.md` (Executive Summary section); `~/dfdraw_governance/phase_TS_v6/`
+
+**Cross-references:** GP-3, GP-9, AD-2/TS_v6.DF, AD-57 (channel framework grammar referenced from §"What dfdraw is")
+
+---
+
+## AD-2/TS_v6.DF — Quantification deferral policy for technical documents
+
+**Phase:** TS_v6 | **Date:** 2026-06-05 (TS v6.3) + 2026-06-06 (Comparison v2.0 F1) | **Original notation:** TS v6 panel summaries; `Sonnet54_PLOTTING_LIBRARY_COMPARISON_v2_MainReview_20260606.md` F1
+
+**Decision:** Technical documents (Technical Summaries, comparison documents, papers, external presentations) cite only architect-officially-confirmed quantifications. As of 2026-06-06, **×2.4 σ(pT)/pT regression at 10 GeV** is the only officially-confirmed quantification cleared for citation. All other quantifications from the December 2025 presentation (498→132 μm, ×3.8, 4.1 μm, 10,000×, 70 min, 1452→722 s, 25M+ fits, 100K+ groups) are deferred pending architect official confirmation. Default-deferred, not permanently deferred — quantifications may be added in subsequent revisions once officially confirmed.
+
+**Motivation:** Numbers in technical documents become citable; once published, they propagate. Walking them back later costs more than holding them initially. Conservative phrasing ("Production-validated convergence across calibration cycles") communicates substance without committing to specific values that may shift. Cross-document consistency requirement: a reader holding both TS v6.3 and Comparison v2.x must see the same conservative quantification stance in both — this was the substance of the comparison v2.0 F1 panel finding (4/7 convergent reviewers).
+
+**Ratification:** TS v6.3 §"The measurable consequence" (commit `5c9284c5`) cites ×2.4 only. PLOTTING_LIBRARY_COMPARISON v2.1 §13 cites no specific numbers (commit `e926eae3`). v6.4 backlog includes identifying and adding an external citable source for the ×2.4 quantification — the measurement exists but no public citable reference has been designated yet.
+
+**Source:** `docs/dfdraw_Technical_Summary.md` §"The measurable consequence"; `docs/dfdraw_PLOTTING_LIBRARY_COMPARISON.md` §13
+
+**Cross-references:** GP-3 (verbatim preservation for quotes; this AD is the numbers-side complement), GP-9 (archived under "decisions" routing), AD-1/TS_v6.DF (Executive Summary structure where ×2.4 lives)
+
+---
+
+*dfdraw ARCHITECT_DECISIONS.md v1.1.0 — 2026-06-06*
+*v1.0 / v1.0.1 — 2026-06-04 (Org panel convergent touch-ups: header, AD-37/50 supersession, GP transitional authority, GP Date fields, About additions)*
+*v1.1.0 — 2026-06-06 (TS v6 governance cycle: GP-9 added, AD-1/TS_v6.DF + AD-2/TS_v6.DF added; panel: Sonnet56 [!] + Sonnet57 [!] + Opus1 [Main Reviewer] + architect direct intervention on GP-9 substantive-threshold definition)*
 *Legacy AD-1..AD-82: Sonnet56 (verbatim text) + Sonnet57 (source refs at HEAD 07606c02)*
 *AD-N/PHASE entries: Sonnet57 final candidate table, Sonnet56 additive corrections, naming convention per 2026-06-04*
