@@ -63,7 +63,7 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 </head>
 <body>
 <h1>Capability Matrix — dfdraw</h1>
-<p class="meta">Generated: <span class="mono">2026-06-09 09:46 UTC</span> · Phase: <span class="mono">PHASE_13_51_DF_END</span></p>
+<p class="meta">Generated: <span class="mono">2026-06-09 11:18 UTC</span> · Phase: <span class="mono">PHASE_13_51_DF_END</span></p>
 <section class="summary">
 <h2>Summary</h2>
 <table>
@@ -72,7 +72,7 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <tr><th>🧨 Broken</th><td class="n">0</td><td class="n">0%</td></tr>
 <tr><th>📋 Planned</th><td class="n">1</td><td class="n">1%</td></tr>
 <tr><th>Total features</th><td class="n"><strong>133</strong></td><td></td></tr>
-<tr><th>Total proof tests</th><td class="n"><strong>629</strong></td><td></td></tr>
+<tr><th>Total proof tests</th><td class="n"><strong>632</strong></td><td></td></tr>
 <tr><th>Invariance tests</th><td class="n"><strong>356</strong></td><td></td></tr>
 <tr><th>Visual tests</th><td class="n"><strong>27</strong></td><td></td></tr>
 </table>
@@ -874,16 +874,7 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <li><span class="layer-marker">☑</span><code>test_phase_13_52_df_overlay.py::test_T3_overlay_scatter_overlay_onto_hist2d</code><span class="outcome passed">passed</span></li>
 </ul>
 </div></td></tr>
-<tr id="feature-OVERLAY.string_sugar_desugar" class="feature-row" data-status="Smoke-only" data-visual="no" data-category="OVERLAY"><td><span class="expand-toggle">▶</span></td><td>☑️</td><td><strong class="mono">OVERLAY.string_sugar_desugar</strong> — draw(type=&#x27;A+B&#x27;) string sugar desugars to overlay engine with §1.4 routing policy</td><td class="n">3</td><td class="n">3</td><td class="n">0</td><td class="n">0</td><td class="n"></td></tr>
-<tr class="tests-row" hidden><td colspan="8">
-<div class="tests-panel">
-<ul>
-<li><span class="layer-marker">☑</span><code>test_phase_13_52_df_overlay.py::test_T_S1_string_sugar_equals_layers_form</code><span class="outcome passed">passed</span></li>
-<li><span class="layer-marker">☑</span><code>test_phase_13_52_df_overlay.py::test_T_S2_string_routing_bins_to_base_fit_to_profile_negative_control</code><span class="outcome passed">passed</span></li>
-<li><span class="layer-marker">☑</span><code>test_phase_13_52_df_overlay.py::test_T_S3_string_routing_selection_replicates_to_all_layers</code><span class="outcome passed">passed</span></li>
-</ul>
-</div></td></tr>
-<tr id="feature-OVERLAY.engine_guards" class="feature-row" data-status="Smoke-only" data-visual="no" data-category="OVERLAY"><td><span class="expand-toggle">▶</span></td><td>☑️</td><td><strong class="mono">OVERLAY.engine_guards</strong> — engine ValueError guards (empty, non-method type, &gt;1 density, non-density base, 3D) raise BEFORE any draw</td><td class="n">6</td><td class="n">6</td><td class="n">0</td><td class="n">0</td><td class="n"></td></tr>
+<tr id="feature-OVERLAY.engine_guards" class="feature-row" data-status="Smoke-only" data-visual="no" data-category="OVERLAY"><td><span class="expand-toggle">▶</span></td><td>☑️</td><td><strong class="mono">OVERLAY.engine_guards</strong> — engine ValueError guards (empty, non-method type, non-allowed type, &gt;1 density, non-density base, 3D) raise BEFORE any draw</td><td class="n">7</td><td class="n">7</td><td class="n">0</td><td class="n">0</td><td class="n"></td></tr>
 <tr class="tests-row" hidden><td colspan="8">
 <div class="tests-panel">
 <ul>
@@ -891,8 +882,20 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <li><span class="layer-marker">☑</span><code>test_phase_13_52_df_overlay.py::test_T_D2_overlay_3d_scatter3d_layer_raises</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">☑</span><code>test_phase_13_52_df_overlay.py::test_T_D3_overlay_empty_layers_raises</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">☑</span><code>test_phase_13_52_df_overlay.py::test_T_D4_overlay_non_method_type_token_raises</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_52_df_overlay.py::test_T_D5_overlay_disallowed_type_outside_whitelist_raises</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">☑</span><code>test_phase_13_52_df_overlay.py::test_T_S5b_string_non_density_base_raises</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">☑</span><code>test_phase_13_52_df_overlay.py::test_T_S4_string_routing_unroutable_kwarg_raises</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-OVERLAY.string_sugar_desugar" class="feature-row" data-status="Smoke-only" data-visual="no" data-category="OVERLAY"><td><span class="expand-toggle">▶</span></td><td>☑️</td><td><strong class="mono">OVERLAY.string_sugar_desugar</strong> — draw(type=&#x27;A+B&#x27;) string sugar desugars to overlay engine with §1.4 routing policy (named-param splice complete per v1.5.1 P1-B)</td><td class="n">5</td><td class="n">5</td><td class="n">0</td><td class="n">0</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">☑</span><code>test_phase_13_52_df_overlay.py::test_T_S1_string_sugar_equals_layers_form</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_52_df_overlay.py::test_T_S2_string_routing_bins_to_base_fit_to_profile_negative_control</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_52_df_overlay.py::test_T_S2b_string_routing_color_to_scatter_overlay</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_52_df_overlay.py::test_T_S3_string_routing_selection_replicates_to_all_layers</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_52_df_overlay.py::test_T_S3b_string_routing_selection_vector_replicates_to_accepting_layers</code><span class="outcome passed">passed</span></li>
 </ul>
 </div></td></tr>
 <tr id="feature-OVERLAY.faceting_rejected" class="feature-row" data-status="Smoke-only" data-visual="no" data-category="OVERLAY"><td><span class="expand-toggle">▶</span></td><td>☑️</td><td><strong class="mono">OVERLAY.faceting_rejected</strong> — faceting/share_* params rejected at engine + sugar level (Phase 13.53 deferred)</td><td class="n">2</td><td class="n">2</td><td class="n">0</td><td class="n">0</td><td class="n"></td></tr>

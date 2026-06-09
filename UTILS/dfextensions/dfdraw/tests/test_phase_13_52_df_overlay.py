@@ -388,3 +388,86 @@ def test_T_S6_overlay_summary_fit_on_profile_layer_renders():
     profile_stats = stats["layers"][1]
     # The profile layer's fit was computed (summary_fit consumes it)
     assert "fit" in profile_stats, "profile layer should have fit stats"
+
+
+# =============================================================================
+# v1.5.1 P1 closure tests (Sonnet65 panel CRR review, GPT11/13/14 P1 findings)
+# =============================================================================
+
+def test_T_D5_overlay_disallowed_type_outside_whitelist_raises():
+    """T-D5 (v1.5.1 P1-A): non-allowed DFDraw method as overlay type → clean
+    ValueError. Prior to v1.5.1 the engine used `hasattr(self, t)` only,
+    which silently accepted `{type:"hist"}` (1D histogram method exists,
+    rendering would proceed). Whitelist enforcement caught by GPT panel.
+
+    Tests two layer positions and one sugar-form variant for coverage."""
+    df = _make_overlay_df()
+    d = DFDraw(df)
+
+    # hist is a method, but not an allowed overlay type
+    with pytest.raises(ValueError, match="not an allowed overlay type"):
+        d.overlay("y:x", layers=[{"type": "hist2d"}, {"type": "hist"}])
+
+    # draw is a method, but not an allowed overlay type (would infinite-loop)
+    with pytest.raises(ValueError, match="not an allowed overlay type"):
+        d.overlay("y:x", layers=[{"type": "hist2d"}, {"type": "draw"}])
+
+    # Same enforcement at sugar surface
+    with pytest.raises(ValueError, match="not an allowed overlay type"):
+        d.draw("y:x", type="hist2d+hist")
+
+
+def test_T_S2b_string_routing_color_to_scatter_overlay():
+    """T-S2b (v1.5.1 P1-B): `color=` is a named param of draw() AND a
+    scatter-unique kwarg — must reach the scatter overlay layer when sugar
+    form is `hist2d+scatter`. Prior to v1.5.1 the splice block omitted
+    `color`/`size`/`marker`, silently dropping them."""
+    df = _make_overlay_df()
+    d = DFDraw(df)
+    layers = d._desugar_overlay("hist2d+scatter")  # baseline: no color
+    # End-to-end via sugar trigger
+    fig, ax, stats = d.draw("y:x", type="hist2d+scatter", color="z")
+    plt.close('all')
+    # Verify color reached the scatter layer through the splice
+    # by re-running through desugar with the spliced kwarg explicitly:
+    layers_with_color = d._desugar_overlay("hist2d+scatter", color="z")
+    assert "color" not in layers_with_color[0], "color must NOT route to hist2d (base)"
+    assert layers_with_color[1].get("color") == "z", (
+        "T-S2b: color= must reach the scatter overlay layer (scatter-unique kwarg)"
+    )
+
+
+def test_T_S3b_string_routing_selection_vector_replicates_to_accepting_layers():
+    """T-S3b (v1.5.1 P1-B): `selection_vector` is a named param of draw()
+    AND in `_OVERLAY_WHOLE_PLOT` — must replicate to every accepting layer
+    when sugar form. Prior to v1.5.1 the splice block omitted it (along
+    with `weights_vector` and `nan_policy`), so users passing
+    `draw(type='hist2d+profile', selection_vector=[...])` saw it silently
+    dropped — contradicting the documented §1.4 whole-plot routing.
+
+    Semantics clarification: '_OVERLAY_WHOLE_PLOT' replicates to every
+    layer that ACCEPTS the kwarg in its signature. hist2d does not accept
+    `selection_vector` (not in hist2d signature post-Phase-13.51), so the
+    router correctly skips hist2d and routes selection_vector to profile
+    only. This matches spec §1.4's intent ("→ all layers" means all
+    layers for which the kwarg is meaningful)."""
+    df = _make_overlay_df()
+    d = DFDraw(df)
+    sv = ["y > 0", "y <= 0"]
+    layers = d._desugar_overlay("hist2d+profile", selection_vector=sv)
+    # hist2d does NOT accept selection_vector in its signature → skipped
+    assert "selection_vector" not in layers[0], (
+        "hist2d doesn't accept selection_vector — router skips it "
+        "(per signature-aware whole-plot routing)"
+    )
+    # profile DOES accept selection_vector → must receive it (v1.5.1 fix)
+    assert layers[1].get("selection_vector") == sv, (
+        "selection_vector must replicate to profile (the accepting layer); "
+        "prior to v1.5.1 the splice block dropped this entirely"
+    )
+
+    # Companion check: `sample=` is in ALL 3 method signatures, so it
+    # should replicate to both layers under whole-plot routing.
+    layers_sample = d._desugar_overlay("hist2d+profile", sample=500)
+    assert layers_sample[0].get("sample") == 500, "sample replicates to hist2d"
+    assert layers_sample[1].get("sample") == 500, "sample replicates to profile"

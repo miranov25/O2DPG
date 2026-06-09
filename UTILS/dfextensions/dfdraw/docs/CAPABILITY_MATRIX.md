@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-06-09 09:46 UTC
+**Generated:** 2026-06-09 11:18 UTC
 **Phase:** PHASE_13_51_DF_END
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -14,7 +14,7 @@
 | 🧨 Broken | 0 | 0% |
 | 📋 Planned | 1 | 1% |
 | **Total features** | **133** | |
-| **Total proof tests** | **629** | |
+| **Total proof tests** | **632** | |
 | **Invariance tests** | **356** | |
 | **Visual tests** | **27** | |
 
@@ -110,8 +110,8 @@
 | ✅ | **NORMALIZE.facet_by_compose** — facet_by + normalize: K x 2 grid with per-facet independent differential; facet_by_bins/_quantiles raises (NF.3 workaround-hint lock) — Phase 13.33 M2 + FIX1 | 3 | 3 | 0 | 3 |  |
 | | **OVERLAY** | | | | | |
 | ☑️ | **OVERLAY.engine_layers_form** — overlay() engine with explicit layers=[...] (density base + overlays on one shared axes) | 4 | 4 | 0 | 0 |  |
-| ☑️ | **OVERLAY.string_sugar_desugar** — draw(type='A+B') string sugar desugars to overlay engine with §1.4 routing policy | 3 | 3 | 0 | 0 |  |
-| ☑️ | **OVERLAY.engine_guards** — engine ValueError guards (empty, non-method type, >1 density, non-density base, 3D) raise BEFORE any draw | 6 | 6 | 0 | 0 |  |
+| ☑️ | **OVERLAY.engine_guards** — engine ValueError guards (empty, non-method type, non-allowed type, >1 density, non-density base, 3D) raise BEFORE any draw | 7 | 7 | 0 | 0 |  |
+| ☑️ | **OVERLAY.string_sugar_desugar** — draw(type='A+B') string sugar desugars to overlay engine with §1.4 routing policy (named-param splice complete per v1.5.1 P1-B) | 5 | 5 | 0 | 0 |  |
 | ☑️ | **OVERLAY.faceting_rejected** — faceting/share_* params rejected at engine + sugar level (Phase 13.53 deferred) | 2 | 2 | 0 | 0 |  |
 | ☑️ | **OVERLAY.range_lock_zorder** — post-draw range lock holds after plt.draw(); base-before-overlay z-order | 2 | 2 | 0 | 0 |  |
 | ☑️ | **OVERLAY.summary_fit_profile_layer** — summary_fit on profile overlay layer renders (Phase 13.51 + 13.52 interaction) | 1 | 1 | 0 | 0 |  |

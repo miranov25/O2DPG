@@ -63,6 +63,17 @@ DrawResult = Tuple[Any, Any, Dict[str, Any]]  # (fig, ax, stats)
 # Density base layers — own a colorbar, must be position 0 of layers list.
 _OVERLAY_DENSITY = {"hist2d", "hexbin", "profile2d"}
 
+# Overlay layers (non-density) — render on top of the density base.
+_OVERLAY_OVERLAYS = {"profile", "scatter"}
+
+# Full allowed set for any layer position in overlay().
+# v1.5.1 P1-A (GPT11/GPT13/GPT14 panel finding): the prior implementation
+# validated only via `hasattr(self, t)`, which accepts ANY DFDraw method
+# (hist, draw, overlay, _desugar_overlay, ...). The error message claimed
+# a whitelist but the check was permissive. Use this set for the actual
+# membership check so the contract matches the documented behavior.
+_OVERLAY_ALLOWED = _OVERLAY_DENSITY | _OVERLAY_OVERLAYS
+
 # Whole-plot kwargs — when present in the string sugar form, replicated to
 # every layer instead of routed to one. (E.g. `selection=` is a global filter,
 # not a per-layer rendering choice.)
@@ -4495,6 +4506,19 @@ class DFDraw:
             if fit is not None: _overlay_kw_in.setdefault('fit', fit)
             if summary_fit is not None: _overlay_kw_in.setdefault('summary_fit', summary_fit)
             if group_by is not None: _overlay_kw_in.setdefault('group_by', group_by)
+            # v1.5.1 P1-B (GPT panel finding): the prior splice missed
+            # selection_vector and weights_vector — both declared in
+            # _OVERLAY_WHOLE_PLOT (replicate to every layer per §1.4) — and
+            # the scatter modifiers color/size/marker that must reach a
+            # scatter overlay layer. nan_policy is also whole-plot. All
+            # are named params of draw() so absent from **kwargs.
+            if selection_vector is not None: _overlay_kw_in.setdefault('selection_vector', selection_vector)
+            if weights_vector is not None: _overlay_kw_in.setdefault('weights_vector', weights_vector)
+            if nan_policy is not None and nan_policy != 'filter':
+                _overlay_kw_in.setdefault('nan_policy', nan_policy)
+            if color is not None: _overlay_kw_in.setdefault('color', color)
+            if size is not None: _overlay_kw_in.setdefault('size', size)
+            if marker is not None: _overlay_kw_in.setdefault('marker', marker)
             # Faceting params: spliced so _desugar_overlay raises a clean
             # ValueError (not silently dropped). Match _OVERLAY_NO_FACET set.
             if facet_by is not None: _overlay_kw_in.setdefault('facet_by', facet_by)
@@ -6288,6 +6312,23 @@ class DFDraw:
                     "hexbin, profile2d, profile, scatter. ('quantiles'/"
                     "'fit-line' are kwargs, not types.)"
                 )
+            # P1-A v1.5.1 (GPT panel finding): the hasattr check alone is
+            # permissive — accepts hist, draw, overlay, _desugar_overlay, etc.
+            # Spec §1.2 restricts overlay layers to density bases + overlays.
+            # Without this whitelist, `layers=[{hist2d},{hist}]` would render
+            # a 1D hist onto the shared 2D axes — silently wrong.
+            # Note: scatter3d is handled separately below (more helpful 3D
+            # message than the generic "not allowed" — preserves error UX).
+            if t == "scatter3d":
+                raise ValueError(
+                    "overlay: 3D layers are not supported (no shared 2D axes)."
+                )
+            if t not in _OVERLAY_ALLOWED:
+                raise ValueError(
+                    f"overlay: '{t}' is not an allowed overlay type. "
+                    f"Density base: {sorted(_OVERLAY_DENSITY)}. "
+                    f"Overlay layers: {sorted(_OVERLAY_OVERLAYS)}."
+                )
             # P1-B: faceting/share params reject at engine level, both surfaces.
             # Faceted primitives return ndarray-of-axes; single-ax threading
             # in this engine cannot consume that (Appendix C reproduction).
@@ -6361,6 +6402,17 @@ class DFDraw:
                 raise ValueError(
                     f"overlay: '{p}' is not a DFDraw method. "
                     "Valid: hist2d, hexbin, profile2d, profile, scatter."
+                )
+            # P1-A v1.5.1 (GPT panel finding): whitelist enforcement at sugar
+            # surface mirrors the engine guard, so messaging is clear in both
+            # surfaces. Without this, `type="hist2d+hist"` would pass the
+            # hasattr check and reach the engine, where the v1.5.1 whitelist
+            # guard above raises — but the sugar-surface error is clearer.
+            if p not in _OVERLAY_ALLOWED:
+                raise ValueError(
+                    f"overlay: '{p}' is not an allowed overlay type. "
+                    f"Density base: {sorted(_OVERLAY_DENSITY)}. "
+                    f"Overlay layers: {sorted(_OVERLAY_OVERLAYS)}."
                 )
         sigs = {
             p: (set(inspect.signature(getattr(self, p)).parameters)

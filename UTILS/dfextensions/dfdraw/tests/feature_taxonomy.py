@@ -1722,26 +1722,29 @@ FEATURES = [
         ],
     },
     {
-        "id": "OVERLAY.string_sugar_desugar",
-        "name": "draw(type='A+B') string sugar desugars to overlay engine with §1.4 routing policy",
-        "category": "OVERLAY",
-        "tests": [
-            "test_phase_13_52_df_overlay.py::test_T_S1_string_sugar_equals_layers_form",
-            "test_phase_13_52_df_overlay.py::test_T_S2_string_routing_bins_to_base_fit_to_profile_negative_control",
-            "test_phase_13_52_df_overlay.py::test_T_S3_string_routing_selection_replicates_to_all_layers",
-        ],
-    },
-    {
         "id": "OVERLAY.engine_guards",
-        "name": "engine ValueError guards (empty, non-method type, >1 density, non-density base, 3D) raise BEFORE any draw",
+        "name": "engine ValueError guards (empty, non-method type, non-allowed type, >1 density, non-density base, 3D) raise BEFORE any draw",
         "category": "OVERLAY",
         "tests": [
             "test_phase_13_52_df_overlay.py::test_T_D1_overlay_two_density_layers_raises",
             "test_phase_13_52_df_overlay.py::test_T_D2_overlay_3d_scatter3d_layer_raises",
             "test_phase_13_52_df_overlay.py::test_T_D3_overlay_empty_layers_raises",
             "test_phase_13_52_df_overlay.py::test_T_D4_overlay_non_method_type_token_raises",
+            "test_phase_13_52_df_overlay.py::test_T_D5_overlay_disallowed_type_outside_whitelist_raises",
             "test_phase_13_52_df_overlay.py::test_T_S5b_string_non_density_base_raises",
             "test_phase_13_52_df_overlay.py::test_T_S4_string_routing_unroutable_kwarg_raises",
+        ],
+    },
+    {
+        "id": "OVERLAY.string_sugar_desugar",
+        "name": "draw(type='A+B') string sugar desugars to overlay engine with §1.4 routing policy (named-param splice complete per v1.5.1 P1-B)",
+        "category": "OVERLAY",
+        "tests": [
+            "test_phase_13_52_df_overlay.py::test_T_S1_string_sugar_equals_layers_form",
+            "test_phase_13_52_df_overlay.py::test_T_S2_string_routing_bins_to_base_fit_to_profile_negative_control",
+            "test_phase_13_52_df_overlay.py::test_T_S2b_string_routing_color_to_scatter_overlay",
+            "test_phase_13_52_df_overlay.py::test_T_S3_string_routing_selection_replicates_to_all_layers",
+            "test_phase_13_52_df_overlay.py::test_T_S3b_string_routing_selection_vector_replicates_to_accepting_layers",
         ],
     },
     {
