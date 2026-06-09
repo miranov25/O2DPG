@@ -4529,20 +4529,38 @@ class DFDraw:
         elif type == "hexbin":
             # Phase 13.51 §1.3 (audit S-11): hexbin in scalar dispatch.
             # Filtered kwargs pattern (mirrors scatter3d _sc3d_kwargs at line ~4327).
-            # Intentionally drops named params absent from hexbin: facet_by,
-            # facet_by_bins, normalize, fit, summary_fit, etc. — these are
-            # Batch 4 S-7 scope (full hexbin modifier parity). Drop is silent
-            # at this dispatch; hexbin()'s own guards raise clean ValueError
-            # for the modifier subset users will most commonly try.
+            #
+            # Phase 13.51 FIX1 (audit F-1, Opus48_3 executed negative control):
+            # explicitly forward facet_by= and range= so hexbin()'s own S-7
+            # guards fire on the dispatch path. The original `_hexbin_allowed`
+            # filter dropped these silently — the §2 CRR comment claiming
+            # "hexbin()'s own guards raise via this dispatch" was inaccurate
+            # because the filter stripped facet_by/range BEFORE they reached
+            # the guards. With explicit forwarding the dispatch path now
+            # behaves symmetrically with the direct hexbin() path: both raise
+            # the same clean ValueError pointing at S-7 / Batch 4.
+            #
+            # Subtlety: `facet_by` IS a named param of draw() (forwarded as a
+            # local variable); `range` is NOT (it's the Python builtin in this
+            # scope). Use kwargs.pop for `range` to extract it without shadow.
+            # Other unsupported modifiers (normalize, fit, summary_fit, etc.)
+            # still drop silently here pending full S-7 implementation in
+            # Batch 4 — registered as KNOWN.hexbin_dispatch_residual_drops.
             _hexbin_allowed = {
                 'gridsize', 'cmap', 'vmin', 'vmax', 'colorbar', 'clabel',
                 'mincnt', 'reduce_C_function', 'C', 'extent', 'edgecolors',
                 'linewidths', 'norm',
             }
             _hexbin_kwargs = {k: v for k, v in kwargs.items() if k in _hexbin_allowed}
+            # Phase 13.51 FIX1 F-1: extract range= via kwargs.pop because
+            # `range` is the Python builtin in this lexical scope (not a
+            # draw() named param). Default None preserves the no-range path.
+            _user_range = kwargs.get('range', None)
             return self.hexbin(
                 expr, selection=selection,
                 title=title, ax=ax, sample=sample, save=save, same=same,
+                facet_by=facet_by,     # Phase 13.51 FIX1 F-1: route to S-7 guard
+                range=_user_range,     # Phase 13.51 FIX1 F-1: route to S-7 guard
                 **_hexbin_kwargs,
             )
         else:

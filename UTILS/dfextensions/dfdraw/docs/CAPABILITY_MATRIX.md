@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-06-09 06:07 UTC
+**Generated:** 2026-06-09 07:37 UTC
 **Phase:** PHASE_13_50_DF_FIX1_END
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -187,9 +187,9 @@
 | ☑️ | **VISUAL.facet_grid** — facet grid shape + shared-axis consistency (figure-derived) 👁 | 2 | 2 | 0 | 0 | 2 |
 | ☑️ | **VISUAL.title** — suptitle populated, not duplicated per-cell (C-3); content (I-4) 👁 | 2 | 2 | 0 | 0 | 2 |
 
-## Unmatched Tests (469)
+## Unmatched Tests (471)
 
-469 tests pytest collected that no feature claims.
+471 tests pytest collected that no feature claims.
 Grouped by test-file prefix.
 
 <details><summary><code>test_adf_integration.py</code> (14)</summary>
@@ -546,7 +546,7 @@ Grouped by test-file prefix.
 
 </details>
 
-<details><summary><code>test_phase_13_51_post_audit.py</code> (21)</summary>
+<details><summary><code>test_phase_13_51_post_audit.py</code> (23)</summary>
 
 - `test_phase_13_51_post_audit.py::test_T10a_hist_datetime64_no_crash_scalarformatter_sentinel`
 - `test_phase_13_51_post_audit.py::test_T10b_compute_autorange_datetime64_robust_3mad`
@@ -557,7 +557,9 @@ Grouped by test-file prefix.
 - `test_phase_13_51_post_audit.py::test_T14_hist2d_time_format_auto_date_tick_labels`
 - `test_phase_13_51_post_audit.py::test_T15_hist2d_fit_raises_clean_value_error`
 - `test_phase_13_51_post_audit.py::test_T16_hexbin_range_raises_clean_value_error`
+- `test_phase_13_51_post_audit.py::test_T16b_draw_type_hexbin_range_raises_clean_value_error_via_dispatch`
 - `test_phase_13_51_post_audit.py::test_T17_hexbin_facet_by_raises_clean_value_error`
+- `test_phase_13_51_post_audit.py::test_T17b_draw_type_hexbin_facet_by_raises_clean_value_error_via_dispatch`
 - `test_phase_13_51_post_audit.py::test_T1_draw_type_profile_normalize_delta_yields_two_axes`
 - `test_phase_13_51_post_audit.py::test_T2_draw_type_profile_facet_by_sec_populated_panels`
 - `test_phase_13_51_post_audit.py::test_T3_draw_type_profile_selection_vector_matches_direct`

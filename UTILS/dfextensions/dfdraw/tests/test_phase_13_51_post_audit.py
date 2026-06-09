@@ -488,3 +488,30 @@ def test_T17_hexbin_facet_by_raises_clean_value_error():
     d = DFDraw(df)
     with pytest.raises(ValueError, match="hexbin.*facet|S-7|Batch 4"):
         d.hexbin("y:x", facet_by="sec")
+
+
+# =============================================================================
+# T16b/T17b — Phase 13.51 FIX1 (F-1, Opus48_3 executed negative control):
+# hexbin dispatch path must route to S-7 guards symmetrically with direct path.
+# Pre-FIX1: `_hexbin_allowed` filter dropped facet_by/range BEFORE reaching
+# the guards, so dispatch was a silent drop while direct call raised clean.
+# Locked by these two tests; matches T16/T17 invariance contract, dispatch
+# entry point.
+# =============================================================================
+
+def test_T16b_draw_type_hexbin_range_raises_clean_value_error_via_dispatch():
+    """T16b (F-1 FIX1): d.draw(type='hexbin', range=...) routes to the same
+    clean ValueError as direct d.hexbin(range=...). Pre-FIX1: silent drop."""
+    df = _make_outlier_df_2d()
+    d = DFDraw(df)
+    with pytest.raises(ValueError, match="hexbin.*range|extent|S-7|Batch 4"):
+        d.draw("y:x", type="hexbin", range=(0, 5))
+
+
+def test_T17b_draw_type_hexbin_facet_by_raises_clean_value_error_via_dispatch():
+    """T17b (F-1 FIX1): d.draw(type='hexbin', facet_by=...) routes to the same
+    clean ValueError as direct d.hexbin(facet_by=...). Pre-FIX1: silent drop."""
+    df = _make_outlier_df_2d()
+    d = DFDraw(df)
+    with pytest.raises(ValueError, match="hexbin.*facet|S-7|Batch 4"):
+        d.draw("y:x", type="hexbin", facet_by="sec")
