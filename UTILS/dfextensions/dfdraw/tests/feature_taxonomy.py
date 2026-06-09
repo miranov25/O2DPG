@@ -1709,6 +1709,97 @@ FEATURES = [
             "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v10_title_content",
         ],
     },
+    # ── Phase 13.51.DF — Audit fix feature registrations ──
+    # The 23 tests in tests/test_phase_13_51_post_audit.py landed in-tree at
+    # `b1db4740` (v1.5) + `2235caef` (FIX1). They cover post-audit fixes:
+    # R-2 explicit forwarding at all 4 draw() dispatch branches, central=
+    # median routing, datetime64 guard at compute_autorange entry, and
+    # hist2d time_format= symmetry. This block registers them as feature
+    # claims so CAPABILITY_MATRIX gates 4 (Verified ≥64) and 7
+    # (VISUAL.* ≥9) close ahead of distribution to the 5 audiences.
+    # No new tests — registration-only pass.
+    {
+        "id": "DRAW.R2_forwarding",
+        "name": "draw() scalar dispatch forwards Phase 13.27–13.41 named params (selection_vector, weights_vector, share_*, facet_by, etc.) to all 4 typed methods — A≡B with direct calls",
+        "category": "DRAW",
+        "tests": [
+            "test_phase_13_51_post_audit.py::test_T3_draw_type_profile_selection_vector_matches_direct",
+            "test_phase_13_51_post_audit.py::test_T5_draw_type_hist_selection_vector_matches_direct",
+        ],
+    },
+    {
+        "id": "PROFILE.central_median_1d",
+        "name": "profile() central='median' renders the median line on the 1D non-grouped path (Phase 13.51 V-3 fix at profile.py:879; bin_means → _central_values)",
+        "category": "PROFILE",
+        "tests": [
+            "test_phase_13_51_post_audit.py::test_T9b_profile_1d_central_median_line_differs_from_mean",
+        ],
+    },
+    {
+        "id": "PROFILE2D.central_median_mesh",
+        "name": "profile2d() central='median' produces a mesh that differs from mean (Phase 13.51 R-2: conditional central= forward into draw_profile2d)",
+        "category": "PROFILE2D",
+        "tests": [
+            "test_phase_13_51_post_audit.py::test_T9a_profile2d_central_median_mesh_differs_from_mean",
+        ],
+    },
+    {
+        "id": "PROFILE.central_median_fit",
+        "name": "profile() central='median', fit=… — fit center reflects median data, not mean (Phase 13.51 P1-B fix at profile.py:907 fit curve _central_values)",
+        "category": "PROFILE",
+        "tests": [
+            "test_phase_13_51_post_audit.py::test_T9c_profile_fit_central_median_fit_center_differs",
+        ],
+    },
+    {
+        "id": "AUTORANGE.datetime64_guard",
+        "name": "compute_autorange() handles datetime64 input across robust_3mad / percentile_99 (and by symmetry all 5) strategies without crashing (Phase 13.51 V-2 guard at _autorange.py entry)",
+        "category": "AUTORANGE",
+        "tests": [
+            "test_phase_13_51_post_audit.py::test_T10b_compute_autorange_datetime64_robust_3mad",
+            "test_phase_13_51_post_audit.py::test_T10c_compute_autorange_datetime64_percentile_99",
+        ],
+    },
+    {
+        "id": "VISUAL.facet_r2_profile",
+        "name": "draw(type='profile', facet_by=) populates every panel — R-2 forwarding visual check",
+        "category": "VISUAL",
+        "tests": [
+            "test_phase_13_51_post_audit.py::test_T2_draw_type_profile_facet_by_sec_populated_panels",
+        ],
+    },
+    {
+        "id": "VISUAL.facet_r2_hist",
+        "name": "draw(type='hist', facet_by=) populates every panel — R-2 forwarding visual check",
+        "category": "VISUAL",
+        "tests": [
+            "test_phase_13_51_post_audit.py::test_T4_draw_type_hist_facet_by_sec_populated_panels",
+        ],
+    },
+    {
+        "id": "VISUAL.facet_r2_scatter",
+        "name": "draw(type='scatter', facet_by=) populates every panel — R-2 forwarding visual check",
+        "category": "VISUAL",
+        "tests": [
+            "test_phase_13_51_post_audit.py::test_T6_draw_type_scatter_facet_by_sec_populated_panels",
+        ],
+    },
+    {
+        "id": "VISUAL.facet_r2_hist2d",
+        "name": "draw(type='hist2d', facet_by=) populates every panel — R-2 forwarding visual check (Phase 13.51 S-3 closure)",
+        "category": "VISUAL",
+        "tests": [
+            "test_phase_13_51_post_audit.py::test_T8_draw_type_hist2d_facet_by_sec_populated_panels",
+        ],
+    },
+    {
+        "id": "VISUAL.hist2d_datetime_labels",
+        "name": "hist2d() time_format='auto' renders readable date tick labels on the appropriate axis (Phase 13.51 S-8 symmetry with hist/scatter/profile)",
+        "category": "VISUAL",
+        "tests": [
+            "test_phase_13_51_post_audit.py::test_T14_hist2d_time_format_auto_date_tick_labels",
+        ],
+    },
     # ── Phase 13.52.DF — Declarative Overlay Capability ──
     {
         "id": "OVERLAY.engine_layers_form",
