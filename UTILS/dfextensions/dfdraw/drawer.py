@@ -55,6 +55,61 @@ DrawResult = Tuple[Any, Any, Dict[str, Any]]  # (fig, ax, stats)
 
 
 # =============================================================================
+# Phase 13.52.DF — Declarative Overlay Capability (v1.5 spec)
+# =============================================================================
+# Module-level constants for the overlay engine (DFDraw.overlay) and string
+# desugar (DFDraw._desugar_overlay). See PHASE_13_52_OverlayProposal_v1_5.md.
+
+# Density base layers — own a colorbar, must be position 0 of layers list.
+_OVERLAY_DENSITY = {"hist2d", "hexbin", "profile2d"}
+
+# Whole-plot kwargs — when present in the string sugar form, replicated to
+# every layer instead of routed to one. (E.g. `selection=` is a global filter,
+# not a per-layer rendering choice.)
+_OVERLAY_WHOLE_PLOT = {
+    "selection", "sample", "nan_policy",
+    "selection_vector", "weights_vector",
+}
+
+# Faceting/share params — rejected at engine entry on BOTH surfaces. Faceted
+# overlays are Phase 13.53 scope; overlay() composes onto one shared axes and
+# cannot consume the ndarray-of-axes returned by faceted primitives. See
+# spec Appendix C (reproduced by 3/5 v1.4 reviewers) — without this guard the
+# combination crashes deep in profile.py:450 with an opaque AttributeError.
+_OVERLAY_NO_FACET = {
+    "facet_by", "facet_by_bins", "facet_by_quantiles", "facet",
+    "share_x", "share_y", "share_across_figures",
+}
+
+# Guard-only params — present in a method's signature ONLY to raise a clean
+# ValueError when the user passes them (Phase 13.51 S-7/S-8 guards), NOT to
+# actually render anything. Routing-ownership inference in _desugar_overlay
+# must EXCLUDE these to honor the spec §1.4 promise "fit→profile" — the spec
+# was authored before Phase 13.51 added fit= as a hist2d guard.
+#
+# §6.1 finding (Phase 13.52 v1.5 implementation): without this exclusion,
+# `d.draw("y:x", type="hist2d+profile", fit="gauss")` would route `fit` to
+# hist2d (base, shared signature), tripping hist2d's S-8 guard. Excluding
+# fit/range/facet_by from hist2d/hexbin sigs makes them resolve as
+# profile-unique (their true owner) per spec intent.
+_OVERLAY_GUARD_PARAMS = {
+    "hist2d": {"fit"},                       # Phase 13.51 S-8 fit guard
+    "hexbin": {"range", "facet_by"},         # Phase 13.51 FIX1 + S-7 guards
+}
+
+
+def _overlay_kw(layer: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract kwargs from a layer dict, excluding the 'type' discriminator.
+
+    Phase 13.52 W-1 (v1.5): defined as a module-level helper, not a
+    comment-only placeholder — calling an undefined `_kw` inside overlay()
+    would NameError on first test run (the §10.7-class trap).
+    """
+    return {k: v for k, v in layer.items() if k != "type"}
+
+
+
+# =============================================================================
 # Phase 13.41.DF v1.6 — Multi-dimensional faceting helpers
 # =============================================================================
 # Convention LOCKED (matches numpy/pandas (n_rows, n_cols, ...) shape):
@@ -4419,6 +4474,44 @@ class DFDraw:
             else:
                 type = "scatter"
         
+        # Phase 13.52.DF: declarative overlay string-form trigger.
+        # If `type` is a string containing '+', desugar to layers=[...] and
+        # delegate to the overlay engine. Sequenced earliest so the existing
+        # _TYPE_ALIASES + dispatch ladder is short-circuited; engine guards
+        # (P1-A/P1-B/P2-2) fire before any draw happens on either surface.
+        # Reserved kwargs (ax, save) are passed through; everything else is
+        # routed to layers by _desugar_overlay per §1.4 routing policy.
+        if isinstance(type, str) and "+" in type:
+            _overlay_kw_in = dict(kwargs)
+            # Whole-plot + layer-shared params that may be named on draw()
+            # are NOT in kwargs (Python signature binding). Splice them in
+            # so the desugar router can resolve ownership uniformly.
+            # Only splice if non-default (don't fabricate user intent).
+            if selection is not None: _overlay_kw_in.setdefault('selection', selection)
+            if sample is not None: _overlay_kw_in.setdefault('sample', sample)
+            if bins is not None: _overlay_kw_in.setdefault('bins', bins)
+            if stats is not None: _overlay_kw_in.setdefault('stats', stats)
+            if title is not None: _overlay_kw_in.setdefault('title', title)
+            if fit is not None: _overlay_kw_in.setdefault('fit', fit)
+            if summary_fit is not None: _overlay_kw_in.setdefault('summary_fit', summary_fit)
+            if group_by is not None: _overlay_kw_in.setdefault('group_by', group_by)
+            # Faceting params: spliced so _desugar_overlay raises a clean
+            # ValueError (not silently dropped). Match _OVERLAY_NO_FACET set.
+            if facet_by is not None: _overlay_kw_in.setdefault('facet_by', facet_by)
+            if facet_by_bins is not None: _overlay_kw_in.setdefault('facet_by_bins', facet_by_bins)
+            if facet_by_quantiles is not None: _overlay_kw_in.setdefault('facet_by_quantiles', facet_by_quantiles)
+            if facet: _overlay_kw_in.setdefault('facet', facet)
+            # share_x/share_y/share_across_figures have non-None defaults
+            # ('all', 'all', True) — only splice if user changed them.
+            if share_x != 'all': _overlay_kw_in.setdefault('share_x', share_x)
+            if share_y != 'all': _overlay_kw_in.setdefault('share_y', share_y)
+            if share_across_figures is not True: _overlay_kw_in.setdefault('share_across_figures', share_across_figures)
+            return self.overlay(
+                expr,
+                self._desugar_overlay(type, **_overlay_kw_in),
+                ax=ax, save=save,
+            )
+
         # Dispatch to specific plot method
         # Phase 13.46.DF C-2: normalize ROOT-convention type aliases (e.g.
         # "histo" -> "hist") before the dispatch ladder.
@@ -6118,6 +6211,189 @@ class DFDraw:
                 "'scatter3d'. Use d.draw(expr, type=...) for other types."
             )
         return self.draw(expr, type='scatter3d', **kwargs)
+
+    # =========================================================================
+    # Phase 13.52.DF — Declarative Overlay Capability (v1.5 spec)
+    # =========================================================================
+
+    def overlay(
+        self,
+        expr: str,
+        layers: List[Dict[str, Any]],
+        *,
+        ax: Optional[Any] = None,
+        save: Optional[str] = None,
+    ) -> Tuple[Any, Any, Dict[str, Any]]:
+        """Compose multiple plot primitives onto one shared axes.
+
+        Phase 13.52.DF engine: one density base layer (hist2d / hexbin /
+        profile2d) plus optional overlay layers (profile / scatter) on the
+        same Axes. Shared x/y range locked post-draw; single colorbar from
+        the base; layer-level stats returned under stats['layers'].
+
+        Parameters
+        ----------
+        expr : str
+            Plot expression (e.g. ``"y:x"``). Used by every layer.
+        layers : list of dict
+            Per-layer config. Each dict has a ``'type'`` key (one of
+            ``'hist2d'``, ``'hexbin'``, ``'profile2d'``, ``'profile'``,
+            ``'scatter'``) plus any kwargs the typed method accepts.
+            ``layers[0]`` is the density base.
+        ax : matplotlib Axes, optional
+            Existing axes to render into. None creates a new figure.
+        save : str, optional
+            File path; if provided, ``fig.savefig(save)`` after all layers.
+
+        Returns
+        -------
+        (fig, ax, stats) : tuple
+            ``stats['layers']`` is a list of per-layer stats dicts.
+
+        Raises
+        ------
+        ValueError
+            Empty layers; non-method type token; >1 density layer;
+            non-density base; 3D layer (scatter3d); any
+            faceting/``share_*`` param on any layer (overlay uses one
+            shared axes; faceted overlay is Phase 13.53 scope).
+
+        Notes
+        -----
+        Sugar surface: ``d.draw("y:x", type="hist2d+profile", ...)``
+        desugars to ``layers=[...]`` via :meth:`_desugar_overlay` and
+        calls this engine. Both surfaces share the same guards.
+
+        Coordination (per spec §1.3):
+        1. Shared range: ``ax.set_xlim``/``set_ylim`` applied after each
+           layer (no primitive has ``x_range=`` on the public signature).
+        2. Single colorbar: the engine enforces exactly one density layer.
+        3. No faceting: rejected at engine entry on BOTH surfaces.
+
+        Examples
+        --------
+        >>> d.overlay("y:x", layers=[{"type":"hist2d","bins":40},
+        ...                          {"type":"profile","bins":15,"fit":"gauss"}])
+        """
+        # -------------------- Guards (hoisted; raise before any draw) -------
+        if not layers:
+            raise ValueError("overlay() requires a non-empty `layers` list")
+
+        for l in layers:
+            t = l.get("type")
+            # P1-A: real DFDraw method required, no AttributeError later.
+            if not (isinstance(t, str) and hasattr(self, t)):
+                raise ValueError(
+                    f"overlay: '{t}' is not a DFDraw method. Valid: hist2d, "
+                    "hexbin, profile2d, profile, scatter. ('quantiles'/"
+                    "'fit-line' are kwargs, not types.)"
+                )
+            # P1-B: faceting/share params reject at engine level, both surfaces.
+            # Faceted primitives return ndarray-of-axes; single-ax threading
+            # in this engine cannot consume that (Appendix C reproduction).
+            bad = _OVERLAY_NO_FACET & set(l)
+            if bad:
+                raise ValueError(
+                    f"overlay: faceting/share params {sorted(bad)} are not "
+                    "supported (overlay uses one shared axes). Faceted "
+                    "overlay is Phase 13.53."
+                )
+
+        density = [l["type"] for l in layers if l["type"] in _OVERLAY_DENSITY]
+        if len(density) > 1:
+            raise ValueError(
+                f"overlay: at most one density layer "
+                f"{sorted(_OVERLAY_DENSITY)}; got {density}."
+            )
+        # P2-2: base must be a density type (z-order + colorbar ownership).
+        if layers[0]["type"] not in _OVERLAY_DENSITY:
+            raise ValueError(
+                f"overlay: base layer must be a density type "
+                f"{sorted(_OVERLAY_DENSITY)}; got '{layers[0]['type']}'."
+            )
+        if any(l["type"] == "scatter3d" for l in layers):
+            raise ValueError(
+                "overlay: 3D layers are not supported (no shared 2D axes)."
+            )
+
+        # -------------------- Draw base, lock extent, draw overlays ---------
+        base = layers[0]
+        fig, ax, base_stats = getattr(self, base["type"])(
+            expr, ax=ax, **_overlay_kw(base)
+        )
+        xr, yr = ax.get_xlim(), ax.get_ylim()
+        stats = [base_stats]
+        for l in layers[1:]:
+            _, _, s = getattr(self, l["type"])(
+                expr, ax=ax, **_overlay_kw(l)
+            )
+            # Post-draw range lock — no primitive has a public x_range=/y_range=
+            # kwarg, so we synchronize via set_xlim/set_ylim after each layer.
+            ax.set_xlim(xr)
+            ax.set_ylim(yr)
+            stats.append(s)
+        if save:
+            fig.savefig(save)
+        return fig, ax, {"layers": stats}
+
+    def _desugar_overlay(
+        self, type_str: str, **kw: Any
+    ) -> List[Dict[str, Any]]:
+        """Convert ``"A+B"``-form to ``layers=[{'type':A,...}, {'type':B,...}]``.
+
+        Routing policy (spec §1.4):
+
+        - faceting/share params → ``ValueError`` (rejected; Phase 13.53 scope)
+        - whole-plot params (``selection``, ``sample``, ``nan_policy``,
+          ``selection_vector``, ``weights_vector``) → replicated to every layer
+        - layer-unique params (accepted by exactly one of the layer types) →
+          that layer
+        - shared layer-specific params (accepted by ≥2 layers) → base layer only
+        - params accepted by no layer → ``ValueError`` (use ``layers=[...]``)
+
+        The cheap string-form guards repeat what the engine also checks,
+        producing a clearer early message before signature inspection.
+        """
+        parts = type_str.split("+")
+        # P1-A early: validate every token before reading signatures.
+        for p in parts:
+            if not hasattr(self, p):
+                raise ValueError(
+                    f"overlay: '{p}' is not a DFDraw method. "
+                    "Valid: hist2d, hexbin, profile2d, profile, scatter."
+                )
+        sigs = {
+            p: (set(inspect.signature(getattr(self, p)).parameters)
+                - _OVERLAY_GUARD_PARAMS.get(p, set()))
+            for p in parts
+        }
+        layers: List[Dict[str, Any]] = [{"type": p} for p in parts]
+        for k, v in kw.items():
+            # P1-B: faceting/share rejected on string surface too (engine
+            # would also reject, but a clearer early message is helpful).
+            if k in _OVERLAY_NO_FACET:
+                raise ValueError(
+                    f"overlay string form: {k}= needs faceted overlay "
+                    "(Phase 13.53). Use layers=[...] when 13.53 lands."
+                )
+            owners = [i for i, p in enumerate(parts) if k in sigs[p]]
+            if not owners:
+                raise ValueError(
+                    f"overlay: {k}= not accepted by any of {parts}; "
+                    "use layers=[...]"
+                )
+            if k in _OVERLAY_WHOLE_PLOT:
+                # Whole-plot: replicate to every accepting layer.
+                for i in owners:
+                    layers[i][k] = v
+            elif len(owners) == 1:
+                # Unique to one layer → that layer owns it.
+                layers[owners[0]][k] = v
+            else:
+                # Shared, layer-specific → base layer only.
+                # Per-layer values require the layers=[...] form.
+                layers[0][k] = v
+        return layers
 
     def hist2d(
         self,

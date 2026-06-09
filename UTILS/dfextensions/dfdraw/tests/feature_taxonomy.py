@@ -1709,6 +1709,67 @@ FEATURES = [
             "test_phase_13_48_df_visual_testing.py::TestPhase1348VisualPrimitive::test_v10_title_content",
         ],
     },
+    # ── Phase 13.52.DF — Declarative Overlay Capability ──
+    {
+        "id": "OVERLAY.engine_layers_form",
+        "name": "overlay() engine with explicit layers=[...] (density base + overlays on one shared axes)",
+        "category": "OVERLAY",
+        "tests": [
+            "test_phase_13_52_df_overlay.py::test_T1_overlay_hist2d_profile_layers_form",
+            "test_phase_13_52_df_overlay.py::test_T1h_overlay_hexbin_profile_alternative_density_base",
+            "test_phase_13_52_df_overlay.py::test_T2_overlay_quantiles_kwarg_on_profile_layer",
+            "test_phase_13_52_df_overlay.py::test_T3_overlay_scatter_overlay_onto_hist2d",
+        ],
+    },
+    {
+        "id": "OVERLAY.string_sugar_desugar",
+        "name": "draw(type='A+B') string sugar desugars to overlay engine with §1.4 routing policy",
+        "category": "OVERLAY",
+        "tests": [
+            "test_phase_13_52_df_overlay.py::test_T_S1_string_sugar_equals_layers_form",
+            "test_phase_13_52_df_overlay.py::test_T_S2_string_routing_bins_to_base_fit_to_profile_negative_control",
+            "test_phase_13_52_df_overlay.py::test_T_S3_string_routing_selection_replicates_to_all_layers",
+        ],
+    },
+    {
+        "id": "OVERLAY.engine_guards",
+        "name": "engine ValueError guards (empty, non-method type, >1 density, non-density base, 3D) raise BEFORE any draw",
+        "category": "OVERLAY",
+        "tests": [
+            "test_phase_13_52_df_overlay.py::test_T_D1_overlay_two_density_layers_raises",
+            "test_phase_13_52_df_overlay.py::test_T_D2_overlay_3d_scatter3d_layer_raises",
+            "test_phase_13_52_df_overlay.py::test_T_D3_overlay_empty_layers_raises",
+            "test_phase_13_52_df_overlay.py::test_T_D4_overlay_non_method_type_token_raises",
+            "test_phase_13_52_df_overlay.py::test_T_S5b_string_non_density_base_raises",
+            "test_phase_13_52_df_overlay.py::test_T_S4_string_routing_unroutable_kwarg_raises",
+        ],
+    },
+    {
+        "id": "OVERLAY.faceting_rejected",
+        "name": "faceting/share_* params rejected at engine + sugar level (Phase 13.53 deferred)",
+        "category": "OVERLAY",
+        "tests": [
+            "test_phase_13_52_df_overlay.py::test_T_F_overlay_facet_by_on_layer_raises",
+            "test_phase_13_52_df_overlay.py::test_T_S5c_string_facet_by_kwarg_raises",
+        ],
+    },
+    {
+        "id": "OVERLAY.range_lock_zorder",
+        "name": "post-draw range lock holds after plt.draw(); base-before-overlay z-order",
+        "category": "OVERLAY",
+        "tests": [
+            "test_phase_13_52_df_overlay.py::test_T4_overlay_range_lock_after_plt_draw",
+            "test_phase_13_52_df_overlay.py::test_T5_overlay_z_order_base_before_overlay",
+        ],
+    },
+    {
+        "id": "OVERLAY.summary_fit_profile_layer",
+        "name": "summary_fit on profile overlay layer renders (Phase 13.51 + 13.52 interaction)",
+        "category": "OVERLAY",
+        "tests": [
+            "test_phase_13_52_df_overlay.py::test_T_S6_overlay_summary_fit_on_profile_layer_renders",
+        ],
+    },
     # ── Phase 13.49.DF — meta-tests for the capability matrix itself ──
     {
         "id": "META.capability_matrix",

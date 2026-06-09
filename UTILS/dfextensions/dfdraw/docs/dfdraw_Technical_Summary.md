@@ -927,6 +927,71 @@ adf.draw(
 
 *Decision rationale: AD-80 (reference convention locked), AD-81 (group_by + facet_by both in-scope from v1.0), AD-82 (pull mode with ±σ bands) in `ARCHITECT_DECISIONS.md`. Implementation: Phase 13.27 Commit 2 (selection/weights vectors) + Phase 13.33 (normalize modes).*
 
+### 1.18 Declarative Overlay — `type="A+B"` and `overlay(layers=[...])`
+
+Phase 13.52.DF introduces composition of multiple plot primitives onto a single shared Axes. Two surfaces, one engine:
+
+- **Sugar (ergonomic):** `adf.draw("y:x", type="hist2d+profile", bins=40, fit="gauss")` — a `+` in the `type` string desugars to layers and calls the engine.
+- **Configurable:** `d.overlay("y:x", layers=[{"type":"hist2d","bins":40}, {"type":"profile","bins":15,"fit":"gauss"}])` — full per-layer control.
+
+Both return `(fig, ax, {"layers": [stats_per_layer]})`. `stats["layers"][0]` is the base layer's stats; subsequent entries are overlays.
+
+**Valid compositions.** Density base (one of `hist2d`, `hexbin`, `profile2d`) plus zero or more overlays from `profile`, `scatter`. The base layer is `layers[0]` and owns the colorbar; the engine enforces exactly one density layer per composition.
+
+**Engine guards (clean `ValueError` BEFORE any draw, both surfaces):**
+1. empty `layers`
+2. non-method `type` token (e.g. `{"type":"quantiles"}` — that's a kwarg, not a type)
+3. >1 density layer (two colorbars not supported)
+4. non-density base layer (e.g. `"profile+hist2d"` — base must be a density type)
+5. 3D layer (`scatter3d`) — no shared 2D axes
+6. any faceting/`share_*` param on any layer — overlay composes onto one Axes; faceted overlay is Phase 13.53 scope
+
+**String kwarg routing (per spec §1.4).** When using the sugar form, kwargs are routed as follows:
+
+| Class | Examples | Routing |
+|---|---|---|
+| Layer-unique | `fit`→profile, `cmap`→hist2d | → owning layer |
+| Whole-plot | `selection`, `sample`, `nan_policy`, `selection_vector`, `weights_vector` | → replicated to every layer |
+| Shared, layer-specific | `bins`, `range`, `stats` | → base layer only |
+| Faceting / `share_*` | `facet_by`, `share_x`, etc. | → `ValueError` (Phase 13.53 scope) |
+| Not accepted by any layer | (typos, invented kwargs) | → `ValueError` with "use `layers=[...]`" hint |
+
+For per-overlay-layer control of shared params (e.g. different `bins` on hist2d vs profile), use the `layers=[...]` form directly.
+
+**`summary_fit` interaction with hist2d (Phase 13.51 cross-reference).** In the sugar form, `summary_fit=` routes to the hist2d base layer where it is a no-op without a corresponding `fit=`. Adding `fit=` to hist2d triggers Phase 13.51's S-8 guard (`hist2d() does not support fit= in Phase 13.51`). For a profile fit summary in a `hist2d+profile` composition, use the layers form: `layers=[..., {"type":"profile", "fit":"gauss", "summary_fit":"table"}]`.
+
+**Guard-only param handling (Phase 13.52 implementation finding).** Phase 13.51 added `fit=` (hist2d) and `range=`/`facet_by=` (hexbin) as guard-only signature entries to surface clean errors instead of cryptic matplotlib failures. Without special handling, signature-based ownership inference in the desugar would route `fit=` to the hist2d base, where the guard would fire instead of the user's intent reaching profile. The desugar excludes these guard-only params from ownership inference via a `_OVERLAY_GUARD_PARAMS` mapping in `drawer.py`, restoring the spec §1.4 promise "layer-unique `fit→profile`". This honors the routing-policy intent while preserving the original S-7/S-8 guards on the direct primitive call paths.
+
+**Range lock.** After the base layer renders, the engine captures `ax.get_xlim()` / `ax.get_ylim()` and re-applies them after every subsequent overlay layer. No primitive has a public `x_range=`/`y_range=` kwarg, so post-draw `set_xlim`/`set_ylim` is the synchronization mechanism. Holds after `plt.draw()` and `fig.canvas.draw()` (locked to `rtol=1e-6`).
+
+**Z-order.** Density base draws first → indexed before overlays in `ax.collections`. Matplotlib walks `ax.collections` in addition order, so overlay artists (profile errorbar, scatter points) render on top of the density mesh naturally.
+
+**Out of scope (Phase 13.53 candidates).** Faceted overlays (engine-rejected with a clear error message, not silently broken); density+density compositions; cross-layer legend synthesis; primitive signature changes; per-overlay-layer control of shared params via the string surface (use `layers=[...]`).
+
+**Examples:**
+
+```python
+# Sugar form — most common usage
+d.draw("y:x", type="hist2d+profile", bins=40, fit="gauss")
+
+# Sugar with whole-plot kwargs (selection applies to both layers)
+d.draw("y:x", type="hist2d+profile", selection="cut_pass", bins=40)
+
+# Layers form — per-layer binning
+d.overlay("y:x", layers=[
+    {"type": "hist2d", "bins": 40, "cmap": "viridis"},
+    {"type": "profile", "bins": 15, "fit": "gauss", "summary_fit": "table"},
+])
+
+# Hexbin alternative density base
+d.overlay("y:x", layers=[
+    {"type": "hexbin", "gridsize": 30},
+    {"type": "profile", "bins": 20},
+])
+```
+
+*Decision rationale: PHASE_13_52_OverlayProposal_v1_5.md (approved by Sonnet65 v1.4 panel, [!] 5/5 0 P1); Appendix C (faceting incompatibility reproduced by 3/5 v1.4 reviewers) drove engine-level rejection of faceting params on both surfaces. Implementation: Phase 13.52 (drawer.py engine + `_desugar_overlay` + sugar trigger; 19 invariance tests, 18 passing + 1 skip for profile2d-base shared-expr limitation).*
+
 ---
 ---
 ## 2. Fitting

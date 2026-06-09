@@ -1,7 +1,7 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-06-09 07:37 UTC
-**Phase:** PHASE_13_50_DF_FIX1_END
+**Generated:** 2026-06-09 09:46 UTC
+**Phase:** PHASE_13_51_DF_END
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
 
@@ -9,12 +9,12 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 59 | 46% |
-| ☑️ Smoke-only | 67 | 53% |
+| ✅ Verified | 59 | 44% |
+| ☑️ Smoke-only | 73 | 55% |
 | 🧨 Broken | 0 | 0% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **127** | |
-| **Total proof tests** | **611** | |
+| **Total features** | **133** | |
+| **Total proof tests** | **629** | |
 | **Invariance tests** | **356** | |
 | **Visual tests** | **27** | |
 
@@ -108,6 +108,13 @@
 | ✅ | **NORMALIZE.validation** — normalize input validation: wrong vector count, invalid mode, same=True conflict — Phase 13.33 M1 | 3 | 3 | 0 | 3 |  |
 | ✅ | **NORMALIZE.group_by_compose** — group_by + normalize: per-group differential rendering — Phase 13.33 M2 | 3 | 3 | 0 | 3 |  |
 | ✅ | **NORMALIZE.facet_by_compose** — facet_by + normalize: K x 2 grid with per-facet independent differential; facet_by_bins/_quantiles raises (NF.3 workaround-hint lock) — Phase 13.33 M2 + FIX1 | 3 | 3 | 0 | 3 |  |
+| | **OVERLAY** | | | | | |
+| ☑️ | **OVERLAY.engine_layers_form** — overlay() engine with explicit layers=[...] (density base + overlays on one shared axes) | 4 | 4 | 0 | 0 |  |
+| ☑️ | **OVERLAY.string_sugar_desugar** — draw(type='A+B') string sugar desugars to overlay engine with §1.4 routing policy | 3 | 3 | 0 | 0 |  |
+| ☑️ | **OVERLAY.engine_guards** — engine ValueError guards (empty, non-method type, >1 density, non-density base, 3D) raise BEFORE any draw | 6 | 6 | 0 | 0 |  |
+| ☑️ | **OVERLAY.faceting_rejected** — faceting/share_* params rejected at engine + sugar level (Phase 13.53 deferred) | 2 | 2 | 0 | 0 |  |
+| ☑️ | **OVERLAY.range_lock_zorder** — post-draw range lock holds after plt.draw(); base-before-overlay z-order | 2 | 2 | 0 | 0 |  |
+| ☑️ | **OVERLAY.summary_fit_profile_layer** — summary_fit on profile overlay layer renders (Phase 13.51 + 13.52 interaction) | 1 | 1 | 0 | 0 |  |
 | | **PLOT** | | | | | |
 | ☑️ | **PLOT.histogram** — 1D histogram | 2 | 2 | 0 | 0 |  |
 | ☑️ | **PLOT.scatter** — Scatter plot | 1 | 1 | 0 | 0 |  |
@@ -187,9 +194,9 @@
 | ☑️ | **VISUAL.facet_grid** — facet grid shape + shared-axis consistency (figure-derived) 👁 | 2 | 2 | 0 | 0 | 2 |
 | ☑️ | **VISUAL.title** — suptitle populated, not duplicated per-cell (C-3); content (I-4) 👁 | 2 | 2 | 0 | 0 | 2 |
 
-## Unmatched Tests (471)
+## Unmatched Tests (472)
 
-471 tests pytest collected that no feature claims.
+472 tests pytest collected that no feature claims.
 Grouped by test-file prefix.
 
 <details><summary><code>test_adf_integration.py</code> (14)</summary>
@@ -571,6 +578,12 @@ Grouped by test-file prefix.
 - `test_phase_13_51_post_audit.py::test_T9a_profile2d_central_median_mesh_differs_from_mean`
 - `test_phase_13_51_post_audit.py::test_T9b_profile_1d_central_median_line_differs_from_mean`
 - `test_phase_13_51_post_audit.py::test_T9c_profile_fit_central_median_fit_center_differs`
+
+</details>
+
+<details><summary><code>test_phase_13_52_df_overlay.py</code> (1)</summary>
+
+- `test_phase_13_52_df_overlay.py::test_T1p_overlay_profile2d_profile_alternative_density_base`
 
 </details>
 
