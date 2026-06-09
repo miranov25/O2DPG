@@ -1,8 +1,8 @@
 # dfdraw Technical Summary
 
-**Library version:** HEAD `07606c02` (Phase 13.50.DF FIX2)
-**Library scope:** 1,057 tests passing · 1 xfailed · 1 skipped · 127 features · 356 invariance tests · 59 Verified · 27 visual-primitive tests *(these are library-level test counts; production use cases — ALICE TPC calibration, ITS/TRD alignment, multiplicity calculation, time-series QA — have separate validation layers built on top)*
-**Date:** 2026-06-05
+**Library version:** HEAD `9a950c7b` (Phase 13.52.DF v1.5.1)
+**Library scope:** 1,101 tests passing · 1 xfailed · 2 skipped · 133 features · 356 invariance tests · 59 Verified · 27 visual-primitive tests *(these are library-level test counts; production use cases — ALICE TPC calibration, ITS/TRD alignment, multiplicity calculation, time-series QA — have separate validation layers built on top)*
+**Date:** 2026-06-09
 **Audience:** Users and integrators of the dfdraw + AliasDataFrame + GBregression analysis stack — including ADF/GB team members, architects, developers, and downstream consumers of dfdraw output (per-bin stats, fit results) in calibration, QA, and broader scientific-DataFrame visualization workflows
 **Purpose:** Conceptual reference for dfdraw — the *what* and *why*. For *how to start*, see `dfdraw_README.md` (user guide). For *how to call exactly*, see `API_REFERENCE.md` (complete API reference; rename to `dfdraw_api_summary.md` pending). For comparison with other visualization stacks, see `dfdraw_PLOTTING_LIBRARY_COMPARISON.md`. Companion documents: `PHASE_HISTORY.md` (chronological log), `CAPABILITY_MATRIX.md` (feature inventory), `ARCHITECT_DECISIONS.md` (decision registry). The ADF and GB technical summaries are at `../../AliasDataFrame/docs/` and `../../groupby_regression/docs/` respectively.
 
@@ -716,7 +716,7 @@ d.profile("[dy_new, dy_ref]:row", normalize="delta",
 
 > **Read this twice.** The convention is locked by AD-80 — `vector[0]` is the signal, `vector[1]` is the reference. Production sign-violation locks are in `tests/test_normalize.py §9.NSC.1`.
 
-**Style keys:** `normalize.pull_band_1sigma_alpha`, `normalize.pull_band_2sigma_alpha`, `normalize.reference_line_color`, `normalize.reference_line_style`.
+**Style keys:** `normalize.pull.band_1sigma_alpha`, `normalize.pull.band_2sigma_alpha`, `normalize.panel.ref_line_color`, `normalize.panel.ref_line_style`. *(Phase 13.51 Batch 1 item 12: dot-notation keys replace underscore form.)*
 
 *Decision rationale: AD-80 (reference convention), AD-81 (group_by + facet_by both in-scope from v1.0), AD-82 (pull mode with ±σ bands) — all in `ARCHITECT_DECISIONS.md`.*
 
@@ -889,7 +889,7 @@ adf.draw("[dy_new, dy_old]:row",
          normalize="pull")
 ```
 
-**Style keys** (Phase 13.33): `normalize.pull_band_1sigma_alpha`, `normalize.pull_band_2sigma_alpha`, `normalize.reference_line_color`, `normalize.reference_line_style`.
+**Style keys** (Phase 13.33): `normalize.pull.band_1sigma_alpha`, `normalize.pull.band_2sigma_alpha`, `normalize.panel.ref_line_color`, `normalize.panel.ref_line_style`. *(Phase 13.51 Batch 1 item 12: dot-notation keys replace underscore form.)*
 
 #### 1.17.4 Subframe-qualified vector form (ADF subframe merges)
 

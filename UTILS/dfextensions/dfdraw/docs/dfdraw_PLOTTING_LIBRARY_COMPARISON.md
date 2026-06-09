@@ -1,12 +1,12 @@
 # dfdraw + ADF + GB Stack — Plotting Library Comparison
 
-**Version:** 2.1 (Phase TS_v6 cycle — major restructure + cross-team panel-fix pass)
-**Date:** 2026-06-06
+**Version:** 2.2 (Phase 13.52.DF — baseline bump + overlay capability note)
+**Date:** 2026-06-09
 **Original:** 2026-01-29 (Phase 13.6.G.DF, v1.0 — Claude2-dfdraw)
 **Refresh history:** 2026-04-09 (Phase 13.17.DF, v1.2 — Claude40)
-**Authors:** Claude2-dfdraw (original) · Claude40 (v1.2 refresh) · Opus2 (v2.0 restructure) · Opus1 (v2.0 architect-pass + v2.1 cross-team-panel-fix pass)
+**Authors:** Claude2-dfdraw (original) · Claude40 (v1.2 refresh) · Opus2 (v2.0 restructure) · Opus1 (v2.0 architect-pass + v2.1 cross-team-panel-fix pass) · Sonnet65 (v2.2 baseline bump)
 **Purpose:** Position the **dfdraw + AliasDataFrame + GBregression stack** within the Python and HEP visualization landscape, aligned with `dfdraw_Technical_Summary.md` v6.3 stack identity.
-**Source baseline:** HEAD `07606c02` (Phase 13.50.DF FIX2)
+**Source baseline:** HEAD `9a950c7b` (Phase 13.52.DF v1.5.1)
 
 ---
 
@@ -118,6 +118,7 @@ This is the architectural fact every comparison in this document must account fo
 | Profile plots | `tree->Draw("y:x", "", "prof")` | `drawer.draw("y:x", type="profile")` | ✅ Preserved |
 | 2D histograms | `tree->Draw("y:x", "", "colz")` | `drawer.draw("y:x", type="hist2d")` | ✅ Preserved |
 | Same-axes overlay | `"same"` option | `same=True` (Phase 13.13) | ✅ Match |
+| Density + profile overlay | Manual two-call composition | `draw("y:x", type="hist2d+profile", bins=40)` or `overlay(layers=[...])` (Phase 13.52) | ✅ New — declarative single-call |
 | Multi-series from list | `Draw("y1:x"); Draw("y2:x","","same")` loop | `drawer.draw("[y1,y2,y3]:x")` (Phase 13.16) | ✅ Single-call vector — **better** |
 | Population std | `ddof=0` | `ddof=0` (Phase 13.6.G.DF) | ✅ ROOT-compatible |
 | Range-aware stats | Within range only | `range=` (Phase 13.6.G.DF) | ✅ Match |
@@ -560,7 +561,7 @@ The channel framework (Algorithm A, `EXPLICIT_RULES`, `channels.cycles.*`) is th
 
 | Category | Status | Details |
 |---|---|---|
-| Plot types | ✅ Complete | 9 types: hist, scatter, profile, hist2d, hexbin, profile2d, scatter3d, cumulative hist, time-axis variants |
+| Plot types | ✅ Complete | 9 types: hist, scatter, profile, hist2d, hexbin, profile2d, scatter3d, cumulative hist, time-axis variants; **plus declarative overlay compositions** `type="hist2d+profile"` etc. (Phase 13.52) |
 | Statistics | ✅ Complete | ROOT-parity + robust + range-aware + structured return |
 | Composition | ✅ Complete | Channel framework Algorithm A; 6-axis grammar |
 | Differential ops | ✅ Complete | `selection_vector=`, `weights_vector=`, `normalize=delta/ratio/pull` |
@@ -643,3 +644,4 @@ ALICE: TPC calibration QA, ITS/TRD alignment, multiplicity, time-series QA, and 
 | 1.2 | 2026-04-09 | Phase 13.17.DF refresh — added Phase 13.12–13.16 capabilities (auto-title, `same=True`, `draw_batch`, vector expressions, AD-37 fix); backend abstraction marked as not-pursued | Claude40 |
 | **2.0** | **2026-06-06** | **Major restructure — Phase TS_v6 cycle.** Aligned with TS v6.3 stack identity (dfdraw + ADF + GB integrated framework). Added: §2 Stack Identity, §5 ggplot2 + broom + lme4 comparison, §6 grammar-layer comparison (Vega-Altair, Plotly Express, HoloViews, Polars + Altair), §7 HEP ecosystem comparison (Scikit-HEP, coffea), §9 worked examples (side-by-side code for 3 patterns), §10 expanded capability matrix through Phase 13.50, §11 architectural-history note on the wrapper layer that was not built, §12 feature parity checklist through Phase 13.50, §14 current roadmap. RootInteractive §8 preserved per architect. References expanded (Scikit-HEP, Polars + Altair, R tidyverse). Pre-commit panel review (7 reviewers) and architect review applied four fixes: (F1) §13 production-users line — specific numeric quantifications of convergence, improvement factors, pipeline timing, iteration counts, and fit/group counts deferred per architect 2026-06-06 — consistent with the same conservatism applied in TS v6.3 (only the ×2.4 σ(pT)/pT degradation is officially confirmed at this time); (F2) §7 removed unverifiable Scikit-HEP date claim; (F3) §10 capability matrix corrected mplhep time-axis cell to `manual` (mplhep adds no time-axis API of its own); (F4) §7 corrected the framing of hierarchical HEP data — ADF + dfdraw handles event-level hierarchical data (V0 → track → collision → calibration) through subframe registration with index-based foreign-key joins, equivalent in capability to awkward's nested-array abstraction; physics analysis added to §13 production-users line as a primary use case alongside calibration QA; "Event-level data" and "Distributed processing" rows in §7 comparison table revised to reflect ADF's subframe hierarchy rather than implying flat-pandas-only. | Opus2 (restructure) + Opus1 (panel-fix pass: F1, F2, F3, F4) |
 | **2.1** | **2026-06-06** | **Cross-team panel-fix pass — 4 P1 source-verified fixes.** Cross-team panel review (8 reviewers: Sonnet54/55/56/57/58/59 + Sonnet1/ADF + Claude11/Arch) returned [X] CHANGES REQUESTED with 4 P1 runtime-breaking errors found by deep grep + source verification against `drawer.py` / `_summary_fit.py` / `_autorange.py`. All four are mechanical fixes preventing runtime errors for readers who copy-paste code examples: (P1-A) `summary_fit=True` → `summary_fit='table'` — `summary_fit=True` raises `ValueError` per `_summary_fit.py:230-237` (accepted types are `str | list | dict | None`); fixed in §4 table, §5 ggplot2 comparison, §12 checklist. (P1-B) `range_x=`, `range_y=` → `range=` — phantom kwargs that raise `TypeError`; public kwarg is `range=`; fixed in §4 "Range-aware stats" row. (P1-C) `legend_stats_fields=[...]` → `stats=True` or `stats=["mean","std","n"]` — phantom kwarg that raises `TypeError`; public kwarg is `stats=`; fixed in §4 "Statistics box" row. (P1-D) §10 capability matrix and §12 checklist: Robust hybrid autorange attributed to Phase 13.36 corrected to Phase 13.28 (per `_autorange.py:2`, confirmed by Sonnet57/58/59 grep verification). No structural changes; document content preserved. P2 items deferred to v2.2 / future iteration (8 items including "9 types" → "8 types", faceting phase labels, 3-level dot chain confirmation, Example B column-name consistency). | Opus1 (cross-team-panel-fix pass: P1-A, P1-B, P1-C, P1-D) |
+| **2.2** | **2026-06-09** | **Baseline bump to Phase 13.52.DF v1.5.1.** Source baseline updated from `07606c02` (Phase 13.50) to `9a950c7b` (Phase 13.52.DF v1.5.1). Added declarative overlay capability (`type="hist2d+profile"` sugar + `overlay(layers=[...])` engine, Phase 13.52) to §3 TTree comparison table and §12 feature checklist. TS version header counts updated. | Sonnet65 (baseline bump) |
