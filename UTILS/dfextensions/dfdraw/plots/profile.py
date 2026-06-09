@@ -875,8 +875,12 @@ def draw_profile(
                         )
         else:
             # No quantiles — standard profile rendering (existing behavior)
+            # Phase 13.51 §1.2.5 V-3 (audit S-2): use _central_values not bin_means.
+            # _central_values is set at line 728: equals _bin_medians when
+            # central='median', else bin_means. Before this fix, the
+            # central='median' setting was silently ignored at the rendering site.
             ax.errorbar(
-                bin_centers[plot_mask], bin_means[plot_mask],
+                bin_centers[plot_mask], _central_values[plot_mask],
                 yerr=bin_errors[plot_mask],
                 fmt=marker, color=color, markersize=markersize,
                 capsize=capsize, linestyle=linestyle, linewidth=linewidth,
@@ -904,7 +908,13 @@ def draw_profile(
         if fit is not None:
             curve = {
                 'x_data':    bin_centers[plot_mask],
-                'y_data':    bin_means[plot_mask],
+                # Phase 13.51 §1.2.5 P1-B (audit S-2 fit-path twin of V-3):
+                # the fit must consume the same data the rendered line shows.
+                # Before this fix, fit always used bin_means, so
+                # central='median'+fit='gauss' fit Gaussian to mean while
+                # rendering median line. _central_values = bin_means when
+                # central != 'median', so this is identity for default path.
+                'y_data':    _central_values[plot_mask],
                 'yerr_data': bin_errors[plot_mask],
                 'color':     color,
                 'label':     label,

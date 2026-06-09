@@ -1172,6 +1172,9 @@ def draw_hist2d(
     stat_fields: Optional[Union[str, List[str]]] = None,
     # Phase 13.28.DF: NaN/inf filter policy (AD-70)
     nan_policy: str = "filter",
+    # Phase 13.51 §1.3 (audit S-8, I-1): time_format applied to x-axis after
+    # render, mirroring draw_hist() pattern at lines 842-851.
+    time_format: Optional[str] = None,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -1241,19 +1244,46 @@ def draw_hist2d(
         fig = ax.get_figure()
     
     # Get data
+    # Phase 13.51 §1.3 (T14 fix): datetime64 pre-conversion BEFORE float cast.
+    # When time_format is set and the source column is datetime64, the prior
+    # `.astype(float)` cast produced int64 nanoseconds-since-epoch (~4.999e12
+    # for a 5000-second range), which matplotlib later tried to interpret as
+    # ordinal days in num2date during tight_layout → OverflowError. Mirror
+    # draw_hist at histogram.py:440-453: convert datetime64 via mdates.date2num
+    # so ax.hist2d sees values in the same numeric space DateFormatter consumes.
+    _need_date_convert = time_format is not None
+    if _need_date_convert:
+        import matplotlib.dates as mdates
+
     if isinstance(x, str):
         x_name = x
-        x_data = df[x].values.astype(float)
+        _x_raw = df[x].values
+        if _need_date_convert and np.issubdtype(_x_raw.dtype, np.datetime64):
+            x_data = mdates.date2num(_x_raw)
+        else:
+            x_data = _x_raw.astype(float)
     else:
         x_name = "x"
-        x_data = np.asarray(x, dtype=float)
-    
+        _x_raw = np.asarray(x)
+        if _need_date_convert and np.issubdtype(_x_raw.dtype, np.datetime64):
+            x_data = mdates.date2num(_x_raw)
+        else:
+            x_data = _x_raw.astype(float)
+
     if isinstance(y, str):
         y_name = y
-        y_data = df[y].values.astype(float)
+        _y_raw = df[y].values
+        if _need_date_convert and np.issubdtype(_y_raw.dtype, np.datetime64):
+            y_data = mdates.date2num(_y_raw)
+        else:
+            y_data = _y_raw.astype(float)
     else:
         y_name = "y"
-        y_data = np.asarray(y, dtype=float)
+        _y_raw = np.asarray(y)
+        if _need_date_convert and np.issubdtype(_y_raw.dtype, np.datetime64):
+            y_data = mdates.date2num(_y_raw)
+        else:
+            y_data = _y_raw.astype(float)
     
     # Phase 13.28.DF: NaN/inf sanitization (AD-69, AD-70)
     x_data, y_data, _sanitize_stats = sanitize_for_plot(
@@ -1337,7 +1367,18 @@ def draw_hist2d(
         _add_stats_box_2d(ax, stats_dict, stats if isinstance(stats, list) else None)
     elif isinstance(stats, list):
         _add_stats_box_2d(ax, stats_dict, stats)
-    
+
+    # Phase 13.51 §1.3 (audit S-8, I-1): apply time_format formatter after
+    # render, mirroring draw_hist() pattern at lines 842-851.
+    if time_format is not None:
+        import matplotlib.dates as mdates
+        if time_format == "auto":
+            locator = mdates.AutoDateLocator()
+            ax.xaxis.set_major_locator(locator)
+            ax.xaxis.set_major_formatter(mdates.AutoDateFormatter(locator))
+        else:
+            ax.xaxis.set_major_formatter(mdates.DateFormatter(time_format))
+
     if not _suppress_layout:
         plt.tight_layout()
     return fig, ax, stats_dict

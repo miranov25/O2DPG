@@ -1,7 +1,7 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-06-03 10:07 UTC
-**Phase:** PHASE_13_50_DF_END
+**Generated:** 2026-06-09 06:07 UTC
+**Phase:** PHASE_13_50_DF_FIX1_END
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
 
@@ -187,9 +187,9 @@
 | ☑️ | **VISUAL.facet_grid** — facet grid shape + shared-axis consistency (figure-derived) 👁 | 2 | 2 | 0 | 0 | 2 |
 | ☑️ | **VISUAL.title** — suptitle populated, not duplicated per-cell (C-3); content (I-4) 👁 | 2 | 2 | 0 | 0 | 2 |
 
-## Unmatched Tests (448)
+## Unmatched Tests (469)
 
-448 tests pytest collected that no feature claims.
+469 tests pytest collected that no feature claims.
 Grouped by test-file prefix.
 
 <details><summary><code>test_adf_integration.py</code> (14)</summary>
@@ -543,6 +543,32 @@ Grouped by test-file prefix.
 - `test_phase_13_36_df_user_style_override.py::TestUserStyleOverride::test_SO4_default_cycle_preserved`
 - `test_phase_13_36_df_user_style_override.py::TestUserStyleOverride::test_SO5_bug013_same_true_marker_overlay`
 - `test_phase_13_36_df_user_style_override.py::TestVectorPathForwarding::test_VF1_marker_via_vector_expression`
+
+</details>
+
+<details><summary><code>test_phase_13_51_post_audit.py</code> (21)</summary>
+
+- `test_phase_13_51_post_audit.py::test_T10a_hist_datetime64_no_crash_scalarformatter_sentinel`
+- `test_phase_13_51_post_audit.py::test_T10b_compute_autorange_datetime64_robust_3mad`
+- `test_phase_13_51_post_audit.py::test_T10c_compute_autorange_datetime64_percentile_99`
+- `test_phase_13_51_post_audit.py::test_T11_profile2d_wrapper_alias_for_profile`
+- `test_phase_13_51_post_audit.py::test_T12_scatter3d_wrapper_and_type_collision_guard`
+- `test_phase_13_51_post_audit.py::test_T13_draw_type_hexbin_dispatches_correctly`
+- `test_phase_13_51_post_audit.py::test_T14_hist2d_time_format_auto_date_tick_labels`
+- `test_phase_13_51_post_audit.py::test_T15_hist2d_fit_raises_clean_value_error`
+- `test_phase_13_51_post_audit.py::test_T16_hexbin_range_raises_clean_value_error`
+- `test_phase_13_51_post_audit.py::test_T17_hexbin_facet_by_raises_clean_value_error`
+- `test_phase_13_51_post_audit.py::test_T1_draw_type_profile_normalize_delta_yields_two_axes`
+- `test_phase_13_51_post_audit.py::test_T2_draw_type_profile_facet_by_sec_populated_panels`
+- `test_phase_13_51_post_audit.py::test_T3_draw_type_profile_selection_vector_matches_direct`
+- `test_phase_13_51_post_audit.py::test_T4_draw_type_hist_facet_by_sec_populated_panels`
+- `test_phase_13_51_post_audit.py::test_T5_draw_type_hist_selection_vector_matches_direct`
+- `test_phase_13_51_post_audit.py::test_T6_draw_type_scatter_facet_by_sec_populated_panels`
+- `test_phase_13_51_post_audit.py::test_T7_draw_type_scatter_time_format_auto_dateformatter`
+- `test_phase_13_51_post_audit.py::test_T8_draw_type_hist2d_facet_by_sec_populated_panels`
+- `test_phase_13_51_post_audit.py::test_T9a_profile2d_central_median_mesh_differs_from_mean`
+- `test_phase_13_51_post_audit.py::test_T9b_profile_1d_central_median_line_differs_from_mean`
+- `test_phase_13_51_post_audit.py::test_T9c_profile_fit_central_median_fit_center_differs`
 
 </details>
 

@@ -161,6 +161,14 @@ def compute_autorange(
             f"strategy must be one of {VALID_STRATEGIES}, got {strategy!r}"
         )
 
+    # Phase 13.51 §1.2.3 (audit S-4 V-2): datetime64 guard at single entry
+    # covers all 5 strategy paths. np.median/np.percentile/data.min on
+    # datetime64 arrays return timedelta64 which float() cannot convert.
+    # Mirror the pattern at plots/profile.py:453-468 used in non-faceted path.
+    data = np.asarray(data)
+    if np.issubdtype(data.dtype, np.datetime64):
+        data = data.astype('datetime64[s]').astype(np.int64).astype(float)
+
     if strategy == "minmax":
         return _minmax_autorange(data)
 

@@ -1261,9 +1261,13 @@ class DFDraw:
         # profile-only and intentionally NOT in this tuple — auto-forwarding
         # them would leak the kwargs to hist/scatter dispatch paths (and
         # bomb on matplotlib's `ax.hist(**kwargs)` since Polygon doesn't
-        # accept normalize_layout). They remain in the draw() signature
-        # for users routing via d.draw(type='profile', normalize='delta'),
-        # and reach profile() via **kwargs in the routing dispatch.
+        # accept normalize_layout).
+        # Phase 13.51 §1.2.4 (audit S-3 correction): the prior comment claimed
+        # these reach profile() via **kwargs. That was wrong — named params on
+        # draw() are bound by Python and NEVER appear in **kwargs. They are
+        # explicitly forwarded by each branch in the scalar dispatch ladder
+        # (R-2 pattern, extended in Phase 13.51 to all 4 branches: profile,
+        # hist, scatter, hist2d at drawer.py:4429/4441/4453/4459).
     )
 
     # Private kwargs that _draw_vector injects into iter_kwargs to suppress
@@ -4436,6 +4440,22 @@ class DFDraw:
                 summary_fit=summary_fit,
                 # Phase 13.50 step 4: explicit forwarding (R-2 pattern)
                 legend=legend, show_legend=show_legend,
+                # Phase 13.51 R-2 extension (audit S-3): forward Phase 13.27-13.41 named params
+                facet_by=facet_by, facet_by_bins=facet_by_bins,
+                facet_by_quantiles=facet_by_quantiles,
+                share_x=share_x, share_y=share_y,
+                share_across_figures=share_across_figures,
+                selection_vector=selection_vector,
+                weights_vector=weights_vector,
+                selection_labels=selection_labels,
+                weights_labels=weights_labels,
+                selection_categorical=selection_categorical,
+                weights_categorical=weights_categorical,
+                vector_compose=vector_compose,
+                delta_facet=delta_facet,
+                nan_policy=nan_policy,
+                # NOTE: time_format, cumulative are NOT in draw() signature;
+                # they reach hist() via **kwargs naturally. central also via **kwargs.
                 **kwargs
             )
         elif type == "scatter":
@@ -4448,13 +4468,36 @@ class DFDraw:
                 summary_fit=summary_fit,
                 # Phase 13.50 step 4: explicit forwarding (R-2 pattern)
                 legend=legend, show_legend=show_legend,
+                # Phase 13.51 R-2 extension (audit S-3): forward Phase 13.27-13.41 named params
+                facet_by=facet_by, facet_by_bins=facet_by_bins,
+                facet_by_quantiles=facet_by_quantiles,
+                share_x=share_x, share_y=share_y,
+                share_across_figures=share_across_figures,
+                selection_vector=selection_vector,
+                weights_vector=weights_vector,
+                selection_labels=selection_labels,
+                weights_labels=weights_labels,
+                selection_categorical=selection_categorical,
+                weights_categorical=weights_categorical,
+                vector_compose=vector_compose,
+                delta_facet=delta_facet,
+                nan_policy=nan_policy,
+                # NOTE: time_format reaches scatter() via **kwargs (not in draw() signature)
                 **kwargs
             )
         elif type == "hist2d":
             return self.hist2d(
                 expr, selection=selection, bins=bins, stats=stats,
                 title=title, ax=ax, sample=sample, save=save,
-                same=same, **kwargs
+                same=same,
+                # Phase 13.51 R-2 extension (audit S-3 + F-5): forward named params
+                summary_fit=summary_fit,
+                facet_by=facet_by, facet_by_bins=facet_by_bins,
+                facet_by_quantiles=facet_by_quantiles,
+                share_x=share_x, share_y=share_y,
+                share_across_figures=share_across_figures,
+                nan_policy=nan_policy,
+                **kwargs
             )
         elif type == "profile":
             return self.profile(
@@ -4465,12 +4508,47 @@ class DFDraw:
                 summary_fit=summary_fit,
                 # Phase 13.50 step 4: explicit forwarding (R-2 pattern)
                 legend=legend, show_legend=show_legend,
+                # Phase 13.51 R-2 extension (audit S-3): forward Phase 13.27-13.41 named params
+                normalize=normalize, normalize_layout=normalize_layout,
+                facet_by=facet_by, facet_by_bins=facet_by_bins,
+                facet_by_quantiles=facet_by_quantiles,
+                share_x=share_x, share_y=share_y,
+                share_across_figures=share_across_figures,
+                selection_vector=selection_vector,
+                weights_vector=weights_vector,
+                selection_labels=selection_labels,
+                weights_labels=weights_labels,
+                selection_categorical=selection_categorical,
+                weights_categorical=weights_categorical,
+                vector_compose=vector_compose,
+                delta_facet=delta_facet,
+                nan_policy=nan_policy,
+                # NOTE: central reaches profile() via **kwargs (not in draw() signature)
                 **kwargs
+            )
+        elif type == "hexbin":
+            # Phase 13.51 §1.3 (audit S-11): hexbin in scalar dispatch.
+            # Filtered kwargs pattern (mirrors scatter3d _sc3d_kwargs at line ~4327).
+            # Intentionally drops named params absent from hexbin: facet_by,
+            # facet_by_bins, normalize, fit, summary_fit, etc. — these are
+            # Batch 4 S-7 scope (full hexbin modifier parity). Drop is silent
+            # at this dispatch; hexbin()'s own guards raise clean ValueError
+            # for the modifier subset users will most commonly try.
+            _hexbin_allowed = {
+                'gridsize', 'cmap', 'vmin', 'vmax', 'colorbar', 'clabel',
+                'mincnt', 'reduce_C_function', 'C', 'extent', 'edgecolors',
+                'linewidths', 'norm',
+            }
+            _hexbin_kwargs = {k: v for k, v in kwargs.items() if k in _hexbin_allowed}
+            return self.hexbin(
+                expr, selection=selection,
+                title=title, ax=ax, sample=sample, save=save, same=same,
+                **_hexbin_kwargs,
             )
         else:
             raise ValueError(
                 f"Unknown plot type '{type}'. "
-                "Expected: scatter, hist, hist2d, profile, scatter3d"
+                "Expected: scatter, hist, hist2d, profile, scatter3d, hexbin"
             )
     
     # =========================================================================
@@ -5458,11 +5536,21 @@ class DFDraw:
             _profile2d_kwargs = {k: v for k, v in kwargs.items() if k in _allowed}
             # min_entries_2d is via kwargs (separate from 1D min_entries semantics)
             _min_entries_2d = kwargs.get('min_entries_2d', 0)
+            # Phase 13.51 §1.2.2 (audit S-2 F-1): central is a named param
+            # of profile() so it was consumed by Python binding and never
+            # appeared in **kwargs. The _allowed filter at line 5511 was dead
+            # code for this param. Forward only when non-None to preserve
+            # draw_profile2d's default ('mean'); None would crash scipy
+            # binned_statistic_2d which requires a string statistic.
+            _p2d_extra = {}
+            if central is not None:
+                _p2d_extra['central'] = central
             return draw_profile2d(
                 _df_2d, z_part, y_part, x_part,
                 ax=ax, bins=bins if bins is not None else 50,
                 bins2=bins2, min_entries=_min_entries_2d,
                 time_format=time_format,
+                **_p2d_extra,
                 **_profile2d_kwargs,
             )
         # =====================================================================
@@ -5965,7 +6053,54 @@ class DFDraw:
         # returns None for "no override", in which case applier no-ops.
         _apply_legend_mode(fig, _normalize_legend_spec(legend, show_legend))
         return fig, axes, stats_dict
-    
+
+    # =========================================================================
+    # Phase 13.51 §1.3 (audit S-5): first-class wrapper methods for symmetry
+    # with hist2d/scatter — peer primitives all have top-level methods.
+    # =========================================================================
+
+    def profile2d(self, expr: str, **kwargs):
+        """Alias for `profile()` with a 3-colon expression (2D heatmap profile).
+
+        Equivalent to ``self.profile(expr, **kwargs)`` when ``expr`` is
+        ``"z:y:x"``. Added in Phase 13.51 for method-surface symmetry with
+        ``hist2d``, ``hexbin``, ``scatter``, etc. (audit finding S-5).
+
+        Examples
+        --------
+        >>> d.profile2d("z:y:x")              # 2D profile of <z> in (x,y) bins
+        >>> d.profile2d("z:y:x", central='median')
+        >>> d.profile2d("z:y:x", x_range=(0,10), y_range=(0,10), bins=50)
+        """
+        return self.profile(expr, **kwargs)
+
+    def scatter3d(self, expr: str, **kwargs):
+        """Alias for ``draw(type='scatter3d')``.
+
+        Added in Phase 13.51 for method-surface symmetry (audit finding S-5).
+
+        Notes
+        -----
+        Phase 13.51 V-4 guard: passing ``type=`` as a keyword raises
+        ``ValueError`` if it is not None or 'scatter3d', preventing the
+        silent intent mismatch ``d.scatter3d('z:y:x', type='profile')``.
+
+        Examples
+        --------
+        >>> d.scatter3d("z:y:x")
+        >>> d.scatter3d("z:y:x", color='sector')
+        """
+        # Phase 13.51 V-4: explicit collision guard, not silent pop.
+        # If caller passes type='scatter3d' explicitly, allow it (no-op).
+        # If caller passes any other type, raise to surface the intent error.
+        _user_type = kwargs.pop('type', None)
+        if _user_type is not None and _user_type != 'scatter3d':
+            raise ValueError(
+                f"scatter3d() received type={_user_type!r}; expected None or "
+                "'scatter3d'. Use d.draw(expr, type=...) for other types."
+            )
+        return self.draw(expr, type='scatter3d', **kwargs)
+
     def hist2d(
         self,
         expr: str,
@@ -6018,6 +6153,15 @@ class DFDraw:
         # _HIST2D_FORWARDED_NAMES (would leak through to ax.hist2d() and
         # raise an unexpected-kwarg error).
         summary_fit: Optional[Union[str, List[str], Dict]] = None,
+        # Phase 13.51 §1.3 (audit S-8 I-1): time_format= for hist2d
+        # — forwarded to draw_hist2d() which applies the DateFormatter
+        # in post-render mirroring draw_hist() pattern.
+        time_format: Optional[str] = None,
+        # Phase 13.51 §1.3 (audit S-8 fit-guard): hist2d does not support
+        # inline fit overlays in this phase. A future Batch 4 phase may
+        # add it. Raise a clean ValueError instead of leaking matplotlib's
+        # `QuadMesh.set() got unexpected keyword argument 'fit'`.
+        fit: Optional[Any] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -6080,6 +6224,19 @@ class DFDraw:
         """
         from .plots.histogram import draw_hist2d
         
+        # Phase 13.51 §1.3 (audit S-8 fit-guard): hist2d does not support
+        # inline fit overlays in this phase. Convert the previously-cryptic
+        # matplotlib error (`QuadMesh.set() got unexpected keyword argument
+        # 'fit'`) into a clean ValueError with workaround guidance.
+        if fit is not None:
+            raise ValueError(
+                "hist2d() does not support fit= in Phase 13.51. "
+                "Fit overlays on 2D density are tracked as audit finding "
+                "S-8 for Batch 4. Workaround: use d.profile('z:y:x', fit=...) "
+                "if you want a fit on per-cell aggregates, or compute the "
+                "fit externally and add it as a contour."
+            )
+
         # Parse expression
         y_expr, x_expr = self._parse_expr(expr)
         
@@ -6199,6 +6356,8 @@ class DFDraw:
                 stat_fields=stat_fields,
                 # Phase 13.28.DF: NaN/inf filter policy
                 nan_policy=nan_policy,
+                # Phase 13.51 §1.3 (audit S-8 I-1)
+                time_format=time_format,
                 **kwargs
             )
             axes = ax
@@ -6243,6 +6402,12 @@ class DFDraw:
         auto_title: Union[bool, str] = False,
         # Phase 13.13.DF: same=True (AD-15)
         same: bool = False,
+        # Phase 13.51 §1.3 (audit S-7 guards): hexbin does not yet support
+        # range=/facet_by= in this phase. Convert previously-cryptic
+        # matplotlib errors (`PolyCollection.set() got unexpected keyword
+        # argument 'facet_by'`) into clean ValueErrors with workaround.
+        range: Optional[Any] = None,
+        facet_by: Optional[Any] = None,
         **kwargs
     ) -> DrawResult:
         """
@@ -6310,6 +6475,22 @@ class DFDraw:
         """
         from .plots.histogram import draw_hexbin
         
+        # Phase 13.51 §1.3 (audit S-7 guards): hexbin does not support
+        # range=/facet_by= in this phase. Tracked as audit finding S-7 for
+        # Batch 4 (full hexbin modifier parity).
+        if facet_by is not None:
+            raise ValueError(
+                "hexbin() does not support facet_by= in Phase 13.51. "
+                "Use hist2d() or profile('z:y:x') for faceted 2D rendering. "
+                "Tracked as audit finding S-7 for Batch 4."
+            )
+        if range is not None:
+            raise ValueError(
+                "hexbin() does not accept range=; use extent=(xlo,xhi,ylo,yhi) instead. "
+                "(hexbin grammar; range= harmonization tracked as audit finding S-7 "
+                "for Batch 4.)"
+            )
+
         # Parse expression
         y_expr, x_expr = self._parse_expr(expr)
         

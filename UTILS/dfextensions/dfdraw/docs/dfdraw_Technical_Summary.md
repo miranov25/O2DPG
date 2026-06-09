@@ -479,6 +479,8 @@ d.profile("y:x", quantiles=[0.16, 0.84], central='median')
 - `central: Optional[str]` — `'mean'` (default), `'median'`, `'both'`, `'none'`
 - `quantile_mode: str = "auto"` — `'auto'` dispatches via `_detect_quantile_mode()`; explicit override available with `'discrete'`, `'band'`, `'error_bars'`, `'nested_band'`
 
+> **Phase 13.51 update (audit S-2):** `central='median'` now correctly renders the median line for the non-grouped 1D and 2D profile paths (fixes at `profile.py:879` for the rendering site and `:907` for the inline-fit `y_data`, plus explicit forwarding to `draw_profile2d` for the 2D path). The grouped path (`group_by=`) does NOT yet support `central='median'` — `profile.py:1347`/`:1359` still use hardcoded `bin_means` and the per-group `_central_values` is not computed; tracked as `KNOWN.grouped_central_median` for Batch 4 / a future phase. Previously these silent-no-op cases ignored `central='median'` entirely; behavior change is `[ADDITIVE]` because no documented correct caller existed (all callers passing `central='median'` were getting silently-wrong mean).
+
 **Stats dict keys when quantiles set:** `q_lower_per_bin`, `q_upper_per_bin`, `quantiles_per_bin` (per mode).
 
 **Style keys (4):** `quantile.band.alpha`, `quantile.band.hatch`, `quantile.error_bars.capsize`, `quantile.central_default`.
@@ -824,6 +826,8 @@ The `"auto"` format selects an appropriate matplotlib `DateFormatter` based on t
 
 **Current scope and planned extension.** Source verification at HEAD `07606c02` confirms `time_format=` applies the formatter to **the x-axis only** (`ax.xaxis.set_major_formatter`, `histogram.py:847`, `profile.py:961`). Symmetric y-axis time formatting is a planned extension — see the ADF/dfdraw interface roadmap; until shipped, y-axis time data must be pre-formatted before passing to dfdraw or rendered as ordinary numeric. *Decision rationale: AD-2/13.39.DF in `ARCHITECT_DECISIONS.md`.*
 
+> **Phase 13.51 update (audit S-4):** the datetime64 + faceted dispatch crash at `_autorange.py:67` is fixed in this phase. The guard now lives at `compute_autorange()` entry and covers all 5 autorange strategies (`hybrid`, `robust_3mad`, `robust_4mad`, `percentile_99`, `percentile_95`, `minmax`). Full per-panel `DateFormatter` application in faceted layouts remains audit finding S-4 and is scheduled for Batch 4 / a future phase. `hist2d` gains `time_format=` symmetry in this phase (audit S-8 + I-1), bringing it to parity with `hist`/`scatter`/`profile`.
+
 
 ---
 
@@ -919,7 +923,7 @@ adf.draw(
 
 #### 1.17.6 Stats output
 
-`stats['normalize_mode']` records the mode used; per-bin numerator and denominator values are preserved under `stats['vector_data']` for downstream consumption. For GB regression workflows that consume differential outputs, see §5.4.
+`stats['normalize_mode']` records the mode used; per-bin numerator and denominator values are preserved under `stats['normalize_data']` for downstream consumption (Phase 13.51 Batch 1 item 8: key is 'normalize_data', not 'vector_data'). For GB regression workflows that consume differential outputs, see §5.4.
 
 *Decision rationale: AD-80 (reference convention locked), AD-81 (group_by + facet_by both in-scope from v1.0), AD-82 (pull mode with ±σ bands) in `ARCHITECT_DECISIONS.md`. Implementation: Phase 13.27 Commit 2 (selection/weights vectors) + Phase 13.33 (normalize modes).*
 
@@ -976,12 +980,12 @@ Highest priority first:
 
 ```python
 # (1) Explicit initial values
-d.profile("y:x", fit={"name": "gauss", "initial": {"mu": 0.5, "sigma": 0.1}})
+d.profile("y:x", fit={"fun": "gauss", "initial": {"mu": 0.5, "sigma": 0.1}})
 
 # (2) Custom guess callable
 def my_guess(x, y):
     return {"A": y.max(), "mu": x[y.argmax()], "sigma": 0.1}
-d.profile("y:x", fit={"name": "gauss", "guess": my_guess})
+d.profile("y:x", fit={"fun": "gauss", "guess": my_guess})
 
 # (3) Default heuristic — no initial values needed for registry functions
 d.profile("y:x", fit="gauss")
@@ -1025,7 +1029,7 @@ Three placement modes:
 # (figure) — separate Figure object, useful for non-faceted calls
 fig, ax, stats = d.profile("y:x", group_by="sec", fit="gauss",
                            summary_fit="figure")
-# stats['summary_fit']['figures'] is a list of matplotlib.Figure objects
+# stats['summary_fit']['figure'] is the matplotlib.Figure object (Phase 13.51 Batch 1 item 6: key is 'figure' singular, value is a Figure or list depending on summary_fit mode)
 
 # (subfigure) — per-panel inset on faceted calls
 # Each facet panel gets an inset showing ONLY that panel's fits (per-panel slices,
@@ -1159,12 +1163,12 @@ stats = {
 
 ### 3.2 In-Plot Statistics Display
 
-The `stats_fields=` and `legend_stats_fields=` kwargs control which per-bin or per-curve statistics render directly on the plot (in the legend or as inline annotations). Available on `profile()` and `hist()`:
+The `stats_fields=` and `stats=` kwargs control which per-bin or per-curve statistics render directly on the plot (in the legend or as inline annotations). Available on `profile()` and `hist()`. (Phase 13.51 Batch 1 item 5: legend_stats_fields= is NOT a valid kwarg; use stats=.)
 
 ```python
 # Show mean and std in the legend for each group
 d.profile("y:x", group_by="sec",
-          legend_stats_fields=["mean", "std"])
+          stats=["mean", "std"])  # Phase 13.51 Batch 1 item 5
 
 # Per-bin median + MAD on the profile
 d.profile("y:x", stat_fields=["median", "mad"])
@@ -1806,7 +1810,7 @@ list_styles() -> list    # List available styles
 
 ### 6.1.3 Statistics Functions
 
-In-plot statistics are surfaced via the `stat_fields=` and `legend_stats_fields=` parameters on `profile()` and `hist()` calls themselves — there is no separate post-hoc helper. See §3.2 (In-Plot Statistics Display) for usage.
+In-plot statistics are surfaced via the `stat_fields=` and `stats=` parameters on `profile()` and `hist()` calls themselves — there is no separate post-hoc helper. See §3.2 (In-Plot Statistics Display) for usage.
 
 For programmatic access to the same numeric values, consume the `stats` dict returned by every draw call — see §3.1.
 
@@ -1851,7 +1855,7 @@ Dispatch dict: `{'all': True, 'row': 'row', 'col': 'col', 'none': False}` — sy
 ```python
 # Inline fit on profile / hist / scatter
 d.profile("y:x", fit="gauss")                        # str — predefined registry
-d.profile("y:x", fit={"name": "gauss",               # dict — full spec
+d.profile("y:x", fit={"fun":  "gauss",               # dict — full spec (Phase 13.51 Batch 1 item 4: key is "fun" not "name")
                       "range": (0, 5),
                       "initial": {"mu": 0, "sigma": 1}})
 d.profile("y:x", fit=my_callable)                    # callable — custom fit fn
