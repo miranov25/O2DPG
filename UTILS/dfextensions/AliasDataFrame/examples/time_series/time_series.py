@@ -27,14 +27,13 @@ import re
 #from __future__ import annotations
 import os
 import sys
-import matplotlib.pyplot as plt
 import pandas as pd
 import uproot
 import numpy as np
 from matplotlib.ticker import FuncFormatter
 from datetime import datetime
 
-from torch.ao.quantization.backend_config.onednn import linear_configs
+
 
 from dfextensions.AliasDataFrame import AliasDataFrame
 from dfextensions.groupby_regression.groupby_regression_sliding_window import (make_sliding_window_fit,)
@@ -42,8 +41,10 @@ from dfextensions.groupby_regression import make_parallel_fit_v4
 import matplotlib
 from perfmonitor import PerformanceLogger
 from dfextensions.dfdraw import set_style
-logger = PerformanceLogger("perf_log.txt")
+from matplotlib.backends.backend_pdf import PdfPages
 
+logger = PerformanceLogger("perf_log.txt")
+time_fmt = FuncFormatter(lambda x, _: datetime.utcfromtimestamp(x).strftime('%H:%M'))
 
 def _is_interactive():
     try:
@@ -702,7 +703,7 @@ def drawTestBugRepoduce(adfVertex,adf):
     for subplot_ax in fig.axes:
         subplot_ax.xaxis.set_major_formatter(time_fmt)
     fig.tight_layout(); plt.draw()
-    # 2. Ratio: early vs late in run - ratio is exactly 1 - looks like bug
+    # 2. Ratio: early vs late in run - ratio is close to 1 -most probable no change in 2 time intervals
     fig, ax, stats = adf.draw(
         "dcar_tpc_vertex:sector",
         selection="(ncl>60)&(abs(dcar_tpc_vertex)<10)&(hasITSTPC)",
@@ -748,14 +749,15 @@ def my_snippet():
     #
     # make delta parameterrization per files
     #
-
-
-
     """
     adfVertex.draw("vertex_x_intercept:vC.vertex_x_intercept_decomp")
     """
     time_fmt = FuncFormatter(lambda x, _: datetime.utcfromtimestamp(x).strftime('%H:%M'))
     logger.log("Step1 my_snippet: read tree")
+    return adf
+
+def drawTimeSeries(adf):
+    time_fmt = FuncFormatter(lambda x, _: datetime.utcfromtimestamp(x).strftime('%H:%M'))
     #
     # 1.) Example draw time series by sector, with cuts and grouping
     #
@@ -784,18 +786,47 @@ def my_snippet():
                                 group_by_bins=2, quantiles=[0.1,0.5, 0.9], facet_by="time_s",facet_by_bins=9, min_entries=200)
 
 
-def drawNcl(adf):
-    adf.draw("ncl:tgl", selection="(abs(qpt)<2.5)&(abs(tgl)<0.8)", type="profile", min_entries=100, auto_title=True,
-             quantiles=[0.1, 0.2, 0.3, 0.5, 0.7, 0.8, 0.9], quantile_mode='discrete')
-    adf.draw("ncl:tgl", selection="(abs(qpt)<2.5)&(abs(tgl)<0.8)", type="profile", min_entries=100, auto_title=True,
-             quantiles=[0.1, 0.2, 0.3, 0.5, 0.7, 0.8, 0.9], facet_by="vertex_z", facet_by_bin=9, quantile_mode='discrete')
+def drawNclExampleFacet(adf,pdf=None):
+    """NCL vs tgl, basic + vertex_z faceted."""
 
-def drawFitExample(adf):
-    set_style({'fit.text_fontsize_facet': 4})
+    """
+    example profile plot  - trobleshooting ncl dependence of tgl distribution  -tracks crossing CE
+    """
+    fig,_,_ = adf.draw("ncl:tgl", selection="(abs(qpt)<2.5)&(abs(tgl)<0.8)", type="profile", min_entries=100, auto_title=True,
+             quantiles=[0.1, 0.2, 0.3, 0.5, 0.7, 0.8, 0.9], quantile_mode='discrete')
+    if pdf is not None: pdf.savefig(fig, bbox_inches='tight');  plt.close(fig)
+    """
+    Draw as function of vertex_z to check if the ncl vs tgl dependence is related to tracks crossing the CE (vertex_z~0) and if the effect is symmetric in z.
+    """
+    fig,_,_ =adf.draw("ncl:tgl", selection="(abs(qpt)<2.5)&(abs(tgl)<1.4)&(abs(vertex_z)<12)", type="profile", min_entries=50, auto_title=True,bins=100,
+             quantiles=[0.1, 0.2, 0.3, 0.5, 0.7, 0.8, 0.9], facet_by="vertex_z", facet_by_bins=9, quantile_mode='discrete')
+    if pdf is not None: pdf.savefig(fig, bbox_inches='tight');  plt.close(fig)
+
+
+def drawFitExample(adf,pdf):
+    # run and save figures as an example figure
+    set_style({'fit.text_fontsize_facet': 6})
     # Linear fit qpt bias
     fig, ax, stats = adf.draw( "deltaPar4:qpt_ITSTPC", selection="(ncl>60)&(abs(dcar_tpc_vertex)<10)&(hasITSTPC)&(abs(qpt)<2)&abs(tgl)<1.4",
         type="profile", bins=80, group_by="tgl", group_by_quantiles=3, facet_by="dsector", facet_by_bins=9,auto_title=True, min_entries=20, range=(-4,4),fit="linear")
+    if pdf is not None: pdf.savefig(fig, bbox_inches='tight');  plt.close(fig)
     #
+    # Gaussian fit ncl distribution good far from edges
+    fig, ax, stats=adf.draw( "ncl", selection="(ncl>60)&(abs(dcar_tpc_vertex)<10)&(hasITSTPC)&(abs(qpt)<2)&abs(tgl)<1.4",
+              type="hist", bins=92, group_by="abs(tgl)", group_by_quantiles=6, facet_by="dsector", facet_by_bins=9,auto_title=True, min_entries=20, range=(60,152) ,fit="gaus")
+    if pdf is not None: pdf.savefig(fig, bbox_inches='tight');  plt.close(fig)
 
-    adf.draw( "ncl", selection="(ncl>60)&(abs(dcar_tpc_vertex)<10)&(hasITSTPC)&(abs(qpt)<2)&abs(tgl)<1.4",
-              type="histo", bins=80, group_by="abs(tgl)", group_by_quantiles=6, facet_by="dsector", facet_by_bins=9,auto_title=True, min_entries=20, range=(60,152),fit="gaus")
+
+def makePlots(output_path="time_series_plots.pdf"):
+    pdf=PdfPages(output_path)
+    adf=my_snippet()
+    #drawTimeSeries(adf)
+    drawNclExampleFacet(adf,pdf)
+    drawFitExample(adf,pdf)
+    pdf.close()
+
+#
+# make plots if args[0] == "plot":
+
+if __name__ == "__main__":
+    makePlots()
