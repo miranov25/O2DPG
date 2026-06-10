@@ -1,7 +1,7 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-06-10 07:43 UTC
-**Phase:** PHASE_13_52_DF_END
+**Generated:** 2026-06-10 10:21 UTC
+**Phase:** PHASE_13_54_DF_END
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
 
@@ -9,14 +9,14 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 59 | 41% |
-| ☑️ Smoke-only | 85 | 59% |
+| ✅ Verified | 64 | 44% |
+| ☑️ Smoke-only | 80 | 55% |
 | 🧨 Broken | 0 | 0% |
 | 📋 Planned | 1 | 1% |
 | **Total features** | **145** | |
 | **Total proof tests** | **650** | |
-| **Invariance tests** | **356** | |
-| **Visual tests** | **27** | |
+| **Invariance tests** | **363** | |
+| **Visual tests** | **32** | |
 
 **Status key:**
 - ✅ Verified — has at least one passing invariance test (A ≡ B check)
@@ -41,7 +41,7 @@
 | ☑️ | **AUTORANGE.minmax** — Minmax autorange strategy (backward compat preset) | 2 | 2 | 0 | 0 |  |
 | ☑️ | **AUTORANGE.percentile** — Percentile autorange strategies (percentile_99, percentile_95) | 1 | 1 | 0 | 0 |  |
 | ☑️ | **AUTORANGE.diagnostics** — Stats keys autorange_used + autorange_strategy (AD-77) | 1 | 1 | 0 | 0 |  |
-| ☑️ | **AUTORANGE.datetime64_guard** — compute_autorange() handles datetime64 input across robust_3mad / percentile_99 (and by symmetry all 5) strategies without crashing (Phase 13.51 V-2 guard at _autorange.py entry) | 2 | 2 | 0 | 0 |  |
+| ✅ | **AUTORANGE.datetime64_guard** — compute_autorange() handles datetime64 input across robust_3mad / percentile_99 (and by symmetry all 5) strategies without crashing (Phase 13.51 V-2 guard at _autorange.py entry) | 2 | 2 | 0 | 2 |  |
 | | **BATCH** | | | | | |
 | ☑️ | **BATCH.dict_format** — draw_batch dict format (original) | 5 | 5 | 0 | 0 |  |
 | ✅ | **BATCH.group_format** — draw_batch group format with defaults hierarchy | 6 | 6 | 0 | 1 |  |
@@ -71,7 +71,7 @@
 | ☑️ | **DATA.counters** — Stats dict counters: n_input, n_filtered, n_inf_*, n_nan_* | 5 | 5 | 0 | 0 |  |
 | ✅ | **HIST.weights** — hist() weights= column or expression — Phase 13.27 Commit 2 FIX1 | 5 | 5 | 0 | 5 |  |
 | | **DRAW** | | | | | |
-| ☑️ | **DRAW.R2_forwarding** — draw() scalar dispatch forwards Phase 13.27–13.41 named params (selection_vector, weights_vector, share_*, facet_by, etc.) to all 4 typed methods — A≡B with direct calls | 2 | 2 | 0 | 0 |  |
+| ✅ | **DRAW.R2_forwarding** — draw() scalar dispatch forwards Phase 13.27–13.41 named params (selection_vector, weights_vector, share_*, facet_by, etc.) to all 4 typed methods — A≡B with direct calls | 2 | 2 | 0 | 2 |  |
 | | **FACET** | | | | | |
 | ☑️ | **FACET.grid** — Facet subplot grids (group_by + facet=True) | 1 | 1 | 0 | 0 |  |
 | ✅ | **FACET.column_mode** — facet_by accepts DataFrame column name (AD-78) — Phase 13.31 | 12 | 12 | 0 | 12 |  |
@@ -136,10 +136,10 @@
 | ☑️ | **PROFILE_HIST.linestyle_cycle** — linestyle_cycle=True cycles per-group linestyles from channels.cycles.linestyle on profile() and hist(); user-explicit linestyle= wins via _ud_user_linestyle sentinel (extends Phase 13.36 Edit 17 pattern) — Phase 13.37.DF | 5 | 5 | 0 | 0 |  |
 | ✅ | **PROFILE.profile2d** — profile('z:y:x') → 2D mean heatmap via scipy.stats.binned_statistic_2d + ax.pcolormesh. Supports bins=[nx,ny] or bins=nx+bins2=ny, min_entries_2d=N masking, norm='log', colorbar+clabel. Dispatch in DFDraw.profile() at colon_count==2 (CP1-5: after _apply_selection/_apply_sampling, before _parse_expr). z/y/x accept column names or df.eval() expressions. Backward compat: 'y:x' (colon_count==1) unchanged — Phase 13.39.DF | 9 | 9 | 0 | 9 |  |
 | ✅ | **PROFILE.time_axis** — profile() time_format= pre-conversion: x_data converted to matplotlib date numbers via mdates.date2num() before binning. CP1-4 auto-detect: datetime64 column dtype detected BEFORE astype(float) (else int64-nanosecond cast becomes ~1.7e15 → pd.to_datetime crashes 'year out of range'). DateFormatter / AutoDateFormatter applied post-render — Phase 13.39.DF | 5 | 5 | 0 | 5 |  |
-| ☑️ | **PROFILE.central_median_1d** — profile() central='median' renders the median line on the 1D non-grouped path (Phase 13.51 V-3 fix at profile.py:879; bin_means → _central_values) | 1 | 1 | 0 | 0 |  |
-| ☑️ | **PROFILE.central_median_fit** — profile() central='median', fit=… — fit center reflects median data, not mean (Phase 13.51 P1-B fix at profile.py:907 fit curve _central_values) | 1 | 1 | 0 | 0 |  |
+| ✅ | **PROFILE.central_median_1d** — profile() central='median' renders the median line on the 1D non-grouped path (Phase 13.51 V-3 fix at profile.py:879; bin_means → _central_values) | 1 | 1 | 0 | 1 |  |
+| ✅ | **PROFILE.central_median_fit** — profile() central='median', fit=… — fit center reflects median data, not mean (Phase 13.51 P1-B fix at profile.py:907 fit curve _central_values) | 1 | 1 | 0 | 1 |  |
 | | **PROFILE2D** | | | | | |
-| ☑️ | **PROFILE2D.central_median_mesh** — profile2d() central='median' produces a mesh that differs from mean (Phase 13.51 R-2: conditional central= forward into draw_profile2d) | 1 | 1 | 0 | 0 |  |
+| ✅ | **PROFILE2D.central_median_mesh** — profile2d() central='median' produces a mesh that differs from mean (Phase 13.51 R-2: conditional central= forward into draw_profile2d) | 1 | 1 | 0 | 1 |  |
 | | **PYARROW** | | | | | |
 | ✅ | **PYARROW.input** — PyArrow Table input support | 7 | 7 | 0 | 5 |  |
 | | **QUANTILE** | | | | | |
@@ -203,11 +203,11 @@
 | ☑️ | **VISUAL.color_distinct** — per-group colors distinct — color-cycle not reset (AD-37 class) 👁 | 2 | 2 | 0 | 0 | 2 |
 | ☑️ | **VISUAL.facet_grid** — facet grid shape + shared-axis consistency (figure-derived) 👁 | 2 | 2 | 0 | 0 | 2 |
 | ☑️ | **VISUAL.title** — suptitle populated, not duplicated per-cell (C-3); content (I-4) 👁 | 2 | 2 | 0 | 0 | 2 |
-| ☑️ | **VISUAL.facet_r2_profile** — draw(type='profile', facet_by=) populates every panel — R-2 forwarding visual check | 1 | 1 | 0 | 0 |  |
-| ☑️ | **VISUAL.facet_r2_hist** — draw(type='hist', facet_by=) populates every panel — R-2 forwarding visual check | 1 | 1 | 0 | 0 |  |
-| ☑️ | **VISUAL.facet_r2_scatter** — draw(type='scatter', facet_by=) populates every panel — R-2 forwarding visual check | 1 | 1 | 0 | 0 |  |
-| ☑️ | **VISUAL.facet_r2_hist2d** — draw(type='hist2d', facet_by=) populates every panel — R-2 forwarding visual check (Phase 13.51 S-3 closure) | 1 | 1 | 0 | 0 |  |
-| ☑️ | **VISUAL.hist2d_datetime_labels** — hist2d() time_format='auto' renders readable date tick labels on the appropriate axis (Phase 13.51 S-8 symmetry with hist/scatter/profile) | 1 | 1 | 0 | 0 |  |
+| ☑️ | **VISUAL.facet_r2_profile** — draw(type='profile', facet_by=) populates every panel — R-2 forwarding visual check 👁 | 1 | 1 | 0 | 0 | 1 |
+| ☑️ | **VISUAL.facet_r2_hist** — draw(type='hist', facet_by=) populates every panel — R-2 forwarding visual check 👁 | 1 | 1 | 0 | 0 | 1 |
+| ☑️ | **VISUAL.facet_r2_scatter** — draw(type='scatter', facet_by=) populates every panel — R-2 forwarding visual check 👁 | 1 | 1 | 0 | 0 | 1 |
+| ☑️ | **VISUAL.facet_r2_hist2d** — draw(type='hist2d', facet_by=) populates every panel — R-2 forwarding visual check (Phase 13.51 S-3 closure) 👁 | 1 | 1 | 0 | 0 | 1 |
+| ☑️ | **VISUAL.hist2d_datetime_labels** — hist2d() time_format='auto' renders readable date tick labels on the appropriate axis (Phase 13.51 S-8 symmetry with hist/scatter/profile) 👁 | 1 | 1 | 0 | 0 | 1 |
 
 ## Unmatched Tests (460)
 

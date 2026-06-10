@@ -510,5 +510,44 @@ TEST_LAYERS = {
     "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitOrientation::test_F14_orientation_row_default_unchanged": "visual_primitive",
     "test_phase_13_50_df_fit_visual.py::TestPhase1350SummaryFitOrientation::test_F15_orientation_column_transposes_shape": "visual_primitive",
 
+    # ── Phase 13.51.DF — Post-audit fix-pass tests (gate-4 closure) ──
+    # 12 of the 23 tests in test_phase_13_51_post_audit.py are classified
+    # here so the matching feature_taxonomy.py entries (registered in
+    # commit 8f6f93f8, Phase 13.52 distribution prep) land in the right
+    # capability layer. The remaining 11 (T1, T7, T10a, T11, T12, T13,
+    # T15, T16/16b, T17/17b) are smoke / no-crash regressions and stay
+    # at the default "smoke" classification.
+    #
+    # Without this block, the 5 Phase 13.51 feature claims (DRAW.R2_forwarding,
+    # PROFILE.central_median_1d, PROFILE2D.central_median_mesh,
+    # PROFILE.central_median_fit, AUTORANGE.datetime64_guard) were
+    # classified Smoke-only, leaving CAPABILITY_MATRIX gate 4
+    # (Verified >=64) open at 59. With this block, Verified moves to 64
+    # and gate 4 closes. ADF reviewer pre-distribution finding.
+    #
+    # Invariance class (A == B / explicit-value assertions):
+    # T3/T5 use "matches_direct" — vector path equals direct call.
+    # T9a/T9b/T9c assert central='median' produces DIFFERENT artefacts
+    # from the mean path (negative-equivalence check on data values).
+    # T10b/T10c assert datetime64 input yields a finite (xmin, xmax)
+    # tuple across two distinct autorange strategies.
+    "test_phase_13_51_post_audit.py::test_T3_draw_type_profile_selection_vector_matches_direct": "invariance",
+    "test_phase_13_51_post_audit.py::test_T5_draw_type_hist_selection_vector_matches_direct": "invariance",
+    "test_phase_13_51_post_audit.py::test_T9a_profile2d_central_median_mesh_differs_from_mean": "invariance",
+    "test_phase_13_51_post_audit.py::test_T9b_profile_1d_central_median_line_differs_from_mean": "invariance",
+    "test_phase_13_51_post_audit.py::test_T9c_profile_fit_central_median_fit_center_differs": "invariance",
+    "test_phase_13_51_post_audit.py::test_T10b_compute_autorange_datetime64_robust_3mad": "invariance",
+    "test_phase_13_51_post_audit.py::test_T10c_compute_autorange_datetime64_percentile_99": "invariance",
+    #
+    # Visual primitive class (renderer-free figure-state checks):
+    # T2/T4/T6/T8 inspect populated panels via ax.collections / ax.lines
+    # / ax.patches per faceted cell (R-2 forwarding visual check).
+    # T14 inspects hist2d's tick label text for date-formatted output.
+    "test_phase_13_51_post_audit.py::test_T2_draw_type_profile_facet_by_sec_populated_panels": "visual_primitive",
+    "test_phase_13_51_post_audit.py::test_T4_draw_type_hist_facet_by_sec_populated_panels": "visual_primitive",
+    "test_phase_13_51_post_audit.py::test_T6_draw_type_scatter_facet_by_sec_populated_panels": "visual_primitive",
+    "test_phase_13_51_post_audit.py::test_T8_draw_type_hist2d_facet_by_sec_populated_panels": "visual_primitive",
+    "test_phase_13_51_post_audit.py::test_T14_hist2d_time_format_auto_date_tick_labels": "visual_primitive",
+
     # Everything else defaults to "smoke"
 }
