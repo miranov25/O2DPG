@@ -11119,13 +11119,44 @@ function collapseDepth(maxD) {{
         except Exception as e:
             raise ValueError(f"Failed to evaluate alias '{alias_name}': {e}")
 
+    @staticmethod
+    def _top_level_colon_count(expr: str) -> int:
+        """Count ':' separators at bracket depth 0 (PHASE_13_55_ADF).
+
+        Used by the dispatch pre-resolution to detect 3-variable
+        expressions (``'z:y:x'`` → 2) without miscounting vector
+        expressions (``'[a, b]:x'`` → 1) or function calls
+        (``'f(a, b):x'`` → 1).
+        """
+        depth = 0
+        count = 0
+        for ch in expr:
+            if ch in '([{':
+                depth += 1
+            elif ch in ')]}':
+                depth -= 1
+            elif ch == ':' and depth == 0:
+                count += 1
+        return count
+
     def _resolve_plot_type(self, expr: str, type_hint: str) -> str:
         """
-        Resolve plot method name from expression and type hint.
-        
+        Resolve the ADF 'auto' sentinel to a concrete plot type.
+
+        .. note::
+            **Scope narrowed in PHASE_13_55_ADF.** This helper now serves
+            two purposes only: (1) resolving ``type='auto'`` before routing
+            through ``DFDraw.draw()`` (1 expression part → ``'hist'``, else
+            ``'scatter'``); (2) ``adf.draw_help()`` introspection. It is
+            NOT the dispatch authority for explicit types — that is
+            ``DFDraw.draw()`` (see ``drawer.py:_TYPE_ALIASES`` and the
+            ``'+'`` overlay sugar trigger). Type lists in this docstring
+            may drift behind ``DFDraw`` — do not rely on them as a complete
+            enumeration of dispatchable types.
+
         Args:
             expr: Plot expression
-            type_hint: 'auto', 'hist', 'scatter', 'profile', 'hist2d', 'hexbin'
+            type_hint: 'auto' or any type accepted by DFDraw.draw()
         
         Returns:
             Method name string
@@ -11414,12 +11445,25 @@ function collapseDepth(maxD) {{
         # Attach self for duck-typed axis title lookup
         plotter._data_source = self
         
-        # Determine plot method
-        method_name = self._resolve_plot_type(expr, type)
-        plot_func = getattr(plotter, method_name)
-        
-        # Call plot
-        result = plot_func(expr, **kwargs)
+        # PHASE_13_55_ADF (AD-1/13.55.ADF): route through DFDraw.draw() so
+        # ADF picks up _TYPE_ALIASES normalization, overlay '+' sugar, and
+        # any future dispatch additions automatically (A-1/A-3 closure).
+        # Pre-resolve the ADF 'auto' sentinel: 'auto' is an ADF convention;
+        # DFDraw.draw()'s auto token is None (A-8 — the literal string
+        # 'auto' would hit the unknown-plot-type ValueError).
+        if type == 'auto':
+            type = self._resolve_plot_type(expr, type)
+        elif type == 'profile' and self._top_level_colon_count(expr) == 2:
+            # PHASE_13_55_ADF post-gallery fix (fig08 regression): the typed
+            # method DFDraw.profile() promotes 3-variable expressions to
+            # profile2d, but DFDraw.draw(type='profile') does not (its early
+            # dispatch fires only for type='profile2d'). Preserve the
+            # pre-13.55 ADF contract by promoting before routing.
+            # Cross-team finding F-E: dfdraw draw()/draw_batch lack this
+            # promotion natively (their 13.55.DF batch routing has the same
+            # gap); remove this shim when dfdraw extends its early dispatch.
+            type = 'profile2d'
+        result = plotter.draw(expr, type=type, **kwargs)
         
         # Cleanup if requested (only when no entry selection)
         if cleanup_needed:
@@ -12204,7 +12248,7 @@ function collapseDepth(maxD) {{
                    *,
                    clear_after=None,
                    lazy=None,
-                   on_error: str = 'skip',
+                   on_error: str = 'raise',  # PHASE_13_55_ADF A-7 (§11.4 Option A): was 'skip'; opt back in with on_error='skip'
                    verbose: bool = True,
                    **kwargs):
         """
@@ -12471,7 +12515,7 @@ function collapseDepth(maxD) {{
         entry_begin: int = None,
         entry_end: int = None,
         entry_mask: np.ndarray = None,
-        on_error: str = 'skip',
+        on_error: str = 'raise',  # PHASE_13_55_ADF A-5: was 'skip'; opt back in with on_error='skip'
         verbose: bool = True,
         **kwargs,
     ):
@@ -12958,12 +13002,30 @@ function collapseDepth(maxD) {{
             title = merged.pop('title', None)
             
             try:
-                # Determine plot method
-                method_name = self._resolve_plot_type(expr, plot_type)
-                plot_func = getattr(plotter, method_name)
-                
-                # Draw on the specific axis
-                _, _, stats = plot_func(expr, ax=ax, **merged)
+                # PHASE_13_55_ADF (A-10): draw_figures builds a 2D subplot
+                # grid; scatter3d requires a 3D-projection axis. Raise a
+                # clean, actionable error instead of a raw matplotlib
+                # failure. Works under both on_error modes (raise → clean
+                # exception; skip → clean message in the error placeholder).
+                if plot_type == 'scatter3d':
+                    raise ValueError(
+                        "type='scatter3d' is not supported in draw_figures' "
+                        "2D subplot grid (requires a 3D projection axis). "
+                        "Use adf.draw(expr, type='scatter3d') for a "
+                        "standalone 3D figure."
+                    )
+                # PHASE_13_55_ADF (AD-1/13.55.ADF): route through
+                # DFDraw.draw() — same rationale and same 'auto'
+                # pre-resolution as adf.draw() (A-2/A-3/A-8 closure).
+                if plot_type == 'auto':
+                    plot_type = self._resolve_plot_type(expr, plot_type)
+                elif (plot_type == 'profile'
+                        and self._top_level_colon_count(expr) == 2):
+                    # PHASE_13_55_ADF post-gallery fix — same profile→
+                    # profile2d promotion as adf.draw() (fig08 regression
+                    # class; see F-E).
+                    plot_type = 'profile2d'
+                _, _, stats = plotter.draw(expr, type=plot_type, ax=ax, **merged)
                 stats_list.append(stats)
                 
                 # Set title if provided

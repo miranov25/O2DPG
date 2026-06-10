@@ -204,10 +204,24 @@ class TestK1VectorDrawKwargDiagnostic:
 
         # User-intent kwargs that should clearly reach DFDraw
         user_intent_kwargs = dict(
-            bins=17,
             group_by='z',
             group_by_bins=3,
             selection='x > 1.0',
+        )
+        # PHASE_13_55_ADF amendment (per the docstring's amendment clause):
+        # kwargs NOT applicable to the dispatched type follow DFDraw.draw()
+        # canonical semantics after Option B routing. bins= is not a
+        # scatter feature — pre-13.55 the raw getattr path forwarded it
+        # and the real DFDraw.scatter crashed in matplotlib
+        # (PathCollection.set() got an unexpected keyword 'bins'); this
+        # test only passed because the capture fixture mocks scatter.
+        # Post-13.55, DFDraw.draw() absorbs bins as a named param and its
+        # scatter branch does not forward it (dfdraw-native behavior,
+        # identical for direct DFDraw.draw(type='scatter', bins=) users).
+        # Cross-team finding filed: dfdraw should warn on type-inapplicable
+        # named params (see PHASE_13_55_ADF CRR §findings).
+        type_inapplicable_kwargs = dict(
+            bins=17,
         )
         # ADF-internal kwargs that may be consumed locally (keyword-only)
         adf_local_kwargs = dict(
@@ -215,7 +229,8 @@ class TestK1VectorDrawKwargDiagnostic:
             keep_materialized=False,
         )
 
-        all_kwargs = {**user_intent_kwargs, **adf_local_kwargs}
+        all_kwargs = {**user_intent_kwargs, **type_inapplicable_kwargs,
+                      **adf_local_kwargs}
         adf.draw("y1:x", type='scatter', **all_kwargs)
 
         assert len(dfdraw_call_capture) >= 1, (
@@ -248,6 +263,14 @@ class TestK1VectorDrawKwargDiagnostic:
                 )
             else:
                 report_lines.append(f"  ARRIVED: {key}={expected!r}")
+
+        # PHASE_13_55_ADF: type-inapplicable kwargs — report, never fail.
+        for key, expected in type_inapplicable_kwargs.items():
+            status = "ARRIVED" if key in captured else "ABSENT"
+            report_lines.append(
+                f"  {status} (TYPE-INAPPLICABLE, canonical DFDraw.draw() "
+                f"semantics): {key}={expected!r}"
+            )
 
         for key, expected in adf_local_kwargs.items():
             if key not in captured:

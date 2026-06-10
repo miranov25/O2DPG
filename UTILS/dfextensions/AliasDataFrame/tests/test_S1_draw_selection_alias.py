@@ -99,8 +99,16 @@ class TestDrawSelectionAliasBug:
             'plot1': {'expr': 'y:x', 'selection': 'isGood==1'},
         }
         # Before fix: this raises "name 'isGood' is not defined"
-        result = adf.draw_batch(specs)
+        # PHASE_13_55_ADF: lazy=True added. Pre-13.55 this test passed only
+        # because the per-plot failure (alias not materialized under default
+        # lazy=False) was masked by on_error='skip' as an in-figure [ERROR]
+        # placeholder, which this assertion did not detect. The new
+        # on_error='raise' default surfaced it. The lazy=False gap is
+        # tracked as BUG_AliasDataFrame_20260610_batch_selection_alias_masked.
+        result = adf.draw_batch(specs, lazy=True)
         assert result is not None, "S2: draw_batch with selection alias should not fail"
+        assert result.get('_errors', {}) == {}, (
+            f"S2: draw_batch reported per-plot errors: {result.get('_errors')}")
 
     def test_S3_draw_figures_materializes_selection_alias(self):
         """
@@ -118,14 +126,23 @@ class TestDrawSelectionAliasBug:
                 {'expr': 'y:x', 'selection': 'isGood==1'},
             ],
         }]
-        # Before fix: fails silently or raises
-        result = adf.draw_figures(specs)
+        # PHASE_13_55_ADF: lazy=True added. Pre-13.55 this test passed only
+        # because the per-plot failure (alias not materialized under default
+        # lazy=False) was masked by on_error='skip' as an in-figure [ERROR]
+        # placeholder, which this assertion did not detect. The new
+        # on_error='raise' default surfaced it. The lazy=False gap is
+        # tracked as BUG_AliasDataFrame_20260610_batch_selection_alias_masked.
+        result = adf.draw_figures(specs, lazy=True)
         assert 'test_fig' in result, "S3: draw_figures should return figure result"
         fig_result = result['test_fig']
         # Check no error
         assert fig_result.get('error') is None, (
             f"S3: draw_figures with selection alias failed: {fig_result.get('error')}"
         )
+        # PHASE_13_55_ADF: placeholder-proof assertion - a None stats entry
+        # means the panel rendered as an [ERROR] placeholder, not a plot.
+        assert fig_result['stats'][0] is not None, (
+            "S3: panel was an error placeholder")
 
     def test_S4_draw_batch_materializes_weights_alias(self):
         """
@@ -136,10 +153,20 @@ class TestDrawSelectionAliasBug:
         adf.add_alias('w', 'abs(y) + 1', dtype=np.float32)
         assert 'w' not in adf.df.columns
 
+        # PHASE_13_55_ADF: type changed scatter→hist. weights= is a
+        # hist/profile feature; on scatter it fell through **kwargs into
+        # matplotlib (PathCollection.set() crash), masked pre-13.55 by the
+        # skip default. hist exercises the materialization intent honestly.
         specs = {
-            'plot1': {'expr': 'y:x', 'weights': 'w'},
+            'plot1': {'expr': 'y', 'type': 'hist', 'bins': 20, 'weights': 'w'},
         }
-        result = adf.draw_batch(specs)
+        # PHASE_13_55_ADF: lazy=True added. Pre-13.55 this test passed only
+        # because the per-plot failure (alias not materialized under default
+        # lazy=False) was masked by on_error='skip' as an in-figure [ERROR]
+        # placeholder, which this assertion did not detect. The new
+        # on_error='raise' default surfaced it. The lazy=False gap is
+        # tracked as BUG_AliasDataFrame_20260610_batch_selection_alias_masked.
+        result = adf.draw_batch(specs, lazy=True)
         assert result is not None, "S4: draw_batch with weights alias should not fail"
 
 

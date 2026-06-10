@@ -1,5 +1,5 @@
 """
-time_series_draw.py  — dfdraw full coverage gallery (v2.0)
+time_series_draw.py  — dfdraw full coverage gallery (v2.1, PHASE_13_55_ADF)
 
 Usage from IPython:
     adf = build_adf("time_series_tracks_0.root")          # full, ~4 min
@@ -19,7 +19,6 @@ Groups:
 
 Known limitations:
   central='median' + group_by=: silently returns mean (KNOWN.grouped_central_median).
-  adf.draw(type='hist2d+profile'): not supported in ADF dispatch (Phase 13.5X).
   fig17 facet_by + time_format=: ScalarFormatter on panels, not HH:MM (S-4, Batch 4).
   hexbin: range= raises ValueError (Phase 13.51 Batch 3 guard).
 """
@@ -209,12 +208,58 @@ def fig29_central_median(adf):
 
 def fig30_overlay(adf):
     """G6.30 — overlay hist2d+profile — 2D density with mean profile overlaid"""
-    # adf.draw(type='hist2d+profile') unsupported in ADF dispatch (Phase 13.5X follow-on).
-    return DFDraw(adf.df).draw("dcar_tpc_vertex:sector", selection=adf.df.eval(BASE_SEL), type="hist2d+profile", bins=36, range=((0, 36), (-1.5, 1.5)), auto_title=True)
+    # PHASE_13_55_ADF: native adf.draw dispatch (A-1 closed); DFDraw detour removed.
+    return adf.draw("dcar_tpc_vertex:sector", selection=BASE_SEL, type="hist2d+profile", bins=36, range=((0, 36), (-1.5, 1.5)), auto_title=True)
 
 def fig31_selection_delta_ncl(adf):
     """G6.31 — selection_vector+delta — DCA_r delta high-ncl vs low-ncl tracks"""
     return adf.draw("dcar_tpc_vertex:sector", selection=BASE_SEL, type="profile", bins=36, selection_vector=["ncl>100", "ncl<=100"], normalize="delta", auto_title=True)
+
+
+# ── G8 — ADF dispatch closure (PHASE_13_55_ADF) ───────────────────────────────
+
+def fig35_batch_profile2d(adf):
+    """G8.35 — draw_batch profile2d — mean DCA_r per (tgl, sector) via batch"""
+    res = adf.draw_batch({"p2d": {"expr": "dcar_tpc_vertex:tgl:sector",
+                                  "type": "profile2d", "bins": 36,
+                                  "selection": BASE_SEL, "auto_title": True}},
+                         verbose=False)
+    r = res["p2d"]
+    return r["fig"], r["ax"], r["stats"]
+
+def fig36_batch_overlay(adf):
+    """G8.36 — draw_batch overlay — hist2d+profile via batch dispatch"""
+    res = adf.draw_batch({"ovl": {"expr": "dcar_tpc_vertex:sector",
+                                  "type": "hist2d+profile", "bins": 36,
+                                  "range": ((0, 36), (-1.5, 1.5)),
+                                  "selection": BASE_SEL, "auto_title": True}},
+                         verbose=False)
+    r = res["ovl"]
+    return r["fig"], r["ax"], r["stats"]
+
+def fig37_adf_draw_overlay(adf):
+    """G8.37 — adf.draw overlay — A-1 closure: hist2d+profile single-call"""
+    return adf.draw("dcar_tpc:sector", selection=BASE_SEL,
+                    type="hist2d+profile", bins=36,
+                    range=((0, 36), (-1.5, 1.5)), auto_title=True)
+
+def fig38_adf_draw_histo_alias(adf):
+    """G8.38 — adf.draw 'histo' alias — A-3 closure: ROOT-convention type alias"""
+    return adf.draw("ncl", type="histo", bins=50, selection="ncl>30",
+                    auto_title=True)
+
+def fig39_figures_overlay_in_spec(adf):
+    """G8.39 — draw_figures overlay-in-spec — A-2 closure: dashboard panel"""
+    res = adf.draw_figures([{
+        "name": "g8_dashboard",
+        "suptitle": "PHASE_13_55_ADF closure — overlay + alias in dashboard",
+        "plots": [
+            {"expr": "dcar_tpc_vertex:sector", "type": "hist2d+profile",
+             "bins": 36, "range": ((0, 36), (-1.5, 1.5)), "selection": BASE_SEL},
+            {"expr": "ncl", "type": "histo", "bins": 50, "selection": "ncl>30"},
+        ]}], verbose=False)
+    r = res["g8_dashboard"]
+    return r["fig"], r["axes"], r["stats"]
 
 
 # ── G7 — Full stack ADF + GB (optional, mutate adf in place) ─────────────────
@@ -262,7 +307,10 @@ FIGURES_G5 = [fig23_hist_fit, fig24_profile_fit, fig25_profile_fit_median, fig26
 FIGURES_G6 = [fig27_vector, fig28_quantile_band, fig29_central_median,
               fig30_overlay, fig31_selection_delta_ncl]
 
-FIGURES_MANDATORY = FIGURES_G1 + FIGURES_G2 + FIGURES_G3 + FIGURES_G4 + FIGURES_G5 + FIGURES_G6
+FIGURES_G8 = [fig35_batch_profile2d, fig36_batch_overlay, fig37_adf_draw_overlay,
+              fig38_adf_draw_histo_alias, fig39_figures_overlay_in_spec]
+
+FIGURES_MANDATORY = FIGURES_G1 + FIGURES_G2 + FIGURES_G3 + FIGURES_G4 + FIGURES_G5 + FIGURES_G6 + FIGURES_G8
 FIGURES_OPTIONAL  = [fig32_subframe_vertex, fig33_gb_correction_tgl, fig34_gb_correction_sector]
 
 

@@ -186,7 +186,14 @@ class TestLayout:
     def test_ncols_default_2(self, adf):
         """Default ncols is 2."""
         specs = [{'name': 'test', 'plots': ['x', 'y', 'z', 'category']}]
-        result = adf.draw_figures(specs)
+        # PHASE_13_55_ADF: explicit on_error='skip'. This is a LAYOUT test;
+        # the 'category' (string) panel fails inside dfdraw hist
+        # (pre-existing: TypeError on StringDtype, also fails on direct
+        # DFDraw.hist). Pre-13.55 the default on_error='skip' masked it;
+        # the new 'raise' default surfaced it. Layout geometry is the
+        # contract under test, so skip mode is the honest configuration.
+        # Cross-team note filed: dfdraw hist on StringDtype columns.
+        result = adf.draw_figures(specs, on_error='skip')
         
         # 4 plots with ncols=2 -> 2x2 grid
         fig = result['test']['fig']
@@ -467,7 +474,13 @@ class TestIntegration:
                 ]
             }
         ]
-        result = adf.draw_figures(specs)
+        # PHASE_13_55_ADF: explicit on_error='skip'. The 'category' (string)
+        # panel fails inside dfdraw hist (pre-existing: TypeError on
+        # StringDtype, also fails on direct DFDraw.hist). Pre-13.55 the
+        # default on_error='skip' masked it; the new 'raise' default
+        # surfaced it. Dashboard layout is the contract under test.
+        # Cross-team note filed: dfdraw hist on StringDtype columns.
+        result = adf.draw_figures(specs, on_error='skip')
         
         assert len(result['qa_overview']['axes']) == 4
         assert result['qa_overview']['fig']._suptitle is not None
