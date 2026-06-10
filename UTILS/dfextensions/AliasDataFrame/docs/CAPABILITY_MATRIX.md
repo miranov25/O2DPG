@@ -1,6 +1,6 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-05-26 13:09 UTC
+**Generated:** 2026-06-10 07:44 UTC
 **Phase:** 13.11.B
 **Taxonomy:** 47 features (PHASE_13_11_B approved)
 **Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)
@@ -9,15 +9,15 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 27 | 57% |
+| ✅ Verified | 28 | 59% |
 | ☑️ Smoke-only | 14 | 29% |
-| 🧨 Broken | 5 | 10% |
+| 🧨 Broken | 4 | 8% |
 | 📋 Planned | 1 | 2% |
 | **Total features** | **47** | |
 | **Matched tests** | **1642** | |
 | **Invariance tests** | **205** | |
 
-**Unmatched tests:** 84 (not mapped to any feature)
+**Unmatched tests:** 95 (not mapped to any feature)
 
 ## CORE
 
@@ -39,7 +39,7 @@
 | Status | Feature | Tests | Pass | Fail | Inv |
 |--------|---------|------:|-----:|-----:|:---:|
 | ✅ | **SUB.register** — Subframe registration | 50 | 50 | 0 | 3 |
-| 🧨 | **SUB.join** — Subframe join & column resolution | 70 | 69 | 1 | 22 |
+| ✅ | **SUB.join** — Subframe join & column resolution | 70 | 70 | 0 | 22 |
 | ✅ | **SUB.composite_key** — Composite key operations | 38 | 38 | 0 | 2 |
 | ✅ | **SUB.auto_alias** — Auto-aliasing subframe columns | 11 | 10 | 0 | 1 |
 | 📋 | **SUB.clone** — Clone with selection (planned) | 0 | 0 | 0 |  |
@@ -123,27 +123,24 @@
 
 ## 🧨 Broken Features — Details
 
-### SUB.join
-- ❌ `test_alias_subframe.py::TestSubframeRoundtrip::test_parquet_roundtrip`
-
 ### DRAW.execution
 - ❌ `test_K2_vector_draw_end_to_end.py::TestK2VectorDrawEndToEnd::test_K2_3_production_reproducer_mirror`
 
 ### COMP.roundtrip
-- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
 - ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
+- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
 
 ### BACK.invariance
 - ❌ `test_invariance_backend.py::TestInvarianceBackend::test_I2_6_chained_subframe_expressions_numba_vs_numpy`
 
 ### RDF.export
 - ❌ `test_AliasDataFrameRDF.py::TestTMemFileBranch::test_missing_keys_in_friend`
-- ❌ `test_AliasDataFrameRDF.py::TestAddDefinesCollision::test_collision_from_friend_tree`
 - ❌ `test_AliasDataFrameRDF.py::TestRDataFrameFriendAccess::test_composite_index_friend`
+- ❌ `test_AliasDataFrameRDF.py::TestAddDefinesCollision::test_collision_from_friend_tree`
 
 ## Unmatched Tests
 
-84 tests not mapped to any feature.
+95 tests not mapped to any feature.
 
 - `test_B1_validate_aliases_false_positives.py::TestB1ValidateAliasesFalsePositives::test_B1_1_np_pi_not_broken`
 - `test_B1_validate_aliases_false_positives.py::TestB1ValidateAliasesFalsePositives::test_B1_2_subframe_column_not_broken`
@@ -175,7 +172,7 @@
 - `test_Q1_quantiles_profile_adf.py::TestQ1QuantilesADFPassthrough::test_Q1_3_parity_adf_vs_dfdraw`
 - `test_Q1_quantiles_profile_adf.py::TestQ1QuantilesADFPassthrough::test_Q1_4_central_median_forwarded`
 - `test_Q1_quantiles_profile_adf.py::TestQ1QuantilesADFPassthrough::test_Q1_5_groupby_with_quantiles`
-- ... +54 more
+- ... +65 more
 
 ---
 *Generated from pytest JSON + feature_taxonomy.py (v2 taxonomy-based).*

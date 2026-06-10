@@ -10937,10 +10937,26 @@ function collapseDepth(maxD) {{
 
     def _ensure_vector_kwargs_aliases(self, kwargs: dict) -> None:
         """Pre-materialize ADF aliases referenced in selection_vector,
-        weights_vector, and facet_by before forwarding to dfdraw.
+        weights_vector, and facet_by (str OR list/tuple) before forwarding
+        to dfdraw.
 
         Called by draw() at method entry, and by draw_batch() / draw_figures()
         once per spec dict in their specs= argument.
+
+        Coverage (by parameter type):
+          - selection_vector / weights_vector: list of expressions (always list);
+            regex-tokenized, alias intersection materialized
+          - facet_by str: materialized if it names an alias and is not a
+            channel enum ('group_by', 'vector', 'quantiles')
+          - facet_by list/tuple: per-element same filter as str case
+            (BUG_AliasDataFrame_20260609_lazy_nd_facet)
+
+        group_by is intentionally NOT handled here:
+          - Scalar group_by is handled by _parse_expr_aliases in the main
+            draw() pipeline (line 10928) — do not duplicate.
+          - List-valued group_by is not supported by dfdraw (raises TypeError
+            'unhashable type' downstream); materializing for an unsupported
+            shape would be dead code.
 
         Phase 13.35.ADF — Phase B marker: the regex tokenizer below should be
         replaced by _analyze_expression() (AST-based, B1-validated) when the
@@ -10977,6 +10993,25 @@ function collapseDepth(maxD) {{
                 and facet_by not in _FACET_BY_CHANNEL_ENUMS
                 and facet_by in self.aliases):
             needed.add(facet_by)
+        # BUG_AliasDataFrame_20260609_lazy_nd_facet: list-valued facet_by
+        # (N-D facet grid) was silently dropped here — the isinstance(str) guard
+        # above excluded list/tuple forms, so lazy aliases referenced as elements
+        # raised KeyError downstream in dfdraw. Apply the same per-element filter
+        # (skip channel enums, materialize only registered aliases).
+        elif isinstance(facet_by, (list, tuple)):
+            for el in facet_by:
+                if (isinstance(el, str)
+                        and el not in _FACET_BY_CHANNEL_ENUMS
+                        and el in self.aliases):
+                    needed.add(el)
+        # Note on group_by scope: list-valued group_by was considered for a
+        # parallel fix during BUG_AliasDataFrame_20260609_lazy_nd_facet
+        # investigation, but dfdraw does not support list-valued group_by
+        # (raises TypeError: unhashable type 'list' downstream — drawer.py
+        # group_by handling). Materializing aliases for an unsupported call
+        # shape would be dead code. If dfdraw adds list-valued group_by
+        # support in a future phase, add a per-element loop here mirroring
+        # the facet_by list branch above.
 
         missing = needed - set(self.df.columns)
         if missing:
