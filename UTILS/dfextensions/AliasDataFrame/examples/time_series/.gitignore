@@ -1,0 +1,8 @@
+*.root
+*.pdf
+*.png
+*.zip
+fig/
+perf_log.txt
+0.2
+ts_draw_gallery.pdf
