@@ -283,6 +283,47 @@ FEATURES = [
             "test_batch.py::TestDrawBatchCloseFigures::test_close_figures_true_clears_fig",
         ],
     },
+    # ── Phase 13.55.DF — draw_batch audit + Phase 13.51/13.52 type-gap fix ──
+    # Triggered by architect's question "Did we audit draw_batch?" after
+    # closing Phase 13.54.DF. 7-reviewer panel [OK] APPROVED. Architect
+    # ratified Option B (route draw_batch through draw()) + on_error
+    # default 'skip'->'raise' (BREAKING). Implementation discovered
+    # architectural asymmetry between profile2d (delegates to self.profile)
+    # and scatter3d (routes through self.draw) — closed via B-fix-draw
+    # (architect-ratified amendment): profile2d early-dispatch added to
+    # draw() mirroring scatter3d, plus _suppress_layout whitelist in
+    # draw() kwarg validator and overlay-engine exemption.
+    {
+        "id": "BATCH.engine_routing",
+        "name": "draw_batch routes through draw() — profile2d/scatter3d/aliases/overlay strings accepted; central=/time_format=/auto_title=/fit= regression-locked (D-1, D-3, D-4 closure)",
+        "category": "BATCH",
+        "tests": [
+            "test_phase_13_55_df_draw_batch_audit.py::test_T1_dict_profile2d",
+            "test_phase_13_55_df_draw_batch_audit.py::test_T2_dict_scatter3d",
+            "test_phase_13_55_df_draw_batch_audit.py::test_T3_dict_histo_alias",
+            "test_phase_13_55_df_draw_batch_audit.py::test_T4_dict_overlay_string",
+            "test_phase_13_55_df_draw_batch_audit.py::test_T5_list_profile2d_in_group",
+            "test_phase_13_55_df_draw_batch_audit.py::test_T6_list_overlay_in_group",
+            "test_phase_13_55_df_draw_batch_audit.py::test_T7_central_median_via_batch_with_outlier_fixture",
+            "test_phase_13_55_df_draw_batch_audit.py::test_T8_time_format_via_batch",
+            "test_phase_13_55_df_draw_batch_audit.py::test_T9_auto_title_scatter_via_batch",
+            "test_phase_13_55_df_draw_batch_audit.py::test_T10_fit_gauss_profile_via_batch",
+            "test_phase_13_55_df_draw_batch_audit.py::test_T11_selection_vector_hist_via_batch",
+            "test_phase_13_55_df_draw_batch_audit.py::test_T15_same_overlay_within_group_reuses_axis",
+            "test_phase_13_55_df_draw_batch_audit.py::test_T16_suppress_layout_flows_to_typed_method",
+            "test_phase_13_55_df_draw_batch_audit.py::test_T17_group_keys_stripped_before_draw_positive_test",
+        ],
+    },
+    {
+        "id": "BATCH.error_visibility",
+        "name": "draw_batch on_error default changed 'skip'->'raise' (BREAKING); invalid types now surface as exceptions instead of silent-skip into _errors dict (D-2 closure)",
+        "category": "BATCH",
+        "tests": [
+            "test_phase_13_55_df_draw_batch_audit.py::test_T12_invalid_type_raises_under_new_default",
+            "test_phase_13_55_df_draw_batch_audit.py::test_T13_invalid_type_with_explicit_skip_is_counted_not_raised",
+            "test_phase_13_55_df_draw_batch_audit.py::test_T14_valid_type_under_new_default_raise_succeeds",
+        ],
+    },
 
     # ── Style System ──
 

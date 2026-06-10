@@ -418,7 +418,12 @@ class TestDrawBatchPlotTypes:
         results = plotter.draw_batch(specs, on_error='skip', verbose=False)
         
         assert 'bad' in results['_errors']
-        assert 'Invalid type' in results['_errors']['bad']
+        # Phase 13.55.DF: draw_batch now routes through draw(), which raises
+        # "Unknown plot type 'invalid_type'..." instead of the prior
+        # "Invalid type 'invalid_type'...". Behavior contract (invalid type
+        # produces a visible error) preserved; only the wording changed.
+        # Assert on the user-supplied type-name itself for source-independence.
+        assert 'invalid_type' in results['_errors']['bad']
 
 
 class TestDrawBatchMissingExpr:

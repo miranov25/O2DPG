@@ -4364,6 +4364,12 @@ class DFDraw:
                          self._PROFILE_FORWARDED_NAMES,
                          self._HIST2D_FORWARDED_NAMES):
                 _known_kwargs.update(_tup)
+            # Phase 13.55.DF: whitelist dfdraw-internal flags that travel
+            # via **kwargs from draw_batch through draw() to typed methods.
+            # Without this, draw_batch list-form (which sets
+            # _suppress_layout=True per subplot to defer tight_layout to
+            # constrained_layout) emits a UserWarning on every subplot.
+            _known_kwargs.add('_suppress_layout')
             for _name in list(kwargs):
                 if _name in _known_kwargs:
                     continue
@@ -4391,6 +4397,30 @@ class DFDraw:
         if figsize is not None and ax is None:
             import matplotlib.pyplot as plt
             fig, ax = plt.subplots(figsize=figsize)
+
+        # Phase 13.55.DF: profile2d early-dispatch BEFORE _parse_expr.
+        # Without it, routing through draw() (as draw_batch does in
+        # Phase 13.55.DF) sends 'z:y:x' to _parse_expr which rejects 3
+        # colons and the dispatch never reaches the profile/draw_profile2d
+        # code path. The direct wrapper self.profile2d() bypasses draw()
+        # and goes straight to self.profile() (which has Phase 13.39
+        # 3-colon parsing); this early-dispatch achieves the same via
+        # draw() so the engine surface is symmetric with scatter3d.
+        # See PHASE_13_55_DF_DrawBatchAudit_Proposal_v1_2.md and
+        # B-fix-draw architect ratification 2026-06-10.
+        if type == "profile2d":
+            colon_count = self._count_colons_outside_brackets(expr)
+            if colon_count != 2:
+                raise ValueError(
+                    f"type='profile2d' requires a 3-variable expression "
+                    f"'z:y:x', got {expr!r} with {colon_count} top-level "
+                    f"colon(s)."
+                )
+            # Delegate to self.profile() which has Phase 13.39 3-colon
+            # routing to draw_profile2d. Keeps a single implementation
+            # path; draw() merely owns the entry-point.
+            _kwargs_no_type = {k: v for k, v in kwargs.items() if k != 'type'}
+            return self.profile(expr, **_kwargs_no_type)
 
         # Phase 13.39.DF Item 3: scatter3d dispatch BEFORE _parse_expr,
         # because _parse_expr rejects colon_count > 1 (z:y:x has 2).
@@ -6439,6 +6469,17 @@ class DFDraw:
         }
         layers: List[Dict[str, Any]] = [{"type": p} for p in parts]
         for k, v in kw.items():
+            # Phase 13.55.DF: _suppress_layout is a dfdraw-internal flag
+            # set by draw_batch list-form to defer tight_layout to
+            # constrained_layout. It does not belong on any specific
+            # overlay layer; the typed methods consume it via **kwargs.
+            # Skip the per-layer accept-check (it would always reject)
+            # and forward to all layers so whichever renders first
+            # consumes it.
+            if k == '_suppress_layout':
+                for i in range(len(layers)):
+                    layers[i][k] = v
+                continue
             # P1-B: faceting/share rejected on string surface too (engine
             # would also reject, but a clearer early message is helpful).
             if k in _OVERLAY_NO_FACET:
@@ -7191,7 +7232,7 @@ class DFDraw:
         specs: Union[Dict[str, Dict[str, Any]], List[Dict[str, Any]], str],
         save_dir: Optional[str] = None,
         defaults: Optional[Dict[str, Any]] = None,
-        on_error: str = 'skip',
+        on_error: str = 'raise',  # Phase 13.55.DF D-2: changed from 'skip' (BREAKING); silent-skip available via explicit on_error='skip'
         verbose: Union[bool, int] = True,
         save_format: str = 'png',
         dpi: int = 150,
@@ -7220,7 +7261,7 @@ class DFDraw:
             Directory to save figures. Created if doesn't exist.
         defaults : dict, optional
             Default parameters applied to all plots (overridden by per-plot specs).
-        on_error : str, default 'skip'
+        on_error : str, default 'raise' (Phase 13.55.DF D-2 BREAKING; was 'skip' prior to v1.13)
             'skip': Continue on errors, collect in results['_errors']
             'raise': Stop on first error
         verbose : bool or int, default True
@@ -7316,14 +7357,16 @@ class DFDraw:
                 if plot_type is None:
                     plot_type = 'hist' if ':' not in expr else 'scatter'
                 
-                # Validate plot type
-                valid_types = ('hist', 'scatter', 'profile', 'hist2d', 'hexbin')
-                if plot_type not in valid_types:
-                    raise ValueError(f"Invalid type '{plot_type}'. Must be one of {valid_types}")
-                
-                # Call appropriate method
-                method = getattr(self, plot_type)
-                fig, ax, stats = method(expr, **merged)
+                # Phase 13.55.DF (D-1, D-3, D-4): route through draw() so
+                # batch surface inherits all draw() dispatch features —
+                # profile2d/scatter3d wrappers (Phase 13.51 S-5), type
+                # aliases like 'histo' (Phase 13.46 C-2), and overlay
+                # sugar 'A+B' (Phase 13.52). The prior hardcoded
+                # valid_types whitelist was 4 phases behind. Reference:
+                # PHASE_13_55_DF_DrawBatchAudit_Proposal_v1_2.md §3.
+                # _GROUP_KEYS is already stripped above this site in the
+                # list-form; dict-form has no group metadata to strip.
+                fig, ax, stats = self.draw(expr, type=plot_type, **merged)
                 
                 # Build result entry
                 result_entry = {'stats': stats, 'fig': fig, 'ax': ax, 'path': None}
@@ -7381,7 +7424,7 @@ class DFDraw:
         groups: List[Dict[str, Any]],
         save_dir: Optional[str] = None,
         defaults: Optional[Dict[str, Any]] = None,
-        on_error: str = 'skip',
+        on_error: str = 'raise',  # Phase 13.55.DF D-2: changed from 'skip' (BREAKING); silent-skip available via explicit on_error='skip'
         verbose: Union[bool, int] = True,
         save_format: str = 'png',
         dpi: int = 150,
@@ -7407,7 +7450,7 @@ class DFDraw:
             Directory for saving (used when 'savefig' not in group).
         defaults : dict, optional
             Batch-level defaults (below group defaults in hierarchy).
-        on_error : str, default 'skip'
+        on_error : str, default 'raise' (Phase 13.55.DF D-2 BREAKING; was 'skip' prior to v1.13)
             'skip' or 'raise'.
         verbose : bool or int, default True
             Verbosity level: False/0=silent, True/1=progress, 2=debug.
@@ -7521,18 +7564,20 @@ class DFDraw:
                     if plot_type is None:
                         plot_type = 'hist' if ':' not in expr else 'scatter'
                     
-                    valid_types = ('hist', 'scatter', 'profile', 'hist2d', 'hexbin')
-                    if plot_type not in valid_types:
-                        raise ValueError(
-                            f"Invalid type '{plot_type}' in group '{name}' "
-                            f"plot {p_idx}. Must be one of {valid_types}"
-                        )
-                    
-                    method = getattr(self, plot_type)
+                    # Phase 13.55.DF (D-1, D-3, D-4): route through draw()
+                    # — same rationale as the dict-form fix above. The
+                    # _GROUP_KEYS strip at the top of this block already
+                    # removed name/ncols/layout/figsize/etc. before
+                    # merged reaches draw(). _suppress_layout=True is
+                    # added below and flows through draw() to the typed
+                    # method via **kwargs (verified by 7-reviewer panel
+                    # source-read; Sonnet65_PHASE_13_55_DF_ProposalPanel
+                    # Summary_20260610.md). Reference:
+                    # PHASE_13_55_DF_DrawBatchAudit_Proposal_v1_2.md §3.
                     # Suppress per-subplot tight_layout — constrained_layout
                     # handles the full figure layout automatically.
                     merged['_suppress_layout'] = True
-                    _, _, stats = method(expr, **merged)
+                    _, _, stats = self.draw(expr, type=plot_type, **merged)
                     group_stats.append(stats)
                 
                 # Suptitle — constrained_layout automatically reserves space

@@ -1,7 +1,7 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-06-10 10:21 UTC
-**Phase:** PHASE_13_54_DF_END
+**Generated:** 2026-06-10 13:40 UTC
+**Phase:** PHASE_13_50_DF_FIX2_END
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
 
@@ -9,14 +9,14 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 64 | 44% |
-| ☑️ Smoke-only | 80 | 55% |
+| ✅ Verified | 66 | 45% |
+| ☑️ Smoke-only | 80 | 54% |
 | 🧨 Broken | 0 | 0% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **145** | |
-| **Total proof tests** | **650** | |
-| **Invariance tests** | **363** | |
-| **Visual tests** | **32** | |
+| **Total features** | **147** | |
+| **Total proof tests** | **667** | |
+| **Invariance tests** | **369** | |
+| **Visual tests** | **34** | |
 
 **Status key:**
 - ✅ Verified — has at least one passing invariance test (A ≡ B check)
@@ -49,6 +49,8 @@
 | ☑️ | **BATCH.same_in_group** — same=True within batch groups | 2 | 2 | 0 | 0 |  |
 | ☑️ | **BATCH.verbose** — Verbose levels (0/1/2) | 3 | 3 | 0 | 0 |  |
 | ☑️ | **BATCH.save** — Batch save and close figures | 2 | 2 | 0 | 0 |  |
+| ✅ | **BATCH.engine_routing** — draw_batch routes through draw() — profile2d/scatter3d/aliases/overlay strings accepted; central=/time_format=/auto_title=/fit= regression-locked (D-1, D-3, D-4 closure) 👁 | 14 | 14 | 0 | 3 | 2 |
+| ✅ | **BATCH.error_visibility** — draw_batch on_error default changed 'skip'->'raise' (BREAKING); invalid types now surface as exceptions instead of silent-skip into _errors dict (D-2 closure) | 3 | 3 | 0 | 3 |  |
 | | **CHANNEL** | | | | | |
 | ☑️ | **CHANNEL.assignment** — Algorithm A: automatic visual-channel assignment for N data channels | 41 | 41 | 0 | 0 |  |
 | ☑️ | **CHANNEL.nested_band** — Nested-band detection (>=2 symmetric pairs, central optional) and rendering | 5 | 5 | 0 | 0 |  |

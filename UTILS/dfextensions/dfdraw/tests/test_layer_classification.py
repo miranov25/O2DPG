@@ -549,5 +549,37 @@ TEST_LAYERS = {
     "test_phase_13_51_post_audit.py::test_T8_draw_type_hist2d_facet_by_sec_populated_panels": "visual_primitive",
     "test_phase_13_51_post_audit.py::test_T14_hist2d_time_format_auto_date_tick_labels": "visual_primitive",
 
+    # ── Phase 13.55.DF — draw_batch audit + Phase 13.51/13.52 type-gap fix ──
+    # 7 of the 17 tests in test_phase_13_55_df_draw_batch_audit.py are
+    # classified here; the remaining 10 (T1-T6, T11, T16, T17) are smoke
+    # / no-crash regressions and stay at the default "smoke" classification.
+    #
+    # Invariance class (A == B / explicit-value assertions):
+    # T7 — central='median' vs 'mean' under outlier fixture differ
+    #      measurably (mean != median at multiple bins); Phase 13.51 T9b
+    #      pattern (10% rows @ 100x).
+    # T10 — fit='gauss' produces a non-empty stats['fit'] block;
+    #       data-structure existence + non-emptiness.
+    # T12 — invalid type raises ValueError (explicit exception-type check).
+    # T13 — invalid type under on_error='skip' counted in _errors dict
+    #       (explicit key + summary['failed']==1).
+    # T14 — valid type under on_error='raise' returns success + stats
+    #       (explicit success state).
+    # T15 — same=True within group reuses axis (len(axes)==1,
+    #       len(stats)==2 explicit counts).
+    "test_phase_13_55_df_draw_batch_audit.py::test_T7_central_median_via_batch_with_outlier_fixture": "invariance",
+    "test_phase_13_55_df_draw_batch_audit.py::test_T10_fit_gauss_profile_via_batch": "invariance",
+    "test_phase_13_55_df_draw_batch_audit.py::test_T12_invalid_type_raises_under_new_default": "invariance",
+    "test_phase_13_55_df_draw_batch_audit.py::test_T13_invalid_type_with_explicit_skip_is_counted_not_raised": "invariance",
+    "test_phase_13_55_df_draw_batch_audit.py::test_T14_valid_type_under_new_default_raise_succeeds": "invariance",
+    "test_phase_13_55_df_draw_batch_audit.py::test_T15_same_overlay_within_group_reuses_axis": "invariance",
+    #
+    # Visual primitive class (renderer-free figure-state checks):
+    # T8 inspects hist2d x-axis tick label text for HH:MM date-formatted
+    #    output via ax.get_xticklabels().
+    # T9 inspects scatter title text via ax.get_title().
+    "test_phase_13_55_df_draw_batch_audit.py::test_T8_time_format_via_batch": "visual_primitive",
+    "test_phase_13_55_df_draw_batch_audit.py::test_T9_auto_title_scatter_via_batch": "visual_primitive",
+
     # Everything else defaults to "smoke"
 }

@@ -63,18 +63,18 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 </head>
 <body>
 <h1>Capability Matrix — dfdraw</h1>
-<p class="meta">Generated: <span class="mono">2026-06-10 10:21 UTC</span> · Phase: <span class="mono">PHASE_13_54_DF_END</span></p>
+<p class="meta">Generated: <span class="mono">2026-06-10 13:40 UTC</span> · Phase: <span class="mono">PHASE_13_50_DF_FIX2_END</span></p>
 <section class="summary">
 <h2>Summary</h2>
 <table>
-<tr><th>✅ Verified</th><td class="n">64</td><td class="n">44%</td></tr>
-<tr><th>☑️ Smoke-only</th><td class="n">80</td><td class="n">55%</td></tr>
+<tr><th>✅ Verified</th><td class="n">66</td><td class="n">45%</td></tr>
+<tr><th>☑️ Smoke-only</th><td class="n">80</td><td class="n">54%</td></tr>
 <tr><th>🧨 Broken</th><td class="n">0</td><td class="n">0%</td></tr>
 <tr><th>📋 Planned</th><td class="n">1</td><td class="n">1%</td></tr>
-<tr><th>Total features</th><td class="n"><strong>145</strong></td><td></td></tr>
-<tr><th>Total proof tests</th><td class="n"><strong>650</strong></td><td></td></tr>
-<tr><th>Invariance tests</th><td class="n"><strong>363</strong></td><td></td></tr>
-<tr><th>Visual tests</th><td class="n"><strong>32</strong></td><td></td></tr>
+<tr><th>Total features</th><td class="n"><strong>147</strong></td><td></td></tr>
+<tr><th>Total proof tests</th><td class="n"><strong>667</strong></td><td></td></tr>
+<tr><th>Invariance tests</th><td class="n"><strong>369</strong></td><td></td></tr>
+<tr><th>Visual tests</th><td class="n"><strong>34</strong></td><td></td></tr>
 </table>
 </section>
 <section class="filters">
@@ -264,6 +264,35 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <ul>
 <li><span class="layer-marker">☑</span><code>test_batch.py::TestDrawBatchSaveDir::test_creates_directory</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">☑</span><code>test_batch.py::TestDrawBatchCloseFigures::test_close_figures_true_clears_fig</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-BATCH.engine_routing" class="feature-row" data-status="Verified" data-visual="yes" data-category="BATCH"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">BATCH.engine_routing</strong> — draw_batch routes through draw() — profile2d/scatter3d/aliases/overlay strings accepted; central=/time_format=/auto_title=/fit= regression-locked (D-1, D-3, D-4 closure) <span class="eye-badge">👁</span></td><td class="n">14</td><td class="n">14</td><td class="n">0</td><td class="n">3</td><td class="n">2</td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">☑</span><code>test_phase_13_55_df_draw_batch_audit.py::test_T1_dict_profile2d</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_55_df_draw_batch_audit.py::test_T2_dict_scatter3d</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_55_df_draw_batch_audit.py::test_T3_dict_histo_alias</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_55_df_draw_batch_audit.py::test_T4_dict_overlay_string</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_55_df_draw_batch_audit.py::test_T5_list_profile2d_in_group</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_55_df_draw_batch_audit.py::test_T6_list_overlay_in_group</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_55_df_draw_batch_audit.py::test_T7_central_median_via_batch_with_outlier_fixture</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_55_df_draw_batch_audit.py::test_T8_time_format_via_batch</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">👁</span><code>test_phase_13_55_df_draw_batch_audit.py::test_T9_auto_title_scatter_via_batch</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_55_df_draw_batch_audit.py::test_T10_fit_gauss_profile_via_batch</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_55_df_draw_batch_audit.py::test_T11_selection_vector_hist_via_batch</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_55_df_draw_batch_audit.py::test_T15_same_overlay_within_group_reuses_axis</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_55_df_draw_batch_audit.py::test_T16_suppress_layout_flows_to_typed_method</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_55_df_draw_batch_audit.py::test_T17_group_keys_stripped_before_draw_positive_test</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-BATCH.error_visibility" class="feature-row" data-status="Verified" data-visual="no" data-category="BATCH"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">BATCH.error_visibility</strong> — draw_batch on_error default changed &#x27;skip&#x27;-&gt;&#x27;raise&#x27; (BREAKING); invalid types now surface as exceptions instead of silent-skip into _errors dict (D-2 closure)</td><td class="n">3</td><td class="n">3</td><td class="n">0</td><td class="n">3</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_55_df_draw_batch_audit.py::test_T12_invalid_type_raises_under_new_default</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_55_df_draw_batch_audit.py::test_T13_invalid_type_with_explicit_skip_is_counted_not_raised</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_55_df_draw_batch_audit.py::test_T14_valid_type_under_new_default_raise_succeeds</code><span class="outcome passed">passed</span></li>
 </ul>
 </div></td></tr>
 <tr class="category-row"><td colspan="8">CHANNEL</td></tr>
