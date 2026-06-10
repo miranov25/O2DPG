@@ -27,6 +27,12 @@ from ._validation import validate_column_references
 # Phase 13.42.DF: Inline fits
 from .fits import normalize_fit_spec, dispatch_fit
 from ._fit_render import render_fit_overlays, render_fit_textbox
+# Phase 13.54.DF: BUG_dfdraw_20260609_scatter_auto_title — restore parity
+# with hist/profile/scatter3d by consuming auto_title= explicitly instead of
+# letting it leak into **kwargs → ax.scatter() → PathCollection.set() crash.
+from ._auto_title import (
+    build_auto_title, apply_auto_title, parse_auto_title_parts, resolve_auto_title,
+)
 
 
 def draw_scatter(
@@ -39,6 +45,11 @@ def draw_scatter(
     marker: Optional[Union[str, List[str]]] = None,
     stats: Optional[Union[bool, List[str]]] = None,
     title: Optional[str] = None,
+    # Phase 13.54.DF: BUG_dfdraw_20260609_scatter_auto_title — symmetry with
+    # hist (histogram.py:212), profile, scatter3d (scatter.py:849). Without
+    # this entry, auto_title= falls into **kwargs → ax.scatter() →
+    # PathCollection.set() AttributeError. Found via ADF gallery (G1.04).
+    auto_title: Union[bool, str] = False,
     xlabel: Optional[str] = None,
     ylabel: Optional[str] = None,
     alpha: Optional[float] = None,
@@ -418,6 +429,21 @@ def draw_scatter(
     
     if title and not _suppress_title:
         ax.set_title(title)
+    elif auto_title and not _suppress_title:
+        # Phase 13.54.DF: BUG_dfdraw_20260609_scatter_auto_title — resolve
+        # auto_title= via style first (Phase 13.12.DF v1.2 pattern), then
+        # apply through the shared _auto_title helpers so the title content
+        # and styling matches hist/profile (same selection/group_by/parts
+        # interpretation). Without this block auto_title= used to leak into
+        # **kwargs and crash PathCollection.set().
+        auto_title = resolve_auto_title(auto_title)
+        if auto_title:
+            parts = parse_auto_title_parts(auto_title)
+            td = build_auto_title(
+                x_name, y=y_name, group_by=group_by,
+                selection=None, parts=parts,
+            )
+            apply_auto_title(ax, td)
     
     # Statistics box
     if stats is True or (stats is None and get_style_value("stats.show", False)):

@@ -1864,6 +1864,32 @@ FEATURES = [
             "test_phase_13_52_df_overlay.py::test_T_S6_overlay_summary_fit_on_profile_layer_renders",
         ],
     },
+    # ── Phase 13.54.DF — Gallery-found bug fixes (BUG_dfdraw 20260609/20260610) ──
+    # Surfaced by the ADF time_series_draw.py real-data visual gallery per
+    # AD-TS-DRAW-001 (gallery as mandatory pre-tag validation). The two bugs
+    # were not caught by the existing unit-test suite because the test
+    # fixtures used synthetic data shapes (gaussian floats, small datetime64
+    # ranges) instead of realistic float64 epoch-seconds.
+    {
+        "id": "SCATTER.auto_title",
+        "name": "DFDraw.scatter() / draw(type='scatter') honors auto_title= without crashing PathCollection.set() — symmetry with hist/profile/scatter3d (BUG_dfdraw_20260609 close)",
+        "category": "SCATTER",
+        "tests": [
+            "test_phase_13_54_df_gallery_fixes.py::test_T1_scatter_direct_auto_title_sets_title",
+            "test_phase_13_54_df_gallery_fixes.py::test_T2_draw_type_scatter_auto_title_routes_through_dispatch",
+            "test_phase_13_54_df_gallery_fixes.py::test_T3_scatter_no_auto_title_regression_baseline",
+        ],
+    },
+    {
+        "id": "HIST2D.time_format_epoch",
+        "name": "hist2d() time_format= handles float64 epoch-second timestamps (~1.776e9) without OverflowError; mirrors draw_hist() epoch-second branch (BUG_dfdraw_20260610 close)",
+        "category": "HIST2D",
+        "tests": [
+            "test_phase_13_54_df_gallery_fixes.py::test_T4_hist2d_float_epoch_time_format_no_overflow",
+            "test_phase_13_54_df_gallery_fixes.py::test_T5_hist2d_datetime64_time_format_phase_13_51_regression",
+            "test_phase_13_54_df_gallery_fixes.py::test_T6_hist2d_non_time_float_no_time_format_else_else_branch",
+        ],
+    },
     # ── Phase 13.49.DF — meta-tests for the capability matrix itself ──
     {
         "id": "META.capability_matrix",

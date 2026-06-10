@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-06-09 13:05 UTC
+**Generated:** 2026-06-10 07:43 UTC
 **Phase:** PHASE_13_52_DF_END
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -10,11 +10,11 @@
 | Status | Count | % |
 |--------|------:|--:|
 | ✅ Verified | 59 | 41% |
-| ☑️ Smoke-only | 83 | 58% |
+| ☑️ Smoke-only | 85 | 59% |
 | 🧨 Broken | 0 | 0% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **143** | |
-| **Total proof tests** | **644** | |
+| **Total features** | **145** | |
+| **Total proof tests** | **650** | |
 | **Invariance tests** | **356** | |
 | **Visual tests** | **27** | |
 
@@ -94,6 +94,8 @@
 | ☑️ | **HIST.hist_errors** — Poisson error bar overlay (hist_errors=True): √n raw / √n/N probability / √n/(N·bw_i) density (per-bin); weighted Poisson via Σw²; zero-bin masking; ungrouped+bins=int safe; Phase 13.36 color sentinel preserved — Phase 13.37.DF | 10 | 10 | 0 | 0 |  |
 | ✅ | **HIST.time_axis** — hist() time_format= pre-conversion: x_data → matplotlib date numbers BEFORE ax.hist(). Post-hoc rewrite would be no-op for Patches (lesson from Phase 13.39 v1.0 P1). CP1-1 regression-lock: §9.TA.5 uses realistic timestamps (~1.7e9), as epoch-0 made both pre-conv (0.0) and raw (0) paths pass — Phase 13.39.DF | 1 | 1 | 0 | 1 |  |
 | ✅ | **HIST.cumulative** — hist() cumulative=True/-1/False — ROOT TH1::Draw('cumulative') equivalent. Three values: True (ascending CDF/ECDF), False (default, byte-identical backward compat), -1 (descending/survival, ROOT convention). matplotlib native cumulative= forwarded explicitly at 4 internal call sites (Phase 13.39 §2.2 lesson applied recursively: DFDraw.hist → draw_hist → _draw_hist_grouped → ax.hist; ALSO through _dispatch_faceted_render for facet_by composition). Composes with: norm='probability' (→ ECDF 0-1), group_by overlaid (per-group ECDFs), group_by stacked (CP2-1 regression lock for 3rd call site), facet_by (per-facet cumulative), histtype='step' (HEP-standard step ECDF). Correctness guard (M5): hist_errors+cumulative → NotImplementedError (Poisson per-bin errors are independent; cumulative counts are correlated). Vector dispatch [x,y] propagates cumulative correctly (Phase 13.16.DF FIX1 bug class lock) — Phase 13.40.DF | 10 | 10 | 0 | 10 |  |
+| | **HIST2D** | | | | | |
+| ☑️ | **HIST2D.time_format_epoch** — hist2d() time_format= handles float64 epoch-second timestamps (~1.776e9) without OverflowError; mirrors draw_hist() epoch-second branch (BUG_dfdraw_20260610 close) | 3 | 3 | 0 | 0 |  |
 | | **LEGEND** | | | | | |
 | ✅ | **LEGEND.modes** — legend= polymorphic kwarg (bool|str|dict) + show_legend= bool parallel + four modes (all|none|shared|first) 👁 | 6 | 6 | 0 | 2 | 4 |
 | | **META** | | | | | |
@@ -168,6 +170,7 @@
 | ✅ | **SCATTER.expr_compose** — scatter() expression color + expression marker composition: both encodings simultaneously on single-path scatter. Each marker subgroup carries its own colormap array — Phase 13.38.DF | 1 | 1 | 0 | 1 |  |
 | ✅ | **SCATTER.time_axis** — scatter() time_format= pre-conversion: x_data → matplotlib date numbers BEFORE ax.scatter/ax.errorbar — Phase 13.39.DF | 1 | 1 | 0 | 1 |  |
 | ✅ | **SCATTER.scatter3d** — draw('z:y:x', type='scatter3d') → 3D point cloud via mpl_toolkits.mplot3d. Reuses Phase 13.38 _process_color() + _process_size() unchanged. color=/size= accept column names or df.eval() expressions. elev=/azim= for ax.view_init(). Stats dict locks mean_x AND mean_y AND mean_z to 1e-9 (CP1-3). Scope boundaries: group_by + scatter3d raises (CP2-1); same=True onto non-3D axes raises (CP2-2). 'y:x' (colon!=2) with type='scatter3d' raises with actionable message — Phase 13.39.DF | 8 | 8 | 0 | 8 |  |
+| ☑️ | **SCATTER.auto_title** — DFDraw.scatter() / draw(type='scatter') honors auto_title= without crashing PathCollection.set() — symmetry with hist/profile/scatter3d (BUG_dfdraw_20260609 close) | 3 | 3 | 0 | 0 |  |
 | | **STATS** | | | | | |
 | ☑️ | **STATS.default_fields** — Auto-detect default stats fields by plot type | 1 | 1 | 0 | 0 |  |
 | ☑️ | **STATS.range_aware** — Range-aware statistics (range_x, range_y) | 3 | 3 | 0 | 0 |  |

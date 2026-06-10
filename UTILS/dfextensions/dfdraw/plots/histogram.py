@@ -1255,11 +1255,22 @@ def draw_hist2d(
     if _need_date_convert:
         import matplotlib.dates as mdates
 
+    # Phase 13.54.DF: BUG_dfdraw_20260610_hist2d_time_format_epoch — add
+    # the float-epoch-seconds branch that draw_hist already has at L440-453.
+    # Without this, float64 epoch values (~1.776e9) bypass the datetime64
+    # conversion and reach matplotlib's date axis as raw numbers, where
+    # interpretation as ordinal days produces OverflowError. Discovered
+    # via ADF gallery G3.16. Pattern mirrors draw_hist.
     if isinstance(x, str):
         x_name = x
         _x_raw = df[x].values
         if _need_date_convert and np.issubdtype(_x_raw.dtype, np.datetime64):
             x_data = mdates.date2num(_x_raw)
+        elif _need_date_convert:
+            # Phase 13.54.DF: float epoch-seconds branch (mirror draw_hist:451)
+            x_data = mdates.date2num(
+                pd.to_datetime(_x_raw, unit='s').to_pydatetime()
+            )
         else:
             x_data = _x_raw.astype(float)
     else:
@@ -1267,6 +1278,11 @@ def draw_hist2d(
         _x_raw = np.asarray(x)
         if _need_date_convert and np.issubdtype(_x_raw.dtype, np.datetime64):
             x_data = mdates.date2num(_x_raw)
+        elif _need_date_convert:
+            # Phase 13.54.DF: float epoch-seconds branch
+            x_data = mdates.date2num(
+                pd.to_datetime(_x_raw, unit='s').to_pydatetime()
+            )
         else:
             x_data = _x_raw.astype(float)
 
@@ -1275,6 +1291,11 @@ def draw_hist2d(
         _y_raw = df[y].values
         if _need_date_convert and np.issubdtype(_y_raw.dtype, np.datetime64):
             y_data = mdates.date2num(_y_raw)
+        elif _need_date_convert:
+            # Phase 13.54.DF: float epoch-seconds branch (y-axis symmetry)
+            y_data = mdates.date2num(
+                pd.to_datetime(_y_raw, unit='s').to_pydatetime()
+            )
         else:
             y_data = _y_raw.astype(float)
     else:
@@ -1282,6 +1303,11 @@ def draw_hist2d(
         _y_raw = np.asarray(y)
         if _need_date_convert and np.issubdtype(_y_raw.dtype, np.datetime64):
             y_data = mdates.date2num(_y_raw)
+        elif _need_date_convert:
+            # Phase 13.54.DF: float epoch-seconds branch
+            y_data = mdates.date2num(
+                pd.to_datetime(_y_raw, unit='s').to_pydatetime()
+            )
         else:
             y_data = _y_raw.astype(float)
     

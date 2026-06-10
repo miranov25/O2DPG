@@ -5120,6 +5120,13 @@ class DFDraw:
         marker: Optional[str] = None,
         stats: Optional[Union[bool, List[str]]] = None,
         title: Optional[str] = None,
+        # Phase 13.54.DF: BUG_dfdraw_20260609_scatter_auto_title — add the
+        # named parameter here so the scalar dispatch path forwards it to
+        # draw_scatter() (which now accepts it). Prior to Phase 13.54 the
+        # absence of this parameter meant the scalar code path silently
+        # dropped auto_title= via the L1621 strip; the vector path was
+        # also blocked because draw_scatter()'s signature lacked it.
+        auto_title: Union[bool, str] = False,
         xlabel: Optional[str] = None,
         ylabel: Optional[str] = None,
         ax=None,
@@ -5377,6 +5384,12 @@ class DFDraw:
                 facet_by=_effective_facet_by, plot_kind='scatter',
                 color=color, size=size, marker=marker,
                 stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
+                # Phase 13.54.DF: BUG_dfdraw_20260609_scatter_auto_title —
+                # forward auto_title= through the faceted scatter path
+                # (mirror of hist2d at drawer.py:~6669). Without this the
+                # faceted scatter would silently drop auto_title even
+                # though the standard path now honors it.
+                auto_title=auto_title,
                 group_by=group_by, top_k=top_k, ncols=ncols,
                 sharex=sharex, sharey=sharey,
                 cmap=cmap, colorbar=colorbar, clabel=clabel, jitter=jitter,
@@ -5418,6 +5431,11 @@ class DFDraw:
                 df, x_expr, y_expr,
                 ax=ax, color=color, size=size, marker=marker,
                 stats=stats, title=title, xlabel=xlabel, ylabel=ylabel,
+                # Phase 13.54.DF: BUG_dfdraw_20260609_scatter_auto_title —
+                # forward the named param so the standard scalar path
+                # produces auto-titles like hist/profile (G1.04 in the
+                # ADF gallery).
+                auto_title=auto_title,
                 group_by=group_by, top_k=top_k, cmap=cmap, colorbar=colorbar,
                 clabel=clabel, jitter=jitter,
                 # Phase 13.28.DF: NaN/inf filter policy
