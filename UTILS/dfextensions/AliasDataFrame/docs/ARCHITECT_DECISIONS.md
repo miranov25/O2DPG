@@ -69,8 +69,33 @@
 
 ---
 
+## AD-2/13.56.ADF — Batch type shims; figures guards; D4 error; help; R-1 rescope
+
+**Date:** 2026-06-11 | **Phase:** PHASE_13_56_ADF | **Status:** ratified
+
+**Decision:**
+
+1. **Amends AD-1/13.55.ADF item 4 scope:** `adf.draw_batch` gains per-spec type shims (literal `'auto'` pre-resolution; 3-var `'profile'`→`'profile2d'` promotion) in the ADF wrapper loop, **pre-delegation** — the transitive-inheritance rationale of AD-1 is preserved (dispatch itself remains dfdraw's). (D1=A)
+2. `draw_figures` guards for `type='profile2d'` and `facet_by` in specs: A-10 semantics (raise default; labelled `[ERROR]` placeholder under explicit skip). **Both temporary**, removal tied to `BUG_dfdraw_20260611_profile2d_ax_ignored` / `BUG_dfdraw_20260611_facet_by_ax_ignored` (dfdraw next steps: honour `ax=`; nested sub-gridspec). (D2=B, D3)
+3. Alias-eval `astype(int)` class gets a clean actionable error naming the quoted dtype form; eval-namespace lambdas unchanged. Deferred feature: EXPR.astype_type_tokens. (D4=A)
+4. Gallery extended by `weights=`, `on_error='skip'` placeholder demonstration, `entry_*` window — mandatory 36→39. (D5: "More is better; I do not want to be surprised in production.")
+5. `draw_help()` lists the live-introspected type surface incl. aliases and overlay syntax; deferred: HELP.live_introspection. ("I prefer to get full help.")
+6. R-1 rescoped to regression lock + docstring (panel M-1: no crash exists at HEAD; FM-Probe-1 candidate recorded).
+7. `keep_materialized` hook-alias residue (panel P3-1): disposition (a) — TS qualification; follow-up item CLEANUP.hook_alias_tracking.
+
+**Ratification (verbatim, GP-3):**
+
+> *"D1: A · D2: B · D3: I think that will be fixed in dfdraw later. We should add a comment about the next step in dfdraw. · D4: Not sure what is safer. I assume we can do more expression evaluation in ADF. · D5: More is better; I do not want to be surprised in production."* — M. Ivanov, 2026-06-11
+> *"R-1- Confirmed"* — M. Ivanov, 2026-06-11 (subsequently rescoped per panel M-1)
+> *"I prefer to get full help."* — M. Ivanov, 2026-06-11
+> *"Approved. Plase start coding"* — M. Ivanov, 2026-06-11 (v1.2 GO)
+
+**Source:** PHASE_13_56_ADF_PostAuditFixes_Proposal_v1_2.md §0; v1.0/v1.1 consolidated review summaries.
+
+
 ## Revision History
 
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0.0 | 2026-06-10 | Registry created (PHASE_13_55_ADF §11 item 6). Seeded with AD-1/13.55.ADF. Legacy backfill scan proposed post-13.55. |
+| 1.1.0 | 2026-06-11 | AD-2/13.56.ADF added (PHASE_13_56_ADF ratifications; amends AD-1 item-4 scope). |

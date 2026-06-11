@@ -12,6 +12,9 @@ FUNC.regression_persistence) covered by 11 R-tests. Total features: 41 → 44.
 Phase 13.23.ADF (2026-04-29): Added 3 new features (SUB.multilevel,
 CORE.dependency_tree, CORE.invalidation). Extended 6 existing features
 with new test patterns (J1, K1, K2, E1, E2, S1, D1, S5). Total: 44 → 47.
+Phase 13.56.ADF (2026-06-11): Added 2 new features under DISPATCH category
+(DISPATCH.adf_routing, DISPATCH.error_visibility) covered by the 29
+Phase-13.55 tests + 14 Phase-13.56 tests. Total: 47 → 49.
 """
 
 FEATURES = [
@@ -373,5 +376,30 @@ FEATURES = [
      "category": "CORE",
      "test_patterns": [
          "test_V1_alias_invalidation.py",
+     ]},
+    # ── DISPATCH (2) — PHASE_13_55_ADF / PHASE_13_56_ADF ──
+    {"id": "DISPATCH.adf_routing",
+     "name": "adf.draw/draw_figures route through DFDraw.draw() (auto pre-resolution, overlay strings, type aliases, 3-var profile promotion)",
+     "category": "DISPATCH",
+     "test_patterns": [
+         "test_phase_13_55_adf_dispatch_audit.py::TestGroup1TypeCoverage",
+         "test_phase_13_55_adf_dispatch_audit.py::TestGroup2KwargLocks",
+         "test_phase_13_55_adf_dispatch_audit.py::TestGroup4RoutingRegression",
+         "test_phase_13_55_adf_dispatch_audit.py::TestGroup6ProfilePromotion",
+         "test_phase_13_56_adf_post_audit.py::TestG6BatchShims",
+         "test_phase_13_56_adf_post_audit.py::TestR1ThreeLevelFacetLock",
+         "test_phase_13_56_adf_post_audit.py::TestH1DrawHelp",
+     ]},
+    {"id": "DISPATCH.error_visibility",
+     "name": "Batch-surface error visibility (on_error='raise' defaults; A-10/E-3/E-4 guards; draw_fit_summary documented exception)",
+     "category": "DISPATCH",
+     "test_patterns": [
+         "test_phase_13_55_adf_dispatch_audit.py::TestGroup3OnError",
+         "test_phase_13_55_adf_dispatch_audit.py::TestGroup5DrawBatchOnError",
+         "test_phase_13_56_adf_post_audit.py::TestG1Profile2dGuard",
+         "test_phase_13_56_adf_post_audit.py::TestG2FacetByGuard",
+         "test_phase_13_56_adf_post_audit.py::TestG3SelectionAliasMatrix",
+         "test_phase_13_56_adf_post_audit.py::TestG5AstypeTypeTokens",
+         "test_phase_13_56_adf_post_audit.py::TestG7CoverageLocks",
      ]},
 ]

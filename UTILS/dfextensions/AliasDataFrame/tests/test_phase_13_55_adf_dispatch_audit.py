@@ -155,12 +155,18 @@ class TestGroup1TypeCoverage:
         assert res["f"]["stats"][0] is not None
 
     def test_T7_figures_profile2d_in_spec(self, adf):
-        """T7: profile2d (2D heatmap) inside draw_figures spec works."""
-        res = adf.draw_figures(
-            _figspec([{"expr": "z:y:x", "type": "profile2d", "bins": 8}]),
-            verbose=False)
-        _no_error_placeholder(res["f"]["axes"][0])
-        assert res["f"]["stats"][0] is not None
+        """T7 (AMENDED in PHASE_13_56_ADF): profile2d inside a draw_figures
+        spec is now guarded. The original assertion locked the E-3
+        silent-defect state — audit AUDIT_ADF_GRAPHICS_2026_06 proved the
+        dashboard panel rendered EMPTY while stats looked valid (the
+        _no_error_placeholder + stats-not-None pass was the silent wrong
+        output itself). The supported surfaces are adf.draw and
+        adf.draw_batch (locked by T3/T-G6b); the figures-side contract is
+        now the clean guard error (T-G1a/b own the detailed assertions)."""
+        with pytest.raises(ValueError, match="profile2d.*draw_figures"):
+            adf.draw_figures(
+                _figspec([{"expr": "z:y:x", "type": "profile2d", "bins": 8}]),
+                verbose=False)
 
     def test_T7_5_figures_scatter3d_clean_error(self, adf):
         """T7.5 (A-10): scatter3d in draw_figures spec -> clean actionable error.
@@ -381,3 +387,48 @@ class TestGroup5DrawBatchOnError:
             on_error="skip", verbose=False)
         assert "_errors" in results and "bad" in results["_errors"]
         assert "good" in results and results["good"]["stats"] is not None
+
+# =============================================================================
+# Group 6 — Post-gallery regression fix (fig08 class): 3-var profile promotion
+# =============================================================================
+
+@pytest.mark.invariance
+class TestGroup6ProfilePromotion:
+    """PHASE_13_55_ADF post-gallery fix. Gallery fig08 regressed because
+    DFDraw.profile() promotes 3-variable expressions to profile2d but
+    DFDraw.draw(type='profile') does not. ADF promotes before routing.
+    FM#12: T3b reproduces the exact fig08 public call form (selection +
+    bins + auto_title through adf.draw with type='profile')."""
+
+    def test_T3b_draw_3var_profile_promotion(self, adf):
+        """T3b: adf.draw 3-var expr with type='profile' → profile2d (fig08 form)."""
+        adf.add_alias("good", "(x > -10)*1")
+        fig, ax, stats = adf.draw("z:y:x", selection="good>0", type="profile",
+                                  bins=8, auto_title=True)
+        assert fig is not None and stats is not None
+
+    def test_T3c_draw_vector_expr_profile_not_promoted(self, adf):
+        """T3c: vector expr '[a,b]:x' (1 top-level colon) stays 2-var profile."""
+        fig, ax, stats = adf.draw("[y, z]:x", type="profile", bins=8)
+        assert fig is not None
+
+    def test_T7b_figures_3var_profile_promotion(self, adf):
+        """T7b (AMENDED in PHASE_13_56_ADF): the 3-var promotion inside a
+        draw_figures spec now lands on the profile2d guard (binding order
+        §3.4) instead of the E-3 empty panel the original assertion was
+        unknowingly locking. Promotion itself stays locked on the working
+        surfaces by T3b (adf.draw) and T-G6b (adf.draw_batch)."""
+        with pytest.raises(ValueError, match="profile2d.*draw_figures"):
+            adf.draw_figures(
+                _figspec([{"expr": "z:y:x", "type": "profile", "bins": 8}]),
+                verbose=False)
+
+    def test_T3d_colon_counter_units(self, adf):
+        """T3d: bracket-aware counter unit checks."""
+        c = adf._top_level_colon_count
+        assert c("x") == 0
+        assert c("y:x") == 1
+        assert c("z:y:x") == 2
+        assert c("[a, b]:x") == 1
+        assert c("f(a, b):g(c, d)") == 1
+        assert c("[a:b]:x") == 1  # colon inside brackets not counted

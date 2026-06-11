@@ -1,5 +1,5 @@
 """
-time_series_draw.py  — dfdraw full coverage gallery (v2.1, PHASE_13_55_ADF)
+time_series_draw.py  — dfdraw full coverage gallery (v2.2, PHASE_13_56_ADF)
 
 Usage from IPython:
     adf = build_adf("time_series_tracks_0.root")          # full, ~4 min
@@ -262,6 +262,35 @@ def fig39_figures_overlay_in_spec(adf):
     return r["fig"], r["axes"], r["stats"]
 
 
+# ── G9 — Coverage closure (PHASE_13_56_ADF, audit D1 gaps) ───────────────────
+
+def fig40_weights_alias(adf):
+    """G9.40 — weights= alias — weighted vs unweighted ncl distribution"""
+    adf.add_alias("w_dca", "1.0 + abs(dcar_tpc_vertex)")
+    return adf.draw("ncl", type="hist", bins=50, weights="w_dca",
+                    selection="ncl>30", auto_title=True)
+
+def fig41_on_error_skip_placeholder(adf):
+    """G9.41 — on_error='skip' — deliberate bad spec: visual confirmation of
+    the labelled [ERROR] placeholder next to a healthy panel (programmatic
+    assertions live in T-G1b/T-G2b/T13-15; this figure is visual-only)."""
+    res = adf.draw_figures([{
+        "name": "g9_skip_demo",
+        "suptitle": "on_error='skip' placeholder demonstration (deliberate)",
+        "plots": [
+            {"expr": "ncl", "type": "not_a_plot_type"},
+            {"expr": "ncl", "type": "hist", "bins": 50, "selection": "ncl>30"},
+        ]}], on_error="skip", verbose=False)
+    r = res["g9_skip_demo"]
+    return r["fig"], r["axes"], r["stats"]
+
+def fig42_entry_window(adf):
+    """G9.42 — entry_begin/entry_end — first 200k entries vs full sample"""
+    return adf.draw("dcar_tpc_vertex:sector", type="profile", bins=36,
+                    selection=BASE_SEL, entry_begin=0, entry_end=200_000,
+                    auto_title=True)
+
+
 # ── G7 — Full stack ADF + GB (optional, mutate adf in place) ─────────────────
 
 def fig32_subframe_vertex(adf):
@@ -310,7 +339,9 @@ FIGURES_G6 = [fig27_vector, fig28_quantile_band, fig29_central_median,
 FIGURES_G8 = [fig35_batch_profile2d, fig36_batch_overlay, fig37_adf_draw_overlay,
               fig38_adf_draw_histo_alias, fig39_figures_overlay_in_spec]
 
-FIGURES_MANDATORY = FIGURES_G1 + FIGURES_G2 + FIGURES_G3 + FIGURES_G4 + FIGURES_G5 + FIGURES_G6 + FIGURES_G8
+FIGURES_G9 = [fig40_weights_alias, fig41_on_error_skip_placeholder, fig42_entry_window]
+
+FIGURES_MANDATORY = FIGURES_G1 + FIGURES_G2 + FIGURES_G3 + FIGURES_G4 + FIGURES_G5 + FIGURES_G6 + FIGURES_G8 + FIGURES_G9
 FIGURES_OPTIONAL  = [fig32_subframe_vertex, fig33_gb_correction_tgl, fig34_gb_correction_sector]
 
 

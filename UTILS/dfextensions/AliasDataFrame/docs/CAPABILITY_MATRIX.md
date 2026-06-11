@@ -1,23 +1,23 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-06-10 20:36 UTC
+**Generated:** 2026-06-11 07:52 UTC
 **Phase:** 13.11.B
-**Taxonomy:** 47 features (PHASE_13_11_B approved)
+**Taxonomy:** 49 features (PHASE_13_11_B approved)
 **Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)
 
 ## Summary
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 28 | 59% |
-| ☑️ Smoke-only | 14 | 29% |
-| 🧨 Broken | 4 | 8% |
+| ✅ Verified | 30 | 61% |
+| ☑️ Smoke-only | 13 | 26% |
+| 🧨 Broken | 5 | 10% |
 | 📋 Planned | 1 | 2% |
-| **Total features** | **47** | |
-| **Matched tests** | **1642** | |
-| **Invariance tests** | **205** | |
+| **Total features** | **49** | |
+| **Matched tests** | **1685** | |
+| **Invariance tests** | **248** | |
 
-**Unmatched tests:** 124 (not mapped to any feature)
+**Unmatched tests:** 96 (not mapped to any feature)
 
 ## CORE
 
@@ -89,7 +89,7 @@
 
 | Status | Feature | Tests | Pass | Fail | Inv |
 |--------|---------|------:|-----:|-----:|:---:|
-| ☑️ | **BACK.arrow** — PyArrow compute & scatter | 120 | 120 | 0 |  |
+| 🧨 | **BACK.arrow** — PyArrow compute & scatter | 120 | 119 | 1 |  |
 | ✅ | **BACK.numba** — Numba JIT acceleration | 20 | 20 | 0 | 3 |
 | 🧨 | **BACK.invariance** — Backend equivalence (numpy vs arrow vs numba) | 14 | 13 | 1 | 13 |
 
@@ -121,6 +121,13 @@
 |--------|---------|------:|-----:|-----:|:---:|
 | ✅ | **INV.cross_module** — Cross-module invariance tests | 8 | 8 | 0 | 7 |
 
+## DISPATCH
+
+| Status | Feature | Tests | Pass | Fail | Inv |
+|--------|---------|------:|-----:|-----:|:---:|
+| ✅ | **DISPATCH.adf_routing** — adf.draw/draw_figures route through DFDraw.draw() (auto pre-resolution, overlay strings, type aliases, 3-var profile promotion) | 28 | 28 | 0 | 28 |
+| ✅ | **DISPATCH.error_visibility** — Batch-surface error visibility (on_error='raise' defaults; A-10/E-3/E-4 guards; draw_fit_summary documented exception) | 15 | 15 | 0 | 15 |
+
 ## 🧨 Broken Features — Details
 
 ### DRAW.execution
@@ -128,20 +135,23 @@
 - ❌ `test_K1_vector_draw_kwarg_diagnostic.py::TestK1VectorDrawKwargDiagnostic::test_K1_3_draw_batch_forwards_batch_kwargs`
 
 ### COMP.roundtrip
-- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
 - ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
+- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
+
+### BACK.arrow
+- ❌ `test_arrow_scatter.py::TestArrowScatterPerformance::test_arrow_vs_numpy_performance`
 
 ### BACK.invariance
 - ❌ `test_invariance_backend.py::TestInvarianceBackend::test_I2_6_chained_subframe_expressions_numba_vs_numpy`
 
 ### RDF.export
-- ❌ `test_AliasDataFrameRDF.py::TestTMemFileBranch::test_missing_keys_in_friend`
-- ❌ `test_AliasDataFrameRDF.py::TestRDataFrameFriendAccess::test_composite_index_friend`
 - ❌ `test_AliasDataFrameRDF.py::TestAddDefinesCollision::test_collision_from_friend_tree`
+- ❌ `test_AliasDataFrameRDF.py::TestRDataFrameFriendAccess::test_composite_index_friend`
+- ❌ `test_AliasDataFrameRDF.py::TestTMemFileBranch::test_missing_keys_in_friend`
 
 ## Unmatched Tests
 
-124 tests not mapped to any feature.
+96 tests not mapped to any feature.
 
 - `test_B1_validate_aliases_false_positives.py::TestB1ValidateAliasesFalsePositives::test_B1_1_np_pi_not_broken`
 - `test_B1_validate_aliases_false_positives.py::TestB1ValidateAliasesFalsePositives::test_B1_2_subframe_column_not_broken`
@@ -173,7 +183,7 @@
 - `test_Q1_quantiles_profile_adf.py::TestQ1QuantilesADFPassthrough::test_Q1_3_parity_adf_vs_dfdraw`
 - `test_Q1_quantiles_profile_adf.py::TestQ1QuantilesADFPassthrough::test_Q1_4_central_median_forwarded`
 - `test_Q1_quantiles_profile_adf.py::TestQ1QuantilesADFPassthrough::test_Q1_5_groupby_with_quantiles`
-- ... +94 more
+- ... +66 more
 
 ---
 *Generated from pytest JSON + feature_taxonomy.py (v2 taxonomy-based).*

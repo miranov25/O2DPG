@@ -3508,6 +3508,21 @@ class AliasDataFrame:
                     f"Hint: All math functions should be vectorized (numpy-based). "
                     f"If you see this with standard functions like 'atan2', please report as a bug."
                 ) from e
+            if "Cannot interpret '<function" in str(e):
+                # PHASE_13_56_ADF D4=A (audit E-1): the alias-eval namespace
+                # shadows builtins int/float/abs/round with vectorized
+                # lambdas (load-bearing for expression semantics), so
+                # .astype(int) receives a lambda instead of a dtype.
+                # Narrow intercept: only this exact pattern; every other
+                # TypeError re-raises unchanged with original traceback.
+                # Deferred feature: EXPR.astype_type_tokens (AST rewrite).
+                raise TypeError(
+                    f"Type tokens like int/float are not usable inside alias "
+                    f"expressions (the eval namespace provides vectorized "
+                    f"functions under those names). In expression: {expr}\n"
+                    f"Use the quoted dtype form instead: .astype('int64'), "
+                    f".astype('float32'), .astype('float64'), ..."
+                ) from e
             raise
     
     def _eval_arrow(self, expr, context_override=None, return_arrow=False, arrow_context=None):
@@ -11215,6 +11230,13 @@ function collapseDepth(maxD) {{
         tuple
             (fig, ax, stats_dict)
 
+            With a 3-level ``facet_by=[a, b, c]`` (row × column × figID),
+            dfdraw produces one figure per value of the third dimension and
+            the return becomes ``(list_of_figs, axes, stats)`` —
+            ``len(list_of_figs)`` equals the cardinality of ``c``
+            (PHASE_13_56_ADF row 8, regression-locked by T-R1; 4-level
+            faceting raises ``NotImplementedError`` in dfdraw).
+
         Examples
         --------
         >>> adf.draw('dEdx:p', type='profile', bins=100, group_by='charge')
@@ -12226,10 +12248,35 @@ function collapseDepth(maxD) {{
             return
 
         if plot_type is None:
-            print("Available plot types: profile, hist, scatter, hist2d, hexbin")
+            # PHASE_13_56_ADF (architect: "full help"): the type surface is
+            # introspected live so this listing cannot drift behind dfdraw
+            # (B4 / panel F-3 class). Follow-up: HELP.live_introspection
+            # (full kwarg-level generated help).
+            core = ['profile', 'hist', 'scatter', 'hist2d', 'hexbin']
+            extra = [m for m in ('profile2d', 'scatter3d')
+                     if callable(getattr(DFDraw, m, None))]
+            aliases = getattr(
+                __import__('dfextensions.dfdraw.drawer',
+                           fromlist=['_TYPE_ALIASES']),
+                '_TYPE_ALIASES', {})
+            print("Available plot types: " + ", ".join(core + extra))
+            if aliases:
+                alias_str = ", ".join(f"'{k}'→'{v}'"
+                                      for k, v in sorted(aliases.items()))
+                print(f"Type aliases (normalized automatically): {alias_str}")
+            print("Overlay syntax: combine types with '+', e.g. "
+                  "type='hist2d+profile' (2D density with profile overlay).")
+            print("Any type accepted by DFDraw.draw() works here — ADF "
+                  "routes through it, so future dfdraw types and aliases "
+                  "are available automatically.")
+            print("Options: every kwarg takes a shortcut form and, where "
+                  "documented, a full dictionary form (e.g. fit='gauss' or "
+                  "fit={...}); see the dfdraw documentation "
+                  "(dfdraw_Technical_Summary / API reference) for the "
+                  "complete per-type option tables.")
             print("Usage: adf.draw_help('profile')  # show options for profile plots")
             print("\nDFDraw methods:")
-            for method in ['profile', 'hist', 'scatter', 'hist2d', 'hexbin']:
+            for method in core + extra:
                 doc = getattr(DFDraw, method, None)
                 if doc and doc.__doc__:
                     first_line = doc.__doc__.strip().split('\n')[0]
@@ -12237,7 +12284,10 @@ function collapseDepth(maxD) {{
         else:
             func = getattr(DFDraw, plot_type, None)
             if func is None:
-                print(f"Unknown plot type '{plot_type}'. Available: profile, hist, scatter, hist2d, hexbin")
+                print(f"Unknown plot type '{plot_type}'. "
+                      f"Available: profile, hist, scatter, hist2d, hexbin, "
+                      f"profile2d, scatter3d (+ aliases and 'a+b' overlay "
+                      f"strings via adf.draw type=).")
             else:
                 help(func)
 
@@ -12359,6 +12409,21 @@ function collapseDepth(maxD) {{
         for _name, _spec in specs.items():
             _merged_spec = {**merged_defaults_v, **_spec}
             self._ensure_vector_kwargs_aliases(_merged_spec)
+            # PHASE_13_56_ADF (D1=A, AD-2/13.56.ADF): per-spec type shims,
+            # pre-delegation — surface symmetry with adf.draw/draw_figures.
+            # Read effective type from the MERGED spec (type may arrive via
+            # defaults/kwargs), write the resolved type into the ORIGINAL
+            # spec in place (vector_compose precedent below). expr may be
+            # the spec name key (L12338 convention).
+            _eff_type = _merged_spec.get('type')
+            if _eff_type in ('auto', 'profile'):
+                _eff_expr = _merged_spec.get('expr', _name)
+                if _eff_type == 'auto':
+                    _spec['type'] = self._resolve_plot_type(_eff_expr, _eff_type)
+                elif self._top_level_colon_count(_eff_expr) == 2:
+                    # 3-var 'profile' → 'profile2d' (F-E class; reuse the
+                    # bracket-aware counter verbatim).
+                    _spec['type'] = 'profile2d'
             # Phase 13.35.ADF: auto-force vector_compose='outer' on the
             # ORIGINAL spec (not merged) so dfdraw.draw_batch sees it per-spec.
             # Follows existing in-place spec mutation pattern (subframe
@@ -13025,6 +13090,31 @@ function collapseDepth(maxD) {{
                     # profile2d promotion as adf.draw() (fig08 regression
                     # class; see F-E).
                     plot_type = 'profile2d'
+                # PHASE_13_56_ADF guards — placed AFTER the promotion block
+                # (binding order, proposal v1.2 §3.4): scatter3d guard →
+                # 'auto'/promotion → profile2d guard → facet_by guard →
+                # plotter.draw(). Both guards are TEMPORARY pending dfdraw
+                # fixes (D3); D2=B semantics (raise default / labelled
+                # placeholder under explicit skip).
+                if plot_type == 'profile2d':
+                    # Remove when BUG_dfdraw_20260611_profile2d_ax_ignored
+                    # is fixed (dfdraw next step: honour ax=).
+                    raise ValueError(
+                        "type='profile2d' is not supported in draw_figures "
+                        "panels (the provided axis is ignored by the dfdraw "
+                        "renderer — see BUG_dfdraw_20260611_profile2d_ax_"
+                        "ignored). Use adf.draw(expr, type='profile2d') or "
+                        "adf.draw_batch."
+                    )
+                if 'facet_by' in merged:
+                    # Remove if dfdraw adds nested sub-gridspec support —
+                    # see BUG_dfdraw_20260611_facet_by_ax_ignored.
+                    raise ValueError(
+                        "facet_by is not supported in draw_figures panels. "
+                        "Use adf.draw(expr, facet_by=...) for a faceted "
+                        "figure. (dfdraw next step: nested sub-gridspec — "
+                        "see BUG_dfdraw_20260611_facet_by_ax_ignored.)"
+                    )
                 _, _, stats = plotter.draw(expr, type=plot_type, ax=ax, **merged)
                 stats_list.append(stats)
                 
