@@ -1,12 +1,25 @@
 # AliasDataFrame Technical Summary
 
-**Document ID:** `AliasDataFrame_Technical_Summary_v13_28_ADF_v1_7.md`  
+**Document ID:** `AliasDataFrame_Technical_Summary_v13_56_ADF_v1_8.md`  
 **Author:** Claude36 (AliasDataFrame Coder, this revision); Claude37 (Main Reviewer, prior revisions)  
-**Date:** 2026-05-17  
-**Version:** 1.7  
-**Phase:** 13.28.ADF (`export_tree` LZ4 default) — base for active queue  
+**Date:** 2026-06-11  
+**Version:** 1.8  
+**Phase:** 13.56.ADF (post-audit graphics closure) — base for active queue  
 **Audience:** All teams — architecture reviewers, cross-team coders (ORecoAI, RootInteractive, RDataFrameDSL, GBAI), and direct users  
 **Purpose:** Complete public API reference, data model, hierarchical data representation, dependencies, limitations
+
+**Revision notes (v1.8):** Phases 13.55.ADF + 13.56.ADF — graphics sections rewritten from AUDIT_ADF_GRAPHICS_2026_06 cleared rows (this revision touches ONLY graphics content + §13/§14 rows + header; lazy-evaluation sections are unchanged pending the lazy audit):
+
+- Updated header: version 1.8, date 2026-06-11, phase target 13.56.ADF, document ID rolled to v13_56_ADF_v1_8 (panel P2-1/P2-2)
+- §3.1 / §4.14 / §8 rewritten to the audited contract: `adf.draw`/`adf.draw_figures` route through `DFDraw.draw()` (AD-1/13.55.ADF); `'auto'` pre-resolution; overlay strings (`'hist2d+profile'`) and type aliases (`'histo'`) at the ADF surface; 3-var `'profile'`→`'profile2d'` promotion on all three surfaces (AD-2/13.56.ADF batch shims); literal `'auto'` accepted in batch specs.
+- Error visibility: `draw_figures`/`draw_batch` default `on_error='raise'` (BREAKING vs ≤13.54; opt back with `'skip'` → labelled `[ERROR]` placeholder); `draw_fit_summary` keeps `'skip'` (documented exception, AD-1 item 6).
+- Temporary guards documented: `type='profile2d'` and `facet_by` inside `draw_figures` specs raise a clean error (dfdraw `ax=` bugs; removal tied to BUG_dfdraw_20260611_*).
+- Alias-kwargs contract corrected (audit C2/E-5): plain `selection=`/`weights=` alias strings require `lazy=True` on ALL draw surfaces; `selection_vector=`/`weights_vector=`/`facet_by` aliases materialize on all surfaces regardless of `lazy`.
+- 3-level `facet_by` multi-figure return contract documented (T-R1 locked); `central='median'` `return_data` limitation noted (BUG_dfdraw_20260611_median_return_data).
+- `draw_help()` documented (live-introspected type surface); `keep_materialized` hook-alias qualification added (AD-2 item 7).
+- §13.1 bug table: +6 rows (F-A corrected scope, 3 dfdraw bugs, F-B/F-C, parallel-flake cluster incl. `test_arrow_vs_numpy_performance`); §13.2 `draw_lazy` row reworded; §14.1 refreshed (dfdraw principles+delta-audit track, lazy-evaluation audit, guard-removal follow-ups).
+- Stale §8.1 integration pseudocode and §8.2 stats-key example removed (audit E-7/A7) — replaced by the verified routing description.
+- All v1.7 non-graphics content retained byte-identical.
 
 **Revision notes (v1.7):** Phase 13.28.ADF + BUG_draw_silent_swallow:
 
@@ -226,8 +239,12 @@ values = adf['pt']              # Triggers: branch load → alias eval → retur
 values = adf['T.column']       # Triggers: join → scatter → return
 
 # 5. Visualize
-fig, ax, stats = adf.draw("pt")
-adf.draw_figures([{"x": "pt"}, {"y:x": "T.pt:eta"}])
+fig, ax, stats = adf.draw("pt")                          # type inferred ('auto')
+fig, ax, stats = adf.draw("dy:sector", type="hist2d+profile")  # overlay string
+adf.draw_figures([{"name": "qa", "plots": [
+    {"expr": "pt", "type": "hist", "bins": 50},
+    {"expr": "T.pt:eta", "type": "profile"},
+]}])                                                      # named-figure specs
 ```
 
 ### 3.2 Class Relationships
@@ -854,47 +871,111 @@ class AliasDataFrame:
 
 ### 4.14 Drawing & Visualization
 
+> Audited surface — AUDIT_ADF_GRAPHICS_2026_06; routing per AD-1/13.55.ADF,
+> batch shims + guards per AD-2/13.56.ADF. See §8 for the routing contract.
+
 ```python
-    def draw(self, expression, selection=None, group_by=None, **kwargs) -> tuple:
+    def draw(self, expression, type='auto', selection=None, group_by=None,
+             facet_by=None, lazy=None, **kwargs) -> tuple:
         """
-        Plot expression using dfdraw. Auto-loads branches, auto-materializes aliases.
+        Plot expression via dfdraw. Auto-loads branches, auto-materializes aliases.
         Axis labels auto-populated from schema metadata (set_axis_title).
 
         Parameters
         ----------
         expression : str
-            Plot expression (e.g., 'pt', 'y:x', 'dz:r:phi')
+            Plot expression ('pt', 'y:x', 'z:y:x'; ';'-separated vector forms)
+        type : str, default 'auto'
+            'auto' is resolved ADF-side from expression arity, then the call
+            routes through DFDraw.draw() — every dfdraw type works here:
+            scatter, hist, hist2d, profile, profile2d, scatter3d, hexbin,
+            type aliases ('histo'→'hist'), and overlay strings ('hist2d+profile').
+            3-var type='profile' is promoted to 'profile2d' (F-E shim).
         selection : str, optional
-            Row filter expression (e.g., 'eta > 0')
+            Row filter. NOTE (alias contract, audit C2/E-5): a plain selection=
+            or weights= string referencing a NON-materialized alias requires
+            lazy=True (otherwise loud UndefinedVariableError — symmetric on all
+            draw surfaces). selection_vector=/weights_vector=/facet_by alias
+            references materialize on all surfaces regardless of lazy.
         group_by : str, optional
-            Group by column for overlaid plots
+            Overlaid curves per group value.
+        facet_by : str | list, optional
+            Panel grid. 2 levels = row × column in ONE figure. 3 levels =
+            row × column × figID: the return becomes (list_of_figs, axes, stats)
+            with len(list_of_figs) == cardinality of the third dimension
+            (regression-locked, T-R1). 4 levels → NotImplementedError.
+            NOT supported inside draw_figures specs (see guard below).
 
         Returns
         -------
-        (fig, ax, stats_dict) : matplotlib figure, axes, statistics
+        (fig, ax, stats_dict) — or ([figs], axes, stats) for 3-level facet_by.
+        With central='median' the rendered line is the median, but
+        return_data profile_data currently carries the MEAN
+        (BUG_dfdraw_20260611_median_return_data, open) — do not fit
+        profile_data after central='median' until fixed.
 
         Label precedence: explicit kwarg > schema title > column name
 
         Example
         -------
         >>> fig, ax, stats = adf.draw('dz_truth:vtx_z')
-        >>> fig, ax, stats = adf.draw('pull_z', selection='n_contributors > 100')
+        >>> fig, ax, stats = adf.draw('dcar:sector', type='hist2d+profile',
+        ...                           selection='ncl > 60')
         """
 
-    def draw_figures(self, specs, **kwargs):
-        """Batch plotting with composed canvas (multi-subplot QA dashboards).
+    def draw_figures(self, figure_specs, on_error='raise', lazy=None, **kwargs):
+        """Multi-panel QA dashboards from named-figure specs.
+
+        figure_specs : list of {'name': str, 'plots': [plot_spec, ...], ...}
+            where plot_spec = {'expr': str, 'type': str, **dfdraw kwargs}.
+            Plot specs route through DFDraw.draw() exactly like adf.draw()
+            (overlay strings, aliases, 'auto' all work in specs).
+
+        on_error : 'raise' (default since 13.55.ADF — BREAKING vs older
+            releases) | 'skip' (renders a labelled '[ERROR] <expr>' placeholder
+            with the message on the panel; stats entry is None).
+
+        GUARDED (temporary, AD-2/13.56.ADF — clean error instead of a silent
+        empty panel; removed when the dfdraw ax= bugs land):
+          - type='profile2d' in a spec (BUG_dfdraw_20260611_profile2d_ax_ignored)
+            → use adf.draw or adf.draw_batch for profile2d
+          - facet_by in a spec (BUG_dfdraw_20260611_facet_by_ax_ignored)
+            → use adf.draw(facet_by=...) for faceted figures
+          - type='scatter3d' in a spec (needs a 3D axis; 13.55 A-10 guard)
+
+        Returns {figure_name: {'fig', 'axes', 'stats'}}.
 
         Example
         -------
-        >>> adf.draw_figures([
-        ...     {'x': 'pt'},
-        ...     {'y:x': 'dz:eta'},
-        ...     {'x': 'pull_z', 'selection': 'is_fake == 0'},
-        ... ])
+        >>> adf.draw_figures([{'name': 'qa', 'plots': [
+        ...     {'expr': 'pt', 'type': 'hist', 'bins': 50},
+        ...     {'expr': 'dz:eta', 'type': 'profile'},
+        ...     {'expr': 'pull_z', 'type': 'hist', 'selection': 'is_fake == 0'},
+        ... ]}])
         """
 
+    def draw_batch(self, specs, save_dir=None, defaults=None, *,
+                   on_error='raise', lazy=None, **kwargs):
+        """One standalone figure per named spec: {name: {'expr': ..., ...}}.
+        'expr' is REQUIRED in every spec (name-key shorthand is NOT supported
+        end-to-end — F-13.56-1). Per-spec type shims (AD-2 item 1): literal
+        type='auto' resolves and 3-var type='profile' promotes to 'profile2d'
+        before delegation — full surface symmetry with adf.draw.
+        on_error: 'raise' default (BREAKING vs ≤13.54), 'skip' collects
+        per-spec errors in the result. profile2d and facet_by both WORK here
+        (standalone figures — the draw_figures guards do not apply)."""
+
     def draw_fit_summary(self, fit_name, **kwargs):
-        """Generate QA dashboard for registered fit result (see register_fit_result)."""
+        """QA dashboard for a registered fit result (see register_fit_result).
+        DOCUMENTED EXCEPTION (AD-1 item 6): keeps on_error='skip' — per-panel
+        fit failures are data-dependent; placeholder panels are the intended UX."""
+
+    def draw_help(self, plot_type=None):
+        """Print the dfdraw type surface. The listing is live-introspected
+        from DFDraw (types incl. profile2d/scatter3d, type aliases, overlay
+        'a+b' syntax) so it cannot drift behind dfdraw; per-type kwargs via
+        draw_help('profile') etc. Full generated kwarg help: deferred
+        HELP.live_introspection."""
 ```
 
 ### 4.15 Registered Functions (Phase 13.9/13.10)
@@ -1226,43 +1307,96 @@ def _get_subframe_column(self, subframe_name, column_name):
 
 ## 8. Draw Integration with dfdraw
 
-### 8.1 Integration Pattern
+> Rewritten in v1.8 from the executed audit (AUDIT_ADF_GRAPHICS_2026_06) and
+> AD-1/13.55.ADF + AD-2/13.56.ADF. The previous §8.1 pseudocode predated the
+> routing decision and was removed (audit E-7).
 
-```python
-# AliasDataFrame.draw() → dfdraw.DFDraw
-def draw(self, expression, selection=None, group_by=None, **kwargs):
-    # 1. Parse expression for required branches
-    branches = self.get_required_branches(expression)
-    
-    # 2. Load branches (if lazy)
-    self.ensure_branches(branches)
-    
-    # 3. Materialize required aliases
-    self.materialize_aliases(required_aliases)
-    
-    # 4. Create DFDraw and plot
-    from dfextensions.dfdraw import DFDraw
-    drawer = DFDraw(self.df, data_source=self)
-    return drawer.draw(expression, selection=selection, group_by=group_by, **kwargs)
+### 8.1 Routing Contract (AD-1/13.55.ADF, AD-2/13.56.ADF)
+
+All three ADF plot surfaces delegate dispatch to `DFDraw.draw()`:
+
 ```
+adf.draw(expr, type=T)          ─┐
+adf.draw_figures(specs)          ├─ ADF pre-steps ──► DFDraw.draw(expr, type=T', ax=...)
+adf.draw_batch(specs)           ─┘
+```
+
+ADF pre-steps, in binding order:
+
+1. Branch loading + alias materialization (lazy semantics, §6) and subframe
+   column resolution (`Sub.col` → temporary columns).
+2. `'auto'` pre-resolution: the ADF `'auto'` sentinel is resolved from
+   expression arity via `_resolve_plot_type` (ADF convention; dfdraw never
+   sees `'auto'` from `adf.draw`/`adf.draw_figures`). In `draw_batch` specs a
+   literal `'auto'` is resolved per-spec by the AD-2 shim.
+3. 3-var `type='profile'` → `'profile2d'` promotion (F-E shim, all surfaces).
+4. `draw_figures`-only guards (temporary, AD-2 item 2): `scatter3d`,
+   `profile2d`, `facet_by` in specs raise a clean error (or labelled
+   placeholder under `on_error='skip'`) instead of the silent-empty-panel
+   failure the audit found (E-3/E-4). Removal is tied to
+   `BUG_dfdraw_20260611_profile2d_ax_ignored` / `_facet_by_ax_ignored`.
+5. Delegation to `DFDraw.draw()` — therefore overlay strings
+   (`'hist2d+profile'`), type aliases (`'histo'`), and any future dfdraw
+   dispatch additions work at the ADF surface automatically.
 
 ### 8.2 Return Contract
 
 ```python
-fig, ax, stats = adf.draw("pt")
-# fig: matplotlib.Figure
-# ax: matplotlib.Axes
-# stats: {'n': int, 'mean': float, 'std': float, 'min': float, 'max': float}
+fig, ax, stats = adf.draw("pt")                       # single figure
+figs, axes, stats = adf.draw("y:x", facet_by=[a,b,c]) # 3-level facet:
+# figs is a LIST, len == cardinality of c (row × column × figID; T-R1 lock)
+res = adf.draw_figures(specs)   # {name: {'fig', 'axes', 'stats'}}
+res = adf.draw_batch(specs)     # {name: {'fig', 'ax', 'stats'}}
 ```
 
-### 8.3 Label Resolution
+`stats` keys are type-dependent (dfdraw owns them — consult
+`adf.draw_help(<type>)` / the dfdraw Technical Summary rather than this
+document). Known data-contract limitation: with `central='median'`,
+`return_data` `profile_data` currently carries the mean
+(`BUG_dfdraw_20260611_median_return_data`, open P2).
+
+### 8.3 Error Visibility (AD-1 items 2–3, 6)
+
+| Surface | Default | `'skip'` behavior | Exception |
+|---|---|---|---|
+| `adf.draw` | raise (no on_error param) | — | — |
+| `adf.draw_figures` | `on_error='raise'` (BREAKING ≥13.55) | `[ERROR] <expr>` titled placeholder + message on panel; `stats[i] is None` | — |
+| `adf.draw_batch` | `on_error='raise'` (BREAKING ≥13.55) | per-spec error collection | — |
+| `draw_fit_summary` | `on_error='skip'` | placeholder panels | documented exception (data-dependent fits) |
+
+### 8.4 Alias-Kwargs Contract (audit C2/E-5 — corrected wording)
+
+Plain `selection=` / `weights=` strings referencing non-materialized aliases
+require `lazy=True` on ALL draw surfaces (loud `UndefinedVariableError`
+otherwise — symmetric; the historical "batch-only" description was wrong).
+`selection_vector=` / `weights_vector=` / `facet_by` alias references
+materialize on all surfaces regardless of `lazy`
+(`_ensure_vector_kwargs_aliases` runs unconditionally). Residual gap: the
+hook does not scan plain selection/weights strings —
+`BUG_AliasDataFrame_20260610_batch_selection_alias_masked` v1.1, open.
+
+Qualification (AD-2 item 7): `keep_materialized=False` restores
+expression-pipeline aliases after draw, but aliases materialized by the
+vector-kwargs hook persist by design (hot-path choice). Follow-up:
+CLEANUP.hook_alias_tracking.
+
+### 8.5 Label Resolution
 
 dfdraw uses duck-typed label lookup from AliasDataFrame's schema:
 ```
 Label precedence: explicit parameter > schema metadata (title) > column name
 ```
 
----
+### 8.6 Open Cross-Team Items (dfdraw queue)
+
+| ID | Effect at ADF surface | ADF mitigation |
+|---|---|---|
+| BUG_dfdraw_20260611_profile2d_ax_ignored (P1) | profile2d into a provided axis renders elsewhere (empty panel, valid-looking stats) | draw_figures guard (temporary) |
+| BUG_dfdraw_20260611_facet_by_ax_ignored (P1) | facet+ax leaks a detached figure; panel empty | draw_figures guard (temporary) |
+| BUG_dfdraw_20260611_median_return_data (P2) | median renders, mean returned in profile_data | documented here + §13.1 |
+| F-B named-param silent drop (P2) | type-inapplicable kwargs ignored silently | none (warn-on-unconsumed requested) |
+| F-C StringDtype hist (P3) | obscure numpy TypeError | explicit on_error='skip' in 2 layout tests |
+| F-E profile promotion (P1, ADF-shimmed) | none (shim active on all surfaces) | shim removable when dfdraw extends dispatch |
 
 ## 9. Backend Strategy
 
@@ -1491,6 +1625,12 @@ Vision: automatic conversion of C++ SOA (Structure of Arrays) table definitions 
 | I2_6 | P2 | Chained subframe Numba/NumPy mismatch | Use single backend | Open |
 | I4_2, I4_3 | P2 | Scaled compression roundtrip | Use linear/sqrt formulas | Open |
 | RDF failures | P2 | 3 RDF friend access failures | Under investigation | Open |
+| BUG_AliasDataFrame_20260610_batch_selection_alias_masked (v1.1) | P1 | Plain `selection=`/`weights=` alias strings require `lazy=True` on ALL draw surfaces (corrected scope — no draw-vs-batch asymmetry); vector kwargs unaffected | `lazy=True`, or `selection_vector=` | Open |
+| BUG_dfdraw_20260611_profile2d_ax_ignored | P1 (dfdraw) | profile2d ignores provided `ax=` → silent empty dashboard panel | ADF guard in `draw_figures` (temporary) | Open, cross-team |
+| BUG_dfdraw_20260611_facet_by_ax_ignored | P1 (dfdraw) | facet_by + provided `ax=` leaks detached figure, panel empty | ADF guard in `draw_figures` (temporary) | Open, cross-team |
+| BUG_dfdraw_20260611_median_return_data | P2 (dfdraw) | `central='median'` renders median but `return_data` carries mean | do not fit `profile_data` after median | Open, cross-team |
+| F-B named-param silent drop / F-C StringDtype hist | P2/P3 (dfdraw) | type-inapplicable kwargs dropped silently; StringDtype hist obscure error | — / explicit `on_error='skip'` | Open, cross-team |
+| Parallel-flake cluster | P2 | `K2_3`, `test_parquet_roundtrip`, `test_arrow_vs_numpy_performance` flip under 12-worker parallel runs (timing/xdist); CM Verified↔Broken flips accordingly | serial rerun confirms; `xdist_group` Path A recommended | Open (architect: "stochastic — fix later") |
 
 ### 13.2 Architectural Limitations
 
@@ -1498,7 +1638,7 @@ Vision: automatic conversion of C++ SOA (Structure of Arrays) table definitions 
 |-----------|--------|------------|
 | Monolithic module (~12,100 lines) | MTTU concern, hard to navigate | Refactoring planned (after invariance coverage ≥80%) |
 | Code duplication: _serialize/_deserialize vs export/apply schema | Two parallel JSON/ROOT serialization paths | Technical debt — caused 13.9.Fix1 incident |
-| draw_lazy=False default | Silent empty plots for unmaterialized aliases | Decision pending (O2DistAI request: change to True) |
+| draw_lazy=False default | Since 13.55 failures are LOUD, not silent: plain `selection=`/`weights=` alias strings raise `UndefinedVariableError` under `lazy=False` (all surfaces, §8.4); vector kwargs materialize regardless | Decision pending (O2DistAI request: change to True); hook plain-string scan = recommended fix in BUG v1.1 |
 | Left join only | Cannot do inner/outer joins | Sufficient for physics use case |
 | Expression eval via pandas.eval | Limited function set | Custom dispatch for np.* functions |
 | Evaluator not serialized | Must re-register after load | By design (GBAI handles persistence) |
@@ -1523,6 +1663,10 @@ Vision: automatic conversion of C++ SOA (Structure of Arrays) table definitions 
 
 | Task | Status | Priority |
 |------|--------|----------|
+| dfdraw track: dfdraw_PRINCIPLES.md → delta-audit (shortcut⇄dict catalog, ax= contract grid, render-vs-return_data, help completeness) → consolidated fix phase | Sequenced 2026-06-11 (dfdraw-owned, joint 3+3 panel; BREAKING items need consumer-impact enumeration + ADF suite/gallery gate) | P1 |
+| Remove draw_figures profile2d/facet_by guards | Blocked on BUG_dfdraw_20260611_* fixes | P1 follow-up |
+| Lazy-evaluation audit (FormularV3: I1 lazy≡eager invariant; ensure_branches/LazyTreeReader seam; disk-backend forward scope) → TS §6 update → Phase 14 ADFStore proposal | Next ADF audit | P1 |
+| F-A residual: extend vector-kwargs hook to plain selection/weights strings | BUG v1.1 recommended fix | P1 |
 | draw_lazy=True default decision | Pending (O2DistAI request) | P1 |
 | clone_with_selection() method | Pending (O2DistAI request) | P1 |
 | GB tuple support for linear_columns | Pending (Gemini3 ruling) | P1 — blocks end-to-end PolynomialSpec |
