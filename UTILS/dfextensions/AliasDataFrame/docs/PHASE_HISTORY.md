@@ -1,7 +1,7 @@
 # AliasDataFrame Phase History
 
 > **Purpose**: Development history for architecture reviews and restart prompts.  
-> **Last Updated**: 2026-06-10  
+> **Last Updated**: 2026-06-11  
 > **Maintained By**: Marian Ivanov (miranov25)
 
 ## How to Use This File
@@ -42,9 +42,9 @@ AliasDataFrame is a high-performance data analysis framework for particle physic
 
 **Key Metrics:**
 - Performance: 60-770x speedups achieved; production pipeline 2.1× faster (1452s → 692s)
-- Test Coverage: 1673 tests passing (server run `596abd41`, 2026-06-10; 8 pre-existing failures; 205 invariance tests)
-- Lines of Code: ~14,086 (AliasDataFrame.py)
-- Features: 47 in taxonomy (28 verified, 14 smoke-only, 4 broken, 1 planned — SUB.join flips Verified↔Broken with the `test_parquet_roundtrip` parallel flake; 27V/5B in same-commit run 221004); DISPATCH.adf_routing + DISPATCH.error_visibility pending taxonomy registration (Phase 13.55.ADF)
+- Test Coverage: 1687 tests passing (server run `d85b3750`, 2026-06-11; 8 pre-existing failures + 1 error, identical by test identity to the documented baseline; 248 invariance tests)
+- Lines of Code: ~14,150 (AliasDataFrame.py)
+- Features: 49 in taxonomy (30 verified, 14 smoke-only, 4 broken, 1 planned — CM Verified↔Broken counts flip run-to-run with the parallel-flake set: `test_K2_3`, `test_parquet_roundtrip`, `test_arrow_vs_numpy_performance` (timing threshold, first seen run 095125; architect: "stochastic — we should fix it later")); DISPATCH.adf_routing ✅ 28/28 + DISPATCH.error_visibility ✅ 15/15 registered and Verified (Phase 13.56.ADF)
 
 **Development Team:**
 - Coordinator: Marian Ivanov (miranov25)
@@ -557,9 +557,9 @@ Real-data visual gallery script for ADF+dfdraw integration validation. Supersede
 **Status**: ✅ Fixed  
 **Commits**: `a52f5522` (tests + gallery support) → `7906cdfd` (source fix + CM regen)  
 **Severity**: P0 — KeyError crash in production gallery fig13  
-**Discovered by**: Gallery fig13 (`profile + facet_by=["side_type", "qpt_bin10"]`, `draw_lazy=True`)
+**Discovered by**: Gallery fig13 (`profile + facet_by=["side_type", "qpt_bin10"]`, lazy draw path)
 
-**Problem**: `adf.draw(expr, facet_by=["side_type", "qpt_bin10"], draw_lazy=True)` raised `KeyError: 'qpt_bin10'` at dfdraw dispatch when `qpt_bin10` was a lazy alias not yet materialized into `adf.df`. The `_ensure_vector_kwargs_aliases` hook (Phase 13.35.ADF) handled single-string `facet_by` and `selection_vector`/`weights_vector`, but not **list-valued** `facet_by`.
+**Problem**: `adf.draw(expr, facet_by=["side_type", "qpt_bin10"], lazy=True)` raised `KeyError: 'qpt_bin10'` at dfdraw dispatch when `qpt_bin10` was a lazy alias not yet materialized into `adf.df`. The `_ensure_vector_kwargs_aliases` hook (Phase 13.35.ADF) handled single-string `facet_by` and `selection_vector`/`weights_vector`, but not **list-valued** `facet_by`.
 
 **Fix**: One `elif` branch added to `_ensure_vector_kwargs_aliases` at `AliasDataFrame.py:L10996–11014`:
 ```python
@@ -641,7 +641,7 @@ New helper `_top_level_colon_count(expr)` — bracket-aware top-level colon coun
 - Gallery: **40/40 PDF pages, 0 failed mandatory figures** (36 mandatory + 1 fit table + 3 optional)
 
 **Findings surfaced by the fix** (masked-failure class — these failures only became visible when `on_error='skip'` no longer swallowed them):
-- **F-A** (P1, open): `draw_figures`/`draw_batch` do not materialize selection/weights aliases under `lazy=False`. Bug report: `BUG_AliasDataFrame_20260610_batch_selection_alias_masked`. Workaround: pass `lazy=True`.
+- **F-A** (P1, open; scope CORRECTED in Phase 13.56.ADF, bug report v1.1): plain `selection=`/`weights=` alias strings require `lazy=True` on ALL draw surfaces (loud `UndefinedVariableError` post-13.55 — no draw-vs-batch asymmetry); `selection_vector=`/`weights_vector=`/`facet_by` alias references materialize on all surfaces regardless of `lazy` (`_ensure_vector_kwargs_aliases` runs unconditionally). Residual gap: the hook does not scan plain selection/weights strings — symmetric everywhere. Bug report: `BUG_AliasDataFrame_20260610_batch_selection_alias_masked` **v1.1**.
 - **F-B** (P2, cross-team dfdraw): `DFDraw.draw()` silently drops type-inapplicable named params (`bins=` on scatter). Pre-fix: hard matplotlib crash. Post-fix: silent drop. Recommendation: add warn-on-unconsumed-named-param.
 - **F-C** (P3, cross-team dfdraw): `DFDraw.hist` on StringDtype columns raises obscure numpy `TypeError`. Two layout tests amended to explicit `on_error='skip'`; recommendation: clean error or categorical-hist support.
 - **F-E** (P1, ADF-fixed + cross-team dfdraw): 3-var `type='profile'` → `profile2d` promotion missing in `DFDraw.draw()`/`draw_batch`. ADF-side shim in place; dfdraw should extend natively.
@@ -650,6 +650,41 @@ New helper `_top_level_colon_count(expr)` — bracket-aware top-level colon coun
 
 **Governance documents created**:
 - `docs/ARCHITECT_DECISIONS.md` v1.0.0 — ADF-local AD registry (AD-1/13.55.ADF); follows dfdraw registry v1.1.0 conventions
+
+### Phase 13.56.ADF: Post-Audit Fixes (graphics closure)
+**Dates**: 2026-06-11 (proposal v1.0→v1.2, implementation, panel, commit — single day)
+**Status**: ✅ Complete — tagged `PHASE_13_56_ADF_END`; `PHASE_BEGIN_ADF` moved
+**Spec**: `PHASE_13_56_ADF_PostAuditFixes_Proposal_v1_2.md` (§0 fully ratified; architect GO: "Approved. Plase start coding")
+**AD reference**: AD-2/13.56.ADF (registry v1.1.0; amends AD-1 item-4 scope)
+**Audit source**: `AUDIT_ADF_GRAPHICS_2026_06` ([!] GO-with-caveats, 7 reviewers; fable5_5 ranked #1 — 76/76 grid cells, sole finder of E-3/E-4)
+**Coder**: Fable1 (drafter=implementer, architect-ratified COI; non-drafter Rule-16 full-diff panel)
+
+**Delivered**:
+- **E-3/E-4 guards** in `draw_figures`: `type='profile2d'` and `facet_by` in specs raise a clean actionable error (default) or labelled `[ERROR]` placeholder (`on_error='skip'`). Both TEMPORARY — removal tied to `BUG_dfdraw_20260611_profile2d_ax_ignored` / `_facet_by_ax_ignored`. Binding order: scatter3d → 'auto'/promotion → profile2d guard → facet_by guard → `plotter.draw()`. Closes the silent-empty-panel-with-valid-stats class at the ADF surface.
+- **D1=A batch shims** (AD-2 item 1): per-spec literal `'auto'` pre-resolution + 3-var `'profile'`→`'profile2d'` promotion in the `draw_batch` wrapper loop, pre-delegation; in-place spec mutation per the vector_compose precedent. Full type-shim symmetry across all three surfaces.
+- **D4=A**: alias-eval `astype(int)` class → actionable error naming the quoted dtype form (narrow intercept + negative control). Deferred: EXPR.astype_type_tokens.
+- **`draw_help()`**: live-introspected type surface (types incl. profile2d/scatter3d, `_TYPE_ALIASES`, overlay `'a+b'` syntax, dfdraw-docs pointer). Deferred: HELP.live_introspection.
+- **R-1 rescope** (panel M-1: the reported 3-level-facet crash never existed — probe artifact; FM-Probe-1 recorded): T-R1 regression lock + `draw()` docstring multi-figure return note. 0 logic LOC.
+- **Taxonomy 47→49**: DISPATCH.adf_routing + DISPATCH.error_visibility; both ✅ Verified in regenerated CM (28/28, 15/15 matched); unmatched 124→96.
+- **Gallery v2.2**: +G9 fig40 (`weights=` alias), fig41 (`on_error='skip'` placeholder demonstration — the audit Q6 visual confirmation), fig42 (`entry_begin/entry_end`); mandatory 36→39. Production run: **43/43 pages, 0 failed** (1.97M tracks).
+- **Doc corrections** (rule 4d): F-A bug report **v1.1** (corrected scope — see Bug Fixes section); this file's F-A/queue/reproducer/flake-set corrections applied in this update.
+
+**Test results** (architect runs `f2ebe0bc` → `d85b3750`, 2026-06-11):
+- Phase tests: **15/15** (`tests/test_phase_13_56_adf_post_audit.py`); both phase files **44/44**
+- FM#12 reverse verification: **10 must-fail tests fail on 13.55-state code / 5 locks pass** (CRR rev 1.1 P2-1: coder's original 9/6 was a taxonomy-copy sequencing artifact; fable5_5's independent 10/5 reproduction correct)
+- Full suite: **1687 passed; failure set identical by test identity** to the documented 8+1 baseline (run d85b3750; run 095125 additionally hit the arrow timing flake — see Key Metrics flake set)
+- T-G1b/T-G2b landed the panel three-assertion form VERBATIM (C-6 clause)
+
+**Amendments with disclosure**: 13.55 T7/T7b had been locking the E-3 silent-empty-panel state (stats non-None, panel blank — placeholder-blind assertions); amended to the guarded contract. Promotion stays locked by T3b/T-G6b on the working surfaces.
+
+**Findings**:
+- **F-13.56-1**: name-key batch specs (expr from spec name) are rejected by dfdraw `draw_batch` ("Missing 'expr'") — the ADF `.get('expr', _name)` fallback is defensive only; no end-to-end name-key support exists. Architect disposition pending (drop the convention vs implement dfdraw-side).
+
+**Cross-team outputs (routed to dfdraw)**: `BUG_dfdraw_20260611_profile2d_ax_ignored` (P1), `BUG_dfdraw_20260611_facet_by_ax_ignored` (P1), `BUG_dfdraw_20260611_median_return_data` (P2).
+
+**Panel**: CRR rev 1.1 [!] APPROVED (9 reviewers; C-1 AD-registry overwrite found by all 9, fixed by architect, fable5_5 closure review [X]→[OK]; C-3 CM header verified 49). Governance recommendation adopted for next Org revision: `governance_checks` registry-scope gate (per-team AD registries contain only own-scoped IDs, e.g. `AD-N/.*\.ADF`).
+
+**Follow-up**: TECHNICAL_SUMMARY v1.8 (graphics rewrite from audit cleared rows) committed 2026-06-11 after [!] panel (8 reviewers). Next ADF audit: lazy evaluation (FormularV3). dfdraw track: PRINCIPLES v1.1 + grammar package sent for ratification 2026-06-11.
 
 ### Phase 13.25.DF FIX1: dfdraw Quantile Test-Quality + AD-52 Sentinel Fix
 **Dates**: 2026-05-14 (proposal drafted)  
@@ -681,11 +716,11 @@ Fix cycle against approved spec `PHASE_13_25_DF_v1.3_Proposal.md` (no re-litigat
 **Discovered by**: Phase 13.55.ADF masked-failure audit (F-A finding); tests S2/S3/S4 exposed when default changed to `on_error='raise'`  
 **Filed**: `docs/BUG_AliasDataFrame_20260610_batch_selection_alias_masked.md`
 
-**Problem**: `draw_figures`/`draw_batch` do not materialize selection/weights vector aliases under the default `lazy=False` setting. The BUG_20260420 fix covered `adf.draw()` only. Under the old `on_error='skip'` default, the materialization failure rendered as an error-text placeholder in the dashboard — invisible in typical QA workflows.
+**Problem** (scope corrected in Phase 13.56.ADF — v1.0 of this entry was wrong; audit C2/E-5, executed 10-call matrix): plain `selection=`/`weights=` strings referencing non-materialized aliases fail under `lazy=False` on **ALL THREE surfaces** (`adf.draw`, `draw_figures`, `draw_batch`) — loud `UndefinedVariableError` post-13.55; there is NO draw-vs-batch asymmetry. `selection_vector=`/`weights_vector=`/`facet_by` alias references work on all surfaces regardless of `lazy` (the 13.35 hook runs unconditionally everywhere). Under the old `on_error='skip'` default the failures rendered as placeholder panels — invisible in typical QA workflows.
 
-**Workaround**: Pass `lazy=True` to `draw_figures`/`draw_batch`. This triggers alias pre-materialization before dispatch.
+**Workaround**: Pass `lazy=True` (any surface), or use the `selection_vector=`/`weights_vector=` forms.
 
-**Recommended fix**: Extend `_ensure_vector_kwargs_aliases` call to `draw_figures`/`draw_batch` per-spec/per-plot loops under `lazy=False` (analogous to the `adf.draw()` fix in BUG_20260420). Separate phase, small scope.
+**Recommended fix**: Extend the `_ensure_vector_kwargs_aliases` scan set to plain `selection=`/`weights=` strings (one scan site; all surfaces inherit). Regression net: Phase 13.56 T-G3 locks the corrected six-cell behavior matrix with fresh instances. Bug report: **v1.1** (`BUG_AliasDataFrame_20260610_batch_selection_alias_masked_v1_1.md`).
 
 **Tests**: S2/S3/S4 amended in Phase 13.55.ADF to use `lazy=True` + placeholder-proof assertions (`_errors=={}`, `stats[0] is not None`).
 
@@ -1311,6 +1346,7 @@ All major decisions require consensus from 3+ AI reviewers:
 | ADF dispatch routes through DFDraw.draw() (AD-1/13.55.ADF) | `getattr(plotter, method_name)` replaced at `adf.draw()` + `adf.draw_figures()` dispatch sites; overlay strings and type aliases now work at ADF surface; `'auto'` pre-resolved via `_resolve_plot_type` before routing (ADF convention); 3-var `type='profile'` promoted to `'profile2d'` ADF-side until dfdraw extends its early dispatch (F-E shim). Architect: "OK. Approve." (2026-06-10) |
 | draw_figures + draw_batch default on_error='raise' (AD-1/13.55.ADF) | All general-purpose ADF batch surfaces default to raise; silent-skip failure mode closed. draw_fit_summary keeps 'skip' (documented exception — data-dependent per-panel fit failures; QA-dashboard UX). Architect: "Skip" for draw_fit_summary. |
 | ADF ARCHITECT_DECISIONS.md registry created | Phase 13.55.ADF; mirrors dfdraw registry v1.1.0 conventions. Seeded with AD-1/13.55.ADF. |
+| Batch type shims pre-delegation; figures guards temporary (AD-2/13.56.ADF) | `draw_batch` per-spec 'auto' resolution + 3-var profile promotion in the ADF wrapper loop (dispatch stays dfdraw's — AD-1 rationale preserved); profile2d/facet_by guards in `draw_figures` removed when the dfdraw `ax=` bugs land. Architect: "D1: A · D2: B" (2026-06-11). |
 
 ---
 
@@ -1407,7 +1443,11 @@ Remaining overhead is Python/Pandas framework cost.
 
 ### Active queue (priority order)
 
-- [ ] **BUG_AliasDataFrame_20260610_batch_selection_alias_masked** (F-A, P1) — `draw_figures`/`draw_batch` don't materialize selection/weights aliases under `lazy=False`; surfaced by Phase 13.55.ADF on_error default change. Workaround: `lazy=True`. Fix: extend `_ensure_vector_kwargs_aliases` to batch paths.
+- [ ] **BUG_AliasDataFrame_20260610_batch_selection_alias_masked v1.1** (F-A, P1, scope corrected 13.56) — plain `selection=`/`weights=` alias strings need `lazy=True` on ALL draw surfaces; vector kwargs unaffected. Fix: extend the hook scan set to plain strings (one site, all surfaces inherit; T-G3 regression net in place).
+- [ ] **Parallel-flake cluster** (`BUG_AliasDataFrame_20260526_parallel_flake_compression` scope extension) — `test_K2_3`, `test_parquet_roundtrip`, `test_arrow_vs_numpy_performance` (timing threshold, run 095125) flip under 12-worker runs; CM Verified↔Broken flips accordingly. Path A (`pytest xdist_group`) recommended. Architect: "stochastic — we should fix it later."
+- [ ] **dfdraw E-3: profile2d ax= ignored** (`BUG_dfdraw_20260611_profile2d_ax_ignored`, P1, routed to dfdraw) — ADF carries a temporary draw_figures guard; remove on fix.
+- [ ] **dfdraw E-4: facet_by ax= ignored / figure leak** (`BUG_dfdraw_20260611_facet_by_ax_ignored`, P1, routed to dfdraw) — ADF temporary guard; remove on fix (dfdraw next step: nested sub-gridspec / figID paging).
+- [ ] **dfdraw E-2: median return_data carries mean** (`BUG_dfdraw_20260611_median_return_data`, P2, routed to dfdraw) — TS §8.2 carries the limitation line until fixed.
 - [ ] **dfdraw F-E: 3-var profile promotion** — `DFDraw.draw(type='profile', expr='z:y:x')` lacks the `DFDraw.profile()` promotion to profile2d. ADF shim in place (Phase 13.55.ADF). dfdraw team should extend early dispatch natively so ADF shim can be removed.
 - [ ] **dfdraw F-B: named-param silent drop** — `DFDraw.draw()` silently drops type-inapplicable named params (e.g. `bins=` on scatter). Surfaced by Phase 13.55.ADF masked-failure audit. Recommendation: warn-on-unconsumed-named-param in `draw()`.
 - [ ] **dfdraw F-C: StringDtype hist crash** — `DFDraw.hist` on StringDtype columns raises obscure numpy `TypeError`. Two ADF layout tests amended to explicit `on_error='skip'` as workaround. dfdraw recommendation: clean error or categorical-hist support.
