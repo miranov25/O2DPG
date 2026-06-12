@@ -286,6 +286,53 @@ def _filter_facet_value(df, col, value, bins=None, quantiles=None):
 # Kept as a module-level dict so it is greppable and trivially extensible.
 _TYPE_ALIASES = {'histo': 'hist'}
 
+# Phase 13.57.DF AF-4: single live source for the "Unknown plot type" message
+# (the dispatch accepts everything below; the pre-13.57 message string was a
+# stale hand-maintained list that omitted profile2d — same failure class as
+# the 13.55 D-1 dispatch whitelist, fixed the same way: one registry).
+_DRAW_TYPE_NAMES = (
+    'scatter', 'hist', 'hist2d', 'profile', 'profile2d', 'scatter3d', 'hexbin',
+)
+
+# Phase 13.57.DF AF-2' (K-1/K-3): vocabulary sets for the C-7 typo guard now
+# shared by draw() AND the typed methods.
+#
+# _MPL_PASSTHROUGH_KWARGS — matplotlib style vocabulary passed verbatim
+# (PRINCIPLES P-5 / proposal section 4.12 "the pass-through that already
+# works"). These MUST never warn: the production corpus uses linestyle x8,
+# markersize x6, linewidth x3 (K-5 zero-warning gate). This also fixes a
+# latent pre-13.57 draw()-surface footgun: linestyle/linewidth were not in
+# the C-7 known set and warned spuriously on the raw draw() surface.
+_MPL_PASSTHROUGH_KWARGS = frozenset({
+    'linestyle', 'linewidth', 'markersize', 'marker', 'alpha', 'color',
+    'cmap', 'label', 'zorder', 'capsize', 'elinewidth', 'edgecolor',
+    'facecolor', 'markeredgecolor', 'markerfacecolor', 'rasterized',
+    'ls', 'lw', 'ms', 'mec', 'mfc', 'c', 's', 'gridsize', 'mincnt',
+})
+
+# Cross-surface vocabulary: legitimate on sibling surfaces (draw_batch /
+# draw_figures / ADF) and occasionally travelling through **kwargs; never a
+# typo, never an error.
+_CROSS_SURFACE_KWARGS = frozenset({
+    'on_error', 'save_dir', 'save_format', 'verbose', 'dpi',
+    'close_figures', 'entry_begin', 'entry_end',
+})
+
+# dfdraw-semantic kwargs: parameters with dfdraw meaning (never matplotlib
+# pass-through). Used by the K-3 split: a semantic kwarg sent to a typed
+# method that does not accept it RAISES (it would otherwise crash inside
+# matplotlib — the pre-13.57 PathCollection.set()/Line2D.set() class);
+# a semantic named param silently filtered by draw()'s per-type forwarding
+# WARNS (the pre-13.57 FB-1 silent-drop class).
+_DFDRAW_SEMANTIC_KWARGS = frozenset({
+    'bins', 'bins2', 'quantiles', 'quantile_mode', 'quantiles_mode',
+    'quantile_style', 'fit', 'summary_fit', 'fit_textbox_kwargs',
+    'time_format', 'central', 'min_entries', 'normalize', 'normalize_layout',
+    'norm', 'hist_norm', 'cumulative', 'weights', 'group_by_bins',
+    'group_by_quantiles', 'stat_fields', 'top_k', 'return_data',
+    'sort_groups', 'error',
+})
+
 
 def _get_suptitle(fig):
     """Phase 13.46.DF C-4: public-API suptitle text (matplotlib >= 3.8) with a
@@ -1341,7 +1388,164 @@ class DFDraw:
     _VECTOR_SUPPRESS_KWARGS = ('_suppress_legend', '_suppress_title', '_suppress_layout')
 
     # =========================================================================
-    # Phase 13.32.DF Sub-fix 3 (AD-79, v1.2 §3.3): shared validation helper
+    # Phase 13.57.DF AF-2' (K-1/K-3): C-7 typo guard, factored out of draw()
+    # and extended to the typed-method surface. One function = one warn site,
+    # so the warnings module deduplicates the draw()->typed delegation path.
+    # =========================================================================
+
+    @classmethod
+    def _c7_known_kwargs(cls):
+        """Live known-kwarg set for the C-7 guard (cached on the class).
+
+        Built from the signatures of draw() + every typed plot method, the
+        _*_FORWARDED_NAMES tuples, the matplotlib pass-through vocabulary
+        (P-5), the cross-surface vocabulary, and the kept-forever aliases
+        (D4: quantiles_mode). Live introspection — no hand-maintained list
+        to go stale (AF-4 lesson).
+        """
+        cached = cls.__dict__.get('_C7_KNOWN_CACHE')
+        if cached is not None:
+            return cached
+        known = set()
+        for _mname in ('draw', 'hist', 'scatter', 'profile', 'hist2d',
+                       'hexbin'):
+            _m = getattr(cls, _mname)
+            for _pname, _p in inspect.signature(_m).parameters.items():
+                if _pname == 'self':
+                    continue
+                if _p.kind in (_p.VAR_KEYWORD, _p.VAR_POSITIONAL):
+                    continue
+                known.add(_pname)
+        for _tname in ('_DRAW_FORWARDED_NAMES', '_HIST_FORWARDED_NAMES',
+                       '_SCATTER_FORWARDED_NAMES', '_PROFILE_FORWARDED_NAMES',
+                       '_HIST2D_FORWARDED_NAMES'):
+            known.update(getattr(cls, _tname, ()))
+        # Phase 13.57.DF AF-2' completeness: the consumption surface also
+        # includes the INNER plot-function signatures (kwargs like
+        # min_entries_2d travel via **kwargs into draw_profile2d and were
+        # never in any outer signature or forwarded tuple) and the
+        # _draw_vector channel kwargs (vector_style/group_style). Without
+        # these, the typed-surface guard raises/warns on legitimate,
+        # consumed parameters (full-suite regression caught both).
+        try:
+            from .plots import profile as _pmod, histogram as _hmod,                 scatter as _smod
+            for _fn in (getattr(_pmod, 'draw_profile', None),
+                        getattr(_pmod, 'draw_profile2d', None),
+                        getattr(_hmod, 'draw_hist', None),
+                        getattr(_hmod, 'draw_hist2d', None),
+                        getattr(_hmod, 'draw_hexbin', None),
+                        getattr(_smod, 'draw_scatter', None),
+                        getattr(_smod, 'draw_scatter3d', None),
+                        getattr(cls, '_draw_vector', None)):
+                if _fn is None:
+                    continue
+                for _pname, _p in inspect.signature(_fn).parameters.items():
+                    if _pname == 'self':
+                        continue
+                    if _p.kind in (_p.VAR_KEYWORD, _p.VAR_POSITIONAL):
+                        continue
+                    known.add(_pname)
+        except Exception:
+            pass  # guard must never break drawing
+
+        # Phase 13.55.DF: dfdraw-internal flags travelling draw_batch->draw()
+        # and _draw_vector->typed methods (Phase 13.57: the typed-surface
+        # guard sees the _VECTOR_SUPPRESS_KWARGS sentinels on the vector
+        # route — all internal sentinels are known-by-definition).
+        known.add('_suppress_layout')
+        known.update(getattr(cls, '_VECTOR_SUPPRESS_KWARGS', ()))
+        # Inline-consumed kwargs (kwargs.get(...) reads, invisible to
+        # signature introspection). Each entry cites its consumption site.
+        known.add('min_entries_2d')   # drawer.py profile 3-colon route
+        # Phase 13.57.DF D4: kept-forever prefixed alias (architect-ratified).
+        known.add('quantiles_mode')
+        known |= _MPL_PASSTHROUGH_KWARGS
+        known |= _CROSS_SURFACE_KWARGS
+        cls._C7_KNOWN_CACHE = frozenset(known)
+        return cls._C7_KNOWN_CACHE
+
+    @classmethod
+    def _method_accepted_kwargs(cls, method_name):
+        """Live per-method accepted set: signature + its forwarded tuple."""
+        cache = cls.__dict__.get('_ACCEPTED_KWARGS_CACHE')
+        if cache is None:
+            cache = {}
+            setattr(cls, '_ACCEPTED_KWARGS_CACHE', cache)
+        if method_name in cache:
+            return cache[method_name]
+        _m = getattr(cls, method_name)
+        acc = set()
+        for _pname, _p in inspect.signature(_m).parameters.items():
+            if _pname == 'self':
+                continue
+            if _p.kind in (_p.VAR_KEYWORD, _p.VAR_POSITIONAL):
+                continue
+            acc.add(_pname)
+        acc.update(getattr(cls, f"_{method_name.upper()}_FORWARDED_NAMES", ()))
+        cache[method_name] = frozenset(acc)
+        return cache[method_name]
+
+    def _kwarg_typo_guard(self, kwargs, method=None):
+        """Phase 13.46.DF C-7 guard, shared (Phase 13.57.DF AF-2' extension).
+
+        Per kwarg:
+        1. Known (signatures + forwarded + P-5 pass-through + aliases): pass.
+           EXCEPT: when ``method`` is given (typed-method entry) and the kwarg
+           is dfdraw-semantic but NOT accepted by that method, raise a clean
+           ValueError — pre-13.57 these crashed inside matplotlib
+           (PathCollection.set()/Line2D.set(), K-3 GUARD half).
+        2. Close match to a known kwarg: raise with the proper name
+           (architect K-2 Option A: the error indicates the proper name).
+        3. Genuinely unknown: warn once (matplotlib pass-through still works,
+           but the user now SEES it — K-3 WARN half).
+        """
+        if not kwargs:
+            return
+        import difflib
+        import warnings
+        known = self._c7_known_kwargs()
+        accepted = (self._method_accepted_kwargs(method)
+                    if method is not None else None)
+        for _name in list(kwargs):
+            if _name in known:
+                # Phase 13.57.DF FX-4 (panel RV-1, Fable5_1 + GPT13): the
+                # D4 alias is exempt ONLY where its target is accepted —
+                # i.e. quantiles_mode passes on profile() (which pops it)
+                # and falls through to the K-3 raise everywhere else.
+                # Unconditional exemption let the alias sail into
+                # matplotlib on hist/hist2d/hexbin/scatter (Polygon.set()/
+                # QuadMesh.set() crashes — the exact AF-2' class).
+                _alias_ok = (_name == 'quantiles_mode'
+                             and accepted is not None
+                             and 'quantile_mode' in accepted)
+                if (accepted is not None
+                        and _name in _DFDRAW_SEMANTIC_KWARGS
+                        and _name not in accepted
+                        and not _alias_ok):
+                    raise ValueError(
+                        f"Parameter {_name!r} is not applicable to "
+                        f"{method}(). It would be forwarded to matplotlib "
+                        f"and fail there. Remove it, or use the plot type "
+                        f"that consumes it (dfdraw Phase 13.57.DF K-3 "
+                        f"guard)."
+                    )
+                continue
+            _near = difflib.get_close_matches(_name, known, n=1, cutoff=0.8)
+            if _near:
+                raise ValueError(
+                    f"Unknown keyword argument {_name!r}. "
+                    f"Did you mean {_near[0]!r}? "
+                    f"(dfdraw Phase 13.46.DF C-7 typo guard.)"
+                )
+            warnings.warn(
+                f"Unknown keyword argument {_name!r} — forwarded to "
+                f"matplotlib or ignored. If this is a dfdraw typo, "
+                f"check the API.",
+                UserWarning, stacklevel=3,
+            )
+
+    # =========================================================================
+    # Phase 13.32.DF Sub-fix 3 (AD-79): shared validation
     # for facet_by_bins/facet_by_quantiles. Used by profile()/hist()/hist2d()/
     # scatter() at entry. Ensures the binning kwargs are consistent with the
     # facet_by tagged union (must be column-mode, must not collide).
@@ -3409,6 +3613,19 @@ class DFDraw:
             _effective_df = df
             _effective_group_col = group_by
             if _gby_bins is not None or _gby_quantiles is not None:
+                # Phase 13.57.DF AF-3 guard (dispatch-level twin of the
+                # plots/profile.py site): clean error instead of numpy
+                # DTypePromotionError on non-numeric binning subjects.
+                if df[group_by].dtype.kind not in 'biufmM':
+                    _bk = ('group_by_bins' if _gby_bins is not None
+                           else 'group_by_quantiles')
+                    raise ValueError(
+                        f"group_by='{group_by}' has dtype "
+                        f"{df[group_by].dtype} — numeric binning ({_bk}=) "
+                        f"is not applicable to a non-numeric column. Drop "
+                        f"{_bk}= to group on the discrete values instead "
+                        f"(dfdraw Phase 13.57.DF AF-3 guard)."
+                    )
                 _effective_df = df.copy()
                 if df[group_by].dtype == np.float16:
                     _effective_df[group_by] = _effective_df[group_by].astype(np.float32)
@@ -3476,6 +3693,17 @@ class DFDraw:
             _effective_df = df
             _effective_facet_col = facet_by
             if _fby_bins is not None or _fby_quantiles is not None:
+                # Phase 13.57.DF AF-3 guard (facet twin).
+                if df[facet_by].dtype.kind not in 'biufmM':
+                    _bk = ('facet_by_bins' if _fby_bins is not None
+                           else 'facet_by_quantiles')
+                    raise ValueError(
+                        f"facet_by='{facet_by}' has dtype "
+                        f"{df[facet_by].dtype} — numeric binning ({_bk}=) "
+                        f"is not applicable to a non-numeric column. Drop "
+                        f"{_bk}= to facet on the discrete values instead "
+                        f"(dfdraw Phase 13.57.DF AF-3 guard)."
+                    )
                 _effective_df = df.copy()
                 if df[facet_by].dtype == np.float16:
                     _effective_df[facet_by] = _effective_df[facet_by].astype(np.float32)
@@ -4338,56 +4566,14 @@ class DFDraw:
         tuple
             (fig, ax, stats_dict)
         """
-        # Phase 13.46.DF C-7: kwarg-typo guard (difflib "did you mean",
-        # industry standard — argparse/click/plotly). A kwarg that is a near
-        # miss for a known parameter raises with a suggestion (catches the
-        # silent facet_by_bin -> facet_by_bins class); a genuinely-unknown
-        # kwarg only warns (matplotlib passthrough still works, but the user
-        # now SEES it). The known set K is built from the signatures of draw()
-        # and every typed plot method PLUS the _*_FORWARDED_NAMES tuples
-        # (N-1, Claude48): inner-method-specific kwargs forwarded via **kwargs
-        # are legitimate and must not warn.
+        # Phase 13.46.DF C-7 kwarg-typo guard — Phase 13.57.DF AF-2': body
+        # factored into self._kwarg_typo_guard (shared with the typed-method
+        # surface); behavior at this call site unchanged except (a) the known
+        # set now includes the P-5 matplotlib pass-through vocabulary
+        # (linestyle/linewidth previously warned spuriously on this surface)
+        # and (b) quantiles_mode is a kept-forever alias (D4).
         if kwargs:
-            import difflib
-            import warnings
-            _known_kwargs = set()
-            for _m in (self.draw, self.hist, self.scatter, self.profile,
-                       self.hist2d, self.hexbin):
-                for _pname, _p in inspect.signature(_m).parameters.items():
-                    if _pname == 'self':
-                        continue
-                    if _p.kind in (_p.VAR_KEYWORD, _p.VAR_POSITIONAL):
-                        continue
-                    _known_kwargs.add(_pname)
-            for _tup in (self._DRAW_FORWARDED_NAMES, self._HIST_FORWARDED_NAMES,
-                         self._SCATTER_FORWARDED_NAMES,
-                         self._PROFILE_FORWARDED_NAMES,
-                         self._HIST2D_FORWARDED_NAMES):
-                _known_kwargs.update(_tup)
-            # Phase 13.55.DF: whitelist dfdraw-internal flags that travel
-            # via **kwargs from draw_batch through draw() to typed methods.
-            # Without this, draw_batch list-form (which sets
-            # _suppress_layout=True per subplot to defer tight_layout to
-            # constrained_layout) emits a UserWarning on every subplot.
-            _known_kwargs.add('_suppress_layout')
-            for _name in list(kwargs):
-                if _name in _known_kwargs:
-                    continue
-                _near = difflib.get_close_matches(
-                    _name, _known_kwargs, n=1, cutoff=0.8)
-                if _near:
-                    raise ValueError(
-                        f"Unknown keyword argument {_name!r}. "
-                        f"Did you mean {_near[0]!r}? "
-                        f"(dfdraw Phase 13.46.DF C-7 typo guard.)"
-                    )
-                else:
-                    warnings.warn(
-                        f"Unknown keyword argument {_name!r} — forwarded to "
-                        f"matplotlib or ignored. If this is a dfdraw typo, "
-                        f"check the API.",
-                        UserWarning, stacklevel=2,
-                    )
+            self._kwarg_typo_guard(kwargs)
 
         # Phase 13.42.DF: AD-42 guard removed; 'fit=' is now the inline-fit
         # specification per the unified str/dict/callable/list grammar
@@ -4408,6 +4594,16 @@ class DFDraw:
         # draw() so the engine surface is symmetric with scatter3d.
         # See PHASE_13_55_DF_DrawBatchAudit_Proposal_v1_2.md and
         # B-fix-draw architect ratification 2026-06-10.
+        # Phase 13.57.DF F-E: native 3-variable promotion. A 'z:y:x'
+        # expression with type='profile' is the 2D profile the user meant —
+        # the typed self.profile() already routes it (Phase 13.39 3-colon
+        # parsing) but draw()'s _parse_expr would reject it. Promote here so
+        # draw()/draw_batch match the typed surface natively and the ADF-side
+        # shim (13.55.ADF AD-2) can be removed.
+        if type == "profile":
+            if self._count_colons_outside_brackets(expr) == 2:
+                type = "profile2d"
+
         if type == "profile2d":
             colon_count = self._count_colons_outside_brackets(expr)
             if colon_count != 2:
@@ -4419,8 +4615,42 @@ class DFDraw:
             # Delegate to self.profile() which has Phase 13.39 3-colon
             # routing to draw_profile2d. Keeps a single implementation
             # path; draw() merely owns the entry-point.
+            #
+            # Phase 13.57.DF K-4 (E-3/E3-D root-cause fix, Sonnet65 C-2 /
+            # Sonnet6 P1-A): draw()'s NAMED parameters are bound by Python
+            # and never appear in **kwargs, so the pre-13.57 delegation
+            # dropped ax/selection/title/save/same/bins/group_by/... —
+            # 'ax=' was silently ignored and a leaked figure was created
+            # (probes E3-A, E3-D). Forward every named parameter that
+            # profile() accepts with identical semantics and identical
+            # defaults. Deliberately NOT forwarded (semantics differ or not
+            # applicable to profile): type, color (column-mapping vs literal
+            # color), size, marker, norm, figsize (already materialized
+            # into ax above).
             _kwargs_no_type = {k: v for k, v in kwargs.items() if k != 'type'}
-            return self.profile(expr, **_kwargs_no_type)
+            _named_fwd = dict(
+                selection=selection, sample=sample, bins=bins, stats=stats,
+                title=title, ax=ax, save=save, same=same,
+                group_by=group_by, facet=facet,
+                facet_by=facet_by, facet_by_bins=facet_by_bins,
+                facet_by_quantiles=facet_by_quantiles,
+                share_x=share_x, share_y=share_y,
+                share_across_figures=share_across_figures,
+                selection_vector=selection_vector,
+                weights_vector=weights_vector,
+                selection_labels=selection_labels,
+                weights_labels=weights_labels,
+                selection_categorical=selection_categorical,
+                weights_categorical=weights_categorical,
+                vector_compose=vector_compose, delta_facet=delta_facet,
+                normalize=normalize, normalize_layout=normalize_layout,
+                fit=fit, fit_textbox_kwargs=fit_textbox_kwargs,
+                summary_fit=summary_fit,
+                legend=legend, show_legend=show_legend,
+                nan_policy=nan_policy,
+            )
+            _named_fwd.update(_kwargs_no_type)
+            return self.profile(expr, **_named_fwd)
 
         # Phase 13.39.DF Item 3: scatter3d dispatch BEFORE _parse_expr,
         # because _parse_expr rejects colon_count > 1 (z:y:x has 2).
@@ -4449,11 +4679,21 @@ class DFDraw:
                 'nan_policy', 'elev', 'azim',
             }
             _sc3d_kwargs = {k: v for k, v in kwargs.items() if k in _allowed}
-            return draw_scatter3d(
+            # Phase 13.57.DF K-4 companion site (Sonnet6 P2-2): this
+            # early-dispatch shares the named-parameter drop pattern with
+            # profile2d. draw_scatter3d has no save= parameter, and title=
+            # is whitelisted via _allowed but draw()'s named title was never
+            # forwarded. Forward title explicitly; honor save= here.
+            if title is not None and 'title' not in _sc3d_kwargs:
+                _sc3d_kwargs['title'] = title
+            _r3d = draw_scatter3d(
                 _df_3d, z_part, y_part, x_part,
                 ax=ax, color=color, size=size,
                 same=same, **_sc3d_kwargs,
             )
+            if save is not None:
+                _r3d[0].savefig(save, dpi=150, bbox_inches='tight')
+            return _r3d
 
         # Parse expression to determine dimensionality
         y_expr, x_expr = self._parse_expr(expr)
@@ -4570,6 +4810,38 @@ class DFDraw:
         # Phase 13.46.DF C-2: normalize ROOT-convention type aliases (e.g.
         # "histo" -> "hist") before the dispatch ladder.
         type = _TYPE_ALIASES.get(type, type)
+
+        # Phase 13.57.DF K-3 (FB-1 fix, WARN half of the split disposition):
+        # draw()'s per-type forwarding filters kwargs through the
+        # _*_FORWARDED_NAMES tuples, so a dfdraw-semantic parameter that the
+        # resolved type does not consume was DROPPED SILENTLY (probe FB-1:
+        # draw(type='scatter', bins=50) rendered as if bins= were never
+        # given). Architect decision DR-3/K-2: warn, naming the parameter
+        # and the type that ignores it. Verified against the 84-call
+        # production corpus: zero warnings (K-5 gate).
+        if type in ('hist', 'scatter', 'profile', 'hist2d', 'hexbin'):
+            import warnings as _w_k3
+            _accepted_t = self._method_accepted_kwargs(type)
+            _named_semantic = {
+                'bins': bins, 'fit': fit, 'summary_fit': summary_fit,
+                'normalize': normalize, 'norm': norm,
+                'fit_textbox_kwargs': fit_textbox_kwargs,
+            }
+            for _sk, _sv in _named_semantic.items():
+                if _sv is not None and _sk not in _accepted_t:
+                    _w_k3.warn(
+                        f"Parameter {_sk!r} is not used by type={type!r} "
+                        f"and is ignored (dfdraw Phase 13.57.DF K-3).",
+                        UserWarning, stacklevel=2,
+                    )
+            # Phase 13.57.DF FX-4 refinement: kwargs-borne semantic params
+            # are NOT warned here — unlike the named params above (which
+            # the per-type forwarding genuinely drops), **kwargs entries
+            # are forwarded into the typed method, whose entry guard
+            # raises the clean K-3 error if the method cannot consume
+            # them. Warning "ignored" for a parameter that is about to be
+            # cleanly rejected would be false messaging (panel RV-1
+            # follow-through).
         # Phase 13.43.DF v1.0 R-2 (Sonnet54 panel finding): explicitly
         # forward fit / fit_textbox_kwargs / summary_fit at scalar dispatch.
         # These are NAMED params on DFDraw.draw (Phase 13.42 + 13.43), so
@@ -4713,7 +4985,12 @@ class DFDraw:
         else:
             raise ValueError(
                 f"Unknown plot type '{type}'. "
-                "Expected: scatter, hist, hist2d, profile, scatter3d, hexbin"
+                # Phase 13.57.DF AF-4: message derived from the live registry
+                # (_DRAW_TYPE_NAMES + _TYPE_ALIASES); the pre-13.57 literal
+                # omitted profile2d while the dispatch accepted it.
+                f"Expected one of: {', '.join(_DRAW_TYPE_NAMES)}; "
+                f"aliases: {', '.join(sorted(_TYPE_ALIASES))}; "
+                f"or an overlay string like 'hist2d+profile'."
             )
     
     # =========================================================================
@@ -4867,6 +5144,17 @@ class DFDraw:
             (fig, ax, stats_dict)
         """
         from .plots.histogram import draw_hist
+
+        # Phase 13.57.DF AF-2' (K-1/K-3): C-7 typo guard extended to the
+        # typed-method surface. Pre-13.57, a misspelled or inapplicable
+        # kwarg on this surface bypassed the draw()-level guard and crashed
+        # inside matplotlib (Line2D.set()/PathCollection.set()) or dropped
+        # silently. Close-match -> error naming the proper parameter
+        # (architect K-2 Option A); inapplicable dfdraw-semantic kwarg ->
+        # clean error; genuinely unknown -> warning.
+        if kwargs:
+            self._kwarg_typo_guard(kwargs, method='hist')
+
 
         # Parse expression (take first part only for 1D)
         y_expr, x_expr = self._parse_expr(expr)
@@ -5281,6 +5569,17 @@ class DFDraw:
         """
         from .plots.scatter import draw_scatter
 
+        # Phase 13.57.DF AF-2' (K-1/K-3): C-7 typo guard extended to the
+        # typed-method surface. Pre-13.57, a misspelled or inapplicable
+        # kwarg on this surface bypassed the draw()-level guard and crashed
+        # inside matplotlib (Line2D.set()/PathCollection.set()) or dropped
+        # silently. Close-match -> error naming the proper parameter
+        # (architect K-2 Option A); inapplicable dfdraw-semantic kwarg ->
+        # clean error; genuinely unknown -> warning.
+        if kwargs:
+            self._kwarg_typo_guard(kwargs, method='scatter')
+
+
         # Phase 13.27.DF Commit 2 (v1.2 §5.5, §9.WDS.1): weights_vector has no
         # effect on scatter (point-size weighting deferred to Phase E). Emit
         # one-time UserWarning at method entry — fires for both single-Y scalar
@@ -5684,6 +5983,57 @@ class DFDraw:
             and 'group' if group_by is used.
         """
         from .plots.profile import draw_profile
+
+        # Phase 13.57.DF AF-2' (K-1/K-3): C-7 typo guard extended to the
+        # typed-method surface. Pre-13.57, a misspelled or inapplicable
+        # kwarg on this surface bypassed the draw()-level guard and crashed
+        # inside matplotlib (Line2D.set()/PathCollection.set()) or dropped
+        # silently. Close-match -> error naming the proper parameter
+        # (architect K-2 Option A); inapplicable dfdraw-semantic kwarg ->
+        # clean error; genuinely unknown -> warning.
+        if kwargs:
+            self._kwarg_typo_guard(kwargs, method='profile')
+
+        # Phase 13.57.DF D4 (architect-ratified alias, kept forever): the
+        # prefixed spelling quantiles_mode= is a synonym of quantile_mode=
+        # (it sorts beside quantiles in help/autocomplete). Conflict with an
+        # explicit non-default quantile_mode= raises.
+        if 'quantiles_mode' in kwargs:
+            _qm_alias = kwargs.pop('quantiles_mode')
+            if quantile_mode != "auto" and _qm_alias != quantile_mode:
+                raise ValueError(
+                    f"Both quantile_mode={quantile_mode!r} and its alias "
+                    f"quantiles_mode={_qm_alias!r} were given with different "
+                    f"values. Pass only one (they are synonyms, Phase "
+                    f"13.57.DF D4)."
+                )
+            quantile_mode = _qm_alias
+
+        # Phase 13.57.DF AF-1 guards: dict (or other non-conforming) inputs
+        # previously died UNCLEAN deep in strftime / a numeric comparison
+        # (audit probes TF-2, Q-2). The dict forms were evaluated and DROPPED
+        # at the P-0 gate (zero corpus demand); these guards make the
+        # rejection clean and instructive instead.
+        if time_format is not None and not isinstance(time_format, str):
+            raise ValueError(
+                f"time_format must be a strftime string like '%H:%M' (or "
+                f"'auto'); got {type(time_format).__name__}. The dict form "
+                f"is not supported (dfdraw Phase 13.57.DF AF-1 guard)."
+            )
+        if quantiles is not None:
+            _q_ok = (isinstance(quantiles, (list, tuple, np.ndarray))
+                     and len(quantiles) > 0
+                     and all(isinstance(_q, (int, float, np.integer,
+                                             np.floating))
+                             for _q in quantiles))
+            if not _q_ok:
+                raise ValueError(
+                    f"quantiles must be a non-empty list of numbers in "
+                    f"[0, 1], e.g. quantiles=[0.05, 0.5, 0.95]; got "
+                    f"{quantiles!r}. The dict form is not supported (dfdraw "
+                    f"Phase 13.57.DF AF-1 guard)."
+                )
+
 
         # Phase 13.27 Commit 2 FIX1-pending guard (Sonnet52_R1 P1-2 / Hard
         # Constraint §3) REMOVED in FIX1 §7a: single-Y + selection_vector /
@@ -6628,6 +6978,17 @@ class DFDraw:
             (fig, ax, stats_dict)
         """
         from .plots.histogram import draw_hist2d
+
+        # Phase 13.57.DF AF-2' (K-1/K-3): C-7 typo guard extended to the
+        # typed-method surface. Pre-13.57, a misspelled or inapplicable
+        # kwarg on this surface bypassed the draw()-level guard and crashed
+        # inside matplotlib (Line2D.set()/PathCollection.set()) or dropped
+        # silently. Close-match -> error naming the proper parameter
+        # (architect K-2 Option A); inapplicable dfdraw-semantic kwarg ->
+        # clean error; genuinely unknown -> warning.
+        if kwargs:
+            self._kwarg_typo_guard(kwargs, method='hist2d')
+
         
         # Phase 13.51 §1.3 (audit S-8 fit-guard): hist2d does not support
         # inline fit overlays in this phase. Convert the previously-cryptic
@@ -6879,6 +7240,17 @@ class DFDraw:
             (fig, ax, stats_dict)
         """
         from .plots.histogram import draw_hexbin
+
+        # Phase 13.57.DF AF-2' (K-1/K-3): C-7 typo guard extended to the
+        # typed-method surface. Pre-13.57, a misspelled or inapplicable
+        # kwarg on this surface bypassed the draw()-level guard and crashed
+        # inside matplotlib (Line2D.set()/PathCollection.set()) or dropped
+        # silently. Close-match -> error naming the proper parameter
+        # (architect K-2 Option A); inapplicable dfdraw-semantic kwarg ->
+        # clean error; genuinely unknown -> warning.
+        if kwargs:
+            self._kwarg_typo_guard(kwargs, method='hexbin')
+
         
         # Phase 13.51 §1.3 (audit S-7 guards): hexbin does not support
         # range=/facet_by= in this phase. Tracked as audit finding S-7 for

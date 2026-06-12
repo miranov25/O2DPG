@@ -1,7 +1,7 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-06-10 13:40 UTC
-**Phase:** PHASE_13_50_DF_FIX2_END
+**Generated:** 2026-06-12 07:13 UTC
+**Phase:** PHASE_13_55_DF_END
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
 
@@ -9,13 +9,13 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 66 | 45% |
-| ☑️ Smoke-only | 80 | 54% |
+| ✅ Verified | 70 | 46% |
+| ☑️ Smoke-only | 81 | 53% |
 | 🧨 Broken | 0 | 0% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **147** | |
-| **Total proof tests** | **667** | |
-| **Invariance tests** | **369** | |
+| **Total features** | **152** | |
+| **Total proof tests** | **713** | |
+| **Invariance tests** | **381** | |
 | **Visual tests** | **34** | |
 
 **Status key:**
@@ -72,6 +72,11 @@
 | ☑️ | **DATA.nan_policy** — Optional NaN/inf filter with nan_policy parameter | 6 | 6 | 0 | 0 |  |
 | ☑️ | **DATA.counters** — Stats dict counters: n_input, n_filtered, n_inf_*, n_nan_* | 5 | 5 | 0 | 0 |  |
 | ✅ | **HIST.weights** — hist() weights= column or expression — Phase 13.27 Commit 2 FIX1 | 5 | 5 | 0 | 5 |  |
+| | **DISPATCH** | | | | | |
+| ✅ | **DISPATCH.kwarg_validation** — C-7 typo guard on all surfaces: close-match raises naming the proper parameter (K-2 Option A); inapplicable dfdraw-semantic kwargs raise cleanly on typed methods (crash paths) and warn on draw() named-param silent drops (FB-1); P-5 matplotlib vocabulary silent; live-introspected known set | 10 | 10 | 0 | 1 |  |
+| ✅ | **DISPATCH.kwarg_aliases** — Kept-forever aliases (D4 quantiles_mode->quantile_mode both surfaces, scope-limited per FX-4; DR-5 fit p0->initial, guess untouched); equivalence-tested incl. old-key forms | 14 | 14 | 0 | 4 |  |
+| ☑️ | **DISPATCH.input_guards** — Clean input guards: time_format/quantiles dict rejection (AF-1), non-numeric binning subjects (AF-3, profile + dispatch twins) — negative controls assert dfdraw raises, never the backend | 9 | 9 | 0 | 0 |  |
+| ✅ | **DISPATCH.E3_parity** — draw() entry-form parity with typed methods on the profile2d/scatter3d early-dispatch: named params (ax/selection/bins/save/...) forwarded (K-4, E-3/E3-D fix); F-E native 3-var profile promotion on draw()+draw_batch | 9 | 9 | 0 | 4 |  |
 | | **DRAW** | | | | | |
 | ✅ | **DRAW.R2_forwarding** — draw() scalar dispatch forwards Phase 13.27–13.41 named params (selection_vector, weights_vector, share_*, facet_by, etc.) to all 4 typed methods — A≡B with direct calls | 2 | 2 | 0 | 2 |  |
 | | **FACET** | | | | | |
@@ -177,6 +182,7 @@
 | ☑️ | **STATS.default_fields** — Auto-detect default stats fields by plot type | 1 | 1 | 0 | 0 |  |
 | ☑️ | **STATS.range_aware** — Range-aware statistics (range_x, range_y) | 3 | 3 | 0 | 0 |  |
 | ☑️ | **STATS.robust** — Robust statistics (median, MAD) | 2 | 2 | 0 | 0 |  |
+| ✅ | **STATS.y_central** — profile_data y_central column = rendered central values (E-2/D5 additive fix; y_mean unchanged forever; grouped path mirrors render, FX-1 documented) | 4 | 4 | 0 | 3 |  |
 | | **STYLE** | | | | | |
 | ☑️ | **STYLE.predefined** — Predefined styles (default, publication, presentation) | 3 | 3 | 0 | 0 |  |
 | ☑️ | **STYLE.custom** — Custom style dict and JSON persistence | 4 | 4 | 0 | 0 |  |

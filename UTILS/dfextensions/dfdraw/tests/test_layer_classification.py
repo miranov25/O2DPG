@@ -582,4 +582,18 @@ TEST_LAYERS = {
     "test_phase_13_55_df_draw_batch_audit.py::test_T9_auto_title_scatter_via_batch": "visual_primitive",
 
     # Everything else defaults to "smoke"
+
+    # ── Phase 13.57.DF — equivalence / effect-assertion tests (A≡B) ──
+    "test_phase_13_57_df_fixes.py::TestQuantilesModeAlias::test_alias_equivalence_typed_surface": "invariance",
+    "test_phase_13_57_df_fixes.py::TestQuantilesModeAlias::test_alias_equivalence_draw_surface": "invariance",
+    "test_phase_13_57_df_fixes.py::TestDR5P0Alias::test_p0_equivalent_to_initial": "invariance",
+    "test_phase_13_57_df_fixes.py::TestDR5P0Alias::test_old_key_equivalence_regression": "invariance",
+    "test_phase_13_57_df_fixes.py::TestE2YCentral::test_y_central_present_and_is_median": "invariance",
+    "test_phase_13_57_df_fixes.py::TestE2YCentral::test_y_central_equals_mean_when_central_default": "invariance",
+    "test_phase_13_57_df_fixes.py::TestE2YCentral::test_grouped_export_has_y_central": "invariance",
+    "test_phase_13_57_df_fixes.py::TestE3Matrix::test_e3a_draw_direct_honors_ax": "invariance",
+    "test_phase_13_57_df_fixes.py::TestE3Matrix::test_e3b_typed_direct_honors_ax_regression_lock": "invariance",
+    "test_phase_13_57_df_fixes.py::TestE3Matrix::test_k4_named_params_reach_profile2d": "invariance",
+    "test_phase_13_57_df_fixes.py::TestE3Matrix::test_k4_selection_effect_assertion": "invariance",
+    "test_phase_13_57_df_fixes.py::TestK5ZeroWarningGate::test_corpus_form_calls_emit_zero_warnings": "invariance",
 }

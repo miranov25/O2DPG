@@ -42,6 +42,12 @@ _VALID_DICT_KEYS = frozenset({
     'fun', 'initial', 'guess', 'range', 'bounds', 'use_errors',
     'show_params', 'label', 'raise_on_failure',
     'redchi_warn_threshold', 'method', 'kwargs',
+    # Phase 13.57.DF DR-5 (architect OK 2026-06-12): 'p0' is a kept-forever
+    # synonym of 'initial' — scipy.optimize.curve_fit's own name for the
+    # starting values (PRINCIPLES P-5). 'guess' is NOT aliased: it is a
+    # callable (x, y) -> p0 (a generator of starting values, fits.py tier
+    # docs above), semantically distinct from a start vector.
+    'p0',
 })
 
 
@@ -332,6 +338,20 @@ def _normalize_one_fit(spec) -> Dict:
     if isinstance(spec, str):
         return {'fun': spec}
     if isinstance(spec, dict):
+        # Phase 13.57.DF DR-5: normalize the scipy-vocabulary synonym
+        # p0 -> initial BEFORE validation, so downstream code keeps a
+        # single canonical key. Conflict (both given, different) raises.
+        if 'p0' in spec:
+            spec = dict(spec)
+            _p0 = spec.pop('p0')
+            if 'initial' in spec and list(spec['initial']) != list(_p0):
+                raise ValueError(
+                    f"[dfdraw.fits] Both 'initial' and its synonym 'p0' "
+                    f"were given with different values "
+                    f"({spec['initial']!r} vs {_p0!r}). Pass only one "
+                    f"(Phase 13.57.DF DR-5)."
+                )
+            spec['initial'] = _p0
         # Validate dict-key spelling
         unknown = set(spec) - _VALID_DICT_KEYS
         if unknown:

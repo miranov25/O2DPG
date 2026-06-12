@@ -558,6 +558,20 @@ def draw_profile(
         # float16 not supported by pd.cut/pd.qcut (pandas Index limitation)
         if df_filtered[group_by].dtype == np.float16:
             df_filtered[group_by] = df_filtered[group_by].astype(np.float32)
+        # Phase 13.57.DF AF-3 guard: numeric binning of a non-numeric column
+        # previously died with an unreadable numpy DTypePromotionError deep
+        # inside pd.cut (audit finding AF-3, anticipated GPT11 P2-2).
+        if group_by_bins is not None or group_by_quantiles is not None:
+            _bin_kw = ('group_by_bins' if group_by_bins is not None
+                       else 'group_by_quantiles')
+            if _col.dtype.kind not in 'biufmM':
+                raise ValueError(
+                    f"group_by='{group_by}' has dtype "
+                    f"{df_filtered[group_by].dtype} — numeric binning "
+                    f"({_bin_kw}=) is not applicable to a non-numeric "
+                    f"column. Drop {_bin_kw}= to group on the discrete "
+                    f"values instead (dfdraw Phase 13.57.DF AF-3 guard)."
+                )
         if group_by_bins is not None:
             intervals = pd.cut(df_filtered[group_by], bins=group_by_bins)
             df_filtered['_group'] = intervals.map(_format_interval_label)
@@ -898,6 +912,15 @@ def draw_profile(
         
         # Phase 13.12.DF F1: Add profile data to stats
         if return_data and profile_df is not None:
+            # Phase 13.57.DF E-2 (D5, additive): export the central values
+            # that are actually RENDERED. Pre-13.57, central='median' drew
+            # the median line but profile_data carried only y_mean — fitting
+            # or re-plotting the export silently reverted to the mean
+            # (BUG_dfdraw_20260611_median_return_data). y_mean is unchanged
+            # forever (G-0); y_central is a new column injected at this
+            # caller site (Sonnet62: not inside _compute_profile, which
+            # stays central-agnostic).
+            profile_df['y_central'] = _central_values
             stats_dict['profile_data'] = profile_df
 
         # ====================================================================
@@ -1276,6 +1299,14 @@ def _draw_profile_grouped(
 
         # Phase 13.12.DF F1: Add group column and collect
         if return_data and profile_df is not None:
+            # Phase 13.57.DF E-2 (D5, additive, grouped path): y_central =
+            # the values this path renders. NOTE (finding FX-1, filed in the
+            # 13.57 CRR): the grouped renderer draws bin_means regardless of
+            # central=; central='median' is silently ignored here (pre-
+            # existing behavior, NOT changed in this phase — rendering
+            # changes need their own decision). y_central therefore equals
+            # y_mean in the grouped export, honestly mirroring the render.
+            profile_df['y_central'] = bin_means
             profile_df['group'] = group
             profile_data_list.append(profile_df)
 

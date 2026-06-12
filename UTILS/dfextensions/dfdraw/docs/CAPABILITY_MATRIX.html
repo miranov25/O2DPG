@@ -63,17 +63,17 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 </head>
 <body>
 <h1>Capability Matrix — dfdraw</h1>
-<p class="meta">Generated: <span class="mono">2026-06-10 13:40 UTC</span> · Phase: <span class="mono">PHASE_13_50_DF_FIX2_END</span></p>
+<p class="meta">Generated: <span class="mono">2026-06-12 07:13 UTC</span> · Phase: <span class="mono">PHASE_13_55_DF_END</span></p>
 <section class="summary">
 <h2>Summary</h2>
 <table>
-<tr><th>✅ Verified</th><td class="n">66</td><td class="n">45%</td></tr>
-<tr><th>☑️ Smoke-only</th><td class="n">80</td><td class="n">54%</td></tr>
+<tr><th>✅ Verified</th><td class="n">70</td><td class="n">46%</td></tr>
+<tr><th>☑️ Smoke-only</th><td class="n">81</td><td class="n">53%</td></tr>
 <tr><th>🧨 Broken</th><td class="n">0</td><td class="n">0%</td></tr>
 <tr><th>📋 Planned</th><td class="n">1</td><td class="n">1%</td></tr>
-<tr><th>Total features</th><td class="n"><strong>147</strong></td><td></td></tr>
-<tr><th>Total proof tests</th><td class="n"><strong>667</strong></td><td></td></tr>
-<tr><th>Invariance tests</th><td class="n"><strong>369</strong></td><td></td></tr>
+<tr><th>Total features</th><td class="n"><strong>152</strong></td><td></td></tr>
+<tr><th>Total proof tests</th><td class="n"><strong>713</strong></td><td></td></tr>
+<tr><th>Invariance tests</th><td class="n"><strong>381</strong></td><td></td></tr>
 <tr><th>Visual tests</th><td class="n"><strong>34</strong></td><td></td></tr>
 </table>
 </section>
@@ -92,6 +92,7 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <option value="COMPAT">COMPAT</option>
 <option value="CORE">CORE</option>
 <option value="DATA">DATA</option>
+<option value="DISPATCH">DISPATCH</option>
 <option value="DRAW">DRAW</option>
 <option value="FACET">FACET</option>
 <option value="FIT">FIT</option>
@@ -504,6 +505,73 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <li><span class="layer-marker">✓</span><code>test_phase_13_27_commit2_selection_weights.py::TestPhase_13_27_Commit2_FIX1::test_HSW_3_hist_weights_with_norm_probability</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">✓</span><code>test_phase_13_27_commit2_selection_weights.py::TestPhase_13_27_Commit2_FIX1::test_HSW_4_hist_weights_with_group_by_raises</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">✓</span><code>test_phase_13_27_commit2_selection_weights.py::TestPhase_13_27_Commit2_FIX1::test_HSW_5_hist_no_weights_backward_compat</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr class="category-row"><td colspan="8">DISPATCH</td></tr>
+<tr id="feature-DISPATCH.kwarg_validation" class="feature-row" data-status="Verified" data-visual="no" data-category="DISPATCH"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">DISPATCH.kwarg_validation</strong> — C-7 typo guard on all surfaces: close-match raises naming the proper parameter (K-2 Option A); inapplicable dfdraw-semantic kwargs raise cleanly on typed methods (crash paths) and warn on draw() named-param silent drops (FB-1); P-5 matplotlib vocabulary silent; live-introspected known set</td><td class="n">10</td><td class="n">10</td><td class="n">0</td><td class="n">1</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestTypedSurfaceTypoGuard::test_typed_close_match_names_proper_parameter</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestTypedSurfaceTypoGuard::test_typed_inapplicable_semantic_kwarg_raises_clean</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestTypedSurfaceTypoGuard::test_typed_negative_control_no_matplotlib_frames</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestTypedSurfaceTypoGuard::test_typed_unknown_kwarg_warns_not_silent</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestTypedSurfaceTypoGuard::test_typed_style_passthrough_stays_silent</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestDrawSurfaceSilentDropWarns::test_fb1_bins_on_scatter_warns</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestDrawSurfaceSilentDropWarns::test_draw_close_match_still_raises_with_proper_name</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestDrawSurfaceSilentDropWarns::test_draw_applicable_params_do_not_warn</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestAF4Message::test_unknown_type_message_includes_profile2d</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_57_df_fixes.py::TestK5ZeroWarningGate::test_corpus_form_calls_emit_zero_warnings</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-DISPATCH.kwarg_aliases" class="feature-row" data-status="Verified" data-visual="no" data-category="DISPATCH"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">DISPATCH.kwarg_aliases</strong> — Kept-forever aliases (D4 quantiles_mode-&gt;quantile_mode both surfaces, scope-limited per FX-4; DR-5 fit p0-&gt;initial, guess untouched); equivalence-tested incl. old-key forms</td><td class="n">14</td><td class="n">14</td><td class="n">0</td><td class="n">4</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_57_df_fixes.py::TestQuantilesModeAlias::test_alias_equivalence_typed_surface</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_57_df_fixes.py::TestQuantilesModeAlias::test_alias_equivalence_draw_surface</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestQuantilesModeAlias::test_alias_no_longer_rejected_where_typo_guard_fired</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestQuantilesModeAlias::test_fx4_alias_scope_per_method[profile-True]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestQuantilesModeAlias::test_fx4_alias_scope_per_method[hist-False]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestQuantilesModeAlias::test_fx4_alias_scope_per_method[hist2d-False]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestQuantilesModeAlias::test_fx4_alias_scope_per_method[hexbin-False]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestQuantilesModeAlias::test_fx4_alias_scope_per_method[scatter-False]</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestQuantilesModeAlias::test_fx4_draw_surface_alias_clean_raise_on_inapplicable_type</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestQuantilesModeAlias::test_alias_conflict_raises</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_57_df_fixes.py::TestDR5P0Alias::test_p0_equivalent_to_initial</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestDR5P0Alias::test_p0_initial_conflict_raises</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestDR5P0Alias::test_guess_untouched</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_57_df_fixes.py::TestDR5P0Alias::test_old_key_equivalence_regression</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-DISPATCH.input_guards" class="feature-row" data-status="Smoke-only" data-visual="no" data-category="DISPATCH"><td><span class="expand-toggle">▶</span></td><td>☑️</td><td><strong class="mono">DISPATCH.input_guards</strong> — Clean input guards: time_format/quantiles dict rejection (AF-1), non-numeric binning subjects (AF-3, profile + dispatch twins) — negative controls assert dfdraw raises, never the backend</td><td class="n">9</td><td class="n">9</td><td class="n">0</td><td class="n">0</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestAF1Guards::test_time_format_dict_clean_error</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestAF1Guards::test_time_format_dict_negative_control_not_strftime</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestAF1Guards::test_quantiles_dict_clean_error</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestAF1Guards::test_quantiles_string_elements_clean_error</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestAF1Guards::test_valid_forms_unaffected</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestAF3Guard::test_string_group_by_bins_clean_error</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestAF3Guard::test_negative_control_not_dtype_promotion_error</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestAF3Guard::test_string_discrete_grouping_still_works</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestAF3Guard::test_string_facet_by_bins_clean_error</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-DISPATCH.E3_parity" class="feature-row" data-status="Verified" data-visual="no" data-category="DISPATCH"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">DISPATCH.E3_parity</strong> — draw() entry-form parity with typed methods on the profile2d/scatter3d early-dispatch: named params (ax/selection/bins/save/...) forwarded (K-4, E-3/E3-D fix); F-E native 3-var profile promotion on draw()+draw_batch</td><td class="n">9</td><td class="n">9</td><td class="n">0</td><td class="n">4</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_57_df_fixes.py::TestE3Matrix::test_e3a_draw_direct_honors_ax</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_57_df_fixes.py::TestE3Matrix::test_e3b_typed_direct_honors_ax_regression_lock</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestE3Matrix::test_e3d_draw_faceted_no_orphan_blank_figure</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_57_df_fixes.py::TestE3Matrix::test_k4_named_params_reach_profile2d</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_57_df_fixes.py::TestE3Matrix::test_k4_selection_effect_assertion</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestE3Matrix::test_scatter3d_save_forwarded</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestFEPromotion::test_draw_profile_3var_promotes</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestFEPromotion::test_draw_batch_profile_3var_promotes</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestFEPromotion::test_profile_2var_unchanged</code><span class="outcome passed">passed</span></li>
 </ul>
 </div></td></tr>
 <tr class="category-row"><td colspan="8">DRAW</td></tr>
@@ -1437,6 +1505,16 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 <ul>
 <li><span class="layer-marker">☑</span><code>test_stats_enhancements.py::TestIssue3_RobustStats::test_robust_empty_range</code><span class="outcome passed">passed</span></li>
 <li><span class="layer-marker">☑</span><code>test_stats_enhancements.py::TestIssue3_RobustStats::test_robust_2d_applies_to_y_only</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
+<tr id="feature-STATS.y_central" class="feature-row" data-status="Verified" data-visual="no" data-category="STATS"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">STATS.y_central</strong> — profile_data y_central column = rendered central values (E-2/D5 additive fix; y_mean unchanged forever; grouped path mirrors render, FX-1 documented)</td><td class="n">4</td><td class="n">4</td><td class="n">0</td><td class="n">3</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_phase_13_57_df_fixes.py::TestE2YCentral::test_y_central_present_and_is_median</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_57_df_fixes.py::TestE2YCentral::test_y_central_equals_mean_when_central_default</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_phase_13_57_df_fixes.py::TestE2YCentral::test_grouped_export_has_y_central</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">☑</span><code>test_phase_13_57_df_fixes.py::TestE2YCentral::test_pre_existing_columns_unchanged</code><span class="outcome passed">passed</span></li>
 </ul>
 </div></td></tr>
 <tr class="category-row"><td colspan="8">STYLE</td></tr>

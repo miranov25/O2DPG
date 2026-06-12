@@ -106,10 +106,21 @@ class TestPhase1346AuditFixes:
         # far-unknown → warn, not raise
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            fig, ax, st = DFDraw(df).draw('x', type='hist', bins=20, zorder=5)
+            # Phase 13.57.DF amendment (disclosed in the 13.57 CRR): the
+            # original exemplar zorder= is P-5 matplotlib pass-through
+            # vocabulary and is SILENT by the ratified AF-2' contract. A
+            # genuinely unknown kwarg warns and is then forwarded to
+            # matplotlib, where it may fail (unchanged pre-13.46 pass-
+            # through contract) — the guarantee under test is that the
+            # user SEES the warning before any downstream failure.
+            try:
+                DFDraw(df).draw('x', type='hist', bins=20,
+                                zzz_far_unknown_kw=5)
+            except Exception:
+                pass  # matplotlib pass-through failure: not under test
             assert any("Unknown keyword" in str(wi.message) for wi in w), \
                 "far-unknown kwarg should warn"
-            plt.close(fig)
+            plt.close('all')
         # valid type-specific kwarg (cumulative) → NO spurious warning (N-1)
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
