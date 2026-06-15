@@ -1,21 +1,21 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-06-11 07:52 UTC
+**Generated:** 2026-06-15 19:36 UTC
 **Phase:** 13.11.B
-**Taxonomy:** 49 features (PHASE_13_11_B approved)
+**Taxonomy:** 50 features (PHASE_13_11_B approved)
 **Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)
 
 ## Summary
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 30 | 61% |
-| ☑️ Smoke-only | 13 | 26% |
-| 🧨 Broken | 5 | 10% |
+| ✅ Verified | 31 | 62% |
+| ☑️ Smoke-only | 14 | 28% |
+| 🧨 Broken | 4 | 8% |
 | 📋 Planned | 1 | 2% |
-| **Total features** | **49** | |
-| **Matched tests** | **1685** | |
-| **Invariance tests** | **248** | |
+| **Total features** | **50** | |
+| **Matched tests** | **1698** | |
+| **Invariance tests** | **253** | |
 
 **Unmatched tests:** 96 (not mapped to any feature)
 
@@ -89,7 +89,7 @@
 
 | Status | Feature | Tests | Pass | Fail | Inv |
 |--------|---------|------:|-----:|-----:|:---:|
-| 🧨 | **BACK.arrow** — PyArrow compute & scatter | 120 | 119 | 1 |  |
+| ☑️ | **BACK.arrow** — PyArrow compute & scatter | 120 | 120 | 0 |  |
 | ✅ | **BACK.numba** — Numba JIT acceleration | 20 | 20 | 0 | 3 |
 | 🧨 | **BACK.invariance** — Backend equivalence (numpy vs arrow vs numba) | 14 | 13 | 1 | 13 |
 
@@ -100,6 +100,7 @@
 | ✅ | **LAZY.read_tree** — Lazy branch loading from ROOT | 88 | 88 | 0 | 2 |
 | ✅ | **LAZY.chain** — Chain loading (multiple files) | 60 | 58 | 0 | 8 |
 | ✅ | **LAZY.materialization** — Lazy subframe & alias evaluation | 54 | 54 | 0 | 2 |
+| ✅ | **LAZY.userinfo_backcompat** — Lazy-path UserInfo metadata back-compatibility (AD-3 precedence) | 13 | 12 | 0 | 5 |
 
 ## FIT_REGISTRATION
 
@@ -135,19 +136,16 @@
 - ❌ `test_K1_vector_draw_kwarg_diagnostic.py::TestK1VectorDrawKwargDiagnostic::test_K1_3_draw_batch_forwards_batch_kwargs`
 
 ### COMP.roundtrip
-- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
 - ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
-
-### BACK.arrow
-- ❌ `test_arrow_scatter.py::TestArrowScatterPerformance::test_arrow_vs_numpy_performance`
+- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
 
 ### BACK.invariance
 - ❌ `test_invariance_backend.py::TestInvarianceBackend::test_I2_6_chained_subframe_expressions_numba_vs_numpy`
 
 ### RDF.export
 - ❌ `test_AliasDataFrameRDF.py::TestAddDefinesCollision::test_collision_from_friend_tree`
-- ❌ `test_AliasDataFrameRDF.py::TestRDataFrameFriendAccess::test_composite_index_friend`
 - ❌ `test_AliasDataFrameRDF.py::TestTMemFileBranch::test_missing_keys_in_friend`
+- ❌ `test_AliasDataFrameRDF.py::TestRDataFrameFriendAccess::test_composite_index_friend`
 
 ## Unmatched Tests
 

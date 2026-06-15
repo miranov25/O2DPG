@@ -194,7 +194,7 @@ class TestG4Taxonomy:
         ids = {f["id"] for f in FEATURES}
         assert "DISPATCH.adf_routing" in ids
         assert "DISPATCH.error_visibility" in ids
-        assert len(FEATURES) == 49
+        assert len(FEATURES) == 50  # 49 + LAZY.userinfo_backcompat (Phase 13.59.ADF)
         routing = next(f for f in FEATURES if f["id"] == "DISPATCH.adf_routing")
         vis = next(f for f in FEATURES if f["id"] == "DISPATCH.error_visibility")
         node_55 = ("test_phase_13_55_adf_dispatch_audit.py::"

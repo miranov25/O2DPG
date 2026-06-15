@@ -15,6 +15,9 @@ with new test patterns (J1, K1, K2, E1, E2, S1, D1, S5). Total: 44 → 47.
 Phase 13.56.ADF (2026-06-11): Added 2 new features under DISPATCH category
 (DISPATCH.adf_routing, DISPATCH.error_visibility) covered by the 29
 Phase-13.55 tests + 14 Phase-13.56 tests. Total: 47 → 49.
+Phase 13.59.ADF (2026-06-15): Added 1 new feature LAZY.userinfo_backcompat
+(lazy-path UserInfo metadata back-compatibility, AD-3 read precedence) covered by
+the 13 test_phase1359_lazy_userinfo.py tests. Total: 49 → 50.
 """
 
 FEATURES = [
@@ -281,7 +284,7 @@ FEATURES = [
          "test_I13_backend_equivalence_invariance.py",
      ]},
 
-    # ── LAZY_LOADING (3) ──
+    # ── LAZY_LOADING (4) ──
     {"id": "LAZY.read_tree", "name": "Lazy branch loading from ROOT", "category": "LAZY_LOADING",
      "test_patterns": [
          "test_lazy_loading.py",
@@ -299,6 +302,11 @@ FEATURES = [
          "test_lazy_subframes.py",
          # Phase 13.12.ADF — lazy vs eager full pipeline
          "test_I10_lazy_eager_invariance.py",
+     ]},
+    {"id": "LAZY.userinfo_backcompat", "name": "Lazy-path UserInfo metadata back-compatibility (AD-3 precedence)", "category": "LAZY_LOADING",
+     "test_patterns": [
+         # Phase 13.59.ADF — BUG_20260613 lazy UserInfo gap + AD-3 read precedence
+         "test_phase1359_lazy_userinfo.py",
      ]},
 
     # ── FIT_REGISTRATION (2) ──

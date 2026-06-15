@@ -54,6 +54,22 @@ class LazyTreeReader:
         self._open_file()
         self.available_branches: Set[str] = set(self._tree.keys())
         self.num_entries: int = self._tree.num_entries
+
+        # Phase 13.59.ADF (BUG_20260613): recover ADF metadata (subframes, indices,
+        # aliases) on construction, following AD-3 read precedence
+        # (ROOT UserInfo -> uproot UserInfo -> standalone key -> names). Self-contained
+        # here (Option a); read_tree_lazy consumes self.adf_metadata to register lazy
+        # subframes. Additive: does not touch the branch-data path (_open_file/load_branches).
+        self.adf_metadata: Optional[dict] = None
+        try:
+            from adf_metadata_compat import read_adf_metadata
+            self.adf_metadata = read_adf_metadata(self.file_path, self.tree_name)
+        except Exception as e:
+            import warnings
+            warnings.warn(
+                f"LazyTreeReader: could not recover ADF metadata for "
+                f"'{self.tree_name}' in {self.file_path}: {e}"
+            )
     
     @property
     def entries(self) -> int:
@@ -113,7 +129,14 @@ class LazyTreeReader:
             filter_name=list(to_load),
             library='pd'
         )
-        
+
+        # Some uproot/awkward version combinations return an awkward Array even for flat
+        # branches (instead of a DataFrame). Coerce to a DataFrame so downstream .copy()
+        # and merge work. No-op when uproot already returns a DataFrame.
+        if not isinstance(new_data, pd.DataFrame):
+            import awkward as ak
+            new_data = ak.to_dataframe(new_data)
+
         # Copy to avoid modifying uproot's internal buffer
         new_data = new_data.copy()
         

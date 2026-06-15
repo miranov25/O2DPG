@@ -401,11 +401,24 @@ class TestGroup6ProfilePromotion:
     bins + auto_title through adf.draw with type='profile')."""
 
     def test_T3b_draw_3var_profile_promotion(self, adf):
-        """T3b: adf.draw 3-var expr with type='profile' → profile2d (fig08 form)."""
-        adf.add_alias("good", "(x > -10)*1")
+        """T3b (AMENDED in PHASE_13_57_DF gate — third 13.55 amendment):
+        adf.draw 3-var expr with type='profile' → profile2d (fig08 form).
+
+        History: the original form passed only because dfdraw's profile2d
+        early-dispatch silently DROPPED selection= pre-13.57 (K-4 root
+        cause; FX-3 — gallery fig08/fig35 rendered unfiltered). The test
+        was unknowingly locking that F-B silent-drop state (same class as
+        T7/T7b). Amended per the F-A contract (plain alias selection needs
+        lazy=True) with a REAL cut and an EFFECT assertion so a dropped
+        selection can never pass again."""
+        adf.add_alias("good", "(x > 0)*1")          # real cut: ~half (x is standard normal)
+        n_full = len(adf.df)
         fig, ax, stats = adf.draw("z:y:x", selection="good>0", type="profile",
-                                  bins=8, auto_title=True)
+                                  bins=8, auto_title=True, lazy=True)
         assert fig is not None and stats is not None
+        assert stats["n"] < n_full, (
+            f"selection had no effect (n={stats['n']} == full {n_full}) — "
+            f"silent-drop regression (FX-3 class)")
 
     def test_T3c_draw_vector_expr_profile_not_promoted(self, adf):
         """T3c: vector expr '[a,b]:x' (1 top-level colon) stays 2-var profile."""

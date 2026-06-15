@@ -6112,6 +6112,40 @@ function collapseDepth(maxD) {{
         
         # Attach lazy reader
         adf._lazy_reader = lazy_reader
+
+        # Phase 13.59.ADF (BUG_20260613): register subframes recovered from the tree's
+        # metadata so the lazy path exposes them. Before this, read_tree_lazy never read
+        # UserInfo, so lazy_subframes was [] even for files whose UserInfo defines
+        # subframes (e.g. calibITS -> ['R','AlignDzITS5']). Each subframe is a sibling
+        # tree <tree>__subframe__<name>; index columns come from the recovered schema.
+        meta = getattr(lazy_reader, 'adf_metadata', None)
+        if meta and meta.get('subframes'):
+            names_only = meta.get('schema_source') == 'names_only'
+            indices = meta.get('subframe_indices') or {}
+            for sf_name in meta['subframes']:
+                if adf._subframes.has_subframe(sf_name) or sf_name in adf._subframe_readers:
+                    continue
+                idx = indices.get(sf_name)
+                if names_only or not idx:
+                    # Structure-only recovery: no index columns, so the subframe cannot be
+                    # registered as a lazy reader. Skip explicitly with a clear warning
+                    # rather than relying on register_subframe_lazy to raise.
+                    warnings.warn(
+                        f"read_tree_lazy: subframe '{sf_name}' recovered without index "
+                        f"columns (schema_source='names_only'); not registered as a lazy "
+                        f"subframe."
+                    )
+                    continue
+                sf_tree = f"{tree_name}__subframe__{sf_name}"
+                try:
+                    adf.register_subframe_lazy(
+                        sf_name, file_path, tree_name=sf_tree, index_columns=idx
+                    )
+                except Exception as e:
+                    warnings.warn(
+                        f"read_tree_lazy: could not register subframe '{sf_name}' "
+                        f"({sf_tree}) from {file_path}: {e}"
+                    )
         
         # Store chain config (single file for now, Phase 7.4 adds multi-file)
         adf._chain = {
