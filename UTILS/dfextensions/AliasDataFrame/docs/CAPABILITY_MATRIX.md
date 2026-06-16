@@ -1,6 +1,6 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-06-15 19:36 UTC
+**Generated:** 2026-06-16 05:54 UTC
 **Phase:** 13.11.B
 **Taxonomy:** 50 features (PHASE_13_11_B approved)
 **Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)
@@ -14,7 +14,7 @@
 | 🧨 Broken | 4 | 8% |
 | 📋 Planned | 1 | 2% |
 | **Total features** | **50** | |
-| **Matched tests** | **1698** | |
+| **Matched tests** | **1700** | |
 | **Invariance tests** | **253** | |
 
 **Unmatched tests:** 96 (not mapped to any feature)
@@ -100,7 +100,7 @@
 | ✅ | **LAZY.read_tree** — Lazy branch loading from ROOT | 88 | 88 | 0 | 2 |
 | ✅ | **LAZY.chain** — Chain loading (multiple files) | 60 | 58 | 0 | 8 |
 | ✅ | **LAZY.materialization** — Lazy subframe & alias evaluation | 54 | 54 | 0 | 2 |
-| ✅ | **LAZY.userinfo_backcompat** — Lazy-path UserInfo metadata back-compatibility (AD-3 precedence) | 13 | 12 | 0 | 5 |
+| ✅ | **LAZY.userinfo_backcompat** — Lazy-path UserInfo metadata back-compatibility (AD-3 precedence) | 15 | 14 | 0 | 5 |
 
 ## FIT_REGISTRATION
 

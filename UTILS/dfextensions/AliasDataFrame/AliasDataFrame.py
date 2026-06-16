@@ -5462,8 +5462,13 @@ function collapseDepth(maxD) {{
             # Phase 1: uproot data write (main tree + all subframes recursively)
             with uproot.recreate(filename_or_file, compression=compression) as f:
                 self._write_all_data_to_uproot(f, treename, dropAliasColumns)
-            # Phase 2: ROOT metadata write (single TFile.Open for all trees)
-            self._write_all_metadata_to_root(filename_or_file, treename)
+            # Phase 2: metadata write (AD-3/13.59.ADF write precedence). ROOT writes
+            # UserInfo (primary, trusted); without ROOT, uproot writes the standalone
+            # <tree>__adfmeta__ key (uproot cannot write UserInfo).
+            if ROOT is not None:
+                self._write_all_metadata_to_root(filename_or_file, treename)
+            else:
+                self._write_all_metadata_to_key(filename_or_file, treename)
         else:
             # Called from recursive data-write path — data only, no metadata
             self._write_all_data_to_uproot(filename_or_file, treename, dropAliasColumns)
@@ -5508,6 +5513,21 @@ function collapseDepth(maxD) {{
         finally:
             f.Close()
 
+    def _write_all_metadata_to_key(self, filename, treename):
+        """ROOT-absent fallback: write each tree's metadata as a standalone
+        `<tree>__adfmeta__` TObjString key via uproot.
+
+        uproot cannot write TTree UserInfo, so when ROOT is unavailable this is the only
+        write path (AD-3/13.59.ADF write precedence: uproot writes the standalone key only
+        when ROOT is absent). Emits the identical JSON as the ROOT path via
+        `_build_metadata_dict`. Reads back via the read-precedence resolver level 3.
+        """
+        from adf_metadata_compat import write_adf_metadata_key
+        targets = self._collect_metadata_targets(treename)
+        with uproot.update(filename) as f:
+            for adf_instance, tree_name in targets:
+                write_adf_metadata_key(f, tree_name, adf_instance._build_metadata_dict())
+
     def _write_metadata_to_root(self, filename, treename):
         """
         Write schema metadata to ROOT file (backward-compatible standalone entry point).
@@ -5551,35 +5571,41 @@ function collapseDepth(maxD) {{
                 expr_str = convert_expr_to_root(expr)
             tree.SetAlias(alias, expr_str)
         
-        # Capture all column dtypes for restoration
+        # Phase 13.59.ADF (D3): shared metadata serialization — ROOT (UserInfo) and
+        # uproot (standalone key) write paths emit the identical JSON dict.
+        metadata = self._build_metadata_dict()
+
+        jmeta = json.dumps(metadata)
+        tree.GetUserInfo().Add(ROOT.TObjString(jmeta))
+        tree.Write("", ROOT.TObject.kOverwrite)
+
+    def _build_metadata_dict(self):
+        """Build the schema-metadata dict written by both write paths.
+
+        Returns the unified-schema JSON-able dict (new SCHEMA_METADATA_KEY format plus
+        legacy fields). Used by `_write_metadata_to_tree` (ROOT UserInfo) and
+        `_write_all_metadata_to_key` (uproot standalone key) so both emit identical JSON
+        (AD-3/13.59.ADF write precedence, D3). No ROOT dependency.
+        """
         column_dtypes = {
             col: str(self.df[col].dtype)
             for col in self.df.columns
         }
-        
-        # Phase 4b: Serialize full schema
         serialized_schema = _serialize_schema(self._schema)
         serialized_schema["column_dtypes"] = column_dtypes
-        
-        # Also include legacy fields for backward compatibility with older readers
-        # and ROOT macro compatibility
-        metadata = {
+        return {
             # New unified schema format
             SCHEMA_METADATA_KEY: serialized_schema,
-            # Legacy fields for backward compatibility
+            # Legacy fields for backward compatibility with older readers / ROOT macros
             "aliases": self.aliases,
             "subframe_indices": {k: v["index"] for k, v in self._subframes.items()},
-            "dtypes": {k: v.__name__ if hasattr(v, '__name__') else str(v) 
+            "dtypes": {k: v.__name__ if hasattr(v, '__name__') else str(v)
                       for k, v in self.alias_dtypes.items()},
             "constants": list(self.constant_aliases),
             "subframes": list(self._subframes.subframes.keys()),
             "compression_info": self.compression_info,
             "column_dtypes": column_dtypes
         }
-        
-        jmeta = json.dumps(metadata)
-        tree.GetUserInfo().Add(ROOT.TObjString(jmeta))
-        tree.Write("", ROOT.TObject.kOverwrite)
 
     @staticmethod
     def read_tree(filename, treename="tree", entry_start=None, entry_stop=None, 
@@ -6130,10 +6156,11 @@ function collapseDepth(maxD) {{
                     # Structure-only recovery: no index columns, so the subframe cannot be
                     # registered as a lazy reader. Skip explicitly with a clear warning
                     # rather than relying on register_subframe_lazy to raise.
+                    reason = ("schema_source='names_only'" if names_only
+                              else "no index columns in recovered metadata")
                     warnings.warn(
-                        f"read_tree_lazy: subframe '{sf_name}' recovered without index "
-                        f"columns (schema_source='names_only'); not registered as a lazy "
-                        f"subframe."
+                        f"read_tree_lazy: subframe '{sf_name}' recovered without usable "
+                        f"index columns ({reason}); not registered as a lazy subframe."
                     )
                     continue
                 sf_tree = f"{tree_name}__subframe__{sf_name}"

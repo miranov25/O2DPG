@@ -30,7 +30,6 @@ UNIT (ROOT-free): resolver precedence levels 3 (key) and 4 (names-only + indicat
 import os
 import sys
 import warnings
-import tempfile
 
 import numpy as np
 import pandas as pd
@@ -131,54 +130,45 @@ def test_root_uproot_userinfo_invariance(userinfo_file):
 
 # --------------------------- UNIT (ROOT-free) ---------------------------
 
-def test_precedence_key_when_only_key():
+def test_precedence_key_when_only_key(tmp_path):
     """AC-3 level 3: standalone key recovered when no UserInfo present."""
-    tmp = tempfile.mktemp(suffix=".root")
-    try:
-        with uproot.recreate(tmp) as fo:
-            fo["t"] = {"x": np.arange(5)}
-            write_adf_metadata_key(fo, "t", {"subframes": ["K"],
-                                             "subframe_indices": {"K": ["x"]}})
-        m = read_adf_metadata(tmp, "t")
-        assert m["_source"] == "key"
-        assert m["subframes"] == ["K"]
-    finally:
-        os.path.exists(tmp) and os.remove(tmp)
+    tmp = str(tmp_path / "key_only.root")
+    with uproot.recreate(tmp) as fo:
+        fo["t"] = {"x": np.arange(5)}
+        write_adf_metadata_key(fo, "t", {"subframes": ["K"],
+                                         "subframe_indices": {"K": ["x"]}})
+    m = read_adf_metadata(tmp, "t")
+    assert m["_source"] == "key"
+    assert m["subframes"] == ["K"]
 
 
-def test_precedence_names_only_carries_indicator():
+def test_precedence_names_only_carries_indicator(tmp_path):
     """AC-3 level 4: names reconstruction is structure-only, flagged schema_source='names_only'."""
-    tmp = tempfile.mktemp(suffix=".root")
-    try:
-        with uproot.recreate(tmp) as fo:
-            fo["main"] = {"x": np.arange(3)}
-            fo["main__subframe__SF"] = {"k": np.arange(3)}
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            m = read_adf_metadata(tmp, "main")
-            assert any("names_only" in str(x.message) for x in w)
-        assert m["_source"] == "names"
-        assert m["subframes"] == ["SF"]
-        assert m.get("schema_source") == "names_only"
-    finally:
-        os.path.exists(tmp) and os.remove(tmp)
+    tmp = str(tmp_path / "names_only.root")
+    with uproot.recreate(tmp) as fo:
+        fo["main"] = {"x": np.arange(3)}
+        fo["main__subframe__SF"] = {"k": np.arange(3)}
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        m = read_adf_metadata(tmp, "main")
+        assert any("names_only" in str(x.message) for x in w)
+    assert m["_source"] == "names"
+    assert m["subframes"] == ["SF"]
+    assert m.get("schema_source") == "names_only"
 
 
-def test_names_only_no_registration():
+def test_names_only_no_registration(tmp_path):
     """Level 4 on the lazy path: a sibling-only file (no UserInfo, no key) warns and does
     NOT register unusable subframes (no indices). ROOT-free."""
-    tmp = tempfile.mktemp(suffix=".root")
-    try:
-        with uproot.recreate(tmp) as fo:
-            fo["main"] = {"x": np.arange(3, dtype="i4")}
-            fo["main__subframe__SF"] = {"k": np.arange(3, dtype="i4")}
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            adf = AliasDataFrame.read_tree_lazy(tmp, "main")
-            assert any("not registered" in str(x.message) for x in w)
-        assert list(adf.lazy_subframes) == []   # structure-only: not registered
-    finally:
-        os.path.exists(tmp) and os.remove(tmp)
+    tmp = str(tmp_path / "names_only_noreg.root")
+    with uproot.recreate(tmp) as fo:
+        fo["main"] = {"x": np.arange(3, dtype="i4")}
+        fo["main__subframe__SF"] = {"k": np.arange(3, dtype="i4")}
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        adf = AliasDataFrame.read_tree_lazy(tmp, "main")
+        assert any("not registered" in str(x.message) for x in w)
+    assert list(adf.lazy_subframes) == []   # structure-only: not registered
 
 
 @pytest.mark.invariance
@@ -314,6 +304,56 @@ def test_G1_real_fixture_recovery_ITS():
     m = read_adf_metadata(_ITS, "AlignITS5", prefer_root=False)
     assert m["_source"] == "uproot_userinfo"
     assert m["subframe_indices"]["AlignDzITS5"] == ["staveITS", "row", "firstTForbit"]
+
+
+def test_write_key_fallback_no_root(tmp_path):
+    """AC-4 write path (uproot key branch): the ROOT-absent writer emits the standalone
+    `<tree>__adfmeta__` key and the round-trip recovers subframes (read precedence
+    level 3).
+
+    Parallel-safe: exercises the production no-ROOT write method (`_write_all_metadata_to_key`,
+    the exact call `export_tree` makes when ROOT is absent) directly, instead of nulling the
+    module-global ROOT — a module global is shared across threads under pytest-parallel and
+    leaks into concurrently running ROOT-path tests.
+    """
+    main = AliasDataFrame(pd.DataFrame({"run": np.arange(10), "x": np.random.rand(10)}))
+    sfA = AliasDataFrame(pd.DataFrame({"run": np.arange(10), "a": np.random.rand(10)}))
+    main.register_subframe("A", sfA, index_columns=["run"])
+    path = str(tmp_path / "write_key.root")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        # Mirror export_tree's path branch: Phase 1 data via uproot, Phase 2 = method under test
+        with uproot.recreate(path) as f:
+            main._write_all_data_to_uproot(f, "tree", True)
+        main._write_all_metadata_to_key(path, "tree")      # the no-ROOT write branch, direct
+        m = read_adf_metadata(path, "tree")                # no UserInfo present -> key
+        assert m["_source"] == "key"
+        assert m["subframes"] == ["A"]
+        adf = AliasDataFrame.read_tree_lazy(path, "tree")
+        assert sorted(adf.lazy_subframes) == ["A"]
+        adf.ensure_subframe("A")
+        assert len(adf.get_subframe("A")) > 0
+
+
+def test_load_guard_coerces_awkward(tmp_path):
+    """P2-3: load_branches coerces an awkward return to a DataFrame (the guard branch,
+    never hit when uproot returns pandas — forced here)."""
+    import awkward as ak
+    from LazyTreeReader import LazyTreeReader
+    path = str(tmp_path / "guard.root")
+    with uproot.recreate(path) as fo:
+        fo["t"] = {"x": np.arange(5, dtype="i4"), "y": np.arange(5, dtype="i4")}
+    reader = LazyTreeReader(path, "t")
+
+    class _AwkTree:
+        def arrays(self, *a, **k):
+            return ak.Array({"x": np.arange(5), "y": np.arange(5)})
+
+    reader._tree = _AwkTree()
+    reader._open_file = lambda: None             # keep our stub _tree through load_branches
+    df = reader.load_branches(["x", "y"])
+    assert isinstance(df, pd.DataFrame)
+    assert len(df) == 5 and {"x", "y"} <= set(df.columns)
 
 
 if __name__ == "__main__":
