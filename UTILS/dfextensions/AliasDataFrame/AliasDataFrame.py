@@ -2097,36 +2097,48 @@ class AliasDataFrame:
         self._load_lazy_subframe(name)
 
     def _lazy_ensure_subframe_refs(self, text):
-        """Materialize any *lazy* subframes referenced as "<sf>.<col>" in the given text
-        (expr/selection/group_by/...), using the existing ensure_subframe machinery, and
-        load each subframe's index columns into the main frame so the draw-time join
-        resolves.
+        """Materialize the *lazy* subframe chain(s) referenced as "<sf>.<col>" or
+        "<sf>.<sub>...<col>" in the given text (expr/selection/group_by/...), using the
+        existing ensure_subframe machinery, so the analyzer and the subframe merge recognize
+        them and the eager merge can resolve the dotted ref.
 
-        This must run BEFORE get_required_branches and the subframe merge: a lazy subframe
-        (in self._subframe_readers) is not in the eager registry that the expression
-        analyzer and the merge block consult, so "A.col" would otherwise collapse to the
-        bare name "A" and the subframe would never be materialized. ensure_subframe registers
-        the loaded subframe into self._subframes (the UNIFICATION PRINCIPLE), after which the
-        existing eager resolution path handles it unchanged.
-
-        Single-level refs ("A.col"). Nested refs ("A.B.col") materialize the outer subframe;
-        deeper lazy resolution is chain scope (13.61).
+        Walks the whole chain: for "A.B.col" it materializes A, then B inside A's frame
+        (nested subframes register on materialization, see _load_lazy_subframe). Each level's
+        index columns are loaded into that level's frame so the join resolves. A segment whose
+        subframe is not a registered lazy subframe (e.g. names-only recovery, or a leaf
+        column) stops the walk; an unresolved ref then fails loud at draw time, never silent.
         """
-        readers = getattr(self, '_subframe_readers', None)
-        if not readers or self._lazy_reader is None:
+        if self._lazy_reader is None and not getattr(self, '_subframe_readers', None):
             return
         import re as _re
-        available = getattr(self._lazy_reader, 'available_branches', set())
         for tok in set(_re.findall(r'\b(\w+(?:\.\w+)+)\b', text or '')):
-            sf = tok.split('.', 1)[0]
-            if sf in readers and not self._subframe_loaded.get(sf, False):
-                cfg = getattr(self, '_subframe_lazy_config', {}).get(sf)
-                if cfg:
+            segs = tok.split('.')
+            # all leading segments except the final one (the column) are candidate subframes
+            self._lazy_materialize_subframe_chain(segs[:-1])
+
+    def _lazy_materialize_subframe_chain(self, names):
+        """Materialize a chain of lazy subframes (e.g. ['A', 'B']) level by level, descending
+        into each materialized subframe's frame. Stops at the first segment that is not a
+        registered lazy subframe."""
+        current = self
+        for nm in names:
+            readers = getattr(current, '_subframe_readers', None) or {}
+            if nm in readers and not current._subframe_loaded.get(nm, False):
+                cfg = getattr(current, '_subframe_lazy_config', {}).get(nm)
+                # load this level's index columns into the current frame (join keys); only the
+                # lazy-main frame needs this -- a materialized subframe frame already holds all
+                # its columns.
+                if cfg and getattr(current, '_lazy_reader', None) is not None:
+                    available = current._lazy_reader.available_branches
                     idx_to_load = (set(cfg.get('index_columns') or [])
-                                   - self._lazy_reader.loaded_branches) & available
+                                   - current._lazy_reader.loaded_branches) & available
                     if idx_to_load:
-                        self.ensure_branches(list(idx_to_load))
-                self.ensure_subframe(sf)
+                        current.ensure_branches(list(idx_to_load))
+                current.ensure_subframe(nm)
+            entry = current._subframes.get_entry(nm) if hasattr(current, '_subframes') else None
+            if not entry:
+                break  # not a subframe (leaf column) or unresolved -> stop; draw fails loud
+            current = entry['frame']
 
     def _load_lazy_subframe(self, name: str) -> None:
         """
@@ -2166,6 +2178,33 @@ class AliasDataFrame:
         
         # Mark as loaded
         self._subframe_loaded[name] = True
+
+        # Phase 13.58 (nested): recover and register this subframe's OWN child subframes as
+        # lazy on its frame, so a nested ref ("A.B.col") can walk one level deeper. The child
+        # data lives in sibling trees "<this_tree>__subframe__<child>"; index columns come
+        # from the child's recovered metadata. Children without usable index columns are
+        # skipped (the draw then fails loud, never silently wrong) -- same contract as the
+        # top level.
+        sf_file = config.get('file')
+        sf_tree = config.get('tree')
+        if sf_file and sf_tree:
+            try:
+                from adf_metadata_compat import read_adf_metadata
+                child_meta = read_adf_metadata(sf_file, sf_tree)
+                child_idx = child_meta.get('subframe_indices') or {}
+                for child in (child_meta.get('subframes') or []):
+                    cidx = child_idx.get(child)
+                    if not cidx:
+                        continue
+                    if subframe_adf._subframes.has_subframe(child) or child in subframe_adf._subframe_readers:
+                        continue
+                    subframe_adf.register_subframe_lazy(
+                        child, sf_file,
+                        tree_name=f"{sf_tree}__subframe__{child}",
+                        index_columns=cidx,
+                    )
+            except Exception as e:
+                warnings.warn(f"_load_lazy_subframe: nested-subframe recovery for '{name}' failed: {e}")
         
         # Validate index columns exist in main DataFrame
         # CRITICAL: Check lazy reader FIRST to avoid triggering main load
@@ -2178,9 +2217,9 @@ class AliasDataFrame:
                     f"Subframe '{name}' index column(s) {sorted(missing_in_main)} "
                     f"not found in main DataFrame available branches."
                 )
-        elif len(self._df) > 0:
+        elif len(self.df) > 0:
             # Eager main: safe to check columns directly
-            missing_in_main = set(config['index_columns']) - set(self._df.columns)
+            missing_in_main = set(config['index_columns']) - set(self.df.columns)
             if missing_in_main:
                 warnings.warn(
                     f"Subframe '{name}' index column(s) {sorted(missing_in_main)} "

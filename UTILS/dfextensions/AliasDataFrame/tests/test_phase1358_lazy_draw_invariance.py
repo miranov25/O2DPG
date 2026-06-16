@@ -322,5 +322,47 @@ def test_lazy_subframe_column_draw(tmp_path):
     assert "A" in lazy.list_subframes()                     # materialized on demand by the draw
 
 
+@pytest.mark.invariance
+def test_lazy_nested_subframe_column_draw(tmp_path):
+    """Phase 13.58 (nested): recursive subframe-column lazy draw. A two-level chain
+    main -> A -> B drawn via 'A.B.col:x' materializes the whole chain on demand (A, then B
+    registered on A's frame at materialization) and matches eager exactly, loading only the
+    join key + main branch (not the decoys at any level)."""
+    import warnings as _warnings
+    rng = np.random.default_rng(3); n = 300
+    run = np.arange(n); x = rng.random(n); col = rng.random(n)
+
+    def _build():
+        B = AliasDataFrame(pd.DataFrame({"run": run.copy(), "col": col.copy(),
+                                         "bdecoy": rng.random(n)}))
+        A = AliasDataFrame(pd.DataFrame({"run": run.copy(), "a": rng.random(n)}))
+        A.register_subframe("B", B, index_columns=["run"])
+        m = AliasDataFrame(pd.DataFrame({"run": run.copy(), "x": x.copy(),
+                                         "unused": rng.random(n)}))
+        m.register_subframe("A", A, index_columns=["run"])
+        return m
+
+    p = str(tmp_path / "nested.root")
+    src = _build()
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore")
+        with uproot.recreate(p) as f:
+            src._write_all_data_to_uproot(f, "t", True)
+        src._write_all_metadata_to_key(p, "t")
+
+    lazy = AliasDataFrame.read_tree_lazy(p, "t"); lazy.draw_lazy = True
+    eager = _build(); eager.draw_lazy = True
+    assert lazy._lazy_reader.loaded_branches == set()
+
+    out_l = lazy.draw(expr="A.B.col:x", type="profile", bins=12, return_data=True)
+    out_e = eager.draw(expr="A.B.col:x", type="profile", bins=12, return_data=True)
+    assert isinstance(out_l, tuple) and len(out_l) > 2
+    _cmp_stats(out_l[2], out_e[2], "nested_subframe_draw")        # lazy == eager
+
+    assert lazy._lazy_reader.loaded_branches == {"run", "x"}, \
+        f"loaded {sorted(lazy._lazy_reader.loaded_branches)} != {{run, x}}"
+    assert "A" in lazy.list_subframes()                          # outer materialized
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
