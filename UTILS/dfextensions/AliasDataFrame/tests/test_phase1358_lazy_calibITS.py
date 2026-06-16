@@ -111,5 +111,32 @@ def test_calibITS_hist_exact_load():
     assert lazy._lazy_reader.loaded_branches == {Y2}
 
 
+@pytest.mark.invariance
+def test_calibITS_subframe_column_lazy_draw():
+    """T11 — subframe-column lazy draw boundary (documents the current limit; locks loud failure).
+
+    calibITS has two ADF subframes ('R', 'AlignDzITS5'). read_tree_lazy recovers their NAMES
+    (names-only metadata reconstruction from the sibling __subframe__ trees — ROOT-free) but
+    does NOT register them as lazy subframes: names-only recovery carries no index columns,
+    and register_subframe_lazy needs them. So a subframe-column lazy draw is not yet supported
+    and must FAIL LOUD (a clear error), never silently render an empty figure.
+
+    This is the real 13.58 boundary, not a ROOT artifact: read_tree_lazy reads metadata via
+    uproot regardless of host ROOT, so the behaviour is identical everywhere. Making
+    subframe-column lazy draw work (recovering index columns from the subframe schema) is
+    lazy-subframe scope (13.60/13.61).
+    """
+    lazy = AliasDataFrame.read_tree_lazy(CALIB_ITS, TREE)
+    meta = getattr(lazy._lazy_reader, "adf_metadata", None) or {}
+    # names ARE recovered (from the sibling __subframe__ trees) ...
+    assert set(meta.get("subframes") or []) >= {"R", "AlignDzITS5"}
+    # ... but NOT registered as lazy subframes (no index columns in names-only recovery)
+    assert lazy.list_subframes() == []
+    # a subframe-column draw therefore fails LOUD, not silently
+    lazy.draw_lazy = True
+    with pytest.raises(ValueError):
+        lazy.draw(expr="AlignDzITS5.dz_ITS5T_rms_AITS5:firstTForbit", type="profile", bins=10)
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
