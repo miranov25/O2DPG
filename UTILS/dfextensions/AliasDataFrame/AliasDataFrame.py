@@ -2095,7 +2095,39 @@ class AliasDataFrame:
         
         # Load the subframe
         self._load_lazy_subframe(name)
-    
+
+    def _lazy_ensure_subframe_refs(self, text):
+        """Materialize any *lazy* subframes referenced as "<sf>.<col>" in the given text
+        (expr/selection/group_by/...), using the existing ensure_subframe machinery, and
+        load each subframe's index columns into the main frame so the draw-time join
+        resolves.
+
+        This must run BEFORE get_required_branches and the subframe merge: a lazy subframe
+        (in self._subframe_readers) is not in the eager registry that the expression
+        analyzer and the merge block consult, so "A.col" would otherwise collapse to the
+        bare name "A" and the subframe would never be materialized. ensure_subframe registers
+        the loaded subframe into self._subframes (the UNIFICATION PRINCIPLE), after which the
+        existing eager resolution path handles it unchanged.
+
+        Single-level refs ("A.col"). Nested refs ("A.B.col") materialize the outer subframe;
+        deeper lazy resolution is chain scope (13.61).
+        """
+        readers = getattr(self, '_subframe_readers', None)
+        if not readers or self._lazy_reader is None:
+            return
+        import re as _re
+        available = getattr(self._lazy_reader, 'available_branches', set())
+        for tok in set(_re.findall(r'\b(\w+(?:\.\w+)+)\b', text or '')):
+            sf = tok.split('.', 1)[0]
+            if sf in readers and not self._subframe_loaded.get(sf, False):
+                cfg = getattr(self, '_subframe_lazy_config', {}).get(sf)
+                if cfg:
+                    idx_to_load = (set(cfg.get('index_columns') or [])
+                                   - self._lazy_reader.loaded_branches) & available
+                    if idx_to_load:
+                        self.ensure_branches(list(idx_to_load))
+                self.ensure_subframe(sf)
+
     def _load_lazy_subframe(self, name: str) -> None:
         """
         Internal: Load a lazy subframe from file.
@@ -11419,6 +11451,11 @@ function collapseDepth(maxD) {{
         # Phase 7.3: Auto-load branches in lazy mode
         # =================================================================
         if self._lazy_reader is not None:
+            # Phase 13.58: materialize any lazy subframes referenced in the expr/kwargs
+            # BEFORE branch detection, so the analyzer and the subframe merge recognize them.
+            self._lazy_ensure_subframe_refs(' '.join(str(t) for t in [
+                expr, kwargs.get('selection'), kwargs.get('group_by'), kwargs.get('color'),
+                kwargs.get('facet_by'), kwargs.get('weights')] if t))
             # Detect required branches from expression and parameters
             required_branches = self.get_required_branches(
                 expr=expr,
@@ -11436,6 +11473,10 @@ function collapseDepth(maxD) {{
             # Phase 6.8a fix: Filter out subframe names (they are not TTree branches)
             all_subframes = set(self._subframes.subframes.keys()) | set(getattr(self, '_subframe_readers', {}).keys())
             branches_to_load = branches_to_load - all_subframes
+            # Phase 13.58: drop subframe-column refs ("A.col") — resolved by the subframe
+            # merge below, not loadable as main-tree branches.
+            branches_to_load = {b for b in branches_to_load
+                                if not ("." in b and b.split(".", 1)[0] in all_subframes)}
             
             if branches_to_load:
                 self.ensure_branches(list(branches_to_load))
@@ -12504,6 +12545,11 @@ function collapseDepth(maxD) {{
             
             for name, spec in specs.items():
                 merged_spec = {**merged_defaults, **spec}
+                # Phase 13.58: materialize lazy subframes referenced in this spec first
+                self._lazy_ensure_subframe_refs(' '.join(str(t) for t in [
+                    merged_spec.get('expr', name), merged_spec.get('selection'),
+                    merged_spec.get('group_by'), merged_spec.get('color'),
+                    merged_spec.get('facet_by'), merged_spec.get('weights')] if t))
                 required = self.get_required_branches(
                     expr=merged_spec.get('expr', name),
                     selection=merged_spec.get('selection'),
@@ -12522,6 +12568,9 @@ function collapseDepth(maxD) {{
             # Phase 6.8a fix: Filter out subframe names (they are not TTree branches)
             all_subframes = set(self._subframes.subframes.keys()) | set(getattr(self, '_subframe_readers', {}).keys())
             branches_to_load = branches_to_load - all_subframes
+            # Phase 13.58: drop subframe-column refs (resolved by the subframe merge)
+            branches_to_load = {b for b in branches_to_load
+                                if not ("." in b and b.split(".", 1)[0] in all_subframes)}
             
             if branches_to_load:
                 if verbose:
@@ -12843,6 +12892,11 @@ function collapseDepth(maxD) {{
                     if isinstance(plot_spec, str):
                         plot_spec = {'expr': plot_spec}
                     merged_plot = {**merged_defaults, **plot_spec}
+                    # Phase 13.58: materialize lazy subframes referenced in this plot first
+                    self._lazy_ensure_subframe_refs(' '.join(str(t) for t in [
+                        merged_plot.get('expr', ''), merged_plot.get('selection'),
+                        merged_plot.get('group_by'), merged_plot.get('color'),
+                        merged_plot.get('facet_by'), merged_plot.get('weights')] if t))
                     required = self.get_required_branches(
                         expr=merged_plot.get('expr', ''),
                         selection=merged_plot.get('selection'),
@@ -12860,6 +12914,9 @@ function collapseDepth(maxD) {{
             # Filter out subframe names (Phase 6.8a fix)
             all_subframes = set(self._subframes.subframes.keys()) | set(getattr(self, '_subframe_readers', {}).keys())
             branches_to_load = branches_to_load - all_subframes
+            # Phase 13.58: drop subframe-column refs (resolved by the subframe merge)
+            branches_to_load = {b for b in branches_to_load
+                                if not ("." in b and b.split(".", 1)[0] in all_subframes)}
             
             if branches_to_load:
                 if verbose:

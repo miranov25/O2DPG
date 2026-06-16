@@ -278,5 +278,49 @@ def test_d2_resolver_isolation_function_level(root_path):
     assert "q" in adf.get_required_branches(expr="y:x", selection_vector=["q>0.2"])
 
 
+@pytest.mark.invariance
+def test_lazy_subframe_column_draw(tmp_path):
+    """Phase 13.58: subframe-column lazy draw. A registered lazy subframe (proper index
+    columns) drawn via 'A.col:x' is materialized on demand through the existing
+    ensure_subframe machinery and matches eager exactly, loading only the subframe's index
+    column plus the main-tree branches used (not the decoy column).
+
+    This is the positive proof of the feature; the calibITS test (T11) exercises the same
+    path on real data and the names-only boundary.
+    """
+    import warnings as _warnings
+    rng = np.random.default_rng(7); n = 400
+    run = np.arange(n); x = rng.random(n); a = rng.random(n); unused = rng.random(n)
+
+    def _build():
+        m = AliasDataFrame(pd.DataFrame({"run": run.copy(), "x": x.copy(), "unused": unused.copy()}))
+        m.register_subframe("A", AliasDataFrame(pd.DataFrame({"run": run.copy(), "a": a.copy()})),
+                            index_columns=["run"])
+        return m
+
+    p = str(tmp_path / "sf.root")
+    src = _build()
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore")
+        with uproot.recreate(p) as f:
+            src._write_all_data_to_uproot(f, "t", True)
+        src._write_all_metadata_to_key(p, "t")
+
+    lazy = AliasDataFrame.read_tree_lazy(p, "t"); lazy.draw_lazy = True
+    eager = _build(); eager.draw_lazy = True
+    assert "A" in lazy.lazy_subframes                       # registered as a lazy subframe
+    assert lazy._lazy_reader.loaded_branches == set()       # provably lazy at construction
+
+    out_l = lazy.draw(expr="A.a:x", type="profile", bins=12, return_data=True)
+    out_e = eager.draw(expr="A.a:x", type="profile", bins=12, return_data=True)
+    assert isinstance(out_l, tuple) and len(out_l) > 2
+    _cmp_stats(out_l[2], out_e[2], "subframe_draw")         # lazy == eager
+
+    # exact load: subframe index 'run' + main 'x'; decoy 'unused' never loaded
+    assert lazy._lazy_reader.loaded_branches == {"run", "x"}, \
+        f"loaded {sorted(lazy._lazy_reader.loaded_branches)} != {{run, x}}"
+    assert "A" in lazy.list_subframes()                     # materialized on demand by the draw
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
