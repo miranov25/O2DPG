@@ -1,7 +1,7 @@
 # AliasDataFrame Phase History
 
 > **Purpose**: Development history for architecture reviews and restart prompts.  
-> **Last Updated**: 2026-06-11  
+> **Last Updated**: 2026-06-16  
 > **Maintained By**: Marian Ivanov (miranov25)
 
 ## How to Use This File
@@ -42,9 +42,9 @@ AliasDataFrame is a high-performance data analysis framework for particle physic
 
 **Key Metrics:**
 - Performance: 60-770x speedups achieved; production pipeline 2.1× faster (1452s → 692s)
-- Test Coverage: 1687 tests passing (server run `d85b3750`, 2026-06-11; 8 pre-existing failures + 1 error, identical by test identity to the documented baseline; 248 invariance tests)
-- Lines of Code: ~14,150 (AliasDataFrame.py)
-- Features: 49 in taxonomy (30 verified, 14 smoke-only, 4 broken, 1 planned — CM Verified↔Broken counts flip run-to-run with the parallel-flake set: `test_K2_3`, `test_parquet_roundtrip`, `test_arrow_vs_numpy_performance` (timing threshold, first seen run 095125; architect: "stochastic — we should fix it later")); DISPATCH.adf_routing ✅ 28/28 + DISPATCH.error_visibility ✅ 15/15 registered and Verified (Phase 13.56.ADF)
+- Test Coverage: 1701 tests passing (server run `566a9257`, 2026-06-16; 8 deterministic pre-existing failures + 1 parallel flake (`test_parquet_roundtrip`) + 1 error; 253 invariance tests)
+- Lines of Code: ~14,238 (AliasDataFrame.py)
+- Features: 50 in taxonomy (30 verified, 14 smoke-only, 5 broken, 1 planned — CM Verified↔Broken counts flip run-to-run with the parallel-flake set: `test_K2_3`, `test_parquet_roundtrip`, `test_arrow_vs_numpy_performance` (timing threshold, first seen run 095125; architect: "stochastic — we should fix it later")); DISPATCH.adf_routing ✅ 28/28 + DISPATCH.error_visibility ✅ 15/15 registered and Verified (Phase 13.56.ADF); LAZY.userinfo_backcompat ✅ Verified (Phase 13.59.ADF)
 
 **Development Team:**
 - Coordinator: Marian Ivanov (miranov25)
@@ -55,7 +55,7 @@ AliasDataFrame is a high-performance data analysis framework for particle physic
 
 ## Phase 13: Advanced Features
 
-**Dates**: 2026-03-22 to 2026-06-10  
+**Dates**: 2026-03-22 to 2026-06-16  
 **Status**: 🔄 In Progress (ADF maintenance mode; dfdraw Phase A active)
 
 ### Phase 13.12.DF: Profile Enhancements
@@ -686,6 +686,41 @@ New helper `_top_level_colon_count(expr)` — bracket-aware top-level colon coun
 
 **Follow-up**: TECHNICAL_SUMMARY v1.8 (graphics rewrite from audit cleared rows) committed 2026-06-11 after [!] panel (8 reviewers). Next ADF audit: lazy evaluation (FormularV3). dfdraw track: PRINCIPLES v1.1 + grammar package sent for ratification 2026-06-11.
 
+### Phase 13.59.ADF: Lazy-path UserInfo Metadata Back-Compatibility
+**Dates**: 2026-06-15 to 2026-06-16  
+**Commit**: `566a9257` (close); branch `feature/groupby-optimization`  
+**Proposal**: `PHASE_13_59_ADF_MetadataBackCompat_v1.2_Proposal.md` (Full Panel, v1.2)  
+**Code Review Request**: `PHASE_13_59_ADF_v1.2_Code_Review_Request.md`  
+**AD reference**: AD-3/13.59.ADF (metadata read/write precedence)  
+**Bug**: `BUG_AliasDataFrame_20260613_lazy_UserInfo_gap`  
+**Coder**: fable5_5 · **Main Reviewer**: Sonnet11 · **Panel**: Sonnet11, Sonnet2 (×2), Sonnet6, Sonnet10, Claude37, Opus48_1 — [OK] for closure
+
+Closes the silent loss of subframes on the lazy read path: `read_tree_lazy` built an ADF without reading TTree UserInfo, so lazily-read files lost their subframes (`lazy_subframes == []`) while eager reads kept them.
+
+**Read precedence (first success wins)**:
+1. ROOT TTree UserInfo (if ROOT available)
+2. uproot UserInfo (`minimal_ttree_metadata=False`)
+3. standalone `<tree>__adfmeta__` key (TObjString JSON; ROOT-preferred read)
+4. names reconstruction from `<tree>__subframe__*` siblings (`schema_source='names_only'`, warning; never overrides 1–3)
+
+**Write precedence**: ROOT writes UserInfo when available; without ROOT, uproot writes the standalone key (uproot cannot write UserInfo). Both write paths share `_build_metadata_dict()` → identical JSON.
+
+**New / changed**:
+- `adf_metadata_compat.py` (new) — `read_adf_metadata()` resolver (levels 1–4); `write_adf_metadata_key()`.
+- `LazyTreeReader.py` — `__init__` resolves `adf_metadata`; `load_branches` coerces awkward→DataFrame.
+- `AliasDataFrame.py` — `read_tree_lazy` registers recovered subframes (names-only / no-index → skip+warn); `export_tree` Phase-2 ROOT/uproot write guard; `_write_all_metadata_to_key()`; `_build_metadata_dict()` extracted (behaviour-preserving, disclosed).
+
+**Tests**: 15 (5 invariance + 10 functional; 5 ROOT-only). Taxonomy 49→50 (`LAZY.userinfo_backcompat`). FM#12 key-path regression test fails pre-fix via the same public API.
+
+**Closing run** (`SUMMARY_20260616_083550`, commit `566a9257`): **1701 passed / 9F / 1E / 9 skipped**. The 8 deterministic pre-existing failures (K1_3, K2_3, I2_6, I4_2, I4_3, RDF×3 friend-tree) plus the `schema_serialization` error are unchanged; the 9th failure, `test_parquet_roundtrip`, is the documented parallel-flake cluster (`BUG_AliasDataFrame_20260526_parallel_flake_compression`, stochastic), not a 13.59 regression. CM: 50 features, 253 invariance, 1700 matched; `LAZY.userinfo_backcompat` ✅ Verified (Verified↔Broken flips with the parquet flake per the documented set).
+
+**Deferred → Phase 13.61**: the same gap on the lazy **chain** path (`read_chain_lazy`), filed as `BUG_AliasDataFrame_20260615_lazy_chain_UserInfo_gap`. A chain subframe is a chain of sibling trees across all files, needing a chain-aware subframe reader + `register_subframe_lazy` extension (>200 lines) — the substance of 13.61. Architect re-ack (2026-06-16): *"Chain we can postpone but we have to properly explain why."*
+
+**Lessons learned**:
+- **Test isolation under `pytest-parallel`**: an early key-fallback test nulled the module-global `AliasDataFrame.ROOT` to force the no-ROOT branch. A module global is shared across threads under the parallel runner, so it leaked into concurrently running ROOT-path tests (`test_save_and_load_integrity`, `test_backward_compatibility_no_compression_info`) — 3 spurious failures on the intermediate commit `1ee957e8`. Fixed by exercising the production no-ROOT writer (`_write_all_metadata_to_key`) directly. Rule: never mutate a module global in a parallel-collected test.
+- **Closure gate (FM#13 + no `--amend`)**: the clean run must carry the closing commit's SHA. An intermediate clean run carried the broken commit's hash; closure waited for a fresh full run on `566a9257`.
+- **Proposal-Completeness Matrix**: every deliverable and AC reconciled before closure; the chain item was explicitly deferred-with-reason, not silently omitted.
+
 ### Phase 13.25.DF FIX1: dfdraw Quantile Test-Quality + AD-52 Sentinel Fix
 **Dates**: 2026-05-14 (proposal drafted)  
 **Status**: 📋 Proposal v1.0 drafted by Claude37; awaiting architect approval to start Coder work  
@@ -708,6 +743,19 @@ Fix cycle against approved spec `PHASE_13_25_DF_v1.3_Proposal.md` (no re-litigat
 ---
 
 ## Bug Fixes
+
+### BUG_AliasDataFrame_20260613_lazy_UserInfo_gap
+**Status**: ✅ Resolved — Phase 13.59.ADF (commit `566a9257`)  
+**Discovered**: 2026-06-13 (blocked Phase 13.58 lazy time-series validation)
+
+`read_tree_lazy` constructed the ADF without reading TTree UserInfo, so lazily-read files silently lost their subframes (`lazy_subframes == []`) even though the file's UserInfo defined them; eager reads were unaffected. Fix: AD-3 read-precedence resolver (UserInfo → uproot UserInfo → `__adfmeta__` key → names-only) with subframe registration in `read_tree_lazy`. Regression guard: `test_keypath_lazy_registration_invariance` (FM#12 — same public API, fails pre-fix). See Phase 13.59.ADF.
+
+### BUG_AliasDataFrame_20260615_lazy_chain_UserInfo_gap
+**Status**: 🔄 Open — deferred to Phase 13.61 (architect re-acked)  
+**Discovered**: 2026-06-15 (Phase 13.59.ADF panel; sibling of the single-tree gap above)
+
+The same metadata gap on the lazy **chain** path: `read_chain_lazy` builds the chain reader and an empty-DataFrame ADF but never consumes per-file metadata to register subframes, so a lazily-read chain silently has no subframes. Not a mirror of the single-tree fix — a chain subframe is a chain of sibling trees `<tree>__subframe__<name>` across all files, requiring a chain-aware subframe reader (own `LazyChainReader` with offset/index handling) and an extension of `register_subframe_lazy` (today single file+tree), >200 lines = the substance of 13.61. Filed: `BUG_AliasDataFrame_20260615_lazy_chain_UserInfo_gap.md`. Architect re-ack: *"Chain we can postpone but we have to properly explain why."*
+
 
 ### BUG_AliasDataFrame_20260610_batch_selection_alias_masked
 **Date**: 2026-06-10  
