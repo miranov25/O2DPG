@@ -3803,6 +3803,13 @@ class AliasDataFrame:
         known_funcs = set(ArrowComputeMapper.FUNC_MAP.keys()) if ArrowComputeMapper else set()
         known_funcs.update(['np', 'numpy', 'math', 'abs', 'int', 'float', 'round', 
                            'min', 'max', 'sum', 'len', 'range', 'True', 'False', 'None'])
+        # Phase 13.58.ADF (D1): registered functions are added at runtime via
+        # register_function(); query the live registry at each parse so a call such as
+        # corr(xM, driftM) treats `corr` as a function, not a column. Querying the registry
+        # (rather than extending a static literal) is what makes runtime-registered names
+        # resolve correctly.
+        if hasattr(self, '_registered_functions'):
+            known_funcs.update(self._registered_functions.keys())
         
         for node in ast.walk(tree):
             if isinstance(node, ast.Name):
@@ -6834,11 +6841,43 @@ function collapseDepth(maxD) {{
         
         return base_branches
 
+    @staticmethod
+    def _split_top_level_colon(expr):
+        """Split a draw expression on top-level ':' separators (dfdraw 'y:x' grammar),
+        ignoring any ':' inside (), [], or {}.
+
+        Phase 13.58.ADF (D1): each part is fed individually to _analyze_expression, which
+        parses it as a Python expression; a raw 'y:x' is not valid Python, so the colon
+        split must happen first. Bracket-depth tracking keeps a stray ':' inside a call or
+        slice from splitting the expression.
+        """
+        parts = []
+        depth = 0
+        current = []
+        for ch in expr:
+            if ch in '([{':
+                depth += 1
+                current.append(ch)
+            elif ch in ')]}':
+                depth = max(0, depth - 1)
+                current.append(ch)
+            elif ch == ':' and depth == 0:
+                parts.append(''.join(current))
+                current = []
+            else:
+                current.append(ch)
+        parts.append(''.join(current))
+        return parts
+
     def get_required_branches(self,
                               expr: str = None,
                               selection: str = None,
                               group_by: str = None,
                               color: str = None,
+                              facet_by=None,
+                              weights=None,
+                              weights_vector=None,
+                              selection_vector=None,
                               aliases: list = None,
                               validate: bool = False) -> set:
         """
@@ -6883,11 +6922,29 @@ function collapseDepth(maxD) {{
         """
         all_columns = set()
         
-        # 1. Parse main expression (e.g., 'dEdx:p' → {'dEdx', 'p'})
-        #    Reuse logic from _parse_expr_aliases but get ALL columns (GPT tweak #1)
+        # 1. Parse main expression into column references.
+        #    Phase 13.58.ADF (D1): route expr parsing through the AST analyzer instead of a
+        #    raw ':'-split, so function calls and compound math resolve to their real column
+        #    dependencies (e.g. 'corr(xM, driftM):c' -> {xM, driftM, c}) and registered
+        #    function names are not mistaken for columns. The dfdraw 'y:x' form is split on
+        #    the top-level ':' first (each side is its own Python expression). Falls back to
+        #    the literal token when a part is not parseable or yields no refs, preserving the
+        #    prior behaviour for bare names and aliases (AC-4 regression set).
         if expr:
-            parts = expr.replace(' ', '').split(':')
-            all_columns.update(parts)
+            for part in self._split_top_level_colon(expr):
+                part = part.strip()
+                if not part:
+                    continue
+                analysis = self._analyze_expression(part)
+                refs = set(analysis.get('column_refs', set()))
+                for sf_name, sf_col in analysis.get('subframe_refs', []):
+                    refs.add(f"{sf_name}.{sf_col}")
+                if refs:
+                    all_columns.update(refs)
+                else:
+                    # Not parseable as a Python expression, or a bare literal: keep the
+                    # token so downstream alias/branch resolution still sees it.
+                    all_columns.add(part.replace(' ', ''))
         
         # 2. Parse selection string
         if selection:
@@ -6899,7 +6956,35 @@ function collapseDepth(maxD) {{
             all_columns.add(group_by)
         if color and isinstance(color, str):
             all_columns.add(color)
-        
+
+        # 3b. Phase 13.58.ADF (D2): column-name-bearing draw kwargs. Any kwarg whose string
+        #     value is interpreted as a column name must contribute to the required-branch
+        #     set, so a branch referenced ONLY via facet_by/weights/weights_vector/
+        #     selection_vector pre-loads in lazy mode (the silent-empty-figure class). Each
+        #     may be a string or a per-Y list of strings. Integer count kwargs
+        #     (facet_by_bins/_quantiles, group_by_bins/_quantiles) are deliberately NOT
+        #     included — they are bin counts, not column names.
+        def _add_colname_kwarg(value, as_selection=False):
+            if value is None:
+                return
+            items = value if isinstance(value, (list, tuple)) else [value]
+            for item in items:
+                if not isinstance(item, str) or not item:
+                    continue
+                if as_selection:
+                    all_columns.update(self._parse_selection_columns(item))
+                    continue
+                analysis = self._analyze_expression(item)
+                refs = set(analysis.get('column_refs', set()))
+                for sf_name, sf_col in analysis.get('subframe_refs', []):
+                    refs.add(f"{sf_name}.{sf_col}")
+                all_columns.update(refs if refs else {item})
+
+        _add_colname_kwarg(facet_by)
+        _add_colname_kwarg(weights)
+        _add_colname_kwarg(weights_vector)
+        _add_colname_kwarg(selection_vector, as_selection=True)
+
         # 4. Add explicit aliases
         if aliases:
             all_columns.update(aliases)
@@ -11339,7 +11424,11 @@ function collapseDepth(maxD) {{
                 expr=expr,
                 selection=kwargs.get('selection'),
                 group_by=kwargs.get('group_by'),
-                color=kwargs.get('color')
+                color=kwargs.get('color'),
+                facet_by=kwargs.get('facet_by'),
+                weights=kwargs.get('weights'),
+                weights_vector=kwargs.get('weights_vector'),
+                selection_vector=kwargs.get('selection_vector')
             )
             # Load any branches not already loaded
             branches_to_load = required_branches - self._lazy_reader.loaded_branches
@@ -12419,7 +12508,11 @@ function collapseDepth(maxD) {{
                     expr=merged_spec.get('expr', name),
                     selection=merged_spec.get('selection'),
                     group_by=merged_spec.get('group_by'),
-                    color=merged_spec.get('color')
+                    color=merged_spec.get('color'),
+                    facet_by=merged_spec.get('facet_by'),
+                    weights=merged_spec.get('weights'),
+                    weights_vector=merged_spec.get('weights_vector'),
+                    selection_vector=merged_spec.get('selection_vector')
                 )
                 all_required.update(required)
             
@@ -12754,7 +12847,11 @@ function collapseDepth(maxD) {{
                         expr=merged_plot.get('expr', ''),
                         selection=merged_plot.get('selection'),
                         group_by=merged_plot.get('group_by'),
-                        color=merged_plot.get('color')
+                        color=merged_plot.get('color'),
+                        facet_by=merged_plot.get('facet_by'),
+                        weights=merged_plot.get('weights'),
+                        weights_vector=merged_plot.get('weights_vector'),
+                        selection_vector=merged_plot.get('selection_vector')
                     )
                     all_required.update(required)
             

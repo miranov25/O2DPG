@@ -18,6 +18,11 @@ Phase-13.55 tests + 14 Phase-13.56 tests. Total: 47 → 49.
 Phase 13.59.ADF (2026-06-15): Added 1 new feature LAZY.userinfo_backcompat
 (lazy-path UserInfo metadata back-compatibility, AD-3 read precedence) covered by
 the 13 test_phase1359_lazy_userinfo.py tests. Total: 49 → 50.
+Phase 13.58.ADF (2026-06-16): Added 1 new feature LAZY.timeseries_draw (single-tree
+lazy time-series loading & lazy drawing — D1 resolver, D2 draw-surface branch scan,
+D3 estimate_memory) covered by test_phase1358_lazy_timeseries.py (7),
+test_phase1358_lazy_draw_invariance.py (14), test_phase1358_gallery_lazy.py (1,
+env-gated). Total: 50 → 51.
 """
 
 FEATURES = [
@@ -284,7 +289,7 @@ FEATURES = [
          "test_I13_backend_equivalence_invariance.py",
      ]},
 
-    # ── LAZY_LOADING (4) ──
+    # ── LAZY_LOADING (5) ──
     {"id": "LAZY.read_tree", "name": "Lazy branch loading from ROOT", "category": "LAZY_LOADING",
      "test_patterns": [
          "test_lazy_loading.py",
@@ -307,6 +312,14 @@ FEATURES = [
      "test_patterns": [
          # Phase 13.59.ADF — BUG_20260613 lazy UserInfo gap + AD-3 read precedence
          "test_phase1359_lazy_userinfo.py",
+     ]},
+    {"id": "LAZY.timeseries_draw", "name": "Single-tree lazy time-series loading & lazy drawing (D1 resolver + D2 draw-surface branch scan + D3 estimate_memory)", "category": "LAZY_LOADING",
+     "test_patterns": [
+         # Phase 13.58.ADF — single-tree lazy time-series (use case 1)
+         "test_phase1358_lazy_timeseries.py",        # loader mechanism + resolver/estimator gates
+         "test_phase1358_lazy_draw_invariance.py",   # real lazy draw() / draw_batch / draw_figures vs eager
+         "test_phase1358_lazy_calibITS.py",           # real-data lazy invariance on calibITS (committed 4 MB fixture)
+         "test_phase1358_gallery_lazy.py",            # time-series gallery double-run (env-gated)
      ]},
 
     # ── FIT_REGISTRATION (2) ──

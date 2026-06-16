@@ -43,9 +43,29 @@ BASE_SEL = "(ncl>60)&(abs(dcar_tpc_vertex)<10)"
 ITS_SEL  = f"{BASE_SEL}&(hasITSTPC)"
 
 
-def build_adf(root_path, sample=None):
-    """Load ADF. build_adf(path, 0.2) gives ~1 min dev run (20% sample)."""
-    adf = root_to_adf(root_path)
+def build_adf(root_path, sample=None, lazy=False, tree_name="tree"):
+    """Load ADF. build_adf(path, 0.2) gives ~1 min dev run (20% sample).
+
+    Phase 13.58.ADF (D4): the additive ``lazy=`` parameter swaps ONLY the constructor --
+    eager ``root_to_adf()`` (default, behaviour unchanged) or lazy ``read_tree_lazy()`` --
+    and shares every post-read step below, so the eager and lazy galleries differ only in
+    data loading (no plotting logic is forked or replicated). ``lazy=True`` requires
+    ``sample=None``: a lazy read makes an N-row frame, ``sample(frac)`` shrinks it, then a
+    branch load returns full-N rows and crashes in ``_merge_loaded_data`` -- sampled-lazy is
+    out of scope (Phase 13.58 §2). ``tree_name`` is used only by the lazy path (the eager
+    default resolution is untouched); pass the gallery file's tree name if it is not
+    ``"tree"``.
+    """
+    if lazy:
+        if sample is not None:
+            raise ValueError(
+                "build_adf(lazy=True) does not support sampling (sample must be None): "
+                "sampled-lazy crashes in _merge_loaded_data and is out of scope for "
+                "Phase 13.58.ADF. Run the lazy gallery unsampled."
+            )
+        adf = AliasDataFrame.read_tree_lazy(root_path, tree_name)
+    else:
+        adf = root_to_adf(root_path)
     adf.draw_lazy = True
     apply_meta(adf, df_TimeSeriesAliases)
     apply_meta(adf, df_TimeSeriesMeta)
@@ -53,8 +73,70 @@ def build_adf(root_path, sample=None):
     if sample is not None:
         adf.df = adf.df.sample(frac=sample, random_state=42).reset_index(drop=True)
     adf.materialize_aliases(names=["sector", "time_s"])
-    print(f"ADF ready: {len(adf.df):,} tracks" + (f" ({int(sample*100)}% sample)" if sample else ""))
+    print(f"ADF ready: {len(adf.df):,} tracks"
+          + (f" ({int(sample*100)}% sample)" if sample else "")
+          + (" [lazy]" if lazy else ""))
     return adf
+
+
+def validate_lazy_vs_eager(root_path, tree_name="tree"):
+    """Phase 13.58.ADF D4 / AC-1 / AC-2 -- gallery lazy-vs-eager double-run (SERVER gate).
+
+    Requires ROOT (eager root_to_adf) + dfdraw; run on the server, unsampled. Asserts:
+      * AC-1 (clean, genuinely lazy): the lazy ADF uses read_tree_lazy, branches load on
+        demand (a figure-only branch like 'ncl' is NOT force-materialized by setup, and
+        IS loaded after the figure that needs it), and every gallery figure renders with
+        no error (AD-TS-DRAW-001).
+      * AC-2 (PP-5 identity): a representative set of draws produce identical stats lazy vs
+        eager at the data/stats level (NOT pixel). The comparison is defensive -- it equates
+        whatever numeric stats both runs return -- so it cannot false-green on a key name.
+    Sandbox cannot run this (no ROOT/dfdraw); it is the alma2 secondary integration gate.
+    The primary gate is the dedicated synthetic test (tests/test_phase1358_lazy_timeseries.py).
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    eager = build_adf(root_path, lazy=False, tree_name=tree_name)
+    lazy = build_adf(root_path, lazy=True, tree_name=tree_name)
+    assert lazy._lazy_reader is not None, "lazy build must use read_tree_lazy (not eager-in-disguise)"
+
+    # provably lazy: a figure-only branch must not be force-materialized by setup
+    forced = set(lazy._lazy_reader.loaded_branches)
+    assert "ncl" not in forced, "ncl must not be force-loaded by build_adf setup"
+
+    # AC-2 stats identity on representative draws (return_data=True; defensive key match)
+    checks = [
+        dict(expr="ncl", type="hist", bins=50, selection="ncl>30"),
+        dict(expr="dcar_tpc_vertex:tgl", type="profile", bins=50, selection=BASE_SEL),
+    ]
+    for kw in checks:
+        re_ = eager.draw(return_data=True, **kw)
+        rl_ = lazy.draw(return_data=True, **kw)
+        se = re_[2] if isinstance(re_, tuple) and len(re_) > 2 and isinstance(re_[2], dict) else {}
+        sl = rl_[2] if isinstance(rl_, tuple) and len(rl_) > 2 and isinstance(rl_[2], dict) else {}
+        compared = 0
+        for key in (set(se) & set(sl)):
+            try:
+                a = np.asarray(se[key], dtype=float)
+                b = np.asarray(sl[key], dtype=float)
+            except (TypeError, ValueError):
+                continue
+            if a.shape == b.shape and a.size:
+                assert np.allclose(a, b, equal_nan=True), f"lazy != eager stats for {kw}, key '{key}'"
+                compared += 1
+        assert compared > 0, f"no comparable numeric stats produced for {kw}"
+
+    assert "ncl" in lazy._lazy_reader.loaded_branches, "ncl should load lazily after its draw"
+
+    # AC-1 clean run: every gallery figure renders lazily with no error
+    fig_funcs = [v for k, v in sorted(globals().items())
+                 if k.startswith("fig") and callable(v)]
+    for fn in fig_funcs:
+        fig = fn(lazy)
+        if fig is not None:
+            plt.close(fig)
+    print(f"validate_lazy_vs_eager: OK -- {len(fig_funcs)} figures rendered lazily; "
+          f"lazy==eager stats on {len(checks)} representative draws")
 
 
 def _add(pdf, fig, title):

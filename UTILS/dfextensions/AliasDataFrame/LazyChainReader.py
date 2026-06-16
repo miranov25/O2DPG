@@ -316,7 +316,8 @@ class LazyChainReader:
         Returns
         -------
         dict
-            'bytes': int, 'human': str, 'warning': str or None
+            'bytes': int, 'human': str, 'branches': int, 'entries': int,
+            'warning': str or None
         """
         if branches is None:
             branches = list(self._available_branches)

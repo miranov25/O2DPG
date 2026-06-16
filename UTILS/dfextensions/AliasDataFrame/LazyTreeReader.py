@@ -8,6 +8,7 @@ Phase 7.4+: Chain mode
 
 import uproot
 import pandas as pd
+import numpy as np
 from typing import List, Set, Optional
 
 
@@ -201,7 +202,73 @@ class LazyTreeReader:
             raise ValueError(f"Branch '{name}' not in TTree")
         self._open_file()
         return str(self._tree[name].interpretation)
-    
+
+    def estimate_memory(self, branches: List[str] = None) -> dict:
+        """
+        Estimate memory for loading branches (single-tree lazy).
+
+        Phase 13.58.ADF (D3): mirrors LazyChainReader.estimate_memory but uses the real
+        per-branch dtype item size from the TTree interpretation (not a float32 constant),
+        so the estimate matches the eager `sum(df[col].nbytes)` exactly (AC-5, tolerance 0)
+        for the same branches on deterministic data. Removes the single-tree-lazy
+        AttributeError (ADF.estimate_memory previously delegated to a method that only
+        existed on the chain reader).
+
+        Parameters
+        ----------
+        branches : List[str], optional
+            Branches to estimate. None = all available.
+
+        Returns
+        -------
+        dict
+            'bytes': int, 'human': str, 'branches': int, 'entries': int,
+            'warning': str or None
+        """
+        self._open_file()
+        if branches is None:
+            branches = list(self.available_branches)
+        total = 0
+        for b in branches:
+            if b not in self.available_branches:
+                continue
+            total += self._branch_itemsize(b) * self.num_entries
+
+        warning = None
+        if total > 32 * 1024**3:
+            warning = "Estimated memory exceeds 32 GB - consider chunked loading"
+        elif total > 16 * 1024**3:
+            warning = "Estimated memory exceeds 16 GB"
+
+        return {
+            'bytes': total,
+            'human': self._format_bytes(total),
+            'branches': len(branches),
+            'entries': self.num_entries,
+            'warning': warning,
+        }
+
+    def _branch_itemsize(self, branch: str) -> int:
+        """Bytes-per-entry for a branch, from the real TTree interpretation dtype.
+
+        Falls back to 4 bytes only if the dtype cannot be determined (e.g. an unusual
+        interpretation); flat numeric branches resolve exactly.
+        """
+        try:
+            dt = np.dtype(self._tree[branch].interpretation.numpy_dtype)
+            return dt.base.itemsize if dt.subdtype is not None else dt.itemsize
+        except Exception:
+            return 4
+
+    @staticmethod
+    def _format_bytes(n: int) -> str:
+        """Format bytes as a human-readable string."""
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if abs(n) < 1024:
+                return f"{n:.1f} {unit}"
+            n /= 1024
+        return f"{n:.1f} PB"
+
     def close(self):
         """Close file handle."""
         if self._file is not None:
