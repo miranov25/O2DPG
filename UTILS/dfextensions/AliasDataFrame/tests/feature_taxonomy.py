@@ -23,6 +23,10 @@ lazy time-series loading & lazy drawing — D1 resolver, D2 draw-surface branch 
 D3 estimate_memory) covered by test_phase1358_lazy_timeseries.py (7),
 test_phase1358_lazy_draw_invariance.py (14), test_phase1358_gallery_lazy.py (1,
 env-gated). Total: 50 → 51.
+Phase 13.58.ADF (2026-06-16): Added 1 new feature LAZY.subframe_draw (subframe-column
+lazy draw — single-level A.col + nested/recursive A.B.col, on-demand materialization via
+ensure_subframe) covered by test_lazy_subframe_column_draw, test_lazy_nested_subframe_
+column_draw, and test_calibITS_subframe_column_lazy_draw. Total: 51 → 52.
 """
 
 FEATURES = [
@@ -320,6 +324,13 @@ FEATURES = [
          "test_phase1358_lazy_draw_invariance.py",   # real lazy draw() / draw_batch / draw_figures vs eager
          "test_phase1358_lazy_calibITS.py",           # real-data lazy invariance on calibITS (committed 4 MB fixture)
          "test_phase1358_gallery_lazy.py",            # time-series gallery double-run (env-gated)
+     ]},
+    {"id": "LAZY.subframe_draw", "name": "Subframe-column lazy draw (single-level A.col + nested A.B.col; on-demand materialization via ensure_subframe + recursive chain walk)", "category": "LAZY_LOADING",
+     "test_patterns": [
+         # Phase 13.58.ADF — subframe-column lazy draw (single-level + nested/recursive)
+         "test_phase1358_lazy_draw_invariance.py::test_lazy_subframe_column_draw",
+         "test_phase1358_lazy_draw_invariance.py::test_lazy_nested_subframe_column_draw",
+         "test_phase1358_lazy_calibITS.py::test_calibITS_subframe_column_lazy_draw",
      ]},
 
     # ── FIT_REGISTRATION (2) ──

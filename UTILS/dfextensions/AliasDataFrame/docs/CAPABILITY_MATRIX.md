@@ -1,21 +1,21 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-06-16 05:54 UTC
+**Generated:** 2026-06-16 21:07 UTC
 **Phase:** 13.11.B
-**Taxonomy:** 50 features (PHASE_13_11_B approved)
+**Taxonomy:** 52 features (PHASE_13_11_B approved)
 **Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)
 
 ## Summary
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 31 | 62% |
-| ☑️ Smoke-only | 14 | 28% |
-| 🧨 Broken | 4 | 8% |
-| 📋 Planned | 1 | 2% |
-| **Total features** | **50** | |
-| **Matched tests** | **1700** | |
-| **Invariance tests** | **253** | |
+| ✅ Verified | 33 | 63% |
+| ☑️ Smoke-only | 14 | 26% |
+| 🧨 Broken | 4 | 7% |
+| 📋 Planned | 1 | 1% |
+| **Total features** | **52** | |
+| **Matched tests** | **1740** | |
+| **Invariance tests** | **286** | |
 
 **Unmatched tests:** 96 (not mapped to any feature)
 
@@ -101,6 +101,8 @@
 | ✅ | **LAZY.chain** — Chain loading (multiple files) | 60 | 58 | 0 | 8 |
 | ✅ | **LAZY.materialization** — Lazy subframe & alias evaluation | 54 | 54 | 0 | 2 |
 | ✅ | **LAZY.userinfo_backcompat** — Lazy-path UserInfo metadata back-compatibility (AD-3 precedence) | 15 | 14 | 0 | 5 |
+| ✅ | **LAZY.timeseries_draw** — Single-tree lazy time-series loading & lazy drawing (D1 resolver + D2 draw-surface branch scan + D3 estimate_memory) | 37 | 36 | 0 | 30 |
+| ✅ | **LAZY.subframe_draw** — Subframe-column lazy draw (single-level A.col + nested A.B.col; on-demand materialization via ensure_subframe + recursive chain walk) | 3 | 3 | 0 | 3 |
 
 ## FIT_REGISTRATION
 
@@ -132,20 +134,20 @@
 ## 🧨 Broken Features — Details
 
 ### DRAW.execution
-- ❌ `test_K2_vector_draw_end_to_end.py::TestK2VectorDrawEndToEnd::test_K2_3_production_reproducer_mirror`
 - ❌ `test_K1_vector_draw_kwarg_diagnostic.py::TestK1VectorDrawKwargDiagnostic::test_K1_3_draw_batch_forwards_batch_kwargs`
+- ❌ `test_K2_vector_draw_end_to_end.py::TestK2VectorDrawEndToEnd::test_K2_3_production_reproducer_mirror`
 
 ### COMP.roundtrip
-- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
 - ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
+- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
 
 ### BACK.invariance
 - ❌ `test_invariance_backend.py::TestInvarianceBackend::test_I2_6_chained_subframe_expressions_numba_vs_numpy`
 
 ### RDF.export
-- ❌ `test_AliasDataFrameRDF.py::TestAddDefinesCollision::test_collision_from_friend_tree`
 - ❌ `test_AliasDataFrameRDF.py::TestTMemFileBranch::test_missing_keys_in_friend`
 - ❌ `test_AliasDataFrameRDF.py::TestRDataFrameFriendAccess::test_composite_index_friend`
+- ❌ `test_AliasDataFrameRDF.py::TestAddDefinesCollision::test_collision_from_friend_tree`
 
 ## Unmatched Tests
 
