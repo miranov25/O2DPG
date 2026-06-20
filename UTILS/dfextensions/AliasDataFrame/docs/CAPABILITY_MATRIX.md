@@ -1,6 +1,6 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-06-16 21:07 UTC
+**Generated:** 2026-06-16 21:25 UTC
 **Phase:** 13.11.B
 **Taxonomy:** 52 features (PHASE_13_11_B approved)
 **Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)
@@ -134,8 +134,8 @@
 ## 🧨 Broken Features — Details
 
 ### DRAW.execution
-- ❌ `test_K1_vector_draw_kwarg_diagnostic.py::TestK1VectorDrawKwargDiagnostic::test_K1_3_draw_batch_forwards_batch_kwargs`
 - ❌ `test_K2_vector_draw_end_to_end.py::TestK2VectorDrawEndToEnd::test_K2_3_production_reproducer_mirror`
+- ❌ `test_K1_vector_draw_kwarg_diagnostic.py::TestK1VectorDrawKwargDiagnostic::test_K1_3_draw_batch_forwards_batch_kwargs`
 
 ### COMP.roundtrip
 - ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`

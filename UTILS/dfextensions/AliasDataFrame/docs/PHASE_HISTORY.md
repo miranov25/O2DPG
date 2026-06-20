@@ -42,9 +42,9 @@ AliasDataFrame is a high-performance data analysis framework for particle physic
 
 **Key Metrics:**
 - Performance: 60-770x speedups achieved; production pipeline 2.1× faster (1452s → 692s)
-- Test Coverage: 1701 tests passing (server run `566a9257`, 2026-06-16; 8 deterministic pre-existing failures + 1 parallel flake (`test_parquet_roundtrip`) + 1 error; 253 invariance tests)
-- Lines of Code: ~14,238 (AliasDataFrame.py)
-- Features: 50 in taxonomy (30 verified, 14 smoke-only, 5 broken, 1 planned — CM Verified↔Broken counts flip run-to-run with the parallel-flake set: `test_K2_3`, `test_parquet_roundtrip`, `test_arrow_vs_numpy_performance` (timing threshold, first seen run 095125; architect: "stochastic — we should fix it later")); DISPATCH.adf_routing ✅ 28/28 + DISPATCH.error_visibility ✅ 15/15 registered and Verified (Phase 13.56.ADF); LAZY.userinfo_backcompat ✅ Verified (Phase 13.59.ADF)
+- Test Coverage: 1737 tests passing (server run `8e081c36`, 2026-06-16; 8 deterministic pre-existing failures + 1 parallel flake (`test_parquet_roundtrip`) + 1 error; 256 invariance tests)
+- Lines of Code: ~14,492 (AliasDataFrame.py)
+- Features: 52 in taxonomy (33 verified, 14 smoke-only, 4 broken, 1 planned — CM Verified↔Broken counts flip run-to-run with the parallel-flake set: `test_K2_3`, `test_parquet_roundtrip`, `test_arrow_vs_numpy_performance` (timing threshold, first seen run 095125; architect: "stochastic — we should fix it later")); DISPATCH.adf_routing ✅ 28/28 + DISPATCH.error_visibility ✅ 15/15 registered and Verified (Phase 13.56.ADF); LAZY.userinfo_backcompat ✅ Verified (Phase 13.59.ADF); LAZY.timeseries_draw ✅ + LAZY.subframe_draw ✅ Verified (Phase 13.58.ADF)
 
 **Development Team:**
 - Coordinator: Marian Ivanov (miranov25)
@@ -720,6 +720,48 @@ Closes the silent loss of subframes on the lazy read path: `read_tree_lazy` buil
 - **Test isolation under `pytest-parallel`**: an early key-fallback test nulled the module-global `AliasDataFrame.ROOT` to force the no-ROOT branch. A module global is shared across threads under the parallel runner, so it leaked into concurrently running ROOT-path tests (`test_save_and_load_integrity`, `test_backward_compatibility_no_compression_info`) — 3 spurious failures on the intermediate commit `1ee957e8`. Fixed by exercising the production no-ROOT writer (`_write_all_metadata_to_key`) directly. Rule: never mutate a module global in a parallel-collected test.
 - **Closure gate (FM#13 + no `--amend`)**: the clean run must carry the closing commit's SHA. An intermediate clean run carried the broken commit's hash; closure waited for a fresh full run on `566a9257`.
 - **Proposal-Completeness Matrix**: every deliverable and AC reconciled before closure; the chain item was explicitly deferred-with-reason, not silently omitted.
+
+### Phase 13.58.ADF: Lazy Time-Series Loading & Lazy Drawing (incl. D6 Subframe-Column Draw)
+**Dates**: 2026-06-15 to 2026-06-16
+**Status**: ✅ Merged
+**Commits**: `6d4f5ea0` (D1–D4) · `a404c855` (D5/T11 + committed calibITS slim fixture, 279 KB) · `8e1221bc` (D6 single-level subframe draw) · `c884b3b5` (D6.7 nested/recursive draw + `self._df`→`self.df` fix) · `8e081c36` (taxonomy `LAZY.subframe_draw` + count-lock 51→52 + CAPABILITY_MATRIX regen)
+**AD reference**: AD-4/13.58.ADF *(placeholder — confirm number)* — D6 scope ratification + D6.8 disposition
+**Proposal**: `PHASE_13_58_ADF_LazyTimeSeries_v1.6` (Full Panel, D1–D5)
+**Code Review Request**: `PHASE_13_58_ADF_v1.6_Code_Review_Request.md` (D1–D4) · `PHASE_13_58_ADF_v1.9_Code_Review_Request_subframe_draw.md` (D6)
+**Joint test plan**: `PHASE_13_58_ADF_Joint_Test_Plan_v2.0`
+
+**Deliverables**:
+- **D1** — `get_required_branches` routes inline expr through `_analyze_expression` (AST) via bracket-aware `_split_top_level_colon`; registered-function aware.
+- **D2** — draw-surface branch scan extended to `facet_by`/`weights`/`weights_vector`/`selection_vector`, threaded at `draw`/`draw_batch`/`draw_figures`.
+- **D3** — `LazyTreeReader.estimate_memory`.
+- **D4** — gallery harness: additive `build_adf(lazy=)` + `validate_lazy_vs_eager` in `examples/time_series/time_series_draw.py`.
+- **D5** — synthetic primary gate + calibITS real-data gate; T11 subframe boundary.
+- **D6** — subframe-column lazy draw: `_lazy_ensure_subframe_refs` + `_lazy_materialize_subframe_chain` materialize the referenced subframe chain on demand (reuse `ensure_subframe`), load join keys, drop `<sf>.<col>` from the branch-load set; `_load_lazy_subframe` recovers each materialized subframe's own child subframes (`read_adf_metadata`) → N-level nested support. Wired at all three draw surfaces.
+
+**Architect decisions (M. Ivanov, 2026-06-16)**:
+- **D6 ratified under Phase 13.58** (not a separate phase). Subframe-column draw was added in-session beyond the ratified v1.6 D1–D5 scope; ratified per unanimous panel recommendation.
+- **D6.8 (names-only index-column recovery): fail-loud accepted as the contract.** When subframe-index metadata is absent (names-only recovery), subframes are not registered and a subframe draw fails loud — never a silently wrong join. If ever scheduled, index columns must be read from the subframe tree's own declared metadata, never inferred from shared columns.
+
+**Scope deviations** (flagged, none silent):
+- D6 (single + nested) added beyond v1.6 D1–D5 at architect direction; ratified above.
+- D6.7 nested `A.B.col`: initially mislabeled "DEFERRED (approved)" in CRR v1.7/v1.8 — a coder Rule 13 violation the coder **self-identified and corrected**; nested was then implemented (Coder Rule 18 / P0-COMPLETE working as designed).
+- `self._df`→`self.df`: latent typo in the subframe index-validation warning, disclosed (2 minus lines under Rule 16); never exercised pre-D6 because lazy subframes only lived on the lazy-main frame.
+
+**Tests**: synthetic primary gate + 22 draw-invariance (incl. `test_lazy_subframe_column_draw`, `test_lazy_nested_subframe_column_draw`) + 5 calibITS (incl. T11) + 8 time-series. Exact-load standard (`loaded == expected_set`, ≥3 decoys) applied throughout. Architect-mandated `[corr(x,y), x]:z`→`{x,y,z}` test present and green. Taxonomy 50 → **52** (`LAZY.timeseries_draw`, `LAZY.subframe_draw`); Phase 13.56 post-audit count-lock 51 → 52.
+
+**Closing run** (`SUMMARY_20260616_231434`, commit `8e081c36`, alma2, -n 12): **1737 passed / 9F / 1E / 10 skipped**. The 8 deterministic pre-existing failures (K1_3, K2_3, I2_6, I4_2, I4_3, RDF×3 friend-tree) plus the `schema_serialization` error are unchanged; **FM#13**: the 9th failure `test_parquet_roundtrip` is the documented parallel-flake cluster (`BUG_AliasDataFrame_20260526_parallel_flake_compression`, stochastic), not a 13.58 regression. CM: 52 features; `LAZY.subframe_draw` ✅ Verified (3/3, 3 invariance); `LAZY.timeseries_draw` ✅ Verified (36/37; the 37th is the env-gated time-series gallery, skipped). PHASE_HISTORY is a doc-only commit, so this run is the closing-state evidence.
+
+**Lessons learned**:
+- **Coder Rule 18 / P0-COMPLETE works**: the coder caught their own prior Rule 13 deferral mislabel (D6.7) and fixed it rather than carrying a silent deferral. This is the intended outcome of the Proposal-Completeness discipline.
+- **Test fixture must match the test's schema**: a transient `gallery_lazy` failure was the *time-series* gallery test pointed (`ADF_TS_ROOT`) at calibITS, which lacks every required column — it failed in setup before any draw, on the eager side too. Not a regression. Candidate hardening: gallery test should assert its expected columns and skip-with-reason on a mismatched file.
+- **Recovering join keys by inference is unsafe**: D6.8 was declined precisely because shared-column inference risks a silently wrong join; fail-loud is the safer contract until the subframe tree's own index metadata can be read.
+
+**Reviewer performance**: Sonnet11 (main) consolidated the closure panel and adjudicated the GPT13/GPT15 `[X]`→`[!]` (parquet flake; `draw_batch`/`draw_figures` covered by the union tests + source verification per D6.4; exact-load-main-only is the intended contract, P3 wording clarification). Panel: Sonnet2, Sonnet10, Claude37, Opus48_1, GPT12–15. Rule 14 full-diff audit complete (6,156-line `diff_to_phase`).
+
+**Follow-up items** (documented, not blocking):
+- D6.8 names-only index recovery — fail-loud contract accepted; if scheduled, read the subframe tree's own declared index metadata (no shared-column inference).
+- A committed 3-level nested test (`A.B.C.col`) — probe-verified, may be added (current committed coverage is 2-level).
+- Time-series gallery double-run remains the optional ~2 GB secondary gate (skipped); calibITS is the committed real-data draw gate (AD-TS-DRAW-001).
 
 ### Phase 13.25.DF FIX1: dfdraw Quantile Test-Quality + AD-52 Sentinel Fix
 **Dates**: 2026-05-14 (proposal drafted)  
