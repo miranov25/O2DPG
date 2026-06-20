@@ -332,6 +332,16 @@ FEATURES = [
          "test_phase1358_lazy_draw_invariance.py::test_lazy_nested_subframe_column_draw",
          "test_phase1358_lazy_calibITS.py::test_calibITS_subframe_column_lazy_draw",
      ]},
+    {"id": "LAZY.alias_autoload", "name": "Alias resolution auto-loads lazy branches (materialize_aliases / validate_aliases / describe_aliases bridge to the lazy reader; LAZY status)", "category": "LAZY_LOADING",
+     "test_patterns": [
+         # Phase 13.60.ADF — alias <-> lazy-branch bridge (U-1 first instance)
+         "test_phase1360_alias_lazy_bridge.py::test_T1_materialize_over_unloaded_branch_equals_eager",
+         "test_phase1360_alias_lazy_bridge.py::test_T2_exact_load_decoys_not_loaded",
+         "test_phase1360_alias_lazy_bridge.py::test_T3_validate_and_describe_lazy_not_broken",
+         "test_phase1360_alias_lazy_bridge.py::test_T4_genuine_missing_still_reported_and_registered_fn",
+         "test_phase1360_alias_lazy_bridge.py::test_T7_chained_alias_transitive_autoload_equals_eager",
+         "test_phase1360_alias_lazy_bridge.py::test_T8_dtype_bearing_alias_lazy_equals_eager",
+     ]},
 
     # ── FIT_REGISTRATION (2) ──
     {"id": "FIT.registration", "name": "Fit metadata storage & retrieval", "category": "FIT_REGISTRATION",

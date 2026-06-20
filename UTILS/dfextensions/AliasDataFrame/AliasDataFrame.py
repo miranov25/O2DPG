@@ -3940,6 +3940,37 @@ class AliasDataFrame:
             'unsupported_reason': unsupported
         }
 
+    def _lazy_available_names(self):
+        """Phase 13.60 (D3): top-level branches the lazy reader can load on demand.
+
+        Returns an empty set for eager frames (no ``_lazy_reader``), so callers that
+        union this into their ``resolvable`` set stay byte-identical on the eager path
+        (acceptance A4). Top-level branches only; subframe-column describe is deferred
+        to Phase 13.61.
+        """
+        reader = getattr(self, "_lazy_reader", None)
+        if reader is None:
+            return set()
+        return set(reader.available_branches)
+
+    def _lazy_autoload_set(self, alias_names):
+        """Phase 13.60 (D3): top-level branches required by ``alias_names`` that are
+        lazily-available but not yet loaded — the set to ``ensure_branches`` before
+        materializing. Empty for eager frames. Subframe-qualified refs (``A.col``) are
+        dropped here and handled by the existing subframe-loading hook (mirrors draw()).
+        ``alias_names`` are alias *names* (strings), passed to ``get_required_branches``
+        via its ``aliases=`` parameter (not expressions).
+        """
+        reader = getattr(self, "_lazy_reader", None)
+        if reader is None:
+            return set()
+        try:
+            required = self.get_required_branches(aliases=list(alias_names))
+        except Exception:
+            return set()
+        top_level = {b for b in required if "." not in b}
+        return (top_level & set(reader.available_branches)) - set(self.df.columns)
+
     def validate_aliases(self):
         """
         Validate that all aliases can be resolved.
@@ -3967,7 +3998,11 @@ class AliasDataFrame:
                             'sqrt', 'clip', 'sin', 'cos', 'tan', 'exp', 'log',
                             'log10', 'atan2', 'arctan', 'arcsin', 'arccos',
                             'sinh', 'cosh', 'tanh'])
-        resolvable = set(self.df.columns) | set(self.aliases.keys()) | known_names
+        # Phase 13.60 (D2, F1): lazily-loadable branches are resolvable — an alias over an
+        # unloaded-but-available branch is LAZY (loadable), not BROKEN. This is the
+        # authoritative BROKEN-label determination; describe_aliases derives its label from
+        # this method's return value, so the fix must land here, not only in the display path.
+        resolvable = set(self.df.columns) | set(self.aliases.keys()) | known_names | self._lazy_available_names()
 
         for name, expr in self.aliases.items():
             analysis = self._analyze_expression(expr)
@@ -4194,7 +4229,7 @@ class AliasDataFrame:
         broken_aliases = set(self.validate_aliases())
         
         # Build detailed info for broken aliases
-        resolvable = set(self.df.columns) | set(self.aliases.keys()) | set(self._default_functions().keys())
+        resolvable = set(self.df.columns) | set(self.aliases.keys()) | set(self._default_functions().keys()) | self._lazy_available_names()  # Phase 13.60 (D2)
         
         # Compute dependencies once
         deps = self._resolve_dependencies()
@@ -4233,6 +4268,16 @@ class AliasDataFrame:
             if is_broken:
                 tokens = re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b', expr)
                 missing = [t for t in tokens if t not in resolvable and not t.isdigit()]
+
+            # Phase 13.60 (D2): LAZY = resolvable and not broken, but references a top-level
+            # branch that is lazily-available yet not loaded (materialize would auto-load it).
+            is_lazy = False
+            if not is_broken and not materialized:
+                lazy_names = self._lazy_available_names()
+                if lazy_names:
+                    loaded = set(self.df.columns)
+                    toks = re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b', expr)
+                    is_lazy = any(t in lazy_names and t not in loaded for t in toks)
             
             # Get dependencies
             alias_deps = sorted(deps.get(name, []))
@@ -4247,6 +4292,7 @@ class AliasDataFrame:
                 'broken': is_broken,
                 'missing': missing if missing else None,
                 'deps': alias_deps if alias_deps else None,
+                'lazy': is_lazy,
             }
             
             # Add stats if requested and materialized
@@ -4277,6 +4323,8 @@ class AliasDataFrame:
             # Mark broken in kind column with optional color
             if info['broken']:
                 kind_str = f"{C_RED}BROKEN{C_RESET}" if color else "BROKEN"
+            elif info.get('lazy'):
+                kind_str = f"{C_YELLOW}LAZY{C_RESET}" if color else "LAZY"
             elif info['materialized'] and color:
                 mat_str = f"{C_GREEN}Yes{C_RESET}"
             
@@ -4966,6 +5014,16 @@ function collapseDepth(maxD) {{
                     if verbose:
                         print(f"[materialize_aliases] Loading lazy subframe: {sf_name}")
                     self.ensure_subframe(sf_name)
+
+            # Phase 13.60 (D1): load any lazy TOP-LEVEL branches referenced by the aliases.
+            # Mirrors the draw() path (get_required_branches -> ensure_branches). Subframe-
+            # qualified refs are excluded by _lazy_autoload_set and handled by the hook above.
+            # No-op on eager frames (reader is None -> empty set).
+            _lazy_branches = self._lazy_autoload_set(to_materialize)
+            if _lazy_branches:
+                if verbose:
+                    print(f"[materialize_aliases] Loading lazy branches: {sorted(_lazy_branches)}")
+                self.ensure_branches(sorted(_lazy_branches))
             
             # =========================================================================
             # PHASE 9e: TRY ARROW ZERO-COPY PIPELINE FIRST
