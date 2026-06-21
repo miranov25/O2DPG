@@ -7080,11 +7080,12 @@ function collapseDepth(maxD) {{
             selection_cols = self._parse_selection_columns(selection)
             all_columns.update(selection_cols)
         
-        # 3. Add group_by and color
-        if group_by:
-            all_columns.add(group_by)
-        if color and isinstance(color, str):
-            all_columns.add(color)
+        # 3. group_by and color are routed through _add_colname_kwarg in step 3b
+        #    (Phase 13.61.ADF Fix-1): an expression-valued group_by/color (e.g.
+        #    "abs(qpt)") must contribute its column_refs ({qpt}), not the literal
+        #    string, so the draw-path projection keeps the real branch. Literal
+        #    colors ("red"/"#FF0000") are filtered by the validate=True intersection
+        #    in step 6 on the eager projection call.
 
         # 3b. Phase 13.58.ADF (D2): column-name-bearing draw kwargs. Any kwarg whose string
         #     value is interpreted as a column name must contribute to the required-branch
@@ -7110,6 +7111,8 @@ function collapseDepth(maxD) {{
                 all_columns.update(refs if refs else {item})
 
         _add_colname_kwarg(facet_by)
+        _add_colname_kwarg(group_by)
+        _add_colname_kwarg(color)
         _add_colname_kwarg(weights)
         _add_colname_kwarg(weights_vector)
         _add_colname_kwarg(selection_vector, as_selection=True)
