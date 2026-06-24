@@ -7112,7 +7112,12 @@ function collapseDepth(maxD) {{
 
         _add_colname_kwarg(facet_by)
         _add_colname_kwarg(group_by)
-        _add_colname_kwarg(color)
+        # Phase 13.61.ADF: guard color so a list/tuple (color *values* per series,
+        # e.g. ["red","blue"]) is ignored rather than tokenized into column adds
+        # (fixes test_color_non_string_ignored). A string color (column/expression)
+        # still routes. This is the one behavior change vs committed 801e0512.
+        if isinstance(color, str):
+            _add_colname_kwarg(color)
         _add_colname_kwarg(weights)
         _add_colname_kwarg(weights_vector)
         _add_colname_kwarg(selection_vector, as_selection=True)
@@ -11464,6 +11469,71 @@ function collapseDepth(maxD) {{
         else:
             return 'scatter'
 
+    def _dict_dispatch_columns(self, df_cols, expr=None, selection=None,
+                               group_by=None, color=None, facet_by=None,
+                               weights=None, weights_vector=None,
+                               selection_vector=None):
+        """Phase 13.61.ADF (D-ADF-DICT): columns the draw dispatch frame must
+        carry for dfdraw to evaluate every channel.
+
+        = base branches (get_required_branches, validate=True)
+        UNION the materialized/real names the channels reference by token
+        (validate resolves aliases to base branches, so alias names that dfdraw
+        evaluates by name — e.g. 'sector', 'w_dca' — must be re-added)
+        UNION referenced subframe index columns (needed by the merge below).
+        Restricted to existing df columns; subframe sf_ columns are added by the
+        merge afterwards. Reads existing Series only — never grows the frame.
+        """
+        import re as _re
+        import warnings as _warnings
+        df_cols = set(df_cols)
+        try:
+            need = set(self.get_required_branches(
+                expr=expr, selection=selection, group_by=group_by, color=color,
+                facet_by=facet_by, weights=weights,
+                weights_vector=weights_vector,
+                selection_vector=selection_vector, validate=True))
+        except Exception as _e:
+            # Memory-safety: a resolver failure must NOT silently revert to the
+            # full frame (that reintroduces the OOM this phase exists to prevent).
+            # Warn loudly and degrade to the token-scan needed-set below (start
+            # empty), which still projects to the referenced columns.
+            _warnings.warn(
+                "[draw-dict] get_required_branches failed (%r); dispatch frame "
+                "falls back to a token-scan of the channels, NOT the full frame. "
+                "Verify the projected columns." % (_e,),
+                RuntimeWarning, stacklevel=2)
+            need = set()
+        parts = []
+        # color is excluded here: a list/tuple is color *values* (e.g. ["red",
+        # "blue"]) and must not be tokenized into column adds; a string color is
+        # already covered by get_required_branches above.
+        for c in (expr, selection, group_by, facet_by,
+                  weights, weights_vector, selection_vector):
+            if c is None:
+                continue
+            if isinstance(c, (list, tuple)):
+                parts += [str(x) for x in c]
+            else:
+                parts.append(str(c))
+        if isinstance(color, str):
+            parts.append(color)
+        text = ' '.join(parts)
+        for tok in _re.findall(r'[A-Za-z_]\w*', text):
+            if tok in df_cols:
+                need.add(tok)
+        if hasattr(self, '_subframes') and hasattr(self._subframes, 'subframes'):
+            sfn = set(self._subframes.subframes.keys())
+            for tok in _re.findall(r'\b(\w+(?:\.\w+)+)\b', text):
+                s0 = tok.split('.')[0]
+                if s0 in sfn:
+                    e = self._subframes.get_entry(s0)
+                    idx = e['index'] if e else []
+                    if isinstance(idx, str):
+                        idx = [idx]
+                    need.update(idx)
+        return need & df_cols
+
     def draw(self,
              expr: str,
              type: str = 'auto',
@@ -11621,6 +11691,29 @@ function collapseDepth(maxD) {{
             cleanup_needed = not effective_keep
         
         # =================================================================
+        # D-ADF-DICT (Phase 13.61.ADF): build a small dispatch frame holding
+        # ONLY the columns dfdraw will reference, instead of handing it the
+        # full-width frame. Column set = base branches (get_required_branches,
+        # validate=True) UNION the materialized/real names the channels
+        # reference by token (dfdraw evals these by name; validate resolves
+        # aliases to bases, so alias names like 'sector' must be re-added)
+        # UNION referenced subframe index columns (needed by the merge below).
+        # Built as a dict of existing Series -> one consolidated small frame;
+        # the big frame is never copied or grown.
+        # =================================================================
+        if getattr(self, 'draw_dict', True):
+            _need = self._dict_dispatch_columns(
+                df_subset.columns, expr=expr, selection=kwargs.get('selection'),
+                group_by=kwargs.get('group_by'), color=kwargs.get('color'),
+                facet_by=kwargs.get('facet_by'), weights=kwargs.get('weights'),
+                weights_vector=kwargs.get('weights_vector'),
+                selection_vector=kwargs.get('selection_vector'))
+            if _need:
+                df_subset = pd.DataFrame(
+                    {_c: df_subset[_c] for _c in df_subset.columns if _c in _need},
+                    copy=False)
+        
+        # =================================================================
         # Subframe column resolution for draw
         # Detect 'Subframe.column' patterns in expression and selection,
         # materialize them as temporary columns so dfdraw can access them.
@@ -11704,6 +11797,14 @@ function collapseDepth(maxD) {{
                         flat_col = leaf_col
                         for _, sf_n, _ in reversed(subframe_chain):
                             flat_col = f'{flat_col}__{sf_n}'
+                        # D-ADF-DICT: _prepare_subframe_joins writes flat_col onto
+                        # self.df; df_subset is now a separate small dict frame, so
+                        # copy the column across (mirrors the draw_batch path).
+                        if (flat_col in self.df.columns
+                                and flat_col not in df_subset.columns):
+                            if df_subset is self.df:
+                                df_subset = df_subset.copy()
+                            df_subset[flat_col] = self.df[flat_col]  # Series: preserve dtype (P2-2)
                         if method_suffix:
                             subframe_replacements[f'{dot_ref_prefix}.{method_suffix}'] = f'{flat_col}.{method_suffix}'
                         else:
@@ -12742,6 +12843,27 @@ function collapseDepth(maxD) {{
         # =================================================================
         subframe_replacements = {}
         df_for_plot = self.df
+        # D-ADF-DICT (Phase 13.61.ADF): project to the UNION of columns needed
+        # across all specs, built ONCE per batch (materialize-once contract).
+        # The big frame is never copied or grown; the subframe merge below adds
+        # sf_ columns to this small frame.
+        _md_dict = {**(defaults or {}), **kwargs}
+        _dfcols_b = set(df_for_plot.columns)
+        _need_b = set()
+        if getattr(self, 'draw_dict', True):
+            for _nm, _sp in specs.items():
+                _m = {**_md_dict, **(_sp if isinstance(_sp, dict) else {'expr': _sp})}
+                _need_b |= self._dict_dispatch_columns(
+                    _dfcols_b, expr=_m.get('expr', _nm),
+                    selection=_m.get('selection'), group_by=_m.get('group_by'),
+                    color=_m.get('color'), facet_by=_m.get('facet_by'),
+                    weights=_m.get('weights'),
+                    weights_vector=_m.get('weights_vector'),
+                    selection_vector=_m.get('selection_vector'))
+        if _need_b:
+            df_for_plot = pd.DataFrame(
+                {_c: df_for_plot[_c] for _c in df_for_plot.columns if _c in _need_b},
+                copy=False)
         if hasattr(self, '_subframes') and hasattr(self._subframes, 'subframes'):
             sf_names = set(self._subframes.subframes.keys())
             merged_defaults = {**(defaults or {}), **kwargs}
@@ -12825,7 +12947,7 @@ function collapseDepth(maxD) {{
                         if df_for_plot is self.df:
                             df_for_plot = df_for_plot.copy()
                         if flat_col in self.df.columns:
-                            df_for_plot[flat_col] = self.df[flat_col].values
+                            df_for_plot[flat_col] = self.df[flat_col]  # Series: preserve dtype (P2-2)
                         if method_suffix:
                             subframe_replacements[f'{dot_ref_prefix}.{method_suffix}'] = f'{flat_col}.{method_suffix}'
                         else:
@@ -13069,6 +13191,30 @@ function collapseDepth(maxD) {{
             if verbose:
                 print(f"[draw_figures] Limited to {max_entries} entries")
         
+        # D-ADF-DICT (Phase 13.61.ADF): project to the UNION of columns needed
+        # across every plot in every figure spec, built ONCE per call. The big
+        # frame is never copied or grown; the subframe merge adds sf_ columns.
+        _md_dict = {**(defaults or {}), **kwargs}
+        _dfcols_f = set(df_subset.columns)
+        _need_f = set()
+        if getattr(self, 'draw_dict', True):
+            for _fs in specs:
+                if not isinstance(_fs, dict):
+                    continue
+                for _ps in _fs.get('plots', []):
+                    _m = {**_md_dict, **(_ps if isinstance(_ps, dict) else {'expr': _ps})}
+                    _need_f |= self._dict_dispatch_columns(
+                        _dfcols_f, expr=_m.get('expr', ''),
+                        selection=_m.get('selection'), group_by=_m.get('group_by'),
+                        color=_m.get('color'), facet_by=_m.get('facet_by'),
+                        weights=_m.get('weights'),
+                        weights_vector=_m.get('weights_vector'),
+                        selection_vector=_m.get('selection_vector'))
+        if _need_f:
+            df_subset = pd.DataFrame(
+                {_c: df_subset[_c] for _c in df_subset.columns if _c in _need_f},
+                copy=False)
+        
         # ═══════════════════════════════════════════════════════════════════
         # Subframe column resolution for draw_figures
         # Same approach as draw()/draw_batch() — detect Subframe.column
@@ -13161,7 +13307,7 @@ function collapseDepth(maxD) {{
                         if flat_col in self.df.columns:
                             if df_subset is self.df:
                                 df_subset = df_subset.copy()
-                            df_subset[flat_col] = self.df[flat_col].values
+                            df_subset[flat_col] = self.df[flat_col]  # Series: preserve dtype (P2-2)
                         if method_suffix:
                             subframe_replacements[f'{dot_ref_prefix}.{method_suffix}'] = f'{flat_col}.{method_suffix}'
                         else:

@@ -27,6 +27,10 @@ Phase 13.58.ADF (2026-06-16): Added 1 new feature LAZY.subframe_draw (subframe-c
 lazy draw — single-level A.col + nested/recursive A.B.col, on-demand materialization via
 ensure_subframe) covered by test_lazy_subframe_column_draw, test_lazy_nested_subframe_
 column_draw, and test_calibITS_subframe_column_lazy_draw. Total: 51 → 52.
+Phase 13.61.ADF (2026-06-24): Added 1 new feature DISPATCH.dict_dispatch (draw-path dict
+dispatch frame — transient channel projection across draw/draw_batch/draw_figures, with
+structural + peak-RSS + volume-invariance memory gates and dict≡full-frame equivalence)
+covered by test_phase1361_dict.py (19) and test_phase1361_memory.py (1). Total: 52 → 53.
 """
 
 FEATURES = [
@@ -443,5 +447,13 @@ FEATURES = [
          "test_phase_13_56_adf_post_audit.py::TestG3SelectionAliasMatrix",
          "test_phase_13_56_adf_post_audit.py::TestG5AstypeTypeTokens",
          "test_phase_13_56_adf_post_audit.py::TestG7CoverageLocks",
+     ]},
+    # ── DISPATCH (1) — PHASE_13_61_ADF (transient draw channels / dict dispatch) ──
+    {"id": "DISPATCH.dict_dispatch",
+     "name": "Draw-path dict dispatch frame: draw()/draw_batch()/draw_figures() hand dfdraw only the needed columns (get_required_branches ∪ materialized alias names ∪ subframe index cols); structural column-count gate + peak-RSS + volume-invariance memory gates + dict≡full-frame equivalence (AC-1/1a/1b incl. subframe single+multi-level) + loud no-silent-full-frame fallback",
+     "category": "DISPATCH",
+     "test_patterns": [
+         "test_phase1361_dict.py",
+         "test_phase1361_memory.py",
      ]},
 ]
