@@ -92,3 +92,32 @@ def test_T6_typo_negative_control(root_path):
     adf = _lazy(root_path)
     with pytest.raises(BranchNotFoundError):
         adf.ensure_branches(["definitely_not_a_branch"])
+
+
+def test_C1_subframe_alias_lazy_draw_end_to_end(tmp_path):
+    """C1 (reviewer-requested end-to-end): lazy ADF + register_subframe + an alias that
+    references a subframe column + draw() -> succeeds AND computes correct values via the
+    on-demand subframe merge (not just 'name does not raise'). Uses plain A.col syntax.
+    """
+    rng = np.random.default_rng(1)
+    nrow = 4000
+    kb = rng.integers(0, 8, nrow)
+    p = tmp_path / "t.root"
+    with uproot.recreate(str(p)) as f:
+        f["t"] = {"x": rng.normal(0, 1, nrow).astype(np.float32),
+                  "kbin": kb.astype(np.int32),
+                  "yobs": rng.normal(0, 1, nrow).astype(np.float32)}
+    adf = AliasDataFrame.read_tree_lazy(str(p), "t")
+    adf.draw_lazy = True
+    adf.ensure_columns("kbin")                      # subframe index available (as production does)
+    coeff = AliasDataFrame(pd.DataFrame({"kbin": np.arange(8, dtype=np.int32),
+                                         "slope": np.linspace(1.0, 8.0, 8)}))
+    adf.register_subframe("FIT", coeff, index_columns=["kbin"])
+    adf.add_alias("pred", "FIT.slope * x")          # plain A.col (no backticks)
+    adf.add_alias("resid", "yobs - pred")
+    adf.draw("resid:x", type="profile", bins=20, min_entries=5)   # lazy draw of subframe-backed alias
+    adf.materialize_aliases(names=["resid"])
+    slopes = np.linspace(1.0, 8.0, 8)
+    got = adf.df["resid"].to_numpy()
+    exp = adf.df["yobs"].to_numpy() - slopes[adf.df["kbin"].to_numpy()] * adf.df["x"].to_numpy()
+    assert np.nanmax(np.abs(got - exp)) < 1e-4      # correct values, not just no-raise
