@@ -10,7 +10,7 @@ class AliasDataFrameError(Exception):
     pass
 
 
-class BranchNotFoundError(AliasDataFrameError):
+class BranchNotFoundError(AliasDataFrameError, ValueError):
     """Branch not found in TTree.
     
     Attributes

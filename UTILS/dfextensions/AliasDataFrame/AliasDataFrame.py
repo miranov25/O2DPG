@@ -32,7 +32,7 @@ except ImportError:
     # Define inline if module not found
     class AliasDataFrameError(Exception):
         pass
-    class BranchNotFoundError(AliasDataFrameError):
+    class BranchNotFoundError(AliasDataFrameError, ValueError):
         def __init__(self, missing, available=None, message=None):
             self.missing = missing
             self.available = available
@@ -6439,6 +6439,13 @@ function collapseDepth(maxD) {{
         --------
         >>> adf.ensure_branches(['eta', 'phi'])
         >>> print('eta' in adf.df.columns)  # True
+
+        Notes
+        -----
+        Loads TTree branches only. Names that are aliases or subframe columns are not
+        loaded here (they are resolved by alias eval / the subframe merge); to materialize
+        an alias use ``materialize_aliases()``. A name that is neither a branch, alias,
+        subframe column, nor an existing frame column raises ``BranchNotFoundError``.
         """
         if isinstance(names, str):
             names = [names]
@@ -6453,17 +6460,48 @@ function collapseDepth(maxD) {{
                 raise BranchNotFoundError(missing, set(self.df.columns))
             return
         
-        # Lazy mode - load from reader
+        # Lazy mode - load from reader.
+        # PHASE_13_62_ADF S1: reconcile against BOTH the frame and the reader's real branch
+        # set, then classify anything left over. A genuinely missing input raises a
+        # cause-naming error instead of the misleading "Branches not found in TTree" used for
+        # names that are actually resolved elsewhere (aliases, subframe columns) or already
+        # present in the frame (hand-added / merged columns).
         names_set = set(names)
         already_loaded = self._lazy_reader.loaded_branches
-        to_load = names_set - already_loaded
-        
+        unloaded = names_set - already_loaded
+        in_frame = unloaded & set(self.df.columns)        # hand-added / merged: already present
+        tree_cand = unloaded - in_frame
+        available = set(self._lazy_reader.available_branches)
+        to_load = tree_cand & available
+        unresolved = tree_cand - to_load                  # not a real branch, not in the frame
+
+        if unresolved:
+            aliases_set = set(self.aliases.keys())
+            subframe_cols = set()
+            for _n in self._subframes.subframes:
+                _sf = self._subframes.get(_n)             # registry accessor -> ADF or None
+                if _sf is not None:
+                    subframe_cols |= set(_sf.df.columns)
+            for _rdr in getattr(self, "_subframe_readers", {}).values():
+                subframe_cols |= set(getattr(_rdr, "available_branches", ()) or ())
+            # Names resolved by alias eval / subframe merge are not tree branches; never load.
+            misrouted = {n for n in unresolved if n in aliases_set or n in subframe_cols}
+            genuine = unresolved - misrouted
+            if genuine:
+                raise BranchNotFoundError(
+                    missing=genuine,
+                    available=available,
+                    message=(f"Not found as TTree branches: {sorted(genuine)}. "
+                             f"They are not branches, aliases, subframe columns, or existing "
+                             f"frame columns - check for a typo or missing input data."))
+            # misrouted names are skipped here; resolved by alias eval / subframe merge.
+
         if not to_load:
-            return  # All requested branches already loaded
-        
+            return  # Nothing real left to load from the tree
+
         # Reader returns new data only (doesn't merge)
         new_data = self._lazy_reader.load_branches(list(to_load))
-        
+
         # ADF handles merge (Arrow-compatible pattern)
         self.df = self._merge_loaded_data(self.df, new_data)
     

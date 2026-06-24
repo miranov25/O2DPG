@@ -1,6 +1,6 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-06-24 07:22 UTC
+**Generated:** 2026-06-24 12:57 UTC
 **Phase:** 13.11.B
 **Taxonomy:** 55 features (PHASE_13_11_B approved)
 **Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)
@@ -14,7 +14,7 @@
 | 🧨 Broken | 4 | 7% |
 | 📋 Planned | 1 | 1% |
 | **Total features** | **55** | |
-| **Matched tests** | **1770** | |
+| **Matched tests** | **1776** | |
 | **Invariance tests** | **308** | |
 
 **Unmatched tests:** 105 (not mapped to any feature)
@@ -104,7 +104,7 @@
 | ✅ | **LAZY.timeseries_draw** — Single-tree lazy time-series loading & lazy drawing (D1 resolver + D2 draw-surface branch scan + D3 estimate_memory) | 37 | 36 | 0 | 30 |
 | ✅ | **LAZY.subframe_draw** — Subframe-column lazy draw (single-level A.col + nested A.B.col; on-demand materialization via ensure_subframe + recursive chain walk) | 3 | 3 | 0 | 3 |
 | ✅ | **LAZY.alias_autoload** — Alias resolution auto-loads lazy branches (materialize_aliases / validate_aliases / describe_aliases bridge to the lazy reader; LAZY status) | 6 | 6 | 0 | 4 |
-| ☑️ | **LAZY.expression_autoload** — Expression/column lazy autoload via ensure_columns() — bridges df.eval()/direct-access paths on a lazy ADF (get_required_branches → ensure_branches; branches-only, subframe-name + dotted-ref filtered; eager no-op) | 4 | 4 | 0 |  |
+| ☑️ | **LAZY.expression_autoload** — Expression/column lazy autoload via ensure_columns() — bridges df.eval()/direct-access paths on a lazy ADF (get_required_branches → ensure_branches; branches-only, subframe-name + dotted-ref filtered; eager no-op) | 10 | 10 | 0 |  |
 
 ## FIT_REGISTRATION
 

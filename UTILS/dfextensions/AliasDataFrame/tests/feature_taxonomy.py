@@ -354,6 +354,7 @@ FEATURES = [
      "category": "LAZY_LOADING",
      "test_patterns": [
          "test_bug20260624_ensure_columns.py",
+         "test_phase_13_62_adf_s1.py",
      ]},
 
     # ── FIT_REGISTRATION (2) ──
