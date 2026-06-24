@@ -31,6 +31,9 @@ Phase 13.61.ADF (2026-06-24): Added 1 new feature DISPATCH.dict_dispatch (draw-p
 dispatch frame — transient channel projection across draw/draw_batch/draw_figures, with
 structural + peak-RSS + volume-invariance memory gates and dict≡full-frame equivalence)
 covered by test_phase1361_dict.py (19) and test_phase1361_memory.py (1). Total: 52 → 53.
+Phase 13.61.ADF Fix (2026-06-24, BUG_20260624_lazy_bridge): Added 1 new feature
+LAZY.expression_autoload (ensure_columns lazy bridge) covered by
+test_bug20260624_ensure_columns.py (4). Total: 54 → 55.
 """
 
 FEATURES = [
@@ -345,6 +348,12 @@ FEATURES = [
          "test_phase1360_alias_lazy_bridge.py::test_T4_genuine_missing_still_reported_and_registered_fn",
          "test_phase1360_alias_lazy_bridge.py::test_T7_chained_alias_transitive_autoload_equals_eager",
          "test_phase1360_alias_lazy_bridge.py::test_T8_dtype_bearing_alias_lazy_equals_eager",
+     ]},
+    {"id": "LAZY.expression_autoload",
+     "name": "Expression/column lazy autoload via ensure_columns() — bridges df.eval()/direct-access paths on a lazy ADF (get_required_branches → ensure_branches; branches-only, subframe-name + dotted-ref filtered; eager no-op)",
+     "category": "LAZY_LOADING",
+     "test_patterns": [
+         "test_bug20260624_ensure_columns.py",
      ]},
 
     # ── FIT_REGISTRATION (2) ──

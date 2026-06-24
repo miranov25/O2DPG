@@ -1,20 +1,20 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-06-24 06:12 UTC
+**Generated:** 2026-06-24 07:22 UTC
 **Phase:** 13.11.B
-**Taxonomy:** 54 features (PHASE_13_11_B approved)
+**Taxonomy:** 55 features (PHASE_13_11_B approved)
 **Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)
 
 ## Summary
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 34 | 62% |
-| ☑️ Smoke-only | 14 | 25% |
-| 🧨 Broken | 5 | 9% |
+| ✅ Verified | 35 | 63% |
+| ☑️ Smoke-only | 15 | 27% |
+| 🧨 Broken | 4 | 7% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **54** | |
-| **Matched tests** | **1766** | |
+| **Total features** | **55** | |
+| **Matched tests** | **1770** | |
 | **Invariance tests** | **308** | |
 
 **Unmatched tests:** 105 (not mapped to any feature)
@@ -39,7 +39,7 @@
 | Status | Feature | Tests | Pass | Fail | Inv |
 |--------|---------|------:|-----:|-----:|:---:|
 | ✅ | **SUB.register** — Subframe registration | 50 | 50 | 0 | 3 |
-| 🧨 | **SUB.join** — Subframe join & column resolution | 70 | 69 | 1 | 22 |
+| ✅ | **SUB.join** — Subframe join & column resolution | 70 | 70 | 0 | 22 |
 | ✅ | **SUB.composite_key** — Composite key operations | 38 | 38 | 0 | 2 |
 | ✅ | **SUB.auto_alias** — Auto-aliasing subframe columns | 11 | 10 | 0 | 1 |
 | 📋 | **SUB.clone** — Clone with selection (planned) | 0 | 0 | 0 |  |
@@ -104,6 +104,7 @@
 | ✅ | **LAZY.timeseries_draw** — Single-tree lazy time-series loading & lazy drawing (D1 resolver + D2 draw-surface branch scan + D3 estimate_memory) | 37 | 36 | 0 | 30 |
 | ✅ | **LAZY.subframe_draw** — Subframe-column lazy draw (single-level A.col + nested A.B.col; on-demand materialization via ensure_subframe + recursive chain walk) | 3 | 3 | 0 | 3 |
 | ✅ | **LAZY.alias_autoload** — Alias resolution auto-loads lazy branches (materialize_aliases / validate_aliases / describe_aliases bridge to the lazy reader; LAZY status) | 6 | 6 | 0 | 4 |
+| ☑️ | **LAZY.expression_autoload** — Expression/column lazy autoload via ensure_columns() — bridges df.eval()/direct-access paths on a lazy ADF (get_required_branches → ensure_branches; branches-only, subframe-name + dotted-ref filtered; eager no-op) | 4 | 4 | 0 |  |
 
 ## FIT_REGISTRATION
 
@@ -135,16 +136,13 @@
 
 ## 🧨 Broken Features — Details
 
-### SUB.join
-- ❌ `test_alias_subframe.py::TestSubframeRoundtrip::test_parquet_roundtrip`
-
 ### DRAW.execution
-- ❌ `test_K1_vector_draw_kwarg_diagnostic.py::TestK1VectorDrawKwargDiagnostic::test_K1_3_draw_batch_forwards_batch_kwargs`
 - ❌ `test_K2_vector_draw_end_to_end.py::TestK2VectorDrawEndToEnd::test_K2_3_production_reproducer_mirror`
+- ❌ `test_K1_vector_draw_kwarg_diagnostic.py::TestK1VectorDrawKwargDiagnostic::test_K1_3_draw_batch_forwards_batch_kwargs`
 
 ### COMP.roundtrip
-- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
 - ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
+- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
 
 ### BACK.invariance
 - ❌ `test_invariance_backend.py::TestInvarianceBackend::test_I2_6_chained_subframe_expressions_numba_vs_numpy`

@@ -3971,6 +3971,59 @@ class AliasDataFrame:
         top_level = {b for b in required if "." not in b}
         return (top_level & set(reader.available_branches)) - set(self.df.columns)
 
+    def ensure_columns(self, *args):
+        """Auto-load lazy TTree branches referenced in expression strings / column lists.
+
+        Bridges the U-1 gap (BUG_20260624) for direct-access paths that bypass
+        draw()/materialize_aliases -- e.g. ``adf.df.eval(selection)`` or ``adf.df[col]``
+        -- which fail on a lazy ADF because the referenced branches are not yet loaded.
+        Resolves all references via ``get_required_branches`` and loads any not already
+        present via ``ensure_branches``.
+
+        Accepts any mix of:
+          - selection-style expression strings: ``"(ncl>50)&(abs(dcar_itstpc)<0.1)"``
+          - bare column-name strings:           ``"ncl"``
+          - lists/tuples of the above:          ``["qpt_ITSTPC", "tgl", "vertex_z"]``
+
+        No-op on eager ADFs (``_lazy_reader is None``).
+
+        Scope (ARCH-2, branches-only): loads *branches*; does NOT materialize aliases.
+        If a selection references an alias *name* directly, its base branches load but the
+        alias column itself is not created -- call ``materialize_aliases(names=[...])`` for
+        that case. Not for draw-style colon grammar (``"y:x"``); use ``draw()`` for those.
+
+        DEVIATION (QRC v1.34 Rule 19): architect named this ``materialize_all(selection)``;
+        implemented as ``ensure_columns`` because the operation loads branches if absent
+        rather than materializing aliases -- "ensure" better describes a load-if-absent op.
+
+        Example
+        -------
+            adf.ensure_columns(
+                "(ncl>50)&(abs(dcar_itstpc)<0.1)&(hasITSTPC>0)",
+                ["qpt_ITSTPC", "tgl", "vertex_z"],
+                "dcar_itstpc",
+            )
+            mask = adf.df.eval(selection)   # now succeeds on a lazy ADF
+        """
+        if getattr(self, "_lazy_reader", None) is None:
+            return
+        needed = set()
+        for item in args:
+            items = item if isinstance(item, (list, tuple)) else [item]
+            for s in items:
+                if isinstance(s, str) and s:
+                    needed |= self.get_required_branches(selection=s)
+        # Drop subframe names and subframe-column refs ("A.col") -- not TTree branches.
+        # Mirrors the draw() lazy-load hook (Phase 6.8a / 13.58).
+        all_subframes = (set(self._subframes.subframes.keys())
+                         | set(getattr(self, "_subframe_readers", {}).keys()))
+        needed = {b for b in needed
+                  if b not in all_subframes
+                  and not ("." in b and b.split(".", 1)[0] in all_subframes)}
+        to_load = needed - set(self.df.columns)
+        if to_load:
+            self.ensure_branches(sorted(to_load))
+
     def validate_aliases(self):
         """
         Validate that all aliases can be resolved.
