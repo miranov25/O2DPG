@@ -32,7 +32,7 @@ import uproot
 import numpy as np
 from matplotlib.ticker import FuncFormatter
 from datetime import datetime
-
+import awkward as ak
 
 
 from dfextensions.AliasDataFrame import AliasDataFrame
@@ -157,6 +157,90 @@ def root_to_adf(path, tree_name=None, branches=None, cut=None,
     return AliasDataFrame(df)
 
 
+
+
+
+def make_row_group_mask(mask, group_size=5, threshold=2, dtype=np.uint32, add_first_last=True, missing_value=255):
+    """
+    Convert per-row cluster bool mask into compact grouped mask.
+
+    For each track, rows are grouped into blocks of `group_size`.
+    A group is active if the number of hit rows is > threshold.
+
+    Example
+    -------
+    group_size=5, threshold=2:
+        active group means at least 3 of 5 rows have clusters.
+
+    Parameters
+    ----------
+    mask : awkward.Array or numpy.ndarray
+        Shape (n_tracks, n_rows), e.g. n_rows=152.
+    group_size : int
+        Rows per output bit.
+    threshold : int
+        Group active if count > threshold.
+    dtype : numpy dtype
+        Integer dtype for packed group mask.
+    add_first_last : bool
+        If True, also return first/last active group as uint8.
+    missing_value : int
+        Sentinel for no active group. Default 255.
+
+    Returns
+    -------
+    result : dict
+        {
+          "rowmask": np.ndarray uint32, shape (n_tracks,),
+          "group_counts": np.ndarray uint8, shape (n_tracks, n_groups),
+          "first": np.ndarray uint8, optional,
+          "last": np.ndarray uint8, optional,
+        }
+    """
+    arr = ak.to_numpy(mask) if isinstance(mask, ak.Array) else np.asarray(mask)
+    arr = arr.astype(bool)
+    if arr.ndim != 2:
+        raise ValueError(f"Expected 2D mask array, got shape {arr.shape}")
+
+    n_tracks, n_rows = arr.shape
+    n_groups = (n_rows + group_size - 1) // group_size
+
+    if n_groups > np.iinfo(dtype).bits:
+        raise ValueError(
+            f"{n_groups} groups do not fit into {np.dtype(dtype).name}; "
+            f"use a larger dtype or multiple words"
+        )
+
+    group_counts = np.zeros((n_tracks, n_groups), dtype=np.uint8)
+    for g in range(n_groups):
+        lo = g * group_size
+        hi = min((g + 1) * group_size, n_rows)
+        group_counts[:, g] = arr[:, lo:hi].sum(axis=1)
+    active = group_counts > threshold
+
+    rowmask = np.zeros(n_tracks, dtype=dtype)
+    for g in range(n_groups):
+        rowmask |= active[:, g].astype(dtype) << g
+    result = {
+        "rowmask": rowmask,
+        "group_counts": group_counts,
+    }
+    if add_first_last:
+        any_active = active.any(axis=1)
+        first = np.full(n_tracks, missing_value, dtype=np.uint8)
+        last = np.full(n_tracks, missing_value, dtype=np.uint8)
+        first[any_active] = np.argmax(active[any_active], axis=1).astype(np.uint8)
+        # last active index = n_groups - 1 - first active in reversed mask
+        last[any_active] = (
+                n_groups - 1 - np.argmax(active[any_active, ::-1], axis=1)
+        ).astype(np.uint8)
+        result["first"] = first
+        result["last"] = last
+
+    return result
+
+
+
 df_TimeSeriesAliases = {
     # GB binning aliases
     "sector_bin180":{"expr": f"90*(phiITSTPCAtVertex/{np.pi})","dtype": np.uint16, "title": "Sector bin180"},
@@ -179,7 +263,28 @@ df_TimeSeriesAliases = {
     "baseITSTPCCut0": {"expr": "(baseTPCCut0)&(hasITSTPC>0)&(sqrt(dcar_itstpc**2+dcaZFromDeltaTime**2)<1)", "dtype": bool, "title": "Base track TPC+ITS selection0 + hasITSTPC"},
     # vertex aliases
     "vertexOK0": {"expr": "(vertex_nContributors>5)&(sqrt(vertex_x**2+vertex_y**2)<1)", "dtype": bool, "title": "Vertex quality flag: >0 contributors, |x|<1cm"},
+    # adf.add_alias("dphi", "0.00299792 * 5 * mX * qpt", dtype=np.float32)
+    # adf.add_alias("dphiTPCITS", "0.00299792 * 0.5 * mX * qpt_ITSTPC", dtype=np.float32). # we should ge ther B field
+    "dphiTPCITSIn": {"expr": "0.00299792 * 0.5 * mX * qpt_ITSTPC", "dtype": np.float32, "title": "dφ TPC-ITS inner (rad)"},
+    "phiTPCITSIn": {"expr": "phiITSTPCAtVertex+0.00299792 * 0.5 * mX * qpt_ITSTPC", "dtype": np.float32, "title": "φ TPC-ITS inner at  mX"}, # we should ge ther B field
+    "fsectorIn": {"expr": "(9*((phiITSTPCAtVertex+0.00299792 * 0.5 * mX * qpt_ITSTPC)/np.pi))", "dtype": np.float32, "title": "Float  TPC sector (0-18) from phiTPCITSIn"},
+    "dsectorIn": {"expr": "fsectorIn-int(fsectorIn)", "dtype": np.float32, "title": "TPC Δ sector from phiTPCITSIn"},
+    "fsector": {"expr": "(9*(phi/np.pi))", "dtype": np.float32, "title": "Float  TPC sector (0-18) from phi"},
+    "dsector": {"expr": "fsector-int(fsector)", "dtype": np.float32, "title": "TPC Δ sector from phi"},
 }
+
+
+"""
+adf.add_alias("dphiTPCITSIn", "0.00299792 * 0.5 * mX * qpt_ITSTPC", dtype=np.float32) # we should ge ther B field 
+adf.add_alias("phiTPCITSIn", "phiITSTPCAtVertex+0.00299792 * 0.5 * mX * qpt_ITSTPC", dtype=np.float32) # we should ge ther B field
+adf.add_alias("fsectorIn", "(9*((phiITSTPCAtVertex+0.00299792 * 0.5 * mX * qpt_ITSTPC)/np.pi))", dtype=np.float16) 
+adf.add_alias("dsectorIn", "fsectorIn-int(fsectorIn)", dtype=np.float16)
+adf.add_alias("fsector", "(9*(phi/np.pi))", dtype=np.float16)
+adf.add_alias("dsector", "fsector-int(fsector)", dtype=np.float16)
+
+ adf.materialize_aliases(names=["dsectorIn"])
+ 
+"""
 
 
 df_TimeSeriesMeta = {
@@ -727,7 +832,7 @@ def drawTestBugRepoduce(adfVertex,adf):
 
 
 
-def my_snippet():
+def my_snippet(makeVertex=True):
 
     #  adf.df.filter(regex="delta.*").columns
     binGB=100
@@ -739,13 +844,14 @@ def my_snippet():
     #
     # 1.) make vertex time series compression
     #
-    adfVertex=calibVertex(adf)
-    adfVertex.df["quantile_binGB"]=adfVertex.df["quantile_bin"]//(binGB)
-    adfVertexC=compressADF(adfVertex, column_array={"vertex_(x|y)_intercept$": "linear"}, gb_columns=["quantile_binGB"],
-                           index_columns=["quantile_bin"],subframe_name="GB", dtype=np.int8, precision=5, coding="asinh")
-    adfVertexC.draw_lazy=True
-    adfVertex.draw_lazy=True
-    adfVertex.register_subframe("vC", adfVertexC, index_columns=["quantile_bin"])
+    if makeVertex:
+        adfVertex=calibVertex(adf)
+        adfVertex.df["quantile_binGB"]=adfVertex.df["quantile_bin"]//(binGB)
+        adfVertexC=compressADF(adfVertex, column_array={"vertex_(x|y)_intercept$": "linear"}, gb_columns=["quantile_binGB"],
+                               index_columns=["quantile_bin"],subframe_name="GB", dtype=np.int8, precision=5, coding="asinh")
+        adfVertexC.draw_lazy=True
+        adfVertex.draw_lazy=True
+        adfVertex.register_subframe("vC", adfVertexC, index_columns=["quantile_bin"])
     #
     # make delta parameterrization per files
     #
@@ -824,6 +930,21 @@ def makePlots(output_path="time_series_plots.pdf"):
     drawNclExampleFacet(adf,pdf)
     drawFitExample(adf,pdf)
     pdf.close()
+
+def loadADFLazy():
+    adf = AliasDataFrame.read_tree_lazy("time_series_tracks_0.root","treeTimeSeries")
+    apply_meta(adf,df_TimeSeriesAliases)
+    apply_meta(adf,df_TimeSeriesMeta)
+    adf.draw_lazy=True
+    with uproot.open("time_series_tracks_0.root") as f:
+        tree = f["treeTimeSeries"]   # adjust if needed
+        mask = tree["clusterMask"].array(library="ak")
+        res_3_5 = make_row_group_mask(mask, group_size=5, threshold=2)
+        adf.df[f"rowmask_3_5"] = res_3_5["rowmask"]
+        adf.df[f"first_3_5"] = res_3_5["first"].astype(np.uint8)
+        adf.df[f"last_3_5"] = res_3_5["last"].astype(np.uint8)
+
+
 
 #
 # make plots if args[0] == "plot":
