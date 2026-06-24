@@ -1,3 +1,8 @@
+"""
+Troublesooting stat examples
+from  time_series import *
+adf=my_snippet()
+"""
 from  time_series import *
 from  time_series_TroubleShooting import *
 
@@ -278,3 +283,78 @@ def drawCECross(adf):
     fig, ax, stats = adf.draw("chi2match_ITSTPC:tgl", selection="(abs(qpt)<2.5)&(abs(tgl)<1)&(abs(dcar_tpc)<6)&(abs(vertex_z)<12)", type="profile", min_entries=100, auto_title=True,
                               quantiles=[0.1, 0.5, 0.9], facet_by="vertex_z", facet_by_quantiles=9, quantile_mode='discrete',bins=100,linewidth=2,ncols=3)
     fig.set_size_inches(16, 10); fig.tight_layout(); plt.draw()
+
+
+
+def fitDCSITS(adf):
+    """
+    :return:
+    """
+    """
+    fit DCA bias
+    """
+    adf.add_alias("phiBin180","(floor(phiITSTPCAtVertex/2/pi*180))",dtype="uint8")
+    adf.add_alias("atgl","abs(tgl)",dtype="float16")
+    adf.add_alias("aqpt_ITSTPC","abs(qpt_ITSTPC)",dtype="float16")
+    adf.materialize_aliases(names=["phiBin180","atgl","aqpt_ITSTPC"])
+    gb_columns=["phiBin180"]
+    linear_columns=["qpt_ITSTPC","tgl","vertex_z","aqpt_ITSTPC","atgl"]
+    fit_columns=["dcar_itstpc"]
+    # ---------------------------------------------------------------
+    # Pass 1: linear fit of dcar_itstpc vs predictors per phiBin180
+    # ---------------------------------------------------------------
+    selection="(ncl>50)&(abs(dcar_itstpc)<0.05)&(hasITSTPC>0)&(nClITS>5)"
+    adf.ensure_columns(selection,gb_columns+linear_columns+fit_columns)
+    selection_mask = adf.df.eval(selection)
+    adf.df["wdcar_itstpc"]=(0.5/(0.5+np.abs(adf.df["aqpt_ITSTPC"]))).astype(np.float32)
+    _, dfCoeffsP1 = make_parallel_fit_v4(
+        df=adf.df,
+        gb_columns=gb_columns,
+        fit_columns=fit_columns,
+        linear_columns=linear_columns,
+        fit_intercept=True,
+        min_stat=50,
+        weights="wdcar_itstpc",
+        selection=selection_mask,
+        suffix="",
+    )
+    #
+    adfVertex=AliasDataFrame(dfCoeffsP1)
+    adf.register_subframe("DCABiasFitP1",adfVertex,index_columns=gb_columns)
+    for v in fit_columns:
+        adf.add_alias(
+            f"{v}_pred",
+            f"DCABiasFitP1.{v}_intercept"
+            f" + DCABiasFitP1.{v}_slope_qpt_ITSTPC      * qpt_ITSTPC"
+            f" + DCABiasFitP1.{v}_slope_tgl             * tgl"
+            f" + DCABiasFitP1.{v}_slope_vertex_z        * vertex_z"
+            f" + DCABiasFitP1.{v}_slope_aqpt_ITSTPC * aqpt_ITSTPC"
+            f" + DCABiasFitP1.{v}_slope_atgl        * atgl",
+        )
+        adf.add_alias(f"{v}_resid", f"{v} - {v}_pred")
+
+    # add aliase to the ADF
+
+    adf.add_alias("q", "sign(qpt_ITSTPC)",dtype="int8")
+    adf.draw("dcar_itstpc:phiITSTPCAtVertex",type="profile",selection="(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<4)&(ncl>80)&(abs(dcar_itstpc)<0.03)",
+             group_by="abs(qpt_ITSTPC)",group_by_bins=5,bins=180,auto_title=True,min_entries=100)
+    adf.draw("dcar_itstpc_pred:phiITSTPCAtVertex",type="profile",selection="(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<4)&(ncl>80)&(abs(dcar_itstpc)<0.03)",
+             group_by="abs(qpt_ITSTPC)",group_by_bins=5,bins=180,auto_title=True,min_entries=100)
+    adf.draw("dcar_itstpc_resid:phiITSTPCAtVertex",type="profile",selection="(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<4)&(ncl>80)&(abs(dcar_itstpc)<0.03)",
+             group_by="abs(qpt_ITSTPC)",group_by_bins=5,bins=180,auto_title=True,min_entries=100)
+
+
+def drawEdge(adf):
+    adf.df["q"]=np.sign(adf.df["qpt_ITSTPC"])
+    adf.draw("dcar_itstpc:phiITSTPCAtVertex",type="profile",selection="(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<4)&(ncl>80)&(abs(dcar_itstpc))<0.03",
+             group_by="abs(qpt_ITSTPC)",group_by_bins=5,bins=180,auto_title=True,facet_by="q",min_entries=100)
+
+    # Plot 1 - DCA
+    adf.draw("dcar_tpc:dsectorIn",type="profile",selection="(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<1)&(ncl>80)&(abs(dcar_itstpc)<0.03)",
+        group_by="abs(qpt_ITSTPC)",group_by_bins=5,bins=100,auto_title=True,min_entries=100)
+
+    # NCL
+    adf.draw("ncl:dsectorIn",type="profile",selection="(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<1)&(ncl>40)&(abs(dcar_itstpc)<0.03)",
+                        group_by="(qpt_ITSTPC)",group_by_bins=5,bins=100,auto_title=True,min_entries=100)
+
+    # Calculate ndead
