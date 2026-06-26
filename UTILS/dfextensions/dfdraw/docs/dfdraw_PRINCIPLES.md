@@ -1,6 +1,6 @@
 # dfdraw_PRINCIPLES.md — Design Principles & Shortcut Grammar
 
-**Version:** 1.1-draft (consolidated: principles + grammar + vocabulary in ONE document)
+**Version:** 1.2-draft rev b (1.1 + §2A Grammar of Graphics: descriptive [CURRENT] specification of the as-built grammar; rev b = panel corrections + naming-vote subtitle)
 **Date:** 2026-06-11
 **Status:** PROPOSAL — awaits dfdraw-team review and architect ratification (§9)
 **Drafter:** [Fable1] [AliasDataFrame] [Coder] — consumer-side draft at architect request; dfdraw team owns this document after ratification. (The dfdraw coder's v1.0 is superseded; its §0 drift narrative and §1 principle names are retained.)
@@ -189,6 +189,95 @@ The same kwarg names and the same grammar apply identically inside `draw(...)`, 
 
 ---
 
+## §2A Grammar of Graphics — expressions, statistical transforms, and layout [CURRENT]
+
+**Scope of the term (naming vote, 10 reviewers, 2026-06-21 — unanimous against "Grammar of Graphics and Statistics").** In this document "Grammar of Graphics" follows Wilkinson's original meaning (*The Grammar of Graphics*, Springer, 1999/2005), in which **statistics is a first-class component** (the seven components: variables, algebra, scales, **statistics**, geometry, coordinates, aesthetics) — not an add-on. dfdraw's statistical transforms (profile central values, quantile bands, fits, summary fits, normalization) are therefore *inside* the grammar, exactly as `stat_*` is inside ggplot2's layered grammar (Wickham 2010, §0a). The name is kept unqualified-but-subtitled; a deeper ggplot2/Wilkinson comparison is deferred to `dfdraw_COMPARISON.md`.
+
+**Purpose (Pass 1).** §2 states the *meta-rules* (G-0, R-1..R-7): how forms generalize. §2A states the *concrete grammar those rules act on* — the as-built expression mini-language and channel vocabulary that until now lived only in `drawer.py` and docstrings. This section is **purely descriptive of dfdraw HEAD** (canonical `drawer.py` 8,082 lines / MD5 `e851acc72510d7a4c03690a6afb1e4b6`); every form is **[CURRENT]** with a source citation. It introduces **no** new or changed behavior — no `[TARGET]` forms appear here (those remain in §2/§8). Where the current grammar has a natural extension seam, it is noted only as a **statement of present behavior**; the design of extensions (y-vector layout; N-numerator normalization) is **Pass 2 (brainstorming) and out of scope here**. Subordinate to G-0 and P-0 like everything else.
+
+### §2A.1 The plot expression (the positional mini-language)
+
+The first positional argument is an expression string, parsed by **top-level colon count** — colons inside `[...]` or `(...)` do not count (`_count_colons_outside_brackets`):
+
+| Colons | Form | Meaning | Source |
+|---|---|---|---|
+| 0 | `x` | 1-variable (distribution / histogram input) | `colon_count == 0` → 1D form (`drawer.py:852`) |
+| 1 | `y:x` | 2-variable plot (y dependent, x independent) | `_split_top_level_colon` (raises if none) |
+| 2 | `z:y:x` | 3-variable plot | `_split_top_level_colons_3` (Phase 13.39.DF) |
+
+For the **positional y/x/z slots**, both raw `DFDraw` and the ADF surface resolve a **column name or a computed expression** — `_eval_column` returns `df[expr]` when it is a column, else `df.eval(expr)` (`drawer.py:984`). The **column-only** limitation applies to the **structural channels** `group_by`/`facet_by`, not to the positional slots (R-4 note; Phase 13.61 is the target that lifts that channel restriction). At the ADF surface the alias machinery additionally resolves aliases before delegating.
+
+### §2A.2 The y-slot vector — `[…]` (multiplicity)
+
+A bracketed, comma-separated list in the y-slot is a **vector**: `[y0, y1, …]:x` → one curve per element. This is R-1 (scalar→vector) applied to the y-slot. Splitting is paren/bracket-aware, so `[max(a,b), c]:x` yields **two** elements (`_split_paren_aware`). Returns a **list** of per-element stats. [CURRENT, executed.]
+
+- **Default layout = overlay on one axes.** The vector dispatch uses the caller's `same` for the first element and forces `same=True` for every subsequent element (`drawer.py:2108–2109`) → all elements share one axes.
+- Elements are distinguished by **`vector_style`** — default `'color'`; when `group_by` is also set the default becomes `'linestyle'` (color reserved for groups).
+- *Present-behavior boundary (Pass-2 seam, not a design statement):* a y-vector has **no per-element panel/facet layout** today — overlay is the only layout for it.
+
+### §2A.3 Plot types — `type=`
+
+Canonical type vocabulary (`_DRAW_TYPE_NAMES`, `drawer.py:293`): **`hist`, `scatter`, `profile`, `hist2d`, `profile2d`, `scatter3d`, `hexbin`**, by expression arity:
+
+| Arity | Expression | Types |
+|---|---|---|
+| 1-variable | `x` | `hist` (distribution) |
+| 2-variable | `y:x` | `profile`, `scatter`, `hist2d`, `hexbin` |
+| 3-variable | `z:y:x` | `profile2d` (2D profile heatmap), `scatter3d` |
+
+`type='profile2d'`/`'scatter3d'` require the 3-variable form (`drawer.py:4607–4611`, `:4657–4661`); `scatter3d` does not support `group_by` (`:4668`).
+
+**Composition — `type='A+B'`** composes layer types left-to-right by z-order; the long form is `overlay(layers=[…])`. Both [CURRENT] on all four surfaces (R-5 table). `+` is the only composition operator.
+
+### §2A.4 Channels (structural & aesthetic kwargs)
+
+- **`group_by`** (+ `group_by_bins`, `group_by_quantiles`): partitions data into **curves on one axes** (one curve per group/bin). A continuous `group_by` requires `group_by_bins` or `group_by_quantiles` (cardinality guard). Expression-valued at the ADF surface (materialized before delegation); column-only at raw dfdraw (R-4 note). Group distinction channel default `'color'`.
+- **`facet_by`** (+ `facet_by_bins`, `facet_by_quantiles`): partitions data into **subplots** (not curves). Dimensional grammar (`drawer.py:127–130`): `facet_by[0]` = **ROW**, `[1]` = **COL**, `[2]` = **FIGID** (separate figures), `[3+]` → `NotImplementedError`. `share` ∈ `{'all','row','col','none'}` controls sharex/sharey. The literal `facet_by='vector'` is a special non-column form (`drawer.py:3655`).
+- **`color`**: a color channel — a column/expression mapped to colors, or a literal matplotlib color (e.g. `'red'`, `'#FF0000'`).
+- **`selection`** (scalar) **+ `selection_vector`** (vector): row filter, a backend query string. Scalar applies globally; per-element folded by **logical AND** (R-2). Applied before binning/stats (so all downstream statistics, including per-bin quantiles, are on the selected rows).
+- **`weights`** (scalar) **+ `weights_vector`** (vector): weighting; folded by **multiplication** (R-2).
+- **`vector_compose`** ∈ `{'inner','outer'}`: how multiple vector kwargs combine (default `'outer'` at the ADF surface, Phase 13.35).
+
+### §2A.5 Normalization — `normalize=` (+ `normalize_layout`)
+
+Operates on a **2-curve y-vector** `[numerator, denominator]:x` — exactly two curves are required (`drawer.py:2481`, `:2789`, `:3110` raise otherwise). Renders a two-panel figure (main + comparison panel). Modes (`drawer.py:2982–2987`):
+
+| Mode | Comparison panel | Reference line |
+|---|---|---|
+| `delta` | numerator − denominator | 0 |
+| `ratio` | numerator / denominator | 1 |
+| `log_ratio` | ln(numerator / denominator) | — |
+| `pull` | (numerator − denominator)/σ, with ±1σ/±2σ bands | 0 |
+
+`normalize` also accepts a **callable** (`Optional[Union[str, callable]]`, `drawer.py:4487`). `normalize_layout` controls the panel arrangement: `'overlay+diff'` (default — main panel + comparison panel, `drawer.py:2514`) or `'diff_only'` (comparison panel alone, `:2526`). *Present-behavior boundary (Pass-2 seam):* the "**exactly 2 curves**" rule is the current limit; the `[num0, …, denom]` extension is Pass 2.
+
+### §2A.6 Statistical / rendering channels (descriptive)
+
+- **`bins`**: bin count — scalar, or `[nx, ny]` for 2D types.
+- **`range`**: axis range — `'minmax'`, explicit, or per-axis nested lists; when unset, an autorange strategy is chosen (e.g. `hybrid`, `robust_*`).
+- **`central`** ∈ `{'mean','median','both','none'}`: profile central tendency (validated at `profile.py:381`). Default resolves to **`'mean'`** (`quantile.central_default`); `'both'` draws the mean and median lines simultaneously (`profile.py:904`); `'none'` draws no central line (band/error only, `:785`).
+- **`quantiles`**: list of levels `[q…]` → per-bin quantile band, computed on the **selected (post-filter)** data, from the same arrays as the central statistic.
+- **`fit`** / **`summary_fit`**: fit overlay + summary table; backend is `scipy.optimize.curve_fit` (dict tier inherits its vocabulary per P-5).
+- **`min_entries`**: minimum per-bin entry count for a point to render.
+
+### §2A.7 The three surfaces (R-7, concrete)
+
+The same mini-language and channels apply identically across:
+
+| Surface | Call form | Note |
+|---|---|---|
+| Interactive | `adf.draw(expr, **kwargs)` | the entry tier (P-0) |
+| Figures | `adf.draw_figures([spec, …])` | each spec is a dict with `'expr'` + the same kwargs |
+| Batch | `adf.draw_batch([spec, …])` | same spec vocabulary; routes through `draw()` (Phase 13.55) |
+
+`'expr'` is required in every spec; composition strings and channels behave identically on all three (R-5 table; R-7).
+
+### §2A.8 Output contract
+
+Every draw returns `(fig, ax, stats)` (`DrawResult`, `drawer.py:54`). A y-vector returns `stats` as a **list**, one entry per element. `ax=` accepts a caller-supplied `Axes` (rendered into — this is how several plots are composed into one figure manually), and `same=True` overlays onto the current/last axes.
+
+---
+
 ## §3 P-0 and the Four Principles
 
 ### P-0 — Interactive simplicity first (the RANKING principle)
@@ -313,3 +402,5 @@ Any change that cannot satisfy both is `[BREAKING]`, requires an enumerated cons
 | 1.1-draft rev d | 2026-06-11 | P-0 (Interactive simplicity first) added as the RANKING principle with 4 new binding quotes; approval gate in §7 (CRR statement + [BREAKING] option sheets answer P-0 first); §6 simple-query test added; corpus datum: dicts appear in 0 of 84 production calls. |
 | 1.1-draft rev c | 2026-06-11 | §1 quote cleanup at architect request (my_times sentence removed — unverifiable origin; v1.0-verdict quote removed — context-free).  Panel fix (fable5_5 [!], 3 executed counter-examples): CURRENT/TARGET tagging on every grammar example; ';' expr spelling re-attributed (architect-required need, NOT a current form — no corpus instance; ValueError at HEAD); R-1 per-surface entry-form caveat; R-2 AND-fold source citation (drawer.py L1480/L1809). |
 | 1.1-draft | 2026-06-11 | Consolidated single document (rev b: quote spelling normalized at architect request; companion references updated to the 3-document package): + §1 architect verbatim quotes (binding); + §2 grammar G-0/R-1..R-7 (reverse-engineered from the 84-call corpus); + §4 declaration schema; + §5 vocabulary with append-only aliases; + §6 executable conformance set; P-5/P-6 dropped. Drafted by Fable1 (ADF) at architect request for dfdraw-team ratification. |
+| 1.2-draft | 2026-06-21 | + §2A Grammar of Graphics: descriptive **[CURRENT]** specification of the as-built grammar (expression mini-language & colon arity; y-slot vector + overlay-default layout; type vocabulary by arity + `A+B` composition; channels `group_by`/`facet_by` row/col/figID/`color`/`selection`/`weights`; normalization 2-curve modes; statistical/rendering channels; the three surfaces; output contract). Consolidates behavior previously only in `drawer.py` + docstrings. **Pass 1 — descriptive only**; no new/changed behavior; all forms source-cited against canonical `drawer.py` 8,082 / MD5 `e851acc7…`. Extension design (y-vector layout; N-numerator normalization) deferred to Pass 2 brainstorming. Drafted by Opus48_3 at architect request. |
+| 1.2-draft rev b | 2026-06-21 | §2A panel corrections (Sonnet65 ×9, all re-verified against canonical): **P1-A** `central='both'` added to §2A.6 (`profile.py:381` validation, `:904` draws both lines); **P1-B** zero-colon `x` row added to §2A.1 table + positional-slot claim corrected (raw `DFDraw` resolves `df.eval` expressions in y/x/z via `_eval_column` `drawer.py:984`; the column-only limit is scoped to structural channels `group_by`/`facet_by`); **P2** line-number fixes (`_DRAW_TYPE_NAMES` :294→:293; normalize modes :2987→:2982–2987; `facet_by='vector'` +`:3655`); **P3** completeness (`normalize_layout` `'overlay+diff'`/`'diff_only'` :2514/:2526; `normalize=` accepts a callable :4487). **Naming vote** (10 reviewers, unanimous NO on "Grammar of Graphics and Statistics"): kept "Grammar of Graphics" + subtitle "— expressions, statistical transforms, and layout" + Wilkinson scope sentence (statistics is component #4, not an add-on); deeper ggplot2/Wilkinson comparison deferred to `dfdraw_COMPARISON.md`. Literature research postponed (does not block Pass 1). |
