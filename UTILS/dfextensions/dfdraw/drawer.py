@@ -2475,10 +2475,10 @@ class DFDraw:
         indices = self._compute_vector_iteration_indices(
             n_y, selection_vector, weights_vector, vector_compose
         )
-        if len(indices) != 2:
+        if len(indices) < 2:  # PHASE 13.63 §8.2: was !=2; N>=2 for f(S)
             # Defensive — entry validation should have caught this.
             raise ValueError(
-                f"normalize= requires exactly 2 curves; got {len(indices)}. "
+                f"normalize= requires at least 2 curves; got {len(indices)}. "
                 f"(This is a logic bug — entry validation should have raised first.)"
             )
 
@@ -2619,6 +2619,7 @@ class DFDraw:
         values, errors, mask_undef = _compute_normalize_transform(
             per_curve_stats[0], per_curve_stats[1],
             mode=normalize, central=(central or 'mean'),
+            stats_list=per_curve_stats,  # PHASE 13.63 §8.1: full list to f(S)
         )
 
         # --- 7. Render bottom panel --------------------------------------------
@@ -2784,9 +2785,9 @@ class DFDraw:
         indices = self._compute_vector_iteration_indices(
             n_y, selection_vector, weights_vector, vector_compose
         )
-        if len(indices) != 2:
+        if len(indices) < 2:  # PHASE 13.63 §8.2: was !=2; N>=2 for f(S)
             raise ValueError(
-                f"normalize= requires exactly 2 curves; got {len(indices)}."
+                f"normalize= requires at least 2 curves; got {len(indices)}."
             )
 
         # --- 2. Outer selection + sampling -------------------------------------
@@ -2935,6 +2936,7 @@ class DFDraw:
             values, errors, mask_undef = _compute_normalize_transform(
                 per_curve_stats[0], per_curve_stats[1],
                 mode=normalize, central=(central or 'mean'),
+            stats_list=per_curve_stats,  # PHASE 13.63 §8.1: full list to f(S)
             )
 
             # Render this group's diff curve on shared ax_diff with group color
@@ -3105,9 +3107,9 @@ class DFDraw:
         indices = self._compute_vector_iteration_indices(
             n_y, selection_vector, weights_vector, vector_compose
         )
-        if len(indices) != 2:
+        if len(indices) < 2:  # PHASE 13.63 §8.2: was !=2; N>=2 for f(S)
             raise ValueError(
-                f"normalize= requires exactly 2 curves; got {len(indices)}."
+                f"normalize= requires at least 2 curves; got {len(indices)}."
             )
 
         # --- 2. Outer selection + sampling ------------------------------------
@@ -3265,6 +3267,7 @@ class DFDraw:
             values, errors, mask_undef = _compute_normalize_transform(
                 per_curve_stats[0], per_curve_stats[1],
                 mode=normalize, central=(central or 'mean'),
+            stats_list=per_curve_stats,  # PHASE 13.63 §8.1: full list to f(S)
             )
 
             # Render facet's diff panel
@@ -6137,12 +6140,29 @@ class DFDraw:
             n_w = len(weights_vector) if weights_vector is not None else 0
             # The "effective vector length" is the max of these three.
             n_vec = max(n_y_eff, n_sel, n_w)
-            if n_vec != 2:
+            # PHASE 13.63 §8.2: widened from "exactly 2" to ">= 2". The 2-curve
+            # fold generalizes to an N-ary user f(S) over the resolved-curve
+            # list (AD-80 sign convention preserved: S[0] numerator at N=2).
+            # n_vec < 2 is still rejected — normalize needs at least a
+            # signal+reference pair; a single curve is not a comparison.
+            if n_vec < 2:
                 raise ValueError(
-                    f"normalize= requires exactly 2 vector elements (signal + "
-                    f"reference per AD-80). Got n_y={n_y_eff}, "
+                    f"normalize= requires at least 2 vector elements (signal + "
+                    f"reference per AD-80; N>=2 for the generalized f(S) diff, "
+                    f"PHASE 13.63). Got n_y={n_y_eff}, "
                     f"n_selection_vector={n_sel}, n_weights_vector={n_w} "
                     f"(effective vector length {n_vec})."
+                )
+            # PHASE 13.63 §2: the built-in STRING modes (delta/ratio/log_ratio/
+            # pull) are 2-curve presets and require EXACTLY 2 vector elements.
+            # Only a user callable normalize=f(S) accepts N>=2 (the generalized
+            # diff). This preserves R-7 string-mode semantics and avoids the
+            # silent-ignore of curves 3..N for a string mode. (test NV-1)
+            if not callable(normalize) and n_vec != 2:
+                raise ValueError(
+                    f"normalize= with a string mode requires exactly 2 vector "
+                    f"elements (signal + reference per AD-80); got {n_vec}. "
+                    f"Use a callable normalize=f(S) for N>2 curves (PHASE 13.63)."
                 )
             # (e) §6 directive — Phase 13.27 FIX1.FIX1 deferred closure
             # (option c, panel vote 3/5 incl. Main Reviewer). When normalize
@@ -6151,9 +6171,11 @@ class DFDraw:
             # vector_compose mechanics — user writes normalize='delta' and
             # gets the right result without touching compose semantics. This
             # is convention application, not a workaround.
+            # PHASE 13.63 §8.3: widened "== 2" to ">= 2" so single-Y + N
+            # selections auto-compose 'outer' on the raw surface (ADF-parity).
             if (not _y_is_vector
                     and selection_vector is not None
-                    and len(selection_vector) == 2):
+                    and len(selection_vector) >= 2):
                 vector_compose = "outer"
         # =====================================================================
 

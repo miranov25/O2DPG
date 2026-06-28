@@ -442,8 +442,8 @@ class TestNormalizeCallable:
         """§9.NC.1: callable returning (values, errors) tuple — both arrays
         flow through to the rendered normalize_data."""
 
-        def my_transform(s0, s1):
-            values = s0["central"] - s1["central"]
+        def my_transform(S):  # PHASE 13.63 clean break: f(S) over operand list
+            values = S[0].value - S[1].value
             errors = np.full_like(values, 0.123)  # constant marker for verification
             return values, errors
 
@@ -470,8 +470,8 @@ class TestNormalizeCallable:
         """§9.NC.2: callable returning values array alone — errors propagate
         as NaN array (rendered without error bars)."""
 
-        def values_only(s0, s1):
-            return s0["central"] - s1["central"]  # no tuple, no errors
+        def values_only(S):  # PHASE 13.63 clean break: f(S) over operand list
+            return S[0].value - S[1].value  # no tuple, no errors
 
         d = DFDraw(df_two_sectors)
         fig, _, stats = d.profile(

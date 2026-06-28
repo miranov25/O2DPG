@@ -1853,11 +1853,79 @@ def _render_quantile_nested_band(
 NORMALIZE_MODES = ("delta", "ratio", "log_ratio", "pull")
 
 
+class _NormOperand:
+    """PHASE 13.63 §8.4 — minimal typed operand for the generalized f(S) diff.
+
+    Each element of the resolved-curve list S = [S[0] .. S[n-1]] handed to a
+    user normalize=callable is one of these. It carries, per bin: value
+    (the central estimator), error, n (counts), and bin edges (x_low/x_high)
+    + bin_centers. Arithmetic operators propagate the *value* elementwise so a
+    user can write f = lambda S: (S[0]/S[1])/(S[2]/S[3]).
+
+    Error policy (PHASE 13.63 §5): operators do NOT auto-propagate error
+    (numerical first-order propagation is deferred; correlated operands are the
+    normal case in calibration QA). The derived error is None unless the user
+    supplies it via f_err. Errors on the built-in string modes are unaffected —
+    those run on their own analytic branches and are byte-identical (G-0).
+
+    Hard scope boundary (§8.4): this type lives ONLY inside the normalize/diff
+    path. It is not a project-wide StatResult and must not leak to renderers.
+    """
+    __slots__ = ('value', 'error', 'n', 'x_low', 'x_high', 'bin_centers')
+
+    def __init__(self, value, error=None, n=None,
+                 x_low=None, x_high=None, bin_centers=None):
+        self.value = np.asarray(value, dtype=float)
+        self.error = None if error is None else np.asarray(error, dtype=float)
+        self.n = n
+        self.x_low = x_low
+        self.x_high = x_high
+        self.bin_centers = bin_centers
+
+    @staticmethod
+    def _v(o):
+        return o.value if isinstance(o, _NormOperand) else o
+
+    def _wrap(self, value):
+        return _NormOperand(value, None, self.n,
+                            self.x_low, self.x_high, self.bin_centers)
+
+    def __truediv__(self, o):
+        with np.errstate(divide='ignore', invalid='ignore'):
+            return self._wrap(self.value / _NormOperand._v(o))
+
+    def __rtruediv__(self, o):
+        with np.errstate(divide='ignore', invalid='ignore'):
+            return self._wrap(_NormOperand._v(o) / self.value)
+
+    def __mul__(self, o):
+        return self._wrap(self.value * _NormOperand._v(o))
+    __rmul__ = __mul__
+
+    def __sub__(self, o):
+        return self._wrap(self.value - _NormOperand._v(o))
+
+    def __rsub__(self, o):
+        return self._wrap(_NormOperand._v(o) - self.value)
+
+    def __add__(self, o):
+        return self._wrap(self.value + _NormOperand._v(o))
+    __radd__ = __add__
+
+    def __neg__(self):
+        return self._wrap(-self.value)
+
+    def __array__(self, dtype=None):
+        # Lets np.asarray(result) work when the user returns an operand.
+        return self.value if dtype is None else self.value.astype(dtype)
+
+
 def _compute_normalize_transform(
     stats_0: Dict[str, np.ndarray],
     stats_1: Dict[str, np.ndarray],
     mode,
     central: str = "mean",
+    stats_list=None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Apply the normalize transform to two per-bin profile statistics.
@@ -1933,16 +2001,49 @@ def _compute_normalize_transform(
         sem2_1 = (sig_1 ** 2) / np.where(n_1 > 0, n_1, 1)
 
         if callable(mode):
-            result = mode(stats_0, stats_1)
-            # Accept (values, errors) tuple OR values alone (errors=None).
-            if isinstance(result, tuple) and len(result) == 2:
+            # PHASE 13.63 §8.1 — CLEAN BREAK (AQ-1): the callable receives the
+            # FULL resolved-curve list S = [S[0] .. S[n-1]] as typed operands,
+            # not (stats_0, stats_1). 2-curve callers (string-mode call sites)
+            # default stats_list to [stats_0, stats_1].
+            _sl = stats_list if stats_list is not None else [stats_0, stats_1]
+            S = [
+                _NormOperand(
+                    s['central'],
+                    error=np.sqrt((np.asarray(s['sigma']) ** 2)
+                                  / np.where(np.asarray(s['counts']) > 0,
+                                             np.asarray(s['counts']), 1)),
+                    n=np.asarray(s['counts']),
+                    x_low=s.get('x_low'), x_high=s.get('x_high'),
+                    bin_centers=s.get('bin_centers'),
+                )
+                for s in _sl
+            ]
+            result = mode(S)
+            # Multi-output f (list/tuple of operands → N-1 derived curves) is a
+            # named follow-on (PHASE 13.63 §9.4 / B11, deferred); single-output
+            # covers the double-ratio deadline and B3/B4/B5.
+            if isinstance(result, (list,)) or (
+                isinstance(result, tuple) and len(result) != 2):
+                raise NotImplementedError(
+                    "PHASE 13.63: multi-output normalize=f(S) (a list of "
+                    "derived curves) is a deferred sub-task (§9.4); return a "
+                    "single derived curve for now."
+                )
+            if isinstance(result, _NormOperand):
+                values, errors = result.value, result.error
+            elif isinstance(result, tuple) and len(result) == 2:
                 values, errors = result
                 values = np.asarray(values, dtype=float)
-                errors = np.asarray(errors, dtype=float) if errors is not None else None
+                errors = (np.asarray(errors, dtype=float)
+                          if errors is not None else None)
             else:
                 values = np.asarray(result, dtype=float)
                 errors = None
-            mask_undefined = base_undefined | ~np.isfinite(values)
+            # Bin is undefined if ANY operand is empty there (N-curve aware).
+            base_cb = ~np.isfinite(values)
+            for s in _sl:
+                base_cb = base_cb | (np.asarray(s['counts']) < 1)
+            mask_undefined = base_cb
 
         elif mode == "delta":
             values = mu_0 - mu_1

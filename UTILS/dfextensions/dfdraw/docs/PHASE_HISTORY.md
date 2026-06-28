@@ -4,8 +4,8 @@
 
 This document tracks the development history of the `dfdraw` module, a DataFrame drawing utility with ROOT TTree::Draw-like interface. Part of the dfextensions toolkit for ALICE experiment calibration and QA at CERN.
 
-**Current Status:** Phase 13.54.DF — Gallery-found bug fixes (scatter `auto_title=` + hist2d `time_format=` epoch-second branch) — ✅ Closed (panel-approved by Sonnet65 6-reviewer + 10-reviewer bug-report panels; ADF gallery 31/31 mandatory clean 2026-06-10; gate 1107/0/2 skipped/1 xfailed at `348fddec`, tag `PHASE_13_54_DF_END`)
-**Test Count:** 1107 passing + 2 skipped + 1 xfailed (145 features, 363 invariance tests, 32 visual_primitive tests, 64 Verified)
+**Current Status:** Phase 13.57.DF — Kwarg Grammar Audit + Fix Phase (PRINCIPLES-driven) — ✅ Closed (14-reviewer CRR panel, Sonnet65 main; gate 1164/0/2 dfdraw architect env + ADF 29/29 T3b amendment verified; tag `PHASE_13_57_DF_END` at `7e5ead01`)
+**Test Count:** 1164 passing + 2 skipped + 1 xfailed (152 features, 381 invariance tests, 34 visual_primitive tests, 70 Verified)
 **Stability Phase:** Experimental (active development)
 
 ---
@@ -2877,6 +2877,314 @@ Opus2 `[OK]` (source-verified the taxonomy `"name"` field update, the two `_summ
 
 ---
 
+## Phase 13.51.DF: Post-Audit Fix Pass
+
+**Date:** 2026-06-09  
+**Commit:** `b1db4740`  
+**Tag:** `PHASE_13_51_DF_END`  
+**Status:** ✅ Closed — post-audit repair pass; architect environment gate 1078 passing before FIX1, 1080 after FIX1
+
+### Trigger
+
+The Phase 13.50 line left several audit findings unresolved in the public drawing surface. The most important class was that `draw()` and the typed methods had diverged: parameters that worked on direct methods were silently dropped or behaved differently when routed through `draw(type=...)`. This was especially dangerous for ADF and gallery workflows, where callers usually enter through wrapper surfaces rather than calling the low-level plot functions directly.
+
+### Implementation
+
+The phase was delivered in three batches. First, the Technical Summary received nine targeted corrections so that examples and status notes matched the actual API. Second, the main dispatch path was repaired: `draw()` now forwards the named parameters added in earlier phases to the four major plot branches (`hist`, `scatter`, `hist2d`, `profile`), and the `central='median'` profile path now uses rendered central values rather than hard-coded means in the 1D rendering and fit path. The autorange code also received a datetime64 guard before numeric conversion so datetime inputs no longer become meaningless nanosecond-scale floats.
+
+Third, the phase added explicit `profile2d()` and `scatter3d()` wrapper methods, a `hexbin` branch in `draw()`, `time_format=` support on `hist2d`, and clean guards for unsupported combinations such as `hist2d(fit=...)` and `hexbin(range=...)` / `hexbin(facet_by=...)`. These guards intentionally fail early with user-facing `ValueError`s rather than allowing matplotlib or scipy to crash later.
+
+### Testing
+
+Added 21 invariance tests in `tests/test_phase_13_51_post_audit.py`. The tests cover R-2 forwarding, `central='median'` rendering and fit behavior, datetime64 autorange, populated faceted panels, and hist2d date-label behavior. Two implementation-time bugs were caught by the full regression gate before submission: unconditional `central=None` forwarding to profile2d, and datetime64 conversion in `draw_hist2d` occurring too late.
+
+### Key Decisions
+
+- `draw()` must remain a real canonical entry point, not a second-class dispatcher.
+- Central-value rendering and returned statistics must describe what was actually drawn.
+- Unsupported combinations should fail cleanly at the dfdraw boundary.
+- Full-suite execution matters: both implementation-time bugs were found by existing tests, not by the new targeted tests alone.
+
+### Lessons / Incidents
+
+The phase confirmed that proposal-level enumeration is not enough. Dispatch branches must be inspected and tested at the actual call boundary, because Python named parameters do not automatically appear in `**kwargs` after binding. The grouped-path `central='median'` inconsistency remained open and was explicitly registered for a later phase.
+
+---
+
+## Phase 13.51.DF FIX1: Hexbin Dispatch Silent-Drop Fix
+
+**Date:** 2026-06-09  
+**Commit:** `2235caef`  
+**Tag:** Included in `PHASE_13_51_DF_END` closure lineage  
+**Status:** ✅ Closed — 2 additional invariance tests; architect environment gate 1080
+
+### Trigger
+
+During the Phase 13.51 CRR panel, Opus48_3 executed a negative control and found a surface mismatch: direct `d.hexbin("y:x", facet_by="sec")` raised the intended clean guard, while `d.draw("y:x", type="hexbin", facet_by="sec")` silently dropped `facet_by=`. The CRR text had claimed that the direct hexbin guard would fire through dispatch; execution proved that claim false.
+
+### Implementation
+
+The root cause was the `_hexbin_allowed` filter in the `draw()` hexbin branch. It removed `facet_by` and `range` before the typed `hexbin()` method could see them. The fix explicitly forwards `facet_by=facet_by` and forwards `range=kwargs.get('range', None)`. The second part is intentionally written with `kwargs.get(...)`: a first attempt used `range=range`, which forwarded Python's built-in `range` object and broke no-argument hexbin dispatch.
+
+### Testing
+
+Added two invariance tests:
+
+- `d.draw(..., type='hexbin', range=(0,5))` raises the clean dispatch guard.
+- `d.draw(..., type='hexbin', facet_by='sec')` raises the clean dispatch guard.
+
+### Key Decisions
+
+This FIX1 did not implement full `hexbin` faceting or range support. It only made the unsupported modifiers fail honestly through the `draw()` surface. Remaining hexbin dispatch drops (`normalize=`, `fit=`, `summary_fit=`, and full `facet_by`/`range` implementation) were recorded as future Batch-4 work.
+
+### Lessons / Incidents
+
+The important review lesson was methodological: diff-reading did not catch this. Only direct comparison of the two user-facing entry points exposed the silent-drop bug.
+
+---
+
+## Phase 13.52.DF: Declarative Overlay Engine
+
+**Date:** 2026-06-09  
+**Commit:** `9a950c7b`  
+**Tag:** `PHASE_13_52_DF_END`  
+**Status:** ✅ Closed — overlay engine plus v1.5.1 P1 fixes; gate 1101/0/2  
+**Specification / CRR:** `PHASE_13_52_OverlayProposal_v1_4.md` + `PHASE_13_52_DF_CRR_20260609.md` closure fixes
+
+### Trigger
+
+Users needed a compact way to produce ROOT-like composite plots such as a 2D density background with a profile or scatter overlay. The existing `same=True` mechanism handled manual overlays but did not provide a declarative, batch-friendly syntax. The desired user form was `draw(..., type='hist2d+profile')`, with an equivalent explicit `layers=[...]` power-user form.
+
+### Implementation
+
+Phase 13.52 introduced a single overlay engine with two surfaces:
+
+- string sugar such as `type='hist2d+profile'` and `type='hexbin+scatter'`;
+- explicit layer dictionaries via `layers=[{'type': ...}, ...]`.
+
+The engine separates base density layers (`hist2d`, `hexbin`, `profile2d`) from overlay layers (`profile`, `scatter`), routes shared parameters to the layers that accept them, locks the base axes/range before drawing overlays, preserves a single colorbar for the density layer, and rejects invalid combinations such as multiple density bases.
+
+The v1.5.1 closure fixed two P1 gaps from the first CRR. First, layer validation was changed from a permissive `hasattr()` test to an explicit `_OVERLAY_ALLOWED` whitelist, so existing but unsupported `DFDraw` methods such as `hist` or `draw` cannot be used as overlay layers. Second, the string-sugar splice was extended to include named `draw()` parameters such as `selection_vector`, `weights_vector`, `nan_policy`, `color`, `size`, and `marker`, avoiding another named-parameter silent-drop class.
+
+### Testing
+
+The phase added overlay equivalence, range-lock, z-order, colorbar, error-message, and negative-control tests. After the v1.5.1 P1 fixes, Phase 13.52 had 22 overlay tests, with one documented skip for the `profile2d` base shared-expression limitation. Six `OVERLAY.*` feature claims were registered.
+
+### Key Decisions
+
+- Overlay shortcuts are part of the primary user interface; dictionaries remain the power tier.
+- Invalid layer names must be rejected by a whitelist, not by method existence.
+- The `_OVERLAY_GUARD_PARAMS` compatibility breach was architect-ratified because 2D-hist fit backward compatibility was not yet a production requirement.
+
+### Lessons / Incidents
+
+This phase exposed the recurring Python-binding problem again: parameters declared in `draw()` do not automatically appear in `**kwargs` for later routing. The phase also established that every shortcut must have a mechanically testable explicit-form equivalent.
+
+---
+
+## Documentation Cluster: Architecture Registry, Technical Summary, Comparison, Motivation, and Distribution Prep
+
+**Date:** 2026-06-04 to 2026-06-10  
+**Commits:** `ee698002`, `5c9284c5`, `e926eae3`, `7c1c5a7c`, `5d2d23bc`, `8f6f93f`, `71d56ded`  
+**Status:** ✅ Closed — documentation and registration work; no dfdraw source-code behavior change
+
+### Trigger
+
+After the TS v6 governance cycle and the Phase 13.51/13.52 implementation work, the project needed a stable documentation base for distribution to ADF, GroupBy, O2DistAI, TimeAI, and calibration users. The existing documentation had motivation text spread across several artifacts, stale API examples, and incomplete capability-matrix registration for tests that already existed.
+
+### Implementation
+
+This cluster contains several documentation and registration commits:
+
+- `ARCHITECT_DECISIONS.md` v1.0.1 and v1.1.0 recorded the canonical architect-decision registry updates, including GP-9, the Technical Summary executive-summary structure decision, and quantification-deferral policy.
+- `dfdraw_Technical_Summary` v6.3 reframed the executive summary around the project thesis and corrected multiple stale API references.
+- `PLOTTING_LIBRARY_COMPARISON` v2.1 aligned the comparison document with the stack-identity framing and fixed four source-verified P1 documentation defects.
+- `MOTIVATION.md` became the permanent motivation-tracking file, so future technical documents can cite it instead of duplicating motivation prose.
+- The Phase 13.52 distribution-prep commit registered ten feature claims for the Phase 13.51 audit tests, and the follow-up `test_layer_classification.py` commit classified twelve tests so five intended features promoted to Verified.
+
+### Testing / Verification
+
+This was primarily documentation and taxonomy work. The behavior gate stayed unchanged where no source code changed. Capability Matrix metadata changed because already-existing tests were finally registered and classified.
+
+### Key Decisions
+
+- `ARCHITECT_DECISIONS.md` is the canonical dfdraw AD registry.
+- Motivation belongs in a durable tracked file rather than in transient session summaries.
+- Capability claims must be backed by registered tests and layer classifications, not only by tests existing somewhere in the tree.
+
+### Lessons / Incidents
+
+This cluster is the bridge between implementation and governance. It also contributed to the PHASE_HISTORY readability incident: too much substantive phase information was placed into Revision History table cells instead of normal H2 phase sections. This v1.15 backport restores the missing body sections while preserving the original rows as audit trail.
+
+---
+
+## Phase 13.54.DF: Gallery-Found dfdraw Bug Fixes
+
+**Date:** 2026-06-10  
+**Commit:** `348fddec`  
+**Tag:** `PHASE_13_54_DF_END`  
+**Status:** ✅ Closed — 6 new invariance tests; gallery mandatory figures clean at closure
+
+### Trigger
+
+The ADF time-series gallery validation mandated by `AD-TS-DRAW-001` found two dfdraw bugs in mandatory real-data figures. This was the first full application of the gallery discipline: unit tests were not considered sufficient; the PDF and log output had to be inspected as user-facing artifacts.
+
+### Implementation
+
+The first bug was `BUG_dfdraw_20260609_scatter_auto_title`. `draw_scatter()` did not accept `auto_title=`, so the keyword leaked into matplotlib and crashed inside `PathCollection.set()`. The fix added `auto_title` to the scatter signature, imported the shared auto-title helpers, implemented the scatter auto-title branch, and forwarded the parameter through `DFDraw.scatter()` and faceted scatter dispatch.
+
+The second bug was `BUG_dfdraw_20260610_hist2d_time_format_epoch`. `hist2d` handled datetime64 inputs but not float epoch seconds near `1.776e9`; those raw values reached matplotlib's date formatter and overflowed. The fix copied the epoch-second conversion logic already present in `draw_hist()` and applied it symmetrically to both axes in the hist2d data-preparation path. The y-axis conversion was kept defensive; the formatter itself remains x-axis-oriented per the original time-format design.
+
+### Testing
+
+Added six invariance tests in `tests/test_phase_13_54_df_gallery_fixes.py`:
+
+- scatter direct call with `auto_title`;
+- scatter through `draw(type='scatter')` with `auto_title`;
+- scatter no-auto-title regression;
+- hist2d float epoch seconds with `time_format`;
+- hist2d datetime64 with `time_format` as a Phase 13.51 regression lock;
+- hist2d non-time float plus y-axis conversion symmetry.
+
+### Key Decisions
+
+- The gallery is a release gate, not a cosmetic afterthought.
+- Real figures can expose interface failures that synthetic unit tests miss.
+- Hypothesis B from the hist2d bug report, the `bins` list-form hypothesis, was rejected by executed checks; the root cause was epoch-second handling.
+
+### Lessons / Incidents
+
+The phase filed a follow-up P2 bug: y-axis overreach can convert non-time integer columns when `time_format` is set. That was intentionally not folded into Phase 13.54 because the primary crash fix was already clear and tested.
+
+---
+
+## Phase 13.55.DF: `draw_batch` Audit + Type-Gap Fix
+
+**Date:** 2026-06-10  
+**Commit:** `596abd41`  
+**Tag:** `PHASE_13_55_DF_END`  
+**Status:** ✅ Closed — 17 new invariance tests; 1124/0/2 architect-environment gate reported by panel
+
+### Trigger
+
+After Phase 13.54 closed the gallery crashes, the architect asked whether `draw_batch()` had been audited. It had not been meaningfully revisited since Phase 13.14, while many new plot types and aliases had been added. Two hard-coded `valid_types` tuples in the dict and list batch paths still accepted only the old five plot types, and the default `on_error='skip'` silently swallowed the resulting failures.
+
+### Implementation
+
+The main fix was Option B from the ratified proposal: route batch execution through canonical `draw()` instead of maintaining a local type whitelist. Both dict-form and list-form `draw_batch` dispatch sites now call `self.draw(expr, type=plot_type, **merged)`. This closes the stale whitelist, `histo` alias bypass, and overlay-string bypass in one place.
+
+The phase also changed the default `on_error` from `'skip'` to `'raise'`. This is a breaking default change, but it is justified: the previous default turned missing plots into apparently successful batch returns unless users inspected the internal `_errors` dictionary. Explicit `on_error='skip'` remains available for workflows that want partial success.
+
+An implementation-time amendment closed a profile2d asymmetry: `scatter3d` had early dispatch in `draw()`, but `profile2d` only worked through `profile()`. The fix added a `draw()` early dispatch that delegates 3-colon profile expressions to the canonical profile path. `_suppress_layout` was also whitelisted at the relevant validator and overlay-sugar boundaries so list-form batch subplots do not emit internal warnings or fail overlay accept-checks.
+
+### Testing
+
+Added 17 tests in `tests/test_phase_13_55_df_draw_batch_audit.py`. Coverage includes `profile2d`, `scatter3d`, `histo`, overlay strings, default raise behavior, explicit skip opt-back, kwarg regression locks, `same=True`, `_suppress_layout`, and `_GROUP_KEYS` preservation. Two new features were registered: `BATCH.engine_routing` and `BATCH.error_visibility`.
+
+### Key Decisions
+
+- `draw_batch()` must route through `draw()` so future plot-type additions do not require a second local whitelist.
+- Silent skip is unsafe as a default; errors must be visible unless the user explicitly opts into skip behavior.
+- The profile2d early-dispatch amendment was architect-ratified during implementation because it was necessary to make `draw()` genuinely canonical.
+
+### Lessons / Incidents
+
+This phase is the concrete example of why duplicated dispatch tables are dangerous. The local `valid_types` table looked harmless when written, but it rejected four later feature families and hid the error by default.
+
+---
+
+## dfdraw_PRINCIPLES v1.1: Interface Grammar and Call-Form Census
+
+**Date:** 2026-06-11  
+**Commit:** `1f30b06d`  
+**Status:** ✅ Ratified / used as Phase 13.57 input; documentation-only commit
+
+### Trigger
+
+The gallery and audit phases showed that dfdraw needed a single interface grammar. The project had many individually reasonable shortcuts, aliases, dictionary forms, and wrappers, but no binding rule explaining which forms were primary, which were power-user forms, and how new forms should preserve existing production usage.
+
+### Implementation
+
+`dfdraw_PRINCIPLES.md` v1.1-draft rev f consolidated:
+
+- P-0 through P-5 design principles;
+- Shortcut Grammar G-0 and R-1 through R-7;
+- canonical vocabulary and declaration rules;
+- a call-form extraction census of 84 production calls from four current scripts;
+- CURRENT/TARGET status tags so reviewers would not file bugs against intended future forms.
+
+The main principle is P-0: interactive simplicity is the ranking principle. Shortcuts are the primary interface, while full dictionaries are the power tier. Existing production call forms keep working unless an explicit breaking decision is recorded.
+
+### Testing / Evidence
+
+The companion `dfdraw_CALLFORM_EXTRACTION.md` provided the AST census used as evidence. It identified 75 `draw`, 7 `draw_figures`, and 2 `draw_batch` calls and grouped them by grammar rule. The document also recorded that no current production form was considered unpreservable by the review panel.
+
+### Key Decisions
+
+- Plain shortcuts remain first-class; users should not be forced into verbose dictionaries for common workflows.
+- The dict tier passes backend parameters through verbatim where appropriate.
+- Aliases are append-only; value aliases stay silent, key aliases may warn once.
+- `by` is the family key for group/facet dictionaries.
+- `quantiles_mode` is a kept-forever alias of `quantile_mode`.
+- `central='median'` remains scalar-only; additive `y_central` is the correct data-return fix.
+
+### Lessons / Incidents
+
+The principles document converted scattered interface judgments into an auditable contract. It also made Phase 13.57 possible: the next phase could audit declarations against executed behavior instead of debating every kwarg from first principles.
+
+---
+
+## Phase 13.57.DF: Kwarg Grammar Audit + Fix Phase
+
+**Date:** 2026-06-12  
+**Commit:** `7e5ead01`  
+**Tag:** `PHASE_13_57_DF_END`  
+**Status:** ✅ Closed — 14-reviewer CRR panel; dfdraw gate 1164/0/2 in architect environment; ADF T3b amendment 29/29
+
+### Trigger
+
+The ratified principles exposed a broader issue: many keyword arguments existed on some dfdraw surfaces but not others, and the error behavior was inconsistent. Some wrong kwargs crashed deep inside matplotlib. Some semantically meaningful kwargs were silently dropped by `draw()`. Some aliases worked on one surface but failed on another. Phase 13.57 audited this grammar against executed probes and repaired the highest-impact inconsistencies.
+
+### Implementation
+
+The core internal change was `_kwarg_typo_guard`. The Phase 13.46 C-7 typo guard was factored into a reusable boundary guard and extended to the typed methods. Its known-key set is built from live signatures, forwarded-name tuples, internal sentinels, matplotlib pass-through vocabulary, and cross-surface dfdraw vocabulary. This replaces stale hard-coded lists with introspection.
+
+The guard behavior is split by surface. On typed methods, dfdraw-semantic kwargs that the method does not accept now raise clean `ValueError`s naming the proper parameter or surface. On the raw `draw()` surface, named parameters that would previously be silently filtered by type-specific forwarding now emit warnings that name the ignored parameter and type. True matplotlib pass-through kwargs such as `linestyle`, `linewidth`, and `zorder` remain silent.
+
+The phase also added or repaired several user-facing forms:
+
+- `quantiles_mode` is a kept-forever alias of `quantile_mode`, scope-limited so it only bypasses the guard on surfaces that actually consume quantile mode;
+- fit dictionaries accept `p0` as a synonym of `initial`, with conflicts only when values differ;
+- malformed `time_format` and `quantiles` inputs now fail with clean dfdraw `ValueError`s instead of strftime or comparison crashes;
+- non-numeric `group_by_bins` / `facet_by_bins` subjects fail cleanly and suggest the discrete-grouping path;
+- `draw()` forwards named parameters through the profile2d early-dispatch path, including `selection`, `ax`, `bins`, `save`, and related parameters;
+- `type='profile'` with a 3-variable expression now promotes natively to profile2d through `draw()` and therefore through `draw_batch()`;
+- `profile_data` gains additive `y_central`, while `y_mean` remains unchanged forever;
+- unknown-type messages use the live draw-type registry, so `profile2d` is included automatically.
+
+### Testing
+
+The phase added 46 tests in `tests/test_phase_13_57_df_fixes.py`, with negative controls, both-surface equivalence checks, E-3 matrix locks, and the K-5 zero-warning corpus gate. It registered five new features: `DISPATCH.kwarg_validation`, `DISPATCH.kwarg_aliases`, `DISPATCH.input_guards`, `DISPATCH.E3_parity`, and `STATS.y_central`. The final Capability Matrix reported 152 features, 381 invariance tests, 34 visual-primitive tests, and 70 Verified features.
+
+### Key Decisions
+
+- The public interface should become simpler even if the internal guard machinery becomes more complex.
+- The 84-call production corpus must continue to run unchanged and warning-free.
+- Clean boundary errors are preferable to matplotlib crashes or silent drops.
+- `y_central` is additive; `y_mean` remains stable for backward compatibility.
+- `guess` and `p0` are intentionally different fit concepts: `p0` is a vector of initial values, while `guess` remains the callable tier.
+
+### Lessons / Incidents
+
+The highest-impact finding was FX-3. Before Phase 13.57, the 3-variable `draw()` route silently dropped `selection=`, so gallery figures fig08 and fig35 rendered unfiltered data in all prior gallery PDFs. The visual change after K-4 is therefore the correction, not a regression.
+
+The ADF T3b failure was adjudicated as an ADF-owned false positive: the old test had only asserted that a figure existed, so it accidentally locked the silent-drop behavior. The ADF amendment added `lazy=True` and an effect assertion (`stats['n'] < n_full`), and 29/29 ADF amendment tests passed.
+
+Open findings were recorded rather than hidden: FX-1 (grouped renderer still ignores `central=`) and FX-2 (`title=` ignored on the 3-colon route) are routed to later phases; FX-3 and FX-4 were fixed in this phase.
+
+---
+
+
 ## Statistics Summary
 
 | Phase | Test Count | Delta | Key Feature |
@@ -2943,7 +3251,13 @@ Opus2 `[OK]` (source-verified the taxonomy `"name"` field update, the two `_summ
 | **13.50.DF FIX1** | **1057** | **+0** | **P2-1 stale-taxonomy fix (Sonnet56/57/54 — 3/5 independent finds in 6-reviewer panel on CRR v1.0) + matrix regen + CRR v1.0 documentation corrections (P3-1/P3-2/P3-3). `SUMMARY_FIT.orientation` feature description in `tests/feature_taxonomy.py` was doubly stale — tokens still `'horizontal'`/`'vertical'` and scope still `"in-slot renderer only"` despite step 7b rename + step 7b R1 figure-renderer extension; targeted sed-rename did not cover the description text → propagated into CAPABILITY_MATRIX verbatim. `"name"` field updated to `"summary_fit.orientation axis: row (default) / column (transpose) — honored by all placements (figure, pad, subfigure)"`; rationale comment block rewritten; two stale-token mop-up sites in `plots/_summary_fit.py` (`_ALLOWED_DICT_KEYS` line ~172, `_ALLOWED_ORIENTATIONS` line ~216) caught by parallel-sweep follow-on; heritage rename notes preserved. CRR v1.0 §4.4 corrected: actual skipped test is `test_adf_cached_last_ax` (Phase 13.25 pre-existing) not `test_f54`. §4.1 gate format corrected to include `1 xfailed` (Phase 13.34 deferred). §10 zip filename corrected. **QRC backlog items 5+6 added**: R17 EXTENSION (parallel doc-surface sweep on rename/scope-change events; fingerprint `grep -rn "OLD_TOKEN" tests/feature_taxonomy.py plots/ docs/` returning only heritage rename notes); §4-facts-from-logs rule (CRR §4 from `test_logs/test_full_*.log`, not working memory). Documentation-only at runtime: features/Verified/invariance unchanged. Tag `PHASE_13_50_DF_FIX1_END`** |
 | **13.50.DF FIX2** | **1057** | **+0** | **`run_tests.sh` HTML packaging enforcement — closes P2-2 (HTML missing from reviewer zip) after 3 consecutive recurrences (Phase 13.49 P2-1, Phase 13.49 FIX1 P2-1, Phase 13.50 v1.0 P2-2). Voluntary discipline failed 3× in a row; panel direction (Sonet51 + Opus2) was mechanical guard not another flag-and-promise cycle. Two-line change: added `docs/CAPABILITY_MATRIX.html` to the explicit file list in the reviewer-zip packaging block (root-cause fix); added post-zip presence assertion `unzip -l "$ZIPFILE" | grep -q '\.html'` as non-fatal warning (matches severity of existing `.md`-unstaged warning at lines 524-533). `bash -n run_tests.sh` verified. Tooling-only: features/Verified/invariance unchanged. **Lesson recorded**: 3 consecutive phases is the threshold where a recurring P2 warrants infrastructure enforcement, not another flag-and-promise cycle. Tag `PHASE_13_50_DF_FIX2_END`** |
 
-**Total Development (as of Phase 13.50.DF FIX2):** 59 phase entries, **1057 tests** + 1 skipped + 1 xfailed, **127 features**, **356 invariance tests**, **27 visual_primitive tests**, **59 Verified features**
+| **13.55.DF** | **1124** | **+17** | **`draw_batch` audit + Phase 13.51/13.52 type-gap fix. D-1 stale `valid_types` whitelist (both dict+list paths, 5-element set missing profile2d/scatter3d/overlay/histo-alias) → both dispatch sites replaced with `self.draw(expr, type=plot_type, **merged)` (Option B, route through canonical `draw()`); D-2 `on_error='skip'` default changed to `'raise'` (**BREAKING** — silent-batch-failure class closed); D-3 `_TYPE_ALIASES` bypass closed; D-4 overlay `+` sugar unreachable closed; D-5 zero invariance coverage closed by 17-test suite. Profile2d B-fix-draw: `draw()` lacked early-dispatch for `profile2d` (asymmetry vs `scatter3d`); added 2-line delegate to `self.profile()` + `_suppress_layout` whitelisted + overlay per-layer accept exemption. CAPABILITY_MATRIX: 145 → 147 (+2 `BATCH.engine_routing`, `BATCH.error_visibility`); **Verified 64 → 66 (Gate 4 finally met)**; invariance 363 → 369; visual_primitive 34 unchanged. 7-reviewer proposal panel [OK]; 6 CRR reviewers [OK]/[!]; cross-team gate PASS. Tag `PHASE_13_55_DF_END` at `596abd41`** |
+| **docs: PRINCIPLES v1.1-draft rev f** | **1124** | **+0** | **`docs/dfdraw_PRINCIPLES.md` v1.1-draft rev f + `dfdraw_CALLFORM_EXTRACTION.md` rev c committed (`1f30b06d`, doc-only, gate unchanged). 11-reviewer ratification panel [!] RATIFY WITH CHANGES (all changes applied); 7 §8 decisions D1-D7; PRINCIPLES §9 architect signature (DR-1) committed with Phase 13.57 close. P-0 Interactive simplicity = ranking principle; P-5 backend pass-through; G-0 preservation invariant; R-1..R-7 shortcut grammar formalized; 84-call AST census as executable conformance set.** |
+| **13.57.DF (audit + fix)** | **1164** | **+46** | **PRINCIPLES-driven kwarg grammar audit (proposal v1.4, 12/12 [!] + fable5_5 40-cell audit report) + fix phase (14-reviewer CRR, Sonnet65 main). C-7 guard extended to all typed methods (`_kwarg_typo_guard` live-introspected — no stale list), K-3 split (typed: ValueError; draw(): warning+did-you-mean), D4 `quantiles_mode` alias scope-limited per FX-4 (RV-1), DR-5 `p0→initial` synonym + conflict guard, AF-1/AF-3 clean guards (time_format dict; quantiles dict; non-numeric binning subjects), K-4 ax/selection/bins forwarding at profile2d+scatter3d early-dispatch (E-3/E3-D root cause), F-E native 3-var profile→profile2d promotion on draw()+draw_batch, E-2 additive `y_central` in profile_data, AF-4 live `_DRAW_TYPE_NAMES` registry. **Highest-impact (FX-3, Fable1 executed + fable5_5 ADF seat):** profile2d `selection=` silently dropped pre-13.57 — gallery fig08/fig35 rendered unfiltered data in all prior PDFs; K-4 is a data-correctness fix. ADF T3b amended (lazy=True + effect assertion; third 13.55-family amendment). CAPABILITIES: 145 → 152 (+5 `DISPATCH.kwarg_validation`, `DISPATCH.kwarg_aliases`, `DISPATCH.input_guards`, `DISPATCH.E3_parity`, `STATS.y_central`); **Verified 64 → 70** (+6, +12 invariance reclassifications); invariance 369 → 381; zero [BREAKING]; K-5 corpus zero-warning gate triple-verified. PRINCIPLES v1.1 architect-approved (DR-1). Tag `PHASE_13_57_DF_END` at `7e5ead01`** |
+
+**Total Development (as of Phase 13.57.DF):** 79 phase entries, **1164 tests** + 2 skipped + 1 xfailed, **152 features**, **381 invariance tests**, **34 visual_primitive tests**, **70 Verified features**
+
+> **Phase ordering note (post-13.54):** chronological commit order is 13.54 (`348fddec`, tag `PHASE_13_54_DF_END`, gate 1107) → gate-4 closure + PHASE_HISTORY v1.13 doc commit (`71d56ded`, tooling/doc-only, gate 1107 unchanged — `test_layer_classification.py` 12 new entries + PHASE_HISTORY backfill; Verified 59→64; this is the same commit that carries v1.13) → 13.55.DF (`596abd41`, tag `PHASE_13_55_DF_END`, gate 1124→1124) → `docs: dfdraw_PRINCIPLES v1.1-draft rev f` (`1f30b06d`, doc-only, gate unchanged) → 13.57.DF fix close (`7e5ead01`, tag `PHASE_13_57_DF_END`, gate 1164). Phase 13.56 = ADF-only (parallel team). Tag `PHASE_BEGIN_dfdraw` rolled `348fddec` → `596abd41` at Phase 13.55 close → `7e5ead01` at Phase 13.57 close.
 
 > **Phase ordering note (post-13.46 FIX1):** chronological commit order is 13.46 FIX1 (`ad91e251`, tag `PHASE_13_46_DF_FIX1_END`, gate 1023) → PHASE_HISTORY v1.10 doc commit (`89884f81`, tooling) → `run_tests.sh` WARN downgrade (`df3057a3`, tooling-only — tag-drift check hard-block → non-blocking WARNING) → 13.48 v1.0 (`9f612601`, tag `PHASE_13_48_DF_END`, gate 1034) → 13.49 v1.0 (`89bc63c6`, tag `PHASE_13_49_DF_END`, gate 1038) → 13.49 FIX1 (`a6ddc753`, tag `PHASE_13_49_DF_FIX1_END`, gate 1038 same-test stricter) → 13.50 step 1 (`c029b405`) → step 2 (`e904ccec`) → step 3 (`181c2366`) → step 4 (`ccd8243d`) → step 5 (`068da47f`) → 13.50 step 7 closing commit (`f3034153`, tag `PHASE_13_50_DF_END`, gate 1057) → 13.50 FIX1 (`5010cf78`, tag `PHASE_13_50_DF_FIX1_END`, gate 1057) → 13.50 FIX2 (`07606c02`, tag `PHASE_13_50_DF_FIX2_END`, gate 1057). Phase numbers monotonic across this window. Phase 13.47 (slim bucket) intentionally skipped — pending in queue per architect priority direction toward extended-graphics work (13.48+). The `df3057a3` tooling commit is recorded as a phase entry in the Statistics Summary table parallel to the earlier `02510a20` tag-drift check addition (v1.10). Phase 13.50.DF v1.0 step commits 1-6 land separately on the branch but the END tag is at the closing step-7 commit (`f3034153`); steps 1-6 do not have separate END tags (parallel to Phase 13.46 v1.0 / FIX1 single-END-tag pattern). Tag `PHASE_BEGIN_dfdraw` rolled `ad91e251` → `07606c02` across this window.
 
@@ -3078,10 +3392,14 @@ All APIs subject to change based on user feedback and integration testing with:
 | **1.10** | **2026-05-28** | **Claude48 (coder seat) at architect request** | **Backfill of 5 phase events that landed between the v1.9 doc commit (`e463161c`, 2026-05-27) and current HEAD (`ad91e251`, 2026-05-28). Strictly append-only — every existing entry preserved verbatim. New H2 sections (chronological commit order, before § Statistics Summary): Phase 13.42.DF FIX2 (`79d449c3`, +6, close 5 items deferred at FIX1: B6/B7/I-8/ADV-1/ADV-3; F.59-F.63+F.61b; FIT.inline 35→41; tag `PHASE_13_42_DF_FIX2_END`, gate 987 — landed AFTER the v1.9 doc commit so v1.9 did not record it), Phase 13.43.DF v1.0 (`0e0d79f7`, +27, `summary_fit` standalone fit-result figures; new `plots/_summary_fit.py`; 13 `summary_fit.*` keys; F.34-F.56 + R-2/F.56c END fix for scalar-delegation drop of fit/fit_textbox_kwargs/summary_fit; FIT.summary feature; tag `PHASE_13_43_DF_END`, gate 1014 — commit body states pre-R-2 1013/+26), run_tests.sh PHASE_HISTORY↔git-tag drift check (`02510a20`, tooling-only, gate 1014; surfaced+resolved the Phase 13.25 tag incident; `PHASE_13_46_DF_BEGIN` placed here), Phase 13.46.DF v1.0 (`1d77702e`, +8, audit bucket ① C-1/C-2/C-4/C-7/C-9; F.64-F.70; +4 features; §2.1 Option-1 shared-global ruling; closure tag is FIX1_END — no separate v1.0 END tag; gate 1022), Phase 13.46.DF FIX1 (`ad91e251`, +1, scatter range= point-filtering — removes out-of-range points per architect 2026-05-28; F.71; +1 feature RANGE.scatter_filter; tag `PHASE_13_46_DF_FIX1_END`; rolling `PHASE_BEGIN_dfdraw` → `ad91e251`; gate 1023). Test count 981 → **1023** (+42 across 5 phases). Verified 50 → 56. Invariance 307 → 349 (+42). Features 108 → 114 (+6). Phase entries 47 → 52 (+5). Statistics Summary table extended with 5 new rows + post-13.42-FIX1 phase-ordering note. Overview header updated to Phase 13.46.DF FIX1 / 1023 / 114 / 349 / 56. Sources: git.log (commits `28f7f3ce`..`ad91e251`), CAPABILITY_MATRIX.md (56 Verified / 114 features / 578 proof / 349 invariance at HEAD `ad91e251`), `PHASE_13_46_DF_v1_3_AuditFixes_Proposal.md`, `PHASE_13_46_DF_FIX1_Code_Review_Request.md`, `PHASE_13_45_dfdraw_Audit_Findings.md`. New run_tests.sh tag-drift check passes after this backfill (the 5 tags were the intentionally-non-blocking repo-ahead-of-doc transient). All pre-existing content preserved verbatim per append-only directive.** |
 | **1.11** | **2026-06-03** | **Opus2 (Reviewer) at architect request; Sonnet53_R2 panel P2-1 amendment applied pre-commit** | **Backfill of 7 phase events that landed between Phase 13.46.DF FIX1 closure (`ad91e251`, 2026-05-28) and current HEAD (`07606c02`, 2026-06-03). Added strictly append-only — every existing entry preserved verbatim per architect's append-only directive. New H2 sections (chronological commit order, inserted before § Statistics Summary): `run_tests.sh` tag-drift WARN downgrade (`df3057a3`, tooling-only, gate 1023 unchanged — heuristic-gate hard-block → non-blocking WARNING in SUMMARY artifact; scope narrowed to declarative tag references only; **added per Sonnet53_R2-led panel P2-1 amendment** after initial v1.11 draft omitted this commit, parallels v1.10's earlier `02510a20` tag-drift addition), Phase 13.48.DF v1.0 (`9f612601`, +11, Tier-1 automated visual testing framework `VisualCheck` + 10 V-checks V.1-V.10 + V.2 ragged-padding-safety lock, new `visual_primitive` test layer, +6 `VISUAL.*` features Smoke-only at close, Tier 1 / Tier 2 split established; tag `PHASE_13_48_DF_END`, gate 1034), Phase 13.49.DF v1.0 (`89bc63c6`, +4, Capability Matrix Traceability link infrastructure + HTML rendering + orthogonal Visual column with 👁 badge + M.1-M.4 meta-tests + KNOWN_UNCLAIMED §3.7 governance with 64 seeded entries SPECIFIC target_phases, D-K + D-L normalization fixes after Opus2 [X] rejection of v1.0 CRR for `startswith("tests/")` regression; tag `PHASE_13_49_DF_END`, gate 1038, +1 feature META.capability_matrix, Verified 56→57), Phase 13.49.DF FIX1 (`a6ddc753`, +0 same-test stricter, HTML rendering fixes H-1/H-2/H-3 after architect rendered the HTML in browser and found 3 bugs the 8-reviewer v1.1 panel missed; M.3 extended with category-uniqueness + MD↔HTML count agreement invariants; direct trigger for Reviewer QRC v1.31 Rule 14 caveat; tag `PHASE_13_49_DF_FIX1_END`, gate 1038), Phase 13.50.DF v1.0 (`f3034153`, +19, fit-rendering overhaul proposal v2.5 after 4-round panel convergence v2.2→v2.3→v2.4→v2.5; six features `FIT.display_names`/`FIT.precision_modes`/`FIT.textbox_kwargs_extensions`/`LEGEND.modes`/`SUMMARY_FIT.placement`/`SUMMARY_FIT.orientation`; two [BREACH]es `fit.text_format` style key + `summary_fit.precision` int field both architect-authorized clean removals; F1-F18 visual_primitive + F17 cross-variant equivalence + F18 4-tuple legend_topology + normalizer idempotency; Claude48 introduced **§0 pre-CRR gap-audit attestation pattern** proposed as Coder QRC R17 after architect's "Was all functionality from spec implemented?" challenge caught 4 undisclosed partials in v1.0-draft; F19 textbox-bbox-overlap deferred to Tier 2 Phase 13.5X — the test that proves the architect-flagged motivating spacing bug is cured; tag `PHASE_13_50_DF_END`, gate 1057, +6 features Verified 57→59 visual_primitive 11→27 invariance 353→356), Phase 13.50.DF FIX1 (`5010cf78`, +0, P2-1 stale-taxonomy fix `SUMMARY_FIT.orientation` "name" field + scope + two `_summary_fit.py` mop-up sites via parallel-sweep follow-on; CRR v1.0 documentation corrections P3-1/P3-2/P3-3; QRC backlog items 5+6 added — R17 EXTENSION parallel doc-surface sweep + §4-facts-from-logs rule; tag `PHASE_13_50_DF_FIX1_END`, gate 1057), Phase 13.50.DF FIX2 (`07606c02`, +0, `run_tests.sh` HTML packaging enforcement closing P2-2 after 3 consecutive recurrences; mechanical guard `unzip -l ... | grep -q '\.html'` non-fatal; lesson recorded as governance pattern — 3 consecutive recurrences is the threshold for infrastructure enforcement vs another flag-and-promise cycle; tag `PHASE_13_50_DF_FIX2_END`, gate 1057). Test count 1023 → **1057** (+34 across 7 phase events). Verified 56 → 59 (+3). Invariance 349 → 356 (+7: +4 from 13.49 M-tests + 3 from 13.50 F17/F18/normalizer). **visual_primitive layer NEW (introduced in 13.48): 0 → 27** (+11 from 13.48 V-checks + 16 from 13.50 F1-F16). Features 114 → 127 (+13: +6 VISUAL.* from 13.48 + 1 META from 13.49 + 6 FIT/LEGEND/SUMMARY_FIT from 13.50). Phase entries 52 → **59** (+7). Statistics Summary table extended with 7 new rows + post-13.46-FIX1 phase-ordering note. Overview header updated to Phase 13.50.DF FIX2 / 1057 / 127 / 356 / 59. Sources: gitlog.txt (commits `ad91e251`..`07606c02`), reviewer.zip artifacts from each phase, `PHASE_13_50_DF_CRR_v1_0.md` + `PHASE_13_50_DF_FIX1_CRR_v1_0.md` (substantive content), `Sonnet53_R2_PHASE_13_50_DF_CRR_v1_0_Summary_Review_20260603.md` (panel verdict), `PHASE_13_49_DF_v1_2_CapabilityMatrixTraceability_Proposal.md`, `PHASE_13_48_DF_v1_4_VisualTesting_Proposal.md`, `PHASE_13_49_DF_FIX1_Code_Review_Request.md`, **Sonnet53_R2-led 3-reviewer panel verdict on Diff A vs Diff B (2026-06-03, [!] APPROVED WITH COMMENTS): Diff B (Opus2) adopted as base; P2-1 (`df3057a3` event missing) applied pre-commit; P2-2 (`VISUAL.*` feature IDs in Phase 13.48 section may diverge from canonical IDs in `feature_taxonomy.py` at HEAD `07606c02` — flagged as source-verification gate before final commit; if mismatch, one-line `sed` correction will be shipped without re-versioning)**. Author note: Opus2 reviewed each of these phases as a panel member in real time (13.48 CRR v1.0, 13.49 v1.0 [X] reject + v1.1 [!] approve + FIX1 [!], 13.50 v2.2/v2.3/v2.4/v2.5 + CRR v1.0 + FIX1 [OK]) — not reconstructing from commit messages alone. All pre-existing content preserved verbatim per append-only directive.** |
 
-| **1.12** | **2026-06-09** | **Sonnet65 (Reviewer) at architect request** | **Backfill of 9 phase events that landed between Phase 13.50.DF FIX2 closure (`07606c02`, 2026-06-03) and current HEAD (`9a950c7b`, 2026-06-09). Added strictly append-only — every existing entry preserved verbatim per architect's append-only directive. New H2 sections (chronological commit order, inserted before § Statistics Summary): `docs: ARCHITECT_DECISIONS.md v1.0.1` (`ee698002`, tooling/doc-only, gate 1057 unchanged — Org panel touch-ups: GP section transitional authority, Date+Scope fields on all 8 GPs, AD-37/AD-50 relationship, v1.0.1), `docs: ARCHITECT_DECISIONS.md v1.1.0` (`7c1c5a7c`, doc-only, gate 1057 — GP-9 Archive Substantive Deliberation + AD-1/TS_v6.DF Executive Summary structure + AD-2/TS_v6.DF Quantification Deferral; panel Sonnet56/57 [!]), `docs: TS v6.3` (`5c9284c5`, doc-only, gate 1057 — thesis-first Executive Summary restructure; 8 subsections; GP-3 verbatim blocks; ×2.4 σ(pT)/pT; Stonebraker 2024 citation; 6+6 internal+external cross-team panel; AD-1+AD-2 governing future TS revisions), `docs: COMPARISON v2.1` (`e926eae3`, doc-only, gate 1057 — stack-identity restructure + cross-team panel-fix pass; 4 P1 runtime-breaking fixes: summary_fit=True→'table', range_x/y→range=, legend_stats_fields→stats=, autorange attribution 13.36→13.28), `docs: MOTIVATION.md` (`5d2d23bc`, doc-only, gate 1101 — permanent canonical motivation tracking file; GP-3 verbatim quotes preserved; cites ARCHITECT_DECISIONS.md GP-9; §7 physics analysis section marked [DRAFT — pending brainstorm session]), Phase 13.51.DF v1.5 (`b1db4740`, +21, post-audit fix pass: Batch 1 9/15 TS doc corrections + Batch 2 R-2 explicit forwarding all 4 draw() dispatch branches + `profile.py:879`/`:907` `bin_means`→`_central_values` V-3+P1-B + datetime64 guard at `compute_autorange()` entry V-2 + `draw_profile2d` conditional `central=` forward F-1 + Batch 3 `profile2d()`/`scatter3d()` wrappers S-5 + hexbin dispatch S-11 + `hist2d` `time_format=` S-8 + clean ValueError guards S-7/S-8; 23 tests in `test_phase_13_51_post_audit.py`; panel Sonnet65 [!] 5/5; tag `PHASE_13_51_DF_END`, gate 1078+FIX1=1080 architect env), Phase 13.51.DF FIX1 (`2235caef`, +2, hexbin dispatch silent-drop closed — Opus48_3 executed negative control caught that `draw(type='hexbin', facet_by=)` silently dropped modifier while direct `hexbin(facet_by=)` raised; root cause `_hexbin_allowed` filter stripped params before S-7 guards; fix: explicit `facet_by=facet_by` + `range=kwargs.get('range',None)` forwards; builtin-shadow bug self-caught during fix; T16b+T17b added; `KNOWN.hexbin_dispatch_residual_drops` registered for Batch 4; tag `PHASE_13_51_DF_FIX1_END`, gate 1080→1082 architect env), Phase 13.52.DF v1.5.1 (`9a950c7b`, +22 tests total 21 pass+1 skip, declarative overlay dual-surface engine: `overlay(expr, layers=[...])` + `draw(type="hist2d+profile")` sugar; `_OVERLAY_DENSITY`/`_OVERLAY_ALLOWED`/`_OVERLAY_GUARD_PARAMS` constants; `_overlay_kw()` helper W-1; all 6 guards hoisted before draw; range lock `set_xlim/ylim` after each overlay layer; z-order base-first; T-S2 negative control W-4; T1p documented skip profile2d-base shared-expr limitation; 6 `OVERLAY.*` features registered; [BREACH] `_OVERLAY_GUARD_PARAMS` ratified by architect "I have not yet used 2D histo fit so I do not need back compatibility"; P1-A `_OVERLAY_ALLOWED` whitelist enforced; P1-B sugar splice extended to `selection_vector`/`weights_vector`/`nan_policy`/`color`/`size`/`marker`; panel Sonnet65 [X]→[!] after v1.5.1 fixes; AD-N/13.52.DF added to ARCHITECT_DECISIONS.md; tag `PHASE_13_52_DF_END`, gate 1101/0/2). Test count 1057 → **1101** (+44 across 9 events: +21 Phase 13.51 + +2 FIX1 + +21 Phase 13.52 incl. skip). Verified 59 → 59 (unchanged — new tests are smoke/guard class; CAPABILITY_MATRIX feature claim registration pass pending before distribution). Invariance 356 → 356 (unchanged). Features 127 → **133** (+6 OVERLAY.*). Phase entries 59 → **68** (+9). Statistics Summary table extended with 9 new rows. Overview header updated to Phase 13.52.DF v1.5.1 / 1101 / 133 / 356 / 59. Sources: git.log (commits `07606c02`..`9a950c7b`), `reviewer_20260609_083733.zip` (Phase 13.51 CRR bundle, 1078/0/1), `reviewer_20260609_114847.zip` (Phase 13.52 CRR bundle, 1098/0/2→1101 post-v1.5.1), `Sonnet65_PHASE_13_51_DF_CRR_PanelSummary_20260609.md`, `Sonnet65_PHASE_13_52_DF_CRR_PanelSummary_20260609.md`, CAPABILITY_MATRIX.md (133 features / 59 Verified at HEAD `9a950c7b`). All pre-existing content preserved verbatim per append-only directive.** |
-| **1.13** | **2026-06-10** | **Opus1 (coder seat) at architect request** | **Backfill of 3 phase events between Phase 13.52.DF v1.5.1 closure (`9a950c7b`, 2026-06-09 13:43) and Phase 13.54.DF closure (`348fddec`, 2026-06-10 10:52) PLUS `tests/test_layer_classification.py` gate-4 closure applied AS PART OF THIS COMMIT. Added strictly append-only — every existing entry preserved verbatim per architect's append-only directive. Events covered, in chronological commit order: (1) Phase 13.52 distribution prep #1 (`8f6f93f8`, 2026-06-09 15:05, doc-only, gate 1101 unchanged — 10 feature claims registered in `tests/feature_taxonomy.py` for the 23 tests already landed in `test_phase_13_51_post_audit.py`: 5 Verified-target features (`DRAW.R2_forwarding`, `PROFILE.central_median_1d`, `PROFILE2D.central_median_mesh`, `PROFILE.central_median_fit`, `AUTORANGE.datetime64_guard`) plus 5 VISUAL.* features (`VISUAL.facet_r2_profile/hist/scatter/hist2d`, `VISUAL.hist2d_datetime_labels`); features 133 → 143; ADF reviewer pre-distribution finding; closed Phase 13.51 spec §5.1 gate F-13 (≥5 new features) and partially closed gate 7 (VISUAL.* ≥9 reached 11); however Verified count stayed at 59 because the matching `test_layer_classification.py` entries were NOT included in the commit — that omission is closed AS PART OF THIS COMMIT (see end of this row)); (2) ADF source fix `7906cdfd` (2026-06-10 09:46, ADF team commit "ADF: source fix for BUG_20260609_lazy_nd_facet (paired with a52f5522)" — not a dfdraw change; listed for cross-team traceability as the closure of `PHASE_13_53_ADF_TS_DRAW` audit thread); (3) Phase 13.54.DF (`348fddec`, 2026-06-10 10:52, +6 tests, gallery-found bug fixes triggered by AD-TS-DRAW-001 ADF `time_series_draw.py` gallery validation on 2026-06-10: BUG_dfdraw_20260609_scatter_auto_title closed via 3-site fix in `plots/scatter.py` + `drawer.py` per Sonnet58/Sonnet62 panel finding (signature + body + R-2 forward + faceted forward); BUG_dfdraw_20260610_hist2d_time_format_epoch closed via epoch-second elif branch mirror of `draw_hist:L451-453` at 4 conversion sites in `plots/histogram.py`; 6 invariance tests T1-T6 in `test_phase_13_54_df_gallery_fixes.py`; 2 new feature claims `SCATTER.auto_title` + `HIST2D.time_format_epoch`; features 143 → 145; cross-product §6.1 enumeration executed 12 combinations per fix per AD-TS-DRAW-001 discipline lesson; panel Sonnet65 6-reviewer [!] approved (2 administrative corrections only: Verified count text + git-add staging); gallery validation 31/31 mandatory clean (fig04 + fig16 now passing); follow-up filed P2 BUG_dfdraw_20260610_hist2d_y_axis_overreach (y-axis elif over-converts non-time integer columns when `time_format=` is set; surfaced by fig16 visual check on real data) scheduled for Phase 13.55.DF; tag `PHASE_13_54_DF_END`, gate 1101 → 1107 architect env). PLUS `tests/test_layer_classification.py` gate-4 closure applied AS PART OF THIS COMMIT — 12 new entries (7 invariance: T3, T5, T9a, T9b, T9c, T10b, T10c; 5 visual_primitive: T2, T4, T6, T8, T14) close CAPABILITY_MATRIX gate 4 (Verified ≥64). Phase 13.51 audit feature claims were registered in `8f6f93f8` without matching layer-classification entries, leaving 5 features (`DRAW.R2_forwarding`, `PROFILE.central_median_1d`, `PROFILE2D.central_median_mesh`, `PROFILE.central_median_fit`, `AUTORANGE.datetime64_guard`) at Smoke-only when their tests actually contain A≡B / explicit-value assertions. With this update those 5 features promote to Verified. Test count 1101 → **1107** (+6 from Phase 13.54). Verified 59 → **64** (+5 reclassification, **gate 4 CLOSED**). Invariance 356 → **363** (+7 reclassification). visual_primitive 27 → **32** (+5 reclassification). Features 133 → **145** (+10 distribution prep + +2 Phase 13.54). Phase entries 68 → **71** (+3 across this v1.13). Overview header updated to Phase 13.54.DF / 1107 / 145 / 363 / 64. Sources: gitlog.txt (commits `9a950c7b`..`348fddec`), `Sonnet65_PHASE_13_54_DF_CRR_PanelSummary_20260610.md` (6 reviewers, [!] APPROVED with 2 administrative corrections), `Sonnet65_GalleryBugReports_PanelSummary_20260610.md` (10 reviewers, [!] APPROVED), `AD-TS-DRAW-001_Architect_Decision.md` (gallery as pre-tag mandatory validation gate), ADF gallery validation log 2026-06-10 (31/31 mandatory clean), CAPABILITY_MATRIX.md regenerated after this commit (145 features / 64 Verified / 363 invariance / 32 visual_primitive). All pre-existing content preserved verbatim per append-only directive.** |
+| **1.12** | **2026-06-09** | **Sonnet65 (Reviewer) at architect request** | **Backfill of 9 phase events that landed between Phase 13.50.DF FIX2 closure (`07606c02`, 2026-06-03) and current HEAD (`9a950c7b`, 2026-06-09). Added strictly append-only — every existing entry preserved verbatim per architect's append-only directive. New H2 sections (chronological commit order, inserted before § Statistics Summary): `docs: ARCHITECT_DECISIONS.md v1.0.1` (`ee698002`, tooling/doc-only, gate 1057 unchanged — Org panel touch-ups: GP section transitional authority, Date+Scope fields on all 8 GPs, AD-37/AD-50 relationship, v1.0.1), `docs: ARCHITECT_DECISIONS.md v1.1.0` (`7c1c5a7c`, doc-only, gate 1057 — GP-9 Archive Substantive Deliberation + AD-1/TS_v6.DF Executive Summary structure + AD-2/TS_v6.DF Quantification Deferral; panel Sonnet56/57 [!]), `docs: TS v6.3` (`5c9284c5`, doc-only, gate 1057 — thesis-first Executive Summary restructure; 8 subsections; GP-3 verbatim blocks; ×2.4 σ(pT)/pT; Stonebraker 2024 citation; 6+6 internal+external cross-team panel; AD-1+AD-2 governing future TS revisions), `docs: COMPARISON v2.1` (`e926eae3`, doc-only, gate 1057 — stack-identity restructure + cross-team panel-fix pass; 4 P1 runtime-breaking fixes: summary_fit=True→'table', range_x/y→range=, legend_stats_fields→stats=, autorange attribution 13.36→13.28), `docs: MOTIVATION.md` (`5d2d23bc`, doc-only, gate 1101 — permanent canonical motivation tracking file; GP-3 verbatim quotes preserved; cites ARCHITECT_DECISIONS.md GP-9; §7 physics analysis section marked [DRAFT — pending brainstorm session]), Phase 13.51.DF v1.5 (`b1db4740`, +21, post-audit fix pass: Batch 1 9/15 TS doc corrections + Batch 2 R-2 explicit forwarding all 4 draw() dispatch branches + `profile.py:879`/`:907` `bin_means`→`_central_values` V-3+P1-B + datetime64 guard at `compute_autorange()` entry V-2 + `draw_profile2d` conditional `central=` forward F-1 + Batch 3 `profile2d()`/`scatter3d()` wrappers S-5 + hexbin dispatch S-11 + `hist2d` `time_format=` S-8 + clean ValueError guards S-7/S-8; 23 tests in `test_phase_13_51_post_audit.py`; panel Sonnet65 [!] 5/5; tag `PHASE_13_51_DF_END`, gate 1078+FIX1=1080 architect env), Phase 13.51.DF FIX1 (`2235caef`, +2, hexbin dispatch silent-drop closed — Opus48_3 executed negative control caught that `draw(type='hexbin', facet_by=)` silently dropped modifier while direct `hexbin(facet_by=)` raised; root cause `_hexbin_allowed` filter stripped params before S-7 guards; fix: explicit `facet_by=facet_by` + `range=kwargs.get('range',None)` forwards; builtin-shadow bug self-caught during fix; T16b+T17b added; `KNOWN.hexbin_dispatch_residual_drops` registered for Batch 4; tag `PHASE_13_51_DF_FIX1_END`, gate 1080→1082 architect env), Phase 13.52.DF v1.5.1 (`9a950c7b`, +22 tests total 21 pass+1 skip, declarative overlay dual-surface engine: `overlay(expr, layers=[...])` + `draw(type="hist2d+profile")` sugar; `_OVERLAY_DENSITY`/`_OVERLAY_ALLOWED`/`_OVERLAY_GUARD_PARAMS` constants; `_overlay_kw()` helper W-1; all 6 guards hoisted before draw; range lock `set_xlim/ylim` after each overlay layer; z-order base-first; T-S2 negative control W-4; T1p documented skip profile2d-base shared-expr limitation; 6 `OVERLAY.*` features registered; [BREACH] `_OVERLAY_GUARD_PARAMS` ratified by architect "I have not yet used 2D histo fit so I do not need back compatibility"; P1-A `_OVERLAY_ALLOWED` whitelist enforced; P1-B sugar splice extended to `selection_vector`/`weights_vector`/`nan_policy`/`color`/`size`/`marker`; panel Sonnet65 [X]→[!] after v1.5.1 fixes; AD-N/13.52.DF added to ARCHITECT_DECISIONS.md; tag `PHASE_13_52_DF_END`, gate 1101/0/2). Test count 1057 → **1101** (+44 across 9 events: +21 Phase 13.51 + +2 FIX1 + +21 Phase 13.52 incl. skip). Verified 59 → 59 (unchanged — new tests are smoke/guard class; CAPABILITY_MATRIX feature claim registration pass pending before distribution). Invariance 356 → 356 (unchanged). Features 127 → **133** (+6 OVERLAY.*). Phase entries 59 → **68** (+9). Statistics Summary table extended with 9 new rows. Overview header updated to Phase 13.52.DF v1.5.1 / 1101 / 133 / 356 / 59. Sources: git.log (commits `07606c02`..`9a950c7b`), `reviewer_20260609_083733.zip` (Phase 13.51 CRR bundle, 1078/0/1), `reviewer_20260609_114847.zip` (Phase 13.52 CRR bundle, 1098/0/2→1101 post-v1.5.1), `Sonnet65_PHASE_13_51_DF_CRR_PanelSummary_20260609.md`, `Sonnet65_PHASE_13_52_DF_CRR_PanelSummary_20260609.md`, CAPABILITY_MATRIX.md (133 features / 59 Verified at HEAD `9a950c7b`). All pre-existing content preserved verbatim per append-only directive.** [CORRECTION 2026-06-12: The H2 body sections claimed in this v1.12 row were not actually present in the submitted document; they were inserted additively in v1.15 before § Statistics Summary.] |
+| **1.13** | **2026-06-10** | **Opus1 (coder seat) at architect request** | **Backfill of 3 phase events between Phase 13.52.DF v1.5.1 closure (`9a950c7b`, 2026-06-09 13:43) and Phase 13.54.DF closure (`348fddec`, 2026-06-10 10:52) PLUS `tests/test_layer_classification.py` gate-4 closure applied AS PART OF THIS COMMIT. Added strictly append-only — every existing entry preserved verbatim per architect's append-only directive. Events covered, in chronological commit order: (1) Phase 13.52 distribution prep #1 (`8f6f93f8`, 2026-06-09 15:05, doc-only, gate 1101 unchanged — 10 feature claims registered in `tests/feature_taxonomy.py` for the 23 tests already landed in `test_phase_13_51_post_audit.py`: 5 Verified-target features (`DRAW.R2_forwarding`, `PROFILE.central_median_1d`, `PROFILE2D.central_median_mesh`, `PROFILE.central_median_fit`, `AUTORANGE.datetime64_guard`) plus 5 VISUAL.* features (`VISUAL.facet_r2_profile/hist/scatter/hist2d`, `VISUAL.hist2d_datetime_labels`); features 133 → 143; ADF reviewer pre-distribution finding; closed Phase 13.51 spec §5.1 gate F-13 (≥5 new features) and partially closed gate 7 (VISUAL.* ≥9 reached 11); however Verified count stayed at 59 because the matching `test_layer_classification.py` entries were NOT included in the commit — that omission is closed AS PART OF THIS COMMIT (see end of this row)); (2) ADF source fix `7906cdfd` (2026-06-10 09:46, ADF team commit "ADF: source fix for BUG_20260609_lazy_nd_facet (paired with a52f5522)" — not a dfdraw change; listed for cross-team traceability as the closure of `PHASE_13_53_ADF_TS_DRAW` audit thread); (3) Phase 13.54.DF (`348fddec`, 2026-06-10 10:52, +6 tests, gallery-found bug fixes triggered by AD-TS-DRAW-001 ADF `time_series_draw.py` gallery validation on 2026-06-10: BUG_dfdraw_20260609_scatter_auto_title closed via 3-site fix in `plots/scatter.py` + `drawer.py` per Sonnet58/Sonnet62 panel finding (signature + body + R-2 forward + faceted forward); BUG_dfdraw_20260610_hist2d_time_format_epoch closed via epoch-second elif branch mirror of `draw_hist:L451-453` at 4 conversion sites in `plots/histogram.py`; 6 invariance tests T1-T6 in `test_phase_13_54_df_gallery_fixes.py`; 2 new feature claims `SCATTER.auto_title` + `HIST2D.time_format_epoch`; features 143 → 145; cross-product §6.1 enumeration executed 12 combinations per fix per AD-TS-DRAW-001 discipline lesson; panel Sonnet65 6-reviewer [!] approved (2 administrative corrections only: Verified count text + git-add staging); gallery validation 31/31 mandatory clean (fig04 + fig16 now passing); follow-up filed P2 BUG_dfdraw_20260610_hist2d_y_axis_overreach (y-axis elif over-converts non-time integer columns when `time_format=` is set; surfaced by fig16 visual check on real data) scheduled for Phase 13.55.DF; tag `PHASE_13_54_DF_END`, gate 1101 → 1107 architect env). PLUS `tests/test_layer_classification.py` gate-4 closure applied AS PART OF THIS COMMIT — 12 new entries (7 invariance: T3, T5, T9a, T9b, T9c, T10b, T10c; 5 visual_primitive: T2, T4, T6, T8, T14) close CAPABILITY_MATRIX gate 4 (Verified ≥64). Phase 13.51 audit feature claims were registered in `8f6f93f8` without matching layer-classification entries, leaving 5 features (`DRAW.R2_forwarding`, `PROFILE.central_median_1d`, `PROFILE2D.central_median_mesh`, `PROFILE.central_median_fit`, `AUTORANGE.datetime64_guard`) at Smoke-only when their tests actually contain A≡B / explicit-value assertions. With this update those 5 features promote to Verified. Test count 1101 → **1107** (+6 from Phase 13.54). Verified 59 → **64** (+5 reclassification, **gate 4 CLOSED**). Invariance 356 → **363** (+7 reclassification). visual_primitive 27 → **32** (+5 reclassification). Features 133 → **145** (+10 distribution prep + +2 Phase 13.54). Phase entries 68 → **71** (+3 across this v1.13). Overview header updated to Phase 13.54.DF / 1107 / 145 / 363 / 64. Sources: gitlog.txt (commits `9a950c7b`..`348fddec`), `Sonnet65_PHASE_13_54_DF_CRR_PanelSummary_20260610.md` (6 reviewers, [!] APPROVED with 2 administrative corrections), `Sonnet65_GalleryBugReports_PanelSummary_20260610.md` (10 reviewers, [!] APPROVED), `AD-TS-DRAW-001_Architect_Decision.md` (gallery as pre-tag mandatory validation gate), ADF gallery validation log 2026-06-10 (31/31 mandatory clean), CAPABILITY_MATRIX.md regenerated after this commit (145 features / 64 Verified / 363 invariance / 32 visual_primitive). All pre-existing content preserved verbatim per append-only directive.** [CORRECTION 2026-06-12: The v1.13 row was retained as audit trail, but the corresponding readable H2 body sections were missing until the additive v1.15 restoration.] |
 
 ---
 
-**Document Status:** Updated through Phase 13.54.DF + gate-4 closure (Phase 13.54 at commit `348fddec`, tag `PHASE_13_54_DF_END`, 2026-06-10; gate 1107/0/2; Verified moved 59 → 64 via `test_layer_classification.py` update applied with this v1.13 commit). Rolling tag `PHASE_BEGIN_dfdraw` → `348fddec`. **Previous "Updated through Phase 13.52.DF v1.5.1", "Updated through Phase 13.50.DF FIX2", "Updated through Phase 13.46.DF FIX1", "Updated through Phase 13.42.DF FIX1", and "Updated through Phase 13.39.DF v1.2" baselines preserved verbatim above for audit traceability per architect's append-only directive.**
-**Next Update:** After ADF time_series tests workstream, or CAPABILITY_MATRIX feature claim registration pass (PHASE_13_51 gates 4+7 — Verified ≥64, VISUAL.* ≥9 — pending before distribution to 5 audiences).
+| **1.14** | **2026-06-12** | **Fable5_2 (coder seat) + Sonnet65 (Reviewer) at architect request** | **Added Phase 13.55.DF section (draw_batch audit + type-gap fix, tag `PHASE_13_55_DF_END` at `596abd41`), `docs: PRINCIPLES v1.1-draft rev f` doc commit (`1f30b06d`), and Phase 13.57.DF section (kwarg grammar audit + fix phase, tag `PHASE_13_57_DF_END` at `7e5ead01`). Statistics rows added for all three; Total Development updated to 79 phase entries / 152 features / 381 invariance / 70 Verified. Phase-ordering note (post-13.54) added. FX-1..FX-4 findings ledger recorded. PRINCIPLES v1.1 architect-approval (DR-1, 2026-06-12) recorded. All pre-existing content preserved verbatim per append-only directive. Sources: gitlog.txt (commits `348fddec`..`1f30b06d` + `7e5ead01`), `Sonnet65_PHASE_13_55_DF_CRR_PanelSummary_20260610.md`, `Sonnet65_PHASE_13_57_DF_FixPhase_CRR_PanelSummary_20260612.md` (14 reviewers), `PHASE_13_57_DF_HistoryEntry_v1_0_20260612.md` (coder-drafted snippet), CAPABILITY_MATRIX.md generated 2026-06-12 07:13 UTC (152 features / 70 Verified / 381 invariance / 34 visual_primitive at `26a1a254`). [CORRECTION 2026-06-12: This row described intended Phase 13.55 / PRINCIPLES / Phase 13.57 H2 content before it was actually present; v1.15 inserts the body sections and resolves the closing hash/gate placeholders.] |
+
+| **1.15** | **2026-06-12** | **GPT14 (dfdraw reviewer) after source-read audit, merging the strongest candidate text** | **Readability restoration after the Phase 13.51–13.57 structural break. Added full human-readable H2 body sections before § Statistics Summary for Phase 13.51.DF, Phase 13.51.DF FIX1, Phase 13.52.DF, the documentation / distribution-prep cluster, Phase 13.54.DF, Phase 13.55.DF, dfdraw_PRINCIPLES v1.1, and Phase 13.57.DF. Existing Revision History rows were preserved as audit trail; correction annotations appended to v1.12, v1.13, and v1.14; unresolved Phase 13.57 closing hash/gate placeholders resolved to commit `7e5ead01` and gate 1164. Plain-language-first / IDs-second convention applied to the restored sections. Sources: supplied `gitlog.txt`; `phase.zip` proposals/CRRs/history snippet; existing `PHASE_HISTORY.md`; comparison against `PH_GPT11.md`, `PH_GPT12.md`, `PH_GPT13.md`, and `PH_GPT14.md`.** |
+
+**Document Status:** Updated through Phase 13.57.DF (commit `7e5ead01`, tag `PHASE_13_57_DF_END`, 2026-06-12; gate 1164/0/2; Verified 64 → 70 via Phase 13.57 taxonomy registration + 12 reclassifications). Rolling tag `PHASE_BEGIN_dfdraw` → `7e5ead01`. **Previous "Updated through Phase 13.54.DF", "Updated through Phase 13.52.DF v1.5.1", "Updated through Phase 13.50.DF FIX2", "Updated through Phase 13.46.DF FIX1", "Updated through Phase 13.42.DF FIX1", and "Updated through Phase 13.39.DF v1.2" baselines preserved verbatim above for audit traceability per architect's append-only directive.**
+**Next Update:** ADF follow-up phase (remove E-3/E-4 guards + F-E shim; T7/T7b re-points; route-uniformity materialization); Phase 13.53 (faceted overlays); FX-1 (grouped renderer central=) + FX-2 (title= on 3-colon route); dfextensions_INTERFACE_PRINCIPLES.md generalization to GBregression + RDataFrameDSL.

@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-06-12 07:13 UTC
+**Generated:** 2026-06-28 12:03 UTC
 **Phase:** PHASE_13_55_DF_END
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -217,9 +217,9 @@
 | ☑️ | **VISUAL.facet_r2_hist2d** — draw(type='hist2d', facet_by=) populates every panel — R-2 forwarding visual check (Phase 13.51 S-3 closure) 👁 | 1 | 1 | 0 | 0 | 1 |
 | ☑️ | **VISUAL.hist2d_datetime_labels** — hist2d() time_format='auto' renders readable date tick labels on the appropriate axis (Phase 13.51 S-8 symmetry with hist/scatter/profile) 👁 | 1 | 1 | 0 | 0 | 1 |
 
-## Unmatched Tests (460)
+## Unmatched Tests (482)
 
-460 tests pytest collected that no feature claims.
+482 tests pytest collected that no feature claims.
 Grouped by test-file prefix.
 
 <details><summary><code>test_adf_integration.py</code> (14)</summary>
@@ -331,6 +331,33 @@ Grouped by test-file prefix.
 - `test_drawer.py::TestSelection::test_selection_callable`
 - `test_drawer.py::TestSelection::test_selection_none`
 - `test_drawer.py::TestSelection::test_selection_string_query`
+
+</details>
+
+<details><summary><code>test_generalized_diff.py</code> (22)</summary>
+
+- `test_generalized_diff.py::test_A1_string_modes_two_curve[delta]`
+- `test_generalized_diff.py::test_A1_string_modes_two_curve[log_ratio]`
+- `test_generalized_diff.py::test_A1_string_modes_two_curve[pull]`
+- `test_generalized_diff.py::test_A1_string_modes_two_curve[ratio]`
+- `test_generalized_diff.py::test_A2_n_ratio_multi_output`
+- `test_generalized_diff.py::test_A3_double_ratio`
+- `test_generalized_diff.py::test_A4_weights_source`
+- `test_generalized_diff.py::test_A5_three_dispatchers`
+- `test_generalized_diff.py::test_A6_entry_gate_widened`
+- `test_generalized_diff.py::test_B10_occupancy_desync`
+- `test_generalized_diff.py::test_B1_g0_string_ratio_runs`
+- `test_generalized_diff.py::test_B2_preset_equals_lambda[delta-<lambda>]`
+- `test_generalized_diff.py::test_B2_preset_equals_lambda[log_ratio-<lambda>]`
+- `test_generalized_diff.py::test_B2_preset_equals_lambda[ratio-<lambda>]`
+- `test_generalized_diff.py::test_B3_ac2_single_output`
+- `test_generalized_diff.py::test_B4_double_ratio_equals_manual`
+- `test_generalized_diff.py::test_B5_algebraic_identities`
+- `test_generalized_diff.py::test_B6_source_independence`
+- `test_generalized_diff.py::test_B7_group_by_orthogonality`
+- `test_generalized_diff.py::test_B8_trap_guard_raises`
+- `test_generalized_diff.py::test_B9_error_survival_analytic_path`
+- `test_generalized_diff.py::test_order_lock_flattening`
 
 </details>
 
