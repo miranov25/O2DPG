@@ -10,6 +10,7 @@ Setup (once per shell session):
     $ source setup_env.sh         # adds AliasDataFrame + dfdraw to PYTHONPATH
 
 Interactive use (IPython):
+import sys,os; sys.path.insert(1, os.environ[f"O2DPG"]+"/UTILS/dfextensions/AliasDataFrame/examples/time_series");
 from time_series import *
 adf = root_to_adf("time_series_tracks_0.root")
     adf = root_to_adf("time_series_tracks_0.root")

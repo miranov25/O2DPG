@@ -336,12 +336,35 @@ def fitDCSITS(adf):
     # add aliase to the ADF
 
     adf.add_alias("q", "sign(qpt_ITSTPC)",dtype="int8")
+    """
     adf.draw("dcar_itstpc:phiITSTPCAtVertex",type="profile",selection="(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<4)&(ncl>80)&(abs(dcar_itstpc)<0.03)",
              group_by="abs(qpt_ITSTPC)",group_by_bins=5,bins=180,auto_title=True,min_entries=100)
     adf.draw("dcar_itstpc_pred:phiITSTPCAtVertex",type="profile",selection="(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<4)&(ncl>80)&(abs(dcar_itstpc)<0.03)",
              group_by="abs(qpt_ITSTPC)",group_by_bins=5,bins=180,auto_title=True,min_entries=100)
     adf.draw("dcar_itstpc_resid:phiITSTPCAtVertex",type="profile",selection="(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<4)&(ncl>80)&(abs(dcar_itstpc)<0.03)",
              group_by="abs(qpt_ITSTPC)",group_by_bins=5,bins=180,auto_title=True,min_entries=100)
+    """
+    # Plot1:
+    sel = "(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<4)&(ncl>80)&(abs(dcar_itstpc)<0.03)"
+    common = dict(type="profile", selection=sel,group_by="abs(qpt_ITSTPC)", group_by_bins=5, bins=180, min_entries=100, auto_title=True)
+    fig, axes = plt.subplots(1, 3, figsize=(24, 6), sharex=True)
+    adf.draw("dcar_itstpc:phiITSTPCAtVertex",       ax=axes[0], **common)
+    adf.draw("dcar_itstpc_pred:phiITSTPCAtVertex",  ax=axes[1], **common)
+    adf.draw("dcar_itstpc_resid:phiITSTPCAtVertex", ax=axes[2], **common)
+    fig.tight_layout()
+    fig, axes = plt.subplots(1, 3, figsize=(24, 6), sharex=True)
+    common = dict(type="profile", selection=sel,group_by="vertex_z", group_by_quantiles=5, bins=180, min_entries=100, auto_title=True)
+    adf.draw("abs(dcar_itstpc):qpt_ITSTPC",       ax=axes[0], **common)
+    adf.draw("abs(dcar_itstpc_pred):qpt_ITSTPC",  ax=axes[1], **common)
+    adf.draw("abs(dcar_itstpc_resid):qpt_ITSTPC", ax=axes[2], **common)
+    fig.tight_layout()
+
+    #
+    #adf.draw("abs(dcar_itstpc_resid):qpt_ITSTPC",type="profile",selection="(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<4)&(ncl>80)&(abs(dcar_itstpc)<0.03)",
+    #         group_by="mult",group_by_quantiles=5,bins=180,auto_title=True,min_entries=100)
+    adf.draw("abs(dcar_itstpc_resid):qpt_ITSTPC",type="profile",selection="(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<4)&(ncl>80)&(abs(dcar_itstpc)<0.03)",
+             group_by="tgl",group_by_quantiles=5,bins=40,auto_title=True,min_entries=100,facet_by="vertex_z",facet_by_quantiles=6)
+
 
 
 def drawEdge(adf):
@@ -357,4 +380,65 @@ def drawEdge(adf):
     adf.draw("ncl:dsectorIn",type="profile",selection="(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<1)&(ncl>40)&(abs(dcar_itstpc)<0.03)",
                         group_by="(qpt_ITSTPC)",group_by_bins=5,bins=100,auto_title=True,min_entries=100)
 
-    # Calculate ndead
+
+def drawEdgeHis(adf):
+    """
+    :param adf:
+    :return:
+    Example use case of the edge effect - histomgramming part
+    Tracks kind and quality selection:
+    1.) Track with the TPC, Track with ITS match
+    2.) Factorization phsysics is symmetric in  phi - GB(qpt,tlg) for normlization
+
+    Effects included:
+      * effiecniency to find the ITS-TPC match (cut dependent e.g DCA)
+      * MC/data missmatach
+      * double found tracks
+      * qpt measurement on the edges is biased, phi posiition on the edge is biased mostly for the TPC only tracks
+      *
+    """
+
+    # make gb count aggregation
+    adf.add_alias("dsector20","dsector*20",dtype="uint8")
+    adf.add_alias("tgl20","tgl*20",dtype="int8")
+    adf.add_alias("qpt5","qpt*5",dtype="int8")
+    adf.add_alias("qpt_ITSTPC5","qpt_ITSTPC*5",dtype="int8")
+
+    adf.materialize_aliases(names=["dsector20","tgl20","qpt5","dsector"])
+    isTPC=(adf.df["ncl"]>40)
+    isITSTPC=((adf.df["ncl"]>40) & (adf.df["hasITSTPC"]>0))
+    #
+    dfgbTPCDSec20 = adf.df[isTPC].groupby(["dsector20","tgl20","qpt5"])[["ncl","tgl","qpt","dsector","qpt_ITSTPC"]].agg(["median"]).reset_index()
+    dfgbTPCDSec20.columns = ['_'.join(c).strip('_') for c in dfgbTPCDSec20.columns.to_flat_index()]
+    dfgbTPCDSec20["count"] = adf.df[isTPC].groupby(["dsector20","tgl20","qpt5"])["ncl"].count().values
+    dfgbITSTPCDSec20 = adf.df[isITSTPC].groupby(["dsector20","tgl20","qpt5"])[["ncl","tgl","qpt","dsector","qpt_ITSTPC"]].agg(["median"]).reset_index()
+    dfgbITSTPCDSec20.columns = ['_'.join(c).strip('_') for c in dfgbITSTPCDSec20.columns.to_flat_index()]
+    dfgbITSTPCDSec20["count"] = adf.df[isITSTPC].groupby(["dsector20","tgl20","qpt5"])["ncl"].count().values
+    dfgbTPC = adf.df[isTPC].groupby(["tgl20","qpt5"])[["ncl","tgl","qpt","dsector"]].agg(["median"]).reset_index()
+    dfgbTPC.columns = ['_'.join(c).strip('_') for c in dfgbTPC.columns.to_flat_index()]
+    dfgbTPC["count"] = adf.df[isTPC].groupby(["tgl20","qpt5"])["ncl"].count().values
+    dfgbITSTPC = adf.df[isITSTPC].groupby(["tgl20","qpt5"])[["ncl","tgl","qpt","dsector","qpt_ITSTPC"]].agg(["median"]).reset_index()
+    dfgbITSTPC.columns = ['_'.join(c).strip('_') for c in dfgbITSTPC.columns.to_flat_index()]
+    dfgbITSTPC["count"] = adf.df[isITSTPC].groupby(["tgl20","qpt5"])["ncl"].count().values
+    #
+
+    #
+    #
+    adfgbTPCDSec20=AliasDataFrame(dfgbTPCDSec20)
+    adfgbTPC=AliasDataFrame(dfgbTPC)
+    adfgbITSTPC=AliasDataFrame(dfgbITSTPC)
+    adfgbITSTPCDSec20=AliasDataFrame(dfgbITSTPCDSec20)
+    adfgbTPCDSec20.register_subframe("adfgbITSTPCDSec20",adfgbITSTPCDSec20,index_columns=["dsector20","tgl20","qpt5"])
+    adfgbTPCDSec20.register_subframe("adfgbTPC",adfgbTPC,index_columns=["tgl20","qpt5"])
+    adfgbTPCDSec20.register_subframe("adfgbITSTPC",adfgbITSTPC,index_columns=["tgl20","qpt5"])
+    adfgbTPCDSec20.draw_lazy=True
+    # example queries
+    adfgbTPCDSec20.draw("count:adfgbITSTPCDSec20.count")
+    adfgbTPCDSec20.draw("adfgbITSTPCDSec20.count:count",type="profile",group_by="qpt_median",selection="abs(tgl20)<10",group_by_bins=5,auto_title=True)
+    adfgbTPCDSec20.draw("adfgbITSTPCDSec20.count/count:dsector_median",type="profile",group_by="qpt_median",selection="(abs(tgl_median)<1) & (count>20) &(abs(qpt_median)<1)",group_by_bins=10,auto_title=True)
+    #
+    adfgbTPCDSec20.draw("adfgbTPC.count/(count*20):dsector_median",type="profile",group_by="qpt_median",selection="(abs(tgl_median)<1) & (count>20) &(abs(qpt_median)<1)",group_by_bins=10,auto_title=True)
+    #
+    adfgbTPCDSec20.draw("(adfgbITSTPCDSec20.count/count)/(adfgbITSTPC.count/adfgbTPC.count):dsector_median",type="profile",group_by="qpt_median",selection="(abs(tgl_median)<1) & (count>20) &(abs(qpt_median)<1)",group_by_bins=10,auto_title=True)
+    #
+    adfgbTPCDSec20.draw("(20*adfgbITSTPCDSec20.count/adfgbITSTPC.count):dsector_median",type="profile",group_by="qpt_median",selection="(abs(tgl_median)<1) & (count>20) &(abs(qpt_median)<2)",group_by_bins=10,auto_title=True,linestyle='none')
