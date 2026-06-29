@@ -357,6 +357,14 @@ FEATURES = [
          "test_phase_13_62_adf_s1.py",
      ]},
 
+    {"id": "WRITE.column_assignment",
+     "name": "Direct column write-through via adf[col] = value (PHASE_13_62 Stage 2a / Fix A) — writes to the frame and syncs the lazy reader's loaded_branches so a hand-added column is present and never re-requested from the TTree; supports numpy/Series/list/scalar (awkward via explicit conversion); non-string key raises; bad shape raises before bookkeeping; adf.aliases immutability (_ReadOnlyAliasDict) unaffected",
+     "category": "CORE",
+     "test_patterns": [
+         "test_phase_13_62_adf_s2a.py",
+         "test_proxy_pattern.py",
+     ]},
+
     # ── FIT_REGISTRATION (2) ──
     {"id": "FIT.registration", "name": "Fit metadata storage & retrieval", "category": "FIT_REGISTRATION",
      "test_patterns": [

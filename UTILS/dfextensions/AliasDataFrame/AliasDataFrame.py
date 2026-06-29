@@ -1078,16 +1078,48 @@ class AliasDataFrame:
     
     def __setitem__(self, key, value):
         """
-        Block direct assignment to prevent confusion between aliases and columns.
-        
-        Use add_alias() for computed columns or adf.df['column'] = value for direct assignment.
+        Assign a materialized column directly: ``adf[key] = value``.
+
+        PHASE_13_62_ADF Stage 2a (Fix A). Writes through to the underlying frame
+        and, on a lazy ADF, records ``key`` as present in the lazy reader's
+        ``loaded_branches`` so the Stage 1 reconciliation and subsequent draws
+        treat it as available instead of re-requesting it from the TTree.
+
+        Supported value shapes are exactly those ``pandas`` accepts for
+        ``df[key] = value`` on this stack (pandas 1.5.3):
+
+        * a numpy array (length == number of rows),
+        * a ``pandas.Series`` (aligned on the frame index; unmatched positions
+          become NaN, per pandas),
+        * a Python list of the right length,
+        * a scalar (broadcast to every row).
+
+        Jagged / awkward arrays are **not** auto-converted: convert explicitly
+        before assignment (e.g. ``ak.to_numpy(arr)`` for a regular array, or
+        ``arr.tolist()`` / object dtype for a ragged one). The write is performed
+        first, so an unacceptable value raises (from pandas) and ``key`` is **not**
+        recorded as loaded.
+
+        Use :meth:`add_alias` for lazily computed columns; this method is for
+        already-materialized values. The immutable ``adf.aliases`` mapping is a
+        separate object and is unaffected (its guard is ``_ReadOnlyAliasDict``).
         """
-        raise TypeError(
-            "Direct assignment via adf['column'] = value is not supported.\n"
-            "Use one of:\n"
-            "  adf.add_alias('name', 'expression')  # For computed columns\n"
-            "  adf.df['column'] = value             # For direct DataFrame modification"
-        )
+        if not isinstance(key, str):
+            raise TypeError(
+                "adf[key] = value requires a string column name, got "
+                f"{type(key).__name__}. Use add_alias() for computed columns, or "
+                "assign to adf.df directly for multi-column / positional writes."
+            )
+        # Write through to the real frame first; pandas validates the value shape
+        # and raises on a length/shape mismatch before any bookkeeping changes.
+        self.df[key] = value
+        # Lazy bookkeeping: mark the column present so ensure_branches / draw paths
+        # do not try to re-load it from the tree (it now lives in the frame).
+        lazy_reader = getattr(self, "_lazy_reader", None)
+        if lazy_reader is not None:
+            loaded = getattr(lazy_reader, "loaded_branches", None)
+            if loaded is not None:
+                loaded.add(key)
     
     def __len__(self):
         """Enable len(adf) to return number of rows."""

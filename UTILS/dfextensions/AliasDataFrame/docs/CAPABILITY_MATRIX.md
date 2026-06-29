@@ -1,23 +1,23 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-06-24 12:57 UTC
+**Generated:** 2026-06-29 11:46 UTC
 **Phase:** 13.11.B
-**Taxonomy:** 55 features (PHASE_13_11_B approved)
+**Taxonomy:** 56 features (PHASE_13_11_B approved)
 **Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)
 
 ## Summary
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 35 | 63% |
-| ☑️ Smoke-only | 15 | 27% |
+| ✅ Verified | 35 | 62% |
+| ☑️ Smoke-only | 16 | 28% |
 | 🧨 Broken | 4 | 7% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **55** | |
-| **Matched tests** | **1776** | |
+| **Total features** | **56** | |
+| **Matched tests** | **1828** | |
 | **Invariance tests** | **308** | |
 
-**Unmatched tests:** 105 (not mapped to any feature)
+**Unmatched tests:** 97 (not mapped to any feature)
 
 ## CORE
 
@@ -31,6 +31,7 @@
 | ☑️ | **CORE.describe** — Structure & alias inspection | 6 | 6 | 0 |  |
 | ☑️ | **CORE.cleanup** — Column cleanup & temporary management | 4 | 4 | 0 |  |
 | ☑️ | **CORE.api_contract** — Public API stability | 8 | 8 | 0 |  |
+| ☑️ | **WRITE.column_assignment** — Direct column write-through via adf[col] = value (PHASE_13_62 Stage 2a / Fix A) — writes to the frame and syncs the lazy reader's loaded_branches so a hand-added column is present and never re-requested from the TTree; supports numpy/Series/list/scalar (awkward via explicit conversion); non-string key raises; bad shape raises before bookkeeping; adf.aliases immutability (_ReadOnlyAliasDict) unaffected | 51 | 51 | 0 |  |
 | ☑️ | **CORE.dependency_tree** — Dependency tree output (text/html/list) | 16 | 16 | 0 |  |
 | ✅ | **CORE.invalidation** — Alias invalidation on expression redefine | 7 | 7 | 0 | 7 |
 
@@ -104,7 +105,7 @@
 | ✅ | **LAZY.timeseries_draw** — Single-tree lazy time-series loading & lazy drawing (D1 resolver + D2 draw-surface branch scan + D3 estimate_memory) | 37 | 36 | 0 | 30 |
 | ✅ | **LAZY.subframe_draw** — Subframe-column lazy draw (single-level A.col + nested A.B.col; on-demand materialization via ensure_subframe + recursive chain walk) | 3 | 3 | 0 | 3 |
 | ✅ | **LAZY.alias_autoload** — Alias resolution auto-loads lazy branches (materialize_aliases / validate_aliases / describe_aliases bridge to the lazy reader; LAZY status) | 6 | 6 | 0 | 4 |
-| ☑️ | **LAZY.expression_autoload** — Expression/column lazy autoload via ensure_columns() — bridges df.eval()/direct-access paths on a lazy ADF (get_required_branches → ensure_branches; branches-only, subframe-name + dotted-ref filtered; eager no-op) | 10 | 10 | 0 |  |
+| ☑️ | **LAZY.expression_autoload** — Expression/column lazy autoload via ensure_columns() — bridges df.eval()/direct-access paths on a lazy ADF (get_required_branches → ensure_branches; branches-only, subframe-name + dotted-ref filtered; eager no-op) | 11 | 11 | 0 |  |
 
 ## FIT_REGISTRATION
 
@@ -137,24 +138,24 @@
 ## 🧨 Broken Features — Details
 
 ### DRAW.execution
-- ❌ `test_K2_vector_draw_end_to_end.py::TestK2VectorDrawEndToEnd::test_K2_3_production_reproducer_mirror`
 - ❌ `test_K1_vector_draw_kwarg_diagnostic.py::TestK1VectorDrawKwargDiagnostic::test_K1_3_draw_batch_forwards_batch_kwargs`
+- ❌ `test_K2_vector_draw_end_to_end.py::TestK2VectorDrawEndToEnd::test_K2_3_production_reproducer_mirror`
 
 ### COMP.roundtrip
-- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
 - ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
+- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
 
 ### BACK.invariance
 - ❌ `test_invariance_backend.py::TestInvarianceBackend::test_I2_6_chained_subframe_expressions_numba_vs_numpy`
 
 ### RDF.export
 - ❌ `test_AliasDataFrameRDF.py::TestRDataFrameFriendAccess::test_composite_index_friend`
-- ❌ `test_AliasDataFrameRDF.py::TestAddDefinesCollision::test_collision_from_friend_tree`
 - ❌ `test_AliasDataFrameRDF.py::TestTMemFileBranch::test_missing_keys_in_friend`
+- ❌ `test_AliasDataFrameRDF.py::TestAddDefinesCollision::test_collision_from_friend_tree`
 
 ## Unmatched Tests
 
-105 tests not mapped to any feature.
+97 tests not mapped to any feature.
 
 - `test_B1_validate_aliases_false_positives.py::TestB1ValidateAliasesFalsePositives::test_B1_1_np_pi_not_broken`
 - `test_B1_validate_aliases_false_positives.py::TestB1ValidateAliasesFalsePositives::test_B1_2_subframe_column_not_broken`
@@ -186,7 +187,7 @@
 - `test_Q1_quantiles_profile_adf.py::TestQ1QuantilesADFPassthrough::test_Q1_3_parity_adf_vs_dfdraw`
 - `test_Q1_quantiles_profile_adf.py::TestQ1QuantilesADFPassthrough::test_Q1_4_central_median_forwarded`
 - `test_Q1_quantiles_profile_adf.py::TestQ1QuantilesADFPassthrough::test_Q1_5_groupby_with_quantiles`
-- ... +75 more
+- ... +67 more
 
 ---
 *Generated from pytest JSON + feature_taxonomy.py (v2 taxonomy-based).*

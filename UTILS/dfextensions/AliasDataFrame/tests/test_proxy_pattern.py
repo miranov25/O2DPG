@@ -79,25 +79,59 @@ class TestGetItem:
 
 
 # =============================================================================
-# __setitem__ Tests (Blocked)
+# __setitem__ Tests (Write-through) — PHASE_13_62_ADF Stage 2a (Fix A)
 # =============================================================================
 
-class TestSetItemBlocked:
-    """Tests that direct assignment is blocked."""
-    
-    def test_direct_assignment_blocked(self, simple_adf):
-        """adf['new'] = values should raise TypeError."""
-        with pytest.raises(TypeError, match="Direct assignment"):
-            simple_adf['new'] = [1, 2, 3, 4, 5]
-    
-    def test_error_message_helpful(self, simple_adf):
-        """Error message should suggest alternatives."""
-        with pytest.raises(TypeError) as exc_info:
-            simple_adf['new'] = [1, 2, 3, 4, 5]
-        
-        error_msg = str(exc_info.value)
-        assert "add_alias" in error_msg
-        assert "adf.df['column']" in error_msg
+class TestSetItemWriteThrough:
+    """adf['col'] = value now writes through to the underlying frame.
+
+    PHASE_13_62_ADF Stage 2a (Fix A) replaced the previous TypeError block with a
+    write-through that also syncs the lazy reader's loaded_branches bookkeeping.
+    These tests exercise the same public API (adf[col] = value) the bug used (FM#12).
+    """
+
+    def test_writethrough_numpy_array(self, simple_adf):
+        """adf['new'] = np.array writes through and is read-back-able."""
+        simple_adf['new'] = np.arange(5.0) * 2
+        assert 'new' in simple_adf.df.columns
+        assert np.allclose(simple_adf.df['new'], np.arange(5.0) * 2)
+        assert np.allclose(simple_adf['new'], np.arange(5.0) * 2)   # read back via adf[]
+
+    def test_writethrough_list(self, simple_adf):
+        """adf['new'] = list of matching length writes through."""
+        simple_adf['new'] = [1, 2, 3, 4, 5]
+        assert list(simple_adf.df['new']) == [1, 2, 3, 4, 5]
+
+    def test_writethrough_series_index_aligned(self, simple_adf):
+        """adf['new'] = Series aligns on the frame index."""
+        simple_adf['new'] = pd.Series([5, 4, 3, 2, 1], index=simple_adf.df.index)
+        assert list(simple_adf.df['new']) == [5, 4, 3, 2, 1]
+
+    def test_writethrough_scalar_broadcast(self, simple_adf):
+        """adf['new'] = scalar broadcasts to all rows."""
+        simple_adf['new'] = 7
+        assert (simple_adf.df['new'] == 7).all()
+
+    def test_overwrite_existing_column(self, simple_adf):
+        """adf['x'] = value overwrites an existing column."""
+        simple_adf['x'] = np.zeros(5)
+        assert (simple_adf.df['x'] == 0).all()
+
+    def test_non_string_key_raises(self, simple_adf):
+        """A non-string key still raises TypeError (string column names only)."""
+        with pytest.raises(TypeError):
+            simple_adf[('bad',)] = [1, 2, 3, 4, 5]
+
+    def test_length_mismatch_raises(self, simple_adf):
+        """A length-mismatched value raises (from pandas); no silent corruption."""
+        with pytest.raises(Exception):
+            simple_adf['new'] = [1, 2, 3]
+
+    def test_aliases_mapping_still_immutable(self, simple_adf):
+        """Fix A touches column assignment only; adf.aliases stays immutable
+        (the _ReadOnlyAliasDict guard is unrelated and untouched)."""
+        with pytest.raises(TypeError):
+            simple_adf.aliases['foo'] = 'x + 1'   # _ReadOnlyAliasDict guard
 
 
 # =============================================================================
