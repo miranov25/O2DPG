@@ -11395,7 +11395,7 @@ function collapseDepth(maxD) {{
         all_text = expr
         if selection:
             all_text += ' ' + selection
-        if weights and isinstance(weights, str):
+        if isinstance(weights, str) and weights:
             all_text += ' ' + weights
         
         # Extract all identifiers from expression
@@ -11713,6 +11713,39 @@ function collapseDepth(maxD) {{
                     need.update(idx)
         return need & df_cols
 
+    def _guard_subframe_refs_in_vector_slots(self, weights_vector, selection_vector):
+        """BUG_20260701: subframe-qualified references (Subframe.col) in the
+        vector slots (weights_vector / selection_vector) are NOT yet materialized
+        — Scan-2 subframe materialization covers the string slots only
+        (expr/selection/group_by/color/facet_by/weights). Rather than let an
+        unresolved Subframe.col fall through to dfdraw's bare df.eval (opaque
+        UndefinedVariableError -> ValueError chain), fail loud here. Full
+        vector-slot coverage is the deferred symmetry follow-up. See
+        BUG_20260701_ADF_subframe_ref_slot_symmetry.
+        """
+        if not (hasattr(self, '_subframes') and hasattr(self._subframes, 'subframes')):
+            return
+        sf_names = set(self._subframes.subframes.keys())
+        if not sf_names:
+            return
+        import re as _re
+        for slot_name, slot_val in (('weights_vector', weights_vector),
+                                    ('selection_vector', selection_vector)):
+            if not slot_val:
+                continue
+            elems = slot_val if isinstance(slot_val, (list, tuple)) else [slot_val]
+            for elem in elems:
+                for tok in _re.findall(r'\b(\w+(?:\.\w+)+)\b', str(elem)):
+                    if tok.split('.', 1)[0] in sf_names:
+                        raise ValueError(
+                            "Subframe-qualified reference {0!r} in {1}= is not yet "
+                            "supported (subframe materialization currently covers "
+                            "expr/selection/group_by/color/facet_by/weights). "
+                            "Reference it via expr= or a materialized alias, or await "
+                            "the vector-slot symmetry follow-up "
+                            "(BUG_20260701_ADF_subframe_ref_slot_symmetry).".format(tok, slot_name)
+                        )
+
     def draw(self,
              expr: str,
              type: str = 'auto',
@@ -11907,6 +11940,15 @@ function collapseDepth(maxD) {{
                 all_text += ' ' + kwargs['selection']
             if kwargs.get('group_by'):
                 all_text += ' ' + str(kwargs['group_by'])
+            # BUG_20260701: extend Scan-2 to the remaining value-bearing string
+            # slots so Subframe.col refs materialize symmetrically (was: only
+            # expr/selection/group_by; weights= raised in production).
+            for _slot in ('color', 'facet_by', 'weights'):
+                _v = kwargs.get(_slot)
+                if isinstance(_v, str) and _v:
+                    all_text += ' ' + _v
+            self._guard_subframe_refs_in_vector_slots(
+                kwargs.get('weights_vector'), kwargs.get('selection_vector'))
             
             import re as _re
             refs_to_resolve = []
@@ -12019,6 +12061,9 @@ function collapseDepth(maxD) {{
                         kwargs['selection'] = kwargs['selection'].replace(dot_ref, flat_ref)
                     if 'group_by' in kwargs and isinstance(kwargs.get('group_by'), str):
                         kwargs['group_by'] = kwargs['group_by'].replace(dot_ref, flat_ref)
+                    for _slot in ('weights', 'facet_by', 'color'):
+                        if isinstance(kwargs.get(_slot), str):
+                            kwargs[_slot] = kwargs[_slot].replace(dot_ref, flat_ref)
         
         # ── group_by expression materialization (BUG_ADF_GroupByExpressionMaterialization) ──
         # dfdraw requires group_by to be a real column (Phase 13.30 contract).
@@ -13056,6 +13101,13 @@ function collapseDepth(maxD) {{
                     all_text_parts.append(merged_spec['selection'])
                 if merged_spec.get('group_by'):
                     all_text_parts.append(str(merged_spec['group_by']))
+                # BUG_20260701: remaining value-bearing string slots (symmetry).
+                for _slot in ('color', 'facet_by', 'weights'):
+                    _v = merged_spec.get(_slot)
+                    if isinstance(_v, str) and _v:
+                        all_text_parts.append(_v)
+                self._guard_subframe_refs_in_vector_slots(
+                    merged_spec.get('weights_vector'), merged_spec.get('selection_vector'))
             all_text = ' '.join(all_text_parts)
             
             import re as _re
@@ -13144,6 +13196,9 @@ function collapseDepth(maxD) {{
                             spec['selection'] = spec['selection'].replace(dot_ref, flat_ref)
                         if 'group_by' in spec and isinstance(spec.get('group_by'), str):
                             spec['group_by'] = spec['group_by'].replace(dot_ref, flat_ref)
+                        for _slot in ('weights', 'facet_by', 'color'):
+                            if isinstance(spec.get(_slot), str):
+                                spec[_slot] = spec[_slot].replace(dot_ref, flat_ref)
         
         # Delegate to dfdraw batch
         plotter = DFDraw(df_for_plot)
@@ -13416,6 +13471,13 @@ function collapseDepth(maxD) {{
                         all_text_parts.append(merged_plot['selection'])
                     if merged_plot.get('group_by'):
                         all_text_parts.append(str(merged_plot['group_by']))
+                    # BUG_20260701: remaining value-bearing string slots (symmetry).
+                    for _slot in ('color', 'facet_by', 'weights'):
+                        _v = merged_plot.get(_slot)
+                        if isinstance(_v, str) and _v:
+                            all_text_parts.append(_v)
+                    self._guard_subframe_refs_in_vector_slots(
+                        merged_plot.get('weights_vector'), merged_plot.get('selection_vector'))
             all_text = ' '.join(all_text_parts)
             
             import re as _re
@@ -13526,6 +13588,9 @@ function collapseDepth(maxD) {{
                                 plot_spec['selection'] = plot_spec['selection'].replace(dot_ref, flat_ref)
                             if 'group_by' in plot_spec and isinstance(plot_spec.get('group_by'), str):
                                 plot_spec['group_by'] = plot_spec['group_by'].replace(dot_ref, flat_ref)
+                            for _slot in ('weights', 'facet_by', 'color'):
+                                if isinstance(plot_spec.get(_slot), str):
+                                    plot_spec[_slot] = plot_spec[_slot].replace(dot_ref, flat_ref)
         
         # ═══════════════════════════════════════════════════════════════════
         # PHASE 5: Generate figures

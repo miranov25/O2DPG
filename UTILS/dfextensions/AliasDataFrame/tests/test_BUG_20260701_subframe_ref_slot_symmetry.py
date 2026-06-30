@@ -90,8 +90,17 @@ class TestStringSlotSymmetry:
         Pre-fix, slot='weights' raised UndefinedVariableError->ValueError."""
         pytest.importorskip("dfdraw")
         base, _ = _make_base_and_subframe()
-        kwargs = {"type": "hist", "group_by": "qpt5"}
-        kwargs[slot] = "S.count" if slot != "selection" else "S.count > 0"
+        # weights= is not composable with group_by= in dfdraw (raises
+        # NotImplementedError regardless of column), so each slot is exercised
+        # in a minimal, valid combination carrying the subframe ref "S.count".
+        if slot == "selection":
+            kwargs = {"type": "hist", "selection": "S.count > 0"}
+        elif slot == "group_by":
+            kwargs = {"type": "hist", "group_by": "S.count"}
+        elif slot in ("color", "facet_by"):
+            kwargs = {"type": "hist", "group_by": "qpt5", slot: "S.count"}
+        else:  # weights — stands alone (no group_by)
+            kwargs = {"type": "hist", "weights": "S.count"}
         # must not raise; the ref materializes before dfdraw sees the frame
         base.draw("val", **kwargs)
 
@@ -103,8 +112,12 @@ class TestStringSlotSymmetry:
         w_manual = _expected_broadcast(base, coarse)
         r_ref = base.draw("val", type="hist", weights=w_manual, stats=True)
         r_sub = base.draw("val", type="hist", weights="S.count", stats=True)
-        # stats dicts (counts/sums) must match: same broadcast weights
         assert r_ref is not None and r_sub is not None
+        # if both return stats dicts, the weighted stats must match (same weights)
+        if isinstance(r_ref, dict) and isinstance(r_sub, dict):
+            for k in ("sum", "count", "mean"):
+                if k in r_ref and k in r_sub:
+                    np.testing.assert_allclose(r_ref[k], r_sub[k], rtol=1e-10)
 
 
 # --------------------------------------------------------------------------
@@ -116,10 +129,11 @@ class TestBatchFiguresSymmetry:
         pytest.importorskip("dfdraw")
         base, _ = _make_base_and_subframe()
         base.draw_batch({"p": {"expr": "val", "type": "hist",
-                               "weights": "S.count", "group_by": "qpt5"}})
+                               "weights": "S.count"}})
 
     def test_draw_figures_weights_resolves(self):
         pytest.importorskip("dfdraw")
         base, _ = _make_base_and_subframe()
-        base.draw_figures([{"expr": "val", "type": "hist",
-                            "weights": "S.count", "group_by": "qpt5"}])
+        # draw_figures: list of figure specs; each spec's 'plots' is a LIST of plot dicts.
+        base.draw_figures([{"plots": [{"expr": "val", "type": "hist",
+                                       "weights": "S.count"}]}])
