@@ -357,6 +357,13 @@ FEATURES = [
          "test_phase_13_62_adf_s1.py",
      ]},
 
+    {"id": "SUBFRAME.asymmetric_join_keys",
+     "name": "Asymmetric subframe join keys (PHASE_13_65) — register_subframe(right_index_columns=[...]) lets parent/child join columns differ in name (pandas left_on/right_on); name-aware across all three _compute_join_indices paths (single-col numba, Phase 8c multi-col linearization via rename-before-linearize, merge fallback); right_index_columns=None is byte-identical to the prior same-name behavior; schema-persisted with absent-field back-compat",
+     "category": "SUBFRAME",
+     "test_patterns": [
+         "test_phase_13_65_adf_asymmetric_keys.py",
+     ]},
+
     {"id": "WRITE.column_assignment",
      "name": "Direct column write-through via adf[col] = value (PHASE_13_62 Stage 2a / Fix A) — writes to the frame and syncs the lazy reader's loaded_branches so a hand-added column is present and never re-requested from the TTree; supports numpy/Series/list/scalar (awkward via explicit conversion); non-string key raises; bad shape raises before bookkeeping; adf.aliases immutability (_ReadOnlyAliasDict) unaffected",
      "category": "CORE",

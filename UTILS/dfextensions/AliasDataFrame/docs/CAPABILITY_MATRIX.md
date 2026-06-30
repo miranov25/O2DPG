@@ -1,20 +1,20 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-06-29 11:46 UTC
+**Generated:** 2026-06-30 06:50 UTC
 **Phase:** 13.11.B
-**Taxonomy:** 56 features (PHASE_13_11_B approved)
+**Taxonomy:** 57 features (PHASE_13_11_B approved)
 **Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)
 
 ## Summary
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 35 | 62% |
-| ☑️ Smoke-only | 16 | 28% |
+| ✅ Verified | 35 | 61% |
+| ☑️ Smoke-only | 17 | 29% |
 | 🧨 Broken | 4 | 7% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **56** | |
-| **Matched tests** | **1828** | |
+| **Total features** | **57** | |
+| **Matched tests** | **1837** | |
 | **Invariance tests** | **308** | |
 
 **Unmatched tests:** 97 (not mapped to any feature)
@@ -107,6 +107,12 @@
 | ✅ | **LAZY.alias_autoload** — Alias resolution auto-loads lazy branches (materialize_aliases / validate_aliases / describe_aliases bridge to the lazy reader; LAZY status) | 6 | 6 | 0 | 4 |
 | ☑️ | **LAZY.expression_autoload** — Expression/column lazy autoload via ensure_columns() — bridges df.eval()/direct-access paths on a lazy ADF (get_required_branches → ensure_branches; branches-only, subframe-name + dotted-ref filtered; eager no-op) | 11 | 11 | 0 |  |
 
+## SUBFRAME
+
+| Status | Feature | Tests | Pass | Fail | Inv |
+|--------|---------|------:|-----:|-----:|:---:|
+| ☑️ | **SUBFRAME.asymmetric_join_keys** — Asymmetric subframe join keys (PHASE_13_65) — register_subframe(right_index_columns=[...]) lets parent/child join columns differ in name (pandas left_on/right_on); name-aware across all three _compute_join_indices paths (single-col numba, Phase 8c multi-col linearization via rename-before-linearize, merge fallback); right_index_columns=None is byte-identical to the prior same-name behavior; schema-persisted with absent-field back-compat | 9 | 9 | 0 |  |
+
 ## FIT_REGISTRATION
 
 | Status | Feature | Tests | Pass | Fail | Inv |
@@ -142,15 +148,15 @@
 - ❌ `test_K2_vector_draw_end_to_end.py::TestK2VectorDrawEndToEnd::test_K2_3_production_reproducer_mirror`
 
 ### COMP.roundtrip
-- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
 - ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
+- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
 
 ### BACK.invariance
 - ❌ `test_invariance_backend.py::TestInvarianceBackend::test_I2_6_chained_subframe_expressions_numba_vs_numpy`
 
 ### RDF.export
-- ❌ `test_AliasDataFrameRDF.py::TestRDataFrameFriendAccess::test_composite_index_friend`
 - ❌ `test_AliasDataFrameRDF.py::TestTMemFileBranch::test_missing_keys_in_friend`
+- ❌ `test_AliasDataFrameRDF.py::TestRDataFrameFriendAccess::test_composite_index_friend`
 - ❌ `test_AliasDataFrameRDF.py::TestAddDefinesCollision::test_collision_from_friend_tree`
 
 ## Unmatched Tests

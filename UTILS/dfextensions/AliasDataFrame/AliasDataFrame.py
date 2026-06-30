@@ -121,13 +121,21 @@ class SubframeRegistry:
     def __init__(self):
         self.subframes = {}  # name → {'frame': adf, 'index': index_columns}
 
-    def add_subframe(self, name, alias_df, index_columns, pre_index=False):
+    def add_subframe(self, name, alias_df, index_columns, pre_index=False, right_index_columns=None):
         # Convert string to list (defensive - prevents "track_tf_uid" → ['t','r','a','c','k',...])
         if isinstance(index_columns, str):
             index_columns = [index_columns]
-        if pre_index and not alias_df.df.index.names == index_columns:
-            alias_df.df.set_index(index_columns, inplace=True)
-        self.subframes[name] = {'frame': alias_df, 'index': index_columns}
+        # PHASE_13_65_ADF: right_index_columns are the child-side join keys (may differ in
+        # name from the parent's index_columns). None -> symmetric (same names both sides).
+        if right_index_columns is None:
+            right_index_columns = index_columns
+        elif isinstance(right_index_columns, str):
+            right_index_columns = [right_index_columns]
+        if pre_index and not alias_df.df.index.names == right_index_columns:
+            # drop=False keeps the child keys accessible as columns for the join lookup.
+            alias_df.df.set_index(right_index_columns, inplace=True, drop=False)
+        self.subframes[name] = {'frame': alias_df, 'index': index_columns,
+                                'right_index': right_index_columns}
 
     def get(self, name):
         return self.subframes.get(name, {}).get('frame', None)
@@ -1704,7 +1712,7 @@ class AliasDataFrame:
     #
     # =========================================================================
 
-    def register_subframe(self, name, adf, index_columns, pre_index=False):
+    def register_subframe(self, name, adf, index_columns, pre_index=False, right_index_columns=None):
         """
         Register a subframe (nested AliasDataFrame) for join operations.
         
@@ -1725,6 +1733,23 @@ class AliasDataFrame:
         # Convert string to list (defensive - prevents iteration over characters)
         if isinstance(index_columns, str):
             index_columns = [index_columns]
+        # PHASE_13_65_ADF: asymmetric join keys. right_index_columns (child side) may differ
+        # in name from index_columns (parent side); None -> symmetric (validated below).
+        if right_index_columns is not None:
+            if isinstance(right_index_columns, str):
+                right_index_columns = [right_index_columns]
+            if len(right_index_columns) != len(index_columns):
+                raise ValueError(
+                    f"right_index_columns {right_index_columns} must have the same length as "
+                    f"index_columns {index_columns}")
+            _missing_parent = [c for c in index_columns if c not in self.df.columns]
+            _missing_child = [c for c in right_index_columns if c not in adf.df.columns]
+            if _missing_parent:
+                raise ValueError(
+                    f"index_columns not found in parent frame: {_missing_parent}")
+            if _missing_child:
+                raise ValueError(
+                    f"right_index_columns not found in subframe '{name}': {_missing_child}")
         
         # Auto-populate subframe's _schema["columns"] if empty (v2 fix)
         # This happens when subframes are loaded from ROOT without embedded schema
@@ -1739,12 +1764,16 @@ class AliasDataFrame:
         self._join_index_cache.pop(name, None)
         
         # Add to runtime registry
-        self._subframes.add_subframe(name, adf, index_columns, pre_index=pre_index)
+        self._subframes.add_subframe(name, adf, index_columns, pre_index=pre_index,
+                                     right_index_columns=right_index_columns)
         
         # Also write to schema for persistence
         self._schema["subframes"][name] = {
             "index": index_columns,           # Legacy key (backward compat)
             "index_columns": index_columns,   # New canonical key
+            # PHASE_13_65_ADF: child-side keys; defaults to index_columns when symmetric.
+            "right_index_columns": right_index_columns if right_index_columns is not None
+                                   else index_columns,
         }
 
     def get_subframe(self, name):
@@ -2936,6 +2965,12 @@ class AliasDataFrame:
         sub_adf = self.get_subframe(sf_name)
         sub_df = sub_adf.df
         n_main = len(self.df)
+
+        # PHASE_13_65_ADF: resolve the child-side (right) key columns from the registry.
+        # left_cols are the parent keys passed in; right_cols default to left_cols (symmetric).
+        left_cols = index_cols
+        _entry = self._subframes.get_entry(sf_name) or {}
+        right_cols = _entry.get('right_index', left_cols)
         
         # Phase 8b: Try Numba path for single-column integer keys
         if (self._use_numba 
@@ -2943,9 +2978,10 @@ class AliasDataFrame:
             and len(index_cols) == 1
             and n_main >= NUMBA_MIN_ROWS):
             
-            col = index_cols[0]
+            col = left_cols[0]
+            rcol = right_cols[0]
             main_keys = self.df[col].to_numpy()
-            sub_keys = sub_df[col].to_numpy()
+            sub_keys = sub_df[rcol].to_numpy()
             
             # Check if keys are integer-compatible
             if (np.issubdtype(main_keys.dtype, np.integer) and 
@@ -2966,9 +3002,19 @@ class AliasDataFrame:
             and len(index_cols) > 1
             and n_main >= NUMBA_MIN_ROWS):
             
-            linear_main, linear_sub, ok = linearize_multi_column_keys_pair(
-                self.df, sub_df, index_cols
-            )
+            if left_cols == right_cols:
+                linear_main, linear_sub, ok = linearize_multi_column_keys_pair(
+                    self.df, sub_df, left_cols
+                )
+            else:
+                # PHASE_13_65_ADF Option A: expose parent names on a child slice so the
+                # global-stride linearization sees matching columns. .copy() prevents
+                # in-place mutation of the subframe.
+                _sub_keys = sub_df[right_cols].copy()
+                _sub_keys.columns = left_cols
+                linear_main, linear_sub, ok = linearize_multi_column_keys_pair(
+                    self.df, _sub_keys, left_cols
+                )
             
             if ok:
                 # Use Phase 8b hash lookup on linearized keys
@@ -2981,17 +3027,22 @@ class AliasDataFrame:
         # Fallback: Pandas merge for multi-column or non-integer keys
         # Build lightweight key table with row indices into ORIGINAL subframe
         # Critical: Add __sub_row__ BEFORE deduplication so indices map to original rows
-        sub_keys_df = sub_df[index_cols].copy()
+        sub_keys_df = sub_df[right_cols].copy()
         sub_keys_df['__sub_row__'] = np.arange(len(sub_df), dtype=np.int64)
         
-        # Deduplicate on index_cols only, keeping first match
-        if sub_keys_df.duplicated(subset=index_cols).any():
-            sub_keys_df = sub_keys_df.drop_duplicates(subset=index_cols, keep='first')
+        # Deduplicate on the child's real keys (right_cols), keeping first match
+        if sub_keys_df.duplicated(subset=right_cols).any():
+            sub_keys_df = sub_keys_df.drop_duplicates(subset=right_cols, keep='first')
+        
+        # PHASE_13_65_ADF: rename child keys to parent names so the existing on=left_cols
+        # merge path is unchanged downstream (symmetric: right_cols == left_cols, a no-op).
+        if right_cols != left_cols:
+            sub_keys_df = sub_keys_df.rename(columns=dict(zip(right_cols, left_cols)))
         
         # Lightweight merge: main keys -> subframe row indices
         # Left merge preserves main DataFrame row order (Many-to-One join)
-        main_keys_df = self.df[index_cols]
-        merged = main_keys_df.merge(sub_keys_df, on=index_cols, how='left', sort=False)
+        main_keys_df = self.df[left_cols]
+        merged = main_keys_df.merge(sub_keys_df, on=left_cols, how='left', sort=False)
         
         # Extract indices and missing mask
         indices = merged['__sub_row__'].fillna(-1).astype(np.int64).to_numpy()
@@ -9881,6 +9932,11 @@ function collapseDepth(maxD) {{
                 # Repair corrupted indices (from char iteration bug)
                 index_cols = _repair_index_columns(index_cols, name)
                 normalized['subframes'][name] = {'index': index_cols}
+                # PHASE_13_65_ADF: carry child-side keys; absent -> symmetric (parent keys).
+                _right = info.get('right_index_columns', index_cols)
+                if isinstance(_right, str):
+                    _right = [_right]
+                normalized['subframes'][name]['right_index_columns'] = _right
                 # Copy columns if present
                 if 'columns' in info:
                     normalized['subframes'][name]['columns'] = info['columns']
