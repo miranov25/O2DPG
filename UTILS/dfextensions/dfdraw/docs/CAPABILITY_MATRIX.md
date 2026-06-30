@@ -1,7 +1,7 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-06-28 12:03 UTC
-**Phase:** PHASE_13_55_DF_END
+**Generated:** 2026-06-30 23:04 UTC
+**Phase:** PHASE_13_57_DF_END
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
 
@@ -217,9 +217,9 @@
 | ☑️ | **VISUAL.facet_r2_hist2d** — draw(type='hist2d', facet_by=) populates every panel — R-2 forwarding visual check (Phase 13.51 S-3 closure) 👁 | 1 | 1 | 0 | 0 | 1 |
 | ☑️ | **VISUAL.hist2d_datetime_labels** — hist2d() time_format='auto' renders readable date tick labels on the appropriate axis (Phase 13.51 S-8 symmetry with hist/scatter/profile) 👁 | 1 | 1 | 0 | 0 | 1 |
 
-## Unmatched Tests (482)
+## Unmatched Tests (486)
 
-482 tests pytest collected that no feature claims.
+486 tests pytest collected that no feature claims.
 Grouped by test-file prefix.
 
 <details><summary><code>test_adf_integration.py</code> (14)</summary>
@@ -841,6 +841,15 @@ Grouped by test-file prefix.
 - `test_vector.py::TestVectorDispatch::test_draw_2d_auto_dispatches_scatter`
 - `test_vector.py::TestVectorInDrawBatch::test_vector_in_draw_batch`
 - `test_vector.py::TestVectorMixedRanges::test_mixed_x_ranges_no_warning`
+
+</details>
+
+<details><summary><code>test_weights_groupby.py</code> (4)</summary>
+
+- `test_weights_groupby.py::test_weights_groupby_no_weights_regression`
+- `test_weights_groupby.py::test_weights_groupby_normalized_raises`
+- `test_weights_groupby.py::test_weights_groupby_raw_matches_manual`
+- `test_weights_groupby.py::test_weights_groupby_stacked_raises`
 
 </details>
 

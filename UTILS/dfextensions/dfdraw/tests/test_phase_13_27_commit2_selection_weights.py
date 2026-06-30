@@ -941,11 +941,17 @@ class TestPhase_13_27_Commit2_FIX1:
         np.testing.assert_allclose(heights.sum(), expected_sum, rtol=1e-12)
 
     def test_HSW_4_hist_weights_with_group_by_raises(self, df_selection):
-        """§9.HSW.4 (FIX1 §7b): hist + weights= + group_by raises
-        NotImplementedError (group + column-name weights deferred)."""
+        """§9.HSW.4 — UPDATED (dfdraw weights+group_by fix): raw weighted counts
+        (hist_norm=None, non-stacked) + group_by is now SUPPORTED — that success
+        path is covered by tests/test_weights_groupby.py. The NORMALIZED and
+        STACKED weighted-grouping combos are still deferred and RAISE
+        NotImplementedError (per-row vs per-group normalization precedence —
+        PHASE 13.64). Name kept stable for the feature_taxonomy reference."""
         d = DFDraw(df_selection)
         with pytest.raises(NotImplementedError, match=r"weights=.*group_by"):
-            d.hist("x", weights="w_a", group_by="sector")
+            d.hist("x", weights="w_a", group_by="sector", hist_norm="probability")
+        with pytest.raises(NotImplementedError, match=r"weights=.*group_by"):
+            d.hist("x", weights="w_a", group_by="sector", stacked=True)
 
     def test_HSW_5_hist_no_weights_backward_compat(self, df_selection):
         """§9.HSW.5 (FIX1 §7b): hist without weights= keeps pre-FIX1 behavior

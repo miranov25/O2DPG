@@ -422,17 +422,31 @@ def draw_hist(
     )
     if w_data is not None:
         # Joint mask: x finite AND w finite. Realigns w_data to surviving rows.
-        # Phase 13.27.DF Commit 2 FIX1 (§7b): group_by + column-name weights is
-        # NotImplementedError — the grouped path would need per-group w slicing.
-        if group_by is not None and group_by in df.columns:
+        # PHASE 13.63.1 (bug: weights + group_by): the raw weighted-count combo
+        # (hist_norm=None, norm raw, non-stacked) is now supported on the
+        # overlaid path — the grouped loop applies a per-group joint (x,w) finite
+        # mask. The NORMALIZED/stacked combos stay guarded: per-row-vs-per-group
+        # normalization precedence and the weighted-Poisson convention are
+        # deferred to the StatResult unification (PHASE 13.64).
+        _grouped = group_by is not None and group_by in df.columns
+        if _grouped and (stacked or hist_norm is not None
+                         or norm in ("probability", "density")):
             raise NotImplementedError(
-                "weights= (column-name / expression) combined with group_by is "
-                "not yet supported. Use group_by alone, or apply your weighting "
-                "filter via selection= and call hist without weights="
+                "weights= combined with group_by is supported only for raw "
+                "weighted counts (hist_norm=None, norm=None, stacked=False). "
+                "Normalized or stacked weighted grouping is deferred (per-row vs "
+                "per-group normalization precedence — PHASE 13.64). Use raw "
+                "counts, or group_by alone."
             )
-        _mask = np.isfinite(x_data) & np.isfinite(w_data)
-        x_data = x_data[_mask]
-        w_data = w_data[_mask]
+        if _grouped:
+            # Raw weighted + group_by: keep w_data FULL and df-aligned so the
+            # grouped loop's per-group mask stays aligned with the df-length
+            # group_mask. Sanitized x is used only for the shared bin edges.
+            x_data = _x_clean
+        else:
+            _mask = np.isfinite(x_data) & np.isfinite(w_data)
+            x_data = x_data[_mask]
+            w_data = w_data[_mask]
     else:
         # No weights: use the sanitized output directly (no double-call).
         x_data = _x_clean
@@ -590,6 +604,7 @@ def draw_hist(
             linestyle_cycle=linestyle_cycle,
             _user_linestyle=_ud_user_linestyle,
             _hist_weights_arr=_hist_weights,
+            _user_weights_arr=w_data,  # PHASE 13.63.1: raw df-aligned user weights
             density=density, weights=_hist_weights,
             alpha=alpha, histtype=histtype, edgecolor=edgecolor,
             linewidth=linewidth,
@@ -882,6 +897,7 @@ def _draw_hist_grouped(
     # Phase 13.37.DF: pre-computed per-row weights (forwarded from draw_hist
     # for hist_errors weighted-Poisson computation in the grouped path).
     _hist_weights_arr: Optional[np.ndarray] = None,
+    _user_weights_arr: Optional[np.ndarray] = None,  # PHASE 13.63.1: raw user weights, df-aligned
     # Phase 13.40.DF CP1-2: cumulative histogram. Recursive named-param
     # forwarding per QRC v1.32 #6 — DFDraw.hist → draw_hist → _draw_hist_grouped
     # → ax.hist. NEVER access via kwargs.get/**hist_kwargs.
@@ -1017,10 +1033,26 @@ def _draw_hist_grouped(
         for i, group in enumerate(groups):
             # BUG_dfdraw_20260505: cast to float for boolean expressions
             group_mask = df[group_by] == group
-            group_data = df[group_mask][x].dropna().values.astype(float)
+            # PHASE 13.63.1 (weights + group_by): when the user supplied per-row
+            # weights, slice them by a per-group JOINT (x,w) finite mask so
+            # group_data and the weight array stay aligned (mirrors the
+            # single-plot _mask). Otherwise keep the original x-only dropna.
+            if _user_weights_arr is not None:
+                _wfull = np.asarray(_user_weights_arr, dtype=float)
+                _xfull = pd.to_numeric(df[x], errors="coerce").to_numpy(dtype=float)
+                _gm = group_mask.to_numpy() & np.isfinite(_xfull) & np.isfinite(_wfull)
+                group_data = _xfull[_gm]
+                _group_w = _wfull[_gm]
+            else:
+                group_data = df[group_mask][x].dropna().values.astype(float)
+                _group_w = None
             if len(group_data) < min_entries:
                 continue
             weights = _group_weights(group_data, bin_edges, hist_norm)
+            # PHASE 13.63.1: raw weighted counts — per-row weights are the render
+            # weights (hist_norm is None on this path, so _group_weights is None).
+            if _group_w is not None:
+                weights = _group_w if weights is None else _group_w * weights
             # Phase 13.36.DF: user override > palette
             group_color = colors[i] if _user_color is None else _user_color
 
@@ -1064,11 +1096,16 @@ def _draw_hist_grouped(
             # Phase 13.37.DF: Poisson error bar overlay (CP1-1/CP1-2 fix:
             # color=group_color follows Phase 13.36 sentinel, NOT colors[i]).
             if hist_errors:
-                if _hist_weights_arr is not None:
+                if _group_w is not None or _hist_weights_arr is not None:
                     # Weighted Poisson: variance per bin = Σw² (CP1-6 fix)
-                    _w = np.asarray(_hist_weights_arr)[group_mask.values]
-                    # Sanitize to match group_data
-                    _w = _w[~np.isnan(_w)][:len(group_data)] if len(_w) >= len(group_data) else _w
+                    if _group_w is not None:
+                        # PHASE 13.63.1: joint-masked user weights, already
+                        # aligned to group_data (no rough re-slice needed).
+                        _w = _group_w
+                    else:
+                        _w = np.asarray(_hist_weights_arr)[group_mask.values]
+                        # Sanitize to match group_data
+                        _w = _w[~np.isnan(_w)][:len(group_data)] if len(_w) >= len(group_data) else _w
                     sum_w, _edges = np.histogram(group_data, bins=bins_arg, weights=_w)
                     sum_w2, _ = np.histogram(group_data, bins=bins_arg, weights=_w**2)
                     total_w = float(_w.sum()) if len(_w) > 0 else 1.0
