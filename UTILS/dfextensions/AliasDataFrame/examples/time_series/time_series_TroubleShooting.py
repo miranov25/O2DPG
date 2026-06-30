@@ -381,7 +381,7 @@ def drawEdge(adf):
                         group_by="(qpt_ITSTPC)",group_by_bins=5,bins=100,auto_title=True,min_entries=100)
 
 
-def drawEdgeHis(adf):
+def drawEdgeHis0(adf):
     """
     :param adf:
     :return:
@@ -402,35 +402,52 @@ def drawEdgeHis(adf):
     adf.add_alias("dsector20","dsector*20",dtype="uint8")
     adf.add_alias("tgl20","tgl*20",dtype="int8")
     adf.add_alias("qpt5","qpt*5",dtype="int8")
-    adf.add_alias("qpt_ITSTPC5","qpt_ITSTPC*5",dtype="int8")
+    adf.add_alias("qptITSTPC5","qpt_ITSTPC*5",dtype="int8")
 
-    adf.materialize_aliases(names=["dsector20","tgl20","qpt5","dsector"])
+    adf.materialize_aliases(names=["dsector20","tgl20","qpt5","dsector","qptITSTPC5"])
     isTPC=(adf.df["ncl"]>40)
     isITSTPC=((adf.df["ncl"]>40) & (adf.df["hasITSTPC"]>0))
-    #
+    # TPC track histo
     dfgbTPCDSec20 = adf.df[isTPC].groupby(["dsector20","tgl20","qpt5"])[["ncl","tgl","qpt","dsector","qpt_ITSTPC"]].agg(["median"]).reset_index()
     dfgbTPCDSec20.columns = ['_'.join(c).strip('_') for c in dfgbTPCDSec20.columns.to_flat_index()]
     dfgbTPCDSec20["count"] = adf.df[isTPC].groupby(["dsector20","tgl20","qpt5"])["ncl"].count().values
+    # ITS+TPC trak histo with tpc track param
     dfgbITSTPCDSec20 = adf.df[isITSTPC].groupby(["dsector20","tgl20","qpt5"])[["ncl","tgl","qpt","dsector","qpt_ITSTPC"]].agg(["median"]).reset_index()
     dfgbITSTPCDSec20.columns = ['_'.join(c).strip('_') for c in dfgbITSTPCDSec20.columns.to_flat_index()]
     dfgbITSTPCDSec20["count"] = adf.df[isITSTPC].groupby(["dsector20","tgl20","qpt5"])["ncl"].count().values
+    #
+    dfgbITSTPCCDSec20 = adf.df[isITSTPC].groupby(["dsector20","tgl20","qptITSTPC5"])[["ncl","tgl","qpt","dsector","qpt_ITSTPC"]].agg(["median"]).reset_index()
+    dfgbITSTPCCDSec20.columns = ['_'.join(c).strip('_') for c in dfgbITSTPCCDSec20.columns.to_flat_index()]
+    dfgbITSTPCCDSec20["count"] = adf.df[isITSTPC].groupby(["dsector20","tgl20","qptITSTPC5"])["ncl"].count().values
+    dfgbITSTPCCDSec20["qpt5"] = dfgbITSTPCCDSec20["qptITSTPC5"].astype("int8")
+    #
     dfgbTPC = adf.df[isTPC].groupby(["tgl20","qpt5"])[["ncl","tgl","qpt","dsector"]].agg(["median"]).reset_index()
     dfgbTPC.columns = ['_'.join(c).strip('_') for c in dfgbTPC.columns.to_flat_index()]
     dfgbTPC["count"] = adf.df[isTPC].groupby(["tgl20","qpt5"])["ncl"].count().values
+    #
     dfgbITSTPC = adf.df[isITSTPC].groupby(["tgl20","qpt5"])[["ncl","tgl","qpt","dsector","qpt_ITSTPC"]].agg(["median"]).reset_index()
     dfgbITSTPC.columns = ['_'.join(c).strip('_') for c in dfgbITSTPC.columns.to_flat_index()]
     dfgbITSTPC["count"] = adf.df[isITSTPC].groupby(["tgl20","qpt5"])["ncl"].count().values
-    #
-
+    # using compbined tracing parameter for the ITSTPC
+    dfgbITSTPCC = adf.df[isITSTPC].groupby(["tgl20","qptITSTPC5"])[["ncl","tgl","qpt","dsector","qpt_ITSTPC"]].agg(["median"]).reset_index()
+    dfgbITSTPCC.columns = ['_'.join(c).strip('_') for c in dfgbITSTPCC.columns.to_flat_index()]
+    dfgbITSTPCC["count"] = adf.df[isITSTPC].groupby(["tgl20","qptITSTPC5"])["ncl"].count().values
+    dfgbITSTPCC["qpt5"] = dfgbITSTPCC["qptITSTPC5"].astype("int8")
     #
     #
     adfgbTPCDSec20=AliasDataFrame(dfgbTPCDSec20)
     adfgbTPC=AliasDataFrame(dfgbTPC)
     adfgbITSTPC=AliasDataFrame(dfgbITSTPC)
+    adfgbITSTPCC=AliasDataFrame(dfgbITSTPCC)
     adfgbITSTPCDSec20=AliasDataFrame(dfgbITSTPCDSec20)
+    adfgbITSTPCCDSec20=AliasDataFrame(dfgbITSTPCCDSec20)
+
     adfgbTPCDSec20.register_subframe("adfgbITSTPCDSec20",adfgbITSTPCDSec20,index_columns=["dsector20","tgl20","qpt5"])
+    adfgbTPCDSec20.register_subframe("adfgbITSTPCCDSec20",adfgbITSTPCCDSec20,index_columns=["dsector20","tgl20","qpt5"])
     adfgbTPCDSec20.register_subframe("adfgbTPC",adfgbTPC,index_columns=["tgl20","qpt5"])
     adfgbTPCDSec20.register_subframe("adfgbITSTPC",adfgbITSTPC,index_columns=["tgl20","qpt5"])
+    adfgbTPCDSec20.register_subframe("adfgbITSTPCC",adfgbITSTPCC,index_columns=["tgl20","qpt5"])
+    adf.register_subframe("adfgbITSTPCC",adfgbITSTPCC,index_columns=["tgl20","qpt5"])
     adfgbTPCDSec20.draw_lazy=True
     # example queries
     adfgbTPCDSec20.draw("count:adfgbITSTPCDSec20.count")
@@ -441,4 +458,129 @@ def drawEdgeHis(adf):
     #
     adfgbTPCDSec20.draw("(adfgbITSTPCDSec20.count/count)/(adfgbITSTPC.count/adfgbTPC.count):dsector_median",type="profile",group_by="qpt_median",selection="(abs(tgl_median)<1) & (count>20) &(abs(qpt_median)<1)",group_by_bins=10,auto_title=True)
     #
-    adfgbTPCDSec20.draw("(20*adfgbITSTPCDSec20.count/adfgbITSTPC.count):dsector_median",type="profile",group_by="qpt_median",selection="(abs(tgl_median)<1) & (count>20) &(abs(qpt_median)<2)",group_by_bins=10,auto_title=True,linestyle='none')
+    adfgbTPCDSec20.draw("(20*adfgbITSTPCDSec20.count/adfgbITSTPC.count):dsector_median",type="profile",group_by="qpt_median",selection="(abs(tgl_median)<1) & (count>20) &(abs(qpt_median)<2)",group_by_bins=10,auto_title=True)
+    #
+    #
+    adfgbTPCDSec20.draw("(20*adfgbITSTPCCDSec20.count/adfgbITSTPCC.count):dsector_median",type="profile",group_by="qpt_median",selection="(abs(tgl_median)<1) & (count>20) &(abs(qpt_median)<2)",group_by_bins=10,auto_title=True)
+    #
+
+
+
+
+
+
+def drawEdgeHis(adf):
+    """Edge-effect QA — the histogramming (count-based) part.
+
+    Builds count aggregations of TPC tracks on two grids and uses them to
+    monitor the ITS-TPC matching efficiency and its bias near the sector edge.
+
+    Track samples compared:
+      * isTPC    = ncl > 40              — TPC tracks
+      * isITSTPC = isTPC & hasITSTPC     — ITS-matched TPC tracks
+
+    Normalization assumption:
+      The physics is taken to factorize and be symmetric in phi, so the
+      aggregation integrated over the sector coordinate ``dsector`` is the
+      phi-symmetric reference. Two grids are therefore built per sample:
+        * fine grid (dsector20, tgl20, qpt5) — resolves the edge in dsector
+        * norm grid (tgl20, qpt5)            — integrated over dsector
+      A second binning uses the combined ITS-TPC curvature ``qpt_ITSTPC5``
+      instead of the TPC-only ``qpt5`` (only defined for matched tracks).
+
+    Effects this is meant to expose:
+      * ITS-TPC matching efficiency and its cut dependence (e.g. on DCA)
+      * MC/data mismatch
+      * double-found (duplicate) tracks
+      * edge bias: qpt is biased near the edge; the phi position is biased on
+        the edge mostly for TPC-only tracks
+
+    :param adf: AliasDataFrame with per-track columns
+                (ncl, hasITSTPC, dsector, tgl, qpt, qpt_ITSTPC).
+    :return: None — registers the count subframes and issues the example draws.
+    """
+    def _gb_agg(df, keys, value_cols, agg=("median",)):
+        """Group `df` on `keys`; per cell: `agg` of `value_cols` (suffixed) + row count.
+        Returns an AliasDataFrame with one row per grid cell: the grid keys as
+        plain columns, each value column aggregated and flat-named ``<col>_<agg>``,
+        plus ``count`` (rows per cell). This is the 'simple-stats' StatResult
+        producer used by the edge-effect example.
+        """
+        g = df.groupby(list(keys))
+        out = g[value_cols].agg(list(agg))
+        out.columns = [f"{c}_{a}" for c, a in out.columns]   # ('ncl','median') -> 'ncl_median'
+        out["count"] = g.size()                              # rows per cell
+        return AliasDataFrame(out.reset_index())
+    def _median_over(adf_fine, keep_keys, col="count"):
+        """Median of `col` over the dropped grid axes, at fixed `keep_keys`. Edge-robust norm."""
+        out = adf_fine.df.groupby(keep_keys, as_index=False)[col].median()
+        return AliasDataFrame(out)
+    # --- 1. integer grid-coordinate aliases ----------------------------------
+    adf.add_alias("dsector20",   "dsector*20",   dtype="uint8")
+    adf.add_alias("tgl20",       "tgl*20",       dtype="int8")
+    adf.add_alias("qpt5",        "qpt*5",        dtype="int8")
+    adf.add_alias("qpt_ITSTPC5", "qpt_ITSTPC*5", dtype="int8")
+    adf.materialize_aliases(names=["dsector20", "tgl20", "qpt5", "qpt_ITSTPC5", "dsector"])
+
+    # --- 2. the two track samples --------------------------------------------
+    isTPC    = adf.df["ncl"] > 40
+    isITSTPC = isTPC & (adf.df["hasITSTPC"] > 0)
+    COLS_TPC    = ["ncl", "tgl", "qpt", "dsector"]
+    COLS_ITSTPC = COLS_TPC + ["qpt_ITSTPC"]
+
+    # --- 3. count tables: {sample} x {grid} x {qpt binning} ------------------
+    #   sample : TPC | ITSTPC          grid : fine (with dsector) | norm (integrated)
+    #   qpt    : qpt5 (TPC curvature)  |  qpt_ITSTPC5 (combined ITS-TPC curvature)
+    specs = {
+        #  name           mask       grid keys                              value cols
+        "TPC_fine":     (isTPC,    ["dsector20", "tgl20", "qpt5"],        COLS_TPC),
+        "ITSTPC_fine":  (isITSTPC, ["dsector20", "tgl20", "qpt5"],        COLS_ITSTPC),
+        "TPC_norm":     (isTPC,    ["tgl20", "qpt5"],                     COLS_TPC),
+        "ITSTPC_norm":  (isITSTPC, ["tgl20", "qpt5"],                     COLS_ITSTPC),
+        # combined ITS-TPC curvature binning (staged for the qpt_ITSTPC draws)
+        "ITSTPCc_fine": (isITSTPC, ["dsector20", "tgl20", "qpt_ITSTPC5"], COLS_ITSTPC),
+        "ITSTPCc_norm": (isITSTPC, ["tgl20", "qpt_ITSTPC5"],             COLS_ITSTPC),
+    }
+    logger.log("drawEdgeHis: Step3 BEGIN")
+    gb = {name: _gb_agg(adf.df[mask], keys, cols) for name, (mask, keys, cols) in specs.items()}
+    logger.log("drawEdgeHis: step3 END")
+    # --- 4. register the comparison tables onto the fine TPC grid ------------
+    # unqualified `count` in the draws = base (TPC_fine) count;
+    # `<name>.count` reaches the registered subframe, aligned on its index cols.
+    logger.log("drawEdgeHis: step4 BEGIN")
+    base = gb["TPC_fine"]
+    registrations = {
+        #  subframe name   table              index (alignment) columns
+        "ITSTPC_fine": (gb["ITSTPC_fine"], ["dsector20", "tgl20", "qpt5"]),
+        "TPC_norm":    (gb["TPC_norm"],    ["tgl20", "qpt5"]),   # broadcast over dsector20
+        "ITSTPC_norm": (gb["ITSTPC_norm"], ["tgl20", "qpt5"]),   # broadcast over dsector20
+    }
+    for name, (table, index_cols) in registrations.items():
+        base.register_subframe(name, table, index_columns=index_cols)
+    base.draw_lazy = True
+    logger.log("drawEdgeHis: step4 END")
+    #
+    # median-over-dsector reference (built from *_fine, not a new raw GB pass)
+    keep = ["tgl20", "qpt5"]
+    base.register_subframe("TPC_normmed",    _median_over(gb["TPC_fine"],    keep), index_columns=keep)
+    base.register_subframe("ITSTPC_normmed", _median_over(gb["ITSTPC_fine"], keep), index_columns=keep)
+
+    # --- 5. example draws -----------------------------------------------------
+    sel = "(abs(tgl_median)<1) & (count>20) & (abs(qpt_median)<1)"
+    # (a) raw count comparison, TPC vs ITS-TPC (one point per fine cell)
+    base.draw("count:ITSTPC_fine.count")
+    base.draw("ITSTPC_fine.count:count", type="profile", group_by="qpt_median", group_by_bins=5, selection="abs(tgl20)<10", auto_title=True)
+    # (b) matching efficiency = ITSTPC / TPC, vs distance to the sector edge
+    base.draw("ITSTPC_fine.count/count:dsector_median", type="profile", group_by="qpt_median", group_by_bins=10, selection=sel, auto_title=True)
+    # (c) uniformity check: norm (dsector-integrated) count vs fine count,
+    #     scaled by the dsector bin factor (=20); ~flat where rate is edge-independent
+    base.draw("TPC_norm.count/(count*20):dsector_median", type="profile", group_by="qpt_median", group_by_bins=10, selection=sel, auto_title=True)
+    # (d) DOUBLE RATIO: edge-resolved efficiency / phi-symmetric reference efficiency
+    base.draw("(ITSTPC_fine.count/count)/(ITSTPC_norm.count/TPC_norm.count):dsector_median",type="profile", group_by="qpt_median", group_by_bins=10,
+              selection=sel, auto_title=True)
+    # (e) ITS-TPC fine/norm count ratio (x20 dsector factor), points only
+    base.draw("(20*ITSTPC_fine.count/ITSTPC_norm.count):dsector_median", type="profile",group_by="qpt_median", group_by_bins=10,
+              selection="(abs(tgl_median)<1) & (count>20) & (abs(qpt_median)<2)",auto_title=True)
+    # (f)  ITS-TPC fine/normed to median withoing sector
+    base.draw("(ITSTPC_fine.count/ITSTPC_normmed.count):dsector_median", type="profile",group_by="qpt_median", group_by_bins=10,
+              selection="(abs(tgl_median)<1) & (count>20) & (abs(qpt_median)<2)",auto_title=True)
