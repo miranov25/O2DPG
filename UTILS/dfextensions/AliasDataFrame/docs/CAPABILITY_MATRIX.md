@@ -1,23 +1,23 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-06-30 08:52 UTC
+**Generated:** 2026-07-02 16:07 UTC
 **Phase:** PHASE_13_57_DF_END
-**Taxonomy:** 57 features (PHASE_13_11_B approved)
+**Taxonomy:** 58 features (PHASE_13_11_B approved)
 **Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)
 
 ## Summary
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 35 | 61% |
+| ✅ Verified | 35 | 60% |
 | ☑️ Smoke-only | 17 | 29% |
-| 🧨 Broken | 4 | 7% |
+| 🧨 Broken | 5 | 8% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **57** | |
-| **Matched tests** | **1837** | |
-| **Invariance tests** | **308** | |
+| **Total features** | **58** | |
+| **Matched tests** | **1878** | |
+| **Invariance tests** | **315** | |
 
-**Unmatched tests:** 97 (not mapped to any feature)
+**Unmatched tests:** 110 (not mapped to any feature)
 
 ## CORE
 
@@ -40,7 +40,7 @@
 | Status | Feature | Tests | Pass | Fail | Inv |
 |--------|---------|------:|-----:|-----:|:---:|
 | ✅ | **SUB.register** — Subframe registration | 50 | 50 | 0 | 3 |
-| ✅ | **SUB.join** — Subframe join & column resolution | 70 | 70 | 0 | 22 |
+| 🧨 | **SUB.join** — Subframe join & column resolution | 70 | 69 | 1 | 22 |
 | ✅ | **SUB.composite_key** — Composite key operations | 38 | 38 | 0 | 2 |
 | ✅ | **SUB.auto_alias** — Auto-aliasing subframe columns | 11 | 10 | 0 | 1 |
 | 📋 | **SUB.clone** — Clone with selection (planned) | 0 | 0 | 0 |  |
@@ -113,6 +113,12 @@
 |--------|---------|------:|-----:|-----:|:---:|
 | ☑️ | **SUBFRAME.asymmetric_join_keys** — Asymmetric subframe join keys (PHASE_13_65) — register_subframe(right_index_columns=[...]) lets parent/child join columns differ in name (pandas left_on/right_on); name-aware across all three _compute_join_indices paths (single-col numba, Phase 8c multi-col linearization via rename-before-linearize, merge fallback); right_index_columns=None is byte-identical to the prior same-name behavior; schema-persisted with absent-field back-compat | 9 | 9 | 0 |  |
 
+## OBJECT
+
+| Status | Feature | Tests | Pass | Fail | Inv |
+|--------|---------|------:|-----:|-----:|:---:|
+| ✅ | **OBJECT.struct_1to1** — 1:1 struct/object branch support (PHASE_13_66) — ROOT struct members (parent/member) usable via dot grammar (dedxTPC.dEdxTotIROC); three-name mapping (physical slash / internal member__struct / logical dot, anchor 0i); reference-driven load with A-1 rename-on-load handling bare-leaf or slash reader keys; public adf.eval() with Step-0 syntax gate; struct-aware across the 7 analysis surfaces, get_required_branches (physical form), the 5 dispatch sites, and all 3 draw surfaces; alias-over-struct (direct + nested) via _get_structs_for_aliases + _do_materialize hook; auto-detection with scalar/jagged guard (never auto-flatten 1:N, anchor 0h); schema-persisted (export + apply) with absent-key back-compat | 41 | 38 | 0 | 7 |
+
 ## FIT_REGISTRATION
 
 | Status | Feature | Tests | Pass | Fail | Inv |
@@ -143,6 +149,9 @@
 
 ## 🧨 Broken Features — Details
 
+### SUB.join
+- ❌ `test_alias_subframe.py::TestSubframeRoundtrip::test_parquet_roundtrip`
+
 ### DRAW.execution
 - ❌ `test_K1_vector_draw_kwarg_diagnostic.py::TestK1VectorDrawKwargDiagnostic::test_K1_3_draw_batch_forwards_batch_kwargs`
 - ❌ `test_K2_vector_draw_end_to_end.py::TestK2VectorDrawEndToEnd::test_K2_3_production_reproducer_mirror`
@@ -155,19 +164,32 @@
 - ❌ `test_invariance_backend.py::TestInvarianceBackend::test_I2_6_chained_subframe_expressions_numba_vs_numpy`
 
 ### RDF.export
+- ❌ `test_AliasDataFrameRDF.py::TestTMemFileBranch::test_missing_keys_in_friend`
 - ❌ `test_AliasDataFrameRDF.py::TestRDataFrameFriendAccess::test_composite_index_friend`
 - ❌ `test_AliasDataFrameRDF.py::TestAddDefinesCollision::test_collision_from_friend_tree`
-- ❌ `test_AliasDataFrameRDF.py::TestTMemFileBranch::test_missing_keys_in_friend`
 
 ## Unmatched Tests
 
-97 tests not mapped to any feature.
+110 tests not mapped to any feature.
 
 - `test_B1_validate_aliases_false_positives.py::TestB1ValidateAliasesFalsePositives::test_B1_1_np_pi_not_broken`
 - `test_B1_validate_aliases_false_positives.py::TestB1ValidateAliasesFalsePositives::test_B1_2_subframe_column_not_broken`
 - `test_B1_validate_aliases_false_positives.py::TestB1ValidateAliasesFalsePositives::test_B1_3_arithmetic_expression_not_broken`
 - `test_B1_validate_aliases_false_positives.py::TestB1ValidateAliasesFalsePositives::test_B1_4_genuinely_broken_still_detected`
 - `test_B1_validate_aliases_false_positives.py::TestB1ValidateAliasesFalsePositives::test_B1_5_truly_missing_bare_token_detected`
+- `test_BUG_20260701_subframe_ref_slot_symmetry.py::TestBatchFiguresSymmetry::test_draw_batch_weights_resolves`
+- `test_BUG_20260701_subframe_ref_slot_symmetry.py::TestBatchFiguresSymmetry::test_draw_figures_weights_resolves`
+- `test_BUG_20260701_subframe_ref_slot_symmetry.py::TestStringSlotSymmetry::test_string_slot_resolves_subframe_ref[color]`
+- `test_BUG_20260701_subframe_ref_slot_symmetry.py::TestStringSlotSymmetry::test_string_slot_resolves_subframe_ref[facet_by]`
+- `test_BUG_20260701_subframe_ref_slot_symmetry.py::TestStringSlotSymmetry::test_string_slot_resolves_subframe_ref[group_by]`
+- `test_BUG_20260701_subframe_ref_slot_symmetry.py::TestStringSlotSymmetry::test_string_slot_resolves_subframe_ref[selection]`
+- `test_BUG_20260701_subframe_ref_slot_symmetry.py::TestStringSlotSymmetry::test_string_slot_resolves_subframe_ref[weights]`
+- `test_BUG_20260701_subframe_ref_slot_symmetry.py::TestStringSlotSymmetry::test_weights_broadcast_matches_manual`
+- `test_BUG_20260701_subframe_ref_slot_symmetry.py::TestVectorSlotGuard::test_non_subframe_dotted_token_does_not_raise`
+- `test_BUG_20260701_subframe_ref_slot_symmetry.py::TestVectorSlotGuard::test_none_is_noop`
+- `test_BUG_20260701_subframe_ref_slot_symmetry.py::TestVectorSlotGuard::test_plain_column_does_not_raise`
+- `test_BUG_20260701_subframe_ref_slot_symmetry.py::TestVectorSlotGuard::test_selection_vector_subframe_ref_raises_loud`
+- `test_BUG_20260701_subframe_ref_slot_symmetry.py::TestVectorSlotGuard::test_weights_vector_subframe_ref_raises_loud`
 - `test_D1_dtype_overrides.py::TestDtypeOverrides::test_D10_override_warning_shows_correct_dtypes`
 - `test_D1_dtype_overrides.py::TestDtypeOverrides::test_D1_regex_converts_float64_to_float16`
 - `test_D1_dtype_overrides.py::TestDtypeOverrides::test_D2_first_match_wins`
@@ -180,20 +202,7 @@
 - `test_D1_dtype_overrides.py::TestDtypeOverrides::test_D9_entry_range_with_overrides`
 - `test_D1_dtype_overrides.py::TestSkipBranches::test_D11_skip_branch_not_in_dataframe`
 - `test_D1_dtype_overrides.py::TestSkipBranches::test_D12_skip_reduces_column_count`
-- `test_D1_dtype_overrides.py::TestSkipBranches::test_D13_skip_and_dtype_override_combined`
-- `test_D1_dtype_overrides.py::TestSkipBranches::test_D14_skip_no_match_is_noop`
-- `test_G1_groupby_expression.py::TestGroupByExpressionMaterialization::test_G1_arithmetic_expression_materializes`
-- `test_G1_groupby_expression.py::TestGroupByExpressionMaterialization::test_G2_existing_column_unchanged`
-- `test_G1_groupby_expression.py::TestGroupByExpressionMaterialization::test_G3_alias_works`
-- `test_G1_groupby_expression.py::TestGroupByExpressionMaterialization::test_G4_no_alias_pollution`
-- `test_N1_11_missing_column_keyerror.py::TestN1_11_MissingColumnKeyError::test_N1_11_two_level_missing_column_raises`
-- `test_N1_11_missing_column_keyerror.py::TestN1_11_MissingColumnKeyError::test_N1_11b_single_level_missing_column_raises`
-- `test_Q1_quantiles_profile_adf.py::TestQ1QuantilesADFPassthrough::test_Q1_1_error_bars_via_adf`
-- `test_Q1_quantiles_profile_adf.py::TestQ1QuantilesADFPassthrough::test_Q1_2_band_via_adf`
-- `test_Q1_quantiles_profile_adf.py::TestQ1QuantilesADFPassthrough::test_Q1_3_parity_adf_vs_dfdraw`
-- `test_Q1_quantiles_profile_adf.py::TestQ1QuantilesADFPassthrough::test_Q1_4_central_median_forwarded`
-- `test_Q1_quantiles_profile_adf.py::TestQ1QuantilesADFPassthrough::test_Q1_5_groupby_with_quantiles`
-- ... +67 more
+- ... +80 more
 
 ---
 *Generated from pytest JSON + feature_taxonomy.py (v2 taxonomy-based).*

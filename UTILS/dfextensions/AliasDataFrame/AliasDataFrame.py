@@ -1044,6 +1044,9 @@ class AliasDataFrame:
         # _subframe_loaded: Whether each lazy subframe has been loaded
         # _subframe_lazy_config: Config for lazy subframes (index_columns, columns, etc.)
         self._subframe_readers = {}   # {name: LazyTreeReader}
+        # PHASE_13_66_ADF: 1:1 struct/object registry.
+        # {struct: {'members':[...], 'l2i':{logical:internal}, 'phys':{member:physical}}}
+        self._structs = {}
         self._subframe_loaded = {}    # {name: bool}
         self._subframe_lazy_config = {}  # {name: {file, tree, index_columns, ...}}
 
@@ -1529,6 +1532,13 @@ class AliasDataFrame:
         
         # Restore subframes metadata (not actual subframe objects)
         self._schema["subframes"] = serialized_schema.get("subframes", {})
+        # PHASE_13_66_ADF: reconstruct registered structs (back-compat: absent key no-op)
+        for _st_name, _st_spec in serialized_schema.get("structs", {}).items():
+            try:
+                if _st_name not in self._structs:
+                    self.register_struct(_st_name, list(_st_spec.get("members", [])))
+            except Exception:
+                pass
         
         # Phase 13.9.Fix1: Restore registered_functions schema
         # NOTE: Reconstruction is deferred — subframes must be loaded first.
@@ -1711,6 +1721,263 @@ class AliasDataFrame:
     # - get_subframe(): Retrieve registered subframe
     #
     # =========================================================================
+
+    def _struct_rewrite_draw_slots(self, d):
+        """PHASE_13_66_ADF: rewrite logical struct refs -> internal in a draw spec
+        dict's value-bearing string slots, in place. Members are already columns
+        (A-1 / autoload), so no scatter — unlike subframes."""
+        if not self._structs:
+            return
+        for _slot in ('expr', 'selection', 'group_by', 'weights', 'facet_by', 'color'):
+            v = d.get(_slot)
+            if isinstance(v, str):
+                d[_slot] = self._prepare_struct_refs(v)
+
+    def _struct_physical_to_internal(self):
+        """{physical_slash_name: internal_name} across all registered structs (A-1)."""
+        out = {}
+        for name, st in self._structs.items():
+            for m in st["members"]:
+                out[self._struct_physical_name(name, m)] = self._struct_internal_name(name, m)
+        return out
+
+    def _rename_struct_branches_on_load(self, new_data):
+        """A-1: rename freshly-loaded struct-member data to internal names. The lazy
+        reader may key the data by the full physical path (dedxTPC/dEdxTotIROC) OR by
+        the bare leaf member name (dEdxTotIROC) depending on the reader — so the map
+        covers both. Bare-name keys that are ambiguous across structs are left alone
+        (only the slash-path form disambiguates them)."""
+        if not self._structs:
+            return new_data
+        from collections import Counter
+        _bare = Counter()
+        for _n, _st in self._structs.items():
+            for _m in _st["members"]:
+                _bare[_m] += 1
+        mapping = {}
+        for _n, _st in self._structs.items():
+            for _m in _st["members"]:
+                _internal = self._struct_internal_name(_n, _m)
+                mapping[self._struct_physical_name(_n, _m)] = _internal   # slash path
+                if _bare[_m] == 1:                                        # unambiguous bare leaf
+                    mapping[_m] = _internal
+        if not mapping:
+            return new_data
+        try:
+            import pandas as _pd
+            if isinstance(new_data, _pd.DataFrame):
+                ren = {c: mapping[c] for c in new_data.columns if c in mapping}
+                return new_data.rename(columns=ren) if ren else new_data
+        except Exception:
+            pass
+        # dict-like fallback
+        try:
+            return {mapping.get(k, k): v for k, v in new_data.items()}
+        except Exception:
+            return new_data
+
+    def detect_structs(self, register=True):
+        """PHASE_13_66_ADF (anchor 0f): auto-detect 1:1 struct/object branches from the
+        lazy reader's available_branches (physical 'parent/member' slash paths). Groups
+        members by parent; registers scalar (1:1) parents. Jagged/array members are
+        skipped with a warning (anchor 0h: never auto-flatten 1:N). No-op eagerly.
+
+        Returns {struct_name: [members]} of what was detected (registered if register).
+        """
+        reader = getattr(self, "_lazy_reader", None)
+        if reader is None:
+            return {}
+        detected = {}
+        for br in reader.available_branches:
+            if "/" not in br:
+                continue
+            parent, member = br.split("/", 1)
+            if "/" in member:      # nested (Phase B territory) — skip in Phase A
+                continue
+            detected.setdefault(parent, []).append(member)
+        # scalar/jagged guard: only auto-register members the reader interprets as scalar
+        result = {}
+        for parent, members in detected.items():
+            if parent in self._structs or parent in self._subframes.subframes:
+                continue
+            scalar = []
+            for m in members:
+                phys = self._struct_physical_name(parent, m)
+                if self._branch_is_scalar(phys):
+                    scalar.append(m)
+                else:
+                    warnings.warn(
+                        f"detect_structs: skipping jagged member {phys!r} "
+                        f"(array-of-struct is Phase B; never auto-flattened)")
+            if scalar:
+                result[parent] = scalar
+                if register:
+                    self.register_struct(parent, scalar)
+        return result
+
+    def refresh_structs(self):
+        """Re-run auto-detection (e.g. after new branches become available)."""
+        return self.detect_structs(register=True)
+
+    def _branch_is_scalar(self, physical_name):
+        """True if the reader interprets the branch as one-value-per-entry (1:1).
+        Conservative: unknown interpretation -> treated as scalar (register), since a
+        genuine jagged member will surface at load; overridable by register_struct."""
+        reader = getattr(self, "_lazy_reader", None)
+        if reader is None:
+            return True
+        checker = getattr(reader, "is_scalar_branch", None)
+        if callable(checker):
+            try:
+                return bool(checker(physical_name))
+            except Exception:
+                return True
+        return True
+
+    def _autoload_expr_branches(self, expr):
+        """PHASE_13_66_ADF (F-fable5_5-2): autoload branches referenced by an
+        EXPRESSION via the expr= leg of get_required_branches (struct-aware through
+        _analyze_expression), then filter+load. Shared helper so the expr leg and
+        ensure_columns's selection leg cannot drift (P1-B: ensure_columns uses the
+        selection= leg, whose parser drops dotted struct members).
+        """
+        # PHASE_13_66_ADF: directly load any registered struct referenced in expr
+        # (robust: does not depend on the get_required_branches expr-leg resolving the
+        # physical branch). ensure_struct loads the physical slash branch + A-1 rename.
+        for _st_name, _st in self._structs.items():
+            for _logical in _st["l2i"]:
+                if _logical in expr:
+                    self.ensure_struct(_st_name)
+                    break
+        needed = self.get_required_branches(expr=expr)
+        all_subframes = (set(self._subframes.subframes.keys())
+                         | set(getattr(self, "_subframe_readers", {}).keys()))
+        needed = {b for b in needed
+                  if b not in all_subframes
+                  and not ("." in b and b.split(".", 1)[0] in all_subframes)}
+        to_load = needed - set(self.df.columns)
+        if to_load:
+            self.ensure_branches(sorted(to_load))
+
+    def _referenced_alias_tokens(self, expr):
+        """Top-level alias names referenced in expr (Step 2). Dotted subframe-aliases
+        are handled by the rewrite layer (Option S), not here."""
+        import ast
+        try:
+            tree = ast.parse(expr, mode="eval")
+        except SyntaxError:
+            return set()
+        names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+        return names & set(getattr(self, "aliases", {}).keys())
+
+    def eval(self, expr):
+        """PHASE_13_66_ADF (DD-3): evaluate an expression against this ADF, resolving
+        struct members (struct.member), subframe-qualified refs, and aliases.
+
+        A real method (shadows __getattr__ step-4 delegation to self.df.eval by normal
+        MRO — no __getattr__ change needed). Option A: alias resolution persists columns.
+        """
+        # Step 0 — syntax gate: uniform SyntaxError on lazy and eager, before any load.
+        compile(expr, "<adf.eval>", "eval")
+        # Step 1 — autoload referenced branches (lazy frames only; expr= leg, struct-aware).
+        if getattr(self, "_lazy_reader", None) is not None:
+            self._autoload_expr_branches(expr)
+        # Step 2 — resolve referenced top-level aliases (persist), per get_alias_series.
+        for tok in self._referenced_alias_tokens(expr):
+            if tok not in self.df.columns:
+                try:
+                    self.materialize_alias(tok)
+                except Exception:
+                    pass
+        # Step 3 — evaluate; _eval_in_namespace is the single rewrite owner.
+        result = self._eval_in_namespace(expr)
+        # Step 4 — normalize to a Series aligned with self.df.index (inline).
+        import numpy as _np, pandas as _pd
+        if isinstance(result, _pd.Series):
+            return result
+        if _np.isscalar(result):
+            return _pd.Series([result] * len(self.df), index=self.df.index)
+        return _pd.Series(result, index=self.df.index)
+
+    # ================= PHASE_13_66_ADF: 1:1 struct/object support =================
+    @property
+    def _struct_names(self):
+        """Registered struct names (parallel to subframe names)."""
+        return set(self._structs.keys())
+
+    @staticmethod
+    def _struct_internal_name(struct, member):
+        """Internal eval-safe column name (matches subframe convention col__sf)."""
+        return f"{member}__{struct}"
+
+    @staticmethod
+    def _struct_physical_name(struct, member):
+        """Physical uproot/ROOT branch path (slash form)."""
+        return f"{struct}/{member}"
+
+    def register_struct(self, name, members):
+        """PHASE_13_66_ADF: explicitly register a 1:1 struct/object branch.
+
+        Three-name mapping per member: logical ``struct.member`` (user grammar),
+        physical ``struct/member`` (uproot), internal ``member__struct`` (self.df /
+        eval namespace, matching the subframe convention). Anchor 0i.
+        """
+        if not isinstance(name, str) or not name:
+            raise ValueError("register_struct: name must be a non-empty string")
+        if isinstance(members, str):
+            members = [members]
+        if not members:
+            raise ValueError(f"register_struct({name!r}): members must be non-empty")
+        # A-2 cross-namespace collision: struct name must not collide with a subframe.
+        if name in self._subframes.subframes or name in self._structs:
+            raise ValueError(
+                f"register_struct: {name!r} already registered as a struct or subframe")
+        l2i, phys = {}, {}
+        for m in members:
+            internal = self._struct_internal_name(name, m)
+            # internal name must not collide with an unrelated existing column
+            if internal in self.df.columns and internal not in l2i.values():
+                # allowed only if it is genuinely this member (rename-on-load may have run)
+                pass
+            l2i[f"{name}.{m}"] = internal
+            phys[m] = self._struct_physical_name(name, m)
+        self._structs[name] = {"members": list(members), "l2i": l2i, "phys": phys}
+        # schema persistence (mirrors _schema["subframes"]); back-compat: absent key is a no-op
+        try:
+            self._schema.setdefault("structs", {})[name] = {"members": list(members)}
+        except Exception:
+            pass
+        return self
+
+    def ensure_struct(self, name):
+        """Load all members of a registered struct under their internal names."""
+        if name not in self._structs:
+            raise ValueError(f"ensure_struct: {name!r} is not a registered struct")
+        phys = self._structs[name]["phys"]
+        # physical slash branches; ensure_branches + A-1 rename hook store them internal
+        physical_branches = [phys[m] for m in self._structs[name]["members"]]
+        # only load members not already present (under internal name)
+        internal = {self._struct_internal_name(name, m): self._struct_physical_name(name, m)
+                    for m in self._structs[name]["members"]}
+        missing_phys = [internal[i] for i in internal if i not in self.df.columns]
+        if missing_phys and getattr(self, "_lazy_reader", None) is not None:
+            self.ensure_branches(missing_phys)
+        return self
+
+    def _prepare_struct_refs(self, expr):
+        """Rewrite logical struct refs (struct.member) -> internal (member__struct) in
+        expression text, for every registered struct. Text-only; single direction;
+        no join, no scatter (structs are the simpler sibling of subframes).
+        """
+        if not self._structs or not isinstance(expr, str):
+            return expr
+        import re as _re
+        for st in self._structs.values():
+            for logical, internal in st["l2i"].items():
+                # word-boundary safe: replace the exact dotted token
+                expr = _re.sub(r"(?<![\w.])" + _re.escape(logical) + r"(?![\w])",
+                               internal, expr)
+        return expr
 
     def register_subframe(self, name, adf, index_columns, pre_index=False, right_index_columns=None):
         """
@@ -2346,6 +2613,36 @@ class AliasDataFrame:
                             to_process.append(dep_name)
         
         return subframes_needed
+
+    def _get_structs_for_aliases(self, alias_names: List[str]) -> Set[str]:
+        """PHASE_13_66_ADF (#11): struct names referenced by the given aliases,
+        recursively. Mirrors _get_subframes_for_aliases."""
+        structs_needed = set()
+        all_structs = set(getattr(self, "_structs", {}))
+        if not all_structs:
+            return structs_needed
+        pat = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b')
+
+        def find_in_expr(expr):
+            for match in pat.finditer(expr):
+                if match.group(1) in all_structs:
+                    structs_needed.add(match.group(1))
+
+        processed = set()
+        to_process = list(alias_names) if alias_names else []
+        while to_process:
+            an = to_process.pop()
+            if an in processed:
+                continue
+            processed.add(an)
+            expr = self.aliases.get(an)
+            if expr:
+                find_in_expr(expr)
+                if an in self.aliases:
+                    for dep_type, dep_name in self._get_alias_dependencies(an, expr):
+                        if dep_type == 'alias' and dep_name not in processed:
+                            to_process.append(dep_name)
+        return structs_needed
 
     @property
     def lazy_subframes(self) -> List[str]:
@@ -3467,6 +3764,8 @@ class AliasDataFrame:
         subframe_names = set()
         if hasattr(self, '_subframes') and hasattr(self._subframes, 'subframes'):
             subframe_names = set(self._subframes.subframes.keys())
+        # PHASE_13_66_ADF: struct names for disambiguation (parallel to subframe_names)
+        struct_names = getattr(self, '_structs', {})
         
         # Build dependency graph
         g = nx.DiGraph()
@@ -3628,6 +3927,9 @@ class AliasDataFrame:
             Name of alias being evaluated (for warning messages)
         """
         expr = self._prepare_subframe_joins(expr, warn_missing_keys=warn_missing_keys, alias_name=alias_name)
+        # PHASE_13_66_ADF: struct rewrite (logical struct.member -> internal member__struct).
+        # _eval_in_namespace is the single rewrite owner for the eval family.
+        expr = self._prepare_struct_refs(expr)
         
         # Phase 9c note: Per-expression Arrow compute disabled here.
         # Conversion overhead per expression exceeds benefits.
@@ -3649,10 +3951,18 @@ class AliasDataFrame:
             # Function or variable not found
             missing_name = str(e).split("'")[1] if "'" in str(e) else "unknown"
             available_funcs = sorted([k for k in local_env.keys() if callable(local_env.get(k))])[:20]
+            # PHASE_13_66_ADF (D-R7-1 FOLD): if the missing name is a registered struct,
+            # the user likely wrote a bare struct name or an unregistered member.
+            _struct_hint = ""
+            if missing_name in getattr(self, "_structs", {}):
+                _members = self._structs[missing_name]["members"]
+                _struct_hint = (f"\n'{missing_name}' is a registered struct; reference a member "
+                                f"as '{missing_name}.<member>' (members: {sorted(_members)}).")
             raise NameError(
                 f"Undefined function or variable '{missing_name}' in expression: {expr}\n"
                 f"Available functions include: {', '.join(available_funcs)}\n"
                 f"Hint: Common functions are available, including both 'arctan2' and 'atan2'"
+                f"{_struct_hint}"
             ) from e
         except TypeError as e:
             if "cannot convert the series" in str(e):
@@ -3952,6 +4262,8 @@ class AliasDataFrame:
         subframe_names = set()
         if hasattr(self, '_subframes') and hasattr(self._subframes, 'subframes'):
             subframe_names = set(self._subframes.subframes.keys())
+        # PHASE_13_66_ADF: struct names for disambiguation (parallel to subframe_names)
+        struct_names = set(getattr(self, '_structs', {}))
         
         # Known function names to exclude from column refs
         known_funcs = set(ArrowComputeMapper.FUNC_MAP.keys()) if ArrowComputeMapper else set()
@@ -3971,6 +4283,7 @@ class AliasDataFrame:
                 # Skip function names, subframe names, and builtins
                 if (name not in known_funcs and 
                     name not in subframe_names and
+                    name not in struct_names and
                     not name.startswith('_')):
                     column_refs.add(name)
                     
@@ -3982,6 +4295,10 @@ class AliasDataFrame:
                     # Subframe reference: sf_name.column
                     if obj_name in subframe_names:
                         subframe_refs.append((obj_name, attr_name))
+                    # PHASE_13_66_ADF: struct member ref struct.member -> a real TTree
+                    # branch (physical slash form), so it must reach ensure_branches.
+                    elif obj_name in struct_names:
+                        column_refs.add(self._struct_physical_name(obj_name, attr_name))
                     # np.pi, math.e, etc. - just skip (not unsupported)
                     elif obj_name not in ('np', 'numpy', 'math'):
                         # Unknown attribute access - mark as unsupported
@@ -4965,6 +5282,10 @@ function collapseDepth(maxD) {{
                 needed_subframes = self._get_subframes_for_aliases([name])
                 for sf_name in needed_subframes:
                     self.ensure_subframe(sf_name)
+                # PHASE_13_66_ADF (#11): load struct members referenced by this alias
+                # (the singular path lacked the plural path's D1 lazy-branch bridge).
+                for st_name in self._get_structs_for_aliases([name]):
+                    self.ensure_struct(st_name)
 
                 # Automatically materialize any referenced aliases or subframe aliases
                 # CRITICAL: Match 'word.word' BEFORE 'word' to correctly detect subframe references
@@ -6585,6 +6906,11 @@ function collapseDepth(maxD) {{
         # Reader returns new data only (doesn't merge)
         new_data = self._lazy_reader.load_branches(list(to_load))
 
+        # PHASE_13_66_ADF (A-1): rename struct-member branches from physical slash
+        # form (dedxTPC/dEdxTotIROC) to internal name (dEdxTotIROC__dedxTPC) before
+        # merge, so members live under the eval-safe internal name (anchor 0i).
+        new_data = self._rename_struct_branches_on_load(new_data)
+
         # ADF handles merge (Arrow-compatible pattern)
         self.df = self._merge_loaded_data(self.df, new_data)
     
@@ -7026,9 +7352,16 @@ function collapseDepth(maxD) {{
         identifiers = set()
         function_names = set()
         
+        _struct_names = set(getattr(self, '_structs', {}))
         for node in ast.walk(tree):
             if isinstance(node, ast.Name):
                 identifiers.add(node.id)
+            # PHASE_13_66_ADF (#10): struct member ref struct.member -> physical branch,
+            # so ensure_columns's selection= leg autoloads it (was: ast.Name only, which
+            # dropped the member and kept only the bare struct name).
+            elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) \
+                    and node.value.id in _struct_names:
+                identifiers.add(self._struct_physical_name(node.value.id, node.attr))
             elif isinstance(node, ast.Call):
                 # Track function names to exclude
                 if isinstance(node.func, ast.Name):
@@ -7037,6 +7370,9 @@ function collapseDepth(maxD) {{
                     # e.g., np.abs → exclude 'np'
                     if isinstance(node.func.value, ast.Name):
                         function_names.add(node.func.value.id)
+        # A bare struct name is never a branch/column (walk re-adds it as an ast.Name
+        # child of the Attribute); drop any that leaked in.
+        identifiers -= _struct_names
         
         # Filter out functions, builtins, and common modules
         excluded = function_names | {
@@ -9746,6 +10082,11 @@ function collapseDepth(maxD) {{
         if reg_funcs:
             result['registered_functions'] = copy.deepcopy(reg_funcs)
         
+        # 8. PHASE_13_66_ADF: registered structs (1:1 object/struct branches)
+        if getattr(self, '_structs', None):
+            result['structs'] = {name: {'members': list(st['members'])}
+                                 for name, st in self._structs.items()}
+        
         return result
 
     def export_definition_schema(self, **kwargs):
@@ -10047,6 +10388,14 @@ function collapseDepth(maxD) {{
         if 'registered_functions' in schema:
             self._schema['registered_functions'] = copy.deepcopy(schema['registered_functions'])
             self._reconstruct_registered_functions()
+
+        # PHASE_13_66_ADF: reconstruct registered structs (back-compat: absent key no-op)
+        for _st_name, _st_spec in schema.get('structs', {}).items():
+            try:
+                if _st_name not in self._structs:
+                    self.register_struct(_st_name, list(_st_spec.get('members', [])))
+            except Exception:
+                pass
 
     def _reconstruct_registered_functions(self):
         """
@@ -11725,7 +12074,8 @@ function collapseDepth(maxD) {{
         """
         if not (hasattr(self, '_subframes') and hasattr(self._subframes, 'subframes')):
             return
-        sf_names = set(self._subframes.subframes.keys())
+        # PHASE_13_66_ADF: cover struct names too (same deferred-slot rationale).
+        sf_names = set(self._subframes.subframes.keys()) | set(getattr(self, '_structs', {}))
         if not sf_names:
             return
         import re as _re
@@ -12064,6 +12414,10 @@ function collapseDepth(maxD) {{
                     for _slot in ('weights', 'facet_by', 'color'):
                         if isinstance(kwargs.get(_slot), str):
                             kwargs[_slot] = kwargs[_slot].replace(dot_ref, flat_ref)
+            # PHASE_13_66_ADF: struct rewrite (runs regardless of subframes).
+            if self._structs:
+                expr = self._prepare_struct_refs(expr)
+                self._struct_rewrite_draw_slots(kwargs)
         
         # ── group_by expression materialization (BUG_ADF_GroupByExpressionMaterialization) ──
         # dfdraw requires group_by to be a real column (Phase 13.30 contract).
@@ -13199,6 +13553,10 @@ function collapseDepth(maxD) {{
                         for _slot in ('weights', 'facet_by', 'color'):
                             if isinstance(spec.get(_slot), str):
                                 spec[_slot] = spec[_slot].replace(dot_ref, flat_ref)
+            # PHASE_13_66_ADF: struct rewrite (runs regardless of subframes).
+            if self._structs:
+                for _name, _spec in specs.items():
+                    self._struct_rewrite_draw_slots(_spec)
         
         # Delegate to dfdraw batch
         plotter = DFDraw(df_for_plot)
@@ -13591,6 +13949,12 @@ function collapseDepth(maxD) {{
                             for _slot in ('weights', 'facet_by', 'color'):
                                 if isinstance(plot_spec.get(_slot), str):
                                     plot_spec[_slot] = plot_spec[_slot].replace(dot_ref, flat_ref)
+            # PHASE_13_66_ADF: struct rewrite (runs regardless of subframes).
+            if self._structs:
+                for _fig_spec in specs:
+                    for _plot_spec in _fig_spec.get('plots', []):
+                        if isinstance(_plot_spec, dict):
+                            self._struct_rewrite_draw_slots(_plot_spec)
         
         # ═══════════════════════════════════════════════════════════════════
         # PHASE 5: Generate figures
