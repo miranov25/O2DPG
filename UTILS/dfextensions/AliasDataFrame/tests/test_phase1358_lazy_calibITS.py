@@ -147,5 +147,56 @@ def test_calibITS_subframe_column_lazy_draw():
             lazy.draw(expr=expr, type="profile", bins=10)
 
 
+@pytest.mark.invariance
+def test_calibITS_subframe_lazy_eager_value_parity():
+    """PHASE_13_67 (architect-requested): loading a SUBFRAME column lazily must give exactly
+    the same values as the eager read. Only meaningful when the fixture carries full subframe
+    metadata (index columns) so the subframe registers; the names-only slim skips."""
+    lazy = AliasDataFrame.read_tree_lazy(CALIB_ITS, TREE)
+    if "AlignDzITS5" not in set(getattr(lazy, "lazy_subframes", [])):
+        pytest.skip("names-only fixture: subframes not registered; no subframe data to load")
+    eager = AliasDataFrame.read_tree(CALIB_ITS, TREE)
+    expr = "AlignDzITS5.dz_ITS5T_rms_AITS5"
+    lazy_vals = np.asarray(lazy.eval(expr), dtype=float)
+    eager_vals = np.asarray(eager.eval(expr), dtype=float)
+    assert lazy_vals.shape == eager_vals.shape
+    assert np.allclose(lazy_vals, eager_vals, equal_nan=True), \
+        "subframe column: lazy load != eager load"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ── PHASE_13_67_ADF: back-compat — lazy read applies the same UserInfo metadata as eager ──
+# Old files carry UserInfo written the old way. Rev 3.1 makes the lazy path APPLY it by
+# default (0a). This guards, on real calibITS data, that (a) old data stays readable,
+# (b) lazy aliases == eager read_tree aliases, (c) same branch universe, and (d) metadata
+# application loads nothing at construction (INV-1). Automatic so it is not re-checked by hand.
+
+@pytest.mark.invariance
+def test_calibITS_lazy_applies_same_metadata_as_eager():
+    lazy = AliasDataFrame.read_tree_lazy(CALIB_ITS, TREE)
+    eager = AliasDataFrame.read_tree(CALIB_ITS, TREE)          # read_tree applies UserInfo
+    # (a)+(b) aliases recovered and applied on the lazy path == eager
+    assert set(lazy.aliases) == set(eager.aliases), (
+        f"lazy aliases {set(lazy.aliases)} != eager {set(eager.aliases)}")
+    # (c) same branch universe (lazy knows all branches without loading them)
+    assert sorted(lazy.available_branches) == sorted(eager.df.columns)
+    # (d) metadata application is lazy — nothing loaded at construction (INV-1)
+    assert lazy._lazy_reader.loaded_branches == set()
+    # subframe NAMES always recovered from UserInfo (registration as lazy_subframes
+    # requires index columns — absent in the names-only slim fixture, present in the full
+    # file; assert on the always-present recovered names, robust to both fixtures).
+    _meta = getattr(lazy._lazy_reader, "adf_metadata", None) or {}
+    assert {"R", "AlignDzITS5"} <= set(_meta.get("subframes") or [])
+
+
+@pytest.mark.invariance
+def test_calibITS_lazy_value_parity_with_metadata_eager():
+    """INV-4(b): a lazily-loaded column's values equal the eager read_tree (metadata-bearing)
+    read of the same column — metadata application does not corrupt data."""
+    lazy = AliasDataFrame.read_tree_lazy(CALIB_ITS, TREE)
+    eager = AliasDataFrame.read_tree(CALIB_ITS, TREE)
+    lazy.ensure_columns([Y])
+    assert np.array_equal(np.asarray(lazy.df[Y]), np.asarray(eager.df[Y]))

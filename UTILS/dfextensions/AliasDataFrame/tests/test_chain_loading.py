@@ -100,9 +100,16 @@ class TestChainLoading:
     """Tests for branch loading from chains."""
     
     def test_lazy_no_data_initially(self, chain_root_files):
-        """Lazy chain has no data initially."""
+        """Lazy chain has no data initially.
+
+        PHASE_13_67_ADF (D4): the lazy chain frame is pre-sized to the chain's entry count
+        (index=range(entries)) so hand-added columns before the first load align to the
+        real length. The lazy invariant is therefore "no COLUMNS loaded", not "no rows".
+        Fails without the D4 fix's assertion update (pre-D4 the frame was 0x0, so len(df)==0
+        passed vacuously; post-D4 len(df)==N, so the old assertion would wrongly fail).
+        """
         adf = AliasDataFrame.read_chain_lazy(f'{chain_root_files}/*.root:tree')
-        assert len(adf.df) == 0
+        assert len(adf.df.columns) == 0        # no data columns loaded (real lazy invariant)
         assert len(adf.loaded_branches) == 0
     
     def test_ensure_branches_loads(self, chain_root_files):

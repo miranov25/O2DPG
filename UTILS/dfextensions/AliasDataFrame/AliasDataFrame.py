@@ -26,6 +26,7 @@ try:
         AliasDataFrameError,
         BranchNotFoundError,
         ChainValidationError,
+        ChainMetadataCompatibilityError,
         CircularAliasError
     )
 except ImportError:
@@ -37,6 +38,8 @@ except ImportError:
             self.missing = missing
             self.available = available
             super().__init__(message or f"Branches not found: {sorted(missing)}")
+    class ChainMetadataCompatibilityError(AliasDataFrameError):
+        pass
     class ChainValidationError(AliasDataFrameError):
         pass
     class CircularAliasError(AliasDataFrameError):
@@ -2413,6 +2416,16 @@ class AliasDataFrame:
         if self._subframes.has_subframe(name):
             return  # Already loaded
         
+        # PHASE_13_67_ADF (D3): definition-only chain subframe -> directive error.
+        # Only fires for chain-recovered definitions with no loadable reader (never for
+        # register_subframe / register_subframe_chain, which register loadable readers).
+        if (name in getattr(self, '_chain_subframe_definitions', [])
+                and name not in self._subframe_readers):
+            raise ChainMetadataCompatibilityError(
+                f"Subframe '{name}' is a chain metadata definition only — its content "
+                f"over a chain is not yet defined (per-file snapshots differ). Process "
+                f"per file, or see the 1:N / AO2D brainstorm.")
+
         # Check if it's a lazy subframe
         if name not in self._subframe_readers:
             raise KeyError(f"Subframe '{name}' not registered")
@@ -6738,6 +6751,13 @@ function collapseDepth(maxD) {{
         # subframes (e.g. calibITS -> ['R','AlignDzITS5']). Each subframe is a sibling
         # tree <tree>__subframe__<name>; index columns come from the recovered schema.
         meta = getattr(lazy_reader, 'adf_metadata', None)
+        # PHASE_13_67 Rev 3.1 (0a): apply recovered UserInfo (aliases/dtypes/compression)
+        # by DEFAULT — UserInfo is authoritative, not optional. Lazy: loads zero columns
+        # (INV-1); dtype/compression take effect at load time (INV-4b). Static method ->
+        # reference the class explicitly (read_tree_lazy has no cls). Explicit schema=
+        # applied above still wins for overlapping keys.
+        if meta:
+            adf._apply_recovered_metadata(AliasDataFrame._normalize_chain_meta(meta))
         if meta and meta.get('subframes'):
             names_only = meta.get('schema_source') == 'names_only'
             indices = meta.get('subframe_indices') or {}
@@ -6968,6 +6988,106 @@ function collapseDepth(maxD) {{
     #
     # =========================================================================
     
+    # ================= PHASE_13_67_ADF: chain lazy metadata recovery =================
+    @staticmethod
+    def _canon_meta_dtype(x):
+        """Canonical dtype string; TypeError fallback (category / codec labels)."""
+        try:
+            return np.dtype(x).str
+        except TypeError:
+            return str(x).strip()
+
+    @classmethod
+    def _normalize_chain_meta(cls, meta):
+        """D2 equality relation over the REAL adf_metadata structure
+        (adf_metadata_compat.read_adf_metadata): aliases{name:expr}, column_dtypes{name:
+        dtype}, subframes[list of names] + subframe_indices{name:index_cols}. _source/raw
+        ignored. names_only (schema_source) -> sentinel."""
+        if not isinstance(meta, dict):
+            return None
+        # names_only / structure-only metadata is a LEGITIMATE sparse case (subframe key
+        # names recovered, no full aliases/dtypes) — common for calib files. It is NOT a
+        # refuse condition: it simply has no column-level payload to apply/compare.
+        aliases = {k: str(v).strip() for k, v in (meta.get("aliases") or {}).items()}
+        dtypes = {k: cls._canon_meta_dtype(v)
+                  for k, v in sorted((meta.get("column_dtypes") or {}).items())}
+        idx = meta.get("subframe_indices") or {}
+        subframes = {}
+        for name in (meta.get("subframes") or []):        # LIST of names
+            spec = idx.get(name) or {}
+            if isinstance(spec, dict):
+                entry = {"index_columns": list(spec.get("index_columns", []))}
+                if "right_index_columns" in spec:
+                    entry["right_index_columns"] = list(spec["right_index_columns"])
+            else:                                          # spec may be a bare index list
+                entry = {"index_columns": list(spec) if spec else []}
+            subframes[name] = entry
+        compression = meta.get("compression") or meta.get("column_compression") or {}
+        return {"aliases": aliases, "dtypes": dtypes, "subframes": subframes,
+                "compression": compression}
+
+    @staticmethod
+    def _first_meta_diff(ref, cur):
+        if isinstance(ref, dict) and isinstance(cur, dict):
+            for k in sorted(set(ref) | set(cur)):
+                if ref.get(k) != cur.get(k):
+                    return f"item '{k}': reference={ref.get(k)!r} vs file={cur.get(k)!r}"
+        return f"reference={ref!r} vs file={cur!r}"
+
+    @classmethod
+    def _check_chain_metadata_compatibility(cls, metas, file_specs):
+        """D2 strict compatibility. First metadata-bearing file = reference; any
+        post-normalization difference -> ChainMetadataCompatibilityError naming file
+        index/path/item. Mixed presence -> refuse. All-missing -> None (bare)."""
+        present = [(i, m) for i, m in enumerate(metas) if m is not None]
+        if not present:
+            return None
+        if len(present) != len(metas):
+            missing = [i for i, m in enumerate(metas) if m is None]
+            raise ChainMetadataCompatibilityError(
+                f"chain metadata mixed presence: file {missing[0]} "
+                f"({file_specs[missing[0]]}) has no ADF metadata while others do")
+        ref_i, ref_meta = present[0]
+        ref = cls._normalize_chain_meta(ref_meta)
+        for i, m in present[1:]:
+            cur = cls._normalize_chain_meta(m)
+            for section in ("aliases", "dtypes", "subframes", "compression"):
+                if cur[section] != ref[section]:
+                    raise ChainMetadataCompatibilityError(
+                        f"file {i} ({file_specs[i]}) differs from reference file "
+                        f"{ref_i} ({file_specs[ref_i]}) in {section}: "
+                        f"{cls._first_meta_diff(ref[section], cur[section])}")
+        return cls._normalize_chain_meta(ref_meta)
+
+    def _apply_recovered_metadata(self, meta):
+        """D1: apply normalized recovered metadata (aliases + dtypes) to this ADF.
+        `meta` is the normalized dict from _normalize_chain_meta. Subframe definitions
+        recorded by the caller (D3). Idempotent; explicit schema= overrides. Returns self."""
+        if not meta:
+            return self
+        for name, expr in (meta.get("aliases") or {}).items():
+            try:
+                if name not in self.aliases:
+                    self.add_alias(name, expr)
+            except Exception:
+                pass
+        dtypes = meta.get("dtypes")
+        if dtypes:
+            try:
+                self.update_schema({"columns": dict(dtypes)})
+            except Exception:
+                pass
+        # PHASE_13_67 Rev 3.1 (0c): record recovered compression into the SAME _schema
+        # structure the lazy-load decompression path reads, so it applies AT LOAD (INV-4b),
+        # not eagerly (INV-1). Additive; existing entries preserved.
+        comp = meta.get("compression")
+        if comp:
+            try:
+                self._schema.setdefault("compression", {}).update(comp)
+            except Exception:
+                pass
+        return self
+
     @classmethod
     def read_chain_lazy(cls,
                         files: Union[str, List[str]],
@@ -6975,6 +7095,7 @@ function collapseDepth(maxD) {{
                         branches: List[str] = None,
                         schema: dict = None,
                         validate_branches: str = 'first',
+                        validate_metadata: str = None,
                         add_file_index: bool = False,
                         max_open_files: int = 8) -> 'AliasDataFrame':
         """
@@ -7026,6 +7147,14 @@ function collapseDepth(maxD) {{
         from LazyChainReader import LazyChainReader
         
         # Parse file specifications
+        # PHASE_13_67_ADF (#5/DD-B): validate metadata mode before any file work.
+        # PHASE_13_67 Rev 3.1 (Δ1): validate_metadata is a strict-only selector, NOT a
+        # gate — application is always on (0a). Accept 'strict'/None; raise otherwise.
+        if validate_metadata not in (None, 'strict'):
+            raise ValueError(
+                f"read_chain_lazy: validate_metadata must be None or 'strict', "
+                f"got {validate_metadata!r}")
+
         file_specs = cls._parse_chain_files(files, tree_name)
         
         if not file_specs:
@@ -7040,9 +7169,32 @@ function collapseDepth(maxD) {{
         )
         
         # Create ADF with empty DataFrame
-        adf = cls(pd.DataFrame())
-        
-        # Apply schema if provided
+        adf = cls(pd.DataFrame(index=range(chain_reader.entries)))  # Rev 3.1 D4: pre-size
+
+        # PHASE_13_67 Rev 3.1: apply canonical UserInfo by DEFAULT (0a); first file
+        # canonical; raise on incompatibility (0b). Loads zero columns (INV-1).
+        _paths = [(fs.get('path', fs) if isinstance(fs, dict) else fs)
+                  for fs in file_specs]
+        # §4 (Rev 3.1a): union/intersection modes exist for heterogeneous chains whose
+        # per-file schemas legitimately differ; metadata recovery/comparison does not apply
+        # there — SKIP it (no raise, no apply), preserving existing union/intersection
+        # behavior. Recovery runs only for strict/first. (Revises R3-2's "raise" default,
+        # which broke existing ValidationModes features; architect may revisit.)
+        _ref = None
+        if validate_branches in ('strict', 'first'):
+            _ref = cls._check_chain_metadata_compatibility(
+                chain_reader._file_metadata, _paths)
+        if _ref:
+            adf._apply_recovered_metadata(_ref)   # aliases + dtypes + compression
+            # D3: record subframe DEFINITIONS only (loadable=False, content undefined)
+            _defs = getattr(adf, '_chain_subframe_definitions', [])
+            for _sfname, _sfspec in (_ref.get('subframes') or {}).items():
+                adf._schema.setdefault('subframes', {})[_sfname] = _sfspec
+                if _sfname not in _defs:
+                    _defs.append(_sfname)
+            adf._chain_subframe_definitions = _defs
+
+        # Explicit schema= overrides recovered (caller precedence)
         if schema:
             adf.update_schema(schema)
         

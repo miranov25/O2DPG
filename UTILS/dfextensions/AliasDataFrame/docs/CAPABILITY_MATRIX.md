@@ -1,21 +1,21 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-07-02 16:07 UTC
+**Generated:** 2026-07-03 12:07 UTC
 **Phase:** PHASE_13_57_DF_END
-**Taxonomy:** 58 features (PHASE_13_11_B approved)
+**Taxonomy:** 59 features (PHASE_13_11_B approved)
 **Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)
 
 ## Summary
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 35 | 60% |
-| ☑️ Smoke-only | 17 | 29% |
-| 🧨 Broken | 5 | 8% |
+| ✅ Verified | 37 | 62% |
+| ☑️ Smoke-only | 17 | 28% |
+| 🧨 Broken | 4 | 6% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **58** | |
-| **Matched tests** | **1878** | |
-| **Invariance tests** | **315** | |
+| **Total features** | **59** | |
+| **Matched tests** | **1897** | |
+| **Invariance tests** | **321** | |
 
 **Unmatched tests:** 110 (not mapped to any feature)
 
@@ -40,7 +40,7 @@
 | Status | Feature | Tests | Pass | Fail | Inv |
 |--------|---------|------:|-----:|-----:|:---:|
 | ✅ | **SUB.register** — Subframe registration | 50 | 50 | 0 | 3 |
-| 🧨 | **SUB.join** — Subframe join & column resolution | 70 | 69 | 1 | 22 |
+| ✅ | **SUB.join** — Subframe join & column resolution | 70 | 70 | 0 | 22 |
 | ✅ | **SUB.composite_key** — Composite key operations | 38 | 38 | 0 | 2 |
 | ✅ | **SUB.auto_alias** — Auto-aliasing subframe columns | 11 | 10 | 0 | 1 |
 | 📋 | **SUB.clone** — Clone with selection (planned) | 0 | 0 | 0 |  |
@@ -102,7 +102,8 @@
 | ✅ | **LAZY.chain** — Chain loading (multiple files) | 60 | 58 | 0 | 8 |
 | ✅ | **LAZY.materialization** — Lazy subframe & alias evaluation | 54 | 54 | 0 | 2 |
 | ✅ | **LAZY.userinfo_backcompat** — Lazy-path UserInfo metadata back-compatibility (AD-3 precedence) | 15 | 14 | 0 | 5 |
-| ✅ | **LAZY.timeseries_draw** — Single-tree lazy time-series loading & lazy drawing (D1 resolver + D2 draw-surface branch scan + D3 estimate_memory) | 37 | 36 | 0 | 30 |
+| ✅ | **LAZY.chain_metadata** — Chain lazy metadata recovery (PHASE_13_67) — first-file UserInfo canonical, applied by DEFAULT (aliases+dtypes+compression, 0a); raise on cross-file incompatibility (0b); union/intersection SKIP recovery (behavior-preserving); lazy application loads zero columns (INV-1); D4 pre-sized chain frame; names_only is a valid sparse case; lazy vs eager metadata + subframe value parity verified on real calibITS | 16 | 15 | 0 | 3 |
+| ✅ | **LAZY.timeseries_draw** — Single-tree lazy time-series loading & lazy drawing (D1 resolver + D2 draw-surface branch scan + D3 estimate_memory) | 40 | 38 | 0 | 33 |
 | ✅ | **LAZY.subframe_draw** — Subframe-column lazy draw (single-level A.col + nested A.B.col; on-demand materialization via ensure_subframe + recursive chain walk) | 3 | 3 | 0 | 3 |
 | ✅ | **LAZY.alias_autoload** — Alias resolution auto-loads lazy branches (materialize_aliases / validate_aliases / describe_aliases bridge to the lazy reader; LAZY status) | 6 | 6 | 0 | 4 |
 | ☑️ | **LAZY.expression_autoload** — Expression/column lazy autoload via ensure_columns() — bridges df.eval()/direct-access paths on a lazy ADF (get_required_branches → ensure_branches; branches-only, subframe-name + dotted-ref filtered; eager no-op) | 11 | 11 | 0 |  |
@@ -148,9 +149,6 @@
 | ✅ | **DISPATCH.dict_dispatch** — Draw-path dict dispatch frame: draw()/draw_batch()/draw_figures() hand dfdraw only the needed columns (get_required_branches ∪ materialized alias names ∪ subframe index cols); structural column-count gate + peak-RSS + volume-invariance memory gates + dict≡full-frame equivalence (AC-1/1a/1b incl. subframe single+multi-level) + loud no-silent-full-frame fallback | 20 | 20 | 0 | 18 |
 
 ## 🧨 Broken Features — Details
-
-### SUB.join
-- ❌ `test_alias_subframe.py::TestSubframeRoundtrip::test_parquet_roundtrip`
 
 ### DRAW.execution
 - ❌ `test_K1_vector_draw_kwarg_diagnostic.py::TestK1VectorDrawKwargDiagnostic::test_K1_3_draw_batch_forwards_batch_kwargs`

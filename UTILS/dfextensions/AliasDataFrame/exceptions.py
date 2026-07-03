@@ -32,6 +32,13 @@ class BranchNotFoundError(AliasDataFrameError, ValueError):
         super().__init__(message)
 
 
+class ChainMetadataCompatibilityError(AliasDataFrameError):
+    """PHASE_13_67_ADF: chain files carry incompatible ADF metadata (aliases, schema/
+    dtypes, subframe definitions, or compression entries). Names the offending file
+    index, path, and item. Raised by strict metadata validation over a lazy chain."""
+    pass
+
+
 class ChainValidationError(AliasDataFrameError):
     """Chain validation failed due to branch mismatch.
     

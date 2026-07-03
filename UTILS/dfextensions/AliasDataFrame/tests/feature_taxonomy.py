@@ -324,6 +324,15 @@ FEATURES = [
          # Phase 13.59.ADF — BUG_20260613 lazy UserInfo gap + AD-3 read precedence
          "test_phase1359_lazy_userinfo.py",
      ]},
+    {"id": "LAZY.chain_metadata", "name": "Chain lazy metadata recovery (PHASE_13_67) — first-file UserInfo canonical, applied by DEFAULT (aliases+dtypes+compression, 0a); raise on cross-file incompatibility (0b); union/intersection SKIP recovery (behavior-preserving); lazy application loads zero columns (INV-1); D4 pre-sized chain frame; names_only is a valid sparse case; lazy vs eager metadata + subframe value parity verified on real calibITS", "category": "LAZY_LOADING",
+     "test_patterns": [
+         # PHASE_13_67_ADF — chain metadata comparator/apply (real adf_metadata structure)
+         "test_phase_13_67_chain_metadata.py",
+         # real-data back-compat: lazy applies same UserInfo as eager; subframe lazy==eager
+         "test_phase1358_lazy_calibITS.py::test_calibITS_lazy_applies_same_metadata_as_eager",
+         "test_phase1358_lazy_calibITS.py::test_calibITS_lazy_value_parity_with_metadata_eager",
+         "test_phase1358_lazy_calibITS.py::test_calibITS_subframe_lazy_eager_value_parity",
+     ]},
     {"id": "LAZY.timeseries_draw", "name": "Single-tree lazy time-series loading & lazy drawing (D1 resolver + D2 draw-surface branch scan + D3 estimate_memory)", "category": "LAZY_LOADING",
      "test_patterns": [
          # Phase 13.58.ADF — single-tree lazy time-series (use case 1)

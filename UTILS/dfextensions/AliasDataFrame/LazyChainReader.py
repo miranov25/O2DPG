@@ -90,6 +90,9 @@ class LazyChainReader:
         
         # Per-file branch sets (needed for union/first modes)
         self._file_branches: List[Set[str]] = []
+        # PHASE_13_67_ADF: per-file ADF metadata (UserInfo), stable, captured here so
+        # read_chain_lazy needs no LRU-cached readers and no duplicate file opens (D5).
+        self._file_metadata: List = []
         
         # Initialize chain (validate, compute offsets)
         self._initialize_chain()
@@ -104,6 +107,8 @@ class LazyChainReader:
             reader = self._get_reader(idx)
             branches = reader.available_branches
             entries = reader.entries
+            # PHASE_13_67_ADF (#1/D5): capture this file's ADF metadata now.
+            self._file_metadata.append(getattr(reader, 'adf_metadata', None))
             
             # Store entry count in file spec
             file_spec['entries'] = entries
