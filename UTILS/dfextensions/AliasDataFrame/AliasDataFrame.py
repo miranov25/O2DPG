@@ -7096,6 +7096,7 @@ function collapseDepth(maxD) {{
                         schema: dict = None,
                         validate_branches: str = 'first',
                         validate_metadata: str = None,
+                        metadata_conflict: str = 'error',
                         add_file_index: bool = False,
                         max_open_files: int = 8) -> 'AliasDataFrame':
         """
@@ -7148,12 +7149,20 @@ function collapseDepth(maxD) {{
         
         # Parse file specifications
         # PHASE_13_67_ADF (#5/DD-B): validate metadata mode before any file work.
-        # PHASE_13_67 Rev 3.1 (Δ1): validate_metadata is a strict-only selector, NOT a
-        # gate — application is always on (0a). Accept 'strict'/None; raise otherwise.
+        # PHASE_13_67: validate_metadata is a placeholder for a future strictness selector.
+        # TO BE IMPLEMENTED (reserved for a future 'warn'-style mode); today it accepts only
+        # 'strict'/None and does not change behavior. Metadata recovery is always on (0a);
+        # conflict handling is controlled by metadata_conflict (below), not by this.
         if validate_metadata not in (None, 'strict'):
             raise ValueError(
                 f"read_chain_lazy: validate_metadata must be None or 'strict', "
-                f"got {validate_metadata!r}")
+                f"got {validate_metadata!r} (this parameter is reserved / TO BE IMPLEMENTED)")
+        # metadata_conflict policy: how to handle a metadata incompatibility across chain
+        # files, or metadata present under a union/intersection branch mode.
+        if metadata_conflict not in ('error', 'warn', 'skip'):
+            raise ValueError(
+                f"read_chain_lazy: metadata_conflict must be 'error', 'warn', or 'skip', "
+                f"got {metadata_conflict!r}")
 
         file_specs = cls._parse_chain_files(files, tree_name)
         
@@ -7175,15 +7184,38 @@ function collapseDepth(maxD) {{
         # canonical; raise on incompatibility (0b). Loads zero columns (INV-1).
         _paths = [(fs.get('path', fs) if isinstance(fs, dict) else fs)
                   for fs in file_specs]
-        # §4 (Rev 3.1a): union/intersection modes exist for heterogeneous chains whose
-        # per-file schemas legitimately differ; metadata recovery/comparison does not apply
-        # there — SKIP it (no raise, no apply), preserving existing union/intersection
-        # behavior. Recovery runs only for strict/first. (Revises R3-2's "raise" default,
-        # which broke existing ValidationModes features; architect may revisit.)
+        _has_meta = any(m is not None for m in chain_reader._file_metadata)
+        # PHASE_13_67 (architect decisions 2026-07-03): metadata conflicts are handled by
+        # the metadata_conflict policy — 'error' (default), 'warn', or 'skip'. The default
+        # stops with an error; the error explains how to turn it off.
+        def _handle_metadata_conflict(_msg):
+            if metadata_conflict == 'error':
+                raise ChainMetadataCompatibilityError(
+                    _msg + " To proceed without metadata recovery, pass "
+                    "metadata_conflict='skip' (silent) or 'warn' (warn and proceed).")
+            if metadata_conflict == 'warn':
+                warnings.warn(_msg + " Proceeding without metadata recovery "
+                              "(metadata_conflict='warn').")
+            # 'skip': proceed silently
+
         _ref = None
-        if validate_branches in ('strict', 'first'):
-            _ref = cls._check_chain_metadata_compatibility(
-                chain_reader._file_metadata, _paths)
+        if validate_branches in ('union', 'intersection'):
+            # Decision 2 (kept OPEN, parametrizable): union/intersection chains have
+            # legitimately different per-file schemas, so applying one file's metadata is
+            # ambiguous. Default = error; recovery is skipped either way.
+            if _has_meta:
+                _handle_metadata_conflict(
+                    f"read_chain_lazy: chain files carry ADF metadata but "
+                    f"validate_branches={validate_branches!r}; per-file schemas may differ, "
+                    f"so no single canonical metadata can be applied.")
+        elif validate_branches in ('strict', 'first'):
+            try:
+                _ref = cls._check_chain_metadata_compatibility(
+                    chain_reader._file_metadata, _paths)
+            except ChainMetadataCompatibilityError as _e:
+                # Decision 1: cross-file mismatch -> error by default, downgradeable.
+                _handle_metadata_conflict(str(_e))
+                _ref = None
         if _ref:
             adf._apply_recovered_metadata(_ref)   # aliases + dtypes + compression
             # D3: record subframe DEFINITIONS only (loadable=False, content undefined)

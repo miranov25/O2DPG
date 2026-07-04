@@ -283,7 +283,7 @@ class TestValidationModes:
             warnings.simplefilter("ignore")
             adf = AliasDataFrame.read_chain_lazy(
                 f'{mismatched_chain_files}/*.root:tree',
-                validate_branches='intersection'
+                validate_branches='intersection', metadata_conflict='skip'
             )
         # Only branches in ALL files should be available
         assert 'common_branch' in adf.available_branches
@@ -295,7 +295,7 @@ class TestValidationModes:
             warnings.simplefilter("ignore")
             adf = AliasDataFrame.read_chain_lazy(
                 f'{mismatched_chain_files}/*.root:tree',
-                validate_branches='union'
+                validate_branches='union', metadata_conflict='skip'
             )
         # All branches from any file should be available
         assert 'y' in adf.available_branches  # Only in first file
@@ -307,7 +307,7 @@ class TestValidationModes:
             warnings.simplefilter("ignore")
             adf = AliasDataFrame.read_chain_lazy(
                 f'{mismatched_chain_files}/*.root:tree',
-                validate_branches='union',
+                validate_branches='union', metadata_conflict='skip',
                 add_file_index=True
             )
         
@@ -343,7 +343,7 @@ class TestValidationModes:
         with pytest.warns(UserWarning, match="Intersection mode"):
             AliasDataFrame.read_chain_lazy(
                 f'{mismatched_chain_files}/*.root:tree',
-                validate_branches='intersection'
+                validate_branches='intersection', metadata_conflict='skip'
             )
     
     def test_union_warns(self, mismatched_chain_files):
@@ -351,7 +351,7 @@ class TestValidationModes:
         with pytest.warns(UserWarning, match="Union mode"):
             AliasDataFrame.read_chain_lazy(
                 f'{mismatched_chain_files}/*.root:tree',
-                validate_branches='union'
+                validate_branches='union', metadata_conflict='skip'
             )
 
 

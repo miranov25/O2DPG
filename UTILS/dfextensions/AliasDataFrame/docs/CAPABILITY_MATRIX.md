@@ -1,6 +1,6 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-07-03 12:07 UTC
+**Generated:** 2026-07-04 08:14 UTC
 **Phase:** PHASE_13_57_DF_END
 **Taxonomy:** 59 features (PHASE_13_11_B approved)
 **Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)
@@ -151,20 +151,20 @@
 ## 🧨 Broken Features — Details
 
 ### DRAW.execution
-- ❌ `test_K1_vector_draw_kwarg_diagnostic.py::TestK1VectorDrawKwargDiagnostic::test_K1_3_draw_batch_forwards_batch_kwargs`
 - ❌ `test_K2_vector_draw_end_to_end.py::TestK2VectorDrawEndToEnd::test_K2_3_production_reproducer_mirror`
+- ❌ `test_K1_vector_draw_kwarg_diagnostic.py::TestK1VectorDrawKwargDiagnostic::test_K1_3_draw_batch_forwards_batch_kwargs`
 
 ### COMP.roundtrip
-- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
 - ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
+- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
 
 ### BACK.invariance
 - ❌ `test_invariance_backend.py::TestInvarianceBackend::test_I2_6_chained_subframe_expressions_numba_vs_numpy`
 
 ### RDF.export
-- ❌ `test_AliasDataFrameRDF.py::TestTMemFileBranch::test_missing_keys_in_friend`
 - ❌ `test_AliasDataFrameRDF.py::TestRDataFrameFriendAccess::test_composite_index_friend`
 - ❌ `test_AliasDataFrameRDF.py::TestAddDefinesCollision::test_collision_from_friend_tree`
+- ❌ `test_AliasDataFrameRDF.py::TestTMemFileBranch::test_missing_keys_in_friend`
 
 ## Unmatched Tests
 
