@@ -3330,6 +3330,21 @@ def make_sliding_window_fit(
     boundary_resolved = _resolve_boundary(boundary, gb_columns)
     _validate_periodic_dims(boundary_resolved, bounds, full_window_spec)
 
+    # ------------------------------------------------------------------
+    # Bug catalog instance #9 (Phase 13.23c.GB, architect ruling
+    # 2026-07-04: "OK. Let's make it a warning."): the recompute path
+    # (the default) does NOT consume boundary_resolved — computation
+    # proceeds as boundary='full'. Warn loudly instead of failing.
+    # ------------------------------------------------------------------
+    _boundary_is_nonfull = any(m != 'full' for m in boundary_resolved.values())
+    if algorithm != 'incremental' and _boundary_is_nonfull:
+        warnings.warn(
+            "boundary='%s' is IGNORED by algorithm='recompute' (default); "
+            "computation proceeds with boundary='full'. Use "
+            "algorithm='incremental' to honour the boundary. See "
+            "BUG catalog instance #9." % (boundary,),
+            UserWarning, stacklevel=2)
+
     # Determine if non-uniform kernel is active
     _is_weighted_kernel = (kernel != 'uniform') if isinstance(kernel, str) else True
     kernel_width_resolved = _resolve_kernel_width(kernel_width, full_window_spec, gb_columns)
@@ -3646,6 +3661,15 @@ def make_sliding_window_fit(
         out[float_cols] = out[float_cols].astype(cast_dtype)
 
     # Provenance (V4-compatible metadata + SW-specific fields)
+    # Phase 13.23c.GB (bug #9 metadata-truth): this shared block serves both
+    # the V3-numpy incremental fallback (boundary honoured) and the recompute
+    # path (boundary IGNORED — effective 'full'). Metadata must record the
+    # boundary ACTUALLY used, not the requested one (audit failure-mode:
+    # "metadata records requested-not-applied parameters").
+    if algorithm == 'incremental':
+        _boundary_mode_actual = {dim: boundary_resolved[dim] for dim in gb_columns}
+    else:
+        _boundary_mode_actual = {dim: 'full' for dim in gb_columns}
     metadata = _build_sw_metadata(
         fit_columns=fit_columns,
         linear_columns=linear_columns,
@@ -3655,7 +3679,7 @@ def make_sliding_window_fit(
         weights_column=weights,
         min_stat=min_stat,
         window_spec=full_window_spec,
-        boundary_mode={dim: boundary_resolved[dim] for dim in gb_columns},
+        boundary_mode=_boundary_mode_actual,
         kernel=kernel,
         kernel_width=kernel_width_resolved,
         algorithm=algorithm,
