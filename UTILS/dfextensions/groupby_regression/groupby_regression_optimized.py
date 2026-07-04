@@ -481,7 +481,11 @@ def _build_fit_metadata(
         metadata['columns']['errors'][target] = err_cols
         metadata['columns']['quality'][target] = [rms_col, mad_col]
     
-    # Median columns (if provided)
+    # Median columns (if provided).
+    # Phase 13.23c.GB (BUG_groupby_20260704, naming ruling "Option B"):
+    # medians are emitted as f"{col}{suffix}" — these names now actually
+    # exist in dfGB, so this metadata is truthful (audit failure-mode:
+    # "metadata records requested-not-applied parameters" — resolved).
     if median_columns:
         metadata['columns']['medians'] = [f"{col}{suffix}" for col in median_columns]
     
@@ -1662,7 +1666,15 @@ def make_parallel_fit_v4(
     linear_columns : str or list[str]
         Predictor variable(s)
     median_columns : list[str], optional
-        Columns for per-group medians (not yet implemented)
+        Columns for per-group medians. For each entry, dfGB gains one column
+        ``f"{col}{suffix}"`` holding the per-group median computed over the
+        SAME rows used for the fit (i.e. after ``selection``; NaN values are
+        skipped within each group; no per-target validity filtering is
+        applied). The suffix is applied exactly as for every other output
+        column, matching legacy ``GroupByRegressor`` behavior (fixed in
+        Phase 13.23c.GB, BUG_groupby_20260704, naming per architect ruling
+        "Option B" 2026-07-04). Raises ValueError if the suffixed name
+        collides with an existing dfGB output column.
     weights : str, optional
         Column with sample weights
     suffix : str, default="_v4"
@@ -2100,6 +2112,44 @@ def make_parallel_fit_v4(
 
 
     dfGB = pd.DataFrame(out_dict)
+
+    # ========================================================================
+    # PER-GROUP MEDIANS (BUG_groupby_20260704_median_columns_silently_ignored)
+    # Phase 13.23c.GB — architect ruling 2026-07-04 ("It is bug and should be
+    # fixed") + naming ruling 2026-07-04 ("Option B"): for each col in
+    # median_columns, per-group median over the SAME rows used for the fit
+    # (post-`selection`; no per-target NaN filtering — pandas median skips
+    # NaN within each group). Output column is f"{col}{suffix}" — the suffix
+    # is applied exactly as for every other output column, matching legacy
+    # GroupByRegressor behavior (groupby_regression.py:88-89 compute +
+    # :538 suffix rename).
+    # ========================================================================
+    if median_columns:
+        # Name-collision guard: the suffixed median name must not collide
+        # with any column already present in dfGB (group keys, coefficients,
+        # errors, diagnostics).
+        for _mcol in median_columns:
+            _mout = f"{_mcol}{suffix}"
+            if _mout in dfGB.columns:
+                raise ValueError(
+                    f"median_columns entry '{_mcol}' produces output column "
+                    f"'{_mout}' which collides with an existing dfGB output "
+                    f"column. Rename the input column or remove it from "
+                    f"median_columns.")
+        # `df` here is already selection-filtered (df.loc[selection] above),
+        # identical row set to the fit. groupby(sort=True) matches the
+        # mergesort group order used for out_dict, but alignment is done by
+        # key reindex (not order) to stay correct on both backend paths.
+        _med = df.groupby(gb_cols, sort=True, observed=True)[
+            list(median_columns)].median()
+        if len(gb_cols) == 1:
+            _med_index = pd.Index(key_arrays[gb_cols[0]], name=gb_cols[0])
+        else:
+            _med_index = pd.MultiIndex.from_arrays(
+                [key_arrays[c] for c in gb_cols], names=gb_cols)
+        _med_aligned = _med.reindex(_med_index)
+        for _mcol in median_columns:
+            dfGB[f"{_mcol}{suffix}"] = _med_aligned[_mcol].to_numpy()
 
     # ========================================================================
     # BUILD METADATA (IF REQUESTED)
