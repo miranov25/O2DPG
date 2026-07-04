@@ -104,13 +104,20 @@ class TestChainLoading:
 
         PHASE_13_67_ADF (D4): the lazy chain frame is pre-sized to the chain's entry count
         (index=range(entries)) so hand-added columns before the first load align to the
-        real length. The lazy invariant is therefore "no COLUMNS loaded", not "no rows".
-        Fails without the D4 fix's assertion update (pre-D4 the frame was 0x0, so len(df)==0
-        passed vacuously; post-D4 len(df)==N, so the old assertion would wrongly fail).
+        real length. The lazy invariant is "no COLUMNS loaded", not "no rows".
+        P1-5: also pin the actual pre-sized row count and the hand-added-column-before-load
+        pattern D4 was written to enable (not just the zero-columns invariant).
         """
         adf = AliasDataFrame.read_chain_lazy(f'{chain_root_files}/*.root:tree')
-        assert len(adf.df.columns) == 0        # no data columns loaded (real lazy invariant)
+        assert len(adf.df.columns) == 0                 # no data columns loaded
         assert len(adf.loaded_branches) == 0
+        # D4: frame is pre-sized to the real chain length (1000+2000+3000 = 6000)
+        assert len(adf.df) == 6000
+        # D4 motivation: a hand-added column BEFORE any load must align to that length
+        import numpy as _np
+        adf.df['hand'] = _np.arange(6000)
+        assert len(adf.df['hand']) == 6000
+        assert len(adf.df.columns) == 1                 # only the hand-added column so far
     
     def test_ensure_branches_loads(self, chain_root_files):
         """ensure_branches loads from all files."""

@@ -7065,18 +7065,32 @@ function collapseDepth(maxD) {{
         recorded by the caller (D3). Idempotent; explicit schema= overrides. Returns self."""
         if not meta:
             return self
+        # PHASE_13_67 (P1-4 fix): applying recovered metadata must FAIL LOUD, not silently.
+        # A corrupt alias / invalid dtype / bad compression entry emits a visible warning
+        # naming the item, rather than being swallowed while the call reports success. One
+        # bad entry does not abort the whole read (the rest still apply), but it is never
+        # hidden — consistent with the phase's apply-by-default, loud-by-default philosophy.
         for name, expr in (meta.get("aliases") or {}).items():
             try:
                 if name not in self.aliases:
                     self.add_alias(name, expr)
-            except Exception:
-                pass
+            except Exception as e:
+                warnings.warn(
+                    f"_apply_recovered_metadata: could not apply recovered alias "
+                    f"{name!r}={expr!r}: {e}")
         dtypes = meta.get("dtypes")
         if dtypes:
             try:
-                self.update_schema({"columns": dict(dtypes)})
-            except Exception:
-                pass
+                # update_schema expects {name: {"dtype": <dtype>}} spec dicts, NOT bare
+                # strings. (P1-4: the prior {name: <str>} form failed every call and was
+                # silently swallowed, so recovered dtypes never applied.)
+                self.update_schema(
+                    {"columns": {name: {"dtype": dt} for name, dt in dtypes.items()}},
+                    errors="warn")
+            except Exception as e:
+                warnings.warn(
+                    f"_apply_recovered_metadata: could not apply recovered dtypes "
+                    f"{dict(dtypes)!r}: {e}")
         # PHASE_13_67 Rev 3.1 (0c): record recovered compression into the SAME _schema
         # structure the lazy-load decompression path reads, so it applies AT LOAD (INV-4b),
         # not eagerly (INV-1). Additive; existing entries preserved.
@@ -7084,8 +7098,10 @@ function collapseDepth(maxD) {{
         if comp:
             try:
                 self._schema.setdefault("compression", {}).update(comp)
-            except Exception:
-                pass
+            except Exception as e:
+                warnings.warn(
+                    f"_apply_recovered_metadata: could not record recovered compression "
+                    f"{comp!r}: {e}")
         return self
 
     @classmethod

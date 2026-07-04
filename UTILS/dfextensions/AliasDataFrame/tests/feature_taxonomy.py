@@ -324,10 +324,11 @@ FEATURES = [
          # Phase 13.59.ADF — BUG_20260613 lazy UserInfo gap + AD-3 read precedence
          "test_phase1359_lazy_userinfo.py",
      ]},
-    {"id": "LAZY.chain_metadata", "name": "Chain lazy metadata recovery (PHASE_13_67) — first-file UserInfo canonical, applied by DEFAULT (aliases+dtypes+compression, 0a); raise on cross-file incompatibility (0b); union/intersection SKIP recovery (behavior-preserving); lazy application loads zero columns (INV-1); D4 pre-sized chain frame; names_only is a valid sparse case; lazy vs eager metadata + subframe value parity verified on real calibITS", "category": "LAZY_LOADING",
+    {"id": "LAZY.chain_metadata", "name": "Chain lazy metadata recovery (PHASE_13_67) — first-file UserInfo canonical, applied by DEFAULT (aliases+dtypes+compression, 0a); raise on cross-file incompatibility (0b); union/intersection -> error by default via metadata_conflict policy (parametrizable, off-switch in message); lazy application loads zero columns (INV-1); D4 pre-sized chain frame; names_only is a valid sparse case; real public-API read_chain_lazy recovery (alias+dtype+eval) verified on export_tree fixtures; subframe parity test runs on full-metadata fixtures, skips on names-only slim", "category": "LAZY_LOADING",
      "test_patterns": [
          # PHASE_13_67_ADF — chain metadata comparator/apply (real adf_metadata structure)
          "test_phase_13_67_chain_metadata.py",
+         "test_phase_13_67_chain_recovery_public_api.py",
          # real-data back-compat: lazy applies same UserInfo as eager; subframe lazy==eager
          "test_phase1358_lazy_calibITS.py::test_calibITS_lazy_applies_same_metadata_as_eager",
          "test_phase1358_lazy_calibITS.py::test_calibITS_lazy_value_parity_with_metadata_eager",
