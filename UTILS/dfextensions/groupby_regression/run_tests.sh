@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# run_tests.sh — dfdraw Test Runner
+# run_tests.sh — groupby_regression Test Runner
 # =============================================================================
 #
 # Usage:
@@ -18,7 +18,7 @@
 #   test_failures_<ts>.log         Failures only
 #   CAPABILITY_MATRIX_<ts>.md      Auto-generated matrix snapshot
 #   diff_last_commit_<ts>.txt      Uncommitted diff + last commit diff
-#   diff_to_phase_<ts>.txt         Diff since PHASE_BEGIN_dfdraw tag
+#   diff_to_phase_<ts>.txt         Diff since GB phase tag
 #   git_status_<ts>.txt            Working tree state (git status --porcelain)
 #   reviewer_<ts>.zip              Review package
 
@@ -27,7 +27,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Navigate to dfdraw root (parent of tests/)
+# Navigate to groupby_regression root (parent of tests/)
 if [[ "$(basename "$SCRIPT_DIR")" == "tests" ]]; then
     PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 elif [[ -d "$SCRIPT_DIR/tests" ]]; then
@@ -46,7 +46,7 @@ echo "Project root: $PROJECT_ROOT"
 
 show_help() {
     cat << 'EOF'
-dfdraw Test Runner
+groupby_regression Test Runner
 ===================
 
 Usage:
@@ -119,7 +119,7 @@ DIFF_PHASE="$LOG_DIR/diff_to_phase_${TS}.txt"
 GIT_STATUS="$LOG_DIR/git_status_${TS}.txt"
 
 echo "========================================"
-echo "dfdraw Test Runner"
+echo "groupby_regression Test Runner"
 echo "Mode: $MODE"
 echo "Timestamp: $TS"
 echo "PYTEST_WORKERS: $PYTEST_WORKERS"
@@ -154,14 +154,23 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
     } > "$DIFF_COMMIT"
     echo "  Last commit diff: $(realpath "$DIFF_COMMIT" 2>/dev/null || echo "$DIFF_COMMIT")"
 
-    # Phase diff — dfdraw tag names first, fall back to ADF for shared scripts
+    # Phase diff — GB tags FIRST (Phase 13.23c.GB, audit E1: the previous list
+    # searched only dfdraw/ADF tags, so diff_to_phase was never anchored to a
+    # GB phase boundary). Order: newest PHASE_BEGIN_groupby* tag, then newest
+    # PHASE_13_*_GB_* tag, then the legacy dfdraw/ADF names as last resort.
     PHASE_TAG=""
-    for tag in PHASE_BEGIN_dfdraw PHASE_BEGIN_AliasDataFrame PHASE_BEGIN_ADF; do
-        if git rev-parse --verify "$tag" &>/dev/null; then
-            PHASE_TAG="$tag"
-            break
-        fi
-    done
+    PHASE_TAG=$(git tag -l 'PHASE_BEGIN_groupby*' --sort=-creatordate 2>/dev/null | head -1)
+    if [[ -z "$PHASE_TAG" ]]; then
+        PHASE_TAG=$(git tag -l 'PHASE_13_*_GB_*' --sort=-creatordate 2>/dev/null | head -1)
+    fi
+    if [[ -z "$PHASE_TAG" ]]; then
+        for tag in PHASE_BEGIN_dfdraw PHASE_BEGIN_AliasDataFrame PHASE_BEGIN_ADF; do
+            if git rev-parse --verify "$tag" &>/dev/null; then
+                PHASE_TAG="$tag"
+                break
+            fi
+        done
+    fi
 
     if [[ -n "$PHASE_TAG" ]]; then
         # Phase 13.16.DF fix: was '$PHASE_TAG..HEAD' which misses uncommitted work.
@@ -170,11 +179,43 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
         git diff --relative "$PHASE_TAG" -- . > "$DIFF_PHASE" 2>/dev/null || true
         echo "  Phase tag: $PHASE_TAG"
     else
-        echo "(No PHASE_BEGIN_* tag found — searched: PHASE_BEGIN_dfdraw, PHASE_BEGIN_AliasDataFrame, PHASE_BEGIN_ADF)" > "$DIFF_PHASE"
+        echo "(No phase tag found — searched: PHASE_BEGIN_groupby*, PHASE_13_*_GB_*, PHASE_BEGIN_dfdraw, PHASE_BEGIN_AliasDataFrame, PHASE_BEGIN_ADF)" > "$DIFF_PHASE"
         echo "  ⚠️  No phase tag — create with: source scripts/phase_tag.sh && phase_begin <id>"
     fi
     
     # Working tree snapshot — reviewers use this to verify repo state
+    # =========================================================================
+    # Unregistered-file check (Phase 13.23c.GB, architect ruling 2026-07-04:
+    # "warning if the test is not registered", ported from dfdraw BUG-011 in
+    # NON-BLOCKING form). Untracked *.py files run in pytest and inflate the
+    # gate, but are invisible in git diffs — exactly how the bug #12 test file
+    # was missed by reviewers in round 1 (bundle 14:53:53). Here we (a) record
+    # the list for a loud SUMMARY warning, and (b) append their full content
+    # to BOTH diff artifacts via 'git diff --no-index /dev/null <f>' so the
+    # reviewer package is complete WITHOUT mutating the user's git index
+    # (work order offered 'git add -N'; --no-index chosen: zero side effects).
+    # =========================================================================
+    UNTRACKED_PY=$(git status --porcelain -uall -- . 2>/dev/null | grep "^?? " | sed 's/^?? //' | grep "\.py$" || true)
+    # porcelain paths are repo-root-relative; convert to cwd-relative so the
+    # -f test and --no-index append work from the module dir (v2 fix, found
+    # by bundle 15:29:16 — content was silently skipped for every file).
+    _GIT_PREFIX=$(git rev-parse --show-prefix 2>/dev/null || true)
+    if [[ -n "$_GIT_PREFIX" && -n "$UNTRACKED_PY" ]]; then
+        UNTRACKED_PY=$(echo "$UNTRACKED_PY" | sed "s|^$_GIT_PREFIX||")
+    fi
+    if [[ -n "$UNTRACKED_PY" ]]; then
+        for _dfile in "$DIFF_COMMIT" "$DIFF_PHASE"; do
+            {
+                echo ""
+                echo "=== UNREGISTERED (untracked) .py files — content appended by run_tests.sh ==="
+                while IFS= read -r _uf; do
+                    [[ -f "$_uf" ]] && git diff --no-index /dev/null "$_uf" 2>/dev/null || true
+                done <<< "$UNTRACKED_PY"
+            } >> "$_dfile"
+        done
+        echo "  ⚠️  Unregistered .py files detected (content appended to diffs) — see SUMMARY warning"
+    fi
+
     {
         echo "=== git status --porcelain (scoped to cwd) ==="
         git status --porcelain -- . 2>/dev/null || echo "(git status failed)"
@@ -284,7 +325,7 @@ fi
 
 {
     echo "========================================"
-    echo "SUMMARY — dfdraw Test Run"
+    echo "SUMMARY — groupby_regression Test Run"
     echo "========================================"
     echo ""
     echo "Timestamp:    $TS"
@@ -307,6 +348,16 @@ fi
     if [[ -s "$FAIL_FILE" ]]; then
         echo "── Failures ──"
         cat "$FAIL_FILE"
+        echo ""
+    fi
+    if [[ -n "${UNTRACKED_PY:-}" ]]; then
+        echo "── ⚠️  WARNING: UNREGISTERED TEST/SOURCE FILES ──"
+        echo "The following .py files ran in this test session but are NOT"
+        echo "registered in git (untracked). The pass count above INCLUDES"
+        echo "their tests, but a plain commit would NOT include the files."
+        echo "Their content has been appended to the diff artifacts."
+        echo "Register with:  git add <file>"
+        echo "$UNTRACKED_PY" | sed 's/^/    ?? /'
         echo ""
     fi
     if [[ -f "$MATRIX_MD" ]]; then

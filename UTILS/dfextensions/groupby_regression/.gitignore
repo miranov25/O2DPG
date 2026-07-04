@@ -61,3 +61,9 @@ benchmarks/results/
 files/
 gitls.txt
 *.gitlog
+bench_out/*.prof
+bench_out/*.txt
+bench_out/primitives_*.json
+cpp/*.o
+cpp/*.pcm
+cpp/include/json_reader.hpp
