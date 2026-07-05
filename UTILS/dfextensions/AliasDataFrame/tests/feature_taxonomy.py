@@ -367,6 +367,13 @@ FEATURES = [
          "test_phase_13_62_adf_s1.py",
      ]},
 
+    {"id": "LAZY.release",
+     "name": "Explicit lazy-branch/struct release (PHASE_13_68) — release_branches()/release_struct() symmetric evict: drop frame columns AND unbook the physical branch(es) on the lazy reader so a later access re-reads from file; struct members translated internal->physical forward from the registry; all-or-nothing loud refuse for eager frames (DD-alpha), aliases (DD-gamma -> dematerialize), written/__file_idx__ non-branch names (DD-beta), parent-side subframe join keys (DD-delta), and names in a materialized alias's dependency closure (C-6); memory_policy surface accepts 'keep' only ('bounded'/'drop' reserved); purely additive, no automatic eviction",
+     "category": "LAZY_LOADING",
+     "test_patterns": [
+         "test_phase_13_68_release.py",
+     ]},
+
     {"id": "SUBFRAME.asymmetric_join_keys",
      "name": "Asymmetric subframe join keys (PHASE_13_65) — register_subframe(right_index_columns=[...]) lets parent/child join columns differ in name (pandas left_on/right_on); name-aware across all three _compute_join_indices paths (single-col numba, Phase 8c multi-col linearization via rename-before-linearize, merge fallback); right_index_columns=None is byte-identical to the prior same-name behavior; schema-persisted with absent-field back-compat",
      "category": "SUBFRAME",

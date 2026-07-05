@@ -145,7 +145,15 @@ class LazyTreeReader:
         self.loaded_branches.update(to_load)
         
         return new_data
-    
+
+    def release_branches(self, names):
+        """PHASE_13_68_ADF: forget the given physical branches so a later
+        access re-reads them from file. Mutates ``loaded_branches`` in place;
+        names that are not loaded are ignored (idempotent)."""
+        if isinstance(names, str):
+            names = [names]
+        self.loaded_branches.difference_update(names)
+
     def ensure_branches(self, names: List[str], df: pd.DataFrame) -> pd.DataFrame:
         """
         Ensure specified branches are loaded into DataFrame.

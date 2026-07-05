@@ -308,7 +308,24 @@ class LazyChainReader:
         
         # Return new data - DO NOT merge here (ADF handles merge)
         return new_data
-    
+
+    def release_branches(self, names):
+        """PHASE_13_68_ADF: forget the given physical branches so a later access
+        re-reads them from all chain files. Mutates the internal ``_loaded_branches``
+        set directly — NOT the copy returned by the ``loaded_branches`` property, a
+        write to which would silently no-op. Names not loaded are ignored.
+
+        Also clears the released names from every currently-cached per-file
+        ``LazyTreeReader`` in the LRU: those readers each track their own loaded
+        set, and a re-read after release would otherwise be suppressed. LRU-evicted
+        readers reset on recreation, so clearing the cached ones is sufficient."""
+        if isinstance(names, str):
+            names = [names]
+        names = list(names)
+        self._loaded_branches.difference_update(names)
+        for reader in self._readers.values():
+            reader.release_branches(names)
+
     def estimate_memory(self, branches: List[str] = None) -> dict:
         """
         Estimate memory for loading branches.

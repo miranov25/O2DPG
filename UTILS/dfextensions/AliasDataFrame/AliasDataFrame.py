@@ -1034,6 +1034,12 @@ class AliasDataFrame:
         self.draw_lazy = False              # Default: require explicit materialization
         self.draw_keep_materialized = True  # Default: keep after single draw
         self.draw_clear_after = True        # Default: clear after batch
+
+        # PHASE_13_68_ADF: retention policy for lazily-loaded raw branches (C-5 / PP-6b).
+        # Only 'keep' is accepted today; 'bounded'/'drop' are reserved for a future phase.
+        # Independent of draw_keep_materialized: that governs materialized ALIAS columns
+        # after a single draw; this governs raw lazy-loaded BRANCHES.
+        self._memory_policy = 'keep'
         
         # Phase 7.1: Lazy branch loading support
         # _lazy_reader: LazyTreeReader instance for on-demand branch loading
@@ -6961,7 +6967,30 @@ function collapseDepth(maxD) {{
         if self._lazy_reader is None:
             return None
         return self._lazy_reader.loaded_branches
-    
+
+    @property
+    def memory_policy(self):
+        """PHASE_13_68_ADF: retention policy for lazily-loaded raw branches (C-5 / PP-6b).
+
+        Only ``'keep'`` is accepted (the default): loaded branches stay resident
+        until explicitly freed via :meth:`release_branches` / :meth:`release_struct`.
+        ``'bounded'`` and ``'drop'`` are reserved for a future phase and raise on
+        assignment today.
+
+        Independent of ``draw_keep_materialized``: that controls materialized alias
+        columns after a single draw; this controls raw lazy-loaded branches.
+        """
+        return self._memory_policy
+
+    @memory_policy.setter
+    def memory_policy(self, value):
+        allowed = ('keep',)
+        if value not in allowed:
+            raise ValueError(
+                f"memory_policy={value!r} is not supported. Allowed: {allowed}. "
+                f"('bounded' and 'drop' are reserved for a future phase.)")
+        self._memory_policy = value
+
     @property
     def is_lazy(self):
         """
@@ -11820,6 +11849,186 @@ function collapseDepth(maxD) {{
             gc.collect()
 
         return to_drop
+
+    def release_branches(self, names):
+        """PHASE_13_68_ADF: free lazily-loaded raw branches (and struct members).
+
+        Symmetric counterpart to lazy loading: drops the named columns from the
+        frame AND removes the corresponding physical branch(es) from the lazy
+        reader's loaded set, so a later access re-reads them from file. This is
+        the raw-branch analog of :meth:`dematerialize`, which frees materialized
+        alias columns only.
+
+        Parameters
+        ----------
+        names : str or list of str
+            Frame-column names to release. For a struct member use its internal
+            name (``member__struct``) — the name that appears in ``adf.df.columns``.
+
+        Returns
+        -------
+        list of str
+            The frame-column names actually released.
+
+        Raises
+        ------
+        ValueError
+            All-or-nothing: if ANY requested name is invalid the call releases
+            nothing and raises, listing every problem. Rejected cases:
+              * the ADF is not lazy (no reader) — nothing to release (DD-alpha);
+              * a name is an alias — use :meth:`dematerialize` (DD-gamma);
+              * a name is a written/hand-added column, or the reader-synthesized
+                ``__file_idx__`` chain marker — not a file branch (DD-beta);
+              * a name was never loaded from the tree (DD-beta);
+              * a name is a parent-side join key of a registered subframe —
+                releasing it would silently degrade joins to NaN-fill (DD-delta);
+              * a name is in the raw-branch dependency closure of a currently
+                materialized alias — releasing it would leave a derived column
+                whose input has been freed (C-6).
+
+        Notes
+        -----
+        Independent of ``draw_keep_materialized`` and ``memory_policy``: this is
+        an explicit, user-driven release; no automatic eviction is performed.
+
+        Examples
+        --------
+        >>> adf.eval("dedxTPC.dEdxTotIROC")          # loads the struct member
+        >>> adf.release_struct("dedxTPC")            # or: release_branches([...])
+        >>> "dEdxTotIROC__dedxTPC" in adf.df.columns  # False
+        """
+        import gc
+
+        if isinstance(names, str):
+            names = [names]
+        if not names:
+            return []
+
+        # DD-alpha: an eager frame has nothing to release lazily.
+        reader = getattr(self, '_lazy_reader', None)
+        if reader is None:
+            raise ValueError(
+                "release_branches: this AliasDataFrame is not lazy (no reader); "
+                "there is nothing to release. Use dematerialize() for alias "
+                "columns, or drop columns from adf.df directly.")
+
+        loaded = set(reader.loaded_branches or ())         # physical + written + __file_idx__
+        available = set(reader.available_branches or ())   # real TTree branches (physical)
+        alias_names = set(self.aliases.keys())
+
+        # Struct member internal -> physical, built FORWARD from the registry.
+        # Never reverse-parse 'member__struct': a member name may itself contain '__'.
+        internal_to_phys = {}
+        for st_name, st in self._structs.items():
+            for m in st['members']:
+                internal_to_phys[self._struct_internal_name(st_name, m)] = \
+                    self._struct_physical_name(st_name, m)
+
+        # Parent-side join keys -> subframe(s) using them (eager + chain/lazy registrations).
+        joinkey_to_subframes = {}
+        for sf_name, entry in self._subframes.items():
+            for k in (entry.get('index') or []):
+                joinkey_to_subframes.setdefault(k, set()).add(sf_name)
+        for sf_name, cfg in getattr(self, '_subframe_lazy_config', {}).items():
+            for k in (cfg.get('index_columns') or []):
+                joinkey_to_subframes.setdefault(k, set()).add(sf_name)
+
+        # C-6: raw-branch dependency closure of currently-materialized aliases.
+        materialized_aliases = alias_names & set(self.df.columns)
+        alias_base_branches = (self._resolve_to_base_branches(set(materialized_aliases))
+                               if materialized_aliases else set())
+
+        errors = []
+        plan = []  # (frame_col_to_drop, physical_name_to_unbook)
+        for n in names:
+            # DD-gamma: alias (formula) column.
+            if n in alias_names:
+                errors.append(
+                    f"{n!r}: is an alias (formula) column; use dematerialize() to "
+                    f"free it, not release_branches().")
+                continue
+            phys = internal_to_phys.get(n, n)   # struct member -> physical; else 1:1
+            # DD-delta: parent-side subframe join key.
+            if n in joinkey_to_subframes:
+                subs = sorted(joinkey_to_subframes[n])
+                errors.append(
+                    f"{n!r}: is a join key of subframe(s) {subs}; releasing it would "
+                    f"silently break the join (NaN-fill). Not released.")
+                continue
+            # C-6: required by a currently-materialized alias.
+            if n in alias_base_branches or phys in alias_base_branches:
+                deps = sorted(
+                    a for a in materialized_aliases
+                    if {n, phys} & self._resolve_to_base_branches({a}))
+                errors.append(
+                    f"{n!r}: is required by materialized alias(es) {deps}; free the "
+                    f"alias(es) first (dematerialize) or they would outlive their "
+                    f"input. Not released.")
+                continue
+            # DD-beta: classify against the reader's loaded/available sets.
+            if phys in loaded and phys in available:
+                plan.append((n, phys))                       # genuine loaded file branch
+            elif phys == '__file_idx__' or n == '__file_idx__':
+                errors.append(
+                    f"{n!r}: is the reader-synthesized chain index marker; it is not "
+                    f"a file branch and cannot be released.")
+            elif phys in loaded:                             # loaded but not a TTree branch
+                errors.append(
+                    f"{n!r}: is a written/hand-added column (not a file branch); remove "
+                    f"it with `del adf[{n!r}]` or drop it from adf.df directly.")
+            else:
+                errors.append(
+                    f"{n!r}: is not a loaded file branch (never loaded, or a typo).")
+
+        if errors:
+            raise ValueError(
+                "release_branches released nothing (all-or-nothing). Problems:\n  "
+                + "\n  ".join(errors))
+
+        # Symmetric evict: drop frame columns AND unbook physical names on the reader.
+        frame_cols = [c for c, _ in plan]
+        phys_names = [p for _, p in plan]
+        existing = [c for c in frame_cols if c in self.df.columns]
+        if existing:
+            self.df = self.df.drop(columns=existing)
+        reader.release_branches(phys_names)   # reader-side seam (D3)
+        gc.collect()
+        return frame_cols
+
+    def release_struct(self, name):
+        """PHASE_13_68_ADF: free all currently-loaded members of a registered struct.
+
+        Sugar over :meth:`release_branches`: expands ``name`` to the struct's
+        loaded member columns (registry members present in the frame) and releases
+        them symmetrically. Members that were never loaded are simply skipped
+        (releasing 3 of 18 loaded members is fine).
+
+        Parameters
+        ----------
+        name : str
+            A registered struct name (see :meth:`register_struct`).
+
+        Returns
+        -------
+        list of str
+            Internal member names actually released (empty if none were loaded).
+
+        Raises
+        ------
+        ValueError
+            If ``name`` is not a registered struct, or — via
+            :meth:`release_branches` — if any expanded member fails validation.
+        """
+        if name not in self._structs:
+            raise ValueError(
+                f"release_struct: {name!r} is not a registered struct. "
+                f"Registered structs: {sorted(self._structs.keys())}.")
+        members = self._structs[name]['members']
+        internal = [self._struct_internal_name(name, m) for m in members]
+        loaded_internal = [c for c in internal if c in self.df.columns]
+        if not loaded_internal:
+            return []
+        return self.release_branches(loaded_internal)
 
     def _resolve_draw_param(self, param_value, param_name: str):
         """
