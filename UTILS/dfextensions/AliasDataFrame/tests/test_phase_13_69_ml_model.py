@@ -401,25 +401,22 @@ def _draw_adf(artifacts):
         "grp": np.tile([0, 1, 2], n // 3),          # a discrete column to facet on
     }))
     adf.register_model("pred", artifacts["onnx"], inputs=["a", "b", "c"])
-    # Materialize the prediction into a column before drawing. On an EAGER frame
-    # (draw_lazy=False), draw() does not auto-materialize a lazy/function-backed
-    # alias — the parser recognizes it, but materialization is gated on the lazy
-    # path. So an ML prediction is drawn either by pre-materializing (here) or by
-    # passing draw(..., lazy=True). This is standard lazy-alias behavior, not an
-    # ML-specific defect. (G-1 finding, PHASE_13_69.)
-    adf.eval("pred")
+    # NB: the prediction is NOT pre-materialized. The draw calls below pass
+    # lazy=True — draw() then materializes the function-backed ML alias on demand
+    # via its lazy path (the representative workflow). This exercises the G-1
+    # premise directly: the ML alias flows through draw with no new dispatch code.
     return adf
 
 
 @pytest.mark.skipif(not _HAS_DFDRAW, reason="Requires dfdraw")
 def test_ML_18_draw_prediction_alias(artifacts):
     """Trivial: the ML prediction draws like any variable — a histogram of `pred`
-    and a profile of `pred` versus an input. Must produce a figure, not raise.
-    (`pred` is materialized in the fixture; see _draw_adf for the eager-frame note.)"""
+    and a profile of `pred` versus an input. Drawn with the lazy switch, so draw()
+    materializes the prediction alias on demand. Must produce a figure, not raise."""
     adf = _draw_adf(artifacts)
-    res_hist = adf.draw("pred", type="hist", bins=20)
+    res_hist = adf.draw("pred", type="hist", bins=20, lazy=True)
     assert res_hist is not None
-    fig, ax, stats = adf.draw("pred:a", type="profile", bins=5, min_entries=1)
+    fig, ax, stats = adf.draw("pred:a", type="profile", bins=5, min_entries=1, lazy=True)
     assert ax is not None
 
 
@@ -429,8 +426,8 @@ def test_ML_19_ml_alias_in_draw_slots(artifacts):
     a GB-evaluator alias (the G-1 premise: function-backed aliases inherit all draw
     slots)."""
     adf = _draw_adf(artifacts)
-    res_w = adf.draw("a", type="hist", weights="pred", bins=10)   # ML alias as weights
+    res_w = adf.draw("a", type="hist", weights="pred", bins=10, lazy=True)   # ML alias as weights
     assert res_w is not None
     res_f = adf.draw("pred:a", type="profile", facet_by="grp",    # faceted, prediction drawn
-                     bins=5, min_entries=1)
+                     bins=5, min_entries=1, lazy=True)
     assert res_f is not None
