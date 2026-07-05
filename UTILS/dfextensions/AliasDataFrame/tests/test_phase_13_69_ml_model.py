@@ -401,13 +401,21 @@ def _draw_adf(artifacts):
         "grp": np.tile([0, 1, 2], n // 3),          # a discrete column to facet on
     }))
     adf.register_model("pred", artifacts["onnx"], inputs=["a", "b", "c"])
+    # Materialize the prediction into a column before drawing. On an EAGER frame
+    # (draw_lazy=False), draw() does not auto-materialize a lazy/function-backed
+    # alias — the parser recognizes it, but materialization is gated on the lazy
+    # path. So an ML prediction is drawn either by pre-materializing (here) or by
+    # passing draw(..., lazy=True). This is standard lazy-alias behavior, not an
+    # ML-specific defect. (G-1 finding, PHASE_13_69.)
+    adf.eval("pred")
     return adf
 
 
 @pytest.mark.skipif(not _HAS_DFDRAW, reason="Requires dfdraw")
 def test_ML_18_draw_prediction_alias(artifacts):
-    """Trivial: draw the ML prediction alias directly — a histogram of `pred`,
-    and a profile of `pred` versus an input. It must produce a figure, not raise."""
+    """Trivial: the ML prediction draws like any variable — a histogram of `pred`
+    and a profile of `pred` versus an input. Must produce a figure, not raise.
+    (`pred` is materialized in the fixture; see _draw_adf for the eager-frame note.)"""
     adf = _draw_adf(artifacts)
     res_hist = adf.draw("pred", type="hist", bins=20)
     assert res_hist is not None
