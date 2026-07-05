@@ -1059,6 +1059,15 @@ class AliasDataFrame:
         self._subframe_loaded = {}    # {name: bool}
         self._subframe_lazy_config = {}  # {name: {file, tree, index_columns, ...}}
 
+        # PHASE_13_69_ADF: ML model store.
+        # _models: {name: descriptor (+ _raw bytes, _handle runtime session)}
+        # _model_cache: {name: {'sig': (len, id(index)), 'outputs': {out: ndarray}}}
+        # _write_listeners: callbacks(key) fired by __setitem__ (D6 invalidation)
+        self._models = {}
+        self._model_cache = {}
+        self._write_listeners = []
+        self._ml_listener_installed = False
+
     # =========================================================================
     # SECTION 0b: Proxy Pattern - DataFrame Delegation
     # =========================================================================
@@ -1133,6 +1142,15 @@ class AliasDataFrame:
         # Write through to the real frame first; pandas validates the value shape
         # and raises on a length/shape mismatch before any bookkeeping changes.
         self.df[key] = value
+        # PHASE_13_69_ADF: notify write-event listeners (e.g. ML prediction caches).
+        # Keyed on the WRITE EVENT itself — fires identically on tree and chain,
+        # independent of the loaded_branches copy-property asymmetry (the known
+        # 13.68 chain no-op is in the booking below, not here). Direct adf.df[...]
+        # mutation bypasses this hook — a documented limitation.
+        listeners = getattr(self, "_write_listeners", None)
+        if listeners:
+            for _cb in list(listeners):
+                _cb(key)
         # Lazy bookkeeping: mark the column present so ensure_branches / draw paths
         # do not try to re-load it from the tree (it now lives in the frame).
         lazy_reader = getattr(self, "_lazy_reader", None)
@@ -6081,6 +6099,11 @@ function collapseDepth(maxD) {{
                 self._write_all_metadata_to_root(filename_or_file, treename)
             else:
                 self._write_all_metadata_to_key(filename_or_file, treename)
+            # PHASE_13_69_ADF: embed registered ML models (blob + descriptor) under
+            # ADF_ML/ via uproot append — additive, the UserInfo path above is
+            # untouched (§2 scope fence). Default persistence = embed.
+            if getattr(self, "_models", None):
+                self._ml_embed_into_file(filename_or_file)
         else:
             # Called from recursive data-write path — data only, no metadata
             self._write_all_data_to_uproot(filename_or_file, treename, dropAliasColumns)
@@ -6666,6 +6689,9 @@ function collapseDepth(maxD) {{
         if adf._schema.get('registered_functions'):
             adf._reconstruct_registered_functions()
 
+        # PHASE_13_69_ADF: recover any embedded ML models (ADF_ML/), MD5-verified.
+        adf._ml_recover_from_file(filename)
+
         return adf
     
     # =========================================================================
@@ -6804,7 +6830,11 @@ function collapseDepth(maxD) {{
             'total_entries': lazy_reader.num_entries,
             'validation_mode': None
         }
-        
+
+        # PHASE_13_69_ADF: recover any embedded ML models (ADF_ML/), MD5-verified.
+        # Defensive no-op if the file has no ADF_ML/ namespace.
+        adf._ml_recover_from_file(file_path)
+
         return adf
     
     def _merge_loaded_data(self, existing_df: pd.DataFrame, 
@@ -11992,6 +12022,9 @@ function collapseDepth(maxD) {{
         if existing:
             self.df = self.df.drop(columns=existing)
         reader.release_branches(phys_names)   # reader-side seam (D3)
+        # PHASE_13_69_ADF: releasing a model input invalidates that model's cache.
+        if getattr(self, "_models", None):
+            self._ml_invalidate_for_columns(frame_cols)
         gc.collect()
         return frame_cols
 
@@ -12029,6 +12062,380 @@ function collapseDepth(maxD) {{
         if not loaded_internal:
             return []
         return self.release_branches(loaded_internal)
+
+    # ================================================================== #
+    # PHASE_13_69_ADF — ML Model Store & Inference Interface              #
+    # ML prediction = registered-function-backed lazy alias (architect 0g).#
+    # ONNX canonical; native xgboost-JSON loaded natively; ROOT-embedded  #
+    # blob is the default persistence. Purely additive; the ONLY shared   #
+    # write-path touch is the __setitem__ notification hook.              #
+    # ================================================================== #
+
+    _ADF_ML_DESCRIPTOR_VERSION = 1
+    _ADF_ML_NS = "ADF_ML"          # ROOT namespace for embedded descriptor/blob
+
+    # ---- format sniffing (R4): ROOT magic -> JSON '{' -> ONNX (else) ----
+    @staticmethod
+    def _ml_sniff_format(raw: bytes) -> str:
+        """Byte-sniff a model payload. ROOT files start with b'root'; native
+        xgboost-JSON with '{' (after optional whitespace); ONNX is bare protobuf
+        with no reliable magic, so it is the else-branch (validated by a trial
+        load at registration). Returns 'root' | 'xgboost-json' | 'onnx'."""
+        if raw[:4] == b"root":
+            return "root"
+        head = raw.lstrip()[:1]
+        if head == b"{":
+            return "xgboost-json"
+        return "onnx"
+
+    @staticmethod
+    def _ml_md5(raw: bytes) -> str:
+        import hashlib
+        return hashlib.md5(raw).hexdigest()
+
+    # ---- runtime handle construction (D9: missing runtime -> loud refuse) ----
+    @staticmethod
+    def _ml_make_handle(raw: bytes, fmt: str):
+        if fmt == "onnx":
+            try:
+                import onnxruntime as ort
+            except ImportError:
+                raise RuntimeError(
+                    "onnxruntime is required to use ONNX models and is not "
+                    "installed. Install it with `pip install onnxruntime`. "
+                    "(The feature is unusable without the runtime — no fallback.)")
+            return ort.InferenceSession(raw, providers=["CPUExecutionProvider"])
+        elif fmt == "xgboost-json":
+            try:
+                import xgboost as xgb
+            except ImportError:
+                raise RuntimeError(
+                    "xgboost is required for the native-JSON model path and is "
+                    "not installed. Install it with `pip install xgboost`, or "
+                    "convert the model to ONNX. (No fallback.)")
+            booster = xgb.Booster()
+            import tempfile, os
+            tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+            try:
+                tmp.write(raw); tmp.flush(); tmp.close()
+                booster.load_model(tmp.name)
+            finally:
+                os.unlink(tmp.name)
+            return booster
+        raise ValueError(
+            f"Unrecognized model format {fmt!r}; recognized: 'onnx', "
+            f"'xgboost-json', or a ROOT container ('root').")
+
+    def _ml_load_source(self, file, fmt, model):
+        """Resolve a file= argument into (raw_bytes, resolved_fmt). Handles a
+        plain ONNX/xgboost-JSON file and a ROOT container (model= selects a
+        member of ADF_ML/). Never mutates any existing metadata."""
+        import uproot, os
+        with open(file, "rb") as fh:
+            head = fh.read(4)
+        detected = self._ml_sniff_format(head + b"") if fmt == "auto" else fmt
+        if detected == "root" or (fmt == "auto" and head == b"root"):
+            # ROOT container: pull the embedded blob + descriptor for `model`.
+            with uproot.open(file) as fo:
+                names = self._ml_list_models_in_file(fo)
+                if model is None:
+                    raise ValueError(
+                        f"{file!r} is a ROOT container with embedded model(s) "
+                        f"{sorted(names)}; pass model=<name> to select one.")
+                if model not in names:
+                    raise ValueError(
+                        f"model={model!r} not found in {file!r}; available: "
+                        f"{sorted(names)}.")
+                raw, desc = self._ml_read_embedded(fo, model)
+            return raw, desc["format"]
+        # plain file: read all bytes, (re)sniff on full content
+        with open(file, "rb") as fh:
+            raw = fh.read()
+        rfmt = self._ml_sniff_format(raw) if fmt == "auto" else fmt
+        if rfmt not in ("onnx", "xgboost-json"):
+            raise ValueError(
+                f"format='auto' could not resolve {file!r}; recognized formats "
+                f"are ONNX, a ROOT container, and native xgboost-JSON. Pass an "
+                f"explicit format=.")
+        return raw, rfmt
+
+    # ---- embedded-object I/O (uproot named string + uint8 tree) ----
+    def _ml_list_models_in_file(self, fo) -> set:
+        ns = self._ADF_ML_NS
+        out = set()
+        for k in fo.keys():
+            k0 = k.split(";")[0]
+            if k0.startswith(ns + "/") and k0.endswith("__descriptor"):
+                out.add(k0[len(ns) + 1:-len("__descriptor")])
+        return out
+
+    def _ml_read_embedded(self, fo, name):
+        import numpy as np, json
+        ns = self._ADF_ML_NS
+        dobj = fo[f"{ns}/{name}__descriptor"]
+        dstr = dobj if isinstance(dobj, str) else dobj.member("fString")
+        desc = json.loads(dstr)
+        blob = fo[f"{ns}/{name}__blob"]["b"].array(library="np").astype(np.uint8).tobytes()
+        got = self._ml_md5(blob)
+        if got != desc["md5"]:
+            raise ValueError(
+                f"MD5 mismatch for embedded model {name!r}: descriptor says "
+                f"{desc['md5']}, blob hashes to {got}. Refusing to load.")
+        return blob, desc
+
+    def _ml_embed_into_file(self, path):
+        """Append every registered model's descriptor + blob under ADF_ML/ to an
+        existing ROOT file via uproot (additive; the ROOT UserInfo path is not
+        touched — §2 scope fence)."""
+        import uproot, numpy as np, json
+        if not getattr(self, "_models", None):
+            return
+        ns = self._ADF_ML_NS
+        with uproot.update(path) as fo:
+            for name, desc in self._models.items():
+                pub = {k: desc[k] for k in desc if not k.startswith("_")}
+                fo[f"{ns}/{name}__descriptor"] = json.dumps(pub)
+                fo[f"{ns}/{name}__blob"] = {"b": np.frombuffer(desc["_raw"], np.uint8)}
+
+    def _ml_recover_from_file(self, path):
+        """Re-register every ADF_ML/ model embedded in `path` (MD5-verified).
+        Called by the read_* recovery hooks. Defensive: a file that cannot be
+        opened, or that has no ADF_ML/ namespace, is a silent no-op — a normal
+        read is never broken. An MD5 mismatch on a model that IS present
+        propagates (fail-loud, per the integrity contract)."""
+        import uproot, os
+        if not isinstance(path, str):
+            return
+        open_path = path
+        if not os.path.exists(open_path) and ":" in open_path:
+            # 'file.root:tree' spec form -> recover from the file part
+            cand = open_path.rsplit(":", 1)[0]
+            if os.path.exists(cand):
+                open_path = cand
+        try:
+            fo = uproot.open(open_path)
+        except Exception:
+            return  # not openable / not a plain file -> nothing to recover
+        try:
+            names = self._ml_list_models_in_file(fo)
+            for name in names:
+                if name in getattr(self, "_models", {}):
+                    continue
+                raw, desc = self._ml_read_embedded(fo, name)   # raises on MD5
+                self._ml_register_resolved(
+                    name, raw, desc["format"], desc["inputs"],
+                    desc.get("outputs"), desc.get("version"),
+                    overwrite=False, location=desc.get("location", "EMBEDDED"))
+        finally:
+            try:
+                fo.close()
+            except Exception:
+                pass
+
+    # ---- the public interface (D1/D2/D3) ----
+    def register_model(self, name, file, format="auto", inputs=None, outputs=None,
+                       version=None, overwrite=False, model=None):
+        """PHASE_13_69_ADF: register an ML model AND create its lazy prediction
+        alias(es) in one call.
+
+        The prediction alias is an ordinary function-backed lazy alias (architect
+        0g): it inherits every dispatch site, parser leg, and PP-6b retention
+        behavior of the existing evaluator path, with no new parser/dispatch code.
+
+        Parameters
+        ----------
+        name : str
+            Model name; also the single-output alias name (see `outputs`).
+        file : str
+            Path to an ONNX file, a native xgboost-JSON file, or a ROOT container
+            holding an embedded model (`model=` selects which).
+        format : {'auto','onnx','xgboost-json','root'}
+            'auto' byte-sniffs: ROOT magic -> JSON '{' -> ONNX (else).
+        inputs : list of str
+            Input columns in the model's feature order. May be branches, aliases,
+            or struct members (resolved + lazily autoloaded via the alias closure).
+            They are column-stacked into a single float32 input tensor. Subframe-
+            column inputs (`Sub.col`) are DEFERRED in Phase 1 (refused here).
+        outputs : dict, optional
+            {model_output_name: alias_name} for multi-output models; one alias per
+            output, all sharing a single evaluation. None => single output aliased
+            as `name`.
+        version, overwrite, model : see the error contract.
+
+        Raises ValueError/RuntimeError per the phase error contract (duplicate
+        without overwrite, unresolvable auto, unknown model= in a container, MD5
+        mismatch, missing runtime, subframe-column input).
+        """
+        if inputs is None or not list(inputs):
+            raise ValueError("register_model requires inputs=[...] (feature order).")
+        subframe_inputs = [c for c in inputs if "." in c and not c.startswith(".")]
+        # struct members use dot too; distinguish: a struct member's struct is in
+        # self._structs, a subframe ref's head is a registered subframe.
+        sf_refs = [c for c in subframe_inputs
+                   if c.split(".")[0] in getattr(self, "_subframes", None).subframes]
+        if sf_refs:
+            raise ValueError(
+                f"Subframe-column inputs {sf_refs} are DEFERRED in Phase 1 of the "
+                f"ML model store; materialize them into frame columns first, or "
+                f"wait for the Phase-1 follow-up. (register_model)")
+        if not hasattr(self, "_models"):
+            self._models = {}
+        if name in self._models and not overwrite:
+            raise ValueError(
+                f"Model {name!r} already registered. Use overwrite=True to replace "
+                f"(register_model), or deregister_model({name!r}) first.")
+        raw, rfmt = self._ml_load_source(file, format, model)
+        import os
+        location = "EMBEDDED"  # default persistence intent; overridden on external export
+        self._ml_register_resolved(name, raw, rfmt, list(inputs), outputs,
+                                   version, overwrite=overwrite, location=location,
+                                   source_path=os.path.abspath(file))
+        return name
+
+    def _ml_register_resolved(self, name, raw, fmt, inputs, outputs, version,
+                              overwrite, location, source_path=None):
+        """Shared registration core used by register_model AND recovery: build the
+        runtime handle, the descriptor, the predict closure(s), and the alias(es)."""
+        import numpy as np
+        handle = self._ml_make_handle(raw, fmt)
+        md5 = self._ml_md5(raw)
+        try:
+            fw = getattr(__import__(fmt.split("-")[0]), "__version__", "unknown")
+        except Exception:
+            fw = "unknown"
+        descriptor = {
+            "adf_model_descriptor_version": self._ADF_ML_DESCRIPTOR_VERSION,
+            "name": name, "format": fmt, "location": location, "md5": md5,
+            "inputs": list(inputs), "outputs": outputs, "version": version,
+            "framework_version": fw,
+            "_raw": raw, "_handle": handle,
+            "_source_path": source_path,
+        }
+        if not hasattr(self, "_models"):
+            self._models = {}
+        if not hasattr(self, "_model_cache"):
+            self._model_cache = {}
+        self._models[name] = descriptor
+        self._model_cache.pop(name, None)
+        # register the write-event listener once (D6 cache invalidation)
+        self._ml_ensure_write_listener()
+        # build alias(es): one per output, all sharing _ml_evaluate(name)
+        arglist = ", ".join(inputs)
+        if outputs:
+            for out_name, alias_name in outputs.items():
+                fn = f"__ml_{name}__{alias_name}"
+                self.register_function(fn, self._ml_make_func(name, out_name),
+                                       overwrite=True)
+                self.add_alias(alias_name, f"{fn}({arglist})")
+        else:
+            fn = f"__ml_{name}"
+            self.register_function(fn, self._ml_make_func(name, None),
+                                   overwrite=True)
+            self.add_alias(name, f"{fn}({arglist})")
+
+    def _ml_make_func(self, name, out_key):
+        """Return a positional-array closure for one output (mirrors the
+        register_evaluator adapter). All sibling closures share one evaluation."""
+        import numpy as np
+        def _f(*arrays):
+            outputs = self._ml_evaluate(name, arrays)
+            col = outputs[out_key] if out_key is not None else next(iter(outputs.values()))
+            col = np.asarray(col)
+            return col[:, 0] if col.ndim == 2 and col.shape[1] == 1 else col
+        return _f
+
+    def _ml_evaluate(self, name, arrays):
+        """Run the model ONCE per valid cache state; sibling outputs reuse it.
+
+        Cache signature = ``len(self.df)`` (row-count change busts the cache).
+        All other invalidation is EXPLICIT and event-driven — the __setitem__
+        write hook, release_branches/release_struct, and re-registration each pop
+        the affected model's cache. This keeps predict-once alive across benign
+        frame rebuilds (e.g. dematerialize, which drops columns but keeps rows),
+        which an index-identity key would wrongly bust. Documented limitation:
+        a direct in-place index permutation with no length change and no hooked
+        write is not detected (same class as direct adf.df[...] mutation)."""
+        import numpy as np
+        sig = len(self.df)
+        cached = self._model_cache.get(name)
+        if cached is not None and cached["sig"] == sig:
+            return cached["outputs"]
+        desc = self._models[name]
+        handle = desc["_handle"]
+        if len(arrays) == 1:
+            X = np.asarray(arrays[0], dtype=np.float32).reshape(-1, 1)
+        else:
+            X = np.column_stack([np.asarray(a, dtype=np.float32) for a in arrays])
+        if desc["format"] == "onnx":
+            in_name = handle.get_inputs()[0].name
+            results = handle.run(None, {in_name: X})
+            out_names = [o.name for o in handle.get_outputs()]
+            outputs = {out_names[i]: np.asarray(results[i]) for i in range(len(results))}
+        else:  # xgboost-json native
+            import xgboost as xgb
+            outputs = {"variable": np.asarray(handle.predict(xgb.DMatrix(X)))}
+        self._model_cache[name] = {"sig": sig, "outputs": outputs}
+        return outputs
+
+    def _ml_ensure_write_listener(self):
+        if not hasattr(self, "_write_listeners"):
+            self._write_listeners = []
+        if getattr(self, "_ml_listener_installed", False):
+            return
+        def _listener(key):
+            for mname, desc in getattr(self, "_models", {}).items():
+                if key in desc["inputs"]:
+                    self._model_cache.pop(mname, None)
+        self._write_listeners.append(_listener)
+        self._ml_listener_installed = True
+
+    def _ml_invalidate_for_columns(self, columns):
+        cols = set(columns)
+        for mname, desc in getattr(self, "_models", {}).items():
+            if cols & set(desc["inputs"]):
+                self._model_cache.pop(mname, None)
+
+    def deregister_model(self, name):
+        """PHASE_13_69_ADF (D2): remove the alias(es), registered function(s),
+        descriptor, cached handle AND prediction cache for `name`, so a clean
+        re-registration of the same name then succeeds (13.68-symmetric)."""
+        if not hasattr(self, "_models") or name not in self._models:
+            raise ValueError(
+                f"deregister_model: {name!r} is not a registered model. "
+                f"Registered: {sorted(getattr(self, '_models', {}).keys())}.")
+        desc = self._models[name]
+        outputs = desc.get("outputs")
+        # remove aliases + functions
+        alias_names = list(outputs.values()) if outputs else [name]
+        fn_names = ([f"__ml_{name}__{a}" for a in outputs.values()]
+                    if outputs else [f"__ml_{name}"])
+        for a in alias_names:
+            try:
+                self.remove_alias(a)
+            except Exception:
+                pass
+        rf = getattr(self, "_registered_functions", {})
+        for fn in fn_names:
+            rf.pop(fn, None)
+        self._models.pop(name, None)
+        self._model_cache.pop(name, None)
+
+    def save_model(self, name, path):
+        """PHASE_13_69_ADF (D3): canonical-byte export — write the exact stored
+        model bytes to `path` (never a runtime re-serialization). The written
+        file's MD5 equals the descriptor MD5; a fresh register_model(file=path)
+        reloads with identical predictions."""
+        if not hasattr(self, "_models") or name not in self._models:
+            raise ValueError(f"save_model: {name!r} is not a registered model.")
+        desc = self._models[name]
+        with open(path, "wb") as fh:
+            fh.write(desc["_raw"])
+        written = self._ml_md5(open(path, "rb").read())
+        if written != desc["md5"]:
+            raise ValueError(
+                f"save_model integrity check failed for {name!r}: wrote MD5 "
+                f"{written}, descriptor MD5 {desc['md5']}.")
+        return path
 
     def _resolve_draw_param(self, param_value, param_name: str):
         """

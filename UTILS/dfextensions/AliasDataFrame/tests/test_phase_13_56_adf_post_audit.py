@@ -194,7 +194,7 @@ class TestG4Taxonomy:
         ids = {f["id"] for f in FEATURES}
         assert "DISPATCH.adf_routing" in ids
         assert "DISPATCH.error_visibility" in ids
-        assert len(FEATURES) == 60  # 59 + LAZY.release (PHASE_13_68 explicit lazy-branch/struct release); 59 = 58 + LAZY.chain_metadata (PHASE_13_67 chain lazy metadata recovery); 58 = 57 + OBJECT.struct_1to1 (PHASE_13_66 Object Store Phase A); 57 = 56 + SUBFRAME.asymmetric_join_keys (PHASE_13_65); 56 = 55 + WRITE.column_assignment (PHASE_13_62 Stage 2a / Fix A); 55 = 54 + LAZY.expression_autoload (BUG_20260624_lazy_bridge); 54 = 53 + DISPATCH.dict_dispatch (13.61.ADF)
+        assert len(FEATURES) == 61  # 60 + FUNC.ml_model (PHASE_13_69 ML model store); 60 = 59 + LAZY.release (PHASE_13_68 explicit lazy-branch/struct release); 59 = 58 + LAZY.chain_metadata (PHASE_13_67 chain lazy metadata recovery); 58 = 57 + OBJECT.struct_1to1 (PHASE_13_66 Object Store Phase A); 57 = 56 + SUBFRAME.asymmetric_join_keys (PHASE_13_65); 56 = 55 + WRITE.column_assignment (PHASE_13_62 Stage 2a / Fix A); 55 = 54 + LAZY.expression_autoload (BUG_20260624_lazy_bridge); 54 = 53 + DISPATCH.dict_dispatch (13.61.ADF)
         routing = next(f for f in FEATURES if f["id"] == "DISPATCH.adf_routing")
         vis = next(f for f in FEATURES if f["id"] == "DISPATCH.error_visibility")
         node_55 = ("test_phase_13_55_adf_dispatch_audit.py::"

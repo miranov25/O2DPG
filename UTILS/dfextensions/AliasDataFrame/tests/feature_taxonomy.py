@@ -207,6 +207,12 @@ FEATURES = [
      "test_patterns": [
          "test_register_evaluator.py",
      ]},
+    {"id": "FUNC.ml_model",
+     "name": "ML model registration, lazy prediction alias, persistence (embed/external/load-from-ROOT), integrity, multi-output cache, chain recovery (PHASE_13_69) — register_model register+alias in one call; ONNX canonical + native xgboost-JSON path; format='auto' byte-sniff (ROOT->JSON->ONNX); single float32 input tensor in feature order; multi-output = sibling aliases sharing ONE evaluation via a prediction cache invalidated by the __setitem__ write-event hook / release / re-registration; embed (default, ADF_ML/ blob+descriptor via uproot, UserInfo untouched) + external relative-path + load-from-ROOT persistence, MD5-verified; missing runtime -> loud refuse. Not scope: training, CCDB, GPU, full RNTuple verification, subframe-column inputs (Phase-1 deferral).",
+     "category": "REGISTERED_FUNCTIONS",
+     "test_patterns": [
+         "test_phase_13_69_ml_model.py",
+     ]},
     {"id": "FUNC.persistence", "name": "Function persistence through schema", "category": "REGISTERED_FUNCTIONS",
      "test_patterns": [
          "test_polynomial_persistence.py",
