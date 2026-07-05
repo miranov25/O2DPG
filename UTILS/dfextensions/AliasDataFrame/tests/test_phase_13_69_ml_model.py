@@ -81,6 +81,7 @@ def test_ML_1_register_creates_usable_lazy_alias(artifacts, data_adf):
     assert out.shape[0] == len(data_adf.df)
 
 
+@pytest.mark.invariance
 def test_ML_2_prediction_equals_direct_onnxruntime(artifacts, data_adf):
     data_adf.register_model("pred", artifacts["onnx"], inputs=["a", "b", "c"])
     got = np.asarray(data_adf.eval("pred"))
@@ -88,6 +89,7 @@ def test_ML_2_prediction_equals_direct_onnxruntime(artifacts, data_adf):
     np.testing.assert_allclose(got, ref, rtol=RTOL, atol=ATOL)
 
 
+@pytest.mark.invariance
 def test_ML_2_native_json_path_matches_booster(artifacts, data_adf):
     data_adf.register_model("predJ", artifacts["json"], inputs=["a", "b", "c"])
     got = np.asarray(data_adf.eval("predJ"))
@@ -97,6 +99,7 @@ def test_ML_2_native_json_path_matches_booster(artifacts, data_adf):
 
 
 # --------------------------------------------------------- T-ML-3 surface symmetry
+@pytest.mark.invariance
 def test_ML_3_surface_symmetry_with_ordinary_alias(artifacts, data_adf):
     """The ML alias behaves like any function-backed alias on the ADF surface: it
     composes in a compound expression and is listed like any alias. (Surface
@@ -133,6 +136,48 @@ def test_ML_4_embed_roundtrip(artifacts, data_adf, reader):
     assert "pred" in adf2._models and "pred" in adf2.aliases   # recovered + re-aliased
     post = np.asarray(adf2.eval("pred"))
     np.testing.assert_allclose(post, pre, rtol=RTOL, atol=ATOL)
+
+
+# ------------------------------------------------- T-ML-5 external reference (D5b)
+@pytest.mark.invariance
+def test_ML_5_external_reference_roundtrip_and_relocation(artifacts, tmp_path):
+    """persist='external': the model stays a separate file; export writes only the
+    descriptor with a path RELATIVE to the data file. Recovery resolves it relative
+    to the data file and MD5-verifies. Both-moved-together recovers; data-moved-
+    alone refuses (naming the resolved path)."""
+    import shutil
+    proj = tmp_path / "proj"
+    (proj / "models").mkdir(parents=True)
+    onnx_ext = str(proj / "models" / "m.onnx")
+    shutil.copy(artifacts["onnx"], onnx_ext)
+    rng = np.random.default_rng(31)
+    n = 50
+    adf = AliasDataFrame(pd.DataFrame({"a": rng.random(n), "b": rng.random(n), "c": rng.random(n)}))
+    adf.register_model("pred", onnx_ext, inputs=["a", "b", "c"], persist="external")
+    pre = np.asarray(adf.eval("pred")).copy()
+    root = str(proj / "data.root")
+    adf.export_tree(root, "tree")
+    # descriptor-only (no blob) with a relative location
+    import uproot, json
+    with uproot.open(root) as fo:
+        keys = [k.split(";")[0] for k in fo.keys() if "ADF_ML" in k]
+        assert any(k.endswith("__descriptor") for k in keys)
+        assert not any(k.endswith("__blob") for k in keys)     # no embedded bytes
+    # both-in-place recovery -> identical predictions
+    adf2 = AliasDataFrame.read_tree_lazy(root, "tree")
+    np.testing.assert_allclose(np.asarray(adf2.eval("pred")), pre, rtol=RTOL, atol=ATOL)
+    # data moved ALONE -> loud refuse naming the resolved path
+    alone = tmp_path / "alone"
+    alone.mkdir()
+    shutil.copy(root, str(alone / "data.root"))
+    with pytest.raises(ValueError) as ei:
+        AliasDataFrame.read_tree_lazy(str(alone / "data.root"), "tree")
+    assert "not found" in str(ei.value)
+    # both moved TOGETHER (whole dir) -> recovers
+    moved = tmp_path / "moved"
+    shutil.copytree(str(proj), str(moved / "proj"))
+    adf3 = AliasDataFrame.read_tree_lazy(str(moved / "proj" / "data.root"), "tree")
+    np.testing.assert_allclose(np.asarray(adf3.eval("pred")), pre, rtol=RTOL, atol=ATOL)
 
 
 # ------------------------------------------------- T-ML-6 load-from-ROOT (D1/R5)
@@ -321,6 +366,7 @@ def test_ML_14_format_auto_disambiguation(artifacts, data_adf):
 
 
 # ------------------------------------- T-ML-15 framework generality (scikit-learn)
+@pytest.mark.invariance
 def test_ML_15_scikit_randomforest_via_onnx(data_adf, tmp_path):
     """ONNX is the canonical format, so ANY framework that exports ONNX rides the
     same path with no ADF code change. Demonstrated with a scikit-learn
@@ -347,6 +393,7 @@ def test_ML_15_scikit_randomforest_via_onnx(data_adf, tmp_path):
 
 
 # ------------------------------------- T-ML-16 invariance: alias vs prefilled column
+@pytest.mark.invariance
 def test_ML_16_invariance_alias_vs_prefilled_column(artifacts, data_adf):
     """The ML-backed alias column must be INDISTINGUISHABLE from a plain
     materialized column carrying the same values — numerically and in any
@@ -409,25 +456,38 @@ def _draw_adf(artifacts):
 
 
 @pytest.mark.skipif(not _HAS_DFDRAW, reason="Requires dfdraw")
-def test_ML_18_draw_prediction_alias(artifacts):
-    """Trivial: the ML prediction draws like any variable — a histogram of `pred`
-    and a profile of `pred` versus an input. Drawn with the lazy switch, so draw()
-    materializes the prediction alias on demand. Must produce a figure, not raise."""
+@pytest.mark.parametrize("mode", ["lazy", "eager"])
+def test_ML_18_draw_prediction_in_slots(artifacts, mode):
+    """G-1 (expanded): the ML prediction used in the draw() slots — as the drawn
+    variable, in weights=, in facet_by=, and in color= — in BOTH lazy and eager
+    mode. Lazy uses lazy=True (draw materializes the alias on demand). Eager
+    pre-materializes (eager-frame draw does not auto-materialize a lazy alias, per
+    §5.10 of the CRR) then draws with lazy=False.
+    NB: dfdraw is unavailable in the coder sandbox; these run on alma2. Any failure
+    here is G-1 design input, not an incidental test bug."""
     adf = _draw_adf(artifacts)
-    res_hist = adf.draw("pred", type="hist", bins=20, lazy=True)
-    assert res_hist is not None
-    fig, ax, stats = adf.draw("pred:a", type="profile", bins=5, min_entries=1, lazy=True)
-    assert ax is not None
+    lazy = (mode == "lazy")
+    if not lazy:
+        adf.eval("pred")                                     # eager: materialize first
+    assert adf.draw("pred", type="hist", bins=20, lazy=lazy) is not None            # as variable
+    assert adf.draw("a", type="hist", weights="pred", bins=10, lazy=lazy) is not None   # weights=
+    assert adf.draw("pred:a", type="profile", facet_by="grp",
+                    bins=5, min_entries=1, lazy=lazy) is not None                    # facet_by=
+    assert adf.draw("b:a", type="scatter", color="pred", lazy=lazy) is not None     # color=
 
 
 @pytest.mark.skipif(not _HAS_DFDRAW, reason="Requires dfdraw")
-def test_ML_19_ml_alias_in_draw_slots(artifacts):
-    """The ML alias works in the draw slots — weights= and facet_by= — exactly like
-    a GB-evaluator alias (the G-1 premise: function-backed aliases inherit all draw
-    slots)."""
+@pytest.mark.parametrize("mode", ["lazy", "eager"])
+def test_ML_19_prediction_across_all_draw_surfaces(artifacts, mode):
+    """G-1 (expanded): the ML prediction drawn through ALL THREE surfaces —
+    draw, draw_batch, draw_figures — in both lazy and eager mode."""
     adf = _draw_adf(artifacts)
-    res_w = adf.draw("a", type="hist", weights="pred", bins=10, lazy=True)   # ML alias as weights
-    assert res_w is not None
-    res_f = adf.draw("pred:a", type="profile", facet_by="grp",    # faceted, prediction drawn
-                     bins=5, min_entries=1, lazy=True)
-    assert res_f is not None
+    lazy = (mode == "lazy")
+    if not lazy:
+        adf.eval("pred")
+    assert adf.draw("pred", type="hist", bins=20, lazy=lazy) is not None
+    assert adf.draw_batch(
+        {"p": {"expr": "pred", "type": "hist", "bins": 20}}, lazy=lazy) is not None
+    assert adf.draw_figures(
+        [{"plots": [{"expr": "pred:a", "type": "profile", "bins": 5,
+                     "min_entries": 1}]}], lazy=lazy) is not None

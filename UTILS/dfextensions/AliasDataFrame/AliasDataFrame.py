@@ -12169,33 +12169,56 @@ function collapseDepth(maxD) {{
                 out.add(k0[len(ns) + 1:-len("__descriptor")])
         return out
 
-    def _ml_read_embedded(self, fo, name):
-        import numpy as np, json
+    def _ml_read_descriptor(self, fo, name):
+        import json
         ns = self._ADF_ML_NS
         dobj = fo[f"{ns}/{name}__descriptor"]
         dstr = dobj if isinstance(dobj, str) else dobj.member("fString")
-        desc = json.loads(dstr)
+        return json.loads(dstr)
+
+    def _ml_read_blob(self, fo, name, desc):
+        import numpy as np
+        ns = self._ADF_ML_NS
         blob = fo[f"{ns}/{name}__blob"]["b"].array(library="np").astype(np.uint8).tobytes()
         got = self._ml_md5(blob)
         if got != desc["md5"]:
             raise ValueError(
                 f"MD5 mismatch for embedded model {name!r}: descriptor says "
                 f"{desc['md5']}, blob hashes to {got}. Refusing to load.")
+        return blob
+
+    def _ml_read_embedded(self, fo, name):
+        desc = self._ml_read_descriptor(fo, name)
+        blob = self._ml_read_blob(fo, name, desc)
         return blob, desc
 
     def _ml_embed_into_file(self, path):
-        """Append every registered model's descriptor + blob under ADF_ML/ to an
-        existing ROOT file via uproot (additive; the ROOT UserInfo path is not
-        touched — §2 scope fence)."""
-        import uproot, numpy as np, json
+        """Persist every registered model into/alongside an existing ROOT file.
+        persist='embed' (default): descriptor + blob written under ADF_ML/ via
+        uproot (additive; UserInfo untouched). persist='external': ONLY the
+        descriptor is written, with location = the model file's path RELATIVE to
+        the data file's directory (never CWD); the model bytes stay in the external
+        file."""
+        import uproot, numpy as np, json, os
         if not getattr(self, "_models", None):
             return
         ns = self._ADF_ML_NS
+        out_dir = os.path.dirname(os.path.abspath(path))
         with uproot.update(path) as fo:
             for name, desc in self._models.items():
                 pub = {k: desc[k] for k in desc if not k.startswith("_")}
-                fo[f"{ns}/{name}__descriptor"] = json.dumps(pub)
-                fo[f"{ns}/{name}__blob"] = {"b": np.frombuffer(desc["_raw"], np.uint8)}
+                if desc.get("persist") == "external":
+                    src = desc.get("_source_path")
+                    if not src or not os.path.exists(src):
+                        raise ValueError(
+                            f"external persistence for model {name!r} needs the "
+                            f"source model file, but {src!r} was not found.")
+                    pub["location"] = os.path.relpath(os.path.abspath(src), out_dir)
+                    fo[f"{ns}/{name}__descriptor"] = json.dumps(pub)   # descriptor only
+                else:
+                    pub["location"] = "EMBEDDED"
+                    fo[f"{ns}/{name}__descriptor"] = json.dumps(pub)
+                    fo[f"{ns}/{name}__blob"] = {"b": np.frombuffer(desc["_raw"], np.uint8)}
 
     def _ml_recover_from_file(self, path):
         """Re-register every ADF_ML/ model embedded in `path` (MD5-verified).
@@ -12218,14 +12241,37 @@ function collapseDepth(maxD) {{
             return  # not openable / not a plain file -> nothing to recover
         try:
             names = self._ml_list_models_in_file(fo)
+            data_dir = os.path.dirname(os.path.abspath(open_path))
             for name in names:
                 if name in getattr(self, "_models", {}):
                     continue
-                raw, desc = self._ml_read_embedded(fo, name)   # raises on MD5
+                desc = self._ml_read_descriptor(fo, name)
+                loc = desc.get("location", "EMBEDDED")
+                if loc == "EMBEDDED":
+                    raw = self._ml_read_blob(fo, name, desc)       # raises on MD5
+                else:
+                    # external reference: resolve RELATIVE to the data file's dir.
+                    model_path = os.path.normpath(os.path.join(data_dir, loc))
+                    if not os.path.exists(model_path):
+                        raise ValueError(
+                            f"external model file for {name!r} not found at the "
+                            f"resolved path {model_path!r} (descriptor location="
+                            f"{loc!r}, relative to the data file). If you moved the "
+                            f"data file, move the model file with it so the relative "
+                            f"layout is preserved.")
+                    with open(model_path, "rb") as mh:
+                        raw = mh.read()
+                    got = self._ml_md5(raw)
+                    if got != desc["md5"]:
+                        raise ValueError(
+                            f"MD5 mismatch for external model {name!r}: descriptor "
+                            f"says {desc['md5']}, file at {model_path!r} hashes to "
+                            f"{got}. Refusing to load.")
                 self._ml_register_resolved(
                     name, raw, desc["format"], desc["inputs"],
                     desc.get("outputs"), desc.get("version"),
-                    overwrite=False, location=desc.get("location", "EMBEDDED"))
+                    overwrite=False, location=loc,
+                    persist=desc.get("persist", "embed"))
         finally:
             try:
                 fo.close()
@@ -12234,7 +12280,7 @@ function collapseDepth(maxD) {{
 
     # ---- the public interface (D1/D2/D3) ----
     def register_model(self, name, file, format="auto", inputs=None, outputs=None,
-                       version=None, overwrite=False, model=None):
+                       version=None, overwrite=False, model=None, persist="embed"):
         """PHASE_13_69_ADF: register an ML model AND create its lazy prediction
         alias(es) in one call.
 
@@ -12286,14 +12332,16 @@ function collapseDepth(maxD) {{
                 f"(register_model), or deregister_model({name!r}) first.")
         raw, rfmt = self._ml_load_source(file, format, model)
         import os
+        if persist not in ("embed", "external"):
+            raise ValueError(f"persist must be 'embed' or 'external', got {persist!r}.")
         location = "EMBEDDED"  # default persistence intent; overridden on external export
         self._ml_register_resolved(name, raw, rfmt, list(inputs), outputs,
                                    version, overwrite=overwrite, location=location,
-                                   source_path=os.path.abspath(file))
+                                   source_path=os.path.abspath(file), persist=persist)
         return name
 
     def _ml_register_resolved(self, name, raw, fmt, inputs, outputs, version,
-                              overwrite, location, source_path=None):
+                              overwrite, location, source_path=None, persist="embed"):
         """Shared registration core used by register_model AND recovery: build the
         runtime handle, the descriptor, the predict closure(s), and the alias(es)."""
         import numpy as np
@@ -12334,6 +12382,7 @@ function collapseDepth(maxD) {{
             "name": name, "format": fmt, "location": location, "md5": md5,
             "inputs": list(inputs), "outputs": outputs, "version": version,
             "framework_version": fw,
+            "persist": persist,
             "_raw": raw, "_handle": handle,
             "_source_path": source_path,
         }
