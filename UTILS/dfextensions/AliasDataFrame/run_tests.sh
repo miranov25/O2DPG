@@ -310,6 +310,31 @@ if [[ "$MODE" != "quick" ]]; then
 fi
 
 # =============================================================================
+# BUG_ADF_20260705_matrix_html — HTML matrix (dfdraw parity) + env stamps
+# Architect decisions 2026-07-05: phase = latest ADF BEGIN tag (in the script);
+# off-gate: red banner only (#2 not needed); md env stamp (#3 yes); BUG commit (#4).
+# =============================================================================
+HTML_SCRIPT=""
+for cand in "scripts/generate_matrix_html.py" "tests/scripts/generate_matrix_html.py"; do
+    [[ -f "$cand" ]] && HTML_SCRIPT="$cand" && break
+done
+if [[ -n "$HTML_SCRIPT" ]]; then
+    python3 "$HTML_SCRIPT" --log "$LOG_FILE" \
+        --output "docs/CAPABILITY_MATRIX.html" \
+        --snapshot "$LOG_DIR/CAPABILITY_MATRIX_${TS}.html" 2>&1 \
+        || echo "${YELLOW}⚠️  generate_matrix_html.py failed (non-blocking)${RESET}"
+else
+    echo "${YELLOW}⚠️  generate_matrix_html.py not found — docs/CAPABILITY_MATRIX.html not regenerated${RESET}"
+fi
+# Environment stamp into the md (idempotent; one line, grep-guarded)
+ENV_STAMP="*Environment: $(hostname) · $(uname -s)-$(uname -m) · Python $(python3 -c 'import platform; print(platform.python_version())') · stamped by run_tests.sh*"
+for mdf in "docs/CAPABILITY_MATRIX.md" "$MATRIX_MD"; do
+    if [[ -f "$mdf" ]] && ! grep -q '^\*Environment: ' "$mdf"; then
+        printf '\n%s\n' "$ENV_STAMP" >> "$mdf"
+    fi
+done
+
+# =============================================================================
 # Summary
 # =============================================================================
 

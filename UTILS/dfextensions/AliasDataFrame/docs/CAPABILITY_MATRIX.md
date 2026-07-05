@@ -1,6 +1,6 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-07-05 05:48 UTC
+**Generated:** 2026-07-05 07:07 UTC
 **Phase:** PHASE_13_57_DF_END
 **Taxonomy:** 60 features (PHASE_13_11_B approved)
 **Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)
@@ -9,9 +9,9 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 38 | 63% |
+| ✅ Verified | 37 | 61% |
 | ☑️ Smoke-only | 17 | 28% |
-| 🧨 Broken | 4 | 6% |
+| 🧨 Broken | 5 | 8% |
 | 📋 Planned | 1 | 1% |
 | **Total features** | **60** | |
 | **Matched tests** | **1921** | |
@@ -40,7 +40,7 @@
 | Status | Feature | Tests | Pass | Fail | Inv |
 |--------|---------|------:|-----:|-----:|:---:|
 | ✅ | **SUB.register** — Subframe registration | 50 | 50 | 0 | 3 |
-| ✅ | **SUB.join** — Subframe join & column resolution | 70 | 70 | 0 | 22 |
+| 🧨 | **SUB.join** — Subframe join & column resolution | 70 | 69 | 1 | 22 |
 | ✅ | **SUB.composite_key** — Composite key operations | 38 | 38 | 0 | 2 |
 | ✅ | **SUB.auto_alias** — Auto-aliasing subframe columns | 11 | 10 | 0 | 1 |
 | 📋 | **SUB.clone** — Clone with selection (planned) | 0 | 0 | 0 |  |
@@ -151,9 +151,12 @@
 
 ## 🧨 Broken Features — Details
 
+### SUB.join
+- ❌ `test_alias_subframe.py::TestSubframeRoundtrip::test_parquet_roundtrip`
+
 ### DRAW.execution
-- ❌ `test_K1_vector_draw_kwarg_diagnostic.py::TestK1VectorDrawKwargDiagnostic::test_K1_3_draw_batch_forwards_batch_kwargs`
 - ❌ `test_K2_vector_draw_end_to_end.py::TestK2VectorDrawEndToEnd::test_K2_3_production_reproducer_mirror`
+- ❌ `test_K1_vector_draw_kwarg_diagnostic.py::TestK1VectorDrawKwargDiagnostic::test_K1_3_draw_batch_forwards_batch_kwargs`
 
 ### COMP.roundtrip
 - ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
@@ -164,8 +167,8 @@
 
 ### RDF.export
 - ❌ `test_AliasDataFrameRDF.py::TestRDataFrameFriendAccess::test_composite_index_friend`
-- ❌ `test_AliasDataFrameRDF.py::TestAddDefinesCollision::test_collision_from_friend_tree`
 - ❌ `test_AliasDataFrameRDF.py::TestTMemFileBranch::test_missing_keys_in_friend`
+- ❌ `test_AliasDataFrameRDF.py::TestAddDefinesCollision::test_collision_from_friend_tree`
 
 ## Unmatched Tests
 
@@ -205,3 +208,4 @@
 
 ---
 *Generated from pytest JSON + feature_taxonomy.py (v2 taxonomy-based).*
+*Environment: alma2 · Linux-aarch64 · Python 3.10.19 · stamped by run_tests.sh*
