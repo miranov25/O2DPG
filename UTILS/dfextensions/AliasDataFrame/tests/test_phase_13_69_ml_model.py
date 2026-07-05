@@ -354,3 +354,29 @@ def test_ML_16_invariance_alias_vs_prefilled_column(artifacts, data_adf):
     e_alias = np.asarray(data_adf.eval("pred * 2 + b"))
     e_pref = np.asarray(data_adf.eval("pred_prefilled * 2 + b"))
     np.testing.assert_allclose(e_alias, e_pref, rtol=RTOL, atol=ATOL)
+
+
+# --------------------------------- T-ML-17 per-row vector output refuses loudly
+def test_ML_17_per_row_vector_output_refused(data_adf, tmp_path):
+    """A single output tensor of width K>1 (a per-row vector) is scalar-incompatible
+    with ADF aliases and is deferred in PHASE_13_69 — it must REFUSE loudly at
+    registration (the declared shape is unreliable, so the width is probed), not
+    fail with a confusing downstream error."""
+    pytest.importorskip("sklearn")
+    pytest.importorskip("skl2onnx")
+    from sklearn.ensemble import RandomForestRegressor
+    from skl2onnx import convert_sklearn
+    from skl2onnx.common.data_types import FloatTensorType
+    rng = np.random.default_rng(13)
+    X = rng.random((200, 3)).astype(np.float32)
+    Y = np.column_stack([2 * X[:, 0] - X[:, 1], X[:, 2] + X[:, 0]]).astype(np.float32)
+    rf = RandomForestRegressor(n_estimators=8, max_depth=4, random_state=0).fit(X, Y)
+    onx = convert_sklearn(rf, initial_types=[("input", FloatTensorType([None, 3]))])
+    path = str(tmp_path / "multi.onnx")
+    with open(path, "wb") as f:
+        f.write(onx.SerializeToString())
+    with pytest.raises(ValueError) as ei:
+        data_adf.register_model("mo", path, inputs=["a", "b", "c"])
+    msg = str(ei.value)
+    assert "vector" in msg and ("width 2" in msg or "width" in msg)
+    assert "mo" not in data_adf.aliases                 # no half-registered alias left

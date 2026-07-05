@@ -12299,6 +12299,32 @@ function collapseDepth(maxD) {{
         import numpy as np
         handle = self._ml_make_handle(raw, fmt)
         md5 = self._ml_md5(raw)
+        # PHASE_13_69_ADF: fail EARLY on per-row vector output (width>1). ADF
+        # prediction aliases are scalar-per-row; a single output tensor of width
+        # K>1 is deferred (needs an architect-specified slot->column mapping). The
+        # declared ONNX shape is unreliable, so probe the ACTUAL width with a
+        # 1-row inference. Named multi-output tensors (outputs={...}) must each be
+        # scalar; a single output (outputs=None) must be scalar.
+        widths = self._ml_probe_output_widths(handle, fmt, len(inputs))
+        if widths:
+            if outputs:
+                wide = {o: widths.get(o) for o in outputs if (widths.get(o) or 1) > 1}
+                if wide:
+                    raise ValueError(
+                        f"Model {name!r} named output(s) {wide} are per-row vectors "
+                        f"(width>1); ADF prediction aliases are scalar-per-row. "
+                        f"Per-row vector output is deferred in PHASE_13_69 (awaiting "
+                        f"architect spec). Split each into scalar output tensors.")
+            else:
+                w = next(iter(widths.values()))
+                if w > 1:
+                    raise ValueError(
+                        f"Model {name!r} output is a per-row vector of width {w}; "
+                        f"ADF prediction aliases are scalar-per-row. Per-row vector "
+                        f"output is NOT defined in PHASE_13_69 (deferred, awaiting "
+                        f"architect spec for slot->column mapping). Use a model with "
+                        f"named scalar output tensors (register with outputs={{...}}), "
+                        f"or reduce the model to a scalar output.")
         try:
             fw = getattr(__import__(fmt.split("-")[0]), "__version__", "unknown")
         except Exception:
@@ -12341,8 +12367,46 @@ function collapseDepth(maxD) {{
             outputs = self._ml_evaluate(name, arrays)
             col = outputs[out_key] if out_key is not None else next(iter(outputs.values()))
             col = np.asarray(col)
-            return col[:, 0] if col.ndim == 2 and col.shape[1] == 1 else col
+            if col.ndim == 1:
+                return col
+            if col.ndim == 2 and col.shape[1] == 1:
+                return col[:, 0]
+            # PHASE_13_69_ADF: per-row VECTOR output (width>1) is not defined —
+            # ADF prediction aliases are scalar-per-row. Fail loud (backstop; the
+            # register-time probe below normally catches this earlier).
+            width = col.shape[1] if col.ndim == 2 else col.shape
+            raise ValueError(
+                f"Model {name!r} output {out_key!r} produced a per-row vector of "
+                f"width {width}; ADF prediction aliases are scalar-per-row. Per-row "
+                f"vector output is NOT defined in PHASE_13_69 (deferred, awaiting "
+                f"architect spec for slot->column mapping). Use a model whose "
+                f"output tensors are each scalar and register with "
+                f"outputs={{model_out_name: alias_name, ...}}, or reduce the model "
+                f"to a scalar output.")
         return _f
+
+    @staticmethod
+    def _ml_probe_output_widths(handle, fmt, n_inputs):
+        """Run a 1-row zero-input inference to learn each output's actual per-row
+        width (the DECLARED ONNX shape is unreliable — e.g. skl2onnx may declare
+        [N,1] yet run [N,K]). Returns {output_name: width} or {} if the probe
+        itself fails (then the eval-time backstop applies)."""
+        import numpy as np
+        try:
+            X = np.zeros((1, n_inputs), dtype=np.float32)
+            if fmt == "onnx":
+                in_name = handle.get_inputs()[0].name
+                results = handle.run(None, {in_name: X})
+                names = [o.name for o in handle.get_outputs()]
+                return {names[i]: (int(np.asarray(r).shape[1])
+                                   if np.asarray(r).ndim == 2 else 1)
+                        for i, r in enumerate(results)}
+            else:  # xgboost-json
+                import xgboost as xgb
+                r = np.asarray(handle.predict(xgb.DMatrix(X)))
+                return {"variable": int(r.shape[1]) if r.ndim == 2 else 1}
+        except Exception:
+            return {}
 
     def _ml_evaluate(self, name, arrays):
         """Run the model ONCE per valid cache state; sibling outputs reuse it.
