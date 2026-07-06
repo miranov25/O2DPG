@@ -932,11 +932,13 @@ def makePlots(output_path="time_series_plots.pdf"):
     drawFitExample(adf,pdf)
     pdf.close()
 
-def loadADFLazy():
+def loadADFLazy0():
+    logger.log("loadADFLazy::BEGIN")
     adf = AliasDataFrame.read_tree_lazy("time_series_tracks_0.root","treeTimeSeries")
     apply_meta(adf,df_TimeSeriesAliases)
     apply_meta(adf,df_TimeSeriesMeta)
     adf.draw_lazy=True
+    logger.log("loadADFLazy::Analyze cluster mask BEGIN")
     with uproot.open("time_series_tracks_0.root") as f:
         tree = f["treeTimeSeries"]   # adjust if needed
         mask = tree["clusterMask"].array(library="ak")
@@ -944,7 +946,29 @@ def loadADFLazy():
         adf.df[f"rowmask_3_5"] = res_3_5["rowmask"]
         adf.df[f"first_3_5"] = res_3_5["first"].astype(np.uint8)
         adf.df[f"last_3_5"] = res_3_5["last"].astype(np.uint8)
+    logger.log("loadADFLazy::Analyze cluster mask END")
+    return adf
 
+def loadADFLazy():
+    logger.log("loadADFLazy::BEGIN")
+    adf = AliasDataFrame.read_tree_lazy("time_series_tracks_0.root","treeTimeSeries")
+    apply_meta(adf,df_TimeSeriesAliases)
+    apply_meta(adf,df_TimeSeriesMeta)
+    adf.draw_lazy=True
+    logger.log("loadADFLazy::Analyze cluster mask BEGIN")
+    _rm, _fi, _la = [], [], []
+    with uproot.open("time_series_tracks_0.root") as f:
+        tree = f["treeTimeSeries"]
+        for chunk in tree.iterate(["clusterMask"], library="ak", step_size=2_000_000):
+            res = make_row_group_mask(chunk["clusterMask"], group_size=5, threshold=2)
+            _rm.append(res["rowmask"])
+            _fi.append(res["first"].astype(np.uint8))
+            _la.append(res["last"].astype(np.uint8))
+    adf.df["rowmask_3_5"] = np.concatenate(_rm)
+    adf.df["first_3_5"]   = np.concatenate(_fi)
+    adf.df["last_3_5"]    = np.concatenate(_la)
+    logger.log("loadADFLazy::Analyze cluster mask END")
+    return adf
 
 
 #

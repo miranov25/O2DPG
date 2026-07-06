@@ -520,8 +520,8 @@ def drawEdgeHis(adf):
     adf.add_alias("tgl20",       "tgl*20",       dtype="int8")
     adf.add_alias("qpt5",        "qpt*5",        dtype="int8")
     adf.add_alias("qpt_ITSTPC5", "qpt_ITSTPC*5", dtype="int8")
-    adf.materialize_aliases(names=["dsector20", "tgl20", "qpt5", "qpt_ITSTPC5", "dsector"])
-
+    adf.materialize_aliases(names=["dsector20", "tgl20", "qpt5", "qpt_ITSTPC5", "dsector","ncl"])
+    adf.ensure_columns("ncl>40&hasITSTPC>0")
     # --- 2. the two track samples --------------------------------------------
     isTPC    = adf.df["ncl"] > 40
     isITSTPC = isTPC & (adf.df["hasITSTPC"] > 0)
@@ -584,3 +584,167 @@ def drawEdgeHis(adf):
     # (f)  ITS-TPC fine/normed to median withoing sector
     base.draw("(ITSTPC_fine.count/ITSTPC_normmed.count):dsector_median", type="profile",group_by="qpt_median", group_by_bins=10,
               selection="(abs(tgl_median)<1) & (count>20) & (abs(qpt_median)<2)",auto_title=True)
+    adf.register_subframe("counters", base, index_columns=["dsector20", "tgl20", "qpt5"]) ## should we register here or as user request?
+    return base
+
+
+def makeGBTPCDiff(adf, cols, group_byLocal, group_byGlobal, selection=None, out_dir=".", tag="gbtpcdiff", time_col="timeMS"):
+    """Local + global GB statistics of `cols`, exported for time-series monitoring.
+    1. LOCAL  — group by `group_byLocal` (fine grid); mean/median/std (+count)
+                per column. Registered on the main frame as subframe 'gbLocal'.
+    2. GLOBAL — subtract the per-local-cell mean from each track, then group the
+                residuals by `group_byGlobal` (sector grid); mean/median/std
+                (+count) of the residuals. Registered as 'gbGlobal'.
+    3. EXPORT — both frames get a `timestamp` column and a timestamped filename,
+                so snapshots can be merged into a time series later.
+
+    adf=loadADFLazy()
+    cols           = ["dcar_itstpc", "dcar_tpc","dcar_tpc_vertex", "chi2match_ITSTPC","dcaZFromDeltaTime"]
+    for icol in range(5): cols.append(f"deltaP{icol}OuterITS"); cols.append(f"deltaPar{icol}")
+
+    group_byLocal  = ["dsector20", "tgl20", "qpt_ITSTPC5"]   # fine grid for local mean subtraction
+    group_byGlobal = ["sector180", "tgl10", "qpt_ITSTPC5"]
+    selection      = "(ncl>40)&(hasITSTPC>0)&(abs(dcar_itstpc)<0.03)&(isOKITSTPC)"
+    time_col="timeMS"
+    plots to export: for the local test before merging time series:
+    PDF report?
+    Candidate figures to code -very dense beut usfull
+    colunss : dcar_tpc_vertx,dcaz_tpc, dP0,dP1,dP2,dP3,dP4
+    reows:
+    makeGBTPCDiff(adf, cols, group_byLocal, group_byGlobal, selection=selection, out_dir=".", tag="gbtpcdiff", time_col="timeMS")
+    """
+    def _gb_stats(frame, keys, value_cols):
+        """mean/median/std of value_cols on grid `keys` + row count; flat-named."""
+        g = frame.groupby(keys)
+        out = g[value_cols].agg(["mean", "median", "std"])
+        out.columns = [f"{c}_{a}" for c, a in out.columns]   # ('dcar','mean') -> 'dcar_mean'
+        out["count"] = g.size()
+        out = out.reset_index()
+        out["timestamp"] = ts
+        return out
+    def makeFigLocal4(var="dcar_tpc_vertex", out="fig/gb4_{var}", group_by="tgl", n=7, range=(-4.5, 4.5)):
+        """
+        makeFigLocal4("dcar_tpc_vertex",range=(-4.5,4.5),out="fig/gb4_{var}45")
+        makeFigLocal4("dcar_tpc_vertex",range=(-1,1),out="fig/gb4_{var}10")
+        makeFigLocal4("deltaP2OuterITS",range=(-1,1),out="fig/gb4_{var}10")
+
+        """
+        sel_raw   = f"(isOKITSTPC>0)&(abs({var})<10)&(abs(dsector-0.5)<0.45)&(ncl>80)"
+        sel_local = "(count>10)&(abs(dsector-0.5)<0.45)"
+        fig, ax = plt.subplots(2, 2, figsize=(12, 9))
+        adf.draw(f"{var}:qpt_ITSTPC",            type="profile", selection=sel_raw,
+                 group_by=group_by, group_by_bins=n, auto_title=True, range=range, ax=ax[0,0])
+        adf.draw(f"abs({var}):qpt_ITSTPC",       type="profile", selection=sel_raw,
+                 group_by=group_by, group_by_bins=n, auto_title=True, range=range, ax=ax[0,1])
+        adfLocal.draw(f"{var}_std:qpt",          type="profile", selection=sel_local,
+                      group_by=group_by, group_by_bins=n, auto_title=True, ax=ax[1,0],range=range)
+        adfLocal.draw(f"abs({var}_mean):qpt",    type="profile", selection=sel_local,
+                      group_by=group_by, group_by_bins=n, auto_title=True, ax=ax[1,1],range=range)
+        fig.suptitle(var)
+        fig.tight_layout(rect=(0, 0, 1, 0.97))
+        stem = out.format(var=var)
+        fig.savefig(f"{stem}.pdf", bbox_inches="tight")
+        fig.savefig(f"{stem}.png", dpi=150, bbox_inches="tight")
+        #plt.close(fig)
+        return f"{stem}.pdf", f"{stem}.png"
+
+# --- grid-coordinate aliases ---------------------------------------------
+    adf.add_alias("dsector20", "dsector*20",   dtype="uint8")
+    adf.add_alias("sector180", "180*(phi/pi)", dtype="int16")   # NOTE: was uint8 — phi<0 overflows
+    adf.add_alias("tgl20",     "tgl*20",       dtype="int8")
+    adf.add_alias("tgl10",     "tgl*10",       dtype="int8")
+    adf.add_alias("qpt5",      "qpt*5",        dtype="int8")
+    adf.add_alias("qpt_ITSTPC5", "qpt_ITSTPC*5", dtype="int8")
+    adf.add_alias("isPrimITS01", "(abs(dcar_itstpc)<0.1)&(abs(dcaz_itstpc)<0.1)", dtype="int8")
+    adf.add_alias("isOKITSTPC", "(hasITSTPC>0)&(abs(deltaP0OuterITS)<5)&(abs(deltaP2OuterITS)<1) & (abs(dcar_tpc_vertex)<10) & (ncl>80)", dtype="int8")
+    # make pulls alaises for the deltaP columns
+    #
+    logger.log(f"makeGBTPCDiff: Load brances Step0 BEGIN")
+    grid_cols = sorted(set(group_byLocal) | set(group_byGlobal))
+    adf.ensure_columns(selection, cols + grid_cols,time_col)
+    adf.materialize_aliases(names=grid_cols)
+    logger.log(f"makeGBTPCDiff: Load brances Step0 END")
+
+    # --- selection + snapshot timestamp --------------------------------------
+    mask = adf.eval(selection) if selection else slice(None)
+    df = adf.df[mask]
+    ts=adf.df["timeMS"].median()
+
+
+    # --- 1. LOCAL ------------------------------------------------------------
+    logger.log(f"makeGBTPCDiff: LOCAL GB Step1: BEGIN")
+    local = _gb_stats(df, group_byLocal, cols)
+    local["timeMS"] = ts
+    adfLocal=AliasDataFrame(local)
+    adfLocal.draw_lazy=True
+    adfLocal.add_alias("qpt", "qpt_ITSTPC5/5", dtype="float32")
+    adfLocal.add_alias("tgl", "tgl20/20", dtype="float32")
+    adfLocal.add_alias("dsector", "dsector20/20", dtype="float32")
+    adf.register_subframe("gbLocal", adfLocal, index_columns=group_byLocal)
+    logger.log(f"makeGBTPCDiff: LOCAL GB END")
+    # 1.b)
+    logger.log(f"makeGBTPCDiff: LOCAL GB ALIASES Step1bBEGIN")
+    cols_DL=[f"{c}_DL" for c in cols]
+    for c in cols: adf.add_alias(f"{c}_DL", f"{c}-gbLocal.{c}_mean", dtype="float32")
+    adf.materialize_aliases(names=cols_DL)
+    """
+    adf.draw("dcar_tpc_vertex:qpt_ITSTPC",type="profile",selection="(isOKITSTPC>0)&(abs(dcar_tpc_vertex)<10)&(abs(dsector-0.5)<0.45)",group_by="tgl",group_by_bins=7,auto_title=True,range=(-4.5,4.5))
+    adf.draw("abs(dcar_tpc_vertex):qpt_ITSTPC",type="profile",selection="(isOKITSTPC>0)&(abs(dcar_tpc_vertex)<10)&(abs(dsector-0.5)<0.45)",group_by="tgl",group_by_bins=7,auto_title=True,range=(-4.5,4.5))
+    #   
+    adfLocal.draw("dcar_tpc_vertex_std:qpt",type="profile",selection="(count>10)&(abs(dsector-0.5)<0.45)",group_by="tgl",group_by_bins=7,auto_title=True)
+    adfLocal.draw("abs(dcar_tpc_vertex_mean):qpt",type="profile",selection="(count>10)&(abs(dsector-0.5)<0.45)",group_by="tgl",group_by_bins=7,auto_title=True)
+
+    
+    adf.draw("dcar_tpc_vertex:gbLocal.dcar_tpc_mean",type="profile",selection="((isOKITSTPC>0)&(abs(dsector-0.5)<0.45)&(isPrimITS01)",group_by="tgl",group_by_bins=7,auto_title=True)
+    # 
+
+    fig, axes, stats = adf.draw("1.44*abs(dcar_tpc_DL):qpt_ITSTPC",type="profile",selection="(hasITSTPC>0)&(isPrimITS01)&(abs(tgl)<1.2)",
+        group_by="dsector",group_by_bins=10,auto_title=True,range=(-4,4),facet_by="mult",facet_by_quantiles=4,ncols=2,legend="shared")
+    
+    fig, axes, stats = adf.draw("1.44*abs(dcar_tpc_DL):mult",type="profile",selection="(hasITSTPC>0)&(isPrimITS01)&(abs(tgl)<1.2)&(abs(qpt_ITSTPC)<1)&abs(dsector-0.5)<0.45",
+        group_by="qpt_ITSTPC",group_by_bins=9,auto_title=True,facet_by="dsector",facet_by_quantiles=9,ncols=3,legend="shared")    
+        
+    fig, axes, stats = adf.draw("1.44*abs(dcar_tpc_DL):mult",type="profile",selection="(hasITSTPC>0)&(isPrimITS01)&(abs(tgl)<1.2)&(abs(qpt_ITSTPC)<1)&abs(dsector-0.5)<0.45",
+        group_by="qpt_ITSTPC",group_by_bins=9,auto_title=True,facet_by="tgl",facet_by_quantiles=6,ncols=3,legend="shared",bins=20)
+        
+        
+      
+    """
+    logger.log(f"makeGBTPCDiff: LOCAL GB ALIASES Step1bEND")
+    # --- 2. GLOBAL on local-mean-subtracted residuals ------------------------
+    logger.log("makeGBTPCDiff: GLOBAL GB Step2 BEGIN")
+    glob = _gb_stats(adf.df[mask], group_byGlobal, cols_DL)   # residuals already materialized
+    glob["timeMS"] = ts
+    adfGlobal=AliasDataFrame(glob)
+    adf.register_subframe("gbGlobal", adfGlobal, index_columns=group_byGlobal)
+    logger.log("makeGBTPCDiff: GLOBAL GB END")
+    # --- 3. EXPORT both, timestamped -----------------------------------------
+    logger.log("makeGBTPCDiff: EXPORT Step3 BEGIN")
+    adfLocal.export_tree(f"{out_dir}/timeSeries_GBLocal.root")
+    adfGlobal.export_tree(f"{out_dir}/timeSeries_GBGlobal.root")
+    logger.log("makeGBTPCDiff: EXPORT Step3 END")
+
+    # --- 4. EXAMPLE DRAW -----------------------------------------------------"""
+    # make pdf report file?
+    """
+    adf.draw("(gbLocal.dcar_tpc_mean):qpt_ITSTPC",type="profile",selection="(hasITSTPC>0)&(abs(dsector-0.5)<0.45)&(isPrimITS01)",group_by="tgl",group_by_bins=7,auto_title=True,range=(-4,4))
+    adf.draw("(gbLocal.dcar_tpc_mean):dsector",type="profile",selection="(hasITSTPC>0)&(abs(dsector-0.5)<0.45)&(isPrimITS01)",group_by="qpt",group_by_bins=11,auto_title=True,range=(0,1))
+    adf.draw("(dcar_tpc):dsector",type="profile",selection="(hasITSTPC>0)&(abs(dsector-0.5)<0.45)&(isPrimITS01)",group_by="qpt",group_by_bins=15,auto_title=True,range=(0,1))
+    adf.draw("1.44*abs(gbLocal.dcar_tpc_mean):qpt_ITSTPC",type="profile",selection="(hasITSTPC>0)&(abs(dsector-0.5)<0.45)&(isPrimITS01)",group_by="tgl",group_by_bins=7,auto_title=True,range=(-4,4))
+    
+    adf.draw("1.44*abs(gbGlobal.dcar_tpc_DL_mean):qpt_ITSTPC",type="profile",selection="(hasITSTPC>0)&(abs(dsector-0.5)<0.45)&(isPrimITS01)",group_by="tgl",group_by_bins=7,auto_title=True,range=(-4,4))
+    adf.draw(1.44*"abs(gbGlobal.dcar_tpc_DL_mean):qpt_ITSTPC",type="profile",selection="(hasITSTPC>0)&(abs(dsector-0.5)<0.45)&(isPrimITS01)",group_by="tgl",group_by_bins=7,auto_title=True,range=(-4,4))
+    #adf.draw("dcar_tpc:sector",type="profile",selection="(hasITSTPC>0)&(abs(dsector-0.5)<0.45)&(isPrimITS01)",group_by="qpt",group_by_bins=11,auto_title=True)
+    adf.draw("dcar_tpc:sector",type="profile",selection="(hasITSTPC>0)&(abs(dsector-0.5)<0.45)&(isPrimITS01)",group_by="qpt",group_by_bins=11,bins=180,auto_title=True)
+    #
+    fig, axes, stats = adf.draw("1.44*abs(dcar_tpc_DL):mult",type="profile",selection="(hasITSTPC>0)&(isPrimITS01)&(abs(tgl)<1.2)&(abs(qpt_ITSTPC)<1)&abs(dsector-0.5)<0.45",
+        group_by="qpt_ITSTPC",group_by_bins=9,auto_title=True,facet_by="dsector",facet_by_quantiles=9,ncols=3,legend="shared")    
+        
+    fig, axes, stats = adf.draw("1.44*abs(dcar_tpc_DL):mult",type="profile",selection="(hasITSTPC>0)&(isPrimITS01)&(abs(tgl)<1.2)&(abs(qpt_ITSTPC)<1)&abs(dsector-0.5)<0.45",
+        group_by="qpt_ITSTPC",group_by_bins=9,auto_title=True,facet_by="tgl",facet_by_quantiles=6,ncols=3,legend="shared",bins=20)
+    fig, axes, stats = adf.draw("1.44*abs(dcar_tpc_DL):mult",type="profile",selection="(hasITSTPC>0)&(isPrimITS01)&(abs(tgl)<1.2)&(abs(qpt_ITSTPC)<0.5)&abs(dsector-0.5)<0.40",
+        group_by="qpt_ITSTPC",group_by_bins=6,auto_title=True,facet_by="tgl",facet_by_quantiles=9,ncols=3,legend="shared",bins=20)    
+    
+    """
+    return adf
+

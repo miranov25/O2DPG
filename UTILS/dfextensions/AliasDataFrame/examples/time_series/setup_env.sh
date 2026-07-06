@@ -22,8 +22,9 @@ _HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 #   ../../../  →  .../dfextensions
 ADF_DIR="$(cd "$_HERE/../.." && pwd)"
 DFEXTENSIONS_DIR="$(cd "$_HERE/../../.." && pwd)"
-
-export PYTHONPATH="$ADF_DIR:$DFEXTENSIONS_DIR:$PYTHONPATH"
+UTILS_DIR="$(cd "$_HERE/../../../.." && pwd)"   # .../O2DPG/UTILS
+export PYTHONPATH="$ADF_DIR:$DFEXTENSIONS_DIR:$UTILS_DIR:$PYTHONPATH"
+#export PYTHONPATH="$ADF_DIR:$DFEXTENSIONS_DIR:$PYTHONPATH"
 
 echo "Environment configured:"
 echo "  ADF_DIR           = $ADF_DIR"
@@ -37,5 +38,10 @@ python3 -c "from AliasDataFrame import AliasDataFrame; print('  ✓ AliasDataFra
 
 python3 -c "from dfdraw import DFDraw; print('  ✓ dfdraw importable')" 2>&1 || \
     echo "  ⚠ dfdraw import failed (tutorials work without it but plots won't render)"
+
+
+python3 -c "import perfmonitor; print('  ✓ perfmonitor importable')" 2>&1 || \
+    echo "  ✗ perfmonitor import FAILED — expected at $UTILS_DIR/perfmonitor"
+
 
 unset _HERE
