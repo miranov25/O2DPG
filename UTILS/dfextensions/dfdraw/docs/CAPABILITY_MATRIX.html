@@ -63,17 +63,17 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 </head>
 <body>
 <h1>Capability Matrix — dfdraw</h1>
-<p class="meta">Generated: <span class="mono">2026-06-30 23:04 UTC</span> · Phase: <span class="mono">PHASE_13_57_DF_END</span></p>
+<p class="meta">Generated: <span class="mono">2026-07-06 18:26 UTC</span> · Phase: <span class="mono">PHASE_13_57_DF_END</span></p>
 <section class="summary">
 <h2>Summary</h2>
 <table>
-<tr><th>✅ Verified</th><td class="n">70</td><td class="n">46%</td></tr>
+<tr><th>✅ Verified</th><td class="n">71</td><td class="n">46%</td></tr>
 <tr><th>☑️ Smoke-only</th><td class="n">81</td><td class="n">53%</td></tr>
 <tr><th>🧨 Broken</th><td class="n">0</td><td class="n">0%</td></tr>
 <tr><th>📋 Planned</th><td class="n">1</td><td class="n">1%</td></tr>
-<tr><th>Total features</th><td class="n"><strong>152</strong></td><td></td></tr>
-<tr><th>Total proof tests</th><td class="n"><strong>713</strong></td><td></td></tr>
-<tr><th>Invariance tests</th><td class="n"><strong>381</strong></td><td></td></tr>
+<tr><th>Total features</th><td class="n"><strong>153</strong></td><td></td></tr>
+<tr><th>Total proof tests</th><td class="n"><strong>719</strong></td><td></td></tr>
+<tr><th>Invariance tests</th><td class="n"><strong>387</strong></td><td></td></tr>
 <tr><th>Visual tests</th><td class="n"><strong>34</strong></td><td></td></tr>
 </table>
 </section>
@@ -1086,6 +1086,18 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
 </ul>
 </div></td></tr>
 <tr class="category-row"><td colspan="8">PROFILE</td></tr>
+<tr id="feature-PROFILE.range_invariance" class="feature-row" data-status="Verified" data-visual="no" data-category="PROFILE"><td><span class="expand-toggle">▶</span></td><td>✅</td><td><strong class="mono">PROFILE.range_invariance</strong> — Profile per-bin statistics are range-invariant; out-of-range rows excluded, not folded into edge bins (overflow-fold fix). Covers mean, std, median, quantile band, and the grouped path.</td><td class="n">6</td><td class="n">6</td><td class="n">0</td><td class="n">6</td><td class="n"></td></tr>
+<tr class="tests-row" hidden><td colspan="8">
+<div class="tests-panel">
+<ul>
+<li><span class="layer-marker">✓</span><code>test_profile_overflow.py::test_profile_mean_range_invariance</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_profile_overflow.py::test_profile_std_range_invariance</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_profile_overflow.py::test_profile_median_range_invariance</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_profile_overflow.py::test_profile_quantile_range_invariance</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_profile_overflow.py::test_profile_grouped_range_invariance</code><span class="outcome passed">passed</span></li>
+<li><span class="layer-marker">✓</span><code>test_profile_overflow.py::test_profile_mean_no_edge_pileup</code><span class="outcome passed">passed</span></li>
+</ul>
+</div></td></tr>
 <tr id="feature-PROFILE.return_data" class="feature-row" data-status="Smoke-only" data-visual="no" data-category="PROFILE"><td><span class="expand-toggle">▶</span></td><td>☑️</td><td><strong class="mono">PROFILE.return_data</strong> — Profile data export (return_data=True)</td><td class="n">3</td><td class="n">3</td><td class="n">0</td><td class="n">0</td><td class="n"></td></tr>
 <tr class="tests-row" hidden><td colspan="8">
 <div class="tests-panel">

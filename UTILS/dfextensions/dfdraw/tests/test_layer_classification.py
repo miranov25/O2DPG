@@ -14,6 +14,12 @@ Phase 13.15.DF
 """
 
 TEST_LAYERS = {
+    "test_profile_overflow.py::test_profile_mean_range_invariance": "invariance",
+    "test_profile_overflow.py::test_profile_std_range_invariance": "invariance",
+    "test_profile_overflow.py::test_profile_median_range_invariance": "invariance",
+    "test_profile_overflow.py::test_profile_quantile_range_invariance": "invariance",
+    "test_profile_overflow.py::test_profile_grouped_range_invariance": "invariance",
+    "test_profile_overflow.py::test_profile_mean_no_edge_pileup": "invariance",
 
     # ── Invariance: batch ≡ standalone (numerical equality) ──
     "test_batch_groups.py::test_value_correctness": "invariance",

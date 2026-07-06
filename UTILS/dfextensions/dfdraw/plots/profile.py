@@ -1000,6 +1000,20 @@ def draw_profile(
     return fig, ax, stats_dict
 
 
+def _bin_indices_in_range(x_data, bin_edges, bins):
+    """Digitize x into [0, bins) and EXCLUDE under/overflow (do NOT fold
+    out-of-range rows into the edge bins). np.clip previously piled every
+    out-of-range row into bin 0 / bin (bins-1), spiking the edge bins and making
+    them range-dependent. Returns (bin_indices_for_in_range_rows, in_range_mask)."""
+    idx = np.digitize(x_data, bin_edges) - 1
+    # np.histogram convention: a point exactly on the UPPER edge belongs to the
+    # last bin, not overflow. This keeps range=None (upper edge == nanmax) from
+    # dropping the maximum point, while true overflow (x > upper edge) is excluded.
+    idx[x_data == bin_edges[-1]] = bins - 1
+    in_range = (idx >= 0) & (idx < bins)
+    return idx[in_range], in_range
+
+
 def _compute_profile(
     x_data: np.ndarray,
     y_data: np.ndarray,
@@ -1044,10 +1058,11 @@ def _compute_profile(
     bin_edges = np.linspace(x_range[0], x_range[1], bins + 1)
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
     
-    # Digitize x values
-    bin_indices = np.digitize(x_data, bin_edges) - 1
-    # Clip to valid range (handle edge cases)
-    bin_indices = np.clip(bin_indices, 0, bins - 1)
+    # Digitize x values; EXCLUDE under/overflow (do NOT fold into edge bins).
+    bin_indices, _in = _bin_indices_in_range(x_data, bin_edges, bins)
+    y_data = y_data[_in]
+    if w_data is not None:
+        w_data = w_data[_in]
     
     # Compute mean, std, sem, count for each bin
     bin_means = np.full(bins, np.nan)
@@ -1550,7 +1565,8 @@ def _compute_per_bin_quantiles(
     
     bin_edges = np.linspace(x_range[0], x_range[1], bins + 1)
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-    bin_indices = np.clip(np.digitize(x_data, bin_edges) - 1, 0, bins - 1)
+    bin_indices, _in = _bin_indices_in_range(x_data, bin_edges, bins)
+    y_data = y_data[_in]
     
     q_lower_frac, q_upper_frac = quantile_pair
     q_lower = np.full(bins, np.nan)
@@ -1591,7 +1607,8 @@ def _compute_per_bin_all_quantiles(
         x_range = (np.nanmin(x_data), np.nanmax(x_data))
     
     bin_edges = np.linspace(x_range[0], x_range[1], bins + 1)
-    bin_indices = np.clip(np.digitize(x_data, bin_edges) - 1, 0, bins - 1)
+    bin_indices, _in = _bin_indices_in_range(x_data, bin_edges, bins)
+    y_data = y_data[_in]
     
     result = {}
     for q in quantile_list:
@@ -1627,7 +1644,8 @@ def _compute_per_bin_median(
         x_range = (np.nanmin(x_data), np.nanmax(x_data))
     
     bin_edges = np.linspace(x_range[0], x_range[1], bins + 1)
-    bin_indices = np.clip(np.digitize(x_data, bin_edges) - 1, 0, bins - 1)
+    bin_indices, _in = _bin_indices_in_range(x_data, bin_edges, bins)
+    y_data = y_data[_in]
     
     bin_medians = np.full(bins, np.nan)
     for i in range(bins):
@@ -1694,7 +1712,8 @@ def _compute_per_bin_mad_sigma(
         x_range = (np.nanmin(x_data), np.nanmax(x_data))
 
     bin_edges = np.linspace(x_range[0], x_range[1], bins + 1)
-    bin_indices = np.clip(np.digitize(x_data, bin_edges) - 1, 0, bins - 1)
+    bin_indices, _in = _bin_indices_in_range(x_data, bin_edges, bins)
+    y_data = y_data[_in]
 
     bin_mad_sigma = np.full(bins, np.nan)
     for i in range(bins):

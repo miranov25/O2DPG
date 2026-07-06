@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-06-30 23:04 UTC
+**Generated:** 2026-07-06 18:26 UTC
 **Phase:** PHASE_13_57_DF_END
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -9,13 +9,13 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 70 | 46% |
+| ✅ Verified | 71 | 46% |
 | ☑️ Smoke-only | 81 | 53% |
 | 🧨 Broken | 0 | 0% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **152** | |
-| **Total proof tests** | **713** | |
-| **Invariance tests** | **381** | |
+| **Total features** | **153** | |
+| **Total proof tests** | **719** | |
+| **Invariance tests** | **387** | |
 | **Visual tests** | **34** | |
 
 **Status key:**
@@ -134,6 +134,7 @@
 | ☑️ | **PLOT.hist2d** — 2D histogram (density heatmap) | 1 | 1 | 0 | 0 |  |
 | ☑️ | **PLOT.hexbin** — Hexbin plot (hexagonal binning) | 1 | 1 | 0 | 0 |  |
 | | **PROFILE** | | | | | |
+| ✅ | **PROFILE.range_invariance** — Profile per-bin statistics are range-invariant; out-of-range rows excluded, not folded into edge bins (overflow-fold fix). Covers mean, std, median, quantile band, and the grouped path. | 6 | 6 | 0 | 6 |  |
 | ☑️ | **PROFILE.return_data** — Profile data export (return_data=True) | 3 | 3 | 0 | 0 |  |
 | ☑️ | **PROFILE.min_entries** — Minimum entries filter (min_entries=3) | 3 | 3 | 0 | 0 |  |
 | ✅ | **PROFILE.group_by_bins** — Auto-bin float group_by (bins/quantiles) | 5 | 5 | 0 | 1 |  |

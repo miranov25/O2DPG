@@ -10,6 +10,21 @@ Phase 13.15.DF — DRAFT for team vote
 """
 
 FEATURES = [
+    {
+        "id": "PROFILE.range_invariance",
+        "name": "Profile per-bin statistics are range-invariant; out-of-range "
+                "rows excluded, not folded into edge bins (overflow-fold fix). "
+                "Covers mean, std, median, quantile band, and the grouped path.",
+        "category": "PROFILE",
+        "tests": [
+            "test_profile_overflow.py::test_profile_mean_range_invariance",
+            "test_profile_overflow.py::test_profile_std_range_invariance",
+            "test_profile_overflow.py::test_profile_median_range_invariance",
+            "test_profile_overflow.py::test_profile_quantile_range_invariance",
+            "test_profile_overflow.py::test_profile_grouped_range_invariance",
+            "test_profile_overflow.py::test_profile_mean_no_edge_pileup",
+        ],
+    },
 
     # ── Core Drawing ──
 
