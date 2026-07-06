@@ -12102,7 +12102,9 @@ function collapseDepth(maxD) {{
             self.df = self.df.drop(columns=existing)
         reader.release_branches(phys_names)   # reader-side seam (D3)
         # PHASE_13_69_ADF: releasing a model input invalidates that model's cache.
-        if getattr(self, "_models", None):
+        # PHASE_13_70_ADF (CF-3): also invalidate vector/group-alias caches — a pure
+        # vector group has no entry in _models, so guarding on _models alone skipped it.
+        if getattr(self, "_models", None) or getattr(self, "_groups", None):
             self._ml_invalidate_for_columns(frame_cols)
         gc.collect()
         return frame_cols

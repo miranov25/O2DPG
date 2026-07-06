@@ -426,3 +426,58 @@ def test_VEC_6b_member_exact_load_closure(tmp_path):
     loaded = set(adf._lazy_reader.loaded_branches or ())
     for decoy in ["decoy1", "decoy2", "decoy3", "c"]:
         assert decoy not in loaded                               # closure did not pull decoys
+
+
+# ------------------------------------------------- T-VEC-3 full invalidation contract (CF-3)
+@pytest.mark.skipif(not _HAS_UPROOT, reason="uproot required for lazy/chain readers")
+@pytest.mark.invariance
+def test_VEC_4d_invalidation_release_reregister_chain(tmp_path):
+    """CF-3: the invalidation legs the ratified T-VEC-3 specified but test_VEC_4 (write
+    leg, eager) did not cover: (A) re-registration, (B) release+reload on a lazy frame,
+    (C) a write on a CHAIN reader. Regression guard for the release-invalidation guard,
+    which was ML-only (`if _models`) and silently skipped pure vector groups until this
+    test caught it."""
+    n = 20
+    counter = {"n": 0}
+
+    def dist(a, b):
+        counter["n"] += (len(np.asarray(a)) > 1)              # count full-size calls (skip 1-row probe)
+        a, b = np.asarray(a), np.asarray(b)
+        return np.column_stack([a + b, a - b])
+
+    # (A) re-registration invalidates the group cache (eager)
+    adf = AliasDataFrame(pd.DataFrame({"a": np.arange(n) * 1.0, "b": np.arange(n) + 5.0}))
+    adf.register_function("dist", dist, overwrite=True)
+    adf.add_alias(["p", "q"], "dist(a, b)")
+    counter["n"] = 0
+    _ = adf.eval("p"); base = counter["n"]
+    gid = adf._group_members["p"]; g = adf._groups[gid]
+    adf._group_register(gid, g["compute"], g["inputs"], g["slots"])   # re-register -> pops cache
+    adf.dematerialize(drop=["p", "q"]); _ = adf.eval("p")
+    assert counter["n"] == base + 1                          # recomputed
+
+    # (B) release+reload of an input invalidates (lazy frame)
+    base_frame = AliasDataFrame(pd.DataFrame({"a": np.arange(n) * 1.0, "b": np.arange(n) + 5.0}))
+    pf = str(tmp_path / "plain.root"); base_frame.export_tree(pf, treename="tree")
+    lz = AliasDataFrame.read_tree_lazy(pf, tree_name="tree")
+    lz.register_function("dist", dist, overwrite=True)
+    lz.add_alias(["p", "q"], "dist(a, b)")
+    lz.ensure_columns(["a", "b"]); counter["n"] = 0
+    _ = lz.eval("p")
+    lz.dematerialize(drop=["p", "q"]); lz.release_branches(["a"]); lz.ensure_columns(["a"])
+    _ = lz.eval("p")
+    assert counter["n"] == 2                                 # recomputed after release+reload
+
+    # (C) write on a CHAIN reader invalidates
+    files = []
+    for i in range(2):
+        b0 = AliasDataFrame(pd.DataFrame({"a": np.arange(n) * 1.0 + i, "b": np.arange(n) + 5.0}))
+        fi = str(tmp_path / f"c{i}.root"); b0.export_tree(fi, treename="tree"); files.append(fi + ":tree")
+    ch = AliasDataFrame.read_chain_lazy(files)
+    ch.register_function("dist", dist, overwrite=True)
+    ch.add_alias(["p", "q"], "dist(a, b)")
+    ch.ensure_columns(["a", "b"]); counter["n"] = 0
+    _ = ch.eval("p")
+    ch["a"] = np.ones(len(ch.df))                            # hooked write on a chain reader
+    ch.dematerialize(drop=["p", "q"]); _ = ch.eval("p")
+    assert counter["n"] == 2                                 # recomputed after write

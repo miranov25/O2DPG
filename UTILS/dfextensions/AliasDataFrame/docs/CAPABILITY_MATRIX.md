@@ -1,21 +1,21 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-07-05 07:07 UTC
+**Generated:** 2026-07-06 12:47 UTC
 **Phase:** PHASE_13_57_DF_END
-**Taxonomy:** 60 features (PHASE_13_11_B approved)
+**Taxonomy:** 62 features (PHASE_13_11_B approved)
 **Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)
 
 ## Summary
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 37 | 61% |
-| ☑️ Smoke-only | 17 | 28% |
-| 🧨 Broken | 5 | 8% |
+| ✅ Verified | 40 | 64% |
+| ☑️ Smoke-only | 17 | 27% |
+| 🧨 Broken | 4 | 6% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **60** | |
-| **Matched tests** | **1921** | |
-| **Invariance tests** | **328** | |
+| **Total features** | **62** | |
+| **Matched tests** | **1975** | |
+| **Invariance tests** | **342** | |
 
 **Unmatched tests:** 110 (not mapped to any feature)
 
@@ -31,6 +31,7 @@
 | ☑️ | **CORE.describe** — Structure & alias inspection | 6 | 6 | 0 |  |
 | ☑️ | **CORE.cleanup** — Column cleanup & temporary management | 4 | 4 | 0 |  |
 | ☑️ | **CORE.api_contract** — Public API stability | 8 | 8 | 0 |  |
+| ✅ | **CORE.vector_alias** — Vector (group) aliases & multi-output prediction (PHASE_13_70) — add_alias(list-of-names, tuple-or-2D expression, dtype=list) defines k scalar member columns from ONE expression evaluated ONCE via the function-generic group engine (D0, shared with register_model) and split by slot; accepted shapes are a k-tuple/list of 1-D or an (n_rows,k) 2-D ndarray (V-6); evaluate-once across siblings with the same cache/invalidation contract as ML prediction (frame length, __setitem__ write hook, release/reload, re-registration); per-name collision refused across all namespaces (CF-5); dtype-list length and arity mismatches are loud errors (CF-8/V-6); single-name list = ordinary alias. Not scope this phase: per-row vector members, dot-sugar. | 27 | 27 | 0 | 8 |
 | ☑️ | **WRITE.column_assignment** — Direct column write-through via adf[col] = value (PHASE_13_62 Stage 2a / Fix A) — writes to the frame and syncs the lazy reader's loaded_branches so a hand-added column is present and never re-requested from the TTree; supports numpy/Series/list/scalar (awkward via explicit conversion); non-string key raises; bad shape raises before bookkeeping; adf.aliases immutability (_ReadOnlyAliasDict) unaffected | 51 | 51 | 0 |  |
 | ☑️ | **CORE.dependency_tree** — Dependency tree output (text/html/list) | 16 | 16 | 0 |  |
 | ✅ | **CORE.invalidation** — Alias invalidation on expression redefine | 7 | 7 | 0 | 7 |
@@ -40,7 +41,7 @@
 | Status | Feature | Tests | Pass | Fail | Inv |
 |--------|---------|------:|-----:|-----:|:---:|
 | ✅ | **SUB.register** — Subframe registration | 50 | 50 | 0 | 3 |
-| 🧨 | **SUB.join** — Subframe join & column resolution | 70 | 69 | 1 | 22 |
+| ✅ | **SUB.join** — Subframe join & column resolution | 70 | 70 | 0 | 22 |
 | ✅ | **SUB.composite_key** — Composite key operations | 38 | 38 | 0 | 2 |
 | ✅ | **SUB.auto_alias** — Auto-aliasing subframe columns | 11 | 10 | 0 | 1 |
 | 📋 | **SUB.clone** — Clone with selection (planned) | 0 | 0 | 0 |  |
@@ -63,6 +64,7 @@
 | ✅ | **FUNC.register_function** — register_function API | 8 | 8 | 0 | 2 |
 | ✅ | **FUNC.polynomial** — PolynomialSpec & register_polynomial_from_subframe | 20 | 20 | 0 | 3 |
 | ✅ | **FUNC.evaluator** — register_evaluator | 24 | 24 | 0 | 3 |
+| ✅ | **FUNC.ml_model** — ML model registration, lazy prediction alias, persistence (embed/external/load-from-ROOT), integrity, multi-output cache, chain recovery (PHASE_13_69) — register_model register+alias in one call; ONNX canonical + native xgboost-JSON path; format='auto' byte-sniff (ROOT->JSON->ONNX); single float32 input tensor in feature order; multi-output = sibling aliases sharing ONE evaluation via a prediction cache invalidated by the __setitem__ write-event hook / release / re-registration; embed (default, ADF_ML/ blob+descriptor via uproot, UserInfo untouched) + external relative-path + load-from-ROOT persistence, MD5-verified; missing runtime -> loud refuse. Not scope: training, CCDB, GPU, full RNTuple verification, subframe-column inputs (Phase-1 deferral). | 27 | 27 | 0 | 6 |
 | ✅ | **FUNC.persistence** — Function persistence through schema | 9 | 9 | 0 | 2 |
 | ✅ | **FUNC.regression_metadata** — Regression metadata registration & update | 4 | 4 | 0 | 4 |
 | ✅ | **FUNC.evaluator_from_metadata** — Bridge: metadata → evaluator binding | 6 | 6 | 0 | 6 |
@@ -151,23 +153,20 @@
 
 ## 🧨 Broken Features — Details
 
-### SUB.join
-- ❌ `test_alias_subframe.py::TestSubframeRoundtrip::test_parquet_roundtrip`
-
 ### DRAW.execution
-- ❌ `test_K2_vector_draw_end_to_end.py::TestK2VectorDrawEndToEnd::test_K2_3_production_reproducer_mirror`
 - ❌ `test_K1_vector_draw_kwarg_diagnostic.py::TestK1VectorDrawKwargDiagnostic::test_K1_3_draw_batch_forwards_batch_kwargs`
+- ❌ `test_K2_vector_draw_end_to_end.py::TestK2VectorDrawEndToEnd::test_K2_3_production_reproducer_mirror`
 
 ### COMP.roundtrip
-- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
 - ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
+- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
 
 ### BACK.invariance
 - ❌ `test_invariance_backend.py::TestInvarianceBackend::test_I2_6_chained_subframe_expressions_numba_vs_numpy`
 
 ### RDF.export
-- ❌ `test_AliasDataFrameRDF.py::TestRDataFrameFriendAccess::test_composite_index_friend`
 - ❌ `test_AliasDataFrameRDF.py::TestTMemFileBranch::test_missing_keys_in_friend`
+- ❌ `test_AliasDataFrameRDF.py::TestRDataFrameFriendAccess::test_composite_index_friend`
 - ❌ `test_AliasDataFrameRDF.py::TestAddDefinesCollision::test_collision_from_friend_tree`
 
 ## Unmatched Tests
