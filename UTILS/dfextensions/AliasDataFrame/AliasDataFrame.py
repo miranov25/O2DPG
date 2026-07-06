@@ -11906,6 +11906,32 @@ function collapseDepth(maxD) {{
             # Drop all materialized
             to_drop = materialized
 
+        # PHASE_13_70_ADF D5: vector/group aliases are ALL-OR-NONE. Dropping any
+        # member drops the whole group (loud message naming siblings); keeping any
+        # member keeps the whole group (no partial-group split).
+        gm = getattr(self, "_group_members", {})
+        if gm and to_drop:
+            reg = getattr(self, "_group_registry", {})
+            expanded = set(to_drop)
+            for c in list(to_drop):
+                gid = gm.get(c)
+                if gid:
+                    expanded.update(s for s in reg.get(gid, {}).get("names", [])
+                                    if s in materialized)
+            if keep is not None:
+                for c in keep:
+                    gid = gm.get(c)
+                    if gid:
+                        expanded.difference_update(reg.get(gid, {}).get("names", []))
+            added = expanded - set(to_drop)
+            if added:
+                import warnings
+                warnings.warn(
+                    f"dematerialize: vector/group aliases are all-or-none; also "
+                    f"dropping sibling member(s) {sorted(added)} to keep the group "
+                    f"consistent.")
+            to_drop = [c for c in materialized if c in expanded]
+
         if to_drop:
             self.df = self.df.drop(columns=to_drop)
             gc.collect()
@@ -12005,9 +12031,17 @@ function collapseDepth(maxD) {{
         for n in names:
             # DD-gamma: alias (formula) column.
             if n in alias_names:
-                errors.append(
-                    f"{n!r}: is an alias (formula) column; use dematerialize() to "
-                    f"free it, not release_branches().")
+                gid = getattr(self, "_group_members", {}).get(n)
+                if gid is not None:
+                    sibs = self._group_registry.get(gid, {}).get("names", [n])
+                    errors.append(
+                        f"{n!r}: is a member of vector/group alias {sibs!r}; use "
+                        f"dematerialize() to free the group (all-or-none — the whole "
+                        f"group is dropped together), not release_branches().")
+                else:
+                    errors.append(
+                        f"{n!r}: is an alias (formula) column; use dematerialize() to "
+                        f"free it, not release_branches().")
                 continue
             phys = internal_to_phys.get(n, n)   # struct member -> physical; else 1:1
             # DD-delta: parent-side subframe join key.
@@ -12506,31 +12540,26 @@ function collapseDepth(maxD) {{
         info = self._analyze_expression(expression)
         funcs = set(getattr(self, "_registered_functions", {}).keys())
         inputs = [c for c in sorted(info["column_refs"]) if c not in funcs]
+        # CF-10: a group expression referencing its own member names is a self/sibling
+        # cycle (the member cannot depend on the group that defines it).
+        cyc = [nm for nm in names if nm in info["column_refs"]]
+        if cyc:
+            raise ValueError(
+                f"vector alias {names}: expression references its own member(s) "
+                f"{cyc} — self/sibling cycle is not allowed (CF-10).")
         gid = "__grp__" + "__".join(names)
         # V-6 arity pre-check: cheap 1-row evaluation catches names-count vs
         # returned-shape mismatch AT DEFINITION (eager/loaded case). Lazy inputs
         # defer to the eval-time validation (materialize path raises the same error).
-        w = self._group_probe_width(expression, funcs)
-        if w is not None and w != len(names):
-            raise ValueError(
-                f"vector alias {names}: expression returns {w} member(s) but "
-                f"{len(names)} name(s) declared — names-count vs returned-shape "
-                f"mismatch (V-6).")
+        # V-6 fail-fast at DEFINITION when inputs are present (eager); the eval-time
+        # compute enforces the identical contract for the lazy case.
+        self._group_probe_validate(expression, funcs, names)
         expr = expression
         n_names = len(names)
         def _compute(arrays):
-            # evaluate the group expression ONCE against the current frame; returns a
-            # k-tuple/list of 1-D or an (n_rows, k) 2-D ndarray (V-6). Split by slot.
-            import numpy as np
-            r = self._eval_in_namespace(expr)
-            got = (r.shape[1] if isinstance(r, np.ndarray) and r.ndim == 2
-                   else (len(r) if isinstance(r, (tuple, list)) else 1))
-            if got != n_names:
-                raise ValueError(
-                    f"vector alias {names}: expression returned {got} member(s) but "
-                    f"{n_names} name(s) declared — names-count vs returned-shape "
-                    f"mismatch (V-6).")
-            return r
+            # evaluate the group expression ONCE against the current frame; the shared
+            # validator enforces V-6 (dict/jagged/arity) and returns the raw result.
+            return self._group_check_result(self._eval_in_namespace(expr), names)
         slots = {nm: i for i, nm in enumerate(names)}
         self._group_register(gid, _compute, inputs, slots)
         self._group_registry[gid] = {
@@ -12566,31 +12595,55 @@ function collapseDepth(maxD) {{
         if sub is not None and hasattr(sub, "has_subframe") and sub.has_subframe(nm):
             raise ValueError(f"vector alias: name {nm!r} collides with a SUBFRAME.")
 
-    def _group_probe_width(self, expression, funcs):
-        """V-6 arity probe at DEFINITION: if the expression's inputs are all present
-        as columns, do a CHEAP 1-row evaluation and return the member count (2-D
-        cols / tuple-list len / 1 for scalar). Returns None when it can't be
-        evaluated now (lazy/missing inputs or an unsupported namespace feature) —
-        arity is then validated at first real evaluation by the group compute."""
+    @staticmethod
+    def _group_check_result(r, names):
+        """V-6 validator shared by the definition probe and the eval-time compute.
+        Raises a clean error for dict / jagged / arity-mismatch; returns `r` on pass."""
         import numpy as np
+        n = len(names)
+        if isinstance(r, dict):
+            raise ValueError(
+                f"vector alias {names}: expression returned a dict; a group expression "
+                f"must return a k-tuple/list of 1-D arrays or an (n_rows,k) 2-D ndarray "
+                f"(V-6), not a dict.")
+        if isinstance(r, np.ndarray) and r.ndim == 2:
+            got = r.shape[1]
+        elif isinstance(r, (tuple, list)):
+            got = len(r)
+            lens = {len(np.asarray(x)) for x in r}
+            if len(lens) > 1:
+                raise ValueError(
+                    f"vector alias {names}: expression returned jagged members with "
+                    f"differing lengths {sorted(lens)} (V-6); every member must be 1-D "
+                    f"of the same length.")
+        else:
+            got = 1
+        if got != n:
+            raise ValueError(
+                f"vector alias {names}: expression returned {got} member(s) but {n} "
+                f"name(s) declared — names-count vs returned-shape mismatch (V-6).")
+        return r
+
+    def _group_probe_validate(self, expression, funcs, names):
+        """Fail-fast V-6 check at DEFINITION: if the inputs are all present as columns,
+        do a cheap 1-row evaluation and run the shared validator (raising clean
+        dict/jagged/arity errors). If it can't be evaluated now (lazy/missing inputs
+        or an unsupported namespace feature), return silently — the eval-time compute
+        enforces the same contract."""
+        import numpy as np
+        info = self._analyze_expression(expression)
+        inputs = [c for c in info["column_refs"] if c not in funcs]
+        if len(self.df) == 0 or any(c not in self.df.columns for c in inputs):
+            return
+        ns = dict(getattr(self, "_registered_functions", {}))
+        ns.setdefault("np", np)
+        for c in inputs:
+            ns[c] = np.asarray(self.df[c].values[:1])
         try:
-            info = self._analyze_expression(expression)
-            inputs = [c for c in info["column_refs"] if c not in funcs]
-            if len(self.df) == 0 or any(c not in self.df.columns for c in inputs):
-                return None
-            # 1-row namespace: registered functions + numpy + 1-row input columns
-            ns = dict(getattr(self, "_registered_functions", {}))
-            ns.setdefault("np", np)
-            for c in inputs:
-                ns[c] = np.asarray(self.df[c].values[:1])
-            r = eval(expression, {"__builtins__": {}}, ns)  # noqa: S307 (1-row arity probe)
-            if isinstance(r, np.ndarray) and r.ndim == 2:
-                return r.shape[1]
-            if isinstance(r, (tuple, list)):
-                return len(r)
-            return 1
+            r = eval(expression, {"__builtins__": {}}, ns)  # noqa: S307 (1-row probe)
         except Exception:
-            return None
+            return  # can't evaluate now -> eval-time enforces the contract
+        self._group_check_result(r, names)  # clean V-6 raises propagate
 
     # ===== PHASE_13_70_ADF D0: function-generic evaluate-once GROUP engine ===== #
     # Shared by register_model (ML groups) AND vector/group aliases. compute(arrays)
