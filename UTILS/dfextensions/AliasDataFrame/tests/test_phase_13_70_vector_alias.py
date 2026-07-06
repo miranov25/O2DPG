@@ -296,3 +296,62 @@ def test_VEC_4c_chain_first_file_canonical_recover(tmp_path):
         frames.append(f)
     chained = AliasDataFrame.read_chain_lazy([x + ":tree" for x in frames])
     assert "__grp__s__dd" in getattr(chained, "_group_registry", {})   # first-file-canonical
+
+
+# ------------------------------------------------- T-VEC-8b release_branches lazy leg (D5)
+@pytest.mark.skipif(not _HAS_UPROOT, reason="uproot required for a lazy frame")
+def test_VEC_8b_release_branches_lazy_names_group(tmp_path):
+    n = 12
+    adf = AliasDataFrame(pd.DataFrame({"a": np.arange(n) * 1.0, "b": np.arange(n) + 3.0}))
+    adf.add_alias(["s", "dd"], "a + b, a - b")
+    f = str(tmp_path / "t.root"); adf.export_tree(f, treename="tree")
+    lz = AliasDataFrame.read_tree_lazy(f, tree_name="tree")   # lazy reader present
+    assert "__grp__s__dd" in lz._group_registry
+    with pytest.raises(ValueError) as ei:
+        lz.release_branches(["s"])                            # member is an alias (DD-gamma)
+    msg = str(ei.value)
+    assert "member of vector/group alias" in msg
+    assert "'dd'" in msg and "dematerialize" in msg          # names sibling + directs
+
+
+# ------------------------------------------------- T-VEC-9 ONNX 2-D flagship
+_HAS_ONNX = False
+try:
+    import onnxruntime as _ort            # noqa
+    from sklearn.ensemble import RandomForestRegressor as _RFR   # noqa
+    from skl2onnx import convert_sklearn as _cvt                 # noqa
+    from skl2onnx.common.data_types import FloatTensorType as _FTT  # noqa
+    _HAS_ONNX = True
+except Exception:
+    pass
+
+
+@pytest.mark.skipif(not _HAS_ONNX, reason="onnxruntime/sklearn/skl2onnx required")
+@pytest.mark.invariance
+def test_VEC_9_onnx_2d_flagship(tmp_path):
+    rng = np.random.default_rng(0)
+    Xt = rng.random((200, 3)).astype(np.float32)
+    Yt = np.column_stack([2 * Xt[:, 0] - Xt[:, 1], Xt[:, 1] + 0.5 * Xt[:, 2]]).astype(np.float32)
+    model = _RFR(n_estimators=8, max_depth=4).fit(Xt, Yt)
+    onx = _cvt(model, initial_types=[("input", _FTT([None, 3]))])
+    op = str(tmp_path / "m.onnx"); open(op, "wb").write(onx.SerializeToString())
+    sess = _ort.InferenceSession(op)
+    in_name = sess.get_inputs()[0].name
+    n = 20
+    A, B, C = rng.random(n), rng.random(n), rng.random(n)
+    adf = AliasDataFrame(pd.DataFrame({"a": A, "b": B, "c": C}))
+    calls = {"n": 0}
+
+    def predict_dist(a, b, c):
+        calls["n"] += (len(np.asarray(a)) == n)
+        X = np.column_stack([np.asarray(a), np.asarray(b), np.asarray(c)]).astype(np.float32)
+        return np.asarray(sess.run(None, {in_name: X})[0])    # (n, 2) — the V-6 2-D case
+
+    adf.register_function("predict_dist", predict_dist, overwrite=True)
+    adf.add_alias(["dY", "dZ"], "predict_dist(a, b, c)", dtype=["float32", "float32"])
+    ref = np.asarray(sess.run(None, {in_name: np.column_stack([A, B, C]).astype(np.float32)})[0])
+    calls["n"] = 0
+    dy = np.asarray(adf.eval("dY")); dz = np.asarray(adf.eval("dZ"))
+    np.testing.assert_allclose(dy, ref[:, 0], rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(dz, ref[:, 1], rtol=1e-5, atol=1e-6)
+    assert calls["n"] == 1                                    # model runs ONCE for both members
