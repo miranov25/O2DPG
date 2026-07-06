@@ -34,6 +34,9 @@ TAGSUFFIX="ADF"
 _pt_commit() { git rev-parse --short "$1^{commit}" 2>/dev/null; }
 
 phase_begin() {
+    if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+        echo "Usage: phase_begin <phase_id> [commit-ish]   (id EXACT, e.g. 13_71_${TAGSUFFIX}; run BEFORE first commit)"; return 0
+    fi
     local phase="$1" at="${2:-HEAD}"
     if [ -z "$phase" ]; then
         echo "Usage: phase_begin <phase_id> [commit-ish]  (e.g. 13_71_ADF)"; return 1
@@ -63,6 +66,9 @@ phase_begin() {
 }
 
 phase_end() {
+    if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+        echo "Usage: phase_end <phase_id> [--force]   (id EXACT, e.g. 13_71_${TAGSUFFIX}; refuses on missing/diverged/empty/out-of-order)"; return 0
+    fi
     local phase="$1" force="${2:-}"
     if [ -z "$phase" ]; then
         echo "Usage: phase_end <phase_id> [--force]  (e.g. 13_71_ADF)"; return 1
@@ -126,6 +132,7 @@ phase_end() {
 }
 
 phase_label() {
+    if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then echo "Usage: phase_label   (no args; prints the current phase anchor)"; return 0; fi
     if git rev-parse -q --verify "refs/tags/PHASE_BEGIN_${SUBPROJECT}" >/dev/null; then
         local ac tags
         ac=$(_pt_commit "PHASE_BEGIN_${SUBPROJECT}")
@@ -143,7 +150,177 @@ phase_label() {
     fi
 }
 
-echo "Phase tag functions loaded for $SUBPROJECT (v3, hardened)"
-echo "  phase_begin <id> [commit-ish]  — start phase (run BEFORE first commit)"
-echo "  phase_end <id> [--force]       — close phase (refuses on missing/diverged/empty/out-of-order)"
-echo "  phase_label                    — show current phase anchor"
+# -----------------------------------------------------------------------------
+# _pt_resolve <input> — normalize a user-typed phase id to the canonical form and
+# confirm it has a BEGIN tag. Accepts dots (13.69.ADF), and a bare prefix (13_69)
+# that maps unambiguously to exactly one PHASE_<...>_BEGIN. Echoes the canonical id
+# on success; empty on failure (0 or >1 matches).
+_pt_resolve() {
+    local x="${1//./_}"
+    if git rev-parse -q --verify "refs/tags/PHASE_${x}_BEGIN" >/dev/null; then
+        echo "$x"; return 0
+    fi
+    local matches count
+    matches=$(git tag --list "PHASE_${x}_*_BEGIN" 2>/dev/null | sed -E 's/^PHASE_//; s/_BEGIN$//' | sort -u)
+    count=$(printf '%s' "$matches" | grep -c .)
+    if [ "$count" = "1" ]; then echo "$matches"; return 0; fi
+    if [ "$count" -gt "1" ]; then
+        echo "AMBIGUOUS" >&2; printf '%s\n' "$matches" >&2
+    fi
+    return 1
+}
+
+# _phase_id_help — the "glue": expected form + example + the available phase ids.
+_phase_id_help() {
+    echo "  Expected phase id:  <major>_<minor>_${TAGSUFFIX}     e.g.  13_69_${TAGSUFFIX}"
+    echo "  (underscores, not dots; the _${TAGSUFFIX} suffix is required — '13_69' and"
+    echo "   '13.69.${TAGSUFFIX}' are auto-resolved when they match exactly one phase.)"
+    echo "  Available ${TAGSUFFIX} phases with a BEGIN tag (newest first):"
+    git tag --list "PHASE_*_${TAGSUFFIX}_BEGIN" --sort=-version:refname 2>/dev/null \
+        | sed -E 's/^PHASE_//; s/_BEGIN$//' | sed 's/^/    /' | head -20
+}
+
+# phase_help — standalone help/example for the whole toolset.
+phase_help() {
+    echo "phase_tag.sh — usage & expected phase-id form"
+    echo "  phase_begin <id> [commit-ish]   e.g. phase_begin 13_71_${TAGSUFFIX}   (id is EXACT, canonical)"
+    echo "  phase_end   <id> [--force]      e.g. phase_end   13_71_${TAGSUFFIX}"
+    echo "  phase_label                     current anchor"
+    echo "  phase_info  <id> [--commits --dates --lines --files --all]   (id may be 13_71 / 13.71.${TAGSUFFIX})"
+    echo
+    _phase_id_help
+}
+
+# _phase_info_help — full help for phase_info WITH a worked example.
+_phase_info_help() {
+    echo "phase_info <id> [--commits --dates --lines --files --all]   (read-only)"
+    echo "  id may be 13_69_${TAGSUFFIX}, 13_69, or 13.69.${TAGSUFFIX} (auto-resolved when unambiguous)"
+    echo "  flags (combine freely; with none, only the summary prints):"
+    echo "    --commits   related commits: hash, date, subject"
+    echo "    --dates     per-commit date + author"
+    echo "    --lines     lines changed per commit (+ phase total)"
+    echo "    --files     files changed across the phase"
+    echo "    --all       all of the above"
+    echo
+    echo "  Example:"
+    echo "    \$ phase_info 13_69_${TAGSUFFIX} --commits --lines"
+    echo "    Phase 13.69.${TAGSUFFIX}  [CLOSED]"
+    echo "      BEGIN PHASE_13_69_${TAGSUFFIX}_BEGIN -> 3bb0811  2026-07-05"
+    echo "      END   PHASE_13_69_${TAGSUFFIX}_END   -> 9186387  2026-07-06"
+    echo "      commits: 7     lines: +512 -18"
+    echo "      --- related commits ---"
+    echo "        9186387  2026-07-06  ADF: draw tests use the lazy switch"
+    echo "        553ada8   2026-07-06  ADF: external persistence (D5b) + G-1 expand"
+    echo "      --- lines per commit ---"
+    echo "        9186387  ADF: draw tests ...        2 files changed, 6 insertions(+), 2 deletions(-)"
+    echo
+    _phase_id_help
+}
+
+# -----------------------------------------------------------------------------
+# phase_info <id> [flags] — READ-ONLY phase inspection (never mutates tags).
+#   default (no flags): one-line-per-field summary (BEGIN/END commit+date, #commits, +/- lines)
+#   --commits   list related commits (hash, date, subject)
+#   --dates     BEGIN/END + per-commit dates
+#   --lines     lines changed per commit (+ phase total)
+#   --files     files changed across the phase
+#   --all       everything above
+# id may be given as 13_69_ADF, 13_69, or 13.69.ADF (auto-resolved when unambiguous).
+# Range uses merge-base(BEGIN, END|HEAD) so a diverged BEGIN (L-2) still yields a
+# sane phase-only range. If END is absent the phase is reported OPEN (range to HEAD).
+# -----------------------------------------------------------------------------
+phase_info() {
+    # Order-independent arg parse: the id and the flags may appear in ANY order.
+    local raw="" c_commits=0 c_dates=0 c_lines=0 c_files=0 a
+    for a in "$@"; do
+        case "$a" in
+            -h|--help) _phase_info_help; return 0 ;;
+            --commits) c_commits=1 ;;
+            --dates)   c_dates=1 ;;
+            --lines)   c_lines=1 ;;
+            --files)   c_files=1 ;;
+            --all)     c_commits=1; c_dates=1; c_lines=1; c_files=1 ;;
+            --*|-*)    echo "phase_info: unknown flag '$a'"; _phase_info_help; return 1 ;;
+            *)         if [ -z "$raw" ]; then raw="$a"
+                       else echo "phase_info: give exactly one phase id (got '$raw' and '$a')"; return 1; fi ;;
+        esac
+    done
+    if [ -z "$raw" ]; then _phase_info_help; return 0; fi
+    local phase; phase=$(_pt_resolve "$raw")
+    if [ -z "$phase" ]; then
+        echo "phase_info: could not resolve '${raw}' to a phase with a BEGIN tag."
+        _phase_id_help; return 1
+    fi
+    local beg="PHASE_${phase}_BEGIN" end state
+    if git rev-parse -q --verify "refs/tags/PHASE_${phase}_END" >/dev/null; then
+        end="PHASE_${phase}_END"; state="CLOSED"
+    else
+        end="HEAD"; state="OPEN (no END tag; range to HEAD)"
+    fi
+    local base; base=$(git merge-base "$beg" "$end")
+    local range="${base}..${end}"
+
+    local n add del
+    n=$(git rev-list --count "$range")
+    add=$(git diff --numstat "$base" "$end" | awk '{a+=$1} END{print a+0}')
+    del=$(git diff --numstat "$base" "$end" | awk '{d+=$2} END{print d+0}')
+    echo "Phase ${phase//_/.}  [$state]"
+    echo "  BEGIN $beg -> $(git rev-parse --short "$beg^{commit}")  $(git log -1 --date=short --format=%ad "$beg^{commit}")"
+    if [ "$end" != "HEAD" ]; then
+        echo "  END   $end -> $(git rev-parse --short "$end^{commit}")  $(git log -1 --date=short --format=%ad "$end^{commit}")"
+    fi
+    echo "  commits: $n     lines: +${add} -${del}"
+
+    if [ "$c_commits" = 1 ]; then
+        echo "  --- related commits ---"
+        git log --date=short --format='    %h  %ad  %s' "$range"
+    fi
+    if [ "$c_dates" = 1 ]; then
+        echo "  --- commit dates ---"
+        git log --format='    %h  %ci  %an' "$range"
+    fi
+    if [ "$c_lines" = 1 ]; then
+        echo "  --- lines per commit ---"
+        local h subj st
+        git log --format='%h%x09%s' "$range" | while IFS=$'\t' read -r h subj; do
+            st=$(git show --shortstat --format= "$h" | tr -s ' ' | sed '/^$/d' | tail -1 | sed 's/^ *//')
+            printf '    %s  %-44.44s  %s\n' "$h" "$subj" "${st:-no file changes}"
+        done
+    fi
+    if [ "$c_files" = 1 ]; then
+        echo "  --- files changed ---"
+        git diff --stat "$base" "$end" | sed 's/^/    /'
+    fi
+}
+
+# =============================================================================
+# Dual mode:
+#   - SOURCED (source scripts/phase_tag.sh): loads the functions, one quiet line
+#     (set PHASE_TAG_QUIET=1 to silence entirely).
+#   - EXECUTED (bash scripts/phase_tag.sh <cmd> ...): runs one command and prints
+#     the result — no banner, exit code preserved. This is the reviewer-runnable,
+#     loggable form: a reviewer names one command, you run it, the output is the log.
+#
+# Reviewer-loggable examples (run and paste the output):
+#   bash scripts/phase_tag.sh info  13_69_ADF --all
+#   bash scripts/phase_tag.sh report 13_69_ADF          # stamped full report (date + HEAD)
+#   bash scripts/phase_tag.sh label
+# =============================================================================
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    _cmd="${1:-help}"; shift 2>/dev/null
+    case "$_cmd" in
+        begin)  phase_begin "$@" ;;
+        end)    phase_end   "$@" ;;
+        label)  phase_label "$@" ;;
+        info)   phase_info  "$@" ;;
+        help|-h|--help) phase_help ;;
+        report)
+            # self-identifying transcript for review logs (matches the gate-transcript precedent)
+            echo "# phase_tag.sh report | $(date -u +%Y-%m-%dT%H:%M:%SZ) | repo HEAD $(git rev-parse --short HEAD 2>/dev/null)"
+            phase_info "$@" --all ;;
+        *) echo "unknown command: $_cmd"; echo; phase_help; exit 2 ;;
+    esac
+    exit $?
+else
+    [ -z "$PHASE_TAG_QUIET" ] && echo "phase_tag.sh loaded ($SUBPROJECT, v6) — run 'phase_help' for usage."
+fi
