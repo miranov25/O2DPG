@@ -167,3 +167,21 @@ def test_VEC_10_tuple_and_2d_equivalent(adf):
     adf.add_alias(["na", "nb"], "m(a, b)")
     np.testing.assert_allclose(np.asarray(adf.eval("ta")), np.asarray(adf.eval("na")), rtol=RTOL, atol=ATOL)
     np.testing.assert_allclose(np.asarray(adf.eval("tb")), np.asarray(adf.eval("nb")), rtol=RTOL, atol=ATOL)
+
+
+# ------------------------------------------------- T-VEC-11 parquet persistence (D4a)
+@pytest.mark.invariance
+def test_VEC_11_parquet_roundtrip_recovers_group(tmp_path):
+    rng = np.random.default_rng(1)
+    n = 12
+    adf = AliasDataFrame(pd.DataFrame({"a": rng.random(n), "b": rng.random(n)}))
+    adf.add_alias(["s", "dd"], "a + b, a - b", dtype=["float64", "float64"])
+    pre_s = np.asarray(adf.eval("s")); pre_d = np.asarray(adf.eval("dd"))
+    p = str(tmp_path / "round")
+    adf.save(p)
+    adf2 = AliasDataFrame.load(p)
+    gid = "__grp__s__dd"
+    assert gid in adf2._group_registry                     # group recovered
+    assert adf2._group_members.get("s") == gid
+    np.testing.assert_allclose(np.asarray(adf2.eval("s")), pre_s, rtol=RTOL, atol=ATOL)
+    np.testing.assert_allclose(np.asarray(adf2.eval("dd")), pre_d, rtol=RTOL, atol=ATOL)

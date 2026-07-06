@@ -5937,6 +5937,11 @@ function collapseDepth(maxD) {{
         metadata = {
             SCHEMA_METADATA_KEY: json.dumps(serialized_schema)
         }
+        # PHASE_13_70_ADF D4a: persist the vector/group-alias registry so members
+        # (whose __grpfn closures cannot be pickled) can be re-registered on load.
+        groups = getattr(self, "_group_registry", None)
+        if groups:
+            metadata["adf_group_registry"] = json.dumps(groups)
         
         existing_meta = table.schema.metadata or {}
         combined_meta = existing_meta.copy()
@@ -6038,6 +6043,16 @@ function collapseDepth(maxD) {{
                     f"Using defaults."
                 )
         
+        # PHASE_13_70_ADF D4a: recover vector/group aliases. Members were restored from
+        # the column schema but reference dead __grpfn closures; re-register the group.
+        if b"adf_group_registry" in meta:
+            try:
+                adf._group_recover_from_registry(
+                    json.loads(meta[b"adf_group_registry"].decode()))
+            except Exception as e:
+                warnings.warn(
+                    f"Failed to recover vector/group aliases from {parquet_path}: {e}")
+
         # Load subframes
         if load_subframes:
             # Get subframe names from schema
@@ -12676,6 +12691,26 @@ function collapseDepth(maxD) {{
         for gid, g in getattr(self, "_groups", {}).items():
             if cols & set(g["inputs"]):
                 self._group_cache.pop(gid, None)
+
+    def _group_recover_from_registry(self, schemas):
+        """PHASE_13_70_ADF D4: rebuild vector/group aliases from a persisted registry
+        (save/load, read_* recovery). Member aliases restored from the column schema
+        point at dead __grpfn closures; drop them and re-register the group cleanly so
+        the functions + evaluate-once engine are rebuilt. Idempotent (skips groups
+        already live)."""
+        for gid, sch in (schemas or {}).items():
+            if gid in getattr(self, "_group_registry", {}):
+                continue
+            names = list(sch["names"])
+            expr = sch["expression"]
+            dtypes = sch.get("dtypes")
+            for nm in names:
+                try:
+                    self.remove_alias(nm)
+                except Exception:
+                    pass
+                getattr(self, "_group_members", {}).pop(nm, None)
+            self._add_group_alias(names, expr, dtypes)
 
     # ---- 13.69 back-compat shims (delegate to the generic engine) ----
     def _ml_evaluate(self, name, arrays):
