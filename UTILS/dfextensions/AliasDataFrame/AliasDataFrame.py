@@ -6136,6 +6136,9 @@ function collapseDepth(maxD) {{
             # untouched (§2 scope fence). Default persistence = embed.
             if getattr(self, "_models", None):
                 self._ml_embed_into_file(filename_or_file)
+            # PHASE_13_70_ADF D4b: embed the vector/group-alias registry (ADF_GROUP/).
+            if getattr(self, "_group_registry", None):
+                self._group_embed_into_file(filename_or_file)
         else:
             # Called from recursive data-write path — data only, no metadata
             self._write_all_data_to_uproot(filename_or_file, treename, dropAliasColumns)
@@ -6723,6 +6726,7 @@ function collapseDepth(maxD) {{
 
         # PHASE_13_69_ADF: recover any embedded ML models (ADF_ML/), MD5-verified.
         adf._ml_recover_from_file(filename)
+        adf._group_recover_from_file(filename)  # D4b: recover vector/group aliases
 
         return adf
     
@@ -6866,6 +6870,7 @@ function collapseDepth(maxD) {{
         # PHASE_13_69_ADF: recover any embedded ML models (ADF_ML/), MD5-verified.
         # Defensive no-op if the file has no ADF_ML/ namespace.
         adf._ml_recover_from_file(file_path)
+        adf._group_recover_from_file(file_path)  # D4b: recover vector/group aliases
 
         return adf
     
@@ -7350,7 +7355,15 @@ function collapseDepth(maxD) {{
         # Load initial branches if requested
         if branches:
             adf.ensure_branches(branches)
-        
+
+        # PHASE_13_70_ADF D4b: recover vector/group aliases from the FIRST (canonical)
+        # chain file (first-file-canonical, consistent with the 13.67 metadata rule).
+        if file_specs:
+            first = file_specs[0]
+            first_path = first.get("path") if isinstance(first, dict) else first
+            if first_path:
+                adf._group_recover_from_file(first_path)
+
         return adf
     
     @classmethod
@@ -12139,6 +12152,7 @@ function collapseDepth(maxD) {{
 
     _ADF_ML_DESCRIPTOR_VERSION = 1
     _ADF_ML_NS = "ADF_ML"          # ROOT namespace for embedded descriptor/blob
+    _ADF_GROUP_NS = "ADF_GROUP"    # PHASE_13_70_ADF D4b: ROOT namespace for the group registry
 
     # ---- format sniffing (R4): ROOT magic -> JSON '{' -> ONNX (else) ----
     @staticmethod
@@ -12241,6 +12255,50 @@ function collapseDepth(maxD) {{
         dobj = fo[f"{ns}/{name}__descriptor"]
         dstr = dobj if isinstance(dobj, str) else dobj.member("fString")
         return json.loads(dstr)
+
+    def _group_embed_into_file(self, path):
+        """PHASE_13_70_ADF D4b: persist the vector/group-alias registry under
+        ADF_GROUP/registry via uproot append (additive; UserInfo and ADF_ML/ are
+        untouched). Groups are expression-only (no blob) -> a single JSON object.
+        Mirrors _ml_embed_into_file's write mechanism."""
+        import uproot, json
+        groups = getattr(self, "_group_registry", None)
+        if not groups:
+            return
+        with uproot.update(path) as fo:
+            fo[f"{self._ADF_GROUP_NS}/registry"] = json.dumps(groups)
+
+    def _group_recover_from_file(self, path):
+        """PHASE_13_70_ADF D4b: rebuild vector/group aliases from ADF_GROUP/registry in
+        `path`. Defensive: a file that cannot be opened, or that has no ADF_GROUP/
+        namespace, is a silent no-op (a normal read is never broken). The actual
+        re-registration reuses the (sandbox-tested) _group_recover_from_registry.
+        Mirrors _ml_recover_from_file."""
+        import uproot, os, json
+        if not isinstance(path, str):
+            return
+        open_path = path
+        if not os.path.exists(open_path) and ":" in open_path:
+            cand = open_path.rsplit(":", 1)[0]
+            if os.path.exists(cand):
+                open_path = cand
+        try:
+            fo = uproot.open(open_path)
+        except Exception:
+            return
+        try:
+            key = f"{self._ADF_GROUP_NS}/registry"
+            avail = set(k.split(";")[0] for k in fo.keys())
+            if key not in avail:
+                return
+            dobj = fo[key]
+            dstr = dobj if isinstance(dobj, str) else dobj.member("fString")
+            self._group_recover_from_registry(json.loads(dstr))
+        finally:
+            try:
+                fo.close()
+            except Exception:
+                pass
 
     def _ml_read_blob(self, fo, name, desc):
         import numpy as np

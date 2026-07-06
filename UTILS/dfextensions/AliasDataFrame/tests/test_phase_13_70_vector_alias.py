@@ -185,3 +185,114 @@ def test_VEC_11_parquet_roundtrip_recovers_group(tmp_path):
     assert adf2._group_members.get("s") == gid
     np.testing.assert_allclose(np.asarray(adf2.eval("s")), pre_s, rtol=RTOL, atol=ATOL)
     np.testing.assert_allclose(np.asarray(adf2.eval("dd")), pre_d, rtol=RTOL, atol=ATOL)
+
+
+# ------------------------------------------------- T-VEC-12 dematerialize all-or-none (D5)
+def test_VEC_12_dematerialize_all_or_none(adf):
+    adf.add_alias(["s", "dd"], "a + b, a - b")
+    _ = adf.eval("s"); _ = adf.eval("dd")
+    assert "s" in adf.df.columns and "dd" in adf.df.columns
+    import warnings
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        dropped = adf.dematerialize(drop=["s"])          # drop ONE member
+    assert set(dropped) == {"s", "dd"}                    # whole group dropped
+    assert "dd" not in adf.df.columns
+    assert any("all-or-none" in str(x.message) for x in w)
+
+
+def test_VEC_12b_dematerialize_keep_keeps_group(adf):
+    adf.add_alias(["s", "dd"], "a + b, a - b")
+    adf.add_alias("solo", "a * 3")
+    for m in ["s", "dd", "solo"]:
+        _ = adf.eval(m)
+    adf.dematerialize(keep=["s"])                          # keep one member -> keep group
+    assert "s" in adf.df.columns and "dd" in adf.df.columns
+    assert "solo" not in adf.df.columns                   # ordinary alias dropped
+
+
+# ------------------------------------------------- T-VEC-13 self/sibling cycle (CF-10)
+def test_VEC_13_self_cycle_refused(adf):
+    with pytest.raises(ValueError) as ei:
+        adf.add_alias(["p", "q"], "p + 1, a - b")         # references own member 'p'
+    assert "cycle" in str(ei.value).lower() and "CF-10" in str(ei.value)
+
+
+# ------------------------------------------------- T-VEC-14 V-6 dict / jagged refusals (D6)
+def test_VEC_14_dict_return_refused(adf):
+    def d(a, b):
+        a, b = np.asarray(a), np.asarray(b)
+        return {"x": a + b, "y": a - b}                    # dict, not tuple/2-D
+    adf.register_function("d", d, overwrite=True)
+    with pytest.raises(ValueError) as ei:
+        adf.add_alias(["p", "q"], "d(a, b)")
+    assert "dict" in str(ei.value) and "V-6" in str(ei.value)
+
+
+def test_VEC_14b_jagged_return_refused(adf):
+    def j(a):
+        a = np.asarray(a)
+        return (a, a[:-1])                                 # differing lengths
+    adf.register_function("j", j, overwrite=True)
+    with pytest.raises(ValueError) as ei:
+        adf.add_alias(["p", "q"], "j(a)")
+    assert "jagged" in str(ei.value) and "V-6" in str(ei.value)
+
+
+# ------------------------------------------------- T-VEC-4 ROOT persistence (D4b)
+_HAS_UPROOT = False
+try:
+    import uproot as _uproot  # noqa
+    _HAS_UPROOT = True
+except Exception:
+    pass
+
+
+@pytest.mark.skipif(not _HAS_UPROOT, reason="uproot required for ROOT roundtrip")
+@pytest.mark.invariance
+def test_VEC_4_root_export_and_read_tree_lazy_recover(tmp_path):
+    rng = np.random.default_rng(2)
+    n = 16
+    adf = AliasDataFrame(pd.DataFrame({"a": rng.random(n), "b": rng.random(n)}))
+    adf.add_alias(["s", "dd"], "a + b, a - b", dtype=["float64", "float64"])
+    pre_s = np.asarray(adf.eval("s")); pre_d = np.asarray(adf.eval("dd"))
+    f = str(tmp_path / "vec.root")
+    adf.export_tree(f, treename="tree")
+    # write side: registry embedded under ADF_GROUP/
+    keys = {k.split(";")[0] for k in _uproot.open(f).keys()}
+    assert "ADF_GROUP/registry" in keys
+    # read side (uproot lazy reader): group recovers, values equal pre-export
+    adf2 = AliasDataFrame.read_tree_lazy(f, tree_name="tree")
+    assert "__grp__s__dd" in adf2._group_registry
+    adf2.ensure_columns(["a", "b"])
+    np.testing.assert_allclose(np.asarray(adf2.eval("s")), pre_s, rtol=RTOL, atol=ATOL)
+    np.testing.assert_allclose(np.asarray(adf2.eval("dd")), pre_d, rtol=RTOL, atol=ATOL)
+
+
+@pytest.mark.skipif(not _HAS_UPROOT, reason="uproot required")
+def test_VEC_4b_direct_recover_from_file(tmp_path):
+    rng = np.random.default_rng(3)
+    n = 10
+    adf = AliasDataFrame(pd.DataFrame({"a": rng.random(n), "b": rng.random(n)}))
+    adf.add_alias(["p", "q"], "a * b, a + b")
+    pre_p = np.asarray(adf.eval("p"))
+    f = str(tmp_path / "vec2.root"); adf.export_tree(f, treename="tree")
+    fresh = AliasDataFrame(pd.DataFrame({"a": adf.df["a"].values, "b": adf.df["b"].values}))
+    fresh._group_recover_from_file(f)
+    assert "__grp__p__q" in fresh._group_registry
+    np.testing.assert_allclose(np.asarray(fresh.eval("p")), pre_p, rtol=RTOL, atol=ATOL)
+
+
+@pytest.mark.skipif(not _HAS_UPROOT, reason="uproot required")
+def test_VEC_4c_chain_first_file_canonical_recover(tmp_path):
+    rng = np.random.default_rng(4)
+    n = 8
+    frames = []
+    for i in range(2):
+        a = rng.random(n); b = rng.random(n)
+        adf = AliasDataFrame(pd.DataFrame({"a": a, "b": b}))
+        adf.add_alias(["s", "dd"], "a + b, a - b")
+        f = str(tmp_path / f"chain_{i}.root"); adf.export_tree(f, treename="tree")
+        frames.append(f)
+    chained = AliasDataFrame.read_chain_lazy([x + ":tree" for x in frames])
+    assert "__grp__s__dd" in getattr(chained, "_group_registry", {})   # first-file-canonical
