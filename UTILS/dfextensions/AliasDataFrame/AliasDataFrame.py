@@ -1061,11 +1061,19 @@ class AliasDataFrame:
 
         # PHASE_13_69_ADF: ML model store.
         # _models: {name: descriptor (+ _raw bytes, _handle runtime session)}
-        # _model_cache: {name: {'sig': (len, id(index)), 'outputs': {out: ndarray}}}
-        # _write_listeners: callbacks(key) fired by __setitem__ (D6 invalidation)
+        # PHASE_13_70_ADF D0: the evaluate-once cache is now a FUNCTION-GENERIC group
+        # engine shared by register_model AND vector/group aliases.
+        # _groups:      {group_id: {'compute': fn(arrays)->cols, 'inputs': [...], 'slots': {member: key}}}
+        # _group_cache: {group_id: {'sig': len(df), 'cols': <dict|2-D ndarray|list>}}
+        # _model_cache is a back-compat ALIAS of _group_cache (ML group_id == model name).
         self._models = {}
-        self._model_cache = {}
+        self._groups = {}
+        self._group_cache = {}
+        self._model_cache = self._group_cache
+        self._group_members = {}   # PHASE_13_70 D1: member_name -> gid (collision + lifecycle)
+        self._group_registry = {}  # PHASE_13_70 D2: gid -> schema entry
         self._write_listeners = []
+        self._group_listener_installed = False
         self._ml_listener_installed = False
 
     # =========================================================================
@@ -3877,6 +3885,15 @@ class AliasDataFrame:
     # =========================================================================
 
     def add_alias(self, name, expression, dtype=None, is_constant=False, fill_value=None):
+        # PHASE_13_70_ADF D1: a LIST/TUPLE of names => a vector (group) alias — the
+        # group expression is evaluated ONCE (D0 engine) and split into k sibling
+        # scalar members. A single-name list is an ordinary alias.
+        if isinstance(name, (list, tuple)):
+            return self._add_group_alias(list(name), expression, dtype)
+        return self._add_scalar_alias(name, expression, dtype=dtype,
+                                      is_constant=is_constant, fill_value=fill_value)
+
+    def _add_scalar_alias(self, name, expression, dtype=None, is_constant=False, fill_value=None):
         """
         Define a new alias (lazy computed column).
         
@@ -12388,51 +12405,50 @@ function collapseDepth(maxD) {{
         }
         if not hasattr(self, "_models"):
             self._models = {}
-        if not hasattr(self, "_model_cache"):
-            self._model_cache = {}
         self._models[name] = descriptor
-        self._model_cache.pop(name, None)
-        # register the write-event listener once (D6 cache invalidation)
-        self._ml_ensure_write_listener()
-        # build alias(es): one per output, all sharing _ml_evaluate(name)
-        arglist = ", ".join(inputs)
-        if outputs:
-            for out_name, alias_name in outputs.items():
-                fn = f"__ml_{name}__{alias_name}"
-                self.register_function(fn, self._ml_make_func(name, out_name),
-                                       overwrite=True)
-                self.add_alias(alias_name, f"{fn}({arglist})")
+        # PHASE_13_70_ADF D0: register the model as a GENERIC group so register_model
+        # and vector aliases share one evaluate-once cache + invalidation. The ML
+        # compute returns {output_name: ndarray}; slots map each alias to its output.
+        if descriptor["format"] == "onnx":
+            out_names = [o.name for o in handle.get_outputs()]
         else:
-            fn = f"__ml_{name}"
-            self.register_function(fn, self._ml_make_func(name, None),
-                                   overwrite=True)
-            self.add_alias(name, f"{fn}({arglist})")
+            out_names = ["variable"]
+        if outputs:
+            slots = {alias: model_out for model_out, alias in outputs.items()}
+        else:
+            slots = {name: out_names[0]}
+        self._group_register(name, self._ml_compute_for(name), list(inputs), slots)
+        arglist = ", ".join(inputs)
+        for alias_name, slot in slots.items():
+            fn = f"__ml_{name}__{alias_name}" if outputs else f"__ml_{name}"
+            self.register_function(fn, self._group_make_func(name, slot), overwrite=True)
+            self.add_alias(alias_name, f"{fn}({arglist})")
+
+    def _ml_compute_for(self, name):
+        """The ML model's compute callable for the generic group engine. Reads the
+        handle FRESH each call (so a caller/test that swaps _models[name]['_handle']
+        still sees it) and returns {output_name: ndarray}. Per-row-vector refuse is
+        enforced at registration by the 1-row probe."""
+        import numpy as np
+        def _compute(arrays):
+            desc = self._models[name]
+            handle = desc["_handle"]
+            if len(arrays) == 1:
+                X = np.asarray(arrays[0], dtype=np.float32).reshape(-1, 1)
+            else:
+                X = np.column_stack([np.asarray(a, dtype=np.float32) for a in arrays])
+            if desc["format"] == "onnx":
+                in_name = handle.get_inputs()[0].name
+                results = handle.run(None, {in_name: X})
+                onames = [o.name for o in handle.get_outputs()]
+                return {onames[i]: np.asarray(results[i]) for i in range(len(results))}
+            import xgboost as xgb
+            return {"variable": np.asarray(handle.predict(xgb.DMatrix(X)))}
+        return _compute
 
     def _ml_make_func(self, name, out_key):
-        """Return a positional-array closure for one output (mirrors the
-        register_evaluator adapter). All sibling closures share one evaluation."""
-        import numpy as np
-        def _f(*arrays):
-            outputs = self._ml_evaluate(name, arrays)
-            col = outputs[out_key] if out_key is not None else next(iter(outputs.values()))
-            col = np.asarray(col)
-            if col.ndim == 1:
-                return col
-            if col.ndim == 2 and col.shape[1] == 1:
-                return col[:, 0]
-            # PHASE_13_69_ADF: per-row VECTOR output (width>1) is not defined —
-            # ADF prediction aliases are scalar-per-row. Fail loud (backstop; the
-            # register-time probe below normally catches this earlier).
-            width = col.shape[1] if col.ndim == 2 else col.shape
-            raise ValueError(
-                f"Model {name!r} output {out_key!r} produced a per-row vector of "
-                f"width {width}; ADF prediction aliases are scalar-per-row. Per-row "
-                f"vector output is NOT defined in PHASE_13_69 (deferred, awaiting "
-                f"architect spec for slot->column mapping). Use a model whose "
-                f"output tensors are each scalar and register with "
-                f"outputs={{model_out_name: alias_name, ...}}, or reduce the model "
-                f"to a scalar output.")
-        return _f
+        """13.69 back-compat shim -> the generic group engine (out_key IS the slot)."""
+        return self._group_make_func(name, out_key)
 
     @staticmethod
     def _ml_probe_output_widths(handle, fmt, n_inputs):
@@ -12457,56 +12473,219 @@ function collapseDepth(maxD) {{
         except Exception:
             return {}
 
-    def _ml_evaluate(self, name, arrays):
-        """Run the model ONCE per valid cache state; sibling outputs reuse it.
+    def _add_group_alias(self, names, expression, dtype):
+        """PHASE_13_70_ADF D1/D3: register a vector (group) alias — one expression,
+        k scalar members, evaluated ONCE via the D0 group engine and split by slot."""
+        if len(names) == 1:
+            d = dtype[0] if isinstance(dtype, (list, tuple)) else dtype
+            return self.add_alias(names[0], expression, dtype=d)  # single-name list = ordinary alias
+        if dtype is not None:
+            if not isinstance(dtype, (list, tuple)) or len(dtype) != len(names):
+                raise ValueError(
+                    f"vector alias: dtype must be a list of length {len(names)} "
+                    f"(one per name), got {dtype!r}.")
+        if len(set(names)) != len(names):
+            raise ValueError(f"vector alias: duplicate member names in {names}.")
+        for nm in names:
+            self._check_group_name_collision(nm)
+        info = self._analyze_expression(expression)
+        funcs = set(getattr(self, "_registered_functions", {}).keys())
+        inputs = [c for c in sorted(info["column_refs"]) if c not in funcs]
+        gid = "__grp__" + "__".join(names)
+        # V-6 arity pre-check: cheap 1-row evaluation catches names-count vs
+        # returned-shape mismatch AT DEFINITION (eager/loaded case). Lazy inputs
+        # defer to the eval-time validation (materialize path raises the same error).
+        w = self._group_probe_width(expression, funcs)
+        if w is not None and w != len(names):
+            raise ValueError(
+                f"vector alias {names}: expression returns {w} member(s) but "
+                f"{len(names)} name(s) declared — names-count vs returned-shape "
+                f"mismatch (V-6).")
+        expr = expression
+        n_names = len(names)
+        def _compute(arrays):
+            # evaluate the group expression ONCE against the current frame; returns a
+            # k-tuple/list of 1-D or an (n_rows, k) 2-D ndarray (V-6). Split by slot.
+            import numpy as np
+            r = self._eval_in_namespace(expr)
+            got = (r.shape[1] if isinstance(r, np.ndarray) and r.ndim == 2
+                   else (len(r) if isinstance(r, (tuple, list)) else 1))
+            if got != n_names:
+                raise ValueError(
+                    f"vector alias {names}: expression returned {got} member(s) but "
+                    f"{n_names} name(s) declared — names-count vs returned-shape "
+                    f"mismatch (V-6).")
+            return r
+        slots = {nm: i for i, nm in enumerate(names)}
+        self._group_register(gid, _compute, inputs, slots)
+        self._group_registry[gid] = {
+            "adf_group_alias_version": 1,
+            "names": list(names),
+            "expression": expression,
+            "dtypes": list(dtype) if dtype else None,
+            "slots": dict(slots),
+        }
+        arglist = ", ".join(inputs)
+        for i, nm in enumerate(names):
+            fn = f"__grpfn_{gid}_{i}"
+            self.register_function(fn, self._group_make_func(gid, i), overwrite=True)
+            self.add_alias(nm, f"{fn}({arglist})", dtype=(dtype[i] if dtype else None))
+            self._group_members[nm] = gid
+        return list(names)
 
-        Cache signature = ``len(self.df)`` (row-count change busts the cache).
-        All other invalidation is EXPLICIT and event-driven — the __setitem__
-        write hook, release_branches/release_struct, and re-registration each pop
-        the affected model's cache. This keeps predict-once alive across benign
-        frame rebuilds (e.g. dematerialize, which drops columns but keeps rows),
-        which an index-identity key would wrongly bust. Documented limitation:
-        a direct in-place index permutation with no length change and no hooked
-        write is not detected (same class as direct adf.df[...] mutation)."""
+    def _check_group_name_collision(self, nm):
+        """CF-5: refuse if `nm` collides with any existing namespace, naming it.
+        Group members are checked FIRST (they are also aliases) so a member
+        collision reports the most-specific namespace."""
+        if nm in getattr(self, "_group_members", {}):
+            raise ValueError(f"vector alias: name {nm!r} collides with another GROUP member "
+                             f"(group {self._group_members[nm]!r}).")
+        if nm in self.aliases:
+            raise ValueError(f"vector alias: name {nm!r} collides with an existing ALIAS "
+                             f"(no overwrite in Phase 1).")
+        if nm in self.df.columns:
+            raise ValueError(f"vector alias: name {nm!r} collides with an existing COLUMN/branch.")
+        if nm in getattr(self, "_structs", {}):
+            raise ValueError(f"vector alias: name {nm!r} collides with a STRUCT.")
+        sub = getattr(self, "_subframes", None)
+        if sub is not None and hasattr(sub, "has_subframe") and sub.has_subframe(nm):
+            raise ValueError(f"vector alias: name {nm!r} collides with a SUBFRAME.")
+
+    def _group_probe_width(self, expression, funcs):
+        """V-6 arity probe at DEFINITION: if the expression's inputs are all present
+        as columns, do a CHEAP 1-row evaluation and return the member count (2-D
+        cols / tuple-list len / 1 for scalar). Returns None when it can't be
+        evaluated now (lazy/missing inputs or an unsupported namespace feature) —
+        arity is then validated at first real evaluation by the group compute."""
         import numpy as np
-        sig = len(self.df)
-        cached = self._model_cache.get(name)
-        if cached is not None and cached["sig"] == sig:
-            return cached["outputs"]
-        desc = self._models[name]
-        handle = desc["_handle"]
-        if len(arrays) == 1:
-            X = np.asarray(arrays[0], dtype=np.float32).reshape(-1, 1)
-        else:
-            X = np.column_stack([np.asarray(a, dtype=np.float32) for a in arrays])
-        if desc["format"] == "onnx":
-            in_name = handle.get_inputs()[0].name
-            results = handle.run(None, {in_name: X})
-            out_names = [o.name for o in handle.get_outputs()]
-            outputs = {out_names[i]: np.asarray(results[i]) for i in range(len(results))}
-        else:  # xgboost-json native
-            import xgboost as xgb
-            outputs = {"variable": np.asarray(handle.predict(xgb.DMatrix(X)))}
-        self._model_cache[name] = {"sig": sig, "outputs": outputs}
-        return outputs
+        try:
+            info = self._analyze_expression(expression)
+            inputs = [c for c in info["column_refs"] if c not in funcs]
+            if len(self.df) == 0 or any(c not in self.df.columns for c in inputs):
+                return None
+            # 1-row namespace: registered functions + numpy + 1-row input columns
+            ns = dict(getattr(self, "_registered_functions", {}))
+            ns.setdefault("np", np)
+            for c in inputs:
+                ns[c] = np.asarray(self.df[c].values[:1])
+            r = eval(expression, {"__builtins__": {}}, ns)  # noqa: S307 (1-row arity probe)
+            if isinstance(r, np.ndarray) and r.ndim == 2:
+                return r.shape[1]
+            if isinstance(r, (tuple, list)):
+                return len(r)
+            return 1
+        except Exception:
+            return None
 
-    def _ml_ensure_write_listener(self):
+    # ===== PHASE_13_70_ADF D0: function-generic evaluate-once GROUP engine ===== #
+    # Shared by register_model (ML groups) AND vector/group aliases. compute(arrays)
+    # returns an indexable of columns (dict / 2-D ndarray / list of 1-D); `slots`
+    # map each member to its key/column-index. One evaluation per cache state; the
+    # siblings split the result. Invalidation is explicit (write hook / release /
+    # re-registration). This is the generalization the G-4 gate required.
+    def _group_register(self, gid, compute, inputs, slots):
+        if not hasattr(self, "_groups"):
+            self._groups = {}
+        if not hasattr(self, "_group_cache"):
+            self._group_cache = {}
+            self._model_cache = self._group_cache
+        self._groups[gid] = {"compute": compute, "inputs": list(inputs), "slots": dict(slots)}
+        self._group_cache.pop(gid, None)
+        self._group_ensure_write_listener()
+
+    def _group_evaluate(self, gid, arrays):
+        """Run the group's compute ONCE per valid cache state (sig = len(df))."""
+        sig = len(self.df)
+        c = self._group_cache.get(gid)
+        if c is not None and c["sig"] == sig:
+            return c["cols"]
+        cols = self._groups[gid]["compute"](arrays)
+        self._group_validate(gid, cols)   # V-6 arity/shape check at (re)compute
+        self._group_cache[gid] = {"sig": sig, "cols": cols}
+        return cols
+
+    def _group_validate(self, gid, cols):
+        """V-6: the group result must supply every declared slot. For vector groups
+        (integer slots) the returned width must equal the number of names; for ML
+        groups (named-output slots) every mapped output name must be present."""
+        import numpy as np
+        slots = self._groups[gid]["slots"]
+        if isinstance(cols, dict):
+            missing = [s for s in slots.values() if s not in cols]
+            if missing:
+                raise ValueError(
+                    f"group {gid!r}: outputs {missing} not produced; got {sorted(cols)}.")
+            return
+        if isinstance(cols, np.ndarray) and cols.ndim == 2:
+            width = cols.shape[1]
+        elif isinstance(cols, np.ndarray) and cols.ndim == 1:
+            width = 1
+        else:
+            try:
+                width = len(cols)
+            except Exception:
+                width = 1
+        k = len(slots)
+        if width != k:
+            raise ValueError(
+                f"vector alias {gid!r}: expression returned {width} member(s) but "
+                f"{k} name(s) were declared ({sorted(slots)}) — names-count vs "
+                f"returned-shape mismatch (V-6).")
+
+    @staticmethod
+    def _group_column(cols, slot):
+        """Extract one scalar-per-row member column from a group result (dict key,
+        2-D column index, or list index). A member that is itself a per-row vector
+        (width>1) is a loud error (scalar-per-row is the member contract)."""
+        import numpy as np
+        if isinstance(cols, dict):
+            col = np.asarray(cols[slot])
+        elif isinstance(cols, np.ndarray) and cols.ndim == 2:
+            col = cols[:, slot]
+        else:
+            col = np.asarray(cols[slot])
+        if col.ndim == 1:
+            return col
+        if col.ndim == 2 and col.shape[1] == 1:
+            return col[:, 0]
+        width = col.shape[1] if col.ndim == 2 else col.shape
+        raise ValueError(
+            f"group member (slot {slot!r}) is a per-row vector of width {width}; "
+            f"members must be scalar-per-row.")
+
+    def _group_make_func(self, gid, slot):
+        """Positional-array closure for one member; siblings share one evaluation."""
+        def _f(*arrays):
+            return self._group_column(self._group_evaluate(gid, arrays), slot)
+        return _f
+
+    def _group_ensure_write_listener(self):
         if not hasattr(self, "_write_listeners"):
             self._write_listeners = []
-        if getattr(self, "_ml_listener_installed", False):
+        if getattr(self, "_group_listener_installed", False):
             return
         def _listener(key):
-            for mname, desc in getattr(self, "_models", {}).items():
-                if key in desc["inputs"]:
-                    self._model_cache.pop(mname, None)
+            for gid, g in getattr(self, "_groups", {}).items():
+                if key in g["inputs"]:
+                    self._group_cache.pop(gid, None)
         self._write_listeners.append(_listener)
-        self._ml_listener_installed = True
+        self._group_listener_installed = True
+
+    def _group_invalidate_for_columns(self, columns):
+        cols = set(columns)
+        for gid, g in getattr(self, "_groups", {}).items():
+            if cols & set(g["inputs"]):
+                self._group_cache.pop(gid, None)
+
+    # ---- 13.69 back-compat shims (delegate to the generic engine) ----
+    def _ml_evaluate(self, name, arrays):
+        return self._group_evaluate(name, arrays)
+
+    def _ml_ensure_write_listener(self):
+        self._group_ensure_write_listener()
 
     def _ml_invalidate_for_columns(self, columns):
-        cols = set(columns)
-        for mname, desc in getattr(self, "_models", {}).items():
-            if cols & set(desc["inputs"]):
-                self._model_cache.pop(mname, None)
+        self._group_invalidate_for_columns(columns)
 
     def deregister_model(self, name):
         """PHASE_13_69_ADF (D2): remove the alias(es), registered function(s),
@@ -12531,6 +12710,9 @@ function collapseDepth(maxD) {{
         for fn in fn_names:
             rf.pop(fn, None)
         self._models.pop(name, None)
+        # PHASE_13_70_ADF D0: also drop the generic group registration + cache.
+        getattr(self, "_groups", {}).pop(name, None)
+        getattr(self, "_group_cache", {}).pop(name, None)
         self._model_cache.pop(name, None)
 
     def save_model(self, name, path):
