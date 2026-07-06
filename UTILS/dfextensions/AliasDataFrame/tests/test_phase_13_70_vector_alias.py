@@ -355,3 +355,74 @@ def test_VEC_9_onnx_2d_flagship(tmp_path):
     np.testing.assert_allclose(dy, ref[:, 0], rtol=1e-5, atol=1e-6)
     np.testing.assert_allclose(dz, ref[:, 1], rtol=1e-5, atol=1e-6)
     assert calls["n"] == 1                                    # model runs ONCE for both members
+
+
+# ------------------------------------------------- T-VEC-6 members in draw slots (§1 claim)
+_HAS_DFDRAW = False
+try:
+    from dfdraw import DFDraw  # noqa
+    _HAS_DFDRAW = True
+except Exception:
+    pass
+
+
+def _draw_vec_adf():
+    rng = np.random.default_rng(21)
+    n = 120
+    adf = AliasDataFrame(pd.DataFrame({
+        "a": rng.random(n), "b": rng.random(n), "c": rng.random(n),
+        "grp": np.tile([0, 1, 2], n // 3),                       # discrete column to facet/group on
+        "decoy1": rng.random(n), "decoy2": rng.random(n),        # >=3 decoy columns that the
+        "decoy3": rng.random(n),                                 # group's closure must NOT pull in
+    }))
+    adf.add_alias(["dY", "dZ"], "a + b, a - b")                  # members are ordinary scalar aliases
+    return adf
+
+
+@pytest.mark.skipif(not _HAS_DFDRAW, reason="Requires dfdraw")
+@pytest.mark.parametrize("mode", ["lazy", "eager"])
+def test_VEC_6_members_in_draw_slots(mode):
+    """T-VEC-6 (§1 load-bearing claim): a vector-alias MEMBER behaves as an ordinary
+    scalar alias in every draw slot — drawn variable, weights=, facet_by=, color=,
+    group_by — across draw / draw_batch / draw_figures, in lazy and eager mode, with
+    >=3 decoy columns present. dfdraw is unavailable in the coder sandbox; runs on alma2.
+    Any failure here is §1 design input, not an incidental test bug."""
+    adf = _draw_vec_adf()
+    lazy = (mode == "lazy")
+    if not lazy:
+        adf.eval("dY"); adf.eval("dZ")                           # eager: materialize members first
+    # member in each draw slot
+    assert adf.draw("dY", type="hist", bins=20, lazy=lazy) is not None                         # variable
+    assert adf.draw("a", type="hist", weights="dZ", bins=10, lazy=lazy) is not None            # weights=
+    assert adf.draw("dY:a", type="profile", facet_by="grp",
+                    bins=5, min_entries=1, lazy=lazy) is not None                              # facet_by=
+    assert adf.draw("b:a", type="scatter", color="dZ", lazy=lazy) is not None                  # color=
+    assert adf.draw("dY:a", type="profile", group_by="grp",
+                    bins=5, min_entries=1, lazy=lazy) is not None                              # group_by=
+    # all three draw surfaces
+    assert adf.draw_batch(
+        {"p": {"expr": "dY", "type": "hist", "bins": 20}}, lazy=lazy) is not None
+    assert adf.draw_figures(
+        [{"plots": [{"expr": "dZ:a", "type": "profile", "bins": 5,
+                     "min_entries": 1}]}], lazy=lazy) is not None
+
+
+@pytest.mark.skipif(not _HAS_UPROOT, reason="uproot required for a lazy frame")
+def test_VEC_6b_member_exact_load_closure(tmp_path):
+    """The group closure loads ONLY its own inputs (a,b) on a lazy frame — decoys and
+    unrelated raw branches are not pulled in when a member is evaluated. (Draw slots
+    inherit this via the same materialization path; the load set is the invariant.)"""
+    rng = np.random.default_rng(6)
+    n = 40
+    base = AliasDataFrame(pd.DataFrame({
+        "a": rng.random(n), "b": rng.random(n), "c": rng.random(n),
+        "decoy1": rng.random(n), "decoy2": rng.random(n), "decoy3": rng.random(n),
+    }))
+    base.add_alias(["dY", "dZ"], "a + b, a - b")
+    f = str(tmp_path / "vec.root"); base.export_tree(f, treename="tree")
+    adf = AliasDataFrame.read_tree_lazy(f, tree_name="tree")
+    adf.ensure_columns(["a", "b"])                               # the group's closure
+    _ = adf.eval("dY")
+    loaded = set(adf._lazy_reader.loaded_branches or ())
+    for decoy in ["decoy1", "decoy2", "decoy3", "c"]:
+        assert decoy not in loaded                               # closure did not pull decoys
