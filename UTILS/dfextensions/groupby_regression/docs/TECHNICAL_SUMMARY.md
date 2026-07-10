@@ -1,10 +1,10 @@
 # Technical Summary: GroupBy Regression
 
-**Version:** 4.0
-**Phase:** 13.23a.GB-RooflineEasyWins
-**Last Updated:** 2026-05-10
-**Coder:** Claude22 (GBAI team)
-**Suggested archive filename:** `GroupByRegression_Technical_Summary_PHASE_13_23A_GB_v4_0.md`
+**Version:** 4.1
+**Phase:** 13.23c.GB-Audit
+**Last Updated:** 2026-07-04
+**Coder:** Fable5_2GBAI (GBAI team; v4.0 by Claude22)
+**Suggested archive filename:** `GroupByRegression_Technical_Summary_PHASE_13_23C_GB_v4_1.md`
 
 ---
 
@@ -20,7 +20,7 @@ The library is part of the dfextensions ecosystem (AliasDataFrame [ADF], GroupBy
 - `make_sliding_window_fit` — N-D sliding window regression for smoothed calibration maps. Supports recompute (V1/V2) and incremental (V3) algorithms with numba and numpy backends.
 - `make_sliding_window_aggregate` — pure aggregation (mean/std/count) with boundary handling. 300× speedup over fit-with-zero-predictors for aggregation-only use cases.
 
-**Quality discipline:** Source-line-cited multi-AI panel review for all production-affecting changes (12 named reviewer instances across Claude and GPT families). CI-integrated roofline performance metric (K = T_observed / T_expected, where K=1 means hardware roofline). Documented parameter-not-propagated bug class catalog with 11 historical instances and mechanical guards (module-path assertions, per-path × per-backend test matrices) against recurrence. See PHASE_HISTORY v7.0 for the full incident catalog and failure modes.
+**Quality discipline:** Source-line-cited multi-AI panel review for all production-affecting changes (12 named reviewer instances across Claude and GPT families). CI-integrated roofline performance metric (K = T_observed / T_expected, where K=1 means hardware roofline). Documented parameter-not-propagated bug class catalog with 14 historical instances and mechanical guards (module-path assertions, per-path × per-backend test matrices) against recurrence. See PHASE_HISTORY v7.1 for the full incident catalog and failure modes.
 
 **Current performance:** Production pipeline 722s on 82M rows (2× improvement from Phases 13.19–13.21). Roofline K=2.9 on the SW fit pipeline (42ms observed, 15ms ideal at 100K rows). Optimization roadmap: BLAS-batched OLS kernel (Phase 13.25), Arrow-based output (future).
 
@@ -63,6 +63,19 @@ The library is part of the dfextensions ecosystem (AliasDataFrame [ADF], GroupBy
 
 ---
 
+## [NEW v4.1] Motivation — why this module exists
+
+**Why not plain pandas/scipy?** A single grouped fit is trivial: `df.groupby(...).apply(lambda g: scipy.stats.linregress(...))`. GroupBy Regression exists because production is not a single fit:
+
+1. **Scale.** A TPC calibration pass runs ~25M fits over 100K+ groups on 82M rows. The naive groupby-apply form costs hours; the current pipeline runs the full pass in **~722 s** (PHASE_HISTORY § Performance Reference, Phase 13.21, commits `eea1046c`/`3f3bce25`), within strict per-core memory limits. That gap is the module: sorted-array group dispatch, numba kernels, PyArrow backend, fork-based parallelism.
+2. **N-dimensional sliding-window fits do not exist elsewhere.** `make_sliding_window_fit` fits each bin using its neighbourhood in an N-D grid (window per dimension, boundary modes, kernels) — pandas `rolling` is 1-D over rows, scipy has no grouped windowed regression. This is the workhorse of the space-charge distortion maps (`makeIterationFit123`).
+3. **Contract outputs for the stack.** The dfGB output schema (`{fit}_intercept{suffix}`, `{fit}_slope_{col}{suffix}`, ... — § Output Column Naming Contract) is consumed programmatically by AliasDataFrame subframe aliases and dfdraw QA (dozens of hardcoded alias strings in production macros); robust statistics, quality flags, and provenance metadata are part of the API, not an afterthought.
+4. **C++/O2 export path.** Fitted models feed the C++ evaluator (Layer A kernel, `cpp/`) for use inside O2/ROOT — a pandas lambda has no export story.
+
+**Honest caveat:** for a single small fit on a laptop, use scipy/statsmodels directly — this module's machinery only pays for itself at scale, in grids, or when the downstream ADF/dfdraw/C++ contract is needed.
+
+---
+
 ## [UPDATED] Subproject Scope and Target
 
 | # | Capability | Status |
@@ -93,6 +106,10 @@ The library is part of the dfextensions ecosystem (AliasDataFrame [ADF], GroupBy
 
 ```python
 # Per-bin regression (recommended)
+# ✅ Phase 13.23c.GB: median_columns is now IMPLEMENTED in make_parallel_fit_v4
+# (it was silently ignored before — bug-class instance #12). Output column per
+# entry: f"{col}{suffix}", medians over the post-selection rows, NaN skipped
+# per group. See § Output Column Naming Contract.
 from dfextensions.groupby_regression import make_parallel_fit_v4
 df_out, dfGB = make_parallel_fit_v4(
     df=df,
@@ -361,7 +378,7 @@ Same as serial, plus:
 | `n_workers` | int | 4 | Number of parallel workers |
 | `on_error` | str | 'nan' | Error handling: 'nan' (skip) or 'raise' |
 
-**⚠️ Same `boundary` bug as serial — the parallel wrapper delegates to `make_sliding_window_aggregate` and inherits the silent-drop.**
+**✅ (corrected v4.1 — the previous "same boundary bug as serial" text here was stale from before Phase 13.17.GB): `boundary` IS honoured for mean/std/count on both serial and parallel aggregate paths (locked by `test_aggregate_parallel_symmetric_matches_serial`; only the `agg_median=True` subpath remains 'full'-only, see its own row). The parallel wrapper delegates to `make_sliding_window_aggregate` and inherits the silent-drop.**
 
 ---
 
@@ -442,8 +459,12 @@ Output coefficients use the key name: `slope_xM2`, `slope_xM_driftM`.
 | `boundary='symmetric'` / `'periodic'` in `make_sliding_window_aggregate` mean/std/count (serial and parallel) | ✅ **Fixed Phase 13.17.GB**, 28 tests pass (unified 16-function plan, 50% invariance ratio) | — |
 | **`boundary` + `agg_median=True` interaction in `make_sliding_window_aggregate`** | **⚠️ Median subpath silently uses `'full'` regardless of `boundary`.** Mean/std/count columns honour `boundary` correctly. | **Workaround:** call the function twice — once with the desired boundary and `agg_median=False` for the statistics, once with `boundary='full'` and `agg_median=True` for the (uncorrected) median. **Fix scheduled for Phase 13.17.GB-MedianFix.** Architect-authorised deferral 2026-04-09 (verbatim): *"D1. We can psopone for later Phase"* and *"D1. I decidee only later on . I did not realize it it too complicated. Can be postponed...."* |
 | **Pre-existing broken `test_aggregate_numba_matches_numpy` test** | **⚠️ False-positive cross-backend invariance.** Test at `tests/test_sliding_window_aggregate.py:219` calls the same numba backend twice and compares output to itself — auto-dispatch failure mode #11 hiding a real gap that has existed since Phase 13.14.GB. | **Superseded by T14 `test_aggregate_numba_equals_numpy_all_boundaries_all_paths` added in Phase 13.17.GB via `monkeypatch` on `_get_numba_agg_kernel`.** Deletion of the old test is a separate micro-task after 13.17.GB commit (NOT done in-phase per scope rule 1). |
-| **`test_v3_numpy_faster_than_v1_numpy` timing test failing on canonical** | **⚠️ Pre-existing wall-clock timing comparison, environment-sensitive.** Failing on canonical alma2 since at least Phase 13.16.GB-FIX2 (predecessor tag), unrelated to F1. | Investigate in a separate cleanup pass; unrelated to boundary handling. Listed in deferred-failures alongside `test_multiple_fits_match_v4_merged` and `test_tpc_distortion_recovery`. |
-| **V1/V2 recompute path silently ignores `boundary` parameter** | **⚠️ `algorithm='recompute'` (default) uses `boundary='full'` regardless of the `boundary` argument passed to `make_sliding_window_fit`.** Only V3/V5 incremental paths honour `boundary='symmetric'` and `boundary='periodic'`. Parameter-not-propagated class instance #9, pre-existing since Phase 13.14.GB, not introduced by Phase 13.19.GB-PERF. | **Workaround:** use `algorithm='incremental'` (V5) when `boundary='symmetric'` or `boundary='periodic'` is needed. **Regression-locked** by `test_v1v2_boundary_parameter_silently_dropped` in `test_fit_path_perf_invariance.py` — test documents current behaviour and will correctly fail when the fix lands. **Fix deferred** to Phase 13.XX.GB-BoundaryV1V2. |
+| **Performance "flapper" tests inside the functional gate** | **⚠️ Two wall-clock assertions flip pass/fail between runs on the same machine, same day (2026-07-04 evidence): `test_v3_numpy_faster_than_v1_numpy` (passed bundle `102349`, failed `134451`, passed `173802`) and `test_evaluator_lookup::test_lookup_performance` (failed `134451` at 1.24× vs required 1.5× under 12-worker contention, passed `135025`).** The stable deferred failures are exactly two: `test_multiple_fits_match_v4_merged` and `test_tpc_distortion_recovery`. | **Honest baseline form: "2 stable failures + 0–2 flappers". Audit proposal (pending): move both flappers out of the functional gate (perf/roofline marker or serial execution).** |
+| **V1/V2 recompute path ignores `boundary` parameter — now WARNS** | **⚠️→🔔 As of Phase 13.23c.GB (commit `159ba256`) `make_sliding_window_fit` emits a loud `UserWarning` ("boundary=... is IGNORED by algorithm='recompute' ...") whenever the default algorithm meets any non-`'full'` boundary dimension. Behaviour is otherwise UNCHANGED (bit-identity locked by W5, `tests/test_bug9_boundary_warning.py`): computation proceeds as `'full'`. Metadata now records the boundary actually used (`'full'` on this path) — Failure Mode #13 truth-in-metadata. Parameter-not-propagated instance #9.** | **Use `algorithm='incremental'` to honour `boundary` (the parallel entry point always does — it is V5-only, verified). Real fix still deferred to Phase 13.XX.GB-BoundaryV1V2. Regression-locked by the untouched characterization test plus 7 warning tests (W1–W5, W1b, W4b).** |
+| **PRODUCTION HAZARD — `calibVertex` workaround collides with the bug #12 fix** | **🧨 `time_series.py::calibVertex` calls `make_parallel_fit_v4(median_columns=["time_s","vertex_z"], suffix="")` and then manually merges the same medians (`time_series.py:642–643`). With the fix in place (commit `e3fdc9e0`) the suffixed contract does NOT rescue this caller (suffix is empty → suffixed name = bare name): pandas renames the colliding columns to `time_s_x/_y`, `vertex_z_x/_y`, and any downstream read of `time_s` fails. Reproduced by the architect on 9.86M production tracks 2026-07-04; values proven identical (`np.allclose == True`).** | **Delete the two workaround lines `time_series.py:642–643` BEFORE the next calibVertex production run. The two `makeSmoothMapsWithTPC` sites (non-empty suffixes) are NOT affected and their workarounds are harmless.** |
+| **`kernel`/`kernel_width` silently ignored on the same recompute path** | **⚠️ NEW (audit 2026-07-04, instance #14): computed and validated, consumed only by the incremental branch; recompute-branch metadata records the requested kernel (Failure Mode #13). No known production impact — all observed production calls use the default `kernel='uniform'`.** | **Pending architect ruling; recommended: same one-line warning as #9. Until then: use `algorithm='incremental'` for non-uniform kernels.** |
+| **`GroupByRegressionEvaluator.from_dfGB` cannot load `fit_intercept=False` models** | **⚠️ The linear loader requires `'intercept'` in the coefficient set and raises `ValueError` otherwise (evaluator pristine :1970–1973). Production `fitPolIter0` fits with `fit_intercept=False` — its dfGB is unloadable by the Python evaluator and, downstream, the C++ path.** | **Known Limitation filed at audit (C4); fix out of 13.23c scope, proposed to ride with 13.25 or a dedicated 13.18.GB-FIX.** |
+| **v3 docstring inverse error** | **⚠️ `make_parallel_fit_v3` docstring says median_columns "(not yet implemented)" while v3 DOES compute medians (optimized pristine :907–915) — the inverse of the fixed v4 defect.** | **Doc-only; correct at next code touch of the file.** |
 | V3/V5 incremental: median=NaN | By design | Use V1/V2 (recompute) or `agg_median=True` in aggregate |
 | Parallel SW: Windows OS | By design | Linux/macOS only |
 | WLS not supported in parallel V5 | By design | Use serial, or split manually |
@@ -501,6 +522,21 @@ The v3.3 split between fit-path (`⚠️`) and aggregate-path (`🧨 silently br
 - **`test_invariance_sliding_window::TestSWV3bTiming::test_v3_numpy_faster_than_v1_numpy`** — wall-clock timing comparison, environment-sensitive, **newly listed in v3.4** but pre-existing on canonical alma2; surfaced by the Phase 13.17.GB canonical run because it had not been in any prior deferred list.
 
 **Zero broken-feature entries in v3.4.** F1 (`boundary` silent-drop in aggregate path) is now ✅ fixed for mean/std/count via Phase 13.17.GB. F2 (`method=dict` mixed interp) was fixed in 13.16.GB-FIX2. The median-subpath D1 deferral is recorded as a Known Limitation but does not constitute a Capability Matrix Broken entry (the SW.aggregate_boundary capability is satisfied for the mean/std/count surface).
+
+---
+
+### [NEW v4.1] Current State addendum (2026-07-04)
+
+| Metric | **v4.1 (Jul 4, 2026)** |
+|--------|------------------------|
+| Test count | **595 passed** (`SUMMARY_20260704_173802`, commit `159ba256`, alma2, 12 workers) |
+| Stable pre-existing failures | **2** (`test_multiple_fits_match_v4_merged`, `test_tpc_distortion_recovery`) |
+| Flappers (perf assertions, 0–2 per run) | **2** (`test_v3_numpy_faster_than_v1_numpy`, `test_lookup_performance`) — see Known Limitations |
+| Skipped | **19** |
+| New tests this phase | **19** (12 median + 7 boundary-warning) |
+| Commits | `e3fdc9e0` (step 1), `97ad28b3` (step 2), `159ba256` (step 3) |
+
+**Correction to the v4.0 line "3 pre-existing failures":** audit day proved the third "failure" (`test_v3_numpy_faster_than_v1_numpy`) is a **flapper**, not stable — it flipped pass→fail→pass across bundles `102349`/`134451`/`173802` on the same machine within hours, and a second flapper (`test_lookup_performance`) was identified the same way. The stable count is and was **2**. Single-run snapshots are not a sufficient baseline definition; every future phase reconciliation should use the "2 stable + 0–2 flappers" form until the gate-exclusion proposal lands.
 
 ---
 
@@ -656,6 +692,52 @@ K=1 means at hardware roofline. K>1 quantifies the optimization gap. Primitives 
 
 ---
 
+## [NEW v4.1] Output Column Naming Contract (frozen)
+
+Dozens of production alias strings hardcode these names (e.g. `time_series.py:733–738`, `makeSmoothMapsWithTPC.py:3338–3341`); this section freezes them as an API contract. `{t}` = fit target, `{p}` = predictor/linear column, `{c}` = aggregated/median column, `{s}` = the `suffix` argument. **Rule: the suffix comes AFTER the statistic name, at the very end.**
+
+| Output | Name | Emitted by |
+|---|---|---|
+| Intercept | `{t}_intercept{s}` | v2/v3/v4/v5, SW fit |
+| Slope | `{t}_slope_{p}{s}` | v2/v3/v4/v5, SW fit |
+| Slope error | `{t}_slope_{p}_err{s}` | v4/v5, SW fit |
+| RMS / MAD | `{t}_rmse{s}` / `{t}_mad{s}` | per entry point (see Interface Catalog) |
+| Fitted count | `{t}_n_fitted{s}` | SW fit |
+| Aggregates | `{c}_mean{s}`, `{c}_std{s}`, `{c}_median{s}`, `{c}_count{s}` | SW aggregate |
+| **Per-group medians (Phase 13.23c.GB)** | **`{c}{s}`** — original name + suffix, nothing else | **Uniform across ALL fitters: v4 (Phase 13.23c fix); v2/v3 via the shared blanket suffix-rename of every non-key output column (`optimized.py:928`); legacy `GroupByRegressor` likewise (`groupby_regression.py:538`)** |
+| Group keys | unchanged, never suffixed | all |
+
+**Collision guard:** `make_parallel_fit_v4` raises `ValueError` if a suffixed median name collides with an existing dfGB output column (test T3, `test_bug12_median_columns_v4.py`).
+
+**Two status conventions exist (do not conflate — audit P2-5):**
+- **SW fit** emits `quality_flag{s}`, values: `''` **(empty string = OK)**, `'empty_window'`, `'insufficient_stats'`, `'singular_matrix'`, `'fit_failed_{t}'`; multi-target flags comma-joined (sliding_window pristine :2868, :2949–2976). Note: the V5 assembly emits only the first two values — a narrower vocabulary than V1/V2/V3. Production (`makeIterationFit123`) tests `== ''` for OK bins.
+- **v3/v4/v5** emit **no `quality_flag` at all**; with `diag=True` they emit `diag_status{s}` with values `'OK'`, ... (STATUS_TO_STRING, optimized pristine :61–67, columns at :2098/:2834).
+
+**`median_columns` semantics (v4, Phase 13.23c.GB):** medians are computed over the **same rows as the fit** — i.e. after `selection` — with **no per-target validity filtering**; NaN values are skipped within each group (pandas median). Identical to legacy `GroupByRegressor` semantics (`groupby_regression.py:88-89`).
+
+**`selection` semantics (all entry points):** one boolean mask filter; a numpy bool array is positional (length-checked), a pandas Series is **index-aligned**. Both behave identically when the mask comes from the same frame (the production pattern); a Series from a differently-indexed frame is the caller's responsibility. (Sites: v3 `df[selection]` :775, v4 `df.loc[selection]` :1780, SW :3326, aggregate :4168 — pristine lines.)
+
+---
+
+## [NEW v4.1] Environment — canonical run requirements
+
+Everything a fresh coder needs to reproduce the canonical numbers; previously session-lore only (audit corpus gaps 1–2).
+
+1. **`export NUMBA_THREADING_LAYER=omp`** — mandatory wherever ROOT/O2 is loaded: O2 pulls its TBB before numba, and without the omp layer numba silently falls back (scar S5; symptom: K_cal ≫ K_test). Required on the servers; harmless and used on alma2.
+2. **`PYTHONPATH=.`** from the module directory; run `bash run_tests.sh | tee run_tests.log`.
+3. **Canonical server path is `/u/miranov/O2DPG/` (via `setDefault10O2M2`) — never `/scratch/alice/.../alicesw2/O2DPG`**, which holds a partially-updated stale tree (scar S6; symptom: `TypeError: expected 21, got 19` from the 21-parameter numba kernel).
+4. **Module-path check before trusting any result** (bug-class instances #10/#11 — stale `sys.path` import and venv-editable-install divergence): `python3 -c "import groupby_regression_sliding_window as m; print(m.__file__)"` must print the working copy. Clear the numba cache when in doubt (scar S3).
+5. **`zip` is missing in the apptainer image** — `run_tests.sh` packaging needs the tar.gz fallback (scar S7, still open as of v4.1).
+6. **Canonical machine:** alma2 (OrbStack, aarch64, Python 3.10.19, 12 workers). Reviewer bundles are generated by `run_tests.sh` (SUMMARY, full log, failure list, `diff_last_commit`, `diff_to_phase` — GB-tag-anchored since commit `97ad28b3` — git status, capability matrix, and since Phase 13.23c the full content of any unregistered `.py` files).
+
+---
+
+## [NEW v4.1] C++ evaluator status pointer
+
+Pre-commissioning status (committed vs missing pieces, fixture gaps, `eval_on_tree` dtype restriction, the missing `gbe_root_io.h/.cxx` + `dfGB_to_root.py` blocker) is tracked in the audit record (`AUDIT_GB_2026_07` §D, decisions AD-Q3) pending the proposed `cpp/STATUS.md`. Headline: **the C++ build is not reproducible from a clean clone until Layer B sources are located or declared unimplemented.**
+
+---
+
 ## Document History
 
 | Version | Date | Change |
@@ -669,4 +751,5 @@ K=1 means at hardware roofline. K>1 quantifies the optimization gap. Primitives 
 | **3.3** | **2026-04-07** | **Phase 13.16.GB-FIX2 landed. F2/F3/F4/F5 fixed in source (evaluator method=dict validation, docstring coverage, lookup+extrapolate rejection, stale backend test). C3/C8/C10 addressed as part of the same commit ('nearest'/'nearest_fast' equivalence, runnable docstring examples, unknown-method detection). 11 new tests in `test_evaluator_lookup.py`, all with explicit path parameters per failure mode #11 and `pytest.raises(..., match=...)` per C7. Test count 517 → 528 canonical / 493 → 505 coder-env. Pre-existing failures 3 → 2 (F5 flipped). Broken count 2 → 1 (F2 fixed; F1 remains for 13.17.GB). All v3.0 sections preserved verbatim. Drafted by Coder (Claude21, GBAI) during implementation of PHASE_13_16_GB_FIX2_v1.0 proposal as consolidated in Claude20's review summary.** |
 | **3.4** | **2026-04-11** | **Phase 13.17.GB landed.**
 | **3.5** | **2026-04-18** | **Phase 13.19.GB-PERF landed.** V1/V2 recompute path routed through dense-lookup infrastructure (F1). `_build_bin_index_map` (205s) replaced by `_assign_bin_ids_fast`. `_get_neighbor_bins` V3a (152s) inlined into `_aggregate_window_dense`. `[FOUND-WHILE-IMPLEMENTING-F1]` `_fit_window_regression_numba` gains `fit_intercept` parameter — parameter-not-propagated class instance #8. V1/V2 boundary parameter silently dropped documented as Known Limitation (instance #9, pre-existing). Output row ordering changed to lexicographic (Behavior Changes section added). 14 T1 invariance tests in `test_fit_path_perf_invariance.py`. F2 (median batching) deferred. T2 re-profile pending. Coder: Claude22. Reviewers: Claude20 (Main), Claude21, Claude23, Claude24, Claude25. |
-| **4.0** | **2026-05-10** | **Phases 13.20–13.23a performance optimization sequence.** Pipeline wall time 1452s→722s (2×). Phase 13.20: numba-ize `_aggregate_window_dense` (CSR gather kernel). Phase 13.21: vectorize SW fit wrapper + prange gather + batch MAD (F1+F2+F3). Phase 13.22: CI roofline regression tests (K=2.9 baseline, 12-cycle proposal v1.12, 10/10 pass). Phase 13.23a: profile-driven easy wins (cProfile 61ms→45ms, -41% function calls). **New sections:** Performance Optimization (13.20–13.21), Roofline Performance Framework (13.22+13.23a profile decomposition). **Current State updated** to v4.0 column (575 tests, 0 broken, 10 roofline, K=2.9). Parameter-not-propagated instances #10 (calibration wrong-module) and #11 (pytest venv-path) documented in PHASE_HISTORY v7.0. Drafted by Claude22 at architect request 2026-05-10. |
+| **4.0** | **2026-05-10** | **Phases 13.20–13.23a performance optimization sequence.** Pipeline wall time 1452s→722s (2×). Phase 13.20: numba-ize `_aggregate_window_dense` (CSR gather kernel). Phase 13.21: vectorize SW fit wrapper + prange gather + batch MAD (F1+F2+F3). Phase 13.22: CI roofline regression tests (K=2.9 baseline, 12-cycle proposal v1.12, 10/10 pass). Phase 13.23a: profile-driven easy wins (cProfile 61ms→45ms, -41% function calls). **New sections:** Performance Optimization (13.20–13.21), Roofline Performance Framework (13.22+13.23a profile decomposition). **Current State updated** to v4.0 column (575 tests, 0 broken, 10 roofline, K=2.9). Parameter-not-propagated instances #10 (calibration wrong-module) and #11 (pytest venv-path) documented in PHASE_HISTORY v7.1. Drafted by Claude22 at architect request 2026-05-10. |
+| **4.1** | **Jul 4, 2026** | **Phase 13.23c.GB-Audit: baseline addendum (595P/2F/19S at `159ba256`; flapper reclassification, stable failures 3→2); `median_columns` documented as implemented (suffixed contract, collision guard, selection semantics); Known Limitations rewritten (#9 warns + metadata truth, NEW #14 kernel pending, C4 evaluator intercept, v3 docstring inverse error, flapper pair); NEW sections: Motivation, Output Column Naming Contract (frozen), Environment, C++ status pointer. Drafted by Fable5_2GBAI, 2026-07-04.** |
