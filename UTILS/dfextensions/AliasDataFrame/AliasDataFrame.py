@@ -10828,6 +10828,115 @@ function collapseDepth(maxD) {{
         matching_cols = self.select_data(pattern=pattern, only_physical=True)
         dtype_map = {col: target_dtype for col in matching_cols}
         self.convert_dtypes(dtype_map)
+    def describe_lazy(self, max_items=40, show_available=True, show_loaded=True,
+                      show_subframes=True, as_dict=False):
+        """
+        PHASE_13_71_ADF: user-facing diagnostic for lazy AliasDataFrame state.
+
+        Reports the main lazy reader's available/loaded branches, the DataFrame
+        columns, and per-lazy-subframe reader state, WITHOUT loading any branch,
+        materializing any alias/subframe, or mutating reader state (diagnostic-only).
+
+        Parameters
+        ----------
+        max_items : int, default=40
+            Max names printed per category; extras summarized as "... (+N more)".
+        show_available, show_loaded, show_subframes : bool
+            Toggle individual report sections.
+        as_dict : bool, default=False
+            If True, return a structured dict instead of printing (describe_* family
+            convention). The dict is the same state assembled for the printed report.
+
+        Returns
+        -------
+        dict or None
+            Structured lazy-state dict if as_dict=True, else prints and returns None.
+        """
+        reader = getattr(self, "_lazy_reader", None)
+        sub_readers = getattr(self, "_subframe_readers", {}) or {}
+        lazy_cfg = getattr(self, "_subframe_lazy_config", {}) or {}
+        idx_map = getattr(self, "index_columns", {}) or {}
+        sub_loaded = getattr(self, "_subframe_loaded", {}) or {}
+
+        def _names(x):
+            # Diagnostic-only: read + sort for stable output; tolerate set/list/Index/None.
+            if x is None:
+                x = []
+            return sorted(str(n) for n in x)
+
+        info = {"lazy": (reader is not None) or bool(sub_readers),
+                "main": None, "subframes": {}}
+
+        if reader is not None:
+            avail = _names(getattr(reader, "available_branches", set()))
+            loaded = _names(getattr(reader, "loaded_branches", set()))
+            info["main"] = {
+                "entries": getattr(reader, "entries",
+                                   getattr(reader, "num_entries", None)),
+                "available": avail,
+                "loaded": loaded,
+                "df_columns": _names(self.df.columns),
+                "not_loaded": sorted(set(avail) - set(loaded)),
+            }
+
+        for name in sorted(sub_readers):
+            r = sub_readers[name]
+            avail = _names(getattr(r, "available_branches", set()))
+            loaded = _names(getattr(r, "loaded_branches", set()))
+            # Lazy subframe index keys live in _subframe_lazy_config; fall back to the
+            # registry's index_columns for already-loaded subframes.
+            idx = (lazy_cfg.get(name, {}) or {}).get("index_columns") or idx_map.get(name)
+            info["subframes"][name] = {
+                "available": avail,
+                "loaded": loaded,
+                "index_columns": list(idx) if idx else [],
+                "is_loaded": bool(sub_loaded.get(name, False)),
+            }
+
+        if as_dict:
+            return info
+
+        def _emit(label, names):
+            shown = names[:max_items]
+            print(f"  {label}:")
+            print("    " + (", ".join(shown) if shown else "(none)"))
+            extra = len(names) - len(shown)
+            if extra > 0:
+                print(f"    ... (+{extra} more)")
+
+        print("Lazy state:")
+        if not info["lazy"]:
+            print("  Not a lazy AliasDataFrame.")
+            return None
+
+        m = info["main"]
+        if m is not None:
+            if m["entries"] is not None:
+                print(f"  Entries: {m['entries']}")
+            print(f"  Available branches: {len(m['available'])}")
+            print(f"  Loaded branches: {len(m['loaded'])}")
+            print(f"  DataFrame columns: {len(m['df_columns'])}")
+            print("")
+            if show_loaded:
+                _emit("Loaded branches", m["loaded"])
+                _emit("DataFrame columns", m["df_columns"])
+            if show_available:
+                _emit("Available but not loaded", m["not_loaded"])
+        else:
+            print("  Main frame: eager (no lazy reader)")
+
+        if show_subframes and info["subframes"]:
+            print("")
+            print("  Lazy subframes:")
+            for name in sorted(info["subframes"]):
+                s = info["subframes"][name]
+                print(f"    {name}:")
+                print(f"      Available branches: {len(s['available'])}")
+                print(f"      Loaded branches: {len(s['loaded'])}")
+                if s["index_columns"]:
+                    print(f"      Index columns: {', '.join(s['index_columns'])}")
+        return None
+
     def describe_structure(self, verbosity=None, return_dict=False):
         """
         Print or return comprehensive structure summary of the AliasDataFrame.

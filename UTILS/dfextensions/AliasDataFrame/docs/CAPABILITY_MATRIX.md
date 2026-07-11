@@ -1,21 +1,21 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-07-06 12:47 UTC
+**Generated:** 2026-07-11 12:02 UTC
 **Phase:** PHASE_13_57_DF_END
-**Taxonomy:** 62 features (PHASE_13_11_B approved)
+**Taxonomy:** 63 features (PHASE_13_11_B approved)
 **Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)
 
 ## Summary
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 40 | 64% |
-| ☑️ Smoke-only | 17 | 27% |
-| 🧨 Broken | 4 | 6% |
+| ✅ Verified | 40 | 63% |
+| ☑️ Smoke-only | 17 | 26% |
+| 🧨 Broken | 5 | 7% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **62** | |
-| **Matched tests** | **1975** | |
-| **Invariance tests** | **342** | |
+| **Total features** | **63** | |
+| **Matched tests** | **1982** | |
+| **Invariance tests** | **343** | |
 
 **Unmatched tests:** 110 (not mapped to any feature)
 
@@ -69,6 +69,12 @@
 | ✅ | **FUNC.regression_metadata** — Regression metadata registration & update | 4 | 4 | 0 | 4 |
 | ✅ | **FUNC.evaluator_from_metadata** — Bridge: metadata → evaluator binding | 6 | 6 | 0 | 6 |
 | ✅ | **FUNC.regression_persistence** — Regression metadata schema roundtrip | 1 | 1 | 0 | 1 |
+
+## DIAGNOSTICS
+
+| Status | Feature | Tests | Pass | Fail | Inv |
+|--------|---------|------:|-----:|-----:|:---:|
+| ✅ | **DIAGNOSTICS.lazy_state** — User-facing lazy-state diagnostic (PHASE_13_71) — adf.describe_lazy() prints (or returns via as_dict) the main lazy reader's entries, available/loaded branches, DataFrame columns, and available-but-not-loaded set, plus a per-lazy-subframe block (available/loaded counts + index columns from _subframe_lazy_config); diagnostic-only with NO loading or materialization side effects; bounded output via max_items with a '... (+N more)' suffix; tolerant of LazyTreeReader/LazyChainReader attribute differences via getattr defaults; reports the subframe block even when the main frame is eager. Not scope this phase: loading/ensuring branches, HTML/JSON output, rich repr. | 7 | 7 | 0 | 1 |
 
 ## DRAWING
 
@@ -149,7 +155,7 @@
 |--------|---------|------:|-----:|-----:|:---:|
 | ✅ | **DISPATCH.adf_routing** — adf.draw/draw_figures route through DFDraw.draw() (auto pre-resolution, overlay strings, type aliases, 3-var profile promotion) | 28 | 28 | 0 | 28 |
 | ✅ | **DISPATCH.error_visibility** — Batch-surface error visibility (on_error='raise' defaults; A-10/E-3/E-4 guards; draw_fit_summary documented exception) | 15 | 15 | 0 | 15 |
-| ✅ | **DISPATCH.dict_dispatch** — Draw-path dict dispatch frame: draw()/draw_batch()/draw_figures() hand dfdraw only the needed columns (get_required_branches ∪ materialized alias names ∪ subframe index cols); structural column-count gate + peak-RSS + volume-invariance memory gates + dict≡full-frame equivalence (AC-1/1a/1b incl. subframe single+multi-level) + loud no-silent-full-frame fallback | 20 | 20 | 0 | 18 |
+| 🧨 | **DISPATCH.dict_dispatch** — Draw-path dict dispatch frame: draw()/draw_batch()/draw_figures() hand dfdraw only the needed columns (get_required_branches ∪ materialized alias names ∪ subframe index cols); structural column-count gate + peak-RSS + volume-invariance memory gates + dict≡full-frame equivalence (AC-1/1a/1b incl. subframe single+multi-level) + loud no-silent-full-frame fallback | 20 | 19 | 1 | 18 |
 
 ## 🧨 Broken Features — Details
 
@@ -158,8 +164,8 @@
 - ❌ `test_K2_vector_draw_end_to_end.py::TestK2VectorDrawEndToEnd::test_K2_3_production_reproducer_mirror`
 
 ### COMP.roundtrip
-- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
 - ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
+- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
 
 ### BACK.invariance
 - ❌ `test_invariance_backend.py::TestInvarianceBackend::test_I2_6_chained_subframe_expressions_numba_vs_numpy`
@@ -168,6 +174,9 @@
 - ❌ `test_AliasDataFrameRDF.py::TestTMemFileBranch::test_missing_keys_in_friend`
 - ❌ `test_AliasDataFrameRDF.py::TestRDataFrameFriendAccess::test_composite_index_friend`
 - ❌ `test_AliasDataFrameRDF.py::TestAddDefinesCollision::test_collision_from_friend_tree`
+
+### DISPATCH.dict_dispatch
+- ❌ `test_phase1361_dict.py::test_peak_rss_dict_below_full_frame`
 
 ## Unmatched Tests
 
