@@ -1,6 +1,6 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-07-11 12:02 UTC
+**Generated:** 2026-07-12 06:44 UTC
 **Phase:** PHASE_13_57_DF_END
 **Taxonomy:** 63 features (PHASE_13_11_B approved)
 **Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)
@@ -9,15 +9,15 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 40 | 63% |
+| ✅ Verified | 41 | 65% |
 | ☑️ Smoke-only | 17 | 26% |
-| 🧨 Broken | 5 | 7% |
+| 🧨 Broken | 4 | 6% |
 | 📋 Planned | 1 | 1% |
 | **Total features** | **63** | |
 | **Matched tests** | **1982** | |
 | **Invariance tests** | **343** | |
 
-**Unmatched tests:** 110 (not mapped to any feature)
+**Unmatched tests:** 122 (not mapped to any feature)
 
 ## CORE
 
@@ -155,7 +155,7 @@
 |--------|---------|------:|-----:|-----:|:---:|
 | ✅ | **DISPATCH.adf_routing** — adf.draw/draw_figures route through DFDraw.draw() (auto pre-resolution, overlay strings, type aliases, 3-var profile promotion) | 28 | 28 | 0 | 28 |
 | ✅ | **DISPATCH.error_visibility** — Batch-surface error visibility (on_error='raise' defaults; A-10/E-3/E-4 guards; draw_fit_summary documented exception) | 15 | 15 | 0 | 15 |
-| 🧨 | **DISPATCH.dict_dispatch** — Draw-path dict dispatch frame: draw()/draw_batch()/draw_figures() hand dfdraw only the needed columns (get_required_branches ∪ materialized alias names ∪ subframe index cols); structural column-count gate + peak-RSS + volume-invariance memory gates + dict≡full-frame equivalence (AC-1/1a/1b incl. subframe single+multi-level) + loud no-silent-full-frame fallback | 20 | 19 | 1 | 18 |
+| ✅ | **DISPATCH.dict_dispatch** — Draw-path dict dispatch frame: draw()/draw_batch()/draw_figures() hand dfdraw only the needed columns (get_required_branches ∪ materialized alias names ∪ subframe index cols); structural column-count gate + peak-RSS + volume-invariance memory gates + dict≡full-frame equivalence (AC-1/1a/1b incl. subframe single+multi-level) + loud no-silent-full-frame fallback | 20 | 20 | 0 | 18 |
 
 ## 🧨 Broken Features — Details
 
@@ -164,23 +164,20 @@
 - ❌ `test_K2_vector_draw_end_to_end.py::TestK2VectorDrawEndToEnd::test_K2_3_production_reproducer_mirror`
 
 ### COMP.roundtrip
-- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
 - ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip`
+- ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
 
 ### BACK.invariance
 - ❌ `test_invariance_backend.py::TestInvarianceBackend::test_I2_6_chained_subframe_expressions_numba_vs_numpy`
 
 ### RDF.export
-- ❌ `test_AliasDataFrameRDF.py::TestTMemFileBranch::test_missing_keys_in_friend`
-- ❌ `test_AliasDataFrameRDF.py::TestRDataFrameFriendAccess::test_composite_index_friend`
 - ❌ `test_AliasDataFrameRDF.py::TestAddDefinesCollision::test_collision_from_friend_tree`
-
-### DISPATCH.dict_dispatch
-- ❌ `test_phase1361_dict.py::test_peak_rss_dict_below_full_frame`
+- ❌ `test_AliasDataFrameRDF.py::TestRDataFrameFriendAccess::test_composite_index_friend`
+- ❌ `test_AliasDataFrameRDF.py::TestTMemFileBranch::test_missing_keys_in_friend`
 
 ## Unmatched Tests
 
-110 tests not mapped to any feature.
+122 tests not mapped to any feature.
 
 - `test_B1_validate_aliases_false_positives.py::TestB1ValidateAliasesFalsePositives::test_B1_1_np_pi_not_broken`
 - `test_B1_validate_aliases_false_positives.py::TestB1ValidateAliasesFalsePositives::test_B1_2_subframe_column_not_broken`
@@ -212,7 +209,7 @@
 - `test_D1_dtype_overrides.py::TestDtypeOverrides::test_D9_entry_range_with_overrides`
 - `test_D1_dtype_overrides.py::TestSkipBranches::test_D11_skip_branch_not_in_dataframe`
 - `test_D1_dtype_overrides.py::TestSkipBranches::test_D12_skip_reduces_column_count`
-- ... +80 more
+- ... +92 more
 
 ---
 *Generated from pytest JSON + feature_taxonomy.py (v2 taxonomy-based).*
