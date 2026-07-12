@@ -148,8 +148,14 @@ def test_T9_eager_lazy_chain_parity(tmp_path):
     assert np.allclose(outs[0], outs[2][:N])        # eager == chain (first file)
 
 
-# ---- T-10: flagship end-to-end - one call == the hand-written aliases, bit-identically ----
+# ---- T-10: flagship end-to-end - one call == the hand-written aliases (numerically) ----
 def test_T10_flagship_matches_handwritten():
+    """The one-call source-scoped binding reproduces the hand-written qualified aliases.
+
+    SCOPE (panel GPT18, 2026-07-12): this asserts NUMERICAL equality (np.allclose) on a
+    SYNTHETIC representative frame — not bitwise equality, and not apass1 production data.
+    Validation against real apass1 data belongs in a usage transcript, not this unit test.
+    """
     p = _parent()
     coeffs = {"dcar_intercept": [0.5, 1.5, 2.5], "dcar_slope_qpt": [2., 3., 4.],
               "dcar_slope_tgl": [1., 1., 1.]}
@@ -161,7 +167,7 @@ def test_T10_flagship_matches_handwritten():
                 "DCABiasFitP2.dcar_intercept + DCABiasFitP2.dcar_slope_qpt*qpt "
                 "+ DCABiasFitP2.dcar_slope_tgl*tgl")
     p.materialize_aliases(names=["dcar_fit", "dcar_fit_manual"])
-    assert np.allclose(p.df["dcar_fit"].values, p.df["dcar_fit_manual"].values)  # bit-identical
+    assert np.allclose(p.df["dcar_fit"].values, p.df["dcar_fit_manual"].values)  # numerically equal
 
 
 # ---- T-11 [X-6]: source= composes with a 13.70 vector (group) alias ----
