@@ -207,6 +207,12 @@ FEATURES = [
      "test_patterns": [
          "test_register_evaluator.py",
      ]},
+    {"id": "ALIAS.source_scoped",
+     "name": "Source-scoped alias resolution (PHASE_13_73) — add_alias/add_aliases with source=<subframe> bind BARE fit formulas (e.g. GB meta['formulas']) to a registered subframe by rewriting bare names to Subframe.name. Resolution is AST-based (names are tokens, not text), so the substring-collision class fixed in 13.72 is structurally impossible. Per-name order: Attribute/Call-func untouched; source index_columns exempt (R1a); present in BOTH source and parent -> loud shadow refusal (R1); in source -> qualify; in parent-universe -> leave bare; otherwise -> refuse at registration (R2). The parent-universe includes lazy available-but-unloaded branches, struct members and registered functions (F-1), so binding works on a lazy frame before any branch is loaded. add_aliases is ATOMIC (all-or-nothing). The rewritten alias stays user-readable and source-qualified; the existing subframe-join path performs the join (no second evaluation route). source=None is bit-identical to pre-13.73. Composes with 13.70 vector aliases.",
+     "category": "ALIAS",
+     "test_patterns": [
+         "test_phase_13_73_source_scoped_alias.py",
+     ]},
     {"id": "DIAGNOSTICS.lazy_state",
      "name": "User-facing lazy-state diagnostic (PHASE_13_71) — adf.describe_lazy() prints (or returns via as_dict) the main lazy reader's entries, available/loaded branches, DataFrame columns, and available-but-not-loaded set, plus a per-lazy-subframe block (available/loaded counts + index columns from _subframe_lazy_config); diagnostic-only with NO loading or materialization side effects; bounded output via max_items with a '... (+N more)' suffix; tolerant of LazyTreeReader/LazyChainReader attribute differences via getattr defaults; reports the subframe block even when the main frame is eager. Not scope this phase: loading/ensuring branches, HTML/JSON output, rich repr.",
      "category": "DIAGNOSTICS",

@@ -3900,7 +3900,152 @@ class AliasDataFrame:
     #
     # =========================================================================
 
-    def add_alias(self, name, expression, dtype=None, is_constant=False, fill_value=None):
+    # ================= PHASE_13_73_ADF: source-scoped alias resolution =================
+    def _ss_parent_universe(self):
+        """PHASE_13_73_ADF (F-1): every name a bare token may legitimately resolve to on the
+        PARENT side. Critically includes lazy available-but-unloaded branches — on a lazy ADF a
+        referenced variable (e.g. qpt_ITSTPC) is typically NOT yet in df.columns, and treating
+        that as 'unresolvable' would raise on the flagship fit-binding workflow."""
+        uni = set(map(str, self.df.columns))                      # 1. materialized columns
+        uni |= set(map(str, getattr(self, "aliases", {}) or {}))  # 2. defined aliases
+        reader = getattr(self, "_lazy_reader", None)              # 3. lazy available branches (F-1)
+        if reader is not None:
+            uni |= {str(b) for b in (getattr(reader, "available_branches", None) or [])}
+        structs = getattr(self, "_structs", None) or {}           # 4. struct member names
+        for sname, members in structs.items():
+            uni.add(str(sname))
+            try:
+                uni |= {str(m) for m in members}
+            except TypeError:
+                pass
+        uni |= set(map(str, getattr(self, "_registered_functions", None) or {}))  # 5. funcs
+        return uni
+
+    def _ss_source_columns(self, source):
+        """Columns/aliases of the source subframe, plus its parent-side index columns."""
+        reg = getattr(self, "_subframes", None)
+        entries = getattr(reg, "subframes", None) if reg is not None else None
+        if not entries or source not in entries:
+            raise ValueError(
+                f"add_alias(source={source!r}): no subframe named {source!r} is registered. "
+                f"Registered subframes: {sorted(entries) if entries else '(none)'}. "
+                f"Register it first with register_subframe()."
+            )
+        entry = entries[source]
+        child = entry["frame"]
+        cols = set(map(str, child.df.columns)) | set(map(str, getattr(child, "aliases", {}) or {}))
+        index_cols = set(map(str, entry.get("index") or []))      # parent-side join keys (R1a)
+        return cols, index_cols
+
+    def _ss_resolve(self, expression, source):
+        """PHASE_13_73_ADF: rewrite bare names in `expression` to `source.name` using an AST walk.
+
+        Names are TOKENS, not text, so the substring-collision class that PHASE_13_72 had to fix
+        with a guarded regex (stepZ14 inside stepZ14pt) is structurally impossible here.
+
+        Per-Name ordering (proposal Rev 1.1 section 3.1):
+          1. ast.Attribute (X.y)     -> already qualified, never touched
+          2. Call func name          -> never touched; its ARGUMENTS recurse
+          3. in source.index_columns -> R1a exemption [D1] -> leave bare (parent)
+          4. in BOTH source & parent -> R1 shadow -> raise
+          5. in source               -> rewrite to source.name
+          6. in parent-universe      -> leave bare
+          7. otherwise               -> R2 -> raise [D2]
+        """
+        import ast as _ast
+        src_cols, index_cols = self._ss_source_columns(source)
+        parent = self._ss_parent_universe()
+
+        try:
+            tree = _ast.parse(str(expression), mode="eval")
+        except SyntaxError as e:
+            raise ValueError(
+                f"add_alias(source={source!r}): cannot parse formula {expression!r}: {e}"
+            ) from e
+
+        # Names used as a call's function (abs, sqrt, registered evaluators) are never rewritten.
+        func_names = set()
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.Call) and isinstance(node.func, _ast.Name):
+                func_names.add(node.func.id)
+        # Names under an Attribute (X.y) are already qualified -> never rewritten.
+        attr_bases = set()
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.Attribute) and isinstance(node.value, _ast.Name):
+                attr_bases.add(node.value.id)
+
+        rewrites = {}
+        for node in _ast.walk(tree):
+            if not isinstance(node, _ast.Name):
+                continue
+            n = node.id
+            if n in func_names or n in attr_bases:
+                continue                                          # steps 1 & 2
+            if n in index_cols:
+                continue                                          # step 3: R1a [D1] -> parent
+            in_src, in_par = (n in src_cols), (n in parent)
+            if in_src and in_par:                                 # step 4: R1 shadow -> loud
+                raise ValueError(
+                    f"add_alias(source={source!r}): name {n!r} exists in BOTH the source subframe "
+                    f"{source!r} and the parent frame — refusing to guess. It is not one of "
+                    f"{source!r}'s index columns ({sorted(index_cols) or 'none'}), so this is a real "
+                    f"shadow. Disambiguate by writing the qualified form explicitly "
+                    f"('{source}.{n}' or the parent's '{n}') in the formula: {expression!r}"
+                )
+            if in_src:
+                rewrites[n] = f"{source}.{n}"                     # step 5
+                continue
+            if in_par:
+                continue                                          # step 6: leave bare
+            raise ValueError(                                     # step 7: R2 [D2]
+                f"add_alias(source={source!r}): name {n!r} is not found in the source subframe "
+                f"{source!r}, nor as a parent column, alias, lazy branch, struct member, or "
+                f"registered function. Check for a typo. Formula: {expression!r}"
+            )
+
+        if not rewrites:
+            return str(expression)
+        # Token-level rewrite: identifier-guarded, so no substring can be clipped.
+        import re as _re
+        pat = _re.compile(
+            r"(?<![\w.])(" + "|".join(_re.escape(k) for k in sorted(rewrites, key=len, reverse=True))
+            + r")(?![\w])"
+        )
+        return pat.sub(lambda m: rewrites[m.group(1)], str(expression))
+
+    def add_aliases(self, mapping, source=None, dtype=None, **kwargs):
+        """PHASE_13_73_ADF: define several aliases at once, optionally source-scoped.
+
+        `mapping` is {alias_name: formula} — e.g. a GB fit's meta["formulas"] passed straight
+        through. ATOMIC [X-7]: if ANY formula fails resolution (R1 shadow / R2 unknown name),
+        NOTHING is added — a half-applied fit binding is worse than none.
+
+        Example
+        -------
+        >>> adf.register_subframe("DCABiasFitP2", AliasDataFrame(dfCoeffs),
+        ...                       index_columns=meta["columns"]["gb_columns"])
+        >>> adf.add_aliases(meta["formulas"], source="DCABiasFitP2")
+        """
+        if not isinstance(mapping, dict):
+            raise TypeError(f"add_aliases(mapping=...) expects a dict {{name: formula}}, "
+                            f"got {type(mapping).__name__}")
+        # Pass 1 — resolve EVERYTHING first; raise before mutating any state (atomicity).
+        resolved = {}
+        for name, formula in mapping.items():
+            resolved[name] = (self._ss_resolve(formula, source) if source is not None
+                              else str(formula))
+        # Pass 2 — commit.
+        for name, expr in resolved.items():
+            self.add_alias(name, expr, dtype=dtype, **kwargs)
+        return list(resolved)
+
+    def add_alias(self, name, expression, dtype=None, is_constant=False, fill_value=None,
+                  source=None):
+        # PHASE_13_73_ADF: source-scoped resolution runs BEFORE dispatch, so it composes with
+        # both scalar and vector (13.70 group) aliases [X-6]. source=None is bit-identical to
+        # the pre-13.73 behaviour.
+        if source is not None:
+            expression = self._ss_resolve(expression, source)
         # PHASE_13_70_ADF D1: a LIST/TUPLE of names => a vector (group) alias — the
         # group expression is evaluated ONCE (D0 engine) and split into k sibling
         # scalar members. A single-name list is an ordinary alias.
