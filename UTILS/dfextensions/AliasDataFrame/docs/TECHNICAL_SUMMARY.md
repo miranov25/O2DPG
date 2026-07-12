@@ -1,10 +1,10 @@
 # AliasDataFrame Technical Summary
 
-**Document ID:** `AliasDataFrame_Technical_Summary_v13_56_ADF_v1_8.md`  
-**Author:** Claude36 (AliasDataFrame Coder, this revision); Claude37 (Main Reviewer, prior revisions)  
-**Date:** 2026-06-11  
-**Version:** 1.8  
-**Phase:** 13.56.ADF (post-audit graphics closure) — base for active queue  
+**Document ID:** `AliasDataFrame_Technical_Summary_v13_72_ADF_v2_0.md`  
+**Author:** Sonnet2 (AliasDataFrame Coder, this revision); Claude36/Claude37 (prior revisions)  
+**Date:** 2026-07-12  
+**Version:** 2.0  
+**Phase:** 13.72.ADF (bug-fix mini-phase) — current head of the ADF line  
 **Audience:** All teams — architecture reviewers, cross-team coders (ORecoAI, RootInteractive, RDataFrameDSL, GBAI), and direct users  
 **Purpose:** Complete public API reference, data model, hierarchical data representation, dependencies, limitations
 
@@ -44,6 +44,38 @@
 - NEW in §4.3: `dematerialize(drop=, keep=)` — memory reclamation with raw-column protection; replaces removed `drop_materialized()`
 - Updated §2 Join Contract: join index cache row (content-based validation, survives `materialize_aliases`, invalidated on `register_subframe`)
 - Updated §12.1: 1521 tests, 125 invariance
+
+---
+
+## What's New Since v1.8 (phases 13.62 → 13.72)
+
+v1.8 was pinned at phase 13.56 and predates the current API surface. New in this revision:
+
+| API | Phase | Section |
+|---|---|---|
+| **`adf.eval(expr)`** — alias-aware expression evaluation | 13.66 | §4.3a |
+| `add_alias([n1, n2], expr, dtype=[...])` — **vector (group) aliases** | 13.70 | §4.3b |
+| `register_model(...)` — **ML model store / ONNX inference** | 13.69 | §4.16 |
+| `describe_lazy(...)` — lazy-state diagnostic | 13.71 | §4.9a |
+| `release_branches()` / `release_struct()` | 13.68 | §4.6a |
+| `register_subframe(..., right_index_columns=[...])` — asymmetric join keys | 13.65 | §4.5a |
+| Struct/object store + dot grammar (`dedxTPC.dEdxTotIROC`) | 13.66 | §4.17 |
+| `read_chain_lazy(..., metadata_conflict=...)` — chain metadata recovery | 13.67 | §4.6b |
+
+> ### ⚠️ MIGRATION — `adf.df.eval()` → `adf.eval()`
+> Before 13.66 there was no `adf.eval()`, so code used **`adf.df.eval(expr)`** — which is **raw pandas
+> on the underlying frame**: it is *alias-blind*. If the expression references an alias that is not yet
+> materialized, it raises `UndefinedVariableError: name '<alias>' is not defined`.
+>
+> **`adf.eval(expr)` is alias-aware**: it autoloads the raw branches the expression needs (including the
+> raw inputs *behind* an alias), materializes the referenced aliases, then evaluates.
+>
+> ```python
+> mask = adf.df.eval(selection)   # ❌ pre-13.66; fails on any unmaterialized alias
+> mask = adf.eval(selection)      # ✅ resolves aliases + loads inputs itself
+> ```
+> Old code "worked" only where a `materialize_aliases(...)` call happened to precede it — a hidden
+> ordering dependency. Migrating removes it.
 
 ---
 
@@ -136,9 +168,11 @@ ROOT / Parquet Files
 
 | Metric | Value | Source |
 |--------|-------|--------|
-| Test suite | 1441 passed, 6 failed, 7 skipped | `pytest tests/` (2026-04-02) |
+| Test suite | 1970 passed, 8 failed, 1 error, 16 skipped | alma2 run `20260712_070749` (phase 13.72) |
+| Baseline failures | 8F + 1E — immutable, exact-matched at every phase close | See §11 Known Limitations |
+| Known intermittents | 2 (`test_parquet_roundtrip`, `test_peak_rss_dict_below_full_frame`) | Environmental, not correctness |
 | Runtime | ~27s (12 workers, ROOT enabled) | Same run |
-| Capability Matrix | 41 features (9 verified, 27 smoke, 4 broken, 1 planned) | Phase 13.11.B |
+| Capability Matrix | 63 features (39–41 verified, run-dependent) | Phase 13.72 |
 | Invariance tests | 64 | `@pytest.mark.invariance` markers |
 | Read speedup | 60–770× (threaded branch-by-branch vs original) | Phase 1 benchmark, commit `60d0e5d` |
 | Join speedup | 10.8× vs Phase 3 baseline | Phase 8c benchmark, commit `46d2320` |
@@ -516,6 +550,73 @@ class AliasDataFrame:
         """
 ```
 
+### 4.3a `adf.eval()` — Alias-Aware Expression Evaluation (Phase 13.66, DD-3)
+
+```python
+    def eval(self, expr):
+        """
+        Evaluate an expression WITH alias/struct/subframe awareness.
+
+        Unlike adf.df.eval() (raw pandas, alias-blind), this:
+          1. Autoloads raw branches the expression needs — including the raw inputs
+             *behind* any referenced alias (lazy frames).
+          2. Materializes referenced top-level aliases (they persist in adf.df).
+          3. Resolves struct members (dot grammar) and subframe-qualified refs.
+          4. Evaluates and returns a pd.Series aligned to adf.df.index.
+
+        Use this for any expression that may reference an alias.
+
+        Examples
+        --------
+        >>> adf.add_alias('isOK', '(ncl>40)&(abs(dcar)<0.03)', dtype='int8')
+        >>> mask = adf.eval('isOK')            # loads ncl, dcar; materializes isOK
+        >>> sel  = adf.eval('(pt>1)&(isOK)')   # composes raw + alias freely
+        >>> df   = adf.df[mask]                # Series aligns with adf.df.index
+        """
+```
+
+**Why it exists.** Pre-13.66 code called `adf.df.eval(...)`, which only sees *real columns*. An alias
+with `Mat: No` is not a column, so pandas raises `UndefinedVariableError`. Such code worked only when a
+`materialize_aliases()` call happened to precede it. `adf.eval()` removes that hidden ordering
+dependency. **Migrate `adf.df.eval` → `adf.eval` wherever the expression can reference an alias.**
+
+---
+
+### 4.3b Vector (Group) Aliases — One Expression, k Columns (Phase 13.70)
+
+```python
+    # Pass a LIST of names -> k member columns from ONE evaluation, evaluated ONCE.
+    adf.add_alias(["dY", "dZ"], "predict(x, y, sector)",
+                  dtype=["float32", "float32"])
+
+    # Accepted return shapes from the expression/function:
+    #   - k-tuple of 1-D arrays            (a, b)
+    #   - list of 1-D arrays               [a, b]
+    #   - a single (n, k) 2-D ndarray
+    # Refused LOUDLY: dict return, jagged arrays, arity mismatch vs len(names).
+    #
+    # A single-name list is just an ordinary alias:  add_alias(["x2"], "x*2")
+```
+
+**Semantics**
+- **Evaluate-once**: all sibling members are filled from ONE evaluation, cached on `len(df)`.
+- **Materialize any → materialize all**: touching one member computes the whole group.
+- **All-or-none lifecycle**: `dematerialize()` drops the whole group (loud warning) if any member is
+  dropped; `release_branches()` names the group and its siblings.
+- **Cache invalidation** fires on: a write to an input (`__setitem__` hook — tree *and* chain),
+  `release_branches()` of an input, and re-registration. *(The release leg was ML-only until 13.72's
+  predecessor fix — see 13.70 CF-3 in PHASE_HISTORY.)*
+- **Persistence**: group registry survives parquet `save`/`load` and ROOT `export_tree` →
+  `read_tree` / `read_tree_lazy` / `read_chain_lazy` (first-file canonical).
+- **Collisions** (name already an alias/column/struct/subframe) and **dtype-list length mismatches**
+  are refused at definition time.
+
+**Limitation.** A group whose expression calls a *user-registered function* persists its schema, but
+the function itself is not ROOT-serializable. Re-register the function before recovery, or define the
+group fresh on the reader. Pure-expression and ML-backed groups recover standalone.
+
+---
+
 ### 4.4 Schema Management
 
 ```python
@@ -606,6 +707,23 @@ class AliasDataFrame:
 >     Covered by: I1_5, I1_7 (skipped invariance tests)"""
 > ```
 
+### 4.5a Asymmetric Join Keys (Phase 13.65)
+
+```python
+    adf.register_subframe(name, child_adf,
+                          index_columns=[...],          # parent (left) join columns
+                          right_index_columns=[...])    # child  (right) join columns
+
+    # Mirrors pandas merge(left_on=..., right_on=...).
+    # Omitting right_index_columns is BYTE-IDENTICAL to the prior same-name behaviour.
+```
+
+Parent and child join columns may now differ in name. Name-aware across all three join paths
+(single-column numba; multi-column linearization; pandas-merge fallback). Validated at registration:
+length match, and the parent names must exist in the parent frame.
+
+---
+
 ### 4.6 Lazy Loading
 
 ```python
@@ -643,6 +761,46 @@ class AliasDataFrame:
         calls are only needed for batch pre-loading.
         """
 ```
+
+### 4.6a Explicit Release — `release_branches()` / `release_struct()` (Phase 13.68)
+
+```python
+    def release_branches(self, names) -> list:
+        """
+        Symmetric evict: drop the frame column AND un-book the physical branch on the
+        lazy reader, so a later access RE-READS from file. Purely additive; there is
+        NO automatic eviction. Returns the frame-column names actually released.
+        """
+    def release_struct(self, name): ...
+```
+
+**All-or-nothing loud refuse** — nothing is released if any name is invalid:
+
+| Refused | Why | Decision |
+|---|---|---|
+| eager frame | nothing to re-read from | DD-alpha |
+| an alias name | use `dematerialize()` instead | DD-gamma |
+| written / `__file_idx__` / unknown non-branch | not a file branch | DD-beta |
+| parent-side subframe join key | releasing it would silently break the join (NaN-fill) | DD-delta |
+
+Releasing an input of a vector group or an ML model **invalidates its evaluate-once cache**, so the
+next materialization recomputes against the reloaded data.
+
+---
+
+### 4.6b Chain Lazy Metadata Recovery (Phase 13.67)
+
+```python
+    adf = AliasDataFrame.read_chain_lazy(files, metadata_conflict='error')
+    #                                           'error' (default) | 'warn' | 'skip'
+```
+
+ROOT UserInfo metadata (aliases, dtypes, compression) is recovered from the **first file (canonical)**
+and **applied by DEFAULT** — UserInfo is authoritative production data written in the past, so applying
+it is the default read behaviour, not an opt-in. A cross-file metadata incompatibility raises by
+default; `metadata_conflict` selects the policy, and the error message states how to change it.
+
+---
 
 ### 4.7 Data Access (Proxy Pattern)
 
@@ -773,6 +931,30 @@ class AliasDataFrame:
                       is_subframe_ref=None) -> list:
         """Filter schema entries by criteria. Returns list of column names."""
 ```
+
+### 4.9a `describe_lazy()` — Lazy-State Diagnostic (Phase 13.71)
+
+```python
+    def describe_lazy(self, max_items=40, show_available=True, show_loaded=True,
+                      show_subframes=True, as_dict=False):
+        """
+        Report lazy state WITHOUT loading anything (diagnostic-only: no branch load,
+        no alias/subframe materialization, no reader mutation).
+
+        Reports: entries; available / loaded branch counts and names; DataFrame columns;
+        available-but-not-loaded; and one block per lazy subframe (available/loaded
+        counts + index columns).
+
+        as_dict=True returns {'lazy': bool, 'main': {...}, 'subframes': {...}}
+        instead of printing. Output is sorted and bounded by max_items ("... (+N more)").
+        """
+```
+
+Replaces reaching into private fields (`_lazy_reader`, `available_branches`, `loaded_branches`,
+`_subframe_readers`). Works for both `LazyTreeReader` and `LazyChainReader`, and reports the
+lazy-subframe block even when the main frame is **eager**.
+
+---
 
 ### 4.10 Dtype Management
 
@@ -1068,6 +1250,74 @@ class AliasDataFrame:
         >>> adf.add_alias('dy_I1', 'dy - corr(xM, driftM)')
         """
 ```
+
+---
+
+### 4.16 ML Model Store & Inference (Phase 13.69)
+
+```python
+    def register_model(self, name, file, format="auto", inputs=None, outputs=None,
+                       version=None, overwrite=False, model=None, persist="embed"):
+        """
+        Register AND alias an ML model in one call. The prediction is a
+        function-backed LAZY ALIAS reusing the register_evaluator machinery —
+        no new parser or dispatch code, so it inherits every draw slot.
+
+        format='auto' byte-sniffs: ROOT -> JSON (native xgboost) -> ONNX.
+        ONNX is the canonical format (evaluated via onnxruntime).
+        Inputs are column-stacked in feature order into ONE float32 tensor.
+
+        persist='embed'    -> model blob embedded in the ROOT file (default)
+        persist='external' -> descriptor only; path stored RELATIVE to the data file,
+                              MD5-verified on recovery (both-moved recovers;
+                              data-moved-alone REFUSES).
+        """
+```
+
+**Multi-output** = sibling aliases sharing **one** evaluation, cached on `len(df)` and invalidated by
+the `__setitem__` write hook (tree *and* chain), release, and re-registration. *(13.70 generalized this
+private cache into the function-generic group engine that also serves vector aliases.)*
+
+**Per-row vector output (a single tensor of width K>1) is REFUSED loudly** — it is scalar-incompatible
+with ADF aliases. The declared ONNX shape is **unreliable** (skl2onnx declares `[N,1]` yet runs
+`[N,2]`), so the width is detected by a **1-row probe inference at registration**, with an eval-time
+backstop. For genuine multi-output, use a vector alias (§4.3b).
+
+```python
+    # Typical use
+    adf.register_model('pred', 'model.onnx', inputs=['x', 'y', 'sector'])   # file= is positional #2
+    adf.eval('pred')                      # lazy: predicts on demand
+    adf.draw('pred:x', weights='pred')    # inherits all draw slots
+```
+
+> **Gotcha (13.69 G-1).** On an **eager** frame, `draw()` only materializes referenced aliases in its
+> *lazy* branch, so a function-backed alias (an ML prediction, or any lazy alias) is **not** materialized
+> before dfdraw evaluates it → `KeyError`. Use `draw(..., lazy=True)` (safe on eager frames — the
+> lazy-reader block is guarded) or `adf.eval('pred')` first. This is standard lazy-alias behaviour, not
+> an ML defect.
+
+---
+
+### 4.17 Struct / Object Store — 1:1 Dot Grammar (Phase 13.66)
+
+```python
+    # ROOT struct members are addressed with DOT grammar:
+    adf.eval('dedxTPC.dEdxTotIROC')
+    adf.add_alias('ratio', 'dedxTPC.dEdxTotIROC / dedxTPC.dEdxTotOROC')
+    adf.draw('dedxTPC.dEdxTotIROC:tgl')          # usable in every draw slot
+```
+
+1:1 struct/object branch support with a **three-name mapping**: physical (`parent/member`), internal
+(`member__struct`), and logical (`parent.member`, the user-facing dot form). Struct columns are
+auto-detected; members are reference-driven (loaded when referenced). Draw-slot coverage is symmetric
+across all 8 slots — including `color`, `facet_by`, and `weights`.
+
+`release_struct(name)` (§4.6a) releases a struct's members.
+
+> **Implementation note.** Struct-reference rewriting uses an **identifier-guarded** `re.sub`
+> (lookbehind/lookahead on word boundaries). This is the pattern 13.72 later adopted for the
+> subframe-join path, after a boundary-blind `str.replace` there caused silent wrong values when one
+> column name was a strict prefix of another (`stepZ14` inside `stepZ14pt`).
 
 ---
 
