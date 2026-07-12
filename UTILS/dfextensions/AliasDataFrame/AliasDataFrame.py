@@ -1422,7 +1422,10 @@ class AliasDataFrame:
             try:
                 return result.astype(target_dtype)
             except AttributeError:
-                return target_dtype(result)
+                # PHASE_13_72_ADF (Bug B): a scalar result has no .astype; `target` is the
+                # already-computed np.dtype, so call its numpy scalar-type constructor.
+                # (The old `target_dtype(result)` crashed when target_dtype was a string.)
+                return target.type(result)
         
         # Integer or bool — NaN must be filled before casting
         try:
@@ -1445,7 +1448,9 @@ class AliasDataFrame:
         try:
             return arr.astype(target_dtype)
         except (AttributeError, TypeError):
-            return target_dtype(arr)
+            # PHASE_13_72_ADF (Bug B, defense-in-depth): mirror the float-branch fix so a
+            # string target_dtype never reaches a non-callable `target_dtype(arr)` here.
+            return target.type(arr)
 
     @property
     def constant_aliases(self):
@@ -1920,10 +1925,11 @@ class AliasDataFrame:
         # Step 2 — resolve referenced top-level aliases (persist), per get_alias_series.
         for tok in self._referenced_alias_tokens(expr):
             if tok not in self.df.columns:
-                try:
-                    self.materialize_alias(tok)
-                except Exception:
-                    pass
+                # PHASE_13_72_ADF (Bug B, X-2): no bare `except Exception: pass` here.
+                # _referenced_alias_tokens returns only real aliases, so a failure is a
+                # genuine internal error — surface it at its true site with its true type,
+                # rather than swallowing it into a misleading downstream NameError.
+                self.materialize_alias(tok)
         # Step 3 — evaluate; _eval_in_namespace is the single rewrite owner.
         result = self._eval_in_namespace(expr)
         # Step 4 — normalize to a Series aligned with self.df.index (inline).
@@ -3689,7 +3695,11 @@ class AliasDataFrame:
         """
         # Phase 13.23.ADF: capture full dotted chains (was: 2-segment regex)
         chain_tokens = re.findall(r'\b(\w+(?:\.\w+)+)\b', expr)
-        
+        # PHASE_13_72_ADF (Bug A, belt): process longest chains first so a shorter chain
+        # that is a strict prefix of a longer one cannot mangle it. Dedup is safe — re.sub
+        # below replaces all occurrences of each token in one pass.
+        chain_tokens = sorted(set(chain_tokens), key=len, reverse=True)
+
         for chain_token in chain_tokens:
             segments = chain_token.split('.')
             
@@ -3762,14 +3772,20 @@ class AliasDataFrame:
                 )
             
             # ── Rewrite the expression ──
+            # PHASE_13_72_ADF (Bug A): identifier-guarded substitution (mirrors
+            # _prepare_struct_refs). The old boundary-blind str.replace() mangled a prefix
+            # that was a strict substring of another token (e.g. 'Sub.stepZ14' inside
+            # 'Sub.stepZ14pt'). Lookbehind (?<![\w.]) / lookahead (?![\w]) confine the match
+            # to a whole dotted identifier. Replacement passed as a function so column names
+            # containing regex-special chars are treated literally.
             original_prefix = '.'.join(segments[:leaf_idx + 1])
             if method_suffix:
-                expr = expr.replace(
-                    f'{original_prefix}.{method_suffix}',
-                    f'{current_col}.{method_suffix}',
-                )
+                _pat = r'(?<![\w.])' + re.escape(f'{original_prefix}.{method_suffix}') + r'(?![\w])'
+                _rep = f'{current_col}.{method_suffix}'
             else:
-                expr = expr.replace(original_prefix, current_col)
+                _pat = r'(?<![\w.])' + re.escape(original_prefix) + r'(?![\w])'
+                _rep = current_col
+            expr = re.sub(_pat, lambda _m, _r=_rep: _r, expr)
         
         return expr
 
