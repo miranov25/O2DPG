@@ -1,7 +1,7 @@
 # AliasDataFrame Phase History
 
 > **Purpose**: Development history for architecture reviews and restart prompts.  
-> **Last Updated**: 2026-06-16  
+> **Last Updated**: 2026-07-12  
 > **Maintained By**: Marian Ivanov (miranov25)
 
 ## How to Use This File
@@ -685,6 +685,383 @@ New helper `_top_level_colon_count(expr)` — bracket-aware top-level colon coun
 **Panel**: CRR rev 1.1 [!] APPROVED (9 reviewers; C-1 AD-registry overwrite found by all 9, fixed by architect, fable5_5 closure review [X]→[OK]; C-3 CM header verified 49). Governance recommendation adopted for next Org revision: `governance_checks` registry-scope gate (per-team AD registries contain only own-scoped IDs, e.g. `AD-N/.*\.ADF`).
 
 **Follow-up**: TECHNICAL_SUMMARY v1.8 (graphics rewrite from audit cleared rows) committed 2026-06-11 after [!] panel (8 reviewers). Next ADF audit: lazy evaluation (FormularV3). dfdraw track: PRINCIPLES v1.1 + grammar package sent for ratification 2026-06-11.
+
+### Phase 13.72.ADF: Bug-Fix Mini-Phase — Subframe Prefix Collision (P0) + Scalar/String dtype Cast
+**Dates**: 2026-07-12
+**Commits**: `d2c69588` (fix), `dc23a135` (capability matrix); BEGIN `f93cd330`; branch `feature/groupby-optimization`
+**Proposal**: `PHASE_13_72_ADF_BugFix_Proposal_Rev1_1_Fable5_2ADF.md` (Fable5_2, drafter — recused; panel 9/9 [OK])
+**Code Review Request**: `PHASE_13_72_ADF_CRR.md`
+**Bugs**: `BUG_AliasDataFrame_20260706_subframe_prefix_collision`, `BUG_AliasDataFrame_20260706_scalar_string_dtype_cast` (reports held in the architect's private location, not the repo)
+**Coder**: Sonnet2 · **Main Reviewer**: Sonnet23 · **Panel**: 8 seats — [!] → [OK] on the CRR text correction
+
+Two production defects reported by the GB team. No new feature, no API change, no new capability row.
+
+**Bug A — subframe-column prefix collision (P0: silent wrong values).** An alias referencing two
+subframe columns where one name is a strict prefix of the other (`S.stepZ14` and `S.stepZ14pt` in one
+expression) produced a mangled identifier. Where the mangled name resolved to an existing column, the
+fit expression returned **silently wrong numbers with no error** — hence P0.
+*Root cause*: `_prepare_subframe_joins` rewrote references with a boundary-blind
+`expr.replace(original_prefix, current_col)`; `str.replace` matches substrings, so replacing
+`S.stepZ14` also hit the `S.stepZ14` inside `S.stepZ14pt`. Order-sensitivity aggravated but was not the
+primary cause.
+*Fix*: identifier-guarded substitution mirroring the `_prepare_struct_refs` precedent —
+`re.sub(r'(?<![\w.])' + re.escape(prefix) + r'(?![\w])', ...)` — plus longest-prefix-first ordering
+(`sorted(set(chain_tokens), key=len, reverse=True)`) as belt. Replacement passed as a function so
+regex-special characters in column names stay literal.
+
+**Bug B — scalar/string dtype cast crash, masked by an error swallow.**
+`add_alias(n, "1.0", dtype="float16")` (a zero-dependency constant alias) silently failed to
+materialize; through `eval()` the user saw a misleading `NameError`.
+*Root cause (two linked defects)*: (B1) `_safe_dtype_cast`'s float/complex branch fell back on
+`AttributeError` (a scalar has no `.astype`) to calling the **raw dtype argument** —
+`target_dtype(result)` → `TypeError: 'str' object is not callable`. (B2) `eval()` Step 2 wrapped
+`materialize_alias` in a bare `except Exception: pass`, which ate B1's `TypeError`; the alias never
+materialized, so Step 3 failed with a `NameError` on the same token — **the misdirection is itself a
+bug**.
+*Fix*: B1 → `return target.type(result)` (reuse the already-computed `np.dtype`); the int/bool branch's
+identical fallback hardened the same way as defense-in-depth (tested: not independently reachable — that
+branch pre-wraps in `np.asarray`). B2 → bare swallow **removed** (architect token X-2 = REMOVE/loud);
+`_referenced_alias_tokens` returns only real aliases, so a failure there is a genuine internal error and
+must surface at its true site with its true type.
+
+**Architect tokens (ratified)**: X-0 = phase 13.72 · X-1 = Bug A treated as P0 · X-2 = swallow REMOVED (loud, not warn).
+
+**Tests**: `tests/test_phase_13_72_bugfix.py` — 9 functions / 12 items. T-A1 (repro), **T-A2 [P0 pin]**
+(poison parent columns + asymmetric magnitudes → numerically correct joined values), T-A3 [Inv]
+(order-insensitivity), T-A4 (negative control), T-A5 (two simultaneous prefix pairs — the production
+shape), T-B1 (4-way dtype matrix: `str` / `np.dtype` / `np.type` / `None`, asserting value **and** exact
+column dtype against an independent reference), T-B2 (true error type surfaces), T-B3 [Inv]
+(eager/lazy/chain parity), T-REG (plain join unchanged). **FM#12 proven**: reverting the fix makes
+T-A1/T-A2/T-A5 fail; Bug B raises `TypeError` pre-fix.
+
+**Closing runs**: `20260712_070749` — **1970 P / 8 F / 1 E** (immutable baseline exactly, no flake
+fired); `20260712_084920` — **1968 P / 10 F / 1 E** (baseline + **both** known intermittents firing).
+13.72 tests **12/12** in both. Zero new deterministic failures. `SUB.join` 70/70/0 Inv=22 in `070749`;
+69/70 with 1 broken in `084920` — the 1 broken is the registered `test_parquet_roundtrip` flake landing
+in that row, **not** a Bug-A regression (same code, same row, green when the flake didn't fire).
+
+**Lessons learned**:
+- **A boundary-blind `str.replace` on identifiers is a latent silent-corruption bug.** The guarded-`re.sub`
+  pattern already existed in `_prepare_struct_refs`; the join path never adopted it. When one code path
+  hardens a rewrite, audit every sibling path that does the same class of rewrite.
+- **A bare `except Exception: pass` converts a precise error into a misleading one.** B2 cost more
+  diagnostic time than B1. Swallows around a call that can only fail for internal reasons should not exist.
+- **Two known intermittents (`test_parquet_roundtrip`, `test_peak_rss_dict_below_full_frame`) rotated
+  through the "extra failure" slot across four runs**, costing a false-alarm adjudication in every CRR
+  and, in the final round, **8 reviewers independently re-deriving the same non-finding**. Follow-up
+  agreed: a `KNOWN_INTERMITTENT` registry the matrix generator reads, so a registered flake cannot flip a
+  feature row's status. **Not** blanket-`xfail` (which would hide real regressions in those tests).
+
+**Open at close**: **G-1 provenance** — run `git log -S 'except Exception' -- AliasDataFrame.py` to
+adjudicate whether the eval swallow is (a) a 13.66-CRR-required removal that never fully landed,
+(b) re-introduced, or (c) a distinct site. The fix is identical in all three worlds; this only decides
+whether Bug B's report carries a process finding. *[OPEN — architect]*
+
+---
+
+### Phase 13.71.ADF: `describe_lazy()` — User-Facing Lazy-State Diagnostic
+**Dates**: 2026-07-10 to 2026-07-11
+**Commit**: `f93cd330` (close); BEGIN `96be9ebc`; branch `feature/groupby-optimization`
+**Proposal**: Rev 1 (GPT14, drafter) → **Rev 2** (Sonnet2, folding the review notes)
+**Code Review Request**: `PHASE_13_71_ADF_CRR.md`
+**Coder**: Sonnet2 · **Main Reviewer**: Sonnet23 · **Panel**: 9 seats — [!] → [OK]
+
+Architect intent (verbatim, GP-3): *"do nto we have user friendly describe for that?"* / *"Plase make a
+samll PHASE. It is trivial and needed"*. Users had no public way to inspect lazy state and were reaching
+into private fields (`_lazy_reader`, `available_branches`, `loaded_branches`, `_subframe_readers`).
+
+**New API**: `adf.describe_lazy(max_items=40, show_available=True, show_loaded=True,
+show_subframes=True, as_dict=False)` — reports the main reader's entries, available/loaded branches,
+DataFrame columns, and available-but-not-loaded set, plus a per-lazy-subframe block (available/loaded
+counts + index columns). Prints by default; returns a structured dict via `as_dict=True` (the
+`describe_*` family convention — the Rev-1 "future `lazy_state()`" was delivered now instead).
+
+**Design points**: diagnostic-only — **no** branch load, alias/subframe materialization, or reader
+mutation (T-LAZYDESC-3, invariance marker). `getattr` defaults are empty sets so `len()`/`sorted()`
+tolerate reader differences (`LazyChainReader` exposes these via properties). Lazy-subframe **index
+columns are read from `_subframe_lazy_config`** — not `self.index_columns`, which is empty for a
+not-yet-loaded subframe (Rev 1 named the wrong source; T-LAZYDESC-5 exposed it during implementation).
+The lazy-subframe block prints even when the main frame is **eager** (Rev 1 would have mislabelled such
+a frame "Not a lazy AliasDataFrame").
+
+**Tests**: `tests/test_phase_13_71_describe_lazy.py` — 7 (eager report, main-reader report, no
+side-effects [Inv], `max_items` truncation, lazy-subframe block, chain-reader tolerance, `as_dict` form).
+Taxonomy 62→63 (`DIAGNOSTICS.lazy_state`); count-lock bumped.
+
+**Closing run** (`20260711_140138`, on the delivered code): **1957 P / 9 F / 1 E**. All 7 LAZYDESC
+**PASSED**; matrix `DIAGNOSTICS.lazy_state` ✅ Verified 7/7/0 Inv=1; Verified total 39→40. The 9th
+failure was `test_peak_rss_dict_below_full_frame` (peak-RSS threshold missed by ~1.5%: 197108 KB vs
+>200 MB) — an intermittent, **not** a regression (it passed in the immediately prior run of the same
+code, and `describe_lazy` is read-only with no path to a memory benchmark).
+
+**Lessons learned**:
+- **`+109 / −0`**: a purely additive method is the safest possible change shape. No existing line removed
+  ⇒ Rule-14 minus-line audit is trivially satisfied.
+- **The CRR's flaky-failure sentence was carried forward from the previous phase instead of re-derived
+  from the attached log** — it named `test_parquet_roundtrip` when the log showed `peak_rss`. **All 5
+  reviewers who re-checked the log caught it; all 4 who accepted the sentence did not.** This was the
+  **third** such instance in a row. Corrective discipline adopted (CRR §8): the non-baseline failure list
+  must be re-derived by grepping `^FAILED`/`^ERROR` in the *attached* log every CRR, and the header's
+  cited bundle id must equal the bundle the numbers came from.
+- **Phase-tag ordering**: `phase_begin` must be cut **before** the commit. An out-of-order attempt in this
+  phase produced an empty range and required tag re-cutting. BEGIN → commit → END, always.
+
+---
+
+### Phase 13.70.ADF: Vector (Group) Aliases & Multi-Output Prediction
+**Dates**: 2026-07-06
+**Commits**: 7, `ba981004` → `92e3683c`, plus the CF-3 rider `1c4066b5` (END re-cut onto it); BEGIN `9186387e`
+**Proposal**: `PHASE_13_70_ADF_VectorAlias_Proposal_Rev2_2_FINAL_Fable5_2ADF.md`
+**Code Review Request**: `PHASE_13_70_ADF_CRR.md` (Rev 2)
+**Coder**: Opus48_1ADF · **Main Reviewer**: Sonnet23 · **Panel**: 7 seats — [!] → [OK] after CF-3
+
+One `add_alias` call producing **several** columns from **one** evaluation:
+`adf.add_alias(["dY","dZ"], "predict(...)", dtype=["float32","float32"])`. A list of names dispatches to
+the group path; a single-name list stays an ordinary alias. Accepted return shapes: k-tuple, list of 1-D
+arrays, or an `(n,k)` 2-D ndarray; dict/jagged/wrong-arity **refuse loudly**.
+
+**D0 — the architectural core**: the evaluate-once cache that 13.69 had built *privately* for
+`register_model` was generalized into a **function-generic group engine**
+(`_group_register` / `_group_evaluate` / `_group_column` / `_group_make_func` /
+`_group_ensure_write_listener` / `_group_invalidate_for_columns`), now consumed by **both**
+`register_model` and vector aliases. The phase's central risk was breaking 13.69 while generalizing what
+was private to it — closed by the 13.69 suite staying green (27/27), confirmed by 7/7 reviewers.
+
+**Also delivered**: parquet persistence + recovery (`adf_group_registry` metadata key); ROOT persistence
+via an `ADF_GROUP` namespace, with recovery on `read_tree`/`read_tree_lazy`/`read_chain_lazy`
+(first-file-canonical); all-or-none group lifecycle in `dematerialize`; `release_branches` naming the
+group + siblings; loud refusal rows for dict/jagged/cycle. Taxonomy 61→62 (`CORE.vector_alias`).
+
+**CF-3 — the required test found a real bug.** The panel required the invalidation legs the ratified
+T-VEC-3 specified but the delivered `test_VEC_4` (eager write leg only) did not cover. Writing them
+exposed that `release_branches` invalidated the evaluate-once cache **only under `if self._models:`** —
+i.e. ML models only. A **pure vector group has no `_models` entry**, so releasing one of its input
+branches left a **stale cache**, and the next materialization returned a stale value. One-line fix:
+`if _models or _groups:`. `test_VEC_4d` covers re-registration, release+reload (lazy — the leg that
+failed pre-fix), and a chain-reader write.
+
+**Closing run** (`20260706_144712`): **1951 P / 8 F / 1 E** — the immutable baseline **exactly**. T-VEC
+**27/27**; matrix `CORE.vector_alias` ✅ Verified.
+
+**Lessons learned**:
+- **Analogy is confidence, not evidence.** The write-hook was *assumed* to cover release the way it did
+  for ML. It did not. The panel's insistence on the specified test — not the plausible argument — is what
+  found a real stale-value bug. This is the same G-4 discipline D0 itself was built on.
+- **A test that "obviously" documents working behaviour can still find a bug.** Budget for the required
+  test even when confident.
+
+---
+
+### Phase 13.69.ADF: ML Model Store & Inference Interface
+**Dates**: 2026-07-05 to 2026-07-06
+**Commits**: `3bb08119` (core) → `9186387e` (close, = 13.70 BEGIN); incl. `7908193e`, `510963a7`, `ce344638`, `e0659fef`
+**Coder**: Opus48_1ADF · *[Panel seats — UNVERIFIED, reviewer to confirm]*
+
+`register_model` registers **and** aliases an ONNX or native-xgboost-JSON model in one call. Prediction is
+a **function-backed lazy alias** (architect 0g) reusing the existing `register_evaluator` machinery — **no
+new parser or dispatch code**. `format='auto'` byte-sniffs ROOT → JSON → ONNX. Inputs are column-stacked
+in feature order into one float32 tensor. ONNX is the canonical format; ROOT-file-embedded blob is the
+default persistence.
+
+**Multi-output** = sibling aliases sharing **one** evaluation via a prediction cache keyed on `len(df)`,
+invalidated by the `__setitem__` write-event hook (fires on tree **and** chain alike), by release, and by
+re-registration. *(This private cache is exactly what 13.70's D0 later generalized — and whose
+release-invalidation guard 13.70's CF-3 found to be ML-only.)*
+
+**D5(b) external persistence**: `register_model(persist='external')` writes a **descriptor only**, with a
+path relative to the data file; recovery resolves the relative path and **MD5-verifies** it (T-ML-5:
+both-moved recovers; data-moved-alone **refuses**). Additive; zero baseline deletions.
+
+**Loud refuse for per-row vector output** (`7908193e`): a single tensor of width K>1 per row is
+scalar-incompatible with ADF aliases and was unspecified in the proposal; it previously failed with a
+confusing `NameError` and now refuses loudly. **The declared ONNX shape is unreliable** — skl2onnx
+declares `[N,1]` yet runs `[N,2]` — so the width is detected by a **1-row probe inference at
+registration**, with an eval-time backstop. (Slot→column mapping for a legitimate vector output was
+deferred here and is what 13.70 delivered.)
+
+**G-1 draw gate**: T-ML-18/19 draw the prediction alias directly and use it in `color=` / `weights=` /
+`facet_by=` slots, lazy and eager, across `draw`/`draw_batch`/`draw_figures` — the premise being that a
+function-backed alias inherits **all** draw slots with no new draw code. Matrix: `FUNC.ml_model` Verified,
+Inv ≥ 5.
+
+**Lessons learned** (from the commit record):
+- **A lazy/function-backed alias is not materialized by `draw()` on an eager frame.** T-ML-18/19 first
+  failed with `KeyError: 'pred'` — `draw()` only materializes referenced aliases in its **lazy** branch, so
+  on an eager frame (`draw_lazy=False`) the prediction was never computed. Not an ML defect: standard
+  lazy-alias behaviour. Fix: `draw(..., lazy=True)` (the representative workflow), which is safe on eager
+  frames because the lazy-reader block is guarded.
+- **Don't trust a model's declared output shape.** Probe it.
+
+---
+
+### Phase 13.68.ADF: Explicit Lazy-Branch / Struct Release
+**Dates**: 2026-07-05
+**Commits**: `f4f510e7` (feature), `4ade764f` (matrix)
+**Coder**: *[UNVERIFIED — reviewer to confirm]* · **Architect approval**: 2026-07-04 (all-or-nothing refuse semantics)
+
+Adds `release_branches()` / `release_struct()` and a `memory_policy` surface. **Symmetric evict**: drop the
+frame column **and** un-book the physical branch on the lazy reader, so a later access re-reads from file.
+Purely additive; **no automatic eviction**.
+
+**All-or-nothing loud refuse** (architect-approved), with named decisions:
+- eager frame → raise — **[DD-alpha]**
+- alias name → refuse, point to `dematerialize()` — **[DD-gamma]**
+- written / `__file_idx__` / unknown non-branch names → refuse — **[DD-beta]**
+- parent-side subframe join key → refuse (releasing it would silently break the join with NaN-fill) — **[DD-delta]**
+
+**Matrix (M.5 finding)**: the re-access invariance legs map to **`LAZY.release`**, *not* to
+`LAZY.expression_autoload` — so `expression_autoload` stays Smoke-only (Inv unchanged) rather than the
+0→2 predicted in the proposal's M.4. The commit records this as **the correct mapping**, since those legs
+test the release round-trip. `LAZY.release` = Verified (17 matched / 15 passed / 0 failed / 4 invariance).
+Taxonomy: 60 features at close.
+
+Also in this window (`ace26bc2`, `BUG_AliasDataFrame_20260705_matrix_html`): **`scripts/generate_matrix_html.py`**
+— a standalone log parser producing a single-file HTML capability matrix, with an environment banner
+(red off-gate: *"NOT release evidence"*), phase taken from the newest merged `PHASE_*_ADF_BEGIN` tag as
+`tag @ sha` (**no hardwired PHASE in source**), a `noscript` fallback, and per-feature permalink anchors
+for review citation.
+
+---
+
+### Phase 13.67.ADF: Chain Lazy Metadata Recovery (default-apply) + Conflict Policy
+**Dates**: 2026-07-03 to 2026-07-04
+**Commits**: `c2d4fa55` (core) → `6fe437c6` (conflict policy) → `b8815df5`/`4e55e158` (CRR revision) → `f2eb22bf` (matrix)
+**Proposal**: Rev 3.1 (approved Fable5_1ADF [OK]; Fable5_2ADF Rev-3 findings folded)
+**Baseline**: post-13.66 commit `2ca3e6fc` · **Main Reviewer**: Sonnet19 (initial verdict **[X]**)
+
+Recovers and **applies** ROOT UserInfo metadata (aliases, dtypes, compression) over a lazy chain or a
+single lazy tree **by default**. Architect intent (0a): *UserInfo is authoritative production data written
+in the past; it can be neither removed nor ignored, so applying it is the default read behaviour, not an
+opt-in.*
+
+**Conflict policy** (`6fe437c6`, folding the architect decisions of 2026-07-03): `read_chain_lazy` gains
+`metadata_conflict='error'|'warn'|'skip'`, default `'error'`. General principle recorded in the commit:
+**decisions are parametrizable with a sensible default, and any error explains how to turn it off.**
+
+**CRR revision — main reviewer returned [X].** Findings closed on top of `6fe437c6`:
+- **P0-1 — the tests weren't testing the product.** The original suite exercised only **internal helpers**.
+  Replaced with a real **public-API** test: `read_chain_lazy` over two real metadata-bearing files (written
+  by `export_tree`) recovers the alias and evaluates it end-to-end (`adf.eval('d') == x/y` over a 2500-row
+  chain).
+- Fail-loud dtype fix; `LAZY.chain_metadata` → Verified, description corrected to *"error by default via
+  `metadata_conflict` policy"*.
+
+**Suites**: 1875 P / 8 F / 1 E after the core; **1882 P / 8 F / 1 E** after the revision — baseline only, no
+regressions.
+
+**Lessons learned**:
+- **A green suite that only exercises internal helpers proves nothing about the product.** The main
+  reviewer's `[X]` on precisely this point is why 13.67 shipped with an end-to-end public-API test. This is
+  the ancestor of the FM#12 rule as applied in later phases.
+
+---
+
+### Phase 13.66.ADF: 1:1 Struct / Object Store (dot grammar, `adf.eval`)
+**Dates**: 2026-07-02
+**Commit**: `2ca3e6fc`
+**Feature**: `OBJECT.struct_1to1`; count-lock 57→58
+
+> **[THIN COMMIT BODY]** — the commit message is a single line. The detail below is reconstructed from
+> implementation context and later phases' references to it; **reviewer confirmation requested**.
+
+1:1 struct/object support: a **dot grammar** for struct/object member access, **`adf.eval()`**,
+auto-detection of struct columns, and draw dispatch for struct members. Symmetric draw-slot coverage
+across all 8 slots (including `color` / `facet_by` / `weights`), and a rewrite of `_prepare_struct_refs`
+— whose **identifier-guarded `re.sub`** is the pattern that 13.72's Bug-A fix later adopted for the
+subframe-join path.
+
+**`adf.eval()` is the significant API addition (DD-3).** Before 13.66 there was no such method, so
+`adf.df.eval(...)` (raw pandas, alias-blind) was the only route and callers had to `materialize_aliases`
+first. `adf.eval()` is **alias-aware**: it autoloads the raw branches an expression needs (including the
+raw inputs behind an alias), materializes the referenced aliases, then evaluates. **Pre-13.66 user code
+calling `adf.df.eval()` on an unmaterialized alias raises `UndefinedVariableError` and must be migrated
+to `adf.eval()`** — this bit a production time-series script on 2026-07-12.
+
+**Related bug fixed in this window** (`8563400a`, `BUG_20260701`): subframe-qualified refs now resolve in
+the `weights` / `facet_by` / `color` draw slots (**Scan-2 symmetry**). `draw()`/`draw_batch()`/
+`draw_figures()` Scan-2 previously materialized `Subframe.col` refs only in `expr`/`selection`/`group_by`.
+Adds an `isinstance(str)` guard so array-valued weights no longer hit a boolean context (also fixing a
+pre-existing `_parse_expr_aliases` bug). Vector slots (`weights_vector` / `selection_vector`) **fail loud**
+pending the deferred follow-up. Regression suite: `test_BUG_20260701` (13 tests, FM#12, broadcast value
+asserted). Suite 1822 P / 8 F / 1 E — baseline, no regressions.
+
+**Lesson learned**: **slot-coverage symmetry.** Scan-1, Scan-2, and `get_required_branches` must cover the
+same set of string slots. This bug class recurs whenever a new draw surface or slot type is added without
+auditing all three sites together.
+
+---
+
+### Phase 13.65.ADF: Asymmetric Subframe Join Keys
+**Dates**: 2026-06-30
+**Commit**: `94b88dd7`
+
+`register_subframe(..., right_index_columns=[...])` lets the parent (left) and child (right) join columns
+**differ in name**, mirroring pandas `merge(left_on=, right_on=)`. **Omitting `right_index_columns` is
+byte-identical to the prior same-name behaviour** — a strict superset, zero migration.
+
+**Name-aware across all three `_compute_join_indices` paths**: the single-column numba path; the Phase-8c
+multi-column linearization (**Option A**: rename the child slice *before* linearizing, leaving
+`_numba_accelerators.py` untouched); and the pandas-merge fallback (slice `right_cols` → dedup on
+`right_cols` → rename → merge on `left_cols`). Validation at registration: length match, and parent names
+must exist in the parent frame.
+
+**Lesson learned**: when adding a variant to a path that has **three** independent implementations
+(numba / linearized-multicolumn / pandas fallback), the change is not done until all three agree — and the
+cheapest way to keep the accelerator untouched is to normalize the data *before* it reaches the accelerator.
+
+---
+
+### Phase 13.62.ADF: Lazy-Branch Reconciliation, Missing-Data Diagnostics, and Write-Through
+**Dates**: 2026-06-24 to 2026-06-29
+**Commits**: `54a5a5a8` (Stage 1), `6ed78577` (Stage 1 test), `6acdd2cc` (Stage 2a)
+
+**Stage 1 — lazy-branch reconciliation + missing-data diagnostics.** `ensure_branches` now requests only
+**real, not-yet-present** TTree branches and **classifies the remainder**: hand-added/merged columns
+(already in `self.df`) and names resolved elsewhere (aliases, subframe columns) are **skipped**; a
+genuinely missing input raises `BranchNotFoundError` with a **cause-naming message** instead of the
+misleading *"Branches not found in TTree"*. A single central edit covers `draw` / `draw_batch` /
+`draw_figures` and direct calls.
+
+Fixes **Face 1**: a hand-added column was unreadable on a lazy ADF (the `make_row_group_mask` workflow).
+The backticked-subframe-ref leak now degrades gracefully (non-goal, user-side: use plain `A.col`).
+Stage 1 also added the **C1 end-to-end subframe-alias lazy draw test** (`6ed78577`) as a reviewer closure
+condition.
+
+**Stage 2a (Fix A) — `adf[col] = value` write-through + lazy `loaded_branches` sync** (`6acdd2cc`): a
+write through the ADF now propagates correctly and keeps the lazy reader's `loaded_branches` bookkeeping in
+sync with the frame. *(This write-event path is the same hook 13.69's prediction cache and 13.70's group
+cache later attach their invalidation to.)*
+
+**Stage 2b (ColumnLoader registry) — DEFERRED** [ARCHITECT-CONFIRMED 2026-06-29], pending brainstorming on
+1:N row-expanding sources, 1:1 object/struct patterns, and a DuckDB/Awkward comparison.
+
+**Lesson learned**: an error message that names the wrong cause costs more than the missing feature. The
+value of Stage 1 is mostly in the **classification** — telling the user *why* a name could not be resolved
+(hand-added? alias? subframe? genuinely absent?) rather than asserting it isn't in the tree.
+
+---
+
+## Gap note — phases with no `PHASE_*_ADF` commits in `gitlog.txt`
+
+**13.60, 13.61, 13.63, 13.64** have **no commits carrying those phase tags** in the log I was given.
+13.61 is referenced in the 13.59 entry as the planned home for the lazy-**chain** UserInfo gap
+(`BUG_AliasDataFrame_20260615_lazy_chain_UserInfo_gap`) — that work appears to have **landed in 13.67**
+(chain lazy metadata recovery) rather than under a 13.61 tag, but **I could not verify this from the log
+and have not asserted it above**. `test_phase1361_dict.py` exists in the suite, implying 13.61 produced
+code under a different commit-message convention.
+
+**Reviewer request**: confirm (a) whether 13.60/13.61/13.63/13.64 exist as real phases, (b) if so whether
+they were tagged, and (c) whether 13.61's chain work was subsumed by 13.67. I have deliberately **not**
+invented entries for them.
+
+---
+
+*Drafted by Sonnet2 (coder seat, 13.70–13.72), 2026-07-12, from `gitlog.txt` commit bodies (248 commits)
+plus direct implementation context for 13.70–13.72. Entries for 13.62–13.69 are reconstructions from the
+commit record and require confirmation by the seats who worked them. Items I could not ground in evidence
+are marked UNVERIFIED rather than asserted.*
+
+---
 
 ### Phase 13.59.ADF: Lazy-path UserInfo Metadata Back-Compatibility
 **Dates**: 2026-06-15 to 2026-06-16  
