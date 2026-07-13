@@ -115,17 +115,38 @@ def test_T7_prefix_collision_structurally_impossible():
     assert np.allclose(p.df["pc"].values, ref)
 
 
-# ---- T-8: add_aliases atomicity - a mid-mapping failure adds NOTHING ----
-def test_T8_add_aliases_atomicity():
+# ---- T-8: PHASE_13_73_FIX - add_aliases removed; a loop is the supported batch form ----
+def test_T8_batch_binding_via_loop_with_per_alias_dtype():
+    """PHASE_13_73_FIX_ADF (D-1): add_aliases was removed. The supported way to bind a whole
+    fit's formulas is a loop over add_alias(..., source=...) - which is strictly MORE
+    expressive, because it takes a PER-ALIAS dtype (add_aliases applied one dtype to the
+    entire mapping)."""
     p = _parent()
     p.register_subframe("FIT", _fit({"p0": [1., 2., 3.]}), index_columns=["run"])
-    before = set(p.aliases)
-    with pytest.raises(ValueError):
-        p.add_aliases({"ok1": "p0 + qpt", "bad2": "p0 + nosuch"}, source="FIT")
-    assert set(p.aliases) == before          # ok1 must NOT have been added
-    # happy path
-    p.add_aliases({"c1": "p0 + qpt", "c2": "p0 - qpt"}, source="FIT")
-    assert p.aliases["c1"] == "FIT.p0 + qpt" and p.aliases["c2"] == "FIT.p0 - qpt"
+    assert not hasattr(p, "add_aliases")          # the removed method
+
+    formulas = {"c1": "p0 + qpt", "c2": "p0 - qpt"}
+    dtypes   = {"c1": "float32", "c2": "float64"}   # per-alias - impossible with add_aliases
+    for name, formula in formulas.items():
+        p.add_alias(name, formula, source="FIT", dtype=dtypes[name])
+
+    assert p.aliases["c1"] == "FIT.p0 + qpt"
+    assert p.aliases["c2"] == "FIT.p0 - qpt"
+    p.materialize_aliases(names=["c1", "c2"])
+    assert p.df["c1"].dtype == np.dtype("float32")
+    assert p.df["c2"].dtype == np.dtype("float64")
+
+
+def test_T8b_bad_formula_in_a_loop_raises_at_that_formula():
+    """Without add_aliases' all-or-nothing guarantee, a bad formula still fails LOUDLY at
+    registration (R2), naming the offending token - so a half-bound state is immediately
+    visible, not silent."""
+    p = _parent()
+    p.register_subframe("FIT", _fit({"p0": [1., 2., 3.]}), index_columns=["run"])
+    p.add_alias("ok1", "p0 + qpt", source="FIT")
+    with pytest.raises(ValueError, match="nosuch"):
+        p.add_alias("bad2", "p0 + nosuch", source="FIT")
+    assert "ok1" in p.aliases and "bad2" not in p.aliases    # loud, and no bad alias landed
 
 
 # ---- T-9 [Inv]: eager / lazy / chain parity ----
@@ -161,7 +182,8 @@ def test_T10_flagship_matches_handwritten():
               "dcar_slope_tgl": [1., 1., 1.]}
     p.register_subframe("DCABiasFitP2", _fit(coeffs), index_columns=["run"])
     formulas = {"dcar_fit": "dcar_intercept + dcar_slope_qpt*qpt + dcar_slope_tgl*tgl"}
-    p.add_aliases(formulas, source="DCABiasFitP2")                       # the ONE call
+    for _n, _f in formulas.items():                                      # the supported form
+        p.add_alias(_n, _f, source="DCABiasFitP2")
     # hand-written equivalent (what users write today)
     p.add_alias("dcar_fit_manual",
                 "DCABiasFitP2.dcar_intercept + DCABiasFitP2.dcar_slope_qpt*qpt "

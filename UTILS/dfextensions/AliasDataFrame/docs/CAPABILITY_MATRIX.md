@@ -1,6 +1,6 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-07-12 12:40 UTC
+**Generated:** 2026-07-13 14:57 UTC
 **Phase:** PHASE_13_57_DF_END
 **Taxonomy:** 64 features (PHASE_13_11_B approved)
 **Generator:** `scripts/generate_capability_matrix.py` v2 (taxonomy-based)
@@ -9,15 +9,15 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 40 | 62% |
+| ✅ Verified | 42 | 65% |
 | ☑️ Smoke-only | 17 | 26% |
-| 🧨 Broken | 6 | 9% |
+| 🧨 Broken | 4 | 6% |
 | 📋 Planned | 1 | 1% |
 | **Total features** | **64** | |
-| **Matched tests** | **1994** | |
+| **Matched tests** | **1995** | |
 | **Invariance tests** | **346** | |
 
-**Unmatched tests:** 122 (not mapped to any feature)
+**Unmatched tests:** 289 (not mapped to any feature)
 
 ## CORE
 
@@ -41,7 +41,7 @@
 | Status | Feature | Tests | Pass | Fail | Inv |
 |--------|---------|------:|-----:|-----:|:---:|
 | ✅ | **SUB.register** — Subframe registration | 50 | 50 | 0 | 3 |
-| 🧨 | **SUB.join** — Subframe join & column resolution | 70 | 69 | 1 | 22 |
+| ✅ | **SUB.join** — Subframe join & column resolution | 70 | 70 | 0 | 22 |
 | ✅ | **SUB.composite_key** — Composite key operations | 38 | 38 | 0 | 2 |
 | ✅ | **SUB.auto_alias** — Auto-aliasing subframe columns | 11 | 10 | 0 | 1 |
 | 📋 | **SUB.clone** — Clone with selection (planned) | 0 | 0 | 0 |  |
@@ -74,7 +74,7 @@
 
 | Status | Feature | Tests | Pass | Fail | Inv |
 |--------|---------|------:|-----:|-----:|:---:|
-| ✅ | **ALIAS.source_scoped** — Source-scoped alias resolution (PHASE_13_73) — add_alias/add_aliases with source=<subframe> bind BARE fit formulas (e.g. GB meta['formulas']) to a registered subframe by rewriting bare names to Subframe.name. Resolution is AST-based (names are tokens, not text), so the substring-collision class fixed in 13.72 is structurally impossible. Per-name order: Attribute/Call-func untouched; source index_columns exempt (R1a); present in BOTH source and parent -> loud shadow refusal (R1); in source -> qualify; in parent-universe -> leave bare; otherwise -> refuse at registration (R2). The parent-universe includes lazy available-but-unloaded branches, struct members and registered functions (F-1), so binding works on a lazy frame before any branch is loaded. add_aliases is ATOMIC (all-or-nothing). The rewritten alias stays user-readable and source-qualified; the existing subframe-join path performs the join (no second evaluation route). source=None is bit-identical to pre-13.73. Composes with 13.70 vector aliases. | 12 | 12 | 0 | 3 |
+| ✅ | **ALIAS.source_scoped** — Source-scoped alias resolution (PHASE_13_73) — add_alias with source=<subframe> binds BARE fit formulas (e.g. GB meta['formulas']) to a registered subframe by rewriting bare names to Subframe.name. Resolution is AST-based (names are tokens, not text), so the substring-collision class fixed in 13.72 is structurally impossible. Per-name order: Attribute/Call-func untouched; source index_columns exempt (R1a); present in BOTH source and parent -> loud shadow refusal (R1); in source -> qualify; in parent-universe -> leave bare; otherwise -> refuse at registration (R2). The parent-universe includes lazy available-but-unloaded branches, struct members and registered functions (F-1), so binding works on a lazy frame before any branch is loaded. Batch binding is a loop over add_alias (PHASE_13_73_FIX removed the add_aliases helper: it could not express per-alias dtypes and was a second entry point for one concept). The rewritten alias stays user-readable and source-qualified; the existing subframe-join path performs the join (no second evaluation route). source=None is bit-identical to pre-13.73. Composes with 13.70 vector aliases. | 13 | 13 | 0 | 3 |
 
 ## DIAGNOSTICS
 
@@ -161,16 +161,13 @@
 |--------|---------|------:|-----:|-----:|:---:|
 | ✅ | **DISPATCH.adf_routing** — adf.draw/draw_figures route through DFDraw.draw() (auto pre-resolution, overlay strings, type aliases, 3-var profile promotion) | 28 | 28 | 0 | 28 |
 | ✅ | **DISPATCH.error_visibility** — Batch-surface error visibility (on_error='raise' defaults; A-10/E-3/E-4 guards; draw_fit_summary documented exception) | 15 | 15 | 0 | 15 |
-| 🧨 | **DISPATCH.dict_dispatch** — Draw-path dict dispatch frame: draw()/draw_batch()/draw_figures() hand dfdraw only the needed columns (get_required_branches ∪ materialized alias names ∪ subframe index cols); structural column-count gate + peak-RSS + volume-invariance memory gates + dict≡full-frame equivalence (AC-1/1a/1b incl. subframe single+multi-level) + loud no-silent-full-frame fallback | 20 | 19 | 1 | 18 |
+| ✅ | **DISPATCH.dict_dispatch** — Draw-path dict dispatch frame: draw()/draw_batch()/draw_figures() hand dfdraw only the needed columns (get_required_branches ∪ materialized alias names ∪ subframe index cols); structural column-count gate + peak-RSS + volume-invariance memory gates + dict≡full-frame equivalence (AC-1/1a/1b incl. subframe single+multi-level) + loud no-silent-full-frame fallback | 20 | 20 | 0 | 18 |
 
 ## 🧨 Broken Features — Details
 
-### SUB.join
-- ❌ `test_alias_subframe.py::TestSubframeRoundtrip::test_parquet_roundtrip`
-
 ### DRAW.execution
-- ❌ `test_K2_vector_draw_end_to_end.py::TestK2VectorDrawEndToEnd::test_K2_3_production_reproducer_mirror`
 - ❌ `test_K1_vector_draw_kwarg_diagnostic.py::TestK1VectorDrawKwargDiagnostic::test_K1_3_draw_batch_forwards_batch_kwargs`
+- ❌ `test_K2_vector_draw_end_to_end.py::TestK2VectorDrawEndToEnd::test_K2_3_production_reproducer_mirror`
 
 ### COMP.roundtrip
 - ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip`
@@ -184,12 +181,9 @@
 - ❌ `test_AliasDataFrameRDF.py::TestTMemFileBranch::test_missing_keys_in_friend`
 - ❌ `test_AliasDataFrameRDF.py::TestAddDefinesCollision::test_collision_from_friend_tree`
 
-### DISPATCH.dict_dispatch
-- ❌ `test_phase1361_dict.py::test_peak_rss_dict_below_full_frame`
-
 ## Unmatched Tests
 
-122 tests not mapped to any feature.
+289 tests not mapped to any feature.
 
 - `test_B1_validate_aliases_false_positives.py::TestB1ValidateAliasesFalsePositives::test_B1_1_np_pi_not_broken`
 - `test_B1_validate_aliases_false_positives.py::TestB1ValidateAliasesFalsePositives::test_B1_2_subframe_column_not_broken`
@@ -221,7 +215,7 @@
 - `test_D1_dtype_overrides.py::TestDtypeOverrides::test_D9_entry_range_with_overrides`
 - `test_D1_dtype_overrides.py::TestSkipBranches::test_D11_skip_branch_not_in_dataframe`
 - `test_D1_dtype_overrides.py::TestSkipBranches::test_D12_skip_reduces_column_count`
-- ... +92 more
+- ... +259 more
 
 ---
 *Generated from pytest JSON + feature_taxonomy.py (v2 taxonomy-based).*

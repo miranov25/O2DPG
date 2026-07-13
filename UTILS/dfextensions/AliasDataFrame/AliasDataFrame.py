@@ -4013,44 +4013,107 @@ class AliasDataFrame:
         )
         return pat.sub(lambda m: rewrites[m.group(1)], str(expression))
 
-    def add_aliases(self, mapping, source=None, dtype=None, **kwargs):
-        """PHASE_13_73_ADF: define several aliases at once, optionally source-scoped.
-
-        `mapping` is {alias_name: formula} — e.g. a GB fit's meta["formulas"] passed straight
-        through. ATOMIC [X-7]: if ANY formula fails resolution (R1 shadow / R2 unknown name),
-        NOTHING is added — a half-applied fit binding is worse than none.
-
-        Example
-        -------
-        >>> adf.register_subframe("DCABiasFitP2", AliasDataFrame(dfCoeffs),
-        ...                       index_columns=meta["columns"]["gb_columns"])
-        >>> adf.add_aliases(meta["formulas"], source="DCABiasFitP2")
-        """
-        if not isinstance(mapping, dict):
-            raise TypeError(f"add_aliases(mapping=...) expects a dict {{name: formula}}, "
-                            f"got {type(mapping).__name__}")
-        # Pass 1 — resolve EVERYTHING first; raise before mutating any state (atomicity).
-        resolved = {}
-        for name, formula in mapping.items():
-            resolved[name] = (self._ss_resolve(formula, source) if source is not None
-                              else str(formula))
-        # Pass 2 — commit.
-        for name, expr in resolved.items():
-            self.add_alias(name, expr, dtype=dtype, **kwargs)
-        return list(resolved)
-
     def add_alias(self, name, expression, dtype=None, is_constant=False, fill_value=None,
                   source=None):
-        # PHASE_13_73_ADF: source-scoped resolution runs BEFORE dispatch, so it composes with
-        # both scalar and vector (13.70 group) aliases [X-6]. source=None is bit-identical to
-        # the pre-13.73 behaviour.
+        """
+        Define an alias: a named column computed lazily from an expression.
+
+        The alias is defined, not computed: the full column is evaluated lazily, on first
+        use — when you call ``eval()``, ``materialize_aliases()``, or draw/plot something
+        that references it.
+
+        One exception, for vector aliases: if the inputs are already present as columns,
+        a **single-row probe evaluation** runs here so that a wrong return shape or arity
+        is reported at definition time instead of much later. Your expression (or model)
+        is therefore called once, with one row, during this call.
+
+        Two forms
+        ---------
+        **Scalar alias** — ``name`` is a string, and the expression yields one column::
+
+            adf.add_alias('sector', '18*(phi/pi)', dtype='float16')
+            adf.add_alias('isOK',   '(ncl>60) & (abs(dcaZ)<10)')
+            adf.eval('isOK')                       # computed now
+
+        **Vector (group) alias** — ``name`` is a LIST of names, and the expression yields
+        several columns from ONE evaluation (useful for multi-output models/functions).
+        The expression must return a tuple/list of 1-D arrays, or one (n, k) 2-D array,
+        with k matching ``len(name)``. Touching any member computes them all, once::
+
+            adf.add_alias(['dY', 'dZ'], 'predict(x, y, sector)',
+                          dtype=['float32', 'float32'])
+
+        A one-element list is just an ordinary scalar alias.
+
+        Parameters
+        ----------
+        name : str or list of str
+            Alias name, or a list of names for a vector (group) alias.
+        expression : str
+            Expression over columns, other aliases, struct members (``dedx.dEdxIROC``),
+            subframe columns (``Fit.p0``), and registered functions.
+        dtype : str, numpy dtype, or list, optional
+            Cast the result to this dtype. For a vector alias, pass a list of dtypes with
+            the same length as ``name``.
+        is_constant : bool, default False
+            The expression evaluates to a single scalar, broadcast to every row.
+            For a vector alias, this is applied to every member.
+        fill_value : optional
+            Replace inf/NaN in the result with this value before the dtype cast.
+            For a vector alias, this is applied to every member.
+        source : str, optional
+            Name of a registered subframe. Bare names in ``expression`` that belong to
+            that subframe are automatically qualified, so a ready-made fit formula can be
+            used verbatim instead of being rewritten by hand::
+
+                adf.register_subframe('Fit', AliasDataFrame(coeffs),
+                                      index_columns=['phiBin', 'vz'])
+                adf.add_alias('dcar_pred', 'p0 + p1*qpt + p2*tgl', source='Fit')
+                #           -> 'Fit.p0 + Fit.p1*qpt + Fit.p2*tgl'
+                #   'qpt'/'tgl' stay bare (they are parent columns, even if not yet loaded
+                #   from file); the subframe's index columns stay bare too.
+
+            A name found in BOTH the subframe and the parent frame raises, rather than
+            guessing — write it qualified to disambiguate. A name found in neither raises
+            immediately, so a typo is caught here and not at draw time.
+
+        Returns
+        -------
+        None or list of str
+            ``None`` for a scalar alias (and for a one-element list, which is treated as
+            a scalar alias). For a multi-name vector alias, the list of member names that
+            were created.
+
+        Raises
+        ------
+        ValueError
+            If the alias would create a reference cycle; if ``dtype`` is a list whose
+            length does not match ``name``; if a vector expression returns the wrong
+            shape or arity; or, with ``source=``, on an ambiguous or unknown bare name.
+
+        See Also
+        --------
+        describe_aliases : list the defined aliases and whether they are materialized.
+        materialize_aliases : force computation of specific aliases.
+        eval : evaluate an expression, resolving and computing aliases as needed.
+
+        Examples
+        --------
+        >>> adf.add_alias('dsectorM', '18*((y+dy)/x)/pi', dtype='float16', fill_value=0)
+        >>> adf.add_alias('time_s', 'timeMS/1000')
+        >>> adf.eval('time_s').head()
+        """
+        # PHASE_13_73_ADF: source-scoped resolution runs BEFORE dispatch, so it applies to
+        # both the scalar and the vector (group) form. source=None leaves the expression
+        # exactly as given (bit-identical to the pre-13.73 behaviour).
         if source is not None:
             expression = self._ss_resolve(expression, source)
         # PHASE_13_70_ADF D1: a LIST/TUPLE of names => a vector (group) alias — the
         # group expression is evaluated ONCE (D0 engine) and split into k sibling
         # scalar members. A single-name list is an ordinary alias.
         if isinstance(name, (list, tuple)):
-            return self._add_group_alias(list(name), expression, dtype)
+            return self._add_group_alias(list(name), expression, dtype,
+                                         is_constant=is_constant, fill_value=fill_value)
         return self._add_scalar_alias(name, expression, dtype=dtype,
                                       is_constant=is_constant, fill_value=fill_value)
 
@@ -4343,6 +4406,19 @@ class AliasDataFrame:
         return dependencies
 
     def plot_alias_dependencies(self):
+        """
+        Draw the alias dependency graph (which alias is computed from which).
+
+        Renders a directed graph with matplotlib: an edge ``a -> b`` means alias ``b``
+        references ``a`` in its expression. Useful for spotting deep chains or an
+        unexpected dependency before materializing.
+
+        Requires ``networkx`` and ``matplotlib``. Shows the figure; returns None.
+
+        See Also
+        --------
+        describe_aliases : the same information as a text table (no plotting deps).
+        """
         deps = self._resolve_dependencies()
         G = nx.DiGraph()
         for alias, subdeps in deps.items():
@@ -6046,6 +6122,30 @@ function collapseDepth(maxD) {{
         return np.asarray(series)
 
     def materialize_all(self):
+        """
+        Compute and store EVERY defined alias as a real column.
+
+        Convenience wrapper: checks for reference cycles, then materializes each alias in
+        ``self.aliases``. Equivalent to calling ``materialize_alias()`` on all of them.
+
+        On a lazy frame this triggers loading of every branch any alias depends on, so it
+        can pull a lot of data — prefer ``materialize_aliases(names=[...])`` when you only
+        need some of them.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If the aliases contain a reference cycle.
+
+        See Also
+        --------
+        materialize_aliases : materialize a chosen subset.
+        dematerialize : drop materialized alias columns again.
+        """
         self._check_for_cycles()
         for name in self.aliases:
             self.materialize_alias(name)
@@ -12852,12 +12952,20 @@ function collapseDepth(maxD) {{
         except Exception:
             return {}
 
-    def _add_group_alias(self, names, expression, dtype):
+    def _add_group_alias(self, names, expression, dtype,
+                         is_constant=False, fill_value=None):
         """PHASE_13_70_ADF D1/D3: register a vector (group) alias — one expression,
-        k scalar members, evaluated ONCE via the D0 group engine and split by slot."""
+        k scalar members, evaluated ONCE via the D0 group engine and split by slot.
+
+        PHASE_13_73_FIX_ADF: is_constant / fill_value are now FORWARDED to every member
+        (they were silently dropped before — add_alias advertised them, the vector path
+        ignored them). They apply per-member, exactly as for a scalar alias.
+        """
         if len(names) == 1:
             d = dtype[0] if isinstance(dtype, (list, tuple)) else dtype
-            return self.add_alias(names[0], expression, dtype=d)  # single-name list = ordinary alias
+            # single-name list = ordinary alias
+            return self.add_alias(names[0], expression, dtype=d,
+                                  is_constant=is_constant, fill_value=fill_value)
         if dtype is not None:
             if not isinstance(dtype, (list, tuple)) or len(dtype) != len(names):
                 raise ValueError(
@@ -12903,7 +13011,8 @@ function collapseDepth(maxD) {{
         for i, nm in enumerate(names):
             fn = f"__grpfn_{gid}_{i}"
             self.register_function(fn, self._group_make_func(gid, i), overwrite=True)
-            self.add_alias(nm, f"{fn}({arglist})", dtype=(dtype[i] if dtype else None))
+            self.add_alias(nm, f"{fn}({arglist})", dtype=(dtype[i] if dtype else None),
+                           is_constant=is_constant, fill_value=fill_value)
             self._group_members[nm] = gid
         return list(names)
 
