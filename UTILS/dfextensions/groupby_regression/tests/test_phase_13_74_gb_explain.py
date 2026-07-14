@@ -1,6 +1,6 @@
 """PHASE_13_74_GB_Explain tests E1-E11 (proposal v1.5).
 
-Sandbox note (CRR §env): ADF snapshot predates PHASE_13_73, so the
+Proposal v1.6 conformance suite. Sandbox note (CRR §env): old-ADF leg predates PHASE_13_73, so the
 `add_alias(source=)` primary path is exercised on alma2 only; here the
 documented D-5 fallback (pre-qualified formulas) runs. E4's source= leg
 carries a skipif on signature detection.
@@ -136,20 +136,103 @@ def _analytic_lmg(r, betas=(2.0, 1.0, 1.0)):
     return np.array([shares[1], shares[2], shares[3]]) / 6.0
 
 
-def test_e2_lmg_matches_analytic_oracle_and_differs_from_naive():
-    r = 0.6
-    cov_xx, cov_xy, var_y = _analytic_3term_cov(r)
-    shares, rd = gb_explain._lmg_shares(cov_xx, cov_xy, var_y)
+def _exact_moment_columns(n, cov, rng):
+    """Data whose SAMPLE covariance (population form, /n) is EXACTLY cov."""
+    k = cov.shape[0]
+    X = rng.normal(size=(n, k))
+    X -= X.mean(axis=0)
+    # empirical whitening then coloring
+    cs = np.linalg.cholesky(np.cov(X.T, bias=True))
+    X = X @ np.linalg.inv(cs).T
+    return X @ np.linalg.cholesky(cov).T
+
+
+def test_e2_lmg_public_entry_matches_analytic_oracle():
+    """v1.6 P1-4: via contribution_summary (public), not _lmg_shares.
+    Noiseless leg: y == sum(c) exactly -> shares == oracle, sum == 1."""
+    r, betas = 0.6, (2.0, 1.0, 1.0)
+    cov_x = np.array([[1.0, r, 0.0], [r, 1.0, 0.0], [0.0, 0.0, 1.0]])
+    X = _exact_moment_columns(600, cov_x, np.random.default_rng(7))
+    df = pd.DataFrame(X, columns=["x1", "x2", "x3"])
+    for v, b in zip(("x1", "x2", "x3"), betas):
+        df[f"y_slope_{v}"] = b
+    df["y_intercept"] = 0.0
+    df["y"] = sum(b * df[v] for v, b in zip(("x1", "x2", "x3"), betas))
+    adf = AliasDataFrame(df)
+    meta = _meta(nvars=("x1", "x2", "x3"))
+    make_contribution_aliases(adf, meta, "GB", "y", corr_warn=None)
+    tab, _ = contribution_summary(adf, meta, "y")
     oracle = _analytic_lmg(r)
-    np.testing.assert_allclose(shares, oracle, rtol=0, atol=1e-12)
-    assert not rd
-    assert abs(shares.sum() - 1.0) < 1e-12  # sums to explained-variance share
-    naive = np.diag(cov_xx) / var_y
-    assert not np.allclose(shares, naive)  # naive != shapley at r != 0
-    # v1.5 negative clause: the fixed-coefficient PARTIAL-SUM variant is a
-    # DIFFERENT quantity at r != 0 — assert non-conformance is detectable:
-    partial_sum_shares = _partial_sum_variant(cov_xx, var_y)
-    assert not np.allclose(shares, partial_sum_shares)
+    got = tab.set_index("term").loc[["x1", "x2", "x3"],
+                                    "var_share_shapley"].to_numpy()
+    np.testing.assert_allclose(got, oracle, rtol=0, atol=1e-9)
+    np.testing.assert_allclose(got.sum(), 1.0, atol=1e-9)
+    naive = tab.set_index("term").loc[["x1", "x2", "x3"],
+                                      "var_share_naive"].to_numpy()
+    assert not np.allclose(got, naive)
+    cov_cc, cov_cy, var_y = _analytic_3term_cov(r, betas)
+    assert not np.allclose(got, _partial_sum_variant(cov_cc, var_y))
+
+
+def test_e2b_real_target_denominator_with_noise_D7():
+    """D-7 discriminator: with orthogonal noise, var(y) > var(sum c) and the
+    shares must sum to the EXPLAINED share R2 = var_c/var_y — the old
+    (non-conformant) explained-part denominator would return sum == 1."""
+    rng = np.random.default_rng(11)
+    n = 800
+    cov_x = np.eye(2)
+    X = _exact_moment_columns(n, cov_x, rng)
+    df = pd.DataFrame(X, columns=["x1", "x2"])
+    df["y_slope_x1"] = 1.0
+    df["y_slope_x2"] = 1.0
+    df["y_intercept"] = 0.0
+    c = df.x1 + df.x2
+    e = rng.normal(size=n)
+    e = e - e.mean()
+    # residualize e against contributions, rescale to exact var 1.0
+    for col in (df.x1, df.x2):
+        e = e - (e @ col) / (col @ col) * col
+    e = e / np.sqrt((e @ e) / n)
+    df["y"] = c + e
+    var_c = float(((c - c.mean()) ** 2).mean())
+    r2 = var_c / (var_c + 1.0)
+    adf = AliasDataFrame(df)
+    meta = _meta()
+    make_contribution_aliases(adf, meta, "GB", "y", corr_warn=None)
+    tab, _ = contribution_summary(adf, meta, "y")
+    np.testing.assert_allclose(tab["var_share_shapley"].sum(), r2, atol=1e-9)
+    assert tab["var_share_shapley"].sum() < 0.999  # old object would give 1
+
+
+def test_e2c_multi_row_pergroup_subframe_end_to_end():
+    """v1.6 P1-2: genuine multi-row per-group source subframe through
+    contribution_summary (join on subframe index columns)."""
+    rng = np.random.default_rng(23)
+    n = 400
+    g = np.repeat([0, 1], n // 2)
+    x1 = rng.normal(size=n)
+    df = pd.DataFrame({"g": g, "x1": x1})
+    b1 = np.where(g == 0, 1.0, 3.0)
+    df["y"] = b1 * df.x1
+    adf = AliasDataFrame(df)
+    coeffs = pd.DataFrame({"g": [0, 1], "y_slope_x1": [1.0, 3.0],
+                           "y_intercept": [0.0, 0.0]})
+    adf.register_subframe("GBC", AliasDataFrame(coeffs),
+                          index_columns=["g"])
+    meta = _meta(nvars=("x1",))
+    make_contribution_aliases(adf, meta, "GBC", "y", corr_warn=None)
+    tab, _ = contribution_summary(adf, meta, "y")
+    # v1 object (per-group betas x GLOBAL mean): the group-dependent
+    # baseline term beta_g*mu is legitimately unexplained by the centered
+    # contribution — oracle computed INDEPENDENTLY from the raw arrays:
+    mu = float(df.x1.mean())
+    cvec = b1 * (df.x1.to_numpy() - mu)
+    yvec = df.y.to_numpy()
+    cc = cvec - cvec.mean(); yy = yvec - yvec.mean()
+    expected = float((cc @ yy) ** 2 / ((cc @ cc) * (yy @ yy)))
+    np.testing.assert_allclose(tab["var_share_shapley"].iloc[0], expected,
+                               rtol=0, atol=1e-12)
+    assert expected > 0.99  # sanity: near-total, not exactly 1
 
 
 def _partial_sum_variant(cov_cc, var_y):
@@ -228,26 +311,33 @@ def test_e4b_aliases_bind_source_kw():
 
 # ---------------------------------------------------------------- E5
 def test_e5_block_delta_nonlinear_toy():
-    """v1-scope-only nonlinear toy: sqrt(p0**2 + (p1*x)**p2)."""
+    """v1-scope-only nonlinear toy (D-4 v1.6): sqrt(p0**2 + (p1*x)**p2),
+    REAL assertion: emitted alias values == independent numpy ablation."""
     n = 300
     df = pd.DataFrame({"x": np.abs(RNG.normal(size=n)) + 0.1})
     p0, p1, p2 = 1.0, 2.0, 2.0
     formula = f"sqrt({p0}**2 + ({p1}*x)**{p2})"
-    df["pred"] = np.sqrt(p0 ** 2 + (p1 * df.x) ** p2)
     adf = AliasDataFrame(df)
-    meta = {"formula": formula, "parameters": {}}
+    meta = {"formulas": {"pred": formula}, "parameters": {}}
     names = make_block_delta_aliases(adf, meta, "GB", "pred",
                                      blocks={"xblk": ["x"]})
-    assert names == ["block_delta_xblk"]
-    got = adf.df.eval(f"({formula}) - ({gb_explain._replace_var(formula,'x',repr(float(df.x.mean())))})")
-    ali = adf.df["block_delta_xblk"] if "block_delta_xblk" in adf.df else None
-    # mean-replacement ablation: delta at x==mean(x) ~ 0
-    x0 = float(df.x.mean())
-    d_at_mean = np.sqrt(p0**2 + (p1*x0)**p2) - np.sqrt(p0**2 + (p1*x0)**p2)
-    assert abs(d_at_mean) < 1e-12
-    assert "SHAP" not in open(gb_explain.__file__).read().split(
-        "make_block_delta_aliases")[1].split("def ")[0].replace(
-        "not Shapley values", "").replace("SHAP appears nowhere", "")
+    assert names == ["block_delta_pred_xblk"]
+    x = df.x.to_numpy(np.float64)
+    x0 = float(x.mean())
+    expected = (np.sqrt(p0**2 + (p1*x)**p2)
+                - np.sqrt(p0**2 + (p1*x0)**p2))
+    if hasattr(adf, "materialize_alias"):
+        adf.materialize_alias("block_delta_pred_xblk")
+    got = np.asarray(adf.df["block_delta_pred_xblk"], dtype=np.float64)
+    np.testing.assert_allclose(got, expected, rtol=1e-5, atol=1e-5)
+    # D-4: overlapping blocks -> ValueError
+    with pytest.raises(ValueError, match="disjoint"):
+        make_block_delta_aliases(adf, meta, "GB", "pred",
+                                 blocks={"a": ["x"], "b": ["x"]})
+    # collision guard (P1-5)
+    with pytest.raises(ValueError, match="collides"):
+        make_block_delta_aliases(adf, meta, "GB", "pred",
+                                 blocks={"xblk": ["x"]})
 
 
 # ---------------------------------------------------------------- E6
@@ -281,6 +371,52 @@ def test_e7_metadata_failures_loud():
         make_contribution_aliases(adf, bad2, "GB", "y")
 
 
+def test_e7b_unresolvable_response_y_D7_and_mismatched_meta():
+    df = _pergroup_frame()
+    adf = AliasDataFrame(df)
+    meta = _meta()
+    make_contribution_aliases(adf, meta, "GB", "y", corr_warn=None)
+    # D-7: response column absent -> loud ValueError at summary
+    # (REAL execution — the previous dead-code guard is the P1-4 fix)
+    df2 = df.drop(columns=["y"])
+    adf2 = AliasDataFrame(df2)
+    make_contribution_aliases(adf2, meta, "GB", "y", corr_warn=None)
+    with pytest.raises(ValueError, match="response column"):
+        contribution_summary(adf2, meta, "y")
+    sel = adf.df["x1"] > 1e9  # empty selection also loud
+    with pytest.raises(ValueError, match="removes all rows"):
+        contribution_summary(adf, meta, "y", selection=sel)
+    # P1-1: mismatched metadata (extra term) -> loud ValueError
+    meta_bad = _meta(nvars=("x1", "x2", "x9"))
+    with pytest.raises(ValueError, match="does not match"):
+        contribution_summary(adf, meta_bad, "y")
+
+
+def test_e7c_weights_validation_and_staleness_guard():
+    # negative weight -> ValueError at creation (P2-4)
+    df = _pergroup_frame()
+    df["w"] = 1.0
+    df.loc[df.index[0], "w"] = -1.0
+    adf = AliasDataFrame(df)
+    with pytest.raises(ValueError, match="finite and >= 0"):
+        make_contribution_aliases(adf, _meta(weights="w"), "GB", "y",
+                                  corr_warn=None)
+    # staleness (P2-3): re-register source subframe after creation
+    df2 = pd.DataFrame({"gid": [0] * 50, "x1": RNG.normal(size=50)})
+    df2["y"] = 2.0 * df2.x1
+    adf2 = AliasDataFrame(df2)
+    c1 = pd.DataFrame({"gid": [0], "y_slope_x1": [2.0],
+                       "y_intercept": [0.0]})
+    adf2.register_subframe("GBC", AliasDataFrame(c1), index_columns=["gid"])
+    meta1 = _meta(nvars=("x1",))
+    make_contribution_aliases(adf2, meta1, "GBC", "y", corr_warn=None)
+    c2 = pd.DataFrame({"gid": [0, 1], "y_slope_x1": [2.0, 9.0],
+                       "y_intercept": [0.0, 0.0]})
+    adf2.register_subframe("GBC", AliasDataFrame(c2), index_columns=["gid"])
+    with pytest.raises(ValueError, match="stale"):
+        contribution_summary(adf2, meta1, "y")
+
+
 # ---------------------------------------------------------------- E8
 def test_e8_zero_variance_term():
     df = _pergroup_frame()
@@ -293,6 +429,13 @@ def test_e8_zero_variance_term():
     row = tab[tab.term == "x3"].iloc[0]
     assert row["zero_variance"] and row["var_share_shapley"] == 0.0
     assert np.isfinite(tab["var_share_shapley"]).all()
+    # v1.6 P2-1 matrix contract, asserted in FULL (P1-3 fix):
+    assert corr.shape == (3, 3)
+    assert list(corr.index) == ["x1", "x2", "x3"]      # labels + order
+    assert list(corr.columns) == ["x1", "x2", "x3"]
+    assert (corr.loc["x3", ["x1", "x2"]] == 0.0).all() # zeroed row
+    assert (corr.loc[["x1", "x2"], "x3"] == 0.0).all() # zeroed column
+    assert corr.loc["x3", "x3"] == 0.0                 # v1.6: diagonal 0
     assert np.isfinite(corr.values).all()
 
 
@@ -368,3 +511,149 @@ def test_e11_perfect_collinearity_finite_deterministic():
     # symmetry of equal contribution stds (c1 = x1, c2 = x1): hand value 0.5
     np.testing.assert_allclose(sorted(t1["var_share_shapley"]), [0.5, 0.5],
                                atol=1e-9)
+
+
+# ------------------------------------------------- v1.6 round-3 fixes
+def test_f1_meta_full_contract_mismatches_raise():
+    df = _pergroup_frame(suffix="_v4")
+    adf = AliasDataFrame(df)
+    meta = _meta(suffix="_v4")
+    make_contribution_aliases(adf, meta, "GB", "y", corr_warn=None)
+    # suffix mismatch
+    with pytest.raises(ValueError, match="suffix"):
+        contribution_summary(adf, _meta(suffix=""), "y")
+    # weights-column mismatch
+    m2 = _meta(suffix="_v4"); m2["parameters"]["weights_column"] = "w"
+    with pytest.raises(ValueError, match="weights_column"):
+        contribution_summary(adf, m2, "y")
+    # intercept mismatch
+    m3 = _meta(suffix="_v4", fit_intercept=False)
+    with pytest.raises(ValueError, match="intercept"):
+        contribution_summary(adf, m3, "y")
+
+
+def test_f2_all_zero_weights_raise_at_creation():
+    df = _pergroup_frame()
+    df["w"] = 0.0
+    adf = AliasDataFrame(df)
+    with pytest.raises(ValueError, match="zero total weight"):
+        make_contribution_aliases(adf, _meta(weights="w"), "GB", "y",
+                                  corr_warn=None)
+
+
+def test_f3_string_selection_supported():
+    df = _pergroup_frame()
+    adf = AliasDataFrame(df)
+    meta = _meta()
+    make_contribution_aliases(adf, meta, "GB", "y", corr_warn=None)
+    t_str, _ = contribution_summary(adf, meta, "y", selection="(g == 0)")
+    t_bool, _ = contribution_summary(adf, meta, "y",
+                                     selection=(adf.df["g"] == 0))
+    pd.testing.assert_frame_equal(t_str, t_bool, check_exact=True)
+
+
+def test_f4_join_duplicate_and_unmatched_keys_raise():
+    rng = np.random.default_rng(31)
+    df = pd.DataFrame({"g": np.repeat([0, 1], 20),
+                       "x1": rng.normal(size=40)})
+    df["y"] = df.x1
+    adf = AliasDataFrame(df)
+    dup = pd.DataFrame({"g": [0, 0, 1], "y_slope_x1": [1.0, 2.0, 1.0],
+                        "y_intercept": [0.0, 0.0, 0.0]})
+    adf.register_subframe("GBC", AliasDataFrame(dup), index_columns=["g"])
+    meta = _meta(nvars=("x1",))
+    make_contribution_aliases(adf, meta, "GBC", "y", corr_warn=None)
+    with pytest.raises(ValueError, match="duplicate join keys"):
+        contribution_summary(adf, meta, "y")
+    # unmatched keys: subframe missing group 1
+    df2 = df.copy()
+    adf2 = AliasDataFrame(df2)
+    part = pd.DataFrame({"g": [0], "y_slope_x1": [1.0],
+                         "y_intercept": [0.0]})
+    adf2.register_subframe("GBC", AliasDataFrame(part), index_columns=["g"])
+    make_contribution_aliases(adf2, meta, "GBC", "y", corr_warn=None)
+    # single-row broadcast path would mask this; force multi-row: add row
+    part2 = pd.DataFrame({"g": [0, 2], "y_slope_x1": [1.0, 5.0],
+                          "y_intercept": [0.0, 0.0]})
+    adf3 = AliasDataFrame(df.copy())
+    adf3.register_subframe("GBC", AliasDataFrame(part2), index_columns=["g"])
+    make_contribution_aliases(adf3, meta, "GBC", "y", corr_warn=None)
+    with pytest.raises(ValueError, match="unmatched join"):
+        contribution_summary(adf3, meta, "y")
+    # P1-3 (round 3): unmatched must STILL raise when the source column
+    # contains a genuine NaN coefficient elsewhere
+    part3 = pd.DataFrame({"g": [0, 2], "y_slope_x1": [np.nan, 5.0],
+                          "y_intercept": [0.0, 0.0]})
+    adf4 = AliasDataFrame(df.copy())
+    adf4.register_subframe("GBC", AliasDataFrame(part3), index_columns=["g"])
+    make_contribution_aliases(adf4, meta, "GBC", "y", corr_warn=None)
+    with pytest.raises(ValueError, match="unmatched join"):
+        contribution_summary(adf4, meta, "y")
+
+
+@pytest.mark.skipif(not HAS_SOURCE_KW, reason="needs 13.73 source=")
+def test_f5_nonlinear_source_binding_out_of_frame_param():
+    """P2-4: block-delta formula referencing an out-of-frame parameter
+    resolved via source= binding."""
+    rng = np.random.default_rng(41)
+    df = pd.DataFrame({"gid": 0, "x": np.abs(rng.normal(size=80)) + 0.1})
+    adf = AliasDataFrame(df)
+    pars = pd.DataFrame({"gid": [0], "p0c": [1.5]})
+    adf.register_subframe("PARS", AliasDataFrame(pars),
+                          index_columns=["gid"])
+    meta = {"formulas": {"pred": "sqrt(p0c**2 + (2.0*x)**2)"},
+            "parameters": {}}
+    names = make_block_delta_aliases(adf, meta, "PARS", "pred",
+                                     blocks={"xb": ["x"]})
+    if hasattr(adf, "materialize_alias"):
+        adf.materialize_alias(names[0])
+    x = df.x.to_numpy(np.float64); x0 = float(x.mean())
+    expected = (np.sqrt(1.5**2 + (2.0*x)**2)
+                - np.sqrt(1.5**2 + (2.0*x0)**2))
+    np.testing.assert_allclose(np.asarray(adf.df[names[0]], np.float64),
+                               expected, rtol=1e-5, atol=1e-5)
+
+
+def test_f6_block_delta_summary_same_tables_P0_1():
+    """P0-1: the D-2 'same summary from the deltas' contract, end-to-end."""
+    rng = np.random.default_rng(53)
+    n = 500
+    df = pd.DataFrame({"x": np.abs(rng.normal(size=n)) + 0.1,
+                       "z": rng.normal(size=n)})
+    formula = "sqrt(1.0 + (2.0*x)**2) + 0.5*z"
+    df["pred"] = np.sqrt(1.0 + (2.0*df.x)**2) + 0.5*df.z
+    adf = AliasDataFrame(df)
+    meta = {"formulas": {"pred": formula}, "parameters": {}}
+    make_block_delta_aliases(adf, meta, "GB", "pred",
+                             blocks={"xb": ["x"], "zb": ["z"]})
+    tab, corr = contribution_summary(adf, meta, "pred")
+    assert list(tab["term"]) == ["xb", "zb"]
+    assert corr.shape == (2, 2)
+    assert np.isfinite(tab["var_share_shapley"]).all()
+    # noiseless decomposition: shares sum to the explained share (<= 1)
+    s = float(tab["var_share_shapley"].sum())
+    assert 0.9 < s <= 1.0 + 1e-9
+    # meta mismatch on the delta path is loud (P1-1 delta check)
+    bad = {"formulas": {"pred": "x"}, "parameters": {}}
+    with pytest.raises(ValueError, match="does not match"):
+        contribution_summary(adf, bad, "pred")
+
+
+def test_f7_common_mask_at_creation_P1_1():
+    """Creation-time mu must use the COMMON mask: a NaN in x2 or y must
+    exclude that row from x1's mean too."""
+    df = pd.DataFrame({"x1": [0.0, 10.0, 20.0], "x2": [1.0, np.nan, 1.0],
+                       "y": [0.0, 0.0, 0.0]})
+    df["y_slope_x1"] = 1.0
+    df["y_slope_x2"] = 1.0
+    df["y_intercept"] = 0.0
+    adf = AliasDataFrame(df)
+    make_contribution_aliases(adf, _meta(), "GB", "y", corr_warn=None)
+    mu = adf.df.attrs["gb_explain"]["y"]["mu"]
+    assert mu["x1"] == 10.0  # rows 0,2 only (common mask), NOT 10.0==mean all3
+    # per-term masking would ALSO give 10.0 here; discriminate via y-NaN:
+    df2 = df.copy(); df2.loc[2, "y"] = np.nan; df2.loc[1, "x2"] = 1.0
+    adf2 = AliasDataFrame(df2)
+    make_contribution_aliases(adf2, _meta(), "GB", "y", corr_warn=None)
+    mu2 = adf2.df.attrs["gb_explain"]["y"]["mu"]
+    assert mu2["x1"] == 5.0  # rows 0,1 — y-NaN row excluded by common mask
