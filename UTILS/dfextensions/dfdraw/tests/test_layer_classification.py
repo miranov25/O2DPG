@@ -14,6 +14,13 @@ Phase 13.15.DF
 """
 
 TEST_LAYERS = {
+    # PHASE_13_76_DF — facet float16 + 2D cell-integrity (row conservation is A==B)
+    "test_phase_13_76_facet2d_bugfix.py::test_FBY16_1_float16_facet_column_no_crash": "invariance",
+    "test_phase_13_76_facet2d_bugfix.py::test_FBY16_2_float16_upcast_preserves_values": "invariance",
+    "test_phase_13_76_facet2d_bugfix.py::test_FBY16_3_qcut_duplicates_drop_preserved": "invariance",
+    "test_phase_13_76_facet2d_bugfix.py::test_FBY16_4_2d_facet_cells_match_global_classification": "invariance",
+    "test_phase_13_76_facet2d_bugfix.py::test_FBY16_5_2d_facet_no_row_loss_is_nonvacuous": "invariance",
+    "test_phase_13_76_facet2d_bugfix.py::test_FBY16_6_discrete_facet_unaffected": "invariance",
     "test_profile_overflow.py::test_profile_mean_range_invariance": "invariance",
     "test_profile_overflow.py::test_profile_std_range_invariance": "invariance",
     "test_profile_overflow.py::test_profile_median_range_invariance": "invariance",

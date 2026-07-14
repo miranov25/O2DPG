@@ -242,6 +242,34 @@ def _normalize_facet_args(facet_by, facet_by_bins, facet_by_quantiles):
     return facet_list, bins_list, quantiles_list
 
 
+def _safe_cut_series(series, bins=None, quantiles=None):
+    """pd.cut/pd.qcut wrapper that upcasts float16 first.
+
+    PHASE_13_76_DF Bug A: pandas Index construction does not support float16
+    ("NotImplementedError: float16 indexes are not supported"), which crashes
+    any facet_by= whose facet column comes from a half-precision ROOT branch.
+    Both the cut and qcut paths are affected, so both route through here.
+    """
+    if series.dtype == np.float16:
+        series = series.astype(np.float32)
+    if quantiles is not None:
+        return pd.qcut(series, q=quantiles, duplicates='drop')
+    return pd.cut(series, bins=bins)
+
+
+def _classify_facet_dim(df, col, bins=None, quantiles=None):
+    """Single authoritative classification of one facet dimension against the
+    FULL df. Returns (bin_series_or_None, ordered_values).
+
+    PHASE_13_76_DF Bug B: labels and per-cell masks must come from ONE
+    classification of the full frame, so they cannot diverge.
+    """
+    if bins is None and quantiles is None:
+        return None, sorted(df[col].dropna().unique().tolist())
+    bin_series = _safe_cut_series(df[col], bins=bins, quantiles=quantiles)
+    return bin_series, list(bin_series.cat.categories)
+
+
 def _resolve_facet_values(df, col, bins=None, quantiles=None):
     """Resolve a facet dimension's column + binning into a list of value-groups.
     
@@ -253,10 +281,7 @@ def _resolve_facet_values(df, col, bins=None, quantiles=None):
         # Discrete column — sorted unique values
         return sorted(df[col].dropna().unique().tolist())
     
-    if quantiles is not None:
-        bin_series = pd.qcut(df[col], q=quantiles, duplicates='drop')
-    else:
-        bin_series = pd.cut(df[col], bins=bins)
+    bin_series = _safe_cut_series(df[col], bins=bins, quantiles=quantiles)
     
     # Return the Categorical's categories (Intervals) in sorted order
     return list(bin_series.cat.categories)
@@ -272,10 +297,7 @@ def _filter_facet_value(df, col, value, bins=None, quantiles=None):
     if bins is None and quantiles is None:
         return df[df[col] == value]
     
-    if quantiles is not None:
-        bin_series = pd.qcut(df[col], q=quantiles, duplicates='drop')
-    else:
-        bin_series = pd.cut(df[col], bins=bins)
+    bin_series = _safe_cut_series(df[col], bins=bins, quantiles=quantiles)
     
     mask = (bin_series == value)
     return df[mask.fillna(False) if mask.dtype == object else mask]
@@ -4278,8 +4300,13 @@ class DFDraw:
         """
         row_col = facet_list[0]
         col_col = facet_list[1]
-        row_values = _resolve_facet_values(df, row_col, bins_list[0], quantiles_list[0])
-        col_values = _resolve_facet_values(df, col_col, bins_list[1], quantiles_list[1])
+        # PHASE_13_76_DF Bug B: classify each dimension ONCE against the full,
+        # unfiltered df. Labels (row_values/col_values) and the per-cell masks
+        # now come from the same classification, so they cannot diverge.
+        row_bin_series, row_values = _classify_facet_dim(
+            df, row_col, bins_list[0], quantiles_list[0])
+        col_bin_series, col_values = _classify_facet_dim(
+            df, col_col, bins_list[1], quantiles_list[1])
         
         n_rows = len(row_values)
         n_cols = len(col_values)
@@ -4297,11 +4324,17 @@ class DFDraw:
         stats_grid = {}
         for i, row_v in enumerate(row_values):
             for j, col_v in enumerate(col_values):
-                # CP1-3: discrete vs binned filtering
-                sub_df = _filter_facet_value(df, row_col, row_v,
-                                              bins_list[0], quantiles_list[0])
-                sub_df = _filter_facet_value(sub_df, col_col, col_v,
-                                              bins_list[1], quantiles_list[1])
+                # PHASE_13_76_DF Bug B: build BOTH masks from the global
+                # classification of the full df and combine them. The previous
+                # code chained _filter_facet_value, so the column filter
+                # re-derived its bin edges from the already-row-filtered subset;
+                # the recomputed Intervals then failed equality against the
+                # global col_v and the cell silently rendered "(no data)".
+                row_mask = ((df[row_col] == row_v) if row_bin_series is None
+                            else (row_bin_series == row_v))
+                col_mask = ((df[col_col] == col_v) if col_bin_series is None
+                            else (col_bin_series == col_v))
+                sub_df = df[row_mask.fillna(False) & col_mask.fillna(False)]
                 
                 ax_ij = axes[i, j]
                 

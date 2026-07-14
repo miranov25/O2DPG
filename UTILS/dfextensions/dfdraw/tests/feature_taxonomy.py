@@ -1392,6 +1392,13 @@ FEATURES = [
         "category": "FACET",
         "tests": [
             "test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_1_string_equals_list_of_one",
+            # PHASE_13_76_DF: float16 crash (Bug A) + 2D bin-edge recompute (Bug B)
+            "test_phase_13_76_facet2d_bugfix.py::test_FBY16_1_float16_facet_column_no_crash",
+            "test_phase_13_76_facet2d_bugfix.py::test_FBY16_2_float16_upcast_preserves_values",
+            "test_phase_13_76_facet2d_bugfix.py::test_FBY16_3_qcut_duplicates_drop_preserved",
+            "test_phase_13_76_facet2d_bugfix.py::test_FBY16_4_2d_facet_cells_match_global_classification",
+            "test_phase_13_76_facet2d_bugfix.py::test_FBY16_5_2d_facet_no_row_loss_is_nonvacuous",
+            "test_phase_13_76_facet2d_bugfix.py::test_FBY16_6_discrete_facet_unaffected",
             "test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_2_2d_grid_rows_by_cols",
             "test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_3_2d_bins_per_dim",
             "test_phase_13_41_df_2d_faceting.py::TestFacetByListGrid::test_FBY_4_2d_quantiles_per_dim",
