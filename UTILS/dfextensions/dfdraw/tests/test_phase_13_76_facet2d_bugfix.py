@@ -27,18 +27,24 @@ from dfdraw.drawer import _safe_cut_series, _classify_facet_dim, _resolve_facet_
 
 
 # ---------------------------------------------------------------- Bug A: float16
-@pytest.mark.parametrize("kwargs,label", [
-    (dict(bins=4), "pd.cut / facet_by_bins"),
-    (dict(quantiles=4), "pd.qcut / facet_by_quantiles"),
-])
-def test_FBY16_1_float16_facet_column_no_crash(kwargs, label):
-    """Bug A: float16 facet column must not raise. BOTH cut and qcut paths
-    (binding correction 1 — the original spec only locked bins)."""
-    rng = np.random.default_rng(0)
-    df = pd.DataFrame({"a": rng.uniform(-1, 1, 2000).astype(np.float16)})
-    bin_series, values = _classify_facet_dim(df, "a", **kwargs)   # must not raise
-    assert len(values) > 1, f"{label}: expected multiple categories, got {values}"
+def _float16_frame(n=2000, seed=0):
+    rng = np.random.default_rng(seed)
+    return pd.DataFrame({"a": rng.uniform(-1, 1, n).astype(np.float16)})
+
+
+def test_FBY16_1a_float16_facet_column_bins_no_crash():
+    """Bug A, pd.cut path (facet_by_bins): float16 facet column must not raise."""
+    bin_series, values = _classify_facet_dim(_float16_frame(), "a", bins=4)
     assert bin_series is not None
+    assert len(values) > 1, f"expected multiple categories, got {values}"
+
+
+def test_FBY16_1b_float16_facet_column_quantiles_no_crash():
+    """Bug A, pd.qcut path (facet_by_quantiles). Binding correction 1: the
+    original spec locked only the bins path; qcut is equally affected."""
+    bin_series, values = _classify_facet_dim(_float16_frame(), "a", quantiles=4)
+    assert bin_series is not None
+    assert len(values) > 1, f"expected multiple categories, got {values}"
 
 
 def test_FBY16_2_float16_upcast_preserves_values():
@@ -70,11 +76,7 @@ def _correlated_frame(n=20000, seed=0):
     return pd.DataFrame({"row": x, "col": y})
 
 
-@pytest.mark.parametrize("kw", [
-    dict(bins=3),          # pd.cut path
-    dict(quantiles=3),     # pd.qcut path
-])
-def test_FBY16_4_2d_facet_cells_match_global_classification(kw):
+def _assert_2d_cells_match_global(**kw):
     """Bug B invariant: every cell's row set == rows whose GLOBAL row-class is
     row_v AND GLOBAL col-class is col_v. No row may be lost.
 
@@ -100,6 +102,16 @@ def test_FBY16_4_2d_facet_cells_match_global_classification(kw):
     assert populated_but_empty == 0, "cell silently rendered empty despite holding rows"
     assert total == len(df), (
         f"2D facet lost rows: kept {total} of {len(df)} — chained bin-edge recompute")
+
+
+def test_FBY16_4a_2d_facet_cells_match_global_classification_bins():
+    """Bug B row-conservation on the pd.cut path."""
+    _assert_2d_cells_match_global(bins=3)
+
+
+def test_FBY16_4b_2d_facet_cells_match_global_classification_quantiles():
+    """Bug B row-conservation on the pd.qcut path."""
+    _assert_2d_cells_match_global(quantiles=3)
 
 
 def test_FBY16_5_2d_facet_no_row_loss_is_nonvacuous():

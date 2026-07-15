@@ -1,6 +1,6 @@
 # Capability Matrix — dfdraw
 
-**Generated:** 2026-07-14 15:27 UTC
+**Generated:** 2026-07-15 06:00 UTC
 **Phase:** PHASE_13_57_DF_END
 **Generator:** `scripts/generate_capability_matrix.py`
 **Sources:** `tests/feature_taxonomy.py` + `tests/test_layer_classification.py`
@@ -9,13 +9,13 @@
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 70 | 46% |
+| ✅ Verified | 71 | 46% |
 | ☑️ Smoke-only | 81 | 53% |
-| 🧨 Broken | 1 | 1% |
+| 🧨 Broken | 0 | 0% |
 | 📋 Planned | 1 | 1% |
 | **Total features** | **153** | |
-| **Total proof tests** | **725** | |
-| **Invariance tests** | **393** | |
+| **Total proof tests** | **727** | |
+| **Invariance tests** | **395** | |
 | **Visual tests** | **34** | |
 
 **Status key:**
@@ -87,7 +87,7 @@
 | ✅ | **FACET.auto_title** — auto_title=True produces fig.suptitle in faceted mode (BUG-002) — Phase 13.32 FIX1 | 2 | 2 | 0 | 2 |  |
 | ✅ | **FACET.numeric_bin_sort** — Facet bin panels in numeric order, not lexicographic (BUG-003) — Phase 13.32 FIX1 | 1 | 1 | 0 | 1 |  |
 | ✅ | **FACET.float_facet_by_guard** — _dispatch_faceted_render() float facet_by + no bins + nunique>20 raises ValueError with facet_by_bins=N / facet_by_quantiles=N guidance (BUG-017; third instance of BUG-012/BUG-015 float-guard class) — Phase 13.38.DF | 2 | 2 | 0 | 2 |  |
-| ✅ | **FACET.list_grid** — facet_by accepts Union[str, List[str]] for 1D/2D/3D faceting. Convention LOCKED matching numpy/pandas (n_rows, n_cols, ...) shape: facet_by[0]=ROW (vertical within figure), facet_by[1]=COLUMN (horizontal within figure), facet_by[2]=FIGID (separate figures, one per value). facet_by[3+] raises NotImplementedError. 3D returns (List[Figure], List[axes_2d], List[stats_dict]) — DEVIATES from standard (fig, ax, stats) contract; documented prominently in inline help. New params: share_x/share_y ∈ {'all','row','col','none'} (within-figure axis sharing), share_across_figures: bool (3D global range lock). Per-plot-kind lock for share_across_figures (CP1-2): scatter locks x AND y; hist/profile locks x only (y auto-scales per figure to handle sparse-figID variance). New helpers: _normalize_facet_args, _to_mpl_share (symmetric {'all':True,'row':'row','col':'col','none':False} — v1.2 CP0-1 fix for Hard Constraint #3), _validate_share_axis_value, _resolve_facet_values (discrete or pd.cut/qcut Interval), _filter_facet_value (CP1-3 discrete vs binned), _compute_global_ranges. dfdraw is FIRST major plotting library with unified API where Nth faceting dimension generates separate figures (seaborn/ggplot2/plotly/altair all require manual loops). _validate_facet_by_binning guard for list input (v1.3 P1-A). Per-plot-kind dispatch: hist uses range= (matplotlib convention); profile uses range= which DFDraw.profile remaps to draw_profile's x_range= internally; scatter uses ax.set_xlim/set_ylim post-draw (no native range params); hist also locks ax.set_xlim post-draw (range= only locks bins, not axis xlim). Empty cell handling: '(no data)' diagnostic + stats={'n':0,'empty':True} — Phase 13.41.DF | 29 | 27 | 0 | 27 |  |
+| ✅ | **FACET.list_grid** — facet_by accepts Union[str, List[str]] for 1D/2D/3D faceting. Convention LOCKED matching numpy/pandas (n_rows, n_cols, ...) shape: facet_by[0]=ROW (vertical within figure), facet_by[1]=COLUMN (horizontal within figure), facet_by[2]=FIGID (separate figures, one per value). facet_by[3+] raises NotImplementedError. 3D returns (List[Figure], List[axes_2d], List[stats_dict]) — DEVIATES from standard (fig, ax, stats) contract; documented prominently in inline help. New params: share_x/share_y ∈ {'all','row','col','none'} (within-figure axis sharing), share_across_figures: bool (3D global range lock). Per-plot-kind lock for share_across_figures (CP1-2): scatter locks x AND y; hist/profile locks x only (y auto-scales per figure to handle sparse-figID variance). New helpers: _normalize_facet_args, _to_mpl_share (symmetric {'all':True,'row':'row','col':'col','none':False} — v1.2 CP0-1 fix for Hard Constraint #3), _validate_share_axis_value, _resolve_facet_values (discrete or pd.cut/qcut Interval), _filter_facet_value (CP1-3 discrete vs binned), _compute_global_ranges. dfdraw is FIRST major plotting library with unified API where Nth faceting dimension generates separate figures (seaborn/ggplot2/plotly/altair all require manual loops). _validate_facet_by_binning guard for list input (v1.3 P1-A). Per-plot-kind dispatch: hist uses range= (matplotlib convention); profile uses range= which DFDraw.profile remaps to draw_profile's x_range= internally; scatter uses ax.set_xlim/set_ylim post-draw (no native range params); hist also locks ax.set_xlim post-draw (range= only locks bins, not axis xlim). Empty cell handling: '(no data)' diagnostic + stats={'n':0,'empty':True} — Phase 13.41.DF | 31 | 31 | 0 | 31 |  |
 | | **FIT** | | | | | |
 | ✅ | **FIT.inline** — Inline fits (fit= parameter on hist/profile/scatter/draw) | 41 | 41 | 0 | 41 |  |
 | ✅ | **FIT.summary** — Summary fit — standalone table + params figure | 27 | 27 | 0 | 27 |  |
@@ -106,7 +106,7 @@
 | | **LEGEND** | | | | | |
 | ✅ | **LEGEND.modes** — legend= polymorphic kwarg (bool|str|dict) + show_legend= bool parallel + four modes (all|none|shared|first) 👁 | 6 | 6 | 0 | 2 | 4 |
 | | **META** | | | | | |
-| 🧨 | **META.capability_matrix** — capability matrix integrity (taxonomy resolves; coverage; HTML; no orphan visuals) | 4 | 3 | 1 | 3 |  |
+| ✅ | **META.capability_matrix** — capability matrix integrity (taxonomy resolves; coverage; HTML; no orphan visuals) | 4 | 4 | 0 | 4 |  |
 | | **NORMALIZE** | | | | | |
 | ✅ | **NORMALIZE.delta** — normalize='delta': v[0]-v[1] per bin with SEM error propagation — Phase 13.33 M1 | 3 | 3 | 0 | 3 |  |
 | ✅ | **NORMALIZE.ratio** — normalize='ratio': v[0]/v[1] with delta-method error, zero-denom mask — Phase 13.33 M1 | 3 | 3 | 0 | 3 |  |
@@ -218,28 +218,10 @@
 | ☑️ | **VISUAL.facet_r2_hist2d** — draw(type='hist2d', facet_by=) populates every panel — R-2 forwarding visual check (Phase 13.51 S-3 closure) 👁 | 1 | 1 | 0 | 0 | 1 |
 | ☑️ | **VISUAL.hist2d_datetime_labels** — hist2d() time_format='auto' renders readable date tick labels on the appropriate axis (Phase 13.51 S-8 symmetry with hist/scatter/profile) 👁 | 1 | 1 | 0 | 0 | 1 |
 
-## 🧨 Broken Features — Details
+## Unmatched Tests (486)
 
-### META.capability_matrix — capability matrix integrity (taxonomy resolves; coverage; HTML; no orphan visuals)
-
-- ❌ `test_meta_capability_matrix.py::test_taxonomy_tests_resolve`
-
-## Unmatched Tests (490)
-
-490 tests pytest collected that no feature claims.
+486 tests pytest collected that no feature claims.
 Grouped by test-file prefix.
-
-<details><summary><code> facet_by_bins]</code> (1)</summary>
-
-- ` facet_by_bins]`
-
-</details>
-
-<details><summary><code> facet_by_quantiles]</code> (1)</summary>
-
-- ` facet_by_quantiles]`
-
-</details>
 
 <details><summary><code>test_adf_integration.py</code> (14)</summary>
 
@@ -641,13 +623,6 @@ Grouped by test-file prefix.
 <details><summary><code>test_phase_13_52_df_overlay.py</code> (1)</summary>
 
 - `test_phase_13_52_df_overlay.py::test_T1p_overlay_profile2d_profile_alternative_density_base`
-
-</details>
-
-<details><summary><code>test_phase_13_76_facet2d_bugfix.py</code> (2)</summary>
-
-- `test_phase_13_76_facet2d_bugfix.py::test_FBY16_4_2d_facet_cells_match_global_classification[kw0]`
-- `test_phase_13_76_facet2d_bugfix.py::test_FBY16_4_2d_facet_cells_match_global_classification[kw1]`
 
 </details>
 
