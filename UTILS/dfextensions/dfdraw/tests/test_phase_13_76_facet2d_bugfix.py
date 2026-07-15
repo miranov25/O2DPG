@@ -1,146 +1,146 @@
-"""PHASE_13_76_DF locking tests — facet dispatch: float16 crash + 2D bin-edge recompute.
+"""PHASE_13_76_DF locking tests (v1.1) — facet float16 crash + 2D bin-edge recompute.
+
+v1.0 REGRESSION (panel-caught, GPT12/15/16/17): the original Bug-B tests were
+tautological — they compared df[mask] against mask.sum() (always equal) and never
+invoked _dispatch_2d_facet, so a mutation reverting the fix still passed them.
+This v1.1 replaces them with tests that call the PUBLIC facet dispatch path and
+compare the dispatcher's returned per-cell stats against an INDEPENDENT oracle
+computed outside the dispatcher. Mutation-verified: the B-tests FAIL when
+_dispatch_2d_facet is reverted to the chained filter.
 
 Bug A (P2): pd.cut/pd.qcut crash on float16 facet columns.
-Bug B (P1): 2D facet chained the per-cell filter, so the column filter re-derived
-            its bin edges from the already-row-filtered subset; Interval equality
-            then failed and populated cells silently rendered "(no data)".
+Bug B (P1): 2D facet chained the per-cell filter, re-deriving column bin edges on
+            the already-row-filtered subset; populated cells silently under-reported.
 
-Panel binding corrections folded in (Sonnet5_1 consolidation §3):
-  1. Bug A test covers BOTH pd.cut (facet_by_bins) AND pd.qcut (facet_by_quantiles).
-  2. Ground-truth oracle is right-closed. pd.cut uses (left, right]; a naive
-     df[col].between(l, r) is inclusive on BOTH ends and would mis-handle boundary
-     rows — it can falsely fail correct code or falsely pass broken code. The oracle
-     here derives the expected mask from the SAME global pd.cut/pd.qcut categorical,
-     which is right-closed by construction.
-  3. Guards are `is not None`, never truthiness (bins=0 / array-like bin specs have
-     no unambiguous boolean sense).
-
-Invariance (A ≡ B): the set of rows in facet cell (i, j) is exactly the set whose
-GLOBAL row-classification is row_v and GLOBAL column-classification is col_v —
-independent of the order the dimensions are filtered in.
+Layer classification (panel correction 3):
+  - B1/B2  -> "invariance" (dispatcher output vs independent oracle; the real lock)
+  - A1/A2  -> "integration" (public dispatch path, float16, no-crash + grid shape)
+  - structural/fixture checks -> "smoke"
 """
 import numpy as np
 import pandas as pd
 import pytest
+import matplotlib
+matplotlib.use("Agg")
 
-from dfdraw.drawer import _safe_cut_series, _classify_facet_dim, _resolve_facet_values
-
-
-# ---------------------------------------------------------------- Bug A: float16
-def _float16_frame(n=2000, seed=0):
-    rng = np.random.default_rng(seed)
-    return pd.DataFrame({"a": rng.uniform(-1, 1, n).astype(np.float16)})
+from dfdraw import DFDraw
+from dfdraw.drawer import _safe_cut_series, _classify_facet_dim
 
 
-def test_FBY16_1a_float16_facet_column_bins_no_crash():
-    """Bug A, pd.cut path (facet_by_bins): float16 facet column must not raise."""
-    bin_series, values = _classify_facet_dim(_float16_frame(), "a", bins=4)
-    assert bin_series is not None
-    assert len(values) > 1, f"expected multiple categories, got {values}"
-
-
-def test_FBY16_1b_float16_facet_column_quantiles_no_crash():
-    """Bug A, pd.qcut path (facet_by_quantiles). Binding correction 1: the
-    original spec locked only the bins path; qcut is equally affected."""
-    bin_series, values = _classify_facet_dim(_float16_frame(), "a", quantiles=4)
-    assert bin_series is not None
-    assert len(values) > 1, f"expected multiple categories, got {values}"
-
-
-def test_FBY16_2_float16_upcast_preserves_values():
-    """The upcast must not change the classification vs an already-float32 column."""
-    rng = np.random.default_rng(1)
-    raw = rng.uniform(-1, 1, 2000).astype(np.float16)
-    s16 = pd.Series(raw)
-    s32 = pd.Series(raw.astype(np.float32))
-    c16 = _safe_cut_series(s16, bins=4)
-    c32 = _safe_cut_series(s32, bins=4)
-    assert (c16.astype(str) == c32.astype(str)).all(), "float16 upcast changed binning"
-
-
-def test_FBY16_3_qcut_duplicates_drop_preserved():
-    """The qcut path must keep duplicates='drop' (no silent behavior change)."""
-    s = pd.Series([0.0] * 900 + list(np.linspace(0.1, 1.0, 100)))
-    out = _safe_cut_series(s, quantiles=4)      # heavy ties: would raise without drop
-    assert out.notna().sum() > 0
-
-
-# ------------------------------------------------- Bug B: 2D chained recompute
 def _correlated_frame(n=20000, seed=0):
-    """Correlated columns: the column's range genuinely shifts per row-slice.
-    The existing 23 FBY tests use INDEPENDENT uniform columns, which is exactly
-    why they never caught this bug."""
+    """Correlated columns: the column's range genuinely shifts per row-slice — the
+    condition the existing 23 FBY tests never create (they use independent uniforms),
+    which is exactly why they never caught Bug B."""
     rng = np.random.default_rng(seed)
     x = rng.uniform(-1, 1, n)
-    y = 3.0 * x + rng.normal(0, 0.05, n)        # strongly correlated
+    y = 3.0 * x + rng.normal(0, 0.05, n)
     return pd.DataFrame({"row": x, "col": y})
 
 
-def _assert_2d_cells_match_global(**kw):
-    """Bug B invariant: every cell's row set == rows whose GLOBAL row-class is
-    row_v AND GLOBAL col-class is col_v. No row may be lost.
+def _float16_frame(n=2000, seed=0):
+    rng = np.random.default_rng(seed)
+    return pd.DataFrame({"row": rng.uniform(-1, 1, n).astype(np.float16),
+                         "col": rng.uniform(-1, 1, n).astype(np.float16)})
 
-    Oracle is right-closed by construction (binding correction 2): it reuses the
-    SAME global categorical, not df.between() (which is closed on both ends)."""
+
+# ============================ Bug B — REAL dispatcher locks =================
+def _dispatch_cell_counts(df, kw):
+    """Call the PUBLIC 2D facet path; return {(row_iv,col_iv): n} from the
+    dispatcher's own returned stats dict."""
+    fig, axes, stats = DFDraw(df).profile("col:row", facet_by=["row", "col"], **kw)
+    import matplotlib.pyplot as plt; plt.close(fig)
+    return {k: v.get("n", 0) for k, v in stats.items()}
+
+
+def _oracle_cell_counts(df, mode):
+    """Independent ground truth: GLOBAL right-closed cut/qcut, computed WITHOUT
+    going through the dispatcher, counted per (row_bin, col_bin) cell."""
+    if mode == "bins":
+        rb, cb = pd.cut(df["row"], 3), pd.cut(df["col"], 3)
+    else:
+        rb = pd.qcut(df["row"], 3, duplicates="drop")
+        cb = pd.qcut(df["col"], 3, duplicates="drop")
+    return rb, cb
+
+
+def test_FBY16_B1_dispatch_cell_counts_match_oracle_bins():
+    """Bug B invariant (pd.cut): the dispatcher's per-cell n must equal an
+    independent global-cut oracle, and total rows must be conserved. FAILS on the
+    pre-fix chained-filter dispatcher (mutation-verified)."""
     df = _correlated_frame()
-    rs, row_values = _classify_facet_dim(df, "row", **kw)
-    cs, col_values = _classify_facet_dim(df, "col", **kw)
-
+    disp = _dispatch_cell_counts(df, dict(facet_by_bins=[3, 3]))
+    rb, cb = _oracle_cell_counts(df, "bins")
     total = 0
-    populated_but_empty = 0
-    for rv in row_values:
-        for cv in col_values:
-            row_mask = (rs == rv)
-            col_mask = (cs == cv)
-            cell = df[row_mask.fillna(False) & col_mask.fillna(False)]
-            expected = int((row_mask.fillna(False) & col_mask.fillna(False)).sum())
-            assert len(cell) == expected
-            if expected > 0 and len(cell) == 0:
-                populated_but_empty += 1
-            total += len(cell)
-
-    assert populated_but_empty == 0, "cell silently rendered empty despite holding rows"
-    assert total == len(df), (
-        f"2D facet lost rows: kept {total} of {len(df)} — chained bin-edge recompute")
+    for (riv, civ), n in disp.items():
+        truth = int(((rb == riv) & (cb == civ)).sum())
+        assert n == truth, f"cell ({riv},{civ}): dispatcher n={n} != oracle {truth}"
+        total += n
+    assert total == len(df), f"2D facet lost rows: dispatcher kept {total} of {len(df)}"
 
 
-def test_FBY16_4a_2d_facet_cells_match_global_classification_bins():
-    """Bug B row-conservation on the pd.cut path."""
-    _assert_2d_cells_match_global(bins=3)
-
-
-def test_FBY16_4b_2d_facet_cells_match_global_classification_quantiles():
-    """Bug B row-conservation on the pd.qcut path."""
-    _assert_2d_cells_match_global(quantiles=3)
-
-
-def test_FBY16_5_2d_facet_no_row_loss_is_nonvacuous():
-    """Guard against a vacuous fixture: the correlated frame MUST produce cells
-    where a naive chained filter would have failed. If every cell were trivially
-    fine, the test above would prove nothing."""
+def test_FBY16_B2_dispatch_cell_counts_match_oracle_quantiles():
+    """Bug B invariant (pd.qcut), same dispatcher-vs-oracle comparison."""
     df = _correlated_frame()
-    rs, row_values = _classify_facet_dim(df, "row", bins=3)
-    cs, col_values = _classify_facet_dim(df, "col", bins=3)
-    # at least 2 populated cells and the column range must actually shift per row slice
-    populated = sum(
-        1 for rv in row_values for cv in col_values
-        if ((rs == rv).fillna(False) & (cs == cv).fillna(False)).sum() > 0
-    )
-    assert populated >= 2, "fixture too weak to exercise the bug"
-    spans = [df.loc[(rs == rv).fillna(False), "col"].max()
-             - df.loc[(rs == rv).fillna(False), "col"].min() for rv in row_values]
-    full_span = df["col"].max() - df["col"].min()
-    assert min(spans) < 0.75 * full_span, (
-        "column range does not shift across row slices — fixture would not trigger "
-        "the chained-recompute defect (this is the flaw in the existing FBY tests)")
+    disp = _dispatch_cell_counts(df, dict(facet_by_quantiles=[3, 3]))
+    rb, cb = _oracle_cell_counts(df, "quantiles")
+    total = 0
+    for (riv, civ), n in disp.items():
+        truth = int(((rb == riv) & (cb == civ)).sum())
+        assert n == truth, f"cell ({riv},{civ}): dispatcher n={n} != oracle {truth}"
+        total += n
+    assert total == len(df), f"2D facet lost rows: dispatcher kept {total} of {len(df)}"
 
 
-def test_FBY16_6_discrete_facet_unaffected():
-    """Discrete (unbinned) facet dimensions must be unchanged: bins/quantiles both
-    None -> plain equality, no classification. Guards the `is not None` fix
-    (binding correction 3): a truthiness guard would misroute bins=0."""
+# ============================ Bug A — REAL public-path integration ==========
+def test_FBY16_A1_float16_public_dispatch_bins():
+    """Bug A (pd.cut): faceting on a float16 column through the PUBLIC dispatch
+    path must not raise and must produce the expected grid shape."""
+    df = _float16_frame()
+    fig, axes, stats = DFDraw(df).profile("col:row", facet_by=["row", "col"],
+                                          facet_by_bins=[3, 3])
+    import matplotlib.pyplot as plt; plt.close(fig)
+    assert len(stats) >= 1, "float16 facet produced no cells"
+    assert np.asarray(axes).size >= 4, "expected a >=3x3-ish grid"
+
+
+def test_FBY16_A2_float16_public_dispatch_quantiles():
+    """Bug A (pd.qcut): float16 through the public path, quantile binning."""
+    df = _float16_frame()
+    fig, axes, stats = DFDraw(df).profile("col:row", facet_by=["row", "col"],
+                                          facet_by_quantiles=[3, 3])
+    import matplotlib.pyplot as plt; plt.close(fig)
+    assert len(stats) >= 1, "float16 qcut facet produced no cells"
+
+
+# ============================ structural / fixture (smoke) ==================
+def test_FBY16_S1_float16_upcast_preserves_binning():
+    """Structural: the float16->float32 upcast must not change the classification."""
+    raw = np.random.default_rng(1).uniform(-1, 1, 2000).astype(np.float16)
+    c16 = _safe_cut_series(pd.Series(raw), bins=4)
+    c32 = _safe_cut_series(pd.Series(raw.astype(np.float32)), bins=4)
+    assert (c16.astype(str) == c32.astype(str)).all()
+
+
+def test_FBY16_S2_qcut_duplicates_drop_preserved():
+    """Structural: qcut path keeps duplicates='drop' (heavy ties must not raise)."""
+    s = pd.Series([0.0] * 900 + list(np.linspace(0.1, 1.0, 100)))
+    assert _safe_cut_series(s, quantiles=4).notna().sum() > 0
+
+
+def test_FBY16_S3_discrete_facet_unaffected():
+    """Structural: bins/quantiles both None -> plain equality, no classification
+    (guards the `is not None` branch; a truthiness guard would misroute bins=0)."""
     df = pd.DataFrame({"row": [0, 0, 1, 1, 2, 2], "col": [0, 1, 0, 1, 0, 1]})
     bin_series, values = _classify_facet_dim(df, "row", bins=None, quantiles=None)
-    assert bin_series is None
-    assert values == [0, 1, 2]
-    assert values == _resolve_facet_values(df, "row")   # A ≡ B with the old helper
+    assert bin_series is None and values == [0, 1, 2]
+
+
+def test_FBY16_S4_correlated_fixture_is_nonvacuous():
+    """Fixture-quality guard: the correlated frame must actually make the column
+    range shift across row slices, else B1/B2 would not exercise the bug."""
+    df = _correlated_frame()
+    rb = pd.cut(df["row"], 3)
+    spans = [df.loc[rb == iv, "col"].max() - df.loc[rb == iv, "col"].min()
+             for iv in rb.cat.categories]
+    full = df["col"].max() - df["col"].min()
+    assert min(spans) < 0.75 * full, "fixture too weak to trigger the chained-recompute bug"

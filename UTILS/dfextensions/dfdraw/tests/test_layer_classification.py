@@ -14,15 +14,15 @@ Phase 13.15.DF
 """
 
 TEST_LAYERS = {
-    # PHASE_13_76_DF — facet float16 + 2D cell-integrity (row conservation is A==B)
-    "test_phase_13_76_facet2d_bugfix.py::test_FBY16_1a_float16_facet_column_bins_no_crash": "invariance",
-    "test_phase_13_76_facet2d_bugfix.py::test_FBY16_1b_float16_facet_column_quantiles_no_crash": "invariance",
-    "test_phase_13_76_facet2d_bugfix.py::test_FBY16_2_float16_upcast_preserves_values": "invariance",
-    "test_phase_13_76_facet2d_bugfix.py::test_FBY16_3_qcut_duplicates_drop_preserved": "invariance",
-    "test_phase_13_76_facet2d_bugfix.py::test_FBY16_4a_2d_facet_cells_match_global_classification_bins": "invariance",
-    "test_phase_13_76_facet2d_bugfix.py::test_FBY16_4b_2d_facet_cells_match_global_classification_quantiles": "invariance",
-    "test_phase_13_76_facet2d_bugfix.py::test_FBY16_5_2d_facet_no_row_loss_is_nonvacuous": "invariance",
-    "test_phase_13_76_facet2d_bugfix.py::test_FBY16_6_discrete_facet_unaffected": "invariance",
+    # PHASE_13_76_DF (v1.1) — B=invariance (dispatcher vs oracle), A=integration, S=smoke
+    "test_phase_13_76_facet2d_bugfix.py::test_FBY16_B1_dispatch_cell_counts_match_oracle_bins": "invariance",
+    "test_phase_13_76_facet2d_bugfix.py::test_FBY16_B2_dispatch_cell_counts_match_oracle_quantiles": "invariance",
+    "test_phase_13_76_facet2d_bugfix.py::test_FBY16_A1_float16_public_dispatch_bins": "integration",
+    "test_phase_13_76_facet2d_bugfix.py::test_FBY16_A2_float16_public_dispatch_quantiles": "integration",
+    "test_phase_13_76_facet2d_bugfix.py::test_FBY16_S1_float16_upcast_preserves_binning": "smoke",
+    "test_phase_13_76_facet2d_bugfix.py::test_FBY16_S2_qcut_duplicates_drop_preserved": "smoke",
+    "test_phase_13_76_facet2d_bugfix.py::test_FBY16_S3_discrete_facet_unaffected": "smoke",
+    "test_phase_13_76_facet2d_bugfix.py::test_FBY16_S4_correlated_fixture_is_nonvacuous": "smoke",
     "test_profile_overflow.py::test_profile_mean_range_invariance": "invariance",
     "test_profile_overflow.py::test_profile_std_range_invariance": "invariance",
     "test_profile_overflow.py::test_profile_median_range_invariance": "invariance",
