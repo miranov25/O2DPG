@@ -137,6 +137,14 @@ echo "== collision guard: same-second bundles distinct (V2-6/R-8, structural) ==
 O7="$WORK/o7"; mkdir "$O7"; run -o "$O7" >/dev/null 2>&1 & run -o "$O7" >/dev/null 2>&1; wait
 check "collision: two bundles" "$(ls -d "$O7"/host_diag_* | wc -l)" 2
 
+echo "== T-D11a: bundle dir vanishes mid-run -> loud FATAL, exit 1 (2026-07-16 incident) =="
+FIXV="$WORK/fixv"; mkfix "$FIXV"; OV="$WORK/ov"; mkdir "$OV"
+( sleep 0.4; rm -rf "$OV"/host_diag_* ) &
+PROC_ROOT="$FIXV/proc" SYS_ROOT="$FIXV/sys" bash "$SCRIPT" -o "$OV" -s 1 -n 3 >/dev/null 2> "$WORK/tv.err"; rcv=$?
+wait
+check "T-D11a exit" "$rcv" 1
+grep -q "bundle directory vanished" "$WORK/tv.err" && ok "T-D11a loud FATAL message" || bad "T-D11a loud FATAL message"
+
 echo "== verdict rules: THP-01 fires on [always] fixture =="
 FIX5="$WORK/fix5"; mkfix "$FIX5"; echo "[always] madvise never" > "$FIX5/sys/kernel/mm/transparent_hugepage/enabled"
 # quiet the kthread so ONLY the config rule fires (base fixture deliberately trips KC-01)

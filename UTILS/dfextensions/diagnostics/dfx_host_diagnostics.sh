@@ -257,6 +257,9 @@ if [ "$S_GIVEN" = 1 ]; then
   OVERRUNS=0
   i=1
   while [ "$i" -le "$NSAMPLES" ]; do
+    # T-D11a guard: if the bundle directory vanishes mid-run (mv/rm/tmp-cleaner),
+    # fail LOUDLY instead of appending forever into deleted files (2026-07-16 incident)
+    [ -d "$BUNDLE" ] || { echo "FATAL: bundle directory vanished: $BUNDLE (sample $i/$NSAMPLES)" >&2; exit 1; }
     SW0=$(date +%s.%N 2>/dev/null || date +%s)
     cs=$(vmk compact_stall); cf=$(vmk compact_fail); fa=$(vmk thp_fault_alloc)
     fb=$(vmk thp_fault_fallback); ca=$(vmk thp_collapse_alloc); pd=$(vmk pgscan_direct)
