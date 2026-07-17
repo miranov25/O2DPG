@@ -2,13 +2,13 @@
 """
 reviewer_bundle.py - dfextensions/diagnostics: build the reviewer packet zip.
 
-One command produces everything a reviewer needs (REVIEWER_GUIDE.md 6-step
+One command produces everything a reviewer needs (the README Reviewer-recipe 6-step
 recipe is the entry point inside):
 
   python3 diagnostics/reviewer_bundle.py [-o OUT.zip] [--evidence DIR ...]
 
 Contents: code/ (all modules + collector script), tests/, docs/ (README,
-REVIEWER_GUIDE, run recipe), logs/ (fresh run_tests.sh output), provenance/
+run recipe), logs/ (fresh run_tests.sh output), provenance/
 (git log for the phase, file MD5 MANIFEST), plus any --evidence directories
 (rendered reports, real bundles, validation/) copied verbatim.
 The zip's own MD5 is printed last - cite it when distributing (AD-10).
@@ -27,7 +27,7 @@ HERE = Path(__file__).resolve().parent
 CODE = ["dfx_host_diagnostics.sh", "collector.py", "schema.py", "audit.py",
         "report_diagnostics.py", "run_metrics.py", "explain_bundle.py",
         "dfx_run_with_diagnostics.py", "run_tests.sh"]
-DOCS = ["README.md", "REVIEWER_GUIDE.md"]
+DOCS = ["README.md"]
 
 
 def md5(p):
@@ -40,12 +40,15 @@ def main(argv=None):
     ap.add_argument("--evidence", action="append", default=[],
                     help="directory to include under evidence/ (repeatable)")
     ap.add_argument("--skip-tests", action="store_true",
-                    help="do not run the suites (NOT for official packets)")
+                    help="do not run the suites (used by run_tests.sh, which "
+                         "just ran them; standalone official packets rerun)")
+    ap.add_argument("--logs", default=None,
+                    help="log directory to package (default: <here>/test_logs)")
     a = ap.parse_args(argv)
     ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     out = Path(a.out or f"diagnostics_reviewer_{ts}.zip")
 
-    logdir = HERE / "test_logs"
+    logdir = Path(a.logs) if a.logs else HERE / "test_logs"
     if not a.skip_tests:
         print("[bundle] running suites (this IS the point - packets carry fresh logs)")
         rc = subprocess.run(["bash", str(HERE / "run_tests.sh"), str(logdir)]).returncode
@@ -89,7 +92,7 @@ def main(argv=None):
         z.writestr("START_HERE.txt",
                    "Reviewer packet - dfextensions/diagnostics (PHASE_13_74_ADF)\n"
                    "1. verify provenance/MANIFEST.md5 against code/ and tests/\n"
-                   "2. read docs/REVIEWER_GUIDE.md and execute its 6 steps\n"
+                   "2. read docs/README.md section: Reviewer recipe - execute its 6 steps\n"
                    "3. logs/ contains the suite runs made when this zip was built\n"
                    "4. evidence/ (if present) holds real bundles and rendered reports\n")
     print(f"[bundle] wrote {out}  files={len(entries)}")

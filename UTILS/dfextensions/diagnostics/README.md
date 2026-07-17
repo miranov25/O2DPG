@@ -19,6 +19,17 @@ changes are an admin decision.**
 | `report_diagnostics.py` | bundles -> AliasDataFrame -> dfdraw figures + summary + IT report |
 | `tests/` | hermetic fixture suites (bash + pytest); ADF tier gates on alma2 |
 
+## Reviewer recipe (execute, do not just read)
+
+1. Verify `provenance/MANIFEST.md5` in the packet against `code/` and `tests/`.
+2. Run the gate yourself: `bash diagnostics/run_tests.sh` - expect `SUMMARY: diagnostics OK`.
+3. Collect on a live host: `bash diagnostics/dfx_host_diagnostics.sh -o /tmp/rv -s 5 -n 6`.
+4. Render + audit: `python3 diagnostics/report_diagnostics.py /tmp/rv/host_diag_* -o /tmp/rv/rep`;
+   read `/tmp/rv/rep/validation/summary.md` FIRST (trust check).
+5. Inspect the report: vitals ALWAYS drawn; processes-and-background section present;
+   rank fields EMPTY (never 0) when a process is outside a top list.
+6. Verdict per the Reviewer QRC: findings P0/P1/P2 with file:line evidence.
+
 ## How to run collection (runbook)
 
 **A. Health snapshot** (5 s): `bash diagnostics/dfx_host_diagnostics.sh -o <data_dir>`
@@ -141,3 +152,76 @@ The ADF tier (add_alias -> materialize -> adf.draw path) auto-skips where the
 locked stack (pandas 1.5.3 + AliasDataFrame + dfdraw) is absent and is
 BLOCKING on alma2. Fixture roots: `PROC_ROOT`, `SYS_ROOT`, `CGROUP_ROOT`,
 `CLK_TCK_OVERRIDE`, `PS_CMD_OVERRIDE`.
+
+
+# Reviewer recipe (CRR packet entry point)
+
+You are reviewing a host-pathology measurement tool. You do NOT need to read
+the CSV raw — the tool explains its own data. Review = run six commands and
+judge the outputs against the expectations below.
+
+## The 6-step review (copy-paste; needs only python3+pandas and bash)
+
+```bash
+cd <packet>/code
+# 1. hermetic test suites (fixtures - no host dependence)
+bash ../tests/test_dfx_host_diagnostics.sh | tail -1        # expect PASS=54 FAIL=0
+python3 -m pytest -q ../tests/                              # expect all pass (ADF tier may skip off-alma2)
+
+# 2. collect 3 samples on YOUR machine (read-only, writes one bundle dir)
+bash dfx_host_diagnostics.sh -o /tmp/rev -s 1 -n 3
+
+# 3. THE ENTRY POINT - the tool explains the bundle column by column:
+python3 explain_bundle.py /tmp/rev/host_diag_*
+#    read [6] SELF-CONSISTENCY VERDICT: anchors must be alive on your machine.
+
+# 4. oracle check (trust nothing): recompute one rate yourself
+python3 - <<'EOF'
+import sys; sys.path.insert(0,'.'); import schema, glob
+b = schema.load_bundle(glob.glob('/tmp/rev/host_diag_*')[0]); df = schema.samples_frame(b)
+print("max |csv - oracle| =", ((df.compact_stall_total.diff()/df.ts.diff())
+      .iloc[1:] - df.compact_stall_per_s.iloc[1:]).abs().max())   # expect 0 or NaN-free tiny
+EOF
+
+# 5. break it on purpose - the tool must FAIL LOUDLY, never lie:
+PROC_ROOT=/nonexistent bash dfx_host_diagnostics.sh -o /tmp/rev; echo "exit=$? (expect 2 UNKNOWN)"
+
+# 6. render and eyeball
+python3 report_diagnostics.py /tmp/rev/host_diag_* -o /tmp/rev_report   # open report.html
+```
+
+## What SHOULD be there (the expectation table)
+
+| Channel class | Healthy host | Affected host (the 2026-07-14 incidents) | Broken collector |
+|---|---|---|---|
+| **ANCHORS**: loadavg1, cpu_busy_pct, mem_available_kb, ctxt_per_s, procs_running | alive and moving — CPU 1–100%, ctxt hundreds+, load >0 | alive (possibly extreme) | **flat zero — the tell** |
+| compaction/THP rates (compact_stall/s, thp_fault_fallback/s, allocstall/s) | **all 0 — zero is the healthy value** | >0 sustained; compact_stall/s is the smoking gun | 0 (indistinguishable without anchors — that is WHY anchors exist) |
+| kcompactd/khugepaged CPU | ~0; INVISIBLE in containers (evidence state says so) | >0.05/s sustained | 0 with state=available and anchors dead |
+| PSI mem full avg10/60 | 0; ABSENT on old/container kernels (state says so) | ≥1 live pathology, ≥5 fires PSI-01 | — |
+| pgscan_direct/s, swap in/out per s | ~0 | hundreds+/s = reclaim pressure | — |
+| sample_wall_s | < 0.5 s | < 0.5 s | overruns |
+
+**Decision logic (also printed by explain_bundle.py):** anchors moving +
+pathology zero ⇒ healthy host, working collector — proven, not assumed.
+Anchors moving + pathology nonzero ⇒ incident data — the whole point.
+Anchors flat ⇒ do not trust anything else in the bundle.
+
+## Where to hunt for bugs (CRR §6, condensed)
+
+1. Rerun step-4's oracle for EVERY *_per_s column, not just one.
+2. Feed hostile fixtures via PROC_ROOT/SYS_ROOT (weird THP strings, huge/tiny
+   uptime, missing files mid-run, prefix-colliding vmstat keys).
+3. Hunt redaction leaks: any other-user string reaching snapshot/report/IT output.
+4. awk portability (mawk/busybox) — printf-argument bugs bit this tool twice.
+5. run_metrics under forks/threads; exception path must write-then-reraise.
+6. explain_bundle's flags: construct a bundle that fools the self-consistency verdict.
+
+## History you should know (so you don't re-litigate)
+
+Rate arithmetic was orally accused and ORACLE-CLEARED on real data (error
+exactly 0.0). The real bug was a coverage gap: pgscan_direct ran at 357/s
+(bursts 2962/s) while every plotted channel was zero — fixed by deriving
+rates for all *_total columns. Anchors were added after reviewers and the
+architect could not tell "healthy" from "broken" — that failure mode is now
+mechanically detectable. Two alma2 test failures were a harness race
+(non-atomic fixture swap); the product responded with an honest INVALID row.
