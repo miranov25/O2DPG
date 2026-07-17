@@ -35,6 +35,7 @@ _UTILS = Path(__file__).resolve().parent.parent.parent
 if (_UTILS / "dfextensions" / "dfdraw").is_dir():
     sys.path.insert(0, str(_UTILS))
 import schema  # noqa: E402
+import audit as audit_mod  # noqa: E402
 
 # channels drawn/summarized when present (rates + PSI are the pathology signals)
 DEFAULT_CHANNELS = [
@@ -42,6 +43,9 @@ DEFAULT_CHANNELS = [
     "thp_fault_fallback_per_s", "allocstall_per_s",
     "kcompactd_cpu_per_s", "khugepaged_cpu_per_s",
     "psi_mem_some_avg10", "psi_mem_full_avg10",
+    # derived by schema.samples_frame from *_total columns (coverage-gap fix):
+    "pgscan_direct_per_s", "disk_read_sectors_per_s",
+    "pswpin_per_s", "pswpout_per_s", "thp_collapse_alloc_per_s",
 ]
 DEFAULT_SECTIONS = ["environment", "rates", "psi", "runs", "crosshost", "evidence"]
 
@@ -59,6 +63,22 @@ SEVERITY_ALIASES = {
 
 
 # --------------------------------------------------------------------------
+def _aux_tables(bundle):
+    """process/user tables if the bundle has them (v8 D1.6); else (None, None)."""
+    import pandas as pd
+    pp = bundle.path / "process_samples.csv"
+    up = bundle.path / "user_samples.csv"
+    pdf_ = udf_ = None
+    try:
+        if pp.is_file() and len(pp.read_text().splitlines()) > 1:
+            pdf_ = pd.read_csv(pp)
+        if up.is_file() and len(up.read_text().splitlines()) > 1:
+            udf_ = pd.read_csv(up)
+    except Exception:
+        pass
+    return pdf_, udf_
+
+
 def _summarize(df, cols):
     """Report-local summary: per-channel count/mean/std/min/max/last on VALID
     rows. Pure-pandas on the materialized frame; oracle-tested (T-R7/T-R8)."""
@@ -123,6 +143,33 @@ def _draw_series(adf, cols, fig_dir, host):
     return written
 
 
+def _img_datauri(path):
+    """Embed a figure as a base64 data-URI: report.html stays valid when moved
+    or mailed WITHOUT its figures/ directory (2026-07-16 'empty report' lesson)."""
+    import base64
+    return ("data:image/png;base64," +
+            base64.b64encode(Path(path).read_bytes()).decode("ascii"))
+
+
+def _channels_to_draw(df, cols):
+    """Split channels into (active, flat_zero, no_data) for the window.
+    Flat-zero channels are summarized in one line instead of an empty-looking
+    plot each - on an affected host only the pathological channels plot."""
+    active, flat, nodata = [], [], []
+    valid = df[df["row_valid"]] if "row_valid" in df.columns else df
+    for c in cols:
+        if c not in valid.columns:
+            continue
+        s = valid[c].dropna()
+        if len(s) == 0:
+            nodata.append(c)
+        elif (s == 0).all():
+            flat.append(c)
+        else:
+            active.append(c)
+    return active, flat, nodata
+
+
 def _html(title, sections):
     body = "\n".join(sections)
     return ("<!doctype html><html><head><meta charset='utf-8'>"
@@ -176,7 +223,7 @@ def _it_report(bundles, summaries, out_dir):
 
 # ============================ public API (frozen) ===========================
 def generate(bundles, run_records=(), labels=None, sections=None,
-             out_dir=".", mode="technical"):
+             out_dir=".", mode="technical", audit=True):
     """Render diagnostic bundles. Returns the path of the primary artifact
     (report.html for technical mode, report_it.md for it_report mode)."""
     if mode not in ("technical", "it_report"):
@@ -187,6 +234,7 @@ def generate(bundles, run_records=(), labels=None, sections=None,
     if not loaded:
         raise ValueError("no bundles given")
 
+    aud = audit_mod.Audit() if audit else None
     summaries, figures, html_parts = {}, {}, []
     for b in loaded:
         env = {"verdict": (b.verdict + " (collector still sampling - verdict is "
@@ -212,11 +260,28 @@ def generate(bundles, run_records=(), labels=None, sections=None,
                               "production node for these signals.</p>")
         if b.samples_path is not None:
             frame = schema.samples_frame(b)
+            if aud is not None:
+                aud.add_stage("S2_parse_derive", f"{b.host}:samples", frame)
+                aud.check_conservation(frame)
+                aud.check_counts(frame)
+                pdf_, udf_ = _aux_tables(b)
+                if pdf_ is not None:
+                    aud.add_stage("S2_parse_derive", f"{b.host}:process_samples", pdf_)
+                aud.check_hierarchy(frame, pdf_, udf_)
             adf, reg = _build_adf(frame)
             summaries[b.host] = _summarize(adf.df, DEFAULT_CHANNELS + reg)
+            if aud is not None:
+                aud.check_reproducibility(summaries[b.host], adf.df,
+                                          DEFAULT_CHANNELS + reg)
             if "rates" in sections or "psi" in sections:
-                figures[b.host] = _draw_series(adf, DEFAULT_CHANNELS + reg,
-                                               out_dir / "figures", b.host)
+                active, flat, nodata = _channels_to_draw(adf.df, DEFAULT_CHANNELS + reg)
+                figures[b.host] = _draw_series(adf, active, out_dir / "figures", b.host)
+                if flat:
+                    html_parts.append(f"<p><b>{b.host}:</b> flat ZERO over the whole "
+                                      f"window (not plotted): {', '.join(flat)}</p>")
+                if nodata:
+                    html_parts.append(f"<p><b>{b.host}:</b> no data on this platform: "
+                                      f"{', '.join(nodata)}</p>")
         else:
             summaries[b.host] = {}
 
@@ -228,6 +293,10 @@ def generate(bundles, run_records=(), labels=None, sections=None,
                             "summary": summaries.get(b.host, {})} for b in loaded}},
         indent=1, sort_keys=True))
 
+    if aud is not None:
+        aud.trace["bundles"] = [str(b.path) for b in loaded]
+        aud.trace["mode"] = mode
+        aud.write(out_dir)
     if mode == "it_report":
         return _it_report(loaded, summaries, out_dir)
 
@@ -238,8 +307,14 @@ def generate(bundles, run_records=(), labels=None, sections=None,
                      f"max={v.get('max',float('nan')):.3g} last={v.get('last',float('nan')):.3g}"
                      if v.get("count") else "no data") for c, v in summ.items()}))
     for host, figs in figures.items():
+        if not figs:
+            html_parts.append(f"<h2>{host} - time series</h2><p>all channels flat "
+                              "zero or without data over this window - nothing to plot "
+                              "(a good sign on a healthy host; see summary table)</p>")
+            continue
         html_parts.append(f"<h2>{host} - time series</h2>" +
-                          "".join(f"<img src='figures/{f}'>" for f in figs))
+                          "".join(f"<img src='{_img_datauri(out_dir / 'figures' / f)}' "
+                                  f"alt='{f}'>" for f in figs))
     if "crosshost" in sections and len(loaded) > 1:
         diff = schema.config_diff(loaded)
         html_parts.append("<h2>Cross-host configuration differences</h2>" +
@@ -265,5 +340,8 @@ if __name__ == "__main__":
     ap.add_argument("bundles", nargs="+", help="bundle directories (D1 output)")
     ap.add_argument("-o", "--out-dir", default="diag_report")
     ap.add_argument("--mode", choices=["technical", "it_report"], default="technical")
+    ap.add_argument("--no-audit", action="store_true",
+                    help="skip validation/ audit (recorded; audit-less reports "
+                         "cannot serve as CRR/official evidence)")
     a = ap.parse_args()
-    print(generate(a.bundles, out_dir=a.out_dir, mode=a.mode))
+    print(generate(a.bundles, out_dir=a.out_dir, mode=a.mode, audit=not a.no_audit))

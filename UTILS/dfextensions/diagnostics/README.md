@@ -19,6 +19,27 @@ changes are an admin decision.**
 | `report_diagnostics.py` | bundles -> AliasDataFrame -> dfdraw figures + summary + IT report |
 | `tests/` | hermetic fixture suites (bash + pytest); ADF tier gates on alma2 |
 
+## How to run collection (runbook)
+
+**A. Health snapshot** (5 s): `bash diagnostics/dfx_host_diagnostics.sh -o <data_dir>`
+**B. Background watch**: `nohup bash ... -o <data_dir> -s 60 -n 120 > <data_dir>/run.log 2>&1 &`
+(process/user/rollup tables sample automatically at 5 s; stop cleanly with
+`kill -TERM <pid>`; NEVER move/delete the bundle dir mid-run - loud FATAL.)
+**C. Around your job**: add `-R <run_id> -F <pidfile>` and run the job with
+`DFX_RUN_ID=<run_id>` so run_metrics records join the bundle; the job's tree
+is marked `is_target_job=1` in process_samples.csv.
+**D. Production node, no checkout**: copy exactly two files -
+`dfx_host_diagnostics.sh` + `collector.py` - run as in A/B, scp the bundle
+back (shareable redaction is the default).
+**E. Analyze**: `report_diagnostics.py <bundles...> -o <out>` then read
+`<out>/validation/summary.md` FIRST (trust check), `explain_bundle.py <bundle>`
+for the column-by-column reading, `--mode it_report` for the admin one-pager.
+
+Flags: `-s` interval s / `-n` samples / `-o` outdir / `-R` run_id /
+`-F` target-pid-file / `-G` job-cgroup / `-r` raw (local only) /
+`-A` foreign-PID ack / `-p` PID deep-dive / `-d` datapath probe.
+Env: `PROC_INTERVAL_OVERRIDE`, `NALL`, `NUSER`, `DFX_PROCESS_SAMPLER=off`.
+
 ## Quick start
 
 ```bash
