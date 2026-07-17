@@ -47,7 +47,17 @@ DEFAULT_CHANNELS = [
     "pgscan_direct_per_s", "disk_read_sectors_per_s",
     "pswpin_per_s", "pswpout_per_s", "thp_collapse_alloc_per_s",
 ]
-DEFAULT_SECTIONS = ["environment", "rates", "psi", "runs", "crosshost", "evidence"]
+DEFAULT_SECTIONS = ["environment", "vitals", "processes", "rates", "psi",
+                    "runs", "crosshost", "evidence"]
+
+# v8 output rule 1: host vitals are ALWAYS drawn when present - never subject
+# to plot-what-moves (a flat vital is itself information; page-1 dashboard)
+VITAL_PANELS = [
+    ("cpu_busy_pct",              "CPU busy [% of all cores]"),
+    ("[loadavg1,procs_running]",  "load (1min) and runnable processes"),
+    ("mem_available_gb",          "MemAvailable [GB]"),
+    ("ctxt_per_s",                "context switches / s"),
+]
 
 # severity-band alias expressions (registered on the ADF - T-R8 exact path)
 # the trailing +0*<input> term propagates NaN: severity of a missing rate is
@@ -62,21 +72,93 @@ SEVERITY_ALIASES = {
 }
 
 
-# --------------------------------------------------------------------------
+# ---------------------- process/user pivots (v8 D4) ------------------------
+def _san(name):
+    out = "".join(c if c.isalnum() else "_" for c in str(name))
+    return out if out and not out[0].isdigit() else "t_" + out
+
+def _pivot_users(udf, k=4):
+    """user_samples -> wide frame: t_rel + cpu_<tenant> [cores] + rss_gb_<tenant>.
+    Keeps the current user ALWAYS + top-k other tenants by window CPU."""
+    udf = udf.copy()
+    udf["t_rel"] = udf["ts"] - udf["ts"].min()
+    tot = udf.groupby("tenant")["cpu_cores"].sum().sort_values(ascending=False)
+    own = set(udf.loc[udf["is_current_user"] == 1, "tenant"])
+    keep = list(own) + [t for t in tot.index if t not in own][:k]
+    wide, names = None, {}
+    import pandas as pd
+    for t in keep:
+        sub = udf[udf["tenant"] == t].set_index("t_rel")
+        col_c, col_r = f"cpu_{_san(t)}", f"rss_gb_{_san(t)}"
+        names[t] = col_c
+        f = pd.DataFrame({col_c: sub["cpu_cores"],
+                          col_r: sub["rss_kb"] / 1048576.0})
+        wide = f if wide is None else wide.join(f, how="outer")
+    wide = wide.reset_index()
+    return wide, names
+
+def _pivot_rollup(wdf):
+    """workload_rollup -> wide frame: t_rel + cpu cores per scope."""
+    import pandas as pd
+    wdf = wdf.copy()
+    wdf["t_rel"] = wdf["ts"] - wdf["ts"].min()
+    wide = None
+    for scope in ("target_job", "current_user_non_job", "other_visible_workloads"):
+        sub = wdf[wdf["scope"] == scope].set_index("t_rel")
+        f = pd.DataFrame({f"cpu_{scope}": sub["cpu_cores"]})
+        wide = f if wide is None else wide.join(f, how="outer")
+    return wide.reset_index()
+
+def _top_consumers(pdf, n=10):
+    """process_samples -> window top-n table rows (tenant, proc, max cpu, max rss)."""
+    g = pdf.groupby(["tenant", "proc"]).agg(
+        cpu_max=("cpu_pct", "max"), cpu_mean=("cpu_pct", "mean"),
+        rss_max_kb=("rss_kb", "max"), samples=("ts", "count")).reset_index()
+    g = g.sort_values(["cpu_max", "rss_max_kb"], ascending=False).head(n)
+    return [dict(r) for _, r in g.iterrows()]
+
+
+def _draw_expr(adf, expr, title, ylab, fig_dir, fname):
+    """One draw through the ADF/dfdraw grammar (incl. [a,b]:x multi-curve),
+    individual-curve fallback if the vector form is rejected."""
+    fig_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        fig, ax, _ = adf.draw(f"{expr}:t_rel", type="scatter", title=title,
+                              xlabel="t_rel [s]", ylabel=ylab)
+        p = fig_dir / fname
+        fig.savefig(p, dpi=110, bbox_inches="tight")
+        try:
+            import matplotlib.pyplot as plt; plt.close(fig)
+        except Exception:
+            pass
+        return [p.name]
+    except Exception:
+        if expr.startswith("["):        # fallback: split the vector
+            names = []
+            for one in expr.strip("[]").split(","):
+                names += _draw_expr(adf, one.strip(), f"{title}: {one}", one,
+                                    fig_dir, fname.replace(".png", f"_{_san(one)}.png"))
+            return names
+        return []
+
+
 def _aux_tables(bundle):
     """process/user tables if the bundle has them (v8 D1.6); else (None, None)."""
     import pandas as pd
     pp = bundle.path / "process_samples.csv"
     up = bundle.path / "user_samples.csv"
-    pdf_ = udf_ = None
+    wp = bundle.path / "workload_rollup.csv"
+    pdf_ = udf_ = wdf_ = None
     try:
         if pp.is_file() and len(pp.read_text().splitlines()) > 1:
             pdf_ = pd.read_csv(pp)
         if up.is_file() and len(up.read_text().splitlines()) > 1:
             udf_ = pd.read_csv(up)
+        if wp.is_file() and len(wp.read_text().splitlines()) > 1:
+            wdf_ = pd.read_csv(wp)
     except Exception:
         pass
-    return pdf_, udf_
+    return pdf_, udf_, wdf_
 
 
 def _summarize(df, cols):
@@ -234,9 +316,12 @@ def generate(bundles, run_records=(), labels=None, sections=None,
     if not loaded:
         raise ValueError("no bundles given")
 
+    def _prog(msg):
+        print(f"[report] {msg}", file=sys.stderr, flush=True)
     aud = audit_mod.Audit() if audit else None
     summaries, figures, html_parts = {}, {}, []
     for b in loaded:
+        _prog(f"bundle {b.host}: environment")
         env = {"verdict": (b.verdict + " (collector still sampling - verdict is "
                             "written at completion; re-render when finished)"
                             if b.in_progress else b.verdict),
@@ -264,7 +349,7 @@ def generate(bundles, run_records=(), labels=None, sections=None,
                 aud.add_stage("S2_parse_derive", f"{b.host}:samples", frame)
                 aud.check_conservation(frame)
                 aud.check_counts(frame)
-                pdf_, udf_ = _aux_tables(b)
+                pdf_, udf_, _wdf_a = _aux_tables(b)
                 if pdf_ is not None:
                     aud.add_stage("S2_parse_derive", f"{b.host}:process_samples", pdf_)
                 aud.check_hierarchy(frame, pdf_, udf_)
@@ -273,6 +358,73 @@ def generate(bundles, run_records=(), labels=None, sections=None,
             if aud is not None:
                 aud.check_reproducibility(summaries[b.host], adf.df,
                                           DEFAULT_CHANNELS + reg)
+            # ---- v8 page-1: host vitals - ALWAYS drawn when present ----
+            _prog(f"bundle {b.host}: vitals")
+            if "vitals" in sections:
+                if "mem_available_kb" in adf.df.columns:
+                    adf.add_alias("mem_available_gb", "mem_available_kb/1048576.0")
+                    adf.materialize_aliases(names=["mem_available_gb"])
+                vfigs = []
+                for expr, title in VITAL_PANELS:
+                    cols = expr.strip("[]").split(",")
+                    if all(c in adf.df.columns and adf.df[c].notna().any() for c in cols):
+                        vfigs += _draw_expr(adf, expr, f"{b.host}: {title}", title,
+                                            out_dir / "figures",
+                                            f"{b.host}_vital_{_san(expr)}.png")
+                if vfigs:
+                    html_parts.append(f"<h2>{b.host} - host vitals</h2>" +
+                                      "".join(f"<img src='{_img_datauri(out_dir / 'figures' / f)}' "
+                                              f"alt='{f}'>" for f in vfigs))
+                else:
+                    html_parts.append(f"<h2>{b.host} - host vitals</h2><p>no vital "
+                                      "channels in this bundle (pre-anchor collector) - "
+                                      "re-collect with the current script</p>")
+            # ---- v8: processes & background (the job-vs-environment picture) ----
+            _prog(f"bundle {b.host}: processes & background")
+            pdf_x, udf_x, wdf_x = _aux_tables(b)
+            if "processes" in sections and udf_x is not None:
+                import pandas as pd
+                pfigs = []
+                wide_u, _names = _pivot_users(udf_x)
+                from AliasDataFrame import AliasDataFrame as _ADF
+                adf_u = _ADF(wide_u)
+                ccols = [c for c in wide_u.columns if c.startswith("cpu_")]
+                rcols = [c for c in wide_u.columns if c.startswith("rss_gb_")]
+                if ccols:
+                    pfigs += _draw_expr(adf_u, "[" + ",".join(ccols) + "]",
+                                        f"{b.host}: CPU by user [cores]", "cores",
+                                        out_dir / "figures", f"{b.host}_users_cpu.png")
+                if rcols:
+                    pfigs += _draw_expr(adf_u, "[" + ",".join(rcols) + "]",
+                                        f"{b.host}: RSS by user [GB]", "GB",
+                                        out_dir / "figures", f"{b.host}_users_rss.png")
+                if wdf_x is not None:
+                    wide_w = _pivot_rollup(wdf_x)
+                    adf_w = _ADF(wide_w)
+                    wcols = [c for c in wide_w.columns if c.startswith("cpu_")]
+                    if wcols:
+                        pfigs += _draw_expr(adf_w, "[" + ",".join(wcols) + "]",
+                                            f"{b.host}: background vs job [CPU cores]",
+                                            "cores", out_dir / "figures",
+                                            f"{b.host}_background_vs_job.png")
+                html_parts.append(f"<h2>{b.host} - processes &amp; background</h2>" +
+                                  "".join(f"<img src='{_img_datauri(out_dir / 'figures' / f)}' "
+                                          f"alt='{f}'>" for f in pfigs))
+                if pdf_x is not None:
+                    rows = _top_consumers(pdf_x)
+                    tbl = ("<table><tr><th>tenant</th><th>process</th><th>cpu max %</th>"
+                           "<th>cpu mean %</th><th>rss max MB</th><th>samples</th></tr>" +
+                           "".join("<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td>"
+                                   "<td>{:.0f}</td><td>{}</td></tr>".format(
+                                       r["tenant"], r["proc"],
+                                       ("-" if r["cpu_max"] != r["cpu_max"]
+                                        else f"{r['cpu_max']:.1f}"),
+                                       ("-" if r["cpu_mean"] != r["cpu_mean"]
+                                        else f"{r['cpu_mean']:.1f}"),
+                                       r["rss_max_kb"] / 1024.0, r["samples"])
+                                   for r in rows) + "</table>")
+                    html_parts.append(f"<h3>{b.host} - top consumers over the window</h3>" + tbl)
+            _prog(f"bundle {b.host}: pathology channels")
             if "rates" in sections or "psi" in sections:
                 active, flat, nodata = _channels_to_draw(adf.df, DEFAULT_CHANNELS + reg)
                 figures[b.host] = _draw_series(adf, active, out_dir / "figures", b.host)
@@ -293,6 +445,7 @@ def generate(bundles, run_records=(), labels=None, sections=None,
                             "summary": summaries.get(b.host, {})} for b in loaded}},
         indent=1, sort_keys=True))
 
+    _prog("writing audit + report")
     if aud is not None:
         aud.trace["bundles"] = [str(b.path) for b in loaded]
         aud.trace["mode"] = mode

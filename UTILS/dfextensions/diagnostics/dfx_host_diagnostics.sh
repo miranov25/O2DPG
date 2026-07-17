@@ -348,6 +348,7 @@ if [ "$S_GIVEN" = 1 ]; then
     fi
     p_t=$t; p_cs=$cs; p_cf=$cf; p_fa=$fa; p_fb=$fb; p_as=$as; p_kc=$kc; p_kh=$kh
     p_cpu_idle=$cpu_idle; p_cpu_total=$cpu_total; p_ctxt=$ctxt
+    echo "[dfx $(date -u +%H:%M:%SZ)] sample $i/$NSAMPLES wall=${swall:-?}s overrun=${ovr:-0} bundle=$(basename "$BUNDLE")"
     [ "$i" -lt "$NSAMPLES" ] && sleep "$INTERVAL"
     i=$((i+1))
   done

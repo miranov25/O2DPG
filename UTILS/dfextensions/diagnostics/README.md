@@ -31,6 +31,10 @@ is marked `is_target_job=1` in process_samples.csv.
 **D. Production node, no checkout**: copy exactly two files -
 `dfx_host_diagnostics.sh` + `collector.py` - run as in A/B, scp the bundle
 back (shareable redaction is the default).
+**Forgot a running watch?** `pgrep -af dfx_host_diagnostics` lists running
+collectors; `grep -L '^verdict=' <data>/host_diag_*/manifest.kv` lists bundles
+still in progress. Watches are ALWAYS bounded (`-n` required) and stop
+themselves; heartbeat lines land in run.log (`tail -f`).
 **E. Analyze**: `report_diagnostics.py <bundles...> -o <out>` then read
 `<out>/validation/summary.md` FIRST (trust check), `explain_bundle.py <bundle>`
 for the column-by-column reading, `--mode it_report` for the admin one-pager.

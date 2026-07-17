@@ -22,6 +22,7 @@ pd = pytest.importorskip("pandas")
 
 
 # ---------------------------- bundle fixture -------------------------------
+ANCH = ",loadavg1,cpu_busy_pct,mem_available_kb,ctxt_per_s,procs_running"
 CSV_HEADER = ("ts,elapsed_s,compact_stall_total,compact_stall_per_s,"
               "compact_fail_total,compact_fail_per_s,thp_fault_alloc_total,"
               "thp_fault_alloc_per_s,thp_fault_fallback_total,thp_fault_fallback_per_s,"
@@ -29,12 +30,12 @@ CSV_HEADER = ("ts,elapsed_s,compact_stall_total,compact_stall_per_s,"
               "allocstall_per_s,kcompactd_cpu_s_total,kcompactd_cpu_per_s,"
               "khugepaged_cpu_s_total,khugepaged_cpu_per_s,psi_mem_some_avg10,"
               "psi_mem_full_avg10,pswpin_total,pswpout_total,disk_read_sectors_total,"
-              "sample_wall_s,overrun")
+              "sample_wall_s,overrun" + ANCH)
 
 def make_bundle(tmp_path, host="hostA", verdict="PASS", rules="none",
                 redaction="shareable", psi_full=("0.0", "6.0", "7.0"),
                 with_samples=True, thp_enabled="always madvise [never]",
-                invalid_row=False):
+                invalid_row=False, with_proc_tables=False):
     b = tmp_path / f"host_diag_{host}_20260716T120000Z_1"
     b.mkdir()
     (b / "manifest.kv").write_text("\n".join([
@@ -56,15 +57,39 @@ def make_bundle(tmp_path, host="hostA", verdict="PASS", rules="none",
     (b / "snapshot.kv").write_text("\n".join(snap) + "\n")
     if with_samples:
         rows = [CSV_HEADER,
-                "1000,,100,,40,,120,,100,,7,3,20,,10.00,,1.00,,0.0,%s,1,2,5000,," % psi_full[0]]
+                "1000,,100,,40,,120,,100,,7,3,20,,10.00,,1.00,,0.0,%s,1,2,5000,,,1.10,,800000,,2" % psi_full[0]]
         if invalid_row:
             rows.append("1010,INVALID,110,,44,,132,,110,,7,3,22,,10.10,,1.01,,"
-                        ",,1,2,5100,,")
+                        ",,1,2,5100,,,1.05,,799000,,2")
         rows.append("1010,10.00,1100,100.000,44,0.400,132,1.200,110,1.000,7,3,22,"
-                    "0.200,10.10,0.0100,1.01,0.0010,1.0,%s,1,2,5100,0.150,0" % psi_full[1])
+                    "0.200,10.10,0.0100,1.01,0.0010,1.0,%s,1,2,5100,0.150,0,1.20,12.5,798000,850.0,3" % psi_full[1])
         rows.append("1020,10.00,2100,100.000,48,0.400,144,1.200,120,1.000,7,3,24,"
-                    "0.200,10.20,0.0100,1.02,0.0010,2.0,%s,1,2,5200,0.150,0" % psi_full[2])
+                    "0.200,10.20,0.0100,1.02,0.0010,2.0,%s,1,2,5200,0.150,0,1.30,15.0,797000,900.0,2" % psi_full[2])
         (b / "samples.csv").write_text("\n".join(rows) + "\n")
+    if with_proc_tables:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        import collector as _col
+        (b / "process_samples.csv").write_text(_col.PROC_HEADER + "\n" + "\n".join([
+            "1010,R,me,python3,50,111,1,R,80.0,512000,1000000,100,10.0,1,1,1,1,rank_cpu_all",
+            "1010,R,u_beef01,[other],70,114,0,R,120.0,2048000,3000000,100,20.0,2,2,,,rank_cpu_all",
+            "1020,R,me,python3,50,111,1,R,90.0,514000,1000000,100,11.0,1,1,1,1,rank_cpu_all",
+            "1020,R,u_beef01,[other],70,114,0,R,110.0,2050000,3000000,100,21.0,2,2,,,rank_cpu_all"]) + "\n")
+        (b / "user_samples.csv").write_text(_col.USER_HEADER + "\n" + "\n".join([
+            "1010,R,me,1,3,1,0,0.9,10.0,1200000,2000000,1000,2000,complete",
+            "1010,R,u_beef01,0,3,1,2,1.2,20.0,2500000,4000000,,,unavailable",
+            "1020,R,me,1,3,1,0,1.0,11.0,1210000,2000000,1100,2100,complete",
+            "1020,R,u_beef01,0,3,1,2,1.1,21.0,2510000,4000000,,,unavailable"]) + "\n")
+        (b / "workload_rollup.csv").write_text(_col.ROLL_HEADER + "\n" + "\n".join([
+            "1010,R,target_job,2,1,0,0.8,1024000,1000,2000,9,7,1,1,0,1",
+            "1010,R,current_user_non_job,1,0,0,0.1,176000,,,9,7,1,1,0,1",
+            "1010,R,other_visible_workloads,3,1,2,1.2,2500000,,,9,7,1,1,0,1",
+            "1010,R,kernel_or_system,1,0,0,0.0,0,,,9,7,1,1,0,1",
+            "1010,R,unknown_or_inaccessible,2,0,0,,,,,9,7,1,1,0,1",
+            "1020,R,target_job,2,1,0,0.9,1030000,1100,2100,9,7,1,1,0,1",
+            "1020,R,current_user_non_job,1,0,0,0.1,176000,,,9,7,1,1,0,1",
+            "1020,R,other_visible_workloads,3,1,2,1.1,2510000,,,9,7,1,1,0,1",
+            "1020,R,kernel_or_system,1,0,0,0.0,0,,,9,7,1,1,0,1",
+            "1020,R,unknown_or_inaccessible,2,0,0,,,,,9,7,1,1,0,1"]) + "\n")
     return b
 
 
@@ -150,6 +175,81 @@ def test_severity_alias_nan_propagation():
     sev = (x >= 10.0) * 2 + ((x >= 1.0) & (x < 10.0)) * 1 + 0 * x
     assert np.isnan(sev.iloc[0])
     assert list(sev.iloc[1:]) == [0.0, 1.0, 2.0]
+
+def test_channels_to_draw_split():
+    df = pd.DataFrame({"row_valid": [True, True, True],
+                       "a": [0.0, 0.0, 0.0],          # flat zero
+                       "b": [0.0, 2.5, 0.0],          # active
+                       "c": [float("nan")] * 3})      # no data
+    active, flat, nodata = rd._channels_to_draw(df, ["a", "b", "c", "absent"])
+    assert active == ["b"] and flat == ["a"] and nodata == ["c"]
+
+def test_img_datauri_embeds_bytes(tmp_path):
+    import base64
+    png = tmp_path / "x.png"; png.write_bytes(b"\x89PNG_fixture_bytes")
+    uri = rd._img_datauri(png)
+    assert uri.startswith("data:image/png;base64,")
+    assert base64.b64decode(uri.split(",", 1)[1]) == b"\x89PNG_fixture_bytes"
+
+def test_derived_rates_for_total_only_columns(tmp_path):
+    """Coverage-gap regression (real-alma2 2026-07-16): *_total columns without
+    a collector rate get a derived _per_s; oracle: diff(total)/diff(ts)."""
+    b = schema.load_bundle(make_bundle(tmp_path))
+    df = schema.samples_frame(b)
+    assert "pgscan_direct_per_s" in df.columns and "disk_read_sectors_per_s" in df.columns
+    import numpy as np
+    assert np.isnan(df["disk_read_sectors_per_s"].iloc[0])       # first row: no rate
+    oracle = (df["disk_read_sectors_total"].diff() / df["ts"].diff()).iloc[1:]
+    got = df["disk_read_sectors_per_s"].iloc[1:]
+    assert ((got - oracle).abs().fillna(0) < 1e-9).all()
+    assert float(df["disk_read_sectors_per_s"].iloc[1]) == pytest.approx(10.0)  # (5100-5000)/10
+
+def test_explain_bundle_consistent_and_signals(tmp_path, capsys):
+    import explain_bundle as eb
+    b = make_bundle(tmp_path)                       # anchors alive, compaction active
+    verdict = eb.explain(b)
+    out = capsys.readouterr().out
+    assert verdict == "CONSISTENT"
+    assert "ANCHOR-OK" in out and "SIGNAL(!)" in out
+    assert "compact_stall_per_s" in out and "SMOKING GUN" in out
+
+def test_explain_flags_dead_anchors(tmp_path, capsys):
+    """All-zero anchors -> UNTRUSTWORTHY: broken collector is now detectable."""
+    import explain_bundle as eb
+    b = make_bundle(tmp_path)
+    csv = (b / "samples.csv").read_text()
+    for a, z in (("1.10", "0"), ("1.20", "0"), ("1.30", "0"), ("12.5", "0"),
+                 ("15.0", "0"), ("850.0", "0"), ("900.0", "0"),
+                 ("798000", "0"), ("797000", "0"), ("800000", "0"),
+                 (",2\n", ",0\n"), (",3\n", ",0\n")):
+        csv = csv.replace(a, z)
+    (b / "samples.csv").write_text(csv)
+    verdict = eb.explain(b)
+    assert verdict == "UNTRUSTWORTHY"
+    assert "DO NOT TRUST" in capsys.readouterr().out
+
+def test_pivot_users_topk_current_always(tmp_path):
+    b = schema.load_bundle(make_bundle(tmp_path, with_proc_tables=True))
+    _, udf, _ = rd._aux_tables(b)
+    wide, names = rd._pivot_users(udf, k=1)
+    assert "cpu_me" in wide.columns and "cpu_u_beef01" in wide.columns
+    assert float(wide["cpu_u_beef01"].iloc[0]) == pytest.approx(1.2)
+    assert "rss_gb_me" in wide.columns
+
+def test_pivot_rollup_scopes(tmp_path):
+    b = schema.load_bundle(make_bundle(tmp_path, with_proc_tables=True))
+    _, _, wdf = rd._aux_tables(b)
+    wide = rd._pivot_rollup(wdf)
+    assert {"cpu_target_job", "cpu_current_user_non_job",
+            "cpu_other_visible_workloads"} <= set(wide.columns)
+    assert float(wide["cpu_target_job"].iloc[-1]) == pytest.approx(0.9)
+
+def test_top_consumers_ranked_and_redacted(tmp_path):
+    b = schema.load_bundle(make_bundle(tmp_path, with_proc_tables=True))
+    pdf, _, _ = rd._aux_tables(b)
+    rows = rd._top_consumers(pdf)
+    assert rows[0]["proc"] == "[other]" and rows[0]["cpu_max"] == pytest.approx(120.0)
+    assert any(r["proc"] == "python3" for r in rows)
 
 # ====================== report_diagnostics sandbox tier =====================
 def test_summarize_matches_pandas_oracle(tmp_path):
@@ -239,6 +339,23 @@ def test_adf_cli_invocation(tmp_path):
                        capture_output=True, text=True)
     assert r.returncode == 0, f"CLI failed:\n{r.stderr[-2000:]}"
     assert (out / "report.html").is_file()
+
+@adf_tier
+def test_adf_v8_output_rules_vitals_and_background(tmp_path):
+    """v8 output rules: vitals ALWAYS drawn; background-vs-job overlay via the
+    ADF vector grammar; top-consumers table present and redacted."""
+    import matplotlib; matplotlib.use("Agg")
+    b = make_bundle(tmp_path, with_proc_tables=True)
+    out = tmp_path / "repv8"
+    rd.generate([b], out_dir=out)
+    html = (out / "report.html").read_text()
+    assert "host vitals" in html
+    assert "background vs job" in html or "background_vs_job" in html
+    assert "top consumers over the window" in html
+    assert "secretjob" not in html
+    figs = {f.name for f in (out / "figures").glob("*.png")}
+    assert any("background_vs_job" in f for f in figs)
+    assert any("users_cpu" in f for f in figs)
 
 @adf_tier
 def test_adf_crosshost_diff_rendered(tmp_path):
