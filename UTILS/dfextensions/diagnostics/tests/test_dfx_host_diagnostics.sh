@@ -190,6 +190,19 @@ fi
 grep -q '^process_interval_s=' "$BS/manifest.kv" && ok "T-D20 manifest cadence" || bad "T-D20 manifest cadence"
 grep -q '^run_id=' "$BS/manifest.kv" && ok "T-D20 manifest run_id" || bad "T-D20 manifest run_id"
 
+echo "== T-D21: TERM during bounded run -> CLEAN stop: verdict + stop_reason =="
+OC="$WORK/oc"; mkdir "$OC"
+PROC_ROOT="$FIX/proc" SYS_ROOT="$FIX/sys" CGROUP_ROOT="$FIX/nocg" bash "$SCRIPT" -o "$OC" -s 1 -n 30 > "$WORK/cs.out" 2>/dev/null &
+CPID=$!
+sleep 2.6
+kill -TERM "$CPID"; wait "$CPID"; rcc=$?
+check "T-D21 exit 0 on TERM" "$rcc" 0
+BC=$(ls -d "$OC"/host_diag_* | head -1)
+grep -q '^verdict=' "$BC/manifest.kv" && ok "T-D21 verdict written" || bad "T-D21 verdict written"
+grep -q '^stop_reason=signal_clean_stop' "$BC/manifest.kv" && ok "T-D21 stop_reason" || bad "T-D21 stop_reason"
+NSC=$(grep '^samples_taken=' "$BC/manifest.kv" | cut -d= -f2)
+[ "${NSC:-0}" -ge 2 ] && ok "T-D21 samples_taken>=2 (got $NSC)" || bad "T-D21 samples_taken>=2 (got $NSC)"
+
 echo "== T-D11a: bundle dir vanishes mid-run -> loud FATAL, exit 1 (2026-07-16 incident) =="
 FIXV="$WORK/fixv"; mkfix "$FIXV"; OV="$WORK/ov"; mkdir "$OV"
 ( sleep 0.4; rm -rf "$OV"/host_diag_* ) &

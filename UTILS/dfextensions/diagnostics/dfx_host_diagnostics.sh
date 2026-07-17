@@ -292,8 +292,14 @@ if [ "$S_GIVEN" = 1 ]; then
   else
     st process_sampler unavailable
   fi
+  # clean-stop (architect token 2026-07-17, "continue"): TERM/INT during a
+  # bounded run finishes the current sample, stops the sampler, writes the
+  # verdict and exits 0 - interruption leaves a VALID bundle (T-D11 class).
+  STOP_REQ=0
+  trap 'STOP_REQ=1' TERM INT
   i=1
   while [ "$i" -le "$NSAMPLES" ]; do
+    [ "$STOP_REQ" = 1 ] && break
     # T-D11a guard: if the bundle directory vanishes mid-run (mv/rm/tmp-cleaner),
     # fail LOUDLY instead of appending forever into deleted files (2026-07-16 incident)
     [ -d "$BUNDLE" ] || { echo "FATAL: bundle directory vanished: $BUNDLE (sample $i/$NSAMPLES)" >&2; exit 1; }
@@ -349,9 +355,14 @@ if [ "$S_GIVEN" = 1 ]; then
     p_t=$t; p_cs=$cs; p_cf=$cf; p_fa=$fa; p_fb=$fb; p_as=$as; p_kc=$kc; p_kh=$kh
     p_cpu_idle=$cpu_idle; p_cpu_total=$cpu_total; p_ctxt=$ctxt
     echo "[dfx $(date -u +%H:%M:%SZ)] sample $i/$NSAMPLES wall=${swall:-?}s overrun=${ovr:-0} bundle=$(basename "$BUNDLE")"
-    [ "$i" -lt "$NSAMPLES" ] && sleep "$INTERVAL"
+    if [ "$STOP_REQ" = 0 ] && [ "$i" -lt "$NSAMPLES" ]; then
+      sleep "$INTERVAL" & SLPID=$!; wait "$SLPID" 2>/dev/null   # interruptible sleep
+    fi
     i=$((i+1))
   done
+  trap - TERM INT
+  man samples_taken "$((i-1))"
+  [ "$STOP_REQ" = 1 ] && man stop_reason signal_clean_stop
   if [ -n "$SAMPLER_PID" ]; then
     # wait (bounded) for the first-scan readiness marker: a TERM during slow
     # interpreter startup would kill the sampler before any scan (alma2 race)
