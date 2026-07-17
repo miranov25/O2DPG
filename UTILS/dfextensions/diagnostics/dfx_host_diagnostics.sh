@@ -38,9 +38,10 @@ usage(){ echo "usage: $0 [-o DIR] [-p PID [-A]] [-d DATA_PATH] [-r] [-s INTERVAL
 
 # ---- argument parsing: flags tracked INSIDE getopts (C-6: never re-parse $*);
 # ---- leading-colon silent mode separates missing-value from unknown-flag (C-7)
-PID=""; INTERVAL=0; NSAMPLES=0; OUTDIR="."; DATAPATH=""; RAW=0; ACK=0
+PID=""; INTERVAL=0; NSAMPLES=0; RUN_ID=""; JOB_CGROUP=""; TARGET_PID_FILE=""; OUTDIR="."; DATAPATH=""; RAW=0; ACK=0
 S_GIVEN=0; N_GIVEN=0
-while getopts ":p:s:n:o:d:rA" opt; do case $opt in
+while getopts ":p:s:n:o:d:rAR:G:F:" opt; do case $opt in
+  R) RUN_ID=$OPTARG;; G) JOB_CGROUP=$OPTARG;; F) TARGET_PID_FILE=$OPTARG;;
   p) PID=$OPTARG;;
   s) INTERVAL=$OPTARG; S_GIVEN=1;;
   n) NSAMPLES=$OPTARG; N_GIVEN=1;;
@@ -71,7 +72,14 @@ fi
 # ---- bundle: directory creation is the atomic collision guard (V2-6)
 HOST=$(hostname -s 2>/dev/null || echo unknown-host)
 UTC=$(date -u +%Y%m%dT%H%M%SZ)
-BUNDLE="$OUTDIR/host_diag_${HOST}_${UTC}_$$"
+# run_id: orchestration-supplied (-R) or generated; C-2: shareable bundle name
+# carries run_id only - raw PID appears in the name ONLY in raw/local (-r) mode
+[ -n "$RUN_ID" ] || RUN_ID=$(printf '%s%s' "$(date +%s)" "$$" | md5sum | cut -c1-8)
+if [ "$RAW" = 1 ]; then
+  BUNDLE="$OUTDIR/host_diag_${HOST}_${UTC}_$$_${RUN_ID}"
+else
+  BUNDLE="$OUTDIR/host_diag_${HOST}_${UTC}_${RUN_ID}"
+fi
 umask 077
 mkdir "$BUNDLE" 2>/dev/null || { echo "bundle dir '$BUNDLE' already exists — refusing" >&2; exit 1; }
 MAN="$BUNDLE/manifest.kv"; SNAP="$BUNDLE/snapshot.kv"; CSV="$BUNDLE/samples.csv"; REP="$BUNDLE/report.txt"
@@ -88,6 +96,7 @@ man tool dfx_host_diagnostics
 man tool_version "$VERSION"
 man tool_md5 "${SELF_MD5:-unknown}"
 man invocation "$0 $*${PID:+ -p $PID}${S_GIVEN:+ -s $INTERVAL -n $NSAMPLES}"
+man run_id "$RUN_ID"
 man host "$HOST"; man utc "$UTC"; man user "$SELF_USER"
 man redaction $([ "$RAW" = 1 ] && echo raw || echo shareable)
 man proc_root "$PROC"; man sys_root "$SYS"; man clk_tck "$CLK_TCK"
@@ -247,14 +256,42 @@ collect_allocenv(){
   kv env.GLIBC_TUNABLES "${GLIBC_TUNABLES:-unset}"
 }
 
-collect_identity; collect_thp; collect_vmstat; collect_kthreads; collect_meminfo
+collect_anchors(){  # ground-truth channels: NEVER flat on a live host
+  if [ -r "$PROC/loadavg" ]; then
+    read -r l1 l5 l15 running _ < "$PROC/loadavg"
+    kv anchor.loadavg1 "$l1"; kv anchor.loadavg5 "$l5"; kv anchor.loadavg15 "$l15"
+    kv anchor.procs_running "${running%%/*}"
+    st anchors available
+  else st anchors unavailable; fi
+  kv anchor.mem_available_kb "$(awk '$1=="MemAvailable:"{print $2}' "$PROC/meminfo" 2>/dev/null)"
+}
+
+collect_identity; collect_anchors; collect_thp; collect_vmstat; collect_kthreads; collect_meminfo
 collect_psi; collect_cgroup; collect_buddy; collect_ps; collect_deepdive; collect_datapath; collect_allocenv
 
 # =================== sampling mode ===================
 if [ "$S_GIVEN" = 1 ]; then
-  echo "ts,elapsed_s,compact_stall_total,compact_stall_per_s,compact_fail_total,compact_fail_per_s,thp_fault_alloc_total,thp_fault_alloc_per_s,thp_fault_fallback_total,thp_fault_fallback_per_s,thp_collapse_alloc_total,pgscan_direct_total,allocstall_total,allocstall_per_s,kcompactd_cpu_s_total,kcompactd_cpu_per_s,khugepaged_cpu_s_total,khugepaged_cpu_per_s,psi_mem_some_avg10,psi_mem_full_avg10,pswpin_total,pswpout_total,disk_read_sectors_total,sample_wall_s,overrun" > "$CSV"
+  echo "ts,elapsed_s,compact_stall_total,compact_stall_per_s,compact_fail_total,compact_fail_per_s,thp_fault_alloc_total,thp_fault_alloc_per_s,thp_fault_fallback_total,thp_fault_fallback_per_s,thp_collapse_alloc_total,pgscan_direct_total,allocstall_total,allocstall_per_s,kcompactd_cpu_s_total,kcompactd_cpu_per_s,khugepaged_cpu_s_total,khugepaged_cpu_per_s,psi_mem_some_avg10,psi_mem_full_avg10,pswpin_total,pswpout_total,disk_read_sectors_total,sample_wall_s,overrun,loadavg1,cpu_busy_pct,mem_available_kb,ctxt_per_s,procs_running" > "$CSV"
   p_t=""; p_cs=""; p_cf=""; p_fa=""; p_fb=""; p_as=""; p_kc=""; p_kh=""
+  p_cpu_idle=""; p_cpu_total=""; p_ctxt=""
   OVERRUNS=0
+  # ---- v8 D1.6: start the process/user/rollup sampler (collector.py) ----
+  SAMPLER_PID=""
+  PROC_INTERVAL=${PROC_INTERVAL_OVERRIDE:-5}
+  if [ "${DFX_PROCESS_SAMPLER:-on}" != "off" ] && command -v python3 >/dev/null 2>&1 && [ -f "$(dirname "$0")/collector.py" ]; then
+    SARGS="-o $BUNDLE --run-id $RUN_ID --interval $PROC_INTERVAL --nall ${NALL:-20} --nuser ${NUSER:-20}"
+    [ -n "$TARGET_PID_FILE" ] && SARGS="$SARGS --target-pid-file $TARGET_PID_FILE"
+    [ -n "$JOB_CGROUP" ] && SARGS="$SARGS --job-cgroup $JOB_CGROUP"
+    [ "$RAW" = 1 ] && SARGS="$SARGS --raw"
+    # shellcheck disable=SC2086
+    # -S: skip site-packages scan (collector is stdlib-only) - 10x faster start on slow FS
+    python3 -S "$(dirname "$0")/collector.py" $SARGS >> "$BUNDLE/sampler.log" 2>&1 &
+    SAMPLER_PID=$!
+    st process_sampler available
+    man process_interval_s "$PROC_INTERVAL"; man nall "${NALL:-20}"; man nuser "${NUSER:-20}"
+  else
+    st process_sampler unavailable
+  fi
   i=1
   while [ "$i" -le "$NSAMPLES" ]; do
     # T-D11a guard: if the bundle directory vanishes mid-run (mv/rm/tmp-cleaner),
@@ -270,6 +307,15 @@ if [ "$S_GIVEN" = 1 ]; then
     pm_f=$(sed -n 's/^full.*avg10=\([0-9.]*\).*/\1/p' "$PROC/pressure/memory" 2>/dev/null | head -1)
     si=$(vmk pswpin); so=$(vmk pswpout)
     dr=$(awk '{s+=$6} END{print s+0}' "$PROC/diskstats" 2>/dev/null)
+    # ---- anchors (ground truth; cpu/ctxt need previous sample) ----
+    read -r la1 _ _ runn _ < "$PROC/loadavg" 2>/dev/null || { la1=""; runn=""; }
+    runn=${runn%%/*}
+    mavail=$(awk '$1=="MemAvailable:"{print $2}' "$PROC/meminfo" 2>/dev/null)
+    read -r _ c_user c_nice c_sys c_idle c_iow c_irq c_sirq c_steal _ < "$PROC/stat" 2>/dev/null || c_idle=""
+    if [ -n "${c_idle:-}" ]; then
+      cpu_total=$((c_user+c_nice+c_sys+c_idle+c_iow+c_irq+c_sirq+c_steal)); cpu_idle=$((c_idle+c_iow))
+    else cpu_total=""; cpu_idle=""; fi
+    ctxt=$(awk '$1=="ctxt"{print $2}' "$PROC/stat" 2>/dev/null)
     t=$(awk '{print $1}' "$PROC/uptime")
     if [ -n "$p_t" ]; then
       rates=$(awk -v t="$t" -v pt="$p_t" -v cs="${cs:-0}" -v pcs="${p_cs:-0}" -v cf="${cf:-0}" -v pcf="${p_cf:-0}" \
@@ -280,23 +326,43 @@ if [ "$S_GIVEN" = 1 ]; then
           else printf "%.2f %.3f %.3f %.3f %.3f %.3f %.4f %.4f OK",
             dt,(cs-pcs)/dt,(cf-pcf)/dt,(fa-pfa)/dt,(fb-pfb)/dt,(as-pas)/dt,(kc-pkc)/dt,(kh-pkh)/dt}')
       set -f; set -- $rates; set +f
+      cpu_pct=""; ctxt_ps=""
+      if [ -n "${p_cpu_total:-}" ] && [ -n "${cpu_total:-}" ]; then
+        cpu_pct=$(awk -v i="$cpu_idle" -v pi="$p_cpu_idle" -v t2="$cpu_total" -v pt2="$p_cpu_total"           'BEGIN{d=t2-pt2; if(d<=0){print ""} else printf "%.1f", 100.0*(1-(i-pi)/d)}')
+      fi
+      if [ -n "${p_ctxt:-}" ] && [ -n "${ctxt:-}" ]; then
+        ctxt_ps=$(awk -v c="$ctxt" -v pc="$p_ctxt" -v t="$t" -v pt="$p_t"           'BEGIN{dt=t-pt; if(dt<=0){print ""} else printf "%.1f",(c-pc)/dt}')
+      fi
       if [ "$1" = "INVALID" ]; then
-        echo "$(date +%s),INVALID,${cs:-},,${cf:-},,${fa:-},,${fb:-},,${ca:-},${pd:-},${as:-},,${kc:-0},,${kh:-0},,${pm_s:-},${pm_f:-},${si:-},${so:-},${dr:-},," >> "$CSV"
+        echo "$(date +%s),INVALID,${cs:-},,${cf:-},,${fa:-},,${fb:-},,${ca:-},${pd:-},${as:-},,${kc:-0},,${kh:-0},,${pm_s:-},${pm_f:-},${si:-},${so:-},${dr:-},,,${la1:-},,${mavail:-},,${runn:-}" >> "$CSV"
       else
         dt_s=$1; r_cs=$2; r_cf=$3; r_fa=$4; r_fb=$5; r_as=$6; r_kc=$7; r_kh=$8
         SW1=$(date +%s.%N 2>/dev/null || date +%s)
         swall=$(awk -v a="$SW0" -v b="$SW1" 'BEGIN{printf "%.3f", b-a}')
         ovr=$(awk -v w="$swall" -v iv="$INTERVAL" 'BEGIN{print (w>iv)?"1":"0"}')
         [ "$ovr" = 1 ] && OVERRUNS=$((OVERRUNS+1))
-        echo "$(date +%s),$dt_s,${cs:-},$r_cs,${cf:-},$r_cf,${fa:-},$r_fa,${fb:-},$r_fb,${ca:-},${pd:-},${as:-},$r_as,${kc:-0},$r_kc,${kh:-0},$r_kh,${pm_s:-},${pm_f:-},${si:-},${so:-},${dr:-},$swall,$ovr" >> "$CSV"
+        echo "$(date +%s),$dt_s,${cs:-},$r_cs,${cf:-},$r_cf,${fa:-},$r_fa,${fb:-},$r_fb,${ca:-},${pd:-},${as:-},$r_as,${kc:-0},$r_kc,${kh:-0},$r_kh,${pm_s:-},${pm_f:-},${si:-},${so:-},${dr:-},$swall,$ovr,${la1:-},${cpu_pct:-},${mavail:-},${ctxt_ps:-},${runn:-}" >> "$CSV"
       fi
     else
-      echo "$(date +%s),,${cs:-},,${cf:-},,${fa:-},,${fb:-},,${ca:-},${pd:-},${as:-},,${kc:-0},,${kh:-0},,${pm_s:-},${pm_f:-},${si:-},${so:-},${dr:-},," >> "$CSV"
+      echo "$(date +%s),,${cs:-},,${cf:-},,${fa:-},,${fb:-},,${ca:-},${pd:-},${as:-},,${kc:-0},,${kh:-0},,${pm_s:-},${pm_f:-},${si:-},${so:-},${dr:-},,,${la1:-},,${mavail:-},,${runn:-}" >> "$CSV"
     fi
     p_t=$t; p_cs=$cs; p_cf=$cf; p_fa=$fa; p_fb=$fb; p_as=$as; p_kc=$kc; p_kh=$kh
+    p_cpu_idle=$cpu_idle; p_cpu_total=$cpu_total; p_ctxt=$ctxt
     [ "$i" -lt "$NSAMPLES" ] && sleep "$INTERVAL"
     i=$((i+1))
   done
+  if [ -n "$SAMPLER_PID" ]; then
+    # wait (bounded) for the first-scan readiness marker: a TERM during slow
+    # interpreter startup would kill the sampler before any scan (alma2 race)
+    w=0
+    while [ ! -f "$BUNDLE/.sampler_ready" ] && [ "$w" -lt 24 ] && kill -0 "$SAMPLER_PID" 2>/dev/null; do
+      sleep 0.25; w=$((w+1))
+    done
+    kill -TERM "$SAMPLER_PID" 2>/dev/null; wait "$SAMPLER_PID" 2>/dev/null
+    if [ -f "$BUNDLE/.sampler_ready" ]; then man process_sampler_stopped clean
+    else man process_sampler_stopped timeout_no_ready; fi
+    rm -f "$BUNDLE/.sampler_ready"
+  fi
   man samples "$NSAMPLES"; man sample_interval_s "$INTERVAL"; man sample_overruns "$OVERRUNS"
   or_rule=$(awk -v o="$OVERRUNS" -v n="$NSAMPLES" 'BEGIN{print (n>0 && o/n>0.10)?"WARN":"OK"}')
   man overrun_status "$or_rule"

@@ -109,6 +109,19 @@ def test_m8_synthetic_read_io_counters(tmp_path):
     assert rec["io"]["state"] == "available"
     assert rec["io"]["rchar"] >= 8 * 1024 * 1024              # logical reads
 
+def test_run_id_env_handoff(tmp_path, monkeypatch):
+    """P0-1: DFX_RUN_ID/DFX_BUNDLE_DIR env handoff; explicit arg wins."""
+    monkeypatch.setenv("DFX_RUN_ID", "envrun01")
+    monkeypatch.setenv("DFX_BUNDLE_DIR", "/some/bundle")
+    with RunMetrics("t10", out=tmp_path) as rm:
+        pass
+    rec = load_record(rm.record_path)
+    assert rec["run_id"] == "envrun01" and rec["bundle_dir"] == "/some/bundle"
+    assert rec["record_type"] == "in_process"
+    with RunMetrics("t10b", out=tmp_path, run_id="explicit") as rm2:
+        pass
+    assert load_record(rm2.record_path)["run_id"] == "explicit"
+
 def test_load_record_rejects_foreign_json(tmp_path):
     p = tmp_path / "x.json"; p.write_text(json.dumps({"tool": "other"}))
     with pytest.raises(ValueError):

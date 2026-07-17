@@ -72,10 +72,15 @@ def _fd_count():
 class RunMetrics:
     """Context manager: `with RunMetrics("fitDCAITS", adf=adf) as rm: ...`"""
 
-    def __init__(self, label, adf=None, sample_interval_s=1.0, out="run_metrics"):
+    def __init__(self, label, adf=None, sample_interval_s=1.0, out="run_metrics",
+                 run_id=None):
         if not isinstance(label, str) or not label:
             raise ValueError("label must be a non-empty string")
         self.label = label
+        # P0-1 (v8 approval round): orchestration handoff - the external wrapper
+        # exports DFX_RUN_ID/DFX_BUNDLE_DIR; in-process records join by run_id
+        self.run_id = run_id or os.environ.get("DFX_RUN_ID") or None
+        self.bundle_dir = os.environ.get("DFX_BUNDLE_DIR") or None
         self.adf = adf
         self.sample_interval_s = float(sample_interval_s)
         self.out = Path(out)
@@ -146,6 +151,8 @@ class RunMetrics:
             "schema_version": schema.SCHEMA_VERSION,
             "tool": _TOOL, "tool_version": _VERSION,
             "label": self.label, "labels": self.labels,
+            "run_id": self.run_id, "bundle_dir": self.bundle_dir,
+            "record_type": "in_process",
             "utc": time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
             "pid": os.getpid(), "python": sys.version.split()[0],
             "outcome": ("exception" if exc_type is not None else "success"),

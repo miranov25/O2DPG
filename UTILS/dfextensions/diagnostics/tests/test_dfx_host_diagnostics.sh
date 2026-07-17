@@ -35,12 +35,20 @@ EOF
   echo "always madvise [never]" > "$R/sys/kernel/mm/transparent_hugepage/enabled"
   echo "always defer defer+madvise [madvise] never" > "$R/sys/kernel/mm/transparent_hugepage/defrag"
   echo 0 > "$R/sys/kernel/mm/transparent_hugepage/khugepaged/full_scans"
+  # readable processes for the v8 process sampler (status+statm present)
+  mkdir -p "$R/proc/500"; echo pytest > "$R/proc/500/comm"
+  echo "500 (pytest) R 1 0 0 0 -1 0 0 0 0 0 300 300 0 0 20 0 1 0 40 1048576 250 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 1 0 0 0 0 0 0 0 0 0 0 0 0 0" > "$R/proc/500/stat"
+  printf '260 250 5 1 0 1 0\n' > "$R/proc/500/statm"
+  printf 'Name:\tpytest\nUid:\t%s\t%s\t%s\t%s\n' "$(id -u)" "$(id -u)" "$(id -u)" "$(id -u)" > "$R/proc/500/status"
   # fake kcompactd kthread pid 61: utime=400000 stime=143210 ticks -> (543210)/100 = 5432.10 s
   mkdir -p "$R/proc/61"; echo kcompactd0 > "$R/proc/61/comm"
+  printf 'Name:\tkcompactd0\nUid:\t0\t0\t0\t0\n' > "$R/proc/61/status"
   echo "61 (kcompactd0) S 2 0 0 0 -1 0 0 0 0 0 400000 143210 0 0 20 0 1 0 30 0 0 18446744073709551615 0 0 0 0 0 0 0 2147483647 0 0 0 0 17 1 0 0 0 0 0 0 0 0 0 0 0 0 0" > "$R/proc/61/stat"
   # self/stat for overhead accounting (fields 14,15)
   echo "1 (test) S 0 0 0 0 -1 0 0 0 0 0 10 10 0 0 20 0 1 0 1 0 0 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 1 0 0 0 0 0 0 0 0 0 0 0 0 0" > "$R/proc/self/stat"
   echo "fixture" > "$R/proc/cmdline"; echo "model name : Fixture CPU" > "$R/proc/cpuinfo"
+  echo "1.25 0.80 0.50 2/345 9999" > "$R/proc/loadavg"
+  printf 'cpu  1000 0 500 8000 100 0 0 0 0 0\nctxt 123456\n' > "$R/proc/stat"
   printf 'Node 0, zone Normal 10 10 10 10 10 10 10 10 10 10 10\n' > "$R/proc/buddyinfo"
   printf ' 8 0 sda 100 0 5000 0 0 0 0 0 0 0 0\n' > "$R/proc/diskstats"
 }
@@ -51,6 +59,7 @@ export PS_CMD_OVERRIDE="cat $WORK/psfix"
 ME=$(id -un)   # own-user row built from the INVOKING user — never hardcoded (alma2 lesson)
 printf 'PID USER VSZ RSS PCPU COMM\n1 %s 1000 100 0.1 python3\n2 otheruser 4000 100 0.2 secretjob\n' "$ME" > "$WORK/psfix"
 
+export DFX_PROCESS_SAMPLER=off   # speed: python sampler only in T-D20
 run(){ PROC_ROOT="$FIX/proc" SYS_ROOT="$FIX/sys" CGROUP_ROOT="$FIX/nocg" bash "$SCRIPT" "$@"; }
 
 echo "== T-D1: snapshot on fixture -> exit 0, bundle complete =="
@@ -103,9 +112,17 @@ echo "== T-D3/T-D3b: sampling on CONTROLLED fixture -> exact rate oracle, empty 
 # sample 1 reads state A; harness swaps to state B during sleep; sample 2 -> dt=10.00, compact_stall 100->1100 => 100.000/s
 FIX3="$WORK/fix3"; mkfix "$FIX3"
 O5="$WORK/o5"; mkdir "$O5"
-( sleep 0.45
-  sed -i 's/^compact_stall 100/compact_stall 1100/' "$FIX3/proc/vmstat"
-  echo "110.00 95.00" > "$FIX3/proc/uptime" ) &
+( # EVENT-DRIVEN swap (2026-07-17 alma2 lesson): fixed sleeps race in BOTH
+  # directions on slow filesystems (0.45s swap fired before a slow script even
+  # took sample 1). Wait until sample 1 is WRITTEN, then swap atomically.
+  CSVF=""
+  for _i in $(seq 1 200); do
+    CSVF=$(ls "$O5"/host_diag_*/samples.csv 2>/dev/null | head -1)
+    [ -n "$CSVF" ] && [ "$(wc -l < "$CSVF")" -ge 2 ] && break
+    sleep 0.05
+  done
+  sed 's/^compact_stall 100/compact_stall 1100/' "$FIX3/proc/vmstat" > "$FIX3/vm.new" && mv "$FIX3/vm.new" "$FIX3/proc/vmstat"
+  printf '110.00 95.00\n' > "$FIX3/up.new" && mv "$FIX3/up.new" "$FIX3/proc/uptime" ) &
 PROC_ROOT="$FIX3/proc" SYS_ROOT="$FIX3/sys" bash "$SCRIPT" -o "$O5" -s 1 -n 2 > /dev/null 2> "$WORK/t3.err"; rc=$?
 wait
 check "T-D3b exit" "$rc" 0
@@ -136,6 +153,42 @@ done
 echo "== collision guard: same-second bundles distinct (V2-6/R-8, structural) =="
 O7="$WORK/o7"; mkdir "$O7"; run -o "$O7" >/dev/null 2>&1 & run -o "$O7" >/dev/null 2>&1; wait
 check "collision: two bundles" "$(ls -d "$O7"/host_diag_* | wc -l)" 2
+
+echo "== T-D15: anchor channels present; loadavg captured in snapshot and CSV =="
+grep -q '^anchor.loadavg1=1.25' "$B/snapshot.kv" && ok "T-D15 snapshot anchor" || bad "T-D15 snapshot anchor"
+hdrA=$(head -1 "$B5/samples.csv")
+case "$hdrA" in *loadavg1,cpu_busy_pct,mem_available_kb,ctxt_per_s,procs_running) ok "T-D15 CSV anchor columns";; *) bad "T-D15 CSV anchor columns";; esac
+la=$(sed -n 3p "$B5/samples.csv" | awk -F, '{print $(NF-4)}')
+check "T-D15 loadavg1 value in row" "$la" "1.25"
+
+echo "== T-D19: C-2 bundle naming - shareable has run_id not PID; raw has PID =="
+ON="$WORK/on"; mkdir "$ON"; run -o "$ON" >/dev/null 2>&1
+BN=$(basename "$(ls -d "$ON"/host_diag_*)")
+case "$BN" in *_$$_*|*_$$) bad "T-D19 shareable name leaks PID ($BN)";; *) ok "T-D19 shareable name has no PID";; esac
+echo "$BN" | grep -qE '_[0-9a-f]{8}$' && ok "T-D19 run_id suffix present" || bad "T-D19 run_id suffix present ($BN)"
+OR="$WORK/or"; mkdir "$OR"; run -o "$OR" -r >/dev/null 2>&1
+BR=$(basename "$(ls -d "$OR"/host_diag_*)")
+echo "$BR" | grep -qE '_[0-9]+_[0-9a-f]{8}$' && ok "T-D19 raw name carries PID" || bad "T-D19 raw name carries PID ($BR)"
+
+echo "== T-D20: sampling mode starts process sampler -> three CSVs with rows =="
+OS="$WORK/os"; mkdir "$OS"
+DFX_PROCESS_SAMPLER=on PROC_INTERVAL_OVERRIDE=1 PROC_ROOT="$FIX/proc" SYS_ROOT="$FIX/sys" CGROUP_ROOT="$FIX/nocg" DFX_UID_OVERRIDE=$(id -u) \
+  bash "$SCRIPT" -o "$OS" -s 1 -n 2 >/dev/null 2>&1
+BS=$(ls -d "$OS"/host_diag_* | head -1)
+TD20_FAIL=0
+for f in process_samples.csv user_samples.csv workload_rollup.csv; do
+  if [ -f "$BS/$f" ] && [ "$(wc -l < "$BS/$f")" -gt 1 ]; then ok "T-D20 $f has rows"; else bad "T-D20 $f has rows"; TD20_FAIL=1; fi
+done
+if [ "$TD20_FAIL" = 1 ]; then
+  echo "--- T-D20 SELF-DIAGNOSIS ---"
+  echo "bundle: $BS"; ls -la "$BS" 2>/dev/null
+  echo "--- sampler.log ---"; cat "$BS/sampler.log" 2>/dev/null || echo "(no sampler.log)"
+  echo "--- manifest sampler lines ---"; grep -E "sampler|process_interval|run_id" "$BS/manifest.kv" 2>/dev/null
+  echo "--- python3 -S smoke ---"; python3 -S -c "import pwd,signal,hashlib;print('stdlib OK')" 2>&1
+  echo "----------------------------"
+fi
+grep -q '^process_interval_s=' "$BS/manifest.kv" && ok "T-D20 manifest cadence" || bad "T-D20 manifest cadence"
+grep -q '^run_id=' "$BS/manifest.kv" && ok "T-D20 manifest run_id" || bad "T-D20 manifest run_id"
 
 echo "== T-D11a: bundle dir vanishes mid-run -> loud FATAL, exit 1 (2026-07-16 incident) =="
 FIXV="$WORK/fixv"; mkfix "$FIXV"; OV="$WORK/ov"; mkdir "$OV"
