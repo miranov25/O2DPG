@@ -19,17 +19,6 @@ changes are an admin decision.**
 | `report_diagnostics.py` | bundles -> AliasDataFrame -> dfdraw figures + summary + IT report |
 | `tests/` | hermetic fixture suites (bash + pytest); ADF tier gates on alma2 |
 
-## Reviewer recipe (execute, do not just read)
-
-1. Verify `provenance/MANIFEST.md5` in the packet against `code/` and `tests/`.
-2. Run the gate yourself: `bash diagnostics/run_tests.sh` - expect `SUMMARY: diagnostics OK`.
-3. Collect on a live host: `bash diagnostics/dfx_host_diagnostics.sh -o /tmp/rv -s 5 -n 6`.
-4. Render + audit: `python3 diagnostics/report_diagnostics.py /tmp/rv/host_diag_* -o /tmp/rv/rep`;
-   read `/tmp/rv/rep/validation/summary.md` FIRST (trust check).
-5. Inspect the report: vitals ALWAYS drawn; processes-and-background section present;
-   rank fields EMPTY (never 0) when a process is outside a top list.
-6. Verdict per the Reviewer QRC: findings P0/P1/P2 with file:line evidence.
-
 ## How to run collection (runbook)
 
 **A. Health snapshot** (5 s): `bash diagnostics/dfx_host_diagnostics.sh -o <data_dir>`
@@ -154,16 +143,6 @@ BLOCKING on alma2. Fixture roots: `PROC_ROOT`, `SYS_ROOT`, `CGROUP_ROOT`,
 `CLK_TCK_OVERRIDE`, `PS_CMD_OVERRIDE`.
 
 
-# Reviewer recipe (CRR packet entry point)
-
-You are reviewing a host-pathology measurement tool. You do NOT need to read
-the CSV raw — the tool explains its own data. Review = run six commands and
-judge the outputs against the expectations below.
-
-## The 6-step review (copy-paste; needs only python3+pandas and bash)
-
-```bash
-cd <packet>/code
 # 1. hermetic test suites (fixtures - no host dependence)
 bash ../tests/test_dfx_host_diagnostics.sh | tail -1        # expect PASS=54 FAIL=0
 python3 -m pytest -q ../tests/                              # expect all pass (ADF tier may skip off-alma2)

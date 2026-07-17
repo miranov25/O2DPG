@@ -2,7 +2,7 @@
 """
 reviewer_bundle.py - dfextensions/diagnostics: build the reviewer packet zip.
 
-One command produces everything a reviewer needs (the README Reviewer-recipe 6-step
+One command produces everything a reviewer needs (the CRR reviewer-instruction
 recipe is the entry point inside):
 
   python3 diagnostics/reviewer_bundle.py [-o OUT.zip] [--evidence DIR ...]
@@ -92,7 +92,8 @@ def main(argv=None):
         z.writestr("START_HERE.txt",
                    "Reviewer packet - dfextensions/diagnostics (PHASE_13_74_ADF)\n"
                    "1. verify provenance/MANIFEST.md5 against code/ and tests/\n"
-                   "2. read docs/README.md section: Reviewer recipe - execute its 6 steps\n"
+                   "2. read docs/PHASE_13_74_ADF_CRR*.md - the Code Review Request\n"
+                   "   (contains the reviewer instructions; official packets include it)\n"
                    "3. logs/ contains the suite runs made when this zip was built\n"
                    "4. evidence/ (if present) holds real bundles and rendered reports\n")
     print(f"[bundle] wrote {out}  files={len(entries)}")
