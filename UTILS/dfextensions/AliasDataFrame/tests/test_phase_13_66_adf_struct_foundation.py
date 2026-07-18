@@ -258,6 +258,14 @@ class _MockReader:
         self.num_entries = n
         self._n = n
 
+    def is_scalar_branch(self, name):
+        """PHASE_13_75_ADF test amendment (disclosed in CRR): detect_structs now
+        REQUIRES a reader-side shape classifier — unknown is never auto-registered
+        as scalar (twice-confirmed panel P0 P75-1; ratified C1). This mock declares
+        all its branches scalar, preserving the test's original intent: detection
+        from a (now contract-complete) mock reader works."""
+        return True if name in self.available_branches else None
+
     def load_branches(self, names):
         out = {}
         for full in names:

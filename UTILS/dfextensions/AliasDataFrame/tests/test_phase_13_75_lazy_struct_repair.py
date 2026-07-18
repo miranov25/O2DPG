@@ -263,6 +263,23 @@ class TestStage7_DrawSurfaces:
                         selection="dedxTPC.dEdxTotTPC>0",
                         lazy=True) is not None
 
+    def test_struct_in_color_facet_weights_slots(self):     # T-DRAW-6 completion
+        adf = fresh()
+        assert adf.draw("dedxTPC.dEdxMaxTPC:mult", type="profile",
+                        weights="dedxTPC.dEdxTotTPC", lazy=True) is not None
+        assert adf.draw("mult", type="hist",
+                        color="dedxTPC.dEdxMaxIROC", lazy=True) is not None
+        assert adf.draw("dedxTPC.dEdxMaxTPC:mult", type="profile",
+                        facet_by="tgl", facet_by_bins=2, lazy=True) is not None
+
+    def test_production_composition_facet_quantiles(self):  # T-DRAW-4 full form
+        adf = fresh()
+        assert adf.draw("log(dedxTPC.dEdxMaxTPC/dedxTPC.dEdxTotTPC):mult",
+                        type="profile", selection="(abs(tgl)<1.)",
+                        group_by="tgl", group_by_bins=3,
+                        facet_by="mult", facet_by_quantiles=2, ncols=2,
+                        lazy=True) is not None
+
     def test_draw_batch_surface(self):                      # T-DRAW-5 (batch)
         adf = fresh()
         out = adf.draw_batch({"fig1": {"expr": "dedxTPC.dEdxMaxTPC:mult",
