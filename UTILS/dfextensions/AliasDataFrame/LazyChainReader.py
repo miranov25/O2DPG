@@ -204,7 +204,10 @@ class LazyChainReader:
         for idx in range(len(self._files)):
             try:
                 rd = self._get_reader(idx)
-            except Exception:
+            except Exception as _e:
+                warnings.warn(f"is_scalar_branch({branch_name!r}): reader for file "
+                              f"{self._files[idx]!r} unavailable ({type(_e).__name__}: "
+                              f"{_e}) -> UNKNOWN (PHASE_13_75_ADF P1-7)")
                 verdicts.append(None); continue
             if branch_name not in getattr(rd, "available_branches", set()):
                 # PHASE_13_75_ADF FINAL-CRR P0-1 (synthesis Appendix A, conservative):
@@ -215,7 +218,10 @@ class LazyChainReader:
             holders.append(self._files[idx])
             try:
                 v = rd.is_scalar_branch(branch_name)
-            except Exception:
+            except Exception as _e:
+                warnings.warn(f"is_scalar_branch({branch_name!r}): classifier raised "
+                              f"in file {self._files[idx]!r} ({type(_e).__name__}: "
+                              f"{_e}) -> UNKNOWN (PHASE_13_75_ADF P1-7)")
                 v = None
             verdicts.append(v)
             if v is True:

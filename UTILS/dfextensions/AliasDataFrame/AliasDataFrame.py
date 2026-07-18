@@ -15133,6 +15133,13 @@ function collapseDepth(maxD) {{
             }
             adf.draw_batch(specs, save_dir='qa/', defaults={'stats': True})
         """
+        # PHASE_13_75_ADF DELTA-2 P0-4: caller-owned specifications and defaults
+        # are NEVER mutated — the entire merge/rewrite/projection/delegation
+        # chain operates on deep local copies.
+        import copy as _copy
+        specs = _copy.deepcopy(specs)
+        if isinstance(defaults, dict):
+            defaults = _copy.deepcopy(defaults)
         # PHASE_13_75_ADF P0-2 (early, before ANY defaults/kwargs snapshot):
         # struct refs arriving via defaults or top-level kwargs are loaded and
         # rewritten here so every later merged view sees internal names.
@@ -15428,7 +15435,7 @@ function collapseDepth(maxD) {{
         plotter = DFDraw(df_for_plot)
         plotter._data_source = self  # For duck-typed axis title lookup
         
-        self._assert_struct_projection(df_for_plot.columns, [str(_v) for _sp0 in specs.values() if isinstance(_sp0, dict) for _v in _sp0.values() if isinstance(_v, str)] + [str(_v) for _v in _md_dict.values() if isinstance(_v, str)], 'draw_batch')
+        self._assert_struct_projection(df_for_plot.columns, [_sp0.get(_sl9) for _sp0 in specs.values() if isinstance(_sp0, dict) for _sl9 in ('expr','selection','group_by','weights','facet_by','color') if isinstance(_sp0.get(_sl9), str)] + [_md_dict.get(_sl9) for _sl9 in ('expr','selection','group_by','weights','facet_by','color') if isinstance(_md_dict.get(_sl9), str)], 'draw_batch')
         results = plotter.draw_batch(
             specs=specs,
             save_dir=save_dir,
@@ -15518,6 +15525,13 @@ function collapseDepth(maxD) {{
         Note:
             Plot specs support short form: 'column' expands to {'expr': 'column'}
         """
+        # PHASE_13_75_ADF DELTA-2 P0-4: caller-owned specifications and defaults
+        # are NEVER mutated — the entire merge/rewrite/projection/delegation
+        # chain operates on deep local copies.
+        import copy as _copy
+        specs = _copy.deepcopy(specs)
+        if isinstance(defaults, dict):
+            defaults = _copy.deepcopy(defaults)
         # PHASE_13_75_ADF P0-2 (early, before ANY defaults/kwargs snapshot):
         # struct refs arriving via defaults or top-level kwargs are loaded and
         # rewritten here so every later merged view sees internal names.
@@ -16036,7 +16050,9 @@ function collapseDepth(maxD) {{
         _fig_texts = []
         for _src in ([fig_spec.get("defaults") or {}] +
                      [p for p in fig_spec.get("plots", []) if isinstance(p, dict)]):
-            for _v in _src.values():
+            for _sl9 in ("expr", "selection", "group_by",
+                         "weights", "facet_by", "color"):
+                _v = _src.get(_sl9)
                 if isinstance(_v, str):
                     _fig_texts.append(_v)
         self._assert_struct_projection(df.columns, _fig_texts, "draw_figures")

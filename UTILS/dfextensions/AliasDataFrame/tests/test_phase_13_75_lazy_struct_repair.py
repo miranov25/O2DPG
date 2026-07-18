@@ -781,3 +781,100 @@ class TestStage14_FinalCrrCorrections:
         origins = {k: v["origin"] for k, v in adf._structs.items()}
         info = adf.describe_structure(return_dict=True)     # diagnostics: no mutation
         assert {k: v["origin"] for k, v in adf._structs.items()} == origins
+
+
+# ────────────────────────── Stage 15: Delta-2 corrections ──────────────────────────
+class TestStage15_Delta2:
+    def test_caller_spec_never_mutated_three_contexts(self, ):   # P0-4 regression
+        """Same ORIGINAL dict: (1) same ADF post-release_struct, (2) fresh lazy
+        ADF, (3) across draw_batch AND draw_figures. Caller bytes untouched."""
+        import copy
+        spec = {"f1": {"expr": "dedxTPC.dEdxMaxTPC:mult", "type": "profile",
+                       "weights": "dedxTPC.dEdxTotTPC"}}
+        fig_spec = [{"figure": "f",
+                     "defaults": {"weights": "dedxTPC.dEdxTotTPC"},
+                     "plots": [{"expr": "dedxTPC.dEdxMaxTPC:mult",
+                                "type": "profile"}]}]
+        snapshot_spec = copy.deepcopy(spec)
+        snapshot_fig = copy.deepcopy(fig_spec)
+        adf = fresh()
+        adf.draw_batch(spec, lazy=True)
+        assert spec == snapshot_spec                       # caller dict untouched
+        if hasattr(adf, "release_struct"):
+            adf.release_struct("dedxTPC")
+            adf.draw_batch(spec, lazy=True)                # (1) post-release reuse
+            assert spec == snapshot_spec
+        adf2 = fresh()
+        adf2.draw_batch(spec, lazy=True)                   # (2) fresh-ADF reuse
+        assert spec == snapshot_spec
+        adf3 = fresh()
+        adf3.draw_figures(fig_spec, lazy=True)             # (3) figures surface
+        assert fig_spec == snapshot_fig
+        adf4 = fresh()
+        adf4.draw_figures(fig_spec, lazy=True)             # figures fresh reuse
+        assert fig_spec == snapshot_fig
+
+    def test_validate_aliases_fresh_lazy(self):            # P2-4
+        adf = fresh()
+        adf.add_alias("logratio", "log(dedxTPC.dEdxMaxTPC/dedxTPC.dEdxTotTPC)")
+        res = adf.validate_aliases()                       # fresh-lazy, no eval first
+        entry = res.get("logratio") if isinstance(res, dict) else None
+        if isinstance(entry, dict):
+            assert entry.get("valid", entry.get("ok", True)) not in (False,)
+        r = adf.eval("logratio")
+        y = np.log(oracle(CLEAN, "dedxTPC/dEdxMaxTPC").astype(np.float64)
+                   / oracle(CLEAN, "dedxTPC/dEdxTotTPC").astype(np.float64))
+        assert np.allclose(r.to_numpy(), y, rtol=1e-5, atol=1e-6)   # alias evals in float32
+
+    def test_describe_structure_print_path(self, capsys):  # P2-5
+        adf = fresh()
+        before_cols = set(adf.df.columns)
+        adf.describe_structure()                           # print path must not raise
+        out = capsys.readouterr().out
+        assert "olumn" in out or "ows" in out              # human sections present
+        assert set(adf.df.columns) == before_cols          # no loading side effect
+
+    @pytest.mark.invariance
+    def test_per_bin_profile_oracle(self):                 # P1-8 via PUBLIC contract
+        adf = fresh()
+        fig, ax, stats = adf.draw("dedxTPC.dEdxMaxTPC:mult", type="profile",
+                                  lazy=True, bins=4, return_data=True)
+        pdata = stats["profile_data"]
+        y = oracle(CLEAN, "dedxTPC/dEdxMaxTPC").astype(np.float64)
+        x = oracle(CLEAN, "mult").astype(np.float64)
+        import pandas as _pd
+        edges = np.concatenate([pdata["x_low"].to_numpy(),
+                                pdata["x_high"].to_numpy()[-1:]])
+        idx = _pd.cut(x, bins=edges, include_lowest=True)
+        ref = _pd.DataFrame({"y": y, "b": idx}).groupby("b", observed=True)
+        assert np.array_equal(pdata["count"].to_numpy(), ref.size().to_numpy())
+        assert np.allclose(pdata["y_mean"].to_numpy(), ref.y.mean().to_numpy(),
+                           rtol=1e-6, equal_nan=True)
+        assert np.allclose(pdata["x_center"].to_numpy(),
+                           (edges[:-1] + edges[1:]) / 2.0, rtol=1e-6)
+
+    def test_guard_ignores_titles_matching_internals(self, dfdraw_spy):  # P2-3
+        adf = fresh()
+        adf.draw_batch({"f1": {"expr": "mult", "type": "hist",
+                               "title": "dEdxMaxIROC__dedxTPC"}},   # decoy title
+                       lazy=True)                          # must NOT raise
+
+    def test_classifier_exception_reports_context(self):   # P1-7
+        from LazyChainReader import LazyChainReader
+        r = LazyChainReader(files=[{"path": CHAIN[0], "tree": "tree"},
+                                   {"path": CHAIN[1], "tree": "tree"}],
+                            validation="union")
+        r._get_reader(0)                                   # materialize
+        import types
+        rd0 = r._readers[0] if hasattr(r, "_readers") else None
+        def boom(name): raise RuntimeError("injected classifier failure")
+        # patch first per-file reader's classifier
+        target = rd0 if rd0 is not None else r._get_reader(0)
+        target.is_scalar_branch = boom
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            v = r.is_scalar_branch("mult")
+        assert v is None                                   # conservative
+        msgs = " ".join(str(x.message) for x in w)
+        assert "classifier raised" in msgs and "mult" in msgs \
+               and "RuntimeError" in msgs and "injected" in msgs
