@@ -36,12 +36,20 @@ case "$BLINE" in *"FAIL=0"*) : ;; *) FAIL=1;; esac
 if [ "$FAIL" = 0 ]; then
   # CRR-12: every packet carries REAL rendered evidence from THIS host
   EV="$DIAGROOT/evidence_$TS"; mkdir -p "$EV"
-  bash "$HERE/dfx_host_diagnostics.sh" -o "$EV" -s 2 -n 3 > "$EV/collect.log" 2>&1 \
+  EVN="${DFX_EVIDENCE_SAMPLES:-16}"   # 16 x 2s: enough points for review figures (architect 2026-07-18)
+  echo "[run_tests] evidence collection: -s 2 -n $EVN (set DFX_EVIDENCE_SAMPLES for longer official runs, e.g. 30)"
+  PROC_INTERVAL_OVERRIDE=2 bash "$HERE/dfx_host_diagnostics.sh" -o "$EV" -s 2 -n "$EVN" > "$EV/collect.log" 2>&1 \
     || echo "[run_tests] evidence collection degraded (see $EV/collect.log)"
   EB=$(ls -d "$EV"/host_diag_* 2>/dev/null | head -1)
   if [ -n "$EB" ]; then
-    python3 "$HERE/report_diagnostics.py" "$EB" -o "$EV/report" > "$EV/render.log" 2>&1 \
-      || echo "[run_tests] evidence render unavailable on this host (see $EV/render.log)"
+    if python3 "$HERE/report_diagnostics.py" "$EB" -o "$EV/report" > "$EV/render.log" 2>&1; then
+      REPHTML="$DIAGROOT/diagnostics_report_$TS.html"
+      cp "$EV/report/report.html" "$REPHTML" 2>/dev/null || REPHTML="$EV/report/report.html"
+      echo "[run_tests] EVIDENCE REPORT (open in browser): $REPHTML"
+      echo "[run_tests] EVIDENCE AUDIT : $EV/report/validation/summary.md"
+    else
+      echo "[run_tests] evidence render unavailable on this host (see $EV/render.log)"
+    fi
   fi
   ZIP="$DIAGROOT/diagnostics_reviewer_$TS.zip"
   CRROPT=""
@@ -51,7 +59,7 @@ if [ "$FAIL" = 0 ]; then
       --evidence "$EV" $CRROPT \
       && [ -s "$ZIP" ]; then
     echo "[run_tests] reviewer zip: $ZIP"
-    echo "SUMMARY: diagnostics OK - bash[$BLINE] pytest[$PLINE] zip[$ZIP]"
+    echo "SUMMARY: diagnostics OK - bash[$BLINE] pytest[$PLINE] zip[$ZIP] report[${REPHTML:-none}]"
   else
     echo "SUMMARY: diagnostics FAILING - tests green but reviewer-zip creation FAILED (CRR-13 gate)"
     exit 1
