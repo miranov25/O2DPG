@@ -150,6 +150,20 @@ def main(argv=None):
         except Exception as e:                  # report failure never masks rc
             orch.step("report", "ERROR", error=f"{type(e).__name__}: {e}")
 
+    # v8 line 1054 (CRR-5): if the WORKLOAD SUCCEEDED but required diagnostics
+    # finalization failed, exit 70 (EX_SOFTWARE) and record the failed stage.
+    # A failed workload always propagates its own rc unchanged.
+    diag_fail = None
+    for st in orch.steps:
+        if st["step"] in ("collector_start", "collector_stop") and st["status"] == "ERROR":
+            diag_fail = st["step"]
+    if not bundle:
+        diag_fail = diag_fail or "bundle_discovered"
+    if rc == 0 and diag_fail:
+        orch.step("diagnostics_finalization", "FAILED", failed_stage=diag_fail,
+                  exit_code=70)
+        orch.write(run_id, rc)
+        return 70
     orch.write(run_id, rc)
     return rc                                    # 10: UNCHANGED workload status
 

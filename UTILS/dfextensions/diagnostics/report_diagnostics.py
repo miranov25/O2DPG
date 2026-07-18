@@ -36,6 +36,7 @@ if (_UTILS / "dfextensions" / "dfdraw").is_dir():
     sys.path.insert(0, str(_UTILS))
 import schema  # noqa: E402
 import audit as audit_mod  # noqa: E402
+import job_host_analysis as jha_mod  # noqa: E402
 
 # channels drawn/summarized when present (rates + PSI are the pathology signals)
 DEFAULT_CHANNELS = [
@@ -118,15 +119,24 @@ def _top_consumers(pdf, n=10):
     return [dict(r) for _, r in g.iterrows()]
 
 
+RENDER_WARNINGS = 0     # GPT18-F: drawing-library warnings are counted and
+                        # reported, never silently flooded to stderr
+
+
 def _draw_expr(adf, expr, title, ylab, fig_dir, fname):
     """One draw through the ADF/dfdraw grammar (incl. [a,b]:x multi-curve),
     individual-curve fallback if the vector form is rejected."""
     fig_dir.mkdir(parents=True, exist_ok=True)
+    import warnings as _w
     try:
+      with _w.catch_warnings(record=True) as _wl:
+        _w.simplefilter("always")
         fig, ax, _ = adf.draw(f"{expr}:t_rel", type="scatter", title=title,
                               xlabel="t_rel [s]", ylabel=ylab)
         p = fig_dir / fname
         fig.savefig(p, dpi=110, bbox_inches="tight")
+        global RENDER_WARNINGS
+        RENDER_WARNINGS += len(_wl)
         try:
             import matplotlib.pyplot as plt; plt.close(fig)
         except Exception:
@@ -446,7 +456,14 @@ def generate(bundles, run_records=(), labels=None, sections=None,
         indent=1, sort_keys=True))
 
     _prog("writing audit + report")
+    global RENDER_WARNINGS
+    if RENDER_WARNINGS:
+        html_parts.append(f"<p class='note'>rendering produced {RENDER_WARNINGS} "
+                          "drawing-library warnings (captured, not shown; "
+                          "constant-series statistics inside the drawing backend - "
+                          "filed against dfdraw).</p>")
     if aud is not None:
+        aud.trace["render_warnings"] = RENDER_WARNINGS
         aud.trace["bundles"] = [str(b.path) for b in loaded]
         aud.trace["mode"] = mode
         aud.write(out_dir)
@@ -478,9 +495,51 @@ def generate(bundles, run_records=(), labels=None, sections=None,
                           (_table({k: json.dumps(v) for k, v in diff.items()})
                            if diff else "<p>no configuration differences detected</p>"))
     if "runs" in sections:
-        html_parts.append("<h2>Run panel</h2><p>" +
-                          (f"{len(run_records)} run record(s) supplied." if run_records
-                           else "no run_metrics records supplied (D2).") + "</p>")
+        if not run_records:
+            html_parts.append("<h2>Layer-C: job vs background</h2>"
+                              "<p>no run_metrics records supplied (D2) - "
+                              "background influence cannot be assessed.</p>")
+        else:
+            # CRR-4: records are LOADED, ALIGNED and CORRELATED - not counted
+            lc_all = []
+            for b in loaded:
+                if b.samples_path is None:
+                    continue
+                hostf = schema.samples_frame(b)
+                _p, _u, roll = _aux_tables(b)
+                res = jha_mod.analyze(run_records, hostf, roll)
+                lc_all.append((b.host, res))
+                if aud is not None:
+                    aud.trace.setdefault("job_host_analysis", {})[b.host] = res
+            for host, res in lc_all:
+                rows_html = []
+                for r in res:
+                    w = r["window"] or {}
+                    rows_html.append(f"<h3>{host} - run '{r.get('label')}' "
+                                     f"(run_id {r.get('run_id')}) - window {w.get('state')}</h3>")
+                    if w.get("state") == "ok":
+                        rows_html.append(f"<p>{w['host_samples_in_window']} host samples "
+                                         f"in the job window, {w['host_samples_baseline']} baseline.</p>")
+                        inf = "".join(
+                            f"<tr><td>{e['channel']}</td><td>{e['state']}</td>"
+                            f"<td>{e.get('window_mean','')}</td><td>{e.get('window_max','')}</td>"
+                            f"<td>{e.get('baseline_mean','')}</td>"
+                            f"<td>{e.get('window_over_baseline','')}</td></tr>"
+                            for e in r["influence"])
+                        rows_html.append("<table><tr><th>channel</th><th>state</th>"
+                                         "<th>window mean</th><th>window max</th>"
+                                         "<th>baseline mean</th><th>window/baseline</th></tr>"
+                                         + inf + "</table>")
+                        cor = "".join(
+                            f"<tr><td>{c['pair']}</td><td>{c['state']}</td>"
+                            f"<td>{'' if c.get('r') is None else c['r']}</td>"
+                            f"<td>{c.get('n','')}</td></tr>"
+                            for c in r["correlations"])
+                        rows_html.append("<table><tr><th>pair</th><th>validity</th>"
+                                         "<th>r</th><th>n</th></tr>" + cor + "</table>")
+                    elif w.get("detail"):
+                        rows_html.append(f"<p>{w['detail']}</p>")
+                html_parts.append("<h2>Layer-C: job vs background</h2>" + "".join(rows_html))
     if "evidence" in sections:
         for b in loaded:
             html_parts.append(f"<h2>{b.host} - evidence states</h2>" +

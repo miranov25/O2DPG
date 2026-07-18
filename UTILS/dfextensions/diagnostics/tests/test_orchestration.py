@@ -100,13 +100,29 @@ def test_o6_bundle_complete_with_clean_stop(tmp_path):
     assert "stop_reason=signal_clean_stop" in man
     assert "samples_taken=" in man
 
-def test_o7_collector_failure_never_masks_workload(tmp_path, monkeypatch):
-    """Break the collector (bad PROC root -> exit 2 immediately): workload runs,
-    rc preserved, failure recorded - the 3.3 contract."""
+def test_o7_failed_workload_rc_never_masked(tmp_path, monkeypatch):
+    """FAILED workload always propagates its own rc - even with broken
+    diagnostics (v8 3.3; exit-70 applies only to rc==0, see T-M21)."""
     env = fixture_env(tmp_path)
     env["PROC_ROOT"] = "/nonexistent_proc_root"
     r, _, orch = run_wrap(tmp_path, ["bash", "-c", "exit 5"], env=env)
     assert r.returncode == 5 and orch["workload_rc"] == 5
+
+def test_m21_success_plus_diag_finalization_failure_exits_70(tmp_path):
+    """v8:1054 / T-M21 (CRR-5): workload rc==0 but diagnostics finalization
+    failed -> wrapper exits 70 and records the failed stage."""
+    import shutil
+    iso = tmp_path / "iso"; iso.mkdir()
+    shutil.copy(WRAP, iso / WRAP.name)          # collector script ABSENT here
+    r = subprocess.run([sys.executable, str(iso / WRAP.name), "--out",
+                        str(tmp_path / "d"), "--pre", "0", "--post", "0",
+                        "--", "true"],
+                       capture_output=True, text=True, timeout=30)
+    assert r.returncode == 70
+    orch = json.loads((tmp_path / "d" / "orchestration.json").read_text())
+    fin = [s for s in orch["steps"] if s["step"] == "diagnostics_finalization"]
+    assert fin and fin[0]["status"] == "FAILED" and fin[0]["exit_code"] == 70
+    assert orch["workload_rc"] == 0
 
 def test_o8_workload_stdout_stderr_passthrough(tmp_path):
     r, _, _ = run_wrap(tmp_path, ["bash", "-c", "echo OUT_MARKER; echo ERR_MARKER >&2"])

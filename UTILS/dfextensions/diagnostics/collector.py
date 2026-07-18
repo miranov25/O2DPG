@@ -79,22 +79,32 @@ def uid_name(uid, cache={}):
 
 
 class Redactor:
-    """Stable-within-bundle tokens for other users/processes (v8 4.7)."""
+    """v8 938-940 (CRR-2): SHAREABLE mode emits bundle-local random tokens
+    ONLY - no usernames (not even the caller's own), no process names, no
+    PID/starttime. Analytical meaning survives via is_current_user /
+    is_target_job flags and rank columns. RAW/local mode keeps real identity."""
     def __init__(self, own_user, raw=False, salt=None):
         self.own = own_user
         self.raw = raw
         self.salt = salt or os.urandom(8).hex()
 
     def user(self, name):
-        if self.raw or name == self.own:
+        if self.raw:
             return name
         h = hashlib.sha256((self.salt + name).encode()).hexdigest()[:8]
         return f"u_{h}"
 
-    def proc(self, owner, comm):
-        if self.raw or owner == self.own:
+    def proc(self, owner, comm, pid=0, starttime=0):
+        if self.raw:
             return comm
-        return "[other]"
+        h = hashlib.sha256(f"{self.salt}p{pid}s{starttime}".encode()).hexdigest()[:8]
+        return f"p_{h}"
+
+    def pid_field(self, pid):
+        return pid if self.raw else ""
+
+    def start_field(self, st):
+        return st if self.raw else ""
 
 
 def scan_stage1(target_pids):
@@ -252,8 +262,10 @@ def sample_once(prev, dt, args, red, own_uid, run_id, ts, boot_id, out):
     with open(out / "process_samples.csv", "a") as f:
         for row in sorted(sel.values(), key=lambda r: (-(r["cpu_pct"] or 0), r["pid"])):
             f.write(",".join(str(x) for x in (
-                ts, run_id, red.user(row["owner"]), red.proc(row["owner"], row["comm"]),
-                row["pid"], row["starttime"], int(row["is_target"]), row["state"],
+                ts, run_id, red.user(row["owner"]),
+                red.proc(row["owner"], row["comm"], row["pid"], row["starttime"]),
+                red.pid_field(row["pid"]), red.start_field(row["starttime"]),
+                int(row["is_target"]), row["state"],
                 "" if row["cpu_pct"] is None else row["cpu_pct"],
                 row["rss_kb"], row["virt_kb"], row["shr_kb"],
                 round(row["cpu_ticks"] / CLK, 2),

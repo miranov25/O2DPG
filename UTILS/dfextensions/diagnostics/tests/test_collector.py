@@ -72,7 +72,9 @@ def env(tmp_path, monkeypatch):
                       ("user_samples.csv", collector.USER_HEADER),
                       ("workload_rollup.csv", collector.ROLL_HEADER)):
         (tmp_path / "bundle" / name).write_text(hdr + "\n")
-    red = collector.Redactor(collector.uid_name(1000), raw=False, salt="fixedsalt")
+    # mechanics tests use RAW mode (they key on pid); the privacy CONTRACT
+    # (shareable = tokens only, v8 938-940) is tested separately in test_p3
+    red = collector.Redactor(collector.uid_name(1000), raw=True, salt="fixedsalt")
     return SimpleNamespace(collector=collector, proc=proc, args=args, red=red,
                            tmp=tmp_path, out=tmp_path / "bundle")
 
@@ -117,18 +119,24 @@ def test_p2_warmup_no_cpu_ranks_target_still_present(env):
     tj = [r for r in r1 if r["is_target_job"] == "1"]
     assert {r["pid"] for r in tj} == {"50", "51"}                 # tree via ppid, rank-independent
 
-def test_p3_redaction_stable_tokens_and_raw(env):
-    run_two_samples(env)
+def test_p3_shareable_is_tokens_only_v8_contract(env):
+    """CRR-2 / v8 938-940: shareable mode = bundle-local tokens ONLY.
+    No usernames (own included), no process names, no pid, no starttime."""
+    share = env.collector.Redactor(env.collector.uid_name(1000), raw=False, salt="s2")
+    env.collector.sample_once(None, 10.0, env.args, share, 1000, "R", 1000, "b", env.out)
+    txt = (env.out / "process_samples.csv").read_text()
+    for leak in ("secretjob", "python3", "worker", "vim", "uid1000", "uid2000"):
+        assert leak not in txt, f"shareable leaks {leak}"
     pr = rows(env, "process_samples.csv")
-    own = [r for r in pr if r["pid"] in ("50", "51", "60")]
-    other = [r for r in pr if r["pid"] == "70"]
-    assert all(r["proc"] in ("python3", "worker", "vim") for r in own)
-    assert all(r["proc"] == "[other]" for r in other)
-    toks = {r["tenant"] for r in other}
-    assert len(toks) == 1 and toks.pop().startswith("u_")         # stable within bundle
-    assert not any("secretjob" in l for l in (env.out / "process_samples.csv").read_text().splitlines())
-    raw_red = env.collector.Redactor(env.collector.uid_name(1000), raw=True)
-    assert raw_red.proc("uid2000", "secretjob") == "secretjob"
+    assert pr and all(r["pid"] == "" and r["starttime"] == "" for r in pr)
+    assert all(r["tenant"].startswith("u_") for r in pr)
+    assert all(r["proc"].startswith("p_") for r in pr)
+    tj = [r for r in pr if r["is_target_job"] == "1"]
+    assert len(tj) == 2                       # analytical meaning survives via flags
+    utxt = (env.out / "user_samples.csv").read_text()
+    assert "uid1000" not in utxt and "uid2000" not in utxt
+    raw = env.collector.Redactor(env.collector.uid_name(1000), raw=True)
+    assert raw.proc("x", "secretjob", 1, 2) == "secretjob" and raw.pid_field(70) == 70
 
 def test_p5_dstate_cap_target_priority(env, monkeypatch):
     # make one D-state row belong to the target job; cap=2 -> target-D first
@@ -148,8 +156,8 @@ def test_u1_user_aggregation_all_processes_oracle(env):
     assert own["process_count"] == "3"
     assert own["rss_kb"] == str((500 + 800 + 50) * PAGE_KB)       # independent oracle
     assert own["running_count"] == "1"
-    # NOTE: root (kthreadd) is also a tokenized other-user row - select by content
-    other = next(r for r in u2 if r["tenant"].startswith("u_") and r["blocked_count"] == "2")
+    # raw-mode mechanics: select the other-user row by content, not token
+    other = next(r for r in u2 if r["is_current_user"] == "0" and r["blocked_count"] == "2")
     assert other["process_count"] == "3"
     assert other["io_coverage_state"] in ("partial", "unavailable")  # never silent-complete
 
