@@ -26,7 +26,9 @@ HERE = Path(__file__).resolve().parent
 
 CODE = ["dfx_host_diagnostics.sh", "collector.py", "schema.py", "audit.py",
         "report_diagnostics.py", "run_metrics.py", "explain_bundle.py",
-        "dfx_run_with_diagnostics.py", "run_tests.sh"]
+        "dfx_run_with_diagnostics.py", "run_tests.sh",
+        "job_host_analysis.py", "conclusion_model.py",
+        "reviewer_bundle.py"]
 DOCS = ["README.md"]
 
 

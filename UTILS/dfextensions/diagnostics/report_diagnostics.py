@@ -37,6 +37,7 @@ if (_UTILS / "dfextensions" / "dfdraw").is_dir():
 import schema  # noqa: E402
 import audit as audit_mod  # noqa: E402
 import job_host_analysis as jha_mod  # noqa: E402
+import conclusion_model as cm_mod  # noqa: E402
 
 # channels drawn/summarized when present (rates + PSI are the pathology signals)
 DEFAULT_CHANNELS = [
@@ -508,10 +509,12 @@ def generate(bundles, run_records=(), labels=None, sections=None,
                 hostf = schema.samples_frame(b)
                 _p, _u, roll = _aux_tables(b)
                 res = jha_mod.analyze(run_records, hostf, roll)
-                lc_all.append((b.host, res))
+                concl = cm_mod.evaluate(b.verdict, b.rules_fired, res)
+                lc_all.append((b.host, res, concl))
                 if aud is not None:
                     aud.trace.setdefault("job_host_analysis", {})[b.host] = res
-            for host, res in lc_all:
+                    aud.trace.setdefault("conclusion_model", {})[b.host] = concl
+            for host, res, concl in lc_all:
                 rows_html = []
                 for r in res:
                     w = r["window"] or {}
@@ -539,6 +542,16 @@ def generate(bundles, run_records=(), labels=None, sections=None,
                                          "<th>r</th><th>n</th></tr>" + cor + "</table>")
                     elif w.get("detail"):
                         rows_html.append(f"<p>{w['detail']}</p>")
+                bc = concl["bundle_conclusion"]
+                per = "".join(f"<tr><td>{r.get('run_id')}</td><td>{r['background_state']}</td>"
+                              f"<td>{r['job_state']}</td><td>{r['code']}</td>"
+                              f"<td>{r['conclusion']}</td></tr>" for r in concl["records"])
+                rows_html.append(
+                    f"<h3>Conclusion (model v{concl['model_version']}, host state: "
+                    f"{concl['host_state']})</h3>"
+                    "<table><tr><th>run</th><th>background</th><th>job</th>"
+                    "<th>code</th><th>conclusion</th></tr>" + per + "</table>"
+                    f"<p><b>Bundle conclusion [{bc['code']}]</b>: {bc['text']}</p>")
                 html_parts.append("<h2>Layer-C: job vs background</h2>" + "".join(rows_html))
     if "evidence" in sections:
         for b in loaded:
