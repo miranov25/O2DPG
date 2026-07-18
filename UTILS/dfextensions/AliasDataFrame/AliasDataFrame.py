@@ -1055,6 +1055,9 @@ class AliasDataFrame:
         self._subframe_readers = {}   # {name: LazyTreeReader}
         # PHASE_13_66_ADF: 1:1 struct/object registry.
         # {struct: {'members':[...], 'l2i':{logical:internal}, 'phys':{member:physical}}}
+        draw_dict = True   # PHASE_13_75_ADF (P75-11): documented internal reduced-dispatch gate;
+        # not a public option — initialized so getattr(self,'draw_dict',True) is no longer a phantom.
+        self.draw_dict = draw_dict
         self._structs = {}
         self._subframe_loaded = {}    # {name: bool}
         self._subframe_lazy_config = {}  # {name: {file, tree, index_columns, ...}}
@@ -1835,44 +1838,136 @@ class AliasDataFrame:
             if "/" in member:      # nested (Phase B territory) — skip in Phase A
                 continue
             detected.setdefault(parent, []).append(member)
-        # scalar/jagged guard: only auto-register members the reader interprets as scalar
+        # PHASE_13_75_ADF hardened guard set (Rev 2.1 §classification rules):
+        #  C1  unknown shape is NEVER auto-registered as scalar;
+        #  H1  jagged/non-scalar members are skipped loudly (never auto-flattened);
+        #  H2  count-helper namespaces are skipped: parent 'nX' whose stripped
+        #      sibling path 'X/member' exists and is non-scalar is uproot's
+        #      auto count branch for a jagged member, not a physics struct;
+        #  H3  internal-name collisions with existing top-level branches or
+        #      DataFrame columns block AUTO-registration of that member
+        #      (explicit register_struct retains precedence/override).
+        avail = getattr(reader, "available_branches", set()) or set()
         result = {}
         for parent, members in detected.items():
             if parent in self._structs or parent in self._subframes.subframes:
                 continue
+            # H2: count-helper namespace detection (parent-level)
+            if parent.startswith("n") and len(parent) > 1:
+                stripped = parent[1:]
+                helper_hits = [m for m in members
+                               if f"{stripped}/{m}" in avail
+                               and self._branch_shape(f"{stripped}/{m}") == "nonscalar"]
+                if helper_hits and len(helper_hits) == len(members):
+                    warnings.warn(
+                        f"detect_structs: skipping {parent!r} — count-helper namespace "
+                        f"for jagged member(s) {helper_hits!r} of struct {stripped!r} "
+                        f"(PHASE_13_75_ADF H2)")
+                    continue
             scalar = []
             for m in members:
                 phys = self._struct_physical_name(parent, m)
-                if self._branch_is_scalar(phys):
-                    scalar.append(m)
-                else:
+                shape = self._branch_shape(phys)
+                if shape == "nonscalar":
                     warnings.warn(
                         f"detect_structs: skipping jagged member {phys!r} "
                         f"(array-of-struct is Phase B; never auto-flattened)")
+                    continue
+                if shape == "unknown":
+                    warnings.warn(
+                        f"detect_structs: skipping {phys!r} — shape UNKNOWN to the "
+                        f"reader; unknown is never auto-registered as scalar "
+                        f"(PHASE_13_75_ADF C1). Use register_struct() to override.")
+                    continue
+                internal = self._struct_internal_name(parent, m)
+                if internal in self.df.columns or internal in avail:
+                    warnings.warn(
+                        f"detect_structs: skipping {phys!r} — internal name "
+                        f"{internal!r} collides with an existing "
+                        f"{'DataFrame column' if internal in self.df.columns else 'branch'} "
+                        f"(PHASE_13_75_ADF H3). Resolve the collision or register explicitly.")
+                    continue
+                scalar.append(m)
             if scalar:
                 result[parent] = scalar
                 if register:
-                    self.register_struct(parent, scalar)
+                    self.register_struct(parent, scalar, _origin="auto")
         return result
 
     def refresh_structs(self):
         """Re-run auto-detection (e.g. after new branches become available)."""
         return self.detect_structs(register=True)
 
-    def _branch_is_scalar(self, physical_name):
-        """True if the reader interprets the branch as one-value-per-entry (1:1).
-        Conservative: unknown interpretation -> treated as scalar (register), since a
-        genuine jagged member will surface at load; overridable by register_struct."""
+    def _branch_shape(self, physical_name):
+        """PHASE_13_75_ADF: three-valued shape classification for auto-detection.
+
+        Returns 'scalar' | 'nonscalar' | 'unknown'. Policy C1: 'unknown' is NEVER
+        treated as scalar by automatic registration (the pre-13.75 default-scalar
+        behavior mis-registered jagged branches on real readers, which do not
+        implement shape checking; see BUG_..._lazy_struct_autodetection_missing
+        and the Rev 2.1 panel record P75-1).
+        """
         reader = getattr(self, "_lazy_reader", None)
         if reader is None:
-            return True
+            return "unknown"
         checker = getattr(reader, "is_scalar_branch", None)
-        if callable(checker):
-            try:
-                return bool(checker(physical_name))
-            except Exception:
-                return True
-        return True
+        if not callable(checker):
+            return "unknown"
+        try:
+            verdict = checker(physical_name)
+        except Exception:
+            return "unknown"
+        if verdict is True:
+            return "scalar"
+        if verdict is False:
+            return "nonscalar"
+        return "unknown"
+
+    def _branch_is_scalar(self, physical_name):
+        """Back-compat wrapper: True ONLY for a positively classified scalar
+        (PHASE_13_75_ADF: unknown is never scalar)."""
+        return self._branch_shape(physical_name) == "scalar"
+
+    def _ensure_struct_catalog(self):
+        """PHASE_13_75_ADF D1: idempotent automatic struct-catalog lifecycle.
+
+        No-op eagerly. On a lazy ADF, runs detect_structs(register=True) once per
+        stable reader catalog; re-runs only when the catalog changes (reader
+        identity or catalog size — attach/reload both change it). Explicit and
+        schema-restored registrations keep precedence (detect_structs skips
+        already-registered parents). Never auto-flattens jagged members (H1),
+        never registers unknown shapes (C1), never auto-registers over a
+        collision (H3). Also normalizes any PRE-loaded physical struct columns
+        (constructor initial branches, D4): 'struct/member' df columns are
+        renamed to internal 'member__struct' for registered members.
+        """
+        reader = getattr(self, "_lazy_reader", None)
+        if reader is None:
+            return self
+        avail = getattr(reader, "available_branches", None)
+        if not avail:
+            return self
+        fp = (id(reader), len(avail))
+        if getattr(self, "_struct_catalog_fp", None) != fp:
+            self._struct_catalog_fp = fp
+            self.detect_structs(register=True)
+        # D4 normalization: reconcile pre-loaded physical columns -> internal names
+        if self._structs:
+            ren = {}
+            for _name, _st in self._structs.items():
+                for _m in _st["members"]:
+                    _phys = _st["phys"][_m]
+                    _internal = self._struct_internal_name(_name, _m)
+                    if _phys in self.df.columns:
+                        if _internal in self.df.columns:
+                            warnings.warn(
+                                f"_ensure_struct_catalog: both {_phys!r} and "
+                                f"{_internal!r} present; leaving both (collision)")
+                        else:
+                            ren[_phys] = _internal
+            if ren:
+                self.df.rename(columns=ren, inplace=True)
+        return self
 
     def _autoload_expr_branches(self, expr):
         """PHASE_13_66_ADF (F-fable5_5-2): autoload branches referenced by an
@@ -1881,6 +1976,7 @@ class AliasDataFrame:
         ensure_columns's selection leg cannot drift (P1-B: ensure_columns uses the
         selection= leg, whose parser drops dotted struct members).
         """
+        self._ensure_struct_catalog()   # PHASE_13_75_ADF D2: defensive, fp-cached
         # PHASE_13_66_ADF: directly load any registered struct referenced in expr
         # (robust: does not depend on the get_required_branches expr-leg resolving the
         # physical branch). ensure_struct loads the physical slash branch + A-1 rename.
@@ -1956,7 +2052,7 @@ class AliasDataFrame:
         """Physical uproot/ROOT branch path (slash form)."""
         return f"{struct}/{member}"
 
-    def register_struct(self, name, members):
+    def register_struct(self, name, members, _origin="explicit"):
         """PHASE_13_66_ADF: explicitly register a 1:1 struct/object branch.
 
         Three-name mapping per member: logical ``struct.member`` (user grammar),
@@ -1982,7 +2078,8 @@ class AliasDataFrame:
                 pass
             l2i[f"{name}.{m}"] = internal
             phys[m] = self._struct_physical_name(name, m)
-        self._structs[name] = {"members": list(members), "l2i": l2i, "phys": phys}
+        self._structs[name] = {"members": list(members), "l2i": l2i, "phys": phys,
+                               "origin": _origin}   # PHASE_13_75_ADF provenance (P75-4)
         # schema persistence (mirrors _schema["subframes"]); back-compat: absent key is a no-op
         try:
             self._schema.setdefault("structs", {})[name] = {"members": list(members)}
@@ -7073,6 +7170,7 @@ function collapseDepth(maxD) {{
         
         # Attach lazy reader
         adf._lazy_reader = lazy_reader
+        adf._ensure_struct_catalog()   # PHASE_13_75_ADF D2: catalog + D4 normalization of pre-loaded branches
 
         # Phase 13.59.ADF (BUG_20260613): register subframes recovered from the tree's
         # metadata so the lazy path exposes them. Before this, read_tree_lazy never read
@@ -7604,6 +7702,7 @@ function collapseDepth(maxD) {{
             adf.update_schema(schema)
         
         adf._lazy_reader = chain_reader
+        adf._ensure_struct_catalog()   # PHASE_13_75_ADF D2: catalog BEFORE initial ensure_branches
         
         # Store chain config (not serialized with schema)
         adf._chain = {
@@ -8124,6 +8223,7 @@ function collapseDepth(maxD) {{
         >>> adf.get_required_branches(expr='x:y', validate=True)
         {'x', 'y'}  # Only if x, y exist
         """
+        self._ensure_struct_catalog()   # PHASE_13_75_ADF D2 (fp-cached no-op when stable)
         all_columns = set()
         
         # 1. Parse main expression into column references.
@@ -13901,6 +14001,13 @@ function collapseDepth(maxD) {{
         # Built as a dict of existing Series -> one consolidated small frame;
         # the big frame is never copied or grown.
         # =================================================================
+        # PHASE_13_75_ADF D3 (Option A, one owner): rewrite struct refs BEFORE the
+        # reduced dict-dispatch projection so internal member__struct names are
+        # plain identifiers when the projection intersects tokens with df columns.
+        self._ensure_struct_catalog()
+        if self._structs:
+            expr = self._prepare_struct_refs(expr)
+            self._struct_rewrite_draw_slots(kwargs)
         if getattr(self, 'draw_dict', True):
             _need = self._dict_dispatch_columns(
                 df_subset.columns, expr=expr, selection=kwargs.get('selection'),
@@ -14052,10 +14159,8 @@ function collapseDepth(maxD) {{
                     for _slot in ('weights', 'facet_by', 'color'):
                         if isinstance(kwargs.get(_slot), str):
                             kwargs[_slot] = kwargs[_slot].replace(dot_ref, flat_ref)
-            # PHASE_13_66_ADF: struct rewrite (runs regardless of subframes).
-            if self._structs:
-                expr = self._prepare_struct_refs(expr)
-                self._struct_rewrite_draw_slots(kwargs)
+            # PHASE_13_75_ADF D3: struct rewrite moved BEFORE the reduced
+            # projection (see block above the draw_dict gate); nothing here.
         
         # ── group_by expression materialization (BUG_ADF_GroupByExpressionMaterialization) ──
         # dfdraw requires group_by to be a real column (Phase 13.30 contract).
@@ -15064,6 +15169,22 @@ function collapseDepth(maxD) {{
         # The big frame is never copied or grown; the subframe merge below adds
         # sf_ columns to this small frame.
         _md_dict = {**(defaults or {}), **kwargs}
+        # PHASE_13_75_ADF D3 (batch surface, Option A/one owner): rewrite struct
+        # refs in every spec BEFORE the union projection below, so internal
+        # member__struct names are plain tokens when intersected with columns.
+        # String-form specs are normalized to dicts first (covers short forms).
+        # Specs are mutated in place, matching the pre-existing behavior of the
+        # later PHASE_13_66 rewrite block (now an idempotent no-op).
+        self._ensure_struct_catalog()
+        if self._structs:
+            for _nm in list(specs.keys()):
+                _sp = specs[_nm]
+                if not isinstance(_sp, dict):
+                    _sp = {'expr': _sp}
+                    specs[_nm] = _sp
+                if 'expr' not in _sp:
+                    _sp['expr'] = _nm
+                self._struct_rewrite_draw_slots(_sp)
         _dfcols_b = set(df_for_plot.columns)
         _need_b = set()
         if getattr(self, 'draw_dict', True):
@@ -15425,6 +15546,21 @@ function collapseDepth(maxD) {{
         # across every plot in every figure spec, built ONCE per call. The big
         # frame is never copied or grown; the subframe merge adds sf_ columns.
         _md_dict = {**(defaults or {}), **kwargs}
+        # PHASE_13_75_ADF D3 (figures surface, Option A/one owner): normalize
+        # every plot spec (incl. SHORT-FORM strings, which the later PHASE_13_66
+        # rewrite block never touched — panel finding P75-5) to a dict and
+        # rewrite struct refs BEFORE the union projection below.
+        self._ensure_struct_catalog()
+        if self._structs:
+            for _fs in specs:
+                if not isinstance(_fs, dict):
+                    continue
+                _plots = _fs.get('plots', [])
+                for _i, _ps in enumerate(list(_plots)):
+                    if not isinstance(_ps, dict):
+                        _ps = {'expr': _ps}
+                        _plots[_i] = _ps
+                    self._struct_rewrite_draw_slots(_ps)
         _dfcols_f = set(df_subset.columns)
         _need_f = set()
         if getattr(self, 'draw_dict', True):
