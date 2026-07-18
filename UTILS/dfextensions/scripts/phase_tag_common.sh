@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# dfextensions/scripts/phase_tag_common.sh — Phase Boundary Management (v6-generic)\n# Localization (SUBPROJECT/TAGSUFFIX) is injected by per-subproject wrappers.
+# dfextensions/scripts/phase_tag_common.sh — Phase Boundary Management (v6.1-generic)\n# Localization (SUBPROJECT/TAGSUFFIX) is injected by per-subproject wrappers.
 # Ref: BUG_AliasDataFrame_20260706_phase_tagging
 # =============================================================================
 # Authoritative moving pointer: PHASE_BEGIN_${SUBPROJECT} (SOLE source of truth
@@ -269,36 +269,67 @@ phase_info() {
     local base; base=$(git merge-base "$beg" "$end")
     local range="${base}..${end}"
 
+    # v6.1 CONCURRENT-PHASE FIX: when several phases are OPEN on one branch,
+    # the bare BEGIN..END range mixes their commits and both phases report
+    # wrong numbers. If any commit in range carries this phase's message
+    # prefix (unbracketed convention 'PHASE_<id>:', legacy '[PHASE_<id>]'
+    # tolerated), statistics are computed from the prefix-matched commits
+    # only. Zero matches (pre-convention phases) -> unchanged range behavior.
+    local pgrep="^\\[?PHASE_${phase}\\]?[: ]"
+    local n_all n_match
+    n_all=$(git rev-list --count "$range")
+    n_match=$(git log -E --grep="$pgrep" --format=%h "$range" | wc -l | tr -d ' ')
+    local filt=""
+    if [ "$n_match" -gt 0 ]; then filt=1; fi
+
     local n add del
-    n=$(git rev-list --count "$range")
-    add=$(git diff --numstat "$base" "$end" | awk '{a+=$1} END{print a+0}')
-    del=$(git diff --numstat "$base" "$end" | awk '{d+=$2} END{print d+0}')
+    if [ -n "$filt" ]; then
+        n=$n_match
+        add=$(git log -E --grep="$pgrep" --numstat --format= "$range" | awk '{a+=$1} END{print a+0}')
+        del=$(git log -E --grep="$pgrep" --numstat --format= "$range" | awk '{d+=$2} END{print d+0}')
+    else
+        n=$n_all
+        add=$(git diff --numstat "$base" "$end" | awk '{a+=$1} END{print a+0}')
+        del=$(git diff --numstat "$base" "$end" | awk '{d+=$2} END{print d+0}')
+    fi
     echo "Phase ${phase//_/.}  [$state]"
     echo "  BEGIN $beg -> $(git rev-parse --short "$beg^{commit}")  $(git log -1 --date=short --format=%ad "$beg^{commit}")"
     if [ "$end" != "HEAD" ]; then
         echo "  END   $end -> $(git rev-parse --short "$end^{commit}")  $(git log -1 --date=short --format=%ad "$end^{commit}")"
     fi
     echo "  commits: $n     lines: +${add} -${del}"
+    if [ -n "$filt" ] && [ "$n_match" -lt "$n_all" ]; then
+        echo "  (prefix-filtered: $n_match of $n_all commits in range belong to this phase; concurrent phases share this branch)"
+    fi
 
     if [ "$c_commits" = 1 ]; then
         echo "  --- related commits ---"
-        git log --date=short --format='    %h  %ad  %s' "$range"
+        if [ -n "$filt" ]; then git log -E --grep="$pgrep" --date=short --format='    %h  %ad  %s' "$range"
+        else git log --date=short --format='    %h  %ad  %s' "$range"; fi
     fi
     if [ "$c_dates" = 1 ]; then
         echo "  --- commit dates ---"
-        git log --format='    %h  %ci  %an' "$range"
+        if [ -n "$filt" ]; then git log -E --grep="$pgrep" --format='    %h  %ci  %an' "$range"
+        else git log --format='    %h  %ci  %an' "$range"; fi
     fi
     if [ "$c_lines" = 1 ]; then
         echo "  --- lines per commit ---"
         local h subj st
-        git log --format='%h%x09%s' "$range" | while IFS=$'\t' read -r h subj; do
+        { if [ -n "$filt" ]; then git log -E --grep="$pgrep" --format='%h%x09%s' "$range"
+          else git log --format='%h%x09%s' "$range"; fi; } | while IFS=$'\t' read -r h subj; do
             st=$(git show --shortstat --format= "$h" | tr -s ' ' | sed '/^$/d' | tail -1 | sed 's/^ *//')
             printf '    %s  %-44.44s  %s\n' "$h" "$subj" "${st:-no file changes}"
         done
     fi
     if [ "$c_files" = 1 ]; then
         echo "  --- files changed ---"
-        git diff --stat "$base" "$end" | sed 's/^/    /'
+        if [ -n "$filt" ]; then
+            git log -E --grep="$pgrep" --numstat --format= "$range" \
+              | awk '{a[$3]+=$1; d[$3]+=$2} END{t_a=0;t_d=0;for(f in a){printf "    %-55s | +%d -%d\n", f, a[f], d[f]; t_a+=a[f]; t_d+=d[f]} printf "    %d files changed, %d insertions(+), %d deletions(-)\n", length(a), t_a, t_d}' \
+              | sort
+        else
+            git diff --stat "$base" "$end" | sed 's/^/    /'
+        fi
     fi
 }
 
@@ -331,5 +362,5 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     esac
     exit $?
 else
-    [ -z "${PHASE_TAG_QUIET:-}" ] && echo "phase_tag_common.sh loaded ($SUBPROJECT/$TAGSUFFIX, v6-generic) — run 'phase_help' for usage."
+    [ -z "${PHASE_TAG_QUIET:-}" ] && echo "phase_tag_common.sh loaded ($SUBPROJECT/$TAGSUFFIX, v6.1-generic) — run 'phase_help' for usage."
 fi
