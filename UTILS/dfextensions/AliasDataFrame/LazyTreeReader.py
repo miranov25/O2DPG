@@ -154,6 +154,30 @@ class LazyTreeReader:
             names = [names]
         self.loaded_branches.difference_update(names)
 
+    def is_scalar_branch(self, branch_name):
+        """PHASE_13_75_ADF: shape classification for struct auto-detection.
+
+        Returns True  -> one-value-per-entry scalar (AsDtype, non-object)
+                False -> jagged/var-length, strings, objects, containers
+                None  -> UNKNOWN (branch absent, or interpretation unavailable)
+        The caller (detect_structs) must treat None/False as NOT auto-registrable
+        (C1: unknown is never scalar).
+        """
+        try:
+            tree = self._tree
+        except AttributeError:
+            return None
+        try:
+            if branch_name not in self.available_branches:
+                return None
+            interp = tree[branch_name].interpretation
+        except Exception:
+            return None
+        cls = type(interp).__name__
+        if cls == "AsDtype":
+            return True          # one plain value per entry
+        return False             # AsJagged / AsStrings / AsObjects / AsGroup / ...
+
     def ensure_branches(self, names: List[str], df: pd.DataFrame) -> pd.DataFrame:
         """
         Ensure specified branches are loaded into DataFrame.

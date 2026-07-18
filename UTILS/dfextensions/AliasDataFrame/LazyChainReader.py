@@ -178,6 +178,24 @@ class LazyChainReader:
         else:
             raise ValueError(f"Unknown validation mode: {self._validation}")
     
+    def is_scalar_branch(self, branch_name):
+        """PHASE_13_75_ADF: chain-level shape classification (same contract as
+        LazyTreeReader.is_scalar_branch: True scalar / False non-scalar / None UNKNOWN).
+        Delegates to per-file readers; first file that knows the branch answers.
+        With 'union' validation a branch may be absent from some files -- any file
+        that can classify it is authoritative for shape (schemas already validated).
+        """
+        if branch_name not in self.available_branches:
+            return None
+        for idx in range(len(self._files)):
+            try:
+                verdict = self._get_reader(idx).is_scalar_branch(branch_name)
+            except Exception:
+                verdict = None
+            if verdict is not None:
+                return verdict
+        return None
+
     def _get_reader(self, file_idx: int) -> LazyTreeReader:
         """Get or create reader with LRU eviction."""
         if file_idx in self._readers:
