@@ -29,6 +29,8 @@ from LazyTreeReader import LazyTreeReader          # noqa: E402
 CLEAN = os.path.join(HERE, "lazy_struct_fixture_clean.root")
 HAZARD = os.path.join(HERE, "lazy_struct_fixture_hazard.root")
 CHAIN = [os.path.join(HERE, "chain_part1.root"), os.path.join(HERE, "chain_part2.root")]
+MIXED = os.path.join(HERE, "chain_mixed.root")
+F64 = os.path.join(HERE, "chain_f64.root")
 
 @pytest.fixture(autouse=True)
 def _fixtures_present():
@@ -37,7 +39,7 @@ def _fixtures_present():
     losers wait for the winner's files). Pre-generating once with
     `python tests/make_fixtures.py` from inside tests/ also works and skips
     all of this."""
-    if os.path.exists(CLEAN):
+    if all(os.path.exists(p) for p in [CLEAN, HAZARD, MIXED, F64] + CHAIN):
         return
     if HERE not in sys.path:
         sys.path.insert(0, HERE)
@@ -91,7 +93,7 @@ class TestStage1_ReaderClassification:
 class TestStage2_DetectorPolicy:
     def test_clean_registration_and_provenance(self):
         adf = fresh()
-        assert set(adf._structs) == {"dedxTPC", "mTOFLength"}
+        assert set(adf._structs) == {"dedxTPC", "mTOFLength", "left", "right"}
         assert all(v["origin"] == "auto" for v in adf._structs.values())
         assert "clusterQ" not in adf._structs["dedxTPC"]["members"]      # H1
 
@@ -257,10 +259,22 @@ class TestStage7_DrawSurfaces:
                         selection="(abs(tgl)<1.)", group_by="tgl",
                         group_by_bins=3, lazy=True) is not None
 
-    def test_struct_in_selection_and_group_by(self):        # T-DRAW-6 subset
+    def test_struct_in_selection_slot(self):                # T-DRAW-6 (selection)
         adf = fresh()
         assert adf.draw("dedxTPC.dEdxMaxTPC:mult", type="profile",
                         selection="dedxTPC.dEdxTotTPC>0",
+                        lazy=True) is not None
+
+    def test_struct_in_group_by_slot(self):                 # T-DRAW-6 (group_by, real)
+        adf = fresh()
+        assert adf.draw("dedxTPC.dEdxMaxTPC:mult", type="profile",
+                        group_by="mTOFLength.len", group_by_bins=2,
+                        lazy=True) is not None
+
+    def test_struct_in_facet_by_slot(self):                 # T-DRAW-6 (facet_by, real)
+        adf = fresh()
+        assert adf.draw("dedxTPC.dEdxMaxTPC:mult", type="profile",
+                        facet_by="dedxTPC.dEdxMaxIROC", facet_by_quantiles=2,
                         lazy=True) is not None
 
     def test_struct_in_color_facet_weights_slots(self):     # T-DRAW-6 completion
@@ -326,3 +340,265 @@ class TestStage8_ErrorContract:
         except Exception as e:                              # any failure must be ADF-shaped
             assert "UndefinedVariableError" not in type(e).__name__
         # success path is the expected outcome post-fix; reaching here = pass
+
+
+# ────────────────────────── Stage 9: D-1 chain shape contract ──────────────────────────
+class TestStage9_ChainShapeContract:
+    def test_scalar_scalar_ok(self):
+        adf = AliasDataFrame.read_chain_lazy(CHAIN, "tree")
+        assert adf._lazy_reader.is_scalar_branch("dedxTPC/dEdxMaxTPC") is True
+
+    def test_mixed_scalar_jagged_raises(self):              # D-1: mismatch = error
+        from LazyChainReader import LazyChainReader, ChainShapeMismatchError
+        r = LazyChainReader(files=[{"path": CHAIN[0], "tree": "tree"},
+                                   {"path": MIXED, "tree": "tree"}],
+                            validation="union")
+        with pytest.raises(ChainShapeMismatchError):
+            r.is_scalar_branch("dedxTPC/dEdxMaxTPC")
+
+    def test_mixed_chain_detection_raises_loudly(self):     # error reaches the user
+        from LazyChainReader import ChainShapeMismatchError
+        with pytest.raises(ChainShapeMismatchError):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                AliasDataFrame.read_chain_lazy([CHAIN[0], MIXED], "tree",
+                                               validate_branches="union",
+                                               metadata_conflict="skip")
+
+    def test_dtype_drift_warns_still_scalar(self):          # D-1: compatible dtype = warning
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            adf = AliasDataFrame.read_chain_lazy([CHAIN[0], F64], "tree",
+                                                 validate_branches="union",
+                                                 metadata_conflict="skip")
+        assert "dedxTPC" in adf._structs
+        assert any("dtype drift" in str(x.message) for x in w)
+
+    def test_union_absence_not_scalar_proof(self):          # absent file never proves scalarity
+        from LazyChainReader import LazyChainReader
+        r = LazyChainReader(files=[{"path": CHAIN[0], "tree": "tree"},
+                                   {"path": MIXED, "tree": "tree"}],
+                            validation="union")
+        assert r.is_scalar_branch("mTOFLength/len") is True   # only file 1 has it: fine
+
+    def test_fixed_size_array_never_scalar(self):           # AsDtype inner-shape
+        r = LazyTreeReader(CLEAN, "tree")
+        assert r.is_scalar_branch("fix3") is False
+        adf = fresh()
+        assert "fix3" not in adf._structs
+
+
+# ────────────────────────── Stage 10: analysis bridges + refresh ──────────────────────────
+class TestStage10_BridgesAndRefresh:
+    def test_fresh_get_required_branches(self):             # T-DEP-1
+        adf = fresh()
+        req = adf.get_required_branches("dedxTPC.dEdxMaxTPC")
+        assert "dedxTPC/dEdxMaxTPC" in set(req)
+
+    def test_fresh_ensure_columns(self):                    # T-DEP-2
+        adf = fresh()
+        adf.ensure_columns(["dedxTPC.dEdxMaxTPC"])
+        assert "dEdxMaxTPC__dedxTPC" in adf.df.columns
+
+    def test_same_size_catalog_change_detected(self):       # fp content hash
+        adf = fresh()
+        r = adf._lazy_reader
+        base = set(r.available_branches)
+        swapped = (base - {"decoyUnused"}) | {"other/x"}
+        r.available_branches = swapped                      # same size, new content
+        calls = {"n": 0}
+        orig = adf.detect_structs
+        adf.detect_structs = lambda register=True: (calls.__setitem__("n", calls["n"] + 1)
+                                                    or orig(register))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf._ensure_struct_catalog()
+        assert calls["n"] == 1
+        r.available_branches = base
+
+    def test_auto_struct_gains_member_on_refresh(self):     # compatible auto-refresh
+        adf = fresh()
+        assert "dEdxMaxIROC" in adf._structs["dedxTPC"]["members"]
+        adf._structs["dedxTPC"]["members"].remove("dEdxMaxIROC")   # simulate older catalog
+        adf._struct_catalog_fp = None
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            adf._ensure_struct_catalog()
+        assert "dEdxMaxIROC" in adf._structs["dedxTPC"]["members"]
+        assert any("gains newly detected" in str(x.message) for x in w)
+
+    def test_explicit_struct_never_broadened(self):
+        adf = fresh()
+        adf._structs.clear(); adf._struct_catalog_fp = None
+        adf.register_struct("dedxTPC", ["dEdxTotTPC"])      # explicit, narrow
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf._ensure_struct_catalog()
+        assert adf._structs["dedxTPC"]["members"] == ["dEdxTotTPC"]
+        assert adf._structs["dedxTPC"]["origin"] == "explicit"
+
+    def test_schema_roundtrip_provenance_and_precedence(self):
+        adf = fresh()
+        import copy
+        schema = copy.deepcopy(adf._schema)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf2 = AliasDataFrame.read_tree_lazy(CLEAN, "tree")
+        adf2._structs.clear(); adf2._struct_catalog_fp = ("locked",)
+        adf2.apply_schema({"structs": schema.get("structs", {})}, warn_missing=False)
+        adf2._struct_catalog_fp = None
+        assert adf2._structs and all(v["origin"] == "schema" for v in adf2._structs.values())
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf2._ensure_struct_catalog()                   # auto must NOT override schema
+        assert all(v["origin"] == "schema" for v in adf2._structs.values())
+        r = adf2.eval("dedxTPC.dEdxMaxTPC")
+        assert np.array_equal(r.to_numpy(), oracle(CLEAN, "dedxTPC/dEdxMaxTPC"))
+
+    def test_release_then_reload(self):                     # 13.68 interaction
+        adf = fresh()
+        adf.eval("dedxTPC.dEdxMaxTPC")
+        if hasattr(adf, "release_struct"):
+            adf.release_struct("dedxTPC")
+            assert "dEdxMaxTPC__dedxTPC" not in adf.df.columns
+        r = adf.eval("dedxTPC.dEdxMaxTPC")
+        assert np.array_equal(r.to_numpy(), oracle(CLEAN, "dedxTPC/dEdxMaxTPC"))
+
+    def test_same_leaf_two_parents_no_crosstalk(self):
+        adf = fresh()
+        assert "left" in adf._structs and "right" in adf._structs
+        lv = adf.eval("left.value").to_numpy()
+        rv = adf.eval("right.value").to_numpy()
+        assert np.array_equal(lv, oracle(CLEAN, "left/value"))
+        assert np.array_equal(rv, oracle(CLEAN, "right/value"))
+        assert not np.array_equal(lv, rv)
+
+
+# ────────────────────────── Stage 11: chain public workflow ──────────────────────────
+@pytest.mark.invariance
+class TestStage11_ChainWorkflow:
+    def test_two_file_chain_value_oracle(self):
+        adf = AliasDataFrame.read_chain_lazy(CHAIN, "tree")
+        got = adf.eval("dedxTPC.dEdxMaxTPC").to_numpy()
+        want = np.concatenate([oracle(CHAIN[0], "dedxTPC/dEdxMaxTPC"),
+                               oracle(CHAIN[1], "dedxTPC/dEdxMaxTPC")])
+        assert np.array_equal(got, want)
+
+    def test_chain_initial_branches_normalized_and_full(self):   # D-3 on chain preload
+        adf = AliasDataFrame.read_chain_lazy(CHAIN, "tree",
+                                             branches=["dedxTPC/dEdxMaxTPC", "mult"])
+        assert "dEdxMaxTPC__dedxTPC" in adf.df.columns
+        assert "dedxTPC/dEdxMaxTPC" not in adf.df.columns
+        for m in adf._structs["dedxTPC"]["members"]:            # full-structure semantics
+            assert f"{m}__dedxTPC" in adf.df.columns
+
+    def test_tree_initial_branches_full_structure(self):        # D-3 on tree preload
+        adf = AliasDataFrame.read_tree_lazy(CLEAN, "tree",
+                                            branches=["dedxTPC/dEdxMaxTPC", "mult"])
+        for m in adf._structs["dedxTPC"]["members"]:
+            assert f"{m}__dedxTPC" in adf.df.columns
+
+
+# ────────────────────────── Stage 12: effective-spec + frame capture + stats ──────────────────────────
+class _DFDrawSpy:
+    """Wraps the real DFDraw, recording the frame each surface passes in."""
+    captured = []
+    def __new__(cls, df, *a, **k):
+        import dfextensions.dfdraw as _dd
+        cls.captured.append(set(df.columns))
+        return cls._real(df, *a, **k)
+
+@pytest.fixture
+def dfdraw_spy(monkeypatch):
+    import dfextensions.dfdraw as _dd
+    _DFDrawSpy._real = _dd.DFDraw
+    _DFDrawSpy.captured = []
+    monkeypatch.setattr(_dd, "DFDraw", _DFDrawSpy)
+    return _DFDrawSpy
+
+class TestStage12_EffectiveSpecAndOracles:
+    def test_draw_frame_capture(self, dfdraw_spy):          # actual DFDraw input, draw
+        adf = fresh()
+        adf.draw("dedxTPC.dEdxMaxTPC:mult", type="profile", lazy=True)
+        cols = dfdraw_spy.captured[-1]
+        assert "dEdxMaxTPC__dedxTPC" in cols
+        assert "decoyUnused" not in cols and "dedxTPC/dEdxMaxTPC" not in cols
+
+    def test_batch_frame_capture_defaults_struct(self, dfdraw_spy):   # P0-2: struct via defaults
+        adf = fresh()
+        adf.draw_batch({"f1": {"expr": "dedxTPC.dEdxMaxTPC:mult", "type": "profile"}},
+                       defaults={"weights": "dedxTPC.dEdxTotTPC"}, lazy=True)
+        cols = dfdraw_spy.captured[-1]
+        assert "dEdxMaxTPC__dedxTPC" in cols and "dEdxTotTPC__dedxTPC" in cols
+
+    def test_figures_frame_capture_kwargs_struct(self, dfdraw_spy):   # P0-2: struct via kwargs
+        adf = fresh()
+        adf.draw_figures([{"figure": "f1",
+                           "plots": [{"expr": "dedxTPC.dEdxMaxTPC:mult",
+                                      "type": "profile"}]}],
+                         selection="dedxTPC.dEdxTotTPC>0", lazy=True)
+        cols = dfdraw_spy.captured[-1]
+        assert "dEdxMaxTPC__dedxTPC" in cols and "dEdxTotTPC__dedxTPC" in cols
+
+    def test_reused_spec_object_second_call_works(self):
+        adf = fresh()
+        spec = {"f1": {"expr": "dedxTPC.dEdxMaxTPC:mult", "type": "profile"}}
+        adf.draw_batch(spec, lazy=True)
+        adf.draw_batch(spec, lazy=True)                     # rewrite is idempotent
+
+    def test_profile_stats_oracle_minimal(self):            # returned-statistics oracle
+        adf = fresh()
+        out = adf.draw("dedxTPC.dEdxMaxTPC:mult", type="profile", lazy=True,
+                       bins=4, return_data=True)
+        data = out[-1] if isinstance(out, tuple) else out
+        y = oracle(CLEAN, "dedxTPC/dEdxMaxTPC"); x = oracle(CLEAN, "mult")
+        import pandas as _pd
+        ref = _pd.DataFrame({"y": y, "x": x})
+        ref["bin"] = _pd.cut(ref.x, 4)
+        ref_means = ref.groupby("bin", observed=True).y.mean().to_numpy()
+        got = None
+        if isinstance(data, dict):
+            for k in ("mean", "means", "y_mean"):
+                if k in data: got = np.asarray(data[k]); break
+        elif hasattr(data, "columns"):
+            for k in ("mean", "y_mean"):
+                if k in data.columns: got = data[k].to_numpy(); break
+        if got is None:
+            pytest.skip("profile return_data schema exposes no mean vector on this dfdraw")
+        assert np.allclose(np.sort(got[~np.isnan(got)]), np.sort(ref_means), rtol=1e-6)
+
+
+# ────────────────────────── Stage 13: diagnostics + fault injection ──────────────────────────
+class TestStage13_DiagnosticsAndErrors:
+    def test_describe_structure_contract_and_no_side_effects(self):
+        adf = fresh()
+        before = set(adf.df.columns)
+        info = adf.describe_structure(return_dict=True)
+        assert {"n_rows", "n_columns"} <= set(info)
+        assert "structs" not in info                        # preserve-only (AD-4/Option A)
+        assert set(adf.df.columns) == before                # no loading side effect
+
+    def test_describe_lazy_reports_and_no_side_effects(self):
+        adf = fresh()
+        before = set(adf.df.columns)
+        d = adf.describe_lazy(as_dict=True)
+        assert "dedxTPC/dEdxMaxTPC" in set(d["main"]["available"])
+        assert set(adf.df.columns) == before
+        adf.eval("dedxTPC.dEdxMaxTPC")
+        d2 = adf.describe_lazy(as_dict=True)
+        assert "dEdxMaxTPC__dedxTPC" in set(d2["main"]["df_columns"])
+
+    def test_fault_injected_projection_raises_adf_error(self, monkeypatch):  # T-ERR-3 real
+        adf = fresh()
+        orig = adf._dict_dispatch_columns
+        def sabotage(*a, **k):
+            need = orig(*a, **k)
+            return {c for c in (need or set()) if c != "dEdxMaxTPC__dedxTPC"}
+        monkeypatch.setattr(adf, "_dict_dispatch_columns", sabotage)
+        with pytest.raises(ValueError) as e:
+            adf.draw("dedxTPC.dEdxMaxTPC:mult", type="profile", lazy=True)
+        msg = str(e.value)
+        assert "projection inconsistency" in msg
+        assert "dEdxMaxTPC__dedxTPC" in msg and "dedxTPC.dEdxMaxTPC" in msg
+        assert "dedxTPC/dEdxMaxTPC" in msg and "draw" in msg
+        assert "UndefinedVariableError" not in type(e.value).__name__

@@ -1579,7 +1579,7 @@ class AliasDataFrame:
         for _st_name, _st_spec in serialized_schema.get("structs", {}).items():
             try:
                 if _st_name not in self._structs:
-                    self.register_struct(_st_name, list(_st_spec.get("members", [])))
+                    self.register_struct(_st_name, list(_st_spec.get("members", [])), _origin="schema")
             except Exception:
                 pass
         
@@ -1765,6 +1765,33 @@ class AliasDataFrame:
     #
     # =========================================================================
 
+    def _assert_struct_projection(self, df_columns, texts, surface):
+        """PHASE_13_75_ADF C3: after the reduced projection, every internal
+        struct column referenced by the rewritten expression/slots MUST be
+        present; otherwise raise a precise ADF-side error (never let a pandas
+        UndefinedVariableError reach the user)."""
+        if not self._structs:
+            return
+        cols = set(df_columns)
+        internal_map = {}
+        for _name, _st in self._structs.items():
+            for _m in _st["members"]:
+                internal_map[self._struct_internal_name(_name, _m)] = (
+                    f"{_name}.{_m}", _st["phys"][_m])
+        import re as _re
+        for _t in texts:
+            if not isinstance(_t, str):
+                continue
+            for _tok in _re.findall(r"[A-Za-z_][A-Za-z0-9_]*", _t):
+                if _tok in internal_map and _tok not in cols:
+                    _logical, _phys = internal_map[_tok]
+                    raise ValueError(
+                        f"PHASE_13_75_ADF projection inconsistency on {surface}: "
+                        f"internal struct column {_tok!r} (logical {_logical!r}, "
+                        f"physical {_phys!r}) is required by the rewritten "
+                        f"expression but absent from the reduced dispatch frame. "
+                        f"This is an ADF projection bug — please report it.")
+
     def _struct_rewrite_draw_slots(self, d):
         """PHASE_13_66_ADF: rewrite logical struct refs -> internal in a draw spec
         dict's value-bearing string slots, in place. Members are already columns
@@ -1850,7 +1877,33 @@ class AliasDataFrame:
         avail = getattr(reader, "available_branches", set()) or set()
         result = {}
         for parent, members in detected.items():
-            if parent in self._structs or parent in self._subframes.subframes:
+            if parent in self._subframes.subframes:
+                continue
+            _existing = self._structs.get(parent)
+            if _existing is not None:
+                if _existing.get("origin") != "auto":
+                    continue        # explicit/schema authoritative: never broadened
+                _new = [m for m in members if m not in _existing["members"]]
+                _add = []
+                for m in _new:
+                    phys = self._struct_physical_name(parent, m)
+                    if self._branch_shape(phys) != "scalar":
+                        continue
+                    internal = self._struct_internal_name(parent, m)
+                    if internal in self.df.columns or internal in avail:
+                        continue
+                    _add.append(m)
+                if _add and register:
+                    warnings.warn(f"detect_structs: auto struct {parent!r} gains "
+                                  f"newly detected member(s) {_add!r} (PHASE_13_75_ADF refresh)")
+                    for _m2 in _add:
+                        _existing["members"].append(_m2)
+                        _existing["l2i"][_m2] = self._struct_internal_name(parent, _m2)
+                        _existing["phys"][_m2] = self._struct_physical_name(parent, _m2)
+                    self._schema.setdefault("structs", {})[parent] = {
+                        "members": list(_existing["members"])}
+                if _add:
+                    result[parent] = _add
                 continue
             # H2: count-helper namespace detection (parent-level)
             if parent.startswith("n") and len(parent) > 1:
@@ -1915,7 +1968,9 @@ class AliasDataFrame:
             return "unknown"
         try:
             verdict = checker(physical_name)
-        except Exception:
+        except Exception as _e:
+            if type(_e).__name__ == "ChainShapeMismatchError":
+                raise                      # D-1: structure changed mid-chain -> loud error
             return "unknown"
         if verdict is True:
             return "scalar"
@@ -1947,7 +2002,7 @@ class AliasDataFrame:
         avail = getattr(reader, "available_branches", None)
         if not avail:
             return self
-        fp = (id(reader), len(avail))
+        fp = (id(reader), len(avail), hash(frozenset(avail)))  # content-hash: same-size changes visible
         if getattr(self, "_struct_catalog_fp", None) != fp:
             self._struct_catalog_fp = fp
             self.detect_structs(register=True)
@@ -1967,6 +2022,18 @@ class AliasDataFrame:
                             ren[_phys] = _internal
             if ren:
                 self.df.rename(columns=ren, inplace=True)
+            # PHASE_13_75_ADF architect D-3 (2026-07-18): full-structure semantics —
+            # any struct with a PARTIAL internal column set is completed to the
+            # full structure (member-exact access is Stage0 scope).
+            for _name, _st in list(self._structs.items()):
+                _ints = [self._struct_internal_name(_name, _m) for _m in _st["members"]]
+                _have = [c for c in _ints if c in self.df.columns]
+                if _have and len(_have) < len(_ints):
+                    try:
+                        self.ensure_struct(_name)
+                    except Exception as _e:
+                        warnings.warn(f"_ensure_struct_catalog: full-structure load "
+                                      f"of {_name!r} failed: {_e} (D-3)")
         return self
 
     def _autoload_expr_branches(self, expr):
@@ -7715,6 +7782,7 @@ function collapseDepth(maxD) {{
         # Load initial branches if requested
         if branches:
             adf.ensure_branches(branches)
+            adf._ensure_struct_catalog()   # PHASE_13_75_ADF D-3: completes partial structs post-preload
 
         # PHASE_13_70_ADF D4b: recover vector/group aliases from the FIRST (canonical)
         # chain file (first-file-canonical, consistent with the 13.67 metadata rule).
@@ -11058,7 +11126,7 @@ function collapseDepth(maxD) {{
         for _st_name, _st_spec in schema.get('structs', {}).items():
             try:
                 if _st_name not in self._structs:
-                    self.register_struct(_st_name, list(_st_spec.get('members', [])))
+                    self.register_struct(_st_name, list(_st_spec.get('members', [])), _origin='schema')
             except Exception:
                 pass
 
@@ -14175,6 +14243,7 @@ function collapseDepth(maxD) {{
             df_subset[group_by] = df_subset.eval(group_by)
 
         # Create plotter and delegate
+        self._assert_struct_projection(df_subset.columns, [expr] + [kwargs.get(_sl) for _sl in ('selection','group_by','weights','facet_by','color')], 'draw')
         plotter = DFDraw(df_subset)
         
         # Attach self for duck-typed axis title lookup
@@ -15042,6 +15111,20 @@ function collapseDepth(maxD) {{
             }
             adf.draw_batch(specs, save_dir='qa/', defaults={'stats': True})
         """
+        # PHASE_13_75_ADF P0-2 (early, before ANY defaults/kwargs snapshot):
+        # struct refs arriving via defaults or top-level kwargs are loaded and
+        # rewritten here so every later merged view sees internal names.
+        self._ensure_struct_catalog()
+        if self._structs:
+            for _d0 in (defaults, kwargs):
+                if isinstance(_d0, dict):
+                    for _v in list(_d0.values()):
+                        if isinstance(_v, str):
+                            try:
+                                self._autoload_expr_branches(_v)
+                            except Exception:
+                                pass
+                    self._struct_rewrite_draw_slots(_d0)
         # Import dfdraw
         try:
             from dfextensions.dfdraw import DFDraw
@@ -15410,6 +15493,20 @@ function collapseDepth(maxD) {{
         Note:
             Plot specs support short form: 'column' expands to {'expr': 'column'}
         """
+        # PHASE_13_75_ADF P0-2 (early, before ANY defaults/kwargs snapshot):
+        # struct refs arriving via defaults or top-level kwargs are loaded and
+        # rewritten here so every later merged view sees internal names.
+        self._ensure_struct_catalog()
+        if self._structs:
+            for _d0 in (defaults, kwargs):
+                if isinstance(_d0, dict):
+                    for _v in list(_d0.values()):
+                        if isinstance(_v, str):
+                            try:
+                                self._autoload_expr_branches(_v)
+                            except Exception:
+                                pass
+                    self._struct_rewrite_draw_slots(_d0)
         # Import dfdraw
         try:
             from dfextensions.dfdraw import DFDraw

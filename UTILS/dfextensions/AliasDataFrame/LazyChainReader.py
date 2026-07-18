@@ -11,6 +11,12 @@ Key Design Decisions (from reviewer feedback):
 """
 
 import warnings
+
+
+class ChainShapeMismatchError(ValueError):
+    """PHASE_13_75_ADF: chain files disagree on a branch's scalar/jagged shape."""
+    pass
+
 from collections import OrderedDict
 from pathlib import Path
 from typing import List, Dict, Set, Optional, Union
@@ -179,22 +185,54 @@ class LazyChainReader:
             raise ValueError(f"Unknown validation mode: {self._validation}")
     
     def is_scalar_branch(self, branch_name):
-        """PHASE_13_75_ADF: chain-level shape classification (same contract as
-        LazyTreeReader.is_scalar_branch: True scalar / False non-scalar / None UNKNOWN).
-        Delegates to per-file readers; first file that knows the branch answers.
-        With 'union' validation a branch may be absent from some files -- any file
-        that can classify it is authoritative for shape (schemas already validated).
+        """PHASE_13_75_ADF (architect D-1, 2026-07-18): chain-level shape
+        classification checks ALL files that contain the branch (bounded cost:
+        callers use this only for struct-candidate members during detection).
+
+        Contract: all known scalar -> True; any known non-scalar -> False;
+        any unknown (and no conflict) -> None (C1: never scalar);
+        CONFLICTING scalar/non-scalar across files -> ChainShapeMismatchError
+        (structure changed mid-chain; never silent, never scalar).
+        Compatible dtype drift among scalar files (e.g. float32/float64) is a
+        warning only; deep per-file validation is Stage0 scope.
         """
         if branch_name not in self.available_branches:
             return None
+        verdicts, dtypes, holders = [], set(), []
         for idx in range(len(self._files)):
             try:
-                verdict = self._get_reader(idx).is_scalar_branch(branch_name)
+                rd = self._get_reader(idx)
             except Exception:
-                verdict = None
-            if verdict is not None:
-                return verdict
-        return None
+                verdicts.append(None); continue
+            if branch_name not in getattr(rd, "available_branches", set()):
+                continue                      # union-mode absence: recorded, not a verdict
+            holders.append(self._files[idx])
+            try:
+                v = rd.is_scalar_branch(branch_name)
+            except Exception:
+                v = None
+            verdicts.append(v)
+            if v is True:
+                try:
+                    dt = rd._tree[branch_name].interpretation.to_dtype
+                    dtypes.add(str(dt))
+                except Exception:
+                    pass
+        known = [v for v in verdicts if v is not None]
+        if True in known and False in known:
+            raise ChainShapeMismatchError(
+                f"branch {branch_name!r} is scalar in some chain files and "
+                f"non-scalar in others (files: {holders}); chain structure "
+                f"changed — refusing classification (PHASE_13_75_ADF D-1)")
+        if False in known:
+            return False
+        if None in verdicts or not known:
+            return None
+        if len(dtypes) > 1:
+            import warnings as _w
+            _w.warn(f"chain branch {branch_name!r}: compatible dtype drift "
+                    f"across files {sorted(dtypes)} (PHASE_13_75_ADF D-1 warning)")
+        return True
 
     def _get_reader(self, file_idx: int) -> LazyTreeReader:
         """Get or create reader with LRU eviction."""

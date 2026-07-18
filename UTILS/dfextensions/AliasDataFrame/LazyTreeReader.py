@@ -175,7 +175,11 @@ class LazyTreeReader:
             return None
         cls = type(interp).__name__
         if cls == "AsDtype":
-            return True          # one plain value per entry
+            # PHASE_13_75_ADF: fixed-size arrays are AsDtype with a non-empty
+            # inner shape (e.g. float32[3]); one value per entry means EMPTY
+            # inner shape. Never classify fixed-size vectors as scalar.
+            inner = getattr(interp, "inner_shape", ()) or ()
+            return len(tuple(inner)) == 0
         return False             # AsJagged / AsStrings / AsObjects / AsGroup / ...
 
     def ensure_branches(self, names: List[str], df: pd.DataFrame) -> pd.DataFrame:

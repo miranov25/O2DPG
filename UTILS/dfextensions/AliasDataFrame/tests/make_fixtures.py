@@ -18,12 +18,17 @@ def _payload(rng, N):
         "mult": rng.integers(0,100,N).astype(np.int32),
         "tgl": rng.uniform(-1,1,N).astype(np.float32),
         "decoyUnused": rng.normal(0,1,N),
+        "fix3": rng.normal(0,1,(N,3)).astype(np.float32),
+        "left/value": rng.normal(1,1,N).astype(np.float32),
+        "right/value": rng.normal(2,1,N).astype(np.float32),
     }
 
 _TYPES = {"dedxTPC/dEdxMaxTPC": np.float32, "dedxTPC/dEdxTotTPC": np.float32,
           "dedxTPC/dEdxMaxIROC": np.float32, "dedxTPC/clusterQ": "var * float32",
           "mTOFLength/len": np.float32, "jag": "var * float32",
-          "mult": np.int32, "tgl": np.float32, "decoyUnused": np.float64}
+          "mult": np.int32, "tgl": np.float32, "decoyUnused": np.float64,
+          "fix3": ("3 * float32"),                 # fixed-size array: never scalar
+          "left/value": np.float32, "right/value": np.float32}  # same-leaf two parents
 
 def make(path, seed, N=200, hazard=False):
     rng = np.random.default_rng(seed)
@@ -35,11 +40,38 @@ def make(path, seed, N=200, hazard=False):
         f.mktree("tree", types); f["tree"].extend(data)
     return path
 
+def make_mixed(path, seed, N=60):
+    """dedxTPC/dEdxMaxTPC JAGGED here: shape conflict vs clean chain parts (D-1 error case)."""
+    rng = np.random.default_rng(seed)
+    with uproot.recreate(path) as f:
+        f.mktree("tree", {"dedxTPC/dEdxMaxTPC": "var * float32",
+                          "dedxTPC/dEdxTotTPC": np.float32, "mult": np.int32})
+        f["tree"].extend({
+            "dedxTPC/dEdxMaxTPC": ak.Array([rng.normal(50,10,int(k)).astype(np.float32).tolist()
+                                            for k in rng.integers(0,4,N)]),
+            "dedxTPC/dEdxTotTPC": rng.normal(40,8,N).astype(np.float32),
+            "mult": rng.integers(0,100,N).astype(np.int32)})
+    return path
+
+def make_f64(path, seed, N=60):
+    """dedxTPC/dEdxMaxTPC float64 here: compatible dtype drift (D-1 warning case)."""
+    rng = np.random.default_rng(seed)
+    t = dict(_TYPES); t["dedxTPC/dEdxMaxTPC"] = np.float64
+    d = _payload(rng, N); d["dedxTPC/dEdxMaxTPC"] = d["dedxTPC/dEdxMaxTPC"].astype(np.float64)
+    d["fix3"] = rng.normal(0,1,(N,3)).astype(np.float32)
+    d["left/value"] = rng.normal(1,1,N).astype(np.float32)
+    d["right/value"] = rng.normal(2,1,N).astype(np.float32)
+    with uproot.recreate(path) as f:
+        f.mktree("tree", t); f["tree"].extend(d)
+    return path
+
 def make_all(d="."):
     make(f"{d}/lazy_struct_fixture_clean.root", 7)
     make(f"{d}/lazy_struct_fixture_hazard.root", 7, hazard=True)
     make(f"{d}/chain_part1.root", 11, N=120)
     make(f"{d}/chain_part2.root", 13, N=80)
+    make_mixed(f"{d}/chain_mixed.root", 17)
+    make_f64(f"{d}/chain_f64.root", 19)
 
 if __name__ == "__main__":
     make_all()
