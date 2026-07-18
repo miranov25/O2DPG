@@ -34,10 +34,28 @@ case "$BLINE" in *"FAIL=0"*) : ;; *) FAIL=1;; esac
 [ "$PRC" -ne 0 ] && FAIL=1
 
 if [ "$FAIL" = 0 ]; then
+  # CRR-12: every packet carries REAL rendered evidence from THIS host
+  EV="$DIAGROOT/evidence_$TS"; mkdir -p "$EV"
+  bash "$HERE/dfx_host_diagnostics.sh" -o "$EV" -s 2 -n 3 > "$EV/collect.log" 2>&1 \
+    || echo "[run_tests] evidence collection degraded (see $EV/collect.log)"
+  EB=$(ls -d "$EV"/host_diag_* 2>/dev/null | head -1)
+  if [ -n "$EB" ]; then
+    python3 "$HERE/report_diagnostics.py" "$EB" -o "$EV/report" > "$EV/render.log" 2>&1 \
+      || echo "[run_tests] evidence render unavailable on this host (see $EV/render.log)"
+  fi
   ZIP="$DIAGROOT/diagnostics_reviewer_$TS.zip"
-  python3 "$HERE/reviewer_bundle.py" -o "$ZIP" --logs "$LOGDIR" --skip-tests \
-    && echo "[run_tests] reviewer zip: $ZIP"
-  echo "SUMMARY: diagnostics OK - bash[$BLINE] pytest[$PLINE] zip[$ZIP]"
+  CRROPT=""
+  [ -n "${DFX_CRR:-}" ] && [ -f "${DFX_CRR:-}" ] && CRROPT="--crr $DFX_CRR"
+  # shellcheck disable=SC2086
+  if python3 "$HERE/reviewer_bundle.py" -o "$ZIP" --logs "$LOGDIR" --skip-tests \
+      --evidence "$EV" $CRROPT \
+      && [ -s "$ZIP" ]; then
+    echo "[run_tests] reviewer zip: $ZIP"
+    echo "SUMMARY: diagnostics OK - bash[$BLINE] pytest[$PLINE] zip[$ZIP]"
+  else
+    echo "SUMMARY: diagnostics FAILING - tests green but reviewer-zip creation FAILED (CRR-13 gate)"
+    exit 1
+  fi
 else
   echo "SUMMARY: diagnostics FAILING - bash rc=$BRC [$BLINE] pytest rc=$PRC [$PLINE] (no reviewer zip from a failing state)"
 fi

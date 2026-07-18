@@ -463,7 +463,11 @@ def generate(bundles, run_records=(), labels=None, sections=None,
         if not figs:
             html_parts.append(f"<h2>{host} - time series</h2><p>all channels flat "
                               "zero or without data over this window - nothing to plot "
-                              "(a good sign on a healthy host; see summary table)</p>")
+                              "- no activity observed in these channels during the "
+                              "window. This is a VALID observation only because the "
+                              "collector is certified live via the anchor channels; "
+                              "flat pathology channels never by themselves prove a "
+                              "healthy host (see validation/summary.md).</p>")
             continue
         html_parts.append(f"<h2>{host} - time series</h2>" +
                           "".join(f"<img src='{_img_datauri(out_dir / 'figures' / f)}' "

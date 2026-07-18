@@ -56,7 +56,12 @@ def _read_self_io():
         with open("/proc/self/io") as f:
             for line in f:
                 k, v = line.split(":")
-                out[k.strip()] = int(v)
+                k = k.strip()
+                # CRR-9 (panel, executed 4/8): some kernels expose 'char' for
+                # 'rchar' - normalize so downstream keys are stable
+                if k == "char":
+                    k = "rchar"
+                out[k] = int(v)
         return out
     except OSError:
         return None

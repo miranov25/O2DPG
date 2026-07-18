@@ -7,7 +7,7 @@ WHAT it is, WHAT WAS MEASURED, WHAT SHOULD BE THERE on a healthy vs an
 affected host, and a per-column FLAG. Ends with a plain-language
 self-consistency verdict based on ANCHOR channels (loadavg/CPU/memory -
 signals that are never flat on a live host): anchors moving + pathology flat
-= healthy host AND working collector, proven; anchors flat = do not trust
+= no activity observed AND collector certified; anchors flat = do not trust
 the bundle.
 
 Pure pandas + stdlib. No ADF needed. This is the reviewer's entry point.
@@ -39,7 +39,7 @@ DOC = {
                             "ANCHOR: >=1 (this collector itself runs)",
                             "large + low CPU -> run-queue congestion"),
     "compact_stall_per_s": ("processes stalled waiting for memory compaction",
-                            "EXPECTED 0 on a healthy host",
+                            "0 = no such events observed in the window",
                             "THE SMOKING GUN: >0 sustained during slowdowns"),
     "compact_fail_per_s":  ("failed compaction attempts",
                             "EXPECTED 0", ">0 with stalls -> fragmentation"),
@@ -66,7 +66,7 @@ DOC = {
     "disk_read_sectors_per_s": ("disk sectors read/s (whole host)",
                             "varies with I/O; just context",
                             "high + memory pressure -> thrash/readback"),
-    "pswpin_per_s":        ("swap-ins/s", "0 on no-swap or healthy hosts",
+    "pswpin_per_s":        ("swap-ins/s", "0 = no swap-in activity observed",
                             ">0 sustained -> swap thrash"),
     "pswpout_per_s":       ("swap-outs/s", "0", ">0 sustained -> memory shortage"),
     "sample_wall_s":       ("collector's own cost per sample",

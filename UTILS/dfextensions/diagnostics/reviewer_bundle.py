@@ -42,6 +42,8 @@ def main(argv=None):
     ap.add_argument("--skip-tests", action="store_true",
                     help="do not run the suites (used by run_tests.sh, which "
                          "just ran them; standalone official packets rerun)")
+    ap.add_argument("--crr", default=None,
+                    help="CRR document to include under docs/ (official packets)")
     ap.add_argument("--logs", default=None,
                     help="log directory to package (default: <here>/test_logs)")
     a = ap.parse_args(argv)
@@ -63,15 +65,17 @@ def main(argv=None):
     for f in CODE:
         p = HERE / f
         if p.is_file():
-            add(p, f"code/{f}")
+            add(p, f"diagnostics/{f}")   # REAL layout: recipe commands work as-is
         else:
-            manifest.append(f"MISSING                           code/{f}")
+            manifest.append(f"MISSING                           diagnostics/{f}")
     for f in sorted((HERE / "tests").glob("test_*")):
-        add(f, f"tests/{f.name}")
+        add(f, f"diagnostics/tests/{f.name}")
     for f in DOCS:
         p = HERE / f
         if p.is_file():
             add(p, f"docs/{f}")
+    if a.crr and Path(a.crr).is_file():
+        add(Path(a.crr), f"docs/{Path(a.crr).name}")
     for lg in sorted(logdir.glob("*.log"))[-4:]:
         add(lg, f"logs/{lg.name}")
     try:
@@ -92,10 +96,10 @@ def main(argv=None):
         z.writestr("START_HERE.txt",
                    "Reviewer packet - dfextensions/diagnostics (PHASE_13_74_ADF)\n"
                    "1. verify provenance/MANIFEST.md5 against code/ and tests/\n"
-                   "2. read docs/PHASE_13_74_ADF_CRR*.md - the Code Review Request\n"
-                   "   (contains the reviewer instructions; official packets include it)\n"
+                   "2. read docs/PHASE_13_74_ADF_CRR*.md (the Code Review Request), then\n"
+                   "   run: bash diagnostics/run_tests.sh  (layout matches a checkout)\n"
                    "3. logs/ contains the suite runs made when this zip was built\n"
-                   "4. evidence/ (if present) holds real bundles and rendered reports\n")
+                   "4. evidence/ holds a REAL bundle + rendered report.html + validation/\n""   collected on the packet-builder host at build time\n")
     print(f"[bundle] wrote {out}  files={len(entries)}")
     print(f"[bundle] zip md5: {md5(out)}")
     return 0
