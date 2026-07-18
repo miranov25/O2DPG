@@ -189,8 +189,10 @@ class LazyChainReader:
         classification checks ALL files that contain the branch (bounded cost:
         callers use this only for struct-candidate members during detection).
 
-        Contract: all known scalar -> True; any known non-scalar -> False;
-        any unknown (and no conflict) -> None (C1: never scalar);
+        Contract: scalar (True) ONLY if the branch is present in every relevant
+        file and every file classifies it scalar; any known non-scalar -> False;
+        any unknown OR ABSENT-IN-A-FILE (and no conflict) -> None (C1: never
+        scalar; partial presence never proves chain-wide scalarity);
         CONFLICTING scalar/non-scalar across files -> ChainShapeMismatchError
         (structure changed mid-chain; never silent, never scalar).
         Compatible dtype drift among scalar files (e.g. float32/float64) is a
@@ -205,7 +207,11 @@ class LazyChainReader:
             except Exception:
                 verdicts.append(None); continue
             if branch_name not in getattr(rd, "available_branches", set()):
-                continue                      # union-mode absence: recorded, not a verdict
+                # PHASE_13_75_ADF FINAL-CRR P0-1 (synthesis Appendix A, conservative):
+                # absence IS a verdict-relevant fact — a chain never proves stable
+                # scalarity unless the branch is present in EVERY relevant file.
+                verdicts.append(None)
+                continue
             holders.append(self._files[idx])
             try:
                 v = rd.is_scalar_branch(branch_name)

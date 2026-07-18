@@ -379,7 +379,27 @@ class TestStage9_ChainShapeContract:
         r = LazyChainReader(files=[{"path": CHAIN[0], "tree": "tree"},
                                    {"path": MIXED, "tree": "tree"}],
                             validation="union")
-        assert r.is_scalar_branch("mTOFLength/len") is True   # only file 1 has it: fine
+        # FINAL-CRR P0-1 (conservative): partial presence NEVER proves scalarity
+        assert r.is_scalar_branch("mTOFLength/len") is None
+        # and no auto-registration results from partial presence: the detector
+        # consumes the classifier's None (partial presence) as UNKNOWN -> skip.
+        import pandas as _pd
+        class _PartialPresence:
+            available_branches = {"mTOFLength/len"}
+            def is_scalar_branch(self, name):
+                return None          # exactly what partial presence now yields
+        adf = AliasDataFrame(_pd.DataFrame({"x": [1.0]}))
+        adf._lazy_reader = _PartialPresence()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            adf.detect_structs(register=True)
+        assert "mTOFLength" not in adf._structs
+        assert any("UNKNOWN" in str(x.message) for x in w)
+        # both file orders:
+        r2 = LazyChainReader(files=[{"path": MIXED, "tree": "tree"},
+                                    {"path": CHAIN[0], "tree": "tree"}],
+                             validation="union")
+        assert r2.is_scalar_branch("mTOFLength/len") is None
 
     def test_fixed_size_array_never_scalar(self):           # AsDtype inner-shape
         r = LazyTreeReader(CLEAN, "tree")
@@ -546,26 +566,38 @@ class TestStage12_EffectiveSpecAndOracles:
         adf.draw_batch(spec, lazy=True)
         adf.draw_batch(spec, lazy=True)                     # rewrite is idempotent
 
-    def test_profile_stats_oracle_minimal(self):            # returned-statistics oracle
+    def test_returned_stats_oracle_minimal(self):           # EXECUTES — no skip
+        """Returned dfdraw statistics vs independent numpy (FINAL-CRR P0-3)."""
         adf = fresh()
-        out = adf.draw("dedxTPC.dEdxMaxTPC:mult", type="profile", lazy=True,
-                       bins=4, return_data=True)
-        data = out[-1] if isinstance(out, tuple) else out
-        y = oracle(CLEAN, "dedxTPC/dEdxMaxTPC"); x = oracle(CLEAN, "mult")
-        import pandas as _pd
-        ref = _pd.DataFrame({"y": y, "x": x})
-        ref["bin"] = _pd.cut(ref.x, 4)
-        ref_means = ref.groupby("bin", observed=True).y.mean().to_numpy()
-        got = None
-        if isinstance(data, dict):
-            for k in ("mean", "means", "y_mean"):
-                if k in data: got = np.asarray(data[k]); break
-        elif hasattr(data, "columns"):
-            for k in ("mean", "y_mean"):
-                if k in data.columns: got = data[k].to_numpy(); break
-        if got is None:
-            pytest.skip("profile return_data schema exposes no mean vector on this dfdraw")
-        assert np.allclose(np.sort(got[~np.isnan(got)]), np.sort(ref_means), rtol=1e-6)
+        fig, ax, stats = adf.draw("dedxTPC.dEdxMaxTPC:mult", type="profile",
+                                  lazy=True, bins=4)
+        y = oracle(CLEAN, "dedxTPC/dEdxMaxTPC").astype(np.float64)
+        x = oracle(CLEAN, "mult").astype(np.float64)
+        assert stats["n"] == len(y)
+        assert np.isclose(stats["mean_y"], y.mean(), rtol=1e-6)
+        assert np.isclose(stats["std_y"], y.std(ddof=1), rtol=1e-3) or \
+               np.isclose(stats["std_y"], y.std(ddof=0), rtol=1e-3)
+        assert np.isclose(stats["mean_x"], x.mean(), rtol=1e-6)
+        assert np.isclose(stats["median_y"], np.median(y), rtol=1e-5)
+
+    def test_returned_stats_oracle_selection(self):         # selection leg EXECUTES
+        adf = fresh()
+        fig, ax, stats = adf.draw("dedxTPC.dEdxMaxTPC:mult", type="profile",
+                                  selection="dedxTPC.dEdxTotTPC>40", lazy=True)
+        y = oracle(CLEAN, "dedxTPC/dEdxMaxTPC").astype(np.float64)
+        sel = oracle(CLEAN, "dedxTPC/dEdxTotTPC") > 40
+        assert stats["n"] == int(sel.sum())
+        assert np.isclose(stats["mean_y"], y[sel].mean(), rtol=1e-6)
+
+    def test_returned_stats_oracle_composite(self):         # production log-ratio EXECUTES
+        adf = fresh()
+        fig, ax, stats = adf.draw(
+            "log(dedxTPC.dEdxMaxTPC/dedxTPC.dEdxTotTPC):mult",
+            type="profile", lazy=True)
+        y = np.log(oracle(CLEAN, "dedxTPC/dEdxMaxTPC").astype(np.float64)
+                   / oracle(CLEAN, "dedxTPC/dEdxTotTPC").astype(np.float64))
+        assert stats["n"] == len(y)
+        assert np.isclose(stats["mean_y"], y.mean(), rtol=1e-5)
 
 
 # ────────────────────────── Stage 13: diagnostics + fault injection ──────────────────────────
@@ -602,3 +634,150 @@ class TestStage13_DiagnosticsAndErrors:
         assert "dEdxMaxTPC__dedxTPC" in msg and "dedxTPC.dEdxMaxTPC" in msg
         assert "dedxTPC/dEdxMaxTPC" in msg and "draw" in msg
         assert "UndefinedVariableError" not in type(e.value).__name__
+
+
+# ────────────────────────── Stage 14: FINAL-CRR corrections ──────────────────────────
+class TestStage14_FinalCrrCorrections:
+    def test_refresh_member_usable_via_dot_grammar(self):   # P0-2 fail-before/pass-after
+        adf = fresh()
+        st = adf._structs["dedxTPC"]
+        # genuine pre-refresh state: member absent from ALL maps + schema
+        st["members"].remove("dEdxMaxIROC")
+        st["l2i"].pop("dedxTPC.dEdxMaxIROC", None)
+        st["phys"].pop("dEdxMaxIROC", None)
+        adf._schema.setdefault("structs", {})["dedxTPC"] = {"members": list(st["members"])}
+        adf._struct_catalog_fp = None
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf._ensure_struct_catalog()                    # refresh
+        assert "dedxTPC.dEdxMaxIROC" in adf._structs["dedxTPC"]["l2i"]
+        r = adf.eval("dedxTPC.dEdxMaxIROC")                 # the exact public call
+        assert np.array_equal(r.to_numpy(), oracle(CLEAN, "dedxTPC/dEdxMaxIROC"))
+        assert adf.draw("dedxTPC.dEdxMaxIROC:mult", type="profile",
+                        lazy=True) is not None              # reduced dispatch
+        assert "dEdxMaxIROC" in adf._schema["structs"]["dedxTPC"]["members"]
+
+    def test_constructor_schema_precedence_tree(self):      # GPT23 P0-2
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf = AliasDataFrame.read_tree_lazy(
+                CLEAN, "tree",
+                schema={"structs": {"dedxTPC": {"members": ["dEdxTotTPC"]}}})
+        assert adf._structs["dedxTPC"]["origin"] == "schema"
+        assert adf._structs["dedxTPC"]["members"] == ["dEdxTotTPC"]   # not broadened
+        r = adf.eval("dedxTPC.dEdxTotTPC")
+        assert np.array_equal(r.to_numpy(), oracle(CLEAN, "dedxTPC/dEdxTotTPC"))
+
+    def test_constructor_schema_precedence_chain(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf = AliasDataFrame.read_chain_lazy(
+                CHAIN, "tree",
+                schema={"structs": {"dedxTPC": {"members": ["dEdxTotTPC"]}}})
+        assert adf._structs["dedxTPC"]["origin"] == "schema"
+        assert adf._structs["dedxTPC"]["members"] == ["dEdxTotTPC"]
+
+    def test_fp_not_cached_on_failed_reconciliation(self, monkeypatch):   # P1-2
+        adf = fresh()
+        adf._struct_catalog_fp = None
+        calls = {"n": 0}
+        def boom(register=True):
+            calls["n"] += 1
+            raise RuntimeError("injected reconciliation failure")
+        monkeypatch.setattr(adf, "detect_structs", boom)
+        for _ in range(2):
+            with pytest.raises(RuntimeError):
+                adf._ensure_struct_catalog()
+        assert calls["n"] == 2                              # second call re-raised, not cached
+
+    def test_full_structure_completion_failure_is_loud(self, monkeypatch):  # P1-4
+        adf = fresh()
+        adf.eval("mTOFLength.len")                          # unrelated struct loaded fine
+        st = adf._structs["dedxTPC"]
+        adf.df["dEdxMaxTPC__dedxTPC"] = 0.0                 # simulate partial preload
+        def boom(name):
+            raise RuntimeError("injected load failure")
+        monkeypatch.setattr(adf, "ensure_struct", boom)
+        adf._struct_catalog_fp = None
+        with pytest.raises(ValueError) as e:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                adf._ensure_struct_catalog()
+        assert "full-structure completion" in str(e.value)
+        assert "dedxTPC" in str(e.value)
+
+    def test_defaults_autoload_is_loud(self):               # P1-3 GPT21
+        adf = fresh()
+        with pytest.raises(Exception) as e:
+            adf.draw_batch({"f1": {"expr": "mult", "type": "hist"}},
+                           defaults={"weights": "dedxTPC.notAMember"}, lazy=True)
+        assert "notAMember" in str(e.value)
+
+    def test_figures_per_figure_defaults_struct(self, dfdraw_spy):   # GPT22 P0-1
+        adf = fresh()
+        adf.draw_figures([{"figure": "f",
+                           "defaults": {"weights": "dedxTPC.dEdxTotTPC"},
+                           "plots": [{"expr": "dedxTPC.dEdxMaxTPC:mult",
+                                      "type": "profile"}]}], lazy=True)
+        cols = dfdraw_spy.captured[-1]
+        assert "dEdxTotTPC__dedxTPC" in cols and "dEdxMaxTPC__dedxTPC" in cols
+        assert "decoyUnused" not in cols and "dedxTPC/dEdxTotTPC" not in cols
+
+    def test_fault_injection_batch_surface(self, monkeypatch):       # P1-6 batch
+        adf = fresh()
+        orig = adf._dict_dispatch_columns
+        def sabotage(*a, **k):
+            need = orig(*a, **k)
+            return {c for c in (need or set()) if c != "dEdxMaxTPC__dedxTPC"}
+        monkeypatch.setattr(adf, "_dict_dispatch_columns", sabotage)
+        with pytest.raises(ValueError) as e:
+            adf.draw_batch({"f1": {"expr": "dedxTPC.dEdxMaxTPC:mult",
+                                   "type": "profile"}}, lazy=True)
+        assert "projection inconsistency" in str(e.value) and "draw_batch" in str(e.value)
+
+    def test_fault_injection_figures_surface(self, monkeypatch):     # P1-6 figures
+        adf = fresh()
+        orig = adf._dict_dispatch_columns
+        def sabotage(*a, **k):
+            need = orig(*a, **k)
+            return {c for c in (need or set()) if c != "dEdxMaxTPC__dedxTPC"}
+        monkeypatch.setattr(adf, "_dict_dispatch_columns", sabotage)
+        with pytest.raises(ValueError) as e:
+            adf.draw_figures([{"figure": "f",
+                               "plots": [{"expr": "dedxTPC.dEdxMaxTPC:mult",
+                                          "type": "profile"}]}], lazy=True)
+        assert "projection inconsistency" in str(e.value) and "draw_figures" in str(e.value)
+
+    def test_batch_capture_excludes_physical_and_decoys(self, dfdraw_spy):  # P1-5
+        adf = fresh()
+        adf.draw_batch({"a": {"expr": "dedxTPC.dEdxMaxTPC:mult", "type": "profile"},
+                        "b": {"expr": "mTOFLength.len:mult", "type": "profile"}},
+                       lazy=True)
+        for cols in dfdraw_spy.captured[-1:]:
+            assert "dEdxMaxTPC__dedxTPC" in cols and "len__mTOFLength" in cols
+            assert "decoyUnused" not in cols
+            assert not any("/" in c for c in cols)          # no physical names
+
+    def test_second_call_different_requirements_fresh(self, dfdraw_spy):
+        adf = fresh()
+        adf.draw_batch({"a": {"expr": "dedxTPC.dEdxMaxTPC:mult",
+                              "type": "profile"}}, lazy=True)
+        adf.draw_batch({"b": {"expr": "mTOFLength.len:mult",
+                              "type": "profile"}}, lazy=True)
+        assert "len__mTOFLength" in dfdraw_spy.captured[-1]
+
+    def test_diagnostics_full_reconciliation(self):         # P1-4 diagnostics depth
+        adf = fresh()
+        adf.eval("dedxTPC.dEdxMaxTPC")                      # full struct loads
+        d = adf.describe_lazy(as_dict=True)
+        dfc = set(d["main"]["df_columns"])
+        for m in adf._structs["dedxTPC"]["members"]:
+            assert f"{m}__dedxTPC" in dfc                   # all internals present
+        assert "decoyUnused" in set(d["main"]["available"])
+        assert "decoyUnused" not in dfc                     # available but not loaded
+        loaded = set(adf._lazy_reader.loaded_branches)
+        for m in adf._structs["dedxTPC"]["members"]:
+            assert adf._structs["dedxTPC"]["phys"][m] in loaded
+        origins = {k: v["origin"] for k, v in adf._structs.items()}
+        info = adf.describe_structure(return_dict=True)     # diagnostics: no mutation
+        assert {k: v["origin"] for k, v in adf._structs.items()} == origins

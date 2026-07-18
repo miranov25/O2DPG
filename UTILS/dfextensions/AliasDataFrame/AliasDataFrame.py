@@ -1898,7 +1898,10 @@ class AliasDataFrame:
                                   f"newly detected member(s) {_add!r} (PHASE_13_75_ADF refresh)")
                     for _m2 in _add:
                         _existing["members"].append(_m2)
-                        _existing["l2i"][_m2] = self._struct_internal_name(parent, _m2)
+                        # PHASE_13_75_ADF FINAL-CRR P0-2: SAME logical key form as
+                        # register_struct — "parent.member", never the bare member.
+                        _existing["l2i"][f"{parent}.{_m2}"] = \
+                            self._struct_internal_name(parent, _m2)
                         _existing["phys"][_m2] = self._struct_physical_name(parent, _m2)
                     self._schema.setdefault("structs", {})[parent] = {
                         "members": list(_existing["members"])}
@@ -2004,8 +2007,10 @@ class AliasDataFrame:
             return self
         fp = (id(reader), len(avail), hash(frozenset(avail)))  # content-hash: same-size changes visible
         if getattr(self, "_struct_catalog_fp", None) != fp:
-            self._struct_catalog_fp = fp
+            # PHASE_13_75_ADF FINAL-CRR P1-2: fingerprint committed ONLY after
+            # successful reconciliation — a failed detection must not be cached.
             self.detect_structs(register=True)
+            self._struct_catalog_fp = fp
         # D4 normalization: reconcile pre-loaded physical columns -> internal names
         if self._structs:
             ren = {}
@@ -2032,8 +2037,11 @@ class AliasDataFrame:
                     try:
                         self.ensure_struct(_name)
                     except Exception as _e:
-                        warnings.warn(f"_ensure_struct_catalog: full-structure load "
-                                      f"of {_name!r} failed: {_e} (D-3)")
+                        raise ValueError(
+                            f"PHASE_13_75_ADF D-3: full-structure completion of "
+                            f"struct {_name!r} FAILED ({_e}); a partially loaded "
+                            f"struct must not appear registered-and-usable. "
+                            f"Loaded members: {_have!r}; required: {_ints!r}.") from _e
         return self
 
     def _autoload_expr_branches(self, expr):
@@ -7237,6 +7245,13 @@ function collapseDepth(maxD) {{
         
         # Attach lazy reader
         adf._lazy_reader = lazy_reader
+        # PHASE_13_75_ADF FINAL-CRR: constructor schema structs are
+        # authoritative (origin="schema") and MUST precede auto detection.
+        if isinstance(schema, dict) and schema.get("structs"):
+            for _sn, _ss in schema["structs"].items():
+                if _sn not in adf._structs:
+                    adf.register_struct(_sn, list(_ss.get("members", [])),
+                                        _origin="schema")
         adf._ensure_struct_catalog()   # PHASE_13_75_ADF D2: catalog + D4 normalization of pre-loaded branches
 
         # Phase 13.59.ADF (BUG_20260613): register subframes recovered from the tree's
@@ -7769,6 +7784,13 @@ function collapseDepth(maxD) {{
             adf.update_schema(schema)
         
         adf._lazy_reader = chain_reader
+        # PHASE_13_75_ADF FINAL-CRR: constructor schema structs are
+        # authoritative (origin="schema") and MUST precede auto detection.
+        if isinstance(schema, dict) and schema.get("structs"):
+            for _sn, _ss in schema["structs"].items():
+                if _sn not in adf._structs:
+                    adf.register_struct(_sn, list(_ss.get("members", [])),
+                                        _origin="schema")
         adf._ensure_struct_catalog()   # PHASE_13_75_ADF D2: catalog BEFORE initial ensure_branches
         
         # Store chain config (not serialized with schema)
@@ -15118,12 +15140,14 @@ function collapseDepth(maxD) {{
         if self._structs:
             for _d0 in (defaults, kwargs):
                 if isinstance(_d0, dict):
-                    for _v in list(_d0.values()):
+                    # PHASE_13_75_ADF FINAL-CRR: slot-scoped (never parses plot
+                    # types/labels/paths) and LOUD — ADF/chain/load errors in a
+                    # ratified expression slot propagate to the caller.
+                    for _sl0 in ("expr", "selection", "group_by",
+                                 "weights", "facet_by", "color"):
+                        _v = _d0.get(_sl0)
                         if isinstance(_v, str):
-                            try:
-                                self._autoload_expr_branches(_v)
-                            except Exception:
-                                pass
+                            self._autoload_expr_branches(_v)
                     self._struct_rewrite_draw_slots(_d0)
         # Import dfdraw
         try:
@@ -15404,6 +15428,7 @@ function collapseDepth(maxD) {{
         plotter = DFDraw(df_for_plot)
         plotter._data_source = self  # For duck-typed axis title lookup
         
+        self._assert_struct_projection(df_for_plot.columns, [str(_v) for _sp0 in specs.values() if isinstance(_sp0, dict) for _v in _sp0.values() if isinstance(_v, str)] + [str(_v) for _v in _md_dict.values() if isinstance(_v, str)], 'draw_batch')
         results = plotter.draw_batch(
             specs=specs,
             save_dir=save_dir,
@@ -15500,13 +15525,24 @@ function collapseDepth(maxD) {{
         if self._structs:
             for _d0 in (defaults, kwargs):
                 if isinstance(_d0, dict):
-                    for _v in list(_d0.values()):
+                    # PHASE_13_75_ADF FINAL-CRR: slot-scoped (never parses plot
+                    # types/labels/paths) and LOUD — ADF/chain/load errors in a
+                    # ratified expression slot propagate to the caller.
+                    for _sl0 in ("expr", "selection", "group_by",
+                                 "weights", "facet_by", "color"):
+                        _v = _d0.get(_sl0)
                         if isinstance(_v, str):
-                            try:
-                                self._autoload_expr_branches(_v)
-                            except Exception:
-                                pass
+                            self._autoload_expr_branches(_v)
                     self._struct_rewrite_draw_slots(_d0)
+            for _fs0 in (specs or []):
+                if isinstance(_fs0, dict) and isinstance(_fs0.get("defaults"), dict):
+                    _fd = _fs0["defaults"]
+                    for _sl0 in ("expr", "selection", "group_by",
+                                 "weights", "facet_by", "color"):
+                        _v = _fd.get(_sl0)
+                        if isinstance(_v, str):
+                            self._autoload_expr_branches(_v)
+                    self._struct_rewrite_draw_slots(_fd)
         # Import dfdraw
         try:
             from dfextensions.dfdraw import DFDraw
@@ -15652,11 +15688,20 @@ function collapseDepth(maxD) {{
             for _fs in specs:
                 if not isinstance(_fs, dict):
                     continue
+                _figd = _fs.get("defaults") if isinstance(_fs.get("defaults"), dict) else {}
                 _plots = _fs.get('plots', [])
                 for _i, _ps in enumerate(list(_plots)):
                     if not isinstance(_ps, dict):
                         _ps = {'expr': _ps}
                         _plots[_i] = _ps
+                    # FINAL-CRR (GPT22 P0-1): materialize the effective cascade
+                    # top-level defaults < figure defaults < plot spec into the
+                    # plot dict, so the SAME effective specification feeds both
+                    # the reduced projection below and the later delegation.
+                    for _sl1 in ("selection", "group_by", "weights",
+                                 "facet_by", "color"):
+                        if _sl1 not in _ps and _sl1 in _figd:
+                            _ps[_sl1] = _figd[_sl1]
                     self._struct_rewrite_draw_slots(_ps)
         _dfcols_f = set(df_subset.columns)
         _need_f = set()
@@ -15988,6 +16033,13 @@ function collapseDepth(maxD) {{
             fig.suptitle(suptitle, fontsize=14)
         
         # Create plotter with data source for axis labels
+        _fig_texts = []
+        for _src in ([fig_spec.get("defaults") or {}] +
+                     [p for p in fig_spec.get("plots", []) if isinstance(p, dict)]):
+            for _v in _src.values():
+                if isinstance(_v, str):
+                    _fig_texts.append(_v)
+        self._assert_struct_projection(df.columns, _fig_texts, "draw_figures")
         plotter = DFDraw(df)
         plotter._data_source = self
         
