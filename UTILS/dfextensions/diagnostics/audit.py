@@ -71,6 +71,29 @@ class Audit:
         self.checks = []          # check rows
         self.trace = {}           # conclusion trace (state engine fills)
 
+    # ---- CRR-8: ratified pipeline stage registry (versioned) --------------
+    # Mirrors the shipped pipeline end to end; the exact mapping onto the
+    # proposal's numbered stage list is recorded in the CRR (any rename bumps
+    # STAGE_LIST_VERSION so coverage reports stay comparable).
+    STAGE_LIST_VERSION = "1.0"
+    RATIFIED_STAGES = (
+        "S0_manifest", "S1_load_tables", "S2_parse_derive", "S3_join",
+        "S4_pivots", "S5_summary", "S6_severity", "S7_job_host_analysis",
+        "S8_conclusion", "S9_render",
+    )
+
+    def check_stage_coverage(self):
+        """CRR-8: every ratified stage must have received >=1 digest this
+        run; an uncovered stage is an explicit SKIP entry, never silence."""
+        seen = {d["stage"] for d in self.stages}
+        for st in self.RATIFIED_STAGES:
+            if st in seen:
+                self._rec(f"I-COV-{st}", st, "PASS",
+                          f"{sum(1 for d in self.stages if d['stage']==st)} digest(s)")
+            else:
+                self._rec(f"I-COV-{st}", st, "SKIP",
+                          "stage produced no digests this run")
+
     def add_stage(self, stage, table, df):
         try:
             self.stages.extend(stage_digest(stage, table, df))
@@ -201,3 +224,43 @@ class Audit:
                          "with its upstream stage within tolerance.")
         (v / "summary.md").write_text("\n".join(lines) + "\n")
         return v
+
+# ---- CRR-7: function-scoped rule-evidence evaluators -----------------------
+# Each config rule gets an EXECUTABLE evidence function over the snapshot; the
+# audit re-evaluates it and cross-checks against the collector's fired list.
+# Rules driven by time-series history (KC/PSI/MEM/STALL) have no snapshot
+# evaluator by design and are recorded SKIP "no snapshot evaluator".
+
+def _thp01(snapshot):
+    return "[always]" in str(snapshot.get("thp.enabled", ""))
+
+def _thp02(snapshot):
+    v = str(snapshot.get("thp.defrag", ""))
+    return "[always]" in v or "[defer+madvise]" in v or "[defer]" in v
+
+RULE_EVALUATORS = {"THP-01": _thp01, "THP-02": _thp02}
+
+
+def check_rule_evidence(aud, bundle, schema_mod, stage="S6_severity"):
+    """CRR-7: fired rules must match re-evaluated snapshot evidence, both
+    directions; and the bundle's rule-table version must equal the schema's."""
+    if bundle.in_progress:
+        aud._rec("I-RULE-any", stage, "SKIP", "bundle in progress - no verdict yet")
+        return
+    bver = bundle.manifest.get("rule_table_version", "absent")
+    ok = (bver == schema_mod.RULE_TABLE_VERSION)
+    aud._rec("I-RULE-version", stage, "PASS" if ok else "FAIL",
+             f"bundle={bver} schema={schema_mod.RULE_TABLE_VERSION}")
+    fired = set(bundle.rules_fired)
+    for rid, fn in RULE_EVALUATORS.items():
+        want = fn(bundle.snapshot)
+        got = rid in fired
+        if want == got:
+            aud._rec(f"I-RULE-{rid}", stage, "PASS",
+                     f"evidence={'present' if want else 'absent'}, fired={got}")
+        else:
+            aud._rec(f"I-RULE-{rid}", stage, "FAIL",
+                     f"evidence={'present' if want else 'absent'} but fired={got} "
+                     "- collector verdict and snapshot disagree")
+    for rid in sorted(fired - set(RULE_EVALUATORS)):
+        aud._rec(f"I-RULE-{rid}", stage, "SKIP", "no snapshot evaluator (history-based rule)")

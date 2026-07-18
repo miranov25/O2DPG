@@ -34,7 +34,7 @@ def test_v2_seeded_corruption_detected_and_localized(tmp_path):
     """Corrupt ONE rate value post-collection -> conservation FAILS and the
     first-inconsistency pointer names the stage and the channel."""
     b = make_bundle(tmp_path)
-    csv = (b / "samples.csv")
+    csv = (b / "host_samples.csv")
     csv.write_text(csv.read_text().replace("100.000", "150.000", 1))
     a = audit.Audit()
     a.check_conservation(schema.samples_frame(schema.load_bundle(b)))
@@ -93,3 +93,58 @@ def test_v6_generate_default_on_and_opt_out(tmp_path):
     assert (out1 / "validation" / "transition_checks.csv").is_file()
     rd.generate([b], out_dir=out2, audit=False)
     assert not (out2 / "validation").exists()
+
+
+# ---- CRR-8: stage coverage --------------------------------------------------
+def test_v7_stage_coverage_pass_and_explicit_skip():
+    import pandas as pd
+    a = audit.Audit()
+    a.add_stage("S2_parse_derive", "t", pd.DataFrame({"x": [1, 2]}))
+    a.check_stage_coverage()
+    rec = {r["check_id"]: r for r in a.checks}
+    assert rec["I-COV-S2_parse_derive"]["status"] == "PASS"
+    assert rec["I-COV-S7_job_host_analysis"]["status"] == "SKIP"
+    assert len([k for k in rec if k.startswith("I-COV-")]) == len(audit.Audit.RATIFIED_STAGES)
+
+# ---- CRR-7: function-scoped rule evidence -----------------------------------
+class _B:
+    in_progress = False
+    def __init__(self, snap, fired, ver="1-draft"):
+        self.snapshot = snap
+        self.manifest = {"rule_table_version": ver}
+        self.rules_fired = fired
+
+def _run(snap, fired, ver="1-draft"):
+    import schema
+    a = audit.Audit()
+    audit.check_rule_evidence(a, _B(snap, fired, ver), schema)
+    return {r["check_id"]: r for r in a.checks}
+
+def test_v8_rule_evidence_consistent_both_directions():
+    rec = _run({"thp.enabled": "always [madvise] never"}, [])
+    assert rec["I-RULE-THP-01"]["status"] == "PASS"
+    rec = _run({"thp.enabled": "[always] madvise never"}, ["THP-01"])
+    assert rec["I-RULE-THP-01"]["status"] == "PASS"
+
+def test_v9_rule_evidence_mismatch_fails_both_directions():
+    # fired without evidence
+    rec = _run({"thp.enabled": "always [madvise] never"}, ["THP-01"])
+    assert rec["I-RULE-THP-01"]["status"] == "FAIL"
+    # evidence without fired
+    rec = _run({"thp.enabled": "[always] madvise never"}, [])
+    assert rec["I-RULE-THP-01"]["status"] == "FAIL"
+
+def test_v10_rule_version_coherence_and_history_rules_skip():
+    rec = _run({"thp.enabled": "always [madvise] never"}, ["KC-01"], ver="1-draft")
+    assert rec["I-RULE-version"]["status"] == "PASS"
+    assert rec["I-RULE-KC-01"]["status"] == "SKIP"      # history-based: no evaluator
+    rec = _run({}, [], ver="0-draft")
+    assert rec["I-RULE-version"]["status"] == "FAIL"
+
+def test_v11_in_progress_bundle_skips_rule_checks():
+    import schema
+    a = audit.Audit()
+    b = _B({}, []); b.in_progress = True
+    audit.check_rule_evidence(a, b, schema)
+    rec = {r["check_id"]: r for r in a.checks}
+    assert rec["I-RULE-any"]["status"] == "SKIP"

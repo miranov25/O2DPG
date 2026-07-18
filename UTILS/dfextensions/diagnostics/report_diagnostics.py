@@ -340,6 +340,11 @@ def generate(bundles, run_records=(), labels=None, sections=None,
                **schema.config_summary(b),
                "missing_required": ",".join(schema.required_missing(b)) or "none"}
         html_parts.append(f"<h2>{b.host} - environment &amp; validity</h2>" + _table(env))
+        if aud is not None:
+            import pandas as _pd
+            aud.add_stage("S6_severity", f"{b.host}:rules",
+                          _pd.DataFrame([{"rule": r} for r in b.rules_fired]
+                                        or [{"rule": "none"}]))
         for s in schema.select_impact(b.rules_fired, mode="technical"):
             html_parts.append(f"<p><b>{s.split(']')[0]}]</b>{s.split(']',1)[1]}</p>")
         # platform-limitation honesty: name the rules that CANNOT fire here
@@ -357,16 +362,30 @@ def generate(bundles, run_records=(), labels=None, sections=None,
         if b.samples_path is not None:
             frame = schema.samples_frame(b)
             if aud is not None:
+                import pandas as _pd
+                aud.add_stage("S0_manifest", f"{b.host}:manifest",
+                              _pd.DataFrame([{"k": k, "v": str(v)}
+                                             for k, v in sorted(b.manifest.items())]))
+                aud.add_stage("S1_load_tables", f"{b.host}:host_table_shape",
+                              _pd.DataFrame([{"rows": len(frame),
+                                              "cols": len(frame.columns),
+                                              "legacy": bool(getattr(b, "legacy_host_table", False))}]))
                 aud.add_stage("S2_parse_derive", f"{b.host}:samples", frame)
                 aud.check_conservation(frame)
                 aud.check_counts(frame)
+                audit_mod.check_rule_evidence(aud, b, schema)   # CRR-7
                 pdf_, udf_, _wdf_a = _aux_tables(b)
+                if _wdf_a is not None and len(_wdf_a):
+                    aud.add_stage("S4_pivots", f"{b.host}:rollup", _wdf_a)
                 if pdf_ is not None:
                     aud.add_stage("S2_parse_derive", f"{b.host}:process_samples", pdf_)
                 aud.check_hierarchy(frame, pdf_, udf_)
             adf, reg = _build_adf(frame)
             summaries[b.host] = _summarize(adf.df, DEFAULT_CHANNELS + reg)
             if aud is not None:
+                import pandas as _pd
+                aud.add_stage("S5_summary", f"{b.host}:summary",
+                              _pd.DataFrame(summaries[b.host]))
                 aud.check_reproducibility(summaries[b.host], adf.df,
                                           DEFAULT_CHANNELS + reg)
             # ---- v8 page-1: host vitals - ALWAYS drawn when present ----
@@ -464,6 +483,13 @@ def generate(bundles, run_records=(), labels=None, sections=None,
                           "constant-series statistics inside the drawing backend - "
                           "filed against dfdraw).</p>")
     if aud is not None:
+        import pandas as _pd
+        aud.add_stage("S9_render", "figures",
+                      _pd.DataFrame([{"figures": len(list((Path(out_dir) / "figs").glob("*.png")))
+                                      if (Path(out_dir) / "figs").is_dir() else 0,
+                                      "render_warnings": RENDER_WARNINGS}]))
+        aud.check_stage_coverage()                      # CRR-8
+        aud.trace["stage_list_version"] = aud.STAGE_LIST_VERSION
         aud.trace["render_warnings"] = RENDER_WARNINGS
         aud.trace["bundles"] = [str(b.path) for b in loaded]
         aud.trace["mode"] = mode
@@ -512,8 +538,19 @@ def generate(bundles, run_records=(), labels=None, sections=None,
                 concl = cm_mod.evaluate(b.verdict, b.rules_fired, res)
                 lc_all.append((b.host, res, concl))
                 if aud is not None:
+                    import pandas as _pd
                     aud.trace.setdefault("job_host_analysis", {})[b.host] = res
                     aud.trace.setdefault("conclusion_model", {})[b.host] = concl
+                    aud.add_stage("S7_job_host_analysis", f"{b.host}:jha",
+                                  _pd.DataFrame([{"run": r.get("run_id"),
+                                                  "window": (r.get("window") or {}).get("state"),
+                                                  "n_corr": len(r.get("correlations", []))}
+                                                 for r in res]))
+                    aud.add_stage("S8_conclusion", f"{b.host}:conclusion",
+                                  _pd.DataFrame([{"run": r["run_id"], "code": r["code"]}
+                                                 for r in concl["records"]]
+                                                or [{"run": "none",
+                                                     "code": concl["bundle_conclusion"]["code"]}]))
             for host, res, concl in lc_all:
                 rows_html = []
                 for r in res:

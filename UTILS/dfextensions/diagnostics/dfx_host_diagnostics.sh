@@ -82,7 +82,11 @@ else
 fi
 umask 077
 mkdir "$BUNDLE" 2>/dev/null || { echo "bundle dir '$BUNDLE' already exists — refusing" >&2; exit 1; }
-MAN="$BUNDLE/manifest.kv"; SNAP="$BUNDLE/snapshot.kv"; CSV="$BUNDLE/samples.csv"; REP="$BUNDLE/report.txt"
+MAN="$BUNDLE/manifest.kv"; SNAP="$BUNDLE/snapshot.kv"; REP="$BUNDLE/report.txt"
+# v8 canonical bundle tables (proposal lines 720-724): host totals + per-entity
+CSV="$BUNDLE/host_samples.csv"
+DISKCSV="$BUNDLE/disk_samples.csv"
+NETCSV="$BUNDLE/network_samples.csv"
 : > "$MAN"; : > "$SNAP"; : > "$REP"
 man(){ echo "$1=$2" >> "$MAN"; }
 kv(){ echo "$1=$2" >> "$SNAP"; }
@@ -272,6 +276,8 @@ collect_psi; collect_cgroup; collect_buddy; collect_ps; collect_deepdive; collec
 # =================== sampling mode ===================
 if [ "$S_GIVEN" = 1 ]; then
   echo "ts,elapsed_s,compact_stall_total,compact_stall_per_s,compact_fail_total,compact_fail_per_s,thp_fault_alloc_total,thp_fault_alloc_per_s,thp_fault_fallback_total,thp_fault_fallback_per_s,thp_collapse_alloc_total,pgscan_direct_total,allocstall_total,allocstall_per_s,kcompactd_cpu_s_total,kcompactd_cpu_per_s,khugepaged_cpu_s_total,khugepaged_cpu_per_s,psi_mem_some_avg10,psi_mem_full_avg10,pswpin_total,pswpout_total,disk_read_sectors_total,sample_wall_s,overrun,loadavg1,cpu_busy_pct,mem_available_kb,ctxt_per_s,procs_running" > "$CSV"
+  echo "ts,device,reads_completed,sectors_read,writes_completed,sectors_written,io_in_progress,io_time_ms" > "$DISKCSV"
+  echo "ts,iface,rx_bytes,rx_packets,rx_errs,rx_drop,tx_bytes,tx_packets,tx_errs,tx_drop" > "$NETCSV"
   p_t=""; p_cs=""; p_cf=""; p_fa=""; p_fb=""; p_as=""; p_kc=""; p_kh=""
   p_cpu_idle=""; p_cpu_total=""; p_ctxt=""
   OVERRUNS=0
@@ -354,6 +360,11 @@ if [ "$S_GIVEN" = 1 ]; then
     fi
     p_t=$t; p_cs=$cs; p_cf=$cf; p_fa=$fa; p_fb=$fb; p_as=$as; p_kc=$kc; p_kh=$kh
     p_cpu_idle=$cpu_idle; p_cpu_total=$cpu_total; p_ctxt=$ctxt
+    TSNOW=$(date +%s)
+    awk -v ts="$TSNOW" 'NF>=13 {print ts","$3","$4","$6","$8","$10","$12","$13}' \
+      "$PROC/diskstats" >> "$DISKCSV" 2>/dev/null || true
+    awk -v ts="$TSNOW" 'NR>2 {gsub(":"," ",$0); print ts","$1","$2","$3","$4","$5","$9","$10","$11","$12}' \
+      "$PROC/net/dev" >> "$NETCSV" 2>/dev/null || true
     echo "[dfx $(date -u +%H:%M:%SZ)] sample $i/$NSAMPLES wall=${swall:-?}s overrun=${ovr:-0} bundle=$(basename "$BUNDLE")"
     if [ "$STOP_REQ" = 0 ] && [ "$i" -lt "$NSAMPLES" ]; then
       sleep "$INTERVAL" & SLPID=$!; wait "$SLPID" 2>/dev/null   # interruptible sleep
@@ -397,12 +408,12 @@ awk -v x="$kcday" 'BEGIN{exit !(x>=300)}' && fire KC-01 2
 PF60=$(sed -n 's/^full.*avg60=\([0-9.]*\).*/\1/p' "$PROC/pressure/memory" 2>/dev/null | head -1)
 [ -n "${PF60:-}" ] && awk -v x="$PF60" 'BEGIN{exit !(x>=5.0)}' && fire PSI-01 2
 case $SEV in 0) VERDICT=PASS;; 1) VERDICT=WARN;; 2) VERDICT=UNHEALTHY;; esac
-man verdict "$VERDICT"; man verdict_rules "${RULES_FIRED:- none}"; man rule_table_version 0-draft
+man verdict "$VERDICT"; man verdict_rules "${RULES_FIRED:- none}"; man rule_table_version 1-draft
 
 # =================== human report (rendering of the SAME values) ===================
 say "dfx_host_diagnostics v$VERSION | host=$HOST | $UTC | bundle=$(basename "$BUNDLE")"
 sec "VERDICT"
-say "verdict: $VERDICT   rules fired:${RULES_FIRED:- none}   (rule table v0-draft; thresholds pending architect ratification per C-9)"
+say "verdict: $VERDICT   rules fired:${RULES_FIRED:- none}   (rule table v1-draft; thresholds pending architect ratification per C-9)"
 say "evidence classes: configuration risk (THP-xx) | historical (KC-01, uptime-normalized: ${kcday}s/day) | live (PSI-01: mem full avg60=${PF60:-n/a})"
 sec "THP CONFIGURATION"
 say "enabled: ${EN:-unreadable}"; say "defrag:  ${DF:-unreadable}"
@@ -427,7 +438,7 @@ say "report_diagnostics.py). Remediation is an admin decision — this tool only
 OV_CPU1=$(read_self_cpu); OV_T1=$(date +%s.%N 2>/dev/null || date +%s)
 man self_cpu_s "$(awk -v a="$OV_CPU0" -v b="$OV_CPU1" -v c="$CLK_TCK" 'BEGIN{printf "%.3f",(b-a)/c}')"
 man self_wall_s "$(awk -v a="$OV_T0" -v b="$OV_T1" 'BEGIN{printf "%.3f", b-a}')"
-man files "manifest.kv snapshot.kv report.txt$([ "$S_GIVEN" = 1 ] && echo ' samples.csv')"
+man files "manifest.kv snapshot.kv report.txt$([ "$S_GIVEN" = 1 ] && echo ' host_samples.csv disk_samples.csv network_samples.csv')"
 man json_conversion deferred_to_schema_py
 
 echo "bundle: $BUNDLE"
