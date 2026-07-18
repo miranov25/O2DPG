@@ -389,6 +389,7 @@ FEATURES = [
      "test_patterns": [
          "test_bug20260624_ensure_columns.py",
          "test_phase_13_62_adf_s1.py",
+          "test_phase_13_75_lazy_struct_repair.py",
      ]},
 
     {"id": "LAZY.release",
@@ -410,6 +411,7 @@ FEATURES = [
      "category": "OBJECT",
      "test_patterns": [
          "test_phase_13_66_adf_struct_foundation.py",
+          "test_phase_13_75_lazy_struct_repair.py",
      ]},
 
     {"id": "WRITE.column_assignment",
@@ -528,5 +530,6 @@ FEATURES = [
      "test_patterns": [
          "test_phase1361_dict.py",
          "test_phase1361_memory.py",
+          "test_phase_13_75_lazy_struct_repair.py",
      ]},
 ]
