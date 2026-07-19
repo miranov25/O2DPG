@@ -1,6 +1,6 @@
 # ARCHITECT_DECISIONS.md
 # AliasDataFrame — Architect Decision Registry
-# Version: 1.0.0 (created in PHASE_13_55_ADF per §11 item 6)
+# Version: 1.3.0 (created in PHASE_13_55_ADF per §11 item 6)
 # Date: 2026-06-10
 # Maintainer: Marian Ivanov (architect)
 #
@@ -139,6 +139,53 @@
 
 ---
 
+## AD-4/13.76.ADF — Symmetry-by-default classification rule (draw path and beyond)
+
+**Ratified:** 2026-07-19 (PHASE_13_76_ADF Stage A) — applies to all Stage-A
+discoveries and to later phases unless superseded.
+
+**Rule (architect's words, verbatim):**
+
+> *"The intended design is full symmetry for every semantically applicable
+> feature. When Stage A finds an asymmetry between surfaces, forms, slots, or
+> equivalent plot paths, it should normally be classified as Repair, not
+> Refused. A behavior may be classified as Refused only when the operation is
+> genuinely semantically inapplicable or when I explicitly approve that
+> limitation. Existing implementation asymmetry by itself is not evidence of
+> intended refusal."* — M. Ivanov, 2026-07-19
+
+> *"Use symmetry as the default intended contract, but do not assume it is
+> already implemented. [...] Any observed asymmetry is automatically a Repair,
+> unless the architect explicitly approves an exception. ADF should not
+> duplicate dfdraw logic merely to protect against every dfdraw defect.
+> Stage-A tests should still detect and record asymmetries so they cannot
+> disappear silently. dfdraw owns and fixes dfdraw-level asymmetries; ADF only
+> guards its own preparation, projection, and delegation contracts."*
+> — M. Ivanov, 2026-07-19
+
+**Operational consequences:**
+1. Matrix classification default: observed asymmetry → `Repair` (deferred if
+   owner is dfdraw, per R-4). `Refused` requires genuine semantic
+   inapplicability or explicit architect approval; proposed permanent
+   exceptions stay `Unspecified` until approved.
+2. No current asymmetry is frozen as a compatibility contract by mere
+   existence.
+3. ADF ships contract tests + ownership tracking, not defensive duplication
+   of dfdraw logic.
+
+**Applied same day:** SEED-1.a (`bins`×scatter warn-and-ignore) → Repair
+DEFERRED owner=dfdraw (acceptance semantics pending architect Q1);
+SEED-2.a (capacity checked pre-`top_k`) → Repair DEFERRED owner=dfdraw.
+Deferred acceptance tests: `test_K1_3_draw_batch_forwards_batch_kwargs`,
+`test_K2_3_production_reproducer_mirror` (both strict xfail, reason-linked
+to this AD). Current behavior pinned in
+`tests/test_phase_13_76_draw_path_characterization.py`.
+
+**Source:** architect chat rulings 2026-07-19 (two messages, quoted above);
+`DRAW_PATH_BEHAVIOR_MATRIX.md` Part I §2.
+
+---
+
 ## Revision History
 
 | Version | Date | Changes |
@@ -146,3 +193,4 @@
 | 1.0.0 | 2026-06-10 | Registry created (PHASE_13_55_ADF §11 item 6). Seeded with AD-1/13.55.ADF. Legacy backfill scan proposed post-13.55. |
 | 1.1.0 | 2026-06-11 | AD-2/13.56.ADF added (PHASE_13_56_ADF ratifications; amends AD-1 item-4 scope). |
 | 1.2.0 | 2026-06-15 | AD-3/13.59.ADF added (PHASE_13_59_ADF metadata read/write precedence; ratified). |
+| 1.3.0 | 2026-07-19 | AD-4/13.76.ADF added (symmetry-by-default classification rule; SEED-1.a/SEED-2.a applications; ratified in chat). |

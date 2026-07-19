@@ -296,6 +296,19 @@ class TestK1VectorDrawKwargDiagnostic:
         )
 
     @pytest.mark.invariance
+    @pytest.mark.xfail(
+        strict=True,
+        reason="SEED-1.a Repair DEFERRED, owner=dfdraw [ARCHITECT RULING "
+               "2026-07-19, AD-4/13.76.ADF symmetry-by-default]: ADF forwards "
+               "batch kwargs verbatim (verified); dfdraw warn-and-ignores "
+               "'bins' for type='scatter' (drawer.py Phase 13.57.DF K-3 rule). "
+               "This test is the deferred ACCEPTANCE test for the intended "
+               "symmetric behavior; exact acceptance semantics pending "
+               "architect Q1 (scatter gains binning vs. silent-inert). "
+               "Current behavior pinned by "
+               "test_phase_13_76_draw_path_characterization.py::"
+               "TestSeed1BinsScatter. Filed to dfdraw; do not modify dfdraw "
+               "in PHASE_13_76_ADF (R-4).")
     def test_K1_3_draw_batch_forwards_batch_kwargs(self, dfdraw_call_capture):
         """
         K1_3 BATCH DISPATCH.

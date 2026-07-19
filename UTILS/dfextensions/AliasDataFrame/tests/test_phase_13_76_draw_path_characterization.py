@@ -31,6 +31,7 @@ Defect anchors (canonical post-13.75, AliasDataFrame.py MD5 c73f0c99...):
 """
 
 import copy
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -139,6 +140,79 @@ class TestSeed3AxIdentity:
             adf.draw_batch({"p": {"expr": "y", "type": "hist"}},
                            defaults={"ax": ax}, verbose=False)
             assert _artists(ax) > 0
+        finally:
+            plt.close("all")
+
+
+# ---------------------------------------------------------------------------
+# C-1 caller non-mutation — before-state of the current deepcopy mechanism
+# (OBS-1). The Stage-B structural-copy replacement must keep these green.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# SEED-1 current-behavior pin (architect ruling 2026-07-19: Repair DEFERRED,
+# owner=dfdraw; ADF must only guard its own forwarding contract). The
+# deferred ACCEPTANCE test is tests/test_K1_vector_draw_kwarg_diagnostic.py::
+# test_K1_3_... (strict xfail).
+# ---------------------------------------------------------------------------
+
+@needs_dfdraw
+class TestSeed1BinsScatter:
+    def test_seed1_1_batch_bins_scatter_forwarded_then_warn_ignored(self):
+        """CURRENT behavior, pinned end-to-end: ADF forwards batch-level
+        bins verbatim; dfdraw warn-and-ignores it for type='scatter'
+        (dfdraw Phase 13.57.DF K-3). If the warning disappears, either
+        dfdraw fixed SEED-1 (then K1_3 XPASSes and both markers are
+        removed together) or the forwarding broke (then this fails)."""
+        adf = _mini_adf()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            res = adf.draw_batch({"p": {"expr": "y:x", "type": "scatter"}},
+                                 bins=10, verbose=False)
+        plt.close("all")
+        assert res["_summary"]["failed"] == 0, "scatter batch must succeed today"
+        ignore_warnings = [w for w in caught
+                           if "is not used by type" in str(w.message)]
+        assert ignore_warnings, (
+            "expected the dfdraw 13.57.DF K-3 warn-and-ignore for 'bins' on "
+            "scatter; its absence means the seam behavior changed - "
+            "reconcile SEED-1 markers")
+
+
+# ---------------------------------------------------------------------------
+# SEED-3.e — draw_figures × caller ax (both forms). Executed 2026-07-19:
+# both crash with TypeError "multiple values for keyword argument 'ax'" at
+# _draw_single_figure (composer passes its own grid ax while the deep-copied
+# caller ax rides **merged). Semantic ruling pending (Q-C): Refused-with-
+# clear-error vs symmetric render-into-caller-ax. EITHER WAY the current
+# bare TypeError is an error-quality Repair (ADF-owned): these tests pin the
+# current crash so it cannot change silently; they are characterization,
+# not endorsement.
+# ---------------------------------------------------------------------------
+
+@needs_dfdraw
+class TestSeed3eDrawFiguresAx:
+    def test_seed3_5_draw_figures_per_plot_ax_current_typeerror(self):
+        adf = _mini_adf()
+        fig, ax = plt.subplots()
+        try:
+            with pytest.raises(TypeError, match="multiple values.*'ax'"):
+                adf.draw_figures(
+                    [{"name": "f1", "ncols": 1,
+                      "plots": [{"expr": "x", "type": "hist", "ax": ax}]}],
+                    verbose=False)
+        finally:
+            plt.close("all")
+
+    def test_seed3_6_draw_figures_defaults_ax_current_typeerror(self):
+        adf = _mini_adf()
+        fig, ax = plt.subplots()
+        try:
+            with pytest.raises(TypeError, match="multiple values.*'ax'"):
+                adf.draw_figures(
+                    [{"name": "f2", "ncols": 1,
+                      "plots": [{"expr": "y", "type": "hist"}]}],
+                    defaults={"ax": ax}, verbose=False)
         finally:
             plt.close("all")
 

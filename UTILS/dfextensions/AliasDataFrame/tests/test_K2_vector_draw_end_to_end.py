@@ -245,6 +245,18 @@ class TestK2VectorDrawEndToEnd:
         plt.close("all")
 
     @pytest.mark.invariance
+    @pytest.mark.xfail(
+        strict=True,
+        reason="SEED-2.a Repair DEFERRED, owner=dfdraw [ARCHITECT RULING "
+               "2026-07-19, AD-4/13.76.ADF symmetry-by-default]: channel "
+               "capacity check (dfdraw channels.py step-5, error site "
+               "'cycle capacity') fires on the pre-top_k cardinality; "
+               "intended: top_k limits the effective channel set BEFORE "
+               "capacity validation, so top_k=4 is checked against "
+               "capacity 4. Fail-before preserved here as the deferred "
+               "acceptance test; XPASS on the dfdraw fix forces marker "
+               "removal. Filed to dfdraw; do not modify dfdraw in "
+               "PHASE_13_76_ADF (R-4).")
     def test_K2_3_production_reproducer_mirror(self):
         """
         K2_3 PRODUCTION REPRODUCER MIRROR.
