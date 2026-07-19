@@ -4,7 +4,7 @@
 evidence base for the "source owner" column). One file by architect
 preference, 2026-07-19.*
 
-**Status:** Stage-A working document, increment 5 (oracles O-1/O-2 executed).
+**Status:** Stage-A working document, increment 6 (vector slots + figures column swept).
 **Governing classification rule:** AD-4/13.76.ADF (symmetry-by-default,
 ratified 2026-07-19, verbatim in `docs/ARCHITECT_DECISIONS.md` v1.3.0):
 observed asymmetry => Repair unless genuinely semantically inapplicable or
@@ -110,12 +110,20 @@ it.
 | POLICY-1 | `draw_lazy=False` (default) REQUIRES explicit `materialize_aliases(names=[...])` before drawing a registered alias by name; error today is `ValueError: Cannot evaluate expression 'z'` — documented instance-policy contract (`AliasDataFrame.py:1034`), classification **Preserve** (behavior) with an error-quality note: the message does not mention the policy or the remedy | probed; protocol encoded inside O-2 |
 | SWEEP-1 | slots `selection`/`weights`/`group_by`/`facet_by`/`color` all accepted with stats on `draw` AND `draw_batch`; numeric batch≡draw equality additionally proven for `selection` and `weights` | `TestSlotSurfaceSweep` (5 params, PASS) |
 
+### SWEEP-2 / SWEEP-3 — executed rows (increment 6)
+
+| Cell | Statement (executed 2026-07-19/20) | Classification | Test |
+|---|---|---|---|
+| SWEEP-2.a | vector context (`'[y1,y2]:x'`): `selection_vector` filters PER CHANNEL — proven numerically (ch0 n=84 = y1>0 count, ch1 n=164 = y2>4 count); `weights_vector` accepted; per-channel stats list on `draw` and `draw_batch` | **Preserve** | `test_sweep2_1`, `test_sweep2_2` (PASS) |
+| SWEEP-2.c | scalar context: `selection_vector`/`weights_vector` on a plain scalar draw are SILENTLY inert — no filtering (n stays unfiltered), no warning | **Repair candidate (Unspecified)** — explicit-but-inapplicable input silently no-ops, the exact pattern AD-5 ruled must error; goes to the Gate-A ruling batch | `test_sweep2_3` (PASS, pins current) |
+| SWEEP-3.a-d | `selection`/`weights`/`group_by`/`color` accepted with stats on `draw_figures`; numeric figures≡draw equality proven for `selection`/`weights` — completes the surface axis of SWEEP-1 | **Preserve** | `TestSweep3FiguresColumn` (4 params, PASS) |
+| SWEEP-3.f | `facet_by` in a `draw_figures` panel: DELIBERATE clean refusal with actionable message naming the alternative (`adf.draw(expr, facet_by=...)`) and the tracked dfdraw work (`BUG_dfdraw_20260611_facet_by_ax_ignored`, nested sub-gridspec) | **Repair — deferred (already dfdraw-tracked); interim refusal is Preserve-quality** (AD-4 consistent: asymmetry stays a Repair, the loud clean interim refusal needs no new ruling) | `test_sweep3_facet_by_...` (PASS, pins refusal + message) |
+
 ## 3. Open cells queue (next characterization increments)
 
 1. ~~SEED-3.e~~ DONE (Q-C resolved by AD-6; acceptance test_seed3_7 strict xfail).
 2. ~~Slot × surface sweep (scalar slots × draw/draw_batch)~~ DONE (SWEEP-1);
-   remaining: vector slots (`weights_vector`, `selection_vector`),
-   `draw_figures` column of the sweep, and data states (§8.8).
+   remaining: data states (§8.8: lazy tree, lazy chain, subframes).
 3. `entry_begin/entry_end/entry_mask` layer rows.
 4. Modifier precedence rows (§8.7).
 5. `error_owner` sweep (T-G) once O-7 oracle exists.

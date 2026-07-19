@@ -434,3 +434,122 @@ class TestSlotSurfaceSweep:
                 assert s_batch.get(key) == pytest.approx(
                     s_draw.get(key), rel=1e-12), (
                     f"{slot}: batch {key} diverges from draw")
+
+
+# ---------------------------------------------------------------------------
+# SWEEP-2 — vector slots (selection_vector / weights_vector), both contexts.
+# Vector context (bracket expr '[y1,y2]:x'): slots engage per channel —
+# proven numerically. Scalar context: both slots are SILENTLY inert today
+# (no warning, no filtering) — pinned as characterization; under the AD-5
+# explicit-provenance precedent this is a Repair candidate (explicit
+# inapplicable input should error, not silently no-op); final classification
+# goes to the Gate-A ruling batch, matrix row SWEEP-2.c.
+# ---------------------------------------------------------------------------
+
+def _vector_adf(n=200):
+    rng = np.random.default_rng(7)
+    return A.AliasDataFrame(pd.DataFrame({
+        "y1": rng.normal(0.0, 1.0, n),
+        "y2": rng.normal(5.0, 1.0, n),
+        "x": rng.uniform(0.0, 1.0, n),
+        "w": rng.uniform(0.5, 2.0, n),
+    })), rng
+
+
+@needs_dfdraw
+class TestSweep2VectorSlots:
+    def test_sweep2_1_selection_vector_filters_per_channel_on_draw(self):
+        adf, _ = _vector_adf()
+        df = adf.df
+        _f, _a, st = adf.draw("[y1,y2]:x", type="profile", bins=6,
+                              selection_vector=["y1>0", "y2>4"])
+        plt.close("all")
+        assert isinstance(st, list) and len(st) == 2
+        assert st[0]["n"] == int((df.y1 > 0).sum())
+        assert st[1]["n"] == int((df.y2 > 4).sum())
+
+    def test_sweep2_2_vector_slots_accepted_on_draw_batch(self):
+        adf, _ = _vector_adf()
+        res = adf.draw_batch(
+            {"p": {"expr": "[y1,y2]:x", "type": "profile", "bins": 6,
+                   "selection_vector": ["y1>0", "y2>4"],
+                   "weights_vector": ["w", "w"]}},
+            verbose=False)
+        plt.close("all")
+        assert res["_summary"]["failed"] == 0, res["_errors"]
+        st = res["p"]["stats"]
+        assert isinstance(st, list) and len(st) == 2
+
+    def test_sweep2_3_scalar_context_vector_slots_silently_inert_today(self):
+        """Characterization pin of CURRENT behavior (not endorsement):
+        selection_vector on a plain scalar draw neither filters nor warns.
+        Executed evidence: n stays at the unfiltered count. Matrix
+        SWEEP-2.c; Repair candidate per AD-5 explicit-provenance
+        precedent; awaiting Gate-A ruling batch."""
+        adf, _ = _vector_adf()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _f, _a, st = adf.draw("y1", type="hist", bins=8,
+                                  selection_vector=["y1>0"])
+        plt.close("all")
+        assert st["n"] == len(adf.df), (
+            "scalar-context selection_vector started filtering - "
+            "reclassify SWEEP-2.c before changing this pin")
+        assert not [w for w in caught
+                    if "selection_vector" in str(w.message)], (
+            "a warning appeared - update the SWEEP-2.c matrix row")
+
+
+# ---------------------------------------------------------------------------
+# SWEEP-3 — draw_figures column of the scalar-slot sweep (completes the
+# surface axis for SWEEP-1). Success + stats for every slot; numeric
+# equality to draw for the row-transforming slots.
+# ---------------------------------------------------------------------------
+
+@needs_dfdraw
+class TestSweep3FiguresColumn:
+    @pytest.mark.parametrize("slot,value,numeric_equiv", [
+        ("selection", "x>0", True),
+        ("weights", "w", True),
+        ("group_by", "cat", False),
+        ("color", "cat", False),
+    ])
+    def test_slot_accepted_on_draw_figures(self, slot, value, numeric_equiv):
+        adf = _oracle_adf()
+        kw = {"expr": "x", "type": "hist", "bins": 10, slot: value}
+        _f, _a, s_draw = adf.draw(kw["expr"],
+                                  **{k: v for k, v in kw.items()
+                                     if k != "expr"})
+        r3 = adf.draw_figures(
+            [{"name": "f", "ncols": 1, "plots": [dict(kw)]}], verbose=False)
+        plt.close("all")
+        st = r3["f"]["stats"]
+        assert isinstance(st, list) and st, (
+            f"draw_figures with {slot} returned no stats")
+        s_fig = st[0]
+        if numeric_equiv and isinstance(s_fig, dict):
+            for key in ("n", "mean", "std"):
+                assert s_fig.get(key) == pytest.approx(
+                    s_draw.get(key), rel=1e-12), (
+                    f"{slot}: draw_figures {key} diverges from draw")
+
+    def test_sweep3_facet_by_on_figures_is_documented_interim_refusal(self):
+        """facet_by in a draw_figures panel is DELIBERATELY refused today
+        with a clean, actionable message naming the alternative and the
+        tracked dfdraw work (BUG_dfdraw_20260611_facet_by_ax_ignored,
+        nested sub-gridspec). Matrix SWEEP-3.f: Repair - deferred (already
+        dfdraw-tracked), interim refusal Preserve-quality. This pin keeps
+        the refusal loud and its message intact until the dfdraw mechanism
+        lands."""
+        adf = _oracle_adf()
+        try:
+            with pytest.raises(ValueError,
+                               match="facet_by is not supported in "
+                                     "draw_figures"):
+                adf.draw_figures(
+                    [{"name": "f", "ncols": 1,
+                      "plots": [{"expr": "x", "type": "hist", "bins": 10,
+                                 "facet_by": "cat"}]}],
+                    verbose=False)
+        finally:
+            plt.close("all")
