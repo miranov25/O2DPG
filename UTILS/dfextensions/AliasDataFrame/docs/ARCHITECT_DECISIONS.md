@@ -1,6 +1,6 @@
 # ARCHITECT_DECISIONS.md
 # AliasDataFrame — Architect Decision Registry
-# Version: 1.3.0 (created in PHASE_13_55_ADF per §11 item 6)
+# Version: 1.4.0 (created in PHASE_13_55_ADF per §11 item 6)
 # Date: 2026-06-10
 # Maintainer: Marian Ivanov (architect)
 #
@@ -186,6 +186,50 @@ to this AD). Current behavior pinned in
 
 ---
 
+## AD-5/13.76.ADF — `bins` × scatter: semantic-inapplicability exception (ratified)
+
+**Ratified:** 2026-07-19. Panel: dfdraw MainReviewer synthesis (Sonnet5_4,
+5 seats, 4/5 convergence with MainReviewer conceding); architect: *"Yes.
+GPT consensus proposal looks reasonable, I wanted to be sure that it has no
+effect. Lets go ahead"* after corpus back-compat check (0 affected usages
+in examples/time_series).
+
+**Ruling (panel draft, architect-approved verbatim):**
+
+> Confirmed as a semantic-inapplicability exception. Shared batch-level
+> `bins=` is silently inapplicable to `type='scatter'` (no warning); an
+> explicitly supplied `bins=` on a scatter spec or direct call raises a
+> clean, actionable error instead of the current warn-and-ignore. dfdraw
+> issue to be filed and scheduled as a normal Repair; also registered as a
+> seed item for a future dfdraw applicability/dispatcher-consistency phase.
+
+**Encoded by:** deferred acceptance tests `test_K1_3_...` (shared-silent
+contract) and `test_seed1_2_...` (explicit-error contract), both strict
+xfail; current behavior pinned by `test_seed1_1_...`.
+
+---
+
+## AD-6/13.76.ADF — `draw_figures` × caller `ax`: clean refusal (ratified)
+
+**Ratified:** 2026-07-19, same panel and architect approval as AD-5.
+
+**Ruling (panel draft, architect-approved verbatim):**
+
+> Confirmed as a semantic exception. `draw_figures` rejects caller-supplied
+> `ax` (top-level or per-spec) with a clean, immediate `ValueError` before
+> any figure/axes creation, replacing the current raw `TypeError`. A future
+> `figure=`/`axes=` contract may be proposed separately for genuine
+> multi-axes composition; not part of this ruling.
+
+**Ownership note (coder, anchor-based):** the collision site is ADF's own
+composer (`_draw_single_figure`), so implementing the refusal is an
+ADF-owned Repair landing in Stage-B spec validation — not a dfdraw filing.
+**Encoded by:** deferred acceptance `test_seed3_7_...` (strict xfail);
+current crash pinned by `test_seed3_5_.../test_seed3_6_...` (retired when
+the Stage-B fix lands).
+
+---
+
 ## Revision History
 
 | Version | Date | Changes |
@@ -194,3 +238,4 @@ to this AD). Current behavior pinned in
 | 1.1.0 | 2026-06-11 | AD-2/13.56.ADF added (PHASE_13_56_ADF ratifications; amends AD-1 item-4 scope). |
 | 1.2.0 | 2026-06-15 | AD-3/13.59.ADF added (PHASE_13_59_ADF metadata read/write precedence; ratified). |
 | 1.3.0 | 2026-07-19 | AD-4/13.76.ADF added (symmetry-by-default classification rule; SEED-1.a/SEED-2.a applications; ratified in chat). |
+| 1.4.0 | 2026-07-19 | AD-5/13.76.ADF (bins×scatter shared/explicit split) and AD-6/13.76.ADF (draw_figures ax clean refusal) added; panel-reviewed, architect-ratified. |

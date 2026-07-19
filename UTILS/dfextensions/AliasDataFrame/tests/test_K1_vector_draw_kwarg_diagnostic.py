@@ -298,39 +298,36 @@ class TestK1VectorDrawKwargDiagnostic:
     @pytest.mark.invariance
     @pytest.mark.xfail(
         strict=True,
-        reason="SEED-1.a Repair DEFERRED, owner=dfdraw [ARCHITECT RULING "
-               "2026-07-19, AD-4/13.76.ADF symmetry-by-default]: ADF forwards "
-               "batch kwargs verbatim (verified); dfdraw warn-and-ignores "
-               "'bins' for type='scatter' (drawer.py Phase 13.57.DF K-3 rule). "
-               "This test is the deferred ACCEPTANCE test for the intended "
-               "symmetric behavior; exact acceptance semantics pending "
-               "architect Q1 (scatter gains binning vs. silent-inert). "
-               "Current behavior pinned by "
-               "test_phase_13_76_draw_path_characterization.py::"
-               "TestSeed1BinsScatter. Filed to dfdraw; do not modify dfdraw "
-               "in PHASE_13_76_ADF (R-4).")
+        reason="SEED-1.a Repair DEFERRED, owner=dfdraw [AD-5/13.76.ADF "
+               "ratified 2026-07-19]: intended contract = shared batch-level "
+               "bins is honored by bins-capable plots and SILENTLY "
+               "inapplicable to scatter (no warning); explicit bins on a "
+               "scatter spec raises a clean error (separate acceptance test "
+               "test_seed1_2_* in test_phase_13_76_draw_path_"
+               "characterization.py). Today dfdraw warn-and-ignores "
+               "(13.57.DF K-3), so the no-warning assertion fails. Filed to "
+               "dfdraw; do not modify dfdraw in PHASE_13_76_ADF (R-4). "
+               "Current behavior pinned by test_seed1_1_*.")
     def test_K1_3_draw_batch_forwards_batch_kwargs(self, dfdraw_call_capture):
         """
-        K1_3 BATCH DISPATCH.
+        K1_3 BATCH DISPATCH — AD-5 ACCEPTANCE (deferred).
 
-        adf.draw_batch(specs, group_by='z', group_by_bins=4) — does
-        each per-spec inner draw call receive group_by and
-        group_by_bins?
-
-        draw_batch signature accepts **kwargs; the question is whether
-        it threads them into each spec's inner call.
+        Ratified contract (AD-5/13.76.ADF): a shared batch-level ``bins=N``
+        is honored by every bins-capable plot in the batch and is silently
+        inapplicable to ``type='scatter'`` — no warning noise. (The
+        pre-AD-5 version of this test asserted bins must reach the scatter
+        call; that expectation was ruled wrong on 2026-07-19.)
         """
+        import warnings as _w
         adf = _build_small_adf()
 
         specs = {
-            'plot_y1': {'expr': 'y1:x', 'type': 'scatter'},
-            'plot_y2': {'expr': 'y2:x', 'type': 'scatter'},
+            'plot_scatter': {'expr': 'y1:x', 'type': 'scatter'},
+            'plot_hist': {'expr': 'y2', 'type': 'hist'},
         }
-        try:
-            adf.draw_batch(specs, group_by='z', group_by_bins=4, bins=10)
-        except Exception as e:
-            print(f"\nK1_3 note: draw_batch raised {type(e).__name__}: {e}")
-            # diagnostic still reads what was captured before the raise
+        with _w.catch_warnings(record=True) as caught:
+            _w.simplefilter("always")
+            adf.draw_batch(specs, bins=10)
 
         if len(dfdraw_call_capture) == 0:
             pytest.fail(
@@ -339,27 +336,22 @@ class TestK1VectorDrawKwargDiagnostic:
                 "Investigate draw_batch source."
             )
 
-        report_lines = [
-            f"K1_3 diagnostic — {len(dfdraw_call_capture)} DFDraw call(s):"
-        ]
-        per_call_drops = []
-        for i, call in enumerate(dfdraw_call_capture):
-            captured = call['kwargs']
-            line = f"  call[{i}] DFDraw.{call['method']}() kwargs: "
-            for key in ('group_by', 'group_by_bins', 'bins'):
-                if key in captured:
-                    line += f"{key}={captured[key]!r} "
-                else:
-                    line += f"{key}=ABSENT "
-                    per_call_drops.append(f"call[{i}] missing {key}")
-            report_lines.append(line)
-
-        print("\n" + "\n".join(report_lines))
-
-        assert not per_call_drops, (
-            "K1_3 BUG LOCALIZATION: draw_batch did not forward all "
-            f"batch-level kwargs to each inner call: {per_call_drops}\n"
-            + "\n".join(report_lines)
+        ignore_warnings = [w for w in caught
+                          if "is not used by type" in str(w.message)]
+        assert not ignore_warnings, (
+            "AD-5: shared bins must be SILENTLY inapplicable to scatter; "
+            f"got warning(s): {[str(w.message) for w in ignore_warnings]}"
+        )
+        by_method = {}
+        for call in dfdraw_call_capture:
+            by_method.setdefault(call['method'], []).append(call['kwargs'])
+        hist_calls = by_method.get('hist', [])
+        scatter_calls = by_method.get('scatter', [])
+        assert any(k.get('bins') == 10 for k in hist_calls), (
+            f"AD-5: bins-capable plot must honor shared bins; hist calls: {hist_calls}"
+        )
+        assert all('bins' not in k for k in scatter_calls), (
+            f"AD-5: scatter must not receive the shared bins; scatter calls: {scatter_calls}"
         )
 
     @pytest.mark.invariance

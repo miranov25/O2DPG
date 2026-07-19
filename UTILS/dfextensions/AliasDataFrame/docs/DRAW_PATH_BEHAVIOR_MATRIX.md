@@ -4,7 +4,7 @@
 evidence base for the "source owner" column). One file by architect
 preference, 2026-07-19.*
 
-**Status:** Stage-A working document, increment 3.
+**Status:** Stage-A working document, increment 4 (AD-5/AD-6 ratified).
 **Governing classification rule:** AD-4/13.76.ADF (symmetry-by-default,
 ratified 2026-07-19, verbatim in `docs/ARCHITECT_DECISIONS.md` v1.3.0):
 observed asymmetry => Repair unless genuinely semantically inapplicable or
@@ -51,8 +51,8 @@ data states §8.8) are as ratified in Rev2 and not restated here.
 | SEED-3.b | `draw_batch` / top-level `ax=` kwarg | **Preserve** | — | kwargs forwarded verbatim via `plotter.draw_batch(..., **kwargs)`; renders into caller Axes | same | delegation at `:15439–15445` | `test_seed3_2` (PASS) |
 | SEED-3.c | `draw_batch` / per-spec `{'ax': ...}` | **Repair** | ADF | `specs = _copy.deepcopy(specs)` replaces Axes with disconnected phantom carrying its own Figure; dfdraw renders into phantom; caller subplot stays empty; **zero diagnostics** | render into caller Axes | `AliasDataFrame.py:15140` | `test_seed3_3` (strict xfail) |
 | SEED-3.d | `draw_batch` / `defaults={'ax': ...}` | **Repair** | ADF | same phantom via `defaults = _copy.deepcopy(defaults)` | render into caller Axes | `:15142` | `test_seed3_4` (strict xfail) |
-| SEED-3.e1 | `draw_figures` / per-plot OR `defaults` `ax` — semantics | **Unspecified (Q-C)** | — | EXECUTED 2026-07-19: both forms crash `TypeError: ...multiple values for keyword argument 'ax'` at `_draw_single_figure:16126` (composer passes its own grid `ax=` while the deep-copied caller ax rides `**merged`) | Q-C to architect: approve **Refused-with-clear-error** (grid-composing surface = genuine semantic inapplicability candidate) OR demand symmetric render-into-caller-ax | `:16126`; deepcopy `:15532/:15534` | `test_seed3_5`, `test_seed3_6` (PASS, pin crash) |
-| SEED-3.e2 | same forms — error quality | **Repair** (unconditional, either Q-C outcome) | ADF | bare TypeError is a backend-style collision, not a preparation-time message | clear ADF preparation error naming the surface and the alternative (`draw`/`draw_batch`), OR working symmetric behavior per Q-C | `_draw_single_figure:16126` | same tests (assertion updates with the fix) |
+| SEED-3.e1 | `draw_figures` / per-plot OR `defaults` `ax` — semantics | **Refused — RATIFIED (AD-6)**: clean-refusal exception approved | ADF | EXECUTED 2026-07-19: both forms crash `TypeError: ...multiple values for keyword argument 'ax'` at `_draw_single_figure:16126` (composer passes its own grid `ax=` while the deep-copied caller ax rides `**merged`) | AD-6 ratified: reject caller ax with clean ValueError before any figure/axes creation; future figure=/axes= API noted as separate idea | `:16126`; deepcopy `:15532/:15534` | `test_seed3_5`, `test_seed3_6` (PASS, pin crash) |
+| SEED-3.e2 | same forms — error quality | **Repair** (AD-6; fix = Stage-B spec validation implementing the ratified refusal) | ADF | bare TypeError is a backend-style collision, not a preparation-time message | clear ADF preparation error naming the surface and the alternative (`draw`/`draw_batch`), OR working symmetric behavior per Q-C | `_draw_single_figure:16126` | same tests (assertion updates with the fix) |
 
 Repair fix location: Stage-B structural-copy normalizer (Rev2 §9), ratified
 by architect 2026-07-19 ("If there is a bug, it has to be fixed" — timing
@@ -64,7 +64,7 @@ usages are SEED-3.a form — no current production caller is affected.
 
 | Cell | Finding (executed) | Classification | error_owner | Anchor |
 |---|---|---|---|---|
-| SEED-1.a | `bins` from batch-level kwargs never reaches the inner `scatter` call. ADF is NOT the dropper: ADF forwards `**kwargs` verbatim (`:15439–15445`, verified). dfdraw deliberately warn-and-ignores params not used by the plot type — observed live: `UserWarning: Parameter 'bins' is not used by type='scatter' and is ignored (dfdraw Phase 13.57.DF K-3)` (`drawer.py:4869`) | **Repair — DEFERRED** [AD-4 ruling 2026-07-19]: symmetric binning semantics intended; acceptance detail pending architect Q1 (scatter gains binning vs silent-inert). Filed to dfdraw; not fixed in 13.76 (R-4) | dfdraw | `drawer.py:4869` (ignore rule), `:7796` (batch inner call) |
+| SEED-1.a | `bins` from batch-level kwargs never reaches the inner `scatter` call. ADF is NOT the dropper: ADF forwards `**kwargs` verbatim (`:15439–15445`, verified). dfdraw deliberately warn-and-ignores params not used by the plot type — observed live: `UserWarning: Parameter 'bins' is not used by type='scatter' and is ignored (dfdraw Phase 13.57.DF K-3)` (`drawer.py:4869`) | **Repair — DEFERRED** [AD-4 ruling 2026-07-19]: symmetric binning semantics intended; RESOLVED by AD-5 (ratified 2026-07-19): shared bins silently inapplicable to scatter; explicit bins on scatter = clean error naming profile/hist2d/hexbin. Filed to dfdraw; not fixed in 13.76 (R-4) | dfdraw | `drawer.py:4869` (ignore rule), `:7796` (batch inner call) |
 | SEED-1.b | Secondary `TypeError: cannot unpack non-iterable NoneType` during the test | **BaselineArtifact** | — (test fixture) | spy fixture returns `None` on inner exception (`test_K1_...py:99–105`), production `fig, ax, stats` unpack at `drawer.py:7796` then fails — artifact does not occur outside the spy |
 | SEED-1.c | The K1_3 run's inner call itself raised `ValueError` (capacity class) | folds into SEED-2 | dfdraw | see SEED-2 |
 
@@ -73,7 +73,7 @@ deferred, owner dfdraw (AD-4). Tests: current behavior pinned by
 `test_seed1_1_batch_bins_scatter_forwarded_then_warn_ignored` (PASS);
 deferred acceptance = `test_K1_3_...` (strict xfail, AD-4-linked).
 Capability-matrix ❌ stays as Repair-deferred, NOT cleared as Refused.
-Still open: Q1 acceptance semantics (architect consulting).
+Q1 RESOLVED by AD-5; acceptance tests: test_K1_3 (shared-silent) + test_seed1_2 (explicit-error), both strict xfail.
 
 ### SEED-2 — `test_K2_3_production_reproducer_mirror` (capability-matrix ❌)
 
@@ -103,7 +103,7 @@ it.
 
 ## 3. Open cells queue (next characterization increments)
 
-1. ~~SEED-3.e~~ DONE (increment 3; Q-C pending with architect).
+1. ~~SEED-3.e~~ DONE (Q-C resolved by AD-6; acceptance test_seed3_7 strict xfail).
 2. Slot × surface sweep (§8.5/§8.6 slots incl. `facet_by`, `weights`,
    `weights_vector`, `selection_vector` — the historical scan-gap slots) ×
    data states (§8.8), seeded from the 13.75 test map.

@@ -178,6 +178,28 @@ class TestSeed1BinsScatter:
             "scatter; its absence means the seam behavior changed - "
             "reconcile SEED-1 markers")
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason="AD-5/13.76.ADF acceptance (Repair DEFERRED, owner=dfdraw): "
+               "an EXPLICIT bins= on a scatter spec must raise a clean, "
+               "actionable error pointing to profile/hist2d/hexbin - not "
+               "the current warn-and-ignore. XPASS on the dfdraw fix "
+               "forces marker removal.")
+    def test_seed1_2_explicit_bins_on_scatter_spec_raises_clean_error(self):
+        adf = _mini_adf()
+        try:
+            # AD-5 intended: a REAL exception whose message names the binned
+            # alternatives (profile/hist2d/hexbin). Matching on those names
+            # (not on 'bins'/'scatter') guarantees the current K-3
+            # warn-and-ignore text can never satisfy this, even escalated.
+            with pytest.raises(Exception,
+                               match="(?i)profile|hist2d|hexbin"):
+                adf.draw_batch(
+                    {"p": {"expr": "y:x", "type": "scatter", "bins": 7}},
+                    verbose=False)
+        finally:
+            plt.close("all")
+
 
 # ---------------------------------------------------------------------------
 # SEED-3.e — draw_figures × caller ax (both forms). Executed 2026-07-19:
@@ -213,6 +235,28 @@ class TestSeed3eDrawFiguresAx:
                     [{"name": "f2", "ncols": 1,
                       "plots": [{"expr": "y", "type": "hist"}]}],
                     defaults={"ax": ax}, verbose=False)
+        finally:
+            plt.close("all")
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="AD-6/13.76.ADF acceptance (Repair, owner=ADF, fix in Stage B "
+               "spec validation): draw_figures must reject caller-supplied "
+               "ax with a clean ValueError BEFORE any figure/axes creation, "
+               "naming draw/draw_batch as the caller-owned-axes "
+               "alternatives - replacing today's raw TypeError keyword "
+               "collision. When the Stage-B fix lands this XPASSes; remove "
+               "the marker and retire the two TypeError crash-pin tests "
+               "above in the same commit.")
+    def test_seed3_7_draw_figures_ax_rejected_with_clean_valueerror(self):
+        adf = _mini_adf()
+        fig, ax = plt.subplots()
+        try:
+            with pytest.raises(ValueError, match="draw_figures"):
+                adf.draw_figures(
+                    [{"name": "f1", "ncols": 1,
+                      "plots": [{"expr": "x", "type": "hist", "ax": ax}]}],
+                    verbose=False)
         finally:
             plt.close("all")
 
