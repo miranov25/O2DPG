@@ -122,3 +122,37 @@ def test_e2e_no_stale_state_between_calls(tmp_path):
     s2 = json.loads((d2 / "report_summary.json").read_text())
     assert s2["runs"] == [], f"stale runs inherited: {s2['runs']}"
     assert not s2.get("conclusion"), "stale conclusion inherited"
+
+
+def test_e2e_multi_host_runs_are_attributable(tmp_path):
+    """UID-delta round-2 closure [GPT25 P1-4]: multi-host summary rows must
+    carry a host key, retain every host's rows, and give NO single top-level
+    conclusion (undefined across hosts); conclusions_by_host covers both."""
+    import shutil
+    out = tmp_path / "data"
+    wl = tmp_path / "workload.py"
+    wl.write_text(WORKLOAD)
+    r = subprocess.run(
+        [sys.executable, str(DIAG / "dfx_run_with_diagnostics.py"),
+         "--out", str(out), "--label", "mh", "--interval", "1",
+         "--max-samples", "8", "--pre", "2", "--post", "2", "--",
+         sys.executable, str(wl), str(DIAG), str(out)],
+        capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr
+    b1 = next(out.glob("host_diag_*"))
+    b2 = tmp_path / (b1.name.replace(b1.name.split("_")[2], "otherhost"))
+    shutil.copytree(b1, b2)
+    mk = (b2 / "manifest.kv").read_text().splitlines()
+    (b2 / "manifest.kv").write_text("\n".join(
+        ("host=otherhost" if l.startswith("host=") else l) for l in mk) + "\n")
+    import report_diagnostics as rd
+    d = tmp_path / "rep"
+    rd.generate([str(b1), str(b2)],
+                run_records=[str(out / "orchestration.json")], out_dir=d)
+    sj = json.loads((d / "report_summary.json").read_text())
+    hosts = {run.get("host") for run in sj["runs"]}
+    assert all(run.get("host") for run in sj["runs"]), "unattributed run rows"
+    assert len(hosts) == 2, f"expected rows from 2 hosts, got {hosts}"
+    assert len(sj["conclusions_by_host"]) == 2
+    assert sj.get("conclusion") is None, \
+        "single top-level conclusion is undefined for a multi-host report"

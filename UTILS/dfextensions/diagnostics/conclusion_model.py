@@ -44,10 +44,10 @@ JOB_STATES = ("success", "failed", "no_records", "unknown_outcome",
 
 
 
-# THE canonical code glosses - extracted from conclude()'s own return texts
-# and asserted equal to them by test. Renderers MUST build any legend from
-# this table, never hand-write one [UID-delta panel P1-3: a hand-written
-# legend inverted CM-6's outcome].
+# THE canonical conclusion texts - conclude() returns entries FROM this
+# table (single source; the 13/13 test walks every code). Renderers MUST
+# build any legend from this table, never hand-write one [UID-delta panel
+# P1-3: a hand-written legend once inverted CM-6's outcome].
 CODE_LEGEND = {
     "CM-0": "No job records supplied: host assessment only; no job-environment conclusion possible.",
     "CM-1": "Job succeeded on a clean host with quiet background: the run qualifies as reference-grade for comparisons.",

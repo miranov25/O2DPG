@@ -445,7 +445,7 @@ def generate(bundles, run_records=(), labels=None, sections=None,
     # module-global stash made a second no-record call in the same process
     # ship the FIRST call's runs/conclusion in report_summary.json, and kept
     # only the last host in multi-host reports. Reproduced, now structural.
-    layerc_analyses = []                 # accumulates across ALL hosts
+    layerc_analyses = []                 # (host, record) pairs - attributable
     layerc_conclusions = {}              # host -> bundle_conclusion
     global RENDER_WARNINGS
     RENDER_WARNINGS = 0                  # per-call, never inherited
@@ -646,7 +646,8 @@ def generate(bundles, run_records=(), labels=None, sections=None,
                 _p, _u, roll = _aux_tables(b)
                 res = jha_mod.analyze(run_records, hostf, roll)
                 concl = cm_mod.evaluate(b.verdict, b.rules_fired, res)
-                layerc_analyses.extend(res)
+                layerc_analyses.extend(          # host-tagged [GPT25 P1-4]:
+                    (b.host, r) for r in res)    # multi-host rows stay attributable
                 layerc_conclusions[b.host] = concl.get("bundle_conclusion")
                 lc_all.append((b.host, res, concl))
                 if aud is not None:
@@ -676,13 +677,13 @@ def generate(bundles, run_records=(), labels=None, sections=None,
          "rule_table_version": schema.RULE_TABLE_VERSION,
          # round-4 machine-legibility fields [GPT21]: run identity+roles,
          # window counts, baseline validity, conclusion inputs/code
-         "runs": [{"run_id": a.get("run_id"), "label": a.get("label"),
+         "runs": [{"host": h, "run_id": a.get("run_id"), "label": a.get("label"),
                    "record_role": a.get("record_role"),
                    "outcome": a.get("outcome"),
                    "baseline_state": a.get("baseline_state"),
                    "window": a.get("window"),
                    "n_correlations": len(a.get("correlations", []))}
-                  for a in layerc_analyses],
+                  for h, a in layerc_analyses],
          "conclusion": (next(iter(layerc_conclusions.values()))
                         if len(layerc_conclusions) == 1 else None),
          "conclusions_by_host": layerc_conclusions,
