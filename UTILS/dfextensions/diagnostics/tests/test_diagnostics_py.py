@@ -65,7 +65,7 @@ def make_bundle(tmp_path, host="hostA", verdict="PASS", rules="none",
                     "0.200,10.10,0.0100,1.01,0.0010,1.0,%s,1,2,5100,0.150,0,1.20,12.5,798000,850.0,3" % psi_full[1])
         rows.append("1020,10.00,2100,100.000,48,0.400,144,1.200,120,1.000,7,3,24,"
                     "0.200,10.20,0.0100,1.02,0.0010,2.0,%s,1,2,5200,0.150,0,1.30,15.0,797000,900.0,2" % psi_full[2])
-        (b / "samples.csv").write_text("\n".join(rows) + "\n")
+        (b / "host_samples.csv").write_text("\n".join(rows) + "\n")
     if with_proc_tables:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
         import collector as _col
@@ -217,16 +217,37 @@ def test_explain_flags_dead_anchors(tmp_path, capsys):
     """All-zero anchors -> UNTRUSTWORTHY: broken collector is now detectable."""
     import explain_bundle as eb
     b = make_bundle(tmp_path)
-    csv = (b / "samples.csv").read_text()
+    csv = (b / "host_samples.csv").read_text()
     for a, z in (("1.10", "0"), ("1.20", "0"), ("1.30", "0"), ("12.5", "0"),
                  ("15.0", "0"), ("850.0", "0"), ("900.0", "0"),
                  ("798000", "0"), ("797000", "0"), ("800000", "0"),
                  (",2\n", ",0\n"), (",3\n", ",0\n")):
         csv = csv.replace(a, z)
-    (b / "samples.csv").write_text(csv)
+    (b / "host_samples.csv").write_text(csv)
     verdict = eb.explain(b)
     assert verdict == "UNTRUSTWORTHY"
     assert "DO NOT TRUST" in capsys.readouterr().out
+
+def test_legacy_bundle_samples_csv_still_loads(tmp_path):
+    """Pre-v8 bundles (legacy samples.csv) must still load and be flagged."""
+    b = make_bundle(tmp_path)
+    (b / "host_samples.csv").rename(b / "samples.csv")
+    lb = schema.load_bundle(b)
+    assert lb.legacy_host_table is True
+    assert schema.samples_frame(lb) is not None
+
+def test_canonical_disk_network_frames(tmp_path):
+    b = make_bundle(tmp_path)
+    (b / "disk_samples.csv").write_text(
+        "ts,device,reads_completed,sectors_read,writes_completed,sectors_written,io_in_progress,io_time_ms\n"
+        "1010,sda,100,800,50,400,0,120\n1010,sdb,10,80,5,40,0,12\n")
+    (b / "network_samples.csv").write_text(
+        "ts,iface,rx_bytes,rx_packets,rx_errs,rx_drop,tx_bytes,tx_packets,tx_errs,tx_drop\n"
+        "1010,eth0,5000,50,1,2,7000,70,3,4\n")
+    lb = schema.load_bundle(b)
+    dd = schema.disk_frame(lb); nn = schema.network_frame(lb)
+    assert list(dd["device"]) == ["sda", "sdb"] and dd["io_time_ms"].sum() == 132
+    assert nn["iface"].iloc[0] == "eth0" and int(nn["rx_bytes"].iloc[0]) == 5000
 
 def test_pivot_users_topk_current_always(tmp_path):
     b = schema.load_bundle(make_bundle(tmp_path, with_proc_tables=True))

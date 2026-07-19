@@ -37,19 +37,51 @@ if [ "$FAIL" = 0 ]; then
   # CRR-12: every packet carries REAL rendered evidence from THIS host
   EV="$DIAGROOT/evidence_$TS"; mkdir -p "$EV"
   EVN="${DFX_EVIDENCE_SAMPLES:-16}"   # 16 x 2s: enough points for review figures (architect 2026-07-18)
-  echo "[run_tests] evidence collection: -s 2 -n $EVN (set DFX_EVIDENCE_SAMPLES for longer official runs, e.g. 30)"
-  PROC_INTERVAL_OVERRIDE=2 bash "$HERE/dfx_host_diagnostics.sh" -o "$EV" -s 2 -n "$EVN" > "$EV/collect.log" 2>&1 \
-    || echo "[run_tests] evidence collection degraded (see $EV/collect.log)"
+  echo "[run_tests] evidence: WRAPPER run, -s 2 -n $EVN (DFX_EVIDENCE_SAMPLES tunes it)"
+  # P0-6 (round-3 panel): the packet's evidence is produced by the REAL
+  # wrapper around a REAL recorded workload, so the SHIPPED report shows the
+  # presence path - not merely a test proving it possible.
+  WL="$EV/evidence_workload.py"
+  mkdir -p "$EV"
+  cat > "$WL" << 'PYEOF'
+import os, sys, time
+sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[0])) if False else sys.argv[1])
+from run_metrics import RunMetrics
+n = int(sys.argv[2])
+with RunMetrics("evidence_job") as rm:      # default out: wrapper env handoff
+    v = 0
+    for i in range(max(4, n // 2)):
+        time.sleep(1.0)
+        v += 100
+        rm.record_event("progress", {"value": v})
+PYEOF
+  HAVE_ADF=0; python3 -c "import sys; sys.path.insert(0,'$HERE/../AliasDataFrame'); import AliasDataFrame" 2>/dev/null && HAVE_ADF=1
+  RPT_OPT=""; [ "$HAVE_ADF" = 1 ] && RPT_OPT="--report"
+  # shellcheck disable=SC2086
+  python3 "$HERE/dfx_run_with_diagnostics.py" --out "$EV" --label evidence \
+      --interval 2 --max-samples "$EVN" --pre 0 --post 0 $RPT_OPT -- \
+      python3 "$WL" "$HERE" "$EVN" > "$EV/collect.log" 2>&1 \
+    || echo "[run_tests] evidence wrapper degraded rc=$? (see $EV/collect.log)"
   EB=$(ls -d "$EV"/host_diag_* 2>/dev/null | head -1)
-  if [ -n "$EB" ]; then
-    if python3 "$HERE/report_diagnostics.py" "$EB" -o "$EV/report" > "$EV/render.log" 2>&1; then
-      REPHTML="$DIAGROOT/diagnostics_report_$TS.html"
-      cp "$EV/report/report.html" "$REPHTML" 2>/dev/null || REPHTML="$EV/report/report.html"
-      echo "[run_tests] EVIDENCE REPORT (open in browser): $REPHTML"
-      echo "[run_tests] EVIDENCE AUDIT : $EV/report/validation/summary.md"
+  EVREP=$(ls -d "$EV"/report_*/report.html 2>/dev/null | head -1)
+  if [ -n "$EVREP" ]; then
+    # build-time PRESENCE assertion: shipped evidence must show the job
+    if grep -q "no run_metrics records supplied" "$EVREP"; then
+      echo "[run_tests] EVIDENCE PRESENCE CHECK FAILED: report shows the absence path"
+      PYRC=1
     else
-      echo "[run_tests] evidence render unavailable on this host (see $EV/render.log)"
+      echo "[run_tests] evidence presence check OK (Layer-C populated)"
     fi
+    grep -q '"I-COV-S7_job_host_analysis","[^"]*","PASS"' \
+        "$(dirname "$EVREP")/validation/transition_checks.csv" \
+      && echo "[run_tests] evidence audit: S7 PASS" \
+      || { echo "[run_tests] EVIDENCE AUDIT: S7 not PASS"; PYRC=1; }
+    REPHTML="$DIAGROOT/diagnostics_report_$TS.html"
+    cp "$EVREP" "$REPHTML" 2>/dev/null || REPHTML="$EVREP"
+    echo "[run_tests] EVIDENCE REPORT (open in browser): $REPHTML"
+    echo "[run_tests] EVIDENCE AUDIT : $(dirname "$EVREP")/validation/summary.md"
+  elif [ -n "$EB" ] && [ "$HAVE_ADF" != 1 ]; then
+    echo "[run_tests] render tier unavailable here (no ADF): bundle + records collected; presence path proven on the render host"
   fi
   ZIP="$DIAGROOT/diagnostics_reviewer_$TS.zip"
   CRROPT=""

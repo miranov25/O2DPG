@@ -315,6 +315,101 @@ def _it_report(bundles, summaries, out_dir):
 
 
 # ============================ public API (frozen) ===========================
+
+def _render_layer_c(host, res, concl):
+    """Render one bundle's Layer-C section from job_host_analysis results and
+    the conclusion-model evaluation. Extracted from generate() [CRR-15]; the
+    renderer<->engine contract is enforced by tests that feed this function
+    REAL analyze() output [P0-B fix: keys = the engine's actual schema]."""
+    rows_html = []
+    for r in res:
+        w = r.get("window") or {}
+        rows_html.append(f"<h3>{host} - run '{r.get('label')}' "
+                         f"(run_id {r.get('run_id')}, {r.get('record_type')}) "
+                         f"- window {w.get('state')}</h3>")
+        if w.get("state") in ("ok", "ok_external"):
+            rows_html.append(
+                f"<p>{w.get('host_samples_in_window', 0)} host samples in the "
+                f"job window; baseline: {w.get('baseline_pre', 0)} before + "
+                f"{w.get('baseline_post', 0)} after "
+                f"(baseline state: {r.get('baseline_state')}).</p>")
+            inf = "".join(
+                f"<tr><td>{e.get('channel')}</td><td>{e.get('state')}</td>"
+                f"<td>{e.get('window_mean','')}</td><td>{e.get('window_max','')}</td>"
+                f"<td>{e.get('baseline_mean','')}</td>"
+                f"<td>{e.get('window_over_baseline','')}</td></tr>"
+                for e in r.get("influence", []))
+            rows_html.append("<table><tr><th>channel</th><th>state</th>"
+                             "<th>window mean</th><th>window max</th>"
+                             "<th>baseline mean</th><th>window/baseline</th></tr>"
+                             + inf + "</table>")
+            cor = "".join(
+                f"<tr><td>{c.get('job_metric')}~{c.get('host_metric')}</td>"
+                f"<td>{c.get('state')}</td>"
+                f"<td>{'' if c.get('r') is None else c['r']}</td>"
+                f"<td>{c.get('n_pairs','')}</td>"
+                f"<td>{c.get('coverage_fraction','')}</td></tr>"
+                for c in r.get("correlations", []))
+            rows_html.append("<table><tr><th>job~host pair</th><th>validity</th>"
+                             "<th>r</th><th>n_pairs</th><th>coverage</th></tr>"
+                             + cor + "</table>")
+            prog = r.get("progress")
+            if prog and prog.get("state") == "ok":
+                pc = "".join(
+                    f"<tr><td>{c.get('job_metric')}~{c.get('host_metric')}</td>"
+                    f"<td>{c.get('state')}</td>"
+                    f"<td>{'' if c.get('r') is None else c['r']}</td>"
+                    f"<td>{c.get('n_pairs','')}</td></tr>"
+                    for c in prog.get("correlations", []))
+                rows_html.append(
+                    f"<p>Progress: {prog.get('n_events')} events, mean throughput "
+                    f"{prog.get('throughput_mean'):.4g}/s.</p>"
+                    "<table><tr><th>pair</th><th>validity</th><th>r</th>"
+                    "<th>n_pairs</th></tr>" + pc + "</table>")
+            elif prog:
+                rows_html.append(f"<p>Progress: {prog.get('state')}.</p>")
+            st = r.get("stages")
+            if st and st.get("state") == "ok":
+                sr = "".join(f"<tr><td>{x['stage']}</td><td>{x['duration_s']}</td>"
+                             f"<td>{x['background_class']}</td></tr>"
+                             for x in st.get("rows", []))
+                rows_html.append("<table><tr><th>stage</th><th>duration s</th>"
+                                 "<th>background class</th></tr>" + sr + "</table>")
+        elif w.get("detail"):
+            rows_html.append(f"<p>{w['detail']}</p>")
+    bc = concl["bundle_conclusion"]
+    per = "".join(f"<tr><td>{r.get('run_id')}</td><td>{r['background_state']}</td>"
+                  f"<td>{r['job_state']}</td><td>{r['code']}</td>"
+                  f"<td>{r['conclusion']}</td></tr>" for r in concl["records"])
+    rows_html.append(
+        f"<h3>Conclusion (model v{concl['model_version']}, host state: "
+        f"{concl['host_state']})</h3>"
+        "<table><tr><th>run</th><th>background</th><th>job</th>"
+        "<th>code</th><th>conclusion</th></tr>" + per + "</table>"
+        f"<p><b>Bundle conclusion [{bc['code']}]</b>: {bc['text']}</p>")
+    return "<h2>Layer-C: job vs background</h2>" + "".join(rows_html)
+
+
+def _finalize_audit(aud, out_dir, loaded, mode):
+    """Persist the audit LAST, after every stage has run [P0-C fix: the
+    previous call site wrote the audit before the Layer-C and conclusion
+    stages executed, so S7/S8 and the conclusion trace never reached the
+    evidence]. Called at every generate() exit that has an audit."""
+    if aud is None:
+        return
+    import pandas as _pd
+    aud.add_stage("S9_render", "figures",
+                  _pd.DataFrame([{"figures": len(list((Path(out_dir) / "figures").glob("*.png")))
+                                  if (Path(out_dir) / "figures").is_dir() else 0,
+                                  "render_warnings": RENDER_WARNINGS}]))
+    aud.check_stage_coverage()
+    aud.trace["stage_list_version"] = aud.STAGE_LIST_VERSION
+    aud.trace["render_warnings"] = RENDER_WARNINGS
+    aud.trace["bundles"] = [Path(b.path).name for b in loaded]   # privacy: relative
+    aud.trace["mode"] = mode
+    aud.write(out_dir)
+
+
 def generate(bundles, run_records=(), labels=None, sections=None,
              out_dir=".", mode="technical", audit=True):
     """Render diagnostic bundles. Returns the path of the primary artifact
@@ -482,19 +577,8 @@ def generate(bundles, run_records=(), labels=None, sections=None,
                           "drawing-library warnings (captured, not shown; "
                           "constant-series statistics inside the drawing backend - "
                           "filed against dfdraw).</p>")
-    if aud is not None:
-        import pandas as _pd
-        aud.add_stage("S9_render", "figures",
-                      _pd.DataFrame([{"figures": len(list((Path(out_dir) / "figs").glob("*.png")))
-                                      if (Path(out_dir) / "figs").is_dir() else 0,
-                                      "render_warnings": RENDER_WARNINGS}]))
-        aud.check_stage_coverage()                      # CRR-8
-        aud.trace["stage_list_version"] = aud.STAGE_LIST_VERSION
-        aud.trace["render_warnings"] = RENDER_WARNINGS
-        aud.trace["bundles"] = [str(b.path) for b in loaded]
-        aud.trace["mode"] = mode
-        aud.write(out_dir)
     if mode == "it_report":
+        _finalize_audit(aud, out_dir, loaded, mode)
         return _it_report(loaded, summaries, out_dir)
 
     for host, summ in summaries.items():
@@ -552,44 +636,7 @@ def generate(bundles, run_records=(), labels=None, sections=None,
                                                 or [{"run": "none",
                                                      "code": concl["bundle_conclusion"]["code"]}]))
             for host, res, concl in lc_all:
-                rows_html = []
-                for r in res:
-                    w = r["window"] or {}
-                    rows_html.append(f"<h3>{host} - run '{r.get('label')}' "
-                                     f"(run_id {r.get('run_id')}) - window {w.get('state')}</h3>")
-                    if w.get("state") == "ok":
-                        rows_html.append(f"<p>{w['host_samples_in_window']} host samples "
-                                         f"in the job window, {w['host_samples_baseline']} baseline.</p>")
-                        inf = "".join(
-                            f"<tr><td>{e['channel']}</td><td>{e['state']}</td>"
-                            f"<td>{e.get('window_mean','')}</td><td>{e.get('window_max','')}</td>"
-                            f"<td>{e.get('baseline_mean','')}</td>"
-                            f"<td>{e.get('window_over_baseline','')}</td></tr>"
-                            for e in r["influence"])
-                        rows_html.append("<table><tr><th>channel</th><th>state</th>"
-                                         "<th>window mean</th><th>window max</th>"
-                                         "<th>baseline mean</th><th>window/baseline</th></tr>"
-                                         + inf + "</table>")
-                        cor = "".join(
-                            f"<tr><td>{c['pair']}</td><td>{c['state']}</td>"
-                            f"<td>{'' if c.get('r') is None else c['r']}</td>"
-                            f"<td>{c.get('n','')}</td></tr>"
-                            for c in r["correlations"])
-                        rows_html.append("<table><tr><th>pair</th><th>validity</th>"
-                                         "<th>r</th><th>n</th></tr>" + cor + "</table>")
-                    elif w.get("detail"):
-                        rows_html.append(f"<p>{w['detail']}</p>")
-                bc = concl["bundle_conclusion"]
-                per = "".join(f"<tr><td>{r.get('run_id')}</td><td>{r['background_state']}</td>"
-                              f"<td>{r['job_state']}</td><td>{r['code']}</td>"
-                              f"<td>{r['conclusion']}</td></tr>" for r in concl["records"])
-                rows_html.append(
-                    f"<h3>Conclusion (model v{concl['model_version']}, host state: "
-                    f"{concl['host_state']})</h3>"
-                    "<table><tr><th>run</th><th>background</th><th>job</th>"
-                    "<th>code</th><th>conclusion</th></tr>" + per + "</table>"
-                    f"<p><b>Bundle conclusion [{bc['code']}]</b>: {bc['text']}</p>")
-                html_parts.append("<h2>Layer-C: job vs background</h2>" + "".join(rows_html))
+                html_parts.append(_render_layer_c(host, res, concl))
     if "evidence" in sections:
         for b in loaded:
             html_parts.append(f"<h2>{b.host} - evidence states</h2>" +
@@ -597,6 +644,7 @@ def generate(bundles, run_records=(), labels=None, sections=None,
 
     p = out_dir / "report.html"
     p.write_text(_html("dfx host diagnostics report", html_parts))
+    _finalize_audit(aud, out_dir, loaded, mode)
     return p
 
 

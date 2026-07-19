@@ -345,12 +345,15 @@ def main(argv=None):
     ap.add_argument("--target-pid-file", default=None)
     ap.add_argument("--job-cgroup", default=None)
     ap.add_argument("--raw", action="store_true")
+    ap.add_argument("--token-salt", default=None,
+                    help="per-bundle token salt from the bash collector (P1-1: "
+                         "one namespace so the same user has one token bundle-wide)")
     args = ap.parse_args(argv)
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     own_uid = int(os.environ.get("DFX_UID_OVERRIDE", os.getuid()))
-    red = Redactor(uid_name(own_uid), raw=args.raw)
+    red = Redactor(uid_name(own_uid), raw=args.raw, salt=args.token_salt)
     boot_id = read_boot_id()
     for name, hdr in (("process_samples.csv", PROC_HEADER),
                       ("user_samples.csv", USER_HEADER),

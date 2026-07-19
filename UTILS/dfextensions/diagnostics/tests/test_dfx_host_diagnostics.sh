@@ -40,6 +40,8 @@ EOF
   echo "500 (pytest) R 1 0 0 0 -1 0 0 0 0 0 300 300 0 0 20 0 1 0 40 1048576 250 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 1 0 0 0 0 0 0 0 0 0 0 0 0 0" > "$R/proc/500/stat"
   printf '260 250 5 1 0 1 0\n' > "$R/proc/500/statm"
   printf 'Name:\tpytest\nUid:\t%s\t%s\t%s\t%s\n' "$(id -u)" "$(id -u)" "$(id -u)" "$(id -u)" > "$R/proc/500/status"
+  mkdir -p "$R/proc/net"
+  printf 'Inter-|   Receive                                                |  Transmit\n face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n    lo: 1000 10 0 0 0 0 0 0 2000 20 0 0 0 0 0 0\n  eth0: 5000 50 1 2 0 0 0 0 7000 70 3 4 0 0 0 0\n' > "$R/proc/net/dev"
   # fake kcompactd kthread pid 61: utime=400000 stime=143210 ticks -> (543210)/100 = 5432.10 s
   mkdir -p "$R/proc/61"; echo kcompactd0 > "$R/proc/61/comm"
   printf 'Name:\tkcompactd0\nUid:\t0\t0\t0\t0\n' > "$R/proc/61/status"
@@ -83,7 +85,8 @@ check "T-D5 allocstall_sum" "$(grep '^vmstat.allocstall_sum=' "$B/snapshot.kv" |
 echo "== C-1: default ps redaction — other user hashed, comm masked; own visible =="
 grep -q 'secretjob' "$B/snapshot.kv" && bad "C-1 other-user comm leaked" || ok "C-1 other-user comm masked"
 grep -q 'otheruser' "$B/snapshot.kv" && bad "C-1 other-user name leaked" || ok "C-1 other-user name hashed"
-grep -Eq "^ps.top=1 $ME .*python3" "$B/snapshot.kv" && ok "C-1 own row visible" || bad "C-1 own row visible"
+grep -Eq "^ps.top=1 u_[0-9a-f]+ .*python3" "$B/snapshot.kv" && ok "C-1 own row visible (comm preserved, user tokenized per P0-F)" || bad "C-1 own row visible (comm preserved, user tokenized per P0-F)"
+grep -Eq "^ps.top=1 $ME " "$B/snapshot.kv" && bad "C-1 own username absent from ps table" || ok "C-1 own username absent from ps table"
 
 echo "== T-D6: REQUIRED evidence missing -> UNKNOWN, exit 2, manifest records reason =="
 FIX2="$WORK/fix2"; mkfix "$FIX2"; rm "$FIX2/proc/vmstat"
@@ -117,7 +120,7 @@ O5="$WORK/o5"; mkdir "$O5"
   # took sample 1). Wait until sample 1 is WRITTEN, then swap atomically.
   CSVF=""
   for _i in $(seq 1 200); do
-    CSVF=$(ls "$O5"/host_diag_*/samples.csv 2>/dev/null | head -1)
+    CSVF=$(ls "$O5"/host_diag_*/host_samples.csv 2>/dev/null | head -1)
     [ -n "$CSVF" ] && [ "$(wc -l < "$CSVF")" -ge 2 ] && break
     sleep 0.05
   done
@@ -129,8 +132,8 @@ check "T-D3b exit" "$rc" 0
 [ "$rc" != 0 ] && { echo "--- T-D3 collector stderr ---"; cat "$WORK/t3.err"; echo "-----------------------------"; }
 check "T-D3b stderr empty" "$(wc -c < "$WORK/t3.err")" 0
 B5=$(ls -d "$O5"/host_diag_* | head -1)
-hdr=$(head -1 "$B5/samples.csv" | awk -F, '{print NF}')
-r2=$(sed -n 3p "$B5/samples.csv")
+hdr=$(head -1 "$B5/host_samples.csv" | awk -F, '{print NF}')
+r2=$(sed -n 3p "$B5/host_samples.csv")
 check "T-D3b column count rows==header" "$(echo "$r2" | awk -F, '{print NF}')" "$hdr"
 check "T-D3 exact dt oracle" "$(echo "$r2" | cut -d, -f2)" "10.00"
 check "T-D3 exact compact_stall rate oracle" "$(echo "$r2" | cut -d, -f4)" "100.000"
@@ -156,9 +159,9 @@ check "collision: two bundles" "$(ls -d "$O7"/host_diag_* | wc -l)" 2
 
 echo "== T-D15: anchor channels present; loadavg captured in snapshot and CSV =="
 grep -q '^anchor.loadavg1=1.25' "$B/snapshot.kv" && ok "T-D15 snapshot anchor" || bad "T-D15 snapshot anchor"
-hdrA=$(head -1 "$B5/samples.csv")
+hdrA=$(head -1 "$B5/host_samples.csv")
 case "$hdrA" in *loadavg1,cpu_busy_pct,mem_available_kb,ctxt_per_s,procs_running) ok "T-D15 CSV anchor columns";; *) bad "T-D15 CSV anchor columns";; esac
-la=$(sed -n 3p "$B5/samples.csv" | awk -F, '{print $(NF-4)}')
+la=$(sed -n 3p "$B5/host_samples.csv" | awk -F, '{print $(NF-4)}')
 check "T-D15 loadavg1 value in row" "$la" "1.25"
 
 echo "== T-D19: C-2 bundle naming - shareable has run_id not PID; raw has PID =="
@@ -189,6 +192,35 @@ if [ "$TD20_FAIL" = 1 ]; then
 fi
 grep -q '^process_interval_s=' "$BS/manifest.kv" && ok "T-D20 manifest cadence" || bad "T-D20 manifest cadence"
 grep -q '^run_id=' "$BS/manifest.kv" && ok "T-D20 manifest run_id" || bad "T-D20 manifest run_id"
+
+echo "== T-D22: v8 canonical per-entity tables (disk_samples/network_samples) =="
+BS22=$(ls -d "$OS"/host_diag_* | head -1)
+for f in disk_samples.csv network_samples.csv; do
+  if [ -f "$BS22/$f" ] && [ "$(wc -l < "$BS22/$f")" -gt 1 ]; then ok "T-D22 $f has rows"; else bad "T-D22 $f has rows"; fi
+done
+grep -q "^ts,device,reads_completed" "$BS22/disk_samples.csv" && ok "T-D22 disk header canonical" || bad "T-D22 disk header canonical"
+awk -F, 'NR>1{print $2}' "$BS22/network_samples.csv" | sort -u | grep -q "eth0" && ok "T-D22 net per-interface rows (eth0)" || bad "T-D22 net per-interface rows (eth0)"
+TX=$(awk -F, '$2=="eth0"{print $7; exit}' "$BS22/network_samples.csv")
+[ "$TX" = 7000 ] && ok "T-D22 eth0 tx_bytes oracle (=7000, P0-G)" || bad "T-D22 eth0 tx_bytes oracle (got '$TX', want 7000)"
+
+echo "== T-D23: bundle-wide identity hunt (P0-F: shareable = tokens only) =="
+ME23=$(id -un)
+LEAK=$(grep -rlw "$ME23" "$BS22" 2>/dev/null | wc -l | tr -d ' ')
+[ "$LEAK" = 0 ] && ok "T-D23 no real username anywhere in shareable bundle" || bad "T-D23 username found in $LEAK file(s): $(grep -rlw "$ME23" "$BS22" | head -2 | tr '\n' ' ')"
+grep -q "^user=u_" "$BS22/manifest.kv" && ok "T-D23 manifest user tokenized" || bad "T-D23 manifest user tokenized"
+grep "^invocation=" "$BS22/manifest.kv" | grep -q "/" && bad "T-D23 invocation path-free" || ok "T-D23 invocation path-free"
+grep -q "^redaction=shareable-tokens" "$BS22/manifest.kv" && ok "T-D23 redaction declared" || bad "T-D23 redaction declared"
+echo "== T-D24: ONE token namespace (P1-1) - manifest == snapshot own-row token =="
+MTOK=$(grep "^user=" "$BS22/manifest.kv" | cut -d= -f2)
+STOK=$(grep -E "^ps.top=1 " "$BS22/snapshot.kv" | awk '{print $2}' | head -1)
+[ -n "$MTOK" ] && [ "$MTOK" = "$STOK" ] && ok "T-D24 manifest/snapshot token identical ($MTOK)" || bad "T-D24 token mismatch: manifest=$MTOK snapshot=$STOK"
+US24="$BS22/user_samples.csv"
+if [ -f "$US24" ]; then
+  grep -q ",$MTOK," "$US24" && ok "T-D24 user_samples carries the same token" || bad "T-D24 user_samples token differs from manifest"
+fi
+
+OVS=$(grep "^self_cpu_s=" "$BS22/manifest.kv" | cut -d= -f2)
+awk -v v="$OVS" 'BEGIN{exit (v>=0)?0:1}' && ok "T-D23 self_cpu_s non-negative (P0-H)" || bad "T-D23 self_cpu_s negative: $OVS"
 
 echo "== T-D21: TERM during bounded run -> CLEAN stop: verdict + stop_reason =="
 OC="$WORK/oc"; mkdir "$OC"

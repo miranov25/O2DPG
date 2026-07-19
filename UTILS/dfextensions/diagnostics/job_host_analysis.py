@@ -123,6 +123,7 @@ def _corr_row(job_metric, host_metric, jv, hv, coverage):
 def analyze_record(rec, host_df, rollup_df=None, channels=None):
     import numpy as np
     out = {"label": rec.get("label"), "run_id": rec.get("run_id"),
+           "outcome": rec.get("outcome"),          # P0-E: carried, never invented
            "record_type": rec.get("record_type") or rec.get("tool") or "unknown",
            "window": None, "baseline_state": None, "influence": [],
            "correlations": [], "progress": None, "stages": None}
@@ -278,6 +279,7 @@ def analyze(records, host_df, rollup_df=None):
             results.append(analyze_record(load_run_record(rp), host_df, rollup_df))
         except Exception as e:
             results.append({"label": str(rp), "record_type": "unknown",
+                            "outcome": None,
                             "window": {"state": "error",
                                        "detail": f"{type(e).__name__}: {e}"},
                             "baseline_state": None,

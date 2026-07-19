@@ -39,7 +39,8 @@ CORR_COVERAGE_MIN = 0.5        # minimum fraction of job points aligned
 HOST_STATES = ("clean", "stressed", "pathological", "in_progress", "unknown")
 BG_STATES = ("quiet", "active_uncorrelated", "active_correlated",
              "unknown_no_baseline", "no_data")
-JOB_STATES = ("success", "failed", "no_records", "performance_unassessed")
+JOB_STATES = ("success", "failed", "no_records", "unknown_outcome",
+              "performance_unassessed")
 
 
 def host_state(verdict, rules_fired):
@@ -91,10 +92,11 @@ def background_state(jha_record):
 
 
 def job_state(outcome):
-    """D3 from the run record outcome. Performance grading NEEDS the
+    """D3 from the run record outcome. A missing outcome is UNKNOWN - the
+    model never invents success [P0-E]. Performance grading NEEDS the
     reference-run comparison (open CRR-4 remainder) - not pretended here."""
     if outcome is None:
-        return "no_records"
+        return "unknown_outcome"
     if outcome == "success":
         return "success"
     return "failed"
@@ -104,6 +106,9 @@ def job_state(outcome):
 def conclude(h, b, j):
     """Versioned precedence. UNKNOWN dominates wherever the claim needs the
     missing knowledge; codes CM-x are stable across report versions."""
+    if j == "unknown_outcome":
+        return ("CM-U4", "The run record carries no outcome: job state is "
+                         "unknown, so no success-dependent conclusion is made.")
     if j == "no_records":
         return ("CM-0", "No job records supplied: host assessment only; "
                         "no job-environment conclusion possible.")
@@ -160,11 +165,10 @@ def evaluate(verdict, rules_fired, jha_results):
         return out
     worst_rank, worst = -1, None
     severity = ["CM-1", "CM-8", "CM-7", "CM-0", "CM-U3", "CM-U2", "CM-U1",
-                "CM-6", "CM-2", "CM-5", "CM-4", "CM-3"]
+                "CM-U4", "CM-6", "CM-2", "CM-5", "CM-4", "CM-3"]
     for r in jha_results:
         b = background_state(r)
-        outcome = r.get("outcome")          # carried through by the report
-        j = job_state(outcome if outcome is not None else "success")
+        j = job_state(r.get("outcome"))     # P0-E: no default, unknown-dominant
         code, text = conclude(h, b, j)
         rec = {"run_id": r.get("run_id"), "label": r.get("label"),
                "background_state": b, "job_state":

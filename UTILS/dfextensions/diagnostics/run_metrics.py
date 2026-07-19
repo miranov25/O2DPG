@@ -77,11 +77,17 @@ def _fd_count():
 class RunMetrics:
     """Context manager: `with RunMetrics("fitDCAITS", adf=adf) as rm: ...`"""
 
-    def __init__(self, label, adf=None, sample_interval_s=1.0, out="run_metrics",
+    def __init__(self, label, adf=None, sample_interval_s=1.0, out=None,
                  run_id=None):
         if not isinstance(label, str) or not label:
             raise ValueError("label must be a non-empty string")
         self.label = label
+        # P1-RunMetrics (round-3 panel): default output follows the wrapper's
+        # env handoff, so ordinary RunMetrics("job") usage is discoverable by
+        # build_report_records() without an explicit out= argument.
+        if out is None:
+            out = os.environ.get("DFX_RUN_METRICS_OUT") \
+                  or os.environ.get("DFX_BUNDLE_DIR") or "run_metrics"
         # P0-1 (v8 approval round): orchestration handoff - the external wrapper
         # exports DFX_RUN_ID/DFX_BUNDLE_DIR; in-process records join by run_id
         self.run_id = run_id or os.environ.get("DFX_RUN_ID") or None

@@ -18,7 +18,7 @@ import conclusion_model as cm  # noqa: E402
 
 def jrec(bg_mean=2.0, bg_base=0.2, baseline_state="ok", r=None, n=10,
          cov=0.9, window_state="ok", progress_r=None):
-    rec = {"run_id": "r1", "label": "job",
+    rec = {"run_id": "r1", "label": "job", "outcome": "success",
            "window": {"state": window_state},
            "baseline_state": baseline_state,
            "influence": [{"channel": "background_cpu_cores", "state": "ok",

@@ -33,6 +33,7 @@ SYS="${SYS_ROOT:-/sys}"
 CGR="${CGROUP_ROOT:-/sys/fs/cgroup}"
 CLK_TCK="${CLK_TCK_OVERRIDE:-$(getconf CLK_TCK 2>/dev/null || echo 100)}"
 SELF_USER="$(id -un 2>/dev/null || echo unknown)"
+TOK_SALT="${RANDOM}${RANDOM}$$$(date +%N 2>/dev/null)"   # per-bundle token salt (P0-F)
 
 usage(){ echo "usage: $0 [-o DIR] [-p PID [-A]] [-d DATA_PATH] [-r] [-s INTERVAL_S -n NSAMPLES]" >&2; exit 1; }
 
@@ -99,14 +100,33 @@ man schema_version 1
 man tool dfx_host_diagnostics
 man tool_version "$VERSION"
 man tool_md5 "${SELF_MD5:-unknown}"
-man invocation "$0 $*${PID:+ -p $PID}${S_GIVEN:+ -s $INTERVAL -n $NSAMPLES}"
+red_inv(){ local a out=""; for a in "$@"; do case "$a" in
+    /*) out="$out $(basename "$a")";; *) out="$out $a";; esac; done
+  printf '%s' "${out# }"; }
+if [ "$RAW" = 1 ]; then
+  man invocation "$0 $*${PID:+ -p $PID}${S_GIVEN:+ -s $INTERVAL -n $NSAMPLES}"
+else
+  # P0-F: absolute paths (home directories) reduced to basenames
+  man invocation "$(red_inv "$0" "$@")${PID:+ -p $PID}${S_GIVEN:+ -s $INTERVAL -n $NSAMPLES}"
+fi
 man run_id "$RUN_ID"
-man host "$HOST"; man utc "$UTC"; man user "$SELF_USER"
-man redaction $([ "$RAW" = 1 ] && echo raw || echo shareable)
+# P0-F: manifest carries no real identity in shareable mode
+if [ "$RAW" = 1 ]; then
+  MAN_USER="$SELF_USER"; man redaction raw
+else
+  MAN_USER="u_$(printf '%s' "$TOK_SALT$SELF_USER" | sha256sum | cut -c1-8)"
+  man redaction shareable-tokens
+fi
+man host "$HOST"; man utc "$UTC"; man user "$MAN_USER"
 man proc_root "$PROC"; man sys_root "$SYS"; man clk_tck "$CLK_TCK"
 
 # ---- self-overhead accounting start (C-9 draft thresholds; measured, not asserted)
-read_self_cpu(){ awk '{print ($14+$15)}' "$PROC/self/stat" 2>/dev/null || echo 0; }
+read_self_cpu(){
+  # P0-H: /proc/$$/stat of THIS shell (an awk subprocess would measure awk).
+  local st; st=$(cat /proc/$$/stat 2>/dev/null) || { echo 0; return; }
+  st="${st##*) }"; set -- $st
+  echo $(( ${12:-0} + ${13:-0} ))    # utime+stime after (comm) strip
+}
 OV_CPU0=$(read_self_cpu); OV_T0=$(date +%s.%N 2>/dev/null || date +%s)
 
 # ---- REQUIRED evidence preflight (C-2 floor: vmstat, THP enabled, meminfo)
@@ -217,8 +237,12 @@ collect_buddy(){
 
 collect_ps(){ # redacted by default (C-1): other users -> hashed id, comm masked
   PSC="${PS_CMD_OVERRIDE:-ps -eo pid,user,vsz,rss,pcpu,comm --sort=-vsz}"
-  $PSC 2>/dev/null | head -13 | awk -v me="$SELF_USER" -v raw="$RAW" 'NR==1{print "pid user vsz rss pcpu comm virt_res"; next}
-    { u=$2; c=$6; if (raw!=1 && u!=me) { cmd="printf %s "u" | cksum"; cmd | getline h; close(cmd); split(h,a," "); u="u"a[1]; c="[other]" }
+  $PSC 2>/dev/null | head -13 | awk -v me="$SELF_USER" -v raw="$RAW" -v salt="${TOK_SALT:-s}" 'NR==1{print "pid user vsz rss pcpu comm virt_res"; next}
+    { u=$2; c=$6;
+      if (raw!=1) {                   # P0-F: shareable tokenizes EVERY user, own included
+        cmd="printf %s \"" salt u "\" | sha256sum"; cmd | getline h; close(cmd); split(h,a," ");
+        if (u!=me) c="[other]";       # own comm stays visible; own name does not
+        u="u_" substr(a[1],1,8) }
       r=($4>0)? sprintf("%.1f",$3/$4) : "inf";
       print $1" "u" "$3" "$4" "$5" "c" "r }' | while read -r line; do echo "ps.top=$line"; done >> "$SNAP"
   st ps_table available
@@ -226,7 +250,8 @@ collect_ps(){ # redacted by default (C-1): other users -> hashed id, comm masked
 
 collect_deepdive(){
   [ -z "$PID" ] && return 0
-  kv "pid.$PID.owner" "${P_OWNER:-unknown}"
+  if [ "$RAW" = 1 ]; then kv "pid.$PID.owner" "${P_OWNER:-unknown}"
+  else kv "pid.$PID.owner" "u_$(printf '%s' "$TOK_SALT${P_OWNER:-unknown}" | sha256sum | cut -c1-8)"; fi
   if [ "$RAW" = 1 ] || [ "$P_OWNER" = "$SELF_USER" ]; then
     kv "pid.$PID.cmd" "$(tr '\0' ' ' < "$PROC/$PID/cmdline" 2>/dev/null)"
   else kv "pid.$PID.cmd" "[redacted]"; fi
@@ -289,6 +314,7 @@ if [ "$S_GIVEN" = 1 ]; then
     [ -n "$TARGET_PID_FILE" ] && SARGS="$SARGS --target-pid-file $TARGET_PID_FILE"
     [ -n "$JOB_CGROUP" ] && SARGS="$SARGS --job-cgroup $JOB_CGROUP"
     [ "$RAW" = 1 ] && SARGS="$SARGS --raw"
+    SARGS="$SARGS --token-salt $TOK_SALT"   # P1-1: ONE bundle-wide token namespace
     # shellcheck disable=SC2086
     # -S: skip site-packages scan (collector is stdlib-only) - 10x faster start on slow FS
     python3 -S "$(dirname "$0")/collector.py" $SARGS >> "$BUNDLE/sampler.log" 2>&1 &
@@ -363,7 +389,7 @@ if [ "$S_GIVEN" = 1 ]; then
     TSNOW=$(date +%s)
     awk -v ts="$TSNOW" 'NF>=13 {print ts","$3","$4","$6","$8","$10","$12","$13}' \
       "$PROC/diskstats" >> "$DISKCSV" 2>/dev/null || true
-    awk -v ts="$TSNOW" 'NR>2 {gsub(":"," ",$0); print ts","$1","$2","$3","$4","$5","$9","$10","$11","$12}' \
+    awk -v ts="$TSNOW" 'NR>2 {gsub(":"," ",$0); print ts","$1","$2","$3","$4","$5","$10","$11","$12","$13}' \
       "$PROC/net/dev" >> "$NETCSV" 2>/dev/null || true
     echo "[dfx $(date -u +%H:%M:%SZ)] sample $i/$NSAMPLES wall=${swall:-?}s overrun=${ovr:-0} bundle=$(basename "$BUNDLE")"
     if [ "$STOP_REQ" = 0 ] && [ "$i" -lt "$NSAMPLES" ]; then
