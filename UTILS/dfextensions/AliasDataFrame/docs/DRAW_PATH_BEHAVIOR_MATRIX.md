@@ -4,7 +4,7 @@
 evidence base for the "source owner" column). One file by architect
 preference, 2026-07-19.*
 
-**Status:** Stage-A working document, increment 4 (AD-5/AD-6 ratified).
+**Status:** Stage-A working document, increment 5 (oracles O-1/O-2 executed).
 **Governing classification rule:** AD-4/13.76.ADF (symmetry-by-default,
 ratified 2026-07-19, verbatim in `docs/ARCHITECT_DECISIONS.md` v1.3.0):
 observed asymmetry => Repair unless genuinely semantically inapplicable or
@@ -101,12 +101,21 @@ Classification: **Preserve** (behavior) with the placement recorded so
 Stage-B consolidation (one projection finalizer, §11.6) is reviewed against
 it.
 
+### O-1 / O-2 — executed oracle rows (all Preserve; Stage B must keep green)
+
+| Cell | Statement (executed 2026-07-19) | Test |
+|---|---|---|
+| O-1.a-c | identical plot request through `draw` / `draw_batch` / `draw_figures` yields identical statistics (n exact; mean/std/median to 1e-12) for plain, `selection`, and `weights` forms | `TestO1CrossSurfaceStatsEquivalence` (3 params, PASS) |
+| O-2.a | all 8 combinations of `draw_lazy` × `draw_keep_materialized` × `draw_clear_after` yield identical statistics for the same alias draw on `draw` and `draw_batch`; policies change lifecycle only, never numbers | `TestO2PolicyIndependence` (8 params, PASS) |
+| POLICY-1 | `draw_lazy=False` (default) REQUIRES explicit `materialize_aliases(names=[...])` before drawing a registered alias by name; error today is `ValueError: Cannot evaluate expression 'z'` — documented instance-policy contract (`AliasDataFrame.py:1034`), classification **Preserve** (behavior) with an error-quality note: the message does not mention the policy or the remedy | probed; protocol encoded inside O-2 |
+| SWEEP-1 | slots `selection`/`weights`/`group_by`/`facet_by`/`color` all accepted with stats on `draw` AND `draw_batch`; numeric batch≡draw equality additionally proven for `selection` and `weights` | `TestSlotSurfaceSweep` (5 params, PASS) |
+
 ## 3. Open cells queue (next characterization increments)
 
 1. ~~SEED-3.e~~ DONE (Q-C resolved by AD-6; acceptance test_seed3_7 strict xfail).
-2. Slot × surface sweep (§8.5/§8.6 slots incl. `facet_by`, `weights`,
-   `weights_vector`, `selection_vector` — the historical scan-gap slots) ×
-   data states (§8.8), seeded from the 13.75 test map.
+2. ~~Slot × surface sweep (scalar slots × draw/draw_batch)~~ DONE (SWEEP-1);
+   remaining: vector slots (`weights_vector`, `selection_vector`),
+   `draw_figures` column of the sweep, and data states (§8.8).
 3. `entry_begin/entry_end/entry_mask` layer rows.
 4. Modifier precedence rows (§8.7).
 5. `error_owner` sweep (T-G) once O-7 oracle exists.

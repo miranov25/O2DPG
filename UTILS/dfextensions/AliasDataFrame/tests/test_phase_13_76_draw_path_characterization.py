@@ -298,3 +298,139 @@ class TestC1CallerNonMutation:
             plt.close("all")
         assert figures == figures_snapshot, "caller figure specs mutated (C-1 breach)"
         assert defaults == defaults_snapshot, "caller defaults mutated (C-1 breach)"
+
+
+# ---------------------------------------------------------------------------
+# O-1 — cross-surface statistics equivalence oracle (Rev2 §10).
+# The same plot request through draw / draw_batch / draw_figures must yield
+# identical statistics. These are Preserve rows: Stage B's consolidated
+# pipeline must keep every one green. Data is seeded; equality is exact-float
+# (same computation path) with a 1e-12 relative guard for future numeric
+# reordering, n strictly exact.
+# ---------------------------------------------------------------------------
+
+def _oracle_adf(n=500):
+    rng = np.random.default_rng(20260719)
+    return A.AliasDataFrame(pd.DataFrame({
+        "x": rng.normal(0.0, 1.0, n),
+        "w": rng.uniform(0.5, 2.0, n),
+        "cat": rng.integers(0, 3, n).astype(float),
+    }))
+
+
+def _stats_triple(adf, plot_kwargs):
+    """Run the identical plot through all three surfaces; return 3 stats."""
+    _f, _a, s_draw = adf.draw(plot_kwargs["expr"],
+                              **{k: v for k, v in plot_kwargs.items()
+                                 if k != "expr"})
+    res = adf.draw_batch({"p": dict(plot_kwargs)}, verbose=False)
+    s_batch = res["p"]["stats"]
+    r3 = adf.draw_figures(
+        [{"name": "f", "ncols": 1, "plots": [dict(plot_kwargs)]}],
+        verbose=False)
+    s_fig = r3["f"]["stats"][0]
+    plt.close("all")
+    return s_draw, s_batch, s_fig
+
+
+@needs_dfdraw
+class TestO1CrossSurfaceStatsEquivalence:
+    @pytest.mark.parametrize("label,extra", [
+        ("plain", {}),
+        ("selection", {"selection": "x>0"}),
+        ("weights", {"weights": "w"}),
+    ])
+    def test_o1_stats_identical_across_three_surfaces(self, label, extra):
+        adf = _oracle_adf()
+        kw = {"expr": "x", "type": "hist", "bins": 20, **extra}
+        s1, s2, s3 = _stats_triple(adf, kw)
+        for key in ("n", "mean", "std", "median"):
+            v1, v2, v3 = s1.get(key), s2.get(key), s3.get(key)
+            assert v1 is not None, f"[{label}] draw stats missing {key}"
+            if key == "n":
+                assert v1 == v2 == v3, f"[{label}] n diverges: {v1},{v2},{v3}"
+            else:
+                assert v2 == pytest.approx(v1, rel=1e-12), (
+                    f"[{label}] draw_batch {key} diverges: {v1} vs {v2}")
+                assert v3 == pytest.approx(v1, rel=1e-12), (
+                    f"[{label}] draw_figures {key} diverges: {v1} vs {v3}")
+
+
+# ---------------------------------------------------------------------------
+# O-2 — policy-independence oracle (Rev2 §10). Identical user syntax under
+# different instance policies must yield identical statistical results; the
+# policies may only change lifecycle effects (what stays materialized),
+# never the numbers. Uses an alias so materialization actually engages.
+# ---------------------------------------------------------------------------
+
+@needs_dfdraw
+class TestO2PolicyIndependence:
+    @pytest.mark.parametrize("lazy", [True, False])
+    @pytest.mark.parametrize("keep,clear", [
+        (True, True), (True, False), (False, True), (False, False),
+    ])
+    def test_o2_policies_do_not_change_results(self, lazy, keep, clear):
+        adf = _oracle_adf()
+        adf.add_alias("z", "x*2 + 1")
+        adf.draw_lazy = lazy
+        adf.draw_keep_materialized = keep
+        adf.draw_clear_after = clear
+        if not lazy:
+            # draw_lazy=False policy REQUIRES explicit materialization for
+            # alias draws (instance-policy contract, AliasDataFrame.py:1034)
+            adf.materialize_aliases(names=["z"])
+        _f, _a, s_draw = adf.draw("z", type="hist", bins=15)
+        res = adf.draw_batch({"p": {"expr": "z", "type": "hist", "bins": 15}},
+                             verbose=False)
+        plt.close("all")
+        s_batch = res["p"]["stats"]
+        ref = _oracle_adf()
+        ref.add_alias("z", "x*2 + 1")
+        ref.materialize_aliases(names=["z"])
+        _f2, _a2, s_ref = ref.draw("z", type="hist", bins=15)
+        plt.close("all")
+        for key in ("n", "mean", "std"):
+            assert s_draw.get(key) == pytest.approx(s_ref.get(key), rel=1e-12), (
+                f"policy (lazy={lazy},keep={keep},clear={clear}) changed draw {key}")
+            assert s_batch.get(key) == pytest.approx(s_ref.get(key), rel=1e-12), (
+                f"policy (lazy={lazy},keep={keep},clear={clear}) changed batch {key}")
+
+
+# ---------------------------------------------------------------------------
+# Slot × surface sweep — the historically missed slots (facet_by, weights)
+# plus the guarded set, characterized on draw and draw_batch. Success +
+# stats presence is asserted for every cell; numeric cross-surface equality
+# additionally for the row-filtering/weighting slots where it is
+# well-defined. group_by/facet_by/color produce surface-managed composite
+# output; their numeric layout is characterized in a later increment.
+# ---------------------------------------------------------------------------
+
+@needs_dfdraw
+class TestSlotSurfaceSweep:
+    @pytest.mark.parametrize("slot,value,numeric_equiv", [
+        ("selection", "x>0", True),
+        ("weights", "w", True),
+        ("group_by", "cat", False),
+        ("facet_by", "cat", False),
+        ("color", "cat", False),
+    ])
+    def test_slot_accepted_on_draw_and_batch(self, slot, value, numeric_equiv):
+        adf = _oracle_adf()
+        kw = {"expr": "x", "type": "hist", "bins": 10, slot: value}
+        _f, _a, s_draw = adf.draw(kw["expr"],
+                                  **{k: v for k, v in kw.items()
+                                     if k != "expr"})
+        assert isinstance(s_draw, dict) and s_draw, (
+            f"draw with {slot} returned no stats")
+        res = adf.draw_batch({"p": dict(kw)}, verbose=False)
+        plt.close("all")
+        assert res["_summary"]["failed"] == 0, (
+            f"draw_batch with {slot} failed: {res['_errors']}")
+        s_batch = res["p"]["stats"]
+        assert isinstance(s_batch, dict) and s_batch, (
+            f"draw_batch with {slot} returned no stats")
+        if numeric_equiv:
+            for key in ("n", "mean", "std"):
+                assert s_batch.get(key) == pytest.approx(
+                    s_draw.get(key), rel=1e-12), (
+                    f"{slot}: batch {key} diverges from draw")
