@@ -94,6 +94,17 @@ class Redactor:
         h = hashlib.sha256((self.salt + name).encode()).hexdigest()[:8]
         return f"u_{h}"
 
+    def uid_token(self, uid):
+        """ONE executable algorithm shared with the bash collector [GPT24
+        blocker]: token(uid) = u_ + sha256(salt + "uid:" + uid)[:8].
+        Canonical identity is the NUMERIC UID - ps truncates usernames over
+        8 chars (averylongname -> averylo+), which made the same person hash to
+        two tokens in one bundle; a uid cannot truncate."""
+        if self.raw:
+            return uid_name(uid)
+        h = hashlib.sha256(f"{self.salt}uid:{uid}".encode()).hexdigest()[:8]
+        return f"u_{h}"
+
     def proc(self, owner, comm, pid=0, starttime=0):
         if self.raw:
             return comm
@@ -262,7 +273,7 @@ def sample_once(prev, dt, args, red, own_uid, run_id, ts, boot_id, out):
     with open(out / "process_samples.csv", "a") as f:
         for row in sorted(sel.values(), key=lambda r: (-(r["cpu_pct"] or 0), r["pid"])):
             f.write(",".join(str(x) for x in (
-                ts, run_id, red.user(row["owner"]),
+                ts, run_id, red.uid_token(row["uid"]),
                 red.proc(row["owner"], row["comm"], row["pid"], row["starttime"]),
                 red.pid_field(row["pid"]), red.start_field(row["starttime"]),
                 int(row["is_target"]), row["state"],
@@ -276,7 +287,7 @@ def sample_once(prev, dt, args, red, own_uid, run_id, ts, boot_id, out):
     # ---- per-user totals over ALL visible processes (v8 0.4) ----
     users = {}
     for e in entries:
-        u = users.setdefault(e["owner"], dict(n=0, run=0, blk=0, ticks=0, cores=0.0,
+        u = users.setdefault(e["uid"], dict(n=0, run=0, blk=0, ticks=0, cores=0.0,
                                               rss=0, virt=0, io_r=0, io_w=0,
                                               io_known=0))
         u["n"] += 1
@@ -292,11 +303,11 @@ def sample_once(prev, dt, args, red, own_uid, run_id, ts, boot_id, out):
             u["io_r"] += sel[k2]["io_read"]; u["io_w"] += sel[k2]["io_write"]
             u["io_known"] += 1
     with open(out / "user_samples.csv", "a") as f:
-        for name, u in sorted(users.items()):
+        for uid, u in sorted(users.items()):
             io_state = ("complete" if u["io_known"] == u["n"] and u["n"] > 0
                         else ("partial" if u["io_known"] else "unavailable"))
             f.write(",".join(str(x) for x in (
-                ts, run_id, red.user(name), int(name == red.own), u["n"], u["run"],
+                ts, run_id, red.uid_token(uid), int(uid == own_uid), u["n"], u["run"],
                 u["blk"], round(u["cores"], 3), round(u["ticks"] / CLK, 2), u["rss"],
                 u["virt"],
                 u["io_r"] if u["io_known"] else "", u["io_w"] if u["io_known"] else "",

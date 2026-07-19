@@ -389,3 +389,76 @@ def test_adf_crosshost_diff_rendered(tmp_path):
     rd.generate([b1, b2], out_dir=out)
     html = (out / "report.html").read_text()
     assert "Cross-host configuration differences" in html and "thp.enabled" in html
+
+
+def test_uid_token_bash_python_conformance(tmp_path):
+    """GPT24 blocker: ONE executable token algorithm. The bash collector and
+    the python Redactor MUST produce the identical token for the same salt
+    and uid - this is the cross-producer contract, executed."""
+    import subprocess
+    from collector import Redactor
+    r = Redactor("me", raw=False, salt="SALTX")
+    py = r.uid_token(1234)
+    sh = subprocess.run(
+        ["bash", "-c", 'printf %s "SALTXuid:1234" | sha256sum | cut -c1-8'],
+        capture_output=True, text=True).stdout.strip()
+    assert py == f"u_{sh}", f"python {py} != bash u_{sh}"
+
+def test_uid_token_ignores_username_text():
+    """Truncation regression: the token depends ONLY on the numeric uid -
+    a ps-truncated display name (averylongname -> averylo+) cannot change it."""
+    from collector import Redactor
+    a = Redactor("averylongname", raw=False, salt="S")
+    b = Redactor("averylo+", raw=False, salt="S")
+    assert a.uid_token(5150) == b.uid_token(5150)
+    assert a.uid_token(5150) != a.uid_token(5151)
+
+
+def test_legend_is_the_models_own_text():
+    """UID-delta round 2 [panel P1-1]: conclude() and the legend consume ONE
+    table - conclude() returns CODE_LEGEND[code] directly, so drift is now
+    structural fact, proven by walking EVERY reachable code (13/13), not a
+    sample. A hand-written legend once inverted CM-6's outcome."""
+    import conclusion_model as cm
+    cases = {  # conclude(h, b, j)
+        "CM-0":  ("clean", "quiet", "no_records"),
+        "CM-1":  ("clean", "quiet", "success"),
+        "CM-2":  ("pathological", "quiet", "success"),
+        "CM-3":  ("pathological", "quiet", "failed"),
+        "CM-4":  ("clean", "active_correlated", "failed"),
+        "CM-5":  ("clean", "quiet", "failed"),
+        "CM-6":  ("clean", "active_correlated", "success"),
+        "CM-7":  ("clean", "active_uncorrelated", "success"),
+        "CM-8":  ("stressed", "quiet", "success"),
+        "CM-U1": ("unknown", "quiet", "success"),
+        "CM-U2": ("clean", "no_data", "success"),
+        "CM-U3": ("clean", "unknown_no_baseline", "success"),
+        "CM-U4": ("clean", "quiet", "unknown_outcome"),
+    }
+    assert set(cases) == set(cm.CODE_LEGEND), "case table out of sync"
+    for expect, (h, b, j) in cases.items():
+        code, text = cm.conclude(h, b, j)
+        assert code == expect, f"{(h, b, j)} -> {code}, wanted {expect}"
+        assert text == cm.CODE_LEGEND[code], f"{code} text diverges from table"
+
+def test_no_layerc_module_globals():
+    """UID-delta round 2 [panel P1-2]: Layer-C state is per-call - the module
+    must not carry the old stash attributes at all."""
+    import report_diagnostics as rd
+    assert not hasattr(rd, "LAYERC_ANALYSES")
+    assert not hasattr(rd, "LAYERC_CONCLUSION")
+
+def test_conclusion_records_carry_roles(tmp_path):
+    """UID-delta panel P1-2: components must name real record roles, not ?."""
+    import pandas as pd
+    import conclusion_model as cm
+    import job_host_analysis as jha
+    hf = pd.DataFrame({"ts": [0.0, 1.0], "cpu_busy_pct": [1.0, 1.0]})
+    recs = [{"tool": "dfx_run_with_diagnostics", "run_id": "r1",
+             "workload_rc": 0, "outcome": "success", "steps": []},
+            {"record_type": "run_metrics", "run_id": "r1", "label": "j",
+             "outcome": "success"}]
+    res = jha.analyze(recs, hf)
+    out = cm.evaluate("OK", [], res)
+    roles = sorted(r["record_role"] for r in out["records"])
+    assert roles == ["in_process", "orchestration"], roles

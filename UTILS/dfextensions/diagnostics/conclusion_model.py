@@ -43,6 +43,27 @@ JOB_STATES = ("success", "failed", "no_records", "unknown_outcome",
               "performance_unassessed")
 
 
+
+# THE canonical code glosses - extracted from conclude()'s own return texts
+# and asserted equal to them by test. Renderers MUST build any legend from
+# this table, never hand-write one [UID-delta panel P1-3: a hand-written
+# legend inverted CM-6's outcome].
+CODE_LEGEND = {
+    "CM-0": "No job records supplied: host assessment only; no job-environment conclusion possible.",
+    "CM-1": "Job succeeded on a clean host with quiet background: the run qualifies as reference-grade for comparisons.",
+    "CM-2": "Job succeeded but the host shows pathology: results are valid, runtimes are NOT comparable to healthy hosts.",
+    "CM-3": "Job failed on a pathological host: investigate the host pathology before blaming the job.",
+    "CM-4": "Job failed while background activity was high and correlated with the job's series: environment interference is a concrete suspect.",
+    "CM-5": "Job failed on an unremarkable host with no background evidence: the job itself is the first suspect.",
+    "CM-6": "Job succeeded; background was active AND correlated with the job's series: runtime comparisons should exclude or annotate this run.",
+    "CM-7": "Job succeeded; background was active but shows no correlation with the job at the model's evidence gates: no interference demonstrated.",
+    "CM-8": "Job succeeded on a stressed but non-pathological host with quiet background: acceptable for comparisons, with the stress rules noted.",
+    "CM-U1": "Host state is not established (collector did not reach a final verdict): job-vs-host conclusion withheld.",
+    "CM-U2": "Background could not be assessed for the job window: conclusion limited to the host verdict.",
+    "CM-U3": "Background activity is measured but has no valid baseline: influence direction cannot be established.",
+    "CM-U4": "The run record carries no outcome: job state is unknown, so no success-dependent conclusion is made."
+}
+
 def host_state(verdict, rules_fired):
     """D1 from the bundle's own versioned verdict machinery."""
     v = (verdict or "").upper()
@@ -107,48 +128,31 @@ def conclude(h, b, j):
     """Versioned precedence. UNKNOWN dominates wherever the claim needs the
     missing knowledge; codes CM-x are stable across report versions."""
     if j == "unknown_outcome":
-        return ("CM-U4", "The run record carries no outcome: job state is "
-                         "unknown, so no success-dependent conclusion is made.")
+        return ("CM-U4", CODE_LEGEND["CM-U4"])
     if j == "no_records":
-        return ("CM-0", "No job records supplied: host assessment only; "
-                        "no job-environment conclusion possible.")
+        return ("CM-0", CODE_LEGEND["CM-0"])
     if h in ("in_progress", "unknown"):
-        return ("CM-U1", "Host state is not established (collector "
-                         f"{h.replace('_', ' ')}): job-vs-host conclusion withheld.")
+        return ("CM-U1", CODE_LEGEND["CM-U1"])
     if b == "no_data":
-        return ("CM-U2", "Background could not be assessed for the job window: "
-                         "conclusion limited to the host verdict.")
+        return ("CM-U2", CODE_LEGEND["CM-U2"])
     if b == "unknown_no_baseline":
-        return ("CM-U3", "Background activity is measured but has no valid "
-                         "baseline: influence direction cannot be established.")
+        return ("CM-U3", CODE_LEGEND["CM-U3"])
     if j == "failed":
         if h == "pathological":
-            return ("CM-3", "Job failed on a pathological host: investigate the "
-                            "host pathology before blaming the job.")
+            return ("CM-3", CODE_LEGEND["CM-3"])
         if b == "active_correlated":
-            return ("CM-4", "Job failed while background activity was high and "
-                            "correlated with the job's series: environment "
-                            "interference is a concrete suspect.")
-        return ("CM-5", "Job failed on an unremarkable host with no background "
-                        "evidence: the job itself is the first suspect.")
+            return ("CM-4", CODE_LEGEND["CM-4"])
+        return ("CM-5", CODE_LEGEND["CM-5"])
     # j == success
     if h == "pathological":
-        return ("CM-2", "Job succeeded but the host shows pathology: results "
-                        "are valid, runtimes are NOT comparable to healthy hosts.")
+        return ("CM-2", CODE_LEGEND["CM-2"])
     if b == "active_correlated":
-        return ("CM-6", "Job succeeded; background was active AND correlated "
-                        "with the job's series: runtime comparisons should "
-                        "exclude or annotate this run.")
+        return ("CM-6", CODE_LEGEND["CM-6"])
     if b == "active_uncorrelated":
-        return ("CM-7", "Job succeeded; background was active but shows no "
-                        "correlation with the job at the model's evidence "
-                        "gates: no interference demonstrated.")
+        return ("CM-7", CODE_LEGEND["CM-7"])
     if h == "stressed":
-        return ("CM-8", "Job succeeded on a stressed but non-pathological "
-                        "host with quiet background: acceptable for "
-                        "comparisons, with the stress rules noted.")
-    return ("CM-1", "Job succeeded on a clean host with quiet background: "
-                    "the run qualifies as reference-grade for comparisons.")
+        return ("CM-8", CODE_LEGEND["CM-8"])
+    return ("CM-1", CODE_LEGEND["CM-1"])
 
 
 def evaluate(verdict, rules_fired, jha_results):
@@ -173,6 +177,7 @@ def evaluate(verdict, rules_fired, jha_results):
         rec = {"run_id": r.get("run_id"), "label": r.get("label"),
                "background_state": b, "job_state":
                    ("performance_unassessed" if j == "success" else j),
+               "record_role": r.get("record_role", "?"),
                "code": code, "conclusion": text}
         out["records"].append(rec)
         rank = severity.index(code) if code in severity else 0

@@ -121,6 +121,7 @@ def _top_consumers(pdf, n=10):
 
 
 RENDER_WARNINGS = 0     # GPT18-F: drawing-library warnings are counted and
+
                         # reported, never silently flooded to stderr
 
 
@@ -324,7 +325,7 @@ def _render_layer_c(host, res, concl):
     rows_html = []
     for r in res:
         w = r.get("window") or {}
-        rows_html.append(f"<h3>{host} - run '{r.get('label')}' "
+        rows_html.append(f"<h3>{host} - run '{r.get('label') or r.get('run_id') or 'unlabeled'}' "
                          f"(run_id {r.get('run_id')}, {r.get('record_type')}) "
                          f"- window {w.get('state')}</h3>")
         if w.get("state") in ("ok", "ok_external"):
@@ -378,15 +379,41 @@ def _render_layer_c(host, res, concl):
         elif w.get("detail"):
             rows_html.append(f"<p>{w['detail']}</p>")
     bc = concl["bundle_conclusion"]
-    per = "".join(f"<tr><td>{r.get('run_id')}</td><td>{r['background_state']}</td>"
-                  f"<td>{r['job_state']}</td><td>{r['code']}</td>"
-                  f"<td>{r['conclusion']}</td></tr>" for r in concl["records"])
+    # identical conclusions from components of the same run collapse into ONE
+    # row listing the component roles [round-4: duplicate CM-row finding]
+    merged = {}
+    for r in concl["records"]:
+        k = (r.get("run_id"), r["background_state"], r["job_state"], r["code"])
+        merged.setdefault(k, {"r": r, "roles": []})["roles"].append(
+            r.get("record_role", "?"))
+    per = "".join(
+        f"<tr><td>{k[0]}</td><td>{'+'.join(v['roles'])}</td><td>{k[1]}</td>"
+        f"<td>{k[2]}</td><td>{k[3]}</td><td>{v['r']['conclusion']}</td></tr>"
+        for k, v in merged.items())
+    guidance = ""
+    if str(bc["code"]).startswith("CM-U"):
+        guidance = ("<p><i>Inconclusive: collect a longer run with non-zero "
+                    "pre/post baseline windows (wrapper --pre/--post) for a "
+                    "decisive read.</i></p>")
     rows_html.append(
         f"<h3>Conclusion (model v{concl['model_version']}, host state: "
         f"{concl['host_state']})</h3>"
-        "<table><tr><th>run</th><th>background</th><th>job</th>"
-        "<th>code</th><th>conclusion</th></tr>" + per + "</table>"
-        f"<p><b>Bundle conclusion [{bc['code']}]</b>: {bc['text']}</p>")
+        "<table><tr><th>run</th><th>components</th><th>background</th>"
+        "<th>job</th><th>code</th><th>conclusion</th></tr>" + per + "</table>"
+        f"<p><b>Bundle conclusion [{bc['code']}]</b>: {bc['text']}</p>"
+        + guidance +
+        "<p><i>Note: correlation tables above may show real correlations "
+        "against channels (e.g. cpu_busy_pct) that are NOT eligible conclusion "
+        "inputs - the background verdict is gated on background_cpu_cores "
+        "specifically, so the job's own activity is not read as interference."
+        "</i></p>"
+        "<details><summary>CM code legend (from conclusion_model.CODE_LEGEND)"
+        "</summary><p>" +
+        " ".join(f"<b>{c}</b>: {t}" for c, t in
+                 __import__("conclusion_model").CODE_LEGEND.items()) +
+        "<br>Evidence states: unavailable_constant = channel present but "
+        "constant (no signal), ok = evaluated, absent = not collected on "
+        "this platform.</p></details>")
     return "<h2>Layer-C: job vs background</h2>" + "".join(rows_html)
 
 
@@ -414,6 +441,14 @@ def generate(bundles, run_records=(), labels=None, sections=None,
              out_dir=".", mode="technical", audit=True):
     """Render diagnostic bundles. Returns the path of the primary artifact
     (report.html for technical mode, report_it.md for it_report mode)."""
+    # UID-delta round 2 [panel P1-2]: Layer-C state is LOCAL per call - the
+    # module-global stash made a second no-record call in the same process
+    # ship the FIRST call's runs/conclusion in report_summary.json, and kept
+    # only the last host in multi-host reports. Reproduced, now structural.
+    layerc_analyses = []                 # accumulates across ALL hosts
+    layerc_conclusions = {}              # host -> bundle_conclusion
+    global RENDER_WARNINGS
+    RENDER_WARNINGS = 0                  # per-call, never inherited
     if mode not in ("technical", "it_report"):
         raise ValueError(f"mode must be 'technical' or 'it_report', got {mode!r}")
     sections = list(sections) if sections else list(DEFAULT_SECTIONS)
@@ -562,16 +597,7 @@ def generate(bundles, run_records=(), labels=None, sections=None,
         else:
             summaries[b.host] = {}
 
-    # summary JSON (canonical values; html is a rendering of the same numbers)
-    (out_dir / "report_summary.json").write_text(json.dumps(
-        {"schema_version": schema.SCHEMA_VERSION,
-         "rule_table_version": schema.RULE_TABLE_VERSION,
-         "hosts": {b.host: {"verdict": b.verdict, "rules": b.rules_fired,
-                            "summary": summaries.get(b.host, {})} for b in loaded}},
-        indent=1, sort_keys=True))
-
     _prog("writing audit + report")
-    global RENDER_WARNINGS
     if RENDER_WARNINGS:
         html_parts.append(f"<p class='note'>rendering produced {RENDER_WARNINGS} "
                           "drawing-library warnings (captured, not shown; "
@@ -620,6 +646,8 @@ def generate(bundles, run_records=(), labels=None, sections=None,
                 _p, _u, roll = _aux_tables(b)
                 res = jha_mod.analyze(run_records, hostf, roll)
                 concl = cm_mod.evaluate(b.verdict, b.rules_fired, res)
+                layerc_analyses.extend(res)
+                layerc_conclusions[b.host] = concl.get("bundle_conclusion")
                 lc_all.append((b.host, res, concl))
                 if aud is not None:
                     import pandas as _pd
@@ -641,6 +669,26 @@ def generate(bundles, run_records=(), labels=None, sections=None,
         for b in loaded:
             html_parts.append(f"<h2>{b.host} - evidence states</h2>" +
                               _table(schema.evidence_states(b)))
+
+    # summary JSON (canonical values; html is a rendering of the same numbers)
+    (out_dir / "report_summary.json").write_text(json.dumps(
+        {"schema_version": schema.SCHEMA_VERSION,
+         "rule_table_version": schema.RULE_TABLE_VERSION,
+         # round-4 machine-legibility fields [GPT21]: run identity+roles,
+         # window counts, baseline validity, conclusion inputs/code
+         "runs": [{"run_id": a.get("run_id"), "label": a.get("label"),
+                   "record_role": a.get("record_role"),
+                   "outcome": a.get("outcome"),
+                   "baseline_state": a.get("baseline_state"),
+                   "window": a.get("window"),
+                   "n_correlations": len(a.get("correlations", []))}
+                  for a in layerc_analyses],
+         "conclusion": (next(iter(layerc_conclusions.values()))
+                        if len(layerc_conclusions) == 1 else None),
+         "conclusions_by_host": layerc_conclusions,
+         "hosts": {b.host: {"verdict": b.verdict, "rules": b.rules_fired,
+                            "summary": summaries.get(b.host, {})} for b in loaded}},
+        indent=1, sort_keys=True))
 
     p = out_dir / "report.html"
     p.write_text(_html("dfx host diagnostics report", html_parts))

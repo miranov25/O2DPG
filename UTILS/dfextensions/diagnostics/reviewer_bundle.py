@@ -129,7 +129,7 @@ def main(argv=None):
         if cand:
             add(cand[-1], f"logs/{cand[-1].name}")
     try:
-        gl = subprocess.run(["git", "log", "--oneline", "PHASE_13_74_ADF_BEGIN..HEAD"],
+        gl = subprocess.run(["git", "log", "--oneline", "--stat", "PHASE_13_74_ADF_BEGIN..HEAD"],
                             capture_output=True, text=True, cwd=HERE).stdout
     except Exception:
         gl = "(git unavailable)\n"

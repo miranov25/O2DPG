@@ -125,6 +125,11 @@ def analyze_record(rec, host_df, rollup_df=None, channels=None):
     out = {"label": rec.get("label"), "run_id": rec.get("run_id"),
            "outcome": rec.get("outcome"),          # P0-E: carried, never invented
            "record_type": rec.get("record_type") or rec.get("tool") or "unknown",
+           # record_role [round-4]: component provenance stays explicit so one
+           # logical run's parts are distinguishable (full merge = closure work)
+           "record_role": ("orchestration"
+                           if rec.get("tool") == "dfx_run_with_diagnostics"
+                           else "in_process"),
            "window": None, "baseline_state": None, "influence": [],
            "correlations": [], "progress": None, "stages": None}
     wstate, t0, t1 = _window(rec)

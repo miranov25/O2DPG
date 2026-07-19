@@ -58,8 +58,8 @@ EOF
 FIX="$WORK/fix"; mkfix "$FIX"
 export CLK_TCK_OVERRIDE=100
 export PS_CMD_OVERRIDE="cat $WORK/psfix"
-ME=$(id -un)   # own-user row built from the INVOKING user — never hardcoded (alma2 lesson)
-printf 'PID USER VSZ RSS PCPU COMM\n1 %s 1000 100 0.1 python3\n2 otheruser 4000 100 0.2 secretjob\n' "$ME" > "$WORK/psfix"
+MEUID=$(id -u)   # own row built from the INVOKING uid — canonical identity (GPT24 blocker)
+printf 'PID UID VSZ RSS PCPU COMM\n1 %s 1000 100 0.1 python3\n2 65534 4000 100 0.2 secretjob\n' "$MEUID" > "$WORK/psfix"
 
 export DFX_PROCESS_SAMPLER=off   # speed: python sampler only in T-D20
 run(){ PROC_ROOT="$FIX/proc" SYS_ROOT="$FIX/sys" CGROUP_ROOT="$FIX/nocg" bash "$SCRIPT" "$@"; }
@@ -84,9 +84,9 @@ check "T-D5 allocstall_sum" "$(grep '^vmstat.allocstall_sum=' "$B/snapshot.kv" |
 
 echo "== C-1: default ps redaction — other user hashed, comm masked; own visible =="
 grep -q 'secretjob' "$B/snapshot.kv" && bad "C-1 other-user comm leaked" || ok "C-1 other-user comm masked"
-grep -q 'otheruser' "$B/snapshot.kv" && bad "C-1 other-user name leaked" || ok "C-1 other-user name hashed"
+grep -Eq "^ps.top=2 65534 " "$B/snapshot.kv" && bad "C-1 foreign raw uid leaked" || ok "C-1 foreign uid tokenized"
 grep -Eq "^ps.top=1 u_[0-9a-f]+ .*python3" "$B/snapshot.kv" && ok "C-1 own row visible (comm preserved, user tokenized per P0-F)" || bad "C-1 own row visible (comm preserved, user tokenized per P0-F)"
-grep -Eq "^ps.top=1 $ME " "$B/snapshot.kv" && bad "C-1 own username absent from ps table" || ok "C-1 own username absent from ps table"
+grep -Eq "^ps.top=1 $MEUID " "$B/snapshot.kv" && bad "C-1 raw uid absent from tokenized ps table" || ok "C-1 raw uid absent from tokenized ps table"
 
 echo "== T-D6: REQUIRED evidence missing -> UNKNOWN, exit 2, manifest records reason =="
 FIX2="$WORK/fix2"; mkfix "$FIX2"; rm "$FIX2/proc/vmstat"
@@ -219,6 +219,16 @@ if [ -f "$US24" ]; then
   grep -q ",$MTOK," "$US24" && ok "T-D24 user_samples carries the same token" || bad "T-D24 user_samples token differs from manifest"
 fi
 
+echo "== T-D25: real-bundle identity invariant (GPT24 blocker) =="
+STOK25=$(grep -E "^ps.top=1 " "$BS22/snapshot.kv" | awk '{print $2}' | head -1)
+[ "$MTOK" = "$STOK25" ] && ok "T-D25 own-PID snapshot token == manifest token ($MTOK)" \
+  || bad "T-D25 REAL-BUNDLE DIVERGENCE: manifest=$MTOK snapshot-own-row=$STOK25"
+grep -E "^ps.top=1 " "$BS22/snapshot.kv" | grep -q "python3" \
+  && ok "T-D25 own comm still visible (uid-canonical, C-1 preserved)" \
+  || bad "T-D25 own comm lost"
+grep -E "^ps.top=2 " "$BS22/snapshot.kv" | grep -q "\[other\]" \
+  && ok "T-D25 foreign-uid row anonymized" || bad "T-D25 foreign row not anonymized"
+
 OVS=$(grep "^self_cpu_s=" "$BS22/manifest.kv" | cut -d= -f2)
 awk -v v="$OVS" 'BEGIN{exit (v>=0)?0:1}' && ok "T-D23 self_cpu_s non-negative (P0-H)" || bad "T-D23 self_cpu_s negative: $OVS"
 
@@ -226,7 +236,13 @@ echo "== T-D21: TERM during bounded run -> CLEAN stop: verdict + stop_reason =="
 OC="$WORK/oc"; mkdir "$OC"
 PROC_ROOT="$FIX/proc" SYS_ROOT="$FIX/sys" CGROUP_ROOT="$FIX/nocg" bash "$SCRIPT" -o "$OC" -s 1 -n 30 > "$WORK/cs.out" 2>/dev/null &
 CPID=$!
-sleep 2.6
+# poll until >=2 samples exist (P2-3: fixed sleep raced on slow hosts)
+for _i in $(seq 1 40); do
+  BC0=$(ls -d "$OC"/host_diag_* 2>/dev/null | head -1)
+  NROWS=$(grep -c . "$BC0/host_samples.csv" 2>/dev/null || echo 0)
+  [ -n "$BC0" ] && [ "${NROWS:-0}" -ge 3 ] && break
+  sleep 0.25
+done
 kill -TERM "$CPID"; wait "$CPID"; rcc=$?
 check "T-D21 exit 0 on TERM" "$rcc" 0
 BC=$(ls -d "$OC"/host_diag_* | head -1)

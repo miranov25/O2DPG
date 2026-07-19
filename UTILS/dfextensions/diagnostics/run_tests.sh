@@ -59,11 +59,28 @@ PYEOF
   RPT_OPT=""; [ "$HAVE_ADF" = 1 ] && RPT_OPT="--report"
   # shellcheck disable=SC2086
   python3 "$HERE/dfx_run_with_diagnostics.py" --out "$EV" --label evidence \
-      --interval 2 --max-samples "$EVN" --pre 0 --post 0 $RPT_OPT -- \
+      --interval 2 --max-samples "$EVN" --pre "${DFX_EVIDENCE_PRE:-10}" --post "${DFX_EVIDENCE_POST:-10}" $RPT_OPT -- \
       python3 "$WL" "$HERE" "$EVN" > "$EV/collect.log" 2>&1 \
     || echo "[run_tests] evidence wrapper degraded rc=$? (see $EV/collect.log)"
   EB=$(ls -d "$EV"/host_diag_* 2>/dev/null | head -1)
   EVREP=$(ls -d "$EV"/report_*/report.html 2>/dev/null | head -1)
+    # real-packet identity invariant [GPT24]: if the workload PID appears in
+  # the snapshot, its token MUST equal the manifest current-user token
+  EVB=$(ls -d "$EV"/host_diag_* 2>/dev/null | head -1)
+  if [ -n "$EVB" ]; then
+    EMTOK=$(grep "^user=" "$EVB/manifest.kv" | cut -d= -f2)
+    WPID=$(ls "$EV"/run_*.json 2>/dev/null | head -1 | sed 's/.*_\([0-9]*\)\.json/\1/')
+    if [ -n "$WPID" ] && grep -q "^ps.top=$WPID " "$EVB/snapshot.kv" 2>/dev/null; then
+    WTOK=$(grep "^ps.top=$WPID " "$EVB/snapshot.kv" | awk '{print $2}')
+    [ "$WTOK" = "$EMTOK" ] && echo "[run_tests] identity invariant OK: workload PID token == manifest ($EMTOK)" \
+      || { echo "[run_tests] IDENTITY INVARIANT FAILED: manifest=$EMTOK workload-row=$WTOK"; PYRC=1; }
+    fi
+    CURTOK=$(awk -F, '$4==1{print $3; exit}' "$EVB/user_samples.csv" 2>/dev/null)
+    if [ -n "$CURTOK" ]; then
+    [ "$CURTOK" = "$EMTOK" ] && echo "[run_tests] identity invariant OK: user_samples current == manifest" \
+      || { echo "[run_tests] IDENTITY INVARIANT FAILED: user_samples=$CURTOK manifest=$EMTOK"; PYRC=1; }
+    fi
+  fi
   if [ -n "$EVREP" ]; then
     # build-time PRESENCE assertion: shipped evidence must show the job
     if grep -q "no run_metrics records supplied" "$EVREP"; then

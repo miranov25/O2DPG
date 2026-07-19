@@ -33,6 +33,9 @@ SYS="${SYS_ROOT:-/sys}"
 CGR="${CGROUP_ROOT:-/sys/fs/cgroup}"
 CLK_TCK="${CLK_TCK_OVERRIDE:-$(getconf CLK_TCK 2>/dev/null || echo 100)}"
 SELF_USER="$(id -un 2>/dev/null || echo unknown)"
+SELF_UID="$(id -u 2>/dev/null || echo 0)"
+# ONE executable token algorithm [GPT24 blocker]: token(uid) = u_ + sha256(salt + "uid:" + uid)[:8]
+tok_uid(){ printf '%s' "${TOK_SALT}uid:$1" | sha256sum | cut -c1-8; }
 TOK_SALT="${RANDOM}${RANDOM}$$$(date +%N 2>/dev/null)"   # per-bundle token salt (P0-F)
 
 usage(){ echo "usage: $0 [-o DIR] [-p PID [-A]] [-d DATA_PATH] [-r] [-s INTERVAL_S -n NSAMPLES]" >&2; exit 1; }
@@ -64,7 +67,8 @@ if [ "$S_GIVEN" = 1 ] && { [ "$INTERVAL" -le 0 ] || [ "$NSAMPLES" -le 0 ]; }; th
 if [ -n "$PID" ]; then
   [ -d "$PROC/$PID" ] || { echo "no such process $PID" >&2; exit 1; }
   P_OWNER="$(stat -c %U "$PROC/$PID" 2>/dev/null || echo unknown)"
-  if [ "$P_OWNER" != "$SELF_USER" ] && [ "$ACK" != 1 ]; then
+  P_OWNER_UID="$(stat -c %u "$PROC/$PID" 2>/dev/null || echo -1)"
+  if [ "$P_OWNER_UID" != "$SELF_UID" ] && [ "$ACK" != 1 ]; then
     echo "pid $PID is owned by '$P_OWNER', not you; re-run with -A to acknowledge deep-dive on another user's process (C-1)" >&2
     exit 1
   fi
@@ -114,7 +118,7 @@ man run_id "$RUN_ID"
 if [ "$RAW" = 1 ]; then
   MAN_USER="$SELF_USER"; man redaction raw
 else
-  MAN_USER="u_$(printf '%s' "$TOK_SALT$SELF_USER" | sha256sum | cut -c1-8)"
+  MAN_USER="u_$(tok_uid "$SELF_UID")"   # canonical: numeric UID, never a truncatable name
   man redaction shareable-tokens
 fi
 man host "$HOST"; man utc "$UTC"; man user "$MAN_USER"
@@ -236,12 +240,12 @@ collect_buddy(){
 }
 
 collect_ps(){ # redacted by default (C-1): other users -> hashed id, comm masked
-  PSC="${PS_CMD_OVERRIDE:-ps -eo pid,user,vsz,rss,pcpu,comm --sort=-vsz}"
-  $PSC 2>/dev/null | head -13 | awk -v me="$SELF_USER" -v raw="$RAW" -v salt="${TOK_SALT:-s}" 'NR==1{print "pid user vsz rss pcpu comm virt_res"; next}
+  PSC="${PS_CMD_OVERRIDE:-ps -eo pid,uid,vsz,rss,pcpu,comm --sort=-vsz}"
+  $PSC 2>/dev/null | head -13 | awk -v me="$SELF_UID" -v raw="$RAW" -v salt="${TOK_SALT:-s}" 'NR==1{print "pid user vsz rss pcpu comm virt_res"; next}
     { u=$2; c=$6;
       if (raw!=1) {                   # P0-F: shareable tokenizes EVERY user, own included
-        cmd="printf %s \"" salt u "\" | sha256sum"; cmd | getline h; close(cmd); split(h,a," ");
-        if (u!=me) c="[other]";       # own comm stays visible; own name does not
+        cmd="printf %s \"" salt "uid:" u "\" | sha256sum"; cmd | getline h; close(cmd); split(h,a," ");
+        if (u+0!=me+0) c="[other]";   # NUMERIC uid compare - ps cannot truncate a uid
         u="u_" substr(a[1],1,8) }
       r=($4>0)? sprintf("%.1f",$3/$4) : "inf";
       print $1" "u" "$3" "$4" "$5" "c" "r }' | while read -r line; do echo "ps.top=$line"; done >> "$SNAP"
@@ -251,7 +255,7 @@ collect_ps(){ # redacted by default (C-1): other users -> hashed id, comm masked
 collect_deepdive(){
   [ -z "$PID" ] && return 0
   if [ "$RAW" = 1 ]; then kv "pid.$PID.owner" "${P_OWNER:-unknown}"
-  else kv "pid.$PID.owner" "u_$(printf '%s' "$TOK_SALT${P_OWNER:-unknown}" | sha256sum | cut -c1-8)"; fi
+  else kv "pid.$PID.owner" "u_$(tok_uid "$P_OWNER_UID")"; fi
   if [ "$RAW" = 1 ] || [ "$P_OWNER" = "$SELF_USER" ]; then
     kv "pid.$PID.cmd" "$(tr '\0' ' ' < "$PROC/$PID/cmdline" 2>/dev/null)"
   else kv "pid.$PID.cmd" "[redacted]"; fi

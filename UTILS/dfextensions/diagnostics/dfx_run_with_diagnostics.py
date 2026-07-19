@@ -211,6 +211,24 @@ def main(argv=None):
         orch.write(run_id, rc)
         return 70
     orch.write(run_id, rc)
+    # terminal summary [GPT25]: one glance = what happened and where it lives
+    print(f"[dfx] run {run_id} | workload rc={workload_rc if 'workload_rc' in dir() else rc} "
+          f"| final rc={rc} | bundle: {bundle or '(none)'}")
+    for st in orch.steps:
+        if st["step"] == "report" and st["status"] == "ok":
+            print(f"[dfx] report: {st.get('path')}")
+            try:                       # P2-2: conclusion at a glance
+                import json as _j
+                sj = Path(st.get("path", "")).parent / "report_summary.json"
+                d = _j.loads(sj.read_text())
+                c = d.get("conclusion") or {}
+                print(f"[dfx] conclusion: [{c.get('code')}] {c.get('text', '')[:80]}")
+                if d.get("runs"):
+                    print(f"[dfx] baseline: "
+                          f"{d['runs'][0].get('baseline_state', 'unknown')}")
+            except Exception:
+                pass
+    print(f"[dfx] records: {out / 'orchestration.json'}")
     return rc                                    # 10: UNCHANGED workload status
 
 
