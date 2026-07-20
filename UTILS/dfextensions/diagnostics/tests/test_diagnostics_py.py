@@ -462,3 +462,31 @@ def test_conclusion_records_carry_roles(tmp_path):
     out = cm.evaluate("OK", [], res)
     roles = sorted(r["record_role"] for r in out["records"])
     assert roles == ["in_process", "orchestration"], roles
+
+
+def test_p1a_zero_vs_no_data_classification():
+    """P1-A [original panel]: measured-zero and never-sampled are DIFFERENT
+    facts and must classify differently."""
+    import pandas as pd
+    from report_diagnostics import classify_availability, _availability_note
+    w = pd.DataFrame({"t_rel": [0, 1, 2],
+                      "cpu_target_job": [float("nan")] * 3,       # never sampled
+                      "cpu_current_user_non_job": [0.0, 0.0, 0.0],  # measured idle
+                      "cpu_other_visible_workloads": [0.0, 1.5, 0.2]})
+    st = classify_availability(w)
+    assert st == {"target_job": "no_data",
+                  "current_user_non_job": "zero",
+                  "other_visible_workloads": "active"}, st
+    note = _availability_note(st)
+    assert "NO DATA" in note and "measured zero" in note
+    assert "Target job not sampled" in note      # explicit unavailable state
+    # absent frame entirely -> everything no_data, warning present
+    st2 = classify_availability(None)
+    assert set(st2.values()) == {"no_data"}
+
+def test_p1a_missing_column_is_no_data():
+    import pandas as pd
+    from report_diagnostics import classify_availability
+    w = pd.DataFrame({"t_rel": [0], "cpu_other_visible_workloads": [2.0]})
+    st = classify_availability(w)
+    assert st["target_job"] == "no_data" and st["other_visible_workloads"] == "active"

@@ -111,6 +111,39 @@ def _pivot_rollup(wdf):
         wide = f if wide is None else wide.join(f, how="outer")
     return wide.reset_index()
 
+def classify_availability(wide, prefix="cpu_"):
+    """P1-A [original panel]: a flat-zero series and an absent series are
+    DIFFERENT facts - measured-idle vs never-sampled. Returns col-suffix ->
+    'no_data' (column missing or all-NaN), 'zero' (sampled, all zero) or
+    'active' (any nonzero). Pure function, sandbox-tested."""
+    states = {}
+    for scope in ("target_job", "current_user_non_job", "other_visible_workloads"):
+        col = f"{prefix}{scope}"
+        if wide is None or col not in wide.columns or wide[col].dropna().empty:
+            states[scope] = "no_data"
+        elif (wide[col].dropna() == 0).all():
+            states[scope] = "zero"
+        else:
+            states[scope] = "active"
+    return states
+
+
+def _availability_note(states):
+    """Render the P1-A availability line shown WITH the background-vs-job
+    figure: names each scope's state so an absent job cannot be read as an
+    idle job."""
+    gloss = {"no_data": "NO DATA (never sampled in this bundle)",
+             "zero": "sampled, measured zero",
+             "active": "active"}
+    items = " | ".join(f"<b>{k}</b>: {gloss[v]}" for k, v in states.items())
+    warn = ""
+    if states.get("target_job") == "no_data":
+        warn = ("<p class='note'><b>Target job not sampled</b> - the figure "
+                "shows background only; absence of a job line means no data, "
+                "not an idle job.</p>")
+    return f"<p class='note'>Series availability: {items}</p>{warn}"
+
+
 def _top_consumers(pdf, n=10):
     """process_samples -> window top-n table rows (tenant, proc, max cpu, max rss)."""
     g = pdf.groupby(["tenant", "proc"]).agg(
@@ -558,18 +591,27 @@ def generate(bundles, run_records=(), labels=None, sections=None,
                     pfigs += _draw_expr(adf_u, "[" + ",".join(rcols) + "]",
                                         f"{b.host}: RSS by user [GB]", "GB",
                                         out_dir / "figures", f"{b.host}_users_rss.png")
+                avail_note = ""
                 if wdf_x is not None:
                     wide_w = _pivot_rollup(wdf_x)
+                    avail = classify_availability(wide_w)
+                    avail_note = _availability_note(avail)      # P1-A
                     adf_w = _ADF(wide_w)
-                    wcols = [c for c in wide_w.columns if c.startswith("cpu_")]
+                    # draw only genuinely sampled series; absent != zero
+                    wcols = [c for c in wide_w.columns
+                             if c.startswith("cpu_")
+                             and not wide_w[c].dropna().empty]
                     if wcols:
                         pfigs += _draw_expr(adf_w, "[" + ",".join(wcols) + "]",
                                             f"{b.host}: background vs job [CPU cores]",
                                             "cores", out_dir / "figures",
                                             f"{b.host}_background_vs_job.png")
+                else:
+                    avail_note = _availability_note(classify_availability(None))
                 html_parts.append(f"<h2>{b.host} - processes &amp; background</h2>" +
                                   "".join(f"<img src='{_img_datauri(out_dir / 'figures' / f)}' "
-                                          f"alt='{f}'>" for f in pfigs))
+                                          f"alt='{f}'>" for f in pfigs) +
+                                  avail_note)
                 if pdf_x is not None:
                     rows = _top_consumers(pdf_x)
                     tbl = ("<table><tr><th>tenant</th><th>process</th><th>cpu max %</th>"

@@ -20,9 +20,9 @@ bash "$HERE/tests/test_dfx_host_diagnostics.sh" > "$BLOG" 2>&1
 BRC=$?
 BLINE=$(tail -1 "$BLOG")
 
-python3 -m pytest -q "$HERE/tests/" > "$PLOG" 2>&1
+python3 -m pytest -v "$HERE/tests/" > "$PLOG" 2>&1   # -v: named pass lines for reviewers without ADF
 PRC=$?
-PLINE=$(grep -E "passed|failed|error" "$PLOG" | tail -1)
+PLINE=$(grep -E "[0-9]+ (passed|failed|error)" "$PLOG" | tail -1 | sed "s/=//g; s/^ *//; s/ *$//")
 
 echo "[run_tests] bash : $BLINE"
 echo "[run_tests] pytest: $PLINE"
