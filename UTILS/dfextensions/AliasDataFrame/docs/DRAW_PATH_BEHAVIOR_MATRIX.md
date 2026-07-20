@@ -4,7 +4,7 @@
 evidence base for the "source owner" column). One file by architect
 preference, 2026-07-19.*
 
-**Status:** Stage-A working document, increment 6 (vector slots + figures column swept).
+**Status:** Stage-A working document, increment 7 (data-states axis complete — sweep DONE on all axes).
 **Governing classification rule:** AD-4/13.76.ADF (symmetry-by-default,
 ratified 2026-07-19, verbatim in `docs/ARCHITECT_DECISIONS.md` v1.3.0):
 observed asymmetry => Repair unless genuinely semantically inapplicable or
@@ -119,12 +119,26 @@ it.
 | SWEEP-3.a-d | `selection`/`weights`/`group_by`/`color` accepted with stats on `draw_figures`; numeric figures≡draw equality proven for `selection`/`weights` — completes the surface axis of SWEEP-1 | **Preserve** | `TestSweep3FiguresColumn` (4 params, PASS) |
 | SWEEP-3.f | `facet_by` in a `draw_figures` panel: DELIBERATE clean refusal with actionable message naming the alternative (`adf.draw(expr, facet_by=...)`) and the tracked dfdraw work (`BUG_dfdraw_20260611_facet_by_ax_ignored`, nested sub-gridspec) | **Repair — deferred (already dfdraw-tracked); interim refusal is Preserve-quality** (AD-4 consistent: asymmetry stays a Repair, the loud clean interim refusal needs no new ruling) | `test_sweep3_facet_by_...` (PASS, pins refusal + message) |
 
+### STATE-1 — data-state equivalence rows (increment 7; all Preserve)
+
+| Cell | Statement (executed 2026-07-20) | Test |
+|---|---|---|
+| STATE-1.a | lazy-tree draw stats identical to eager (n exact, mean/std/median 1e-12) | `test_state1_1` (PASS) |
+| STATE-1.b | lazy 2-file chain identical to eager concat, n=400 exact | `test_state1_2` (PASS) |
+| STATE-1.c | O-1 cross-surface oracle holds on the lazy-tree state (draw ≡ draw_batch) | `test_state1_3` (PASS) |
+| STATE-1.d | weighted+selected draw on chain identical to eager | `test_state1_4` (PASS) |
+
+Slot-on-lazy coverage note: per-slot draws on lazy tree/chain (incl.
+`group_by`, `facet_by`, `color`, vector kwargs) are already exercised by the
+13.75 suite's draw section (82 tests, green); STATE-1 adds the cross-state
+numeric equality those tests did not assert.
+
 ## 3. Open cells queue (next characterization increments)
 
 1. ~~SEED-3.e~~ DONE (Q-C resolved by AD-6; acceptance test_seed3_7 strict xfail).
 2. ~~Slot × surface sweep (scalar slots × draw/draw_batch)~~ DONE (SWEEP-1);
    remaining: data states (§8.8: lazy tree, lazy chain, subframes).
-3. `entry_begin/entry_end/entry_mask` layer rows.
+3. `entry_begin/entry_end/entry_mask` layer rows — REMAINING (Gate-A candidate: characterize or explicitly defer with owner).
 4. Modifier precedence rows (§8.7).
 5. `error_owner` sweep (T-G) once O-7 oracle exists.
 

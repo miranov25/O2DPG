@@ -553,3 +553,86 @@ class TestSweep3FiguresColumn:
                     verbose=False)
         finally:
             plt.close("all")
+
+
+# ---------------------------------------------------------------------------
+# STATE-1 — data-state equivalence (last sweep axis, Rev2 §8.8): the same
+# logical data drawn from an eager frame, a lazy tree, and a lazy 2-file
+# chain must yield identical statistics; and the O-1 cross-surface oracle
+# holds on the lazy state too. Fixtures are written per-test via uproot
+# mktree (dict assignment would write RNTuple, not TTree — make_fixtures.py
+# note) with seeded data.
+# ---------------------------------------------------------------------------
+
+uproot = pytest.importorskip("uproot")
+
+
+def _write_tree(path, x, w):
+    with uproot.recreate(path) as f:
+        f.mktree("tree", {"x": "float64", "w": "float64"})
+        f["tree"].extend({"x": x, "w": w})
+
+
+@needs_dfdraw
+class TestState1DataStateEquivalence:
+    @pytest.fixture()
+    def state_fixture(self, tmp_path):
+        rng = np.random.default_rng(20260720)
+        x = rng.normal(0.0, 1.0, 400)
+        w = rng.uniform(0.5, 2.0, 400)
+        p1 = str(tmp_path / "part1.root")
+        p2 = str(tmp_path / "part2.root")
+        _write_tree(p1, x[:250], w[:250])
+        _write_tree(p2, x[250:], w[250:])
+        eager = A.AliasDataFrame(pd.DataFrame({"x": x, "w": w}))
+        return eager, p1, p2
+
+    def test_state1_1_lazy_tree_stats_equal_eager(self, state_fixture):
+        eager, p1, _p2 = state_fixture
+        sub = A.AliasDataFrame(eager.df.iloc[:250].reset_index(drop=True))
+        lazy = A.AliasDataFrame.read_tree_lazy(p1, "tree")
+        _f, _a, s_e = sub.draw("x", type="hist", bins=16)
+        _f2, _a2, s_l = lazy.draw("x", type="hist", bins=16, lazy=True)
+        plt.close("all")
+        assert s_l["n"] == s_e["n"] == 250
+        for key in ("mean", "std", "median"):
+            assert s_l[key] == pytest.approx(s_e[key], rel=1e-12), (
+                f"lazy tree {key} diverges from eager")
+
+    def test_state1_2_lazy_chain_stats_equal_eager_concat(self, state_fixture):
+        eager, p1, p2 = state_fixture
+        chain = A.AliasDataFrame.read_chain_lazy([p1, p2], "tree")
+        _f, _a, s_e = eager.draw("x", type="hist", bins=16)
+        _f2, _a2, s_c = chain.draw("x", type="hist", bins=16, lazy=True)
+        plt.close("all")
+        assert s_c["n"] == s_e["n"] == 400
+        for key in ("mean", "std", "median"):
+            assert s_c[key] == pytest.approx(s_e[key], rel=1e-12), (
+                f"lazy chain {key} diverges from eager concat")
+
+    def test_state1_3_o1_cross_surface_holds_on_lazy_tree(self, state_fixture):
+        _eager, p1, _p2 = state_fixture
+        lazy = A.AliasDataFrame.read_tree_lazy(p1, "tree")
+        _f, _a, s_draw = lazy.draw("x", type="hist", bins=16, lazy=True)
+        res = lazy.draw_batch(
+            {"p": {"expr": "x", "type": "hist", "bins": 16}},
+            lazy=True, verbose=False)
+        plt.close("all")
+        assert res["_summary"]["failed"] == 0, res["_errors"]
+        s_batch = res["p"]["stats"]
+        assert s_batch["n"] == s_draw["n"]
+        for key in ("mean", "std"):
+            assert s_batch[key] == pytest.approx(s_draw[key], rel=1e-12), (
+                f"O-1 on lazy tree: batch {key} diverges from draw")
+
+    def test_state1_4_weighted_selection_equivalence_on_chain(self, state_fixture):
+        eager, p1, p2 = state_fixture
+        chain = A.AliasDataFrame.read_chain_lazy([p1, p2], "tree")
+        kw = {"type": "hist", "bins": 12, "selection": "x>0", "weights": "w"}
+        _f, _a, s_e = eager.draw("x", **kw)
+        _f2, _a2, s_c = chain.draw("x", lazy=True, **kw)
+        plt.close("all")
+        assert s_c["n"] == s_e["n"]
+        for key in ("mean", "std"):
+            assert s_c[key] == pytest.approx(s_e[key], rel=1e-12), (
+                f"chain weighted+selected {key} diverges from eager")
