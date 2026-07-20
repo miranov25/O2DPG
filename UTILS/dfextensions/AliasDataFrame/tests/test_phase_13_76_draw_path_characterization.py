@@ -636,3 +636,89 @@ class TestState1DataStateEquivalence:
         for key in ("mean", "std"):
             assert s_c[key] == pytest.approx(s_e[key], rel=1e-12), (
                 f"chain weighted+selected {key} diverges from eager")
+
+
+# ---------------------------------------------------------------------------
+# ENTRY-1 — entry-selection layer (entry_begin/entry_end/entry_mask),
+# Rev2 §8.4 specification layer. draw and draw_figures implement it
+# (named params; _apply_entry_selection) with exact numerics — Preserve.
+# draw_batch has NO entry layer: the kwargs fall through **kwargs into
+# dfdraw defaults and die inside matplotlib with a raw
+# "Polygon.set() got an unexpected keyword argument 'entry_begin'" —
+# an AD-4 asymmetry => Repair (ADF-owned; natural fix = the Stage-B
+# EffectiveDrawSpec entry layer). Matrix rows ENTRY-1.a-d.
+# ---------------------------------------------------------------------------
+
+@needs_dfdraw
+class TestEntry1EntryLayer:
+    def _adf300(self):
+        rng = np.random.default_rng(3)
+        return A.AliasDataFrame(
+            pd.DataFrame({"x": rng.normal(0.0, 1.0, 300)}))
+
+    def test_entry1_1_draw_window_exact(self):
+        adf = self._adf300()
+        x = adf.df["x"].to_numpy()
+        _f, _a, s = adf.draw("x", type="hist", bins=10,
+                             entry_begin=50, entry_end=150)
+        plt.close("all")
+        assert s["n"] == 100
+        assert s["mean"] == pytest.approx(x[50:150].mean(), rel=1e-12)
+
+    def test_entry1_2_draw_mask_exact(self):
+        adf = self._adf300()
+        x = adf.df["x"].to_numpy()
+        mask = np.zeros(300, bool)
+        mask[::3] = True
+        _f, _a, s = adf.draw("x", type="hist", bins=10, entry_mask=mask)
+        plt.close("all")
+        assert s["n"] == int(mask.sum())
+        assert s["mean"] == pytest.approx(x[mask].mean(), rel=1e-12)
+
+    def test_entry1_3_figures_window_exact(self):
+        adf = self._adf300()
+        x = adf.df["x"].to_numpy()
+        r = adf.draw_figures(
+            [{"name": "f", "ncols": 1,
+              "plots": [{"expr": "x", "type": "hist", "bins": 10}]}],
+            entry_begin=50, entry_end=150, verbose=False)
+        plt.close("all")
+        st = r["f"]["stats"][0]
+        assert st["n"] == 100
+        assert st["mean"] == pytest.approx(x[50:150].mean(), rel=1e-12)
+
+    def test_entry1_4_batch_entry_kwarg_current_matplotlib_crash(self):
+        """Characterization pin of the CURRENT defect symptom (not
+        endorsement): entry kwargs on draw_batch fall through to
+        matplotlib artists. Retire together with the xfail below when the
+        Stage-B entry layer lands."""
+        adf = self._adf300()
+        try:
+            with pytest.raises(Exception,
+                               match="entry_begin"):
+                adf.draw_batch({"p": {"expr": "x", "type": "hist",
+                                      "bins": 10}},
+                               entry_begin=50, entry_end=150,
+                               verbose=False)
+        finally:
+            plt.close("all")
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="ENTRY-1 Repair (owner=ADF, Stage-B EffectiveDrawSpec entry "
+               "layer): draw_batch must honor entry_begin/entry_end/"
+               "entry_mask with the same exact semantics as draw and "
+               "draw_figures (AD-4 symmetry). XPASS on the fix forces "
+               "marker removal; retire the crash pin above in the same "
+               "commit.")
+    def test_entry1_5_batch_window_acceptance(self):
+        adf = self._adf300()
+        x = adf.df["x"].to_numpy()
+        res = adf.draw_batch({"p": {"expr": "x", "type": "hist",
+                                    "bins": 10}},
+                             entry_begin=50, entry_end=150, verbose=False)
+        plt.close("all")
+        assert res["_summary"]["failed"] == 0
+        s = res["p"]["stats"]
+        assert s["n"] == 100
+        assert s["mean"] == pytest.approx(x[50:150].mean(), rel=1e-12)

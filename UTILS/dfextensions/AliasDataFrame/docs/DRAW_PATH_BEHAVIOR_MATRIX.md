@@ -4,7 +4,7 @@
 evidence base for the "source owner" column). One file by architect
 preference, 2026-07-19.*
 
-**Status:** Stage-A working document, increment 7 (data-states axis complete — sweep DONE on all axes).
+**Status:** Stage-A working document, increment 8 — GATE-A CANDIDATE (all axes swept; A7 measured).
 **Governing classification rule:** AD-4/13.76.ADF (symmetry-by-default,
 ratified 2026-07-19, verbatim in `docs/ARCHITECT_DECISIONS.md` v1.3.0):
 observed asymmetry => Repair unless genuinely semantically inapplicable or
@@ -133,12 +133,32 @@ Slot-on-lazy coverage note: per-slot draws on lazy tree/chain (incl.
 13.75 suite's draw section (82 tests, green); STATE-1 adds the cross-state
 numeric equality those tests did not assert.
 
+### ENTRY-1 — entry-selection layer rows (increment 8)
+
+| Cell | Statement (executed 2026-07-20) | Classification | Test |
+|---|---|---|---|
+| ENTRY-1.a/b | `draw`: `entry_begin/entry_end` and `entry_mask` numerically exact (n and mean vs manual slice, 1e-12) | **Preserve** | `test_entry1_1/2` (PASS) |
+| ENTRY-1.c | `draw_figures`: entry window exact via named params + `_apply_entry_selection:15682` | **Preserve** | `test_entry1_3` (PASS) |
+| ENTRY-1.d | `draw_batch`: NO entry layer — signature lacks the params; kwargs fall through to matplotlib, dying with raw `Polygon.set() ... 'entry_begin'` | **Repair** (AD-4 asymmetry; owner ADF; fix = Stage-B EffectiveDrawSpec entry layer) | crash pin `test_entry1_4` (PASS) + acceptance `test_entry1_5` (strict xfail) |
+
+### A7 — duplication-cost measurements (executed 2026-07-20, sandbox; method: helper call-counters + wall time; re-run on alma2 rides in the Gate-A verification block)
+
+| Scenario | struct-catalog ensures | struct rewrites | note |
+|---|---|---|---|
+| `draw` (struct expr, lazy) | 4 | 1 | baseline single surface |
+| `draw_batch` 2 plots (struct, lazy) | **7** | **5** | repeated passes measured, matching the static 3×-sites finding |
+| `draw_figures` 2 plots (struct, lazy) | **7** | **5** | same duplication shape |
+| plain-column draws | 2–6 ensures | 0 rewrites | rewrite engages only with struct data (honest scope note) |
+
+Stage-B §14 target: one ensure + one rewrite per call, identical statistics
+(O-1..O-2, STATE-1), no >10% wall-time regression on the single-plot path.
+
 ## 3. Open cells queue (next characterization increments)
 
 1. ~~SEED-3.e~~ DONE (Q-C resolved by AD-6; acceptance test_seed3_7 strict xfail).
 2. ~~Slot × surface sweep (scalar slots × draw/draw_batch)~~ DONE (SWEEP-1);
    remaining: data states (§8.8: lazy tree, lazy chain, subframes).
-3. `entry_begin/entry_end/entry_mask` layer rows — REMAINING (Gate-A candidate: characterize or explicitly defer with owner).
+3. ~~entry layer rows~~ DONE (ENTRY-1).
 4. Modifier precedence rows (§8.7).
 5. `error_owner` sweep (T-G) once O-7 oracle exists.
 
