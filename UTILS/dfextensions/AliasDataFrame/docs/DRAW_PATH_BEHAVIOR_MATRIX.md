@@ -4,7 +4,7 @@
 evidence base for the "source owner" column). One file by architect
 preference, 2026-07-19.*
 
-**Status:** Stage-A working document, increment 8 — GATE-A CANDIDATE (all axes swept; A7 measured).
+**Status:** Stage-A baseline (Gate-A candidate) + Stage-B fix log (append-only below).
 **Governing classification rule:** AD-4/13.76.ADF (symmetry-by-default,
 ratified 2026-07-19, verbatim in `docs/ARCHITECT_DECISIONS.md` v1.3.0):
 observed asymmetry => Repair unless genuinely semantically inapplicable or
@@ -248,3 +248,22 @@ Countable from this inventory: repeated struct-catalog ensures (2× figures,
 duplicated subframe clusters (8–9 sites/surface). A7 measures wall time and
 call counts for these on representative corpus draws before Stage B, and the
 identical measurement after, feeding the §14 invariants.
+
+
+---
+
+## Stage-B fix log (append-only; each entry names the flipped cells)
+
+### B1 — 2026-07-20 (first production change of the phase)
+
+| Cell | Was | Now | Mechanism |
+|---|---|---|---|
+| SEED-3.c, SEED-3.d | Repair (phantom-`ax` via deepcopy; silent empty caller subplot) | **FIXED** — batch per-spec and defaults `ax` render into the caller's Axes; acceptance `test_seed3_3/4` un-xfailed and PASS | `_structural_copy_spec_tree`: containers copied (13.75 P0-4 no-mutation preserved — 82/82 regression green), non-containers (Axes/Figure/arrays/callables) by reference; applied on BOTH batch and figures surfaces (AD-4 symmetry, figures deepcopy had the same latent shape) |
+| ENTRY-1.d | Repair (no entry layer on batch; raw matplotlib crash) | **FIXED** — `entry_begin/entry_end/entry_mask` are named params routed through `_apply_entry_selection`, identical semantics to draw/figures; acceptance `test_entry1_5` un-xfailed and PASS (n=100, mean exact) | signature + subset base before projection |
+| SEED-3.e1, SEED-3.e2 | Repair (raw TypeError deep in `_draw_single_figure`) | **FIXED** — AD-6 clean ValueError before any figure/axes creation, covering kwargs / defaults / per-figure defaults / per-plot specs, message names the `adf.draw(expr, ax=...)` alternative; acceptance `test_seed3_7` un-xfailed and PASS | early validation block after `_validate_figure_specs` |
+
+Retired with the fixes (pre-declared in their own docstrings): crash pins
+`test_seed3_5`, `test_seed3_6`, `test_entry1_4`. Char suite 45 → 42 tests
+(41 pass + 1 xfail = dfdraw-owned seed1_2). Remaining open Repairs: AD-5
+bins×scatter + SEED-2 top_k (dfdraw-owned, tracker), R-1/R-2 (awaiting
+architect ruling), consolidation proper (§14 one-ensure-one-rewrite).

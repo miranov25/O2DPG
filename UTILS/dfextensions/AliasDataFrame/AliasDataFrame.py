@@ -15095,6 +15095,22 @@ function collapseDepth(maxD) {{
             else:
                 help(func)
 
+    def _structural_copy_spec_tree(self, obj):
+        """PHASE_13_76_ADF B1 (SEED-3.c/d, AD-4): structural copy for draw
+        specs/defaults. Copies dict/list/tuple CONTAINERS recursively so the
+        caller's containers are never mutated (13.75 Delta-2 P0-4 contract);
+        every non-container value — matplotlib Axes/Figure, numpy arrays,
+        callables, scalars — is kept BY REFERENCE. deepcopy here was the
+        SEED-3.c/d root cause: cloned Axes became disconnected phantoms and
+        caller subplots silently stayed empty."""
+        if isinstance(obj, dict):
+            return {k: self._structural_copy_spec_tree(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [self._structural_copy_spec_tree(v) for v in obj]
+        if isinstance(obj, tuple):
+            return tuple(self._structural_copy_spec_tree(v) for v in obj)
+        return obj
+
     def draw_batch(self,
                    specs,
                    save_dir=None,
@@ -15102,6 +15118,9 @@ function collapseDepth(maxD) {{
                    *,
                    clear_after=None,
                    lazy=None,
+                   entry_begin: int = None,
+                   entry_end: int = None,
+                   entry_mask: np.ndarray = None,
                    on_error: str = 'raise',  # PHASE_13_55_ADF A-7 (§11.4 Option A): was 'skip'; opt back in with on_error='skip'
                    verbose: bool = True,
                    **kwargs):
@@ -15134,12 +15153,19 @@ function collapseDepth(maxD) {{
             adf.draw_batch(specs, save_dir='qa/', defaults={'stats': True})
         """
         # PHASE_13_75_ADF DELTA-2 P0-4: caller-owned specifications and defaults
-        # are NEVER mutated — the entire merge/rewrite/projection/delegation
-        # chain operates on deep local copies.
-        import copy as _copy
-        specs = _copy.deepcopy(specs)
+        # are NEVER mutated — the merge/rewrite/projection/delegation chain
+        # operates on local copies.
+        # PHASE_13_76_ADF B1 (SEED-3.c/d fix, AD-4 symmetry): the copy is
+        # STRUCTURAL, not deep — dict/list/tuple containers are copied
+        # (preserving the P0-4 no-mutation contract, which concerns container
+        # entries), while non-container values (matplotlib Axes/Figure,
+        # arrays, callables) are kept BY REFERENCE. The previous
+        # copy.deepcopy cloned caller Axes into disconnected phantoms
+        # carrying their own Figure: dfdraw rendered into the phantom and
+        # the caller's subplot stayed empty with zero diagnostics.
+        specs = self._structural_copy_spec_tree(specs)
         if isinstance(defaults, dict):
-            defaults = _copy.deepcopy(defaults)
+            defaults = self._structural_copy_spec_tree(defaults)
         # PHASE_13_75_ADF P0-2 (early, before ANY defaults/kwargs snapshot):
         # struct refs arriving via defaults or top-level kwargs are loaded and
         # rewritten here so every later merged view sees internal names.
@@ -15277,7 +15303,18 @@ function collapseDepth(maxD) {{
         # all specs, materialize as temporary columns, rewrite expressions.
         # =================================================================
         subframe_replacements = {}
-        df_for_plot = self.df
+        # PHASE_13_76_ADF B1 (ENTRY-1.d, AD-4 symmetry): draw_batch honors
+        # entry_begin/entry_end/entry_mask with the SAME semantics as draw and
+        # draw_figures (_apply_entry_selection: iloc window / boolean mask /
+        # integer indices; range+mask together = ValueError). Previously these
+        # kwargs fell through **kwargs into matplotlib and died with a raw
+        # "Polygon.set() got an unexpected keyword argument 'entry_begin'".
+        if (entry_begin is not None or entry_end is not None
+                or entry_mask is not None):
+            df_for_plot = self._apply_entry_selection(
+                entry_begin, entry_end, entry_mask)
+        else:
+            df_for_plot = self.df
         # D-ADF-DICT (Phase 13.61.ADF): project to the UNION of columns needed
         # across all specs, built ONCE per batch (materialize-once contract).
         # The big frame is never copied or grown; the subframe merge below adds
@@ -15526,12 +15563,19 @@ function collapseDepth(maxD) {{
             Plot specs support short form: 'column' expands to {'expr': 'column'}
         """
         # PHASE_13_75_ADF DELTA-2 P0-4: caller-owned specifications and defaults
-        # are NEVER mutated — the entire merge/rewrite/projection/delegation
-        # chain operates on deep local copies.
-        import copy as _copy
-        specs = _copy.deepcopy(specs)
+        # are NEVER mutated — the merge/rewrite/projection/delegation chain
+        # operates on local copies.
+        # PHASE_13_76_ADF B1 (SEED-3.c/d fix, AD-4 symmetry): the copy is
+        # STRUCTURAL, not deep — dict/list/tuple containers are copied
+        # (preserving the P0-4 no-mutation contract, which concerns container
+        # entries), while non-container values (matplotlib Axes/Figure,
+        # arrays, callables) are kept BY REFERENCE. The previous
+        # copy.deepcopy cloned caller Axes into disconnected phantoms
+        # carrying their own Figure: dfdraw rendered into the phantom and
+        # the caller's subplot stayed empty with zero diagnostics.
+        specs = self._structural_copy_spec_tree(specs)
         if isinstance(defaults, dict):
-            defaults = _copy.deepcopy(defaults)
+            defaults = self._structural_copy_spec_tree(defaults)
         # PHASE_13_75_ADF P0-2 (early, before ANY defaults/kwargs snapshot):
         # struct refs arriving via defaults or top-level kwargs are loaded and
         # rewritten here so every later merged view sees internal names.
@@ -15567,6 +15611,33 @@ function collapseDepth(maxD) {{
         
         # Validate specs structure
         self._validate_figure_specs(specs)
+
+        # AD-6/13.76.ADF: draw_figures composes its own figure and axes grid
+        # and cannot render into caller-supplied Axes — reject LOUDLY before
+        # any figure/axes creation. Previously both forms crashed deep inside
+        # _draw_single_figure with a raw TypeError ("multiple values for
+        # 'ax'"). A figure=/axes= embedding API is tracked separately.
+        _ad6_msg = (
+            "draw_figures composes its own figure and axes grid and cannot "
+            "render into caller-supplied Axes; remove 'ax' from {where}. To "
+            "render a single plot into your own Axes use "
+            "adf.draw(expr, ax=...). (AD-6/13.76.ADF)")
+        if 'ax' in kwargs:
+            raise ValueError(_ad6_msg.format(where="the draw_figures kwargs"))
+        if isinstance(defaults, dict) and 'ax' in defaults:
+            raise ValueError(_ad6_msg.format(where="defaults"))
+        for _fs_ad6 in (specs or []):
+            if not isinstance(_fs_ad6, dict):
+                continue
+            if isinstance(_fs_ad6.get('defaults'), dict) \
+                    and 'ax' in _fs_ad6['defaults']:
+                raise ValueError(_ad6_msg.format(
+                    where=f"figure '{_fs_ad6.get('name', '?')}' defaults"))
+            for _pl_ad6 in _fs_ad6.get('plots', []) or []:
+                if isinstance(_pl_ad6, dict) and 'ax' in _pl_ad6:
+                    raise ValueError(_ad6_msg.format(
+                        where=f"a plot spec of figure "
+                              f"'{_fs_ad6.get('name', '?')}'"))
         
         # Resolve parameters with 3-level precedence
         effective_lazy = self._resolve_draw_param(lazy, 'lazy')

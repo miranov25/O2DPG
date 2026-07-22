@@ -109,13 +109,6 @@ class TestSeed3AxIdentity:
         finally:
             plt.close("all")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="SEED-3.c Repair pending: draw_batch deep-copies specs, so a "
-               "per-spec ax is replaced by a disconnected phantom Axes "
-               "(silent; caller subplot stays empty). Fix lands in Stage B "
-               "structural-copy normalizer (Rev2 §9); on fix this XPASSes "
-               "strictly and the marker must be removed.")
     def test_seed3_3_draw_batch_per_spec_ax_renders_into_caller_axes(self):
         adf = _mini_adf()
         fig, ax = plt.subplots()
@@ -126,13 +119,6 @@ class TestSeed3AxIdentity:
         finally:
             plt.close("all")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="SEED-3.d Repair pending: draw_batch deep-copies defaults, so "
-               "defaults={'ax': ...} is replaced by a disconnected phantom "
-               "Axes (silent). Fix lands in Stage B structural-copy "
-               "normalizer (Rev2 §9); on fix this XPASSes strictly and the "
-               "marker must be removed.")
     def test_seed3_4_draw_batch_defaults_ax_renders_into_caller_axes(self):
         adf = _mini_adf()
         fig, ax = plt.subplots()
@@ -214,40 +200,6 @@ class TestSeed1BinsScatter:
 
 @needs_dfdraw
 class TestSeed3eDrawFiguresAx:
-    def test_seed3_5_draw_figures_per_plot_ax_current_typeerror(self):
-        adf = _mini_adf()
-        fig, ax = plt.subplots()
-        try:
-            with pytest.raises(TypeError, match="multiple values.*'ax'"):
-                adf.draw_figures(
-                    [{"name": "f1", "ncols": 1,
-                      "plots": [{"expr": "x", "type": "hist", "ax": ax}]}],
-                    verbose=False)
-        finally:
-            plt.close("all")
-
-    def test_seed3_6_draw_figures_defaults_ax_current_typeerror(self):
-        adf = _mini_adf()
-        fig, ax = plt.subplots()
-        try:
-            with pytest.raises(TypeError, match="multiple values.*'ax'"):
-                adf.draw_figures(
-                    [{"name": "f2", "ncols": 1,
-                      "plots": [{"expr": "y", "type": "hist"}]}],
-                    defaults={"ax": ax}, verbose=False)
-        finally:
-            plt.close("all")
-
-    @pytest.mark.xfail(
-        strict=True,
-        reason="AD-6/13.76.ADF acceptance (Repair, owner=ADF, fix in Stage B "
-               "spec validation): draw_figures must reject caller-supplied "
-               "ax with a clean ValueError BEFORE any figure/axes creation, "
-               "naming draw/draw_batch as the caller-owned-axes "
-               "alternatives - replacing today's raw TypeError keyword "
-               "collision. When the Stage-B fix lands this XPASSes; remove "
-               "the marker and retire the two TypeError crash-pin tests "
-               "above in the same commit.")
     def test_seed3_7_draw_figures_ax_rejected_with_clean_valueerror(self):
         adf = _mini_adf()
         fig, ax = plt.subplots()
@@ -687,30 +639,6 @@ class TestEntry1EntryLayer:
         assert st["n"] == 100
         assert st["mean"] == pytest.approx(x[50:150].mean(), rel=1e-12)
 
-    def test_entry1_4_batch_entry_kwarg_current_matplotlib_crash(self):
-        """Characterization pin of the CURRENT defect symptom (not
-        endorsement): entry kwargs on draw_batch fall through to
-        matplotlib artists. Retire together with the xfail below when the
-        Stage-B entry layer lands."""
-        adf = self._adf300()
-        try:
-            with pytest.raises(Exception,
-                               match="entry_begin"):
-                adf.draw_batch({"p": {"expr": "x", "type": "hist",
-                                      "bins": 10}},
-                               entry_begin=50, entry_end=150,
-                               verbose=False)
-        finally:
-            plt.close("all")
-
-    @pytest.mark.xfail(
-        strict=True,
-        reason="ENTRY-1 Repair (owner=ADF, Stage-B EffectiveDrawSpec entry "
-               "layer): draw_batch must honor entry_begin/entry_end/"
-               "entry_mask with the same exact semantics as draw and "
-               "draw_figures (AD-4 symmetry). XPASS on the fix forces "
-               "marker removal; retire the crash pin above in the same "
-               "commit.")
     def test_entry1_5_batch_window_acceptance(self):
         adf = self._adf300()
         x = adf.df["x"].to_numpy()
