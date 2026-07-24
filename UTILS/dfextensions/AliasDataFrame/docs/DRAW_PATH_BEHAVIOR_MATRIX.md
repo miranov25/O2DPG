@@ -267,3 +267,83 @@ Retired with the fixes (pre-declared in their own docstrings): crash pins
 (41 pass + 1 xfail = dfdraw-owned seed1_2). Remaining open Repairs: AD-5
 bins×scatter + SEED-2 top_k (dfdraw-owned, tracker), R-1/R-2 (awaiting
 architect ruling), consolidation proper (§14 one-ensure-one-rewrite).
+
+
+### B2 — 2026-07-22 (consolidation: one preparation pass per draw call) — **SUPERSEDED** (the cache described here was reduced to counters-only on 2026-07-24; one-pass-per-call arrives with B3.2; see the correction entries below)
+
+Plain-language summary: before this change, one call to the multi-plot
+drawing functions repeated the same internal preparation work several times —
+the "struct catalog" check (which hashes the full branch list and scans
+columns) ran 7 times and the expression rewrite ran 5 times for a two-plot
+batch. Now each runs once per call: the three drawing entry points open a
+small per-call scope, and repeat invocations find the work already done. No
+code was removed — every existing call site still runs, later calls are
+simply free. Measured after: catalog 1× (was 7×), rewrites 3× (was 5×; three
+is correct — two plot dictionaries plus the shared defaults dictionary, one
+rewrite each). Numbers proven unchanged by the full oracle battery
+(cross-surface, policy-independence, data-state equivalence) plus the 13.75
+and 13.66 regression suites. Executable contract: TestB2ConsolidationContract
+(4 tests) asserts the exact counts and result identity.
+
+
+### B3.1 — 2026-07-23 (first pipeline owners, on draw) — **SUPERSEDED IN PART** (public exports reverted, records privatized and purified on 2026-07-24; see the correction entries below)
+
+Plain-language summary: two small classes now own what used to be loose code
+at the top of draw(). DrawExecutionPolicy owns the flag resolution (call
+argument beats instance setting beats default). EffectiveDrawSpec owns the
+normalized plot request: it runs the vector-parameter normalization exactly
+once and is the single source for every "which parameters may reference
+columns" question — its slot list explicitly contains the four parameters
+historical scans kept missing (facet_by, weights, weights_vector,
+selection_vector), pinned by test. draw() builds both records and feeds its
+existing body from them. The pre-B3 inline code is kept VERBATIM behind the
+environment switch ADF_B3_OLD_DRAW_PATH=1 for head-to-head testing and is
+removed in step B3.4. Proof: old and new paths produce identical statistics
+on four request shapes plus lazy struct data, and the real helper methods
+are called the same number of times under both paths — counted by wrapping
+the real methods (independent oracle, per the GPT24 review), not by reading
+the implementation's own counters. TestB31EffectiveSpecOnDraw, 7 tests.
+
+
+### B3.1 correction pass — 2026-07-24 (GPT24 [!] + GPT25 [X] pre-commit reviews applied)
+
+Plain-language summary of the four corrections. First: the two new pipeline
+records are PRIVATE (_EffectiveDrawSpec, _DrawExecutionPolicy) — the phase
+introduces no new public API; the package export added earlier is reverted
+and tests import the implementation module directly. Second: building the
+specification record is now PURE — it loads nothing, materializes nothing,
+mutates nothing (enforced by a test); the effect-producing normalization
+stays an explicit draw()-side step until the B3.2 executor becomes its
+proper owner. Third: the B2 cache's early-returns were behavior-changing
+suppression, not instrumentation — they are REMOVED; only counters remain,
+and the three one-pass count tests are converted to strict expected-failure
+acceptance tests that will turn green when B3.2 makes one-pass preparation
+true by construction. Fourth, smaller items: the old-path environment
+switch now requires exactly the value "1"; the subframe pre-scan text is
+derived from the single slot list and covers the vector slots (proven by a
+source-derived marker test); and spec-construction purity has its own test.
+Suite shape: 51 passed / 4 expected-failures, identical under module-style
+and package-style imports.
+
+
+### B3.1 second correction pass — 2026-07-24 (Main-Reviewer reversal synthesis applied)
+
+Plain-language summary. Dead machinery from the removed suppression logic
+(the rewritten-identifiers set: built, appended, discarded, never read) is
+deleted entirely, and the per-call-scope docstring now states the truth:
+counters only, nothing suppressed, every call executes. The pre-scan text
+builder is type-safe — only real strings and string elements of lists reach
+the join; a numpy array in a vector slot previously crashed with "truth
+value of an array is ambiguous" and now cannot (test with array-valued
+slots). The draw() path's pre-scan is byte-equivalent to the old path
+(scalar slots only) — widening it to vector slots is a behavior change and
+lands with its owner in B3.2; a test captures the pre-scan argument under
+both paths and asserts equality. GPT27's ordering question is answered by
+execution: subframe-qualified references inside vector slots are refused by
+the EXISTING tracked guard (BUG_20260701_ADF_subframe_ref_slot_symmetry)
+with the identical message under both paths, before any materialization —
+pinned by test. The specification record now holds a structural copy of the
+style dictionary: rewriting the caller's dict after construction cannot
+alter the record (isolation test). The old/new equivalence oracle compares
+every returned channel, not just the first. Suite: 54 passed / 4 expected
+failures, identical under module-style and package-style imports.

@@ -903,6 +903,142 @@ class _ReadOnlyConstantAliasSet(set):
         return (_ReadOnlyConstantAliasSet, (set(self), self._msg))
 
 
+def _structural_copy_tree(obj):
+    """Copy dict/list/tuple containers recursively; keep every non-container
+    value (arrays, Axes, callables, scalars) by reference. Shared by the
+    draw pipeline records and the batch/figures spec copies."""
+    if isinstance(obj, dict):
+        return {k: _structural_copy_tree(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_structural_copy_tree(v) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_structural_copy_tree(v) for v in obj)
+    return obj
+
+
+class _DrawExecutionPolicy:
+    """PHASE_13_76_ADF B3.1 (Proposal Rev 2 §11.2). The resolved execution
+    flags for ONE draw call — the single owner of the three-level precedence
+    (call argument > instance attribute > class default) that was previously
+    re-derived ad hoc inside each drawing function.
+
+    Fields: lazy (auto-materialize aliases during the draw),
+    keep_materialized (keep what the draw materialized afterwards),
+    clear_after (drop loaded branches afterwards; batch/figures use it).
+    """
+
+    __slots__ = ("lazy", "keep_materialized", "clear_after")
+
+    def __init__(self, lazy, keep_materialized, clear_after):
+        self.lazy = lazy
+        self.keep_materialized = keep_materialized
+        self.clear_after = clear_after
+
+    @classmethod
+    def resolve(cls, adf, lazy=None, keep_materialized=None, clear_after=None):
+        return cls(
+            lazy=adf._resolve_draw_param(lazy, 'lazy'),
+            keep_materialized=adf._resolve_draw_param(
+                keep_materialized, 'keep_materialized'),
+            clear_after=adf._resolve_draw_param(clear_after, 'clear_after'),
+        )
+
+
+class _EffectiveDrawSpec:
+    """PHASE_13_76_ADF B3.1 (Proposal Rev 2 §11.1). One normalized record of
+    everything the user asked for in ONE plot request, and the single place
+    where the request is normalized.
+
+    The record is PURE and ISOLATED: constructing it performs no loading,
+    no materialization, and no mutation (enforced by test), and it holds a
+    structural copy of the style dictionary, so later rewrites of the
+    caller's dict cannot alter the record (also enforced by test). The
+    normalization itself remains a separate, explicitly-owned step.
+
+    The slot accessors are the ONE source for "which parameters can carry
+    column references" — including facet_by, weights, weights_vector and
+    selection_vector, the parameters that were historically missed by
+    branch-requirement scans (behavior matrix; Phase 13.58 gap record).
+    """
+
+    SLOT_NAMES = ('selection', 'group_by', 'color', 'facet_by', 'weights',
+                  'weights_vector', 'selection_vector')
+
+    __slots__ = ("expr", "plot_type", "style",
+                 "entry_begin", "entry_end", "entry_mask")
+
+    def __init__(self, expr, plot_type, style,
+                 entry_begin=None, entry_end=None, entry_mask=None):
+        self.expr = expr
+        self.plot_type = plot_type
+        # ISOLATED copy (GPT25 item 4): containers are structurally
+        # copied so later rewrites of the caller's dictionary — or of the
+        # kwargs flowing on to dfdraw — cannot alter this record;
+        # non-container values (arrays, Axes, callables) stay by reference.
+        self.style = _structural_copy_tree(style)
+        self.entry_begin = entry_begin
+        self.entry_end = entry_end
+        self.entry_mask = entry_mask
+
+    @classmethod
+    def from_call(cls, expr, plot_type, kwargs,
+                  entry_begin=None, entry_end=None, entry_mask=None):
+        """Build the effective specification for one draw call. PURE by
+        contract (GPT25 pre-commit review, blocking finding 1): no ADF
+        instance argument, no branch loading, no alias materialization, no
+        subframe joining, no mutation of anything. Effect-producing
+        normalization stays a draw()-side step until the B3.2 dependency-
+        plan/executor gives it its proper owner."""
+        return cls(expr, plot_type, kwargs,
+                   entry_begin=entry_begin, entry_end=entry_end,
+                   entry_mask=entry_mask)
+
+    # --- slot access (always through the live, normalized style dict) ---
+    def slot(self, name):
+        return self.style.get(name)
+
+    def slots(self):
+        """The full slot mapping, one source for every consumer."""
+        return {name: self.style.get(name) for name in self.SLOT_NAMES}
+
+    def required_branch_kwargs(self):
+        """Exactly the keyword set get_required_branches needs — derived
+        from SLOT_NAMES so a future slot addition cannot silently diverge
+        between the scan and the specification."""
+        out = {'expr': self.expr}
+        out.update(self.slots())
+        return out
+
+    SCALAR_SLOT_NAMES = ('selection', 'group_by', 'color', 'facet_by',
+                         'weights')
+
+    def reference_text_blob(self, include_vector_slots=True):
+        """Textual fields that can reference subframes/columns, joined for
+        the subframe-reference pre-scan; derived from the single slot list.
+        TYPE-SAFE (GPT27 correction): only real strings and string elements
+        of lists/tuples reach the join — arrays, Series, callables and other
+        objects are ignored, never truth-tested or stringified (a numpy
+        array here previously raised "truth value ... is ambiguous").
+        include_vector_slots=False reproduces the pre-B3.1 scalar-only scan
+        EXACTLY; the draw() path uses that until the B3.2 dependency plan
+        owns vector-slot dependencies (the widened scan is a behavior
+        change, not restructuring, and lands with its owner)."""
+        names = (self.SLOT_NAMES if include_vector_slots
+                 else self.SCALAR_SLOT_NAMES)
+        parts = [self.expr] if isinstance(self.expr, str) else []
+        for name in names:
+            v = self.style.get(name)
+            if isinstance(v, str):
+                parts.append(v)
+            elif isinstance(v, (list, tuple)):
+                parts.extend(e for e in v if isinstance(e, str))
+        return ' '.join(t for t in parts if t)
+
+    def has_entry_selection(self):
+        return (self.entry_begin is not None or self.entry_end is not None
+                or self.entry_mask is not None)
+
+
 class AliasDataFrame:
     """
     AliasDataFrame allows for defining and evaluating lazy-evaluated column aliases
@@ -1798,6 +1934,12 @@ class AliasDataFrame:
         (A-1 / autoload), so no scatter — unlike subframes."""
         if not self._structs:
             return
+        # PHASE_13_76_ADF temporary instrumentation: count every real
+        # rewrite-helper invocation. No work is cached or suppressed.
+        # B3.2 will make one rewrite pass per call true by construction.
+        _prep = getattr(self, "_draw_prep", None)
+        if _prep is not None:
+            _prep["rewrite_full_runs"] += 1
         for _slot in ('expr', 'selection', 'group_by', 'weights', 'facet_by', 'color'):
             v = d.get(_slot)
             if isinstance(v, str):
@@ -1986,6 +2128,32 @@ class AliasDataFrame:
         (PHASE_13_75_ADF: unknown is never scalar)."""
         return self._branch_shape(physical_name) == "scalar"
 
+    @staticmethod
+    def _draw_prep_scoped(fn):
+        """PHASE_13_76_ADF: per-call COUNTERS, nothing else. The three
+        drawing entry points open a small scope that counts how many times
+        the struct-catalog check and the specification rewrite actually run
+        during one user call. NOTHING is suppressed or skipped — every call
+        site executes its full work every time. The counts land in
+        _last_draw_prep_stats at scope exit. One preparation pass per call
+        becomes true BY CONSTRUCTION in increment B3.2 (dependency plan +
+        single side-effect executor); these counters are the measurement,
+        and the strict expected-failure acceptance tests read them."""
+        import functools
+
+        @functools.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            if getattr(self, "_draw_prep", None) is not None:
+                return fn(self, *args, **kwargs)   # inner call: reuse scope
+            self._draw_prep = {"catalog_full_runs": 0,
+                               "rewrite_full_runs": 0}
+            try:
+                return fn(self, *args, **kwargs)
+            finally:
+                self._last_draw_prep_stats = self._draw_prep
+                self._draw_prep = None
+        return wrapper
+
     def _ensure_struct_catalog(self):
         """PHASE_13_75_ADF D1: idempotent automatic struct-catalog lifecycle.
 
@@ -1999,6 +2167,12 @@ class AliasDataFrame:
         (constructor initial branches, D4): 'struct/member' df columns are
         renamed to internal 'member__struct' for registered members.
         """
+        # PHASE_13_76_ADF temporary instrumentation: count every real
+        # catalog-helper invocation before the existing Phase-13.75
+        # fingerprint logic. This adds no per-call cache or suppression.
+        _prep = getattr(self, "_draw_prep", None)
+        if _prep is not None:
+            _prep["catalog_full_runs"] += 1
         reader = getattr(self, "_lazy_reader", None)
         if reader is None:
             return self
@@ -13924,6 +14098,7 @@ function collapseDepth(maxD) {{
                             "(BUG_20260701_ADF_subframe_ref_slot_symmetry).".format(tok, slot_name)
                         )
 
+    @_draw_prep_scoped.__func__
     def draw(self,
              expr: str,
              type: str = 'auto',
@@ -13992,44 +14167,68 @@ function collapseDepth(maxD) {{
                 "dfdraw package not found. Install it or ensure it's in your path."
             )
         
-        # Resolve parameters with 3-level precedence
-        effective_lazy = self._resolve_draw_param(lazy, 'lazy')
-        effective_keep = self._resolve_draw_param(keep_materialized, 'keep_materialized')
-        
-        # Phase 13.35.ADF: pre-materialize aliases referenced in vector kwargs
-        # (selection_vector / weights_vector / facet_by). MUST be early — before
-        # any df_subset construction or DFDraw(df_subset) init — otherwise
-        # downstream copies of self.df won't see the materialized columns.
-        # Phase B will fold this into AST resolver consolidation.
-        self._ensure_vector_kwargs_aliases(kwargs)
-        # Phase 13.35.ADF: auto-force vector_compose='outer' for single-Y +
-        # N-element selection_vector/weights_vector. Closes the §1.4 production
-        # ergonomic gap (otherwise users hit dfdraw AD-67 ValueError).
-        self._normalize_vector_compose_kwargs(kwargs, expr=expr)
-        
+        # ------------------------------------------------------------------
+        # PHASE_13_76_ADF B3.1: request normalization and flag resolution are
+        # owned by _EffectiveDrawSpec and _DrawExecutionPolicy (private records) (Rev 2 §11.1/2).
+        # The pre-B3 inline path is kept VERBATIM behind the environment
+        # switch ADF_B3_OLD_DRAW_PATH=1 for A/B equivalence testing only and
+        # is removed in step B3.4.
+        # ------------------------------------------------------------------
+        _required_branches = None
+        if os.environ.get('ADF_B3_OLD_DRAW_PATH') == '1':
+            # --- OLD PATH (verbatim pre-B3.1 behavior) ---
+            effective_lazy = self._resolve_draw_param(lazy, 'lazy')
+            effective_keep = self._resolve_draw_param(keep_materialized, 'keep_materialized')
+            self._ensure_vector_kwargs_aliases(kwargs)
+            self._normalize_vector_compose_kwargs(kwargs, expr=expr)
+            if self._lazy_reader is not None:
+                self._lazy_ensure_subframe_refs(' '.join(str(t) for t in [
+                    expr, kwargs.get('selection'), kwargs.get('group_by'), kwargs.get('color'),
+                    kwargs.get('facet_by'), kwargs.get('weights')] if t))
+                _required_branches = self.get_required_branches(
+                    expr=expr,
+                    selection=kwargs.get('selection'),
+                    group_by=kwargs.get('group_by'),
+                    color=kwargs.get('color'),
+                    facet_by=kwargs.get('facet_by'),
+                    weights=kwargs.get('weights'),
+                    weights_vector=kwargs.get('weights_vector'),
+                    selection_vector=kwargs.get('selection_vector')
+                )
+        else:
+            # --- NEW PATH: the two Rev-2 §11 owners ---
+            _policy = _DrawExecutionPolicy.resolve(
+                self, lazy=lazy, keep_materialized=keep_materialized)
+            effective_lazy = _policy.lazy
+            effective_keep = _policy.keep_materialized
+            # Effect-producing normalization: an explicit draw-side step
+            # (same two calls as the old path); its proper owner arrives with
+            # the B3.2 dependency-plan/executor.
+            self._ensure_vector_kwargs_aliases(kwargs)
+            self._normalize_vector_compose_kwargs(kwargs, expr=expr)
+            _espec = _EffectiveDrawSpec.from_call(
+                expr, type, kwargs,
+                entry_begin=entry_begin, entry_end=entry_end,
+                entry_mask=entry_mask)
+            if self._lazy_reader is not None:
+                # Phase 13.58 subframe pre-scan, fed from the one record.
+                # include_vector_slots=False: byte-equivalent to the old
+                # path's scalar-only scan (GPT27 item 3 — widening the scan
+                # is a B3.2-owned behavior change, not B3.1 restructuring).
+                self._lazy_ensure_subframe_refs(
+                    _espec.reference_text_blob(include_vector_slots=False))
+                _required_branches = self.get_required_branches(
+                    **_espec.required_branch_kwargs())
+
         # =================================================================
-        # Phase 7.3: Auto-load branches in lazy mode
+        # Phase 7.3: Auto-load branches in lazy mode (shared tail; identical
+        # under both request-normalization paths above)
         # =================================================================
-        if self._lazy_reader is not None:
-            # Phase 13.58: materialize any lazy subframes referenced in the expr/kwargs
-            # BEFORE branch detection, so the analyzer and the subframe merge recognize them.
-            self._lazy_ensure_subframe_refs(' '.join(str(t) for t in [
-                expr, kwargs.get('selection'), kwargs.get('group_by'), kwargs.get('color'),
-                kwargs.get('facet_by'), kwargs.get('weights')] if t))
-            # Detect required branches from expression and parameters
-            required_branches = self.get_required_branches(
-                expr=expr,
-                selection=kwargs.get('selection'),
-                group_by=kwargs.get('group_by'),
-                color=kwargs.get('color'),
-                facet_by=kwargs.get('facet_by'),
-                weights=kwargs.get('weights'),
-                weights_vector=kwargs.get('weights_vector'),
-                selection_vector=kwargs.get('selection_vector')
-            )
+        if _required_branches is not None:
+            required_branches = _required_branches
             # Load any branches not already loaded
             branches_to_load = required_branches - self._lazy_reader.loaded_branches
-            
+
             # Phase 6.8a fix: Filter out subframe names (they are not TTree branches)
             all_subframes = set(self._subframes.subframes.keys()) | set(getattr(self, '_subframe_readers', {}).keys())
             branches_to_load = branches_to_load - all_subframes
@@ -14037,7 +14236,7 @@ function collapseDepth(maxD) {{
             # merge below, not loadable as main-tree branches.
             branches_to_load = {b for b in branches_to_load
                                 if not ("." in b and b.split(".", 1)[0] in all_subframes)}
-            
+
             if branches_to_load:
                 self.ensure_branches(list(branches_to_load))
         # =================================================================
@@ -15103,14 +15302,11 @@ function collapseDepth(maxD) {{
         callables, scalars — is kept BY REFERENCE. deepcopy here was the
         SEED-3.c/d root cause: cloned Axes became disconnected phantoms and
         caller subplots silently stayed empty."""
-        if isinstance(obj, dict):
-            return {k: self._structural_copy_spec_tree(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [self._structural_copy_spec_tree(v) for v in obj]
-        if isinstance(obj, tuple):
-            return tuple(self._structural_copy_spec_tree(v) for v in obj)
-        return obj
+        # One owner: delegates to the module-level _structural_copy_tree
+        # (GPT24/GPT27 round-3 consolidation).
+        return _structural_copy_tree(obj)
 
+    @_draw_prep_scoped.__func__
     def draw_batch(self,
                    specs,
                    save_dir=None,
@@ -15496,6 +15692,7 @@ function collapseDepth(maxD) {{
     # Phase 12.4b1: draw_figures() - Composed multi-subplot figures
     # =========================================================================
 
+    @_draw_prep_scoped.__func__
     def draw_figures(
         self,
         specs: list,
