@@ -18,8 +18,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import schema  # noqa: E402
+# [Increment 1, T-P3] no sys.path manipulation - see run_metrics.py
+try:
+    from . import schema
+except ImportError:
+    import schema  # noqa: E402
 
 # column -> (meaning, healthy expectation, affected signature)
 DOC = {

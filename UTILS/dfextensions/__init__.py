@@ -1,27 +1,9 @@
+"""dfextensions - Python extensions for ALICE physics data analysis.
+
+Namespace package root.  Declared so that the subprojects below it
+(``diagnostics`` and its siblings) are importable through canonical package
+paths such as ``from dfextensions.diagnostics import RunMetrics`` rather than
+through manual manipulation of Python's module search path.
+
+[PHASE_13_74_ADF Increment 1, deliverable D0]
 """
-dfextensions - DataFrame extensions and utilities.
-
-Main packages:
-- AliasDataFrame: Lazy-evaluated DataFrame with compression support
-- groupby_regression: Grouped regression utilities
-- quantile_fit_nd: N-dimensional quantile fitting
-- dataframe_utils: Plotting and statistics utilities
-- formula_utils: Formula-based modeling and code export
-"""
-
-# Main packages
-from .AliasDataFrame import AliasDataFrame, CompressionState
-from .groupby_regression import *  # Includes GroupByRegressor
-
-# Utilities (moved to subdirectories)
-from .dataframe_utils import *
-from .formula_utils import FormulaLinearModel
-
-__all__ = [
-    "AliasDataFrame",
-    "CompressionState",
-    "FormulaLinearModel",
-    "GroupByRegressor",  # from groupby_regression
-]
-
-__version__ = '1.1.0'

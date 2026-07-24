@@ -24,20 +24,54 @@ from __future__ import annotations
 import json
 import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 os.environ.setdefault("MPLBACKEND", "Agg")   # headless rendering (D4 contract)
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-# adf.draw imports dfextensions.dfdraw -> the PARENT of dfextensions must be on
-# sys.path when this file is run as a plain script (pytest adds it, CLI doesn't)
-_UTILS = Path(__file__).resolve().parent.parent.parent
-if (_UTILS / "dfextensions" / "dfdraw").is_dir():
-    sys.path.insert(0, str(_UTILS))
-import schema  # noqa: E402
-import audit as audit_mod  # noqa: E402
-import job_host_analysis as jha_mod  # noqa: E402
-import conclusion_model as cm_mod  # noqa: E402
+# Sibling modules [Increment 1, T-P1/T-P3]: package-relative when imported as
+# part of dfextensions.diagnostics; plain import when this file is run directly
+# as a script - Python itself puts the script's directory on sys.path in that
+# case, so NO manual path insertion is needed and none is performed here.
+try:                                            # package context
+    from . import schema
+    from . import audit as audit_mod
+    from . import job_host_analysis as jha_mod
+    from . import conclusion_model as cm_mod
+except ImportError:                             # plain-script context
+    import schema  # noqa: E402
+    import audit as audit_mod  # noqa: E402
+    import job_host_analysis as jha_mod  # noqa: E402
+    import conclusion_model as cm_mod  # noqa: E402
+
+# The single controlled fallback for the OPTIONAL analysis stack
+# [architect ruling 2026-07-22]: AliasDataFrame and dfextensions.dfdraw are not
+# required to collect data, only to render.  When ordinary package resolution
+# does not find them, this helper adds candidate locations for the duration of
+# the import or draw call ONLY, and restores sys.path afterwards.  It runs only
+# when those components are actually needed - never at module import time.
+_HERE = Path(__file__).resolve().parent
+_ADF_CANDIDATES = (_HERE.parent / "AliasDataFrame",   # sibling subproject
+                   _HERE.parent.parent)               # parent of dfextensions
+
+
+@contextmanager
+def _optional_dependency_path(*candidates):
+    """Temporarily expose optional-dependency locations, then restore sys.path."""
+    added = []
+    try:
+        for c in candidates:
+            s = str(c)
+            if Path(c).is_dir() and s not in sys.path:
+                sys.path.insert(0, s)
+                added.append(s)
+        yield
+    finally:
+        for s in added:
+            try:
+                sys.path.remove(s)
+            except ValueError:                  # someone else removed it
+                pass
 
 # channels drawn/summarized when present (rates + PSI are the pathology signals)
 DEFAULT_CHANNELS = [
@@ -128,6 +162,20 @@ def classify_availability(wide, prefix="cpu_"):
     return states
 
 
+def plotted_columns(states, prefix="cpu_"):
+    """P2-B: the SINGLE authority on which series may be drawn.
+
+    Derived directly from classify_availability()'s own output, so the figure
+    and the availability caption beside it can never disagree.  A series is
+    plotted when it was genuinely sampled - 'zero' (measured idle) is plotted,
+    because measured idleness is a real result; 'no_data' (never sampled) is
+    NOT plotted, because drawing it would assert a zero that was never
+    measured.  That conflation is the exact defect P1-A existed to remove.
+    """
+    return [f"{prefix}{scope}" for scope, state in states.items()
+            if state != "no_data"]
+
+
 def _availability_note(states):
     """Render the P1-A availability line shown WITH the background-vs-job
     figure: names each scope's state so an absent job cannot be read as an
@@ -166,8 +214,11 @@ def _draw_expr(adf, expr, title, ylab, fig_dir, fname):
     try:
       with _w.catch_warnings(record=True) as _wl:
         _w.simplefilter("always")
-        fig, ax, _ = adf.draw(f"{expr}:t_rel", type="scatter", title=title,
-                              xlabel="t_rel [s]", ylabel=ylab)
+        # adf.draw resolves dfextensions.dfdraw lazily; the same controlled
+        # fallback covers it, and the search path is restored immediately
+        with _optional_dependency_path(*_ADF_CANDIDATES):
+            fig, ax, _ = adf.draw(f"{expr}:t_rel", type="scatter", title=title,
+                                  xlabel="t_rel [s]", ylabel=ylab)
         p = fig_dir / fname
         fig.savefig(p, dpi=110, bbox_inches="tight")
         global RENDER_WARNINGS
@@ -233,10 +284,10 @@ def _build_adf(frame):
     try:
         from AliasDataFrame import AliasDataFrame  # locked stack (pandas 1.5.3)
     except ImportError:
-        _sib = Path(__file__).resolve().parent.parent / "AliasDataFrame"
-        if _sib.is_dir():
-            sys.path.insert(0, str(_sib))
-        from AliasDataFrame import AliasDataFrame
+        # optional dependency not on the normal path: one controlled fallback,
+        # search path restored on exit [Increment 1, T-P3/T-P6]
+        with _optional_dependency_path(*_ADF_CANDIDATES):
+            from AliasDataFrame import AliasDataFrame
     adf = AliasDataFrame(frame)
     reg = []
     for name, expr in SEVERITY_ALIASES.items():
@@ -597,10 +648,11 @@ def generate(bundles, run_records=(), labels=None, sections=None,
                     avail = classify_availability(wide_w)
                     avail_note = _availability_note(avail)      # P1-A
                     adf_w = _ADF(wide_w)
-                    # draw only genuinely sampled series; absent != zero
-                    wcols = [c for c in wide_w.columns
-                             if c.startswith("cpu_")
-                             and not wide_w[c].dropna().empty]
+                    # P2-B: classify_availability() is the SINGLE owner of the
+                    # decision "which series may be drawn".  The plotted set is
+                    # derived from its output, not from a second, independently
+                    # written filter that could drift away from the caption.
+                    wcols = plotted_columns(avail)
                     if wcols:
                         pfigs += _draw_expr(adf_w, "[" + ",".join(wcols) + "]",
                                             f"{b.host}: background vs job [CPU cores]",

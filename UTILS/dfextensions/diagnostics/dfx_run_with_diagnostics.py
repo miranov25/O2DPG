@@ -184,9 +184,17 @@ def main(argv=None):
 
     if a.report and bundle:
         try:
+            # [Increment 1, T-P3] resolve the renderer with NO modification of
+            # the module search path.  Flat resolution is attempted first,
+            # exactly as before this increment: in script mode Python already
+            # places this file's directory on sys.path, and an already-imported
+            # or test-substituted module must keep taking precedence.  The
+            # package path is the fallback for package-context callers.
             import importlib
-            sys.path.insert(0, str(HERE))
-            rd = importlib.import_module("report_diagnostics")
+            try:
+                rd = importlib.import_module("report_diagnostics")
+            except ImportError:
+                from dfextensions.diagnostics import report_diagnostics as rd
             orch.write(run_id, rc)                # P0-1: record EXISTS before
             recs = build_report_records(out, run_id)  # the report reads it
             rep = rd.generate([bundle], run_records=recs,

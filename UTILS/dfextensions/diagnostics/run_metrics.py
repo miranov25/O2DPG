@@ -32,8 +32,12 @@ import threading
 import time
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import schema  # noqa: E402
+# [Increment 1, T-P3] no sys.path manipulation: package-relative when imported
+# as part of dfextensions.diagnostics, plain import when run as a script.
+try:
+    from . import schema
+except ImportError:
+    import schema  # noqa: E402
 
 _TOOL = "run_metrics"
 _VERSION = "1.0"

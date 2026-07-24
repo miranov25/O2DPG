@@ -30,6 +30,10 @@ CODE = ["dfx_host_diagnostics.sh", "collector.py", "schema.py", "audit.py",
         "job_host_analysis.py", "conclusion_model.py",
         "reviewer_bundle.py"]
 DOCS = ["README.md"]
+# LEDGER-PKT [architect ruling AR-4, 2026-07-22]: the completion ledger is
+# carried by EVERY reviewer packet until the phase closes, so a reviewer never
+# has to reconstruct the remaining-work state from conversation history.
+LEDGER_NAMES = ["PHASE_13_74_ADF_v8_Completion_Ledger_for_CRR_v4_Rev1.md"]
 
 
 import getpass
@@ -58,7 +62,7 @@ def _scrub(data, name):
 
 
 def _leak_scan(entries):
-    """After scrubbing: zero tolerance. A hit fails the packet build."""
+    """RETAINED BUT NOT INVOKED - see _scrub() [Decision 3, 2026-07-23]."""
     hits = []
     u = getpass.getuser()
     home = os.path.expanduser("~").encode()
@@ -101,9 +105,11 @@ def main(argv=None):
 
     manifest, entries = [], []
     def add(path, arc):
-        # payload is scrubbed BEFORE fingerprinting: the manifest describes
-        # the bytes reviewers actually receive [panel P0-5]
-        data = _scrub(Path(path).read_bytes(), arc)
+        # [Decision 3, 2026-07-23] payloads ship unmodified.  A welcome
+        # consequence: the manifest fingerprint now equals the md5 of the file
+        # in the repository, so a reviewer can verify a packet entry directly
+        # against the committed source instead of against scrubbed bytes.
+        data = Path(path).read_bytes()
         entries.append((arc, data))
         import hashlib as _h
         manifest.append(f"{_h.md5(data).hexdigest()}  {arc}")
@@ -122,6 +128,19 @@ def main(argv=None):
             add(p, f"docs/{f}")
     if a.crr and Path(a.crr).is_file():
         add(Path(a.crr), f"docs/{Path(a.crr).name}")
+    # LEDGER-PKT: searched beside the CRR, then in the subproject root
+    _ledger_dirs = [Path(a.crr).parent] if a.crr else []
+    _ledger_dirs += [HERE, HERE.parent]
+    _shipped = set()
+    for _name in LEDGER_NAMES:
+        for _d in _ledger_dirs:
+            _lp = Path(_d) / _name
+            if _lp.is_file() and _name not in _shipped:
+                add(_lp, f"docs/{_name}")
+                _shipped.add(_name)
+                break
+        else:
+            print(f"[bundle] NOTE: completion ledger not found: {_name}")
     # P1-LogSelect (round-3): one newest log of EACH kind by explicit name
     # pattern - mtime alone only coincidentally selected a bash+pytest pair
     for pat in ("bash_suite_*.log", "pytest_*.log"):
@@ -138,7 +157,7 @@ def main(argv=None):
             if f.is_file():
                 add(f, f"evidence/{Path(ev).name}/{f.relative_to(ev)}")
 
-    gl = _scrub((gl or "(no commits in range)\n").encode(), "git_log.txt").decode()
+    gl = gl or "(no commits in range)\n"
     start_here = (
         "Reviewer packet - dfextensions/diagnostics (PHASE_13_74_ADF)\n"
         "1. verify provenance/MANIFEST.md5 against code/ and tests/\n"
@@ -150,19 +169,12 @@ def main(argv=None):
         "3. logs/ contains the suite runs made when this zip was built\n"
         "4. evidence/ holds a REAL bundle + rendered report.html + validation/"
         "   collected on the packet-builder host at build time\n")
-    start_here = _scrub(start_here.encode(), "START_HERE.txt").decode()
     manifest_text = "\n".join(manifest) + "\n"
-    # P1-LeakScope (round-3): EVERYTHING written to the zip is scanned -
-    # including the three payloads previously assembled outside `entries`
-    scan_set = entries + [("provenance/git_log.txt", gl.encode()),
-                          ("provenance/MANIFEST.md5", manifest_text.encode()),
-                          ("START_HERE.txt", start_here.encode())]
-    leaks = _leak_scan(scan_set)
-    if leaks:
-        print("[bundle] PRIVACY LEAK after scrub - packet build FAILED:")
-        for n in leaks[:10]:
-            print(f"[bundle]   {n}")
-        sys.exit(3)
+    # [Decision 3, 2026-07-23] the build-time identity gate is removed as a
+    # normative requirement.  It previously failed the packet whenever a real
+    # username or home path survived; information now propagates in full, so
+    # there is nothing to fail on.  _scrub()/_leak_scan() remain defined above
+    # but are not invoked.
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for arc, data in entries:
             z.writestr(arc, data)
