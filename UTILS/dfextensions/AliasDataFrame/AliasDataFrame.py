@@ -1039,6 +1039,94 @@ class _EffectiveDrawSpec:
                 or self.entry_mask is not None)
 
 
+class _DrawPreparationState:
+    """PHASE_13_76_ADF B3.2 (Proposal Rev 2 §11.5). The record of what the
+    side-effect executor actually did for ONE draw call — the auditable
+    answer to "which effects ran", produced only by _execute_draw_plan.
+
+    Every read/column field below is DERIVED FROM OBSERVATION — a before/after
+    delta measured against the reader's loaded branches and the frame's
+    columns — never from what the plan intended or from a helper's return
+    value. The ONE deliberate exception is `requested_reads`, which is the
+    plan's intent and is named, kept and documented as such precisely so it
+    cannot be mistaken for a measurement (round-2 finding F5). The B3.2 part-1 panel ([X], GPT24/GPT25/GPT26, three independent
+    executed reproductions) showed all three ways an intent-derived record
+    lies: reads performed by struct completion were omitted; completion that
+    happened during the initial catalog call left no trace at all; and on an
+    eager frame a struct was reported completed when nothing had been loaded,
+    because ensure_struct() is a no-op without a lazy reader and the name was
+    appended regardless. A record that can be affirmatively false is worse
+    than no record, because PHASE_13_77_ADF is specified to trust it."""
+
+    __slots__ = ("prescan_text", "catalog_ensured", "dicts_rewritten",
+                 "requested_reads", "branches_loaded",
+                 "reads_by_catalog", "reads_by_prescan",
+                 "reads_by_union_load",
+                 "reads_by_completion", "reads_by_autoload",
+                 "columns_created", "structs_completed",
+                 "struct_members_present")
+
+    def __init__(self):
+        self.prescan_text = ""
+        self.catalog_ensured = False
+        self.dicts_rewritten = 0
+        # What the plan ASKED for (intent — kept separately and labelled).
+        self.requested_reads = ()
+        # What actually happened (observation), total and attributed by stage.
+        self.branches_loaded = ()
+        self.reads_by_catalog = ()
+        self.reads_by_prescan = ()
+        self.reads_by_union_load = ()
+        self.reads_by_completion = ()
+        self.reads_by_autoload = ()
+        self.columns_created = ()
+        # Struct names VERIFIED complete afterwards — never merely attempted.
+        self.structs_completed = ()
+        # Neutral fact, not a fault: (struct, members present, is complete).
+        self.struct_members_present = ()
+
+
+class _DrawDependencyPlan:
+    """PHASE_13_76_ADF B3.2 (Proposal Rev 2 §11.3). Everything ONE draw call
+    needs, computed once from the effective specifications: the union of
+    required branches, the subframe pre-scan text, and the exact dictionaries
+    the rewrite pass must touch. PURE — building the plan has no effects;
+    every effect belongs to _execute_draw_plan (§11.4).
+
+    rewrite_dicts / autoload_dicts are the executor's EXPLICIT mutation
+    work list, held deliberately by reference: on the batch surface these
+    are the structural copies made at entry (B1, _structural_copy_spec_tree)
+    plus ADF-internal kwargs — never caller-owned dictionaries. The
+    analysis side (especs) is isolated separately via each record's own
+    structural copy (F-4, B3.2 panel)."""
+
+    __slots__ = ("especs", "rewrite_dicts", "autoload_dicts")
+
+    def __init__(self, especs, rewrite_dicts, autoload_dicts):
+        self.especs = list(especs)
+        self.rewrite_dicts = [d for d in rewrite_dicts if isinstance(d, dict)]
+        self.autoload_dicts = [d for d in autoload_dicts
+                               if isinstance(d, dict)]
+
+    def prescan_text(self):
+        """Scalar-slot pre-scan text for the whole call (one string).
+        Vector slots are excluded deliberately: subframe-qualified
+        references inside vector slots are refused by the existing guard
+        (BUG_20260701_ADF_subframe_ref_slot_symmetry); pre-scanning them
+        would materialize a subframe immediately before its refusal —
+        an effect-before-refusal inversion. Widening waits for that
+        guard's symmetry fix, and this docstring is its owner record."""
+        return ' '.join(t for t in (
+            e.reference_text_blob(include_vector_slots=False)
+            for e in self.especs) if t)
+
+    def required_branches(self, adf):
+        out = set()
+        for e in self.especs:
+            out |= adf.get_required_branches(**e.required_branch_kwargs())
+        return out
+
+
 class AliasDataFrame:
     """
     AliasDataFrame allows for defining and evaluating lazy-evaluated column aliases
@@ -2201,22 +2289,240 @@ class AliasDataFrame:
                             ren[_phys] = _internal
             if ren:
                 self.df.rename(columns=ren, inplace=True)
-            # PHASE_13_75_ADF architect D-3 (2026-07-18): full-structure semantics —
-            # any struct with a PARTIAL internal column set is completed to the
-            # full structure (member-exact access is Stage0 scope).
-            for _name, _st in list(self._structs.items()):
-                _ints = [self._struct_internal_name(_name, _m) for _m in _st["members"]]
-                _have = [c for c in _ints if c in self.df.columns]
-                if _have and len(_have) < len(_ints):
-                    try:
-                        self.ensure_struct(_name)
-                    except Exception as _e:
-                        raise ValueError(
-                            f"PHASE_13_75_ADF D-3: full-structure completion of "
-                            f"struct {_name!r} FAILED ({_e}); a partially loaded "
-                            f"struct must not appear registered-and-usable. "
-                            f"Loaded members: {_have!r}; required: {_ints!r}.") from _e
+            self._complete_partial_structs()
         return self
+
+    def _complete_partial_structs(self):
+        """PHASE_13_75_ADF architect D-3 (2026-07-18): full-structure semantics —
+        any struct with a PARTIAL internal column set is completed to the full
+        structure (member-exact access is Stage0 scope).
+
+        PHASE_13_76_ADF B3.2 (Ruling 2, 2026-07-25): extracted from
+        _ensure_struct_catalog so the draw pipeline can OWN this effect by
+        position. It is a real effect — it loads branches — and it is NOT
+        guarded by the catalog fingerprint: unlike detect_structs, it re-tests
+        the frame's columns on every invocation, so it fires whenever a
+        preceding load left a struct half-populated. Before B3.2 that made it
+        reachable from the defensive catalog re-checks inside
+        get_required_branches / _dict_dispatch_columns AFTER
+        _execute_draw_plan had returned, i.e. a preparation effect outside the
+        executor (executed proof: TestB32CatalogResidualPaths). The executor
+        now calls this itself immediately after its own branch load, so the
+        downstream re-checks find every struct already complete and become
+        genuine no-ops; their physical removal remains the B3.4 step.
+
+        Returns the tuple of struct names VERIFIED complete afterwards — never
+        merely attempted. B3.2 part-1 panel P0 (GPT24/GPT25/GPT26, three
+        independent executed reproductions): the previous version appended the
+        name unconditionally after calling ensure_struct(), which is a silent
+        no-op on an eager frame (it has no reader to load from), so an eager
+        partial struct was reported COMPLETED while the missing column was
+        never created. Attempt and outcome are not the same event; only the
+        outcome is recorded here.
+
+        This method is called by _execute_draw_plan ONLY when a lazy reader
+        exists. Round-2 finding F2 corrected the earlier claim that eager
+        frames were already exercising this logic: _ensure_struct_catalog()
+        returns at its second statement when _lazy_reader is None, so the D-3
+        leg never reached an eager frame. An eager frame also has no reader to
+        complete a struct from, which makes the gate the honest shape rather
+        than merely the safe one.
+
+        Architect ruling 2026-07-25: a struct holding only some of its members
+        is NOT an error. Working with a subset of branches is a capability
+        that will be supported, so incompleteness is recorded as a neutral
+        fact (_DrawPreparationState.struct_members_present) with no warning
+        and no refusal. Touching a member that is genuinely absent still
+        fails loudly through the existing 13.75 C3 projection guard, so no
+        caller can compute on data that is not there.
+        """
+        completed = []
+        if not self._structs:
+            return tuple(completed)
+        for _name, _st in list(self._structs.items()):
+            _ints = [self._struct_internal_name(_name, _m) for _m in _st["members"]]
+            _have = [c for c in _ints if c in self.df.columns]
+            if _have and len(_have) < len(_ints):
+                try:
+                    self.ensure_struct(_name)
+                except Exception as _e:
+                    raise ValueError(
+                        f"PHASE_13_75_ADF D-3: full-structure completion of "
+                        f"struct {_name!r} FAILED ({_e}); a partially loaded "
+                        f"struct must not appear registered-and-usable. "
+                        f"Loaded members: {_have!r}; required: {_ints!r}.") from _e
+                # Verify, do not assume: re-read the frame and record the
+                # struct only if every member is now actually present.
+                if all(c in self.df.columns for c in _ints):
+                    completed.append(_name)
+        return tuple(completed)
+
+    def _struct_membership_status(self):
+        """Which members of each registered struct are present RIGHT NOW,
+        counting a member as present under EITHER its internal name
+        (`member__struct`) or its physical name (`struct/member`).
+
+        Round-2 finding F1 (P0, GPT24 + GPT26, two independent executed
+        reproductions, confirmed here): the previous helper looked at internal
+        names only, and was sampled BEFORE `_ensure_struct_catalog()` — which
+        is exactly when a struct can still be in physical form and not yet
+        registered at all (the D4 preloaded-physical-column shape). A struct
+        that the catalog call then registered, normalized and completed was
+        therefore invisible to the snapshot, and its completion went
+        unrecorded even though the reads it caused were recorded.
+
+        Deliberately neutral vocabulary. This reports which members are
+        present, not whether a struct is "broken": working with a subset of
+        branches is a capability the architect has stated will be supported
+        (2026-07-25), so a field named for a fault would not survive it.
+        """
+        return self._struct_membership_in(frozenset(self.df.columns))
+
+    def _struct_membership_in(self, cols):
+        """_struct_membership_status() evaluated against an ARBITRARY column
+        set, using the struct definitions registered right now.
+
+        This indirection is what closes F1 correctly. The naive fix — take two
+        membership snapshots around the catalog call — cannot distinguish "the
+        catalog completed a partial struct" from "the struct was already whole
+        in physical form and the catalog merely registered and renamed it",
+        because before registration there are no definitions to measure
+        against. Measuring the EARLIER column set with the LATER definitions
+        answers the question that actually matters: given what we now know the
+        struct is, was it whole before this stage?
+        """
+        status = {}
+        for _name, _st in (self._structs or {}).items():
+            _present = {
+                _m for _m in _st["members"]
+                if (self._struct_internal_name(_name, _m) in cols
+                    or _st["phys"][_m] in cols)
+            }
+            status[_name] = (frozenset(_present),
+                             len(_present) == len(_st["members"]))
+        return status
+
+    @staticmethod
+    def _structs_completed_between(before, after):
+        """Struct names that were incomplete in `before` and are complete in
+        `after`. Already-whole structs are excluded, so a
+        registration-plus-rename with nothing to load is correctly NOT
+        reported as a completion (control: test_b32_13).
+
+        A struct loaded from NOTHING is not a completion either, but that is
+        guaranteed by WHERE this is measured rather than by a clause here: the
+        catalog stage can only take a struct from partial to complete, never
+        from absent to complete, because detect_structs registers without
+        loading and the D-3 leg only acts on a struct that already has some
+        members. An earlier version carried an explicit `not _present_before`
+        clause for that case; it was removed because no reachable path
+        triggers it and a mutation test could not tell whether it was doing
+        anything. The contract itself is pinned behaviourally by test_b32_17,
+        which is what will catch it if this measurement ever moves."""
+        out = []
+        for _name, (_present_after, _complete_after) in after.items():
+            if not _complete_after:
+                continue
+            _present_before, _complete_before = before.get(
+                _name, (frozenset(), False))
+            if _complete_before:
+                continue
+            out.append(_name)
+        return tuple(sorted(out))
+
+    def _observe_prep_effects(self):
+        """B3.2 part-1 correction: the single observation point the
+        preparation-state record is derived from. Returns (reads, columns) as
+        frozensets so any executor stage can be measured as a before/after
+        delta rather than described by intent.
+
+        Round-3 finding P0-ReaderGraph (GPT31, executed; the only seat that
+        built a subframe scenario): this used to observe `self._lazy_reader`
+        and `self.df.columns` ONLY. A draw slot referencing a lazy subframe
+        makes the executor's pre-scan materialize that subframe, which loads
+        branches through the SUBFRAME'S OWN reader and creates columns in the
+        subframe's own frame. None of that was visible here, by construction —
+        so the record was complete for the main reader and silently blind to
+        the rest of the graph, while claiming to be the auditable answer to
+        "which effects ran".
+
+        The whole graph is walked: this frame's reader, every registered lazy
+        subframe reader, and every materialized subframe's frame, recursively.
+        Names are qualified with their owner (`SectorCalib::corr`) so a branch
+        of the same name in two readers cannot collapse into one entry and
+        silently under-report.
+
+        DOCUMENTED SCOPE — what this does and does not cover. The blocking bar
+        for this record is that it must never state something UNTRUE; coverage
+        gaps are disclosed here rather than treated as defects, because the
+        space of input shapes is unbounded and "never lies" is a checkable
+        property where "covers everything" is not.
+
+        Covered: the main reader; every registered lazy subframe reader; every
+        materialized subframe frame, recursively; physical branch reads only.
+
+        NOT covered, deliberately and by disclosure (round-4 panel):
+          * the same child AliasDataFrame object registered under TWO subframe
+            names — the cycle guard is a single identity set, so the second
+            owner path is not walked and its effects are OMITTED (never
+            misreported). Whether that registration should be permitted at all
+            is an open architect ruling, not a bug fix (GPT26).
+          * structs living INSIDE a subframe — completion is self-scoped while
+            observation is now graph-scoped, so such a struct is left partial
+            and correctly reported as not completed. Whether the executor
+            should reach into subframe registries is a scope ruling, not a
+            correction (Sonet25/Sonet27/Fabble5_7, hypothesis executed and
+            confirmed by the coder).
+        """
+        reads, cols = set(), set()
+
+        def _physical_reads(rdr):
+            """Loaded names that are genuinely physical branches.
+
+            Round-4 finding P0-ChainSyntheticRead (GPT30, executed; confirmed
+            here). LazyChainReader adds a synthetic '__file_idx__' bookkeeping
+            column to loaded_branches while deliberately excluding it from
+            available_branches — its own docstring says so. Copying loaded
+            names unfiltered therefore put a name into the read record that was
+            never read from a file. That is a FALSEHOOD, not a coverage gap:
+            a consumer reading branches_loaded would be told about I/O that did
+            not occur. It is a real column, so it still appears in
+            columns_created, where it belongs.
+
+            Readers that do not expose available_branches are not filtered —
+            better to record a superset than to silently drop real reads."""
+            _loaded = getattr(rdr, "loaded_branches", None) if rdr is not None else None
+            if not _loaded:
+                return ()
+            _avail = getattr(rdr, "available_branches", None)
+            if not _avail:
+                return tuple(_loaded)
+            _avail = frozenset(map(str, _avail))
+            return tuple(_b for _b in _loaded if str(_b) in _avail)
+
+        def _walk(node, prefix, seen):
+            if id(node) in seen:
+                return
+            seen.add(id(node))
+            for _b in _physical_reads(getattr(node, "_lazy_reader", None)):
+                reads.add(f"{prefix}{_b}")
+            _df = getattr(node, "df", None)
+            if _df is not None:
+                for _c in _df.columns:
+                    cols.add(f"{prefix}{_c}")
+            for _nm, _sub_rdr in (getattr(node, "_subframe_readers", None) or {}).items():
+                for _b in _physical_reads(_sub_rdr):
+                    reads.add(f"{prefix}{_nm}::{_b}")
+            _reg = getattr(node, "_subframes", None)
+            for _nm, _entry in (getattr(_reg, "subframes", None) or {}).items():
+                # registry entries are dicts: {'frame': <AliasDataFrame>, ...}
+                _child = (_entry.get("frame") if isinstance(_entry, dict)
+                          else getattr(_entry, "frame", None))
+                if _child is not None and hasattr(_child, "df"):
+                    _walk(_child, f"{prefix}{_nm}::", seen)
+
+        _walk(self, "", set())
+        return (frozenset(map(str, reads)), frozenset(map(str, cols)))
 
     def _autoload_expr_branches(self, expr):
         """PHASE_13_66_ADF (F-fable5_5-2): autoload branches referenced by an
@@ -15306,6 +15612,145 @@ function collapseDepth(maxD) {{
         # (GPT24/GPT27 round-3 consolidation).
         return _structural_copy_tree(obj)
 
+    def _execute_draw_plan(self, plan, verbose=False):
+        """PHASE_13_76_ADF B3.2 (Proposal Rev 2 §11.4). The side-effect
+        executor for one draw call. Effects OWNED here as of this increment:
+        struct-catalog check once, subframe pre-scan once, branch loading
+        once (union over all specifications), full-structure completion of
+        any struct those loads left partial, and slot autoload plus struct
+        rewrite once per specification dictionary. The returned
+        _DrawPreparationState records what actually ran.
+
+        Scope note (honest, do not widen without the code): alias
+        materialization, vector-slot alias materialization, subframe joins
+        and their temporary columns, and the post-draw cleanup are still
+        performed by the calling surface, NOT here. Migrating them is the
+        remainder of this increment's work order; this docstring names what
+        is true today, not what is intended.
+
+        Effect accounting (B3.2 part-1 panel [X] correction): every read and
+        column field of the returned state is a MEASURED before/after delta,
+        taken at each stage boundary below, never the set of branches this
+        method asked for. Three ways the previous intent-derived record lied
+        are pinned by TestB32StateReconciliation."""
+        state = _DrawPreparationState()
+        _obs0 = self._observe_prep_effects()
+        # Catalog FIRST and deliberately: the very next step resolves
+        # required branches through struct-aware expression analysis
+        # ('dedxTPC.dEdxMaxTPC' must resolve into physical branch names), so
+        # the catalog has to exist before the analysis that decides what to
+        # load. It also lets the helpers' defensive re-checks take the 13.75
+        # fingerprint fast path. This check cannot move later — the
+        # post-load completion below is an ADDITION, not a relocation.
+        self._ensure_struct_catalog()
+        state.catalog_ensured = True
+        # B32P1-2 (GPT25, P0): the initial catalog call can itself complete a
+        # struct that was ALREADY partial when the executor was entered — its
+        # D-3 leg runs before the union load below. That completion used to
+        # leave no trace in either field. Measure it here and attribute it.
+        _obs1 = self._observe_prep_effects()
+        state.reads_by_catalog = tuple(sorted(_obs1[0] - _obs0[0]))
+        # F1 (round-2 P0): measure the ENTRY column set with the definitions we
+        # now have, so a struct first registered by this very call is judged on
+        # what it looked like before the call rather than being invisible.
+        _by_catalog = self._structs_completed_between(
+            self._struct_membership_in(_obs0[1]),
+            self._struct_membership_status())
+        if self._lazy_reader is not None:
+            text = plan.prescan_text()
+            state.prescan_text = text
+            if text:
+                self._lazy_ensure_subframe_refs(text)
+            # F3 (round-2 P1, GPT26, executed): the subframe pre-scan can load
+            # branches of its own. Its reads used to fall inside the
+            # union-load observation window and were reported as union-load
+            # reads, while requested_reads (correctly) never mentioned them.
+            # Own boundary, own field.
+            _obs_ps = self._observe_prep_effects()
+            state.reads_by_prescan = tuple(sorted(_obs_ps[0] - _obs1[0]))
+            required = plan.required_branches(self)
+            branches_to_load = required - self._lazy_reader.loaded_branches
+            all_subframes = (set(self._subframes.subframes.keys())
+                             | set(getattr(self, '_subframe_readers',
+                                           {}).keys()))
+            branches_to_load = branches_to_load - all_subframes
+            branches_to_load = {b for b in branches_to_load
+                                if not ("." in b and
+                                        b.split(".", 1)[0] in all_subframes)}
+            # INTENT, labelled as such and kept apart from the observation.
+            state.requested_reads = tuple(sorted(branches_to_load))
+            if branches_to_load:
+                if verbose:
+                    print(f"Loading {len(branches_to_load)} branches: "
+                          f"{sorted(branches_to_load)}")
+                self.ensure_branches(list(branches_to_load))
+        # PHASE_13_76_ADF B3.2 (Ruling 2, 2026-07-25): OWN the D-3
+        # full-structure completion by position. The load above can leave a
+        # struct half-populated; the D-3 leg inside _ensure_struct_catalog is
+        # not fingerprint-guarded, so before this line the completion fired
+        # in whichever defensive re-check ran next — reachably AFTER this
+        # executor returned, whenever the struct reference lived in a
+        # per-spec dictionary rather than in defaults. Executed proof and
+        # regression guard: TestB32CatalogResidualPaths / TestB32ExecutorBoundary.
+        # LAZY-ONLY, corrected in round 2 (F2, GPT27 found it; GPT24/GPT26
+        # confirmed). The previous version called this unconditionally on the
+        # stated ground that "the D-3 leg has always run on eager frames and
+        # has always done nothing there". That was FALSE:
+        # _ensure_struct_catalog() returns at its second statement when
+        # _lazy_reader is None, so the D-3 leg never ran on an eager frame at
+        # all. The unconditional call was therefore a NEW eager invocation
+        # documented as a preservation — the precise mistake this phase keeps
+        # paying for. Gated here so eager behavior really is unchanged; an
+        # eager frame has no reader to complete a struct from in any case.
+        _obs2 = self._observe_prep_effects()
+        state.reads_by_union_load = tuple(sorted(
+            _obs2[0] - (_obs_ps[0] if self._lazy_reader is not None
+                        else _obs1[0])))
+        # ONE assignment (round-2 P2, Sonet25 — who was right, and the coder's
+        # "correction" of that finding was wrong). It was argued that the first
+        # of the two assignments was load-bearing on the eager path. It was
+        # not: _ensure_struct_catalog() returns immediately without a reader,
+        # so no rename or completion happens there and _by_catalog is
+        # necessarily empty on an eager frame. A mutation test proved it —
+        # restoring the two-assignment form changed no test outcome. Single
+        # expression here for readability, not to preserve a value.
+        state.structs_completed = _by_catalog + (
+            self._complete_partial_structs()
+            if self._lazy_reader is not None else ())
+        # B32P1-1 (GPT24/GPT25, P0): completion performs its OWN reads. They
+        # were absent from the record because branches_loaded was written from
+        # the union-load intent above and never revisited.
+        _obs3 = self._observe_prep_effects()
+        state.reads_by_completion = tuple(sorted(_obs3[0] - _obs2[0]))
+        if self._structs:
+            for _d in plan.autoload_dicts:
+                for _sl in ("expr", "selection", "group_by",
+                            "weights", "facet_by", "color"):
+                    _v = _d.get(_sl)
+                    if isinstance(_v, str):
+                        self._autoload_expr_branches(_v)
+            for _d in plan.rewrite_dicts:
+                self._struct_rewrite_draw_slots(_d)
+                state.dicts_rewritten += 1
+        # Totals, measured across the whole executor call rather than summed
+        # from the stages, so an unattributed effect still shows up.
+        _obs4 = self._observe_prep_effects()
+        state.reads_by_autoload = tuple(sorted(_obs4[0] - _obs3[0]))
+        state.branches_loaded = tuple(sorted(_obs4[0] - _obs0[0]))
+        state.columns_created = tuple(sorted(_obs4[1] - _obs0[1]))
+        # Neutral membership record (architect ruling 2026-07-25). Working with
+        # a subset of branches is a capability that WILL be supported, so a
+        # struct holding only some members is reported as a plain fact — not a
+        # warning, not an error, and not named for a fault. Reviewers' actual
+        # objection was that the state was invisible, and this answers it
+        # without pre-deciding the member-exact-loading question that Rev 2
+        # §25 defers.
+        state.struct_members_present = tuple(sorted(
+            (_n, tuple(sorted(_p)), _c)
+            for _n, (_p, _c) in self._struct_membership_status().items()))
+        self._last_draw_prep_state = state
+        return state
+
     @_draw_prep_scoped.__func__
     def draw_batch(self,
                    specs,
@@ -15362,22 +15807,6 @@ function collapseDepth(maxD) {{
         specs = self._structural_copy_spec_tree(specs)
         if isinstance(defaults, dict):
             defaults = self._structural_copy_spec_tree(defaults)
-        # PHASE_13_75_ADF P0-2 (early, before ANY defaults/kwargs snapshot):
-        # struct refs arriving via defaults or top-level kwargs are loaded and
-        # rewritten here so every later merged view sees internal names.
-        self._ensure_struct_catalog()
-        if self._structs:
-            for _d0 in (defaults, kwargs):
-                if isinstance(_d0, dict):
-                    # PHASE_13_75_ADF FINAL-CRR: slot-scoped (never parses plot
-                    # types/labels/paths) and LOUD — ADF/chain/load errors in a
-                    # ratified expression slot propagate to the caller.
-                    for _sl0 in ("expr", "selection", "group_by",
-                                 "weights", "facet_by", "color"):
-                        _v = _d0.get(_sl0)
-                        if isinstance(_v, str):
-                            self._autoload_expr_branches(_v)
-                    self._struct_rewrite_draw_slots(_d0)
         # Import dfdraw
         try:
             from dfextensions.dfdraw import DFDraw
@@ -15385,55 +15814,51 @@ function collapseDepth(maxD) {{
             raise ImportError(
                 "dfdraw package not found. Install it or ensure it's in your path."
             )
-        
-        # Resolve parameters
-        effective_lazy = self._resolve_draw_param(lazy, 'lazy')
-        effective_clear = self._resolve_draw_param(clear_after, 'clear_after')
-        
-        # Load specs if path
+
+        # Resolve parameters — PHASE_13_76_ADF B3.2 (F-3): batch uses the
+        # same _DrawExecutionPolicy owner as draw() (Rev 2 §11.2).
+        _policy_b32 = _DrawExecutionPolicy.resolve(
+            self, lazy=lazy, clear_after=clear_after)
+        effective_lazy = _policy_b32.lazy
+        effective_clear = _policy_b32.clear_after
+
+        # Load specs if path (moved before plan building; pure file read)
         if isinstance(specs, str):
             specs = self._load_specs_file_for_draw(specs)
-        
+
         # =================================================================
-        # Phase 7.3: Pre-scan and batch-load branches in lazy mode
+        # PHASE_13_76_ADF B3.2 (Rev 2 §11.3–§11.5): ONE dependency plan and
+        # ONE side-effect executor for the whole batch call. This replaces,
+        # by construction: the early defaults/kwargs catalog+rewrite block
+        # (13.75 P0-2), the per-spec pre-scan/branch loop (Phase 7.3), the
+        # pre-projection catalog+rewrite pass (13.75 D3), and the trailing
+        # 13.66 rewrite loop. String-form specifications are normalized to
+        # dictionaries first (previously done inside the D3 block).
         # =================================================================
-        if self._lazy_reader is not None:
-            all_required = set()
-            merged_defaults = {**(defaults or {}), **kwargs}
-            
-            for name, spec in specs.items():
-                merged_spec = {**merged_defaults, **spec}
-                # Phase 13.58: materialize lazy subframes referenced in this spec first
-                self._lazy_ensure_subframe_refs(' '.join(str(t) for t in [
-                    merged_spec.get('expr', name), merged_spec.get('selection'),
-                    merged_spec.get('group_by'), merged_spec.get('color'),
-                    merged_spec.get('facet_by'), merged_spec.get('weights')] if t))
-                required = self.get_required_branches(
-                    expr=merged_spec.get('expr', name),
-                    selection=merged_spec.get('selection'),
-                    group_by=merged_spec.get('group_by'),
-                    color=merged_spec.get('color'),
-                    facet_by=merged_spec.get('facet_by'),
-                    weights=merged_spec.get('weights'),
-                    weights_vector=merged_spec.get('weights_vector'),
-                    selection_vector=merged_spec.get('selection_vector')
-                )
-                all_required.update(required)
-            
-            # Load all required branches at once
-            branches_to_load = all_required - self._lazy_reader.loaded_branches
-            
-            # Phase 6.8a fix: Filter out subframe names (they are not TTree branches)
-            all_subframes = set(self._subframes.subframes.keys()) | set(getattr(self, '_subframe_readers', {}).keys())
-            branches_to_load = branches_to_load - all_subframes
-            # Phase 13.58: drop subframe-column refs (resolved by the subframe merge)
-            branches_to_load = {b for b in branches_to_load
-                                if not ("." in b and b.split(".", 1)[0] in all_subframes)}
-            
-            if branches_to_load:
-                if verbose:
-                    print(f"Loading {len(branches_to_load)} branches: {sorted(branches_to_load)}")
-                self.ensure_branches(list(branches_to_load))
+        # F-1 fix (B3.2 panel, unanimous P0): string-form specs are
+        # normalized to dictionaries, but the plot-name expr fallback is
+        # NEVER written into the raw spec before the defaults merge — a
+        # defaults-supplied expr must win (test_batch_with_defaults). The
+        # fallback is applied read-only on the merged view; the dfdraw-
+        # facing name-write happens at its original pre-delegation
+        # position, unchanged from pre-B3.2 behavior.
+        for _nm in list(specs.keys()):
+            _sp = specs[_nm]
+            if not isinstance(_sp, dict):
+                _sp = {'expr': _sp}
+                specs[_nm] = _sp
+        _merged_defaults_b32 = {**(defaults or {}), **kwargs}
+        _especs_b32 = [
+            _EffectiveDrawSpec.from_call(
+                {**_merged_defaults_b32, **_sp}.get('expr', _nm),
+                {**_merged_defaults_b32, **_sp}.get('type'),
+                {**_merged_defaults_b32, **_sp})
+            for _nm, _sp in specs.items()]
+        _plan_b32 = _DrawDependencyPlan(
+            especs=_especs_b32,
+            rewrite_dicts=[defaults, kwargs] + list(specs.values()),
+            autoload_dicts=[defaults, kwargs])
+        self._execute_draw_plan(_plan_b32, verbose=verbose)
         # =================================================================
         
         # Track pre-existing materialized aliases
@@ -15516,22 +15941,15 @@ function collapseDepth(maxD) {{
         # The big frame is never copied or grown; the subframe merge below adds
         # sf_ columns to this small frame.
         _md_dict = {**(defaults or {}), **kwargs}
-        # PHASE_13_75_ADF D3 (batch surface, Option A/one owner): rewrite struct
-        # refs in every spec BEFORE the union projection below, so internal
-        # member__struct names are plain tokens when intersected with columns.
-        # String-form specs are normalized to dicts first (covers short forms).
-        # Specs are mutated in place, matching the pre-existing behavior of the
-        # later PHASE_13_66 rewrite block (now an idempotent no-op).
-        self._ensure_struct_catalog()
-        if self._structs:
-            for _nm in list(specs.keys()):
-                _sp = specs[_nm]
-                if not isinstance(_sp, dict):
-                    _sp = {'expr': _sp}
-                    specs[_nm] = _sp
-                if 'expr' not in _sp:
-                    _sp['expr'] = _nm
-                self._struct_rewrite_draw_slots(_sp)
+        # PHASE_13_76_ADF B3.2: struct refs in every spec were already
+        # rewritten ONCE by _execute_draw_plan above (owner: Rev 2 §11.4);
+        # the 13.75 D3 catalog+rewrite pass that lived here is superseded.
+        # F-1 fix, final form: NO name-fallback write into raw specs at
+        # all. Pre-B3.2 this write only ever ran inside the struct guard
+        # (and never conflicted there); on every other path dfdraw's own
+        # defaults merge resolves an absent expr — a defaults-supplied
+        # expr therefore always wins, and the plan/espec layer applies the
+        # plot-name fallback READ-ONLY for branch analysis.
         _dfcols_b = set(df_for_plot.columns)
         _need_b = set()
         if getattr(self, 'draw_dict', True):
@@ -15659,10 +16077,9 @@ function collapseDepth(maxD) {{
                         for _slot in ('weights', 'facet_by', 'color'):
                             if isinstance(spec.get(_slot), str):
                                 spec[_slot] = spec[_slot].replace(dot_ref, flat_ref)
-            # PHASE_13_66_ADF: struct rewrite (runs regardless of subframes).
-            if self._structs:
-                for _name, _spec in specs.items():
-                    self._struct_rewrite_draw_slots(_spec)
+            # PHASE_13_76_ADF B3.2: the 13.66 struct-rewrite loop that lived
+            # here is superseded — every spec dictionary was rewritten ONCE
+            # by _execute_draw_plan (owner: Rev 2 §11.4).
         
         # Delegate to dfdraw batch
         plotter = DFDraw(df_for_plot)

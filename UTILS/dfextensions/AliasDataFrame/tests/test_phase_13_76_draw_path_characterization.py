@@ -38,6 +38,11 @@ try:  # package-style (alma2: dfextensions on path)
         _EffectiveDrawSpec, _DrawExecutionPolicy)
 except (ImportError, ModuleNotFoundError):  # module-style (sandbox)
     from AliasDataFrame import _EffectiveDrawSpec, _DrawExecutionPolicy
+try:
+    from AliasDataFrame.AliasDataFrame import (
+        _DrawDependencyPlan, _DrawPreparationState)
+except (ImportError, ModuleNotFoundError):
+    from AliasDataFrame import _DrawDependencyPlan, _DrawPreparationState
 
 import numpy as np
 import pandas as pd
@@ -677,7 +682,15 @@ class TestB2ConsolidationContract:
             pytest.skip("struct fixture not present (make_fixtures.py)")
         return A.AliasDataFrame.read_tree_lazy(fixture, "tree")
 
-    @pytest.mark.xfail(strict=True, reason="B3.2 acceptance: one catalog pass per draw call, true by construction via the dependency-plan/executor (counter suppression removed per GPT25 pre-commit review; counts return to pre-consolidation reality until B3.2 lands)")
+    @pytest.mark.xfail(
+        strict=True,
+        reason="B3.4 acceptance (re-anchored from B3.2, disclosed): the "
+               "catalog INVOCATION count reaches 1 only when the demolition "
+               "step removes the defensive re-checks inside shared helpers "
+               "(get_required_branches, _dict_dispatch_columns) for "
+               "executor-owned flows; the executor already performs the one "
+               "owned ensure, and helper re-checks take the fingerprint "
+               "fast path")
     def test_b2_1_draw_single_prep_pass(self):
         adf = self._lazy_struct_adf()
         adf.draw("dedxTPC.dEdxMaxTPC:mult", type="profile", bins=5,
@@ -687,8 +700,11 @@ class TestB2ConsolidationContract:
         assert st["catalog_full_runs"] == 1, st
         assert st["rewrite_full_runs"] == 1, st
 
-    @pytest.mark.xfail(strict=True, reason="B3.2 acceptance: one catalog pass and one rewrite per specification dictionary per batch call, by construction (see b2_1 reason)")
-    def test_b2_2_batch_one_catalog_run_one_rewrite_per_dict(self):
+    def test_b2_2_batch_rewrite_once_per_dict_by_construction(self):
+        """B3.2 ACCEPTANCE, GREEN BY CONSTRUCTION: the single side-effect
+        executor rewrites each dictionary exactly once for the whole batch
+        call — two plot dictionaries plus the (empty) top-level kwargs
+        dictionary here — and its preparation-state record says so."""
         adf = self._lazy_struct_adf()
         adf.draw_batch(
             {"a": {"expr": "dedxTPC.dEdxMaxTPC:mult", "type": "profile",
@@ -696,12 +712,37 @@ class TestB2ConsolidationContract:
              "b": {"expr": "dedxTPC.dEdxTotTPC", "type": "hist", "bins": 5}},
             lazy=True, verbose=False)
         plt.close("all")
-        st = adf._last_draw_prep_stats
-        assert st["catalog_full_runs"] == 1, st
-        # two plot dictionaries + the merged defaults dictionary = 3
-        assert st["rewrite_full_runs"] == 3, st
+        assert adf._last_draw_prep_stats["rewrite_full_runs"] == 3
+        state = adf._last_draw_prep_state
+        assert state.catalog_ensured is True
+        # Ruling 3 (2026-07-25): stated structurally, not as a fixture-shaped
+        # literal. See _expected_rewrite_count for why the old '3' was an
+        # artifact (two specs + the empty top-level kwargs dictionary).
+        assert state.dicts_rewritten == _expected_rewrite_count(
+            None, {},
+            {"a": {"expr": "dedxTPC.dEdxMaxTPC:mult", "type": "profile",
+                   "bins": 5},
+             "b": {"expr": "dedxTPC.dEdxTotTPC", "type": "hist", "bins": 5}})
+        assert "dedxTPC/dEdxMaxTPC" in state.branches_loaded
 
-    @pytest.mark.xfail(strict=True, reason="B3.2 acceptance: one catalog pass and one rewrite per specification dictionary per figures call, by construction (see b2_1 reason)")
+    @pytest.mark.xfail(
+        strict=True,
+        reason="B3.4 acceptance (catalog invocation count; see b2_1 reason) "
+               "- batch surface")
+    def test_b2_2b_batch_single_catalog_invocation(self):
+        adf = self._lazy_struct_adf()
+        adf.draw_batch(
+            {"a": {"expr": "dedxTPC.dEdxMaxTPC:mult", "type": "profile",
+                   "bins": 5},
+             "b": {"expr": "dedxTPC.dEdxTotTPC", "type": "hist", "bins": 5}},
+            lazy=True, verbose=False)
+        plt.close("all")
+        assert adf._last_draw_prep_stats["catalog_full_runs"] == 1
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="B3.3 acceptance: draw_figures migrates onto the dependency "
+               "plan and single executor in the next increment")
     def test_b2_3_figures_one_catalog_run_one_rewrite_per_dict(self):
         adf = self._lazy_struct_adf()
         adf.draw_figures(
@@ -1100,3 +1141,1040 @@ class TestB31EffectiveSpecOnDraw:
         assert delegated["new"] == delegated["old"], (
             f"delegated frames diverge:\nold: {delegated['old']}\n"
             f"new: {delegated['new']}")
+
+
+@needs_dfdraw
+class TestB32PlanExecutor:
+    def _lazy(self):
+        fixture = os.path.join(os.path.dirname(__file__),
+                               "lazy_struct_fixture_clean.root")
+        if not os.path.exists(fixture):
+            pytest.skip("struct fixture not present")
+        return A.AliasDataFrame.read_tree_lazy(fixture, "tree")
+
+    def test_b32_1_plan_building_is_pure(self):
+        """Rev 2 §11.3: building the dependency plan has NO effects."""
+        adf = self._lazy()
+        loaded = set(adf._lazy_reader.loaded_branches)
+        cols = list(adf.df.columns)
+        e = _EffectiveDrawSpec.from_call("dedxTPC.dEdxMaxTPC:mult",
+                                        "profile", {"bins": 5})
+        plan = _DrawDependencyPlan(especs=[e], rewrite_dicts=[{}],
+                                   autoload_dicts=[])
+        assert plan.prescan_text()  # computable without effects
+        assert set(adf._lazy_reader.loaded_branches) == loaded
+        assert list(adf.df.columns) == cols
+
+    def test_b32_2_midcall_loading_still_normalized_on_batch(self):
+        """GPT25/GPT26 adversarial requirement: a struct branch that only
+        becomes needed (and loaded) DURING the call — here via a second
+        spec whose branch was not touched before — is still normalized and
+        drawn correctly; the executor's single pass covers the union up
+        front, so nothing depends on a mid-call refresh."""
+        adf = self._lazy()
+        assert "dEdxTotTPC__dedxTPC" not in adf.df.columns
+        res = adf.draw_batch(
+            {"a": {"expr": "dedxTPC.dEdxMaxTPC:mult", "type": "profile",
+                   "bins": 5},
+             "b": {"expr": "dedxTPC.dEdxTotTPC", "type": "hist",
+                   "bins": 5}},
+            lazy=True, verbose=False)
+        plt.close("all")
+        assert res["_summary"]["failed"] == 0, res["_errors"]
+        assert res["b"]["stats"]["n"] > 0
+
+    def test_b32_3_executor_state_records_what_ran(self):
+        adf = self._lazy()
+        adf.draw_batch(
+            {"a": {"expr": "dedxTPC.dEdxMaxTPC:mult", "type": "profile",
+                   "bins": 5}},
+            lazy=True, verbose=False)
+        plt.close("all")
+        st = adf._last_draw_prep_state
+        assert st.catalog_ensured is True
+        # Ruling 3: structural, not a fixture-shaped literal (one spec
+        # dictionary plus the empty top-level kwargs dictionary here).
+        assert st.dicts_rewritten == _expected_rewrite_count(
+            None, {}, {"only": {}})
+        assert st.prescan_text  # scalar-slot text was scanned
+        assert all("/" in b or b == "mult" for b in st.branches_loaded)
+
+    def test_b32_4_defaults_supplied_expr_wins_over_name_fallback(self, tmp_path):
+        """F-1 regression guard (B3.2 panel, unanimous P0), non-skipping:
+        a spec of {} with a defaults-supplied expr must draw the defaults
+        expression — the plot-name fallback may never poison the raw spec
+        before the merge. Mirrors test_batch_with_defaults on a fixture
+        that runs everywhere."""
+        rng = np.random.default_rng(324)
+        p = str(tmp_path / "defaults_fix.root")
+        _write_tree(p, rng.normal(0.0, 1.0, 120), rng.uniform(0.5, 2, 120))
+        adf = A.AliasDataFrame.read_tree_lazy(p, "tree")
+        res = adf.draw_batch({"hist_x": {}},
+                             defaults={"expr": "x", "type": "hist",
+                                       "bins": 8},
+                             lazy=True, verbose=False)
+        plt.close("all")
+        assert res["_summary"]["failed"] == 0, res["_errors"]
+        assert res["hist_x"]["stats"]["n"] == 120
+        assert "x" in adf._lazy_reader.loaded_branches
+
+
+# ---------------------------------------------------------------------------
+# PHASE_13_76_ADF B3.2 — architect Ruling 2 (2026-07-25).
+#
+# The ruling: "Do not defer the catalog requirement solely on assertion.
+# Include the adversarial test. A reachable effect must move under the
+# executor; a proven no-op may be physically removed in B3.4 only after an
+# explicit recorded ruling."
+#
+# Executed answer (this file, these tests): a residual catalog re-check CAN
+# perform a real effect. _ensure_struct_catalog has two legs. The detection
+# leg (detect_structs) is guarded by a fingerprint over the reader's
+# available_branches, which is static per file — that leg genuinely cannot
+# re-fire mid-call. The D-3 full-structure-completion leg has NO such guard:
+# it re-tests the frame's columns on every invocation and loads branches
+# whenever a preceding load left a struct half-populated. Before this
+# increment that made struct completion reachable from the defensive
+# re-checks inside get_required_branches / _dict_dispatch_columns AFTER
+# _execute_draw_plan returned — and it did so exactly when the struct
+# reference lived in a per-spec dictionary rather than in defaults, because
+# the plan's autoload work-list covered only [defaults, kwargs].
+#
+# The fix is positional, not list-shaped: the executor calls
+# _complete_partial_structs() itself, immediately after its own load. Making
+# it depend on which dictionary carried the reference is what produced the
+# defect in the first place.
+#
+# Two tests below, deliberately paired:
+#   * the BOUNDARY test states the guarantee (nothing loads after the
+#     executor returns);
+#   * the CAPABILITY test proves the boundary test is not vacuous — the
+#     residual path still acts when the state it reacts to is constructed by
+#     hand. Without it, the boundary test would keep passing if the D-3 leg
+#     were silently deleted, and B3.4's removal would lose its safety
+#     argument.
+# ---------------------------------------------------------------------------
+
+
+def _expected_rewrite_count(defaults, kwargs, specs):
+    """Rewrite-pass expectation, stated structurally rather than as a
+    fixture-shaped integer (architect Ruling 3, 2026-07-25: 'one
+    authoritative rewrite pass per public call, traversing each effective
+    specification dictionary exactly once').
+
+    The literal '3' this replaced was an artifact: two spec dictionaries
+    plus the EMPTY top-level kwargs dictionary, which passes the plan's
+    isinstance(dict) filter. A call supplying defaults would give 4;
+    defaults=None is filtered out. Counting the dictionaries that actually
+    exist is fixture-independent and self-describing."""
+    return len([d for d in (defaults, kwargs, *specs.values())
+                if isinstance(d, dict)])
+
+
+class _EffectTrace:
+    """Independent oracle: wraps the REAL preparation helpers on the class and
+    records every invocation, tagged by whether _execute_draw_plan was on the
+    stack at the time. Deliberately not the implementation's own counters —
+    self-reported counters were reviewer-rejected twice in this phase."""
+
+    # B32P1-5 (GPT25/GPT27, P1): the tracer must observe EVERY effect the
+    # executor contract names, otherwise the strict fail-before marker below
+    # can XPASS while subframe joins, temporary columns or cleanup are still
+    # running outside the executor. Three method names were not enough to
+    # guard a six-effect boundary.
+    METHODS = ("ensure_branches", "ensure_struct",
+               "materialize_alias", "materialize_aliases",
+               "_ensure_vector_kwargs_aliases", "_prepare_subframe_joins",
+               "dematerialize")
+
+    def __init__(self, cls):
+        self.cls = cls
+        self.inside = []
+        self.after = []
+        self._depth = 0
+        self._orig = {}
+
+    def __enter__(self):
+        cls = self.cls
+        self._orig["_execute_draw_plan"] = cls._execute_draw_plan
+        real_exec = cls._execute_draw_plan
+
+        def exec_(inner_self, plan, verbose=False):
+            self._depth += 1
+            try:
+                return real_exec(inner_self, plan, verbose=verbose)
+            finally:
+                self._depth -= 1
+
+        cls._execute_draw_plan = exec_
+        for name in self.METHODS:
+            real = getattr(cls, name)
+            self._orig[name] = real
+
+            def make(nm, fn):
+                def wrapper(inner_self, *a, **k):
+                    label = f"{nm}({a[0]!r})" if a else nm
+                    (self.inside if self._depth else self.after).append(label)
+                    return fn(inner_self, *a, **k)
+                return wrapper
+
+            setattr(cls, name, make(name, real))
+        return self
+
+    def __exit__(self, *exc):
+        for name, fn in self._orig.items():
+            setattr(self.cls, name, fn)
+        return False
+
+
+@needs_dfdraw
+class TestB32ExecutorBoundary:
+    """Ruling 2 guarantee: struct/branch preparation does not escape the
+    executor. Scope is stated honestly — this increment owns catalog,
+    pre-scan, branch loading, full-structure completion and the rewrite
+    pass. Alias materialization is NOT yet owned; the strict-xfail sibling
+    below is its fail-before evidence and flips when that migration lands."""
+
+    def _lazy(self):
+        fixture = os.path.join(os.path.dirname(__file__),
+                               "lazy_struct_fixture_clean.root")
+        if not os.path.exists(fixture):
+            pytest.skip("struct fixture not present (make_fixtures.py)")
+        return A.AliasDataFrame.read_tree_lazy(fixture, "tree")
+
+    CASES = {
+        "struct_ref_in_spec_only": (
+            {"p1": {"expr": "dedxTPC.dEdxMaxTPC:mult", "type": "scatter"}},
+            None),
+        "struct_ref_in_defaults": (
+            {"p1": {"type": "scatter"}},
+            {"expr": "dedxTPC.dEdxMaxTPC:mult"}),
+        "struct_ref_in_second_spec": (
+            {"p0": {"expr": "tgl:mult", "type": "scatter"},
+             "p1": {"expr": "dedxTPC.dEdxTotTPC:mult", "type": "scatter"}},
+            None),
+    }
+
+    @pytest.mark.parametrize("case", sorted(CASES))
+    def test_b32_5_no_branch_or_struct_effect_after_executor(self, case):
+        """The regression this closes: with the struct reference in a
+        per-spec dictionary the executor loaded one member and returned,
+        and a downstream defensive catalog re-check then completed the
+        struct — real branch I/O outside the single effect owner."""
+        specs, defaults = self.CASES[case]
+        adf = self._lazy()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with _EffectTrace(A.AliasDataFrame) as tr:
+                adf.draw_batch(specs, defaults=defaults, verbose=False)
+        plt.close("all")
+        escaped = [e for e in tr.after
+                   if e.startswith(("ensure_branches", "ensure_struct"))]
+        assert not escaped, (
+            f"preparation effect(s) outside _execute_draw_plan: {escaped}; "
+            f"inside was {tr.inside}")
+        assert any(e.startswith("ensure_branches") for e in tr.inside), (
+            "no load happened inside the executor either — the trace is "
+            "not exercising the path it claims to")
+
+    def test_b32_5b_executor_state_records_the_completion(self):
+        """Rev 2 §11.5: the effect must be reported, not merely performed."""
+        specs, defaults = self.CASES["struct_ref_in_spec_only"]
+        adf = self._lazy()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf.draw_batch(specs, defaults=defaults, verbose=False)
+        plt.close("all")
+        st = adf._last_draw_prep_state
+        assert st.structs_completed == ("dedxTPC",), st.structs_completed
+        assert "dedxTPC/dEdxMaxTPC" in st.branches_loaded
+        # B32P1-4 (GPT25, P1): reconcile against EXTERNAL state, not against
+        # the one field the executor happened to set. The previous version
+        # passed while the record silently omitted the sibling branches that
+        # completion itself read.
+        actually = set(map(str, adf._lazy_reader.loaded_branches))
+        assert set(st.branches_loaded) == actually, (
+            f"record {sorted(st.branches_loaded)} != reader "
+            f"{sorted(actually)}")
+        assert st.reads_by_completion, (
+            "completion read nothing? then this fixture no longer exercises "
+            "the partial-struct path it was chosen for")
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="B3.2 remainder (fail-before evidence): alias materialization "
+               "is still performed by draw_batch after the executor returns. "
+               "XPASS when the materialization migration lands, which forces "
+               "removal of this marker.")
+    def test_b32_5c_no_preparation_effect_of_any_kind_after_executor(self):
+        adf = self._lazy()
+        adf.add_alias("shift", "mult + 1")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with _EffectTrace(A.AliasDataFrame) as tr:
+                adf.draw_batch({"p": {"expr": "shift", "type": "hist",
+                                      "bins": 5}},
+                               lazy=True, verbose=False)
+        plt.close("all")
+        assert not tr.after, tr.after
+
+
+@needs_dfdraw
+class TestB32CatalogResidualPaths:
+    """Ruling 2 evidence, both halves."""
+
+    def _lazy(self):
+        fixture = os.path.join(os.path.dirname(__file__),
+                               "lazy_struct_fixture_clean.root")
+        if not os.path.exists(fixture):
+            pytest.skip("struct fixture not present (make_fixtures.py)")
+        return A.AliasDataFrame.read_tree_lazy(fixture, "tree")
+
+    @staticmethod
+    def _snapshot(adf):
+        r = adf._lazy_reader
+        return (sorted(map(str, adf.df.columns)),
+                sorted(map(str, getattr(r, "loaded_branches", ()) or ())),
+                sorted(adf._structs))
+
+    RESIDUALS = {
+        "ensure_struct_catalog":
+            lambda adf: adf._ensure_struct_catalog(),
+        "get_required_branches":
+            lambda adf: adf.get_required_branches(
+                expr="dedxTPC.dEdxMaxTPC:mult", validate=True),
+        "dict_dispatch_columns":
+            lambda adf: adf._dict_dispatch_columns(
+                set(adf.df.columns), expr="dedxTPC.dEdxMaxTPC:mult"),
+    }
+
+    @pytest.mark.parametrize("path", sorted(RESIDUALS))
+    def test_b32_6_residual_paths_are_no_ops_after_a_real_call(self, path):
+        """Half one: after a real draw_batch the residual catalog re-checks
+        change nothing. This is what makes their physical removal in B3.4
+        safe — and it holds BECAUSE the executor completed the structs, not
+        because the code path is inert."""
+        adf = self._lazy()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf.draw_batch(
+                {"p1": {"expr": "dedxTPC.dEdxMaxTPC:mult", "type": "scatter"}},
+                verbose=False)
+            plt.close("all")
+            before = self._snapshot(adf)
+            self.RESIDUALS[path](adf)
+            after = self._snapshot(adf)
+        assert before == after, (
+            f"residual path {path!r} still performs an effect after the "
+            f"executor owned preparation")
+
+    @pytest.mark.parametrize("path", sorted(RESIDUALS))
+    def test_b32_7_residual_paths_are_capable_when_state_is_partial(self, path):
+        """Half two — the non-vacuity guard. Construct the partial-struct
+        state by hand (load ONE member directly, bypassing the executor) and
+        the same residual path DOES complete the struct. If this test ever
+        starts passing-by-doing-nothing, test_b32_6 has stopped proving
+        anything and B3.4's removal argument has silently expired."""
+        adf = self._lazy()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf._ensure_struct_catalog()
+            adf.ensure_branches(["dedxTPC/dEdxMaxTPC"])
+            before = self._snapshot(adf)
+            self.RESIDUALS[path](adf)
+            after = self._snapshot(adf)
+        assert "dEdxTotTPC__dedxTPC" not in before[0], (
+            "fixture precondition broken: the sibling column must be ABSENT "
+            "before the residual path runs, or this proves nothing")
+        assert "dEdxTotTPC__dedxTPC" in after[0], (
+            f"residual path {path!r} did NOT complete the partial struct; the "
+            f"D-3 completion leg appears to have been removed or guarded — "
+            f"re-derive the B3.4 removal argument before trusting "
+            f"test_b32_6")
+        gained_cols = set(after[0]) - set(before[0])
+        gained_reads = set(after[1]) - set(before[1])
+        assert gained_cols == {"dEdxTotTPC__dedxTPC", "dEdxMaxIROC__dedxTPC"}, \
+            gained_cols
+        assert gained_reads == {"dedxTPC/dEdxTotTPC", "dedxTPC/dEdxMaxIROC"}, \
+            gained_reads
+
+
+# ---------------------------------------------------------------------------
+# PHASE_13_76_ADF B3.2 part-1 correction — panel [X] (GPT24 / GPT25 / GPT26,
+# three independent EXECUTED reproductions; Main-Reviewer synthesis 2026-07-25).
+#
+# What the panel proved, and what it cost to learn: a preparation-state record
+# built from what the executor INTENDED is wrong in three separate ways, and
+# each way was found by running the case rather than reading it. The coder's
+# own review request had named the eager path as "plausible, not covered by a
+# test"; the honest description was "affirmatively false when executed".
+#
+#   B32P1-1  reads performed by full-structure completion were absent from
+#            branches_loaded, because that field was written from the
+#            up-front union-load intent and never revisited.
+#   B32P1-2  a struct already partial on entry is completed by the INITIAL
+#            catalog call, before the union-load line runs — leaving no trace
+#            in either branches_loaded or structs_completed.
+#   B32P1-3  on an eager frame ensure_struct() is a silent no-op (there is no
+#            reader to load from), yet the struct name was appended to
+#            structs_completed regardless: a field that PHASE_13_77_ADF is
+#            specified to trust could say a struct was safe to use when its
+#            columns did not exist.
+#
+# The corrections: every read/column field is now a MEASURED before/after
+# delta taken at each stage boundary; completion is recorded only after
+# re-reading the frame and confirming every member is present; and the
+# initial catalog call is measured like any other stage.
+#
+# These three tests are the permanent form of the panel's probes. They
+# reconcile the record against EXTERNAL observation — the reader's loaded
+# branches and the frame's columns — never against another field the same
+# code path set.
+# ---------------------------------------------------------------------------
+
+
+@needs_dfdraw
+class TestB32StateReconciliation:
+    """GPT25 required correction 4: three states, each reconciled at the
+    public entry point against externally observed effects."""
+
+    FIXTURE = "lazy_struct_fixture_clean.root"
+
+    def _lazy(self):
+        fixture = os.path.join(os.path.dirname(__file__), self.FIXTURE)
+        if not os.path.exists(fixture):
+            pytest.skip("struct fixture not present (make_fixtures.py)")
+        return A.AliasDataFrame.read_tree_lazy(fixture, "tree")
+
+    @staticmethod
+    def _reader_branches(adf):
+        rdr = getattr(adf, "_lazy_reader", None)
+        return set(map(str, getattr(rdr, "loaded_branches", ()) or ()))
+
+    def test_b32_8_fresh_lazy_partial_struct_reconciles(self):
+        """State 1. The union load pulls one member; completion pulls the
+        siblings. Every read must appear in the total, and the stage
+        attribution must add up to it."""
+        adf = self._lazy()
+        before = self._reader_branches(adf)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf.draw_batch(
+                {"p1": {"expr": "dedxTPC.dEdxMaxTPC:mult", "type": "scatter"}},
+                verbose=False)
+        plt.close("all")
+        st = adf._last_draw_prep_state
+        actually = self._reader_branches(adf) - before
+        assert set(st.branches_loaded) == actually, (
+            f"record {sorted(st.branches_loaded)} != observed "
+            f"{sorted(actually)}")
+        stages = {
+            "catalog": set(st.reads_by_catalog),
+            "prescan": set(st.reads_by_prescan),
+            "union": set(st.reads_by_union_load),
+            "completion": set(st.reads_by_completion),
+            "autoload": set(st.reads_by_autoload),
+        }
+        staged = set().union(*stages.values())
+        assert staged == set(st.branches_loaded), (
+            f"stage attribution {sorted(staged)} does not add up to the "
+            f"total {sorted(st.branches_loaded)} — an effect is unattributed")
+        # R2-P2-2 (GPT25, P2): union equality alone hides double-counting.
+        names = sorted(stages)
+        for i, a in enumerate(names):
+            for b in names[i + 1:]:
+                overlap = stages[a] & stages[b]
+                assert not overlap, (
+                    f"stages {a!r} and {b!r} both claim {sorted(overlap)}; "
+                    f"attribution must be pairwise disjoint")
+        assert st.reads_by_completion, "completion path not exercised"
+        # TODAY'S POLICY, not an eternal invariant: a partial struct on a lazy
+        # frame is auto-completed to the full structure (13.75 D-3). The
+        # architect has stated (2026-07-25) that working with a SUBSET of
+        # branches will become a supported option; when that lands this
+        # assertion is the thing to revisit, deliberately findable from here
+        # rather than discovered as a test wall.
+        assert st.structs_completed == ("dedxTPC",)
+        for member in ("dEdxMaxTPC", "dEdxTotTPC", "dEdxMaxIROC"):
+            assert f"{member}__dedxTPC" in adf.df.columns
+
+    def test_b32_9_preexisting_lazy_partial_struct_reconciles(self):
+        """State 2 (B32P1-2). The struct is ALREADY partial when the executor
+        starts, so the initial catalog call completes it before the union
+        load runs. Previously that produced an empty record beside a real
+        effect."""
+        adf = self._lazy()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf._ensure_struct_catalog()
+            adf.ensure_branches(["dedxTPC/dEdxMaxTPC"])
+            for c in ("dEdxTotTPC__dedxTPC", "dEdxMaxIROC__dedxTPC"):
+                if c in adf.df.columns:
+                    adf.df.drop(columns=[c], inplace=True)
+            before = self._reader_branches(adf)
+            cols_before = set(adf.df.columns)
+            # the drawn expression deliberately does NOT mention the struct
+            adf.draw_batch({"p1": {"expr": "tgl:mult", "type": "scatter"}},
+                           verbose=False)
+        plt.close("all")
+        st = adf._last_draw_prep_state
+        actually = self._reader_branches(adf) - before
+        assert set(st.branches_loaded) == actually, (
+            f"record {sorted(st.branches_loaded)} != observed "
+            f"{sorted(actually)}")
+        assert st.reads_by_catalog, (
+            "the initial catalog call completed the struct but the record "
+            "attributes no read to it (B32P1-2)")
+        assert st.structs_completed == ("dedxTPC",), st.structs_completed
+        assert set(st.columns_created) == set(adf.df.columns) - cols_before
+
+    def test_b32_10_eager_partial_struct_is_never_reported_complete(self):
+        """State 3 (B32P1-3), the falsifying case. An eager frame has no
+        reader, so ensure_struct() cannot load anything; the record must say
+        so. Eager partial structs are TOLERATED, not completed — pre-existing
+        behavior, preserved here deliberately and pinned so a future change
+        is visible. Whether they should instead be refused loudly is an open
+        matrix cell for the architect."""
+        adf = self._lazy()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf._ensure_struct_catalog()
+            adf.ensure_struct("dedxTPC")
+            adf.ensure_branches(["mult"])
+            adf._lazy_reader = None                      # eager from here on
+            adf.df = adf.df.drop(columns=["dEdxTotTPC__dedxTPC"])
+            assert "dEdxMaxTPC__dedxTPC" in adf.df.columns  # genuinely partial
+            adf.draw_batch({"p": {"expr": "mult", "type": "hist", "bins": 5}},
+                           verbose=False)
+        plt.close("all")
+        st = adf._last_draw_prep_state
+        assert "dEdxTotTPC__dedxTPC" not in adf.df.columns, (
+            "fixture no longer partial — this test proves nothing")
+        assert st.structs_completed == (), (
+            "a struct was reported COMPLETED on an eager frame while its "
+            "column was never created (B32P1-3)")
+        assert st.columns_created == ()
+        assert st.branches_loaded == ()
+        # Architect ruling 2026-07-25: incompleteness is a NEUTRAL FACT, not a
+        # fault — a subset of branches will be a supported way to work. So it
+        # must be visible in the record (the reviewers' actual objection) while
+        # raising no warning and refusing nothing.
+        recorded = {n: (set(p), c) for n, p, c in st.struct_members_present}
+        assert "dedxTPC" in recorded, recorded
+        present, complete = recorded["dedxTPC"]
+        assert complete is False
+        assert "dEdxTotTPC" not in present
+
+
+@needs_dfdraw
+class TestB32DefaultsDoubleCompletion:
+    """B32P1-6 / Disputed-DoubleComplete. GPT25 traced two ensure_struct calls
+    and a repeated branch REQUEST; GPT26 argued from source that no duplicate
+    branch I/O occurs. Both are right at different layers, and the synthesis
+    left it unadjudicated pending one direct trace. This is that trace, kept
+    permanently so the answer cannot drift.
+
+    Measured: the second ensure_struct() DOES issue a second ensure_branches()
+    request (GPT25's observation stands), but the reader performs exactly two
+    real reads for the whole call (GPT26's conclusion stands) — the filtering
+    happens inside ensure_branches, not, as argued, inside ensure_struct's
+    missing-member check. So this is invocation overhead, not duplicated I/O,
+    which is what makes it a B3.4 demolition item rather than part-2 scope.
+    """
+
+    def _lazy(self):
+        fixture = os.path.join(os.path.dirname(__file__),
+                               "lazy_struct_fixture_clean.root")
+        if not os.path.exists(fixture):
+            pytest.skip("struct fixture not present (make_fixtures.py)")
+        return A.AliasDataFrame.read_tree_lazy(fixture, "tree")
+
+    def test_b32_11_defaults_path_costs_invocations_not_reads(self):
+        adf = self._lazy()
+        reads, calls = [], []
+        real_load = adf._lazy_reader.load_branches
+        adf._lazy_reader.load_branches = lambda names, *a, **k: (
+            reads.append(sorted(names)), real_load(names, *a, **k))[1]
+        cls = A.AliasDataFrame
+        real_es = cls.ensure_struct
+        cls.ensure_struct = lambda s, n, *a, **k: (
+            calls.append(n), real_es(s, n, *a, **k))[1]
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                adf.draw_batch({"p1": {"type": "scatter"}},
+                               defaults={"expr": "dedxTPC.dEdxMaxTPC:mult"},
+                               verbose=False)
+        finally:
+            cls.ensure_struct = real_es
+        plt.close("all")
+        assert calls.count("dedxTPC") == 2, (
+            f"expected the known double invocation, saw {calls}; if this is "
+            f"now 1 the B3.4 demolition item is already closed — update the "
+            f"matrix rather than deleting this test")
+        assert len(reads) == 2, (
+            f"duplicate branch I/O appeared: {reads}. The redundancy was "
+            f"invocation-only; a second real read means the cost changed "
+            f"and B32P1-6 must be re-scoped out of B3.4")
+        # R2-P2-1 (GPT24/GPT25/GPT26, P2): equal call COUNTS do not prove
+        # disjoint reads. Two overlapping batches would also give len == 2.
+        flat = [b for batch in reads for b in batch]
+        assert len(flat) == len(set(flat)), (
+            f"a branch was read twice across batches: {reads}")
+        assert set(flat) == {"dedxTPC/dEdxMaxTPC", "dedxTPC/dEdxTotTPC",
+                             "dedxTPC/dEdxMaxIROC", "mult"}, sorted(flat)
+
+
+@needs_dfdraw
+class TestB32PhysicalFormCatalogCompletion:
+    """Round-2 finding F1 (P0) — GPT24 and GPT26, two independent executed
+    reproductions, reproduced a third time by the coder before acceptance.
+
+    The state 'a struct partial on entry' has TWO representations, and the
+    first correction only handled one. A struct can arrive as internal member
+    columns (`dEdxMaxTPC__dedxTPC`) — covered by test_b32_9 — or in PHYSICAL
+    form (`dedxTPC/dEdxMaxTPC`), not yet registered at all, which is the D4
+    preloaded-column shape the executor's own comment cites. In the physical
+    case the initial catalog call registers the struct, renames the column and
+    loads the missing siblings, all in one stage. The membership snapshot taken
+    before that call could not see a struct that did not yet exist, so the
+    reads were recorded while the completion that caused them was not.
+
+    Fixed by measuring the ENTRY column set with the definitions known AFTER
+    registration — see _struct_membership_in. The control test below matters as
+    much as the finding: measuring it the naive way would report a completion
+    for a struct that merely got registered and renamed while already whole.
+    """
+
+    def _lazy_with_physical_member(self, member="dedxTPC/dEdxMaxTPC"):
+        fixture = os.path.join(os.path.dirname(__file__),
+                               "lazy_struct_fixture_clean.root")
+        if not os.path.exists(fixture):
+            pytest.skip("struct fixture not present (make_fixtures.py)")
+        adf = A.AliasDataFrame.read_tree_lazy(fixture, "tree")
+        # Undo auto-registration so the struct is genuinely unknown on entry,
+        # then land ONE member under its physical name (bypassing the A-1
+        # rename that ensure_branches would apply).
+        adf._structs = {}
+        adf._struct_catalog_fp = None
+        adf.ensure_branches(["mult"])
+        adf.df = adf._merge_loaded_data(
+            adf.df, adf._lazy_reader.load_branches([member]))
+        assert member in adf.df.columns
+        return adf
+
+    def test_b32_12_physical_form_completion_is_recorded(self):
+        adf = self._lazy_with_physical_member()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf.draw_batch({"p": {"expr": "mult", "type": "hist", "bins": 5}},
+                           verbose=False)
+        plt.close("all")
+        st = adf._last_draw_prep_state
+        assert st.reads_by_catalog, (
+            "the catalog stage read nothing — fixture no longer exercises the "
+            "physical-form completion path")
+        assert "dedxTPC" in st.structs_completed, (
+            f"completion recorded reads {st.reads_by_catalog} but no struct "
+            f"(F1); structs_completed={st.structs_completed}")
+        for m in ("dEdxMaxTPC", "dEdxTotTPC", "dEdxMaxIROC"):
+            assert f"{m}__dedxTPC" in adf.df.columns
+        assert set(st.branches_loaded) >= set(st.reads_by_catalog)
+
+    def test_b32_13_already_whole_struct_is_not_reported_completed(self):
+        """Control for the fix, not for the defect. 'left' has a single
+        member, so landing it physically makes the struct WHOLE before the
+        catalog call; registering and renaming it is not a completion. A
+        naive before/after membership diff would report it as one."""
+        adf = self._lazy_with_physical_member("left/value")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf.draw_batch({"p": {"expr": "tgl", "type": "hist", "bins": 5}},
+                           verbose=False)
+        plt.close("all")
+        st = adf._last_draw_prep_state
+        assert "left" not in st.structs_completed, (
+            f"a struct that was already whole was reported as completed: "
+            f"{st.structs_completed}")
+        assert "value__left" in adf.df.columns   # it was still normalized
+
+
+@needs_dfdraw
+class TestB32EagerCompletionNotInvoked:
+    """Round-2 finding F2 (P1) — GPT27 caught it; GPT24 and GPT26 confirmed.
+
+    The first correction called _complete_partial_structs() unconditionally,
+    justified as preserving behaviour on eager frames. That justification was
+    false: _ensure_struct_catalog() returns at its second statement when
+    _lazy_reader is None, so the D-3 completion leg had never run on an eager
+    frame. The unconditional call was a NEW eager invocation described as a
+    preservation. The call is now gated to lazy frames, which is both the
+    honest shape and the useful one — an eager frame has no reader to complete
+    a struct from.
+    """
+
+    def test_b32_14_eager_frame_never_enters_completion(self):
+        e = A.AliasDataFrame(pd.DataFrame({
+            "mult": np.arange(100.0),
+            "dEdxMaxTPC__dedxTPC": np.arange(100.0)}))
+        e._restore_schema({"structs": {"dedxTPC": {
+            "members": ["dEdxMaxTPC", "dEdxTotTPC", "dEdxMaxIROC"]}}})
+        assert "dedxTPC" in e._structs, "schema restore did not register"
+        cls = A.AliasDataFrame
+        real = cls._complete_partial_structs
+        calls = []
+        cls._complete_partial_structs = lambda s: (calls.append(1), real(s))[1]
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                e.draw_batch({"p": {"expr": "mult", "type": "hist",
+                                    "bins": 5}}, verbose=False)
+        finally:
+            cls._complete_partial_structs = real
+        plt.close("all")
+        assert calls == [], (
+            "the executor invoked struct completion on an eager frame; that "
+            "path never ran before this phase (F2)")
+
+    def test_b32_15_eager_partial_struct_usable_and_absent_member_loud(self):
+        """The architect ruling, pinned. A subset of branches will be a
+        supported way to work, so a present member must stay usable; a genuinely
+        absent member must still fail loudly through the 13.75 C3 guard, so
+        nobody computes on data that is not there."""
+        e = A.AliasDataFrame(pd.DataFrame({
+            "mult": np.arange(100.0),
+            "dEdxMaxTPC__dedxTPC": np.linspace(40.0, 60.0, 100)}))
+        e._restore_schema({"structs": {"dedxTPC": {
+            "members": ["dEdxMaxTPC", "dEdxTotTPC", "dEdxMaxIROC"]}}})
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ok = e.draw_batch(
+                {"p": {"expr": "dedxTPC.dEdxMaxTPC", "type": "hist",
+                       "bins": 10}}, verbose=False)
+        plt.close("all")
+        assert ok["_summary"]["failed"] == 0, ok["_errors"]
+        assert ok["p"]["stats"]["n"] == 100
+        with pytest.raises(ValueError, match="projection inconsistency"):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                e.draw_batch({"q": {"expr": "dedxTPC.dEdxTotTPC",
+                                    "type": "hist", "bins": 10}},
+                             verbose=False)
+        plt.close("all")
+
+
+def _write_tree_with_subframe(path, seed=7, n=200):
+    """Main tree + a small calibration tree in one file, for lazy-subframe
+    tests. mktree, not dict assignment — the latter writes an RNTuple."""
+    rng = np.random.default_rng(seed)
+    with uproot.recreate(path) as f:
+        f.mktree("tree", {"x": np.float64, "y": np.float64, "sec": np.int32})
+        f["tree"].extend({"x": rng.normal(0, 1, n), "y": rng.normal(0, 1, n),
+                          "sec": rng.integers(0, 4, n).astype(np.int32)})
+        f.mktree("SectorCalib", {"sec": np.int32, "corr": np.float64,
+                                 "pad": np.float64})
+        f["SectorCalib"].extend({"sec": np.arange(4, dtype=np.int32),
+                                 "corr": np.array([1., 2., 3., 4.]),
+                                 "pad": np.array([9., 9., 9., 9.])})
+    return path
+
+
+@needs_dfdraw
+class TestB32PrescanAttribution:
+    """Round-2 finding F3 (P1) — GPT26, executed.
+
+    The subframe pre-scan loads branches of its own (the index columns a lazy
+    subframe needs to join). Those reads used to fall inside the union-load
+    observation window and were reported as union-load reads, while
+    requested_reads — correctly — never mentioned them. Total accounting was
+    unaffected, which is exactly why it went unnoticed: only the attribution
+    was wrong, and no test looked at attribution on a frame where the pre-scan
+    actually did anything.
+
+    The fixture matters more than the assertion here. The first version of the
+    stage-disjointness check passed with the boundary deliberately broken,
+    because the struct fixture's pre-scan loads nothing. A test that cannot
+    fail is not evidence.
+    """
+
+    def test_b32_16_prescan_reads_are_attributed_to_the_prescan(self, tmp_path):
+        p = _write_tree_with_subframe(str(tmp_path / "sf.root"))
+        adf = A.AliasDataFrame.read_tree_lazy(p, "tree")
+        adf.register_subframe_lazy("SectorCalib", p,
+                                   tree_name="SectorCalib",
+                                   index_columns=["sec"])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf.draw_batch({"p": {"expr": "SectorCalib.corr:x",
+                                  "type": "scatter"}}, verbose=False)
+        plt.close("all")
+        st = adf._last_draw_prep_state
+        assert st.reads_by_prescan, (
+            "the pre-scan loaded nothing — fixture no longer exercises F3")
+        assert "sec" in st.reads_by_prescan, st.reads_by_prescan
+        assert "sec" not in st.reads_by_union_load, (
+            f"a pre-scan read is attributed to the union load (F3): "
+            f"union={st.reads_by_union_load}")
+        assert "sec" not in st.requested_reads, (
+            "requested_reads is plan INTENT; the pre-scan's own reads are "
+            "not part of it")
+        assert set(st.branches_loaded) == set(st.reads_by_prescan) | set(
+            st.reads_by_union_load) | set(st.reads_by_catalog) | set(
+            st.reads_by_completion) | set(st.reads_by_autoload)
+
+
+@needs_dfdraw
+class TestB32CompletionVsPlainLoad:
+    """Control for the F1 fix: a struct loaded from NOTHING during the call is
+    a plain load, not a completion, and must not be reported as one.
+
+    This is the branch of _structs_completed_between guarded by
+    `not _present_before`. The first control test (b32_13) did not reach it —
+    it exercised the already-whole path instead — and the guard survived a
+    mutation undetected. Recording every fresh load as a "completion" would
+    make the field meaningless precisely when PHASE_13_77_ADF starts reading it.
+    """
+
+    def _lazy(self):
+        fixture = os.path.join(os.path.dirname(__file__),
+                               "lazy_struct_fixture_clean.root")
+        if not os.path.exists(fixture):
+            pytest.skip("struct fixture not present (make_fixtures.py)")
+        return A.AliasDataFrame.read_tree_lazy(fixture, "tree")
+
+    def test_b32_17_struct_loaded_from_nothing_is_not_a_completion(self):
+        adf = self._lazy()
+        assert not [c for c in adf.df.columns if "__mTOFLength" in str(c)]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf.draw_batch({"p": {"expr": "mTOFLength.len:mult",
+                                  "type": "scatter"}}, verbose=False)
+        plt.close("all")
+        st = adf._last_draw_prep_state
+        assert "len__mTOFLength" in adf.df.columns, "struct was not loaded"
+        assert "mTOFLength" not in st.structs_completed, (
+            f"a struct loaded from nothing was reported as COMPLETED: "
+            f"{st.structs_completed}")
+
+
+@needs_dfdraw
+class TestB32ReaderGraphObservation:
+    """Round-3 finding P0-ReaderGraph — GPT31, executed; the only seat across
+    three rounds that built a subframe scenario rather than confirming the fix
+    against the scenarios it was designed for.
+
+    _observe_prep_effects() used to look at `self._lazy_reader` and
+    `self.df.columns` and nothing else. A draw slot referencing a lazy subframe
+    makes the executor's pre-scan materialize that subframe, which reads
+    branches through the SUBFRAME'S OWN reader and builds the subframe's own
+    frame. Those effects were invisible to the record by construction — so the
+    state was complete for the main reader and silently blind to the rest of
+    the graph, while calling itself the auditable answer to "which effects
+    ran". Same class of error as the two rounds before it: the claim was wider
+    than what the code observed.
+
+    The record now walks the whole graph and qualifies names by owner
+    (`SectorCalib::corr`), so a branch of the same name in two readers cannot
+    collapse into one entry and under-report. Main-frame names stay
+    unqualified, so every earlier reconciliation test keeps its meaning.
+    """
+
+    def _adf_with_lazy_subframe(self, tmp_path):
+        p = _write_tree_with_subframe(str(tmp_path / "graph.root"))
+        adf = A.AliasDataFrame.read_tree_lazy(p, "tree")
+        adf.register_subframe_lazy("SectorCalib", p,
+                                   tree_name="SectorCalib",
+                                   index_columns=["sec"])
+        return adf
+
+    def test_b32_18_subframe_reader_effects_are_recorded(self, tmp_path):
+        adf = self._adf_with_lazy_subframe(tmp_path)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf.draw_batch({"p": {"expr": "SectorCalib.corr:x",
+                                  "type": "scatter"}}, verbose=False)
+        plt.close("all")
+        st = adf._last_draw_prep_state
+        # the subframe's own reader did real work; the record must say so
+        assert any(b.startswith("SectorCalib::") for b in st.branches_loaded), (
+            f"subframe reader effects are invisible to the record "
+            f"(P0-ReaderGraph): branches_loaded={st.branches_loaded}")
+        assert "SectorCalib::corr" in st.branches_loaded, st.branches_loaded
+        assert any(c.startswith("SectorCalib::") for c in st.columns_created), (
+            f"subframe frame columns are invisible: "
+            f"columns_created={st.columns_created}")
+        # main-frame names remain unqualified — earlier reconciliations hold
+        assert "x" in st.branches_loaded
+        assert not any(b.startswith("::") for b in st.branches_loaded)
+
+    def test_b32_19_graph_reads_reconcile_and_stay_attributed(self, tmp_path):
+        """The stage attribution must survive the widened observation: every
+        graph read belongs to exactly one stage, and the stages still sum to
+        the measured total."""
+        adf = self._adf_with_lazy_subframe(tmp_path)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf.draw_batch({"p": {"expr": "SectorCalib.corr:x",
+                                  "type": "scatter"}}, verbose=False)
+        plt.close("all")
+        st = adf._last_draw_prep_state
+        stages = {
+            "catalog": set(st.reads_by_catalog),
+            "prescan": set(st.reads_by_prescan),
+            "union": set(st.reads_by_union_load),
+            "completion": set(st.reads_by_completion),
+            "autoload": set(st.reads_by_autoload),
+        }
+        staged = set().union(*stages.values())
+        assert staged == set(st.branches_loaded), (
+            f"graph reads {sorted(set(st.branches_loaded) - staged)} are "
+            f"unattributed")
+        names = sorted(stages)
+        for i, a in enumerate(names):
+            for b in names[i + 1:]:
+                assert not (stages[a] & stages[b]), (
+                    f"{a} and {b} both claim {sorted(stages[a] & stages[b])}")
+        # the subframe reads belong to the pre-scan, which is what triggers them
+        assert "SectorCalib::corr" in stages["prescan"], stages["prescan"]
+
+
+@needs_dfdraw
+class TestB32ChainSyntheticColumn:
+    """Round-4 finding P0-ChainSyntheticRead — GPT30, executed; confirmed by
+    the coder before acceptance.
+
+    `LazyChainReader` adds a synthetic `__file_idx__` bookkeeping column to
+    `loaded_branches` while deliberately excluding it from
+    `available_branches` — its own docstring says so at two places. The graph
+    walk copied loaded names unfiltered, so a name that was never read from a
+    file entered `branches_loaded` and `reads_by_union_load`.
+
+    This one blocked where the round's other finding did not, and the
+    distinction is the standing bar for this record: `__file_idx__` in a read
+    field is a FALSEHOOD — it tells a consumer that I/O happened which did not.
+    A coverage gap merely omits; a falsehood misinforms. Reads are now filtered
+    through each reader's own `available_branches`; the column still appears in
+    `columns_created`, which is accurate, because it is a real column.
+    """
+
+    CHAIN = ("chain_part1.root", "chain_part2.root")
+
+    def _chain(self, add_file_index=True):
+        paths = [os.path.join(os.path.dirname(__file__), f) for f in self.CHAIN]
+        for p in paths:
+            if not os.path.exists(p):
+                pytest.skip("chain fixtures not present (make_fixtures.py)")
+        return A.AliasDataFrame.read_chain_lazy(
+            paths, "tree", add_file_index=add_file_index)
+
+    def test_b32_20_synthetic_column_never_enters_the_read_record(self):
+        adf = self._chain(add_file_index=True)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf.draw_batch({"p": {"expr": "mult", "type": "hist", "bins": 5}},
+                           verbose=False)
+        plt.close("all")
+        st = adf._last_draw_prep_state
+        read_fields = (st.branches_loaded, st.requested_reads,
+                       st.reads_by_catalog, st.reads_by_prescan,
+                       st.reads_by_union_load, st.reads_by_completion,
+                       st.reads_by_autoload)
+        for field in read_fields:
+            assert not any("__file_idx__" in str(b) for b in field), (
+                f"a synthetic bookkeeping column is reported as a physical "
+                f"read (P0-ChainSyntheticRead): {field}")
+        # it IS a real column, so this half must stay true
+        assert any("__file_idx__" in str(c) for c in st.columns_created), (
+            "the synthetic column vanished from columns_created — the filter "
+            "was applied to the wrong half of the record")
+        assert "mult" in st.branches_loaded, "the real read was filtered away"
+
+    def test_b32_21_real_chain_reads_survive_the_filter(self):
+        """Guard against over-filtering: a chain WITHOUT the file index must
+        record its ordinary branch reads unchanged."""
+        adf = self._chain(add_file_index=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf.draw_batch({"p": {"expr": "mult", "type": "hist", "bins": 5}},
+                           verbose=False)
+        plt.close("all")
+        st = adf._last_draw_prep_state
+        assert "mult" in st.branches_loaded, st.branches_loaded
+        assert not any("__file_idx__" in str(c) for c in st.columns_created)
+
+
+@needs_dfdraw
+class TestB32DisclosedScopeLimits:
+    """The two round-4 omissions, pinned as DISCLOSED LIMITS rather than fixed.
+
+    Both are coverage gaps, not falsehoods: nothing untrue is recorded, the
+    scope is simply narrower than a casual reading of "the auditable answer to
+    which effects ran" would suggest. Both also turn on questions that are the
+    architect's to answer, and deciding them inside a correction pass is the
+    mistake this phase already paid for once with the eager path.
+
+    These tests exist so the limits are visible and so the day someone changes
+    the answer, a test says so out loud instead of a docstring quietly going
+    stale.
+    """
+
+    def _lazy(self, name="lazy_struct_fixture_clean.root"):
+        fixture = os.path.join(os.path.dirname(__file__), name)
+        if not os.path.exists(fixture):
+            pytest.skip("struct fixture not present (make_fixtures.py)")
+        return A.AliasDataFrame.read_tree_lazy(fixture, "tree")
+
+    def test_b32_22_struct_inside_a_subframe_is_left_partial_and_says_so(self):
+        """Hypothesis raised independently by three seats (Sonet25, Sonet27,
+        Fabble5_7), executed by the coder. Completion is self-scoped while
+        observation is now graph-scoped, so a struct living inside a subframe
+        is not completed. The record does NOT claim otherwise — which is why
+        this is a disclosed limit and not a defect. Whether the executor should
+        reach into subframe registries is an open scope ruling."""
+        main = self._lazy()
+        child = self._lazy()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            child._ensure_struct_catalog()
+            child.ensure_branches(["dedxTPC/dEdxMaxTPC", "mult"])
+            for c in ("dEdxTotTPC__dedxTPC", "dEdxMaxIROC__dedxTPC"):
+                if c in child.df.columns:
+                    child.df.drop(columns=[c], inplace=True)
+            main.ensure_branches(["mult"])
+            main.register_subframe("Child", child, index_columns=["mult"])
+            before = set(map(str, child.df.columns))
+            main.draw_batch({"p": {"expr": "mult", "type": "hist", "bins": 5}},
+                            verbose=False)
+        plt.close("all")
+        after = set(map(str, child.df.columns))
+        assert after == before, (
+            "the executor now completes structs inside subframes — that is a "
+            "scope change requiring an architect ruling; update this test and "
+            "the documented scope together")
+        st = main._last_draw_prep_state
+        assert "dedxTPC" not in st.structs_completed, (
+            "nothing was completed, so nothing may be reported as completed")
+
+    def test_b32_23_aliased_subframe_object_is_omitted_not_misreported(self):
+        """GPT26's finding, pinned as a limit. The same child object under two
+        names is walked once, so the second owner path is OMITTED. Nothing
+        false is recorded — the first path's effects are correct. Whether the
+        registration should be permitted at all is an open architect ruling."""
+        main = self._lazy()
+        child = self._lazy()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            main.ensure_branches(["mult"])
+            child.ensure_branches(["mult"])
+            main.register_subframe("A", child, index_columns=["mult"])
+            main.register_subframe("B", child, index_columns=["mult"])
+            main.draw_batch({"p": {"expr": "mult", "type": "hist", "bins": 5}},
+                            verbose=False)
+        plt.close("all")
+        st = main._last_draw_prep_state
+        paths = {c.split("::")[0] for c in st.columns_created if "::" in c}
+        assert not ({"A", "B"} <= paths), (
+            "both owner paths are now recorded — the aliasing limit has been "
+            "closed; remove this test and the disclosure together")
+        assert not any(str(c).startswith("B::") and str(c) not in
+                       st.columns_created for c in st.columns_created)

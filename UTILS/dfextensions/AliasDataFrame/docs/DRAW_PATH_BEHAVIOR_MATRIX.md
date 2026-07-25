@@ -347,3 +347,464 @@ style dictionary: rewriting the caller's dict after construction cannot
 alter the record (isolation test). The old/new equivalence oracle compares
 every returned channel, not just the first. Suite: 54 passed / 4 expected
 failures, identical under module-style and package-style imports.
+
+
+### B3.2 — 2026-07-24 (dependency plan + single side-effect executor, on draw_batch) — **SUPERSEDED IN PART**
+
+> **Superseded 2026-07-25** (B3.2 part-1 panel `[X]`, findings B32P1-7 /
+> GPT24 / GPT26). Two claims in the paragraph below are known false and
+> are corrected in the part-1 entry at the end of this log: *"every
+> preparation effect happens here and nowhere else"* — alias
+> materialization, vector-slot materialization, subframe joins,
+> temporary columns and cleanup still run in `draw_batch` after the
+> executor returns — and *"the auditable answer to which effects ran"*
+> — the record as written then could omit real reads and could report a
+> struct completion that did not happen. Read this entry as history,
+> not as contract.
+
+Plain-language summary. Three new private owners land: the dependency plan
+(everything one call needs, computed once from the effective specifications
+— pure, no effects), the single side-effect executor (subframe pre-scan
+once, union branch load once, catalog check once, autoload and struct
+rewrite once per dictionary — every preparation effect happens here and
+nowhere else), and the preparation-state record (the auditable answer to
+"which effects ran"). draw_batch now builds one plan and calls the executor
+once; three superseded preparation blocks are removed from it (the 13.75
+P0-2 early defaults pass, the Phase-7.3 per-spec loop, the 13.75 D3
+pre-projection pass, and the 13.66 trailing rewrite loop). Measured result:
+rewrites are one-per-dictionary BY CONSTRUCTION (acceptance test green);
+the executor performs the one owned catalog ensure, and the remaining
+catalog invocations are defensive re-checks inside shared helpers
+(get_required_branches, _dict_dispatch_columns) that serve standalone
+callers — their removal for executor-owned flows is the B3.4 demolition
+step, and the catalog-count acceptance tests are re-anchored there,
+disclosed, not silently. The pre-scan stays scalar-only with its reason now
+recorded in the plan's own docstring: pre-scanning vector slots would
+materialize a subframe immediately before the existing guard refuses it
+(BUG_20260701_ADF_subframe_ref_slot_symmetry) — an effect-before-refusal
+inversion; widening waits for that guard's symmetry fix. New tests: plan
+purity, mid-call union coverage on batch (the reviewers' adversarial
+requirement), executor-state contract. Suite: 63 passed / 4 expected
+failures under both import styles.
+
+
+### B3.2 correction pass — 2026-07-24 (panel [X], F-1 unanimous P0 fixed) — **SUPERSEDED IN PART**
+
+> **Superseded 2026-07-25**: F-1 and F-4 remain closed exactly as
+> described. The effect-ownership and preparation-state statements are
+> corrected by the part-1 entry at the end of this log.
+
+F-1: the plot-name expr fallback was written into the raw spec before the
+defaults merge, poisoning defaults-supplied expressions (caught by the
+pre-existing test_batch_with_defaults). Final form: NO name-write into raw
+specs at all — pre-B3.2 it only ever ran inside the struct guard; dfdraw's
+own defaults merge resolves absent expr, and the plan applies the fallback
+read-only for branch analysis. A non-skipping regression guard mirrors the
+catching test on a fixture that runs everywhere. F-3: batch flags migrate
+onto _DrawExecutionPolicy. F-4: the plan docstring states the mutation
+work-list truth — it holds the B1 structural copies plus ADF-internal
+kwargs, never caller-owned dictionaries. F-5: equivalence evidence for the
+corrected batch = the full oracle battery (O-1, policy, sweeps, state
+equivalence, b2_4) plus the defaults guard; batch has no old-path switch by
+design. F-6: the switch-removal target B3.4 is the architect-ratified
+bounded plan's own step (one-line re-acknowledgment requested). F-7:
+examples/time_series never staged (standing rule). Suite 64 passed /
+4 expected failures both import styles.
+
+
+### B3.2 second correction pass, part 1 of 2 — 2026-07-25 (architect Ruling 2; catalog effect ownership)
+
+**Ruling 2 (2026-07-25):** *"Do not defer the catalog requirement solely on
+assertion. Include the adversarial test. A reachable effect must move under
+the executor; a proven no-op may be physically removed in B3.4 only after an
+explicit recorded ruling."*
+
+**Executed answer: the effect IS reachable — the previous prediction was
+wrong, and the reason is worth recording.** `_ensure_struct_catalog` has two
+legs. The *detection* leg (`detect_structs`) is guarded by a fingerprint over
+the reader's `available_branches`, which is static per file; that leg indeed
+cannot re-fire mid-call, and that is what the earlier no-effect prediction
+reasoned about. The *D-3 full-structure-completion* leg has no such guard: it
+re-tests the frame's columns on every invocation and loads branches whenever a
+preceding load left a struct half-populated. Two legs, one guard.
+
+Consequence before this pass, traced end-to-end on a real `draw_batch` call
+(`TestB32ExecutorBoundary`): the executor loaded one struct member and
+returned; the defensive catalog re-check inside `get_required_branches` /
+`_dict_dispatch_columns` then completed the struct — `ensure_struct` plus a
+second `ensure_branches`, i.e. real branch I/O **outside** the single effect
+owner. It happened precisely when the struct reference lived in a per-spec
+dictionary rather than in `defaults`, because the plan's autoload work-list
+covered only `[defaults, kwargs]`. Whether a preparation effect stayed inside
+the executor therefore depended on which dictionary the user happened to put
+the reference in.
+
+**Fix — positional, not list-shaped.** The D-3 leg is extracted to
+`_complete_partial_structs()` (one owner, called from both places) and
+`_execute_draw_plan` invokes it immediately after its own branch load.
+Widening `autoload_dicts` to the per-spec dictionaries would have made
+correctness depend on a list's contents again — the same shape as the defect.
+The first catalog check stays where it is and is **not** relocated: the very
+next executor step resolves required branches through struct-aware expression
+analysis, so the catalog must exist before the analysis that decides what to
+load. Addition, not movement.
+
+**Cells flipped**
+
+| Cell | Was | Now |
+|---|---|---|
+| Catalog effect ownership (batch, struct ref in a per-spec dict) | Repair — completion escapes the executor | Preserve — executor-owned, `TestB32ExecutorBoundary::test_b32_5` |
+| Preparation-state completeness for struct completion | absent | `_DrawPreparationState.structs_completed`, `test_b32_5b` |
+| Catalog *invocation*-count acceptances (`b2_1`, `b2_2b`) | B3.4, deferred on assertion | B3.4, deferred **on executed evidence** (`test_b32_6` + `test_b32_7`) |
+| Rewrite-count assertion | fixture-shaped literal `3` / `2` | structural, `_expected_rewrite_count` (Ruling 3) |
+
+**Why the deferral of physical removal is now safe, and how that safety is
+kept honest.** `test_b32_6` shows the residual re-checks change nothing after
+a real call. On its own that would be a weak guard: it would keep passing if
+the D-3 leg were deleted or silenced, and B3.4's removal argument would
+expire without anyone noticing. `test_b32_7` is its deliberate counterpart —
+it constructs the partial-struct state by hand and asserts the same residual
+path *does* act. The pair states the real property: the residual calls are
+inert **because the executor completed the structs first**, not because the
+code path is incapable.
+
+**Scope, stated honestly.** This pass does not yet make the executor the sole
+owner of *every* preparation effect. Alias materialization, vector-slot alias
+materialization, subframe joins with their temporary columns, and the
+post-draw cleanup are still performed by `draw_batch` after the executor
+returns; the executor docstring now says so rather than claiming otherwise,
+and `test_b32_5c` is the strict-xfail fail-before evidence that flips when
+that migration lands in part 2. The spec-normalisation shims (plot-type,
+`vector_compose`) and the entry-window selection are deliberately **not**
+migration targets — they belong to `_EffectiveDrawSpec` (§11.1) and the
+projection stage (§11.6) respectively.
+
+Suite: focused 74 passed / 5 expected failures (was 64 / 4 — ten new tests,
+one new fail-before marker). Battery 222 passed / 4 skipped / 7 expected
+failures. Full sandbox sweep: failure identities byte-identical before and
+after (91 before, 91 after, zero new, zero accidentally fixed). Mutation-
+verified: removing the one-line fix fails `test_b32_5` on both spec-side
+cases and `test_b32_5b`.
+
+
+### B3.2 part-1 correction — 2026-07-25 (panel `[X]`; preparation-state truthfulness)
+
+Eight reviews on `reviewer_20260725_122628.zip`. Six landed `[!]`/`[OK]`;
+GPT24, GPT25 and GPT26 landed `[X]` — and the Main Reviewer overrode the
+numeric majority, correctly. The three `[X]` seats did not merely flag the
+eager path as untested, which is what every Sonnet-family seat and the coder's
+own review request had said. They **ran it**, independently, three times, with
+different fixtures, and got matching falsifying results. The coder had named
+this exact risk in §4 of the review request as "plausible, not covered by a
+test"; the honest description was "affirmatively false when executed". That is
+the same failure this phase exists to teach, one level up: reasoning about a
+path is not evidence about a path.
+
+**Three ways an intent-derived record lied** (each now reproduced by the coder
+independently before accepting the finding):
+
+| ID | Defect | Observed |
+|---|---|---|
+| B32P1-3 | Eager frames: `ensure_struct()` is a silent no-op without a reader, but the struct name was appended to `structs_completed` regardless | columns before `['x','a__S']`, after `['x','a__S']`, `structs_completed == ('S',)` |
+| B32P1-1 | Reads performed by full-structure completion were absent from `branches_loaded`, which was written from the union-load intent and never revisited | recorded `['dedxTPC/dEdxMaxTPC','mult']`, actual reader state also held `dEdxMaxIROC`, `dEdxTotTPC` |
+| B32P1-2 | A struct already partial on entry is completed by the **initial** catalog call, before the union-load line runs — leaving no trace in either field | 2 struct columns appeared; `structs_completed == ()`, `branches_loaded == ('mult','tgl')` |
+
+**Corrections.** Every read/column field of `_DrawPreparationState` is now a
+**measured before/after delta** taken at each stage boundary
+(`_observe_prep_effects`), never the set of branches the executor asked for.
+Intent is kept, labelled, and kept apart: `requested_reads`. Effects are
+attributed by stage — `reads_by_catalog`, `reads_by_union_load`,
+`reads_by_completion`, `reads_by_autoload` — and the total is measured across
+the whole call rather than summed from the stages, so an unattributed effect
+still shows up in the reconciliation. `_complete_partial_structs()` re-reads
+the frame and records a struct **only when every member is verifiably
+present**: attempt and outcome are different events, and only the outcome is
+reported.
+
+**Eager partial structs are TOLERATED, not completed.** That is pre-existing
+behaviour — the D-3 leg has always run on eager frames and has always done
+nothing there — preserved deliberately rather than changed inside a correction
+pass, and now pinned by `test_b32_10`. Whether a registered-but-partial struct
+on an eager frame should instead be **refused loudly**, as D-3's own error text
+implies, is an **open cell requiring an architect ruling**: Preserve or Repair.
+It is out of scope for this correction either way.
+
+**The GPT25/GPT26 double-completion dispute is resolved by direct trace, and
+both were right at different layers.** GPT25 observed that the second
+`ensure_struct` issues a second `ensure_branches` request — confirmed. GPT26
+concluded no duplicate branch I/O occurs — also confirmed: the reader performs
+exactly two real reads for the whole call. But GPT26's stated mechanism is
+wrong; the filtering happens inside `ensure_branches`, not inside
+`ensure_struct`'s missing-member check. So the redundancy is **invocation
+overhead, not duplicated I/O**, which keeps it a B3.4 demolition item rather
+than part-2 scope. `test_b32_11` pins both halves so the answer cannot drift,
+and fails loudly if a second real read ever appears.
+
+**Cells flipped**
+
+| Cell | Was | Now |
+|---|---|---|
+| `structs_completed` truthfulness | can be affirmatively false (eager) | verified-then-recorded, `test_b32_10` |
+| `branches_loaded` completeness | union-load intent only | measured total, reconciled against the reader, `test_b32_8` |
+| Completion during the initial catalog call | untraced | `reads_by_catalog` + `structs_completed`, `test_b32_9` |
+| Effect attribution by stage | absent | four stage fields, sum reconciled against the measured total |
+| C5 fail-before tracer | 3 method names | 7 — adds `materialize_alias`, `_ensure_vector_kwargs_aliases`, `_prepare_subframe_joins`, `dematerialize` |
+| `test_b32_7` non-vacuity | bare `before != after` | exact expected column and read deltas, plus an explicit absent-before precondition |
+| Rewrite-count assertions | fixture-shaped literals | structural (Ruling 3) |
+| Earlier B3.2 matrix entries | unmarked full-ownership claims | `SUPERSEDED IN PART`, with the false sentences quoted |
+
+**Still open, deliberately.** The executor is not yet the sole owner of every
+preparation effect; `test_b32_5c` remains the strict fail-before marker and its
+tracer now watches all seven relevant methods, so it can no longer XPASS early.
+Plan purity (`test_b32_1` never calls `required_branches(adf)`) is unchanged
+and carries into part 2. `draw()` and `draw_figures()` have **not** been
+examined for the same completion escape — the coder named this in the review
+request and no reviewer closed it; it is the first thing part 2 must check
+before the matrix claims a general closure.
+
+Suite: focused 74 → **78 passed / 5 expected failures** (four new reconciliation
+tests). Mutation-verified per correction: reverting verify-then-record fails
+`test_b32_10`; reverting the measured total fails `test_b32_8`, `test_b32_9`,
+`test_b32_5b`; reverting the initial-catalog attribution fails `test_b32_9`.
+
+
+### B3.2 part-1 round-2 correction — 2026-07-25 (panel `[X]`; second pass on the same record)
+
+Nine reviews. Sonet29's `[OK]` was issued from four seats before the GPT
+reviews landed and self-labelled provisional, asking to be superseded rather
+than reconciled once they arrived. They arrived: GPT24 `[X]`, GPT26 `[X]`,
+GPT25 `[!]`, GPT27 `[!]`. Two independent executed reproductions of the same
+P0 → `[X]` stands and the `[OK]` is superseded.
+
+**F1 (P0) — the same defect, a second representation.** Round 1 closed
+"initial-catalog completion is untraced" for structs already registered with
+internal member columns. It stayed open for the D4 shape: a struct arriving in
+PHYSICAL form (`dedxTPC/dEdxMaxTPC`), not yet registered. The catalog call then
+registers it, renames the column and loads the siblings all in one stage, and
+the membership snapshot taken before that call could not see a struct that did
+not yet exist. Reads were recorded; the completion that caused them was not.
+Reproduced by GPT24 and GPT26 independently, then by the coder before
+acceptance.
+
+Fixed by measuring the ENTRY column set with the definitions known AFTER
+registration (`_struct_membership_in`), and by counting a member present under
+either its internal or its physical name. The naive two-snapshot fix would have
+reported a *false* completion for a struct that was already whole in physical
+form and merely got registered and renamed — `test_b32_13` is the control that
+pins that, and it matters as much as the finding.
+
+**F2 (P1) — a behaviour change documented as a preservation.** GPT27 traced
+what four Sonnet-family seats and the Main Reviewer accepted at face value: the
+claim that "the D-3 leg has always run on eager frames and has always done
+nothing there" is false. `_ensure_struct_catalog()` returns at its **second
+statement** when `_lazy_reader is None`, so that leg never reached an eager
+frame at all. The round-1 unconditional call was therefore a NEW eager
+invocation described as preserving prior behaviour — the exact failure this
+phase keeps paying for, this time in the correction pass whose subject was not
+asserting things. The call is now gated to lazy frames, which is also the
+useful shape: an eager frame has no reader to complete a struct from.
+
+**F3 (P1) — misattributed pre-scan reads.** The subframe pre-scan loads the
+index columns a lazy subframe needs to join. Those reads fell inside the
+union-load observation window and were reported as union-load reads. Own
+boundary, own field (`reads_by_prescan`). The fixture is the point here: the
+first version of the stage-disjointness assertion passed with the boundary
+deliberately broken, because the struct fixture's pre-scan loads nothing. A new
+two-tree fixture (`_write_tree_with_subframe`) exercises it — measured
+`reads_by_prescan=('sec',)` against `requested_reads=('x',)`.
+
+**Architect ruling, 2026-07-25 — partial branch sets will be supported.** This
+settles the eager question and rules OUT the Repair/refuse-loudly option that
+GPT24, GPT25 and three Sonnet seats recommended. Refusing to work with a
+registered-but-incomplete struct would block a capability the architect has
+stated is coming, and Rev 2 §25 already defers member-exact loading to its own
+decision. Measured facts behind the ruling: a present member draws correctly;
+an absent member raises the 13.75 C3 projection guard with logical, internal
+and physical names; `eval()` on an absent member raises `NameError`. Nobody
+computes on data that is not there.
+
+Consequences for the record, deliberately chosen:
+* incompleteness is a **neutral fact** — `struct_members_present` records
+  which members are present per struct, with **no warning and no refusal**. A
+  warning would become noise the moment partial working is normal, and a field
+  named for a fault would not survive the future mode.
+* the automatic completion of a partial struct on a **lazy** frame is pinned as
+  **today's policy, not an eternal invariant**, with the tag written into
+  `test_b32_8` so the future partial-loading mode finds it instead of hitting a
+  test wall.
+
+**Mechanical items closed:** `test_b32_11` now asserts exact read batches and
+no repeated branch name across them, not just a call count (R2-P2-1); stage
+attribution asserts **pairwise disjointness** as well as summing to the total
+(R2-P2-2); the state docstring names `requested_reads` as the one deliberate
+intent field rather than claiming everything is observational (F5).
+
+**One removal worth disclosing.** `_structs_completed_between` carried a `not
+_present_before` clause for "a struct loaded from nothing is not a completion".
+No reachable path triggers it — the catalog stage can only take a struct from
+partial to complete — and a mutation test could not tell whether it was doing
+anything. It was removed rather than left as untestable defensive code, and the
+contract is now pinned behaviourally by `test_b32_17`, which is what catches it
+if the measurement ever moves.
+
+**Still open, unchanged:** `draw()` / `draw_figures()` parity for the same
+completion escape (named since round 1, closed by nobody, first task of part 2);
+plan purity (`test_b32_1` still never calls `required_branches(adf)`); the
+remaining effect migration behind `test_b32_5c`; cache effects and cleanup
+candidates still unrepresented against Rev 2 §11.5. GPT24's R2-P1-2 stands: the
+seven-method tracer still cannot see a direct `df_for_plot[flat_ref] = ...`
+temp-column write, so external frame observation must be added in part 2 before
+that marker is trusted as the migration-complete signal.
+
+Suite: focused 78 → **84 passed / 5 expected failures**. Battery **260 passed**
+/ 4 skipped / 7 expected failures. Full sandbox sweep: failure identities
+byte-identical to the pre-part-1 baseline (91 before, 91 after). Mutation-
+verified: reverting the F1 measurement fails `test_b32_9` and `test_b32_12`;
+reverting the eager gate fails `test_b32_14`; reverting the pre-scan boundary
+fails `test_b32_16`.
+
+
+### B3.2 part-1 round-3 correction — 2026-07-25 (reader-graph observation)
+
+Ten seats reviewed `reviewer_20260725_135249.zip`. The Main Reviewer overturned
+its own interim `[OK]` on the full panel — worth recording as method, not just
+outcome: the interim verdict was issued from four seats before the remaining
+GPT reviews arrived, and it was wrong.
+
+**Two of that synthesis's findings were already closed** in the bytes that
+followed it (`aff20f48`, packet `...150027`), which the panel had not yet seen:
+P0-PhysicalPreload (the `_partial_struct_names()` function it quotes no longer
+exists) and P1-EagerHistory. Re-litigating closed findings is the cost of a
+review round landing on superseded bytes; the round-3 note exists to stop that
+repeating.
+
+**P0-ReaderGraph — the one genuinely new blocker, and the deepest of the three
+rounds.** GPT31 was the only seat across ten reviews and three rounds to build
+a *subframe* scenario rather than confirm the fix against the scenarios it was
+designed for. `_observe_prep_effects()` — the single point every measured field
+derives from — looked at `self._lazy_reader` and `self.df.columns` and nothing
+else. A draw slot referencing a lazy subframe makes the executor's pre-scan
+materialize that subframe, reading branches through the SUBFRAME'S OWN reader
+and building the subframe's own frame. None of it was visible, by construction.
+Reproduced here before acceptance: with `SectorCalib.corr:x`, the string
+`corr` appeared in **no field of the record**.
+
+This is the third consecutive round of the same class of error, each one level
+further out: first the claim outran the code, then the record described intent
+instead of effects, now the observation was narrower than the thing it claimed
+to observe. Naming the pattern rather than just fixing the instance: *a
+measurement is only as honest as its scope, and scope is exactly what a test
+written against the same assumption cannot check.*
+
+Fixed by walking the whole graph — this frame's reader, every registered lazy
+subframe reader, and every materialized subframe's frame, recursively, with a
+visited set. Names are qualified by owner (`SectorCalib::corr`) so a branch of
+the same name in two readers cannot collapse into one entry and under-report.
+Main-frame names stay unqualified, so every earlier reconciliation test keeps
+its exact meaning. Permanent tests `test_b32_18` (subframe effects recorded)
+and `test_b32_19` (graph reads still attributed to exactly one stage, stages
+still pairwise disjoint and summing to the measured total).
+
+**P2-DoubleAssign — Sonet25 was right and the coder's correction of it was
+wrong.** It was argued that the first of the two `structs_completed`
+assignments was load-bearing on the eager path. It is not:
+`_ensure_struct_catalog()` returns immediately without a reader, so `_by_catalog`
+is necessarily empty on an eager frame. A mutation test settled it — restoring
+the two-assignment form changed no test outcome. Now a single expression, for
+readability rather than to preserve a value, and the comment says so.
+
+**Peak-RSS, partial isolation evidence.** The sandbox sweep showed 90 failure
+identities against the 91-identity baseline — `test_peak_rss_dict_below_full_frame`
+passed. Rather than report a one-off improvement, it was isolated: the test
+passes **8/8 standalone** (5 runs on these bytes, 3 on the pre-part-1 baseline)
+and fails only under 12-way parallel load, on both trees. That is evidence the
+failure is load-related and not attributable to this phase. It is not the alma2
+isolation run, which is still owed; it is the first actual measurement anyone
+has attached to that claim in six rounds of asserting it.
+
+**Cells flipped**
+
+| Cell | Was | Now |
+|---|---|---|
+| Reader-graph observation | main reader + main frame only | whole graph, owner-qualified, `test_b32_18` |
+| Stage attribution under a subframe reference | untested | reconciles and stays disjoint, `test_b32_19` |
+| `structs_completed` assignment | two assignments, one argued live | one expression, argument retracted |
+| Peak-RSS attribution | asserted, never measured | measured 8/8 in isolation, load-related |
+
+**Still open, unchanged:** `draw()` / `draw_figures()` parity (named since round
+1, closed by nobody, first task of part 2); plan purity; `test_b32_5c`'s tracer
+cannot see a direct `df_for_plot[flat_ref] = ...` write (GPT24 R2-P1-2, GPT27,
+GPT30, GPT31); cache effects and cleanup candidates unrepresented against
+Rev 2 §11.5.
+
+Suite: focused 84 → **86 passed / 5 expected failures**. Battery **262 passed**
+/ 4 skipped / 7 expected failures. Mutation-verified: reverting the graph walk
+fails `test_b32_18` and `test_b32_19`.
+
+
+### B3.2 part-1 round-4 correction — 2026-07-25 (one falsehood fixed, two omissions disclosed)
+
+Nine seats. **Seven approved; two did not, and the two were right.** GPT26 and
+GPT30 each built a different input shape nobody had tried and each found a real
+gap in the mechanism that had just closed the previous round's two P0s. The
+Main Reviewer overturned its own `[OK]` for the third round running and said so
+plainly. Both mechanisms were reproduced by the coder before acceptance.
+
+**The standing bar, adopted this round.** Four rounds have shown that someone
+can always construct an input shape the suite does not cover, so "the record
+covers every input" does not terminate. "The record never states something
+untrue" does, and it is checkable. That line separates this round's two
+findings cleanly and is now the blocking criterion for `_DrawPreparationState`:
+
+| | Meaning | Disposition |
+|---|---|---|
+| **Falsehood** | the record asserts something that did not happen | **fix — blocking** |
+| **Omission** | the record does not cover a shape; nothing untrue is said | **disclose in the documented scope — not blocking** |
+
+**Fixed — P0-ChainSyntheticRead (GPT30), a falsehood.** `LazyChainReader` adds
+a synthetic `__file_idx__` bookkeeping column to `loaded_branches` while
+deliberately excluding it from `available_branches`; its own docstring says so
+in two places. The graph walk copied loaded names unfiltered, so a name that was
+never read from a file appeared in `branches_loaded` and `reads_by_union_load`
+— telling a consumer that I/O occurred which did not. Reads are now filtered
+through each reader's own `available_branches`. The column still appears in
+`columns_created`, which is accurate: it is a real column. Readers that do not
+expose `available_branches` are left unfiltered — recording a superset beats
+silently dropping real reads. `test_b32_20`; `test_b32_21` guards against
+over-filtering. Mutation-verified.
+
+**Disclosed — P0-SharedNodeAlias (GPT26), an omission.** The cycle guard is a
+single identity set, so a child object registered under two subframe names is
+walked once and the second owner path's effects are omitted. Nothing false is
+recorded; the first path is correct. GPT26 framed this as needing a ruling and
+that framing is accepted: either forbid the registration with a clear error, or
+support it properly by separating physical-reader identity from logical
+owner-path provenance — a design change, not a correction. **Open architect
+ruling.** Pinned by `test_b32_23`, written so that closing the limit fails the
+test rather than leaving a stale docstring.
+
+**Disclosed — struct inside a subframe, an omission.** Raised independently as
+a hypothesis by three seats (Sonet25, Sonet27, Fabble5_7) and executed by the
+coder rather than left unconfirmed: **it holds.** Completion is `self`-scoped
+while observation is now graph-scoped, so such a struct is left partial. The
+record does not claim otherwise — `structs_completed` is correctly empty.
+Whether the executor should reach into subframe registries is a scope ruling.
+**Open architect ruling.** Pinned by `test_b32_22`.
+
+Both limits are now written into `_observe_prep_effects`'s docstring as an
+explicit covered / not-covered list, so the scope is stated where the code is,
+not only in this log.
+
+**Worth recording about the method.** GPT25 and GPT31 both went looking for
+more — nested subframes, repeated branch names across readers, a deliberate
+graph cycle — and found the mechanism sound. That is useful negative evidence,
+not a miss: it narrows where the remaining risk lives. What no round has
+produced is a way to know in advance which untried shape matters, which is
+precisely why the bar moved from coverage to truthfulness.
+
+Suite: focused 86 → **90 passed / 5 expected failures**. Battery **266 passed**
+/ 4 skipped / 7 expected failures. Full sandbox sweep: 90 identities against the
+91-identity baseline, the difference being `test_peak_rss_dict_below_full_frame`
+which passes 8/8 standalone on both trees and fails only under 12-way parallel
+load — load-related, not attributable. Mutation-verified: reverting the
+`available_branches` filter fails `test_b32_20`.
