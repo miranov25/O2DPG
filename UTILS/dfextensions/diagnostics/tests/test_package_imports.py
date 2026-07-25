@@ -344,3 +344,80 @@ def test_LEDGERPKT_identity_gate_removed_and_substitution_retained_unused():
             and not line.strip().startswith(("#", "def ", '"""'))
             and "remain defined" not in line]
     assert not live, f"substitution must not be invoked; live calls at {live}"
+
+
+# --------------------------------------------------------------------------
+# UMBRELLA - the dfextensions package public API must survive package work
+# [regression guard: PHASE_13_74 Increment 1 dropped these; restored lazily]
+# --------------------------------------------------------------------------
+UMBRELLA = PKG_PARENT / "dfextensions" / "__init__.py"
+
+
+def test_umbrella_version_present(tmp_path):
+    """dfextensions.__version__ must exist (was '1.1.0'; Increment 1 dropped it)."""
+    # P1-2: exact value, not merely "present". The mutation test that passed
+    # against version "9.9.9" is exactly what this now catches.
+    r = _run("import dfextensions; print('VER=' + repr(getattr(dfextensions,'__version__','GONE')))",
+             cwd=tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "VER='1.1.0'" in r.stdout, (
+        f"dfextensions.__version__ must be exactly '1.1.0'; got: {r.stdout.strip()}")
+
+
+def test_umbrella_light_import_stays_light(tmp_path):
+    """Importing a light subpackage must NOT eagerly pull in the analysis stack,
+    or the diagnostics collector cannot run on a host without ADF/dfdraw."""
+    r = _run(
+        "import sys, dfextensions.diagnostics\n"
+        "print('ADF_PULLED', 'dfextensions.AliasDataFrame' in sys.modules)\n",
+        cwd=tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "ADF_PULLED False" in r.stdout, (
+        "importing dfextensions.diagnostics dragged in the analysis stack")
+
+
+def test_umbrella_import_order_documented(tmp_path):
+    """P1-4: `AliasDataFrame` is both an umbrella export (the class) and a real
+    submodule name. In a FRESH interpreter the umbrella export resolves to the
+    class (this is the contract that matters). After an explicit
+    `import dfextensions.AliasDataFrame`, Python binds the submodule and the
+    umbrella name then resolves to the module - a known, documented consequence
+    of the name collision that predates this work. It is non-blocking because no
+    ADF/dfdraw/GB code uses the umbrella export path (all use
+    `from dfextensions.AliasDataFrame import ...`); this test pins the behavior
+    so it can never change silently."""
+    fresh = _run(
+        "import types\n"
+        "from dfextensions import AliasDataFrame as X\n"
+        "print('FRESH_IS_CLASS', not isinstance(X, types.ModuleType))\n",
+        cwd=tmp_path)
+    assert fresh.returncode == 0, fresh.stderr
+    assert "FRESH_IS_CLASS True" in fresh.stdout, (
+        "in a fresh interpreter the umbrella export must be the class")
+
+
+@pytest.mark.skipif(
+    not (PKG_PARENT / "dfextensions" / "AliasDataFrame").exists()
+    and not (PKG_PARENT / "dfextensions" / "AliasDataFrame.py").exists(),
+    reason="analysis stack not present on this host")
+def test_umbrella_public_exports_resolve(tmp_path):
+    """The umbrella's documented exports must resolve on demand."""
+    # P1-2: assert IDENTITY - each umbrella export must be the very object the
+    # submodule defines, not just any importable name. Dummy stand-ins (the
+    # mutation test) fail here because they are not the submodule's own object.
+    r = _run(
+        "import importlib\n"
+        "from dfextensions import AliasDataFrame, CompressionState, "
+        "GroupByRegressor, FormulaLinearModel\n"
+        "adf = importlib.import_module('dfextensions.AliasDataFrame')\n"
+        "fu  = importlib.import_module('dfextensions.formula_utils')\n"
+        "gr  = importlib.import_module('dfextensions.groupby_regression')\n"
+        "ok = (AliasDataFrame is adf.AliasDataFrame\n"
+        "      and CompressionState is adf.CompressionState\n"
+        "      and FormulaLinearModel is fu.FormulaLinearModel\n"
+        "      and GroupByRegressor is gr.GroupByRegressor)\n"
+        "print('IDENTITY', ok)\n",
+        cwd=tmp_path)
+    assert r.returncode == 0, f"umbrella exports broken:\n{r.stderr}"
+    assert "IDENTITY True" in r.stdout, (
+        f"umbrella exports must BE the submodule objects, not stand-ins:\n{r.stdout}")

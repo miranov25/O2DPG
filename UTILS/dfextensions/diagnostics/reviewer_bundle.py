@@ -28,12 +28,14 @@ CODE = ["dfx_host_diagnostics.sh", "collector.py", "schema.py", "audit.py",
         "report_diagnostics.py", "run_metrics.py", "explain_bundle.py",
         "dfx_run_with_diagnostics.py", "run_tests.sh",
         "job_host_analysis.py", "conclusion_model.py",
+        "capabilities.py",              # registry: lets a reviewer reproduce T-P9 from the packet
         "reviewer_bundle.py"]
-DOCS = ["README.md"]
+DOCS = ["README.md", "docs/CAPABILITY_MATRIX.md"]
 # LEDGER-PKT [architect ruling AR-4, 2026-07-22]: the completion ledger is
 # carried by EVERY reviewer packet until the phase closes, so a reviewer never
 # has to reconstruct the remaining-work state from conversation history.
-LEDGER_NAMES = ["PHASE_13_74_ADF_v8_Completion_Ledger_for_CRR_v4_Rev1.md"]
+LEDGER_NAMES = ["PHASE_13_74_ADF_v8_Completion_Ledger_for_CRR_v4_Rev2.md",
+                "PHASE_13_74_ADF_v8_Completion_Ledger_for_CRR_v4_Rev1.md"]  # Rev2 preferred; Rev1 fallback
 
 
 import getpass
@@ -125,7 +127,14 @@ def main(argv=None):
     for f in DOCS:
         p = HERE / f
         if p.is_file():
-            add(p, f"docs/{f}")
+            # P0-2 fix: CAPABILITY_MATRIX.md is consumed by capabilities.py and
+            # test_capabilities.py, which resolve docs/ as a SIBLING of the code
+            # (diagnostics/docs/). Ship it there so a fresh packet extraction
+            # reproduces T-P9. Human-facing docs (README) stay at packet-top docs/.
+            if Path(f).name == "CAPABILITY_MATRIX.md":
+                add(p, f"diagnostics/docs/{Path(f).name}")
+            else:
+                add(p, f"docs/{Path(f).name}")
     if a.crr and Path(a.crr).is_file():
         add(Path(a.crr), f"docs/{Path(a.crr).name}")
     # LEDGER-PKT: searched beside the CRR, then in the subproject root
