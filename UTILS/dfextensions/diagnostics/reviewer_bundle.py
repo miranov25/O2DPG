@@ -37,6 +37,33 @@ DOCS = ["README.md", "docs/CAPABILITY_MATRIX.md"]
 LEDGER_NAMES = ["PHASE_13_74_ADF_v8_Completion_Ledger_for_CRR_v4_Rev2.md",
                 "PHASE_13_74_ADF_v8_Completion_Ledger_for_CRR_v4_Rev1.md"]  # Rev2 preferred; Rev1 fallback
 
+# Governance documents that make the packet a COMPLETE, self-contained review
+# request - so a reviewer never reconstructs the "why / what / status" from
+# conversation history [architect: reviewer packet must carry everything needed
+# for review automatically]. Each is auto-included if found; a missing one is
+# noted, not fatal. Search order: --docs-dir (the GitLab docs tree), then the
+# subproject dir and its parent. Filenames are prefix-matched newest-first so a
+# later Rev supersedes an earlier one without editing this list.
+GOVERNANCE_DOCS = [
+    ("PHASE_13_74_ADF_MOTIVATION",              "the WHY - read first (motivation, goal, non-goals)"),
+    ("PHASE_13_74_ADF_v8_Proposal",             "the SPEC - normative specification"),
+    ("PHASE_13_74_ADF_CRR_Increment",           "the CRR - code review request (cover letter)"),
+]
+# Phase documents live in the GitLab NOTES tree (repo split: code on GitHub,
+# documents on GitLab). Override with --docs-dir.
+DEFAULT_DOCS_DIR = ("/Users/miranov25/NOTES/alice-tpc-notes/JIRA/"
+                    "O2-6532/docs/AliasDataFrame")
+
+
+def _newest_match(dirs, prefix):
+    """Newest file whose name starts with `prefix` and ends in .md, across dirs."""
+    hits = []
+    for d in dirs:
+        d = Path(d)
+        if d.is_dir():
+            hits += [f for f in d.glob(f"{prefix}*.md") if f.is_file()]
+    return max(hits, key=lambda f: f.stat().st_mtime) if hits else None
+
 
 import getpass
 import os
@@ -91,7 +118,10 @@ def main(argv=None):
                     help="do not run the suites (used by run_tests.sh, which "
                          "just ran them; standalone official packets rerun)")
     ap.add_argument("--crr", default=None,
-                    help="CRR document to include under docs/ (official packets)")
+                    help="explicit CRR path (else auto-found in --docs-dir)")
+    ap.add_argument("--docs-dir", default=DEFAULT_DOCS_DIR,
+                    help="GitLab docs tree holding governance documents "
+                         "(spec, motivation, CRR, ledger)")
     ap.add_argument("--logs", default=None,
                     help="log directory to package (default: <here>/test_logs)")
     a = ap.parse_args(argv)
@@ -116,6 +146,15 @@ def main(argv=None):
         import hashlib as _h
         manifest.append(f"{_h.md5(data).hexdigest()}  {arc}")
 
+    # Shared umbrella dfextensions/__init__.py lives one level ABOVE the
+    # subproject; ship it in package layout so a reviewer can fingerprint it
+    # here instead of hunting sources_adf.zip [closes round-1 P0-1 in-packet].
+    _umbrella = HERE.parent / "__init__.py"
+    if _umbrella.is_file():
+        add(_umbrella, "dfextensions/__init__.py")
+    else:
+        manifest.append("MISSING                           dfextensions/__init__.py")
+
     for f in CODE:
         p = HERE / f
         if p.is_file():
@@ -135,21 +174,36 @@ def main(argv=None):
                 add(p, f"diagnostics/docs/{Path(f).name}")
             else:
                 add(p, f"docs/{Path(f).name}")
-    if a.crr and Path(a.crr).is_file():
-        add(Path(a.crr), f"docs/{Path(a.crr).name}")
-    # LEDGER-PKT: searched beside the CRR, then in the subproject root
-    _ledger_dirs = [Path(a.crr).parent] if a.crr else []
-    _ledger_dirs += [HERE, HERE.parent]
-    _shipped = set()
+    _doc_search = [a.docs_dir, HERE, HERE.parent]
+    _crr_name = None
+    for _prefix, _role in GOVERNANCE_DOCS:
+        # explicit --crr wins for the CRR slot
+        if _prefix.startswith("PHASE_13_74_ADF_CRR") and a.crr and Path(a.crr).is_file():
+            _doc = Path(a.crr)
+        else:
+            _doc = _newest_match(_doc_search, _prefix)
+        if _doc and _doc.is_file():
+            add(_doc, f"governance/{_doc.name}")
+            if _prefix.startswith("PHASE_13_74_ADF_CRR"):
+                _crr_name = _doc.name
+        else:
+            print(f"[bundle] NOTE: governance doc not found ({_role}): {_prefix}*.md")
+    # LEDGER-PKT: the completion ledger, from the docs tree or subproject root
+    _ledger_dirs = [a.docs_dir, HERE, HERE.parent]
+    if a.crr:
+        _ledger_dirs.insert(0, str(Path(a.crr).parent))
+    _shipped = False
     for _name in LEDGER_NAMES:
         for _d in _ledger_dirs:
             _lp = Path(_d) / _name
-            if _lp.is_file() and _name not in _shipped:
-                add(_lp, f"docs/{_name}")
-                _shipped.add(_name)
+            if _lp.is_file():
+                add(_lp, f"governance/{_name}")
+                _shipped = True
                 break
-        else:
-            print(f"[bundle] NOTE: completion ledger not found: {_name}")
+        if _shipped:
+            break
+    if not _shipped:
+        print("[bundle] NOTE: completion ledger not found in " + str(_ledger_dirs))
     # P1-LogSelect (round-3): one newest log of EACH kind by explicit name
     # pattern - mtime alone only coincidentally selected a bash+pytest pair
     for pat in ("bash_suite_*.log", "pytest_*.log"):
@@ -169,15 +223,18 @@ def main(argv=None):
     gl = gl or "(no commits in range)\n"
     start_here = (
         "Reviewer packet - dfextensions/diagnostics (PHASE_13_74_ADF)\n"
-        "1. verify provenance/MANIFEST.md5 against code/ and tests/\n"
-        + (("2. read docs/" + Path(a.crr).name + " (the Code Review Request), then\n")
-           if a.crr and Path(a.crr).is_file() else
-           "2. the CRR document is distributed separately via GitLab (not in this packet)\n"
-           "   then\n")
-        + "   run: bash diagnostics/run_tests.sh  (layout matches a checkout)\n"
-        "3. logs/ contains the suite runs made when this zip was built\n"
-        "4. evidence/ holds a REAL bundle + rendered report.html + validation/"
-        "   collected on the packet-builder host at build time\n")
+        "This packet is SELF-CONTAINED: everything needed to review is inside.\n\n"
+        "READING ORDER:\n"
+        "  0. governance/PHASE_13_74_ADF_MOTIVATION*.md  - WHY we are doing this (read first)\n"
+        "  1. governance/PHASE_13_74_ADF_CRR_*.md         - the Code Review Request (what changed)\n"
+        "  2. governance/PHASE_13_74_ADF_v8_Proposal.md   - the normative specification\n"
+        "  3. governance/*Completion_Ledger*.md           - remaining-work status matrix\n\n"
+        "VERIFY & RUN:\n"
+        "  4. verify provenance/MANIFEST.md5 against diagnostics/ (incl. dfextensions/__init__.py)\n"
+        "  5. run: bash diagnostics/run_tests.sh  (layout matches a checkout)\n"
+        "  6. logs/ holds the suite runs made when this zip was built\n"
+        "  7. evidence/ holds a REAL bundle + rendered report.html + validation/\n"
+        "  8. provenance/git_log.txt anchors the review target commit\n")
     manifest_text = "\n".join(manifest) + "\n"
     # [Decision 3, 2026-07-23] the build-time identity gate is removed as a
     # normative requirement.  It previously failed the packet whenever a real
