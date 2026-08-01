@@ -25,7 +25,7 @@ Test requirements from review:
 - test_fill_applied_in_dependency_chain
 - test_update_config_affects_subsequent_materialization
 - test_auto_generated_aliases_respect_fill_config
-- test_fill_missing_rejects_non_numeric
+- test_fill_accepts_any_scalar_and_rejects_containers (was test_fill_missing_rejects_non_numeric; renamed in round 7, AD-14)
 - test_fast_mode_raises_not_implemented
 - test_backward_compatibility_no_config
 """
@@ -138,13 +138,37 @@ class TestGlobalFillConfig:
         with pytest.raises(NotImplementedError, match="Phase 2"):
             adf.set_global_fill(fill_mode='fast')
     
-    def test_fill_missing_rejects_non_numeric(self, adf_with_subframe):
-        """Test that non-numeric fill values raise TypeError."""
+    def test_fill_accepts_any_scalar_and_rejects_containers(self, adf_with_subframe):
+        """SUPERSEDED CONTRACT — AD-14/13.76.ADF (architect, 2026-07-28,
+        GPT31 Decision 3), rewritten deliberately and flagged in the CRR.
+
+        This test used to assert that ANY non-numeric fill raises
+        `TypeError: must be numeric`. The architect overturned that rule:
+
+            "set_subframe_fill() accepts any fill value compatible with the
+             actual column dtype: numeric, string, timestamp/NaT, complex, or
+             an existing category. It never silently adds a category. It
+             raises clearly on incompatibility."
+
+        Compatibility is not decidable at CONFIGURATION time, because a fill
+        is configured per SUBFRAME while dtypes are per COLUMN. So the check
+        moved to projection (`_coerce_fill_to_dtype`), where the column's own
+        dtype is known and the error can name it. What stays refusable here is
+        what is wrong for every dtype: a CONTAINER is not a fill value.
+
+        The old assertion is preserved in inverted form below, so the change
+        of contract is visible in the test rather than only in a document.
+        """
         adf = adf_with_subframe
-        with pytest.raises(TypeError, match="must be numeric"):
-            adf.set_global_fill(fill_missing="string")
-        with pytest.raises(TypeError, match="must be numeric"):
+        # was TypeError — a string is now a legal fill for a string/object
+        # column and is refused at projection for, say, a float one.
+        adf.set_global_fill(fill_missing="string")
+        adf.clear_global_fill()
+        # containers were rejected before and still are, with a clearer reason
+        with pytest.raises(TypeError, match="scalar fill value"):
             adf.set_global_fill(fill_nan=[1, 2, 3])
+        with pytest.raises(TypeError, match="scalar fill value"):
+            adf.set_global_fill(fill_missing=np.array([1, 2]))
     
     def test_clear_global_fill(self, adf_with_subframe):
         """Test clearing global fill resets to defaults."""

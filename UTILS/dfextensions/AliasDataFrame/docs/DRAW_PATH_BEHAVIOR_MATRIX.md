@@ -808,3 +808,1155 @@ Suite: focused 86 → **90 passed / 5 expected failures**. Battery **266 passed*
 which passes 8/8 standalone on both trees and fails only under 12-way parallel
 load — load-related, not attributable. Mutation-verified: reverting the
 `available_branches` filter fails `test_b32_20`.
+
+
+### B3.2 part 2 — 2026-07-25 (the executor becomes the sole owner on draw_batch)
+
+Part 1 closed the effect-accounting layer over four review rounds. Part 2 does
+what B3.2 was actually for: move the remaining preparation effects under the
+executor, so "one owner" is a property of the code rather than a sentence in a
+docstring.
+
+**Architect ruling — the two-phase (in fact three-phase) executor.** Two of the
+four remaining effects cannot live in a pre-draw executor, and that is physics:
+
+* the single-level subframe join writes its flattened column into the
+  **reduced** frame, which does not exist until projection. Moving it earlier
+  means growing `self.df`, and the D-ADF-DICT contract says in as many words
+  that the big frame is never copied or grown — on a ten-million-row TPC frame
+  that is not a cosmetic difference;
+* **cleanup** runs after dfdraw has rendered. There is no "before the draw"
+  that contains it.
+
+Presented as three options — two-phase executor, narrow the claim to three
+separate owners, or force everything pre-draw and grow the big frame — the
+architect chose the two-phase executor (2026-07-25). Narrowing the claim would
+have re-created the very arrangement this phase exists to remove; forcing
+everything pre-draw would have traded a documentation problem for a memory
+problem.
+
+**Migrated into the preparation phase:** alias materialization, vector-slot
+alias materialization, subframe joins. **Named phases added:**
+`_execute_draw_projection_effects` (reduced-frame temporary columns) and
+`_execute_draw_cleanup` (dematerialization after the render). All three report
+into one `_DrawPreparationState`, now 20 fields.
+
+**Measured result — zero escapes.** Effect trace on three call shapes:
+
+```
+alias + clear_after   escapes = NONE
+struct in spec        escapes = NONE
+vector slots          escapes = NONE
+```
+
+**`test_b32_5c` flipped to XPASS(strict) and its marker was removed.** That is
+the fail-before mechanism working as designed rather than as a formality: it was
+written while alias materialization still escaped, and it went off the moment
+the migration landed instead of waiting for someone to remember. Its tracer now
+counts all three phases as "inside the executor", which is what the ruling
+makes true.
+
+**GPT24's R2-P1-2 closed, by measurement rather than by watching.** A tracer
+that wraps methods can never observe `df_for_plot[flat_ref] = ...` — the write
+has no method to wrap. The projection phase therefore measures the reduced
+frame before and after, and records what it gained as `temporary_columns`,
+asserted distinct from `columns_created` and asserted absent from `self.df`.
+
+**P1-PlanPurity closed by deletion, not by a test.** Open since round 1 and
+flagged by four GPT seats across four rounds: `_DrawDependencyPlan` documented
+itself as PURE while carrying `required_branches(adf)`, which reached through
+`get_required_branches` into the struct catalog. The reviewers proposed a test
+that calls the method and asserts no effect. Removing the method is stronger —
+purity then holds by construction, and cannot rot when someone forgets the
+assertion. Resolution moved to `_resolve_required_branches` on the executor.
+`test_b32_24` pins the structural property: the plan exposes no method that
+needs an ADF to act on.
+
+**Falsehood found by the coder and fixed.** While probing `draw()` /
+`draw_figures()` parity, the preparation record turned out to survive a call on
+an unmigrated surface: `draw_batch` then `draw()` left the batch call's reads
+in place while `tgl` had in fact been read. Under the standing bar that is a
+falsehood, not a coverage gap — an absent record is honest, a stale one is not.
+All three public surfaces now clear the record on entry, so an unmigrated
+surface leaves `None`.
+
+**Rev 2 §11.5 completeness.** `cache_effects` is the last field group, recorded
+as a measured transition rather than as "a cache was touched": a stable catalog
+reports nothing, an unset one reports the fingerprint transition, and the
+subframe join-index cache reports growth. A field that fires on every call
+would mean nothing.
+
+**Cells flipped**
+
+| Cell | Was | Now |
+|---|---|---|
+| Sole effect ownership on `draw_batch` | 4 effects outside the executor | zero escapes, three named phases |
+| Reduced-frame temporary columns | unobservable by the tracer | measured, `temporary_columns` |
+| Post-render cleanup | surface-local step | executor phase, candidates from the record |
+| Plan purity | documented, untested, effectful method present | true by construction |
+| Preparation record after an unmigrated surface | stale, readable | `None` |
+| Rev 2 §11.5 field groups | writes and cleanup missing | complete, 20 fields |
+
+**Still open, and stated rather than implied.** `draw()` and `draw_figures()`
+are unmigrated B3.3 scope, and this was *measured*, not assumed — both still
+complete a partial struct through a residual catalog re-check after their own
+load, exactly as `draw_batch` did before part 1. The two disclosed limits from
+round 4 are unchanged and still await rulings: the same child frame registered
+under two subframe names, and structs living inside a subframe. The alma2
+peak-RSS isolation run is still owed.
+
+Suite: focused **97 passed / 4 expected failures** (one fewer expected failure
+than part 1 — the removed marker). Battery **273 passed** / 4 skipped / 6
+expected failures. Full sandbox sweep: **91 identities, identical to the
+pre-phase baseline**. Mutation-verified: sourcing cleanup candidates from
+anywhere but the record fails `test_b32_26`/`27`; a silent projection phase
+fails `test_b32_28`; restoring the plan's effectful method fails `test_b32_24`.
+
+---
+
+## Fix log — B3.2 part 2, correction round (2026-07-25)
+
+**Panel verdict on the part-2 bytes was `[X]`.** Five GPT seats found the same
+thing independently, and they were right. The entry above says "zero escapes,
+three named phases". The code did not support it: the 118-line subframe
+resolution block was still inline in `draw_batch`, and
+`_execute_draw_projection_effects` was called *afterwards* to diff two column
+lists. That is a good oracle. An oracle is not an owner. Everything in the
+previous section about the projection phase is **SUPERSEDED IN PART** — the
+measurements it describes were real, the ownership claim attached to them was
+not.
+
+**P0-ProjectionOwnership — the phase now executes.** The join, the child-frame
+alias materialization, the multi-level `_prepare_subframe_joins` call and the
+spec rewrite all run *inside* `_execute_draw_projection_effects`, which returns
+`(df_for_plot, subframe_replacements)`. `draw_batch` is a caller, not a
+co-owner holding half the state. `test_b32_30` is the mutation form of the
+claim: replace the phase with a pass-through and the flattened column can no
+longer appear. The previous tests could not have caught this — they would have
+passed just as happily against the inline arrangement, which is how the
+arrangement survived a round of review.
+
+**P0-SubframeCleanupRegression.** Cleanup called `self.dematerialize()`, which
+can only reach *this* frame. An alias the projection phase materialized on a
+CHILD frame was therefore listed as a cleanup candidate and then quietly
+survived the call — a record that lists a candidate never dropped is not
+incomplete, it is false. Cleanup now goes through `_dematerialize_qualified`,
+which reaches every frame in the graph, and `aliases_dropped` is measured after
+the attempt so an undroppable candidate shows up as the difference between the
+two fields rather than as a claim (`test_b32_32`, `test_b32_33`).
+
+Related: `aliases_materialized` was being measured against the set of
+*declared* aliases, which materialization does not change. Measured against the
+set of aliases that currently have a backing column instead
+(`_materialized_frame_aliases`).
+
+**P0-NestedPersistentMislabeled.** Classification is now by **where the write
+landed**, not by which phase observed it. A multi-level reference goes through
+`_prepare_subframe_joins`, which writes a PERSISTENT column onto `self.df`; the
+previous version measured the reduced frame alone, saw the column appear there,
+and filed it under `temporary_columns` — whose documented meaning is "discarded
+when the call returns". `test_b32_34` asserts the persistent case,
+`test_b32_35` the control.
+
+**P2-DeadLocal.** `already_materialized` at the old `:16038` was deleted. Once
+cleanup became a phase sourcing its bracket from the record, nothing read it; a
+retained-for-symmetry local is a claim that the surface still participates in
+the alias lifecycle, which is what this increment removed.
+
+### Architect rulings implemented this round
+
+| # | Ruling | Implementation |
+|---|---|---|
+| **D1** | Same child registered under two subframe names is legal and must be supported | Cycle guard moved from one global identity set to the **ancestor path**, so a child reachable as `A` and `B` is walked under both prefixes. A genuine cycle still terminates. New field `frame_aliases`. `test_b32_23`, `test_b32_23b` |
+| **D2** | Full functionality within child tables | `_complete_partial_structs` is graph-scoped, gated **per node** on that node's own lazy reader; `_struct_membership_graph` reports membership under qualified names on the same scope. `test_b32_22`, `test_b32_22b` |
+| **D3** | Cleanup-on-render-failure must be an option | New `clear_after_on_error=False` on `draw_batch`. Default preserves pre-B3.2 behaviour exactly (a raised render leaves the columns in place — they are the evidence someone debugging wants). New field `cleanup_outcome` records which of the five outcomes occurred, so the previously ambiguous "no candidates" state is readable. `test_b32_36`–`38` |
+
+**Both round-4 disclosures are now CLOSED** — by ruling, not by the coder
+deciding a scope question mid-correction. The `_observe_prep_effects` docstring
+was rewritten accordingly; it now discloses one remaining gap instead of two: a
+subframe registry entry that is not an AliasDataFrame has no frame to observe,
+so its effects are omitted and never misreported.
+
+**One walk, one guard.** `_observe_prep_effects` used to carry its own copy of
+the graph traversal. Both it and the new phases now use `_iter_frame_graph`.
+Two walks with two guards is how the record and the cleanup bracket came to
+disagree about which frames existed in the first place.
+
+**Newly disclosed, pre-existing, NOT fixed here.** A *lazy* subframe referenced
+only through an ALIAS (`Sub.some_alias`) never gets its join index columns
+pre-scanned, so the join fails before the projection phase is reached. The
+child-alias tests therefore use eager frames. This is a gap in the lazy
+pre-scan, not in this increment; repairing it inside a correction pass would
+mix two changes and the evidence would no longer say which one it covers.
+
+**Cells flipped (correcting the previous section)**
+
+| Cell | Previous entry claimed | Actually now |
+|---|---|---|
+| Projection phase | "one owner, three named phases" | true — the phase executes; `test_b32_30` fails if the work moves back out |
+| Cleanup scope | this frame | whole graph, owner-qualified |
+| Multi-level join column | reported temporary | reported persistent (`columns_created`) |
+| Struct completion scope | this frame (disclosed limit) | whole graph, per-node reader gate (D2) |
+| Aliased child registration | walked once (disclosed limit) | walked under both owner paths (D1) |
+| Cleanup on render failure | fixed: never runs | caller's choice, recorded either way (D3) |
+
+---
+
+## Fix log — B3.2 part 2, correction round 2 (2026-07-27)
+
+**Panel verdict `[X]`, 5 of 8 seats, and the five were right.** GPT25, GPT26,
+GPT27, GPT30 and GPT31 each independently executed `draw_batch` with a
+subframe reference *and* an entry selection, and each got the same failure.
+Three Sonnet seats approved; the synthesis (Sonet29) overturned its own `[OK]`
+under the Verdict-from-Convergence rule. Every finding below was reproduced by
+the coder before it was accepted.
+
+**P0-EntryProjection — the composition nobody had built.** `entry_begin` /
+`entry_end` / `entry_mask` became a `draw_batch` contract in B1. Subframe
+projection is what part 2 consolidated. The join is computed over the WHOLE
+parent frame (`_compute_join_indices` is defined that way), so its full-length
+result could not be assigned into the entry-selected reduced frame. The
+mismatch raised, the broad subframe `except` downgraded it to a warning, the
+dotted reference was never rewritten, and dfdraw then failed with a NameError
+about an undefined subframe name — which reads like a user typo. All three
+entry forms were affected.
+
+Fixed by carrying the selected parent-row POSITIONS
+(`_entry_selection_positions`) into the projection phase and slicing the join
+by them. Positional, not label-reindexed: nothing forbids duplicate index
+labels, and label alignment on such a frame silently fans out or picks the
+wrong row (`test_b32_44` is that case). The multi-level route's persistent
+copy became positional for the same reason.
+
+**Verified against a hand-computed join**, not against absence of an
+exception: `test_b32_39`–`44` each compare the flattened values with an
+independent join restricted to the same rows. "It didn't throw" would have
+passed against a projection producing the wrong numbers.
+
+**Disclosure: this P0 predates the correction.** The same assignment shape
+existed in the rejected inline arrangement — verified by running the failing
+call against `f125375f`, where it fails identically. It blocks B3.2 anyway,
+because the broken composition now lives inside the code that claims sole
+ownership, and closing the increment would freeze a known hole in the new
+owner.
+
+**P0-DefaultsRewrite (GPT25).** A subframe reference supplied through
+`defaults` or a top-level kwarg — a supported way to give one expression to a
+whole batch — was joined and got its flattened column, but the rewrite loop
+walked only the per-plot spec dicts. The rewrite set is now the same set the
+reference text was collected FROM. The caller's own dictionary is still never
+mutated (B1's structural copy); `test_b32_45` pins both halves.
+
+**P1-RepeatedCallMisclassify (GPT25).** Classification now asks where a column
+LIVES, not what this call wrote. On a second call the persistent multi-level
+column already exists, so it was absent from this call's write diff and was
+filed as a reduced-frame temporary — a column documented as "discarded when
+the call returns" that in fact sits on `self.df`.
+
+**P1-CleanupOutcomeWrong (GPT27) and P1-FailureStateTruthfulness (GPT27).**
+One `else` covered two situations, so a render failure with `clear_after=False`
+reported `skipped_render_failed` when cleanup had never been requested. And the
+bracket covered only the render, so a failure in preparation or projection left
+an alias materialized with an outcome of `not_requested` and no sign anything
+had gone wrong. There are now three brackets — preparation, projection, render
+— feeding one `_record_draw_failure`, a new `failure_phase` field, and outcomes
+renamed to `skipped_after_failure` / `ran_after_failure` since they are no
+longer render-specific. `_execute_draw_plan` publishes its record the moment it
+exists, so a half-finished preparation is still readable.
+
+**P1-BaseExceptionTooBroad (GPT30).** `except Exception`. A `KeyboardInterrupt`
+is the user stopping the session, not a failed plot; treating it as one deleted
+their columns on the way out (`test_b32_51`).
+
+### Architect rulings this round
+
+| # | Ruling | Implementation |
+|---|---|---|
+| **D1 (Option 3)** | A failed subframe resolution raises by default, with an escape hatch | `on_subframe_error='raise'` (default) / `'warn'`. The old warn-and-continue is exactly what hid P0-EntryProjection for the whole of part 2: the warning fired in every run and nothing watched for it. `test_b32_48`, `test_b32_49` |
+| **D2** | **REVERSES the 2026-07-25 D1 ruling.** Registering the same AliasDataFrame *object* under two subframe names is now FORBIDDEN | `_refuse_duplicate_frame_registration`. One mutable object under two logical names shares aliases, materialization, caches and cleanup, and forces one physical effect to be reported under two identities — which is exactly the `structs_completed` / `struct_members_present` contradiction GPT27 found. The architect's actual use case (one source, two independent analysis contexts with different parameterized aliases) is two INSTANCES, which stays legal and is tested. `test_b32_23`, `test_b32_23a` |
+
+**Scope of the D2 refusal, pinned as a matrix (`test_b32_52`–`58`) because
+getting the width wrong breaks something real in either direction.** The rule
+is a property of the RESULT: after this registration, would one object be
+reachable by two distinct paths *in this graph*?
+
+| Shape | Verdict |
+|---|---|
+| Same child into two parents that do NOT share a graph | **legal** — `time_series_TroubleShooting.py` does exactly this |
+| Same child reachable twice in one graph | refused, whichever registration completes the second path |
+| Same object under two names on one parent | refused |
+| Re-registering the same name | legal — an update |
+| Distinct instances under distinct names | legal — this is the shape D2 directs users to |
+| A frame registering itself | legal — a cycle with one name, already refused by `materialize_aliases` |
+
+Two implementation misses are recorded because the tests exist to prevent them
+coming back. The first version was **too wide** and broke
+`test_N1_7_cycle_detection` by refusing self-registration. The second was
+**order-dependent**: it asked "have I already seen this object", so
+`root←C, mid←C, root←mid` was accepted while the same three registrations in
+another order were refused — one structure, two answers.
+
+**This closes P1-D1xD2Inconsistency by prohibition rather than by
+reconciliation.** There was no non-arbitrary answer to "how many completions
+happened" for one object under two owner names; the ruling makes the question
+unaskable instead of picking an answer.
+
+**Mechanical items closed:** `clear_after_on_error` documented in `Args`;
+"two-phase" → "multi-phase" throughout; `test_b32_30` asserts the specific
+consequence and that the spec was *not* rewritten; the unsupported
+sandbox-sweep sentence removed from the commit message; the staging check made
+fail-closed with an exact path set and index-hash comparison.
+
+**Cells flipped**
+
+| Cell | Was | Now |
+|---|---|---|
+| Entry selection × subframe column | silently produced no column | correct values for the selected rows, all three entry forms |
+| Entry selection × nested subframe | index-label alignment, accidentally right | positional |
+| Subframe ref in `defaults` / kwargs | joined, never rewritten | rewritten; caller's dict still untouched |
+| Repeat call on one instance | persistent column relabelled temporary | classified by where it lives |
+| Failed subframe resolution | warning, then a confusing downstream NameError | ADF-owned error naming the reference; `'warn'` opt-out |
+| Failure record | render only, one branch for two cases | three phases, `failure_phase`, distinct outcomes |
+| Ctrl-C during a batch | treated as a render failure | propagates untouched |
+| Same object under two subframe names | supported (2026-07-25) | refused (2026-07-27); two instances instead |
+
+
+### Backward-compatibility check against real user code
+
+Asked directly by the architect: *will the old scripts stop working?* Checked
+rather than asserted.
+
+| Call site | Affected by D1 (raise) | Affected by D2 (refusal) |
+|---|---|---|
+| `examples/time_series/time_series.py` — 8 `register_subframe`, all distinct instances | no | no |
+| `examples/time_series/time_series_TroubleShooting.py` — incl. one frame registered into **two parents** (`adf` and `adfgbTPCDSec20`, lines 561–562) | no | **no** — the two parents do not share a graph |
+| `examples/time_series/time_series_draw.py` — `entry_begin/entry_end` on `draw`, no subframe in the same call | no | no |
+| `tutorials/drawing/*`, `tutorials/cheatsheets/*` | no | no |
+| `scripts/census_draw_path.py` | no | no |
+
+`tutorials/drawing/with_subframes.py` and `selections_groupby.py` were executed
+on both trees; behaviour is byte-identical, including two failures that
+`with_subframes.py` already had (`available_branches[:5]` slices a set; a
+`corrected` alias the script never defines). Neither is caused by this
+increment and neither is fixed here.
+
+**The residual risk, stated rather than implied.** If
+`adfgbTPCDSec20` is ever registered *into* `adf`, line 562 becomes a second
+path to the same object and will be refused. That is the ruling working as
+intended, but it is a change that would bite an existing script, so it is
+recorded here rather than left to be discovered.
+
+**D1's raise is reachable only where the old code already failed.** Every case
+that now raises previously emitted `[draw_batch] Failed to resolve subframe
+ref ...` and then handed dfdraw an unresolved dotted reference, which failed a
+few frames later. No call that produced a plot before produces an error now;
+the error simply arrives at the right place with the right message. `'warn'`
+restores the old sequence exactly for anyone who was catching the downstream
+failure.
+
+---
+
+## Fix log — B3.2 part 2, correction round 3 (2026-07-27)
+
+**Panel `[X]` again, and the finding was the worst category this chain
+tracks: silent wrong numbers.** All five GPT seats executed a subframe join
+with a *missing* parent key. None of the three Sonnet seats did, although the
+review request listed that scenario by name. `_compute_join_indices` returns
+`-1` as its missing-key sentinel plus a `missing` mask; the projection phase
+captured `missing`, never read it, and did `values[join_idx]`. NumPy reads
+`-1` as "last row", so a parent key with no child match received the child's
+final value — no exception, no warning.
+
+**Why 2,355 passing tests coexisted with it.** Every subframe fixture in the
+characterization file generated parent keys inside the child's key range, so
+the missing branch could not fire. The round-2 "compare against a
+hand-computed join" oracle was built on a fixture where every key matched — an
+oracle that could not fail in the way that mattered.
+
+**Standing rule adopted this round: no value oracle may use a fixture where
+every parent key is present in the child.** Every fixture in
+`TestB32MissingJoinKeys` carries at least one unmatched key.
+
+### The fix, and what it closed for free
+
+The projection phase now **borrows** `_extract_subframe_values_cached`, the
+established owner of missing-mask handling, `fill_missing`, and dtype policy,
+instead of restating the gather. `join_idx` **and** `missing` are sliced by the
+selected positions first, so the gather is already reduced-frame sized.
+
+That one change also closed both **D1 escape paths** (GPT26, GPT27): the
+helper owns child-alias materialization and raises `KeyError` for an absent
+column, so a failed child alias and a missing leaf column now reach the
+projection `except` and therefore `_fail()`. They previously warned, continued,
+and died inside dfdraw with `failure_phase="render"` for a projection failure.
+Borrowing a contract closed the paths that restating it had left open — the
+general lesson of this round.
+
+### Everything else
+
+| Finding | Raised by | Fix |
+|---|---|---|
+| Self-registration under two **different** names accepted twice | GPT27 | The graph walk skips the root (no subframe name) and the ancestor guard never turns a self-path into a walked node, so the two were never compared. A direct registry scan closes it; a single self-registration stays legal, which is what the cycle contract and `test_N1_7_cycle_detection` own |
+| Shared descendant of two registered subtrees accepted | GPT25, GPT26 | Already closed by the order-independence change (the incoming subtree's identities are compared, not just its root) |
+| Partial preparation failure leaves the alias fields empty | GPT26 | `_record_draw_failure` re-measures before deciding. A failing path costs one graph walk; the alternative is a record that says nothing happened while an alias sits materialized and uncleanable |
+| Entry validation outside every bracket | GPT27 | Bracketed; `failure_phase="entry_selection"` |
+| Struct assertion + plotter construction between two brackets | GPT27 | Bracketed with the projection guard |
+| `cleanup_outcome` relabelled `nothing_to_clean` after a failure with no candidates | Sonet27 | Outcome written **after** the cleanup phase, not before |
+| `on_subframe_error` accepted any string | GPT26, GPT30 | Validated to `{'raise','warn'}`. A typo silently changing failure behaviour is the same class of defect as the warning nobody watched |
+| `on_error='skip'` × `on_subframe_error` undocumented | GPT25, GPT27 | Documented in `Args` and pinned by `test_b32_71`: they act at different phases and do not substitute for each other |
+| D1 ruling date used interchangeably with the 07-25 batch | GPT27 | Corrected |
+| Docstring said warn "then fails" unconditionally | GPT30 | Qualified |
+| Trailing whitespace on added lines | GPT26 | Cleaned |
+
+### Architect rulings, 2026-07-27 (second batch)
+
+**D2 is GRAPH-LOCAL.** Within one reachable graph an object may not appear at
+two logical paths. Across *disconnected* graphs it may — which preserves
+`time_series_TroubleShooting.py`, where one grouped frame is registered into
+both `adf` and `adfgbTPCDSec20`.
+
+**The cost is stated, not dressed up.** Two disconnected parents holding the
+same object share mutable state: materialized aliases, struct state, columns,
+caches and cleanup performed through one are visible through the other. This
+is **not** an enforced read-only or copy-on-write mode; a real shared-memory
+mode would be a separate design. `test_b32_82` asserts the sharing so the
+hazard cannot go stale in prose while the code changes underneath it. For
+independent contexts the supported model remains two instances over the same
+source.
+
+**The lazy-subframe gap is fixed here, not deferred.** And the disclosure it
+replaces was wrong. Two rounds described it as "a lazy subframe referenced only
+through an ALIAS"; executing it shows a plain physical column fails
+identically. The real condition: once a lazy subframe has been materialized by
+anything — `get_subframe()`, an earlier draw, adding an alias to it — the
+PARENT's join index columns are never loaded, and every later `draw_batch`
+reference fails with `None of [Index(['sec'])] are in the [columns]`. The
+parent's index load had been nested inside "is the child still unloaded",
+which are unrelated conditions. `test_b32_75`–`78`, including the realistic
+shape: two draws in a row, where the first one broke the second.
+
+**Cells flipped**
+
+| Cell | Was | Now |
+|---|---|---|
+| Missing join key | child's last row, silently | NaN, or the configured `fill_missing` |
+| Missing key × entry selection | wrong value at the wrong row | correct, all selection forms |
+| Missing leaf column / failed child alias | warned, died later as `render` | raises at `projection`, naming the reference |
+| Self under two names | accepted | refused |
+| Lazy subframe after any touch | every later reference failed | works; two draws in a row work |
+| Entry-validation failure | `failure_phase=""` | `"entry_selection"` |
+| Partial preparation failure | record said nothing happened | reconciled before the cleanup decision |
+| Disconnected shared frames | undescribed | allowed by ruling, hazard asserted by test |
+
+---
+
+## Fix log — B3.2 part 2, correction round 4 (2026-07-28)
+
+Panel `[X]`, three findings, all reproduced by the coder before acceptance.
+Architect rulings recorded as **AD-7 / AD-8 / AD-9** in
+`docs/ARCHITECT_DECISIONS.md`.
+
+**P0 — dtype regression (AD-7).** Round 3 fixed missing keys by borrowing
+`_extract_subframe_values_cached`; that helper allocates
+`np.full(n, np.nan, dtype=float64)` for every non-floating column. Four GPT
+seats executed it: `object`/`category` RAISED `could not convert string to
+float`, and `int`/`bool`/`datetime` were silently coerced — datetime to raw
+epoch nanoseconds, which still plots.
+
+Fixed in two parts:
+
+- **All keys matched → gather directly in the source dtype, allocating
+  nothing.** This alone restores every dtype for matched joins, which is the
+  case that regressed.
+- **Keys missing → a representation the dtype can hold**: `NaT` for
+  datetime/timedelta, `None` for object, native for category. Measured, not
+  assumed (24→24 bytes, 27→27 bytes).
+
+**And a correction the coder got wrong first, recorded because it is the
+ruling's own point.** The first implementation RAISED for `int`/`bool` with
+missing keys. That invented a policy where one already existed. The project
+settled it in April: this layer yields `NaN`, and the user's declared dtype is
+restored at the ALIAS layer by `_safe_dtype_cast` (fills `0`/`False`,
+preserves dtype, warns) — the "recipe for default values on failure" the
+architect was pointing at. Three tests predating this phase said so:
+`test_A5_missing_child_key`, `test_D1_int8_dtype_preserved_through_join`,
+`test_D2_bool_dtype_preserved_through_join`. **The full sweep caught it; the
+focused suite did not, because the focused suite is the coder's and the
+contract is not.** `test_b32_85` is kept and inverted so the mistake cannot be
+made twice, and `test_b32_87` shows the two layers working end to end.
+
+**P0 — D2 defeated by delayed connection (AD-8).** Attach two parents to a
+root, THEN give each the same child: neither registration can see the other,
+because a frame holds no back-reference to its parents. Registration-order
+defences have now failed three times, so the check moved to where it cannot be
+outrun: `_validate_frame_graph_ownership()` runs at `draw_batch()` entry,
+**before any effect**, and refuses a graph in which one object is reachable by
+two paths, naming both. Order-independent by construction — it sees the graph
+that resulted, not the sequence that built it. Strictly read-only;
+`test_b32_93` asserts it changes no frame, reader, alias, cache or record, and
+`test_b32_95` asserts nothing is materialized before the refusal. The
+registration-time check stays as an early, friendlier error.
+
+**P1 — cleanup was the last unbracketed boundary.** A raising cleanup escaped
+with `failure_phase=""` and `cleanup_outcome="not_requested"` while an alias
+sat undropped. Now `failure_phase="cleanup"` / `cleanup_outcome="failed"`,
+written directly rather than through `_record_draw_failure` — which would call
+the same failing cleanup a second time (`test_b32_97` asserts it is entered
+exactly once). GPT27's separate normalization/dispatch interval is bracketed
+too (`failure_phase="normalization"`).
+
+**The four "untested — status unknown" combinations are now statuses.** Missing
+key on a lazy subframe, missing key on a nested path, empty child table, and
+`fill_mode='safe'` all execute and all behave correctly (`test_b32_98`–`101`).
+Leaving a category called "unknown" open across rounds is how the missing-key
+P0 survived four of them.
+
+**Whitespace cleaned BEFORE packaging**, per GPT26: stripping it afterwards
+would change the reviewed bytes and their fingerprints.
+
+**Cells flipped**
+
+| Cell | Was | Now |
+|---|---|---|
+| Matched join, any dtype | float64 or a raise | caller's exact dtype, no allocation |
+| Missing key, datetime/timedelta | epoch floats, silently | `NaT`, dtype kept |
+| Missing key, object / category | raised | `None` / native, dtype kept |
+| Missing key, int / bool | (first draft: raised) | unchanged established contract: NaN here, dtype restored by the alias layer |
+| Duplicate owner via delayed attachment | accepted, ran, produced an ambiguous record | refused at `draw_batch` entry before any effect, naming both paths |
+| Cleanup exception | `failure_phase=""`, `not_requested` | `"cleanup"` / `"failed"`, candidates retained |
+| Normalization exception | unbracketed | `failure_phase="normalization"` |
+| Lazy / nested / empty-child / safe-mode missing keys | unknown | executed and correct |
+
+
+---
+
+## Fix log — B3.2 part 2, correction round 5 (2026-07-28)
+
+Two panels reviewed round 4 (GPT25/26/27/31 as full reviews; Sonet25/27/28/29,
+Fabble5_7, GPT26, GPT30 through the synthesis). The union is eight findings,
+all reproduced by the coder before acceptance, and **one of them is a false
+statement in the round-4 CRR** rather than a defect in the code.
+
+### The structural change: one primitive, not a branch per dtype
+
+The architect asked whether the framework was being symmetrized or whether we
+were "using a special `if` for each particular case". **We were.** The
+implementation branched on datetime, category and object; this round's findings
+would have added complex, timezone-aware, nullable-extension and interval
+branches to the same chain. Three of five B3.2 rounds landed in the dtype
+domain for exactly that reason — pandas' dtype surface is larger than any list
+a person maintains, so enumerating it keeps missing a different corner.
+
+The gather is now **one call**:
+`pandas.api.extensions.take(arr, idx, allow_fill=True[, fill_value=])`, which
+already speaks the `-1` missing sentinel `_compute_join_indices` produces.
+Measured end to end through `draw_batch`:
+
+| source dtype | matched | missing |
+|---|---|---|
+| float32/64, complex64/128, datetime64, **tz-aware datetime**, timedelta64, object, category, **Int64**, **boolean**, **string**, period | preserved | preserved |
+| int8/int64/uint32 | preserved | `float64` — the ratified `_safe_dtype_cast` contract |
+| bool | preserved | `object` — same contract |
+| interval[int64] | preserved | **refused** per AD-11 (subtype would widen) |
+
+Empty child tables fall out of the same call with no special case. Fill
+representability is pandas' to decide, which closes GPT26's categorical-fill P1
+by construction rather than by a hand-rolled membership check.
+
+The matrix that guards it is **generated** (`DTYPE_CASES` × matched / missing /
+empty-child / entry-selection): adding a dtype exercises every combination
+automatically, so coverage is a property of the table rather than of what
+anyone thought of on the day — Sonet29's structural recommendation, adopted.
+
+### Findings closed
+
+| Finding | Raised by | Fix |
+|---|---|---|
+| tz-aware datetime loses its timezone, **matched and missing** | GPT25/26/27/30/31 | the fast path returned `.values`, which strips extension metadata; it returns the array now |
+| `Int64`/`boolean` → `object` on a matched join | GPT25/27/30/31 | same |
+| complex + missing → `float64`, imaginary discarded | GPT26/27/30/31 | the symmetric primitive; `np.floating`-only checks are gone |
+| empty **non-numeric** child raises out-of-bounds | GPT31 | same primitive; the round-4 test passed only because it used a float column |
+| categorical fill by an existing category refused | GPT26 | pandas owns representability |
+| symmetric `pre_index=True` fails: key is both index level and column | GPT26 | both key tables rebuilt from column values with a fresh positional index; `__sub_row__` mapping preserved |
+| **back-edge cycle bypasses the AD-8 validator** | GPT30 | one guard was doing two jobs: the ancestor check terminates recursion AND was deciding what got compared. Edges are enumerated separately from the walk, so `root←A, A←root` is visible even though recursing into it would not terminate. Single self-registration stays legal |
+| **dispatch interval still unbracketed — the round-4 CRR said it was closed** | GPT27/GPT30 | bracketed as `failure_phase="dispatch"`. The previous round bracketed the *normalization* loop and the claim was written as if that covered dispatch |
+| partial cleanup drop not recorded | GPT25 | `aliases_dropped` measured in a `finally` |
+| cleanup failure replaces the original exception | GPT25/27 | AD-10: original stays primary, cleanup kept in `secondary_error` — a field, not `raise ... from`, because chaining would read as causation |
+
+### Mechanical
+
+Stale `test_b32_86` citation corrected to `test_b32_93`; `test_b32_86` renamed
+and now actually configures a fill; the `failure_phase` value list completed
+(`entry_selection`, `normalization`, `dispatch`, `cleanup` were missing);
+"allocating nothing" narrowed — `Series.take` does allocate the gathered
+result, and the earlier wording overstated the property.
+
+### Still open and NOT closed by this round
+
+`_DrawDependencyPlan` remains an intermediate carrier rather than the full
+Rev-2 plan contract. GPT27 raises this as a substantive P1 that independently
+blocks closure, and it needs an architect ruling — complete it inside B3.2, or
+assign it to a named later increment. The coder has asked twice and has no
+answer; it is carried here so closure cannot happen by silence.
+
+---
+
+## Correction round 6 — GPT31's decision set (architect-approved 2026-07-28)
+
+Four architect decisions, a standing symmetry requirement, and one item ruled
+"fix it NOW". Recorded as **AD-12 … AD-17** in `docs/ARCHITECT_DECISIONS.md`.
+Every finding below was reproduced on the round-5 bytes (`1e63052b`) before it
+was fixed.
+
+### The root cause, which is one thing and not six
+
+The gather routed on `dtype.kind == 'f'`. `.kind` is defined on pandas
+ExtensionDtypes as well as NumPy dtypes:
+
+```
+pd.Float64Dtype().kind           -> 'f'
+pd.SparseDtype(np.float64).kind  -> 'f'
+pd.SparseDtype(np.int64).kind    -> 'i'
+```
+
+A predicate that looked general was a per-dtype assumption wearing a general
+face — the same shape of defect the round-5 symmetrization was supposed to
+have removed, one level further in. Replaced by `_is_plain_float_dtype()`:
+`isinstance(dtype, np.dtype) and np.issubdtype(dtype, np.floating)`, which
+asks the question that actually matters — *is this a real NumPy float buffer
+that holds NaN natively?*
+
+### Measured, before → after
+
+| case | before (round 5) | after |
+|---|---|---|
+| `Float64` / `Float32`, **fully matched** | **`object`** | preserved |
+| `Float64` / `Float32`, missing key | `float64` | `Float64` / `Float32` with `<NA>` |
+| `Sparse[float64]`, matched or missing | densified `float64` | preserved |
+| `Sparse[int64]` + missing key | dense `float64` — densified AND widened | refused, with the remedy named |
+| `bool` + `fill_missing=0` | `object` holding `[True, False, 0, False]` | `bool` |
+| `bool` + `fill_missing=2` | `object` holding a literal `2` | refused |
+| `int64` + `fill_missing=1.5` | `int64` holding `1` — silent truncation | refused |
+| category + a non-member fill | `NaN` | refused; a category is never added |
+| `object` column + `fill_missing='NA'` | `TypeError: must be numeric` | works |
+| complex + `fill_mode='safe'`, `fill_nan`/`fill_inf` | silently ignored | applied, identically to float |
+| child indexed with `set_index(drop=True)` | bare `KeyError: 'kc'` | joins; a genuinely absent key still names itself |
+| facet alias in `draw_batch` | excluded from the single bulk materialization | included |
+
+### Decision 2's scope boundary — the thing that needed a ruling, not a fix
+
+Decision 2 says *"do not silently change an integer column to `float64` or a
+Boolean column to `object`."* Applied literally to the shared gather it
+contradicts a contract ratified in April and pinned by three tests that
+predate this phase (`test_A5_missing_child_key`,
+`test_D1_int8_dtype_preserved_through_join`,
+`test_D2_bool_dtype_preserved_through_join`): the join layer yields NaN and
+`_safe_dtype_cast` restores the declared dtype at the ALIAS layer.
+
+Round 4 broke exactly those three tests by inventing a policy where one
+already existed. Rather than break them again by the opposite reasoning, the
+conflict was reported before any code was written. AD-13 records the boundary:
+Decision 2 governs matched joins, joins with a configured fill, and
+extension/sparse integer dtypes; the April contract stands for a plain NumPy
+int/bool column with a missing key and NO configured fill — documented and
+tested, therefore not *silent*. Changing it would also draw a real `0` where a
+TPC map currently leaves a gap.
+
+### `facet_by` — a two-list problem, not a typo
+
+`_parse_expr_aliases` took five of the six scalar draw slots. The branch scan
+(`required_branch_kwargs`) derives its slot list from
+`_EffectiveDrawSpec.SLOT_NAMES` and was correct; the alias scan hand-wrote the
+same list and was silently short. One derived, one copied, and only the copied
+one was wrong — which is the concrete argument for the standing symmetry
+requirement (AD-16: B3.3 adopt, B3.4 delete duplicates, B3.5 prove the
+matrix).
+
+### Mechanical / P2
+
+`_DrawDependencyPlan`'s docstring claimed a union-of-required-branches field
+it does not hold (resolution moved to the executor two refactors ago);
+`_extract_subframe_values_cached` documented an `np.ndarray` return while it
+deliberately returns the column's own array; the AD-8 validator's placement
+comment justified itself with a catalog effect that plan construction no
+longer has; the "one call" claim narrowed to *one call per array kind* —
+`ExtensionArray.take` or `pandas.api.extensions.take`, a dispatch on the array
+protocol rather than on the dtype.
+
+### Still open
+
+`aliases_pre_existing` is frame-scoped while `aliases_materialized` is
+graph-scoped (narrowed in documentation, not widened);
+`makeSmoothMapsWithTPC.py` is not in this tree; `draw()` / `draw_figures()`
+are B3.3; the alma2 peak-RSS isolation run is owed. The full Rev-2 dependency
+plan is no longer "open" — AD-12 assigns it to B3.2b, before B3.3.
+
+---
+
+## Correction round 7 — two P0s, both the coder's, both executed by four seats
+
+Round 6 was rejected `[X]` by GPT25, GPT27, GPT30 and GPT31, and the Main
+Reviewer (Sonet29) **overturned its own `[OK]`** after re-verifying against
+source. Two P0s converged 4/4 — the strongest convergence of the phase.
+
+### The pattern worth naming: I fixed the symptom and re-typed the cause
+
+Round 6's headline fix was removing `dtype.kind` from the gather router,
+because `.kind` is defined on pandas ExtensionDtypes and therefore lies about
+storage family. The same round left this standing one helper over:
+
+```python
+isinstance(dtype, np.dtype) and dtype.kind in "fc"      # the fill router
+```
+
+So `Float64` and `Sparse[float64]` silently discarded an explicitly configured
+`fill_nan` / `fill_inf`, while the identical call on `float64` applied it. The
+correct fix and the surviving defect were written in the same commit.
+
+The second P0 has the same shape at a different level: round 6 *documented* an
+invariant (AD-17: an index level and a same-named column are one key) without
+ever *checking* it.
+
+### P0-1 — every fill knob now obeys AD-14, on every storage family
+
+`_coerce_fill_to_dtype` existed since round 6 and was called from exactly one
+site. Measured before → after:
+
+| call | round 6 | round 7 |
+|---|---|---|
+| `float64` + `fill_nan="BAD"` | `object` holding `"BAD"` | refused, knob + dtype named |
+| `complex128` + `fill_inf="BAD"` | `object` | refused |
+| `float64` + `fill_missing=Decimal("1.25")` | `object` | `float64`, value `1.25` |
+| `Float64` / `Float32` + `fill_nan=99`, `fill_inf=77` | ignored | applied, dtype preserved |
+| `Sparse[float64]` / `Sparse[float32]` + same | ignored | applied, sparsity preserved |
+| `float64` control | applied | applied (unchanged) |
+
+Applicability is now asked by **capability** — `pandas.api.types.is_float_dtype`
+/ `is_complex_dtype`, which answer across plain NumPy, nullable and sparse
+alike — never by `isinstance(dtype, np.dtype)`. Every knob writes through one
+primitive, `_place_fill`, which coerces first and then assigns; arrays that
+refuse item assignment (`SparseArray`) go through a dense **temporary** and are
+restored to their exact dtype, so the result is never densified. That is one
+try/except on the array protocol, not a branch per dtype.
+
+`direct` mode still touches missing keys only — pinned per dtype family, since
+the guard moved into the shared helper.
+
+### P0-2 — an ambiguous join key is refused, and it was OUR regression
+
+```
+child index k=[0,1,2], child column k=[2,1,0], parent k=[0,1,2]
+round 6: [30.0, 20.0, 10.0]      silently reversed, no error
+round 7: ValueError naming the subframe, the side, and both value samples
+```
+
+Checked against the pre-phase baseline `c73f0c99`, pandas had been refusing
+this shape itself:
+
+```
+ValueError: 'k' is both an index level and a column label, which is ambiguous.
+```
+
+The round-4 ambiguity normalization — added to make `pre_index=True` work,
+where the two spellings *always* agree — rebuilt both key tables from column
+values and removed that refusal for the case where they do not. So this is a
+defect introduced by this phase, not a pre-existing gap, and round 6 then wrote
+a decision asserting the surviving behaviour was safe.
+
+The rule is now checked on both sides, at registration (before the registry is
+written, so a refused registration leaves no partial state) and again at graph
+consumption, since a frame can be re-indexed afterwards.
+
+Also closed under the same helper (GPT31 P1): `pre_index=True` on a child with
+a MultiIndex joined on a **subset** of its levels raised
+`KeyError: "None of ['a'] are in the columns"`. The predicate now asks, per
+key, whether that key is reachable, instead of comparing whole index-name
+lists.
+
+### Record items
+
+`test_fill_missing_rejects_non_numeric` renamed to
+`test_fill_accepts_any_scalar_and_rejects_containers` (it proved the opposite
+of its name); AD-17 corrected from "ratified by implementation" to **PROPOSED**
+— implementation cannot ratify a decision (GPT27, GPT30); the revision history
+re-ordered chronologically; `set_global_fill` / `set_subframe_fill` docstrings
+no longer describe the removed numeric-only contract; `np.array(1.0)` accepted
+as the scalar it is (GPT25 P2-3); `run_tests.sh` now ships a separate
+focused-suite log in the packet so the CRR's headline count is verifiable
+rather than trusted (GPT30 P2-1).
+
+### GPT27's AD-12 objection — not upheld, by the Main Reviewer
+
+GPT27 read the ratified decision as making B3.2b a mandatory sub-increment
+that blocks B3.2 closure. Sonet29 checked the primary ratified text rather than
+a paraphrase: the only sequencing constraint approved is **B3.2b before the
+`draw()` / `draw_figures()` migration**. AD-12 stands, with the challenge and
+its adjudication now recorded in the entry itself.
+
+### Two items still need the architect, not code
+
+- **AD-13's direct-slot reading** — GPT27 alone holds that Decision 2's literal
+  text forbids the ratified April NaN-at-join contract on the *direct*
+  (non-alias) path. GPT25 explicitly ratifies AD-13's boundary as written.
+  Needs a recorded answer, not a code change.
+- **AD-17's ratification** — the entry is PROPOSED and stays that way until the
+  architect rules.
+
+---
+
+## Correction round 8 — the round-7 panel, and one architect ruling
+
+Round 7: **GPT25, GPT26, GPT27, GPT31 → `[X]`; Fabble5_7 → `[OK]`.**
+Everything below was reproduced on the round-7 bytes (`423c0d36`) before a
+line was changed.
+
+### The architect ruling that came with it — AD-13a
+
+The panel split 3–2 on the direct (non-alias) int/bool path: GPT25/26/27 read
+Decision 2 as forbidding the widening outright; GPT31 and Fabble5_7 held that
+the widening *is* the missing-ness. The architect separated the two questions
+and chose **Option 3**:
+
+| aspect | ruling |
+|---|---|
+| the value | stays a gap — ADF never invents a measurement |
+| the dtype change | **reported**, per column per call, `FutureWarning` |
+| the future | the notice says it **will become an error** |
+| the remedy | `set_subframe_fill(fill_missing=...)`, which preserves the dtype today |
+
+Scoped to the one call site with no alias restoration downstream. The alias
+path is untouched — `_safe_dtype_cast` already restores and already warns
+there, and a second notice would train users to ignore the one that matters.
+No script that produces a figure today stops producing one.
+
+### 4/4 — `pd.NA` in a join key raised a raw `TypeError`
+
+```
+register_subframe(...)   ->  TypeError: boolean value of NA is ambiguous
+```
+
+for `object`, `string`, `boolean` **and** `Int64` keys. Only the plain float
+`NaN` control survived, which is exactly why the round-7 matrix passed. The
+comparison resolved missing-ness *after* the reduction instead of before it.
+
+Now: both-missing = equal, one-sided = different, compare only the non-missing
+subset — and the spelling of the gap (`None` / `np.nan` / `pd.NA` / `pd.NaT`)
+is not significant, because pandas normalises between them on a `set_index()`
+round trip without the user asking.
+
+### The round-7 record was false about "before any effect"
+
+I wrote that a refused registration "leaves no partial state", and tested the
+registry entry. GPT31 tested the rest: the child's `_schema` had already been
+auto-populated and the parent's join cache invalidated before the raise.
+
+Every check now runs above the first mutation. `test_b32_168` snapshots child
+schema, parent schema, join cache, child index and child columns across a
+refusal, for conflicting keys and absent keys, with and without `pre_index`.
+
+### A pre-existing hole the same move closed — and two wrong attempts at it
+
+The key-existence check had lived inside the `right_index_columns is not None`
+branch since PHASE_13_65, so the **ordinary symmetric call** — the one every
+existing script makes — never ran it on the CHILD. A child without the join
+key registered successfully and wrote both registry and schema (GPT25).
+
+**Getting the scope right took two failed attempts, both caught by the full
+sweep and neither by the focused suite** — the same asymmetry as round 4, and
+worth recording because the reflex to widen a validation is the recurring
+failure mode of this phase:
+
+| attempt | what broke | why |
+|---|---|---|
+| check both sides always | **29 tests** | a parent legitimately gains its key *after* registration — a declared alias materialized later, or an unloaded branch under a lazy reader |
+| drop the parent check entirely | `test_A6` (PHASE_13_65) | an unknown PARENT name **is** a registration error when `right_index_columns` is given explicitly |
+
+The original placement was therefore not the defect. Parent-side existence is
+a ratified contract of the **asymmetric** call and stays exactly there; only
+the CHILD-side check widens to the symmetric call, which is precisely what
+GPT25 reported.
+
+One further consequence: the round-2 fixture `_broken()` relied on the hole,
+so it is repointed at the shape D1 was actually ruled for (a missing *column*,
+not a missing *key*), and the old shape is kept as `test_b32_47b`.
+
+### Portability: a pandas primitive is not a dtype guarantee
+
+```
+pandas 1.5.3   Sparse[float32].take(...) -> Sparse[float32, nan]
+pandas 3.0.2   Sparse[float32].take(...) -> Sparse[float64, nan]
+```
+
+— and on the newer pandas it widens even for **matched** positions. Round 7's
+exact-preservation claim held only on the coder's and the architect's pandas,
+and the matrix that "proved" it fails elsewhere. GPT26 found it by executing on
+pandas 2.2.3, a runtime no seat had used before; that is the whole reason it
+took seven rounds. Results are now normalized back to the verified source
+dtype, with a losslessness check that reads only the array's *stored* values.
+
+### The public-path requirement (GPT27 QRC Rule 4)
+
+The round-7 matrices called private helpers. Every round-7 value/dtype claim is
+re-proved here through `draw_batch()`, asserting on the frame actually
+delegated to dfdraw: `test_b32_159`–`164`.
+
+### Measured, not deferred
+
+The `_place_fill` dense fallback costs **~5.25× the dense column** — 10M rows:
+420 MB peak against an 80 MB dense equivalent, independent of density, and only
+for a sparse column that also has a fill knob configured. Removing the
+defensive `.copy()` changed nothing measurable, so the honest statement is that
+the whole densify-fill-resparsify round trip costs that, not that one line
+does. A sparse-index reconstruction that never densifies is a named **B3.2b**
+item.
+
+### Record items
+
+AD-18 relabelled an **implementation consequence of AD-14**, not a ratified
+decision — "ratified by implication" was the same invalid move the same
+document had corrected for AD-17 one section earlier. `_get_fill_config`'s
+return documentation no longer says `float or None`.
+
+---
+
+## Correction round 9 — AD-19 ratified, AD-13a superseded
+
+Round 8: GPT27, GPT30, GPT31 → `[X]`; Fabble5_7 → `[OK]`. One confirmed P0
+producing **silently wrong scientific values**. Everything below was
+reproduced on the round-8 bytes (`99e911d8`) before a line was changed.
+
+### The ruling that reshaped the round
+
+The architect ratified **AD-19** in his own words, and explicitly **rejected**
+the weaker formulation the review had proposed:
+
+> A missing-key operation may not change the explicitly supplied dtype and may
+> never change any non-missing value. If the dtype cannot represent the gap,
+> ADF must require an explicit compatible fill or refuse clearly.
+
+and superseded **AD-13a** — *"widen now, warn, error later was not my decision
+and contradicts AD-19"*. **AD-17** is ratified.
+
+So the round-8 policy was not merely incomplete: warning-and-widening is not a
+permitted transitional state at all, because the widening can change values,
+and no warning makes a changed measurement acceptable.
+
+### The P0 — measured, and why eight rounds of matrices missed it
+
+```
+source (int64)   1152921504606846977, ...979, ...981, ...983
+matched          exact
+one key missing  1.152921504606847e+18  x3, NaN
+                 -> three distinct measurements collapsed into ONE
+via alias dtype="int64"
+                 1152921504606846976 x3, 0
+                 -> cast back to int64: type-correct, value-wrong
+```
+
+`uint64` above 2**63 behaves identically. `int32` does not — and that is the
+whole explanation for the blindness: **every integer in every dtype matrix
+built in rounds 6, 7 and 8 was small enough to be exactly representable as
+float64**, so the table could not fail. The same shape as the round-3 fixture
+where every key matched.
+
+These are not exotic values here: a track/timeframe uid, a nanosecond
+timestamp, a bunch-crossing id. One missing join key silently merged distinct
+tracks.
+
+### Behaviour now
+
+| case | behaviour |
+|---|---|
+| fully matched | exact dtype, exact values — always |
+| missing key, compatible fill configured | exact dtype, gap carries the fill |
+| missing key, widening would change a value | **refused**, remedy named |
+| missing key, widening provably lossless, no declared dtype | ratified April representation stands |
+
+Never widen-and-warn. Never cast rounded floats back to an integer dtype. The
+guard runs on **both** the direct and the alias path, because the alias path
+was the worse of the two — it restored the dtype and therefore disguised the
+corruption.
+
+**Implementation note that is itself a finding.** The first version of the
+guard compared values through `to_numpy(dtype=object)`. That is 3× slower and
+allocates one Python object per row — roughly 600 MB of boxed integers for a
+10M-row child column, on a path inside every draw. It would have violated the
+D-ADF-DICT contract in the act of enforcing AD-19. Replaced by a vectorised
+numeric round trip through the source dtype, which is exact for this question
+and allocation-free.
+
+### One normalization point, matched as well as missing
+
+Round 8 normalized only the missing-key path, so a **fully matched**
+`Sparse[float32]` was delegated as `Sparse[float64]` on pandas 2.2.3 — and the
+round-8 CRR claimed otherwise (GPT27 FIX8-P0-1, GPT30 B32F8-P0-1, both
+executed). The gather primitive's dtype is not a contract on any version:
+
+```
+1.5.3  preserves matched AND missing
+2.2.3  widens    matched AND missing
+3.0.2  preserves matched, widens missing      (Fabble5_7)
+```
+
+Three adjacent versions, three behaviours. The dtype is now verified and
+restored at one point covering both branches, and a restoration that would
+change a value is refused rather than applied.
+
+**And the test no longer depends on the runner's pandas** (GPT30 B32F8-P2-1):
+`test_b32_178` monkeypatches the primitive to widen unconditionally, so
+deleting the restoration fails the suite on 1.5.3 too.
+
+### Lazy-reader branches — my regression, fourth iteration
+
+A branch a lazy reader *advertises* is present: it is physical data the frame
+owns and has not loaded yet. Round 8 refused it on the child side (GPT27
+FIX8-P0-2 — round 7 accepted that shape, so this was a regression I
+introduced) and on the parent-asymmetric side (GPT30, GPT31).
+
+The round-8 source comment said an unloaded lazy branch is a legitimate
+deferred key, and the predicate written directly beneath it did not check for
+one. `_has_key` now reads `available_branches` from `_lazy_reader` /
+`_chain_reader` and from lazily-registered subframe readers — read-only, never
+loading — and a genuinely unknown key is still refused (`test_b32_180`–`184`,
+including one that asserts the validator loads nothing).
+
+### Record
+
+`AD-19` recorded canonically in the architect's words; `AD-17` ratified;
+`AD-13a` superseded with its original text kept for the record; the warning
+text no longer claims "the VALUE is correct" — it states that matched values
+have been *verified*, and names the round-8 claim as false. AD registry is
+v2.0.0: AD-19 changes a public behaviour that had held since April.
+
+---
+
+## Correction round 10 — AD-19 ratified with an operational definition
+
+Round 9: GPT27, GPT30, GPT31 → `[X]`; Fabble5_7 → `[OK]`; the Main Reviewer
+overturned his own `[!]`. Everything below was reproduced on the round-9 bytes
+(`833638dc`) before a line was changed.
+
+### The architect's addition that made this implementable
+
+> **ADF does not need to know whether the user consciously typed `dtype=...`.**
+> Every dtype observable from source metadata, an existing physical column,
+> schema metadata, an explicit alias declaration, or the first successful
+> creation/materialization is authoritative. ADF must preserve it thereafter.
+> If a missing value cannot be represented in that dtype, ADF must use an
+> explicitly configured compatible fill or refuse clearly.
+
+That removes the guessing the coder was stuck on and it settles AD-19-SCOPE as
+**Option 1**. The round-9 "lossless widening may stand" exception is gone: the
+dtype changing at all is the violation, not whether the numbers survived.
+
+### The P0 that survived round 9's own fix
+
+```
+add_alias("d", "S.v", dtype="int64")     ALL FOUR KEYS MATCHED, no missing key
+source   1152921504606846977, ...979, ...981, ...983
+round 9  1152921504606846976 x4
+```
+
+`_safe_dtype_cast` ran `np.asarray(result, dtype=np.float64)` **unconditionally**
+— with zero NaN present. Round 9's exactness guard is in the GATHER;
+`_safe_dtype_cast` runs downstream of it on the alias path, and was untouched
+by the round-9 diff. So a fully matched declared alias was corrupted by the
+very function whose job is to preserve its dtype, and it stayed corrupted even
+when a subframe or global fill was correctly configured.
+
+**Both reviewer traces were right, exactly as the Main Reviewer suspected.**
+Sonet28 was right that the gather guard is shared by both paths; GPT30 was
+right about what happens after it. The Main Reviewer declined to resolve it by
+reading and asked for one executed reproduction. It settled on execution.
+
+The same five lines held the second defect: `fill = False if kind=='b' else 0`
+— the automatic neutral value AD-19 forbids. 0 is neutral for an additive
+correction, 1 for a multiplicative one, and a dtype cannot tell them apart.
+
+### Configured fills — all three mechanisms now reach the gather
+
+```
+alias dtype=int64, fill_value=0  (additive)        -> int64, gap 0, matched exact
+alias dtype=int64, fill_value=1  (multiplicative)  -> int64, gap 1, matched exact
+set_subframe_fill(fill_missing=7)                  -> int64, gap 7
+set_global_fill(fill_missing=5)                    -> int64, gap 5
+nothing configured                                 -> REFUSED, all three named
+```
+
+**Precedence unchanged and pinned** — the architect asked that historical
+behaviour not change silently, and the measured order is:
+
+```
+subframe fill  >  global fill  >  alias fill  >  refusal
+```
+
+Round 10's only change is that the alias value reaches the *gather* rather
+than being applied after it. Same observable order; what changes is that it
+now works for values that cannot survive the intermediate, which round 9
+refused outright.
+
+### Blast radius — measured, and much smaller than expected
+
+A ruling that turns a widening into a refusal could have broken a great deal.
+Across the whole suite it broke **four** tests, three of which the architect
+named himself:
+
+```
+test_A5_missing_child_key                     (13.65)
+test_D1_int8_dtype_preserved_through_join
+test_D2_bool_dtype_preserved_through_join
+test_I3_9_flat_normalized_equivalence
+```
+
+All four are revised to the AD-19 contract — each now asserts *both* halves:
+the refusal without a configured fill, and exact dtype plus exact matched
+values with one. Plus 29 in the phase's own file, all of which encoded the
+superseded behaviour.
+
+After the revisions the sweep identity set is **identical to round 9**, which
+is identical to rounds 5–8: the sixth consecutive round with a character-stable
+set.
+
+### Record
+
+`_warn_direct_slot_widening` is **deleted**, not disabled — AD-13a is
+superseded and had nothing left to stand on; `test_b32_154` asserts its
+absence. `_matched_values_survive` gained a same-domain check after GPT27
+showed `source 1, gathered 1.5` passed the round-trip alone; the round-9 CRR's
+claim that it proved "no non-missing value may ever change" was stronger than
+the code. AD registry v2.1.0.
+
+---
+
+## SUPERSESSION NOTICE — "Configured fills — all three mechanisms now reach the gather"
+
+**Recorded:** 2026-08-01, checkpoint fix11a. **Authority:** ratified contract
+v1.4.2 as amended by v1.4.4, **AR-3**.
+
+The section above titled *"Configured fills — all three mechanisms now reach
+the gather"* records **ROUND-10 behaviour and is superseded.** Its claim —
+
+> *"Round 10's only change is that the alias value reaches the gather rather
+> than being applied after it. Same observable order"*
+
+— is false for any expression that is not the bare reference `S.v`. Measured:
+
+```text
+alias = "S.v + x", dtype=int64, fill_value=1, key missing, no operand fill
+    pre-phase c73f0c99  ->  [13, 1]
+    round 10 f9781761   ->  [13, 21]
+```
+
+The flat precedence list `subframe > global > alias > refusal` is likewise
+superseded: it describes one stage, and there are two.
+
+**Ratified contract:** operand fills (`set_subframe_fill`, `set_global_fill`)
+apply before evaluation and DEFINE the operand — precedence among them stays
+`subframe-specific -> global -> native gap / refusal`. Alias `fill_value`
+applies after evaluation, only to a final result that is still undefined or
+invalid, and is never injected into a subframe operand.
+
+**Checkpoint status:** the fix11a bytes still implement the superseded
+behaviour. Pinned by `b32_195`–`197` as `xfail(strict=True)`; corrected by
+`D_4`/`D_5`. Historical entries above are retained and marked superseded, not
+deleted.

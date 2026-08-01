@@ -501,12 +501,29 @@ class TestInvarianceSubframe:
         })
         
         # Normalized (events only has event_id 0 and 1)
+        #
+        # REVISED under AD-19 (architect, RATIFIED 2026-07-29). `run` is
+        # `int64` and therefore authoritative; an unmatched event cannot be
+        # represented in it, so ADF refuses unless the user says what an
+        # absent run means. This test is about flat-vs-normalized EQUIVALENCE,
+        # not about missing-value policy, so it declares the intent explicitly
+        # and keeps asserting the thing it exists to assert.
         adf_missing = AliasDataFrame(tracks_missing.copy())
         adf_missing.register_subframe('E', AliasDataFrame(events.copy()), 'event_id')
+        with pytest.raises(ValueError, match="authoritative dtype|neutral value"):
+            adf_missing.add_alias('run_value_norefuse', 'E.run')
+            adf_missing.materialize_alias('run_value_norefuse')
+
+        # Declare the gap explicitly: a float alias dtype CAN hold NaN, which
+        # is what this test's expected array describes.
+        adf_missing = AliasDataFrame(tracks_missing.copy())
+        adf_missing.register_subframe('E', AliasDataFrame(events.copy()), 'event_id')
+        adf_missing.set_subframe_fill('E', fill_missing=-1)
         adf_missing.add_alias('run_value', 'E.run')
         adf_missing.materialize_alias('run_value')  # FIX: Must materialize
-        missing_result = adf_missing.df['run_value'].values
-        
+        missing_result = adf_missing.df['run_value'].values.astype(np.float64)
+        missing_result = np.where(missing_result == -1, np.nan, missing_result)
+
         # Expected: [100, 100, 101, NaN, NaN]
         expected_missing = np.array([100., 100., 101., np.nan, np.nan], dtype=np.float64)
         

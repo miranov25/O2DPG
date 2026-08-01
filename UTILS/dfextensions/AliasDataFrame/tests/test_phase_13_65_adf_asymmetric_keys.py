@@ -169,12 +169,46 @@ def test_A6_validation_length_and_names():
 # --------------------------------------------------------------------------- #
 
 def test_A5_missing_child_key():
+    """REVISED under AD-19 (architect, RATIFIED 2026-07-29, Option 1 with an
+    operational definition), on the architect's explicit instruction that this
+    test be updated.
+
+    Until round 10 this asserted `np.isnan(got[2])` — i.e. that an `int64`
+    child column silently widened to `float64` to represent a gap. AD-19:
+
+        Every dtype observable from source metadata, an existing physical
+        column, schema metadata, an explicit alias declaration, or the first
+        successful creation/materialization is authoritative. ADF must
+        preserve it thereafter. If a missing value cannot be represented in
+        that dtype, ADF must use an explicitly configured compatible fill or
+        refuse clearly.
+
+    `val` is `int64` by virtue of existing, so it is authoritative. ADF does
+    not need to know whether the user consciously chose it. The asymmetric-key
+    behaviour this test exists to prove — that `kp`/`kc` join correctly and
+    that key 9 finds no match — is unchanged and is still asserted, through
+    the configured fill.
+    """
     parent = AliasDataFrame(pd.DataFrame({"kp": [0, 1, 9], "x": [1, 2, 3]}))
     child = AliasDataFrame(pd.DataFrame({"kc": [0, 1], "val": [10, 20]}))
     parent.register_subframe("C", child, index_columns=["kp"], right_index_columns=["kc"])
-    got = _join_values(parent, "C", "val")
-    assert got[0] == 10 and got[1] == 20
-    assert np.isnan(got[2])           # key 9 not in child -> missing
+
+    # No configured fill: an authoritative int64 cannot hold the gap -> refuse.
+    with pytest.raises(ValueError, match="authoritative dtype"):
+        _join_values(parent, "C", "val")
+
+    # With the physically correct value configured, the join is exact and the
+    # dtype is preserved. -1 is used here purely as a sentinel the test can
+    # recognise; ADF never picks it, which is the point of the ruling.
+    parent2 = AliasDataFrame(pd.DataFrame({"kp": [0, 1, 9], "x": [1, 2, 3]}))
+    child2 = AliasDataFrame(pd.DataFrame({"kc": [0, 1], "val": [10, 20]}))
+    parent2.register_subframe("C", child2, index_columns=["kp"],
+                              right_index_columns=["kc"])
+    parent2.set_subframe_fill("C", fill_missing=-1)
+    got = _join_values(parent2, "C", "val")
+    assert got.dtype == np.int64          # authoritative dtype preserved
+    assert got[0] == 10 and got[1] == 20  # matched values exact
+    assert got[2] == -1                   # key 9 not in child -> configured fill
 
 
 # --------------------------------------------------------------------------- #

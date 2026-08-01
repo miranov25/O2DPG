@@ -29,9 +29,24 @@ class TestDtypeLossSubframeJoin:
     def test_D1_int8_dtype_preserved_through_join(self):
         """
         D1: alias with dtype=int8 through subframe join preserves dtype.
-        
-        Before fix: result is float32 (cast fails on NaN from missing keys).
-        After fix: result is int8 (NaN filled with 0, warning emitted).
+
+        REVISED under AD-19 (architect, RATIFIED 2026-07-29), on his explicit
+        instruction that this test be updated.
+
+        The April behaviour asserted here was: NaN from the missing key is
+        automatically filled with 0 and a RuntimeWarning is emitted. AD-19
+        forbids that:
+
+            "an unknown value must not silently become a neutral value unless
+             the user explicitly configured that policy ... do not
+             automatically choose 0, 1, False, or any other fill. Those are
+             physical choices made by the user."
+
+        0 is the neutral value of an ADDITIVE correction and 1 of a
+        MULTIPLICATIVE one; a dtype cannot tell them apart. So the test now
+        asserts both halves of the ruling: without a configured fill the
+        operation refuses, and with one the dtype AND the matched values are
+        preserved exactly.
         """
         main_df = pd.DataFrame({
             'sec': np.array([0, 1, 2, 999], dtype=np.int16),
@@ -47,21 +62,32 @@ class TestDtypeLossSubframeJoin:
         adf.register_subframe('T', sf, index_columns=['sec'])
         adf.add_alias('is_good', 'T.flag', dtype=np.int8)
 
-        with pytest.warns(RuntimeWarning, match="NaN values filled"):
+        # No configured fill: ADF refuses rather than inventing 0.
+        with pytest.raises(ValueError, match="authoritative dtype|neutral value"):
             adf.materialize_aliases(names=['is_good'])
 
-        assert adf.df['is_good'].dtype == np.int8, (
-            f"D1: expected int8, got {adf.df['is_good'].dtype}"
+        # With the physically correct value configured, int8 is preserved.
+        adf2 = AliasDataFrame(main_df.copy())
+        sf2 = AliasDataFrame(sub_df.copy())
+        adf2.register_subframe('T', sf2, index_columns=['sec'])
+        adf2.add_alias('is_good', 'T.flag', dtype=np.int8, fill_value=0)
+        adf2.materialize_aliases(names=['is_good'])
+
+        assert adf2.df['is_good'].dtype == np.int8, (
+            f"D1: expected int8, got {adf2.df['is_good'].dtype}"
         )
-        # sec=999 missing → NaN → filled with 0
-        assert adf.df['is_good'].iloc[3] == 0, "Missing key should be 0"
-        assert adf.df['is_good'].iloc[0] == 1, "Present key should be 1"
+        # sec=999 missing -> the CONFIGURED fill, not an ADF-chosen one
+        assert adf2.df['is_good'].iloc[3] == 0, "Missing key takes the configured fill"
+        assert adf2.df['is_good'].iloc[0] == 1, "Present key should be 1"
 
     @pytest.mark.invariance
     def test_D2_bool_dtype_preserved_through_join(self):
         """
         D2: alias with dtype=bool through subframe join preserves dtype.
-        Missing keys become False.
+
+        REVISED under AD-19, same reasoning as D1: `False` is a physical
+        choice, not something a Boolean dtype implies. Without a configured
+        fill ADF refuses; with one the dtype and matched values are exact.
         """
         main_df = pd.DataFrame({
             'sec': np.array([0, 1, 999], dtype=np.int16),
@@ -77,15 +103,21 @@ class TestDtypeLossSubframeJoin:
         adf.register_subframe('T', sf, index_columns=['sec'])
         adf.add_alias('primary', 'T.is_primary', dtype=bool)
 
-        with pytest.warns(RuntimeWarning, match="NaN values filled"):
+        with pytest.raises(ValueError, match="authoritative dtype|neutral value"):
             adf.materialize_aliases(names=['primary'])
 
-        assert adf.df['primary'].dtype == bool, (
-            f"D2: expected bool, got {adf.df['primary'].dtype}"
+        adf2 = AliasDataFrame(main_df.copy())
+        sf2 = AliasDataFrame(sub_df.copy())
+        adf2.register_subframe('T', sf2, index_columns=['sec'])
+        adf2.add_alias('primary', 'T.is_primary', dtype=bool, fill_value=False)
+        adf2.materialize_aliases(names=['primary'])
+
+        assert adf2.df['primary'].dtype == bool, (
+            f"D2: expected bool, got {adf2.df['primary'].dtype}"
         )
-        assert adf.df['primary'].iloc[0] == True
-        assert adf.df['primary'].iloc[1] == False
-        assert adf.df['primary'].iloc[2] == False  # missing → False
+        assert adf2.df['primary'].iloc[0] == True
+        assert adf2.df['primary'].iloc[1] == False
+        assert adf2.df['primary'].iloc[2] == False  # missing -> configured fill
 
     @pytest.mark.invariance
     def test_D3_float_dtype_unaffected(self):

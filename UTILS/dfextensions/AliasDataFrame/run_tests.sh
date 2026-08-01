@@ -117,6 +117,18 @@ SUMMARY_FILE="$LOG_DIR/SUMMARY_${TS}.txt"
 DIFF_COMMIT="$LOG_DIR/diff_last_commit_${TS}.txt"
 DIFF_PHASE="$LOG_DIR/diff_to_phase_${TS}.txt"
 GIT_STATUS="$LOG_DIR/git_status_${TS}.txt"
+# Focused (phase) suite, logged SEPARATELY and shipped in the packet.
+# GPT30 P2-1, round 6: the CRR quoted a focused-suite count that the packet
+# contained no evidence for, so a reviewer could verify the full run and not
+# the number the CRR actually led with. Override the pattern per phase:
+#   FOCUSED_TESTS="tests/test_phase_13_77_*.py" bash run_tests.sh
+FOCUSED_TESTS="${FOCUSED_TESTS:-tests/test_phase_13_76_draw_path_characterization.py}"
+FOCUSED_LOG="$LOG_DIR/test_focused_${TS}.log"
+REVIEWER_ZIP="$LOG_DIR/reviewer_${TS}.zip"
+# Absolute path, computed HERE rather than at packaging time, so the summary
+# block below can print it BEFORE the file exists. `realpath -m` resolves a
+# not-yet-created path; the fallback covers platforms without it.
+REVIEWER_ZIP_ABS="$(realpath -m "$REVIEWER_ZIP" 2>/dev/null || echo "$PROJECT_ROOT/$REVIEWER_ZIP")"
 
 echo "========================================"
 echo "AliasDataFrame Test Runner"
@@ -262,6 +274,17 @@ PYCOUNT
     # Extract failures
     grep -E "^FAILED |^ERROR " "$LOG_FILE" 2>/dev/null | sort -u > "$FAIL_FILE" || true
 
+    # --- focused (phase) suite, its own log so the CRR's headline number is
+    # verifiable from the packet rather than taken on trust.
+    if compgen -G "$FOCUSED_TESTS" > /dev/null 2>&1; then
+        echo "--- Running focused suite: $FOCUSED_TESTS ---"
+        python3 -m pytest $FOCUSED_TESTS -q --tb=short 2>&1 | tee "$FOCUSED_LOG"
+        FOCUSED_LINE=$(grep -E "^[0-9]+ (passed|failed)" "$FOCUSED_LOG" | tail -1)
+        echo "  focused: ${FOCUSED_LINE:-<no summary line>}"
+    else
+        echo "--- No focused suite matched: $FOCUSED_TESTS ---"
+    fi
+
     echo ""
     echo "⏱️  Tests completed in $DURATION_STR"
     echo ""
@@ -379,6 +402,13 @@ done
     echo "  Diff:     $(realpath "$DIFF_COMMIT" 2>/dev/null || echo "$DIFF_COMMIT")"
     echo "  Phase:    $(realpath "$DIFF_PHASE" 2>/dev/null || echo "$DIFF_PHASE")"
     echo "  Status:   $(realpath "$GIT_STATUS" 2>/dev/null || echo "$GIT_STATUS")"
+    if [[ -f "$FOCUSED_LOG" ]]; then
+        echo "  Focused:  $(realpath "$FOCUSED_LOG" 2>/dev/null || echo "$FOCUSED_LOG")"
+        echo "            $(grep -E "^[0-9]+ (passed|failed)" "$FOCUSED_LOG" | tail -1)"
+    fi
+    echo ""
+    echo "── Reviewer package ──"
+    echo "  $REVIEWER_ZIP_ABS"
     echo "========================================"
 } | tee "$SUMMARY_FILE"
 
@@ -532,8 +562,6 @@ fi
 echo ""
 echo "--- Packaging reviewer.zip ---"
 
-REVIEWER_ZIP="$LOG_DIR/reviewer_${TS}.zip"
-
 (
     cd "$PROJECT_ROOT"
     ZIP_FILES=""
@@ -541,6 +569,7 @@ REVIEWER_ZIP="$LOG_DIR/reviewer_${TS}.zip"
         "$SUMMARY_FILE" \
         "$FAIL_FILE" \
         "$LOG_FILE" \
+        "$FOCUSED_LOG" \
         "$MATRIX_MD" \
         "$DIFF_COMMIT" \
         "$DIFF_PHASE" \
@@ -553,7 +582,11 @@ REVIEWER_ZIP="$LOG_DIR/reviewer_${TS}.zip"
 
     if [[ -n "$ZIP_FILES" ]]; then
         zip -q "$REVIEWER_ZIP" $ZIP_FILES 2>/dev/null || true
-        echo "  Reviewer package: $REVIEWER_ZIP"
+        # ABSOLUTE path. It used to print "test_logs/reviewer_<ts>.zip", which
+        # is unusable for copy/paste from a terminal whose cwd the reader does
+        # not share — and the zip is the ONE artifact of this script that
+        # leaves the machine.
+        echo "  Reviewer package: $REVIEWER_ZIP_ABS"
 
         # (inherited) assert the HTML matrix
         # made it into the zip. Three consecutive phases (13.49, 13.49-FIX1,
