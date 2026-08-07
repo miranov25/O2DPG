@@ -290,6 +290,133 @@ class NumpyRootMapper:
         entry = cls.MAPPING.get(name)
         return entry[1] if entry else name
 
+class DTypeOrigin:
+    """Where an authoritative dtype came from — the five AD-19 sources, plus
+    the explicit `UNKNOWN` state.
+
+    D_1 of the ratified Round-11 contract
+    (`PHASE_13_76_ADF_AD19_DTYPE_AND_FILL_BRAINSTORM_v1_4_2_RATIFIED.md` §5.1,
+    as amended by `v1_4_4`).
+
+    String constants rather than an `enum.Enum` for one reason that matters
+    here: these values are written into `AliasDataFrame._schema`, which is
+    serialized to JSON and round-tripped through ROOT metadata. A plain `str`
+    survives that trip; an `Enum` member does not. This mirrors
+    `CompressionState` below, which made the same choice for the same reason.
+    """
+
+    #: 1 — tree / ROOT / NumPy / PyArrow branch or reader metadata. The branch
+    #: is NEVER loaded merely to learn its dtype (§5.6).
+    READER_METADATA = "reader_metadata"
+
+    #: 2 — a pandas or child-ADF physical column that already exists. Once a
+    #: frame is handed to ADF, its column dtypes are authoritative.
+    PHYSICAL_COLUMN = "physical_column"
+
+    #: 3 — `add_alias(..., dtype=...)`. Establishes authority immediately.
+    EXPLICIT_ALIAS = "explicit_alias"
+
+    #: 4 — the dtype produced by the FIRST successful, nonempty, stored
+    #: in-frame materialization of an alias declared without a dtype (§5.4).
+    FIRST_MATERIALIZATION = "first_stored_in_frame_materialization"
+
+    #: 5 — a persistent in-frame column ADF created itself. ADF may choose the
+    #: dtype at creation; once created it is fixed.
+    ADF_CREATED = "adf_created"
+
+    #: Not an authority. "Not established YET" — and nothing more. §5.2 is
+    #: explicit that UNKNOWN does NOT authorize widening, guessing, an implicit
+    #: neutral value, or later silent dtype drift.
+    UNKNOWN = "unknown"
+
+    #: Every value above, for validation. Ordered by AD-19 source number.
+    ALL = (READER_METADATA, PHYSICAL_COLUMN, EXPLICIT_ALIAS,
+           FIRST_MATERIALIZATION, ADF_CREATED, UNKNOWN)
+
+
+class DTypeAuthority:
+    """One resolved answer to "what dtype is authoritative for this subject?"
+
+    D_1. Immutable by construction, and the §5.3 valid-state invariants are
+    enforced in `__init__` rather than checked by callers:
+
+        known=True           -> dtype is not None and origin != UNKNOWN
+        known=False          -> dtype is None     and origin == UNKNOWN
+        stored_in_frame=True -> known=True
+
+    An invalid combination cannot be constructed. That is deliberate: the
+    round-9 corruption and the round-10 blockers were both cases where a piece
+    of dtype state was allowed to exist in a shape nobody had considered.
+
+    TERMINOLOGY, per contract §16 — "stored in-frame" means an in-memory
+    DataFrame/ADF column. "Persisted" is reserved for schema/file
+    serialization and is B3.2b work. Round 11 does in-frame only, so this
+    record deliberately has no `persisted` field to be misread.
+    """
+
+    __slots__ = ("dtype", "origin", "known", "stored_in_frame",
+                 "subject_kind", "subject_name")
+
+    def __init__(self, dtype, origin, subject_kind, subject_name,
+                 stored_in_frame=False):
+        known = dtype is not None
+        if known and origin == DTypeOrigin.UNKNOWN:
+            raise ValueError(
+                f"DTypeAuthority for {subject_kind} {subject_name!r}: a known "
+                f"dtype ({dtype}) cannot have origin UNKNOWN (contract §5.3)")
+        if not known and origin != DTypeOrigin.UNKNOWN:
+            raise ValueError(
+                f"DTypeAuthority for {subject_kind} {subject_name!r}: origin "
+                f"{origin!r} claims an authority but no dtype was supplied "
+                f"(contract §5.3)")
+        if origin not in DTypeOrigin.ALL:
+            raise ValueError(
+                f"DTypeAuthority for {subject_kind} {subject_name!r}: unknown "
+                f"origin {origin!r}; expected one of {DTypeOrigin.ALL}")
+        if stored_in_frame and not known:
+            raise ValueError(
+                f"DTypeAuthority for {subject_kind} {subject_name!r}: "
+                f"stored_in_frame=True requires a known dtype (contract §5.3)")
+        object.__setattr__(self, "dtype", dtype)
+        object.__setattr__(self, "origin", origin)
+        object.__setattr__(self, "known", known)
+        object.__setattr__(self, "stored_in_frame", bool(stored_in_frame))
+        object.__setattr__(self, "subject_kind", subject_kind)
+        object.__setattr__(self, "subject_name", subject_name)
+
+    def __setattr__(self, *_a, **_k):
+        raise AttributeError("DTypeAuthority is immutable")
+
+    def __delattr__(self, *_a, **_k):
+        raise AttributeError("DTypeAuthority is immutable")
+
+    @classmethod
+    def unknown(cls, subject_kind, subject_name):
+        """The only way to build a not-yet-established authority."""
+        return cls(None, DTypeOrigin.UNKNOWN, subject_kind, subject_name)
+
+    def __eq__(self, other):
+        if not isinstance(other, DTypeAuthority):
+            return NotImplemented
+        return (str(self.dtype) == str(other.dtype)
+                and self.origin == other.origin
+                and self.stored_in_frame == other.stored_in_frame
+                and self.subject_kind == other.subject_kind
+                and self.subject_name == other.subject_name)
+
+    def __hash__(self):
+        return hash((str(self.dtype), self.origin, self.stored_in_frame,
+                     self.subject_kind, self.subject_name))
+
+    def __repr__(self):
+        if not self.known:
+            return (f"DTypeAuthority(UNKNOWN, {self.subject_kind}="
+                    f"{self.subject_name!r})")
+        return (f"DTypeAuthority({self.dtype}, origin={self.origin}, "
+                f"{self.subject_kind}={self.subject_name!r}"
+                f"{', stored_in_frame' if self.stored_in_frame else ''})")
+
+
 class CompressionState:
     """
     Compression state constants for column compression lifecycle.
@@ -1701,6 +1828,220 @@ class AliasDataFrame:
             if name not in self._schema["columns"]:
                 self._schema["columns"][name] = {}
             self._schema["columns"][name]["expr"] = expr
+
+    # ---- D_8 : AD-19 source 4, first stored in-frame materialization -----
+    #
+    # Contract v1.4.2 §5.4 as amended by v1.4.4. An INFERRED authority is
+    # committed only after a materialization that is
+    #
+    #     successful  AND  nonempty  AND  stored in-frame
+    #
+    # and never by a getter, a zero-row result, a failed evaluation, a failed
+    # publication or a discarded result.
+    #
+    # WHY IT IS NOT STORED UNDER `_schema["columns"][name]["dtype"]`, which
+    # would have been the obvious place: `alias_dtypes` is built from exactly
+    # that key, so writing an INFERRED dtype there would make it
+    # indistinguishable from a dtype the user DECLARED with
+    # `add_alias(..., dtype=...)`. Those are AD-19 sources 4 and 3, and the
+    # contract keeps them apart — an explicit declaration outranks an
+    # inference and may be re-declared, an inference may not. Conflating them
+    # is the same class of mistake as the round-6 `dtype.kind` router: a
+    # predicate that looks general while quietly answering a different
+    # question.
+    #
+    # The record is a plain JSON-serializable dict so it survives the ROOT
+    # metadata round trip. DURABLE persistence of the origin is B3.2b
+    # (contract §13 item 2); this is in-frame state only.
+
+    _AUTHORITY_KEY = "dtype_authority"
+
+    def get_dtype_authority(self, name):
+        """The recorded authority for an alias, as a `DTypeAuthority`.
+
+        Returns an UNKNOWN authority when none has been established. Never
+        raises for an unknown name — "not established yet" is a real state
+        (contract §5.2), not an error.
+        """
+        _entry = (self._schema.get("columns", {}) or {}).get(name) or {}
+        _declared = _entry.get("dtype") if "expr" in _entry else None
+        if _declared is not None:
+            return DTypeAuthority(self._canonical_dtype(_declared),
+                                  DTypeOrigin.EXPLICIT_ALIAS, "alias", name,
+                                  stored_in_frame=name in self.df.columns)
+        _rec = _entry.get(self._AUTHORITY_KEY)
+        if not _rec:
+            return DTypeAuthority.unknown("alias", name)
+        return DTypeAuthority(self._canonical_dtype(_rec["dtype"]),
+                              _rec["origin"], "alias", name,
+                              stored_in_frame=name in self.df.columns)
+
+    @staticmethod
+    def _authority_is_exactly_representable(dtype):
+        """Can `str(dtype)` be reconstructed back to THIS dtype exactly?
+
+        The round-trip is the test, not a list of dtype names — the same
+        discipline `_coerce_fill_to_dtype` uses. Anything whose string form
+        loses metadata (categories and their order; storage-family variants
+        that share a token) fails it and is deliberately left without an
+        inferred authority rather than recorded approximately.
+        """
+        try:
+            _back = pd.api.types.pandas_dtype(str(dtype))
+        except (TypeError, ValueError):
+            return False
+        return _back == dtype
+
+    @staticmethod
+    def _canonical_dtype(spec):
+        """Reconstruct a dtype from its stored string, for EVERY supported
+        storage family — not only NumPy.
+
+        `np.dtype("Int64")` raises `TypeError: data type 'Int64' not
+        understood`, and the same for `boolean`, `string`, `category` and
+        timezone-aware datetime. Those are exactly the families AD-11 and
+        AD-19 cover, so a NumPy-only parser made the authority record
+        unreadable for them (GPT31 F11B-P0-2, GPT32 F11B-P1-2, both executed).
+
+        `pandas.api.types.pandas_dtype` understands the pandas surface AND
+        plain NumPy, so one call replaces the branch.
+
+        KNOWN LIMIT, stated rather than left to be discovered: a bare string
+        does not round-trip a categorical's categories or their order. Rather
+        than record that partial truth, `_authority_is_exactly_representable`
+        refuses to establish an inferred authority for any dtype whose string
+        form fails the round trip, so a categorical column simply has no
+        source-4 authority. The exact structured codec is B3.2b work.
+        """
+        if spec is None or not isinstance(spec, str):
+            return spec
+        return pd.api.types.pandas_dtype(spec)
+
+    def _aligned_publication_candidate(self, values):
+        """Exactly what `self.df[name] = values` will store.
+
+        F11B2-P1-1 (GPT32, executed). Enforcement ran on the PRE-assignment
+        object; pandas then realigned on the parent index during assignment
+        and stored something else — a misaligned int64 Series became
+        float64/[NaN, NaN] while the record still said int64. Building the
+        aligned candidate FIRST makes the thing we check and the thing we
+        store the same object.
+        """
+        if isinstance(values, pd.DataFrame):
+            raise TypeError(
+                f"alias publication expects a 1-D result, got a DataFrame "
+                f"with columns {list(values.columns)!r}")
+        if isinstance(values, pd.Series):
+            return values.reindex(self.df.index)
+        # F11B3-P1-1 (GPT32, executed). Normalizing ONLY Series meant a
+        # scalar or list alias reached _enforce_recorded_authority without a
+        # .dtype and raised AttributeError on rematerialization — while the
+        # bulk path worked, because pd.DataFrame(results, index=...)
+        # normalizes for free. That is a singular/bulk parity defect in the
+        # helper written to END singular/bulk parity defects: "one owner" is
+        # only true if it owns EVERY supported result shape, not only the
+        # shape the first test happened to use.
+        #
+        # pd.Series() preserves an ExtensionArray's dtype, broadcasts a
+        # scalar, and raises a clear length error for a wrong-length
+        # sequence — before publication, which is where it belongs.
+        return pd.Series(values, index=self.df.index)
+
+    def _publish_alias_column(self, name, values, explicit_dtype=None):
+        """The single owner of an alias publication. Both public paths use it.
+
+        align -> enforce authority on the ALIGNED candidate -> publish ->
+        commit from the STORED column. Answering GPT32's question honestly:
+        the previous round centralized the authority RULES but duplicated the
+        publication SEQUENCE at two call sites, so one untested defect lived
+        in both. This is the sequence, once.
+        """
+        _aligned = self._aligned_publication_candidate(values)
+        if explicit_dtype is None:
+            _aligned = self._enforce_recorded_authority(name, _aligned)
+        self.df[name] = _aligned
+        self._commit_first_materialization_authority(name)
+
+    def _commit_first_materialization_authority(self, name):
+        """Record the dtype of the first successful nonempty publication.
+
+        Reads `self.df[name]` — the column pandas ACTUALLY stored — not the
+        pre-assignment object. `self.df[name] = result` can realign on the
+        index and produce a different dtype and different values than the
+        object handed to it; recording the pre-assignment dtype made the
+        registry state something false about the stored column (GPT31
+        F11B-P1-1, executed: stored float64/[NaN, NaN], recorded int64).
+        A record that is false is worse than no record.
+        """
+        if name not in self.df.columns:
+            return
+        values = self.df[name]
+        _entry = (self._schema.get("columns", {}) or {}).get(name)
+        if _entry is None or "expr" not in _entry:
+            return                      # not an alias
+        if _entry.get("dtype") is not None:
+            return                      # source 3 governs; nothing to infer
+        if _entry.get(self._AUTHORITY_KEY):
+            return                      # already established; do not re-record
+        try:
+            _n = len(values)
+        except TypeError:
+            return
+        if _n == 0:
+            # §5.4 — a zero-row result observes nothing about the data. The
+            # dtype seen here is a backend default, not a measurement, and
+            # freezing it would be a guess wearing an authority's clothes.
+            return
+        _dt = getattr(values, "dtype", None)
+        if _dt is None:
+            return
+        if not self._authority_is_exactly_representable(_dt):
+            # F11B2-P1-2 (GPT31 and GPT32, both executed). str(dtype) is
+            # "category" for EVERY categorical, so recording that string
+            # claimed a known authority while not knowing the authority:
+            # ['a','b'] unordered and ['b','a','c'] ORDERED both stringify
+            # identically and the comparison accepted the drift silently.
+            # Category order changes sorting, comparison, grouping and the
+            # encoded codes - it is part of the dtype contract, not decoration.
+            #
+            # Recording a partial truth as exact is the one thing this phase
+            # says it never does, so the authority is left UNKNOWN and the
+            # deferral is disclosed. An exact structured codec is B3.2b;
+            # inventing one in the closing minutes of an increment is how the
+            # previous defect got in.
+            return
+        self._schema["columns"][name][self._AUTHORITY_KEY] = {
+            "dtype": str(_dt),
+            "origin": DTypeOrigin.FIRST_MATERIALIZATION,
+        }
+
+    def _enforce_recorded_authority(self, name, result):
+        """Rematerialization must reproduce the recorded dtype, or refuse.
+
+        Contract §4.4: restoring an existing alias is not a new user-requested
+        conversion, so the recorded dtype stays binding and a newly inferred
+        one may not be silently adopted.
+        """
+        _entry = (self._schema.get("columns", {}) or {}).get(name) or {}
+        _rec = _entry.get(self._AUTHORITY_KEY)
+        if not _rec:
+            return result
+        _want = self._canonical_dtype(_rec["dtype"])
+        _got = getattr(result, "dtype", None)
+        if _got is not None and str(_got) == str(_want):
+            return result
+        _restored = self._restore_exact_dtype(result, _want)
+        if _restored is not None and str(getattr(_restored, "dtype", "")) == str(_want):
+            return _restored
+        raise ValueError(
+            f"alias {name!r} was first materialized as {_want} (AD-19 source "
+            f"4: the first successful nonempty in-frame materialization "
+            f"establishes the authoritative dtype), but re-evaluating it now "
+            f"produces {_got}, and the result cannot be restored to {_want} "
+            f"without changing values. ADF will not silently adopt a new "
+            f"dtype for an existing alias (contract §4.4). Declare the "
+            f"intended dtype explicitly with add_alias(..., dtype=...) if the "
+            f"alias contract has genuinely changed.")
 
     @property
     def alias_dtypes(self):
@@ -6398,6 +6739,24 @@ class AliasDataFrame:
         return self._add_scalar_alias(name, expression, dtype=dtype,
                                       is_constant=is_constant, fill_value=fill_value)
 
+    def _preserved_authority_on_redefinition(self, name, new_dtype):
+        """Carry a source-4 authority across an `add_alias` redefinition.
+
+        Re-registering an alias rebuilds its whole schema entry, which silently
+        deleted the recorded authority (GPT32 F11B-P1-3, executed: int64
+        authority -> UNKNOWN -> float64 adopted without a word). An inferred
+        authority is a contract about the published column, and redefining the
+        EXPRESSION does not revoke it.
+
+        An explicit `dtype=` IS a deliberate source-3 declaration and outranks
+        an inference, so it clears the record — that is the documented way to
+        change the contract.
+        """
+        if new_dtype is not None:
+            return None
+        _entry = (self._schema.get("columns", {}) or {}).get(name) or {}
+        return _entry.get(self._AUTHORITY_KEY)
+
     def _add_scalar_alias(self, name, expression, dtype=None, is_constant=False, fill_value=None):
         """
         Define a new alias (lazy computed column).
@@ -6456,8 +6815,14 @@ class AliasDataFrame:
         if fill_value is not None:
             spec["fill_value"] = fill_value
         
+        # D_8 (F11B-P1-3): carry a source-4 authority across redefinition.
+        # Captured BEFORE the entry is replaced.
+        _carried = self._preserved_authority_on_redefinition(name, dtype)
+
         # Write to schema
         self._schema["columns"][name] = spec
+        if _carried is not None:
+            self._schema["columns"][name][self._AUTHORITY_KEY] = _carried
         
         # BUG FIX: invalidate stale materialized columns.
         self._invalidate_alias_cascade(name)
@@ -7908,7 +8273,8 @@ function collapseDepth(maxD) {{
                 result_dtype = dtype or self.alias_dtypes.get(name)
                 if result_dtype is not None:
                     result = self._safe_dtype_cast(result, result_dtype, alias_name=name)
-                self.df[name] = result
+                self._publish_alias_column(name, result,
+                                           explicit_dtype=result_dtype)
                 
                 # Emit aggregated warning BEFORE restoring config (so warn_missing_keys=False takes effect)
                 self._emit_missing_key_summary()
@@ -8203,8 +8569,24 @@ function collapseDepth(maxD) {{
             
             # BATCH ADD: Single concat instead of per-alias insert
             if results:
+                # D_8 (F11B-P0-1, GPT31/GPT32 executed): the bulk path is a
+                # STORED IN-FRAME PUBLICATION exactly like the single path, so
+                # it owes the same authority contract. Shipping the helpers on
+                # one call site only meant the same alias behaved differently
+                # depending on which public API the caller chose — and
+                # materialize_aliases() is the one the docs recommend.
+                # Build the ALIGNED frame first — pd.DataFrame(..., index=)
+                # realigns exactly as assignment does — then enforce on the
+                # aligned columns, so nothing is published unless every column
+                # passed. F11B2-P1-1.
                 new_cols_df = pd.DataFrame(results, index=self.df.index)
+                for _nm in list(new_cols_df.columns):
+                    if self.alias_dtypes.get(_nm) is None:
+                        new_cols_df[_nm] = self._enforce_recorded_authority(
+                            _nm, new_cols_df[_nm])
                 self.df = pd.concat([self.df, new_cols_df], axis=1)
+                for _nm in list(new_cols_df.columns):
+                    self._commit_first_materialization_authority(_nm)
                 if verbose:
                     print(f"[materialize_aliases] Batch-added {len(results)} columns")
                     print(f"[materialize_aliases] Join cache: {self._join_cache_hits} hits, "

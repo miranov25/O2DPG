@@ -6135,16 +6135,11 @@ class TestB32Round11RatifiedContract:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             m.get_alias_series("q")
-        entry = (getattr(m, "_schema", {}) or {}).get("columns", {}).get("q")
-        assert not (entry or {}).get("dtype"), (
+        assert not m.get_dtype_authority("q").known, (
             "a non-materializing getter must not record dtype authority")
 
     # ================= AC_5 : first stored in-frame authority =============
 
-    @pytest.mark.xfail(strict=True, reason=
-        "round 11 D_8 not yet implemented: AD-19 source 4: first stored in-frame authority is not recorded yet. "
-        "strict=True: this flips to a FAILURE the moment the fix lands, "
-        "so the marker cannot outlive the defect.")
     def test_b32_201_first_materialization_records_and_enforces_dtype(self):
         """AD-19 source 4 / D_8 (GPT25, GPT26, GPT30, GPT31 F10). An alias
         with no declared dtype must record the dtype of its first successful
@@ -6163,9 +6158,12 @@ class TestB32Round11RatifiedContract:
         first = self._mat(m, "q")
         assert str(first.dtype) == "int64"
 
-        entry = (getattr(m, "_schema", {}) or {}).get("columns", {}).get("q")
-        assert (entry or {}).get("dtype") == "int64", (
+        auth = m.get_dtype_authority("q")
+        assert auth.known and str(auth.dtype) == "int64", (
             "first stored in-frame materialization must record the authority")
+        # the origin is a plain string BY DESIGN (it is serialized into the
+        # schema and through ROOT metadata), so assert the wire value
+        assert auth.origin == "first_stored_in_frame_materialization"
 
         m.dematerialize(["q"])
         state["mode"] = "float"
@@ -6183,8 +6181,7 @@ class TestB32Round11RatifiedContract:
         m = A.AliasDataFrame(pd.DataFrame({"x": np.array([], np.int64)}))
         m.add_alias("q", "x * 2")
         self._mat(m, "q")
-        entry = (getattr(m, "_schema", {}) or {}).get("columns", {}).get("q")
-        assert not (entry or {}).get("dtype"), (
+        assert not m.get_dtype_authority("q").known, (
             "zero-row materialization must leave the authority UNKNOWN")
 
     # ================= AC_6 : all rows undefined ==========================
@@ -6318,3 +6315,274 @@ class TestB32Round11RatifiedContract:
         with pytest.raises(Exception) as excinfo:
             self._mat(m)
         assert not isinstance(excinfo.value, AssertionError)
+
+
+class TestB32Round11bAuthorityDefects:
+    """The four defects GPT31 and GPT32 executed against the first D_8 draft.
+
+    All four had the same root cause: D_8 was bolted onto ONE publication
+    site instead of being a contract every stored in-frame publication owes.
+    That is the "special if per case" shape the architect has flagged
+    repeatedly, and the reason these are permanent tests rather than fixes.
+    """
+
+    @staticmethod
+    def _dyn_frame():
+        state = {"mode": "int"}
+
+        def dyn(v):
+            a = np.asarray(v)
+            return (a.astype(np.int64) if state["mode"] == "int"
+                    else a.astype(np.float64) + 0.5)
+
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))
+        m.register_function("dyn", dyn)
+        m.add_alias("q", "dyn(x)")
+        return m, state
+
+    # ---- F11B-P0-1 : both public paths owe the same contract -------------
+    @pytest.mark.parametrize("bulk", [False, True], ids=["single", "bulk"])
+    def test_b32_212_both_materialization_paths_record_authority(self, bulk):
+        m, _ = self._dyn_frame()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_aliases(names=["q"]) if bulk else m.materialize_alias("q")
+        auth = m.get_dtype_authority("q")
+        assert auth.known and str(auth.dtype) == "int64", (
+            "materialize_aliases() is a stored in-frame publication and owes "
+            "the same source-4 contract as materialize_alias()")
+        assert auth.origin == "first_stored_in_frame_materialization"
+
+    @pytest.mark.parametrize("bulk", [False, True], ids=["single", "bulk"])
+    def test_b32_213_both_paths_refuse_dtype_drift(self, bulk):
+        m, state = self._dyn_frame()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_aliases(names=["q"]) if bulk else m.materialize_alias("q")
+            m.dematerialize(["q"])
+            state["mode"] = "float"
+            with pytest.raises(ValueError, match="AD-19 source 4"):
+                m.materialize_aliases(names=["q"]) if bulk else m.materialize_alias("q")
+
+    # ---- F11B-P0-2 : the record is storage-family neutral ----------------
+    @pytest.mark.parametrize("spec", ["Int64", "boolean", "string", "category",
+                                      "datetime64[ns, UTC]", "Float32"])
+    def test_b32_214_extension_dtype_authority_is_readable(self, spec):
+        """np.dtype() raises `data type 'Int64' not understood` for every one
+        of these — the families AD-11 and AD-19 explicitly cover."""
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))
+        m.add_alias("q", "x", dtype=spec)
+        auth = m.get_dtype_authority("q")
+        assert auth.known
+        assert str(auth.dtype) == str(pd.api.types.pandas_dtype(spec))
+
+    def test_b32_215_extension_dtype_survives_rematerialization(self):
+        def ext(v):
+            return pd.Series(np.asarray(v), dtype="Int64")
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))
+        m.register_function("ext", ext)
+        m.add_alias("q", "ext(x)")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("q")
+            assert str(m.get_dtype_authority("q").dtype) == "Int64"
+            m.dematerialize(["q"])
+            m.materialize_alias("q")
+        assert str(m.df["q"].dtype) == "Int64"
+
+    # ---- F11B-P1-1 : the record must describe the STORED column ----------
+    def test_b32_216_authority_records_the_stored_column_not_the_input(self):
+        """`self.df[name] = result` realigns on the index. Recording the
+        pre-assignment dtype made the registry state something false: stored
+        float64/[NaN, NaN] while the record claimed int64."""
+        def misaligned(v):
+            return pd.Series([1, 2], index=[10, 11], dtype="int64")
+        m = A.AliasDataFrame(pd.DataFrame({"x": [1, 2]}, index=[0, 1]))
+        m.register_function("misaligned", misaligned)
+        m.add_alias("q", "misaligned(x)")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("q")
+        assert str(m.get_dtype_authority("q").dtype) == str(m.df["q"].dtype), (
+            "the recorded authority must describe the column pandas actually "
+            "stored, never the object handed to the assignment")
+
+    # ---- F11B-P1-3 : redefinition does not revoke an authority -----------
+    def test_b32_217_authority_survives_expression_redefinition(self):
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))
+        m.add_alias("q", "x * 2")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("q")
+        assert str(m.get_dtype_authority("q").dtype) == "int64"
+        m.add_alias("q", "x / 2")            # expression changes, no dtype
+        assert str(m.get_dtype_authority("q").dtype) == "int64", (
+            "redefining the EXPRESSION does not revoke a source-4 authority")
+
+    def test_b32_218_explicit_dtype_redefinition_supersedes(self):
+        """An explicit dtype= IS a deliberate source-3 declaration and DOES
+        replace an inference - the documented way to change the contract."""
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))
+        m.add_alias("q", "x * 2")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("q")
+        m.add_alias("q", "x / 2", dtype="float64")
+        auth = m.get_dtype_authority("q")
+        assert str(auth.dtype) == "float64"
+        assert auth.origin == "explicit_alias"
+
+
+class TestB32Round11b2PublicationOwner:
+    """F11B2-P1-1 and F11B2-P1-2 — the two defects GPT31/GPT32 executed
+    against the FIRST correction. Both were in code written to close the
+    previous round's findings, which is why they are pinned permanently."""
+
+    # ---- F11B2-P1-1 : enforce the ALIGNED candidate, not the input -------
+    @pytest.mark.parametrize("bulk", [False, True], ids=["single", "bulk"])
+    def test_b32_219_post_alignment_never_violates_authority(self, bulk):
+        """`self.df[name] = series` REALIGNS on the parent index. Enforcing
+        the pre-assignment object let a misaligned int64 Series be stored as
+        float64/[NaN, NaN] while the record still said int64 — the record was
+        false about the physical column, which is the invariant this phase
+        exists to protect."""
+        state = {"misaligned": False}
+
+        def dyn(v):
+            if state["misaligned"]:
+                return pd.Series([3, 4], index=[10, 11], dtype="int64")
+            return pd.Series([1, 2], index=[0, 1], dtype="int64")
+
+        m = A.AliasDataFrame(pd.DataFrame({"x": [1, 2]}, index=[0, 1]))
+        m.register_function("dyn", dyn)
+        m.add_alias("q", "dyn(x)")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_aliases(names=["q"]) if bulk else m.materialize_alias("q")
+            assert str(m.get_dtype_authority("q").dtype) == "int64"
+            m.dematerialize(["q"])
+            state["misaligned"] = True
+            try:
+                m.materialize_aliases(names=["q"]) if bulk else m.materialize_alias("q")
+            except ValueError:
+                return                       # refusal is the correct outcome
+        # if it published, the record and the stored column MUST agree
+        assert str(m.get_dtype_authority("q").dtype) == str(m.df["q"].dtype), (
+            "the authority may never disagree with the column pandas stored")
+
+    def test_b32_220_authority_always_matches_the_stored_column(self):
+        """The invariant behind b32_219, stated directly."""
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))
+        m.add_alias("q", "x * 2")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("q")
+        auth = m.get_dtype_authority("q")
+        assert auth.known and str(auth.dtype) == str(m.df["q"].dtype)
+
+    # ---- F11B2-P1-2 : never record a partial truth as exact --------------
+    def test_b32_221_categorical_does_not_establish_inferred_authority(self):
+        """`str(dtype)` is "category" for EVERY categorical, so it cannot
+        carry categories or order. Rather than record an approximate
+        authority, none is established — disclosed deferral, B3.2b owns the
+        exact structured codec."""
+        def cat(_):
+            return pd.Series(pd.Categorical(["a", "b"],
+                                            categories=["a", "b"],
+                                            ordered=False))
+        m = A.AliasDataFrame(pd.DataFrame({"x": [1, 2]}))
+        m.register_function("cat", cat)
+        m.add_alias("q", "cat(x)")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("q")
+        assert str(m.df["q"].dtype) == "category"
+        assert not m.get_dtype_authority("q").known, (
+            "a dtype whose string form loses metadata must not establish an "
+            "inferred authority — a partial truth recorded as exact is worse "
+            "than no record")
+
+    @pytest.mark.parametrize("spec", ["int64", "float32", "Int64", "boolean",
+                                      "datetime64[ns]"])
+    def test_b32_222_exactly_representable_dtypes_still_record(self, spec):
+        """The deferral is scoped by a ROUND TRIP, not by a dtype name list —
+        the same discipline _coerce_fill_to_dtype uses. Everything whose
+        string form reconstructs exactly must still establish authority."""
+        assert A.AliasDataFrame._authority_is_exactly_representable(
+            pd.api.types.pandas_dtype(spec)), spec
+
+    def test_b32_223_categorical_fails_the_representability_round_trip(self):
+        ct = pd.CategoricalDtype(categories=["a", "b"], ordered=True)
+        assert not A.AliasDataFrame._authority_is_exactly_representable(ct)
+
+
+class TestB32Round11b3ResultShapeParity:
+    """F11B3-P1-1 — the publication owner must own EVERY supported result
+    shape, not only the one the first test used.
+
+    `_aligned_publication_candidate` normalized only `pd.Series`, so a scalar
+    or list alias reached authority enforcement without a `.dtype` and raised
+    `AttributeError` on rematerialization — while the bulk path worked,
+    because `pd.DataFrame(results, index=...)` normalizes for free. A
+    singular/bulk parity defect inside the helper written to end
+    singular/bulk parity defects."""
+
+    SHAPES = {
+        "scalar":  ("5",        None),
+        "list":    ("lst(x)",   lambda v: [7, 8]),
+        "ndarray": ("arr(x)",   lambda v: np.array([9, 10], np.int64)),
+        "series":  ("ser(x)",   lambda v: pd.Series([11, 12], dtype="int64")),
+        "nullable": ("nul(x)",  lambda v: pd.Series([13, 14], dtype="Int64")),
+    }
+
+    def _frame(self, shape):
+        expr, fn = self.SHAPES[shape]
+        m = A.AliasDataFrame(pd.DataFrame({"x": [1, 2]}))
+        if fn is not None:
+            m.register_function(expr.split("(")[0], fn)
+        m.add_alias("q", expr)
+        return m
+
+    @staticmethod
+    def _mat(m, bulk):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_aliases(names=["q"]) if bulk else m.materialize_alias("q")
+
+    @pytest.mark.parametrize("shape", sorted(SHAPES))
+    @pytest.mark.parametrize("bulk", [False, True], ids=["single", "bulk"])
+    def test_b32_224_every_result_shape_publishes_and_rematerializes(
+            self, shape, bulk):
+        m = self._frame(shape)
+        self._mat(m, bulk)
+        first_vals, first_dtype = m.df["q"].tolist(), str(m.df["q"].dtype)
+        auth = m.get_dtype_authority("q")
+        assert auth.known and str(auth.dtype) == first_dtype
+        m.dematerialize(["q"])
+        self._mat(m, bulk)               # must NOT raise AttributeError
+        assert m.df["q"].tolist() == first_vals
+        assert str(m.df["q"].dtype) == first_dtype
+
+    @pytest.mark.parametrize("shape", sorted(SHAPES))
+    def test_b32_225_single_and_bulk_agree_on_dtype_and_values(self, shape):
+        """The parity assertion itself, stated directly rather than implied
+        by two separately-parameterized runs."""
+        a, b = self._frame(shape), self._frame(shape)
+        self._mat(a, False)
+        self._mat(b, True)
+        assert str(a.df["q"].dtype) == str(b.df["q"].dtype)
+        assert a.df["q"].tolist() == b.df["q"].tolist()
+        assert (str(a.get_dtype_authority("q").dtype)
+                == str(b.get_dtype_authority("q").dtype))
+
+    def test_b32_226_dataframe_result_is_refused_not_published(self):
+        """A 2-D result is not a 1-D alias column; refuse before publication
+        rather than let pandas invent a shape."""
+        m = A.AliasDataFrame(pd.DataFrame({"x": [1, 2]}))
+        m.register_function("two_d", lambda v: pd.DataFrame({"a": [1, 2],
+                                                             "b": [3, 4]}))
+        m.add_alias("q", "two_d(x)")
+        with pytest.raises((TypeError, ValueError)):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                m.materialize_alias("q")
