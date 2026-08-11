@@ -6053,10 +6053,8 @@ class TestB32Round11RatifiedContract:
 
     # ================= AR-3 : alias fill is FINAL-RESULT only =============
 
-    @pytest.mark.xfail(strict=True, reason=
-        "round 11 D_4/D_5 not yet implemented: alias fill is still published into the gather; the mask must reach the final-result stage. "
-        "strict=True: this flips to a FAILURE the moment the fix lands, "
-        "so the marker cannot outlive the defect.")
+    # MARKER REMOVED in 11c — D_5 core landed and strict=True turned the
+    # XPASS into a suite failure, which is what forced this edit.
     def test_b32_195_compound_additive_alias_fill_is_final_result(self):
         """AR-3 / §8.3. `S.v + x`, alias fill 1, no operand policy.
 
@@ -6070,10 +6068,7 @@ class TestB32Round11RatifiedContract:
         assert str(got.dtype) == "int64"
         assert [int(v) for v in got.values] == [13, 1]
 
-    @pytest.mark.xfail(strict=True, reason=
-        "round 11 D_4/D_5 not yet implemented: same mechanism as b32_195, multiplicative form. "
-        "strict=True: this flips to a FAILURE the moment the fix lands, "
-        "so the marker cannot outlive the defect.")
+    # MARKER REMOVED in 11c — D_5 core.
     def test_b32_196_compound_multiplicative_alias_fill_is_final_result(self):
         """AR-3. `S.v * x`, alias fill 1 -> [30, 1], not [30, 20]."""
         m = self._pair()
@@ -6081,10 +6076,7 @@ class TestB32Round11RatifiedContract:
         got = self._mat(m)
         assert [int(v) for v in got.values] == [30, 1]
 
-    @pytest.mark.xfail(strict=True, reason=
-        "round 11 D_4/D_5 not yet implemented: bulk path shares the defect with the single path. "
-        "strict=True: this flips to a FAILURE the moment the fix lands, "
-        "so the marker cannot outlive the defect.")
+    # MARKER REMOVED in 11c — D_5 core.
     def test_b32_197_compound_alias_fill_bulk_path(self):
         """AC_3. The bulk path must agree with the single path."""
         m = self._pair()
@@ -6586,3 +6578,356 @@ class TestB32Round11b3ResultShapeParity:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 m.materialize_alias("q")
+
+
+# ============================================================================
+# CORRECTION ROUND 11c — D_5 core (materialization path)
+#
+# Governed by the ratified design review
+# PHASE_13_76_ADF_fix11c_D4_D5_OFFICIAL_DESIGN_REVIEW_SUMMARY_20260807.md
+#   Decision A = Option 1, Decision B = Option 1
+#   §5 fail-closed row-local gate is PRIMARY, A/B probe is defense-in-depth
+#   §6 UNDEFINED * 0 -> UNDEFINED, never 0
+#   §7 probe isolation must be proved on the real bytes
+#
+# Every test here was written against the design note, and the ones that
+# could fail on the pre-11c bytes were checked to fail there first.
+# ============================================================================
+
+
+def _adf_module():
+    """The module that DEFINES AliasDataFrame, resolved through the class.
+
+    `import AliasDataFrame as A` gives the PACKAGE on alma2 and re-exports
+    only public names, so module-level helpers (`_AliasEvalContext`,
+    `_expression_is_row_local`) are not reachable as `A.<name>`. Going through
+    `__module__` works identically on both layouts.
+    """
+    import sys as _sys
+    return _sys.modules[A.AliasDataFrame.__module__]
+
+
+class TestB32Round11cMaskCarriage:
+    """D_5 core: placeholder + authoritative mask, refusal at the final stage."""
+
+    @staticmethod
+    def _pair(sub=None, child=None, keys=(0, 9), x=(10, 20)):
+        main = A.AliasDataFrame(pd.DataFrame({
+            "k": np.asarray(keys, dtype=np.int64),
+            "x": np.asarray(x, dtype=np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch.df["v"] = (np.array([3], dtype=np.int64) if child is None else child)
+        main.register_subframe("S", ch, index_columns=["k"])
+        if sub is not None:
+            main.set_subframe_fill("S", fill_missing=sub)
+        return main
+
+    @staticmethod
+    def _mat(m, name="d", bulk=False):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            if bulk:
+                m.materialize_aliases(names=[name])
+            else:
+                m.materialize_alias(name)
+        return m.df[name]
+
+    # ---- §7 probe isolation — the binding verification -------------------
+
+    def test_b32_236_probe_b_is_isolated_from_probe_a(self):
+        """Opus5_2's finding, turned into a permanent control.
+
+        `_scatter_subframe_column` has an idempotent fast path that returns
+        the joined column if it is already present in `self.df`. Measured on
+        baseline ee9227e7, a second `_eval_in_namespace` consumed a poisoned
+        `v__S` verbatim: [777,777] -> [787,797]. A probe built on re-evaluation
+        through the normal path would therefore compare A against A, agree with
+        itself on EVERY expression, and look like a working guard.
+
+        This test pins the isolation directly: `_eval_prepared` must honour the
+        overlay and must NOT read the frame column."""
+        m = self._pair()
+        m.df["v__S"] = np.array([3, 3], dtype=np.int64)
+        got = m._eval_prepared("v__S + x", {"v__S": pd.Series(
+            np.array([100, 100], dtype=np.int64), index=m.df.index)})
+        assert [int(v) for v in np.asarray(got)] == [110, 120], (
+            "probe B read the frame column instead of the overlay — the "
+            "guard would be incapable of firing")
+        assert [int(v) for v in m.df["v__S"].values] == [3, 3], (
+            "probe B must not write back into self.df")
+
+    def test_b32_237_probe_runs_exactly_two_top_level_evaluations(self):
+        """Re-entrancy: `_eval_prepared` performs no scatter and carries no
+        context, so the guard cannot recurse. Counted, not assumed."""
+        m = self._pair()
+        m.add_alias("d", "S.v + x", dtype="int64", fill_value=1)
+        seen = {}
+        orig = A.AliasDataFrame._eval_in_namespace
+
+        def _count(self, *a, **kw):
+            ctx = kw.get("ctx")
+            if ctx is not None:
+                seen["ctx_evals"] = seen.get("ctx_evals", 0) + 1
+            return orig(self, *a, **kw)
+
+        A.AliasDataFrame._eval_in_namespace = _count
+        try:
+            self._mat(m)
+        finally:
+            A.AliasDataFrame._eval_in_namespace = orig
+        assert seen.get("ctx_evals") == 1, (
+            "the probe must not re-enter the join-preparing evaluator")
+
+    # ---- §5 fail-closed row-local gate -----------------------------------
+
+    @pytest.mark.parametrize("expr", [
+        "(S.v + x).cumsum()",       # attribute/method — reduction
+        "S.v + x - x.mean()",       # the shape no name-based deny-list catches
+        "S.v / x.sum()",            # reduction through attribute
+        "S.v + x if x[0] > 0 else x",   # conditional provenance
+    ])
+    def test_b32_238_non_row_local_is_refused_even_though_probes_may_agree(
+            self, expr):
+        """§5. The GATE is primary. None of these may publish, regardless of
+        what the A/B probe would say — that is the whole point of fail-closed:
+        an unlisted construct is refused, so an incomplete list costs a
+        needless refusal, never a wrong number."""
+        m = self._pair()
+        m.add_alias("d", expr, fill_value=1)
+        with pytest.raises(Exception) as ei:
+            self._mat(m)
+        assert "row-local" in str(ei.value) or "parsed" in str(ei.value)
+
+    def test_b32_239_unclassified_registered_function_is_refused(self):
+        """A user-registered function is NOT on the proven row-local list, so
+        it is refused while a residual mask survives — even if it happens to
+        be elementwise. Fail closed."""
+        m = self._pair()
+        m.register_function("my_scale", lambda v: v * 2)
+        m.add_alias("d", "my_scale(S.v + x)", fill_value=1)
+        with pytest.raises(Exception) as ei:
+            self._mat(m)
+        assert "row-local" in str(ei.value)
+
+    def test_b32_240_gate_does_not_run_without_a_residual_mask(self):
+        """The gate is scoped to residual undefinedness. With an operand fill
+        configured the mask is cleared, and a reduction evaluates normally —
+        proving 11c did not quietly ban reductions everywhere."""
+        m = self._pair(sub=0)
+        m.add_alias("d", "(S.v + x).cumsum()")
+        got = self._mat(m)
+        assert [int(v) for v in np.asarray(got)] == [13, 33]
+
+    @pytest.mark.parametrize("expr,expected", [
+        ("sqrt(S.v + x)", None),
+        ("abs(S.v - x)", None),
+        ("S.v + x * 2", None),
+        ("(S.v > 1) & (x > 1)", None),
+        ("-S.v + x", None),
+    ])
+    def test_b32_244_row_local_set_is_admitted(self, expr, expected):
+        """The admitted operator families and ELEMENTWISE callables must
+        actually evaluate, not merely be listed."""
+        m = self._pair()
+        m.add_alias("d", expr, fill_value=0)
+        got = self._mat(m)
+        assert len(got) == 2
+
+    # ---- §6 no algebraic implicit fill -----------------------------------
+
+    def test_b32_230_undefined_times_zero_stays_undefined(self):
+        """§6, BINDING. The v1 design proposed accepting this because both
+        probes agree. Not approved: ADF does not get to decide algebraically
+        that an absent value became defined — that is the same 'choose a
+        neutral value for the user' AD-19 forbids, arriving through arithmetic
+        instead of through a default. The mask is union-propagated
+        independently of operator semantics."""
+        m = self._pair()
+        m.add_alias("d", "S.v * 0", dtype="int64")
+        with pytest.raises(ValueError) as ei:
+            self._mat(m)
+        assert "no defined value" in str(ei.value)
+
+    def test_b32_230b_undefined_times_zero_is_resolved_by_the_alias_fill(self):
+        """...and the final fill resolves it, at the final stage."""
+        m = self._pair()
+        m.add_alias("d", "S.v * 0", dtype="int64", fill_value=7)
+        got = self._mat(m)
+        assert [int(v) for v in got.values] == [0, 7]
+
+    # ---- Decision B: transactional retraction ----------------------------
+
+    def test_b32_232_placeholder_column_does_not_survive(self):
+        """Decision B. On the pre-11c bytes `v__S` was left in the frame as a
+        real int64 column holding the fabricated fill [3, 1]."""
+        m = self._pair()
+        m.add_alias("d", "S.v + x", dtype="int64", fill_value=1)
+        self._mat(m)
+        assert "v__S" not in m.df.columns
+
+    def test_b32_241_retraction_on_refusal(self):
+        """Exit path 2 — no-fill refusal."""
+        m = self._pair()
+        m.add_alias("d", "S.v + x", dtype="int64")
+        with pytest.raises(ValueError):
+            self._mat(m)
+        assert "v__S" not in m.df.columns
+
+    def test_b32_242_retraction_on_provenance_refusal(self):
+        """Exit path 3 — provenance/safety refusal."""
+        m = self._pair()
+        m.add_alias("d", "(S.v + x).cumsum()", fill_value=1)
+        with pytest.raises(Exception):
+            self._mat(m)
+        assert "v__S" not in m.df.columns
+
+    def test_b32_243_retraction_restores_a_preexisting_column(self):
+        """Decision B: RESTORE, not merely remove, when the name pre-existed.
+
+        Driven directly against `_retract_placeholder_columns`, DELIBERATELY
+        and with the reason recorded. The first version of this test set
+        `v__S` in the frame and materialized, which passed even with the
+        retraction mutated away — because `_scatter_subframe_column`'s
+        idempotent fast path returns the existing column, so the gather never
+        runs and `_prior` is never non-None. That version asserted nothing.
+
+        The restore branch is therefore currently UNREACHABLE through the
+        integration path, and is retained because the panel required the
+        semantics and because a future change to the fast path would make it
+        live. Tested at the unit it belongs to, so the assertion is real."""
+        m = self._pair()
+        m.df["v__S"] = np.array([41, 42], dtype=np.int64)
+        _M = _adf_module()
+        ctx = _M._AliasEvalContext(alias_name="d", carry_mask=True)
+        ctx.retracted.append(("v__S", m.df["v__S"].copy()))
+        m.df["v__S"] = np.array([-1, -1], dtype=np.int64)
+        m._retract_placeholder_columns(ctx)
+        assert [int(v) for v in m.df["v__S"].values] == [41, 42]
+        assert ctx.retracted == []
+
+    def test_b32_243b_preexisting_joined_column_is_reused_by_the_fast_path(
+            self):
+        """Characterization, pre-existing and unchanged by 11c: if a column
+        named like a joined temporary already exists, the scatter reuses it
+        and no join is performed. Pinned here because b32_243's first version
+        silently depended on it, and because the fast path's safety argument
+        (see _scatter_subframe_column) rests on it."""
+        m = self._pair()
+        m.df["v__S"] = np.array([41, 42], dtype=np.int64)
+        m.add_alias("d", "S.v + x", dtype="int64", fill_value=1)
+        got = self._mat(m)
+        assert [int(v) for v in got.values] == [51, 62]
+        assert [int(v) for v in m.df["v__S"].values] == [41, 42]
+
+    def test_b32_247_probe_catches_a_reduction_when_the_gate_is_stubbed_open(
+            self):
+        """THE defense-in-depth assertion, and the honest one.
+
+        With the fail-closed gate primary, the A/B probe can never fire for an
+        expression the gate ADMITS — admitted expressions are row-local, and a
+        row-local expression provably cannot propagate a placeholder into a
+        defined row. So the probe's whole value is catching a GATE MISTAKE,
+        and the only way to assert that value is to inject one.
+
+        THE FIXTURE IS DELIBERATE, and the first version of this test got it
+        wrong in an instructive way. With the UNDEFINED row LAST, a cumulative
+        sum contaminates nothing that is defined, and the probe correctly sees
+        no difference. Contamination is only observable when an undefined row
+        precedes a defined one. That is direct evidence for the panel's ruling
+        that the probe is not a proof: its sensitivity depends on WHERE the
+        gaps fall, which no user controls.
+
+        Also the mutation control for `_probe_b_values`: make probe B equal
+        probe A and this test stops catching the reduction."""
+        main = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([9, 0], np.int64), "x": np.array([10, 20], np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0, 1], np.int64)}))
+        ch.df["v"] = np.array([5, 7], dtype=np.int64)
+        main.register_subframe("S", ch, index_columns=["k"])
+        main.add_alias("d", "(S.v + x).cumsum()", fill_value=1)
+        _M = _adf_module()
+        _orig = _M._expression_is_row_local
+        _M._expression_is_row_local = lambda expr: (True, None)
+        try:
+            with pytest.raises(Exception) as ei:
+                self._mat(main)
+        finally:
+            _M._expression_is_row_local = _orig
+        assert "placeholder" in str(ei.value), (
+            "the gate was stubbed open, so the probe was the only thing left "
+            "and it failed to catch a cumulative sum")
+
+    def test_b32_245_real_data_joined_column_is_kept(self):
+        """The retraction is scoped to PLACEHOLDER-bearing columns. An
+        operand-fill-resolved column is real data and must survive exactly as
+        it did before 11c — this is the control that stops the cleanup from
+        becoming a behaviour regression."""
+        m = self._pair(sub=0)
+        m.add_alias("d", "S.v + x", dtype="int64")
+        self._mat(m)
+        assert "v__S" in m.df.columns
+        assert [int(v) for v in m.df["v__S"].values] == [3, 0]
+
+    # ---- placeholder policy ----------------------------------------------
+
+    def test_b32_233_empty_child_frame_uses_the_dtype_default(self):
+        """v1.4.4 P1-1. Nothing to borrow -> default-constructed value, and
+        the decision still happens at the final stage, never in the gather."""
+        main = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([7, 8], np.int64), "x": np.array([1, 2], np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([], np.int64)}))
+        ch.df["v"] = np.array([], dtype=np.int64)
+        main.register_subframe("S", ch, index_columns=["k"])
+        main.add_alias("d", "S.v + x", dtype="int64", fill_value=5)
+        got = self._mat(main)
+        assert [int(v) for v in got.values] == [5, 5]
+
+    @pytest.mark.parametrize("child,dtype", [
+        (np.array([127], dtype=np.int8), np.int8),
+        (np.array([2 ** 63 - 1], dtype=np.int64), np.int64),
+        (np.array([True], dtype=bool), bool),
+    ])
+    def test_b32_234_probe_b_never_overflows(self, child, dtype):
+        """`A ^ 1`, deliberately not `A + 1`, which overflows at int8(127) and
+        at 2**63-1. Both are live in this codebase."""
+        vals = np.asarray([child[0], child[0]], dtype=dtype)
+        out = A.AliasDataFrame._probe_b_values(
+            pd.Series(vals), np.array([False, True]))
+        assert str(out.dtype) == str(np.dtype(dtype))
+        assert out.iloc[0] == child[0]
+        assert out.iloc[1] != child[0]
+
+    def test_b32_227_placeholder_is_not_observable(self):
+        """Two different child values -> two different placeholders -> the
+        SAME published result, because the placeholder is overwritten under
+        the mask."""
+        a = self._pair(child=np.array([3], np.int64))
+        b = self._pair(child=np.array([987654321], np.int64))
+        for m in (a, b):
+            m.add_alias("d", "S.v * 0 + 4", dtype="int64", fill_value=1)
+        assert ([int(v) for v in self._mat(a).values]
+                == [int(v) for v in self._mat(b).values] == [4, 1])
+
+    # ---- the moved refusal ------------------------------------------------
+
+    def test_b32_235_moved_refusal_keeps_all_three_remedies(self):
+        """The message moved five frames up; none of its user-facing guidance
+        may be lost on the way."""
+        m = self._pair()
+        m.add_alias("d", "S.v + x", dtype="int64")
+        with pytest.raises(ValueError) as ei:
+            self._mat(m)
+        msg = str(ei.value)
+        assert "set_subframe_fill" in msg
+        assert "set_global_fill" in msg
+        assert "fill_value" in msg
+        assert "'d'" in msg, "the refusal must name the alias"
+
+    def test_b32_246_alias_fill_is_gone_from_the_operand_fill_config(self):
+        """D_5 core deletes the round-10 shortcut. `_get_fill_config` must no
+        longer see an alias-level fill under any circumstances — this is the
+        structural assertion behind b32_195/196/197."""
+        m = self._pair()
+        m.add_alias("d", "S.v + x", dtype="int64", fill_value=1)
+        assert m._get_fill_config("S")["fill_missing"] is None
+        assert not hasattr(m, "_active_alias_fill")

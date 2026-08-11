@@ -417,6 +417,185 @@ class DTypeAuthority:
                 f"{', stored_in_frame' if self.stored_in_frame else ''})")
 
 
+class ADFProvenanceUnsupportedError(ValueError):
+    """Residual undefinedness survived into an expression ADF cannot prove is
+    row-local, so publishing any value would risk a silent wrong result.
+
+    D_5 core, round 11c. Ratified design review 2026-08-07 §5: the gate is
+    FAIL-CLOSED — an expression is refused unless it is *proven* row-local,
+    rather than accepted unless it is *known* non-row-local.
+
+    Subclasses `ValueError` so existing `except ValueError` call sites and the
+    established refusal tests keep working; the distinct type exists so a
+    provenance refusal can be told apart from a dtype or fill refusal.
+    """
+
+
+#: Callables from `_default_functions()` that are proven ELEMENTWISE — the
+#: result at row i depends only on the operand values at row i.
+#:
+#: WRITTEN OUT LITERALLY, NOT DERIVED BY FILTERING (design review §5). If this
+#: were computed as "everything in _default_functions() minus a deny-list",
+#: adding a new function to the alias namespace would silently widen the
+#: safety gate. Spelled out, a new function is refused until someone puts it
+#: here deliberately. That is the fail-closed property.
+#:
+#: Measured on baseline ee9227e7: `_default_functions()` exposes 73 names.
+#: Deliberately ABSENT from this set:
+#:   np                  a module — every use of it is an ast.Attribute, which
+#:                       the gate refuses outright (kills np.cumsum, np.sort, …)
+#:   fsum, prod, dist    reductions — the result depends on other rows
+#:   frexp, modf         return tuples, not one aligned column
+#:   e, pi, tau, inf, nan  constants; they appear as ast.Name, never ast.Call
+_ROW_LOCAL_FUNCTIONS = frozenset({
+    'abs', 'acos', 'acosh', 'arccos', 'arccosh', 'arcsin', 'arcsinh',
+    'arctan', 'arctan2', 'arctanh', 'asin', 'asinh', 'atan', 'atan2',
+    'atanh', 'ceil', 'clip', 'comb', 'copysign', 'cos', 'cosh', 'degrees',
+    'erf', 'erfc', 'exp', 'expm1', 'fabs', 'factorial', 'float', 'floor',
+    'fmod', 'gamma', 'gcd', 'hypot', 'int', 'isclose', 'isfinite', 'isinf',
+    'isnan', 'isqrt', 'lcm', 'ldexp', 'lgamma', 'log', 'log10', 'log1p',
+    'log2', 'nextafter', 'perm', 'pow', 'power', 'radians', 'remainder',
+    'round', 'sin', 'sinh', 'sqrt', 'tan', 'tanh', 'trunc', 'uint', 'ulp',
+})
+
+#: AST node types admitted by the row-local gate. Everything absent is refused.
+_ROW_LOCAL_NODES = (
+    ast.Expression, ast.Constant, ast.Name, ast.Load,
+    ast.UnaryOp, ast.UAdd, ast.USub, ast.Invert, ast.Not,
+    ast.BinOp, ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv,
+    ast.Mod, ast.Pow,
+    ast.Compare, ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
+    ast.BoolOp, ast.And, ast.Or,
+    ast.BitAnd, ast.BitOr, ast.BitXor,
+    ast.Call,
+)
+
+
+def _expression_is_row_local(expr):
+    """Fail-closed proof that `expr` is row-local, hence mask-safe.
+
+    Returns ``(True, None)`` when every node of the expression is admitted, and
+    ``(False, reason)`` otherwise. NEVER raises on a malformed expression — a
+    syntax error is simply "not proven", which is the safe answer.
+
+    WHY A CLASSIFIER AT ALL, AFTER I ARGUED AGAINST ONE. The coder's v1 design
+    note objected that syntactic classification is what failed in correction
+    rounds 5-10. The design-review panel overruled it and was right: those
+    lists were FAIL-OPEN — accept unless known bad — so every construct nobody
+    had thought of was silently admitted. This one is FAIL-CLOSED. The failure
+    mode is inverted: an unlisted construct is refused, so the worst outcome of
+    an incomplete list is an unnecessary refusal, never a wrong number.
+
+    WHAT THIS BUYS. `ast.Attribute` is not admitted, which alone closes every
+    shape measured as reachable on the baseline with no registered function:
+
+        x.cumsum()      x - x.mean()      x / x.sum()      np.<anything>
+
+    A syntactic *deny*-list keyed on function names could not have caught
+    `x - x.mean()`, which is exactly why the fail-open form kept failing.
+
+    SCOPE — this gate only ever runs when a residual undefinedness mask has
+    survived onto a plain integer/Boolean column. On the pre-11c bytes that
+    case refuses UNCONDITIONALLY for every expression, so nothing that works
+    today can be broken here; 11c is strictly more permissive than its
+    predecessor.
+    """
+    try:
+        _tree = ast.parse(expr, mode='eval')
+    except SyntaxError as _e:
+        return False, f"expression could not be parsed ({_e.msg})"
+
+    for _node in ast.walk(_tree):
+        if isinstance(_node, ast.Call):
+            # Only a BARE NAME may be called, and only from the literal set.
+            # `func` being an Attribute (`x.mean`, `np.cumsum`) is refused by
+            # the node check below anyway; this makes the intent explicit and
+            # produces the better message.
+            if not isinstance(_node.func, ast.Name):
+                return False, ("only plain function calls are supported here; "
+                               "method and module calls (obj.f(), np.f()) are "
+                               "not proven row-local")
+            if _node.func.id not in _ROW_LOCAL_FUNCTIONS:
+                return False, (f"function {_node.func.id!r} is not on the "
+                               f"proven row-local list")
+            if _node.keywords:
+                return False, (f"keyword arguments to {_node.func.id!r} are "
+                               f"not proven row-local")
+            continue
+        if not isinstance(_node, _ROW_LOCAL_NODES):
+            return False, (f"{type(_node).__name__} is not proven row-local "
+                           f"(reductions, rolling/cumulative/positional "
+                           f"operations, sorting, ranking, subscripting, "
+                           f"conditionals and attribute access all reach here)")
+    return True, None
+
+
+class _AliasEvalContext:
+    """Explicit per-evaluation state for the alias evaluator — D_4/D_5.
+
+    Replaces the instance global `_active_alias_fill` introduced in round 10.
+    §10 of the ratified contract forbids swapping one instance global for
+    another, so this is passed as a PARAMETER and never stored on `self`.
+
+    It travels DOWN carrying one bit (`carry_mask`: may the gather produce a
+    placeholder instead of refusing?) and travels UP carrying the authoritative
+    row masks and the retraction ledger.
+
+    Fields
+    ------
+    alias_name : str or None
+        For error messages only.
+    carry_mask : bool
+        False (the default everywhere) reproduces the pre-11c behaviour byte
+        for byte: the gather refuses at the point it always refused.
+    masks : dict[str, np.ndarray[bool]]
+        joined column name -> authoritative undefinedness mask. Populated by
+        `_scatter_subframe_column`, which already holds the mask.
+    retracted : list[tuple[str, object]]
+        (column name, prior content or None). Drives the transactional cleanup
+        required by Decision B; `None` means "did not exist, remove it".
+    prepared_expr : str or None
+        The rewritten expression, so probe B can be evaluated WITHOUT
+        re-entering join preparation. See `_eval_prepared`.
+    """
+
+    __slots__ = ("alias_name", "carry_mask", "masks", "retracted",
+                 "prepared_expr", "pending_mask", "n_evaluations")
+
+    def __init__(self, alias_name=None, carry_mask=False):
+        self.alias_name = alias_name
+        self.carry_mask = bool(carry_mask)
+        self.masks = {}
+        self.retracted = []
+        self.prepared_expr = None
+        # Hand-off slot: the gather knows a placeholder was used but not the
+        # joined column's public name; the scatter knows the name but not
+        # whether the fill config resolved the gap. The gather sets this, the
+        # scatter consumes and clears it on the very next line. One column at
+        # a time, no nesting — the chain gather -> scatter is strictly serial.
+        self.pending_mask = None
+        # Counts TOP-LEVEL evaluations, so the probe re-entrancy test can
+        # assert "exactly two" rather than trust that it is two.
+        self.n_evaluations = 0
+
+    def residual_mask(self):
+        """Union of every surviving undefinedness mask, or None if empty.
+
+        Union-propagated INDEPENDENTLY OF OPERATOR SEMANTICS. Design review §6
+        is binding here: `UNDEFINED * 0` stays UNDEFINED. ADF does not get to
+        decide algebraically that an absent value became defined — that is the
+        same "choose a neutral value for the user" that AD-19 forbids, just
+        arriving through arithmetic instead of through a default.
+        """
+        _out = None
+        for _m in self.masks.values():
+            _arr = np.asarray(_m, dtype=bool)
+            _out = _arr if _out is None else (_out | _arr)
+        if _out is None or not _out.any():
+            return None
+        return _out
+
+
 class CompressionState:
     """
     Compression state constants for column compression lifecycle.
@@ -4793,26 +4972,24 @@ class AliasDataFrame:
             if 'fill_inf' not in sf_cfg:
                 result['fill_inf'] = sf_invalid
         
-        # ALIAS-LEVEL fill, as the LOWEST-precedence source (round 10).
-        # AD-19 requires `add_alias(..., fill_value=...)` to be usable — the
-        # architect listed it first among the mechanisms that must keep
-        # working. Round 9 applied it only AFTER evaluation, so a large-integer
-        # join was refused inside the gather before the configured fill could
-        # be reached (GPT30 R9-P0-1, GPT31 B32F9-P1-1, both executed).
+        # NO ALIAS-LEVEL FILL HERE — removed in round 11c (D_5 core).
         #
-        # PRECEDENCE IS UNCHANGED, deliberately. The architect asked to
-        # preserve historical behaviour, and the measured historical order is
-        #     subframe fill  >  global fill  >  alias fill (post-evaluation)
-        # so the alias value is consulted ONLY when neither of the others is
-        # configured — exactly the case where the gather used to leave NaN for
-        # the alias step to fix. Same observable result, one layer earlier,
-        # which is what makes it work for values that cannot survive the
-        # intermediate.
-        if result['fill_missing'] is None:
-            _alias_fill = getattr(self, '_active_alias_fill', None)
-            if _alias_fill is not None:
-                result['fill_missing'] = _alias_fill
-
+        # Round 10 published `add_alias(..., fill_value=)` into this config as
+        # the lowest-precedence operand fill, so that the gather could consume
+        # it and a large-integer join would stop being refused. That worked for
+        # a bare `S.v` and was WRONG for every compound expression, because it
+        # silently promoted a FINAL-RESULT policy to an OPERAND policy:
+        #
+        #     add_alias("d", "S.v + x", dtype="int64", fill_value=1)
+        #     round 10 -> [13, 21]      the fill became the operand: 1 + 20
+        #     ratified -> [13, 1]       the fill resolves the RESULT row
+        #
+        # AR-3 layering: an OPERAND fill (set_subframe_fill / set_global_fill)
+        # defines an operand BEFORE evaluation and clears its mask; the ALIAS
+        # fill_value applies to the FINAL RESULT only, after evaluation, under
+        # the residual mask. The gather no longer needs this shortcut because
+        # it no longer refuses — it produces a placeholder plus an authoritative
+        # mask and lets §9 step 10 decide (`_resolve_residual_undefinedness`).
         return result
 
     def _record_missing_stats(self, subframe_name, n_missing, n_total, fill_value):
@@ -5559,13 +5736,19 @@ class AliasDataFrame:
         pandas and ADF does not guess at date parsing. Pass a real
         `pd.Timestamp` / `pd.NaT`. The error says so.
         """
+        # 11c: this primitive is now also reached from the ALIAS layer
+        # (`_resolve_residual_undefinedness`), where "subframe X column Y" is
+        # the wrong noun. `sf_name is sf_col` is the alias case and is how the
+        # caller signals it — no new parameter, no new call-site contract.
+        _subject = (f"alias {sf_name!r} result" if sf_name == sf_col
+                    else f"subframe {sf_name!r} column {sf_col!r}")
         try:
             _arr = pd.array([fill], dtype=dtype)
             _back = _arr[0]
         except Exception as _e:
             raise ValueError(
-                f"{knob}={fill!r} cannot be stored in subframe {sf_name!r} "
-                f"column {sf_col!r} of dtype {dtype}: {_e}. Decision 3 "
+                f"{knob}={fill!r} cannot be stored in {_subject} "
+                f"of dtype {dtype}: {_e}. Decision 3 "
                 f"(architect, 2026-07-28): the fill must be compatible with "
                 f"the column's own dtype; ADF never changes the column to fit "
                 f"the fill."
@@ -5605,8 +5788,8 @@ class AliasDataFrame:
             if _f is not None and np.isfinite(_f):
                 if not np.isfinite(_b):
                     raise ValueError(
-                        f"{knob}={fill!r} overflows the dtype of subframe "
-                        f"{sf_name!r} column {sf_col!r} ({dtype}) — it "
+                        f"{knob}={fill!r} overflows the dtype of {_subject} "
+                        f"({dtype}) — it "
                         f"becomes {_back!r}. A configured fill may be ROUNDED "
                         f"by the target dtype but never DESTROYED "
                         f"(v1.4.4 §4.2, architect-approved 2026-07-31). "
@@ -5614,7 +5797,7 @@ class AliasDataFrame:
                 if _f != 0.0 and _b == 0.0:
                     raise ValueError(
                         f"{knob}={fill!r} underflows to zero in the dtype of "
-                        f"subframe {sf_name!r} column {sf_col!r} ({dtype}). "
+                        f"{_subject} ({dtype}). "
                         f"A configured fill may be ROUNDED by the target "
                         f"dtype but never DESTROYED — a non-zero physical "
                         f"value silently becoming 0 is exactly the case the "
@@ -5634,7 +5817,7 @@ class AliasDataFrame:
         if not _survived:
             raise ValueError(
                 f"{knob}={fill!r} does not survive conversion to the dtype of "
-                f"subframe {sf_name!r} column {sf_col!r} ({dtype}) — it "
+                f"{_subject} ({dtype}) — it "
                 f"becomes {_back!r}. Refused rather than stored, so the plot "
                 f"cannot show a value the data does not contain (Decision 3, "
                 f"architect 2026-07-28). For a categorical column the fill "
@@ -5785,8 +5968,54 @@ class AliasDataFrame:
             return None
         return _restored
 
+    @staticmethod
+    def _authoritative_placeholder(dtype, col):
+        """A non-semantic, in-dtype payload for a row whose join key is absent.
+
+        D_5 core. The value is NEVER observable: it is overwritten under the
+        authoritative mask at §9 step 10, or the evaluation refuses there. It
+        exists only so the gathered buffer can keep the column's authoritative
+        storage dtype instead of widening to float64 to hold a NaN.
+
+        It is NOT a sentinel: nothing downstream tests for it, and two
+        different placeholders must give the same published answer (that is
+        what the A/B probe checks).
+
+        Source, per v1.4.4 P1-1 as accepted by the architect:
+          * the child column's first value, when the child frame is non-empty —
+            guaranteed in-range and representable, because it IS one of the
+            user's own values;
+          * the dtype's default-constructed value (0 / False) when the child
+            frame is empty and there is nothing to borrow.
+        """
+        try:
+            if len(col) > 0:
+                return col.iloc[0]
+        except (TypeError, IndexError, AttributeError):
+            pass
+        return dtype.type(0)
+
+    @staticmethod
+    def _probe_b_values(values, mask):
+        """Placeholder B, derived from placeholder A already sitting in `values`.
+
+        `A ^ 1` for integers — deliberately NOT `A + 1`, which overflows at
+        `int8(127)` and at `2**63 - 1`, both of which are live in this
+        codebase (`BIG = 2**60 + 1` is in the round-11 fixture). Flipping the
+        low bit is always in range, can never overflow, and can never collide
+        with A.
+        """
+        _out = values.copy()
+        _sel = np.asarray(mask, dtype=bool)
+        if pd.api.types.is_bool_dtype(_out.dtype):
+            _out[_sel] = ~np.asarray(_out[_sel], dtype=bool)
+        else:
+            _out[_sel] = np.asarray(_out[_sel]) ^ 1
+        return _out
+
     def _extract_subframe_values_typed(self, sf_name, sf_col, indices,
-                                       missing_mask, direct_slot=False):
+                                       missing_mask, direct_slot=False,
+                                       ctx=None):
         """Gather a subframe column with missing keys WITHOUT changing the
         user's dtype — using ONE symmetric primitive, not a branch per dtype.
 
@@ -5859,6 +6088,30 @@ class AliasDataFrame:
         if _fill is not None:
             _fill = self._coerce_fill_to_dtype(
                 _fill, _dtype, sf_name, sf_col, 'fill_missing')
+
+        # ---- D_5 core: placeholder + authoritative mask, instead of refusing.
+        #
+        # AR-6. When no OPERAND policy resolves the absent value and the column
+        # is a plain NumPy integer or Boolean — a dtype that cannot represent a
+        # gap — the pre-11c code refused RIGHT HERE, five frames below the
+        # place where the user's `fill_value` lives. That is why round 10 had
+        # to smuggle the alias fill down into `_get_fill_config`, and that is
+        # what broke compound expressions.
+        #
+        # Now the gather stops deciding. It produces a non-semantic in-dtype
+        # placeholder, hands the authoritative row mask upward through `ctx`,
+        # and the refusal moves to §9 step 10 — AFTER the final fill is known.
+        #
+        # `ctx.carry_mask` is False everywhere by default, so every path that
+        # has not opted in (the direct-draw slots, which are D_13 and are NOT
+        # part of this increment) reaches the unchanged refusal below.
+        _placeholder_mask = None
+        if (_fill is None and _n_missing > 0
+                and ctx is not None and ctx.carry_mask
+                and isinstance(_dtype, np.dtype) and _dtype.kind in "biu"):
+            _fill = self._authoritative_placeholder(_dtype, _col)
+            _placeholder_mask = np.asarray(missing_mask, dtype=bool)
+
         # Prefer the ARRAY'S OWN take. `pandas.api.extensions.take` is the
         # right entry point for a plain ndarray, but for an ExtensionArray it
         # is a dispatcher, and GPT31 measured a pandas FutureWarning coming out
@@ -5940,6 +6193,9 @@ class AliasDataFrame:
                 f"join of this column preserves its dtype; configure "
                 f"adf.set_subframe_fill({sf_name!r}, fill_missing=<value of "
                 f"dtype {_dtype}>) if the gap should carry a real value.")
+        if _placeholder_mask is not None and ctx is not None:
+            # Hand the authoritative mask upward. See `_AliasEvalContext`.
+            ctx.pending_mask = _placeholder_mask
         return _result.array if hasattr(_result, "array") else _result.values
 
     @staticmethod
@@ -5966,7 +6222,8 @@ class AliasDataFrame:
         return isinstance(dtype, np.dtype) and np.issubdtype(dtype, np.floating)
 
     def _extract_subframe_values_cached(self, sf_name, sf_col, indices,
-                                        missing_mask, direct_slot=False):
+                                        missing_mask, direct_slot=False,
+                                        ctx=None):
         """
         Extract subframe column values using cached indices.
         
@@ -6112,7 +6369,7 @@ class AliasDataFrame:
         if not self._is_plain_float_dtype(_dtype):
             return self._extract_subframe_values_typed(
                 sf_name, sf_col, indices, missing_mask,
-                direct_slot=direct_slot)
+                direct_slot=direct_slot, ctx=ctx)
 
         # Real floating columns keep the original implementation verbatim.
         # Phase 9b: Try PyArrow path first (fastest for large arrays)
@@ -6193,7 +6450,7 @@ class AliasDataFrame:
             ))
         return tuple(parts)
 
-    def _scatter_subframe_column(self, sf_name, sf_col, entry):
+    def _scatter_subframe_column(self, sf_name, sf_col, entry, ctx=None):
         """
         Scatter sf_col from registered subframe into self.df as f"{sf_col}__{sf_name}".
         
@@ -6223,8 +6480,23 @@ class AliasDataFrame:
             index_cols = [index_cols]
         
         col_renamed = f'{sf_col}__{sf_name}'
-        
+
         # Idempotent — fast path
+        #
+        # D_5 core, INVARIANT THAT MAKES THIS SAFE — read before weakening the
+        # retraction in `_evaluate_alias_expression`. A joined column that
+        # SURVIVES in self.df can never carry a placeholder, because the
+        # retraction ledger removes or restores every placeholder-bearing
+        # column on all seven exit paths. So a pre-existing `col_renamed` is
+        # necessarily one of:
+        #     (a) a fully matched gather              -> mask empty
+        #     (b) an operand-fill-resolved gather      -> defined by policy,
+        #                                                 mask cleared (AR-3)
+        #     (c) written by user code                 -> the user's own data
+        # and in all three cases "no mask" is the correct answer, which is what
+        # taking this path records. If retraction is ever made conditional,
+        # THIS fast path becomes a silent-wrong-result hole: it would reuse a
+        # stale placeholder as if it were data.
         if col_renamed in self.df.columns:
             return col_renamed
         
@@ -6257,9 +6529,9 @@ class AliasDataFrame:
                 indices = cache_entry['indices']
                 missing_mask = cache_entry['missing_mask']
                 values = self._extract_subframe_values_cached(
-                    sf_name, sf_col, indices, missing_mask
+                    sf_name, sf_col, indices, missing_mask, ctx=ctx
                 )
-                self.df[col_renamed] = values
+                self._publish_joined_column(col_renamed, values, ctx)
                 return col_renamed
         
         # CACHE MISS: Compute join indices
@@ -6277,13 +6549,34 @@ class AliasDataFrame:
         
         # Extract values using cached indices
         values = self._extract_subframe_values_cached(
-            sf_name, sf_col, indices, missing_mask
+            sf_name, sf_col, indices, missing_mask, ctx=ctx
         )
-        
-        self.df[col_renamed] = values
+
+        self._publish_joined_column(col_renamed, values, ctx)
         return col_renamed
 
-    def _prepare_subframe_joins(self, expr, warn_missing_keys=True, alias_name=None):
+    def _publish_joined_column(self, col_renamed, values, ctx):
+        """Write a scattered column, enrolling it in the retraction ledger if
+        it carries a placeholder.
+
+        Decision B (architect, 2026-08-07, Option 1). Only a column that came
+        back PLACEHOLDER-BEARING is enrolled — a fully matched or
+        operand-fill-resolved column is real data and stays, exactly as before
+        11c. Enrolment records the prior content so a pre-existing name is
+        RESTORED rather than merely dropped.
+        """
+        _mask = None if ctx is None else ctx.pending_mask
+        if ctx is not None:
+            ctx.pending_mask = None
+        if _mask is not None:
+            _prior = (self.df[col_renamed].copy()
+                      if col_renamed in self.df.columns else None)
+            ctx.retracted.append((col_renamed, _prior))
+            ctx.masks[col_renamed] = _mask
+        self.df[col_renamed] = values
+
+    def _prepare_subframe_joins(self, expr, warn_missing_keys=True,
+                                alias_name=None, ctx=None):
         """
         Resolve subframe column references in expression.
         
@@ -6378,6 +6671,16 @@ class AliasDataFrame:
                     sf_name=sf_name,
                     sf_col=current_col,
                     entry=entry,
+                    # SCOPE LIMIT, deliberate and disclosed. Mask carriage is
+                    # applied only at the level whose rows the alias is
+                    # published on. An INNER level of a multi-level chain
+                    # (A.B.C.val) scatters into an intermediate frame whose
+                    # masks and retraction ledger are not this one's, so it
+                    # keeps the pre-11c behaviour and refuses. That is not a
+                    # regression — it is exactly what happens today — but it
+                    # is also not an improvement, and it is scheduled work,
+                    # not an oversight.
+                    ctx=(ctx if parent_adf is self else None),
                 )
                 if new_col is None:
                     resolution_ok = False
@@ -6830,7 +7133,43 @@ class AliasDataFrame:
         # Check for cycles (catches indirect cycles like A -> B -> A)
         self._check_for_cycles()
 
-    def _eval_in_namespace(self, expr, context_override=None, warn_missing_keys=True, alias_name=None):
+    def _eval_prepared(self, expr, overrides=None):
+        """Evaluate an ALREADY-REWRITTEN expression with no join preparation.
+
+        This is the probe-B entry point, and its whole purpose is ISOLATION.
+
+        THE DEFECT IT EXISTS TO AVOID — found by reviewer Opus5_2 and confirmed
+        by execution on baseline ee9227e7 before a line was written:
+        `_scatter_subframe_column` has an idempotent fast path that returns
+        immediately when the joined column is already present in `self.df`. A
+        naive two-pass probe would therefore have had probe B silently consume
+        probe A's column:
+
+            v__S := [777, 777]   (poisoned by hand)
+            _eval_in_namespace("S.v + x")  ->  [787, 797]
+
+        The gather never re-ran and the join cache was never even consulted.
+        The guard would have compared A against A, agreed with itself on every
+        expression including the reductions it exists to catch, and looked
+        like it worked.
+
+        So probe B never round-trips through `self.df`. It takes the rewritten
+        expression, overlays the probe-B values in the local namespace, and
+        touches neither `self.df` nor `_join_index_cache`.
+
+        RE-ENTRANCY IS STRUCTURAL, NOT FLAGGED. This method performs no
+        scatter, carries no context and collects no mask, so it cannot
+        re-enter the guard. There is no recursion to protect against and no
+        "in_probe" flag that could be left set.
+        """
+        local_env = {col: self.df[col] for col in self.df.columns}
+        if overrides:
+            local_env.update(overrides)
+        local_env.update(self._default_functions())
+        return eval(expr, {}, local_env)
+
+    def _eval_in_namespace(self, expr, context_override=None, warn_missing_keys=True,
+                           alias_name=None, ctx=None):
         """
         Evaluate expression in namespace with DataFrame columns, functions, and optional overrides.
         
@@ -6850,10 +7189,16 @@ class AliasDataFrame:
         alias_name : str, optional
             Name of alias being evaluated (for warning messages)
         """
-        expr = self._prepare_subframe_joins(expr, warn_missing_keys=warn_missing_keys, alias_name=alias_name)
+        expr = self._prepare_subframe_joins(expr, warn_missing_keys=warn_missing_keys,
+                                            alias_name=alias_name, ctx=ctx)
         # PHASE_13_66_ADF: struct rewrite (logical struct.member -> internal member__struct).
         # _eval_in_namespace is the single rewrite owner for the eval family.
         expr = self._prepare_struct_refs(expr)
+        if ctx is not None:
+            # Recorded AFTER both rewrites, so probe B evaluates exactly the
+            # expression probe A evaluated and needs no join preparation.
+            ctx.prepared_expr = expr
+            ctx.n_evaluations += 1
         
         # Phase 9c note: Per-expression Arrow compute disabled here.
         # Conversion overhead per expression exceeds benefits.
@@ -8176,6 +8521,164 @@ function collapseDepth(maxD) {{
         
         return deps
 
+    # ------------------------------------------------------------------
+    # D_5 core — one evaluation entry for the materialization family.
+    # ------------------------------------------------------------------
+
+    def _retract_placeholder_columns(self, ctx):
+        """Transactional cleanup of placeholder-bearing joined temporaries.
+
+        Decision B (architect, 2026-08-07, Option 1), with the design-review §4
+        exit-path list binding. Runs from a `finally`, so it covers all seven:
+        successful final fill, no-fill refusal, provenance/safety refusal,
+        expression exception, fill-coercion failure, dtype-authority refusal,
+        publication failure.
+
+        DOES NOT DEPEND ON `cleanTemporary`. That flag is a user-facing
+        convenience about tidiness; this is a safety invariant. Before 11c the
+        joined column survived a `materialize_alias()` carrying the fabricated
+        fill — measured on the baseline, `v__S` was left as a real int64 column
+        holding `[3, 1]`, which under AD-19 source 2 then reads as an
+        AUTHORITATIVE dtype for that name and which `export_tree` would
+        persist. A placeholder surviving there would be strictly worse.
+
+        Restores prior content when the name pre-existed; removes it otherwise.
+        The join INDEX cache is deliberately left intact — it describes the
+        join, not the values, and stays valid.
+        """
+        if ctx is None or not ctx.retracted:
+            return
+        while ctx.retracted:
+            _col, _prior = ctx.retracted.pop()
+            try:
+                if _prior is None:
+                    if _col in self.df.columns:
+                        del self.df[_col]
+                else:
+                    self.df[_col] = _prior
+            except Exception as _e:   # pragma: no cover - defensive only
+                # Never mask the exception that is already propagating.
+                warnings.warn(
+                    f"could not retract placeholder-bearing joined column "
+                    f"{_col!r}: {_e}", RuntimeWarning)
+
+    def _guard_residual_undefinedness(self, name, ctx, result_a,
+                                      context_override=None):
+        """Refuse anything that is not PROVEN safe to publish with a residual mask.
+
+        Two layers, in this order, per the ratified design review §5:
+
+        1. FAIL-CLOSED ROW-LOCAL GATE (primary). An expression is refused
+           unless every AST node is on the admitted list. This is the layer
+           that carries the correctness argument.
+        2. A/B PLACEHOLDER PROBE (defense in depth). Evaluate again with a
+           different placeholder and require every DEFINED row to be
+           identical.
+
+        The panel was explicit that the probe is NOT a proof and must not be
+        the sole check: finite probes can coincide through median/quantile
+        accidents, clipping and thresholds, parity, branch conditions, and
+        reductions whose value happens not to move. So a probe agreement never
+        admits anything the gate refused; it can only reject further.
+        """
+        _ok, _why = _expression_is_row_local(ctx.prepared_expr)
+        if not _ok:
+            raise ADFProvenanceUnsupportedError(
+                f"alias {name!r} has {int(ctx.residual_mask().sum())} row(s) "
+                f"whose value is undefined (a join key was absent and no "
+                f"operand fill defines it), and ADF cannot prove that "
+                f"{ctx.prepared_expr!r} is row-local: {_why}. Publishing it "
+                f"could put a non-semantic placeholder into rows that are NOT "
+                f"undefined, which would be a silent wrong result. Define the "
+                f"operand instead — adf.set_subframe_fill(<subframe>, "
+                f"fill_missing=<value>) or adf.set_global_fill("
+                f"fill_missing=<value>) — so the value is real before the "
+                f"expression runs.")
+
+        _overrides = dict(context_override or {})
+        for _col, _mask in ctx.masks.items():
+            if _col in self.df.columns:
+                _overrides[_col] = self._probe_b_values(self.df[_col], _mask)
+        _result_b = self._eval_prepared(ctx.prepared_expr, _overrides)
+
+        _defined = ~ctx.residual_mask()
+        if not _defined.any():
+            return
+        try:
+            _a = self._aligned_publication_candidate(result_a)[_defined]
+            _b = self._aligned_publication_candidate(_result_b)[_defined]
+        except (TypeError, ValueError):
+            return
+        if not _a.equals(_b):
+            raise ADFProvenanceUnsupportedError(
+                f"alias {name!r}: changing the internal placeholder changed "
+                f"{int((~_a.eq(_b)).sum())} row(s) that are NOT undefined, so "
+                f"{ctx.prepared_expr!r} propagates an absent value into "
+                f"defined rows. Refused rather than published. Define the "
+                f"operand with set_subframe_fill(...) / set_global_fill(...).")
+
+    def _evaluate_alias_expression(self, name, expr, context_override=None,
+                                   warn_missing_keys=True):
+        """Evaluate one alias with mask carriage. Returns ``(result, ctx)``.
+
+        This is where `_active_alias_fill` used to be set and cleared. The
+        instance global is gone: §10 of the ratified contract forbids replacing
+        it with another one, so the state is an explicit parameter object.
+        """
+        ctx = _AliasEvalContext(alias_name=name, carry_mask=True)
+        try:
+            result = self._eval_in_namespace(
+                expr, context_override=context_override,
+                warn_missing_keys=warn_missing_keys, alias_name=name, ctx=ctx)
+            if ctx.residual_mask() is not None:
+                self._guard_residual_undefinedness(
+                    name, ctx, result, context_override)
+            return result, ctx
+        finally:
+            # All seven exit paths. See _retract_placeholder_columns.
+            self._retract_placeholder_columns(ctx)
+
+    def _resolve_residual_undefinedness(self, name, result, ctx, fill_val):
+        """§9 step 10 — the final-result stage, and the ONLY place undefined
+        rows are resolved or refused.
+
+        This is the refusal that used to live in the gather at
+        `_extract_subframe_values_typed`, five frames lower, before the user's
+        `fill_value` could be reached. Moving it here is what makes
+
+            add_alias("d", "S.v + x", dtype="int64", fill_value=1)  ->  [13, 1]
+
+        instead of round 10's `[13, 21]`: the alias fill resolves the RESULT
+        row, it never becomes the operand (AR-3).
+
+        Note this is COMPLEMENTARY to, not a replacement for, the existing
+        `isfinite` fill that follows it. AR-7: undefined-by-absence and
+        NaN/Inf-produced-by-arithmetic are different conditions and each keeps
+        its own rule.
+        """
+        _residual = None if ctx is None else ctx.residual_mask()
+        if _residual is None:
+            return result
+        if fill_val is None:
+            raise ValueError(
+                f"alias {name!r} has {int(_residual.sum())} row(s) with no "
+                f"defined value: a subframe join key was absent and the "
+                f"column's authoritative dtype cannot represent a gap. ADF "
+                f"will not choose a neutral value for you — 0 is neutral for "
+                f"an additive correction, 1 for a multiplicative one, and only "
+                f"you know which this is (AD-19, architect 2026-07-29). "
+                f"Configure the physically correct value: "
+                f"adf.set_subframe_fill(<subframe>, fill_missing=<value>), "
+                f"adf.set_global_fill(fill_missing=<value>), or "
+                f"add_alias({name!r}, ..., fill_value=<value>) — and use a "
+                f"separate flag column to record that the measurement was "
+                f"absent.")
+        _series = self._aligned_publication_candidate(result).copy()
+        _coerced = self._coerce_fill_to_dtype(
+            fill_val, _series.dtype, name, name, 'fill_value')
+        _series[_residual] = _coerced
+        return _series
+
     def materialize_alias(self, name, cleanTemporary=False, dtype=None, warn_missing_keys=True,
                           profile=False, profile_text=None, profile_binary=None):
         """
@@ -8253,23 +8756,26 @@ function collapseDepth(maxD) {{
                     elif token in self.aliases and token not in self.df.columns:
                         self.materialize_alias(token, warn_missing_keys=warn_missing_keys)
 
-                # Round 10: publish this alias's configured fill BEFORE the
-                # expression is evaluated, so the subframe gather can use it
-                # (see _get_fill_config). Cleared in the finally below.
-                self._active_alias_fill = (
-                    self._schema["columns"].get(name, {}) or {}).get("fill_value")
-                try:
-                    result = self._eval_in_namespace(expr, warn_missing_keys=warn_missing_keys, alias_name=name)
-                finally:
-                    self._active_alias_fill = None
+                # D_5 core. The round-10 `_active_alias_fill` instance global
+                # is GONE — the alias fill no longer travels down into the
+                # gather as an operand fill, which is what turned [13, 1] into
+                # [13, 21] for every compound expression.
+                result, _ctx = self._evaluate_alias_expression(
+                    name, expr, warn_missing_keys=warn_missing_keys)
 
-                # Phase 13.9: Apply fill_value for inf/NaN replacement
                 alias_spec = self._schema["columns"].get(name, {})
                 fill_val = alias_spec.get("fill_value")
+
+                # §9 step 10a — undefined by ABSENCE, resolved under the mask.
+                result = self._resolve_residual_undefinedness(
+                    name, result, _ctx, fill_val)
+
+                # §9 step 10b — NaN/Inf produced by ARITHMETIC. Different
+                # condition, own rule, unchanged (AR-7).
                 if fill_val is not None and \
                         np.asarray(result).dtype.kind not in 'biu':
                     result = np.where(np.isfinite(result), result, fill_val)
-                
+
                 result_dtype = dtype or self.alias_dtypes.get(name)
                 if result_dtype is not None:
                     result = self._safe_dtype_cast(result, result_dtype, alias_name=name)
@@ -8521,11 +9027,12 @@ function collapseDepth(maxD) {{
                                 if verbose:
                                     print(f"[materialize_aliases]   Materializing dependency with fill_value: {dep_name}")
                                 dep_expr = self.aliases[dep_name]
-                                self._active_alias_fill = dep_fill
-                                try:
-                                    dep_result = self._eval_in_namespace(dep_expr, context_override=results, alias_name=dep_name)
-                                finally:
-                                    self._active_alias_fill = None
+                                dep_result, _dep_ctx = \
+                                    self._evaluate_alias_expression(
+                                        dep_name, dep_expr,
+                                        context_override=results)
+                                dep_result = self._resolve_residual_undefinedness(
+                                    dep_name, dep_result, _dep_ctx, dep_fill)
                                 if np.asarray(dep_result).dtype.kind not in 'biu':
                                     dep_result = np.where(np.isfinite(dep_result), dep_result, dep_fill)
                                 dep_dtype = self.alias_dtypes.get(dep_name)
@@ -8537,21 +9044,21 @@ function collapseDepth(maxD) {{
                                 results[dep_name] = dep_result
                                 added.append(dep_name)
                     
-                    # Round 10: publish this alias's configured fill BEFORE
-                    # evaluation so the subframe gather can use it. Same
-                    # mechanism as the single-alias path; see _get_fill_config.
-                    self._active_alias_fill = (
-                        self._schema["columns"].get(name, {}) or {}
-                    ).get("fill_value")
-                    try:
-                        # Compute with context_override so dependent aliases can see prior results
-                        result = self._eval_in_namespace(expr, context_override=results, alias_name=name)
-                    finally:
-                        self._active_alias_fill = None
+                    # D_5 core — same contract as the single-alias path, which
+                    # is the point: b32_197 exists because round 10 fixed one
+                    # path and left the other. Compute with context_override so
+                    # dependent aliases can see prior results.
+                    result, _ctx = self._evaluate_alias_expression(
+                        name, expr, context_override=results)
 
-                    # Apply fill_value for inf/NaN replacement (must be before dtype cast)
                     alias_spec = self._schema["columns"].get(name, {})
                     fill_val = alias_spec.get("fill_value")
+
+                    # §9 step 10a — undefined by ABSENCE (AR-3: final result).
+                    result = self._resolve_residual_undefinedness(
+                        name, result, _ctx, fill_val)
+
+                    # §9 step 10b — NaN/Inf from arithmetic (AR-7), unchanged.
                     if fill_val is not None and \
                             np.asarray(result).dtype.kind not in 'biu':
                         # An integer/Boolean result is already exact and holds
