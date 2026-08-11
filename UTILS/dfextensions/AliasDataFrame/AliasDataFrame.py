@@ -8638,7 +8638,8 @@ function collapseDepth(maxD) {{
             # All seven exit paths. See _retract_placeholder_columns.
             self._retract_placeholder_columns(ctx)
 
-    def _resolve_residual_undefinedness(self, name, result, ctx, fill_val):
+    def _resolve_residual_undefinedness(self, name, result, ctx, fill_val,
+                                        publishing=False, explicit_dtype=None):
         """§9 step 10 — the final-result stage, and the ONLY place undefined
         rows are resolved or refused.
 
@@ -8659,6 +8660,7 @@ function collapseDepth(maxD) {{
         _residual = None if ctx is None else ctx.residual_mask()
         if _residual is None:
             return result
+
         if fill_val is None:
             raise ValueError(
                 f"alias {name!r} has {int(_residual.sum())} row(s) with no "
@@ -8673,6 +8675,63 @@ function collapseDepth(maxD) {{
                 f"add_alias({name!r}, ..., fill_value=<value>) — and use a "
                 f"separate flag column to record that the measurement was "
                 f"absent.")
+
+        # ---- AC_6 (§5.4) — round 11e, corrected in the 11e revision.
+        #
+        # ALL rows undefined and a configured fill is the ONLY possible basis
+        # for the dtype: a STORED publication refuses. There is no observation
+        # anywhere to infer from, and a fill constant is a POLICY CHOICE, not
+        # data. Letting it establish AD-19 source-4 authority would record the
+        # user's default as if it had been measured — the same "ADF decides
+        # what the data says" that AD-19 forbids.
+        #
+        # A TARGET CONTRACT IS NOT ONLY AN EXPLICIT dtype. This is the
+        # correction: the first version of this branch tested
+        # `explicit_dtype is None`, which conflated "the user did not declare
+        # a dtype on THIS call" with "no authoritative dtype exists at all".
+        # A RECORDED source-4 authority is a target contract too, so this
+        # history was wrongly refused (F11E-MR-P0-1, found by GPT32 by
+        # execution on the exact candidate and by GPT27/GPT29/GPT30 by source
+        # tracing):
+        #
+        #     alias with no declared dtype -> first nonempty materialization
+        #     records source-4 int64 -> dematerialize -> the relation now
+        #     yields all-undefined rows -> rematerialization must publish in
+        #     the recorded int64, and instead refused.
+        #
+        # The authority is asked of the central accessor rather than
+        # re-derived here, per the panel's instruction not to invent a second
+        # caller-local rule. When it is known, `_publish_alias_column` ->
+        # `_enforce_recorded_authority` restores and validates against it on
+        # the way out, so nothing further is owed here.
+        #
+        # ORDERING IS LOAD-BEARING: this runs AFTER the no-fill refusal above.
+        # The first version ran before it, so an all-undefined alias with NO
+        # configured fill received the fill-policy diagnostic, which talks
+        # about a fill the user never set (F11E-MR-P1-2).
+        #
+        # SCOPED TO PUBLICATION ON PURPOSE. `publishing` is False for
+        # `get_alias_series` / `get_alias_array`, so the non-materializing
+        # branch is untouched: the all-undefined GETTER question is a genuine
+        # §5.4-vs-§9-step-10 ambiguity owned by B3.2b, and the round-11d panel
+        # adjudicated exactly this boundary.
+        if publishing and bool(np.asarray(_residual).all()):
+            _auth = self.get_dtype_authority(name)
+            _has_contract = (explicit_dtype is not None
+                             or (_auth is not None and _auth.known))
+            if not _has_contract:
+                raise ValueError(
+                    f"alias {name!r} has NO defined row: every subframe join "
+                    f"key is absent, so there is no observation from which to "
+                    f"infer a dtype, and the configured fill is a policy "
+                    f"choice rather than data. Storing it would record your "
+                    f"default as if it had been measured (AC_6 / §5.4). "
+                    f"Declare the target explicitly — "
+                    f"add_alias({name!r}, ..., dtype=<dtype>) — so the fill "
+                    f"has a contract to be checked against, or use "
+                    f"get_alias_series({name!r}) if you want the value "
+                    f"without storing it.")
+
         _series = self._aligned_publication_candidate(result).copy()
         _coerced = self._coerce_fill_to_dtype(
             fill_val, _series.dtype, name, name, 'fill_value')
@@ -8767,8 +8826,10 @@ function collapseDepth(maxD) {{
                 fill_val = alias_spec.get("fill_value")
 
                 # §9 step 10a — undefined by ABSENCE, resolved under the mask.
+                # publishing=True: this path STORES, so AC_6 applies.
                 result = self._resolve_residual_undefinedness(
-                    name, result, _ctx, fill_val)
+                    name, result, _ctx, fill_val, publishing=True,
+                    explicit_dtype=(dtype or self.alias_dtypes.get(name)))
 
                 # §9 step 10b — NaN/Inf produced by ARITHMETIC. Different
                 # condition, own rule, unchanged (AR-7).
@@ -9032,7 +9093,9 @@ function collapseDepth(maxD) {{
                                         dep_name, dep_expr,
                                         context_override=results)
                                 dep_result = self._resolve_residual_undefinedness(
-                                    dep_name, dep_result, _dep_ctx, dep_fill)
+                                    dep_name, dep_result, _dep_ctx, dep_fill,
+                                    publishing=True,
+                                    explicit_dtype=self.alias_dtypes.get(dep_name))
                                 if np.asarray(dep_result).dtype.kind not in 'biu':
                                     dep_result = np.where(np.isfinite(dep_result), dep_result, dep_fill)
                                 dep_dtype = self.alias_dtypes.get(dep_name)
@@ -9055,8 +9118,10 @@ function collapseDepth(maxD) {{
                     fill_val = alias_spec.get("fill_value")
 
                     # §9 step 10a — undefined by ABSENCE (AR-3: final result).
+                    # publishing=True: the bulk path stores too.
                     result = self._resolve_residual_undefinedness(
-                        name, result, _ctx, fill_val)
+                        name, result, _ctx, fill_val, publishing=True,
+                        explicit_dtype=self.alias_dtypes.get(name))
 
                     # §9 step 10b — NaN/Inf from arithmetic (AR-7), unchanged.
                     if fill_val is not None and \
@@ -9239,9 +9304,19 @@ function collapseDepth(maxD) {{
         # It now shares the materializing pair's contract: the same context,
         # the same fail-closed provenance gate, the same transactional
         # retraction, and the same final-result resolution of the alias fill.
-        # The ONLY difference that remains is publication — this getter does
-        # not store the column, so it never commits dtype authority
-        # (`test_b32_200`).
+        #
+        # The difference that remains is publication OF THE REQUESTED ALIAS.
+        # This getter does not store `name`, so it commits no AD-19 source-4
+        # authority FOR `name` (`test_b32_200`). It does NOT follow that the
+        # call has no publishing effects at all: DEPENDENCY aliases are still
+        # materialized above, under their own normal contract, exactly as
+        # `materialize_alias` does — that side effect is intentional and
+        # long-standing. The earlier wording here said "never commits dtype
+        # authority", which overstated it (round-11d review, F11D-4, GPT27).
+        #
+        # `publishing` is left False below for the same reason: AC_6 governs
+        # STORED publication, and the all-undefined getter branch is a known
+        # open §5.4-vs-§9-step-10 ambiguity owned by B3.2b.
         result, _ctx = self._evaluate_alias_expression(
             name, expr, warn_missing_keys=warn_missing_keys)
         result = self._resolve_residual_undefinedness(

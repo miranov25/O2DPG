@@ -6172,10 +6172,7 @@ class TestB32Round11RatifiedContract:
 
     # ================= AC_6 : all rows undefined ==========================
 
-    @pytest.mark.xfail(strict=True, reason=
-        "round 11 D_8 not yet implemented: AC_6 all-undefined rule is not implemented yet. "
-        "strict=True: this flips to a FAILURE the moment the fix lands, "
-        "so the marker cannot outlive the defect.")
+    # MARKER REMOVED in 11e — AC_6 landed; strict=True forced this edit.
     def test_b32_203_all_undefined_fill_alone_does_not_establish_authority(
             self):
         """AC_6 / §5.4 (GPT29). No defined value exists to infer a
@@ -7048,3 +7045,343 @@ class TestB32Round11dOneEvaluator:
         after = m.get_dtype_authority("d")
         assert after.known and after.origin == "explicit_alias"
         assert str(after.dtype) == str(before.dtype)
+
+
+# ============================================================================
+# CORRECTION ROUND 11e — AC_6, and the publication/getter boundary
+#
+# Round-11d review adjudication (Main Reviewer GPT30, 4-5 split resolved on
+# the merits): b32_203 asserts the STORED-PUBLICATION rule, which the
+# ratified contract already specifies. The all-undefined GETTER question is a
+# separate, genuinely open §5.4-vs-§9-step-10 ambiguity owned by B3.2b.
+# The coder's re-anchor proposal answered the getter question with a test
+# that never calls a getter, and was rejected.
+#
+# These tests pin the BOUNDARY, so a future increment cannot close the getter
+# ambiguity by accident, and cannot reopen the publication rule by accident.
+# ============================================================================
+
+
+class TestB32Round11eAllUndefinedAuthority:
+
+    @staticmethod
+    def _pair(keys=(7, 9)):
+        m = A.AliasDataFrame(pd.DataFrame({
+            "k": np.asarray(keys, dtype=np.int64),
+            "x": np.array([10, 20], dtype=np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch.df["v"] = np.array([3], dtype=np.int64)
+        m.register_subframe("S", ch, index_columns=["k"])
+        return m
+
+    @pytest.mark.parametrize("bulk", [False, True])
+    def test_b32_255_ac6_refuses_on_both_publishing_paths(self, bulk):
+        """AC_6 must hold on the single AND the bulk publication path. b32_203
+        exercises one of them; this is the parity control, because 'fixed one
+        path and left the other' is the defect b32_197 already exists for."""
+        m = self._pair()
+        m.add_alias("d", "S.v", fill_value=0)
+        with pytest.raises(ValueError) as ei:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                if bulk:
+                    m.materialize_aliases(names=["d"])
+                else:
+                    m.materialize_alias("d")
+        assert "NO defined row" in str(ei.value)
+
+    def test_b32_256_ac6_does_not_fire_when_one_row_is_defined(self):
+        """The rule is ALL rows undefined. One observation is enough to infer
+        from, so the ordinary residual-fill path applies and publication
+        succeeds. Without this control the AC_6 branch could be written far
+        too wide and every partial gap would start refusing."""
+        m = self._pair(keys=(0, 9))          # row 0 matches
+        m.add_alias("d", "S.v", fill_value=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("d")
+        assert [int(v) for v in m.df["d"].values] == [3, 0]
+
+    @pytest.mark.parametrize("getter", ["get_alias_series", "get_alias_array"])
+    def test_b32_257_ac6_is_scoped_to_publication_not_to_the_getters(
+            self, getter):
+        """THE BOUNDARY. The all-undefined getter branch is an OPEN question
+        assigned to B3.2b; AC_6 governs stored publication only. This test
+        exists so that a future increment cannot silently answer the open
+        question by widening the publication rule — if someone makes the
+        getters refuse here, this fails and they have to go and get a ruling
+        instead."""
+        m = self._pair()
+        m.add_alias("d", "S.v", fill_value=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            out = np.asarray(getattr(m, getter)("d"))
+        assert [int(v) for v in out] == [0, 0]
+
+    def test_b32_258_ac6_records_no_authority_after_refusing(self):
+        """A refused publication must leave no trace: the point of AC_6 is
+        that a policy constant never becomes source-4 authority."""
+        m = self._pair()
+        m.add_alias("d", "S.v", fill_value=0)
+        with pytest.raises(ValueError):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                m.materialize_alias("d")
+        assert "d" not in m.df.columns
+        assert not m.get_dtype_authority("d").known
+        assert "v__S" not in m.df.columns      # retraction still transactional
+
+
+class TestB32Round11eAsymmetricKeyMaskInteraction:
+    """ADF-EXT-001-T3 — the one characterization the round-11d panel required
+    before the B3.2 tag (F11D-3).
+
+    The AO2D/AI external report is a `draw()` / `draw_figures()` defect: two
+    reviewer seats independently measured a loud KeyError there and correct
+    values through `draw_batch`, so it is class C relative to B3.2 and is
+    repaired in the B3.3 draw migration. What was NOT measured is whether
+    asymmetric keys INTERACT with the round-11 residual-undefinedness
+    machinery — a shape nobody had run. That is what this class pins.
+
+    It lives here rather than in tests/test_phase_13_65_adf_asymmetric_keys.py
+    because it characterizes ROUND-11 behaviour. The ADF-EXT-001 repair tests
+    belong in the 13.65 file with the rest of the asymmetric-key contract.
+    """
+
+    @staticmethod
+    def _asym():
+        """GENUINELY asymmetric: the parent key column and the child key
+        column have DIFFERENT NAMES, bound by `right_index_columns`
+        (PHASE_13_65_ADF). `child_run=2` has no child row, so the join key is
+        absent for exactly one parent row.
+
+        THE FIRST VERSION OF THIS FIXTURE WAS NOT ASYMMETRIC AT ALL. It named
+        both sides `run` and never passed `right_index_columns`, so the
+        relation was symmetric by name and the extra `sector` column did
+        nothing. The round-11e CRR nevertheless reported it as the executed
+        ADF-EXT-001-T3 evidence. That was a false claim in the record — the
+        one thing the standing round-4 bar rules out — and it is corrected
+        here rather than quietly replaced (F11E-MR-P1-1; the fixture was
+        inspected by GPT32 and GPT30, and three approving seats had accepted
+        the description without checking the source)."""
+        main = A.AliasDataFrame(pd.DataFrame({
+            "parent_run": np.array([1, 1, 2], np.int64),
+            "sector": np.array([0, 1, 0], np.int64),
+            "x": np.array([10, 20, 30], np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({
+            "child_run": np.array([1], np.int64)}))
+        ch.df["z"] = np.array([7], dtype=np.int64)
+        main.register_subframe("C", ch,
+                               index_columns=["parent_run"],
+                               right_index_columns=["child_run"])
+        return main
+
+    @staticmethod
+    def _mat(m, name="d"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias(name)
+        return m.df[name]
+
+    def test_b32_259_asymmetric_missing_key_refuses_without_a_fill(self):
+        """The AD-19 refusal reaches the asymmetric shape unchanged."""
+        m = self._asym()
+        m.add_alias("d", "C.z + x", dtype="int64")
+        with pytest.raises(ValueError):
+            self._mat(m)
+
+    def test_b32_260_asymmetric_alias_fill_is_still_final_result(self):
+        """AR-3 across an asymmetric join. Oracle: C.z scatters to [7, 7, -],
+        x = [10, 20, 30], so the two defined rows are 17 and 27 and the
+        undefined row takes the alias fill — NOT fill + x."""
+        m = self._asym()
+        m.add_alias("d", "C.z + x", dtype="int64", fill_value=0)
+        got = self._mat(m)
+        assert str(got.dtype) == "int64"
+        assert [int(v) for v in got.values] == [17, 27, 0]
+
+    def test_b32_261_asymmetric_operand_fill_defines_the_operand(self):
+        """The complementary layer: an operand fill of 0 makes the absent
+        C.z a real 0, so the row is 0 + 30 = 30, not the alias fill."""
+        m = self._asym()
+        m.set_subframe_fill("C", fill_missing=0)
+        m.add_alias("d", "C.z + x", dtype="int64", fill_value=99)
+        assert [int(v) for v in self._mat(m).values] == [17, 27, 30]
+
+    def test_b32_262_asymmetric_non_row_local_still_refuses(self):
+        """The fail-closed provenance gate is not weakened by an asymmetric
+        join — a surviving mask plus a reduction refuses here too."""
+        m = self._asym()
+        m.add_alias("d", "(C.z + x).cumsum()", fill_value=0)
+        with pytest.raises(Exception) as ei:
+            self._mat(m)
+        assert "row-local" in str(ei.value)
+
+    def test_b32_263_asymmetric_placeholder_does_not_survive(self):
+        """Decision B holds on the asymmetric shape."""
+        m = self._asym()
+        m.add_alias("d", "C.z + x", dtype="int64", fill_value=0)
+        self._mat(m)
+        assert "z__C" not in m.df.columns
+
+
+class TestB32Round11eRevisionAuthorityAndCoverage:
+    """Round-11e revision, from the Main-Reviewer `[X]` summary.
+
+    F11E-MR-P0-1  a RECORDED source-4 authority is a target contract too, so
+                  an all-undefined rematerialization must publish in it, not
+                  refuse. The first AC_6 predicate tested "no explicit dtype",
+                  which is a different question.
+    F11E-MR-P1-2  with no configured fill the ordinary no-fill refusal must
+                  fire, not the fill-policy diagnostic.
+    F11E-MR-P2-1  the bulk DEPENDENCY publication leg carries publishing=True
+                  and had no direct AC_6 acceptance test.
+    """
+
+    @staticmethod
+    def _frame(child_keys):
+        m = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "x": np.array([10, 20], np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.asarray(child_keys, np.int64)}))
+        ch.df["v"] = np.arange(3, 3 + len(child_keys), dtype=np.int64)
+        m.register_subframe("S", ch, index_columns=["k"])
+        return m
+
+    @staticmethod
+    def _swap_to_all_missing(m):
+        """Rebind the subframe to a child that matches nothing."""
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([77], np.int64)}))
+        ch.df["v"] = np.array([9], dtype=np.int64)
+        m.register_subframe("S", ch, index_columns=["k"])
+        m._join_index_cache.clear()
+        if "v__S" in m.df.columns:
+            del m.df["v__S"]
+
+    @pytest.mark.parametrize("bulk", [False, True])
+    def test_b32_264_existing_source4_authority_permits_all_undefined_remat(
+            self, bulk):
+        """F11E-MR-P0-1, the executed history GPT32 reported.
+
+        No declared dtype, so the FIRST nonempty materialization establishes
+        source-4 authority. After dematerializing, a relation that yields
+        only undefined rows must still publish — the recorded dtype is the
+        contract the fill is validated against. Refusing here would make a
+        successful earlier measurement unusable."""
+        m = self._frame([0, 1])
+        m.add_alias("d", "S.v", fill_value=0)          # NO explicit dtype
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("d")
+        auth = m.get_dtype_authority("d")
+        assert auth.known and auth.origin == "first_stored_in_frame_materialization"
+        assert str(auth.dtype) == "int64"
+
+        m.dematerialize(drop=["d"])
+        self._swap_to_all_missing(m)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            if bulk:
+                m.materialize_aliases(names=["d"])
+            else:
+                m.materialize_alias("d")
+        assert str(m.df["d"].dtype) == "int64"
+        assert [int(v) for v in m.df["d"].values] == [0, 0]
+        after = m.get_dtype_authority("d")
+        assert after.known and str(after.dtype) == "int64", (
+            "the recorded authority must survive the rematerialization")
+
+    def test_b32_265_ac6_still_refuses_when_the_fill_is_the_only_basis(self):
+        """The negative control for b32_264: without a prior successful
+        materialization there is no recorded authority, so the fill really is
+        the only possible basis and AC_6 refuses. If this ever passes, the
+        P0-1 correction has been made too wide and AC_6 is dead."""
+        m = self._frame([77])
+        m.add_alias("d", "S.v", fill_value=0)
+        with pytest.raises(ValueError) as ei:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                m.materialize_alias("d")
+        assert "policy choice" in str(ei.value)
+
+    def test_b32_266_no_fill_gets_the_ordinary_refusal_not_the_ac6_text(self):
+        """F11E-MR-P1-2. All rows undefined and NO configured fill: the user
+        must be told the value is undefined and how to configure one — not
+        given a diagnostic about a fill they never set. Ordering fix: AC_6
+        now runs after the no-fill refusal."""
+        m = self._frame([77])
+        m.add_alias("q", "S.v")                        # no dtype, no fill
+        with pytest.raises(ValueError) as ei:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                m.materialize_alias("q")
+        msg = str(ei.value)
+        assert "no defined value" in msg
+        assert "policy choice" not in msg, (
+            "the fill-policy diagnostic must not fire when no fill is set")
+        assert "set_subframe_fill" in msg and "set_global_fill" in msg
+
+    def test_b32_267_ac6_covers_the_bulk_dependency_publication_leg(self):
+        """F11E-MR-P2-1. `materialize_aliases` has a THIRD publishing path:
+        a dependency alias carrying its own fill_value is evaluated and
+        published inside the batch loop. It receives publishing=True, so AC_6
+        must reach it — asserted directly rather than inferred from the two
+        call sites that already had tests."""
+        m = self._frame([77])
+        m.add_alias("dep", "S.v", fill_value=0)        # no dtype -> AC_6 applies
+        m.add_alias("top", "dep + x", dtype="int64")
+        with pytest.raises(ValueError) as ei:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                m.materialize_aliases(names=["top"])
+        assert "policy choice" in str(ei.value) or "no defined value" in str(ei.value)
+
+
+class TestB32Round11eDrawBatchAsymmetricControl:
+    """GPT27's recommended pre-tag control, added now so the Closure Report
+    does not trigger another round.
+
+    B3.2 claims the `draw_batch` surface. ADF-EXT-001 is a `draw()` /
+    `draw_figures()` defect; the panel measured `draw_batch` as correct. This
+    pins that end to end, on the genuinely asymmetric shape with a missing
+    key, so the claim rests on a permanent test rather than on a one-off
+    measurement in a review."""
+
+    @staticmethod
+    def _asym():
+        main = A.AliasDataFrame(pd.DataFrame({
+            "parent_run": np.array([1, 1, 2], np.int64),
+            "x": np.array([10.0, 20.0, 30.0])}))
+        ch = A.AliasDataFrame(pd.DataFrame({
+            "child_run": np.array([1], np.int64)}))
+        ch.df["z"] = np.array([7.0])
+        main.register_subframe("C", ch,
+                               index_columns=["parent_run"],
+                               right_index_columns=["child_run"])
+        return main
+
+    def test_b32_268_draw_batch_asymmetric_missing_key_matches_the_oracle(
+            self):
+        """The float leg: a missing key yields NaN natively, so no mask is
+        carried and the row is simply absent from the plot. The values that
+        ARE drawn must equal the eval oracle."""
+        m = self._asym()
+        m.add_alias("t", "C.z + x")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            truth = np.asarray(m.get_alias_array("t"))
+        assert np.isnan(truth[2]), "the unmatched row must be undefined"
+        assert [float(v) for v in truth[:2]] == [17.0, 27.0]
+
+    def test_b32_269_draw_batch_completes_on_the_asymmetric_shape(self):
+        """The end-to-end control for the B3.2 claim: draw_batch does not
+        raise on the shape that makes draw() raise (ADF-EXT-001)."""
+        m = self._asym()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            res = m.draw_batch(
+                {"a": {"expr": "C.z + x:x", "type": "scatter"}},
+                lazy=False, verbose=False)
+        plt.close("all")
+        assert res["_summary"]["failed"] == 0, res.get("_errors")
