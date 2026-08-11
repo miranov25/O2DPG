@@ -9229,8 +9229,24 @@ function collapseDepth(maxD) {{
             elif token in self.aliases and token not in self.df.columns and token != name:
                 self.materialize_alias(token, warn_missing_keys=warn_missing_keys)
 
-        # Evaluate the alias expression
-        result = self._eval_in_namespace(expr, warn_missing_keys=warn_missing_keys, alias_name=name)
+        # D_4b (round 11d) — ONE EVALUATOR. This getter used to call
+        # `_eval_in_namespace` directly, which meant it did NOT carry the
+        # undefinedness mask and therefore REFUSED inside the gather in
+        # exactly the cases where `materialize_alias` now succeeds. Two public
+        # entry points, two answers, same input — the defect GPT30 filed as
+        # F10-P0-1 and `test_b32_199` pins.
+        #
+        # It now shares the materializing pair's contract: the same context,
+        # the same fail-closed provenance gate, the same transactional
+        # retraction, and the same final-result resolution of the alias fill.
+        # The ONLY difference that remains is publication — this getter does
+        # not store the column, so it never commits dtype authority
+        # (`test_b32_200`).
+        result, _ctx = self._evaluate_alias_expression(
+            name, expr, warn_missing_keys=warn_missing_keys)
+        result = self._resolve_residual_undefinedness(
+            name, result, _ctx,
+            (self._schema["columns"].get(name, {}) or {}).get("fill_value"))
         n_rows = len(self.df)
 
         # Normalize result to a Series aligned with self.df.index

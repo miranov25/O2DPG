@@ -6098,10 +6098,7 @@ class TestB32Round11RatifiedContract:
     # ================= AC_3 : one evaluator, four wrappers ================
 
     @pytest.mark.parametrize("getter", ["get_alias_series", "get_alias_array"])
-    @pytest.mark.xfail(strict=True, reason=
-        "round 11 D_4 not yet implemented: get_alias_series/get_alias_array do not share the evaluator yet (GPT30 F10-P0-1). "
-        "strict=True: this flips to a FAILURE the moment the fix lands, "
-        "so the marker cannot outlive the defect.")
+    # MARKER REMOVED in 11d — D_4b landed; strict=True forced this edit.
     def test_b32_199_alias_fill_reaches_the_non_materializing_getters(
             self, getter):
         """AC_3 / §6.3 (GPT30 F10-P0-1). A configured alias fill works
@@ -6116,10 +6113,7 @@ class TestB32Round11RatifiedContract:
         assert arr.dtype == np.int64
         assert [int(v) for v in arr] == [int(self.BIG[0]), 0]
 
-    @pytest.mark.xfail(strict=True, reason=
-        "round 11 D_4/D_8 not yet implemented: blocked by b32_199: the getter refuses before authority can be observed. "
-        "strict=True: this flips to a FAILURE the moment the fix lands, "
-        "so the marker cannot outlive the defect.")
+    # MARKER REMOVED in 11d — D_4b landed.
     def test_b32_200_getters_do_not_commit_authority(self):
         """AC_5 / §5.4. A getter is not a stored in-frame publication."""
         m = self._pair()
@@ -6931,3 +6925,126 @@ class TestB32Round11cMaskCarriage:
         m.add_alias("d", "S.v + x", dtype="int64", fill_value=1)
         assert m._get_fill_config("S")["fill_missing"] is None
         assert not hasattr(m, "_active_alias_fill")
+
+
+# ============================================================================
+# CORRECTION ROUND 11d — D_4b: one evaluator, four public surfaces
+#
+# Round 11c gave the two MATERIALIZING entry points a shared contract. This
+# increment brings the two NON-MATERIALIZING getters onto the same one, so
+# the four public ways of evaluating an alias cannot drift apart again.
+#   materialize_alias   materialize_aliases   get_alias_series   get_alias_array
+# ============================================================================
+
+
+class TestB32Round11dOneEvaluator:
+    """AC_3: all four public surfaces share one evaluation contract."""
+
+    SURFACES = ("materialize_alias", "materialize_aliases",
+                "get_alias_series", "get_alias_array")
+
+    @staticmethod
+    def _pair(sub=None, child=None, keys=(0, 9), x=(10, 20)):
+        main = A.AliasDataFrame(pd.DataFrame({
+            "k": np.asarray(keys, dtype=np.int64),
+            "x": np.asarray(x, dtype=np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch.df["v"] = (np.array([3], dtype=np.int64) if child is None else child)
+        main.register_subframe("S", ch, index_columns=["k"])
+        if sub is not None:
+            main.set_subframe_fill("S", fill_missing=sub)
+        return main
+
+    @classmethod
+    def _evaluate(cls, m, surface, name="d"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            if surface == "materialize_alias":
+                m.materialize_alias(name);      return np.asarray(m.df[name])
+            if surface == "materialize_aliases":
+                m.materialize_aliases(names=[name]); return np.asarray(m.df[name])
+            return np.asarray(getattr(m, surface)(name))
+
+    @pytest.mark.parametrize("surface", SURFACES)
+    def test_b32_248_compound_alias_fill_agrees_across_all_four_surfaces(
+            self, surface):
+        """The AR-3 result must be identical on every public surface. Before
+        11c the materializing pair returned [13, 21]; before 11d the getters
+        refused outright. One contract, one answer."""
+        m = self._pair()
+        m.add_alias("d", "S.v + x", dtype="int64", fill_value=1)
+        assert [int(v) for v in self._evaluate(m, surface)] == [13, 1]
+
+    @pytest.mark.parametrize("surface", SURFACES)
+    def test_b32_249_no_fill_refuses_on_all_four_surfaces(self, surface):
+        """A refusal is part of the contract too. If one surface refuses and
+        another quietly returns a number, the contract is not shared."""
+        m = self._pair()
+        m.add_alias("d", "S.v + x", dtype="int64")
+        with pytest.raises(ValueError):
+            self._evaluate(m, surface)
+
+    @pytest.mark.parametrize("surface", SURFACES)
+    def test_b32_250_provenance_gate_applies_on_all_four_surfaces(
+            self, surface):
+        """The fail-closed row-local gate must not be reachable-around by
+        picking a different entry point."""
+        m = self._pair()
+        m.add_alias("d", "(S.v + x).cumsum()", fill_value=1)
+        with pytest.raises(Exception) as ei:
+            self._evaluate(m, surface)
+        assert "row-local" in str(ei.value)
+
+    @pytest.mark.parametrize("surface", SURFACES)
+    def test_b32_251_operand_fill_precedence_holds_on_all_four_surfaces(
+            self, surface):
+        """AR-3 layering: an operand fill defines the operand and the alias
+        fill stands down — on every surface."""
+        m = self._pair(sub=0)
+        m.add_alias("d", "S.v + x", dtype="int64", fill_value=1)
+        assert [int(v) for v in self._evaluate(m, surface)] == [13, 20]
+
+    @pytest.mark.parametrize("surface", ["get_alias_series", "get_alias_array"])
+    def test_b32_252_getters_retract_placeholder_columns_too(self, surface):
+        """Decision B applies to the getters as well: no placeholder-bearing
+        joined temporary may survive a getter call either."""
+        m = self._pair()
+        m.add_alias("d", "S.v + x", dtype="int64", fill_value=1)
+        self._evaluate(m, surface)
+        assert "v__S" not in m.df.columns
+
+    @pytest.mark.parametrize("surface", ["get_alias_series", "get_alias_array"])
+    def test_b32_253_getters_still_do_not_publish_the_column(self, surface):
+        """The ONE difference that must survive the unification: a getter
+        evaluates without STORING. If sharing the evaluator had also made the
+        getters publish, the whole point of a non-materializing surface would
+        be gone.
+
+        The alias deliberately carries NO declared dtype. The first version of
+        this test used dtype="int64" and asserted no authority was recorded —
+        which failed, correctly: a declared dtype is AD-19 SOURCE 3
+        (explicit_alias) and is established by add_alias, long before any
+        getter runs. What a getter must not create is SOURCE 4, first stored
+        in-frame materialization. Conflating the two is the mistake this
+        comment exists to stop the next reader repeating."""
+        m = self._pair()
+        m.add_alias("d", "S.v + x", fill_value=1)
+        self._evaluate(m, surface)
+        assert "d" not in m.df.columns, "a getter must not store the column"
+        assert not m.get_dtype_authority("d").known, (
+            "a getter must not commit source-4 authority")
+
+    @pytest.mark.parametrize("surface", ["get_alias_series", "get_alias_array"])
+    def test_b32_254_declared_dtype_authority_is_untouched_by_a_getter(
+            self, surface):
+        """The complement of b32_253: a DECLARED dtype (source 3) is
+        established at add_alias time and a getter neither creates nor
+        disturbs it."""
+        m = self._pair()
+        m.add_alias("d", "S.v + x", dtype="int64", fill_value=1)
+        before = m.get_dtype_authority("d")
+        assert before.known and before.origin == "explicit_alias"
+        self._evaluate(m, surface)
+        after = m.get_dtype_authority("d")
+        assert after.known and after.origin == "explicit_alias"
+        assert str(after.dtype) == str(before.dtype)
