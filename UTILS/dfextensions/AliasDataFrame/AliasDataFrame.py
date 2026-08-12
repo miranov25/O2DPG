@@ -2284,7 +2284,50 @@ class AliasDataFrame:
             Values cast to target_dtype.
         """
         import warnings
-        
+
+        # PANDAS EXTENSION TARGETS — round 11f correction, and a PRE-EXISTING
+        # defect this increment did not create.
+        #
+        # `np.dtype("Float64")` raises `TypeError: data type 'Float64' not
+        # understood`, so EVERY declared pandas extension dtype has been
+        # unusable on this path since it was written — measured on the
+        # simplest possible case, a plain `add_alias("q", "x * 2",
+        # dtype="Float64")` with no subframe, no mask and no round-11 code
+        # involved. It surfaced only now because the round-11f review
+        # required a PUBLIC nullable-float control (F11FC-MR-P1-2) and there
+        # was no such test before.
+        #
+        # The fix is deliberately minimal and cannot regress anything: the
+        # branch below is reached only for dtypes on which the old line
+        # RAISED, so nothing that works today changes. Extension dtypes own
+        # their own casting semantics — including how they represent missing
+        # values — so the conversion is delegated to pandas rather than
+        # re-implemented against a NumPy kind code.
+        _ext = None
+        try:
+            np.dtype(target_dtype)
+        except TypeError:
+            try:
+                _ext = pd.api.types.pandas_dtype(target_dtype)
+            except (TypeError, ValueError):
+                _ext = None
+        if _ext is not None:
+            try:
+                # `ndarray.astype` cannot take a pandas ExtensionDtype
+                # ("Cannot interpret 'Float64Dtype()' as a data type"), so a
+                # NumPy result is routed through pandas, which owns the
+                # extension conversion. A pandas object converts itself.
+                if isinstance(result, (pd.Series, pd.Index)):
+                    return result.astype(_ext)
+                if np.isscalar(result):
+                    return pd.array([result], dtype=_ext)[0]
+                return pd.array(np.asarray(result), dtype=_ext)
+            except (TypeError, ValueError) as _e:
+                raise TypeError(
+                    f"cannot convert alias "
+                    f"{alias_name if alias_name else '<unnamed>'!r} to the "
+                    f"declared extension dtype {target_dtype}: {_e}") from _e
+
         target = np.dtype(target_dtype)
         
         # Float/complex dtypes handle NaN natively — direct cast
@@ -8733,10 +8776,261 @@ function collapseDepth(maxD) {{
                     f"without storing it.")
 
         _series = self._aligned_publication_candidate(result).copy()
+
+        # ---- Round 11f (F11ER-MR-P1-1, GPT29). RESOLVE THE TARGET ONCE,
+        # THEN VALIDATE THE FILL AGAINST IT.
+        #
+        # Until 11f this line read
+        #     _coerce_fill_to_dtype(fill_val, _series.dtype, ...)
+        # which validates against the PROVISIONAL evaluated dtype — the buffer
+        # the gather happened to produce — instead of against the dtype the
+        # result is contracted to have. The two differ, and when they do the
+        # user gets a LOUD FALSE REFUSAL:
+        #
+        #     source-4 float64 authority recorded -> the relation later yields
+        #     an all-undefined int64 placeholder buffer -> fill_value=0.5 is
+        #     refused "against int64" although the authoritative target is
+        #     float64 and 0.5 is perfectly representable in it.
+        #
+        # The same happens with an EXPLICIT dtype="float64" and an integer
+        # provisional buffer, so this predates 11e; GPT29 found it by tracing
+        # the branch 11e newly admitted and walked past an older bug.
+        #
+        # WHY A RESOLVER AND NOT ANOTHER LOCAL BRANCH. Measured on these
+        # bytes: 36 `.astype(` calls, 11 `alias_dtypes.get` lookups, six sites
+        # each computing a "target dtype" with its own expression, and only
+        # two references to `get_dtype_authority` — the authority RECORD was
+        # built in D_1/D_8 and almost nothing consumes it. Four findings in
+        # four rounds against this one function (AR-3 operand-vs-final, the
+        # AC_6 predicate, the AC_6 ordering, and this) are the same defect:
+        # the code asks a locally convenient question instead of the
+        # contract's. `_resolve_target_dtype` is the first instance of the one
+        # answer; the B3.2b resolver work extends it rather than replacing it.
+        _target = self._resolve_target_dtype(name, explicit_dtype,
+                                             _series.dtype)
+        if _target is not None and str(_target) != str(_series.dtype):
+            _series = self._retarget_for_fill(
+                _series, _target, _residual, name,
+                strict=self._target_dtype_is_restoration(name,
+                                                         explicit_dtype))
+
+        # VALIDATED AGAINST THE TARGET, PLACED INTO THE PROMOTED BUFFER.
+        # The two dtypes are the same in the widening case and can differ in
+        # the narrowing one, where the buffer stays put (see
+        # `_buffer_dtype_for_fill`) but the CONTRACT the fill must satisfy is
+        # still the target. Refusing a fill the target cannot hold is the
+        # established fill rule (Decision 3 / AD-14), not new strictness —
+        # AR-1's permissive `casting='unsafe'` governs conversion of COMPUTED
+        # data, never a configured fill.
         _coerced = self._coerce_fill_to_dtype(
-            fill_val, _series.dtype, name, name, 'fill_value')
+            fill_val, (_target if _target is not None else _series.dtype),
+            name, name, 'fill_value')
         _series[_residual] = _coerced
         return _series
+
+    def _resolve_target_dtype(self, name, explicit_dtype=None,
+                              provisional=None):
+        """THE ONE ANSWER to "what dtype is this alias's result contracted to
+        have?" — resolved once, per AD-19's source precedence.
+
+        ```text
+        1. an EXPLICIT declaration on this call or on the alias   (source 3)
+        2. the RECORDED authority                       (sources 1, 2, 4, 5)
+        3. the provisional evaluated dtype — inference from defined data,
+           valid only when neither of the above exists
+        ```
+
+        Deliberately NOT a second authority implementation: whatever the
+        authority record currently holds is read through the public
+        `get_dtype_authority` accessor rather than re-derived here.
+
+        SCOPE, stated precisely (F11F-P2-1): this resolves the target for
+        `_resolve_residual_undefinedness` ONLY. It is not yet the ADF-wide
+        dtype resolver — 36 `.astype(` calls and eleven `alias_dtypes.get`
+        lookups still decide locally, and of AD-19's five authority sources
+        only source 3 (explicit) and source 4 (first stored materialization)
+        are implemented at all. Sources 1, 2 and 5 are B3.2b work. This is the
+        first instance of the one answer, not the finished resolver, and the
+        comment said otherwise until the round-11f review corrected it.
+
+        Returns `None` only when `provisional` is `None` and nothing is
+        declared or recorded — i.e. genuinely unknown.
+        """
+        if explicit_dtype is not None:
+            try:
+                return self._canonical_dtype(explicit_dtype)
+            except (TypeError, ValueError):
+                return explicit_dtype
+        _auth = self.get_dtype_authority(name)
+        if _auth is not None and _auth.known and _auth.dtype is not None:
+            return _auth.dtype
+        return provisional
+
+    @staticmethod
+    def _buffer_dtype_for_fill(series_dtype, target):
+        """The dtype the buffer must hold so the fill can be PLACED without
+        truncation, given the resolved target.
+
+        `np.result_type(provisional, target)` — the common type of the two —
+        and NOT simply the target. The difference matters in both directions
+        and the choice is deliberate:
+
+        * WIDENING (provisional `int64`, target `float64`): the common type is
+          `float64`, so the buffer moves there and `0.5` lands intact. This is
+          the case F11ER-MR-P1-1 is about.
+        * NARROWING (provisional `int64`, target `int8`): the common type is
+          `int64`, so the buffer STAYS. Casting it to `int8` here would
+          duplicate a decision that already has an owner: `_safe_dtype_cast`
+          applies the declared dtype at publication and refuses a
+          value-changing narrowing under AD-19.
+
+        WIDENING IS NOT AUTOMATICALLY SAFE, and this comment used to claim it
+        was. `np.result_type` returns the COMMON type, not a type that can
+        hold every value of both: `float64` is the common type of `int64` and
+        `float64` and cannot represent an int64 above 2**53. Choosing the
+        common type is only the first half of the answer;
+        `_retarget_for_fill` performs the value-preservation check that makes
+        it safe and refuses when it cannot. Read its docstring before
+        touching either — that check was deleted once and the deletion
+        produced a P0.
+
+        `np.result_type` selects a common REPRESENTATION only; it does not
+        guarantee value preservation for every value of either input.
+        `_retarget_for_fill` therefore verifies defined-row round-trip
+        identity before accepting the staging, whenever the target is a
+        RESTORATION target. When `result_type` cannot combine the two dtype
+        families this returns `None` and `_retarget_for_fill` stages at the
+        TARGET itself under the same rule — it does not fall back to the
+        provisional buffer.
+
+        (Both of those sentences previously said the opposite. They were the
+        false claim that produced the F11F-P0-1 silent corruption, they
+        survived a correction that only rewrote the first half of this
+        docstring, and four seats flagged them again. Recorded so the third
+        occurrence is not needed.)
+        """
+        try:
+            return np.result_type(np.dtype(series_dtype), np.dtype(target))
+        except (TypeError, ValueError):
+            return None
+
+    def _target_dtype_is_restoration(self, name, explicit_dtype):
+        """Did the resolved target come from a RECORDED authority rather than
+        from an explicit declaration on this call?
+
+        This is the source-3 / source-4 policy split, and the two halves are
+        governed by DIFFERENT ratified rules:
+
+        ```text
+        source 3, EXPLICIT declaration
+            the user asked for this conversion. AR-1 standards-first applies:
+            defined values follow the backend's ordinary conversion
+            semantics, exactly as they would with no missing row at all.
+
+        source 4, RECORDED authority (restoration)
+            nobody asked for a conversion. ADF is reconstructing a dtype it
+            established earlier, so a defined value must survive exactly or
+            the publication refuses (AD-19).
+        ```
+
+        Without this distinction the round-11f correction made an explicit
+        `dtype="float64"` conversion succeed when every row matched and REFUSE
+        when an unrelated row was missing — the conversion policy changing
+        because of a different row (F11FC-MR-P1-1, GPT30 and GPT32).
+
+        A private Round-11-local predicate is deliberate and sufficient: it is
+        NOT a general authority-origin framework. Generalizing across all five
+        AD-19 sources is B3.2b.
+        """
+        if explicit_dtype is not None:
+            return False
+        _auth = self.get_dtype_authority(name)
+        return bool(_auth is not None and _auth.known
+                    and _auth.dtype is not None)
+
+    def _retarget_for_fill(self, series, target, residual, name,
+                           strict=True):
+        """Stage the buffer so a fill validated against `target` can be placed
+        into it, and REFUSE if that staging would change a value that is
+        already DEFINED.
+
+        Order is load-bearing: placing first and converting afterwards is not
+        equivalent, because writing `0.5` into an `int64` buffer truncates to
+        `0` silently — the outcome this phase exists to prevent.
+
+        THE VALUE-PRESERVATION CHECK IS THE POINT, AND ITS HISTORY IS WORTH
+        READING BEFORE ANYONE DELETES IT AGAIN.
+
+        Round 11f's first draft had this check. I removed it, twice giving a
+        reason that measurement did not support: first "it is stricter than
+        AR-1" (it is not — AR-1 governs conversion of computed data, not
+        internal staging), then "it is redundant with `_safe_dtype_cast`" (it
+        is not — `_safe_dtype_cast` runs AFTER this point and cannot see a
+        loss that has already happened inside the staging cast).
+
+        Removing it created a P0. Four reviewers found it independently and
+        GPT32 executed it end to end on the exact candidate:
+
+            source-4 authority float64, later provisional int64 carrying a
+            DEFINED 2**60 + 1, one row missing, fill 0.5
+                published   1152921504606846976
+                actual      1152921504606846977
+
+        `np.result_type(int64, float64)` is `float64`, and float64 cannot hold
+        every int64 — so "the common type never loses information" is false
+        above 2**53. Silent numerical corruption of a defined measurement is
+        the one failure this whole phase exists to prevent, and it was
+        introduced by a change meant to fix a merely LOUD defect.
+
+        So: fail closed. The check is a round trip over the DEFINED rows only
+        — undefined rows carry a placeholder that is about to be overwritten,
+        so comparing them would refuse for a difference nobody can observe.
+        """
+        _buf = self._buffer_dtype_for_fill(series.dtype, target)
+        if _buf is None:
+            # `np.result_type` could not combine them — a pandas extension
+            # dtype on one side or both (F11F-P1-1). Stage at the target
+            # itself and let the round trip below decide; a representation
+            # that cannot round-trip is refused rather than guessed at.
+            _buf = target
+        if str(_buf) == str(series.dtype):
+            return series
+
+        try:
+            _cast = series.astype(_buf)
+        except (TypeError, ValueError) as _e:
+            raise ValueError(
+                f"alias {name!r}: some rows are undefined and the configured "
+                f"fill must be placed in the target representation {target}, "
+                f"but the evaluated {series.dtype} result cannot be staged "
+                f"there: {_e}. Refused rather than published."
+            ) from _e
+
+        # STRICT only for a RESTORATION target. For an explicit source-3
+        # conversion the user asked for exactly this conversion and AR-1
+        # governs the defined rows, so the staging is accepted as ordinary
+        # backend behaviour — the same answer they would get with no missing
+        # row at all. See `_target_dtype_is_restoration`.
+        _defined = ~np.asarray(residual, dtype=bool)
+        if strict and _defined.any():
+            _lost = None
+            try:
+                _back = _cast.astype(series.dtype)
+                if not bool(series[_defined].equals(_back[_defined])):
+                    _lost = int((~series[_defined].eq(_back[_defined])).sum())
+            except (TypeError, ValueError):
+                _lost = int(_defined.sum())
+            if _lost:
+                raise ValueError(
+                    f"alias {name!r}: {_lost} row(s) that ARE defined cannot "
+                    f"survive being staged from {series.dtype} into {_buf} so "
+                    f"that the fill can be placed — an integer above 2**53 "
+                    f"loses its low bits in a float, for example. Refused "
+                    f"rather than published: a defined measurement is never "
+                    f"silently altered to make room for a fill (AD-19). "
+                    f"Declare a dtype that can hold both the data and the "
+                    f"fill, or configure a fill of the column's own dtype.")
+        return _cast
 
     def materialize_alias(self, name, cleanTemporary=False, dtype=None, warn_missing_keys=True,
                           profile=False, profile_text=None, profile_binary=None):

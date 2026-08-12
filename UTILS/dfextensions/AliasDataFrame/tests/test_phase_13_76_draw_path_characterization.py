@@ -7385,3 +7385,619 @@ class TestB32Round11eDrawBatchAsymmetricControl:
                 lazy=False, verbose=False)
         plt.close("all")
         assert res["_summary"]["failed"] == 0, res.get("_errors")
+
+
+class TestB32Round11fTargetDtypeResolver:
+    """Round 11f — F11ER-MR-P1-1 (GPT29, upheld by the Main Reviewer).
+
+    The final alias fill must be validated against the RESOLVED AUTHORITATIVE
+    TARGET dtype, not against the provisional evaluated buffer the gather
+    happened to produce. `b32_264` could not see this because it used int64
+    on both sides, so authority and provisional agreed and the wrong
+    validation target was invisible. Every test here varies that orthogonal
+    dimension deliberately.
+    """
+
+    @staticmethod
+    def _float_authority_then_int_provisional():
+        """Establish source-4 float64 authority, then rebind to an int64
+        child with no matching keys so the provisional buffer is int64."""
+        m = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "x": np.array([10, 20], np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0, 1], np.int64)}))
+        ch.df["v"] = np.array([3.5, 4.5])                 # float64
+        m.register_subframe("S", ch, index_columns=["k"])
+        m.add_alias("d", "S.v", fill_value=0.5)           # NO declared dtype
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("d")
+        assert str(m.get_dtype_authority("d").dtype) == "float64"
+        m.dematerialize(drop=["d"])
+        if "v__S" in m.df.columns:
+            del m.df["v__S"]
+        ch2 = A.AliasDataFrame(pd.DataFrame({"k": np.array([77], np.int64)}))
+        ch2.df["v"] = np.array([9], dtype=np.int64)       # int64, no match
+        m.register_subframe("S", ch2, index_columns=["k"])
+        m._join_index_cache.clear()
+        return m
+
+    @pytest.mark.parametrize("bulk", [False, True])
+    def test_b32_270_fill_is_validated_against_recorded_authority_not_buffer(
+            self, bulk):
+        """A and B of the required tests. Recorded authority float64,
+        provisional int64, fill 0.5 -> publish float64 [0.5, 0.5]. Before 11f
+        this refused, quoting int64 — a loud FALSE refusal."""
+        m = self._float_authority_then_int_provisional()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            if bulk:
+                m.materialize_aliases(names=["d"])
+            else:
+                m.materialize_alias("d")
+        assert str(m.df["d"].dtype) == "float64"
+        assert [float(v) for v in m.df["d"].values] == [0.5, 0.5]
+        assert str(m.get_dtype_authority("d").dtype) == "float64", (
+            "the recorded authority must be preserved, not replaced")
+
+    def test_b32_271_explicit_target_governs_over_an_integer_buffer(self):
+        """The source-3 stage-order control the review asked for. An explicit
+        dtype='float64' with an integer provisional buffer must validate the
+        fill against float64. This variant fails on the pre-11f bytes too, so
+        the defect predates round 11e."""
+        m = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([7, 9], np.int64),
+            "x": np.array([10, 20], np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch.df["v"] = np.array([3], dtype=np.int64)
+        m.register_subframe("S", ch, index_columns=["k"])
+        m.add_alias("q", "S.v", dtype="float64", fill_value=0.5)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("q")
+        assert str(m.df["q"].dtype) == "float64"
+        assert [float(v) for v in m.df["q"].values] == [0.5, 0.5]
+
+    def test_b32_272_incompatible_fill_still_refuses_against_the_target(self):
+        """C of the required tests, and the negative control for the whole
+        change: resolving the target must not become a way of ACCEPTING a
+        fill the target cannot hold. 0.5 into an int64 target is destruction,
+        and destruction is still refused."""
+        m = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([7, 9], np.int64),
+            "x": np.array([10, 20], np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch.df["v"] = np.array([3], dtype=np.int64)
+        m.register_subframe("S", ch, index_columns=["k"])
+        m.add_alias("r", "S.v", dtype="int64", fill_value=0.5)
+        with pytest.raises(ValueError):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                m.materialize_alias("r")
+        assert "r" not in m.df.columns
+        assert "v__S" not in m.df.columns
+
+    def test_b32_273_a_narrowing_target_still_works_when_values_fit(self):
+        """NARROWING PRESERVATION CONTROL, and a correction to two of my own
+        drafts — both recorded rather than quietly replaced.
+
+        Draft one built a float64 child and asserted a refusal. It DID NOT
+        RAISE, because a plain float child carries NaN natively, no mask
+        survives, and step 10 is never reached: the test could not exercise
+        the code it named. Same defect as the round-11e T3 fixture.
+
+        Draft two assumed AR-1 permitted a value-changing int64 -> int8
+        narrowing and asserted it published. Measured, `_safe_dtype_cast`
+        already REFUSES it under AD-19, one layer above this code and long
+        before 11f. So my first `_retarget_for_fill` guard was not stricter
+        than the contract as I claimed — it was REDUNDANT with an existing
+        guard. Removing it was still right (one owner per rule), but the
+        stated reason was wrong and the comment now says so.
+
+        What this test actually pins: when the values DO fit the narrower
+        target, 11f changed nothing — the buffer is not promoted, the fill is
+        validated against int8, and publication narrows as it always did."""
+        m = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 9], np.int64),
+            "x": np.array([10, 20], np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch.df["v"] = np.array([100], dtype=np.int64)      # fits int8
+        m.register_subframe("S", ch, index_columns=["k"])
+        m.add_alias("d", "S.v", dtype="int8", fill_value=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("d")
+        assert str(m.df["d"].dtype) == "int8"
+        assert [int(v) for v in m.df["d"].values] == [100, 0]
+
+    def test_b32_273b_a_fill_the_target_cannot_hold_is_still_refused(self):
+        """The fill contract is checked against the TARGET, not the
+        provisional buffer. Decision 3 / AD-14 refuse a fill the target cannot
+        represent; AR-1's permissive conversion governs COMPUTED data only."""
+        m = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 9], np.int64),
+            "x": np.array([10, 20], np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch.df["v"] = np.array([3], dtype=np.int64)
+        m.register_subframe("S", ch, index_columns=["k"])
+        m.add_alias("d", "S.v", dtype="int8", fill_value=300)
+        with pytest.raises(ValueError):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                m.materialize_alias("d")
+        assert "d" not in m.df.columns
+        assert "v__S" not in m.df.columns
+
+    def test_b32_273c_value_changing_narrowing_still_refused_by_its_owner(
+            self):
+        """The pre-existing AD-19 guard, pinned so 11f cannot be blamed for it
+        and so a future refactor cannot delete it believing it duplicates the
+        resolver. A defined value of 300 cannot become int8."""
+        m = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 9], np.int64),
+            "x": np.array([10, 20], np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch.df["v"] = np.array([300], dtype=np.int64)
+        m.register_subframe("S", ch, index_columns=["k"])
+        m.add_alias("d", "S.v", dtype="int8", fill_value=0)
+        with pytest.raises(ValueError) as ei:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                m.materialize_alias("d")
+        assert "dtype_cast" in str(ei.value) or "would change values" in str(ei.value)
+
+    def test_b32_274_resolver_precedence_is_explicit_then_authority(self):
+        """The resolver itself, unit-level. Explicit declaration outranks a
+        recorded authority; authority outranks the provisional; provisional
+        is the fallback."""
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))
+        m.add_alias("a", "x * 2")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("a")
+        assert m.get_dtype_authority("a").known
+        assert str(m._resolve_target_dtype("a", "float32", np.dtype("int8"))) \
+            == "float32", "an explicit declaration must outrank authority"
+        assert str(m._resolve_target_dtype("a", None, np.dtype("int8"))) \
+            == "int64", "a recorded authority must outrank the provisional"
+        assert str(m._resolve_target_dtype("nosuch", None, np.dtype("int8"))) \
+            == "int8", "with neither, the provisional is the answer"
+
+
+class TestB32Round11fDrawBatchDelegatedValues:
+    """F11ER-MR-P2-1. The round-11e CRR called b32_268 a draw_batch value
+    oracle; it is not — it evaluates through `get_alias_array`. Rather than
+    only correcting the wording, this captures the values `draw_batch`
+    ACTUALLY delegates to dfdraw and compares them to the oracle, which is
+    what the claim should have rested on."""
+
+    @staticmethod
+    def _asym():
+        main = A.AliasDataFrame(pd.DataFrame({
+            "parent_run": np.array([1, 1, 2], np.int64),
+            "x": np.array([10.0, 20.0, 30.0])}))
+        ch = A.AliasDataFrame(pd.DataFrame({
+            "child_run": np.array([1], np.int64)}))
+        ch.df["z"] = np.array([7.0])
+        main.register_subframe("C", ch,
+                               index_columns=["parent_run"],
+                               right_index_columns=["child_run"])
+        return main
+
+    def test_b32_275_draw_batch_delegates_the_oracle_values(self):
+        """The real value oracle: run draw_batch, capture the frame handed to
+        dfdraw, and require the delegated column to equal the evaluation
+        truth row by row, NaN included."""
+        m = self._asym()
+        got = _delegated_frame(m, spec_slot="group_by", ref="C.z")
+        vals = np.asarray(got, dtype=float)
+        assert len(vals) == 3
+        assert [float(v) for v in vals[:2]] == [7.0, 7.0], (
+            "matched rows must carry the child value")
+        assert np.isnan(vals[2]), (
+            "the unmatched parent key must be delegated as undefined, "
+            "not as a fabricated number")
+
+
+class TestB32Round11fBufferPromotionUnit:
+    """Direct unit coverage for `_buffer_dtype_for_fill`.
+
+    WHY A UNIT TEST AND NOT ONLY AN INTEGRATION ONE — disclosed, because the
+    mutation table would otherwise look complete when it is not. Disabling the
+    promotion kills NO integration test on this sandbox, and that is a pandas
+    VERSION artifact, not evidence that the promotion is dead code:
+
+        pandas 1.5.3:  Series(int64)[mask] = 0.5  ->  upcasts to float64
+                       so the promotion is redundant and the mutation is
+                       invisible
+        pandas 2 / 3:  the same setitem is deprecated / refuses, so the
+                       promotion is load-bearing
+
+    Reviewers run pandas 2.2.3 and 3.0.2; this sandbox runs 1.5.3. Version
+    diversity has already found two P0s in this phase that seat diversity did
+    not, so the behaviour is pinned at the unit here, where it holds on every
+    version, rather than left to an integration test that only bites on some.
+    """
+
+    @staticmethod
+    def _adf():
+        return A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))
+
+    def test_b32_276_widening_promotes_to_the_common_type(self):
+        """int64 buffer, float64 target -> float64, so a fractional fill can
+        be PLACED rather than truncated. This is F11ER-MR-P1-1's case."""
+        got = self._adf()._buffer_dtype_for_fill(np.dtype("int64"),
+                                                 np.dtype("float64"))
+        assert str(got) == "float64"
+
+    def test_b32_277_narrowing_leaves_the_buffer_alone(self):
+        """int64 buffer, int8 target -> int64. The buffer is NOT narrowed
+        here: `_safe_dtype_cast` owns the declared-dtype narrowing and already
+        refuses a value-changing one under AD-19 (pinned by b32_273c). Two
+        implementations of one rule is the divergence this phase keeps paying
+        for."""
+        got = self._adf()._buffer_dtype_for_fill(np.dtype("int64"),
+                                                 np.dtype("int8"))
+        assert str(got) == "int64"
+
+    def test_b32_278_identical_dtypes_are_a_no_op(self):
+        got = self._adf()._buffer_dtype_for_fill(np.dtype("int64"),
+                                                 np.dtype("int64"))
+        assert str(got) == "int64"
+
+    def test_b32_279_uncombinable_dtypes_fall_back_to_the_provisional(self):
+        """An extension dtype `np.result_type` cannot combine must return
+        None, so `_retarget_for_fill` leaves the buffer as it was — the
+        pre-11f behaviour — instead of raising from inside a helper."""
+        got = self._adf()._buffer_dtype_for_fill(np.dtype("int64"),
+                                                 pd.CategoricalDtype(["a"]))
+        assert got is None
+
+
+class TestB32Round11fValuePreservation:
+    """F11F-P0-1 — the P0 that round 11f's first attempt INTRODUCED.
+
+    Fixing a loud false refusal produced a silent one. `np.result_type` gives
+    the COMMON type of two dtypes, not a type that can hold every value of
+    both: `float64` is the common type of `int64` and `float64` and cannot
+    represent an int64 above 2**53. Promoting the whole buffer therefore
+    rounded a DEFINED measurement, and `_enforce_recorded_authority` could not
+    see it because the loss had already happened inside the staging cast.
+
+    Executed on the exact candidate by GPT32 and reproduced by the coder:
+
+        2**60 + 1  published as  2**60
+
+    Four reviewers found it independently while six approved the bytes. The
+    approving seats proved that staging is NEEDED on pandas 2/3; none of them
+    varied the defined value into the range where the staging is LOSSY. That
+    distinction — need for staging versus losslessness of staging — is what
+    this class pins.
+    """
+
+    BIG = 2 ** 60 + 1          # not representable in float64
+    OK = 7                     # exactly representable
+
+    @classmethod
+    def _float_authority_then_int_data(cls, defined_value):
+        """source-4 float64 authority, then a relation whose provisional
+        buffer is int64 with ONE defined row and one missing row."""
+        m = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "x": np.array([10, 20], np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0, 1], np.int64)}))
+        ch.df["v"] = np.array([3.5, 4.5])
+        m.register_subframe("S", ch, index_columns=["k"])
+        m.add_alias("d", "S.v", fill_value=0.5)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("d")
+        assert str(m.get_dtype_authority("d").dtype) == "float64"
+        m.dematerialize(drop=["d"])
+        if "v__S" in m.df.columns:
+            del m.df["v__S"]
+        ch2 = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch2.df["v"] = np.array([defined_value], dtype=np.int64)
+        m.register_subframe("S", ch2, index_columns=["k"])
+        m.df["k"] = np.array([0, 9], np.int64)      # row 1 now unmatched
+        m._join_index_cache.clear()
+        return m
+
+    @staticmethod
+    def _run(m, bulk):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            if bulk:
+                m.materialize_aliases(names=["d"])
+            else:
+                m.materialize_alias("d")
+
+    @pytest.mark.parametrize("bulk", [False, True])
+    def test_b32_280_large_defined_integer_is_never_silently_rounded(
+            self, bulk):
+        """11f-A and 11f-B. Fail closed: refuse rather than publish a rounded
+        measurement. This is the direct regression test for the P0."""
+        m = self._float_authority_then_int_data(self.BIG)
+        with pytest.raises(ValueError) as ei:
+            self._run(m, bulk)
+        assert "defined" in str(ei.value)
+        assert "d" not in m.df.columns, "nothing may be published"
+        assert "v__S" not in m.df.columns, "retraction still transactional"
+
+    @pytest.mark.parametrize("bulk", [False, True])
+    def test_b32_281_exactly_representable_value_still_publishes(self, bulk):
+        """11f-C, the positive control. The guard must refuse only what is
+        actually lossy — otherwise it would make the 11f repair useless by
+        refusing every widening."""
+        m = self._float_authority_then_int_data(self.OK)
+        self._run(m, bulk)
+        assert str(m.df["d"].dtype) == "float64"
+        vals = [float(v) for v in m.df["d"].values]
+        assert vals == [7.0, 0.5]
+
+    def test_b32_282_explicit_conversion_semantics_are_unchanged(self):
+        """11f-D. The contrast case: with NO undefined row there is no mask,
+        step 10 never runs, and an ordinary declared-dtype conversion keeps
+        whatever semantics it always had. The guard is scoped to STAGING for
+        a fill, and must not leak into ordinary conversion."""
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([self.BIG, 2],
+                                                         np.int64)}))
+        m.add_alias("q", "x", dtype="float64")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("q")
+        assert str(m.df["q"].dtype) == "float64"
+        assert float(m.df["q"].values[0]) == float(np.float64(self.BIG))
+
+    def test_b32_283_unit_the_guard_lives_in_retarget_not_in_the_helper(self):
+        """11f-E's target, stated at the unit. `_buffer_dtype_for_fill` still
+        answers `float64` for (int64, float64) — choosing the common type is
+        correct and unchanged. The safety is `_retarget_for_fill`'s job, so a
+        mutation that removes the round trip must break b32_280 while leaving
+        the helper's own tests green."""
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))
+        assert str(m._buffer_dtype_for_fill(np.dtype("int64"),
+                                            np.dtype("float64"))) == "float64"
+
+    def test_b32_284_extension_target_mismatch_fails_closed(self):
+        """11f-F. `np.result_type` cannot combine a pandas extension dtype, so
+        `_buffer_dtype_for_fill` returns None and `_retarget_for_fill` stages
+        at the target itself under the same round-trip guard. A
+        representation that cannot round-trip is REFUSED, never guessed."""
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))
+        s = pd.Series(np.array([self.BIG, 5], dtype=np.int64))
+        residual = np.array([False, True])
+        with pytest.raises(ValueError):
+            m._retarget_for_fill(s, pd.CategoricalDtype([1, 5]), residual, "q")
+
+
+class TestB32Round11fSource3VsSource4Policy:
+    """F11FC-MR-P1-1 — the decisive source-3 / source-4 contrast, on the SAME
+    numerical shape.
+
+    Round 11f's correction applied restoration exactness to every staging
+    operation, including an EXPLICIT conversion the user asked for. The result
+    was a conversion whose policy changed because a different row was missing:
+
+        dtype="float64", defined int64 2**60+1
+            no missing row      -> succeeded (ordinary backend conversion)
+            one unrelated gap   -> REFUSED   (restoration exactness)
+
+    GPT30 and GPT32 both flagged it; the Main Reviewer adjudicated that the
+    ratified standards-first contract gives the two origins different rules.
+    `b32_282` could not catch it — with no residual mask, step 10 never runs,
+    so that test proves only that the guard does not affect calls that never
+    reach it. Same test-construction defect I documented for the first
+    `b32_273` draft, a third time.
+    """
+
+    BIG = 2 ** 60 + 1
+
+    @classmethod
+    def _partial_missing(cls, defined_value=None):
+        """One matched row carrying a large int64, one unmatched row."""
+        v = cls.BIG if defined_value is None else defined_value
+        m = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 9], np.int64),
+            "x": np.array([10, 20], np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch.df["v"] = np.array([v], dtype=np.int64)
+        m.register_subframe("S", ch, index_columns=["k"])
+        return m
+
+    @staticmethod
+    def _mat(m, name, bulk):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            if bulk:
+                m.materialize_aliases(names=[name])
+            else:
+                m.materialize_alias(name)
+
+    # ---- T1 / T3 : EXPLICIT source-3 conversion --------------------------
+
+    @pytest.mark.parametrize("bulk", [False, True])
+    def test_b32_285_explicit_target_uses_ordinary_conversion(self, bulk):
+        """T1 and T3. The user explicitly asked for float64. AR-1
+        standards-first: the defined row follows the backend's ordinary
+        conversion semantics, and the missing row takes the fill. This must
+        give the SAME defined value as the no-missing-row case."""
+        m = self._partial_missing()
+        m.add_alias("q", "S.v", dtype="float64", fill_value=0.5)
+        self._mat(m, "q", bulk)
+        assert str(m.df["q"].dtype) == "float64"
+        got = [float(v) for v in m.df["q"].values]
+        assert got[0] == float(np.float64(self.BIG)), (
+            "an explicit conversion must not change policy because another "
+            "row is missing")
+        assert got[1] == 0.5
+
+    def test_b32_286_explicit_conversion_agrees_with_the_no_gap_case(self):
+        """The invariant stated directly: the defined row's published value is
+        identical whether or not some other row is undefined."""
+        with_gap = self._partial_missing()
+        with_gap.add_alias("q", "S.v", dtype="float64", fill_value=0.5)
+        self._mat(with_gap, "q", False)
+
+        no_gap = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0], np.int64), "x": np.array([10], np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch.df["v"] = np.array([self.BIG], dtype=np.int64)
+        no_gap.register_subframe("S", ch, index_columns=["k"])
+        no_gap.add_alias("q", "S.v", dtype="float64", fill_value=0.5)
+        self._mat(no_gap, "q", False)
+
+        assert float(with_gap.df["q"].values[0]) == float(no_gap.df["q"].values[0])
+
+    # ---- T2 : RECORDED source-4 authority contrast ------------------------
+
+    @pytest.mark.parametrize("bulk", [False, True])
+    def test_b32_287_recorded_authority_still_refuses_on_the_same_shape(
+            self, bulk):
+        """T2 and T3. IDENTICAL numerical shape, but the target comes from a
+        RECORDED source-4 authority rather than an explicit declaration.
+        Nobody asked for this conversion — ADF is reconstructing a dtype it
+        established earlier — so a defined value that cannot survive exactly
+        REFUSES. This pair is the whole point: same numbers, different
+        origin, different contract."""
+        m = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "x": np.array([10, 20], np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0, 1], np.int64)}))
+        ch.df["v"] = np.array([3.5, 4.5])
+        m.register_subframe("S", ch, index_columns=["k"])
+        m.add_alias("q", "S.v", fill_value=0.5)          # NO explicit dtype
+        self._mat(m, "q", False)
+        assert str(m.get_dtype_authority("q").dtype) == "float64"
+        m.dematerialize(drop=["q"])
+        if "v__S" in m.df.columns:
+            del m.df["v__S"]
+        ch2 = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch2.df["v"] = np.array([self.BIG], dtype=np.int64)
+        m.register_subframe("S", ch2, index_columns=["k"])
+        m.df["k"] = np.array([0, 9], np.int64)
+        m._join_index_cache.clear()
+        with pytest.raises(ValueError) as ei:
+            self._mat(m, "q", bulk)
+        assert "defined" in str(ei.value)
+
+    def test_b32_288_unit_the_origin_predicate(self):
+        """The predicate itself. Explicit declaration -> not restoration;
+        recorded authority with no declaration -> restoration; neither ->
+        not restoration (AC_6 owns that case)."""
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))
+        m.add_alias("a", "x * 2")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("a")
+        assert m._target_dtype_is_restoration("a", None) is True
+        assert m._target_dtype_is_restoration("a", "float64") is False
+        assert m._target_dtype_is_restoration("nosuch", None) is False
+
+
+class TestB32Round11fNullableExtensionTarget:
+    """F11FC-MR-P1-2 — the public nullable-floating control.
+
+    `b32_284` proves the fail-closed fallback at the private helper with a
+    categorical dtype. The Main Reviewer asked for the NUMERIC nullable family
+    through a PUBLIC materialization path, because that is the storage family
+    closest to the production promotion path and the one that motivated the
+    pandas 2/3 concern. `np.result_type` cannot combine `int64` with
+    `pd.Float64Dtype()`, so these exercise the stage-at-the-target branch for
+    real rather than at the unit.
+    """
+
+    BIG = 2 ** 60 + 1
+
+    @staticmethod
+    def _frame(defined_value):
+        m = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 9], np.int64),
+            "x": np.array([10, 20], np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch.df["v"] = np.array([defined_value], dtype=np.int64)
+        m.register_subframe("S", ch, index_columns=["k"])
+        return m
+
+    @pytest.mark.parametrize("target", ["Float64", "Float32"])
+    @pytest.mark.parametrize("bulk", [False, True])
+    def test_b32_289_nullable_float_target_through_the_public_path(
+            self, target, bulk):
+        """T4. A pandas nullable float target, an exactly representable
+        defined value, a residual missing row and a fractional fill — through
+        `materialize_alias` / `materialize_aliases`, not through a helper.
+        The extension dtype must be retained, the defined value correct, the
+        fill applied, and no raw incompatible setitem relied upon."""
+        m = self._frame(7)
+        m.add_alias("q", "S.v", dtype=target, fill_value=0.5)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            if bulk:
+                m.materialize_aliases(names=["q"])
+            else:
+                m.materialize_alias("q")
+        assert str(m.df["q"].dtype) == target, "the extension target is kept"
+        assert float(m.df["q"].iloc[0]) == 7.0
+        assert float(m.df["q"].iloc[1]) == 0.5
+
+    def test_b32_290_nullable_float_explicit_target_follows_ar1(self):
+        """The nullable family obeys the same source-3 rule as the NumPy one:
+        an explicit target converts the defined row by ordinary semantics
+        rather than refusing."""
+        m = self._frame(self.BIG)
+        m.add_alias("q", "S.v", dtype="Float64", fill_value=0.5)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("q")
+        assert str(m.df["q"].dtype) == "Float64"
+        assert float(m.df["q"].iloc[1]) == 0.5
+
+
+class TestB32Round11fExtensionDtypeDeclaration:
+    """A PRE-EXISTING defect this increment did not create, found by the
+    round-11f review's own requirement.
+
+    `_safe_dtype_cast` called `np.dtype(target_dtype)` unconditionally, and
+    `np.dtype("Float64")` raises. So EVERY declared pandas extension dtype has
+    been unusable on the alias-cast path since it was written. Measured on the
+    simplest possible case — no subframe, no mask, no round-11 code:
+
+        add_alias("q", "x * 2", dtype="Float64")  ->  TypeError
+
+    It surfaced only because F11FC-MR-P1-2 demanded a PUBLIC nullable-float
+    control and no such test existed. The fix is reached only for dtypes on
+    which the old line RAISED, so nothing that worked before can change.
+    """
+
+    @pytest.mark.parametrize("dt", ["Float64", "Float32", "Int64", "boolean"])
+    def test_b32_291_declared_extension_dtype_is_usable_at_all(self, dt):
+        """The minimal reproduction, with no round-11 machinery on the path."""
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))
+        expr = "x > 1" if dt == "boolean" else "x * 2"
+        m.add_alias("q", expr, dtype=dt)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("q")
+        assert str(m.df["q"].dtype) == dt
+
+    def test_b32_292_numpy_target_path_is_untouched(self):
+        """The regression control for the guard: a NumPy target must not enter
+        the new branch at all, because `np.dtype` succeeds for it."""
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))
+        m.add_alias("q", "x * 2", dtype="int32")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("q")
+        assert str(m.df["q"].dtype) == "int32"
+        assert [int(v) for v in m.df["q"].values] == [2, 4]
+
+    def test_b32_293_an_impossible_extension_conversion_still_raises(self):
+        """Fail closed: the new branch must not turn an impossible conversion
+        into a silent success."""
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))
+        m.register_function("as_text", lambda v: np.array(["a", "b"]))
+        m.add_alias("q", "as_text(x)", dtype="Int64")
+        with pytest.raises((TypeError, ValueError)):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                m.materialize_alias("q")
