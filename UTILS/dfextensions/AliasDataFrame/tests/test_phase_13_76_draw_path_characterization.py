@@ -8001,3 +8001,1839 @@ class TestB32Round11fExtensionDtypeDeclaration:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 m.materialize_alias("q")
+
+
+# ============================================================================
+# INCREMENT B3.2b — ACCEPTANCE SCAFFOLD  (revision 3)
+#
+# B3.2 closed with named exclusions under the architect's Rule-18 decision of
+# 2026-08-12. B3.2b is MANDATORY BEFORE B3.3 (AD-12).
+#
+# WHY THIS EXISTS BEFORE ANY B3.2b CODE. B3.2's closure criterion was
+# mechanical — "no strict xfail names B3.2" — and that is the only reason the
+# stage closed by a command instead of an argument. At the B3.2 tag, B3.2b had
+# ZERO acceptance tests.
+#
+# REVISION 3, after the Main Reviewer rejected revision 2 ([X], GPT26,
+# 9 submissions / 7 seats, 4 [OK] and 3 [X]). The panel agreed revision 2
+# fixed everything revision 1 got wrong; the rejection is that the resulting
+# GATE was not yet sufficient to be the definition of done:
+#
+#   MR-P0-1  b32b_15b asserted `not re.search("densify-fill-resparsify")`
+#            over the module source. RENAMING A COMMENT would have turned it
+#            green with zero executable change — in the same file whose
+#            header adopts the rule that a strict xfail must fail for the
+#            defect its reason names. Replaced with an executable spy: the
+#            dense conversion is forbidden at runtime and _place_fill is
+#            driven directly. A comment cannot satisfy it.
+#   MR-P0-2  named owners were one specimen per family, so a family could
+#            close after a single case. Reader disagreement, the Arrow
+#            matrix, the persistent-creator inventory and the non-`where`
+#            fallback forms are now enumerated.
+#   MR-P0-3  PLAN_GROUPS omitted normative Rev-2 §11.3 concepts. `logical
+#            requirements`, `group materializations` and `slot/surface
+#            provenance` are added; the map is concept -> implementation,
+#            never identical spelling.
+#   MR-P1-4  b32b_9's remaining failure belongs to ordinary D_3 conversion
+#            semantics, not to the strict helper, which already works.
+#            Split: the helper route is a PASSING characterization.
+#   MR-P1-5  the all-undefined getter is ruled by AD-20 (below) and is now
+#            family 10, with its already-true clauses pinned as passing
+#            controls and its two open clauses as strict xfails.
+#   MR-P2-1  the cast whitelist and the disposition marker carry recorded,
+#            adjudicated reasons instead of bare names.
+#   MR-P2-2  b32b_11's two production calls are separated so the intended
+#            failure point cannot silently move.
+#
+# AUTHORING RULE, adopted permanently in revision 2 and applied again here: a
+# strict xfail is not acceptance evidence until it has been run with xfail
+# disabled and its failure shown to be the contract defect named in its
+# reason string. Every `Measured baseline failure:` line below is the text of
+# an actual --runxfail run on the tagged bytes, EXCEPT the two family-2 tests,
+# which cannot execute in the coder sandbox and are disclosed as such.
+#
+# ---------------------------------------------------------------------------
+# AD-20 — ALL-UNDEFINED NON-MATERIALIZING GETTER   [STEP-0 GATING RULING]
+# Ruled by the architect 2026-08-12, resolving the §5.4-vs-§9-step-10
+# ambiguity that AliasDataFrame.py:9611 records as owned by B3.2b:
+#
+#   A non-materializing getter MAY return an ephemeral filled result when
+#   configured handling fully resolves the undefined rows. It MUST NOT
+#   publish the requested alias and MUST NOT create AD-19 source-4
+#   authority. Existing explicit or recorded authority governs the returned
+#   dtype; with no authority, the backend-natural dtype may be returned
+#   ephemerally. If residual undefinedness remains unresolved, refuse
+#   clearly.
+#
+# Architect's note, recorded: real workflows may revisit this once a use case
+# that needs the ephemeral-fill semantics appears.
+#
+# MEASURED against the tagged bytes before scaffolding (not assumed from the
+# reviewers' text — the coder's first report that "current behaviour already
+# satisfies it" was half wrong):
+#
+#   clause 1  no publication of the requested alias      ALREADY TRUE
+#   clause 2  no source-4 authority created              ALREADY TRUE
+#   clause 3  declared/recorded authority governs dtype  ALREADY TRUE
+#   clause 4  ephemeral fill, else clear refusal         NOT TRUE — the
+#             getter ignores the alias-level fill_value that
+#             materialize_alias honours (nan vs 0.0 for the same alias),
+#             and returns silent NaN where the ruling requires a refusal.
+# ============================================================================
+
+#: The ratified B3.2b work families. Every one must have an owner below;
+#: `test_b32b_0_every_ratified_family_has_an_owner` enforces that from the
+#: AST, so a family cannot be forgotten the way five of them were in
+#: revision 1, and a docstring mentioning a name cannot satisfy it.
+B32B_SCOPE = {
+    "1-reader-metadata":         ["b32b_5", "b32b_5b", "b32b_5c",
+                                  "b32b_5d", "b32b_5e"],
+    "2-persisted-dtype-origin":  ["b32b_13", "b32b_13b", "b32b_13c",
+                                  "b32b_13d", "b32b_13e"],
+    "3-arrow-coverage":          ["b32b_14", "b32b_14b", "b32b_14c",
+                                  "b32b_14d", "b32b_14e", "b32b_14f",
+                                  "b32b_14g", "b32b_14h"],
+    "4-sparse-no-dense-temp":    ["b32b_15", "b32b_15b"],
+    "5-conditional-provenance":  ["b32b_16", "b32b_16b", "b32b_16c"],
+    "6-cast-site-audit":         ["b32b_12"],
+    "7-persistent-column-audit": ["b32b_4", "b32b_4b", "b32b_4c", "b32b_4d"],
+    "8-conversion-api-audit":    ["b32b_17"],
+    "9-rev2-dependency-plan":    ["b32b_1", "b32b_2", "b32b_2b"],
+    "10-all-undefined-getter":   ["b32b_18", "b32b_18b", "b32b_18c",
+                                  "b32b_18d", "b32b_18e"],
+}
+
+
+def _adf_source_text():
+    import inspect
+    return inspect.getsource(_adf_module())
+
+
+def _write_tree_dtyped(path, dtype_x, n=4):
+    """`_write_tree` fixes both branches at float64. The reader-metadata
+    family needs branches that DISAGREE across a chain, which needs a
+    per-branch dtype."""
+    with uproot.recreate(path) as f:
+        f.mktree("tree", {"x": dtype_x, "w": "float64"})
+        f["tree"].extend({"x": np.arange(n).astype(dtype_x),
+                          "w": np.ones(n, dtype=np.float64)})
+
+
+def _arrow_env():
+    """The environment, for every family-3 failure message.
+
+    REVISION 3d. The architect reported the Arrow tests as intermittently
+    failing. Without the versions and the string_storage option in the
+    message, a divergence between his pandas 1.5.3 and a reviewer's 2.2.3 or
+    3.0.2 is indistinguishable from a real regression, which is what made it
+    look like flakiness.
+    """
+    try:
+        import pyarrow as _pa
+        pa_v = _pa.__version__
+    except Exception:
+        pa_v = "absent"
+    return (f"pandas={pd.__version__} pyarrow={pa_v} "
+            f"string_storage={pd.options.mode.string_storage}")
+
+
+def _is_arrow_backed(dtype):
+    """Structural, never textual — and it must recognise BOTH mechanisms.
+
+    REVISION 3c/3d CORRECTION. Revision 3b tested `"pyarrow" in str(dtype)`
+    and concluded that `string[pyarrow]` was 'silently downgraded'. FALSE:
+    pandas prints `str(StringDtype)` as 'string' for every storage. Measured
+    — the gathered dtype compares EQUAL to the child dtype.
+
+    pandas has two separate Arrow mechanisms and they are different classes:
+        pd.ArrowDtype                a real Arrow type   (int64[pyarrow])
+        pd.StringDtype(storage=...)  a pandas string stored in Arrow
+    `isinstance(dt, pd.ArrowDtype)` is False for the second. Treating them as
+    one family is precisely the mistake that produced the false finding.
+    """
+    if isinstance(dtype, getattr(pd, "ArrowDtype", ())):
+        return True
+    return getattr(dtype, "storage", None) == "pyarrow"
+
+
+def _arrow_build(dtype, values):
+    """Capability probe. Returns the array, or None if THIS pandas/pyarrow
+    cannot build the specimen — so an unsupported combination is reported as
+    a named gap rather than crashing the test or vanishing silently.
+
+    The sentinel "ARROW_STRING" asks for a genuinely Arrow-TYPED string,
+    which must be constructed through `pd.ArrowDtype(pa.string())`;
+    `pd.ArrowDtype.construct_from_string("string[pyarrow]")` raises, because
+    that spelling belongs to StringDtype.
+    """
+    try:
+        if dtype == "ARROW_STRING":
+            import pyarrow as _pa
+            return pd.array(values, dtype=pd.ArrowDtype(_pa.string()))
+        return pd.array(values, dtype=dtype)
+    except Exception:
+        return None
+
+
+def _arrow_specimens():
+    """One specimen per Arrow MECHANISM, skipping whatever this environment
+    cannot build. Keys are labels used in failure messages."""
+    out = {}
+    typed = _arrow_build("double[pyarrow]", [1.5])
+    if typed is not None:
+        out["arrow-typed double"] = typed
+    arrow_str = _arrow_build("ARROW_STRING", ["a"])
+    if arrow_str is not None:
+        out["arrow-typed string"] = arrow_str
+    storage = _arrow_build("string[pyarrow]", ["a"])
+    if storage is not None:
+        out["arrow-storage string"] = storage
+    return out
+
+
+def _arrow_neutral(dtype):
+    """A fill value of the right shape for a specimen's dtype."""
+    if _is_arrow_backed(dtype) and getattr(dtype, "storage", None) == "pyarrow":
+        return ""
+    kind = str(getattr(dtype, "kind", "")) or str(dtype)
+    if "string" in str(dtype) or "str" in kind:
+        return ""
+    if "bool" in str(dtype):
+        return False
+    if "int" in str(dtype):
+        return 0
+    return 0.0
+
+
+class TestB32bAcceptanceScaffold:
+    """The machine-readable definition of 'B3.2b is finished'."""
+
+    # ---- the scope guard --------------------------------------------------
+
+    def test_b32b_0_every_ratified_family_has_an_owner(self):
+        """Not an xfail — this passes today and must keep passing. It is the
+        guard revision 1 lacked: five of the nine ratified families had no
+        test at all and nothing detected that.
+
+        AST, not source text (MR-P2, GPT27): revision 2 searched for the
+        string `def test_<owner>_`, which a docstring, a comment or a
+        commented-out definition satisfies. Only a real FunctionDef counts."""
+        import ast as _ast
+        tree = _ast.parse(_adf_scaffold_text())
+        defined = {n.name for n in _ast.walk(tree)
+                   if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef))}
+        for family, owners in B32B_SCOPE.items():
+            for owner in owners:
+                assert any(d.startswith(f"test_{owner}_") for d in defined), (
+                    f"family {family} names owner {owner}, which is not a "
+                    f"defined test function")
+
+    # ---- family 9: the Rev-2 dependency plan (AD-12) ----------------------
+
+    #: The normative Rev-2 §11.3 plan concepts. MR-P0-3: revision 2 carried
+    #: nine and omitted `logical requirements`, explicit group materialization
+    #: and `slot/surface provenance`, so b32b_1 could pass against an
+    #: incomplete schema. Field names in the implementation may differ; the
+    #: mapping below is the contract, the spelling is not.
+    PLAN_GROUPS = ("logical_requirements",     # what the call REQUIRES, pre-physical
+                   "branches",                 # physical branch reads
+                   "aliases",                  # alias materializations
+                   "group_materializations",   # vector-slot / group expansion
+                   "structs",
+                   "subframes",
+                   "joins",
+                   "temporary_columns",        # expected temporary writes
+                   "persistent_columns",       # expected persistent writes
+                   "cache_effects",            # cache effects / invalidations
+                   "cleanup",                  # cleanup candidates
+                   "slot_surface_provenance")  # which slot/surface asked for it
+
+    #: plan intent -> observed counterpart. B32B-MR-P1-5: the contract wants
+    #: field-by-field reconciliation of INTENT with OBSERVATION, not identical
+    #: Python attribute spelling. Revision 1 demanded same-named slots, which
+    #: would have forced duplicate generic fields into the state record.
+    PLAN_TO_STATE = {
+        "logical_requirements":   ("requested_reads", "prescan_text"),
+        "branches":               ("requested_reads", "branches_loaded"),
+        "aliases":                ("aliases_pre_existing", "aliases_materialized"),
+        "group_materializations": ("aliases_by_projection", "projection_columns"),
+        "structs":                ("structs_completed", "struct_members_present"),
+        "subframes":              ("reads_by_projection", "aliases_by_projection"),
+        "joins":                  ("reads_by_projection",),
+        "temporary_columns":      ("temporary_columns", "projection_columns"),
+        "persistent_columns":     ("columns_created",),
+        "cache_effects":          ("cache_effects",),
+        "cleanup":                ("cleanup_candidates", "aliases_dropped",
+                                   "cleanup_outcome"),
+        "slot_surface_provenance": ("reads_by_catalog", "reads_by_prescan",
+                                    "reads_by_completion", "reads_by_autoload",
+                                    "reads_by_union_load"),
+    }
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 9 (AD-12): the full Rev-2 §11.3 dependency-"
+        "plan contract, INCLUDING logical requirements, group materialization "
+        "and slot/surface provenance. Measured baseline failure: 'plan is "
+        "missing Rev-2 groups' — the plan carries 5 slots (especs, "
+        "rewrite_dicts, autoload_dicts, merged_specs, lazy), the record it "
+        "must mirror carries 26.")
+    def test_b32b_1_plan_carries_the_full_rev2_contract(self):
+        plan_cls = getattr(_adf_module(), "_DrawDependencyPlan")
+        slots = set(getattr(plan_cls, "__slots__", ()))
+        missing = [g for g in self.PLAN_GROUPS if g not in slots]
+        assert not missing, f"plan is missing Rev-2 groups: {missing}"
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 9 + AC_8 plan half: every normative plan "
+        "group reconciles with a NAMED observed counterpart (semantic map, "
+        "not identical spelling). Measured baseline failure: no Rev-2 group "
+        "is planned at all.")
+    def test_b32b_2_plan_intent_reconciles_with_state_observation(self):
+        mod = _adf_module()
+        plan = set(getattr(mod._DrawDependencyPlan, "__slots__", ()))
+        state = set(getattr(mod._DrawPreparationState, "__slots__", ()))
+        assert plan & set(self.PLAN_GROUPS), "no Rev-2 group is planned at all"
+        for group, observed in self.PLAN_TO_STATE.items():
+            if group not in plan:
+                continue
+            assert any(o in state for o in observed), (
+                f"plan.{group} has no observed counterpart among {observed}")
+        unmapped = [g for g in plan & set(self.PLAN_GROUPS)
+                    if g not in self.PLAN_TO_STATE]
+        assert not unmapped, f"planned but unmapped to observation: {unmapped}"
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 9, the STEP-9 half (MR-P1-1): schema "
+        "agreement is not reconciliation. A representative plan must be "
+        "BUILT, EXECUTED, and its intended requirements compared group by "
+        "group against the measured _DrawPreparationState. Measured baseline "
+        "failure: _DrawDependencyPlan has no Rev-2 group to reconcile, so "
+        "there is nothing to compare — the schema does not exist yet.")
+    def test_b32b_2b_plan_reconciles_against_executed_state(self):
+        """MR-P1-1. b32b_2 proves the MAP is coherent; this proves the map is
+        USED. It is deliberately the last thing B3.2b closes (STEP 9), because
+        the state record it reconciles against must be stable first."""
+        mod = _adf_module()
+        plan_slots = set(getattr(mod._DrawDependencyPlan, "__slots__", ()))
+        planned = [g for g in self.PLAN_GROUPS if g in plan_slots]
+        assert planned, (
+            "no Rev-2 group exists on the plan, so no executed reconciliation "
+            "is possible")
+        state = mod._DrawPreparationState()
+        for group in planned:
+            observed = self.PLAN_TO_STATE[group]
+            present = [o for o in observed if hasattr(state, o)]
+            assert present, (
+                f"group {group} has no observable counterpart on an actual "
+                f"state instance")
+
+    # ---- family 7: ADF-created PERSISTENT columns (AD-19 source 5) --------
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 7 (AD-19 source 5): a column ADF "
+        "deliberately creates AND PERSISTS carries ADF_CREATED provenance. "
+        "compress_columns is a genuine persistent-creation path. Measured "
+        "baseline failure: DTypeAuthority(UNKNOWN, alias='dy_c') for the "
+        "created column.")
+    def test_b32b_4_persistent_adf_created_column_is_an_authority_source(self):
+        """P0-3 correction. Revision 1 used the joined temporary `v__S`, but
+        the ratified text says a temporary working column is NOT an authority,
+        and 11c retracts placeholder-bearing temporaries precisely so they
+        cannot masquerade as data. Asserting source 5 on a temporary would
+        have pushed B3.2b to undo that."""
+        m = A.AliasDataFrame(pd.DataFrame({
+            "dy": np.array([1.5, 2.5, 3.5])}))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.compress_columns({"dy": {
+                "compress": "round(dy*10)",
+                "decompress": "dy_c/10.",
+                "compressed_dtype": np.int16,
+                "decompressed_dtype": np.float32}})
+        assert "dy_c" in m.df.columns, "compress_columns creates a persistent column"
+        auth = m.get_dtype_authority("dy_c")
+        assert auth.known, "an ADF-created persistent column must be authoritative"
+        assert auth.origin == _adf_module().DTypeOrigin.ADF_CREATED
+
+    def test_b32b_4b_a_temporary_never_becomes_an_authority(self):
+        """The negative control that must NEVER flip. It passes today and is
+        the guard on b32b_4: whatever B3.2b does for persistent columns, a
+        joined working temporary must not acquire public dtype authority.
+
+        MR-P1-2: revision 2 asserted only that the temporary was physically
+        gone, which a change that KEPT the column but exempted it from
+        retraction would still satisfy while quietly minting an authority.
+        Absence of the authority is now asserted directly, and separately from
+        absence of the column."""
+        m = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 9], np.int64), "x": np.array([10, 20], np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch.df["v"] = np.array([3], dtype=np.int64)
+        m.register_subframe("S", ch, index_columns=["k"])
+        m.add_alias("d", "S.v + x", dtype="int64", fill_value=1)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("d")
+        assert "v__S" not in m.df.columns, "the placeholder temporary is retracted"
+        auth = m.get_dtype_authority("v__S")
+        assert not auth.known, (
+            "no stale authority may survive for a retracted temporary — "
+            f"got {auth!r}")
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 7 (MR-P0-2): source 5 is an INVENTORY, not "
+        "one specimen. Every ADF path that creates a persistent column must "
+        "record ADF_CREATED, and re-creating one must not leave the previous "
+        "authority behind. Measured baseline failure: "
+        "DTypeAuthority(UNKNOWN, alias='dy_c') on the very first creator, so "
+        "no creator in the inventory records provenance at all.")
+    def test_b32b_4c_every_persistent_creator_records_provenance(self):
+        """MR-P1-2 / GPT27: revision 2 proved one path. The audit closes when
+        every creator is enumerated and re-creation semantics are pinned —
+        otherwise the family can close with compress_columns owned and
+        decompress_columns silently unowned."""
+        mod = _adf_module()
+        created = []
+
+        m = A.AliasDataFrame(pd.DataFrame({"dy": np.array([1.5, 2.5, 3.5])}))
+        spec = {"dy": {"compress": "round(dy*10)",
+                       "decompress": "dy_c/10.",
+                       "compressed_dtype": np.int16,
+                       "decompressed_dtype": np.float32}}
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.compress_columns(spec)
+        created.append(("compress_columns", m, "dy_c"))
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.decompress_columns(["dy"])
+        created.append(("decompress_columns", m, "dy"))
+
+        declared = {n for n, (k, _) in
+                    self.PERSISTENT_WRITER_DISPOSITION.items()
+                    if k == "source-5"}
+        exercised = {c for c, _, _ in created}
+        assert declared <= exercised, (
+            f"registry declares source-5 creators that no test exercises: "
+            f"{sorted(declared - exercised)}")
+
+        for creator, frame, col in created:
+            assert col in frame.df.columns, f"{creator} did not create {col}"
+            auth = frame.get_dtype_authority(col)
+            assert auth.known, (
+                f"{creator} created a PERSISTENT column {col!r} with no "
+                f"authority — source 5 is not an inventory yet")
+            assert auth.origin == mod.DTypeOrigin.ADF_CREATED, (
+                f"{creator}: expected ADF_CREATED, got {auth.origin}")
+
+    #: Every site that writes a column into `self.df`, with its adjudicated
+    #: AD-19 disposition. R3B-P1-1 (GPT32): revision 3b enumerated two
+    #: creators and called it a "complete persistent-column audit", so
+    #: another creator could stay unclassified while the family closed.
+    #: `b32b_4d` derives the write sites from the AST and requires every one
+    #: to appear here, so the registry cannot silently fall behind the code.
+    PERSISTENT_WRITER_DISPOSITION = {
+        # --- source 5: ADF deliberately creates and PERSISTS a column ------
+        "compress_columns":
+            ("source-5",
+             "creates <col>_c and keeps it; the compressed column is the "
+             "stored representation, not a working temporary"),
+        "decompress_columns":
+            ("source-5",
+             "restores <col> as a persistent column from the codec"),
+        # --- explicitly NOT source 5, each with the reason ----------------
+        "_publish_alias_column":
+            ("not-source-5",
+             "a materialized alias is AD-19 SOURCE 4 (first stored in-frame "
+             "materialization), which is a different authority source"),
+        "_publish_joined_column":
+            ("not-source-5",
+             "writes the join temporary v__S; the ratified text says a "
+             "temporary working column is NOT an authority — b32b_4b is the "
+             "control that must never flip"),
+        "_retract_placeholder_columns":
+            ("not-source-5",
+             "removes columns rather than creating them; 11c added it so "
+             "placeholder-bearing temporaries cannot masquerade as data"),
+        "__setitem__":
+            ("not-source-5",
+             "user assignment; the result is an ordinary physical column, "
+             "AD-19 source 2"),
+        "apply_dtypes":
+            ("not-source-5",
+             "converts existing columns in place and creates none; family 8 "
+             "owns its conversion disposition"),
+        "convert_dtypes":
+            ("not-source-5",
+             "same as apply_dtypes — in-place conversion, family 8"),
+        "apply_schema":
+            ("not-source-5",
+             "re-applies a declared schema; any authority follows the "
+             "restored DECLARATION (source 3), not an ADF creation"),
+        "update_schema":
+            ("not-source-5",
+             "schema bookkeeping; column writes here mirror a declaration"),
+        "load":
+            ("not-source-5",
+             "reader ingestion; the authority is AD-19 source 1 (reader "
+             "metadata) or source 2, never ADF creation"),
+    }
+
+    def test_b32b_4d_every_column_writer_has_an_adjudicated_disposition(self):
+        """Passing completeness guard — R3B-P1-1. The write sites are derived
+        from the production AST, not typed by hand, so adding a new column
+        writer to AliasDataFrame.py fails this test until somebody classifies
+        it. That is what makes family 7 terminal rather than illustrative.
+
+        Measured on the tagged bytes: ten functions assign into `self.df[...]`
+        — apply_dtypes, apply_schema, convert_dtypes, decompress_columns,
+        load, update_schema, __setitem__, _publish_alias_column,
+        _publish_joined_column, _retract_placeholder_columns."""
+        import ast as _ast
+        tree = _ast.parse(_adf_source_text())
+        writers = set()
+        for fn in _ast.walk(tree):
+            if not isinstance(fn, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                continue
+            for node in _ast.walk(fn):
+                if not isinstance(node, _ast.Assign):
+                    continue
+                for target in node.targets:
+                    if (isinstance(target, _ast.Subscript)
+                            and isinstance(target.value, _ast.Attribute)
+                            and target.value.attr == "df"):
+                        writers.add(fn.name)
+        unclassified = sorted(w for w in writers
+                              if w not in self.PERSISTENT_WRITER_DISPOSITION)
+        assert not unclassified, (
+            f"column writers with no adjudicated AD-19 disposition: "
+            f"{unclassified}")
+        for name, entry in self.PERSISTENT_WRITER_DISPOSITION.items():
+            kind, reason = entry
+            assert kind in ("source-5", "not-source-5"), name
+            assert len(reason) >= 30, f"{name} has no stated reason"
+
+    # ---- family 1: reader / branch metadata (AD-19 source 1) -------------
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 1 (AD-19 source 1): a LAZY branch's dtype "
+        "is authoritative from READER METADATA. BEHAVIOURAL, through "
+        "read_tree_lazy. Measured baseline failure: "
+        "DTypeAuthority(UNKNOWN, alias='x') for a lazily-declared branch.")
+    def test_b32b_5_reader_metadata_is_an_authority_source(self, tmp_path):
+        """P1-1 correction. Revision 1 counted a token in the module source,
+        which a comment or dead branch could satisfy. The reviewers were right
+        that this file already has uproot fixtures, so a behavioural test IS
+        available — my 'no lazy reader in this sandbox' justification was
+        wrong."""
+        p = tmp_path / "b32b_src.root"
+        _write_tree(p, np.arange(8, dtype=np.float64),
+                    np.ones(8, dtype=np.float64))
+        lazy = A.AliasDataFrame.read_tree_lazy(str(p), "tree")
+        auth = lazy.get_dtype_authority("x")
+        assert auth.known, "a lazy branch's declared dtype is authoritative"
+        assert auth.origin == _adf_module().DTypeOrigin.READER_METADATA
+        assert str(auth.dtype) == "float64"
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 1: asking for a branch's dtype must NOT "
+        "load the branch. Measured baseline failure: no authority exists at "
+        "all, so the no-load property is vacuous today.")
+    def test_b32b_5b_metadata_lookup_does_not_load_the_branch(self, tmp_path):
+        p = tmp_path / "b32b_noload.root"
+        _write_tree(p, np.arange(8, dtype=np.float64),
+                    np.ones(8, dtype=np.float64))
+        lazy = A.AliasDataFrame.read_tree_lazy(str(p), "tree")
+        before = set(getattr(lazy._lazy_reader, "loaded_branches", ()) or ())
+        auth = lazy.get_dtype_authority("x")
+        after = set(getattr(lazy._lazy_reader, "loaded_branches", ()) or ())
+        assert auth.known, (
+            "no reader authority exists at all, so the no-load property is "
+            f"vacuous: {auth!r}")
+        assert before == after, "inspecting a dtype must not load data"
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 1: across a CHAIN whose members AGREE, the "
+        "agreed branch dtype is the authority. Measured baseline failure: "
+        "DTypeAuthority(UNKNOWN, alias='x') — no reader authority exists.")
+    def test_b32b_5c_chain_metadata_agreement_is_explicit(self, tmp_path):
+        p1, p2 = tmp_path / "c1.root", tmp_path / "c2.root"
+        for p in (p1, p2):
+            _write_tree(p, np.arange(4, dtype=np.float64),
+                        np.ones(4, dtype=np.float64))
+        chain = A.AliasDataFrame.read_chain_lazy([str(p1), str(p2)], "tree")
+        auth = chain.get_dtype_authority("x")
+        assert auth.known, (
+            f"an agreeing chain yields no reader authority: {auth!r}")
+        assert str(auth.dtype) == "float64", f"wrong agreed dtype: {auth!r}"
+        assert auth.origin == _adf_module().DTypeOrigin.READER_METADATA
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 1 (MR-P0-2, GPT29): the case revision 2's "
+        "reason string PROMISED and its body did not build — chain members "
+        "that DISAGREE. float64 in one file, float32 in the other must be an "
+        "explicit conflict or an explicit UNKNOWN, never a silent pick of "
+        "whichever file was opened first. Measured baseline failure: the "
+        "chain builds without complaint and an AGREEING chain and a "
+        "DISAGREEING chain both report the identical "
+        "DTypeAuthority(UNKNOWN, alias='x'), so disagreement cannot even be "
+        "detected.")
+    def test_b32b_5d_chain_metadata_disagreement_is_not_silently_resolved(
+            self, tmp_path):
+        """This is the coder's fifth reason-string-does-not-match-body defect
+        in this phase and the reason the --runxfail rule exists. Revision 2
+        wrote 'disagreeing metadata is an explicit conflict' into b32b_5c's
+        reason and then built two AGREEING float64 files.
+
+        The oracle is DISTINGUISHABILITY, not a guessed conflict field: the
+        first draft of this test accepted `origin is not None`, which the
+        default UNKNOWN satisfies, and it XPASSED on the tagged bytes. Caught
+        by running it, not by reading it."""
+        a1, a2 = tmp_path / "a1.root", tmp_path / "a2.root"
+        _write_tree_dtyped(a1, "float64")
+        _write_tree_dtyped(a2, "float64")
+        agree = A.AliasDataFrame.read_chain_lazy([str(a1), str(a2)], "tree")
+
+        d1, d2 = tmp_path / "d1.root", tmp_path / "d2.root"
+        _write_tree_dtyped(d1, "float64")
+        _write_tree_dtyped(d2, "float32")
+        dis = A.AliasDataFrame.read_chain_lazy([str(d1), str(d2)], "tree")
+
+        a_auth = agree.get_dtype_authority("x")
+        d_auth = dis.get_dtype_authority("x")
+        assert a_auth.known, (
+            "precondition (AD-19 source 1): an AGREEING chain must yield a "
+            f"known authority before disagreement can mean anything: {a_auth!r}")
+        assert repr(d_auth) != repr(a_auth), (
+            "an agreeing chain and a disagreeing chain are indistinguishable: "
+            f"both report {a_auth!r}")
+        if d_auth.known:
+            assert getattr(d_auth, "conflict", False), (
+                "a disagreeing chain reported one member's dtype as "
+                f"authoritative without recording the conflict: {d_auth!r}")
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 1 (MR-P0-2; fixture corrected per "
+        "R3B-P0-1): metadata-vs-PHYSICAL conflict. The branch is declared "
+        "float32 by reader metadata, loaded, and then genuinely CONTRADICTED "
+        "by recasting the physical column to float64. The declared authority "
+        "may not silently survive that. Measured baseline failure: "
+        "'no reader authority is declared' — DTypeAuthority(UNKNOWN, "
+        "alias='x') before the load, after ensure_branches, and after the "
+        "recast alike, so source 1 does not exist to be contradicted.")
+    def test_b32b_5e_declared_and_loaded_dtypes_are_reconciled(self, tmp_path):
+        """R3B-P0-1 (GPT32), and he is right. Revision 3b wrote a float32
+        branch and compared the declared dtype with the loaded dtype OF THE
+        SAME BRANCH — both float32, so no contradiction was ever built. Once
+        source-1 reader authority lands, that version would have XPASSED
+        while metadata-vs-loaded conflict handling stayed unimplemented:
+        precisely the false closure this scaffold exists to prevent, and the
+        same shape as the b32b_5c defect one revision earlier.
+
+        Measured on the tagged bytes (pandas 1.5.3): the branch loads as
+        float32 via `ensure_branches`, so the contradiction must be created
+        deliberately by recasting the column. That makes the two dtypes
+        really differ, which is what the finding requires."""
+        p = tmp_path / "b32b_conflict.root"
+        _write_tree_dtyped(p, "float32")
+        lazy = A.AliasDataFrame.read_tree_lazy(str(p), "tree")
+        declared = lazy.get_dtype_authority("x")
+        assert declared.known, (
+            f"no reader authority is declared, so metadata-vs-physical "
+            f"cannot be contradicted: {declared!r}")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            lazy.ensure_branches(["x"])
+        assert str(lazy.df["x"].dtype) == str(declared.dtype), (
+            "precondition: the branch must load as its declared dtype")
+
+        # The genuine contradiction: physical float64 against declared float32.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            lazy.df["x"] = lazy.df["x"].astype(np.float64)
+        after = lazy.get_dtype_authority("x")
+        assert str(after.dtype) == str(lazy.df["x"].dtype) or getattr(
+            after, "conflict", False), (
+            f"declared {declared.dtype!r} and physical "
+            f"{lazy.df['x'].dtype!r} disagree, and neither a reconciliation "
+            f"nor a recorded conflict is visible: {after!r}")
+
+    # ---- family 2: persisted dtype and origin ----------------------------
+    #
+    # ENVIRONMENT. `export_tree` requires xxhash and PyROOT is also absent;
+    # the coder venv has no pip and cannot install either, so these three
+    # tests SKIP in the coder sandbox and RUN on alma2.
+    #
+    # REVISION 3b. Revision 3 disclosed these as the only tests whose failure
+    # mode the coder had not executed. The architect ran them on alma2 and
+    # ALL THREE FAILED FOR THE WRONG REASON — two guessed fixtures and one
+    # string comparison, none of them the contract defect the reason named:
+    #
+    #   b32b_13   got PAST `assert after.known` and failed on
+    #             assert "<class 'numpy.float32'>" == 'float32'.
+    #             The authority DOES survive. -> converted to PASSING.
+    #   b32b_13b  cleared attributes (`_dtype_authority`, `_authority`,
+    #             `dtype_authority`) that DO NOT EXIST, so the 'legacy'
+    #             fixture was a no-op, and then checked a guessed origin
+    #             allow-list. -> replaced by the canonical-representation
+    #             defect the failure actually exposed.
+    #   b32b_13c  raised KeyError 'q': read_tree restores `q` as an ALIAS,
+    #             not a column. -> materialize first.
+    #
+    # Every assertion below is now written against measured alma2 output
+    # (pandas 1.5.3 / numpy 1.24.2), not against the coder's assumption.
+
+    def test_b32b_13_authority_survives_the_persistence_round_trip(
+            self, tmp_path):
+        """ALREADY SATISFIED ON ENTRY — converted from a strict xfail, on
+        alma2 evidence.
+
+        Revision 3 shipped this as an xfail whose reason said 'dtype AND
+        origin survive the round trip'. Run on alma2 it got PAST
+        `assert after.known` and failed on a SPELLING comparison:
+
+            assert "<class 'numpy.float32'>" == 'float32'
+
+        Semantically the authority survives intact — same dtype, same origin.
+        My assertion compared `str()` of two representations of the same
+        dtype. Measured on alma2 (pandas 1.5.3 / numpy 1.24.2):
+
+            before  DTypeAuthority(float32, origin=explicit_alias, stored_in_frame)
+                    .dtype = dtype('float32')
+            after   DTypeAuthority(<class 'numpy.float32'>, origin=explicit_alias)
+                    .dtype = <class 'numpy.float32'>
+            origins equal      True
+            np.dtype equal     True
+
+        So survival is pinned here as PASSING, and the representation defect
+        the spelling mismatch actually exposes is `b32b_13b`."""
+        pytest.importorskip("xxhash")   # see the class note on family 2
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1.0, 2.0])}))
+        m.add_alias("q", "x * 2", dtype="float32")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("q")
+        before = m.get_dtype_authority("q")
+        assert before.known
+        out = str(tmp_path / "b32b_persist.root")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.export_tree(out, "t")
+            back = A.AliasDataFrame.read_tree(out, "t")
+        after = back.get_dtype_authority("q")
+        assert after.known, "authority must survive persistence"
+        assert np.dtype(after.dtype) == np.dtype(before.dtype), (
+            f"dtype changed across persistence: {before.dtype!r} -> "
+            f"{after.dtype!r}")
+        assert after.origin == before.origin, (
+            f"origin changed across persistence: {before.origin} -> "
+            f"{after.origin}")
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 2 (MR-P1-2): a restored authority is "
+        "CANONICALLY REPRESENTED. Measured on alma2: the same authority is "
+        "dtype('float32') before export and the TYPE OBJECT "
+        "<class 'numpy.float32'> after restore, so str(auth.dtype) changes "
+        "from 'float32' to \"<class 'numpy.float32'>\" across a round trip "
+        "and every consumer that compares a dtype by its printed form "
+        "breaks. Measured baseline failure: assert "
+        "\"<class 'numpy.float32'>\" == 'float32'. The persisted schema "
+        "stores the raw declaration ({'expr': 'x * 2', 'dtype': <class "
+        "'numpy.float32'>}) and never canonicalises it. Environment: needs "
+        "xxhash/PyROOT — SKIPS in the coder sandbox, runs on alma2.")
+    def test_b32b_13b_restored_authority_is_canonically_represented(
+            self, tmp_path):
+        """MR-P1-3 correction, on alma2 evidence rather than on my guess.
+
+        Revision 3's version invented a 'legacy' fixture by clearing
+        attributes named `_dtype_authority` / `_authority` /
+        `dtype_authority`. The probe showed **none of those attributes
+        exists** — the authority is derived from `alias_dtypes` and
+        `_schema['columns']`, so my strip loop was a silent no-op and the
+        fixture never constructed the history its name claimed. The test then
+        failed on an origin allow-list I had guessed (the real restored origin
+        is `explicit_alias`, which I had not listed).
+
+        Replaced with the defect the alma2 failure actually exposed, which is
+        a genuine MR-P1-2 item: persistence carries no canonical dtype
+        representation, so a dtype survives by value and not by form."""
+        pytest.importorskip("xxhash")   # see the class note on family 2
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1.0, 2.0])}))
+        m.add_alias("q", "x * 2", dtype="float32")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("q")
+        before = m.get_dtype_authority("q")
+        out = str(tmp_path / "b32b_canonical.root")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.export_tree(out, "t")
+            back = A.AliasDataFrame.read_tree(out, "t")
+        after = back.get_dtype_authority("q")
+        assert after.known
+        assert str(after.dtype) == str(before.dtype), (
+            f"the restored authority is not canonically represented: "
+            f"{str(before.dtype)!r} -> {str(after.dtype)!r}")
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 2 (MR-P1-3): restored metadata that "
+        "CONTRADICTS the physical column it describes is an explicit "
+        "conflict, not a silent overwrite in either direction. Measured on "
+        "alma2: after restore and materialization the column is cast to "
+        "float64 and the authority STILL reports "
+        "DTypeAuthority(<class 'numpy.float32'>, origin=explicit_alias, "
+        "stored_in_frame) with no conflict recorded — the contradiction is "
+        "absorbed silently. Environment: needs xxhash/PyROOT — SKIPS in the "
+        "coder sandbox, runs on alma2.")
+    def test_b32b_13c_restored_metadata_conflict_is_explicit(self, tmp_path):
+        """Fixture corrected on alma2 evidence. Revision 3 wrote
+        `back.df["q"] = ...` straight after `read_tree` and raised
+        `KeyError: 'q'`: the probe showed `read_tree` restores `q` as an
+        ALIAS, not a physical column — `back.df.columns == ['x']` and
+        `back.aliases == {'q': 'x * 2'}`. It must be materialized first."""
+        pytest.importorskip("xxhash")   # see the class note on family 2
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1.0, 2.0])}))
+        m.add_alias("q", "x * 2", dtype="float32")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("q")
+        out = str(tmp_path / "b32b_conflict.root")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.export_tree(out, "t")
+            back = A.AliasDataFrame.read_tree(out, "t")
+            back.materialize_alias("q")          # restored as an alias
+        assert "q" in back.df.columns, "the fixture needs a physical column"
+        back.df["q"] = back.df["q"].astype(np.float64)
+        auth = back.get_dtype_authority("q")
+        assert auth.known, "the restored authority must still be reportable"
+        assert np.dtype(auth.dtype) == back.df["q"].dtype or getattr(
+            auth, "conflict", False), (
+            "restored metadata and the physical column disagree and neither "
+            f"a reconciliation nor a recorded conflict is visible: {auth!r} "
+            f"vs column {back.df['q'].dtype}")
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 2 (B32B-R3B-P0-1, GPT30): the persisted "
+        "column record carries an EXPLICIT authority entry, so a file "
+        "written WITHOUT one is detectable as such instead of being "
+        "indistinguishable from a file that never had authority. Measured "
+        "baseline failure: the persisted entry for a column with known "
+        "authority is {'expr': 'x * 2', 'dtype': 'float32'} — it records the "
+        "DECLARATION and no origin, so DTypeOrigin.EXPLICIT_ALIAS is "
+        "RE-DERIVED on restore rather than restored, and an authority that "
+        "was FIRST_MATERIALIZATION cannot survive at all. The schema-level "
+        "__meta__ carries schema_version 1; the column record carries no "
+        "authority version. Runs in the coder sandbox — no xxhash needed.")
+    def test_b32b_13d_persisted_record_carries_an_explicit_authority(self):
+        """B32B-R3B-P0-1. GPT30 is right that my revision-3b rewrite REMOVED
+        the acceptance owner for old/missing authority metadata: I replaced
+        `b32b_13b` instead of adding to it, so family 2 could have reached
+        zero xfails without ever proving how a legacy file is handled.
+
+        His instruction was 'do not emulate legacy state by clearing guessed
+        in-memory attributes' — the mistake that made revision 3's fixture a
+        no-op. So this asserts on the ACTUAL persisted representation, which
+        the alma2 probe measured: `_schema['columns'][col]`. That is what
+        `export_tree` serialises and `read_tree` restores.
+
+        It also needs no ROOT round trip, so unlike the rest of family 2 it
+        executes in the coder sandbox."""
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1.0, 2.0])}))
+        m.add_alias("q", "x * 2", dtype="float32")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("q")
+        auth = m.get_dtype_authority("q")
+        assert auth.known, "precondition: the authority must be known"
+        entry = m._schema["columns"]["q"]
+        recorded = [k for k in entry
+                    if "origin" in k.lower() or "authority" in k.lower()]
+        assert recorded, (
+            f"the persisted record carries no authority entry, so its "
+            f"absence in an older file is undetectable: {entry!r}")
+
+    def test_b32b_13e_absent_metadata_does_not_fabricate_authority(self):
+        """The other half of B32B-R3B-P0-1, and it already holds — pinned so
+        that adding the authority record in STEP 3 cannot regress it.
+
+        A column record with no dtype metadata is exactly the legacy shape
+        (`{'expr': 'x * 2'}`, measured). Reading it must not invent an
+        authority, must not crash, and must leave the result UNKNOWN until
+        legitimate evidence exists."""
+        mod = _adf_module()
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1.0, 2.0])}))
+        m.add_alias("q", "x * 2")               # no declared dtype: legacy shape
+        assert "dtype" not in m._schema["columns"]["q"], (
+            "precondition: the record must genuinely lack dtype metadata")
+        auth = m.get_dtype_authority("q")
+        assert not auth.known, (
+            f"authority was fabricated from absent metadata: {auth!r}")
+        assert auth.origin == mod.DTypeOrigin.UNKNOWN
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("q")
+        after = m.get_dtype_authority("q")
+        assert after.origin == mod.DTypeOrigin.FIRST_MATERIALIZATION, (
+            "once the column really is materialized in this frame, source 4 "
+            "is legitimate evidence and must be recorded as such — the "
+            f"legacy record must not block it: {after!r}")
+
+    # ---- family 3: Arrow-backed dtypes ------------------------------------
+    #
+    # REVISION 3d. The architect reported the Arrow tests as unstable —
+    # "sometimes OK, sometimes failing". They are not flaky. Three distinct
+    # things were conflated, and measurement separates them:
+    #
+    #   1. pandas has TWO Arrow mechanisms, not one.
+    #        int64[pyarrow]   -> pd.ArrowDtype           (a real Arrow type)
+    #        string[pyarrow]  -> pd.StringDtype(storage) (a pandas string
+    #                                                     stored in Arrow)
+    #      `isinstance(dt, pd.ArrowDtype)` is True for the first and FALSE
+    #      for the second. Testing them as one family is what produced
+    #      revision 3's false "silent downgrade" finding.
+    #
+    #   2. str(dtype) is not stable across the two. ArrowDtype prints
+    #      'int64[pyarrow]'; StringDtype prints 'string' whatever its
+    #      storage. Every comparison here is therefore structural or
+    #      relational — never textual. `_is_arrow_backed` classifies by
+    #      `pd.ArrowDtype` / `.storage`, never by a substring.
+    #
+    #   3. THE REAL DEFECT, and the source of the reported instability:
+    #      whether a string column gets a dtype authority depends on the
+    #      PROCESS-WIDE option `pd.options.mode.string_storage`, not on the
+    #      column. Measured on the tagged bytes, identical input:
+    #
+    #        string_storage='python'   -> DTypeAuthority(UNKNOWN)
+    #        string_storage='pyarrow'  -> authority recorded
+    #
+    #      because `_authority_is_exactly_representable` round-trips through
+    #      `pd.api.types.pandas_dtype(str(dtype))`, and for StringDtype that
+    #      round trip is resolved by the global option:
+    #
+    #        pandas_dtype('string')  -> string[python]   (default here)
+    #        pandas_dtype('string')  -> string[pyarrow]  (under the option)
+    #
+    #      The architect runs pandas 1.5.3, where the default is 'python';
+    #      reviewers run 2.2.3 and 3.0.2, where pyarrow-backed strings become
+    #      the default. Same file, same code, different answer — which is
+    #      exactly what "sometimes OK, sometimes failing" looks like from the
+    #      outside. `b32b_14g` owns it.
+    #
+    # Every test below therefore: pins the option it depends on rather than
+    # inheriting it, probes whether this pandas+pyarrow can build a specimen
+    # before using it, and prints the environment in its failure message.
+
+    def test_b32b_14_arrow_backed_gather_already_preserves_the_backing(self):
+        """ALREADY SATISFIED ON ENTRY, recorded rather than xfailed.
+
+        I wrote this as a strict xfail and it XPASSED: the AD-7/AD-11
+        symmetric gather already keeps a pyarrow backing through a subframe
+        join with a missing key. Assuming a family was open because the
+        closure report listed it would have been the same error as revision
+        1 in the other direction — so the basic case is pinned as passing and
+        the genuinely open parts are `b32b_14b`, `14c` and `14g`."""
+        pytest.importorskip("pyarrow")
+        m = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 9], np.int64), "x": np.array([10, 20], np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch.df["v"] = pd.array([3.5], dtype="double[pyarrow]")
+        m.register_subframe("S", ch, index_columns=["k"])
+        m.set_subframe_fill("S", fill_missing=0.0)
+        m.add_alias("d", "S.v")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("d")
+        assert m.df["d"].dtype == ch.df["v"].dtype, (
+            f"the gather changed the dtype: {ch.df['v'].dtype!r} -> "
+            f"{m.df['d'].dtype!r} [{_arrow_env()}]")
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 3: the remaining Arrow work is AUTHORITY, "
+        "not the gather — an Arrow-backed column must be an authority source "
+        "with its exact backed dtype. Measured baseline failure: "
+        "DTypeAuthority(UNKNOWN, alias='v') for a pyarrow-backed column.")
+    def test_b32b_14b_arrow_backed_dtype_is_an_authority(self):
+        pytest.importorskip("pyarrow")
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1.0, 2.0])}))
+        m.df["v"] = pd.array([1.5, 2.5], dtype="double[pyarrow]")
+        auth = m.get_dtype_authority("v")
+        assert auth.known, (
+            f"an Arrow-backed column must be authoritative [{_arrow_env()}]")
+        assert auth.dtype == m.df["v"].dtype, (
+            f"the authority lost the backing: {auth.dtype!r} vs "
+            f"{m.df['v'].dtype!r} [{_arrow_env()}]")
+
+    #: The ratified Arrow dimensions, each mapped to the test that owns it.
+    #: R3B-P0-2 (GPT32 and GPT30, independently): revision 3b had four dtype
+    #: SPECIMENS, which is not the same thing as the ratified "full
+    #: Arrow-backed dtype coverage". `b32b_14d` enforces that every dimension
+    #: keeps an owner, so fixing one case cannot close the family.
+    ARROW_DIMENSIONS = {
+        "matched":          "b32b_14e",   # every key present
+        "missing":          "b32b_14",    # partial join, key absent
+        "empty":            "b32b_14e",   # zero-row child
+        "fill":             "b32b_14",    # configured fill through a gather
+        "cast":             "b32b_14e",   # int64[pyarrow] preserved, not widened
+        "metadata":         "b32b_14b",   # a physical Arrow column is an authority
+        "native_parity":    "b32b_14e",   # numpy-backed twin behaves identically
+        "dtype_breadth":    "b32b_14c",   # the ArrowDtype specimen matrix
+        "storage_family":   "b32b_14g",   # ArrowDtype vs StringDtype(storage)
+        "env_independence": "b32b_14g",   # no global option may decide authority
+        "refusal":          "b32b_14f",   # carried exactly, or refused
+    }
+
+    #: ARROW-TYPED specimens — every one of these is a `pd.ArrowDtype`.
+    #: Revision 3b called the first case "matched" while giving it parent
+    #: keys [0, 9] against a one-row child, so it was a MISSING case wearing
+    #: the wrong name (GPT32). Labels now name the dtype they test; matched,
+    #: empty and cast have their own real fixtures in `b32b_14e`.
+    ARROW_TYPED_CASES = (
+        ("int64",  "int64[pyarrow]",  np.array([0, 9], np.int64), 0),
+        ("double", "double[pyarrow]", np.array([7, 8], np.int64), 0.0),
+        ("bool",   "bool[pyarrow]",   np.array([0, 9], np.int64), False),
+        ("string", "ARROW_STRING",    np.array([0, 9], np.int64), ""),
+    )
+
+    def test_b32b_14d_every_arrow_dimension_has_an_owner(self):
+        """Passing guard, the family-3 analogue of `b32b_0`. Without it the
+        Arrow family can close on whichever dimensions happened to be
+        sampled — R3B-P0-2. It fails if a dimension names a test that does
+        not exist, so dimensions cannot be quietly dropped either."""
+        import ast as _ast
+        tree = _ast.parse(_adf_scaffold_text())
+        defined = {n.name for n in _ast.walk(tree)
+                   if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef))}
+        for dimension, owner in self.ARROW_DIMENSIONS.items():
+            assert any(d.startswith(f"test_{owner}_") for d in defined), (
+                f"Arrow dimension {dimension!r} names owner {owner!r}, "
+                f"which is not a defined test function")
+
+    def test_b32b_14e_arrow_matched_empty_cast_and_native_parity(self):
+        """ALREADY SATISFIED ON ENTRY — measured, then pinned.
+
+        R3B-P0-2 asked for the missing dimensions. I built them expecting
+        xfails and all four already hold: a fully matched join, a zero-row
+        child, an int64 backing that is not silently widened, and a
+        numpy-backed twin that reaches the same authority origin. Pinning
+        them as passing is the same call as `b32b_14` / `b32b_15`.
+
+        Every assertion compares dtype OBJECTS against the fixture's own
+        dtype, so nothing here depends on how pandas spells a dtype in this
+        version."""
+        pytest.importorskip("pyarrow")
+        keys = np.array([0, 1], np.int64)
+
+        def gather(child_keys, values, dtype, fill=None):
+            m = A.AliasDataFrame(pd.DataFrame({
+                "k": keys, "x": np.array([10, 20], np.int64)}))
+            ch = A.AliasDataFrame(pd.DataFrame({"k": child_keys}))
+            ch.df["v"] = pd.array(values, dtype=dtype)
+            m.register_subframe("S", ch, index_columns=["k"])
+            if fill is not None:
+                m.set_subframe_fill("S", fill_missing=fill)
+            m.add_alias("d", "S.v")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                m.materialize_alias("d")
+            return m, ch
+
+        matched, mch = gather(np.array([0, 1], np.int64), [1.5, 2.5],
+                              "double[pyarrow]")
+        assert matched.df["d"].dtype == mch.df["v"].dtype, (
+            f"matched: {mch.df['v'].dtype!r} -> {matched.df['d'].dtype!r} "
+            f"[{_arrow_env()}]")
+        assert matched.get_dtype_authority("d").known
+
+        empty, ech = gather(np.array([], np.int64), [], "double[pyarrow]",
+                            fill=0.0)
+        assert empty.df["d"].dtype == ech.df["v"].dtype, (
+            f"empty child: {ech.df['v'].dtype!r} -> {empty.df['d'].dtype!r} "
+            f"[{_arrow_env()}]")
+        assert len(empty.df["d"]) == 2, "the parent row count is preserved"
+
+        cast, cch = gather(np.array([0, 1], np.int64), [1, 2], "int64[pyarrow]")
+        assert cast.df["d"].dtype == cch.df["v"].dtype, (
+            f"an int64 Arrow backing was changed: {cch.df['v'].dtype!r} -> "
+            f"{cast.df['d'].dtype!r} [{_arrow_env()}]")
+
+        native, _ = gather(np.array([0, 1], np.int64), [1.5, 2.5], "float64")
+        assert native.get_dtype_authority("d").origin == (
+            matched.get_dtype_authority("d").origin), (
+            f"native-vs-Arrow parity: the two backings must reach the same "
+            f"authority origin [{_arrow_env()}]")
+
+    def test_b32b_14f_no_arrow_form_is_silently_downgraded(self):
+        """The refusal / no-downgrade dimension — ALREADY SATISFIED, and the
+        test that CAUGHT MY OWN FALSE FINDING.
+
+        I wrote this as a strict xfail whose reason said 'string[pyarrow] is
+        silently downgraded to pandas string'. Run, it reported the dropped
+        dtype as `string[pyarrow]` — contradicting itself. The cause: pandas
+        prints `str(StringDtype)` as 'string' for EVERY storage, so revision
+        3b's `"pyarrow" in str(dtype)` oracle read a preserved Arrow column
+        as a downgraded one. Measured: the gathered dtype compares EQUAL to
+        the child dtype for every specimen, typed and storage alike.
+
+        So the §0.3 finding I published in the revision-3 CRR — and put in a
+        draft commit message — was FALSE. The backing is preserved
+        everywhere. What is genuinely missing for strings is the AUTHORITY
+        (`b32b_14c`), and why it is missing is environmental (`b32b_14g`).
+
+        This test pins the true invariant: an Arrow form is either carried
+        through with its exact dtype or refused by an ADF-owned error.
+        Silent downgrade is not an acceptable third option."""
+        pytest.importorskip("pyarrow")
+        mod = _adf_module()
+        root = getattr(mod, "ADFError", ValueError)
+        for label, source in _arrow_specimens().items():
+            m = A.AliasDataFrame(pd.DataFrame({
+                "k": np.array([0, 9], np.int64),
+                "x": np.array([10, 20], np.int64)}))
+            ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+            ch.df["v"] = source
+            m.register_subframe("S", ch, index_columns=["k"])
+            m.set_subframe_fill("S", fill_missing=_arrow_neutral(source.dtype))
+            m.add_alias("d", "S.v")
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    m.materialize_alias("d")
+            except root:
+                continue                # explicit refusal is acceptable
+            assert m.df["d"].dtype == ch.df["v"].dtype, (
+                f"{label}: the Arrow backing was changed silently from "
+                f"{ch.df['v'].dtype!r} to {m.df['d'].dtype!r} — neither "
+                f"preserved nor refused [{_arrow_env()}]")
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 3 (MR-P0-2): the ARROW-TYPED family is a "
+        "MATRIX, not one float column — int64, double, bool and string "
+        "pd.ArrowDtype columns each record an exact authoritative dtype. "
+        "Measured baseline failure: 'Arrow matrix gaps: string: authority "
+        "UNKNOWN after gather'. THREE of the four record source-4 authority "
+        "with the backing intact; the STRING case records none. "
+        "CORRECTION (revision 3c/3d): revision 3b's reason claimed the "
+        "string backing was 'silently downgraded to pandas string'. THAT WAS "
+        "WRONG — an artefact of comparing str(dtype), which pandas prints as "
+        "'string' for StringDtype whatever the storage. Measured: the "
+        "gathered dtype compares EQUAL to the child dtype. The backing IS "
+        "preserved; only the AUTHORITY is missing, and b32b_14g shows why.")
+    def test_b32b_14c_arrow_authority_holds_across_the_matrix(self):
+        pytest.importorskip("pyarrow")
+        failures = []
+        for label, dtype, keys, fill in self.ARROW_TYPED_CASES:
+            source = _arrow_build(dtype, [fill])
+            if source is None:
+                failures.append(f"{label}: this pandas/pyarrow cannot build "
+                                f"the specimen [{_arrow_env()}]")
+                continue
+            m = A.AliasDataFrame(pd.DataFrame({
+                "k": keys, "x": np.array([10, 20], np.int64)}))
+            ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+            ch.df["v"] = source
+            m.register_subframe("S", ch, index_columns=["k"])
+            m.set_subframe_fill("S", fill_missing=fill)
+            m.add_alias("d", "S.v")
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    m.materialize_alias("d")
+            except Exception as exc:
+                failures.append(f"{label}: materialize raised "
+                                f"{type(exc).__name__}")
+                continue
+            auth = m.get_dtype_authority("d")
+            if not auth.known:
+                failures.append(f"{label}: authority UNKNOWN after gather")
+            elif auth.dtype != ch.df["v"].dtype:
+                failures.append(f"{label}: authority is {auth.dtype!r}, not "
+                                f"the backed {ch.df['v'].dtype!r}")
+        assert not failures, ("Arrow matrix gaps: " + "; ".join(failures)
+                              + f" [{_arrow_env()}]")
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 3 (REVISION 3d — the architect's reported "
+        "Arrow 'instability', diagnosed): whether a column has a dtype "
+        "authority is a property OF THE COLUMN and must not depend on a "
+        "process-wide pandas option. Measured baseline failure: identical "
+        "string[pyarrow] input, authority UNKNOWN under "
+        "mode.string_storage='python' and RECORDED under 'pyarrow'. Cause: "
+        "_authority_is_exactly_representable round-trips through "
+        "pd.api.types.pandas_dtype(str(dtype)), and str(StringDtype) is "
+        "'string' for every storage, so the round trip is resolved by the "
+        "global option — pandas_dtype('string') is string[python] by default "
+        "on pandas 1.5.3 and string[pyarrow] under the option. Reviewers on "
+        "pandas 2.2.3/3.0.2 get the other branch, which is why the same file "
+        "'sometimes works and sometimes fails'.")
+    def test_b32b_14g_authority_does_not_depend_on_a_global_option(self):
+        """The environment-independence and storage-family dimensions.
+
+        This is the test that turns 'the Arrow tests are unstable' into a
+        defect with an address. It sets the global BOTH WAYS around
+        otherwise identical work and requires the same answer. Because it
+        pins the option itself, it gives the same result on pandas 1.5.3 and
+        on 3.0 — the previous tests inherited whatever the machine's default
+        was, which is what made them look flaky."""
+        pytest.importorskip("pyarrow")
+
+        def authority_under(storage):
+            """The whole gather runs inside the option context, because the
+            option is consulted at MATERIALIZATION time by
+            `_authority_is_exactly_representable`, not when the column is
+            built. A first draft of this test asked a bare physical column
+            instead and XPASSED — AD-19 source 2 is unimplemented, so both
+            branches answered UNKNOWN and the divergence was invisible.
+            Caught by running it."""
+            with pd.option_context("mode.string_storage", storage):
+                m = A.AliasDataFrame(pd.DataFrame({
+                    "k": np.array([0, 9], np.int64),
+                    "x": np.array([10, 20], np.int64)}))
+                ch = A.AliasDataFrame(pd.DataFrame({
+                    "k": np.array([0], np.int64)}))
+                ch.df["v"] = pd.array(["a"], dtype="string[pyarrow]")
+                m.register_subframe("S", ch, index_columns=["k"])
+                m.set_subframe_fill("S", fill_missing="")
+                m.add_alias("d", "S.v")
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    m.materialize_alias("d")
+                return m.get_dtype_authority("d")
+
+        as_python = authority_under("python")
+        as_pyarrow = authority_under("pyarrow")
+
+        assert as_python.known == as_pyarrow.known, (
+            f"the same string[pyarrow] column is authoritative under "
+            f"mode.string_storage='pyarrow' ({as_pyarrow!r}) and not under "
+            f"'python' ({as_python!r}) — a process-wide option decided a "
+            f"property of the column [{_arrow_env()}]")
+        assert as_python.dtype == as_pyarrow.dtype, (
+            f"the recorded dtype depends on the global option: "
+            f"{as_python.dtype!r} vs {as_pyarrow.dtype!r} [{_arrow_env()}]")
+        assert as_python.known, (
+            f"and neither branch may be UNKNOWN once the column really is "
+            f"materialized in this frame: {as_python!r} [{_arrow_env()}]")
+
+    def test_b32b_14h_the_two_arrow_mechanisms_stay_distinguishable(self):
+        """Passing control on the storage-family dimension, and the guard on
+        the mistake that cost revision 3 a false finding.
+
+        `int64[pyarrow]` is a `pd.ArrowDtype`. `string[pyarrow]` is a
+        `pd.StringDtype` whose storage happens to be Arrow. They are
+        different classes with different `str()` forms, and any future
+        helper that treats them as one family reintroduces the defect."""
+        pytest.importorskip("pyarrow")
+        typed = pd.array([1], dtype="int64[pyarrow]").dtype
+        storage = pd.array(["a"], dtype="string[pyarrow]").dtype
+
+        assert isinstance(typed, pd.ArrowDtype), _arrow_env()
+        assert not isinstance(storage, pd.ArrowDtype), (
+            f"string[pyarrow] is a StringDtype, not an ArrowDtype "
+            f"[{_arrow_env()}]")
+        assert getattr(storage, "storage", None) == "pyarrow", _arrow_env()
+        assert _is_arrow_backed(typed) and _is_arrow_backed(storage), (
+            f"the classifier must recognise BOTH mechanisms [{_arrow_env()}]")
+        assert str(typed) != str(storage).replace("string", "int64"), (
+            "this assertion exists only to record that str() forms differ: "
+            f"{str(typed)!r} vs {str(storage)!r} [{_arrow_env()}]")
+    # ---- family 4: sparse fill without a dense temporary -----------------
+
+    def test_b32b_15_sparse_fill_already_preserves_the_sparse_dtype(self):
+        """ALREADY SATISFIED ON ENTRY. Also XPASSED when written as an xfail.
+        AD-15 preserves sparsity through the gather; what B3.2b actually owns
+        is the DENSE TEMPORARY, not the dtype — see `b32b_15b`."""
+        m = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 9], np.int64), "x": np.array([10, 20], np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch.df["v"] = pd.arrays.SparseArray(np.array([3.0]), fill_value=0.0)
+        m.register_subframe("S", ch, index_columns=["k"])
+        m.set_subframe_fill("S", fill_missing=0.0)
+        m.add_alias("d", "S.v")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("d")
+        assert isinstance(m.df["d"].dtype, pd.SparseDtype)
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 4: the DENSE TEMPORARY is removed. AD-15's "
+        "round-8 addendum measured the densify-fill-resparsify round trip at "
+        "~5.25x the dense column (1M rows: 42 MB peak vs 8 MB) and assigned "
+        "the sparse-index reconstruction to B3.2b. EXECUTABLE ORACLE: dense "
+        "conversion is forbidden at runtime and _place_fill is driven "
+        "directly. Measured baseline failure: AssertionError "
+        "'_place_fill densified a sparse column' — the fill knob path falls "
+        "through to `_dense = np.asarray(series.to_numpy()).copy()`.")
+    def test_b32b_15b_sparse_fill_never_densifies(self):
+        """MR-P0-1, the blocking finding. Revision 2 asserted
+
+            not re.search(r"densify-fill-resparsify", module_source)
+
+        so DELETING OR RENAMING A COMMENT turned it green with zero
+        executable change — in the same file whose header adopts the rule
+        that an xfail must fail for the defect its reason names. Three seats
+        found it independently.
+
+        The replacement is executable and cannot be satisfied by any comment:
+        `Series.to_numpy` is made to raise for the duration of one direct
+        `_place_fill` call on a sparse series with a fill knob. If the
+        implementation still densifies, the spy trips. If B3.2b lands the
+        sparse-index reconstruction, nothing dense is ever built and the call
+        returns normally.
+
+        A peak-RSS assertion at the sizes where the 5.25x is visible was
+        rejected: this project already has one timing-sensitive probe that
+        flaps, and MR explicitly said no flaky memory threshold is required.
+        """
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1.0, 2.0, 3.0])}))
+        sparse = pd.Series(pd.arrays.SparseArray(
+            np.array([1.0, 0.0, 3.0]), fill_value=0.0))
+        mask = np.array([False, True, False])
+
+        tripped = []
+        real_to_numpy = pd.Series.to_numpy
+
+        def _no_densify(self, *a, **k):
+            tripped.append(True)
+            raise AssertionError("_place_fill densified a sparse column")
+
+        pd.Series.to_numpy = _no_densify
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                out = m._place_fill(sparse, mask, 9.0, "fill_missing", "S", "v")
+        finally:
+            pd.Series.to_numpy = real_to_numpy
+
+        assert not tripped, (
+            "_place_fill built a dense temporary; AD-15 assigns the "
+            "non-densifying sparse-index reconstruction to B3.2b")
+        assert isinstance(out.dtype, pd.SparseDtype), (
+            "the result must still be sparse")
+        assert float(out.values[1]) == 9.0, "the fill must still be applied"
+
+    # ---- family 5: conditional / fallback row-wise provenance ------------
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 5: requiredness is ROW-WISE, not a syntactic "
+        "union — a row whose selected branch never consults the absent "
+        "operand is DEFINED. Measured baseline failure: NameError, "
+        "\"Undefined function or variable 'where' in expression\", so family 5 "
+        "needs BOTH the supported conditional form AND row-wise requiredness.")
+    def test_b32b_16_conditional_requiredness_is_row_wise(self):
+        """`where(cond, a, S.v)` — the rows taking `a` never consult `S.v`,
+        so their value is defined even though `S.v` is absent for some row.
+        Round 11 deliberately treats requiredness as a syntactic union and
+        B3.2b owns the row-wise refinement."""
+        m = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 9], np.int64),
+            "a": np.array([100, 200], np.int64),
+            "c": np.array([False, True])}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch.df["v"] = np.array([3], dtype=np.int64)
+        m.register_subframe("S", ch, index_columns=["k"])
+        m.add_alias("d", "where(c, a, S.v)", dtype="int64")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("d")
+        assert [int(v) for v in m.df["d"].values] == [3, 200]
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 5: the complement — a row that DOES select the "
+        "absent operand is still undefined and still refuses, so the row-wise "
+        "refinement cannot become a blanket permission. Measured baseline "
+        "failure: NameError, \"Undefined function or variable 'where'\".")
+    def test_b32b_16b_conditional_still_refuses_a_selected_absent_operand(self):
+        m = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 9], np.int64),
+            "a": np.array([100, 200], np.int64),
+            "c": np.array([True, False])}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch.df["v"] = np.array([3], dtype=np.int64)
+        m.register_subframe("S", ch, index_columns=["k"])
+        m.add_alias("d", "where(c, a, S.v)", dtype="int64")
+        with pytest.raises(ValueError):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                m.materialize_alias("d")
+
+    #: The ratified family-5 forms. `where` alone is one of three named in the
+    #: scope text; MR-P1-5 requires the non-`where` forms too, or an explicit
+    #: support/refusal matrix. This is the matrix.
+    FALLBACK_FORMS = ("where(c, a, S.v)", "fillna(S.v, a)",
+                      "coalesce(S.v, a)", "select(c, a, S.v)")
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 5 (MR-P1-5): every named conditional/"
+        "fallback form is EITHER supported with row-wise requiredness OR "
+        "refused by an ADF-owned error that names it as unsupported. A raw "
+        "NameError escaping the expression engine is neither. Measured "
+        "baseline failure: all four forms — where, fillna, coalesce, select "
+        "— raise NameError \"Undefined function or variable\", so the family "
+        "has no disposition at all.")
+    def test_b32b_16c_every_fallback_form_is_supported_or_refused_cleanly(self):
+        """MR-P1-5 / GPT27: revision 2 covered only `where`, so family 5 could
+        have closed while `fillna` and `coalesce` still leaked a raw
+        NameError to the physicist writing the alias."""
+        mod = _adf_module()
+        root = getattr(mod, "ADFError", ValueError)
+        undisposed = []
+        for form in self.FALLBACK_FORMS:
+            m = A.AliasDataFrame(pd.DataFrame({
+                "k": np.array([0, 9], np.int64),
+                "a": np.array([100, 200], np.int64),
+                "c": np.array([False, True])}))
+            ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+            ch.df["v"] = np.array([3], dtype=np.int64)
+            m.register_subframe("S", ch, index_columns=["k"])
+            m.add_alias("d", form, dtype="int64")
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    m.materialize_alias("d")
+            except NameError as exc:
+                undisposed.append(f"{form}: raw NameError ({exc})")
+            except root:
+                pass          # explicitly refused — an acceptable disposition
+            except Exception as exc:
+                undisposed.append(f"{form}: {type(exc).__name__} ({exc})")
+        assert not undisposed, (
+            "fallback forms with no disposition: " + "; ".join(undisposed))
+
+    # ---- family 8: bounded conversion-API audit --------------------------
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 8: apply_dtypes / convert_dtypes / "
+        "convert_dtypes_pattern each route through the central conversion "
+        "policy or carry a recorded disposition WITH A REASON. Measured "
+        "baseline failure: none of the three references the resolver, and "
+        "none carries a disposition marker.")
+    def test_b32b_17_conversion_apis_have_a_recorded_disposition(self):
+        """MR-P2-1: revision 2 accepted the bare token `B3.2b-DISPOSITION`,
+        which a one-word comment satisfies — a rubber stamp. The marker must
+        now be followed by a reason of real length on the same line, so
+        'disposed' means somebody wrote down why."""
+        import re as _re
+        src = _adf_source_text()
+        for api in ("apply_dtypes", "convert_dtypes", "convert_dtypes_pattern"):
+            m = _re.search(r"def %s\(.*?(?=\n    def )" % api, src, _re.S)
+            assert m, f"{api} not found"
+            body = m.group(0)
+            routed = ("_resolve_target_dtype" in body
+                      or "_safe_dtype_cast" in body)
+            reasoned = _re.search(r"B3\.2b-DISPOSITION[:\s]+(\S.{29,})", body)
+            assert routed or reasoned, (
+                f"{api} neither routes through central policy nor carries a "
+                f"recorded B3.2b-DISPOSITION with a stated reason")
+
+    # ---- family 6: the cast-site audit / one owner ------------------------
+
+    #: Sites allowed to decide a dtype locally, each with the ADJUDICATED
+    #: reason it is exempt (MR-P2-1: revision 2 listed bare names, so the
+    #: whitelist could grow silently). B3.2b's audit is complete when every
+    #: remaining site either appears here with a reason or routes through the
+    #: resolver.
+    CAST_SITE_WHITELIST = {
+        "_resolve_target_dtype":
+            "the owner itself — this IS the central decision",
+        "_buffer_dtype_for_fill":
+            "chooses a staging representation only; the target is resolved "
+            "by _resolve_target_dtype before this is called",
+        "_coerce_fill_to_dtype":
+            "asks pandas whether a value is representable; does not choose "
+            "a target",
+        "_safe_dtype_cast":
+            "applies an ALREADY-RESOLVED declared dtype; round 11f added the "
+            "pandas-extension branch here",
+        "_restore_exact_dtype":
+            "AD-19 exact restoration of a recorded authority — by "
+            "construction it may not consult anything else",
+        "_canonical_dtype":
+            "pure spelling normalisation, no policy",
+        "_authority_is_exactly_representable":
+            "a predicate over a recorded authority, no target chosen",
+    }
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 6: the remaining conversion/dtype call-site "
+        "audit. AST-based, not a regex — revision 1 grepped two variable "
+        "spellings and could be defeated by a rename. Measured baseline "
+        "failure: many functions still call .astype / dtype.kind / to_numpy / "
+        ".values outside the whitelist.")
+    def test_b32b_12_every_cast_site_is_owned_or_whitelisted(self):
+        """P1-4 / P0-2 correction. Revision 1's version also xfailed for the
+        WRONG REASON — `NameError: name 're' is not defined`, because the test
+        module never imported `re`. It was not acceptance evidence at all.
+
+        KNOWN GRANULARITY LIMIT, disclosed (GPT27, non-blocking): the audit is
+        function-granular, not call-site granular, so a whitelisted function
+        that grows a second unrelated cast is not caught. Making it call-site
+        granular is a B3.2b STEP 2 refinement once the resolver exists and the
+        offender count is small enough to enumerate."""
+        import ast as _ast
+        tree = _ast.parse(_adf_source_text())
+        offenders = set()
+        for fn in _ast.walk(tree):
+            if not isinstance(fn, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                continue
+            if fn.name in self.CAST_SITE_WHITELIST:
+                continue
+            for node in _ast.walk(fn):
+                if isinstance(node, _ast.Attribute) and node.attr in (
+                        "astype", "kind", "to_numpy", "values"):
+                    offenders.add(fn.name)
+                    break
+        assert not offenders, (
+            f"{len(offenders)} function(s) still decide a dtype locally: "
+            f"{sorted(offenders)[:8]}")
+
+    def test_b32b_12b_every_whitelist_entry_states_its_reason(self):
+        """Passing guard on the guard. MR-P2-1: without this, the audit can be
+        closed by appending names to CAST_SITE_WHITELIST."""
+        for name, reason in self.CAST_SITE_WHITELIST.items():
+            assert isinstance(reason, str) and len(reason) >= 30, (
+                f"whitelist entry {name!r} has no adjudicated reason")
+
+    # ---- family 10: the all-undefined getter (AD-20) ---------------------
+
+    @staticmethod
+    def _all_undefined_frame():
+        """Every join key absent: three rows, none matched."""
+        m = A.AliasDataFrame(pd.DataFrame({
+            "key": np.array([1, 2, 3], np.int64),
+            "x": np.array([10.0, 20.0, 30.0])}))
+        ch = A.AliasDataFrame(pd.DataFrame({"key": np.array([7, 8, 9], np.int64)}))
+        ch.df["v"] = np.array([1.0, 2.0, 3.0])
+        m.register_subframe("S", ch, index_columns=["key"])
+        return m
+
+    def test_b32b_18_getter_never_publishes_the_requested_alias(self):
+        """AD-20 clause 1 — ALREADY TRUE, pinned so B3.2b cannot regress it
+        while implementing clause 4. This is the clause that matters most:
+        `materialize_alias` on the same all-undefined alias publishes a
+        column AND mints float64 source-4 authority out of a fill policy
+        nobody measured. The getter must never do that."""
+        m = self._all_undefined_frame()
+        m.set_subframe_fill("S", fill_missing=0.0)
+        m.add_alias("scaled", "S.v * 2")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            out = m.get_alias_series("scaled")
+        assert len(out) == 3
+        assert "scaled" not in m.df.columns, (
+            "a non-materializing getter published the requested alias")
+
+    def test_b32b_18b_getter_creates_no_source4_authority(self):
+        """AD-20 clause 2 — ALREADY TRUE. The contrast is the point: the same
+        alias through materialize_alias records
+        DTypeOrigin.FIRST_MATERIALIZATION."""
+        mod = _adf_module()
+        m = self._all_undefined_frame()
+        m.set_subframe_fill("S", fill_missing=0.0)
+        m.add_alias("scaled", "S.v * 2")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.get_alias_series("scaled")
+        auth = m.get_dtype_authority("scaled")
+        assert not auth.known, (
+            f"the getter minted an authority from an ephemeral read: {auth!r}")
+
+        publishing = self._all_undefined_frame()
+        publishing.set_subframe_fill("S", fill_missing=0.0)
+        publishing.add_alias("scaled", "S.v * 2")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            publishing.materialize_alias("scaled")
+        assert publishing.get_dtype_authority("scaled").origin == (
+            mod.DTypeOrigin.FIRST_MATERIALIZATION), (
+            "the contrast this test rests on has changed; re-derive AD-20")
+
+    def test_b32b_18c_declared_authority_governs_the_ephemeral_dtype(self):
+        """AD-20 clause 3 — ALREADY TRUE. An explicitly declared dtype
+        (AD-19 source 3) governs what the getter hands back, and the
+        declaration was made by add_alias, not by the getter."""
+        mod = _adf_module()
+        m = self._all_undefined_frame()
+        m.set_subframe_fill("S", fill_missing=0.0)
+        m.add_alias("scaled", "S.v * 2", dtype=np.int16)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            out = m.get_alias_series("scaled")
+        assert str(out.dtype) == "int16", (
+            f"declared authority did not govern the getter: {out.dtype}")
+        assert m.get_dtype_authority("scaled").origin == (
+            mod.DTypeOrigin.EXPLICIT_ALIAS)
+        assert "scaled" not in m.df.columns
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 10 (AD-20 clause 4): the getter honours the "
+        "SAME configured fill that materialize_alias honours. Measured "
+        "baseline failure: assert nan == 0.0 — get_alias_series returns "
+        "[nan, nan, nan] while materialize_alias returns [0.0, 0.0, 0.0] for "
+        "the identical alias and the identical fill_value, because "
+        "_resolve_residual_undefinedness is reached with publishing=False "
+        "and the AR-7 final fill stage that the materializing path runs is "
+        "not run for the getter (AliasDataFrame.py:9611 records this as the "
+        "open B3.2b branch).")
+    def test_b32b_18d_getter_honours_the_configured_alias_fill(self):
+        """Two public entry points, two answers, same input — the defect class
+        GPT30 filed as F10-P0-1. Round 11d closed it for the REFUSAL path and
+        left it open for the FILL path."""
+        m = self._all_undefined_frame()
+        m.add_alias("scaled", "S.v * 2", fill_value=0.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            got = list(m.get_alias_series("scaled").values)
+
+        publishing = self._all_undefined_frame()
+        publishing.add_alias("scaled", "S.v * 2", fill_value=0.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            publishing.materialize_alias("scaled")
+        expected = list(publishing.df["scaled"].values)
+
+        assert got == expected, (
+            f"getter returned {got}, materialize_alias returned {expected} "
+            f"for the same alias and the same fill")
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 10 (AD-20 clause 4, second half): with NO "
+        "configured handling, residual undefinedness is REFUSED CLEARLY "
+        "rather than returned as silent NaN. Measured baseline failure: "
+        "DID NOT RAISE — get_alias_series returns [nan, nan, nan] and the "
+        "caller cannot distinguish 'every key was absent' from 'the "
+        "arithmetic produced NaN' (AR-7 says those are different "
+        "conditions).")
+    def test_b32b_18e_getter_refuses_unresolved_undefinedness(self):
+        mod = _adf_module()
+        root = getattr(mod, "ADFError", ValueError)
+        m = self._all_undefined_frame()
+        m.add_alias("scaled", "S.v * 2")
+        with pytest.raises(root):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                m.get_alias_series("scaled")
+
+    # ---- the remaining carried D_n items ---------------------------------
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance (AD-19 source 2): an EXISTING PHYSICAL COLUMN is "
+        "authoritative simply by existing. Measured baseline failure: "
+        "DTypeAuthority(UNKNOWN, alias='x') for a plain frame column.")
+    def test_b32b_3_physical_column_is_an_authority_source(self):
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))
+        auth = m.get_dtype_authority("x")
+        assert auth.known, (
+            f"a plain physical column is not an authority source: {auth!r}")
+        assert auth.origin == _adf_module().DTypeOrigin.PHYSICAL_COLUMN
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance (D_5 remainder): mask carriage reaches INNER levels "
+        "of a multi-level subframe chain. Measured baseline failure: the "
+        "inner gather raises the AD-19 'would change its authoritative dtype' "
+        "refusal, because the inner scatter receives ctx=None by design.")
+    def test_b32b_6_multilevel_chain_carries_the_mask(self):
+        inner = A.AliasDataFrame(pd.DataFrame({"j": np.array([0], np.int64)}))
+        inner.df["val"] = np.array([7], dtype=np.int64)
+        mid = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64), "j": np.array([0, 9], np.int64)}))
+        mid.register_subframe("I", inner, index_columns=["j"])
+        main = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64), "x": np.array([10, 20], np.int64)}))
+        main.register_subframe("M", mid, index_columns=["k"])
+        main.add_alias("d", "M.I.val + x", dtype="int64", fill_value=1)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            main.materialize_alias("d")
+        assert [int(v) for v in main.df["d"].values] == [17, 1]
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance (D_8 remainder): the exact categorical source-4 "
+        "codec. Measured baseline failure: DTypeAuthority(UNKNOWN) — "
+        "_authority_is_exactly_representable refuses categorical because "
+        "categories and order do not survive str(dtype).")
+    def test_b32b_7_categorical_authority_is_recorded_exactly(self):
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))
+        cats = pd.CategoricalDtype(["b", "a"], ordered=True)
+        m.register_function("as_cat",
+                            lambda v: pd.Series(["a", "b"]).astype(cats))
+        m.add_alias("q", "as_cat(x)")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("q")
+        auth = m.get_dtype_authority("q")
+        assert auth.known, (
+            f"categorical authority cannot be recorded at all: {auth!r}")
+        assert list(auth.dtype.categories) == ["b", "a"]
+        assert auth.dtype.ordered is True
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance (D_9, §5.5): publication is ATOMIC across ALL "
+        "publication-owned state — physical column, schema dtype, origin and "
+        "authority — at EVERY fault seam, not just one. Measured baseline "
+        "failure: 'seam _commit_first_materialization_authority: a failed "
+        "publication left a column behind'.")
+    def test_b32b_8_publication_is_atomic_at_every_seam(self):
+        """B32B-MR-P1-6: revision 1 injected one fault and checked two things.
+        The publication transaction owns more than that, so both seams are
+        driven and the whole snapshot is compared."""
+        cls = A.AliasDataFrame
+        seams = ("_commit_first_materialization_authority",
+                 "_enforce_recorded_authority")
+        for seam in seams:
+            m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))
+            m.add_alias("q", "x * 2")
+            cols_before = list(m.df.columns)
+            schema_before = copy.deepcopy(m._schema)
+            orig = getattr(cls, seam)
+
+            def boom(self, *a, **k):
+                raise RuntimeError(f"injected fault at {seam}")
+
+            setattr(cls, seam, boom)
+            try:
+                with pytest.raises(RuntimeError):
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        m.materialize_alias("q")
+            finally:
+                setattr(cls, seam, orig)
+            assert list(m.df.columns) == cols_before, (
+                f"seam {seam}: a failed publication left a column behind")
+            assert m._schema == schema_before, (
+                f"seam {seam}: a failed publication mutated the schema")
+
+    def test_b32b_9_strict_route_is_a_registered_helper_not_a_framework_flag(
+            self):
+        """AR-2 / D_10 — ALREADY SATISFIED, converted from a strict xfail.
+
+        MR-P1-4 (GPT29): revision 2 marked this xfail with a reason claiming
+        'no strict route exists'. Run with --runxfail it fails on the OTHER
+        assertion — the strict helper works exactly as AR-2 specifies, and
+        what is still open is the ORDINARY route's conversion semantics,
+        which belongs to D_3 and is now owned by `b32b_9b`. Leaving the two
+        joined would have let family 10's real defect close under family 9's
+        name.
+
+        P0-4 correction, retained: revision 1 required
+        `register_function(..., strict=True)`, inventing exactly the framework
+        API that AR-2 was designed to avoid."""
+        def strict_int8(v):
+            a = np.asarray(v)
+            if (a < -128).any() or (a > 127).any():
+                raise ValueError("strict_int8: value out of range")
+            return a.astype(np.int8)
+
+        strict = A.AliasDataFrame(pd.DataFrame({"x": np.array([300, 2], np.int64)}))
+        strict.register_function("strict_int8", strict_int8)
+        strict.add_alias("q", "strict_int8(x)")
+        with pytest.raises(ValueError):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                strict.materialize_alias("q")
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance (D_3, §6.1 — split out of b32b_9 per MR-P1-4): the "
+        "ORDINARY conversion route follows documented backend semantics and "
+        "delivers the declared dtype, so the strict helper is a genuine "
+        "opt-in rather than the only route that works. Measured baseline "
+        "failure: materialize_alias raises before the dtype can be checked — "
+        "the ordinary route refuses the out-of-range value instead of "
+        "applying AR-1 standards-first conversion.")
+    def test_b32b_9b_ordinary_route_follows_backend_semantics(self):
+        ordinary = A.AliasDataFrame(
+            pd.DataFrame({"x": np.array([300, 2], np.int64)}))
+        ordinary.add_alias("q", "x", dtype="int8")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ordinary.materialize_alias("q")
+        assert str(ordinary.df["q"].dtype) == "int8", (
+            "the ORDINARY route must still follow documented backend "
+            "semantics — the strict helper is opt-in, not a global switch")
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance (D_3, §6.1): the conversion route both DECLARES and "
+        "USES a pinned backend casting mode, so a future NumPy default change "
+        "cannot move the ratified contract. Measured baseline failure: "
+        "'no named casting-mode constant exists'.")
+    def test_b32b_10_casting_mode_is_pinned_and_consumed(self):
+        """B32B-MR-P1-2: revision 1 asserted only that a constant existed. An
+        unused constant would have flipped it. Declaration AND use.
+
+        KNOWN LIMIT, disclosed (GPT27, non-blocking): consumption is measured
+        textually, so a constant used in a dead branch would satisfy it. The
+        behavioural version needs the resolver to exist first (STEP 2)."""
+        import re as _re
+        mod = _adf_module()
+        named = [n for n in dir(mod)
+                 if "CASTING" in n.upper() and isinstance(getattr(mod, n), str)]
+        assert named, "no named casting-mode constant exists"
+        pinned = [n for n in named if getattr(mod, n) == "unsafe"]
+        assert pinned, "AR-1 ratifies casting='unsafe'; pin it"
+        src = _adf_source_text()
+        used = any(len(_re.findall(r"casting=%s\b" % n, src)) > 0
+                   for n in pinned)
+        assert used, "the pinned constant is declared but never consumed"
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance (D_6, §7): a STRUCTURAL absence raises an ADF-owned "
+        "type under one ADFError root. Measured baseline failure: "
+        "'D_6 defines an ADFError root; it does not exist'.")
+    def test_b32b_11_structural_absence_raises_an_adf_type(self):
+        """MR-P2-2 (Sonet28, Sonet31): revision 2 put `add_alias` and
+        `materialize_alias` inside ONE `pytest.raises` block, so if
+        `add_alias` ever starts raising first the test would silently narrow
+        to a different production path and still pass. The two calls are now
+        separated, and the row-level half is its own test so the two shapes
+        cannot be conflated."""
+        mod = _adf_module()
+        root = getattr(mod, "ADFError", None)
+        assert root is not None, "D_6 defines an ADFError root; it does not exist"
+
+        structural = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2])}))
+        structural.add_alias("d", "Nope.v")          # must NOT raise here
+        with pytest.raises(root):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                structural.materialize_alias("d")
+
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance (D_6, §7): a ROW-LEVEL missing key raises an "
+        "ADF-owned type DISTINCT from the structural one, through a real "
+        "production path. Measured baseline failure: "
+        "'D_6 defines an ADFError root; it does not exist' — both paths "
+        "currently raise bare ValueError.")
+    def test_b32b_11b_row_level_missingness_raises_a_distinct_adf_type(self):
+        mod = _adf_module()
+        root = getattr(mod, "ADFError", None)
+        assert root is not None, "D_6 defines an ADFError root; it does not exist"
+
+        structural = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2])}))
+        structural.add_alias("d", "Nope.v")
+        with pytest.raises(root) as st:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                structural.materialize_alias("d")
+
+        rowlevel = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 9], np.int64), "x": np.array([10, 20], np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch.df["v"] = np.array([3], dtype=np.int64)
+        rowlevel.register_subframe("S", ch, index_columns=["k"])
+        rowlevel.add_alias("d", "S.v", dtype="int64")
+        with pytest.raises(root) as rl:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                rowlevel.materialize_alias("d")
+
+        assert type(st.value) is not type(rl.value), (
+            "structural absence and row-level missingness must be "
+            "distinguishable by type, not only by message")
+
+
+def _adf_scaffold_text():
+    """This test module's own source — for the family-owner guard."""
+    import inspect, sys
+    return inspect.getsource(sys.modules[__name__])
