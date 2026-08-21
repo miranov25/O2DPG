@@ -8248,84 +8248,187 @@ class TestB32bAcceptanceScaffold:
                    "cleanup",                  # cleanup candidates
                    "slot_surface_provenance")  # which slot/surface asked for it
 
-    #: plan intent -> observed counterpart. B32B-MR-P1-5: the contract wants
-    #: field-by-field reconciliation of INTENT with OBSERVATION, not identical
-    #: Python attribute spelling. Revision 1 demanded same-named slots, which
-    #: would have forced duplicate generic fields into the state record.
-    PLAN_TO_STATE = {
-        "logical_requirements":   ("requested_reads", "prescan_text"),
-        "branches":               ("requested_reads", "branches_loaded"),
-        "aliases":                ("aliases_pre_existing", "aliases_materialized"),
-        "group_materializations": ("aliases_by_projection", "projection_columns"),
-        "structs":                ("structs_completed", "struct_members_present"),
-        "subframes":              ("reads_by_projection", "aliases_by_projection"),
-        "joins":                  ("reads_by_projection",),
-        "temporary_columns":      ("temporary_columns", "projection_columns"),
-        "persistent_columns":     ("columns_created",),
-        "cache_effects":          ("cache_effects",),
-        "cleanup":                ("cleanup_candidates", "aliases_dropped",
-                                   "cleanup_outcome"),
-        "slot_surface_provenance": ("reads_by_catalog", "reads_by_prescan",
-                                    "reads_by_completion", "reads_by_autoload",
-                                    "reads_by_union_load"),
+    #: The scaffold's OWN expected disposition per group — P0-STEP1-1.
+    #:
+    #: STEP 1 v01 carried a flat `PLAN_TO_STATE` that paired every group with
+    #: some observed field, and three seats found that several pairings
+    #: conflate different semantic axes: slot/surface provenance is not
+    #: executor-stage attribution, a join is not a projection read, and a
+    #: logical requirement is not a physical requested read. The contract is
+    #: now a DISPOSITION, and a group that has no measured counterpart says so
+    #: instead of borrowing an unrelated non-empty field.
+    #:
+    #: This is written INDEPENDENTLY of production and `b32b_2` checks
+    #: production against it — v01 only validated the scaffold's own copy,
+    #: so production could have been wrong with every test still green
+    #: (P0-STEP1-2, anti-drift half).
+    EXPECTED_DISPOSITION = {
+        "logical_requirements":    ("PLAN_ONLY", ()),
+        "branches":                ("STATE", ("branches_loaded",)),
+        "aliases":                 ("STATE", ("aliases_materialized",)),
+        "group_materializations":  ("STATE", ("aliases_by_projection",
+                                              "projection_columns")),
+        "structs":                 ("STATE", ("structs_completed",
+                                              "struct_members_present")),
+        "subframes":               ("PENDING", ()),
+        "joins":                   ("PENDING", ()),
+        "temporary_columns":       ("STATE", ("temporary_columns",)),
+        "persistent_columns":      ("STATE", ("columns_created",)),
+        "cache_effects":           ("STATE", ("cache_effects",)),
+        "cleanup":                 ("STATE", ("cleanup_candidates",
+                                              "aliases_dropped",
+                                              "cleanup_outcome")),
+        "slot_surface_provenance": ("PLAN_ONLY", ()),
     }
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 9 (AD-12): the full Rev-2 §11.3 dependency-"
-        "plan contract, INCLUDING logical requirements, group materialization "
-        "and slot/surface provenance. Measured baseline failure: 'plan is "
-        "missing Rev-2 groups' — the plan carries 5 slots (especs, "
-        "rewrite_dicts, autoload_dicts, merged_specs, lazy), the record it "
-        "must mirror carries 26.")
+    #: Groups whose planned items must reconcile item-by-item at STEP 9.
+    #: Only STATE groups can: PLAN_ONLY has no observation by construction and
+    #: PENDING has none yet.
+    RECONCILABLE_GROUPS = tuple(
+        g for g, (kind, _) in EXPECTED_DISPOSITION.items() if kind == "STATE")
+
     def test_b32b_1_plan_carries_the_full_rev2_contract(self):
+        """CLOSED BY B3.2b STEP 1 — was a strict xfail, now passing.
+
+        The plan carried 5 slots at the B3.2 tag (especs, rewrite_dicts,
+        autoload_dicts, merged_specs, lazy) against a 26-field observation
+        record. STEP 1 adds the twelve normative Rev-2 §11.3 groups as
+        SCHEMA; STEP 9 populates them, and `b32b_2b` is what refuses to let
+        the schema alone count as reconciliation.
+
+        The concept list below is this scaffold's OWN expectation and is
+        deliberately not read from production, so the contract and the code
+        cannot drift together — that drift is how three §11.3 concepts went
+        missing for two revisions."""
         plan_cls = getattr(_adf_module(), "_DrawDependencyPlan")
         slots = set(getattr(plan_cls, "__slots__", ()))
         missing = [g for g in self.PLAN_GROUPS if g not in slots]
         assert not missing, f"plan is missing Rev-2 groups: {missing}"
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 9 + AC_8 plan half: every normative plan "
-        "group reconciles with a NAMED observed counterpart (semantic map, "
-        "not identical spelling). Measured baseline failure: no Rev-2 group "
-        "is planned at all.")
     def test_b32b_2_plan_intent_reconciles_with_state_observation(self):
-        mod = _adf_module()
-        plan = set(getattr(mod._DrawDependencyPlan, "__slots__", ()))
-        state = set(getattr(mod._DrawPreparationState, "__slots__", ()))
-        assert plan & set(self.PLAN_GROUPS), "no Rev-2 group is planned at all"
-        for group, observed in self.PLAN_TO_STATE.items():
-            if group not in plan:
-                continue
-            assert any(o in state for o in observed), (
-                f"plan.{group} has no observed counterpart among {observed}")
-        unmapped = [g for g in plan & set(self.PLAN_GROUPS)
-                    if g not in self.PLAN_TO_STATE]
-        assert not unmapped, f"planned but unmapped to observation: {unmapped}"
+        """CLOSED BY B3.2b STEP 1 — was a strict xfail, now passing.
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 9, the STEP-9 half (MR-P1-1): schema "
-        "agreement is not reconciliation. A representative plan must be "
-        "BUILT, EXECUTED, and its intended requirements compared group by "
-        "group against the measured _DrawPreparationState. Measured baseline "
-        "failure: _DrawDependencyPlan has no Rev-2 group to reconcile, so "
-        "there is nothing to compare — the schema does not exist yet.")
-    def test_b32b_2b_plan_reconciles_against_executed_state(self):
-        """MR-P1-1. b32b_2 proves the MAP is coherent; this proves the map is
-        USED. It is deliberately the last thing B3.2b closes (STEP 9), because
-        the state record it reconciles against must be stable first."""
+        P0-STEP1-2, anti-drift half. v01 validated only the scaffold's own
+        map, so a semantically wrong production map passed every test. This
+        checks PRODUCTION's `REV2_GROUP_DISPOSITION` against the scaffold's
+        independent expectation, field by field.
+
+        The contract it enforces:
+          STATE      names measured field(s) that EXIST on the record
+          PLAN_ONLY  names NO state field — reconciled inside the plan
+          PENDING    names NO state field and names its owning STEP
+        and every entry carries an adjudicated reason, so a disposition
+        cannot be changed silently."""
         mod = _adf_module()
-        plan_slots = set(getattr(mod._DrawDependencyPlan, "__slots__", ()))
-        planned = [g for g in self.PLAN_GROUPS if g in plan_slots]
-        assert planned, (
-            "no Rev-2 group exists on the plan, so no executed reconciliation "
-            "is possible")
+        plan_cls = mod._DrawDependencyPlan
         state = mod._DrawPreparationState()
-        for group in planned:
-            observed = self.PLAN_TO_STATE[group]
-            present = [o for o in observed if hasattr(state, o)]
-            assert present, (
-                f"group {group} has no observable counterpart on an actual "
-                f"state instance")
+
+        prod = getattr(plan_cls, "REV2_GROUP_DISPOSITION", None)
+        assert prod is not None, (
+            "production declares no Rev-2 group disposition")
+        assert set(prod) == set(self.EXPECTED_DISPOSITION), (
+            f"production groups {sorted(set(prod) ^ set(self.EXPECTED_DISPOSITION))} "
+            f"differ from the scaffold's expectation")
+
+        for group, (want_kind, want_fields) in self.EXPECTED_DISPOSITION.items():
+            kind, fields, reason = prod[group]
+            assert kind == want_kind, (
+                f"{group}: production says {kind}, contract says {want_kind}")
+            assert tuple(fields) == tuple(want_fields), (
+                f"{group}: production counterparts {tuple(fields)} differ "
+                f"from the contract's {tuple(want_fields)}")
+            assert isinstance(reason, str) and len(reason) >= 30, (
+                f"{group}: disposition carries no adjudicated reason")
+
+            if kind == "STATE":
+                assert fields, f"{group}: STATE with no counterpart"
+                for name in fields:
+                    assert hasattr(state, name), (
+                        f"{group}: names {name!r}, which does not exist on "
+                        f"_DrawPreparationState — a counterpart that is not "
+                        f"there cannot be reconciled against")
+            else:
+                assert not fields, (
+                    f"{group}: {kind} must name NO state field; naming one is "
+                    f"the conflation P0-STEP1-1 removed")
+            if kind == "PENDING":
+                assert "STEP" in reason, (
+                    f"{group}: PENDING must name the step that owes the "
+                    f"measured counterpart")
+
+        derived = getattr(plan_cls, "REV2_GROUP_TO_STATE", {})
+        assert set(derived) == set(self.RECONCILABLE_GROUPS), (
+            "the derived STATE-only map must expose exactly the groups that "
+            "have a measured counterpart")
+
+    @needs_dfdraw
+    @pytest.mark.xfail(strict=True, reason=
+        "B3.2b acceptance, family 9, the STEP-9 half (MR-P1-1, GPT32 R3D "
+        "blocker A, and P0-STEP1-2 item-level half): a representative plan "
+        "must be BUILT, EXECUTED through the real draw_batch path, and its "
+        "planned items matched ITEM BY ITEM against the measured "
+        "_DrawPreparationState. Measured baseline failure after STEP 1: "
+        "'the executed plan carries no reconcilable requirement' — every "
+        "Rev-2 group is empty because STEP 1 delivers the schema and STEP 9 "
+        "populates it. This cannot XPASS from the schema alone, and it "
+        "cannot XPASS from an unrelated observed field being non-empty.")
+    def test_b32b_2b_plan_reconciles_against_executed_state(self):
+        """GPT32 R3D blocker A, plus the item-level half of P0-STEP1-2.
+
+        Two false-close mechanisms have been removed from this criterion:
+
+        1. v00 read `__slots__` and probed an empty state for attribute
+           existence, so STEP 1's schema alone would have made it XPASS.
+        2. v01 executed a real draw but reconciled a group whenever its
+           mapped observed field was NON-EMPTY. `planned branch x` against
+           `observed branch y` would have passed. GPT29 and GPT32 both
+           called that not-reconciliation, and they are right.
+
+        The predicate is now membership: every planned item must be FOUND
+        among the measured items of its counterpart fields. Only STATE
+        groups are reconcilable — PLAN_ONLY has no observation by
+        construction, PENDING has none yet — and asserting otherwise would
+        reintroduce exactly the conflation P0-STEP1-1 removed."""
+        adf = _mini_adf()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf.draw_batch({"p": {"expr": "x", "type": "hist"}}, verbose=False)
+
+        plan = getattr(adf, "_last_draw_plan", None)
+        state = getattr(adf, "_last_draw_prep_state", None)
+        assert plan is not None, "the executed plan was not retained"
+        assert state is not None, "no preparation record was produced"
+
+        def _items(value):
+            if value is None:
+                return []
+            if isinstance(value, dict):
+                return list(value)
+            if isinstance(value, (list, tuple, set, frozenset)):
+                return list(value)
+            return [value]
+
+        populated = [g for g in self.RECONCILABLE_GROUPS
+                     if getattr(plan, g, None)]
+        assert populated, (
+            "the executed plan carries no reconcilable requirement, so there "
+            "is nothing to match against the measured record (STEP 1 "
+            "delivers the schema; STEP 9 populates it)")
+
+        unreconciled = []
+        for group in populated:
+            planned = _items(getattr(plan, group))
+            measured = []
+            for name in self.EXPECTED_DISPOSITION[group][1]:
+                measured.extend(_items(getattr(state, name, None)))
+            missing = [item for item in planned if item not in measured]
+            if missing:
+                unreconciled.append(
+                    f"{group}: planned {missing[:4]} not found among the "
+                    f"measured {measured[:6]}")
+        assert not unreconciled, (
+            "planned items with no measured counterpart: "
+            + "; ".join(unreconciled))
 
     # ---- family 7: ADF-created PERSISTENT columns (AD-19 source 5) --------
 

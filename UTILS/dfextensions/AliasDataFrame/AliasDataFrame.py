@@ -1517,8 +1517,161 @@ class _DrawDependencyPlan:
     analysis side (especs) is isolated separately via each record's own
     structural copy (F-4, B3.2 panel)."""
 
+    # ---- B3.2b STEP 1 — the Rev-2 §11.3 dependency-plan SCHEMA -----------
+    #
+    # SCHEMA ONLY. These groups exist and are addressable from here on; they
+    # are POPULATED in STEP 9, after the executor's own record is stable.
+    # The split is deliberate and is the frozen work order: a plan that
+    # describes its groups is what STEP 2's resolver and STEP 3's authority
+    # sources hang off, while filling them requires the observation side to
+    # have stopped moving. `b32b_1`/`b32b_2` own the schema half and pass
+    # from this increment; `b32b_2b` owns the executed reconciliation and
+    # stays a strict xfail until STEP 9.
+    #
+    # WHY THE CONCEPT NAMES ARE HERE AND NOT ONLY IN THE TEST. Until now the
+    # normative concept list lived only in the acceptance scaffold, so the
+    # contract and the code could drift apart silently — which is how three
+    # §11.3 concepts (logical requirements, group materializations, slot and
+    # surface provenance) went missing from the scaffold for two revisions
+    # (B32B-R2-MR-P0-3). The list is production data now; the scaffold checks
+    # it against its own independent expectation rather than reading it.
+    REV2_GROUPS = (
+        "logical_requirements",     # what the call REQUIRES, before physics
+        "branches",                 # physical branch reads
+        "aliases",                  # alias materializations
+        "group_materializations",   # vector-slot / group expansion
+        "structs",                  # struct completion requirements
+        "subframes",                # subframe requirements
+        "joins",                    # join requirements
+        "temporary_columns",        # expected temporary writes
+        "persistent_columns",       # expected persistent writes
+        "cache_effects",            # cache effects / invalidations
+        "cleanup",                  # cleanup candidates
+        "slot_surface_provenance",  # which slot/surface asked for each item
+    )
+
+    # ---- P0-STEP1-1 (GPT29 + GPT26 + GPT32, convergent) -----------------
+    #
+    # The first STEP 1 draft carried a flat `REV2_GROUP_TO_STATE` that pointed
+    # every group at some non-empty field of the observation record. Three
+    # independent seats found that several of those pairings CONFLATE
+    # DIFFERENT SEMANTIC AXES, and they were right — I wrote the map:
+    #
+    #   slot_surface_provenance -> reads_by_catalog / prescan / completion...
+    #       Those record WHICH EXECUTOR STAGE performed a load. Slot/surface
+    #       provenance answers WHICH SLOT OR SURFACE REQUIRED it. "The
+    #       pre-scan caused this read" is not "spec p, slot selection needed
+    #       it". Different question, different axis.
+    #
+    #   joins -> reads_by_projection
+    #       A projection read is not a join. The observation record has NO
+    #       measured join field at all, so this pairing invented one.
+    #
+    #   logical_requirements -> requested_reads / prescan_text
+    #       `requested_reads` is a PHYSICAL branch-read intent, and is kept
+    #       separate and labelled precisely because it is intent (round-2
+    #       finding F5). A logical requirement is pre-physical by definition,
+    #       so this paired intent with intent and called it observation.
+    #
+    #   branches -> requested_reads, branches_loaded
+    #       Same defect, smaller: only `branches_loaded` is MEASURED.
+    #
+    # A map that points a group at a merely non-empty unrelated field lets
+    # STEP 9 "reconcile" by coincidence. Since STEP 2-9 inherit this
+    # vocabulary, the correction is here rather than downstream — GPT32:
+    # "STEP 2 would not automatically repair these defects and would instead
+    # build on them."
+    #
+    # THE DISPOSITION, not a mapping. Each group declares one of:
+    #
+    #   STATE      a genuine MEASURED counterpart exists on
+    #              _DrawPreparationState and is named
+    #   PLAN_ONLY  the group is reconciled inside the plan / effective specs;
+    #              there is no executor observation of it, and inventing one
+    #              would be the conflation this correction removes
+    #   PENDING    no genuine measured counterpart exists yet. It is owed
+    #              NO LATER THAN STEP 9 (reconciliation/closure); an earlier
+    #              step may introduce one, and then the disposition is
+    #              updated deliberately. F1 (GPT32, GPT26): the first draft
+    #              named STEP 3, but the frozen work order gives STEP 3 to
+    #              authority/persistence/reader work and STEP 9 to plan and
+    #              state reconciliation — so that text asserted an ownership
+    #              the work order does not assign
+    #
+    # PLAN_ONLY and PENDING name NO state field. That is the point: an honest
+    # "there is nothing to compare against yet" beats a pairing that looks
+    # like reconciliation and is not.
+    REV2_GROUP_DISPOSITION = {
+        "logical_requirements": (
+            "PLAN_ONLY", (),
+            "what the CALL requires, before any physical decision. It is "
+            "reconciled against the effective specs inside the plan; the "
+            "executor never observes a logical requirement as such"),
+        "branches": (
+            "STATE", ("branches_loaded",),
+            "branches_loaded is the measured before/after delta. "
+            "requested_reads is deliberately NOT listed: it is the plan's "
+            "own intent, kept and labelled as intent since round 2 (F5), so "
+            "pairing it here would reconcile intent with intent"),
+        "aliases": (
+            "STATE", ("aliases_materialized",),
+            "aliases_materialized is measured. aliases_pre_existing is "
+            "context for the delta, not the counterpart"),
+        "group_materializations": (
+            "STATE", ("aliases_by_projection", "projection_columns"),
+            "vector-slot / group expansion is observed as the projection "
+            "aliases and columns it produced"),
+        "structs": (
+            "STATE", ("structs_completed", "struct_members_present"),
+            "both are measured; struct completion was the round-2 case that "
+            "proved an intent-derived record can be affirmatively false"),
+        "subframes": (
+            "PENDING", (),
+            "the observation record has no subframe-requirement field, so "
+            "there is nothing measured to reconcile against and "
+            "reads_by_projection is a different axis. A genuine measured "
+            "counterpart must exist NO LATER THAN STEP 9 "
+            "reconciliation/closure; if an earlier implementation step "
+            "introduces one, this disposition is updated deliberately"),
+        "joins": (
+            "PENDING", (),
+            "no measured join record exists at all; the first draft pointed "
+            "this at reads_by_projection, which is a projection read and not "
+            "a join. A genuine measured counterpart must exist NO LATER THAN "
+            "STEP 9 reconciliation/closure; if an earlier implementation "
+            "step introduces one, this disposition is updated deliberately"),
+        "temporary_columns": (
+            "STATE", ("temporary_columns",),
+            "measured directly as the temporary columns the executor wrote "
+            "and is expected to retract"),
+        "persistent_columns": (
+            "STATE", ("columns_created",),
+            "columns_created is the measured column delta"),
+        "cache_effects": (
+            "STATE", ("cache_effects",),
+            "measured directly from the join-index cache and struct-catalog "
+            "fingerprint deltas taken at the stage boundaries"),
+        "cleanup": (
+            "STATE", ("cleanup_candidates", "aliases_dropped",
+                      "cleanup_outcome"),
+            "candidates are intent-adjacent but aliases_dropped and "
+            "cleanup_outcome are measured, and the group reconciles against "
+            "those"),
+        "slot_surface_provenance": (
+            "PLAN_ONLY", (),
+            "which slot or surface asked for a requirement is plan data, "
+            "derived from the effective specs. The reads_by_* fields answer "
+            "which executor STAGE loaded it, which is a different axis"),
+    }
+
+    #: Kept as a derived convenience for STATE groups only, so no caller can
+    #: read a counterpart for a group that has none.
+    REV2_GROUP_TO_STATE = {
+        _g: _d[1] for _g, _d in REV2_GROUP_DISPOSITION.items()
+        if _d[0] == "STATE"}
+
     __slots__ = ("especs", "rewrite_dicts", "autoload_dicts",
-                 "merged_specs", "lazy")
+                 "merged_specs", "lazy") + REV2_GROUPS
 
     def __init__(self, especs, rewrite_dicts, autoload_dicts,
                  merged_specs=(), lazy=False):
@@ -1532,6 +1685,23 @@ class _DrawDependencyPlan:
         self.rewrite_dicts = [d for d in rewrite_dicts if isinstance(d, dict)]
         self.autoload_dicts = [d for d in autoload_dicts
                                if isinstance(d, dict)]
+        # B3.2b STEP 1: the Rev-2 groups exist and are empty. STEP 9 fills
+        # them. `slot_surface_provenance` is a mapping by nature — it answers
+        # "which slot or surface asked for this item" — the rest are ordered
+        # collections of requirements.
+        for _group in self.REV2_GROUPS:
+            setattr(self, _group,
+                    {} if _group == "slot_surface_provenance" else ())
+
+    # NO is_populated() HELPER, deliberately. The first STEP 1 draft added one
+    # and `test_b32_24_plan_exposes_no_effectful_method` failed: that ratified
+    # B3.2 test allows exactly `prescan_text`. The helper is pure — it reads
+    # only its own slots — so the property the test defends was not violated,
+    # but widening a ratified allow-list to admit a convenience method is the
+    # wrong trade in an increment whose whole scope is SCHEMA. Emptiness is
+    # `any(getattr(plan, g) for g in REV2_GROUPS)` at the call site, and the
+    # helper can be introduced in STEP 9 when population makes it load-bearing
+    # — with that test updated deliberately rather than as collateral.
 
     def prescan_text(self):
         """Scalar-slot pre-scan text for the whole call (one string).
@@ -17500,6 +17670,10 @@ function collapseDepth(maxD) {{
         # absent record is honest, a stale one is not. Unmigrated surfaces
         # therefore leave None until B3.3 gives them a real record.
         self._last_draw_prep_state = None
+        # B3.2b STEP 1: the plan that produced that record, for AC_8's
+        # intent-vs-observation reconciliation. Same honesty rule as the
+        # state — absent beats stale, so an unmigrated surface leaves None.
+        self._last_draw_plan = None
         # Import dfdraw
         try:
             from dfextensions.dfdraw import DFDraw
@@ -18695,6 +18869,14 @@ function collapseDepth(maxD) {{
         # P1-FailureStateTruthfulness). The fields are all empty at this
         # point, so nothing false is published either.
         self._last_draw_prep_state = state
+        # B3.2b STEP 1. AC_8's plan half reconciles INTENT with OBSERVATION,
+        # and until now only the observation survived the call — the plan was
+        # a local in draw_batch and was discarded. Retaining it alongside the
+        # state is the minimum that makes reconciliation expressible at all;
+        # `b32b_2b` is the acceptance criterion that consumes the pair.
+        # Held by reference deliberately, exactly as the state is: this is a
+        # record of what THIS call planned, not a copy for anyone to mutate.
+        self._last_draw_plan = plan
         _obs0 = self._observe_prep_effects()
         _fp0 = getattr(self, "_struct_catalog_fp", None)
         _jc0 = len(getattr(self, "_join_index_cache", None) or {})
@@ -19329,6 +19511,9 @@ function collapseDepth(maxD) {{
         # absent record is honest, a stale one is not. Unmigrated surfaces
         # therefore leave None until B3.3 gives them a real record.
         self._last_draw_prep_state = None
+        # B3.2b STEP 1: same invalidation for the retained plan — a stale
+        # plan next to a fresh record would be worse than none.
+        self._last_draw_plan = None
         # PHASE_13_75_ADF DELTA-2 P0-4: caller-owned specifications and defaults
         # are NEVER mutated — the merge/rewrite/projection/delegation chain
         # operates on local copies.
@@ -19694,6 +19879,9 @@ function collapseDepth(maxD) {{
         # entry (reasoning at draw_batch). draw_figures is unmigrated, so it
         # leaves None rather than the previous call's record.
         self._last_draw_prep_state = None
+        # B3.2b STEP 1: same invalidation for the retained plan — a stale
+        # plan next to a fresh record would be worse than none.
+        self._last_draw_plan = None
         # PHASE_13_75_ADF DELTA-2 P0-4: caller-owned specifications and defaults
         # are NEVER mutated — the merge/rewrite/projection/delegation chain
         # operates on local copies.
