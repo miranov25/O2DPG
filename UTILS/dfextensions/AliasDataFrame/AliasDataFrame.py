@@ -471,6 +471,92 @@ _ROW_LOCAL_NODES = (
 )
 
 
+def _numpy_dtype_can_hold_gap(dtype):
+    """Is this dtype OUTSIDE the AD-19 NumPy gap refusal?
+
+    B3.2b STEP 2. The question was asked seven times in seven places as an
+    inline `dtype.kind in "biu"` -- and once as `"iub"`, the same set spelled
+    differently, which is how a storage-family rule ends up with seven
+    independent answers. It has one name now.
+
+    WHAT IT DECIDES. Exactly one thing: whether a value of this dtype falls
+    under the refusal that AD-19 states as "int64 cannot represent a gap, and
+    ADF will not choose a neutral value for you". NumPy bool / int / unsigned
+    do -- there is no NaN in the domain -- and this returns False for them.
+
+    WHAT IT DOES NOT DECIDE, and `S2-P1-2` is why this is spelled out.
+    The first STEP 2 name was `_numpy_dtype_can_hold_gap`, which claims a
+    general semantic property, and for a non-NumPy dtype the body simply
+    returns True. GPT31, GPT29 and Fabble5_7 all pointed at `Sparse[int64]`:
+    it is not an `np.dtype`, so it lands in that branch, yet holding a gap
+    would require widening it to `Sparse[float64]` -- so the broad reading is
+    false, and it would contradict the sparse preservation contracts the
+    product already has.
+
+    Nothing was wrong at the seven call sites: each already guarded on
+    `isinstance(_dtype, np.dtype)`, or received a value that had been through
+    `np.asarray`, so behaviour is unchanged. The defect was the CLAIM, not
+    the code. The name now says NumPy, and True for a non-NumPy dtype means
+    only "not subject to the NumPy refusal -- its own storage family owns the
+    question", which is STEP 4's work (Arrow / sparse / categorical).
+
+    Fixed-width NumPy `U`/`S` are inside the NumPy domain and are NOT `biu`,
+    so they return True: a NumPy string array's gap is an empty string or an
+    object-dtype NaN, which is a storage-family question and again STEP 4's.
+    Recorded rather than silently inherited.
+    """
+    if not isinstance(dtype, np.dtype):
+        return True          # extension/sparse/Arrow: not the NumPy refusal
+    return dtype.kind not in "biu"
+
+
+def _int64_key_cast_is_lossless(*arrays):
+    """Does casting these integer key arrays to int64 preserve their VALUES?
+
+    B3.2b STEP 2 CORRECTION, `S2-P0-1`. The Numba join fast path normalized
+    both key sides with `.astype(np.int64)` and compared the results. For
+
+        int64(-1)            -> int64(-1)
+        uint64(2**64 - 1)    -> int64(-1)
+
+    two DISTINCT keys become equal, so rows that must not match do match --
+    a silent relational correctness violation. GPT32 executed it at
+    `n >= NUMBA_MIN_ROWS` and observed false matches on every row where
+    pandas, on the ORIGINAL typed keys, reports none.
+
+    The defect predates B3.2b. What STEP 2 did was certify the site as
+    adjudicated-safe `LOCAL` with the reason "index arithmetic, not the dtype
+    of any published column" -- true about the PURPOSE of the cast and false
+    about its CONSEQUENCE. A key normalization that can collide two distinct
+    keys is not safe because it never becomes a column dtype.
+
+    NOT A ROUND-TRIP TEST, and the first draft of this function got that
+    wrong. `uint64(2**64-1).astype(int64).astype(uint64)` returns
+    `2**64-1` -- the round trip SUCCEEDS, because two's complement gives
+    int64(-1) and uint64(2**64-1) identical BITS. Bit preservation is exactly
+    what makes the collision possible; it cannot be what detects it. The
+    question is whether the VALUE survives, and for an unsigned key that is a
+    range question:
+
+        signed    every NumPy signed width fits in int64 -> always safe
+        unsigned  safe iff max(key) <= 2**63 - 1; at or above that the int64
+                  image is NEGATIVE and no longer denotes the same number
+
+    When this returns False the caller must FAIL CLOSED to the pandas merge,
+    which compares the keys in their own domains.
+    """
+    _INT64_MAX = np.iinfo(np.int64).max
+    for _a in arrays:
+        _arr = np.asarray(_a)
+        if not np.issubdtype(_arr.dtype, np.integer):
+            return False
+        if not np.issubdtype(_arr.dtype, np.unsignedinteger):
+            continue                      # any signed width fits int64
+        if _arr.size and int(_arr.max()) > _INT64_MAX:
+            return False                  # its int64 image would be negative
+    return True
+
+
 def _expression_is_row_local(expr):
     """Fail-closed proof that `expr` is row-local, hence mask-safe.
 
@@ -615,6 +701,524 @@ class CompressionState:
 # =============================================================================
 
 # Dedicated metadata key to avoid collisions
+#: B3.2b STEP 2 / D_3 §6.1 — the backend casting mode AR-1 ratifies, pinned
+#: as a named constant so a future NumPy default cannot move the contract
+#: without the change being visible in a diff. AR-1 is standards-first: an
+#: ORDINARY conversion of COMPUTED data follows documented backend semantics
+#: rather than inventing extra strictness, and `casting="unsafe"` is the
+#: NumPy spelling of that. It governs computed data only — never a configured
+#: fill, which is validated against the target (Decision 3 / AD-14).
+#: Consumed in `_safe_dtype_cast`, the single applier of a resolved target.
+ADF_CASTING_MODE = "unsafe"
+
+#: B3.2b STEP 2 — THE DTYPE CALL-SITE LEDGER, PER SITE.
+#:
+#: `S2-P1-1`. The first STEP 2 ledger keyed by FUNCTION NAME and the audit
+#: `break`-ed after the first matching operation, so a SECOND unclassified
+#: cast inside an already-classified function passed. GPT32 demonstrated it by
+#: mutation, GPT31 found the same mechanism independently, and Sonet30 saw the
+#: `break` and read it as a disclosure. It was not a disclosure: Decision 6
+#: said "classify call sites, not merely syntax", and the CRR then described
+#: the result as "every site classified". It was every FUNCTION.
+#:
+#: The key is now `function:operation:ordinal-within-function`, so every site
+#: is individually addressable and a new one cannot hide behind a classified
+#: neighbour. Ordinals are assigned in source order (line, column).
+#:
+#: The operation is part of the key, which is what lets one function hold
+#: sites of different kinds -- `_compute_join_indices:astype:*` is a guarded
+#: key normalization while `_compute_join_indices:to_numpy:0` merely obtains
+#: an array.
+#:
+#: `values_call` is a mapping `.values()`. That is a proof, not an
+#: impression: pandas `.values` is a PROPERTY, so `x.values()` on a Series or
+#: DataFrame raises `TypeError: 'numpy.ndarray' object is not callable`. Any
+#: `x.values()` that executes in a passing test has a mapping receiver. The
+#: executable oracle distinguishes it structurally, not the prose.
+#:
+#: KINDS
+#:   DECISION     chooses or synthesizes what dtype a value should have
+#:   APPLICATION  the target was resolved upstream; this only casts
+#:   INSPECTION   branches on the dtype family
+#:   EXTRACTION   obtains the underlying array; chooses no dtype
+#:   LOCAL        a justified local operation, justification stated
+#:   LATER:<step> a real dtype concern owned by a named later B3.2b step
+DTYPE_SITE_DISPOSITION = {
+    "_numpy_dtype_can_hold_gap:kind:0": (
+        "INSPECTION",
+        "dtype-family branch; routed through"
+        "_numpy_dtype_can_hold_gapunless the question is a different one"),
+    "residual_mask:values_call:0": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "update_schema:astype:0": (
+        "APPLICATION",
+        "applies the dtype recorded in the schema entry"),
+    "apply_dtypes:astype:0": (
+        "LATER:STEP 7",
+        "public conversion API. STEP 7's conversion-API audit ownswhether"
+        "it routes through the central policy or carries adisposition;"
+        "`b32b_17` is its criterion"),
+    "register_struct:values_call:0": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "_prepare_struct_refs:values_call:0": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "register_subframe:values_call:0": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "_place_fill:to_numpy:0": (
+        "EXTRACTION",
+        "array access inside a APPLICATION site; obtains the"
+        "array,chooses no dtype"),
+    "_place_fill:astype:0": (
+        "APPLICATION",
+        "restores the ORIGINAL sparse dtype after the fill; the target"
+        "isthe input's own dtype. The `to_numpy` is the dense"
+        "temporaryAD-15 assigns to B3.2b and `b32b_15b` owns"),
+    "_apply_fill_config:values:0": (
+        "EXTRACTION",
+        "array access so the configured fill can be placed; the"
+        "dtypequestion is _place_fill's"),
+    "_nan_inf_probe:to_numpy:0": (
+        "EXTRACTION",
+        "reads values to test finiteness for the AR-7 NaN/Inf stage;"
+        "notarget is chosen"),
+    "_compute_join_indices:astype:0": (
+        "LOCAL",
+        "`astype(np.int64)` normalizes JOIN KEYS for the Numba fast"
+        "path,and produces the row-index vector. GUARDED as of S2-P0-1:"
+        "thecast is taken ONLY when `_int64_key_cast_is_lossless` proves"
+        "itround-trips for both key sides, otherwise the pandas merge"
+        "runsand compares the keys in their own domains. The first STEP"
+        "2ledger called this site safe because the cast never becomes"
+        "apublished column dtype -- true about the purpose, false"
+        "aboutthe consequence, and int64(-1) vs uint64(2**64-1) is"
+        "thecounterexample"),
+    "_compute_join_indices:astype:1": (
+        "LOCAL",
+        "`astype(np.int64)` normalizes JOIN KEYS for the Numba fast"
+        "path,and produces the row-index vector. GUARDED as of S2-P0-1:"
+        "thecast is taken ONLY when `_int64_key_cast_is_lossless` proves"
+        "itround-trips for both key sides, otherwise the pandas merge"
+        "runsand compares the keys in their own domains. The first STEP"
+        "2ledger called this site safe because the cast never becomes"
+        "apublished column dtype -- true about the purpose, false"
+        "aboutthe consequence, and int64(-1) vs uint64(2**64-1) is"
+        "thecounterexample"),
+    "_compute_join_indices:astype:2": (
+        "LOCAL",
+        "`astype(np.int64)` normalizes JOIN KEYS for the Numba fast"
+        "path,and produces the row-index vector. GUARDED as of S2-P0-1:"
+        "thecast is taken ONLY when `_int64_key_cast_is_lossless` proves"
+        "itround-trips for both key sides, otherwise the pandas merge"
+        "runsand compares the keys in their own domains. The first STEP"
+        "2ledger called this site safe because the cast never becomes"
+        "apublished column dtype -- true about the purpose, false"
+        "aboutthe consequence, and int64(-1) vs uint64(2**64-1) is"
+        "thecounterexample"),
+    "_compute_join_indices:astype:3": (
+        "LOCAL",
+        "S2-P0-1 second half: normalizes an UNSAFE integer key pair to object "
+        "dtype so the pandas merge compares Python ints by VALUE. Reached "
+        "only when _int64_key_cast_is_lossless refuses, so the ordinary path "
+        "keeps its native-dtype merge"),
+    "_compute_join_indices:astype:4": (
+        "LOCAL",
+        "the child side of the same S2-P0-1 object normalization; both key "
+        "sides must move together or the merge compares object against "
+        "int64"),
+    "_compute_join_indices:to_numpy:1": (
+        "EXTRACTION",
+        "reads the parent key column to test whether the int64 domain can "
+        "represent it; obtains an array, chooses no dtype"),
+    "_compute_join_indices:to_numpy:2": (
+        "EXTRACTION",
+        "reads the child key column for the same domain test; obtains an "
+        "array, chooses no dtype"),
+    "_compute_join_indices:to_numpy:0": (
+        "EXTRACTION",
+        "array access inside a LOCAL site; obtains the array, chooses"
+        "nodtype"),
+    "_key_arrays_equal:astype:0": (
+        "LOCAL",
+        "`astype(bool)` on a comparison result inside an equality"
+        "helper;decides nothing about a column"),
+    "_join_key_values:values:0": (
+        "EXTRACTION",
+        "obtains the left and right key arrays to join on; the join"
+        "keydtype is normalized in _compute_join_indices"),
+    "_join_key_values:values:1": (
+        "EXTRACTION",
+        "obtains the left and right key arrays to join on; the join"
+        "keydtype is normalized in _compute_join_indices"),
+    "_join_key_values:values:2": (
+        "EXTRACTION",
+        "obtains the left and right key arrays to join on; the join"
+        "keydtype is normalized in _compute_join_indices"),
+    "_join_key_values:values:3": (
+        "EXTRACTION",
+        "obtains the left and right key arrays to join on; the join"
+        "keydtype is normalized in _compute_join_indices"),
+    "_extract_subframe_values_arrow:to_numpy:0": (
+        "EXTRACTION",
+        "array access inside a LOCAL site; obtains the array, chooses"
+        "nodtype"),
+    "_extract_subframe_values_arrow:to_numpy:1": (
+        "EXTRACTION",
+        "array access inside a LOCAL site; obtains the array, chooses"
+        "nodtype"),
+    "_extract_subframe_values_arrow:astype:0": (
+        "LOCAL",
+        "the `astype(np.float64)` widening here is UNREACHABLE for a gap-"
+        "incapable dtype and was measured as such: the caller"
+        "routeseverything that is not a plain real float to the typed"
+        "gather(`if not self._is_plain_float_dtype(_dtype)`), so an int64"
+        "childcolumn with a missing key raises the AD-19 refusal and"
+        "neverreaches this line -- verified by instrumenting both"
+        "gathers(arrow=0, typed=1). Defensive, not an asymmetry"),
+    "_matched_values_survive:to_numpy:0": (
+        "EXTRACTION",
+        "array access inside a LOCAL site; obtains the array, chooses"
+        "nodtype"),
+    "_matched_values_survive:astype:0": (
+        "LOCAL",
+        "AD-19 verification helper: it casts to the EXPECTED dtype"
+        "andback to prove no non-missing value changed. The target is"
+        "thecaller's, not chosen here"),
+    "_matched_values_survive:astype:1": (
+        "LOCAL",
+        "AD-19 verification helper: it casts to the EXPECTED dtype"
+        "andback to prove no non-missing value changed. The target is"
+        "thecaller's, not chosen here"),
+    "_stored_values:to_numpy:0": (
+        "EXTRACTION",
+        "reads an already-stored column; its dtype was decided when itwas"
+        "published"),
+    "_extract_subframe_values_typed:values:0": (
+        "EXTRACTION",
+        "the AD-19 symmetric gather. Its dtype decisions already"
+        "runthrough the authority machinery; the two `.values` reads"
+        "obtainthe source array to take from"),
+    "_extract_subframe_values_typed:values:1": (
+        "EXTRACTION",
+        "the AD-19 symmetric gather. Its dtype decisions already"
+        "runthrough the authority machinery; the two `.values` reads"
+        "obtainthe source array to take from"),
+    "_extract_subframe_values_cached:to_numpy:0": (
+        "EXTRACTION",
+        "cache lookup and array access; the cached gather chooses nodtype"
+        "-- it returns what the cache holds"),
+    "_extract_subframe_values_cached:values:0": (
+        "EXTRACTION",
+        "cache lookup and array access; the cached gather chooses nodtype"
+        "-- it returns what the cache holds"),
+    "_extract_subframe_values_cached:to_numpy:1": (
+        "EXTRACTION",
+        "cache lookup and array access; the cached gather chooses nodtype"
+        "-- it returns what the cache holds"),
+    "_eval_arrow:values:0": (
+        "EXTRACTION",
+        "Arrow evaluation buffers; the backend owns its own types and"
+        "noADF target is chosen here"),
+    "_eval_arrow:values:1": (
+        "EXTRACTION",
+        "Arrow evaluation buffers; the backend owns its own types and"
+        "noADF target is chosen here"),
+    "_eval_arrow:to_numpy:0": (
+        "EXTRACTION",
+        "Arrow evaluation buffers; the backend owns its own types and"
+        "noADF target is chosen here"),
+    "describe_aliases:kind:0": (
+        "INSPECTION",
+        "`kind in 'iuf'` asks IS THIS NUMERIC so mean/std can be"
+        "reported-- a different question from gap-capability, and a"
+        "reportingconcern. Routing it through the storage-family"
+        "predicate wouldconflate two unrelated questions to make a count"
+        "fall"),
+    "describe_aliases:kind:1": (
+        "INSPECTION",
+        "`kind in 'iuf'` asks IS THIS NUMERIC so mean/std can be"
+        "reported-- a different question from gap-capability, and a"
+        "reportingconcern. Routing it through the storage-family"
+        "predicate wouldconflate two unrelated questions to make a count"
+        "fall"),
+    "describe_aliases:values_call:0": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "describe_aliases:values_call:1": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "_retarget_for_fill:astype:0": (
+        "APPLICATION",
+        "round-trips DEFINED rows through the staging buffer chosen"
+        "by`_buffer_dtype_for_fill` and refuses if any changed --"
+        "round11f's silent-corruption guard. Both casts apply targets"
+        "decidedelsewhere"),
+    "_retarget_for_fill:astype:1": (
+        "APPLICATION",
+        "round-trips DEFINED rows through the staging buffer chosen"
+        "by`_buffer_dtype_for_fill` and refuses if any changed --"
+        "round11f's silent-corruption guard. Both casts apply targets"
+        "decidedelsewhere"),
+    "materialize_aliases:astype:0": (
+        "APPLICATION",
+        "applies a DECLARED dtype. MEASURED, and reverted once:"
+        "routingthis through `_resolve_target_dtype` makes the resolver"
+        "answerwith the RECORDED authority when no declaration exists,"
+        "andcasting a drifted result back to it SWALLOWS the AD-19"
+        "source-4drift refusal (`b32b_213` went from raising to"
+        "coercing). Theauthority half is already centralized"
+        "in`_enforce_recorded_authority`"),
+    "get_alias_series:astype:0": (
+        "APPLICATION",
+        "applies the caller's dtype override or the declaration."
+        "AD-20clause 3's recorded-authority half is enforced downstream,"
+        "notby re-resolving here"),
+    "get_alias_array:to_numpy:0": (
+        "EXTRACTION",
+        "converts the Series get_alias_series produced into an array;"
+        "thedtype was already applied there"),
+    "save:astype:0": (
+        "LOCAL",
+        "float16 -> float32 because PyArrow/Parquet has no"
+        "halffloat.Documented at the site, and the column_dtypes metadata"
+        "restoresfloat16 on load, so no information is lost"),
+    "load:astype:0": (
+        "LATER:STEP 3",
+        "reader ingestion. The authority is source 1 or source 2, andSTEP"
+        "3 owns establishing it"),
+    "export_tree:astype:0": (
+        "APPLICATION",
+        "applies the export dtype map assembled by the caller"),
+    "export_tree:values:0": (
+        "EXTRACTION",
+        "array access inside a APPLICATION site; obtains the"
+        "array,chooses no dtype"),
+    "_write_all_data_to_uproot:astype:0": (
+        "APPLICATION",
+        "applies the same export dtype map"),
+    "_write_all_data_to_uproot:values:0": (
+        "EXTRACTION",
+        "array access inside a APPLICATION site; obtains the"
+        "array,chooses no dtype"),
+    "read_tree:astype:0": (
+        "LATER:STEP 3",
+        "applies a per-branch target while reading. Whether that targetis"
+        "AD-19 SOURCE 1 (reader metadata) is exactly what STEP 3decides;"
+        "`b32b_5` is its criterion"),
+    "read_tree:astype:1": (
+        "LATER:STEP 3",
+        "applies a per-branch target while reading. Whether that targetis"
+        "AD-19 SOURCE 1 (reader metadata) is exactly what STEP 3decides;"
+        "`b32b_5` is its criterion"),
+    "read_tree:astype:2": (
+        "LATER:STEP 3",
+        "applies a per-branch target while reading. Whether that targetis"
+        "AD-19 SOURCE 1 (reader metadata) is exactly what STEP 3decides;"
+        "`b32b_5` is its criterion"),
+    "read_tree:astype:3": (
+        "LATER:STEP 3",
+        "applies a per-branch target while reading. Whether that targetis"
+        "AD-19 SOURCE 1 (reader metadata) is exactly what STEP 3decides;"
+        "`b32b_5` is its criterion"),
+    "_merge_loaded_data:values:0": (
+        "EXTRACTION",
+        "array access while merging loaded branch data; no dtype"
+        "decisionis taken"),
+    "ensure_branches:values_call:0": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "close:values_call:0": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "compress_columns:values:0": (
+        "EXTRACTION",
+        "array access for the compression codec; the compressed"
+        "dtypecomes from the user's spec"),
+    "_measure_compression_precision:values:0": (
+        "EXTRACTION",
+        "array access inside a LOCAL site; obtains the array, chooses"
+        "nodtype"),
+    "_measure_compression_precision:astype:0": (
+        "LOCAL",
+        "casts both sides to float64 to compute RMSE and max error."
+        "Ameasurement buffer for a report, never published"),
+    "_measure_compression_precision:astype:1": (
+        "LOCAL",
+        "casts both sides to float64 to compute RMSE and max error."
+        "Ameasurement buffer for a report, never published"),
+    "decompress_columns:astype:0": (
+        "APPLICATION",
+        "applies the decompressed dtype from the stored compressionschema"),
+    "describe_compression:values_call:0": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "describe_compression:values_call:1": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "describe_schema:values_call:0": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "describe_schema:values_call:1": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "apply_schema:astype:0": (
+        "APPLICATION",
+        "re-applies a declared schema; the target is restored, notdecided"),
+    "convert_dtypes:astype:0": (
+        "LATER:STEP 7",
+        "public conversion API; same owner as apply_dtypes"),
+    "describe_structure:values_call:0": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "auto_alias_subframe:values:0": (
+        "EXTRACTION",
+        "array access while deriving subframe aliases automatically"),
+    "auto_alias_subframe:values:1": (
+        "EXTRACTION",
+        "array access while deriving subframe aliases automatically"),
+    "_ml_read_blob:astype:0": (
+        "LOCAL",
+        "uint8 is the byte-blob representation, not a column dtype"),
+    "_ml_register_resolved:values_call:0": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "_group_probe_validate:values:0": (
+        "EXTRACTION",
+        "array access while probing a group for validation"),
+    "_group_validate:values_call:0": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "deregister_model:values_call:0": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "deregister_model:values_call:1": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "_eval_alias_on_df:values:0": (
+        "EXTRACTION",
+        "array access while evaluating an alias expression on the"
+        "frame;no target dtype is chosen"),
+    "_eval_alias_on_df:values:1": (
+        "EXTRACTION",
+        "array access while evaluating an alias expression on the"
+        "frame;no target dtype is chosen"),
+    "draw:values:0": (
+        "EXTRACTION",
+        "array access on an unmigrated draw surface; B3.3 owns"
+        "migratingit and will reclassify then"),
+    "register_evaluator:values_call:0": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "register_evaluator_from_metadata:astype:0": (
+        "LOCAL",
+        "same bridge representation as _bridge_eval_func"),
+    "_validate_regression_subframe_contracts:to_numpy:0": (
+        "EXTRACTION",
+        "reads values to validate a regression subframe contract;"
+        "notarget dtype is chosen"),
+    "_execute_draw_projection_effects:values:0": (
+        "EXTRACTION",
+        "mapping iteration and array access in the executor"),
+    "_execute_draw_projection_effects:values_call:0": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "draw_batch:values_call:0": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "draw_batch:values_call:1": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "draw_figures:values:0": (
+        "EXTRACTION",
+        "array access on an unmigrated draw surface; B3.3 owns"
+        "migratingit and will reclassify then"),
+    "_compute_fit_validation:values:0": (
+        "EXTRACTION",
+        "array access to validate a fit result; a reporting path"
+        "thatchooses no dtype"),
+    "_compute_statistics:values:0": (
+        "EXTRACTION",
+        "array access to compute summary statistics; chooses no dtype"
+        "forany column"),
+    "_compute_statistics:values:1": (
+        "EXTRACTION",
+        "array access to compute summary statistics; chooses no dtype"
+        "forany column"),
+    "draw_fit_summary:values:0": (
+        "EXTRACTION",
+        "array access to build the fit-summary report"),
+    "_has_key:values_call:0": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "_do_materialize:astype:0": (
+        "APPLICATION",
+        "same site as materialize_aliases; see that entry"),
+    "_eval_func:values_call:0": (
+        "EXTRACTION",
+        "mapping .values() -- dictionary iteration. pandas .values is"
+        "aPROPERTY, so x.values() on a Series raises TypeError; any"
+        "callthat executes proves a mapping receiver. Not a dtype site"),
+    "_bridge_eval_func:astype:0": (
+        "LOCAL",
+        "float64 for the GBregression bridge layer, feeding"
+        "predictorsthat are float64 by construction"),
+    "read_branch:astype:0": (
+        "LATER:STEP 3",
+        "the same per-branch reader path as read_tree; STEP 3"
+        "decideswhether its target is AD-19 source 1"),
+    "read_branch:astype:1": (
+        "LATER:STEP 3",
+        "the same per-branch reader path as read_tree; STEP 3"
+        "decideswhether its target is AD-19 source 1"),
+}
+
 SCHEMA_METADATA_KEY = "__alias_dataframe_schema__"
 SCHEMA_VERSION = 1
 SCHEMA_VERSION_V2 = 2  # New v2 format with groups, metadata, smart formatting
@@ -2537,8 +3141,14 @@ class AliasDataFrame:
 
         # EXACT PATH: an integer/Boolean source needs no float detour at all.
         # This is the case the corruption lived in.
-        if _arr.dtype.kind in 'biu':
-            _out = _arr.astype(target)
+        if not _numpy_dtype_can_hold_gap(_arr.dtype):
+            # AR-1 standards-first: the ORDINARY conversion of computed data
+            # follows documented backend semantics, with the mode PINNED
+            # (D_3 §6.1) so a future NumPy default cannot move the contract
+            # silently. The exactness guarantee below does not come from the
+            # casting mode -- it comes from the round-trip check, which is
+            # what actually forbids a value change.
+            _out = _arr.astype(target, casting=ADF_CASTING_MODE)
             if not np.array_equal(_out.astype(_arr.dtype), _arr):
                 raise ValueError(
                     f"[dtype_cast] alias {alias_name!r}: casting {_arr.dtype} "
@@ -5620,10 +6230,17 @@ class AliasDataFrame:
             main_keys = self._join_key_values(self.df, col, 'parent', sf_name)
             sub_keys = self._join_key_values(sub_df, rcol, 'child', sf_name)
             
-            # Check if keys are integer-compatible
-            if (np.issubdtype(main_keys.dtype, np.integer) and 
-                np.issubdtype(sub_keys.dtype, np.integer)):
-                
+            # Check if keys are integer-compatible AND that the int64
+            # normalization below preserves equality for BOTH key domains.
+            # S2-P0-1: without the second condition, int64(-1) and
+            # uint64(2**64-1) both normalize to -1 and FALSELY MATCH. When the
+            # round trip fails we fall through to the pandas merge, which
+            # compares the keys in their own domains -- fail closed, never a
+            # silent wrong join.
+            if (np.issubdtype(main_keys.dtype, np.integer) and
+                    np.issubdtype(sub_keys.dtype, np.integer) and
+                    _int64_key_cast_is_lossless(main_keys, sub_keys)):
+
                 # Use Numba index lookup
                 indices, missing_mask, used_numba = numba_compute_join_indices(
                     main_keys.astype(np.int64),
@@ -5693,6 +6310,33 @@ class AliasDataFrame:
         main_keys_df = pd.DataFrame(
             {_c: self._join_key_values(self.df, _c, 'parent', sf_name)
              for _c in left_cols})
+
+        # S2-P0-1, SECOND HALF. Failing closed OUT of the Numba fast path is
+        # not enough: on pandas 1.5.3 the merge below has the SAME collision.
+        # Measured, on the architect's exact version:
+        #
+        #     pandas 1.5.3   merge(int64(-1), uint64(2**64-1))  -> MATCHED
+        #     pandas 3.0.2   the same merge                     -> no match
+        #
+        # The review reasoned "pandas on the original typed keys reports no
+        # match", which is true on the reviewers' pandas and FALSE on the one
+        # this project runs -- so the fallback I fail closed to was itself
+        # wrong, and `b32b_20b` caught it on alma2 after passing in a
+        # pandas-3 sandbox. Same version-divergence trap as the Arrow round.
+        #
+        # Object dtype holds Python ints, which compare by VALUE on every
+        # pandas version: -1 != 18446744073709551615. Applied only when the
+        # int64 domain cannot represent both key sides, so the ordinary path
+        # keeps its fast native-dtype merge.
+        for _lc, _rc in zip(left_cols, right_cols):
+            _mk = main_keys_df[_lc].to_numpy()
+            _sk = sub_keys_df[_lc].to_numpy()
+            if (np.issubdtype(_mk.dtype, np.integer)
+                    and np.issubdtype(_sk.dtype, np.integer)
+                    and not _int64_key_cast_is_lossless(_mk, _sk)):
+                main_keys_df[_lc] = _mk.astype(object)
+                sub_keys_df[_lc] = _sk.astype(object)
+
         merged = main_keys_df.merge(sub_keys_df, on=left_cols, how='left', sort=False)
         
         # Extract indices and missing mask
@@ -5746,7 +6390,7 @@ class AliasDataFrame:
             else b
         if a.shape != b.shape:
             return False
-        if a.dtype == b.dtype and a.dtype.kind in "iub":
+        if a.dtype == b.dtype and not _numpy_dtype_can_hold_gap(a.dtype):
             # integer/bool/unsigned NumPy arrays cannot hold a missing value
             return bool(np.array_equal(a, b))
 
@@ -6097,7 +6741,7 @@ class AliasDataFrame:
         # 10M-row child column, on a code path that runs inside every draw.
         # That would have violated the D-ADF-DICT contract in the act of
         # enforcing AD-19.
-        if _expected.dtype.kind in "biu" and _expected.size:
+        if not _numpy_dtype_can_hold_gap(_expected.dtype) and _expected.size:
             try:
                 if not np.array_equal(
                         _got.astype(_expected.dtype, copy=False), _expected):
@@ -6321,7 +6965,7 @@ class AliasDataFrame:
         _placeholder_mask = None
         if (_fill is None and _n_missing > 0
                 and ctx is not None and ctx.carry_mask
-                and isinstance(_dtype, np.dtype) and _dtype.kind in "biu"):
+                and not _numpy_dtype_can_hold_gap(_dtype)):
             _fill = self._authoritative_placeholder(_dtype, _col)
             _placeholder_mask = np.asarray(missing_mask, dtype=bool)
 
@@ -6363,7 +7007,7 @@ class AliasDataFrame:
             if _exact is not None:
                 _result = _exact
         if str(_result.dtype) != str(_dtype):
-            if isinstance(_dtype, np.dtype) and _dtype.kind in "biu":
+            if not _numpy_dtype_can_hold_gap(_dtype):
                 # AD-19 (RATIFIED, architect 2026-07-29) — Option 1 with an
                 # operational definition. Every dtype observable from source
                 # metadata, an existing physical column, schema metadata, an
@@ -9298,9 +9942,26 @@ function collapseDepth(maxD) {{
                 # §9 step 10b — NaN/Inf produced by ARITHMETIC. Different
                 # condition, own rule, unchanged (AR-7).
                 if fill_val is not None and \
-                        np.asarray(result).dtype.kind not in 'biu':
+                        _numpy_dtype_can_hold_gap(np.asarray(result).dtype):
                     result = np.where(np.isfinite(result), result, fill_val)
 
+                # B3.2b STEP 2 — ONE RESOLVER. This read `self.alias_dtypes`
+                # directly, which is AD-19 SOURCE 3 ALONE: a declared dtype
+                # and nothing else. `_resolve_target_dtype` asks the same
+                # question but consults the recorded authority too (sources
+                # 1/2/4/5), so a column whose dtype was established by a
+                # reader, by an existing physical column or by a first stored
+                # materialization was invisible here. Before this increment
+                # the resolver had exactly ONE caller in the whole file.
+                # B3.2b STEP 2, MEASURED: this is an APPLICATION site, not a
+                # DECISION site, and routing it through _resolve_target_dtype
+                # is WRONG. Tried and reverted: with no declaration the
+                # resolver answers with the RECORDED authority, and casting a
+                # drifted result back to it SWALLOWS the AD-19 source-4 drift
+                # refusal -- test_b32_213_both_paths_refuse_dtype_drift went
+                # from raising to silently coercing. The authority half is
+                # already centralized, in `_enforce_recorded_authority`; this
+                # line applies a DECLARATION and must keep doing only that.
                 result_dtype = dtype or self.alias_dtypes.get(name)
                 if result_dtype is not None:
                     result = self._safe_dtype_cast(result, result_dtype, alias_name=name)
@@ -9560,7 +10221,7 @@ function collapseDepth(maxD) {{
                                     dep_name, dep_result, _dep_ctx, dep_fill,
                                     publishing=True,
                                     explicit_dtype=self.alias_dtypes.get(dep_name))
-                                if np.asarray(dep_result).dtype.kind not in 'biu':
+                                if _numpy_dtype_can_hold_gap(np.asarray(dep_result).dtype):
                                     dep_result = np.where(np.isfinite(dep_result), dep_result, dep_fill)
                                 dep_dtype = self.alias_dtypes.get(dep_name)
                                 if dep_dtype is not None:
@@ -9589,13 +10250,12 @@ function collapseDepth(maxD) {{
 
                     # §9 step 10b — NaN/Inf from arithmetic (AR-7), unchanged.
                     if fill_val is not None and \
-                            np.asarray(result).dtype.kind not in 'biu':
+                            _numpy_dtype_can_hold_gap(np.asarray(result).dtype):
                         # An integer/Boolean result is already exact and holds
                         # no NaN — running it through np.where would float-ify
                         # it and reintroduce the round-10 precision defect.
                         result = np.where(np.isfinite(result), result, fill_val)
                     
-                    # Apply dtype if specified
                     result_dtype = self.alias_dtypes.get(name)
                     if result_dtype is not None:
                         result = self._safe_dtype_cast(result, result_dtype, alias_name=name)

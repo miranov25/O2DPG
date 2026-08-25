@@ -9559,45 +9559,283 @@ class TestB32bAcceptanceScaffold:
             "a predicate over a recorded authority, no target chosen",
     }
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 6: the remaining conversion/dtype call-site "
-        "audit. AST-based, not a regex — revision 1 grepped two variable "
-        "spellings and could be defeated by a rename. Measured baseline "
-        "failure: many functions still call .astype / dtype.kind / to_numpy / "
-        ".values outside the whitelist.")
-    def test_b32b_12_every_cast_site_is_owned_or_whitelisted(self):
-        """P1-4 / P0-2 correction. Revision 1's version also xfailed for the
-        WRONG REASON — `NameError: name 're' is not defined`, because the test
-        module never imported `re`. It was not acceptance evidence at all.
+    #: The classifications the scaffold expects production to use. Written
+    #: independently of `DTYPE_SITE_DISPOSITION` so the two cannot agree by
+    #: construction -- the same anti-drift shape as `EXPECTED_DISPOSITION`.
+    DTYPE_SITE_KINDS = ("DECISION", "APPLICATION", "INSPECTION",
+                        "EXTRACTION", "LOCAL")
 
-        KNOWN GRANULARITY LIMIT, disclosed (GPT27, non-blocking): the audit is
-        function-granular, not call-site granular, so a whitelisted function
-        that grows a second unrelated cast is not caught. Making it call-site
-        granular is a B3.2b STEP 2 refinement once the resolver exists and the
-        offender count is small enough to enumerate."""
+    @staticmethod
+    def _dtype_sites_from_ast(source, whitelist):
+        """Enumerate dtype/array sites as (function, operation, ordinal).
+
+        The ordinal is assigned in source order within the function, so every
+        site is individually addressable. `values_call` is a mapping
+        `.values()` -- distinguished STRUCTURALLY here, in the executable
+        oracle, not merely asserted in prose (S2-P1-1). pandas `.values` is a
+        property; `x.values()` that executes proves a mapping receiver.
+        """
         import ast as _ast
-        tree = _ast.parse(_adf_source_text())
-        offenders = set()
+        tree = _ast.parse(source)
+        called = {id(n.func) for n in _ast.walk(tree)
+                  if isinstance(n, _ast.Call)
+                  and isinstance(n.func, _ast.Attribute)}
+        sites = {}
         for fn in _ast.walk(tree):
             if not isinstance(fn, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
                 continue
-            if fn.name in self.CAST_SITE_WHITELIST:
+            if fn.name in whitelist:
+                continue
+            hits = []
+            for node in _ast.walk(fn):
+                if not (isinstance(node, _ast.Attribute) and node.attr in (
+                        "astype", "kind", "to_numpy", "values")):
+                    continue
+                op = ("values_call"
+                      if node.attr == "values" and id(node) in called
+                      else node.attr)
+                hits.append((node.lineno, node.col_offset, op))
+            per_op = {}
+            for lineno, col, op in sorted(set(hits)):
+                ordinal = per_op.get(op, 0)
+                per_op[op] = ordinal + 1
+                sites[f"{fn.name}:{op}:{ordinal}"] = (fn.name, op, lineno)
+        return sites
+
+    def test_b32b_12_every_dtype_site_is_classified_and_owned(self):
+        """CLOSED BY B3.2b STEP 2 as a PER-SITE audit — S2-P1-1 corrected.
+
+        The first version keyed by FUNCTION NAME and `break`-ed after the
+        first matching operation, so a second unclassified cast inside an
+        already-classified function passed. GPT32 demonstrated it by
+        mutation; GPT31 found the same mechanism independently. Decision 6
+        said "classify call sites, not merely syntax", and the CRR then
+        claimed "every site classified" when it was every function. That
+        overclaim is corrected here and in the CRR.
+
+        The key is now `function:operation:ordinal`. Adding a site to
+        AliasDataFrame.py produces a key the ledger does not carry and this
+        test fails until somebody says what the site is.
+
+        The count reduction from the old oracle (62 functions -> the real
+        inventory) was BOOKKEEPING -- false positives removed, nothing fixed.
+        The CRR says so in those words."""
+        mod = _adf_module()
+        ledger = getattr(mod, "DTYPE_SITE_DISPOSITION", None)
+        assert ledger is not None, "production carries no dtype call-site ledger"
+
+        sites = self._dtype_sites_from_ast(_adf_source_text(),
+                                           self.CAST_SITE_WHITELIST)
+
+        unclassified = sorted(set(sites) - set(ledger))
+        assert not unclassified, (
+            f"{len(unclassified)} dtype/array site(s) carry no adjudicated "
+            f"disposition: {unclassified[:8]}")
+
+        stale = sorted(set(ledger) - set(sites))
+        assert not stale, (
+            f"the ledger classifies sites that no longer exist, so it has "
+            f"drifted from the code: {stale[:8]}")
+
+        for key, entry in ledger.items():
+            kind, reason = entry
+            ok = kind in self.DTYPE_SITE_KINDS or kind.startswith("LATER:")
+            assert ok, f"{key}: unknown classification {kind!r}"
+            if kind.startswith("LATER:"):
+                assert "STEP" in kind, (
+                    f"{key}: a deferred site must name the owning step")
+            assert isinstance(reason, str) and len(reason) >= 30, (
+                f"{key}: classification {kind} carries no adjudicated reason")
+
+    def test_b32b_12d_a_second_site_in_a_classified_function_is_caught(self):
+        """The negative control GPT32 required — the mutation that used to
+        pass.
+
+        Take a function the ledger already classifies, give it ANOTHER site
+        of the same operation, and the audit must fail. Under the old
+        function-keyed oracle it passed, because the function name was
+        already present and the walk stopped at the first hit.
+
+        The mutation is applied to a COPY of the source text, so production
+        is untouched."""
+        mod = _adf_module()
+        ledger = getattr(mod, "DTYPE_SITE_DISPOSITION", {})
+        src = _adf_source_text()
+
+        # find a classified function with an astype site, and inject a second
+        victim = None
+        for key in ledger:
+            fn, op, _ = key.split(":")
+            if op == "astype":
+                victim = fn
+                break
+        assert victim, "no astype site to mutate"
+
+        import ast as _ast
+        tree = _ast.parse(src)
+        target = next(n for n in _ast.walk(tree)
+                      if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef))
+                      and n.name == victim)
+        lines = src.split("\n")
+        # Inject BEFORE the first body statement, at its own indentation.
+        # A first draft used `body[-1].lineno`, which can land inside a
+        # nested block and produce an IndentationError instead of a mutation.
+        first = target.body[0]
+        insert_at = first.lineno - 1                # 0-based, before it
+        indent = " " * (len(lines[insert_at])
+                        - len(lines[insert_at].lstrip()))
+        mutated = lines[:insert_at] + [
+            f"{indent}_b32b_12d_probe = __import__('numpy').array([1]).astype('int8')"
+        ] + lines[insert_at:]
+        mutated_src = "\n".join(mutated)
+
+        sites = self._dtype_sites_from_ast(mutated_src, self.CAST_SITE_WHITELIST)
+        unclassified = sorted(set(sites) - set(ledger))
+        assert unclassified, (
+            f"a second astype injected into {victim!r} produced no "
+            f"unclassified site — the audit is not per-site and would let a "
+            f"new cast hide behind a classified neighbour")
+        assert any(u.startswith(f"{victim}:astype:") for u in unclassified), (
+            f"the injected site was not attributed to {victim}: {unclassified[:4]}")
+
+    def test_b32b_12c_no_duplicated_storage_family_test_remains(self):
+        """The half of STEP 2 that is production progress rather than
+        bookkeeping — and its contract, narrowed per `S2-P1-2`.
+
+        "Does the AD-19 NumPy gap refusal apply?" was asked seven times as an
+        inline `dtype.kind in "biu"`, and once as `"iub"` -- the same set
+        spelled differently, which is how a storage-family rule ends up with
+        seven independent answers.
+
+        The helper was first called `_dtype_can_represent_gap`, which claims
+        a general semantic property. GPT31, GPT29 and Fabble5_7 all pointed
+        at `Sparse[int64]`: not an `np.dtype`, so it took the True branch,
+        yet holding a gap would require widening to `Sparse[float64]`. The
+        CODE was right at all seven sites -- each guards on
+        `isinstance(np.dtype)` or receives an `np.asarray` result -- the
+        CLAIM was wrong. Renamed to `_numpy_dtype_can_hold_gap`, where True
+        for a non-NumPy dtype means only "not subject to the NumPy refusal;
+        its own storage family owns the question", which is STEP 4."""
+        import ast as _ast
+        mod = _adf_module()
+        pred = getattr(mod, "_numpy_dtype_can_hold_gap", None)
+        assert pred is not None, "the storage-family predicate does not exist"
+
+        # the NumPy domain -- the only thing this predicate adjudicates
+        assert pred(np.dtype(np.float64)) is True
+        assert pred(np.dtype(np.int64)) is False
+        assert pred(np.dtype(np.uint32)) is False
+        assert pred(np.dtype(bool)) is False
+        # fixed-width NumPy strings are inside the NumPy domain and not biu;
+        # their gap semantics are a storage-family question (STEP 4)
+        assert pred(np.dtype("U8")) is True
+        assert pred(np.dtype(object)) is True
+
+        # outside the NumPy domain: True means "not the NumPy refusal", NOT
+        # "can hold a gap in its own storage". Sparse[int64] is the case the
+        # reviewers named, and it is recorded here as STEP 4's to answer.
+        assert pred(pd.Int64Dtype()) is True, (
+            "an extension dtype carries its own NA and is not subject to the "
+            "NumPy refusal, even though its .kind is 'i'")
+        assert pred(pd.SparseDtype(np.float64)) is True
+        assert pred(pd.SparseDtype(np.int64)) is True, (
+            "documented scope, not a semantic claim: Sparse[int64] is not "
+            "subject to the NumPy refusal. Whether it can hold a gap while "
+            "PRESERVING its storage dtype is a sparse-family question and "
+            "STEP 4 owns it")
+
+        # and no inline duplicate of the question survives
+        offenders = []
+        for fn in _ast.walk(_ast.parse(_adf_source_text())):
+            if not isinstance(fn, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                continue
+            if fn.name == "_numpy_dtype_can_hold_gap":
                 continue
             for node in _ast.walk(fn):
-                if isinstance(node, _ast.Attribute) and node.attr in (
-                        "astype", "kind", "to_numpy", "values"):
-                    offenders.add(fn.name)
-                    break
+                if not (isinstance(node, _ast.Compare)
+                        and isinstance(node.left, _ast.Attribute)
+                        and node.left.attr == "kind"):
+                    continue
+                for cmp_ in node.comparators:
+                    text = _ast.unparse(cmp_).strip("'\"")
+                    if text and set(text) <= set("biu"):
+                        offenders.append(f"{fn.name}:{node.lineno}")
         assert not offenders, (
-            f"{len(offenders)} function(s) still decide a dtype locally: "
-            f"{sorted(offenders)[:8]}")
+            "inline gap-refusal tests remain, so the question still has more "
+            f"than one answer: {offenders}")
 
-    def test_b32b_12b_every_whitelist_entry_states_its_reason(self):
-        """Passing guard on the guard. MR-P2-1: without this, the audit can be
-        closed by appending names to CAST_SITE_WHITELIST."""
-        for name, reason in self.CAST_SITE_WHITELIST.items():
-            assert isinstance(reason, str) and len(reason) >= 30, (
-                f"whitelist entry {name!r} has no adjudicated reason")
+    # ---- S2-P0-1: the signed/unsigned join collision ----------------------
+
+    def test_b32b_20_int64_key_normalization_is_value_preserving(self):
+        """`S2-P0-1`, the predicate. CLOSED BY B3.2b STEP 2 CORRECTION.
+
+        The Numba join fast path normalized both key sides with
+        `.astype(np.int64)` and compared the results. `int64(-1)` and
+        `uint64(2**64-1)` both become `-1`, so two distinct keys match.
+        GPT32 executed it at `n >= NUMBA_MIN_ROWS` and saw false matches on
+        every row where pandas, on the original typed keys, reports none.
+
+        NOT A ROUND-TRIP TEST, and my first draft of the guard was exactly
+        that and passed the collision case: two's complement gives
+        `int64(-1)` and `uint64(2**64-1)` identical BITS, so
+        `.astype(int64).astype(uint64)` returns the original. Bit
+        preservation is what MAKES the collision; it cannot detect it. The
+        question is whether the VALUE survives."""
+        mod = _adf_module()
+        f = getattr(mod, "_int64_key_cast_is_lossless", None)
+        assert f is not None, "the key-cast guard does not exist"
+
+        i64 = np.array([-1], np.int64)
+        assert f(i64, np.array([5], np.int64)) is True
+        assert f(i64, np.array([7], np.uint64)) is True, "small unsigned fits"
+        assert f(i64, np.array([2**64 - 1], np.uint64)) is False, (
+            "uint64(2**64-1) has a NEGATIVE int64 image and must fail closed")
+        assert f(np.array([2**63], np.uint64)) is False, "the exact boundary"
+        assert f(np.array([2**63 - 1], np.uint64)) is True, "just inside it"
+        assert f(np.array([-1], np.int32),
+                 np.array([4294967295], np.uint32)) is True, (
+            "every 32-bit value fits int64; only uint64 can overflow it")
+        assert f(np.array([], np.uint64)) is True, "an empty key set is safe"
+        assert f(np.array([1.5])) is False, "a float key is not integer-castable"
+
+    @needs_dfdraw
+    def test_b32b_20b_mixed_sign_join_never_false_matches(self):
+        """`S2-P0-1`, the behaviour, at Numba fast-path scale.
+
+        Both orientations, plus an equal-key control so the guard is shown to
+        gate the accelerator rather than disable it. The control matters as
+        much as the collision cases: a guard that always refuses would pass
+        the first two assertions and be useless."""
+        mod = _adf_module()
+        n = getattr(mod, "NUMBA_MIN_ROWS", 10000) + 10
+
+        def matched(parent_keys, child_keys, use_numba):
+            m = A.AliasDataFrame(pd.DataFrame({
+                "k": parent_keys, "x": np.arange(len(parent_keys))}))
+            m._use_numba = use_numba
+            ch = A.AliasDataFrame(pd.DataFrame({"k": child_keys}))
+            ch.df["v"] = np.arange(len(child_keys), dtype=np.int64)
+            m.register_subframe("S", ch, index_columns=["k"])
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                _idx, miss = m._compute_join_indices("S", ["k"])
+            return int((~np.asarray(miss)).sum())
+
+        collide_p = np.full(n, -1, dtype=np.int64)
+        collide_c = np.full(n, 2**64 - 1, dtype=np.uint64)
+
+        for use_numba in (False, True):
+            assert matched(collide_p, collide_c, use_numba) == 0, (
+                f"int64(-1) matched uint64(2**64-1) with use_numba="
+                f"{use_numba} -- a silent wrong join")
+            assert matched(collide_c, collide_p, use_numba) == 0, (
+                f"reversed orientation false-matched with use_numba="
+                f"{use_numba}")
+
+        equal = np.arange(n, dtype=np.int64)
+        for use_numba in (False, True):
+            assert matched(equal, equal.copy(), use_numba) == n, (
+                "the guard must gate the fast path, not disable joining")
 
     # ---- family 10: the all-undefined getter (AD-20) ---------------------
 
@@ -9856,18 +10094,28 @@ class TestB32bAcceptanceScaffold:
             "the ORDINARY route must still follow documented backend "
             "semantics — the strict helper is opt-in, not a global switch")
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance (D_3, §6.1): the conversion route both DECLARES and "
-        "USES a pinned backend casting mode, so a future NumPy default change "
-        "cannot move the ratified contract. Measured baseline failure: "
-        "'no named casting-mode constant exists'.")
     def test_b32b_10_casting_mode_is_pinned_and_consumed(self):
-        """B32B-MR-P1-2: revision 1 asserted only that a constant existed. An
+        """CLOSED BY B3.2b STEP 2 — was a strict xfail, now passing.
+
+        `ADF_CASTING_MODE = "unsafe"` is declared at module level and consumed
+        in `_safe_dtype_cast`, the single applier of a resolved target:
+
+            _out = _arr.astype(target, casting=ADF_CASTING_MODE)
+
+        AR-1 is standards-first — an ordinary conversion of COMPUTED data
+        follows documented backend semantics rather than inventing strictness
+        — and pinning the mode means a future NumPy default cannot move the
+        ratified contract without the change appearing in a diff.
+
+        B32B-MR-P1-2: revision 1 asserted only that a constant EXISTED; an
         unused constant would have flipped it. Declaration AND use.
 
-        KNOWN LIMIT, disclosed (GPT27, non-blocking): consumption is measured
-        textually, so a constant used in a dead branch would satisfy it. The
-        behavioural version needs the resolver to exist first (STEP 2)."""
+        KNOWN LIMIT, still disclosed (GPT27, non-blocking): consumption is
+        measured textually, so a constant used in a dead branch would satisfy
+        it. The site it is consumed at is the exact-cast path of
+        `_safe_dtype_cast`, which `b32b_9b` and the round-11f corruption
+        tests both exercise, so it is not dead — but the test does not prove
+        that, and saying so is cheaper than implying otherwise."""
         import re as _re
         mod = _adf_module()
         named = [n for n in dir(mod)
