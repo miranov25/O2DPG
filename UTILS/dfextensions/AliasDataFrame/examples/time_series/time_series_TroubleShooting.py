@@ -5,6 +5,7 @@ adf=my_snippet()
 """
 from  time_series import *
 from  time_series_TroubleShooting import *
+from dfextensions.groupby_regression import make_sliding_window_aggregate
 
 def checkEffiecnyADFQA(adf):
     #
@@ -286,41 +287,79 @@ def drawCECross(adf):
 
 
 
-def fitDCSITS(adf):
+def fitDCAITS(adf):
     """
     :return:
+    adf=loadADFLazy()
+    apply_meta(adf,df_TimeSeriesAliases)
+    apply_meta(adf,df_TimeSeriesMeta)
+    adf.draw_lazy=True
     """
     """
-    fit DCA bias
+    Step 1: Make aliasesfit DCA bias
     """
     adf.add_alias("phiBin180","(floor(phiITSTPCAtVertex/2/pi*180))",dtype="uint8")
+    adf.add_alias("vz3","(floor(vertex_z/3.))",dtype="uint8")
     adf.add_alias("atgl","abs(tgl)",dtype="float16")
+    adf.add_alias("tgl2","tgl*tgl",dtype="float16")
+    adf.add_alias("vertexz2N","(vertex*vertex/25)",dtype="float16")
     adf.add_alias("aqpt_ITSTPC","abs(qpt_ITSTPC)",dtype="float16")
-    adf.materialize_aliases(names=["phiBin180","atgl","aqpt_ITSTPC"])
+    adf.add_alias("aqpt","abs(qpt_ITSTPC)",dtype="float32")
+    adf.add_alias("tglqpt","tgl*qpt_ITSTPC",dtype="float16")
+    adf.add_alias("tgl2qpt","tgl*tgl*qpt_ITSTPC",dtype="float16")
+    adf.add_alias("vertexzqpt","vertex_z*qpt_ITSTPC",dtype="float16")
+    adf.add_alias("tglmpt","tgl*abs(qpt_ITSTPC)",dtype="float16")
+    adf.add_alias("tgl2mpt","tgl2*abs(qpt_ITSTPC)",dtype="float16")
+    adf.add_alias("vertexzmpt","vertex_z*abs(qpt_ITSTPC)",dtype="float16")
+
+    adf.add_alias("z14","(vertex_z+tgl*14)",dtype="float32")
+    #
+    adf.materialize_aliases(names=["phiBin180","atgl","aqpt_ITSTPC","vz3", "tglqpt","vertexzqpt","tglmpt","vertexzmpt","z14","tgl2","tgl2mpt","tgl2qpt"])
     gb_columns=["phiBin180"]
-    linear_columns=["qpt_ITSTPC","tgl","vertex_z","aqpt_ITSTPC","atgl"]
-    fit_columns=["dcar_itstpc"]
+    gb_columns2=["phiBin180","vz3"]
+    linear_columns=["qpt_ITSTPC","tgl","vertex_z","aqpt_ITSTPC","tglqpt","vertexzqpt","tglmpt","vertexzmpt"]
+    linear_columns2=["qpt_ITSTPC","tgl","vertex_z","aqpt_ITSTPC","tglqpt","vertexzqpt","tglmpt","vertexzmpt"]
+    linear_columns3=["qpt_ITSTPC","tgl","vertex_z","aqpt_ITSTPC","tglqpt","vertexzqpt","tglmpt","vertexzmpt","tgl2","tgl2mpt","tgl2qpt"]
+    fit_columns=["dcar_itstpc","dcaz_itstpc"]
     # ---------------------------------------------------------------
     # Pass 1: linear fit of dcar_itstpc vs predictors per phiBin180
     # ---------------------------------------------------------------
-    selection="(ncl>50)&(abs(dcar_itstpc)<0.05)&(hasITSTPC>0)&(nClITS>5)"
-    adf.ensure_columns(selection,gb_columns+linear_columns+fit_columns)
+    logger.log("fitDCaITS: Fit Begin")
+    selection="(ncl>50)&(abs(dcar_itstpc)<0.05)&(abs(dcaz_itstpc)<0.05)&(hasITSTPC>0)&(nClITS>5)"
+    adf.ensure_columns(selection,gb_columns+linear_columns+fit_columns+linear_columns2)
     selection_mask = adf.df.eval(selection)
     adf.df["wdcar_itstpc"]=(0.5/(0.5+np.abs(adf.df["aqpt_ITSTPC"]))).astype(np.float32)
-    _, dfCoeffsP1 = make_parallel_fit_v4(
+    _, dfCoeffsP1,metaP1 = make_parallel_fit_v4(
+        df=adf.df,
+        gb_columns=gb_columns, fit_columns=fit_columns, linear_columns=linear_columns,
+        fit_intercept=True, min_stat=50,
+        weights="wdcar_itstpc",selection=selection_mask,
+        suffix="",return_metadata=True
+    )
+    _, dfCoeffsP2,metaP2 = make_parallel_fit_v4(
+        df=adf.df,
+        gb_columns=gb_columns2, fit_columns=fit_columns, linear_columns=linear_columns2,
+        fit_intercept=True, min_stat=10, weights="wdcar_itstpc",
+        selection=selection_mask, suffix="", return_metadata=True
+    )
+    _, dfCoeffsP3,metaP3 = make_parallel_fit_v4(
         df=adf.df,
         gb_columns=gb_columns,
-        fit_columns=fit_columns,
-        linear_columns=linear_columns,
-        fit_intercept=True,
-        min_stat=50,
-        weights="wdcar_itstpc",
-        selection=selection_mask,
+        fit_columns=fit_columns, linear_columns=linear_columns3, fit_intercept=True,
+        min_stat=10, weights="wdcar_itstpc",selection=selection_mask,
         suffix="",
+        return_metadata=True
     )
+    logger.log("fitDCaITS: Fit END")
     #
+    # 2.) Register fits
     adfVertex=AliasDataFrame(dfCoeffsP1)
     adf.register_subframe("DCABiasFitP1",adfVertex,index_columns=gb_columns)
+    adfVertexP2=AliasDataFrame(dfCoeffsP2)
+    adf.register_subframe("DCABiasFitP2",adfVertexP2,index_columns=gb_columns2)
+    adfVertexP3=AliasDataFrame(dfCoeffsP3)
+    adf.register_subframe("DCABiasFitP3",adfVertexP3,index_columns=gb_columns)
+    """
     for v in fit_columns:
         adf.add_alias(
             f"{v}_pred",
@@ -331,40 +370,113 @@ def fitDCSITS(adf):
             f" + DCABiasFitP1.{v}_slope_aqpt_ITSTPC * aqpt_ITSTPC"
             f" + DCABiasFitP1.{v}_slope_atgl        * atgl",
         )
+        adf.add_alias(
+            f"{v}_predP2",
+            f"DCABiasFitP2.{v}_intercept"
+            f" + DCABiasFitP2.{v}_slope_qpt_ITSTPC      * qpt_ITSTPC"
+            f" + DCABiasFitP2.{v}_slope_tgl             * tgl"
+            f" + DCABiasFitP2.{v}_slope_vertex_z        * vertex_z"
+            f" + DCABiasFitP2.{v}_slope_aqpt_ITSTPC * aqpt_ITSTPC"
+            f" + DCABiasFitP2.{v}_slope_atgl        * atgl"
+            f" + DCABiasFitP2.{v}_slope_stepZ14     * stepZ14"
+            f" + DCABiasFitP2.{v}_slope_aZ14        * aZ14"
+            f" + DCABiasFitP2.{v}_slope_qptstepZ14     * qptstepZ14"
+            f" + DCABiasFitP2.{v}_slope_qptaZ14        * qptaZ14"
+        )
         adf.add_alias(f"{v}_resid", f"{v} - {v}_pred")
-
+        adf.add_alias(f"{v}_residP2", f"{v} - {v}_predP2")
+    """
     # add aliase to the ADF
+    predictorsP1 = linear_columns
+    predictorsP2 = linear_columns2
+    predictorsP3 = linear_columns3
+    def fit_formula(v, predictors):
+        return f"{v}_intercept + " + " + ".join(f"{v}_slope_{p} * {p}" for p in predictors)
+    for v in fit_columns:
+        adf.add_alias(f"{v}_pred",   fit_formula(v, predictorsP1), source="DCABiasFitP1")
+        adf.add_alias(f"{v}_predP2", fit_formula(v, predictorsP2), source="DCABiasFitP2")
+        adf.add_alias(f"{v}_predP3", fit_formula(v, predictorsP3), source="DCABiasFitP3")
+        adf.add_alias(f"{v}_resid",   f"{v} - {v}_pred")      # parent-level: no source
+        adf.add_alias(f"{v}_residP2", f"{v} - {v}_predP2")
+        adf.add_alias(f"{v}_residP3", f"{v} - {v}_predP3")
+
+    # Check imprtance
+    cols = make_contribution_aliases(adf, metaP1, "DCABiasFitP1", "dcar_itstpc")
+    tab1, corr1 = contribution_summary(adf, metaP1, "dcar_itstpc", selection=selection_mask)
+    print(tab1)   # std [μm] | naive share | shapley share | max_corr_partner
+    print(corr1)
+    cols = make_contribution_aliases(adf, metaP2, "DCABiasFitP2", "dcar_itstpc")
+    tab2, corr2 = contribution_summary(adf, metaP2, "dcar_itstpc", selection=selection_mask)
+    print(tab2)   # std [μm] | naive share | shapley share | max_corr_partner
+    print(corr2)
+    #adf.draw(f"[{','.join(cols)}]:z14", type="profile", selection=selection_mask, bins=45)
+
 
     adf.add_alias("q", "sign(qpt_ITSTPC)",dtype="int8")
-    """
+    """ Example draw
     adf.draw("dcar_itstpc:phiITSTPCAtVertex",type="profile",selection="(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<4)&(ncl>80)&(abs(dcar_itstpc)<0.03)",
              group_by="abs(qpt_ITSTPC)",group_by_bins=5,bins=180,auto_title=True,min_entries=100)
     adf.draw("dcar_itstpc_pred:phiITSTPCAtVertex",type="profile",selection="(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<4)&(ncl>80)&(abs(dcar_itstpc)<0.03)",
              group_by="abs(qpt_ITSTPC)",group_by_bins=5,bins=180,auto_title=True,min_entries=100)
     adf.draw("dcar_itstpc_resid:phiITSTPCAtVertex",type="profile",selection="(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<4)&(ncl>80)&(abs(dcar_itstpc)<0.03)",
-             group_by="abs(qpt_ITSTPC)",group_by_bins=5,bins=180,auto_title=True,min_entries=100)
+             group_by="abs(qpt_ITSTPC)",group_by_bins=5,bins=180,auto_title=True,min_entries=100)        
+    #
+    plt.close("all")
+    adf.draw("dcar_itstpc_resid:phiITSTPCAtVertex",type="profile",selection="(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<4)&(ncl>80)&(abs(dcar_itstpc)<0.03)", 
+        group_by="tgl",group_by_bins=5,bins=45,auto_title=True,min_entries=100,facet_by="vertex_z",facet_by_bins=6)
+    adf.draw("dcar_itstpc_residP2:phiITSTPCAtVertex",type="profile",selection="(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<4)&(ncl>80)&(abs(dcar_itstpc)<0.03)", 
+        group_by="z14",group_by_bins=5,bins=45,auto_title=True,min_entries=100,facet_by="vertex_z",facet_by_bins=6)
     """
     # Plot1:
-    sel = "(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<4)&(ncl>80)&(abs(dcar_itstpc)<0.03)"
-    common = dict(type="profile", selection=sel,group_by="abs(qpt_ITSTPC)", group_by_bins=5, bins=180, min_entries=100, auto_title=True)
-    fig, axes = plt.subplots(1, 3, figsize=(24, 6), sharex=True)
+    sel = "(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<4)&(ncl>80)&(abs(dcar_itstpc)/sqrt(1+(qpt_ITSTPC*2)**2)<0.06)&(abs(dcaz_itstpc)/sqrt(1+(qpt_ITSTPC*2)**2)<0.06)"
+    common = dict(type="profile", selection=sel,group_by="abs(qpt_ITSTPC)", group_by_bins=5, bins=90, min_entries=100, auto_title=True)
+    fig, axes = plt.subplots(1, 3, figsize=(24, 6), sharex=True, sharey=True)
     adf.draw("dcar_itstpc:phiITSTPCAtVertex",       ax=axes[0], **common)
     adf.draw("dcar_itstpc_pred:phiITSTPCAtVertex",  ax=axes[1], **common)
     adf.draw("dcar_itstpc_resid:phiITSTPCAtVertex", ax=axes[2], **common)
     fig.tight_layout()
-    fig, axes = plt.subplots(1, 3, figsize=(24, 6), sharex=True)
-    common = dict(type="profile", selection=sel,group_by="vertex_z", group_by_quantiles=5, bins=180, min_entries=100, auto_title=True)
-    adf.draw("abs(dcar_itstpc):qpt_ITSTPC",       ax=axes[0], **common)
-    adf.draw("abs(dcar_itstpc_pred):qpt_ITSTPC",  ax=axes[1], **common)
-    adf.draw("abs(dcar_itstpc_resid):qpt_ITSTPC", ax=axes[2], **common)
+    fig.savefig(f"fig/dcar_itstpcBiasPhi.png", dpi=150, bbox_inches="tight")
+    #
+    fig, axes = plt.subplots(1, 3, figsize=(24, 6), sharex=True, sharey=True)
+    adf.draw("dcaz_itstpc:phiITSTPCAtVertex",       ax=axes[0], **common)
+    adf.draw("dcaz_itstpc_pred:phiITSTPCAtVertex",  ax=axes[1], **common)
+    adf.draw("dcaz_itstpc_resid:phiITSTPCAtVertex", ax=axes[2], **common)
     fig.tight_layout()
+    fig.savefig(f"fig/dcaz_itstpcBiasPhi.png", dpi=150, bbox_inches="tight")
+    #
+    fig, axes = plt.subplots(1, 3, figsize=(24, 6), sharex=True, sharey=True)
+    common = dict(type="profile", selection=sel,group_by="vertex_z", group_by_quantiles=5, bins=100, min_entries=100, auto_title=True)
+    adf.draw("abs(dcar_itstpc)/sqrt(1+abs(qpt_ITSTPC*2)**2):qpt_ITSTPC",       ax=axes[0], **common)
+    adf.draw("abs(dcar_itstpc_resid)/sqrt(1+abs(qpt_ITSTPC*2)**2):qpt_ITSTPC", ax=axes[1], **common)
+    adf.draw("abs(dcar_itstpc_residP2)/sqrt(1+abs(qpt_ITSTPC*2)**2):qpt_ITSTPC", ax=axes[2], **common)
+    fig.tight_layout()
+    fig.savefig(f"fig/dcar_itstpcResoltQPTvz.png", dpi=150, bbox_inches="tight")
+    #
+    fig, axes = plt.subplots(1, 3, figsize=(24, 6), sharex=True, sharey=True)
+    common = dict(type="profile", selection=sel,group_by="vertex_z", group_by_quantiles=5, bins=100, min_entries=100, auto_title=True)
+    adf.draw("abs(dcaz_itstpc)/sqrt(1+abs(qpt_ITSTPC*2)**2):qpt_ITSTPC",       ax=axes[0], **common)
+    adf.draw("abs(dcaz_itstpc_resid)/sqrt(1+abs(qpt_ITSTPC*2)**2):qpt_ITSTPC", ax=axes[1], **common)
+    adf.draw("abs(dcaz_itstpc_residP2)/sqrt(1+abs(qpt_ITSTPC*2)**2):qpt_ITSTPC", ax=axes[2], **common)
+    fig.tight_layout()
+    fig.savefig(f"fig/dcaz_itstpcResoltQPTvz.png", dpi=150, bbox_inches="tight")
+    #
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6), sharex=True, sharey=True)
+    common = dict(type="profile", selection=sel,group_by="mult", group_by_quantiles=5, bins=100, min_entries=100, auto_title=True)
+    adf.draw("abs(dcaz_itstpc)/sqrt(1+abs(qpt_ITSTPC*2)**2):qpt_ITSTPC",       ax=axes[0], **common)
+    adf.draw("abs(dcaz_itstpc_resid)/sqrt(1+abs(qpt_ITSTPC*2)**2):qpt_ITSTPC", ax=axes[1], **common)
+    fig.tight_layout()
+    fig.savefig(f"fig/dcaz_itstpcResoltQPTmult.png", dpi=150, bbox_inches="tight")
+
 
     #
     #adf.draw("abs(dcar_itstpc_resid):qpt_ITSTPC",type="profile",selection="(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<4)&(ncl>80)&(abs(dcar_itstpc)<0.03)",
     #         group_by="mult",group_by_quantiles=5,bins=180,auto_title=True,min_entries=100)
     adf.draw("abs(dcar_itstpc_resid):qpt_ITSTPC",type="profile",selection="(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<4)&(ncl>80)&(abs(dcar_itstpc)<0.03)",
              group_by="tgl",group_by_quantiles=5,bins=40,auto_title=True,min_entries=100,facet_by="vertex_z",facet_by_quantiles=6)
-
+    """
+    adf.draw("dcar_itstpc_resid:phiITSTPCAtVertex",type="profile",selection="(hasITSTPC>0)&(abs(phi-phiITSTPCAtVertex)<1)&(abs(qpt_ITSTPC)<4)&(ncl>80)&(abs(dcar_itstpc)<0.03)", 
+        group_by="aqpt",group_by_bins=5,bins=45,auto_title=True,min_entries=100,facet_by=["vertex_z","z14"],facet_by_bins=[4,4])
+    """
 
 
 def drawEdge(adf):
@@ -604,7 +716,7 @@ def makeGBTPCDiff(adf, cols, group_byLocal, group_byGlobal, selection=None, out_
 
     group_byLocal  = ["dsector20", "tgl20", "qpt_ITSTPC5"]   # fine grid for local mean subtraction
     group_byGlobal = ["sector180", "tgl10", "qpt_ITSTPC5"]
-    selection      = "(ncl>40)&(hasITSTPC>0)&(abs(dcar_itstpc)<0.03)&(isOKITSTPC)"
+    selection      = "(ncl>80)&(hasITSTPC>0)&(abs(dcar_itstpc)<0.03)&(isOKITSTPC)"
     time_col="timeMS"
     plots to export: for the local test before merging time series:
     PDF report?
@@ -622,33 +734,125 @@ def makeGBTPCDiff(adf, cols, group_byLocal, group_byGlobal, selection=None, out_
         out = out.reset_index()
         out["timestamp"] = ts
         return out
-    def makeFigLocal4(var="dcar_tpc_vertex", out="fig/gb4_{var}", group_by="tgl", n=7, range=(-4.5, 4.5)):
+    def _gb_stats_sliding(frame, keys, value_cols, min_stat=1, boundary='full'):
+        """mean/median/std of value_cols pooled over +-1 neighbouring bins
+        on grid `keys` + row count; flat-named like _gb_stats.
+        REQUIREMENT: every column in `keys` must be an integer bin index
+        (the sliding window is defined on the integer grid)."""
+        out = make_sliding_window_aggregate(
+            df=frame,
+            gb_columns=keys,
+            agg_columns=value_cols,
+            window_spec={k: 1 for k in keys},   # +-1 in every key; set 0 for dims that must NOT slide (e.g. 'side')
+            suffix='',                          # -> dcar_mean, dcar_std, dcar_median, dcar_count
+            min_stat=min_stat,                  # bins with fewer POOLED rows than this -> NaN (your low-stats guard)
+            boundary=boundary,
+            agg_median=False,                    # median wanted, per your original
+        )
+        out["count"] = out[f"{value_cols[0]}_count"]  # keep your old single count column (counts are per-column; differ only via NaNs)
+        out["timestamp"] = ts
+        return out
+    def makeFigLocal4(var="dcar_tpc_vertex", out="fig/gb4_{var}", group_by="tgl", n=7, range=(-4.5, 4.5), norm=""):
         """
         makeFigLocal4("dcar_tpc_vertex",range=(-4.5,4.5),out="fig/gb4_{var}45")
         makeFigLocal4("dcar_tpc_vertex",range=(-1,1),out="fig/gb4_{var}10")
         makeFigLocal4("deltaP2OuterITS",range=(-1,1),out="fig/gb4_{var}10")
-
+        #
+        makeFigLocal4("deltaP2OuterITS",range=(-2,2),out="fig/gb4_{var}10Norm",norm="/sqrt(1+qpt**2)")
         """
         sel_raw   = f"(isOKITSTPC>0)&(abs({var})<10)&(abs(dsector-0.5)<0.45)&(ncl>80)"
-        sel_local = "(count>10)&(abs(dsector-0.5)<0.45)"
+        sel_local = "(count>50)&(abs(dsector-0.5)<0.40)"
         fig, ax = plt.subplots(2, 2, figsize=(12, 9))
-        adf.draw(f"{var}:qpt_ITSTPC",            type="profile", selection=sel_raw,
-                 group_by=group_by, group_by_bins=n, auto_title=True, range=range, ax=ax[0,0])
-        adf.draw(f"abs({var}):qpt_ITSTPC",       type="profile", selection=sel_raw,
-                 group_by=group_by, group_by_bins=n, auto_title=True, range=range, ax=ax[0,1])
-        adfLocal.draw(f"{var}_std:qpt",          type="profile", selection=sel_local,
-                      group_by=group_by, group_by_bins=n, auto_title=True, ax=ax[1,0],range=range)
-        adfLocal.draw(f"abs({var}_mean):qpt",    type="profile", selection=sel_local,
-                      group_by=group_by, group_by_bins=n, auto_title=True, ax=ax[1,1],range=range)
+        adf.draw(f"{var}{norm}:qpt_ITSTPC",            type="profile", selection=sel_raw,
+                 group_by=group_by, group_by_bins=n, auto_title=True, range=range, ax=ax[0,0],legend=False)
+        adf.draw(f"1.48*abs({var}{norm}):qpt_ITSTPC",       type="profile", selection=sel_raw,
+                 group_by=group_by, group_by_bins=n, auto_title=True, range=range, ax=ax[0,1],legend=False)
+        adfLocal.draw(f"{var}_std{norm}:qpt",          type="profile", selection=sel_local,
+                      group_by=group_by, group_by_bins=n, auto_title=True, ax=ax[1,0],range=range,legend=False)
+        adfLocal.draw(f"1.48*abs({var}_mean){norm}:qpt",    type="profile", selection=sel_local,
+                      group_by=group_by, group_by_bins=n, auto_title=True, ax=ax[1,1],range=range,legend=True)
         fig.suptitle(var)
         fig.tight_layout(rect=(0, 0, 1, 0.97))
         stem = out.format(var=var)
         fig.savefig(f"{stem}.pdf", bbox_inches="tight")
         fig.savefig(f"{stem}.png", dpi=150, bbox_inches="tight")
         #plt.close(fig)
-        return f"{stem}.pdf", f"{stem}.png"
+        return fig;
+    def makeFigLocalGlobal6(var="dcar_tpc_vertex", out="fig/gb4_{var}", group_by="tgl", n=7, range=(-4.5, 4.5), norm=""):
+        """
+                makeFigLocal4("dcar_tpc_vertex",range=(-4.5,4.5),out="fig/gb4_{var}45")
+                makeFigLocal4("dcar_tpc_vertex",range=(-1,1),out="fig/gb4_{var}10")
+                makeFigLocalGlobal6("deltaP2OuterITS",range=(-1,1),out="fig/gb4LG_{var}10")
+        """
+        sel_raw   = f"(isOKITSTPC>0)&(abs({var})<10)&(abs(dsector-0.5)<0.45)&(ncl>80)"
+        sel_local = "(count>50)&(abs(dsector-0.5)<0.40)"
+        sel_global = "(count>50)&(abs(dsector-0.5)<0.4)"
 
-# --- grid-coordinate aliases ---------------------------------------------
+        fig, ax = plt.subplots(3, 2, figsize=(12, 9))
+        adf.draw(f"{var}{norm}:qpt_ITSTPC",            type="profile", selection=sel_raw,
+                 group_by=group_by, group_by_bins=n, auto_title=True, range=range, ax=ax[0,0],legend=False)
+        adf.draw(f"1.48*abs({var}{norm}):qpt_ITSTPC",       type="profile", selection=sel_raw,
+                 group_by=group_by, group_by_bins=n, auto_title=True, range=range, ax=ax[0,1],legend=False)
+        adfLocal.draw(f"{var}_std{norm}:qpt",          type="profile", selection=sel_local,
+                      group_by=group_by, group_by_bins=n, auto_title=True, ax=ax[1,0],range=range,legend=False)
+        adfLocal.draw(f"1.48*abs({var}_mean){norm}:qpt",    type="profile", selection=sel_local,
+                      group_by=group_by, group_by_bins=n, auto_title=True, ax=ax[1,1],range=range,legend=False)
+        adfGlobal.draw(f"{var}_DL_std{norm}:qpt",          type="profile", selection=sel_global,
+                       group_by=group_by, group_by_bins=n, auto_title=True, ax=ax[2,0],range=range,legend=False)
+        adfGlobal.draw(f"1.48*abs({var}_DL_mean){norm}:qpt",    type="profile", selection=sel_global,
+                       group_by=group_by, group_by_bins=n, auto_title=True, ax=ax[2,1],range=range,legend=True)
+        fig.suptitle(var)
+        fig.tight_layout(rect=(0, 0, 1, 0.97))
+        stem = out.format(var=var)
+        fig.savefig(f"{stem}.pdf", bbox_inches="tight")
+        fig.savefig(f"{stem}.png", dpi=150, bbox_inches="tight")
+        #plt.close(fig)
+        return fig;
+
+    def makeFigLocalAll():
+        # open pdf file for all figures
+        # Normalizzation
+        vars=["dcar_tpc_vertex", "deltaP0OuterITS", "deltaP1OuterITS", "deltaP2OuterITS", "deltaP3OuterITS", "deltaP4OuterITS"]
+        varN=["/sqrt(1+qpt**2)","/sqrt(1+qpt**2)","/sqrt(1+(qpt*2)**2)","/sqrt(1+(qpt*2)**2)","/sqrt(1+(qpt*2)**2)","/sqrt(1+(qpt*2)**2)"]
+        with PdfPages('fig/gb4_all.pdf') as pdf:
+            for i,var in enumerate(vars):
+                logger.log(f"makeFigLocalAll: makeFigLocal4 for {var}")
+                fig = makeFigLocal4(var=var, range=(-4.5, 4.5), out="fig/gb4_{var}45")
+                pdf.savefig(fig)
+                plt.close(fig)
+                fig = makeFigLocal4(var=var, range=(-1, 1), out="fig/gb4_{var}10")
+                pdf.savefig(fig)
+                plt.close(fig)
+                fig = makeFigLocal4(var=var, range=(-4, 4), out="fig/gb4_{var}10Norm", norm=varN[i])
+                pdf.savefig(fig)
+                plt.close(fig)
+        with PdfPages('fig/gb6_all.pdf') as pdf:
+            for i,var in enumerate(vars):
+                logger.log(f"makeFigLocalAll: makeFigLocal6 for {var}")
+                fig = makeFigLocalGlobal6(var=var, range=(-4.5, 4.5), out="fig/gb6_{var}45")
+                pdf.savefig(fig)
+                plt.close(fig)
+                fig = makeFigLocalGlobal6(var=var, range=(-1, 1), out="fig/gb6_{var}10")
+                pdf.savefig(fig)
+                plt.close(fig)
+                fig = makeFigLocalGlobal6(var=var, range=(-4, 4), out="fig/gb6_{var}10Norm", norm=varN[i])
+                pdf.savefig(fig)
+                plt.close(fig)
+
+    def makeFigMult():
+        with PdfPages('fig/resolMult.pdf') as pdf:
+            fig,_,_=adf.draw("abs(dcar_tpc_vertex/sqrt(1+qpt_ITSTPC**2)):mult",type="profile",selection="(abs(tgl10/10)<1)&(abs(qpt_ITSTPC)<1)&(isOKITSTPC>0)&(ncl>80)&(abs(dsector-0.5)<0.35)",
+                     bins=20,group_by="qpt_ITSTPC",group_by_bins=5,auto_title=True)
+            fig.savefig(f"fig/figDCARMult.pdf", bbox_inches="tight")
+            fig.savefig(f"fig/figDCARMult.png", bbox_inches="tight")
+            pdf.savefig(fig); plt.close(fig)
+            adf.draw("abs(deltaP4OuterITS/sqrt(1+qpt_ITSTPC**2)):mult",type="profile",selection="(abs(tgl10/10)<1)&(abs(qpt_ITSTPC)<0.5)&(isOKITSTPC>0)&(ncl>80)&(abs(dsector-0.5)<0.35)",
+                     bins=20,group_by="tgl",group_by_bins=5,auto_title=True)
+            fig.savefig(f"fig/figdeltaPar4Mult.pdf", bbox_inches="tight")
+            fig.savefig(f"fig/figdeltaPar4Mult.png", bbox_inches="tight")
+            pdf.savefig(fig); plt.close(fig)
+
+    # --- grid-coordinate aliases ---------------------------------------------
     adf.add_alias("dsector20", "dsector*20",   dtype="uint8")
     adf.add_alias("sector180", "180*(phi/pi)", dtype="int16")   # NOTE: was uint8 — phi<0 overflows
     adf.add_alias("tgl20",     "tgl*20",       dtype="int8")
@@ -673,13 +877,17 @@ def makeGBTPCDiff(adf, cols, group_byLocal, group_byGlobal, selection=None, out_
 
     # --- 1. LOCAL ------------------------------------------------------------
     logger.log(f"makeGBTPCDiff: LOCAL GB Step1: BEGIN")
-    local = _gb_stats(df, group_byLocal, cols)
+    #local = _gb_stats(df, group_byLocal, cols)
+    local = _gb_stats_sliding(df, group_byLocal, cols)
+
     local["timeMS"] = ts
     adfLocal=AliasDataFrame(local)
     adfLocal.draw_lazy=True
     adfLocal.add_alias("qpt", "qpt_ITSTPC5/5", dtype="float32")
     adfLocal.add_alias("tgl", "tgl20/20", dtype="float32")
     adfLocal.add_alias("dsector", "dsector20/20", dtype="float32")
+    adfLocal.set_axis_title("qpt", r"ITS-TPC $q/p_{T}$ (1/GeV)")
+    adfLocal.set_axis_title("tgl", "tanh(#eta)")
     adf.register_subframe("gbLocal", adfLocal, index_columns=group_byLocal)
     logger.log(f"makeGBTPCDiff: LOCAL GB END")
     # 1.b)
@@ -707,21 +915,28 @@ def makeGBTPCDiff(adf, cols, group_byLocal, group_byGlobal, selection=None, out_
     fig, axes, stats = adf.draw("1.44*abs(dcar_tpc_DL):mult",type="profile",selection="(hasITSTPC>0)&(isPrimITS01)&(abs(tgl)<1.2)&(abs(qpt_ITSTPC)<1)&abs(dsector-0.5)<0.45",
         group_by="qpt_ITSTPC",group_by_bins=9,auto_title=True,facet_by="tgl",facet_by_quantiles=6,ncols=3,legend="shared",bins=20)
         
-        
-      
     """
     logger.log(f"makeGBTPCDiff: LOCAL GB ALIASES Step1bEND")
     # --- 2. GLOBAL on local-mean-subtracted residuals ------------------------
     logger.log("makeGBTPCDiff: GLOBAL GB Step2 BEGIN")
-    glob = _gb_stats(adf.df[mask], group_byGlobal, cols_DL)   # residuals already materialized
+    globL = _gb_stats(adf.df[mask], group_byGlobal, cols_DL)   # residuals already materialized
+    glob= _gb_stats_sliding(adf.df[mask], group_byGlobal, cols_DL)
     glob["timeMS"] = ts
+    glob=glob.merge(globL, on=group_byGlobal, how="left", suffixes=("", "L"))
     adfGlobal=AliasDataFrame(glob)
+    adfGlobal.draw_lazy=True
+    adfGlobal.add_alias("qpt", "qpt_ITSTPC5/5", dtype="float32")
+    adfGlobal.add_alias("tgl", "tgl10/10", dtype="float32")
+    adfGlobal.add_alias("dsector", "(sector180%10)/10", dtype="float32")
+    adfGlobal.set_axis_title("qpt", r"ITS-TPC $q/p_{T}$ (1/GeV)")
     adf.register_subframe("gbGlobal", adfGlobal, index_columns=group_byGlobal)
     logger.log("makeGBTPCDiff: GLOBAL GB END")
     # --- 3. EXPORT both, timestamped -----------------------------------------
     logger.log("makeGBTPCDiff: EXPORT Step3 BEGIN")
+    """
     adfLocal.export_tree(f"{out_dir}/timeSeries_GBLocal.root")
     adfGlobal.export_tree(f"{out_dir}/timeSeries_GBGlobal.root")
+    """
     logger.log("makeGBTPCDiff: EXPORT Step3 END")
 
     # --- 4. EXAMPLE DRAW -----------------------------------------------------"""
@@ -748,3 +963,21 @@ def makeGBTPCDiff(adf, cols, group_byLocal, group_byGlobal, selection=None, out_
     """
     return adf
 
+def drawdEdxRatio(adf):
+    fig, axes, stats = adf.draw("log(dEdxMaxTPC/dEdxTotTPC):mult",type="profile",selection="(hasITSTPC>0)&(isPrimITS01)&(abs(tgl)<1.)",
+                                group_by="tgl",group_by_bins=9,auto_title=True,facet_by="1/dEdxMaxTPC",facet_by_quantiles=6,ncols=3,legend="shared",bins=20)
+
+
+def drawdEdxPassive(adf):
+    """
+
+    :return:
+    """
+    adf.draw("deltaP4OuterITS:qpt_ITSTPC",selection="(hasITSTPC>0)&(chi2ITS>0)&(ncl>50)&(nClITS>6)&(abs(deltaP4OuterITS)<1.5)&(abs(dsector-0.5)<0.4)&(PID<5)&(abs(tgl)<1)",type="profile",
+             group_by="PID",bins=40,quantiles=[0.2,0.5,0.8],facet_by="tgl",facet_by_bins=6,auto_title=True)
+
+    #
+    adf.draw("deltaP4OuterITS:qpt_ITSTPC",selection="(hasITSTPC>0)&(ncl>80)&(nClITS>6)&(abs(deltaP4OuterITS)<1.5)&(abs(dsector-0.5)<0.4)&(PID<5)&(abs(tgl)<1)",type="profile",
+        group_by="PID",bins=40,quantiles=[0.2,0.5,0.8],facet_by="absTgl",facet_by_bins=6,auto_title=True)
+    adf.draw("sqrt(chi2match_ITSTPC):qpt_ITSTPC",selection="(hasITSTPC>0)&(ncl>80)&(nClITS>6)&(abs(deltaP4OuterITS)<1.5)&(abs(dsector-0.5)<0.4)&(PID<5)&(abs(tgl)<1)",type="profile",
+             group_by="PID",bins=40,quantiles=[0.2,0.5,0.8],facet_by="absTgl",facet_by_bins=6,auto_title=True)

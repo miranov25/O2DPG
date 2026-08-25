@@ -44,6 +44,9 @@ from perfmonitor import PerformanceLogger
 from dfextensions.dfdraw import set_style
 from matplotlib.backends.backend_pdf import PdfPages
 
+from dfextensions.groupby_regression.gb_explain import (
+    make_contribution_aliases, contribution_summary, make_block_delta_aliases)
+
 logger = PerformanceLogger("perf_log.txt")
 time_fmt = FuncFormatter(lambda x, _: datetime.utcfromtimestamp(x).strftime('%H:%M'))
 
