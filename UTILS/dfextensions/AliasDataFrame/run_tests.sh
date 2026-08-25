@@ -15,6 +15,9 @@
 # Output (in test_logs/):
 #   SUMMARY_<ts>.txt               Test summary
 #   test_full_<ts>.log             Full pytest output
+#   test_focused_<ts>.log          Phase suite only
+#   runxfail_focused_<ts>.log      Phase suite with xfail DISABLED (failures expected)
+#   md5_manifest_<ts>.txt          Fingerprints of the reviewed bytes
 #   test_failures_<ts>.log         Failures only
 #   CAPABILITY_MATRIX_<ts>.md      Auto-generated matrix snapshot
 #   diff_last_commit_<ts>.txt      Uncommitted diff + last commit diff
@@ -63,6 +66,9 @@ Environment:
 
 Output:
   test_logs/SUMMARY_<ts>.txt            Test summary
+  test_logs/test_focused_<ts>.log       Phase suite only
+  test_logs/runxfail_focused_<ts>.log   Phase suite, xfail disabled (failures expected)
+  test_logs/md5_manifest_<ts>.txt       Fingerprints of the reviewed bytes
   test_logs/CAPABILITY_MATRIX_<ts>.md   Feature matrix
   test_logs/diff_last_commit_<ts>.txt   Uncommitted + HEAD~1 diffs
   test_logs/diff_to_phase_<ts>.txt      Diff since PHASE_BEGIN tag
@@ -124,6 +130,19 @@ GIT_STATUS="$LOG_DIR/git_status_${TS}.txt"
 #   FOCUSED_TESTS="tests/test_phase_13_77_*.py" bash run_tests.sh
 FOCUSED_TESTS="${FOCUSED_TESTS:-tests/test_phase_13_76_draw_path_characterization.py}"
 FOCUSED_LOG="$LOG_DIR/test_focused_${TS}.log"
+# --runxfail evidence for the focused suite. Six times in PHASE_13_76 a strict
+# xfail failed for the WRONG reason -- a broken import, a fixture that never
+# built the case its reason named, an oracle a comment could satisfy. The
+# panel's standing rule is that a strict xfail is not acceptance evidence
+# until it has been run with xfail handling DISABLED and its failure shown to
+# be the contract defect its reason string names. Four review rounds asked for
+# this log and it was attached by hand each time; produced here it is always
+# in the packet and never depends on anyone remembering.
+RUNXFAIL_LOG="$LOG_DIR/runxfail_focused_${TS}.log"
+# Candidate fingerprints. Reviewers verify the reviewed bytes by checksum, and
+# twice an install silently did not land -- the packet then measured one file
+# while the CRR quoted another.
+MD5_MANIFEST="$LOG_DIR/md5_manifest_${TS}.txt"
 REVIEWER_ZIP="$LOG_DIR/reviewer_${TS}.zip"
 # Absolute path, computed HERE rather than at packaging time, so the summary
 # block below can print it BEFORE the file exists. `realpath -m` resolves a
@@ -281,9 +300,40 @@ PYCOUNT
         python3 -m pytest $FOCUSED_TESTS -q --tb=short 2>&1 | tee "$FOCUSED_LOG"
         FOCUSED_LINE=$(grep -E "^[0-9]+ (passed|failed)" "$FOCUSED_LOG" | tail -1)
         echo "  focused: ${FOCUSED_LINE:-<no summary line>}"
+
+        # --- the same focused suite with xfail handling DISABLED.
+        # EXPECTED to report failures: that is the point. Each line is a
+        # strict xfail failing, and the reviewer checks that the cause matches
+        # the reason the criterion states. `|| true` because a non-zero exit
+        # here is the designed outcome, not a problem with the run.
+        echo "--- Recording --runxfail evidence for the focused suite ---"
+        python3 -m pytest $FOCUSED_TESTS --runxfail -q --tb=line -p no:warnings \
+            > "$RUNXFAIL_LOG" 2>&1 || true
+        RUNXFAIL_LINE=$(grep -E "^[0-9]+ (passed|failed)" "$RUNXFAIL_LOG" | tail -1)
+        echo "  runxfail: ${RUNXFAIL_LINE:-<no summary line>} (failures here are EXPECTED)"
     else
         echo "--- No focused suite matched: $FOCUSED_TESTS ---"
     fi
+
+    # --- fingerprints of the reviewed bytes ---------------------------------
+    {
+        echo "=== MD5 of the candidate files ==="
+        echo "(the bytes this run measured; compare against the CRR)"
+        echo ""
+        for f in AliasDataFrame.py $FOCUSED_TESTS; do
+            [[ -f "$f" ]] && md5sum "$f" 2>/dev/null
+        done
+        echo ""
+        echo "=== staged blob MD5 (what a commit would record) ==="
+        if git rev-parse --is-inside-work-tree &>/dev/null; then
+            for f in AliasDataFrame.py $FOCUSED_TESTS; do
+                if git ls-files --error-unmatch "$f" &>/dev/null; then
+                    printf '%s  %s\n' \
+                        "$(git show ":0:./$f" 2>/dev/null | md5sum | cut -d' ' -f1)" "$f"
+                fi
+            done
+        fi
+    } > "$MD5_MANIFEST" 2>/dev/null || true
 
     echo ""
     echo "⏱️  Tests completed in $DURATION_STR"
@@ -374,6 +424,12 @@ done
     echo "Tree state:   $GIT_TREE_STATE"
     echo "Python:       $(python3 --version 2>&1)"
     echo "Platform:     $(uname -s) $(uname -m)"
+    # The package versions, not just Python's. PHASE_13_76 lost a full round to
+    # an "unstable" Arrow test that was pandas resolving `pandas_dtype("string")`
+    # differently by version -- invisible while the summary said only
+    # "Python 3.10.19". A divergence between machines is now diagnosable from
+    # the packet instead of by argument.
+    echo "Packages:     $(python3 -c 'import pandas,numpy;print(f"pandas {pandas.__version__} numpy {numpy.__version__}",end="")' 2>/dev/null || echo "pandas ? numpy ?")$(python3 -c 'import pyarrow;print(f" pyarrow {pyarrow.__version__}",end="")' 2>/dev/null)$(python3 -c 'import uproot;print(f" uproot {uproot.__version__}",end="")' 2>/dev/null)"
     echo "Workers:      $PYTEST_WORKERS"
     echo "Duration:     ${DURATION_STR:-N/A}"
     echo ""
@@ -405,6 +461,13 @@ done
     if [[ -f "$FOCUSED_LOG" ]]; then
         echo "  Focused:  $(realpath "$FOCUSED_LOG" 2>/dev/null || echo "$FOCUSED_LOG")"
         echo "            $(grep -E "^[0-9]+ (passed|failed)" "$FOCUSED_LOG" | tail -1)"
+    fi
+    if [[ -f "$RUNXFAIL_LOG" ]]; then
+        echo "  Runxfail: $(realpath "$RUNXFAIL_LOG" 2>/dev/null || echo "$RUNXFAIL_LOG")"
+        echo "            $(grep -E "^[0-9]+ (passed|failed)" "$RUNXFAIL_LOG" | tail -1)  <- failures EXPECTED"
+    fi
+    if [[ -f "$MD5_MANIFEST" ]]; then
+        echo "  MD5:      $(realpath "$MD5_MANIFEST" 2>/dev/null || echo "$MD5_MANIFEST")"
     fi
     echo ""
     echo "── Reviewer package ──"
@@ -570,6 +633,8 @@ echo "--- Packaging reviewer.zip ---"
         "$FAIL_FILE" \
         "$LOG_FILE" \
         "$FOCUSED_LOG" \
+        "$RUNXFAIL_LOG" \
+        "$MD5_MANIFEST" \
         "$MATRIX_MD" \
         "$DIFF_COMMIT" \
         "$DIFF_PHASE" \
