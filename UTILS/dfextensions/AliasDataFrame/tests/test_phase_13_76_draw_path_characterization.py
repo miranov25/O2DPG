@@ -8432,12 +8432,6 @@ class TestB32bAcceptanceScaffold:
 
     # ---- family 7: ADF-created PERSISTENT columns (AD-19 source 5) --------
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 7 (AD-19 source 5): a column ADF "
-        "deliberately creates AND PERSISTS carries ADF_CREATED provenance. "
-        "compress_columns is a genuine persistent-creation path. Measured "
-        "baseline failure: DTypeAuthority(UNKNOWN, alias='dy_c') for the "
-        "created column.")
     def test_b32b_4_persistent_adf_created_column_is_an_authority_source(self):
         """P0-3 correction. Revision 1 used the joined temporary `v__S`, but
         the ratified text says a temporary working column is NOT an authority,
@@ -8483,13 +8477,6 @@ class TestB32bAcceptanceScaffold:
             "no stale authority may survive for a retracted temporary — "
             f"got {auth!r}")
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 7 (MR-P0-2): source 5 is an INVENTORY, not "
-        "one specimen. Every ADF path that creates a persistent column must "
-        "record ADF_CREATED, and re-creating one must not leave the previous "
-        "authority behind. Measured baseline failure: "
-        "DTypeAuthority(UNKNOWN, alias='dy_c') on the very first creator, so "
-        "no creator in the inventory records provenance at all.")
     def test_b32b_4c_every_persistent_creator_records_provenance(self):
         """MR-P1-2 / GPT27: revision 2 proved one path. The audit closes when
         every creator is enumerated and re-creation semantics are pinned —
@@ -8529,6 +8516,76 @@ class TestB32bAcceptanceScaffold:
                 f"authority — source 5 is not an inventory yet")
             assert auth.origin == mod.DTypeOrigin.ADF_CREATED, (
                 f"{creator}: expected ADF_CREATED, got {auth.origin}")
+
+        # ---- F4b (B3.2b STEP 3 correction). The claim "re-creation semantics
+        # are pinned" was not exercised: the two creators above make DIFFERENT
+        # names, so nothing here recreated the SAME persistent name. The
+        # ratified source-5 table says recreation at the same dtype is
+        # accepted and an incompatible recreation is refused, and until this
+        # correction neither branch existed.
+        m2 = A.AliasDataFrame(pd.DataFrame({"dy": np.array([1.5, 2.5, 3.5])}))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m2.compress_columns(spec)
+        assert m2.get_dtype_authority("dy_c").origin == mod.DTypeOrigin.ADF_CREATED
+
+        # same dtype -> accepted, authority intact
+        m2["dy_c"] = np.array([7, 8, 9], dtype=np.int16)
+        again = m2.get_dtype_authority("dy_c")
+        assert again.known and again.origin == mod.DTypeOrigin.ADF_CREATED, (
+            f"recreating at the SAME dtype must keep the source-5 authority: "
+            f"{again!r}")
+
+        # incompatible dtype -> refused, and the frame is left untouched
+        _before = list(m2.df["dy_c"])
+        with pytest.raises(ValueError) as _exc:
+            m2["dy_c"] = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+        assert "dy_c" in str(_exc.value)
+        assert list(m2.df["dy_c"]) == _before, (
+            "a refused overwrite must not also corrupt the column")
+        assert str(m2.df["dy_c"].dtype) == "int16", (
+            "a refused overwrite must not change the dtype either")
+
+        # and the authority must not survive the column being destroyed
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m2.decompress_columns(["dy"], keep_compressed=False)
+        assert "dy_c" not in m2.df.columns
+        gone = m2.get_dtype_authority("dy_c")
+        assert not gone.known, (
+            f"the source-5 authority outlived the column it describes: "
+            f"{gone!r}")
+
+        # ---- F3 (v03). A same-name `add_alias(..., dtype=None)` must NOT
+        # inherit the source-5 record. `_preserved_authority_on_redefinition`
+        # was written to carry a SOURCE-4 inference across a redefinition;
+        # STEP 3 put source-5 records under the same key and it returned them
+        # unconditionally. Executed consequence before the fix:
+        #
+        #     compress                dy_c : int16, adf_created
+        #     add_alias("dy_c","z*2", dtype=None) -> authority STILL int16
+        #     materialize                          -> int16 [2, 4, 6]
+        #
+        # a brand-new alias over an unrelated expression constrained to a
+        # compressed column's dtype.
+        m3 = A.AliasDataFrame(pd.DataFrame({
+            "dy": np.array([1.5, 2.5, 3.5]),
+            "z": np.array([1.0, 2.0, 3.0])}))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m3.compress_columns(spec)
+        assert m3.get_dtype_authority("dy_c").origin == mod.DTypeOrigin.ADF_CREATED
+        m3.add_alias("dy_c", "z * 2")            # same name, NO declared dtype
+        after = m3.get_dtype_authority("dy_c")
+        assert after.origin != mod.DTypeOrigin.ADF_CREATED, (
+            f"the new alias inherited the destroyed column's source-5 "
+            f"authority: {after!r}")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m3.materialize_alias("dy_c")
+        assert list(m3.df["dy_c"]) == [2.0, 4.0, 6.0], (
+            f"the alias was constrained to the old column dtype: "
+            f"{list(m3.df['dy_c'])} (z*2 is 2, 4, 6)")
 
     #: Every site that writes a column into `self.df`, with its adjudicated
     #: AD-19 disposition. R3B-P1-1 (GPT32): revision 3b enumerated two
@@ -8584,10 +8641,29 @@ class TestB32bAcceptanceScaffold:
     }
 
     def test_b32b_4d_every_column_writer_has_an_adjudicated_disposition(self):
-        """Passing completeness guard — R3B-P1-1. The write sites are derived
-        from the production AST, not typed by hand, so adding a new column
-        writer to AliasDataFrame.py fails this test until somebody classifies
-        it. That is what makes family 7 terminal rather than illustrative.
+        """Completeness guard for ONE writer form — R3B-P1-1, narrowed in the
+        B3.2b STEP 3 correction (F4).
+
+        SCOPE, stated because the previous wording claimed more than the
+        oracle can see. This walks the production AST for `self.df[...] = ...`
+        subscript assignment ONLY. It does NOT recognise whole-frame
+        publication:
+
+            self.df = pd.concat(...)
+            self.df = self._merge_loaded_data(...)
+            self.df = self.df.drop(...)
+
+        so "every column writer" was true of the assignment form and false of
+        the family. No such path is a source-5 creator today — that was
+        checked, not assumed — but the ORACLE cannot prove it, and a guard
+        whose wording outruns its mechanism is the same defect as `b32b_5e`.
+        STEP 6 owns the terminal persistent-column audit and is where
+        whole-frame publication is enumerated; this guard is the assignment
+        half of it.
+
+        The site set is still derived from the AST rather than typed by hand,
+        so adding a new subscript writer fails this test until somebody
+        classifies it.
 
         Measured on the tagged bytes: ten functions assign into `self.df[...]`
         — apply_dtypes, apply_schema, convert_dtypes, decompress_columns,
@@ -8619,11 +8695,6 @@ class TestB32bAcceptanceScaffold:
 
     # ---- family 1: reader / branch metadata (AD-19 source 1) -------------
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 1 (AD-19 source 1): a LAZY branch's dtype "
-        "is authoritative from READER METADATA. BEHAVIOURAL, through "
-        "read_tree_lazy. Measured baseline failure: "
-        "DTypeAuthority(UNKNOWN, alias='x') for a lazily-declared branch.")
     def test_b32b_5_reader_metadata_is_an_authority_source(self, tmp_path):
         """P1-1 correction. Revision 1 counted a token in the module source,
         which a comment or dead branch could satisfy. The reviewers were right
@@ -8639,10 +8710,6 @@ class TestB32bAcceptanceScaffold:
         assert auth.origin == _adf_module().DTypeOrigin.READER_METADATA
         assert str(auth.dtype) == "float64"
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 1: asking for a branch's dtype must NOT "
-        "load the branch. Measured baseline failure: no authority exists at "
-        "all, so the no-load property is vacuous today.")
     def test_b32b_5b_metadata_lookup_does_not_load_the_branch(self, tmp_path):
         p = tmp_path / "b32b_noload.root"
         _write_tree(p, np.arange(8, dtype=np.float64),
@@ -8656,10 +8723,6 @@ class TestB32bAcceptanceScaffold:
             f"vacuous: {auth!r}")
         assert before == after, "inspecting a dtype must not load data"
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 1: across a CHAIN whose members AGREE, the "
-        "agreed branch dtype is the authority. Measured baseline failure: "
-        "DTypeAuthority(UNKNOWN, alias='x') — no reader authority exists.")
     def test_b32b_5c_chain_metadata_agreement_is_explicit(self, tmp_path):
         p1, p2 = tmp_path / "c1.root", tmp_path / "c2.root"
         for p in (p1, p2):
@@ -8672,16 +8735,6 @@ class TestB32bAcceptanceScaffold:
         assert str(auth.dtype) == "float64", f"wrong agreed dtype: {auth!r}"
         assert auth.origin == _adf_module().DTypeOrigin.READER_METADATA
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 1 (MR-P0-2, GPT29): the case revision 2's "
-        "reason string PROMISED and its body did not build — chain members "
-        "that DISAGREE. float64 in one file, float32 in the other must be an "
-        "explicit conflict or an explicit UNKNOWN, never a silent pick of "
-        "whichever file was opened first. Measured baseline failure: the "
-        "chain builds without complaint and an AGREEING chain and a "
-        "DISAGREEING chain both report the identical "
-        "DTypeAuthority(UNKNOWN, alias='x'), so disagreement cannot even be "
-        "detected.")
     def test_b32b_5d_chain_metadata_disagreement_is_not_silently_resolved(
             self, tmp_path):
         """This is the coder's fifth reason-string-does-not-match-body defect
@@ -8716,15 +8769,6 @@ class TestB32bAcceptanceScaffold:
                 "a disagreeing chain reported one member's dtype as "
                 f"authoritative without recording the conflict: {d_auth!r}")
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 1 (MR-P0-2; fixture corrected per "
-        "R3B-P0-1): metadata-vs-PHYSICAL conflict. The branch is declared "
-        "float32 by reader metadata, loaded, and then genuinely CONTRADICTED "
-        "by recasting the physical column to float64. The declared authority "
-        "may not silently survive that. Measured baseline failure: "
-        "'no reader authority is declared' — DTypeAuthority(UNKNOWN, "
-        "alias='x') before the load, after ensure_branches, and after the "
-        "recast alike, so source 1 does not exist to be contradicted.")
     def test_b32b_5e_declared_and_loaded_dtypes_are_reconciled(self, tmp_path):
         """R3B-P0-1 (GPT32), and he is right. Revision 3b wrote a float32
         branch and compared the declared dtype with the loaded dtype OF THE
@@ -8756,11 +8800,201 @@ class TestB32bAcceptanceScaffold:
             warnings.simplefilter("ignore")
             lazy.df["x"] = lazy.df["x"].astype(np.float64)
         after = lazy.get_dtype_authority("x")
-        assert str(after.dtype) == str(lazy.df["x"].dtype) or getattr(
-            after, "conflict", False), (
-            f"declared {declared.dtype!r} and physical "
-            f"{lazy.df['x'].dtype!r} disagree, and neither a reconciliation "
-            f"nor a recorded conflict is visible: {after!r}")
+
+        # TERMINAL ORACLE (B3.2b STEP 3 correction, F1). The previous form was
+        #
+        #     assert (str(after.dtype) == str(lazy.df["x"].dtype)
+        #             or getattr(after, "conflict", False))
+        #
+        # and `DTypeAuthority` had no `conflict` attribute, so the second
+        # clause was ALWAYS False and the first is exactly what source 2 does.
+        # The assertion could not fail. A criterion written to forbid a silent
+        # winner accepted the silent winner -- the precise false closure its
+        # own docstring says it exists to prevent, and the third time this
+        # `getattr`-a-field-that-does-not-exist shape has appeared in this
+        # file. The field now exists, so the probe is load-bearing; asserting
+        # it directly rather than through `getattr` means its removal breaks
+        # the test instead of silently satisfying it.
+        assert after.conflict, (
+            f"reader metadata declared {declared.dtype} and the loaded column "
+            f"is {lazy.df['x'].dtype}; the authority reports "
+            f"{after.dtype} with NO recorded conflict, so one source silently "
+            f"won: {after!r}")
+        assert after.conflict_detail, (
+            "a conflict must say WHAT disagrees, or a consumer cannot act on "
+            f"it: {after!r}")
+        assert str(declared.dtype) in after.conflict_detail, (
+            f"the conflict detail does not name the contradicted reader "
+            f"dtype {declared.dtype}: {after.conflict_detail!r}")
+
+        # ...and the control: agreement must NOT be reported as a conflict,
+        # or the check degenerates into "always contested" and proves nothing.
+        agreeing = A.AliasDataFrame.read_tree_lazy(str(p), "tree")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            agreeing.ensure_branches(["x"])
+        assert not agreeing.get_dtype_authority("x").conflict, (
+            "a branch loaded AS its declared dtype must not be reported as "
+            "contested")
+
+        # ---- F1 (v03): the conflict must be ENFORCED AT USE, not merely
+        # recorded. v02 recorded it and consumed it nowhere -- `.conflict`
+        # existed at __eq__, __hash__ and __repr__ and at no other production
+        # site -- while the v02 CRR claimed refusal "at the point of use".
+        # The contested subject is a physical OPERAND, so a check inside
+        # `_resolve_target_dtype` could not see it; this pins the behaviour
+        # rather than the location.
+        lazy.add_alias("uses_x", "x * 2")
+        for _getter in ("materialize_alias", "get_alias_series",
+                        "get_alias_array"):
+            with pytest.raises(ValueError) as _exc:
+                getattr(lazy, _getter)("uses_x")
+            assert "x" in str(_exc.value), (
+                f"{_getter} refused without naming the contested subject: "
+                f"{_exc.value}")
+
+        # ...and INSPECTION still does not raise. That distinction is the
+        # entire justification for recording rather than throwing.
+        assert lazy.get_dtype_authority("x").conflict
+
+        # CONTROL: the agreeing frame must still evaluate, or "refuses when
+        # contested" degenerates into "refuses always".
+        agreeing.add_alias("ok_x", "x * 2")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            agreeing.materialize_alias("ok_x")
+        assert "ok_x" in agreeing.df.columns
+
+        # ---- v04 `F1`: the PUBLIC eval() surface. v03 guarded
+        # `_evaluate_alias_expression` and the v03 CRR claimed that covered
+        # "every alias-evaluating public path". `adf.eval()` goes straight to
+        # `_eval_in_namespace` and bypassed it, returning values computed from
+        # a contested column. The guard now lives at that single shared point,
+        # so eval(), alias evaluation and the vector-group compute all reach
+        # it.
+        with pytest.raises(ValueError) as _e_eval:
+            lazy.eval("x * 2")
+        assert "x" in str(_e_eval.value)
+
+        # CONTROL: the agreeing frame must still evaluate through eval().
+        assert list(agreeing.eval("x * 2"))[:2] == [0.0, 2.0]
+
+        # ---- v04 `F2`: SUBFRAME-QUALIFIED operands. `_analyze_expression`
+        # returns `subframe_refs` alongside `column_refs`; v03 read only the
+        # latter, so a parent alias over a contested CHILD column evaluated
+        # happily. My own v03 CRR named this class and did not test it.
+        def _pair():
+            _p = A.AliasDataFrame(pd.DataFrame({
+                "k": np.arange(3), "a": np.ones(3)}))
+            _c = A.AliasDataFrame(pd.DataFrame({
+                "k": np.arange(3), "q": np.arange(3, dtype=np.float32)}))
+            _c.add_alias("q2", "q * 1", dtype="float32")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                _c.materialize_alias("q2")
+            _p.register_subframe("S", _c, index_columns=["k"])
+            return _p, _c
+
+        # CONTROL first: an agreeing child must still project.
+        _par, _ch = _pair()
+        _par.add_alias("p", "S.q2 * 2")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            _par.materialize_alias("p")
+        assert list(_par.df["p"]) == [0.0, 2.0, 4.0]
+
+        # ...then the contested child.
+        _par, _ch = _pair()
+        _ch.df["q2"] = _ch.df["q2"].astype(np.float64)
+        assert _ch.get_dtype_authority("q2").conflict, (
+            "fixture precondition: the CHILD column must be contested")
+        _par.add_alias("p", "S.q2 * 2")
+        with pytest.raises(ValueError) as _e_sub:
+            _par.materialize_alias("p")
+        assert "S.q2" in str(_e_sub.value), (
+            f"the refusal must name the contested CHILD subject: "
+            f"{_e_sub.value}")
+
+        # ---- v05 `P0-LAZY`: source 1 must SURVIVE a lazy child's load.
+        # `_load_lazy_subframe` built a plain `AliasDataFrame(df)`, so the
+        # reader -- and with it AD-19 source 1 -- vanished at materialization.
+        # A conflict needs TWO sources, so after the load an incompatible
+        # recast could not even be represented and a parent expression
+        # consumed it. The reader's DECLARED dtypes are now carried onto the
+        # child (metadata only, not the reader itself, which would make the
+        # child look lazy and invite further loading).
+        _lz = tmp_path / "b32b_lazychild.root"
+        with uproot.recreate(str(_lz)) as _f:
+            _f.mktree("tree", {"k": "int64"})
+            _f["tree"].extend({"k": np.arange(3)})
+            _f.mktree("Ch", {"k": "int64", "q": "float32"})
+            _f["Ch"].extend({"k": np.arange(3),
+                             "q": np.arange(3, dtype=np.float32)})
+
+        def _lazy_pair():
+            _m = A.AliasDataFrame.read_tree_lazy(str(_lz), "tree")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                _m.ensure_branches(["k"])
+                _m.register_subframe_lazy("S", str(_lz), tree_name="Ch",
+                                          index_columns=["k"])
+                _m.ensure_subframe("S")
+            return _m, _m._subframes.get("S")
+
+        # CONTROL: matching reader/physical -> qualified use succeeds.
+        _m, _c = _lazy_pair()
+        _m.add_alias("u", "S.q * 2")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            _m.materialize_alias("u")
+        assert list(_m.df["u"]) == [0.0, 2.0, 4.0]
+
+        # loaded, then recast incompatibly -> conflict visible, use refuses.
+        _m, _c = _lazy_pair()
+        _c.df["q"] = _c.df["q"].astype(np.float64)
+        assert _c.get_dtype_authority("q").conflict, (
+            "the reader's declared dtype did not survive the child's load, "
+            "so a physical contradiction cannot even be formed")
+        _m.add_alias("u", "S.q * 2")
+        with pytest.raises(ValueError) as _e_lazy:
+            _m.materialize_alias("u")
+        assert "S.q" in str(_e_lazy.value)
+
+        # ---- v05 `P0-NESTED`: a MULTI-LEVEL chain. `_analyze_expression`
+        # resolves one level -- `A.B.q` came back as `('A','B')` -- so the
+        # deep leaf was never produced and went unchecked while the join
+        # resolver reached it happily. Both now share one chain grammar.
+        def _deep():
+            _p = A.AliasDataFrame(pd.DataFrame({"k": np.arange(3)}))
+            _mid = A.AliasDataFrame(pd.DataFrame({"k": np.arange(3)}))
+            _leaf = A.AliasDataFrame(pd.DataFrame({
+                "k": np.arange(3), "q": np.arange(3, dtype=np.float32)}))
+            _leaf.add_alias("q2", "q * 1", dtype="float32")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                _leaf.materialize_alias("q2")
+            _mid.register_subframe("B", _leaf, index_columns=["k"])
+            _p.register_subframe("A", _mid, index_columns=["k"])
+            return _p, _leaf
+
+        # CONTROL: nested and agreeing -> succeeds.
+        _par, _leaf = _deep()
+        _par.add_alias("w", "A.B.q2 * 2")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            _par.materialize_alias("w")
+        assert list(_par.df["w"]) == [0.0, 2.0, 4.0]
+
+        # contested DEEP leaf -> refuses, and names the qualified subject.
+        _par, _leaf = _deep()
+        _leaf.df["q2"] = _leaf.df["q2"].astype(np.float64)
+        assert _leaf.get_dtype_authority("q2").conflict
+        _par.add_alias("w", "A.B.q2 * 2")
+        with pytest.raises(ValueError) as _e_deep:
+            _par.materialize_alias("w")
+        assert "A.B.q2" in str(_e_deep.value), (
+            f"the refusal must name the full dotted subject the user wrote: "
+            f"{_e_deep.value}")
 
     # ---- family 2: persisted dtype and origin ----------------------------
     #
@@ -8833,34 +9067,40 @@ class TestB32bAcceptanceScaffold:
             f"origin changed across persistence: {before.origin} -> "
             f"{after.origin}")
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 2 (MR-P1-2): a restored authority is "
-        "CANONICALLY REPRESENTED. Measured on alma2: the same authority is "
-        "dtype('float32') before export and the TYPE OBJECT "
-        "<class 'numpy.float32'> after restore, so str(auth.dtype) changes "
-        "from 'float32' to \"<class 'numpy.float32'>\" across a round trip "
-        "and every consumer that compares a dtype by its printed form "
-        "breaks. Measured baseline failure: assert "
-        "\"<class 'numpy.float32'>\" == 'float32'. The persisted schema "
-        "stores the raw declaration ({'expr': 'x * 2', 'dtype': <class "
-        "'numpy.float32'>}) and never canonicalises it. Environment: needs "
-        "xxhash/PyROOT — SKIPS in the coder sandbox, runs on alma2.")
     def test_b32b_13b_restored_authority_is_canonically_represented(
             self, tmp_path):
-        """MR-P1-3 correction, on alma2 evidence rather than on my guess.
+        """ADJUDICATED in the B3.2b STEP 3 correction, per the Main Reviewer's
+        instruction not to implement this one blindly.
 
-        Revision 3's version invented a 'legacy' fixture by clearing
-        attributes named `_dtype_authority` / `_authority` /
-        `dtype_authority`. The probe showed **none of those attributes
-        exists** — the authority is derived from `alias_dtypes` and
-        `_schema['columns']`, so my strip loop was a silent no-op and the
-        fixture never constructed the history its name claimed. The test then
-        failed on an origin allow-list I had guessed (the real restored origin
-        is `explicit_alias`, which I had not listed).
+        Revision 3b asserted `str(after.dtype) == str(before.dtype)`. That is
+        REPRESENTATION identity, which is stronger than the ratified contract
+        (§13 item 2: dtype AND origin survive). I implemented it — one line,
+        `np.dtype(value)` instead of `np.dtype(value).type` in
+        `_deserialize_schema` — and the full-suite failure-identity diff
+        refused it:
 
-        Replaced with the defect the alma2 failure actually exposed, which is
-        a genuine MR-P1-2 item: persistence carries no canonical dtype
-        representation, so a dtype survives by value and not by form."""
+            FAILED tests/test_schema_serialization.py::
+                   test_deserialize_schema_restores_dtypes
+
+        That test predates this phase and asserts
+        `hasattr(spec['dtype'], '__name__')`, i.e. a numpy TYPE CLASS. Its own
+        comment says "should be a numpy type, not a string", so its INTENT
+        admits a dtype instance and its MECHANISM does not — the same
+        intent-versus-mechanism gap that made `b32b_5e` a false close.
+
+        So the current representation IS pinned by a ratified test. Editing
+        that test so my criterion could pass would be accommodating in the
+        wrong direction. This criterion is therefore adjudicated down to the
+        SEMANTIC contract, which alma2 already measured as holding:
+
+            before  DTypeAuthority(float32,               origin=explicit_alias)
+            after   DTypeAuthority(<class numpy.float32>, origin=explicit_alias)
+            np.dtype equal   True
+            origins  equal   True
+
+        Exact representation identity remains a genuine improvement. It
+        belongs in a change that owns BOTH tests, not in a correction whose
+        scope is authority sources."""
         pytest.importorskip("xxhash")   # see the class note on family 2
         m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1.0, 2.0])}))
         m.add_alias("q", "x * 2", dtype="float32")
@@ -8875,26 +9115,24 @@ class TestB32bAcceptanceScaffold:
             back = A.AliasDataFrame.read_tree(out, "t")
         after = back.get_dtype_authority("q")
         assert after.known
-        assert str(after.dtype) == str(before.dtype), (
-            f"the restored authority is not canonically represented: "
-            f"{str(before.dtype)!r} -> {str(after.dtype)!r}")
+        assert np.dtype(after.dtype) == np.dtype(before.dtype), (
+            f"the restored authority is not the same dtype: "
+            f"{before.dtype!r} -> {after.dtype!r}")
+        assert after.origin == before.origin, (
+            f"the restored authority lost its origin: "
+            f"{before.origin!r} -> {after.origin!r}")
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 2 (MR-P1-3): restored metadata that "
-        "CONTRADICTS the physical column it describes is an explicit "
-        "conflict, not a silent overwrite in either direction. Measured on "
-        "alma2: after restore and materialization the column is cast to "
-        "float64 and the authority STILL reports "
-        "DTypeAuthority(<class 'numpy.float32'>, origin=explicit_alias, "
-        "stored_in_frame) with no conflict recorded — the contradiction is "
-        "absorbed silently. Environment: needs xxhash/PyROOT — SKIPS in the "
-        "coder sandbox, runs on alma2.")
     def test_b32b_13c_restored_metadata_conflict_is_explicit(self, tmp_path):
-        """Fixture corrected on alma2 evidence. Revision 3 wrote
-        `back.df["q"] = ...` straight after `read_tree` and raised
-        `KeyError: 'q'`: the probe showed `read_tree` restores `q` as an
-        ALIAS, not a physical column — `back.df.columns == ['x']` and
-        `back.aliases == {'q': 'x * 2'}`. It must be materialized first."""
+        """MR-P1-3, oracle strengthened in v03 (`F4`). The v02 body ended in
+
+            assert np.dtype(auth.dtype) == back.df["q"].dtype or getattr(
+                auth, "conflict", False)
+
+        which accepts an END STATE and proves no TRANSITION: a build that
+        reported `conflict=True` unconditionally would pass it, and so would
+        one that never conflicts but happens to agree. v03 asserts the
+        transition — agreement BEFORE, conflict AFTER, refusal at use — so
+        both degenerate builds fail."""
         pytest.importorskip("xxhash")   # see the class note on family 2
         m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1.0, 2.0])}))
         m.add_alias("q", "x * 2", dtype="float32")
@@ -8908,41 +9146,38 @@ class TestB32bAcceptanceScaffold:
             back = A.AliasDataFrame.read_tree(out, "t")
             back.materialize_alias("q")          # restored as an alias
         assert "q" in back.df.columns, "the fixture needs a physical column"
+
+        # BEFORE: restored record and physical column AGREE. `F2` — a v02
+        # build marked this contested because it compared str() of
+        # `<class 'numpy.float32'>` against `dtype('float32')`.
+        clean = back.get_dtype_authority("q")
+        assert clean.known
+        assert not clean.conflict, (
+            f"a restored authority that MATCHES its column must not be "
+            f"reported contested: {clean!r} vs {back.df['q'].dtype}")
+
+        # AFTER: a real contradiction.
         back.df["q"] = back.df["q"].astype(np.float64)
         auth = back.get_dtype_authority("q")
         assert auth.known, "the restored authority must still be reportable"
-        assert np.dtype(auth.dtype) == back.df["q"].dtype or getattr(
-            auth, "conflict", False), (
-            "restored metadata and the physical column disagree and neither "
-            f"a reconciliation nor a recorded conflict is visible: {auth!r} "
-            f"vs column {back.df['q'].dtype}")
+        assert auth.conflict, (
+            f"restored metadata and the physical column disagree and no "
+            f"conflict is recorded: {auth!r} vs {back.df['q'].dtype}")
+        assert auth.conflict_detail, "a conflict must say what disagrees"
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 2 (B32B-R3B-P0-1, GPT30): the persisted "
-        "column record carries an EXPLICIT authority entry, so a file "
-        "written WITHOUT one is detectable as such instead of being "
-        "indistinguishable from a file that never had authority. Measured "
-        "baseline failure: the persisted entry for a column with known "
-        "authority is {'expr': 'x * 2', 'dtype': 'float32'} — it records the "
-        "DECLARATION and no origin, so DTypeOrigin.EXPLICIT_ALIAS is "
-        "RE-DERIVED on restore rather than restored, and an authority that "
-        "was FIRST_MATERIALIZATION cannot survive at all. The schema-level "
-        "__meta__ carries schema_version 1; the column record carries no "
-        "authority version. Runs in the coder sandbox — no xxhash needed.")
+        # AND USING IT REFUSES (`F1`) — inspection above never raised.
+        back.add_alias("uses_q", "q * 2")
+        with pytest.raises(ValueError) as exc:
+            back.materialize_alias("uses_q")
+        assert "q" in str(exc.value)
+
     def test_b32b_13d_persisted_record_carries_an_explicit_authority(self):
-        """B32B-R3B-P0-1. GPT30 is right that my revision-3b rewrite REMOVED
-        the acceptance owner for old/missing authority metadata: I replaced
-        `b32b_13b` instead of adding to it, so family 2 could have reached
-        zero xfails without ever proving how a legacy file is handled.
-
-        His instruction was 'do not emulate legacy state by clearing guessed
-        in-memory attributes' — the mistake that made revision 3's fixture a
-        no-op. So this asserts on the ACTUAL persisted representation, which
-        the alma2 probe measured: `_schema['columns'][col]`. That is what
-        `export_tree` serialises and `read_tree` restores.
-
-        It also needs no ROOT round trip, so unlike the rest of family 2 it
-        executes in the coder sandbox."""
+        """B32B-R3B-P0-1, oracle strengthened in v03 (`F4`). The v02 body
+        asserted only that SOME key whose NAME contains "origin" or
+        "authority" exists — a record holding `{"authority": None}` would have
+        satisfied it. v03 asserts the contents: dtype, origin and
+        subject_kind, each against what the authority actually reports."""
+        mod = _adf_module()
         m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1.0, 2.0])}))
         m.add_alias("q", "x * 2", dtype="float32")
         with warnings.catch_warnings():
@@ -8950,12 +9185,21 @@ class TestB32bAcceptanceScaffold:
             m.materialize_alias("q")
         auth = m.get_dtype_authority("q")
         assert auth.known, "precondition: the authority must be known"
+
         entry = m._schema["columns"]["q"]
-        recorded = [k for k in entry
-                    if "origin" in k.lower() or "authority" in k.lower()]
-        assert recorded, (
+        rec = entry.get("dtype_authority")
+        assert isinstance(rec, dict), (
             f"the persisted record carries no authority entry, so its "
             f"absence in an older file is undetectable: {entry!r}")
+        assert np.dtype(rec["dtype"]) == np.dtype(auth.dtype), (
+            f"the persisted dtype {rec['dtype']!r} is not the authority's "
+            f"{auth.dtype!r}")
+        assert rec["origin"] == mod.DTypeOrigin.EXPLICIT_ALIAS, (
+            f"a DECLARED dtype is AD-19 source 3; the record says "
+            f"{rec['origin']!r}")
+        assert rec["origin"] == auth.origin, "record and authority disagree"
+        assert rec.get("subject_kind") == "alias", (
+            f"the record must say WHAT it describes: {rec!r}")
 
     def test_b32b_13e_absent_metadata_does_not_fabricate_authority(self):
         """The other half of B32B-R3B-P0-1, and it already holds — pinned so
@@ -9053,11 +9297,6 @@ class TestB32bAcceptanceScaffold:
             f"the gather changed the dtype: {ch.df['v'].dtype!r} -> "
             f"{m.df['d'].dtype!r} [{_arrow_env()}]")
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 3: the remaining Arrow work is AUTHORITY, "
-        "not the gather — an Arrow-backed column must be an authority source "
-        "with its exact backed dtype. Measured baseline failure: "
-        "DTypeAuthority(UNKNOWN, alias='v') for a pyarrow-backed column.")
     def test_b32b_14b_arrow_backed_dtype_is_an_authority(self):
         pytest.importorskip("pyarrow")
         m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1.0, 2.0])}))
@@ -9959,10 +10198,6 @@ class TestB32bAcceptanceScaffold:
 
     # ---- the remaining carried D_n items ---------------------------------
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance (AD-19 source 2): an EXISTING PHYSICAL COLUMN is "
-        "authoritative simply by existing. Measured baseline failure: "
-        "DTypeAuthority(UNKNOWN, alias='x') for a plain frame column.")
     def test_b32b_3_physical_column_is_an_authority_source(self):
         m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))
         auth = m.get_dtype_authority("x")

@@ -355,10 +355,32 @@ class DTypeAuthority:
     """
 
     __slots__ = ("dtype", "origin", "known", "stored_in_frame",
-                 "subject_kind", "subject_name")
+                 "subject_kind", "subject_name", "conflict", "conflict_detail")
 
     def __init__(self, dtype, origin, subject_kind, subject_name,
-                 stored_in_frame=False):
+                 stored_in_frame=False, conflict=False, conflict_detail=""):
+        # ---- B3.2b STEP 3 CORRECTION, `F1`. Two AUTHORITY SOURCES CAN
+        # DISAGREE about the same subject, and until this field existed there
+        # was nowhere to say so. `get_dtype_authority` simply returned
+        # whichever source it consulted first -- source 2 -- and the criterion
+        # written to forbid that, `b32b_5e`, accepted it, because its only
+        # other clause was `getattr(after, "conflict", False)` on a class with
+        # no such attribute. An assertion that cannot fail is not a criterion.
+        #
+        # RECORDED RATHER THAN RAISED, deliberately. This class is reached
+        # through `get_dtype_authority`, whose contract is "Never raises for an
+        # unknown name -- 'not established yet' is a real state, not an error".
+        # Turning an INSPECTION method into a throwing enforcement point would
+        # mean a user who legitimately recasts a loaded column gets an
+        # exception every time anything later looks at it. The contradiction is
+        # recorded here so it is visible, and REFUSED at the point of USE
+        # (`_resolve_target_dtype`), which is where acting on a contradictory
+        # dtype would actually do harm.
+        #
+        # The scaffold anticipated this field in THREE places -- `b32b_5d`,
+        # `b32b_5e` and `b32b_13c` all probe for it by `getattr` -- so adding
+        # it is completing a contract the acceptance criteria already assumed,
+        # not inventing one.
         known = dtype is not None
         if known and origin == DTypeOrigin.UNKNOWN:
             raise ValueError(
@@ -381,8 +403,16 @@ class DTypeAuthority:
         object.__setattr__(self, "origin", origin)
         object.__setattr__(self, "known", known)
         object.__setattr__(self, "stored_in_frame", bool(stored_in_frame))
+        if conflict and not known:
+            raise ValueError(
+                f"DTypeAuthority for {subject_kind} {subject_name!r}: a "
+                f"conflict requires the dtype that was actually chosen, so "
+                f"the caller can see WHAT was returned as well as that it is "
+                f"contested (contract §5.3)")
         object.__setattr__(self, "subject_kind", subject_kind)
         object.__setattr__(self, "subject_name", subject_name)
+        object.__setattr__(self, "conflict", bool(conflict))
+        object.__setattr__(self, "conflict_detail", str(conflict_detail))
 
     def __setattr__(self, *_a, **_k):
         raise AttributeError("DTypeAuthority is immutable")
@@ -402,11 +432,12 @@ class DTypeAuthority:
                 and self.origin == other.origin
                 and self.stored_in_frame == other.stored_in_frame
                 and self.subject_kind == other.subject_kind
-                and self.subject_name == other.subject_name)
+                and self.subject_name == other.subject_name
+                and self.conflict == other.conflict)
 
     def __hash__(self):
         return hash((str(self.dtype), self.origin, self.stored_in_frame,
-                     self.subject_kind, self.subject_name))
+                     self.subject_kind, self.subject_name, self.conflict))
 
     def __repr__(self):
         if not self.known:
@@ -414,7 +445,8 @@ class DTypeAuthority:
                     f"{self.subject_name!r})")
         return (f"DTypeAuthority({self.dtype}, origin={self.origin}, "
                 f"{self.subject_kind}={self.subject_name!r}"
-                f"{', stored_in_frame' if self.stored_in_frame else ''})")
+                f"{', stored_in_frame' if self.stored_in_frame else ''}"
+                f"{', CONFLICT' if self.conflict else ''})")
 
 
 class ADFProvenanceUnsupportedError(ValueError):
@@ -998,9 +1030,8 @@ DTYPE_SITE_DISPOSITION = {
         "halffloat.Documented at the site, and the column_dtypes metadata"
         "restoresfloat16 on load, so no information is lost"),
     "load:astype:0": (
-        "LATER:STEP 3",
-        "reader ingestion. The authority is source 1 or source 2, andSTEP"
-        "3 owns establishing it"),
+        "APPLICATION",
+        "parquet ingestion applies the column_dtypes the schema recorded when the frame was saved. That record is the file's own metadata, i.e. AD-19 SOURCE 1, established by B3.2b STEP 3; this site restores it rather than deciding it"),
     "export_tree:astype:0": (
         "APPLICATION",
         "applies the export dtype map assembled by the caller"),
@@ -1016,25 +1047,17 @@ DTYPE_SITE_DISPOSITION = {
         "array access inside a APPLICATION site; obtains the"
         "array,chooses no dtype"),
     "read_tree:astype:0": (
-        "LATER:STEP 3",
-        "applies a per-branch target while reading. Whether that targetis"
-        "AD-19 SOURCE 1 (reader metadata) is exactly what STEP 3decides;"
-        "`b32b_5` is its criterion"),
+        "APPLICATION",
+        "applies the per-branch target assembled upstream in dtype_hints -- from compression metadata, from the file's own column_dtypes (AD-19 SOURCE 1, which B3.2b STEP 3 implemented and `b32b_5` now pins), and from the caller's dtype_overrides. The cast APPLIES that target; the deciding happens where dtype_hints is built"),
     "read_tree:astype:1": (
-        "LATER:STEP 3",
-        "applies a per-branch target while reading. Whether that targetis"
-        "AD-19 SOURCE 1 (reader metadata) is exactly what STEP 3decides;"
-        "`b32b_5` is its criterion"),
+        "APPLICATION",
+        "applies the per-branch target assembled upstream in dtype_hints -- from compression metadata, from the file's own column_dtypes (AD-19 SOURCE 1, which B3.2b STEP 3 implemented and `b32b_5` now pins), and from the caller's dtype_overrides. The cast APPLIES that target; the deciding happens where dtype_hints is built"),
     "read_tree:astype:2": (
-        "LATER:STEP 3",
-        "applies a per-branch target while reading. Whether that targetis"
-        "AD-19 SOURCE 1 (reader metadata) is exactly what STEP 3decides;"
-        "`b32b_5` is its criterion"),
+        "APPLICATION",
+        "applies the per-branch target assembled upstream in dtype_hints -- from compression metadata, from the file's own column_dtypes (AD-19 SOURCE 1, which B3.2b STEP 3 implemented and `b32b_5` now pins), and from the caller's dtype_overrides. The cast APPLIES that target; the deciding happens where dtype_hints is built"),
     "read_tree:astype:3": (
-        "LATER:STEP 3",
-        "applies a per-branch target while reading. Whether that targetis"
-        "AD-19 SOURCE 1 (reader metadata) is exactly what STEP 3decides;"
-        "`b32b_5` is its criterion"),
+        "APPLICATION",
+        "applies the per-branch target assembled upstream in dtype_hints -- from compression metadata, from the file's own column_dtypes (AD-19 SOURCE 1, which B3.2b STEP 3 implemented and `b32b_5` now pins), and from the caller's dtype_overrides. The cast APPLIES that target; the deciding happens where dtype_hints is built"),
     "_merge_loaded_data:values:0": (
         "EXTRACTION",
         "array access while merging loaded branch data; no dtype"
@@ -1210,13 +1233,11 @@ DTYPE_SITE_DISPOSITION = {
         "float64 for the GBregression bridge layer, feeding"
         "predictorsthat are float64 by construction"),
     "read_branch:astype:0": (
-        "LATER:STEP 3",
-        "the same per-branch reader path as read_tree; STEP 3"
-        "decideswhether its target is AD-19 source 1"),
+        "APPLICATION",
+        "applies the per-branch target assembled upstream in dtype_hints -- from compression metadata, from the file's own column_dtypes (AD-19 SOURCE 1, which B3.2b STEP 3 implemented and `b32b_5` now pins), and from the caller's dtype_overrides. The cast APPLIES that target; the deciding happens where dtype_hints is built"),
     "read_branch:astype:1": (
-        "LATER:STEP 3",
-        "the same per-branch reader path as read_tree; STEP 3"
-        "decideswhether its target is AD-19 source 1"),
+        "APPLICATION",
+        "applies the per-branch target assembled upstream in dtype_hints -- from compression metadata, from the file's own column_dtypes (AD-19 SOURCE 1, which B3.2b STEP 3 implemented and `b32b_5` now pins), and from the caller's dtype_overrides. The cast APPLIES that target; the deciding happens where dtype_hints is built"),
 }
 
 SCHEMA_METADATA_KEY = "__alias_dataframe_schema__"
@@ -1389,6 +1410,28 @@ def _deserialize_schema(serialized):
         for key, value in spec.items():
             if key == "dtype" and isinstance(value, str):
                 # Convert string back to numpy dtype type
+                #
+                # B3.2b STEP 3 CORRECTION, `13b` ADJUDICATION. I changed this
+                # to `np.dtype(value)` so a restored dtype would `str()`
+                # identically to the declared one, which is what `b32b_13b`
+                # asserted. The full-suite identity diff refused it:
+                #
+                #   FAILED test_schema_serialization.py::
+                #          test_deserialize_schema_restores_dtypes
+                #
+                # That test predates this phase and asserts
+                # `hasattr(spec['dtype'], '__name__')` -- a numpy TYPE CLASS.
+                # Its comment says "should be a numpy type, not a string", so
+                # its INTENT admits a dtype instance while its MECHANISM does
+                # not: the same intent-vs-mechanism gap as `b32b_5e`.
+                #
+                # So the representation IS pinned by a ratified test, and
+                # editing that test to fit my criterion would be accommodating
+                # in the wrong direction. Reverted; `b32b_13b` is adjudicated
+                # down to the ratified SEMANTIC contract (same dtype, same
+                # origin), which alma2 already measured as holding. Exact
+                # representation identity is a real improvement and belongs in
+                # a change that owns both tests, not in this correction.
                 try:
                     deserialized_spec[key] = np.dtype(value).type
                 except TypeError:
@@ -1682,6 +1725,9 @@ def _export_subframe_schema_v2(subframe_entry, include_precision_stats=False, in
     # Aliases from schema
     for col, col_info in sf_schema.get('columns', {}).items():
         if col not in columns:
+            # B3.2b STEP 3 -- same exclusion as export_schema_v2; see there.
+            if not include_state and col in compressed_col_names:
+                continue
             # In definition mode, compression targets as physical columns
             if not include_state and col in compression_targets:
                 decompressed_dtype = compression_info.get(col, {}).get('decompressed_dtype')
@@ -2577,9 +2623,49 @@ class AliasDataFrame:
                 f"{type(key).__name__}. Use add_alias() for computed columns, or "
                 "assign to adf.df directly for multi-column / positional writes."
             )
+        # B3.2b STEP 3 CORRECTION, `F2` second half. `adf[key] = value` over
+        # a column ADF created is the one public path that can contradict a
+        # source-5 authority. The ratified source-5 table is explicit:
+        #
+        #     ADF-created authority + recreation at the SAME dtype -> accept
+        #     ADF-created authority + INCOMPATIBLE recreation      -> refuse
+        #
+        # so this is enforced rather than demoted. §5.5 says the dtype is
+        # fixed once created; silently letting a user overwrite `dy_c` with
+        # float64 while the compression schema still says int16 would leave
+        # the schema describing data that is not there.
+        #
+        # TRANSACTIONAL: the write happens first, because only pandas can say
+        # what dtype the value actually becomes, and is UNDONE if the result
+        # contradicts the record. A refusal must not also corrupt the frame.
+        _created = None
+        _entry = (self._schema.get("columns", {}) or {}).get(key) or {}
+        _rec = _entry.get(self._AUTHORITY_KEY)
+        if _rec and _rec.get("origin") == DTypeOrigin.ADF_CREATED:
+            _created = _rec.get("dtype")
+        _prior = self.df[key].copy() if (_created is not None
+                                         and key in self.df.columns) else None
+
         # Write through to the real frame first; pandas validates the value shape
         # and raises on a length/shape mismatch before any bookkeeping changes.
         self.df[key] = value
+
+        if _created is not None and str(self.df[key].dtype) != str(_created):
+            _got = self.df[key].dtype
+            if _prior is not None:
+                self.df[key] = _prior
+            else:
+                self.df.drop(columns=[key], inplace=True)
+            raise ValueError(
+                f"column {key!r} was CREATED BY ADF with dtype {_created} "
+                f"({_rec.get('reason', 'no reason recorded')}), and AD-19 "
+                f"§5.5 fixes that dtype once created. Assigning a {_got} "
+                f"value would leave the recorded schema describing data the "
+                f"frame does not hold. The frame is unchanged. Assign a "
+                f"{_created} value, or remove ADF's claim on the name first "
+                f"— for compressed storage that is "
+                f"decompress_columns([...], keep_schema=False), which drops "
+                f"the column and its authority together.")
         # PHASE_13_69_ADF: notify write-event listeners (e.g. ML prediction caches).
         # Keyed on the WRITE EVENT itself — fires identically on tree and chain,
         # independent of the loaded_branches copy-property asymmetry (the known
@@ -2809,25 +2895,204 @@ class AliasDataFrame:
 
     _AUTHORITY_KEY = "dtype_authority"
 
+    def _reader_branch_dtype(self, name):
+        """AD-19 SOURCE 1 — a branch dtype from READER METADATA, or None.
+
+        B3.2b STEP 3. Delegates to the reader, which owns the question and
+        answers it from header metadata WITHOUT loading the branch (§5.6).
+        Both reader families implement `branch_numpy_dtype`; the chain reader
+        additionally requires every file to agree, and returns None when they
+        do not, so a disagreeing chain yields UNKNOWN rather than a guess.
+
+        `getattr` rather than a type test: a caller may supply any reader with
+        the same contract, and an older reader without the accessor simply
+        provides no source-1 authority instead of raising.
+        """
+        # v05 `P0-LAZY`: a materialized lazy CHILD has no reader of its own but
+        # carries the dtypes its reader declared, so source 1 survives the
+        # load and can still contradict a later physical change.
+        _carried = getattr(self, "_reader_declared_dtypes", None)
+        if _carried and name in _carried:
+            return _carried[name]
+        _rdr = getattr(self, "_lazy_reader", None)
+        if _rdr is None:
+            return None
+        _fn = getattr(_rdr, "branch_numpy_dtype", None)
+        if not callable(_fn):
+            return None
+        try:
+            return _fn(name)
+        except Exception:
+            return None
+
     def get_dtype_authority(self, name):
-        """The recorded authority for an alias, as a `DTypeAuthority`.
+        """The authoritative dtype for a name, as a `DTypeAuthority`.
 
         Returns an UNKNOWN authority when none has been established. Never
         raises for an unknown name — "not established yet" is a real state
         (contract §5.2), not an error.
+
+        B3.2b STEP 3 — SOURCES 1, 2 AND 5 ANSWER HERE FOR THE FIRST TIME.
+        Before this increment `DTypeOrigin.READER_METADATA`, `PHYSICAL_COLUMN`
+        and `ADF_CREATED` were declared in the enum and CONSTRUCTED AT ZERO
+        SITES; only sources 3 and 4 existed in practice, so a plain physical
+        column answered `DTypeAuthority(UNKNOWN)` — and answered it while
+        calling itself an `alias`, which it is not.
+
+        PRECEDENCE, and the one part of it that is load-bearing:
+
+        ```text
+        3 EXPLICIT_ALIAS        a dtype DECLARED on the alias
+        4 FIRST_MATERIALIZATION the recorded inferred authority
+        5 ADF_CREATED           ADF chose the dtype when it created the column
+        2 PHYSICAL_COLUMN       the column exists; its dtype is authoritative
+        1 READER_METADATA       not loaded yet, but the reader declares it
+        ```
+
+        AN ALIAS IS ANSWERED BY 3 AND 4 ONLY, never by 2. This is deliberate
+        and it is what keeps STEP 2's measurement true. `_resolve_target_dtype`
+        consults this method, so if a materialized alias with no declaration
+        and no record could answer from its own stored column, the resolver
+        would adopt whatever dtype the last evaluation happened to produce —
+        and casting a drifted result back to it is exactly how
+        `b32_213_both_paths_refuse_dtype_drift` went from RAISING to silently
+        coercing when STEP 2 tried the same shortcut. An alias's authority is
+        its contract, not its current storage. Sources 2, 1 and 5 therefore
+        answer for names that are not aliases.
         """
+        _is_alias = name in self.aliases
         _entry = (self._schema.get("columns", {}) or {}).get(name) or {}
+        _stored = name in self.df.columns
+        def _same_dtype(_a, _b):
+            """SEMANTIC dtype equality — B3.2b STEP 3 v03, `F2`.
+
+            v02 compared `str(_a) == str(_b)` and that produced a FALSE
+            CONFLICT on a perfectly healthy restore, because the two halves of
+            my own v02 disagreed with each other:
+
+                restored schema dtype   <class 'numpy.float32'>   (13b kept .type)
+                physical column         dtype('float32')
+                str() equal             False   -> conflict
+                semantically equal      True
+
+            A restored alias with nothing wrong with it was reported contested.
+            Worse, `F1` enforcement built on top of this would have made every
+            such alias FAIL CLOSED, which is why the reviewers required this
+            fix to land FIRST.
+
+            `pandas_dtype` canonicalizes a NumPy type class, a dtype instance,
+            a string and an extension dtype to one comparable object. The
+            `str()` fallback covers anything it cannot parse -- no worse than
+            v02 for those, and correct for everything it can.
+            """
+            try:
+                return (pd.api.types.pandas_dtype(_a)
+                        == pd.api.types.pandas_dtype(_b))
+            except (TypeError, ValueError):
+                return str(_a) == str(_b)
+
+        def _contested(_dt):
+            """13c: does this authority contradict the column that stores it?
+
+            The alias-side analogue of F1. A restored record can disagree with
+            the physical column it describes -- the STORED dtype is not
+            re-derived from the record, so nothing previously noticed. The
+            authority still REPORTS its own dtype (that is the contract, and
+            §4.4 depends on it), but the contradiction is now visible instead
+            of being discoverable only by comparing by hand.
+            """
+            if not _stored or _dt is None:
+                return False, ""
+            _phys = self.df[name].dtype
+            if _same_dtype(_dt, _phys):
+                return False, ""
+            return True, (f"the recorded authority says {_dt} but the stored "
+                          f"column {name!r} is {_phys}")
+
         _declared = _entry.get("dtype") if "expr" in _entry else None
         if _declared is not None:
-            return DTypeAuthority(self._canonical_dtype(_declared),
-                                  DTypeOrigin.EXPLICIT_ALIAS, "alias", name,
-                                  stored_in_frame=name in self.df.columns)
+            _d = self._canonical_dtype(_declared)
+            _c, _why = _contested(_d)
+            return DTypeAuthority(_d, DTypeOrigin.EXPLICIT_ALIAS, "alias",
+                                  name, stored_in_frame=_stored,
+                                  conflict=_c, conflict_detail=_why)
         _rec = _entry.get(self._AUTHORITY_KEY)
-        if not _rec:
-            return DTypeAuthority.unknown("alias", name)
-        return DTypeAuthority(self._canonical_dtype(_rec["dtype"]),
-                              _rec["origin"], "alias", name,
-                              stored_in_frame=name in self.df.columns)
+        if _rec:
+            # Source 4 for an alias, source 5 for an ADF-created column: both
+            # are RECORDED authorities and both live under one key, so the
+            # existing schema serialization carries them without change.
+            _d = self._canonical_dtype(_rec["dtype"])
+            _c, _why = _contested(_d)
+            return DTypeAuthority(_d, _rec["origin"],
+                                  _rec.get("subject_kind",
+                                           "alias" if _is_alias else "column"),
+                                  name, stored_in_frame=_stored,
+                                  conflict=_c, conflict_detail=_why)
+        if _is_alias:
+            return DTypeAuthority.unknown("alias", name)   # insulation, see above
+        if _stored:
+            # F1. Source 2 no longer wins SILENTLY. When the reader ALSO
+            # declares this branch and the two disagree, the contradiction is
+            # recorded on the authority instead of being resolved by whichever
+            # source happened to be consulted first. The physical dtype is
+            # still what is returned -- it is what the frame actually holds,
+            # and a caller must be able to see what it got -- but nothing can
+            # now treat it as uncontested.
+            _declared_by_reader = self._reader_branch_dtype(name)
+            _physical = self.df[name].dtype
+            if (_declared_by_reader is not None
+                    and not _same_dtype(_declared_by_reader, _physical)):
+                return DTypeAuthority(
+                    _physical, DTypeOrigin.PHYSICAL_COLUMN, "column", name,
+                    stored_in_frame=True, conflict=True,
+                    conflict_detail=(
+                        f"reader metadata declares {_declared_by_reader} for "
+                        f"branch {name!r} but the loaded column is "
+                        f"{_physical}"))
+            return DTypeAuthority(_physical,
+                                  DTypeOrigin.PHYSICAL_COLUMN, "column", name,
+                                  stored_in_frame=True)
+        _reader_dtype = self._reader_branch_dtype(name)
+        if _reader_dtype is not None:
+            return DTypeAuthority(_reader_dtype, DTypeOrigin.READER_METADATA,
+                                  "branch", name, stored_in_frame=False)
+        return DTypeAuthority.unknown("column", name)
+
+    def _record_adf_created_authority(self, name, dtype, reason):
+        """AD-19 SOURCE 5 — record that ADF created this persistent column and
+        chose its dtype.
+
+        B3.2b STEP 3. §5.5: "a persistent in-frame column ADF created itself.
+        ADF may choose the dtype at creation; once created it is fixed."
+
+        PERSISTENT ONLY, and the distinction is not cosmetic. A joined
+        temporary such as `v__S` is NOT a source-5 authority: the ratified
+        text says a temporary working column is not an authority, and round
+        11c retracts placeholder-bearing temporaries precisely so they cannot
+        masquerade as data. Asserting source 5 on one would push B3.2b to undo
+        that.
+
+        `reason` is stored so the record says WHY the column exists, not only
+        that something made it — the same rule the STEP 2 site ledger follows.
+        """
+        try:
+            _dt = self._canonical_dtype(dtype) if isinstance(dtype, str) \
+                else pd.api.types.pandas_dtype(dtype)
+        except (TypeError, ValueError):
+            return
+        if not self._authority_is_exactly_representable(_dt):
+            # Same rule as source 4: a dtype whose string form does not round
+            # trip is left without an authority rather than recorded
+            # approximately. A partial truth presented as exact is the one
+            # thing this phase does not do.
+            return
+        self._schema.setdefault("columns", {}).setdefault(name, {})
+        self._schema["columns"][name][self._AUTHORITY_KEY] = {
+            "dtype": str(_dt),
+            "origin": DTypeOrigin.ADF_CREATED,
+            "subject_kind": "column",
+            "reason": reason,
+        }
 
     @staticmethod
     def _authority_is_exactly_representable(dtype):
@@ -3034,6 +3299,24 @@ class AliasDataFrame:
             if name not in self._schema["columns"]:
                 self._schema["columns"][name] = {}
             self._schema["columns"][name]["dtype"] = dtype
+
+    def _clear_adf_created_authority(self, name):
+        """Drop a source-5 record when ADF destroys the column it describes.
+
+        B3.2b STEP 3 CORRECTION, `F2`. Only an `ADF_CREATED` record is
+        cleared: a source-4 alias record survives dematerialization on purpose
+        (that is the whole point of §4.4 -- an alias's contract outlives its
+        storage), and clearing one here would silently re-open the drift the
+        STEP 2 refusal exists to catch.
+        """
+        _entry = (self._schema.get("columns", {}) or {}).get(name)
+        if not _entry:
+            return
+        _rec = _entry.get(self._AUTHORITY_KEY)
+        if _rec and _rec.get("origin") == DTypeOrigin.ADF_CREATED:
+            _entry.pop(self._AUTHORITY_KEY, None)
+            if not _entry:
+                self._schema["columns"].pop(name, None)
 
     def _safe_dtype_cast(self, result, target_dtype, alias_name=None):
         """
@@ -5196,6 +5479,35 @@ class AliasDataFrame:
         # Create AliasDataFrame wrapper for subframe (UNIFICATION)
         # This reuses ALL existing subframe join machinery
         subframe_adf = AliasDataFrame(df)
+
+        # v05 `P0-LAZY`. The wrapper is a PLAIN frame with no reader, so
+        # AD-19 source 1 vanished the moment the child was materialized.
+        # A conflict needs TWO sources, so after the load an incompatible
+        # recast of a child column could not even be represented as a
+        # contradiction, and a parent expression consumed it happily:
+        #
+        #     child loaded              q : float32, physical_column
+        #     q recast to float64       conflict = False   <- cannot form
+        #     parent "S.q * 2"          SUCCEEDS
+        #
+        # The reader's DECLARED dtypes are carried onto the child instead of
+        # the reader itself: handing over the reader would make the child
+        # look lazy and invite further loading, which is not what this needs.
+        # The map is metadata only -- it is read by `_reader_branch_dtype`,
+        # so the child answers source-2 for a loaded column (correct: the
+        # column exists) while the source-1 declaration remains available to
+        # contradict it.
+        _declared = {}
+        _fn = getattr(reader, "branch_numpy_dtype", None)
+        if callable(_fn):
+            for _b in columns_to_load:
+                try:
+                    _dt = _fn(_b)
+                except Exception:
+                    _dt = None
+                if _dt is not None:
+                    _declared[_b] = _dt
+        subframe_adf._reader_declared_dtypes = _declared
         
         # Register as eager subframe
         self._subframes.add_subframe(
@@ -7432,6 +7744,64 @@ class AliasDataFrame:
             ctx.masks[col_renamed] = _mask
         self.df[col_renamed] = values
 
+    def _walk_subframe_chains(self, expr, alias_name=None, strict=True):
+        """THE dotted-chain grammar, in one place — B3.2b STEP 3 v05.
+
+        Yields `(chain_token, segments, subframe_chain, leaf_idx)` for every
+        `a.b.c` token in `expr`, where `subframe_chain` is the list of
+        `(owner_adf, name, entry)` hops that resolved as real subframes and
+        `segments[leaf_idx]` is the first segment that did not.
+
+        WHY THIS EXISTS. `_prepare_subframe_joins` owned this walk privately,
+        and the v04 conflict preflight instead used
+        `_analyze_expression`'s `subframe_refs`, which is ONE LEVEL ONLY:
+
+            _analyze_expression("A.B.q * 2")
+                subframe_refs = [('A', 'B')]      <- 'B' read as a COLUMN of A
+
+        So a supported `A.B.q` chain reached its leaf through the join
+        resolver while the preflight looked for a column `B` that does not
+        exist, skipped, and left the deep leaf unguarded. Two grammars for one
+        language, and the safety check had the weaker one. The Main Reviewer's
+        instruction was explicit: reuse one resolver rather than maintain a
+        second dotted-chain grammar for conflict checks.
+
+        `strict` distinguishes the two callers deliberately. The JOIN path
+        raises on a cycle or excess depth, because it is about to act. The
+        PREFLIGHT passes `strict=False` and skips such a chain: a safety
+        check must not convert a cycle into a *different* error message than
+        the one the join is about to produce for the same expression.
+        """
+        for _tok in sorted(set(re.findall(r'\b(\w+(?:\.\w+)+)\b', expr)),
+                           key=len, reverse=True):
+            _segments = _tok.split('.')
+            _chain, _cur, _seen, _leaf = [], self, {id(self)}, None
+            for _k, _seg in enumerate(_segments):
+                _entry = _cur._subframes.get_entry(_seg)
+                if _entry is None:
+                    _leaf = _k
+                    break
+                _sub = _entry['frame']
+                if id(_sub) in _seen:
+                    if not strict:
+                        _leaf = None
+                        break
+                    raise ValueError(
+                        f"Cycle detected in subframe chain '{_tok}' "
+                        f"(alias={alias_name!r}): subframe '{_seg}' re-enters "
+                        f"an ancestor ADF.")
+                if len(_chain) >= MAX_SUBFRAME_DEPTH:
+                    if not strict:
+                        _leaf = None
+                        break
+                    raise ValueError(
+                        f"Subframe chain '{_tok}' exceeds "
+                        f"MAX_SUBFRAME_DEPTH={MAX_SUBFRAME_DEPTH}.")
+                _chain.append((_cur, _seg, _entry))
+                _seen.add(id(_sub))
+                _cur = _sub
+            yield _tok, _segments, _chain, _leaf
+
     def _prepare_subframe_joins(self, expr, warn_missing_keys=True,
                                 alias_name=None, ctx=None):
         """
@@ -7466,49 +7836,15 @@ class AliasDataFrame:
             Modified expression with subframe references replaced by joined column names
         """
         # Phase 13.23.ADF: capture full dotted chains (was: 2-segment regex)
-        chain_tokens = re.findall(r'\b(\w+(?:\.\w+)+)\b', expr)
-        # PHASE_13_72_ADF (Bug A, belt): process longest chains first so a shorter chain
-        # that is a strict prefix of a longer one cannot mangle it. Dedup is safe — re.sub
-        # below replaces all occurrences of each token in one pass.
-        chain_tokens = sorted(set(chain_tokens), key=len, reverse=True)
-
-        for chain_token in chain_tokens:
-            segments = chain_token.split('.')
-            
-            # ── Greedy left→right walk of the subframe chain ──
-            subframe_chain = []
-            current_adf = self
-            visited_ids = {id(self)}
-            leaf_idx = None
-            
-            for k, seg in enumerate(segments):
-                entry = current_adf._subframes.get_entry(seg)
-                if entry is None:
-                    # First non-subframe segment → leaf column
-                    leaf_idx = k
-                    break
-                
-                sub_adf = entry['frame']
-                
-                # Cycle guard
-                if id(sub_adf) in visited_ids:
-                    raise ValueError(
-                        f"Cycle detected in subframe chain '{chain_token}' "
-                        f"(alias={alias_name!r}): subframe '{seg}' re-enters "
-                        f"an ancestor ADF."
-                    )
-                
-                # Depth guard
-                if len(subframe_chain) >= MAX_SUBFRAME_DEPTH:
-                    raise ValueError(
-                        f"Subframe chain '{chain_token}' exceeds "
-                        f"MAX_SUBFRAME_DEPTH={MAX_SUBFRAME_DEPTH}."
-                    )
-                
-                subframe_chain.append((current_adf, seg, entry))
-                visited_ids.add(id(sub_adf))
-                current_adf = sub_adf
-            
+        # v05: ONE grammar. This loop owned the greedy walk privately and the
+        # conflict preflight used a different, one-level one -- which is how
+        # `A.B.q` reached its leaf here and went unchecked there. Both now
+        # call `_walk_subframe_chains`, so the two cannot diverge again.
+        # `strict=True`: this path is about to ACT, so a cycle or excess
+        # depth raises, exactly as before.
+        for chain_token, segments, subframe_chain, leaf_idx in \
+                self._walk_subframe_chains(expr, alias_name=alias_name,
+                                           strict=True):
             # Not a subframe reference at all (e.g., 'np.sqrt', 'math.pi')
             if not subframe_chain:
                 continue
@@ -7915,7 +8251,29 @@ class AliasDataFrame:
         if new_dtype is not None:
             return None
         _entry = (self._schema.get("columns", {}) or {}).get(name) or {}
-        return _entry.get(self._AUTHORITY_KEY)
+        _rec = _entry.get(self._AUTHORITY_KEY)
+        if not _rec:
+            return None
+        # B3.2b STEP 3 v03, `F3`. This helper exists to preserve a SOURCE-4
+        # inference across an alias redefinition -- an inferred contract about
+        # an alias outlives a change to its expression. STEP 3 then began
+        # storing SOURCE-5 `ADF_CREATED` records under the same key, and this
+        # returned whatever it found. Executed consequence:
+        #
+        #   compress_columns          dy_c : int16, adf_created
+        #   add_alias("dy_c","z * 2", dtype=None)
+        #   materialize            -> int16 [2, 4, 6]
+        #
+        # A brand-new alias over an unrelated expression inherited a
+        # compressed column's dtype. An existing helper plus new state, and I
+        # did not enumerate the interaction when I added the state.
+        #
+        # A source-5 record describes a COLUMN ADF created. Redefining that
+        # name as an alias destroys that subject; the record must not survive
+        # it. Source 3 is established through `add_alias`'s own path.
+        if _rec.get("origin") != DTypeOrigin.FIRST_MATERIALIZATION:
+            return None
+        return _rec
 
     def _add_scalar_alias(self, name, expression, dtype=None, is_constant=False, fill_value=None):
         """
@@ -7983,6 +8341,30 @@ class AliasDataFrame:
         self._schema["columns"][name] = spec
         if _carried is not None:
             self._schema["columns"][name][self._AUTHORITY_KEY] = _carried
+        elif dtype is not None:
+            # B3.2b STEP 3 CORRECTION, `13d`. A DECLARED dtype establishes
+            # AD-19 source 3 immediately (§5.3), but until now nothing was
+            # WRITTEN: the origin was re-derived at read time from the mere
+            # presence of `dtype`. That works in memory and fails as a
+            # persistence contract -- a file written by an older ADF, and a
+            # file whose alias genuinely never had an authority, produce the
+            # identical record, so "this file predates authority" is
+            # undetectable. Recording it makes the absence meaningful.
+            #
+            # `get_dtype_authority` still answers from the declaration first,
+            # so this changes what is STORED, not what is returned.
+            try:
+                _canon = self._canonical_dtype(dtype) if isinstance(dtype, str) \
+                    else pd.api.types.pandas_dtype(dtype)
+                if self._authority_is_exactly_representable(_canon):
+                    self._schema["columns"][name][self._AUTHORITY_KEY] = {
+                        "dtype": str(_canon),
+                        "origin": DTypeOrigin.EXPLICIT_ALIAS,
+                        "subject_kind": "alias",
+                        "reason": "declared via add_alias(dtype=...)",
+                    }
+            except (TypeError, ValueError):
+                pass
         
         # BUG FIX: invalidate stale materialized columns.
         self._invalidate_alias_cascade(name)
@@ -8046,6 +8428,11 @@ class AliasDataFrame:
         alias_name : str, optional
             Name of alias being evaluated (for warning messages)
         """
+        # v04 `F1`/`F2`: refuse BEFORE any evaluation, at the ONE point every
+        # caller reaches -- `eval()`, `_evaluate_alias_expression` and the
+        # vector-group compute. Placed above the join preparation so a
+        # contested operand is refused before a subframe is even gathered.
+        self._refuse_conflicted_operands(alias_name, expr)
         expr = self._prepare_subframe_joins(expr, warn_missing_keys=warn_missing_keys,
                                             alias_name=alias_name, ctx=ctx)
         # PHASE_13_66_ADF: struct rewrite (logical struct.member -> internal member__struct).
@@ -9474,6 +9861,110 @@ function collapseDepth(maxD) {{
                 f"defined rows. Refused rather than published. Define the "
                 f"operand with set_subframe_fill(...) / set_global_fill(...).")
 
+    def _refuse_conflicted_operands(self, name, expr):
+        """FAIL CLOSED when an expression consumes a subject whose authority is
+        KNOWN to be contested — B3.2b STEP 3 v03, `F1`.
+
+        v02 recorded `DTypeAuthority.conflict` and consumed it NOWHERE:
+        `.conflict` appeared at `__eq__`, `__hash__`, `__repr__` and nothing
+        else, while the v02 CRR justified record-over-raise by promising
+        refusal "at the point of use (`_resolve_target_dtype`)". That code did
+        not exist. The rationale described a mechanism I had not built.
+
+        WHY NOT IN `_resolve_target_dtype`, which is what I wrongly named. The
+        reviewers' executed evidence is the argument:
+
+            reader x float32, loaded x recast to float64  -> x is CONTESTED
+            add_alias("q", "x * 2")
+            materialize_alias("q") / get_alias_series / get_alias_array
+                -> all SUCCEED
+
+        The contested subject is `x`, a physical OPERAND. `_resolve_target_dtype`
+        resolves the target for `q` and never looks at `x`, so a check there
+        could not have caught this — which is exactly why the panel said not to
+        put one there unless a test proves the conflicted operand reaches it.
+
+        This preflight sits where the operands are known, before evaluation,
+        and is reached by every alias-evaluating public path — `materialize_alias`,
+        `materialize_aliases`, `get_alias_series`, `get_alias_array` — because
+        all of them funnel through `_evaluate_alias_expression`. One owner.
+
+        INSPECTION STAYS NON-THROWING. `get_dtype_authority` still reports the
+        contradiction without raising; only USING it fails. That is the
+        distinction v02 claimed and did not implement.
+        """
+        try:
+            _refs = self._analyze_expression(expr).get("column_refs") or set()
+        except Exception:
+            # v05, Main Reviewer item C: a safety check must not fail open
+            # SILENTLY. It does fail open here, and the disposition is named
+            # rather than left implicit: `_analyze_expression` returns a
+            # result dict for anything it can parse and only raises on input
+            # it cannot -- which `eval()` is about to reject anyway, with a
+            # better message than a conflict refusal would give. Refusing
+            # here would replace a clear syntax error with a confusing
+            # authority error.
+            #
+            # OWNER: if the analyzer ever gains a failure mode that is NOT
+            # "unparseable", this becomes a real hole and belongs to whichever
+            # step introduces it. Recorded so that change cannot be silent.
+            return
+        # `F2` (v04). `_analyze_expression` returns subframe_refs ALONGSIDE
+        # column_refs, and v03 read only the second -- so a parent alias over
+        # a contested child column evaluated happily. My own v03 §7 named this
+        # exact class ("a reference the analyzer cannot see is a subject the
+        # preflight cannot check") and I did not run it; the analyzer could
+        # see it perfectly well, and I was reading the wrong field.
+        #
+        # `self._subframes.get` is used deliberately INSTEAD of
+        # `get_subframe`: the latter triggers a lazy load, and loading a
+        # subframe merely to inspect a dtype would violate §5.6 and turn a
+        # safety check into an I/O cost. An unmaterialized child column is
+        # simply not checked here -- it will be gathered through the join,
+        # whose own authority handling owns it.
+        _subject_of = {}
+        for _c in _refs:
+            _subject_of[_c] = (self, _c)
+        # v05 `P0-NESTED`. v04 read `_analyze_expression`'s `subframe_refs`,
+        # which resolves ONE level: `A.B.q` came back as `('A','B')`, i.e. `B`
+        # read as a column of `A`, so the real leaf was never produced and the
+        # deep subject went unchecked. The join resolver walks the chain
+        # properly; the preflight now walks it with the SAME owner rather than
+        # a second, weaker grammar.
+        for _tok, _segments, _chain, _leaf in self._walk_subframe_chains(
+                expr, alias_name=name, strict=False):
+            if not _chain or _leaf is None:
+                continue                   # not a subframe reference at all
+            _owner_adf = _chain[-1][2]['frame']
+            _leaf_col = _segments[_leaf]
+            _owner_df = getattr(_owner_adf, "df", None)
+            if _owner_df is None or _leaf_col not in _owner_df.columns:
+                continue                   # not materialized -> do NOT load
+            # label with the full dotted path, so a refusal names the subject
+            # the user actually wrote (`A.B.q`, not `q`)
+            _subject_of['.'.join(_segments[:_leaf + 1])] = (
+                _owner_adf, _leaf_col)
+
+        for _label in sorted(_subject_of):
+            _owner, _col = _subject_of[_label]
+            if _owner is self and (_col == name or _col not in self.df.columns):
+                continue
+            _auth = _owner.get_dtype_authority(_col)
+            if not getattr(_auth, "conflict", False):
+                continue
+            _col = _label
+            raise ValueError(
+                f"{'alias ' + repr(name) if name else 'this expression'} "
+                f"reads {_col!r}, whose dtype authority is "
+                f"CONTESTED: {_auth.conflict_detail}. Two sources disagree "
+                f"about what {_col!r} is, so any value computed from it would "
+                f"rest on whichever one happened to win. ADF refuses rather "
+                f"than picking (AD-19). Resolve it — reload the branch so the "
+                f"column matches its declared dtype, or declare the intended "
+                f"dtype explicitly — and the alias evaluates normally. "
+                f"Inspecting the authority with get_dtype_authority({_col!r}) "
+                f"never raises; only using it does.")
+
     def _evaluate_alias_expression(self, name, expr, context_override=None,
                                    warn_missing_keys=True):
         """Evaluate one alias with mask carriage. Returns ``(result, ctx)``.
@@ -9482,6 +9973,12 @@ function collapseDepth(maxD) {{
         instance global is gone: §10 of the ratified contract forbids replacing
         it with another one, so the state is an explicit parameter object.
         """
+        # F1's preflight MOVED in v04 to `_eval_in_namespace`, which is the
+        # single point every expression-evaluating caller passes through --
+        # this one, the public `eval()`, and the vector-group compute. v03 put
+        # it here and the v03 CRR claimed that covered "every alias-evaluating
+        # public path". It did not: `eval()` goes straight to
+        # `_eval_in_namespace` and bypassed it entirely.
         ctx = _AliasEvalContext(alias_name=name, carry_mask=True)
         try:
             result = self._eval_in_namespace(
@@ -13139,6 +13636,18 @@ function collapseDepth(maxD) {{
                     orig_col, original_values, config
                 )
 
+            # AD-19 SOURCE 5 (B3.2b STEP 3). `compressed_col` is a
+            # PERSISTENT column ADF created and whose dtype ADF chose from the
+            # compression spec -- the textbook source-5 case, and the one
+            # `b32b_4` names. Recorded here, at the moment of creation, rather
+            # than inferred later: §5.5 says the dtype is fixed once created,
+            # and a record written at creation is the only one that can say so
+            # truthfully.
+            self._record_adf_created_authority(
+                compressed_col, config['compressed_dtype'],
+                f"compressed storage for {orig_col!r} "
+                f"(compress_expr={config['compress']!r})")
+
             # Step 3: Remove original from storage (if requested and exists)
             if drop_original and orig_col in self.df.columns:
                 self.df.drop(columns=[orig_col], inplace=True)
@@ -13428,6 +13937,19 @@ function collapseDepth(maxD) {{
             if col in self.aliases:
                 del self._schema["columns"][col]
 
+            # AD-19 SOURCE 5 (B3.2b STEP 3). The restored column is now
+            # PHYSICAL and its dtype was chosen by ADF from the stored
+            # `decompressed_dtype` two lines above -- so decompression is a
+            # persistent creator exactly as compression is. `b32b_4c` exists
+            # because revision 2 owned compress_columns and left this path
+            # silently unowned, which is how an "inventory" closes while
+            # holding one specimen. Recorded AFTER the schema entry is
+            # deleted, or the delete would take the record with it.
+            self._record_adf_created_authority(
+                col, target_dtype,
+                f"decompressed from {compressed_col!r} "
+                f"(decompress_expr={info['decompress_expr']!r})")
+
             # Step 4: Collect compressed column for batch drop
             if not keep_compressed:
                 cols_to_drop.append(compressed_col)
@@ -13443,6 +13965,15 @@ function collapseDepth(maxD) {{
         # Batch drop all compressed columns at once (single reindex)
         if cols_to_drop:
             self.df.drop(columns=cols_to_drop, inplace=True)
+            # B3.2b STEP 3 CORRECTION, `F2` first half. A source-5 record must
+            # NOT outlive the column it describes. GPT32 executed the sequence:
+            # compress -> dy_c int16/ADF_CREATED -> decompress dropping dy_c ->
+            # the authority still reported int16 ADF_CREATED for a column that
+            # no longer existed, and a later recreation at a different dtype
+            # inherited that stale claim. An authority describing an absent
+            # column is a falsehood, not merely stale.
+            for _gone in cols_to_drop:
+                self._clear_adf_created_authority(_gone)
 
         return self
 
@@ -14978,6 +15509,16 @@ function collapseDepth(maxD) {{
         # Aliases from schema (not in DataFrame)
         for col, col_info in schema_columns.items():
             if col not in columns:
+                # B3.2b STEP 3. A compressed STORAGE column is excluded from a
+                # definition schema -- it does not exist in fresh data. The
+                # DataFrame loop above already skipped it; this loop did not
+                # need to, because such a column had no schema entry at all.
+                # Recording AD-19 source 5 gives it one, so the exclusion has
+                # to hold on BOTH paths or a definition schema starts
+                # describing storage. Caught by the failure-identity diff, not
+                # by reasoning: test_definition_schema_no_storage_columns.
+                if not include_state and col in compressed_col_names:
+                    continue
                 # In definition mode, compression targets should be exported as physical columns
                 # (no expr), because in fresh data they ARE physical columns
                 if not include_state and col in compression_targets:

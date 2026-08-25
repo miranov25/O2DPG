@@ -239,6 +239,45 @@ class LazyTreeReader:
         self._open_file()
         return str(self._tree[name].interpretation)
 
+    def branch_numpy_dtype(self, name):
+        """AD-19 SOURCE 1 — the branch's dtype from TTree METADATA, or None.
+
+        B3.2b STEP 3. `get_branch_dtype` already existed and returns
+        `str(interpretation)` -- `"AsDtype('>f8')"` -- which
+        `pandas.api.types.pandas_dtype` cannot parse, so nothing could
+        actually consume it as a dtype. This returns a real `np.dtype`.
+
+        NEVER LOADS THE BRANCH, which is contract §5.6 and the reason source 1
+        exists at all: a dtype must be knowable without paying for the data.
+        `interpretation` is uproot header metadata. Measured on
+        `tests/data/calibITS.root`: asking all ten branches for a dtype left
+        `loaded_branches` at 0, and all ten metadata dtypes equalled the dtype
+        the branch actually produced when loaded -- including `uint8`, `int8`
+        and `int64`, not only the easy float case.
+
+        Returns None rather than guessing when the branch is absent or its
+        interpretation is not a plain dtype (jagged, strings, objects). None
+        means "no authority from this source", never "any dtype will do".
+
+        DISCLOSED LIMIT -- RNTuple. `interpretation` is TTree metadata. A file
+        written as an RNTuple exposes `RField`, which carries a C++ `typename`
+        (`"float"`) and no dtype, so this returns None and the subject simply
+        has no source-1 authority. Translating C++ type names to NumPy dtypes
+        is a mapping table this correction deliberately does not invent: a
+        wrong entry would produce a CONFIDENT WRONG authority, which is worse
+        than none. Recorded here so the gap is disclosed rather than
+        discovered. (`uproot.recreate(f)["t"] = {...}` writes an RNTuple;
+        `mktree` + `extend` writes a TTree -- the acceptance fixtures use the
+        latter deliberately.)
+        """
+        try:
+            if name not in self.available_branches:
+                return None
+            self._open_file()
+            return np.dtype(self._tree[name].interpretation.numpy_dtype)
+        except Exception:
+            return None
+
     def estimate_memory(self, branches: List[str] = None) -> dict:
         """
         Estimate memory for loading branches (single-tree lazy).

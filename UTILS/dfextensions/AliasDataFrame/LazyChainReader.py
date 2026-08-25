@@ -184,6 +184,44 @@ class LazyChainReader:
         else:
             raise ValueError(f"Unknown validation mode: {self._validation}")
     
+    def branch_numpy_dtype(self, name):
+        """AD-19 SOURCE 1 across a CHAIN — the AGREED dtype, or None.
+
+        B3.2b STEP 3, same discipline as `is_scalar_branch` directly below
+        (which is why it sits here): every file that holds the branch is
+        asked, and the answer is authoritative only if they AGREE.
+
+        DISAGREEMENT RETURNS None, deliberately. A chain whose files declare
+        the branch differently has no single authoritative dtype, and
+        silently picking the first file's answer -- or widening to a common
+        type -- would be ADF deciding what the data says, which is the thing
+        AD-19 forbids. None means the caller gets UNKNOWN and must be told,
+        not given a guess. Absence in some files is the same answer for the
+        same reason: partial presence never proves a chain-wide dtype.
+
+        Never loads a branch: each file answers from its own header metadata.
+        """
+        if name not in self.available_branches:
+            return None
+        seen, holders = set(), 0
+        for idx in range(len(self._files)):
+            try:
+                rd = self._get_reader(idx)
+            except Exception:
+                return None                 # a file we cannot read -> no agreement
+            if name not in (getattr(rd, "available_branches", None) or ()):
+                return None                 # partial presence proves nothing
+            dt = rd.branch_numpy_dtype(name)
+            if dt is None:
+                return None
+            holders += 1
+            seen.add(str(dt))
+            if len(seen) > 1:
+                return None                 # declared differently -> NOT resolved
+        if holders == 0 or len(seen) != 1:
+            return None
+        return np.dtype(next(iter(seen)))
+
     def is_scalar_branch(self, branch_name):
         """PHASE_13_75_ADF (architect D-1, 2026-07-18): chain-level shape
         classification checks ALL files that contain the branch (bounded cost:
