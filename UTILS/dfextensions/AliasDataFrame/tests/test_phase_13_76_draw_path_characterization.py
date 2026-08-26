@@ -31,6 +31,7 @@ Defect anchors (canonical post-13.75, AliasDataFrame.py MD5 c73f0c99...):
 """
 
 import copy
+import json
 import warnings
 import os
 try:  # package-style (alma2: dfextensions on path)
@@ -6464,15 +6465,30 @@ class TestB32Round11b2PublicationOwner:
         assert auth.known and str(auth.dtype) == str(m.df["q"].dtype)
 
     # ---- F11B2-P1-2 : never record a partial truth as exact --------------
-    def test_b32_221_categorical_does_not_establish_inferred_authority(self):
-        """`str(dtype)` is "category" for EVERY categorical, so it cannot
-        carry categories or order. Rather than record an approximate
-        authority, none is established — disclosed deferral, B3.2b owns the
-        exact structured codec."""
+    def test_b32_221_categorical_establishes_an_exact_inferred_authority(self):
+        """SUPERSEDED BY ITS OWN NAMED SUCCESSOR, in B3.2b STEP 4.
+
+        This test pinned a DEFERRAL, and said so: "disclosed deferral, B3.2b
+        owns the exact structured codec". `str(dtype)` is `'category'` for
+        every categorical, so recording it would have claimed an authority it
+        did not have -- ['a','b'] unordered and ['b','a'] ORDERED stringify
+        identically. Refusing was right while the codec did not exist.
+
+        STEP 4 built it, so the deferral is over and the assertion inverts:
+        a categorical now DOES establish authority, and the guard becomes the
+        stronger one -- it must be EXACT, categories and order included.
+
+        WHY THIS IS UPDATED WHILE `b32b_13b`'s CONFLICT WAS NOT, because the
+        two look identical and are not. There, `test_deserialize_schema_
+        restores_dtypes` pinned a representation and named NO successor, so my
+        criterion was the intruder and I withdrew it. Here the pinned
+        behaviour names B3.2b as the owner of the change that supersedes it.
+        A test that says "X owns replacing me" is replaced by X; a test that
+        simply disagrees with a new idea is not."""
         def cat(_):
             return pd.Series(pd.Categorical(["a", "b"],
-                                            categories=["a", "b"],
-                                            ordered=False))
+                                            categories=["b", "a"],
+                                            ordered=True))
         m = A.AliasDataFrame(pd.DataFrame({"x": [1, 2]}))
         m.register_function("cat", cat)
         m.add_alias("q", "cat(x)")
@@ -6480,10 +6496,17 @@ class TestB32Round11b2PublicationOwner:
             warnings.simplefilter("ignore")
             m.materialize_alias("q")
         assert str(m.df["q"].dtype) == "category"
-        assert not m.get_dtype_authority("q").known, (
-            "a dtype whose string form loses metadata must not establish an "
-            "inferred authority — a partial truth recorded as exact is worse "
-            "than no record")
+        auth = m.get_dtype_authority("q")
+        assert auth.known, (
+            "B3.2b STEP 4 built the structured codec, so a categorical must "
+            f"now establish an authority: {auth!r}")
+        # EXACT, not approximate — the property the deferral protected.
+        assert list(auth.dtype.categories) == ["b", "a"], (
+            f"category ORDER was not preserved: "
+            f"{list(auth.dtype.categories)}")
+        assert auth.dtype.ordered is True, "orderedness was not preserved"
+        assert auth.dtype == m.df["q"].dtype, (
+            "the recorded authority is not the column's actual dtype")
 
     @pytest.mark.parametrize("spec", ["int64", "float32", "Int64", "boolean",
                                       "datetime64[ns]"])
@@ -9450,19 +9473,6 @@ class TestB32bAcceptanceScaffold:
                 f"{ch.df['v'].dtype!r} to {m.df['d'].dtype!r} — neither "
                 f"preserved nor refused [{_arrow_env()}]")
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 3 (MR-P0-2): the ARROW-TYPED family is a "
-        "MATRIX, not one float column — int64, double, bool and string "
-        "pd.ArrowDtype columns each record an exact authoritative dtype. "
-        "Measured baseline failure: 'Arrow matrix gaps: string: authority "
-        "UNKNOWN after gather'. THREE of the four record source-4 authority "
-        "with the backing intact; the STRING case records none. "
-        "CORRECTION (revision 3c/3d): revision 3b's reason claimed the "
-        "string backing was 'silently downgraded to pandas string'. THAT WAS "
-        "WRONG — an artefact of comparing str(dtype), which pandas prints as "
-        "'string' for StringDtype whatever the storage. Measured: the "
-        "gathered dtype compares EQUAL to the child dtype. The backing IS "
-        "preserved; only the AUTHORITY is missing, and b32b_14g shows why.")
     def test_b32b_14c_arrow_authority_holds_across_the_matrix(self):
         pytest.importorskip("pyarrow")
         failures = []
@@ -9496,20 +9506,6 @@ class TestB32bAcceptanceScaffold:
         assert not failures, ("Arrow matrix gaps: " + "; ".join(failures)
                               + f" [{_arrow_env()}]")
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 3 (REVISION 3d — the architect's reported "
-        "Arrow 'instability', diagnosed): whether a column has a dtype "
-        "authority is a property OF THE COLUMN and must not depend on a "
-        "process-wide pandas option. Measured baseline failure: identical "
-        "string[pyarrow] input, authority UNKNOWN under "
-        "mode.string_storage='python' and RECORDED under 'pyarrow'. Cause: "
-        "_authority_is_exactly_representable round-trips through "
-        "pd.api.types.pandas_dtype(str(dtype)), and str(StringDtype) is "
-        "'string' for every storage, so the round trip is resolved by the "
-        "global option — pandas_dtype('string') is string[python] by default "
-        "on pandas 1.5.3 and string[pyarrow] under the option. Reviewers on "
-        "pandas 2.2.3/3.0.2 get the other branch, which is why the same file "
-        "'sometimes works and sometimes fails'.")
     def test_b32b_14g_authority_does_not_depend_on_a_global_option(self):
         """The environment-independence and storage-family dimensions.
 
@@ -9599,15 +9595,6 @@ class TestB32bAcceptanceScaffold:
             m.materialize_alias("d")
         assert isinstance(m.df["d"].dtype, pd.SparseDtype)
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 4: the DENSE TEMPORARY is removed. AD-15's "
-        "round-8 addendum measured the densify-fill-resparsify round trip at "
-        "~5.25x the dense column (1M rows: 42 MB peak vs 8 MB) and assigned "
-        "the sparse-index reconstruction to B3.2b. EXECUTABLE ORACLE: dense "
-        "conversion is forbidden at runtime and _place_fill is driven "
-        "directly. Measured baseline failure: AssertionError "
-        "'_place_fill densified a sparse column' — the fill knob path falls "
-        "through to `_dense = np.asarray(series.to_numpy()).copy()`.")
     def test_b32b_15b_sparse_fill_never_densifies(self):
         """MR-P0-1, the blocking finding. Revision 2 asserted
 
@@ -9628,6 +9615,13 @@ class TestB32bAcceptanceScaffold:
         A peak-RSS assertion at the sizes where the 5.25x is visible was
         rejected: this project already has one timing-sensitive probe that
         flaps, and MR explicitly said no flaky memory threshold is required.
+
+        SCOPE (STEP 4 v03, GPT29 `F3`): this test proves the property for
+        ONE fixture. The name is a family-level claim, and it is literally
+        true only because v03 made a declining reconstruction REFUSE rather
+        than densify — so no sparse input can reach the dense route at all.
+        `b32b_15c` owns the family: the natural matrix that reconstructs, and
+        the forced decline that refuses without building anything dense.
         """
         m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1.0, 2.0, 3.0])}))
         sparse = pd.Series(pd.arrays.SparseArray(
@@ -9655,6 +9649,134 @@ class TestB32bAcceptanceScaffold:
         assert isinstance(out.dtype, pd.SparseDtype), (
             "the result must still be sparse")
         assert float(out.values[1]) == 9.0, "the fill must still be applied"
+
+    def test_b32b_15c_sparse_reconstruction_refuses_instead_of_densifying(self):
+        """STEP 4 v03 — GPT29 `F3`, his recommended branch, architect
+        Decission 1.
+
+        v01's criterion was NAMED "never densifies" while production
+        densified on any reconstruction exception, so the criterion could
+        close while the AD-15 cost quietly returned. This test owns the two
+        halves that make the name literal:
+
+        1. THE NATURAL MATRIX RECONSTRUCTS. GPT29 asked for `Sparse[int64]`
+           and `Sparse[float64]` with `fill == fill_value` and
+           `fill != fill_value`; this widens that to the shapes that could
+           plausibly defeat an index-only rewrite — BlockIndex as well as
+           IntIndex, the all-fill and no-fill extremes, object and bool
+           storage, and masks at both ends and over the whole column. Every
+           case must reconstruct, keep its exact sparse dtype, and produce
+           the right values. That matrix is also the EVIDENCE that refusing
+           costs nothing real: the dense route was already unreachable for
+           sparse input in practice.
+        2. A DECLINING RECONSTRUCTION REFUSES. Forced to fail, it must raise
+           an ADF error and the dense-conversion spy must NOT run — the
+           mutation control GPT29 specified, and the half no fixture-based
+           test can supply on its own.
+        """
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1.0])}))
+
+        def _sp(vals, fv, kind="integer", dtype=None):
+            return pd.Series(pd.arrays.SparseArray(
+                np.array(vals) if dtype is None
+                else np.array(vals, dtype=dtype),
+                fill_value=fv, kind=kind))
+
+        matrix = [
+            ("float64 IntIndex", lambda: _sp([1.0, 0.0, 3.0, 0.0], 0.0),
+             [9.0, 0.0, -1.5]),
+            ("float64 BlockIndex",
+             lambda: _sp([1.0, 1.0, 0.0, 0.0, 2.0, 2.0], 0.0, kind="block"),
+             [9.0, 0.0]),
+            ("float64 nan fill", lambda: _sp([1.0, np.nan, 3.0], np.nan),
+             [9.0, np.nan]),
+            ("int64 fill 0", lambda: _sp([1, 0, 3, 0], 0), [9, 0, -7]),
+            ("int64 fill -1", lambda: _sp([1, -1, 3], -1), [9, -1]),
+            ("float32", lambda: _sp([1.0, 0.0, 3.0], np.float32(0),
+                                    dtype=np.float32), [9.0, 0.0]),
+            ("bool", lambda: _sp([True, False, True], False), [True, False]),
+            ("object", lambda: _sp(["a", "", "c"], "", dtype=object),
+             ["z", ""]),
+            ("all fill", lambda: _sp([0.0, 0.0, 0.0], 0.0), [9.0, 0.0]),
+            ("no fill", lambda: _sp([1.0, 2.0, 3.0], 0.0), [9.0, 0.0]),
+        ]
+
+        checked = 0
+        for label, make, fills in matrix:
+            for fill in fills:
+                n = len(make())
+                for pattern in ("first", "last", "all", "interior"):
+                    mask = np.zeros(n, dtype=bool)
+                    if pattern == "first":
+                        mask[0] = True
+                    elif pattern == "last":
+                        mask[-1] = True
+                    elif pattern == "all":
+                        mask[:] = True
+                    else:
+                        mask[min(1, n - 1)] = True
+
+                    src = make()
+                    want = np.asarray(src.values, dtype=object).copy()
+                    want[mask] = fill
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        out = m._place_fill(src, mask, fill,
+                                            "fill_missing", "S", "v")
+                    checked += 1
+                    where = f"{label} fill={fill!r} mask={pattern}"
+                    assert isinstance(out.dtype, pd.SparseDtype), (
+                        f"{where}: lost the sparse dtype -> {out.dtype}")
+                    assert out.dtype == make().dtype, (
+                        f"{where}: sparse dtype changed "
+                        f"{make().dtype} -> {out.dtype}")
+                    got = np.asarray(out.values, dtype=object)
+                    for a, b in zip(want, got):
+                        assert (pd.isna(a) and pd.isna(b)) or a == b, (
+                            f"{where}: expected {list(want)} got {list(got)}")
+        assert checked >= 80, (
+            f"the matrix must actually be driven; only {checked} cases ran")
+
+        # 2. forced decline -> REFUSE, and nothing dense is built.
+        # The injection replaces the `IntIndex` module for the duration, which
+        # `_place_fill` imports INSIDE its own try block — so only the
+        # reconstruction is affected, not `_coerce_fill_to_dtype` and not the
+        # dense route we are asserting never runs.
+        import sys as _sys
+        real_mod = _sys.modules["pandas._libs.sparse"]
+        real_to_numpy = pd.Series.to_numpy
+        densified = []
+
+        class _Declines:
+            def __getattr__(self, _n):
+                raise RuntimeError("injected: sparse reconstruction declined")
+
+        def _spy(self, *a, **k):
+            densified.append(True)
+            return real_to_numpy(self, *a, **k)
+
+        src = _sp([1.0, 0.0, 3.0], 0.0)
+        _sys.modules["pandas._libs.sparse"] = _Declines()
+        pd.Series.to_numpy = _spy
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with pytest.raises(Exception) as exc:
+                    m._place_fill(src, np.array([False, True, False]), 9.0,
+                                  "fill_missing", "S", "v")
+        finally:
+            pd.Series.to_numpy = real_to_numpy
+            _sys.modules["pandas._libs.sparse"] = real_mod
+
+        assert not densified, (
+            "a declining reconstruction still built a dense temporary; that "
+            "is the AD-15 cost returning silently")
+        assert type(exc.value).__name__ != "AssertionError", (
+            f"the refusal must be a real error, not a bare assert: {exc.value}")
+        text = str(exc.value)
+        assert "fill_missing" in text and "5.25" in text, (
+            "the refusal must name the knob and the cost it is refusing to "
+            f"pay, so the caller can decide: {text}")
 
     # ---- family 5: conditional / fallback row-wise provenance ------------
 
@@ -10225,11 +10347,6 @@ class TestB32bAcceptanceScaffold:
             main.materialize_alias("d")
         assert [int(v) for v in main.df["d"].values] == [17, 1]
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance (D_8 remainder): the exact categorical source-4 "
-        "codec. Measured baseline failure: DTypeAuthority(UNKNOWN) — "
-        "_authority_is_exactly_representable refuses categorical because "
-        "categories and order do not survive str(dtype).")
     def test_b32b_7_categorical_authority_is_recorded_exactly(self):
         m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))
         cats = pd.CategoricalDtype(["b", "a"], ordered=True)
@@ -10244,6 +10361,194 @@ class TestB32bAcceptanceScaffold:
             f"categorical authority cannot be recorded at all: {auth!r}")
         assert list(auth.dtype.categories) == ["b", "a"]
         assert auth.dtype.ordered is True
+
+    def test_b32b_7b_codec_admission_is_derived_from_the_decoder(self):
+        """STEP 4 v02 — GPT31 `F1` and GPT29 `F2`, one mechanism.
+
+        v01's encoder judged its own exactness with a JSON-SAFETY check, and
+        `json.dumps(x)` succeeding is a DIFFERENT proposition from
+        `json.loads(json.dumps(x)) == x`. Both findings are that gap:
+
+            CategoricalDtype([("a",1)])   dumps fine, decodes TypeError
+            ArrowDtype(timestamp tz)      encodes fine, no `type_for_alias`
+
+        Each wrote a record no reader could ever read — the exact outcome the
+        "exact or no authority" rule exists to prevent. This test states the
+        invariant itself rather than the two specimens: for EVERY dtype, an
+        admitted encoding must survive the ACTUAL wire and decode back to the
+        same dtype. A future lossy family is then refused by construction
+        instead of waiting to be enumerated.
+        """
+        cls = A.AliasDataFrame
+        specimens = [
+            np.dtype("float64"), np.dtype("int64"), np.dtype("O"),
+            pd.Int64Dtype(), pd.BooleanDtype(),
+            pd.SparseDtype("int64", 0), pd.SparseDtype("float64", np.nan),
+            pd.DatetimeTZDtype("ns", "Europe/Berlin"),
+            pd.PeriodDtype("D"), pd.IntervalDtype("int64"),
+            pd.CategoricalDtype(["a", "b"]),
+            pd.CategoricalDtype(["b", "a"], ordered=True),
+            pd.CategoricalDtype(pd.Index([1, 2], dtype="int64")),
+            pd.CategoricalDtype([("a", 1), ("b", 2)]),      # F1
+            pd.StringDtype("python"),
+        ]
+        try:
+            import pyarrow as pa
+            specimens += [
+                pd.ArrowDtype(pa.string()), pd.ArrowDtype(pa.int64()),
+                pd.ArrowDtype(pa.bool_()), pd.ArrowDtype(pa.float64()),
+                pd.ArrowDtype(pa.timestamp("us", tz="UTC")),   # F2
+                pd.ArrowDtype(pa.decimal128(5, 2)),            # F2
+                pd.ArrowDtype(pa.list_(pa.int64())),           # F2
+            ]
+            specimens.append(pd.StringDtype("pyarrow"))
+        except ImportError:
+            pass
+
+        admitted = 0
+        for dt in specimens:
+            enc = cls._encode_dtype(dt)
+            if enc is None:
+                continue                    # refused: no claim, nothing to check
+            admitted += 1
+            wire = json.loads(json.dumps(enc))     # the REAL wire, not the object
+            back = cls._decode_dtype(wire)
+            assert cls._dtype_exactly_equal(back, dt), (
+                f"{dt!r} was admitted as an EXACT authority but the record "
+                f"reads back as {back!r}")
+
+        assert admitted >= 12, (
+            "the self-check must not be satisfied by refusing everything; "
+            f"only {admitted} specimens were admitted")
+
+        # and the two executed findings specifically must now be REFUSED
+        assert cls._encode_dtype(
+            pd.CategoricalDtype([("a", 1), ("b", 2)])) is None, (
+            "GPT31 F1: tuple categories become LISTS on the wire and the "
+            "record then raises `unhashable type: 'list'` on decode")
+        try:
+            import pyarrow as pa
+            assert cls._encode_dtype(
+                pd.ArrowDtype(pa.timestamp("us", tz="UTC"))) is None, (
+                "GPT29 F2: the encoder admitted a broader Arrow domain than "
+                "`type_for_alias` can reconstruct")
+        except ImportError:
+            pass
+
+    def test_b32b_7c_category_order_is_part_of_exactness(self):
+        """The reviewers prescribed "semantic equality with the original
+        dtype" as the admission invariant. Implemented with `==` it has a
+        hole, and this test is why `_dtype_exactly_equal` exists:
+
+            CategoricalDtype(["a","b"]) == CategoricalDtype(["b","a"]) -> True
+
+        pandas compares UNORDERED categories as a set. The category ORDER is
+        what the stored codes index, so a codec that permuted it would pass a
+        `==`-based self-check while `b32b_7` requires categories AND order.
+        """
+        cls = A.AliasDataFrame
+        a = pd.CategoricalDtype(["a", "b"])
+        b = pd.CategoricalDtype(["b", "a"])
+        assert a == b, (
+            "pandas' own equality is set-like here; if this ever changes the "
+            "stricter comparison below is redundant, not wrong")
+        assert not cls._dtype_exactly_equal(a, b), (
+            "admission equality must be stricter than the dtype's own")
+        assert cls._dtype_exactly_equal(a, pd.CategoricalDtype(["a", "b"]))
+        assert not cls._dtype_exactly_equal(
+            a, pd.CategoricalDtype(["a", "b"], ordered=True))
+        assert not cls._dtype_exactly_equal(
+            pd.StringDtype("python"), pd.StringDtype("pyarrow"))
+
+    def test_b32b_7e_every_recorder_admits_through_the_same_codec(self):
+        """STEP 4 v02, free attack 5A — and it found a THIRD recorder.
+
+        v01 changed the two materialization recorders and left the AD-19
+        source-3 site (`add_alias(dtype=...)`, added by STEP 3 `13d`) on the
+        OLD `str()`-based admission. A DECLARED categorical alias therefore
+        stored no authority record at all, while the same dtype arriving by
+        source 4 or 5 stored one exactly — and because the declaration still
+        answers from memory, nothing looked wrong until the file was reread,
+        which is precisely the persistence argument `13d` was written to make.
+
+        The structural assertion is the point: no recorder may hold its own
+        opinion about what is exactly representable.
+        """
+        cats = pd.CategoricalDtype(["b", "a"], ordered=True)
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))
+        m.add_alias("q", "x * 2", dtype=cats)
+        rec = m._schema["columns"]["q"].get(
+            A.AliasDataFrame._AUTHORITY_KEY)
+        assert rec is not None, (
+            "a DECLARED categorical dtype stored no authority record; the "
+            "source-3 recorder is not using the STEP 4 codec")
+        back = A.AliasDataFrame._canonical_dtype(
+            json.loads(json.dumps(rec["dtype"])))
+        assert A.AliasDataFrame._dtype_exactly_equal(back, cats), (
+            f"the source-3 record does not read back exactly: {back!r}")
+
+        # and the source-3 record must be reachable through the public getter
+        auth = m.get_dtype_authority("q")
+        assert auth.known and A.AliasDataFrame._dtype_exactly_equal(
+            auth.dtype, cats), f"{auth!r}"
+
+        # no recorder CALLS the superseded str()-based admission any more.
+        # The definition survives only because `b32_222`/`b32_223` assert the
+        # predicate directly, so the definition line is excluded and every
+        # remaining CALL would be a recorder holding its own opinion.
+        import re as _re
+        src = open(__import__("AliasDataFrame").__file__).read()
+        calls = _re.findall(
+            r"(?<!def )_authority_is_exactly_representable\(", src)
+        assert calls == [], (
+            f"{len(calls)} recorder(s) still admit by the superseded "
+            "str()-based rule")
+
+    def test_b32b_7d_child_frame_categorical_authority_is_contestable(self):
+        """The STEP 4 v01 CRR listed this as free attack `5B` and EXECUTED,
+        but the diff carried no test to point at (Sonet28 `F4`). A probe that
+        leaves no regression behind is not evidence a later change can be
+        held to, so the probe is landed here as a named test.
+
+        A categorical authority recorded on a CHILD frame, then contradicted
+        by a physical recast, must refuse consumption through `S.c` — the
+        authority must be a property of the column wherever the column lives,
+        not of the top-level frame.
+        """
+        cats = pd.CategoricalDtype(["b", "a"], ordered=True)
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0, 1], np.int64)}))
+        ch.register_function("as_cat",
+                             lambda v: pd.Series(["a", "b"]).astype(cats))
+        ch.add_alias("c", "as_cat(k)")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ch.materialize_alias("c")
+        auth = ch.get_dtype_authority("c")
+        assert auth.known and list(auth.dtype.categories) == ["b", "a"], (
+            f"the child frame must record the authority at all: {auth!r}")
+
+        m = A.AliasDataFrame(pd.DataFrame({"k": np.array([0, 1], np.int64)}))
+        m.register_subframe("S", ch, index_columns=["k"])
+        m.add_alias("d", "S.c")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("d")        # CONTROL: uncontested, it works
+        assert "d" in m.df.columns
+
+        ch.df["c"] = ch.df["c"].astype(
+            pd.CategoricalDtype(["a", "b"], ordered=True))   # order flipped
+        assert ch.get_dtype_authority("c").conflict, (
+            "a physical recast that changes the category ORDER must contest "
+            "the recorded authority")
+        m2 = A.AliasDataFrame(pd.DataFrame({"k": np.array([0, 1], np.int64)}))
+        m2.register_subframe("S", ch, index_columns=["k"])
+        m2.add_alias("d", "S.c")
+        with pytest.raises(Exception) as exc:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                m2.materialize_alias("d")
+        assert "S.c" in str(exc.value), (
+            f"the refusal must name the qualified child subject: {exc.value}")
 
     @pytest.mark.xfail(strict=True, reason=
         "B3.2b acceptance (D_9, §5.5): publication is ATOMIC across ALL "
