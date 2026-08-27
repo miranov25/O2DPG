@@ -721,8 +721,9 @@ def test_a1_v06_audit_is_derived_not_declared():
     assert not hasattr(H, "CONSUMED_FIELDS"), \
         "the hand-maintained allow-list is still present"
     read = H._fields_read_in_this_module()
-    for f in ("title", "schema_version"):
-        assert f in read, f"{f} still has no reader"
+    # v07: schema_version was REMOVED from CaseSpec (A1-v06-P1-2), so only
+    # `title` remains from the pair v06 gave readers to.
+    assert "title" in read, "title still has no reader"
 
 
 def test_a1_v06_audit_detects_a_field_with_no_reader():
@@ -742,9 +743,124 @@ def test_a1_v06_audit_detects_a_field_with_no_reader():
 
 
 def test_a1_v06_manifest_carries_title_and_case_schema_version(mk, tmp_path):
+    """SUPERSEDED BY v07 — the per-case schema_version field is gone.
+
+    A1-v06-P1-2: a field whose only legal value is a module constant carries no
+    information and created a second schema authority.  provenance() records
+    the module version once for the run.  `title` is still asserted.
+    """
     case = _base_case(case_id="INV-SURFACE-01", surfaces_under_test=H.SURFACES)
     res = H.run_consistency(case, mk)
     doc = H.write_manifest(str(tmp_path / "m.json"), [res], [case])
-    rec = doc["cases"][0]
-    assert rec["title"] == case.title
-    assert rec["case_schema_version"] == case.schema_version
+    assert doc["cases"][0]["title"] == case.title
+    assert doc["provenance"]["schema_version"] == H.SCHEMA_VERSION
+
+
+# ── 12. v07 — declared-set gating, receiver-narrowed audit, single schema ──
+
+def test_a1_v07_declared_case_with_no_result_gates():
+    """A1-v06-P0-1.  v06 iterated `results`, so a declared case that produced
+    NO result was invisible: measured, 2 declared / 1 result -> exit 0."""
+    cases = [_base_case(case_id="A"), _base_case(case_id="B_NEVER_RAN")]
+    results = [H.CaseResult(case_id="A", status=H.PASS)]
+    assert H.strict_exit_code(results, cases) == 1
+
+
+def test_a1_v07_duplicate_result_gates():
+    case = _base_case(case_id="A")
+    dup = [H.CaseResult(case_id="A", status=H.PASS),
+           H.CaseResult(case_id="A", status=H.PASS)]
+    assert H.strict_exit_code(dup, [case]) == 1
+
+
+def test_a1_v07_result_for_an_undeclared_case_gates():
+    case = _base_case(case_id="A")
+    stray = [H.CaseResult(case_id="A", status=H.PASS),
+             H.CaseResult(case_id="GHOST", status=H.PASS)]
+    assert H.strict_exit_code(stray, [case]) == 2
+
+
+def test_a1_v07_complete_declared_set_still_passes():
+    """Positive control: a rule that gated everything would pass the three
+    falsifiers above and be useless."""
+    cases = [_base_case(case_id="A"), _base_case(case_id="B")]
+    results = [H.CaseResult(case_id="A", status=H.PASS),
+               H.CaseResult(case_id="B", status=H.PASS)]
+    assert H.strict_exit_code(results, cases) == 0
+
+
+def test_a1_v07_coverage_gaps_names_the_dropped_case():
+    cases = [_base_case(case_id="A"), _base_case(case_id="B_NEVER_RAN")]
+    gaps = H.coverage_gaps([H.CaseResult(case_id="A", status=H.PASS)], cases)
+    assert any("B_NEVER_RAN" in g and "no result" in g for g in gaps), gaps
+
+
+def test_a1_v07_audit_is_receiver_narrowed():
+    """A1-v06-P1-1.  v06 counted any same-named attribute anywhere, so
+    `CaseResult.status` certified a hypothetical `CaseSpec.status`.  I named
+    this hole in the v06 CRR as an attack point and shipped it anyway."""
+    read = H._fields_read_in_this_module()
+    assert "status" not in read, \
+        "CaseResult.status is still leaking into the CaseSpec read-set"
+    assert "detail" not in read
+    assert H.audit_declared_state() == []
+
+
+def test_a1_v07_audit_detects_a_name_colliding_field():
+    """The negative control the collision demands: a NEW CaseSpec field whose
+    name collides with a heavily-used CaseResult attribute."""
+    import dataclasses
+    orig = H.CaseSpec
+    planted = dataclasses.make_dataclass(
+        "CaseSpec", [("status", str, dataclasses.field(default=""))],
+        bases=(orig,))
+    H.CaseSpec = planted
+    try:
+        orphans = H.audit_declared_state()
+    finally:
+        H.CaseSpec = orig
+    assert any("CaseSpec.status" in o for o in orphans), orphans
+
+
+def test_a1_v07_iterating_a_field_does_not_promote_its_element():
+    """`for o in case.observables` yields Observables, not CaseSpecs.  An
+    earlier v07 draft walked through the Attribute and promoted `o`, putting
+    Observable.status back into the read-set — the same receiver-blindness one
+    level down."""
+    read = H._fields_read_in_this_module()
+    for observable_only in ("comparator", "atol", "rtol"):
+        assert observable_only not in read, \
+            f"{observable_only} is an Observable field and must not certify a CaseSpec field"
+
+
+def test_a1_v07_no_per_case_schema_version():
+    """A1-v06-P1-2.  Two schema authorities, one of them wrong."""
+    import dataclasses
+    names = {f.name for f in dataclasses.fields(H.CaseSpec)}
+    assert "schema_version" not in names
+    with pytest.raises(TypeError):
+        _base_case(schema_version="1.0.0-ANCIENT")
+
+
+@pytest.mark.parametrize("applicable,status,expected", [
+    (True,  "PASS",            False),
+    (False, "PASS",            False),
+    (True,  "FAIL",            True),
+    (False, "FAIL",            False),
+    (True,  "SKIP",            True),
+    (False, "SKIP",            False),
+    (True,  "INVALID_FIXTURE", True),
+    (False, "INVALID_FIXTURE", True),
+    (True,  "DIAGNOSTIC",      False),
+    (False, "DIAGNOSTIC",      False),
+    (True,  "SOMETHING_NEW",   True),
+])
+def test_a1_v07_gate_matrix_asserts_the_expected_verdict(applicable, status, expected):
+    """A1-v06-P1-3.  v06 asserted only that a bool and a reason EXIST, so a
+    wrong verdict passed.  This pins the policy, not its shape."""
+    case = _base_case(gate="ENVIRONMENT_GATED", applicable=applicable,
+                      applicability_reason="r" if not applicable else "")
+    gates, why = H.gate_decision(case, H.CaseResult(case_id=case.case_id,
+                                                    status=status))
+    assert gates is expected, f"({applicable}, {status}): {why}"
+    assert why

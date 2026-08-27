@@ -31,7 +31,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A1.6"
+SCHEMA_VERSION = "13.77.A1.7"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -381,7 +381,12 @@ class CaseSpec:
     known_bug_id: str = ""
     negative_control: str = ""
     reference_policy: str = "named-immutable"
-    schema_version: str = SCHEMA_VERSION
+    # A1-v06-P1-2: there is no per-case schema_version.  v06 defaulted it to
+    # the module constant and accepted any override, so a case could declare
+    # "1.0.0-ANCIENT" while being validated by 13.77.A1.7 — two schema
+    # authorities, one of them wrong.  A field whose only legal value is a
+    # module constant carries no information; provenance() records the module
+    # version once, for the run.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -411,26 +416,76 @@ FUTURE_STAGE_FIELDS = {
 }
 
 
+def _casespec_receivers(tree, spec_body_lines: set) -> set:
+    """Names that provably hold a CaseSpec in this module.
+
+    A1-v06-P1-1.  v06 counted ANY attribute access whose name matched a field,
+    anywhere in the module, and `CaseResult.status` therefore certified a
+    hypothetical `CaseSpec.status` as read.  Measured: `status` was in the
+    derived read-set and a new unread `CaseSpec.status` field was reported
+    clean.  I named this hole in the v06 CRR as an attack point and shipped it
+    anyway — naming a hole is not closing it.
+
+    A receiver qualifies only by evidence, never by convention:
+        annotated parameter        def f(case: CaseSpec) / "CaseSpec"
+        annotated local            case: CaseSpec = ...
+        constructor result         c = CaseSpec(...)
+        isinstance-narrowed name   isinstance(x, CaseSpec)
+    """
+    import ast
+    names = set()
+
+    def _is_spec_ann(ann):
+        if isinstance(ann, ast.Name):
+            return ann.id == "CaseSpec"
+        if isinstance(ann, ast.Constant) and isinstance(ann.value, str):
+            return "CaseSpec" in ann.value
+        if isinstance(ann, ast.Subscript):          # Sequence[CaseSpec] etc.
+            return _is_spec_ann(ann.slice)
+        if isinstance(ann, ast.BinOp):              # CaseSpec | None
+            return _is_spec_ann(ann.left) or _is_spec_ann(ann.right)
+        return False
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            a = node.args
+            for arg in list(a.args) + list(a.posonlyargs) + list(a.kwonlyargs):
+                if arg.annotation is not None and _is_spec_ann(arg.annotation):
+                    names.add(arg.arg)
+        elif isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name) and _is_spec_ann(node.annotation):
+                names.add(node.target.id)
+        elif isinstance(node, ast.Assign):
+            v = node.value
+            if (isinstance(v, ast.Call) and isinstance(v.func, ast.Name)
+                    and v.func.id == "CaseSpec"):
+                for t in node.targets:
+                    if isinstance(t, ast.Name):
+                        names.add(t.id)
+        elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+              and node.func.id == "isinstance" and len(node.args) == 2
+              and isinstance(node.args[0], ast.Name)
+              and isinstance(node.args[1], ast.Name)
+              and node.args[1].id == "CaseSpec"):
+            names.add(node.args[0].id)
+    return names
+
+
 def _fields_read_in_this_module() -> set:
-    """DERIVE which CaseSpec fields are actually read, by parsing this module.
+    """CaseSpec fields genuinely read in this module, by AST, RECEIVER-NARROWED.
 
-    A1-v05-P1-1.  v05 used a hand-maintained CONSUMED_FIELDS allow-list, and it
-    was not merely gameable in principle — it was ALREADY WRONG on the shipped
-    schema: `title`, `anti_contamination_preconditions` and `schema_version`
-    appeared only in their own dataclass declaration and in the allow-list, and
-    the audit reported clean.
-
-    An allow-list is defeated by adding two lines.  This walks the module's own
-    AST for attribute access `<obj>.<field>` and `getattr(<obj>, "<field>")`,
-    EXCLUDING the CaseSpec class body itself — a declaration is not a reader.
-    To satisfy this audit a field must actually be used.
+    v05 used a hand-maintained allow-list and it was already false-certifying
+    three fields.  v06 derived the set but counted any same-named attribute on
+    any object.  v07 counts an access only when the receiver is provably a
+    CaseSpec, or when the attribute is reached through `getattr(<spec>, "…")`.
+    A comprehension over a `Sequence[CaseSpec]` parameter also qualifies, since
+    that is how validate_registry iterates.
     """
     import ast
     import inspect
 
     tree = ast.parse(inspect.getsource(sys.modules[__name__]))
 
-    # locate the CaseSpec class body so its annotations are not counted
     spec_body_lines = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef) and node.name == "CaseSpec":
@@ -438,16 +493,34 @@ def _fields_read_in_this_module() -> set:
                 if hasattr(sub, "lineno"):
                     spec_body_lines.add(sub.lineno)
 
+    receivers = _casespec_receivers(tree, spec_body_lines)
+
+    # Iterating a Sequence[CaseSpec] receiver DIRECTLY yields CaseSpecs, so the
+    # loop variable is a receiver too.  Iterating an ATTRIBUTE of one does not:
+    # `for o in case.observables` yields Observables, and an earlier draft of
+    # this function walked down through the Attribute and promoted `o`, which
+    # put `Observable.status` back into the read-set — reintroducing the exact
+    # receiver-blindness of A1-v06-P1-1 one level down.  Bare Name only.
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.For, ast.comprehension)):
+            iter_src, target = node.iter, node.target
+        else:
+            continue
+        if isinstance(iter_src, ast.Name) and iter_src.id in receivers \
+                and isinstance(target, ast.Name):
+            receivers.add(target.id)
+
     read = set()
     for node in ast.walk(tree):
         if getattr(node, "lineno", None) in spec_body_lines:
             continue
-        if isinstance(node, ast.Attribute):
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) \
+                and node.value.id in receivers:
             read.add(node.attr)
-        elif (isinstance(node, ast.Call)
-              and isinstance(node.func, ast.Name)
-              and node.func.id == "getattr"
-              and len(node.args) >= 2
+        elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+              and node.func.id == "getattr" and len(node.args) >= 2
+              and isinstance(node.args[0], ast.Name)
+              and node.args[0].id in receivers
               and isinstance(node.args[1], ast.Constant)
               and isinstance(node.args[1].value, str)):
             read.add(node.args[1].value)
@@ -734,7 +807,6 @@ def write_manifest(path: str, results: Sequence[CaseResult],
                 # what lets a later reader tell which contract a manifest was
                 # written under; the title is the human name for the page.
                 "title": c.title,
-                "case_schema_version": c.schema_version,
                 "claim_id": c.claim_id, "claim": c.claim,
                 "non_claims": list(c.non_claims),
                 "purpose": c.purpose, "gate": c.gate,
@@ -1058,18 +1130,56 @@ def gate_decision(case: "CaseSpec", result: "CaseResult") -> tuple:
 
 def strict_exit_code(results: Sequence[CaseResult],
                      cases: Sequence[CaseSpec]) -> int:
-    """Non-zero when any result gates, per GATE_MATRIX / gate_decision.
+    """Non-zero when any DECLARED case fails to yield a passing verdict.
 
-    Every verdict is derived from one enumerated table rather than a chain of
-    special cases, so a combination nobody thought about fails closed instead
-    of falling between two `if`s.
+    A1-v06-P0-1.  v06 iterated `results`, so a declared case that produced NO
+    result was invisible: measured, two cases declared and one result returned
+    strict exit 0.  A registry entry dropped by a runner exception, a filter or
+    a typo is the purest false green available — the harness reports success
+    for a proof it never attempted.
+
+    The gate is now over the DECLARED set:
+        every case_id has exactly one result   missing -> gate, duplicate -> gate
+        an unknown result id                   -> gate
+        each result's verdict per gate_decision
     """
-    by_id = {c.case_id: c for c in cases}
+    by_case = {c.case_id: c for c in cases}
+    seen: dict = {}
     for r in results:
-        c = by_id.get(r.case_id)
-        if c is None:
-            return 2
+        if r.case_id not in by_case:
+            return 2                      # a result for a case nobody declared
+        if r.case_id in seen:
+            return 1                      # duplicate verdict for one case
+        seen[r.case_id] = r
+    for cid, c in by_case.items():
+        r = seen.get(cid)
+        if r is None:
+            return 1                      # declared and never executed
         gates, _why = gate_decision(c, r)
         if gates:
             return 1
     return 0
+
+
+def coverage_gaps(results: Sequence[CaseResult],
+                  cases: Sequence[CaseSpec]) -> list:
+    """Which declared cases produced no result, or more than one.
+
+    strict_exit_code returns a number; this says WHY, so the manifest and a
+    reviewer can see a dropped case by name rather than inferring it from a
+    count.
+    """
+    counts: dict = {}
+    for r in results:
+        counts[r.case_id] = counts.get(r.case_id, 0) + 1
+    gaps = []
+    for c in cases:
+        n = counts.get(c.case_id, 0)
+        if n == 0:
+            gaps.append(f"{c.case_id}: declared but produced no result")
+        elif n > 1:
+            gaps.append(f"{c.case_id}: produced {n} results; expected exactly 1")
+    for cid in counts:
+        if cid not in {c.case_id for c in cases}:
+            gaps.append(f"{cid}: result for a case that was never declared")
+    return gaps
