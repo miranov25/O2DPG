@@ -8215,9 +8215,21 @@ def _arrow_specimens():
 
 
 def _arrow_neutral(dtype):
-    """A fill value of the right shape for a specimen's dtype."""
-    if _is_arrow_backed(dtype) and getattr(dtype, "storage", None) == "pyarrow":
-        return ""
+    """A fill value of the right shape for a specimen's dtype.
+
+    B3.2b STEP 5 CORRECTION. This began with an arrow-backed branch that
+    returned `""` for ANY dtype whose `.storage` is `"pyarrow"` — which is
+    every Arrow specimen, `double[pyarrow]` included. So the double specimen
+    was filled with a STRING, `_coerce_fill_to_dtype` correctly refused it,
+    and `b32b_14f` swallowed that refusal through a `getattr(mod, "ADFError",
+    ValueError)` fallback that resolved to `ValueError` while `ADFError` did
+    not exist. The test passed without ever reaching its own assertion for
+    that specimen. STEP 5 created `ADFError`, the fallback stopped resolving
+    to `ValueError`, and the fixture defect surfaced — found by the identity
+    diff, not by reading.
+
+    The value type decides, and nothing else does.
+    """
     kind = str(getattr(dtype, "kind", "")) or str(dtype)
     if "string" in str(dtype) or "str" in kind:
         return ""
@@ -9452,7 +9464,12 @@ class TestB32bAcceptanceScaffold:
         Silent downgrade is not an acceptable third option."""
         pytest.importorskip("pyarrow")
         mod = _adf_module()
-        root = getattr(mod, "ADFError", ValueError)
+        # NOT `getattr(mod, "ADFError", ValueError)`. That default silently
+        # widened the acceptable-refusal branch to every ValueError in the
+        # stack while `ADFError` was still unimplemented, and swallowed a
+        # fixture bug for a whole increment. `D_6` delivered the root; the
+        # test must now depend on it, and fail loudly if it ever disappears.
+        root = mod.ADFError
         for label, source in _arrow_specimens().items():
             m = A.AliasDataFrame(pd.DataFrame({
                 "k": np.array([0, 9], np.int64),
@@ -10668,10 +10685,6 @@ class TestB32bAcceptanceScaffold:
                    for n in pinned)
         assert used, "the pinned constant is declared but never consumed"
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance (D_6, §7): a STRUCTURAL absence raises an ADF-owned "
-        "type under one ADFError root. Measured baseline failure: "
-        "'D_6 defines an ADFError root; it does not exist'.")
     def test_b32b_11_structural_absence_raises_an_adf_type(self):
         """MR-P2-2 (Sonet28, Sonet31): revision 2 put `add_alias` and
         `materialize_alias` inside ONE `pytest.raises` block, so if
@@ -10690,12 +10703,6 @@ class TestB32bAcceptanceScaffold:
                 warnings.simplefilter("ignore")
                 structural.materialize_alias("d")
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance (D_6, §7): a ROW-LEVEL missing key raises an "
-        "ADF-owned type DISTINCT from the structural one, through a real "
-        "production path. Measured baseline failure: "
-        "'D_6 defines an ADFError root; it does not exist' — both paths "
-        "currently raise bare ValueError.")
     def test_b32b_11b_row_level_missingness_raises_a_distinct_adf_type(self):
         mod = _adf_module()
         root = getattr(mod, "ADFError", None)
@@ -10722,6 +10729,351 @@ class TestB32bAcceptanceScaffold:
         assert type(st.value) is not type(rl.value), (
             "structural absence and row-level missingness must be "
             "distinguishable by type, not only by message")
+
+    def test_b32b_11c_the_taxonomy_holds_on_every_alias_surface(self):
+        """STEP 5 — the reason `b32b_11` alone does not close `D_6` §7.
+
+        `b32b_11` drives ONE structural path (a missing subframe) through ONE
+        public surface, and its own docstring warns that a single path
+        silently narrows a criterion. Asked of the other surfaces, the
+        narrowing was real: `S.nosuchcol` — a subframe that EXISTS without the
+        referenced column, the commoner shape in practice — raised a bare
+        `KeyError`, indistinguishable from a pandas lookup failure.
+
+        So the criterion is stated as the taxonomy over the surfaces rather
+        than as two specimens: every alias-evaluation absence is ADF-owned,
+        and structural and row-level are never the same type.
+        """
+        mod = _adf_module()
+        root = mod.ADFError
+        structural = mod.StructuralAbsenceError
+        rowlevel = mod.RowLevelMissingnessError
+
+        def plain():
+            return A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2])}))
+
+        def joined():
+            m = A.AliasDataFrame(pd.DataFrame({
+                "k": np.array([0, 9], np.int64),
+                "x": np.array([10, 20], np.int64)}))
+            ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+            ch.df["v"] = np.array([3], dtype=np.int64)
+            m.register_subframe("S", ch, index_columns=["k"])
+            return m
+
+        def run(build, expr, surface, dtype=None):
+            m = build()
+            if surface == "eval":
+                op = lambda: m.eval(expr)
+            else:
+                m.add_alias("d", expr, dtype=dtype)
+                _bound = getattr(m, surface)
+                op = (lambda: _bound("d"))
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                try:
+                    op()
+                except Exception as exc:      # noqa: BLE001 - the subject
+                    return exc
+            return None
+
+        SURFACES = ("materialize_alias", "get_alias_array", "get_alias_series")
+
+        # --- structural: absent by SCHEMA, no fill can repair it ----------
+        cases = [(plain, "Nope.v", "missing subframe"),
+                 (plain, "nope * 2", "missing column"),
+                 (plain, "nosuchfunc(x)", "missing function"),
+                 (joined, "S.nosuchcol", "subframe without the column")]
+        for build, expr, label in cases:
+            for surface in SURFACES:
+                exc = run(build, expr, surface)
+                assert exc is not None, f"{label} via {surface}: nothing raised"
+                assert isinstance(exc, structural), (
+                    f"{label} via {surface}: {type(exc).__name__} is not "
+                    f"ADF-owned structural absence")
+            exc = run(build, expr, "eval")
+            assert isinstance(exc, structural), (
+                f"{label} via eval(): {type(exc).__name__}")
+
+        # the KeyError promise the production comment makes explicitly
+        exc = run(joined, "S.nosuchcol", "materialize_alias")
+        assert isinstance(exc, KeyError), (
+            "the raise site promises KeyError for Sub.nonexistent references; "
+            f"ADF ownership must be added to that, not replace it: {exc!r}")
+        assert "does not contain" in str(exc), (
+            f"KeyError.__str__ would repr() the message and break match=: "
+            f"{str(exc)!r}")
+
+        # --- row-level: EXISTS, some rows unmatched, a fill WOULD repair --
+        for surface in SURFACES + ("eval",):
+            expr = "d" if surface == "eval" else "S.v"
+            m = joined()
+            m.add_alias("d", "S.v", dtype="int64")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with pytest.raises(rowlevel) as caught:
+                    if surface == "eval":
+                        m.eval("d")
+                    else:
+                        getattr(m, surface)("d")
+            assert not isinstance(caught.value, structural), (
+                f"{surface}: row-level missingness must NOT be structural — "
+                "the caller may retry the first with a fill and must never "
+                "retry the second")
+            assert isinstance(caught.value, root)
+
+        # --- the MULTI-LEVEL chain raises from its own site --------------
+        # Found the same way as `S.nosuchcol`: the single-level path was
+        # re-typed and the projection path two levels down was still raising a
+        # bare ValueError. Same condition, different raise site — which is the
+        # third time in this phase that "one path" turned out not to be the
+        # criterion.
+        inner = A.AliasDataFrame(pd.DataFrame({"j": np.array([0], np.int64)}))
+        inner.df["val"] = np.array([7], dtype=np.int64)
+        mid = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "j": np.array([0, 9], np.int64)}))
+        mid.register_subframe("I", inner, index_columns=["j"])
+        deep = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "x": np.array([10, 20], np.int64)}))
+        deep.register_subframe("M", mid, index_columns=["k"])
+        deep.add_alias("d", "M.I.val + x", dtype="int64")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with pytest.raises(rowlevel) as deep_exc:
+                deep.materialize_alias("d")
+        assert isinstance(deep_exc.value, ValueError), (
+            "the projection sites raised ValueError before D_6; that must "
+            "survive, or callers catching ValueError silently stop catching")
+
+        # --- and the repair actually works, or the taxonomy means nothing -
+        m = joined()
+        m.add_alias("d", "S.v", dtype="int64", fill_value=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("d")
+        assert [int(v) for v in m.df["d"].values] == [3, 0], (
+            "a configured fill must resolve the row-level case; if it does "
+            "not, calling it 'repairable' is a claim the code does not honour")
+
+    def test_b32b_11d_step4_sparse_refusal_is_under_the_adf_root(self):
+        """The debt STEP 4 opened and this step discharges.
+
+        STEP 4's sparse reconstruction refuses rather than densifying, and it
+        raised the bare `AliasDataFrameError` base ON PURPOSE, because `D_6`
+        owned the hierarchy and inventing a type ahead of its owner is how an
+        increment grows a defect. `D_6` has now placed a root above that base,
+        so the refusal is ADF-rooted without a single line of STEP 4 changing.
+
+        It is deliberately NOT structural and NOT row-level: nothing is
+        absent. It is a representation refusal, and `D_6` §7 names exactly two
+        absence kinds — so it stays under the root and outside the taxonomy.
+        """
+        mod = _adf_module()
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1.0, 2.0, 3.0])}))
+        src = pd.Series(pd.arrays.SparseArray(
+            np.array([1.0, 0.0, 3.0]), fill_value=0.0))
+
+        import sys as _sys
+        real = _sys.modules["pandas._libs.sparse"]
+
+        class _Declines:
+            def __getattr__(self, _n):
+                raise RuntimeError("injected: sparse reconstruction declined")
+
+        _sys.modules["pandas._libs.sparse"] = _Declines()
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with pytest.raises(mod.ADFError) as exc:
+                    m._place_fill(src, np.array([False, True, False]), 9.0,
+                                  "fill_missing", "S", "v")
+        finally:
+            _sys.modules["pandas._libs.sparse"] = real
+
+        assert not isinstance(exc.value, mod.StructuralAbsenceError)
+        assert not isinstance(exc.value, mod.RowLevelMissingnessError)
+
+    def test_b32b_11e_each_leaf_carries_only_its_own_builtin(self):
+        """STEP 5a v02 — GPT29 `F2`, and the correction is entirely NEGATIVE.
+
+        v01 made `StructuralAbsenceError` a `NameError` and hung the KeyError
+        leaf beneath it, so `S.nosuchcol` became catchable by
+        `except NameError` where it never had been. I disclosed exactly this
+        as uncertainty #1 and did not execute it — the fourth time this phase
+        that the defect was in a sentence I wrote rather than in the diff.
+
+        Compatibility is not only about keeping what was caught. WIDENING what
+        a handler catches is a change too: a caller with a broad
+        `except NameError` around expression evaluation would silently begin
+        swallowing subframe-column errors it used to let through, which is the
+        harder failure to notice because nothing raises.
+
+        So the semantic parent carries no builtin, each leaf carries exactly
+        the one its own site raised, and this test asserts the ABSENCES.
+        Positive assertions cannot catch a widening; only negative ones can.
+        """
+        mod = _adf_module()
+
+        # the shape, stated on the classes so it cannot drift silently
+        assert not issubclass(mod.StructuralAbsenceError, NameError), (
+            "the SEMANTIC category must carry no builtin; the leaves do")
+        assert not issubclass(mod.StructuralAbsenceError, KeyError)
+        assert issubclass(mod.ExpressionNameAbsenceError, NameError)
+        assert not issubclass(mod.ExpressionNameAbsenceError, KeyError)
+        assert issubclass(mod.SubframeColumnAbsenceError, KeyError)
+        assert not issubclass(mod.SubframeColumnAbsenceError, NameError), (
+            "GPT29 F2: a KeyError path must not become catchable by "
+            "`except NameError`")
+
+        def joined():
+            m = A.AliasDataFrame(pd.DataFrame({
+                "k": np.array([0, 9], np.int64),
+                "x": np.array([10, 20], np.int64)}))
+            ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+            ch.df["v"] = np.array([3], dtype=np.int64)
+            m.register_subframe("S", ch, index_columns=["k"])
+            return m
+
+        def raised(build, expr):
+            m = build()
+            m.add_alias("d", expr)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                try:
+                    m.materialize_alias("d")
+                except Exception as exc:      # noqa: BLE001 - the subject
+                    return exc
+            raise AssertionError(f"{expr!r} did not raise")
+
+        # and on the real production paths, both directions
+        col = raised(joined, "S.nosuchcol")
+        assert isinstance(col, mod.StructuralAbsenceError)
+        assert isinstance(col, KeyError)
+        assert not isinstance(col, NameError), (
+            f"`except NameError` now catches the subframe-column path: {col!r}")
+
+        name = raised(
+            lambda: A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2])})),
+            "Nope.v")
+        assert isinstance(name, mod.StructuralAbsenceError)
+        assert isinstance(name, NameError)
+        assert not isinstance(name, KeyError), (
+            f"`except KeyError` now catches the undefined-name path: {name!r}")
+
+    def test_b32b_11f_the_root_covers_every_adf_owned_refusal(self):
+        """STEP 5a — GPT27 `F1`, widened in v03 by `P1-1`.
+
+        v02 asserted that every ADF-defined exception is under `ADFError` and
+        swept TWO modules. Four seats found the counterexample in a third:
+        `LazyChainReader.ChainShapeMismatchError(ValueError)`, public and
+        ADF-owned, outside the root the CRR called "the single root of every
+        ADF-owned error". I had disclosed the two-module limit as uncertainty
+        #2 and had not executed the wider sweep — the same failure mode as
+        `F2`, one revision later.
+
+        The sweep is now over the PACKAGE. Every top-level module is parsed,
+        every class whose bases name an exception is collected, and each is
+        checked against the root. A module that declares such a class and
+        cannot be imported FAILS rather than being skipped, so the search
+        universe can never shrink quietly — which is exactly how v02's
+        two-module census came to look complete.
+        """
+        mod = _adf_module()
+
+        # --- the specific v01 finding stays pinned -------------------------
+        assert issubclass(mod.ADFProvenanceUnsupportedError, mod.ADFError), (
+            "GPT27 F1: a public ADF refusal outside the root")
+        assert issubclass(mod.ADFProvenanceUnsupportedError, ValueError), (
+            "…and its ValueError compatibility must survive the reparenting")
+        assert not issubclass(
+            mod.ADFProvenanceUnsupportedError, mod.StructuralAbsenceError)
+        assert not issubclass(
+            mod.ADFProvenanceUnsupportedError, mod.RowLevelMissingnessError)
+
+        # --- and the v03 finding, which no two-module census could see -----
+        import LazyChainReader as _lcr
+        assert issubclass(_lcr.ChainShapeMismatchError, mod.ADFError), (
+            "P1-1: a public ADF exception in a reader module, outside the "
+            "root the CRR claims is complete")
+        assert issubclass(_lcr.ChainShapeMismatchError, ValueError), (
+            "…and its ValueError compatibility must survive")
+        assert not issubclass(
+            _lcr.ChainShapeMismatchError, mod.AliasDataFrameError), (
+            "rooting it must not ALSO widen `except ChainValidationError` / "
+            "`except AliasDataFrameError` — the F2 lesson applied to F1")
+
+        # --- the census, over the whole package ----------------------------
+        import ast as _ast, glob as _glob, importlib as _il
+        import os as _os
+
+        pkg = _os.path.dirname(_os.path.abspath(mod.__file__))
+        BUILTIN_EXC = {
+            "Exception", "BaseException", "ValueError", "KeyError",
+            "NameError", "TypeError", "RuntimeError", "LookupError",
+            "ArithmeticError", "OSError", "IOError", "AttributeError",
+            "IndexError", "NotImplementedError"}
+
+        orphans, unimportable, swept = [], [], 0
+        for path in sorted(_glob.glob(_os.path.join(pkg, "*.py"))):
+            modname = _os.path.splitext(_os.path.basename(path))[0]
+            if modname == "__init__":
+                continue
+            try:
+                with open(path) as fh:
+                    tree = _ast.parse(fh.read())
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+            declared = []
+            for node in _ast.walk(tree):
+                if not isinstance(node, _ast.ClassDef):
+                    continue
+                bases = [b.id if isinstance(b, _ast.Name)
+                         else getattr(b, "attr", "") for b in node.bases]
+                if any(b in BUILTIN_EXC or b.endswith("Error") for b in bases):
+                    declared.append(node.name)
+            if not declared:
+                continue
+            try:
+                module = _il.import_module(modname)
+            except Exception as exc:      # noqa: BLE001 - reported, not hidden
+                unimportable.append(f"{modname} ({type(exc).__name__}: {exc})")
+                continue
+            for nm in declared:
+                obj = getattr(module, nm, None)
+                if not (isinstance(obj, type)
+                        and issubclass(obj, BaseException)):
+                    continue
+                swept += 1
+                if not issubclass(obj, mod.ADFError):
+                    orphans.append(f"{modname}.{nm}")
+
+        assert not unimportable, (
+            "a module declaring an exception could not be imported, so the "
+            "root census is INCOMPLETE and this test cannot support the "
+            f"claim it is used to support: {unimportable}")
+        assert not orphans, (
+            "every ADF-defined exception must be under the ADFError root; "
+            f"outside it: {sorted(set(orphans))}")
+        assert swept >= 13, (
+            "the census must actually find the hierarchy; a sweep that "
+            f"matches nothing passes vacuously. Found only {swept}")
+
+    def test_b32b_11g_row_level_carries_only_value_error(self):
+        """`P2-1` (GPT31, GPT33). Two lines, and they close a hole I listed as
+        uncertainty #3 and left open: nothing asserted that
+        `RowLevelMissingnessError` had not acquired a builtin it should not
+        have. Every other leaf has its negative pin; this one did not, purely
+        because no reviewer had asked yet."""
+        mod = _adf_module()
+        assert issubclass(mod.RowLevelMissingnessError, ValueError)
+        assert not issubclass(mod.RowLevelMissingnessError, NameError)
+        assert not issubclass(mod.RowLevelMissingnessError, KeyError)
+        assert not issubclass(
+            mod.RowLevelMissingnessError, mod.StructuralAbsenceError), (
+            "row-level missingness is REPAIRABLE and structural absence is "
+            "not; a caller must never retry the second")
 
 
 def _adf_scaffold_text():

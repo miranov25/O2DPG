@@ -12,9 +12,30 @@ Key Design Decisions (from reviewer feedback):
 
 import warnings
 
+try:
+    from exceptions import ADFError as _ADFError
+except ImportError:          # standalone use, no package on the path
+    class _ADFError(Exception):
+        pass
 
-class ChainShapeMismatchError(ValueError):
-    """PHASE_13_75_ADF: chain files disagree on a branch's scalar/jagged shape."""
+
+class ChainShapeMismatchError(_ADFError, ValueError):
+    """PHASE_13_75_ADF: chain files disagree on a branch's scalar/jagged shape.
+
+    B3.2b STEP 5a v03 (`P1-1`, found independently by GPT34, GPT31, GPT33 and
+    Sonet30). v02 introduced `ADFError` as "the single root of every ADF-owned
+    error" and a test claiming to prove it — while this class, public and
+    ADF-owned, sat outside the root. The claim was false and the test could
+    not see it, because the test swept two modules and this is a third.
+
+    `ADFError` is ADDED; `ValueError` is kept, so every existing
+    `except ValueError` and `except ChainShapeMismatchError` catches exactly
+    what it caught before. Nothing is widened beyond the intended root —
+    deliberately NOT reparented under `ChainValidationError`, which would
+    have pulled `AliasDataFrameError` into its bases and quietly widened
+    `except ChainValidationError`. That is the `F2` lesson applied to the
+    fix for `F1`.
+    """
     pass
 
 from collections import OrderedDict

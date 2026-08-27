@@ -23,16 +23,37 @@ import ast
 # Phase 7.4: Custom exceptions
 try:
     from exceptions import (
+        ADFError,
+        ADFProvenanceError,
         AliasDataFrameError,
         BranchNotFoundError,
         ChainValidationError,
         ChainMetadataCompatibilityError,
-        CircularAliasError
+        CircularAliasError,
+        ExpressionNameAbsenceError,
+        RowLevelMissingnessError,
+        StructuralAbsenceError,
+        SubframeColumnAbsenceError,
     )
 except ImportError:
     # Define inline if module not found
-    class AliasDataFrameError(Exception):
+    class ADFError(Exception):
         pass
+    class ADFProvenanceError(ADFError):
+        pass
+    class AliasDataFrameError(ADFError):
+        pass
+    class StructuralAbsenceError(ADFError):
+        pass
+    class ExpressionNameAbsenceError(StructuralAbsenceError, NameError):
+        pass
+    class RowLevelMissingnessError(ADFError, ValueError):
+        pass
+    class SubframeColumnAbsenceError(StructuralAbsenceError, KeyError):
+        def __str__(self):
+            if self.args and isinstance(self.args[0], str):
+                return self.args[0]
+            return super().__str__()
     class BranchNotFoundError(AliasDataFrameError, ValueError):
         def __init__(self, missing, available=None, message=None):
             self.missing = missing
@@ -449,7 +470,7 @@ class DTypeAuthority:
                 f"{', CONFLICT' if self.conflict else ''})")
 
 
-class ADFProvenanceUnsupportedError(ValueError):
+class ADFProvenanceUnsupportedError(ADFProvenanceError, ValueError):
     """Residual undefinedness survived into an expression ADF cannot prove is
     row-local, so publishing any value would risk a silent wrong result.
 
@@ -460,6 +481,11 @@ class ADFProvenanceUnsupportedError(ValueError):
     Subclasses `ValueError` so existing `except ValueError` call sites and the
     established refusal tests keep working; the distinct type exists so a
     provenance refusal can be told apart from a dtype or fill refusal.
+
+    B3.2b STEP 5a v02 (GPT27 `F1`): ALSO an `ADFProvenanceError`, hence an
+    `ADFError`. `D_6` gives ADF one root, and this refusal is as ADF-owned as
+    any of the absence types — leaving it outside would have made
+    `except ADFError` a promise the library does not keep.
     """
 
 
@@ -7096,7 +7122,7 @@ class AliasDataFrame:
                 sub_adf.materialize_alias(sf_col)
                 sub_df = sub_adf.df
             else:
-                raise KeyError(f"Subframe '{sf_name}' does not contain column or alias '{sf_col}'")
+                raise SubframeColumnAbsenceError(f"Subframe '{sf_name}' does not contain column or alias '{sf_col}'")
         
         sub_values = sub_df[sf_col].to_numpy()
         
@@ -7138,7 +7164,7 @@ class AliasDataFrame:
             if sf_col in _sub.aliases:
                 _sub.materialize_alias(sf_col)
             else:
-                raise KeyError(
+                raise SubframeColumnAbsenceError(
                     f"Subframe '{sf_name}' does not contain column or alias "
                     f"'{sf_col}'")
         return _sub.df[sf_col].dtype
@@ -7616,7 +7642,7 @@ class AliasDataFrame:
                 # widening whenever it happened to be lossless. GPT27, GPT30
                 # and GPT31 all read the final clarification the same way and
                 # all three filed it as blocking.
-                raise ValueError(
+                raise RowLevelMissingnessError(
                     f"projecting subframe {sf_name!r} column {sf_col!r} with "
                     f"{_n_missing} missing join key(s) would change its "
                     f"authoritative dtype {_dtype} -> {_result.dtype}. "
@@ -7630,7 +7656,7 @@ class AliasDataFrame:
                     f"adf.set_global_fill(fill_missing=<value>), or "
                     f"add_alias(..., fill_value=<value>) — and use a separate "
                     f"flag column to record that the measurement was absent.")
-            raise ValueError(
+            raise RowLevelMissingnessError(
                 f"projecting subframe {sf_name!r} column {sf_col!r} with "
                 f"{_n_missing} missing join key(s) would change its dtype "
                 f"{_dtype} -> {_result.dtype}, because {_dtype} cannot "
@@ -7728,7 +7754,7 @@ class AliasDataFrame:
                     _sub_adf0.materialize_alias(sf_col)
                     _sub_df0 = _sub_adf0.df
                 else:
-                    raise KeyError(
+                    raise SubframeColumnAbsenceError(
                         f"Subframe '{sf_name}' does not contain column or "
                         f"alias '{sf_col}'")
             _taken = _sub_df0[sf_col].take(indices)
@@ -7845,7 +7871,7 @@ class AliasDataFrame:
                 sub_adf.materialize_alias(sf_col)
                 sub_df = sub_adf.df
             else:
-                raise KeyError(f"Subframe '{sf_name}' does not contain column or alias '{sf_col}'")
+                raise SubframeColumnAbsenceError(f"Subframe '{sf_name}' does not contain column or alias '{sf_col}'")
         
         sub_values = sub_df[sf_col].to_numpy()
         
@@ -8161,7 +8187,7 @@ class AliasDataFrame:
                 # Subframe chain is valid but leaf column doesn't exist.
                 # Raise KeyError to preserve backward compatibility with
                 # tests that expect errors on Sub.nonexistent references.
-                raise KeyError(
+                raise SubframeColumnAbsenceError(
                     f"Subframe '{subframe_chain[-1][1]}' does not contain "
                     f"column '{leaf_col}'"
                 )
@@ -8758,7 +8784,13 @@ class AliasDataFrame:
                 _members = self._structs[missing_name]["members"]
                 _struct_hint = (f"\n'{missing_name}' is a registered struct; reference a member "
                                 f"as '{missing_name}.<member>' (members: {sorted(_members)}).")
-            raise NameError(
+            # B3.2b STEP 5 (`D_6` §7, structural half). Still a NameError by
+            # inheritance -- this IS an undefined name and every existing
+            # handler keeps working -- but now also ADF-owned, so a caller can
+            # tell an ADF contract refusal from an unrelated NameError raised
+            # by the stack underneath, and can tell it from row-level
+            # missingness BY TYPE rather than by matching message text.
+            raise ExpressionNameAbsenceError(
                 f"Undefined function or variable '{missing_name}' in expression: {expr}\n"
                 f"Available functions include: {', '.join(available_funcs)}\n"
                 f"Hint: Common functions are available, including both 'arctan2' and 'atan2'"
@@ -10303,7 +10335,11 @@ function collapseDepth(maxD) {{
             return result
 
         if fill_val is None:
-            raise ValueError(
+            # B3.2b STEP 5 (`D_6` §7, row-level half). Still a ValueError by
+            # inheritance. The type carries the one fact the message spends a
+            # paragraph explaining: this condition is REPAIRABLE by configuring
+            # a fill, and structural absence is not.
+            raise RowLevelMissingnessError(
                 f"alias {name!r} has {int(_residual.sum())} row(s) with no "
                 f"defined value: a subframe join key was absent and the "
                 f"column's authoritative dtype cannot represent a gap. ADF "
