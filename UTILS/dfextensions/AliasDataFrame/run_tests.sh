@@ -316,17 +316,40 @@ PYCOUNT
     fi
 
     # --- fingerprints of the reviewed bytes ---------------------------------
+    # The file list is DERIVED, not written down. B3.2b STEP 5a was the first
+    # increment to change a third production file (exceptions.py) and the
+    # hard-coded list silently left it out of the evidence — the whole D_6
+    # hierarchy lived in bytes the manifest could not confirm (GPT29 §7.1).
+    # Anything the working tree or the index has changed is fingerprinted, so
+    # no future increment can add a file and lose it from the record.
+    #
+    # v03 (P1-2, GPT34/GPT31): the first version of this filtered `*.py`, so
+    # the claim "anything changed is fingerprinted" was false for the very
+    # run that introduced it — `run_tests.sh` itself had just been modified
+    # and did not appear. NO EXTENSION FILTER. `git diff --name-only` lists
+    # only TRACKED modifications, so the list stays bounded without one.
+    CANDIDATE_FILES=$(
+        {
+            echo "AliasDataFrame.py"
+            for t in $FOCUSED_TESTS; do echo "$t"; done
+            if git rev-parse --is-inside-work-tree &>/dev/null; then
+                git diff --name-only --relative HEAD 2>/dev/null
+                git diff --cached --name-only --relative HEAD 2>/dev/null
+            fi
+        } | sed 's|^\./||' | sort -u
+    )
     {
         echo "=== MD5 of the candidate files ==="
         echo "(the bytes this run measured; compare against the CRR)"
+        echo "(list DERIVED from the working tree + index, not hard-coded)"
         echo ""
-        for f in AliasDataFrame.py $FOCUSED_TESTS; do
+        for f in $CANDIDATE_FILES; do
             [[ -f "$f" ]] && md5sum "$f" 2>/dev/null
         done
         echo ""
         echo "=== staged blob MD5 (what a commit would record) ==="
         if git rev-parse --is-inside-work-tree &>/dev/null; then
-            for f in AliasDataFrame.py $FOCUSED_TESTS; do
+            for f in $CANDIDATE_FILES; do
                 if git ls-files --error-unmatch "$f" &>/dev/null; then
                     printf '%s  %s\n' \
                         "$(git show ":0:./$f" 2>/dev/null | md5sum | cut -d' ' -f1)" "$f"
