@@ -359,7 +359,16 @@ def test_a1_p0_3_mandatory_skip_fails_closed():
 
 
 def test_a1_p0_3_environment_gated_skip_is_still_legal():
-    case = _base_case(case_id="EG", gate="ENVIRONMENT_GATED")
+    """SUPERSEDED BY v06 — this test asserted the A1-v05-P0-1 DEFECT.
+
+    v04 wrote it as `ENVIRONMENT_GATED + SKIP -> 0` with the default
+    applicable=True, which is exactly the silent non-proof P0-1 reports.  The
+    property v04 MEANT to protect is that an UNAVAILABLE environment may skip,
+    and that is what it now asserts.  The applicable variant is covered by
+    test_a1_v06_applicable_skip_always_gates.
+    """
+    case = _base_case(case_id="EG", gate="ENVIRONMENT_GATED", applicable=False,
+                      applicability_reason="no ROOT")
     skipped = H.CaseResult(case_id="EG", status=H.SKIP, detail="no ROOT")
     assert H.strict_exit_code([skipped], [case]) == 0
 
@@ -631,13 +640,16 @@ def test_a1_v05_no_caseSpec_field_is_declared_but_unread():
         + "\n  ".join(orphans))
 
 
-def test_a1_v05_audit_detects_a_planted_orphan(monkeypatch):
-    """The audit's own negative control — an audit that cannot fail is the
-    same defect it exists to catch."""
-    monkeypatch.setattr(H, "CONSUMED_FIELDS",
-                        H.CONSUMED_FIELDS - {"negative_control"})
-    orphans = H.audit_declared_state()
-    assert any("negative_control" in o for o in orphans), orphans
+def test_a1_v05_audit_detects_a_planted_orphan():
+    """SUPERSEDED BY v06 — the mechanism this tested no longer exists.
+
+    v05's negative control removed a name from the hand-maintained
+    CONSUMED_FIELDS set.  A1-v05-P1-1 found that allow-list was already
+    false-certifying three fields, so v06 DERIVES consumption from the module
+    AST instead and the set is gone.  The replacement plants a real field with
+    no reader: test_a1_v06_audit_detects_a_field_with_no_reader.
+    """
+    assert not hasattr(H, "CONSUMED_FIELDS")
 
 
 def test_a1_v05_future_staged_fields_are_recorded_with_their_stage(mk, tmp_path):
@@ -647,3 +659,92 @@ def test_a1_v05_future_staged_fields_are_recorded_with_their_stage(mk, tmp_path)
     fs = doc["cases"][0]["future_staged"]
     assert fs["slots_under_test"]["owning_stage"] == "A4"
     assert fs["reference_policy"]["owning_stage"] == "A6"
+
+
+# ── 11. v06 — the derived audit and the enumerated gate matrix ─────────────
+
+def test_a1_v06_applicable_skip_always_gates():
+    """A1-v05-P0-1.  An applicable case that proved nothing is a silent
+    non-proof.  v05 measured strict exit 0 for ENVIRONMENT_GATED + applicable
+    + SKIP."""
+    for gate in ("CORE_MANDATORY", "ENVIRONMENT_GATED"):
+        case = _base_case(case_id="S", gate=gate)
+        skipped = H.CaseResult(case_id="S", status=H.SKIP, detail="x")
+        assert H.strict_exit_code([skipped], [case]) == 1, gate
+
+
+def test_a1_v06_unavailable_environment_may_still_skip():
+    case = _base_case(case_id="S", gate="ENVIRONMENT_GATED", applicable=False,
+                      applicability_reason="no ROOT")
+    skipped = H.CaseResult(case_id="S", status=H.SKIP, detail="no ROOT")
+    assert H.strict_exit_code([skipped], [case]) == 0
+
+
+def test_a1_v06_environment_blocked_may_not_be_applicable():
+    """A1-v05-P1-2.  A blocked environment is not an applicable one."""
+    case = _base_case(gate="ENVIRONMENT_GATED", known_bug_status="ENVIRONMENT_BLOCKED",
+                      known_bug_id="ENV_x", applicable=True)
+    assert any("contradictory" in v for v in H.validate_registry([case]))
+
+
+@pytest.mark.parametrize("applicable,status", [
+    (True, "PASS"), (False, "PASS"),
+    (True, "FAIL"), (False, "FAIL"),
+    (True, "SKIP"), (False, "SKIP"),
+    (True, "INVALID_FIXTURE"), (False, "INVALID_FIXTURE"),
+    (True, "DIAGNOSTIC"), (False, "DIAGNOSTIC"),
+])
+def test_a1_v06_every_gate_state_has_a_defined_verdict(applicable, status):
+    """The class behind P0-1 and P1-2: I kept fixing ONE cell of
+    gate x applicable x known_bug_status x status.  Every reachable
+    combination must now yield a verdict AND a reason."""
+    case = _base_case(gate="ENVIRONMENT_GATED", applicable=applicable,
+                      applicability_reason="r" if not applicable else "")
+    res = H.CaseResult(case_id=case.case_id, status=status)
+    gates, why = H.gate_decision(case, res)
+    assert isinstance(gates, bool)
+    assert why, f"({applicable}, {status}) has no stated reason"
+
+
+def test_a1_v06_unknown_status_fails_closed():
+    case = _base_case()
+    res = H.CaseResult(case_id=case.case_id, status="SOMETHING_NEW")
+    gates, why = H.gate_decision(case, res)
+    assert gates and "fail closed" in why
+
+
+def test_a1_v06_audit_is_derived_not_declared():
+    """A1-v05-P1-1.  v05's hand-maintained allow-list was not merely gameable
+    — it was ALREADY WRONG: title, anti_contamination_preconditions and
+    schema_version had no reader and the audit reported clean."""
+    assert H.audit_declared_state() == [], H.audit_declared_state()
+    assert not hasattr(H, "CONSUMED_FIELDS"), \
+        "the hand-maintained allow-list is still present"
+    read = H._fields_read_in_this_module()
+    for f in ("title", "schema_version"):
+        assert f in read, f"{f} still has no reader"
+
+
+def test_a1_v06_audit_detects_a_field_with_no_reader():
+    """The audit's own negative control, against the DERIVED mechanism: a new
+    field with no reader must be named."""
+    import dataclasses
+    orig = H.CaseSpec
+    planted = dataclasses.make_dataclass(
+        "CaseSpec", [("unread_new_field", str, dataclasses.field(default=""))],
+        bases=(orig,))
+    H.CaseSpec = planted
+    try:
+        orphans = H.audit_declared_state()
+    finally:
+        H.CaseSpec = orig
+    assert any("unread_new_field" in o for o in orphans), orphans
+
+
+def test_a1_v06_manifest_carries_title_and_case_schema_version(mk, tmp_path):
+    case = _base_case(case_id="INV-SURFACE-01", surfaces_under_test=H.SURFACES)
+    res = H.run_consistency(case, mk)
+    doc = H.write_manifest(str(tmp_path / "m.json"), [res], [case])
+    rec = doc["cases"][0]
+    assert rec["title"] == case.title
+    assert rec["case_schema_version"] == case.schema_version

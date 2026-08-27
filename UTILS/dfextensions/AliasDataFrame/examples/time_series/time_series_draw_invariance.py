@@ -31,7 +31,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A1.5"
+SCHEMA_VERSION = "13.77.A1.6"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -405,37 +405,79 @@ class CaseSpec:
 # against a named stage.  A new field with no reader fails the suite the day it
 # is added, rather than surviving to the next review round.
 FUTURE_STAGE_FIELDS = {
-    "slots_under_test": "A4",       # slot symmetry; no slot case exists yet
-    "reference_policy": "A6",       # named-reference acceptance
-}
-
-# Fields consumed by validation, a runner, or the manifest.  Kept explicit
-# rather than inferred: an inferred list would silently absorb a new orphan.
-CONSUMED_FIELDS = {
-    "case_id", "claim_id", "title", "claim", "failure_means", "expected_visual",
-    "owner_on_failure", "purpose", "gate", "oracle_kind", "loading_mode",
-    "sample_mode", "canonical_spec", "applicable", "applicability_reason",
-    "setup_contract", "preconditions", "figure_contract",
-    "surfaces_under_test", "observables", "non_claims",
-    "anti_contamination_preconditions", "not_applicable", "known_bug_status",
-    "known_bug_id", "negative_control", "schema_version",
+    "slots_under_test": "A4",                    # slot symmetry; no slot case yet
+    "anti_contamination_preconditions": "A4",    # verified by slot cases only
+    "reference_policy": "A6",                    # named-reference acceptance
 }
 
 
-def audit_declared_state() -> list[str]:
-    """Every CaseSpec field is read, validated, serialised — or future-staged.
+def _fields_read_in_this_module() -> set:
+    """DERIVE which CaseSpec fields are actually read, by parsing this module.
+
+    A1-v05-P1-1.  v05 used a hand-maintained CONSUMED_FIELDS allow-list, and it
+    was not merely gameable in principle — it was ALREADY WRONG on the shipped
+    schema: `title`, `anti_contamination_preconditions` and `schema_version`
+    appeared only in their own dataclass declaration and in the allow-list, and
+    the audit reported clean.
+
+    An allow-list is defeated by adding two lines.  This walks the module's own
+    AST for attribute access `<obj>.<field>` and `getattr(<obj>, "<field>")`,
+    EXCLUDING the CaseSpec class body itself — a declaration is not a reader.
+    To satisfy this audit a field must actually be used.
+    """
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(sys.modules[__name__]))
+
+    # locate the CaseSpec class body so its annotations are not counted
+    spec_body_lines = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "CaseSpec":
+            for sub in ast.walk(node):
+                if hasattr(sub, "lineno"):
+                    spec_body_lines.add(sub.lineno)
+
+    read = set()
+    for node in ast.walk(tree):
+        if getattr(node, "lineno", None) in spec_body_lines:
+            continue
+        if isinstance(node, ast.Attribute):
+            read.add(node.attr)
+        elif (isinstance(node, ast.Call)
+              and isinstance(node.func, ast.Name)
+              and node.func.id == "getattr"
+              and len(node.args) >= 2
+              and isinstance(node.args[1], ast.Constant)
+              and isinstance(node.args[1].value, str)):
+            read.add(node.args[1].value)
+    return read
+
+
+def audit_declared_state() -> list:
+    """Every CaseSpec field is genuinely read, or future-staged with its stage.
 
     Returns a list of orphans.  Empty list == no declared-but-unread state.
+
+    This is the fourth attempt at closing one class:
+        v01 P1-2  oracle_source declared, execution ignored it
+        v03 P0-1  applicable    declared, execution ignored it
+        v04 P0-2  source        validated, never checked against the runner
+        v04 P1-1  slots_under_test / reference_policy, no reader
+        v05 P1-1  the audit ITSELF false-certified three fields
+    Derivation replaces declaration so the audit cannot be satisfied by editing
+    a list.
     """
     from dataclasses import fields as _fields
+    read = _fields_read_in_this_module()
     orphans = []
     for f in _fields(CaseSpec):
-        if f.name in CONSUMED_FIELDS or f.name in FUTURE_STAGE_FIELDS:
+        if f.name in read or f.name in FUTURE_STAGE_FIELDS:
             continue
         orphans.append(
-            f"CaseSpec.{f.name}: declared but not read, validated or "
-            f"serialised; add a reader, or register it in FUTURE_STAGE_FIELDS "
-            f"against the stage that will consume it")
+            f"CaseSpec.{f.name}: declared but never read in this module; add a "
+            f"reader, or register it in FUTURE_STAGE_FIELDS against the stage "
+            f"that will consume it")
     return orphans
 
 
@@ -490,6 +532,13 @@ def validate_registry(cases: Sequence[CaseSpec]) -> list[str]:
         if not c.applicable and not c.applicability_reason:
             bad.append(f"{cid}: not applicable but no applicability_reason "
                        f"(v1.2 §3.2 requires SKIP to carry its reason)")
+        # A1-v05-P1-2: ENVIRONMENT_BLOCKED asserts the environment is blocked.
+        # v05 accepted it alongside applicable=True, a contradiction whose
+        # strict semantics were undefined.  The two must agree.
+        if c.known_bug_status == "ENVIRONMENT_BLOCKED" and c.applicable:
+            bad.append(f"{cid}: known_bug_status ENVIRONMENT_BLOCKED with "
+                       f"applicable=True is contradictory; a blocked "
+                       f"environment is not applicable")
         if c.applicable is False and c.gate == "CORE_MANDATORY":
             bad.append(f"{cid}: CORE_MANDATORY cases are always applicable; "
                        f"declare gate=ENVIRONMENT_GATED to be inapplicable")
@@ -680,6 +729,12 @@ def write_manifest(path: str, results: Sequence[CaseResult],
         rec = asdict(r)
         if c is not None:
             rec.update({
+                # A1-v05-P1-1: these two had NO reader and the hand-maintained
+                # audit certified them anyway.  A per-case schema_version is
+                # what lets a later reader tell which contract a manifest was
+                # written under; the title is the human name for the page.
+                "title": c.title,
+                "case_schema_version": c.schema_version,
                 "claim_id": c.claim_id, "claim": c.claim,
                 "non_claims": list(c.non_claims),
                 "purpose": c.purpose, "gate": c.gate,
@@ -954,39 +1009,67 @@ def run_error_contract(case: CaseSpec, make_adf: Callable[[], Any],
         res.wall_time_s = round(time.time() - t0, 4)
 
 
+# ── the gate state matrix ───────────────────────────────────────────────────
+#
+# A1-v05-P0-1 and P1-2 are the same defect from two directions: I kept fixing
+# ONE cell of  gate x applicable x known_bug_status x status  instead of
+# enumerating the space.  v05 gated CORE_MANDATORY+SKIP, ERROR_CONTRACT+FAIL
+# and applicable+SUPPORTED+FAIL, and an applicable ENVIRONMENT_GATED case that
+# could not perform its proof returned SKIP -> strict exit 0.
+#
+# Every reachable combination now has a stated verdict and a reason.
+GATE_MATRIX = {
+    # (applicable, status)            -> (gates, why)
+    (False, SKIP):             (False, "environment unavailable; SKIP is the "
+                                       "contracted outcome"),
+    (True,  SKIP):             (True,  "the case was applicable and proved "
+                                       "nothing; a silent non-proof is the "
+                                       "false-green this harness exists to "
+                                       "prevent"),
+    (True,  INVALID_FIXTURE):  (True,  "the harness could not establish its "
+                                       "own claim"),
+    (False, INVALID_FIXTURE):  (True,  "a fixture defect is a harness defect "
+                                       "whether or not the case applied"),
+    (True,  DIAGNOSTIC):       (False, "observational by construction"),
+    (False, DIAGNOSTIC):       (False, "observational by construction"),
+}
+
+
+def gate_decision(case: "CaseSpec", result: "CaseResult") -> tuple:
+    """(gates, reason) for one result.  Total over the reachable state space."""
+    key = (bool(case.applicable), result.status)
+    if key in GATE_MATRIX:
+        return GATE_MATRIX[key]
+    if result.status == PASS:
+        return False, "passed"
+    if result.status == FAIL:
+        # ERROR_CONTRACT proves a refusal still happens; its known_bug_id is
+        # PROVENANCE for why the guard exists, not a licence to lose the guard.
+        if case.purpose == "ERROR_CONTRACT":
+            return True, "an error-contract guard stopped refusing"
+        if not case.applicable:
+            return False, ("inapplicable cases do not execute; a FAIL here is "
+                           "unreachable and non-gating")
+        if case.known_bug_status in ("KNOWN_BUG", "EXPECTED_FAIL"):
+            return False, f"failure expected: {case.known_bug_id}"
+        return True, "an applicable case failed"
+    return True, f"unhandled status {result.status!r} — fail closed"
+
+
 def strict_exit_code(results: Sequence[CaseResult],
                      cases: Sequence[CaseSpec]) -> int:
-    """Non-zero when an applicable mandatory case failed.
+    """Non-zero when any result gates, per GATE_MATRIX / gate_decision.
 
-    A KNOWN_BUG / EXPECTED_FAIL case that fails is expected and does not gate.
-    INVALID_FIXTURE always gates: it means the harness cannot prove its claim.
+    Every verdict is derived from one enumerated table rather than a chain of
+    special cases, so a combination nobody thought about fails closed instead
+    of falling between two `if`s.
     """
     by_id = {c.case_id: c for c in cases}
     for r in results:
         c = by_id.get(r.case_id)
         if c is None:
             return 2
-        if r.status == INVALID_FIXTURE:
-            return 1
-        # A1-P0-3: a CORE_MANDATORY case that SKIPs is invisible to the gate.
-        # v01 returned 0 for it, so a malformed mandatory entry disappeared.
-        # ENVIRONMENT_GATED may legitimately skip when its dependency is absent.
-        if r.status == SKIP and c.gate == "CORE_MANDATORY":
-            return 1
-        # A1-v04-P0-1.  ENVIRONMENT_GATED buys the right to SKIP when the
-        # environment is UNAVAILABLE.  It does not buy the right to fail
-        # silently when the case actually RAN.  v04 gated CORE_MANDATORY FAIL
-        # and ERROR_CONTRACT FAIL, and a supported ENVIRONMENT_GATED failure
-        # fell between them: measured strict_exit_code 0 on a genuine FAIL.
-        if r.status == FAIL and c.applicable \
-                and c.known_bug_status == "SUPPORTED":
-            return 1
-        # A1-P1-3: an ERROR_CONTRACT case proves a refusal still happens.  Its
-        # known_bug_id is PROVENANCE for why the guard exists, not a licence to
-        # ignore the guard disappearing.  v01 suppressed this failure.
-        if r.status == FAIL and c.purpose == "ERROR_CONTRACT":
-            return 1
-        if r.status == FAIL and c.gate == "CORE_MANDATORY" \
-                and c.known_bug_status == "SUPPORTED":
+        gates, _why = gate_decision(c, r)
+        if gates:
             return 1
     return 0
