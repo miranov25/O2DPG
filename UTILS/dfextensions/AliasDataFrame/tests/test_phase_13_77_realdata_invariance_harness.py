@@ -864,3 +864,104 @@ def test_a1_v07_gate_matrix_asserts_the_expected_verdict(applicable, status, exp
                                                     status=status))
     assert gates is expected, f"({applicable}, {status}): {why}"
     assert why
+
+
+# ── 13. v08 — empty set, per-scope receivers, one reconciliation authority ──
+
+def test_a1_v08_empty_declared_set_is_refused_at_both_doors():
+    """A1-v07-P0-1.  v07 spent the whole increment making the gate iterate the
+    DECLARED set, and never asked what happens when that set is EMPTY.
+    Measured: validate_registry([]) == [] and strict_exit_code([], []) == 0 —
+    a harness that ran nothing reporting that everything is fine."""
+    assert any("EMPTY" in v for v in H.validate_registry([]))
+    assert H.strict_exit_code([], []) == 1
+
+
+def test_a1_v08_receiver_evidence_is_scope_local(tmp_path):
+    """A1-v07-P1-1.  v07 built a MODULE-GLOBAL receiver-name set, so proving
+    `case` is a CaseSpec in one function certified `case.<anything>` in every
+    other function.  A variable name is not a type identity, and it is not one
+    across lexical scopes either."""
+    import importlib.util
+    src = open(H.__file__).read() + (
+        '\n\nclass Other:\n    status = "x"\n\n\n'
+        'def unrelated(case):\n    return case.status\n')
+    mod_path = tmp_path / "poisoned_harness.py"
+    mod_path.write_text(src)
+    spec = importlib.util.spec_from_file_location("poisoned_harness", mod_path)
+    poisoned = importlib.util.module_from_spec(spec)
+    sys.modules["poisoned_harness"] = poisoned
+    spec.loader.exec_module(poisoned)
+    try:
+        assert "status" not in poisoned._fields_read_in_this_module(), \
+            "an unrelated same-named receiver still certifies a CaseSpec field"
+        import dataclasses
+        orig = poisoned.CaseSpec
+        planted = dataclasses.make_dataclass(
+            "CaseSpec", [("status", str, dataclasses.field(default=""))],
+            bases=(orig,))
+        poisoned.CaseSpec = planted
+        try:
+            orphans = poisoned.audit_declared_state()
+        finally:
+            poisoned.CaseSpec = orig
+        assert any("CaseSpec.status" in o for o in orphans), orphans
+    finally:
+        sys.modules.pop("poisoned_harness", None)
+
+
+@pytest.mark.parametrize("ann,expected", [
+    ("CaseSpec", True), ("Sequence[CaseSpec]", True), ("CaseSpec | None", True),
+    ("CaseSpecView", False), ("NotACaseSpec", False), ("FakeCaseSpec", False),
+    ("CaseResult", False),
+])
+def test_a1_v08_annotation_match_is_exact_not_substring(ann, expected):
+    """A1-v07-P1-3.  v07 tested `"CaseSpec" in <string>`, admitting any name
+    containing the token."""
+    import ast
+    node = ast.parse(repr(ann), mode="eval").body
+    assert H._is_casespec_annotation(node) is expected
+
+
+def test_a1_v08_missing_declared_case_appears_in_the_manifest(tmp_path):
+    """A1-v07-P1-2.  v07's gate knew a case was dropped; the manifest did not.
+    Measured: declared ['A','B_NEVER_RAN'], manifest listed ['A']."""
+    cases = [_base_case(case_id="A"), _base_case(case_id="B_NEVER_RAN")]
+    doc = H.write_manifest(str(tmp_path / "m.json"),
+                           [H.CaseResult(case_id="A", status=H.PASS)], cases)
+    ids = [c["case_id"] for c in doc["cases"]]
+    assert "B_NEVER_RAN" in ids, ids
+    dropped = [c for c in doc["cases"] if c["case_id"] == "B_NEVER_RAN"][0]
+    assert dropped["status"] == "NO_RESULT"
+    assert "B_NEVER_RAN" in doc["reconciliation"]["missing"]
+
+
+def test_a1_v08_gate_and_coverage_derive_from_one_authority():
+    """A1-v07-P1-2 / P2-1.  Two functions computing overlapping facts is how
+    they drift — I named this in the v07 CRR §7 item 4 and shipped it."""
+    cases = [_base_case(case_id="A"), _base_case(case_id="B_NEVER_RAN")]
+    results = [H.CaseResult(case_id="A", status=H.PASS)]
+    rec = H.reconcile(results, cases)
+    assert H.strict_exit_code(results, cases) == rec["exit_code"]
+    assert H.coverage_gaps(results, cases) == rec["gaps"]
+    assert rec["missing"] == ["B_NEVER_RAN"]
+
+
+def test_a1_v08_duplicate_declared_id_is_caught_by_reconcile():
+    """A1-v07-P2-1, defence in depth: the gate no longer relies on the
+    registry validator having run."""
+    dup = [_base_case(case_id="A"), _base_case(case_id="A")]
+    results = [H.CaseResult(case_id="A", status=H.PASS)]
+    rec = H.reconcile(results, dup)
+    assert any("duplicate declared case_id" in g for g in rec["gaps"])
+    assert rec["exit_code"] == 1
+
+
+def test_a1_v08_complete_run_still_passes():
+    """Positive control: an authority that gated everything would satisfy every
+    falsifier above and be useless."""
+    cases = [_base_case(case_id="A"), _base_case(case_id="B")]
+    results = [H.CaseResult(case_id="A", status=H.PASS),
+               H.CaseResult(case_id="B", status=H.PASS)]
+    rec = H.reconcile(results, cases)
+    assert rec["exit_code"] == 0 and rec["gaps"] == [] and rec["gating"] == []

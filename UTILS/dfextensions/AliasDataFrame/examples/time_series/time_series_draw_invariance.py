@@ -31,7 +31,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A1.7"
+SCHEMA_VERSION = "13.77.A1.8"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -416,70 +416,113 @@ FUTURE_STAGE_FIELDS = {
 }
 
 
-def _casespec_receivers(tree, spec_body_lines: set) -> set:
-    """Names that provably hold a CaseSpec in this module.
+def _is_casespec_annotation(ann) -> bool:
+    """Exact match on the CaseSpec type, never a substring.
 
-    A1-v06-P1-1.  v06 counted ANY attribute access whose name matched a field,
-    anywhere in the module, and `CaseResult.status` therefore certified a
-    hypothetical `CaseSpec.status` as read.  Measured: `status` was in the
-    derived read-set and a new unread `CaseSpec.status` field was reported
-    clean.  I named this hole in the v06 CRR as an attack point and shipped it
-    anyway — naming a hole is not closing it.
+    A1-v07-P1-3.  v07 tested `"CaseSpec" in <string annotation>`, which admits
+    CaseSpecView, NotACaseSpec, FakeCaseSpec — any name containing the token.
+    A quoted forward reference is parsed and matched by identity.
+    """
+    import ast
+    if ann is None:
+        return False
+    if isinstance(ann, ast.Name):
+        return ann.id == "CaseSpec"
+    if isinstance(ann, ast.Constant) and isinstance(ann.value, str):
+        try:
+            inner = ast.parse(ann.value, mode="eval").body
+        except SyntaxError:
+            return False
+        return _is_casespec_annotation(inner)
+    if isinstance(ann, ast.Subscript):                # Sequence[CaseSpec]
+        return _is_casespec_annotation(ann.slice)
+    if isinstance(ann, ast.Tuple):
+        return any(_is_casespec_annotation(e) for e in ann.elts)
+    if isinstance(ann, ast.BinOp):                    # CaseSpec | None
+        return (_is_casespec_annotation(ann.left)
+                or _is_casespec_annotation(ann.right))
+    return False
 
-    A receiver qualifies only by evidence, never by convention:
-        annotated parameter        def f(case: CaseSpec) / "CaseSpec"
-        annotated local            case: CaseSpec = ...
-        constructor result         c = CaseSpec(...)
-        isinstance-narrowed name   isinstance(x, CaseSpec)
+
+def _scope_receivers(scope, spec_body_lines: set) -> set:
+    """CaseSpec receiver names proven WITHIN one function scope.
+
+    A1-v07-P1-1.  v07 built a MODULE-GLOBAL set of names, so proving `case` is
+    a CaseSpec in one function certified `case.<anything>` in every other
+    function.  Executed falsifier: an unannotated `def unrelated(case): return
+    case.status` put `status` in the read-set and an unread `CaseSpec.status`
+    was reported clean.  A variable name is not a type identity, and it is not
+    one across lexical scopes either.
+
+    Evidence recognised, all within this scope only:
+        annotated parameter          def f(case: CaseSpec)
+        annotated local              case: CaseSpec = ...
+        constructor result           c = CaseSpec(...)
+        isinstance-narrowed name     isinstance(x, CaseSpec)
+        loop over a receiver         for c in cases          (bare Name only)
     """
     import ast
     names = set()
 
-    def _is_spec_ann(ann):
-        if isinstance(ann, ast.Name):
-            return ann.id == "CaseSpec"
-        if isinstance(ann, ast.Constant) and isinstance(ann.value, str):
-            return "CaseSpec" in ann.value
-        if isinstance(ann, ast.Subscript):          # Sequence[CaseSpec] etc.
-            return _is_spec_ann(ann.slice)
-        if isinstance(ann, ast.BinOp):              # CaseSpec | None
-            return _is_spec_ann(ann.left) or _is_spec_ann(ann.right)
-        return False
+    a = scope.args
+    for arg in list(a.args) + list(a.posonlyargs) + list(a.kwonlyargs):
+        if _is_casespec_annotation(arg.annotation):
+            names.add(arg.arg)
 
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            a = node.args
-            for arg in list(a.args) + list(a.posonlyargs) + list(a.kwonlyargs):
-                if arg.annotation is not None and _is_spec_ann(arg.annotation):
-                    names.add(arg.arg)
-        elif isinstance(node, ast.AnnAssign):
-            if isinstance(node.target, ast.Name) and _is_spec_ann(node.annotation):
-                names.add(node.target.id)
-        elif isinstance(node, ast.Assign):
-            v = node.value
-            if (isinstance(v, ast.Call) and isinstance(v.func, ast.Name)
-                    and v.func.id == "CaseSpec"):
-                for t in node.targets:
-                    if isinstance(t, ast.Name):
-                        names.add(t.id)
+    inner = {n for n in ast.walk(scope)
+             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+             and n is not scope}
+    inner_lines = {ln for f in inner for ln in
+                   range(f.lineno, getattr(f, "end_lineno", f.lineno) + 1)}
+
+    def _own(node):
+        return getattr(node, "lineno", None) not in inner_lines
+
+    for node in ast.walk(scope):
+        if not _own(node):
+            continue
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) \
+                and _is_casespec_annotation(node.annotation):
+            names.add(node.target.id)
+        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) \
+                and isinstance(node.value.func, ast.Name) \
+                and node.value.func.id == "CaseSpec":
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    names.add(t.id)
         elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
               and node.func.id == "isinstance" and len(node.args) == 2
               and isinstance(node.args[0], ast.Name)
               and isinstance(node.args[1], ast.Name)
               and node.args[1].id == "CaseSpec"):
             names.add(node.args[0].id)
+
+    # loop / comprehension over a receiver, bare Name only.  Iterating an
+    # ATTRIBUTE of a receiver yields its elements, not CaseSpecs — an earlier
+    # v07 draft walked through ast.Attribute and put Observable fields back in.
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(scope):
+            if not _own(node):
+                continue
+            if isinstance(node, (ast.For, ast.comprehension)):
+                it, tgt = node.iter, node.target
+                if isinstance(it, ast.Name) and it.id in names \
+                        and isinstance(tgt, ast.Name) and tgt.id not in names:
+                    names.add(tgt.id)
+                    changed = True
     return names
 
 
 def _fields_read_in_this_module() -> set:
-    """CaseSpec fields genuinely read in this module, by AST, RECEIVER-NARROWED.
+    """CaseSpec fields genuinely read, resolved PER SCOPE.
 
-    v05 used a hand-maintained allow-list and it was already false-certifying
-    three fields.  v06 derived the set but counted any same-named attribute on
-    any object.  v07 counts an access only when the receiver is provably a
-    CaseSpec, or when the attribute is reached through `getattr(<spec>, "…")`.
-    A comprehension over a `Sequence[CaseSpec]` parameter also qualifies, since
-    that is how validate_registry iterates.
+    v05 hand-maintained allow-list  -> already false-certified three fields
+    v06 derived, receiver-blind     -> any object's same-named attribute
+    v07 receiver-narrowed by NAME   -> any same-named receiver, ANY scope
+    v08 per-scope symbol table      -> a name proven in one function proves
+                                       nothing in another
     """
     import ast
     import inspect
@@ -493,37 +536,26 @@ def _fields_read_in_this_module() -> set:
                 if hasattr(sub, "lineno"):
                     spec_body_lines.add(sub.lineno)
 
-    receivers = _casespec_receivers(tree, spec_body_lines)
-
-    # Iterating a Sequence[CaseSpec] receiver DIRECTLY yields CaseSpecs, so the
-    # loop variable is a receiver too.  Iterating an ATTRIBUTE of one does not:
-    # `for o in case.observables` yields Observables, and an earlier draft of
-    # this function walked down through the Attribute and promoted `o`, which
-    # put `Observable.status` back into the read-set — reintroducing the exact
-    # receiver-blindness of A1-v06-P1-1 one level down.  Bare Name only.
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.For, ast.comprehension)):
-            iter_src, target = node.iter, node.target
-        else:
-            continue
-        if isinstance(iter_src, ast.Name) and iter_src.id in receivers \
-                and isinstance(target, ast.Name):
-            receivers.add(target.id)
-
     read = set()
-    for node in ast.walk(tree):
-        if getattr(node, "lineno", None) in spec_body_lines:
+    for scope in ast.walk(tree):
+        if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) \
-                and node.value.id in receivers:
-            read.add(node.attr)
-        elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-              and node.func.id == "getattr" and len(node.args) >= 2
-              and isinstance(node.args[0], ast.Name)
-              and node.args[0].id in receivers
-              and isinstance(node.args[1], ast.Constant)
-              and isinstance(node.args[1].value, str)):
-            read.add(node.args[1].value)
+        receivers = _scope_receivers(scope, spec_body_lines)
+        if not receivers:
+            continue
+        for node in ast.walk(scope):
+            if getattr(node, "lineno", None) in spec_body_lines:
+                continue
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) \
+                    and node.value.id in receivers:
+                read.add(node.attr)
+            elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                  and node.func.id == "getattr" and len(node.args) >= 2
+                  and isinstance(node.args[0], ast.Name)
+                  and node.args[0].id in receivers
+                  and isinstance(node.args[1], ast.Constant)
+                  and isinstance(node.args[1].value, str)):
+                read.add(node.args[1].value)
     return read
 
 
@@ -557,6 +589,12 @@ def audit_declared_state() -> list:
 def validate_registry(cases: Sequence[CaseSpec]) -> list[str]:
     """Return a list of violations.  Empty list == registry is admissible."""
     bad: list[str] = []
+    # A1-v07-P0-1: an empty registry is a failure at BOTH doors.  The gate
+    # refuses it via reconcile(); validation must refuse it too, so a
+    # registry-loading failure is caught before anything is executed.
+    if not cases:
+        bad.append("the declared case set is EMPTY; a harness that declares "
+                   "no case cannot report success")
     seen: set[str] = set()
     for c in cases:
         cid = c.case_id
@@ -792,11 +830,28 @@ def provenance() -> dict:
 
 def write_manifest(path: str, results: Sequence[CaseResult],
                    cases: Sequence[CaseSpec], extra: dict | None = None) -> dict:
+    """Write the run manifest.  Reconciliation facts come from reconcile().
+
+    A1-v07-P1-2: v07 iterated `results`, so a declared case that produced no
+    result was absent from the evidence entirely — the gate knew, the manifest
+    did not.  Every declared case now appears, and one that produced no result
+    appears with status NO_RESULT rather than silently vanishing.
+    """
     by_id = {c.case_id: c for c in cases}
+    rec = reconcile(results, cases)
+    seen: dict = {}
+    for r in results:
+        seen.setdefault(r.case_id, r)
     doc = {
         "provenance": {**provenance(), **(extra or {})},
+        "reconciliation": rec,
         "cases": [],
     }
+    # a declared case with no result is EVIDENCE, not an omission
+    results = list(results) + [
+        CaseResult(case_id=cid, status="NO_RESULT",
+                   detail="declared but produced no result")
+        for cid in rec["missing"]]
     for r in results:
         c = by_id.get(r.case_id)
         rec = asdict(r)
@@ -1128,58 +1183,91 @@ def gate_decision(case: "CaseSpec", result: "CaseResult") -> tuple:
     return True, f"unhandled status {result.status!r} — fail closed"
 
 
+def reconcile(results: Sequence[CaseResult],
+              cases: Sequence[CaseSpec]) -> dict:
+    """THE single authority on declared-vs-observed reconciliation.
+
+    A1-v07-P1-2 / P2-1.  v07 had `strict_exit_code` and `coverage_gaps`
+    computing overlapping facts independently, and `write_manifest` reading
+    neither — so a declared case that produced no result gated correctly and
+    was ABSENT FROM THE EVIDENCE.  Measured: declared ['A','B_NEVER_RAN'],
+    manifest listed ['A'] only.  I named this drift risk in the v07 CRR §7
+    item 4 and shipped it.
+
+    The gate, the coverage report and the manifest are now all derived from
+    this one function.  Two producers of one fact is how they disagree.
+
+    A1-v07-P0-1.  An EMPTY declared set is a failure, not a vacuous success.
+    v07 returned strict exit 0 for zero cases and zero results — a harness
+    that ran nothing reporting that everything is fine.  A registry-loading
+    failure, a filter matching nothing, or a bad path all produced success.
+    """
+    declared = [c.case_id for c in cases]
+    counts: dict = {}
+    for r in results:
+        counts[r.case_id] = counts.get(r.case_id, 0) + 1
+    by_case = {c.case_id: c for c in cases}
+    first: dict = {}
+    for r in results:
+        first.setdefault(r.case_id, r)
+
+    gaps: list = []
+    undeclared: list = []
+    missing: list = []
+    duplicated: list = []
+    gating: list = []
+
+    if not cases:
+        gaps.append("the declared case set is EMPTY; a harness that declares "
+                    "nothing cannot report success")
+
+    if len(set(declared)) != len(declared):
+        dupes = sorted({d for d in declared if declared.count(d) > 1})
+        gaps.append(f"duplicate declared case_id(s): {dupes}")
+
+    for cid in counts:
+        if cid not in by_case:
+            undeclared.append(cid)
+            gaps.append(f"{cid}: result for a case that was never declared")
+
+    for c in cases:
+        n = counts.get(c.case_id, 0)
+        if n == 0:
+            missing.append(c.case_id)
+            gaps.append(f"{c.case_id}: declared but produced no result")
+            continue
+        if n > 1:
+            duplicated.append(c.case_id)
+            gaps.append(f"{c.case_id}: produced {n} results; expected exactly 1")
+            continue
+        g, why = gate_decision(c, first[c.case_id])
+        if g:
+            gating.append({"case_id": c.case_id,
+                           "status": first[c.case_id].status, "reason": why})
+
+    if undeclared:
+        exit_code = 2
+    elif gaps or gating:
+        exit_code = 1
+    else:
+        exit_code = 0
+
+    return {"declared": declared, "n_declared": len(declared),
+            "n_results": len(results), "missing": missing,
+            "duplicated": duplicated, "undeclared": undeclared,
+            "gating": gating, "gaps": gaps, "exit_code": exit_code}
+
+
 def strict_exit_code(results: Sequence[CaseResult],
                      cases: Sequence[CaseSpec]) -> int:
-    """Non-zero when any DECLARED case fails to yield a passing verdict.
+    """Non-zero when reconciliation reports any gap or gating verdict.
 
-    A1-v06-P0-1.  v06 iterated `results`, so a declared case that produced NO
-    result was invisible: measured, two cases declared and one result returned
-    strict exit 0.  A registry entry dropped by a runner exception, a filter or
-    a typo is the purest false green available — the harness reports success
-    for a proof it never attempted.
-
-    The gate is now over the DECLARED set:
-        every case_id has exactly one result   missing -> gate, duplicate -> gate
-        an unknown result id                   -> gate
-        each result's verdict per gate_decision
+    Derived from reconcile(); holds no policy of its own.
     """
-    by_case = {c.case_id: c for c in cases}
-    seen: dict = {}
-    for r in results:
-        if r.case_id not in by_case:
-            return 2                      # a result for a case nobody declared
-        if r.case_id in seen:
-            return 1                      # duplicate verdict for one case
-        seen[r.case_id] = r
-    for cid, c in by_case.items():
-        r = seen.get(cid)
-        if r is None:
-            return 1                      # declared and never executed
-        gates, _why = gate_decision(c, r)
-        if gates:
-            return 1
-    return 0
+    return reconcile(results, cases)["exit_code"]
 
 
 def coverage_gaps(results: Sequence[CaseResult],
                   cases: Sequence[CaseSpec]) -> list:
-    """Which declared cases produced no result, or more than one.
-
-    strict_exit_code returns a number; this says WHY, so the manifest and a
-    reviewer can see a dropped case by name rather than inferring it from a
-    count.
-    """
-    counts: dict = {}
-    for r in results:
-        counts[r.case_id] = counts.get(r.case_id, 0) + 1
-    gaps = []
-    for c in cases:
-        n = counts.get(c.case_id, 0)
-        if n == 0:
-            gaps.append(f"{c.case_id}: declared but produced no result")
-        elif n > 1:
-            gaps.append(f"{c.case_id}: produced {n} results; expected exactly 1")
-    for cid in counts:
-        if cid not in {c.case_id for c in cases}:
-            gaps.append(f"{cid}: result for a case that was never declared")
-    return gaps
+    """Human-readable gaps.  Derived from reconcile(); holds no policy."""
+    return reconcile(results, cases)["gaps"]
