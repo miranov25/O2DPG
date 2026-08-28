@@ -31,7 +31,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A3.3"
+SCHEMA_VERSION = "13.77.A3.6"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -217,6 +217,17 @@ def resolve(stats: Any, path: str, access: str) -> Any:
             try:
                 cur = cur[int(part)]
             except (ValueError, IndexError):
+                cur = _MISSING
+        elif hasattr(cur, "columns") and hasattr(cur, "__getitem__"):
+            # A3.6: grouped profile ``return_data=True`` exposes measured
+            # per-group/per-bin observables as a pandas DataFrame.  Resolve a
+            # named column into a NumPy array so the existing A2 array
+            # comparator remains the sole numerical comparison mechanism.
+            if part in cur.columns:
+                column = cur[part]
+                cur = (column.to_numpy(copy=True)
+                       if hasattr(column, "to_numpy") else np.asarray(column))
+            else:
                 cur = _MISSING
         else:
             cur = _MISSING
@@ -576,9 +587,9 @@ def a3_cases() -> tuple[CaseSpec, ...]:
 
     Every case uses ONE ``canonical_spec`` object for ``draw``, ``draw_batch``
     and ``draw_figures``.  A3.1/A3.2 establish the simplest histogram shape;
-    A3.3 adds a two-variable profile so the same surface adapter/comparator is
-    exercised on the profile statistics family without introducing grouping,
-    faceting, subframes or lazy loading yet.
+    A3.3 adds a two-variable profile; A3.6 adds one production-shaped
+    ``group_by`` profile and compares its measured per-group/per-bin data.
+    Faceting, subframes, vectors and lazy/eager symmetry remain out of scope.
     """
     hist_id = "I2-HIST-01"
     hist = CaseSpec(
@@ -700,7 +711,75 @@ def a3_cases() -> tuple[CaseSpec, ...]:
         reference_policy="named-immutable",
     )
 
-    return (hist, profile)
+    group_id = "I2-GROUPBY-01"
+    group = CaseSpec(
+        case_id=group_id,
+        claim_id="I2",
+        title="same side_type grouped profile through all public draw surfaces",
+        claim=("draw(), draw_batch() and draw_figures() produce the same "
+               "per-group/per-bin profile result for one canonical group_by request"),
+        failure_means=("a public draw surface changes group membership, binning, "
+                       "selection or grouped numerical reduction semantics"),
+        expected_visual="one sector profile with one trace per side_type group",
+        owner_on_failure="ADF",
+        purpose="INVARIANCE",
+        gate="CORE_MANDATORY",
+        oracle_kind="CONSISTENCY",
+        loading_mode="EAGER",
+        sample_mode="FULL",
+        canonical_spec={
+            "expr": "dcar_tpc_vertex:sector",
+            "type": "profile",
+            "bins": 36,
+            "selection": "(ncl>60)&(abs(dcar_tpc_vertex)<10)&(side_type<2)",
+            "group_by": "side_type",
+            "return_data": True,
+            "auto_title": True,
+        },
+        applicable=True,
+        setup_contract=("frame contains numeric sector, dcar_tpc_vertex, ncl and "
+                        "side_type; EAGER/FULL; grouped profile data requested "
+                        "explicitly for numerical observability"),
+        preconditions=(
+            "sector is present and numeric",
+            "dcar_tpc_vertex is present and numeric",
+            "ncl is present and numeric",
+            "side_type is present, numeric and contains at least two selected groups",
+        ),
+        figure_contract=FigureContract(
+            expected_panels="one panel",
+            panel_roles="main: dcar_tpc_vertex versus sector profile",
+            expected_traces="one profile trace per side_type group",
+            expected_group_count="2",
+            primary_comparison=("profile_data group labels, counts, x centers and "
+                                "y means across draw/draw_batch/draw_figures"),
+            residual_definition=("candidate per-group/per-bin observable minus "
+                                 "draw reference at the same profile_data row"),
+            accepted_envelope=("group labels and counts exact; floating profile "
+                               "coordinates/means within declared tolerance"),
+            case_ids=(group_id,),
+            proof_kind="CONSISTENCY",
+        ),
+        surfaces_under_test=SURFACES,
+        observables=(
+            Observable("group", "STATS", "ARRAY", "profile_data.group"),
+            Observable("count", "STATS", "ARRAY", "profile_data.count"),
+            Observable("x_center", "STATS", "ARRAY", "profile_data.x_center",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same global profile bins; floating bin centers"),
+            Observable("y_mean", "STATS", "ARRAY", "profile_data.y_mean",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same grouped rows; floating per-bin reduction"),
+        ),
+        non_claims=(
+            "cross-surface group_by agreement is not an independent correctness proof",
+            "return_data=True is used only to expose grouped numerical observables",
+        ),
+        negative_control="FAMILY_MUTATION:A3-GROUP-SPECIFIC-PROFILE-CORRUPTION",
+        reference_policy="named-immutable",
+    )
+
+    return (hist, profile, group)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

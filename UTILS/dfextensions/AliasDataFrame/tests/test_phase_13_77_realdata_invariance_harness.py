@@ -1397,3 +1397,125 @@ def test_a3_06_surface_stats_corruption_changes_strict_gate_zero_to_one(monkeypa
     assert "draw" in bad.detail and "draw_figures" in bad.detail
     assert H.strict_exit_code([bad], [case]) == 1
 
+
+
+# ── A3.6 — canonical group_by invariance ────────────────────────────────────
+
+def _a3_groupby_frame(seed=137706, n=1800):
+    """Fast synthetic analogue of time_series_draw.py fig09_group_by_profile."""
+    rng = np.random.default_rng(seed)
+    side_type = rng.integers(0, 2, size=n)
+    sector = rng.integers(0, 36, size=n).astype(float)
+    dcar = (0.04 * (sector - 17.5)
+            + np.where(side_type == 0, -0.35, 0.45)
+            + rng.normal(0.0, 0.15, size=n))
+    return pd.DataFrame({
+        "sector": sector,
+        "dcar_tpc_vertex": dcar,
+        "side_type": side_type,
+        "ncl": rng.integers(45, 160, size=n),
+    })
+
+
+def test_a3_07_groupby_case_declares_one_spec_and_group_resolved_observables():
+    case = next(c for c in H.a3_cases() if c.case_id == "I2-GROUPBY-01")
+    assert tuple(case.surfaces_under_test) == H.SURFACES
+    assert case.not_applicable == {}
+    assert case.canonical_spec == {
+        "expr": "dcar_tpc_vertex:sector",
+        "type": "profile",
+        "bins": 36,
+        "selection": "(ncl>60)&(abs(dcar_tpc_vertex)<10)&(side_type<2)",
+        "group_by": "side_type",
+        "return_data": True,
+        "auto_title": True,
+    }
+    assert [(o.name, o.access, o.path) for o in case.observables] == [
+        ("group", "ARRAY", "profile_data.group"),
+        ("count", "ARRAY", "profile_data.count"),
+        ("x_center", "ARRAY", "profile_data.x_center"),
+        ("y_mean", "ARRAY", "profile_data.y_mean"),
+    ]
+    assert H.validate_registry(H.a3_cases()) == []
+
+
+def test_a3_08_groupby_same_spec_passes_draw_draw_batch_draw_figures():
+    frame = _a3_groupby_frame()
+    make_adf = lambda: ADF(frame.copy())
+    case = next(c for c in H.a3_cases() if c.case_id == "I2-GROUPBY-01")
+    res = H.run_consistency(case, make_adf)
+    assert res.status == H.PASS, res.detail
+    assert set(res.payload_paths) == set(H.SURFACES)
+    # draw is reference; 2 candidate surfaces x 4 declared array observables.
+    assert res.executed_comparisons == 8
+    assert len(res.comparisons) == 8
+    assert all(rec["ok"] for rec in res.comparisons), res.comparisons
+    groups = np.asarray(res.observed["group"]["draw"])
+    assert set(groups.tolist()) == {0, 1}
+
+
+def test_a3_09_profile_data_missing_column_fails_loudly():
+    profile_data = pd.DataFrame({"group": [0, 1], "y_mean": [1.0, 2.0]})
+    with pytest.raises(H.HarnessError, match="no_such_column"):
+        H.resolve({"profile_data": profile_data},
+                  "profile_data.no_such_column", "ARRAY")
+
+
+def test_a3_10_group_specific_mismatch_is_not_hidden_by_global_stats(monkeypatch):
+    """Independent falsification test for A3.6.
+
+    Construct a regression case that falsifies the implementation invariant:
+    mutate one per-bin y_mean belonging to side_type==1 on draw_figures while
+    leaving the global summary statistic untouched.  The existing A2 array
+    comparator must identify that row and the strict numerical gate must fail.
+    """
+    frame = _a3_groupby_frame(seed=137710)
+    make_adf = lambda: ADF(frame.copy())
+    case = next(c for c in H.a3_cases() if c.case_id == "I2-GROUPBY-01")
+
+    good = H.run_consistency(case, make_adf)
+    assert good.status == H.PASS, good.detail
+    assert H.strict_exit_code([good], [case]) == 0
+
+    # Independent public-surface baseline for the global statistic.  The
+    # falsification below changes only profile_data.y_mean, not this summary.
+    raw_global, kw_global = H._call(make_adf(), "draw_figures", case.canonical_spec)
+    baseline_global_mean_y = H.unwrap(
+        "draw_figures", raw_global, **kw_global).stats["mean_y"]
+    H._close()
+
+    original = H.unwrap
+    mutation = {}
+
+    def corrupted(surface, result, **kw):
+        payload = original(surface, result, **kw)
+        if surface == "draw_figures" and isinstance(payload.stats, dict):
+            stats = dict(payload.stats)
+            table = stats["profile_data"].copy(deep=True)
+            rows = np.flatnonzero(table["group"].to_numpy() == 1)
+            assert len(rows) > 0
+            row = int(rows[0])
+            mutation["row"] = row
+            mutation["group"] = int(table.iloc[row]["group"])
+            mutation["global_mean_y"] = stats["mean_y"]
+            table.iloc[row, table.columns.get_loc("y_mean")] += 0.25
+            stats["profile_data"] = table
+            return H.Payload(surface, stats, payload.path)
+        return payload
+
+    monkeypatch.setattr(H, "unwrap", corrupted)
+    bad = H.run_consistency(case, make_adf)
+    assert bad.status == H.FAIL, bad.detail
+    assert "y_mean" in bad.detail
+    assert mutation["group"] == 1
+    assert bad.observed["y_mean"]["draw_figures"][mutation["row"]] != (
+        bad.observed["y_mean"]["draw"][mutation["row"]])
+    # The deliberately untouched global statistic proves this mismatch cannot
+    # be detected by a global-summary-only comparison.
+    assert mutation["global_mean_y"] == baseline_global_mean_y
+    failed = [rec for rec in bad.comparisons if not rec["ok"]]
+    assert len(failed) == 1
+    assert failed[0]["observable"] == "y_mean"
+    assert failed[0]["mismatch_count"] == 1
+    assert failed[0]["mismatch_indices"] == [[mutation["row"]]]
+    assert H.strict_exit_code([bad], [case]) == 1
