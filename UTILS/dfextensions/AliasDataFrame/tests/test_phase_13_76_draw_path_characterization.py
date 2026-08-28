@@ -11345,12 +11345,6 @@ class TestB32bAcceptanceScaffold:
         assert "S.c" in str(exc.value), (
             f"the refusal must name the qualified child subject: {exc.value}")
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance (D_9, §5.5): publication is ATOMIC across ALL "
-        "publication-owned state — physical column, schema dtype, origin and "
-        "authority — at EVERY fault seam, not just one. Measured baseline "
-        "failure: 'seam _commit_first_materialization_authority: a failed "
-        "publication left a column behind'.")
     def test_b32b_8_publication_is_atomic_at_every_seam(self):
         """B32B-MR-P1-6: revision 1 injected one fault and checked two things.
         The publication transaction owns more than that, so both seams are
@@ -11380,6 +11374,178 @@ class TestB32bAcceptanceScaffold:
                 f"seam {seam}: a failed publication left a column behind")
             assert m._schema == schema_before, (
                 f"seam {seam}: a failed publication mutated the schema")
+
+
+    def test_b32b_8a_bulk_publication_rolls_back_every_source4_alias(self):
+        """STEP 6 source-4 bulk transaction.
+
+        ``materialize_aliases`` publishes the aligned batch in one concat and
+        then establishes source-4 authorities one by one.  Before STEP 6, a
+        failure on authority #2 left BOTH physical columns plus authority #1.
+        The public batch call must be all-or-none for the columns/authorities
+        it owns in this publication.
+        """
+        cls = A.AliasDataFrame
+        m = A.AliasDataFrame(pd.DataFrame({
+            "x": np.array([1, 2], np.int64)}))
+        m.add_alias("q1", "x * 2")
+        m.add_alias("q2", "x * 3")
+        cols_before = list(m.df.columns)
+        schema_before = copy.deepcopy(m._schema)
+        orig = cls._commit_first_materialization_authority
+        calls = []
+
+        def boom_second(self, name):
+            calls.append(name)
+            if name == "q2":
+                raise RuntimeError("injected bulk authority fault on q2")
+            return orig(self, name)
+
+        cls._commit_first_materialization_authority = boom_second
+        try:
+            with pytest.raises(RuntimeError, match="q2"):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    m.materialize_aliases(names=["q1", "q2"],
+                                          with_dependencies=False,
+                                          cleanTemporary=False)
+        finally:
+            cls._commit_first_materialization_authority = orig
+
+        assert calls == ["q1", "q2"], (
+            "fault injection must reach authority #2 after #1 committed")
+        assert list(m.df.columns) == cols_before, (
+            "failed bulk publication left one or more physical aliases")
+        assert m._schema == schema_before, (
+            "failed bulk publication left partial source-4 authority state")
+
+    @staticmethod
+    def _step6_compression_spec(*cols):
+        """Small deterministic source-5 codec fixture for atomicity faults."""
+        return {
+            col: {
+                "compress": f"round({col}*10)",
+                "decompress": f"{col}_c/10.",
+                "compressed_dtype": np.int16,
+                "decompressed_dtype": np.float32,
+            }
+            for col in cols
+        }
+
+    def test_b32b_8b_compress_columns_rolls_back_source5_batch(self):
+        """STEP 6 source-5 creation is all-or-none across a multi-column call.
+
+        Before STEP 6, a source-5 authority failure on the second compressed
+        column left the first transition committed and the second physical
+        column/schema half-finished.  Compression owns one persistent state
+        transition per public call, so every physical/schema/authority change
+        from that call must roll back together.
+        """
+        cls = A.AliasDataFrame
+        m = A.AliasDataFrame(pd.DataFrame({
+            "dy": np.array([1.5, 2.5, 3.5]),
+            "dz": np.array([4.5, 5.5, 6.5]),
+        }))
+        spec = self._step6_compression_spec("dy", "dz")
+        df_before = m.df.copy(deep=True)
+        schema_before = copy.deepcopy(m._schema)
+        orig = cls._record_adf_created_authority
+        calls = []
+
+        def boom_second(self, name, dtype, reason):
+            calls.append(name)
+            if name == "dz_c":
+                raise RuntimeError("injected source-5 compression fault on dz_c")
+            return orig(self, name, dtype, reason)
+
+        cls._record_adf_created_authority = boom_second
+        try:
+            with pytest.raises(RuntimeError, match="dz_c"):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    m.compress_columns(spec)
+        finally:
+            cls._record_adf_created_authority = orig
+
+        assert calls == ["dy_c", "dz_c"], (
+            "fault must reach source-5 authority #2 after #1 succeeded")
+        pd.testing.assert_frame_equal(m.df, df_before)
+        assert m._schema == schema_before, (
+            "failed source-5 compression left schema/authority state behind")
+
+    def test_b32b_8c_decompress_creation_rolls_back_source5_state(self):
+        """A failed source-5 record for the restored column restores COMPRESSED.
+
+        Decompression materializes/casts the original column and removes its
+        alias before recording the new source-5 authority.  A fault at that
+        record used to leave a physical restored column with metadata still
+        describing the compressed state.
+        """
+        cls = A.AliasDataFrame
+        m = A.AliasDataFrame(pd.DataFrame({
+            "dy": np.array([1.5, 2.5, 3.5])}))
+        spec = self._step6_compression_spec("dy")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.compress_columns(spec)
+        df_before = m.df.copy(deep=True)
+        schema_before = copy.deepcopy(m._schema)
+        orig = cls._record_adf_created_authority
+
+        def boom_restore(self, name, dtype, reason):
+            if name == "dy":
+                raise RuntimeError("injected source-5 decompression fault")
+            return orig(self, name, dtype, reason)
+
+        cls._record_adf_created_authority = boom_restore
+        try:
+            with pytest.raises(RuntimeError, match="decompression fault"):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    m.decompress_columns(["dy"])
+        finally:
+            cls._record_adf_created_authority = orig
+
+        pd.testing.assert_frame_equal(m.df, df_before)
+        assert m._schema == schema_before, (
+            "failed decompression creation did not restore compressed metadata")
+
+    def test_b32b_8d_decompress_destruction_rolls_back_column_and_authority(self):
+        """Destroying compressed storage is atomic with clearing its authority.
+
+        Before STEP 6, ``keep_compressed=False`` dropped ``dy_c`` and then
+        cleared its source-5 record.  A fault in the clear left an authority
+        that described a column that no longer existed.  The whole public
+        decompression transition must restore its pre-call COMPRESSED state.
+        """
+        cls = A.AliasDataFrame
+        m = A.AliasDataFrame(pd.DataFrame({
+            "dy": np.array([1.5, 2.5, 3.5])}))
+        spec = self._step6_compression_spec("dy")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.compress_columns(spec)
+        df_before = m.df.copy(deep=True)
+        schema_before = copy.deepcopy(m._schema)
+        orig = cls._clear_adf_created_authority
+
+        def boom_clear(self, name):
+            if name == "dy_c":
+                raise RuntimeError("injected source-5 destruction fault")
+            return orig(self, name)
+
+        cls._clear_adf_created_authority = boom_clear
+        try:
+            with pytest.raises(RuntimeError, match="destruction fault"):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    m.decompress_columns(["dy"], keep_compressed=False)
+        finally:
+            cls._clear_adf_created_authority = orig
+
+        pd.testing.assert_frame_equal(m.df, df_before)
+        assert m._schema == schema_before, (
+            "failed source-5 destruction left column/authority state split")
 
     def test_b32b_9_strict_route_is_a_registered_helper_not_a_framework_flag(
             self):

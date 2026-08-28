@@ -5,6 +5,7 @@ import numpy as np
 import json
 import uproot
 import copy
+from contextlib import contextmanager
 import warnings
 import glob
 from pathlib import Path
@@ -3766,19 +3767,46 @@ class AliasDataFrame:
         return pd.Series(values, index=self.df.index)
 
     def _publish_alias_column(self, name, values, explicit_dtype=None):
-        """The single owner of an alias publication. Both public paths use it.
+        """Atomically publish one source-4 alias column and its authority.
 
-        align -> enforce authority on the ALIGNED candidate -> publish ->
-        commit from the STORED column. Answering GPT32's question honestly:
-        the previous round centralized the authority RULES but duplicated the
-        publication SEQUENCE at two call sites, so one untested defect lived
-        in both. This is the sequence, once.
+        STEP 6 (D_9 / §5.5): a stored alias column and the source-4 authority
+        describing that stored column are one publication transaction.  If
+        the authority commit fails after pandas accepted the assignment, the
+        caller must observe the exact pre-publication column/schema state --
+        never ``column exists, authority missing``.
+
+        The rollback is deliberately narrow: only ``name`` is snapshotted.
+        Successfully materialized dependency aliases are separate publication
+        transactions and keep their historical lifecycle.
         """
         _aligned = self._aligned_publication_candidate(values)
         if explicit_dtype is None:
             _aligned = self._enforce_recorded_authority(name, _aligned)
-        self.df[name] = _aligned
-        self._commit_first_materialization_authority(name)
+
+        _schema_cols = self._schema.setdefault("columns", {})
+        _had_schema = name in _schema_cols
+        _schema_before = copy.deepcopy(_schema_cols.get(name))
+        _had_column = name in self.df.columns
+        _column_before = (self.df[name].copy(deep=True)
+                          if _had_column else None)
+
+        try:
+            self.df[name] = _aligned
+            self._commit_first_materialization_authority(name)
+        except Exception:
+            # Restore physical storage first, then the schema/authority record
+            # that describes it.  Assignment preserves an existing column's
+            # position; a newly-created column is removed completely.
+            if _had_column:
+                self.df[name] = _column_before
+            elif name in self.df.columns:
+                self.df.drop(columns=[name], inplace=True)
+
+            if _had_schema:
+                _schema_cols[name] = _schema_before
+            else:
+                _schema_cols.pop(name, None)
+            raise
 
     def _commit_first_materialization_authority(self, name):
         """Record the dtype of the first successful nonempty publication.
@@ -11696,9 +11724,31 @@ function collapseDepth(maxD) {{
                     if self.alias_dtypes.get(_nm) is None:
                         new_cols_df[_nm] = self._enforce_recorded_authority(
                             _nm, new_cols_df[_nm])
-                self.df = pd.concat([self.df, new_cols_df], axis=1)
-                for _nm in list(new_cols_df.columns):
-                    self._commit_first_materialization_authority(_nm)
+                # STEP 6 source-4 BULK TRANSACTION.  ``pd.concat`` creates a
+                # new DataFrame object, so retaining the previous object is a
+                # cheap exact rollback for physical storage.  Authority commits
+                # mutate schema entries one-by-one, therefore snapshot only the
+                # affected entries and restore them all if any commit fails.
+                _df_before_publication = self.df
+                _schema_cols = self._schema.setdefault("columns", {})
+                _schema_before_publication = {
+                    _nm: (_nm in _schema_cols,
+                          copy.deepcopy(_schema_cols.get(_nm)))
+                    for _nm in list(new_cols_df.columns)
+                }
+                try:
+                    self.df = pd.concat([self.df, new_cols_df], axis=1)
+                    for _nm in list(new_cols_df.columns):
+                        self._commit_first_materialization_authority(_nm)
+                except Exception:
+                    self.df = _df_before_publication
+                    for _nm, (_had_entry, _entry) in \
+                            _schema_before_publication.items():
+                        if _had_entry:
+                            _schema_cols[_nm] = _entry
+                        else:
+                            _schema_cols.pop(_nm, None)
+                    raise
                 if verbose:
                     print(f"[materialize_aliases] Batch-added {len(results)} columns")
                     print(f"[materialize_aliases] Join cache: {self._join_cache_hits} hits, "
@@ -14262,6 +14312,30 @@ function collapseDepth(maxD) {{
                     return False
         return True
 
+    @contextmanager
+    def _source5_persistent_transaction(self):
+        """Atomically guard source-5 compression/decompression state.
+
+        Compression and decompression are explicit, comparatively heavy state
+        transitions.  They can change physical columns, alias/schema entries,
+        compression metadata and AD-19 source-5 authority records in one call.
+        A failure at any later seam must restore the complete pre-call state.
+
+        ``deep=False`` is deliberate for the DataFrame snapshot: these paths
+        replace/drop whole columns rather than mutating array payloads in place,
+        so a shallow frame snapshot preserves the old column objects without an
+        O(frame-size) data copy.  The schema is small control state and is copied
+        deeply because compression/authority dictionaries are mutated in place.
+        """
+        _df_before = self.df.copy(deep=False)
+        _schema_before = copy.deepcopy(self._schema)
+        try:
+            yield
+        except Exception:
+            self.df = _df_before
+            self._schema = _schema_before
+            raise
+
     def compress_columns(self, compression_spec=None, columns=None, suffix='_c', drop_original=True,
                          on_missing='warn',       # NEW
                          return_summary=False,     # NEW
@@ -14434,223 +14508,224 @@ function collapseDepth(maxD) {{
         cols_to_process = available_cols
         # === END NEW CODE ===
 
-        for orig_col in cols_to_process:
-            # Get config (from spec or existing schema)
-            if schema_mode == 'reuse':
-                if orig_col not in self.compression_info:
-                    raise ValueError(
-                        f"No compression schema found for column '{orig_col}'. "
-                        f"Define schema first with define_compression_schema()."
-                    )
-                config = self._schema_from_info(orig_col)
-                existing_info = self.compression_info[orig_col]
-                compressed_col = existing_info['compressed_col']
-            elif schema_mode in ('inline', 'define', 'selective'):
-                config = compression_spec[orig_col]
-                # Validate config
-                required_keys = ['compress', 'decompress', 'compressed_dtype', 'decompressed_dtype']
-                missing = [k for k in required_keys if k not in config]
-                if missing:
-                    raise ValueError(
-                        f"Compression config for '{orig_col}' missing required keys: {missing}"
-                    )
-                compressed_col = f"{orig_col}{suffix}"
+        with self._source5_persistent_transaction():
+            for orig_col in cols_to_process:
+                # Get config (from spec or existing schema)
+                if schema_mode == 'reuse':
+                    if orig_col not in self.compression_info:
+                        raise ValueError(
+                            f"No compression schema found for column '{orig_col}'. "
+                            f"Define schema first with define_compression_schema()."
+                        )
+                    config = self._schema_from_info(orig_col)
+                    existing_info = self.compression_info[orig_col]
+                    compressed_col = existing_info['compressed_col']
+                elif schema_mode in ('inline', 'define', 'selective'):
+                    config = compression_spec[orig_col]
+                    # Validate config
+                    required_keys = ['compress', 'decompress', 'compressed_dtype', 'decompressed_dtype']
+                    missing = [k for k in required_keys if k not in config]
+                    if missing:
+                        raise ValueError(
+                            f"Compression config for '{orig_col}' missing required keys: {missing}"
+                        )
+                    compressed_col = f"{orig_col}{suffix}"
 
-            # For selective mode, nothing to be done
+                # For selective mode, nothing to be done
 
-            # Check current state and validate transitions
-            current_state = self.get_compression_state(orig_col)
+                # Check current state and validate transitions
+                current_state = self.get_compression_state(orig_col)
 
-            if schema_mode == 'define':
-                # Schema-only mode: just store metadata
-                if current_state is not None:
-                    raise ValueError(
-                        f"Column '{orig_col}' already has compression schema with state '{current_state}'. "
-                        f"Remove existing schema first."
-                    )
-                # Store schema-only metadata
-                self.compression_info[orig_col] = {
-                    'compressed_col': compressed_col,
-                    'compress_expr': config['compress'],
-                    'decompress_expr': config['decompress'],
-                    'compressed_dtype': np.dtype(config['compressed_dtype']).name,
-                    'decompressed_dtype': np.dtype(config['decompressed_dtype']).name,
-                    'state': CompressionState.SCHEMA_ONLY,
-                    'original_removed': False
-                }
-                continue  # Don't compress data, just store schema
+                if schema_mode == 'define':
+                    # Schema-only mode: just store metadata
+                    if current_state is not None:
+                        raise ValueError(
+                            f"Column '{orig_col}' already has compression schema with state '{current_state}'. "
+                            f"Remove existing schema first."
+                        )
+                    # Store schema-only metadata
+                    self.compression_info[orig_col] = {
+                        'compressed_col': compressed_col,
+                        'compress_expr': config['compress'],
+                        'decompress_expr': config['decompress'],
+                        'compressed_dtype': np.dtype(config['compressed_dtype']).name,
+                        'decompressed_dtype': np.dtype(config['decompressed_dtype']).name,
+                        'state': CompressionState.SCHEMA_ONLY,
+                        'original_removed': False
+                    }
+                    continue  # Don't compress data, just store schema
 
-            # For actual compression (inline, reuse, or selective mode):
+                # For actual compression (inline, reuse, or selective mode):
             
-            # EARLY CHECK: If data is physically already compressed
-            # This handles mixed-state scenarios where embedded schema may be inconsistent
-            data_is_physically_compressed = (
-                compressed_col in self.df.columns and
-                orig_col not in self.df.columns
-            )
-            if data_is_physically_compressed:
-                # Data is already in compressed form
-                # If a new schema is being provided, check if it differs
-                if schema_mode in ('selective', 'inline') and compression_spec:
+                # EARLY CHECK: If data is physically already compressed
+                # This handles mixed-state scenarios where embedded schema may be inconsistent
+                data_is_physically_compressed = (
+                    compressed_col in self.df.columns and
+                    orig_col not in self.df.columns
+                )
+                if data_is_physically_compressed:
+                    # Data is already in compressed form
+                    # If a new schema is being provided, check if it differs
+                    if schema_mode in ('selective', 'inline') and compression_spec:
+                        existing_schema = self._schema_from_info(orig_col)
+                        new_schema = compression_spec.get(orig_col, {})
+                        if not self._schemas_equal(existing_schema, new_schema):
+                            # Different schema - cannot change schema of compressed column
+                            raise ValueError(
+                                f"Column '{orig_col}' is already compressed with a different schema. "
+                                f"Please decompress first before applying new compression schema:\n"
+                                f"  adf.decompress_columns(['{orig_col}'], keep_schema=False)\n"
+                                f"  adf.compress_columns(new_spec, columns=['{orig_col}'])"
+                            )
+                    # Same schema or no new schema - skip (idempotent)
+                    # Update state to reflect reality
+                    if orig_col in self._schema.get('compression', {}):
+                        self._schema['compression'][orig_col]['state'] = CompressionState.COMPRESSED
+                    continue
+            
+                # Special handling for selective mode with COMPRESSED state
+                if schema_mode == 'selective' and current_state == CompressionState.COMPRESSED:
+                    # Check if schema is the same or different
                     existing_schema = self._schema_from_info(orig_col)
-                    new_schema = compression_spec.get(orig_col, {})
-                    if not self._schemas_equal(existing_schema, new_schema):
-                        # Different schema - cannot change schema of compressed column
+                    if self._schemas_equal(existing_schema, config):
+                        # Same schema, already compressed - skip (idempotent)
+                        continue
+                    else:
+                        # Different schema - must decompress first
                         raise ValueError(
                             f"Column '{orig_col}' is already compressed with a different schema. "
                             f"Please decompress first before applying new compression schema:\n"
                             f"  adf.decompress_columns(['{orig_col}'], keep_schema=False)\n"
                             f"  adf.compress_columns(new_spec, columns=['{orig_col}'])"
                         )
-                # Same schema or no new schema - skip (idempotent)
-                # Update state to reflect reality
-                if orig_col in self._schema.get('compression', {}):
-                    self._schema['compression'][orig_col]['state'] = CompressionState.COMPRESSED
-                continue
-            
-            # Special handling for selective mode with COMPRESSED state
-            if schema_mode == 'selective' and current_state == CompressionState.COMPRESSED:
-                # Check if schema is the same or different
-                existing_schema = self._schema_from_info(orig_col)
-                if self._schemas_equal(existing_schema, config):
-                    # Same schema, already compressed - skip (idempotent)
-                    continue
-                else:
-                    # Different schema - must decompress first
-                    raise ValueError(
-                        f"Column '{orig_col}' is already compressed with a different schema. "
-                        f"Please decompress first before applying new compression schema:\n"
-                        f"  adf.decompress_columns(['{orig_col}'], keep_schema=False)\n"
-                        f"  adf.compress_columns(new_spec, columns=['{orig_col}'])"
-                    )
 
-            # Standard state validation for non-selective modes
-            if current_state == CompressionState.COMPRESSED:
-                # Verify data is actually compressed, not just schema state
-                # This handles case where schema was loaded but data wasn't compressed
-                comp_info = self._schema['compression'].get(orig_col, {})
-                compressed_col_name = comp_info.get('compressed_col', f'{orig_col}_c')
-                data_is_compressed = (
-                    compressed_col_name in self.df.columns and
-                    orig_col not in self.df.columns
-                )
+                # Standard state validation for non-selective modes
+                if current_state == CompressionState.COMPRESSED:
+                    # Verify data is actually compressed, not just schema state
+                    # This handles case where schema was loaded but data wasn't compressed
+                    comp_info = self._schema['compression'].get(orig_col, {})
+                    compressed_col_name = comp_info.get('compressed_col', f'{orig_col}_c')
+                    data_is_compressed = (
+                        compressed_col_name in self.df.columns and
+                        orig_col not in self.df.columns
+                    )
                 
-                if data_is_compressed:
-                    # Truly compressed - skip (idempotent)
-                    continue
-                else:
-                    # Schema says compressed but data isn't - treat as SCHEMA_ONLY
-                    # Update state to reflect reality
-                    self._schema['compression'][orig_col]['state'] = CompressionState.SCHEMA_ONLY
-                    current_state = CompressionState.SCHEMA_ONLY
-                    # Fall through to compress
+                    if data_is_compressed:
+                        # Truly compressed - skip (idempotent)
+                        continue
+                    else:
+                        # Schema says compressed but data isn't - treat as SCHEMA_ONLY
+                        # Update state to reflect reality
+                        self._schema['compression'][orig_col]['state'] = CompressionState.SCHEMA_ONLY
+                        current_state = CompressionState.SCHEMA_ONLY
+                        # Fall through to compress
             
-            if current_state == CompressionState.SCHEMA_ONLY:
-                # Valid transition: SCHEMA_ONLY → COMPRESSED
-                pass
-            elif current_state == CompressionState.DECOMPRESSED:
-                # Valid transition: DECOMPRESSED → COMPRESSED (recompression)
-                pass
-            elif current_state is None:
-                # Valid transition: None → COMPRESSED (inline compression)
-                if schema_mode == 'reuse':
+                if current_state == CompressionState.SCHEMA_ONLY:
+                    # Valid transition: SCHEMA_ONLY → COMPRESSED
+                    pass
+                elif current_state == CompressionState.DECOMPRESSED:
+                    # Valid transition: DECOMPRESSED → COMPRESSED (recompression)
+                    pass
+                elif current_state is None:
+                    # Valid transition: None → COMPRESSED (inline compression)
+                    if schema_mode == 'reuse':
+                        raise ValueError(
+                            f"Column '{orig_col}' has no compression schema. "
+                            f"Cannot reuse non-existent schema."
+                        )
+
+                # Collision detection for compressed_col name
+                self._validate_compressed_col_name(orig_col, compressed_col)
+
+                # Cache original values if measuring precision
+                original_values = None
+                if measure_precision and orig_col in self.df.columns:
+                    original_values = self.df[orig_col].values.copy()
+
+                # Step 1: Create and materialize compressed version
+                try:
+                    # For recompression, remove old compressed column if it exists
+                    if compressed_col in self.df.columns:
+                        self.df.drop(columns=[compressed_col], inplace=True)
+
+                    self.add_alias(compressed_col, config['compress'],
+                                   dtype=config['compressed_dtype'])
+                    self.materialize_alias(compressed_col)
+                    # Remove from aliases to avoid false cycle detection
+                    if compressed_col in self.aliases:
+                        del self._schema["columns"][compressed_col]
+                except SyntaxError as e:
                     raise ValueError(
-                        f"Column '{orig_col}' has no compression schema. "
-                        f"Cannot reuse non-existent schema."
+                        f"Compression failed for '{orig_col}': invalid compress expression.\n"
+                        f"Expression: {config['compress']}\n"
+                        f"Error: {e}"
+                    ) from e
+                except KeyError as e:
+                    raise ValueError(
+                        f"Compression failed for '{orig_col}': undefined variable in compress expression.\n"
+                        f"Expression: {config['compress']}\n"
+                        f"Error: {e}"
+                    ) from e
+                except Exception as e:
+                    raise ValueError(
+                        f"Compression failed for '{orig_col}' during compress step: {e}"
+                    ) from e
+
+                # Step 2: Measure precision loss if requested
+                precision_info = None
+                if measure_precision and original_values is not None:
+                    precision_info = self._measure_compression_precision(
+                        orig_col, original_values, config
                     )
 
-            # Collision detection for compressed_col name
-            self._validate_compressed_col_name(orig_col, compressed_col)
+                # AD-19 SOURCE 5 (B3.2b STEP 3). `compressed_col` is a
+                # PERSISTENT column ADF created and whose dtype ADF chose from the
+                # compression spec -- the textbook source-5 case, and the one
+                # `b32b_4` names. Recorded here, at the moment of creation, rather
+                # than inferred later: §5.5 says the dtype is fixed once created,
+                # and a record written at creation is the only one that can say so
+                # truthfully.
+                self._record_adf_created_authority(
+                    compressed_col, config['compressed_dtype'],
+                    f"compressed storage for {orig_col!r} "
+                    f"(compress_expr={config['compress']!r})")
 
-            # Cache original values if measuring precision
-            original_values = None
-            if measure_precision and orig_col in self.df.columns:
-                original_values = self.df[orig_col].values.copy()
+                # Step 3: Remove original from storage (if requested and exists)
+                if drop_original and orig_col in self.df.columns:
+                    self.df.drop(columns=[orig_col], inplace=True)
 
-            # Step 1: Create and materialize compressed version
-            try:
-                # For recompression, remove old compressed column if it exists
-                if compressed_col in self.df.columns:
-                    self.df.drop(columns=[compressed_col], inplace=True)
+                # Step 4: Remove old decompression alias if it exists (from DECOMPRESSED state)
+                if orig_col in self.aliases:
+                    del self._schema["columns"][orig_col]
 
-                self.add_alias(compressed_col, config['compress'],
-                               dtype=config['compressed_dtype'])
-                self.materialize_alias(compressed_col)
-                # Remove from aliases to avoid false cycle detection
-                if compressed_col in self.aliases:
-                    del self._schema["columns"][compressed_col]
-            except SyntaxError as e:
-                raise ValueError(
-                    f"Compression failed for '{orig_col}': invalid compress expression.\n"
-                    f"Expression: {config['compress']}\n"
-                    f"Error: {e}"
-                ) from e
-            except KeyError as e:
-                raise ValueError(
-                    f"Compression failed for '{orig_col}': undefined variable in compress expression.\n"
-                    f"Expression: {config['compress']}\n"
-                    f"Error: {e}"
-                ) from e
-            except Exception as e:
-                raise ValueError(
-                    f"Compression failed for '{orig_col}' during compress step: {e}"
-                ) from e
+                # Step 5: Add decompression alias (original name → decompressed expression)
+                try:
+                    self.add_alias(orig_col, config['decompress'],
+                                   dtype=config['decompressed_dtype'])
+                except SyntaxError as e:
+                    raise ValueError(
+                        f"Compression failed for '{orig_col}': invalid decompress expression.\n"
+                        f"Expression: {config['decompress']}\n"
+                        f"Error: {e}"
+                    ) from e
+                except Exception as e:
+                    raise ValueError(
+                        f"Compression failed for '{orig_col}' during decompress alias creation: {e}"
+                    ) from e
 
-            # Step 2: Measure precision loss if requested
-            precision_info = None
-            if measure_precision and original_values is not None:
-                precision_info = self._measure_compression_precision(
-                    orig_col, original_values, config
-                )
+                # Step 6: Store/update metadata (JSON-safe: dtypes as strings)
+                self.compression_info[orig_col] = {
+                    'compressed_col': compressed_col,
+                    'compress_expr': config['compress'],
+                    'decompress_expr': config['decompress'],
+                    'compressed_dtype': np.dtype(config['compressed_dtype']).name,
+                    'decompressed_dtype': np.dtype(config['decompressed_dtype']).name,
+                    'state': CompressionState.COMPRESSED,
+                    'original_removed': drop_original
+                }
 
-            # AD-19 SOURCE 5 (B3.2b STEP 3). `compressed_col` is a
-            # PERSISTENT column ADF created and whose dtype ADF chose from the
-            # compression spec -- the textbook source-5 case, and the one
-            # `b32b_4` names. Recorded here, at the moment of creation, rather
-            # than inferred later: §5.5 says the dtype is fixed once created,
-            # and a record written at creation is the only one that can say so
-            # truthfully.
-            self._record_adf_created_authority(
-                compressed_col, config['compressed_dtype'],
-                f"compressed storage for {orig_col!r} "
-                f"(compress_expr={config['compress']!r})")
-
-            # Step 3: Remove original from storage (if requested and exists)
-            if drop_original and orig_col in self.df.columns:
-                self.df.drop(columns=[orig_col], inplace=True)
-
-            # Step 4: Remove old decompression alias if it exists (from DECOMPRESSED state)
-            if orig_col in self.aliases:
-                del self._schema["columns"][orig_col]
-
-            # Step 5: Add decompression alias (original name → decompressed expression)
-            try:
-                self.add_alias(orig_col, config['decompress'],
-                               dtype=config['decompressed_dtype'])
-            except SyntaxError as e:
-                raise ValueError(
-                    f"Compression failed for '{orig_col}': invalid decompress expression.\n"
-                    f"Expression: {config['decompress']}\n"
-                    f"Error: {e}"
-                ) from e
-            except Exception as e:
-                raise ValueError(
-                    f"Compression failed for '{orig_col}' during decompress alias creation: {e}"
-                ) from e
-
-            # Step 6: Store/update metadata (JSON-safe: dtypes as strings)
-            self.compression_info[orig_col] = {
-                'compressed_col': compressed_col,
-                'compress_expr': config['compress'],
-                'decompress_expr': config['decompress'],
-                'compressed_dtype': np.dtype(config['compressed_dtype']).name,
-                'decompressed_dtype': np.dtype(config['decompressed_dtype']).name,
-                'state': CompressionState.COMPRESSED,
-                'original_removed': drop_original
-            }
-
-            if precision_info is not None:
-                self.compression_info[orig_col]['precision'] = precision_info
+                if precision_info is not None:
+                    self.compression_info[orig_col]['precision'] = precision_info
 
         # === NEW: Return summary if requested ===
         if return_summary:
@@ -14851,96 +14926,97 @@ function collapseDepth(maxD) {{
         # Filter __meta__
         columns = [c for c in columns if c != "__meta__"]
 
-        # Phase 13.7: Collect columns to drop, then batch-drop once at end
-        # (Avoids O(N_cols × N_rows) pandas reindex per drop)
-        cols_to_drop = []
+        with self._source5_persistent_transaction():
+            # Phase 13.7: Collect columns to drop, then batch-drop once at end
+            # (Avoids O(N_cols × N_rows) pandas reindex per drop)
+            cols_to_drop = []
 
-        for col in columns:
-            if col not in self.compression_info:
-                raise ValueError(
-                    f"Column '{col}' has no compression metadata. "
-                    f"Available: {[c for c in self.compression_info.keys() if c != '__meta__']}"
-                )
+            for col in columns:
+                if col not in self.compression_info:
+                    raise ValueError(
+                        f"Column '{col}' has no compression metadata. "
+                        f"Available: {[c for c in self.compression_info.keys() if c != '__meta__']}"
+                    )
 
-            info = self.compression_info[col]
-            current_state = info.get('state')
+                info = self.compression_info[col]
+                current_state = info.get('state')
 
-            # Validate state transition
-            if current_state == CompressionState.SCHEMA_ONLY:
-                # Warn but allow (no-op): never compressed, nothing to decompress
-                continue
-            elif current_state == CompressionState.DECOMPRESSED:
-                # Already decompressed, skip
-                continue
-            elif current_state != CompressionState.COMPRESSED:
-                raise ValueError(
-                    f"Column '{col}' is in state '{current_state}', cannot decompress. "
-                    f"Only COMPRESSED columns can be decompressed."
-                )
+                # Validate state transition
+                if current_state == CompressionState.SCHEMA_ONLY:
+                    # Warn but allow (no-op): never compressed, nothing to decompress
+                    continue
+                elif current_state == CompressionState.DECOMPRESSED:
+                    # Already decompressed, skip
+                    continue
+                elif current_state != CompressionState.COMPRESSED:
+                    raise ValueError(
+                        f"Column '{col}' is in state '{current_state}', cannot decompress. "
+                        f"Only COMPRESSED columns can be decompressed."
+                    )
 
-            compressed_col = info['compressed_col']
+                compressed_col = info['compressed_col']
 
-            # Validate compressed column exists
-            if compressed_col not in self.df.columns:
-                raise ValueError(
-                    f"Compressed column '{compressed_col}' for '{col}' is missing. "
-                    f"Cannot decompress without source data."
-                )
+                # Validate compressed column exists
+                if compressed_col not in self.df.columns:
+                    raise ValueError(
+                        f"Compressed column '{compressed_col}' for '{col}' is missing. "
+                        f"Cannot decompress without source data."
+                    )
 
-            # Step 1: Materialize decompressed alias
-            if col not in self.aliases:
-                raise ValueError(
-                    f"Internal error: decompression alias for '{col}' is missing. "
-                    f"This indicates corrupted compression_info."
-                )
+                # Step 1: Materialize decompressed alias
+                if col not in self.aliases:
+                    raise ValueError(
+                        f"Internal error: decompression alias for '{col}' is missing. "
+                        f"This indicates corrupted compression_info."
+                    )
 
-            self.materialize_alias(col)
+                self.materialize_alias(col)
 
-            # Step 2: Enforce decompressed dtype
-            target_dtype = np.dtype(info['decompressed_dtype']).type
-            self.df[col] = self.df[col].astype(target_dtype)
+                # Step 2: Enforce decompressed dtype
+                target_dtype = np.dtype(info['decompressed_dtype']).type
+                self.df[col] = self.df[col].astype(target_dtype)
 
-            # Step 3: Remove decompression alias (col is now physical)
-            if col in self.aliases:
-                del self._schema["columns"][col]
+                # Step 3: Remove decompression alias (col is now physical)
+                if col in self.aliases:
+                    del self._schema["columns"][col]
 
-            # AD-19 SOURCE 5 (B3.2b STEP 3). The restored column is now
-            # PHYSICAL and its dtype was chosen by ADF from the stored
-            # `decompressed_dtype` two lines above -- so decompression is a
-            # persistent creator exactly as compression is. `b32b_4c` exists
-            # because revision 2 owned compress_columns and left this path
-            # silently unowned, which is how an "inventory" closes while
-            # holding one specimen. Recorded AFTER the schema entry is
-            # deleted, or the delete would take the record with it.
-            self._record_adf_created_authority(
-                col, target_dtype,
-                f"decompressed from {compressed_col!r} "
-                f"(decompress_expr={info['decompress_expr']!r})")
+                # AD-19 SOURCE 5 (B3.2b STEP 3). The restored column is now
+                # PHYSICAL and its dtype was chosen by ADF from the stored
+                # `decompressed_dtype` two lines above -- so decompression is a
+                # persistent creator exactly as compression is. `b32b_4c` exists
+                # because revision 2 owned compress_columns and left this path
+                # silently unowned, which is how an "inventory" closes while
+                # holding one specimen. Recorded AFTER the schema entry is
+                # deleted, or the delete would take the record with it.
+                self._record_adf_created_authority(
+                    col, target_dtype,
+                    f"decompressed from {compressed_col!r} "
+                    f"(decompress_expr={info['decompress_expr']!r})")
 
-            # Step 4: Collect compressed column for batch drop
-            if not keep_compressed:
-                cols_to_drop.append(compressed_col)
+                # Step 4: Collect compressed column for batch drop
+                if not keep_compressed:
+                    cols_to_drop.append(compressed_col)
 
-            # Step 5: Update state
-            if keep_schema:
-                # Transition to DECOMPRESSED state
-                self.compression_info[col]['state'] = CompressionState.DECOMPRESSED
-            else:
-                # Remove all compression metadata
-                del self.compression_info[col]
+                # Step 5: Update state
+                if keep_schema:
+                    # Transition to DECOMPRESSED state
+                    self.compression_info[col]['state'] = CompressionState.DECOMPRESSED
+                else:
+                    # Remove all compression metadata
+                    del self.compression_info[col]
 
-        # Batch drop all compressed columns at once (single reindex)
-        if cols_to_drop:
-            self.df.drop(columns=cols_to_drop, inplace=True)
-            # B3.2b STEP 3 CORRECTION, `F2` first half. A source-5 record must
-            # NOT outlive the column it describes. GPT32 executed the sequence:
-            # compress -> dy_c int16/ADF_CREATED -> decompress dropping dy_c ->
-            # the authority still reported int16 ADF_CREATED for a column that
-            # no longer existed, and a later recreation at a different dtype
-            # inherited that stale claim. An authority describing an absent
-            # column is a falsehood, not merely stale.
-            for _gone in cols_to_drop:
-                self._clear_adf_created_authority(_gone)
+            # Batch drop all compressed columns at once (single reindex)
+            if cols_to_drop:
+                self.df.drop(columns=cols_to_drop, inplace=True)
+                # B3.2b STEP 3 CORRECTION, `F2` first half. A source-5 record must
+                # NOT outlive the column it describes. GPT32 executed the sequence:
+                # compress -> dy_c int16/ADF_CREATED -> decompress dropping dy_c ->
+                # the authority still reported int16 ADF_CREATED for a column that
+                # no longer existed, and a later recreation at a different dtype
+                # inherited that stale claim. An authority describing an absent
+                # column is a falsehood, not merely stale.
+                for _gone in cols_to_drop:
+                    self._clear_adf_created_authority(_gone)
 
         return self
 
