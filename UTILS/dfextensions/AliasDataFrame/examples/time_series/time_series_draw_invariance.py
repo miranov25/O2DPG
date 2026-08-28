@@ -31,7 +31,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A1.8"
+SCHEMA_VERSION = "13.77.A2.1"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -241,34 +241,212 @@ def resolve(stats: Any, path: str, access: str) -> Any:
 COMPARATORS = ("exact", "close")
 
 
-def cmp_exact(a: Any, b: Any) -> tuple[bool, str]:
-    if isinstance(a, (list, tuple, np.ndarray)) or isinstance(b, (list, tuple, np.ndarray)):
-        ok = np.array_equal(np.asarray(a), np.asarray(b))
+@dataclass(frozen=True)
+class ComparisonResult:
+    """Structured outcome of one A2 numerical comparison."""
+    ok: bool
+    comparator: str
+    detail: str = ""
+    atol: float = 0.0
+    rtol: float = 0.0
+    mismatch_count: int = 0
+    mismatch_indices: tuple[tuple[int, ...], ...] = ()
+
+
+@dataclass(frozen=True)
+class ToleranceSpec:
+    """Validated executable tolerance contract for one observable."""
+    comparator: str
+    atol: float = 0.0
+    rtol: float = 0.0
+    rationale: str = ""
+
+
+def _validated_tolerance(comparator: str, atol: float, rtol: float,
+                         rationale: str, *, observable_name: str) -> ToleranceSpec:
+    try:
+        atol_f = float(atol)
+        rtol_f = float(rtol)
+    except (TypeError, ValueError) as exc:
+        raise HarnessError(
+            f"observable {observable_name!r}: atol/rtol must be numeric") from exc
+    if comparator not in COMPARATORS:
+        raise HarnessError(
+            f"observable {observable_name!r}: unknown comparator {comparator!r}; "
+            f"known: {COMPARATORS}")
+    if not np.isfinite(atol_f) or not np.isfinite(rtol_f):
+        raise HarnessError(
+            f"observable {observable_name!r}: atol/rtol must be finite")
+    if atol_f < 0.0 or rtol_f < 0.0:
+        raise HarnessError(
+            f"observable {observable_name!r}: atol/rtol must be non-negative")
+    if comparator == "exact":
+        if atol_f != 0.0 or rtol_f != 0.0:
+            raise HarnessError(
+                f"observable {observable_name!r}: exact comparator cannot carry "
+                f"non-zero atol/rtol")
     else:
-        ok = bool(a == b)
-    return ok, ("" if ok else f"exact mismatch: {a!r} != {b!r}")
+        if atol_f == 0.0 and rtol_f == 0.0:
+            raise HarnessError(
+                f"observable {observable_name!r}: 'close' with atol=rtol=0 is "
+                f"'exact' in disguise")
+        if not rationale:
+            raise HarnessError(
+                f"observable {observable_name!r}: floating comparator needs a rationale")
+    return ToleranceSpec(comparator, atol_f, rtol_f, rationale)
+
+
+def tolerance_for(o: "Observable") -> ToleranceSpec:
+    return _validated_tolerance(
+        o.comparator, o.atol, o.rtol, o.rationale, observable_name=o.name)
+
+
+def tolerance_violations(o: "Observable") -> list[str]:
+    try:
+        tolerance_for(o)
+    except HarnessError as exc:
+        return [str(exc)]
+    return []
+
+
+def _real_floating_scalar(value: Any) -> bool:
+    """True only for scalar real floating values accepted by ``close``.
+
+    A2 tolerance comparisons are defined for floating observables.  Integer,
+    complex and object inputs must use an explicit supported comparator rather
+    than being silently narrowed/coerced before comparison.
+    """
+    if np.ndim(value) != 0:
+        return False
+    try:
+        return bool(np.issubdtype(np.asarray(value).dtype, np.floating))
+    except TypeError:
+        return False
+
+
+def compare_scalar(a: Any, b: Any, *, comparator: str,
+                   atol: float = 0.0, rtol: float = 0.0) -> ComparisonResult:
+    """Compare scalar values with explicit exact or atol/rtol semantics."""
+    spec = _validated_tolerance(
+        comparator, atol, rtol,
+        "" if comparator == "exact" else "runtime scalar comparison",
+        observable_name="<scalar>")
+    if np.ndim(a) != 0 or np.ndim(b) != 0:
+        raise HarnessError("compare_scalar accepts scalar values only")
+    if comparator == "exact":
+        # Treat paired NaNs as equal for numerical invariance purposes.
+        try:
+            if bool(np.isnan(a)) and bool(np.isnan(b)):
+                ok = True
+            else:
+                ok = bool(a == b)
+        except (TypeError, ValueError):
+            ok = bool(a == b)
+        return ComparisonResult(
+            ok=ok, comparator="exact",
+            detail="" if ok else f"exact mismatch: {a!r} != {b!r}")
+    if not _real_floating_scalar(a) or not _real_floating_scalar(b):
+        raise HarnessError("close comparator requires real floating scalars")
+    # Compare the original scalar values.  Do not coerce through Python
+    # ``float``: that would narrow np.longdouble/float128 to binary64 and can
+    # erase an out-of-tolerance difference before NumPy evaluates it.
+    ok = bool(np.isclose(a, b, atol=spec.atol, rtol=spec.rtol,
+                         equal_nan=True))
+    return ComparisonResult(
+        ok=ok, comparator="close", atol=spec.atol, rtol=spec.rtol,
+        detail="" if ok else
+        f"not close (atol={spec.atol}, rtol={spec.rtol}): {a!r} vs {b!r}")
+
+
+def compare_array(a: Any, b: Any, *, comparator: str,
+                  atol: float = 0.0, rtol: float = 0.0) -> ComparisonResult:
+    """Compare arrays element-wise and report mismatch coordinates."""
+    spec = _validated_tolerance(
+        comparator, atol, rtol,
+        "" if comparator == "exact" else "runtime array comparison",
+        observable_name="<array>")
+    aa = np.asarray(a)
+    bb = np.asarray(b)
+    if aa.shape != bb.shape:
+        return ComparisonResult(
+            ok=False, comparator=comparator, atol=float(atol), rtol=float(rtol),
+            detail=f"shape mismatch: {aa.shape!r} != {bb.shape!r}")
+    if comparator == "exact":
+        try:
+            equal = np.equal(aa, bb) | (np.isnan(aa) & np.isnan(bb))
+        except (TypeError, ValueError):
+            equal = np.equal(aa, bb)
+    elif comparator == "close":
+        if not (np.issubdtype(aa.dtype, np.floating) and
+                np.issubdtype(bb.dtype, np.floating)):
+            raise HarnessError("close comparator requires real floating arrays")
+        # Preserve the operands' NumPy floating precision.  Casting to
+        # ``float`` here narrows wider dtypes and can create a false-positive
+        # comparison pass.  NumPy chooses the common floating dtype directly.
+        equal = np.isclose(aa, bb, atol=spec.atol, rtol=spec.rtol,
+                           equal_nan=True)
+        atol, rtol = spec.atol, spec.rtol
+    else:
+        raise HarnessError(f"unknown comparator {comparator!r}; known: {COMPARATORS}")
+    bad = np.argwhere(~np.asarray(equal, dtype=bool))
+    coords = tuple(tuple(int(i) for i in row) for row in bad[:8])
+    nbad = int(len(bad))
+    return ComparisonResult(
+        ok=(nbad == 0), comparator=comparator, atol=float(atol), rtol=float(rtol),
+        mismatch_count=nbad, mismatch_indices=coords,
+        detail="" if nbad == 0 else f"{nbad} element mismatch(es); first={coords}")
+
+
+def compare_observable(o: "Observable", reference: Any, candidate: Any) -> ComparisonResult:
+    spec = tolerance_for(o)
+    if np.ndim(reference) == 0 and np.ndim(candidate) == 0:
+        return compare_scalar(reference, candidate, comparator=spec.comparator,
+                              atol=spec.atol, rtol=spec.rtol)
+    return compare_array(reference, candidate, comparator=spec.comparator,
+                         atol=spec.atol, rtol=spec.rtol)
+
+
+def comparison_evidence(o: "Observable", result: ComparisonResult, *,
+                        reference_label: str, candidate_label: str) -> dict:
+    """JSON-ready record of the numerical comparison that actually ran."""
+    spec = tolerance_for(o)
+    return {
+        "observable": o.name,
+        "reference": reference_label,
+        "candidate": candidate_label,
+        "comparator": spec.comparator,
+        "atol": spec.atol,
+        "rtol": spec.rtol,
+        "rationale": spec.rationale,
+        "ok": bool(result.ok),
+        "detail": result.detail,
+        "mismatch_count": int(result.mismatch_count),
+        "mismatch_indices": [list(x) for x in result.mismatch_indices],
+    }
+
+
+def cmp_exact(a: Any, b: Any) -> tuple[bool, str]:
+    result = (compare_scalar(a, b, comparator="exact")
+              if np.ndim(a) == 0 and np.ndim(b) == 0
+              else compare_array(a, b, comparator="exact"))
+    return result.ok, result.detail
 
 
 def comparator_for(o: "Observable") -> Callable[[Any, Any], tuple[bool, str]]:
-    """Resolve a comparator by name.  A1-P1-1: an unknown name is a HarnessError,
-    never a silent fallback to `close` — `comparator="banana"` used to be
-    treated as `close` and PASSED registry validation."""
-    if o.comparator == "exact":
-        return cmp_exact
-    if o.comparator == "close":
-        return cmp_close(o.atol, o.rtol)
-    raise HarnessError(
-        f"observable {o.name!r}: unknown comparator {o.comparator!r}; "
-        f"known: {COMPARATORS}")
+    """Resolve the validated comparator contract for one observable."""
+    tolerance_for(o)
+    def _c(a, b):
+        result = compare_observable(o, a, b)
+        return result.ok, result.detail
+    return _c
 
 
 def cmp_close(atol: float, rtol: float) -> Callable[[Any, Any], tuple[bool, str]]:
     def _c(a, b):
-        ok = bool(np.allclose(np.asarray(a, dtype=float),
-                              np.asarray(b, dtype=float),
-                              atol=atol, rtol=rtol, equal_nan=True))
-        return ok, ("" if ok else
-                    f"not close (atol={atol}, rtol={rtol}): {a!r} vs {b!r}")
+        result = (compare_scalar(a, b, comparator="close", atol=atol, rtol=rtol)
+                  if np.ndim(a) == 0 and np.ndim(b) == 0
+                  else compare_array(a, b, comparator="close", atol=atol, rtol=rtol))
+        return result.ok, result.detail
     return _c
 
 
@@ -707,9 +885,8 @@ def validate_registry(cases: Sequence[CaseSpec]) -> list[str]:
                            f"{len(applicable)} applicable surface(s); it can only "
                            f"SKIP and would never gate")
         for o in c.observables:
-            if o.comparator not in COMPARATORS:
-                bad.append(f"{cid}/{o.name}: unknown comparator "
-                           f"{o.comparator!r}; known: {COMPARATORS}")
+            for violation in tolerance_violations(o):
+                bad.append(f"{cid}/{o.name}: {violation}")
             if o.status == "EXECUTED" and o.source not in IMPLEMENTED_SOURCES:
                 bad.append(f"{cid}/{o.name}: source {o.source!r} is declarable "
                            f"but not executable by this runner; declare "
@@ -720,11 +897,6 @@ def validate_registry(cases: Sequence[CaseSpec]) -> list[str]:
                 bad.append(f"{cid}/{o.name}: access {o.access!r} not in {ACCESS}")
             if not (o.status in OBS_STATUS or o.status.startswith("DEFERRED:")):
                 bad.append(f"{cid}/{o.name}: status {o.status!r} invalid")
-            if o.comparator == "close" and not o.rationale:
-                bad.append(f"{cid}/{o.name}: floating comparator needs a rationale")
-            if o.comparator == "close" and o.atol == 0.0 and o.rtol == 0.0:
-                bad.append(f"{cid}/{o.name}: 'close' with atol=rtol=0 is 'exact' "
-                           f"in disguise")
             if o.source == "ARTIST_FALLBACK" and not o.rationale:
                 bad.append(f"{cid}/{o.name}: ARTIST_FALLBACK needs a stated reason")
         if c.purpose == "INVARIANCE" and c.oracle_kind == "CORRECTNESS":
@@ -745,6 +917,7 @@ class CaseResult:
     payload_paths: dict = field(default_factory=dict)   # surface -> path
     observed: dict = field(default_factory=dict)
     observable_contract: list = field(default_factory=list)   # A1-P1-4
+    comparisons: list = field(default_factory=list)            # A2 structured evidence
     executed_comparisons: int = 0                             # A1-P0-1
     skipped_surfaces: dict = field(default_factory=dict)
     wall_time_s: float = 0.0
@@ -800,9 +973,10 @@ def _contract(o: "Observable") -> dict:
     could not reconstruct WHICH comparison was executed, with what comparator or
     tolerance.  The declaration and the outcome must both be in the record.
     """
+    spec = tolerance_for(o)
     return {"name": o.name, "source": o.source, "access": o.access,
-            "path": o.path, "status": o.status, "comparator": o.comparator,
-            "atol": o.atol, "rtol": o.rtol, "rationale": o.rationale}
+            "path": o.path, "status": o.status, "comparator": spec.comparator,
+            "atol": spec.atol, "rtol": spec.rtol, "rationale": spec.rationale}
 
 
 def provenance() -> dict:
@@ -856,6 +1030,9 @@ def write_manifest(path: str, results: Sequence[CaseResult],
         c = by_id.get(r.case_id)
         rec = asdict(r)
         if c is not None:
+            gates, gate_reason = gate_decision(c, r)
+            rec["gates"] = gates
+            rec["gate_reason"] = gate_reason
             rec.update({
                 # A1-v05-P1-1: these two had NO reader and the hand-maintained
                 # audit certified them anyway.  A per-case schema_version is
@@ -996,12 +1173,14 @@ def run_consistency(case: CaseSpec, make_adf: Callable[[], Any]) -> CaseResult:
                 res.status = INVALID_FIXTURE
                 res.detail = str(exc)
                 return res
-            comp = comparator_for(o)
             res.observable_contract.append(_contract(o))
             for sname, v in vals.items():
                 if sname == ref_name:
                     continue
-                ok, why = comp(vals[ref_name], v)
+                result = compare_observable(o, vals[ref_name], v)
+                res.comparisons.append(comparison_evidence(
+                    o, result, reference_label=ref_name, candidate_label=sname))
+                ok, why = result.ok, result.detail
                 res.executed_comparisons += 1
                 if not ok:
                     res.status = FAIL
@@ -1081,9 +1260,11 @@ def run_correctness(case: CaseSpec, make_adf: Callable[[], Any],
                 res.status = INVALID_FIXTURE
                 res.detail = str(exc)
                 return res
-            comp = comparator_for(o)
             res.observable_contract.append(_contract(o))
-            ok, why = comp(expected[o.name], got)
+            result = compare_observable(o, expected[o.name], got)
+            res.comparisons.append(comparison_evidence(
+                o, result, reference_label="independent", candidate_label=surface))
+            ok, why = result.ok, result.detail
             res.executed_comparisons += 1
             if not ok:
                 res.status, res.detail = FAIL, f"{o.name}: {why}"
@@ -1168,6 +1349,10 @@ def gate_decision(case: "CaseSpec", result: "CaseResult") -> tuple:
     if key in GATE_MATRIX:
         return GATE_MATRIX[key]
     if result.status == PASS:
+        if case.purpose in ("INVARIANCE", "CORRECTNESS") \
+                and result.executed_comparisons == 0:
+            return True, ("PASS with zero executed comparisons; a machine-gated "
+                          "numerical case proved no observable")
         return False, "passed"
     if result.status == FAIL:
         # ERROR_CONTRACT proves a refusal still happens; its known_bug_id is

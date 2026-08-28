@@ -784,8 +784,8 @@ def test_a1_v07_complete_declared_set_still_passes():
     """Positive control: a rule that gated everything would pass the three
     falsifiers above and be useless."""
     cases = [_base_case(case_id="A"), _base_case(case_id="B")]
-    results = [H.CaseResult(case_id="A", status=H.PASS),
-               H.CaseResult(case_id="B", status=H.PASS)]
+    results = [H.CaseResult(case_id="A", status=H.PASS, executed_comparisons=1),
+               H.CaseResult(case_id="B", status=H.PASS, executed_comparisons=1)]
     assert H.strict_exit_code(results, cases) == 0
 
 
@@ -860,8 +860,15 @@ def test_a1_v07_gate_matrix_asserts_the_expected_verdict(applicable, status, exp
     wrong verdict passed.  This pins the policy, not its shape."""
     case = _base_case(gate="ENVIRONMENT_GATED", applicable=applicable,
                       applicability_reason="r" if not applicable else "")
-    gates, why = H.gate_decision(case, H.CaseResult(case_id=case.case_id,
-                                                    status=status))
+    result = H.CaseResult(
+        case_id=case.case_id,
+        status=status,
+        # A2 makes a PASS-with-zero-comparisons a false green.  This older
+        # A1 gate-policy matrix is not testing that invariant; its PASS rows
+        # therefore model a genuine successful numerical comparison.
+        executed_comparisons=1 if status == "PASS" else 0,
+    )
+    gates, why = H.gate_decision(case, result)
     assert gates is expected, f"({applicable}, {status}): {why}"
     assert why
 
@@ -961,7 +968,323 @@ def test_a1_v08_complete_run_still_passes():
     """Positive control: an authority that gated everything would satisfy every
     falsifier above and be useless."""
     cases = [_base_case(case_id="A"), _base_case(case_id="B")]
-    results = [H.CaseResult(case_id="A", status=H.PASS),
-               H.CaseResult(case_id="B", status=H.PASS)]
+    results = [H.CaseResult(case_id="A", status=H.PASS, executed_comparisons=1),
+               H.CaseResult(case_id="B", status=H.PASS, executed_comparisons=1)]
     rec = H.reconcile(results, cases)
     assert rec["exit_code"] == 0 and rec["gaps"] == [] and rec["gating"] == []
+
+
+# ── 14. PHASE_13_77 A2 — numerical comparator/tolerance framework ──────────
+
+
+def test_a2_01_scalar_exact_pass_and_fail():
+    assert H.compare_scalar(7, 7, comparator="exact").ok
+    bad = H.compare_scalar(7, 8, comparator="exact")
+    assert not bad.ok and "exact mismatch" in bad.detail
+
+
+def test_a2_02_scalar_close_atol_boundary():
+    assert H.compare_scalar(1.0, 1.000001, comparator="close",
+                            atol=2e-6, rtol=0.0).ok
+    assert not H.compare_scalar(1.0, 1.000001, comparator="close",
+                                atol=5e-7, rtol=0.0).ok
+
+
+def test_a2_03_scalar_close_rtol_boundary():
+    assert H.compare_scalar(100.0, 100.5, comparator="close",
+                            atol=0.0, rtol=1e-2).ok
+    assert not H.compare_scalar(100.0, 100.5, comparator="close",
+                                atol=0.0, rtol=1e-3).ok
+
+
+def test_a2_04_scalar_nan_and_infinity_rules():
+    assert H.compare_scalar(np.nan, np.nan, comparator="exact").ok
+    assert H.compare_scalar(np.nan, np.nan, comparator="close",
+                            atol=1e-12, rtol=1e-12).ok
+    assert H.compare_scalar(np.inf, np.inf, comparator="close",
+                            atol=1e-12, rtol=1e-12).ok
+    assert not H.compare_scalar(np.inf, -np.inf, comparator="close",
+                                atol=1e-12, rtol=1e-12).ok
+
+
+def test_a2_05_scalar_refuses_array_nonnumeric_and_unknown():
+    with pytest.raises(H.HarnessError, match="scalar values only"):
+        H.compare_scalar([1.0], [1.0], comparator="exact")
+    with pytest.raises(H.HarnessError, match="real floating scalars"):
+        H.compare_scalar("a", "a", comparator="close", atol=1e-6)
+    with pytest.raises(H.HarnessError, match="unknown comparator"):
+        H.compare_scalar(1, 1, comparator="banana")
+
+
+def test_a2_06_array_shape_is_exact():
+    bad = H.compare_array([1, 2], [[1, 2]], comparator="exact")
+    assert not bad.ok and "shape mismatch" in bad.detail
+
+
+def test_a2_07_array_exact_reports_mismatch_coordinates():
+    bad = H.compare_array([[1, 2], [3, 4]], [[1, 9], [3, 8]],
+                          comparator="exact")
+    assert not bad.ok
+    assert bad.mismatch_count == 2
+    assert bad.mismatch_indices == ((0, 1), (1, 1))
+
+
+def test_a2_08_array_close_elementwise_and_nan():
+    a = np.array([1.0, np.nan, 100.0])
+    b = np.array([1.0 + 5e-7, np.nan, 100.5])
+    assert H.compare_array(a, b, comparator="close",
+                           atol=1e-6, rtol=1e-2).ok
+    bad = H.compare_array(a, b, comparator="close",
+                          atol=1e-8, rtol=1e-3)
+    assert not bad.ok and bad.mismatch_indices == ((2,),)
+
+
+def test_a2_09_array_close_rejects_non_numeric():
+    with pytest.raises(H.HarnessError, match="real floating arrays"):
+        H.compare_array(["a"], ["a"], comparator="close", atol=1e-6)
+
+
+def test_a2_10_a1_comparator_api_remains_compatible():
+    assert H.cmp_exact([1, 2], [1, 2]) == (True, "")
+    close = H.cmp_close(1e-6, 0.0)
+    assert close([1.0, 2.0], [1.0, 2.0 + 5e-7]) == (True, "")
+
+
+def test_a2_11_tolerance_exact_contract_is_valid():
+    o = H.Observable("n", "STATS", "FLAT", "n")
+    assert H.tolerance_for(o) == H.ToleranceSpec("exact", 0.0, 0.0, "")
+
+
+def test_a2_12_tolerance_close_contract_is_valid():
+    o = H.Observable("mean", "STATS", "FLAT", "mean", comparator="close",
+                     atol=1e-9, rtol=1e-6, rationale="float reduction")
+    assert H.tolerance_for(o) == H.ToleranceSpec(
+        "close", 1e-9, 1e-6, "float reduction")
+
+
+def test_a2_13_negative_atol_is_refused():
+    o = H.Observable("mean", "STATS", "FLAT", "mean", comparator="close",
+                     atol=-1.0, rtol=1e-6, rationale="x")
+    assert any("non-negative" in x for x in H.tolerance_violations(o))
+
+
+def test_a2_14_negative_rtol_is_refused():
+    o = H.Observable("mean", "STATS", "FLAT", "mean", comparator="close",
+                     atol=1e-6, rtol=-1.0, rationale="x")
+    assert any("non-negative" in x for x in H.tolerance_violations(o))
+
+
+def test_a2_15_nan_tolerance_is_refused():
+    o = H.Observable("mean", "STATS", "FLAT", "mean", comparator="close",
+                     atol=float("nan"), rtol=1e-6, rationale="x")
+    assert any("finite" in x for x in H.tolerance_violations(o))
+
+
+def test_a2_16_infinite_tolerance_is_refused():
+    o = H.Observable("mean", "STATS", "FLAT", "mean", comparator="close",
+                     atol=1e-6, rtol=float("inf"), rationale="x")
+    assert any("finite" in x for x in H.tolerance_violations(o))
+
+
+def test_a2_17_exact_cannot_carry_ignored_tolerance():
+    o = H.Observable("n", "STATS", "FLAT", "n", comparator="exact", atol=1.0)
+    assert any("exact comparator" in x for x in H.tolerance_violations(o))
+
+
+def test_a2_18_close_zero_tolerance_is_refused():
+    o = H.Observable("mean", "STATS", "FLAT", "mean", comparator="close",
+                     rationale="x")
+    assert any("exact' in disguise" in x for x in H.tolerance_violations(o))
+
+
+def test_a2_19_close_requires_rationale():
+    o = H.Observable("mean", "STATS", "FLAT", "mean", comparator="close",
+                     atol=1e-6)
+    assert any("rationale" in x for x in H.tolerance_violations(o))
+
+
+def test_a2_20_unknown_comparator_is_refused():
+    o = H.Observable("mean", "STATS", "FLAT", "mean", comparator="banana")
+    assert any("unknown comparator" in x for x in H.tolerance_violations(o))
+
+
+def test_a2_21_compare_observable_uses_declared_scalar_contract():
+    o = H.Observable("mean", "STATS", "FLAT", "mean", comparator="close",
+                     atol=1e-6, rtol=0.0, rationale="float reduction")
+    assert H.compare_observable(o, 1.0, 1.0 + 5e-7).ok
+
+
+def test_a2_22_compare_observable_uses_declared_array_contract():
+    o = H.Observable("bins", "STATS", "ARRAY", "bins", comparator="close",
+                     atol=1e-6, rtol=0.0, rationale="float bins")
+    assert H.compare_observable(o, [1.0, 2.0], [1.0, 2.0 + 5e-7]).ok
+
+
+def test_a2_23_comparison_evidence_is_json_ready():
+    import json
+    o = H.Observable("mean", "STATS", "FLAT", "mean", comparator="close",
+                     atol=1e-6, rtol=1e-3, rationale="float reduction")
+    result = H.compare_observable(o, 100.0, 100.5)
+    rec = H.comparison_evidence(o, result, reference_label="draw",
+                                candidate_label="draw_batch")
+    assert rec["observable"] == "mean"
+    assert rec["comparator"] == "close"
+    assert rec["reference"] == "draw" and rec["candidate"] == "draw_batch"
+    json.dumps(rec)
+
+
+def test_a2_24_consistency_runner_records_structured_evidence(tmp_path):
+    class SyntheticSurfaces:
+        def draw(self, expr, **kw):
+            return None, None, {"n": 3}
+        def draw_batch(self, specs):
+            return {"c": {"stats": {"n": 3}}}
+
+    case = _base_case(case_id="A2-CONSISTENCY")
+    res = H.run_consistency(case, SyntheticSurfaces)
+    assert res.status == H.PASS, res.detail
+    assert res.executed_comparisons == 1
+    assert len(res.comparisons) == 1
+    doc = H.write_manifest(str(tmp_path / "a2.json"), [res], [case])
+    assert doc["cases"][0]["comparisons"][0]["ok"] is True
+
+
+def test_a2_25_correctness_runner_records_structured_evidence():
+    class SyntheticSurface:
+        df = pd.DataFrame({"x": [1.0, 2.0, 3.0]})
+        def draw(self, expr, **kw):
+            return None, None, {"n": 3}
+
+    case = _base_case(
+        case_id="A2-CORRECTNESS", purpose="CORRECTNESS",
+        oracle_kind="CORRECTNESS", surfaces_under_test=("draw",),
+        figure_contract=_full_figure_contract(
+            "A2-CORRECTNESS", proof_kind="CORRECTNESS"),
+        observables=(H.Observable("n", "INDEPENDENT", "FLAT", "n"),))
+    res = H.run_correctness(
+        case, SyntheticSurface, lambda df: {"n": len(df)},
+        raw_factory=lambda: pd.DataFrame({"x": [1.0, 2.0, 3.0]}))
+    assert res.status == H.PASS, res.detail
+    assert res.executed_comparisons == 1
+    assert res.comparisons[0]["reference"] == "independent"
+
+
+def test_a2_26_pass_without_comparison_fails_strict_gate_and_manifest(tmp_path):
+    case = _base_case(case_id="A2-ZERO")
+    result = H.CaseResult(case_id=case.case_id, status=H.PASS,
+                          executed_comparisons=0)
+    assert H.strict_exit_code([result], [case]) == 1
+    doc = H.write_manifest(str(tmp_path / "zero.json"), [result], [case])
+    assert doc["cases"][0]["gates"] is True
+    assert "zero executed comparisons" in doc["cases"][0]["gate_reason"]
+
+
+def test_a2_27_intentional_numeric_corruption_changes_gate_zero_to_one():
+    case = _base_case(case_id="A2-MUTATION")
+    o = case.observables[0]
+    good_cmp = H.compare_observable(o, 10, 10)
+    bad_cmp = H.compare_observable(o, 10, 11)
+    good = H.CaseResult(case_id=case.case_id, status=H.PASS,
+                        executed_comparisons=1,
+                        comparisons=[H.comparison_evidence(
+                            o, good_cmp, reference_label="reference",
+                            candidate_label="candidate")])
+    bad = H.CaseResult(case_id=case.case_id, status=H.FAIL,
+                       detail=bad_cmp.detail, executed_comparisons=1,
+                       comparisons=[H.comparison_evidence(
+                           o, bad_cmp, reference_label="reference",
+                           candidate_label="candidate")])
+    assert H.strict_exit_code([good], [case]) == 0
+    assert H.strict_exit_code([bad], [case]) == 1
+
+
+def test_a2_28_direct_exact_comparison_rejects_nonzero_tolerance():
+    with pytest.raises(H.HarnessError, match="exact comparator"):
+        H.compare_scalar(1, 1, comparator="exact", atol=1.0)
+    with pytest.raises(H.HarnessError, match="exact comparator"):
+        H.compare_array([1], [1], comparator="exact", rtol=1.0)
+
+
+def test_a2_29_invalid_comparator_is_rejected_before_shape_comparison():
+    with pytest.raises(H.HarnessError, match="unknown comparator"):
+        H.compare_array([1, 2], [[1, 2]], comparator="banana")
+
+
+def _wider_than_float64_dtype():
+    """Return a real floating dtype with more precision than float64, if any."""
+    candidates = []
+    for name in ("longdouble", "float128"):
+        dtype = getattr(np, name, None)
+        if dtype is None:
+            continue
+        try:
+            finfo = np.finfo(dtype)
+        except (TypeError, ValueError):
+            continue
+        if finfo.eps < np.finfo(np.float64).eps:
+            candidates.append(dtype)
+    return candidates[0] if candidates else None
+
+
+def test_a2_30_extended_precision_scalar_mismatch_survives_close_and_gate():
+    """A2-v02-P0-1: do not narrow wider real floating scalars to float64."""
+    dtype = _wider_than_float64_dtype()
+    if dtype is None:
+        pytest.skip("platform has no real floating dtype wider than float64")
+
+    reference = dtype(1)
+    candidate = np.nextafter(reference, dtype(2), dtype=dtype)
+    delta = candidate - reference
+    atol = float(delta / dtype(2))
+    assert delta > atol
+    assert not bool(np.isclose(reference, candidate, atol=atol, rtol=0.0,
+                               equal_nan=True))
+
+    o = H.Observable("mean", "STATS", "FLAT", "mean", comparator="close",
+                     atol=atol, rtol=0.0, rationale="extended precision")
+    cmp = H.compare_observable(o, reference, candidate)
+    assert not cmp.ok, cmp
+
+    case = _base_case(case_id="A2-EXTENDED-SCALAR", observables=(o,))
+    result = H.CaseResult(
+        case_id=case.case_id, status=H.FAIL, detail=cmp.detail,
+        executed_comparisons=1,
+        comparisons=[H.comparison_evidence(
+            o, cmp, reference_label="reference", candidate_label="candidate")])
+    assert H.strict_exit_code([result], [case]) == 1
+
+
+def test_a2_31_extended_precision_array_mismatch_survives_close():
+    """A2-v02-P0-1 array path: preserve the input floating dtype."""
+    dtype = _wider_than_float64_dtype()
+    if dtype is None:
+        pytest.skip("platform has no real floating dtype wider than float64")
+
+    reference = np.array([dtype(1)], dtype=dtype)
+    candidate = np.nextafter(reference, np.array([dtype(2)], dtype=dtype))
+    delta = candidate[0] - reference[0]
+    atol = float(delta / dtype(2))
+    assert not bool(np.isclose(reference, candidate, atol=atol, rtol=0.0,
+                               equal_nan=True)[0])
+
+    cmp = H.compare_array(reference, candidate, comparator="close",
+                          atol=atol, rtol=0.0)
+    assert not cmp.ok
+    assert cmp.mismatch_count == 1
+    assert cmp.mismatch_indices == ((0,),)
+
+
+def test_a2_32_close_refuses_nonfloating_numeric_families_without_coercion():
+    """Unsupported numeric families must refuse rather than narrow silently."""
+    with pytest.raises(H.HarnessError, match="real floating scalars"):
+        H.compare_scalar(1 + 2j, 1 + 3j, comparator="close", atol=1e-6)
+    with pytest.raises(H.HarnessError, match="real floating arrays"):
+        H.compare_array(np.array([1 + 2j]), np.array([1 + 3j]),
+                        comparator="close", atol=1e-6)
+    with pytest.raises(H.HarnessError, match="real floating scalars"):
+        H.compare_scalar(np.int64(2**62), np.int64(2**62 + 1),
+                         comparator="close", atol=0.5)
+    with pytest.raises(H.HarnessError, match="real floating arrays"):
+        H.compare_array(np.array([2**62], dtype=np.int64),
+                        np.array([2**62 + 1], dtype=np.int64),
+                        comparator="close", atol=0.5)
