@@ -1774,3 +1774,154 @@ def test_a3_16_subframe_specific_mismatch_reaches_strict_gate(monkeypatch):
     assert failed[0]["mismatch_count"] == 1
     assert failed[0]["mismatch_indices"] == [[mutation["row"]]]
     assert H.strict_exit_code([bad], [case]) == 1
+
+# ── A3.9 selection + selection_vector differential-profile checkpoint ──────
+
+def _a3_selection_vector_frame(seed=137917):
+    """Fast synthetic analogue of the real time-series selection-vector gallery.
+
+    Exactly 84/120 rows survive the base selection.  Among those selected rows,
+    sector alternates between 13 (signal) and 20 (reference), so the two
+    selection-vector branches contain exactly 42 rows each and both populate
+    every broad time bin.
+    """
+    rng = np.random.default_rng(seed)
+    n = 120
+    idx = np.arange(n)
+    sector = np.where(idx % 2 == 0, 13.0, 20.0)
+    selected = idx < 84
+    time_s = np.linspace(0.0, 3600.0, n, dtype=np.float64)
+    # Give the two vector branches distinct central values, with a gentle time
+    # trend so wrong branch routing cannot be masked by a constant fixture.
+    ncl_its = (5.0 + 0.0008 * time_s
+               + np.where(sector == 13.0, 0.9, -0.6)
+               + rng.normal(0.0, 0.08, n))
+    frame = pd.DataFrame({
+        "nClITS": ncl_its,
+        "time_s": time_s,
+        "ncl": np.where(selected, 80, 50),
+        "dcar_tpc_vertex": rng.normal(0.0, 0.5, n),
+        "hasITSTPC": np.ones(n, dtype=np.int8),
+        "sector": sector,
+    })
+
+    base = ((frame["ncl"] > 60)
+            & (frame["dcar_tpc_vertex"].abs() < 10)
+            & frame["hasITSTPC"].astype(bool))
+    signal = (frame["sector"] - 13).abs() < 2
+    reference = ((frame["sector"] - 13).abs() >= 2) & (frame["sector"] < 36)
+    assert int(base.sum()) == 84 < len(frame)
+    assert int((base & signal).sum()) == 42
+    assert int((base & reference).sum()) == 42
+    assert not bool((base & signal & reference).any())
+    assert bool((base == (base & (signal | reference))).all())
+    return frame
+
+
+def _a3_selection_vector_adf(seed=137917):
+    return ADF(_a3_selection_vector_frame(seed=seed))
+
+
+def test_a3_17_selection_vector_case_declares_branch_resolved_observables():
+    case = next(c for c in H.a3_cases()
+                if c.case_id == "I2-SELECTION-VECTOR-01")
+    assert tuple(case.surfaces_under_test) == H.SURFACES
+    assert case.not_applicable == {}
+    assert case.canonical_spec == {
+        "expr": "nClITS:time_s",
+        "type": "profile",
+        "bins": 8,
+        "selection": "(ncl>60)&(abs(dcar_tpc_vertex)<10)&(hasITSTPC)",
+        "selection_vector": [
+            "(abs(sector-13)<2)",
+            "(abs(sector-13)>=2)&(sector<36)",
+        ],
+        "normalize": "delta",
+        "return_data": True,
+        "auto_title": True,
+    }
+    assert [(o.name, o.access, o.path) for o in case.observables] == [
+        ("x_center", "ARRAY", "normalize_data.x_center"),
+        ("signal_central", "ARRAY", "normalize_data.signal_central"),
+        ("signal_count", "ARRAY", "normalize_data.signal_count"),
+        ("reference_central", "ARRAY", "normalize_data.reference_central"),
+        ("reference_count", "ARRAY", "normalize_data.reference_count"),
+        ("value", "ARRAY", "normalize_data.value"),
+    ]
+    assert H.validate_registry(H.a3_cases()) == []
+
+
+def test_a3_18_selection_vector_same_spec_passes_all_three_surfaces():
+    case = next(c for c in H.a3_cases()
+                if c.case_id == "I2-SELECTION-VECTOR-01")
+    res = H.run_consistency(case, _a3_selection_vector_adf)
+    assert res.status == H.PASS, res.detail
+    assert set(res.payload_paths) == set(H.SURFACES)
+    # draw is reference; 2 candidate surfaces x 6 declared observables.
+    assert res.executed_comparisons == 12
+    assert len(res.comparisons) == 12
+    assert all(rec["ok"] for rec in res.comparisons), res.comparisons
+    assert int(np.asarray(res.observed["signal_count"]["draw"]).sum()) == 42
+    assert int(np.asarray(res.observed["reference_count"]["draw"]).sum()) == 42
+    assert H.strict_exit_code([res], [case]) == 0
+
+
+def test_a3_19_selection_vector_branch_mismatch_is_not_hidden_by_derived_value(monkeypatch):
+    """Independent falsification test for A3.9.
+
+    Construct a regression case that falsifies the implementation invariant:
+    change one signal-branch ``central`` bin on ``draw_figures`` only while
+    deliberately leaving the already-derived normalized ``value`` unchanged.
+    The existing A2 array comparator must still identify the branch-specific
+    mismatch and strict mode must fail.  This proves that A3.9 does not reduce
+    the vector contract to the final delta alone.
+    """
+    case = next(c for c in H.a3_cases()
+                if c.case_id == "I2-SELECTION-VECTOR-01")
+
+    good = H.run_consistency(case, _a3_selection_vector_adf)
+    assert good.status == H.PASS, good.detail
+    assert H.strict_exit_code([good], [case]) == 0
+
+    original = H.unwrap
+    mutation = {}
+
+    def corrupted(surface, result, **kw):
+        payload = original(surface, result, **kw)
+        if surface == "draw_figures" and isinstance(payload.stats, dict):
+            stats = dict(payload.stats)
+            table = stats["normalize_data"].copy(deep=True)
+            rows = np.flatnonzero(table["signal_count"].to_numpy() > 0)
+            assert len(rows) > 0
+            row = int(rows[len(rows) // 2])
+            mutation["row"] = row
+            mutation["derived_value_before"] = float(table.iloc[row]["value"])
+            table.iloc[row, table.columns.get_loc("signal_central")] += 0.25
+            # Intentionally DO NOT recompute ``value``.  A final-delta-only
+            # oracle would therefore false-green this regression.
+            mutation["derived_value_after"] = float(table.iloc[row]["value"])
+            stats["normalize_data"] = table
+            return H.Payload(surface, stats, payload.path)
+        return payload
+
+    monkeypatch.setattr(H, "unwrap", corrupted)
+    bad = H.run_consistency(case, _a3_selection_vector_adf)
+    assert bad.status == H.FAIL, bad.detail
+    assert "signal_central" in bad.detail
+
+    failed = [rec for rec in bad.comparisons if not rec["ok"]]
+    assert len(failed) == 1
+    assert failed[0]["observable"] == "signal_central"
+    assert failed[0]["mismatch_count"] == 1
+    assert failed[0]["mismatch_indices"] == [[mutation["row"]]]
+
+    # The derived delta is independently confirmed unchanged in the mutated
+    # payload.  run_consistency intentionally returns at the first failed
+    # observable, so later observables are not present in ``bad.observed``.
+    assert mutation["derived_value_after"] == pytest.approx(
+        mutation["derived_value_before"]
+    )
+    assert mutation["derived_value_before"] == pytest.approx(
+        good.observed["value"]["draw_figures"][mutation["row"]]
+    )
+    assert H.strict_exit_code([bad], [case]) == 1

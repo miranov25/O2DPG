@@ -592,8 +592,9 @@ def a3_cases() -> tuple[CaseSpec, ...]:
     A3.7 adds one canonical ``facet_by`` profile on the two surfaces that
     support faceting plus a separate refusal contract for ``draw_figures``.
     A3.8 adds one production-shaped subframe-qualified profile across all
-    three public draw surfaces.  Vectors and lazy/eager symmetry remain out
-    of scope.
+    three public draw surfaces.  A3.9 adds one production-shaped
+    ``selection`` + ``selection_vector`` differential profile across all three
+    surfaces.  ``weights_vector`` and lazy/eager symmetry remain out of scope.
     """
     hist_id = "I2-HIST-01"
     hist = CaseSpec(
@@ -972,7 +973,95 @@ def a3_cases() -> tuple[CaseSpec, ...]:
         reference_policy="named-immutable",
     )
 
-    return (hist, profile, group, facet, facet_refusal, subframe)
+    selection_vector_id = "I2-SELECTION-VECTOR-01"
+    selection_vector = CaseSpec(
+        case_id=selection_vector_id,
+        claim_id="I2",
+        title="same selected two-branch differential profile through all public draw surfaces",
+        claim=("draw(), draw_batch() and draw_figures() produce the same "
+               "branch-resolved and derived differential profile for one canonical "
+               "selection + selection_vector request"),
+        failure_means=("a public draw surface applies different base-selection, "
+                       "vector-branch, binning or normalization semantics to the same request"),
+        expected_visual=("one nClITS versus time_s differential profile built from "
+                         "the same signal/reference selection-vector branches"),
+        owner_on_failure="ADF",
+        purpose="INVARIANCE",
+        gate="CORE_MANDATORY",
+        oracle_kind="CONSISTENCY",
+        loading_mode="EAGER",
+        sample_mode="FULL",
+        canonical_spec={
+            "expr": "nClITS:time_s",
+            "type": "profile",
+            "bins": 8,
+            "selection": "(ncl>60)&(abs(dcar_tpc_vertex)<10)&(hasITSTPC)",
+            "selection_vector": [
+                "(abs(sector-13)<2)",
+                "(abs(sector-13)>=2)&(sector<36)",
+            ],
+            "normalize": "delta",
+            "return_data": True,
+            "auto_title": True,
+        },
+        applicable=True,
+        setup_contract=("frame contains numeric nClITS, time_s, ncl, "
+                        "dcar_tpc_vertex, hasITSTPC and sector; the base selection "
+                        "rejects some rows and the two selection_vector branches "
+                        "both contain selected rows; EAGER/FULL"),
+        preconditions=(
+            "base selection keeps a strict subset of input rows",
+            "both selection_vector branches contain selected rows",
+            "the two vector branches partition the selected synthetic fixture",
+            "nClITS and time_s are present and numeric",
+        ),
+        figure_contract=FigureContract(
+            expected_panels="one main profile plus the differential-normalization view",
+            panel_roles=("signal/reference profile comparison with delta normalization"),
+            expected_traces="two vector-source profiles plus derived differential",
+            expected_group_count="2 vector branches",
+            primary_comparison=("normalize_data x_center, signal/reference central values "
+                                "and counts, plus the derived delta value across "
+                                "draw/draw_batch/draw_figures"),
+            residual_definition=("candidate branch-resolved/derived observable minus "
+                                 "draw reference at the same normalize_data row"),
+            accepted_envelope=("branch counts exact; floating branch central values, "
+                               "bin centers and derived delta within declared tolerance"),
+            case_ids=(selection_vector_id,),
+            proof_kind="CONSISTENCY",
+        ),
+        surfaces_under_test=SURFACES,
+        observables=(
+            Observable("x_center", "STATS", "ARRAY", "normalize_data.x_center",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same profile bins; floating bin centers"),
+            Observable("signal_central", "STATS", "ARRAY",
+                       "normalize_data.signal_central",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same selected signal-vector rows; floating reduction"),
+            Observable("signal_count", "STATS", "ARRAY",
+                       "normalize_data.signal_count"),
+            Observable("reference_central", "STATS", "ARRAY",
+                       "normalize_data.reference_central",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same selected reference-vector rows; floating reduction"),
+            Observable("reference_count", "STATS", "ARRAY",
+                       "normalize_data.reference_count"),
+            Observable("value", "STATS", "ARRAY", "normalize_data.value",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same delta transform of the two vector-source profiles"),
+        ),
+        non_claims=(
+            "cross-surface agreement is not an independent mathematical correctness proof",
+            "this checkpoint does not cover weights_vector",
+            "return_data=True is used only to expose branch-resolved numerical observables",
+        ),
+        negative_control=("FAMILY_MUTATION:A3-SELECTION-VECTOR-BRANCH-"
+                          "PROFILE-CORRUPTION"),
+        reference_policy="named-immutable",
+    )
+
+    return (hist, profile, group, facet, facet_refusal, subframe, selection_vector)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
