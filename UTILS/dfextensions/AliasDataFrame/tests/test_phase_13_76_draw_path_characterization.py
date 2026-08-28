@@ -6861,7 +6861,7 @@ class TestB32Round11cMaskCarriage:
         main.add_alias("d", "(S.v + x).cumsum()", fill_value=1)
         _M = _adf_module()
         _orig = _M._expression_is_row_local
-        _M._expression_is_row_local = lambda expr: (True, None)
+        _M._expression_is_row_local = lambda expr, *args, **kwargs: (True, None)
         try:
             with pytest.raises(Exception) as ei:
                 self._mat(main)
@@ -7386,16 +7386,50 @@ class TestB32Round11eDrawBatchAsymmetricControl:
 
     def test_b32_268_draw_batch_asymmetric_missing_key_matches_the_oracle(
             self):
-        """The float leg: a missing key yields NaN natively, so no mask is
-        carried and the row is simply absent from the plot. The values that
-        ARE drawn must equal the eval oracle."""
+        """Decision 5 / AD-20 correction of the historical oracle.
+
+        This is a draw_batch expression-value control, not a getter contract.
+        The old test used get_alias_array("t") as truth and therefore pinned
+        the superseded getter behavior.  The first Decision-5 rewrite then
+        tried to route ``t`` through ``group_by``; that is also wrong because
+        dfdraw Class-2 channels require a materialized column.
+
+        Exercise the alias as the PLOTTED EXPRESSION with ``lazy=True`` so the
+        ADF draw plan materializes ``t`` and delegates that real column to
+        dfdraw.  Compare the delegated values against an independent fixture
+        oracle: child z=7 joins parent_run=1, hence t=[17,27]; parent_run=2
+        has no child key and remains NaN in the delegated floating frame.
+        """
+        import dfextensions.dfdraw as _dfd
+
         m = self._asym()
         m.add_alias("t", "C.z + x")
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            truth = np.asarray(m.get_alias_array("t"))
-        assert np.isnan(truth[2]), "the unmatched row must be undefined"
-        assert [float(v) for v in truth[:2]] == [17.0, 27.0]
+        seen, real = {}, _dfd.DFDraw.draw_batch
+
+        def _spy(plotter, *args, **kwargs):
+            seen["df"] = plotter.df.copy()
+            return real(plotter, *args, **kwargs)
+
+        _dfd.DFDraw.draw_batch = _spy
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                res = m.draw_batch(
+                    {"p": {"expr": "t", "type": "hist", "bins": 3}},
+                    lazy=True, verbose=False)
+        finally:
+            _dfd.DFDraw.draw_batch = real
+            plt.close("all")
+
+        assert res["_summary"]["failed"] == 0, res.get("_errors")
+        assert "t" in seen["df"].columns, list(seen["df"].columns)
+        vals = seen["df"]["t"].to_numpy(dtype=float)
+        assert len(vals) == 3
+        assert [float(v) for v in vals[:2]] == [17.0, 27.0], (
+            "matched rows must equal the hand-computed C.z+x oracle")
+        assert np.isnan(vals[2]), (
+            "the unmatched parent key must remain undefined in the delegated "
+            "draw_batch frame, not be fabricated by the getter policy")
 
     def test_b32_269_draw_batch_completes_on_the_asymmetric_shape(self):
         """The end-to-end control for the B3.2 claim: draw_batch does not
@@ -9797,12 +9831,6 @@ class TestB32bAcceptanceScaffold:
 
     # ---- family 5: conditional / fallback row-wise provenance ------------
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 5: requiredness is ROW-WISE, not a syntactic "
-        "union — a row whose selected branch never consults the absent "
-        "operand is DEFINED. Measured baseline failure: NameError, "
-        "\"Undefined function or variable 'where' in expression\", so family 5 "
-        "needs BOTH the supported conditional form AND row-wise requiredness.")
     def test_b32b_16_conditional_requiredness_is_row_wise(self):
         """`where(cond, a, S.v)` — the rows taking `a` never consult `S.v`,
         so their value is defined even though `S.v` is absent for some row.
@@ -9821,11 +9849,6 @@ class TestB32bAcceptanceScaffold:
             m.materialize_alias("d")
         assert [int(v) for v in m.df["d"].values] == [3, 200]
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 5: the complement — a row that DOES select the "
-        "absent operand is still undefined and still refuses, so the row-wise "
-        "refinement cannot become a blanket permission. Measured baseline "
-        "failure: NameError, \"Undefined function or variable 'where'\".")
     def test_b32b_16b_conditional_still_refuses_a_selected_absent_operand(self):
         m = A.AliasDataFrame(pd.DataFrame({
             "k": np.array([0, 9], np.int64),
@@ -9846,20 +9869,12 @@ class TestB32bAcceptanceScaffold:
     FALLBACK_FORMS = ("where(c, a, S.v)", "fillna(S.v, a)",
                       "coalesce(S.v, a)", "select(c, a, S.v)")
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 5 (MR-P1-5): every named conditional/"
-        "fallback form is EITHER supported with row-wise requiredness OR "
-        "refused by an ADF-owned error that names it as unsupported. A raw "
-        "NameError escaping the expression engine is neither. Measured "
-        "baseline failure: all four forms — where, fillna, coalesce, select "
-        "— raise NameError \"Undefined function or variable\", so the family "
-        "has no disposition at all.")
     def test_b32b_16c_every_fallback_form_is_supported_or_refused_cleanly(self):
         """MR-P1-5 / GPT27: revision 2 covered only `where`, so family 5 could
         have closed while `fillna` and `coalesce` still leaked a raw
         NameError to the physicist writing the alias."""
         mod = _adf_module()
-        root = getattr(mod, "ADFError", ValueError)
+        root = mod.ADFError
         undisposed = []
         for form in self.FALLBACK_FORMS:
             m = A.AliasDataFrame(pd.DataFrame({
@@ -9882,6 +9897,565 @@ class TestB32bAcceptanceScaffold:
                 undisposed.append(f"{form}: {type(exc).__name__} ({exc})")
         assert not undisposed, (
             "fallback forms with no disposition: " + "; ".join(undisposed))
+
+    def _fam5(self, cond, child_extra=None):
+        m = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 9], np.int64),
+            "a": np.array([100, 200], np.int64),
+            "c": np.array(cond)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch.df["v"] = np.array([3], dtype=np.int64)
+        if child_extra:
+            for _n, _v in child_extra.items():
+                ch.df[_n] = np.array(_v)
+        m.register_subframe("S", ch, index_columns=["k"])
+        return m
+
+    def _fam5_run(self, m, expr, dtype="int64"):
+        m.add_alias("d", expr, dtype=dtype)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            try:
+                m.materialize_alias("d")
+            except Exception as exc:      # noqa: BLE001 - the subject
+                return exc
+        return [int(v) for v in m.df["d"].values]
+
+    def test_b32b_16d_row_wise_requiredness_over_the_whole_condition_range(
+            self):
+        """STEP 5b — the boundary matrix, and it caught a real defect in my
+        own first implementation.
+
+        `b32b_16` drives ONE condition, `[False, True]`, where each branch is
+        taken by exactly one row. That leaves the two ENDS of the range
+        untested, and the all-true end was wrong: `where(c, a, S.v)` with `c`
+        everywhere true never looks at `S.v` at all, and the first version
+        still refused with "1 row(s) with no defined value". The cause was
+        that a name the walk never reaches had NO entry, and no entry meant
+        "consulted everywhere" rather than "consulted nowhere".
+
+        One condition value is not a criterion for a row-wise property. The
+        full range is.
+        """
+        cases = [
+            ([False, True], [3, 200], "one branch each — the b32b_16 case"),
+            ([True, True], [100, 200], "NEVER consults S.v — must succeed"),
+            ([True, False], None, "row 1 selects the absent operand"),
+            ([False, False], None, "row 1 selects it too"),
+        ]
+        for cond, expect, label in cases:
+            got = self._fam5_run(self._fam5(cond), "where(c, a, S.v)")
+            if expect is None:
+                assert isinstance(got, Exception), (
+                    f"{label}: expected a refusal, got {got}")
+                assert isinstance(got, _adf_module().RowLevelMissingnessError), (
+                    f"{label}: {type(got).__name__} is not row-level "
+                    f"missingness")
+            else:
+                assert got == expect, f"{label}: {got}"
+
+        # the refinement must not leak to expressions with NO conditional
+        for expr in ("S.v", "S.v * 2", "S.v + a"):
+            got = self._fam5_run(self._fam5([False, True]), expr)
+            assert isinstance(got, _adf_module().RowLevelMissingnessError), (
+                f"{expr!r} has no conditional, so every row consults S.v and "
+                f"it must still refuse: {got}")
+
+    def test_b32b_16e_the_condition_is_an_operand_too(self):
+        """STEP 5b — the soundness question row-wise requiredness creates.
+
+        If a row's CONDITION is itself undefined, ADF does not know which
+        branch that row takes, so it cannot claim the row is defined — and
+        picking a branch anyway would be a silent wrong result of exactly the
+        kind AD-19 forbids, arriving through a conditional instead of through
+        a default fill.
+
+        The walk therefore visits the condition with the FULL reachability
+        mask, never a narrowed one. This is the test that would fail first if
+        anyone ever "optimised" that.
+        """
+        m = self._fam5([False, True], child_extra={"flag": [True]})
+        got = self._fam5_run(m, "where(S.flag, a, a * 2)")
+        assert isinstance(got, _adf_module().RowLevelMissingnessError), (
+            "a row whose CONDITION is undefined must refuse; ADF cannot know "
+            f"which branch it takes: {got}")
+
+    def test_b32b_16f_the_forms_agree_and_compose(self):
+        """STEP 5b. `where`, `select`, `fillna` and `coalesce` are one
+        mechanism, not four: the fallback pair is rewritten into `where`
+        against the operand's own undefinedness mask, so there is a single
+        conditional to reason about and the row-wise walker needs no special
+        case for them. If they ever disagree, that rewrite has drifted.
+
+        Composition is asserted because the walker carries reachability DOWN
+        a tree, so a conditional inside a conditional, and a conditional
+        inside arithmetic, are the shapes where a per-node bug would show.
+        """
+        for form in ("where(c, a, S.v)", "select(c, a, S.v)",
+                     "fillna(S.v, a)", "coalesce(S.v, a)"):
+            got = self._fam5_run(self._fam5([False, True]), form)
+            assert got == [3, 200], f"{form}: {got}"
+
+        assert self._fam5_run(
+            self._fam5([False, True]),
+            "where(c, a, where(c, a, S.v))") == [3, 200], "nested"
+        assert self._fam5_run(
+            self._fam5([False, True]), "where(c, a, S.v) + 1") == [4, 201], (
+            "a conditional inside arithmetic")
+
+        # and with no subframe at all the forms are ordinary functions
+        p = A.AliasDataFrame(pd.DataFrame({
+            "x": np.array([1.0, 2.0, 3.0]),
+            "c": np.array([True, False, True])}))
+        p.add_alias("q", "where(c, x, -x)")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            p.materialize_alias("q")
+        assert list(p.df["q"].values) == [1.0, -2.0, 3.0]
+        assert list(np.asarray(p.eval("where(c, x, 0.0)"))) == [1.0, 0.0, 3.0]
+
+    def test_b32b_16l_adf_owns_its_generated_call(self):
+        """STEP 5b v03 — `P0-1` / `P2-1`. EXECUTED on the v02 bytes.
+
+        v02's fallback emitted a PUBLIC `where(...)` call, so ADF's own
+        generated operation went back through a namespace the user owns:
+
+            register_function("where", lambda c, a, b: b)
+            fillna(S.v, a)          -> published [3, 3]
+            a COLUMN named `where`  -> TypeError
+
+        And ADF-ness was a plain attribute, so a user callable carrying
+        `_adf_conditional` inherited ADF's proof and published [3, 3] too.
+
+        v03 emits the generated call against a freshly generated private name
+        bound to the primitive itself, and decides ADF-ness by `is`. A public
+        name the user has taken is then simply not ADF's function, so the
+        proof declines and the ordinary provenance guard runs.
+        """
+        mod = _adf_module()
+
+        def hijack(cond, a, b):
+            return b
+
+        for form in ("fillna", "coalesce"):
+            m = self._fam5([False, True])
+            m.register_function("where", hijack)
+            got = self._fam5_run(m, f"{form}(S.v, a)")
+            assert got == [3, 200], (
+                f"a user-owned `where` captured ADF's generated {form} "
+                f"rewrite: {got}")
+
+        # a physical column of that name must not break the rewrite either
+        m = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 9], np.int64),
+            "a": np.array([100, 200], np.int64),
+            "c": np.array([False, True]),
+            "where": np.array([1, 1], np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch.df["v"] = np.array([3], dtype=np.int64)
+        m.register_subframe("S", ch, index_columns=["k"])
+        assert self._fam5_run(m, "fillna(S.v, a)") == [3, 200], (
+            "a COLUMN named `where` broke ADF's generated rewrite")
+
+        # `P2-1`: the marker is not the identity
+        def spoof(cond, a, b):
+            return b
+        spoof._adf_conditional = "select"
+        m = self._fam5([False, True])
+        m.register_function("where", spoof)
+        got = self._fam5_run(m, "where(c, a, S.v)")
+        assert isinstance(got, mod.ADFError), (
+            f"a callable carrying the marker inherited ADF's proof: {got}")
+
+    def test_b32b_16m_nothing_unproven_is_hoisted(self):
+        """STEP 5b v03 — `P0-2` / `P1-1`. Both EXECUTED on the v02 bytes.
+
+        Binding evaluates a subexpression EARLY and removes it from the tree.
+        Both consequences were defects:
+
+            P0-2  `touch(a) + where(sel(a), a, S.v)` called `sel` BEFORE
+                  `touch`. `register_function` promises neither purity nor
+                  order-independence.
+            P1-1  the row-local gate inspects the rewritten tree:
+                      where(z - z.mean() > 0, a, v__S)   row-local FALSE
+                      where(__adf_bound_0__, a, v__S)    row-local TRUE
+                  Fix11c's fail-closed gate was disarmed by the rewrite that
+                  was supposed to be safe.
+
+        One rule closes both: hoist only what `_expression_is_row_local`
+        already admits — which excludes reductions AND every registered
+        callable — and let the gate inspect the UNBOUND expression. What
+        binding removes from the tree was proven safe before it was removed.
+        """
+        mod = _adf_module()
+
+        # P1-1: the gate must refuse the same thing before and after binding.
+        # v04's proof is runtime-identity-aware, so supply a genuine default
+        # namespace here; otherwise "no runtime binding supplied" would make
+        # this assertion pass before it ever reached the reduction we intend
+        # to test.
+        _probe = self._fam5([False, True])
+        _trusted = _probe._default_functions(include_registered=False)
+        assert not _adf_module()._expression_is_row_local(
+            "where(z - z.mean() > 0, a, v__S)",
+            env=dict(_trusted), trusted_functions=_trusted)[0], (
+            "fixture: the selector must be non-row-local because of mean(), "
+            "not because runtime identity was omitted")
+        m = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 9], np.int64),
+            "a": np.array([100, 200], np.int64),
+            "z": np.array([1.0, 5.0])}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch.df["v"] = np.array([3], dtype=np.int64)
+        m.register_subframe("S", ch, index_columns=["k"])
+        got = self._fam5_run(m, "where(z - z.mean() > 0, a, S.v)")
+        assert isinstance(got, mod.ADFError), (
+            f"a non-row-local selector was laundered behind a bound name and "
+            f"the Fix11c gate never saw it: {got}")
+
+        # P0-2: evaluation order is the source order, or nothing is hoisted
+        order = []
+
+        def touch(x):
+            order.append("touch")
+            return np.zeros(len(x), dtype=np.int64)
+
+        def sel(x):
+            order.append("sel")
+            return np.array([False, True])
+
+        m = self._fam5([False, True])
+        m.register_function("touch", touch)
+        m.register_function("sel", sel)
+        got = self._fam5_run(m, "touch(a) + where(sel(a), a, S.v)")
+        assert order[:2] == ["touch", "sel"], (
+            f"the selector was hoisted ahead of an earlier registered call, "
+            f"changing observable evaluation order: {order}")
+        assert isinstance(got, mod.ADFError), (
+            "an unhoisted selector cannot be refined, so the row stays "
+            f"undefined and must refuse: {got}")
+
+    def test_b32b_16n_unknown_na_fails_closed(self):
+        """STEP 5b v03 — `P1-2` (GPT29, Fabble5_7).
+
+        v02 collapsed "`pd.isna` raised" into the same `None` as "nothing is
+        NA", so an operand ADF could not inspect was treated as fully
+        defined — failing OPEN in the one place this increment is about
+        failing closed. Three states now, and UNKNOWN declines the binding.
+        """
+        assert _adf_module()._ISNA_UNKNOWN is not None
+
+        # A structured/record dtype: `pd.isna` raises at library level.
+        # Fabble5_7 enumerated it; my first fixture here was a hand-rolled
+        # object for which `pd.isna` quietly answers False, which proves
+        # nothing — the test needs a value the LIBRARY cannot answer for.
+        unanswerable = np.zeros(2, dtype=[("a", "i4"), ("b", "f4")])
+        with pytest.raises(TypeError):
+            pd.isna(unanswerable)
+
+        got = _adf_module()._isna_mask(unanswerable)
+        assert got is _adf_module()._ISNA_UNKNOWN, (
+            f"an uninspectable operand must be UNKNOWN, not 'no NA': {got!r}")
+        assert _adf_module()._isna_mask(np.array([1.0, 2.0])) is None, (
+            "…and a genuinely NA-free operand must still be None")
+
+    def test_b32b_16o_internal_primitive_identity_is_not_user_namespace(self):
+        """STEP 5b v04 — private proof identity cannot be overwritten publicly.
+
+        v03 stored the selector/fallback identities under
+        ``__adf_*_primitive__`` keys and then merged ``register_function`` on
+        top.  The spelling looked private, but the public API accepts arbitrary
+        names.  Replacing the selector key made ADF ``fillna`` publish the
+        unrepaired placeholder while the proof blessed the same user callable.
+
+        v04 keeps the identities outside the evaluation namespace entirely.
+        Registering either old key may create an ordinary user function binding,
+        but it cannot change what ADF's own fallback implementation calls.
+        """
+        def wrong_select(cond, a, b):
+            return b
+
+        def wrong_fallback(x, f):
+            return x
+
+        for key, fn in (("__adf_select_primitive__", wrong_select),
+                        ("__adf_fallback_primitive__", wrong_fallback)):
+            for form in ("fillna", "coalesce"):
+                m = self._fam5([False, True])
+                m.register_function(key, fn)
+                got = self._fam5_run(m, f"{form}(S.v, a)")
+                assert got == [3, 200], (
+                    f"registered {key!r} changed ADF's internal {form} "
+                    f"semantics: {got}")
+
+        base = self._fam5([False, True])._default_functions(
+            include_registered=False)
+        assert "__adf_select_primitive__" not in base
+        assert "__adf_fallback_primitive__" not in base
+
+    def test_b32b_16p_row_locality_follows_runtime_callable_identity(self):
+        """STEP 5b v04 — a trusted FUNCTION NAME is not a trusted callable.
+
+        v03 gated hoisting with ``_expression_is_row_local`` but that helper
+        classified calls by spelling.  A registered stateful function named
+        ``sin`` therefore inherited numpy.sin's proof and moved ahead of an
+        earlier ``touch`` call.  The same name-only hole also let a registered
+        ``where`` pass the primary Fix11c gate, leaving finite A/B probing as
+        the only defence even though that probe is explicitly not proof.
+        """
+        mod = _adf_module()
+        order = []
+        state = {"touched": False}
+
+        def touch(x):
+            order.append("touch")
+            state["touched"] = True
+            return np.zeros(len(x), dtype=np.int64)
+
+        def user_sin(x):
+            order.append("sin")
+            # Before touch row 1 selects clean ``a``; after touch it selects
+            # absent S.v.  Hoisting therefore changes the semantic branch.
+            return (np.array([1.0, 1.0]) if not state["touched"]
+                    else np.array([1.0, 0.0]))
+
+        m = self._fam5([False, True])
+        m.register_function("touch", touch)
+        m.register_function("sin", user_sin)
+        got = self._fam5_run(
+            m, "touch(a) + where(sin(a) > 0, a, S.v)")
+        assert order[:2] == ["touch", "sin"], (
+            f"registered sin inherited the default sin row-local proof and "
+            f"was hoisted: {order}")
+        assert isinstance(got, mod.ADFError), (
+            f"an unproven registered callable must refuse, not publish: {got}")
+
+        # Primary-gate check: a registered callable under a conditional spelling
+        # must not become row-local merely because its NAME is on ADF's list.
+        # Keep the user function deliberately cross-row; the primary gate must
+        # reject before any finite placeholder coincidence could be trusted.
+        def cross_row_where(cond, a, b):
+            return np.full(len(a), int(np.max(np.asarray(b)) < 10), dtype=np.int64)
+
+        m = self._fam5([False, True])
+        m.register_function("where", cross_row_where)
+        got = self._fam5_run(m, "where(c, a, S.v)")
+        assert isinstance(got, mod.ADFProvenanceUnsupportedError), (
+            f"registered where was certified row-local by spelling: {got}")
+        assert "not bound to" in str(got) or "not proven row-local" in str(got)
+
+    def test_b32b_16q_unknown_na_refuses_on_the_public_fallback_path(self):
+        """STEP 5b v04 — UNKNOWN must stay fail-closed through its consumer.
+
+        v03 made ``_isna_mask`` three-state, but the runtime fallback primitive
+        still passed the UNKNOWN sentinel to ``np.where``.  Depending on dtype
+        that either crashed in numpy or treated the opaque object as a truthy
+        scalar and selected the fallback everywhere.  This test calls the public
+        expression path, not only the helper that produces the sentinel.
+        """
+        mod = _adf_module()
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))
+
+        def structured(x):
+            out = np.zeros(len(x), dtype=[("a", "i4"), ("b", "f4")])
+            out["a"] = np.asarray(x)
+            return out
+
+        m.register_function("structured", structured)
+        for form in ("fillna", "coalesce"):
+            with pytest.raises(mod.ADFProvenanceUnsupportedError,
+                               match="cannot determine row-wise missingness"):
+                m.eval(f"{form}(structured(x), x)")
+
+    def test_b32b_16r_arithmetic_gating_refusal_names_the_conditional_remedy(self):
+        """F6: a correct fail-closed refusal must tell the user how to
+        express row-wise requiredness explicitly.  Arithmetic gating evaluates
+        both operands, so ``c*a + (1-c)*S.v`` must still refuse when ``S.v``
+        is structurally absent; the diagnostic should point to ``where``/
+        ``select`` rather than leaving the supported form undiscoverable.
+        """
+        mod = _adf_module()
+        m = self._fam5([True, True])
+        m.add_alias("d", "c*a + (1-c)*S.v", dtype="int64")
+        with pytest.raises(mod.RowLevelMissingnessError) as err:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                m.materialize_alias("d")
+        msg = str(err.value)
+        assert "where(condition" in msg
+        assert "row-wise requiredness" in msg
+        assert "arithmetic gating" in msg
+
+    def test_b32b_16h_the_proof_follows_the_BINDING_not_the_name(self):
+        """STEP 5b v02 — `F2` (GPT33, GPT29). EXECUTED on the v01 bytes.
+
+        `register_function()` accepts arbitrary names and registered functions
+        WIN the evaluation namespace. v01's analyzer keyed on the AST name
+        `where`, so a user's callable produced the value while ADF's
+        branch-selection semantics produced the proof. Measured on v01:
+
+            register_function("where", lambda c, a, b: b)
+            d = where(c, a, S.v)        -> published [3, 3]
+
+        The user's function returns `b` on EVERY row, so row 1 truly reads the
+        absent `S.v`. The analyzer believed row 1 took `a`, cleared the
+        residual mask, and the Fix11c fail-closed gate never ran — the gate
+        exists precisely for unclassified registered callables, and the bad
+        refinement disarmed it before it could fire.
+
+        The refinement is now conditional on the runtime object being ADF's
+        own primitive, so a user override falls back to the pre-5b syntactic
+        union and the ordinary provenance guard does its job.
+        """
+        mod = _adf_module()
+        for name in ("where", "select"):
+            m = self._fam5([False, True])
+            m.register_function(name, lambda cond, a, b: b)
+            got = self._fam5_run(m, f"{name}(c, a, S.v)")
+            assert isinstance(got, mod.ADFError), (
+                f"a registered {name!r} must not inherit ADF's row-wise "
+                f"proof; row 1 really does read the absent operand: {got}")
+        for name in ("fillna", "coalesce"):
+            m = self._fam5([False, True])
+            m.register_function(name, lambda x, f: x)
+            got = self._fam5_run(m, f"{name}(S.v, a)")
+            assert isinstance(got, mod.ADFError), (
+                f"a registered {name!r} returns its first operand unrepaired, "
+                f"so the absent row is still absent: {got}")
+
+    def test_b32b_16i_the_selector_is_evaluated_exactly_once(self):
+        """STEP 5b v02 — `F3` (GPT33; GPT34 independently). EXECUTED on v01.
+
+        v01 evaluated the selector twice: once inside the expression that
+        produced the value, once again to derive reachability. The public
+        `register_function()` contract promises no purity or determinism, so
+        the two evaluations could disagree. Measured on v01:
+
+            call 1 -> row 1 selects S.v   (the value contains the placeholder)
+            call 2 -> row 1 selects a     (the proof clears the dependency)
+            published [3, 3]
+
+        The selector is now evaluated ONCE and bound; the proof reads the
+        bound array rather than re-running the source. The call count is
+        asserted because "same value" and "same evaluation" are different
+        claims, and only the second one is structural.
+        """
+        mod = _adf_module()
+        calls = {"n": 0}
+
+        def flip(x):
+            calls["n"] += 1
+            return np.array([False, calls["n"] > 1])
+
+        m = self._fam5([False, True])
+        m.register_function("flip", flip)
+        got = self._fam5_run(m, "where(flip(a), a, S.v)")
+        assert isinstance(got, mod.ADFError), (
+            f"the FIRST evaluation selects the absent operand on row 1, so "
+            f"the row is undefined however the second one votes: {got}")
+        assert calls["n"] == 1, (
+            f"the selector must be evaluated once and reused; a proof derived "
+            f"from a second evaluation is a proof about a different "
+            f"expression (called {calls['n']} times)")
+
+    def test_b32b_16j_fallback_uses_RESULT_level_missingness(self):
+        """STEP 5b v02 — `F1` (GPT34, GPT29; GPT33 on the NA half).
+        EXECUTED on the v01 bytes.
+
+        v01 derived a fallback's trigger from the SYNTACTIC UNION of masks for
+        names appearing in its first operand. That is a different quantity
+        from "is this operand's RESULT undefined on this row", and STEP 5b
+        itself is what makes them differ — a conditional operand can already
+        be defined on a row whose masked name is absent. Measured on v01:
+
+            fillna(where(c, a, S.v), f)   c = [False, True]
+            expected [3, 200]   ->   published [3, 900]
+
+        Row 1 takes `a` inside the conditional, so nothing is missing and the
+        fallback must not fire. The trigger is now the operand's result-level
+        undefinedness — the reachability walk run on the operand itself — OR
+        its own NA, so `fillna` means one thing regardless of dtype.
+        """
+        for form in ("fillna", "coalesce"):
+            got = self._fam5_run(self._fam5([False, True]),
+                                 f"{form}(where(c, a, S.v), f)")
+            assert got == [3, 200], (
+                f"{form} over a conditional operand: row 1 is already defined "
+                f"by the conditional and must not be overwritten: {got}")
+            assert self._fam5_run(self._fam5([False, True]),
+                                  f"{form}(S.v, a)") == [3, 200], form
+
+        # ONE meaning of `fillna`, whatever the operand's dtype. v01 guarded
+        # on `dtype.kind in "fc"` and therefore did nothing at all for object
+        # and for every nullable dtype — including the row it exists to fix.
+        for label, vals in (("Int64", pd.array([pd.NA], dtype="Int64")),
+                            ("object", np.array([np.nan], dtype=object)),
+                            ("float64", np.array([np.nan]))):
+            m = A.AliasDataFrame(pd.DataFrame({
+                "k": np.array([0, 9], np.int64),
+                "a": np.array([100.0, 200.0])}))
+            ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+            ch.df["v"] = vals
+            m.register_subframe("S", ch, index_columns=["k"])
+            got = self._fam5_run(m, "fillna(S.v, a)")
+            assert [float(v) for v in got] == [100.0, 200.0], (
+                f"{label}: fillna silently did nothing — a matched NA on row "
+                f"0 and an absent row 1 must BOTH take the fallback: {got}")
+
+    def test_b32b_16k_generated_bindings_and_dependent_aliases_survive(self):
+        """STEP 5b v02 — `F4` (GPT34, GPT29). Two separate collision surfaces,
+        so two separate assertions.
+
+        FIRST: the namespace applies functions AFTER columns AND after
+        `context_override`, which is how a dependent alias reaches a batched
+        evaluation before publication. v01 guarded only `self.df.columns`.
+        Measured on v01: an alias named `where` through the batched path
+        raised "unsupported operand type(s) for +: 'function' and 'int'".
+
+        SECOND: the rewrite generates names for the arrays it binds. A fixed
+        prefix is an assumption about the user's column names, not a
+        guarantee, so the generator bumps until the name is actually free.
+        """
+        m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1.0, 2.0])}))
+        m.add_alias("where", "x + 1")
+        m.add_alias("q", "where + 2")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_aliases(pattern="q")
+        assert list(m.df["q"].values) == [4.0, 5.0], (
+            "an ALIAS named `where`, visible through context_override, was "
+            "replaced by the new builtin")
+
+        occupied = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 9], np.int64),
+            "a": np.array([100, 200], np.int64),
+            "c": np.array([False, True]),
+            "__adf_bound_0__": np.array([7, 7], np.int64)}))
+        ch = A.AliasDataFrame(pd.DataFrame({"k": np.array([0], np.int64)}))
+        ch.df["v"] = np.array([3], dtype=np.int64)
+        occupied.register_subframe("S", ch, index_columns=["k"])
+        occupied.add_alias("d", "where(c, a, S.v)", dtype="int64")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            occupied.materialize_alias("d")
+        assert [int(v) for v in occupied.df["d"].values] == [3, 200]
+        assert [int(v) for v in occupied.df["__adf_bound_0__"].values] == [7, 7], (
+            "a generated binding name overwrote a real user column")
+
+    def test_b32b_16g_a_column_named_where_is_not_shadowed(self):
+        """STEP 5b. The eval namespace puts FUNCTIONS AFTER COLUMNS, so an
+        unguarded injection of `where` would shadow a physicist's column of
+        that name and silently change what their alias means. Four new names
+        is four new collisions; the guard costs one `in`."""
+        m = A.AliasDataFrame(pd.DataFrame({
+            "where": np.array([1.0, 2.0]),
+            "coalesce": np.array([10.0, 20.0])}))
+        m.add_alias("q", "where + coalesce")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("q")
+        assert list(m.df["q"].values) == [11.0, 22.0], (
+            "a column named `where` must still be a column")
 
     # ---- family 8: bounded conversion-API audit --------------------------
 
@@ -10286,20 +10860,10 @@ class TestB32bAcceptanceScaffold:
             mod.DTypeOrigin.EXPLICIT_ALIAS)
         assert "scaled" not in m.df.columns
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 10 (AD-20 clause 4): the getter honours the "
-        "SAME configured fill that materialize_alias honours. Measured "
-        "baseline failure: assert nan == 0.0 — get_alias_series returns "
-        "[nan, nan, nan] while materialize_alias returns [0.0, 0.0, 0.0] for "
-        "the identical alias and the identical fill_value, because "
-        "_resolve_residual_undefinedness is reached with publishing=False "
-        "and the AR-7 final fill stage that the materializing path runs is "
-        "not run for the getter (AliasDataFrame.py:9611 records this as the "
-        "open B3.2b branch).")
     def test_b32b_18d_getter_honours_the_configured_alias_fill(self):
-        """Two public entry points, two answers, same input — the defect class
-        GPT30 filed as F10-P0-1. Round 11d closed it for the REFUSAL path and
-        left it open for the FILL path."""
+        """AD-20 clause 4: the ephemeral Series getter honours the same
+        configured final alias fill as materialize_alias, without publishing.
+        """
         m = self._all_undefined_frame()
         m.add_alias("scaled", "S.v * 2", fill_value=0.0)
         with warnings.catch_warnings():
@@ -10316,24 +10880,238 @@ class TestB32bAcceptanceScaffold:
         assert got == expected, (
             f"getter returned {got}, materialize_alias returned {expected} "
             f"for the same alias and the same fill")
+        assert "scaled" not in m.df.columns
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 10 (AD-20 clause 4, second half): with NO "
-        "configured handling, residual undefinedness is REFUSED CLEARLY "
-        "rather than returned as silent NaN. Measured baseline failure: "
-        "DID NOT RAISE — get_alias_series returns [nan, nan, nan] and the "
-        "caller cannot distinguish 'every key was absent' from 'the "
-        "arithmetic produced NaN' (AR-7 says those are different "
-        "conditions).")
     def test_b32b_18e_getter_refuses_unresolved_undefinedness(self):
+        """AD-20 clause 4: unresolved structural absence is not silent NaN."""
         mod = _adf_module()
-        root = getattr(mod, "ADFError", ValueError)
         m = self._all_undefined_frame()
         m.add_alias("scaled", "S.v * 2")
-        with pytest.raises(root):
+        with pytest.raises(mod.ADFError):
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 m.get_alias_series("scaled")
+
+    def test_b32b_18f_array_getter_honours_the_configured_alias_fill(self):
+        """AD-20 applies symmetrically to the public NumPy getter surface."""
+        m = self._all_undefined_frame()
+        m.add_alias("scaled", "S.v * 2", fill_value=0.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            got = list(m.get_alias_array("scaled"))
+        assert got == [0.0, 0.0, 0.0]
+        assert "scaled" not in m.df.columns
+
+    def test_b32b_18g_array_getter_refuses_unresolved_undefinedness(self):
+        """The public NumPy getter refuses the same unresolved absence."""
+        mod = _adf_module()
+        m = self._all_undefined_frame()
+        m.add_alias("scaled", "S.v * 2")
+        with pytest.raises(mod.ADFError):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                m.get_alias_array("scaled")
+
+    def test_b32b_18h_arithmetic_nan_is_not_misclassified_as_structural(self):
+        """AR-7 negative control: an unconsulted absent operand does not turn
+        an arithmetic NaN on the selected branch into structural absence.
+        """
+        m = self._all_undefined_frame()
+        m.df["c"] = np.array([False, False, False])
+        m.df["bad"] = np.array([-1.0, -1.0, -1.0])
+        m.add_alias("q", "where(c, S.v, sqrt(bad))")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            out = m.get_alias_series("q")
+        assert np.isnan(np.asarray(out, dtype=float)).all()
+        assert "q" not in m.df.columns
+
+    def test_b32b_18i_configured_fill_preserves_arithmetic_nan(self):
+        """Decision 5 negative control: alias fill resolves structural
+        absence only.  Pure arithmetic NaN remains NaN even when the alias has
+        a configured fill, on both non-materializing getter surfaces.
+        """
+        m = A.AliasDataFrame(pd.DataFrame({
+            "bad": np.array([-1.0, -1.0, -1.0], dtype=float)}))
+        m.add_alias("q", "sqrt(bad)", fill_value=0.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            series = m.get_alias_series("q")
+            array = m.get_alias_array("q")
+        assert np.isnan(np.asarray(series, dtype=float)).all(), (
+            f"configured fill changed arithmetic Series NaN: {series!r}")
+        assert np.isnan(np.asarray(array, dtype=float)).all(), (
+            f"configured fill changed arithmetic array NaN: {array!r}")
+        assert "q" not in m.df.columns
+
+    def test_b32b_18j_structural_fill_and_arithmetic_nan_stay_distinct(self):
+        """Decision 5 mixed control in one getter call: structural absence
+        is filled, while an independently produced arithmetic NaN remains NaN.
+        Series and array surfaces must agree.
+        """
+        m = A.AliasDataFrame(pd.DataFrame({
+            "key": np.array([1, 2], np.int64),
+            "c": np.array([True, False]),
+            "bad": np.array([-1.0, -1.0], dtype=float)}))
+        child = A.AliasDataFrame(pd.DataFrame({
+            "key": np.array([2], np.int64),
+            "v": np.array([5.0], dtype=float)}))
+        m.register_subframe("S", child, index_columns=["key"])
+        m.add_alias("q", "where(c, S.v, sqrt(bad))", fill_value=0.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            series = np.asarray(m.get_alias_series("q"), dtype=float)
+            array = np.asarray(m.get_alias_array("q"), dtype=float)
+        for got, label in ((series, "Series"), (array, "array")):
+            assert got[0] == 0.0, (
+                f"{label} did not fill the structural row: {got!r}")
+            assert np.isnan(got[1]), (
+                f"{label} replaced arithmetic NaN with structural fill: {got!r}")
+        assert "q" not in m.df.columns
+
+
+    @staticmethod
+    def _partially_undefined_getter_frame():
+        """Two rows: key 1 absent from S, key 2 matched to S.v=5."""
+        m = A.AliasDataFrame(pd.DataFrame({
+            "key": np.array([1, 2], np.int64),
+            "x": np.array([10.0, 20.0])}))
+        ch = A.AliasDataFrame(pd.DataFrame({
+            "key": np.array([2], np.int64),
+            "v": np.array([5.0], dtype=float)}))
+        m.register_subframe("S", ch, index_columns=["key"])
+        return m
+
+    def test_b32b_18k_failed_getter_retracts_structural_temp_before_fill_retry(self):
+        """Decision-5 lifecycle: an expression exception after scattering S.v
+        must not leave a representable-gap temporary that poisons the next
+        getter.  The retry with configured fill must still see the absent key.
+        """
+        m = self._partially_undefined_getter_frame()
+
+        def boom(v):
+            raise RuntimeError("intentional getter failure after join")
+
+        m.register_function("boom", boom)
+        m.add_alias("q", "S.v + boom(x)", fill_value=0.0)
+        with pytest.raises(RuntimeError, match="intentional getter failure"):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                m.get_alias_series("q")
+        assert "v__S" not in m.df.columns, (
+            "failed getter leaked its structural join temporary")
+
+        m.add_alias("r", "S.v * 2", fill_value=0.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            got = np.asarray(m.get_alias_series("r"), dtype=float)
+        np.testing.assert_allclose(got, np.array([0.0, 10.0]))
+
+    def test_b32b_18l_failed_getter_retracts_structural_temp_before_refusal_retry(self):
+        """Same failed-getter lifecycle, but the retry has no handling and
+        must therefore produce the ADF-owned Decision-5 refusal, not silent NaN.
+        """
+        mod = _adf_module()
+        m = self._partially_undefined_getter_frame()
+
+        def boom(v):
+            raise RuntimeError("intentional getter failure after join")
+
+        m.register_function("boom", boom)
+        m.add_alias("q", "S.v + boom(x)", fill_value=0.0)
+        with pytest.raises(RuntimeError):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                m.get_alias_array("q")
+        assert "v__S" not in m.df.columns
+
+        m.add_alias("r", "S.v * 2")
+        with pytest.raises(mod.ADFError):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                m.get_alias_array("r")
+
+    def test_b32b_18m_eval_preexisting_join_preserves_fill_getter_provenance(self):
+        """A joined column left by public eval() remains caller-visible, but
+        Decision-5 getter provenance must be reconstructed from the join rather
+        than inferred from whether the flattened column is newly created.
+        """
+        m = self._partially_undefined_getter_frame()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            raw = np.asarray(m.eval("S.v"), dtype=float)
+        assert np.isnan(raw[0]) and raw[1] == 5.0
+        assert "v__S" in m.df.columns
+        prior = m.df["v__S"].copy()
+
+        m.add_alias("q", "S.v", fill_value=0.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            series = np.asarray(m.get_alias_series("q"), dtype=float)
+            array = np.asarray(m.get_alias_array("q"), dtype=float)
+        np.testing.assert_allclose(series, np.array([0.0, 5.0]))
+        np.testing.assert_allclose(array, np.array([0.0, 5.0]))
+        assert "v__S" in m.df.columns, (
+            "getter deleted a pre-existing joined column owned by eval()")
+        pd.testing.assert_series_equal(m.df["v__S"], prior)
+
+    def test_b32b_18n_eval_preexisting_join_preserves_no_fill_refusal(self):
+        """Pre-existing joined representation must not turn unresolved
+        structural absence into silent NaN on either getter surface.
+        """
+        mod = _adf_module()
+        m = self._partially_undefined_getter_frame()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.eval("S.v")
+        assert "v__S" in m.df.columns
+        prior = m.df["v__S"].copy()
+
+        m.add_alias("q", "S.v")
+        for getter in (m.get_alias_series, m.get_alias_array):
+            with pytest.raises(mod.ADFError):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    getter("q")
+            assert "v__S" in m.df.columns
+            pd.testing.assert_series_equal(m.df["v__S"], prior)
+
+    def test_b32b_18o_nonrowlocal_structural_getter_with_fill_refuses(self):
+        """Fix11c must consume AD-20's structural-mask channel too.
+
+        A fill may resolve the structurally absent RESULT row only after ADF
+        proves that the absent operand cannot contaminate defined rows.  A
+        whole-column reduction over S.v is not row-local, so both getter
+        surfaces must refuse before the alias fill can turn the missing row
+        into an apparently valid result.
+        """
+        mod = _adf_module()
+        for getter_name in ("get_alias_series", "get_alias_array"):
+            m = self._partially_undefined_getter_frame()
+            m.add_alias("q", "S.v - S.v.mean()", fill_value=0.0)
+            with pytest.raises(mod.ADFProvenanceUnsupportedError,
+                               match="row-local"):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    getattr(m, getter_name)("q")
+
+    def test_b32b_18p_nonrowlocal_structural_getter_without_fill_refuses_at_gate(self):
+        """No-fill follows the same provenance gate, not the later resolver.
+
+        The safety classification is independent of whether the user supplied
+        a final-result fill.  In both cases the non-row-local expression must
+        be rejected as ADFProvenanceUnsupportedError before Decision-5
+        fill/refusal handling runs.
+        """
+        mod = _adf_module()
+        for getter_name in ("get_alias_series", "get_alias_array"):
+            m = self._partially_undefined_getter_frame()
+            m.add_alias("q", "S.v - S.v.mean()")
+            with pytest.raises(mod.ADFProvenanceUnsupportedError,
+                               match="row-local"):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    getattr(m, getter_name)("q")
 
     # ---- the remaining carried D_n items ---------------------------------
 

@@ -516,6 +516,15 @@ _ROW_LOCAL_FUNCTIONS = frozenset({
     'round', 'sin', 'sinh', 'sqrt', 'tan', 'tanh', 'trunc', 'uint', 'ulp',
 })
 
+#: B3.2b STEP 5b. The forms whose branches make requiredness ROW-WISE.
+#: `where`/`select` select by a condition; `fillna`/`coalesce` select by the
+#: undefinedness of their first operand. They are intentionally NOT in the
+#: unconditional row-local name set above: v04 admits them only when the
+#: runtime binding is the exact ADF-owned primitive.
+_CONDITIONAL_SELECT_FORMS = frozenset({'where', 'select'})
+_CONDITIONAL_FALLBACK_FORMS = frozenset({'fillna', 'coalesce'})
+_CONDITIONAL_FORMS = _CONDITIONAL_SELECT_FORMS | _CONDITIONAL_FALLBACK_FORMS
+
 #: AST node types admitted by the row-local gate. Everything absent is refused.
 _ROW_LOCAL_NODES = (
     ast.Expression, ast.Constant, ast.Name, ast.Load,
@@ -615,56 +624,363 @@ def _int64_key_cast_is_lossless(*arrays):
     return True
 
 
-def _expression_is_row_local(expr):
-    """Fail-closed proof that `expr` is row-local, hence mask-safe.
+def _bind_conditional_forms(expr, env, mask_for_expr, fresh_name,
+                            adf_select, adf_fallback, trusted_functions=None):
+    """Bind every conditional SELECTOR and every fallback OPERAND to a value,
+    once, and rewrite the tree to read those bindings.
+
+    B3.2b STEP 5b. The invariant the whole mechanism rests on:
+
+        THE PROOF AND THE VALUE MUST USE THE SAME ARRAY,
+        PRODUCED BY THE ADF-OWNED CALLABLE.
+
+    v02 restored that for `F1`/`F2`/`F3` and then broke a different one,
+    because rewriting the tree changes what every LATER consumer of the tree
+    sees. Four findings, one root, all executed on the v02 bytes:
+
+    ```text
+    P0-1  the generated fallback emitted a PUBLIC `where(...)` call, so a
+          user's `register_function("where", ...)` -- or a column of that
+          name -- captured ADF's own generated operation.
+          fillna(S.v, a) published [3, 3]; a column named `where` crashed.
+    P2-1  ADF-ness was a plain attribute, so a user callable carrying
+          `_adf_conditional` inherited ADF's proof. Published [3, 3].
+    P1-1  the row-local gate inspects the REWRITTEN expression, and binding
+          replaces a whole subtree with one name:
+              where(z - z.mean() > 0, a, v__S)   row-local -> FALSE
+              where(__adf_bound_0__, a, v__S)    row-local -> TRUE
+          Fix11c's fail-closed gate was disarmed by the rewrite.
+    P0-2  hoisting the selector moved its evaluation AHEAD of the rest of the
+          expression: `touch(a) + where(sel(a), ...)` called sel first.
+          `register_function` promises no purity and no order-independence.
+    ```
+
+    v03 closes all four with three rules, none of them a special case:
+
+    1. IDENTITY IS `is`, NEVER A NAME OR A MARKER. A form is ADF's only when
+       the runtime object IS the primitive passed in here.
+    2. THE GENERATED CALL IS PRIVATE. It is emitted against a freshly
+       generated name bound to the primitive itself, so no namespace a user
+       can reach — column, alias, override or registered function — can
+       intercept ADF's own rewrite.
+    3. HOIST ONLY WHAT IS PROVABLY ROW-LOCAL. A subexpression is evaluated
+       early only if `_expression_is_row_local` admits it, which excludes
+       reductions AND every registered callable. So nothing whose order or
+       purity is unknown is ever moved, and the row-local gate can no longer
+       be laundered: what binding removes from the tree was already proven
+       safe before it was removed.
+
+    Anything not bound is not refined, which is the pre-5b syntactic union.
+    """
+    try:
+        _tree = ast.parse(expr, mode='eval')
+    except SyntaxError:
+        return expr, {}, set()
+    _bindings = {}
+    # Names inside a BOUND SELECTOR. Binding replaces the selector subtree
+    # with one name, so those operands vanish from the tree the reachability
+    # walk sees -- and a masked operand the walk never sees is "consulted
+    # nowhere", i.e. silently defined. That is how the v02 binding fix broke
+    # `b32b_16e`, the very property STEP 5b added to pin: `where(S.flag, a,
+    # a*2)` with `S.flag` absent published [100, 200] instead of refusing.
+    # A selector operand is required on EVERY row -- ADF cannot know which
+    # branch a row takes if it cannot evaluate the selector for that row --
+    # so these names are forced back to full reach after the walk.
+    _forced = set()
+    _private = {}          # generated name -> the ADF primitive it is bound to
+
+    def _is_adf(node, primitive):
+        return (isinstance(node.func, ast.Name)
+                and env.get(node.func.id) is primitive)
+
+    def _bind(value):
+        _nm = fresh_name()
+        _bindings[_nm] = value
+        return ast.Name(id=_nm, ctx=ast.Load())
+
+    def _private_select():
+        for _nm, _fn in _private.items():
+            if _fn is adf_select:
+                return _nm
+        _nm = fresh_name()
+        _bindings[_nm] = adf_select
+        _private[_nm] = adf_select
+        return _nm
+
+    def _hoistable(node):
+        """May this subexpression be evaluated EARLY? (`P0-2`, v04)."""
+        _src = ast.unparse(node)
+        _runtime = dict(env, **_bindings)
+        _trusted = dict(trusted_functions or {})
+        # Generated private callable names are fresh and their exact object is
+        # known here; they are trusted by identity, never by spelling.
+        _trusted.update(_private)
+        _ok, _ = _expression_is_row_local(
+            _src, extra_functions=set(_private), env=_runtime,
+            trusted_functions=_trusted)
+        return _ok
+
+    def _value_of(node):
+        return eval(ast.unparse(node), {}, dict(env, **_bindings))
+
+    class _Binder(ast.NodeTransformer):
+        def visit_Call(self, node):
+            # POST-ORDER: an inner conditional is bound before an outer one
+            # reads its value, so a nested form is evaluated exactly once.
+            self.generic_visit(node)
+            if _is_adf(node, adf_select) and len(node.args) == 3 \
+                    and not node.keywords:
+                if not _hoistable(node.args[0]):
+                    return node          # unproven -> never hoisted, never refined
+                try:
+                    _cond = np.asarray(_value_of(node.args[0]), dtype=bool)
+                except Exception:
+                    return node
+                _forced.update(_names_in(node.args[0]))
+                node.args[0] = _bind(_cond)
+                return node
+            if _is_adf(node, adf_fallback) and len(node.args) == 2 \
+                    and not node.keywords:
+                if not _hoistable(node.args[0]):
+                    return node
+                try:
+                    _val = _value_of(node.args[0])
+                except Exception:
+                    return node
+                _na = _isna_mask(_val)
+                if _na is _ISNA_UNKNOWN:
+                    return node          # could not inspect -> fail closed
+                _src = ast.unparse(node.args[0])
+                # The IN-PROGRESS bindings must travel with it. Post-order
+                # means the operand's own selectors are already bound, and a
+                # walk that cannot see those bindings refuses to refine and
+                # falls back to the syntactic union -- which is exactly the
+                # `F1` defect, reintroduced one level down.
+                _absent = mask_for_expr(_src, dict(env, **_bindings),
+                                        _bindings, _forced)
+                if _absent is None and _na is None:
+                    return node.args[0]  # nothing can fire; the operand IS it
+                _trigger = _absent if _na is None else (
+                    _na if _absent is None else (_absent | _na))
+                return ast.Call(
+                    func=ast.Name(id=_private_select(), ctx=ast.Load()),
+                    args=[_bind(np.asarray(_trigger, dtype=bool)),
+                          node.args[1], _bind(_val)],
+                    keywords=[])
+            return node
+
+    _out = ast.fix_missing_locations(_Binder().visit(_tree))
+    return ast.unparse(_out), _bindings, _forced
+
+
+#: `_isna_mask` could not determine NA-ness. Distinct from None ("nothing is
+#: NA"), because the two must lead to opposite decisions.
+_ISNA_UNKNOWN = object()
+
+
+def _isna_mask(values):
+    """`pd.isna` as a bool array, None when nothing is NA, `_ISNA_UNKNOWN`
+    when the question could not be answered.
+
+    B3.2b STEP 5b v02. v01 used `np.isnan` behind a `dtype.kind in "fc"`
+    guard, so `fillna` SILENTLY DID NOTHING on object and on every pandas
+    nullable dtype — including on the very rows it exists to repair.
+    Measured on the v01 bytes: `fillna(S.v, a)` over an `Int64` child
+    returned `[<NA>, <NA>]`. `pd.isna` answers for all of them.
+    """
+    try:
+        _m = np.asarray(pd.isna(values), dtype=bool)
+    except Exception:
+        # v03 (`P1-2`, GPT29 + Fabble5_7). v02 collapsed "pd.isna raised" into
+        # the same `None` as "nothing is NA", so an operand ADF could not
+        # inspect was treated as fully defined -- fail OPEN in the one place
+        # the whole increment is about failing closed. A structured/record
+        # dtype raises at library level. Three states now, and the caller
+        # declines to bind on UNKNOWN.
+        return _ISNA_UNKNOWN
+    if _m.ndim == 0:
+        _m = _m.reshape(1)
+    return _m if _m.any() else None
+
+
+def _adf_select_primitive(cond, a, b):
+    """ADF-owned row-wise selector used by public where/select forms."""
+    return np.where(np.asarray(cond, dtype=bool), a, b)
+
+
+def _adf_fallback_primitive(x, fallback):
+    """ADF-owned fallback with one fail-closed NA contract for every dtype."""
+    _na = _isna_mask(x)
+    if _na is _ISNA_UNKNOWN:
+        # B3.2b STEP 5b v04: UNKNOWN is not "no NA".  Passing the sentinel to
+        # np.where made an uninspectable operand take the fallback everywhere
+        # (or crash with a backend dtype error).  Refuse under an ADF-owned
+        # type instead of claiming the result is defined.
+        raise ADFProvenanceUnsupportedError(
+            "ADF fillna/coalesce cannot determine row-wise missingness for "
+            "this operand dtype; refusing rather than applying a fallback "
+            "without a valid NA mask")
+    if _na is None:
+        return x
+    _base = (np.asarray(x, dtype=object)
+             if getattr(x, "dtype", None) is not None
+             and str(getattr(x, "dtype")) in ("object",) else x)
+    return np.where(_na, fallback, _base)
+
+
+# These identities are deliberately MODULE-LEVEL and are never sourced from
+# the user evaluation namespace.  register_function() may shadow any public
+# spelling, including names that look private; it cannot replace these objects.
+_ADF_SELECT_PRIMITIVE = _adf_select_primitive
+_ADF_FALLBACK_PRIMITIVE = _adf_fallback_primitive
+
+
+def _names_in(node):
+    """Every bare name read by a subexpression."""
+    return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+
+
+def _consulted_masks(expr, masked_names, bindings, n_rows, env=None,
+                      adf_select=None):
+    """For each masked column, the rows on which `expr` actually reads it.
+
+    B3.2b STEP 5b, the substance of `b32b_16`. Requiredness was a SYNTACTIC
+    UNION: a column referenced anywhere in an expression was required on every
+    row. For a conditional that is simply wrong —
+
+        where(c, a, S.v)     the rows where `c` is true never look at `S.v`
+
+    — and treating those rows as undefined refuses a computation that is
+    completely determined. The walk carries a REACHABILITY mask down the tree:
+    a branch of a conditional is reachable only where its condition selects it,
+    and a name is consulted exactly where its node is reachable.
+
+    v02: a branch is narrowed ONLY when the selector is a name this run BOUND
+    (see `_bind_conditional_forms`). Nothing is re-evaluated here, so the mask
+    the proof uses is by construction the array the value used. An unbound
+    selector — an unbindable expression, or a user-registered callable
+    occupying the name — narrows nothing and both branches take the full
+    reach, which is the pre-5b answer.
+
+    FAIL-CLOSED, like `_expression_is_row_local` and for the same reason: any
+    node this walker does not model passes the FULL reachability mask to its
+    children, so an unmodelled construct can only ever over-report
+    requiredness. The worst case is the pre-5b answer, never a wrong one.
+    """
+    try:
+        _tree = ast.parse(expr, mode='eval').body
+    except SyntaxError:
+        return {}
+    _all = np.ones(n_rows, dtype=bool)
+    # SEEDED AT ZERO, not left absent. A name the walk never reaches is
+    # consulted on NO row -- `where(c, a, S.v)` with `c` everywhere true never
+    # looks at `S.v` at all. Leaving it absent would fall back to "consulted
+    # everywhere" and refuse a computation with nothing undefined in it, which
+    # is the exact defect this walker exists to remove. Measured: c=[T,T]
+    # refused with "1 row(s) with no defined value" before this line existed.
+    _out = {_n: np.zeros(n_rows, dtype=bool) for _n in masked_names}
+    _env = env or {}
+
+    def _mark(name, reach):
+        if name not in masked_names:
+            return
+        _out[name] = _out[name] | reach
+
+    def _selector_of(node):
+        """The BOUND array for a conditional call, or None -> do not refine."""
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and len(node.args) == 3 and not node.keywords):
+            return None
+        # IDENTITY, not a name and not a marker (`P2-1`): a user callable
+        # carrying `_adf_conditional` inherited ADF's proof in v02 and
+        # published a wrong value. `adf_select` is the primitive itself.
+        if adf_select is None or _env.get(node.func.id) is not adf_select:
+            return None
+        _sel = node.args[0]
+        if not (isinstance(_sel, ast.Name) and _sel.id in bindings):
+            return None
+        try:
+            _c = np.asarray(bindings[_sel.id], dtype=bool)
+        except (TypeError, ValueError):
+            return None
+        if _c.shape != (n_rows,):
+            try:
+                _c = np.broadcast_to(_c, (n_rows,))
+            except ValueError:
+                return None
+        return _c
+
+    def _walk(node, reach):
+        if not reach.any():
+            return                      # unreachable: consults nothing
+        if isinstance(node, ast.Name):
+            _mark(node.id, reach)
+            return
+        _cond = _selector_of(node)
+        if _cond is not None:
+            _walk(node.args[0], reach)              # the selector: FULL reach
+            _walk(node.args[1], reach & _cond)
+            _walk(node.args[2], reach & ~_cond)
+            return
+        for _child in ast.iter_child_nodes(node):
+            _walk(_child, reach)
+
+    _walk(_tree, _all)
+    return _out
+
+
+def _expression_is_row_local(expr, extra_functions=frozenset(), *,
+                             env=None, trusted_functions=None):
+    """Fail-closed proof that ``expr`` is row-local, hence mask-safe.
+
+    B3.2b STEP 5b v04: a CALL is admitted only when its *runtime binding* is
+    the callable whose row-locality ADF actually proved.  Earlier revisions
+    proved the spelling (``sin``, ``where``...) while ``register_function``
+    was allowed to replace that spelling with arbitrary user code.  That made
+    a registered stateful callable hoistable merely by borrowing a trusted
+    name.  ``env`` and ``trusted_functions`` close that gap by identity.
+
+    The evaluation path always supplies both mappings.  Without them, any
+    expression containing a call is deliberately NOT proven row-local; this
+    private helper must never silently fall back to a weaker name-only proof.
 
     Returns ``(True, None)`` when every node of the expression is admitted, and
-    ``(False, reason)`` otherwise. NEVER raises on a malformed expression — a
-    syntax error is simply "not proven", which is the safe answer.
-
-    WHY A CLASSIFIER AT ALL, AFTER I ARGUED AGAINST ONE. The coder's v1 design
-    note objected that syntactic classification is what failed in correction
-    rounds 5-10. The design-review panel overruled it and was right: those
-    lists were FAIL-OPEN — accept unless known bad — so every construct nobody
-    had thought of was silently admitted. This one is FAIL-CLOSED. The failure
-    mode is inverted: an unlisted construct is refused, so the worst outcome of
-    an incomplete list is an unnecessary refusal, never a wrong number.
-
-    WHAT THIS BUYS. `ast.Attribute` is not admitted, which alone closes every
-    shape measured as reachable on the baseline with no registered function:
-
-        x.cumsum()      x - x.mean()      x / x.sum()      np.<anything>
-
-    A syntactic *deny*-list keyed on function names could not have caught
-    `x - x.mean()`, which is exactly why the fail-open form kept failing.
-
-    SCOPE — this gate only ever runs when a residual undefinedness mask has
-    survived onto a plain integer/Boolean column. On the pre-11c bytes that
-    case refuses UNCONDITIONALLY for every expression, so nothing that works
-    today can be broken here; 11c is strictly more permissive than its
-    predecessor.
+    ``(False, reason)`` otherwise.  Syntax errors are simply not proven.
     """
     try:
         _tree = ast.parse(expr, mode='eval')
     except SyntaxError as _e:
         return False, f"expression could not be parsed ({_e.msg})"
 
+    _extra = set(extra_functions or ())
+    _runtime = env if env is not None else {}
+    _trusted = trusted_functions if trusted_functions is not None else {}
+
     for _node in ast.walk(_tree):
         if isinstance(_node, ast.Call):
-            # Only a BARE NAME may be called, and only from the literal set.
-            # `func` being an Attribute (`x.mean`, `np.cumsum`) is refused by
-            # the node check below anyway; this makes the intent explicit and
-            # produces the better message.
             if not isinstance(_node.func, ast.Name):
                 return False, ("only plain function calls are supported here; "
                                "method and module calls (obj.f(), np.f()) are "
                                "not proven row-local")
-            if _node.func.id not in _ROW_LOCAL_FUNCTIONS:
-                return False, (f"function {_node.func.id!r} is not on the "
-                               f"proven row-local list")
+            _name = _node.func.id
+            if _name not in _ROW_LOCAL_FUNCTIONS \
+                    and _name not in _CONDITIONAL_FORMS \
+                    and _name not in _extra:
+                return False, (f"function {_name!r} is not on the proven "
+                               f"row-local list")
+            # v04: spelling is not ownership.  The same name may have been
+            # replaced by register_function(), a column/context value, or a
+            # generated binding.  Only the exact trusted callable is proof.
+            if env is None or trusted_functions is None:
+                return False, (f"function {_name!r} has no runtime-binding "
+                               f"proof")
+            if _name not in _trusted or _runtime.get(_name) is not _trusted[_name]:
+                return False, (f"function {_name!r} is not bound to the "
+                               f"ADF/default callable whose row-locality is "
+                               f"proven")
             if _node.keywords:
-                return False, (f"keyword arguments to {_node.func.id!r} are "
-                               f"not proven row-local")
+                return False, (f"keyword arguments to {_name!r} are not "
+                               f"proven row-local")
             continue
         if not isinstance(_node, _ROW_LOCAL_NODES):
             return False, (f"{type(_node).__name__} is not proven row-local "
@@ -703,13 +1019,24 @@ class _AliasEvalContext:
         re-entering join preparation. See `_eval_prepared`.
     """
 
-    __slots__ = ("alias_name", "carry_mask", "masks", "retracted",
-                 "prepared_expr", "pending_mask", "n_evaluations")
+    __slots__ = ("alias_name", "carry_mask", "masks", "structural_masks",
+                 "retracted", "prepared_expr", "pending_mask",
+                 "pending_structural_mask", "track_structural_gaps",
+                 "n_evaluations", "consulted", "extra_env", "unbound_expr",
+                 "row_local_env", "trusted_functions")
 
-    def __init__(self, alias_name=None, carry_mask=False):
+    def __init__(self, alias_name=None, carry_mask=False,
+                 track_structural_gaps=False):
         self.alias_name = alias_name
         self.carry_mask = bool(carry_mask)
         self.masks = {}
+        # AD-20/13.76.ADF clause 4: non-materializing getters must distinguish
+        # a row that is structurally undefined because a join key is absent
+        # from an ordinary arithmetic NaN.  `masks` above intentionally stays
+        # the pre-existing placeholder-only channel used by the publication
+        # guard; this second channel is getter-only evidence and therefore
+        # cannot change materialization behavior.
+        self.structural_masks = {}
         self.retracted = []
         self.prepared_expr = None
         # Hand-off slot: the gather knows a placeholder was used but not the
@@ -718,9 +1045,29 @@ class _AliasEvalContext:
         # scatter consumes and clears it on the very next line. One column at
         # a time, no nesting — the chain gather -> scatter is strictly serial.
         self.pending_mask = None
+        self.pending_structural_mask = None
+        self.track_structural_gaps = bool(track_structural_gaps)
         # Counts TOP-LEVEL evaluations, so the probe re-entrancy test can
         # assert "exactly two" rather than trust that it is two.
         self.n_evaluations = 0
+        # B3.2b STEP 5b. joined column name -> the rows on which the
+        # expression ACTUALLY CONSULTS that column. Empty means "every row",
+        # which is the pre-5b behaviour and stays the default.
+        self.consulted = {}
+        # Bindings the conditional rewrite created (mask arrays). Probe B
+        # evaluates `prepared_expr`, so it needs the same names bound.
+        self.extra_env = {}
+        # The expression BEFORE the conditional binding rewrote it. Fix11c's
+        # row-local gate must inspect what the user wrote, not what ADF
+        # rewrote: binding replaces a subtree with a single name, and in v02
+        # that turned a refused expression into an admitted one (`P1-1`).
+        self.unbound_expr = None
+        # v04: exact callable identities seen by the value evaluation and the
+        # corresponding pre-registration identities trusted by the row-local
+        # proof.  Snapshotting them on the per-evaluation context makes the
+        # final Fix11c gate reason about the SAME namespace the value used.
+        self.row_local_env = {}
+        self.trusted_functions = {}
 
     def residual_mask(self):
         """Union of every surviving undefinedness mask, or None if empty.
@@ -732,8 +1079,39 @@ class _AliasEvalContext:
         arriving through arithmetic instead of through a default.
         """
         _out = None
-        for _m in self.masks.values():
+        for _name, _m in self.masks.items():
             _arr = np.asarray(_m, dtype=bool)
+            # B3.2b STEP 5b — ROW-WISE requiredness. A row that never consults
+            # this operand is not undefined because of it. The union above is
+            # still the rule for every operator (design review §6: UNDEFINED*0
+            # stays UNDEFINED); what changes is WHICH ROWS have the operand as
+            # an operand at all. `where(c, a, S.v)` does not consult `S.v` on
+            # the rows where `c` is true, so those rows are defined.
+            #
+            # Absent an entry, every row consults it — the pre-5b behaviour.
+            _seen = self.consulted.get(_name)
+            if _seen is not None:
+                _arr = _arr & np.asarray(_seen, dtype=bool)
+            _out = _arr if _out is None else (_out | _arr)
+        if _out is None or not _out.any():
+            return None
+        return _out
+
+    def structural_residual_mask(self):
+        """Getter-only union of unresolved join absence after row reachability.
+
+        Unlike :meth:`residual_mask`, this includes dtypes such as float64
+        that can physically carry a gap as NaN.  That distinction is needed
+        only by AD-20's non-materializing getter contract: without it a caller
+        cannot tell "the arithmetic produced NaN" from "every join key was
+        absent".  Materializing paths do not enable this channel.
+        """
+        _out = None
+        for _name, _m in self.structural_masks.items():
+            _arr = np.asarray(_m, dtype=bool)
+            _seen = self.consulted.get(_name)
+            if _seen is not None:
+                _arr = _arr & np.asarray(_seen, dtype=bool)
             _out = _arr if _out is None else (_out | _arr)
         if _out is None or not _out.any():
             return None
@@ -802,15 +1180,20 @@ ADF_CASTING_MODE = "unsafe"
 #:   LOCAL        a justified local operation, justification stated
 #:   LATER:<step> a real dtype concern owned by a named later B3.2b step
 DTYPE_SITE_DISPOSITION = {
+    # B3.2b STEP 5b v02: the two `_adf_fillna` / `_default_functions` dtype.kind
+    # entries are GONE with their site. v01 guarded NaN filling on
+    # `dtype.kind in "fc"`, which is exactly why `fillna` did nothing on
+    # object and on every nullable dtype; `pd.isna` needs no dtype branch at
+    # all, so the site disappeared rather than being reclassified.
     "_numpy_dtype_can_hold_gap:kind:0": (
         "INSPECTION",
         "dtype-family branch; routed through"
         "_numpy_dtype_can_hold_gapunless the question is a different one"),
-    "residual_mask:values_call:0": (
-        "EXTRACTION",
-        "mapping .values() -- dictionary iteration. pandas .values is"
-        "aPROPERTY, so x.values() on a Series raises TypeError; any"
-        "callthat executes proves a mapping receiver. Not a dtype site"),
+    # B3.2b STEP 5b: `residual_mask` no longer calls `.values()` — the
+    # row-wise refinement needs the NAMES, so it iterates `.items()`. The
+    # entry is removed rather than left behind: the audit checks drift in
+    # BOTH directions, and a ledger describing a site that no longer exists
+    # is the same defect as a site with no entry, one revision later.
     "update_schema:astype:0": (
         "APPLICATION",
         "applies the dtype recorded in the schema entry"),
@@ -6768,7 +7151,7 @@ class AliasDataFrame:
         
         return result
 
-    def _default_functions(self):
+    def _default_functions(self, include_registered=True):
         import math
 
         # Start with math functions (scalar fallbacks)
@@ -6788,8 +7171,28 @@ class AliasDataFrame:
         env["round"] = np.round
         env["clip"] = np.clip
 
-        # Phase 13.9: Add registered custom functions
-        if hasattr(self, '_registered_functions'):
+        # B3.2b STEP 5b — the family-5 conditional forms.
+        # NOT injected over a column of the same name: this namespace puts
+        # functions AFTER columns, so an unguarded `where` would shadow a
+        # physicist's column called `where`. Four new names is four new
+        # collisions, and the guard costs one `in`.
+        _cols = set(getattr(self, "df", pd.DataFrame()).columns)
+
+        # B3.2b STEP 5b v04: the ADF primitives are MODULE-LEVEL objects.
+        # Their identity is not stored under a user-writeable namespace key.
+        # Public spellings may still be replaced by register_function(); that
+        # changes the public call, never ADF's private proof identity.
+        for _nm, _fn in (("where", _ADF_SELECT_PRIMITIVE),
+                         ("select", _ADF_SELECT_PRIMITIVE),
+                         ("fillna", _ADF_FALLBACK_PRIMITIVE),
+                         ("coalesce", _ADF_FALLBACK_PRIMITIVE)):
+            if _nm not in _cols:
+                env[_nm] = _fn
+
+        # Phase 13.9: Add registered custom functions.  ``include_registered``
+        # lets _eval_in_namespace retain the pre-override map as the exact set
+        # of callable identities whose row-locality ADF has proved.
+        if include_registered and hasattr(self, '_registered_functions'):
             env.update(self._registered_functions)
 
         return env
@@ -7578,6 +7981,13 @@ class AliasDataFrame:
         # has not opted in (the direct-draw slots, which are D_13 and are NOT
         # part of this increment) reaches the unchanged refusal below.
         _placeholder_mask = None
+        if (_fill is None and _n_missing > 0 and ctx is not None
+                and ctx.track_structural_gaps):
+            # AD-20 getter evidence.  Record the join's semantic absence even
+            # when this dtype can represent it natively (for example float64
+            # as NaN).  Publication still uses the historical placeholder-only
+            # `pending_mask`; this channel is consumed only by getters.
+            ctx.pending_structural_mask = np.asarray(missing_mask, dtype=bool)
         if (_fill is None and _n_missing > 0
                 and ctx is not None and ctx.carry_mask
                 and not _numpy_dtype_can_hold_gap(_dtype)):
@@ -7844,6 +8254,14 @@ class AliasDataFrame:
                 direct_slot=direct_slot, ctx=ctx)
 
         # Real floating columns keep the original implementation verbatim.
+        _cfg = self._get_fill_config(sf_name)
+        if (ctx is not None and ctx.track_structural_gaps
+                and missing_mask.any() and _cfg.get('fill_missing') is None):
+            # Same AD-20 channel as the symmetric typed gather above.  Floats
+            # used to be the blind spot because NaN physically represented
+            # the gap and therefore no placeholder mask was enrolled.
+            ctx.pending_structural_mask = np.asarray(missing_mask, dtype=bool)
+
         # Phase 9b: Try PyArrow path first (fastest for large arrays)
         if (self._use_arrow and PYARROW_AVAILABLE and n >= NUMBA_MIN_ROWS):
             try:
@@ -7953,23 +8371,47 @@ class AliasDataFrame:
         
         col_renamed = f'{sf_col}__{sf_name}'
 
-        # Idempotent — fast path
+        # Idempotent — fast path.
         #
-        # D_5 core, INVARIANT THAT MAKES THIS SAFE — read before weakening the
-        # retraction in `_evaluate_alias_expression`. A joined column that
-        # SURVIVES in self.df can never carry a placeholder, because the
-        # retraction ledger removes or restores every placeholder-bearing
-        # column on all seven exit paths. So a pre-existing `col_renamed` is
-        # necessarily one of:
-        #     (a) a fully matched gather              -> mask empty
-        #     (b) an operand-fill-resolved gather      -> defined by policy,
-        #                                                 mask cleared (AR-3)
-        #     (c) written by user code                 -> the user's own data
-        # and in all three cases "no mask" is the correct answer, which is what
-        # taking this path records. If retraction is ever made conditional,
-        # THIS fast path becomes a silent-wrong-result hole: it would reuse a
-        # stale placeholder as if it were data.
+        # STEP 5c v03 / Decision 5 lifecycle correction.  A pre-existing
+        # joined column is NOT proof that the current getter has no structural
+        # absence.  Public eval() deliberately leaves representable joined
+        # columns in self.df, and a prior getter may also have reached this
+        # name before an exception.  The getter contract must therefore
+        # recover the join's missing-key provenance independently of column
+        # history.
+        #
+        # Only the getter-only structural channel is reconstructed here.  The
+        # existing column is never overwritten or deleted.  Operand-level
+        # fill_missing resolves the join before alias evaluation, so in that
+        # case no structural mask is carried (same rule as the gather path).
         if col_renamed in self.df.columns:
+            if (ctx is not None and ctx.track_structural_gaps
+                    and self._get_fill_config(sf_name).get('fill_missing') is None):
+                _missing = None
+                _cache = self._join_index_cache.get(sf_name)
+                if (_cache is not None
+                        and _cache.get('n_rows') == len(self.df)
+                        and _cache.get('subframe_id') == id(sub_adf.df)
+                        and _cache.get('index_sig') ==
+                            self._index_column_signature(index_cols)):
+                    _missing = _cache.get('missing_mask')
+                if _missing is None:
+                    # Reconstruct the semantic join state without touching the
+                    # pre-existing values.  This is getter-only provenance; it
+                    # does not turn the existing column into a temporary.
+                    _indices, _missing = self._compute_join_indices(
+                        sf_name, index_cols)
+                    self._join_index_cache[sf_name] = {
+                        'indices': _indices,
+                        'missing_mask': _missing,
+                        'n_rows': len(self.df),
+                        'subframe_id': id(sub_adf.df),
+                        'index_sig': self._index_column_signature(index_cols),
+                    }
+                _missing = np.asarray(_missing, dtype=bool)
+                if _missing.any():
+                    ctx.structural_masks[col_renamed] = _missing
             return col_renamed
         
         # Source column must exist on the subframe DataFrame.
@@ -8028,22 +8470,36 @@ class AliasDataFrame:
         return col_renamed
 
     def _publish_joined_column(self, col_renamed, values, ctx):
-        """Write a scattered column, enrolling it in the retraction ledger if
-        it carries a placeholder.
+        """Write a scattered column and transactionally enrol unsafe temporaries.
 
-        Decision B (architect, 2026-08-07, Option 1). Only a column that came
-        back PLACEHOLDER-BEARING is enrolled — a fully matched or
-        operand-fill-resolved column is real data and stays, exactly as before
-        11c. Enrolment records the prior content so a pre-existing name is
-        RESTORED rather than merely dropped.
+        Decision B originally enrolled only placeholder-bearing joins.
+        STEP 5c v03 extends the SAME transaction to getter-only structural
+        joins: a representable float gap may carry NaN rather than a fabricated
+        placeholder, but it is still ephemeral provenance and must not survive
+        success or exception and poison the next getter.
+
+        Fully matched and operand-fill-resolved joins remain persistent exactly
+        as before.  A pre-existing name is restored rather than dropped.
         """
         _mask = None if ctx is None else ctx.pending_mask
+        _structural = None if ctx is None else ctx.pending_structural_mask
         if ctx is not None:
             ctx.pending_mask = None
-        if _mask is not None:
+            ctx.pending_structural_mask = None
+
+        if _structural is not None:
+            ctx.structural_masks[col_renamed] = np.asarray(
+                _structural, dtype=bool)
+
+        # One transaction owner for both placeholder and getter-structural
+        # temporaries.  Enrol BEFORE the write so `_evaluate_alias_expression`
+        # can retract it from its existing `finally` even when expression
+        # evaluation raises after the scatter.
+        if ctx is not None and (_mask is not None or _structural is not None):
             _prior = (self.df[col_renamed].copy()
                       if col_renamed in self.df.columns else None)
             ctx.retracted.append((col_renamed, _prior))
+        if _mask is not None:
             ctx.masks[col_renamed] = _mask
         self.df[col_renamed] = values
 
@@ -8751,11 +9207,6 @@ class AliasDataFrame:
         # PHASE_13_66_ADF: struct rewrite (logical struct.member -> internal member__struct).
         # _eval_in_namespace is the single rewrite owner for the eval family.
         expr = self._prepare_struct_refs(expr)
-        if ctx is not None:
-            # Recorded AFTER both rewrites, so probe B evaluates exactly the
-            # expression probe A evaluated and needs no join preparation.
-            ctx.prepared_expr = expr
-            ctx.n_evaluations += 1
         
         # Phase 9c note: Per-expression Arrow compute disabled here.
         # Conversion overhead per expression exceeds benefits.
@@ -8769,10 +9220,92 @@ class AliasDataFrame:
         if context_override:
             local_env.update(context_override)
         
-        local_env.update(self._default_functions())
+        # `F4`. Functions are applied AFTER columns and overrides, so the four
+        # new names would silently replace a physical column OR a dependent
+        # alias handed in through `context_override` — measured on the v01
+        # bytes: an alias named `where`, materialized through the batched
+        # path, raised "unsupported operand type(s) for +: 'function' and
+        # 'int'". `_default_functions` guards columns; only here are the
+        # overrides visible, so the restore belongs here.
+        _shadowed = {_n: local_env[_n] for _n in _CONDITIONAL_FORMS
+                     if _n in local_env}
+        # v04: retain the exact PRE-REGISTRATION callable objects.  The
+        # row-local proof compares runtime bindings to these by identity, so a
+        # registered replacement called ``sin`` or ``where`` cannot inherit a
+        # safety proof by spelling alone.
+        _trusted_functions = self._default_functions(include_registered=False)
+        local_env.update(_trusted_functions)
+        if hasattr(self, '_registered_functions'):
+            local_env.update(self._registered_functions)
+        local_env.update(_shadowed)
+        if ctx is not None:
+            _proof_names = _ROW_LOCAL_FUNCTIONS | _CONDITIONAL_FORMS
+            ctx.row_local_env = {_n: local_env[_n] for _n in _proof_names
+                                 if _n in local_env}
+            ctx.trusted_functions = {_n: _trusted_functions[_n]
+                                     for _n in _proof_names
+                                     if _n in _trusted_functions}
+
+        # B3.2b STEP 5b v02 — bind selectors and fallback operands ONCE, after
+        # the namespace exists (they must be evaluated in it) and before the
+        # expression runs. `prepared_expr` records the bound form so probe B
+        # evaluates the same tree against the same arrays.
+        _cond_bindings, _forced_operands = {}, set()
+        _proof_masks = None
+        if ctx is not None:
+            _proof_masks = dict(getattr(ctx, "structural_masks", {}) or {})
+            _proof_masks.update(ctx.masks)
+        if ctx is not None and _proof_masks:
+            _counter = [0]
+
+            def _fresh():
+                # `F4`, second surface: a generated name must not collide with
+                # anything real. Bump until free rather than trusting a prefix.
+                while True:
+                    _nm = f"__adf_bound_{_counter[0]}__"
+                    _counter[0] += 1
+                    if _nm not in local_env:
+                        return _nm
+
+            def _mask_for_expr(_src, _env, _binds, _forced_names):
+                # RESULT-LEVEL undefinedness of a subexpression (`F1`): the
+                # rows on which it actually reads a masked operand, not the
+                # syntactic union of the masks of names inside it.
+                _seen = _consulted_masks(
+                    _src, set(_proof_masks), _binds, len(self.df.index),
+                    env=_env, adf_select=_ADF_SELECT_PRIMITIVE)
+                _acc = None
+                for _n, _reach in _seen.items():
+                    if _n in _forced_names:
+                        _reach = np.ones(len(self.df.index), dtype=bool)
+                    _m = np.asarray(_proof_masks[_n], dtype=bool) & _reach
+                    _acc = _m if _acc is None else (_acc | _m)
+                return None if _acc is None or not _acc.any() else _acc
+
+            ctx.unbound_expr = expr
+            # v04: private ownership never comes FROM local_env.
+            # register_function() may replace any public namespace key, so the
+            # authoritative ADF objects are module-level identities.
+            _sel_fn = _ADF_SELECT_PRIMITIVE
+            _fb_fn = _ADF_FALLBACK_PRIMITIVE
+            try:
+                expr, _cond_bindings, _forced_operands = \
+                    _bind_conditional_forms(
+                        expr, local_env, _mask_for_expr, _fresh,
+                        _sel_fn, _fb_fn, trusted_functions=_trusted_functions)
+            except Exception:
+                _cond_bindings, _forced_operands = {}, set()
+            if _cond_bindings:
+                local_env.update(_cond_bindings)
+                ctx.extra_env.update(_cond_bindings)
+        if ctx is not None:
+            # Recorded AFTER every rewrite, so probe B evaluates exactly the
+            # expression probe A evaluated and needs no join preparation.
+            ctx.prepared_expr = expr
+            ctx.n_evaluations += 1
 
         try:
-            return eval(expr, {}, local_env)
+            _result = eval(expr, {}, local_env)
         except NameError as e:
             # Function or variable not found
             missing_name = str(e).split("'")[1] if "'" in str(e) else "unknown"
@@ -8820,7 +9353,26 @@ class AliasDataFrame:
                     f".astype('float32'), .astype('float64'), ..."
                 ) from e
             raise
-    
+
+        # B3.2b STEP 5b — ROW-WISE requiredness, computed once the expression
+        # has evaluated and the condition columns are known to be evaluable.
+        # Only runs when a mask actually survived: no mask, no conditional,
+        # nothing to refine, and the pre-5b path is untouched.
+        if ctx is not None and _proof_masks:
+            try:
+                _n = len(self.df.index)
+                ctx.consulted = _consulted_masks(
+                    expr, set(_proof_masks), _cond_bindings, _n, env=local_env,
+                    adf_select=_ADF_SELECT_PRIMITIVE)
+                for _fn_name in _forced_operands:
+                    if _fn_name in ctx.consulted:
+                        ctx.consulted[_fn_name] = np.ones(_n, dtype=bool)
+            except Exception:
+                # Fail closed: no refinement means the syntactic union, which
+                # is what every release before this one did.
+                ctx.consulted = {}
+        return _result
+
     def _eval_arrow(self, expr, context_override=None, return_arrow=False, arrow_context=None):
         """
         Evaluate expression using PyArrow compute.
@@ -10126,7 +10678,8 @@ function collapseDepth(maxD) {{
                     f"{_col!r}: {_e}", RuntimeWarning)
 
     def _guard_residual_undefinedness(self, name, ctx, result_a,
-                                      context_override=None):
+                                      context_override=None,
+                                      residual_override=None):
         """Refuse anything that is not PROVEN safe to publish with a residual mask.
 
         Two layers, in this order, per the ratified design review §5:
@@ -10144,10 +10697,28 @@ function collapseDepth(maxD) {{
         reductions whose value happens not to move. So a probe agreement never
         admits anything the gate refused; it can only reject further.
         """
-        _ok, _why = _expression_is_row_local(ctx.prepared_expr)
+        # STEP 5c v04: Fix11c governs BOTH undefinedness channels.  The old
+        # placeholder channel (`ctx.masks`) and AD-20's getter-only structural
+        # channel (`ctx.structural_masks`) differ only in representation, not
+        # in the safety question: can an absent operand affect rows that are
+        # otherwise defined?  The caller therefore passes their union here.
+        _residual = (residual_override if residual_override is not None
+                     else ctx.residual_mask())
+        if _residual is None:
+            return
+        _residual = np.asarray(_residual, dtype=bool)
+
+        # `P1-1`: the UNBOUND expression. Binding collapses a subtree into one
+        # name, so inspecting the rewritten form admitted `where(z - z.mean()
+        # > 0, ...)` that the same gate refuses when written out. The gate
+        # must see what the user wrote.
+        _ok, _why = _expression_is_row_local(
+            getattr(ctx, "unbound_expr", None) or ctx.prepared_expr,
+            env=getattr(ctx, "row_local_env", None),
+            trusted_functions=getattr(ctx, "trusted_functions", None))
         if not _ok:
             raise ADFProvenanceUnsupportedError(
-                f"alias {name!r} has {int(ctx.residual_mask().sum())} row(s) "
+                f"alias {name!r} has {int(_residual.sum())} row(s) "
                 f"whose value is undefined (a join key was absent and no "
                 f"operand fill defines it), and ADF cannot prove that "
                 f"{ctx.prepared_expr!r} is row-local: {_why}. Publishing it "
@@ -10159,12 +10730,16 @@ function collapseDepth(maxD) {{
                 f"expression runs.")
 
         _overrides = dict(context_override or {})
+        # B3.2b STEP 5b: `prepared_expr` may now name mask arrays the
+        # conditional rewrite created. Probe B evaluates that exact string, so
+        # it needs those names bound or it raises NameError on its own input.
+        _overrides.update(getattr(ctx, "extra_env", {}) or {})
         for _col, _mask in ctx.masks.items():
             if _col in self.df.columns:
                 _overrides[_col] = self._probe_b_values(self.df[_col], _mask)
         _result_b = self._eval_prepared(ctx.prepared_expr, _overrides)
 
-        _defined = ~ctx.residual_mask()
+        _defined = ~_residual
         if not _defined.any():
             return
         try:
@@ -10285,7 +10860,8 @@ function collapseDepth(maxD) {{
                 f"never raises; only using it does.")
 
     def _evaluate_alias_expression(self, name, expr, context_override=None,
-                                   warn_missing_keys=True):
+                                   warn_missing_keys=True,
+                                   track_structural_gaps=False):
         """Evaluate one alias with mask carriage. Returns ``(result, ctx)``.
 
         This is where `_active_alias_fill` used to be set and cleared. The
@@ -10298,21 +10874,35 @@ function collapseDepth(maxD) {{
         # it here and the v03 CRR claimed that covered "every alias-evaluating
         # public path". It did not: `eval()` goes straight to
         # `_eval_in_namespace` and bypassed it entirely.
-        ctx = _AliasEvalContext(alias_name=name, carry_mask=True)
+        ctx = _AliasEvalContext(
+            alias_name=name, carry_mask=True,
+            track_structural_gaps=track_structural_gaps)
         try:
             result = self._eval_in_namespace(
                 expr, context_override=context_override,
                 warn_missing_keys=warn_missing_keys, alias_name=name, ctx=ctx)
-            if ctx.residual_mask() is not None:
+            _safety_residual = ctx.residual_mask()
+            _structural_residual = ctx.structural_residual_mask()
+            if _structural_residual is not None:
+                _structural_residual = np.asarray(
+                    _structural_residual, dtype=bool)
+                if _safety_residual is None:
+                    _safety_residual = _structural_residual
+                else:
+                    _safety_residual = (np.asarray(
+                        _safety_residual, dtype=bool) | _structural_residual)
+            if _safety_residual is not None:
                 self._guard_residual_undefinedness(
-                    name, ctx, result, context_override)
+                    name, ctx, result, context_override,
+                    residual_override=_safety_residual)
             return result, ctx
         finally:
             # All seven exit paths. See _retract_placeholder_columns.
             self._retract_placeholder_columns(ctx)
 
     def _resolve_residual_undefinedness(self, name, result, ctx, fill_val,
-                                        publishing=False, explicit_dtype=None):
+                                        publishing=False, explicit_dtype=None,
+                                        residual_override=None):
         """§9 step 10 — the final-result stage, and the ONLY place undefined
         rows are resolved or refused.
 
@@ -10330,7 +10920,8 @@ function collapseDepth(maxD) {{
         NaN/Inf-produced-by-arithmetic are different conditions and each keeps
         its own rule.
         """
-        _residual = None if ctx is None else ctx.residual_mask()
+        _residual = (residual_override if residual_override is not None
+                     else (None if ctx is None else ctx.residual_mask()))
         if _residual is None:
             return result
 
@@ -10351,7 +10942,12 @@ function collapseDepth(maxD) {{
                 f"adf.set_global_fill(fill_missing=<value>), or "
                 f"add_alias({name!r}, ..., fill_value=<value>) — and use a "
                 f"separate flag column to record that the measurement was "
-                f"absent.")
+                f"absent. If the absent operand is required only on selected "
+                f"rows, express that dependency explicitly with "
+                f"where(condition, value_if_true, value_if_false) or "
+                f"select(condition, value_if_true, value_if_false) so ADF can "
+                f"determine row-wise requiredness; arithmetic gating such as "
+                f"c*a + (1-c)*S.v does not short-circuit operand requiredness.")
 
         # ---- AC_6 (§5.4) — round 11e, corrected in the 11e revision.
         #
@@ -11200,8 +11796,12 @@ function collapseDepth(maxD) {{
             Optional dtype override. If not provided, alias_dtypes[name]
             is used if available.
         warn_missing_keys : bool, default=True
-            If True, emit warning when subframe join has missing keys.
-            Missing keys produce NaN (rows are never dropped).
+            If True, emit a warning when a subframe join has missing keys.
+            Rows are never dropped.  If configured fill handling resolves a
+            structural gap, the getter returns that filled value ephemerally;
+            if structural absence remains unresolved, the getter raises an
+            ADF-owned error.  Ordinary arithmetic NaN/Inf is not reclassified
+            as structural absence and is returned unchanged.
 
         Returns
         -------
@@ -11212,6 +11812,9 @@ function collapseDepth(maxD) {{
         ------
         KeyError
             If the alias is not defined.
+        ADFError
+            If a structurally absent subframe value remains unresolved after
+            applying the alias's configured getter handling.
         ValueError
             If the evaluated result has incompatible length.
         TypeError
@@ -11245,9 +11848,12 @@ function collapseDepth(maxD) {{
         # entry points, two answers, same input — the defect GPT30 filed as
         # F10-P0-1 and `test_b32_199` pins.
         #
-        # It now shares the materializing pair's contract: the same context,
-        # the same fail-closed provenance gate, the same transactional
-        # retraction, and the same final-result resolution of the alias fill.
+        # It now shares the materializing pair's structural-provenance
+        # contract: the same context, the same fail-closed provenance gate,
+        # and the same final-result resolution of STRUCTURAL absence.  Decision
+        # 5 deliberately does NOT copy materialize_alias's AR-7 whole-result
+        # NaN/Inf replacement into the non-materializing getter: arithmetic
+        # non-finite values remain arithmetic non-finite values here.
         #
         # The difference that remains is publication OF THE REQUESTED ALIAS.
         # This getter does not store `name`, so it commits no AD-19 source-4
@@ -11258,14 +11864,36 @@ function collapseDepth(maxD) {{
         # long-standing. The earlier wording here said "never commits dtype
         # authority", which overstated it (round-11d review, F11D-4, GPT27).
         #
-        # `publishing` is left False below for the same reason: AC_6 governs
-        # STORED publication, and the all-undefined getter branch is a known
-        # open §5.4-vs-§9-step-10 ambiguity owned by B3.2b.
+        # AD-20/13.76.ADF clause 4 (architect 2026-08-12) resolves the final
+        # getter ambiguity: a non-materializing getter MAY return an
+        # ephemeral filled result, but if structural undefinedness remains
+        # unresolved it MUST refuse clearly.  The getter therefore asks the
+        # evaluator to carry representable-gap masks too (float NaN was the
+        # old blind spot), while `publishing=False` keeps AC_6/source-4
+        # authority semantics unchanged.
+        # STEP 5c v03: `_evaluate_alias_expression` owns the complete
+        # structural-temp transaction.  Its existing `finally` retracts every
+        # joined temporary created by this getter on success AND exception,
+        # while `_scatter_subframe_column` reconstructs structural provenance
+        # for a pre-existing joined column without deleting it.  The getter
+        # therefore has no second cleanup policy of its own.
         result, _ctx = self._evaluate_alias_expression(
-            name, expr, warn_missing_keys=warn_missing_keys)
+            name, expr, warn_missing_keys=warn_missing_keys,
+            track_structural_gaps=True)
+        _alias_spec = self._schema["columns"].get(name, {}) or {}
+        _fill_val = _alias_spec.get("fill_value")
+        _getter_residual = _ctx.structural_residual_mask()
         result = self._resolve_residual_undefinedness(
-            name, result, _ctx,
-            (self._schema["columns"].get(name, {}) or {}).get("fill_value"))
+            name, result, _ctx, _fill_val,
+            explicit_dtype=(dtype or self.alias_dtypes.get(name)),
+            residual_override=_getter_residual)
+
+        # Decision 5: structural absence is the ONLY basis for ephemeral
+        # getter fill/refusal.  Do not apply materialize_alias's AR-7
+        # whole-result np.isfinite fill here: any non-finite value left after
+        # structural resolution is arithmetic/scientific NaN/Inf and must
+        # remain unchanged.  No requested-alias column is published and no
+        # source-4 authority is created by this operation.
         n_rows = len(self.df)
 
         # Normalize result to a Series aligned with self.df.index
@@ -11335,11 +11963,27 @@ function collapseDepth(maxD) {{
         dtype : optional
             Optional dtype override.
         warn_missing_keys : bool, default=True
-            If True, emit warning when subframe join has missing keys.
+            If True, emit a warning when a subframe join has missing keys.
+            Structural-gap handling is identical to get_alias_series(): an
+            explicit configured fill may resolve the returned value ephemerally;
+            unresolved structural absence raises an ADF-owned error; ordinary
+            arithmetic NaN/Inf remains unchanged.
 
         Returns
         -------
         numpy.ndarray
+
+        Raises
+        ------
+        KeyError
+            If the alias is not defined.
+        ADFError
+            If structural absence remains unresolved.
+        ValueError
+            If the evaluated result has incompatible length.
+        TypeError
+            If dtype conversion fails or evaluation returns an unsupported
+            type.
 
         Examples
         --------
