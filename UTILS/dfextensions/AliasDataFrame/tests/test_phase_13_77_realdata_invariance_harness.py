@@ -1288,3 +1288,112 @@ def test_a2_32_close_refuses_nonfloating_numeric_families_without_coercion():
         H.compare_array(np.array([2**62], dtype=np.int64),
                         np.array([2**62 + 1], dtype=np.int64),
                         comparator="close", atol=0.5)
+
+
+# ── A3.1/A3.2 — first canonical same-spec case ─────────────────────────────
+
+def test_a3_01_hist_case_declares_one_spec_for_all_three_surfaces():
+    case = H.a3_cases()[0]
+    assert case.case_id == "I2-HIST-01"
+    assert tuple(case.surfaces_under_test) == H.SURFACES
+    assert case.not_applicable == {}
+    assert case.canonical_spec == {
+        "expr": "ncl", "type": "hist", "bins": 50,
+        "selection": "ncl>30", "auto_title": True,
+    }
+    assert H.validate_registry([case]) == []
+
+
+def test_a3_02_hist_same_spec_passes_draw_draw_batch_draw_figures():
+    # Synthetic execution of the REAL A3 CaseSpec.  Real-data execution belongs
+    # to the standalone harness/A6 reference run; this test proves all three
+    # public surfaces consume the exact same A3 canonical request.
+    rng = np.random.default_rng(1377)
+    frame = pd.DataFrame({"ncl": rng.integers(0, 160, size=800)})
+    make_adf = lambda: ADF(frame.copy())
+    case = H.a3_cases()[0]
+    res = H.run_consistency(case, make_adf)
+    assert res.status == H.PASS, res.detail
+    assert set(res.payload_paths) == set(H.SURFACES)
+    # draw is the reference; 2 candidate surfaces x 5 declared observables.
+    assert res.executed_comparisons == 10
+    assert len(res.comparisons) == 10
+    assert all(rec["ok"] for rec in res.comparisons), res.comparisons
+
+
+def test_a3_03_draw_figures_is_an_executed_surface_not_a_documented_exception():
+    case = H.a3_cases()[0]
+    assert "draw_figures" in case.surfaces_under_test
+    assert "draw_figures" not in case.not_applicable
+    assert case.figure_contract is not None
+    assert "draw_figures" in case.figure_contract.primary_comparison
+
+
+def test_a3_04_profile_case_declares_one_spec_for_all_three_surfaces():
+    case = next(c for c in H.a3_cases() if c.case_id == "I2-PROFILE-01")
+    assert tuple(case.surfaces_under_test) == H.SURFACES
+    assert case.not_applicable == {}
+    assert case.canonical_spec == {
+        "expr": "y:x", "type": "profile", "bins": 25,
+        "selection": "(x>-2.0)&(x<2.0)", "auto_title": True,
+    }
+    assert [o.name for o in case.observables] == [
+        "n", "n_input", "n_filtered", "mean_x", "mean_y", "std_x", "std_y"
+    ]
+    assert H.validate_registry(H.a3_cases()) == []
+
+
+def test_a3_05_profile_same_spec_passes_draw_draw_batch_draw_figures():
+    # Synthetic dataframe, real public ADF surfaces.  No grouping/faceting yet:
+    # A3.3 isolates the profile stats family from later A3/A4 dimensions.
+    rng = np.random.default_rng(137703)
+    x = rng.normal(0.0, 1.0, size=900)
+    y = 1.5 + 0.7 * x + rng.normal(0.0, 0.2, size=900)
+    frame = pd.DataFrame({"x": x, "y": y})
+    make_adf = lambda: ADF(frame.copy())
+    case = next(c for c in H.a3_cases() if c.case_id == "I2-PROFILE-01")
+    res = H.run_consistency(case, make_adf)
+    assert res.status == H.PASS, res.detail
+    assert set(res.payload_paths) == set(H.SURFACES)
+    # draw is reference; 2 candidate surfaces x 7 declared observables.
+    assert res.executed_comparisons == 14
+    assert len(res.comparisons) == 14
+    assert all(rec["ok"] for rec in res.comparisons), res.comparisons
+
+
+def test_a3_06_surface_stats_corruption_changes_strict_gate_zero_to_one(monkeypatch):
+    """A3.4 negative regression: one surface mismatch must gate the case.
+
+    Use the canonical A3 histogram case itself.  The positive control executes
+    all three declared surfaces with matching statistics and must keep the
+    strict gate at zero.  Then corrupt exactly one numerical statistic on the
+    draw_figures payload.  The A2 comparator must report the mismatch and the
+    mandatory-case strict gate must become non-zero.
+    """
+    case = next(c for c in H.a3_cases() if c.case_id == "I2-HIST-01")
+
+    rng = np.random.default_rng(137704)
+    frame = pd.DataFrame({"ncl": rng.integers(0, 160, size=800)})
+    make_adf = lambda: ADF(frame.copy())
+
+    good = H.run_consistency(case, make_adf)
+    assert good.status == H.PASS, good.detail
+    assert H.strict_exit_code([good], [case]) == 0
+
+    original = H.unwrap
+
+    def corrupted(surface, result, **kw):
+        payload = original(surface, result, **kw)
+        if surface == "draw_figures" and isinstance(payload.stats, dict):
+            stats = dict(payload.stats)
+            stats["mean"] = float(stats["mean"]) + 1.0
+            return H.Payload(surface, stats, payload.path)
+        return payload
+
+    monkeypatch.setattr(H, "unwrap", corrupted)
+    bad = H.run_consistency(case, make_adf)
+    assert bad.status == H.FAIL, bad.detail
+    assert "mean" in bad.detail
+    assert "draw" in bad.detail and "draw_figures" in bad.detail
+    assert H.strict_exit_code([bad], [case]) == 1
+

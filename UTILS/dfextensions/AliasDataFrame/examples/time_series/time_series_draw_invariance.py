@@ -31,7 +31,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A2.1"
+SCHEMA_VERSION = "13.77.A3.3"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -565,6 +565,142 @@ class CaseSpec:
     # authorities, one of them wrong.  A field whose only legal value is a
     # module constant carries no information; provenance() records the module
     # version once, for the run.
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# A3 canonical same-spec cross-surface cases
+# ─────────────────────────────────────────────────────────────────────────────
+
+def a3_cases() -> tuple[CaseSpec, ...]:
+    """Canonical A3 same-spec cases.
+
+    Every case uses ONE ``canonical_spec`` object for ``draw``, ``draw_batch``
+    and ``draw_figures``.  A3.1/A3.2 establish the simplest histogram shape;
+    A3.3 adds a two-variable profile so the same surface adapter/comparator is
+    exercised on the profile statistics family without introducing grouping,
+    faceting, subframes or lazy loading yet.
+    """
+    hist_id = "I2-HIST-01"
+    hist = CaseSpec(
+        case_id=hist_id,
+        claim_id="I2",
+        title="same ncl histogram through all public draw surfaces",
+        claim=("draw(), draw_batch() and draw_figures() produce the same "
+               "numerical histogram statistics for one canonical request"),
+        failure_means=("a public draw surface applies different preparation, "
+                       "selection or evaluation semantics to the same request"),
+        expected_visual="one ncl histogram with the same selected population",
+        owner_on_failure="ADF",
+        purpose="INVARIANCE",
+        gate="CORE_MANDATORY",
+        oracle_kind="CONSISTENCY",
+        loading_mode="EAGER",
+        sample_mode="FULL",
+        canonical_spec={
+            "expr": "ncl",
+            "type": "hist",
+            "bins": 50,
+            "selection": "ncl>30",
+            "auto_title": True,
+        },
+        applicable=True,
+        setup_contract=("frame contains numeric ncl; EAGER/FULL; no alias is "
+                        "required for this first same-spec case"),
+        preconditions=("ncl is present and numeric",),
+        figure_contract=FigureContract(
+            expected_panels="one panel",
+            panel_roles="main: ncl histogram",
+            expected_traces="one histogram",
+            expected_group_count="1",
+            primary_comparison=("n, n_input, n_filtered, mean and std across "
+                                "draw/draw_batch/draw_figures"),
+            residual_definition="candidate surface minus draw reference",
+            accepted_envelope=("counts exact; mean/std within declared "
+                               "floating tolerance"),
+            case_ids=(hist_id,),
+            proof_kind="CONSISTENCY",
+        ),
+        surfaces_under_test=SURFACES,
+        observables=(
+            Observable("n", "STATS", "FLAT", "n"),
+            Observable("n_input", "STATS", "FLAT", "n_input"),
+            Observable("n_filtered", "STATS", "FLAT", "n_filtered"),
+            Observable("mean", "STATS", "FLAT", "mean", comparator="close",
+                       atol=1e-14, rtol=1e-12,
+                       rationale="same selected sample; floating reduction"),
+            Observable("std", "STATS", "FLAT", "std", comparator="close",
+                       atol=1e-14, rtol=1e-12,
+                       rationale="same selected sample; floating reduction"),
+        ),
+        non_claims=("cross-surface agreement is not an independent correctness proof",),
+        negative_control="FAMILY_MUTATION:A3-SURFACE-STATS-CORRUPTION",
+        reference_policy="named-immutable",
+    )
+
+    profile_id = "I2-PROFILE-01"
+    profile = CaseSpec(
+        case_id=profile_id,
+        claim_id="I2",
+        title="same y:x profile through all public draw surfaces",
+        claim=("draw(), draw_batch() and draw_figures() produce the same "
+               "two-variable profile statistics for one canonical request"),
+        failure_means=("a public draw surface evaluates, filters or prepares "
+                       "the x/y profile population differently"),
+        expected_visual="one y:x profile with the same selected population",
+        owner_on_failure="ADF",
+        purpose="INVARIANCE",
+        gate="CORE_MANDATORY",
+        oracle_kind="CONSISTENCY",
+        loading_mode="EAGER",
+        sample_mode="FULL",
+        canonical_spec={
+            "expr": "y:x",
+            "type": "profile",
+            "bins": 25,
+            "selection": "(x>-2.0)&(x<2.0)",
+            "auto_title": True,
+        },
+        applicable=True,
+        setup_contract=("frame contains finite numeric x and y; EAGER/FULL; "
+                        "no grouping/faceting/subframe dependency"),
+        preconditions=("x is present and numeric", "y is present and numeric"),
+        figure_contract=FigureContract(
+            expected_panels="one panel",
+            panel_roles="main: y versus x profile",
+            expected_traces="one profile",
+            expected_group_count="1",
+            primary_comparison=("n, n_input, n_filtered, mean_x, mean_y, "
+                                "std_x and std_y across all three surfaces"),
+            residual_definition="candidate surface minus draw reference",
+            accepted_envelope=("counts exact; floating summary statistics "
+                               "within declared tolerance"),
+            case_ids=(profile_id,),
+            proof_kind="CONSISTENCY",
+        ),
+        surfaces_under_test=SURFACES,
+        observables=(
+            Observable("n", "STATS", "FLAT", "n"),
+            Observable("n_input", "STATS", "FLAT", "n_input"),
+            Observable("n_filtered", "STATS", "FLAT", "n_filtered"),
+            Observable("mean_x", "STATS", "FLAT", "mean_x", comparator="close",
+                       atol=1e-14, rtol=1e-12,
+                       rationale="same selected x sample; floating reduction"),
+            Observable("mean_y", "STATS", "FLAT", "mean_y", comparator="close",
+                       atol=1e-14, rtol=1e-12,
+                       rationale="same selected y sample; floating reduction"),
+            Observable("std_x", "STATS", "FLAT", "std_x", comparator="close",
+                       atol=1e-14, rtol=1e-12,
+                       rationale="same selected x sample; floating reduction"),
+            Observable("std_y", "STATS", "FLAT", "std_y", comparator="close",
+                       atol=1e-14, rtol=1e-12,
+                       rationale="same selected y sample; floating reduction"),
+        ),
+        non_claims=("profile bin contents are not yet independently correctness-anchored",),
+        negative_control="FAMILY_MUTATION:A3-PROFILE-SURFACE-STATS-CORRUPTION",
+        reference_policy="named-immutable",
+    )
+
+    return (hist, profile)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
