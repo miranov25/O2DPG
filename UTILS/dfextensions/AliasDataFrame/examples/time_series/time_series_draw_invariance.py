@@ -31,7 +31,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A3.6"
+SCHEMA_VERSION = "13.77.A3.7"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -589,7 +589,10 @@ def a3_cases() -> tuple[CaseSpec, ...]:
     and ``draw_figures``.  A3.1/A3.2 establish the simplest histogram shape;
     A3.3 adds a two-variable profile; A3.6 adds one production-shaped
     ``group_by`` profile and compares its measured per-group/per-bin data.
-    Faceting, subframes, vectors and lazy/eager symmetry remain out of scope.
+    A3.7 adds one canonical ``facet_by`` profile on the two surfaces that
+    support faceting, while the same CaseSpec records and tests the required
+    ``draw_figures`` refusal.  Subframes, vectors and lazy/eager symmetry
+    remain out of scope.
     """
     hist_id = "I2-HIST-01"
     hist = CaseSpec(
@@ -779,7 +782,127 @@ def a3_cases() -> tuple[CaseSpec, ...]:
         reference_policy="named-immutable",
     )
 
-    return (hist, profile, group)
+    facet_id = "I2-FACET-01"
+    facet_refusal_id = "I2-FACET-DRAW-FIGURES-REFUSAL-01"
+    # One canonical request object is shared by the supported-surface numerical
+    # case and the draw_figures refusal case.  Keeping the error contract as a
+    # separate CaseSpec is deliberate: each CaseSpec must produce exactly one
+    # reconcilable result, and an ERROR_CONTRACT PASS has no numerical
+    # comparisons by construction.
+    facet_spec = {
+        "expr": "dcar_tpc_vertex:sector",
+        "type": "profile",
+        "bins": 36,
+        "selection": "(ncl>60)&(abs(dcar_tpc_vertex)<10)&(side_type<2)",
+        "facet_by": "side_type",
+        "return_data": True,
+        "auto_title": True,
+    }
+    facet = CaseSpec(
+        case_id=facet_id,
+        claim_id="I2",
+        title="same side_type faceted profile on supported public draw surfaces",
+        claim=("draw() and draw_batch() produce the same facet-resolved profile "
+               "result for one canonical facet_by request"),
+        failure_means=("a supported public draw surface changes facet membership, "
+                       "binning, selection or facet-resolved numerical reduction"),
+        expected_visual="two side_type facet panels with the same profile definition",
+        owner_on_failure="ADF",
+        purpose="INVARIANCE",
+        gate="CORE_MANDATORY",
+        oracle_kind="CONSISTENCY",
+        loading_mode="EAGER",
+        sample_mode="FULL",
+        canonical_spec=facet_spec,
+        applicable=True,
+        setup_contract=("frame contains numeric sector, dcar_tpc_vertex, ncl and "
+                        "side_type; EAGER/FULL; facet-resolved profile data requested "
+                        "explicitly for numerical observability"),
+        preconditions=(
+            "sector is present and numeric",
+            "dcar_tpc_vertex is present and numeric",
+            "ncl is present and numeric",
+            "side_type is present, numeric and contains selected values 0 and 1",
+        ),
+        figure_contract=FigureContract(
+            expected_panels="two facet panels on supported surfaces",
+            panel_roles="side_type=0 facet; side_type=1 facet",
+            expected_traces="one profile trace in each facet panel",
+            expected_group_count="2 facet populations",
+            primary_comparison=("facet keys plus per-facet profile_data counts, x "
+                                "centers and y means across draw/draw_batch"),
+            residual_definition=("candidate per-facet/per-bin observable minus "
+                                 "draw reference at the same facet and profile_data row"),
+            accepted_envelope=("facet labels/counts exact; floating profile "
+                               "coordinates/means within declared tolerance"),
+            case_ids=(facet_id,),
+            proof_kind="CONSISTENCY",
+        ),
+        surfaces_under_test=SURFACES,
+        not_applicable={
+            "draw_figures": ("facet_by is intentionally refused by the current "
+                             "draw_figures panel contract; the separate "
+                             f"{facet_refusal_id} error-contract case proves the guard")
+        },
+        observables=(
+            Observable("facet_groups", "STATS", "ARRAY", "groups"),
+            Observable("facet0_count", "STATS", "ARRAY",
+                       "per_group.0.profile_data.count"),
+            Observable("facet0_x_center", "STATS", "ARRAY",
+                       "per_group.0.profile_data.x_center",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same global facet profile bins; floating bin centers"),
+            Observable("facet0_y_mean", "STATS", "ARRAY",
+                       "per_group.0.profile_data.y_mean",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same facet-0 rows; floating per-bin reduction"),
+            Observable("facet1_count", "STATS", "ARRAY",
+                       "per_group.1.profile_data.count"),
+            Observable("facet1_x_center", "STATS", "ARRAY",
+                       "per_group.1.profile_data.x_center",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same global facet profile bins; floating bin centers"),
+            Observable("facet1_y_mean", "STATS", "ARRAY",
+                       "per_group.1.profile_data.y_mean",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same facet-1 rows; floating per-bin reduction"),
+        ),
+        non_claims=(
+            "facet_by agreement is not an independent mathematical correctness proof",
+            "draw_figures facet rendering remains unsupported and is not emulated",
+            "return_data=True is used only to expose facet-resolved numerical observables",
+        ),
+        negative_control="FAMILY_MUTATION:A3-FACET-SPECIFIC-PROFILE-CORRUPTION",
+        reference_policy="named-immutable",
+    )
+    facet_refusal = CaseSpec(
+        case_id=facet_refusal_id,
+        claim_id="I2",
+        title="draw_figures explicitly refuses the canonical facet_by request",
+        claim=("draw_figures() refuses the exact same canonical facet_by request "
+               "until the known faceted-axes limitation is removed deliberately"),
+        failure_means=("draw_figures no longer refuses the unsupported facet_by "
+                       "request, or refuses without naming facet_by"),
+        expected_visual="no figure: the public surface must refuse before rendering",
+        owner_on_failure="ADF",
+        purpose="ERROR_CONTRACT",
+        gate="CORE_MANDATORY",
+        oracle_kind="CONSISTENCY",
+        loading_mode="EAGER",
+        sample_mode="FULL",
+        canonical_spec=facet_spec,
+        applicable=True,
+        surfaces_under_test=("draw_figures",),
+        known_bug_status="KNOWN_BUG",
+        known_bug_id="BUG_dfdraw_20260611_facet_by_ax_ignored",
+        non_claims=(
+            "this case does not claim facet rendering support in draw_figures",
+            "when dfdraw gains safe faceted axes ownership this refusal must be revised explicitly",
+        ),
+        reference_policy="named-immutable",
+    )
+
+    return (hist, profile, group, facet, facet_refusal)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

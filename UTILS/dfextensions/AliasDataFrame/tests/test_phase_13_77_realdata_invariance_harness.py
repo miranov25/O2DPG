@@ -1519,3 +1519,128 @@ def test_a3_10_group_specific_mismatch_is_not_hidden_by_global_stats(monkeypatch
     assert failed[0]["mismatch_count"] == 1
     assert failed[0]["mismatch_indices"] == [[mutation["row"]]]
     assert H.strict_exit_code([bad], [case]) == 1
+
+
+# ── A3.7 — canonical facet_by invariance on supported surfaces ─────────────
+
+def test_a3_11_facet_case_declares_supported_surfaces_and_separate_refusal_contract():
+    cases = H.a3_cases()
+    case = next(c for c in cases if c.case_id == "I2-FACET-01")
+    refusal = next(c for c in cases
+                   if c.case_id == "I2-FACET-DRAW-FIGURES-REFUSAL-01")
+    assert tuple(case.surfaces_under_test) == H.SURFACES
+    assert set(case.not_applicable) == {"draw_figures"}
+    assert "facet_by" in case.not_applicable["draw_figures"]
+    assert refusal.purpose == "ERROR_CONTRACT"
+    assert tuple(refusal.surfaces_under_test) == ("draw_figures",)
+    assert refusal.known_bug_id == "BUG_dfdraw_20260611_facet_by_ax_ignored"
+    # The two proof obligations execute one identical request, not two similar
+    # copies that can drift independently.
+    assert case.canonical_spec is refusal.canonical_spec
+    assert case.canonical_spec == {
+        "expr": "dcar_tpc_vertex:sector",
+        "type": "profile",
+        "bins": 36,
+        "selection": "(ncl>60)&(abs(dcar_tpc_vertex)<10)&(side_type<2)",
+        "facet_by": "side_type",
+        "return_data": True,
+        "auto_title": True,
+    }
+    assert [(o.name, o.access, o.path) for o in case.observables] == [
+        ("facet_groups", "ARRAY", "groups"),
+        ("facet0_count", "ARRAY", "per_group.0.profile_data.count"),
+        ("facet0_x_center", "ARRAY", "per_group.0.profile_data.x_center"),
+        ("facet0_y_mean", "ARRAY", "per_group.0.profile_data.y_mean"),
+        ("facet1_count", "ARRAY", "per_group.1.profile_data.count"),
+        ("facet1_x_center", "ARRAY", "per_group.1.profile_data.x_center"),
+        ("facet1_y_mean", "ARRAY", "per_group.1.profile_data.y_mean"),
+    ]
+    assert H.validate_registry(cases) == []
+
+
+def test_a3_12_facet_same_spec_passes_supported_surfaces_and_refuses_draw_figures():
+    frame = _a3_groupby_frame(seed=137712)
+    make_adf = lambda: ADF(frame.copy())
+    cases = H.a3_cases()
+    case = next(c for c in cases if c.case_id == "I2-FACET-01")
+    refusal_case = next(c for c in cases
+                        if c.case_id == "I2-FACET-DRAW-FIGURES-REFUSAL-01")
+
+    res = H.run_consistency(case, make_adf)
+    assert res.status == H.PASS, res.detail
+    assert set(res.payload_paths) == {"draw", "draw_batch"}
+    assert set(res.skipped_surfaces) == {"draw_figures"}
+    # draw is reference; one supported candidate x seven facet-resolved observables.
+    assert res.executed_comparisons == 7
+    assert len(res.comparisons) == 7
+    assert all(rec["ok"] for rec in res.comparisons), res.comparisons
+    assert np.array_equal(np.asarray(res.observed["facet_groups"]["draw"]),
+                          np.asarray([0, 1]))
+
+    refusal = H.run_error_contract(refusal_case, make_adf, "draw_figures",
+                                   "facet_by is not supported")
+    assert refusal.status == H.PASS, refusal.detail
+    # The two obligations are separately declared and therefore reconcile as
+    # two unique results rather than duplicating one case_id.
+    assert H.strict_exit_code([res, refusal], [case, refusal_case]) == 0
+    assert H.coverage_gaps([res, refusal], [case, refusal_case]) == []
+
+
+def test_a3_13_facet_specific_mismatch_reaches_strict_gate(monkeypatch):
+    """Independent falsification test for A3.7.
+
+    Construct a regression case that falsifies the implementation invariant:
+    mutate one profile_data.y_mean bin in facet ``side_type==1`` on draw_batch.
+    Leave both the top-level population count and the facet's own summary mean
+    untouched.  A summary-only adapter would remain green; the existing A2
+    per-array comparator must report exactly one facet-specific mismatch.
+    """
+    frame = _a3_groupby_frame(seed=137713)
+    make_adf = lambda: ADF(frame.copy())
+    case = next(c for c in H.a3_cases() if c.case_id == "I2-FACET-01")
+
+    good = H.run_consistency(case, make_adf)
+    assert good.status == H.PASS, good.detail
+    assert H.strict_exit_code([good], [case]) == 0
+
+    original = H.unwrap
+    mutation = {}
+
+    def corrupted(surface, result, **kw):
+        payload = original(surface, result, **kw)
+        if surface == "draw_batch" and isinstance(payload.stats, dict):
+            stats = dict(payload.stats)
+            per_group = {k: dict(v) for k, v in stats["per_group"].items()}
+            facet = per_group["1"]
+            table = facet["profile_data"].copy(deep=True)
+            rows = np.flatnonzero(table["count"].to_numpy() > 0)
+            assert len(rows) > 0
+            row = int(rows[0])
+            mutation["row"] = row
+            mutation["n_total"] = stats["n_total"]
+            mutation["facet_mean_y"] = facet["mean_y"]
+            table.iloc[row, table.columns.get_loc("y_mean")] += 0.25
+            facet["profile_data"] = table
+            per_group["1"] = facet
+            stats["per_group"] = per_group
+            return H.Payload(surface, stats, payload.path)
+        return payload
+
+    monkeypatch.setattr(H, "unwrap", corrupted)
+    bad = H.run_consistency(case, make_adf)
+    assert bad.status == H.FAIL, bad.detail
+    assert "facet1_y_mean" in bad.detail
+
+    # These summaries were deliberately untouched by the falsification.
+    raw_ref, kw_ref = H._call(make_adf(), "draw", case.canonical_spec)
+    ref_stats = original("draw", raw_ref, **kw_ref).stats
+    H._close()
+    assert mutation["n_total"] == ref_stats["n_total"]
+    assert mutation["facet_mean_y"] == ref_stats["per_group"]["1"]["mean_y"]
+
+    failed = [rec for rec in bad.comparisons if not rec["ok"]]
+    assert len(failed) == 1
+    assert failed[0]["observable"] == "facet1_y_mean"
+    assert failed[0]["mismatch_count"] == 1
+    assert failed[0]["mismatch_indices"] == [[mutation["row"]]]
+    assert H.strict_exit_code([bad], [case]) == 1
