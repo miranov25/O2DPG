@@ -31,7 +31,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A3.7"
+SCHEMA_VERSION = "13.77.A3.8"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -590,9 +590,10 @@ def a3_cases() -> tuple[CaseSpec, ...]:
     A3.3 adds a two-variable profile; A3.6 adds one production-shaped
     ``group_by`` profile and compares its measured per-group/per-bin data.
     A3.7 adds one canonical ``facet_by`` profile on the two surfaces that
-    support faceting, while the same CaseSpec records and tests the required
-    ``draw_figures`` refusal.  Subframes, vectors and lazy/eager symmetry
-    remain out of scope.
+    support faceting plus a separate refusal contract for ``draw_figures``.
+    A3.8 adds one production-shaped subframe-qualified profile across all
+    three public draw surfaces.  Vectors and lazy/eager symmetry remain out
+    of scope.
     """
     hist_id = "I2-HIST-01"
     hist = CaseSpec(
@@ -902,7 +903,76 @@ def a3_cases() -> tuple[CaseSpec, ...]:
         reference_policy="named-immutable",
     )
 
-    return (hist, profile, group, facet, facet_refusal)
+    subframe_id = "I2-SUBFRAME-01"
+    subframe = CaseSpec(
+        case_id=subframe_id,
+        claim_id="I2",
+        title="same CalibVertex subframe profile through all public draw surfaces",
+        claim=("draw(), draw_batch() and draw_figures() produce the same "
+               "per-bin profile result for one canonical subframe-qualified request"),
+        failure_means=("a public draw surface resolves, joins, broadcasts, bins or "
+                       "reduces the same subframe-qualified expression differently"),
+        expected_visual=("one CalibVertex.vertex_x_intercept versus time_s profile "
+                         "with the same keyed subframe values"),
+        owner_on_failure="ADF",
+        purpose="INVARIANCE",
+        gate="CORE_MANDATORY",
+        oracle_kind="CONSISTENCY",
+        loading_mode="EAGER",
+        sample_mode="FULL",
+        canonical_spec={
+            "expr": "CalibVertex.vertex_x_intercept:time_s",
+            "type": "profile",
+            "bins": 12,
+            "return_data": True,
+            "auto_title": True,
+        },
+        applicable=True,
+        setup_contract=("main frame contains repeated quantile_bin keys and numeric "
+                        "time_s; registered CalibVertex subframe contains one row per "
+                        "quantile_bin and numeric vertex_x_intercept; EAGER/FULL"),
+        preconditions=(
+            "quantile_bin is present in the main frame and repeats across rows",
+            "CalibVertex is registered on quantile_bin",
+            "CalibVertex.vertex_x_intercept exists only on the subframe",
+            "time_s is present and numeric",
+        ),
+        figure_contract=FigureContract(
+            expected_panels="one panel",
+            panel_roles="main: CalibVertex.vertex_x_intercept versus time_s profile",
+            expected_traces="one profile",
+            expected_group_count="1",
+            primary_comparison=("n plus profile_data counts, x centers and y means "
+                                "across draw/draw_batch/draw_figures"),
+            residual_definition=("candidate per-bin observable minus draw reference "
+                                 "at the same profile_data row"),
+            accepted_envelope=("n/count exact; floating profile coordinates/means "
+                               "within declared tolerance"),
+            case_ids=(subframe_id,),
+            proof_kind="CONSISTENCY",
+        ),
+        surfaces_under_test=SURFACES,
+        observables=(
+            Observable("n", "STATS", "FLAT", "n"),
+            Observable("count", "STATS", "ARRAY", "profile_data.count"),
+            Observable("x_center", "STATS", "ARRAY", "profile_data.x_center",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same profile bins; floating bin centers"),
+            Observable("y_mean", "STATS", "ARRAY", "profile_data.y_mean",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale=("same keyed subframe values broadcast to the same "
+                                  "main-frame rows; floating per-bin reduction")),
+        ),
+        non_claims=(
+            "cross-surface subframe agreement is not an independent correctness proof",
+            "this checkpoint does not cover nested subframes, subframe aliases or missing keys",
+            "return_data=True is used only to expose per-bin numerical observables",
+        ),
+        negative_control="FAMILY_MUTATION:A3-SUBFRAME-DERIVED-PROFILE-CORRUPTION",
+        reference_policy="named-immutable",
+    )
+
+    return (hist, profile, group, facet, facet_refusal, subframe)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

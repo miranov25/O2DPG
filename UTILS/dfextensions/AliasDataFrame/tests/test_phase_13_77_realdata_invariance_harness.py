@@ -1644,3 +1644,133 @@ def test_a3_13_facet_specific_mismatch_reaches_strict_gate(monkeypatch):
     assert failed[0]["mismatch_count"] == 1
     assert failed[0]["mismatch_indices"] == [[mutation["row"]]]
     assert H.strict_exit_code([bad], [case]) == 1
+
+
+# ── A3.8 — canonical subframe-qualified expression invariance ──────────────
+
+def _a3_subframe_adf(seed=137814):
+    """Fast synthetic analogue of the real CalibVertex time-series workflow.
+
+    The main frame has many rows per ``quantile_bin`` while the registered
+    CalibVertex subframe has exactly one row per key.  The plotted y value is
+    absent from the main frame, so success requires real subframe join/broadcast
+    resolution rather than an ordinary same-frame column lookup.
+    """
+    rng = np.random.default_rng(seed)
+    n_keys = 8
+    rows_per_key = 30
+    quantile_bin = np.repeat(np.arange(n_keys, dtype=np.int16), rows_per_key)
+    n = len(quantile_bin)
+    main = pd.DataFrame({
+        "quantile_bin": quantile_bin,
+        "time_s": np.linspace(0.0, 6.0 * 3600.0, n, dtype=np.float64),
+        "noise": rng.normal(0.0, 1.0, n),
+    })
+    sub = pd.DataFrame({
+        "quantile_bin": np.arange(n_keys, dtype=np.int16),
+        "vertex_x_intercept": (
+            0.15 + 0.07 * np.arange(n_keys, dtype=np.float64)
+            + rng.normal(0.0, 0.002, n_keys)
+        ),
+    })
+
+    # Fixture guards: this must genuinely be a keyed subframe lookup.
+    assert "vertex_x_intercept" not in main.columns
+    assert main["quantile_bin"].duplicated().any()
+    assert sub["quantile_bin"].is_unique
+
+    adf = ADF(main)
+    adf.register_subframe("CalibVertex", ADF(sub), index_columns="quantile_bin")
+    registered = adf.get_subframe("CalibVertex")
+    assert "vertex_x_intercept" in registered.df.columns
+    assert len(registered.df) == n_keys < len(adf.df)
+    return adf
+
+
+def test_a3_14_subframe_case_declares_one_spec_and_keyed_observables():
+    case = next(c for c in H.a3_cases() if c.case_id == "I2-SUBFRAME-01")
+    assert tuple(case.surfaces_under_test) == H.SURFACES
+    assert case.not_applicable == {}
+    assert case.canonical_spec == {
+        "expr": "CalibVertex.vertex_x_intercept:time_s",
+        "type": "profile",
+        "bins": 12,
+        "return_data": True,
+        "auto_title": True,
+    }
+    assert [(o.name, o.access, o.path) for o in case.observables] == [
+        ("n", "FLAT", "n"),
+        ("count", "ARRAY", "profile_data.count"),
+        ("x_center", "ARRAY", "profile_data.x_center"),
+        ("y_mean", "ARRAY", "profile_data.y_mean"),
+    ]
+    adf = _a3_subframe_adf()
+    assert "vertex_x_intercept" not in adf.df.columns
+    assert "vertex_x_intercept" in adf.get_subframe("CalibVertex").df.columns
+    assert H.validate_registry(H.a3_cases()) == []
+
+
+def test_a3_15_subframe_same_spec_passes_draw_draw_batch_draw_figures():
+    case = next(c for c in H.a3_cases() if c.case_id == "I2-SUBFRAME-01")
+    res = H.run_consistency(case, _a3_subframe_adf)
+    assert res.status == H.PASS, res.detail
+    assert set(res.payload_paths) == set(H.SURFACES)
+    # draw is reference; 2 candidate surfaces x 4 declared observables.
+    assert res.executed_comparisons == 8
+    assert len(res.comparisons) == 8
+    assert all(rec["ok"] for rec in res.comparisons), res.comparisons
+    counts = np.asarray(res.observed["count"]["draw"])
+    assert counts.sum() == res.observed["n"]["draw"]
+
+
+def test_a3_16_subframe_specific_mismatch_reaches_strict_gate(monkeypatch):
+    """Independent falsification test for A3.8.
+
+    Construct a regression case that falsifies the implementation invariant:
+    change one per-bin ``y_mean`` derived from the CalibVertex subframe on
+    ``draw_figures`` only.  Leave the global ``mean_y`` summary untouched.
+    The existing A2 array comparator must identify exactly one bin and strict
+    mode must fail, proving that subframe-derived numerical disagreement is not
+    hidden by the adapter or by an unchanged global summary.
+    """
+    case = next(c for c in H.a3_cases() if c.case_id == "I2-SUBFRAME-01")
+
+    good = H.run_consistency(case, _a3_subframe_adf)
+    assert good.status == H.PASS, good.detail
+    assert H.strict_exit_code([good], [case]) == 0
+
+    original = H.unwrap
+    mutation = {}
+
+    def corrupted(surface, result, **kw):
+        payload = original(surface, result, **kw)
+        if surface == "draw_figures" and isinstance(payload.stats, dict):
+            stats = dict(payload.stats)
+            table = stats["profile_data"].copy(deep=True)
+            rows = np.flatnonzero(table["count"].to_numpy() > 0)
+            assert len(rows) > 0
+            row = int(rows[len(rows) // 2])
+            mutation["row"] = row
+            mutation["global_mean_y"] = stats["mean_y"]
+            table.iloc[row, table.columns.get_loc("y_mean")] += 0.125
+            stats["profile_data"] = table
+            return H.Payload(surface, stats, payload.path)
+        return payload
+
+    monkeypatch.setattr(H, "unwrap", corrupted)
+    bad = H.run_consistency(case, _a3_subframe_adf)
+    assert bad.status == H.FAIL, bad.detail
+    assert "y_mean" in bad.detail
+
+    # The global summary is measured independently and deliberately untouched.
+    raw_ref, kw_ref = H._call(_a3_subframe_adf(), "draw", case.canonical_spec)
+    ref_mean_y = original("draw", raw_ref, **kw_ref).stats["mean_y"]
+    H._close()
+    assert mutation["global_mean_y"] == ref_mean_y
+
+    failed = [rec for rec in bad.comparisons if not rec["ok"]]
+    assert len(failed) == 1
+    assert failed[0]["observable"] == "y_mean"
+    assert failed[0]["mismatch_count"] == 1
+    assert failed[0]["mismatch_indices"] == [[mutation["row"]]]
+    assert H.strict_exit_code([bad], [case]) == 1
