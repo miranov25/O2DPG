@@ -31,7 +31,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A4.1.v01"
+SCHEMA_VERSION = "13.77.A4.2.v01"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -1391,10 +1391,12 @@ EXPRESSION_SLOTS = (
 )
 
 # A4 does not infer slot ownership from variable names.  This compact execution
-# contract is the machine authority for the slot-exclusive fixture.  Later A4
-# increments add sibling entries; A4.1 intentionally owns selection only.
+# contract is the machine authority for each slot-exclusive fixture.  The
+# ``runner`` field is deliberately explicit: the one-surface CORE_MANDATORY
+# exception is justified only for cases actually bound to run_slot_symmetry().
 A4_SLOT_CONTRACTS = {
     "I3-SELECTION-01": {
+        "runner": "run_slot_symmetry",
         "slots_under_test": ("selection",),
         "slot_alias": "slot_keep",
         "required_physical_dependencies": ("dep_selection",),
@@ -1407,21 +1409,141 @@ A4_SLOT_CONTRACTS = {
             "unrelated branch decoy is unloaded before and after the lazy arm",
         ),
     },
+    "I3-EXPR-01": {
+        "runner": "run_slot_symmetry",
+        "slots_under_test": ("expr",),
+        "slot_alias": "slot_expr",
+        "required_physical_dependencies": ("dep_expr",),
+        "expected_lazy_loaded_after": ("dep_expr", "x"),
+        "unrelated_physical_branches": ("decoy",),
+        "anti_contamination_preconditions": (
+            "slot alias slot_expr is absent from frame columns before each arm",
+            "lazy reader begins with no loaded physical branches",
+            "expr-only dependency dep_expr is unloaded before the lazy arm",
+            "unrelated branch decoy is unloaded before and after the lazy arm",
+        ),
+    },
+    "I3-WEIGHTS-01": {
+        "runner": "run_slot_symmetry",
+        "slots_under_test": ("weights",),
+        "slot_alias": "slot_weight",
+        "required_physical_dependencies": ("dep_weights",),
+        "expected_lazy_loaded_after": ("dep_weights", "x", "y"),
+        "unrelated_physical_branches": ("decoy",),
+        "anti_contamination_preconditions": (
+            "slot alias slot_weight is absent from frame columns before each arm",
+            "lazy reader begins with no loaded physical branches",
+            "weights-only dependency dep_weights is unloaded before the lazy arm",
+            "unrelated branch decoy is unloaded before and after the lazy arm",
+        ),
+    },
+    "I3-GROUP-BY-01": {
+        "runner": "run_slot_symmetry",
+        "slots_under_test": ("group_by",),
+        "slot_alias": "slot_group",
+        "required_physical_dependencies": ("dep_group",),
+        "expected_lazy_loaded_after": ("dep_group", "x", "y"),
+        "unrelated_physical_branches": ("decoy",),
+        "anti_contamination_preconditions": (
+            "slot alias slot_group is absent from frame columns before each arm",
+            "lazy reader begins with no loaded physical branches",
+            "group_by-only dependency dep_group is unloaded before the lazy arm",
+            "unrelated branch decoy is unloaded before and after the lazy arm",
+        ),
+    },
+    "I3-FACET-BY-01": {
+        "runner": "run_slot_symmetry",
+        "slots_under_test": ("facet_by",),
+        "slot_alias": "slot_facet",
+        "required_physical_dependencies": ("dep_facet",),
+        "expected_lazy_loaded_after": ("dep_facet", "x", "y"),
+        "unrelated_physical_branches": ("decoy",),
+        "anti_contamination_preconditions": (
+            "slot alias slot_facet is absent from frame columns before each arm",
+            "lazy reader begins with no loaded physical branches",
+            "facet_by-only dependency dep_facet is unloaded before the lazy arm",
+            "unrelated branch decoy is unloaded before and after the lazy arm",
+        ),
+    },
+    "I3-COMPOUND-EXPR-01": {
+        "runner": "run_slot_symmetry",
+        "slots_under_test": ("compound_expression",),
+        "slot_alias": "slot_compound",
+        "required_physical_dependencies": ("dep_compound",),
+        "expected_lazy_loaded_after": ("dep_compound", "x", "y"),
+        "unrelated_physical_branches": ("decoy",),
+        "anti_contamination_preconditions": (
+            "slot alias slot_compound is absent from frame columns before each arm",
+            "lazy reader begins with no loaded physical branches",
+            "compound-expression-only dependency dep_compound is unloaded before the lazy arm",
+            "unrelated branch decoy is unloaded before and after the lazy arm",
+        ),
+    },
 }
 
 
-def a4_cases() -> tuple[CaseSpec, ...]:
-    """A4 slot-exclusive cases implemented so far.
+def _a4_slot_case(case_id: str, *, claim_id: str, title: str, claim: str,
+                  failure_means: str, expected_visual: str, canonical_spec: dict,
+                  setup_contract: str, preconditions: Sequence[str],
+                  observables: Sequence[Observable], primary_comparison: str,
+                  accepted_envelope: str, negative_control: str) -> CaseSpec:
+    contract = A4_SLOT_CONTRACTS[case_id]
+    slot = contract["slots_under_test"][0]
+    return CaseSpec(
+        case_id=case_id,
+        claim_id=claim_id,
+        title=title,
+        claim=claim,
+        failure_means=failure_means,
+        expected_visual=expected_visual,
+        owner_on_failure="ADF",
+        purpose="INVARIANCE",
+        gate="CORE_MANDATORY",
+        oracle_kind="CONSISTENCY",
+        loading_mode="BOTH",
+        sample_mode="FULL",
+        canonical_spec=canonical_spec,
+        applicable=True,
+        setup_contract=setup_contract,
+        preconditions=preconditions,
+        figure_contract=FigureContract(
+            expected_panels="one panel",
+            panel_roles=f"main: {slot}-exclusive profile",
+            expected_traces="one profile or grouped/faceted profile envelope",
+            expected_group_count="1 or the declared group/facet count",
+            primary_comparison=primary_comparison,
+            residual_definition="lazy numerical observable minus eager observable",
+            accepted_envelope=accepted_envelope,
+            case_ids=(case_id,),
+            proof_kind="CONSISTENCY",
+        ),
+        surfaces_under_test=("draw",),
+        slots_under_test=contract["slots_under_test"],
+        observables=observables,
+        non_claims=(
+            "A4.2 covers scalar expression-bearing slots only; vector slots remain A4.3",
+            "this synthetic case does not replace the later real-data lazy acceptance run",
+            "A4 does not reopen A3 public-surface symmetry",
+        ),
+        anti_contamination_preconditions=contract["anti_contamination_preconditions"],
+        negative_control=negative_control,
+        reference_policy="named-immutable",
+    )
 
-    A4.1 starts with ONE selection-only alias case in BOTH/FULL mode.  The
-    public draw surface is intentionally held fixed: A3 already proved public
-    surface symmetry; A4's comparison axis is EAGER versus LAZY, and the lazy
-    arm additionally proves exact physical dependency discovery/loading.
+
+def a4_cases() -> tuple[CaseSpec, ...]:
+    """A4 slot-exclusive cases implemented through A4.2.
+
+    A4.1 banks the selection-only case.  A4.2 extends the same BOTH/FULL
+    execution contract to the scalar ``expr``, ``weights``, ``group_by``,
+    ``facet_by`` and compound-expression slots.  The public draw surface is
+    intentionally held fixed: A3 already proved surface symmetry; A4's second
+    consistency arm is loading mode, and the lazy arm additionally proves the
+    exact physical dependency set attributable to that one slot.
     """
-    cid = "I3-SELECTION-01"
-    contract = A4_SLOT_CONTRACTS[cid]
-    selection = CaseSpec(
-        case_id=cid,
+    cases = []
+    cases.append(_a4_slot_case(
+        "I3-SELECTION-01",
         claim_id="I3.selection.A4.1",
         title="selection-slot alias symmetry in eager and lazy loading modes",
         claim=("a dependency that appears only through selection= is discovered and "
@@ -1431,60 +1553,121 @@ def a4_cases() -> tuple[CaseSpec, ...]:
                        "loads the wrong physical branch set, or a contaminated fixture "
                        "is allowed to pass"),
         expected_visual="one y:x profile after the slot-only selection removes half the rows",
-        owner_on_failure="ADF",
-        purpose="INVARIANCE",
-        gate="CORE_MANDATORY",
-        oracle_kind="CONSISTENCY",
-        loading_mode="BOTH",
-        sample_mode="FULL",
-        canonical_spec={
-            "expr": "y:x",
-            "type": "profile",
-            "bins": 8,
-            "selection": "slot_keep>0",
-            "return_data": True,
-            "auto_title": True,
-        },
-        applicable=True,
+        canonical_spec={"expr": "y:x", "type": "profile", "bins": 8,
+                        "selection": "slot_keep>0", "return_data": True,
+                        "auto_title": True},
         setup_contract=("EAGER and tracking-LAZY fixtures contain the same physical "
                         "x/y/dep_selection/decoy data; slot_keep is an alias of "
                         "dep_selection>0 and appears only in selection="),
-        preconditions=(
-            "slot_keep is registered as an alias and not pre-materialized",
-            "dep_selection is the only selection-only physical dependency",
-            "the lazy reader starts with zero loaded physical branches",
-        ),
-        figure_contract=FigureContract(
-            expected_panels="one panel",
-            panel_roles="main: selected y versus x profile",
-            expected_traces="one profile",
-            expected_group_count="1",
-            primary_comparison=("EAGER versus LAZY selected-row count and profile values; "
-                                "LAZY exact physical branch-load evidence"),
-            residual_definition="lazy numerical observable minus eager observable",
-            accepted_envelope=("selected-row count exact; floating profile values within "
-                               "declared tolerance; exact lazy loaded branch set"),
-            case_ids=(cid,),
-            proof_kind="CONSISTENCY",
-        ),
-        surfaces_under_test=("draw",),
-        slots_under_test=contract["slots_under_test"],
-        observables=(
-            Observable("n", "STATS", "FLAT", "n"),
-            Observable("y_mean", "STATS", "ARRAY", "profile_data.y_mean",
-                       comparator="close", atol=1e-14, rtol=1e-12,
-                       rationale="same selected rows and profile reduction in EAGER/LAZY"),
-        ),
-        non_claims=(
-            "A4.1 covers selection only; remaining expression-bearing slots are later A4 increments",
-            "this synthetic case does not replace the later real-data lazy acceptance run",
-            "A4.1 does not reopen A3 public-surface symmetry",
-        ),
-        anti_contamination_preconditions=contract["anti_contamination_preconditions"],
+        preconditions=("slot_keep is registered as an alias and not pre-materialized",
+                       "dep_selection is the only selection-only physical dependency",
+                       "the lazy reader starts with zero loaded physical branches"),
+        observables=(Observable("n", "STATS", "FLAT", "n"),
+                     Observable("y_mean", "STATS", "ARRAY", "profile_data.y_mean",
+                                comparator="close", atol=1e-14, rtol=1e-12,
+                                rationale="same selected rows and profile reduction in EAGER/LAZY")),
+        primary_comparison=("EAGER versus LAZY selected-row count and profile values; "
+                            "LAZY exact physical branch-load evidence"),
+        accepted_envelope=("selected-row count exact; floating profile values within "
+                           "declared tolerance; exact lazy loaded branch set"),
         negative_control="GLOBAL_MUTATION:M2 selection-slot preload contamination -> INVALID_FIXTURE",
-        reference_policy="named-immutable",
-    )
-    return (selection,)
+    ))
+    cases.append(_a4_slot_case(
+        "I3-EXPR-01", claim_id="I3.expr.A4.2",
+        title="expr-slot alias symmetry in eager and lazy loading modes",
+        claim="an alias used only as the profile value expression is discovered symmetrically",
+        failure_means="expr-slot alias discovery or lazy physical dependency loading is asymmetric",
+        expected_visual="one slot_expr:x profile",
+        canonical_spec={"expr": "slot_expr:x", "type": "profile", "bins": 8,
+                        "return_data": True, "auto_title": True},
+        setup_contract="slot_expr aliases dep_expr and appears only in expr",
+        preconditions=("slot_expr is registered and not pre-materialized",
+                       "dep_expr is unloaded before the lazy arm"),
+        observables=(Observable("n", "STATS", "FLAT", "n"),
+                     Observable("y_mean", "STATS", "ARRAY", "profile_data.y_mean",
+                                comparator="close", atol=1e-14, rtol=1e-12,
+                                rationale="same expr-only alias values in EAGER/LAZY")),
+        primary_comparison="EAGER versus LAZY profile values plus exact lazy expr dependency load",
+        accepted_envelope="n exact; y_mean within tolerance; exact lazy loaded branch set",
+        negative_control="GLOBAL_MUTATION:M2 expr-slot preload contamination -> INVALID_FIXTURE",
+    ))
+    cases.append(_a4_slot_case(
+        "I3-WEIGHTS-01", claim_id="I3.weights.A4.2",
+        title="weights-slot alias symmetry in eager and lazy loading modes",
+        claim="an alias used only through weights= is discovered symmetrically",
+        failure_means="weights-slot alias discovery or weighted profile reduction differs by loading mode",
+        expected_visual="one weighted y:x profile",
+        canonical_spec={"expr": "y:x", "type": "profile", "bins": 8,
+                        "weights": "slot_weight", "return_data": True,
+                        "auto_title": True},
+        setup_contract="slot_weight aliases 1+dep_weights and appears only in weights",
+        preconditions=("slot_weight is registered and not pre-materialized",
+                       "dep_weights is unloaded before the lazy arm"),
+        observables=(Observable("n", "STATS", "FLAT", "n"),
+                     Observable("y_mean", "STATS", "ARRAY", "profile_data.y_mean",
+                                comparator="close", atol=1e-14, rtol=1e-12,
+                                rationale="same weighted per-bin profile reduction in EAGER/LAZY")),
+        primary_comparison="EAGER versus LAZY weighted profile plus exact lazy weights dependency load",
+        accepted_envelope="n exact; weighted y_mean within tolerance; exact lazy loaded branch set",
+        negative_control="GLOBAL_MUTATION:M2 weights-slot preload contamination -> INVALID_FIXTURE",
+    ))
+    cases.append(_a4_slot_case(
+        "I3-GROUP-BY-01", claim_id="I3.group_by.A4.2",
+        title="group_by-slot alias symmetry in eager and lazy loading modes",
+        claim="an alias used only through group_by= is discovered symmetrically",
+        failure_means="group_by-slot dependency discovery or grouped profile reduction differs by loading mode",
+        expected_visual="one grouped y:x profile",
+        canonical_spec={"expr": "y:x", "type": "profile", "bins": 8,
+                        "group_by": "slot_group", "return_data": True,
+                        "auto_title": True},
+        setup_contract="slot_group aliases dep_group and appears only in group_by",
+        preconditions=("slot_group is registered and not pre-materialized",
+                       "dep_group is unloaded before the lazy arm"),
+        observables=(Observable("n", "STATS", "FLAT", "n"),
+                     Observable("y_mean", "STATS", "ARRAY", "profile_data.y_mean",
+                                comparator="close", atol=1e-14, rtol=1e-12,
+                                rationale="same group-resolved profile data in EAGER/LAZY")),
+        primary_comparison="EAGER versus LAZY grouped profile plus exact lazy group_by dependency load",
+        accepted_envelope="n exact; grouped y_mean within tolerance; exact lazy loaded branch set",
+        negative_control="GLOBAL_MUTATION:M2 group_by-slot preload contamination -> INVALID_FIXTURE",
+    ))
+    cases.append(_a4_slot_case(
+        "I3-FACET-BY-01", claim_id="I3.facet_by.A4.2",
+        title="facet_by-slot alias symmetry in eager and lazy loading modes",
+        claim="an alias used only through facet_by= is discovered symmetrically",
+        failure_means="facet_by-slot dependency discovery or faceted population differs by loading mode",
+        expected_visual="one two-facet y:x profile",
+        canonical_spec={"expr": "y:x", "type": "profile", "bins": 8,
+                        "facet_by": "slot_facet", "return_data": True,
+                        "auto_title": True},
+        setup_contract="slot_facet aliases dep_facet and appears only in facet_by",
+        preconditions=("slot_facet is registered and not pre-materialized",
+                       "dep_facet is unloaded before the lazy arm"),
+        observables=(Observable("n_total", "STATS", "FLAT", "n_total"),),
+        primary_comparison="EAGER versus LAZY faceted population plus exact lazy facet_by dependency load",
+        accepted_envelope="n_total exact; exact lazy loaded branch set",
+        negative_control="GLOBAL_MUTATION:M2 facet_by-slot preload contamination -> INVALID_FIXTURE",
+    ))
+    cases.append(_a4_slot_case(
+        "I3-COMPOUND-EXPR-01", claim_id="I3.compound_expression.A4.2",
+        title="compound-expression slot alias symmetry in eager and lazy loading modes",
+        claim="an alias embedded only inside a compound plotted expression is discovered symmetrically",
+        failure_means="compound-expression alias discovery or profile reduction differs by loading mode",
+        expected_visual="one (y+slot_compound):x profile",
+        canonical_spec={"expr": "y + slot_compound:x", "type": "profile", "bins": 8,
+                        "return_data": True, "auto_title": True},
+        setup_contract="slot_compound aliases dep_compound and appears only inside the compound expr",
+        preconditions=("slot_compound is registered and not pre-materialized",
+                       "dep_compound is unloaded before the lazy arm"),
+        observables=(Observable("n", "STATS", "FLAT", "n"),
+                     Observable("y_mean", "STATS", "ARRAY", "profile_data.y_mean",
+                                comparator="close", atol=1e-14, rtol=1e-12,
+                                rationale="same compound-expression profile reduction in EAGER/LAZY")),
+        primary_comparison="EAGER versus LAZY compound profile plus exact lazy compound dependency load",
+        accepted_envelope="n exact; y_mean within tolerance; exact lazy loaded branch set",
+        negative_control="GLOBAL_MUTATION:M2 compound-expression preload contamination -> INVALID_FIXTURE",
+    ))
+    return tuple(cases)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1733,6 +1916,8 @@ def validate_registry(cases: Sequence[CaseSpec]) -> list[str]:
             if slot_contract is None:
                 bad.append(f"{cid}: slot case has no A4_SLOT_CONTRACTS execution contract")
             else:
+                if slot_contract.get("runner") != "run_slot_symmetry":
+                    bad.append(f"{cid}: A4 slot execution contract is not bound to run_slot_symmetry")
                 if tuple(c.slots_under_test) != tuple(slot_contract["slots_under_test"]):
                     bad.append(f"{cid}: slots_under_test drift from A4 execution contract")
                 if tuple(c.anti_contamination_preconditions) != tuple(
@@ -1824,7 +2009,9 @@ def validate_registry(cases: Sequence[CaseSpec]) -> list[str]:
             # A4 slot symmetry compares EAGER vs LAZY while deliberately holding
             # one public surface fixed; its second consistency arm is loading mode,
             # not another draw surface.
-            a4_both = bool(c.slots_under_test) and c.loading_mode == "BOTH"
+            slot_contract = A4_SLOT_CONTRACTS.get(c.case_id) if c.slots_under_test else None
+            a4_both = (c.loading_mode == "BOTH" and slot_contract is not None
+                       and slot_contract.get("runner") == "run_slot_symmetry")
             if len(applicable) < 2 and c.gate == "CORE_MANDATORY" and not a4_both:
                 bad.append(f"{cid}: CORE_MANDATORY consistency case has "
                            f"{len(applicable)} applicable surface(s); it can only "
@@ -2099,6 +2286,10 @@ def run_slot_symmetry(case: CaseSpec,
             res.status = INVALID_FIXTURE
             res.detail = f"no A4 slot execution contract for {case.case_id}"
             return res
+        if contract.get("runner") != "run_slot_symmetry":
+            res.status = INVALID_FIXTURE
+            res.detail = "A4 slot execution contract is not bound to run_slot_symmetry"
+            return res
         if tuple(case.slots_under_test) != tuple(contract["slots_under_test"]):
             res.status = INVALID_FIXTURE
             res.detail = "slots_under_test does not match A4 execution contract"
@@ -2164,15 +2355,6 @@ def run_slot_symmetry(case: CaseSpec,
             res.detail = ("M2 contamination: LAZY reader begins with preloaded physical "
                           f"branches {sorted(lazy_before)}")
             return res
-        if required_physical & lazy_before:
-            res.status = INVALID_FIXTURE
-            res.detail = "M2 contamination: slot-only physical dependency was preloaded"
-            return res
-        if unrelated & lazy_before:
-            res.status = INVALID_FIXTURE
-            res.detail = "M2 contamination: unrelated physical branch was preloaded"
-            return res
-
         def call_one(adf):
             kw = dict(case.canonical_spec)
             expr = kw.pop("expr")
@@ -2194,6 +2376,10 @@ def run_slot_symmetry(case: CaseSpec,
             res.detail = f"LAZY arm did not materialize slot alias {alias_name!r}"
             return res
         lazy_after = set(lazy_reader.loaded_branches)
+        # Deliberately brittle exact-set check: if the loader starts pulling an
+        # additional implicit/index branch, or stops loading a required branch,
+        # this A4 contract MUST fail and be consciously re-reviewed rather than
+        # being widened reflexively.
         if lazy_after != expected_after:
             res.status = FAIL
             res.detail = ("LAZY slot load set mismatch: "
@@ -2229,17 +2415,17 @@ def run_slot_symmetry(case: CaseSpec,
                 res.observed[o.name] = {"status": o.status}
                 continue
             try:
+                _assert_source_matches("run_slot_symmetry", o)
+            except HarnessError as exc:
+                res.status = INVALID_FIXTURE
+                res.detail = str(exc)
+                return res
+            try:
                 eager_v = resolve(eager_payload.stats, o.path, o.access)
                 lazy_v = resolve(lazy_payload.stats, o.path, o.access)
             except HarnessError as exc:
                 res.status = INVALID_FIXTURE
                 res.detail = f"declared observable {o.name!r} not extractable: {exc}"
-                return res
-            try:
-                _assert_source_matches("run_slot_symmetry", o)
-            except HarnessError as exc:
-                res.status = INVALID_FIXTURE
-                res.detail = str(exc)
                 return res
             res.observed[o.name] = {"EAGER": eager_v, "LAZY": lazy_v}
             res.observable_contract.append(_contract(o))

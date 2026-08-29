@@ -2373,7 +2373,7 @@ def test_a4_01_selection_slot_contract_is_executable_and_manifest_visible(tmp_pa
     assert rec["anti_contamination_preconditions"] == list(
         case.anti_contamination_preconditions)
     assert set(rec["future_staged"]) == {"reference_policy"}
-    assert doc["provenance"]["schema_version"] == "13.77.A4.1.v01"
+    assert doc["provenance"]["schema_version"] == H.SCHEMA_VERSION
 
 
 def test_a4_02_selection_slot_both_proves_materialization_and_exact_lazy_loads():
@@ -2420,3 +2420,116 @@ def test_a4_03_m2_preload_contamination_is_invalid_fixture_not_pass():
     # M2 contamination can never be a strict green.
     assert H.strict_exit_code([bad_eager], [case]) == 1
     assert H.strict_exit_code([bad_lazy], [case]) == 1
+
+# ── A4.2 — scalar expression-bearing slot expansion ─────────────────────────
+
+def _a4_scalar_raw():
+    n = 120
+    x = np.linspace(0.05, 0.95, n)
+    phase = np.arange(n)
+    return pd.DataFrame({
+        "x": x,
+        "y": 1.0 + 0.4 * x,
+        "dep_expr": 2.0 + 0.3 * x,
+        "dep_weights": (phase % 4).astype(float) / 3.0,
+        "dep_group": (phase % 2).astype(int),
+        "dep_facet": ((phase // 2) % 2).astype(int),
+        "dep_compound": 0.2 * np.sin(phase / 7.0),
+        "decoy": np.linspace(10.0, 20.0, n),
+    })
+
+
+def _a4_register_scalar_aliases(adf):
+    adf.add_alias("slot_expr", "dep_expr")
+    adf.add_alias("slot_weight", "1.0 + dep_weights")
+    adf.add_alias("slot_group", "dep_group")
+    adf.add_alias("slot_facet", "dep_facet")
+    adf.add_alias("slot_compound", "dep_compound")
+    return adf
+
+
+def _a4_make_scalar_eager():
+    return _a4_register_scalar_aliases(ADF(_a4_scalar_raw()))
+
+
+def _a4_make_scalar_lazy():
+    raw = _a4_scalar_raw()
+    adf = ADF(pd.DataFrame(index=range(len(raw))))
+    reader = _A4TrackingLazyReader(raw)
+    adf._lazy_reader = reader
+    adf._chain = {
+        "files": [], "entry_offsets": [0], "total_entries": len(raw),
+        "validation_mode": None,
+    }
+    return _a4_register_scalar_aliases(adf)
+
+
+def test_a4_04_scalar_catalogue_and_runner_binding_are_machine_authoritative():
+    cases = {c.case_id: c for c in H.a4_cases()}
+    expected = {
+        "I3-SELECTION-01", "I3-EXPR-01", "I3-WEIGHTS-01",
+        "I3-GROUP-BY-01", "I3-FACET-BY-01", "I3-COMPOUND-EXPR-01",
+    }
+    assert set(cases) == expected
+    assert H.validate_registry(tuple(cases.values())) == []
+
+    for cid in expected:
+        contract = H.A4_SLOT_CONTRACTS[cid]
+        assert contract["runner"] == "run_slot_symmetry"
+        assert tuple(cases[cid].slots_under_test) == tuple(contract["slots_under_test"])
+
+    # Review hardening: the one-surface CORE_MANDATORY exemption is justified
+    # only by an execution contract actually bound to run_slot_symmetry.
+    saved = H.A4_SLOT_CONTRACTS["I3-EXPR-01"]
+    H.A4_SLOT_CONTRACTS["I3-EXPR-01"] = dict(saved, runner="run_consistency")
+    try:
+        bad = H.validate_registry([cases["I3-EXPR-01"]])
+        assert any("not bound to run_slot_symmetry" in e for e in bad)
+        assert any("1 applicable surface" in e for e in bad)
+    finally:
+        H.A4_SLOT_CONTRACTS["I3-EXPR-01"] = saved
+
+
+@pytest.mark.parametrize(
+    "case_id,expected_loaded",
+    [
+        ("I3-EXPR-01", {"x", "dep_expr"}),
+        ("I3-WEIGHTS-01", {"x", "y", "dep_weights"}),
+        ("I3-GROUP-BY-01", {"x", "y", "dep_group"}),
+        ("I3-FACET-BY-01", {"x", "y", "dep_facet"}),
+        ("I3-COMPOUND-EXPR-01", {"x", "y", "dep_compound"}),
+    ],
+)
+def test_a4_05_to_09_scalar_slots_prove_eager_materialization_and_exact_lazy_loads(
+        case_id, expected_loaded):
+    case = {c.case_id: c for c in H.a4_cases()}[case_id]
+    result = H.run_slot_symmetry(case, _a4_make_scalar_eager, _a4_make_scalar_lazy)
+    assert result.status == H.PASS, result.detail
+    assert result.executed_comparisons == len(case.observables)
+    assert len(result.comparisons) == len(case.observables)
+    assert all(c["ok"] for c in result.comparisons)
+
+    evidence = result.observed["slot_evidence"]
+    contract = H.A4_SLOT_CONTRACTS[case_id]
+    assert evidence["slot"] == contract["slots_under_test"][0]
+    assert evidence["alias"] == contract["slot_alias"]
+    assert evidence["eager_alias_materialized"] is True
+    assert evidence["lazy_alias_materialized"] is True
+    assert evidence["lazy_loaded_before"] == []
+    assert set(evidence["lazy_loaded_after"]) == expected_loaded
+    assert set(evidence["required_physical_dependencies"]) <= expected_loaded
+    assert set(evidence["unrelated_physical_branches"]).isdisjoint(expected_loaded)
+
+
+def test_a4_10_source_contract_is_checked_before_observable_path_resolution():
+    case = {c.case_id: c for c in H.a4_cases()}["I3-EXPR-01"]
+    bad_observable = replace(
+        case.observables[0], source="INDEPENDENT", path="definitely.missing.path")
+    bad_case = replace(case, observables=(bad_observable,))
+
+    result = H.run_slot_symmetry(
+        bad_case, _a4_make_scalar_eager, _a4_make_scalar_lazy)
+    assert result.status == H.INVALID_FIXTURE
+    assert "declares source 'INDEPENDENT'" in result.detail
+    assert "does not resolve" not in result.detail
+
