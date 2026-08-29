@@ -1198,11 +1198,6 @@ DTYPE_SITE_DISPOSITION = {
     "update_schema:astype:0": (
         "APPLICATION",
         "applies the dtype recorded in the schema entry"),
-    "apply_dtypes:astype:0": (
-        "LATER:STEP 7",
-        "public conversion API. STEP 7's conversion-API audit ownswhether"
-        "it routes through the central policy or carries adisposition;"
-        "`b32b_17` is its criterion"),
     "register_struct:values_call:0": (
         "EXTRACTION",
         "mapping .values() -- dictionary iteration. pandas .values is"
@@ -1534,9 +1529,6 @@ DTYPE_SITE_DISPOSITION = {
     "apply_schema:astype:0": (
         "APPLICATION",
         "re-applies a declared schema; the target is restored, notdecided"),
-    "convert_dtypes:astype:0": (
-        "LATER:STEP 7",
-        "public conversion API; same owner as apply_dtypes"),
     "describe_structure:values_call:0": (
         "EXTRACTION",
         "mapping .values() -- dictionary iteration. pandas .values is"
@@ -4051,23 +4043,17 @@ class AliasDataFrame:
         #    dtype cannot tell them apart, and ADF must not guess.
         _arr = np.asarray(result)
 
-        # EXACT PATH: an integer/Boolean source needs no float detour at all.
-        # This is the case the corruption lived in.
+        # EXACT SOURCE REPRESENTATION, EXPLICIT TARGET.  No float detour is
+        # needed, but AR-1 is still the governing policy: a dtype explicitly
+        # declared by the caller is an ORDINARY conversion request and follows
+        # the backend's documented conversion semantics.  STEP 7 removes the
+        # historical round-trip exactness check here because it silently turned
+        # ``casting="unsafe"`` back into a strict conversion for integer
+        # sources (e.g. int64 300 -> int8).  Exact restoration of an EXISTING
+        # authority is a different operation and remains owned by
+        # `_restore_exact_dtype` / `_enforce_recorded_authority`.
         if not _numpy_dtype_can_hold_gap(_arr.dtype):
-            # AR-1 standards-first: the ORDINARY conversion of computed data
-            # follows documented backend semantics, with the mode PINNED
-            # (D_3 §6.1) so a future NumPy default cannot move the contract
-            # silently. The exactness guarantee below does not come from the
-            # casting mode -- it comes from the round-trip check, which is
-            # what actually forbids a value change.
-            _out = _arr.astype(target, casting=ADF_CASTING_MODE)
-            if not np.array_equal(_out.astype(_arr.dtype), _arr):
-                raise ValueError(
-                    f"[dtype_cast] alias {alias_name!r}: casting {_arr.dtype} "
-                    f"to {target_dtype} would change values. AD-19: an "
-                    f"authoritative dtype is preserved and no non-missing "
-                    f"value is ever changed.")
-            return _out
+            return _arr.astype(target, casting=ADF_CASTING_MODE)
 
         # A float/object intermediate can only get here when the value really
         # is missing (the gather is exact for everything else).
@@ -4328,32 +4314,157 @@ class AliasDataFrame:
             constant = spec.get("constant", False)
             self.add_alias(name, expr, dtype=dtype, is_constant=constant)
 
+    def _commit_explicit_conversion_metadata(self, col, requested_dtype):
+        """Commit metadata after a deliberate public dtype conversion.
+
+        B3.2b STEP 7.  The caller already chose the target dtype; ADF does not
+        resolve or reinterpret that choice.  This helper makes EVERY metadata
+        authority that describes the converted physical representation agree
+        with the dtype pandas actually stored.
+
+        * materialized alias -> the requested dtype becomes source-3
+          (explicit alias contract), and any older inferred source-4 record is
+          removed;
+        * source-5 compression representation -> preserve ADF_CREATED origin,
+          update the generic authority AND the codec's compressed/decompressed
+          dtype record;
+        * reader-origin record -> a deliberate user recast is now source 2,
+          PHYSICAL_COLUMN: the reader did not declare the replacement dtype;
+        * ordinary physical/source-2 column -> keep source 2 at the new dtype.
+        """
+        _cols = self._schema.setdefault("columns", {})
+        _entry = _cols.setdefault(col, {})
+        _entry["dtype"] = requested_dtype
+
+        _actual = pd.api.types.pandas_dtype(self.df[col].dtype)
+        _encoded = self._encode_dtype(_actual)
+
+        # Compression metadata is operational dtype authority too: readback
+        # builds dtype hints from `compressed_dtype`, and schema comparison
+        # reconstructs both dtype fields.  Converting a source-5 physical
+        # representation without updating this record leaves two authorities
+        # describing one stored column.  A compression dtype must remain a
+        # NumPy dtype because the codec schema itself is NumPy-dtype based.
+        _compression = self._schema.setdefault("compression", {})
+        _codec_targets = []
+        for _orig, _info in _compression.items():
+            if _orig == "__meta__" or not isinstance(_info, dict):
+                continue
+            if _info.get("compressed_col") == col:
+                _codec_targets.append((_orig, "compressed_dtype"))
+            if _orig == col:
+                _codec_targets.append((_orig, "decompressed_dtype"))
+        if len(_codec_targets) > 1:
+            raise ValueError(
+                f"explicit dtype conversion of {col!r} maps to multiple "
+                f"compression dtype authorities: {_codec_targets!r}")
+        if _codec_targets:
+            try:
+                _codec_dtype = np.dtype(self.df[col].dtype).name
+            except (TypeError, ValueError) as e:
+                raise ValueError(
+                    f"explicit dtype conversion of compression column {col!r} "
+                    f"produced dtype {self.df[col].dtype!r}, which cannot be "
+                    f"represented by the compression codec metadata") from e
+            _orig, _field = _codec_targets[0]
+            _compression[_orig][_field] = _codec_dtype
+
+        if "expr" in _entry:
+            # An explicit dtype on an alias is source 3 and outranks the old
+            # inferred source-4 record.  Do not leave two authorities behind.
+            _entry.pop(self._AUTHORITY_KEY, None)
+            return
+
+        _old = _entry.get(self._AUTHORITY_KEY)
+        if _encoded is None:
+            # Never retain an authority that describes the PRE-conversion
+            # storage.  The physical column itself remains source 2.
+            _entry.pop(self._AUTHORITY_KEY, None)
+            return
+
+        if _old is not None:
+            _rec = copy.deepcopy(_old)
+            _rec["dtype"] = _encoded
+            _rec.setdefault("subject_kind", "column")
+            if _rec.get("origin") == DTypeOrigin.READER_METADATA:
+                # DTypeOrigin names where the authoritative dtype CAME FROM.
+                # After an explicit recast, the replacement dtype came from
+                # the physical/user transition, not from the reader.
+                _rec["origin"] = DTypeOrigin.PHYSICAL_COLUMN
+                _rec["reason"] = "explicit dtype conversion API"
+            elif _rec.get("origin") == DTypeOrigin.PHYSICAL_COLUMN:
+                _rec["reason"] = "explicit dtype conversion API"
+            # ADF_CREATED remains source 5: ADF still owns the persistent
+            # representation; only its explicit physical/codec dtype changed.
+            _entry[self._AUTHORITY_KEY] = _rec
+            return
+
+        _entry[self._AUTHORITY_KEY] = {
+            "dtype": _encoded,
+            "origin": DTypeOrigin.PHYSICAL_COLUMN,
+            "subject_kind": "column",
+            "reason": "explicit dtype conversion API",
+        }
+
+    def _convert_physical_dtype_explicit(self, col, target_dtype):
+        """Atomically apply one user-requested physical dtype conversion.
+
+        The value conversion follows AR-1/backend semantics via
+        `_safe_dtype_cast`; the physical column and its schema/authority update
+        are one transaction.  On any metadata failure the exact pre-conversion
+        column/schema entry is restored.
+        """
+        if col not in self.df.columns:
+            raise ValueError(f"Column {col!r} not found in DataFrame")
+
+        _schema_cols = self._schema.setdefault("columns", {})
+        _had_schema = col in _schema_cols
+        _schema_before = copy.deepcopy(_schema_cols.get(col))
+        _compression_before = copy.deepcopy(
+            self._schema.setdefault("compression", {}))
+        _column_before = self.df[col].copy(deep=True)
+
+        try:
+            _converted = self._safe_dtype_cast(
+                self.df[col], target_dtype, alias_name=col)
+            self.df[col] = _converted
+            self._commit_explicit_conversion_metadata(col, target_dtype)
+        except Exception:
+            self.df[col] = _column_before
+            if _had_schema:
+                _schema_cols[col] = _schema_before
+            else:
+                _schema_cols.pop(col, None)
+            self._schema["compression"] = _compression_before
+            raise
+
     def apply_dtypes(self, dtype_spec, errors="raise"):
         """
-        Bulk dtype conversion for physical columns.
-        
+        Bulk explicit dtype conversion for physical columns.
+
+        B3.2b STEP 7: the target is user-owned, so conversion follows backend
+        semantics; physical storage and schema/authority update atomically.
+
         Args:
             dtype_spec: {col_name: dtype, ...}
             errors: "raise" | "warn" | "ignore"
         """
+        if errors not in {"raise", "warn", "ignore"}:
+            raise ValueError("errors must be 'raise', 'warn', or 'ignore'")
         for col, dtype in dtype_spec.items():
             if col not in self.df.columns:
                 if errors == "raise":
                     raise ValueError(f"Column '{col}' not found in DataFrame")
-                elif errors == "warn":
+                if errors == "warn":
                     warnings.warn(f"Column '{col}' not found, skipping")
                 continue
-            
+
             try:
-                self.df[col] = self.df[col].astype(dtype)
-                # Update schema
-                if col not in self._schema["columns"]:
-                    self._schema["columns"][col] = {}
-                self._schema["columns"][col]["dtype"] = dtype
+                self._convert_physical_dtype_explicit(col, dtype)
             except Exception as e:
                 if errors == "raise":
                     raise
-                elif errors == "warn":
+                if errors == "warn":
                     warnings.warn(f"Failed to cast '{col}' to {dtype}: {e}")
 
     def __getattr__(self, item: str):
@@ -17165,29 +17276,34 @@ function collapseDepth(maxD) {{
 
     def convert_dtypes(self, dtype_map):
         """
-        Convert dtypes for multiple columns.
-        
+        Convert dtypes for multiple physical columns.
+
+        B3.2b STEP 7: deliberate conversion follows the same central explicit
+        conversion transaction as `apply_dtypes`.  Conversion failures retain
+        the historical warning-and-continue behavior.
+
         Parameters
         ----------
         dtype_map : dict
             Mapping of column_name → target_dtype
         """
         for col, target_dtype in dtype_map.items():
-            if col in self.df.columns:
-                try:
-                    self.df[col] = self.df[col].astype(target_dtype)
-                    # Update schema
-                    if col in self.schema['columns']:
-                        self.schema['columns'][col]['dtype'] = np.dtype(target_dtype).name
-                except (TypeError, ValueError) as e:
-                    warnings.warn(f"Failed to convert {col} to {target_dtype}: {e}")
-            else:
+            if col not in self.df.columns:
                 warnings.warn(f"Column '{col}' not found in DataFrame")
+                continue
+            try:
+                self._convert_physical_dtype_explicit(col, target_dtype)
+            except (TypeError, ValueError) as e:
+                warnings.warn(f"Failed to convert {col} to {target_dtype}: {e}")
 
     def convert_dtypes_pattern(self, pattern, target_dtype):
         """
         Convert dtypes for columns matching pattern.
-        
+
+        B3.2b-DISPOSITION: this is a selection wrapper only; it delegates each
+        matched physical column to `convert_dtypes`, which owns the explicit
+        conversion transaction and authority update.
+
         Parameters
         ----------
         pattern : str

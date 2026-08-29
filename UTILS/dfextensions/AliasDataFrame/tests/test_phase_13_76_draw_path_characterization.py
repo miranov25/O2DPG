@@ -7585,11 +7585,15 @@ class TestB32Round11fTargetDtypeResolver:
         assert "d" not in m.df.columns
         assert "v__S" not in m.df.columns
 
-    def test_b32_273c_value_changing_narrowing_still_refused_by_its_owner(
-            self):
-        """The pre-existing AD-19 guard, pinned so 11f cannot be blamed for it
-        and so a future refactor cannot delete it believing it duplicates the
-        resolver. A defined value of 300 cannot become int8."""
+    def test_b32_273c_explicit_value_changing_narrowing_follows_ar1(self):
+        """SUPERSEDED by the later ratified AR-1 / B3.2b family-9 split.
+
+        This test used to protect the opposite behavior: explicit int64->int8
+        narrowing of a defined value 300 was required to refuse.  The later
+        contract makes that a deliberate ordinary conversion, so NumPy's
+        backend result (300 -> 44 on int8) is the required value.  Fill
+        compatibility remains strict and is still pinned by 273b/209.
+        """
         m = A.AliasDataFrame(pd.DataFrame({
             "k": np.array([0, 9], np.int64),
             "x": np.array([10, 20], np.int64)}))
@@ -7597,11 +7601,12 @@ class TestB32Round11fTargetDtypeResolver:
         ch.df["v"] = np.array([300], dtype=np.int64)
         m.register_subframe("S", ch, index_columns=["k"])
         m.add_alias("d", "S.v", dtype="int8", fill_value=0)
-        with pytest.raises(ValueError) as ei:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                m.materialize_alias("d")
-        assert "dtype_cast" in str(ei.value) or "would change values" in str(ei.value)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.materialize_alias("d")
+        assert str(m.df["d"].dtype) == "int8"
+        assert [int(v) for v in m.df["d"].values] == [44, 0]
+
 
     def test_b32_274_resolver_precedence_is_explicit_then_authority(self):
         """The resolver itself, unit-level. Explicit declaration outranks a
@@ -7689,10 +7694,9 @@ class TestB32Round11fBufferPromotionUnit:
 
     def test_b32_277_narrowing_leaves_the_buffer_alone(self):
         """int64 buffer, int8 target -> int64. The buffer is NOT narrowed
-        here: `_safe_dtype_cast` owns the declared-dtype narrowing and already
-        refuses a value-changing one under AD-19 (pinned by b32_273c). Two
-        implementations of one rule is the divergence this phase keeps paying
-        for."""
+        here: `_safe_dtype_cast` owns the later EXPLICIT conversion under
+        AR-1/backend semantics (pinned by b32_273c and b32b_9b). Staging must
+        not pre-truncate before the user's requested conversion is applied."""
         got = self._adf()._buffer_dtype_for_fill(np.dtype("int64"),
                                                  np.dtype("int8"))
         assert str(got) == "int64"
@@ -8696,6 +8700,12 @@ class TestB32bAcceptanceScaffold:
         "convert_dtypes":
             ("not-source-5",
              "same as apply_dtypes — in-place conversion, family 8"),
+        "_convert_physical_dtype_explicit":
+            ("not-source-5",
+             "STEP 7 family 8 owner: converts an EXISTING physical column "
+             "and atomically updates its schema/authority (including any "
+             "source-5 codec metadata); it creates no new persistent logical "
+             "column identity"),
         "apply_schema":
             ("not-source-5",
              "re-applies a declared schema; any authority follows the "
@@ -10459,29 +10469,162 @@ class TestB32bAcceptanceScaffold:
 
     # ---- family 8: bounded conversion-API audit --------------------------
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 8: apply_dtypes / convert_dtypes / "
-        "convert_dtypes_pattern each route through the central conversion "
-        "policy or carry a recorded disposition WITH A REASON. Measured "
-        "baseline failure: none of the three references the resolver, and "
-        "none carries a disposition marker.")
     def test_b32b_17_conversion_apis_have_a_recorded_disposition(self):
-        """MR-P2-1: revision 2 accepted the bare token `B3.2b-DISPOSITION`,
-        which a one-word comment satisfies — a rubber stamp. The marker must
-        now be followed by a reason of real length on the same line, so
-        'disposed' means somebody wrote down why."""
+        """STEP 7 closes family 8 with one real conversion transaction.
+
+        `apply_dtypes` and `convert_dtypes` must route through the explicit
+        physical-conversion owner. `convert_dtypes_pattern` is allowed to be a
+        pure selection wrapper, but its source must say why and delegate to
+        `convert_dtypes`.  A comment alone cannot close the two APIs that
+        actually perform conversions.
+        """
         import re as _re
         src = _adf_source_text()
         for api in ("apply_dtypes", "convert_dtypes", "convert_dtypes_pattern"):
             m = _re.search(r"def %s\(.*?(?=\n    def )" % api, src, _re.S)
             assert m, f"{api} not found"
             body = m.group(0)
-            routed = ("_resolve_target_dtype" in body
-                      or "_safe_dtype_cast" in body)
-            reasoned = _re.search(r"B3\.2b-DISPOSITION[:\s]+(\S.{29,})", body)
-            assert routed or reasoned, (
-                f"{api} neither routes through central policy nor carries a "
-                f"recorded B3.2b-DISPOSITION with a stated reason")
+            if api == "convert_dtypes_pattern":
+                assert "self.convert_dtypes(" in body, (
+                    "pattern conversion no longer delegates to convert_dtypes")
+                reasoned = _re.search(
+                    r"B3\.2b-DISPOSITION[:\s]+(\S.{29,})", body)
+                assert reasoned, (
+                    "pattern wrapper delegates but lost its recorded reason")
+            else:
+                assert "_convert_physical_dtype_explicit" in body, (
+                    f"{api} bypasses the STEP-7 explicit conversion owner")
+
+    def test_b32b_17a_apply_dtypes_updates_source5_authority_atomically(self):
+        """A deliberate conversion changes physical dtype and source-5
+        authority together; the old authority must not survive as a conflict.
+        """
+        m = A.AliasDataFrame(pd.DataFrame({
+            "dy": np.array([1.5, 2.5, 3.5], dtype=np.float64)}))
+        m.compress_columns(self._step6_compression_spec("dy"))
+        before = m.get_dtype_authority("dy_c")
+        assert before.known and before.origin == _adf_module().DTypeOrigin.ADF_CREATED
+        m.apply_dtypes({"dy_c": np.float64})
+        assert str(m.df["dy_c"].dtype) == "float64"
+        auth = m.get_dtype_authority("dy_c")
+        assert auth.known and str(auth.dtype) == "float64"
+        assert auth.origin == _adf_module().DTypeOrigin.ADF_CREATED
+        assert not auth.conflict, auth.conflict_detail
+        assert m.compression_info["dy"]["compressed_dtype"] == "float64", (
+            "source-5 codec metadata still describes the pre-conversion "
+            "compressed representation")
+
+    def test_b32b_17b_convert_dtypes_updates_real_schema_not_schema_copy(self):
+        """Regression for the pre-STEP-7 `self.schema[...]` no-op.
+
+        `schema` is a deep-copy property, so the old code changed the physical
+        dtype while silently leaving `_schema` untouched.
+        """
+        m = A.AliasDataFrame(pd.DataFrame({
+            "x": np.array([1.0, 2.0], dtype=np.float32)}))
+        m.convert_dtypes({"x": np.float16})
+        assert str(m.df["x"].dtype) == "float16"
+        assert str(pd.api.types.pandas_dtype(m._schema["columns"]["x"]["dtype"])) \
+            == "float16"
+        auth = m.get_dtype_authority("x")
+        assert auth.known and str(auth.dtype) == "float16"
+        assert not auth.conflict
+
+    def test_b32b_17c_pattern_routes_the_same_conversion_transaction(self):
+        m = A.AliasDataFrame(pd.DataFrame({
+            "dy_1": np.array([1.0, 2.0], dtype=np.float32),
+            "dy_2": np.array([3.0, 4.0], dtype=np.float32),
+            "dz_1": np.array([5.0, 6.0], dtype=np.float32)}))
+        m.convert_dtypes_pattern(r"dy_.*", np.float16)
+        assert str(m.df["dy_1"].dtype) == "float16"
+        assert str(m.df["dy_2"].dtype) == "float16"
+        assert str(m.df["dz_1"].dtype) == "float32"
+        for col in ("dy_1", "dy_2"):
+            assert str(m.get_dtype_authority(col).dtype) == "float16"
+
+    def test_b32b_17d_explicit_conversion_rolls_back_physical_and_authority(self):
+        """Fault after metadata commit: physical + schema/authority roll back.
+        """
+        cls = A.AliasDataFrame
+        m = A.AliasDataFrame(pd.DataFrame({
+            "x": np.array([1, 2, 3], dtype=np.int64)}))
+        df_before = m.df.copy(deep=True)
+        schema_before = copy.deepcopy(m._schema)
+        orig = cls._commit_explicit_conversion_metadata
+
+        def boom(self, col, target):
+            orig(self, col, target)
+            raise RuntimeError("injected explicit-conversion metadata fault")
+
+        cls._commit_explicit_conversion_metadata = boom
+        try:
+            with pytest.raises(RuntimeError, match="metadata fault"):
+                m.apply_dtypes({"x": np.float32})
+        finally:
+            cls._commit_explicit_conversion_metadata = orig
+        pd.testing.assert_frame_equal(m.df, df_before)
+        assert m._schema == schema_before
+
+    def test_b32b_17e_decompressed_source5_codec_dtype_tracks_explicit_recast(self):
+        """The original/decompressed representation has its own codec dtype."""
+        mod = _adf_module()
+        m = A.AliasDataFrame(pd.DataFrame({
+            "dy": np.array([1.5, 2.5, 3.5], dtype=np.float64)}))
+        m.compress_columns(self._step6_compression_spec("dy"))
+        m.decompress_columns(["dy"], keep_compressed=True)
+        before = m.get_dtype_authority("dy")
+        assert before.known and before.origin == mod.DTypeOrigin.ADF_CREATED
+        m.convert_dtypes({"dy": np.float32})
+        assert str(m.df["dy"].dtype) == "float32"
+        auth = m.get_dtype_authority("dy")
+        assert auth.known and str(auth.dtype) == "float32"
+        assert auth.origin == mod.DTypeOrigin.ADF_CREATED
+        assert m.compression_info["dy"]["decompressed_dtype"] == "float32"
+
+    def test_b32b_17f_source5_conversion_fault_restores_codec_metadata(self):
+        """Physical + authority + compression record are ONE transaction."""
+        cls = A.AliasDataFrame
+        m = A.AliasDataFrame(pd.DataFrame({
+            "dy": np.array([1.5, 2.5, 3.5], dtype=np.float64)}))
+        m.compress_columns(self._step6_compression_spec("dy"))
+        df_before = m.df.copy(deep=True)
+        schema_before = copy.deepcopy(m._schema)
+        orig = cls._commit_explicit_conversion_metadata
+
+        def boom(self, col, target):
+            orig(self, col, target)
+            raise RuntimeError("injected source-5 conversion metadata fault")
+
+        cls._commit_explicit_conversion_metadata = boom
+        try:
+            with pytest.raises(RuntimeError, match="source-5 conversion metadata fault"):
+                m.apply_dtypes({"dy_c": np.float64})
+        finally:
+            cls._commit_explicit_conversion_metadata = orig
+        pd.testing.assert_frame_equal(m.df, df_before)
+        assert m._schema == schema_before
+
+    def test_b32b_17g_reader_origin_recast_becomes_physical_column_origin(self):
+        """A user-selected replacement dtype did not come from the reader."""
+        mod = _adf_module()
+        m = A.AliasDataFrame(pd.DataFrame({
+            "x": np.array([1.0, 2.0], dtype=np.float64)}))
+        entry = m._schema.setdefault("columns", {}).setdefault("x", {})
+        entry[m._AUTHORITY_KEY] = {
+            "dtype": m._encode_dtype(np.dtype("float64")),
+            "origin": mod.DTypeOrigin.READER_METADATA,
+            "subject_kind": "column",
+            "reason": "fixture reader metadata",
+        }
+        assert m.get_dtype_authority("x").origin == mod.DTypeOrigin.READER_METADATA
+        m.apply_dtypes({"x": np.float32})
+        auth = m.get_dtype_authority("x")
+        assert auth.known and str(auth.dtype) == "float32"
+        assert auth.origin == mod.DTypeOrigin.PHYSICAL_COLUMN
+        assert not auth.conflict
+        rec = m._schema["columns"]["x"][m._AUTHORITY_KEY]
+        assert rec["origin"] == mod.DTypeOrigin.PHYSICAL_COLUMN
+        assert "explicit dtype conversion" in rec.get("reason", "")
 
     # ---- family 6: the cast-site audit / one owner ------------------------
 
@@ -11837,24 +11980,21 @@ class TestB32bAcceptanceScaffold:
                 warnings.simplefilter("ignore")
                 strict.materialize_alias("q")
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance (D_3, §6.1 — split out of b32b_9 per MR-P1-4): the "
-        "ORDINARY conversion route follows documented backend semantics and "
-        "delivers the declared dtype, so the strict helper is a genuine "
-        "opt-in rather than the only route that works. Measured baseline "
-        "failure: materialize_alias raises before the dtype can be checked — "
-        "the ordinary route refuses the out-of-range value instead of "
-        "applying AR-1 standards-first conversion.")
     def test_b32b_9b_ordinary_route_follows_backend_semantics(self):
-        ordinary = A.AliasDataFrame(
-            pd.DataFrame({"x": np.array([300, 2], np.int64)}))
+        """AR-1: explicit ordinary narrowing follows NumPy/backend semantics.
+
+        The pre-STEP-7 integer round-trip check made `casting="unsafe"` strict
+        again.  This test pins both the dtype and the actual backend result.
+        """
+        source = np.array([300, 2], np.int64)
+        ordinary = A.AliasDataFrame(pd.DataFrame({"x": source.copy()}))
         ordinary.add_alias("q", "x", dtype="int8")
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             ordinary.materialize_alias("q")
-        assert str(ordinary.df["q"].dtype) == "int8", (
-            "the ORDINARY route must still follow documented backend "
-            "semantics — the strict helper is opt-in, not a global switch")
+        assert str(ordinary.df["q"].dtype) == "int8"
+        expected = source.astype(np.int8)
+        np.testing.assert_array_equal(ordinary.df["q"].values, expected)
 
     def test_b32b_10_casting_mode_is_pinned_and_consumed(self):
         """CLOSED BY B3.2b STEP 2 — was a strict xfail, now passing.
