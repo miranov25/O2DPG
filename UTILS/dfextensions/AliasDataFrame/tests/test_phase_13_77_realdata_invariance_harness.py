@@ -2470,7 +2470,8 @@ def test_a4_04_scalar_catalogue_and_runner_binding_are_machine_authoritative():
         "I3-SELECTION-01", "I3-EXPR-01", "I3-WEIGHTS-01",
         "I3-GROUP-BY-01", "I3-FACET-BY-01", "I3-COMPOUND-EXPR-01",
     }
-    assert set(cases) == expected
+    # A4.2 owns these six contracts; later A4 increments may append siblings.
+    assert expected.issubset(set(cases))
     assert H.validate_registry(tuple(cases.values())) == []
 
     for cid in expected:
@@ -2532,4 +2533,165 @@ def test_a4_10_source_contract_is_checked_before_observable_path_resolution():
     assert result.status == H.INVALID_FIXTURE
     assert "declares source 'INDEPENDENT'" in result.detail
     assert "does not resolve" not in result.detail
+
+# ── A4.3 — vector slots + explicit subframe-vector capability boundary ────────
+
+def _a4_vector_raw():
+    n = 120
+    x = np.linspace(0.05, 0.95, n)
+    phase = np.arange(n)
+    return pd.DataFrame({
+        "x": x,
+        "y": 1.0 + 0.4 * x + 0.03 * np.sin(phase / 9.0),
+        "dep_selection_vector": (phase % 2).astype(float),
+        "dep_weights_vector": (phase % 4).astype(float) / 3.0,
+        "decoy": np.linspace(10.0, 20.0, n),
+    })
+
+
+def _a4_register_vector_aliases(adf):
+    adf.add_alias("slot_selection_vector", "dep_selection_vector")
+    adf.add_alias("slot_weights_vector", "1.0 + dep_weights_vector")
+    return adf
+
+
+def _a4_make_vector_eager():
+    return _a4_register_vector_aliases(ADF(_a4_vector_raw()))
+
+
+def _a4_make_vector_lazy():
+    raw = _a4_vector_raw()
+    adf = ADF(pd.DataFrame(index=range(len(raw))))
+    reader = _A4TrackingLazyReader(raw)
+    adf._lazy_reader = reader
+    adf._chain = {
+        "files": [], "entry_offsets": [0], "total_entries": len(raw),
+        "validation_mode": None,
+    }
+    return _a4_register_vector_aliases(adf)
+
+
+def _a4_make_subframe_vector_eager():
+    n = 120
+    phase = np.arange(n)
+    base = ADF(pd.DataFrame({
+        "x": np.linspace(0.05, 0.95, n),
+        "y": 1.0 + 0.4 * np.linspace(0.05, 0.95, n),
+        "kbin": (phase % 4).astype(int),
+    }))
+    sub = ADF(pd.DataFrame({
+        "kbin": np.arange(4, dtype=int),
+        "count": np.array([1.0, 2.0, 3.0, 4.0]),
+    }))
+    base.register_subframe("S", sub, index_columns="kbin")
+    return base
+
+
+def _a4_make_subframe_vector_lazy():
+    n = 120
+    phase = np.arange(n)
+    raw = pd.DataFrame({
+        "x": np.linspace(0.05, 0.95, n),
+        "y": 1.0 + 0.4 * np.linspace(0.05, 0.95, n),
+        "kbin": (phase % 4).astype(int),
+    })
+    base = ADF(pd.DataFrame(index=range(n)))
+    reader = _A4TrackingLazyReader(raw)
+    base._lazy_reader = reader
+    base._chain = {
+        "files": [], "entry_offsets": [0], "total_entries": len(raw),
+        "validation_mode": None,
+    }
+    sub = ADF(pd.DataFrame({
+        "kbin": np.arange(4, dtype=int),
+        "count": np.array([1.0, 2.0, 3.0, 4.0]),
+    }))
+    base.register_subframe("S", sub, index_columns="kbin")
+    return base
+
+
+def test_a4_11_vector_catalogue_and_refusal_contracts_are_machine_visible(tmp_path):
+    cases = {c.case_id: c for c in H.a4_cases()}
+    expected = {
+        "I3-SELECTION-VECTOR-01",
+        "I3-WEIGHTS-VECTOR-01",
+        "I3-SUBFRAME-SELECTION-VECTOR-REFUSAL-01",
+        "I3-SUBFRAME-WEIGHTS-VECTOR-REFUSAL-01",
+    }
+    assert expected.issubset(set(cases))
+    assert H.validate_registry(tuple(cases.values())) == []
+
+    for cid in ("I3-SELECTION-VECTOR-01", "I3-WEIGHTS-VECTOR-01"):
+        c = cases[cid]
+        assert c.purpose == "INVARIANCE"
+        assert c.loading_mode == "BOTH"
+        assert H.A4_SLOT_CONTRACTS[cid]["runner"] == "run_slot_symmetry"
+
+    for cid in ("I3-SUBFRAME-SELECTION-VECTOR-REFUSAL-01",
+                "I3-SUBFRAME-WEIGHTS-VECTOR-REFUSAL-01"):
+        c = cases[cid]
+        assert c.purpose == "ERROR_CONTRACT"
+        assert c.known_bug_status == "KNOWN_BUG"
+        assert c.known_bug_id == "BUG_20260701_ADF_subframe_ref_slot_symmetry"
+        assert H.A4_SLOT_CONTRACTS[cid]["runner"] == "run_error_contract"
+
+    # The current capability boundary must survive the same manifest path used
+    # by normal Stage-A evidence, not only exist as a source-code comment.
+    result = H.run_error_contract(
+        cases["I3-SUBFRAME-SELECTION-VECTOR-REFUSAL-01"],
+        _a4_make_subframe_vector_eager, "draw",
+        "BUG_20260701_ADF_subframe_ref_slot_symmetry")
+    assert result.status == H.PASS, result.detail
+    doc = H.write_manifest(str(tmp_path / "a4_3.json"), [result],
+                           [cases["I3-SUBFRAME-SELECTION-VECTOR-REFUSAL-01"]])
+    rec = doc["cases"][0]
+    assert rec["known_bug_id"] == "BUG_20260701_ADF_subframe_ref_slot_symmetry"
+    assert rec["slots_under_test"] == ["selection_vector"]
+
+
+@pytest.mark.parametrize(
+    "case_id,expected_loaded",
+    [
+        ("I3-SELECTION-VECTOR-01", {"x", "y", "dep_selection_vector"}),
+        ("I3-WEIGHTS-VECTOR-01", {"x", "y", "dep_weights_vector"}),
+    ],
+)
+def test_a4_12_13_vector_slots_prove_eager_materialization_and_exact_lazy_loads(
+        case_id, expected_loaded):
+    case = {c.case_id: c for c in H.a4_cases()}[case_id]
+    result = H.run_slot_symmetry(case, _a4_make_vector_eager, _a4_make_vector_lazy)
+    assert result.status == H.PASS, result.detail
+    assert result.executed_comparisons == len(case.observables)
+    assert len(result.comparisons) == len(case.observables)
+    assert all(c["ok"] for c in result.comparisons)
+
+    evidence = result.observed["slot_evidence"]
+    contract = H.A4_SLOT_CONTRACTS[case_id]
+    assert evidence["slot"] == contract["slots_under_test"][0]
+    assert evidence["alias"] == contract["slot_alias"]
+    assert evidence["eager_alias_materialized"] is True
+    assert evidence["lazy_alias_materialized"] is True
+    assert evidence["lazy_loaded_before"] == []
+    assert set(evidence["lazy_loaded_after"]) == expected_loaded
+    assert set(evidence["unrelated_physical_branches"]).isdisjoint(expected_loaded)
+
+    # Both vector arms must carry data; a degenerate empty branch would make
+    # the slot-causality proof weaker even if EAGER and LAZY agreed.
+    assert np.nansum(result.observed["signal_count"]["EAGER"]) > 0
+    assert np.nansum(result.observed["reference_count"]["EAGER"]) > 0
+
+
+def test_a4_14_15_subframe_vector_refusals_hold_in_eager_and_lazy_modes():
+    cases = {c.case_id: c for c in H.a4_cases()}
+    for cid in ("I3-SUBFRAME-SELECTION-VECTOR-REFUSAL-01",
+                "I3-SUBFRAME-WEIGHTS-VECTOR-REFUSAL-01"):
+        case = cases[cid]
+        for maker in (_a4_make_subframe_vector_eager, _a4_make_subframe_vector_lazy):
+            result = H.run_error_contract(
+                case, maker, "draw", "BUG_20260701_ADF_subframe_ref_slot_symmetry")
+            # PASS here already means run_error_contract found the exact bug ID
+            # in the full exception text; result.detail is intentionally truncated.
+            assert result.status == H.PASS, (cid, result.detail)
+            assert case.known_bug_id == "BUG_20260701_ADF_subframe_ref_slot_symmetry"
+            assert H.strict_exit_code([result], [case]) == 0
 

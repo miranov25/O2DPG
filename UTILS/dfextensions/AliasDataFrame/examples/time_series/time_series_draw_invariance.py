@@ -31,7 +31,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A4.2.v01"
+SCHEMA_VERSION = "13.77.A4.3.v01"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -1479,6 +1479,53 @@ A4_SLOT_CONTRACTS = {
             "unrelated branch decoy is unloaded before and after the lazy arm",
         ),
     },
+    "I3-SELECTION-VECTOR-01": {
+        "runner": "run_slot_symmetry",
+        "slots_under_test": ("selection_vector",),
+        "slot_alias": "slot_selection_vector",
+        "required_physical_dependencies": ("dep_selection_vector",),
+        "expected_lazy_loaded_after": ("dep_selection_vector", "x", "y"),
+        "unrelated_physical_branches": ("decoy",),
+        "anti_contamination_preconditions": (
+            "slot alias slot_selection_vector is absent from frame columns before each arm",
+            "lazy reader begins with no loaded physical branches",
+            "selection_vector-only dependency dep_selection_vector is unloaded before the lazy arm",
+            "unrelated branch decoy is unloaded before and after the lazy arm",
+        ),
+    },
+    "I3-WEIGHTS-VECTOR-01": {
+        "runner": "run_slot_symmetry",
+        "slots_under_test": ("weights_vector",),
+        "slot_alias": "slot_weights_vector",
+        "required_physical_dependencies": ("dep_weights_vector",),
+        "expected_lazy_loaded_after": ("dep_weights_vector", "x", "y"),
+        "unrelated_physical_branches": ("decoy",),
+        "anti_contamination_preconditions": (
+            "slot alias slot_weights_vector is absent from frame columns before each arm",
+            "lazy reader begins with no loaded physical branches",
+            "weights_vector-only dependency dep_weights_vector is unloaded before the lazy arm",
+            "unrelated branch decoy is unloaded before and after the lazy arm",
+        ),
+    },
+    "I3-SUBFRAME-SELECTION-VECTOR-REFUSAL-01": {
+        "runner": "run_error_contract",
+        "slots_under_test": ("selection_vector",),
+        "anti_contamination_preconditions": (
+            "registered subframe S is present before the public call",
+            "S.count appears only inside selection_vector",
+            "the request must refuse before dfdraw evaluates an unresolved subframe reference",
+        ),
+    },
+    "I3-SUBFRAME-WEIGHTS-VECTOR-REFUSAL-01": {
+        "runner": "run_error_contract",
+        "slots_under_test": ("weights_vector",),
+        "anti_contamination_preconditions": (
+            "registered subframe S is present before the public call",
+            "S.count appears only inside weights_vector",
+            "the request must refuse before dfdraw evaluates an unresolved subframe reference",
+        ),
+    },
+
 }
 
 
@@ -1531,12 +1578,46 @@ def _a4_slot_case(case_id: str, *, claim_id: str, title: str, claim: str,
     )
 
 
+def _a4_vector_refusal_case(case_id: str, *, slot: str, canonical_spec: dict) -> CaseSpec:
+    contract = A4_SLOT_CONTRACTS[case_id]
+    return CaseSpec(
+        case_id=case_id,
+        claim_id=f"I3.{slot}.subframe_refusal.A4.3",
+        title=f"subframe-qualified reference in {slot} refuses loudly",
+        claim=(f"the currently unsupported subframe-qualified {slot} request refuses "
+               "with the registered BUG_20260701 contract instead of falling through "
+               "to an opaque dfdraw evaluation error"),
+        failure_means=(f"{slot} subframe handling changed without updating the declared "
+                       "capability boundary, or the refusal stopped naming its owner"),
+        expected_visual="no figure: the public request must refuse before rendering",
+        owner_on_failure="ADF",
+        purpose="ERROR_CONTRACT",
+        gate="CORE_MANDATORY",
+        oracle_kind="CONSISTENCY",
+        loading_mode="BOTH",
+        sample_mode="FULL",
+        canonical_spec=canonical_spec,
+        applicable=True,
+        surfaces_under_test=("draw",),
+        slots_under_test=contract["slots_under_test"],
+        anti_contamination_preconditions=contract["anti_contamination_preconditions"],
+        known_bug_status="KNOWN_BUG",
+        known_bug_id="BUG_20260701_ADF_subframe_ref_slot_symmetry",
+        negative_control=("FAMILY_MUTATION:A4.3 same subframe-qualified vector request "
+                          "must not silently succeed or lose the bug-labelled refusal"),
+        reference_policy="named-immutable",
+    )
+
+
 def a4_cases() -> tuple[CaseSpec, ...]:
     """A4 slot-exclusive cases implemented through A4.2.
 
     A4.1 banks the selection-only case.  A4.2 extends the same BOTH/FULL
     execution contract to the scalar ``expr``, ``weights``, ``group_by``,
-    ``facet_by`` and compound-expression slots.  The public draw surface is
+    ``facet_by`` and compound-expression slots.  A4.3 adds ordinary alias
+    coverage for ``selection_vector`` and ``weights_vector`` and records the
+    existing subframe-qualified vector limitation as mandatory ERROR_CONTRACT
+    cases carrying BUG_20260701_ADF_subframe_ref_slot_symmetry.  The public draw surface is
     intentionally held fixed: A3 already proved surface symmetry; A4's second
     consistency arm is loading mode, and the lazy arm additionally proves the
     exact physical dependency set attributable to that one slot.
@@ -1666,6 +1747,90 @@ def a4_cases() -> tuple[CaseSpec, ...]:
         primary_comparison="EAGER versus LAZY compound profile plus exact lazy compound dependency load",
         accepted_envelope="n exact; y_mean within tolerance; exact lazy loaded branch set",
         negative_control="GLOBAL_MUTATION:M2 compound-expression preload contamination -> INVALID_FIXTURE",
+    ))
+    cases.append(_a4_slot_case(
+        "I3-SELECTION-VECTOR-01", claim_id="I3.selection_vector.A4.3",
+        title="selection_vector alias symmetry in eager and lazy loading modes",
+        claim="an alias used only inside selection_vector is discovered symmetrically",
+        failure_means="selection_vector alias discovery or branch-resolved profile reduction differs by loading mode",
+        expected_visual="one normalized signal/reference profile difference",
+        canonical_spec={"expr": "y:x", "type": "profile", "bins": 8,
+                        "selection_vector": ["slot_selection_vector>0",
+                                             "slot_selection_vector<=0"],
+                        "normalize": "delta", "return_data": True,
+                        "auto_title": True},
+        setup_contract="slot_selection_vector aliases dep_selection_vector and appears only in selection_vector",
+        preconditions=("slot_selection_vector is registered and not pre-materialized",
+                       "dep_selection_vector is unloaded before the lazy arm",
+                       "both vector branches select populated rows"),
+        observables=(
+            Observable("signal_count", "STATS", "ARRAY", "normalize_data.signal_count",
+                       comparator="exact", rationale="same signal-branch population in EAGER/LAZY"),
+            Observable("reference_count", "STATS", "ARRAY", "normalize_data.reference_count",
+                       comparator="exact", rationale="same reference-branch population in EAGER/LAZY"),
+            Observable("signal_central", "STATS", "ARRAY", "normalize_data.signal_central",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same signal profile reduction in EAGER/LAZY"),
+            Observable("reference_central", "STATS", "ARRAY", "normalize_data.reference_central",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same reference profile reduction in EAGER/LAZY"),
+            Observable("value", "STATS", "ARRAY", "normalize_data.value",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same derived delta after identical vector branches"),
+        ),
+        primary_comparison="EAGER versus LAZY branch-resolved vector profile plus exact lazy dependency load",
+        accepted_envelope="branch counts exact; floating branch/delta values within tolerance; exact lazy loaded set",
+        negative_control="GLOBAL_MUTATION:M2 selection_vector preload contamination -> INVALID_FIXTURE",
+    ))
+    cases.append(_a4_slot_case(
+        "I3-WEIGHTS-VECTOR-01", claim_id="I3.weights_vector.A4.3",
+        title="weights_vector alias symmetry in eager and lazy loading modes",
+        claim="an alias used only inside weights_vector is discovered symmetrically",
+        failure_means="weights_vector alias discovery or branch-weighted profile reduction differs by loading mode",
+        expected_visual="one normalized weighted signal/reference profile difference",
+        canonical_spec={"expr": "y:x", "type": "profile", "bins": 8,
+                        "weights_vector": ["slot_weights_vector",
+                                           "2.5-slot_weights_vector"],
+                        "normalize": "delta", "return_data": True,
+                        "auto_title": True},
+        setup_contract="slot_weights_vector aliases 1+dep_weights_vector and appears only in weights_vector",
+        preconditions=("slot_weights_vector is registered and not pre-materialized",
+                       "dep_weights_vector is unloaded before the lazy arm",
+                       "both vector weight expressions remain positive"),
+        observables=(
+            Observable("signal_count", "STATS", "ARRAY", "normalize_data.signal_count",
+                       comparator="exact", rationale="same signal weighted-profile population in EAGER/LAZY"),
+            Observable("reference_count", "STATS", "ARRAY", "normalize_data.reference_count",
+                       comparator="exact", rationale="same reference weighted-profile population in EAGER/LAZY"),
+            Observable("signal_central", "STATS", "ARRAY", "normalize_data.signal_central",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same signal weighted profile in EAGER/LAZY"),
+            Observable("reference_central", "STATS", "ARRAY", "normalize_data.reference_central",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same reference weighted profile in EAGER/LAZY"),
+            Observable("value", "STATS", "ARRAY", "normalize_data.value",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same derived weighted delta in EAGER/LAZY"),
+        ),
+        primary_comparison="EAGER versus LAZY weighted vector branches plus exact lazy dependency load",
+        accepted_envelope="branch counts exact; floating weighted branch/delta values within tolerance; exact lazy loaded set",
+        negative_control="GLOBAL_MUTATION:M2 weights_vector preload contamination -> INVALID_FIXTURE",
+    ))
+    cases.append(_a4_vector_refusal_case(
+        "I3-SUBFRAME-SELECTION-VECTOR-REFUSAL-01",
+        slot="selection_vector",
+        canonical_spec={"expr": "y:x", "type": "profile", "bins": 8,
+                        "selection_vector": ["S.count>0", "S.count<=0"],
+                        "normalize": "delta", "return_data": True,
+                        "auto_title": True},
+    ))
+    cases.append(_a4_vector_refusal_case(
+        "I3-SUBFRAME-WEIGHTS-VECTOR-REFUSAL-01",
+        slot="weights_vector",
+        canonical_spec={"expr": "y:x", "type": "profile", "bins": 8,
+                        "weights_vector": ["S.count", "2.5-S.count"],
+                        "normalize": "delta", "return_data": True,
+                        "auto_title": True},
     ))
     return tuple(cases)
 
@@ -1916,17 +2081,26 @@ def validate_registry(cases: Sequence[CaseSpec]) -> list[str]:
             if slot_contract is None:
                 bad.append(f"{cid}: slot case has no A4_SLOT_CONTRACTS execution contract")
             else:
-                if slot_contract.get("runner") != "run_slot_symmetry":
+                runner = slot_contract.get("runner")
+                if c.purpose == "INVARIANCE" and runner != "run_slot_symmetry":
                     bad.append(f"{cid}: A4 slot execution contract is not bound to run_slot_symmetry")
+                elif c.purpose == "ERROR_CONTRACT" and runner != "run_error_contract":
+                    bad.append(f"{cid}: A4 ERROR_CONTRACT slot execution contract is not bound to run_error_contract")
+                elif runner not in ("run_slot_symmetry", "run_error_contract"):
+                    bad.append(f"{cid}: A4 slot execution contract has unknown runner {runner!r}")
                 if tuple(c.slots_under_test) != tuple(slot_contract["slots_under_test"]):
                     bad.append(f"{cid}: slots_under_test drift from A4 execution contract")
                 if tuple(c.anti_contamination_preconditions) != tuple(
                         slot_contract["anti_contamination_preconditions"]):
                     bad.append(f"{cid}: anti_contamination_preconditions drift from A4 execution contract")
                 if c.loading_mode != "BOTH":
-                    bad.append(f"{cid}: A4 slot symmetry requires loading_mode='BOTH'")
+                    bad.append(f"{cid}: A4 slot contracts require loading_mode='BOTH'")
                 if c.sample_mode != "FULL":
-                    bad.append(f"{cid}: A4 BOTH slot symmetry requires sample_mode='FULL'")
+                    bad.append(f"{cid}: A4 BOTH slot contract requires sample_mode='FULL'")
+                if runner == "run_slot_symmetry" and c.purpose != "INVARIANCE":
+                    bad.append(f"{cid}: run_slot_symmetry contract requires purpose='INVARIANCE'")
+                if runner == "run_error_contract" and c.purpose != "ERROR_CONTRACT":
+                    bad.append(f"{cid}: run_error_contract slot contract requires purpose='ERROR_CONTRACT'")
         elif c.anti_contamination_preconditions:
             bad.append(f"{cid}: anti_contamination_preconditions declared without slots_under_test")
         for s in c.surfaces_under_test:
