@@ -31,7 +31,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A3.11.v02"
+SCHEMA_VERSION = "13.77.A4.1.v01"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -189,6 +189,7 @@ _MISSING = object()
 RUNNER_SOURCE = {
     "run_consistency": ("STATS",),
     "run_correctness": ("INDEPENDENT",),
+    "run_slot_symmetry": ("STATS",),
 }
 
 
@@ -1378,6 +1379,114 @@ def a3_closure_reconciliation(cases: Sequence[CaseSpec] | None = None) -> dict:
     }
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# A4.1 expression-slot symmetry — first bounded slot case
+# ─────────────────────────────────────────────────────────────────────────────
+
+EXPRESSION_SLOTS = (
+    "expr", "selection", "weights", "group_by", "facet_by",
+    "selection_vector", "weights_vector", "subframe_qualified_expression",
+    "compound_expression",
+)
+
+# A4 does not infer slot ownership from variable names.  This compact execution
+# contract is the machine authority for the slot-exclusive fixture.  Later A4
+# increments add sibling entries; A4.1 intentionally owns selection only.
+A4_SLOT_CONTRACTS = {
+    "I3-SELECTION-01": {
+        "slots_under_test": ("selection",),
+        "slot_alias": "slot_keep",
+        "required_physical_dependencies": ("dep_selection",),
+        "expected_lazy_loaded_after": ("dep_selection", "x", "y"),
+        "unrelated_physical_branches": ("decoy",),
+        "anti_contamination_preconditions": (
+            "slot alias slot_keep is absent from frame columns before each arm",
+            "lazy reader begins with no loaded physical branches",
+            "selection-only dependency dep_selection is unloaded before the lazy arm",
+            "unrelated branch decoy is unloaded before and after the lazy arm",
+        ),
+    },
+}
+
+
+def a4_cases() -> tuple[CaseSpec, ...]:
+    """A4 slot-exclusive cases implemented so far.
+
+    A4.1 starts with ONE selection-only alias case in BOTH/FULL mode.  The
+    public draw surface is intentionally held fixed: A3 already proved public
+    surface symmetry; A4's comparison axis is EAGER versus LAZY, and the lazy
+    arm additionally proves exact physical dependency discovery/loading.
+    """
+    cid = "I3-SELECTION-01"
+    contract = A4_SLOT_CONTRACTS[cid]
+    selection = CaseSpec(
+        case_id=cid,
+        claim_id="I3.selection.A4.1",
+        title="selection-slot alias symmetry in eager and lazy loading modes",
+        claim=("a dependency that appears only through selection= is discovered and "
+               "materialized in EAGER mode and loads exactly its required physical "
+               "branch in LAZY mode, with no unrelated preload"),
+        failure_means=("selection-slot dependency discovery is asymmetric, the lazy arm "
+                       "loads the wrong physical branch set, or a contaminated fixture "
+                       "is allowed to pass"),
+        expected_visual="one y:x profile after the slot-only selection removes half the rows",
+        owner_on_failure="ADF",
+        purpose="INVARIANCE",
+        gate="CORE_MANDATORY",
+        oracle_kind="CONSISTENCY",
+        loading_mode="BOTH",
+        sample_mode="FULL",
+        canonical_spec={
+            "expr": "y:x",
+            "type": "profile",
+            "bins": 8,
+            "selection": "slot_keep>0",
+            "return_data": True,
+            "auto_title": True,
+        },
+        applicable=True,
+        setup_contract=("EAGER and tracking-LAZY fixtures contain the same physical "
+                        "x/y/dep_selection/decoy data; slot_keep is an alias of "
+                        "dep_selection>0 and appears only in selection="),
+        preconditions=(
+            "slot_keep is registered as an alias and not pre-materialized",
+            "dep_selection is the only selection-only physical dependency",
+            "the lazy reader starts with zero loaded physical branches",
+        ),
+        figure_contract=FigureContract(
+            expected_panels="one panel",
+            panel_roles="main: selected y versus x profile",
+            expected_traces="one profile",
+            expected_group_count="1",
+            primary_comparison=("EAGER versus LAZY selected-row count and profile values; "
+                                "LAZY exact physical branch-load evidence"),
+            residual_definition="lazy numerical observable minus eager observable",
+            accepted_envelope=("selected-row count exact; floating profile values within "
+                               "declared tolerance; exact lazy loaded branch set"),
+            case_ids=(cid,),
+            proof_kind="CONSISTENCY",
+        ),
+        surfaces_under_test=("draw",),
+        slots_under_test=contract["slots_under_test"],
+        observables=(
+            Observable("n", "STATS", "FLAT", "n"),
+            Observable("y_mean", "STATS", "ARRAY", "profile_data.y_mean",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same selected rows and profile reduction in EAGER/LAZY"),
+        ),
+        non_claims=(
+            "A4.1 covers selection only; remaining expression-bearing slots are later A4 increments",
+            "this synthetic case does not replace the later real-data lazy acceptance run",
+            "A4.1 does not reopen A3 public-surface symmetry",
+        ),
+        anti_contamination_preconditions=contract["anti_contamination_preconditions"],
+        negative_control="GLOBAL_MUTATION:M2 selection-slot preload contamination -> INVALID_FIXTURE",
+        reference_policy="named-immutable",
+    )
+    return (selection,)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 5.  Registry validation — §14's self-checks, run BEFORE any case executes.
 #
@@ -1399,8 +1508,6 @@ def a3_closure_reconciliation(cases: Sequence[CaseSpec] | None = None) -> dict:
 # against a named stage.  A new field with no reader fails the suite the day it
 # is added, rather than surviving to the next review round.
 FUTURE_STAGE_FIELDS = {
-    "slots_under_test": "A4",                    # slot symmetry; no slot case yet
-    "anti_contamination_preconditions": "A4",    # verified by slot cases only
     "reference_policy": "A6",                    # named-reference acceptance
 }
 
@@ -1614,6 +1721,29 @@ def validate_registry(cases: Sequence[CaseSpec]) -> list[str]:
         if c.loading_mode in ("LAZY", "BOTH") and c.sample_mode == "FRACTION":
             bad.append(f"{cid}: LAZY/BOTH with FRACTION — sampled-lazy is not "
                        f"supported by build_adf (v1.2 §7.3)")
+        # A4.1: slots_under_test and anti-contamination are no longer
+        # future-declared state.  A slot case must bind to an explicit execution
+        # contract; the declaration itself is checked against that authority.
+        if c.slots_under_test:
+            unknown_slots = [slot for slot in c.slots_under_test
+                             if slot not in EXPRESSION_SLOTS]
+            if unknown_slots:
+                bad.append(f"{cid}: unknown slots_under_test {unknown_slots}")
+            slot_contract = A4_SLOT_CONTRACTS.get(cid)
+            if slot_contract is None:
+                bad.append(f"{cid}: slot case has no A4_SLOT_CONTRACTS execution contract")
+            else:
+                if tuple(c.slots_under_test) != tuple(slot_contract["slots_under_test"]):
+                    bad.append(f"{cid}: slots_under_test drift from A4 execution contract")
+                if tuple(c.anti_contamination_preconditions) != tuple(
+                        slot_contract["anti_contamination_preconditions"]):
+                    bad.append(f"{cid}: anti_contamination_preconditions drift from A4 execution contract")
+                if c.loading_mode != "BOTH":
+                    bad.append(f"{cid}: A4 slot symmetry requires loading_mode='BOTH'")
+                if c.sample_mode != "FULL":
+                    bad.append(f"{cid}: A4 BOTH slot symmetry requires sample_mode='FULL'")
+        elif c.anti_contamination_preconditions:
+            bad.append(f"{cid}: anti_contamination_preconditions declared without slots_under_test")
         for s in c.surfaces_under_test:
             if s not in SURFACES:
                 bad.append(f"{cid}: unknown surface {s!r}")
@@ -1691,7 +1821,11 @@ def validate_registry(cases: Sequence[CaseSpec]) -> list[str]:
         if c.oracle_kind == "CONSISTENCY" and c.purpose == "INVARIANCE":
             applicable = [s_ for s_ in c.surfaces_under_test
                           if s_ not in c.not_applicable]
-            if len(applicable) < 2 and c.gate == "CORE_MANDATORY":
+            # A4 slot symmetry compares EAGER vs LAZY while deliberately holding
+            # one public surface fixed; its second consistency arm is loading mode,
+            # not another draw surface.
+            a4_both = bool(c.slots_under_test) and c.loading_mode == "BOTH"
+            if len(applicable) < 2 and c.gate == "CORE_MANDATORY" and not a4_both:
                 bad.append(f"{cid}: CORE_MANDATORY consistency case has "
                            f"{len(applicable)} applicable surface(s); it can only "
                            f"SKIP and would never gate")
@@ -1875,6 +2009,9 @@ def write_manifest(path: str, results: Sequence[CaseResult],
                 "applicability_reason": c.applicability_reason,
                 "setup_contract": c.setup_contract,
                 "preconditions": list(c.preconditions),
+                # A4.1: these fields are now executable, no longer future-staged.
+                "slots_under_test": list(c.slots_under_test),
+                "anti_contamination_preconditions": list(c.anti_contamination_preconditions),
                 # A1-v04-P1-1: future-staged fields are RECORDED with the
                 # stage that owns them, so "declared but unread" is visible in
                 # the evidence rather than discoverable only by source audit.
@@ -1937,6 +2074,198 @@ def _close() -> None:
         plt.close("all")
     except Exception:
         pass
+
+
+
+def run_slot_symmetry(case: CaseSpec,
+                      make_eager: Callable[[], Any],
+                      make_lazy: Callable[[], Any]) -> CaseResult:
+    """Execute one A4 slot-exclusive BOTH/FULL case.
+
+    The public surface is held fixed.  EAGER proves slot-specific alias
+    discovery/materialization.  LAZY proves the same numerical semantics plus
+    the exact physical branch set loaded by that slot.  Anti-contamination is a
+    PRECONDITION: if the alias or lazy physical branches are already present,
+    the result is INVALID_FIXTURE rather than PASS.
+    """
+    _skip = _inapplicable(case)
+    if _skip is not None:
+        return _skip
+    t0 = time.time()
+    res = CaseResult(case_id=case.case_id, status=SKIP)
+    try:
+        contract = A4_SLOT_CONTRACTS.get(case.case_id)
+        if contract is None:
+            res.status = INVALID_FIXTURE
+            res.detail = f"no A4 slot execution contract for {case.case_id}"
+            return res
+        if tuple(case.slots_under_test) != tuple(contract["slots_under_test"]):
+            res.status = INVALID_FIXTURE
+            res.detail = "slots_under_test does not match A4 execution contract"
+            return res
+        if tuple(case.anti_contamination_preconditions) != tuple(
+                contract["anti_contamination_preconditions"]):
+            res.status = INVALID_FIXTURE
+            res.detail = "anti_contamination_preconditions do not match A4 execution contract"
+            return res
+        if case.loading_mode != "BOTH" or case.sample_mode != "FULL":
+            res.status = INVALID_FIXTURE
+            res.detail = "A4 slot runner requires BOTH/FULL"
+            return res
+        if len(case.surfaces_under_test) != 1:
+            res.status = INVALID_FIXTURE
+            res.detail = "A4.1 slot runner holds exactly one public surface fixed"
+            return res
+        surface = case.surfaces_under_test[0]
+        if surface != "draw":
+            res.status = INVALID_FIXTURE
+            res.detail = "A4.1 implements the draw surface only"
+            return res
+
+        alias_name = contract["slot_alias"]
+        required_physical = set(contract["required_physical_dependencies"])
+        expected_after = set(contract["expected_lazy_loaded_after"])
+        unrelated = set(contract["unrelated_physical_branches"])
+
+        eager = make_eager()
+        lazy = make_lazy()
+
+        if getattr(eager, "_lazy_reader", None) is not None:
+            res.status = INVALID_FIXTURE
+            res.detail = "EAGER arm factory returned a lazy ADF"
+            return res
+        lazy_reader = getattr(lazy, "_lazy_reader", None)
+        if lazy_reader is None:
+            res.status = INVALID_FIXTURE
+            res.detail = "LAZY arm factory did not attach a lazy reader"
+            return res
+
+        # M2 anti-contamination checks BEFORE any public call.
+        if alias_name not in getattr(eager, "aliases", {}):
+            res.status = INVALID_FIXTURE
+            res.detail = f"slot alias {alias_name!r} is not registered in EAGER arm"
+            return res
+        if alias_name not in getattr(lazy, "aliases", {}):
+            res.status = INVALID_FIXTURE
+            res.detail = f"slot alias {alias_name!r} is not registered in LAZY arm"
+            return res
+        if alias_name in eager.df.columns:
+            res.status = INVALID_FIXTURE
+            res.detail = f"M2 contamination: EAGER slot alias {alias_name!r} was pre-materialized"
+            return res
+        if alias_name in lazy.df.columns:
+            res.status = INVALID_FIXTURE
+            res.detail = f"M2 contamination: LAZY slot alias {alias_name!r} was pre-materialized"
+            return res
+
+        lazy_before = set(lazy_reader.loaded_branches)
+        if lazy_before:
+            res.status = INVALID_FIXTURE
+            res.detail = ("M2 contamination: LAZY reader begins with preloaded physical "
+                          f"branches {sorted(lazy_before)}")
+            return res
+        if required_physical & lazy_before:
+            res.status = INVALID_FIXTURE
+            res.detail = "M2 contamination: slot-only physical dependency was preloaded"
+            return res
+        if unrelated & lazy_before:
+            res.status = INVALID_FIXTURE
+            res.detail = "M2 contamination: unrelated physical branch was preloaded"
+            return res
+
+        def call_one(adf):
+            kw = dict(case.canonical_spec)
+            expr = kw.pop("expr")
+            # `lazy=True` is the public alias-materialization hook on an eager
+            # ADF and the dependency-loading hook on a lazy ADF.  It is an
+            # execution control, not part of the logical plot specification.
+            raw = adf.draw(expr, lazy=True, keep_materialized=True, **kw)
+            return unwrap("draw", raw)
+
+        eager_payload = call_one(eager)
+        if alias_name not in eager.df.columns:
+            res.status = FAIL
+            res.detail = f"EAGER arm did not materialize slot alias {alias_name!r}"
+            return res
+
+        lazy_payload = call_one(lazy)
+        if alias_name not in lazy.df.columns:
+            res.status = FAIL
+            res.detail = f"LAZY arm did not materialize slot alias {alias_name!r}"
+            return res
+        lazy_after = set(lazy_reader.loaded_branches)
+        if lazy_after != expected_after:
+            res.status = FAIL
+            res.detail = ("LAZY slot load set mismatch: "
+                          f"expected {sorted(expected_after)}, got {sorted(lazy_after)}")
+            return res
+        if not required_physical.issubset(lazy_after):
+            res.status = FAIL
+            res.detail = "LAZY arm did not load the slot-only physical dependency"
+            return res
+        if unrelated & lazy_after:
+            res.status = FAIL
+            res.detail = f"LAZY arm loaded unrelated physical branch(es) {sorted(unrelated & lazy_after)}"
+            return res
+
+        res.payload_paths = {
+            "EAGER/draw": list(eager_payload.path),
+            "LAZY/draw": list(lazy_payload.path),
+        }
+        res.observed["slot_evidence"] = {
+            "slot": contract["slots_under_test"][0],
+            "alias": alias_name,
+            "eager_alias_materialized": True,
+            "lazy_alias_materialized": True,
+            "lazy_loaded_before": sorted(lazy_before),
+            "lazy_loaded_after": sorted(lazy_after),
+            "required_physical_dependencies": sorted(required_physical),
+            "unrelated_physical_branches": sorted(unrelated),
+            "anti_contamination_preconditions": list(case.anti_contamination_preconditions),
+        }
+
+        for o in case.observables:
+            if o.status != "EXECUTED":
+                res.observed[o.name] = {"status": o.status}
+                continue
+            try:
+                eager_v = resolve(eager_payload.stats, o.path, o.access)
+                lazy_v = resolve(lazy_payload.stats, o.path, o.access)
+            except HarnessError as exc:
+                res.status = INVALID_FIXTURE
+                res.detail = f"declared observable {o.name!r} not extractable: {exc}"
+                return res
+            try:
+                _assert_source_matches("run_slot_symmetry", o)
+            except HarnessError as exc:
+                res.status = INVALID_FIXTURE
+                res.detail = str(exc)
+                return res
+            res.observed[o.name] = {"EAGER": eager_v, "LAZY": lazy_v}
+            res.observable_contract.append(_contract(o))
+            result = compare_observable(o, eager_v, lazy_v)
+            res.comparisons.append(comparison_evidence(
+                o, result, reference_label="EAGER", candidate_label="LAZY"))
+            res.executed_comparisons += 1
+            if not result.ok:
+                res.status = FAIL
+                res.detail = f"{o.name}: EAGER vs LAZY: {result.detail}"
+                return res
+
+        if res.executed_comparisons == 0:
+            res.status = INVALID_FIXTURE
+            res.detail = "A4 slot case executed no numerical comparison"
+            return res
+        res.status = PASS
+        return res
+    except Exception as exc:
+        res.status = FAIL
+        res.detail = f"{type(exc).__name__}: {exc}"
+        res.exception = traceback.format_exc(limit=4)
+        return res
+    finally:
+        _close()
+        res.wall_time_s = round(time.time() - t0, 4)
 
 
 def run_consistency(case: CaseSpec, make_adf: Callable[[], Any]) -> CaseResult:

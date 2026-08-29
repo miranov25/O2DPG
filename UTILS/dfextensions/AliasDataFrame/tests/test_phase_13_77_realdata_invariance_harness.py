@@ -655,12 +655,21 @@ def test_a1_v05_audit_detects_a_planted_orphan():
 
 
 def test_a1_v05_future_staged_fields_are_recorded_with_their_stage(mk, tmp_path):
+    """A4.1 ownership transfer: only genuinely future-owned fields remain here.
+
+    Before A4 this test required slots_under_test to be FUTURE_STAGE:A4.  A4.1
+    now gives that field (and anti_contamination_preconditions) executable
+    readers, validation and manifest evidence, so keeping the old expectation
+    would protect stale governance state rather than the A1 invariant.
+    """
     case = _base_case(case_id="INV-SURFACE-01", surfaces_under_test=H.SURFACES)
     res = H.run_consistency(case, mk)
     doc = H.write_manifest(str(tmp_path / "m.json"), [res], [case])
     fs = doc["cases"][0]["future_staged"]
-    assert fs["slots_under_test"]["owning_stage"] == "A4"
+    assert set(fs) == {"reference_policy"}
     assert fs["reference_policy"]["owning_stage"] == "A6"
+    assert doc["cases"][0]["slots_under_test"] == []
+    assert doc["cases"][0]["anti_contamination_preconditions"] == []
 
 
 # ── 11. v06 — the derived audit and the enumerated gate matrix ─────────────
@@ -2266,10 +2275,148 @@ def test_a3_27_missing_family_manifest_persists_blocked_closure(tmp_path):
     assert doc["a3_closure"]["closure_ready"] is False
     assert "I2-GROUPBY-01" in doc["a3_closure"]["missing_case_ids"]
     assert doc["a3_closure"]["execution_context"]["fresh_execution_verdict"] is False
-    assert doc["provenance"]["schema_version"] == "13.77.A3.11.v02"
+    # The closure-record persistence contract survives later schema revisions;
+    # this test must follow the module's current schema authority rather than
+    # freeze the historical A3.11 marker after A4 adds manifest fields.
+    assert doc["provenance"]["schema_version"] == H.SCHEMA_VERSION
 
     loaded = json.loads(path.read_text())
     assert loaded["a3_closure"]["status"] == "BLOCKED"
     assert "I2-GROUPBY-01" in loaded["a3_closure"]["missing_case_ids"]
-    assert loaded["provenance"]["schema_version"] == "13.77.A3.11.v02"
+    assert loaded["provenance"]["schema_version"] == H.SCHEMA_VERSION
 
+
+# ── A4.1 — first expression-slot symmetry increment ─────────────────────────
+
+class _A4TrackingLazyReader:
+    """Small in-memory lazy-reader seam for the fast A4 self-check suite.
+
+    It exercises ADF's real ensure_branches/materialize/draw path while keeping
+    pytest independent of ROOT files, as required by proposal v1.2 §7.5.
+    """
+
+    def __init__(self, data):
+        self.data = data.copy()
+        self.available_branches = set(data.columns)
+        self.loaded_branches = set()
+        self.num_entries = len(data)
+        self.adf_metadata = None
+
+    def load_branches(self, names):
+        names = set(names)
+        missing = names - self.available_branches
+        if missing:
+            raise ValueError(f"missing tracking branches: {sorted(missing)}")
+        to_load = names - self.loaded_branches
+        self.loaded_branches.update(to_load)
+        if not to_load:
+            return pd.DataFrame(index=self.data.index)
+        return self.data[sorted(to_load)].copy()
+
+
+def _a4_selection_raw():
+    n = 120
+    x = np.linspace(0.05, 0.95, n)
+    return pd.DataFrame({
+        "x": x,
+        "y": 1.0 + 0.4 * x,
+        "dep_selection": np.tile(np.array([0.0, 1.0]), n // 2),
+        "decoy": np.linspace(10.0, 20.0, n),
+    })
+
+
+def _a4_register_selection_alias(adf):
+    adf.add_alias("slot_keep", "dep_selection > 0")
+    return adf
+
+
+def _a4_make_eager(*, contaminate_alias=False):
+    adf = _a4_register_selection_alias(ADF(_a4_selection_raw()))
+    if contaminate_alias:
+        adf.materialize_aliases(names=["slot_keep"])
+    return adf
+
+
+def _a4_make_lazy(*, preload=()):
+    raw = _a4_selection_raw()
+    adf = ADF(pd.DataFrame(index=range(len(raw))))
+    reader = _A4TrackingLazyReader(raw)
+    adf._lazy_reader = reader
+    adf._chain = {
+        "files": [], "entry_offsets": [0], "total_entries": len(raw),
+        "validation_mode": None,
+    }
+    _a4_register_selection_alias(adf)
+    if preload:
+        adf.ensure_branches(list(preload))
+    return adf
+
+
+def test_a4_01_selection_slot_contract_is_executable_and_manifest_visible(tmp_path):
+    case = H.a4_cases()[0]
+    assert case.case_id == "I3-SELECTION-01"
+    assert case.loading_mode == "BOTH"
+    assert case.sample_mode == "FULL"
+    assert tuple(case.slots_under_test) == ("selection",)
+    assert case.anti_contamination_preconditions
+    assert "slots_under_test" not in H.FUTURE_STAGE_FIELDS
+    assert "anti_contamination_preconditions" not in H.FUTURE_STAGE_FIELDS
+    assert H.validate_registry([case]) == []
+    assert H.audit_declared_state() == []
+
+    result = H.run_slot_symmetry(case, _a4_make_eager, _a4_make_lazy)
+    assert result.status == H.PASS, result.detail
+
+    doc = H.write_manifest(str(tmp_path / "a4.json"), [result], [case])
+    rec = doc["cases"][0]
+    assert rec["slots_under_test"] == ["selection"]
+    assert rec["anti_contamination_preconditions"] == list(
+        case.anti_contamination_preconditions)
+    assert set(rec["future_staged"]) == {"reference_policy"}
+    assert doc["provenance"]["schema_version"] == "13.77.A4.1.v01"
+
+
+def test_a4_02_selection_slot_both_proves_materialization_and_exact_lazy_loads():
+    case = H.a4_cases()[0]
+    result = H.run_slot_symmetry(case, _a4_make_eager, _a4_make_lazy)
+    assert result.status == H.PASS, result.detail
+    assert result.executed_comparisons == 2
+    assert len(result.comparisons) == 2
+    assert all(c["ok"] for c in result.comparisons)
+
+    evidence = result.observed["slot_evidence"]
+    assert evidence["slot"] == "selection"
+    assert evidence["alias"] == "slot_keep"
+    assert evidence["eager_alias_materialized"] is True
+    assert evidence["lazy_alias_materialized"] is True
+    assert evidence["lazy_loaded_before"] == []
+    assert set(evidence["lazy_loaded_after"]) == {"x", "y", "dep_selection"}
+    assert evidence["required_physical_dependencies"] == ["dep_selection"]
+    assert evidence["unrelated_physical_branches"] == ["decoy"]
+
+    # The selection really fires: alternating dep_selection keeps exactly half.
+    assert result.observed["n"]["EAGER"] == 60
+    assert result.observed["n"]["LAZY"] == 60
+
+
+def test_a4_03_m2_preload_contamination_is_invalid_fixture_not_pass():
+    case = H.a4_cases()[0]
+
+    # EAGER arm: the slot alias was materialized by setup, so the slot no longer
+    # proves that selection= discovered it.
+    bad_eager = H.run_slot_symmetry(
+        case, lambda: _a4_make_eager(contaminate_alias=True), _a4_make_lazy)
+    assert bad_eager.status == H.INVALID_FIXTURE, bad_eager.detail
+    assert "pre-materialized" in bad_eager.detail
+
+    # LAZY arm: the slot-only physical dependency was already loaded, so the
+    # case cannot attribute that load to selection=.
+    bad_lazy = H.run_slot_symmetry(
+        case, _a4_make_eager,
+        lambda: _a4_make_lazy(preload=("dep_selection",)))
+    assert bad_lazy.status == H.INVALID_FIXTURE, bad_lazy.detail
+    assert "preloaded physical" in bad_lazy.detail
+
+    # M2 contamination can never be a strict green.
+    assert H.strict_exit_code([bad_eager], [case]) == 1
+    assert H.strict_exit_code([bad_lazy], [case]) == 1
