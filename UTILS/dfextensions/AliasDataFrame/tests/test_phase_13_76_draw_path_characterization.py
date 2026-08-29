@@ -11265,12 +11265,13 @@ class TestB32bAcceptanceScaffold:
             f"a plain physical column is not an authority source: {auth!r}")
         assert auth.origin == _adf_module().DTypeOrigin.PHYSICAL_COLUMN
 
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance (D_5 remainder): mask carriage reaches INNER levels "
-        "of a multi-level subframe chain. Measured baseline failure: the "
-        "inner gather raises the AD-19 'would change its authoritative dtype' "
-        "refusal, because the inner scatter receives ctx=None by design.")
     def test_b32b_6_multilevel_chain_carries_the_mask(self):
+        """STEP 8: an INNER missing key reaches the final alias fill.
+
+        Each join level has a different row coordinate system. The inner
+        placeholder mask is therefore carried through the outer join index,
+        not copied by position.
+        """
         inner = A.AliasDataFrame(pd.DataFrame({"j": np.array([0], np.int64)}))
         inner.df["val"] = np.array([7], dtype=np.int64)
         mid = A.AliasDataFrame(pd.DataFrame({
@@ -11284,6 +11285,139 @@ class TestB32bAcceptanceScaffold:
             warnings.simplefilter("ignore")
             main.materialize_alias("d")
         assert [int(v) for v in main.df["d"].values] == [17, 1]
+        assert "val__I" not in mid.df.columns, (
+            "inner placeholder-bearing temporary survived successful chain "
+            "evaluation")
+        assert "val__I__M" not in main.df.columns, (
+            "outer column carrying inherited missingness escaped cleanup")
+
+    def test_b32b_6a_multilevel_mask_is_lifted_not_copied_by_position(self):
+        """Unequal row counts make a positional-copy implementation fail."""
+        inner = A.AliasDataFrame(pd.DataFrame({"j": np.array([0], np.int64)}))
+        inner.df["val"] = np.array([7], dtype=np.int64)
+        # The missing inner key is MID row 1. Main selects MID rows 0 and 2,
+        # so the final expression has NO missing row. A naive first-two-row
+        # mask copy would incorrectly mark main row 1 missing.
+        mid = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1, 2], np.int64),
+            "j": np.array([0, 9, 0], np.int64)}))
+        mid.register_subframe("I", inner, index_columns=["j"])
+        main = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 2], np.int64),
+            "x": np.array([10, 30], np.int64)}))
+        main.register_subframe("M", mid, index_columns=["k"])
+        main.add_alias("d", "M.I.val + x", dtype="int64", fill_value=1)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            main.materialize_alias("d")
+        assert [int(v) for v in main.df["d"].values] == [17, 37]
+        assert "val__I" not in mid.df.columns
+        # The carried mask lifts to all-False on main because only MID rows 0
+        # and 2 are selected. The outer joined column is therefore safe and
+        # may remain under the established fully-defined-join policy.
+        assert "val__I__M" in main.df.columns
+
+    def test_b32b_6b_multilevel_inner_and_outer_missingness_are_unioned(self):
+        """Inner-carried and outer-join missingness survive together."""
+        inner = A.AliasDataFrame(pd.DataFrame({"j": np.array([0], np.int64)}))
+        inner.df["val"] = np.array([7], dtype=np.int64)
+        mid = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "j": np.array([0, 9], np.int64)}))
+        mid.register_subframe("I", inner, index_columns=["j"])
+        # k=1 matches MID but its INNER key is absent; k=2 is absent at M.
+        main = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1, 2], np.int64),
+            "x": np.array([10, 20, 30], np.int64)}))
+        main.register_subframe("M", mid, index_columns=["k"])
+        main.add_alias("d", "M.I.val + x", dtype="int64", fill_value=1)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            main.materialize_alias("d")
+        assert [int(v) for v in main.df["d"].values] == [17, 1, 1]
+        assert "val__I" not in mid.df.columns
+        assert "val__I__M" not in main.df.columns
+
+    def test_b32b_6c_multilevel_exception_retracts_inner_temporary(self):
+        """An exception after the inner scatter cannot leak its column."""
+        cls = A.AliasDataFrame
+        inner = A.AliasDataFrame(pd.DataFrame({"j": np.array([0], np.int64)}))
+        inner.df["val"] = np.array([7], dtype=np.int64)
+        mid = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64), "j": np.array([0, 9], np.int64)}))
+        mid.register_subframe("I", inner, index_columns=["j"])
+        main = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64), "x": np.array([10, 20], np.int64)}))
+        main.register_subframe("M", mid, index_columns=["k"])
+        main.add_alias("d", "M.I.val + x", dtype="int64", fill_value=1)
+        orig = cls._scatter_subframe_column
+
+        def boom(self, sf_name, sf_col, entry, **kwargs):
+            if self is main and sf_name == "M":
+                assert "val__I" in mid.df.columns, (
+                    "fault did not fire after the inner temporary existed")
+                raise RuntimeError("injected STEP-8 outer scatter fault")
+            return orig(self, sf_name, sf_col, entry, **kwargs)
+
+        cls._scatter_subframe_column = boom
+        try:
+            with pytest.raises(RuntimeError, match="STEP-8 outer scatter fault"):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    main.materialize_alias("d")
+        finally:
+            cls._scatter_subframe_column = orig
+        assert "val__I" not in mid.df.columns, (
+            "inner placeholder-bearing temporary survived exception cleanup")
+
+    def test_b32b_6d_multilevel_getter_carries_float_structural_mask(self):
+        """AD-20 structural evidence also survives a multi-level chain."""
+        inner = A.AliasDataFrame(pd.DataFrame({"j": np.array([0], np.int64)}))
+        inner.df["val"] = np.array([7.0], dtype=np.float64)
+        mid = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64), "j": np.array([0, 9], np.int64)}))
+        mid.register_subframe("I", inner, index_columns=["j"])
+        main = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64), "x": np.array([10.0, 20.0])}))
+        main.register_subframe("M", mid, index_columns=["k"])
+        main.add_alias("d", "M.I.val + x", dtype="float64", fill_value=1.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            got = np.asarray(main.get_alias_array("d"))
+        np.testing.assert_allclose(got, np.array([17.0, 1.0]))
+        assert "val__I" not in mid.df.columns, (
+            "getter-only structural temporary survived successful cleanup")
+        assert "val__I__M" not in main.df.columns
+
+    def test_b32b_6e_three_level_chain_lifts_mask_at_every_hop(self):
+        """Three levels prove the STEP-8 mechanism is recursive, not 2-level."""
+        inner = A.AliasDataFrame(pd.DataFrame({"j": np.array([0], np.int64)}))
+        inner.df["val"] = np.array([7], dtype=np.int64)
+
+        level_b = A.AliasDataFrame(pd.DataFrame({
+            "b": np.array([0, 1], np.int64),
+            "j": np.array([0, 9], np.int64)}))
+        level_b.register_subframe("I", inner, index_columns=["j"])
+
+        level_m = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1, 2], np.int64),
+            "b": np.array([0, 1, 0], np.int64)}))
+        level_m.register_subframe("B", level_b, index_columns=["b"])
+
+        main = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1, 2], np.int64),
+            "x": np.array([10, 20, 30], np.int64)}))
+        main.register_subframe("M", level_m, index_columns=["k"])
+        main.add_alias("d", "M.B.I.val + x", dtype="int64", fill_value=1)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            main.materialize_alias("d")
+
+        assert [int(v) for v in main.df["d"].values] == [17, 1, 37]
+        assert not [c for c in level_b.df.columns if "__" in str(c)]
+        assert not [c for c in level_m.df.columns if "__" in str(c)]
+        assert not [c for c in main.df.columns if "__" in str(c)]
 
     def test_b32b_7_categorical_authority_is_recorded_exactly(self):
         m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))

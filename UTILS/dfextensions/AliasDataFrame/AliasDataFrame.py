@@ -8479,7 +8479,73 @@ class AliasDataFrame:
             ))
         return tuple(parts)
 
-    def _scatter_subframe_column(self, sf_name, sf_col, entry, ctx=None):
+    @staticmethod
+    def _lift_mask_through_join(source_mask, indices, parent_len, *, subject):
+        """Map a child-row undefinedness mask into the parent join row space.
+
+        B3.2b STEP 8.  A multi-level chain has a DIFFERENT row coordinate
+        system at every level.  Copying an inner mask by position is therefore
+        invalid even when a small test happens to give both frames the same
+        length.  `indices[parent_row]` is the only authoritative mapping.
+
+        Missing outer join keys are owned by that outer gather's own mask; this
+        helper carries only missingness that already existed on MATCHED child
+        rows.
+        """
+        _src = np.asarray(source_mask, dtype=bool)
+        _idx = np.asarray(indices, dtype=np.intp)
+        if len(_idx) != int(parent_len):
+            raise ValueError(
+                f"cannot carry {subject}: join index has {len(_idx)} rows "
+                f"but parent frame has {parent_len}")
+        _valid = _idx >= 0
+        if _valid.any():
+            _max = int(_idx[_valid].max())
+            if _max >= len(_src):
+                raise ValueError(
+                    f"cannot carry {subject}: join index references child row "
+                    f"{_max}, but the child mask has only {len(_src)} rows")
+        _out = np.zeros(int(parent_len), dtype=bool)
+        if _valid.any():
+            _out[_valid] = _src[_idx[_valid]]
+        return _out
+
+    @staticmethod
+    def _merge_carried_mask(ctx, name, carried, *, structural=False):
+        """OR one lifted mask into an already-published context entry."""
+        if ctx is None or carried is None:
+            return
+        _arr = np.asarray(carried, dtype=bool)
+        if not _arr.any():
+            return
+        _store = ctx.structural_masks if structural else ctx.masks
+        _old = _store.get(name)
+        _store[name] = (_arr if _old is None
+                        else (np.asarray(_old, dtype=bool) | _arr))
+
+    @staticmethod
+    def _merge_carried_into_pending(ctx, carried, *, structural=False):
+        """Merge inherited missingness BEFORE publishing the parent column.
+
+        `_publish_joined_column` is the transaction owner for unsafe joined
+        columns.  Giving it the combined pending mask ensures an outer join
+        that is fully matched but carries INNER missingness is still enrolled
+        for cleanup; merging only after the write would leave a placeholder-
+        bearing column behind.
+        """
+        if ctx is None or carried is None:
+            return
+        _arr = np.asarray(carried, dtype=bool)
+        if not _arr.any():
+            return
+        _attr = ('pending_structural_mask' if structural else 'pending_mask')
+        _old = getattr(ctx, _attr)
+        setattr(ctx, _attr, (_arr if _old is None
+                             else (np.asarray(_old, dtype=bool) | _arr)))
+
+    def _scatter_subframe_column(self, sf_name, sf_col, entry, ctx=None,
+                                 inherited_mask=None,
+                                 inherited_structural_mask=None):
         """
         Scatter sf_col from registered subframe into self.df as f"{sf_col}__{sf_name}".
         
@@ -8551,6 +8617,47 @@ class AliasDataFrame:
                 _missing = np.asarray(_missing, dtype=bool)
                 if _missing.any():
                     ctx.structural_masks[col_renamed] = _missing
+
+            # STEP 8: the source column may itself be a scattered temporary
+            # from a deeper subframe level.  Its masks live in the CHILD row
+            # space and must be lifted through THIS join's index map before
+            # they can be merged into this context.  The idempotent fast path
+            # still needs that provenance even though it does not rewrite the
+            # values.
+            if (ctx is not None and
+                    (inherited_mask is not None or
+                     inherited_structural_mask is not None)):
+                _cache = self._join_index_cache.get(sf_name)
+                if (_cache is not None
+                        and _cache.get('n_rows') == len(self.df)
+                        and _cache.get('subframe_id') == id(sub_adf.df)
+                        and _cache.get('index_sig') ==
+                            self._index_column_signature(index_cols)):
+                    _indices = _cache['indices']
+                else:
+                    _indices, _missing2 = self._compute_join_indices(
+                        sf_name, index_cols)
+                    self._join_index_cache[sf_name] = {
+                        'indices': _indices,
+                        'missing_mask': _missing2,
+                        'n_rows': len(self.df),
+                        'subframe_id': id(sub_adf.df),
+                        'index_sig': self._index_column_signature(index_cols),
+                    }
+                if inherited_mask is not None:
+                    self._merge_carried_mask(
+                        ctx, col_renamed,
+                        self._lift_mask_through_join(
+                            inherited_mask, _indices, len(self.df),
+                            subject=f"mask for {sf_col!r} through {sf_name!r}"))
+                if inherited_structural_mask is not None:
+                    self._merge_carried_mask(
+                        ctx, col_renamed,
+                        self._lift_mask_through_join(
+                            inherited_structural_mask, _indices, len(self.df),
+                            subject=(f"structural mask for {sf_col!r} through "
+                                     f"{sf_name!r}")),
+                        structural=True)
             return col_renamed
         
         # Source column must exist on the subframe DataFrame.
@@ -8584,6 +8691,18 @@ class AliasDataFrame:
                 values = self._extract_subframe_values_cached(
                     sf_name, sf_col, indices, missing_mask, ctx=ctx
                 )
+                if inherited_mask is not None:
+                    self._merge_carried_into_pending(
+                        ctx, self._lift_mask_through_join(
+                            inherited_mask, indices, len(self.df),
+                            subject=f"mask for {sf_col!r} through {sf_name!r}"))
+                if inherited_structural_mask is not None:
+                    self._merge_carried_into_pending(
+                        ctx, self._lift_mask_through_join(
+                            inherited_structural_mask, indices, len(self.df),
+                            subject=(f"structural mask for {sf_col!r} through "
+                                     f"{sf_name!r}")),
+                        structural=True)
                 self._publish_joined_column(col_renamed, values, ctx)
                 return col_renamed
         
@@ -8605,6 +8724,18 @@ class AliasDataFrame:
             sf_name, sf_col, indices, missing_mask, ctx=ctx
         )
 
+        if inherited_mask is not None:
+            self._merge_carried_into_pending(
+                ctx, self._lift_mask_through_join(
+                    inherited_mask, indices, len(self.df),
+                    subject=f"mask for {sf_col!r} through {sf_name!r}"))
+        if inherited_structural_mask is not None:
+            self._merge_carried_into_pending(
+                ctx, self._lift_mask_through_join(
+                    inherited_structural_mask, indices, len(self.df),
+                    subject=(f"structural mask for {sf_col!r} through "
+                             f"{sf_name!r}")),
+                structural=True)
         self._publish_joined_column(col_renamed, values, ctx)
         return col_renamed
 
@@ -8755,28 +8886,64 @@ class AliasDataFrame:
             method_suffix = '.'.join(segments[leaf_idx + 1:])  # '' if none
             
             # ── Bottom-up scatter: leaf → deepest subframe → … → self ──
+            #
+            # STEP 8 closes the final D_5 mask-carriage gap.  Every level has
+            # its OWN row coordinate system, so an inner mask may never be
+            # copied directly into the main evaluation context.  Intermediate
+            # levels therefore get local contexts.  Their masks are lifted
+            # through the NEXT join's actual index array, then merged into the
+            # next context.  Intermediate placeholder-bearing columns stay
+            # alive only until the outer level has consumed them and are
+            # retracted in the `finally` below on success OR exception.
             current_col = leaf_col
+            carried_mask = None
+            carried_structural = None
             resolution_ok = True
-            for (parent_adf, sf_name, entry) in reversed(subframe_chain):
-                new_col = parent_adf._scatter_subframe_column(
-                    sf_name=sf_name,
-                    sf_col=current_col,
-                    entry=entry,
-                    # SCOPE LIMIT, deliberate and disclosed. Mask carriage is
-                    # applied only at the level whose rows the alias is
-                    # published on. An INNER level of a multi-level chain
-                    # (A.B.C.val) scatters into an intermediate frame whose
-                    # masks and retraction ledger are not this one's, so it
-                    # keeps the pre-11c behaviour and refuses. That is not a
-                    # regression — it is exactly what happens today — but it
-                    # is also not an improvement, and it is scheduled work,
-                    # not an oversight.
-                    ctx=(ctx if parent_adf is self else None),
-                )
-                if new_col is None:
-                    resolution_ok = False
-                    break
-                current_col = new_col
+            _intermediate_contexts = []
+            try:
+                for (parent_adf, sf_name, entry) in reversed(subframe_chain):
+                    if parent_adf is self:
+                        _level_ctx = ctx
+                    elif ctx is not None and ctx.carry_mask:
+                        _level_ctx = _AliasEvalContext(
+                            alias_name=(ctx.alias_name or alias_name),
+                            carry_mask=True,
+                            track_structural_gaps=ctx.track_structural_gaps)
+                        _intermediate_contexts.append((parent_adf, _level_ctx))
+                    else:
+                        # Paths that never opted into mask carriage preserve
+                        # their pre-STEP-8 behaviour exactly.
+                        _level_ctx = None
+
+                    new_col = parent_adf._scatter_subframe_column(
+                        sf_name=sf_name,
+                        sf_col=current_col,
+                        entry=entry,
+                        ctx=_level_ctx,
+                        inherited_mask=carried_mask,
+                        inherited_structural_mask=carried_structural,
+                    )
+                    if new_col is None:
+                        resolution_ok = False
+                        break
+
+                    if _level_ctx is not None:
+                        _m = _level_ctx.masks.get(new_col)
+                        carried_mask = (None if _m is None else
+                                        np.asarray(_m, dtype=bool).copy())
+                        _sm = _level_ctx.structural_masks.get(new_col)
+                        carried_structural = (None if _sm is None else
+                                               np.asarray(_sm, dtype=bool).copy())
+                    else:
+                        carried_mask = None
+                        carried_structural = None
+                    current_col = new_col
+            finally:
+                # Reverse cleanup mirrors nesting: deepest temporary last in
+                # the chain was consumed first by its parent.  Each context is
+                # retracted on the ADF that actually owns its temporary.
+                for _owner, _local_ctx in reversed(_intermediate_contexts):
+                    _owner._retract_placeholder_columns(_local_ctx)
             
             if not resolution_ok:
                 # Subframe chain is valid but leaf column doesn't exist.
