@@ -594,7 +594,10 @@ def a3_cases() -> tuple[CaseSpec, ...]:
     A3.8 adds one production-shaped subframe-qualified profile across all
     three public draw surfaces.  A3.9 adds one production-shaped
     ``selection`` + ``selection_vector`` differential profile across all three
-    surfaces.  ``weights_vector`` and lazy/eager symmetry remain out of scope.
+    surfaces.  A3.10 adds explicit profile-bin geometry/statistics coverage and
+    records histogram bin edges/counts as ARTIST_FALLBACK/NOT_EXTRACTABLE rather
+    than silently upgrading the earlier histogram summary-statistics proof.
+    ``weights_vector`` and lazy/eager symmetry remain out of scope.
     """
     hist_id = "I2-HIST-01"
     hist = CaseSpec(
@@ -647,6 +650,20 @@ def a3_cases() -> tuple[CaseSpec, ...]:
             Observable("std", "STATS", "FLAT", "std", comparator="close",
                        atol=1e-14, rtol=1e-12,
                        rationale="same selected sample; floating reduction"),
+            Observable(
+                "bin_edges", "ARTIST_FALLBACK", "ARRAY", "artist.bin_edges",
+                status="NOT_EXTRACTABLE",
+                rationale=("histogram bin edges are absent from the returned public "
+                           "stats payload; the current A3 runner has no executable "
+                           "ARTIST_FALLBACK extractor"),
+            ),
+            Observable(
+                "bin_counts", "ARTIST_FALLBACK", "ARRAY", "artist.bin_counts",
+                status="NOT_EXTRACTABLE",
+                rationale=("histogram bin counts are absent from the returned public "
+                           "stats payload; the current A3 runner has no executable "
+                           "ARTIST_FALLBACK extractor"),
+            ),
         ),
         non_claims=("cross-surface agreement is not an independent correctness proof",),
         negative_control="FAMILY_MUTATION:A3-SURFACE-STATS-CORRUPTION",
@@ -1061,7 +1078,91 @@ def a3_cases() -> tuple[CaseSpec, ...]:
         reference_policy="named-immutable",
     )
 
-    return (hist, profile, group, facet, facet_refusal, subframe, selection_vector)
+    profile_bins_id = "I2-PROFILE-BINS-01"
+    profile_bins = CaseSpec(
+        case_id=profile_bins_id,
+        claim_id="I2",
+        title="same sparse explicit-bin profile through all public draw surfaces",
+        claim=("draw(), draw_batch() and draw_figures() expose the same explicit "
+               "profile-bin geometry, counts, central values, errors and empty-bin "
+               "mask for one canonical sparse request"),
+        failure_means=("a public draw surface changes explicit profile binning, "
+                       "per-bin population, reduction/error semantics or the missing-bin mask"),
+        expected_visual=("one sparse y:x profile with populated first/last bins and "
+                         "three intentionally empty interior bins"),
+        owner_on_failure="ADF",
+        purpose="INVARIANCE",
+        gate="CORE_MANDATORY",
+        oracle_kind="CONSISTENCY",
+        loading_mode="EAGER",
+        sample_mode="FULL",
+        canonical_spec={
+            "expr": "y:x",
+            "type": "profile",
+            "bins": 5,
+            "range": (0.0, 5.0),
+            "return_data": True,
+            "auto_title": True,
+        },
+        applicable=True,
+        setup_contract=("frame contains finite numeric x/y rows only in the first "
+                        "and last of five explicit x bins; EAGER/FULL; return_data=True "
+                        "exposes the stable profile_data table"),
+        preconditions=(
+            "x and y are present and numeric",
+            "explicit range is [0, 5] with exactly five bins",
+            "first and last bins are populated and three interior bins are empty",
+        ),
+        figure_contract=FigureContract(
+            expected_panels="one panel",
+            panel_roles="main: sparse y versus x profile",
+            expected_traces="one profile",
+            expected_group_count="1",
+            primary_comparison=("profile_data x_low/x_high/x_center, count, y_mean, "
+                                "y_std, y_sem and y_central across all three surfaces"),
+            residual_definition=("candidate per-bin observable minus draw reference "
+                                 "at the same explicit bin row"),
+            accepted_envelope=("count exact; floating geometry/statistics within "
+                               "declared tolerance; NaN empty-bin mask must agree"),
+            case_ids=(profile_bins_id,),
+            proof_kind="CONSISTENCY",
+        ),
+        surfaces_under_test=SURFACES,
+        observables=(
+            Observable("x_low", "STATS", "ARRAY", "profile_data.x_low",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same explicit profile-bin lower edges"),
+            Observable("x_high", "STATS", "ARRAY", "profile_data.x_high",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same explicit profile-bin upper edges"),
+            Observable("x_center", "STATS", "ARRAY", "profile_data.x_center",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same explicit profile-bin centers"),
+            Observable("count", "STATS", "ARRAY", "profile_data.count"),
+            Observable("y_mean", "STATS", "ARRAY", "profile_data.y_mean",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same per-bin profile mean; empty bins remain NaN"),
+            Observable("y_std", "STATS", "ARRAY", "profile_data.y_std",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same per-bin profile standard deviation; empty bins remain NaN"),
+            Observable("y_sem", "STATS", "ARRAY", "profile_data.y_sem",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same per-bin profile standard error; empty bins remain NaN"),
+            Observable("y_central", "STATS", "ARRAY", "profile_data.y_central",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same rendered central statistic; empty bins remain NaN"),
+        ),
+        non_claims=(
+            "cross-surface profile-bin agreement is not a full independent raw-row correctness proof",
+            "histogram bin edges/counts remain explicitly NOT_EXTRACTABLE from public stats",
+            "this checkpoint does not implement ARTIST_FALLBACK extraction",
+        ),
+        negative_control="FAMILY_MUTATION:A3-PROFILE-BIN-ERROR-CORRUPTION",
+        reference_policy="named-immutable",
+    )
+
+    return (hist, profile, group, facet, facet_refusal, subframe, selection_vector,
+            profile_bins)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

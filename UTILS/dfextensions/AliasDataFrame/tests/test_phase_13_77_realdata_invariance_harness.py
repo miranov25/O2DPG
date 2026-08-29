@@ -1925,3 +1925,154 @@ def test_a3_19_selection_vector_branch_mismatch_is_not_hidden_by_derived_value(m
         good.observed["value"]["draw_figures"][mutation["row"]]
     )
     assert H.strict_exit_code([bad], [case]) == 1
+
+# ── A3.10 explicit profile-bin observables + histogram disposition ─────────
+
+def _a3_profile_bins_frame():
+    """Sparse five-bin fixture with only edge bins populated."""
+    frame = pd.DataFrame({
+        "x": np.asarray([0.2, 0.3, 0.4, 4.6, 4.7, 4.8], dtype=np.float64),
+        "y": np.asarray([1.0, 2.0, 3.0, 10.0, 11.0, 12.0], dtype=np.float64),
+    })
+    return frame
+
+
+def _a3_profile_bins_adf():
+    return ADF(_a3_profile_bins_frame().copy())
+
+
+def test_a3_20_profile_bin_case_and_histogram_disposition_are_explicit(tmp_path):
+    cases = H.a3_cases()
+    hist = next(c for c in cases if c.case_id == "I2-HIST-01")
+    case = next(c for c in cases if c.case_id == "I2-PROFILE-BINS-01")
+
+    hist_disp = {o.name: o for o in hist.observables
+                 if o.name in {"bin_edges", "bin_counts"}}
+    assert set(hist_disp) == {"bin_edges", "bin_counts"}
+    for observable in hist_disp.values():
+        assert observable.source == "ARTIST_FALLBACK"
+        assert observable.status == "NOT_EXTRACTABLE"
+        assert "absent" in observable.rationale
+        assert "ARTIST_FALLBACK" in observable.rationale
+
+    # The disposition is not only source text: it must survive into the
+    # machine-readable manifest so later closure cannot silently upgrade the
+    # earlier histogram summary-statistics proof to a bin-level proof.
+    rng = np.random.default_rng(137710)
+    hist_frame = pd.DataFrame({"ncl": rng.integers(0, 160, size=300)})
+    hist_res = H.run_consistency(hist, lambda: ADF(hist_frame.copy()))
+    assert hist_res.status == H.PASS, hist_res.detail
+    doc = H.write_manifest(str(tmp_path / "a3_10_hist_disposition.json"),
+                           [hist_res], [hist])
+    declared = {o["name"]: o for o in doc["cases"][0]["declared_observables"]}
+    for name in ("bin_edges", "bin_counts"):
+        assert declared[name]["source"] == "ARTIST_FALLBACK"
+        assert declared[name]["status"] == "NOT_EXTRACTABLE"
+        assert declared[name]["rationale"]
+
+    assert tuple(case.surfaces_under_test) == H.SURFACES
+    assert case.canonical_spec == {
+        "expr": "y:x",
+        "type": "profile",
+        "bins": 5,
+        "range": (0.0, 5.0),
+        "return_data": True,
+        "auto_title": True,
+    }
+    assert [(o.name, o.access, o.path) for o in case.observables] == [
+        ("x_low", "ARRAY", "profile_data.x_low"),
+        ("x_high", "ARRAY", "profile_data.x_high"),
+        ("x_center", "ARRAY", "profile_data.x_center"),
+        ("count", "ARRAY", "profile_data.count"),
+        ("y_mean", "ARRAY", "profile_data.y_mean"),
+        ("y_std", "ARRAY", "profile_data.y_std"),
+        ("y_sem", "ARRAY", "profile_data.y_sem"),
+        ("y_central", "ARRAY", "profile_data.y_central"),
+    ]
+    assert H.validate_registry(cases) == []
+
+
+def test_a3_21_sparse_profile_bins_match_all_three_surfaces():
+    case = next(c for c in H.a3_cases() if c.case_id == "I2-PROFILE-BINS-01")
+    res = H.run_consistency(case, _a3_profile_bins_adf)
+    assert res.status == H.PASS, res.detail
+    assert set(res.payload_paths) == set(H.SURFACES)
+    # draw is reference; 2 candidate surfaces x 8 bin-level observables.
+    assert res.executed_comparisons == 16
+    assert len(res.comparisons) == 16
+    assert all(rec["ok"] for rec in res.comparisons), res.comparisons
+
+    counts = np.asarray(res.observed["count"]["draw"])
+    assert np.array_equal(counts, np.asarray([3, 0, 0, 0, 3]))
+    empty = counts == 0
+    populated = counts > 0
+    assert int(empty.sum()) == 3
+    for name in ("y_mean", "y_std", "y_sem", "y_central"):
+        values = np.asarray(res.observed[name]["draw"])
+        assert np.isnan(values[empty]).all(), (name, values)
+        assert np.isfinite(values[populated]).all(), (name, values)
+
+    assert np.allclose(res.observed["x_low"]["draw"], [0, 1, 2, 3, 4])
+    assert np.allclose(res.observed["x_high"]["draw"], [1, 2, 3, 4, 5])
+    assert np.allclose(res.observed["x_center"]["draw"], [.5, 1.5, 2.5, 3.5, 4.5])
+    assert H.strict_exit_code([res], [case]) == 0
+
+
+def test_a3_22_profile_bin_error_mismatch_reaches_strict_gate(monkeypatch):
+    """Independent falsification test for A3.10.
+
+    Construct a regression case that falsifies the implementation invariant:
+    alter exactly one populated-bin ``y_sem`` value on ``draw_figures`` while
+    leaving the global ``std_y`` summary and all per-bin central values
+    untouched.  The existing A2 array comparator must report one mismatch and
+    strict mode must fail.  This proves that error/effective-bin evidence is
+    not reduced to global or central-value summaries.
+    """
+    case = next(c for c in H.a3_cases() if c.case_id == "I2-PROFILE-BINS-01")
+
+    good = H.run_consistency(case, _a3_profile_bins_adf)
+    assert good.status == H.PASS, good.detail
+    assert H.strict_exit_code([good], [case]) == 0
+
+    original = H.unwrap
+    mutation = {}
+
+    def corrupted(surface, result, **kw):
+        payload = original(surface, result, **kw)
+        if surface == "draw_figures" and isinstance(payload.stats, dict):
+            stats = dict(payload.stats)
+            table = stats["profile_data"].copy(deep=True)
+            rows = np.flatnonzero(table["count"].to_numpy() > 0)
+            assert len(rows) >= 2
+            row = int(rows[-1])
+            mutation["row"] = row
+            mutation["global_std_y"] = float(stats["std_y"])
+            mutation["y_mean"] = float(table.iloc[row]["y_mean"])
+            mutation["y_central"] = float(table.iloc[row]["y_central"])
+            table.iloc[row, table.columns.get_loc("y_sem")] += 0.25
+            stats["profile_data"] = table
+            return H.Payload(surface, stats, payload.path)
+        return payload
+
+    monkeypatch.setattr(H, "unwrap", corrupted)
+    bad = H.run_consistency(case, _a3_profile_bins_adf)
+    assert bad.status == H.FAIL, bad.detail
+    assert "y_sem" in bad.detail
+
+    failed = [rec for rec in bad.comparisons if not rec["ok"]]
+    assert len(failed) == 1
+    assert failed[0]["observable"] == "y_sem"
+    assert failed[0]["mismatch_count"] == 1
+    assert failed[0]["mismatch_indices"] == [[mutation["row"]]]
+
+    # Independently verify that global and central-value summaries were not
+    # touched by the falsifier.  run_consistency returns at the first failure.
+    raw_ref, kw_ref = H._call(_a3_profile_bins_adf(), "draw", case.canonical_spec)
+    ref_stats = original("draw", raw_ref, **kw_ref).stats
+    H._close()
+    assert mutation["global_std_y"] == pytest.approx(ref_stats["std_y"])
+    ref_table = ref_stats["profile_data"]
+    assert mutation["y_mean"] == pytest.approx(ref_table.iloc[mutation["row"]]["y_mean"])
+    assert mutation["y_central"] == pytest.approx(
+        ref_table.iloc[mutation["row"]]["y_central"])
+    assert H.strict_exit_code([bad], [case]) == 1
