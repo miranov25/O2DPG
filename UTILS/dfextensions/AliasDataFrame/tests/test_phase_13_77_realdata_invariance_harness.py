@@ -14,6 +14,8 @@ What it proves:
 
 import os
 import sys
+import json
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -2076,3 +2078,198 @@ def test_a3_22_profile_bin_error_mismatch_reaches_strict_gate(monkeypatch):
     assert mutation["y_central"] == pytest.approx(
         ref_table.iloc[mutation["row"]]["y_central"])
     assert H.strict_exit_code([bad], [case]) == 1
+
+
+# ── A3.11 A3 reconciliation / closure-declaration checkpoint ────────────────
+
+def test_a3_23_closure_reconciliation_covers_every_required_family_without_orphans():
+    cases = H.a3_cases()
+    rec = H.a3_closure_reconciliation(cases)
+
+    assert rec["substage"] == "A3"
+    assert rec["scope"] == "same-spec cross-surface consistency"
+    assert rec["status"] == "READY_FOR_CLOSURE"
+    assert rec["closure_ready"] is True
+    assert rec["missing_case_ids"] == []
+    assert rec["duplicate_case_ids"] == []
+    assert rec["orphan_obligations"] == []
+    assert rec["registry_errors"] == []
+
+    families = {row["family"]: row for row in rec["required_families"]}
+    assert set(families) == {
+        "histogram", "profile", "group_by", "facet_by",
+        "subframe_qualified", "selection_vector",
+    }
+    assert all(row["status"] == "PROVED" for row in families.values())
+    assert families["facet_by"]["case_ids"] == [
+        "I2-FACET-01", "I2-FACET-DRAW-FIGURES-REFUSAL-01"
+    ]
+    assert rec["closure_hardening_case_ids"] == ["I2-PROFILE-BINS-01"]
+
+    hist = {row["observable"]: row for row in rec["histogram_bin_observables"]}
+    assert set(hist) == {"bin_edges", "bin_counts"}
+    for row in hist.values():
+        assert row["source"] == "ARTIST_FALLBACK"
+        assert row["status"] == "NOT_EXTRACTABLE"
+        assert row["a3_disposition"] == "EXPLICIT_NON_CLAIM"
+        assert row["rationale"]
+        assert row["next_owner"] == "Stage A"
+        assert "ARTIST_FALLBACK" in row["future_resolution"]
+
+    # Closure is precise rather than expansive: named later work is carried as
+    # a non-claim, not silently promoted into the A3 proof.
+    joined = " ".join(rec["explicit_non_claims"])
+    assert "raw-row mathematical correctness" in joined
+    assert "weights_vector" in joined
+    assert "lazy/eager" in joined
+
+
+def test_a3_24_closure_reconciliation_fails_closed_on_missing_family_or_histogram_upgrade():
+    """Independent falsification tests for the A3.11 closure record.
+
+    Construct two regression cases that falsify the closure invariant:
+    (1) remove a required A3 family; (2) silently upgrade histogram bin_edges
+    from the explicit NOT_EXTRACTABLE non-claim to an EXECUTED claim without
+    supplying an executable artist source.  Either mutation must block closure.
+    """
+    cases = H.a3_cases()
+
+    missing_group = tuple(c for c in cases if c.case_id != "I2-GROUPBY-01")
+    rec_missing = H.a3_closure_reconciliation(missing_group)
+    assert rec_missing["closure_ready"] is False
+    assert rec_missing["status"] == "BLOCKED"
+    assert "I2-GROUPBY-01" in rec_missing["missing_case_ids"]
+    assert next(row for row in rec_missing["required_families"]
+                if row["family"] == "group_by")["status"] == "MISSING"
+
+    mutated = []
+    for c in cases:
+        if c.case_id != "I2-HIST-01":
+            mutated.append(c)
+            continue
+        changed_obs = tuple(
+            replace(o, status="EXECUTED") if o.name == "bin_edges" else o
+            for o in c.observables
+        )
+        mutated.append(replace(c, observables=changed_obs))
+
+    rec_upgrade = H.a3_closure_reconciliation(tuple(mutated))
+    assert rec_upgrade["closure_ready"] is False
+    assert rec_upgrade["status"] == "BLOCKED"
+    assert any("I2-HIST-01/bin_edges" in item
+               for item in rec_upgrade["orphan_obligations"])
+    # The ordinary registry also rejects the false executable artist claim.
+    assert any("I2-HIST-01/bin_edges" in item
+               for item in rec_upgrade["registry_errors"])
+
+
+def test_a3_25_complete_a3_manifest_carries_closure_record(tmp_path):
+    cases = H.a3_cases()
+    results = []
+    for case in cases:
+        # This test exercises manifest/reconciliation serialization, not the
+        # already-banked numerical cases.  Give each invariance result one
+        # synthetic executed comparison so the generic strict gate cannot
+        # false-green on PASS-with-zero-comparisons.
+        ncmp = 1 if case.purpose in ("INVARIANCE", "CORRECTNESS") else 0
+        results.append(H.CaseResult(case_id=case.case_id, status=H.PASS,
+                                    executed_comparisons=ncmp))
+
+    path = tmp_path / "a3_11_closure_manifest.json"
+    doc = H.write_manifest(str(path), results, cases)
+    assert doc["reconciliation"]["exit_code"] == 0
+    assert doc["a3_closure"] == H.a3_closure_reconciliation(cases)
+    assert doc["a3_closure"]["closure_ready"] is True
+
+    loaded = json.loads(path.read_text())
+    assert loaded["a3_closure"]["status"] == "READY_FOR_CLOSURE"
+    assert loaded["a3_closure"]["orphan_obligations"] == []
+    hist = {row["observable"]: row
+            for row in loaded["a3_closure"]["histogram_bin_observables"]}
+    assert hist["bin_edges"]["a3_disposition"] == "EXPLICIT_NON_CLAIM"
+    assert hist["bin_counts"]["a3_disposition"] == "EXPLICIT_NON_CLAIM"
+
+# ── A3.11 v02 closure-authority hardening ───────────────────────────────────
+
+def test_a3_26_closure_contract_map_blocks_legal_required_case_drift():
+    """Independent falsification tests for reviewed A3 proof-contract drift.
+
+    Keep every required case ID present and make declarations that remain legal
+    under the generic CaseSpec schema.  A3 closure must nevertheless block if
+    the reviewed proof kind or public-surface/not-applicable scope changes.
+    """
+    cases = H.a3_cases()
+
+    # Proof-kind drift: VISUAL_DIAGNOSTIC is a legal generic purpose, so this
+    # mutation specifically tests the closure authority rather than registry
+    # syntax validation.
+    purpose_drift = tuple(
+        replace(c, purpose="VISUAL_DIAGNOSTIC")
+        if c.case_id == "I2-GROUPBY-01" else c
+        for c in cases
+    )
+    assert H.validate_registry(purpose_drift) == []
+    rec = H.a3_closure_reconciliation(purpose_drift)
+    assert rec["status"] == "BLOCKED"
+    assert rec["closure_ready"] is False
+    assert {
+        (row["case_id"], row["field"], row["expected"], row["observed"])
+        for row in rec["contract_drift"]
+    } >= {("I2-GROUPBY-01", "purpose", "INVARIANCE", "VISUAL_DIAGNOSTIC")}
+    group = next(row for row in rec["required_families"]
+                 if row["family"] == "group_by")
+    assert group["status"] == "CONTRACT_DRIFT"
+    assert group["contract_drift_case_ids"] == ["I2-GROUPBY-01"]
+
+    # Surface-list drift can also remain generically valid because two
+    # consistency surfaces still exist.  Closure must still reject the
+    # narrower proof than the one that was banked.
+    surface_drift = tuple(
+        replace(c, surfaces_under_test=("draw", "draw_batch"))
+        if c.case_id == "I2-PROFILE-01" else c
+        for c in cases
+    )
+    assert H.validate_registry(surface_drift) == []
+    rec_surface = H.a3_closure_reconciliation(surface_drift)
+    assert rec_surface["status"] == "BLOCKED"
+    assert any(row["case_id"] == "I2-PROFILE-01"
+               and row["field"] == "surfaces_under_test"
+               for row in rec_surface["contract_drift"])
+
+    # not_applicable is independently part of the reviewed surface scope.
+    na_drift = tuple(
+        replace(c, not_applicable={"draw_figures": "synthetic narrowing"})
+        if c.case_id == "I2-SUBFRAME-01" else c
+        for c in cases
+    )
+    assert H.validate_registry(na_drift) == []
+    rec_na = H.a3_closure_reconciliation(na_drift)
+    assert rec_na["status"] == "BLOCKED"
+    assert any(row["case_id"] == "I2-SUBFRAME-01"
+               and row["field"] == "not_applicable_surfaces"
+               for row in rec_na["contract_drift"])
+
+
+def test_a3_27_missing_family_manifest_persists_blocked_closure(tmp_path):
+    """A missing required A3 family must remain explicit in durable evidence."""
+    cases = tuple(c for c in H.a3_cases() if c.case_id != "I2-GROUPBY-01")
+    results = []
+    for case in cases:
+        ncmp = 1 if case.purpose in ("INVARIANCE", "CORRECTNESS") else 0
+        results.append(H.CaseResult(case_id=case.case_id, status=H.PASS,
+                                    executed_comparisons=ncmp))
+
+    path = tmp_path / "a3_11_v02_blocked_manifest.json"
+    doc = H.write_manifest(str(path), results, cases)
+    assert "a3_closure" in doc
+    assert doc["a3_closure"]["status"] == "BLOCKED"
+    assert doc["a3_closure"]["closure_ready"] is False
+    assert "I2-GROUPBY-01" in doc["a3_closure"]["missing_case_ids"]
+    assert doc["a3_closure"]["execution_context"]["fresh_execution_verdict"] is False
+    assert doc["provenance"]["schema_version"] == "13.77.A3.11.v02"
+
+    loaded = json.loads(path.read_text())
+    assert loaded["a3_closure"]["status"] == "BLOCKED"
+    assert "I2-GROUPBY-01" in loaded["a3_closure"]["missing_case_ids"]
+    assert loaded["provenance"]["schema_version"] == "13.77.A3.11.v02"
+

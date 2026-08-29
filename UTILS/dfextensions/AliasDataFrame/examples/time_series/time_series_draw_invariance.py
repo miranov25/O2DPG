@@ -31,7 +31,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A3.8"
+SCHEMA_VERSION = "13.77.A3.11.v02"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -1166,6 +1166,219 @@ def a3_cases() -> tuple[CaseSpec, ...]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# A3.11 closure reconciliation
+# ─────────────────────────────────────────────────────────────────────────────
+
+A3_REQUIRED_FAMILIES = {
+    "histogram": ("I2-HIST-01",),
+    "profile": ("I2-PROFILE-01",),
+    "group_by": ("I2-GROUPBY-01",),
+    "facet_by": ("I2-FACET-01", "I2-FACET-DRAW-FIGURES-REFUSAL-01"),
+    "subframe_qualified": ("I2-SUBFRAME-01",),
+    "selection_vector": ("I2-SELECTION-VECTOR-01",),
+}
+A3_CLOSURE_HARDENING = ("I2-PROFILE-BINS-01",)
+A3_HISTOGRAM_BIN_NONCLAIMS = ("bin_edges", "bin_counts")
+
+# A3.11-v02: closure is allowed to trust banked proof evidence only if the
+# declaration being closed is still the same kind and public-surface scope that
+# was reviewed.  IDs alone are not proof identity.  Keep this map deliberately
+# narrow: it locks proof semantics, not prose, tolerances, or fixture values.
+A3_CLOSURE_CONTRACTS = {
+    "I2-HIST-01": {
+        "purpose": "INVARIANCE", "oracle_kind": "CONSISTENCY",
+        "surfaces_under_test": SURFACES, "not_applicable_surfaces": (),
+    },
+    "I2-PROFILE-01": {
+        "purpose": "INVARIANCE", "oracle_kind": "CONSISTENCY",
+        "surfaces_under_test": SURFACES, "not_applicable_surfaces": (),
+    },
+    "I2-GROUPBY-01": {
+        "purpose": "INVARIANCE", "oracle_kind": "CONSISTENCY",
+        "surfaces_under_test": SURFACES, "not_applicable_surfaces": (),
+    },
+    "I2-FACET-01": {
+        "purpose": "INVARIANCE", "oracle_kind": "CONSISTENCY",
+        "surfaces_under_test": SURFACES,
+        "not_applicable_surfaces": ("draw_figures",),
+    },
+    "I2-FACET-DRAW-FIGURES-REFUSAL-01": {
+        "purpose": "ERROR_CONTRACT", "oracle_kind": "CONSISTENCY",
+        "surfaces_under_test": ("draw_figures",),
+        "not_applicable_surfaces": (),
+    },
+    "I2-SUBFRAME-01": {
+        "purpose": "INVARIANCE", "oracle_kind": "CONSISTENCY",
+        "surfaces_under_test": SURFACES, "not_applicable_surfaces": (),
+    },
+    "I2-SELECTION-VECTOR-01": {
+        "purpose": "INVARIANCE", "oracle_kind": "CONSISTENCY",
+        "surfaces_under_test": SURFACES, "not_applicable_surfaces": (),
+    },
+    "I2-PROFILE-BINS-01": {
+        "purpose": "INVARIANCE", "oracle_kind": "CONSISTENCY",
+        "surfaces_under_test": SURFACES, "not_applicable_surfaces": (),
+    },
+}
+
+
+def a3_closure_reconciliation(cases: Sequence[CaseSpec] | None = None) -> dict:
+    """Return the machine-readable A3 closure/disposition record.
+
+    A3 is the same-spec cross-surface CONSISTENCY substage.  This record does
+    not upgrade a consistency case into an independent correctness proof and it
+    does not turn a NOT_EXTRACTABLE observable into VERIFIED evidence.  It
+    answers the narrower closure question: is every required A3 family backed
+    by an explicit CaseSpec, and is every non-executed A3 observable either
+    explicitly dispositioned or an orphan that must block closure?
+    """
+    cases = tuple(a3_cases() if cases is None else cases)
+    by_id = {c.case_id: c for c in cases}
+    duplicate_ids = sorted({c.case_id for c in cases
+                            if sum(x.case_id == c.case_id for x in cases) > 1})
+    required_ids = [cid for ids in A3_REQUIRED_FAMILIES.values() for cid in ids]
+    required_ids += list(A3_CLOSURE_HARDENING)
+    missing_cases = [cid for cid in required_ids if cid not in by_id]
+    orphan_obligations: list[str] = []
+    contract_drift: list[dict] = []
+    family_records: list[dict] = []
+
+    # Lock the reviewed proof kind and public-surface scope for every required
+    # or hardening case.  Generic registry validation only checks that a field
+    # is legal; this closure-specific audit checks that it still means what the
+    # banked A3 review proved.
+    for cid, expected in A3_CLOSURE_CONTRACTS.items():
+        c = by_id.get(cid)
+        if c is None:
+            continue
+        observed = {
+            "purpose": c.purpose,
+            "oracle_kind": c.oracle_kind,
+            "surfaces_under_test": tuple(c.surfaces_under_test),
+            "not_applicable_surfaces": tuple(sorted(c.not_applicable)),
+        }
+        for field_name, expected_value in expected.items():
+            actual_value = observed[field_name]
+            # Preserve strings as strings and surface collections as tuples for
+            # comparison; emit JSON-friendly lists below.
+            norm_expected = (tuple(expected_value)
+                             if field_name in ("surfaces_under_test", "not_applicable_surfaces")
+                             else expected_value)
+            if actual_value != norm_expected:
+                contract_drift.append({
+                    "case_id": cid,
+                    "field": field_name,
+                    "expected": (list(norm_expected)
+                                 if isinstance(norm_expected, tuple) else norm_expected),
+                    "observed": (list(actual_value)
+                                 if isinstance(actual_value, tuple) else actual_value),
+                })
+
+    drift_ids = {row["case_id"] for row in contract_drift}
+    for family, ids in A3_REQUIRED_FAMILIES.items():
+        missing = [cid for cid in ids if cid not in by_id]
+        drifted = [cid for cid in ids if cid in drift_ids]
+        status = "MISSING" if missing else ("CONTRACT_DRIFT" if drifted else "PROVED")
+        family_records.append({
+            "family": family,
+            "case_ids": list(ids),
+            "status": status,
+            "evidence_scope": ("banked per-case execution/review evidence; "
+                               "this closure record checks declaration/disposition coverage"),
+            "missing_case_ids": missing,
+            "contract_drift_case_ids": drifted,
+        })
+
+    # The facet capability boundary has two proof obligations on one canonical
+    # request: numerical invariance where supported and mandatory refusal on
+    # draw_figures.  Losing either one blocks an honest A3 closure.
+    facet = by_id.get("I2-FACET-01")
+    refusal = by_id.get("I2-FACET-DRAW-FIGURES-REFUSAL-01")
+    if facet is not None and refusal is not None:
+        if facet.canonical_spec is not refusal.canonical_spec:
+            orphan_obligations.append("facet_by numerical/refusal CaseSpecs no longer share one canonical request")
+
+    histogram_disposition: list[dict] = []
+    hist = by_id.get("I2-HIST-01")
+    if hist is not None:
+        obs = {o.name: o for o in hist.observables}
+        for name in A3_HISTOGRAM_BIN_NONCLAIMS:
+            o = obs.get(name)
+            if o is None:
+                orphan_obligations.append(f"I2-HIST-01/{name}: required explicit non-claim is missing")
+                histogram_disposition.append({"observable": name, "status": "MISSING"})
+                continue
+            record = {
+                "observable": name,
+                "source": o.source,
+                "status": o.status,
+                "rationale": o.rationale,
+                "a3_disposition": "EXPLICIT_NON_CLAIM",
+                "next_owner": "Stage A",
+                "future_resolution": ("retain the explicit non-claim unless later "
+                                      "PDF/artist review or a future ARTIST_FALLBACK "
+                                      "extractor adds evidence"),
+            }
+            histogram_disposition.append(record)
+            if not (o.source == "ARTIST_FALLBACK"
+                    and o.status == "NOT_EXTRACTABLE"
+                    and bool(o.rationale)):
+                orphan_obligations.append(
+                    f"I2-HIST-01/{name}: must remain ARTIST_FALLBACK / "
+                    "NOT_EXTRACTABLE with rationale for A3 closure")
+
+    # Any other non-executed A3 observable must also carry an explicit
+    # disposition.  Silence is an orphan and therefore a closure blocker.
+    for c in cases:
+        if c.case_id not in required_ids:
+            continue
+        for o in c.observables:
+            if o.status == "EXECUTED":
+                continue
+            if o.status == "NOT_EXTRACTABLE" and o.rationale:
+                continue
+            if o.status.startswith("DEFERRED:") and o.status.split(":", 1)[1].strip():
+                continue
+            orphan_obligations.append(
+                f"{c.case_id}/{o.name}: non-executed observable has no complete disposition")
+
+    registry_errors = validate_registry(cases)
+    closure_ready = not (duplicate_ids or missing_cases or contract_drift
+                         or orphan_obligations or registry_errors)
+    return {
+        "substage": "A3",
+        "record_kind": "closure declaration/disposition reconciliation",
+        "scope": "same-spec cross-surface consistency",
+        "status": "READY_FOR_CLOSURE" if closure_ready else "BLOCKED",
+        "closure_ready": closure_ready,
+        "required_families": family_records,
+        "closure_hardening_case_ids": list(A3_CLOSURE_HARDENING),
+        "histogram_bin_observables": histogram_disposition,
+        "missing_case_ids": missing_cases,
+        "duplicate_case_ids": duplicate_ids,
+        "contract_drift": contract_drift,
+        "orphan_obligations": orphan_obligations,
+        "registry_errors": registry_errors,
+        "execution_context": {
+            "fresh_execution_verdict": False,
+            "meaning": ("declaration/disposition reconciliation over banked A3 proof "
+                        "contracts; ordinary manifest reconciliation remains the "
+                        "execution/gate authority"),
+        },
+        "explicit_non_claims": [
+            "histogram bin_edges/bin_counts are not verified by the public stats channel",
+            "A3 consistency does not by itself prove independent raw-row mathematical correctness",
+            "facet_by_bins/facet_by_quantiles, weights_vector, and lazy/eager composition are not claimed by A3",
+        ],
+        "later_stage_a_obligations": [
+            "independent correctness/reference reconciliation where required",
+            "histogram bin-level evidence may be assigned to later Stage-A PDF/artist review or a future extractor",
+            "lazy/eager full-stack symmetry belongs to later Stage-A work",
+        ],
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 5.  Registry validation — §14's self-checks, run BEFORE any case executes.
 #
 # "Adding a case breaks the build until somebody says what it is."
@@ -1619,6 +1832,12 @@ def write_manifest(path: str, results: Sequence[CaseResult],
         "reconciliation": rec,
         "cases": [],
     }
+    # A3.11-v02: once a manifest is in A3 context, persist the closure record
+    # even when it is BLOCKED.  Absence of a required family is itself durable
+    # evidence and must not make the governance record disappear.
+    a3_known = set(A3_CLOSURE_CONTRACTS)
+    if a3_known.intersection(by_id):
+        doc["a3_closure"] = a3_closure_reconciliation(cases)
     # a declared case with no result is EVIDENCE, not an omission
     results = list(results) + [
         CaseResult(case_id=cid, status="NO_RESULT",
