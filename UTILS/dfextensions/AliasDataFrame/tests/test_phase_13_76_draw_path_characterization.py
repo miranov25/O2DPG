@@ -11463,7 +11463,7 @@ class TestB32bAcceptanceScaffold:
             with pytest.raises(RuntimeError, match="dz_c"):
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
-                    m.compress_columns(spec)
+                    m.compress_columns(spec, atomic="call")
         finally:
             cls._record_adf_created_authority = orig
 
@@ -11487,7 +11487,7 @@ class TestB32bAcceptanceScaffold:
         spec = self._step6_compression_spec("dy")
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            m.compress_columns(spec)
+            m.compress_columns(spec, atomic="call")
         df_before = m.df.copy(deep=True)
         schema_before = copy.deepcopy(m._schema)
         orig = cls._record_adf_created_authority
@@ -11502,7 +11502,7 @@ class TestB32bAcceptanceScaffold:
             with pytest.raises(RuntimeError, match="decompression fault"):
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
-                    m.decompress_columns(["dy"])
+                    m.decompress_columns(["dy"], atomic="call")
         finally:
             cls._record_adf_created_authority = orig
 
@@ -11524,7 +11524,7 @@ class TestB32bAcceptanceScaffold:
         spec = self._step6_compression_spec("dy")
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            m.compress_columns(spec)
+            m.compress_columns(spec, atomic="call")
         df_before = m.df.copy(deep=True)
         schema_before = copy.deepcopy(m._schema)
         orig = cls._clear_adf_created_authority
@@ -11539,13 +11539,274 @@ class TestB32bAcceptanceScaffold:
             with pytest.raises(RuntimeError, match="destruction fault"):
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
-                    m.decompress_columns(["dy"], keep_compressed=False)
+                    m.decompress_columns(["dy"], keep_compressed=False, atomic="call")
         finally:
             cls._clear_adf_created_authority = orig
 
         pd.testing.assert_frame_equal(m.df, df_before)
         assert m._schema == schema_before, (
             "failed source-5 destruction left column/authority state split")
+
+    def test_b32b_8e_default_column_atomic_compression_keeps_prior_success(self):
+        """AD-6 Option 3: historical partial success, but each column is atomic.
+
+        The public default is ``atomic='column'``.  If ``dy`` succeeds and
+        source-5 authority publication for ``dz`` fails, the completed ``dy``
+        transition remains committed while every mutation belonging to ``dz``
+        is restored.  This is the safe form of the historical behavior pinned
+        by ``test_partial_failure_handling``.
+        """
+        cls = A.AliasDataFrame
+        m = A.AliasDataFrame(pd.DataFrame({
+            "dy": np.array([1.5, 2.5, 3.5]),
+            "dz": np.array([4.5, 5.5, 6.5]),
+        }))
+        spec = self._step6_compression_spec("dy", "dz")
+        dz_before = m.df["dz"].copy(deep=True)
+        orig = cls._record_adf_created_authority
+        calls = []
+
+        def boom_second(self, name, dtype, reason):
+            calls.append(name)
+            if name == "dz_c":
+                raise RuntimeError("injected column-atomic compression fault")
+            return orig(self, name, dtype, reason)
+
+        cls._record_adf_created_authority = boom_second
+        try:
+            with pytest.raises(RuntimeError, match="column-atomic"):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    m.compress_columns(spec)  # default atomic='column'
+        finally:
+            cls._record_adf_created_authority = orig
+
+        assert calls == ["dy_c", "dz_c"]
+        assert "dy_c" in m.df.columns and "dy" not in m.df.columns
+        assert m.get_compression_state("dy") == "compressed"
+        assert m.get_dtype_authority("dy_c").known
+        pd.testing.assert_series_equal(m.df["dz"], dz_before)
+        assert "dz_c" not in m.df.columns
+        assert m.get_compression_state("dz") is None
+
+    def test_b32b_8f_default_column_atomic_decompression_keeps_prior_success(self):
+        """Default per-column decompression commits earlier columns coherently."""
+        cls = A.AliasDataFrame
+        m = A.AliasDataFrame(pd.DataFrame({
+            "dy": np.array([1.5, 2.5, 3.5]),
+            "dz": np.array([4.5, 5.5, 6.5]),
+        }))
+        spec = self._step6_compression_spec("dy", "dz")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.compress_columns(spec, atomic="call")
+        orig = cls._record_adf_created_authority
+
+        def boom_second(self, name, dtype, reason):
+            if name == "dz":
+                raise RuntimeError("injected column-atomic decompression fault")
+            return orig(self, name, dtype, reason)
+
+        cls._record_adf_created_authority = boom_second
+        try:
+            with pytest.raises(RuntimeError, match="column-atomic"):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    m.decompress_columns(["dy", "dz"])
+        finally:
+            cls._record_adf_created_authority = orig
+
+        assert "dy" in m.df.columns and "dy_c" in m.df.columns
+        assert m.get_compression_state("dy") == "decompressed"
+        assert m.get_dtype_authority("dy").known
+        assert "dz" not in m.df.columns and "dz_c" in m.df.columns
+        assert m.get_compression_state("dz") == "compressed"
+
+    def test_b32b_8g_default_column_atomic_destruction_keeps_prior_success(self):
+        """Default per-column destruction commits earlier completed columns."""
+        cls = A.AliasDataFrame
+        m = A.AliasDataFrame(pd.DataFrame({
+            "dy": np.array([1.5, 2.5, 3.5]),
+            "dz": np.array([4.5, 5.5, 6.5]),
+        }))
+        spec = self._step6_compression_spec("dy", "dz")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.compress_columns(spec, atomic="call")
+        orig = cls._clear_adf_created_authority
+
+        def boom_second(self, name):
+            if name == "dz_c":
+                raise RuntimeError("injected column-atomic destruction fault")
+            return orig(self, name)
+
+        cls._clear_adf_created_authority = boom_second
+        try:
+            with pytest.raises(RuntimeError, match="column-atomic"):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    m.decompress_columns(["dy", "dz"], keep_compressed=False)
+        finally:
+            cls._clear_adf_created_authority = orig
+
+        assert "dy" in m.df.columns and "dy_c" not in m.df.columns
+        assert m.get_compression_state("dy") == "decompressed"
+        assert not m.get_dtype_authority("dy_c").known
+        assert "dz" not in m.df.columns and "dz_c" in m.df.columns
+        assert m.get_compression_state("dz") == "compressed"
+        assert m.get_dtype_authority("dz_c").known
+
+    def test_b32b_8h_call_atomic_multicolumn_decompression_rolls_back_all(self):
+        """``atomic='call'`` rolls back an earlier successful decompression."""
+        cls = A.AliasDataFrame
+        m = A.AliasDataFrame(pd.DataFrame({
+            "dy": np.array([1.5, 2.5, 3.5]),
+            "dz": np.array([4.5, 5.5, 6.5]),
+        }))
+        spec = self._step6_compression_spec("dy", "dz")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.compress_columns(spec, atomic="call")
+        df_before = m.df.copy(deep=True)
+        schema_before = copy.deepcopy(m._schema)
+        orig = cls._record_adf_created_authority
+
+        def boom_second(self, name, dtype, reason):
+            if name == "dz":
+                raise RuntimeError("injected call-atomic decompression fault")
+            return orig(self, name, dtype, reason)
+
+        cls._record_adf_created_authority = boom_second
+        try:
+            with pytest.raises(RuntimeError, match="call-atomic"):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    m.decompress_columns(["dy", "dz"], atomic="call")
+        finally:
+            cls._record_adf_created_authority = orig
+
+        pd.testing.assert_frame_equal(m.df, df_before)
+        assert m._schema == schema_before
+
+    def test_b32b_8i_call_atomic_multicolumn_destruction_rolls_back_all(self):
+        """``atomic='call'`` also owns late compressed-column destruction."""
+        cls = A.AliasDataFrame
+        m = A.AliasDataFrame(pd.DataFrame({
+            "dy": np.array([1.5, 2.5, 3.5]),
+            "dz": np.array([4.5, 5.5, 6.5]),
+        }))
+        spec = self._step6_compression_spec("dy", "dz")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.compress_columns(spec, atomic="call")
+        df_before = m.df.copy(deep=True)
+        schema_before = copy.deepcopy(m._schema)
+        orig = cls._clear_adf_created_authority
+
+        def boom_second(self, name):
+            if name == "dz_c":
+                raise RuntimeError("injected call-atomic destruction fault")
+            return orig(self, name)
+
+        cls._clear_adf_created_authority = boom_second
+        try:
+            with pytest.raises(RuntimeError, match="call-atomic"):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    m.decompress_columns(
+                        ["dy", "dz"], keep_compressed=False, atomic="call")
+        finally:
+            cls._clear_adf_created_authority = orig
+
+        pd.testing.assert_frame_equal(m.df, df_before)
+        assert m._schema == schema_before
+
+    def test_b32b_8j_atomic_policy_rejects_unknown_value(self):
+        """The new public transaction policy has a closed two-value grammar."""
+        m = A.AliasDataFrame(pd.DataFrame({"dy": np.array([1.5, 2.5])}))
+        spec = self._step6_compression_spec("dy")
+        with pytest.raises(ValueError, match="atomic must be"):
+            m.compress_columns(spec, atomic="sometimes")
+        with pytest.raises(ValueError, match="atomic must be"):
+            m.decompress_columns(["dy"], atomic="sometimes")
+
+    def test_b32b_8k_column_atomic_preserves_inline_state_reconciliation(self):
+        """AD-6: atomic granularity must not change inline success semantics.
+
+        Persisted metadata can say COMPRESSED while only the original physical
+        column is present (for example, schema recovered independently of the
+        compressed payload).  The historical inline path repairs this by
+        treating the stale state as SCHEMA_ONLY and recompressing.  The
+        column-atomic dispatcher must preserve that inline grammar rather than
+        reclassifying its one-column recursive call as selective.
+        """
+        spec = self._step6_compression_spec("dy")
+        original = np.array([1.5, 2.5, 3.5])
+
+        def stale_mixed_state():
+            m = A.AliasDataFrame(pd.DataFrame({"dy": original.copy()}))
+            m.define_compression_schema(spec)
+            assert m.get_compression_state("dy") == "schema_only"
+            # Simulate persisted/recovered metadata claiming COMPRESSED while
+            # the physical compressed payload is absent and the original is
+            # present.  This is the state the non-selective inline path has an
+            # explicit reconciliation branch for.
+            m._schema["compression"]["dy"]["state"] = "compressed"
+            assert m.get_compression_state("dy") == "compressed"
+            assert "dy" in m.df.columns and "dy_c" not in m.df.columns
+            return m
+
+        column_mode = stale_mixed_state()
+        call_mode = stale_mixed_state()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            column_mode.compress_columns(spec)  # default atomic='column'
+            call_mode.compress_columns(spec, atomic="call")
+
+        for m in (column_mode, call_mode):
+            assert "dy" not in m.df.columns
+            assert "dy_c" in m.df.columns
+            assert m.get_compression_state("dy") == "compressed"
+            assert m.get_dtype_authority("dy_c").known
+
+        pd.testing.assert_series_equal(
+            column_mode.df["dy_c"], call_mode.df["dy_c"])
+        assert column_mode._schema.get("compression") == \
+            call_mode._schema.get("compression")
+        assert column_mode._schema.get("columns") == \
+            call_mode._schema.get("columns")
+
+    def test_b32b_8l_atomic_modes_preserve_summary_and_precision_semantics(self):
+        """AD-6 changes rollback granularity, not successful-call reporting.
+
+        ``return_summary`` and ``measure_precision`` must describe the same
+        successful compression under column- and call-atomic policies.
+        """
+        spec = self._step6_compression_spec("dy", "dz")
+        frame = pd.DataFrame({
+            "dy": np.array([1.5, 2.5, 3.5]),
+            "dz": np.array([4.5, 5.5, 6.5]),
+        })
+        column_mode = A.AliasDataFrame(frame.copy(deep=True))
+        call_mode = A.AliasDataFrame(frame.copy(deep=True))
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            summary_column = column_mode.compress_columns(
+                spec, atomic="column", return_summary=True,
+                measure_precision=True)
+            summary_call = call_mode.compress_columns(
+                spec, atomic="call", return_summary=True,
+                measure_precision=True)
+
+        assert summary_column == summary_call == {
+            "compressed": ["dy", "dz"], "skipped": []}
+        for col in ("dy", "dz"):
+            p_col = column_mode.compression_info[col].get("precision")
+            p_call = call_mode.compression_info[col].get("precision")
+            assert p_col is not None and p_call is not None
+            assert p_col == p_call
+        pd.testing.assert_frame_equal(column_mode.df, call_mode.df)
 
     def test_b32b_9_strict_route_is_a_registered_helper_not_a_framework_flag(
             self):

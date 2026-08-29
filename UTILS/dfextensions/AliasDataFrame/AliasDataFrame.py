@@ -14339,7 +14339,8 @@ function collapseDepth(maxD) {{
     def compress_columns(self, compression_spec=None, columns=None, suffix='_c', drop_original=True,
                          on_missing='warn',       # NEW
                          return_summary=False,     # NEW
-                         measure_precision=False):
+                         measure_precision=False,
+                         atomic='column'):
         """
         Compress columns using bidirectional transforms with state management.
 
@@ -14381,6 +14382,14 @@ function collapseDepth(maxD) {{
             Return summary dict with compressed/skipped columns (default: False)
         measure_precision : bool, optional
             Compute and store compression precision loss (default: False)
+        atomic : {'column', 'call'}, optional
+            Transaction boundary for processing failures (default: 'column').
+            ``'column'`` preserves the historical progressive behavior: each
+            selected column is individually atomic, so earlier successful
+            columns remain committed if a later column fails. ``'call'`` makes
+            the whole multi-column public call atomic and restores the complete
+            pre-call state if any selected transition fails. Missing-column
+            handling via ``on_missing`` is resolved before either transaction.
 
         Returns
         -------
@@ -14394,6 +14403,8 @@ function collapseDepth(maxD) {{
             If invalid state transition, name collision, or missing schema
         KeyError
             If on_missing='error' and columns don't exist in DataFrame
+        ValueError
+            If ``atomic`` is not ``'column'`` or ``'call'``
 
         Examples
         --------
@@ -14420,7 +14431,13 @@ function collapseDepth(maxD) {{
         - Schema reuse ignores new suffix, uses stored compressed_col
         - Pattern 2 allows schema updates for SCHEMA_ONLY/DECOMPRESSED columns
         - Idempotent: re-compressing with same schema is silently skipped
+        - ``atomic='column'`` is the backward-compatible default; use
+          ``atomic='call'`` for all-or-none multi-column processing failures.
         """
+        if atomic not in ('column', 'call'):
+            raise ValueError(
+                f"atomic must be 'column' or 'call', got {atomic!r}")
+
         # Determine mode and target columns
         if compression_spec is None and columns is None:
             # Mode: compress all columns with SCHEMA_ONLY or DECOMPRESSED state
@@ -14507,6 +14524,56 @@ function collapseDepth(maxD) {{
         # Update cols_to_process to only include available columns
         cols_to_process = available_cols
         # === END NEW CODE ===
+
+        # AD-6 / STEP 6: preserve historical progressive behavior safely by
+        # reusing the reviewed call-level transaction as a one-column
+        # transaction.  There is deliberately only ONE compression engine:
+        # ``atomic='column'`` dispatches each selected column through the
+        # exact ``atomic='call'`` implementation below.  Thus an earlier
+        # successful column remains committed while the failing column is
+        # restored completely.  ``on_missing`` was already resolved above.
+        if atomic == 'column':
+            for _orig_col in cols_to_process:
+                if schema_mode == 'define':
+                    _sub_spec = {_orig_col: compression_spec[_orig_col]}
+                    _sub_columns = []
+                elif schema_mode == 'reuse':
+                    _sub_spec = None
+                    _sub_columns = [_orig_col]
+                elif schema_mode == 'inline':
+                    # Preserve the public request grammar: an inline call
+                    # remains inline when the column-atomic dispatcher narrows
+                    # it to one column.  Passing columns=[col] would silently
+                    # reclassify the request as selective and bypass the
+                    # stale-COMPRESSED reconciliation branch below.
+                    _sub_spec = {_orig_col: compression_spec[_orig_col]}
+                    _sub_columns = None
+                else:
+                    # selective
+                    _sub_spec = {_orig_col: compression_spec[_orig_col]}
+                    _sub_columns = [_orig_col]
+                self.compress_columns(
+                    compression_spec=_sub_spec,
+                    columns=_sub_columns,
+                    suffix=suffix,
+                    drop_original=drop_original,
+                    on_missing='error',
+                    return_summary=False,
+                    measure_precision=measure_precision,
+                    atomic='call')
+
+            if return_summary:
+                compressed_cols = [
+                    col for col in available_cols
+                    if schema_mode != 'define' and
+                    col in self.compression_info and
+                    self.compression_info[col].get('state') ==
+                    CompressionState.COMPRESSED]
+                return {
+                    'compressed': compressed_cols,
+                    'skipped': missing_cols
+                }
+            return self
 
         with self._source5_persistent_transaction():
             for orig_col in cols_to_process:
@@ -14867,7 +14934,8 @@ function collapseDepth(maxD) {{
         """
         return self.compress_columns(compression_spec, columns=[], suffix=suffix)
 
-    def decompress_columns(self, columns=None, inplace=False, keep_compressed=True, keep_schema=True):
+    def decompress_columns(self, columns=None, inplace=False, keep_compressed=True, keep_schema=True,
+                           atomic='column'):
         """
         Materialize decompressed versions of compressed columns with state management.
 
@@ -14883,6 +14951,12 @@ function collapseDepth(maxD) {{
         keep_schema : bool, optional
             If True, keep compression schema and transition to DECOMPRESSED state.
             If False, remove all compression metadata (default: True).
+        atomic : {'column', 'call'}, optional
+            Transaction boundary for processing failures (default: 'column').
+            ``'column'`` commits each completed decompression/destruction
+            transition independently and rolls back only the failing column.
+            ``'call'`` restores the complete pre-call state if any selected
+            column fails.
 
         Returns
         -------
@@ -14892,7 +14966,8 @@ function collapseDepth(maxD) {{
         Raises
         ------
         ValueError
-            If column not in COMPRESSED state or data missing
+            If column not in COMPRESSED state, data missing, or ``atomic`` is
+            not ``'column'``/``'call'``
 
         Examples
         --------
@@ -14909,6 +14984,10 @@ function collapseDepth(maxD) {{
         - State transitions: COMPRESSED → DECOMPRESSED or COMPRESSED → None
         - Cannot decompress SCHEMA_ONLY (never compressed) or DECOMPRESSED (already done)
         """
+        if atomic not in ('column', 'call'):
+            raise ValueError(
+                f"atomic must be 'column' or 'call', got {atomic!r}")
+
         # Handle legacy inplace parameter
         if inplace:
             keep_schema = False
@@ -14925,6 +15004,22 @@ function collapseDepth(maxD) {{
 
         # Filter __meta__
         columns = [c for c in columns if c != "__meta__"]
+
+        # AD-6 / STEP 6: ``atomic='column'`` is the historical-compatible
+        # public default, but each column is now genuinely atomic.  Reuse the
+        # reviewed whole-call transaction with a one-column request so
+        # compression creation, decompression creation and destruction all
+        # share the same rollback mechanism.  Earlier completed columns remain
+        # committed if a later column fails.
+        if atomic == 'column':
+            for _col in columns:
+                self.decompress_columns(
+                    columns=[_col],
+                    inplace=False,
+                    keep_compressed=keep_compressed,
+                    keep_schema=keep_schema,
+                    atomic='call')
+            return self
 
         with self._source5_persistent_transaction():
             # Phase 13.7: Collect columns to drop, then batch-drop once at end
