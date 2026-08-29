@@ -2586,10 +2586,14 @@ class TestB32ProjectionOwnership:
 
     def test_b32_33_candidates_not_dropped_show_as_a_gap_not_a_claim(
             self):
-        """The honest-failure shape. aliases_dropped is measured AFTER the
-        drop attempt, so a candidate that cannot be dropped appears as the
-        difference between the two fields rather than as a claim that it was
-        dropped. Verified by making the drop impossible."""
+        """STEP-9 supersession: honest record PLUS terminal loud failure.
+
+        This test originally proved only that `aliases_dropped` did not invent
+        an effect when cleanup silently failed to remove a candidate.  STEP 9
+        is the terminal owner of that gap: candidate identification is not
+        cleanup execution, so the public draw must now reject the unreconciled
+        state while preserving the truthful preparation record for debugging.
+        """
         adf, sf = self._eager_pair()
         sf.add_alias("corr2", "corr * 2")
         cls = type(adf)
@@ -2598,9 +2602,10 @@ class TestB32ProjectionOwnership:
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                adf.draw_batch({"p": {"expr": "SectorCalib.corr2:x",
-                                      "type": "scatter"}},
-                               clear_after=True, verbose=False)
+                with pytest.raises(RuntimeError, match="draw-plan-reconcile"):
+                    adf.draw_batch({"p": {"expr": "SectorCalib.corr2:x",
+                                          "type": "scatter"}},
+                                   clear_after=True, verbose=False)
         finally:
             cls._dematerialize_qualified = real
             plt.close("all")
@@ -2609,6 +2614,7 @@ class TestB32ProjectionOwnership:
         assert "SectorCalib::corr2" not in st.aliases_dropped, (
             "nothing was dropped, so nothing may be reported as dropped")
         assert st.cleanup_outcome == "completed"
+        assert st.failure_phase == "reconciliation"
 
 
 @needs_dfdraw
@@ -8339,17 +8345,17 @@ class TestB32bAcceptanceScaffold:
         "logical_requirements":    ("PLAN_ONLY", ()),
         "branches":                ("STATE", ("branches_loaded",)),
         "aliases":                 ("STATE", ("aliases_materialized",)),
-        "group_materializations":  ("STATE", ("aliases_by_projection",
+        "group_materializations":  ("STATE", ("aliases_materialized",
+                                              "aliases_by_projection",
                                               "projection_columns")),
         "structs":                 ("STATE", ("structs_completed",
                                               "struct_members_present")),
-        "subframes":               ("PENDING", ()),
-        "joins":                   ("PENDING", ()),
+        "subframes":               ("STATE", ("subframes_observed",)),
+        "joins":                   ("STATE", ("joins_observed",)),
         "temporary_columns":       ("STATE", ("temporary_columns",)),
         "persistent_columns":      ("STATE", ("columns_created",)),
         "cache_effects":           ("STATE", ("cache_effects",)),
-        "cleanup":                 ("STATE", ("cleanup_candidates",
-                                              "aliases_dropped",
+        "cleanup":                 ("STATE", ("aliases_dropped",
                                               "cleanup_outcome")),
         "slot_surface_provenance": ("PLAN_ONLY", ()),
     }
@@ -8359,6 +8365,19 @@ class TestB32bAcceptanceScaffold:
     #: PENDING has none yet.
     RECONCILABLE_GROUPS = tuple(
         g for g, (kind, _) in EXPECTED_DISPOSITION.items() if kind == "STATE")
+
+    EXPECTED_RECONCILIATION_POLICY = {
+        "branches": "required_subset",
+        "aliases": "required_subset",
+        "group_materializations": "required_subset",
+        "structs": "required_subset",
+        "subframes": "exact_owned",
+        "joins": "exact_owned",
+        "temporary_columns": "required_subset",
+        "persistent_columns": "required_subset",
+        "cache_effects": "observed_only",
+        "cleanup": "actual_cleanup",
+    }
 
     def test_b32b_1_plan_carries_the_full_rev2_contract(self):
         """CLOSED BY B3.2b STEP 1 — was a strict xfail, now passing.
@@ -8433,75 +8452,347 @@ class TestB32bAcceptanceScaffold:
         assert set(derived) == set(self.RECONCILABLE_GROUPS), (
             "the derived STATE-only map must expose exactly the groups that "
             "have a measured counterpart")
+        assert all(kind != "PENDING" for kind, _, _ in prod.values()), (
+            "STEP 9 is the terminal owner: no Rev-2 group may remain PENDING")
+        policy = getattr(plan_cls, "REV2_RECONCILIATION_POLICY", {})
+        assert policy == self.EXPECTED_RECONCILIATION_POLICY, (
+            f"terminal reconciliation policy drift: {policy!r}")
 
     @needs_dfdraw
-    @pytest.mark.xfail(strict=True, reason=
-        "B3.2b acceptance, family 9, the STEP-9 half (MR-P1-1, GPT32 R3D "
-        "blocker A, and P0-STEP1-2 item-level half): a representative plan "
-        "must be BUILT, EXECUTED through the real draw_batch path, and its "
-        "planned items matched ITEM BY ITEM against the measured "
-        "_DrawPreparationState. Measured baseline failure after STEP 1: "
-        "'the executed plan carries no reconcilable requirement' — every "
-        "Rev-2 group is empty because STEP 1 delivers the schema and STEP 9 "
-        "populates it. This cannot XPASS from the schema alone, and it "
-        "cannot XPASS from an unrelated observed field being non-empty.")
     def test_b32b_2b_plan_reconciles_against_executed_state(self):
-        """GPT32 R3D blocker A, plus the item-level half of P0-STEP1-2.
+        """STEP 9 positive control: real plan intent reconciles to real effects.
 
-        Two false-close mechanisms have been removed from this criterion:
-
-        1. v00 read `__slots__` and probed an empty state for attribute
-           existence, so STEP 1's schema alone would have made it XPASS.
-        2. v01 executed a real draw but reconciled a group whenever its
-           mapped observed field was NON-EMPTY. `planned branch x` against
-           `observed branch y` would have passed. GPT29 and GPT32 both
-           called that not-reconciliation, and they are right.
-
-        The predicate is now membership: every planned item must be FOUND
-        among the measured items of its counterpart fields. Only STATE
-        groups are reconcilable — PLAN_ONLY has no observation by
-        construction, PENDING has none yet — and asserting otherwise would
-        reintroduce exactly the conflation P0-STEP1-1 removed."""
+        This uses an alias that must be materialized and then cleaned, so the
+        plan has genuine STATE-group work.  The terminal production reconciler
+        runs inside draw_batch after cleanup; this test also inspects the
+        retained records so a future bypass cannot hide behind "draw returned".
+        """
         adf = _mini_adf()
+        adf.add_alias("q", "x * 2")
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            adf.draw_batch({"p": {"expr": "x", "type": "hist"}}, verbose=False)
+            adf.draw_batch(
+                {"p": {"expr": "q", "type": "hist"}},
+                lazy=True, clear_after=True, verbose=False)
 
         plan = getattr(adf, "_last_draw_plan", None)
         state = getattr(adf, "_last_draw_prep_state", None)
-        assert plan is not None, "the executed plan was not retained"
-        assert state is not None, "no preparation record was produced"
+        assert plan is not None
+        assert state is not None
+        assert "q" in set(plan.aliases), plan.aliases
+        assert "q" in set(state.aliases_materialized), state.aliases_materialized
+        assert "q" in set(plan.cleanup), plan.cleanup
+        assert "q" in set(state.aliases_dropped), (
+            "cleanup_candidates is not execution evidence; the alias must "
+            "appear in aliases_dropped")
+        assert state.cleanup_outcome == "completed"
+        assert state.plan_reconciliation_errors == ()
+        assert adf._reconcile_draw_plan_state(
+            plan, state, raise_on_error=False) == ()
 
-        def _items(value):
-            if value is None:
-                return []
-            if isinstance(value, dict):
-                return list(value)
-            if isinstance(value, (list, tuple, set, frozenset)):
-                return list(value)
-            return [value]
+    def test_b32b_2c_missing_required_effect_fails_terminal_reconciliation(self):
+        """A planned effect cannot disappear from measured state."""
+        mod = _adf_module()
+        adf = _mini_adf()
+        plan = mod._DrawDependencyPlan([], [], [], lazy=True)
+        plan.aliases = ("q",)
+        state = mod._DrawPreparationState()
+        state.aliases_materialized = ()
+        errs = adf._reconcile_draw_plan_state(
+            plan, state, raise_on_error=False)
+        assert any("aliases" in e and "not measured" in e for e in errs), errs
 
-        populated = [g for g in self.RECONCILABLE_GROUPS
-                     if getattr(plan, g, None)]
-        assert populated, (
-            "the executed plan carries no reconcilable requirement, so there "
-            "is nothing to match against the measured record (STEP 1 "
-            "delivers the schema; STEP 9 populates it)")
+    def test_b32b_2d_unexpected_exact_owned_effect_fails(self):
+        """Exact-owned subframe/join groups reject undeclared effects."""
+        mod = _adf_module()
+        adf = _mini_adf()
+        for group, field in (("subframes", "subframes_observed"),
+                             ("joins", "joins_observed")):
+            plan = mod._DrawDependencyPlan([], [], [], lazy=False)
+            setattr(plan, group, ("S",))
+            state = mod._DrawPreparationState()
+            setattr(state, field, ("S", "EXTRA"))
+            errs = adf._reconcile_draw_plan_state(
+                plan, state, raise_on_error=False)
+            assert any(group in e and "unexpected" in e for e in errs), (
+                group, errs)
 
-        unreconciled = []
-        for group in populated:
-            planned = _items(getattr(plan, group))
-            measured = []
-            for name in self.EXPECTED_DISPOSITION[group][1]:
-                measured.extend(_items(getattr(state, name, None)))
-            missing = [item for item in planned if item not in measured]
-            if missing:
-                unreconciled.append(
-                    f"{group}: planned {missing[:4]} not found among the "
-                    f"measured {measured[:6]}")
-        assert not unreconciled, (
-            "planned items with no measured counterpart: "
-            + "; ".join(unreconciled))
+    def test_b32b_2e_wrong_identity_and_wrong_provenance_fail(self):
+        """Both sides being non-empty is not reconciliation."""
+        mod = _adf_module()
+        adf = _mini_adf()
+
+        plan = mod._DrawDependencyPlan([], [], [], lazy=True)
+        plan.aliases = ("wanted",)
+        state = mod._DrawPreparationState()
+        state.aliases_materialized = ("other",)
+        errs = adf._reconcile_draw_plan_state(
+            plan, state, raise_on_error=False)
+        assert any("wanted" in e and "other" in e for e in errs), errs
+
+        rid = "draw_batch:0:selection:0:x > 0"
+        plan2 = mod._DrawDependencyPlan([], [], [], lazy=False)
+        plan2.logical_requirements = (rid,)
+        plan2.slot_surface_provenance = {
+            rid: ("draw_batch", 0, "weights")}
+        state2 = mod._DrawPreparationState()
+        errs2 = adf._reconcile_draw_plan_state(
+            plan2, state2, raise_on_error=False)
+        assert any("wrong provenance" in e for e in errs2), errs2
+
+    def test_b32b_2f_cleanup_candidate_cannot_substitute_for_actual_drop(self):
+        """STEP-1 carry: candidate identification is not cleanup execution."""
+        mod = _adf_module()
+        adf = _mini_adf()
+        plan = mod._DrawDependencyPlan([], [], [], lazy=True)
+        plan.cleanup = ("q",)
+        state = mod._DrawPreparationState()
+        state.cleanup_candidates = ("q",)   # intent-adjacent only
+        state.aliases_dropped = ()          # actual effect absent
+        state.cleanup_outcome = "completed"
+        errs = adf._reconcile_draw_plan_state(
+            plan, state, raise_on_error=False)
+        assert any("not actually dropped" in e for e in errs), errs
+
+        # The inverse is independently load-bearing: an effect that the plan
+        # never owned must not disappear inside the same cleanup group.
+        state2 = mod._DrawPreparationState()
+        state2.aliases_dropped = ("unexpected",)
+        state2.cleanup_outcome = "completed"
+        errs2 = adf._reconcile_draw_plan_state(
+            mod._DrawDependencyPlan([], [], [], lazy=True),
+            state2, raise_on_error=False)
+        assert any("unexpected aliases were dropped" in e for e in errs2), errs2
+
+    def test_b32b_2g_state_groups_have_terminal_population_or_policy(self):
+        """No STATE group may remain semantically unowned at STEP 9."""
+        mod = _adf_module()
+        plan_cls = mod._DrawDependencyPlan
+        assert all(kind != "PENDING"
+                   for kind, _, _ in plan_cls.REV2_GROUP_DISPOSITION.values())
+        assert set(plan_cls.REV2_RECONCILIATION_POLICY) == set(
+            self.RECONCILABLE_GROUPS)
+
+        # group_materializations is not structurally dead: when a planned alias
+        # is a group member, the plan owner records it.
+        adf = _mini_adf()
+        adf.add_alias("q", "x * 2")
+        adf._group_members["q"] = "__test_group__"
+        espec = mod._EffectiveDrawSpec.from_call(
+            "q", "hist", {"expr": "q", "type": "hist"})
+        plan = mod._DrawDependencyPlan([espec], [], [],
+                                       merged_specs=[{"expr": "q"}],
+                                       lazy=True)
+        adf._populate_draw_plan_intent(plan, clear_after=False)
+        assert plan.group_materializations == ("q",)
+        group_state = mod._DrawPreparationState()
+        group_state.aliases_materialized = ("q",)
+        assert adf._reconcile_draw_plan_state(
+            plan, group_state, raise_on_error=False) == (), (
+            "group_materializations must have a real non-empty STATE fixture")
+
+        # Cache changes are contingent on pre-call state: the terminal policy
+        # says OBSERVED_ONLY explicitly rather than silently leaving the group
+        # empty and pretending it was reconciled.
+        assert plan_cls.REV2_RECONCILIATION_POLICY["cache_effects"] == \
+            "observed_only"
+        cache_plan = mod._DrawDependencyPlan([], [], [], lazy=False)
+        state = mod._DrawPreparationState()
+        state.cache_effects = (("join_index_cache::S", "+1"),)
+        assert adf._reconcile_draw_plan_state(
+            cache_plan, state, raise_on_error=False) == (), (
+            "observed-only cache effects must remain auditable without "
+            "inventing deterministic plan intent")
+
+    @needs_dfdraw
+    def test_b32b_2h_subframe_and_join_counterparts_are_measured(self):
+        """Previously-PENDING groups now reconcile against real execution."""
+        parent = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "x": np.array([10.0, 20.0])}))
+        child = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "v": np.array([1.0, 2.0])}))
+        parent.register_subframe("S", child, index_columns=["k"])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            parent.draw_batch(
+                {"p": {"expr": "S.v:x", "type": "scatter"}},
+                verbose=False)
+        plan = parent._last_draw_plan
+        state = parent._last_draw_prep_state
+        assert plan.subframes == ("S",), plan.subframes
+        assert plan.joins == ("S",), plan.joins
+        assert state.subframes_observed == ("S",), state.subframes_observed
+        assert state.joins_observed == ("S",), state.joins_observed
+        assert parent._reconcile_draw_plan_state(
+            plan, state, raise_on_error=False) == ()
+
+    @needs_dfdraw
+    def test_b32b_2i_reconciliation_failure_is_recorded_as_its_own_phase(self,
+                                                                          monkeypatch):
+        """A terminal reconciliation failure must not masquerade as success.
+
+        STEP 9 runs after cleanup.  This fault injection proves the retained
+        preparation record keeps the successful cleanup outcome while naming
+        `reconciliation` as the phase that actually rejected the call.
+        """
+        adf = _mini_adf()
+        adf.add_alias("q", "x * 2")
+        orig = adf._reconcile_draw_plan_state
+
+        def _boom(plan, state, *, raise_on_error=True):
+            errs = orig(plan, state, raise_on_error=False)
+            assert errs == (), errs
+            raise RuntimeError("injected STEP-9 reconciliation failure")
+
+        monkeypatch.setattr(adf, "_reconcile_draw_plan_state", _boom)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with pytest.raises(RuntimeError, match="reconciliation failure"):
+                adf.draw_batch(
+                    {"p": {"expr": "q", "type": "hist"}},
+                    lazy=True, clear_after=True, verbose=False)
+        plt.close("all")
+        state = adf._last_draw_prep_state
+        assert state is not None
+        assert state.cleanup_outcome == "completed"
+        assert "q" in state.aliases_dropped
+        assert state.failure_phase == "reconciliation"
+
+    @needs_dfdraw
+    def test_b32b_2j_warn_mode_reconciles_valid_and_unresolved_subframe_specs(self):
+        """Warn-mode policy must not false-close or false-reject a mixed batch.
+
+        The valid `S.v` spec executes a real subframe/join effect.  The bad
+        `S.nosuch` spec is intentionally allowed to remain unresolved by the
+        public warn policy and is skipped by dfdraw.  STEP 9 must reconcile the
+        real observed S effect without demanding an impossible effect from the
+        tolerated unresolved leaf.
+        """
+        parent = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "x": np.array([10.0, 20.0])}))
+        child = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "v": np.array([1.0, 2.0])}))
+        parent.register_subframe("S", child, index_columns=["k"])
+        specs = {
+            "good": {"expr": "S.v:x", "type": "scatter"},
+            "bad": {"expr": "S.nosuch:x", "type": "scatter"},
+        }
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            res = parent.draw_batch(
+                specs, on_error="skip", on_subframe_error="warn",
+                verbose=False)
+        plt.close("all")
+        assert res is not None
+        plan = parent._last_draw_plan
+        state = parent._last_draw_prep_state
+        assert plan.subframe_error_policy == "warn"
+        assert "S" in state.subframes_observed
+        assert "S" in state.joins_observed
+        assert state.plan_reconciliation_errors == ()
+        assert parent._reconcile_draw_plan_state(
+            plan, state, raise_on_error=False) == ()
+
+    @needs_dfdraw
+    def test_b32b_2k_child_alias_cleanup_is_planned_under_qualified_identity(self):
+        """Projection-owned child aliases are not "unexpected" cleanup.
+
+        This is the cross-increment case the broad STEP-9 pass found: a dotted
+        child alias is materialized during projection and later dropped by the
+        common cleanup owner.  Plan intent must name the same owner-qualified
+        identity that execution records.
+        """
+        parent = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "x": np.array([10.0, 20.0])}))
+        child = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "v": np.array([1.0, 2.0])}))
+        child.add_alias("corr2", "v * 2")
+        parent.register_subframe("S", child, index_columns=["k"])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            parent.draw_batch(
+                {"p": {"expr": "S.corr2:x", "type": "scatter"}},
+                lazy=True, clear_after=True, verbose=False)
+        plt.close("all")
+        plan = parent._last_draw_plan
+        state = parent._last_draw_prep_state
+        assert "S::corr2" in plan.aliases, plan.aliases
+        assert "S::corr2" in plan.cleanup, plan.cleanup
+        assert "S::corr2" in state.aliases_materialized, state.aliases_materialized
+        assert "S::corr2" in state.aliases_dropped, state.aliases_dropped
+        assert state.plan_reconciliation_errors == ()
+        assert parent._reconcile_draw_plan_state(
+            plan, state, raise_on_error=False) == ()
+
+
+    def test_b32b_2l_lazy_subframe_declaration_is_plan_intent_without_loading(self,
+                                                                            tmp_path):
+        """A declared lazy subframe is plan-visible before its frame is loaded.
+
+        STEP-9 v01/v02 initially looked only in `_subframes`, which contains
+        eager/loaded frames.  Execution then observed SectorCalib while the
+        pure plan stayed empty, making ordinary lazy-subframe draws fail at the
+        terminal reconciler.  Planning may inspect lazy registration metadata;
+        it must not load the child merely to discover that the join is intended.
+        """
+        mod = _adf_module()
+        p = _write_tree_with_subframe(str(tmp_path / "plan_lazy.root"))
+        adf = A.AliasDataFrame.read_tree_lazy(p, "tree")
+        adf.register_subframe_lazy("SectorCalib", p,
+                                   tree_name="SectorCalib",
+                                   index_columns=["sec"])
+        assert not adf._subframe_loaded.get("SectorCalib", False)
+        espec = mod._EffectiveDrawSpec.from_call(
+            "SectorCalib.corr:x", "scatter",
+            {"expr": "SectorCalib.corr:x", "type": "scatter"})
+        plan = mod._DrawDependencyPlan(
+            [espec], [], [],
+            merged_specs=[{"expr": "SectorCalib.corr:x", "type": "scatter"}],
+            lazy=False)
+        adf._populate_draw_plan_intent(plan, clear_after=False,
+                                       surface="draw_batch",
+                                       on_subframe_error="raise")
+        assert plan.subframes == ("SectorCalib",), plan.subframes
+        assert plan.joins == ("SectorCalib",), plan.joins
+        assert "SectorCalib_corr" in plan.temporary_columns, \
+            plan.temporary_columns
+        assert not adf._subframe_loaded.get("SectorCalib", False), (
+            "pure plan discovery loaded the lazy subframe")
+
+    def test_b32b_2m_vector_slot_alias_is_planned_even_when_lazy_false(self):
+        """Established vector-slot hooks materialize aliases unconditionally.
+
+        `selection_vector` / `weights_vector` (and alias-valued facet_by) are
+        pre-materialized even when the public lazy switch is False.  STEP-9
+        cleanup planning must describe that deterministic effect or a real drop
+        is misclassified as unexpected — the TG3 selection matrix regression.
+        """
+        mod = _adf_module()
+        adf = _mini_adf()
+        adf.add_alias("isGood", "x > 0")
+        espec = mod._EffectiveDrawSpec.from_call(
+            "x", "hist", {
+                "expr": "x", "type": "hist",
+                "selection_vector": ["isGood>0", "isGood<1"],
+            })
+        plan = mod._DrawDependencyPlan(
+            [espec], [], [],
+            merged_specs=[{
+                "expr": "x", "type": "hist",
+                "selection_vector": ["isGood>0", "isGood<1"],
+            }],
+            lazy=False)
+        adf._populate_draw_plan_intent(plan, clear_after=True,
+                                       surface="draw_batch",
+                                       on_subframe_error="raise")
+        assert "isGood" in plan.aliases, plan.aliases
+        assert "isGood" in plan.cleanup, plan.cleanup
 
     # ---- family 7: ADF-created PERSISTENT columns (AD-19 source 5) --------
 

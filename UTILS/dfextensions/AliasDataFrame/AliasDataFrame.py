@@ -2465,8 +2465,10 @@ class _DrawPreparationState:
                  "cleanup_candidates", "aliases_dropped",
                  "temporary_columns", "projection_columns",
                  "reads_by_projection", "aliases_by_projection",
+                 "subframes_observed", "joins_observed",
                  "frame_aliases", "cleanup_outcome", "failure_phase",
-                 "secondary_error", "cache_effects")
+                 "secondary_error", "cache_effects",
+                 "plan_reconciliation_errors")
 
     def __init__(self):
         self.prescan_text = ""
@@ -2506,7 +2508,7 @@ class _DrawPreparationState:
         self.cleanup_outcome = "not_requested"
         # Which phase raised, if any: '' | 'preparation' | 'entry_selection'
         # | 'normalization' | 'dispatch' | 'projection' | 'render' |
-        # 'cleanup'. The list was stale after three rounds of new brackets
+        # 'cleanup' | 'reconciliation'. The list was stale after three rounds of new brackets
         # (GPT25 P2-1); it is the enumeration a consumer reads, so it has to
         # be complete. cleanup_outcome answers "was cleanup run"; this answers
         # "did the call finish". Collapsing the two made a render failure with
@@ -2536,6 +2538,11 @@ class _DrawPreparationState:
         # phase grew them.
         self.reads_by_projection = ()
         self.aliases_by_projection = ()
+        # STEP 9 measured counterparts for the previously PENDING plan groups.
+        # These are written only after the corresponding projection operation
+        # succeeds; they are not inferred from dotted text alone.
+        self.subframes_observed = ()
+        self.joins_observed = ()
         # Every alias in the frame graph, qualified by owner path
         # ('' for this frame, 'Child::' for a registered subframe). Each frame
         # appears under exactly one owner path: registering one object twice
@@ -2549,6 +2556,10 @@ class _DrawPreparationState:
         # subframe join-index cache is owned by the join layer and reported
         # only when this call caused it to grow.
         self.cache_effects = ()
+        # Empty on successful reconciliation.  On mismatch the reconciliation
+        # helper raises, but preserving the exact errors in the state makes a
+        # fault-injection test and a debugger see the same evidence.
+        self.plan_reconciliation_errors = ()
 
 
 class _DrawDependencyPlan:
@@ -2680,28 +2691,26 @@ class _DrawDependencyPlan:
             "aliases_materialized is measured. aliases_pre_existing is "
             "context for the delta, not the counterpart"),
         "group_materializations": (
-            "STATE", ("aliases_by_projection", "projection_columns"),
-            "vector-slot / group expansion is observed as the projection "
-            "aliases and columns it produced"),
+            "STATE", ("aliases_materialized", "aliases_by_projection",
+                      "projection_columns"),
+            "group/vector materialization can occur during preparation or "
+            "projection. STEP 9 therefore reconciles planned member aliases "
+            "against the union of measured materialized aliases and projection "
+            "outputs, rather than assuming one phase owns every group shape"),
         "structs": (
             "STATE", ("structs_completed", "struct_members_present"),
             "both are measured; struct completion was the round-2 case that "
             "proved an intent-derived record can be affirmatively false"),
         "subframes": (
-            "PENDING", (),
-            "the observation record has no subframe-requirement field, so "
-            "there is nothing measured to reconcile against and "
-            "reads_by_projection is a different axis. A genuine measured "
-            "counterpart must exist NO LATER THAN STEP 9 "
-            "reconciliation/closure; if an earlier implementation step "
-            "introduces one, this disposition is updated deliberately"),
+            "STATE", ("subframes_observed",),
+            "STEP 9 adds a genuine measured counterpart: a subframe identity "
+            "is recorded only after the projection path has successfully "
+            "resolved that subframe requirement"),
         "joins": (
-            "PENDING", (),
-            "no measured join record exists at all; the first draft pointed "
-            "this at reads_by_projection, which is a projection read and not "
-            "a join. A genuine measured counterpart must exist NO LATER THAN "
-            "STEP 9 reconciliation/closure; if an earlier implementation "
-            "step introduces one, this disposition is updated deliberately"),
+            "STATE", ("joins_observed",),
+            "STEP 9 records each join identity only after its join operation "
+            "has successfully executed; projection reads are deliberately not "
+            "used as a proxy for join execution"),
         "temporary_columns": (
             "STATE", ("temporary_columns",),
             "measured directly as the temporary columns the executor wrote "
@@ -2714,11 +2723,11 @@ class _DrawDependencyPlan:
             "measured directly from the join-index cache and struct-catalog "
             "fingerprint deltas taken at the stage boundaries"),
         "cleanup": (
-            "STATE", ("cleanup_candidates", "aliases_dropped",
-                      "cleanup_outcome"),
-            "candidates are intent-adjacent but aliases_dropped and "
-            "cleanup_outcome are measured, and the group reconciles against "
-            "those"),
+            "STATE", ("aliases_dropped", "cleanup_outcome"),
+            "STEP 9 removes cleanup_candidates from the measured counterpart: "
+            "being IDENTIFIED for cleanup is not evidence that cleanup ran. "
+            "Only aliases_dropped plus the measured outcome can close a "
+            "planned cleanup requirement"),
         "slot_surface_provenance": (
             "PLAN_ONLY", (),
             "which slot or surface asked for a requirement is plan data, "
@@ -2732,8 +2741,37 @@ class _DrawDependencyPlan:
         _g: _d[1] for _g, _d in REV2_GROUP_DISPOSITION.items()
         if _d[0] == "STATE"}
 
+    # STEP 9 terminal semantics.  "STATE" says a measured counterpart exists;
+    # this second table says HOW intent and observation are allowed to relate.
+    #
+    # required_subset
+    #     every planned identity must be measured; extra measured effects are
+    #     tolerated because defensive/autoload stages can legitimately do more.
+    # exact_owned
+    #     this plan owns the complete identity set for the call; unexpected
+    #     observed identities are a reconciliation failure.
+    # observed_only
+    #     the effect is contingent on pre-call cache state and cannot be a
+    #     deterministic plan requirement. The plan MUST stay empty while the
+    #     measured record remains auditable.
+    # actual_cleanup
+    #     planned aliases must appear in aliases_dropped. cleanup_candidates
+    #     never satisfies this policy.
+    REV2_RECONCILIATION_POLICY = {
+        "branches": "required_subset",
+        "aliases": "required_subset",
+        "group_materializations": "required_subset",
+        "structs": "required_subset",
+        "subframes": "exact_owned",
+        "joins": "exact_owned",
+        "temporary_columns": "required_subset",
+        "persistent_columns": "required_subset",
+        "cache_effects": "observed_only",
+        "cleanup": "actual_cleanup",
+    }
+
     __slots__ = ("especs", "rewrite_dicts", "autoload_dicts",
-                 "merged_specs", "lazy") + REV2_GROUPS
+                 "merged_specs", "lazy", "subframe_error_policy") + REV2_GROUPS
 
     def __init__(self, especs, rewrite_dicts, autoload_dicts,
                  merged_specs=(), lazy=False):
@@ -2743,6 +2781,7 @@ class _DrawDependencyPlan:
         # the executor's effect.
         self.merged_specs = list(merged_specs)
         self.lazy = bool(lazy)
+        self.subframe_error_policy = "raise"
         self.especs = list(especs)
         self.rewrite_dicts = [d for d in rewrite_dicts if isinstance(d, dict)]
         self.autoload_dicts = [d for d in autoload_dicts
@@ -21444,6 +21483,352 @@ function collapseDepth(maxD) {{
         # (GPT24/GPT27 round-3 consolidation).
         return _structural_copy_tree(obj)
 
+    @staticmethod
+    def _draw_plan_items(value):
+        """Normalize one plan/state field to stable identity strings.
+
+        STEP 9 deliberately compares semantic identities rather than truthiness.
+        Tuples used as measured records (cache effects / struct membership) are
+        reduced by the group-specific reconciler below; this helper handles the
+        ordinary scalar/sequence/mapping shapes.
+        """
+        if value is None:
+            return []
+        if isinstance(value, dict):
+            return [str(k) for k in value]
+        if isinstance(value, (list, tuple, set, frozenset)):
+            return [str(v) for v in value]
+        return [str(value)]
+
+    def _populate_draw_plan_intent(self, plan, *, clear_after=False,
+                                   surface="draw_batch",
+                                   on_subframe_error="raise"):
+        """Populate the pure Rev-2 STEP-9 intent groups before effects run.
+
+        Only deterministic intent belongs here.  Cache transitions are
+        contingent on pre-call cache state and are explicitly OBSERVED_ONLY.
+        Physical branch resolution stays on the executor because struct-aware
+        resolution is effectful; an empty `branches` tuple is therefore an
+        honest "no deterministic pre-effect physical branch identity here",
+        not a placeholder to be made artificially non-empty.
+        """
+        import re as _re
+
+        logical = []
+        provenance = {}
+        aliases = set()
+        # Child-frame aliases referenced through dotted expressions are
+        # materialized by the projection/join path even when draw_lazy=False.
+        # Keep them separate from root aliases, whose materialization remains
+        # governed by the public lazy policy.
+        projection_aliases = set()
+        # Some slot aliases are materialized unconditionally by the established
+        # pre-delegation hooks even when draw_lazy/lazy=False.  STEP 9 must plan
+        # those effects too or terminal cleanup sees a real drop as "unexpected".
+        unconditional_slot_aliases = set()
+        groups = set()
+        branches = set()
+        structs = set()
+        subframes = set()
+        joins = set()
+        temporary = set()
+        persistent = set()
+
+        preexisting = set(self._materialized_frame_aliases())
+        plan.subframe_error_policy = str(on_subframe_error)
+        _seen_exprs = set()
+        _lazy_available = set(
+            getattr(getattr(self, "_lazy_reader", None),
+                    "available_branches", ()) or ())
+        _lazy_loaded = set(
+            getattr(getattr(self, "_lazy_reader", None),
+                    "loaded_branches", ()) or ())
+
+        def _collect_physical_intent(_text):
+            """Pure recursive alias->physical dependency closure."""
+            if not isinstance(_text, str) or not _text or _text in _seen_exprs:
+                return
+            _seen_exprs.add(_text)
+            _info = self._analyze_expression(_text)
+            for _ref in _info.get("column_refs", ()):
+                if _ref in getattr(self, "aliases", {}):
+                    _collect_physical_intent(self.aliases[_ref])
+                elif (plan.lazy and _lazy_available and
+                      _ref in _lazy_available and _ref not in _lazy_loaded):
+                    branches.add(str(_ref))
+            # Struct intent is semantic, not a physical-read proxy. Record a
+            # referenced struct only when at least one member is not already
+            # present and some reader in this frame can complete it.
+            try:
+                _tree = ast.parse(_text, mode="eval")
+            except SyntaxError:
+                _tree = None
+            if _tree is not None:
+                for _node in ast.walk(_tree):
+                    if (isinstance(_node, ast.Attribute)
+                            and isinstance(_node.value, ast.Name)
+                            and _node.value.id in getattr(self, "_structs", {})):
+                        _sn = _node.value.id
+                        _members = self._structs[_sn].get("members", ())
+                        if any(self._struct_internal_name(_sn, m)
+                               not in self.df.columns for m in _members):
+                            structs.add(_sn)
+
+        for _i, _es in enumerate(plan.especs):
+            _slot_values = [("expr", _es.expr)]
+            _slot_values.extend((name, _es.style.get(name))
+                                for name in _EffectiveDrawSpec.SLOT_NAMES)
+            for _slot, _value in _slot_values:
+                _texts = []
+                if isinstance(_value, str) and _value:
+                    _texts = [_value]
+                elif isinstance(_value, (list, tuple)):
+                    _texts = [v for v in _value if isinstance(v, str) and v]
+                for _j, _text in enumerate(_texts):
+                    _rid = f"{surface}:{_i}:{_slot}:{_j}:{_text}"
+                    logical.append(_rid)
+                    provenance[_rid] = (surface, _i, _slot)
+                    _collect_physical_intent(_text)
+                    if _slot in ("weights_vector", "selection_vector", "facet_by"):
+                        _slot_aliases = set(self._parse_expr_aliases(_text))
+                        aliases.update(_slot_aliases)
+                        # _ensure_vector_kwargs_aliases materializes these
+                        # surfaces independently of the public lazy switch.
+                        # Plan the same deterministic effect so cleanup intent
+                        # and measured drops cannot diverge.
+                        unconditional_slot_aliases.update(_slot_aliases)
+
+            aliases.update(self._parse_expr_aliases(
+                _es.expr,
+                _es.style.get("group_by"),
+                _es.style.get("color"),
+                selection=_es.style.get("selection"),
+                weights=_es.style.get("weights"),
+                facet_by=_es.style.get("facet_by")))
+
+            # Dotted subframe requirements are resolvable without executing a
+            # join.  Record every chain prefix that denotes a registered
+            # subframe; the leaf is the first segment that is not a subframe.
+            _blob = _es.reference_text_blob(include_vector_slots=False)
+            for _token in _re.findall(r'\b(\w+(?:\.\w+)+)\b', _blob):
+                _segments = _token.split(".")
+                _cur = self
+                _prefixes = []
+                _leaf_idx = None
+                for _k, _seg in enumerate(_segments):
+                    _entry = (_cur._subframes.get_entry(_seg)
+                              if getattr(_cur, "_subframes", None) is not None
+                              else None)
+                    # A lazy subframe is DECLARED before it is materialized into
+                    # _subframes.  Plan construction is pure and must not load
+                    # it merely to discover intent, so the lazy registry/config
+                    # is a legitimate declaration source.  This closes the
+                    # STEP-9 regression where execution measured SectorCalib
+                    # while the plan stayed empty on every lazy-subframe draw.
+                    _lazy_declared = (
+                        _entry is None
+                        and (_seg in (getattr(_cur, "_subframe_lazy_config", {}) or {})
+                             or _seg in (getattr(_cur, "_subframe_readers", {}) or {})))
+                    if _entry is None and not _lazy_declared:
+                        _leaf_idx = _k
+                        break
+                    _prefixes.append(_seg)
+                    _path = ".".join(_prefixes)
+                    # Record the intended subframe/join identity even in
+                    # warn mode.  The terminal reconciler knows that warn mode
+                    # permits an intended resolution to remain unexecuted, but
+                    # still rejects any observed identity outside this plan.
+                    subframes.add(_path)
+                    joins.add(_path)
+                    if _entry is not None:
+                        _cur = _entry["frame"]
+                        continue
+                    # The lazy child frame is deliberately not loaded here.
+                    # We can still plan the declared first-level join and, for
+                    # a simple S.leaf reference, the leaf write below.  Deeper
+                    # nested intent remains conservative until its owner frame
+                    # exists; terminal cumulative review owns that wider case.
+                    _leaf_idx = _k + 1 if _k + 1 < len(_segments) else None
+                    break
+                if _prefixes and _leaf_idx is not None:
+                    _leaf = _segments[_leaf_idx]
+                    # A leaf alias owned by a child frame is a real planned
+                    # materialization even though it is not in self.aliases.
+                    # Execution measures these under owner-qualified names
+                    # (S::corr2, A::B::corr2); the plan must use the same
+                    # identity or cleanup looks "unexpected" after doing
+                    # exactly what the expression requested.
+                    if _leaf in (getattr(_cur, "aliases", None) or {}):
+                        _qualified_alias = "::".join(_prefixes + [_leaf])
+                        projection_aliases.add(_qualified_alias)
+                        if _leaf in getattr(_cur, "_group_members", {}):
+                            groups.add(_qualified_alias)
+
+                if (_prefixes and _leaf_idx is not None
+                        and on_subframe_error == "raise"):
+                    _leaf = _segments[_leaf_idx]
+                    if len(_prefixes) == 1:
+                        _flat = f"{_prefixes[0]}_{_leaf}"
+                        # Plan only a write the call actually intends.  A
+                        # same-named persistent column already on self.df is
+                        # not a reduced-frame temporary creation.
+                        if _flat not in self.df.columns:
+                            temporary.add(_flat)
+                    else:
+                        _flat = _leaf
+                        for _name in reversed(_prefixes):
+                            _flat = f"{_flat}__{_name}"
+                        # Repeat calls reuse an existing persistent chain
+                        # column.  "May be needed" is not "will be created";
+                        # STEP 9 plans only the latter.
+                        if _flat not in self.df.columns:
+                            persistent.add(_flat)
+
+        _root_aliases = (aliases - preexisting) if plan.lazy else set()
+        planned_aliases = ((_root_aliases | unconditional_slot_aliases
+                            | projection_aliases) - preexisting)
+        for _alias in planned_aliases:
+            if _alias in getattr(self, "_group_members", {}):
+                groups.add(_alias)
+
+        plan.logical_requirements = tuple(sorted(logical))
+        plan.slot_surface_provenance = {
+            k: provenance[k] for k in sorted(provenance)}
+        # Physical branch intent is limited to currently available-but-not-
+        # loaded lazy branches found by a pure recursive alias dependency walk.
+        # No catalog mutation or loading occurs here.
+        plan.branches = tuple(sorted(branches))
+        plan.aliases = tuple(sorted(planned_aliases))
+        plan.group_materializations = tuple(sorted(groups & planned_aliases))
+        plan.structs = tuple(sorted(structs))
+        plan.subframes = tuple(sorted(subframes))
+        plan.joins = tuple(sorted(joins))
+        plan.temporary_columns = tuple(sorted(temporary))
+        plan.persistent_columns = tuple(sorted(persistent))
+        # Explicit terminal disposition: cache transitions are measured but
+        # contingent, so the PLAN side is required to stay empty.
+        plan.cache_effects = ()
+        plan.cleanup = (tuple(sorted(planned_aliases))
+                        if clear_after else ())
+        return plan
+
+    @classmethod
+    def _draw_state_items_for_group(cls, group, state):
+        """Return normalized measured identities for one Rev-2 STATE group."""
+        fields = _DrawDependencyPlan.REV2_GROUP_TO_STATE.get(group, ())
+        out = set()
+        for name in fields:
+            value = getattr(state, name, ())
+            if group == "structs" and name == "struct_members_present":
+                for rec in value or ():
+                    if isinstance(rec, (list, tuple)) and rec:
+                        out.add(str(rec[0]))
+                continue
+            if group == "cache_effects":
+                for rec in value or ():
+                    if isinstance(rec, (list, tuple)) and rec:
+                        out.add(str(rec[0]))
+                    else:
+                        out.add(str(rec))
+                continue
+            if group == "cleanup" and name == "cleanup_outcome":
+                # Outcome is checked semantically below, never as an alias id.
+                continue
+            for item in cls._draw_plan_items(value):
+                out.add(item)
+        return out
+
+    def _reconcile_draw_plan_state(self, plan, state, *, raise_on_error=True):
+        """STEP 9 terminal reconciliation of Rev-2 intent vs execution.
+
+        This is intentionally stronger than membership-by-truthiness:
+          * planned required identities must be measured;
+          * exact-owned groups reject unexpected measured identities;
+          * cleanup must be proven by `aliases_dropped`, never merely by
+            `cleanup_candidates`;
+          * PLAN_ONLY provenance is checked against the logical requirement
+            records;
+          * OBSERVED_ONLY cache effects require an empty plan side.
+
+        Returns a tuple of human-readable errors.  On a successful public draw
+        the caller uses `raise_on_error=True`, because a mismatch is an ADF
+        internal contract violation, not user input.
+        """
+        errors = []
+
+        # PLAN_ONLY closure: every declared logical requirement must carry the
+        # exact surface/spec/slot provenance encoded in its requirement id.
+        prov = getattr(plan, "slot_surface_provenance", {}) or {}
+        for rid in getattr(plan, "logical_requirements", ()) or ():
+            parts = str(rid).split(":", 4)
+            if len(parts) < 5:
+                errors.append(f"logical requirement has malformed id {rid!r}")
+                continue
+            surface, spec_i, slot = parts[0], parts[1], parts[2]
+            got = prov.get(rid)
+            want = (surface, int(spec_i), slot)
+            if got is None or tuple(got) != want:
+                errors.append(
+                    f"wrong provenance for {rid!r}: planned {got!r}, "
+                    f"expected {want!r}")
+        unexpected_prov = sorted(set(prov) - set(
+            getattr(plan, "logical_requirements", ()) or ()))
+        if unexpected_prov:
+            errors.append(
+                f"unexpected slot/surface provenance entries: {unexpected_prov}")
+
+        for group, policy in _DrawDependencyPlan.REV2_RECONCILIATION_POLICY.items():
+            planned = set(self._draw_plan_items(getattr(plan, group, ())))
+            measured = self._draw_state_items_for_group(group, state)
+
+            if policy == "observed_only":
+                if planned:
+                    errors.append(
+                        f"{group}: contingent observed-only group must have "
+                        f"empty plan intent, got {sorted(planned)}")
+                continue
+
+            if policy == "actual_cleanup":
+                dropped = set(map(str, getattr(state, "aliases_dropped", ()) or ()))
+                missing = sorted(planned - dropped)
+                unexpected = sorted(dropped - planned)
+                if missing:
+                    errors.append(
+                        f"cleanup: planned aliases not actually dropped: {missing}; "
+                        f"candidates={list(getattr(state, 'cleanup_candidates', ()) or ())}, "
+                        f"outcome={getattr(state, 'cleanup_outcome', '')!r}")
+                if unexpected:
+                    errors.append(
+                        f"cleanup: unexpected aliases were dropped: {unexpected}; "
+                        f"planned={sorted(planned)}")
+                if planned and getattr(state, "cleanup_outcome", "") not in (
+                        "completed", "ran_after_failure"):
+                    errors.append(
+                        f"cleanup: planned cleanup ended with outcome "
+                        f"{getattr(state, 'cleanup_outcome', '')!r}")
+                continue
+
+            missing = sorted(planned - measured)
+            _warn_tolerated = (
+                group in ("subframes", "joins")
+                and getattr(plan, "subframe_error_policy", "raise") == "warn")
+            if missing and not _warn_tolerated:
+                errors.append(
+                    f"{group}: planned identities not measured: {missing}; "
+                    f"measured={sorted(measured)}")
+            if policy == "exact_owned":
+                extra = sorted(measured - planned)
+                if extra:
+                    errors.append(
+                        f"{group}: unexpected measured identities: {extra}; "
+                        f"planned={sorted(planned)}")
+
+        state.plan_reconciliation_errors = tuple(errors)
+        if errors and raise_on_error:
+            raise RuntimeError(
+                "[draw-plan-reconcile] " + " | ".join(errors))
+        return tuple(errors)
+
     def _execute_draw_plan(self, plan, verbose=False):
         """PHASE_13_76_ADF B3.2 (Proposal Rev 2 §11.4). The side-effect
         executor for one draw call. Effects OWNED here as of this increment:
@@ -21732,6 +22117,8 @@ function collapseDepth(maxD) {{
         _obs_before = self._observe_prep_effects()
         _al_before = self._materialized_frame_aliases()
         _jc_before = self._join_cache_sizes()
+        _sf_observed = set(getattr(state, "subframes_observed", ()) or ())
+        _joins_observed = set(getattr(state, "joins_observed", ()) or ())
         # ---- the projection phase EXECUTES here (B3.2 part 2 correction,
         # panel [X] 2026-07-25, five independent executions). The previous
         # version left this block inline in draw_batch and called a method
@@ -21843,6 +22230,11 @@ function collapseDepth(maxD) {{
                                 self._extract_subframe_values_cached(
                                     sf_name, col_name, _ji, _miss,
                                     direct_slot=True)
+                            # STEP 9 measured counterparts: only record after
+                            # both join-index computation and gathered-column
+                            # publication succeeded.
+                            _sf_observed.add(sf_name)
+                            _joins_observed.add(sf_name)
                             if method_suffix:
                                 subframe_replacements[f'{dot_ref}.{method_suffix}'] = f'{flat_ref}.{method_suffix}'
                             else:
@@ -21852,7 +22244,17 @@ function collapseDepth(maxD) {{
                 else:
                     # Multi-level: pre-materialize on self.df
                     try:
-                        self._prepare_subframe_joins(dot_ref_prefix, alias_name='__draw_batch__')
+                        self._prepare_subframe_joins(
+                            dot_ref_prefix, alias_name='__draw_batch__')
+                        # `_prepare_subframe_joins` returning successfully is
+                        # the measured join boundary for every registered
+                        # prefix in the chain. Record only after success.
+                        _prefix_parts = []
+                        for _, _sf_n9, _ in subframe_chain:
+                            _prefix_parts.append(_sf_n9)
+                            _path9 = ".".join(_prefix_parts)
+                            _sf_observed.add(_path9)
+                            _joins_observed.add(_path9)
                         flat_col = leaf_col
                         for _, sf_n, _ in reversed(subframe_chain):
                             flat_col = f'{flat_col}__{sf_n}'
@@ -21934,6 +22336,8 @@ function collapseDepth(maxD) {{
                 _cache.append((f'join_index_cache::{_owner}',
                                f'+{_n - _jc_before.get(_owner, 0)}'))
         state.cache_effects = tuple(_cache)
+        state.subframes_observed = tuple(sorted(_sf_observed))
+        state.joins_observed = tuple(sorted(_joins_observed))
         state.frame_aliases = self._iter_frame_graph()[1]
         return df_for_plot, subframe_replacements
 
@@ -22205,6 +22609,12 @@ function collapseDepth(maxD) {{
                            'expr': {**_merged_defaults_b32, **_sp}.get('expr', _nm)}
                           for _nm, _sp in specs.items()],
             lazy=effective_lazy)
+        # B3.2b STEP 9 — populate deterministic intent BEFORE the executor's
+        # first effect. Empty groups are honest when this call intends no such
+        # effect; cache effects are explicitly observed-only.
+        self._populate_draw_plan_intent(
+            _plan_b32, clear_after=effective_clear, surface="draw_batch",
+            on_subframe_error=on_subframe_error)
         # AD-8/13.76.ADF: BEFORE any effect. Deliberately ahead of the
         # executor rather than inside it, so that a graph with ambiguous
         # ownership is refused before the executor's first effect.
@@ -22420,6 +22830,23 @@ function collapseDepth(maxD) {{
                 _state_b32.failure_phase = "cleanup"
                 _state_b32.cleanup_outcome = "failed"
                 _state_b32.cleanup_candidates = _state_b32.aliases_materialized
+                self._last_draw_prep_state = _state_b32
+            raise
+        # B3.2b STEP 9 — terminal intent/effect reconciliation. This runs
+        # only after successful cleanup so the cleanup group can prove actual
+        # drops rather than merely candidates. Any mismatch is an internal
+        # ADF contract failure and is deliberately loud.
+        try:
+            self._reconcile_draw_plan_state(_plan_b32, _state_b32,
+                                            raise_on_error=True)
+        except Exception:
+            # STEP 9 is a real terminal phase, not a post-return assertion.
+            # If reconciliation itself rejects the plan/state pair, preserve
+            # the already-completed cleanup record and name the actual phase
+            # that failed.  Otherwise consumers see failure_phase="" even
+            # though the public call raised after all draw effects completed.
+            if _state_b32 is not None:
+                _state_b32.failure_phase = "reconciliation"
                 self._last_draw_prep_state = _state_b32
             raise
         self._last_draw_prep_state = _state_b32
