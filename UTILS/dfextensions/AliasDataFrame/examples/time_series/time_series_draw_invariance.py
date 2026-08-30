@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import platform
+import re
 import sys
 import time
 import traceback
@@ -31,7 +32,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A4.3.v01"
+SCHEMA_VERSION = "13.77.A4.4.v03"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -190,6 +191,7 @@ RUNNER_SOURCE = {
     "run_consistency": ("STATS",),
     "run_correctness": ("INDEPENDENT",),
     "run_slot_symmetry": ("STATS",),
+    "run_subframe_slot_symmetry": ("STATS",),
 }
 
 
@@ -1399,6 +1401,7 @@ A4_SLOT_CONTRACTS = {
         "runner": "run_slot_symmetry",
         "slots_under_test": ("selection",),
         "slot_alias": "slot_keep",
+        "expected_eager_new_aliases": ("slot_keep",),
         "required_physical_dependencies": ("dep_selection",),
         "expected_lazy_loaded_after": ("dep_selection", "x", "y"),
         "unrelated_physical_branches": ("decoy",),
@@ -1413,6 +1416,7 @@ A4_SLOT_CONTRACTS = {
         "runner": "run_slot_symmetry",
         "slots_under_test": ("expr",),
         "slot_alias": "slot_expr",
+        "expected_eager_new_aliases": ("slot_expr",),
         "required_physical_dependencies": ("dep_expr",),
         "expected_lazy_loaded_after": ("dep_expr", "x"),
         "unrelated_physical_branches": ("decoy",),
@@ -1427,6 +1431,7 @@ A4_SLOT_CONTRACTS = {
         "runner": "run_slot_symmetry",
         "slots_under_test": ("weights",),
         "slot_alias": "slot_weight",
+        "expected_eager_new_aliases": ("slot_weight",),
         "required_physical_dependencies": ("dep_weights",),
         "expected_lazy_loaded_after": ("dep_weights", "x", "y"),
         "unrelated_physical_branches": ("decoy",),
@@ -1441,6 +1446,7 @@ A4_SLOT_CONTRACTS = {
         "runner": "run_slot_symmetry",
         "slots_under_test": ("group_by",),
         "slot_alias": "slot_group",
+        "expected_eager_new_aliases": ("slot_group",),
         "required_physical_dependencies": ("dep_group",),
         "expected_lazy_loaded_after": ("dep_group", "x", "y"),
         "unrelated_physical_branches": ("decoy",),
@@ -1455,6 +1461,7 @@ A4_SLOT_CONTRACTS = {
         "runner": "run_slot_symmetry",
         "slots_under_test": ("facet_by",),
         "slot_alias": "slot_facet",
+        "expected_eager_new_aliases": ("slot_facet",),
         "required_physical_dependencies": ("dep_facet",),
         "expected_lazy_loaded_after": ("dep_facet", "x", "y"),
         "unrelated_physical_branches": ("decoy",),
@@ -1469,6 +1476,7 @@ A4_SLOT_CONTRACTS = {
         "runner": "run_slot_symmetry",
         "slots_under_test": ("compound_expression",),
         "slot_alias": "slot_compound",
+        "expected_eager_new_aliases": ("slot_compound",),
         "required_physical_dependencies": ("dep_compound",),
         "expected_lazy_loaded_after": ("dep_compound", "x", "y"),
         "unrelated_physical_branches": ("decoy",),
@@ -1483,6 +1491,7 @@ A4_SLOT_CONTRACTS = {
         "runner": "run_slot_symmetry",
         "slots_under_test": ("selection_vector",),
         "slot_alias": "slot_selection_vector",
+        "expected_eager_new_aliases": ("slot_selection_vector",),
         "required_physical_dependencies": ("dep_selection_vector",),
         "expected_lazy_loaded_after": ("dep_selection_vector", "x", "y"),
         "unrelated_physical_branches": ("decoy",),
@@ -1497,6 +1506,7 @@ A4_SLOT_CONTRACTS = {
         "runner": "run_slot_symmetry",
         "slots_under_test": ("weights_vector",),
         "slot_alias": "slot_weights_vector",
+        "expected_eager_new_aliases": ("slot_weights_vector",),
         "required_physical_dependencies": ("dep_weights_vector",),
         "expected_lazy_loaded_after": ("dep_weights_vector", "x", "y"),
         "unrelated_physical_branches": ("decoy",),
@@ -1507,9 +1517,30 @@ A4_SLOT_CONTRACTS = {
             "unrelated branch decoy is unloaded before and after the lazy arm",
         ),
     },
+    "I3-SUBFRAME-EXPR-01": {
+        "runner": "run_subframe_slot_symmetry",
+        "slots_under_test": ("subframe_qualified_expression",),
+        "qualified_reference": "S.count",
+        "structural_baseline_physical_dependencies": ("kbin",),
+        "expected_lazy_loaded_before": ("kbin",),
+        "expected_lazy_loaded_after": ("kbin", "x"),
+        "unrelated_physical_branches": ("decoy",),
+        "anti_contamination_preconditions": (
+            "registered eager subframe S contains kbin/count before each arm",
+            "S.count is absent from the parent frame and appears only in expr",
+            "lazy parent begins with structural join key kbin loaded and x/decoy unloaded",
+            "the public draw call must load x without loading decoy",
+        ),
+    },
     "I3-SUBFRAME-SELECTION-VECTOR-REFUSAL-01": {
         "runner": "run_error_contract",
         "slots_under_test": ("selection_vector",),
+        "qualified_reference": "S.count",
+        "expected_known_bug_id": "BUG_20260701_ADF_subframe_ref_slot_symmetry",
+        "expected_surfaces_under_test": ("draw",),
+        "expected_loading_mode": "BOTH",
+        "expected_sample_mode": "FULL",
+        "bug_id_text_is_deliberate_contract": True,
         "anti_contamination_preconditions": (
             "registered subframe S is present before the public call",
             "S.count appears only inside selection_vector",
@@ -1519,6 +1550,12 @@ A4_SLOT_CONTRACTS = {
     "I3-SUBFRAME-WEIGHTS-VECTOR-REFUSAL-01": {
         "runner": "run_error_contract",
         "slots_under_test": ("weights_vector",),
+        "qualified_reference": "S.count",
+        "expected_known_bug_id": "BUG_20260701_ADF_subframe_ref_slot_symmetry",
+        "expected_surfaces_under_test": ("draw",),
+        "expected_loading_mode": "BOTH",
+        "expected_sample_mode": "FULL",
+        "bug_id_text_is_deliberate_contract": True,
         "anti_contamination_preconditions": (
             "registered subframe S is present before the public call",
             "S.count appears only inside weights_vector",
@@ -1527,6 +1564,285 @@ A4_SLOT_CONTRACTS = {
     },
 
 }
+
+A4_POSITIVE_CASE_IDS = (
+    "I3-SELECTION-01",
+    "I3-EXPR-01",
+    "I3-WEIGHTS-01",
+    "I3-GROUP-BY-01",
+    "I3-FACET-BY-01",
+    "I3-COMPOUND-EXPR-01",
+    "I3-SELECTION-VECTOR-01",
+    "I3-WEIGHTS-VECTOR-01",
+    "I3-SUBFRAME-EXPR-01",
+)
+
+A4_ERROR_CASE_IDS = (
+    "I3-SUBFRAME-SELECTION-VECTOR-REFUSAL-01",
+    "I3-SUBFRAME-WEIGHTS-VECTOR-REFUSAL-01",
+)
+
+A4_CLOSURE_LEDGER_EXPECTATIONS = {
+    "slot_exclusivity": {"status": "CLOSED_BY_A4_4", "owner": None},
+    "eager_non_target_selectivity": {"status": "CLOSED_BY_A4_4", "owner": None},
+    "catalogue_bidirectional": {"status": "CLOSED_BY_A4_4", "owner": None},
+    "subframe_scalar_causality": {"status": "CLOSED_BY_A4_4", "owner": None},
+    "subframe_vector_boundary": {
+        "status": "ACCEPTED_ERROR_CONTRACT",
+        "owner": "BUG_20260701_ADF_subframe_ref_slot_symmetry",
+    },
+    "facet_overlay_real_user_bug": {
+        "status": "LATER_NOT_A4",
+        "owner": "BUG_dfdraw_20260822_facet_by_overlay_unsupported",
+    },
+    "interval_label_nan_real_user_bug": {
+        "status": "LATER_NOT_A4",
+        "owner": "BUG_dfdraw_20260822_format_interval_label_nan_crash",
+    },
+    "bug_id_text_brittleness": {
+        "status": "ACCEPTED_DELIBERATE_CONTRACT",
+        "owner": None,
+    },
+}
+A4_REQUIRED_LEDGER_IDS = tuple(A4_CLOSURE_LEDGER_EXPECTATIONS)
+
+A4_CLOSURE_LEDGER = (
+    {"id": "slot_exclusivity", "status": "CLOSED_BY_A4_4"},
+    {"id": "eager_non_target_selectivity", "status": "CLOSED_BY_A4_4"},
+    {"id": "catalogue_bidirectional", "status": "CLOSED_BY_A4_4"},
+    {"id": "subframe_scalar_causality", "status": "CLOSED_BY_A4_4"},
+    {"id": "subframe_vector_boundary", "status": "ACCEPTED_ERROR_CONTRACT",
+     "owner": "BUG_20260701_ADF_subframe_ref_slot_symmetry"},
+    {"id": "facet_overlay_real_user_bug", "status": "LATER_NOT_A4",
+     "owner": "BUG_dfdraw_20260822_facet_by_overlay_unsupported"},
+    {"id": "interval_label_nan_real_user_bug", "status": "LATER_NOT_A4",
+     "owner": "BUG_dfdraw_20260822_format_interval_label_nan_crash"},
+    {"id": "bug_id_text_brittleness", "status": "ACCEPTED_DELIBERATE_CONTRACT",
+     "rationale": "ERROR_CONTRACT cases deliberately require the owning bug ID in exception text"},
+)
+
+
+def _a4_text_contains_target(value: Any, target: str) -> bool:
+    """Return whether a canonical-spec value contains one exact target token/ref.
+
+    Qualified references are deliberately token-exact: ``S.count`` matches
+    ``S.count:x`` and ``S.count+1`` but not ``S.count2`` or ``XS.count``.
+    This brittleness is closure-significant because A4 attributes causality to
+    one exact alias/reference identity rather than to a textual prefix.
+    """
+    if isinstance(value, str):
+        boundary = r"[A-Za-z0-9_.]" if "." in target else r"[A-Za-z0-9_]"
+        return re.search(
+            rf"(?<!{boundary}){re.escape(target)}(?!{boundary})", value) is not None
+    if isinstance(value, (list, tuple)):
+        return any(_a4_text_contains_target(v, target) for v in value)
+    return False
+
+
+def a4_actual_target_slots(case: CaseSpec, contract: dict) -> tuple[str, ...]:
+    """Derive the public A4 slots that actually contain the contract target."""
+    target = contract.get("slot_alias") or contract.get("qualified_reference")
+    if not target:
+        return ()
+    primary = tuple(contract.get("slots_under_test", ()))
+    primary_slot = primary[0] if len(primary) == 1 else None
+    found = []
+    for key in ("expr", "selection", "weights", "group_by", "facet_by",
+                "selection_vector", "weights_vector"):
+        if not _a4_text_contains_target(case.canonical_spec.get(key), target):
+            continue
+        if key == "expr" and primary_slot in ("compound_expression",
+                                               "subframe_qualified_expression"):
+            found.append(primary_slot)
+        else:
+            found.append(key)
+    return tuple(sorted(set(found)))
+
+
+def _a4_contract_reconciliation_errors(case: CaseSpec, contract: dict) -> list[str]:
+    """Closure-level proof-identity reconciliation for one A4 case."""
+    errors = []
+    runner = contract.get("runner")
+    if tuple(case.slots_under_test) != tuple(contract.get("slots_under_test", ())):
+        errors.append("slots_under_test drift")
+    if tuple(case.anti_contamination_preconditions) != tuple(
+            contract.get("anti_contamination_preconditions", ())):
+        errors.append("anti_contamination_preconditions drift")
+    actual_slots = a4_actual_target_slots(case, contract)
+    if actual_slots != tuple(sorted(case.slots_under_test)):
+        errors.append(
+            f"slot-exclusivity drift: declared {tuple(case.slots_under_test)!r}, actual {actual_slots!r}")
+    if runner in ("run_slot_symmetry", "run_subframe_slot_symmetry"):
+        if case.purpose != "INVARIANCE" or case.oracle_kind != "CONSISTENCY":
+            errors.append("positive A4 case lost INVARIANCE/CONSISTENCY proof identity")
+        if case.loading_mode != "BOTH" or case.sample_mode != "FULL":
+            errors.append("positive A4 case lost BOTH/FULL loading contract")
+        if not any(o.status == "EXECUTED" for o in case.observables):
+            errors.append("positive A4 case has no executable numerical companion")
+        if runner == "run_slot_symmetry":
+            alias = contract.get("slot_alias")
+            if not alias:
+                errors.append("slot-symmetry contract has no slot_alias")
+            expected_new = tuple(contract.get("expected_eager_new_aliases", ()))
+            if alias and expected_new != (alias,):
+                errors.append("expected_eager_new_aliases is not exactly the target alias")
+            for key in ("required_physical_dependencies", "expected_lazy_loaded_after",
+                        "unrelated_physical_branches"):
+                if not contract.get(key):
+                    errors.append(f"slot-symmetry contract missing {key}")
+        else:
+            if not contract.get("qualified_reference"):
+                errors.append("subframe slot contract has no qualified_reference")
+            if tuple(contract.get("expected_lazy_loaded_before", ())) != tuple(
+                    contract.get("structural_baseline_physical_dependencies", ())):
+                errors.append("subframe structural baseline/load-before contract drift")
+    elif runner == "run_error_contract":
+        if case.purpose != "ERROR_CONTRACT":
+            errors.append("refusal case lost ERROR_CONTRACT purpose")
+        if case.known_bug_status != "KNOWN_BUG" or not case.known_bug_id:
+            errors.append("refusal case lost known-bug ownership")
+        expected_bug = contract.get("expected_known_bug_id")
+        if case.known_bug_id != expected_bug:
+            errors.append(
+                f"refusal known_bug_id drift: expected {expected_bug!r}, observed {case.known_bug_id!r}")
+        if tuple(case.surfaces_under_test) != tuple(contract.get("expected_surfaces_under_test", ())):
+            errors.append("refusal surfaces_under_test drift")
+        if case.loading_mode != contract.get("expected_loading_mode"):
+            errors.append("refusal loading_mode drift")
+        if case.sample_mode != contract.get("expected_sample_mode"):
+            errors.append("refusal sample_mode drift")
+        if not case.negative_control:
+            errors.append("refusal case lost negative control")
+        if not contract.get("bug_id_text_is_deliberate_contract"):
+            errors.append("refusal case does not declare bug-ID text brittleness as deliberate")
+    else:
+        errors.append(f"unknown A4 runner {runner!r}")
+    return errors
+
+
+def a4_closure_reconciliation(cases: Sequence[CaseSpec]) -> dict:
+    """Fail-closed A4 catalogue/contract/ownership reconciliation."""
+    by_id = {}
+    duplicates = []
+    for case in cases:
+        if case.case_id in by_id:
+            duplicates.append(case.case_id)
+        by_id[case.case_id] = case
+    expected_positive = set(A4_POSITIVE_CASE_IDS)
+    expected_error = set(A4_ERROR_CASE_IDS)
+    expected_all = expected_positive | expected_error
+    actual_a4 = {cid for cid in by_id if cid.startswith("I3-")}
+    contract_ids = set(A4_SLOT_CONTRACTS)
+    positive_contract_ids = {cid for cid, c in A4_SLOT_CONTRACTS.items()
+                             if c.get("runner") in ("run_slot_symmetry",
+                                                    "run_subframe_slot_symmetry")}
+    error_contract_ids = {cid for cid, c in A4_SLOT_CONTRACTS.items()
+                          if c.get("runner") == "run_error_contract"}
+
+    missing = sorted(expected_all - actual_a4)
+    unexpected = sorted(actual_a4 - expected_all)
+    stale_contracts = sorted(contract_ids - expected_all)
+    uncontracted = sorted(expected_all - contract_ids)
+    mapping_errors = []
+    if positive_contract_ids != expected_positive:
+        mapping_errors.append(
+            f"positive case/contract mismatch: expected {sorted(expected_positive)}, contracts {sorted(positive_contract_ids)}")
+    if error_contract_ids != expected_error:
+        mapping_errors.append(
+            f"error case/contract mismatch: expected {sorted(expected_error)}, contracts {sorted(error_contract_ids)}")
+
+    contract_drift = []
+    for cid in sorted(expected_all & set(by_id) & contract_ids):
+        for error in _a4_contract_reconciliation_errors(by_id[cid], A4_SLOT_CONTRACTS[cid]):
+            contract_drift.append({"case_id": cid, "detail": error})
+
+    ledger_ids = [row.get("id") for row in A4_CLOSURE_LEDGER]
+    ledger_duplicate_ids = sorted({
+        ledger_id for ledger_id in ledger_ids
+        if ledger_id is not None and ledger_ids.count(ledger_id) > 1
+    })
+    ledger_by_id = {row.get("id"): dict(row) for row in A4_CLOSURE_LEDGER}
+    ledger_missing = sorted(set(A4_REQUIRED_LEDGER_IDS) - set(ledger_by_id))
+    ledger_unexpected = sorted(set(ledger_by_id) - set(A4_REQUIRED_LEDGER_IDS))
+    ledger_open = sorted(row["id"] for row in ledger_by_id.values()
+                         if row.get("status") == "OPEN_BLOCKER")
+    ledger_drift = []
+    for ledger_id, expected in A4_CLOSURE_LEDGER_EXPECTATIONS.items():
+        observed = ledger_by_id.get(ledger_id)
+        if observed is None:
+            continue
+        for field_name in ("status", "owner"):
+            want = expected.get(field_name)
+            got = observed.get(field_name)
+            if got != want:
+                ledger_drift.append({
+                    "id": ledger_id,
+                    "field": field_name,
+                    "expected": want,
+                    "observed": got,
+                })
+
+    subframe_owned = {
+        "I3-SUBFRAME-EXPR-01",
+        "I3-SUBFRAME-SELECTION-VECTOR-REFUSAL-01",
+        "I3-SUBFRAME-WEIGHTS-VECTOR-REFUSAL-01",
+    }
+    subframe_missing = sorted(subframe_owned - actual_a4)
+
+    blockers = []
+    blockers += [f"missing case {x}" for x in missing]
+    blockers += [f"unexpected A4 case {x}" for x in unexpected]
+    blockers += [f"stale contract {x}" for x in stale_contracts]
+    blockers += [f"case without contract {x}" for x in uncontracted]
+    blockers += mapping_errors
+    blockers += [f"{row['case_id']}: {row['detail']}" for row in contract_drift]
+    blockers += [f"duplicate closure-ledger item {x}" for x in ledger_duplicate_ids]
+    blockers += [f"missing closure-ledger item {x}" for x in ledger_missing]
+    blockers += [f"unexpected closure-ledger item {x}" for x in ledger_unexpected]
+    blockers += [f"open closure-ledger blocker {x}" for x in ledger_open]
+    blockers += [
+        f"closure-ledger drift {row['id']}.{row['field']}: expected {row['expected']!r}, observed {row['observed']!r}"
+        for row in ledger_drift
+    ]
+    blockers += [f"missing subframe ownership case {x}" for x in subframe_missing]
+    if duplicates:
+        blockers += [f"duplicate A4 case {x}" for x in sorted(set(duplicates))]
+
+    ready = not blockers
+    return {
+        "status": "READY_FOR_CLOSURE" if ready else "BLOCKED",
+        "closure_ready": ready,
+        "evidence_scope": "A4 expression-slot dependency-discovery causality only",
+        "execution_context": {
+            "fresh_execution_verdict": False,
+            "meaning": "declaration/disposition reconciliation over banked A4 execution evidence",
+        },
+        "positive_case_ids": sorted(expected_positive),
+        "error_case_ids": sorted(expected_error),
+        "actual_a4_case_ids": sorted(actual_a4),
+        "contract_ids": sorted(contract_ids),
+        "missing_case_ids": missing,
+        "unexpected_case_ids": unexpected,
+        "stale_contract_ids": stale_contracts,
+        "uncontracted_case_ids": uncontracted,
+        "duplicate_case_ids": sorted(set(duplicates)),
+        "contract_drift": contract_drift,
+        "subframe_ownership_missing": subframe_missing,
+        "ledger_duplicate_ids": ledger_duplicate_ids,
+        "ledger_missing": ledger_missing,
+        "ledger_unexpected": ledger_unexpected,
+        "ledger_open_blockers": ledger_open,
+        "ledger_drift": ledger_drift,
+        "historical_ledger": [dict(row) for row in A4_CLOSURE_LEDGER],
+        "accepted_non_claims": [
+            "subframe-qualified selection_vector/weights_vector remain explicit ERROR_CONTRACT boundaries",
+            "BUG_dfdraw_20260822_facet_by_overlay_unsupported remains later-owner work",
+            "BUG_dfdraw_20260822_format_interval_label_nan_crash remains later-owner work",
+            "the fast subframe causality fixture uses the established lazy-main/eager-subframe shape with structural join key preloaded",
+            "A4 closure does not close Stage A or PHASE_13_77",
+        ],
+        "blockers": blockers,
+    }
 
 
 def _a4_slot_case(case_id: str, *, claim_id: str, title: str, claim: str,
@@ -1610,7 +1926,7 @@ def _a4_vector_refusal_case(case_id: str, *, slot: str, canonical_spec: dict) ->
 
 
 def a4_cases() -> tuple[CaseSpec, ...]:
-    """A4 slot-exclusive cases implemented through A4.2.
+    """A4 slot-exclusive cases implemented through A4.4 closure hardening.
 
     A4.1 banks the selection-only case.  A4.2 extends the same BOTH/FULL
     execution contract to the scalar ``expr``, ``weights``, ``group_by``,
@@ -1815,6 +2131,59 @@ def a4_cases() -> tuple[CaseSpec, ...]:
         primary_comparison="EAGER versus LAZY weighted vector branches plus exact lazy dependency load",
         accepted_envelope="branch counts exact; floating weighted branch/delta values within tolerance; exact lazy loaded set",
         negative_control="GLOBAL_MUTATION:M2 weights_vector preload contamination -> INVALID_FIXTURE",
+    ))
+    cases.append(CaseSpec(
+        case_id="I3-SUBFRAME-EXPR-01",
+        claim_id="I3.subframe_qualified_expression.A4.4",
+        title="subframe-qualified expr causality in eager and lazy-main modes",
+        claim=("the supported scalar S.count:x request resolves the registered subframe in both arms and "
+               "the lazy-main arm loads only x beyond the declared structural join-key baseline"),
+        failure_means=("the supported scalar subframe reference no longer resolves, the lazy main frame loads "
+                       "the wrong physical set, or the structural join-key precondition is silently bypassed"),
+        expected_visual="one S.count:x profile",
+        owner_on_failure="ADF",
+        purpose="INVARIANCE",
+        gate="CORE_MANDATORY",
+        oracle_kind="CONSISTENCY",
+        loading_mode="BOTH",
+        sample_mode="FULL",
+        canonical_spec={"expr": "S.count:x", "type": "profile", "bins": 4,
+                        "return_data": True, "auto_title": True},
+        applicable=True,
+        setup_contract=("both arms register the same eager S(kbin,count) subframe; the LAZY main frame preloads "
+                        "only structural join key kbin because the established draw-subframe contract requires "
+                        "the join key to exist before the temporary merge"),
+        preconditions=("S.count is absent from the parent frame",
+                       "S.count exists in the registered subframe",
+                       "LAZY parent has only kbin loaded before draw",
+                       "x and decoy are unloaded before draw"),
+        figure_contract=FigureContract(
+            expected_panels="one panel",
+            panel_roles="main: supported subframe-qualified profile",
+            expected_traces="one profile",
+            expected_group_count="1",
+            primary_comparison="EAGER versus lazy-main subframe profile and exact parent load set",
+            residual_definition="lazy-main numerical observable minus eager observable",
+            accepted_envelope="n exact; y_mean within tolerance; lazy parent load set exactly {kbin,x}",
+            case_ids=("I3-SUBFRAME-EXPR-01",),
+            proof_kind="CONSISTENCY",
+        ),
+        surfaces_under_test=("draw",),
+        slots_under_test=("subframe_qualified_expression",),
+        observables=(
+            Observable("n", "STATS", "FLAT", "n"),
+            Observable("y_mean", "STATS", "ARRAY", "profile_data.y_mean",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="same supported subframe-qualified profile in both loading arms"),
+        ),
+        non_claims=(
+            "this fast A4 fixture uses an eager registered subframe; lazy-subframe file loading is later Stage-A/A5 work",
+            "the structural join key kbin is an explicit setup baseline, not claimed as slot-discovered",
+            "subframe-qualified vector forms remain explicit ERROR_CONTRACT boundaries",
+        ),
+        anti_contamination_preconditions=A4_SLOT_CONTRACTS["I3-SUBFRAME-EXPR-01"]["anti_contamination_preconditions"],
+        negative_control="GLOBAL_MUTATION:A4.4 subframe baseline/load-set drift -> INVALID_FIXTURE or FAIL",
+        reference_policy="named-immutable",
     ))
     cases.append(_a4_vector_refusal_case(
         "I3-SUBFRAME-SELECTION-VECTOR-REFUSAL-01",
@@ -2082,25 +2451,33 @@ def validate_registry(cases: Sequence[CaseSpec]) -> list[str]:
                 bad.append(f"{cid}: slot case has no A4_SLOT_CONTRACTS execution contract")
             else:
                 runner = slot_contract.get("runner")
-                if c.purpose == "INVARIANCE" and runner != "run_slot_symmetry":
-                    bad.append(f"{cid}: A4 slot execution contract is not bound to run_slot_symmetry")
+                if (c.purpose == "INVARIANCE"
+                        and runner not in ("run_slot_symmetry", "run_subframe_slot_symmetry")):
+                    bad.append(f"{cid}: A4 positive slot execution contract is not bound to run_slot_symmetry or run_subframe_slot_symmetry")
                 elif c.purpose == "ERROR_CONTRACT" and runner != "run_error_contract":
                     bad.append(f"{cid}: A4 ERROR_CONTRACT slot execution contract is not bound to run_error_contract")
-                elif runner not in ("run_slot_symmetry", "run_error_contract"):
+                elif runner not in ("run_slot_symmetry", "run_subframe_slot_symmetry", "run_error_contract"):
                     bad.append(f"{cid}: A4 slot execution contract has unknown runner {runner!r}")
                 if tuple(c.slots_under_test) != tuple(slot_contract["slots_under_test"]):
                     bad.append(f"{cid}: slots_under_test drift from A4 execution contract")
                 if tuple(c.anti_contamination_preconditions) != tuple(
                         slot_contract["anti_contamination_preconditions"]):
                     bad.append(f"{cid}: anti_contamination_preconditions drift from A4 execution contract")
+                actual_slots = a4_actual_target_slots(c, slot_contract)
+                if actual_slots != tuple(sorted(c.slots_under_test)):
+                    bad.append(f"{cid}: slot-exclusivity drift; declared {tuple(c.slots_under_test)!r}, actual {actual_slots!r}")
                 if c.loading_mode != "BOTH":
                     bad.append(f"{cid}: A4 slot contracts require loading_mode='BOTH'")
                 if c.sample_mode != "FULL":
                     bad.append(f"{cid}: A4 BOTH slot contract requires sample_mode='FULL'")
-                if runner == "run_slot_symmetry" and c.purpose != "INVARIANCE":
-                    bad.append(f"{cid}: run_slot_symmetry contract requires purpose='INVARIANCE'")
+                if runner in ("run_slot_symmetry", "run_subframe_slot_symmetry") and c.purpose != "INVARIANCE":
+                    bad.append(f"{cid}: positive A4 runner requires purpose='INVARIANCE'")
                 if runner == "run_error_contract" and c.purpose != "ERROR_CONTRACT":
                     bad.append(f"{cid}: run_error_contract slot contract requires purpose='ERROR_CONTRACT'")
+                for detail in _a4_contract_reconciliation_errors(c, slot_contract):
+                    msg = f"{cid}: {detail}"
+                    if msg not in bad:
+                        bad.append(msg)
         elif c.anti_contamination_preconditions:
             bad.append(f"{cid}: anti_contamination_preconditions declared without slots_under_test")
         for s in c.surfaces_under_test:
@@ -2185,7 +2562,7 @@ def validate_registry(cases: Sequence[CaseSpec]) -> list[str]:
             # not another draw surface.
             slot_contract = A4_SLOT_CONTRACTS.get(c.case_id) if c.slots_under_test else None
             a4_both = (c.loading_mode == "BOTH" and slot_contract is not None
-                       and slot_contract.get("runner") == "run_slot_symmetry")
+                       and slot_contract.get("runner") in ("run_slot_symmetry", "run_subframe_slot_symmetry"))
             if len(applicable) < 2 and c.gate == "CORE_MANDATORY" and not a4_both:
                 bad.append(f"{cid}: CORE_MANDATORY consistency case has "
                            f"{len(applicable)} applicable surface(s); it can only "
@@ -2333,6 +2710,9 @@ def write_manifest(path: str, results: Sequence[CaseResult],
     a3_known = set(A3_CLOSURE_CONTRACTS)
     if a3_known.intersection(by_id):
         doc["a3_closure"] = a3_closure_reconciliation(cases)
+    a4_known = set(A4_POSITIVE_CASE_IDS) | set(A4_ERROR_CASE_IDS) | set(A4_SLOT_CONTRACTS)
+    if a4_known.intersection(by_id):
+        doc["a4_closure"] = a4_closure_reconciliation(cases)
     # a declared case with no result is EVIDENCE, not an omission
     results = list(results) + [
         CaseResult(case_id=cid, status="NO_RESULT",
@@ -2473,6 +2853,12 @@ def run_slot_symmetry(case: CaseSpec,
             res.status = INVALID_FIXTURE
             res.detail = "anti_contamination_preconditions do not match A4 execution contract"
             return res
+        actual_slots = a4_actual_target_slots(case, contract)
+        if actual_slots != tuple(sorted(case.slots_under_test)):
+            res.status = INVALID_FIXTURE
+            res.detail = ("A4 slot-exclusivity drift: "
+                          f"declared {tuple(case.slots_under_test)!r}, actual {actual_slots!r}")
+            return res
         if case.loading_mode != "BOTH" or case.sample_mode != "FULL":
             res.status = INVALID_FIXTURE
             res.detail = "A4 slot runner requires BOTH/FULL"
@@ -2523,6 +2909,14 @@ def run_slot_symmetry(case: CaseSpec,
             res.detail = f"M2 contamination: LAZY slot alias {alias_name!r} was pre-materialized"
             return res
 
+        eager_registered_aliases = set(getattr(eager, "aliases", {}) or {})
+        eager_materialized_before = eager_registered_aliases & set(eager.df.columns)
+        expected_eager_new = set(contract.get("expected_eager_new_aliases", (alias_name,)))
+        if expected_eager_new != {alias_name}:
+            res.status = INVALID_FIXTURE
+            res.detail = "A4 contract expected_eager_new_aliases must equal the target alias"
+            return res
+
         lazy_before = set(lazy_reader.loaded_branches)
         if lazy_before:
             res.status = INVALID_FIXTURE
@@ -2542,6 +2936,13 @@ def run_slot_symmetry(case: CaseSpec,
         if alias_name not in eager.df.columns:
             res.status = FAIL
             res.detail = f"EAGER arm did not materialize slot alias {alias_name!r}"
+            return res
+        eager_materialized_after = eager_registered_aliases & set(eager.df.columns)
+        eager_newly_materialized = eager_materialized_after - eager_materialized_before
+        if eager_newly_materialized != expected_eager_new:
+            res.status = FAIL
+            res.detail = ("EAGER alias materialization set mismatch: "
+                          f"expected new {sorted(expected_eager_new)}, got {sorted(eager_newly_materialized)}")
             return res
 
         lazy_payload = call_one(lazy)
@@ -2576,6 +2977,8 @@ def run_slot_symmetry(case: CaseSpec,
             "slot": contract["slots_under_test"][0],
             "alias": alias_name,
             "eager_alias_materialized": True,
+            "eager_registered_aliases": sorted(eager_registered_aliases),
+            "eager_newly_materialized_aliases": sorted(eager_newly_materialized),
             "lazy_alias_materialized": True,
             "lazy_loaded_before": sorted(lazy_before),
             "lazy_loaded_after": sorted(lazy_after),
@@ -2615,6 +3018,149 @@ def run_slot_symmetry(case: CaseSpec,
         if res.executed_comparisons == 0:
             res.status = INVALID_FIXTURE
             res.detail = "A4 slot case executed no numerical comparison"
+            return res
+        res.status = PASS
+        return res
+    except Exception as exc:
+        res.status = FAIL
+        res.detail = f"{type(exc).__name__}: {exc}"
+        res.exception = traceback.format_exc(limit=4)
+        return res
+    finally:
+        _close()
+        res.wall_time_s = round(time.time() - t0, 4)
+
+
+def run_subframe_slot_symmetry(case: CaseSpec,
+                               make_eager: Callable[[], Any],
+                               make_lazy: Callable[[], Any]) -> CaseResult:
+    """Execute the supported scalar subframe-qualified A4 causality case.
+
+    The parent join key is an explicit structural baseline.  The qualified
+    expression must still resolve the registered child and, in the lazy-main
+    arm, load exactly the remaining parent dependency without the decoy.
+    """
+    _skip = _inapplicable(case)
+    if _skip is not None:
+        return _skip
+    t0 = time.time()
+    res = CaseResult(case_id=case.case_id, status=SKIP)
+    try:
+        contract = A4_SLOT_CONTRACTS.get(case.case_id)
+        if contract is None or contract.get("runner") != "run_subframe_slot_symmetry":
+            res.status = INVALID_FIXTURE
+            res.detail = "no run_subframe_slot_symmetry A4 execution contract"
+            return res
+        if tuple(case.slots_under_test) != tuple(contract["slots_under_test"]):
+            res.status = INVALID_FIXTURE
+            res.detail = "slots_under_test does not match subframe A4 execution contract"
+            return res
+        if tuple(case.anti_contamination_preconditions) != tuple(contract["anti_contamination_preconditions"]):
+            res.status = INVALID_FIXTURE
+            res.detail = "anti_contamination_preconditions do not match subframe A4 contract"
+            return res
+        actual_slots = a4_actual_target_slots(case, contract)
+        if actual_slots != tuple(sorted(case.slots_under_test)):
+            res.status = INVALID_FIXTURE
+            res.detail = ("A4 subframe slot-exclusivity drift: "
+                          f"declared {tuple(case.slots_under_test)!r}, actual {actual_slots!r}")
+            return res
+        if case.loading_mode != "BOTH" or case.sample_mode != "FULL" or tuple(case.surfaces_under_test) != ("draw",):
+            res.status = INVALID_FIXTURE
+            res.detail = "A4 subframe runner requires BOTH/FULL with draw held fixed"
+            return res
+
+        eager = make_eager()
+        lazy = make_lazy()
+        if getattr(eager, "_lazy_reader", None) is not None:
+            res.status = INVALID_FIXTURE
+            res.detail = "EAGER subframe arm factory returned a lazy parent"
+            return res
+        lazy_reader = getattr(lazy, "_lazy_reader", None)
+        if lazy_reader is None:
+            res.status = INVALID_FIXTURE
+            res.detail = "LAZY subframe arm factory did not attach a lazy reader"
+            return res
+        qualified = contract["qualified_reference"]
+        sf_name, sf_col = qualified.split(".", 1)
+        for label, adf in (("EAGER", eager), ("LAZY", lazy)):
+            if sf_col in adf.df.columns or f"{sf_name}_{sf_col}" in adf.df.columns:
+                res.status = INVALID_FIXTURE
+                res.detail = f"{label} parent was contaminated with subframe value before draw"
+                return res
+            sf = adf.get_subframe(sf_name)
+            if sf is None or sf_col not in sf.df.columns:
+                res.status = INVALID_FIXTURE
+                res.detail = f"{label} registered subframe lacks {qualified}"
+                return res
+
+        lazy_before = set(lazy_reader.loaded_branches)
+        expected_before = set(contract["expected_lazy_loaded_before"])
+        expected_after = set(contract["expected_lazy_loaded_after"])
+        unrelated = set(contract["unrelated_physical_branches"])
+        if lazy_before != expected_before:
+            res.status = INVALID_FIXTURE
+            res.detail = ("subframe structural baseline mismatch: "
+                          f"expected {sorted(expected_before)}, got {sorted(lazy_before)}")
+            return res
+        if unrelated & lazy_before:
+            res.status = INVALID_FIXTURE
+            res.detail = "subframe lazy baseline already contains unrelated branch"
+            return res
+
+        def call_one(adf):
+            kw = dict(case.canonical_spec)
+            expr = kw.pop("expr")
+            return unwrap("draw", adf.draw(expr, lazy=True, keep_materialized=True, **kw))
+
+        eager_payload = call_one(eager)
+        lazy_payload = call_one(lazy)
+        lazy_after = set(lazy_reader.loaded_branches)
+        if lazy_after != expected_after:
+            res.status = FAIL
+            res.detail = ("LAZY subframe parent load set mismatch: "
+                          f"expected {sorted(expected_after)}, got {sorted(lazy_after)}")
+            return res
+        if unrelated & lazy_after:
+            res.status = FAIL
+            res.detail = "LAZY subframe arm loaded unrelated physical branch"
+            return res
+
+        res.payload_paths = {"EAGER/draw": list(eager_payload.path),
+                             "LAZY/draw": list(lazy_payload.path)}
+        res.observed["slot_evidence"] = {
+            "slot": case.slots_under_test[0],
+            "qualified_reference": qualified,
+            "structural_baseline_physical_dependencies": sorted(expected_before),
+            "lazy_loaded_before": sorted(lazy_before),
+            "lazy_loaded_after": sorted(lazy_after),
+            "unrelated_physical_branches": sorted(unrelated),
+            "subframe_reference_resolved": True,
+        }
+        for o in case.observables:
+            if o.status != "EXECUTED":
+                res.observed[o.name] = {"status": o.status}
+                continue
+            try:
+                _assert_source_matches("run_subframe_slot_symmetry", o)
+                eager_v = resolve(eager_payload.stats, o.path, o.access)
+                lazy_v = resolve(lazy_payload.stats, o.path, o.access)
+            except HarnessError as exc:
+                res.status = INVALID_FIXTURE
+                res.detail = str(exc)
+                return res
+            res.observed[o.name] = {"EAGER": eager_v, "LAZY": lazy_v}
+            res.observable_contract.append(_contract(o))
+            result = compare_observable(o, eager_v, lazy_v)
+            res.comparisons.append(comparison_evidence(o, result, reference_label="EAGER", candidate_label="LAZY"))
+            res.executed_comparisons += 1
+            if not result.ok:
+                res.status = FAIL
+                res.detail = f"{o.name}: EAGER vs LAZY: {result.detail}"
+                return res
+        if res.executed_comparisons == 0:
+            res.status = INVALID_FIXTURE
+            res.detail = "A4 subframe case executed no numerical comparison"
             return res
         res.status = PASS
         return res

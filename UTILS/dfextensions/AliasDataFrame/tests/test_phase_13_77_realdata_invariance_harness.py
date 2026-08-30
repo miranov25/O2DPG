@@ -2327,6 +2327,10 @@ def _a4_selection_raw():
 
 def _a4_register_selection_alias(adf):
     adf.add_alias("slot_keep", "dep_selection > 0")
+    # A4.4 closure falsifier: this unrelated alias shares the SAME physical
+    # dependency.  LAZY branch-set evidence alone therefore cannot reveal a
+    # buggy EAGER path that materializes every registered alias.
+    adf.add_alias("slot_shadow", "dep_selection * 2")
     return adf
 
 
@@ -2695,3 +2699,364 @@ def test_a4_14_15_subframe_vector_refusals_hold_in_eager_and_lazy_modes():
             assert case.known_bug_id == "BUG_20260701_ADF_subframe_ref_slot_symmetry"
             assert H.strict_exit_code([result], [case]) == 0
 
+# ── A4.4 — cumulative slot-causality closure hardening ──────────────────────
+
+def _a4_make_subframe_expr_eager():
+    n = 120
+    phase = np.arange(n)
+    base = ADF(pd.DataFrame({
+        "x": np.linspace(0.05, 0.95, n),
+        "kbin": (phase % 4).astype(int),
+        "decoy": np.linspace(10.0, 20.0, n),
+    }))
+    sub = ADF(pd.DataFrame({
+        "kbin": np.arange(4, dtype=int),
+        "count": np.array([1.0, 2.0, 3.0, 4.0]),
+        "count2": np.array([11.0, 12.0, 13.0, 14.0]),
+    }))
+    base.register_subframe("S", sub, index_columns="kbin")
+    return base
+
+
+def _a4_make_subframe_expr_lazy():
+    n = 120
+    phase = np.arange(n)
+    raw = pd.DataFrame({
+        "x": np.linspace(0.05, 0.95, n),
+        "kbin": (phase % 4).astype(int),
+        "decoy": np.linspace(10.0, 20.0, n),
+    })
+    base = ADF(pd.DataFrame(index=range(n)))
+    reader = _A4TrackingLazyReader(raw)
+    base._lazy_reader = reader
+    base._chain = {
+        "files": [], "entry_offsets": [0], "total_entries": len(raw),
+        "validation_mode": None,
+    }
+    # Established mixed-lazy subframe contract: the structural join key is a
+    # setup baseline.  A4.4 does not falsely claim that the expr slot discovers
+    # this key; it proves the remaining qualified-expression causality.
+    base.ensure_branches(["kbin"])
+    sub = ADF(pd.DataFrame({
+        "kbin": np.arange(4, dtype=int),
+        "count": np.array([1.0, 2.0, 3.0, 4.0]),
+        "count2": np.array([11.0, 12.0, 13.0, 14.0]),
+    }))
+    base.register_subframe("S", sub, index_columns="kbin")
+    return base
+
+
+def test_a4_16_complete_catalogue_and_contract_reconciliation_is_bidirectional(tmp_path):
+    cases = H.a4_cases()
+    closure = H.a4_closure_reconciliation(cases)
+    assert closure["status"] == "READY_FOR_CLOSURE", closure
+    assert closure["closure_ready"] is True
+    assert set(closure["positive_case_ids"]) == set(H.A4_POSITIVE_CASE_IDS)
+    assert set(closure["error_case_ids"]) == set(H.A4_ERROR_CASE_IDS)
+    assert set(closure["actual_a4_case_ids"]) == (
+        set(H.A4_POSITIVE_CASE_IDS) | set(H.A4_ERROR_CASE_IDS))
+    assert set(closure["contract_ids"]) == set(closure["actual_a4_case_ids"])
+    assert closure["missing_case_ids"] == []
+    assert closure["unexpected_case_ids"] == []
+    assert closure["stale_contract_ids"] == []
+    assert closure["uncontracted_case_ids"] == []
+    assert closure["contract_drift"] == []
+
+    # Durable healthy closure record: this is declaration reconciliation, not
+    # a fresh execution verdict.
+    doc = H.write_manifest(str(tmp_path / "a4_4_closure.json"), [], cases)
+    assert doc["a4_closure"]["status"] == "READY_FOR_CLOSURE"
+    assert doc["a4_closure"]["execution_context"]["fresh_execution_verdict"] is False
+
+    # Reverse-direction falsifier: one stale contract must block closure.
+    H.A4_SLOT_CONTRACTS["I3-STALE-A4-CONTRACT"] = {
+        "runner": "run_slot_symmetry",
+        "slots_under_test": ("expr",),
+        "slot_alias": "stale_alias",
+        "expected_eager_new_aliases": ("stale_alias",),
+        "required_physical_dependencies": ("stale_dep",),
+        "expected_lazy_loaded_after": ("stale_dep", "x"),
+        "unrelated_physical_branches": ("decoy",),
+        "anti_contamination_preconditions": ("synthetic stale contract",),
+    }
+    try:
+        blocked = H.a4_closure_reconciliation(cases)
+        assert blocked["status"] == "BLOCKED"
+        assert "I3-STALE-A4-CONTRACT" in blocked["stale_contract_ids"]
+    finally:
+        H.A4_SLOT_CONTRACTS.pop("I3-STALE-A4-CONTRACT", None)
+
+
+def test_a4_17_slot_alias_exclusivity_is_machine_locked_and_second_slot_fails():
+    case = {c.case_id: c for c in H.a4_cases()}["I3-EXPR-01"]
+    mutated_spec = dict(case.canonical_spec)
+    mutated_spec["selection"] = "slot_expr > 0"
+    bad_case = replace(case, canonical_spec=mutated_spec)
+
+    errors = H.validate_registry((bad_case,))
+    assert any("slot-exclusivity drift" in e for e in errors)
+
+    result = H.run_slot_symmetry(
+        bad_case, _a4_make_scalar_eager, _a4_make_scalar_lazy)
+    assert result.status == H.INVALID_FIXTURE
+    assert "slot-exclusivity drift" in result.detail
+    assert H.strict_exit_code([result], [bad_case]) == 1
+
+
+def test_a4_18_eager_target_only_materialization_is_proven_with_shared_dependency_alias():
+    case = {c.case_id: c for c in H.a4_cases()}["I3-SELECTION-01"]
+    result = H.run_slot_symmetry(case, _a4_make_eager, _a4_make_lazy)
+    assert result.status == H.PASS, result.detail
+    evidence = result.observed["slot_evidence"]
+    assert set(evidence["eager_registered_aliases"]) >= {"slot_keep", "slot_shadow"}
+    assert evidence["eager_newly_materialized_aliases"] == ["slot_keep"]
+    # The non-target alias shares dep_selection, so this is genuinely stronger
+    # than the exact physical-load-set oracle.
+    assert "slot_shadow" not in _a4_make_eager().df.columns
+    assert result.observed["n"]["EAGER"] == 60
+    assert result.observed["n"]["LAZY"] == 60
+
+
+def test_a4_19_shared_physical_dependency_all_alias_materialization_false_green_is_caught(monkeypatch):
+    case = {c.case_id: c for c in H.a4_cases()}["I3-SELECTION-01"]
+    original = ADF.materialize_aliases
+
+    def materialize_all_registered(self, *args, **kwargs):
+        names = kwargs.get("names")
+        if names is not None and "slot_keep" in set(names):
+            kwargs = dict(kwargs)
+            kwargs["names"] = list(self.aliases)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(ADF, "materialize_aliases", materialize_all_registered)
+    result = H.run_slot_symmetry(case, _a4_make_eager, _a4_make_lazy)
+    assert result.status == H.FAIL
+    assert "EAGER alias materialization set mismatch" in result.detail
+    assert H.strict_exit_code([result], [case]) == 1
+
+
+def test_a4_20_subframe_scalar_causality_and_vector_refusal_ownership_are_complete():
+    cases = {c.case_id: c for c in H.a4_cases()}
+    positive = cases["I3-SUBFRAME-EXPR-01"]
+    result = H.run_subframe_slot_symmetry(
+        positive, _a4_make_subframe_expr_eager, _a4_make_subframe_expr_lazy)
+    assert result.status == H.PASS, result.detail
+    assert result.executed_comparisons == len(positive.observables) == 2
+    evidence = result.observed["slot_evidence"]
+    assert evidence["qualified_reference"] == "S.count"
+    assert evidence["lazy_loaded_before"] == ["kbin"]
+    assert set(evidence["lazy_loaded_after"]) == {"kbin", "x"}
+    assert "decoy" not in evidence["lazy_loaded_after"]
+    assert evidence["subframe_reference_resolved"] is True
+
+    for cid in ("I3-SUBFRAME-SELECTION-VECTOR-REFUSAL-01",
+                "I3-SUBFRAME-WEIGHTS-VECTOR-REFUSAL-01"):
+        c = cases[cid]
+        contract = H.A4_SLOT_CONTRACTS[cid]
+        assert c.purpose == "ERROR_CONTRACT"
+        assert c.known_bug_id == "BUG_20260701_ADF_subframe_ref_slot_symmetry"
+        assert contract["runner"] == "run_error_contract"
+        assert contract["bug_id_text_is_deliberate_contract"] is True
+
+    # Removing the supported scalar ownership must block cumulative A4 closure.
+    without_scalar = tuple(c for c in cases.values() if c.case_id != "I3-SUBFRAME-EXPR-01")
+    blocked = H.a4_closure_reconciliation(without_scalar)
+    assert blocked["status"] == "BLOCKED"
+    assert "I3-SUBFRAME-EXPR-01" in blocked["missing_case_ids"]
+    assert "I3-SUBFRAME-EXPR-01" in blocked["subframe_ownership_missing"]
+
+
+def test_a4_21_historical_closure_ledger_has_no_implicit_obligation_and_blocks_on_loss():
+    cases = H.a4_cases()
+    closure = H.a4_closure_reconciliation(cases)
+    assert closure["ledger_missing"] == []
+    assert closure["ledger_unexpected"] == []
+    assert closure["ledger_open_blockers"] == []
+    ledger = {row["id"]: row for row in closure["historical_ledger"]}
+    assert set(ledger) == set(H.A4_REQUIRED_LEDGER_IDS)
+    assert ledger["facet_overlay_real_user_bug"]["owner"] == "BUG_dfdraw_20260822_facet_by_overlay_unsupported"
+    assert ledger["interval_label_nan_real_user_bug"]["owner"] == "BUG_dfdraw_20260822_format_interval_label_nan_crash"
+    assert ledger["subframe_vector_boundary"]["status"] == "ACCEPTED_ERROR_CONTRACT"
+
+    saved = H.A4_CLOSURE_LEDGER
+    H.A4_CLOSURE_LEDGER = tuple(
+        row for row in saved if row["id"] != "eager_non_target_selectivity")
+    try:
+        blocked = H.a4_closure_reconciliation(cases)
+        assert blocked["status"] == "BLOCKED"
+        assert "eager_non_target_selectivity" in blocked["ledger_missing"]
+    finally:
+        H.A4_CLOSURE_LEDGER = saved
+
+# ── A4.4 v02 — closure-authority semantic/identity hardening ────────────────
+
+def test_a4_22_closure_ledger_status_and_owner_semantics_are_locked(tmp_path):
+    cases = H.a4_cases()
+    healthy = H.a4_closure_reconciliation(cases)
+    assert healthy["status"] == "READY_FOR_CLOSURE"
+    assert healthy["ledger_drift"] == []
+
+    mutations = (
+        ("eager_non_target_selectivity", "status", "LATER_NOT_A4"),
+        ("subframe_vector_boundary", "status", "LATER_NOT_A4"),
+        ("subframe_vector_boundary", "owner", "SOME_OTHER_BUG"),
+        ("facet_overlay_real_user_bug", "owner", "SOME_OTHER_OWNER"),
+        ("interval_label_nan_real_user_bug", "owner", None),
+    )
+    saved = H.A4_CLOSURE_LEDGER
+    try:
+        for ledger_id, field_name, wrong_value in mutations:
+            mutated = []
+            for row in saved:
+                row = dict(row)
+                if row["id"] == ledger_id:
+                    if wrong_value is None:
+                        row.pop(field_name, None)
+                    else:
+                        row[field_name] = wrong_value
+                mutated.append(row)
+            H.A4_CLOSURE_LEDGER = tuple(mutated)
+            blocked = H.a4_closure_reconciliation(cases)
+            assert blocked["status"] == "BLOCKED", (ledger_id, field_name, blocked)
+            assert any(
+                d["id"] == ledger_id and d["field"] == field_name
+                for d in blocked["ledger_drift"]
+            )
+
+        # Durable negative-state check through the real manifest path.
+        mutated = [dict(row) for row in saved]
+        for row in mutated:
+            if row["id"] == "eager_non_target_selectivity":
+                row["status"] = "LATER_NOT_A4"
+        H.A4_CLOSURE_LEDGER = tuple(mutated)
+        path = tmp_path / "a4_4_v02_ledger_blocked.json"
+        doc = H.write_manifest(str(path), [], cases)
+        reloaded = json.loads(path.read_text())
+        for payload in (doc, reloaded):
+            assert payload["a4_closure"]["status"] == "BLOCKED"
+            assert any(
+                d["id"] == "eager_non_target_selectivity" and d["field"] == "status"
+                for d in payload["a4_closure"]["ledger_drift"]
+            )
+    finally:
+        H.A4_CLOSURE_LEDGER = saved
+
+
+def test_a4_23_refusal_contract_locks_exact_bug_identity_and_proof_scope():
+    cases = list(H.a4_cases())
+    target_id = "I3-SUBFRAME-SELECTION-VECTOR-REFUSAL-01"
+    index = next(i for i, c in enumerate(cases) if c.case_id == target_id)
+    original = cases[index]
+    contract = H.A4_SLOT_CONTRACTS[target_id]
+    assert contract["expected_known_bug_id"] == "BUG_20260701_ADF_subframe_ref_slot_symmetry"
+    assert contract["expected_surfaces_under_test"] == ("draw",)
+    assert contract["expected_loading_mode"] == "BOTH"
+    assert contract["expected_sample_mode"] == "FULL"
+
+    bad = replace(original, known_bug_id="SOME_OTHER_NONEMPTY_BUG_ID")
+    assert bad.known_bug_id
+    errors = H.validate_registry((bad,))
+    assert any("refusal known_bug_id drift" in e for e in errors)
+
+    cases[index] = bad
+    closure = H.a4_closure_reconciliation(tuple(cases))
+    assert closure["status"] == "BLOCKED"
+    assert any(
+        row["case_id"] == target_id and "refusal known_bug_id drift" in row["detail"]
+        for row in closure["contract_drift"]
+    )
+
+    # The same authority also locks the reviewed draw/BOTH/FULL proof scope.
+    for field_name, wrong_value, expected_detail in (
+        ("surfaces_under_test", ("draw_batch",), "refusal surfaces_under_test drift"),
+        ("loading_mode", "EAGER", "refusal loading_mode drift"),
+        ("sample_mode", "FRACTION", "refusal sample_mode drift"),
+    ):
+        scoped_bad = replace(original, **{field_name: wrong_value})
+        scoped_errors = H.validate_registry((scoped_bad,))
+        assert any(expected_detail in e for e in scoped_errors), (field_name, scoped_errors)
+
+
+def test_a4_24_qualified_reference_matching_is_token_exact_and_near_name_replacement_blocks():
+    assert H._a4_text_contains_target("S.count", "S.count")
+    assert H._a4_text_contains_target("S.count+1", "S.count")
+    assert H._a4_text_contains_target("S.count:x", "S.count")
+    assert not H._a4_text_contains_target("S.count2", "S.count")
+    assert not H._a4_text_contains_target("XS.count", "S.count")
+    assert not H._a4_text_contains_target("S.count_more", "S.count")
+
+    # Prove the near-name replacement is a legal supported subframe reference,
+    # so the closure failure below is identity-sensitive rather than a syntax error.
+    probe = _a4_make_subframe_expr_eager()
+    _, _, stats = probe.draw(
+        "S.count2:x", type="profile", bins=4, return_data=True, auto_title=True)
+    assert stats["n"] == 120
+
+    cases = list(H.a4_cases())
+    target_id = "I3-SUBFRAME-EXPR-01"
+    index = next(i for i, c in enumerate(cases) if c.case_id == target_id)
+    original = cases[index]
+    mutated_spec = dict(original.canonical_spec)
+    mutated_spec["expr"] = "S.count2:x"
+    bad = replace(original, canonical_spec=mutated_spec)
+
+    assert H.a4_actual_target_slots(bad, H.A4_SLOT_CONTRACTS[target_id]) == ()
+    errors = H.validate_registry((bad,))
+    assert any("slot-exclusivity drift" in e for e in errors)
+
+    cases[index] = bad
+    closure = H.a4_closure_reconciliation(tuple(cases))
+    assert closure["status"] == "BLOCKED"
+    assert any(
+        row["case_id"] == target_id and "slot-exclusivity drift" in row["detail"]
+        for row in closure["contract_drift"]
+    )
+
+
+# ── A4.4 v03 — duplicate historical-ledger identity hardening ──────────────
+
+def test_a4_25_duplicate_historical_ledger_ids_block_and_persist(tmp_path):
+    cases = H.a4_cases()
+    healthy = H.a4_closure_reconciliation(cases)
+    assert healthy["status"] == "READY_FOR_CLOSURE"
+    assert healthy["closure_ready"] is True
+    assert healthy["ledger_duplicate_ids"] == []
+
+    saved = H.A4_CLOSURE_LEDGER
+    target_id = "eager_non_target_selectivity"
+    expected = next(dict(row) for row in saved if row["id"] == target_id)
+
+    try:
+        # Strong falsifier: prepend a contradictory duplicate while leaving the
+        # later authoritative-looking row untouched.  A last-write-wins map
+        # would silently erase the contradiction and false-green closure.
+        conflicting = dict(expected)
+        conflicting["status"] = "LATER_NOT_A4"
+        H.A4_CLOSURE_LEDGER = (conflicting,) + tuple(saved)
+        blocked = H.a4_closure_reconciliation(cases)
+        assert blocked["status"] == "BLOCKED"
+        assert blocked["closure_ready"] is False
+        assert blocked["ledger_duplicate_ids"] == [target_id]
+        assert sum(row["id"] == target_id for row in blocked["historical_ledger"]) == 2
+        assert any("duplicate closure-ledger item" in item for item in blocked["blockers"])
+
+        # Durable negative-state check through the real manifest / JSON path.
+        path = tmp_path / "a4_4_v03_duplicate_ledger_blocked.json"
+        doc = H.write_manifest(str(path), [], cases)
+        reloaded = json.loads(path.read_text())
+        for payload in (doc, reloaded):
+            closure = payload["a4_closure"]
+            assert closure["status"] == "BLOCKED"
+            assert closure["closure_ready"] is False
+            assert closure["ledger_duplicate_ids"] == [target_id]
+            assert sum(row["id"] == target_id for row in closure["historical_ledger"]) == 2
+
+        # Even a byte-for-semantics identical duplicate is ambiguous history:
+        # one closure finding must have exactly one authoritative ledger row.
+        H.A4_CLOSURE_LEDGER = (dict(expected),) + tuple(saved)
+        identical = H.a4_closure_reconciliation(cases)
+        assert identical["status"] == "BLOCKED"
+        assert identical["closure_ready"] is False
+        assert identical["ledger_duplicate_ids"] == [target_id]
+    finally:
+        H.A4_CLOSURE_LEDGER = saved
