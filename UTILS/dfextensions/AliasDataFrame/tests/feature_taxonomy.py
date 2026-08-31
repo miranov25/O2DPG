@@ -62,7 +62,7 @@ FEATURES = [
          # Phase 13.12.ADF
          "test_I15_materialization_order_invariance.py",
      ]},
-    {"id": "CORE.dependency_resolution", "name": "Dependency chain & fill_value resolution", "category": "CORE",
+    {"id": "CORE.dependency_resolution", "name": "Dynamic dependency resolution — deferred unresolved definitions, dependency chains, fill_value propagation, late namespace completion, and use-time resolution", "category": "CORE",
      "test_patterns": [
          "test_cycle_detection.py::TestCycleDetection",
          "test_cycle_detection.py::TestIndexColumnMaterialization",
@@ -77,6 +77,8 @@ FEATURES = [
          "test_fill_handling.py::TestCalibrationWorkflow",
          # Phase 13.12.ADF — fill_value propagation + missing-key NaN
          "test_I6_subframe_missing_key_invariance.py",
+         "test_phase_13_76_v12_dynamic_alias_contract.py::TestV12DependencyResolutionContract",
+         "test_phase_13_76_v12_history_invariance.py::TestV12DeferredRetryInvariance",
      ]},
     {"id": "CORE.dtypes", "name": "Dtype handling & casting", "category": "CORE",
      "test_patterns": [
@@ -90,9 +92,10 @@ FEATURES = [
      "test_patterns": [
          "test_constructor_contract.py",
      ]},
-    {"id": "CORE.describe", "name": "Structure & alias inspection", "category": "CORE",
+    {"id": "CORE.describe", "name": "Structure & alias inspection — resolved/unresolved logical definitions and validation visibility", "category": "CORE",
      "test_patterns": [
          "test_alias_dataframe.py::TestDescribeStructure",
+         "test_phase_13_76_v12_dynamic_alias_contract.py::TestV12InspectionContract",
      ]},
     {"id": "CORE.cleanup", "name": "Column cleanup & temporary management", "category": "CORE",
      "test_patterns": [
@@ -105,15 +108,19 @@ FEATURES = [
      ]},
 
     # ── SUBFRAMES (6) ──
-    {"id": "SUB.register", "name": "Subframe registration", "category": "SUBFRAMES",
+    {"id": "SUB.register", "name": "Subframe registration & replacement — registration/re-registration semantics, current logical ownership, and dependent-state invalidation obligations", "category": "SUBFRAMES",
      "test_patterns": [
          "test_alias_dataframe.py::TestAliasDataFrameWithSubframes",
          "test_alias_subframe.py::TestSubframeBasicJoin",
          "test_subframe_alias_api.py",
          # Phase 13.12.ADF
          "test_I8_subframe_alias_composition_invariance.py",
+         # PHASE_13_76_ADF — interactive replacement/invalidation contract
+         "test_phase_13_76_v12_dynamic_alias_contract.py::TestV12InvalidationContract::test_ev_3_subframe_reregistration_invalidates_sourced_alias",
+         "test_phase_13_76_v12_calibration_scope.py::TestV12CalibrationRecalibration",
+         "test_phase_13_76_v12_history_invariance.py::TestV12HistoryInvariance::test_o1_subframe_reregistration_final_state_matches_fresh_instance",
      ]},
-    {"id": "SUB.join", "name": "Subframe join & column resolution", "category": "SUBFRAMES",
+    {"id": "SUB.join", "name": "Subframe join & column resolution — key matching, missing-key/declared-neutral fill semantics, conditional calibration composition, and cache/order invariance", "category": "SUBFRAMES",
      "test_patterns": [
          "test_alias_subframe.py::TestMultiKeySubframeJoins",
          "test_alias_subframe.py::TestSubframeMissingKeys",
@@ -129,6 +136,9 @@ FEATURES = [
          "test_I14_join_index_invariance.py",
          # Phase 13.21.ADF — join index caching
          "test_J1_join_cache.py",
+         "test_phase_13_76_v12_calibration_scope.py::TestV12CalibrationScope",
+         "test_phase_13_76_v12_calibration_scope.py::TestV12CalibrationRecalibration",
+         "test_fill_handling.py::TestFillModeDirect::test_V3_2_unmatched_key_gets_declared_neutral_in_masked_correction",
      ]},
     {"id": "SUB.composite_key", "name": "Composite key operations", "category": "SUBFRAMES",
      "test_patterns": [
@@ -255,7 +265,7 @@ FEATURES = [
          # BUG FIX 20260420 — selection/weights alias materialization
          "test_S1_draw_selection_alias.py",
      ]},
-    {"id": "DRAW.subframe_resolution", "name": "Subframe column resolution in draw", "category": "DRAWING",
+    {"id": "DRAW.subframe_resolution", "name": "Subframe resolution in draw — expression-slot discovery, owner-qualified materialization/cleanup, request-level/spec-slot attribution, per-public-call evidence isolation, and terminal plan/state reconciliation", "category": "DRAWING",
      "test_patterns": [
          "test_draw_subframe_resolution.py",
          # Phase 13.12.ADF
@@ -268,6 +278,9 @@ FEATURES = [
          "test_S10_draw_subframe_alias.py",
          # PHASE_13_36_ADF — subframe metadata propagation to drawing
          "test_X1_subframe_metadata_propagation.py",
+         "test_phase_13_76_v12_reconciliation_contract.py::TestV12B3ReconciliationContract",
+         "test_phase_13_76_v12_subframe_mode_matrix.py::TestR10SubframeModeMatrix",
+         "test_phase_13_76_v12_history_invariance.py::TestV12RequestHistoryInvariance",
      ]},
     {"id": "DRAW.compound_expr", "name": "Lazy materialization of compound expressions", "category": "DRAWING",
      "test_patterns": [
@@ -337,11 +350,12 @@ FEATURES = [
          "test_chain_loading.py",
          "test_invariance_load_mode.py",
      ]},
-    {"id": "LAZY.materialization", "name": "Lazy subframe & alias evaluation", "category": "LAZY_LOADING",
+    {"id": "LAZY.materialization", "name": "Lazy subframe & alias evaluation — on-demand physical/logical resolution across eager/lazy parent-child modes, no-metadata operation, and raise vs warn/skip resolution policies", "category": "LAZY_LOADING",
      "test_patterns": [
          "test_lazy_subframes.py",
          # Phase 13.12.ADF — lazy vs eager full pipeline
          "test_I10_lazy_eager_invariance.py",
+         "test_phase_13_76_v12_subframe_mode_matrix.py::TestR10SubframeModeMatrix",
      ]},
     {"id": "LAZY.userinfo_backcompat", "name": "Lazy-path UserInfo metadata back-compatibility (AD-3 precedence)", "category": "LAZY_LOADING",
      "test_patterns": [
@@ -366,12 +380,13 @@ FEATURES = [
          "test_phase1358_lazy_calibITS.py",           # real-data lazy invariance on calibITS (committed 4 MB fixture)
          "test_phase1358_gallery_lazy.py",            # time-series gallery double-run (env-gated)
      ]},
-    {"id": "LAZY.subframe_draw", "name": "Subframe-column lazy draw (single-level A.col + nested A.B.col; on-demand materialization via ensure_subframe + recursive chain walk)", "category": "LAZY_LOADING",
+    {"id": "LAZY.subframe_draw", "name": "Subframe-column lazy draw — single/nested qualified references, eager/lazy parent-child compositions, structural join-key setup, post-load aliases, and on-demand ensure_subframe resolution", "category": "LAZY_LOADING",
      "test_patterns": [
          # Phase 13.58.ADF — subframe-column lazy draw (single-level + nested/recursive)
          "test_phase1358_lazy_draw_invariance.py::test_lazy_subframe_column_draw",
          "test_phase1358_lazy_draw_invariance.py::test_lazy_nested_subframe_column_draw",
          "test_phase1358_lazy_calibITS.py::test_calibITS_subframe_column_lazy_draw",
+         "test_phase_13_76_v12_subframe_mode_matrix.py::TestR10SubframeModeMatrix",
      ]},
     {"id": "LAZY.alias_autoload", "name": "Alias resolution auto-loads lazy branches (materialize_aliases / validate_aliases / describe_aliases bridge to the lazy reader; LAZY status)", "category": "LAZY_LOADING",
      "test_patterns": [
@@ -493,10 +508,14 @@ FEATURES = [
          "test_dependency_tree.py",
      ]},
     {"id": "CORE.invalidation",
-     "name": "Alias invalidation on expression redefine",
+     "name": "Interactive invalidation — alias redefinition, final-state/fresh-instance equivalence, materialization-history independence, subframe replacement, and rejected-mutation state integrity",
      "category": "CORE",
      "test_patterns": [
          "test_V1_alias_invalidation.py",
+         "test_phase_13_76_v12_dynamic_alias_contract.py::TestV12InvalidationContract",
+         "test_phase_13_76_v12_alias_mutation_falsifiers.py",
+         "test_phase_13_76_v12_calibration_scope.py::TestV12CalibrationRecalibration",
+         "test_phase_13_76_v12_history_invariance.py::TestV12HistoryInvariance",
      ]},
     # ── DISPATCH (2) — PHASE_13_55_ADF / PHASE_13_56_ADF ──
     {"id": "DISPATCH.adf_routing",
