@@ -3060,3 +3060,208 @@ def test_a4_25_duplicate_historical_ledger_ids_block_and_persist(tmp_path):
         assert identical["ledger_duplicate_ids"] == [target_id]
     finally:
         H.A4_CLOSURE_LEDGER = saved
+
+# ── A5.1 — first lazy/eager + keyed-subframe + group_by full stack ──────────
+
+def _a5_full_stack_raw():
+    """Deterministic parent fixture with two groups and four populated x bins."""
+    rows = []
+    values = np.asarray([1.0, 2.0, 4.0, 8.0], dtype=np.float64)
+    for group in (0, 1):
+        for xbin in range(4):
+            kbin = (xbin + group) % 4
+            # Stay well inside each explicit bin while giving x nonzero spread.
+            for rep in range(6):
+                x = (xbin + 0.5) / 4.0 + (rep - 2.5) * 0.002
+                rows.append((x, kbin, group, 1000.0 + len(rows)))
+    frame = pd.DataFrame(rows, columns=["x", "kbin", "group", "decoy"])
+    assert len(frame) == 48
+    assert set(frame["group"]) == {0, 1}
+    assert set(frame["kbin"]) == {0, 1, 2, 3}
+    # Fixture truth: S.count will be this lookup, never a parent column.
+    assert "count" not in frame.columns
+    assert np.array_equal(values, np.asarray([1.0, 2.0, 4.0, 8.0]))
+    return frame
+
+
+def _a5_full_stack_subframe():
+    return pd.DataFrame({
+        "kbin": np.arange(4, dtype=int),
+        "count": np.asarray([1.0, 2.0, 4.0, 8.0], dtype=np.float64),
+        "decoy_s": np.asarray([101.0, 102.0, 104.0, 108.0], dtype=np.float64),
+    })
+
+
+def _a5_make_full_stack_eager():
+    base = ADF(_a5_full_stack_raw().copy())
+    base.register_subframe(
+        "S", ADF(_a5_full_stack_subframe().copy()), index_columns="kbin")
+    return base
+
+
+def _a5_make_full_stack_lazy(*, preload=()):
+    raw = _a5_full_stack_raw()
+    base = ADF(pd.DataFrame(index=range(len(raw))))
+    reader = _A4TrackingLazyReader(raw)
+    base._lazy_reader = reader
+    base._chain = {
+        "files": [], "entry_offsets": [0], "total_entries": len(raw),
+        "validation_mode": None,
+    }
+    # Keyed-subframe joins require the structural key as an explicit setup
+    # baseline; A5.1 proves the remaining composed dependency discovery.
+    base.ensure_branches(["kbin"])
+    if preload:
+        base.ensure_branches(list(preload))
+    base.register_subframe(
+        "S", ADF(_a5_full_stack_subframe().copy()), index_columns="kbin")
+    return base
+
+
+def _a5_full_stack_anchor():
+    """Independent NumPy/pandas oracle; never constructs or calls ADF/dfdraw."""
+    parent = _a5_full_stack_raw().copy(deep=True)
+    sub = _a5_full_stack_subframe().copy(deep=True)
+    lookup = dict(zip(sub["kbin"].tolist(), sub["count"].tolist()))
+    y = parent["kbin"].map(lookup).to_numpy(dtype=np.float64)
+    x = parent["x"].to_numpy(dtype=np.float64)
+    group = parent["group"].to_numpy(dtype=int)
+
+    edges = np.linspace(0.0, 1.0, 5, dtype=np.float64)
+    out_group = []
+    out_count = []
+    out_x_center = []
+    out_y_mean = []
+    for g in sorted(np.unique(group).tolist()):
+        gm = group == g
+        for ibin in range(4):
+            # No fixture value is exactly 1.0; standard half-open bins suffice.
+            bm = gm & (x >= edges[ibin]) & (x < edges[ibin + 1])
+            assert int(bm.sum()) > 0
+            out_group.append(int(g))
+            out_count.append(int(bm.sum()))
+            out_x_center.append(float(0.5 * (edges[ibin] + edges[ibin + 1])))
+            out_y_mean.append(float(np.mean(y[bm])))
+    return {
+        "group": np.asarray(out_group, dtype=int),
+        "count": np.asarray(out_count, dtype=int),
+        "x_center": np.asarray(out_x_center, dtype=np.float64),
+        "y_mean": np.asarray(out_y_mean, dtype=np.float64),
+    }
+
+
+def test_a5_01_full_stack_case_is_bounded_and_registry_valid():
+    case = H.a5_cases()[0]
+    assert case.case_id == "I4-SUBFRAME-GROUPBY-01"
+    assert case.purpose == "CORRECTNESS"
+    assert case.oracle_kind == "CORRECTNESS"
+    assert case.loading_mode == "BOTH"
+    assert case.sample_mode == "FULL"
+    assert tuple(case.surfaces_under_test) == ("draw",)
+    assert case.canonical_spec == {
+        "expr": "S.count:x",
+        "type": "profile",
+        "bins": 4,
+        "range": (0.0, 1.0),
+        "group_by": "group",
+        "return_data": True,
+        "auto_title": True,
+    }
+    assert [(o.name, o.source, o.access, o.path) for o in case.observables] == [
+        ("group", "INDEPENDENT", "ARRAY", "profile_data.group"),
+        ("count", "INDEPENDENT", "ARRAY", "profile_data.count"),
+        ("x_center", "INDEPENDENT", "ARRAY", "profile_data.x_center"),
+        ("y_mean", "INDEPENDENT", "ARRAY", "profile_data.y_mean"),
+    ]
+    assert H.validate_registry(H.a5_cases()) == []
+    assert H.audit_declared_state() == []
+
+
+def test_a5_02_full_stack_matches_independent_oracle_in_eager_and_lazy_modes():
+    case = H.a5_cases()[0]
+    result = H.run_a5_full_stack(
+        case, _a5_make_full_stack_eager, _a5_make_full_stack_lazy,
+        _a5_full_stack_anchor)
+    assert result.status == H.PASS, result.detail
+
+    # Four observables x three comparisons:
+    # independent->EAGER, independent->LAZY, EAGER->LAZY.
+    assert result.executed_comparisons == 12
+    assert len(result.comparisons) == 12
+    assert all(row["ok"] for row in result.comparisons), result.comparisons
+
+    evidence = result.observed["full_stack_evidence"]
+    assert evidence["qualified_reference"] == "S.count"
+    assert evidence["group_by"] == "group"
+    assert evidence["lazy_loaded_before"] == ["kbin"]
+    assert set(evidence["lazy_loaded_after"]) == {"kbin", "x", "group"}
+    assert "decoy" not in evidence["lazy_loaded_after"]
+    assert evidence["independent_anchor_computed_before_product"] is True
+
+    expected = _a5_full_stack_anchor()
+    assert np.array_equal(result.observed["group"]["independent"], expected["group"])
+    assert np.array_equal(result.observed["count"]["independent"], expected["count"])
+    assert np.array_equal(expected["count"], np.full(8, 6, dtype=int))
+    assert np.allclose(expected["x_center"],
+                       np.asarray([.125, .375, .625, .875] * 2))
+    assert np.allclose(
+        expected["y_mean"],
+        np.asarray([1.0, 2.0, 4.0, 8.0, 2.0, 4.0, 8.0, 1.0]))
+    assert H.strict_exit_code([result], [case]) == 0
+
+
+def test_a5_03_independent_oracle_catches_one_lazy_group_bin_corruption(monkeypatch):
+    """A5.1 family falsifier: one grouped-bin mutation must gate the case."""
+    case = H.a5_cases()[0]
+
+    good = H.run_a5_full_stack(
+        case, _a5_make_full_stack_eager, _a5_make_full_stack_lazy,
+        _a5_full_stack_anchor)
+    assert good.status == H.PASS, good.detail
+    assert H.strict_exit_code([good], [case]) == 0
+
+    original_draw = ADF.draw
+    mutation = {}
+
+    def corrupted_draw(self, *args, **kwargs):
+        raw = original_draw(self, *args, **kwargs)
+        if getattr(self, "_lazy_reader", None) is None:
+            return raw
+        fig, ax, stats = raw
+        stats = dict(stats)
+        table = stats["profile_data"].copy(deep=True)
+        rows = np.flatnonzero(
+            (table["group"].to_numpy() == 1)
+            & (table["count"].to_numpy() > 0))
+        assert len(rows) > 0
+        row = int(rows[0])
+        mutation["row"] = row
+        table.iloc[row, table.columns.get_loc("y_mean")] += 0.5
+        stats["profile_data"] = table
+        return fig, ax, stats
+
+    monkeypatch.setattr(ADF, "draw", corrupted_draw)
+    bad = H.run_a5_full_stack(
+        case, _a5_make_full_stack_eager, _a5_make_full_stack_lazy,
+        _a5_full_stack_anchor)
+    assert bad.status == H.FAIL, bad.detail
+    assert "y_mean" in bad.detail
+    assert "independent" in bad.detail and "LAZY" in bad.detail
+    failed = [row for row in bad.comparisons if not row["ok"]]
+    assert len(failed) == 1
+    assert failed[0]["observable"] == "y_mean"
+    assert failed[0]["candidate"] == "LAZY"
+    assert failed[0]["mismatch_count"] == 1
+    assert failed[0]["mismatch_indices"] == [[mutation["row"]]]
+    assert H.strict_exit_code([bad], [case]) == 1
+
+
+def test_a5_04_preloaded_unrelated_branch_is_invalid_fixture_not_pass():
+    case = H.a5_cases()[0]
+    bad = H.run_a5_full_stack(
+        case, _a5_make_full_stack_eager,
+        lambda: _a5_make_full_stack_lazy(preload=("decoy",)),
+        _a5_full_stack_anchor)
+    assert bad.status == H.INVALID_FIXTURE, bad.detail
+    assert "structural baseline mismatch" in bad.detail
+    assert H.strict_exit_code([bad], [case]) == 1

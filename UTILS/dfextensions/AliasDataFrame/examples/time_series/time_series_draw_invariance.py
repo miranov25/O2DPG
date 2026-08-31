@@ -32,7 +32,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A4.4.v03"
+SCHEMA_VERSION = "13.77.A5.1.v01"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -192,6 +192,7 @@ RUNNER_SOURCE = {
     "run_correctness": ("INDEPENDENT",),
     "run_slot_symmetry": ("STATS",),
     "run_subframe_slot_symmetry": ("STATS",),
+    "run_a5_full_stack": ("INDEPENDENT",),
 }
 
 
@@ -2205,6 +2206,117 @@ def a4_cases() -> tuple[CaseSpec, ...]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# A5.1 — first lazy/eager + keyed-subframe + group_by full-stack composition
+# ─────────────────────────────────────────────────────────────────────────────
+
+A5_1_CASE_ID = "I4-SUBFRAME-GROUPBY-01"
+A5_1_CONTRACT = {
+    "runner": "run_a5_full_stack",
+    "surface": "draw",
+    "qualified_reference": "S.count",
+    "group_by": "group",
+    "structural_baseline_physical_dependencies": ("kbin",),
+    "expected_lazy_loaded_before": ("kbin",),
+    "expected_lazy_loaded_after": ("group", "kbin", "x"),
+    "unrelated_physical_branches": ("decoy",),
+}
+
+
+def a5_cases() -> tuple[CaseSpec, ...]:
+    """Return the first bounded A5 full-stack composition case.
+
+    A5.1 deliberately composes dimensions that A3/A4 proved separately:
+
+        loading mode BOTH
+        + keyed subframe S.count
+        + physical group_by
+        + public draw()
+        + independent grouped-bin oracle
+
+    This is still a fast synthetic acceptance case.  It does not claim the A6
+    real-data/reference run, lazy child-file loading, lifecycle mutation
+    coverage, or the known subframe-vector capability boundary.
+    """
+    cid = A5_1_CASE_ID
+    return (CaseSpec(
+        case_id=cid,
+        claim_id="I4.subframe_groupby.A5.1",
+        title="keyed-subframe grouped profile is correct in eager and lazy parent modes",
+        claim=("the same keyed S.count:x grouped profile is numerically correct "
+               "against an independent grouped-bin oracle in EAGER and LAZY "
+               "parent modes"),
+        failure_means=("the full-stack composition changes keyed-subframe join, "
+                       "group membership, profile binning/reduction, or lazy "
+                       "dependency loading semantics"),
+        expected_visual=("one S.count:x grouped profile with one trace per "
+                         "physical group and four populated x bins per group"),
+        owner_on_failure="ADF",
+        purpose="CORRECTNESS",
+        gate="CORE_MANDATORY",
+        oracle_kind="CORRECTNESS",
+        loading_mode="BOTH",
+        sample_mode="FULL",
+        canonical_spec={
+            "expr": "S.count:x",
+            "type": "profile",
+            "bins": 4,
+            "range": (0.0, 1.0),
+            "group_by": "group",
+            "return_data": True,
+            "auto_title": True,
+        },
+        applicable=True,
+        setup_contract=("parent contains x, kbin, group and an unrelated decoy; "
+                        "registered eager subframe S contains one count per kbin; "
+                        "the LAZY parent preloads only structural join key kbin"),
+        preconditions=(
+            "S.count exists only in the registered keyed subframe",
+            "the parent has repeated kbin values and two populated physical groups",
+            "every group has a populated row set in each of the four explicit x bins",
+            "the LAZY parent begins with only structural join key kbin loaded",
+            "decoy is absent from the required dependency set",
+        ),
+        figure_contract=FigureContract(
+            expected_panels="one panel",
+            panel_roles="main: S.count versus x grouped profile",
+            expected_traces="two group_by profile traces",
+            expected_group_count="2",
+            primary_comparison=("independent group/count/x_center/y_mean oracle "
+                                "versus both EAGER/draw and LAZY/draw"),
+            residual_definition=("public grouped-bin observable minus independent "
+                                 "NumPy/pandas grouped-bin reference"),
+            accepted_envelope=("group/count exact; floating x_center/y_mean within "
+                               "declared tolerance; LAZY load set exactly "
+                               "{kbin,x,group}"),
+            case_ids=(cid,),
+            proof_kind="CORRECTNESS",
+        ),
+        surfaces_under_test=("draw",),
+        observables=(
+            Observable("group", "INDEPENDENT", "ARRAY", "profile_data.group"),
+            Observable("count", "INDEPENDENT", "ARRAY", "profile_data.count"),
+            Observable("x_center", "INDEPENDENT", "ARRAY",
+                       "profile_data.x_center", comparator="close",
+                       atol=1e-14, rtol=1e-12,
+                       rationale="explicit bin centers are floating values"),
+            Observable("y_mean", "INDEPENDENT", "ARRAY",
+                       "profile_data.y_mean", comparator="close",
+                       atol=1e-14, rtol=1e-12,
+                       rationale=("independent keyed-subframe grouped-bin mean "
+                                  "versus public floating reduction")),
+        ),
+        non_claims=(
+            "A5.1 is a fast synthetic composition case, not the A6 real-data reference run",
+            "the registered subframe is eager; lazy child-file loading remains later A5 work",
+            "subframe-qualified selection_vector/weights_vector remain owned by BUG_20260701_ADF_subframe_ref_slot_symmetry",
+            "dynamic lifecycle defects carried from PHASE_13_76 are not repaired by this case",
+        ),
+        negative_control="FAMILY_MUTATION:A5.1-INDEPENDENT-GROUP-BIN-CORRUPTION",
+        reference_policy="named-immutable",
+    ),)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 5.  Registry validation — §14's self-checks, run BEFORE any case executes.
 #
 # "Adding a case breaks the build until somebody says what it is."
@@ -3161,6 +3273,195 @@ def run_subframe_slot_symmetry(case: CaseSpec,
         if res.executed_comparisons == 0:
             res.status = INVALID_FIXTURE
             res.detail = "A4 subframe case executed no numerical comparison"
+            return res
+        res.status = PASS
+        return res
+    except Exception as exc:
+        res.status = FAIL
+        res.detail = f"{type(exc).__name__}: {exc}"
+        res.exception = traceback.format_exc(limit=4)
+        return res
+    finally:
+        _close()
+        res.wall_time_s = round(time.time() - t0, 4)
+
+
+def run_a5_full_stack(case: CaseSpec,
+                      make_eager: Callable[[], Any],
+                      make_lazy: Callable[[], Any],
+                      independent_anchor: Callable[[], dict]) -> CaseResult:
+    """Execute the first A5 keyed-subframe + group_by full-stack contract.
+
+    The independent anchor is computed before either product fixture is
+    constructed, so it cannot read state mutated/materialized by ADF.  Both
+    EAGER and LAZY public ``draw`` results are compared independently against
+    that anchor and directly against each other.
+
+    The lazy parent uses the same explicit structural join-key baseline as the
+    banked A4 scalar-subframe case, then must load exactly ``x`` and ``group``
+    for the composed request.  ``decoy`` must remain unloaded.
+    """
+    _skip = _inapplicable(case)
+    if _skip is not None:
+        return _skip
+    t0 = time.time()
+    res = CaseResult(case_id=case.case_id, status=SKIP)
+    try:
+        contract = A5_1_CONTRACT if case.case_id == A5_1_CASE_ID else None
+        if contract is None or contract.get("runner") != "run_a5_full_stack":
+            res.status = INVALID_FIXTURE
+            res.detail = f"no A5.1 full-stack execution contract for {case.case_id}"
+            return res
+        if (case.purpose != "CORRECTNESS"
+                or case.oracle_kind != "CORRECTNESS"
+                or case.loading_mode != "BOTH"
+                or case.sample_mode != "FULL"):
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.1 runner requires CORRECTNESS/CORRECTNESS/BOTH/FULL"
+            return res
+        if tuple(case.surfaces_under_test) != (contract["surface"],):
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.1 runner requires the contract-declared single public surface"
+            return res
+        if case.canonical_spec.get("group_by") != contract["group_by"]:
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.1 group_by declaration drift"
+            return res
+        if not _a4_text_contains_target(
+                case.canonical_spec.get("expr"), contract["qualified_reference"]):
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.1 qualified subframe reference drift"
+            return res
+
+        # Freeze the independent truth BEFORE product construction/execution.
+        expected = independent_anchor()
+        if not isinstance(expected, dict):
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.1 independent anchor must return a dict"
+            return res
+
+        eager = make_eager()
+        lazy = make_lazy()
+        if getattr(eager, "_lazy_reader", None) is not None:
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.1 EAGER factory returned a lazy parent"
+            return res
+        lazy_reader = getattr(lazy, "_lazy_reader", None)
+        if lazy_reader is None:
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.1 LAZY factory did not attach a lazy reader"
+            return res
+
+        qualified = contract["qualified_reference"]
+        sf_name, sf_col = qualified.split(".", 1)
+        for label, adf in (("EAGER", eager), ("LAZY", lazy)):
+            if sf_col in adf.df.columns or f"{sf_name}_{sf_col}" in adf.df.columns:
+                res.status = INVALID_FIXTURE
+                res.detail = f"{label} parent was contaminated with {qualified} before draw"
+                return res
+            sf = adf.get_subframe(sf_name)
+            if sf is None or sf_col not in sf.df.columns:
+                res.status = INVALID_FIXTURE
+                res.detail = f"{label} registered subframe lacks {qualified}"
+                return res
+
+        lazy_before = set(lazy_reader.loaded_branches)
+        expected_before = set(contract["expected_lazy_loaded_before"])
+        expected_after = set(contract["expected_lazy_loaded_after"])
+        unrelated = set(contract["unrelated_physical_branches"])
+        if lazy_before != expected_before:
+            res.status = INVALID_FIXTURE
+            res.detail = ("A5.1 structural baseline mismatch: "
+                          f"expected {sorted(expected_before)}, got {sorted(lazy_before)}")
+            return res
+        if unrelated & lazy_before:
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.1 LAZY baseline already contains an unrelated branch"
+            return res
+
+        def call_one(adf):
+            kw = dict(case.canonical_spec)
+            expr = kw.pop("expr")
+            raw = adf.draw(expr, lazy=True, keep_materialized=True, **kw)
+            return unwrap(contract["surface"], raw)
+
+        eager_payload = call_one(eager)
+        lazy_payload = call_one(lazy)
+        lazy_after = set(lazy_reader.loaded_branches)
+        if lazy_after != expected_after:
+            res.status = FAIL
+            res.detail = ("A5.1 LAZY full-stack load set mismatch: "
+                          f"expected {sorted(expected_after)}, got {sorted(lazy_after)}")
+            return res
+        if unrelated & lazy_after:
+            res.status = FAIL
+            res.detail = "A5.1 LAZY full-stack request loaded unrelated physical branch"
+            return res
+
+        res.payload_paths = {
+            "EAGER/draw": list(eager_payload.path),
+            "LAZY/draw": list(lazy_payload.path),
+        }
+        res.observed["full_stack_evidence"] = {
+            "qualified_reference": qualified,
+            "group_by": contract["group_by"],
+            "structural_baseline_physical_dependencies": sorted(expected_before),
+            "lazy_loaded_before": sorted(lazy_before),
+            "lazy_loaded_after": sorted(lazy_after),
+            "unrelated_physical_branches": sorted(unrelated),
+            "independent_anchor_computed_before_product": True,
+        }
+
+        for o in case.observables:
+            if o.status != "EXECUTED":
+                res.observed[o.name] = {"status": o.status}
+                continue
+            try:
+                _assert_source_matches("run_a5_full_stack", o)
+            except HarnessError as exc:
+                res.status = INVALID_FIXTURE
+                res.detail = str(exc)
+                return res
+            if o.name not in expected:
+                res.status = INVALID_FIXTURE
+                res.detail = f"A5.1 independent anchor supplied no value for {o.name!r}"
+                return res
+            try:
+                eager_v = resolve(eager_payload.stats, o.path, o.access)
+                lazy_v = resolve(lazy_payload.stats, o.path, o.access)
+            except HarnessError as exc:
+                res.status = INVALID_FIXTURE
+                res.detail = f"declared A5.1 observable {o.name!r} not extractable: {exc}"
+                return res
+
+            independent_v = expected[o.name]
+            res.observed[o.name] = {
+                "independent": independent_v,
+                "EAGER": eager_v,
+                "LAZY": lazy_v,
+            }
+            res.observable_contract.append(_contract(o))
+            comparisons = (
+                ("independent", "EAGER", independent_v, eager_v),
+                ("independent", "LAZY", independent_v, lazy_v),
+                ("EAGER", "LAZY", eager_v, lazy_v),
+            )
+            for reference_label, candidate_label, reference_v, candidate_v in comparisons:
+                result = compare_observable(o, reference_v, candidate_v)
+                res.comparisons.append(comparison_evidence(
+                    o, result, reference_label=reference_label,
+                    candidate_label=candidate_label))
+                res.executed_comparisons += 1
+                if not result.ok:
+                    res.status = FAIL
+                    res.detail = (
+                        f"{o.name}: {reference_label} vs {candidate_label}: "
+                        f"{result.detail}")
+                    return res
+
+        if res.executed_comparisons == 0:
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.1 full-stack case executed no numerical comparison"
             return res
         res.status = PASS
         return res
