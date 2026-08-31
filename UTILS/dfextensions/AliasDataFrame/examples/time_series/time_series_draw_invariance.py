@@ -32,7 +32,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A5.1.v01"
+SCHEMA_VERSION = "13.77.A5.2.v03"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -2314,6 +2314,457 @@ def a5_cases() -> tuple[CaseSpec, ...]:
         negative_control="FAMILY_MUTATION:A5.1-INDEPENDENT-GROUP-BIN-CORRUPTION",
         reference_policy="named-immutable",
     ),)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# A5.2 — environment-gated real-data CalibVertex/G7.32 acceptance
+# ─────────────────────────────────────────────────────────────────────────────
+
+A5_2_CASE_ID = "I4-REAL-G7-SUBFRAME-EAGER-20PCT-01"
+A5_2_SAMPLE_FRACTION = 0.20
+A5_2_SAMPLE_SEED = 42
+A5_2_GALLERY_FUNCTION = "fig32_subframe_vertex"
+
+
+def _a5_2_import_gallery():
+    """Import the trusted time_series_draw gallery only when real data is used.
+
+    Keeping this import delayed preserves the ratified split: the fast pytest
+    harness remains ROOT/data independent, while the standalone harness owns
+    the real-data execution.
+    """
+    import importlib
+    return importlib.import_module("time_series_draw")
+
+
+A5_2_ENV_AVAILABLE = "AVAILABLE"
+A5_2_ENV_UNAVAILABLE = "UNAVAILABLE"
+A5_2_ENV_CONTRACT_ERROR = "CONTRACT_ERROR"
+
+# Missing these modules is a known external-environment condition for the
+# trusted time-series gallery.  Everything else fails closed as gallery/code
+# contract drift rather than being silently converted to a non-gating SKIP.
+A5_2_EXTERNAL_MODULES = frozenset({
+    "time_series_draw",
+    "perfmonitor",
+    "ROOT",
+    "uproot",
+})
+
+
+def _a5_2_environment_status(root_path: str, gallery_module=None) -> tuple[str, str]:
+    """Classify A5.2 availability without hiding trusted-gallery contract drift."""
+    import os
+
+    if not root_path:
+        return A5_2_ENV_UNAVAILABLE, "no ROOT input path was supplied"
+    if not os.path.isfile(root_path):
+        return (A5_2_ENV_UNAVAILABLE,
+                f"ROOT input is unavailable: {os.path.abspath(root_path)}")
+    try:
+        gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+    except ModuleNotFoundError as exc:
+        missing = getattr(exc, "name", None)
+        if missing in A5_2_EXTERNAL_MODULES:
+            return (A5_2_ENV_UNAVAILABLE,
+                    f"time_series_draw environment unavailable: "
+                    f"{type(exc).__name__}: {exc}")
+        return (A5_2_ENV_CONTRACT_ERROR,
+                f"time_series_draw import contract failure: "
+                f"{type(exc).__name__}: {exc}")
+    except Exception as exc:
+        return (A5_2_ENV_CONTRACT_ERROR,
+                f"time_series_draw import contract failure: "
+                f"{type(exc).__name__}: {exc}")
+
+    required = ("build_adf", A5_2_GALLERY_FUNCTION)
+    missing = [name for name in required if not callable(getattr(gallery, name, None))]
+    if missing:
+        return (A5_2_ENV_CONTRACT_ERROR,
+                f"time_series_draw missing required callable(s): {missing}")
+    return A5_2_ENV_AVAILABLE, ""
+
+
+def a5_2_environment(root_path: str, gallery_module=None) -> tuple[bool, str]:
+    """Compatibility view of environment availability.
+
+    ``False`` covers both unavailable environment and contract error.  The
+    CaseSpec builder uses the richer classification so only genuine external
+    unavailability becomes a non-gating SKIP.
+    """
+    status, reason = _a5_2_environment_status(
+        root_path, gallery_module=gallery_module)
+    return status == A5_2_ENV_AVAILABLE, reason
+
+
+def a5_2_realdata_case(root_path: str, gallery_module=None) -> CaseSpec:
+    """Build the bounded environment-gated A5.2 real-data CaseSpec.
+
+    This first real-data increment deliberately proves execution/provenance,
+    not independent calibration correctness.  A5.1 already owns an independent
+    synthetic full-stack numerical oracle; later A5/A6 work owns real-data
+    GB/reference correctness and lazy/full equivalence.
+    """
+    env_status, reason = _a5_2_environment_status(
+        root_path, gallery_module=gallery_module)
+    # Only genuine external/data unavailability makes the case inapplicable.
+    # Gallery API/code drift remains applicable so the acceptance runner can
+    # fail closed instead of silently reporting a SKIP.
+    applicable = env_status != A5_2_ENV_UNAVAILABLE
+    applicability_reason = reason if not applicable else ""
+    return CaseSpec(
+        case_id=A5_2_CASE_ID,
+        claim_id="I4.real_g7_subframe.A5.2",
+        title="real CalibVertex G7.32 executes on deterministic eager 20% data",
+        claim=("the trusted time-series G7.32 CalibVertex subframe workflow executes "
+               "on the deterministic EAGER 20% sample, returns finite plotted/profile "
+               "y evidence from the public draw result, and records the actual "
+               "original-row sample identity"),
+        failure_means=("an applicable real-data G7.32 workflow silently skipped, "
+                       "failed to create the CalibVertex subframe, returned no finite "
+                       "plotted/profile y evidence, or the sampled-row provenance "
+                       "could not be established"),
+        expected_visual=("the existing G7.32 CalibVertex.vertex_x_intercept versus "
+                         "time_s profile on the deterministic 20% sample"),
+        owner_on_failure="ADF",
+        purpose="COVERAGE",
+        gate="ENVIRONMENT_GATED",
+        oracle_kind="CONSISTENCY",
+        loading_mode="EAGER",
+        sample_mode="FRACTION",
+        canonical_spec={
+            "gallery_function": A5_2_GALLERY_FUNCTION,
+            "expr": "CalibVertex.vertex_x_intercept:time_s",
+            "sample_fraction": A5_2_SAMPLE_FRACTION,
+            "sample_seed": A5_2_SAMPLE_SEED,
+        },
+        applicable=applicable,
+        applicability_reason=applicability_reason,
+        setup_contract=("time_series_draw.build_adf(root_path, sample=0.20, lazy=False) "
+                        "using its established random_state=42 sampling path; then the "
+                        "existing fig32_subframe_vertex() gallery function executes "
+                        "calibVertex(adf) and the public draw()"),
+        preconditions=(
+            "the ROOT input file is readable by the trusted time-series gallery environment",
+            "the trusted build_adf and fig32_subframe_vertex callables are available",
+            "sample fraction is exactly 0.20 and the established gallery seed is 42",
+        ),
+        surfaces_under_test=("draw",),
+        non_claims=(
+            "A5.2 is execution/provenance coverage, not an independent mathematical oracle for calibVertex",
+            "the GB correction figures G7.33/G7.34 remain a later bounded A5 increment",
+            "LAZY/FULL and BOTH/FULL real-data acceptance remain later A5/A6 work",
+            "the optional gallery may still skip G7.32; only this acceptance harness converts an applicable skip to FAIL",
+        ),
+        negative_control="FAMILY_MUTATION:A5.2-OPTIONAL-G7-NONE-MUST-FAIL",
+        reference_policy="named-immutable",
+    )
+
+
+def _a5_2_index_digest(index) -> str:
+    """Stable digest of the actual pre-reset pandas sample row identities."""
+    import hashlib
+    import pandas as pd
+
+    hashed = pd.util.hash_pandas_object(index, index=False).to_numpy(dtype=np.uint64)
+    h = hashlib.sha256()
+    h.update(str(getattr(index, "dtype", "unknown")).encode("utf-8"))
+    h.update(str(len(index)).encode("ascii"))
+    h.update(hashed.tobytes())
+    return h.hexdigest()
+
+
+def _a5_2_numeric_summary(stats: Any) -> dict:
+    """Bounded numerical inspectability summary for one public stats payload."""
+    numeric_scalars = 0
+    numeric_values = 0
+    finite_values = 0
+
+    def visit(value):
+        nonlocal numeric_scalars, numeric_values, finite_values
+        if isinstance(value, dict):
+            for child in value.values():
+                visit(child)
+            return
+        if hasattr(value, "columns") and hasattr(value, "__getitem__"):
+            for name in value.columns:
+                visit(value[name].to_numpy(copy=False))
+            return
+        if isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child)
+            return
+        try:
+            arr = np.asarray(value)
+        except Exception:
+            return
+        if not np.issubdtype(arr.dtype, np.number):
+            return
+        if arr.ndim == 0:
+            numeric_scalars += 1
+        numeric_values += int(arr.size)
+        try:
+            finite_values += int(np.isfinite(arr).sum())
+        except TypeError:
+            pass
+
+    visit(stats)
+    return {
+        "numeric_scalars": numeric_scalars,
+        "numeric_values": numeric_values,
+        "finite_values": finite_values,
+    }
+
+
+
+def _a5_2_profile_numeric_evidence(stats: Any) -> dict:
+    """Evidence from the plotted/profile y observable, not bookkeeping counts.
+
+    Prefer the established ``profile_data.count`` + ``profile_data.y_mean``
+    contract when the public payload exposes it.  The trusted G7.32 gallery
+    currently does not request ``return_data=True``; in that envelope the
+    established flat profile summary ``mean_y`` is the bounded equivalent
+    plotted-y observable.
+
+    If ``profile_data`` is present but malformed/non-finite, do not fall back
+    to ``mean_y``: a broken richer profile payload must fail closed.
+    """
+    evidence = {
+        "source": "",
+        "profile_data_present": False,
+        "populated_bins": 0,
+        "finite_profile_y_values": 0,
+    }
+    if not isinstance(stats, dict):
+        return evidence
+
+    profile_data = stats.get("profile_data")
+    if profile_data is not None:
+        evidence["source"] = "profile_data.y_mean"
+        evidence["profile_data_present"] = True
+        if not (hasattr(profile_data, "columns")
+                and "count" in profile_data.columns
+                and "y_mean" in profile_data.columns):
+            return evidence
+        try:
+            count = np.asarray(profile_data["count"])
+            y_mean = np.asarray(profile_data["y_mean"])
+            if count.shape != y_mean.shape:
+                return evidence
+            populated = np.asarray(count > 0, dtype=bool)
+            evidence["populated_bins"] = int(populated.sum())
+            if not np.issubdtype(y_mean.dtype, np.number):
+                return evidence
+            finite = populated & np.isfinite(y_mean)
+            evidence["finite_profile_y_values"] = int(finite.sum())
+            return evidence
+        except Exception:
+            return evidence
+
+    evidence["source"] = "mean_y"
+    mean_y = stats.get("mean_y", _MISSING)
+    if mean_y is _MISSING:
+        return evidence
+    try:
+        arr = np.asarray(mean_y)
+        if arr.ndim != 0 or not np.issubdtype(arr.dtype, np.number):
+            return evidence
+        evidence["populated_bins"] = 1
+        evidence["finite_profile_y_values"] = int(bool(np.isfinite(arr)))
+    except Exception:
+        pass
+    return evidence
+
+
+def run_a5_2_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
+                       sample_fraction: float = A5_2_SAMPLE_FRACTION,
+                       seed: int = A5_2_SAMPLE_SEED) -> CaseResult:
+    """Execute the bounded A5.2 real-data G7.32 acceptance contract.
+
+    The trusted gallery remains unchanged and may keep G7 optional.  This
+    runner is the acceptance boundary: once the environment is applicable,
+    ``fig32_subframe_vertex() -> None`` is a FAIL, not a silent SKIP.
+
+    The runner instruments the *actual* ``pandas.DataFrame.sample`` call made by
+    ``time_series_draw.build_adf``.  It records the original row index selected
+    before the gallery resets the sampled frame index, satisfying the v1.2
+    requirement that FRACTION runs preserve sample identity rather than merely
+    record ``fraction=0.20``.
+    """
+    _skip = _inapplicable(case)
+    if _skip is not None:
+        return _skip
+    t0 = time.time()
+    res = CaseResult(case_id=case.case_id, status=SKIP)
+    original_sample = None
+    try:
+        if case.case_id != A5_2_CASE_ID:
+            res.status = INVALID_FIXTURE
+            res.detail = f"A5.2 runner received unexpected case {case.case_id!r}"
+            return res
+        if (case.purpose != "COVERAGE" or case.gate != "ENVIRONMENT_GATED"
+                or case.loading_mode != "EAGER" or case.sample_mode != "FRACTION"):
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.2 runner requires COVERAGE/ENVIRONMENT_GATED/EAGER/FRACTION"
+            return res
+        if sample_fraction != A5_2_SAMPLE_FRACTION or seed != A5_2_SAMPLE_SEED:
+            res.status = INVALID_FIXTURE
+            res.detail = ("A5.2 canonical sample is fixed at fraction=0.20, seed=42; "
+                          f"got fraction={sample_fraction!r}, seed={seed!r}")
+            return res
+
+        gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+        env_status, why = _a5_2_environment_status(
+            root_path, gallery_module=gallery)
+        if env_status != A5_2_ENV_AVAILABLE:
+            # The case reached execution as applicable.  Any subsequent
+            # unavailability or trusted-gallery contract drift is evidence
+            # drift and must fail closed rather than become a SKIP.
+            res.status = INVALID_FIXTURE
+            res.detail = (
+                f"A5.2 environment/contract changed after CaseSpec creation "
+                f"({env_status}): {why}")
+            return res
+
+        import os
+        import pandas as pd
+        sample_calls = []
+        original_sample = pd.DataFrame.sample
+
+        def recording_sample(self, *args, **kwargs):
+            out = original_sample(self, *args, **kwargs)
+            frac = kwargs.get("frac")
+            random_state = kwargs.get("random_state")
+            if frac == A5_2_SAMPLE_FRACTION and random_state == A5_2_SAMPLE_SEED:
+                sample_calls.append({
+                    "source_rows": int(len(self)),
+                    "selected_rows": int(len(out)),
+                    "index_digest_sha256": _a5_2_index_digest(out.index),
+                    "index_dtype": str(out.index.dtype),
+                })
+            return out
+
+        pd.DataFrame.sample = recording_sample
+        try:
+            adf = gallery.build_adf(root_path, sample=sample_fraction, lazy=False)
+        finally:
+            pd.DataFrame.sample = original_sample
+            original_sample = None
+
+        if getattr(adf, "_lazy_reader", None) is not None:
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.2 EAGER build unexpectedly attached a lazy reader"
+            return res
+        if len(sample_calls) != 1:
+            res.status = INVALID_FIXTURE
+            res.detail = ("A5.2 could not identify exactly one canonical pandas "
+                          f"sample call; observed {len(sample_calls)}")
+            return res
+        sample_evidence = sample_calls[0]
+        if int(len(adf.df)) != sample_evidence["selected_rows"]:
+            res.status = INVALID_FIXTURE
+            res.detail = ("A5.2 sampled-row provenance disagrees with the final "
+                          f"ADF row count: {sample_evidence['selected_rows']} vs {len(adf.df)}")
+            return res
+        if sample_evidence["selected_rows"] <= 0:
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.2 deterministic sample is empty"
+            return res
+
+        gallery_fn = getattr(gallery, A5_2_GALLERY_FUNCTION)
+        raw = gallery_fn(adf)
+        if raw is None:
+            res.status = FAIL
+            res.detail = ("applicable A5.2 G7.32 returned None: the optional gallery "
+                          "skip is not an acceptance PASS")
+            return res
+        payload = unwrap("draw", raw)
+        if not isinstance(payload.stats, dict):
+            res.status = FAIL
+            res.detail = "A5.2 G7.32 returned a non-dict public stats payload"
+            return res
+
+        sf = adf.get_subframe("CalibVertex")
+        if sf is None or "vertex_x_intercept" not in sf.df.columns:
+            res.status = FAIL
+            res.detail = "A5.2 G7.32 did not leave the expected CalibVertex subframe evidence"
+            return res
+        if "vertex_x_intercept" in adf.df.columns:
+            res.status = FAIL
+            res.detail = "A5.2 parent was contaminated with subframe-only vertex_x_intercept"
+            return res
+
+        n_value = payload.stats.get("n")
+        try:
+            n_numeric = int(n_value)
+        except (TypeError, ValueError):
+            res.status = FAIL
+            res.detail = f"A5.2 G7.32 stats has no usable n count: {n_value!r}"
+            return res
+        if n_numeric <= 0:
+            res.status = FAIL
+            res.detail = f"A5.2 G7.32 produced no selected rows (n={n_numeric})"
+            return res
+        summary = _a5_2_numeric_summary(payload.stats)
+        profile_evidence = _a5_2_profile_numeric_evidence(payload.stats)
+        if (profile_evidence["populated_bins"] <= 0
+                or profile_evidence["finite_profile_y_values"] <= 0):
+            res.status = FAIL
+            res.detail = (
+                "A5.2 G7.32 has no finite populated plotted/profile y evidence: "
+                f"{profile_evidence}; bookkeeping summary={summary}")
+            return res
+
+        st = os.stat(root_path)
+        res.payload_paths = {"G7.32/draw": list(payload.path)}
+        res.observed["realdata_provenance"] = {
+            "input_path": os.path.abspath(root_path),
+            "input_size_bytes": int(st.st_size),
+            "input_mtime_ns": int(st.st_mtime_ns),
+            "loading_mode": "EAGER",
+            "sample_mode": "FRACTION",
+            "sample_fraction": A5_2_SAMPLE_FRACTION,
+            "sample_seed": A5_2_SAMPLE_SEED,
+            "sampling_algorithm": ("pandas.DataFrame.sample(frac=0.20, "
+                                   "random_state=42) observed at runtime"),
+            **sample_evidence,
+        }
+        res.observed["g7_32_evidence"] = {
+            "gallery_function": A5_2_GALLERY_FUNCTION,
+            "calibvertex_subframe_registered": True,
+            "parent_subframe_column_isolated": True,
+            "public_n": n_numeric,
+            "numeric_summary": summary,
+            "profile_numeric_evidence": profile_evidence,
+        }
+        res.status = PASS
+        return res
+    except Exception as exc:
+        res.status = FAIL
+        res.detail = f"{type(exc).__name__}: {exc}"
+        res.exception = traceback.format_exc(limit=6)
+        return res
+    finally:
+        if original_sample is not None:
+            try:
+                import pandas as pd
+                pd.DataFrame.sample = original_sample
+            except Exception:
+                pass
+        _close()
+        res.wall_time_s = round(time.time() - t0, 4)
+
+
+def run_a5_2_realdata_gate(root_path: str, *, manifest_path: str,
+                           gallery_module=None) -> tuple[CaseResult, dict, int]:
+    """Run A5.2 once, write its manifest, and return the strict exit code."""
+    case = a5_2_realdata_case(root_path, gallery_module=gallery_module)
+    result = run_a5_2_realdata(case, root_path, gallery_module=gallery_module)
+    extra = {}
+    if isinstance(result.observed.get("realdata_provenance"), dict):
+        extra.update(result.observed["realdata_provenance"])
+    doc = write_manifest(manifest_path, [result], [case], extra=extra)
+    return result, doc, strict_exit_code([result], [case])
 
 
 # ─────────────────────────────────────────────────────────────────────────────

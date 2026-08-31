@@ -3265,3 +3265,273 @@ def test_a5_04_preloaded_unrelated_branch_is_invalid_fixture_not_pass():
     assert bad.status == H.INVALID_FIXTURE, bad.detail
     assert "structural baseline mismatch" in bad.detail
     assert H.strict_exit_code([bad], [case]) == 1
+
+# ── A5.2 — environment-gated real-data G7.32 acceptance plumbing ───────────
+
+class _A52FakeSubframe:
+    def __init__(self):
+        self.df = pd.DataFrame({
+            "quantile_bin": np.arange(4, dtype=np.int16),
+            "vertex_x_intercept": np.asarray([0.1, 0.2, 0.3, 0.4]),
+        })
+
+
+class _A52FakeADF:
+    def __init__(self, df):
+        self.df = df
+        self._lazy_reader = None
+        self._subframes = {}
+
+    def get_subframe(self, name):
+        return self._subframes.get(name)
+
+
+class _A52FakeGallery:
+    @staticmethod
+    def build_adf(root_path, sample=None, lazy=False):
+        assert lazy is False
+        frame = pd.DataFrame({
+            "time_s": np.linspace(0.0, 100.0, 20),
+            "quantile_bin": np.arange(20, dtype=np.int16) % 4,
+            "noise": np.linspace(-1.0, 1.0, 20),
+        })
+        adf = _A52FakeADF(frame)
+        if sample is not None:
+            adf.df = adf.df.sample(frac=sample, random_state=42).reset_index(drop=True)
+        return adf
+
+    @staticmethod
+    def fig32_subframe_vertex(adf):
+        adf._subframes["CalibVertex"] = _A52FakeSubframe()
+        n = int(len(adf.df))
+        stats = {
+            "n": n,
+            "mean_y": 0.25,
+            "profile_data": pd.DataFrame({
+                "count": np.asarray([n], dtype=np.int64),
+                "y_mean": np.asarray([0.25], dtype=np.float64),
+            }),
+        }
+        return None, None, stats
+
+
+class _A52NoneGallery(_A52FakeGallery):
+    @staticmethod
+    def fig32_subframe_vertex(adf):
+        return None
+
+
+class _A52RaiseGallery(_A52FakeGallery):
+    @staticmethod
+    def fig32_subframe_vertex(adf):
+        raise RuntimeError("deliberate G7 failure")
+
+
+class _A52MissingG7Gallery:
+    build_adf = staticmethod(_A52FakeGallery.build_adf)
+
+
+class _A52NonFiniteProfileGallery(_A52FakeGallery):
+    @staticmethod
+    def fig32_subframe_vertex(adf):
+        adf._subframes["CalibVertex"] = _A52FakeSubframe()
+        n = int(len(adf.df))
+        stats = {
+            "n": n,
+            "mean_y": np.nan,
+            "profile_data": pd.DataFrame({
+                "count": np.asarray([n], dtype=np.int64),
+                "y_mean": np.asarray([np.nan], dtype=np.float64),
+            }),
+        }
+        return None, None, stats
+
+
+class _A52BuildRaiseGallery(_A52FakeGallery):
+    @staticmethod
+    def build_adf(root_path, sample=None, lazy=False):
+        frame = pd.DataFrame({
+            "time_s": np.linspace(0.0, 100.0, 20),
+            "quantile_bin": np.arange(20, dtype=np.int16) % 4,
+        })
+        if sample is not None:
+            frame.sample(frac=sample, random_state=42)
+        raise RuntimeError("deliberate build failure after sample")
+
+
+def test_a5_05_unavailable_realdata_environment_skips_without_running_product(tmp_path):
+    missing = tmp_path / "missing.root"
+    case = H.a5_2_realdata_case(str(missing), gallery_module=_A52RaiseGallery)
+    assert case.case_id == H.A5_2_CASE_ID
+    assert case.gate == "ENVIRONMENT_GATED"
+    assert case.applicable is False
+    assert "unavailable" in case.applicability_reason
+
+    result = H.run_a5_2_realdata(
+        case, str(missing), gallery_module=_A52RaiseGallery)
+    assert result.status == H.SKIP, result.detail
+    assert H.strict_exit_code([result], [case]) == 0
+
+
+def test_a5_06_realdata_case_pins_eager_fraction_20pct_seed42(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.2 fake ROOT identity")
+    case = H.a5_2_realdata_case(str(root_path), gallery_module=_A52FakeGallery)
+
+    assert case.applicable is True
+    assert case.purpose == "COVERAGE"
+    assert case.gate == "ENVIRONMENT_GATED"
+    assert case.loading_mode == "EAGER"
+    assert case.sample_mode == "FRACTION"
+    assert case.canonical_spec["gallery_function"] == "fig32_subframe_vertex"
+    assert case.canonical_spec["sample_fraction"] == 0.20
+    assert case.canonical_spec["sample_seed"] == 42
+    assert H.validate_registry([case]) == []
+    assert H.audit_declared_state() == []
+
+
+def test_a5_07_realdata_runner_records_actual_sample_identity_and_g7_evidence(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.2 deterministic input")
+    case = H.a5_2_realdata_case(str(root_path), gallery_module=_A52FakeGallery)
+
+    first = H.run_a5_2_realdata(case, str(root_path), gallery_module=_A52FakeGallery)
+    second = H.run_a5_2_realdata(case, str(root_path), gallery_module=_A52FakeGallery)
+    assert first.status == H.PASS, first.detail
+    assert second.status == H.PASS, second.detail
+    assert H.strict_exit_code([first], [case]) == 0
+
+    prov = first.observed["realdata_provenance"]
+    assert prov["source_rows"] == 20
+    assert prov["selected_rows"] == 4
+    assert prov["sample_fraction"] == 0.20
+    assert prov["sample_seed"] == 42
+    assert len(prov["index_digest_sha256"]) == 64
+    assert second.observed["realdata_provenance"]["index_digest_sha256"] == (
+        prov["index_digest_sha256"])
+
+    g7 = first.observed["g7_32_evidence"]
+    assert g7["gallery_function"] == "fig32_subframe_vertex"
+    assert g7["calibvertex_subframe_registered"] is True
+    assert g7["parent_subframe_column_isolated"] is True
+    assert g7["public_n"] == 4
+    assert g7["numeric_summary"]["numeric_values"] > 0
+    assert g7["numeric_summary"]["finite_values"] > 0
+    assert g7["profile_numeric_evidence"]["source"] == "profile_data.y_mean"
+    assert g7["profile_numeric_evidence"]["populated_bins"] == 1
+    assert g7["profile_numeric_evidence"]["finite_profile_y_values"] == 1
+
+
+def test_a5_08_realdata_gate_persists_sample_provenance_in_manifest(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.2 manifest input")
+    manifest = tmp_path / "a5_2_manifest.json"
+
+    result, doc, code = H.run_a5_2_realdata_gate(
+        str(root_path), manifest_path=str(manifest), gallery_module=_A52FakeGallery)
+    assert result.status == H.PASS, result.detail
+    assert code == 0
+    assert manifest.exists()
+    assert doc["provenance"]["sample_fraction"] == 0.20
+    assert doc["provenance"]["sample_seed"] == 42
+    assert len(doc["provenance"]["index_digest_sha256"]) == 64
+    assert doc["provenance"]["selected_rows"] == 4
+    assert doc["cases"][0]["case_id"] == H.A5_2_CASE_ID
+    assert doc["cases"][0]["status"] == H.PASS
+
+
+def test_a5_09_applicable_optional_gallery_none_is_fail_not_skip(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.2 optional-none input")
+    case = H.a5_2_realdata_case(str(root_path), gallery_module=_A52NoneGallery)
+
+    result = H.run_a5_2_realdata(
+        case, str(root_path), gallery_module=_A52NoneGallery)
+    assert result.status == H.FAIL, result.detail
+    assert "optional gallery skip is not an acceptance PASS" in result.detail
+    assert H.strict_exit_code([result], [case]) == 1
+
+
+def test_a5_10_applicable_g7_exception_fails_closed_and_wrong_seed_is_invalid(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.2 failure input")
+
+    case = H.a5_2_realdata_case(str(root_path), gallery_module=_A52RaiseGallery)
+    failed = H.run_a5_2_realdata(
+        case, str(root_path), gallery_module=_A52RaiseGallery)
+    assert failed.status == H.FAIL, failed.detail
+    assert "deliberate G7 failure" in failed.detail
+    assert H.strict_exit_code([failed], [case]) == 1
+
+    good_case = H.a5_2_realdata_case(str(root_path), gallery_module=_A52FakeGallery)
+    invalid = H.run_a5_2_realdata(
+        good_case, str(root_path), gallery_module=_A52FakeGallery, seed=7)
+    assert invalid.status == H.INVALID_FIXTURE, invalid.detail
+    assert "fraction=0.20, seed=42" in invalid.detail
+    assert H.strict_exit_code([invalid], [good_case]) == 1
+
+def test_a5_11_missing_required_gallery_callable_is_not_a_skip(tmp_path):
+    """A5.2-P1-ENVIRONMENT: trusted-gallery API drift must fail closed."""
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.2 missing-callable input")
+
+    case = H.a5_2_realdata_case(
+        str(root_path), gallery_module=_A52MissingG7Gallery)
+    assert case.applicable is True
+    assert case.applicability_reason == ""
+
+    result = H.run_a5_2_realdata(
+        case, str(root_path), gallery_module=_A52MissingG7Gallery)
+    assert result.status == H.INVALID_FIXTURE, result.detail
+    assert "missing required callable" in result.detail
+    assert H.strict_exit_code([result], [case]) == 1
+
+
+def test_a5_12_unexpected_gallery_import_exception_is_not_environment_skip(
+        tmp_path, monkeypatch):
+    """A5.2-P1-ENVIRONMENT: unexpected gallery code/import drift must gate."""
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.2 import-contract input")
+
+    def broken_import():
+        raise RuntimeError("deliberate gallery import contract failure")
+
+    monkeypatch.setattr(H, "_a5_2_import_gallery", broken_import)
+    case = H.a5_2_realdata_case(str(root_path))
+    assert case.applicable is True
+
+    result = H.run_a5_2_realdata(case, str(root_path))
+    assert result.status == H.FAIL, result.detail
+    assert "deliberate gallery import contract failure" in result.detail
+    assert H.strict_exit_code([result], [case]) == 1
+
+
+def test_a5_13_finite_bookkeeping_cannot_hide_all_nan_profile_y(tmp_path):
+    """A5.2-P1-NUMERIC: n/count finite is not plotted-y evidence."""
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.2 nonfinite-profile input")
+    case = H.a5_2_realdata_case(
+        str(root_path), gallery_module=_A52NonFiniteProfileGallery)
+
+    result = H.run_a5_2_realdata(
+        case, str(root_path), gallery_module=_A52NonFiniteProfileGallery)
+    assert result.status == H.FAIL, result.detail
+    assert "no finite populated plotted/profile y evidence" in result.detail
+    assert "finite_values" in result.detail  # bookkeeping is visibly finite
+    assert H.strict_exit_code([result], [case]) == 1
+
+
+def test_a5_14_sample_monkeypatch_restored_when_build_fails(tmp_path):
+    """Recommended hardening: DataFrame.sample restoration is exception-safe."""
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.2 restoration input")
+    case = H.a5_2_realdata_case(
+        str(root_path), gallery_module=_A52BuildRaiseGallery)
+
+    original = pd.DataFrame.sample
+    result = H.run_a5_2_realdata(
+        case, str(root_path), gallery_module=_A52BuildRaiseGallery)
+    assert result.status == H.FAIL, result.detail
+    assert "deliberate build failure after sample" in result.detail
+    assert pd.DataFrame.sample is original
+    assert H.strict_exit_code([result], [case]) == 1
