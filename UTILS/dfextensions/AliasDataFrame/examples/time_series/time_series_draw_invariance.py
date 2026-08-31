@@ -32,7 +32,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A5.2.v03"
+SCHEMA_VERSION = "13.77.A5.3.v03"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -2766,6 +2766,442 @@ def run_a5_2_realdata_gate(root_path: str, *, manifest_path: str,
     doc = write_manifest(manifest_path, [result], [case], extra=extra)
     return result, doc, strict_exit_code([result], [case])
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# A5.3 — environment-gated real-data G7.32 LAZY/FULL acceptance
+# ─────────────────────────────────────────────────────────────────────────────
+
+A5_3_CASE_ID = "I4-REAL-G7-SUBFRAME-LAZY-FULL-01"
+A5_3_TREE_NAME = "treeTimeSeries"
+A5_3_BLOCKER_CASE_ID = "I4-REAL-G7-SUBFRAME-LAZY-FULL-TIMEMS-REFUSAL-01"
+A5_3_BLOCKER_BUG_ID = "BUG_time_series_draw_20260901_lazy_build_adf_timeMS_unloaded"
+
+
+def a5_3_realdata_case(root_path: str, gallery_module=None) -> CaseSpec:
+    """Build the bounded real-data LAZY/FULL G7.32 CaseSpec.
+
+    A5.2 established the canonical EAGER/FRACTION real-data bridge.  A5.3
+    changes one execution dimension: it reuses the same trusted G7.32 workflow
+    on the supported unsampled lazy loader.  It is COVERAGE, not an
+    eager-vs-lazy numerical equivalence proof; the BOTH/FULL comparison remains
+    a later bounded increment.
+    """
+    env_status, reason = _a5_2_environment_status(
+        root_path, gallery_module=gallery_module)
+    applicable = env_status != A5_2_ENV_UNAVAILABLE
+    applicability_reason = reason if not applicable else ""
+    return CaseSpec(
+        case_id=A5_3_CASE_ID,
+        claim_id="I4.real_g7_subframe_lazy.A5.3",
+        title="real CalibVertex G7.32 executes on unsampled lazy full data",
+        claim=("the trusted time-series G7.32 CalibVertex subframe workflow "
+               "executes through build_adf(lazy=True, sample=None), remains "
+               "genuinely lazy, performs no pandas sampling, expands its "
+               "on-demand physical branch set during G7.32, and returns finite "
+               "plotted/profile y evidence"),
+        failure_means=("an applicable lazy/full G7.32 workflow is eager in "
+                       "disguise, samples the input, performs no on-demand "
+                       "branch expansion, silently skips, loses CalibVertex "
+                       "isolation, or returns no finite plotted/profile y evidence"),
+        expected_visual=("the existing G7.32 CalibVertex.vertex_x_intercept "
+                         "versus time_s profile on the full lazy input"),
+        owner_on_failure="ADF",
+        purpose="COVERAGE",
+        gate="ENVIRONMENT_GATED",
+        oracle_kind="CONSISTENCY",
+        loading_mode="LAZY",
+        sample_mode="FULL",
+        canonical_spec={
+            "gallery_function": A5_2_GALLERY_FUNCTION,
+            "expr": "CalibVertex.vertex_x_intercept:time_s",
+            "sample": None,
+            "lazy": True,
+            "tree_name": A5_3_TREE_NAME,
+        },
+        applicable=applicable,
+        applicability_reason=applicability_reason,
+        setup_contract=("time_series_draw.build_adf(root_path, sample=None, "
+                        "lazy=True) using the established read_tree_lazy path; "
+                        "then the existing fig32_subframe_vertex() executes "
+                        "calibVertex(adf) and public draw()"),
+        preconditions=(
+            "the ROOT input file is readable by the trusted time-series gallery environment",
+            "the trusted build_adf and fig32_subframe_vertex callables are available",
+            "sample is None because sampled-lazy is explicitly unsupported",
+            "the lazy build exposes a live _lazy_reader with loaded_branches evidence",
+        ),
+        surfaces_under_test=("draw",),
+        non_claims=(
+            "A5.3 is lazy/full execution coverage, not independent calibVertex correctness",
+            "A5.3 does not compare EAGER/FULL and LAZY/FULL numerical outputs",
+            "A5.3 records lazy branch expansion but does not claim an exact minimal branch set",
+            "G7.33/G7.34 GB correction coverage remains a later bounded A5 increment",
+        ),
+        negative_control="FAMILY_MUTATION:A5.3-EAGER-IN-DISGUISE-OR-NO-LAZY-EXPANSION",
+        reference_policy="named-immutable",
+    )
+
+
+def _a5_3_loaded_branches(adf) -> tuple[str, ...] | None:
+    """Return canonical lazy-reader branch evidence, or None if unavailable."""
+    reader = getattr(adf, "_lazy_reader", None)
+    if reader is None:
+        return None
+    loaded = getattr(reader, "loaded_branches", None)
+    if loaded is None:
+        return None
+    try:
+        return tuple(sorted(str(x) for x in loaded))
+    except TypeError:
+        return None
+
+
+
+def a5_3_lazy_setup_error_case(root_path: str, gallery_module=None) -> CaseSpec:
+    """Current real-data A5.3 boundary: trusted lazy gallery setup refuses."""
+    env_status, reason = _a5_2_environment_status(
+        root_path, gallery_module=gallery_module)
+    applicable = env_status != A5_2_ENV_UNAVAILABLE
+    applicability_reason = reason if not applicable else ""
+    return CaseSpec(
+        case_id=A5_3_BLOCKER_CASE_ID,
+        claim_id="I4.real_g7_subframe_lazy.setup_refusal.A5.3",
+        title="real lazy/full time-series setup refuses on unloaded timeMS",
+        claim=("the current trusted build_adf(lazy=True, sample=None, "
+               "tree_name='treeTimeSeries') refuses at addTimeQuantiles with "
+               "KeyError('timeMS'); any different failure or silent success "
+               "forces review of this capability boundary"),
+        failure_means=("the known lazy setup boundary changed without the "
+                       "A5.3 contract being updated, or an unrelated failure "
+                       "was mistaken for the owned timeMS blocker"),
+        expected_visual="no figure: current blocker occurs before G7.32 rendering",
+        owner_on_failure="ADF",
+        purpose="ERROR_CONTRACT",
+        gate="ENVIRONMENT_GATED",
+        oracle_kind="CONSISTENCY",
+        loading_mode="LAZY",
+        sample_mode="FULL",
+        canonical_spec={
+            "gallery_function": A5_2_GALLERY_FUNCTION,
+            "sample": None,
+            "lazy": True,
+            "tree_name": A5_3_TREE_NAME,
+            "expected_exception": "KeyError",
+            "expected_key": "timeMS",
+        },
+        applicable=applicable,
+        applicability_reason=applicability_reason,
+        setup_contract=("call unchanged time_series_draw.build_adf with "
+                        "sample=None, lazy=True and tree_name='treeTimeSeries'; "
+                        "do not preload timeMS in the A5 harness"),
+        preconditions=(
+            "ROOT input is readable by the trusted time-series environment",
+            "trusted build_adf is available",
+            "sample is None because sampled-lazy is unsupported",
+        ),
+        surfaces_under_test=(),
+        known_bug_status="KNOWN_BUG",
+        known_bug_id=A5_3_BLOCKER_BUG_ID,
+        non_claims=(
+            "this error contract does not claim G7.32 lazy/full execution succeeds",
+            "the owning fix is outside PHASE_13_77 A5",
+            "the positive synthetic A5.3 runner remains a future-success oracle",
+        ),
+        negative_control=("wrong exception key/type or unexpected successful "
+                          "lazy setup must gate"),
+        reference_policy="named-immutable",
+    )
+
+
+def run_a5_3_lazy_setup_error_contract(
+        case: CaseSpec, root_path: str, *, gallery_module=None) -> CaseResult:
+    """Require the exact current lazy/full timeMS setup refusal."""
+    _skip = _inapplicable(case)
+    if _skip is not None:
+        return _skip
+    t0 = time.time()
+    res = CaseResult(case_id=case.case_id, status=SKIP)
+    original_sample = None
+    try:
+        if case.case_id != A5_3_BLOCKER_CASE_ID:
+            res.status = INVALID_FIXTURE
+            res.detail = f"A5.3 blocker runner received unexpected case {case.case_id!r}"
+            return res
+        if (case.purpose != "ERROR_CONTRACT"
+                or case.gate != "ENVIRONMENT_GATED"
+                or case.loading_mode != "LAZY"
+                or case.sample_mode != "FULL"
+                or case.known_bug_id != A5_3_BLOCKER_BUG_ID):
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.3 blocker runner requires exact ERROR_CONTRACT/LAZY/FULL bug identity"
+            return res
+
+        gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+        env_status, why = _a5_2_environment_status(
+            root_path, gallery_module=gallery)
+        if env_status != A5_2_ENV_AVAILABLE:
+            res.status = INVALID_FIXTURE
+            res.detail = (
+                f"A5.3 environment/contract changed after CaseSpec creation "
+                f"({env_status}): {why}")
+            return res
+
+        import pandas as pd
+        sample_calls = []
+        original_sample = pd.DataFrame.sample
+
+        def forbidden_sample(self, *args, **kwargs):
+            sample_calls.append({"args": list(args), "kwargs": dict(kwargs)})
+            return original_sample(self, *args, **kwargs)
+
+        pd.DataFrame.sample = forbidden_sample
+        try:
+            try:
+                gallery.build_adf(
+                    root_path, sample=None, lazy=True,
+                    tree_name=case.canonical_spec["tree_name"])
+            except KeyError as exc:
+                if sample_calls:
+                    res.status = INVALID_FIXTURE
+                    res.detail = (
+                        "A5.3 setup sampled before expected timeMS refusal; "
+                        f"observed {len(sample_calls)} call(s)")
+                    return res
+                if tuple(exc.args) == (case.canonical_spec["expected_key"],):
+                    res.status = PASS
+                    res.detail = (
+                        f"refused as required by {A5_3_BLOCKER_BUG_ID}: "
+                        "KeyError('timeMS') before G7.32")
+                    res.observed["known_bug_evidence"] = {
+                        "bug_id": A5_3_BLOCKER_BUG_ID,
+                        "exception_type": "KeyError",
+                        "exception_key": "timeMS",
+                        "tree_name": case.canonical_spec["tree_name"],
+                        "loading_mode": "LAZY",
+                        "sample_mode": "FULL",
+                    }
+                    return res
+                res.status = FAIL
+                res.detail = (
+                    "A5.3 lazy setup raised KeyError, but not the owned "
+                    f"timeMS key: args={exc.args!r}")
+                return res
+            except Exception as exc:
+                res.status = FAIL
+                res.detail = (
+                    "A5.3 lazy setup failed outside the owned timeMS contract: "
+                    f"{type(exc).__name__}: {exc}")
+                res.exception = traceback.format_exc(limit=6)
+                return res
+        finally:
+            pd.DataFrame.sample = original_sample
+            original_sample = None
+
+        if sample_calls:
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.3 LAZY/FULL setup unexpectedly sampled and then succeeded"
+            return res
+
+        res.status = FAIL
+        res.detail = (
+            f"{A5_3_BLOCKER_BUG_ID} unexpectedly disappeared: trusted lazy "
+            "build_adf succeeded; retire/update the error contract before "
+            "claiming A5.3 real-data coverage")
+        return res
+    finally:
+        if original_sample is not None:
+            try:
+                import pandas as pd
+                pd.DataFrame.sample = original_sample
+            except Exception:
+                pass
+        _close()
+        res.wall_time_s = round(time.time() - t0, 4)
+
+
+def run_a5_3_realdata(case: CaseSpec, root_path: str, *, gallery_module=None) -> CaseResult:
+    """Execute the bounded A5.3 LAZY/FULL real-data G7.32 contract."""
+    _skip = _inapplicable(case)
+    if _skip is not None:
+        return _skip
+    t0 = time.time()
+    res = CaseResult(case_id=case.case_id, status=SKIP)
+    original_sample = None
+    try:
+        if case.case_id != A5_3_CASE_ID:
+            res.status = INVALID_FIXTURE
+            res.detail = f"A5.3 runner received unexpected case {case.case_id!r}"
+            return res
+        if (case.purpose != "COVERAGE" or case.gate != "ENVIRONMENT_GATED"
+                or case.loading_mode != "LAZY" or case.sample_mode != "FULL"):
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.3 runner requires COVERAGE/ENVIRONMENT_GATED/LAZY/FULL"
+            return res
+
+        gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+        env_status, why = _a5_2_environment_status(
+            root_path, gallery_module=gallery)
+        if env_status != A5_2_ENV_AVAILABLE:
+            res.status = INVALID_FIXTURE
+            res.detail = (
+                f"A5.3 environment/contract changed after CaseSpec creation "
+                f"({env_status}): {why}")
+            return res
+
+        import os
+        import pandas as pd
+
+        sample_calls = []
+        original_sample = pd.DataFrame.sample
+
+        def forbidden_sample(self, *args, **kwargs):
+            sample_calls.append({"args": list(args), "kwargs": dict(kwargs)})
+            return original_sample(self, *args, **kwargs)
+
+        pd.DataFrame.sample = forbidden_sample
+        try:
+            adf = gallery.build_adf(
+                root_path, sample=None, lazy=True,
+                tree_name=case.canonical_spec["tree_name"])
+        finally:
+            pd.DataFrame.sample = original_sample
+            original_sample = None
+
+        if sample_calls:
+            res.status = INVALID_FIXTURE
+            res.detail = (
+                "A5.3 LAZY/FULL build unexpectedly called pandas.DataFrame.sample; "
+                f"observed {len(sample_calls)} call(s)")
+            return res
+
+        loaded_before = _a5_3_loaded_branches(adf)
+        if loaded_before is None:
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.3 lazy build has no usable _lazy_reader.loaded_branches evidence"
+            return res
+
+        gallery_fn = getattr(gallery, A5_2_GALLERY_FUNCTION)
+        raw = gallery_fn(adf)
+        if raw is None:
+            res.status = FAIL
+            res.detail = (
+                "applicable A5.3 G7.32 returned None: the optional gallery skip "
+                "is not a lazy/full acceptance PASS")
+            return res
+        payload = unwrap("draw", raw)
+        if not isinstance(payload.stats, dict):
+            res.status = FAIL
+            res.detail = "A5.3 G7.32 returned a non-dict public stats payload"
+            return res
+
+        loaded_after = _a5_3_loaded_branches(adf)
+        if loaded_after is None:
+            res.status = FAIL
+            res.detail = "A5.3 lost lazy-reader branch evidence during G7.32"
+            return res
+        before_set = set(loaded_before)
+        after_set = set(loaded_after)
+        if not before_set.issubset(after_set):
+            res.status = FAIL
+            res.detail = (
+                "A5.3 lazy loaded-branch state regressed during G7.32: "
+                f"before={loaded_before}, after={loaded_after}")
+            return res
+        newly_loaded = tuple(sorted(after_set - before_set))
+        if not newly_loaded:
+            res.status = FAIL
+            res.detail = (
+                "A5.3 G7.32 produced no on-demand physical branch expansion; "
+                "lazy/full acceptance would be eager-in-disguise or non-causal")
+            return res
+
+        sf = adf.get_subframe("CalibVertex")
+        if sf is None or "vertex_x_intercept" not in sf.df.columns:
+            res.status = FAIL
+            res.detail = "A5.3 G7.32 did not leave the expected CalibVertex subframe evidence"
+            return res
+        if "vertex_x_intercept" in adf.df.columns:
+            res.status = FAIL
+            res.detail = "A5.3 parent was contaminated with subframe-only vertex_x_intercept"
+            return res
+
+        n_value = payload.stats.get("n")
+        try:
+            n_numeric = int(n_value)
+        except (TypeError, ValueError):
+            res.status = FAIL
+            res.detail = f"A5.3 G7.32 stats has no usable n count: {n_value!r}"
+            return res
+        if n_numeric <= 0:
+            res.status = FAIL
+            res.detail = f"A5.3 G7.32 produced no rows (n={n_numeric})"
+            return res
+
+        summary = _a5_2_numeric_summary(payload.stats)
+        profile_evidence = _a5_2_profile_numeric_evidence(payload.stats)
+        if (profile_evidence["populated_bins"] <= 0
+                or profile_evidence["finite_profile_y_values"] <= 0):
+            res.status = FAIL
+            res.detail = (
+                "A5.3 G7.32 has no finite populated plotted/profile y evidence: "
+                f"{profile_evidence}; bookkeeping summary={summary}")
+            return res
+
+        st = os.stat(root_path)
+        res.payload_paths = {"G7.32/draw": list(payload.path)}
+        res.observed["realdata_provenance"] = {
+            "input_path": os.path.abspath(root_path),
+            "input_size_bytes": int(st.st_size),
+            "input_mtime_ns": int(st.st_mtime_ns),
+            "loading_mode": "LAZY",
+            "sample_mode": "FULL",
+            "sample_fraction": None,
+            "sample_seed": None,
+            "tree_name": case.canonical_spec["tree_name"],
+            "source_rows": int(len(adf.df)),
+            "lazy_loaded_before": list(loaded_before),
+            "lazy_loaded_after": list(loaded_after),
+            "lazy_newly_loaded": list(newly_loaded),
+        }
+        res.observed["g7_32_evidence"] = {
+            "gallery_function": A5_2_GALLERY_FUNCTION,
+            "calibvertex_subframe_registered": True,
+            "parent_subframe_column_isolated": True,
+            "public_n": n_numeric,
+            "numeric_summary": summary,
+            "profile_numeric_evidence": profile_evidence,
+        }
+        res.status = PASS
+        return res
+    except Exception as exc:
+        res.status = FAIL
+        res.detail = f"{type(exc).__name__}: {exc}"
+        res.exception = traceback.format_exc(limit=6)
+        return res
+    finally:
+        if original_sample is not None:
+            try:
+                import pandas as pd
+                pd.DataFrame.sample = original_sample
+            except Exception:
+                pass
+        _close()
+        res.wall_time_s = round(time.time() - t0, 4)
+
+
+def run_a5_3_realdata_gate(root_path: str, *, manifest_path: str,
+                           gallery_module=None) -> tuple[CaseResult, dict, int]:
+    """Run the current real-data A5.3 fail-closed lazy-setup boundary."""
+    case = a5_3_lazy_setup_error_case(
+        root_path, gallery_module=gallery_module)
+    result = run_a5_3_lazy_setup_error_contract(
+        case, root_path, gallery_module=gallery_module)
+    extra = {}
+    if isinstance(result.observed.get("known_bug_evidence"), dict):
+        extra.update(result.observed["known_bug_evidence"])
+    doc = write_manifest(manifest_path, [result], [case], extra=extra)
+    return result, doc, strict_exit_code([result], [case])
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5.  Registry validation — §14's self-checks, run BEFORE any case executes.

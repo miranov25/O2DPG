@@ -3349,7 +3349,7 @@ class _A52NonFiniteProfileGallery(_A52FakeGallery):
 
 class _A52BuildRaiseGallery(_A52FakeGallery):
     @staticmethod
-    def build_adf(root_path, sample=None, lazy=False):
+    def build_adf(root_path, sample=None, lazy=False, tree_name="tree"):
         frame = pd.DataFrame({
             "time_s": np.linspace(0.0, 100.0, 20),
             "quantile_bin": np.arange(20, dtype=np.int16) % 4,
@@ -3534,4 +3534,216 @@ def test_a5_14_sample_monkeypatch_restored_when_build_fails(tmp_path):
     assert result.status == H.FAIL, result.detail
     assert "deliberate build failure after sample" in result.detail
     assert pd.DataFrame.sample is original
+    assert H.strict_exit_code([result], [case]) == 1
+
+# ── A5.3 — real-data G7.32 LAZY/FULL acceptance ──────────────────────────────
+
+class _A53FakeLazyReader:
+    def __init__(self, loaded=()):
+        self.loaded_branches = set(loaded)
+
+
+class _A53FakeGallery:
+    @staticmethod
+    def build_adf(root_path, sample=None, lazy=False, tree_name="tree"):
+        assert sample is None
+        assert lazy is True
+        assert tree_name == H.A5_3_TREE_NAME
+        frame = pd.DataFrame({
+            "time_s": np.linspace(0.0, 100.0, 20),
+            "quantile_bin": np.arange(20, dtype=np.int16) % 4,
+        })
+        adf = _A52FakeADF(frame)
+        adf._lazy_reader = _A53FakeLazyReader({"timeMS", "sector"})
+        return adf
+
+    @staticmethod
+    def fig32_subframe_vertex(adf):
+        adf._lazy_reader.loaded_branches.update({"vertex_x", "vertex_z"})
+        adf._subframes["CalibVertex"] = _A52FakeSubframe()
+        n = int(len(adf.df))
+        return None, None, {
+            "n": n,
+            "mean_y": 0.25,
+            "profile_data": pd.DataFrame({
+                "count": np.asarray([n], dtype=np.int64),
+                "y_mean": np.asarray([0.25], dtype=np.float64),
+            }),
+        }
+
+
+class _A53EagerDisguiseGallery(_A53FakeGallery):
+    @staticmethod
+    def build_adf(root_path, sample=None, lazy=False, tree_name="tree"):
+        assert tree_name == H.A5_3_TREE_NAME
+        frame = pd.DataFrame({
+            "time_s": np.linspace(0.0, 100.0, 20),
+            "quantile_bin": np.arange(20, dtype=np.int16) % 4,
+        })
+        return _A52FakeADF(frame)
+
+
+class _A53NoExpansionGallery(_A53FakeGallery):
+    @staticmethod
+    def fig32_subframe_vertex(adf):
+        adf._subframes["CalibVertex"] = _A52FakeSubframe()
+        n = int(len(adf.df))
+        return None, None, {"n": n, "mean_y": 0.25}
+
+
+class _A53SamplingGallery(_A53FakeGallery):
+    @staticmethod
+    def build_adf(root_path, sample=None, lazy=False, tree_name="tree"):
+        assert tree_name == H.A5_3_TREE_NAME
+        frame = pd.DataFrame({
+            "time_s": np.linspace(0.0, 100.0, 20),
+            "quantile_bin": np.arange(20, dtype=np.int16) % 4,
+        })
+        # Deliberate contract violation: FULL lazy setup must never sample.
+        frame = frame.sample(frac=1.0, random_state=42).reset_index(drop=True)
+        adf = _A52FakeADF(frame)
+        adf._lazy_reader = _A53FakeLazyReader({"timeMS", "sector"})
+        return adf
+
+
+def test_a5_15_lazy_full_case_is_bounded_and_registry_valid(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.3 lazy/full input")
+    case = H.a5_3_realdata_case(str(root_path), gallery_module=_A53FakeGallery)
+
+    assert case.case_id == H.A5_3_CASE_ID
+    assert case.purpose == "COVERAGE"
+    assert case.gate == "ENVIRONMENT_GATED"
+    assert case.loading_mode == "LAZY"
+    assert case.sample_mode == "FULL"
+    assert case.canonical_spec["sample"] is None
+    assert case.canonical_spec["lazy"] is True
+    assert case.canonical_spec["tree_name"] == "treeTimeSeries"
+    assert H.validate_registry([case]) == []
+    assert H.audit_declared_state() == []
+
+
+def test_a5_16_lazy_full_g7_records_real_lazy_branch_expansion(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.3 lazy/full execution")
+    case = H.a5_3_realdata_case(str(root_path), gallery_module=_A53FakeGallery)
+
+    result = H.run_a5_3_realdata(
+        case, str(root_path), gallery_module=_A53FakeGallery)
+    assert result.status == H.PASS, result.detail
+    assert H.strict_exit_code([result], [case]) == 0
+
+    prov = result.observed["realdata_provenance"]
+    assert prov["loading_mode"] == "LAZY"
+    assert prov["sample_mode"] == "FULL"
+    assert prov["sample_fraction"] is None
+    assert prov["sample_seed"] is None
+    assert prov["tree_name"] == "treeTimeSeries"
+    assert set(prov["lazy_loaded_before"]) == {"sector", "timeMS"}
+    assert set(prov["lazy_newly_loaded"]) == {"vertex_x", "vertex_z"}
+    assert set(prov["lazy_loaded_after"]) == {
+        "sector", "timeMS", "vertex_x", "vertex_z"}
+
+    g7 = result.observed["g7_32_evidence"]
+    assert g7["calibvertex_subframe_registered"] is True
+    assert g7["parent_subframe_column_isolated"] is True
+    assert g7["profile_numeric_evidence"]["finite_profile_y_values"] == 1
+
+
+def test_a5_17_lazy_full_eager_in_disguise_is_invalid_fixture(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.3 eager-disguise input")
+    case = H.a5_3_realdata_case(
+        str(root_path), gallery_module=_A53EagerDisguiseGallery)
+
+    result = H.run_a5_3_realdata(
+        case, str(root_path), gallery_module=_A53EagerDisguiseGallery)
+    assert result.status == H.INVALID_FIXTURE, result.detail
+    assert "_lazy_reader.loaded_branches" in result.detail
+    assert H.strict_exit_code([result], [case]) == 1
+
+
+def test_a5_18_lazy_full_requires_on_demand_branch_expansion(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.3 no-expansion input")
+    case = H.a5_3_realdata_case(
+        str(root_path), gallery_module=_A53NoExpansionGallery)
+
+    result = H.run_a5_3_realdata(
+        case, str(root_path), gallery_module=_A53NoExpansionGallery)
+    assert result.status == H.FAIL, result.detail
+    assert "no on-demand physical branch expansion" in result.detail
+    assert H.strict_exit_code([result], [case]) == 1
+
+
+def test_a5_19_lazy_full_forbids_sampling_and_restores_sample(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.3 sampling-violation input")
+    case = H.a5_3_realdata_case(
+        str(root_path), gallery_module=_A53SamplingGallery)
+
+    original = pd.DataFrame.sample
+    result = H.run_a5_3_realdata(
+        case, str(root_path), gallery_module=_A53SamplingGallery)
+    assert result.status == H.INVALID_FIXTURE, result.detail
+    assert "unexpectedly called pandas.DataFrame.sample" in result.detail
+    assert pd.DataFrame.sample is original
+    assert H.strict_exit_code([result], [case]) == 1
+
+class _A53TimeMSBlockerGallery:
+    @staticmethod
+    def build_adf(root_path, sample=None, lazy=False, tree_name="tree"):
+        assert sample is None
+        assert lazy is True
+        assert tree_name == H.A5_3_TREE_NAME
+        raise KeyError("timeMS")
+
+    fig32_subframe_vertex = staticmethod(_A53FakeGallery.fig32_subframe_vertex)
+
+
+class _A53WrongKeyBlockerGallery(_A53TimeMSBlockerGallery):
+    @staticmethod
+    def build_adf(root_path, sample=None, lazy=False, tree_name="tree"):
+        raise KeyError("notTimeMS")
+
+
+def test_a5_20_realdata_lazy_setup_exact_timems_blocker_is_error_contract_pass(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.3 exact timeMS blocker")
+    case = H.a5_3_lazy_setup_error_case(
+        str(root_path), gallery_module=_A53TimeMSBlockerGallery)
+
+    assert case.purpose == "ERROR_CONTRACT"
+    assert case.known_bug_status == "KNOWN_BUG"
+    assert case.known_bug_id == H.A5_3_BLOCKER_BUG_ID
+    result = H.run_a5_3_lazy_setup_error_contract(
+        case, str(root_path), gallery_module=_A53TimeMSBlockerGallery)
+    assert result.status == H.PASS, result.detail
+    assert result.observed["known_bug_evidence"]["exception_key"] == "timeMS"
+    assert H.strict_exit_code([result], [case]) == 0
+
+
+def test_a5_21_realdata_lazy_setup_wrong_key_does_not_false_green(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.3 wrong blocker")
+    case = H.a5_3_lazy_setup_error_case(
+        str(root_path), gallery_module=_A53WrongKeyBlockerGallery)
+
+    result = H.run_a5_3_lazy_setup_error_contract(
+        case, str(root_path), gallery_module=_A53WrongKeyBlockerGallery)
+    assert result.status == H.FAIL, result.detail
+    assert "not the owned timeMS key" in result.detail
+    assert H.strict_exit_code([result], [case]) == 1
+
+
+def test_a5_22_realdata_lazy_setup_success_forces_contract_review(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.3 blocker unexpectedly gone")
+    case = H.a5_3_lazy_setup_error_case(
+        str(root_path), gallery_module=_A53FakeGallery)
+
+    result = H.run_a5_3_lazy_setup_error_contract(
+        case, str(root_path), gallery_module=_A53FakeGallery)
+    assert result.status == H.FAIL, result.detail
+    assert "unexpectedly disappeared" in result.detail
     assert H.strict_exit_code([result], [case]) == 1
