@@ -17,9 +17,11 @@
 #   test_full_<ts>.log             Full pytest output
 #   test_focused_<ts>.log          Phase suite only
 #   runxfail_focused_<ts>.log      Phase suite with xfail DISABLED (failures expected)
-#   md5_manifest_<ts>.txt          Fingerprints of the reviewed bytes
+#   focused_nodes_<ts>.txt         Exact focused collection manifest
+#   md5_manifest_<ts>.txt          Fingerprints of the reviewed FINAL bytes
 #   test_failures_<ts>.log         Failures only
-#   CAPABILITY_MATRIX_<ts>.md      Auto-generated matrix snapshot
+#   CAPABILITY_MATRIX_<ts>.md      Auto-generated Markdown matrix snapshot
+#   CAPABILITY_MATRIX_<ts>.html    Auto-generated HTML matrix snapshot
 #   diff_last_commit_<ts>.txt      Uncommitted diff + last commit diff
 #   diff_to_phase_<ts>.txt         Diff since PHASE_BEGIN_AliasDataFrame tag
 #   git_status_<ts>.txt            Working tree state (git status --porcelain)
@@ -57,7 +59,7 @@ Usage:
 
 Options:
   --help       Show this help
-  --quick      Run tests only (no matrix, no diffs)
+  --quick      Run tests only (no matrix)
   --matrix     Generate matrix only (skip tests)
   --verbose    Verbose pytest output
 
@@ -68,8 +70,10 @@ Output:
   test_logs/SUMMARY_<ts>.txt            Test summary
   test_logs/test_focused_<ts>.log       Phase suite only
   test_logs/runxfail_focused_<ts>.log   Phase suite, xfail disabled (failures expected)
-  test_logs/md5_manifest_<ts>.txt       Fingerprints of the reviewed bytes
-  test_logs/CAPABILITY_MATRIX_<ts>.md   Feature matrix
+  test_logs/focused_nodes_<ts>.txt      Exact focused collection manifest
+  test_logs/md5_manifest_<ts>.txt       Fingerprints of reviewed final bytes
+  test_logs/CAPABILITY_MATRIX_<ts>.md   Markdown feature matrix
+  test_logs/CAPABILITY_MATRIX_<ts>.html HTML feature matrix
   test_logs/diff_last_commit_<ts>.txt   Uncommitted + HEAD~1 diffs
   test_logs/diff_to_phase_<ts>.txt      Diff since PHASE_BEGIN tag
   test_logs/git_status_<ts>.txt         Working tree state snapshot
@@ -119,34 +123,31 @@ FAIL_FILE="$LOG_DIR/test_failures_${TS}.log"
 JSON_DIR="$LOG_DIR/json_report_${TS}"
 JSON_REPORT="$JSON_DIR/.pytest_report.json"
 MATRIX_MD="$LOG_DIR/CAPABILITY_MATRIX_${TS}.md"
+MATRIX_HTML="$LOG_DIR/CAPABILITY_MATRIX_${TS}.html"
 SUMMARY_FILE="$LOG_DIR/SUMMARY_${TS}.txt"
 DIFF_COMMIT="$LOG_DIR/diff_last_commit_${TS}.txt"
 DIFF_PHASE="$LOG_DIR/diff_to_phase_${TS}.txt"
 GIT_STATUS="$LOG_DIR/git_status_${TS}.txt"
+
 # Focused (phase) suite, logged SEPARATELY and shipped in the packet.
-# GPT30 P2-1, round 6: the CRR quoted a focused-suite count that the packet
-# contained no evidence for, so a reviewer could verify the full run and not
-# the number the CRR actually led with. Override the pattern per phase:
+# Override the pattern per phase, e.g.:
 #   FOCUSED_TESTS="tests/test_phase_13_77_*.py" bash run_tests.sh
 FOCUSED_TESTS="${FOCUSED_TESTS:-tests/test_phase_13_76_draw_path_characterization.py}"
 FOCUSED_LOG="$LOG_DIR/test_focused_${TS}.log"
-# --runxfail evidence for the focused suite. Six times in PHASE_13_76 a strict
-# xfail failed for the WRONG reason -- a broken import, a fixture that never
-# built the case its reason named, an oracle a comment could satisfy. The
-# panel's standing rule is that a strict xfail is not acceptance evidence
-# until it has been run with xfail handling DISABLED and its failure shown to
-# be the contract defect its reason string names. Four review rounds asked for
-# this log and it was attached by hand each time; produced here it is always
-# in the packet and never depends on anyone remembering.
+
+# RUNNER-FOCUS-1: exact focused collection evidence. The manifest is the
+# execution authority: collect once, then both normal and raw lanes execute
+# exactly those collected node IDs with the same xdist configuration.
+FOCUSED_NODE_LOG="$LOG_DIR/focused_nodes_${TS}.txt"
+
+# --runxfail evidence for the focused suite.
 RUNXFAIL_LOG="$LOG_DIR/runxfail_focused_${TS}.log"
-# Candidate fingerprints. Reviewers verify the reviewed bytes by checksum, and
-# twice an install silently did not land -- the packet then measured one file
-# while the CRR quoted another.
+
+# Candidate fingerprints.
 MD5_MANIFEST="$LOG_DIR/md5_manifest_${TS}.txt"
 REVIEWER_ZIP="$LOG_DIR/reviewer_${TS}.zip"
-# Absolute path, computed HERE rather than at packaging time, so the summary
-# block below can print it BEFORE the file exists. `realpath -m` resolves a
-# not-yet-created path; the fallback covers platforms without it.
+
+# Absolute path, computed before packaging so the summary can print it.
 REVIEWER_ZIP_ABS="$(realpath -m "$REVIEWER_ZIP" 2>/dev/null || echo "$PROJECT_ROOT/$REVIEWER_ZIP")"
 
 echo "========================================"
@@ -174,10 +175,6 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
         GIT_TREE_STATE="DIRTY (uncommitted changes — not anchored to $GIT_HASH)"
     fi
 
-    # Combined diff: uncommitted work (reviewer's primary interest)
-    # + last committed change (for context).
-    # Phase 13.16.DF fix: was 'git diff HEAD~1..HEAD' which misses uncommitted work.
-    # --relative makes paths cwd-relative (drawer.py instead of UTILS/.../drawer.py).
     {
         echo "=== Uncommitted changes (git diff HEAD) ==="
         echo "=== staged + unstaged, relative to last commit ==="
@@ -190,7 +187,6 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
     } > "$DIFF_COMMIT"
     echo "  Last commit diff: $(realpath "$DIFF_COMMIT" 2>/dev/null || echo "$DIFF_COMMIT")"
 
-    # Phase diff — AliasDataFrame tag names (this project's own tags)
     PHASE_TAG=""
     for tag in PHASE_BEGIN_AliasDataFrame PHASE_BEGIN_ADF; do
         if git rev-parse --verify "$tag" &>/dev/null; then
@@ -200,17 +196,13 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
     done
 
     if [[ -n "$PHASE_TAG" ]]; then
-        # Phase 13.16.DF fix: was '$PHASE_TAG..HEAD' which misses uncommitted work.
-        # 'git diff $PHASE_TAG' without range includes working tree.
-        # --relative scopes paths to cwd.
         git diff --relative "$PHASE_TAG" -- . > "$DIFF_PHASE" 2>/dev/null || true
         echo "  Phase tag: $PHASE_TAG"
     else
         echo "(No PHASE_BEGIN_* tag found — searched: PHASE_BEGIN_AliasDataFrame, PHASE_BEGIN_ADF)" > "$DIFF_PHASE"
         echo "  ⚠️  No phase tag — create with: source scripts/phase_tag.sh && phase_begin <id>"
     fi
-    
-    # Working tree snapshot — reviewers use this to verify repo state
+
     {
         echo "=== git status --porcelain (scoped to cwd) ==="
         git status --porcelain -- . 2>/dev/null || echo "(git status failed)"
@@ -223,11 +215,6 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
         echo ""
         echo "=== Branch ==="
         git branch --show-current 2>/dev/null || echo "(git branch failed)"
-        # Phase 13.27 Commit 2 FIX1.FIX1 follow-up — Sonet50 reviewer-packet
-        # gap: tag listing was missing from reviewer.zip across multiple
-        # phases, forcing reviewers to round-trip the architect for tag
-        # verification. Append PHASE_* tags (newest first, last 10) and
-        # the last 5 commits with decorations.
         echo ""
         echo "=== PHASE_* tags (newest first, last 10) ==="
         git tag --list 'PHASE_*' --sort=-creatordate 2>/dev/null | head -10 \
@@ -270,10 +257,6 @@ if [[ "$MODE" != "matrix" ]]; then
     DURATION=$((END_TIME - START_TIME))
     DURATION_STR="$((DURATION / 60))m $((DURATION % 60))s"
 
-    # Counts come from the SAME JSON the capability matrix consumes (single source of
-    # truth — no terminal scraping). pytest-json-report records collection errors (e.g. a
-    # module that fails to import) in collectors[].outcome, NOT summary.error, so ERRORS
-    # sums both. See BUG_20260630_run_tests for why the scrape/two-source design was wrong.
     read PASSED FAILED ERRORS SKIPPED < <(python3 - "$JSON_REPORT" << 'PYCOUNT'
 import json, sys
 try:
@@ -281,82 +264,50 @@ try:
 except Exception:
     print("0 0 0 0"); sys.exit()
 s = r.get("summary", {})
-passed = s.get("passed", 0); failed = s.get("failed", 0); skipped = s.get("skipped", 0)
-# test-level errors (summary.error) + collection errors (collectors with non-passed outcome)
+passed = s.get("passed", 0)
+failed = s.get("failed", 0)
+skipped = s.get("skipped", 0)
 errors = s.get("error", 0)
-errors += sum(1 for c in r.get("collectors", []) if c.get("outcome") in ("failed", "error"))
+errors += sum(
+    1 for c in r.get("collectors", [])
+    if c.get("outcome") in ("failed", "error")
+)
 print(passed, failed, errors, skipped)
 PYCOUNT
 )
     PASSED=${PASSED:-0}; FAILED=${FAILED:-0}; ERRORS=${ERRORS:-0}; SKIPPED=${SKIPPED:-0}
 
-    # Extract failures
     grep -E "^FAILED |^ERROR " "$LOG_FILE" 2>/dev/null | sort -u > "$FAIL_FILE" || true
 
-    # --- focused (phase) suite, its own log so the CRR's headline number is
-    # verifiable from the packet rather than taken on trust.
+    # Focused suite: collect one node set, then execute the SAME selection
+    # normally and with --runxfail. Both execution lanes use xdist.
     if compgen -G "$FOCUSED_TESTS" > /dev/null 2>&1; then
-        echo "--- Running focused suite: $FOCUSED_TESTS ---"
-        python3 -m pytest $FOCUSED_TESTS -q --tb=short 2>&1 | tee "$FOCUSED_LOG"
+        echo "--- Collecting focused node set: $FOCUSED_TESTS ---"
+        python3 -m pytest $FOCUSED_TESTS --collect-only -q 2>/dev/null \
+            | grep '::' | sort -u > "$FOCUSED_NODE_LOG" || true
+        FOCUSED_NODE_COUNT=$(grep -c '::' "$FOCUSED_NODE_LOG" 2>/dev/null || echo 0)
+        echo "  focused nodes: $FOCUSED_NODE_COUNT"
+
+        mapfile -t FOCUSED_NODES < "$FOCUSED_NODE_LOG"
+        if [[ ${#FOCUSED_NODES[@]} -eq 0 ]]; then
+            echo "ERROR: focused collection produced zero executable node IDs" >&2
+            return 1 2>/dev/null || false
+        fi
+
+        echo "--- Running exact collected focused node set ---"
+        python3 -m pytest "${FOCUSED_NODES[@]}" -n "$PYTEST_WORKERS" -q --tb=short \
+            2>&1 | tee "$FOCUSED_LOG"
         FOCUSED_LINE=$(grep -E "^[0-9]+ (passed|failed)" "$FOCUSED_LOG" | tail -1)
         echo "  focused: ${FOCUSED_LINE:-<no summary line>}"
 
-        # --- the same focused suite with xfail handling DISABLED.
-        # EXPECTED to report failures: that is the point. Each line is a
-        # strict xfail failing, and the reviewer checks that the cause matches
-        # the reason the criterion states. `|| true` because a non-zero exit
-        # here is the designed outcome, not a problem with the run.
-        echo "--- Recording --runxfail evidence for the focused suite ---"
-        python3 -m pytest $FOCUSED_TESTS --runxfail -q --tb=line -p no:warnings \
-            > "$RUNXFAIL_LOG" 2>&1 || true
+        echo "--- Recording --runxfail evidence for the exact same focused node set ---"
+        python3 -m pytest "${FOCUSED_NODES[@]}" --runxfail -n "$PYTEST_WORKERS" \
+            -q --tb=line -p no:warnings > "$RUNXFAIL_LOG" 2>&1 || true
         RUNXFAIL_LINE=$(grep -E "^[0-9]+ (passed|failed)" "$RUNXFAIL_LOG" | tail -1)
         echo "  runxfail: ${RUNXFAIL_LINE:-<no summary line>} (failures here are EXPECTED)"
     else
         echo "--- No focused suite matched: $FOCUSED_TESTS ---"
     fi
-
-    # --- fingerprints of the reviewed bytes ---------------------------------
-    # The file list is DERIVED, not written down. B3.2b STEP 5a was the first
-    # increment to change a third production file (exceptions.py) and the
-    # hard-coded list silently left it out of the evidence — the whole D_6
-    # hierarchy lived in bytes the manifest could not confirm (GPT29 §7.1).
-    # Anything the working tree or the index has changed is fingerprinted, so
-    # no future increment can add a file and lose it from the record.
-    #
-    # v03 (P1-2, GPT34/GPT31): the first version of this filtered `*.py`, so
-    # the claim "anything changed is fingerprinted" was false for the very
-    # run that introduced it — `run_tests.sh` itself had just been modified
-    # and did not appear. NO EXTENSION FILTER. `git diff --name-only` lists
-    # only TRACKED modifications, so the list stays bounded without one.
-    CANDIDATE_FILES=$(
-        {
-            echo "AliasDataFrame.py"
-            for t in $FOCUSED_TESTS; do echo "$t"; done
-            if git rev-parse --is-inside-work-tree &>/dev/null; then
-                git diff --name-only --relative HEAD 2>/dev/null
-                git diff --cached --name-only --relative HEAD 2>/dev/null
-            fi
-        } | sed 's|^\./||' | sort -u
-    )
-    {
-        echo "=== MD5 of the candidate files ==="
-        echo "(the bytes this run measured; compare against the CRR)"
-        echo "(list DERIVED from the working tree + index, not hard-coded)"
-        echo ""
-        for f in $CANDIDATE_FILES; do
-            [[ -f "$f" ]] && md5sum "$f" 2>/dev/null
-        done
-        echo ""
-        echo "=== staged blob MD5 (what a commit would record) ==="
-        if git rev-parse --is-inside-work-tree &>/dev/null; then
-            for f in $CANDIDATE_FILES; do
-                if git ls-files --error-unmatch "$f" &>/dev/null; then
-                    printf '%s  %s\n' \
-                        "$(git show ":0:./$f" 2>/dev/null | md5sum | cut -d' ' -f1)" "$f"
-                fi
-            done
-        fi
-    } > "$MD5_MANIFEST" 2>/dev/null || true
 
     echo ""
     echo "⏱️  Tests completed in $DURATION_STR"
@@ -364,7 +315,7 @@ PYCOUNT
 fi
 
 # =============================================================================
-# Generate capability matrix
+# Generate capability matrix — shared semantics, established HTML renderer
 # =============================================================================
 
 if [[ "$MODE" != "quick" ]]; then
@@ -377,58 +328,112 @@ if [[ "$MODE" != "quick" ]]; then
         [[ -f "$candidate" ]] && MATRIX_SCRIPT="$candidate" && break
     done
 
-    if [[ -n "$MATRIX_SCRIPT" ]]; then
-        MATRIX_ARGS=""
-        [[ -f "$JSON_REPORT" ]] && MATRIX_ARGS="--test-results $JSON_REPORT"
+    HTML_SCRIPT=""
+    for candidate in \
+        "scripts/generate_matrix_html.py" \
+        "tests/scripts/generate_matrix_html.py"; do
+        [[ -f "$candidate" ]] && HTML_SCRIPT="$candidate" && break
+    done
 
-        # Phase 13.49.DF §9 D-B: derive --phase from the most recent _END tag.
-        # NB: the glob is 'PHASE_[0-9]*_DF*_END' (no underscore between _DF and *).
-        # The natural-looking pattern '_DF_*_END' would require >=1 char between
-        # _DF_ and _END and silently miss the plain _END tags (most phases).
-        # Verified at v1.2 implementation against the real tag set.
-        PHASE_FOR_MATRIX=$(git tag --list 'PHASE_[0-9]*_DF*_END' --sort=-creatordate 2>/dev/null | head -1)
-        if [[ -n "$PHASE_FOR_MATRIX" ]]; then
-            MATRIX_ARGS="$MATRIX_ARGS --phase $PHASE_FOR_MATRIX"
-        else
-            MATRIX_ARGS="$MATRIX_ARGS --phase unknown"
-        fi
+    # Both renderers consume the same pytest JSON evidence.  The HTML script
+    # imports build_matrix_model() from generate_capability_matrix.py, so the
+    # historical rich renderer is presentation-only and cannot independently
+    # redefine feature status.
+    MATRIX_JSON=""
+    if [[ -f "$JSON_REPORT" ]]; then
+        MATRIX_JSON="$JSON_REPORT"
+    elif [[ -f ".pytest_report.json" ]]; then
+        MATRIX_JSON=".pytest_report.json"
+    fi
 
-        python3 "$MATRIX_SCRIPT" $MATRIX_ARGS 2>&1 || \
-            echo "⚠️  Capability matrix generation had errors"
+    # MATRIX-PHASE-1: this is the AliasDataFrame matrix.  Resolve phase
+    # provenance only from ADF phase tags; never reuse dfdraw *_DF*_END tags.
+    PHASE_FOR_MATRIX=$(git tag --merged HEAD --list 'PHASE_*_ADF_BEGIN' --sort=-creatordate 2>/dev/null | head -1)
+    if [[ -z "$PHASE_FOR_MATRIX" ]]; then
+        PHASE_FOR_MATRIX=$(git tag --merged HEAD --list 'PHASE_BEGIN_AliasDataFrame' --sort=-creatordate 2>/dev/null | head -1)
+    fi
+    if [[ -z "$PHASE_FOR_MATRIX" ]]; then
+        PHASE_FOR_MATRIX=$(git tag --merged HEAD --list 'PHASE_BEGIN_ADF' --sort=-creatordate 2>/dev/null | head -1)
+    fi
+    [[ -n "$PHASE_FOR_MATRIX" ]] || PHASE_FOR_MATRIX="PHASE_13_76_ADF"
 
-        # Copy timestamped snapshot
-        [[ -f "docs/CAPABILITY_MATRIX.md" ]] && cp "docs/CAPABILITY_MATRIX.md" "$MATRIX_MD"
-    else
+    if [[ -n "$MATRIX_SCRIPT" && -n "$MATRIX_JSON" ]]; then
+        python3 "$MATRIX_SCRIPT" \
+            --test-results "$MATRIX_JSON" \
+            --phase "$PHASE_FOR_MATRIX" 2>&1 || \
+            echo "⚠️  Capability matrix Markdown generation had errors"
+
+        [[ -f "docs/CAPABILITY_MATRIX.md" ]] && \
+            cp "docs/CAPABILITY_MATRIX.md" "$MATRIX_MD"
+    elif [[ -z "$MATRIX_SCRIPT" ]]; then
         echo "⚠️  generate_capability_matrix.py not found"
         echo "    Expected at: scripts/generate_capability_matrix.py"
+    else
+        echo "⚠️  pytest JSON report not found; Capability Matrix not regenerated"
+    fi
+
+    if [[ -n "$HTML_SCRIPT" && -n "$MATRIX_JSON" ]]; then
+        # MATRIX-PARITY-1 + HTML-PRESENTATION-1:
+        # keep the established interactive HTML renderer, but feed it the
+        # shared normalized semantic model via the same pytest JSON evidence.
+        python3 "$HTML_SCRIPT" \
+            --test-results "$MATRIX_JSON" \
+            --output "docs/CAPABILITY_MATRIX.html" \
+            --snapshot "$MATRIX_HTML" \
+            --phase "$PHASE_FOR_MATRIX" 2>&1 || \
+            echo "⚠️  Capability matrix HTML generation had errors"
+    elif [[ -z "$HTML_SCRIPT" ]]; then
+        echo "⚠️  generate_matrix_html.py not found"
+        echo "    Expected at: scripts/generate_matrix_html.py"
     fi
     echo ""
 fi
 
-# =============================================================================
-# BUG_ADF_20260705_matrix_html — HTML matrix (dfdraw parity) + env stamps
-# Architect decisions 2026-07-05: phase = latest ADF BEGIN tag (in the script);
-# off-gate: red banner only (#2 not needed); md env stamp (#3 yes); BUG commit (#4).
-# =============================================================================
-HTML_SCRIPT=""
-for cand in "scripts/generate_matrix_html.py" "tests/scripts/generate_matrix_html.py"; do
-    [[ -f "$cand" ]] && HTML_SCRIPT="$cand" && break
-done
-if [[ -n "$HTML_SCRIPT" ]]; then
-    python3 "$HTML_SCRIPT" --log "$LOG_FILE" \
-        --output "docs/CAPABILITY_MATRIX.html" \
-        --snapshot "$LOG_DIR/CAPABILITY_MATRIX_${TS}.html" 2>&1 \
-        || echo "${YELLOW}⚠️  generate_matrix_html.py failed (non-blocking)${RESET}"
-else
-    echo "${YELLOW}⚠️  generate_matrix_html.py not found — docs/CAPABILITY_MATRIX.html not regenerated${RESET}"
-fi
-# Environment stamp into the md (idempotent; one line, grep-guarded)
+# Environment stamp into Markdown only.  The established HTML renderer keeps
+# its own environment/off-gate banner.
 ENV_STAMP="*Environment: $(hostname) · $(uname -s)-$(uname -m) · Python $(python3 -c 'import platform; print(platform.python_version())') · stamped by run_tests.sh*"
 for mdf in "docs/CAPABILITY_MATRIX.md" "$MATRIX_MD"; do
     if [[ -f "$mdf" ]] && ! grep -q '^\*Environment: ' "$mdf"; then
         printf '\n%s\n' "$ENV_STAMP" >> "$mdf"
     fi
 done
+
+# =============================================================================
+# Final candidate fingerprints — AFTER matrix generation/copy/render
+# =============================================================================
+# REVIEWER-CUSTODY: candidate hashes must describe the final bytes that are
+# about to enter reviewer.zip, not pre-generation matrix bytes.
+
+CANDIDATE_FILES=$(
+    {
+        echo "AliasDataFrame.py"
+        for t in $FOCUSED_TESTS; do echo "$t"; done
+        if git rev-parse --is-inside-work-tree &>/dev/null; then
+            git diff --name-only --relative HEAD 2>/dev/null
+            git diff --cached --name-only --relative HEAD 2>/dev/null
+        fi
+    } | sed 's|^\./||' | sort -u
+)
+
+{
+    echo "=== MD5 of the candidate files ==="
+    echo "(the FINAL bytes this run measured; compare against the CRR)"
+    echo "(computed after Markdown/HTML generation and final copies)"
+    echo ""
+    for f in $CANDIDATE_FILES; do
+        [[ -f "$f" ]] && md5sum "$f" 2>/dev/null
+    done
+    echo ""
+    echo "=== staged blob MD5 (what a commit would record) ==="
+    if git rev-parse --is-inside-work-tree &>/dev/null; then
+        for f in $CANDIDATE_FILES; do
+            if git ls-files --error-unmatch "$f" &>/dev/null; then
+                printf '%s  %s\n' \
+                    "$(git show ":0:./$f" 2>/dev/null | md5sum | cut -d' ' -f1)" "$f"
+            fi
+        done
+    fi
+} > "$MD5_MANIFEST" 2>/dev/null || true
 
 # =============================================================================
 # Summary
@@ -447,11 +452,6 @@ done
     echo "Tree state:   $GIT_TREE_STATE"
     echo "Python:       $(python3 --version 2>&1)"
     echo "Platform:     $(uname -s) $(uname -m)"
-    # The package versions, not just Python's. PHASE_13_76 lost a full round to
-    # an "unstable" Arrow test that was pandas resolving `pandas_dtype("string")`
-    # differently by version -- invisible while the summary said only
-    # "Python 3.10.19". A divergence between machines is now diagnosable from
-    # the packet instead of by argument.
     echo "Packages:     $(python3 -c 'import pandas,numpy;print(f"pandas {pandas.__version__} numpy {numpy.__version__}",end="")' 2>/dev/null || echo "pandas ? numpy ?")$(python3 -c 'import pyarrow;print(f" pyarrow {pyarrow.__version__}",end="")' 2>/dev/null)$(python3 -c 'import uproot;print(f" uproot {uproot.__version__}",end="")' 2>/dev/null)"
     echo "Workers:      $PYTEST_WORKERS"
     echo "Duration:     ${DURATION_STR:-N/A}"
@@ -470,7 +470,7 @@ done
     fi
     if [[ -f "$MATRIX_MD" ]]; then
         echo "── Capability Matrix Summary ──"
-        sed -n '/^## Summary/,/^## /p' "$MATRIX_MD" | head -12
+        sed -n '/^## Summary/,/^## /p' "$MATRIX_MD" | head -16
         echo ""
     fi
     echo "── Files ──"
@@ -481,6 +481,10 @@ done
     echo "  Diff:     $(realpath "$DIFF_COMMIT" 2>/dev/null || echo "$DIFF_COMMIT")"
     echo "  Phase:    $(realpath "$DIFF_PHASE" 2>/dev/null || echo "$DIFF_PHASE")"
     echo "  Status:   $(realpath "$GIT_STATUS" 2>/dev/null || echo "$GIT_STATUS")"
+    if [[ -f "$FOCUSED_NODE_LOG" ]]; then
+        echo "  Nodes:    $(realpath "$FOCUSED_NODE_LOG" 2>/dev/null || echo "$FOCUSED_NODE_LOG")"
+        echo "            $(grep -c '::' "$FOCUSED_NODE_LOG" 2>/dev/null || echo 0) collected focused nodes"
+    fi
     if [[ -f "$FOCUSED_LOG" ]]; then
         echo "  Focused:  $(realpath "$FOCUSED_LOG" 2>/dev/null || echo "$FOCUSED_LOG")"
         echo "            $(grep -E "^[0-9]+ (passed|failed)" "$FOCUSED_LOG" | tail -1)"
@@ -499,22 +503,8 @@ done
 } | tee "$SUMMARY_FILE"
 
 # =============================================================================
-# Pre-bundle staging check (inherited from the shared runner)
+# Pre-bundle staging check
 # =============================================================================
-# Catches a class of bugs where new test files are created in the working tree,
-# pytest finds them and reports "all tests pass", but the file is untracked and
-# never enters the commit. The bundle then ships a gate (e.g., 822/0/0) that
-# doesn't match the committed test count (e.g., 817).
-#
-# Rationale: a new test file in the working tree that is untracked will be run
-# by pytest (gate looks green) yet is absent from the commit — a false-positive bundle.
-#
-# This check blocks BUNDLE creation when any *.py file in tests/ is untracked.
-# Test results are still saved to test_logs/ (already written above) — only
-# the .zip artifact is prevented. That's the artifact reviewers consume.
-#
-# Override: ADF_SKIP_STAGING_CHECK=1 bash run_tests.sh
-#   (for development runs where untracked test files are intentional).
 
 if git rev-parse --is-inside-work-tree &>/dev/null; then
     UNTRACKED_TESTS=$(git status --porcelain tests/ 2>/dev/null | grep "^?? " | grep "\.py$" || true)
@@ -542,66 +532,24 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
 fi
 
 # =============================================================================
-# Pre-bundle PHASE_HISTORY <-> git-tag drift check (inherited from the shared runner)
+# Pre-bundle PHASE_HISTORY <-> git-tag drift check
 # =============================================================================
-# Catches a class of bugs where docs/PHASE_HISTORY.md and the actual git tags
-# disagree about phase closures. Two real incidents motivated this (both found
-# (generic check; not tied to any one project's history):
-#
-#   (1) DOCUMENTED-BUT-UNTAGGED: PHASE_HISTORY.md recorded
-#       "FIX2 ... tag PHASE_13_25_DF_FIX2_END" but no such tag existed in the
-#       repo (the FIX2 commit existed; the tag was never created). The history
-#       claimed a closure the repo could not prove.
-#
-#   (2) MISPLACED FIX TAG: PHASE_13_25_DF_FIX1_END was sitting on the FIX2
-#       commit (subject "Phase 13.25.DF FIX2: ...") instead of the FIX1 commit.
-#       Anyone checking out the FIX1 tag would have gotten FIX2 code.
-#
-# Check (1) is a BLOCK: any PHASE_*_END string mentioned in PHASE_HISTORY.md
-#   that is NOT a real git tag stops bundle creation. This is unambiguous —
-#   the doc asserts a closure the repo doesn't have.
-# Check (2) is a WARNING (heuristic): for each repo PHASE_*_FIX<N>_END tag,
-#   if the tagged commit's subject line mentions a DIFFERENT FIX<M> (M != N),
-#   the tag is likely on the wrong commit. Warn (don't block) because commit
-#   subjects are free-form; promote to a block later if it proves reliable.
-#
-# Note: the reverse direction (repo tags NOT cited in PHASE_HISTORY.md) is NOT
-# flagged — many tags (GB/ADF/older phases) are intentionally not cited by
-# exact string in the PHASE_HISTORY narrative. That direction is noise.
-#
-# Override: ADF_SKIP_TAG_DRIFT_CHECK=1 bash run_tests.sh
-#   (for development runs before PHASE_HISTORY.md has been updated).
 
 PHASE_HISTORY_FILE="docs/PHASE_HISTORY.md"
 if git rev-parse --is-inside-work-tree &>/dev/null \
         && [[ -f "$PHASE_HISTORY_FILE" ]] \
         && [[ -z "$ADF_SKIP_TAG_DRIFT_CHECK" ]]; then
 
-    # _END tags claimed in the history doc vs _END tags actually in the repo.
-    # Phase 13.48 grep tightening — scope to tag-DECLARATION context only.
-    # A phase closure is *claimed* by writing "tag `PHASE_X_END`" or
-    # "**Tag:** `PHASE_X_END`". The earlier loose grep matched any PHASE_*_END
-    # token anywhere in the doc, including prose mentions (e.g. an example tag
-    # in a sentence describing this very check) -> false positives.
     DOC_END_TAGS=$(grep -ioE 'tag[^`]{0,12}`PHASE_[A-Z0-9_]+_END`' "$PHASE_HISTORY_FILE" \
                        | grep -oE 'PHASE_[A-Z0-9_]+_END' \
                        | sort -u || true)
     REPO_END_TAGS=$(git tag --list 'PHASE_*_END' | sort -u || true)
 
-    # (1) Documented-but-untagged: lines in DOC not in REPO.
     MISSING_TAGS=$(comm -23 \
         <(printf '%s\n' "$DOC_END_TAGS") \
         <(printf '%s\n' "$REPO_END_TAGS") | grep -v '^$' || true)
 
     if [[ -n "$MISSING_TAGS" ]]; then
-        # NON-BLOCKING (Phase 13.48 design — committed as df3057a3): doc<->tag drift
-        # is a documentation-hygiene signal, not a test result. Hard-blocking the
-        # bundle on a heuristic grep of a prose file is fragile and creates override
-        # pressure (the bypass would become invisible -> dead-weight check). Instead:
-        # WARN loudly AND record the warning in SUMMARY so the drift itself travels
-        # in reviewer.zip for architect/reviewers to see and resolve. Bundle still
-        # builds. A false negative here is low-harm — a missed warning, not a false
-        # sense of a passed gate. (Restored at 13.49 implementation after a regression.)
         {
             echo ""
             echo "⚠️  TAG DRIFT (non-blocking) — PHASE_HISTORY.md declares phase-closure"
@@ -614,15 +562,12 @@ if git rev-parse --is-inside-work-tree &>/dev/null \
         echo "${YELLOW}(Tag drift reported in SUMMARY; bundle still built.)${RESET}"
     fi
 
-    # (2) Misplaced FIX tag (heuristic warning, non-blocking).
     TAG_PLACEMENT_WARNINGS=""
     while IFS= read -r tag; do
         [[ -z "$tag" ]] && continue
-        # Extract FIX<N> from the tag name, if present.
         tag_fix=$(printf '%s' "$tag" | grep -oE 'FIX[0-9]+' | head -1 || true)
         [[ -z "$tag_fix" ]] && continue
         subject=$(git log -1 --format='%s' "$tag" 2>/dev/null || true)
-        # Find any FIX<M> mentioned in the tagged commit's subject.
         subj_fix=$(printf '%s' "$subject" | grep -oE 'FIX[0-9]+' | head -1 || true)
         if [[ -n "$subj_fix" ]] && [[ "$subj_fix" != "$tag_fix" ]]; then
             TAG_PLACEMENT_WARNINGS+="    $tag -> commit subject mentions $subj_fix (\"$subject\")"$'\n'
@@ -657,8 +602,10 @@ echo "--- Packaging reviewer.zip ---"
         "$LOG_FILE" \
         "$FOCUSED_LOG" \
         "$RUNXFAIL_LOG" \
+        "$FOCUSED_NODE_LOG" \
         "$MD5_MANIFEST" \
         "$MATRIX_MD" \
+        "$MATRIX_HTML" \
         "$DIFF_COMMIT" \
         "$DIFF_PHASE" \
         "$GIT_STATUS" \
@@ -670,17 +617,8 @@ echo "--- Packaging reviewer.zip ---"
 
     if [[ -n "$ZIP_FILES" ]]; then
         zip -q "$REVIEWER_ZIP" $ZIP_FILES 2>/dev/null || true
-        # ABSOLUTE path. It used to print "test_logs/reviewer_<ts>.zip", which
-        # is unusable for copy/paste from a terminal whose cwd the reader does
-        # not share — and the zip is the ONE artifact of this script that
-        # leaves the machine.
         echo "  Reviewer package: $REVIEWER_ZIP_ABS"
 
-        # (inherited) assert the HTML matrix
-        # made it into the zip. Three consecutive phases (13.49, 13.49-FIX1,
-        # 13.50) shipped reviewer.zip without docs/CAPABILITY_MATRIX.html
-        # because the file list above forgot the .html line. Mechanical
-        # guard so voluntary discipline isn't relied on for a fourth time.
         if ! unzip -l "$REVIEWER_ZIP" 2>/dev/null | grep -q 'docs/CAPABILITY_MATRIX\.html$'; then
             echo "${YELLOW}${BOLD}⚠️  $REVIEWER_ZIP missing docs/CAPABILITY_MATRIX.html — reviewers cannot navigate the rendered matrix${RESET}"
         fi
@@ -688,17 +626,10 @@ echo "--- Packaging reviewer.zip ---"
 )
 
 # =============================================================================
-# Working-tree warnings (Phase 13.27 Commit 2 FIX1.FIX1 follow-up)
+# Working-tree warnings
 # =============================================================================
-# After 6 reproductions across Phases 13.25 / 13.26 / 13.28 / 13.30 / 13.32 /
-# 13.27-FIX1, docs/CAPABILITY_MATRIX.md is the chronic miss in commits — it is
-# regenerated by this script (above) and then forgotten in the next git add.
-# Warn loudly so the coder doesn't ship a phase tag with the matrix orphaned
-# in the working tree. Purely informational — does not affect exit code.
 
 if git rev-parse --is-inside-work-tree &>/dev/null; then
-    # --porcelain prefix: ' M' (unstaged), 'M ' (staged), 'MM' (both),
-    # '??' (untracked). We warn on ANY unstaged modification of the matrix.
     if [[ -n "$(git status --porcelain -- docs/CAPABILITY_MATRIX.md 2>/dev/null)" ]]; then
         echo ""
         echo "${YELLOW}${BOLD}⚠️  docs/CAPABILITY_MATRIX.md is modified but not staged.${RESET}"
