@@ -289,6 +289,34 @@ class TestFillModeDirect:
         assert np.isnan(adf.df['t_clean'].iloc[2])  # idx=3
         assert np.isnan(adf.df['t_clean'].iloc[6])  # idx=7
     
+    def test_V3_2_unmatched_key_gets_declared_neutral_in_masked_correction(self):
+        """Production-shaped extension: direct fill + conditional correction.
+
+        The missing key is a target/TPC row, so this proves that explicit
+        fill_missing=0.0 supplies the additive neutral.  Non-target rows carry
+        poison calibration values and must remain exactly unchanged by the mask.
+        """
+        row = np.array([10, 100, 151, 152, 160, 170, 190], dtype=np.int32)
+        sec = np.arange(7, dtype=np.int32)
+        dyC1 = np.array([10., 20., 30., 40., 50., 60., 70.], dtype=np.float64)
+        calib = np.array([1., 2., 3., 999., 999., 999., 999.], dtype=np.float64)
+        keep = np.array([0, 2, 3, 4, 5, 6], dtype=np.int64)  # missing sec=1, target row 100
+
+        adf = AliasDataFrame(pd.DataFrame({"row": row, "sec": sec, "dyC1": dyC1}))
+        sub = AliasDataFrame(pd.DataFrame({"sec": sec[keep], "calib": calib[keep]}))
+        adf.register_subframe("Cal", sub, index_columns=["sec"])
+        adf.set_subframe_fill(
+            "Cal", fill_missing=0.0, fill_mode="direct", warn_missing_keys=False
+        )
+        adf.add_alias("dyC2", "dyC1-(Cal.calib*(row<152))")
+
+        got = np.asarray(adf.eval("dyC2"))
+        assert got.dtype == dyC1.dtype
+        np.testing.assert_allclose(got[0], dyC1[0] - calib[0])
+        np.testing.assert_array_equal(got[1], dyC1[1])          # unmatched target -> +0
+        np.testing.assert_allclose(got[2], dyC1[2] - calib[2])
+        np.testing.assert_array_equal(got[3:], dyC1[3:])        # outside mask
+
     def test_direct_mode_does_not_fill_original_nan(self, adf_with_subframe):
         """Test direct mode doesn't fill NaN that was in original subframe data."""
         adf = adf_with_subframe
