@@ -30,10 +30,6 @@ needs_dfdraw = pytest.mark.skipif(
     not HAVE_DFDRAW, reason="dfdraw not importable via dfextensions.dfdraw"
 )
 
-DYN_P1_2 = (
-    "DYN-P1-2: eager/in-memory parent + lazy child physical reference does "
-    "not auto-resolve"
-)
 B3_P0_3 = (
     "B3-P0-3: metadata-poor bad-only warn discards exact runtime unresolved "
     "evidence and terminal reconciliation false-refuses"
@@ -114,8 +110,7 @@ PHYSICAL_CASES = [
     pytest.param("eager", "eager", id="physical-parent_eager-child_eager"),
     pytest.param(
         "eager", "lazy",
-        marks=pytest.mark.xfail(strict=True, raises=ValueError, reason=DYN_P1_2),
-        id="physical-parent_eager-child_lazy-DYN-P1-2",
+        id="physical-parent_eager-child_lazy",
     ),
     pytest.param("lazy", "eager", id="physical-parent_lazy-child_eager"),
     pytest.param("lazy", "lazy", id="physical-parent_lazy-child_lazy"),
@@ -125,8 +120,7 @@ WARN_BAD_CASES = [
     pytest.param("eager", "eager", id="bad_warn-parent_eager-child_eager"),
     pytest.param(
         "eager", "lazy",
-        marks=pytest.mark.xfail(strict=True, raises=RuntimeError, reason=DYN_P1_2),
-        id="bad_warn-parent_eager-child_lazy-DYN-P1-2",
+        id="bad_warn-parent_eager-child_lazy",
     ),
     pytest.param("lazy", "eager", id="bad_warn-parent_lazy-child_eager"),
     pytest.param(
@@ -139,8 +133,7 @@ RAISE_BAD_CASES = [
     pytest.param("eager", "eager", id="bad_raise-parent_eager-child_eager"),
     pytest.param(
         "eager", "lazy",
-        marks=pytest.mark.xfail(strict=True, raises=RuntimeError, reason=DYN_P1_2),
-        id="bad_raise-parent_eager-child_lazy-DYN-P1-2",
+        id="bad_raise-parent_eager-child_lazy",
     ),
     pytest.param("lazy", "eager", id="bad_raise-parent_lazy-child_eager"),
     pytest.param("lazy", "lazy", id="bad_raise-parent_lazy-child_lazy"),

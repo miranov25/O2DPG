@@ -2544,7 +2544,9 @@ class _DrawPreparationState:
         # succeeds; they are not inferred from dotted text alone.
         self.subframes_observed = ()
         self.joins_observed = ()
-        # B3.2b v1.2 private runtime ledger.  Each tuple is
+        # B3.2b v1.2 private runtime ledger.  Governing requirements:
+        # ArchitectClarification v05 Decisions C/F; Audit Synthesis v02
+        # B3-P0-2/B3-P0-3/B3-P1-2.  Each tuple is
         # (request_id, dotted_token, outcome, detail).  It is populated at the
         # existing projection success/failure site, where the exact request is
         # still available, and consumed only by terminal reconciliation.
@@ -2796,7 +2798,9 @@ class _DrawDependencyPlan:
         self.subframe_error_policy = "raise"
         self.warn_required_subframes = ()
         self.warn_required_joins = ()
-        # B3.2b v1.2 private request ledger.  Each tuple is
+        # B3.2b v1.2 private request ledger.  Governing requirements:
+        # ArchitectClarification v05 Decisions C/F; Audit Synthesis v02
+        # B3-P0-2/B3-P0-3/B3-P1-2.  Each tuple is
         # (request_id, dotted_token, owner_paths, plan_resolution, required).
         # This is deliberately NOT a Rev-2 normative group: it refines the
         # request identity behind the existing subframes/joins groups.
@@ -6203,8 +6207,13 @@ class AliasDataFrame:
         subframe is not a registered lazy subframe (e.g. names-only recovery, or a leaf
         column) stops the walk; an unresolved ref then fails loud at draw time, never silent.
         """
-        if self._lazy_reader is None and not getattr(self, '_subframe_readers', None):
-            return
+        # B3.2b closure / nested-lazy carry-forward.  Do NOT early-return
+        # merely because the ROOT frame itself has no lazy reader.  A supported
+        # chain may start through an eager subframe and encounter a lazy child
+        # later, e.g. ``S.T.w`` with eager ``S`` and lazy ``T``.  The chain
+        # walker below is already side-effect-free for unrelated/non-subframe
+        # tokens and materializes only referenced lazy hops, so the root frame
+        # does not need to be lazy for this pre-scan to be relevant.
         import re as _re
         for tok in set(_re.findall(r'\b(\w+(?:\.\w+)+)\b', text or '')):
             segs = tok.split('.')
@@ -21575,8 +21584,9 @@ function collapseDepth(maxD) {{
         def _complete_nonphysical_namespaces(_meta):
             """Return complete nonphysical namespaces, or None if incomplete.
 
-            B3.2b v1.2 / B3-P1-1: metadata SOURCE KIND is not a completeness
-            certificate.  ``read_adf_metadata`` normalizes missing namespaces
+            B3.2b v1.2 / B3-P1-1; ArchitectClarification v05 Decision E:
+            metadata SOURCE KIND is not a completeness certificate.
+            ``read_adf_metadata`` normalizes missing namespaces
             to empty containers, so looking only at ``_source`` plus the
             normalized ``aliases``/``subframes`` fields can turn
 
@@ -21750,8 +21760,10 @@ function collapseDepth(maxD) {{
         def _collect_child_alias_closure(_frame, _alias, _prefixes):
             """Plan every owner-qualified alias the child may materialize.
 
-            B3-P0-1: requesting ``S.a2`` can legitimately materialize ``a1``
-            while recursively evaluating ``a2``.  Cleanup observes both, so
+            B3-P0-1; ArchitectClarification v05 Decision C: requesting
+            ``S.a2`` makes only its referenced dependency closure current-call
+            intent, but that closure can legitimately materialize ``a1`` while
+            recursively evaluating ``a2``.  Cleanup observes both, so
             plan ownership must carry the same transitive closure instead of
             weakening exact cleanup reconciliation.
             """
@@ -21934,6 +21946,16 @@ function collapseDepth(maxD) {{
                 out.add(item)
         return out
 
+    # PHASE_13_76_ADF B3.2/B3.2b surface-scope boundary.
+    #
+    # The Rev-2 dependency-plan / request-ledger terminal reconciliation in
+    # this substage is intentionally a draw_batch guarantee.  The B3.2 stage
+    # closure explicitly records that draw() and draw_figures() remain on
+    # their pre-migration preparation paths and are owned by B3.3
+    # (PHASE_13_76_ADF_StageB_B3_2_STAGE_CLOSURE_REPORT.md, §7;
+    # PHASE_13_76_ADF_B3_2_ROUND2_ROUND3_BLOCKER_VERIFICATION.md, §2.2).
+    # Do not generalize evidence from this reconciler to those two public
+    # surfaces before the B3.3 migration.
     def _reconcile_draw_plan_state(self, plan, state, *, raise_on_error=True):
         """STEP 9 terminal reconciliation of Rev-2 intent vs execution.
 
@@ -22023,8 +22045,10 @@ function collapseDepth(maxD) {{
                         _request_required_owners.update(_paths)
                     continue
                 if _warn_mode and _outcome == "tolerated_unresolved":
-                    # Runtime exact absence is final authority when planning
-                    # could only say UNKNOWN. Relax THIS request only.
+                    # ArchitectClarification v05 Decision F / B3-P0-3/P1-2:
+                    # runtime exact absence is final authority when planning
+                    # could only say UNKNOWN. Relax THIS request only; Decision F
+                    # explicitly forbids generalizing one request to siblings.
                     continue
 
                 # A tolerated arbitrary runtime failure is not evidence that a
@@ -22198,18 +22222,26 @@ function collapseDepth(maxD) {{
         _by_catalog = self._structs_completed_between(
             self._struct_membership_graph(_obs0[1]),
             self._struct_membership_graph(self._observe_prep_effects()[1]))
+        # The subframe pre-scan is graph-scoped, not root-reader-scoped.
+        # B3.2b closure finding (nested-lazy carry-forward from STEP 3 v05):
+        # an eager root may own eager ``S`` whose child ``T`` is lazy.  Gating
+        # this pre-scan on ``self._lazy_reader`` left ``T`` unmaterialized, so
+        # planning recognized ``S.T.w`` but projection later mis-parsed the
+        # runtime token as ``S.T`` and reconciliation correctly refused it.
+        # Materialize referenced lazy hops before projection on every graph;
+        # unrelated chains remain untouched.
+        text = plan.prescan_text()
+        state.prescan_text = text
+        if text:
+            self._lazy_ensure_subframe_refs(text)
+        # F3 (round-2 P1, GPT26, executed): the subframe pre-scan can load
+        # branches of its own. Its reads used to fall inside the
+        # union-load observation window and were reported as union-load
+        # reads, while requested_reads (correctly) never mentioned them.
+        # Own boundary, own field.
+        _obs_ps = self._observe_prep_effects()
+        state.reads_by_prescan = tuple(sorted(_obs_ps[0] - _obs1[0]))
         if self._lazy_reader is not None:
-            text = plan.prescan_text()
-            state.prescan_text = text
-            if text:
-                self._lazy_ensure_subframe_refs(text)
-            # F3 (round-2 P1, GPT26, executed): the subframe pre-scan can load
-            # branches of its own. Its reads used to fall inside the
-            # union-load observation window and were reported as union-load
-            # reads, while requested_reads (correctly) never mentioned them.
-            # Own boundary, own field.
-            _obs_ps = self._observe_prep_effects()
-            state.reads_by_prescan = tuple(sorted(_obs_ps[0] - _obs1[0]))
             required = self._resolve_required_branches(plan)
             branches_to_load = required - self._lazy_reader.loaded_branches
             all_subframes = (set(self._subframes.subframes.keys())
@@ -22245,9 +22277,7 @@ function collapseDepth(maxD) {{
         # paying for. Gated here so eager behavior really is unchanged; an
         # eager frame has no reader to complete a struct from in any case.
         _obs2 = self._observe_prep_effects()
-        state.reads_by_union_load = tuple(sorted(
-            _obs2[0] - (_obs_ps[0] if self._lazy_reader is not None
-                        else _obs1[0])))
+        state.reads_by_union_load = tuple(sorted(_obs2[0] - _obs_ps[0]))
         # ONE assignment (round-2 P2, Sonet25 — who was right, and the coder's
         # "correction" of that finding was wrong). It was argued that the first
         # of the two assignments was load-bearing on the eager path. It was
@@ -22397,8 +22427,9 @@ function collapseDepth(maxD) {{
             state.subframe_request_outcomes = tuple(_request_outcomes)
 
         def _is_runtime_unresolved(exc):
-            # Runtime is the final authority for metadata-poor requests, but
-            # warn tolerance is narrow: only structural absence is an
+            # ArchitectClarification v05 Decision F / B3-P0-3/P1-2:
+            # runtime is final authority for metadata-poor requests, but warn
+            # tolerance is narrow: only structural absence is an
             # unresolved request. Arbitrary RuntimeError/TypeError/etc. remains
             # a failed VALID request and must be caught by reconciliation.
             return isinstance(exc, (StructuralAbsenceError, BranchNotFoundError))

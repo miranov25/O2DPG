@@ -13231,3 +13231,296 @@ def _adf_scaffold_text():
     """This test module's own source — for the family-owner guard."""
     import inspect, sys
     return inspect.getsource(sys.modules[__name__])
+
+
+# ---------------------------------------------------------------------------
+# B3.2b formal-closure scope pin — permanent public-surface ownership record.
+# The B3.2 stage closure explicitly states that only draw_batch is migrated
+# onto the dependency-plan/executor path; draw()/draw_figures() are B3.3.
+# This test prevents a future closure report from accidentally generalizing
+# draw_batch's terminal request reconciliation to all three public surfaces.
+# ---------------------------------------------------------------------------
+
+@needs_dfdraw
+def test_b32b_closure_scope_request_reconciliation_is_draw_batch_only_until_b33(
+        monkeypatch):
+    """CLO-1 regression / historical scope pin.
+
+    Governing records:
+      * PHASE_13_76_ADF_StageB_B3_2_STAGE_CLOSURE_REPORT.md, §7
+      * PHASE_13_76_ADF_B3_2_ROUND2_ROUND3_BLOCKER_VERIFICATION.md, §2.2
+
+    B3.2/B3.2b migrate the dependency-plan / terminal-reconciliation guarantee
+    on draw_batch.  draw() and draw_figures() deliberately remain on their
+    pre-migration preparation paths until B3.3.  They must invalidate stale
+    batch preparation evidence rather than inheriting it.
+    """
+    real = A.AliasDataFrame._reconcile_draw_plan_state
+    calls = []
+
+    def _spy(self, plan, state, *, raise_on_error=True):
+        calls.append(id(self))
+        return real(self, plan, state, raise_on_error=raise_on_error)
+
+    monkeypatch.setattr(
+        A.AliasDataFrame, "_reconcile_draw_plan_state", _spy)
+
+    try:
+        batch = _mini_adf()
+        batch.draw_batch(
+            {"p": {"expr": "x", "type": "hist", "bins": 5}},
+            verbose=False)
+        assert len(calls) == 1, (
+            "draw_batch must reach the B3.2b terminal reconciler exactly once")
+
+        calls.clear()
+        direct = _mini_adf()
+        direct.draw("x", type="hist", bins=5)
+        assert calls == [], (
+            "draw() is a B3.3 migration surface; B3.2b must not claim that "
+            "its request reconciler currently owns this path")
+        assert direct._last_draw_prep_state is None, (
+            "unmigrated draw() must invalidate stale batch preparation state")
+
+        calls.clear()
+        figures = _mini_adf()
+        figures.draw_figures(
+            [{"name": "f", "ncols": 1,
+              "plots": [{"expr": "x", "type": "hist", "bins": 5}]}],
+            verbose=False)
+        assert calls == [], (
+            "draw_figures() is a B3.3 migration surface; B3.2b must not claim "
+            "that its request reconciler currently owns this path")
+        assert figures._last_draw_prep_state is None, (
+            "unmigrated draw_figures() must invalidate stale batch "
+            "preparation state")
+    finally:
+        plt.close("all")
+
+
+# ---------------------------------------------------------------------------
+# B3.2b cumulative-closure nested-lazy carry-forward.
+# STEP 3 v05 explicitly left ``A.B.q`` with a lazy intermediate unproven.
+# Sonet28's second cumulative falsification reproduced the exact mismatch:
+# planning owned ``S.T.w`` while projection, with lazy T still unloaded,
+# observed only ``S.T`` and reconciliation refused the token change.
+# ---------------------------------------------------------------------------
+
+@needs_dfdraw
+def test_b32b_closure_nested_lazy_intermediate_materializes_before_projection(
+        tmp_path):
+    """An eager outer hop may contain a referenced lazy inner hop.
+
+    The executor pre-scan must walk the whole referenced chain even when the
+    root frame itself is eager.  ``S.T.w`` must therefore materialize lazy T
+    before projection, preserve exact request identity, and complete normally.
+    An unrelated lazy T must remain unloaded when the expression only uses S.v.
+    """
+    p = str(tmp_path / "b32b_nested_lazy.root")
+    with uproot.recreate(p) as f:
+        f.mktree("T", {"j": np.int64, "w": np.float64})
+        f["T"].extend({
+            "j": np.array([0, 1], dtype=np.int64),
+            "w": np.array([10.0, 20.0], dtype=np.float64),
+        })
+
+    def _build():
+        main = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], dtype=np.int64),
+            "x": np.array([1.0, 2.0], dtype=np.float64),
+        }))
+        child = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], dtype=np.int64),
+            "j": np.array([0, 1], dtype=np.int64),
+            "v": np.array([3.0, 4.0], dtype=np.float64),
+        }))
+        child.register_subframe_lazy(
+            "T", p, tree_name="T", index_columns=["j"])
+        main.register_subframe("S", child, index_columns=["k"])
+        assert child._subframe_loaded.get("T") is False
+        return main, child
+
+    try:
+        # Negative control: a shallow S.v request must not load unrelated T.
+        shallow, child0 = _build()
+        shallow.draw_batch(
+            {"p": {"expr": "S.v:x", "type": "scatter"}},
+            verbose=False)
+        assert child0._subframe_loaded.get("T") is False, (
+            "the graph-scoped pre-scan loaded an unreferenced lazy child")
+
+        # Closure attack: the referenced nested lazy hop must load and the exact
+        # planned token must survive through projection/reconciliation.
+        nested, child1 = _build()
+        nested.draw_batch(
+            {"p": {"expr": "S.T.w:x", "type": "scatter"}},
+            verbose=False)
+        assert child1._subframe_loaded.get("T") is True
+
+        plan = nested._last_draw_plan
+        state = nested._last_draw_prep_state
+        planned = [r for r in plan.subframe_requests if r[1] == "S.T.w"]
+        assert len(planned) == 1, planned
+        rid = str(planned[0][0])
+        outcomes = {str(r[0]): tuple(r[1:])
+                    for r in state.subframe_request_outcomes}
+        assert rid in outcomes, outcomes
+        assert outcomes[rid][0] == "S.T.w", outcomes[rid]
+        assert outcomes[rid][1] == "success", outcomes[rid]
+        assert state.failure_phase == ""
+    finally:
+        plt.close("all")
+
+
+# ---------------------------------------------------------------------------
+# B3.2b second cumulative closure — mandatory Attacks 1 and 2.
+# These are the two seams the closure request marks as the remaining
+# row-missingness coverage gap: STEP 5b<->5c and the final dual-channel
+# STEP 5c<->8 composition.
+# ---------------------------------------------------------------------------
+
+def test_b32b_closure_attack1_step5b_5c_row_requiredness_masks_both_channels():
+    """Attack 1 — STEP 5b <-> STEP 5c seam.
+
+    An integer subframe gather with a missing key carries TWO representations
+    of the same semantic absence in getter mode:
+
+      * placeholder/dtype-safety mask (STEP 5b), and
+      * structural-absence mask (STEP 5c / AD-20).
+
+    Row-wise requiredness must narrow BOTH channels using the same consulted
+    rows.  ``where(c, a, S.v)`` with the missing row selecting ``a`` therefore
+    succeeds; if the missing row selects ``S.v`` it must refuse.
+    """
+    mod = _adf_module()
+
+    def _build(cond):
+        main = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 9], dtype=np.int64),
+            "a": np.array([100, 200], dtype=np.int64),
+            "c": np.array(cond, dtype=bool),
+        }))
+        child = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0], dtype=np.int64),
+            "v": np.array([3], dtype=np.int64),
+        }))
+        main.register_subframe("S", child, index_columns=["k"])
+        return main
+
+    safe = _build([False, True])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result, ctx = safe._evaluate_alias_expression(
+            "d", "where(c, a, S.v)", track_structural_gaps=True)
+
+    np.testing.assert_array_equal(np.asarray(result), np.array([3, 200]))
+    assert set(ctx.masks) == {"v__S"}
+    assert set(ctx.structural_masks) == {"v__S"}
+    np.testing.assert_array_equal(
+        ctx.masks["v__S"], np.array([False, True]))
+    np.testing.assert_array_equal(
+        ctx.structural_masks["v__S"], np.array([False, True]))
+    np.testing.assert_array_equal(
+        ctx.consulted["v__S"], np.array([True, False]))
+    assert ctx.residual_mask() is None
+    assert ctx.structural_residual_mask() is None
+
+    unsafe = _build([False, False])
+    # `_evaluate_alias_expression()` is the internal evaluation stage: it may
+    # return a residual undefinedness context.  The public publication stage
+    # (`materialize_alias`) owns the RowLevelMissingnessError refusal.  Pin
+    # both halves so this closure attack cannot regress into either a false
+    # green or a misplaced internal exception.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        _, unsafe_ctx = unsafe._evaluate_alias_expression(
+            "d", "where(c, a, S.v)", track_structural_gaps=True)
+    np.testing.assert_array_equal(
+        unsafe_ctx.residual_mask(), np.array([False, True]))
+    np.testing.assert_array_equal(
+        unsafe_ctx.structural_residual_mask(), np.array([False, True]))
+    unsafe.add_alias("d", "where(c, a, S.v)", dtype="int64")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(mod.RowLevelMissingnessError):
+            unsafe.materialize_alias("d")
+
+
+def test_b32b_closure_attack2_dual_missingness_consumed_in_one_final_conditional():
+    """Attack 2 — STEP 5c <-> STEP 8 final dual-channel composition.
+
+    Carry two complementary missingness subjects through an outer subframe hop:
+
+      M.I.iv : int64, row 1 missing -> placeholder + structural channels
+      M.F.fv : float64, row 0 missing -> structural channel only
+
+    The final row-local conditional selects exactly the DEFINED operand on each
+    row.  A blind union of either channel would mark every row undefined; the
+    correct consulted-row masks make both residual channels empty.  Reversing
+    the condition selects exactly the two missing operands and must refuse.
+    """
+    mod = _adf_module()
+
+    def _build(cond):
+        int_child = A.AliasDataFrame(pd.DataFrame({
+            "ji": np.array([0], dtype=np.int64),
+            "iv": np.array([7], dtype=np.int64),
+        }))
+        float_child = A.AliasDataFrame(pd.DataFrame({
+            "jf": np.array([1], dtype=np.int64),
+            "fv": np.array([3.5], dtype=np.float64),
+        }))
+        mid = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], dtype=np.int64),
+            "ji": np.array([0, 9], dtype=np.int64),
+            "jf": np.array([9, 1], dtype=np.int64),
+        }))
+        mid.register_subframe("I", int_child, index_columns=["ji"])
+        mid.register_subframe("F", float_child, index_columns=["jf"])
+
+        main = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], dtype=np.int64),
+            "c": np.array(cond, dtype=bool),
+        }))
+        main.register_subframe("M", mid, index_columns=["k"])
+        return main
+
+    safe = _build([True, False])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result, ctx = safe._evaluate_alias_expression(
+            "d", "where(c, M.I.iv, M.F.fv)",
+            track_structural_gaps=True)
+
+    np.testing.assert_allclose(np.asarray(result), np.array([7.0, 3.5]))
+    assert set(ctx.masks) == {"iv__I__M"}
+    assert set(ctx.structural_masks) == {"iv__I__M", "fv__F__M"}
+    np.testing.assert_array_equal(
+        ctx.masks["iv__I__M"], np.array([False, True]))
+    np.testing.assert_array_equal(
+        ctx.structural_masks["iv__I__M"], np.array([False, True]))
+    np.testing.assert_array_equal(
+        ctx.structural_masks["fv__F__M"], np.array([True, False]))
+    np.testing.assert_array_equal(
+        ctx.consulted["iv__I__M"], np.array([True, False]))
+    np.testing.assert_array_equal(
+        ctx.consulted["fv__F__M"], np.array([False, True]))
+    assert ctx.residual_mask() is None
+    assert ctx.structural_residual_mask() is None
+
+    unsafe = _build([False, True])
+    # Both rows deliberately select an absent operand.  Internal evaluation
+    # must retain that residual provenance; refusal belongs to the public
+    # publication/materialization stage, not to `_evaluate_alias_expression`.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        _, unsafe_ctx = unsafe._evaluate_alias_expression(
+            "d", "where(c, M.I.iv, M.F.fv)",
+            track_structural_gaps=True)
+    np.testing.assert_array_equal(
+        unsafe_ctx.structural_residual_mask(), np.array([True, True]))
+    unsafe.add_alias("d", "where(c, M.I.iv, M.F.fv)", dtype="float64")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(mod.RowLevelMissingnessError):
+            unsafe.materialize_alias("d")
