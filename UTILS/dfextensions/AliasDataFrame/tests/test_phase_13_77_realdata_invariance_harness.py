@@ -4134,3 +4134,213 @@ def test_a5_35_g7_34_failure_restores_exact_calibration_binding(tmp_path):
     assert gallery.calibBiasResolution is original_calib
     assert H.strict_exit_code([result], [case]) == 1
 
+# ── A5.6 — logical definition/parent-structure invariance ──────────────────
+
+class _A56FakeADF(_A52FakeADF):
+    def __init__(self, df):
+        super().__init__(df)
+        self.aliases = {}
+        self._subframe_index = {}
+
+    def export_definition_schema(self, **kwargs):
+        subframes = {}
+        for name, sf in sorted(self._subframes.items()):
+            subframes[name] = {
+                "index": list(self._subframe_index.get(name, [])),
+                "columns": [str(c) for c in sf.df.columns],
+                "dtypes": [str(sf.df[c].dtype) for c in sf.df.columns],
+            }
+        return {
+            "columns": [
+                {"name": str(c), "dtype": str(self.df[c].dtype)}
+                for c in self.df.columns
+            ],
+            "aliases": {
+                str(k): str(v) for k, v in sorted(self.aliases.items())
+            },
+            "subframes": subframes,
+        }
+
+
+class _A56Gallery(_A55Gallery):
+    def build_adf(self, root_path, sample=None, lazy=False):
+        assert lazy is False
+        frame = pd.DataFrame({
+            "dcar_tpc_vertex": np.linspace(-0.8, 0.8, 40),
+            "tgl": np.linspace(-1.0, 1.0, 40),
+            "sector": np.arange(40, dtype=np.int16) % 18,
+            "ncl": np.full(40, 90, dtype=np.int16),
+        })
+        adf = _A56FakeADF(frame)
+        if sample is not None:
+            adf.df = adf.df.sample(
+                frac=sample, random_state=42).reset_index(drop=True)
+        return adf
+
+    def calibBiasResolution(self, adf):
+        self.calibration_calls += 1
+        adf._subframes["CalibBias1"] = _A55Subframe()
+        adf._subframe_index["CalibBias1"] = ["sector_bin180", "tgl_bin10"]
+        adf.aliases["dcar_tpc_vertex_predicted0"] = (
+            "GB:CalibBias1 -> dcar_tpc_vertex prediction")
+        adf.df["dcar_tpc_vertex_predicted0"] = np.linspace(
+            -0.2, 0.2, len(adf.df), dtype=np.float64)
+
+
+class _A56AliasMutationGallery(_A56Gallery):
+    def fig34_gb_correction_sector(self, adf):
+        adf.aliases["dcar_tpc_vertex_predicted0"] = "CORRUPTED_ALIAS"
+        return super().fig34_gb_correction_sector(adf)
+
+
+class _A56SubframeMetadataMutationGallery(_A56Gallery):
+    def fig34_gb_correction_sector(self, adf):
+        adf._subframe_index["CalibBias1"] = ["wrong_join_key"]
+        return super().fig34_gb_correction_sector(adf)
+
+
+class _A56ParentStructureMutationGallery(_A56Gallery):
+    def fig34_gb_correction_sector(self, adf):
+        adf.df["_a56_unexpected_persistent_column"] = np.int8(1)
+        return super().fig34_gb_correction_sector(adf)
+
+
+def _a56_prepared_state(gallery):
+    adf = gallery.build_adf("fake.root", sample=0.20, lazy=False)
+    result = gallery.fig33_gb_correction_tgl(adf)
+    assert result is not None
+    return adf
+
+
+def test_a5_36_g7_34_logical_state_case_declares_four_exact_observables(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.6 case")
+    gallery = _A56Gallery()
+    case = H.a5_6_realdata_case(str(root_path), gallery_module=gallery)
+
+    assert case.case_id == H.A5_6_CASE_ID
+    assert case.purpose == "INVARIANCE"
+    assert case.oracle_kind == "CONSISTENCY"
+    assert case.reference_policy == "same-process"
+    assert case.figure_contract is not None
+    assert case.figure_contract.case_ids == (H.A5_6_CASE_ID,)
+    assert case.figure_contract.proof_kind == "CONSISTENCY"
+    assert case.figure_contract.missing() == []
+    assert case.figure_contract.contradicts(case) == []
+    assert [o.name for o in case.observables] == [
+        "calibbias1_state_digest",
+        "predicted_state_digest",
+        "definition_schema_digest",
+        "parent_structure_digest",
+    ]
+    assert all(o.comparator == "exact" for o in case.observables)
+    assert H.validate_registry([case]) == []
+
+
+def test_a5_37_g7_34_healthy_logical_state_executes_four_comparisons(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.6 positive")
+    gallery = _A56Gallery()
+    case = H.a5_6_realdata_case(str(root_path), gallery_module=gallery)
+
+    result = H.run_a5_6_realdata(
+        case, str(root_path), gallery_module=gallery)
+
+    assert result.status == H.PASS, result.detail
+    assert result.executed_comparisons == 4
+    assert len(result.comparisons) == 4
+    assert all(c["ok"] for c in result.comparisons)
+    assert gallery.calibration_calls == 1
+    evidence = result.observed["g7_34_logical_state_evidence"]
+    assert evidence["declared_observables"] == 4
+    assert evidence["executed_comparisons"] == 4
+    assert evidence["finite_predicted_values"] == evidence["predicted_values"]
+
+
+def test_a5_38_g7_34_alias_definition_mutation_fails(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.6 alias mutation")
+    gallery = _A56AliasMutationGallery()
+    case = H.a5_6_realdata_case(str(root_path), gallery_module=gallery)
+
+    result = H.run_a5_6_realdata(
+        case, str(root_path), gallery_module=gallery)
+
+    assert result.status == H.FAIL, result.detail
+    assert "definition_schema_digest" in result.detail
+    assert H.strict_exit_code([result], [case]) == 1
+
+
+def test_a5_39_g7_34_subframe_index_definition_mutation_fails(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.6 subframe metadata mutation")
+    gallery = _A56SubframeMetadataMutationGallery()
+    case = H.a5_6_realdata_case(str(root_path), gallery_module=gallery)
+
+    result = H.run_a5_6_realdata(
+        case, str(root_path), gallery_module=gallery)
+
+    assert result.status == H.FAIL, result.detail
+    assert "definition_schema_digest" in result.detail
+    assert H.strict_exit_code([result], [case]) == 1
+
+
+def test_a5_40_g7_34_parent_structure_mutation_fails_and_fingerprint_is_deterministic(tmp_path):
+    # First prove equivalent prepared fixtures produce the same semantic
+    # fingerprints before using them as mutation detectors.
+    g1 = _A56Gallery()
+    g2 = _A56Gallery()
+    a1 = _a56_prepared_state(g1)
+    a2 = _a56_prepared_state(g2)
+    assert H._a5_6_definition_schema_digest(a1) == H._a5_6_definition_schema_digest(a2)
+    assert H._a5_6_parent_structure_digest(a1) == H._a5_6_parent_structure_digest(a2)
+
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.6 parent structure mutation")
+    gallery = _A56ParentStructureMutationGallery()
+    case = H.a5_6_realdata_case(str(root_path), gallery_module=gallery)
+
+    result = H.run_a5_6_realdata(
+        case, str(root_path), gallery_module=gallery)
+
+    assert result.status == H.FAIL, result.detail
+    assert "definition_schema_digest" in result.detail or "parent_structure_digest" in result.detail
+    assert H.strict_exit_code([result], [case]) == 1
+
+
+def test_a5_41_definition_digest_ignores_only_export_created_at():
+    class _A56VolatileOnlyADF:
+        def __init__(self, created_at, alias_expr="x + 1"):
+            self.created_at = created_at
+            self.alias_expr = alias_expr
+            self.df = pd.DataFrame({"x": np.asarray([1.0, 2.0])})
+
+        def export_definition_schema(self, **kwargs):
+            return {
+                "__meta__": {
+                    "created_at": self.created_at,
+                    "schema_kind": "definition",
+                },
+                "aliases": {
+                    "a": {"expression": self.alias_expr},
+                },
+                "subframes": {},
+            }
+
+    first = _A56VolatileOnlyADF("2026-09-01T14:56:40.393362+00:00")
+    second = _A56VolatileOnlyADF("2026-09-01T14:56:40.812305+00:00")
+
+    # The exact real-data false mismatch found in v02 must normalize away.
+    assert H._a5_6_definition_schema(first)["__meta__"]["created_at"] != (
+        H._a5_6_definition_schema(second)["__meta__"]["created_at"])
+    assert H._a5_6_definition_schema_digest(first) == (
+        H._a5_6_definition_schema_digest(second))
+
+    # Semantic definition changes remain load-bearing.
+    semantic_change = _A56VolatileOnlyADF(
+        "2026-09-01T14:56:40.812305+00:00",
+        alias_expr="x + 2",
+    )
+    assert H._a5_6_definition_schema_digest(first) != (
+        H._a5_6_definition_schema_digest(semantic_change))
+

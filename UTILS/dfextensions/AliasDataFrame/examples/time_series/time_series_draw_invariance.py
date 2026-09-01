@@ -21,6 +21,7 @@ Governing documents
 
 from __future__ import annotations
 
+import copy
 import json
 import platform
 import re
@@ -32,7 +33,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A5.5.v02"
+SCHEMA_VERSION = "13.77.A5.6.v03"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -5436,6 +5437,417 @@ def run_a5_5_realdata_gate(root_path: str, *, manifest_path: str,
                            gallery_module=None) -> tuple[CaseResult, dict, int]:
     case = a5_5_realdata_case(root_path, gallery_module=gallery_module)
     result = run_a5_5_realdata(
+        case, root_path, gallery_module=gallery_module)
+    extra = {}
+    if isinstance(result.observed.get("realdata_provenance"), dict):
+        extra.update(result.observed["realdata_provenance"])
+    doc = write_manifest(manifest_path, [result], [case], extra=extra)
+    return result, doc, strict_exit_code([result], [case])
+
+# ─────────────────────────────────────────────────────────────────────────────
+# A5.6 — real G7.34 logical-definition/structure invariance
+# ─────────────────────────────────────────────────────────────────────────────
+
+A5_6_CASE_ID = "I4-REAL-G7-GB-LOGICAL-STATE-EAGER-20PCT-01"
+
+
+def _a5_6_definition_schema(adf: Any) -> dict:
+    """Public semantic blueprint used for same-process logical-state comparison."""
+    exporter = getattr(adf, "export_definition_schema", None)
+    if not callable(exporter):
+        raise HarnessError(
+            "A5.6 requires public export_definition_schema()")
+    schema = exporter(
+        include_precision_stats=False,
+        include_subframes=True,
+        within_group_sort="schema",
+    )
+    if not isinstance(schema, dict):
+        raise HarnessError(
+            "A5.6 export_definition_schema() did not return a dict")
+    return schema
+
+
+def _a5_6_json_digest(value: Any) -> str:
+    import hashlib
+    payload = json.dumps(
+        value, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=True, allow_nan=False).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+A5_6_VOLATILE_DEFINITION_PATHS = ("__meta__.created_at",)
+
+
+def _a5_6_normalized_definition_schema(adf: Any) -> dict:
+    """Return public definition state with export-time-only metadata removed."""
+    schema = copy.deepcopy(_a5_6_definition_schema(adf))
+    meta = schema.get("__meta__")
+    if isinstance(meta, dict):
+        meta.pop("created_at", None)
+    return schema
+
+
+def _a5_6_definition_schema_digest(adf: Any) -> str:
+    return _a5_6_json_digest(_a5_6_normalized_definition_schema(adf))
+
+
+def _a5_6_parent_structure(adf: Any) -> dict:
+    if not hasattr(adf, "df") or not hasattr(adf.df, "columns"):
+        raise HarnessError("A5.6 requires a pandas-like parent df")
+    return {
+        "columns": [str(c) for c in adf.df.columns],
+        "dtypes": [str(adf.df[c].dtype) for c in adf.df.columns],
+    }
+
+
+def _a5_6_parent_structure_digest(adf: Any) -> str:
+    return _a5_6_json_digest(_a5_6_parent_structure(adf))
+
+
+def a5_6_realdata_case(root_path: str, gallery_module=None) -> CaseSpec:
+    env_status, reason = _a5_5_environment_status(
+        root_path, gallery_module=gallery_module)
+    applicable = env_status != A5_2_ENV_UNAVAILABLE
+    applicability_reason = reason if not applicable else ""
+    return CaseSpec(
+        case_id=A5_6_CASE_ID,
+        claim_id="I4.real_g7_gb_logical_state.A5.6",
+        title="real G7.34 preserves measured GB data state and public ADF definition state",
+        claim=("after trusted G7.33 prepares the real GB state on the canonical "
+               "deterministic EAGER 20% sample, trusted G7.34 leaves unchanged "
+               "the full CalibBias1 frame, the full materialized predicted "
+               "column, the public export_definition_schema() blueprint, and "
+               "the parent dataframe column/dtype structure"),
+        failure_means=("G7.34 changed either measured GB data artifact, altered "
+                       "public alias/subframe/schema definitions, added/dropped/"
+                       "retyped a parent column, silently skipped, returned no "
+                       "finite public numerical evidence, or reached the guarded "
+                       "module-global recalibration seam"),
+        expected_visual=("the existing G7.34 normalized raw-versus-predicted "
+                         "DCA_r differential profile versus sector"),
+        owner_on_failure="GB",
+        purpose="INVARIANCE",
+        gate="ENVIRONMENT_GATED",
+        oracle_kind="CONSISTENCY",
+        loading_mode="EAGER",
+        sample_mode="FRACTION",
+        canonical_spec={
+            "prepare_gallery_function": A5_5_PREP_FUNCTION,
+            "reuse_gallery_function": A5_5_REUSE_FUNCTION,
+            "sample_fraction": A5_2_SAMPLE_FRACTION,
+            "sample_seed": A5_2_SAMPLE_SEED,
+            "definition_surface": "normalized export_definition_schema",
+            "parent_structure": "ordered column names + dtypes",
+        },
+        applicable=applicable,
+        applicability_reason=applicability_reason,
+        setup_contract=("build one canonical EAGER 20% ADF; run trusted G7.33; "
+                        "fingerprint two GB data artifacts plus public definition "
+                        "schema and parent column/dtype structure; arm the same "
+                        "future-refit tripwire used by A5.5; run trusted G7.34; "
+                        "compare all four observables exactly"),
+        preconditions=(
+            "ROOT input is readable by the trusted time-series environment",
+            "public export_definition_schema() is available",
+            "G7.33 successfully prepares CalibBias1 and dcar_tpc_vertex_predicted0",
+        ),
+        figure_contract=FigureContract(
+            expected_panels="one panel",
+            panel_roles="main: normalized raw-versus-predicted DCA_r profile versus sector",
+            expected_traces="two profile traces: raw and predicted",
+            expected_group_count="1",
+            primary_comparison=(
+                "four exact before/after state digests across G7.34, with finite "
+                "public profile evidence as a secondary execution guard"),
+            residual_definition=(
+                "candidate after-G7.34 state digest minus/equality against the "
+                "before-G7.34 reference state; visual profile residual is the "
+                "trusted normalize='delta' raw-versus-predicted comparison"),
+            accepted_envelope=(
+                "all four declared state digests exactly equal; public profile "
+                "evidence contains at least one finite value"),
+            case_ids=(A5_6_CASE_ID,),
+            proof_kind="CONSISTENCY",
+        ),
+        surfaces_under_test=("draw",),
+        observables=(
+            Observable(
+                "calibbias1_state_digest", "INDEPENDENT", "FLAT",
+                "state.CalibBias1.sha256", comparator="exact",
+                rationale="retain A5.5 full coefficient-frame invariance"),
+            Observable(
+                "predicted_state_digest", "INDEPENDENT", "FLAT",
+                "state.dcar_tpc_vertex_predicted0.sha256", comparator="exact",
+                rationale="retain A5.5 full predicted-array invariance"),
+            Observable(
+                "definition_schema_digest", "INDEPENDENT", "FLAT",
+                "state.export_definition_schema.sha256", comparator="exact",
+                rationale=("detect alias/subframe/schema-definition drift through "
+                           "the public definition export after removing only the "
+                           "volatile __meta__.created_at export timestamp")),
+            Observable(
+                "parent_structure_digest", "INDEPENDENT", "FLAT",
+                "state.parent_columns_dtypes.sha256", comparator="exact",
+                rationale="detect persistent parent-column addition/drop/retype"),
+        ),
+        non_claims=(
+            "A5.6 does not hash all parent dataframe values; only the two GB data artifacts are value-fingerprinted",
+            "A5.6 deliberately excludes private caches and object identity from the logical-state contract",
+            "the public definition digest removes only __meta__.created_at because it is regenerated by each export call and is not logical state",
+            "the definition digest is a same-process comparison and is not an A6 cross-version immutable reference",
+            "the poison covers only the time_series_draw module-global calibBiasResolution binding",
+            "real LAZY/FULL G7.34 remains outside scope while the A5.3 timeMS blocker is open",
+        ),
+        negative_control="FAMILY_MUTATION:A5.6-LOGICAL-DEFINITION-OR-STRUCTURE-MUTATION-MUST-FAIL",
+        reference_policy="same-process",
+    )
+
+
+def run_a5_6_realdata(case: CaseSpec, root_path: str, *, gallery_module=None) -> CaseResult:
+    _skip = _inapplicable(case)
+    if _skip is not None:
+        return _skip
+
+    import os
+    import pandas as pd
+
+    t0 = time.time()
+    res = CaseResult(case_id=case.case_id, status=SKIP)
+    original_sample = None
+    original_calib = None
+    gallery = None
+    try:
+        if case.case_id != A5_6_CASE_ID:
+            res.status = INVALID_FIXTURE
+            res.detail = f"A5.6 runner received unexpected case {case.case_id!r}"
+            return res
+        if case.loading_mode != "EAGER" or case.sample_mode != "FRACTION":
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.6 requires exact EAGER/FRACTION mode"
+            return res
+        if len(case.observables) != 4:
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.6 requires exactly four declared observables"
+            return res
+
+        env_status, why = _a5_5_environment_status(
+            root_path, gallery_module=gallery_module)
+        if env_status == A5_2_ENV_UNAVAILABLE:
+            res.status = INVALID_FIXTURE
+            res.detail = f"A5.6 environment changed after CaseSpec creation: {why}"
+            return res
+        if env_status == A5_2_ENV_CONTRACT_ERROR:
+            res.status = INVALID_FIXTURE
+            res.detail = why
+            return res
+
+        gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+
+        sample_observed = []
+        original_sample = pd.DataFrame.sample
+
+        def observed_sample(self, *args, **kwargs):
+            frac = kwargs.get("frac")
+            random_state = kwargs.get("random_state")
+            out = original_sample(self, *args, **kwargs)
+            if frac == A5_2_SAMPLE_FRACTION and random_state == A5_2_SAMPLE_SEED:
+                sample_observed.append({
+                    "source_rows": int(len(self)),
+                    "selected_rows": int(len(out)),
+                    "index_digest_sha256": _a5_2_index_digest(out.index),
+                    "index_dtype": str(out.index.dtype),
+                })
+            return out
+
+        pd.DataFrame.sample = observed_sample
+        try:
+            adf = gallery.build_adf(
+                root_path, sample=A5_2_SAMPLE_FRACTION, lazy=False)
+        finally:
+            pd.DataFrame.sample = original_sample
+            original_sample = None
+
+        if len(sample_observed) != 1:
+            res.status = INVALID_FIXTURE
+            res.detail = (
+                "A5.6 expected exactly one canonical build_adf 20% sample; "
+                f"observed {len(sample_observed)}")
+            return res
+
+        try:
+            prepared = getattr(gallery, A5_5_PREP_FUNCTION)(adf)
+        except Exception as exc:
+            res.status = FAIL
+            res.detail = f"A5.6 G7.33 preparation raised {type(exc).__name__}: {exc}"
+            res.exception = traceback.format_exc(limit=8)
+            return res
+        if prepared is None:
+            res.status = FAIL
+            res.detail = "A5.6 G7.33 preparation silently skipped"
+            return res
+
+        subframe_before = (adf.get_subframe(A5_4_SUBFRAME)
+                           if hasattr(adf, "get_subframe") else None)
+        if (subframe_before is None or not hasattr(subframe_before, "df")
+                or len(subframe_before.df) == 0):
+            res.status = FAIL
+            res.detail = "A5.6 G7.33 did not prepare non-empty CalibBias1"
+            return res
+        if not hasattr(adf, "df") or A5_4_PREDICTED not in adf.df.columns:
+            res.status = FAIL
+            res.detail = "A5.6 G7.33 did not prepare dcar_tpc_vertex_predicted0"
+            return res
+
+        predicted_before = np.asarray(adf.df[A5_4_PREDICTED])
+        if int(np.isfinite(predicted_before).sum()) <= 0:
+            res.status = FAIL
+            res.detail = "A5.6 reference predicted column has no finite values"
+            return res
+
+        before = {
+            "calibbias1_state_digest": _a5_5_frame_digest(subframe_before.df),
+            "predicted_state_digest": _a5_5_array_digest(predicted_before),
+            "definition_schema_digest": _a5_6_definition_schema_digest(adf),
+            "parent_structure_digest": _a5_6_parent_structure_digest(adf),
+        }
+
+        original_calib = getattr(gallery, "calibBiasResolution", None)
+        if original_calib is None or not callable(original_calib):
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.6 cannot arm missing calibBiasResolution tripwire"
+            return res
+
+        def forbidden_recalibration(*args, **kwargs):
+            raise AssertionError(
+                "A5.6 G7.34 reached guarded calibBiasResolution refit seam")
+
+        setattr(gallery, "calibBiasResolution", forbidden_recalibration)
+        try:
+            raw = getattr(gallery, A5_5_REUSE_FUNCTION)(adf)
+        finally:
+            setattr(gallery, "calibBiasResolution", original_calib)
+            original_calib = None
+
+        if raw is None:
+            res.status = FAIL
+            res.detail = "A5.6 G7.34 optional gallery skip is not an acceptance PASS"
+            return res
+
+        payload = unwrap("draw", raw)
+
+        subframe_after = (adf.get_subframe(A5_4_SUBFRAME)
+                          if hasattr(adf, "get_subframe") else None)
+        if subframe_after is None or not hasattr(subframe_after, "df"):
+            res.status = FAIL
+            res.detail = "A5.6 G7.34 lost CalibBias1"
+            return res
+        if A5_4_PREDICTED not in adf.df.columns:
+            res.status = FAIL
+            res.detail = "A5.6 G7.34 lost dcar_tpc_vertex_predicted0"
+            return res
+
+        predicted_after = np.asarray(adf.df[A5_4_PREDICTED])
+        after = {
+            "calibbias1_state_digest": _a5_5_frame_digest(subframe_after.df),
+            "predicted_state_digest": _a5_5_array_digest(predicted_after),
+            "definition_schema_digest": _a5_6_definition_schema_digest(adf),
+            "parent_structure_digest": _a5_6_parent_structure_digest(adf),
+        }
+
+        for observable in case.observables:
+            res.observable_contract.append(_contract(observable))
+            ref = before[observable.name]
+            cand = after[observable.name]
+            res.observed[observable.name] = {
+                "before_G7_34": ref,
+                "after_G7_34": cand,
+            }
+            comparison = compare_observable(observable, ref, cand)
+            res.comparisons.append(comparison_evidence(
+                observable, comparison,
+                reference_label="before_G7_34",
+                candidate_label="after_G7_34"))
+            res.executed_comparisons += 1
+            if not comparison.ok:
+                res.status = FAIL
+                res.detail = f"{observable.name}: G7.34 mutated declared state"
+                return res
+
+        if res.executed_comparisons != 4:
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.6 did not execute all four declared comparisons"
+            return res
+
+        public_evidence = _a5_4_public_numeric_evidence(payload.stats)
+        if public_evidence["finite_values"] <= 0:
+            res.status = FAIL
+            res.detail = "A5.6 G7.34 public result has no finite profile evidence"
+            return res
+
+        sample = sample_observed[0]
+        res.observed["realdata_provenance"] = {
+            "input_path": os.path.abspath(root_path),
+            "input_size_bytes": int(os.path.getsize(root_path)),
+            "input_mtime_ns": int(os.stat(root_path).st_mtime_ns),
+            "loading_mode": "EAGER",
+            "sample_mode": "FRACTION",
+            "sample_fraction": A5_2_SAMPLE_FRACTION,
+            "sample_seed": A5_2_SAMPLE_SEED,
+            "sampling_algorithm": (
+                "pandas.DataFrame.sample(frac=0.20, random_state=42) "
+                "observed at runtime"),
+            "adf_source_md5": _a5_5_adf_source_md5(),
+            "adf_source_module": "dfextensions.AliasDataFrame.AliasDataFrame",
+            "ingest_entrypoint": "time_series.root_to_adf",
+            "known_loader_defect": A5_5_LOADER_BUG_ID,
+            **sample,
+        }
+        res.observed["g7_34_logical_state_evidence"] = {
+            "definition_surface": "normalized export_definition_schema",
+            "definition_ignored_volatile_paths": list(A5_6_VOLATILE_DEFINITION_PATHS),
+            "parent_structure_surface": "ordered column names + dtypes",
+            "declared_observables": 4,
+            "executed_comparisons": res.executed_comparisons,
+            "calibbias1_rows_before": int(len(subframe_before.df)),
+            "calibbias1_rows_after": int(len(subframe_after.df)),
+            "predicted_values": int(predicted_after.size),
+            "finite_predicted_values": int(np.isfinite(predicted_after).sum()),
+            "public_numeric_evidence": public_evidence,
+        }
+        res.status = PASS
+        res.detail = ""
+        return res
+    except AssertionError as exc:
+        res.status = FAIL
+        res.detail = str(exc)
+        res.exception = traceback.format_exc(limit=6)
+        return res
+    except Exception as exc:
+        res.status = FAIL
+        res.detail = f"{type(exc).__name__}: {exc}"
+        res.exception = traceback.format_exc(limit=8)
+        return res
+    finally:
+        if original_calib is not None and gallery is not None:
+            try:
+                setattr(gallery, "calibBiasResolution", original_calib)
+            except Exception:
+                pass
+        if original_sample is not None:
+            try:
+                import pandas as pd
+                pd.DataFrame.sample = original_sample
+            except Exception:
+                pass
+        _close()
+        res.wall_time_s = round(time.time() - t0, 4)
+
+
+def run_a5_6_realdata_gate(root_path: str, *, manifest_path: str,
+                           gallery_module=None) -> tuple[CaseResult, dict, int]:
+    case = a5_6_realdata_case(root_path, gallery_module=gallery_module)
+    result = run_a5_6_realdata(
         case, root_path, gallery_module=gallery_module)
     extra = {}
     if isinstance(result.observed.get("realdata_provenance"), dict):
