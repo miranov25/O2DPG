@@ -32,7 +32,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A5.3.v03"
+SCHEMA_VERSION = "13.77.A5.4.v02"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -4696,3 +4696,367 @@ def coverage_gaps(results: Sequence[CaseResult],
                   cases: Sequence[CaseSpec]) -> list:
     """Human-readable gaps.  Derived from reconcile(); holds no policy."""
     return reconcile(results, cases)["gaps"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# A5.4 — environment-gated real-data GB / G7.33 EAGER 20% acceptance
+# ─────────────────────────────────────────────────────────────────────────────
+
+A5_4_CASE_ID = "I4-REAL-G7-GB-EAGER-20PCT-01"
+A5_4_GALLERY_FUNCTION = "fig33_gb_correction_tgl"
+A5_4_SUBFRAME = "CalibBias1"
+A5_4_PREDICTED = "dcar_tpc_vertex_predicted0"
+
+
+def _a5_4_environment_status(root_path: str, gallery_module=None) -> tuple[str, str]:
+    """A5.4 environment status without depending on the G7.32 callable."""
+    import os
+
+    if not root_path:
+        return A5_2_ENV_UNAVAILABLE, "no ROOT input path was supplied"
+    if not os.path.isfile(root_path):
+        return (A5_2_ENV_UNAVAILABLE,
+                f"ROOT input is unavailable: {os.path.abspath(root_path)}")
+    try:
+        gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+    except ModuleNotFoundError as exc:
+        missing = getattr(exc, "name", None)
+        if missing in A5_2_EXTERNAL_MODULES:
+            return (A5_2_ENV_UNAVAILABLE,
+                    f"time_series_draw environment unavailable: "
+                    f"{type(exc).__name__}: {exc}")
+        return (A5_2_ENV_CONTRACT_ERROR,
+                f"time_series_draw import contract failure: "
+                f"{type(exc).__name__}: {exc}")
+    except Exception as exc:
+        return (A5_2_ENV_CONTRACT_ERROR,
+                f"time_series_draw import contract failure: "
+                f"{type(exc).__name__}: {exc}")
+
+    required = ("build_adf", A5_4_GALLERY_FUNCTION)
+    missing = [name for name in required if not callable(getattr(gallery, name, None))]
+    if missing:
+        return (A5_2_ENV_CONTRACT_ERROR,
+                f"time_series_draw missing required callable(s): {missing}")
+    return A5_2_ENV_AVAILABLE, ""
+
+
+def a5_4_realdata_case(root_path: str, gallery_module=None) -> CaseSpec:
+    """Bounded real-data G7.33 GB correction coverage on the canonical 20% sample."""
+    env_status, reason = _a5_4_environment_status(
+        root_path, gallery_module=gallery_module)
+    applicable = env_status != A5_2_ENV_UNAVAILABLE
+    applicability_reason = reason if not applicable else ""
+    return CaseSpec(
+        case_id=A5_4_CASE_ID,
+        claim_id="I4.real_g7_gb.A5.4",
+        title="real G7.33 GB correction executes on deterministic eager 20% data",
+        claim=("the trusted time-series G7.33 calibBiasResolution workflow executes "
+               "on the canonical deterministic EAGER 20% sample, registers CalibBias1, "
+               "materializes finite dcar_tpc_vertex_predicted0 values, and returns "
+               "a non-empty public draw result"),
+        failure_means=("an applicable real-data G7.33 workflow silently skipped, "
+                       "failed to register its coefficient subframe, failed to produce "
+                       "finite predicted correction values, or returned no numerical "
+                       "public result"),
+        expected_visual=("the existing G7.33 normalized raw-versus-predicted "
+                         "DCA_r differential profile versus tgl"),
+        owner_on_failure="GB",
+        purpose="COVERAGE",
+        gate="ENVIRONMENT_GATED",
+        oracle_kind="CONSISTENCY",
+        loading_mode="EAGER",
+        sample_mode="FRACTION",
+        canonical_spec={
+            "gallery_function": A5_4_GALLERY_FUNCTION,
+            "expr": "[dcar_tpc_vertex, dcar_tpc_vertex_predicted0]:tgl",
+            "selection": "(ncl>60)&(abs(dcar_tpc_vertex)<10)",
+            "type": "profile",
+            "bins": 50,
+            "normalize": "delta",
+            "sample_fraction": A5_2_SAMPLE_FRACTION,
+            "sample_seed": A5_2_SAMPLE_SEED,
+            "expected_subframe": A5_4_SUBFRAME,
+            "expected_predicted_column": A5_4_PREDICTED,
+        },
+        applicable=applicable,
+        applicability_reason=applicability_reason,
+        setup_contract=("reuse time_series_draw.build_adf(root_path, sample=0.20, "
+                        "lazy=False), observe the actual pandas sample call, then run "
+                        "the unchanged fig33_gb_correction_tgl() workflow"),
+        preconditions=(
+            "the ROOT input file is readable by the trusted time-series environment",
+            "trusted build_adf and fig33_gb_correction_tgl callables are available",
+            "sample fraction is exactly 0.20 with the established random_state=42",
+        ),
+        surfaces_under_test=("draw",),
+        non_claims=(
+            "A5.4 is execution/GB-composition coverage, not independent calibBiasResolution correctness",
+            "G7.34 sector reuse is a later bounded increment",
+            "real LAZY/FULL G7.33 is not claimed while A5.3's lazy timeMS blocker remains open",
+            "the 10% internal calibBiasResolution fit subsample is trusted workflow behavior, not the A5.4 input-sampling contract",
+        ),
+        negative_control="FAMILY_MUTATION:A5.4-GB-PREDICTED-NONFINITE-MUST-FAIL",
+        reference_policy="named-immutable",
+    )
+
+
+def _a5_4_public_numeric_evidence(stats: Any) -> dict:
+    """Finite plotted/normalized evidence across the actual G7.33 stats shape.
+
+    G7.33 uses a vector expression and does not request ``return_data=True``.
+    Depending on the public draw path, the returned stats payload may therefore
+    be a dict *or* a sequence of per-expression/profile stats dictionaries.
+
+    Accept only semantically meaningful plotted quantities:
+      * ``normalize_data.value`` when available;
+      * populated ``profile_data.y_mean``;
+      * finite scalar ``mean_y`` as the established profile-summary fallback.
+
+    Never count arbitrary numeric bookkeeping such as ``n``/``count`` alone.
+    """
+
+    records = []
+
+    def one(value: Any, path: str) -> None:
+        if isinstance(value, (list, tuple)):
+            for i, child in enumerate(value):
+                one(child, f"{path}[{i}]")
+            return
+        if not isinstance(value, dict):
+            return
+
+        table = value.get("normalize_data")
+        if table is not None and hasattr(table, "columns") and "value" in table.columns:
+            vals = np.asarray(table["value"])
+            mask = np.ones(vals.shape, dtype=bool)
+            if "signal_count" in table.columns and "reference_count" in table.columns:
+                sc = np.asarray(table["signal_count"])
+                rc = np.asarray(table["reference_count"])
+                if sc.shape == vals.shape and rc.shape == vals.shape:
+                    mask = (sc > 0) & (rc > 0)
+            finite = 0
+            if np.issubdtype(vals.dtype, np.number):
+                finite = int((mask & np.isfinite(vals)).sum())
+            records.append({
+                "source": f"{path}.normalize_data.value",
+                "populated_bins": int(mask.sum()),
+                "finite_values": finite,
+            })
+            return
+
+        profile = value.get("profile_data")
+        if profile is not None:
+            finite = 0
+            populated_n = 0
+            if (hasattr(profile, "columns")
+                    and "count" in profile.columns
+                    and "y_mean" in profile.columns):
+                count = np.asarray(profile["count"])
+                y_mean = np.asarray(profile["y_mean"])
+                if count.shape == y_mean.shape:
+                    populated = np.asarray(count > 0, dtype=bool)
+                    populated_n = int(populated.sum())
+                    if np.issubdtype(y_mean.dtype, np.number):
+                        finite = int((populated & np.isfinite(y_mean)).sum())
+            records.append({
+                "source": f"{path}.profile_data.y_mean",
+                "populated_bins": populated_n,
+                "finite_values": finite,
+            })
+            # Rich profile_data is authoritative.  Do not fall back to mean_y
+            # if it is present but malformed/non-finite.
+            return
+
+        if "mean_y" in value:
+            try:
+                arr = np.asarray(value["mean_y"])
+                finite = int(
+                    arr.ndim == 0
+                    and np.issubdtype(arr.dtype, np.number)
+                    and bool(np.isfinite(arr)))
+            except Exception:
+                finite = 0
+            records.append({
+                "source": f"{path}.mean_y",
+                "populated_bins": 1,
+                "finite_values": finite,
+            })
+
+    one(stats, "stats")
+    finite_total = int(sum(r["finite_values"] for r in records))
+    populated_total = int(sum(r["populated_bins"] for r in records))
+    return {
+        "source": "recursive_public_profile_evidence",
+        "records": records,
+        "populated_bins": populated_total,
+        "finite_values": finite_total,
+    }
+
+def run_a5_4_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
+                       sample_fraction: float = A5_2_SAMPLE_FRACTION,
+                       seed: int = A5_2_SAMPLE_SEED) -> CaseResult:
+    """Execute the bounded EAGER/FRACTION real G7.33 GB acceptance case."""
+    _skip = _inapplicable(case)
+    if _skip is not None:
+        return _skip
+
+    import os
+    import pandas as pd
+
+    t0 = time.time()
+    res = CaseResult(case_id=case.case_id, status=SKIP)
+    original_sample = None
+    try:
+        if case.case_id != A5_4_CASE_ID:
+            res.status = INVALID_FIXTURE
+            res.detail = f"A5.4 runner received unexpected case {case.case_id!r}"
+            return res
+        if (case.loading_mode != "EAGER" or case.sample_mode != "FRACTION"
+                or sample_fraction != A5_2_SAMPLE_FRACTION
+                or seed != A5_2_SAMPLE_SEED):
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.4 requires exact EAGER fraction=0.20, seed=42"
+            return res
+
+        env_status, why = _a5_4_environment_status(
+            root_path, gallery_module=gallery_module)
+        if env_status == A5_2_ENV_UNAVAILABLE:
+            res.status = INVALID_FIXTURE
+            res.detail = f"A5.4 environment changed after CaseSpec creation: {why}"
+            return res
+        if env_status == A5_2_ENV_CONTRACT_ERROR:
+            res.status = INVALID_FIXTURE
+            res.detail = why
+            return res
+
+        gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+
+        sample_observed = []
+        original_sample = pd.DataFrame.sample
+
+        def observed_sample(self, *args, **kwargs):
+            frac = kwargs.get("frac")
+            random_state = kwargs.get("random_state")
+            out = original_sample(self, *args, **kwargs)
+            if frac == A5_2_SAMPLE_FRACTION and random_state == A5_2_SAMPLE_SEED:
+                sample_observed.append({
+                    "source_rows": int(len(self)),
+                    "selected_rows": int(len(out)),
+                    "index_digest_sha256": _a5_2_index_digest(out.index),
+                    "index_dtype": str(out.index.dtype),
+                })
+            return out
+
+        pd.DataFrame.sample = observed_sample
+        try:
+            adf = gallery.build_adf(
+                root_path, sample=A5_2_SAMPLE_FRACTION, lazy=False)
+        finally:
+            pd.DataFrame.sample = original_sample
+            original_sample = None
+
+        if len(sample_observed) != 1:
+            res.status = INVALID_FIXTURE
+            res.detail = (
+                "A5.4 expected exactly one canonical build_adf sample call; "
+                f"observed {len(sample_observed)}")
+            return res
+
+        try:
+            raw = getattr(gallery, A5_4_GALLERY_FUNCTION)(adf)
+        except Exception as exc:
+            res.status = FAIL
+            res.detail = f"A5.4 G7.33 raised {type(exc).__name__}: {exc}"
+            res.exception = traceback.format_exc(limit=8)
+            return res
+        if raw is None:
+            res.status = FAIL
+            res.detail = "A5.4 optional gallery skip is not an acceptance PASS"
+            return res
+
+        payload = unwrap("draw", raw)
+
+        subframe = (adf.get_subframe(A5_4_SUBFRAME)
+                    if hasattr(adf, "get_subframe") else None)
+        if subframe is None or not hasattr(subframe, "df") or len(subframe.df) == 0:
+            res.status = FAIL
+            res.detail = "A5.4 G7.33 did not register a non-empty CalibBias1 subframe"
+            return res
+
+        if not hasattr(adf, "df") or A5_4_PREDICTED not in adf.df.columns:
+            res.status = FAIL
+            res.detail = (
+                "A5.4 G7.33 did not materialize "
+                "dcar_tpc_vertex_predicted0 in the parent frame")
+            return res
+        predicted = np.asarray(adf.df[A5_4_PREDICTED])
+        if not np.issubdtype(predicted.dtype, np.number):
+            res.status = FAIL
+            res.detail = "A5.4 predicted correction column is not numeric"
+            return res
+        finite_pred = int(np.isfinite(predicted).sum())
+        if finite_pred <= 0:
+            res.status = FAIL
+            res.detail = "A5.4 predicted correction column has no finite values"
+            return res
+
+        public_evidence = _a5_4_public_numeric_evidence(payload.stats)
+        if public_evidence["finite_values"] <= 0:
+            res.status = FAIL
+            res.detail = "A5.4 G7.33 public result has no finite numerical evidence"
+            return res
+
+        sample = sample_observed[0]
+        res.observed["realdata_provenance"] = {
+            "input_path": os.path.abspath(root_path),
+            "input_size_bytes": int(os.path.getsize(root_path)),
+            "input_mtime_ns": int(os.stat(root_path).st_mtime_ns),
+            "loading_mode": "EAGER",
+            "sample_mode": "FRACTION",
+            "sample_fraction": A5_2_SAMPLE_FRACTION,
+            "sample_seed": A5_2_SAMPLE_SEED,
+            "sampling_algorithm": (
+                "pandas.DataFrame.sample(frac=0.20, random_state=42) "
+                "observed at runtime"),
+            **sample,
+        }
+        res.observed["g7_33_evidence"] = {
+            "gallery_function": A5_4_GALLERY_FUNCTION,
+            "calibbias1_subframe_registered": True,
+            "calibbias1_rows": int(len(subframe.df)),
+            "predicted_column": A5_4_PREDICTED,
+            "predicted_values": int(predicted.size),
+            "finite_predicted_values": finite_pred,
+            "public_numeric_evidence": public_evidence,
+            "numeric_summary": _a5_2_numeric_summary(payload.stats),
+        }
+        res.status = PASS
+        res.detail = ""
+        return res
+    except Exception as exc:
+        res.status = FAIL
+        res.detail = f"{type(exc).__name__}: {exc}"
+        res.exception = traceback.format_exc(limit=8)
+        return res
+    finally:
+        if original_sample is not None:
+            try:
+                import pandas as pd
+                pd.DataFrame.sample = original_sample
+            except Exception:
+                pass
+        _close()
+        res.wall_time_s = round(time.time() - t0, 4)
+
+
+def run_a5_4_realdata_gate(root_path: str, *, manifest_path: str,
+                           gallery_module=None) -> tuple[CaseResult, dict, int]:
+    case = a5_4_realdata_case(root_path, gallery_module=gallery_module)
+    result = run_a5_4_realdata(
+        case, root_path, gallery_module=gallery_module)
+    extra = {}
+    if isinstance(result.observed.get("realdata_provenance"), dict):
+        extra.update(result.observed["realdata_provenance"])
+    doc = write_manifest(manifest_path, [result], [case], extra=extra)
+    return result, doc, strict_exit_code([result], [case])
+

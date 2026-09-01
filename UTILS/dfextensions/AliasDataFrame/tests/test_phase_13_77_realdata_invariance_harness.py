@@ -3747,3 +3747,203 @@ def test_a5_22_realdata_lazy_setup_success_forces_contract_review(tmp_path):
     assert result.status == H.FAIL, result.detail
     assert "unexpectedly disappeared" in result.detail
     assert H.strict_exit_code([result], [case]) == 1
+
+# ── A5.4 — real-data G7.33 GB correction EAGER/FRACTION acceptance ──────────
+
+class _A54FakeSubframe:
+    def __init__(self):
+        self.df = pd.DataFrame({
+            "sector_bin180": np.asarray([0, 1, 2], dtype=np.int16),
+            "tgl_bin10": np.asarray([0, 0, 1], dtype=np.int16),
+            "dcar_tpc_vertex_intercept": np.asarray([0.01, 0.02, 0.03]),
+        })
+
+
+class _A54FakeGallery:
+    @staticmethod
+    def build_adf(root_path, sample=None, lazy=False):
+        assert lazy is False
+        frame = pd.DataFrame({
+            "dcar_tpc_vertex": np.linspace(-0.8, 0.8, 20),
+            "tgl": np.linspace(-1.0, 1.0, 20),
+            "ncl": np.full(20, 90, dtype=np.int16),
+        })
+        adf = _A52FakeADF(frame)
+        if sample is not None:
+            adf.df = adf.df.sample(
+                frac=sample, random_state=42).reset_index(drop=True)
+        return adf
+
+    @staticmethod
+    def fig33_gb_correction_tgl(adf):
+        adf._subframes["CalibBias1"] = _A54FakeSubframe()
+        n = len(adf.df)
+        adf.df["dcar_tpc_vertex_predicted0"] = np.linspace(
+            -0.2, 0.2, n, dtype=np.float64)
+        stats = {
+            "n": int(n),
+            "normalize_data": pd.DataFrame({
+                "x_center": np.asarray([-0.5, 0.5]),
+                "signal_central": np.asarray([0.3, 0.4]),
+                "signal_count": np.asarray([2, 2]),
+                "reference_central": np.asarray([0.1, 0.15]),
+                "reference_count": np.asarray([2, 2]),
+                "value": np.asarray([0.2, 0.25]),
+            }),
+        }
+        return None, None, stats
+
+
+class _A54NonFinitePredictedGallery(_A54FakeGallery):
+    @staticmethod
+    def fig33_gb_correction_tgl(adf):
+        adf._subframes["CalibBias1"] = _A54FakeSubframe()
+        adf.df["dcar_tpc_vertex_predicted0"] = np.full(len(adf.df), np.nan)
+        return None, None, {
+            "n": len(adf.df),
+            "normalize_data": pd.DataFrame({
+                "signal_count": [1],
+                "reference_count": [1],
+                "value": [0.2],
+            }),
+        }
+
+
+class _A54MissingSubframeGallery(_A54FakeGallery):
+    @staticmethod
+    def fig33_gb_correction_tgl(adf):
+        adf.df["dcar_tpc_vertex_predicted0"] = np.linspace(
+            -0.2, 0.2, len(adf.df))
+        return None, None, {
+            "n": len(adf.df),
+            "normalize_data": pd.DataFrame({
+                "signal_count": [1],
+                "reference_count": [1],
+                "value": [0.2],
+            }),
+        }
+
+
+class _A54NoneGallery(_A54FakeGallery):
+    @staticmethod
+    def fig33_gb_correction_tgl(adf):
+        return None
+
+
+def test_a5_23_g7_33_case_is_bounded_eager_fraction_and_registry_valid(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.4 G7.33 case")
+    case = H.a5_4_realdata_case(str(root_path), gallery_module=_A54FakeGallery)
+
+    assert case.case_id == H.A5_4_CASE_ID
+    assert case.purpose == "COVERAGE"
+    assert case.gate == "ENVIRONMENT_GATED"
+    assert case.loading_mode == "EAGER"
+    assert case.sample_mode == "FRACTION"
+    assert case.canonical_spec["gallery_function"] == "fig33_gb_correction_tgl"
+    assert case.canonical_spec["sample_fraction"] == 0.20
+    assert case.canonical_spec["sample_seed"] == 42
+    assert case.canonical_spec["expected_subframe"] == "CalibBias1"
+    assert case.canonical_spec["expected_predicted_column"] == (
+        "dcar_tpc_vertex_predicted0")
+    assert H.validate_registry([case]) == []
+
+
+def test_a5_24_g7_33_records_sample_gb_subframe_predicted_and_public_evidence(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.4 positive")
+    case = H.a5_4_realdata_case(str(root_path), gallery_module=_A54FakeGallery)
+
+    first = H.run_a5_4_realdata(
+        case, str(root_path), gallery_module=_A54FakeGallery)
+    second = H.run_a5_4_realdata(
+        case, str(root_path), gallery_module=_A54FakeGallery)
+
+    assert first.status == H.PASS, first.detail
+    assert second.status == H.PASS, second.detail
+    assert H.strict_exit_code([first], [case]) == 0
+
+    prov = first.observed["realdata_provenance"]
+    assert prov["source_rows"] == 20
+    assert prov["selected_rows"] == 4
+    assert prov["sample_fraction"] == 0.20
+    assert prov["sample_seed"] == 42
+    assert len(prov["index_digest_sha256"]) == 64
+    assert second.observed["realdata_provenance"]["index_digest_sha256"] == (
+        prov["index_digest_sha256"])
+
+    gb = first.observed["g7_33_evidence"]
+    assert gb["gallery_function"] == "fig33_gb_correction_tgl"
+    assert gb["calibbias1_subframe_registered"] is True
+    assert gb["calibbias1_rows"] == 3
+    assert gb["predicted_column"] == "dcar_tpc_vertex_predicted0"
+    assert gb["finite_predicted_values"] == 4
+    ev = gb["public_numeric_evidence"]
+    assert ev["source"] == "recursive_public_profile_evidence"
+    assert ev["finite_values"] == 2
+    assert ev["populated_bins"] == 2
+    assert [record["source"] for record in ev["records"]] == [
+        "stats.normalize_data.value"
+    ]
+
+
+def test_a5_25_g7_33_nonfinite_predicted_column_fails_closed(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.4 nonfinite predicted")
+    case = H.a5_4_realdata_case(
+        str(root_path), gallery_module=_A54NonFinitePredictedGallery)
+
+    result = H.run_a5_4_realdata(
+        case, str(root_path), gallery_module=_A54NonFinitePredictedGallery)
+    assert result.status == H.FAIL, result.detail
+    assert "no finite values" in result.detail
+    assert H.strict_exit_code([result], [case]) == 1
+
+
+def test_a5_26_g7_33_missing_calibbias1_subframe_fails_closed(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.4 missing subframe")
+    case = H.a5_4_realdata_case(
+        str(root_path), gallery_module=_A54MissingSubframeGallery)
+
+    result = H.run_a5_4_realdata(
+        case, str(root_path), gallery_module=_A54MissingSubframeGallery)
+    assert result.status == H.FAIL, result.detail
+    assert "CalibBias1" in result.detail
+    assert H.strict_exit_code([result], [case]) == 1
+
+
+def test_a5_27_g7_33_optional_none_is_fail_not_skip(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.4 optional none")
+    case = H.a5_4_realdata_case(str(root_path), gallery_module=_A54NoneGallery)
+
+    result = H.run_a5_4_realdata(
+        case, str(root_path), gallery_module=_A54NoneGallery)
+    assert result.status == H.FAIL, result.detail
+    assert "optional gallery skip" in result.detail
+    assert H.strict_exit_code([result], [case]) == 1
+
+def test_a5_28_g7_33_sequence_stats_profile_means_are_valid_public_evidence():
+    stats = [
+        {"n": 10, "mean_y": 0.25},
+        {"n": 10, "mean_y": -0.10},
+    ]
+    ev = H._a5_4_public_numeric_evidence(stats)
+    assert ev["source"] == "recursive_public_profile_evidence"
+    assert ev["finite_values"] == 2
+    assert ev["populated_bins"] == 2
+    assert [r["source"] for r in ev["records"]] == [
+        "stats[0].mean_y", "stats[1].mean_y"
+    ]
+
+
+def test_a5_29_g7_33_sequence_stats_bookkeeping_cannot_hide_nan_profiles():
+    stats = [
+        {"n": 10, "count": 10, "mean_y": np.nan},
+        {"n": 10, "count": 10, "mean_y": np.nan},
+    ]
+    ev = H._a5_4_public_numeric_evidence(stats)
+    assert ev["finite_values"] == 0
+    assert ev["populated_bins"] == 2
+
