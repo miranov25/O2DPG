@@ -31,6 +31,18 @@
 #   fatal — two packets built from two lists is finding D-1 in a new costume.
 #   Set ADF_SNAP_TAR=0 to emit the zip only.
 #
+# v05 — plain-text companion
+#   Also emits  sources_<name>_<stamp>.llmbundle.txt  via make_llm_bundle.py,
+#   built FROM THE ZIP so it cannot drift from the reviewed file list.  Some
+#   reviewer runtimes cannot open ANY archive — the attachment to
+#   analysis-runtime handoff fails for zip and tar alike — so a text form
+#   removes the container entirely.  It carries a header, a per-file manifest
+#   and a trailer, so a TRUNCATED bundle is detectable instead of looking
+#   complete.  Entry-count divergence from the zip is fatal, exactly like the
+#   tar.  A bundler that is absent or refuses is a WARNING, not fatal: the
+#   zip and tar are already complete and self-consistent at that point.
+#   Set ADF_SNAP_BUNDLE=0 to skip it.
+#
 # USAGE
 #   make_audit_snapshot.sh <src_dir> <name> [out_dir] [git_ref]
 #
@@ -47,6 +59,14 @@
 #   ADF_SNAP_KEYFILES   basename regex of "key files" echoed in the report
 #                       default: AliasDataFrame\.py|dfdraw\.py|.*characterization\.py
 #   ADF_SNAP_TAR        0 = zip only.  default: emit both.
+#   ADF_SNAP_BUNDLE     0 = skip the plain-text .llmbundle.txt companion.
+#   ADF_SNAP_BUNDLE_ALLOW_DELIM
+#                       1 = pass --allow-delimiters.  Default is REFUSE: a
+#                       source snapshot is extracted by eye, so a file that
+#                       contains an LLMBUNDLE delimiter must be seen, not
+#                       silently embedded.  (The reviewer-evidence packet in
+#                       run_tests.sh allows them, because its diffs quote
+#                       make_llm_bundle.py's own delimiter constants.)
 #
 # EXAMPLES
 #   make_audit_snapshot.sh ../../AliasDataFrame adf    .
@@ -60,6 +80,13 @@
 set -u
 
 SCRIPT_PATH="${BASH_SOURCE[0]}"
+# Resolve to an absolute path BEFORE any cd.  v04 read $SCRIPT_PATH after
+# `cd "$SRC"`, so an invocation by relative path (bash make_audit_snapshot.sh
+# ../pkg ...) silently produced an EMPTY generator_md5 — P2-C's self-
+# fingerprint was not actually working.  v05 also needs this to find
+# make_llm_bundle.py beside the script.
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" 2>/dev/null && pwd)"
+[ -n "$SCRIPT_DIR" ] && SCRIPT_PATH="$SCRIPT_DIR/$(basename "$SCRIPT_PATH")"
 SRC="${1:-}"
 NAME="${2:-}"
 OUT="${3:-$PWD}"
@@ -68,16 +95,18 @@ REF="${4:-}"
 DROP_EXT="${ADF_SNAP_DROP_EXT:-pkl|root|npy|npz|so|pyc|o|a|whl}"
 KEYFILES="${ADF_SNAP_KEYFILES:-AliasDataFrame\.py|dfdraw\.py|.*characterization\.py}"
 
-ZIP=""   # set later; referenced by die()
-TAR=""   # v04 companion; also referenced by die()
+ZIP=""      # set later; referenced by die()
+TAR=""      # v04 companion; also referenced by die()
+BUNDLE=""   # v05 companion; also referenced by die()
 WANT_TAR="${ADF_SNAP_TAR:-1}"
+WANT_BUNDLE="${ADF_SNAP_BUNDLE:-1}"
 
 die() {
     echo "ERROR: $*" >&2
     # R3: never leave a valid-looking partial archive behind.  v04: this must
     # cover BOTH containers, or a failure can delete the zip and leave a
     # plausible tar that no longer has a verified companion.
-    for _a in "$ZIP" "$TAR"; do
+    for _a in "$ZIP" "$TAR" "$BUNDLE"; do
         if [ -n "$_a" ] && [ -f "$_a" ]; then
             rm -f "$_a"
             echo "ERROR: removed incomplete archive $_a" >&2
@@ -135,7 +164,8 @@ else
 fi
 # Same basename, different extension: the pair is obvious on disk and in
 # the CRR, and neither can be mistaken for a different snapshot.
-[ "$WANT_TAR" = "0" ] || TAR="${ZIP%.zip}.tar"
+[ "$WANT_TAR" = "0" ]    || TAR="${ZIP%.zip}.tar"
+[ "$WANT_BUNDLE" = "0" ] || BUNDLE="${ZIP%.zip}.llmbundle.txt"
 
 WORK=$(mktemp -d) || exit 2
 trap 'rm -rf "$WORK"' EXIT
@@ -328,6 +358,43 @@ if [ -n "$TAR" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 5c. v05 — the plain-text companion, built FROM THE ZIP.
+#     Never from a directory: the zip is the verified file list, so the
+#     bundle inherits R1/R3 rather than re-deriving them.  A directory walk
+#     would sweep up .git, caches and test data (measured: 2386 entries and
+#     298 MB for dfdraw) and would not be the audited byte set.
+# ---------------------------------------------------------------------------
+NBUNDLE=0
+if [ -n "$BUNDLE" ]; then
+    BUNDLER="${SCRIPT_DIR:-.}/make_llm_bundle.py"
+    BUNDLE_ARGS=""
+    [ "${ADF_SNAP_BUNDLE_ALLOW_DELIM:-0}" = "1" ] && BUNDLE_ARGS="--allow-delimiters"
+
+    if [ ! -f "$BUNDLER" ]; then
+        echo "WARNING: make_llm_bundle.py not found beside this script; no text bundle" >&2
+        echo "         expected: $BUNDLER" >&2
+        BUNDLE=""
+    elif python3 "$BUNDLER" "$ZIP" -o "$BUNDLE" $BUNDLE_ARGS >/dev/null 2>"$WORK/bundle.err" \
+            && [ -s "$BUNDLE" ]; then
+        NBUNDLE=$(grep -c '^===== LLMBUNDLE ENTRY BEGIN =====$' "$BUNDLE" || echo 0)
+        NZIP_ALL=$(unzip -Z1 "$ZIP" | grep -cv '/$')
+        # Same rule as the tar: two artifacts claiming one manifest must agree.
+        [ "$NBUNDLE" -eq "$NZIP_ALL" ] \
+            || die "bundle mismatch: zip holds $NZIP_ALL members, bundle holds $NBUNDLE"
+        tail -1 "$BUNDLE" | grep -q '^===== LLMBUNDLE END ' \
+            || die "bundle has no trailer — it is truncated"
+    else
+        echo "WARNING: make_llm_bundle.py failed; zip and tar are unaffected" >&2
+        sed 's/^/         /' "$WORK/bundle.err" >&2
+        echo "         (a file containing an LLMBUNDLE delimiter is refused by" >&2
+        echo "          design; re-run with ADF_SNAP_BUNDLE_ALLOW_DELIM=1 only" >&2
+        echo "          if every consumer parses by the 'bytes:' length prefix)" >&2
+        rm -f "$BUNDLE"
+        BUNDLE=""
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # 6. report
 # ---------------------------------------------------------------------------
 ZMD5=$(md5sum "$ZIP" | cut -d' ' -f1)
@@ -337,11 +404,20 @@ if [ -n "$TAR" ] && [ -f "$TAR" ]; then
     TMD5=$(md5sum "$TAR" | cut -d' ' -f1)
     TSHA=$(sha256sum "$TAR" | cut -d' ' -f1)
 fi
+BMD5=""; BSHA=""; BMANIFEST=""
+if [ -n "$BUNDLE" ] && [ -f "$BUNDLE" ]; then
+    BMD5=$(md5sum "$BUNDLE" | cut -d' ' -f1)
+    BSHA=$(sha256sum "$BUNDLE" | cut -d' ' -f1)
+    BMANIFEST=$(grep -m1 '^manifest-sha256: ' "$BUNDLE" | cut -d' ' -f2)
+fi
 
 echo "==================================================================="
 echo "SNAPSHOT   $ZIP"
 if [ -n "$TAR" ] && [ -f "$TAR" ]; then
     echo "           $TAR   (same file list, same manifest)"
+fi
+if [ -n "$BMD5" ]; then
+    echo "           $BUNDLE   (plain text, built FROM the zip)"
 fi
 echo "  package        $NAME          mode: $MODE"
 echo "  SOURCE_COMMIT  $SOURCE_COMMIT"
@@ -357,6 +433,13 @@ echo "  zip  sha256    $ZSHA"
 if [ -n "$TMD5" ]; then
     echo "  tar  md5       $TMD5"
     echo "  tar  sha256    $TSHA"
+fi
+if [ -n "$BMD5" ]; then
+    echo "  text md5       $BMD5"
+    echo "  text sha256    $BSHA"
+    echo "  text entries   $NBUNDLE   manifest-sha256 $BMANIFEST"
+fi
+if [ -n "$TMD5" ] || [ -n "$BMD5" ]; then
     echo "  containers     verified to hold the same member count"
 fi
 echo "  generator      $TOOL_MD5"
@@ -387,7 +470,17 @@ echo "      zip md5          $ZMD5"
 if [ -n "$TMD5" ]; then
 echo "      $NAME   $(basename "$TAR")"
 echo "      tar md5          $TMD5"
-echo "      *** DECLARE BOTH, and state which container you opened."
+fi
+if [ -n "$BMD5" ]; then
+echo "      $NAME   $(basename "$BUNDLE")"
+echo "      text md5         $BMD5"
+echo "      text entries     $NBUNDLE"
+echo "      text manifest    $BMANIFEST"
+echo "      *** A Source-Read claim on the text bundle must quote entries"
+echo "      *** and manifest-sha256 from BOTH the header AND the trailer."
+fi
+if [ -n "$TMD5" ] || [ -n "$BMD5" ]; then
+echo "      *** DECLARE ALL, and state which container you opened."
 fi
 echo "      SOURCE_COMMIT    $SOURCE_COMMIT"
 echo "      state            $STATE"

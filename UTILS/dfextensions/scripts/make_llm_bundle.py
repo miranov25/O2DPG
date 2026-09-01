@@ -50,9 +50,12 @@ from typing import Iterable, Iterator, Optional
 
 FORMAT_VERSION = b"LLMBUNDLE/2\n"
 
-# Any of these appearing INSIDE file content makes a delimiter-scanning reader
-# mis-split the bundle.  A length-prefix reader is immune, but the primary
-# consumer of this format reads by eye, so we refuse rather than emit.
+# A delimiter-scanning reader mis-splits the bundle only when a file contains
+# a LINE that is exactly a delimiter.  A quoted mention inside code — a grep
+# pattern in run_tests.sh, this script's own DELIMITERS constant, a diff that
+# touches either — is harmless and must NOT be refused: those occurrences are
+# permanent and unavoidable in any tree that ships these tools, so a substring
+# test makes the guard fire always and therefore mean nothing.
 DELIMITERS = (
     b"===== LLMBUNDLE ENTRY BEGIN =====",
     b"===== LLMBUNDLE ENTRY END =====",
@@ -196,6 +199,30 @@ def default_output_path(input_path: Path) -> Path:
     return input_path.with_name(name + ".llmbundle.txt")
 
 
+def contains_delimiter_line(data: bytes) -> Optional[str]:
+    """
+    Return the offending delimiter if DATA contains a line that IS a delimiter.
+
+    Line-anchored on purpose: `b"===== CONTENT END ====="` appearing inside a
+    string literal or a grep pattern cannot confuse a reader that matches whole
+    lines, whereas a bare delimiter line can.
+    """
+    padded = b"\n" + data + b"\n"
+    for d in DELIMITERS:
+        if b"\n" + d + b"\n" in padded:
+            return d.decode("ascii")
+        # trailing-content forms: "===== LLMBUNDLE END entries=... ====="
+        idx = padded.find(b"\n" + d)
+        while idx != -1:
+            eol = padded.find(b"\n", idx + 1)
+            if eol != -1 and padded[idx + 1:eol].startswith(d):
+                seg = padded[idx + 1:eol]
+                if seg == d or seg.endswith(b"====="):
+                    return d.decode("ascii")
+            idx = padded.find(b"\n" + d, idx + 1)
+    return None
+
+
 def is_utf8_text(data: bytes) -> bool:
     """
     Treat valid UTF-8 without NUL bytes as text.
@@ -269,8 +296,11 @@ def make_llm_bundle(
     if not allow_delimiters:
         collisions = []
         for entry in entries:
-            if entry.kind != "symlink" and any(d in entry.data for d in DELIMITERS):
-                collisions.append(entry.path)
+            if entry.kind == "symlink":
+                continue
+            hit = contains_delimiter_line(entry.data)
+            if hit is not None:
+                collisions.append(f"{entry.path}   (line is exactly: {hit})")
         if collisions:
             raise ValueError(
                 "Refusing to build: these files contain an LLMBUNDLE delimiter, "
