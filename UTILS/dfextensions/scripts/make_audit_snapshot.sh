@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# make_audit_snapshot.sh  v03 — anchored source snapshots for reviewers
+# make_audit_snapshot.sh  v04 — anchored source snapshots for reviewers
 # PHASE_13_78_ADF
 #
 # WHY THIS EXISTS
@@ -21,6 +21,16 @@
 #         their own key files instead of an empty block.
 #   P2-C  the script fingerprints itself into _AUDIT_HEAD.txt.
 #
+# v04 — dual container
+#   Emits BOTH  sources_<name>_<stamp>.zip  AND  .tar  from ONE file list in
+#   ONE pass.  Some reviewer environments cannot read the zip; a second
+#   container removes that as a blocker without changing the canonical zip.
+#   The .tar is UNCOMPRESSED on purpose: it removes gzip as a second thing
+#   that can fail in a reader, and it allows two-pass append exactly like zip.
+#   R3 fail-closed applies to BOTH, and a zip/tar member-count mismatch is
+#   fatal — two packets built from two lists is finding D-1 in a new costume.
+#   Set ADF_SNAP_TAR=0 to emit the zip only.
+#
 # USAGE
 #   make_audit_snapshot.sh <src_dir> <name> [out_dir] [git_ref]
 #
@@ -36,6 +46,7 @@
 #                       default: pkl|root|npy|npz|so|pyc|o|a|whl
 #   ADF_SNAP_KEYFILES   basename regex of "key files" echoed in the report
 #                       default: AliasDataFrame\.py|dfdraw\.py|.*characterization\.py
+#   ADF_SNAP_TAR        0 = zip only.  default: emit both.
 #
 # EXAMPLES
 #   make_audit_snapshot.sh ../../AliasDataFrame adf    .
@@ -58,14 +69,20 @@ DROP_EXT="${ADF_SNAP_DROP_EXT:-pkl|root|npy|npz|so|pyc|o|a|whl}"
 KEYFILES="${ADF_SNAP_KEYFILES:-AliasDataFrame\.py|dfdraw\.py|.*characterization\.py}"
 
 ZIP=""   # set later; referenced by die()
+TAR=""   # v04 companion; also referenced by die()
+WANT_TAR="${ADF_SNAP_TAR:-1}"
 
 die() {
     echo "ERROR: $*" >&2
-    # R3: never leave a valid-looking partial archive behind.
-    if [ -n "$ZIP" ] && [ -f "$ZIP" ]; then
-        rm -f "$ZIP"
-        echo "ERROR: removed incomplete archive $ZIP" >&2
-    fi
+    # R3: never leave a valid-looking partial archive behind.  v04: this must
+    # cover BOTH containers, or a failure can delete the zip and leave a
+    # plausible tar that no longer has a verified companion.
+    for _a in "$ZIP" "$TAR"; do
+        if [ -n "$_a" ] && [ -f "$_a" ]; then
+            rm -f "$_a"
+            echo "ERROR: removed incomplete archive $_a" >&2
+        fi
+    done
     exit 1
 }
 
@@ -116,6 +133,9 @@ if [ "$MODE" = "ref" ]; then
 else
     ZIP="$OUT/sources_${NAME}_${STAMP}.zip"
 fi
+# Same basename, different extension: the pair is obvious on disk and in
+# the CRR, and neither can be mistaken for a different snapshot.
+[ "$WANT_TAR" = "0" ] || TAR="${ZIP%.zip}.tar"
 
 WORK=$(mktemp -d) || exit 2
 trap 'rm -rf "$WORK"' EXIT
@@ -274,13 +294,55 @@ NZIP=$(unzip -Z1 "$ZIP" | grep -cv '/$')
 ( cd "$META" && zip -q "$ZIP" _AUDIT_*.txt ) || die "zip failed while adding metadata"
 
 # ---------------------------------------------------------------------------
+# 5b. v04 — the .tar companion, from the SAME _AUDIT_FILES.txt, same two
+#     passes, same fail-closed rule.  Uncompressed so `tar --append` works
+#     for the metadata pass exactly as `zip` does.
+# ---------------------------------------------------------------------------
+if [ -n "$TAR" ]; then
+    command -v tar >/dev/null 2>&1 || die "ADF_SNAP_TAR requested but tar is missing"
+    rm -f "$TAR"
+
+    # --sort=name and fixed ownership keep member order and uid/gid stable
+    # across machines, so two snapshots of identical bytes stay comparable.
+    ( cd "$PAYLOAD_ROOT" \
+        && tar --sort=name --owner=0 --group=0 --numeric-owner \
+               -cf "$TAR" -T "$META/_AUDIT_FILES.txt" ) \
+        || ( cd "$PAYLOAD_ROOT" && tar -cf "$TAR" -T "$META/_AUDIT_FILES.txt" ) \
+        || die "tar failed while adding source files"
+    [ -f "$TAR" ] || die "tar produced no archive"
+
+    NTAR=$(tar -tf "$TAR" | grep -cv '/$')
+    [ "$NTAR" -eq "$NFILES" ] \
+        || die "tar mismatch: claimed $NFILES source files, archive holds $NTAR"
+
+    ( cd "$META" && tar --append -f "$TAR" _AUDIT_*.txt ) \
+        || die "tar failed while adding metadata"
+
+    # The two containers must agree.  A silent divergence between them is
+    # worse than shipping only one, because two reviewers would then audit
+    # two byte sets while one manifest claims to describe both.
+    NZIP_FINAL=$(unzip -Z1 "$ZIP" | grep -cv '/$')
+    NTAR_FINAL=$(tar -tf "$TAR" | grep -cv '/$')
+    [ "$NZIP_FINAL" -eq "$NTAR_FINAL" ] \
+        || die "container mismatch: zip holds $NZIP_FINAL, tar holds $NTAR_FINAL"
+fi
+
+# ---------------------------------------------------------------------------
 # 6. report
 # ---------------------------------------------------------------------------
 ZMD5=$(md5sum "$ZIP" | cut -d' ' -f1)
 ZSHA=$(sha256sum "$ZIP" | cut -d' ' -f1)
+TMD5=""; TSHA=""
+if [ -n "$TAR" ] && [ -f "$TAR" ]; then
+    TMD5=$(md5sum "$TAR" | cut -d' ' -f1)
+    TSHA=$(sha256sum "$TAR" | cut -d' ' -f1)
+fi
 
 echo "==================================================================="
 echo "SNAPSHOT   $ZIP"
+if [ -n "$TAR" ] && [ -f "$TAR" ]; then
+    echo "           $TAR   (same file list, same manifest)"
+fi
 echo "  package        $NAME          mode: $MODE"
 echo "  SOURCE_COMMIT  $SOURCE_COMMIT"
 echo "  REPO_HEAD      $REPO_HEAD   (generation context only)"
@@ -290,8 +352,13 @@ if [ "$NDELETED" -gt 0 ]; then
     echo "  deleted        $NDELETED tracked file(s) missing from disk, EXCLUDED:"
     sed 's/^/                   /' "$META/_AUDIT_DELETED_TRACKED.txt"
 fi
-echo "  md5            $ZMD5"
-echo "  sha256         $ZSHA"
+echo "  zip  md5       $ZMD5"
+echo "  zip  sha256    $ZSHA"
+if [ -n "$TMD5" ]; then
+    echo "  tar  md5       $TMD5"
+    echo "  tar  sha256    $TSHA"
+    echo "  containers     verified to hold the same member count"
+fi
 echo "  generator      $TOOL_MD5"
 echo
 echo "  key file fingerprints:"
@@ -316,7 +383,12 @@ elif [ "$MODE" = "worktree" ]; then
 fi
 echo "  Paste into the audit prompt §1:"
 echo "      $NAME   $(basename "$ZIP")"
-echo "      md5              $ZMD5"
+echo "      zip md5          $ZMD5"
+if [ -n "$TMD5" ]; then
+echo "      $NAME   $(basename "$TAR")"
+echo "      tar md5          $TMD5"
+echo "      *** DECLARE BOTH, and state which container you opened."
+fi
 echo "      SOURCE_COMMIT    $SOURCE_COMMIT"
 echo "      state            $STATE"
 echo "      REPO_HEAD        $REPO_HEAD  (generation context, NOT the source)"

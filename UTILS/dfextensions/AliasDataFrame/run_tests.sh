@@ -25,7 +25,9 @@
 #   diff_last_commit_<ts>.txt      Uncommitted diff + last commit diff
 #   diff_to_phase_<ts>.txt         Diff since PHASE_BEGIN_AliasDataFrame tag
 #   git_status_<ts>.txt            Working tree state (git status --porcelain)
-#   reviewer_<ts>.zip              Review package
+#   reviewer_<ts>.zip              Review package (zip)
+#   reviewer_<ts>.tar              Review package (tar, same file list)
+#   reviewer_digests_<ts>.txt      MD5/SHA256 of BOTH packages
 
 # Don't exit on test failures
 # set -e
@@ -77,7 +79,12 @@ Output:
   test_logs/diff_last_commit_<ts>.txt   Uncommitted + HEAD~1 diffs
   test_logs/diff_to_phase_<ts>.txt      Diff since PHASE_BEGIN tag
   test_logs/git_status_<ts>.txt         Working tree state snapshot
-  test_logs/reviewer_<ts>.zip           Review package
+  test_logs/reviewer_<ts>.zip           Review package (zip)
+  test_logs/reviewer_<ts>.tar           Review package (tar, same file list)
+  test_logs/reviewer_digests_<ts>.txt   MD5/SHA256 of BOTH packages
+
+Environment:
+  ADF_REVIEWER_TAR=0  Disable the .tar companion (zip only)
 
 EOF
     exit 0
@@ -147,8 +154,16 @@ RUNXFAIL_LOG="$LOG_DIR/runxfail_focused_${TS}.log"
 MD5_MANIFEST="$LOG_DIR/md5_manifest_${TS}.txt"
 REVIEWER_ZIP="$LOG_DIR/reviewer_${TS}.zip"
 
-# Absolute path, computed before packaging so the summary can print it.
+# Companion .tar of the SAME file list, built in the SAME step.  Some reviewer
+# environments cannot read the zip; a second container removes that as a
+# blocker WITHOUT changing the canonical zip that every other consumer uses.
+# Set ADF_REVIEWER_TAR=0 to skip it.
+REVIEWER_TAR="$LOG_DIR/reviewer_${TS}.tar"
+REVIEWER_DIGESTS="$LOG_DIR/reviewer_digests_${TS}.txt"
+
+# Absolute paths, computed before packaging so the summary can print them.
 REVIEWER_ZIP_ABS="$(realpath -m "$REVIEWER_ZIP" 2>/dev/null || echo "$PROJECT_ROOT/$REVIEWER_ZIP")"
+REVIEWER_TAR_ABS="$(realpath -m "$REVIEWER_TAR" 2>/dev/null || echo "$PROJECT_ROOT/$REVIEWER_TAR")"
 
 echo "========================================"
 echo "AliasDataFrame Test Runner"
@@ -499,6 +514,12 @@ CANDIDATE_FILES=$(
     echo ""
     echo "── Reviewer package ──"
     echo "  $REVIEWER_ZIP_ABS"
+    if [[ "${ADF_REVIEWER_TAR:-1}" != "0" ]]; then
+        echo "  $REVIEWER_TAR_ABS   (same file list)"
+        echo "  digests written to reviewer_digests_${TS}.txt AFTER packaging"
+        echo "  (the digest file is deliberately NOT inside the packages —"
+        echo "   an archive cannot contain its own hash)"
+    fi
     echo "========================================"
 } | tee "$SUMMARY_FILE"
 
@@ -616,12 +637,78 @@ echo "--- Packaging reviewer.zip ---"
     done
 
     if [[ -n "$ZIP_FILES" ]]; then
+        N_WANT=$(printf '%s\n' $ZIP_FILES | grep -c .)
+
         zip -q "$REVIEWER_ZIP" $ZIP_FILES 2>/dev/null || true
-        echo "  Reviewer package: $REVIEWER_ZIP_ABS"
+        echo "  Reviewer package (zip): $REVIEWER_ZIP_ABS"
+
+        N_ZIP=$(unzip -Z1 "$REVIEWER_ZIP" 2>/dev/null | grep -cv '/$' || echo 0)
+        if [[ "$N_ZIP" -ne "$N_WANT" ]]; then
+            echo "${RED}${BOLD}❌ zip holds $N_ZIP of $N_WANT intended files${RESET}"
+        fi
 
         if ! unzip -l "$REVIEWER_ZIP" 2>/dev/null | grep -q 'docs/CAPABILITY_MATRIX\.html$'; then
             echo "${YELLOW}${BOLD}⚠️  $REVIEWER_ZIP missing docs/CAPABILITY_MATRIX.html — reviewers cannot navigate the rendered matrix${RESET}"
         fi
+
+        # ---------------------------------------------------------------
+        # Companion .tar — SAME file list, SAME relative paths, SAME step.
+        # Two packets built from two lists is finding D-1 in a new costume,
+        # so the list is computed once above and reused verbatim here.
+        # Uncompressed on purpose: the architect asked for .tar, and it
+        # removes gzip as a second thing that can fail in a reader.
+        # ---------------------------------------------------------------
+        if [[ "${ADF_REVIEWER_TAR:-1}" != "0" ]]; then
+            if command -v tar >/dev/null 2>&1; then
+                # --sort=name and fixed ownership keep the member order and
+                # uid/gid stable across machines.  Not required for review,
+                # cheap insurance if anyone ever diffs two tars.
+                tar --sort=name --owner=0 --group=0 --numeric-owner \
+                    -cf "$REVIEWER_TAR" $ZIP_FILES 2>/dev/null \
+                    || tar -cf "$REVIEWER_TAR" $ZIP_FILES 2>/dev/null || true
+
+                if [[ -f "$REVIEWER_TAR" ]]; then
+                    N_TAR=$(tar -tf "$REVIEWER_TAR" 2>/dev/null | grep -cv '/$' || echo 0)
+                    echo "  Reviewer package (tar): $REVIEWER_TAR_ABS"
+                    if [[ "$N_TAR" -ne "$N_WANT" ]]; then
+                        echo "${RED}${BOLD}❌ tar holds $N_TAR of $N_WANT intended files${RESET}"
+                    fi
+                    if [[ "$N_TAR" -ne "$N_ZIP" ]]; then
+                        echo "${RED}${BOLD}❌ PACKAGE MISMATCH: zip=$N_ZIP tar=$N_TAR — the two packets are NOT the same content${RESET}"
+                    else
+                        echo "  content check: zip and tar both hold $N_TAR files"
+                    fi
+                else
+                    echo "${YELLOW}⚠️  tar companion was requested but not produced${RESET}"
+                fi
+            else
+                echo "${YELLOW}⚠️  tar not available; zip only${RESET}"
+            fi
+        fi
+
+        # ---------------------------------------------------------------
+        # Digests of BOTH packages, in one file, written AFTER packaging.
+        # Deliberately NOT inside either archive: an archive cannot carry
+        # its own hash, and a digest file that is inside one packet but
+        # describes both is exactly the custody confusion to avoid.
+        # Declare BOTH lines in the CRR; reviewers state which they opened.
+        # ---------------------------------------------------------------
+        {
+            echo "=== reviewer package digests — run $TS ==="
+            echo "(declare BOTH in the CRR; a reviewer must state which they opened)"
+            echo ""
+            for pkg in "$REVIEWER_ZIP" "$REVIEWER_TAR"; do
+                [[ -f "$pkg" ]] || continue
+                echo "$(basename "$pkg")"
+                echo "  md5     $(md5sum    "$pkg" | cut -d' ' -f1)"
+                echo "  sha256  $(sha256sum "$pkg" | cut -d' ' -f1)"
+                echo "  files   $( { [[ "$pkg" == *.zip ]] && unzip -Z1 "$pkg" || tar -tf "$pkg"; } 2>/dev/null | grep -cv '/$' )"
+                echo ""
+            done
+        } > "$REVIEWER_DIGESTS"
+
+        echo ""
+        cat "$REVIEWER_DIGESTS" | sed 's/^/  /'
     fi
 )
 
