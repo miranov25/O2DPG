@@ -3947,3 +3947,190 @@ def test_a5_29_g7_33_sequence_stats_bookkeeping_cannot_hide_nan_profiles():
     assert ev["finite_values"] == 0
     assert ev["populated_bins"] == 2
 
+# ── A5.5 — real G7.34 sector reuse after G7.33 preparation ─────────────────
+
+class _A55Subframe:
+    def __init__(self):
+        self.df = pd.DataFrame({
+            "sector_bin180": np.asarray([0, 1, 2], dtype=np.int16),
+            "tgl_bin10": np.asarray([0, 0, 1], dtype=np.int16),
+            "dcar_tpc_vertex_intercept": np.asarray([0.01, 0.02, 0.03]),
+        })
+
+
+class _A55Gallery:
+    def __init__(self):
+        self.calibration_calls = 0
+
+    def build_adf(self, root_path, sample=None, lazy=False):
+        assert lazy is False
+        frame = pd.DataFrame({
+            "dcar_tpc_vertex": np.linspace(-0.8, 0.8, 40),
+            "tgl": np.linspace(-1.0, 1.0, 40),
+            "sector": np.arange(40, dtype=np.int16) % 18,
+            "ncl": np.full(40, 90, dtype=np.int16),
+        })
+        adf = _A52FakeADF(frame)
+        if sample is not None:
+            adf.df = adf.df.sample(
+                frac=sample, random_state=42).reset_index(drop=True)
+        return adf
+
+    def calibBiasResolution(self, adf):
+        self.calibration_calls += 1
+        adf._subframes["CalibBias1"] = _A55Subframe()
+        adf.df["dcar_tpc_vertex_predicted0"] = np.linspace(
+            -0.2, 0.2, len(adf.df), dtype=np.float64)
+
+    def fig33_gb_correction_tgl(self, adf):
+        self.calibBiasResolution(adf)
+        return None, None, [
+            {"n": len(adf.df), "mean_y": 0.20},
+            {"n": len(adf.df), "mean_y": 0.10},
+        ]
+
+    def fig34_gb_correction_sector(self, adf):
+        return None, None, [
+            {"n": len(adf.df), "mean_y": 0.15},
+            {"n": len(adf.df), "mean_y": 0.08},
+        ]
+
+
+class _A55RefitGallery(_A55Gallery):
+    def fig34_gb_correction_sector(self, adf):
+        self.calibBiasResolution(adf)
+        return super().fig34_gb_correction_sector(adf)
+
+
+class _A55MutatePredictedGallery(_A55Gallery):
+    def fig34_gb_correction_sector(self, adf):
+        adf.df["dcar_tpc_vertex_predicted0"] = (
+            np.asarray(adf.df["dcar_tpc_vertex_predicted0"]) + 1.0)
+        return super().fig34_gb_correction_sector(adf)
+
+
+class _A55MutateSubframeGallery(_A55Gallery):
+    def fig34_gb_correction_sector(self, adf):
+        sf = adf.get_subframe("CalibBias1")
+        sf.df.loc[sf.df.index[0], "dcar_tpc_vertex_intercept"] += 1.0
+        return super().fig34_gb_correction_sector(adf)
+
+
+class _A55RaiseDuringReuseGallery(_A55Gallery):
+    def fig34_gb_correction_sector(self, adf):
+        raise RuntimeError("A5.5 forced G7.34 failure while poison is installed")
+
+
+def test_a5_30_g7_34_case_declares_two_real_state_consistency_observables(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.5 case")
+    gallery = _A55Gallery()
+    case = H.a5_5_realdata_case(str(root_path), gallery_module=gallery)
+
+    assert case.case_id == H.A5_5_CASE_ID
+    assert case.purpose == "COVERAGE"
+    assert case.oracle_kind == "CONSISTENCY"
+    assert case.loading_mode == "EAGER"
+    assert case.sample_mode == "FRACTION"
+    assert [o.name for o in case.observables] == [
+        "calibbias1_state_digest",
+        "predicted_state_digest",
+    ]
+    assert all(o.source == "INDEPENDENT" for o in case.observables)
+    assert H.validate_registry([case]) == []
+
+
+def test_a5_31_g7_34_reuses_prepared_state_and_executes_two_comparisons(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.5 positive")
+    gallery = _A55Gallery()
+    case = H.a5_5_realdata_case(str(root_path), gallery_module=gallery)
+
+    result = H.run_a5_5_realdata(
+        case, str(root_path), gallery_module=gallery)
+
+    assert result.status == H.PASS, result.detail
+    assert result.executed_comparisons == 2
+    assert len(result.comparisons) == 2
+    assert all(c["ok"] for c in result.comparisons)
+    assert gallery.calibration_calls == 1
+
+    evidence = result.observed["g7_34_evidence"]
+    assert evidence["recalibration_poison_active"] is True
+    assert evidence["calibbias1_rows_before"] == 3
+    assert evidence["calibbias1_rows_after"] == 3
+    assert evidence["finite_predicted_values"] == evidence["predicted_values"]
+    assert evidence["public_numeric_evidence"]["finite_values"] == 2
+
+    prov = result.observed["realdata_provenance"]
+    assert prov["sample_fraction"] == 0.20
+    assert prov["sample_seed"] == 42
+    assert len(prov["index_digest_sha256"]) == 64
+    assert prov["ingest_entrypoint"] == "time_series.root_to_adf"
+    assert prov["known_loader_defect"] == H.A5_5_LOADER_BUG_ID
+
+
+def test_a5_32_g7_34_refit_attempt_is_poisoned_and_fails(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.5 refit")
+    gallery = _A55RefitGallery()
+    case = H.a5_5_realdata_case(str(root_path), gallery_module=gallery)
+
+    result = H.run_a5_5_realdata(
+        case, str(root_path), gallery_module=gallery)
+
+    assert result.status == H.FAIL, result.detail
+    assert "forbidden calibBiasResolution refit" in result.detail
+    assert H.strict_exit_code([result], [case]) == 1
+
+
+def test_a5_33_g7_34_predicted_state_mutation_fails_consistency(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.5 predicted mutation")
+    gallery = _A55MutatePredictedGallery()
+    case = H.a5_5_realdata_case(str(root_path), gallery_module=gallery)
+
+    result = H.run_a5_5_realdata(
+        case, str(root_path), gallery_module=gallery)
+
+    assert result.status == H.FAIL, result.detail
+    assert "predicted_state_digest" in result.detail
+    assert result.executed_comparisons == 2
+    assert H.strict_exit_code([result], [case]) == 1
+
+
+def test_a5_34_g7_34_calibbias1_mutation_fails_consistency(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.5 subframe mutation")
+    gallery = _A55MutateSubframeGallery()
+    case = H.a5_5_realdata_case(str(root_path), gallery_module=gallery)
+
+    result = H.run_a5_5_realdata(
+        case, str(root_path), gallery_module=gallery)
+
+    assert result.status == H.FAIL, result.detail
+    assert "calibbias1_state_digest" in result.detail
+    assert result.executed_comparisons == 1
+    assert H.strict_exit_code([result], [case]) == 1
+
+
+def test_a5_35_g7_34_failure_restores_exact_calibration_binding(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.5 restoration")
+    gallery = _A55RaiseDuringReuseGallery()
+
+    # Pin one exact object into the instance dictionary.  Repeated normal
+    # bound-method lookup creates fresh wrapper objects, which would make an
+    # identity assertion meaningless even when restoration is correct.
+    original_calib = gallery.calibBiasResolution
+    gallery.calibBiasResolution = original_calib
+
+    case = H.a5_5_realdata_case(str(root_path), gallery_module=gallery)
+    result = H.run_a5_5_realdata(
+        case, str(root_path), gallery_module=gallery)
+
+    assert result.status == H.FAIL, result.detail
+    assert "forced G7.34 failure" in result.detail
+    assert gallery.calibBiasResolution is original_calib
+    assert H.strict_exit_code([result], [case]) == 1
+

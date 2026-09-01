@@ -32,7 +32,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A5.4.v02"
+SCHEMA_VERSION = "13.77.A5.5.v02"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -5053,6 +5053,389 @@ def run_a5_4_realdata_gate(root_path: str, *, manifest_path: str,
                            gallery_module=None) -> tuple[CaseResult, dict, int]:
     case = a5_4_realdata_case(root_path, gallery_module=gallery_module)
     result = run_a5_4_realdata(
+        case, root_path, gallery_module=gallery_module)
+    extra = {}
+    if isinstance(result.observed.get("realdata_provenance"), dict):
+        extra.update(result.observed["realdata_provenance"])
+    doc = write_manifest(manifest_path, [result], [case], extra=extra)
+    return result, doc, strict_exit_code([result], [case])
+
+# ─────────────────────────────────────────────────────────────────────────────
+# A5.5 — real-data G7.34 sector reuse after G7.33 preparation
+# ─────────────────────────────────────────────────────────────────────────────
+
+A5_5_CASE_ID = "I4-REAL-G7-GB-SECTOR-REUSE-EAGER-20PCT-01"
+A5_5_PREP_FUNCTION = "fig33_gb_correction_tgl"
+A5_5_REUSE_FUNCTION = "fig34_gb_correction_sector"
+A5_5_LOADER_BUG_ID = "ADF-API-TREENAME-1"
+
+
+def _a5_5_environment_status(root_path: str, gallery_module=None) -> tuple[str, str]:
+    status, reason = _a5_4_environment_status(
+        root_path, gallery_module=gallery_module)
+    if status != A5_2_ENV_AVAILABLE:
+        return status, reason
+    gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+    if not callable(getattr(gallery, A5_5_REUSE_FUNCTION, None)):
+        return (A5_2_ENV_CONTRACT_ERROR,
+                f"time_series_draw missing required callable {A5_5_REUSE_FUNCTION!r}")
+    return A5_2_ENV_AVAILABLE, ""
+
+
+def _a5_5_array_digest(values: Any) -> str:
+    import hashlib
+    arr = np.ascontiguousarray(np.asarray(values))
+    h = hashlib.sha256()
+    h.update(str(arr.dtype).encode("utf-8"))
+    h.update(repr(tuple(arr.shape)).encode("utf-8"))
+    h.update(arr.tobytes())
+    return h.hexdigest()
+
+
+def _a5_5_frame_digest(frame: Any) -> str:
+    import hashlib
+    import pandas as pd
+    if frame is None or not hasattr(frame, "columns"):
+        raise HarnessError("A5.5 frame digest requires a pandas-like table")
+    h = hashlib.sha256()
+    h.update(repr(tuple(str(c) for c in frame.columns)).encode("utf-8"))
+    h.update(repr(tuple(str(frame[c].dtype) for c in frame.columns)).encode("utf-8"))
+    hashed = pd.util.hash_pandas_object(frame, index=True).to_numpy(
+        dtype=np.uint64, copy=False)
+    h.update(np.ascontiguousarray(hashed).tobytes())
+    return h.hexdigest()
+
+
+def _a5_5_adf_source_md5() -> str:
+    """Hash the production AliasDataFrame.py implementation, not package __init__."""
+    import hashlib
+    import importlib
+    try:
+        mod = importlib.import_module(
+            "dfextensions.AliasDataFrame.AliasDataFrame")
+        path = getattr(mod, "__file__", "")
+        if not path:
+            return ""
+        with open(path, "rb") as stream:
+            return hashlib.md5(stream.read()).hexdigest()
+    except Exception:
+        return ""
+
+
+def a5_5_realdata_case(root_path: str, gallery_module=None) -> CaseSpec:
+    env_status, reason = _a5_5_environment_status(
+        root_path, gallery_module=gallery_module)
+    applicable = env_status != A5_2_ENV_UNAVAILABLE
+    applicability_reason = reason if not applicable else ""
+    return CaseSpec(
+        case_id=A5_5_CASE_ID,
+        claim_id="I4.real_g7_gb_sector_reuse.A5.5",
+        title="real G7.34 consumes G7.33-prepared GB state unchanged",
+        claim=("after trusted G7.33 prepares CalibBias1 and "
+               "dcar_tpc_vertex_predicted0 on the canonical deterministic EAGER "
+               "20% sample, trusted G7.34 executes the sector profile while "
+               "leaving both measured prepared artifacts unchanged; a poison on "
+               "the time_series_draw module-global calibBiasResolution binding "
+               "acts as a regression tripwire if a future G7.34 begins refitting "
+               "through that seam"),
+        failure_means=("G7.34 mutated CalibBias1 or "
+                       "dcar_tpc_vertex_predicted0, silently skipped, returned no "
+                       "finite public numerical result, or reached the guarded "
+                       "module-global calibBiasResolution refit seam"),
+        expected_visual=("the existing G7.34 normalized raw-versus-predicted "
+                         "DCA_r differential profile versus sector"),
+        owner_on_failure="GB",
+        purpose="COVERAGE",
+        gate="ENVIRONMENT_GATED",
+        oracle_kind="CONSISTENCY",
+        loading_mode="EAGER",
+        sample_mode="FRACTION",
+        canonical_spec={
+            "prepare_gallery_function": A5_5_PREP_FUNCTION,
+            "reuse_gallery_function": A5_5_REUSE_FUNCTION,
+            "expr": "[dcar_tpc_vertex, dcar_tpc_vertex_predicted0]:sector",
+            "selection": "(ncl>60)&(abs(dcar_tpc_vertex)<10)",
+            "type": "profile",
+            "bins": 36,
+            "normalize": "delta",
+            "sample_fraction": A5_2_SAMPLE_FRACTION,
+            "sample_seed": A5_2_SAMPLE_SEED,
+            "expected_subframe": A5_4_SUBFRAME,
+            "expected_predicted_column": A5_4_PREDICTED,
+        },
+        applicable=applicable,
+        applicability_reason=applicability_reason,
+        setup_contract=("build one canonical EAGER 20% ADF; run trusted G7.33 "
+                        "once to prepare GB state; fingerprint CalibBias1 and the "
+                        "predicted column; arm the time_series_draw module-global "
+                        "calibBiasResolution binding as a future-refit regression "
+                        "tripwire; run trusted G7.34; require both fingerprints "
+                        "unchanged"),
+        preconditions=(
+            "ROOT input is readable by the trusted time-series environment",
+            "build_adf, fig33_gb_correction_tgl and fig34_gb_correction_sector are available",
+            "G7.33 successfully prepares CalibBias1 and dcar_tpc_vertex_predicted0",
+        ),
+        surfaces_under_test=("draw",),
+        observables=(
+            Observable(
+                "calibbias1_state_digest", "INDEPENDENT", "FLAT",
+                "state.CalibBias1.sha256", comparator="exact",
+                rationale="G7.34 must reuse, not mutate/refit, the prepared GB coefficients"),
+            Observable(
+                "predicted_state_digest", "INDEPENDENT", "FLAT",
+                "state.dcar_tpc_vertex_predicted0.sha256", comparator="exact",
+                rationale="G7.34 must consume, not rewrite, the prepared predicted correction"),
+        ),
+        non_claims=(
+            "A5.5 is reuse/state-invariance coverage for CalibBias1 and dcar_tpc_vertex_predicted0, not independent GB-fit correctness or whole-ADF non-mutation",
+            "the poison covers only the time_series_draw module-global calibBiasResolution binding; a refit routed through a function-local import or lower-level fitting primitive is outside this tripwire",
+            "real LAZY/FULL G7.34 is not claimed while the A5.3 timeMS blocker remains open",
+            "the known eager root_to_adf/read_tree signature defect is recorded but not fixed here",
+        ),
+        negative_control="FAMILY_MUTATION:A5.5-REFIT-OR-STATE-MUTATION-MUST-FAIL",
+        reference_policy="named-immutable",
+    )
+
+
+def run_a5_5_realdata(case: CaseSpec, root_path: str, *, gallery_module=None) -> CaseResult:
+    _skip = _inapplicable(case)
+    if _skip is not None:
+        return _skip
+
+    import os
+    import pandas as pd
+
+    t0 = time.time()
+    res = CaseResult(case_id=case.case_id, status=SKIP)
+    original_sample = None
+    original_calib = None
+    gallery = None
+    try:
+        if case.case_id != A5_5_CASE_ID:
+            res.status = INVALID_FIXTURE
+            res.detail = f"A5.5 runner received unexpected case {case.case_id!r}"
+            return res
+        if case.loading_mode != "EAGER" or case.sample_mode != "FRACTION":
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.5 requires exact EAGER/FRACTION mode"
+            return res
+        if len(case.observables) != 2:
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.5 requires exactly two declared state-reuse observables"
+            return res
+
+        env_status, why = _a5_5_environment_status(
+            root_path, gallery_module=gallery_module)
+        if env_status == A5_2_ENV_UNAVAILABLE:
+            res.status = INVALID_FIXTURE
+            res.detail = f"A5.5 environment changed after CaseSpec creation: {why}"
+            return res
+        if env_status == A5_2_ENV_CONTRACT_ERROR:
+            res.status = INVALID_FIXTURE
+            res.detail = why
+            return res
+
+        gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+
+        sample_observed = []
+        original_sample = pd.DataFrame.sample
+
+        def observed_sample(self, *args, **kwargs):
+            frac = kwargs.get("frac")
+            random_state = kwargs.get("random_state")
+            out = original_sample(self, *args, **kwargs)
+            if frac == A5_2_SAMPLE_FRACTION and random_state == A5_2_SAMPLE_SEED:
+                sample_observed.append({
+                    "source_rows": int(len(self)),
+                    "selected_rows": int(len(out)),
+                    "index_digest_sha256": _a5_2_index_digest(out.index),
+                    "index_dtype": str(out.index.dtype),
+                })
+            return out
+
+        pd.DataFrame.sample = observed_sample
+        try:
+            adf = gallery.build_adf(
+                root_path, sample=A5_2_SAMPLE_FRACTION, lazy=False)
+        finally:
+            pd.DataFrame.sample = original_sample
+            original_sample = None
+
+        if len(sample_observed) != 1:
+            res.status = INVALID_FIXTURE
+            res.detail = (
+                "A5.5 expected exactly one canonical build_adf 20% sample; "
+                f"observed {len(sample_observed)}")
+            return res
+
+        try:
+            prepared = getattr(gallery, A5_5_PREP_FUNCTION)(adf)
+        except Exception as exc:
+            res.status = FAIL
+            res.detail = f"A5.5 G7.33 preparation raised {type(exc).__name__}: {exc}"
+            res.exception = traceback.format_exc(limit=8)
+            return res
+        if prepared is None:
+            res.status = FAIL
+            res.detail = "A5.5 G7.33 preparation silently skipped"
+            return res
+
+        subframe_before = (adf.get_subframe(A5_4_SUBFRAME)
+                           if hasattr(adf, "get_subframe") else None)
+        if (subframe_before is None or not hasattr(subframe_before, "df")
+                or len(subframe_before.df) == 0):
+            res.status = FAIL
+            res.detail = "A5.5 G7.33 did not prepare a non-empty CalibBias1 subframe"
+            return res
+        if not hasattr(adf, "df") or A5_4_PREDICTED not in adf.df.columns:
+            res.status = FAIL
+            res.detail = "A5.5 G7.33 did not prepare dcar_tpc_vertex_predicted0"
+            return res
+
+        predicted_before = np.asarray(adf.df[A5_4_PREDICTED])
+        finite_before = int(np.isfinite(predicted_before).sum())
+        if finite_before <= 0:
+            res.status = FAIL
+            res.detail = "A5.5 prepared predicted column has no finite values"
+            return res
+
+        before = {
+            "calibbias1_state_digest": _a5_5_frame_digest(subframe_before.df),
+            "predicted_state_digest": _a5_5_array_digest(predicted_before),
+        }
+
+        # Poison the calibration seam after successful G7.33 preparation.
+        # G7.34 is defined as pure reuse and must not call it again.
+        original_calib = getattr(gallery, "calibBiasResolution", None)
+        if original_calib is None or not callable(original_calib):
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.5 cannot poison missing calibBiasResolution seam"
+            return res
+
+        def forbidden_recalibration(*args, **kwargs):
+            raise AssertionError("A5.5 G7.34 reached forbidden calibBiasResolution refit")
+
+        setattr(gallery, "calibBiasResolution", forbidden_recalibration)
+        try:
+            raw = getattr(gallery, A5_5_REUSE_FUNCTION)(adf)
+        finally:
+            setattr(gallery, "calibBiasResolution", original_calib)
+            original_calib = None
+
+        if raw is None:
+            res.status = FAIL
+            res.detail = "A5.5 G7.34 optional gallery skip is not an acceptance PASS"
+            return res
+
+        payload = unwrap("draw", raw)
+
+        subframe_after = (adf.get_subframe(A5_4_SUBFRAME)
+                          if hasattr(adf, "get_subframe") else None)
+        if subframe_after is None or not hasattr(subframe_after, "df"):
+            res.status = FAIL
+            res.detail = "A5.5 G7.34 lost CalibBias1"
+            return res
+        if A5_4_PREDICTED not in adf.df.columns:
+            res.status = FAIL
+            res.detail = "A5.5 G7.34 lost dcar_tpc_vertex_predicted0"
+            return res
+
+        predicted_after = np.asarray(adf.df[A5_4_PREDICTED])
+        after = {
+            "calibbias1_state_digest": _a5_5_frame_digest(subframe_after.df),
+            "predicted_state_digest": _a5_5_array_digest(predicted_after),
+        }
+
+        for observable in case.observables:
+            res.observable_contract.append(_contract(observable))
+            ref = before[observable.name]
+            cand = after[observable.name]
+            res.observed[observable.name] = {"before_G7_34": ref, "after_G7_34": cand}
+            comparison = compare_observable(observable, ref, cand)
+            res.comparisons.append(comparison_evidence(
+                observable, comparison,
+                reference_label="after_G7_33",
+                candidate_label="after_G7_34"))
+            res.executed_comparisons += 1
+            if not comparison.ok:
+                res.status = FAIL
+                res.detail = f"{observable.name}: G7.34 mutated prepared state"
+                return res
+
+        if res.executed_comparisons != 2:
+            res.status = INVALID_FIXTURE
+            res.detail = "A5.5 did not execute both declared state comparisons"
+            return res
+
+        public_evidence = _a5_4_public_numeric_evidence(payload.stats)
+        if public_evidence["finite_values"] <= 0:
+            res.status = FAIL
+            res.detail = "A5.5 G7.34 public result has no finite profile evidence"
+            return res
+
+        sample = sample_observed[0]
+        res.observed["realdata_provenance"] = {
+            "input_path": os.path.abspath(root_path),
+            "input_size_bytes": int(os.path.getsize(root_path)),
+            "input_mtime_ns": int(os.stat(root_path).st_mtime_ns),
+            "loading_mode": "EAGER",
+            "sample_mode": "FRACTION",
+            "sample_fraction": A5_2_SAMPLE_FRACTION,
+            "sample_seed": A5_2_SAMPLE_SEED,
+            "sampling_algorithm": (
+                "pandas.DataFrame.sample(frac=0.20, random_state=42) "
+                "observed at runtime"),
+            "adf_source_md5": _a5_5_adf_source_md5(),
+            "adf_source_module": "dfextensions.AliasDataFrame.AliasDataFrame",
+            "ingest_entrypoint": "time_series.root_to_adf",
+            "known_loader_defect": A5_5_LOADER_BUG_ID,
+            **sample,
+        }
+        res.observed["g7_34_evidence"] = {
+            "prepare_gallery_function": A5_5_PREP_FUNCTION,
+            "reuse_gallery_function": A5_5_REUSE_FUNCTION,
+            "recalibration_poison_active": True,
+            "calibbias1_rows_before": int(len(subframe_before.df)),
+            "calibbias1_rows_after": int(len(subframe_after.df)),
+            "predicted_values": int(predicted_after.size),
+            "finite_predicted_values": int(np.isfinite(predicted_after).sum()),
+            "public_numeric_evidence": public_evidence,
+            "numeric_summary": _a5_2_numeric_summary(payload.stats),
+        }
+        res.status = PASS
+        res.detail = ""
+        return res
+    except AssertionError as exc:
+        res.status = FAIL
+        res.detail = str(exc)
+        res.exception = traceback.format_exc(limit=6)
+        return res
+    except Exception as exc:
+        res.status = FAIL
+        res.detail = f"{type(exc).__name__}: {exc}"
+        res.exception = traceback.format_exc(limit=8)
+        return res
+    finally:
+        if original_calib is not None and gallery is not None:
+            try:
+                setattr(gallery, "calibBiasResolution", original_calib)
+            except Exception:
+                pass
+        if original_sample is not None:
+            try:
+                import pandas as pd
+                pd.DataFrame.sample = original_sample
+            except Exception:
+                pass
+        _close()
+        res.wall_time_s = round(time.time() - t0, 4)
+
+
+def run_a5_5_realdata_gate(root_path: str, *, manifest_path: str,
+                           gallery_module=None) -> tuple[CaseResult, dict, int]:
+    case = a5_5_realdata_case(root_path, gallery_module=gallery_module)
+    result = run_a5_5_realdata(
         case, root_path, gallery_module=gallery_module)
     extra = {}
     if isinstance(result.observed.get("realdata_provenance"), dict):
