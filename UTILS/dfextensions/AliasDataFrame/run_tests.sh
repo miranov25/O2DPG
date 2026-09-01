@@ -27,7 +27,8 @@
 #   git_status_<ts>.txt            Working tree state (git status --porcelain)
 #   reviewer_<ts>.zip              Review package (zip)
 #   reviewer_<ts>.tar              Review package (tar, same file list)
-#   reviewer_digests_<ts>.txt      MD5/SHA256 of BOTH packages
+#   reviewer_<ts>.llmbundle.txt    Review package (plain text, same file list)
+#   reviewer_digests_<ts>.txt      MD5/SHA256 of ALL packages
 
 # Don't exit on test failures
 # set -e
@@ -81,10 +82,12 @@ Output:
   test_logs/git_status_<ts>.txt         Working tree state snapshot
   test_logs/reviewer_<ts>.zip           Review package (zip)
   test_logs/reviewer_<ts>.tar           Review package (tar, same file list)
-  test_logs/reviewer_digests_<ts>.txt   MD5/SHA256 of BOTH packages
+  test_logs/reviewer_<ts>.llmbundle.txt Review package (plain text, same file list)
+  test_logs/reviewer_digests_<ts>.txt   MD5/SHA256 of ALL packages
 
 Environment:
-  ADF_REVIEWER_TAR=0  Disable the .tar companion (zip only)
+  ADF_REVIEWER_TAR=0     Disable the .tar companion (zip only)
+  ADF_REVIEWER_BUNDLE=0  Disable the plain-text LLMBUNDLE companion
 
 EOF
     exit 0
@@ -159,11 +162,21 @@ REVIEWER_ZIP="$LOG_DIR/reviewer_${TS}.zip"
 # blocker WITHOUT changing the canonical zip that every other consumer uses.
 # Set ADF_REVIEWER_TAR=0 to skip it.
 REVIEWER_TAR="$LOG_DIR/reviewer_${TS}.tar"
+
+# Plain-text companion.  Some reviewer runtimes cannot open ANY archive: the
+# attachment -> analysis-runtime handoff fails for zip and tar alike, so the
+# container was never the problem.  A text bundle removes the container.
+# It is built FROM THE ZIP, never from a directory, so it cannot drift from
+# the reviewed file list (finding D-1), and it carries a header/manifest/
+# trailer so a truncated bundle is detectable rather than silently short.
+# Set ADF_REVIEWER_BUNDLE=0 to skip it.
+REVIEWER_BUNDLE="$LOG_DIR/reviewer_${TS}.llmbundle.txt"
 REVIEWER_DIGESTS="$LOG_DIR/reviewer_digests_${TS}.txt"
 
 # Absolute paths, computed before packaging so the summary can print them.
 REVIEWER_ZIP_ABS="$(realpath -m "$REVIEWER_ZIP" 2>/dev/null || echo "$PROJECT_ROOT/$REVIEWER_ZIP")"
 REVIEWER_TAR_ABS="$(realpath -m "$REVIEWER_TAR" 2>/dev/null || echo "$PROJECT_ROOT/$REVIEWER_TAR")"
+REVIEWER_BUNDLE_ABS="$(realpath -m "$REVIEWER_BUNDLE" 2>/dev/null || echo "$PROJECT_ROOT/$REVIEWER_BUNDLE")"
 
 echo "========================================"
 echo "AliasDataFrame Test Runner"
@@ -516,6 +529,11 @@ CANDIDATE_FILES=$(
     echo "  $REVIEWER_ZIP_ABS"
     if [[ "${ADF_REVIEWER_TAR:-1}" != "0" ]]; then
         echo "  $REVIEWER_TAR_ABS   (same file list)"
+    fi
+    if [[ "${ADF_REVIEWER_BUNDLE:-1}" != "0" ]]; then
+        echo "  $REVIEWER_BUNDLE_ABS   (plain text, built FROM the zip)"
+    fi
+    if [[ "${ADF_REVIEWER_TAR:-1}" != "0" || "${ADF_REVIEWER_BUNDLE:-1}" != "0" ]]; then
         echo "  digests written to reviewer_digests_${TS}.txt AFTER packaging"
         echo "  (the digest file is deliberately NOT inside the packages —"
         echo "   an archive cannot contain its own hash)"
@@ -687,7 +705,59 @@ echo "--- Packaging reviewer.zip ---"
         fi
 
         # ---------------------------------------------------------------
-        # Digests of BOTH packages, in one file, written AFTER packaging.
+        # Plain-text LLMBUNDLE companion — SAME content, no container.
+        # Built from "$REVIEWER_ZIP" and NOT from a directory: the zip IS
+        # the reviewed file list, so the bundle cannot drift from it.
+        # Pointing the bundler at a working directory sweeps up .git,
+        # coverage output and test data — measured at 2386 entries and
+        # 298 MB for dfdraw, which no reviewer runtime can read.
+        # ---------------------------------------------------------------
+        if [[ "${ADF_REVIEWER_BUNDLE:-1}" != "0" ]]; then
+            BUNDLE_SCRIPT=""
+            for candidate in \
+                "../scripts/make_llm_bundle.py" \
+                "scripts/make_llm_bundle.py" \
+                "tests/scripts/make_llm_bundle.py"; do
+                [[ -f "$candidate" ]] && BUNDLE_SCRIPT="$candidate" && break
+            done
+
+            # --allow-delimiters is REQUIRED here, not optional.  The packet
+            # always contains diff_to_phase/diff_last_commit, and any diff that
+            # touches make_llm_bundle.py necessarily quotes that script's own
+            # DELIMITERS constants.  Refusing on that would make the packet
+            # permanently un-bundleable.  The bundle stays unambiguous for any
+            # reader that uses the "bytes:" length prefix, which is what the
+            # header/manifest/trailer exist to support.
+            BUNDLE_ERR="$LOG_DIR/reviewer_bundle_stderr_${TS}.txt"
+            if [[ -z "$BUNDLE_SCRIPT" ]]; then
+                echo "${YELLOW}⚠️  make_llm_bundle.py not found (../scripts/, scripts/); no text bundle${RESET}"
+            elif python3 "$BUNDLE_SCRIPT" "$REVIEWER_ZIP" -o "$REVIEWER_BUNDLE" \
+                        --allow-delimiters >/dev/null 2>"$BUNDLE_ERR" \
+                    && [[ -s "$REVIEWER_BUNDLE" ]]; then
+                rm -f "$BUNDLE_ERR"
+                N_BUNDLE=$(grep -c '^===== LLMBUNDLE ENTRY BEGIN =====$' "$REVIEWER_BUNDLE" 2>/dev/null || echo 0)
+                echo "  Reviewer package (text): $REVIEWER_BUNDLE_ABS"
+                if [[ "$N_BUNDLE" -ne "$N_ZIP" ]]; then
+                    echo "${RED}${BOLD}❌ PACKAGE MISMATCH: zip=$N_ZIP bundle=$N_BUNDLE — not the same content${RESET}"
+                else
+                    echo "  content check: zip and text bundle both hold $N_BUNDLE files"
+                fi
+                if ! tail -1 "$REVIEWER_BUNDLE" | grep -q '^===== LLMBUNDLE END '; then
+                    echo "${RED}${BOLD}❌ text bundle has no trailer — it is truncated${RESET}"
+                fi
+            else
+                echo "${RED}${BOLD}❌ make_llm_bundle.py FAILED — no text bundle (zip/tar unaffected)${RESET}"
+                if [[ -s "$BUNDLE_ERR" ]]; then
+                    echo "${YELLOW}--- bundler stderr ---${RESET}"
+                    sed 's/^/    /' "$BUNDLE_ERR"
+                    echo "${YELLOW}--- end bundler stderr ---${RESET}"
+                fi
+                rm -f "$REVIEWER_BUNDLE"
+            fi
+        fi
+
+        # ---------------------------------------------------------------
+        # Digests of ALL packages, in one file, written AFTER packaging.
         # Deliberately NOT inside either archive: an archive cannot carry
         # its own hash, and a digest file that is inside one packet but
         # describes both is exactly the custody confusion to avoid.
@@ -697,12 +767,23 @@ echo "--- Packaging reviewer.zip ---"
             echo "=== reviewer package digests — run $TS ==="
             echo "(declare BOTH in the CRR; a reviewer must state which they opened)"
             echo ""
-            for pkg in "$REVIEWER_ZIP" "$REVIEWER_TAR"; do
+            for pkg in "$REVIEWER_ZIP" "$REVIEWER_TAR" "$REVIEWER_BUNDLE"; do
                 [[ -f "$pkg" ]] || continue
                 echo "$(basename "$pkg")"
                 echo "  md5     $(md5sum    "$pkg" | cut -d' ' -f1)"
                 echo "  sha256  $(sha256sum "$pkg" | cut -d' ' -f1)"
-                echo "  files   $( { [[ "$pkg" == *.zip ]] && unzip -Z1 "$pkg" || tar -tf "$pkg"; } 2>/dev/null | grep -cv '/$' )"
+                case "$pkg" in
+                    *.zip)
+                        echo "  files   $(unzip -Z1 "$pkg" 2>/dev/null | grep -cv '/$')" ;;
+                    *.tar)
+                        echo "  files   $(tar -tf "$pkg" 2>/dev/null | grep -cv '/$')" ;;
+                    *)
+                        echo "  files   $(grep -c '^===== LLMBUNDLE ENTRY BEGIN =====$' "$pkg" 2>/dev/null || echo 0)"
+                        echo "  entries $(grep -m1 '^entries: ' "$pkg" 2>/dev/null | cut -d' ' -f2)"
+                        echo "  manifest-sha256 $(grep -m1 '^manifest-sha256: ' "$pkg" 2>/dev/null | cut -d' ' -f2)"
+                        echo "  (a Source-Read claim must quote entries + manifest-sha256"
+                        echo "   from BOTH the header and the trailer; no trailer = truncated)" ;;
+                esac
                 echo ""
             done
         } > "$REVIEWER_DIGESTS"
