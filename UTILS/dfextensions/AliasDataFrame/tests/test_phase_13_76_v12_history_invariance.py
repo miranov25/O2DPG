@@ -262,7 +262,6 @@ def _tolerated_call(parent):
 @needs_dfdraw
 @pytest.mark.invariance
 class TestV12RequestHistoryInvariance:
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=B3_P0_2)
     def test_o3_spec_permutation_preserves_valid_failure_semantics(self, monkeypatch):
         orders = [
             ("good", "faulted"),
@@ -305,6 +304,11 @@ class TestV12RequestHistoryInvariance:
             assert tuple(clean_plan.subframes) == tuple(fresh_plan.subframes)
             assert tuple(clean_plan.joins) == tuple(fresh_plan.joins)
             assert tuple(clean_plan.logical_requirements) == tuple(fresh_plan.logical_requirements)
+            assert tuple(clean_plan.subframe_requests) == tuple(fresh_plan.subframe_requests)
+            assert tuple(clean_state.subframe_request_outcomes) == tuple(
+                fresh_state.subframe_request_outcomes)
+            assert len(clean_state.subframe_request_outcomes) == 1
+            assert clean_state.subframe_request_outcomes[0][2] == "success"
         else:
             _clean_call(parent)
             tol_obs, tol_plan, tol_state = _tolerated_call(parent)
@@ -316,6 +320,11 @@ class TestV12RequestHistoryInvariance:
             assert tuple(tol_plan.subframes) == tuple(fresh_plan.subframes)
             assert tuple(tol_plan.joins) == tuple(fresh_plan.joins)
             assert tuple(tol_plan.logical_requirements) == tuple(fresh_plan.logical_requirements)
+            assert tuple(tol_plan.subframe_requests) == tuple(fresh_plan.subframe_requests)
+            assert tuple(tol_state.subframe_request_outcomes) == tuple(
+                fresh_state.subframe_request_outcomes)
+            assert sorted(x[2] for x in tol_state.subframe_request_outcomes) == [
+                "success", "tolerated_unresolved"]
 
 
 @pytest.mark.invariance

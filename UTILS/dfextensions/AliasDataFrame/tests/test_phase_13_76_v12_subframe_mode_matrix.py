@@ -131,8 +131,7 @@ WARN_BAD_CASES = [
     pytest.param("lazy", "eager", id="bad_warn-parent_lazy-child_eager"),
     pytest.param(
         "lazy", "lazy",
-        marks=pytest.mark.xfail(strict=True, raises=RuntimeError, reason=B3_P0_3),
-        id="bad_warn-parent_lazy-child_lazy-B3-P0-3",
+        id="bad_warn-parent_lazy-child_lazy",
     ),
 ]
 

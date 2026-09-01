@@ -1,8 +1,9 @@
 """PHASE_13_76_ADF B3.2b — tests-first planner/reconciliation contract.
 
 The intended semantics are fixed by Architect Clarification v05 A–F.
-This checkpoint changes NO production code.  Confirmed current B3 defects are
-strict xfails so their exact executable shapes are banked before v1.2.
+The tests-first checkpoint banked the confirmed B3 defects as strict xfails.
+Production v1.2 converts only the B3-owned guards to ordinary passing tests;
+separate DYN lifecycle defects remain outside this file/scope.
 """
 
 import warnings
@@ -43,6 +44,13 @@ B3_P0_2 = (
 B3_P0_3 = (
     "B3-P0-3: metadata-poor bad-only warn discards exact runtime unresolved "
     "evidence and terminal reconciliation false-refuses"
+)
+B3_P1_1 = (
+    "B3-P1-1: metadata source label is not namespace-completeness authority"
+)
+B3_P1_2 = (
+    "B3-P1-2: exact runtime tolerated-unresolved evidence must survive to "
+    "terminal reconciliation"
 )
 def _parent_child_three_columns():
     parent = AliasDataFrame(pd.DataFrame({
@@ -112,7 +120,6 @@ def _convert_known_false_refusal(exc):
 
 @needs_dfdraw
 class TestV12B3ReconciliationContract:
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=B3_P0_1)
     @pytest.mark.parametrize("depth", [2, 3, 4])
     def test_r1_child_alias_dependency_closure_is_planned(self, depth):
         parent, child = _parent_child_three_columns()
@@ -154,7 +161,6 @@ class TestV12B3ReconciliationContract:
         assert "S::a1" in state.aliases_dropped
         assert parent._reconcile_draw_plan_state(plan, state, raise_on_error=False) == ()
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=B3_P0_2)
     def test_r2_two_valid_same_owner_requests_cannot_hide_one_runtime_failure(self, monkeypatch):
         parent, _ = _parent_child_three_columns()
         _fault_leaf(monkeypatch, parent, "w")
@@ -174,7 +180,6 @@ class TestV12B3ReconciliationContract:
             defect="B3-P0-2",
         )
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=B3_P0_3)
     def test_r3_metadata_free_bad_only_warn_uses_runtime_unresolved_evidence(self, tmp_path):
         uproot = pytest.importorskip("uproot")
         if getattr(uproot, "__version__", "") == "stub":
@@ -222,7 +227,6 @@ class TestV12B3ReconciliationContract:
         assert result is not None
         assert parent._last_draw_prep_state.plan_reconciliation_errors == ()
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=B3_P0_2)
     def test_r5_cross_spec_tolerance_cannot_discharge_faulted_valid_spec(self, monkeypatch):
         parent, _ = _parent_child_three_columns()
         _fault_leaf(monkeypatch, parent, "w")
@@ -243,7 +247,6 @@ class TestV12B3ReconciliationContract:
             defect="B3-P0-2",
         )
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=B3_P0_2)
     def test_r6_cross_slot_success_cannot_hide_faulted_valid_selection(self, monkeypatch):
         parent, _ = _parent_child_three_columns()
         _fault_leaf(monkeypatch, parent, "w")
@@ -315,8 +318,140 @@ class TestV12B3ReconciliationContract:
                 )
         plt.close("all")
 
-    # B3-P1-1 META-1 is intentionally NOT banked in this tests-only checkpoint.
-    # The v01 review proved that its exact assertion depended on v1.1-only
-    # private plan fields absent from banked STEP-9.  Reintroduce B3-P1-1 with
-    # the production v1.2 increment, where request-level runtime bookkeeping is
-    # part of the reviewed implementation substrate.
+    def test_meta_1_source_label_alone_does_not_prove_alias_namespace_complete(self):
+        """B3-P1-1: sparse raw metadata stays UNKNOWN despite a canonical source label."""
+        class PartialKeyReader:
+            available_branches = {"k", "v"}
+            adf_metadata = {
+                "_source": "key",
+                # Normalization creates empty public containers, but RAW did
+                # not represent aliases/structs/subframes completely.
+                "aliases": {},
+                "subframes": [],
+                "column_dtypes": {"v": "float64"},
+                "raw": {"column_dtypes": {"v": "float64"}},
+            }
+
+        parent = AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], dtype=np.int64),
+            "x": np.array([10.0, 20.0]),
+        }))
+        parent._subframe_readers["S"] = PartialKeyReader()
+        parent._subframe_lazy_config["S"] = {
+            "index_columns": ["k"], "columns": None}
+
+        espec = A_mod._EffectiveDrawSpec.from_call(
+            "S.future_alias:x", "scatter",
+            {"expr": "S.future_alias:x", "type": "scatter"},
+        )
+        plan = A_mod._DrawDependencyPlan(
+            [espec], [], [],
+            merged_specs=[{"expr": "S.future_alias:x", "type": "scatter"}],
+            lazy=False,
+        )
+        parent._populate_draw_plan_intent(
+            plan, clear_after=False, surface="draw_batch",
+            on_subframe_error="warn",
+        )
+
+        assert plan.warn_required_subframes == ("S",), B3_P1_1
+        assert plan.warn_required_joins == ("S",), B3_P1_1
+        assert len(plan.subframe_requests) == 1
+        request_id, token, owners, resolution, required = plan.subframe_requests[0]
+        assert request_id
+        assert token == "S.future_alias"
+        assert owners == ("S",)
+        assert resolution == "unknown", B3_P1_1
+        assert required is True, B3_P1_1
+
+        # Same source label, but now RAW explicitly represents the relevant
+        # nonphysical namespaces as empty.  This is the distinction required by
+        # Architect Decision E: represented-and-empty may prove absence while
+        # normalized-but-absent may not.  Use ADF's own writer payload shape.
+        complete_child = AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], dtype=np.int64),
+            "v": np.array([1.0, 2.0]),
+        }))
+        complete_raw = complete_child._build_metadata_dict()
+
+        class CompleteKeyReader:
+            available_branches = {"k", "v"}
+            adf_metadata = {
+                "_source": "key",
+                "aliases": dict(complete_raw.get("aliases", {})),
+                "subframes": list(complete_raw.get("subframes", [])),
+                "column_dtypes": dict(complete_raw.get("column_dtypes", {})),
+                "raw": complete_raw,
+            }
+
+        parent2 = AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], dtype=np.int64),
+            "x": np.array([10.0, 20.0]),
+        }))
+        parent2._subframe_readers["S"] = CompleteKeyReader()
+        parent2._subframe_lazy_config["S"] = {
+            "index_columns": ["k"], "columns": None}
+        plan2 = A_mod._DrawDependencyPlan(
+            [espec], [], [],
+            merged_specs=[{"expr": "S.future_alias:x", "type": "scatter"}],
+            lazy=False,
+        )
+        parent2._populate_draw_plan_intent(
+            plan2, clear_after=False, surface="draw_batch",
+            on_subframe_error="warn",
+        )
+        assert len(plan2.subframe_requests) == 1
+        _, token2, owners2, resolution2, required2 = plan2.subframe_requests[0]
+        assert token2 == "S.future_alias"
+        assert owners2 == ("S",)
+        assert resolution2 == "unresolvable", B3_P1_1
+        assert required2 is False, B3_P1_1
+
+    def test_meta_2_runtime_tolerated_unresolved_evidence_is_request_exact(self, monkeypatch):
+        """B3-P1-2: projection persists exact per-request runtime outcomes."""
+        parent, _ = _parent_child_three_columns()
+        result = _public_draw(
+            parent,
+            {"bad": {"expr": "S.nosuch:x", "type": "scatter"}},
+            on_subframe_error="warn",
+            on_error="skip",
+        )
+        assert result is not None
+
+        plan = parent._last_draw_plan
+        state = parent._last_draw_prep_state
+        assert len(plan.subframe_requests) == 1
+        assert len(state.subframe_request_outcomes) == 1
+
+        request_id, token, owners, resolution, required = plan.subframe_requests[0]
+        runtime_id, runtime_token, outcome, detail = state.subframe_request_outcomes[0]
+        assert runtime_id == request_id, B3_P1_2
+        assert runtime_token == token == "S.nosuch", B3_P1_2
+        assert owners == ("S",)
+        assert resolution == "unresolvable"
+        assert required is False
+        assert outcome == "tolerated_unresolved", B3_P1_2
+        assert "SubframeColumnAbsenceError" in detail
+        assert state.plan_reconciliation_errors == ()
+
+        # A VALID request with an injected arbitrary runtime failure must be
+        # recorded differently and must remain a reconciliation failure.
+        parent2, _ = _parent_child_three_columns()
+        _fault_leaf(monkeypatch, parent2, "w")
+        with pytest.raises(RuntimeError, match=r"\[draw-plan-reconcile\]"):
+            _public_draw(
+                parent2,
+                {"faulted": {"expr": "S.w:x", "type": "scatter"}},
+                on_subframe_error="warn",
+                on_error="skip",
+            )
+        state2 = parent2._last_draw_prep_state
+        plan2 = parent2._last_draw_plan
+        assert len(plan2.subframe_requests) == 1
+        assert len(state2.subframe_request_outcomes) == 1
+        rid2, token2, outcome2, detail2 = state2.subframe_request_outcomes[0]
+        assert rid2 == plan2.subframe_requests[0][0]
+        assert token2 == "S.w"
+        assert outcome2 == "tolerated_error", B3_P1_2
+        assert "RuntimeError" in detail2
+        assert any("did not succeed" in e for e in state2.plan_reconciliation_errors)

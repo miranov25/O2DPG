@@ -2468,7 +2468,8 @@ class _DrawPreparationState:
                  "subframes_observed", "joins_observed",
                  "frame_aliases", "cleanup_outcome", "failure_phase",
                  "secondary_error", "cache_effects",
-                 "plan_reconciliation_errors")
+                 "plan_reconciliation_errors",
+                 "subframe_request_outcomes")
 
     def __init__(self):
         self.prescan_text = ""
@@ -2543,6 +2544,11 @@ class _DrawPreparationState:
         # succeeds; they are not inferred from dotted text alone.
         self.subframes_observed = ()
         self.joins_observed = ()
+        # B3.2b v1.2 private runtime ledger.  Each tuple is
+        # (request_id, dotted_token, outcome, detail).  It is populated at the
+        # existing projection success/failure site, where the exact request is
+        # still available, and consumed only by terminal reconciliation.
+        self.subframe_request_outcomes = ()
         # Every alias in the frame graph, qualified by owner path
         # ('' for this frame, 'Child::' for a registered subframe). Each frame
         # appears under exactly one owner path: registering one object twice
@@ -2770,8 +2776,14 @@ class _DrawDependencyPlan:
         "cleanup": "actual_cleanup",
     }
 
+    # STEP-9 cumulative hardening metadata.  These are private per-call
+    # requiredness aids for warn-mode reconciliation, NOT normative Rev-2
+    # dependency-plan groups and therefore deliberately have no
+    # REV2_GROUP_DISPOSITION / REV2_RECONCILIATION_POLICY entries.
     __slots__ = ("especs", "rewrite_dicts", "autoload_dicts",
-                 "merged_specs", "lazy", "subframe_error_policy") + REV2_GROUPS
+                 "merged_specs", "lazy", "subframe_error_policy",
+                 "warn_required_subframes", "warn_required_joins",
+                 "subframe_requests") + REV2_GROUPS
 
     def __init__(self, especs, rewrite_dicts, autoload_dicts,
                  merged_specs=(), lazy=False):
@@ -2782,6 +2794,13 @@ class _DrawDependencyPlan:
         self.merged_specs = list(merged_specs)
         self.lazy = bool(lazy)
         self.subframe_error_policy = "raise"
+        self.warn_required_subframes = ()
+        self.warn_required_joins = ()
+        # B3.2b v1.2 private request ledger.  Each tuple is
+        # (request_id, dotted_token, owner_paths, plan_resolution, required).
+        # This is deliberately NOT a Rev-2 normative group: it refines the
+        # request identity behind the existing subframes/joins groups.
+        self.subframe_requests = ()
         self.especs = list(especs)
         self.rewrite_dicts = [d for d in rewrite_dicts if isinstance(d, dict)]
         self.autoload_dicts = [d for d in autoload_dicts
@@ -21531,6 +21550,9 @@ function collapseDepth(maxD) {{
         structs = set()
         subframes = set()
         joins = set()
+        warn_required_subframes = set()
+        warn_required_joins = set()
+        subframe_requests = []
         temporary = set()
         persistent = set()
 
@@ -21543,6 +21565,155 @@ function collapseDepth(maxD) {{
         _lazy_loaded = set(
             getattr(getattr(self, "_lazy_reader", None),
                     "loaded_branches", ()) or ())
+
+        # Cumulative B3.2b hardening: one authority determines both which
+        # subframe/join identities are planned and whether a warn-mode request
+        # is definitely unresolved (optional) or must remain required.  The
+        # safety default is fail-closed: UNKNOWN means REQUIRED.  Only a leaf
+        # proven absent from all known physical/alias/struct/subframe namespaces
+        # is optional under on_subframe_error="warn".
+        def _complete_nonphysical_namespaces(_meta):
+            """Return complete nonphysical namespaces, or None if incomplete.
+
+            B3.2b v1.2 / B3-P1-1: metadata SOURCE KIND is not a completeness
+            certificate.  ``read_adf_metadata`` normalizes missing namespaces
+            to empty containers, so looking only at ``_source`` plus the
+            normalized ``aliases``/``subframes`` fields can turn
+
+                namespace absent from raw metadata
+
+            into
+
+                namespace represented and empty.
+
+            Absence is authoritative only when the RAW payload actually
+            represents every nonphysical namespace that could own the leaf.
+            Physical absence is handled independently by available_branches.
+            """
+            if not isinstance(_meta, dict):
+                return None
+            if (_meta.get("schema_source") == "names_only"
+                    or str(_meta.get("_source", "")) == "names"):
+                return None
+
+            _raw = _meta.get("raw")
+            if not isinstance(_raw, dict):
+                return None
+            _schema = _raw.get(SCHEMA_METADATA_KEY)
+            _schema = _schema if isinstance(_schema, dict) else {}
+
+            # Representation, not source label, is authority.  Current ADF
+            # ROOT writers explicitly emit aliases and subframes in the raw
+            # payload; those are the nonphysical namespaces that can make an
+            # otherwise physically absent dotted leaf resolvable.  Struct
+            # existence is independently visible through physical
+            # ``Struct/member`` branch prefixes, so optional raw struct
+            # metadata is a positive signal but is not a completeness gate.
+            _aliases_present = "aliases" in _raw
+            _subframes_present = ("subframes" in _raw
+                                  or "subframes" in _schema)
+            if not (_aliases_present and _subframes_present):
+                return None
+
+            _aliases = _raw.get("aliases") or {}
+            if not isinstance(_aliases, dict):
+                return None
+            _structs = (_raw.get("structs")
+                        if "structs" in _raw else _schema.get("structs"))
+            _structs = _structs or {}
+            if not isinstance(_structs, dict):
+                return None
+            _subframes_raw = (_raw.get("subframes")
+                              if "subframes" in _raw
+                              else _schema.get("subframes"))
+            _subframes_raw = _subframes_raw or {}
+            if isinstance(_subframes_raw, dict):
+                _subframes = set(map(str, _subframes_raw.keys()))
+            elif isinstance(_subframes_raw, (list, tuple, set, frozenset)):
+                _subframes = set(map(str, _subframes_raw))
+            else:
+                return None
+            return _aliases, _structs, _subframes
+
+        def _inspect_subframe_token(_token):
+            _segments = _token.split(".")
+            _cur = self
+            _prefixes = []
+            _leaf_idx = None
+            _leaf_reader = None
+
+            for _k, _seg in enumerate(_segments):
+                _entry = (_cur._subframes.get_entry(_seg)
+                          if getattr(_cur, "_subframes", None) is not None
+                          else None)
+                _readers = getattr(_cur, "_subframe_readers", {}) or {}
+                _lazy_cfg = getattr(_cur, "_subframe_lazy_config", {}) or {}
+                _reader = _readers.get(_seg)
+                _lazy_declared = (
+                    _entry is None
+                    and (_seg in _lazy_cfg or _reader is not None))
+                if _entry is None and not _lazy_declared:
+                    _leaf_idx = _k
+                    break
+
+                _prefixes.append(_seg)
+                if _entry is not None:
+                    _cur = _entry["frame"]
+                    continue
+
+                # Pure planning may inspect the lazy reader metadata but must
+                # not materialize the child just to decide requiredness.
+                _leaf_reader = _reader
+                _leaf_idx = _k + 1 if _k + 1 < len(_segments) else None
+                break
+
+            _status = "unknown"
+            if _prefixes and _leaf_idx is not None:
+                _leaf = _segments[_leaf_idx]
+                if _leaf_reader is None:
+                    # Eager/materialized owner: its in-memory namespaces are
+                    # complete unless it itself has a lazy reader.
+                    if (_leaf in set(map(str, getattr(_cur.df, "columns", ())))
+                            or _leaf in (getattr(_cur, "aliases", {}) or {})
+                            or _leaf in (getattr(_cur, "_structs", {}) or {})
+                            or (_cur._subframes.get_entry(_leaf)
+                                if getattr(_cur, "_subframes", None) is not None
+                                else None)
+                            or _leaf in (getattr(_cur, "_subframe_readers", {}) or {})):
+                        _status = "resolvable"
+                    else:
+                        _leaf_reader = getattr(_cur, "_lazy_reader", None)
+                        if _leaf_reader is None:
+                            _status = "unresolvable"
+
+                if _status == "unknown" and _leaf_reader is not None:
+                    _avail = getattr(_leaf_reader, "available_branches", None)
+                    _meta = getattr(_leaf_reader, "adf_metadata", None)
+                    if _avail is not None:
+                        _avail_s = {str(v) for v in _avail}
+                        if (_leaf in _avail_s
+                                or any(v.startswith(f"{_leaf}/")
+                                       for v in _avail_s)):
+                            _status = "resolvable"
+                        else:
+                            _complete = _complete_nonphysical_namespaces(_meta)
+                            if _complete is not None:
+                                (_aliases_meta, _structs_meta,
+                                 _subframes_meta) = _complete
+                                if (_leaf in _aliases_meta
+                                        or _leaf in _structs_meta
+                                        or _leaf in _subframes_meta):
+                                    _status = "resolvable"
+                                else:
+                                    # Both physical and every represented
+                                    # nonphysical namespace are complete: only
+                                    # here is absence proven rather than guessed.
+                                    _status = "unresolvable"
+                        # available_branches with sparse/unknown metadata proves
+                        # physical absence only; alias/struct absence remains
+                        # UNKNOWN and therefore REQUIRED by the caller below.
+
+            return _segments, _cur, _prefixes, _leaf_idx, _status
 
         def _collect_physical_intent(_text):
             """Pure recursive alias->physical dependency closure."""
@@ -21573,6 +21744,45 @@ function collapseDepth(maxD) {{
                         if any(self._struct_internal_name(_sn, m)
                                not in self.df.columns for m in _members):
                             structs.add(_sn)
+
+        _child_alias_seen = set()
+
+        def _collect_child_alias_closure(_frame, _alias, _prefixes):
+            """Plan every owner-qualified alias the child may materialize.
+
+            B3-P0-1: requesting ``S.a2`` can legitimately materialize ``a1``
+            while recursively evaluating ``a2``.  Cleanup observes both, so
+            plan ownership must carry the same transitive closure instead of
+            weakening exact cleanup reconciliation.
+            """
+            _key = (id(_frame), tuple(_prefixes), str(_alias))
+            if _key in _child_alias_seen:
+                return
+            _child_alias_seen.add(_key)
+            _expr = (getattr(_frame, "aliases", None) or {}).get(_alias)
+            if _expr is None:
+                return
+            _qualified = "::".join(list(_prefixes) + [str(_alias)])
+            projection_aliases.add(_qualified)
+            if _alias in (getattr(_frame, "_group_members", {}) or {}):
+                groups.add(_qualified)
+            if not isinstance(_expr, str):
+                return
+            _info = _frame._analyze_expression(_expr)
+            for _dep in _info.get("column_refs", ()):
+                if _dep in (getattr(_frame, "aliases", None) or {}):
+                    _collect_child_alias_closure(
+                        _frame, _dep, _prefixes)
+            for _sf_name, _sf_col in _info.get("subframe_refs", ()):
+                _entry = (_frame._subframes.get_entry(_sf_name)
+                          if getattr(_frame, "_subframes", None) is not None
+                          else None)
+                if _entry is None:
+                    continue
+                _child = _entry["frame"]
+                if _sf_col in (getattr(_child, "aliases", None) or {}):
+                    _collect_child_alias_closure(
+                        _child, _sf_col, list(_prefixes) + [_sf_name])
 
         for _i, _es in enumerate(plan.especs):
             _slot_values = [("expr", _es.expr)]
@@ -21606,83 +21816,66 @@ function collapseDepth(maxD) {{
                 weights=_es.style.get("weights"),
                 facet_by=_es.style.get("facet_by")))
 
-            # Dotted subframe requirements are resolvable without executing a
-            # join.  Record every chain prefix that denotes a registered
-            # subframe; the leaf is the first segment that is not a subframe.
-            _blob = _es.reference_text_blob(include_vector_slots=False)
-            for _token in _re.findall(r'\b(\w+(?:\.\w+)+)\b', _blob):
-                _segments = _token.split(".")
-                _cur = self
-                _prefixes = []
-                _leaf_idx = None
-                for _k, _seg in enumerate(_segments):
-                    _entry = (_cur._subframes.get_entry(_seg)
-                              if getattr(_cur, "_subframes", None) is not None
-                              else None)
-                    # A lazy subframe is DECLARED before it is materialized into
-                    # _subframes.  Plan construction is pure and must not load
-                    # it merely to discover intent, so the lazy registry/config
-                    # is a legitimate declaration source.  This closes the
-                    # STEP-9 regression where execution measured SectorCalib
-                    # while the plan stayed empty on every lazy-subframe draw.
-                    _lazy_declared = (
-                        _entry is None
-                        and (_seg in (getattr(_cur, "_subframe_lazy_config", {}) or {})
-                             or _seg in (getattr(_cur, "_subframe_readers", {}) or {})))
-                    if _entry is None and not _lazy_declared:
-                        _leaf_idx = _k
-                        break
-                    _prefixes.append(_seg)
-                    _path = ".".join(_prefixes)
-                    # Record the intended subframe/join identity even in
-                    # warn mode.  The terminal reconciler knows that warn mode
-                    # permits an intended resolution to remain unexecuted, but
-                    # still rejects any observed identity outside this plan.
-                    subframes.add(_path)
-                    joins.add(_path)
-                    if _entry is not None:
-                        _cur = _entry["frame"]
-                        continue
-                    # The lazy child frame is deliberately not loaded here.
-                    # We can still plan the declared first-level join and, for
-                    # a simple S.leaf reference, the leaf write below.  Deeper
-                    # nested intent remains conservative until its owner frame
-                    # exists; terminal cumulative review owns that wider case.
-                    _leaf_idx = _k + 1 if _k + 1 < len(_segments) else None
-                    break
-                if _prefixes and _leaf_idx is not None:
-                    _leaf = _segments[_leaf_idx]
-                    # A leaf alias owned by a child frame is a real planned
-                    # materialization even though it is not in self.aliases.
-                    # Execution measures these under owner-qualified names
-                    # (S::corr2, A::B::corr2); the plan must use the same
-                    # identity or cleanup looks "unexpected" after doing
-                    # exactly what the expression requested.
-                    if _leaf in (getattr(_cur, "aliases", None) or {}):
-                        _qualified_alias = "::".join(_prefixes + [_leaf])
-                        projection_aliases.add(_qualified_alias)
-                        if _leaf in getattr(_cur, "_group_members", {}):
-                            groups.add(_qualified_alias)
+            # B3.2b v1.2: retain request identity while discovering dotted
+            # requirements.  Owner-only sets remain the normative Rev-2 plan
+            # groups; this private ledger refines which independent request
+            # created each obligation so one sibling cannot discharge another.
+            for _slot, _value in _slot_values:
+                _texts = []
+                if isinstance(_value, str) and _value:
+                    _texts = [_value]
+                elif isinstance(_value, (list, tuple)):
+                    _texts = [v for v in _value if isinstance(v, str) and v]
+                for _j, _text in enumerate(_texts):
+                    _text_rid = f"{surface}:{_i}:{_slot}:{_j}:{_text}"
+                    _tokens = _re.findall(r'\b(\w+(?:\.\w+)+)\b', _text)
+                    for _tok_i, _token in enumerate(_tokens):
+                        (_segments, _cur, _prefixes, _leaf_idx,
+                         _resolution) = _inspect_subframe_token(_token)
+                        if not _prefixes:
+                            continue
 
-                if (_prefixes and _leaf_idx is not None
-                        and on_subframe_error == "raise"):
-                    _leaf = _segments[_leaf_idx]
-                    if len(_prefixes) == 1:
-                        _flat = f"{_prefixes[0]}_{_leaf}"
-                        # Plan only a write the call actually intends.  A
-                        # same-named persistent column already on self.df is
-                        # not a reduced-frame temporary creation.
-                        if _flat not in self.df.columns:
-                            temporary.add(_flat)
-                    else:
-                        _flat = _leaf
-                        for _name in reversed(_prefixes):
-                            _flat = f"{_flat}__{_name}"
-                        # Repeat calls reuse an existing persistent chain
-                        # column.  "May be needed" is not "will be created";
-                        # STEP 9 plans only the latter.
-                        if _flat not in self.df.columns:
-                            persistent.add(_flat)
+                        _paths = [".".join(_prefixes[:_n])
+                                  for _n in range(1, len(_prefixes) + 1)]
+                        subframes.update(_paths)
+                        joins.update(_paths)
+
+                        _required = (on_subframe_error != "warn"
+                                     or _resolution != "unresolvable")
+                        if _required:
+                            warn_required_subframes.update(_paths)
+                            warn_required_joins.update(_paths)
+
+                        _request_id = (
+                            f"{_text_rid}:subframe:{_tok_i}:{_token}")
+                        subframe_requests.append((
+                            _request_id, _token, tuple(_paths),
+                            _resolution, bool(_required)))
+
+                        if _leaf_idx is not None:
+                            _leaf = _segments[_leaf_idx]
+                            # Eager/materialized child aliases have a complete
+                            # alias graph available NOW. Plan the whole closure
+                            # execution may materialize, not only the requested
+                            # leaf. Lazy-child alias identity is still not guessed.
+                            if (_resolution == "resolvable"
+                                    and _leaf in (getattr(_cur, "aliases", None) or {})):
+                                _collect_child_alias_closure(
+                                    _cur, _leaf, _prefixes)
+
+                        if (_leaf_idx is not None
+                                and on_subframe_error == "raise"):
+                            _leaf = _segments[_leaf_idx]
+                            if len(_prefixes) == 1:
+                                _flat = f"{_prefixes[0]}_{_leaf}"
+                                if _flat not in self.df.columns:
+                                    temporary.add(_flat)
+                            else:
+                                _flat = _leaf
+                                for _name in reversed(_prefixes):
+                                    _flat = f"{_flat}__{_name}"
+                                if _flat not in self.df.columns:
+                                    persistent.add(_flat)
 
         _root_aliases = (aliases - preexisting) if plan.lazy else set()
         planned_aliases = ((_root_aliases | unconditional_slot_aliases
@@ -21703,6 +21896,9 @@ function collapseDepth(maxD) {{
         plan.structs = tuple(sorted(structs))
         plan.subframes = tuple(sorted(subframes))
         plan.joins = tuple(sorted(joins))
+        plan.warn_required_subframes = tuple(sorted(warn_required_subframes))
+        plan.warn_required_joins = tuple(sorted(warn_required_joins))
+        plan.subframe_requests = tuple(subframe_requests)
         plan.temporary_columns = tuple(sorted(temporary))
         plan.persistent_columns = tuple(sorted(persistent))
         # Explicit terminal disposition: cache transitions are measured but
@@ -21777,6 +21973,75 @@ function collapseDepth(maxD) {{
             errors.append(
                 f"unexpected slot/surface provenance entries: {unexpected_prov}")
 
+        # B3.2b v1.2 request-level closure.  Owner-level observation remains
+        # useful for exact-owned effect accounting, but it is not sufficient to
+        # prove that every independent request to the same owner succeeded.
+        _plan_requests = {}
+        for _rec in getattr(plan, "subframe_requests", ()) or ():
+            if not isinstance(_rec, (tuple, list)) or len(_rec) != 5:
+                errors.append(f"malformed private subframe request record: {_rec!r}")
+                continue
+            _rid, _token, _paths, _resolution, _required = _rec
+            _rid = str(_rid)
+            if _rid in _plan_requests:
+                errors.append(f"duplicate private subframe request id: {_rid!r}")
+                continue
+            _plan_requests[_rid] = (
+                str(_token), tuple(map(str, _paths)),
+                str(_resolution), bool(_required))
+
+        _runtime_outcomes = {}
+        for _rec in getattr(state, "subframe_request_outcomes", ()) or ():
+            if not isinstance(_rec, (tuple, list)) or len(_rec) < 3:
+                errors.append(f"malformed runtime subframe request outcome: {_rec!r}")
+                continue
+            _rid = str(_rec[0])
+            if _rid in _runtime_outcomes:
+                errors.append(f"duplicate runtime subframe request outcome: {_rid!r}")
+                continue
+            _runtime_outcomes[_rid] = (str(_rec[1]), str(_rec[2]),
+                                       str(_rec[3]) if len(_rec) > 3 else "")
+
+        _request_required_owners = set()
+        if _plan_requests:
+            _warn_mode = (getattr(plan, "subframe_error_policy", "raise") == "warn")
+            for _rid, (_token, _paths, _resolution, _required) in _plan_requests.items():
+                _runtime = _runtime_outcomes.get(_rid)
+                if _runtime is None:
+                    errors.append(
+                        f"subframe request {_rid!r} ({_token}) has no runtime outcome")
+                    if _required:
+                        _request_required_owners.update(_paths)
+                    continue
+                _runtime_token, _outcome, _detail = _runtime
+                if _runtime_token != _token:
+                    errors.append(
+                        f"subframe request {_rid!r} token changed: planned {_token!r}, "
+                        f"runtime {_runtime_token!r}")
+                if _outcome == "success":
+                    if _required:
+                        _request_required_owners.update(_paths)
+                    continue
+                if _warn_mode and _outcome == "tolerated_unresolved":
+                    # Runtime exact absence is final authority when planning
+                    # could only say UNKNOWN. Relax THIS request only.
+                    continue
+
+                # A tolerated arbitrary runtime failure is not evidence that a
+                # valid request became optional.  Keep its owner obligation and
+                # reject through the reconciliation phase.
+                if _required:
+                    _request_required_owners.update(_paths)
+                errors.append(
+                    f"subframe request {_rid!r} ({_token}) did not succeed: "
+                    f"outcome={_outcome!r}, plan_resolution={_resolution!r}, "
+                    f"detail={_detail!r}")
+
+            _unexpected_runtime = sorted(set(_runtime_outcomes) - set(_plan_requests))
+            if _unexpected_runtime:
+                errors.append(
+                    f"unexpected runtime subframe request outcomes: {_unexpected_runtime}")
+
         for group, policy in _DrawDependencyPlan.REV2_RECONCILIATION_POLICY.items():
             planned = set(self._draw_plan_items(getattr(plan, group, ())))
             measured = self._draw_state_items_for_group(group, state)
@@ -21808,11 +22073,31 @@ function collapseDepth(maxD) {{
                         f"{getattr(state, 'cleanup_outcome', '')!r}")
                 continue
 
-            missing = sorted(planned - measured)
-            _warn_tolerated = (
-                group in ("subframes", "joins")
-                and getattr(plan, "subframe_error_policy", "raise") == "warn")
-            if missing and not _warn_tolerated:
+            _required = planned
+            if (group in ("subframes", "joins")
+                    and getattr(plan, "subframe_error_policy", "raise") == "warn"):
+                if _plan_requests:
+                    # Request-level runtime evidence is authoritative for the
+                    # missing direction.  A request specifically proven
+                    # unresolved may relax its own owner path, while a faulted
+                    # valid sibling remains required even if another request to
+                    # the same owner succeeded.
+                    _required = set(_request_required_owners)
+                else:
+                    # Compatibility path for synthetic/older plan fixtures.
+                    _required_attr = ("warn_required_subframes"
+                                      if group == "subframes"
+                                      else "warn_required_joins")
+                    _required = set(self._draw_plan_items(
+                        getattr(plan, _required_attr, ())))
+                _outside_plan = sorted(_required - planned)
+                if _outside_plan:
+                    errors.append(
+                        f"{group}: warn-required identities are outside the "
+                        f"normative plan: {_outside_plan}; "
+                        f"planned={sorted(planned)}")
+            missing = sorted(_required - measured)
+            if missing:
                 errors.append(
                     f"{group}: planned identities not measured: {missing}; "
                     f"measured={sorted(measured)}")
@@ -22053,7 +22338,8 @@ function collapseDepth(maxD) {{
     def _execute_draw_projection_effects(self, state, df_for_plot,
                                         specs, defaults, kwargs,
                                         sel_pos=None,
-                                        on_subframe_error='raise'):
+                                        on_subframe_error='raise',
+                                        plan=None):
         """PHASE_13_76_ADF B3.2 part 2 — the executor's PROJECTION phase.
 
         Effects that can only happen once the reduced frame exists: subframe
@@ -22095,13 +22381,42 @@ function collapseDepth(maxD) {{
                 f"as 'raise' would let a typo change failure behaviour "
                 f"without saying so (GPT26/GPT30, correction round 2).")
 
-        def _fail(ref, exc):
-            """One refusal point, so the two branches cannot drift."""
+        _request_outcomes = list(
+            getattr(state, "subframe_request_outcomes", ()) or ())
+        _request_outcome_ids = {str(r[0]) for r in _request_outcomes
+                                if isinstance(r, (tuple, list)) and r}
+
+        def _record_request(request_id, token, outcome, detail=""):
+            """Persist one exact runtime request outcome for this draw call."""
+            _rid = str(request_id)
+            if _rid in _request_outcome_ids:
+                return
+            _request_outcomes.append(
+                (_rid, str(token), str(outcome), str(detail)))
+            _request_outcome_ids.add(_rid)
+            state.subframe_request_outcomes = tuple(_request_outcomes)
+
+        def _is_runtime_unresolved(exc):
+            # Runtime is the final authority for metadata-poor requests, but
+            # warn tolerance is narrow: only structural absence is an
+            # unresolved request. Arbitrary RuntimeError/TypeError/etc. remains
+            # a failed VALID request and must be caught by reconciliation.
+            return isinstance(exc, (StructuralAbsenceError, BranchNotFoundError))
+
+        def _fail(request_id, ref, exc):
+            """One refusal point, preserving the exact request before warn."""
             _msg = (f"[draw_batch] failed to resolve subframe reference "
                     f"{ref!r}: {exc}")
             if on_subframe_error == 'warn':
+                _outcome = ("tolerated_unresolved"
+                            if _is_runtime_unresolved(exc)
+                            else "tolerated_error")
+                _record_request(request_id, ref, _outcome,
+                                f"{type(exc).__name__}: {exc}")
                 warnings.warn(_msg)
                 return
+            _record_request(request_id, ref, "error",
+                            f"{type(exc).__name__}: {exc}")
             raise ValueError(
                 _msg + ". The projection phase owns this effect, so it "
                 "refuses rather than handing dfdraw an unresolved reference "
@@ -22130,28 +22445,41 @@ function collapseDepth(maxD) {{
             sf_names = set(self._subframes.subframes.keys())
             merged_defaults = {**(defaults or {}), **kwargs}
 
-            # Collect all text across all specs
+            # Vector-slot refusal remains a runtime guard. Scalar dotted
+            # request identity comes from the pure plan when available, so
+            # projection does not collapse spec/slot provenance into one blob.
             all_text_parts = []
             for name, spec in specs.items():
                 merged_spec = {**merged_defaults, **spec}
-                all_text_parts.append(merged_spec.get('expr', name))
-                if merged_spec.get('selection'):
-                    all_text_parts.append(merged_spec['selection'])
-                if merged_spec.get('group_by'):
-                    all_text_parts.append(str(merged_spec['group_by']))
-                # BUG_20260701: remaining value-bearing string slots (symmetry).
-                for _slot in ('color', 'facet_by', 'weights'):
-                    _v = merged_spec.get(_slot)
-                    if isinstance(_v, str) and _v:
-                        all_text_parts.append(_v)
+                if plan is None or not getattr(plan, "subframe_requests", ()):
+                    all_text_parts.append(merged_spec.get('expr', name))
+                    if merged_spec.get('selection'):
+                        all_text_parts.append(merged_spec['selection'])
+                    if merged_spec.get('group_by'):
+                        all_text_parts.append(str(merged_spec['group_by']))
+                    for _slot in ('color', 'facet_by', 'weights'):
+                        _v = merged_spec.get(_slot)
+                        if isinstance(_v, str) and _v:
+                            all_text_parts.append(_v)
                 self._guard_subframe_refs_in_vector_slots(
                     merged_spec.get('weights_vector'), merged_spec.get('selection_vector'))
-            all_text = ' '.join(all_text_parts)
 
-            import re as _re
-            # Phase 13.23.ADF: greedy walk for multi-level chain support
-            chain_tokens = _re.findall(r'\b(\w+(?:\.\w+)+)\b', all_text)
-            for chain_token in chain_tokens:
+            if plan is not None and getattr(plan, "subframe_requests", ()):
+                _runtime_requests = [
+                    (str(_rec[0]), str(_rec[1]))
+                    for _rec in plan.subframe_requests]
+            else:
+                import re as _re
+                all_text = ' '.join(all_text_parts)
+                chain_tokens = _re.findall(
+                    r'\b(\w+(?:\.\w+)+)\b', all_text)
+                _runtime_requests = [
+                    (f"projection:fallback:{_i}:{_tok}", _tok)
+                    for _i, _tok in enumerate(chain_tokens)]
+
+            # Phase 13.23.ADF: greedy walk for multi-level chain support.
+            # B3.2b v1.2 preserves the request id alongside the token.
+            for _request_id, chain_token in _runtime_requests:
                 segments = chain_token.split('.')
 
                 current_adf = self
@@ -22179,7 +22507,23 @@ function collapseDepth(maxD) {{
                     col_name = leaf_col
                     dot_ref = f"{sf_name}.{col_name}"
                     flat_ref = f"{sf_name}_{col_name}"
-                    if flat_ref not in df_for_plot.columns and dot_ref not in subframe_replacements:
+                    if dot_ref in subframe_replacements:
+                        # A previous request in THIS projection already
+                        # resolved the same dotted reference.  Reuse only that
+                        # owned mapping; an unrelated pre-existing ``S_v``
+                        # column must not be mistaken for subframe evidence.
+                        if method_suffix:
+                            subframe_replacements[
+                                f'{dot_ref}.{method_suffix}'] = f'{flat_ref}.{method_suffix}'
+                        _sf_observed.add(sf_name)
+                        _joins_observed.add(sf_name)
+                        _record_request(_request_id, chain_token, "success")
+                    elif flat_ref in df_for_plot.columns:
+                        # Preserve the established fail-closed collision
+                        # behavior: do not fabricate a dotted->flat rewrite
+                        # from an arbitrary same-named physical column.
+                        continue
+                    else:
                         try:
                             index_cols = entry['index']
                             if isinstance(index_cols, str):
@@ -22235,12 +22579,13 @@ function collapseDepth(maxD) {{
                             # publication succeeded.
                             _sf_observed.add(sf_name)
                             _joins_observed.add(sf_name)
+                            _record_request(_request_id, chain_token, "success")
                             if method_suffix:
                                 subframe_replacements[f'{dot_ref}.{method_suffix}'] = f'{flat_ref}.{method_suffix}'
                             else:
                                 subframe_replacements[dot_ref] = flat_ref
                         except Exception as e:
-                            _fail(dot_ref, e)
+                            _fail(_request_id, dot_ref, e)
                 else:
                     # Multi-level: pre-materialize on self.df
                     try:
@@ -22273,12 +22618,13 @@ function collapseDepth(maxD) {{
                                     _by_position(self.df[flat_col].values),
                                     index=df_for_plot.index,
                                     dtype=self.df[flat_col].dtype)
+                        _record_request(_request_id, chain_token, "success")
                         if method_suffix:
                             subframe_replacements[f'{dot_ref_prefix}.{method_suffix}'] = f'{flat_col}.{method_suffix}'
                         else:
                             subframe_replacements[dot_ref_prefix] = flat_col
                     except Exception as e:
-                        _fail(dot_ref_prefix, e)
+                        _fail(_request_id, dot_ref_prefix, e)
 
             # Rewrite all specs: replace Sub.col → Sub_col.
             # GPT25 (correction round, P0): `defaults` and top-level kwargs
@@ -22338,6 +22684,7 @@ function collapseDepth(maxD) {{
         state.cache_effects = tuple(_cache)
         state.subframes_observed = tuple(sorted(_sf_observed))
         state.joins_observed = tuple(sorted(_joins_observed))
+        state.subframe_request_outcomes = tuple(_request_outcomes)
         state.frame_aliases = self._iter_frame_graph()[1]
         return df_for_plot, subframe_replacements
 
@@ -22766,7 +23113,7 @@ function collapseDepth(maxD) {{
                 self._execute_draw_projection_effects(
                     _state_b32, df_for_plot, specs, defaults, kwargs,
                     sel_pos=_sel_pos_b32,
-                    on_subframe_error=on_subframe_error))
+                    on_subframe_error=on_subframe_error, plan=_plan_b32))
         except Exception:
             self._record_draw_failure(_state_b32, "projection",
                                       effective_clear, clear_after_on_error,

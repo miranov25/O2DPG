@@ -8572,6 +8572,12 @@ class TestB32bAcceptanceScaffold:
                    for kind, _, _ in plan_cls.REV2_GROUP_DISPOSITION.values())
         assert set(plan_cls.REV2_RECONCILIATION_POLICY) == set(
             self.RECONCILABLE_GROUPS)
+        assert "warn_required_subframes" not in plan_cls.REV2_GROUPS
+        assert "warn_required_joins" not in plan_cls.REV2_GROUPS
+        assert "warn_required_subframes" not in plan_cls.REV2_RECONCILIATION_POLICY
+        assert "warn_required_joins" not in plan_cls.REV2_RECONCILIATION_POLICY
+        assert "subframe_requests" not in plan_cls.REV2_GROUPS
+        assert "subframe_requests" not in plan_cls.REV2_RECONCILIATION_POLICY
 
         # group_materializations is not structurally dead: when a planned alias
         # is a group member, the plan owner records it.
@@ -8793,6 +8799,247 @@ class TestB32bAcceptanceScaffold:
                                        on_subframe_error="raise")
         assert "isGood" in plan.aliases, plan.aliases
         assert "isGood" in plan.cleanup, plan.cleanup
+
+    @needs_dfdraw
+    def test_b32b_2n_warn_mode_does_not_hide_missing_valid_subframe_effect(self):
+        """A tolerated bad sibling must not make a valid subframe optional.
+
+        STEP 9 v03 stored one call-wide ``subframe_error_policy``.  Under
+        ``warn`` the terminal reconciler therefore suppressed *all* missing
+        subframe/join identities, including a valid ``S.v`` requirement when
+        a different ``S.nosuch`` request was tolerated.  Build the real public
+        mixed plan, erase the successful valid observation, and require that
+        reconciliation notices the missing valid effect.
+        """
+        parent = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "x": np.array([10.0, 20.0])}))
+        child = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "v": np.array([1.0, 2.0])}))
+        parent.register_subframe("S", child, index_columns=["k"])
+        specs = {
+            "good": {"expr": "S.v:x", "type": "scatter"},
+            "bad": {"expr": "S.nosuch:x", "type": "scatter"},
+        }
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            parent.draw_batch(
+                specs, on_error="skip", on_subframe_error="warn",
+                verbose=False)
+        plt.close("all")
+        plan = parent._last_draw_plan
+        state = parent._last_draw_prep_state
+        assert plan.subframe_error_policy == "warn"
+        assert plan.warn_required_subframes == ("S",), \
+            plan.warn_required_subframes
+        assert plan.warn_required_joins == ("S",), plan.warn_required_joins
+        assert set(plan.warn_required_subframes) <= set(plan.subframes)
+        assert set(plan.warn_required_joins) <= set(plan.joins)
+        assert "S" in state.subframes_observed
+        assert "S" in state.joins_observed
+
+        # Fault-inject the exact missing-valid-effect state the cumulative
+        # review attacks.  The banked implementation false-closes this because
+        # warn tolerance is applied to the whole subframe/join group.
+        state.subframes_observed = ()
+        state.joins_observed = ()
+        errors = parent._reconcile_draw_plan_state(
+            plan, state, raise_on_error=False)
+        assert any("subframes: planned identities not measured" in e
+                   for e in errors), errors
+        assert any("joins: planned identities not measured" in e
+                   for e in errors), errors
+
+        # The narrower warn-required set governs only the MISSING direction.
+        # Exact-owned extra-effect checking must still use the complete
+        # normative plan, otherwise the fix trades one false green for another.
+        state.subframes_observed = ("S", "EXTRA")
+        state.joins_observed = ("S", "EXTRA")
+        extra_errors = parent._reconcile_draw_plan_state(
+            plan, state, raise_on_error=False)
+        assert any("subframes: unexpected measured identities" in e
+                   for e in extra_errors), extra_errors
+        assert any("joins: unexpected measured identities" in e
+                   for e in extra_errors), extra_errors
+
+        # Negative companion: a request that is PROVEN unresolved is the one
+        # warn-mode case allowed to remain optional.  This guards against the
+        # opposite regression of turning warn into global raise semantics.
+        parent2 = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "x": np.array([10.0, 20.0])}))
+        child2 = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "v": np.array([1.0, 2.0])}))
+        parent2.register_subframe("S", child2, index_columns=["k"])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            parent2.draw_batch(
+                {"bad": {"expr": "S.nosuch:x", "type": "scatter"}},
+                on_error="skip", on_subframe_error="warn", verbose=False)
+        plt.close("all")
+        plan2 = parent2._last_draw_plan
+        state2 = parent2._last_draw_prep_state
+        assert plan2.subframes == ("S",), plan2.subframes
+        assert plan2.joins == ("S",), plan2.joins
+        assert plan2.warn_required_subframes == (), \
+            plan2.warn_required_subframes
+        assert plan2.warn_required_joins == (), plan2.warn_required_joins
+        state2.subframes_observed = ()
+        state2.joins_observed = ()
+        assert parent2._reconcile_draw_plan_state(
+            plan2, state2, raise_on_error=False) == ()
+
+        # Fail-closed metadata default.  Physical branches are known, but
+        # non-physical alias/struct metadata is unavailable, so S.maybe_alias
+        # is UNKNOWN rather than proven absent.  UNKNOWN must stay REQUIRED.
+        class _IncompleteLazyReader:
+            available_branches = {"k", "v"}
+            adf_metadata = None
+
+        parent3 = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "x": np.array([10.0, 20.0])}))
+        parent3._subframe_readers["S"] = _IncompleteLazyReader()
+        parent3._subframe_lazy_config["S"] = {
+            "index_columns": ["k"], "columns": None}
+        mod = _adf_module()
+        espec = mod._EffectiveDrawSpec.from_call(
+            "S.maybe_alias:x", "scatter",
+            {"expr": "S.maybe_alias:x", "type": "scatter"})
+        plan3 = mod._DrawDependencyPlan(
+            [espec], [], [],
+            merged_specs=[{"expr": "S.maybe_alias:x", "type": "scatter"}],
+            lazy=False)
+        parent3._populate_draw_plan_intent(
+            plan3, clear_after=False, surface="draw_batch",
+            on_subframe_error="warn")
+        assert plan3.subframes == ("S",), plan3.subframes
+        assert plan3.warn_required_subframes == ("S",), \
+            plan3.warn_required_subframes
+        assert plan3.warn_required_joins == ("S",), plan3.warn_required_joins
+
+        # Real sparse-metadata companion.  ADF's names-reconstruction mode is
+        # a legitimate dict-shaped metadata result, but it is explicitly
+        # structure-only: absence from aliases/structs is NOT proven.  The
+        # classifier must therefore keep the request UNKNOWN -> REQUIRED.
+        class _NamesOnlyLazyReader:
+            available_branches = {"k", "v"}
+            adf_metadata = {
+                "_source": "names",
+                "schema_source": "names_only",
+                "aliases": {},
+                "subframes": [],
+                "subframe_indices": {},
+                "column_dtypes": {},
+                "raw": {},
+            }
+
+        parent4 = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "x": np.array([10.0, 20.0])}))
+        parent4._subframe_readers["S"] = _NamesOnlyLazyReader()
+        parent4._subframe_lazy_config["S"] = {
+            "index_columns": ["k"], "columns": None}
+        plan4 = mod._DrawDependencyPlan(
+            [espec], [], [],
+            merged_specs=[{"expr": "S.maybe_alias:x", "type": "scatter"}],
+            lazy=False)
+        parent4._populate_draw_plan_intent(
+            plan4, clear_after=False, surface="draw_batch",
+            on_subframe_error="warn")
+        assert plan4.subframes == ("S",), plan4.subframes
+        assert plan4.warn_required_subframes == ("S",), \
+            plan4.warn_required_subframes
+        assert plan4.warn_required_joins == ("S",), \
+            plan4.warn_required_joins
+
+        # Boundary companion: metadata from a recognized complete metadata
+        # source may prove a nonphysical leaf absent.  In that one case warn
+        # keeps the unresolved-only request optional.
+        class _CompleteLazyReader:
+            available_branches = {"k", "v"}
+            adf_metadata = {
+                "_source": "key",
+                "aliases": {},
+                "subframes": [],
+                "subframe_indices": {},
+                "column_dtypes": {},
+                "raw": {
+                    "aliases": {},
+                    "subframes": [],
+                    "__alias_dataframe_schema__": {
+                        "subframes": {},
+                        "structs": {},
+                    },
+                },
+            }
+
+        parent5 = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "x": np.array([10.0, 20.0])}))
+        parent5._subframe_readers["S"] = _CompleteLazyReader()
+        parent5._subframe_lazy_config["S"] = {
+            "index_columns": ["k"], "columns": None}
+        plan5 = mod._DrawDependencyPlan(
+            [espec], [], [],
+            merged_specs=[{"expr": "S.maybe_alias:x", "type": "scatter"}],
+            lazy=False)
+        parent5._populate_draw_plan_intent(
+            plan5, clear_after=False, surface="draw_batch",
+            on_subframe_error="warn")
+        assert plan5.subframes == ("S",), plan5.subframes
+        assert plan5.warn_required_subframes == (), \
+            plan5.warn_required_subframes
+        assert plan5.warn_required_joins == (), plan5.warn_required_joins
+
+    def test_b32b_2o_lazy_child_parent_alias_collision_does_not_fabricate_qualified_plan(self):
+        """A parent alias name is not evidence for a lazy child's alias.
+
+        CUMULATIVE FIX 1 factors dotted-token planning into one inspector.  The
+        old inline walk could see a lazy child declaration, leave ``_cur`` at
+        the parent, and then treat a same-named PARENT alias as ``S::leaf``.
+        Pin the intentional narrowing: incomplete child metadata keeps the
+        subframe required, but must not invent owner-qualified alias/cleanup
+        intent from the parent's namespace.
+        """
+        class _NamesOnlyLazyReader:
+            available_branches = {"k", "v"}
+            adf_metadata = {
+                "_source": "names",
+                "schema_source": "names_only",
+                "aliases": {},
+                "subframes": [],
+                "subframe_indices": {},
+                "column_dtypes": {},
+                "raw": {},
+            }
+
+        parent = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "x": np.array([10.0, 20.0])}))
+        parent.add_alias("maybe_alias", "x * 2")
+        parent._subframe_readers["S"] = _NamesOnlyLazyReader()
+        parent._subframe_lazy_config["S"] = {
+            "index_columns": ["k"], "columns": None}
+        mod = _adf_module()
+        espec = mod._EffectiveDrawSpec.from_call(
+            "S.maybe_alias:x", "scatter",
+            {"expr": "S.maybe_alias:x", "type": "scatter"})
+        plan = mod._DrawDependencyPlan(
+            [espec], [], [],
+            merged_specs=[{"expr": "S.maybe_alias:x", "type": "scatter"}],
+            lazy=False)
+        parent._populate_draw_plan_intent(
+            plan, clear_after=True, surface="draw_batch",
+            on_subframe_error="warn")
+
+        assert plan.subframes == ("S",), plan.subframes
+        assert plan.warn_required_subframes == ("S",), \
+            plan.warn_required_subframes
+        assert "S::maybe_alias" not in plan.aliases, plan.aliases
+        assert "S::maybe_alias" not in plan.cleanup, plan.cleanup
 
     # ---- family 7: ADF-created PERSISTENT columns (AD-19 source 5) --------
 
@@ -11710,6 +11957,88 @@ class TestB32bAcceptanceScaffold:
         assert not [c for c in level_m.df.columns if "__" in str(c)]
         assert not [c for c in main.df.columns if "__" in str(c)]
 
+    def test_b32b_6f_same_hop_placeholder_and_structural_masks_stay_separate(self):
+        """STEP 5c <-> STEP 8: simultaneous mask channels keep ownership.
+
+        Both channel mechanisms are enabled for BOTH intermediate scatters.
+        AD-20 intentionally records structural absence for every missing-key
+        getter, including an integer gather; the integer also needs a
+        placeholder mask because its dtype cannot represent the gap.  The float
+        gather needs only the structural channel.  Complementary missing-key
+        patterns make any stale-state/name cross-contamination observable.
+        """
+        mod = _adf_module()
+
+        int_child = A.AliasDataFrame(pd.DataFrame({
+            "ji": np.array([0], np.int64),
+            "iv": np.array([7], np.int64)}))
+        float_child = A.AliasDataFrame(pd.DataFrame({
+            "jf": np.array([1], np.int64),
+            "fv": np.array([3.5], np.float64)}))
+        mid = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "ji": np.array([0, 9], np.int64),
+            "jf": np.array([9, 1], np.int64)}))
+        mid.register_subframe("I", int_child, index_columns=["ji"])
+        mid.register_subframe("F", float_child, index_columns=["jf"])
+
+        # SAME context, SAME dual-live policy for both scatters.  The two
+        # columns have complementary gaps, so the channel maps must preserve
+        # both subject identity and row-space identity.
+        mid_ctx = mod._AliasEvalContext(
+            alias_name="dual", carry_mask=True, track_structural_gaps=True)
+        i_entry = mid._subframes.get_entry("I")
+        i_col = mid._scatter_subframe_column(
+            "I", "iv", i_entry, ctx=mid_ctx)
+        f_entry = mid._subframes.get_entry("F")
+        f_col = mid._scatter_subframe_column(
+            "F", "fv", f_entry, ctx=mid_ctx)
+
+        assert i_col == "iv__I"
+        assert f_col == "fv__F"
+        assert i_col in mid_ctx.masks
+        assert i_col in mid_ctx.structural_masks
+        assert f_col not in mid_ctx.masks
+        assert f_col in mid_ctx.structural_masks
+        np.testing.assert_array_equal(
+            mid_ctx.masks[i_col], np.array([False, True]))
+        np.testing.assert_array_equal(
+            mid_ctx.structural_masks[i_col], np.array([False, True]))
+        np.testing.assert_array_equal(
+            mid_ctx.structural_masks[f_col], np.array([True, False]))
+
+        main = A.AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], np.int64),
+            "x": np.array([10.0, 20.0])}))
+        main.register_subframe("M", mid, index_columns=["k"])
+        outer_ctx = mod._AliasEvalContext(
+            alias_name="dual", carry_mask=True, track_structural_gaps=True)
+        m_entry = main._subframes.get_entry("M")
+
+        i_outer = main._scatter_subframe_column(
+            "M", i_col, m_entry, ctx=outer_ctx,
+            inherited_mask=mid_ctx.masks[i_col],
+            inherited_structural_mask=mid_ctx.structural_masks[i_col])
+        f_outer = main._scatter_subframe_column(
+            "M", f_col, m_entry, ctx=outer_ctx,
+            inherited_structural_mask=mid_ctx.structural_masks[f_col])
+
+        assert i_outer == "iv__I__M"
+        assert f_outer == "fv__F__M"
+        assert i_outer in outer_ctx.masks
+        assert i_outer in outer_ctx.structural_masks
+        assert f_outer not in outer_ctx.masks
+        assert f_outer in outer_ctx.structural_masks
+        np.testing.assert_array_equal(
+            outer_ctx.masks[i_outer], np.array([False, True]))
+        np.testing.assert_array_equal(
+            outer_ctx.structural_masks[i_outer], np.array([False, True]))
+        np.testing.assert_array_equal(
+            outer_ctx.structural_masks[f_outer], np.array([True, False]))
+
+        mid._retract_placeholder_columns(mid_ctx)
+        main._retract_placeholder_columns(outer_ctx)
+
     def test_b32b_7_categorical_authority_is_recorded_exactly(self):
         m = A.AliasDataFrame(pd.DataFrame({"x": np.array([1, 2], np.int64)}))
         cats = pd.CategoricalDtype(["b", "a"], ordered=True)
@@ -12375,6 +12704,58 @@ class TestB32bAcceptanceScaffold:
             assert p_col is not None and p_call is not None
             assert p_col == p_call
         pd.testing.assert_frame_equal(column_mode.df, call_mode.df)
+
+    def test_b32b_8m_recast_source5_is_restored_by_later_call_atomic_rollback(self):
+        """STEP 7 recast state is the pre-state of a later STEP-6 rollback.
+
+        This is distinct from 17f (failure inside explicit conversion) and 8h
+        (rollback of an ordinary compressed state).  Recast ``dy_c`` first so
+        source-5 physical/authority/codec metadata all describe float64, then
+        fail the second column of a later call-atomic decompression.  Rollback
+        must restore that recast state exactly, not reconstruct the original
+        int16 codec declaration.
+        """
+        cls = A.AliasDataFrame
+        m = A.AliasDataFrame(pd.DataFrame({
+            "dy": np.array([1.5, 2.5, 3.5]),
+            "dz": np.array([4.5, 5.5, 6.5]),
+        }))
+        spec = self._step6_compression_spec("dy", "dz")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m.compress_columns(spec, atomic="call")
+
+        m.apply_dtypes({"dy_c": np.float64})
+        assert str(m.df["dy_c"].dtype) == "float64"
+        assert str(m.get_dtype_authority("dy_c").dtype) == "float64"
+        assert m.compression_info["dy"]["compressed_dtype"] == "float64"
+
+        df_before = m.df.copy(deep=True)
+        schema_before = copy.deepcopy(m._schema)
+        codec_before = copy.deepcopy(m.compression_info)
+        orig = cls._record_adf_created_authority
+
+        def boom_second(self, name, dtype, reason):
+            if name == "dz":
+                raise RuntimeError("injected recast-state rollback fault")
+            return orig(self, name, dtype, reason)
+
+        cls._record_adf_created_authority = boom_second
+        try:
+            with pytest.raises(RuntimeError, match="recast-state rollback"):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    m.decompress_columns(["dy", "dz"], atomic="call")
+        finally:
+            cls._record_adf_created_authority = orig
+
+        pd.testing.assert_frame_equal(m.df, df_before)
+        assert m._schema == schema_before
+        assert m.compression_info == codec_before
+        assert str(m.df["dy_c"].dtype) == "float64"
+        auth = m.get_dtype_authority("dy_c")
+        assert auth.known and str(auth.dtype) == "float64"
+        assert m.compression_info["dy"]["compressed_dtype"] == "float64"
 
     def test_b32b_9_strict_route_is_a_registered_helper_not_a_framework_flag(
             self):
