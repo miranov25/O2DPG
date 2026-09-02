@@ -1,27 +1,27 @@
 # Capability Matrix — AliasDataFrame
 
-**Generated:** 2026-08-31 21:45 UTC
+**Generated:** 2026-09-02 06:48 UTC
 **Phase:** PHASE_13_76_ADF_BEGIN
-**Taxonomy:** 64 features
+**Taxonomy:** 68 features
 **Generator:** `scripts/generate_capability_matrix.py` v4 (shared semantic model)
 
 ## Summary
 
 | Status | Count | % |
 |--------|------:|--:|
-| ✅ Verified | 36 | 56% |
-| ☑️ Smoke-only | 14 | 21% |
-| 🧨 Broken | 13 | 20% |
+| ✅ Verified | 42 | 61% |
+| ☑️ Smoke-only | 15 | 22% |
+| 🧨 Broken | 10 | 14% |
 | 📋 Planned | 1 | 1% |
-| **Total features** | **64** | |
-| **Unique matched tests** | **2033** | |
-| **Feature-test associations** | **2343** | |
-| **Invariance tests** | **453** | |
-| **Mapped XFAIL evidence** | **49** | |
+| **Total features** | **68** | |
+| **Unique matched tests** | **2283** | |
+| **Feature-test associations** | **2593** | |
+| **Invariance tests** | **559** | |
+| **Mapped XFAIL evidence** | **29** | |
 | **Mapped XPASS evidence** | **3** | |
 | **Mapped skipped tests** | **17** | |
 
-**Unmatched tests:** 1317 (not mapped to any feature)
+**Unmatched tests:** 1096 (not mapped to any feature)
 
 ## CORE
 
@@ -92,7 +92,7 @@
 |--------|---------|------:|-----:|-----:|----:|------:|------:|-----:|----:|
 | 🧨 | **DRAW.execution** — draw() with auto-materialization | 70 | 67 | 0 | 0 | 2 | 0 | 1 | 17 |
 | 🧨 | **DRAW.batch** — draw_batch() & draw_figures() | 45 | 44 | 0 | 0 | 1 | 0 | 0 |  |
-| 🧨 | **DRAW.subframe_resolution** — Subframe resolution in draw — expression-slot discovery, owner-qualified materialization/cleanup, request-level/spec-slot attribution, per-public-call evidence isolation, and terminal plan/state reconciliation | 86 | 74 | 0 | 0 | 12 | 0 | 0 | 36 |
+| ✅ | **DRAW.subframe_resolution** — Subframe resolution in draw — expression-slot discovery, owner-qualified materialization/cleanup, request-level/spec-slot attribution, per-public-call evidence isolation, and terminal plan/state reconciliation | 88 | 88 | 0 | 0 | 0 | 0 | 0 | 41 |
 | ✅ | **DRAW.compound_expr** — Lazy materialization of compound expressions | 13 | 13 | 0 | 0 | 0 | 0 | 0 | 2 |
 | ✅ | **DRAW.invariance** — Draw vs materialize invariance | 18 | 18 | 0 | 0 | 0 | 0 | 0 | 15 |
 
@@ -118,11 +118,11 @@
 |--------|---------|------:|-----:|-----:|----:|------:|------:|-----:|----:|
 | ✅ | **LAZY.read_tree** — Lazy branch loading from ROOT | 88 | 88 | 0 | 0 | 0 | 0 | 0 | 2 |
 | ✅ | **LAZY.chain** — Chain loading (multiple files) | 60 | 58 | 0 | 0 | 0 | 0 | 2 | 6 |
-| 🧨 | **LAZY.materialization** — Lazy subframe & alias evaluation — on-demand physical/logical resolution across eager/lazy parent-child modes, no-metadata operation, and raise vs warn/skip resolution policies | 70 | 66 | 0 | 0 | 4 | 0 | 0 | 14 |
+| ✅ | **LAZY.materialization** — Lazy subframe & alias evaluation — on-demand physical/logical resolution across eager/lazy parent-child modes, no-metadata operation, and raise vs warn/skip resolution policies | 70 | 70 | 0 | 0 | 0 | 0 | 0 | 18 |
 | ✅ | **LAZY.userinfo_backcompat** — Lazy-path UserInfo metadata back-compatibility (AD-3 precedence) | 15 | 14 | 0 | 0 | 0 | 0 | 1 | 5 |
 | ✅ | **LAZY.chain_metadata** — Chain lazy metadata recovery (PHASE_13_67) — first-file UserInfo canonical, applied by DEFAULT (aliases+dtypes+compression, 0a); raise on cross-file incompatibility (0b); union/intersection -> error by default via metadata_conflict policy (parametrizable, off-switch in message); lazy application loads zero columns (INV-1); D4 pre-sized chain frame; names_only is a valid sparse case; real public-API read_chain_lazy recovery (alias+dtype+eval) verified on export_tree fixtures; subframe parity test runs on full-metadata fixtures, skips on names-only slim | 23 | 22 | 0 | 0 | 0 | 0 | 1 | 5 |
 | ✅ | **LAZY.timeseries_draw** — Single-tree lazy time-series loading & lazy drawing (D1 resolver + D2 draw-surface branch scan + D3 estimate_memory) | 40 | 38 | 0 | 0 | 0 | 0 | 2 | 32 |
-| 🧨 | **LAZY.subframe_draw** — Subframe-column lazy draw — single/nested qualified references, eager/lazy parent-child compositions, structural join-key setup, post-load aliases, and on-demand ensure_subframe resolution | 19 | 15 | 0 | 0 | 4 | 0 | 0 | 15 |
+| ✅ | **LAZY.subframe_draw** — Subframe-column lazy draw — single/nested qualified references, eager/lazy parent-child compositions, structural join-key setup, post-load aliases, and on-demand ensure_subframe resolution | 19 | 19 | 0 | 0 | 0 | 0 | 0 | 19 |
 | ✅ | **LAZY.alias_autoload** — Alias resolution auto-loads lazy branches (materialize_aliases / validate_aliases / describe_aliases bridge to the lazy reader; LAZY status) | 6 | 6 | 0 | 0 | 0 | 0 | 0 | 4 |
 | ✅ | **LAZY.expression_autoload** — Expression/column lazy autoload via ensure_columns() — bridges df.eval()/direct-access paths on a lazy ADF (get_required_branches → ensure_branches; branches-only, subframe-name + dotted-ref filtered; eager no-op) | 93 | 93 | 0 | 0 | 0 | 0 | 0 | 23 |
 | ✅ | **LAZY.release** — Explicit lazy-branch/struct release (PHASE_13_68) — release_branches()/release_struct() symmetric evict: drop frame columns AND unbook the physical branch(es) on the lazy reader so a later access re-reads from file; struct members translated internal->physical forward from the registry; all-or-nothing loud refuse for eager frames (DD-alpha), aliases (DD-gamma -> dematerialize), written/__file_idx__ non-branch names (DD-beta), parent-side subframe join keys (DD-delta), and names in a materialized alias's dependency closure (C-6); memory_policy surface accepts 'keep' only ('bounded'/'drop' reserved); purely additive, no automatic eviction | 17 | 15 | 0 | 0 | 0 | 0 | 2 | 3 |
@@ -158,6 +158,9 @@
 | Status | Feature | Tests | Pass | Fail | Err | XFail | XPass | Skip | Inv |
 |--------|---------|------:|-----:|-----:|----:|------:|------:|-----:|----:|
 | ✅ | **INV.cross_module** — Cross-module invariance tests | 8 | 8 | 0 | 0 | 0 | 0 | 0 | 7 |
+| ✅ | **INV.draw_surface_consistency** — Same-spec numerical consistency across draw(), draw_batch(), and draw_figures(), including explicit supported-surface refusals and closure reconciliation (A3) | 27 | 27 | 0 | 0 | 0 | 0 | 0 | 27 |
+| ✅ | **INV.eager_lazy_slot_symmetry** — Eager/lazy expression-slot causality and exact dependency-load symmetry across selection/expression/weights/group_by/facet/vector/subframe compositions (A4) | 24 | 24 | 0 | 0 | 0 | 0 | 0 | 24 |
+| ✅ | **INV.realdata_acceptance** — Deterministic real-data/gallery acceptance and state invariance — full-stack composition, provenance, environment contracts, G7.32/G7.33/G7.34 evidence, GB prepared-state reuse, and logical-state mutation falsifiers (A5) | 42 | 42 | 0 | 0 | 0 | 0 | 0 | 42 |
 
 ## DISPATCH
 
@@ -166,6 +169,12 @@
 | ✅ | **DISPATCH.adf_routing** — adf.draw/draw_figures route through DFDraw.draw() (auto pre-resolution, overlay strings, type aliases, 3-var profile promotion) | 28 | 28 | 0 | 0 | 0 | 0 | 0 | 28 |
 | ✅ | **DISPATCH.error_visibility** — Batch-surface error visibility (on_error='raise' defaults; A-10/E-3/E-4 guards; draw_fit_summary documented exception) | 15 | 15 | 0 | 0 | 0 | 0 | 0 | 15 |
 | 🧨 | **DISPATCH.dict_dispatch** — Draw-path dict dispatch frame: draw()/draw_batch()/draw_figures() hand dfdraw only the needed columns (get_required_branches ∪ materialized alias names ∪ subframe index cols); structural column-count gate + peak-RSS + volume-invariance memory gates + dict≡full-frame equivalence (AC-1/1a/1b incl. subframe single+multi-level) + loud no-silent-full-frame fallback | 102 | 101 | 1 | 0 | 0 | 0 | 0 | 41 |
+
+## TESTING
+
+| Status | Feature | Tests | Pass | Fail | Err | XFail | XPass | Skip | Inv |
+|--------|---------|------:|-----:|-----:|----:|------:|------:|-----:|----:|
+| ☑️ | **TESTING.phase13_77_harness** — PHASE_13_77 acceptance-harness integrity — CaseSpec/FigureContract registry, comparator/gate fail-closed behavior, manifest reconciliation, environment gating, and anti-false-green controls (A1+A2) | 155 | 155 | 0 | 0 | 0 | 0 | 0 |  |
 
 ## 🧨 Broken Features — Details
 
@@ -189,38 +198,12 @@
 ### DRAW.batch
 - 🧨 `test_S1_draw_selection_alias.py::TestDrawSelectionAliasBug::test_S1_draw_materializes_selection_alias` — `xfailed`
 
-### DRAW.subframe_resolution
-- 🧨 `test_phase_13_76_v12_history_invariance.py::TestV12RequestHistoryInvariance::test_o3_spec_permutation_preserves_valid_failure_semantics` — `xfailed`
-- 🧨 `test_phase_13_76_v12_reconciliation_contract.py::TestV12B3ReconciliationContract::test_r1_child_alias_dependency_closure_is_planned[2]` — `xfailed`
-- 🧨 `test_phase_13_76_v12_reconciliation_contract.py::TestV12B3ReconciliationContract::test_r1_child_alias_dependency_closure_is_planned[3]` — `xfailed`
-- 🧨 `test_phase_13_76_v12_reconciliation_contract.py::TestV12B3ReconciliationContract::test_r1_child_alias_dependency_closure_is_planned[4]` — `xfailed`
-- 🧨 `test_phase_13_76_v12_reconciliation_contract.py::TestV12B3ReconciliationContract::test_r2_two_valid_same_owner_requests_cannot_hide_one_runtime_failure` — `xfailed`
-- 🧨 `test_phase_13_76_v12_reconciliation_contract.py::TestV12B3ReconciliationContract::test_r3_metadata_free_bad_only_warn_uses_runtime_unresolved_evidence` — `xfailed`
-- 🧨 `test_phase_13_76_v12_reconciliation_contract.py::TestV12B3ReconciliationContract::test_r5_cross_spec_tolerance_cannot_discharge_faulted_valid_spec` — `xfailed`
-- 🧨 `test_phase_13_76_v12_reconciliation_contract.py::TestV12B3ReconciliationContract::test_r6_cross_slot_success_cannot_hide_faulted_valid_selection` — `xfailed`
-- 🧨 `test_phase_13_76_v12_subframe_mode_matrix.py::TestR10SubframeModeMatrix::test_r10_physical_existing[physical-parent_eager-child_lazy-DYN-P1-2]` — `xfailed`
-- 🧨 `test_phase_13_76_v12_subframe_mode_matrix.py::TestR10SubframeModeMatrix::test_r10_unresolved_bad_raise_policy[bad_raise-parent_eager-child_lazy-DYN-P1-2]` — `xfailed`
-- 🧨 `test_phase_13_76_v12_subframe_mode_matrix.py::TestR10SubframeModeMatrix::test_r10_unresolved_bad_warn_skip_policy[bad_warn-parent_eager-child_lazy-DYN-P1-2]` — `xfailed`
-- 🧨 `test_phase_13_76_v12_subframe_mode_matrix.py::TestR10SubframeModeMatrix::test_r10_unresolved_bad_warn_skip_policy[bad_warn-parent_lazy-child_lazy-B3-P0-3]` — `xfailed`
-
 ### COMP.roundtrip
 - ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_2_scaled_linear_compression_roundtrip` — `failed`
 - ❌ `test_invariance_compression.py::TestInvarianceCompression::test_I4_3_asinh_compression_roundtrip` — `failed`
 
 ### BACK.invariance
 - ❌ `test_invariance_backend.py::TestInvarianceBackend::test_I2_6_chained_subframe_expressions_numba_vs_numpy` — `failed`
-
-### LAZY.materialization
-- 🧨 `test_phase_13_76_v12_subframe_mode_matrix.py::TestR10SubframeModeMatrix::test_r10_physical_existing[physical-parent_eager-child_lazy-DYN-P1-2]` — `xfailed`
-- 🧨 `test_phase_13_76_v12_subframe_mode_matrix.py::TestR10SubframeModeMatrix::test_r10_unresolved_bad_raise_policy[bad_raise-parent_eager-child_lazy-DYN-P1-2]` — `xfailed`
-- 🧨 `test_phase_13_76_v12_subframe_mode_matrix.py::TestR10SubframeModeMatrix::test_r10_unresolved_bad_warn_skip_policy[bad_warn-parent_eager-child_lazy-DYN-P1-2]` — `xfailed`
-- 🧨 `test_phase_13_76_v12_subframe_mode_matrix.py::TestR10SubframeModeMatrix::test_r10_unresolved_bad_warn_skip_policy[bad_warn-parent_lazy-child_lazy-B3-P0-3]` — `xfailed`
-
-### LAZY.subframe_draw
-- 🧨 `test_phase_13_76_v12_subframe_mode_matrix.py::TestR10SubframeModeMatrix::test_r10_physical_existing[physical-parent_eager-child_lazy-DYN-P1-2]` — `xfailed`
-- 🧨 `test_phase_13_76_v12_subframe_mode_matrix.py::TestR10SubframeModeMatrix::test_r10_unresolved_bad_raise_policy[bad_raise-parent_eager-child_lazy-DYN-P1-2]` — `xfailed`
-- 🧨 `test_phase_13_76_v12_subframe_mode_matrix.py::TestR10SubframeModeMatrix::test_r10_unresolved_bad_warn_skip_policy[bad_warn-parent_eager-child_lazy-DYN-P1-2]` — `xfailed`
-- 🧨 `test_phase_13_76_v12_subframe_mode_matrix.py::TestR10SubframeModeMatrix::test_r10_unresolved_bad_warn_skip_policy[bad_warn-parent_lazy-child_lazy-B3-P0-3]` — `xfailed`
 
 ### RDF.export
 - ❌ `test_AliasDataFrameRDF.py::TestAddDefinesCollision::test_collision_from_friend_tree` — `failed`
@@ -253,7 +236,7 @@
 
 ## Unmatched Tests
 
-1317 tests not mapped to any feature.
+1096 tests not mapped to any feature.
 
 - `test_B1_validate_aliases_false_positives.py::TestB1ValidateAliasesFalsePositives::test_B1_1_np_pi_not_broken`
 - `test_B1_validate_aliases_false_positives.py::TestB1ValidateAliasesFalsePositives::test_B1_2_subframe_column_not_broken`
@@ -285,7 +268,7 @@
 - `test_D1_dtype_overrides.py::TestDtypeOverrides::test_D9_entry_range_with_overrides`
 - `test_D1_dtype_overrides.py::TestSkipBranches::test_D11_skip_branch_not_in_dataframe`
 - `test_D1_dtype_overrides.py::TestSkipBranches::test_D12_skip_reduces_column_count`
-- ... +1287 more
+- ... +1066 more
 
 ---
 *Generated from pytest JSON + feature_taxonomy.py using the shared Capability Matrix semantic model.*

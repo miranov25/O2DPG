@@ -33,7 +33,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A5.6.v03"
+SCHEMA_VERSION = "13.77.A5.CLOSE.v01"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -5451,17 +5451,20 @@ def run_a5_5_realdata_gate(root_path: str, *, manifest_path: str,
 A5_6_CASE_ID = "I4-REAL-G7-GB-LOGICAL-STATE-EAGER-20PCT-01"
 
 
+A5_6_DEFINITION_EXPORT_KWARGS = {
+    "include_precision_stats": False,
+    "include_subframes": True,
+    "within_group_sort": "schema",
+}
+
+
 def _a5_6_definition_schema(adf: Any) -> dict:
     """Public semantic blueprint used for same-process logical-state comparison."""
     exporter = getattr(adf, "export_definition_schema", None)
     if not callable(exporter):
         raise HarnessError(
             "A5.6 requires public export_definition_schema()")
-    schema = exporter(
-        include_precision_stats=False,
-        include_subframes=True,
-        within_group_sort="schema",
-    )
+    schema = exporter(**A5_6_DEFINITION_EXPORT_KWARGS)
     if not isinstance(schema, dict):
         raise HarnessError(
             "A5.6 export_definition_schema() did not return a dict")
@@ -5538,6 +5541,7 @@ def a5_6_realdata_case(root_path: str, gallery_module=None) -> CaseSpec:
             "sample_fraction": A5_2_SAMPLE_FRACTION,
             "sample_seed": A5_2_SAMPLE_SEED,
             "definition_surface": "normalized export_definition_schema",
+            "definition_export_kwargs": dict(A5_6_DEFINITION_EXPORT_KWARGS),
             "parent_structure": "ordered column names + dtypes",
         },
         applicable=applicable,
@@ -5581,15 +5585,15 @@ def a5_6_realdata_case(root_path: str, gallery_module=None) -> CaseSpec:
                 "state.dcar_tpc_vertex_predicted0.sha256", comparator="exact",
                 rationale="retain A5.5 full predicted-array invariance"),
             Observable(
+                "parent_structure_digest", "INDEPENDENT", "FLAT",
+                "state.parent_columns_dtypes.sha256", comparator="exact",
+                rationale="detect persistent parent-column addition/drop/retype"),
+            Observable(
                 "definition_schema_digest", "INDEPENDENT", "FLAT",
                 "state.export_definition_schema.sha256", comparator="exact",
                 rationale=("detect alias/subframe/schema-definition drift through "
                            "the public definition export after removing only the "
                            "volatile __meta__.created_at export timestamp")),
-            Observable(
-                "parent_structure_digest", "INDEPENDENT", "FLAT",
-                "state.parent_columns_dtypes.sha256", comparator="exact",
-                rationale="detect persistent parent-column addition/drop/retype"),
         ),
         non_claims=(
             "A5.6 does not hash all parent dataframe values; only the two GB data artifacts are value-fingerprinted",
@@ -5805,6 +5809,7 @@ def run_a5_6_realdata(case: CaseSpec, root_path: str, *, gallery_module=None) ->
         }
         res.observed["g7_34_logical_state_evidence"] = {
             "definition_surface": "normalized export_definition_schema",
+            "definition_export_kwargs": dict(A5_6_DEFINITION_EXPORT_KWARGS),
             "definition_ignored_volatile_paths": list(A5_6_VOLATILE_DEFINITION_PATHS),
             "parent_structure_surface": "ordered column names + dtypes",
             "declared_observables": 4,

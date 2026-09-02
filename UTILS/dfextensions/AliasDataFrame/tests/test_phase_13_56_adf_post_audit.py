@@ -194,7 +194,9 @@ class TestG4Taxonomy:
         ids = {f["id"] for f in FEATURES}
         assert "DISPATCH.adf_routing" in ids
         assert "DISPATCH.error_visibility" in ids
-        assert len(FEATURES) == 64  # 63 + ALIAS.source_scoped (PHASE_13_73 source-scoped alias binding); 63 = 62 + DIAGNOSTICS.lazy_state (PHASE_13_71); 62 = 61 + CORE.vector_alias (PHASE_13_70);
+        # The taxonomy is append-only across later phases; T-G4 owns the
+        # phase-local DISPATCH registrations, not a frozen global feature count.
+        assert len(ids) == len(FEATURES)  # feature IDs remain globally unique
         routing = next(f for f in FEATURES if f["id"] == "DISPATCH.adf_routing")
         vis = next(f for f in FEATURES if f["id"] == "DISPATCH.error_visibility")
         node_55 = ("test_phase_13_55_adf_dispatch_audit.py::"

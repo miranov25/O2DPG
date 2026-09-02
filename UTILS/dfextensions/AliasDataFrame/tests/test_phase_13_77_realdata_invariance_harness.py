@@ -1303,6 +1303,7 @@ def test_a2_32_close_refuses_nonfloating_numeric_families_without_coercion():
 
 # ── A3.1/A3.2 — first canonical same-spec case ─────────────────────────────
 
+@pytest.mark.invariance
 def test_a3_01_hist_case_declares_one_spec_for_all_three_surfaces():
     case = H.a3_cases()[0]
     assert case.case_id == "I2-HIST-01"
@@ -1315,6 +1316,7 @@ def test_a3_01_hist_case_declares_one_spec_for_all_three_surfaces():
     assert H.validate_registry([case]) == []
 
 
+@pytest.mark.invariance
 def test_a3_02_hist_same_spec_passes_draw_draw_batch_draw_figures():
     # Synthetic execution of the REAL A3 CaseSpec.  Real-data execution belongs
     # to the standalone harness/A6 reference run; this test proves all three
@@ -1332,6 +1334,7 @@ def test_a3_02_hist_same_spec_passes_draw_draw_batch_draw_figures():
     assert all(rec["ok"] for rec in res.comparisons), res.comparisons
 
 
+@pytest.mark.invariance
 def test_a3_03_draw_figures_is_an_executed_surface_not_a_documented_exception():
     case = H.a3_cases()[0]
     assert "draw_figures" in case.surfaces_under_test
@@ -1340,6 +1343,7 @@ def test_a3_03_draw_figures_is_an_executed_surface_not_a_documented_exception():
     assert "draw_figures" in case.figure_contract.primary_comparison
 
 
+@pytest.mark.invariance
 def test_a3_04_profile_case_declares_one_spec_for_all_three_surfaces():
     case = next(c for c in H.a3_cases() if c.case_id == "I2-PROFILE-01")
     assert tuple(case.surfaces_under_test) == H.SURFACES
@@ -1354,6 +1358,7 @@ def test_a3_04_profile_case_declares_one_spec_for_all_three_surfaces():
     assert H.validate_registry(H.a3_cases()) == []
 
 
+@pytest.mark.invariance
 def test_a3_05_profile_same_spec_passes_draw_draw_batch_draw_figures():
     # Synthetic dataframe, real public ADF surfaces.  No grouping/faceting yet:
     # A3.3 isolates the profile stats family from later A3/A4 dimensions.
@@ -1372,6 +1377,7 @@ def test_a3_05_profile_same_spec_passes_draw_draw_batch_draw_figures():
     assert all(rec["ok"] for rec in res.comparisons), res.comparisons
 
 
+@pytest.mark.invariance
 def test_a3_06_surface_stats_corruption_changes_strict_gate_zero_to_one(monkeypatch):
     """A3.4 negative regression: one surface mismatch must gate the case.
 
@@ -1428,6 +1434,7 @@ def _a3_groupby_frame(seed=137706, n=1800):
     })
 
 
+@pytest.mark.invariance
 def test_a3_07_groupby_case_declares_one_spec_and_group_resolved_observables():
     case = next(c for c in H.a3_cases() if c.case_id == "I2-GROUPBY-01")
     assert tuple(case.surfaces_under_test) == H.SURFACES
@@ -1450,6 +1457,7 @@ def test_a3_07_groupby_case_declares_one_spec_and_group_resolved_observables():
     assert H.validate_registry(H.a3_cases()) == []
 
 
+@pytest.mark.invariance
 def test_a3_08_groupby_same_spec_passes_draw_draw_batch_draw_figures():
     frame = _a3_groupby_frame()
     make_adf = lambda: ADF(frame.copy())
@@ -1465,6 +1473,7 @@ def test_a3_08_groupby_same_spec_passes_draw_draw_batch_draw_figures():
     assert set(groups.tolist()) == {0, 1}
 
 
+@pytest.mark.invariance
 def test_a3_09_profile_data_missing_column_fails_loudly():
     profile_data = pd.DataFrame({"group": [0, 1], "y_mean": [1.0, 2.0]})
     with pytest.raises(H.HarnessError, match="no_such_column"):
@@ -1472,6 +1481,7 @@ def test_a3_09_profile_data_missing_column_fails_loudly():
                   "profile_data.no_such_column", "ARRAY")
 
 
+@pytest.mark.invariance
 def test_a3_10_group_specific_mismatch_is_not_hidden_by_global_stats(monkeypatch):
     """Independent falsification test for A3.6.
 
@@ -1534,6 +1544,7 @@ def test_a3_10_group_specific_mismatch_is_not_hidden_by_global_stats(monkeypatch
 
 # ── A3.7 — canonical facet_by invariance on supported surfaces ─────────────
 
+@pytest.mark.invariance
 def test_a3_11_facet_case_declares_supported_surfaces_and_separate_refusal_contract():
     cases = H.a3_cases()
     case = next(c for c in cases if c.case_id == "I2-FACET-01")
@@ -1569,6 +1580,7 @@ def test_a3_11_facet_case_declares_supported_surfaces_and_separate_refusal_contr
     assert H.validate_registry(cases) == []
 
 
+@pytest.mark.invariance
 def test_a3_12_facet_same_spec_passes_supported_surfaces_and_refuses_draw_figures():
     frame = _a3_groupby_frame(seed=137712)
     make_adf = lambda: ADF(frame.copy())
@@ -1597,6 +1609,7 @@ def test_a3_12_facet_same_spec_passes_supported_surfaces_and_refuses_draw_figure
     assert H.coverage_gaps([res, refusal], [case, refusal_case]) == []
 
 
+@pytest.mark.invariance
 def test_a3_13_facet_specific_mismatch_reaches_strict_gate(monkeypatch):
     """Independent falsification test for A3.7.
 
@@ -1698,6 +1711,7 @@ def _a3_subframe_adf(seed=137814):
     return adf
 
 
+@pytest.mark.invariance
 def test_a3_14_subframe_case_declares_one_spec_and_keyed_observables():
     case = next(c for c in H.a3_cases() if c.case_id == "I2-SUBFRAME-01")
     assert tuple(case.surfaces_under_test) == H.SURFACES
@@ -1721,6 +1735,7 @@ def test_a3_14_subframe_case_declares_one_spec_and_keyed_observables():
     assert H.validate_registry(H.a3_cases()) == []
 
 
+@pytest.mark.invariance
 def test_a3_15_subframe_same_spec_passes_draw_draw_batch_draw_figures():
     case = next(c for c in H.a3_cases() if c.case_id == "I2-SUBFRAME-01")
     res = H.run_consistency(case, _a3_subframe_adf)
@@ -1734,6 +1749,7 @@ def test_a3_15_subframe_same_spec_passes_draw_draw_batch_draw_figures():
     assert counts.sum() == res.observed["n"]["draw"]
 
 
+@pytest.mark.invariance
 def test_a3_16_subframe_specific_mismatch_reaches_strict_gate(monkeypatch):
     """Independent falsification test for A3.8.
 
@@ -1833,6 +1849,7 @@ def _a3_selection_vector_adf(seed=137917):
     return ADF(_a3_selection_vector_frame(seed=seed))
 
 
+@pytest.mark.invariance
 def test_a3_17_selection_vector_case_declares_branch_resolved_observables():
     case = next(c for c in H.a3_cases()
                 if c.case_id == "I2-SELECTION-VECTOR-01")
@@ -1862,6 +1879,7 @@ def test_a3_17_selection_vector_case_declares_branch_resolved_observables():
     assert H.validate_registry(H.a3_cases()) == []
 
 
+@pytest.mark.invariance
 def test_a3_18_selection_vector_same_spec_passes_all_three_surfaces():
     case = next(c for c in H.a3_cases()
                 if c.case_id == "I2-SELECTION-VECTOR-01")
@@ -1877,6 +1895,7 @@ def test_a3_18_selection_vector_same_spec_passes_all_three_surfaces():
     assert H.strict_exit_code([res], [case]) == 0
 
 
+@pytest.mark.invariance
 def test_a3_19_selection_vector_branch_mismatch_is_not_hidden_by_derived_value(monkeypatch):
     """Independent falsification test for A3.9.
 
@@ -1952,6 +1971,7 @@ def _a3_profile_bins_adf():
     return ADF(_a3_profile_bins_frame().copy())
 
 
+@pytest.mark.invariance
 def test_a3_20_profile_bin_case_and_histogram_disposition_are_explicit(tmp_path):
     cases = H.a3_cases()
     hist = next(c for c in cases if c.case_id == "I2-HIST-01")
@@ -2003,6 +2023,7 @@ def test_a3_20_profile_bin_case_and_histogram_disposition_are_explicit(tmp_path)
     assert H.validate_registry(cases) == []
 
 
+@pytest.mark.invariance
 def test_a3_21_sparse_profile_bins_match_all_three_surfaces():
     case = next(c for c in H.a3_cases() if c.case_id == "I2-PROFILE-BINS-01")
     res = H.run_consistency(case, _a3_profile_bins_adf)
@@ -2029,6 +2050,7 @@ def test_a3_21_sparse_profile_bins_match_all_three_surfaces():
     assert H.strict_exit_code([res], [case]) == 0
 
 
+@pytest.mark.invariance
 def test_a3_22_profile_bin_error_mismatch_reaches_strict_gate(monkeypatch):
     """Independent falsification test for A3.10.
 
@@ -2091,6 +2113,7 @@ def test_a3_22_profile_bin_error_mismatch_reaches_strict_gate(monkeypatch):
 
 # ── A3.11 A3 reconciliation / closure-declaration checkpoint ────────────────
 
+@pytest.mark.invariance
 def test_a3_23_closure_reconciliation_covers_every_required_family_without_orphans():
     cases = H.a3_cases()
     rec = H.a3_closure_reconciliation(cases)
@@ -2133,6 +2156,7 @@ def test_a3_23_closure_reconciliation_covers_every_required_family_without_orpha
     assert "lazy/eager" in joined
 
 
+@pytest.mark.invariance
 def test_a3_24_closure_reconciliation_fails_closed_on_missing_family_or_histogram_upgrade():
     """Independent falsification tests for the A3.11 closure record.
 
@@ -2172,6 +2196,7 @@ def test_a3_24_closure_reconciliation_fails_closed_on_missing_family_or_histogra
                for item in rec_upgrade["registry_errors"])
 
 
+@pytest.mark.invariance
 def test_a3_25_complete_a3_manifest_carries_closure_record(tmp_path):
     cases = H.a3_cases()
     results = []
@@ -2200,6 +2225,7 @@ def test_a3_25_complete_a3_manifest_carries_closure_record(tmp_path):
 
 # ── A3.11 v02 closure-authority hardening ───────────────────────────────────
 
+@pytest.mark.invariance
 def test_a3_26_closure_contract_map_blocks_legal_required_case_drift():
     """Independent falsification tests for reviewed A3 proof-contract drift.
 
@@ -2259,6 +2285,7 @@ def test_a3_26_closure_contract_map_blocks_legal_required_case_drift():
                for row in rec_na["contract_drift"])
 
 
+@pytest.mark.invariance
 def test_a3_27_missing_family_manifest_persists_blocked_closure(tmp_path):
     """A missing required A3 family must remain explicit in durable evidence."""
     cases = tuple(c for c in H.a3_cases() if c.case_id != "I2-GROUPBY-01")
@@ -2356,6 +2383,7 @@ def _a4_make_lazy(*, preload=()):
     return adf
 
 
+@pytest.mark.invariance
 def test_a4_01_selection_slot_contract_is_executable_and_manifest_visible(tmp_path):
     case = H.a4_cases()[0]
     assert case.case_id == "I3-SELECTION-01"
@@ -2380,6 +2408,7 @@ def test_a4_01_selection_slot_contract_is_executable_and_manifest_visible(tmp_pa
     assert doc["provenance"]["schema_version"] == H.SCHEMA_VERSION
 
 
+@pytest.mark.invariance
 def test_a4_02_selection_slot_both_proves_materialization_and_exact_lazy_loads():
     case = H.a4_cases()[0]
     result = H.run_slot_symmetry(case, _a4_make_eager, _a4_make_lazy)
@@ -2403,6 +2432,7 @@ def test_a4_02_selection_slot_both_proves_materialization_and_exact_lazy_loads()
     assert result.observed["n"]["LAZY"] == 60
 
 
+@pytest.mark.invariance
 def test_a4_03_m2_preload_contamination_is_invalid_fixture_not_pass():
     case = H.a4_cases()[0]
 
@@ -2468,6 +2498,7 @@ def _a4_make_scalar_lazy():
     return _a4_register_scalar_aliases(adf)
 
 
+@pytest.mark.invariance
 def test_a4_04_scalar_catalogue_and_runner_binding_are_machine_authoritative():
     cases = {c.case_id: c for c in H.a4_cases()}
     expected = {
@@ -2505,6 +2536,7 @@ def test_a4_04_scalar_catalogue_and_runner_binding_are_machine_authoritative():
         ("I3-COMPOUND-EXPR-01", {"x", "y", "dep_compound"}),
     ],
 )
+@pytest.mark.invariance
 def test_a4_05_to_09_scalar_slots_prove_eager_materialization_and_exact_lazy_loads(
         case_id, expected_loaded):
     case = {c.case_id: c for c in H.a4_cases()}[case_id]
@@ -2526,6 +2558,7 @@ def test_a4_05_to_09_scalar_slots_prove_eager_materialization_and_exact_lazy_loa
     assert set(evidence["unrelated_physical_branches"]).isdisjoint(expected_loaded)
 
 
+@pytest.mark.invariance
 def test_a4_10_source_contract_is_checked_before_observable_path_resolution():
     case = {c.case_id: c for c in H.a4_cases()}["I3-EXPR-01"]
     bad_observable = replace(
@@ -2614,6 +2647,7 @@ def _a4_make_subframe_vector_lazy():
     return base
 
 
+@pytest.mark.invariance
 def test_a4_11_vector_catalogue_and_refusal_contracts_are_machine_visible(tmp_path):
     cases = {c.case_id: c for c in H.a4_cases()}
     expected = {
@@ -2660,6 +2694,7 @@ def test_a4_11_vector_catalogue_and_refusal_contracts_are_machine_visible(tmp_pa
         ("I3-WEIGHTS-VECTOR-01", {"x", "y", "dep_weights_vector"}),
     ],
 )
+@pytest.mark.invariance
 def test_a4_12_13_vector_slots_prove_eager_materialization_and_exact_lazy_loads(
         case_id, expected_loaded):
     case = {c.case_id: c for c in H.a4_cases()}[case_id]
@@ -2685,6 +2720,7 @@ def test_a4_12_13_vector_slots_prove_eager_materialization_and_exact_lazy_loads(
     assert np.nansum(result.observed["reference_count"]["EAGER"]) > 0
 
 
+@pytest.mark.invariance
 def test_a4_14_15_subframe_vector_refusals_hold_in_eager_and_lazy_modes():
     cases = {c.case_id: c for c in H.a4_cases()}
     for cid in ("I3-SUBFRAME-SELECTION-VECTOR-REFUSAL-01",
@@ -2746,6 +2782,7 @@ def _a4_make_subframe_expr_lazy():
     return base
 
 
+@pytest.mark.invariance
 def test_a4_16_complete_catalogue_and_contract_reconciliation_is_bidirectional(tmp_path):
     cases = H.a4_cases()
     closure = H.a4_closure_reconciliation(cases)
@@ -2787,6 +2824,7 @@ def test_a4_16_complete_catalogue_and_contract_reconciliation_is_bidirectional(t
         H.A4_SLOT_CONTRACTS.pop("I3-STALE-A4-CONTRACT", None)
 
 
+@pytest.mark.invariance
 def test_a4_17_slot_alias_exclusivity_is_machine_locked_and_second_slot_fails():
     case = {c.case_id: c for c in H.a4_cases()}["I3-EXPR-01"]
     mutated_spec = dict(case.canonical_spec)
@@ -2803,6 +2841,7 @@ def test_a4_17_slot_alias_exclusivity_is_machine_locked_and_second_slot_fails():
     assert H.strict_exit_code([result], [bad_case]) == 1
 
 
+@pytest.mark.invariance
 def test_a4_18_eager_target_only_materialization_is_proven_with_shared_dependency_alias():
     case = {c.case_id: c for c in H.a4_cases()}["I3-SELECTION-01"]
     result = H.run_slot_symmetry(case, _a4_make_eager, _a4_make_lazy)
@@ -2817,6 +2856,7 @@ def test_a4_18_eager_target_only_materialization_is_proven_with_shared_dependenc
     assert result.observed["n"]["LAZY"] == 60
 
 
+@pytest.mark.invariance
 def test_a4_19_shared_physical_dependency_all_alias_materialization_false_green_is_caught(monkeypatch):
     case = {c.case_id: c for c in H.a4_cases()}["I3-SELECTION-01"]
     original = ADF.materialize_aliases
@@ -2835,6 +2875,7 @@ def test_a4_19_shared_physical_dependency_all_alias_materialization_false_green_
     assert H.strict_exit_code([result], [case]) == 1
 
 
+@pytest.mark.invariance
 def test_a4_20_subframe_scalar_causality_and_vector_refusal_ownership_are_complete():
     cases = {c.case_id: c for c in H.a4_cases()}
     positive = cases["I3-SUBFRAME-EXPR-01"]
@@ -2866,6 +2907,7 @@ def test_a4_20_subframe_scalar_causality_and_vector_refusal_ownership_are_comple
     assert "I3-SUBFRAME-EXPR-01" in blocked["subframe_ownership_missing"]
 
 
+@pytest.mark.invariance
 def test_a4_21_historical_closure_ledger_has_no_implicit_obligation_and_blocks_on_loss():
     cases = H.a4_cases()
     closure = H.a4_closure_reconciliation(cases)
@@ -2890,6 +2932,7 @@ def test_a4_21_historical_closure_ledger_has_no_implicit_obligation_and_blocks_o
 
 # ── A4.4 v02 — closure-authority semantic/identity hardening ────────────────
 
+@pytest.mark.invariance
 def test_a4_22_closure_ledger_status_and_owner_semantics_are_locked(tmp_path):
     cases = H.a4_cases()
     healthy = H.a4_closure_reconciliation(cases)
@@ -2942,6 +2985,7 @@ def test_a4_22_closure_ledger_status_and_owner_semantics_are_locked(tmp_path):
         H.A4_CLOSURE_LEDGER = saved
 
 
+@pytest.mark.invariance
 def test_a4_23_refusal_contract_locks_exact_bug_identity_and_proof_scope():
     cases = list(H.a4_cases())
     target_id = "I3-SUBFRAME-SELECTION-VECTOR-REFUSAL-01"
@@ -2977,6 +3021,7 @@ def test_a4_23_refusal_contract_locks_exact_bug_identity_and_proof_scope():
         assert any(expected_detail in e for e in scoped_errors), (field_name, scoped_errors)
 
 
+@pytest.mark.invariance
 def test_a4_24_qualified_reference_matching_is_token_exact_and_near_name_replacement_blocks():
     assert H._a4_text_contains_target("S.count", "S.count")
     assert H._a4_text_contains_target("S.count+1", "S.count")
@@ -3015,6 +3060,7 @@ def test_a4_24_qualified_reference_matching_is_token_exact_and_near_name_replace
 
 # ── A4.4 v03 — duplicate historical-ledger identity hardening ──────────────
 
+@pytest.mark.invariance
 def test_a4_25_duplicate_historical_ledger_ids_block_and_persist(tmp_path):
     cases = H.a4_cases()
     healthy = H.a4_closure_reconciliation(cases)
@@ -3150,6 +3196,7 @@ def _a5_full_stack_anchor():
     }
 
 
+@pytest.mark.invariance
 def test_a5_01_full_stack_case_is_bounded_and_registry_valid():
     case = H.a5_cases()[0]
     assert case.case_id == "I4-SUBFRAME-GROUPBY-01"
@@ -3177,6 +3224,7 @@ def test_a5_01_full_stack_case_is_bounded_and_registry_valid():
     assert H.audit_declared_state() == []
 
 
+@pytest.mark.invariance
 def test_a5_02_full_stack_matches_independent_oracle_in_eager_and_lazy_modes():
     case = H.a5_cases()[0]
     result = H.run_a5_full_stack(
@@ -3210,6 +3258,7 @@ def test_a5_02_full_stack_matches_independent_oracle_in_eager_and_lazy_modes():
     assert H.strict_exit_code([result], [case]) == 0
 
 
+@pytest.mark.invariance
 def test_a5_03_independent_oracle_catches_one_lazy_group_bin_corruption(monkeypatch):
     """A5.1 family falsifier: one grouped-bin mutation must gate the case."""
     case = H.a5_cases()[0]
@@ -3256,6 +3305,7 @@ def test_a5_03_independent_oracle_catches_one_lazy_group_bin_corruption(monkeypa
     assert H.strict_exit_code([bad], [case]) == 1
 
 
+@pytest.mark.invariance
 def test_a5_04_preloaded_unrelated_branch_is_invalid_fixture_not_pass():
     case = H.a5_cases()[0]
     bad = H.run_a5_full_stack(
@@ -3359,6 +3409,7 @@ class _A52BuildRaiseGallery(_A52FakeGallery):
         raise RuntimeError("deliberate build failure after sample")
 
 
+@pytest.mark.invariance
 def test_a5_05_unavailable_realdata_environment_skips_without_running_product(tmp_path):
     missing = tmp_path / "missing.root"
     case = H.a5_2_realdata_case(str(missing), gallery_module=_A52RaiseGallery)
@@ -3373,6 +3424,7 @@ def test_a5_05_unavailable_realdata_environment_skips_without_running_product(tm
     assert H.strict_exit_code([result], [case]) == 0
 
 
+@pytest.mark.invariance
 def test_a5_06_realdata_case_pins_eager_fraction_20pct_seed42(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.2 fake ROOT identity")
@@ -3390,6 +3442,7 @@ def test_a5_06_realdata_case_pins_eager_fraction_20pct_seed42(tmp_path):
     assert H.audit_declared_state() == []
 
 
+@pytest.mark.invariance
 def test_a5_07_realdata_runner_records_actual_sample_identity_and_g7_evidence(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.2 deterministic input")
@@ -3422,6 +3475,7 @@ def test_a5_07_realdata_runner_records_actual_sample_identity_and_g7_evidence(tm
     assert g7["profile_numeric_evidence"]["finite_profile_y_values"] == 1
 
 
+@pytest.mark.invariance
 def test_a5_08_realdata_gate_persists_sample_provenance_in_manifest(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.2 manifest input")
@@ -3440,6 +3494,7 @@ def test_a5_08_realdata_gate_persists_sample_provenance_in_manifest(tmp_path):
     assert doc["cases"][0]["status"] == H.PASS
 
 
+@pytest.mark.invariance
 def test_a5_09_applicable_optional_gallery_none_is_fail_not_skip(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.2 optional-none input")
@@ -3452,6 +3507,7 @@ def test_a5_09_applicable_optional_gallery_none_is_fail_not_skip(tmp_path):
     assert H.strict_exit_code([result], [case]) == 1
 
 
+@pytest.mark.invariance
 def test_a5_10_applicable_g7_exception_fails_closed_and_wrong_seed_is_invalid(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.2 failure input")
@@ -3470,6 +3526,7 @@ def test_a5_10_applicable_g7_exception_fails_closed_and_wrong_seed_is_invalid(tm
     assert "fraction=0.20, seed=42" in invalid.detail
     assert H.strict_exit_code([invalid], [good_case]) == 1
 
+@pytest.mark.invariance
 def test_a5_11_missing_required_gallery_callable_is_not_a_skip(tmp_path):
     """A5.2-P1-ENVIRONMENT: trusted-gallery API drift must fail closed."""
     root_path = tmp_path / "fake.root"
@@ -3487,6 +3544,7 @@ def test_a5_11_missing_required_gallery_callable_is_not_a_skip(tmp_path):
     assert H.strict_exit_code([result], [case]) == 1
 
 
+@pytest.mark.invariance
 def test_a5_12_unexpected_gallery_import_exception_is_not_environment_skip(
         tmp_path, monkeypatch):
     """A5.2-P1-ENVIRONMENT: unexpected gallery code/import drift must gate."""
@@ -3506,6 +3564,7 @@ def test_a5_12_unexpected_gallery_import_exception_is_not_environment_skip(
     assert H.strict_exit_code([result], [case]) == 1
 
 
+@pytest.mark.invariance
 def test_a5_13_finite_bookkeeping_cannot_hide_all_nan_profile_y(tmp_path):
     """A5.2-P1-NUMERIC: n/count finite is not plotted-y evidence."""
     root_path = tmp_path / "fake.root"
@@ -3521,6 +3580,7 @@ def test_a5_13_finite_bookkeeping_cannot_hide_all_nan_profile_y(tmp_path):
     assert H.strict_exit_code([result], [case]) == 1
 
 
+@pytest.mark.invariance
 def test_a5_14_sample_monkeypatch_restored_when_build_fails(tmp_path):
     """Recommended hardening: DataFrame.sample restoration is exception-safe."""
     root_path = tmp_path / "fake.root"
@@ -3606,6 +3666,7 @@ class _A53SamplingGallery(_A53FakeGallery):
         return adf
 
 
+@pytest.mark.invariance
 def test_a5_15_lazy_full_case_is_bounded_and_registry_valid(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.3 lazy/full input")
@@ -3623,6 +3684,7 @@ def test_a5_15_lazy_full_case_is_bounded_and_registry_valid(tmp_path):
     assert H.audit_declared_state() == []
 
 
+@pytest.mark.invariance
 def test_a5_16_lazy_full_g7_records_real_lazy_branch_expansion(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.3 lazy/full execution")
@@ -3650,6 +3712,7 @@ def test_a5_16_lazy_full_g7_records_real_lazy_branch_expansion(tmp_path):
     assert g7["profile_numeric_evidence"]["finite_profile_y_values"] == 1
 
 
+@pytest.mark.invariance
 def test_a5_17_lazy_full_eager_in_disguise_is_invalid_fixture(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.3 eager-disguise input")
@@ -3663,6 +3726,7 @@ def test_a5_17_lazy_full_eager_in_disguise_is_invalid_fixture(tmp_path):
     assert H.strict_exit_code([result], [case]) == 1
 
 
+@pytest.mark.invariance
 def test_a5_18_lazy_full_requires_on_demand_branch_expansion(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.3 no-expansion input")
@@ -3676,6 +3740,7 @@ def test_a5_18_lazy_full_requires_on_demand_branch_expansion(tmp_path):
     assert H.strict_exit_code([result], [case]) == 1
 
 
+@pytest.mark.invariance
 def test_a5_19_lazy_full_forbids_sampling_and_restores_sample(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.3 sampling-violation input")
@@ -3707,6 +3772,7 @@ class _A53WrongKeyBlockerGallery(_A53TimeMSBlockerGallery):
         raise KeyError("notTimeMS")
 
 
+@pytest.mark.invariance
 def test_a5_20_realdata_lazy_setup_exact_timems_blocker_is_error_contract_pass(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.3 exact timeMS blocker")
@@ -3723,6 +3789,7 @@ def test_a5_20_realdata_lazy_setup_exact_timems_blocker_is_error_contract_pass(t
     assert H.strict_exit_code([result], [case]) == 0
 
 
+@pytest.mark.invariance
 def test_a5_21_realdata_lazy_setup_wrong_key_does_not_false_green(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.3 wrong blocker")
@@ -3736,6 +3803,7 @@ def test_a5_21_realdata_lazy_setup_wrong_key_does_not_false_green(tmp_path):
     assert H.strict_exit_code([result], [case]) == 1
 
 
+@pytest.mark.invariance
 def test_a5_22_realdata_lazy_setup_success_forces_contract_review(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.3 blocker unexpectedly gone")
@@ -3830,6 +3898,7 @@ class _A54NoneGallery(_A54FakeGallery):
         return None
 
 
+@pytest.mark.invariance
 def test_a5_23_g7_33_case_is_bounded_eager_fraction_and_registry_valid(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.4 G7.33 case")
@@ -3849,6 +3918,7 @@ def test_a5_23_g7_33_case_is_bounded_eager_fraction_and_registry_valid(tmp_path)
     assert H.validate_registry([case]) == []
 
 
+@pytest.mark.invariance
 def test_a5_24_g7_33_records_sample_gb_subframe_predicted_and_public_evidence(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.4 positive")
@@ -3887,6 +3957,7 @@ def test_a5_24_g7_33_records_sample_gb_subframe_predicted_and_public_evidence(tm
     ]
 
 
+@pytest.mark.invariance
 def test_a5_25_g7_33_nonfinite_predicted_column_fails_closed(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.4 nonfinite predicted")
@@ -3900,6 +3971,7 @@ def test_a5_25_g7_33_nonfinite_predicted_column_fails_closed(tmp_path):
     assert H.strict_exit_code([result], [case]) == 1
 
 
+@pytest.mark.invariance
 def test_a5_26_g7_33_missing_calibbias1_subframe_fails_closed(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.4 missing subframe")
@@ -3913,6 +3985,7 @@ def test_a5_26_g7_33_missing_calibbias1_subframe_fails_closed(tmp_path):
     assert H.strict_exit_code([result], [case]) == 1
 
 
+@pytest.mark.invariance
 def test_a5_27_g7_33_optional_none_is_fail_not_skip(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.4 optional none")
@@ -3924,6 +3997,7 @@ def test_a5_27_g7_33_optional_none_is_fail_not_skip(tmp_path):
     assert "optional gallery skip" in result.detail
     assert H.strict_exit_code([result], [case]) == 1
 
+@pytest.mark.invariance
 def test_a5_28_g7_33_sequence_stats_profile_means_are_valid_public_evidence():
     stats = [
         {"n": 10, "mean_y": 0.25},
@@ -3938,6 +4012,7 @@ def test_a5_28_g7_33_sequence_stats_profile_means_are_valid_public_evidence():
     ]
 
 
+@pytest.mark.invariance
 def test_a5_29_g7_33_sequence_stats_bookkeeping_cannot_hide_nan_profiles():
     stats = [
         {"n": 10, "count": 10, "mean_y": np.nan},
@@ -4021,6 +4096,7 @@ class _A55RaiseDuringReuseGallery(_A55Gallery):
         raise RuntimeError("A5.5 forced G7.34 failure while poison is installed")
 
 
+@pytest.mark.invariance
 def test_a5_30_g7_34_case_declares_two_real_state_consistency_observables(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.5 case")
@@ -4040,6 +4116,7 @@ def test_a5_30_g7_34_case_declares_two_real_state_consistency_observables(tmp_pa
     assert H.validate_registry([case]) == []
 
 
+@pytest.mark.invariance
 def test_a5_31_g7_34_reuses_prepared_state_and_executes_two_comparisons(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.5 positive")
@@ -4070,6 +4147,7 @@ def test_a5_31_g7_34_reuses_prepared_state_and_executes_two_comparisons(tmp_path
     assert prov["known_loader_defect"] == H.A5_5_LOADER_BUG_ID
 
 
+@pytest.mark.invariance
 def test_a5_32_g7_34_refit_attempt_is_poisoned_and_fails(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.5 refit")
@@ -4084,6 +4162,7 @@ def test_a5_32_g7_34_refit_attempt_is_poisoned_and_fails(tmp_path):
     assert H.strict_exit_code([result], [case]) == 1
 
 
+@pytest.mark.invariance
 def test_a5_33_g7_34_predicted_state_mutation_fails_consistency(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.5 predicted mutation")
@@ -4099,6 +4178,7 @@ def test_a5_33_g7_34_predicted_state_mutation_fails_consistency(tmp_path):
     assert H.strict_exit_code([result], [case]) == 1
 
 
+@pytest.mark.invariance
 def test_a5_34_g7_34_calibbias1_mutation_fails_consistency(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.5 subframe mutation")
@@ -4114,6 +4194,7 @@ def test_a5_34_g7_34_calibbias1_mutation_fails_consistency(tmp_path):
     assert H.strict_exit_code([result], [case]) == 1
 
 
+@pytest.mark.invariance
 def test_a5_35_g7_34_failure_restores_exact_calibration_binding(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.5 restoration")
@@ -4212,6 +4293,7 @@ def _a56_prepared_state(gallery):
     return adf
 
 
+@pytest.mark.invariance
 def test_a5_36_g7_34_logical_state_case_declares_four_exact_observables(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.6 case")
@@ -4230,13 +4312,14 @@ def test_a5_36_g7_34_logical_state_case_declares_four_exact_observables(tmp_path
     assert [o.name for o in case.observables] == [
         "calibbias1_state_digest",
         "predicted_state_digest",
-        "definition_schema_digest",
         "parent_structure_digest",
+        "definition_schema_digest",
     ]
     assert all(o.comparator == "exact" for o in case.observables)
     assert H.validate_registry([case]) == []
 
 
+@pytest.mark.invariance
 def test_a5_37_g7_34_healthy_logical_state_executes_four_comparisons(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.6 positive")
@@ -4254,9 +4337,15 @@ def test_a5_37_g7_34_healthy_logical_state_executes_four_comparisons(tmp_path):
     evidence = result.observed["g7_34_logical_state_evidence"]
     assert evidence["declared_observables"] == 4
     assert evidence["executed_comparisons"] == 4
+    assert evidence["definition_export_kwargs"] == {
+        "include_precision_stats": False,
+        "include_subframes": True,
+        "within_group_sort": "schema",
+    }
     assert evidence["finite_predicted_values"] == evidence["predicted_values"]
 
 
+@pytest.mark.invariance
 def test_a5_38_g7_34_alias_definition_mutation_fails(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.6 alias mutation")
@@ -4271,6 +4360,7 @@ def test_a5_38_g7_34_alias_definition_mutation_fails(tmp_path):
     assert H.strict_exit_code([result], [case]) == 1
 
 
+@pytest.mark.invariance
 def test_a5_39_g7_34_subframe_index_definition_mutation_fails(tmp_path):
     root_path = tmp_path / "fake.root"
     root_path.write_bytes(b"A5.6 subframe metadata mutation")
@@ -4285,6 +4375,7 @@ def test_a5_39_g7_34_subframe_index_definition_mutation_fails(tmp_path):
     assert H.strict_exit_code([result], [case]) == 1
 
 
+@pytest.mark.invariance
 def test_a5_40_g7_34_parent_structure_mutation_fails_and_fingerprint_is_deterministic(tmp_path):
     # First prove equivalent prepared fixtures produce the same semantic
     # fingerprints before using them as mutation detectors.
@@ -4304,22 +4395,26 @@ def test_a5_40_g7_34_parent_structure_mutation_fails_and_fingerprint_is_determin
         case, str(root_path), gallery_module=gallery)
 
     assert result.status == H.FAIL, result.detail
-    assert "definition_schema_digest" in result.detail or "parent_structure_digest" in result.detail
+    assert "parent_structure_digest" in result.detail
+    assert "definition_schema_digest" not in result.detail
     assert H.strict_exit_code([result], [case]) == 1
 
 
+@pytest.mark.invariance
 def test_a5_41_definition_digest_ignores_only_export_created_at():
     class _A56VolatileOnlyADF:
-        def __init__(self, created_at, alias_expr="x + 1"):
+        def __init__(self, created_at, alias_expr="x + 1",
+                     schema_kind="definition"):
             self.created_at = created_at
             self.alias_expr = alias_expr
+            self.schema_kind = schema_kind
             self.df = pd.DataFrame({"x": np.asarray([1.0, 2.0])})
 
         def export_definition_schema(self, **kwargs):
             return {
                 "__meta__": {
                     "created_at": self.created_at,
-                    "schema_kind": "definition",
+                    "schema_kind": self.schema_kind,
                 },
                 "aliases": {
                     "a": {"expression": self.alias_expr},
@@ -4343,4 +4438,59 @@ def test_a5_41_definition_digest_ignores_only_export_created_at():
     )
     assert H._a5_6_definition_schema_digest(first) != (
         H._a5_6_definition_schema_digest(semantic_change))
+
+    # A nonvolatile __meta__ field remains load-bearing.  This specifically
+    # prevents an over-broad implementation from dropping the whole __meta__
+    # object while claiming to ignore only created_at.
+    metadata_change = _A56VolatileOnlyADF(
+        "2026-09-01T14:56:40.393362+00:00",
+        schema_kind="record",
+    )
+    assert H._a5_6_definition_schema_digest(first) != (
+        H._a5_6_definition_schema_digest(metadata_change))
+
+
+@pytest.mark.invariance
+def test_a5_42_phase_13_77_capability_taxonomy_registration_is_exact():
+    import importlib.util
+    import os
+
+    here = os.path.dirname(__file__)
+    spec = importlib.util.spec_from_file_location(
+        "adf_feature_taxonomy_a5_close",
+        os.path.join(here, "feature_taxonomy.py"),
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    by_id = {feature["id"]: feature for feature in mod.FEATURES}
+    expected = {
+        "TESTING.phase13_77_harness": ("test_a1_", "test_a2_"),
+        "INV.draw_surface_consistency": ("test_a3_",),
+        "INV.eager_lazy_slot_symmetry": ("test_a4_",),
+        "INV.realdata_acceptance": ("test_a5_",),
+    }
+    for feature_id in expected:
+        assert feature_id in by_id
+
+    owned = {}
+    for feature_id, prefixes in expected.items():
+        patterns = by_id[feature_id]["test_patterns"]
+        assert patterns, feature_id
+        for pattern in patterns:
+            assert pattern.startswith(
+                "test_phase_13_77_realdata_invariance_harness.py::test_a")
+            tail = pattern.split("::", 1)[1]
+            assert tail.startswith(prefixes), (feature_id, pattern)
+            assert pattern not in owned, (pattern, owned[pattern], feature_id)
+            owned[pattern] = feature_id
+
+    # Exact collected-node custody for the A5-close registration.  A1 has
+    # parameterized cases, so the taxonomy deliberately stores exact node IDs
+    # rather than relying on unsupported wildcard semantics.
+    assert len(by_id["TESTING.phase13_77_harness"]["test_patterns"]) == 155
+    assert len(by_id["INV.draw_surface_consistency"]["test_patterns"]) == 27
+    assert len(by_id["INV.eager_lazy_slot_symmetry"]["test_patterns"]) == 24
+    assert len(by_id["INV.realdata_acceptance"]["test_patterns"]) == 42
+    assert len(owned) == 248
 
