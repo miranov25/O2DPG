@@ -1,7 +1,7 @@
 {
   "schema": "AliasDataFrame.PHASE_13_79.SlotGridContract",
   "schema_version": 1,
-  "status": "B1_MEASURED_CANDIDATE_V03_USER_ENV_CONFIRMATION_PENDING",
+  "status": "B2_INVARIANCE_CANDIDATE_V01",
   "created": "2026-09-03",
   "author": "GPT41:ADF",
   "governing_decisions": [
@@ -107,7 +107,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:expr:column:eager",
+      "invariance_oracle_id": "hist_public_geometry_and_summary",
+      "invariance_comparator": "numeric_allclose_equal_nan",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:expr:column:lazy",
@@ -131,7 +137,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:expr:column:lazy",
+      "invariance_oracle_id": "hist_public_geometry_and_summary",
+      "invariance_comparator": "numeric_allclose_equal_nan",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:expr:alias:eager",
@@ -155,7 +167,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:expr:alias:eager",
+      "invariance_oracle_id": "hist_public_geometry_and_summary",
+      "invariance_comparator": "numeric_allclose_equal_nan",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:expr:alias:lazy",
@@ -179,7 +197,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:expr:alias:lazy",
+      "invariance_oracle_id": "hist_public_geometry_and_summary",
+      "invariance_comparator": "numeric_allclose_equal_nan",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:expr:expression:eager",
@@ -203,7 +227,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:expr:expression:eager",
+      "invariance_oracle_id": "hist_public_geometry_and_summary",
+      "invariance_comparator": "numeric_allclose_equal_nan",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:expr:expression:lazy",
@@ -227,7 +257,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:expr:expression:lazy",
+      "invariance_oracle_id": "hist_public_geometry_and_summary",
+      "invariance_comparator": "numeric_allclose_equal_nan",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:expr:subframe:eager",
@@ -251,7 +287,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:expr:subframe:eager",
+      "invariance_oracle_id": "hist_public_geometry_and_summary",
+      "invariance_comparator": "numeric_allclose_equal_nan",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:expr:subframe:lazy",
@@ -275,7 +317,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:expr:subframe:lazy",
+      "invariance_oracle_id": "hist_public_geometry_and_summary",
+      "invariance_comparator": "numeric_allclose_equal_nan",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:expr:struct:eager",
@@ -299,7 +347,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:expr:struct:eager",
+      "invariance_oracle_id": "hist_public_geometry_and_summary",
+      "invariance_comparator": "numeric_allclose_equal_nan",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:expr:struct:lazy",
@@ -323,7 +377,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:expr:struct:lazy",
+      "invariance_oracle_id": "hist_public_geometry_and_summary",
+      "invariance_comparator": "numeric_allclose_equal_nan",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:selection:column:eager",
@@ -347,7 +407,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:selection:column:eager",
+      "invariance_oracle_id": "profile_data_selected_population",
+      "invariance_comparator": "semantic_dataframe_numeric",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:selection:column:lazy",
@@ -371,7 +437,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:selection:column:lazy",
+      "invariance_oracle_id": "profile_data_selected_population",
+      "invariance_comparator": "semantic_dataframe_numeric",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:selection:alias:eager",
@@ -395,7 +467,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:selection:alias:eager",
+      "invariance_oracle_id": "profile_data_selected_population",
+      "invariance_comparator": "semantic_dataframe_numeric",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:selection:alias:lazy",
@@ -419,7 +497,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:selection:alias:lazy",
+      "invariance_oracle_id": "profile_data_selected_population",
+      "invariance_comparator": "semantic_dataframe_numeric",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:selection:expression:eager",
@@ -443,7 +527,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:selection:expression:eager",
+      "invariance_oracle_id": "profile_data_selected_population",
+      "invariance_comparator": "semantic_dataframe_numeric",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:selection:expression:lazy",
@@ -467,7 +557,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:selection:expression:lazy",
+      "invariance_oracle_id": "profile_data_selected_population",
+      "invariance_comparator": "semantic_dataframe_numeric",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:selection:subframe:eager",
@@ -491,7 +587,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:selection:subframe:eager",
+      "invariance_oracle_id": "profile_data_selected_population",
+      "invariance_comparator": "semantic_dataframe_numeric",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:selection:subframe:lazy",
@@ -515,7 +617,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:selection:subframe:lazy",
+      "invariance_oracle_id": "profile_data_selected_population",
+      "invariance_comparator": "semantic_dataframe_numeric",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:selection:struct:eager",
@@ -539,7 +647,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:selection:struct:eager",
+      "invariance_oracle_id": "profile_data_selected_population",
+      "invariance_comparator": "semantic_dataframe_numeric",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:selection:struct:lazy",
@@ -563,7 +677,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:selection:struct:lazy",
+      "invariance_oracle_id": "profile_data_selected_population",
+      "invariance_comparator": "semantic_dataframe_numeric",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:selection_vector:column:eager",
@@ -587,7 +707,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:selection_vector:column:eager",
+      "invariance_oracle_id": "ordered_branch_profile_data",
+      "invariance_comparator": "ordered_branch_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:selection_vector:column:lazy",
@@ -611,7 +737,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:selection_vector:column:lazy",
+      "invariance_oracle_id": "ordered_branch_profile_data",
+      "invariance_comparator": "ordered_branch_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:selection_vector:alias:eager",
@@ -635,7 +767,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:selection_vector:alias:eager",
+      "invariance_oracle_id": "ordered_branch_profile_data",
+      "invariance_comparator": "ordered_branch_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:selection_vector:alias:lazy",
@@ -659,7 +797,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:selection_vector:alias:lazy",
+      "invariance_oracle_id": "ordered_branch_profile_data",
+      "invariance_comparator": "ordered_branch_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:selection_vector:expression:eager",
@@ -683,7 +827,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:selection_vector:expression:eager",
+      "invariance_oracle_id": "ordered_branch_profile_data",
+      "invariance_comparator": "ordered_branch_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:selection_vector:expression:lazy",
@@ -707,7 +857,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:selection_vector:expression:lazy",
+      "invariance_oracle_id": "ordered_branch_profile_data",
+      "invariance_comparator": "ordered_branch_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:selection_vector:subframe:eager",
@@ -735,7 +891,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:selection_vector:subframe:eager",
+      "invariance_oracle_id": "ordered_branch_profile_data",
+      "invariance_comparator": "ordered_branch_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "BLOCKED_BY_KNOWN_GAP"
     },
     {
       "cell_id": "slotgrid:selection_vector:subframe:lazy",
@@ -763,7 +925,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:selection_vector:subframe:lazy",
+      "invariance_oracle_id": "ordered_branch_profile_data",
+      "invariance_comparator": "ordered_branch_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "BLOCKED_BY_KNOWN_GAP"
     },
     {
       "cell_id": "slotgrid:selection_vector:struct:eager",
@@ -791,7 +959,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:selection_vector:struct:eager",
+      "invariance_oracle_id": "ordered_branch_profile_data",
+      "invariance_comparator": "ordered_branch_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "BLOCKED_BY_KNOWN_GAP"
     },
     {
       "cell_id": "slotgrid:selection_vector:struct:lazy",
@@ -819,7 +993,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:selection_vector:struct:lazy",
+      "invariance_oracle_id": "ordered_branch_profile_data",
+      "invariance_comparator": "ordered_branch_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "BLOCKED_BY_KNOWN_GAP"
     },
     {
       "cell_id": "slotgrid:weights:column:eager",
@@ -843,7 +1023,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:weights:column:eager",
+      "invariance_oracle_id": "weighted_profile_data_sum_weights",
+      "invariance_comparator": "semantic_dataframe_numeric",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:weights:column:lazy",
@@ -867,7 +1053,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:weights:column:lazy",
+      "invariance_oracle_id": "weighted_profile_data_sum_weights",
+      "invariance_comparator": "semantic_dataframe_numeric",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:weights:alias:eager",
@@ -891,7 +1083,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:weights:alias:eager",
+      "invariance_oracle_id": "weighted_profile_data_sum_weights",
+      "invariance_comparator": "semantic_dataframe_numeric",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:weights:alias:lazy",
@@ -915,7 +1113,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:weights:alias:lazy",
+      "invariance_oracle_id": "weighted_profile_data_sum_weights",
+      "invariance_comparator": "semantic_dataframe_numeric",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:weights:expression:eager",
@@ -939,7 +1143,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:weights:expression:eager",
+      "invariance_oracle_id": "weighted_profile_data_sum_weights",
+      "invariance_comparator": "semantic_dataframe_numeric",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:weights:expression:lazy",
@@ -963,7 +1173,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:weights:expression:lazy",
+      "invariance_oracle_id": "weighted_profile_data_sum_weights",
+      "invariance_comparator": "semantic_dataframe_numeric",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:weights:subframe:eager",
@@ -987,7 +1203,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:weights:subframe:eager",
+      "invariance_oracle_id": "weighted_profile_data_sum_weights",
+      "invariance_comparator": "semantic_dataframe_numeric",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:weights:subframe:lazy",
@@ -1011,7 +1233,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:weights:subframe:lazy",
+      "invariance_oracle_id": "weighted_profile_data_sum_weights",
+      "invariance_comparator": "semantic_dataframe_numeric",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:weights:struct:eager",
@@ -1035,7 +1263,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:weights:struct:eager",
+      "invariance_oracle_id": "weighted_profile_data_sum_weights",
+      "invariance_comparator": "semantic_dataframe_numeric",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:weights:struct:lazy",
@@ -1059,7 +1293,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:weights:struct:lazy",
+      "invariance_oracle_id": "weighted_profile_data_sum_weights",
+      "invariance_comparator": "semantic_dataframe_numeric",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:weights_vector:column:eager",
@@ -1083,7 +1323,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:weights_vector:column:eager",
+      "invariance_oracle_id": "ordered_weight_branch_profile_data",
+      "invariance_comparator": "ordered_branch_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:weights_vector:column:lazy",
@@ -1107,7 +1353,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:weights_vector:column:lazy",
+      "invariance_oracle_id": "ordered_weight_branch_profile_data",
+      "invariance_comparator": "ordered_branch_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:weights_vector:alias:eager",
@@ -1131,7 +1383,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:weights_vector:alias:eager",
+      "invariance_oracle_id": "ordered_weight_branch_profile_data",
+      "invariance_comparator": "ordered_branch_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:weights_vector:alias:lazy",
@@ -1155,7 +1413,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:weights_vector:alias:lazy",
+      "invariance_oracle_id": "ordered_weight_branch_profile_data",
+      "invariance_comparator": "ordered_branch_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:weights_vector:expression:eager",
@@ -1179,7 +1443,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:weights_vector:expression:eager",
+      "invariance_oracle_id": "ordered_weight_branch_profile_data",
+      "invariance_comparator": "ordered_branch_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:weights_vector:expression:lazy",
@@ -1203,7 +1473,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:weights_vector:expression:lazy",
+      "invariance_oracle_id": "ordered_weight_branch_profile_data",
+      "invariance_comparator": "ordered_branch_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:weights_vector:subframe:eager",
@@ -1231,7 +1507,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:weights_vector:subframe:eager",
+      "invariance_oracle_id": "ordered_weight_branch_profile_data",
+      "invariance_comparator": "ordered_branch_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "BLOCKED_BY_KNOWN_GAP"
     },
     {
       "cell_id": "slotgrid:weights_vector:subframe:lazy",
@@ -1259,7 +1541,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:weights_vector:subframe:lazy",
+      "invariance_oracle_id": "ordered_weight_branch_profile_data",
+      "invariance_comparator": "ordered_branch_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "BLOCKED_BY_KNOWN_GAP"
     },
     {
       "cell_id": "slotgrid:weights_vector:struct:eager",
@@ -1287,7 +1575,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:weights_vector:struct:eager",
+      "invariance_oracle_id": "ordered_weight_branch_profile_data",
+      "invariance_comparator": "ordered_branch_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "BLOCKED_BY_KNOWN_GAP"
     },
     {
       "cell_id": "slotgrid:weights_vector:struct:lazy",
@@ -1315,7 +1609,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:weights_vector:struct:lazy",
+      "invariance_oracle_id": "ordered_weight_branch_profile_data",
+      "invariance_comparator": "ordered_branch_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "BLOCKED_BY_KNOWN_GAP"
     },
     {
       "cell_id": "slotgrid:group_by:column:eager",
@@ -1339,7 +1639,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:group_by:column:eager",
+      "invariance_oracle_id": "group_identity_and_profile_data",
+      "invariance_comparator": "group_identity_plus_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:group_by:column:lazy",
@@ -1363,7 +1669,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:group_by:column:lazy",
+      "invariance_oracle_id": "group_identity_and_profile_data",
+      "invariance_comparator": "group_identity_plus_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:group_by:alias:eager",
@@ -1387,7 +1699,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:group_by:alias:eager",
+      "invariance_oracle_id": "group_identity_and_profile_data",
+      "invariance_comparator": "group_identity_plus_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:group_by:alias:lazy",
@@ -1411,7 +1729,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:group_by:alias:lazy",
+      "invariance_oracle_id": "group_identity_and_profile_data",
+      "invariance_comparator": "group_identity_plus_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:group_by:expression:eager",
@@ -1435,7 +1759,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:group_by:expression:eager",
+      "invariance_oracle_id": "group_identity_and_profile_data",
+      "invariance_comparator": "group_identity_plus_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:group_by:expression:lazy",
@@ -1459,7 +1789,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:group_by:expression:lazy",
+      "invariance_oracle_id": "group_identity_and_profile_data",
+      "invariance_comparator": "group_identity_plus_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:group_by:subframe:eager",
@@ -1483,7 +1819,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:group_by:subframe:eager",
+      "invariance_oracle_id": "group_identity_and_profile_data",
+      "invariance_comparator": "group_identity_plus_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:group_by:subframe:lazy",
@@ -1507,7 +1849,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:group_by:subframe:lazy",
+      "invariance_oracle_id": "group_identity_and_profile_data",
+      "invariance_comparator": "group_identity_plus_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:group_by:struct:eager",
@@ -1531,7 +1879,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:group_by:struct:eager",
+      "invariance_oracle_id": "group_identity_and_profile_data",
+      "invariance_comparator": "group_identity_plus_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:group_by:struct:lazy",
@@ -1555,7 +1909,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:group_by:struct:lazy",
+      "invariance_oracle_id": "group_identity_and_profile_data",
+      "invariance_comparator": "group_identity_plus_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:facet_by:column:eager",
@@ -1579,7 +1939,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:facet_by:column:eager",
+      "invariance_oracle_id": "facet_identity_and_per_facet_profile_data",
+      "invariance_comparator": "facet_identity_plus_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:facet_by:column:lazy",
@@ -1603,7 +1969,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:facet_by:column:lazy",
+      "invariance_oracle_id": "facet_identity_and_per_facet_profile_data",
+      "invariance_comparator": "facet_identity_plus_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:facet_by:alias:eager",
@@ -1627,7 +1999,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:facet_by:alias:eager",
+      "invariance_oracle_id": "facet_identity_and_per_facet_profile_data",
+      "invariance_comparator": "facet_identity_plus_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:facet_by:alias:lazy",
@@ -1651,7 +2029,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:facet_by:alias:lazy",
+      "invariance_oracle_id": "facet_identity_and_per_facet_profile_data",
+      "invariance_comparator": "facet_identity_plus_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:facet_by:expression:eager",
@@ -1679,7 +2063,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:facet_by:expression:eager",
+      "invariance_oracle_id": "facet_identity_and_per_facet_profile_data",
+      "invariance_comparator": "facet_identity_plus_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "BLOCKED_BY_KNOWN_GAP"
     },
     {
       "cell_id": "slotgrid:facet_by:expression:lazy",
@@ -1707,7 +2097,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:facet_by:expression:lazy",
+      "invariance_oracle_id": "facet_identity_and_per_facet_profile_data",
+      "invariance_comparator": "facet_identity_plus_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "BLOCKED_BY_KNOWN_GAP"
     },
     {
       "cell_id": "slotgrid:facet_by:subframe:eager",
@@ -1731,7 +2127,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:facet_by:subframe:eager",
+      "invariance_oracle_id": "facet_identity_and_per_facet_profile_data",
+      "invariance_comparator": "facet_identity_plus_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:facet_by:subframe:lazy",
@@ -1755,7 +2157,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:facet_by:subframe:lazy",
+      "invariance_oracle_id": "facet_identity_and_per_facet_profile_data",
+      "invariance_comparator": "facet_identity_plus_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:facet_by:struct:eager",
@@ -1779,7 +2187,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:facet_by:struct:eager",
+      "invariance_oracle_id": "facet_identity_and_per_facet_profile_data",
+      "invariance_comparator": "facet_identity_plus_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:facet_by:struct:lazy",
@@ -1803,7 +2217,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:facet_by:struct:lazy",
+      "invariance_oracle_id": "facet_identity_and_per_facet_profile_data",
+      "invariance_comparator": "facet_identity_plus_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:color:column:eager",
@@ -1827,7 +2247,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:color:column:eager",
+      "invariance_oracle_id": "scatter_offsets_and_color_array",
+      "invariance_comparator": "numeric_allclose_equal_nan",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:color:column:lazy",
@@ -1851,7 +2277,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:color:column:lazy",
+      "invariance_oracle_id": "scatter_offsets_and_color_array",
+      "invariance_comparator": "numeric_allclose_equal_nan",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:color:alias:eager",
@@ -1875,7 +2307,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:color:alias:eager",
+      "invariance_oracle_id": "scatter_offsets_and_color_array",
+      "invariance_comparator": "numeric_allclose_equal_nan",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:color:alias:lazy",
@@ -1899,7 +2337,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:color:alias:lazy",
+      "invariance_oracle_id": "scatter_offsets_and_color_array",
+      "invariance_comparator": "numeric_allclose_equal_nan",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:color:expression:eager",
@@ -1923,7 +2367,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:color:expression:eager",
+      "invariance_oracle_id": "scatter_offsets_and_color_array",
+      "invariance_comparator": "numeric_allclose_equal_nan",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:color:expression:lazy",
@@ -1947,7 +2397,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:color:expression:lazy",
+      "invariance_oracle_id": "scatter_offsets_and_color_array",
+      "invariance_comparator": "numeric_allclose_equal_nan",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:color:subframe:eager",
@@ -1971,7 +2427,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:color:subframe:eager",
+      "invariance_oracle_id": "scatter_offsets_and_color_array",
+      "invariance_comparator": "numeric_allclose_equal_nan",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:color:subframe:lazy",
@@ -1995,7 +2457,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:color:subframe:lazy",
+      "invariance_oracle_id": "scatter_offsets_and_color_array",
+      "invariance_comparator": "numeric_allclose_equal_nan",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:color:struct:eager",
@@ -2019,7 +2487,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:color:struct:eager",
+      "invariance_oracle_id": "scatter_offsets_and_color_array",
+      "invariance_comparator": "numeric_allclose_equal_nan",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:color:struct:lazy",
@@ -2043,7 +2517,13 @@
       "evidence_class": "core",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately."
+      "rationale": "SUPPORTED by AD-4/13.76.ADF symmetry-by-default and the architect-ratified PHASE_13_79 B-0 contract. Current implementation state is recorded separately.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:color:struct:lazy",
+      "invariance_oracle_id": "scatter_offsets_and_color_array",
+      "invariance_comparator": "numeric_allclose_equal_nan",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "cell_id": "slotgrid:expr:subframe:eager_parent_lazy_child",
@@ -2071,7 +2551,13 @@
       "evidence_class": "bounded_mode",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by the architect-ratified eager-parent/lazy-child subframe seam; kept bounded rather than multiplying the global loading-mode axis."
+      "rationale": "SUPPORTED by the architect-ratified eager-parent/lazy-child subframe seam; kept bounded rather than multiplying the global loading-mode axis.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:expr:subframe:eager_parent_lazy_child",
+      "invariance_oracle_id": "hist_public_geometry_and_summary",
+      "invariance_comparator": "numeric_allclose_equal_nan",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "BLOCKED_BY_KNOWN_GAP"
     },
     {
       "cell_id": "slotgrid:selection:subframe:eager_parent_lazy_child",
@@ -2099,7 +2585,13 @@
       "evidence_class": "bounded_mode",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by the architect-ratified eager-parent/lazy-child subframe seam; kept bounded rather than multiplying the global loading-mode axis."
+      "rationale": "SUPPORTED by the architect-ratified eager-parent/lazy-child subframe seam; kept bounded rather than multiplying the global loading-mode axis.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:selection:subframe:eager_parent_lazy_child",
+      "invariance_oracle_id": "profile_data_selected_population",
+      "invariance_comparator": "semantic_dataframe_numeric",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "BLOCKED_BY_KNOWN_GAP"
     },
     {
       "cell_id": "slotgrid:selection_vector:subframe:eager_parent_lazy_child",
@@ -2127,7 +2619,13 @@
       "evidence_class": "bounded_mode",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by the architect-ratified eager-parent/lazy-child subframe seam; kept bounded rather than multiplying the global loading-mode axis."
+      "rationale": "SUPPORTED by the architect-ratified eager-parent/lazy-child subframe seam; kept bounded rather than multiplying the global loading-mode axis.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:selection_vector:subframe:eager_parent_lazy_child",
+      "invariance_oracle_id": "ordered_branch_profile_data",
+      "invariance_comparator": "ordered_branch_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "BLOCKED_BY_KNOWN_GAP"
     },
     {
       "cell_id": "slotgrid:weights:subframe:eager_parent_lazy_child",
@@ -2155,7 +2653,13 @@
       "evidence_class": "bounded_mode",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by the architect-ratified eager-parent/lazy-child subframe seam; kept bounded rather than multiplying the global loading-mode axis."
+      "rationale": "SUPPORTED by the architect-ratified eager-parent/lazy-child subframe seam; kept bounded rather than multiplying the global loading-mode axis.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:weights:subframe:eager_parent_lazy_child",
+      "invariance_oracle_id": "weighted_profile_data_sum_weights",
+      "invariance_comparator": "semantic_dataframe_numeric",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "BLOCKED_BY_KNOWN_GAP"
     },
     {
       "cell_id": "slotgrid:weights_vector:subframe:eager_parent_lazy_child",
@@ -2183,7 +2687,13 @@
       "evidence_class": "bounded_mode",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by the architect-ratified eager-parent/lazy-child subframe seam; kept bounded rather than multiplying the global loading-mode axis."
+      "rationale": "SUPPORTED by the architect-ratified eager-parent/lazy-child subframe seam; kept bounded rather than multiplying the global loading-mode axis.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:weights_vector:subframe:eager_parent_lazy_child",
+      "invariance_oracle_id": "ordered_weight_branch_profile_data",
+      "invariance_comparator": "ordered_branch_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "BLOCKED_BY_KNOWN_GAP"
     },
     {
       "cell_id": "slotgrid:group_by:subframe:eager_parent_lazy_child",
@@ -2211,7 +2721,13 @@
       "evidence_class": "bounded_mode",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by the architect-ratified eager-parent/lazy-child subframe seam; kept bounded rather than multiplying the global loading-mode axis."
+      "rationale": "SUPPORTED by the architect-ratified eager-parent/lazy-child subframe seam; kept bounded rather than multiplying the global loading-mode axis.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:group_by:subframe:eager_parent_lazy_child",
+      "invariance_oracle_id": "group_identity_and_profile_data",
+      "invariance_comparator": "group_identity_plus_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "BLOCKED_BY_KNOWN_GAP"
     },
     {
       "cell_id": "slotgrid:facet_by:subframe:eager_parent_lazy_child",
@@ -2239,7 +2755,13 @@
       "evidence_class": "bounded_mode",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by the architect-ratified eager-parent/lazy-child subframe seam; kept bounded rather than multiplying the global loading-mode axis."
+      "rationale": "SUPPORTED by the architect-ratified eager-parent/lazy-child subframe seam; kept bounded rather than multiplying the global loading-mode axis.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:facet_by:subframe:eager_parent_lazy_child",
+      "invariance_oracle_id": "facet_identity_and_per_facet_profile_data",
+      "invariance_comparator": "facet_identity_plus_semantic_dataframe",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "BLOCKED_BY_KNOWN_GAP"
     },
     {
       "cell_id": "slotgrid:color:subframe:eager_parent_lazy_child",
@@ -2267,7 +2789,13 @@
       "evidence_class": "bounded_mode",
       "mechanism_disposition_ad16": "UNMEASURED",
       "measured_at": "PHASE_13_79_B1_local_reconstructed_sources_2026-09-03",
-      "rationale": "SUPPORTED by the architect-ratified eager-parent/lazy-child subframe seam; kept bounded rather than multiplying the global loading-mode axis."
+      "rationale": "SUPPORTED by the architect-ratified eager-parent/lazy-child subframe seam; kept bounded rather than multiplying the global loading-mode axis.",
+      "smoke_oracle_id": "public_result_exists",
+      "invariance_fixture_id": "b2:color:subframe:eager_parent_lazy_child",
+      "invariance_oracle_id": "scatter_offsets_and_color_array",
+      "invariance_comparator": "numeric_allclose_equal_nan",
+      "invariance_reference": "direct_dfdraw_plain_dataframe",
+      "invariance_state": "BLOCKED_BY_KNOWN_GAP"
     }
   ],
   "seams": [
@@ -2280,7 +2808,11 @@
       "current_state": "UNMEASURED",
       "oracle_id": "branch_identity_order_per_panel_or_group",
       "empty_facet_rule": "A facet with stats {'n': 0, 'empty': True} is exempt from branch-presence; it must be explicitly marked empty rather than silently absent.",
-      "rationale": "Architect-ratified B-4 seam: every vector branch must be represented in every non-empty panel/group with branch identity and order preserved."
+      "rationale": "Architect-ratified B-4 seam: every vector branch must be represented in every non-empty panel/group with branch identity and order preserved.",
+      "invariance_fixture_id": "b2:seam:nondegenerate:plain:eager",
+      "invariance_reference": "explicit scalar branch requests through direct dfdraw",
+      "invariance_comparator": "branch_identity_order_and_semantic_profile_evidence",
+      "local_invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "seam_id": "slotseam:selection_vector:group_by",
@@ -2291,7 +2823,11 @@
       "current_state": "UNMEASURED",
       "oracle_id": "branch_identity_order_per_panel_or_group",
       "empty_facet_rule": null,
-      "rationale": "Architect-ratified B-4 seam: every vector branch must be represented in every non-empty panel/group with branch identity and order preserved."
+      "rationale": "Architect-ratified B-4 seam: every vector branch must be represented in every non-empty panel/group with branch identity and order preserved.",
+      "invariance_fixture_id": "b2:seam:nondegenerate:plain:eager",
+      "invariance_reference": "explicit scalar branch requests through direct dfdraw",
+      "invariance_comparator": "branch_identity_order_and_semantic_profile_evidence",
+      "local_invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "seam_id": "slotseam:weights_vector:facet_by",
@@ -2302,7 +2838,11 @@
       "current_state": "UNMEASURED",
       "oracle_id": "branch_identity_order_per_panel_or_group",
       "empty_facet_rule": "A facet with stats {'n': 0, 'empty': True} is exempt from branch-presence; it must be explicitly marked empty rather than silently absent.",
-      "rationale": "Architect-ratified B-4 seam: every vector branch must be represented in every non-empty panel/group with branch identity and order preserved."
+      "rationale": "Architect-ratified B-4 seam: every vector branch must be represented in every non-empty panel/group with branch identity and order preserved.",
+      "invariance_fixture_id": "b2:seam:nondegenerate:plain:eager",
+      "invariance_reference": "explicit scalar branch requests through direct dfdraw",
+      "invariance_comparator": "branch_identity_order_and_semantic_profile_evidence",
+      "local_invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     },
     {
       "seam_id": "slotseam:weights_vector:group_by",
@@ -2313,7 +2853,11 @@
       "current_state": "UNMEASURED",
       "oracle_id": "branch_identity_order_per_panel_or_group",
       "empty_facet_rule": null,
-      "rationale": "Architect-ratified B-4 seam: every vector branch must be represented in every non-empty panel/group with branch identity and order preserved."
+      "rationale": "Architect-ratified B-4 seam: every vector branch must be represented in every non-empty panel/group with branch identity and order preserved.",
+      "invariance_fixture_id": "b2:seam:nondegenerate:plain:eager",
+      "invariance_reference": "explicit scalar branch requests through direct dfdraw",
+      "invariance_comparator": "branch_identity_order_and_semantic_profile_evidence",
+      "local_invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
     }
   ],
   "implementation_notes": [
@@ -2347,5 +2891,13 @@
     "user_environment_confirmation_required": true,
     "local_focused_result": "97 passed, 18 xfailed, 0 unexpected failures",
     "local_runxfail_result": "97 passed, 18 failed (all registered current gaps)"
+  },
+  "b2_invariance": {
+    "reference": "direct dfdraw on plain pandas DataFrame; bypasses AliasDataFrame preparation",
+    "fixture": "non-degenerate deterministic 120-row fixture",
+    "cross_mode": "explicit eager vs lazy comparison for every slot/form pair whose two base cells are currently PASSING",
+    "seams": "four architect-ratified vector\u00d7facet/group seams",
+    "local_result": "110 passed, 18 xfailed; --runxfail => 110 passed, 18 failed",
+    "local_environment": "Python 3.13.5, pandas 2.2.3, numpy 2.3.5; exact ADF/dfdraw source bytes"
   }
 }
