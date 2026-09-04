@@ -67,6 +67,7 @@ _SHARED_SEMANTICS = _load_shared_semantic_model()
 try:
     build_matrix_model = _SHARED_SEMANTICS.build_matrix_model
     load_pytest_report = _SHARED_SEMANTICS.load_pytest_report
+    feature_contract_summary = _SHARED_SEMANTICS.feature_contract_summary
 except AttributeError as e:
     sys.exit(
         "generate_matrix_html: canonical shared semantic model is missing "
@@ -175,7 +176,8 @@ def generate_html_matrix(test_results, features=None, test_layers=None,
                           phase=None, project="AliasDataFrame",
                           expected_env=("Linux", "aarch64"),
                           normalized_feature_results=None,
-                          semantic_summary=None, generated=None):
+                          semantic_summary=None, generated=None,
+                          node_records=None):
     """Return a single-file HTML matrix as a string.
 
     Each feature row is anchored at id="feature-{feature_id}" and expands to
@@ -188,6 +190,7 @@ def generate_html_matrix(test_results, features=None, test_layers=None,
     features = features if features is not None else []
     test_layers = test_layers or {}
     known_unclaimed = known_unclaimed or []
+    node_records = node_records or {}
     now = generated or datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
     # Presentation only.  Canonical PHASE_13_76 runs pass
@@ -300,6 +303,8 @@ tr.tests-row[hidden] { display: none; }
 .tests-panel { background: var(--hover); padding: 10px 32px; border-left: 3px solid var(--accent); margin: 4px 0 12px 0; }
 .tests-panel ul { list-style: none; padding: 0; margin: 0; }
 .tests-panel li { padding: 3px 0; font-family: 'JetBrains Mono', Menlo, monospace; font-size: 0.85em; }
+.feature-description { margin-top: 4px; color: var(--muted); font-size: 0.88em; line-height: 1.35; max-width: 80ch; }
+.source-locator { color: var(--muted); margin-left: 8px; font-size: 0.9em; }
 .layer-marker { display: inline-block; width: 18px; text-align: center; }
 .outcome { margin-left: 8px; font-size: 0.85em; }
 .outcome.passed { color: var(--pass); }
@@ -405,6 +410,21 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
         fid = f["id"]
         eye = ' <span class="eye-badge">👁</span>' if s["has_visual"] else ""
         visual_cell = s["n_visual"] if s["n_visual"] > 0 else ""
+        description = f.get("description", "")
+        contract = feature_contract_summary(f)
+        surface_text = ""
+        if contract and contract.get("declared_cells") is not None:
+            states = contract.get("cell_state_counts", {})
+            state_text = ", ".join(f"{k}={v}" for k, v in states.items())
+            surface_text = (
+                f"Surface: {contract['declared_cells']} cells; "
+                f"{state_text}; seams={contract.get('seams', 0)}"
+            )
+        description_parts = [x for x in (description, surface_text) if x]
+        description_html = (
+            f'<div class="feature-description">{"<br>".join(esc(x) for x in description_parts)}</div>'
+            if description_parts else ""
+        )
         out.append(
             f'<tr id="feature-{esc(fid)}" class="feature-row" '
             f'data-status="{esc(s["status"])}" '
@@ -412,7 +432,7 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
             f'data-category="{esc(cat)}">'
             f'<td><span class="expand-toggle">▶</span></td>'
             f'<td>{s["icon"]}</td>'
-            f'<td><strong class="mono">{esc(fid)}</strong> — {esc(f["name"])}{eye} <a class="mono" href="#feature-{esc(fid)}" title="permalink">&para;</a></td>'
+            f'<td><strong class="mono">{esc(fid)}</strong> — {esc(f["name"])}{eye} <a class="mono" href="#feature-{esc(fid)}" title="permalink">&para;</a>{description_html}</td>'
             f'<td class="n">{s["n_tests"]}</td>'
             f'<td class="n">{s["n_pass"]}</td>'
             f'<td class="n">{s["n_fail"]}</td>'
@@ -435,10 +455,19 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
                     "passed": "passed", "failed": "failed", "missing": "missing",
                     "skipped": "skipped", "xfailed": "xfailed",
                 }.get(outcome, outcome)
+                record = node_records.get(test_id, {})
+                locator = record.get("file", "")
+                if locator and record.get("line") is not None:
+                    locator += f":L{record['line']}"
+                locator_html = (
+                    f'<span class="source-locator">{esc(locator)}</span>'
+                    if locator else ""
+                )
                 panel.append(
                     f'<li><span class="layer-marker">{marker}</span>'
                     f'<code>{esc(test_id)}</code>'
-                    f'<span class="outcome {esc(outcome)}">{esc(outcome_label)}</span></li>'
+                    f'<span class="outcome {esc(outcome)}">{esc(outcome_label)}</span>'
+                    f'{locator_html}</li>'
                 )
             panel.append("</ul>")
         panel.append("</div></td></tr>")
@@ -652,6 +681,7 @@ def generate_html_from_model(model, *, project="AliasDataFrame",
         normalized_feature_results=model.get("features", []),
         semantic_summary=model.get("summary"),
         generated=model.get("generated"),
+        node_records=model.get("node_records", {}),
     )
 
 

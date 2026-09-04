@@ -1,16 +1,12 @@
 {
   "schema": "AliasDataFrame.PHASE_13_79.SlotGridContract",
   "schema_version": 1,
-  "status": "B2_INVARIANCE_CANDIDATE_V01",
+  "status": "B2_INVARIANCE_FACET_ORACLE_REPAIR_V02",
   "created": "2026-09-03",
   "author": "GPT41:ADF",
   "governing_decisions": [
     "AD-4/13.76.ADF",
-    "AD-16/13.76.ADF",
-    "AD-4/13.79.ADF",
-    "AD-6/13.79.ADF",
-    "AD-8/13.79.ADF",
-    "AD-11/13.79.ADF"
+    "AD-16/13.76.ADF"
   ],
   "source_custody": {
     "adf_bundle": "sources_adf_20260901_222148.llmbundle.txt",
@@ -2805,14 +2801,23 @@
       "compose_slot": "facet_by",
       "evidence_class": "seam",
       "interface_contract": "SUPPORTED",
-      "current_state": "UNMEASURED",
-      "oracle_id": "branch_identity_order_per_panel_or_group",
+      "current_state": "KNOWN_GAP",
+      "oracle_id": "ordered_branch_faceted_stats_vs_independent_scalar_references",
       "empty_facet_rule": "A facet with stats {'n': 0, 'empty': True} is exempt from branch-presence; it must be explicitly marked empty rather than silently absent.",
-      "rationale": "Architect-ratified B-4 seam: every vector branch must be represented in every non-empty panel/group with branch identity and order preserved.",
+      "rationale": "Architect-ratified B-4 seam remains SUPPORTED, but the stronger oracle proves the current implementation does not preserve branch-resolved faceted stats/profile semantics. This is a KNOWN_GAP, not a refusal-by-design.",
       "invariance_fixture_id": "b2:seam:nondegenerate:plain:eager",
-      "invariance_reference": "explicit scalar branch requests through direct dfdraw",
-      "invariance_comparator": "branch_identity_order_and_semantic_profile_evidence",
-      "local_invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
+      "invariance_reference": "explicit scalar branch requests through direct dfdraw, per vector branch and facet",
+      "invariance_comparator": "facet_identity_branch_identity_order_and_semantic_profile_dataframe",
+      "local_invariance_state": "KNOWN_GAP_STRICT_XFAIL",
+      "measured_at": "PHASE_13_79_B4_facet_oracle_repair_2026-09-03",
+      "owning_bug": "BUG_AliasDataFrame_20260903_vector_facet_branch_semantics",
+      "owning_phase": "PHASE_13_76_ADF/B3.3 production repair owner",
+      "pytest_policy": "STRICT_XFAIL",
+      "current_gap_signature": {
+        "kind": "semantic_mismatch",
+        "type": "AssertionError",
+        "message_fragment": "expected ordered per-branch faceted stats"
+      }
     },
     {
       "seam_id": "slotseam:selection_vector:group_by",
@@ -2820,14 +2825,19 @@
       "compose_slot": "group_by",
       "evidence_class": "seam",
       "interface_contract": "SUPPORTED",
-      "current_state": "UNMEASURED",
+      "current_state": "PASSING",
       "oracle_id": "branch_identity_order_per_panel_or_group",
       "empty_facet_rule": null,
       "rationale": "Architect-ratified B-4 seam: every vector branch must be represented in every non-empty panel/group with branch identity and order preserved.",
       "invariance_fixture_id": "b2:seam:nondegenerate:plain:eager",
       "invariance_reference": "explicit scalar branch requests through direct dfdraw",
       "invariance_comparator": "branch_identity_order_and_semantic_profile_evidence",
-      "local_invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
+      "local_invariance_state": "PASSING_LOCAL_REFERENCE_ENV",
+      "measured_at": "PHASE_13_79_B4_facet_oracle_repair_2026-09-03",
+      "owning_bug": null,
+      "owning_phase": null,
+      "pytest_policy": "NORMAL",
+      "current_gap_signature": null
     },
     {
       "seam_id": "slotseam:weights_vector:facet_by",
@@ -2835,14 +2845,23 @@
       "compose_slot": "facet_by",
       "evidence_class": "seam",
       "interface_contract": "SUPPORTED",
-      "current_state": "UNMEASURED",
-      "oracle_id": "branch_identity_order_per_panel_or_group",
+      "current_state": "KNOWN_GAP",
+      "oracle_id": "ordered_branch_faceted_stats_vs_independent_scalar_references",
       "empty_facet_rule": "A facet with stats {'n': 0, 'empty': True} is exempt from branch-presence; it must be explicitly marked empty rather than silently absent.",
-      "rationale": "Architect-ratified B-4 seam: every vector branch must be represented in every non-empty panel/group with branch identity and order preserved.",
+      "rationale": "Architect-ratified B-4 seam remains SUPPORTED, but the stronger oracle proves the current implementation does not preserve branch-resolved faceted stats/profile semantics. This is a KNOWN_GAP, not a refusal-by-design.",
       "invariance_fixture_id": "b2:seam:nondegenerate:plain:eager",
-      "invariance_reference": "explicit scalar branch requests through direct dfdraw",
-      "invariance_comparator": "branch_identity_order_and_semantic_profile_evidence",
-      "local_invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
+      "invariance_reference": "explicit scalar branch requests through direct dfdraw, per vector branch and facet",
+      "invariance_comparator": "facet_identity_branch_identity_order_and_semantic_profile_dataframe",
+      "local_invariance_state": "KNOWN_GAP_STRICT_XFAIL",
+      "measured_at": "PHASE_13_79_B4_facet_oracle_repair_2026-09-03",
+      "owning_bug": "BUG_AliasDataFrame_20260903_vector_facet_branch_semantics",
+      "owning_phase": "PHASE_13_76_ADF/B3.3 production repair owner",
+      "pytest_policy": "STRICT_XFAIL",
+      "current_gap_signature": {
+        "kind": "semantic_mismatch",
+        "type": "AssertionError",
+        "message_fragment": "expected ordered per-branch faceted stats"
+      }
     },
     {
       "seam_id": "slotseam:weights_vector:group_by",
@@ -2850,21 +2869,27 @@
       "compose_slot": "group_by",
       "evidence_class": "seam",
       "interface_contract": "SUPPORTED",
-      "current_state": "UNMEASURED",
+      "current_state": "PASSING",
       "oracle_id": "branch_identity_order_per_panel_or_group",
       "empty_facet_rule": null,
       "rationale": "Architect-ratified B-4 seam: every vector branch must be represented in every non-empty panel/group with branch identity and order preserved.",
       "invariance_fixture_id": "b2:seam:nondegenerate:plain:eager",
       "invariance_reference": "explicit scalar branch requests through direct dfdraw",
       "invariance_comparator": "branch_identity_order_and_semantic_profile_evidence",
-      "local_invariance_state": "PASSING_LOCAL_REFERENCE_ENV"
+      "local_invariance_state": "PASSING_LOCAL_REFERENCE_ENV",
+      "measured_at": "PHASE_13_79_B4_facet_oracle_repair_2026-09-03",
+      "owning_bug": null,
+      "owning_phase": null,
+      "pytest_policy": "NORMAL",
+      "current_gap_signature": null
     }
   ],
   "implementation_notes": [
     "B-1 measures the 78 pre-scan UNMEASURED rows; it does not pre-label them PASSING.",
     "Ten vector-qualified rows remain architect-SUPPORTED and current KNOWN_GAP under BUG_20260701_ADF_subframe_ref_slot_symmetry.",
     "The four B-4 vector\u00d7facet/group seams are declared separately from the 88 B-0 rows.",
-    "size/marker/xerr/yerr are explicitly tracked as UNSPECIFIED Gate-2 passthrough exclusions, not silently omitted."
+    "size/marker/xerr/yerr are explicitly tracked as UNSPECIFIED Gate-2 passthrough exclusions, not silently omitted.",
+    "B-4 facet seam oracle repair replaces line-count reachability with ordered branch/facet semantic comparison; both vector\u00d7facet seams are current KNOWN_GAP."
   ],
   "measurement_summary": {
     "total_cells": 88,
@@ -2896,8 +2921,31 @@
     "reference": "direct dfdraw on plain pandas DataFrame; bypasses AliasDataFrame preparation",
     "fixture": "non-degenerate deterministic 120-row fixture",
     "cross_mode": "explicit eager vs lazy comparison for every slot/form pair whose two base cells are currently PASSING",
-    "seams": "four architect-ratified vector\u00d7facet/group seams",
-    "local_result": "110 passed, 18 xfailed; --runxfail => 110 passed, 18 failed",
+    "seams": "four architect-ratified vector\u00d7facet/group seams; 2 group_by PASSING, 2 facet_by KNOWN_GAP under strict semantic oracle",
+    "local_result": "110 passed, 20 xfailed; --runxfail => 110 passed, 20 failed",
     "local_environment": "Python 3.13.5, pandas 2.2.3, numpy 2.3.5; exact ADF/dfdraw source bytes"
+  },
+  "proposal_local_decisions": [
+    "PD-4/13.79.ADF",
+    "PD-6/13.79.ADF",
+    "PD-8/13.79.ADF",
+    "PD-11/13.79.ADF"
+  ],
+  "proposal_local_decision_source": "PHASE_13_79_ADF_Proposal_v08_1_Claude_ADF_20260903.md",
+  "proposal_local_decision_legacy_labels": {
+    "PD-4/13.79.ADF": "AD-4/13.79.ADF",
+    "PD-6/13.79.ADF": "AD-6/13.79.ADF",
+    "PD-8/13.79.ADF": "AD-8/13.79.ADF",
+    "PD-11/13.79.ADF": "AD-11/13.79.ADF"
+  },
+  "proposal_local_decision_note": "PD-* is the proposal-local namespace. The legacy AD-* labels above are retained only as a mapping to the already-reviewed proposal text; they are not canonical global registry IDs.",
+  "b4_seam_summary": {
+    "total_seams": 4,
+    "passing": 2,
+    "known_gap": 2,
+    "known_gap_owners": {
+      "BUG_AliasDataFrame_20260903_vector_facet_branch_semantics": 2
+    },
+    "falsifiers": 2
   }
 }

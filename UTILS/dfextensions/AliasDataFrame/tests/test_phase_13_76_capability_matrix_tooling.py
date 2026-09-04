@@ -352,11 +352,9 @@ class TestMatrixAccountingAndPhase:
 
     def test_T14_runner_phase_provenance_is_adf_specific(self):
         text = RUNNER_PATH.read_text(encoding="utf-8")
-        assert "PHASE_*_ADF_BEGIN" in text
-        assert "PHASE_BEGIN_AliasDataFrame" in text
-        assert "PHASE_BEGIN_ADF" in text
         assert "PHASE_[0-9]*_DF*_END" not in text
-        assert 'PHASE_FOR_MATRIX="PHASE_13_76_ADF"' in text
+        assert 'ADF_MATRIX_PHASE:-PHASE_13_79_ADF' in text
+        assert 'PHASE_FOR_MATRIX="${ADF_MATRIX_PHASE:-PHASE_13_79_ADF}"' in text
 
 
 class TestFocusedRunnerContract:
@@ -430,3 +428,130 @@ class TestReviewerPacketCustody:
         assert "generate_matrix_html.py" in text
         assert '--test-results "$MATRIX_JSON"' in text
         assert '--log "$LOG_FILE"' not in text
+
+
+class TestPhase1379DiagnosticIndex:
+    def test_T16_json_projection_is_ai_readable_and_has_source_locators(self):
+        gen = _load_generator()
+        node = "synthetic.py::TestSynthetic::test_clean_invariance[param]"
+        model = gen.build_matrix_model(
+            {node: "passed"},
+            {node: set()},
+            phase="PHASE_13_79_ADF",
+            features=[{
+                "id": "META.synthetic",
+                "name": "Synthetic",
+                "description": "Human-readable diagnostic description.",
+                "category": "META",
+                "test_patterns": ["synthetic.py::TestSynthetic"],
+            }],
+        )
+        payload = gen.export_json_model(model)
+        assert payload["schema"] == "AliasDataFrame.CapabilityMatrix"
+        assert payload["schema_version"] == 1
+        assert payload["features"][0]["description"].startswith("Human-readable")
+        rec = payload["features"][0]["tests"][0]
+        assert rec["node_id"] == node
+        assert rec["evidence_layer"] == "invariance"
+        assert rec["file"] == "tests/synthetic.py"
+        assert "line" in rec
+        assert "provenance" in payload
+
+    def test_T17_markdown_contains_description_and_expandable_owned_nodes(self):
+        gen = _load_generator()
+        node = "synthetic.py::TestSynthetic::test_clean"
+        model = gen.build_matrix_model(
+            {node: "passed"}, {node: {"smoke"}}, phase="PHASE_13_79_ADF",
+            features=[{
+                "id": "META.synthetic", "name": "Synthetic",
+                "description": "Findable capability description.",
+                "category": "META", "test_patterns": ["synthetic.py::TestSynthetic"],
+            }],
+        )
+        md = gen.render_markdown(model)
+        assert "Findable capability description." in md
+        assert "<details>" in md
+        assert node in md
+        assert "tests/synthetic.py" in md
+
+    def test_T18_html_contains_description_and_source_locator_surface(self):
+        gen = _load_generator()
+        html_gen = _load_html_generator()
+        node = "synthetic.py::TestSynthetic::test_clean"
+        model = gen.build_matrix_model(
+            {node: "passed"}, {node: {"smoke"}}, phase="PHASE_13_79_ADF",
+            features=[{
+                "id": "META.synthetic", "name": "Synthetic",
+                "description": "HTML diagnostic description.",
+                "category": "META", "test_patterns": ["synthetic.py::TestSynthetic"],
+            }],
+        )
+        html = html_gen.generate_html_from_model(model)
+        assert "HTML diagnostic description." in html
+        assert "feature-description" in html
+        assert "source-locator" in html
+        assert "tests/synthetic.py" in html
+
+    def test_T19_runner_defaults_focus_to_phase_13_79_and_packages_candidates(self):
+        text = RUNNER_PATH.read_text(encoding="utf-8")
+        assert 'FOCUSED_TESTS="${FOCUSED_TESTS:-tests/test_phase_13_79_slot_grid*.py}"' in text
+        assert 'docs/CAPABILITY_MATRIX.json' in text
+        assert 'for f in $CANDIDATE_FILES' in text
+        assert 'ZIP_FILES="$ZIP_FILES $f"' in text
+
+
+class TestPhase1379SlotGridRegistration:
+    def test_T20_slot_grid_contract_summary_is_machine_derived(self):
+        gen = _load_generator()
+        feature = next(f for f in gen.FEATURES if f["id"] == "DRAW.slot_grid")
+        summary = gen.feature_contract_summary(feature)
+        assert summary["declared_cells"] == 88
+        assert summary["cell_state_counts"] == {"KNOWN_GAP": 18, "PASSING": 70}
+        assert summary["interface_contract_counts"] == {"SUPPORTED": 88}
+        assert summary["seams"] == 4
+        assert len(summary["sha256"]) == 64
+        assert feature["test_patterns"] == [
+            "test_phase_13_79_slot_grid.py",
+            "test_phase_13_79_slot_grid_invariance.py",
+        ]
+
+
+class TestPhase1379MachineSurfaceExport:
+    def test_T21_json_carries_full_slot_grid_cells_and_seams(self):
+        gen = _load_generator()
+        feature = next(f for f in gen.FEATURES if f["id"] == "DRAW.slot_grid")
+        surfaces = gen.feature_contract_surfaces(feature)
+
+        cells = surfaces["DRAW.slot_grid"]
+        seams = surfaces["DRAW.slot_grid.seams"]
+        assert cells["evidence_class"] == "cell"
+        assert seams["evidence_class"] == "seam"
+        assert len(cells["rows"]) == 88
+        assert len(seams["rows"]) == 4
+        assert {row["cell_id"] for row in cells["rows"]} == {
+            row["cell_id"] for row in gen._load_feature_contract(feature)[0]["cells"]
+        }
+        assert {row["seam_id"] for row in seams["rows"]} == {
+            row["seam_id"] for row in gen._load_feature_contract(feature)[0]["seams"]
+        }
+
+        model = gen.build_matrix_model({}, {}, phase="PHASE_13_79_ADF", features=[feature])
+        payload = gen.export_json_model(model)
+        assert payload["surfaces"] == surfaces
+        assert payload["semantic_payload_digest"] == gen._semantic_payload_digest(surfaces)
+
+    def test_T22_semantic_payload_digest_is_deterministic_and_surface_sensitive(self):
+        gen = _load_generator()
+        feature = next(f for f in gen.FEATURES if f["id"] == "DRAW.slot_grid")
+        surfaces = gen.feature_contract_surfaces(feature)
+        digest = gen._semantic_payload_digest(surfaces)
+        assert len(digest) == 64
+        assert digest == gen._semantic_payload_digest(surfaces)
+
+        changed = {key: dict(value) for key, value in surfaces.items()}
+        changed["DRAW.slot_grid"] = dict(changed["DRAW.slot_grid"])
+        changed["DRAW.slot_grid"]["rows"] = [
+            dict(row) for row in changed["DRAW.slot_grid"]["rows"]
+        ]
+        changed["DRAW.slot_grid"]["rows"][0]["current_state"] = "__MUTATED__"
+        assert gen._semantic_payload_digest(changed) != digest

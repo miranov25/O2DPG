@@ -134,6 +134,7 @@ JSON_DIR="$LOG_DIR/json_report_${TS}"
 JSON_REPORT="$JSON_DIR/.pytest_report.json"
 MATRIX_MD="$LOG_DIR/CAPABILITY_MATRIX_${TS}.md"
 MATRIX_HTML="$LOG_DIR/CAPABILITY_MATRIX_${TS}.html"
+MATRIX_AI_JSON="$LOG_DIR/CAPABILITY_MATRIX_${TS}.json"
 SUMMARY_FILE="$LOG_DIR/SUMMARY_${TS}.txt"
 DIFF_COMMIT="$LOG_DIR/diff_last_commit_${TS}.txt"
 DIFF_PHASE="$LOG_DIR/diff_to_phase_${TS}.txt"
@@ -142,7 +143,7 @@ GIT_STATUS="$LOG_DIR/git_status_${TS}.txt"
 # Focused (phase) suite, logged SEPARATELY and shipped in the packet.
 # Override the pattern per phase, e.g.:
 #   FOCUSED_TESTS="tests/test_phase_13_77_*.py" bash run_tests.sh
-FOCUSED_TESTS="${FOCUSED_TESTS:-tests/test_phase_13_76_draw_path_characterization.py}"
+FOCUSED_TESTS="${FOCUSED_TESTS:-tests/test_phase_13_79_slot_grid*.py}"
 FOCUSED_LOG="$LOG_DIR/test_focused_${TS}.log"
 
 # RUNNER-FOCUS-1: exact focused collection evidence. The manifest is the
@@ -374,25 +375,21 @@ if [[ "$MODE" != "quick" ]]; then
         MATRIX_JSON=".pytest_report.json"
     fi
 
-    # MATRIX-PHASE-1: this is the AliasDataFrame matrix.  Resolve phase
-    # provenance only from ADF phase tags; never reuse dfdraw *_DF*_END tags.
-    PHASE_FOR_MATRIX=$(git tag --merged HEAD --list 'PHASE_*_ADF_BEGIN' --sort=-creatordate 2>/dev/null | head -1)
-    if [[ -z "$PHASE_FOR_MATRIX" ]]; then
-        PHASE_FOR_MATRIX=$(git tag --merged HEAD --list 'PHASE_BEGIN_AliasDataFrame' --sort=-creatordate 2>/dev/null | head -1)
-    fi
-    if [[ -z "$PHASE_FOR_MATRIX" ]]; then
-        PHASE_FOR_MATRIX=$(git tag --merged HEAD --list 'PHASE_BEGIN_ADF' --sort=-creatordate 2>/dev/null | head -1)
-    fi
-    [[ -n "$PHASE_FOR_MATRIX" ]] || PHASE_FOR_MATRIX="PHASE_13_76_ADF"
+    # MATRIX-PHASE-1: matrix provenance is the current ADF work phase, not
+    # the latest historical BEGIN tag.  Override explicitly when needed.
+    PHASE_FOR_MATRIX="${ADF_MATRIX_PHASE:-PHASE_13_79_ADF}"
 
     if [[ -n "$MATRIX_SCRIPT" && -n "$MATRIX_JSON" ]]; then
         python3 "$MATRIX_SCRIPT" \
             --test-results "$MATRIX_JSON" \
-            --phase "$PHASE_FOR_MATRIX" 2>&1 || \
+            --phase "$PHASE_FOR_MATRIX" \
+            --json-output "docs/CAPABILITY_MATRIX.json" 2>&1 || \
             echo "⚠️  Capability matrix Markdown generation had errors"
 
         [[ -f "docs/CAPABILITY_MATRIX.md" ]] && \
             cp "docs/CAPABILITY_MATRIX.md" "$MATRIX_MD"
+        [[ -f "docs/CAPABILITY_MATRIX.json" ]] && \
+            cp "docs/CAPABILITY_MATRIX.json" "$MATRIX_AI_JSON"
     elif [[ -z "$MATRIX_SCRIPT" ]]; then
         echo "⚠️  generate_capability_matrix.py not found"
         echo "    Expected at: scripts/generate_capability_matrix.py"
@@ -505,6 +502,9 @@ CANDIDATE_FILES=$(
     echo "  Log:      $(realpath "$LOG_FILE" 2>/dev/null || echo "$LOG_FILE")"
     echo "  Failures: $(realpath "$FAIL_FILE" 2>/dev/null || echo "$FAIL_FILE")"
     echo "  Matrix:   $(realpath "$MATRIX_MD" 2>/dev/null || echo "$MATRIX_MD")"
+    if [[ -f "$MATRIX_AI_JSON" ]]; then
+        echo "  MatrixAI: $(realpath "$MATRIX_AI_JSON" 2>/dev/null || echo "$MATRIX_AI_JSON")"
+    fi
     echo "  Summary:  $(realpath "$SUMMARY_FILE" 2>/dev/null || echo "$SUMMARY_FILE")"
     echo "  Diff:     $(realpath "$DIFF_COMMIT" 2>/dev/null || echo "$DIFF_COMMIT")"
     echo "  Phase:    $(realpath "$DIFF_PHASE" 2>/dev/null || echo "$DIFF_PHASE")"
@@ -649,10 +649,21 @@ echo "--- Packaging reviewer.zip ---"
         "$DIFF_PHASE" \
         "$GIT_STATUS" \
         "docs/CAPABILITY_MATRIX.md" \
-        "docs/CAPABILITY_MATRIX.html"
+        "docs/CAPABILITY_MATRIX.html" \
+        "docs/CAPABILITY_MATRIX.json" \
+        "docs/ARCHITECT_DECISIONS.md" \
+        "tests/phase_13_79_slot_grid_contract.json" \
+        "$MATRIX_AI_JSON"
     do
         [[ -f "$f" ]] && ZIP_FILES="$ZIP_FILES $f"
     done
+
+    # Reviewer source custody: ship the exact changed/focused candidate files
+    # too.  The packet must let a reviewer read the oracle/table, not only logs.
+    for f in $CANDIDATE_FILES; do
+        [[ -f "$f" ]] && ZIP_FILES="$ZIP_FILES $f"
+    done
+    ZIP_FILES=$(printf '%s\n' $ZIP_FILES | sort -u | tr '\n' ' ')
 
     if [[ -n "$ZIP_FILES" ]]; then
         N_WANT=$(printf '%s\n' $ZIP_FILES | grep -c .)

@@ -496,9 +496,74 @@ def _nonempty_axes(fig):
     return [ax for ax in fig.axes if ax.lines or ax.collections or ax.patches]
 
 
-@pytest.mark.parametrize("vector_slot,compose_slot", SEAM_CASES,
-                         ids=["selection_vector-facet_by", "weights_vector-facet_by",
-                              "selection_vector-group_by", "weights_vector-group_by"])
+def _assert_facet_seam_semantic_equal(candidate_stats, refs, *, vector_slot):
+    """Prove ordered vector branches survive every facet semantically.
+
+    The candidate must expose one faceted stats object per vector branch, in
+    the original vector order.  Each branch/facet profile is then compared
+    against an independently executed scalar dfdraw request.  A line count
+    is intentionally insufficient: profile error-band lines are not vector
+    branches.
+    """
+    assert isinstance(candidate_stats, list), (
+        f"{vector_slot}×facet_by: expected ordered per-branch faceted stats; "
+        f"observed {type(candidate_stats).__name__}")
+    assert len(candidate_stats) == len(refs) == 2, (
+        f"{vector_slot}×facet_by: expected exactly two ordered vector branches; "
+        f"observed {len(candidate_stats)}")
+
+    for branch_index, (candidate_branch, ref) in enumerate(zip(candidate_stats, refs)):
+        reference_branch = ref[2]
+        cand_groups, cand_frames = _facet_evidence(candidate_branch)
+        ref_groups, ref_frames = _facet_evidence(reference_branch)
+        assert cand_groups == ref_groups, (
+            f"{vector_slot}×facet_by.branch{branch_index}: facet identity/order "
+            f"{cand_groups!r} != {ref_groups!r}")
+        assert len(cand_frames) == len(ref_frames)
+        for (cand_facet, cand_frame), (ref_facet, ref_frame) in zip(cand_frames, ref_frames):
+            assert cand_facet == ref_facet, (
+                f"{vector_slot}×facet_by.branch{branch_index}: facet identity "
+                f"{cand_facet!r} != {ref_facet!r}")
+            _assert_frame_semantic_equal(
+                cand_frame, ref_frame,
+                label=(
+                    f"{vector_slot}×facet_by.branch{branch_index}."
+                    f"facet{cand_facet}"
+                ),
+            )
+
+
+SEAM_BY_ID = {row["seam_id"]: row for row in B1.SEAMS}
+
+
+def _seam_param(vector_slot, compose_slot):
+    seam_id = f"slotseam:{vector_slot}:{compose_slot}"
+    row = SEAM_BY_ID[seam_id]
+    assert row["interface_contract"] == "SUPPORTED"
+    if row["current_state"] == "KNOWN_GAP":
+        return pytest.param(
+            vector_slot, compose_slot,
+            id=f"{vector_slot}-{compose_slot}",
+            marks=pytest.mark.xfail(
+                strict=True,
+                raises=AssertionError,
+                reason=(
+                    f"{row['owning_bug']}: "
+                    "vector branch identity/order/semantic profile evidence "
+                    "is not preserved through facet_by"
+                ),
+            ),
+        )
+    assert row["current_state"] == "PASSING", (
+        f"{seam_id}: unmeasured/unknown seam state cannot enter B-4 evidence")
+    return pytest.param(
+        vector_slot, compose_slot, id=f"{vector_slot}-{compose_slot}")
+
+
+SEAM_PARAMS = tuple(_seam_param(*case) for case in SEAM_CASES)
+
+
+@pytest.mark.parametrize("vector_slot,compose_slot", SEAM_PARAMS)
 def test_b4_vector_composition_seam(vector_slot, compose_slot):
     cand = _seam_candidate(vector_slot, compose_slot)
     refs = _seam_reference(vector_slot, compose_slot)
@@ -513,15 +578,27 @@ def test_b4_vector_composition_seam(vector_slot, compose_slot):
                     label=f"{vector_slot}×group_by.branch{i}")
             return
 
-        # Faceting: every non-empty facet must contain every vector branch.
-        # The independent reference is one explicit scalar request per branch.
+        # Faceting: line counts are not branch evidence because profile
+        # uncertainty bands also create lines.  Require an ordered faceted
+        # stats object for each vector branch and compare every branch/facet
+        # profile to the independently executed scalar reference.
         fig, axes, stats = cand
-        assert stats.get("groups") == [0, 1, 2, 3]
         visible_axes = _nonempty_axes(fig)
         assert len(visible_axes) == 4
-        for facet_index, ax in enumerate(visible_axes):
-            assert len(ax.lines) >= 2, (
-                f"{vector_slot}×facet_by facet={facet_index}: expected both vector "
-                f"branches, observed {len(ax.lines)} profile line(s)")
+        _assert_facet_seam_semantic_equal(stats, refs, vector_slot=vector_slot)
     finally:
         plt.close("all")
+
+
+@pytest.mark.parametrize("vector_slot", ("selection_vector", "weights_vector"))
+def test_b4_facet_seam_falsifier_swapped_branch_order_is_caught(vector_slot):
+    """Anti-false-green: branch-order corruption must fail the B-4 oracle."""
+    refs = _seam_reference(vector_slot, "facet_by")
+    swapped_candidate_stats = [refs[1][2], refs[0][2]]
+    try:
+        with pytest.raises(AssertionError):
+            _assert_facet_seam_semantic_equal(
+                swapped_candidate_stats, refs, vector_slot=vector_slot)
+    finally:
+        plt.close("all")
+

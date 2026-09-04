@@ -35,6 +35,7 @@ Phase 13.61.ADF Fix (2026-06-24, BUG_20260624_lazy_bridge): Added 1 new feature
 LAZY.expression_autoload (ensure_columns lazy bridge) covered by
 test_bug20260624_ensure_columns.py (4). Total: 54 → 55.
 Phase 13.77.ADF A5 closure (2026-09-02): Added 4 acceptance-catalogue features: TESTING.phase13_77_harness, INV.draw_surface_consistency, INV.eager_lazy_slot_symmetry, and INV.realdata_acceptance. Exact collected-node ownership covers all 248 current PHASE_13_77 harness nodes; A3/A4/A5 nodes are marked invariance. Total features: 64 → 68.
+Phase 13.79.ADF Part A registration (2026-09-03): Added DRAW.slot_grid for the architect-ratified B-SMOKE/B-INVARIANCE systematic surface and TESTING.capability_matrix_index for the shared Markdown/HTML/JSON diagnostic-index tooling.
 """
 
 FEATURES = [
@@ -295,6 +296,24 @@ FEATURES = [
          # Phase 13.12.ADF
          "test_I7_draw_path_invariance.py",
      ]},
+    {"id": "DRAW.slot_grid",
+     "name": "Systematic draw slot symmetry grid",
+     "description": "Checks every architect-supported draw slot across column, alias, expression, subframe and struct forms in eager/lazy modes. Smoke records reachability and live gaps; invariance compares executable cells against an independent plain-data reference and checks eager/lazy equivalence.",
+     "category": "DRAWING",
+     "surface": {
+         "slots": 8,
+         "forms": 5,
+         "base_modes": 2,
+         "base_cells": 80,
+         "bounded_mixed_mode_rows": 8,
+         "declared_cells": 88,
+         "evidence": ["B-SMOKE", "B-INVARIANCE"],
+     },
+     "contract_file": "tests/phase_13_79_slot_grid_contract.json",
+     "test_patterns": [
+         "test_phase_13_79_slot_grid.py",
+         "test_phase_13_79_slot_grid_invariance.py",
+     ]},
 
     # ── COMPRESSION (3) ──
     {"id": "COMP.roundtrip", "name": "Compress/decompress roundtrip", "category": "COMPRESSION",
@@ -554,6 +573,13 @@ FEATURES = [
      ]},
 
     # ── PHASE_13_77_ADF A5 closure — acceptance catalogue (4) ──
+    {"id": "TESTING.capability_matrix_index",
+     "name": "Capability Matrix diagnostic index tooling",
+     "description": "Proves the shared Capability Matrix semantic model, Markdown/HTML parity, AI-readable JSON export, node source locators, phase/focused-run evidence and reviewer-packet custody rules.",
+     "category": "TESTING",
+     "test_patterns": [
+         "test_phase_13_76_capability_matrix_tooling.py",
+     ]},
     {"id": "TESTING.phase13_77_harness",
      "name": "PHASE_13_77 acceptance-harness integrity — CaseSpec/FigureContract registry, comparator/gate fail-closed behavior, manifest reconciliation, environment gating, and anti-false-green controls (A1+A2)",
      "category": "TESTING",
