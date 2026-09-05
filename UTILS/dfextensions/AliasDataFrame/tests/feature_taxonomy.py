@@ -248,7 +248,7 @@ FEATURES = [
          "test_polynomial_persistence.py",
      ]},
 
-    # ── DRAWING (5) ──
+    # ── DRAWING (7) ──
     {"id": "DRAW.execution", "name": "draw() with auto-materialization", "category": "DRAWING",
      "test_patterns": [
          "test_draw_lazy_integration.py",
@@ -313,6 +313,22 @@ FEATURES = [
      "test_patterns": [
          "test_phase_13_79_slot_grid.py",
          "test_phase_13_79_slot_grid_invariance.py",
+     ]},
+    {"id": "DRAW.normalize_integration",
+     "name": "ADF normalization integration bridge",
+     "description": "Checks ADF-to-dfdraw normalize= integration across curve sources, operand representations and eager/lazy loading without duplicating dfdraw-owned normalization mathematics. Ratified-supported current gaps remain explicit strict-XFAIL evidence rather than being reclassified as intended refusals.",
+     "category": "DRAWING",
+     "surface": {
+         "canonical_mode": "ratio",
+         "curve_sources": 3,
+         "forms": 5,
+         "loading_modes": 2,
+         "core_cells": 30,
+         "evidence": ["BN-SMOKE"],
+     },
+     "contract_file": "tests/phase_13_79_normalization_contract.json",
+     "test_patterns": [
+         "test_phase_13_79_normalization_smoke.py",
      ]},
 
     # ── COMPRESSION (3) ──
@@ -918,6 +934,7 @@ FEATURE_PRESENTATION = {
     "DRAW.compound_expr": ("Compound-expression drawing", "Discovers and lazily materializes dependencies inside compound draw expressions. A failure means an expression works only after manual preloading or loads/evaluates the wrong inputs."),
     "DRAW.invariance": ("Draw/materialize invariance", "Checks that drawing directly and drawing after explicit materialization/filtering produce equivalent numerical results. A failure means draw-path preparation changes analysis semantics."),
     "DRAW.slot_grid": ("Systematic draw slot symmetry grid", "Checks draw parameters such as selection, weights, grouping, faceting and vectors across column/alias/expression/struct/subframe forms and eager/lazy modes. A failure means an architect-supported representation is rejected, ignored or differs from its canonical plain-data reference."),
+    "DRAW.normalize_integration": ("Normalization integration bridge", "Checks the ADF bridge into dfdraw normalize= across selection-vector, weights-vector and Y-vector curve sources, supported operand forms and eager/lazy loading. A failure means normalization is dropped, the wrong curves are compared, or an architect-supported representation cannot reach the normalization machinery."),
     "COMP.roundtrip": ("Compression round-trip", "Compresses and decompresses columns within the declared numerical fidelity contract. A failure means recovered values exceed tolerance or metadata cannot reproduce the encoded data."),
     "COMP.selection": ("Compression method selection", "Chooses/records the appropriate compression strategy for supported column types and options. A failure means the wrong codec/parameters are selected or unsupported state is silently accepted."),
     "COMP.monitoring": ("Compression quality monitoring", "Measures compression quality and error diagnostics so lossy behavior remains visible. A failure means excessive distortion is not detected or monitoring statistics are incorrect."),

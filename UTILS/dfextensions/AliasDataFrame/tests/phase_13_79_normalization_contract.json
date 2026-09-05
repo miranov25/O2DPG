@@ -1,0 +1,840 @@
+{
+  "author": "GPT44:ADF",
+  "axes": {
+    "canonical_mode": "ratio",
+    "curve_sources": [
+      "selection_vector",
+      "weights_vector",
+      "y_vector"
+    ],
+    "forms": [
+      "column",
+      "alias",
+      "expression",
+      "subframe",
+      "struct"
+    ],
+    "loading_modes": [
+      "eager",
+      "lazy"
+    ],
+    "vector_compose": "outer"
+  },
+  "base_commit": "fa57cd35",
+  "bounded_seams": {
+    "composition_seams": [
+      "group_by",
+      "facet_by"
+    ],
+    "implementation_stage": "DEFERRED_TO_BN2_BN3_AFTER_BN_SMOKE",
+    "layout_seams": [
+      "diff_only"
+    ],
+    "mode_seams": [
+      "delta",
+      "log_ratio",
+      "pull",
+      "callable_2curve",
+      "callable_4curve"
+    ],
+    "public_surface_seams": [
+      "draw",
+      "draw_batch",
+      "draw_figures"
+    ],
+    "vector_compose_seams": [
+      "auto_force_selection_vector",
+      "auto_force_weights_vector"
+    ]
+  },
+  "cells": [
+    {
+      "cell_id": "normalize:ratio:selection_vector:column:eager",
+      "current_gap_signature": null,
+      "current_state": "PASSING",
+      "curve_source": "selection_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "eager",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "column",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": null,
+      "owning_component": null,
+      "owning_phase": null,
+      "rationale": "Coder-local BN-SMOKE scan produced ratio normalize_data with nonzero signal/reference counts.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:selection_vector:column:lazy",
+      "current_gap_signature": null,
+      "current_state": "PASSING",
+      "curve_source": "selection_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "lazy",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "column",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": null,
+      "owning_component": null,
+      "owning_phase": null,
+      "rationale": "Coder-local BN-SMOKE scan produced ratio normalize_data with nonzero signal/reference counts.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:selection_vector:alias:eager",
+      "current_gap_signature": null,
+      "current_state": "PASSING",
+      "curve_source": "selection_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "eager",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "alias",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": null,
+      "owning_component": null,
+      "owning_phase": null,
+      "rationale": "Coder-local BN-SMOKE scan produced ratio normalize_data with nonzero signal/reference counts.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:selection_vector:alias:lazy",
+      "current_gap_signature": null,
+      "current_state": "PASSING",
+      "curve_source": "selection_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "lazy",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "alias",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": null,
+      "owning_component": null,
+      "owning_phase": null,
+      "rationale": "Coder-local BN-SMOKE scan produced ratio normalize_data with nonzero signal/reference counts.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:selection_vector:expression:eager",
+      "current_gap_signature": null,
+      "current_state": "PASSING",
+      "curve_source": "selection_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "eager",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "expression",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": null,
+      "owning_component": null,
+      "owning_phase": null,
+      "rationale": "Coder-local BN-SMOKE scan produced ratio normalize_data with nonzero signal/reference counts.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:selection_vector:expression:lazy",
+      "current_gap_signature": null,
+      "current_state": "PASSING",
+      "curve_source": "selection_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "lazy",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "expression",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": null,
+      "owning_component": null,
+      "owning_phase": null,
+      "rationale": "Coder-local BN-SMOKE scan produced ratio normalize_data with nonzero signal/reference counts.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:selection_vector:subframe:eager",
+      "current_gap_signature": {
+        "message_fragment": "Subframe-qualified reference",
+        "type": "ValueError"
+      },
+      "current_state": "KNOWN_GAP",
+      "curve_source": "selection_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "eager",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "subframe",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": "BUG_20260701_ADF_subframe_ref_slot_symmetry",
+      "owning_component": "AliasDataFrame",
+      "owning_phase": "PHASE_13_76/B3.3",
+      "rationale": "Global slot symmetry requires support; current ADF vector-slot guard refuses qualified subframe/struct references.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:selection_vector:subframe:lazy",
+      "current_gap_signature": {
+        "message_fragment": "Subframe-qualified reference",
+        "type": "ValueError"
+      },
+      "current_state": "KNOWN_GAP",
+      "curve_source": "selection_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "lazy",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "subframe",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": "BUG_20260701_ADF_subframe_ref_slot_symmetry",
+      "owning_component": "AliasDataFrame",
+      "owning_phase": "PHASE_13_76/B3.3",
+      "rationale": "Global slot symmetry requires support; current ADF vector-slot guard refuses qualified subframe/struct references.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:selection_vector:struct:eager",
+      "current_gap_signature": {
+        "message_fragment": "Subframe-qualified reference",
+        "type": "ValueError"
+      },
+      "current_state": "KNOWN_GAP",
+      "curve_source": "selection_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "eager",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "struct",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": "BUG_20260701_ADF_subframe_ref_slot_symmetry",
+      "owning_component": "AliasDataFrame",
+      "owning_phase": "PHASE_13_76/B3.3",
+      "rationale": "Global slot symmetry requires support; current ADF vector-slot guard refuses qualified subframe/struct references.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:selection_vector:struct:lazy",
+      "current_gap_signature": {
+        "message_fragment": "Subframe-qualified reference",
+        "type": "ValueError"
+      },
+      "current_state": "KNOWN_GAP",
+      "curve_source": "selection_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "lazy",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "struct",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": "BUG_20260701_ADF_subframe_ref_slot_symmetry",
+      "owning_component": "AliasDataFrame",
+      "owning_phase": "PHASE_13_76/B3.3",
+      "rationale": "Global slot symmetry requires support; current ADF vector-slot guard refuses qualified subframe/struct references.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:weights_vector:column:eager",
+      "current_gap_signature": null,
+      "current_state": "PASSING",
+      "curve_source": "weights_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "eager",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "column",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": null,
+      "owning_component": null,
+      "owning_phase": null,
+      "rationale": "Coder-local BN-SMOKE scan produced ratio normalize_data with nonzero signal/reference counts.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:weights_vector:column:lazy",
+      "current_gap_signature": null,
+      "current_state": "PASSING",
+      "curve_source": "weights_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "lazy",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "column",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": null,
+      "owning_component": null,
+      "owning_phase": null,
+      "rationale": "Coder-local BN-SMOKE scan produced ratio normalize_data with nonzero signal/reference counts.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:weights_vector:alias:eager",
+      "current_gap_signature": null,
+      "current_state": "PASSING",
+      "curve_source": "weights_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "eager",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "alias",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": null,
+      "owning_component": null,
+      "owning_phase": null,
+      "rationale": "Coder-local BN-SMOKE scan produced ratio normalize_data with nonzero signal/reference counts.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:weights_vector:alias:lazy",
+      "current_gap_signature": null,
+      "current_state": "PASSING",
+      "curve_source": "weights_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "lazy",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "alias",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": null,
+      "owning_component": null,
+      "owning_phase": null,
+      "rationale": "Coder-local BN-SMOKE scan produced ratio normalize_data with nonzero signal/reference counts.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:weights_vector:expression:eager",
+      "current_gap_signature": null,
+      "current_state": "PASSING",
+      "curve_source": "weights_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "eager",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "expression",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": null,
+      "owning_component": null,
+      "owning_phase": null,
+      "rationale": "Coder-local BN-SMOKE scan produced ratio normalize_data with nonzero signal/reference counts.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:weights_vector:expression:lazy",
+      "current_gap_signature": null,
+      "current_state": "PASSING",
+      "curve_source": "weights_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "lazy",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "expression",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": null,
+      "owning_component": null,
+      "owning_phase": null,
+      "rationale": "Coder-local BN-SMOKE scan produced ratio normalize_data with nonzero signal/reference counts.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:weights_vector:subframe:eager",
+      "current_gap_signature": {
+        "message_fragment": "Subframe-qualified reference",
+        "type": "ValueError"
+      },
+      "current_state": "KNOWN_GAP",
+      "curve_source": "weights_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "eager",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "subframe",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": "BUG_20260701_ADF_subframe_ref_slot_symmetry",
+      "owning_component": "AliasDataFrame",
+      "owning_phase": "PHASE_13_76/B3.3",
+      "rationale": "Global slot symmetry requires support; current ADF vector-slot guard refuses qualified subframe/struct references.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:weights_vector:subframe:lazy",
+      "current_gap_signature": {
+        "message_fragment": "Subframe-qualified reference",
+        "type": "ValueError"
+      },
+      "current_state": "KNOWN_GAP",
+      "curve_source": "weights_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "lazy",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "subframe",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": "BUG_20260701_ADF_subframe_ref_slot_symmetry",
+      "owning_component": "AliasDataFrame",
+      "owning_phase": "PHASE_13_76/B3.3",
+      "rationale": "Global slot symmetry requires support; current ADF vector-slot guard refuses qualified subframe/struct references.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:weights_vector:struct:eager",
+      "current_gap_signature": {
+        "message_fragment": "Subframe-qualified reference",
+        "type": "ValueError"
+      },
+      "current_state": "KNOWN_GAP",
+      "curve_source": "weights_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "eager",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "struct",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": "BUG_20260701_ADF_subframe_ref_slot_symmetry",
+      "owning_component": "AliasDataFrame",
+      "owning_phase": "PHASE_13_76/B3.3",
+      "rationale": "Global slot symmetry requires support; current ADF vector-slot guard refuses qualified subframe/struct references.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:weights_vector:struct:lazy",
+      "current_gap_signature": {
+        "message_fragment": "Subframe-qualified reference",
+        "type": "ValueError"
+      },
+      "current_state": "KNOWN_GAP",
+      "curve_source": "weights_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "lazy",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "struct",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": "BUG_20260701_ADF_subframe_ref_slot_symmetry",
+      "owning_component": "AliasDataFrame",
+      "owning_phase": "PHASE_13_76/B3.3",
+      "rationale": "Global slot symmetry requires support; current ADF vector-slot guard refuses qualified subframe/struct references.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:y_vector:column:eager",
+      "current_gap_signature": {
+        "message_fragment": "BN-SMOKE expected normalize_data dict for ratio",
+        "type": "AssertionError"
+      },
+      "current_state": "KNOWN_GAP",
+      "curve_source": "y_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "eager",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "column",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": "BUG_dfdraw_20260905_draw_profile_y_vector_normalize_ignored",
+      "owning_component": "dfdraw",
+      "owning_phase": "dfdraw normalization routing follow-up",
+      "rationale": "DFDraw.profile normalizes the Y-vector, but DFDraw.draw(type=profile) returns ordinary per-curve stats; ADF routes through DFDraw.draw.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:y_vector:column:lazy",
+      "current_gap_signature": {
+        "message_fragment": "BN-SMOKE expected normalize_data dict for ratio",
+        "type": "AssertionError"
+      },
+      "current_state": "KNOWN_GAP",
+      "curve_source": "y_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "lazy",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "column",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": "BUG_dfdraw_20260905_draw_profile_y_vector_normalize_ignored",
+      "owning_component": "dfdraw",
+      "owning_phase": "dfdraw normalization routing follow-up",
+      "rationale": "DFDraw.profile normalizes the Y-vector, but DFDraw.draw(type=profile) returns ordinary per-curve stats; ADF routes through DFDraw.draw.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:y_vector:alias:eager",
+      "current_gap_signature": {
+        "message_fragment": "BN-SMOKE expected normalize_data dict for ratio",
+        "type": "AssertionError"
+      },
+      "current_state": "KNOWN_GAP",
+      "curve_source": "y_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "eager",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "alias",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": "BUG_dfdraw_20260905_draw_profile_y_vector_normalize_ignored",
+      "owning_component": "dfdraw",
+      "owning_phase": "dfdraw normalization routing follow-up",
+      "rationale": "DFDraw.profile normalizes the Y-vector, but DFDraw.draw(type=profile) returns ordinary per-curve stats; ADF routes through DFDraw.draw.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:y_vector:alias:lazy",
+      "current_gap_signature": {
+        "message_fragment": "BN-SMOKE expected normalize_data dict for ratio",
+        "type": "AssertionError"
+      },
+      "current_state": "KNOWN_GAP",
+      "curve_source": "y_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "lazy",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "alias",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": "BUG_dfdraw_20260905_draw_profile_y_vector_normalize_ignored",
+      "owning_component": "dfdraw",
+      "owning_phase": "dfdraw normalization routing follow-up",
+      "rationale": "DFDraw.profile normalizes the Y-vector, but DFDraw.draw(type=profile) returns ordinary per-curve stats; ADF routes through DFDraw.draw.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:y_vector:expression:eager",
+      "current_gap_signature": {
+        "message_fragment": "BN-SMOKE expected normalize_data dict for ratio",
+        "type": "AssertionError"
+      },
+      "current_state": "KNOWN_GAP",
+      "curve_source": "y_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "eager",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "expression",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": "BUG_dfdraw_20260905_draw_profile_y_vector_normalize_ignored",
+      "owning_component": "dfdraw",
+      "owning_phase": "dfdraw normalization routing follow-up",
+      "rationale": "DFDraw.profile normalizes the Y-vector, but DFDraw.draw(type=profile) returns ordinary per-curve stats; ADF routes through DFDraw.draw.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:y_vector:expression:lazy",
+      "current_gap_signature": {
+        "message_fragment": "BN-SMOKE expected normalize_data dict for ratio",
+        "type": "AssertionError"
+      },
+      "current_state": "KNOWN_GAP",
+      "curve_source": "y_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "lazy",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "expression",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": "BUG_dfdraw_20260905_draw_profile_y_vector_normalize_ignored",
+      "owning_component": "dfdraw",
+      "owning_phase": "dfdraw normalization routing follow-up",
+      "rationale": "DFDraw.profile normalizes the Y-vector, but DFDraw.draw(type=profile) returns ordinary per-curve stats; ADF routes through DFDraw.draw.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:y_vector:subframe:eager",
+      "current_gap_signature": {
+        "message_fragment": "BN-SMOKE expected normalize_data dict for ratio",
+        "type": "AssertionError"
+      },
+      "current_state": "KNOWN_GAP",
+      "curve_source": "y_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "eager",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "subframe",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": "BUG_dfdraw_20260905_draw_profile_y_vector_normalize_ignored",
+      "owning_component": "dfdraw",
+      "owning_phase": "dfdraw normalization routing follow-up",
+      "rationale": "DFDraw.profile normalizes the Y-vector, but DFDraw.draw(type=profile) returns ordinary per-curve stats; ADF routes through DFDraw.draw.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:y_vector:subframe:lazy",
+      "current_gap_signature": {
+        "message_fragment": "BN-SMOKE expected normalize_data dict for ratio",
+        "type": "AssertionError"
+      },
+      "current_state": "KNOWN_GAP",
+      "curve_source": "y_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "lazy",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "subframe",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": "BUG_dfdraw_20260905_draw_profile_y_vector_normalize_ignored",
+      "owning_component": "dfdraw",
+      "owning_phase": "dfdraw normalization routing follow-up",
+      "rationale": "DFDraw.profile normalizes the Y-vector, but DFDraw.draw(type=profile) returns ordinary per-curve stats; ADF routes through DFDraw.draw.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:y_vector:struct:eager",
+      "current_gap_signature": {
+        "message_fragment": "BN-SMOKE expected normalize_data dict for ratio",
+        "type": "AssertionError"
+      },
+      "current_state": "KNOWN_GAP",
+      "curve_source": "y_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "eager",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "struct",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": "BUG_dfdraw_20260905_draw_profile_y_vector_normalize_ignored",
+      "owning_component": "dfdraw",
+      "owning_phase": "dfdraw normalization routing follow-up",
+      "rationale": "DFDraw.profile normalizes the Y-vector, but DFDraw.draw(type=profile) returns ordinary per-curve stats; ADF routes through DFDraw.draw.",
+      "vector_compose": "outer"
+    },
+    {
+      "cell_id": "normalize:ratio:y_vector:struct:lazy",
+      "current_gap_signature": {
+        "message_fragment": "BN-SMOKE expected normalize_data dict for ratio",
+        "type": "AssertionError"
+      },
+      "current_state": "KNOWN_GAP",
+      "curve_source": "y_vector",
+      "evidence_class": "BN-SMOKE",
+      "fixture_id": "bn_ratio_core_v01",
+      "interface_contract": "SUPPORTED",
+      "loading_mode": "lazy",
+      "measured_at": "GPT44-local-2026-09-05",
+      "normalization_mode": "ratio",
+      "operand_form": "struct",
+      "oracle_id": "normalize_stats_presence_v01",
+      "owning_bug": "BUG_dfdraw_20260905_draw_profile_y_vector_normalize_ignored",
+      "owning_component": "dfdraw",
+      "owning_phase": "dfdraw normalization routing follow-up",
+      "rationale": "DFDraw.profile normalizes the Y-vector, but DFDraw.draw(type=profile) returns ordinary per-curve stats; ADF routes through DFDraw.draw.",
+      "vector_compose": "outer"
+    }
+  ],
+  "created": "2026-09-05",
+  "explicit_non_goal": {
+    "hist_norm_and_norm": "separate histogram-normalization family"
+  },
+  "governing_global_decisions": [
+    "AD-4/13.76.ADF",
+    "AD-16/13.76.ADF"
+  ],
+  "local_ratified_decisions": {
+    "BN0-D1": "ratio canonical core; delta/log_ratio/pull/callable bounded seams",
+    "BN0-D2": "5 forms x 3 curve sources x eager/lazy",
+    "BN0-D3": "core pins vector_compose=outer; auto-force is separate seam",
+    "BN0-D4": "non-profile normalize= is REFUSE_BY_DESIGN (raise)",
+    "BN0-D5": "supported current gaps remain KNOWN_GAP/strict-XFAIL; no production repair in PHASE_13_79"
+  },
+  "measurement_summary": {
+    "derived_core_cells": 30,
+    "gap_families": {
+      "BUG_20260701_ADF_subframe_ref_slot_symmetry": 8,
+      "BUG_dfdraw_20260905_draw_profile_y_vector_normalize_ignored": 10
+    },
+    "known_gap": 18,
+    "passing": 12
+  },
+  "non_profile_contract": [
+    {
+      "current_state": "KNOWN_GAP_SILENT_IGNORE",
+      "interface_contract": "REFUSE_BY_DESIGN",
+      "plot_type": "hist",
+      "required_behavior": "raise deterministic API-level exception"
+    },
+    {
+      "current_state": "KNOWN_GAP_SILENT_IGNORE",
+      "interface_contract": "REFUSE_BY_DESIGN",
+      "plot_type": "scatter",
+      "required_behavior": "raise deterministic API-level exception"
+    },
+    {
+      "current_state": "KNOWN_GAP_SILENT_IGNORE",
+      "interface_contract": "REFUSE_BY_DESIGN",
+      "plot_type": "hist2d",
+      "required_behavior": "raise deterministic API-level exception"
+    }
+  ],
+  "schema": "AliasDataFrame.PHASE_13_79.NormalizationContract",
+  "schema_version": 1,
+  "seams": [
+    {
+      "current_state": "UNMEASURED",
+      "implementation_stage": "BN2",
+      "interface_contract": "SUPPORTED",
+      "kind": "mode",
+      "seam_id": "normalize:mode:delta"
+    },
+    {
+      "current_state": "UNMEASURED",
+      "implementation_stage": "BN2",
+      "interface_contract": "SUPPORTED",
+      "kind": "mode",
+      "seam_id": "normalize:mode:log_ratio"
+    },
+    {
+      "current_state": "UNMEASURED",
+      "implementation_stage": "BN2",
+      "interface_contract": "SUPPORTED",
+      "kind": "mode",
+      "seam_id": "normalize:mode:pull"
+    },
+    {
+      "current_state": "UNMEASURED",
+      "implementation_stage": "BN2",
+      "interface_contract": "SUPPORTED",
+      "kind": "mode",
+      "seam_id": "normalize:mode:callable_2curve"
+    },
+    {
+      "current_state": "UNMEASURED",
+      "implementation_stage": "BN2",
+      "interface_contract": "SUPPORTED",
+      "kind": "mode",
+      "seam_id": "normalize:mode:callable_4curve"
+    },
+    {
+      "current_state": "UNMEASURED",
+      "implementation_stage": "BN3",
+      "interface_contract": "SUPPORTED",
+      "kind": "composition",
+      "seam_id": "normalize:compose:group_by"
+    },
+    {
+      "current_state": "UNMEASURED",
+      "implementation_stage": "BN3",
+      "interface_contract": "SUPPORTED",
+      "kind": "composition",
+      "seam_id": "normalize:compose:facet_by"
+    },
+    {
+      "current_state": "UNMEASURED",
+      "implementation_stage": "BN3",
+      "interface_contract": "SUPPORTED",
+      "kind": "public_surface",
+      "seam_id": "normalize:surface:draw"
+    },
+    {
+      "current_state": "UNMEASURED",
+      "implementation_stage": "BN3",
+      "interface_contract": "SUPPORTED",
+      "kind": "public_surface",
+      "seam_id": "normalize:surface:draw_batch"
+    },
+    {
+      "current_state": "UNMEASURED",
+      "implementation_stage": "BN3",
+      "interface_contract": "SUPPORTED",
+      "kind": "public_surface",
+      "seam_id": "normalize:surface:draw_figures"
+    },
+    {
+      "current_state": "UNMEASURED",
+      "implementation_stage": "BN3",
+      "interface_contract": "SUPPORTED",
+      "kind": "layout",
+      "seam_id": "normalize:layout:diff_only"
+    },
+    {
+      "current_state": "PREEXISTING_EVIDENCE",
+      "implementation_stage": "BN3",
+      "interface_contract": "SUPPORTED",
+      "kind": "vector_compose",
+      "seam_id": "normalize:vector_compose:auto_force_selection_vector"
+    },
+    {
+      "current_state": "PREEXISTING_EVIDENCE",
+      "implementation_stage": "BN3",
+      "interface_contract": "SUPPORTED",
+      "kind": "vector_compose",
+      "seam_id": "normalize:vector_compose:auto_force_weights_vector"
+    },
+    {
+      "current_state": "KNOWN_GAP_SILENT_IGNORE",
+      "implementation_stage": "BN3",
+      "interface_contract": "REFUSE_BY_DESIGN",
+      "kind": "non_profile",
+      "required_behavior": "raise deterministic API-level exception",
+      "seam_id": "normalize:nonprofile:hist"
+    },
+    {
+      "current_state": "KNOWN_GAP_SILENT_IGNORE",
+      "implementation_stage": "BN3",
+      "interface_contract": "REFUSE_BY_DESIGN",
+      "kind": "non_profile",
+      "required_behavior": "raise deterministic API-level exception",
+      "seam_id": "normalize:nonprofile:scatter"
+    },
+    {
+      "current_state": "KNOWN_GAP_SILENT_IGNORE",
+      "implementation_stage": "BN3",
+      "interface_contract": "REFUSE_BY_DESIGN",
+      "kind": "non_profile",
+      "required_behavior": "raise deterministic API-level exception",
+      "seam_id": "normalize:nonprofile:hist2d"
+    }
+  ],
+  "status": "RATIFIED_BN0_MEASURED_BN1_CANDIDATE"
+}

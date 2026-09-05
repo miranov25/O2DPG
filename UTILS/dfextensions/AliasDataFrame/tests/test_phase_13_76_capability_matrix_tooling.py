@@ -17,6 +17,7 @@ define the bounded API/behavior that the tooling implementation must satisfy.
 
 from __future__ import annotations
 
+import json
 import importlib.util
 import re
 from pathlib import Path
@@ -494,7 +495,7 @@ class TestPhase1379DiagnosticIndex:
 
     def test_T19_runner_defaults_focus_to_phase_13_79_and_packages_candidates(self):
         text = RUNNER_PATH.read_text(encoding="utf-8")
-        assert 'FOCUSED_TESTS="${FOCUSED_TESTS:-tests/test_phase_13_79_slot_grid*.py}"' in text
+        assert 'FOCUSED_TESTS="${FOCUSED_TESTS:-tests/test_phase_13_79_*.py}"' in text
         assert 'docs/CAPABILITY_MATRIX.json' in text
         assert 'for f in $CANDIDATE_FILES' in text
         assert 'ZIP_FILES="$ZIP_FILES $f"' in text
@@ -622,3 +623,34 @@ class TestPhase1379DescriptionMetadata:
         assert all(category["description"] for category in payload["categories"])
         assert len(payload["features"]) == len(gen.FEATURES)
         assert len(payload["categories"]) == len(model["category_order"])
+
+
+class TestPhase1379NormalizationRegistration:
+    def test_T28_normalization_contract_summary_is_machine_derived(self):
+        gen = _load_generator()
+        feature = next(f for f in gen.FEATURES if f["id"] == "DRAW.normalize_integration")
+        summary = gen.feature_contract_summary(feature)
+        assert summary["declared_cells"] == 30
+        assert summary["cell_state_counts"] == {"KNOWN_GAP": 18, "PASSING": 12}
+        assert summary["interface_contract_counts"] == {"SUPPORTED": 30}
+        assert summary["seams"] == 16
+        assert len(summary["sha256"]) == 64
+        assert feature["test_patterns"] == ["test_phase_13_79_normalization_smoke.py"]
+
+    def test_T29_normalization_machine_surface_preserves_gap_families(self):
+        gen = _load_generator()
+        contract_path = PROJECT_ROOT / "tests" / "phase_13_79_normalization_contract.json"
+        payload = json.loads(contract_path.read_text(encoding="utf-8"))
+        assert payload["measurement_summary"]["derived_core_cells"] == 30
+        assert payload["measurement_summary"]["passing"] == 12
+        assert payload["measurement_summary"]["known_gap"] == 18
+        assert payload["measurement_summary"]["gap_families"] == {
+            "BUG_20260701_ADF_subframe_ref_slot_symmetry": 8,
+            "BUG_dfdraw_20260905_draw_profile_y_vector_normalize_ignored": 10,
+        }
+        assert set(payload["governing_global_decisions"]) == {
+            "AD-4/13.76.ADF", "AD-16/13.76.ADF",
+        }
+        assert set(payload["local_ratified_decisions"]) == {
+            "BN0-D1", "BN0-D2", "BN0-D3", "BN0-D4", "BN0-D5",
+        }

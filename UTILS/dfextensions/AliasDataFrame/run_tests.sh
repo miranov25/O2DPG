@@ -143,7 +143,7 @@ GIT_STATUS="$LOG_DIR/git_status_${TS}.txt"
 # Focused (phase) suite, logged SEPARATELY and shipped in the packet.
 # Override the pattern per phase, e.g.:
 #   FOCUSED_TESTS="tests/test_phase_13_77_*.py" bash run_tests.sh
-FOCUSED_TESTS="${FOCUSED_TESTS:-tests/test_phase_13_79_slot_grid*.py}"
+FOCUSED_TESTS="${FOCUSED_TESTS:-tests/test_phase_13_79_*.py}"
 FOCUSED_LOG="$LOG_DIR/test_focused_${TS}.log"
 
 # RUNNER-FOCUS-1: exact focused collection evidence. The manifest is the
