@@ -324,13 +324,17 @@ FEATURES = [
          "forms": 5,
          "loading_modes": 2,
          "core_cells": 30,
-         "evidence": ["BN-SMOKE", "BN-INVARIANCE"],
+         "evidence": ["BN-SMOKE", "BN-INVARIANCE", "BN3-SEAMS"],
          "mode_seams": 5,
+         "bn3_seams": 11,
+         "bn3_passing": 8,
+         "bn3_known_gap": 3,
      },
      "contract_file": "tests/phase_13_79_normalization_contract.json",
      "test_patterns": [
          "test_phase_13_79_normalization_smoke.py",
          "test_phase_13_79_normalization_invariance.py",
+         "test_phase_13_79_normalization_seams.py",
      ]},
 
     # ── COMPRESSION (3) ──

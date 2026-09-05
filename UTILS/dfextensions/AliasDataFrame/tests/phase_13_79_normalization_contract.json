@@ -20,13 +20,13 @@
     ],
     "vector_compose": "outer"
   },
-  "base_commit": "c26fb049",
+  "base_commit": "549a4b03",
   "bounded_seams": {
     "composition_seams": [
       "group_by",
       "facet_by"
     ],
-    "implementation_stage": "DEFERRED_TO_BN2_BN3_AFTER_BN_SMOKE",
+    "implementation_stage": "BN2_AND_BN3_MEASURED_CANDIDATE",
     "layout_seams": [
       "diff_only"
     ],
@@ -699,22 +699,40 @@
   },
   "non_profile_contract": [
     {
-      "current_state": "KNOWN_GAP_SILENT_IGNORE",
+      "current_state": "KNOWN_GAP_WARN_AND_IGNORE",
       "interface_contract": "REFUSE_BY_DESIGN",
       "plot_type": "hist",
-      "required_behavior": "raise deterministic API-level exception"
+      "required_behavior": "raise deterministic API-level exception",
+      "owning_bug": "BUG_dfdraw_20260905_nonprofile_normalize_warn_ignore",
+      "observed_warning_fragment": "Parameter 'normalize' is not used by type='hist' and is ignored",
+      "current_gap_signature": {
+        "type": "AssertionError",
+        "message_fragment": "BN3 expected REFUSE_BY_DESIGN raise; observed warn+ignore"
+      }
     },
     {
-      "current_state": "KNOWN_GAP_SILENT_IGNORE",
+      "current_state": "KNOWN_GAP_WARN_AND_IGNORE",
       "interface_contract": "REFUSE_BY_DESIGN",
       "plot_type": "scatter",
-      "required_behavior": "raise deterministic API-level exception"
+      "required_behavior": "raise deterministic API-level exception",
+      "owning_bug": "BUG_dfdraw_20260905_nonprofile_normalize_warn_ignore",
+      "observed_warning_fragment": "Parameter 'normalize' is not used by type='scatter' and is ignored",
+      "current_gap_signature": {
+        "type": "AssertionError",
+        "message_fragment": "BN3 expected REFUSE_BY_DESIGN raise; observed warn+ignore"
+      }
     },
     {
-      "current_state": "KNOWN_GAP_SILENT_IGNORE",
+      "current_state": "KNOWN_GAP_WARN_AND_IGNORE",
       "interface_contract": "REFUSE_BY_DESIGN",
       "plot_type": "hist2d",
-      "required_behavior": "raise deterministic API-level exception"
+      "required_behavior": "raise deterministic API-level exception",
+      "owning_bug": "BUG_dfdraw_20260905_nonprofile_normalize_warn_ignore",
+      "observed_warning_fragment": "Parameter 'normalize' is not used by type='hist2d' and is ignored",
+      "current_gap_signature": {
+        "type": "AssertionError",
+        "message_fragment": "BN3 expected REFUSE_BY_DESIGN raise; observed warn+ignore"
+      }
     }
   ],
   "schema": "AliasDataFrame.PHASE_13_79.NormalizationContract",
@@ -766,87 +784,124 @@
       "oracle_id": "independent_mode_transform_v01"
     },
     {
-      "current_state": "UNMEASURED",
+      "current_state": "PASSING",
       "implementation_stage": "BN3",
       "interface_contract": "SUPPORTED",
       "kind": "composition",
-      "seam_id": "normalize:compose:group_by"
+      "seam_id": "normalize:compose:group_by",
+      "evidence_class": "BN3-SEAM",
+      "oracle_id": "independent_ratio_profile_numpy_v01"
     },
     {
-      "current_state": "UNMEASURED",
+      "current_state": "PASSING",
       "implementation_stage": "BN3",
       "interface_contract": "SUPPORTED",
       "kind": "composition",
-      "seam_id": "normalize:compose:facet_by"
+      "seam_id": "normalize:compose:facet_by",
+      "evidence_class": "BN3-SEAM",
+      "oracle_id": "independent_ratio_profile_numpy_v01"
     },
     {
-      "current_state": "UNMEASURED",
+      "current_state": "PASSING",
       "implementation_stage": "BN3",
       "interface_contract": "SUPPORTED",
       "kind": "public_surface",
-      "seam_id": "normalize:surface:draw"
+      "seam_id": "normalize:surface:draw",
+      "evidence_class": "BN3-SEAM",
+      "oracle_id": "independent_ratio_profile_numpy_v01"
     },
     {
-      "current_state": "UNMEASURED",
+      "current_state": "PASSING",
       "implementation_stage": "BN3",
       "interface_contract": "SUPPORTED",
       "kind": "public_surface",
-      "seam_id": "normalize:surface:draw_batch"
+      "seam_id": "normalize:surface:draw_batch",
+      "evidence_class": "BN3-SEAM",
+      "oracle_id": "independent_ratio_profile_numpy_v01"
     },
     {
-      "current_state": "UNMEASURED",
+      "current_state": "PASSING",
       "implementation_stage": "BN3",
       "interface_contract": "SUPPORTED",
       "kind": "public_surface",
-      "seam_id": "normalize:surface:draw_figures"
+      "seam_id": "normalize:surface:draw_figures",
+      "evidence_class": "BN3-SEAM",
+      "oracle_id": "independent_ratio_profile_numpy_v01"
     },
     {
-      "current_state": "UNMEASURED",
+      "current_state": "PASSING",
       "implementation_stage": "BN3",
       "interface_contract": "SUPPORTED",
       "kind": "layout",
-      "seam_id": "normalize:layout:diff_only"
+      "seam_id": "normalize:layout:diff_only",
+      "evidence_class": "BN3-SEAM",
+      "oracle_id": "independent_ratio_profile_numpy_v01"
     },
     {
-      "current_state": "PREEXISTING_EVIDENCE",
+      "current_state": "PASSING",
       "implementation_stage": "BN3",
       "interface_contract": "SUPPORTED",
       "kind": "vector_compose",
-      "seam_id": "normalize:vector_compose:auto_force_selection_vector"
+      "seam_id": "normalize:vector_compose:auto_force_selection_vector",
+      "evidence_class": "BN3-SEAM",
+      "oracle_id": "public_delegation_capture_plus_independent_ratio_v01"
     },
     {
-      "current_state": "PREEXISTING_EVIDENCE",
+      "current_state": "PASSING",
       "implementation_stage": "BN3",
       "interface_contract": "SUPPORTED",
       "kind": "vector_compose",
-      "seam_id": "normalize:vector_compose:auto_force_weights_vector"
+      "seam_id": "normalize:vector_compose:auto_force_weights_vector",
+      "evidence_class": "BN3-SEAM",
+      "oracle_id": "public_delegation_capture_plus_independent_ratio_v01"
     },
     {
-      "current_state": "KNOWN_GAP_SILENT_IGNORE",
+      "current_state": "KNOWN_GAP_WARN_AND_IGNORE",
       "implementation_stage": "BN3",
       "interface_contract": "REFUSE_BY_DESIGN",
       "kind": "non_profile",
       "required_behavior": "raise deterministic API-level exception",
-      "seam_id": "normalize:nonprofile:hist"
+      "seam_id": "normalize:nonprofile:hist",
+      "evidence_class": "BN3-REFUSAL-CONTRACT",
+      "owning_bug": "BUG_dfdraw_20260905_nonprofile_normalize_warn_ignore",
+      "observed_warning_fragment": "Parameter 'normalize' is not used by type='hist' and is ignored",
+      "current_gap_signature": {
+        "type": "AssertionError",
+        "message_fragment": "BN3 expected REFUSE_BY_DESIGN raise; observed warn+ignore"
+      }
     },
     {
-      "current_state": "KNOWN_GAP_SILENT_IGNORE",
+      "current_state": "KNOWN_GAP_WARN_AND_IGNORE",
       "implementation_stage": "BN3",
       "interface_contract": "REFUSE_BY_DESIGN",
       "kind": "non_profile",
       "required_behavior": "raise deterministic API-level exception",
-      "seam_id": "normalize:nonprofile:scatter"
+      "seam_id": "normalize:nonprofile:scatter",
+      "evidence_class": "BN3-REFUSAL-CONTRACT",
+      "owning_bug": "BUG_dfdraw_20260905_nonprofile_normalize_warn_ignore",
+      "observed_warning_fragment": "Parameter 'normalize' is not used by type='scatter' and is ignored",
+      "current_gap_signature": {
+        "type": "AssertionError",
+        "message_fragment": "BN3 expected REFUSE_BY_DESIGN raise; observed warn+ignore"
+      }
     },
     {
-      "current_state": "KNOWN_GAP_SILENT_IGNORE",
+      "current_state": "KNOWN_GAP_WARN_AND_IGNORE",
       "implementation_stage": "BN3",
       "interface_contract": "REFUSE_BY_DESIGN",
       "kind": "non_profile",
       "required_behavior": "raise deterministic API-level exception",
-      "seam_id": "normalize:nonprofile:hist2d"
+      "seam_id": "normalize:nonprofile:hist2d",
+      "evidence_class": "BN3-REFUSAL-CONTRACT",
+      "owning_bug": "BUG_dfdraw_20260905_nonprofile_normalize_warn_ignore",
+      "observed_warning_fragment": "Parameter 'normalize' is not used by type='hist2d' and is ignored",
+      "current_gap_signature": {
+        "type": "AssertionError",
+        "message_fragment": "BN3 expected REFUSE_BY_DESIGN raise; observed warn+ignore"
+      }
     }
   ],
-  "status": "RATIFIED_BN0_MEASURED_BN1_BN2_CANDIDATE",
+  "status": "BN3_MEASURED_CANDIDATE",
   "bn2_invariance": {
     "status": "MEASURED_CANDIDATE",
     "oracle_id": "independent_ratio_profile_numpy_v01",
@@ -857,5 +912,21 @@
     "mode_seams_passing": 5,
     "oracle_independence": "raw deterministic fixture arrays + numpy binning/statistics; does not call dfdraw normalization transform"
   },
-  "bn0_ratification_base_commit": "fa57cd35"
+  "bn0_ratification_base_commit": "fa57cd35",
+  "bn3_seams": {
+    "status": "MEASURED_CANDIDATE",
+    "total_seams": 11,
+    "passing": 8,
+    "known_gap": 3,
+    "composition_passing": 2,
+    "public_surface_passing": 3,
+    "layout_passing": 1,
+    "vector_compose_passing": 2,
+    "non_profile_known_gap": 3,
+    "non_profile_bug": "BUG_dfdraw_20260905_nonprofile_normalize_warn_ignore",
+    "ratio_oracle_id": "independent_ratio_profile_numpy_v01",
+    "vector_compose_oracle_id": "public_delegation_capture_plus_independent_ratio_v01",
+    "non_profile_current_behavior": "warn+ignore",
+    "non_profile_required_behavior": "raise deterministic API-level exception"
+  }
 }

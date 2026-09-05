@@ -638,6 +638,7 @@ class TestPhase1379NormalizationRegistration:
         assert feature["test_patterns"] == [
             "test_phase_13_79_normalization_smoke.py",
             "test_phase_13_79_normalization_invariance.py",
+            "test_phase_13_79_normalization_seams.py",
         ]
 
     def test_T29_normalization_machine_surface_preserves_gap_families(self):
@@ -693,4 +694,48 @@ class TestPhase1379NormalizationRegistration:
         assert all(row["oracle_id"] == "independent_mode_transform_v01" for row in bn2)
         # BN-2 must not silently claim BN-3 seams.
         assert all(row["implementation_stage"] == "BN3" for row in bn3)
+
+    def test_T32_normalization_bn3_seam_summary_is_machine_derived(self):
+        contract_path = PROJECT_ROOT / "tests" / "phase_13_79_normalization_contract.json"
+        payload = json.loads(contract_path.read_text(encoding="utf-8"))
+        assert payload["bn3_seams"] == {
+            "status": "MEASURED_CANDIDATE",
+            "total_seams": 11,
+            "passing": 8,
+            "known_gap": 3,
+            "composition_passing": 2,
+            "public_surface_passing": 3,
+            "layout_passing": 1,
+            "vector_compose_passing": 2,
+            "non_profile_known_gap": 3,
+            "non_profile_bug": "BUG_dfdraw_20260905_nonprofile_normalize_warn_ignore",
+            "ratio_oracle_id": "independent_ratio_profile_numpy_v01",
+            "vector_compose_oracle_id": "public_delegation_capture_plus_independent_ratio_v01",
+            "non_profile_current_behavior": "warn+ignore",
+            "non_profile_required_behavior": "raise deterministic API-level exception",
+        }
+
+    def test_T33_normalization_bn3_states_and_nonprofile_refusal_contract_are_exact(self):
+        contract_path = PROJECT_ROOT / "tests" / "phase_13_79_normalization_contract.json"
+        payload = json.loads(contract_path.read_text(encoding="utf-8"))
+        bn3 = [row for row in payload["seams"] if row["implementation_stage"] == "BN3"]
+        assert len(bn3) == 11
+        passing = [row for row in bn3 if row["current_state"] == "PASSING"]
+        gaps = [row for row in bn3 if row["current_state"] == "KNOWN_GAP_WARN_AND_IGNORE"]
+        assert len(passing) == 8
+        assert len(gaps) == 3
+        assert {row["kind"] for row in passing} == {
+            "composition", "public_surface", "layout", "vector_compose",
+        }
+        assert {row["seam_id"] for row in gaps} == {
+            "normalize:nonprofile:hist",
+            "normalize:nonprofile:scatter",
+            "normalize:nonprofile:hist2d",
+        }
+        assert all(row["interface_contract"] == "REFUSE_BY_DESIGN" for row in gaps)
+        assert all(row["owning_bug"] == "BUG_dfdraw_20260905_nonprofile_normalize_warn_ignore" for row in gaps)
+        nonprofile = payload["non_profile_contract"]
+        assert {row["plot_type"] for row in nonprofile} == {"hist", "scatter", "hist2d"}
+        assert all(row["current_state"] == "KNOWN_GAP_WARN_AND_IGNORE" for row in nonprofile)
+        assert all("is ignored" in row["observed_warning_fragment"] for row in nonprofile)
 
