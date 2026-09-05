@@ -555,3 +555,70 @@ class TestPhase1379MachineSurfaceExport:
         ]
         changed["DRAW.slot_grid"]["rows"][0]["current_state"] = "__MUTATED__"
         assert gen._semantic_payload_digest(changed) != digest
+
+
+class TestPhase1379DescriptionMetadata:
+    """Part-A A-1: one presentation source feeds MD/HTML/JSON."""
+
+    def test_T23_every_live_feature_has_unique_id_short_name_and_description(self):
+        gen = _load_generator()
+        ids = [feature["id"] for feature in gen.FEATURES]
+        assert len(ids) == len(set(ids)), "Capability IDs must remain unique"
+        for feature in gen.FEATURES:
+            assert feature["name"].strip() == feature["name"]
+            assert feature["name"], feature["id"]
+            assert "\n" not in feature["name"], feature["id"]
+            assert feature.get("description", "").strip(), feature["id"]
+
+    def test_T24_every_live_category_has_nonempty_documentation(self):
+        gen = _load_generator()
+        live_categories = {feature["category"] for feature in gen.FEATURES}
+        assert set(gen.CATEGORY_DESCRIPTIONS) == live_categories
+        for category in live_categories:
+            assert gen.CATEGORY_DESCRIPTIONS[category].strip(), category
+
+    def test_T25_json_exports_same_feature_and_category_descriptions(self):
+        gen = _load_generator()
+        model = gen.build_matrix_model({}, {}, phase="PHASE_13_79_ADF")
+        payload = gen.export_json_model(model)
+
+        exported_features = {f["id"]: f for f in payload["features"]}
+        assert set(exported_features) == {f["id"] for f in gen.FEATURES}
+        for feature in gen.FEATURES:
+            got = exported_features[feature["id"]]
+            assert got["name"] == feature["name"]
+            assert got["description"] == feature["description"]
+
+        exported_categories = {c["id"]: c["description"] for c in payload["categories"]}
+        assert exported_categories == {
+            category: gen.CATEGORY_DESCRIPTIONS[category]
+            for category in model["category_order"]
+        }
+
+    def test_T26_markdown_and_html_render_same_description_payload(self):
+        import html as html_lib
+
+        gen = _load_generator()
+        html_gen = _load_html_generator()
+        model = gen.build_matrix_model({}, {}, phase="PHASE_13_79_ADF")
+        md = gen.render_markdown(model)
+        rendered_html = html_gen.generate_html_from_model(model)
+
+        for feature in gen.FEATURES:
+            assert feature["description"] in md, feature["id"]
+            assert html_lib.escape(feature["description"], quote=True) in rendered_html, feature["id"]
+
+        for category, description in gen.CATEGORY_DESCRIPTIONS.items():
+            assert description in md, category
+            assert html_lib.escape(description, quote=True) in rendered_html, category
+            assert f"## {category}" in md
+
+    def test_T27_regeneration_cannot_silently_drop_description_payload(self):
+        gen = _load_generator()
+        model = gen.build_matrix_model({}, {}, phase="PHASE_13_79_ADF")
+        payload = gen.export_json_model(model)
+
+        assert all(feature["description"] for feature in payload["features"])
+        assert all(category["description"] for category in payload["categories"])
+        assert len(payload["features"]) == len(gen.FEATURES)
+        assert len(payload["categories"]) == len(model["category_order"])

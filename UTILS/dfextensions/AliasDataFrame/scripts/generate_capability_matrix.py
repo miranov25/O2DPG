@@ -34,7 +34,7 @@ PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 sys.path.insert(0, os.path.join(PROJECT_DIR, "tests"))
 
 try:
-    from feature_taxonomy import FEATURES
+    from feature_taxonomy import FEATURES, CATEGORY_DESCRIPTIONS
 except ImportError:
     print("ERROR: Cannot import feature_taxonomy. Place feature_taxonomy.py in tests/")
     sys.exit(1)
@@ -230,6 +230,10 @@ def export_json_model(model):
         "provenance": model.get("provenance", {}),
         "semantic_payload_digest": _semantic_payload_digest(surfaces),
         "summary": model["summary"],
+        "categories": [
+            {"id": category, "description": model.get("category_descriptions", {}).get(category, "")}
+            for category in model.get("category_order", [])
+        ],
         "features": features,
         "surfaces": surfaces,
         "unmatched": [node_records[n] for n in model["unmatched"]],
@@ -378,10 +382,21 @@ def build_matrix_model(results, markers, phase="13.11.B", features=None):
             "line": loc["line"],
         }
 
+    category_order = []
+    for feature in features:
+        category = feature.get("category", "")
+        if category and category not in category_order:
+            category_order.append(category)
+
     return {
         "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "phase": phase,
         "taxonomy_size": len(features),
+        "category_order": category_order,
+        "category_descriptions": {
+            category: CATEGORY_DESCRIPTIONS.get(category, "")
+            for category in category_order
+        },
         "features": data,
         "summary": {
             "status_counts": {
@@ -469,6 +484,11 @@ def render_markdown(model):
         lines += [
             f"## {category}",
             "",
+        ]
+        category_description = model.get("category_descriptions", {}).get(category, "")
+        if category_description:
+            lines += [category_description, ""]
+        lines += [
             "| Status | Feature | Tests | Pass | Fail | Err | XFail | XPass | Skip | Inv |",
             "|--------|---------|------:|-----:|-----:|----:|------:|------:|-----:|----:|",
         ]

@@ -850,3 +850,133 @@ FEATURES = [
      ]},
 
 ]
+
+# =============================================================================
+# PHASE_13_79_ADF Part-A A-1 — human/AI presentation metadata
+# =============================================================================
+#
+# Keep presentation prose here, beside the feature ownership taxonomy, so the
+# Markdown, HTML and JSON renderers consume one source of truth.  The short
+# ``name`` is a label; ``description`` says what the capability proves and what
+# a user-visible failure means.  Category descriptions explain where a problem
+# belongs without encoding a fixed feature/category count.
+#
+# These dictionaries are deliberately exhaustive.  Adding/removing a live
+# feature or category without updating its presentation metadata fails at
+# import and is independently covered by Capability Matrix tooling meta-tests.
+
+CATEGORY_DESCRIPTIONS = {
+    "CORE": "Core AliasDataFrame behavior: construction, aliases, dependencies, materialization, dtype handling, invalidation, cleanup and public API guarantees.",
+    "SUBFRAMES": "Registration, joining, nesting and lifecycle of child AliasDataFrames. Use this category for qualified columns, join keys, replacement and multi-level subframe behavior.",
+    "SCHEMA": "Schema validation and persistence across JSON/ROOT boundaries, including versioning and round-trip preservation of ADF metadata.",
+    "REGISTERED_FUNCTIONS": "User-registered evaluators, polynomial/regression helpers and ML models, including metadata, lazy evaluation and persistence of registered computations.",
+    "ALIAS": "Specialized alias-definition semantics that do not fit the general CORE alias bucket, such as source-scoped name binding.",
+    "DIAGNOSTICS": "User-facing inspection and diagnostic surfaces. These tests check that ADF reports internal/lazy state accurately without changing that state.",
+    "DRAWING": "ADF drawing surfaces and their preparation logic: draw, batch/figure dispatch, required-column resolution, subframe handling and systematic slot symmetry.",
+    "COMPRESSION": "Column compression/decompression behavior, method selection and quality monitoring, including numerical round-trip expectations.",
+    "BACKEND": "Alternative execution backends and acceleration paths such as NumPy, PyArrow and Numba, including equivalence between backends.",
+    "LAZY_LOADING": "On-demand ROOT/chain loading, autoload, release and lazy subframe behavior. Failures usually mean required data is not loaded, unrelated data is loaded, or lazy/eager results diverge.",
+    "SUBFRAME": "Specialized subframe mechanics kept under the historical singular category, currently including asymmetric parent/child join-key naming.",
+    "OBJECT": "Structured/object branch support, including logical member naming, loading, aliases and analysis-surface access to 1:1 ROOT structs.",
+    "FIT_REGISTRATION": "Registration, retrieval and visualization of fit metadata/results used by downstream analysis and diagnostics.",
+    "RDATAFRAME": "Interop with ROOT RDataFrame, including export and composite-key behavior.",
+    "INVARIANCE": "Cross-surface and cross-mode equivalence tests. These are correctness oracles showing that different supported representations/execution paths produce the same semantics.",
+    "DISPATCH": "Routing between ADF and dfdraw, error propagation and the bounded data handed to draw surfaces. Failures include wrong routing, swallowed errors or oversized/full-frame dispatch.",
+    "TESTING": "Testing and review infrastructure that validates the Capability Matrix and phase acceptance harnesses rather than end-user data operations directly.",
+}
+
+FEATURE_PRESENTATION = {
+    "CORE.alias_definition": ("Alias definition and evaluation", "Defines scalar aliases and evaluates expressions with the documented namespace and dtype behavior. A failure means a valid alias is rejected, resolves the wrong symbol, or produces different values from its expression."),
+    "CORE.materialization": ("Alias materialization", "Materializes one or many aliases into frame columns while preserving dependency/order semantics. A failure means materialization is missing, repeated incorrectly, or depends on batch/order history."),
+    "CORE.dependency_resolution": ("Dynamic dependency resolution", "Resolves alias dependency chains at use time, including deferred names and fill-value propagation. A failure means a definition is rejected too early, remains unresolved when its inputs exist, or resolves against stale/wrong dependencies."),
+    "CORE.dtypes": ("Dtype handling and casting", "Preserves and applies authoritative dtypes through alias evaluation, joins and casts. A failure means values are silently widened/narrowed, dtype metadata drifts, or a valid dtype path is refused."),
+    "CORE.constructor": ("DataFrame construction", "Creates AliasDataFrame objects with the expected frame, schema and initialization contract. A failure means valid construction breaks or required initial state is missing/inconsistent."),
+    "CORE.describe": ("Structure and alias inspection", "Reports physical columns, aliases and resolved/unresolved definitions without changing them. A failure means diagnostics hide or misclassify logical state or trigger unintended materialization."),
+    "CORE.cleanup": ("Temporary-column cleanup", "Removes temporary/materialized helper columns according to ADF ownership rules. A failure means temporary state leaks, user columns are removed, or cleanup changes results."),
+    "CORE.api_contract": ("Public API contract", "Pins stable public methods/proxy behavior and backward-compatible access patterns. A failure means supported user code changes meaning or previously documented API behavior disappears."),
+    "SUB.register": ("Subframe registration and replacement", "Registers/re-registers child ADFs and preserves ownership/invalidation rules for dependent state. A failure means replacement leaves stale dependent results, rejects valid registration, or binds the wrong child."),
+    "SUB.join": ("Subframe joins and column resolution", "Joins child columns to the parent using declared keys and missing-key/fill semantics with cache/order invariance. A failure means rows match incorrectly, missing rows get wrong values, or cached and fresh joins disagree."),
+    "SUB.composite_key": ("Composite subframe keys", "Supports multi-column subframe join keys with order-independent value semantics. A failure means composite keys match the wrong rows or key ordering changes the result."),
+    "SUB.auto_alias": ("Automatic subframe aliases", "Creates/uses automatic aliases for subframe columns without cycles or duplicate materialization. A failure means auto-aliasing resolves differently from the equivalent manual alias or creates self-reference."),
+    "SUB.clone": ("Clone with selection", "Planned capability for cloning an ADF under a row selection. No executable proof is registered yet, so the matrix should remain Planned until tests define the contract."),
+    "SUB.nested": ("Nested subframe export", "Exports and reloads nested subframe structures while preserving their schema and recursive accessibility. A failure means nested content is lost, flattened incorrectly, or cannot be reconstructed."),
+    "SCHEMA.export_import": ("Schema JSON round-trip", "Exports/imports ADF schema metadata through JSON while preserving aliases, dtypes and other declared state. A failure means round-trip metadata changes or cannot be reapplied."),
+    "SCHEMA.root_persistence": ("ROOT persistence", "Persists ADF data/schema through ROOT files and reconstructs equivalent eager/lazy state. A failure means saved state is lost, corrupted, or reload results differ from the source frame."),
+    "SCHEMA.validation": ("Schema validation", "Checks data/schema consistency and reports invalid records according to strict/non-strict validation rules. A failure means incompatible state is accepted or valid schema/data is rejected."),
+    "SCHEMA.versioning": ("Schema versioning and migration", "Protects schema-version changes and migration/deprecation behavior. A failure means incompatible versions are silently accepted or supported migrations lose information."),
+    "FUNC.register_function": ("Registered function API", "Registers callable functions for use in aliases while preserving argument semantics and representation identity. A failure means a registered function cannot be evaluated or behaves differently from the direct callable."),
+    "FUNC.polynomial": ("Polynomial registration", "Builds PolynomialSpec expressions and registers polynomial corrections, including subframe-driven coefficients. A failure means basis/formula generation, ROOT translation or registered evaluation is incorrect."),
+    "FUNC.evaluator": ("Evaluator registration", "Registers evaluator objects/functions as reusable ADF computations. A failure means evaluator binding, invocation or metadata behavior differs from the declared contract."),
+    "ALIAS.source_scoped": ("Source-scoped alias resolution", "Binds bare names in an alias to a declared subframe using token-aware resolution while protecting parent/source shadowing. A failure means a name is qualified to the wrong source, shadowing is silent, or lazy available names are misclassified."),
+    "DIAGNOSTICS.lazy_state": ("Lazy-state diagnostics", "Reports available, loaded and not-yet-loaded branches for the main frame and lazy subframes without loading data. A failure means the diagnostic changes state or reports an inaccurate lazy inventory."),
+    "CORE.vector_alias": ("Vector aliases and multi-output evaluation", "Defines multiple scalar aliases from one tuple/2-D expression and evaluates shared computation once with cache/invalidation semantics. A failure means sibling outputs reorder/drift, evaluation repeats incorrectly, or arity/dtype mismatches are not refused."),
+    "FUNC.ml_model": ("ML model registration and persistence", "Registers ML inference as lazy aliases and persists/reloads supported model formats with integrity and multi-output caching. A failure means predictions, model bytes, feature order or cache invalidation differ after registration/persistence."),
+    "FUNC.persistence": ("Registered-function persistence", "Persists registered function metadata through the ADF schema and restores equivalent callable behavior. A failure means function definitions/metadata disappear or reload evaluation differs."),
+    "DRAW.execution": ("draw execution", "Runs draw() with automatic discovery/materialization of the columns and aliases required by the plot. A failure means a valid plot cannot resolve its inputs or produces different data than explicit materialization."),
+    "DRAW.batch": ("Batch and figure drawing", "Runs draw_batch() and draw_figures() across multiple specifications while preserving per-request semantics and errors. A failure means batch/figure results diverge from equivalent individual draws or one request contaminates another."),
+    "DRAW.subframe_resolution": ("Subframe resolution in draw", "Resolves owner-qualified subframe dependencies for draw requests and reconciles planned vs runtime outcomes per request/spec slot. A failure means a qualified dependency is missed, over-generalized, leaked across calls, or cleaned up incorrectly."),
+    "DRAW.compound_expr": ("Compound-expression drawing", "Discovers and lazily materializes dependencies inside compound draw expressions. A failure means an expression works only after manual preloading or loads/evaluates the wrong inputs."),
+    "DRAW.invariance": ("Draw/materialize invariance", "Checks that drawing directly and drawing after explicit materialization/filtering produce equivalent numerical results. A failure means draw-path preparation changes analysis semantics."),
+    "DRAW.slot_grid": ("Systematic draw slot symmetry grid", "Checks draw parameters such as selection, weights, grouping, faceting and vectors across column/alias/expression/struct/subframe forms and eager/lazy modes. A failure means an architect-supported representation is rejected, ignored or differs from its canonical plain-data reference."),
+    "COMP.roundtrip": ("Compression round-trip", "Compresses and decompresses columns within the declared numerical fidelity contract. A failure means recovered values exceed tolerance or metadata cannot reproduce the encoded data."),
+    "COMP.selection": ("Compression method selection", "Chooses/records the appropriate compression strategy for supported column types and options. A failure means the wrong codec/parameters are selected or unsupported state is silently accepted."),
+    "COMP.monitoring": ("Compression quality monitoring", "Measures compression quality and error diagnostics so lossy behavior remains visible. A failure means excessive distortion is not detected or monitoring statistics are incorrect."),
+    "BACK.arrow": ("PyArrow backend", "Executes supported expression/scatter work through PyArrow acceleration while preserving ADF semantics. A failure means Arrow-specific execution produces wrong values or cannot handle a supported operation."),
+    "BACK.numba": ("Numba backend", "Executes supported accelerated kernels through Numba, including join/scatter paths. A failure means the accelerated result differs from the reference path or key/value semantics are corrupted."),
+    "BACK.invariance": ("Backend equivalence", "Compares NumPy/PyArrow/Numba implementations on the same operation. A failure means backend choice changes numerical or relational results."),
+    "LAZY.read_tree": ("Lazy ROOT-tree loading", "Opens ROOT data lazily and loads requested branches on demand. A failure means required branches are unavailable, unrelated branches load prematurely, or lazy values differ from eager reads."),
+    "LAZY.chain": ("Lazy multi-file chains", "Provides lazy access across multiple ROOT files with stable row/branch behavior. A failure means file boundaries, branch availability or combined values differ from the equivalent eager chain."),
+    "LAZY.materialization": ("Lazy subframe and alias materialization", "Resolves physical/logical dependencies on demand across eager/lazy parent-child combinations and error policies. A failure means a required lazy dependency is not loaded, unrelated data is loaded, or raise/warn behavior resolves the wrong request."),
+    "LAZY.userinfo_backcompat": ("Lazy UserInfo metadata compatibility", "Reads legacy/current UserInfo metadata on lazy paths using the documented precedence rules. A failure means older files lose metadata or competing metadata sources are resolved incorrectly."),
+    "LAZY.chain_metadata": ("Lazy chain metadata recovery", "Recovers and validates schema/UserInfo metadata across lazy file chains without loading data columns. A failure means incompatible files are silently combined, valid metadata is lost, or metadata recovery forces branch reads."),
+    "LAZY.timeseries_draw": ("Lazy time-series drawing", "Supports time-series lazy loading, draw-surface branch discovery and memory estimation. A failure means time-series plots require manual preload, load unrelated branches, or report misleading memory usage."),
+    "LAZY.subframe_draw": ("Lazy subframe-column drawing", "Draws single/nested qualified subframe columns with on-demand child materialization and join-key setup. A failure means qualified lazy columns cannot be drawn, load the wrong child data, or differ across eager/lazy parent-child layouts."),
+    "LAZY.alias_autoload": ("Lazy alias autoload", "Makes alias materialization/validation/inspection request the physical lazy branches needed by the alias. A failure means aliases require manual branch loading or diagnostics/materialization disagree about dependencies."),
+    "LAZY.expression_autoload": ("Lazy expression autoload", "Uses ensure_columns() to load physical branches required by direct expression/eval paths while filtering subframe-qualified references appropriately. A failure means valid expressions see missing branches or unrelated/subframe names are loaded as root branches."),
+    "LAZY.release": ("Lazy branch and struct release", "Explicitly evicts eligible loaded branches/structs so later access rereads them, while refusing unsafe releases. A failure means released data remains booked, required dependencies are evicted, or eager/non-branch state is silently removed."),
+    "SUBFRAME.asymmetric_join_keys": ("Asymmetric subframe join keys", "Allows parent and child join columns to have different names across all join implementations and schema persistence. A failure means asymmetric keys match incorrectly or only one backend/path supports them."),
+    "OBJECT.struct_1to1": ("1:1 struct/object branches", "Exposes ROOT struct members through logical dot names across loading, aliases and analysis/draw surfaces while preserving physical/internal mapping. A failure means struct members cannot be resolved, are flattened incorrectly, or eager/lazy access differs."),
+    "WRITE.column_assignment": ("Direct column assignment", "Writes adf[col] values into the frame and synchronizes lazy-reader bookkeeping so user-added columns are not rerequested from ROOT. A failure means assignment leaves stale lazy state, accepts invalid shapes/keys, or overwrites alias semantics."),
+    "FIT.registration": ("Fit metadata registration", "Stores and retrieves fit-result metadata used by downstream analysis. A failure means registered fit state is missing, mutated or cannot be queried consistently."),
+    "FIT.visualization": ("Fit-result visualization", "Renders fit summary diagnostics to supported graphics outputs and options. A failure means requested summaries are missing/blank or include the wrong fit content."),
+    "RDF.export": ("RDataFrame export", "Exports ADF data/expressions to ROOT RDataFrame-compatible form. A failure means exported columns/values differ from ADF or supported data cannot be represented."),
+    "RDF.composite": ("RDataFrame composite keys", "Preserves composite-key semantics when interoperating with RDataFrame. A failure means multi-column keys are reordered, collapsed or matched differently."),
+    "INV.cross_module": ("Cross-module invariance", "Checks equivalent operations across ADF and collaborating dfextensions modules. A failure means module boundary/routing changes the numerical or structural result."),
+    "FUNC.regression_metadata": ("Regression metadata", "Registers and updates regression-model metadata used to reconstruct corrections/evaluators. A failure means coefficients/formulas/metadata drift or updates do not replace the intended state."),
+    "FUNC.evaluator_from_metadata": ("Evaluator from metadata", "Builds evaluator bindings from stored regression metadata. A failure means persisted metadata cannot reproduce the intended evaluator or binds inputs incorrectly."),
+    "FUNC.regression_persistence": ("Regression metadata persistence", "Round-trips regression metadata through schema persistence. A failure means model metadata is lost/changed or cannot reconstruct equivalent downstream evaluation."),
+    "SUB.multilevel": ("Multi-level subframe resolution", "Resolves qualified paths such as A.B.C.val through nested subframes. A failure means deep paths stop at the wrong owner, load the wrong level, or differ from equivalent flattened access."),
+    "CORE.dependency_tree": ("Dependency-tree reporting", "Produces text/HTML/list dependency views for aliases and their inputs. A failure means dependencies are missing, duplicated or represented differently across output forms."),
+    "CORE.invalidation": ("Interactive invalidation", "Invalidates materialized/dependent state after alias redefinition or subframe replacement and preserves fresh-instance equivalence. A failure means old values remain authoritative or rejected mutations partially change state."),
+    "DISPATCH.adf_routing": ("ADF-to-dfdraw routing", "Routes draw/draw_figures requests through dfdraw with the expected type aliases, overlays and profile promotion after ADF pre-resolution. A failure means the wrong draw path is used or request semantics change during forwarding."),
+    "DISPATCH.error_visibility": ("Draw error visibility", "Keeps batch/draw errors visible under the documented on_error policy rather than silently swallowing them. A failure means invalid requests appear successful or an error is attributed to the wrong surface."),
+    "DISPATCH.dict_dispatch": ("Bounded draw dispatch frame", "Hands dfdraw only columns required by each draw request while preserving equivalence with full-frame dispatch. A failure means unnecessary full-frame data leaks into drawing, required columns are omitted, or bounded/full results differ."),
+    "TESTING.capability_matrix_index": ("Capability Matrix diagnostic index", "Validates the shared Markdown/HTML/JSON Capability Matrix pipeline, machine contracts, provenance and reviewer packaging. A failure means evidence is missing, renderers disagree, or reviewers cannot trace a capability to exact pytest nodes/source locations."),
+    "TESTING.phase13_77_harness": ("PHASE_13_77 acceptance harness", "Validates the CaseSpec/FigureContract registry, fail-closed gates, manifests, environment handling and anti-false-green controls used for real-data acceptance. A failure means the harness can report PASS with missing, malformed or contradictory evidence."),
+    "INV.draw_surface_consistency": ("Draw-surface consistency", "Checks the same declared draw specification across draw(), draw_batch() and draw_figures(), including explicit supported refusals. A failure means public draw surfaces disagree numerically or closure reconciliation misses a required case."),
+    "INV.eager_lazy_slot_symmetry": ("Eager/lazy slot symmetry", "Checks exact dependency/materialization symmetry for expression-bearing draw slots across eager and lazy execution. A failure means lazy mode loads the wrong dependencies, eager/lazy results diverge, or a slot-specific refusal is misowned."),
+    "INV.realdata_acceptance": ("Real-data acceptance and state invariance", "Runs deterministic gallery/full-stack acceptance with provenance, prepared GB state and logical-state mutation falsifiers. A failure means real workflow results/state differ from independent expectations or the harness can hide environment/state corruption."),
+}
+
+_live_feature_ids = {feature["id"] for feature in FEATURES}
+_live_categories = {feature["category"] for feature in FEATURES}
+if set(FEATURE_PRESENTATION) != _live_feature_ids:
+    missing = sorted(_live_feature_ids - set(FEATURE_PRESENTATION))
+    extra = sorted(set(FEATURE_PRESENTATION) - _live_feature_ids)
+    raise RuntimeError(
+        "PHASE_13_79 A-1 feature presentation drift: "
+        f"missing={missing}, extra={extra}"
+    )
+if set(CATEGORY_DESCRIPTIONS) != _live_categories:
+    missing = sorted(_live_categories - set(CATEGORY_DESCRIPTIONS))
+    extra = sorted(set(CATEGORY_DESCRIPTIONS) - _live_categories)
+    raise RuntimeError(
+        "PHASE_13_79 A-1 category presentation drift: "
+        f"missing={missing}, extra={extra}"
+    )
+
+for _feature in FEATURES:
+    _name, _description = FEATURE_PRESENTATION[_feature["id"]]
+    _feature["name"] = _name
+    _feature["description"] = _description
+

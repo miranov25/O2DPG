@@ -25,7 +25,7 @@ PROJECT = os.path.dirname(HERE) if os.path.basename(HERE) == "scripts" else HERE
 sys.path.insert(0, PROJECT)
 sys.path.insert(0, os.path.join(PROJECT, "tests"))
 try:
-    from feature_taxonomy import FEATURES
+    from feature_taxonomy import FEATURES, CATEGORY_DESCRIPTIONS
 except ImportError as e:
     sys.exit(f"generate_matrix_html: cannot import feature_taxonomy: {e}")
 
@@ -177,7 +177,7 @@ def generate_html_matrix(test_results, features=None, test_layers=None,
                           expected_env=("Linux", "aarch64"),
                           normalized_feature_results=None,
                           semantic_summary=None, generated=None,
-                          node_records=None):
+                          node_records=None, category_descriptions=None):
     """Return a single-file HTML matrix as a string.
 
     Each feature row is anchored at id="feature-{feature_id}" and expands to
@@ -191,6 +191,11 @@ def generate_html_matrix(test_results, features=None, test_layers=None,
     test_layers = test_layers or {}
     known_unclaimed = known_unclaimed or []
     node_records = node_records or {}
+    category_descriptions = (
+        dict(CATEGORY_DESCRIPTIONS)
+        if category_descriptions is None
+        else dict(category_descriptions)
+    )
     now = generated or datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
     # Presentation only.  Canonical PHASE_13_76 runs pass
@@ -304,6 +309,7 @@ tr.tests-row[hidden] { display: none; }
 .tests-panel ul { list-style: none; padding: 0; margin: 0; }
 .tests-panel li { padding: 3px 0; font-family: 'JetBrains Mono', Menlo, monospace; font-size: 0.85em; }
 .feature-description { margin-top: 4px; color: var(--muted); font-size: 0.88em; line-height: 1.35; max-width: 80ch; }
+.category-description { display:block; margin-top:3px; color:var(--muted); font-family:'Newsreader', Georgia, serif; font-weight:400; font-size:0.95em; line-height:1.35; max-width:100ch; }
 .source-locator { color: var(--muted); margin-left: 8px; font-size: 0.9em; }
 .layer-marker { display: inline-block; width: 18px; text-align: center; }
 .outcome { margin-left: 8px; font-size: 0.85em; }
@@ -405,7 +411,14 @@ footer { color: var(--muted); font-size: 0.85em; margin-top: 3em; border-top: 1p
     for f, s in rows:
         cat = f.get("category", "")
         if cat != current_cat:
-            out.append(f'<tr class="category-row"><td colspan="8">{esc(cat)}</td></tr>')
+            category_description = category_descriptions.get(cat, "")
+            description_html = (
+                f'<span class="category-description">{esc(category_description)}</span>'
+                if category_description else ""
+            )
+            out.append(
+                f'<tr class="category-row"><td colspan="8">{esc(cat)}{description_html}</td></tr>'
+            )
             current_cat = cat
         fid = f["id"]
         eye = ' <span class="eye-badge">👁</span>' if s["has_visual"] else ""
@@ -682,6 +695,7 @@ def generate_html_from_model(model, *, project="AliasDataFrame",
         semantic_summary=model.get("summary"),
         generated=model.get("generated"),
         node_records=model.get("node_records", {}),
+        category_descriptions=model.get("category_descriptions", {}),
     )
 
 
