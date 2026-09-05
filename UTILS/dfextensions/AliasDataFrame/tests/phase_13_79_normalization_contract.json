@@ -20,7 +20,7 @@
     ],
     "vector_compose": "outer"
   },
-  "base_commit": "fa57cd35",
+  "base_commit": "c26fb049",
   "bounded_seams": {
     "composition_seams": [
       "group_by",
@@ -721,39 +721,49 @@
   "schema_version": 1,
   "seams": [
     {
-      "current_state": "UNMEASURED",
+      "current_state": "PASSING",
       "implementation_stage": "BN2",
       "interface_contract": "SUPPORTED",
       "kind": "mode",
-      "seam_id": "normalize:mode:delta"
+      "seam_id": "normalize:mode:delta",
+      "evidence_class": "BN-INVARIANCE",
+      "oracle_id": "independent_mode_transform_v01"
     },
     {
-      "current_state": "UNMEASURED",
+      "current_state": "PASSING",
       "implementation_stage": "BN2",
       "interface_contract": "SUPPORTED",
       "kind": "mode",
-      "seam_id": "normalize:mode:log_ratio"
+      "seam_id": "normalize:mode:log_ratio",
+      "evidence_class": "BN-INVARIANCE",
+      "oracle_id": "independent_mode_transform_v01"
     },
     {
-      "current_state": "UNMEASURED",
+      "current_state": "PASSING",
       "implementation_stage": "BN2",
       "interface_contract": "SUPPORTED",
       "kind": "mode",
-      "seam_id": "normalize:mode:pull"
+      "seam_id": "normalize:mode:pull",
+      "evidence_class": "BN-INVARIANCE",
+      "oracle_id": "independent_mode_transform_v01"
     },
     {
-      "current_state": "UNMEASURED",
+      "current_state": "PASSING",
       "implementation_stage": "BN2",
       "interface_contract": "SUPPORTED",
       "kind": "mode",
-      "seam_id": "normalize:mode:callable_2curve"
+      "seam_id": "normalize:mode:callable_2curve",
+      "evidence_class": "BN-INVARIANCE",
+      "oracle_id": "independent_mode_transform_v01"
     },
     {
-      "current_state": "UNMEASURED",
+      "current_state": "PASSING",
       "implementation_stage": "BN2",
       "interface_contract": "SUPPORTED",
       "kind": "mode",
-      "seam_id": "normalize:mode:callable_4curve"
+      "seam_id": "normalize:mode:callable_4curve",
+      "evidence_class": "BN-INVARIANCE",
+      "oracle_id": "independent_mode_transform_v01"
     },
     {
       "current_state": "UNMEASURED",
@@ -836,5 +846,16 @@
       "seam_id": "normalize:nonprofile:hist2d"
     }
   ],
-  "status": "RATIFIED_BN0_MEASURED_BN1_CANDIDATE"
+  "status": "RATIFIED_BN0_MEASURED_BN1_BN2_CANDIDATE",
+  "bn2_invariance": {
+    "status": "MEASURED_CANDIDATE",
+    "oracle_id": "independent_ratio_profile_numpy_v01",
+    "core_rows": 30,
+    "passing": 12,
+    "known_gap": 18,
+    "eager_lazy_equivalence_pairs": 6,
+    "mode_seams_passing": 5,
+    "oracle_independence": "raw deterministic fixture arrays + numpy binning/statistics; does not call dfdraw normalization transform"
+  },
+  "bn0_ratification_base_commit": "fa57cd35"
 }

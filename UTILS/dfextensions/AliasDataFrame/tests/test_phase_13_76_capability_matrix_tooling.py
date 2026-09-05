@@ -635,7 +635,10 @@ class TestPhase1379NormalizationRegistration:
         assert summary["interface_contract_counts"] == {"SUPPORTED": 30}
         assert summary["seams"] == 16
         assert len(summary["sha256"]) == 64
-        assert feature["test_patterns"] == ["test_phase_13_79_normalization_smoke.py"]
+        assert feature["test_patterns"] == [
+            "test_phase_13_79_normalization_smoke.py",
+            "test_phase_13_79_normalization_invariance.py",
+        ]
 
     def test_T29_normalization_machine_surface_preserves_gap_families(self):
         gen = _load_generator()
@@ -654,3 +657,40 @@ class TestPhase1379NormalizationRegistration:
         assert set(payload["local_ratified_decisions"]) == {
             "BN0-D1", "BN0-D2", "BN0-D3", "BN0-D4", "BN0-D5",
         }
+
+    def test_T30_normalization_bn2_invariance_contract_is_machine_derived(self):
+        contract_path = PROJECT_ROOT / "tests" / "phase_13_79_normalization_contract.json"
+        payload = json.loads(contract_path.read_text(encoding="utf-8"))
+        inv = payload["bn2_invariance"]
+        assert inv == {
+            "status": "MEASURED_CANDIDATE",
+            "oracle_id": "independent_ratio_profile_numpy_v01",
+            "core_rows": 30,
+            "passing": 12,
+            "known_gap": 18,
+            "eager_lazy_equivalence_pairs": 6,
+            "mode_seams_passing": 5,
+            "oracle_independence": (
+                "raw deterministic fixture arrays + numpy binning/statistics; "
+                "does not call dfdraw normalization transform"
+            ),
+        }
+
+    def test_T31_normalization_bn2_mode_seams_are_measured_without_bn3_drift(self):
+        contract_path = PROJECT_ROOT / "tests" / "phase_13_79_normalization_contract.json"
+        payload = json.loads(contract_path.read_text(encoding="utf-8"))
+        bn2 = [row for row in payload["seams"] if row["implementation_stage"] == "BN2"]
+        bn3 = [row for row in payload["seams"] if row["implementation_stage"] == "BN3"]
+        assert {row["seam_id"] for row in bn2} == {
+            "normalize:mode:delta",
+            "normalize:mode:log_ratio",
+            "normalize:mode:pull",
+            "normalize:mode:callable_2curve",
+            "normalize:mode:callable_4curve",
+        }
+        assert all(row["current_state"] == "PASSING" for row in bn2)
+        assert all(row["evidence_class"] == "BN-INVARIANCE" for row in bn2)
+        assert all(row["oracle_id"] == "independent_mode_transform_v01" for row in bn2)
+        # BN-2 must not silently claim BN-3 seams.
+        assert all(row["implementation_stage"] == "BN3" for row in bn3)
+
