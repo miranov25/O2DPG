@@ -17,16 +17,26 @@
 # USAGE
 #   source scripts/install_by_md5.sh          # once per shell
 #   install_by_md5 <src> <dst> <expected_md5>
+#   check_ref <file> <expected_md5> [expected_sha256]
 #
 #   install_by_md5 "$Downloads/foo_rev3c.py" tests/foo.py 3a57e2e4...
+#   check_ref run_tests.sh <md5> <sha256>
 #
 # BEHAVIOUR
+#   install_by_md5:
 #   * refuses if <src> does not exist
 #   * refuses if <src> does not match <expected_md5>       -- nothing is copied
 #   * backs up an existing <dst> to <dst>.bak.<timestamp>
 #   * re-verifies <dst> after copying and refuses to report success otherwise
-#   * returns non-zero on every failure; NEVER calls `exit`, because this file
-#     is sourced into an interactive shell and `exit` would close it
+#
+#   check_ref:
+#   * compares an existing file against a recorded MD5 and optional SHA256
+#   * prints only OK / NOT OK / MISSING for normal interactive use
+#   * returns 0 only when every supplied digest matches
+#   * never copies or modifies the checked file
+#
+#   All functions return non-zero on failure and do not terminate the
+#   interactive shell.
 #
 # NOTES
 #   Linux/alma2: uses md5sum. A darwin fallback to `md5 -q` is included so the
@@ -41,6 +51,74 @@ _ibm5_md5() {
         echo "install_by_md5: neither md5sum nor md5 is available" >&2
         return 1
     fi
+}
+
+_ibm5_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 "$1" | awk '{print $NF}'
+    else
+        echo "check_ref: no SHA256 tool available (sha256sum/shasum/openssl)" >&2
+        return 1
+    fi
+}
+
+check_ref() {
+    local file expected_md5 expected_sha256 actual_md5 actual_sha256
+
+    if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+        cat >&2 <<'USAGE'
+usage: check_ref <file> <expected_md5> [expected_sha256]
+
+  <file>             existing worktree/reference file
+  <expected_md5>     recorded MD5 for the exact reference bytes
+  [expected_sha256]  optional recorded SHA256; if supplied, BOTH must match
+
+Output is intentionally compact:
+  OK      <file>
+  NOT OK  <file>
+  MISSING <file>
+
+No file is modified.
+USAGE
+        return 2
+    fi
+
+    file="$1"
+    expected_md5="$2"
+    expected_sha256="${3:-}"
+
+    if [ ! -f "$file" ]; then
+        printf 'MISSING %s\n' "$file"
+        return 1
+    fi
+
+    actual_md5="$(_ibm5_md5 "$file")" || {
+        printf 'NOT OK  %s\n' "$file"
+        return 1
+    }
+
+    if [ "$actual_md5" != "$expected_md5" ]; then
+        printf 'NOT OK  %s\n' "$file"
+        return 1
+    fi
+
+    if [ -n "$expected_sha256" ]; then
+        actual_sha256="$(_ibm5_sha256 "$file")" || {
+            printf 'NOT OK  %s\n' "$file"
+            return 1
+        }
+        if [ "$actual_sha256" != "$expected_sha256" ]; then
+            printf 'NOT OK  %s\n' "$file"
+            return 1
+        fi
+    fi
+
+    printf 'OK      %s\n' "$file"
+    return 0
 }
 
 install_by_md5() {
