@@ -31,6 +31,8 @@
 #   reviewer_digests_<ts>.txt      MD5/SHA256 of ALL packages
 #   timing_<ts>.txt                Final human/machine-readable stage timings
 #   timing_packet_<ts>.txt         Pre-package timing snapshot shipped in packet
+#   reviewer_manifest_<ts>.json     Versioned logical packet manifest + digest
+#   reviewer_profile_<ts>.txt       Read-only packet byte/character/token-estimate profile
 
 # Don't exit on test failures
 # set -e
@@ -91,6 +93,8 @@ Output:
   test_logs/reviewer_digests_<ts>.txt   MD5/SHA256 of ALL packages
   test_logs/timing_<ts>.txt             Final stage timings
   test_logs/timing_packet_<ts>.txt      Pre-package timing snapshot shipped in packet
+  test_logs/reviewer_manifest_<ts>.json  Logical packet manifest/duplicate groups
+  test_logs/reviewer_profile_<ts>.txt    Packet volume/profile summary
 
 Environment:
   ADF_REVIEWER_TAR=0     Disable the .tar companion (zip only)
@@ -275,6 +279,14 @@ REVIEWER_TAR="$LOG_DIR/reviewer_${TS}.tar"
 # Set ADF_REVIEWER_BUNDLE=0 to skip it.
 REVIEWER_BUNDLE="$LOG_DIR/reviewer_${TS}.llmbundle.txt"
 REVIEWER_DIGESTS="$LOG_DIR/reviewer_digests_${TS}.txt"
+
+# PHASE_13_80 PART-A A1-A8: one logical packet, lossless exact-content
+# duplicate measurement, consumer-safe archive delivery, shared ZIP->LLMBUNDLE custody and read-only profiler.
+PACKET_TOOL="scripts/reviewer_packet.py"
+REVIEWER_INPUTS="$LOG_DIR/reviewer_inputs_${TS}.txt"
+REVIEWER_MANIFEST="$LOG_DIR/reviewer_manifest_${TS}.json"
+REVIEWER_PROFILE="$LOG_DIR/reviewer_profile_${TS}.txt"
+REVIEWER_PROFILE_JSON="$LOG_DIR/reviewer_profile_${TS}.json"
 
 # Absolute paths, computed before packaging so the summary can print them.
 REVIEWER_ZIP_ABS="$(realpath -m "$REVIEWER_ZIP" 2>/dev/null || echo "$PROJECT_ROOT/$REVIEWER_ZIP")"
@@ -651,6 +663,8 @@ timing_start "summary generation"
     fi
     echo "  Timing:   $TIMING_FILE"
     echo "  TimingPkt:$TIMING_PACKET_SNAPSHOT"
+    echo "  Manifest: $(realpath "$REVIEWER_MANIFEST" 2>/dev/null || echo "$REVIEWER_MANIFEST")"
+    echo "  Profile:  $(realpath "$REVIEWER_PROFILE" 2>/dev/null || echo "$REVIEWER_PROFILE")"
     echo ""
     echo "── Reviewer package ──"
     echo "  $REVIEWER_ZIP_ABS"
@@ -765,7 +779,9 @@ timing_end "pre-bundle custody checks" 0
 timing_snapshot_for_packet
 
 # =============================================================================
-# Package reviewer.zip
+# Package optimized logical reviewer packet
+# Custody invariant: reviewer ZIP is the reviewed container; LLMBUNDLE/3 is
+# derived ONLY from that completed ZIP and never rereads worktree payloads.
 # =============================================================================
 
 echo ""
@@ -773,6 +789,12 @@ echo "--- Packaging reviewer.zip ---"
 
 (
     cd "$PROJECT_ROOT"
+
+    if [[ ! -f "$PACKET_TOOL" ]]; then
+        echo "${RED}${BOLD}❌ reviewer packet tool not found: $PACKET_TOOL${RESET}"
+        exit 1
+    fi
+
     ZIP_FILES=""
     for f in \
         "$SUMMARY_FILE" \
@@ -799,80 +821,99 @@ echo "--- Packaging reviewer.zip ---"
     done
 
     # Reviewer source custody: ship the exact changed/focused candidate files
-    # too.  The packet must let a reviewer read the oracle/table, not only logs.
+    # too. Every logical reviewer path is stored as an ordinary archive file;
+    # exact duplicate relationships remain recorded in the logical manifest.
     for f in $CANDIDATE_FILES; do
         [[ -f "$f" ]] && ZIP_FILES="$ZIP_FILES $f"
     done
-    ZIP_FILES=$(printf '%s\n' $ZIP_FILES | sort -u | tr '\n' ' ')
+    ZIP_FILES=$(printf '%s\n' $ZIP_FILES | sort -u)
+    printf '%s\n' $ZIP_FILES > "$REVIEWER_INPUTS"
 
-    if [[ -n "$ZIP_FILES" ]]; then
-        N_WANT=$(printf '%s\n' $ZIP_FILES | grep -c .)
+    if [[ -s "$REVIEWER_INPUTS" ]]; then
+        N_LOGICAL=$(grep -c . "$REVIEWER_INPUTS" 2>/dev/null || echo 0)
+
+        timing_start "reviewer manifest / dedup planning"
+        MANIFEST_LINE=$(python3 "$PACKET_TOOL" manifest \
+            --root "$PROJECT_ROOT" \
+            --files-file "$REVIEWER_INPUTS" \
+            --manifest "$REVIEWER_MANIFEST" 2>&1)
+        MANIFEST_EXIT=$?
+        timing_end "reviewer manifest / dedup planning" "$MANIFEST_EXIT"
+        if [[ "$MANIFEST_EXIT" -ne 0 ]]; then
+            echo "${RED}${BOLD}❌ reviewer logical manifest generation failed${RESET}"
+            echo "$MANIFEST_LINE"
+            exit 1
+        fi
+        echo "  logical manifest: $MANIFEST_LINE"
+        LOGICAL_MANIFEST_SHA256=$(python3 - "$REVIEWER_MANIFEST" <<'PYMANIFEST'
+import json, sys
+m=json.load(open(sys.argv[1]))
+print(m["logical_manifest_sha256"])
+PYMANIFEST
+)
+        N_PHYSICAL=$(python3 - "$REVIEWER_MANIFEST" <<'PYMANIFEST'
+import json, sys
+m=json.load(open(sys.argv[1]))
+print(m["physical_payload_count"])
+PYMANIFEST
+)
+        N_ALIASES=$(python3 - "$REVIEWER_MANIFEST" <<'PYMANIFEST'
+import json, sys
+m=json.load(open(sys.argv[1]))
+print(m["alias_count"])
+PYMANIFEST
+)
 
         timing_start "reviewer ZIP creation"
-        zip -q "$REVIEWER_ZIP" $ZIP_FILES 2>/dev/null
+        python3 "$PACKET_TOOL" zip \
+            --root "$PROJECT_ROOT" \
+            --manifest "$REVIEWER_MANIFEST" \
+            --output "$REVIEWER_ZIP"
         ZIP_EXIT=$?
         timing_end "reviewer ZIP creation" "$ZIP_EXIT"
+        if [[ "$ZIP_EXIT" -ne 0 || ! -s "$REVIEWER_ZIP" ]]; then
+            echo "${RED}${BOLD}❌ optimized reviewer ZIP creation failed${RESET}"
+            exit 1
+        fi
         echo "  Reviewer package (zip): $REVIEWER_ZIP_ABS"
-
         N_ZIP=$(unzip -Z1 "$REVIEWER_ZIP" 2>/dev/null | grep -cv '/$' || echo 0)
-        if [[ "$N_ZIP" -ne "$N_WANT" ]]; then
-            echo "${RED}${BOLD}❌ zip holds $N_ZIP of $N_WANT intended files${RESET}"
+        EXPECTED_CONTAINER_MEMBERS=$((N_LOGICAL + 1))  # every logical path + REVIEW_PACKET_MANIFEST.json
+        if [[ "$N_ZIP" -ne "$EXPECTED_CONTAINER_MEMBERS" ]]; then
+            echo "${RED}${BOLD}❌ zip holds $N_ZIP physical members; expected $EXPECTED_CONTAINER_MEMBERS${RESET}"
+            exit 1
+        else
+            echo "  logical/content: $N_LOGICAL ordinary reviewer files; $N_PHYSICAL unique content payloads; $N_ALIASES exact-duplicate logical paths + manifest"
         fi
 
         if ! unzip -l "$REVIEWER_ZIP" 2>/dev/null | grep -q 'docs/CAPABILITY_MATRIX\.html$'; then
-            echo "${YELLOW}${BOLD}⚠️  $REVIEWER_ZIP missing docs/CAPABILITY_MATRIX.html — reviewers cannot navigate the rendered matrix${RESET}"
+            echo "${YELLOW}${BOLD}⚠️  $REVIEWER_ZIP missing canonical docs/CAPABILITY_MATRIX.html payload${RESET}"
         fi
 
-        # ---------------------------------------------------------------
-        # Companion .tar — SAME file list, SAME relative paths, SAME step.
-        # Two packets built from two lists is finding D-1 in a new costume,
-        # so the list is computed once above and reused verbatim here.
-        # Uncompressed on purpose: the architect asked for .tar, and it
-        # removes gzip as a second thing that can fail in a reader.
-        # ---------------------------------------------------------------
         if [[ "${ADF_REVIEWER_TAR:-1}" != "0" ]]; then
-            if command -v tar >/dev/null 2>&1; then
-                # --sort=name and fixed ownership keep the member order and
-                # uid/gid stable across machines.  Not required for review,
-                # cheap insurance if anyone ever diffs two tars.
-                timing_start "reviewer TAR creation"
-                tar --sort=name --owner=0 --group=0 --numeric-owner \
-                    -cf "$REVIEWER_TAR" $ZIP_FILES 2>/dev/null
-                TAR_EXIT=$?
-                if [[ "$TAR_EXIT" -ne 0 ]]; then
-                    tar -cf "$REVIEWER_TAR" $ZIP_FILES 2>/dev/null
-                    TAR_EXIT=$?
-                fi
-                timing_end "reviewer TAR creation" "$TAR_EXIT"
-
-                if [[ -f "$REVIEWER_TAR" ]]; then
-                    N_TAR=$(tar -tf "$REVIEWER_TAR" 2>/dev/null | grep -cv '/$' || echo 0)
-                    echo "  Reviewer package (tar): $REVIEWER_TAR_ABS"
-                    if [[ "$N_TAR" -ne "$N_WANT" ]]; then
-                        echo "${RED}${BOLD}❌ tar holds $N_TAR of $N_WANT intended files${RESET}"
-                    fi
-                    if [[ "$N_TAR" -ne "$N_ZIP" ]]; then
-                        echo "${RED}${BOLD}❌ PACKAGE MISMATCH: zip=$N_ZIP tar=$N_TAR — the two packets are NOT the same content${RESET}"
-                    else
-                        echo "  content check: zip and tar both hold $N_TAR files"
-                    fi
-                else
-                    echo "${YELLOW}⚠️  tar companion was requested but not produced${RESET}"
+            timing_start "reviewer TAR creation"
+            python3 "$PACKET_TOOL" tar \
+                --root "$PROJECT_ROOT" \
+                --manifest "$REVIEWER_MANIFEST" \
+                --output "$REVIEWER_TAR"
+            TAR_EXIT=$?
+            timing_end "reviewer TAR creation" "$TAR_EXIT"
+            if [[ "$TAR_EXIT" -eq 0 && -s "$REVIEWER_TAR" ]]; then
+                N_TAR=$(tar -tf "$REVIEWER_TAR" 2>/dev/null | grep -cv '/$' || echo 0)
+                echo "  Reviewer package (tar): $REVIEWER_TAR_ABS"
+                if [[ "$N_TAR" -ne "$EXPECTED_CONTAINER_MEMBERS" ]]; then
+                    echo "${RED}${BOLD}❌ tar holds $N_TAR physical members; expected $EXPECTED_CONTAINER_MEMBERS${RESET}"
+                    exit 1
                 fi
             else
-                echo "${YELLOW}⚠️  tar not available; zip only${RESET}"
+                echo "${RED}${BOLD}❌ optimized reviewer TAR creation failed${RESET}"
+                exit 1
             fi
         fi
 
-        # ---------------------------------------------------------------
-        # Plain-text LLMBUNDLE companion — SAME content, no container.
-        # Built from "$REVIEWER_ZIP" and NOT from a directory: the zip IS
-        # the reviewed file list, so the bundle cannot drift from it.
-        # Pointing the bundler at a working directory sweeps up .git,
-        # coverage output and test data — measured at 2386 entries and
-        # 298 MB for dfdraw, which no reviewer runtime can read.
-        # ---------------------------------------------------------------
         if [[ "${ADF_REVIEWER_BUNDLE:-1}" != "0" ]]; then
+            # Reuse the established shared ZIP -> LLMBUNDLE implementation.
+            # The completed reviewer ZIP is the ONLY packet input; no ADF-local
+            # converter exists and no worktree payload is reread here.
             BUNDLE_SCRIPT=""
             for candidate in \
                 "../scripts/make_llm_bundle.py" \
@@ -880,59 +921,105 @@ echo "--- Packaging reviewer.zip ---"
                 "tests/scripts/make_llm_bundle.py"; do
                 [[ -f "$candidate" ]] && BUNDLE_SCRIPT="$candidate" && break
             done
-
-            # --allow-delimiters is REQUIRED here, not optional.  The packet
-            # always contains diff_to_phase/diff_last_commit, and any diff that
-            # touches make_llm_bundle.py necessarily quotes that script's own
-            # DELIMITERS constants.  Refusing on that would make the packet
-            # permanently un-bundleable.  The bundle stays unambiguous for any
-            # reader that uses the "bytes:" length prefix, which is what the
-            # header/manifest/trailer exist to support.
-            BUNDLE_ERR="$LOG_DIR/reviewer_bundle_stderr_${TS}.txt"
             if [[ -z "$BUNDLE_SCRIPT" ]]; then
-                echo "${YELLOW}⚠️  make_llm_bundle.py not found (../scripts/, scripts/); no text bundle${RESET}"
-            else
-                timing_start "LLMBUNDLE conversion"
-                python3 "$BUNDLE_SCRIPT" "$REVIEWER_ZIP" -o "$REVIEWER_BUNDLE" \
-                        --allow-delimiters >/dev/null 2>"$BUNDLE_ERR"
-                BUNDLE_EXIT=$?
-                timing_end "LLMBUNDLE conversion" "$BUNDLE_EXIT"
+                echo "${RED}${BOLD}❌ make_llm_bundle.py not found — cannot build reviewer text representation${RESET}"
+                exit 1
+            fi
 
-                if [[ "$BUNDLE_EXIT" -eq 0 && -s "$REVIEWER_BUNDLE" ]]; then
-                    rm -f "$BUNDLE_ERR"
-                    N_BUNDLE=$(grep -c '^===== LLMBUNDLE ENTRY BEGIN =====$' "$REVIEWER_BUNDLE" 2>/dev/null || echo 0)
-                    echo "  Reviewer package (text): $REVIEWER_BUNDLE_ABS"
-                    if [[ "$N_BUNDLE" -ne "$N_ZIP" ]]; then
-                        echo "${RED}${BOLD}❌ PACKAGE MISMATCH: zip=$N_ZIP bundle=$N_BUNDLE — not the same content${RESET}"
-                    else
-                        echo "  content check: zip and text bundle both hold $N_BUNDLE files"
-                    fi
-                    if ! tail -1 "$REVIEWER_BUNDLE" | grep -q '^===== LLMBUNDLE END '; then
-                        echo "${RED}${BOLD}❌ text bundle has no trailer — it is truncated${RESET}"
-                    fi
-                else
-                    echo "${RED}${BOLD}❌ make_llm_bundle.py FAILED — no text bundle (zip/tar unaffected)${RESET}"
-                    if [[ -s "$BUNDLE_ERR" ]]; then
-                        echo "${YELLOW}--- bundler stderr ---${RESET}"
-                        sed 's/^/    /' "$BUNDLE_ERR"
-                        echo "${YELLOW}--- end bundler stderr ---${RESET}"
-                    fi
-                    rm -f "$REVIEWER_BUNDLE"
+            timing_start "LLMBUNDLE conversion"
+            BUNDLE_ERR="$LOG_DIR/reviewer_bundle_stderr_${TS}.txt"
+            python3 "$BUNDLE_SCRIPT" "$REVIEWER_ZIP" -o "$REVIEWER_BUNDLE" \
+                --allow-delimiters >/dev/null 2>"$BUNDLE_ERR"
+            BUNDLE_EXIT=$?
+            timing_end "LLMBUNDLE conversion" "$BUNDLE_EXIT"
+            if [[ "$BUNDLE_EXIT" -eq 0 && -s "$REVIEWER_BUNDLE" ]]; then
+                rm -f "$BUNDLE_ERR"
+                N_BUNDLE=$(grep -c '^===== LLMBUNDLE ENTRY BEGIN =====$' "$REVIEWER_BUNDLE" 2>/dev/null || echo 0)
+                BUNDLE_VERSION=$(head -1 "$REVIEWER_BUNDLE" 2>/dev/null || true)
+                echo "  Reviewer package (text): $REVIEWER_BUNDLE_ABS"
+                echo "  LLMBUNDLE representation: $BUNDLE_VERSION"
+                if [[ "$N_BUNDLE" -ne "$EXPECTED_CONTAINER_MEMBERS" ]]; then
+                    echo "${RED}${BOLD}❌ LLMBUNDLE entries=$N_BUNDLE expected=$EXPECTED_CONTAINER_MEMBERS (logical paths + manifest)${RESET}"
+                    exit 1
                 fi
+                if ! tail -1 "$REVIEWER_BUNDLE" | grep -q '^===== LLMBUNDLE END '; then
+                    echo "${RED}${BOLD}❌ LLMBUNDLE has no trailer — truncated${RESET}"
+                    exit 1
+                fi
+            else
+                echo "${RED}${BOLD}❌ make_llm_bundle.py FAILED — no text bundle${RESET}"
+                if [[ -s "$BUNDLE_ERR" ]]; then
+                    echo "${YELLOW}--- bundler stderr ---${RESET}"
+                    sed 's/^/    /' "$BUNDLE_ERR"
+                    echo "${YELLOW}--- end bundler stderr ---${RESET}"
+                fi
+                rm -f "$REVIEWER_BUNDLE"
+                exit 1
             fi
         fi
 
-        # ---------------------------------------------------------------
-        # Digests of ALL packages, in one file, written AFTER packaging.
-        # Deliberately NOT inside either archive: an archive cannot carry
-        # its own hash, and a digest file that is inside one packet but
-        # describes both is exactly the custody confusion to avoid.
-        # Declare BOTH lines in the CRR; reviewers state which they opened.
-        # ---------------------------------------------------------------
+        timing_start "reviewer packet round-trip verification"
+        VERIFY_ARGS=(
+            verify
+            --root "$PROJECT_ROOT"
+            --manifest "$REVIEWER_MANIFEST"
+            --zip "$REVIEWER_ZIP"
+        )
+        if [[ "${ADF_REVIEWER_TAR:-1}" != "0" ]]; then
+            VERIFY_ARGS+=(--tar "$REVIEWER_TAR")
+        fi
+        if [[ "${ADF_REVIEWER_BUNDLE:-1}" != "0" ]]; then
+            VERIFY_ARGS+=(--bundle "$REVIEWER_BUNDLE")
+        fi
+        VERIFY_LINE=$(python3 "$PACKET_TOOL" "${VERIFY_ARGS[@]}" 2>&1)
+        VERIFY_EXIT=$?
+        timing_end "reviewer packet round-trip verification" "$VERIFY_EXIT"
+        if [[ "$VERIFY_EXIT" -ne 0 ]]; then
+            echo "${RED}${BOLD}❌ reviewer packet logical round-trip verification failed${RESET}"
+            echo "$VERIFY_LINE"
+            exit 1
+        fi
+        echo "  round-trip: $VERIFY_LINE"
+
+        timing_start "reviewer packet profiling"
+        PROFILE_ARGS=(
+            profile
+            --root "$PROJECT_ROOT"
+            --manifest "$REVIEWER_MANIFEST"
+            --zip "$REVIEWER_ZIP"
+            --output "$REVIEWER_PROFILE"
+            --json-output "$REVIEWER_PROFILE_JSON"
+        )
+        if [[ "${ADF_REVIEWER_TAR:-1}" != "0" ]]; then
+            PROFILE_ARGS+=(--tar "$REVIEWER_TAR")
+        fi
+        if [[ "${ADF_REVIEWER_BUNDLE:-1}" != "0" ]]; then
+            PROFILE_ARGS+=(--bundle "$REVIEWER_BUNDLE")
+        fi
+        PROFILE_LINE=$(python3 "$PACKET_TOOL" "${PROFILE_ARGS[@]}" 2>&1)
+        PROFILE_EXIT=$?
+        timing_end "reviewer packet profiling" "$PROFILE_EXIT"
+        if [[ "$PROFILE_EXIT" -ne 0 ]]; then
+            echo "${RED}${BOLD}❌ reviewer packet profiler failed${RESET}"
+            echo "$PROFILE_LINE"
+            exit 1
+        fi
+        echo "  profile: $PROFILE_LINE"
+        echo "  profile file: $(realpath "$REVIEWER_PROFILE" 2>/dev/null || echo "$REVIEWER_PROFILE")"
+
         timing_start "reviewer package digest generation"
         {
             echo "=== reviewer package digests — run $TS ==="
-            echo "(declare BOTH in the CRR; a reviewer must state which they opened)"
+            echo "(logical packet identity is shared across enabled encodings)"
+            echo ""
+            echo "logical-manifest-sha256 $LOGICAL_MANIFEST_SHA256"
+            echo "logical-paths $N_LOGICAL"
+            echo "unique-payloads $N_PHYSICAL"
+            echo "aliases $N_ALIASES"
+            echo "manifest-md5 $(md5sum "$REVIEWER_MANIFEST" | cut -d' ' -f1)"
+            echo "manifest-sha256 $(sha256sum "$REVIEWER_MANIFEST" | cut -d' ' -f1)"
+            echo "profile-md5 $(md5sum "$REVIEWER_PROFILE" | cut -d' ' -f1)"
+            echo "profile-sha256 $(sha256sum "$REVIEWER_PROFILE" | cut -d' ' -f1)"
             echo ""
             for pkg in "$REVIEWER_ZIP" "$REVIEWER_TAR" "$REVIEWER_BUNDLE"; do
                 [[ -f "$pkg" ]] || continue
@@ -941,15 +1028,20 @@ echo "--- Packaging reviewer.zip ---"
                 echo "  sha256  $(sha256sum "$pkg" | cut -d' ' -f1)"
                 case "$pkg" in
                     *.zip)
-                        echo "  files   $(unzip -Z1 "$pkg" 2>/dev/null | grep -cv '/$')" ;;
+                        echo "  physical-members $(unzip -Z1 "$pkg" 2>/dev/null | grep -cv '/$')"
+                        echo "  logical-paths $N_LOGICAL"
+                        echo "  logical-manifest-sha256 $LOGICAL_MANIFEST_SHA256" ;;
                     *.tar)
-                        echo "  files   $(tar -tf "$pkg" 2>/dev/null | grep -cv '/$')" ;;
+                        echo "  physical-members $(tar -tf "$pkg" 2>/dev/null | grep -cv '/$')"
+                        echo "  logical-paths $N_LOGICAL"
+                        echo "  logical-manifest-sha256 $LOGICAL_MANIFEST_SHA256" ;;
                     *)
-                        echo "  files   $(grep -c '^===== LLMBUNDLE ENTRY BEGIN =====$' "$pkg" 2>/dev/null || echo 0)"
-                        echo "  entries $(grep -m1 '^entries: ' "$pkg" 2>/dev/null | cut -d' ' -f2)"
-                        echo "  manifest-sha256 $(grep -m1 '^manifest-sha256: ' "$pkg" 2>/dev/null | cut -d' ' -f2)"
-                        echo "  (a Source-Read claim must quote entries + manifest-sha256"
-                        echo "   from BOTH the header and the trailer; no trailer = truncated)" ;;
+                        echo "  representation $(head -1 "$pkg")"
+                        echo "  entries $(grep -c '^===== LLMBUNDLE ENTRY BEGIN =====$' "$pkg" 2>/dev/null || echo 0)"
+                        echo "  symlinks $(grep -c '^type: symlink$' "$pkg" 2>/dev/null || echo 0)"
+                        echo "  logical-paths $N_LOGICAL"
+                        echo "  logical-manifest-sha256 $LOGICAL_MANIFEST_SHA256"
+                        echo "  (identity comes from embedded REVIEW_PACKET_MANIFEST.json and verified round-trip)" ;;
                 esac
                 echo ""
             done
@@ -960,6 +1052,16 @@ echo "--- Packaging reviewer.zip ---"
         cat "$REVIEWER_DIGESTS" | sed 's/^/  /'
     fi
 )
+PACKAGE_EXIT=$?
+if [[ "$PACKAGE_EXIT" -ne 0 ]]; then
+    echo ""
+    echo "${RED}${BOLD}❌ Reviewer package construction/custody failed (exit $PACKAGE_EXIT)${RESET}"
+    timing_finish_total
+    printf '[%s] END run_tests.sh — package failure\n' "$(date +"%Y-%m-%d %H:%M:%S %z")"
+    echo "Timing artifact: $TIMING_FILE"
+    echo "Packet timing snapshot: $TIMING_PACKET_SNAPSHOT"
+    exit "$PACKAGE_EXIT"
+fi
 
 # =============================================================================
 # Working-tree warnings
