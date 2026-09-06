@@ -29,9 +29,14 @@
 #   reviewer_<ts>.tar              Review package (tar, same file list)
 #   reviewer_<ts>.llmbundle.txt    Review package (plain text, same file list)
 #   reviewer_digests_<ts>.txt      MD5/SHA256 of ALL packages
+#   timing_<ts>.txt                Final human/machine-readable stage timings
+#   timing_packet_<ts>.txt         Pre-package timing snapshot shipped in packet
 
 # Don't exit on test failures
 # set -e
+
+RUN_TESTS_TOTAL_START_EPOCH=$(date +%s)
+RUN_TESTS_TOTAL_START_WALL=$(date +"%Y-%m-%d %H:%M:%S %z")
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -84,6 +89,8 @@ Output:
   test_logs/reviewer_<ts>.tar           Review package (tar, same file list)
   test_logs/reviewer_<ts>.llmbundle.txt Review package (plain text, same file list)
   test_logs/reviewer_digests_<ts>.txt   MD5/SHA256 of ALL packages
+  test_logs/timing_<ts>.txt             Final stage timings
+  test_logs/timing_packet_<ts>.txt      Pre-package timing snapshot shipped in packet
 
 Environment:
   ADF_REVIEWER_TAR=0     Disable the .tar companion (zip only)
@@ -116,6 +123,101 @@ done
 TS=$(date +"%Y%m%d_%H%M%S")
 LOG_DIR="test_logs"
 mkdir -p "$LOG_DIR"
+
+# PHASE_13_80 A14/A15: human-visible timing instrumentation.
+# IMPORTANT: these helpers only RECORD timing.  They must never execute a
+# pytest/package stage.  In particular, TEST_EXIT=${PIPESTATUS[0]} must remain
+# immediately after the full pytest pipeline, before timing_end is called.
+TIMING_FILE="$PROJECT_ROOT/$LOG_DIR/timing_${TS}.txt"
+TIMING_PACKET_SNAPSHOT="$PROJECT_ROOT/$LOG_DIR/timing_packet_${TS}.txt"
+TIMING_ROWS_FILE="$PROJECT_ROOT/$LOG_DIR/.timing_rows_${TS}.tsv"
+TIMING_TOTAL_START_EPOCH=$RUN_TESTS_TOTAL_START_EPOCH
+TIMING_TOTAL_START_WALL="$RUN_TESTS_TOTAL_START_WALL"
+TIMING_STAGE_NAME=""
+TIMING_STAGE_START_EPOCH=0
+TIMING_STAGE_START_WALL=""
+
+timing_start() {
+    local stage="$1"
+    TIMING_STAGE_NAME="$stage"
+    TIMING_STAGE_START_EPOCH=$(date +%s)
+    TIMING_STAGE_START_WALL=$(date +"%Y-%m-%d %H:%M:%S %z")
+    printf '[%s] START %s\n' "$TIMING_STAGE_START_WALL" "$stage"
+    {
+        printf 'stage: %s\n' "$stage"
+        printf 'start: %s\n' "$TIMING_STAGE_START_WALL"
+    } >> "$TIMING_FILE"
+}
+
+timing_end() {
+    local stage="$1"
+    local result="${2:-0}"
+    local end_epoch end_wall elapsed
+    end_epoch=$(date +%s)
+    end_wall=$(date +"%Y-%m-%d %H:%M:%S %z")
+    elapsed=$((end_epoch - TIMING_STAGE_START_EPOCH))
+    printf '[%s] END %s elapsed=%ss result=%s\n' \
+        "$end_wall" "$stage" "$elapsed" "$result"
+    {
+        printf 'end: %s\n' "$end_wall"
+        printf 'elapsed_seconds: %s\n' "$elapsed"
+        printf 'result: %s\n\n' "$result"
+    } >> "$TIMING_FILE"
+    printf '%s\t%s\n' "$stage" "$elapsed" >> "$TIMING_ROWS_FILE"
+    TIMING_STAGE_NAME=""
+    TIMING_STAGE_START_EPOCH=0
+    TIMING_STAGE_START_WALL=""
+}
+
+timing_snapshot_for_packet() {
+    {
+        cat "$TIMING_FILE"
+        echo "packet_snapshot: true"
+        echo "packet_snapshot_note: packaging-stage timings continue in timing_${TS}.txt outside the packet to avoid self-referential packet-byte drift"
+    } > "$TIMING_PACKET_SNAPSHOT"
+}
+
+timing_finish_total() {
+    local total_end_epoch total_end_wall total_seconds stage_sum other
+    total_end_epoch=$(date +%s)
+    total_end_wall=$(date +"%Y-%m-%d %H:%M:%S %z")
+    total_seconds=$((total_end_epoch - TIMING_TOTAL_START_EPOCH))
+    stage_sum=$(awk -F '\t' '{s += $2} END {print s+0}' "$TIMING_ROWS_FILE" 2>/dev/null)
+    stage_sum=${stage_sum:-0}
+    other=$((total_seconds - stage_sum))
+    if [[ $other -lt 0 ]]; then
+        other=0
+    fi
+
+    echo ""
+    echo "TIMING SUMMARY"
+    echo ""
+    if [[ -s "$TIMING_ROWS_FILE" ]]; then
+        awk -F '\t' '{printf "  %-34s %6s s\n", $1, $2}' "$TIMING_ROWS_FILE"
+    fi
+    printf '  %-34s %6s s\n' "unclassified/other" "$other"
+    echo "  -------------------------------------------"
+    printf '  %-34s %6s s\n' "TOTAL" "$total_seconds"
+    echo ""
+
+    {
+        printf 'end: %s\n' "$total_end_wall"
+        printf 'total_seconds: %s\n' "$total_seconds"
+        printf 'classified_stage_seconds: %s\n' "$stage_sum"
+        printf 'unclassified_other_seconds: %s\n' "$other"
+    } >> "$TIMING_FILE"
+    rm -f "$TIMING_ROWS_FILE"
+}
+
+{
+    echo "ADF_RUN_TIMING/1"
+    echo "run_timestamp: $TS"
+    echo "start: $TIMING_TOTAL_START_WALL"
+    echo ""
+} > "$TIMING_FILE"
+: > "$TIMING_ROWS_FILE"
+
+printf '[%s] START run_tests.sh\n' "$TIMING_TOTAL_START_WALL"
 
 PYTEST_WORKERS=${PYTEST_WORKERS:-12}
 
@@ -204,6 +306,7 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
         GIT_TREE_STATE="DIRTY (uncommitted changes — not anchored to $GIT_HASH)"
     fi
 
+    timing_start "diff_last_commit"
     {
         echo "=== Uncommitted changes (git diff HEAD) ==="
         echo "=== staged + unstaged, relative to last commit ==="
@@ -214,6 +317,7 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
         echo ""
         git diff --relative HEAD~1..HEAD -- . 2>/dev/null || echo "(no previous commit)"
     } > "$DIFF_COMMIT"
+    timing_end "diff_last_commit" 0
     echo "  Last commit diff: $(realpath "$DIFF_COMMIT" 2>/dev/null || echo "$DIFF_COMMIT")"
 
     PHASE_TAG=""
@@ -224,6 +328,7 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
         fi
     done
 
+    timing_start "diff_to_phase"
     if [[ -n "$PHASE_TAG" ]]; then
         git diff --relative "$PHASE_TAG" -- . > "$DIFF_PHASE" 2>/dev/null || true
         echo "  Phase tag: $PHASE_TAG"
@@ -231,7 +336,9 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
         echo "(No PHASE_BEGIN_* tag found — searched: PHASE_BEGIN_AliasDataFrame, PHASE_BEGIN_ADF)" > "$DIFF_PHASE"
         echo "  ⚠️  No phase tag — create with: source scripts/phase_tag.sh && phase_begin <id>"
     fi
+    timing_end "diff_to_phase" 0
 
+    timing_start "environment / provenance"
     {
         echo "=== git status --porcelain (scoped to cwd) ==="
         git status --porcelain -- . 2>/dev/null || echo "(git status failed)"
@@ -252,6 +359,7 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
         echo "=== Recent commits with tag decorations (last 5) ==="
         git log --oneline --decorate -5 2>/dev/null || echo "(git log failed)"
     } > "$GIT_STATUS"
+    timing_end "environment / provenance" 0
     echo "  Working tree: $(realpath "$GIT_STATUS" 2>/dev/null || echo "$GIT_STATUS")"
 else
     echo "(not a git repository)" > "$DIFF_COMMIT"
@@ -272,6 +380,7 @@ if [[ "$MODE" != "matrix" ]]; then
     mkdir -p "$JSON_DIR"
 
     START_TIME=$(date +%s)
+    timing_start "full pytest"
 
     python3 -m pytest tests/ \
         $PYTEST_VERBOSITY \
@@ -281,6 +390,7 @@ if [[ "$MODE" != "matrix" ]]; then
         --json-report --json-report-file="$JSON_REPORT" \
         2>&1 | tee "$LOG_FILE"
     TEST_EXIT=${PIPESTATUS[0]}
+    timing_end "full pytest" "$TEST_EXIT"
 
     END_TIME=$(date +%s)
     DURATION=$((END_TIME - START_TIME))
@@ -312,8 +422,10 @@ PYCOUNT
     # normally and with --runxfail. Both execution lanes use xdist.
     if compgen -G "$FOCUSED_TESTS" > /dev/null 2>&1; then
         echo "--- Collecting focused node set: $FOCUSED_TESTS ---"
+        timing_start "focused collection"
         python3 -m pytest $FOCUSED_TESTS --collect-only -q 2>/dev/null \
             | grep '::' | sort -u > "$FOCUSED_NODE_LOG" || true
+        timing_end "focused collection" 0
         FOCUSED_NODE_COUNT=$(grep -c '::' "$FOCUSED_NODE_LOG" 2>/dev/null || echo 0)
         echo "  focused nodes: $FOCUSED_NODE_COUNT"
 
@@ -324,14 +436,20 @@ PYCOUNT
         fi
 
         echo "--- Running exact collected focused node set ---"
+        timing_start "focused pytest"
         python3 -m pytest "${FOCUSED_NODES[@]}" -n "$PYTEST_WORKERS" -q --tb=short \
             2>&1 | tee "$FOCUSED_LOG"
+        FOCUSED_EXIT=${PIPESTATUS[0]}
+        timing_end "focused pytest" "$FOCUSED_EXIT"
         FOCUSED_LINE=$(grep -E "^[0-9]+ (passed|failed)" "$FOCUSED_LOG" | tail -1)
         echo "  focused: ${FOCUSED_LINE:-<no summary line>}"
 
         echo "--- Recording --runxfail evidence for the exact same focused node set ---"
+        timing_start "raw-XFAIL pytest"
         python3 -m pytest "${FOCUSED_NODES[@]}" --runxfail -n "$PYTEST_WORKERS" \
-            -q --tb=line -p no:warnings > "$RUNXFAIL_LOG" 2>&1 || true
+            -q --tb=line -p no:warnings > "$RUNXFAIL_LOG" 2>&1
+        RUNXFAIL_EXIT=$?
+        timing_end "raw-XFAIL pytest" "$RUNXFAIL_EXIT"
         RUNXFAIL_LINE=$(grep -E "^[0-9]+ (passed|failed)" "$RUNXFAIL_LOG" | tail -1)
         echo "  runxfail: ${RUNXFAIL_LINE:-<no summary line>} (failures here are EXPECTED)"
     else
@@ -380,6 +498,7 @@ if [[ "$MODE" != "quick" ]]; then
     PHASE_FOR_MATRIX="${ADF_MATRIX_PHASE:-PHASE_13_79_ADF}"
 
     if [[ -n "$MATRIX_SCRIPT" && -n "$MATRIX_JSON" ]]; then
+        timing_start "Capability Matrix Markdown/JSON generation"
         python3 "$MATRIX_SCRIPT" \
             --test-results "$MATRIX_JSON" \
             --phase "$PHASE_FOR_MATRIX" \
@@ -390,6 +509,7 @@ if [[ "$MODE" != "quick" ]]; then
             cp "docs/CAPABILITY_MATRIX.md" "$MATRIX_MD"
         [[ -f "docs/CAPABILITY_MATRIX.json" ]] && \
             cp "docs/CAPABILITY_MATRIX.json" "$MATRIX_AI_JSON"
+        timing_end "Capability Matrix Markdown/JSON generation" 0
     elif [[ -z "$MATRIX_SCRIPT" ]]; then
         echo "⚠️  generate_capability_matrix.py not found"
         echo "    Expected at: scripts/generate_capability_matrix.py"
@@ -398,6 +518,7 @@ if [[ "$MODE" != "quick" ]]; then
     fi
 
     if [[ -n "$HTML_SCRIPT" && -n "$MATRIX_JSON" ]]; then
+        timing_start "Capability Matrix HTML generation"
         # MATRIX-PARITY-1 + HTML-PRESENTATION-1:
         # keep the established interactive HTML renderer, but feed it the
         # shared normalized semantic model via the same pytest JSON evidence.
@@ -407,6 +528,7 @@ if [[ "$MODE" != "quick" ]]; then
             --snapshot "$MATRIX_HTML" \
             --phase "$PHASE_FOR_MATRIX" 2>&1 || \
             echo "⚠️  Capability matrix HTML generation had errors"
+        timing_end "Capability Matrix HTML generation" 0
     elif [[ -z "$HTML_SCRIPT" ]]; then
         echo "⚠️  generate_matrix_html.py not found"
         echo "    Expected at: scripts/generate_matrix_html.py"
@@ -429,6 +551,7 @@ done
 # REVIEWER-CUSTODY: candidate hashes must describe the final bytes that are
 # about to enter reviewer.zip, not pre-generation matrix bytes.
 
+timing_start "candidate hashing / MD5 manifest"
 CANDIDATE_FILES=$(
     {
         echo "AliasDataFrame.py"
@@ -459,11 +582,13 @@ CANDIDATE_FILES=$(
         done
     fi
 } > "$MD5_MANIFEST" 2>/dev/null || true
+timing_end "candidate hashing / MD5 manifest" 0
 
 # =============================================================================
 # Summary
 # =============================================================================
 
+timing_start "summary generation"
 {
     echo "========================================"
     echo "SUMMARY — AliasDataFrame Test Run"
@@ -524,6 +649,8 @@ CANDIDATE_FILES=$(
     if [[ -f "$MD5_MANIFEST" ]]; then
         echo "  MD5:      $(realpath "$MD5_MANIFEST" 2>/dev/null || echo "$MD5_MANIFEST")"
     fi
+    echo "  Timing:   $TIMING_FILE"
+    echo "  TimingPkt:$TIMING_PACKET_SNAPSHOT"
     echo ""
     echo "── Reviewer package ──"
     echo "  $REVIEWER_ZIP_ABS"
@@ -540,11 +667,14 @@ CANDIDATE_FILES=$(
     fi
     echo "========================================"
 } | tee "$SUMMARY_FILE"
+SUMMARY_PIPE_EXIT=${PIPESTATUS[0]}
+timing_end "summary generation" "$SUMMARY_PIPE_EXIT"
 
 # =============================================================================
 # Pre-bundle staging check
 # =============================================================================
 
+timing_start "pre-bundle custody checks"
 if git rev-parse --is-inside-work-tree &>/dev/null; then
     UNTRACKED_TESTS=$(git status --porcelain tests/ 2>/dev/null | grep "^?? " | grep "\.py$" || true)
     if [[ -n "$UNTRACKED_TESTS" ]] && [[ -z "$ADF_SKIP_STAGING_CHECK" ]]; then
@@ -566,6 +696,8 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
         echo "Test results from this run are saved to:"
         echo "    $LOG_DIR/"
         echo "Bundle .zip was NOT created."
+        timing_end "pre-bundle custody checks" 1
+        timing_finish_total
         exit 1
     fi
 fi
@@ -625,6 +757,13 @@ if git rev-parse --is-inside-work-tree &>/dev/null \
     fi
 fi
 
+timing_end "pre-bundle custody checks" 0
+
+# Freeze a packet-safe timing snapshot before packaging.  The final timing file
+# continues to record ZIP/TAR/LLMBUNDLE/digest durations outside the packet;
+# freezing the snapshot avoids self-referential packet-byte drift.
+timing_snapshot_for_packet
+
 # =============================================================================
 # Package reviewer.zip
 # =============================================================================
@@ -648,6 +787,7 @@ echo "--- Packaging reviewer.zip ---"
         "$DIFF_COMMIT" \
         "$DIFF_PHASE" \
         "$GIT_STATUS" \
+        "$LOG_DIR/timing_packet_${TS}.txt" \
         "docs/CAPABILITY_MATRIX.md" \
         "docs/CAPABILITY_MATRIX.html" \
         "docs/CAPABILITY_MATRIX.json" \
@@ -668,7 +808,10 @@ echo "--- Packaging reviewer.zip ---"
     if [[ -n "$ZIP_FILES" ]]; then
         N_WANT=$(printf '%s\n' $ZIP_FILES | grep -c .)
 
-        zip -q "$REVIEWER_ZIP" $ZIP_FILES 2>/dev/null || true
+        timing_start "reviewer ZIP creation"
+        zip -q "$REVIEWER_ZIP" $ZIP_FILES 2>/dev/null
+        ZIP_EXIT=$?
+        timing_end "reviewer ZIP creation" "$ZIP_EXIT"
         echo "  Reviewer package (zip): $REVIEWER_ZIP_ABS"
 
         N_ZIP=$(unzip -Z1 "$REVIEWER_ZIP" 2>/dev/null | grep -cv '/$' || echo 0)
@@ -692,9 +835,15 @@ echo "--- Packaging reviewer.zip ---"
                 # --sort=name and fixed ownership keep the member order and
                 # uid/gid stable across machines.  Not required for review,
                 # cheap insurance if anyone ever diffs two tars.
+                timing_start "reviewer TAR creation"
                 tar --sort=name --owner=0 --group=0 --numeric-owner \
-                    -cf "$REVIEWER_TAR" $ZIP_FILES 2>/dev/null \
-                    || tar -cf "$REVIEWER_TAR" $ZIP_FILES 2>/dev/null || true
+                    -cf "$REVIEWER_TAR" $ZIP_FILES 2>/dev/null
+                TAR_EXIT=$?
+                if [[ "$TAR_EXIT" -ne 0 ]]; then
+                    tar -cf "$REVIEWER_TAR" $ZIP_FILES 2>/dev/null
+                    TAR_EXIT=$?
+                fi
+                timing_end "reviewer TAR creation" "$TAR_EXIT"
 
                 if [[ -f "$REVIEWER_TAR" ]]; then
                     N_TAR=$(tar -tf "$REVIEWER_TAR" 2>/dev/null | grep -cv '/$' || echo 0)
@@ -742,28 +891,34 @@ echo "--- Packaging reviewer.zip ---"
             BUNDLE_ERR="$LOG_DIR/reviewer_bundle_stderr_${TS}.txt"
             if [[ -z "$BUNDLE_SCRIPT" ]]; then
                 echo "${YELLOW}⚠️  make_llm_bundle.py not found (../scripts/, scripts/); no text bundle${RESET}"
-            elif python3 "$BUNDLE_SCRIPT" "$REVIEWER_ZIP" -o "$REVIEWER_BUNDLE" \
-                        --allow-delimiters >/dev/null 2>"$BUNDLE_ERR" \
-                    && [[ -s "$REVIEWER_BUNDLE" ]]; then
-                rm -f "$BUNDLE_ERR"
-                N_BUNDLE=$(grep -c '^===== LLMBUNDLE ENTRY BEGIN =====$' "$REVIEWER_BUNDLE" 2>/dev/null || echo 0)
-                echo "  Reviewer package (text): $REVIEWER_BUNDLE_ABS"
-                if [[ "$N_BUNDLE" -ne "$N_ZIP" ]]; then
-                    echo "${RED}${BOLD}❌ PACKAGE MISMATCH: zip=$N_ZIP bundle=$N_BUNDLE — not the same content${RESET}"
-                else
-                    echo "  content check: zip and text bundle both hold $N_BUNDLE files"
-                fi
-                if ! tail -1 "$REVIEWER_BUNDLE" | grep -q '^===== LLMBUNDLE END '; then
-                    echo "${RED}${BOLD}❌ text bundle has no trailer — it is truncated${RESET}"
-                fi
             else
-                echo "${RED}${BOLD}❌ make_llm_bundle.py FAILED — no text bundle (zip/tar unaffected)${RESET}"
-                if [[ -s "$BUNDLE_ERR" ]]; then
-                    echo "${YELLOW}--- bundler stderr ---${RESET}"
-                    sed 's/^/    /' "$BUNDLE_ERR"
-                    echo "${YELLOW}--- end bundler stderr ---${RESET}"
+                timing_start "LLMBUNDLE conversion"
+                python3 "$BUNDLE_SCRIPT" "$REVIEWER_ZIP" -o "$REVIEWER_BUNDLE" \
+                        --allow-delimiters >/dev/null 2>"$BUNDLE_ERR"
+                BUNDLE_EXIT=$?
+                timing_end "LLMBUNDLE conversion" "$BUNDLE_EXIT"
+
+                if [[ "$BUNDLE_EXIT" -eq 0 && -s "$REVIEWER_BUNDLE" ]]; then
+                    rm -f "$BUNDLE_ERR"
+                    N_BUNDLE=$(grep -c '^===== LLMBUNDLE ENTRY BEGIN =====$' "$REVIEWER_BUNDLE" 2>/dev/null || echo 0)
+                    echo "  Reviewer package (text): $REVIEWER_BUNDLE_ABS"
+                    if [[ "$N_BUNDLE" -ne "$N_ZIP" ]]; then
+                        echo "${RED}${BOLD}❌ PACKAGE MISMATCH: zip=$N_ZIP bundle=$N_BUNDLE — not the same content${RESET}"
+                    else
+                        echo "  content check: zip and text bundle both hold $N_BUNDLE files"
+                    fi
+                    if ! tail -1 "$REVIEWER_BUNDLE" | grep -q '^===== LLMBUNDLE END '; then
+                        echo "${RED}${BOLD}❌ text bundle has no trailer — it is truncated${RESET}"
+                    fi
+                else
+                    echo "${RED}${BOLD}❌ make_llm_bundle.py FAILED — no text bundle (zip/tar unaffected)${RESET}"
+                    if [[ -s "$BUNDLE_ERR" ]]; then
+                        echo "${YELLOW}--- bundler stderr ---${RESET}"
+                        sed 's/^/    /' "$BUNDLE_ERR"
+                        echo "${YELLOW}--- end bundler stderr ---${RESET}"
+                    fi
+                    rm -f "$REVIEWER_BUNDLE"
                 fi
-                rm -f "$REVIEWER_BUNDLE"
             fi
         fi
 
@@ -774,6 +929,7 @@ echo "--- Packaging reviewer.zip ---"
         # describes both is exactly the custody confusion to avoid.
         # Declare BOTH lines in the CRR; reviewers state which they opened.
         # ---------------------------------------------------------------
+        timing_start "reviewer package digest generation"
         {
             echo "=== reviewer package digests — run $TS ==="
             echo "(declare BOTH in the CRR; a reviewer must state which they opened)"
@@ -798,6 +954,7 @@ echo "--- Packaging reviewer.zip ---"
                 echo ""
             done
         } > "$REVIEWER_DIGESTS"
+        timing_end "reviewer package digest generation" 0
 
         echo ""
         cat "$REVIEWER_DIGESTS" | sed 's/^/  /'
@@ -820,6 +977,11 @@ fi
 # =============================================================================
 # Final
 # =============================================================================
+
+timing_finish_total
+printf '[%s] END run_tests.sh\n' "$(date +"%Y-%m-%d %H:%M:%S %z")"
+echo "Timing artifact: $TIMING_FILE"
+echo "Packet timing snapshot: $TIMING_PACKET_SNAPSHOT"
 
 echo ""
 if [[ $FAILED -gt 0 || $ERRORS -gt 0 ]]; then
