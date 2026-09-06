@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
@@ -64,30 +65,43 @@ def infer_evidence_layer(node_id, marker_set):
     return "smoke"
 
 
+@lru_cache(maxsize=None)
+def _source_ast_body(rel_path):
+    """Parse one repository-relative test source once per generator process.
+
+    Capability Matrix generation resolves thousands of pytest node IDs back to
+    source locations, but those nodes belong to a much smaller set of source
+    files.  Keep the established AST-based locator semantics while avoiding a
+    full read+parse of the same test module for every node.
+    """
+    path = Path(PROJECT_DIR) / rel_path
+    if not path.is_file():
+        return ()
+    try:
+        return tuple(ast.parse(path.read_text(encoding="utf-8")).body)
+    except (OSError, UnicodeError, SyntaxError):
+        return ()
+
+
 def _node_source_location(node_id):
     """Best-effort repository-relative file/line locator for a pytest node."""
     parts = node_id.split("::")
     file_name = parts[0]
     rel = Path("tests") / file_name
-    path = Path(PROJECT_DIR) / rel
     line = None
-    if path.is_file() and len(parts) >= 2:
+    if len(parts) >= 2:
         target = [part.split("[", 1)[0] for part in parts[1:]]
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-            body = tree.body
-            for name in target:
-                found = None
-                for node in body:
-                    if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
-                        found = node
-                        break
-                if found is None:
+        body = _source_ast_body(rel.as_posix())
+        for name in target:
+            found = None
+            for node in body:
+                if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+                    found = node
                     break
-                line = found.lineno
-                body = getattr(found, "body", ())
-        except (OSError, UnicodeError, SyntaxError):
-            line = None
+            if found is None:
+                break
+            line = found.lineno
+            body = getattr(found, "body", ())
     return {"file": rel.as_posix(), "line": line}
 
 

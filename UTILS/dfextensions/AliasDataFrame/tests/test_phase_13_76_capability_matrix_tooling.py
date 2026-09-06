@@ -739,3 +739,25 @@ class TestPhase1379NormalizationRegistration:
         assert all(row["current_state"] == "KNOWN_GAP_WARN_AND_IGNORE" for row in nonprofile)
         assert all("is ignored" in row["observed_warning_fragment"] for row in nonprofile)
 
+class TestCapabilityMatrixSourceLocatorPerformance:
+    """Regression guard for the source-location AST cache."""
+
+    def test_T34_source_ast_is_parsed_once_per_test_file(self):
+        gen = _load_generator()
+        cache = getattr(gen, "_source_ast_body", None)
+        assert cache is not None, (
+            "Capability Matrix source lookup must cache parsed ASTs per file"
+        )
+        assert hasattr(cache, "cache_clear") and hasattr(cache, "cache_info")
+
+        cache.cache_clear()
+        filename = "test_phase_13_76_capability_matrix_tooling.py"
+        gen._node_source_location(f"{filename}::does_not_need_to_exist_A")
+        first = cache.cache_info()
+        gen._node_source_location(f"{filename}::does_not_need_to_exist_B")
+        second = cache.cache_info()
+
+        assert first.misses == 1
+        assert second.misses == 1
+        assert second.hits >= 1
+
