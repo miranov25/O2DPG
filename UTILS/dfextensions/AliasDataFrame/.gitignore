@@ -1,1 +1,4 @@
 docs/CAPABILITY_MATRIX.html
+/filesAudit/
+/files*/
+scripts/env.local.sh
