@@ -1,0 +1,62 @@
+{
+  "schema": "AliasDataFrame.PHASE_13_77.ReferenceContract",
+  "schema_version": 1,
+  "status": "A6_REFERENCE_GOVERNANCE_V01",
+  "created": "2026-09-09",
+  "author": "GPT46:ADFCoder",
+  "governing_decisions": [],
+  "source_custody": {
+    "adf_source_zip": "sources_adf_20260907_065536.zip",
+    "adf_source_zip_md5": "ff09cb037e067042764317e874dfb267",
+    "adf_source_zip_sha256": "2c7178aaeaebae89231aa86fd93324e334e6f8c005c7cec80aff95754829b7c7",
+    "source_commit": "817585e9560a46254d4db503e665847d3492336a + UNCOMMITTED WORKING-TREE CHANGES",
+    "state": "DIRTY",
+    "a5_baseline_time_series_draw_invariance_md5": "8237df93a85f3dd11688566167a71bb9",
+    "a5_baseline_test_phase_13_77_realdata_invariance_harness_md5": "28963a61e5ae28826365f403b7671bc1"
+  },
+  "proposal_local_requirements": [
+    "PHASE_13_77 v1.2 section 7.1 sample identity rule",
+    "PHASE_13_77 v1.2 section 10 immutable reference-manifest governance",
+    "PHASE_13_77 v1.2 section 17 CLI",
+    "PHASE_13_77 v1.2 section 22 Stage-A closure criteria"
+  ],
+  "reference_policies": {
+    "named-immutable": {
+      "cross_run_reference": true,
+      "requires_explicit_reference": true,
+      "implicit_latest_allowed": false
+    },
+    "same-process": {
+      "cross_run_reference": false,
+      "requires_explicit_reference": false,
+      "implicit_latest_allowed": false
+    }
+  },
+  "required_accepted_reference_fields": [
+    "reference_manifest_id",
+    "dataset_input_identity",
+    "gallery_case_registry_version",
+    "sampling_algorithm_version",
+    "sample_seed",
+    "accepted_code_baseline",
+    "schema_oracle_version",
+    "approval_identity",
+    "approval_date",
+    "supersedes",
+    "reason_for_update"
+  ],
+  "governance_rules": {
+    "failed_run_may_overwrite_reference": false,
+    "update_requires_explicit_reviewed_act": true,
+    "old_references_remain_reproducible": true,
+    "implicit_latest_reference_allowed": false,
+    "different_input_or_sample_identity": "REFUSE",
+    "same_process_cases_in_cross_run_named_reference": "EXCLUDE"
+  },
+  "implementation_stage": {
+    "A6.1": "reference_policy activation + reference identity derivation/comparison",
+    "A6.2": "explicit accept/update + named reference compare orchestration",
+    "A6.3": "CLI/PDF integration + closure reconciliation",
+    "A6.FINAL": "reviewed full-data accepted reference"
+  }
+}

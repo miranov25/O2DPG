@@ -655,24 +655,25 @@ def test_a1_v05_audit_detects_a_planted_orphan():
 
 
 def test_a1_v05_future_staged_fields_are_recorded_with_their_stage(mk, tmp_path):
-    """A4.1 ownership transfer: only genuinely future-owned fields remain here.
+    """A6.1 activates the last A1 future-staged field without hiding it.
 
-    Before A4 this test required slots_under_test to be FUTURE_STAGE:A4.  A4.1
-    now gives that field (and anti_contamination_preconditions) executable
-    readers, validation and manifest evidence, so keeping the old expectation
-    would protect stale governance state rather than the A1 invariant.
+    Keep this historical node ID stable for Capability Matrix custody.  The
+    expected future-staged set is now empty, and reference_policy must be
+    direct executable manifest state instead.
     """
     case = _base_case(case_id="INV-SURFACE-01", surfaces_under_test=H.SURFACES)
     res = H.run_consistency(case, mk)
     doc = H.write_manifest(str(tmp_path / "m.json"), [res], [case])
-    fs = doc["cases"][0]["future_staged"]
-    assert set(fs) == {"reference_policy"}
-    assert fs["reference_policy"]["owning_stage"] == "A6"
-    assert doc["cases"][0]["slots_under_test"] == []
-    assert doc["cases"][0]["anti_contamination_preconditions"] == []
+    rec = doc["cases"][0]
+    assert rec["future_staged"] == {}
+    assert rec["reference_policy"] == "named-immutable"
+    assert rec["reference_policy_semantics"] == {
+        "cross_run_reference": True,
+        "requires_explicit_reference": True,
+        "implicit_latest_allowed": False,
+    }
+    assert H.FUTURE_STAGE_FIELDS == {}
 
-
-# ── 11. v06 — the derived audit and the enumerated gate matrix ─────────────
 
 def test_a1_v06_applicable_skip_always_gates():
     """A1-v05-P0-1.  An applicable case that proved nothing is a silent
@@ -2404,7 +2405,8 @@ def test_a4_01_selection_slot_contract_is_executable_and_manifest_visible(tmp_pa
     assert rec["slots_under_test"] == ["selection"]
     assert rec["anti_contamination_preconditions"] == list(
         case.anti_contamination_preconditions)
-    assert set(rec["future_staged"]) == {"reference_policy"}
+    assert rec["future_staged"] == {}
+    assert rec["reference_policy"] == case.reference_policy
     assert doc["provenance"]["schema_version"] == H.SCHEMA_VERSION
 
 
@@ -4493,4 +4495,134 @@ def test_a5_42_phase_13_77_capability_taxonomy_registration_is_exact():
     assert len(by_id["INV.eager_lazy_slot_symmetry"]["test_patterns"]) == 24
     assert len(by_id["INV.realdata_acceptance"]["test_patterns"]) == 42
     assert len(owned) == 248
+
+
+
+# ── A6.1 — named-reference governance foundation ───────────────────────────
+
+def test_a6_01_reference_contract_reuses_phase_13_79_shape():
+    from pathlib import Path
+    contract_path = Path(__file__).with_name("phase_13_77_reference_contract.json")
+    payload = json.loads(contract_path.read_text(encoding="utf-8"))
+    for key in ("schema", "schema_version", "status", "created", "author",
+                "governing_decisions", "source_custody"):
+        assert key in payload
+    assert payload["schema"] == "AliasDataFrame.PHASE_13_77.ReferenceContract"
+    assert payload["reference_policies"] == H.REFERENCE_POLICY_SEMANTICS
+    assert payload["governance_rules"]["implicit_latest_reference_allowed"] is False
+    assert payload["governance_rules"]["different_input_or_sample_identity"] == "REFUSE"
+
+
+def test_a6_02_every_live_reference_policy_is_executable():
+    assert set(H.REFERENCE_POLICY) == {"named-immutable", "same-process"}
+    assert H.FUTURE_STAGE_FIELDS == {}
+    named = _base_case(reference_policy="named-immutable")
+    same = _base_case(reference_policy="same-process")
+    assert H.validate_registry([named]) == []
+    assert H.validate_registry([same]) == []
+    assert H.reference_policy_semantics(named)["cross_run_reference"] is True
+    assert H.reference_policy_semantics(same)["cross_run_reference"] is False
+    assert H.audit_declared_state() == []
+
+
+def test_a6_03_unknown_reference_policy_is_refused():
+    case = _base_case(reference_policy="latest-magic")
+    bad = H.validate_registry([case])
+    assert any("reference_policy" in item for item in bad)
+    with pytest.raises(H.HarnessError, match="unknown reference_policy"):
+        H.reference_policy_semantics(case)
+
+
+def test_a6_04_realdata_manifest_derives_named_reference_identity(tmp_path):
+    case = _base_case(reference_policy="named-immutable")
+    result = H.CaseResult(case_id=case.case_id, status=H.PASS)
+    extra = {
+        "input_path": "/data/fake.root",
+        "input_size_bytes": 1234,
+        "input_mtime_ns": 99,
+        "loading_mode": "EAGER",
+        "sample_mode": "FRACTION",
+        "sample_fraction": 0.20,
+        "sample_seed": 42,
+        "sampling_algorithm": "pandas.DataFrame.sample(frac=0.20, random_state=42)",
+        "source_rows": 100,
+        "selected_rows": 20,
+        "index_digest_sha256": "a" * 64,
+    }
+    doc = H.write_manifest(str(tmp_path / "a6.json"), [result], [case], extra=extra)
+    identity = doc["reference_identity"]
+    assert identity["sample_seed"] == 42
+    assert identity["index_digest_sha256"] == "a" * 64
+    assert doc["cases"][0]["reference_policy"] == "named-immutable"
+    assert doc["cases"][0]["future_staged"] == {}
+
+
+def _complete_fraction_reference_identity():
+    return {
+        "input_path": "/data/fake.root",
+        "input_size_bytes": 1234,
+        "input_mtime_ns": 99,
+        "loading_mode": "EAGER",
+        "sample_mode": "FRACTION",
+        "sampling_algorithm": "pandas.DataFrame.sample(frac=0.20, random_state=42)",
+        "source_rows": 100,
+        "selected_rows": 20,
+        "sample_fraction": 0.20,
+        "sample_seed": 42,
+        "index_digest_sha256": "a" * 64,
+    }
+
+
+def test_a6_05_reference_identity_mismatch_refuses():
+    current = _complete_fraction_reference_identity()
+    accepted = dict(current)
+    H.compare_reference_identity(current, accepted)
+    accepted["sample_seed"] = 43
+    with pytest.raises(H.HarnessError, match="sample_seed"):
+        H.compare_reference_identity(current, accepted)
+
+
+def test_a6_06_incomplete_named_reference_identity_refuses():
+    with pytest.raises(H.HarnessError, match="incomplete"):
+        H.reference_identity_from_provenance(
+            {"input_path": "/data/fake.root", "input_size_bytes": 1,
+             "sample_mode": "FRACTION", "sample_seed": 42},
+            require_complete=True)
+
+
+def test_a6_06b_equal_incomplete_reference_identities_refuse():
+    incomplete = {
+        "input_path": "/data/fake.root",
+        "sample_mode": "FRACTION",
+    }
+    with pytest.raises(H.HarnessError, match="current named-reference identity is incomplete"):
+        H.compare_reference_identity(dict(incomplete), dict(incomplete))
+
+
+def test_a6_06c_every_authoritative_fraction_field_is_mandatory():
+    complete = _complete_fraction_reference_identity()
+    required = H.reference_identity_required_keys("FRACTION")
+    assert set(required) == set(complete)
+    for missing_key in required:
+        current = dict(complete)
+        current.pop(missing_key)
+        with pytest.raises(H.HarnessError, match=missing_key):
+            H.compare_reference_identity(current, complete)
+
+
+def test_a6_06d_manifest_never_emits_partial_identity_as_comparison_ready(tmp_path):
+    case = _base_case(reference_policy="named-immutable")
+    result = H.CaseResult(case_id=case.case_id, status=H.PASS)
+    doc = H.write_manifest(
+        str(tmp_path / "partial.json"), [result], [case],
+        extra={"input_path": "/data/fake.root", "sample_mode": "FRACTION"})
+    assert "reference_identity" not in doc
+    assert doc["reference_identity_status"]["comparison_ready"] is False
+    assert "input_size_bytes" in doc["reference_identity_status"]["missing_fields"]
+
+
+def test_a6_07_same_process_policy_is_excluded_from_cross_run_reference_set():
+    named = _base_case(reference_policy="named-immutable")
+    same = _base_case(reference_policy="same-process")
+    assert H.named_reference_case_ids([named, same]) == (named.case_id,)
 

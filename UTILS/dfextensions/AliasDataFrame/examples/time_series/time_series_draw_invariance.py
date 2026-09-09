@@ -33,7 +33,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A5.CLOSE.v01"
+SCHEMA_VERSION = "13.77.A6.1.v01"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -60,6 +60,48 @@ OBS_STATUS = ("EXECUTED", "NOT_EXTRACTABLE")      # DEFERRED:<stage> also allowe
 KNOWN_BUG_STATUS = ("SUPPORTED", "KNOWN_BUG", "EXPECTED_FAIL", "ENVIRONMENT_BLOCKED")
 LOADING_MODE = ("EAGER", "LAZY", "BOTH")
 SAMPLE_MODE = ("FULL", "FRACTION")
+
+# A6.1 — reference-policy semantics.  This is deliberately a small, explicit
+# policy vocabulary rather than another reference framework.  The structural
+# contract follows the tested PHASE_13_79 contract-file pattern; the run
+# manifest remains owned by write_manifest() below.
+REFERENCE_POLICY = ("named-immutable", "same-process")
+REFERENCE_POLICY_SEMANTICS = {
+    "named-immutable": {
+        "cross_run_reference": True,
+        "requires_explicit_reference": True,
+        "implicit_latest_allowed": False,
+    },
+    "same-process": {
+        "cross_run_reference": False,
+        "requires_explicit_reference": False,
+        "implicit_latest_allowed": False,
+    },
+}
+
+# Existing A5 real-data manifests already record these provenance fields.
+# A6.1 derives one reference-identity view from that existing owner instead of
+# introducing a second sampling/input-identity implementation.
+_REFERENCE_IDENTITY_BASE_KEYS = (
+    "input_path", "input_size_bytes", "input_mtime_ns", "loading_mode",
+    "sample_mode", "sampling_algorithm", "source_rows", "selected_rows",
+)
+_REFERENCE_IDENTITY_FRACTION_KEYS = (
+    "sample_fraction", "sample_seed", "index_digest_sha256",
+)
+
+# A6.1-v02: comparison-ready identity completeness is single-sourced here and
+# consumed by derivation, comparison, and manifest emission.  FRACTION is the
+# deterministic 20% reference path already owned by A5.  FULL acceptance is a
+# later A6 checkpoint, so its minimum comparison-ready identity remains limited
+# to the provenance fields the current FULL runner already owns.
+_REFERENCE_IDENTITY_FULL_REQUIRED_KEYS = (
+    "input_path", "input_size_bytes", "input_mtime_ns", "loading_mode",
+    "sample_mode", "source_rows",
+)
+_REFERENCE_IDENTITY_FRACTION_REQUIRED_KEYS = _REFERENCE_IDENTITY_BASE_KEYS + (
+    "sample_fraction", "sample_seed", "index_digest_sha256",
+)
 
 SURFACES = ("draw", "draw_batch", "draw_figures")
 
@@ -3224,9 +3266,10 @@ def run_a5_3_realdata_gate(root_path: str, *, manifest_path: str,
 # CaseSpec field must be READ, VALIDATED, SERIALISED — or declared future work
 # against a named stage.  A new field with no reader fails the suite the day it
 # is added, rather than surviving to the next review round.
-FUTURE_STAGE_FIELDS = {
-    "reference_policy": "A6",                    # named-reference acceptance
-}
+# A6.1 activates reference_policy: it is now read, validated, serialized and
+# has executable semantics.  Keep the future-stage registry explicit so the
+# declared-state audit remains fail-closed for any later deferred field.
+FUTURE_STAGE_FIELDS = {}
 
 
 def _is_casespec_annotation(ann) -> bool:
@@ -3399,6 +3442,110 @@ def audit_declared_state() -> list:
     return orphans
 
 
+def reference_policy_semantics(case: CaseSpec) -> dict:
+    """Return the executable A6 semantics for one CaseSpec reference policy.
+
+    Unknown policies fail loudly rather than being serialized as decorative
+    metadata.  ``named-immutable`` participates in cross-run named-reference
+    comparison; ``same-process`` is explicitly not eligible for that path.
+    """
+    try:
+        return dict(REFERENCE_POLICY_SEMANTICS[case.reference_policy])
+    except KeyError as exc:
+        raise HarnessError(
+            f"{case.case_id}: unknown reference_policy {case.reference_policy!r}; "
+            f"known: {REFERENCE_POLICY}") from exc
+
+
+def named_reference_case_ids(cases: Sequence[CaseSpec]) -> tuple[str, ...]:
+    """Return exactly the cases eligible for cross-run named references.
+
+    This is the first executable use of the per-case A6 policy: same-process
+    cases remain recorded in the run manifest but are not silently promoted to
+    cross-run reference comparisons.
+    """
+    out = []
+    for case in cases:
+        semantics = reference_policy_semantics(case)
+        if semantics["cross_run_reference"]:
+            out.append(case.case_id)
+    return tuple(out)
+
+
+def reference_identity_required_keys(sample_mode: str) -> tuple[str, ...]:
+    """Return the one authoritative required-field set for A6 identity comparison.
+
+    This deliberately reuses A5 provenance fields.  Callers must not maintain
+    their own required-field lists; derivation, comparison and manifest
+    preparation all pass through this function.
+    """
+    if sample_mode == "FRACTION":
+        return _REFERENCE_IDENTITY_FRACTION_REQUIRED_KEYS
+    if sample_mode == "FULL":
+        return _REFERENCE_IDENTITY_FULL_REQUIRED_KEYS
+    raise HarnessError(
+        f"named-reference identity has invalid sample_mode {sample_mode!r}; "
+        f"expected one of {SAMPLE_MODE}")
+
+
+def reference_identity_missing_fields(identity: dict) -> tuple[str, ...]:
+    """Return missing/blank fields that make an identity comparison-ineligible."""
+    if not isinstance(identity, dict):
+        raise HarnessError("reference identity must be a dict")
+    mode = identity.get("sample_mode")
+    required = reference_identity_required_keys(mode)
+    missing = []
+    for key in required:
+        if key not in identity:
+            missing.append(key)
+            continue
+        value = identity[key]
+        if value is None or (isinstance(value, str) and not value.strip()):
+            missing.append(key)
+    return tuple(missing)
+
+
+def _require_complete_reference_identity(identity: dict, *, role: str) -> None:
+    """Fail closed unless one explicit identity is comparison-ready."""
+    missing = reference_identity_missing_fields(identity)
+    if missing:
+        raise HarnessError(
+            f"{role} named-reference identity is incomplete; missing "
+            + ", ".join(missing))
+
+
+def reference_identity_from_provenance(provenance_doc: dict, *,
+                                       require_complete: bool = False) -> dict:
+    """Derive the A6 named-reference identity from existing run provenance.
+
+    A5 already owns deterministic sampling and records the original sampled
+    index digest.  A6 reuses those fields verbatim.  Completeness is checked by
+    the same authoritative rule used at comparison and manifest boundaries.
+    """
+    if not isinstance(provenance_doc, dict):
+        raise HarnessError("reference provenance must be a dict")
+    keys = list(_REFERENCE_IDENTITY_BASE_KEYS)
+    if provenance_doc.get("sample_mode") == "FRACTION":
+        keys.extend(_REFERENCE_IDENTITY_FRACTION_KEYS)
+    identity = {k: provenance_doc[k] for k in keys if k in provenance_doc}
+    if require_complete:
+        _require_complete_reference_identity(identity, role="derived")
+    return identity
+
+
+def compare_reference_identity(current: dict, accepted: dict) -> None:
+    """Fail closed unless two complete explicit A6 identities are identical."""
+    if not isinstance(current, dict) or not isinstance(accepted, dict):
+        raise HarnessError("reference identity comparison requires two dicts")
+    _require_complete_reference_identity(current, role="current")
+    _require_complete_reference_identity(accepted, role="accepted")
+    if current != accepted:
+        keys = sorted(set(current) | set(accepted))
+        mismatched = [k for k in keys if current.get(k) != accepted.get(k)]
+        raise HarnessError(
+            "named-reference identity mismatch: " + ", ".join(mismatched))
+
+
 def validate_registry(cases: Sequence[CaseSpec]) -> list[str]:
     """Return a list of violations.  Empty list == registry is admissible."""
     bad: list[str] = []
@@ -3430,6 +3577,9 @@ def validate_registry(cases: Sequence[CaseSpec]) -> list[str]:
             bad.append(f"{cid}: loading_mode {c.loading_mode!r} not in {LOADING_MODE}")
         if c.sample_mode not in SAMPLE_MODE:
             bad.append(f"{cid}: sample_mode {c.sample_mode!r} not in {SAMPLE_MODE}")
+        if c.reference_policy not in REFERENCE_POLICY:
+            bad.append(f"{cid}: reference_policy {c.reference_policy!r} not in "
+                       f"{REFERENCE_POLICY}")
         if c.known_bug_status not in KNOWN_BUG_STATUS:
             bad.append(f"{cid}: known_bug_status {c.known_bug_status!r} invalid")
         if c.known_bug_status in ("KNOWN_BUG", "EXPECTED_FAIL") and not c.known_bug_id:
@@ -3699,11 +3849,30 @@ def write_manifest(path: str, results: Sequence[CaseResult],
     seen: dict = {}
     for r in results:
         seen.setdefault(r.case_id, r)
+    run_provenance = {**provenance(), **(extra or {})}
     doc = {
-        "provenance": {**provenance(), **(extra or {})},
+        "provenance": run_provenance,
         "reconciliation": rec,
+        "named_reference_case_ids": list(named_reference_case_ids(cases)),
         "cases": [],
     }
+    reference_identity = reference_identity_from_provenance(run_provenance)
+    if reference_identity:
+        missing_reference_fields = reference_identity_missing_fields(reference_identity)
+        if missing_reference_fields:
+            # A6.1-v02: a partial identity may remain visible as ordinary run
+            # provenance, but it must never be serialized under the
+            # comparison-ready ``reference_identity`` key.
+            doc["reference_identity_status"] = {
+                "comparison_ready": False,
+                "missing_fields": list(missing_reference_fields),
+            }
+        else:
+            doc["reference_identity"] = reference_identity
+            doc["reference_identity_status"] = {
+                "comparison_ready": True,
+                "missing_fields": [],
+            }
     # A3.11-v02: once a manifest is in A3 context, persist the closure record
     # even when it is BLOCKED.  Absence of a required family is itself durable
     # evidence and must not make the governance record disappear.
@@ -3753,9 +3922,10 @@ def write_manifest(path: str, results: Sequence[CaseResult],
                 # A4.1: these fields are now executable, no longer future-staged.
                 "slots_under_test": list(c.slots_under_test),
                 "anti_contamination_preconditions": list(c.anti_contamination_preconditions),
-                # A1-v04-P1-1: future-staged fields are RECORDED with the
-                # stage that owns them, so "declared but unread" is visible in
-                # the evidence rather than discoverable only by source audit.
+                # A6.1: reference_policy is now executable, not future-staged.
+                "reference_policy": c.reference_policy,
+                "reference_policy_semantics": reference_policy_semantics(c),
+                # Future-staged fields remain visible if later stages add any.
                 "future_staged": {
                     name: {"value": getattr(c, name), "owning_stage": stage}
                     for name, stage in FUTURE_STAGE_FIELDS.items()},

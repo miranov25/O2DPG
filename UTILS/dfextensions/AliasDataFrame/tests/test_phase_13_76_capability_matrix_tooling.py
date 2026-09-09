@@ -761,3 +761,22 @@ class TestCapabilityMatrixSourceLocatorPerformance:
         assert second.misses == 1
         assert second.hits >= 1
 
+
+
+class TestPhase1377A6ReferenceContractRegistration:
+    def test_T35_phase1377_reference_contract_is_registered_and_machine_readable(self):
+        gen = _load_generator()
+        feature = next(f for f in gen.FEATURES if f["id"] == "TESTING.phase13_77_reference_governance")
+        assert feature["contract_file"] == "tests/phase_13_77_reference_contract.json"
+        summary = gen.feature_contract_summary(feature)
+        assert summary["schema"] == "AliasDataFrame.PHASE_13_77.ReferenceContract"
+        assert summary["schema_version"] == 1
+        assert summary["status"] == "A6_REFERENCE_GOVERNANCE_V01"
+        assert summary["declared_cells"] == 0
+        assert len(summary["sha256"]) == 64
+
+        contract_path = PROJECT_ROOT / "tests" / "phase_13_77_reference_contract.json"
+        payload = json.loads(contract_path.read_text(encoding="utf-8"))
+        assert set(payload["reference_policies"]) == {"named-immutable", "same-process"}
+        assert payload["governance_rules"]["failed_run_may_overwrite_reference"] is False
+        assert payload["governance_rules"]["implicit_latest_reference_allowed"] is False
