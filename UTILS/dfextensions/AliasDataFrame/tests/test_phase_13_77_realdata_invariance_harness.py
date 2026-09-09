@@ -4795,3 +4795,158 @@ def test_a6_16_no_implicit_latest_reference_discovery(tmp_path):
         H.compare_manifest_to_named_reference(run, "")
     assert not hasattr(H, "latest_reference")
     assert not hasattr(H, "find_latest_reference")
+
+# ── A6.3 — integrated CLI/PDF closure and comparison hardening ─────────────
+
+def test_a6_17_compare_refuses_duplicate_current_case_records(tmp_path):
+    run = _a6_2_reference_ready_manifest(tmp_path)
+    ref = H.accepted_reference_from_manifest(run, **_a6_2_accept_kwargs())
+    duplicate = json.loads(json.dumps(run))
+    duplicate["cases"].append(json.loads(json.dumps(duplicate["cases"][0])))
+    with pytest.raises(H.HarnessError, match="duplicate case record"):
+        H.compare_run_manifest_to_reference(duplicate, ref)
+
+
+def test_a6_18_malformed_observable_contract_raises_harness_error(tmp_path):
+    run = _a6_2_reference_ready_manifest(tmp_path)
+    ref = H.accepted_reference_from_manifest(run, **_a6_2_accept_kwargs())
+    malformed = json.loads(json.dumps(run))
+    malformed["cases"][0]["declared_observables"][0].pop("comparator")
+    # Keep stored contract identical so comparison reaches contract validation.
+    ref = json.loads(json.dumps(ref))
+    ref["reference_cases"][0]["declared_observables"] = json.loads(json.dumps(
+        malformed["cases"][0]["declared_observables"]))
+    ref_without_id = dict(ref)
+    ref_without_id.pop("reference_manifest_id", None)
+    ref["reference_manifest_id"] = H._accepted_reference_id(ref_without_id)
+    with pytest.raises(H.HarnessError, match="invalid or missing comparator"):
+        H.compare_run_manifest_to_reference(malformed, ref)
+
+
+def test_a6_19_reference_convenience_metadata_must_match_nested_identity(tmp_path):
+    run = _a6_2_reference_ready_manifest(tmp_path)
+    ref = H.accepted_reference_from_manifest(run, **_a6_2_accept_kwargs())
+    tampered = json.loads(json.dumps(ref))
+    tampered["sample_seed"] = 99
+    without_id = dict(tampered)
+    without_id.pop("reference_manifest_id", None)
+    tampered["reference_manifest_id"] = H._accepted_reference_id(without_id)
+    with pytest.raises(H.HarnessError, match="sample_seed disagrees"):
+        H.validate_accepted_reference(tampered)
+
+
+def _a6_3_fake_gallery():
+    import types
+
+    class FakeFigure:
+        def __init__(self):
+            self.annotations = []
+        def text(self, *args, **kwargs):
+            self.annotations.append((args, kwargs))
+        def subplots_adjust(self, **kwargs):
+            self.adjust = kwargs
+
+    class FakePdfPages:
+        def __init__(self, path):
+            self.path = path
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    mod = types.SimpleNamespace()
+    mod.PdfPages = FakePdfPages
+    mod.saved = []
+    def _add(pdf, fig, title):
+        mod.saved.append((fig, title))
+    mod._add = _add
+    mod.build_adf = lambda root_path, sample=None, lazy=False: object()
+    mod.validate_lazy_vs_eager = lambda root_path: None
+
+    funcs = []
+    for name in sorted(H._GALLERY_DISPOSITION):
+        def make_fn(fn_name):
+            def fn(adf):
+                return FakeFigure(), object(), {}
+            fn.__name__ = fn_name
+            fn.__doc__ = fn_name
+            return fn
+        fn = make_fn(name)
+        setattr(mod, name, fn)
+        funcs.append(fn)
+    optional_names = {"fig32_subframe_vertex", "fig33_gb_correction_tgl", "fig34_gb_correction_sector"}
+    mod.FIGURES_OPTIONAL = [f for f in funcs if f.__name__ in optional_names]
+    mod.FIGURES_MANDATORY = [f for f in funcs if f.__name__ not in optional_names]
+    return mod
+
+
+def test_a6_20_gallery_disposition_is_exact_for_all_42_figures():
+    gallery = _a6_3_fake_gallery()
+    rows = H.gallery_disposition_table(gallery)
+    assert len(rows) == 42
+    assert {r["gallery_function"] for r in rows} == set(H._GALLERY_DISPOSITION)
+    assert {r["disposition"] for r in rows}.issubset(set(H.GALLERY_DISPOSITION_ALLOWED))
+    assert next(r for r in rows if r["gallery_function"] == "fig17_profile_facet_time")["disposition"] == "KNOWN_BUG"
+    assert next(r for r in rows if r["gallery_function"] == "fig32_subframe_vertex")["disposition"] == "REUSED_CORE"
+
+
+def test_a6_21_numerical_oracle_closure_is_explicit_and_ready():
+    rec = H.numerical_oracle_closure_record()
+    assert rec["status"] == "READY", rec
+    assert rec["same_spec_cross_surface_case_ids"]
+    assert len(rec["independent_correctness_anchors"]) >= 2
+    assert rec["tolerance_rationale_missing"] == []
+    assert rec["blockers"] == []
+
+
+def test_a6_22_pdf_wrapper_reuses_gallery_pdf_owner_and_annotates_pages(tmp_path):
+    gallery = _a6_3_fake_gallery()
+    root = tmp_path / "fake.root"
+    root.write_bytes(b"root")
+    evidence = H.write_stage_a_pdf(
+        object(), str(tmp_path / "stage_a.pdf"), root_path=str(root),
+        gallery_module=gallery)
+    assert evidence["ok"] is True
+    assert evidence["page_count"] == 42
+    assert len(gallery.saved) == 42
+    # At least one core page and one ordinary visual page received annotations.
+    assert all(fig.annotations for fig, _ in gallery.saved)
+
+
+def test_a6_23_cli_sample_mode_delegates_to_single_fraction_gate_and_compare(tmp_path, monkeypatch):
+    calls = []
+    manifest = {"reconciliation": {"exit_code": 0}}
+    def fake_gate(root_path, *, manifest_path, pdf_path, gallery_module=None):
+        calls.append((root_path, manifest_path, pdf_path))
+        return [], manifest, 0
+    monkeypatch.setattr(H, "run_stage_a_fraction_gate", fake_gate)
+    monkeypatch.setattr(
+        H, "compare_manifest_to_named_reference",
+        lambda doc, path: calls.append(("compare", path)) or {"ok": True})
+    rc = H.stage_a_cli_main([
+        str(tmp_path / "input.root"), "--sample", "0.20", "--seed", "42",
+        "--manifest", str(tmp_path / "run.json"),
+        "--pdf", str(tmp_path / "run.pdf"),
+        "--compare", str(tmp_path / "reference.json"), "--strict",
+    ], gallery_module=object())
+    assert rc == 0
+    assert calls[0][0] == str(tmp_path / "input.root")
+    assert calls[1] == ("compare", str(tmp_path / "reference.json"))
+
+
+def test_a6_24_cli_refuses_noncanonical_fraction_or_seed(tmp_path):
+    base = [str(tmp_path / "input.root"), "--manifest", str(tmp_path / "m.json"),
+            "--pdf", str(tmp_path / "p.pdf"), "--strict"]
+    assert H.stage_a_cli_main(base + ["--sample", "0.25"], gallery_module=object()) == 2
+    assert H.stage_a_cli_main(base + ["--sample", "0.20", "--seed", "43"], gallery_module=object()) == 2
+
+
+def test_a6_25_cli_validate_lazy_eager_reuses_gallery_validator(tmp_path):
+    import types
+    calls = []
+    gallery = types.SimpleNamespace(
+        validate_lazy_vs_eager=lambda path: calls.append(path))
+    root = str(tmp_path / "input.root")
+    rc = H.stage_a_cli_main([root, "--validate-lazy-eager", "--strict"], gallery_module=gallery)
+    assert rc == 0
+    assert calls == [root]

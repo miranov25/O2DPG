@@ -35,7 +35,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A6.2.v01"
+SCHEMA_VERSION = "13.77.A6.3.v01"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -3629,19 +3629,58 @@ def _manifest_acceptance_ready(run_manifest: dict) -> None:
     _manifest_reference_identity(run_manifest)
 
 
+def _manifest_case_records(run_manifest: dict, *, role: str) -> dict[str, dict]:
+    """Return one fail-closed case_id -> record map for a run manifest.
+
+    Acceptance and comparison must share the same duplicate/malformed-record
+    semantics.  A dict comprehension is forbidden here because duplicate IDs
+    would silently collapse.
+    """
+    if not isinstance(run_manifest, dict):
+        raise HarnessError(f"{role} run manifest must be a dict")
+    records = run_manifest.get("cases")
+    if not isinstance(records, list):
+        raise HarnessError(f"{role} run manifest cases must be a list")
+    by_id: dict[str, dict] = {}
+    for i, rec in enumerate(records):
+        if not isinstance(rec, dict):
+            raise HarnessError(f"{role} run manifest case record #{i} is not a dict")
+        cid = rec.get("case_id")
+        if not isinstance(cid, str) or not cid:
+            raise HarnessError(f"{role} run manifest case record #{i} has no case_id")
+        if cid in by_id:
+            raise HarnessError(f"{role} run manifest has duplicate case record {cid!r}")
+        by_id[cid] = rec
+    return by_id
+
+
+def _validate_serialized_observable_contract(contract: dict, *, path: str) -> None:
+    """Validate one manifest-side observable contract before comparison.
+
+    Malformed evidence is a HarnessError, never an incidental KeyError.
+    """
+    if not isinstance(contract, dict):
+        raise HarnessError(f"{path}: observable contract must be a dict")
+    name = contract.get("name")
+    if not isinstance(name, str) or not name:
+        raise HarnessError(f"{path}: observable contract has no name")
+    comparator = contract.get("comparator")
+    if comparator not in COMPARATORS:
+        raise HarnessError(
+            f"{path}/{name}: invalid or missing comparator {comparator!r}; "
+            f"known: {COMPARATORS}")
+    if comparator == "close":
+        for key in ("atol", "rtol"):
+            value = contract.get(key)
+            if not isinstance(value, (int, float, np.number)):
+                raise HarnessError(f"{path}/{name}: {key} must be numeric")
+
+
 def _reference_case_snapshot(run_manifest: dict) -> list[dict]:
     """Extract the immutable machine-comparison payload for named-reference cases."""
     _manifest_acceptance_ready(run_manifest)
     named = list(run_manifest["named_reference_case_ids"])
-    by_id = {}
-    for rec in run_manifest.get("cases", []):
-        if not isinstance(rec, dict):
-            continue
-        cid = rec.get("case_id")
-        if cid in by_id:
-            raise HarnessError(f"run manifest has duplicate case record {cid!r}")
-        if cid:
-            by_id[cid] = rec
+    by_id = _manifest_case_records(run_manifest, role="acceptance")
     missing = [cid for cid in named if cid not in by_id]
     if missing:
         raise HarnessError("run manifest is missing named-reference case(s): " + ", ".join(missing))
@@ -3737,6 +3776,15 @@ def validate_accepted_reference(reference: dict) -> None:
                 if isinstance(r, dict)]
     if case_ids != reference["named_reference_case_ids"]:
         raise HarnessError("accepted reference case snapshot does not match named case registry")
+    identity = reference["dataset_input_identity"]
+    expected_sampling = identity.get("sampling_algorithm", "FULL")
+    if reference.get("sampling_algorithm_version") != expected_sampling:
+        raise HarnessError(
+            "accepted reference sampling_algorithm_version disagrees with dataset_input_identity")
+    expected_seed = identity.get("sample_seed")
+    if reference.get("sample_seed") != expected_seed:
+        raise HarnessError(
+            "accepted reference sample_seed disagrees with dataset_input_identity")
     claimed = reference.get("reference_manifest_id")
     without_id = dict(reference)
     without_id.pop("reference_manifest_id", None)
@@ -3869,8 +3917,7 @@ def compare_run_manifest_to_reference(run_manifest: dict,
             "schema/oracle version mismatch: "
             f"{current_schema!r} != {accepted_reference['schema_oracle_version']!r}")
 
-    current_cases = {r.get("case_id"): r for r in run_manifest.get("cases", [])
-                     if isinstance(r, dict) and r.get("case_id")}
+    current_cases = _manifest_case_records(run_manifest, role="comparison")
     evidence = []
     for stored in accepted_reference["reference_cases"]:
         cid = stored["case_id"]
@@ -3883,7 +3930,16 @@ def compare_run_manifest_to_reference(run_manifest: dict,
         current_contracts = current.get("declared_observables", [])
         if current_contracts != stored.get("declared_observables", []):
             raise HarnessError(f"{cid}: declared observable contract changed")
-        by_name = {c.get("name"): c for c in current_contracts if isinstance(c, dict)}
+        if not isinstance(current_contracts, list):
+            raise HarnessError(f"{cid}: declared observable contract must be a list")
+        by_name = {}
+        for i, contract in enumerate(current_contracts):
+            _validate_serialized_observable_contract(
+                contract, path=f"{cid}/declared_observables[{i}]")
+            name = contract["name"]
+            if name in by_name:
+                raise HarnessError(f"{cid}: duplicate observable contract {name!r}")
+            by_name[name] = contract
         current_observed = current.get("observed", {})
         stored_observed = stored.get("observed", {})
         for name, contract in by_name.items():
@@ -6393,3 +6449,473 @@ def run_a5_6_realdata_gate(root_path: str, *, manifest_path: str,
     doc = write_manifest(manifest_path, [result], [case], extra=extra)
     return result, doc, strict_exit_code([result], [case])
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# A6.3 — final Stage-A orchestration, PDF evidence, and closure reconciliation
+# ─────────────────────────────────────────────────────────────────────────────
+
+GALLERY_DISPOSITION_ALLOWED = (
+    "REUSED_CORE", "REUSED_VISUAL", "ENVIRONMENT_GATED", "KNOWN_BUG",
+    "NOT_IN_STAGE_A",
+)
+
+# Explicit disposition of every trusted-gallery figNN_* function known at A6.3.
+# The discovery check below makes this list fail closed when the gallery grows.
+_GALLERY_DISPOSITION = {
+    "fig01_hist_ncl": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig02_hist_time": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig03_hist_cumulative": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig04_scatter_dca_tgl": ("REUSED_VISUAL", "trusted mandatory gallery page; scatter auto-title workaround remains in gallery"),
+    "fig05_hist2d_dca_sector": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig06_hexbin_dca_sector": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig07_profile_dca_sector": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig08_profile2d_dca_tgl_sector": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig09_scatter3d": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig10_profile_groupby_side": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig11_hist_groupby_side": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig12_profile_facet_side": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig13_profile_facet_nd": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig14_group_and_facet": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig15_profile_time": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig16_hist2d_time": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig17_profile_facet_time": ("KNOWN_BUG", "trusted page retained; facet time-format panel ticks remain the registered S-4 limitation"),
+    "fig18_delta_sector13": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig19_ratio_time": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig20_pull_time": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig21_delta_side": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig22_delta_faceted": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig23_hist_fit": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig24_profile_fit": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig25_profile_fit_median": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig26_summary_fit": ("REUSED_VISUAL", "trusted mandatory gallery page including fit-summary table"),
+    "fig27_vector": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig28_quantile_band": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig29_central_median": ("REUSED_VISUAL", "trusted mandatory non-grouped median page"),
+    "fig30_overlay": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig31_selection_delta_ncl": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig32_subframe_vertex": ("REUSED_CORE", "A5.2 real-data G7.32 acceptance reuses this exact gallery function"),
+    "fig33_gb_correction_tgl": ("REUSED_CORE", "A5.4/A5.5 real-data G7.33 preparation reuses this exact gallery function"),
+    "fig34_gb_correction_sector": ("REUSED_CORE", "A5.5/A5.6 real-data G7.34 acceptance reuses this exact gallery function"),
+    "fig35_batch_profile2d": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig36_batch_overlay": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig37_adf_draw_overlay": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig38_adf_draw_histo_alias": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig39_figures_overlay_in_spec": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig40_weights_alias": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig41_on_error_skip_placeholder": ("REUSED_VISUAL", "trusted visual-only error-placeholder demonstration"),
+    "fig42_entry_window": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+}
+
+_NUMERICAL_CORRECTNESS_ANCHORS = (
+    {
+        "family": "histogram",
+        "evidence": "test_phase_13_77_realdata_invariance_harness.py::test_a1_correctness_case_agrees_with_numpy",
+        "meaning": "independent NumPy histogram/count anchor",
+    },
+    {
+        "family": "grouped_profile_keyed_subframe",
+        "evidence": "test_phase_13_77_realdata_invariance_harness.py::test_a5_02_full_stack_matches_independent_oracle_in_eager_and_lazy_modes",
+        "meaning": "independent grouped-bin NumPy/pandas anchor in EAGER and LAZY modes",
+    },
+)
+
+
+def gallery_disposition_table(gallery_module=None) -> list[dict]:
+    """Return the complete, fail-closed §11 disposition of trusted figNN_* callables."""
+    gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+    discovered = sorted(
+        name for name in dir(gallery)
+        if re.fullmatch(r"fig\d{2}_.+", name) and callable(getattr(gallery, name, None))
+    )
+    expected = sorted(_GALLERY_DISPOSITION)
+    missing = sorted(set(discovered) - set(expected))
+    stale = sorted(set(expected) - set(discovered))
+    if missing or stale:
+        raise HarnessError(
+            "gallery disposition drift: "
+            f"unclassified={missing}, stale={stale}")
+    rows = []
+    for name in discovered:
+        disposition, reason = _GALLERY_DISPOSITION[name]
+        if disposition not in GALLERY_DISPOSITION_ALLOWED:
+            raise HarnessError(
+                f"{name}: invalid gallery disposition {disposition!r}")
+        rows.append({
+            "gallery_function": name,
+            "disposition": disposition,
+            "reason": reason,
+        })
+    return rows
+
+
+def numerical_oracle_closure_record() -> dict:
+    """Machine reconciliation of the Stage-A numerical-oracle closure criterion."""
+    same_spec = [
+        c.case_id for c in a3_cases()
+        if c.purpose == "INVARIANCE" and len(tuple(c.surfaces_under_test)) >= 2
+    ]
+    missing_rationale = []
+    for case in tuple(a3_cases()) + tuple(a4_cases()) + tuple(a5_cases()):
+        for obs in case.observables:
+            if obs.status == "EXECUTED" and obs.comparator == "close" \
+                    and not str(obs.rationale).strip():
+                missing_rationale.append(f"{case.case_id}/{obs.name}")
+    blockers = []
+    if not same_spec:
+        blockers.append("no same-spec cross-surface numerical case")
+    if len(_NUMERICAL_CORRECTNESS_ANCHORS) < 2:
+        blockers.append("insufficient independent correctness-anchor families")
+    if missing_rationale:
+        blockers.append("floating tolerances without rationale: " + ", ".join(missing_rationale))
+    return {
+        "status": "READY" if not blockers else "BLOCKED",
+        "same_spec_cross_surface_case_ids": same_spec,
+        "independent_correctness_anchors": [dict(x) for x in _NUMERICAL_CORRECTNESS_ANCHORS],
+        "tolerance_rationale_missing": missing_rationale,
+        "blockers": blockers,
+    }
+
+
+def stage_a_closure_metadata(gallery_module=None) -> dict:
+    """Closure metadata shared by manifest and final review evidence."""
+    return {
+        "gallery_dispositions": gallery_disposition_table(gallery_module),
+        "numerical_oracle": numerical_oracle_closure_record(),
+    }
+
+
+def _stage_a_case_for_gallery_function(name: str, root_path: str, gallery_module=None):
+    """Return the CaseSpec that owns a load-bearing real-data gallery page, if any."""
+    if name == A5_2_GALLERY_FUNCTION:
+        return a5_2_realdata_case(root_path, gallery_module=gallery_module)
+    if name == A5_4_GALLERY_FUNCTION:
+        return a5_4_realdata_case(root_path, gallery_module=gallery_module)
+    if name == A5_5_REUSE_FUNCTION:
+        return a5_5_realdata_case(root_path, gallery_module=gallery_module)
+    return None
+
+
+def _annotate_stage_a_figure(fig: Any, text: str) -> None:
+    """Add small Stage-A evidence text without creating a second PDF renderer."""
+    if fig is None:
+        return
+    text_fn = getattr(fig, "text", None)
+    if callable(text_fn):
+        text_fn(0.01, 0.01, text, ha="left", va="bottom", fontsize=5,
+                family="monospace", wrap=True)
+    adjust = getattr(fig, "subplots_adjust", None)
+    if callable(adjust):
+        try:
+            adjust(bottom=0.18)
+        except Exception:
+            pass
+
+
+def write_stage_a_pdf(adf: Any, path: str, *, root_path: str,
+                      gallery_module=None) -> dict:
+    """Render Stage-A human evidence using the trusted gallery PDF primitives.
+
+    The gallery remains independently runnable.  This wrapper reuses its exact
+    figure callables, ``PdfPages`` and ``_add`` saver, adding only structured
+    Stage-A footer/disposition annotations.
+    """
+    gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+    for attr in ("PdfPages", "_add", "FIGURES_MANDATORY", "FIGURES_OPTIONAL"):
+        if not hasattr(gallery, attr):
+            raise HarnessError(f"time_series_draw missing PDF reuse owner {attr!r}")
+    dispositions = {r["gallery_function"]: r for r in gallery_disposition_table(gallery)}
+    errors = []
+    skipped = []
+    n_pages = 0
+    with gallery.PdfPages(path) as pdf:
+        for mandatory, funcs in ((True, gallery.FIGURES_MANDATORY),
+                                 (False, gallery.FIGURES_OPTIONAL)):
+            for fn in funcs:
+                name = fn.__name__
+                title = (fn.__doc__ or name).splitlines()[0].strip()
+                try:
+                    result = fn(adf)
+                    if result is None:
+                        if mandatory:
+                            raise HarnessError(
+                                f"mandatory gallery function {name} returned None")
+                        skipped.append({"gallery_function": name, "reason": "returned None"})
+                        continue
+                    fig = result[0] if isinstance(result, tuple) else result
+                    case = _stage_a_case_for_gallery_function(
+                        name, root_path, gallery_module=gallery)
+                    if case is not None:
+                        annotation = footer_text(case)
+                    else:
+                        row = dispositions[name]
+                        annotation = (
+                            f"GALLERY DISPOSITION: {row['disposition']}\n"
+                            f"REASON: {row['reason']}")
+                    _annotate_stage_a_figure(fig, annotation)
+                    gallery._add(pdf, fig, title)
+                    n_pages += 1
+                    if name == "fig26_summary_fit" and isinstance(result, tuple) \
+                            and len(result) > 2 and isinstance(result[2], dict):
+                        tbl = result[2].get("summary_fit", {}).get("table")
+                        if tbl is not None:
+                            _annotate_stage_a_figure(
+                                tbl, "GALLERY DISPOSITION: REUSED_VISUAL\n"
+                                     "REASON: fit-summary table from trusted fig26")
+                            gallery._add(pdf, tbl, title + " — fit table")
+                            n_pages += 1
+                except Exception as exc:
+                    if mandatory:
+                        errors.append({"gallery_function": name,
+                                       "error": f"{type(exc).__name__}: {exc}"})
+                    else:
+                        skipped.append({"gallery_function": name,
+                                        "reason": f"{type(exc).__name__}: {exc}"})
+                    try:
+                        import matplotlib.pyplot as plt
+                        plt.close("all")
+                    except Exception:
+                        pass
+    return {
+        "ok": not errors,
+        "pdf_path": os.path.abspath(path),
+        "page_count": n_pages,
+        "errors": errors,
+        "skipped": skipped,
+        "gallery_dispositions": list(dispositions.values()),
+    }
+
+
+def _a6_3_visual_case(*, sample_mode: str) -> CaseSpec:
+    label = "20PCT" if sample_mode == "FRACTION" else "FULL"
+    return CaseSpec(
+        case_id=f"A6-VISUAL-GALLERY-{label}-01",
+        claim_id="A6.visual.gallery",
+        title=f"trusted Stage-A gallery renders in {sample_mode} mode",
+        claim=("the unchanged trusted time_series_draw gallery renders every mandatory "
+               "page and records an explicit disposition for every figNN_* function"),
+        failure_means=("a mandatory trusted gallery page stopped rendering, a gallery "
+                       "function disappeared from disposition coverage, or PDF evidence "
+                       "cannot be produced"),
+        expected_visual="one reviewed PDF containing all mandatory trusted-gallery pages",
+        owner_on_failure="ADF",
+        purpose="COVERAGE",
+        gate="ENVIRONMENT_GATED",
+        oracle_kind="CONSISTENCY",
+        loading_mode="EAGER",
+        sample_mode=sample_mode,
+        canonical_spec={"gallery": "time_series_draw", "pdf": True},
+        applicable=True,
+        setup_contract="reuse time_series_draw.build_adf and trusted gallery figure lists",
+        preconditions=("ROOT input exists", "trusted gallery is importable"),
+        surfaces_under_test=("draw",),
+        observables=(),
+        non_claims=("PDF evidence is not a substitute for machine numerical oracles",),
+        reference_policy="same-process",
+    )
+
+
+def _run_a6_3_visual_case(case: CaseSpec, root_path: str, *, pdf_path: str,
+                          gallery_module=None, sample_fraction: float | None = None) -> CaseResult:
+    t0 = time.time()
+    res = CaseResult(case_id=case.case_id, status=SKIP)
+    try:
+        gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+        build = getattr(gallery, "build_adf", None)
+        if not callable(build):
+            raise HarnessError("time_series_draw missing callable build_adf")
+        adf = build(root_path, sample=sample_fraction, lazy=False)
+        evidence = write_stage_a_pdf(
+            adf, pdf_path, root_path=root_path, gallery_module=gallery)
+        res.observed["visual_evidence"] = evidence
+        if not evidence["ok"]:
+            res.status = FAIL
+            res.detail = f"mandatory PDF gallery failures: {evidence['errors']}"
+        else:
+            res.status = PASS
+        return res
+    except Exception as exc:
+        res.status = FAIL
+        res.detail = f"{type(exc).__name__}: {exc}"
+        res.exception = traceback.format_exc(limit=8)
+        return res
+    finally:
+        res.wall_time_s = round(time.time() - t0, 4)
+
+
+def _a6_3_fraction_cases(root_path: str, gallery_module=None) -> tuple[CaseSpec, ...]:
+    return (
+        a5_2_realdata_case(root_path, gallery_module=gallery_module),
+        a5_4_realdata_case(root_path, gallery_module=gallery_module),
+        a5_5_realdata_case(root_path, gallery_module=gallery_module),
+        a5_6_realdata_case(root_path, gallery_module=gallery_module),
+    )
+
+
+def _shared_fraction_provenance(results: Sequence[CaseResult]) -> dict:
+    identities = []
+    provenance_docs = []
+    for result in results:
+        prov = result.observed.get("realdata_provenance")
+        if isinstance(prov, dict):
+            provenance_docs.append(dict(prov))
+            identities.append(reference_identity_from_provenance(prov, require_complete=True))
+    if not identities:
+        raise HarnessError("Stage-A fraction gate produced no comparison-ready real-data provenance")
+    first = identities[0]
+    for identity in identities[1:]:
+        compare_reference_identity(first, identity)
+    return provenance_docs[0]
+
+
+def run_stage_a_fraction_gate(root_path: str, *, manifest_path: str, pdf_path: str,
+                              gallery_module=None) -> tuple[list[CaseResult], dict, int]:
+    """Execute the existing deterministic 20% A5 real-data owners as one A6 gate."""
+    gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+    cases = list(_a6_3_fraction_cases(root_path, gallery_module=gallery))
+    runners = (run_a5_2_realdata, run_a5_4_realdata,
+               run_a5_5_realdata, run_a5_6_realdata)
+    results = [runner(case, root_path, gallery_module=gallery)
+               for runner, case in zip(runners, cases)]
+    provenance_doc = _shared_fraction_provenance(results)
+    visual_case = _a6_3_visual_case(sample_mode="FRACTION")
+    visual_result = _run_a6_3_visual_case(
+        visual_case, root_path, pdf_path=pdf_path, gallery_module=gallery,
+        sample_fraction=A5_2_SAMPLE_FRACTION)
+    cases.append(visual_case)
+    results.append(visual_result)
+    extra = {
+        **provenance_doc,
+        "stage_a_gate": "FRACTION_20PCT",
+        "stage_a_closure": stage_a_closure_metadata(gallery),
+    }
+    doc = write_manifest(manifest_path, results, cases, extra=extra)
+    return results, doc, strict_exit_code(results, cases)
+
+
+def run_stage_a_full_gallery_gate(root_path: str, *, manifest_path: str, pdf_path: str,
+                                  gallery_module=None) -> tuple[list[CaseResult], dict, int]:
+    """Run the trusted full-data gallery as strict human/coverage evidence.
+
+    Full-data machine-reference acceptance remains an A6-FINAL decision; this
+    gate deliberately uses ``same-process`` reference policy and cannot create
+    a persistent named reference.
+    """
+    gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+    case = _a6_3_visual_case(sample_mode="FULL")
+    result = _run_a6_3_visual_case(
+        case, root_path, pdf_path=pdf_path, gallery_module=gallery,
+        sample_fraction=None)
+    doc = write_manifest(
+        manifest_path, [result], [case],
+        extra={
+            "loading_mode": "EAGER",
+            "sample_mode": "FULL",
+            "stage_a_gate": "FULL_GALLERY",
+            "stage_a_closure": stage_a_closure_metadata(gallery),
+        })
+    return [result], doc, strict_exit_code([result], [case])
+
+
+def build_stage_a_cli_parser():
+    """Build the one PHASE_13_77 Stage-A CLI defined by proposal v1.2 §17."""
+    import argparse
+    parser = argparse.ArgumentParser(
+        prog="time_series_draw_invariance.py",
+        description="PHASE_13_77 Stage-A real-data acceptance runner")
+    parser.add_argument("root_path")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--sample", type=float)
+    mode.add_argument("--full", action="store_true")
+    mode.add_argument("--validate-lazy-eager", action="store_true")
+    parser.add_argument("--seed", type=int, default=A5_2_SAMPLE_SEED)
+    parser.add_argument("--manifest")
+    parser.add_argument("--pdf")
+    parser.add_argument("--compare", metavar="REFERENCE")
+    parser.add_argument("--accept-reference", metavar="PATH")
+    parser.add_argument("--update-reference", metavar="NEW_PATH")
+    parser.add_argument("--previous-reference", metavar="PATH")
+    parser.add_argument("--accepted-code-baseline")
+    parser.add_argument("--approval-identity")
+    parser.add_argument("--approval-date")
+    parser.add_argument("--reason-for-update", default="initial reviewed acceptance")
+    parser.add_argument("--strict", action="store_true")
+    return parser
+
+
+def _require_cli_evidence_paths(args) -> None:
+    if args.validate_lazy_eager:
+        return
+    if not args.manifest:
+        raise HarnessError("Stage-A sample/full gate requires --manifest")
+    if not args.pdf:
+        raise HarnessError("Stage-A sample/full gate requires --pdf")
+
+
+def _require_reference_approval_args(args) -> None:
+    for attr in ("accepted_code_baseline", "approval_identity", "approval_date"):
+        if not getattr(args, attr):
+            raise HarnessError(
+                f"reference acceptance/update requires --{attr.replace('_', '-')}")
+
+
+def stage_a_cli_main(argv: Sequence[str] | None = None, *, gallery_module=None) -> int:
+    """Execute the single Stage-A CLI; returns a process-style exit code."""
+    parser = build_stage_a_cli_parser()
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    try:
+        gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+        if args.validate_lazy_eager:
+            if any((args.compare, args.accept_reference, args.update_reference,
+                    args.previous_reference)):
+                raise HarnessError("lazy/eager validation cannot perform reference mutation/comparison")
+            validator = getattr(gallery, "validate_lazy_vs_eager", None)
+            if not callable(validator):
+                raise HarnessError("time_series_draw missing validate_lazy_vs_eager")
+            validator(args.root_path)
+            return 0
+
+        _require_cli_evidence_paths(args)
+        if args.sample is not None:
+            if args.sample != A5_2_SAMPLE_FRACTION or args.seed != A5_2_SAMPLE_SEED:
+                raise HarnessError(
+                    "canonical Stage-A FRACTION gate is fixed at --sample 0.20 --seed 42")
+            results, manifest, gate_code = run_stage_a_fraction_gate(
+                args.root_path, manifest_path=args.manifest, pdf_path=args.pdf,
+                gallery_module=gallery)
+        else:
+            if any((args.compare, args.accept_reference, args.update_reference,
+                    args.previous_reference)):
+                raise HarnessError(
+                    "persistent named-reference operations require the canonical 20% FRACTION gate")
+            results, manifest, gate_code = run_stage_a_full_gallery_gate(
+                args.root_path, manifest_path=args.manifest, pdf_path=args.pdf,
+                gallery_module=gallery)
+
+        if args.compare:
+            compare_manifest_to_named_reference(manifest, args.compare)
+        if args.accept_reference:
+            _require_reference_approval_args(args)
+            accept_named_reference(
+                args.accept_reference, manifest,
+                accepted_code_baseline=args.accepted_code_baseline,
+                approval_identity=args.approval_identity,
+                approval_date=args.approval_date,
+                reason_for_update=args.reason_for_update)
+        if args.update_reference:
+            _require_reference_approval_args(args)
+            if not args.previous_reference:
+                raise HarnessError("--update-reference requires --previous-reference")
+            update_named_reference(
+                args.update_reference, args.previous_reference, manifest,
+                accepted_code_baseline=args.accepted_code_baseline,
+                approval_identity=args.approval_identity,
+                approval_date=args.approval_date,
+                reason_for_update=args.reason_for_update)
+        return gate_code if args.strict else 0
+    except HarnessError as exc:
+        print(f"A6 Stage-A gate REFUSED: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(stage_a_cli_main())
