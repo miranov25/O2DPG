@@ -22,7 +22,9 @@ Governing documents
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import os
 import platform
 import re
 import sys
@@ -33,7 +35,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A6.1.v01"
+SCHEMA_VERSION = "13.77.A6.2.v01"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -3544,6 +3546,367 @@ def compare_reference_identity(current: dict, accepted: dict) -> None:
         mismatched = [k for k in keys if current.get(k) != accepted.get(k)]
         raise HarnessError(
             "named-reference identity mismatch: " + ", ".join(mismatched))
+
+
+ACCEPTED_REFERENCE_SCHEMA = "AliasDataFrame.PHASE_13_77.AcceptedReference"
+ACCEPTED_REFERENCE_SCHEMA_VERSION = 1
+_ACCEPTED_REFERENCE_REQUIRED_FIELDS = (
+    "reference_manifest_id",
+    "dataset_input_identity",
+    "gallery_case_registry_version",
+    "sampling_algorithm_version",
+    "sample_seed",
+    "accepted_code_baseline",
+    "schema_oracle_version",
+    "approval_identity",
+    "approval_date",
+    "supersedes",
+    "reason_for_update",
+)
+
+
+def accepted_reference_required_fields() -> tuple[str, ...]:
+    """Return the authoritative A6 accepted-reference field set."""
+    return _ACCEPTED_REFERENCE_REQUIRED_FIELDS
+
+
+def _json_ready_reference_value(value: Any) -> Any:
+    """Convert a reference payload to stable JSON data without stringifying arrays."""
+    if isinstance(value, dict):
+        return {str(k): _json_ready_reference_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_ready_reference_value(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return [_json_ready_reference_value(v) for v in value.tolist()]
+    if isinstance(value, np.generic):
+        return value.item()
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def _canonical_json_sha256(payload: dict) -> str:
+    data = json.dumps(
+        _json_ready_reference_value(payload), sort_keys=True,
+        separators=(",", ":"), ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(data).hexdigest()
+
+
+def _accepted_reference_id(payload_without_id: dict) -> str:
+    return "sha256:" + _canonical_json_sha256(payload_without_id)
+
+
+def _manifest_reference_identity(run_manifest: dict) -> dict:
+    if not isinstance(run_manifest, dict):
+        raise HarnessError("run manifest must be a dict")
+    status = run_manifest.get("reference_identity_status")
+    identity = run_manifest.get("reference_identity")
+    if not isinstance(status, dict) or status.get("comparison_ready") is not True:
+        missing = status.get("missing_fields", []) if isinstance(status, dict) else []
+        suffix = f"; missing {', '.join(missing)}" if missing else ""
+        raise HarnessError("run manifest has no comparison-ready reference identity" + suffix)
+    if not isinstance(identity, dict):
+        raise HarnessError("run manifest comparison-ready identity is missing")
+    _require_complete_reference_identity(identity, role="run-manifest")
+    return dict(identity)
+
+
+def _manifest_acceptance_ready(run_manifest: dict) -> None:
+    """Fail closed unless a run manifest is eligible for explicit acceptance."""
+    if not isinstance(run_manifest, dict):
+        raise HarnessError("run manifest must be a dict")
+    reconciliation = run_manifest.get("reconciliation")
+    if not isinstance(reconciliation, dict):
+        raise HarnessError("run manifest has no reconciliation record")
+    if reconciliation.get("exit_code") != 0:
+        raise HarnessError(
+            f"run manifest is not strict-clean; reconciliation exit_code="
+            f"{reconciliation.get('exit_code')!r}")
+    named = run_manifest.get("named_reference_case_ids")
+    if not isinstance(named, list) or not named:
+        raise HarnessError("run manifest declares no named-reference cases")
+    _manifest_reference_identity(run_manifest)
+
+
+def _reference_case_snapshot(run_manifest: dict) -> list[dict]:
+    """Extract the immutable machine-comparison payload for named-reference cases."""
+    _manifest_acceptance_ready(run_manifest)
+    named = list(run_manifest["named_reference_case_ids"])
+    by_id = {}
+    for rec in run_manifest.get("cases", []):
+        if not isinstance(rec, dict):
+            continue
+        cid = rec.get("case_id")
+        if cid in by_id:
+            raise HarnessError(f"run manifest has duplicate case record {cid!r}")
+        if cid:
+            by_id[cid] = rec
+    missing = [cid for cid in named if cid not in by_id]
+    if missing:
+        raise HarnessError("run manifest is missing named-reference case(s): " + ", ".join(missing))
+    out = []
+    for cid in named:
+        rec = by_id[cid]
+        out.append(_json_ready_reference_value({
+            "case_id": cid,
+            "status": rec.get("status"),
+            "oracle_kind": rec.get("oracle_kind"),
+            "known_bug_status": rec.get("known_bug_status"),
+            "known_bug_id": rec.get("known_bug_id"),
+            "declared_observables": rec.get("declared_observables", []),
+            "observed": rec.get("observed", {}),
+        }))
+    return out
+
+
+def _require_nonblank(value: Any, *, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise HarnessError(f"accepted reference requires non-empty {field_name}")
+    return value.strip()
+
+
+def accepted_reference_from_manifest(
+        run_manifest: dict, *, accepted_code_baseline: str,
+        approval_identity: str, approval_date: str,
+        reason_for_update: str, supersedes: str | None = None) -> dict:
+    """Build one immutable accepted-reference record from a strict-clean run."""
+    _manifest_acceptance_ready(run_manifest)
+    accepted_code_baseline = _require_nonblank(
+        accepted_code_baseline, field_name="accepted_code_baseline")
+    approval_identity = _require_nonblank(
+        approval_identity, field_name="approval_identity")
+    approval_date = _require_nonblank(approval_date, field_name="approval_date")
+    reason_for_update = _require_nonblank(
+        reason_for_update, field_name="reason_for_update")
+    if supersedes is not None:
+        supersedes = _require_nonblank(supersedes, field_name="supersedes")
+
+    identity = _manifest_reference_identity(run_manifest)
+    provenance = run_manifest.get("provenance", {})
+    schema_version = provenance.get("schema_version") or SCHEMA_VERSION
+    named_ids = list(run_manifest["named_reference_case_ids"])
+    case_registry_digest = _canonical_json_sha256({"case_ids": named_ids})
+    payload = {
+        "schema": ACCEPTED_REFERENCE_SCHEMA,
+        "schema_version": ACCEPTED_REFERENCE_SCHEMA_VERSION,
+        "status": "ACCEPTED",
+        "dataset_input_identity": _json_ready_reference_value(identity),
+        "gallery_case_registry_version": schema_version,
+        "case_registry_digest_sha256": case_registry_digest,
+        "sampling_algorithm_version": identity.get("sampling_algorithm", "FULL"),
+        "sample_seed": identity.get("sample_seed"),
+        "accepted_code_baseline": accepted_code_baseline,
+        "schema_oracle_version": schema_version,
+        "approval_identity": approval_identity,
+        "approval_date": approval_date,
+        "supersedes": supersedes,
+        "reason_for_update": reason_for_update,
+        "named_reference_case_ids": named_ids,
+        "reference_cases": _reference_case_snapshot(run_manifest),
+        "source_run_manifest_sha256": _canonical_json_sha256(run_manifest),
+    }
+    payload["reference_manifest_id"] = _accepted_reference_id(payload)
+    validate_accepted_reference(payload)
+    return payload
+
+
+def validate_accepted_reference(reference: dict) -> None:
+    """Validate schema, integrity digest and comparison-critical fields."""
+    if not isinstance(reference, dict):
+        raise HarnessError("accepted reference must be a dict")
+    if reference.get("schema") != ACCEPTED_REFERENCE_SCHEMA:
+        raise HarnessError("accepted reference has unknown schema")
+    if reference.get("schema_version") != ACCEPTED_REFERENCE_SCHEMA_VERSION:
+        raise HarnessError("accepted reference has unsupported schema_version")
+    missing = [k for k in accepted_reference_required_fields() if k not in reference]
+    if missing:
+        raise HarnessError("accepted reference is missing field(s): " + ", ".join(missing))
+    _require_complete_reference_identity(
+        reference["dataset_input_identity"], role="accepted-reference")
+    for key in ("accepted_code_baseline", "approval_identity", "approval_date",
+                "reason_for_update", "gallery_case_registry_version",
+                "schema_oracle_version"):
+        _require_nonblank(reference.get(key), field_name=key)
+    if not isinstance(reference.get("named_reference_case_ids"), list) \
+            or not reference["named_reference_case_ids"]:
+        raise HarnessError("accepted reference has no named_reference_case_ids")
+    if not isinstance(reference.get("reference_cases"), list):
+        raise HarnessError("accepted reference has no reference_cases")
+    case_ids = [r.get("case_id") for r in reference["reference_cases"]
+                if isinstance(r, dict)]
+    if case_ids != reference["named_reference_case_ids"]:
+        raise HarnessError("accepted reference case snapshot does not match named case registry")
+    claimed = reference.get("reference_manifest_id")
+    without_id = dict(reference)
+    without_id.pop("reference_manifest_id", None)
+    expected = _accepted_reference_id(without_id)
+    if claimed != expected:
+        raise HarnessError("accepted reference integrity digest mismatch")
+
+
+def load_accepted_reference(path: str) -> dict:
+    """Load one explicitly named accepted reference; no 'latest' discovery exists."""
+    _require_nonblank(path, field_name="reference path")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except FileNotFoundError as exc:
+        raise HarnessError(f"accepted reference does not exist: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise HarnessError(f"accepted reference is invalid JSON: {path}") from exc
+    validate_accepted_reference(doc)
+    return doc
+
+
+def _write_accepted_reference_exclusive(path: str, reference: dict) -> None:
+    """Create a new immutable reference path; existing paths are never overwritten."""
+    validate_accepted_reference(reference)
+    _require_nonblank(path, field_name="reference path")
+    parent = os.path.dirname(os.path.abspath(path))
+    if not os.path.isdir(parent):
+        raise HarnessError(f"reference parent directory does not exist: {parent}")
+    text = json.dumps(reference, indent=1, sort_keys=False, ensure_ascii=False) + "\n"
+    try:
+        with open(path, "x", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+    except FileExistsError as exc:
+        raise HarnessError(
+            f"accepted reference path already exists and is immutable: {path}") from exc
+    except Exception:
+        # A failed first-time write may leave a partial NEW file.  It is not an
+        # accepted reference and must not survive as misleading evidence.
+        try:
+            if os.path.exists(path):
+                os.unlink(path)
+        except Exception:
+            pass
+        raise
+
+
+def accept_named_reference(
+        path: str, run_manifest: dict, *, accepted_code_baseline: str,
+        approval_identity: str, approval_date: str,
+        reason_for_update: str = "initial acceptance") -> dict:
+    """Explicitly create a first immutable named reference at a new path."""
+    reference = accepted_reference_from_manifest(
+        run_manifest,
+        accepted_code_baseline=accepted_code_baseline,
+        approval_identity=approval_identity,
+        approval_date=approval_date,
+        reason_for_update=reason_for_update,
+        supersedes=None,
+    )
+    _write_accepted_reference_exclusive(path, reference)
+    return reference
+
+
+def update_named_reference(
+        new_path: str, previous_path: str, run_manifest: dict, *,
+        accepted_code_baseline: str, approval_identity: str,
+        approval_date: str, reason_for_update: str) -> dict:
+    """Write an explicit successor reference; the previous reference stays untouched."""
+    previous = load_accepted_reference(previous_path)
+    current_identity = _manifest_reference_identity(run_manifest)
+    compare_reference_identity(
+        current_identity, previous["dataset_input_identity"])
+    reference = accepted_reference_from_manifest(
+        run_manifest,
+        accepted_code_baseline=accepted_code_baseline,
+        approval_identity=approval_identity,
+        approval_date=approval_date,
+        reason_for_update=reason_for_update,
+        supersedes=previous["reference_manifest_id"],
+    )
+    _write_accepted_reference_exclusive(new_path, reference)
+    return reference
+
+
+def _compare_reference_value(reference: Any, candidate: Any, contract: dict,
+                             *, path: str) -> None:
+    """Recursively compare one JSON-like observable using its declared tolerance."""
+    if isinstance(reference, dict) or isinstance(candidate, dict):
+        if not isinstance(reference, dict) or not isinstance(candidate, dict):
+            raise HarnessError(f"{path}: observed structure type mismatch")
+        if set(reference) != set(candidate):
+            raise HarnessError(f"{path}: observed mapping keys differ")
+        for key in sorted(reference):
+            _compare_reference_value(
+                reference[key], candidate[key], contract,
+                path=f"{path}.{key}")
+        return
+    if isinstance(reference, (list, tuple)) or isinstance(candidate, (list, tuple)):
+        result = compare_array(
+            reference, candidate,
+            comparator=contract["comparator"],
+            atol=contract.get("atol", 0.0), rtol=contract.get("rtol", 0.0))
+        if not result.ok:
+            raise HarnessError(f"{path}: {result.detail}")
+        return
+    result = compare_scalar(
+        reference, candidate, comparator=contract["comparator"],
+        atol=contract.get("atol", 0.0), rtol=contract.get("rtol", 0.0))
+    if not result.ok:
+        raise HarnessError(f"{path}: {result.detail}")
+
+
+def compare_run_manifest_to_reference(run_manifest: dict,
+                                      accepted_reference: dict) -> dict:
+    """Compare one strict-clean run against one explicit immutable reference."""
+    _manifest_acceptance_ready(run_manifest)
+    validate_accepted_reference(accepted_reference)
+    compare_reference_identity(
+        _manifest_reference_identity(run_manifest),
+        accepted_reference["dataset_input_identity"])
+    current_ids = list(run_manifest["named_reference_case_ids"])
+    if current_ids != accepted_reference["named_reference_case_ids"]:
+        raise HarnessError("named-reference case registry mismatch")
+    current_schema = run_manifest.get("provenance", {}).get("schema_version") or SCHEMA_VERSION
+    if current_schema != accepted_reference["schema_oracle_version"]:
+        raise HarnessError(
+            "schema/oracle version mismatch: "
+            f"{current_schema!r} != {accepted_reference['schema_oracle_version']!r}")
+
+    current_cases = {r.get("case_id"): r for r in run_manifest.get("cases", [])
+                     if isinstance(r, dict) and r.get("case_id")}
+    evidence = []
+    for stored in accepted_reference["reference_cases"]:
+        cid = stored["case_id"]
+        current = current_cases.get(cid)
+        if current is None:
+            raise HarnessError(f"current run has no case record {cid!r}")
+        if current.get("status") != stored.get("status"):
+            raise HarnessError(
+                f"{cid}: status mismatch {current.get('status')!r} != {stored.get('status')!r}")
+        current_contracts = current.get("declared_observables", [])
+        if current_contracts != stored.get("declared_observables", []):
+            raise HarnessError(f"{cid}: declared observable contract changed")
+        by_name = {c.get("name"): c for c in current_contracts if isinstance(c, dict)}
+        current_observed = current.get("observed", {})
+        stored_observed = stored.get("observed", {})
+        for name, contract in by_name.items():
+            if contract.get("status") != "EXECUTED":
+                continue
+            if name not in current_observed or name not in stored_observed:
+                raise HarnessError(f"{cid}/{name}: executed observable missing from manifest")
+            _compare_reference_value(
+                stored_observed[name], current_observed[name], contract,
+                path=f"{cid}/{name}")
+        evidence.append({"case_id": cid, "status": "MATCH"})
+    return {
+        "reference_manifest_id": accepted_reference["reference_manifest_id"],
+        "case_count": len(evidence),
+        "cases": evidence,
+        "ok": True,
+    }
+
+
+def compare_manifest_to_named_reference(run_manifest: dict, path: str) -> dict:
+    """Load one explicit path and compare; this function never discovers 'latest'."""
+    return compare_run_manifest_to_reference(
+        run_manifest, load_accepted_reference(path))
 
 
 def validate_registry(cases: Sequence[CaseSpec]) -> list[str]:

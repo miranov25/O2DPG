@@ -4626,3 +4626,172 @@ def test_a6_07_same_process_policy_is_excluded_from_cross_run_reference_set():
     same = _base_case(reference_policy="same-process")
     assert H.named_reference_case_ids([named, same]) == (named.case_id,)
 
+
+# ── A6.2 — explicit immutable accept/compare/update governance ──────────────
+
+def _a6_2_reference_ready_manifest(tmp_path, *, observed_n=10, exit_code=0,
+                                   input_path="/data/reference.root",
+                                   sample_seed=42):
+    case = _base_case(
+        case_id="A6-REF-CASE",
+        reference_policy="named-immutable",
+        loading_mode="EAGER", sample_mode="FRACTION",
+        observables=(H.Observable("n", "STATS", "FLAT", "n"),),
+    )
+    result = H.CaseResult(
+        case_id=case.case_id, status=H.PASS,
+        observed={"n": {"draw": observed_n, "draw_batch": observed_n}},
+        executed_comparisons=1,
+        observable_contract=[H._contract(case.observables[0])],
+    )
+    extra = {
+        "input_path": input_path,
+        "input_size_bytes": 123456,
+        "input_mtime_ns": 987654321,
+        "loading_mode": "EAGER",
+        "sample_mode": "FRACTION",
+        "sampling_algorithm": "pandas.DataFrame.sample(frac=0.20, random_state=42)",
+        "source_rows": 100,
+        "selected_rows": 20,
+        "sample_fraction": 0.20,
+        "sample_seed": sample_seed,
+        "index_digest_sha256": "a" * 64,
+    }
+    doc = H.write_manifest(str(tmp_path / "run.json"), [result], [case], extra=extra)
+    doc["reconciliation"]["exit_code"] = exit_code
+    return doc
+
+
+def _a6_2_accept_kwargs(**over):
+    kw = dict(
+        accepted_code_baseline="commit:72b75376",
+        approval_identity="GPT45:ADF",
+        approval_date="2026-09-09",
+        reason_for_update="reviewed A6.2 acceptance",
+    )
+    kw.update(over)
+    return kw
+
+
+def test_a6_08_accepted_reference_contains_required_governance_and_integrity(tmp_path):
+    run = _a6_2_reference_ready_manifest(tmp_path)
+    ref = H.accepted_reference_from_manifest(run, **_a6_2_accept_kwargs())
+    assert set(H.accepted_reference_required_fields()).issubset(ref)
+    assert ref["schema"] == H.ACCEPTED_REFERENCE_SCHEMA
+    assert ref["reference_manifest_id"].startswith("sha256:")
+    assert ref["supersedes"] is None
+    assert ref["dataset_input_identity"] == run["reference_identity"]
+    assert ref["named_reference_case_ids"] == ["A6-REF-CASE"]
+    H.validate_accepted_reference(ref)
+
+
+def test_a6_09_failed_run_cannot_create_or_overwrite_reference(tmp_path):
+    path = tmp_path / "accepted.json"
+    clean = _a6_2_reference_ready_manifest(tmp_path)
+    H.accept_named_reference(str(path), clean, **_a6_2_accept_kwargs())
+    before = path.read_bytes()
+
+    failed = _a6_2_reference_ready_manifest(tmp_path, exit_code=1)
+    with pytest.raises(H.HarnessError, match="not strict-clean"):
+        H.accept_named_reference(str(tmp_path / "failed.json"), failed,
+                                 **_a6_2_accept_kwargs())
+    assert not (tmp_path / "failed.json").exists()
+
+    with pytest.raises(H.HarnessError, match="immutable"):
+        H.accept_named_reference(str(path), clean, **_a6_2_accept_kwargs())
+    assert path.read_bytes() == before
+
+
+def test_a6_10_named_reference_compare_checks_machine_payload_not_only_identity(tmp_path):
+    accepted_run = _a6_2_reference_ready_manifest(tmp_path, observed_n=10)
+    ref_path = tmp_path / "accepted.json"
+    ref = H.accept_named_reference(str(ref_path), accepted_run, **_a6_2_accept_kwargs())
+
+    same = _a6_2_reference_ready_manifest(tmp_path, observed_n=10)
+    evidence = H.compare_run_manifest_to_reference(same, ref)
+    assert evidence["ok"] is True
+    assert evidence["case_count"] == 1
+
+    changed = _a6_2_reference_ready_manifest(tmp_path, observed_n=11)
+    with pytest.raises(H.HarnessError, match="exact mismatch"):
+        H.compare_run_manifest_to_reference(changed, ref)
+
+
+def test_a6_11_compare_refuses_wrong_input_or_sample_identity(tmp_path):
+    run = _a6_2_reference_ready_manifest(tmp_path)
+    ref = H.accepted_reference_from_manifest(run, **_a6_2_accept_kwargs())
+
+    wrong_input = _a6_2_reference_ready_manifest(tmp_path, input_path="/other.root")
+    with pytest.raises(H.HarnessError, match="identity mismatch"):
+        H.compare_run_manifest_to_reference(wrong_input, ref)
+
+    wrong_seed = _a6_2_reference_ready_manifest(tmp_path, sample_seed=43)
+    with pytest.raises(H.HarnessError, match="identity mismatch"):
+        H.compare_run_manifest_to_reference(wrong_seed, ref)
+
+
+def test_a6_12_update_writes_new_reference_and_preserves_old_bytes(tmp_path):
+    old_path = tmp_path / "reference_v1.json"
+    new_path = tmp_path / "reference_v2.json"
+    old_run = _a6_2_reference_ready_manifest(tmp_path, observed_n=10)
+    old = H.accept_named_reference(str(old_path), old_run, **_a6_2_accept_kwargs())
+    old_bytes = old_path.read_bytes()
+
+    new_run = _a6_2_reference_ready_manifest(tmp_path, observed_n=11)
+    new = H.update_named_reference(
+        str(new_path), str(old_path), new_run,
+        **_a6_2_accept_kwargs(reason_for_update="approved numerical reference update"),
+    )
+    assert old_path.read_bytes() == old_bytes
+    assert new_path.exists()
+    assert new["supersedes"] == old["reference_manifest_id"]
+    assert new["reason_for_update"] == "approved numerical reference update"
+    assert new["reference_manifest_id"] != old["reference_manifest_id"]
+    with pytest.raises(H.HarnessError, match="exact mismatch"):
+        H.compare_manifest_to_named_reference(new_run, str(old_path))
+    assert H.compare_manifest_to_named_reference(new_run, str(new_path))["ok"] is True
+
+
+def test_a6_13_update_refuses_different_sample_and_creates_no_successor(tmp_path):
+    old_path = tmp_path / "reference_v1.json"
+    new_path = tmp_path / "reference_v2.json"
+    run = _a6_2_reference_ready_manifest(tmp_path)
+    H.accept_named_reference(str(old_path), run, **_a6_2_accept_kwargs())
+    old_bytes = old_path.read_bytes()
+
+    wrong = _a6_2_reference_ready_manifest(tmp_path, sample_seed=99)
+    with pytest.raises(H.HarnessError, match="identity mismatch"):
+        H.update_named_reference(
+            str(new_path), str(old_path), wrong,
+            **_a6_2_accept_kwargs(reason_for_update="must refuse"),
+        )
+    assert old_path.read_bytes() == old_bytes
+    assert not new_path.exists()
+
+
+def test_a6_14_reference_integrity_digest_detects_tampering(tmp_path):
+    run = _a6_2_reference_ready_manifest(tmp_path)
+    ref = H.accepted_reference_from_manifest(run, **_a6_2_accept_kwargs())
+    tampered = json.loads(json.dumps(ref))
+    tampered["approval_identity"] = "someone-else"
+    with pytest.raises(H.HarnessError, match="integrity digest mismatch"):
+        H.validate_accepted_reference(tampered)
+
+
+def test_a6_15_reference_contract_required_fields_match_runtime_owner():
+    from pathlib import Path
+    payload = json.loads(
+        Path(__file__).with_name("phase_13_77_reference_contract.json").read_text(
+            encoding="utf-8"))
+    assert tuple(payload["required_accepted_reference_fields"]) == \
+        H.accepted_reference_required_fields()
+    assert payload["governance_rules"]["update_writes_new_reference_path"] is True
+    assert payload["governance_rules"]["existing_reference_path_is_immutable"] is True
+
+
+def test_a6_16_no_implicit_latest_reference_discovery(tmp_path):
+    run = _a6_2_reference_ready_manifest(tmp_path)
+    with pytest.raises(H.HarnessError, match="reference path"):
+        H.compare_manifest_to_named_reference(run, "")
+    assert not hasattr(H, "latest_reference")
+    assert not hasattr(H, "find_latest_reference")

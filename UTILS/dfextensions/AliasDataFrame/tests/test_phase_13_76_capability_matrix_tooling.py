@@ -770,8 +770,8 @@ class TestPhase1377A6ReferenceContractRegistration:
         assert feature["contract_file"] == "tests/phase_13_77_reference_contract.json"
         summary = gen.feature_contract_summary(feature)
         assert summary["schema"] == "AliasDataFrame.PHASE_13_77.ReferenceContract"
-        assert summary["schema_version"] == 1
-        assert summary["status"] == "A6_REFERENCE_GOVERNANCE_V01"
+        assert summary["schema_version"] == 2
+        assert summary["status"] == "A6_REFERENCE_GOVERNANCE_V02"
         assert summary["declared_cells"] == 0
         assert len(summary["sha256"]) == 64
 

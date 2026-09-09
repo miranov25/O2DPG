@@ -1,7 +1,7 @@
 {
   "schema": "AliasDataFrame.PHASE_13_77.ReferenceContract",
-  "schema_version": 1,
-  "status": "A6_REFERENCE_GOVERNANCE_V01",
+  "schema_version": 2,
+  "status": "A6_REFERENCE_GOVERNANCE_V02",
   "created": "2026-09-09",
   "author": "GPT46:ADFCoder",
   "governing_decisions": [],
@@ -51,11 +51,14 @@
     "old_references_remain_reproducible": true,
     "implicit_latest_reference_allowed": false,
     "different_input_or_sample_identity": "REFUSE",
-    "same_process_cases_in_cross_run_named_reference": "EXCLUDE"
+    "same_process_cases_in_cross_run_named_reference": "EXCLUDE",
+    "update_writes_new_reference_path": true,
+    "existing_reference_path_is_immutable": true,
+    "accepted_reference_integrity": "reference_manifest_id sha256 over canonical accepted-reference payload"
   },
   "implementation_stage": {
     "A6.1": "reference_policy activation + reference identity derivation/comparison",
-    "A6.2": "explicit accept/update + named reference compare orchestration",
+    "A6.2": "implemented: explicit immutable accept + compare-by-name + successor update/no-overwrite",
     "A6.3": "CLI/PDF integration + closure reconciliation",
     "A6.FINAL": "reviewed full-data accepted reference"
   }
