@@ -85,7 +85,7 @@ Output:
   test_logs/CAPABILITY_MATRIX_<ts>.md   Markdown feature matrix
   test_logs/CAPABILITY_MATRIX_<ts>.html HTML feature matrix
   test_logs/diff_last_commit_<ts>.txt   Uncommitted + HEAD~1 diffs
-  test_logs/diff_to_phase_<ts>.txt      Diff since PHASE_BEGIN tag
+  test_logs/diff_to_phase_<ts>.txt      Diff since PHASE_BEGIN tag (generated Capability Matrix files excluded)
   test_logs/git_status_<ts>.txt         Working tree state snapshot
   test_logs/reviewer_<ts>.zip           Review package (zip)
   test_logs/reviewer_<ts>.tar           Review package (tar, same file list)
@@ -309,6 +309,17 @@ echo "--- Capturing git diffs ---"
 GIT_HASH="unknown"
 GIT_BRANCH="unknown"
 
+# Generated Capability Matrix renderings are packaged separately as review
+# evidence.  Exclude them from source diffs so semantic code/test changes are
+# not buried under large regenerated artifacts.  Keep taxonomy/generator/
+# contract source files in the diff.
+DIFF_PATHS=(
+    .
+    ':(exclude)docs/CAPABILITY_MATRIX.md'
+    ':(exclude)docs/CAPABILITY_MATRIX.html'
+    ':(exclude)docs/CAPABILITY_MATRIX.json'
+)
+
 if git rev-parse --is-inside-work-tree &>/dev/null; then
     GIT_HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
     GIT_BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
@@ -323,11 +334,11 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
         echo "=== Uncommitted changes (git diff HEAD) ==="
         echo "=== staged + unstaged, relative to last commit ==="
         echo ""
-        git diff --relative HEAD -- . 2>/dev/null || echo "(no uncommitted changes)"
+        git diff --relative HEAD -- "${DIFF_PATHS[@]}" 2>/dev/null || echo "(no uncommitted changes)"
         echo ""
         echo "=== Previous commit (git diff HEAD~1..HEAD) ==="
         echo ""
-        git diff --relative HEAD~1..HEAD -- . 2>/dev/null || echo "(no previous commit)"
+        git diff --relative HEAD~1..HEAD -- "${DIFF_PATHS[@]}" 2>/dev/null || echo "(no previous commit)"
     } > "$DIFF_COMMIT"
     timing_end "diff_last_commit" 0
     echo "  Last commit diff: $(realpath "$DIFF_COMMIT" 2>/dev/null || echo "$DIFF_COMMIT")"
@@ -342,7 +353,7 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
 
     timing_start "diff_to_phase"
     if [[ -n "$PHASE_TAG" ]]; then
-        git diff --relative "$PHASE_TAG" -- . > "$DIFF_PHASE" 2>/dev/null || true
+        git diff --relative "$PHASE_TAG" -- "${DIFF_PATHS[@]}" > "$DIFF_PHASE" 2>/dev/null || true
         echo "  Phase tag: $PHASE_TAG"
     else
         echo "(No PHASE_BEGIN_* tag found — searched: PHASE_BEGIN_AliasDataFrame, PHASE_BEGIN_ADF)" > "$DIFF_PHASE"
