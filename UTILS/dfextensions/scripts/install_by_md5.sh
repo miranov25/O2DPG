@@ -17,9 +17,11 @@
 # USAGE
 #   source scripts/install_by_md5.sh          # once per shell
 #   install_by_md5 <src> <dst> <expected_md5>
+#   install_newest_by_md5 <glob> <dst> <expected_md5>
 #   check_ref <file> <expected_md5> [expected_sha256]
 #
 #   install_by_md5 "$Downloads/foo_rev3c.py" tests/foo.py 3a57e2e4...
+#   install_newest_by_md5 'foo_rev3c*.py' tests/foo.py 3a57e2e4...
 #   check_ref run_tests.sh <md5> <sha256>
 #
 # BEHAVIOUR
@@ -28,6 +30,12 @@
 #   * refuses if <src> does not match <expected_md5>       -- nothing is copied
 #   * backs up an existing <dst> to <dst>.bak.<timestamp>
 #   * re-verifies <dst> after copying and refuses to report success otherwise
+#
+#   install_newest_by_md5:
+#   * searches $Downloads for the newest file matching <glob>
+#   * installs that exact file through install_by_md5
+#   * reports how many matching copies were present
+#   * removes all matching Downloads copies only after a successful install
 #
 #   check_ref:
 #   * compares an existing file against a recorded MD5 and optional SHA256
@@ -175,6 +183,41 @@ USAGE
     fi
 
     echo "install_by_md5: OK  $dst  $actual"
+    return 0
+}
+
+install_newest_by_md5() {
+    local pattern="$1" dst="$2" want="$3"
+
+    if [ "$#" -ne 3 ]; then
+        echo "usage: install_newest_by_md5 <glob> <dst> <expected_md5>" >&2
+        return 2
+    fi
+
+    if [ -z "${Downloads:-}" ]; then
+        echo "install_newest_by_md5: \$Downloads is not set" >&2
+        return 2
+    fi
+
+    local src
+    src=$(ls -t $Downloads/$pattern 2>/dev/null | head -1)
+
+    if [ -z "$src" ]; then
+        echo "install_newest_by_md5: nothing matches $Downloads/$pattern" >&2
+        return 1
+    fi
+
+    local n
+    n=$(ls -t $Downloads/$pattern 2>/dev/null | wc -l | tr -d ' ')
+
+    echo "  using $src  ($n copy/copies present)"
+
+    install_by_md5 "$src" "$dst" "$want" || return 1
+
+    # A successful checksum-controlled installation makes all same-pattern
+    # Downloads copies stale/redundant. Remove them only AFTER success.
+    rm -f $Downloads/$pattern
+
     return 0
 }
 
