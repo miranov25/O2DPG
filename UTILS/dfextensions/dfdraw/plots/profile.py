@@ -32,6 +32,7 @@ from ._data_sanitize import sanitize_for_plot
 from .fits import normalize_fit_spec, dispatch_fit
 from ._fit_render import render_fit_overlays, render_fit_textbox
 from ._autorange import compute_autorange, resolve_range_1d, VALID_STRATEGIES
+from ._time_coords import to_date_coords
 # Phase 13.30.DF: Class-2 column-reference parameter validation
 from ._validation import validate_column_references
 
@@ -505,12 +506,8 @@ def draw_profile(
     if time_format is not None:
         import matplotlib.dates as mdates
         _x_arr = np.asarray(x_data)
-        if np.issubdtype(_x_arr.dtype, np.datetime64):
-            x_data = mdates.date2num(_x_arr)
-        else:
-            x_data = mdates.date2num(
-                pd.to_datetime(_x_arr, unit='s').to_pydatetime()
-            )
+        # BUGFIX time_format perf: one shared conversion owner
+        x_data = to_date_coords(_x_arr)
 
     # Phase 13.28.DF: Resolve x_range autorange (AD-73, AD-77)
     if len(x_data) > 0:
@@ -2356,12 +2353,8 @@ def draw_profile2d(
     if time_format is not None:
         import matplotlib.dates as mdates
         x_edges_arr = np.asarray(x_edges)
-        if np.issubdtype(x_edges_arr.dtype, np.datetime64):
-            x_edges = mdates.date2num(x_edges_arr)
-        else:
-            x_edges = mdates.date2num(
-                pd.to_datetime(x_edges_arr, unit='s').to_pydatetime()
-            )
+        # BUGFIX time_format perf: one shared conversion owner
+        x_edges = to_date_coords(x_edges_arr)
 
     # Set up axes
     if ax is None:

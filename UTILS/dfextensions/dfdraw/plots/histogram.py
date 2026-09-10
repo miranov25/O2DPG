@@ -20,6 +20,7 @@ from ._auto_title import build_auto_title, apply_auto_title, parse_auto_title_pa
 # Phase 13.28.DF: Robust data handling
 from ._data_sanitize import sanitize_for_plot
 from ._autorange import compute_autorange, VALID_STRATEGIES
+from ._time_coords import to_date_coords
 # Phase 13.30.DF: Class-2 column-reference parameter validation
 from ._validation import validate_column_references
 # Phase 13.37.DF (BUG-016): pd.Interval-aware sort key for legend ordering.
@@ -459,12 +460,8 @@ def draw_hist(
     if time_format is not None:
         import matplotlib.dates as mdates
         _x_arr = np.asarray(x_data)
-        if np.issubdtype(_x_arr.dtype, np.datetime64):
-            x_data = mdates.date2num(_x_arr)
-        else:
-            x_data = mdates.date2num(
-                pd.to_datetime(_x_arr, unit='s').to_pydatetime()
-            )
+        # BUGFIX time_format perf: one shared conversion owner
+        x_data = to_date_coords(_x_arr)
 
     # Phase 13.28.DF: Resolve autorange (AD-73, AD-77)
     from ._autorange import resolve_range_1d
@@ -1301,50 +1298,34 @@ def draw_hist2d(
     if isinstance(x, str):
         x_name = x
         _x_raw = df[x].values
-        if _need_date_convert and np.issubdtype(_x_raw.dtype, np.datetime64):
-            x_data = mdates.date2num(_x_raw)
-        elif _need_date_convert:
-            # Phase 13.54.DF: float epoch-seconds branch (mirror draw_hist:451)
-            x_data = mdates.date2num(
-                pd.to_datetime(_x_raw, unit='s').to_pydatetime()
-            )
+        if _need_date_convert:
+            # BUGFIX time_format perf: one shared conversion owner
+            x_data = to_date_coords(_x_raw)
         else:
             x_data = _x_raw.astype(float)
     else:
         x_name = "x"
         _x_raw = np.asarray(x)
-        if _need_date_convert and np.issubdtype(_x_raw.dtype, np.datetime64):
-            x_data = mdates.date2num(_x_raw)
-        elif _need_date_convert:
-            # Phase 13.54.DF: float epoch-seconds branch
-            x_data = mdates.date2num(
-                pd.to_datetime(_x_raw, unit='s').to_pydatetime()
-            )
+        if _need_date_convert:
+            # BUGFIX time_format perf: one shared conversion owner
+            x_data = to_date_coords(_x_raw)
         else:
             x_data = _x_raw.astype(float)
 
     if isinstance(y, str):
         y_name = y
         _y_raw = df[y].values
-        if _need_date_convert and np.issubdtype(_y_raw.dtype, np.datetime64):
-            y_data = mdates.date2num(_y_raw)
-        elif _need_date_convert:
-            # Phase 13.54.DF: float epoch-seconds branch (y-axis symmetry)
-            y_data = mdates.date2num(
-                pd.to_datetime(_y_raw, unit='s').to_pydatetime()
-            )
+        if _need_date_convert:
+            # BUGFIX time_format perf: one shared conversion owner
+            y_data = to_date_coords(_y_raw)
         else:
             y_data = _y_raw.astype(float)
     else:
         y_name = "y"
         _y_raw = np.asarray(y)
-        if _need_date_convert and np.issubdtype(_y_raw.dtype, np.datetime64):
-            y_data = mdates.date2num(_y_raw)
-        elif _need_date_convert:
-            # Phase 13.54.DF: float epoch-seconds branch
-            y_data = mdates.date2num(
-                pd.to_datetime(_y_raw, unit='s').to_pydatetime()
-            )
+        if _need_date_convert:
+            # BUGFIX time_format perf: one shared conversion owner
+            y_data = to_date_coords(_y_raw)
         else:
             y_data = _y_raw.astype(float)
     

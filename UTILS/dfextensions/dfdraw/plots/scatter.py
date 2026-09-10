@@ -12,6 +12,7 @@ Supports:
 """
 
 import numpy as np
+from ._time_coords import to_date_coords
 import pandas as pd
 import warnings
 import matplotlib.pyplot as plt
@@ -200,12 +201,8 @@ def draw_scatter(
     if time_format is not None:
         import matplotlib.dates as mdates
         _x_arr = np.asarray(x_data)
-        if np.issubdtype(_x_arr.dtype, np.datetime64):
-            x_data = mdates.date2num(_x_arr)
-        else:
-            x_data = mdates.date2num(
-                pd.to_datetime(_x_arr, unit='s').to_pydatetime()
-            )
+        # BUGFIX time_format perf: one shared conversion owner
+        x_data = to_date_coords(_x_arr)
     
     # Phase 13.46.DF FIX1 — range= REMOVES out-of-range points (point filter),
     # consistent with how hist/profile range= excludes points from binning. The
