@@ -6287,6 +6287,19 @@ class AliasDataFrame:
         # This reuses ALL existing subframe join machinery
         subframe_adf = AliasDataFrame(df)
 
+        # PHASE_13_76_ADF B3.2b closure Attack 4.  LazyTreeReader already
+        # recovers authoritative ADF metadata at registration time, and the
+        # pure planner is allowed to rely on a complete alias namespace from
+        # that metadata.  Materialization must therefore preserve the same
+        # namespace on the eager child; otherwise planning can truthfully
+        # classify ``S.a`` as resolvable while execution discards ``a``.
+        # Reuse the canonical metadata normalization/application path used by
+        # read_tree_lazy rather than introducing a second alias/schema loader.
+        _recovered_meta = getattr(reader, "adf_metadata", None)
+        if _recovered_meta:
+            subframe_adf._apply_recovered_metadata(
+                AliasDataFrame._normalize_chain_meta(_recovered_meta))
+
         # v05 `P0-LAZY`. The wrapper is a PLAIN frame with no reader, so
         # AD-19 source 1 vanished the moment the child was materialized.
         # A conflict needs TWO sources, so after the load an incompatible
@@ -21757,7 +21770,8 @@ function collapseDepth(maxD) {{
 
         _child_alias_seen = set()
 
-        def _collect_child_alias_closure(_frame, _alias, _prefixes):
+        def _collect_child_alias_closure(_frame, _alias, _prefixes,
+                                         _alias_map=None):
             """Plan every owner-qualified alias the child may materialize.
 
             B3-P0-1; ArchitectClarification v05 Decision C: requesting
@@ -21766,25 +21780,40 @@ function collapseDepth(maxD) {{
             recursively evaluating ``a2``.  Cleanup observes both, so
             plan ownership must carry the same transitive closure instead of
             weakening exact cleanup reconciliation.
+
+            B3.2b closure Attack 4: for an unmaterialized lazy child, a
+            complete metadata alias namespace is also authoritative planning
+            input.  ``_alias_map`` lets this same closure walker consume that
+            namespace without materializing the child or duplicating alias
+            dependency parsing.
             """
+            _aliases = (_alias_map if _alias_map is not None
+                        else (getattr(_frame, "aliases", None) or {}))
             _key = (id(_frame), tuple(_prefixes), str(_alias))
             if _key in _child_alias_seen:
                 return
             _child_alias_seen.add(_key)
-            _expr = (getattr(_frame, "aliases", None) or {}).get(_alias)
+            _expr = _aliases.get(_alias)
             if _expr is None:
                 return
             _qualified = "::".join(list(_prefixes) + [str(_alias)])
             projection_aliases.add(_qualified)
-            if _alias in (getattr(_frame, "_group_members", {}) or {}):
+            if (_alias_map is None
+                    and _alias in (getattr(_frame, "_group_members", {}) or {})):
                 groups.add(_qualified)
             if not isinstance(_expr, str):
                 return
             _info = _frame._analyze_expression(_expr)
             for _dep in _info.get("column_refs", ()):
-                if _dep in (getattr(_frame, "aliases", None) or {}):
+                if _dep in _aliases:
                     _collect_child_alias_closure(
-                        _frame, _dep, _prefixes)
+                        _frame, _dep, _prefixes, _alias_map=_aliases)
+            # Nested subframe-alias closure requires a materialized frame graph.
+            # Metadata-only planning owns same-child alias dependencies here;
+            # the existing eager/materialized path below retains nested-graph
+            # ownership without guessing a graph from metadata.
+            if _alias_map is not None:
+                return
             for _sf_name, _sf_col in _info.get("subframe_refs", ()):
                 _entry = (_frame._subframes.get_entry(_sf_name)
                           if getattr(_frame, "_subframes", None) is not None
@@ -21870,10 +21899,36 @@ function collapseDepth(maxD) {{
                             # alias graph available NOW. Plan the whole closure
                             # execution may materialize, not only the requested
                             # leaf. Lazy-child alias identity is still not guessed.
-                            if (_resolution == "resolvable"
-                                    and _leaf in (getattr(_cur, "aliases", None) or {})):
-                                _collect_child_alias_closure(
-                                    _cur, _leaf, _prefixes)
+                            if _resolution == "resolvable":
+                                _cur_aliases = (getattr(_cur, "aliases", None) or {})
+                                if _leaf in _cur_aliases:
+                                    _collect_child_alias_closure(
+                                        _cur, _leaf, _prefixes)
+                                else:
+                                    # Closure Attack 4: planning already treats
+                                    # complete lazy-child metadata as positive
+                                    # namespace authority.  Carry the SAME
+                                    # metadata alias graph into plan ownership
+                                    # so execution/materialization/cleanup cannot
+                                    # outrun the deterministic plan.  _inspect_
+                                    # subframe_token deliberately stays pure and
+                                    # does not return live reader objects; resolve
+                                    # the final lazy owner from the same current
+                                    # frame/prefix path here.
+                                    _lazy_owner = (_prefixes[-1]
+                                                   if _prefixes else None)
+                                    _lazy_reader = ((getattr(
+                                        _cur, "_subframe_readers", {}) or {})
+                                        .get(_lazy_owner))
+                                    if _lazy_reader is not None:
+                                        _complete = _complete_nonphysical_namespaces(
+                                            getattr(_lazy_reader, "adf_metadata", None))
+                                        if _complete is not None:
+                                            _aliases_meta = _complete[0]
+                                            if _leaf in _aliases_meta:
+                                                _collect_child_alias_closure(
+                                                    _cur, _leaf, _prefixes,
+                                                    _alias_map=_aliases_meta)
 
                         if (_leaf_idx is not None
                                 and on_subframe_error == "raise"):

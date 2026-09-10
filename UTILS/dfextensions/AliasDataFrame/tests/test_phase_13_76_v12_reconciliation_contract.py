@@ -161,6 +161,111 @@ class TestV12B3ReconciliationContract:
         assert "S::a1" in state.aliases_dropped
         assert parent._reconcile_draw_plan_state(plan, state, raise_on_error=False) == ()
 
+    def test_r1b_complete_lazy_child_metadata_alias_ownership_is_restored_and_planned(self):
+        """Closure Attack 4 — positive complete-metadata lazy-child alias ownership.
+
+        Governing closure request:
+          PHASE_13_76_ADF_B3_2b_CUMULATIVE_CLOSURE_FALSIFICATION_v01_REQUEST_20260901.md
+          Attack 4.
+
+        A complete lazy-child metadata payload that explicitly contains aliases
+        is authoritative positive namespace evidence.  Planning may therefore
+        classify ``S.a2`` as resolvable.  When execution materializes ``S``,
+        the same alias namespace must exist on the child, its transitive alias
+        dependencies must be included in plan/materialization/cleanup
+        ownership, and the public draw must complete.
+
+        This is distinct from R10's post-load alias family, which deliberately
+        does not define metadata-provided lazy-child alias behavior.
+        """
+        aliases = {
+            "a1": "v * 2",
+            "a2": "a1 + 1",
+        }
+
+        class CompleteAliasReader:
+            available_branches = {"k", "v"}
+            loaded_branches = set()
+            adf_metadata = {
+                "_source": "key",
+                "aliases": dict(aliases),
+                "subframes": [],
+                "column_dtypes": {"k": "int64", "v": "float64"},
+                "raw": {
+                    "aliases": dict(aliases),
+                    "subframes": [],
+                    "column_dtypes": {"k": "int64", "v": "float64"},
+                    A_mod.SCHEMA_METADATA_KEY: {
+                        "subframes": {},
+                        "structs": {},
+                    },
+                },
+            }
+
+            def load_branches(self, names):
+                self.loaded_branches.update(names)
+                columns = {
+                    "k": np.array([0, 1], dtype=np.int64),
+                    "v": np.array([2.0, 3.0], dtype=np.float64),
+                }
+                return pd.DataFrame({name: columns[name] for name in names})
+
+            @staticmethod
+            def branch_numpy_dtype(name):
+                return np.dtype(np.int64 if name == "k" else np.float64)
+
+        parent = AliasDataFrame(pd.DataFrame({
+            "k": np.array([0, 1], dtype=np.int64),
+            "x": np.array([10.0, 20.0], dtype=np.float64),
+        }))
+        parent._subframe_readers["S"] = CompleteAliasReader()
+        parent._subframe_loaded["S"] = False
+        parent._subframe_lazy_config["S"] = {
+            "columns": None,
+            "index_columns": ["k"],
+            "alignment": "by_key",
+            "join_type": "left",
+            "file": None,
+            "tree": None,
+        }
+        parent._schema.setdefault("subframes", {})["S"] = {
+            "index": ["k"],
+            "index_columns": ["k"],
+            "join_type": "left",
+            "lazy": True,
+        }
+
+        try:
+            result = _public_draw(
+                parent,
+                {"p": {"expr": "S.a2:x", "type": "scatter"}},
+            )
+        except ValueError as exc:
+            if ("failed to resolve subframe reference 'S.a2'" in str(exc)
+                    and "does not contain column or alias 'a2'" in str(exc)):
+                raise AssertionError(
+                    "B3-P0-1 / closure Attack 4: planning accepted the "
+                    "metadata-provided lazy-child alias, but child "
+                    "materialization discarded that alias namespace"
+                ) from exc
+            raise
+
+        assert result is not None
+        assert parent._subframe_loaded.get("S", False)
+        child = parent.get_subframe("S")
+        assert child.aliases.get("a1") == aliases["a1"]
+        assert child.aliases.get("a2") == aliases["a2"]
+
+        plan = parent._last_draw_plan
+        state = parent._last_draw_prep_state
+        expected = {"S::a1", "S::a2"}
+        assert expected <= set(plan.aliases), (expected, plan.aliases)
+        assert expected <= set(plan.cleanup), (expected, plan.cleanup)
+        assert expected <= set(state.aliases_materialized), state.aliases_materialized
+        assert expected <= set(state.aliases_dropped), state.aliases_dropped
+        assert parent._reconcile_draw_plan_state(
+            plan, state, raise_on_error=False) == ()
+
     def test_r2_two_valid_same_owner_requests_cannot_hide_one_runtime_failure(self, monkeypatch):
         parent, _ = _parent_child_three_columns()
         _fault_leaf(monkeypatch, parent, "w")
