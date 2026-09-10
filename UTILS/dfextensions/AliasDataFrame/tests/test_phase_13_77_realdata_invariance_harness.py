@@ -3601,8 +3601,11 @@ def test_a5_14_sample_monkeypatch_restored_when_build_fails(tmp_path):
 # ── A5.3 — real-data G7.32 LAZY/FULL acceptance ──────────────────────────────
 
 class _A53FakeLazyReader:
-    def __init__(self, loaded=()):
+    def __init__(self, loaded=(), available=None):
         self.loaded_branches = set(loaded)
+        self.available_branches = set(available or (
+            "timeMS", "sector", "ncl", "vertex_x", "vertex_z",
+            "dcar_tpc_vertex", "tgl"))
 
 
 class _A53FakeGallery:
@@ -3757,66 +3760,62 @@ def test_a5_19_lazy_full_forbids_sampling_and_restores_sample(tmp_path):
     assert pd.DataFrame.sample is original
     assert H.strict_exit_code([result], [case]) == 1
 
-class _A53TimeMSBlockerGallery:
-    @staticmethod
-    def build_adf(root_path, sample=None, lazy=False, tree_name="tree"):
-        assert sample is None
-        assert lazy is True
-        assert tree_name == H.A5_3_TREE_NAME
-        raise KeyError("timeMS")
+class _A53TimeMSAutoLoadADF:
+    def __init__(self, n=20):
+        self.df = pd.DataFrame(index=np.arange(n))
+        self.ensure_calls = []
+        self.registered = {}
 
-    fig32_subframe_vertex = staticmethod(_A53FakeGallery.fig32_subframe_vertex)
+    def ensure_branches(self, names):
+        self.ensure_calls.append(tuple(names))
+        if "timeMS" in names and "timeMS" not in self.df.columns:
+            self.df["timeMS"] = np.linspace(1000.0, 2000.0, len(self.df))
 
-
-class _A53WrongKeyBlockerGallery(_A53TimeMSBlockerGallery):
-    @staticmethod
-    def build_adf(root_path, sample=None, lazy=False, tree_name="tree"):
-        raise KeyError("notTimeMS")
+    def register_subframe(self, name, adf, index_columns=None):
+        self.registered[name] = (adf, tuple(index_columns or ()))
 
 
 @pytest.mark.invariance
-def test_a5_20_realdata_lazy_setup_exact_timems_blocker_is_error_contract_pass(tmp_path):
-    root_path = tmp_path / "fake.root"
-    root_path.write_bytes(b"A5.3 exact timeMS blocker")
-    case = H.a5_3_lazy_setup_error_case(
-        str(root_path), gallery_module=_A53TimeMSBlockerGallery)
+def test_a5_20_timems_consumer_materializes_lazy_branch_before_pandas_access():
+    # Exercise the real owning helper, not a copied implementation.
+    import time_series as TS
+    adf = _A53TimeMSAutoLoadADF(20)
+    TS.addTimeQuantiles(adf, varname="timeMS", step=5, step2=2)
+    assert adf.ensure_calls == [("timeMS",)]
+    assert "timeMS" in adf.df.columns
+    assert "quantile_bin" in adf.df.columns
+    assert "quantile_binGB" in adf.df.columns
+    assert "TimeQuantiles" in adf.registered
 
-    assert case.purpose == "ERROR_CONTRACT"
-    assert case.known_bug_status == "KNOWN_BUG"
-    assert case.known_bug_id == H.A5_3_BLOCKER_BUG_ID
-    result = H.run_a5_3_lazy_setup_error_contract(
-        case, str(root_path), gallery_module=_A53TimeMSBlockerGallery)
+
+@pytest.mark.invariance
+def test_a5_21_timems_blocker_transition_is_explicit_and_positive():
+    rec = H.a5_3_blocker_resolution_record()
+    assert rec["bug_id"] == H.A5_3_BLOCKER_BUG_ID
+    assert rec["previous_case_id"] == H.A5_3_BLOCKER_CASE_ID
+    assert rec["previous_state"]["purpose"] == "ERROR_CONTRACT"
+    assert rec["previous_state"]["known_bug_status"] == "KNOWN_BUG"
+    assert rec["new_case_id"] == H.A5_3_CASE_ID
+    assert rec["new_state"] == {
+        "purpose": "COVERAGE", "known_bug_status": "SUPPORTED"}
+    assert "addTimeQuantiles" in rec["fix_owner"]
+    assert "--full --lazy" in rec["closure_gate"]
+
+
+@pytest.mark.invariance
+def test_a5_22_realdata_gate_now_uses_positive_lazy_full_coverage(tmp_path):
+    root_path = tmp_path / "fake.root"
+    root_path.write_bytes(b"A5.3 blocker retired")
+    manifest = tmp_path / "a5_3.json"
+    result, doc, rc = H.run_a5_3_realdata_gate(
+        str(root_path), manifest_path=str(manifest),
+        gallery_module=_A53FakeGallery)
     assert result.status == H.PASS, result.detail
-    assert result.observed["known_bug_evidence"]["exception_key"] == "timeMS"
-    assert H.strict_exit_code([result], [case]) == 0
-
-
-@pytest.mark.invariance
-def test_a5_21_realdata_lazy_setup_wrong_key_does_not_false_green(tmp_path):
-    root_path = tmp_path / "fake.root"
-    root_path.write_bytes(b"A5.3 wrong blocker")
-    case = H.a5_3_lazy_setup_error_case(
-        str(root_path), gallery_module=_A53WrongKeyBlockerGallery)
-
-    result = H.run_a5_3_lazy_setup_error_contract(
-        case, str(root_path), gallery_module=_A53WrongKeyBlockerGallery)
-    assert result.status == H.FAIL, result.detail
-    assert "not the owned timeMS key" in result.detail
-    assert H.strict_exit_code([result], [case]) == 1
-
-
-@pytest.mark.invariance
-def test_a5_22_realdata_lazy_setup_success_forces_contract_review(tmp_path):
-    root_path = tmp_path / "fake.root"
-    root_path.write_bytes(b"A5.3 blocker unexpectedly gone")
-    case = H.a5_3_lazy_setup_error_case(
-        str(root_path), gallery_module=_A53FakeGallery)
-
-    result = H.run_a5_3_lazy_setup_error_contract(
-        case, str(root_path), gallery_module=_A53FakeGallery)
-    assert result.status == H.FAIL, result.detail
-    assert "unexpectedly disappeared" in result.detail
-    assert H.strict_exit_code([result], [case]) == 1
+    assert rc == 0
+    assert manifest.exists()
+    assert doc["provenance"]["a5_3_blocker_transition"]["new_case_id"] == H.A5_3_CASE_ID
+    assert doc["cases"][0]["purpose"] == "COVERAGE"
+    assert doc["cases"][0]["known_bug_status"] == "SUPPORTED"
 
 # ── A5.4 — real-data G7.33 GB correction EAGER/FRACTION acceptance ──────────
 
@@ -4850,6 +4849,8 @@ def _a6_3_fake_gallery():
         def __init__(self, path):
             self.path = path
         def __enter__(self):
+            from pathlib import Path
+            Path(self.path).write_bytes(b"%PDF-FAKE\n")
             return self
         def __exit__(self, exc_type, exc, tb):
             return False
@@ -4857,17 +4858,40 @@ def _a6_3_fake_gallery():
     mod = types.SimpleNamespace()
     mod.PdfPages = FakePdfPages
     mod.saved = []
+    mod.perf_messages = []
+    mod.logger = types.SimpleNamespace(log=lambda message: mod.perf_messages.append(message))
     def _add(pdf, fig, title):
         mod.saved.append((fig, title))
     mod._add = _add
-    mod.build_adf = lambda root_path, sample=None, lazy=False: object()
+    mod.build_calls = []
+    def build_adf(root_path, sample=None, lazy=False, tree_name="tree"):
+        import types
+        mod.build_calls.append({
+            "root_path": root_path,
+            "sample": sample,
+            "lazy": lazy,
+            "tree_name": tree_name,
+        })
+        reader = (types.SimpleNamespace(
+                    loaded_branches={"timeMS", "sector"},
+                    available_branches={"timeMS", "sector", "ncl", "vertex_x",
+                                        "vertex_z", "dcar_tpc_vertex", "tgl"})
+                  if lazy else None)
+        return types.SimpleNamespace(
+            _lazy_reader=reader,
+            df=pd.DataFrame(index=np.arange(20)),
+        )
+    mod.build_adf = build_adf
     mod.validate_lazy_vs_eager = lambda root_path: None
 
     funcs = []
     for name in sorted(H._GALLERY_DISPOSITION):
         def make_fn(fn_name):
             def fn(adf):
-                return FakeFigure(), object(), {}
+                stats = {}
+                if fn_name == "fig26_summary_fit":
+                    stats = {"summary_fit": {"table": FakeFigure()}}
+                return FakeFigure(), object(), stats
             fn.__name__ = fn_name
             fn.__doc__ = fn_name
             return fn
@@ -4907,8 +4931,12 @@ def test_a6_22_pdf_wrapper_reuses_gallery_pdf_owner_and_annotates_pages(tmp_path
         object(), str(tmp_path / "stage_a.pdf"), root_path=str(root),
         gallery_module=gallery)
     assert evidence["ok"] is True
-    assert evidence["page_count"] == 42
-    assert len(gallery.saved) == 42
+    assert evidence["page_count"] == 43
+    assert evidence["expected_page_count"] == 43
+    assert len(gallery.saved) == 43
+    assert len(gallery.perf_messages) == 84
+    assert gallery.perf_messages[0].endswith(": BEGIN")
+    assert gallery.perf_messages[-1].endswith(": END")
     # At least one core page and one ordinary visual page received annotations.
     assert all(fig.annotations for fig, _ in gallery.saved)
 
@@ -4950,3 +4978,287 @@ def test_a6_25_cli_validate_lazy_eager_reuses_gallery_validator(tmp_path):
     rc = H.stage_a_cli_main([root, "--validate-lazy-eager", "--strict"], gallery_module=gallery)
     assert rc == 0
     assert calls == [root]
+
+
+def test_a6_26_cli_full_lazy_delegates_to_single_lazy_full_gate(tmp_path, monkeypatch):
+    calls = []
+    manifest = {"reconciliation": {"exit_code": 0}}
+
+    def fake_gate(root_path, *, manifest_path, pdf_path, gallery_module=None, lazy=False):
+        calls.append({
+            "root_path": root_path,
+            "manifest_path": manifest_path,
+            "pdf_path": pdf_path,
+            "lazy": lazy,
+        })
+        return [], manifest, 0
+
+    monkeypatch.setattr(H, "run_stage_a_full_gallery_gate", fake_gate)
+    root = str(tmp_path / "input.root")
+    rc = H.stage_a_cli_main([
+        root, "--full", "--lazy",
+        "--manifest", str(tmp_path / "run.json"),
+        "--pdf", str(tmp_path / "run.pdf"),
+        "--strict",
+    ], gallery_module=object())
+    assert rc == 0
+    assert len(calls) == 1
+    assert calls[0]["root_path"] == root
+    assert calls[0]["lazy"] is True
+
+
+def test_a6_27_cli_refuses_lazy_without_full(tmp_path):
+    rc = H.stage_a_cli_main([
+        str(tmp_path / "input.root"),
+        "--sample", "0.20", "--lazy",
+        "--manifest", str(tmp_path / "run.json"),
+        "--pdf", str(tmp_path / "run.pdf"),
+        "--strict",
+    ], gallery_module=object())
+    assert rc == 2
+
+
+def test_a6_28_full_lazy_gallery_builds_once_and_records_branch_evidence(tmp_path):
+    gallery = _a6_3_fake_gallery()
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+    manifest = tmp_path / "run.json"
+    pdf = tmp_path / "run.pdf"
+
+    results, doc, rc = H.run_stage_a_full_gallery_gate(
+        str(root), manifest_path=str(manifest), pdf_path=str(pdf),
+        gallery_module=gallery, lazy=True)
+
+    assert rc == 0
+    assert len(gallery.build_calls) == 1
+    assert gallery.build_calls[0]["sample"] is None
+    assert gallery.build_calls[0]["lazy"] is True
+    assert gallery.build_calls[0]["tree_name"] == H.A5_3_TREE_NAME
+    assert doc["provenance"]["loading_mode"] == "LAZY"
+    assert doc["provenance"]["stage_a_execution"]["adf_build_count"] == 1
+    evidence = results[0].observed["visual_evidence"]
+    assert evidence["lazy_loaded_branch_count"] == 2
+    assert evidence["lazy_loaded_branches_after_gallery"] == ["sector", "timeMS"]
+    assert evidence["lazy_setup_provenance"]["lazy_reader_present"] is True
+    assert evidence["lazy_setup_provenance"]["eager_fallback"] is False
+
+
+def test_a6_29_fraction_gate_builds_adf_once_and_reuses_same_object(tmp_path, monkeypatch):
+    import pandas as pd
+    import types
+
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+    shared = types.SimpleNamespace(df=None, _lazy_reader=None)
+    gallery = types.SimpleNamespace(build_calls=0)
+
+    def build_adf(root_path, sample=None, lazy=False):
+        gallery.build_calls += 1
+        source = pd.DataFrame({"x": range(100)}, index=range(1000, 1100))
+        shared.df = source.sample(frac=sample, random_state=42).reset_index(drop=True)
+        return shared
+    gallery.build_adf = build_adf
+
+    cases = [
+        H.CaseSpec(
+            case_id=f"SHARED-{i}", claim_id=f"shared.{i}", title="shared",
+            claim="shared", failure_means="shared", expected_visual="shared",
+            owner_on_failure="ADF", purpose="COVERAGE", gate="ENVIRONMENT_GATED",
+            oracle_kind="CONSISTENCY", loading_mode="EAGER", sample_mode="FRACTION",
+            canonical_spec={}, applicable=True, setup_contract="shared",
+            preconditions=(), surfaces_under_test=(), observables=(),
+            non_claims=(), reference_policy="named-immutable")
+        for i in range(4)
+    ]
+    monkeypatch.setattr(H, "_a6_3_fraction_cases", lambda *a, **k: tuple(cases))
+
+    seen = []
+    def fake_runner(case, root_path, *, gallery_module=None,
+                    prepared_adf=None, prepared_provenance=None, **kwargs):
+        seen.append(prepared_adf)
+        r = H.CaseResult(case_id=case.case_id, status=H.PASS)
+        r.observed["realdata_provenance"] = dict(prepared_provenance)
+        return r
+
+    monkeypatch.setattr(H, "run_a5_2_realdata", fake_runner)
+    monkeypatch.setattr(H, "run_a5_4_realdata", fake_runner)
+    monkeypatch.setattr(H, "run_a5_5_realdata", fake_runner)
+    monkeypatch.setattr(H, "run_a5_6_realdata", fake_runner)
+    monkeypatch.setattr(
+        H, "_run_a6_3_visual_case",
+        lambda case, root_path, *, prepared_adf=None, **kwargs:
+            (seen.append(prepared_adf) or H.CaseResult(case_id=case.case_id, status=H.PASS)))
+    monkeypatch.setattr(H, "stage_a_closure_metadata", lambda gallery: {})
+    monkeypatch.setattr(H, "strict_exit_code", lambda results, cases: 0)
+
+    results, doc, rc = H.run_stage_a_fraction_gate(
+        str(root), manifest_path=str(tmp_path / "m.json"),
+        pdf_path=str(tmp_path / "p.pdf"), gallery_module=gallery)
+
+    assert rc == 0
+    assert gallery.build_calls == 1
+    assert len(seen) == 5
+    assert all(obj is shared for obj in seen)
+    assert doc["provenance"]["stage_a_execution"] == {
+        "adf_build_count": 1,
+        "adf_reused_across_cases": True,
+    }
+
+
+def test_a6_30_public_cli_full_lazy_end_to_end_creates_evidence_and_proves_lazy(tmp_path):
+    gallery = _a6_3_fake_gallery()
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+    manifest = tmp_path / "run.json"
+    pdf = tmp_path / "run.pdf"
+
+    rc = H.stage_a_cli_main([
+        str(root), "--full", "--lazy",
+        "--manifest", str(manifest),
+        "--pdf", str(pdf),
+        "--strict",
+    ], gallery_module=gallery)
+
+    assert rc == 0
+    assert manifest.exists()
+    assert pdf.exists()
+    doc = json.loads(manifest.read_text(encoding="utf-8"))
+    prov = doc["provenance"]
+    assert prov["loading_mode"] == "LAZY"
+    assert prov["sample_mode"] == "FULL"
+    assert prov["lazy_reader_present"] is True
+    assert prov["eager_fallback"] is False
+    assert prov["stage_a_execution"]["adf_build_count"] == 1
+    assert "--full --lazy" in prov["stage_a_execution"]["public_entrypoint"]
+    assert len(gallery.build_calls) == 1
+    assert gallery.build_calls[0]["lazy"] is True
+    assert gallery.build_calls[0]["sample"] is None
+
+
+def test_a6_31_full_lazy_build_failure_persists_manifest(tmp_path):
+    import types
+    gallery = _a6_3_fake_gallery()
+    def broken_build(*args, **kwargs):
+        raise H.HarnessError("synthetic lazy setup failure")
+    gallery.build_adf = broken_build
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+    manifest = tmp_path / "failed.json"
+    pdf = tmp_path / "failed.pdf"
+
+    results, doc, rc = H.run_stage_a_full_gallery_gate(
+        str(root), manifest_path=str(manifest), pdf_path=str(pdf),
+        gallery_module=gallery, lazy=True)
+
+    assert rc == 1
+    assert results[0].status == H.FAIL
+    assert manifest.exists()
+    disk = json.loads(manifest.read_text(encoding="utf-8"))
+    assert disk["reconciliation"]["exit_code"] == 1
+    assert disk["provenance"]["stage_a_execution"]["failure_manifest_persisted"] is True
+    assert "synthetic lazy setup failure" in disk["cases"][0]["detail"]
+
+
+def test_a6_32_lazy_full_deferrals_are_re_adjudicated_without_duplicate_full_oracles():
+    rows = H.lazy_full_deferral_reconciliation()
+    assert [r["case_id"] for r in rows] == [H.A5_4_CASE_ID, H.A5_5_CASE_ID, H.A5_6_CASE_ID]
+    assert all(r["disposition"] == "RE_ADJUDICATED" for r in rows)
+    assert all("full-lazy gallery" in r["current_contract"] for r in rows)
+    meta = H.stage_a_closure_metadata(_a6_3_fake_gallery())
+    assert meta["a5_3_blocker_transition"]["new_state"]["known_bug_status"] == "SUPPORTED"
+    assert len(meta["lazy_full_deferral_reconciliation"]) == 3
+
+def test_a6_33_reused_core_optional_skip_is_strict_failure(tmp_path):
+    gallery = _a6_3_fake_gallery()
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+
+    def skipped_core(adf):
+        return None
+    skipped_core.__name__ = "fig32_subframe_vertex"
+    skipped_core.__doc__ = "fig32_subframe_vertex"
+    gallery.fig32_subframe_vertex = skipped_core
+    gallery.FIGURES_OPTIONAL = [
+        skipped_core if fn.__name__ == "fig32_subframe_vertex" else fn
+        for fn in gallery.FIGURES_OPTIONAL
+    ]
+
+    results, doc, rc = H.run_stage_a_full_gallery_gate(
+        str(root), manifest_path=str(tmp_path / "m.json"),
+        pdf_path=str(tmp_path / "p.pdf"), gallery_module=gallery, lazy=True)
+
+    assert rc == 1
+    assert results[0].status == H.FAIL
+    evidence = results[0].observed["visual_evidence"]
+    assert evidence["ok"] is False
+    assert evidence["page_count"] == 42
+    assert evidence["expected_page_count"] == 43
+    assert any(e["gallery_function"] == "fig32_subframe_vertex"
+               for e in evidence["errors"])
+    assert any(e["gallery_function"] == "__page_count__"
+               for e in evidence["errors"])
+
+
+def test_a6_34_stage_a_pdf_contract_requires_all_43_pages(tmp_path):
+    gallery = _a6_3_fake_gallery()
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+    evidence = H.write_stage_a_pdf(
+        object(), str(tmp_path / "stage_a.pdf"), root_path=str(root),
+        gallery_module=gallery)
+    assert evidence["ok"] is True
+    assert evidence["page_count"] == 43
+    assert evidence["expected_page_count"] == 43
+    assert set(("fig32_subframe_vertex", "fig33_gb_correction_tgl",
+                "fig34_gb_correction_sector")).issubset(
+                    set(evidence["required_gallery_functions"]))
+    assert evidence["errors"] == []
+    assert evidence["skipped"] == []
+
+
+def test_a6_35_calibvertex_ensures_direct_physical_inputs_before_pandas_consumers():
+    import time_series as TS
+
+    class StopAfterEnsure(RuntimeError):
+        pass
+
+    class LazyProbe:
+        def __init__(self):
+            self.df = pd.DataFrame(index=np.arange(4))
+            self.ensure_calls = []
+        def ensure_branches(self, names):
+            self.ensure_calls.append(tuple(names))
+            raise StopAfterEnsure("stop after owner boundary")
+
+    adf = LazyProbe()
+    with pytest.raises(StopAfterEnsure, match="owner boundary"):
+        TS.calibVertex(adf)
+    assert adf.ensure_calls == [(
+        "vertex_x", "vertex_y", "vertex_z", "vertex_nContributors")]
+
+
+def test_a6_36_calibbias_ensures_direct_physical_inputs_before_alias_materialization():
+    import time_series as TS
+
+    class StopAfterEnsure(RuntimeError):
+        pass
+
+    class LazyProbe:
+        def __init__(self):
+            self.df = pd.DataFrame(index=np.arange(4))
+            self.ensure_calls = []
+        def ensure_branches(self, names):
+            self.ensure_calls.append(tuple(names))
+            raise StopAfterEnsure("stop after owner boundary")
+
+    adf = LazyProbe()
+    with pytest.raises(StopAfterEnsure, match="owner boundary"):
+        TS.calibBiasResolution(adf)
+    required = set(adf.ensure_calls[0])
+    assert {
+        "phiITSTPCAtVertex", "phi", "tgl", "qpt", "ncl",
+        "dcaZFromDeltaTime", "hasITSTPC", "dcar_tpc_vertex",
+        "dcar_itstpc", "deltaPar0", "deltaP4OuterITS",
+    }.issubset(required)
+    assert len(required) < 40  # bounded lazy dependency set, not full-column fallback
+

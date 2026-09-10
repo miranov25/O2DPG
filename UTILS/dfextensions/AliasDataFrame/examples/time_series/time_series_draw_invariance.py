@@ -35,7 +35,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-SCHEMA_VERSION = "13.77.A6.3.v01"
+SCHEMA_VERSION = "13.77.A6.4.v03"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enumerations.  Plain strings: they are serialised into the manifest, and a
@@ -2623,7 +2623,9 @@ def _a5_2_profile_numeric_evidence(stats: Any) -> dict:
 
 def run_a5_2_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
                        sample_fraction: float = A5_2_SAMPLE_FRACTION,
-                       seed: int = A5_2_SAMPLE_SEED) -> CaseResult:
+                       seed: int = A5_2_SAMPLE_SEED,
+                       prepared_adf: Any = None,
+                       prepared_provenance: dict | None = None) -> CaseResult:
     """Execute the bounded A5.2 real-data G7.32 acceptance contract.
 
     The trusted gallery remains unchanged and may keep G7 optional.  This
@@ -2672,29 +2674,34 @@ def run_a5_2_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
             return res
 
         import os
-        import pandas as pd
         sample_calls = []
-        original_sample = pd.DataFrame.sample
+        if prepared_adf is None:
+            import pandas as pd
+            original_sample = pd.DataFrame.sample
 
-        def recording_sample(self, *args, **kwargs):
-            out = original_sample(self, *args, **kwargs)
-            frac = kwargs.get("frac")
-            random_state = kwargs.get("random_state")
-            if frac == A5_2_SAMPLE_FRACTION and random_state == A5_2_SAMPLE_SEED:
-                sample_calls.append({
-                    "source_rows": int(len(self)),
-                    "selected_rows": int(len(out)),
-                    "index_digest_sha256": _a5_2_index_digest(out.index),
-                    "index_dtype": str(out.index.dtype),
-                })
-            return out
+            def recording_sample(self, *args, **kwargs):
+                out = original_sample(self, *args, **kwargs)
+                frac = kwargs.get("frac")
+                random_state = kwargs.get("random_state")
+                if frac == A5_2_SAMPLE_FRACTION and random_state == A5_2_SAMPLE_SEED:
+                    sample_calls.append({
+                        "source_rows": int(len(self)),
+                        "selected_rows": int(len(out)),
+                        "index_digest_sha256": _a5_2_index_digest(out.index),
+                        "index_dtype": str(out.index.dtype),
+                    })
+                return out
 
-        pd.DataFrame.sample = recording_sample
-        try:
-            adf = gallery.build_adf(root_path, sample=sample_fraction, lazy=False)
-        finally:
-            pd.DataFrame.sample = original_sample
-            original_sample = None
+            pd.DataFrame.sample = recording_sample
+            try:
+                adf = gallery.build_adf(root_path, sample=sample_fraction, lazy=False)
+            finally:
+                pd.DataFrame.sample = original_sample
+                original_sample = None
+        else:
+            adf = prepared_adf
+            sample_calls.append(_a6_4_prepared_fraction_sample_evidence(
+                adf, prepared_provenance, root_path))
 
         if getattr(adf, "_lazy_reader", None) is not None:
             res.status = INVALID_FIXTURE
@@ -2903,170 +2910,78 @@ def _a5_3_loaded_branches(adf) -> tuple[str, ...] | None:
 
 
 
-def a5_3_lazy_setup_error_case(root_path: str, gallery_module=None) -> CaseSpec:
-    """Current real-data A5.3 boundary: trusted lazy gallery setup refuses."""
-    env_status, reason = _a5_2_environment_status(
-        root_path, gallery_module=gallery_module)
-    applicable = env_status != A5_2_ENV_UNAVAILABLE
-    applicability_reason = reason if not applicable else ""
-    return CaseSpec(
-        case_id=A5_3_BLOCKER_CASE_ID,
-        claim_id="I4.real_g7_subframe_lazy.setup_refusal.A5.3",
-        title="real lazy/full time-series setup refuses on unloaded timeMS",
-        claim=("the current trusted build_adf(lazy=True, sample=None, "
-               "tree_name='treeTimeSeries') refuses at addTimeQuantiles with "
-               "KeyError('timeMS'); any different failure or silent success "
-               "forces review of this capability boundary"),
-        failure_means=("the known lazy setup boundary changed without the "
-                       "A5.3 contract being updated, or an unrelated failure "
-                       "was mistaken for the owned timeMS blocker"),
-        expected_visual="no figure: current blocker occurs before G7.32 rendering",
-        owner_on_failure="ADF",
-        purpose="ERROR_CONTRACT",
-        gate="ENVIRONMENT_GATED",
-        oracle_kind="CONSISTENCY",
-        loading_mode="LAZY",
-        sample_mode="FULL",
-        canonical_spec={
-            "gallery_function": A5_2_GALLERY_FUNCTION,
-            "sample": None,
-            "lazy": True,
-            "tree_name": A5_3_TREE_NAME,
-            "expected_exception": "KeyError",
-            "expected_key": "timeMS",
+
+def a5_3_blocker_resolution_record() -> dict:
+    """Record the governed A5.3 blocker -> positive-coverage transition.
+
+    The registered refusal is retired only together with the owning caller fix.
+    The real FULL+LAZY A6 run supplies the demonstrating execution evidence.
+    """
+    return {
+        "bug_id": A5_3_BLOCKER_BUG_ID,
+        "previous_case_id": A5_3_BLOCKER_CASE_ID,
+        "previous_state": {
+            "purpose": "ERROR_CONTRACT",
+            "known_bug_status": "KNOWN_BUG",
+            "failure": "KeyError('timeMS') during lazy build_adf/addTimeQuantiles",
+            "recorded_owner_on_failure": "ADF",
+            "corrected_owner": "time_series/gallery caller",
         },
-        applicable=applicable,
-        applicability_reason=applicability_reason,
-        setup_contract=("call unchanged time_series_draw.build_adf with "
-                        "sample=None, lazy=True and tree_name='treeTimeSeries'; "
-                        "do not preload timeMS in the A5 harness"),
-        preconditions=(
-            "ROOT input is readable by the trusted time-series environment",
-            "trusted build_adf is available",
-            "sample is None because sampled-lazy is unsupported",
-        ),
-        surfaces_under_test=(),
-        known_bug_status="KNOWN_BUG",
-        known_bug_id=A5_3_BLOCKER_BUG_ID,
-        non_claims=(
-            "this error contract does not claim G7.32 lazy/full execution succeeds",
-            "the owning fix is outside PHASE_13_77 A5",
-            "the positive synthetic A5.3 runner remains a future-success oracle",
-        ),
-        negative_control=("wrong exception key/type or unexpected successful "
-                          "lazy setup must gate"),
-        reference_policy="named-immutable",
-    )
+        "new_case_id": A5_3_CASE_ID,
+        "new_state": {
+            "purpose": "COVERAGE",
+            "known_bug_status": "SUPPORTED",
+        },
+        "fix_owner": "examples/time_series/time_series.py::addTimeQuantiles",
+        "fix_contract": (
+            "ensure the requested physical time branch through AliasDataFrame's "
+            "lazy-load API before direct pandas-frame access"),
+        "demonstrating_case_id": A5_3_CASE_ID,
+        "closure_gate": "real public --full --lazy --manifest --pdf --strict run",
+    }
 
 
-def run_a5_3_lazy_setup_error_contract(
-        case: CaseSpec, root_path: str, *, gallery_module=None) -> CaseResult:
-    """Require the exact current lazy/full timeMS setup refusal."""
-    _skip = _inapplicable(case)
-    if _skip is not None:
-        return _skip
-    t0 = time.time()
-    res = CaseResult(case_id=case.case_id, status=SKIP)
-    original_sample = None
-    try:
-        if case.case_id != A5_3_BLOCKER_CASE_ID:
-            res.status = INVALID_FIXTURE
-            res.detail = f"A5.3 blocker runner received unexpected case {case.case_id!r}"
-            return res
-        if (case.purpose != "ERROR_CONTRACT"
-                or case.gate != "ENVIRONMENT_GATED"
-                or case.loading_mode != "LAZY"
-                or case.sample_mode != "FULL"
-                or case.known_bug_id != A5_3_BLOCKER_BUG_ID):
-            res.status = INVALID_FIXTURE
-            res.detail = "A5.3 blocker runner requires exact ERROR_CONTRACT/LAZY/FULL bug identity"
-            return res
-
-        gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
-        env_status, why = _a5_2_environment_status(
-            root_path, gallery_module=gallery)
-        if env_status != A5_2_ENV_AVAILABLE:
-            res.status = INVALID_FIXTURE
-            res.detail = (
-                f"A5.3 environment/contract changed after CaseSpec creation "
-                f"({env_status}): {why}")
-            return res
-
-        import pandas as pd
-        sample_calls = []
-        original_sample = pd.DataFrame.sample
-
-        def forbidden_sample(self, *args, **kwargs):
-            sample_calls.append({"args": list(args), "kwargs": dict(kwargs)})
-            return original_sample(self, *args, **kwargs)
-
-        pd.DataFrame.sample = forbidden_sample
-        try:
-            try:
-                gallery.build_adf(
-                    root_path, sample=None, lazy=True,
-                    tree_name=case.canonical_spec["tree_name"])
-            except KeyError as exc:
-                if sample_calls:
-                    res.status = INVALID_FIXTURE
-                    res.detail = (
-                        "A5.3 setup sampled before expected timeMS refusal; "
-                        f"observed {len(sample_calls)} call(s)")
-                    return res
-                if tuple(exc.args) == (case.canonical_spec["expected_key"],):
-                    res.status = PASS
-                    res.detail = (
-                        f"refused as required by {A5_3_BLOCKER_BUG_ID}: "
-                        "KeyError('timeMS') before G7.32")
-                    res.observed["known_bug_evidence"] = {
-                        "bug_id": A5_3_BLOCKER_BUG_ID,
-                        "exception_type": "KeyError",
-                        "exception_key": "timeMS",
-                        "tree_name": case.canonical_spec["tree_name"],
-                        "loading_mode": "LAZY",
-                        "sample_mode": "FULL",
-                    }
-                    return res
-                res.status = FAIL
-                res.detail = (
-                    "A5.3 lazy setup raised KeyError, but not the owned "
-                    f"timeMS key: args={exc.args!r}")
-                return res
-            except Exception as exc:
-                res.status = FAIL
-                res.detail = (
-                    "A5.3 lazy setup failed outside the owned timeMS contract: "
-                    f"{type(exc).__name__}: {exc}")
-                res.exception = traceback.format_exc(limit=6)
-                return res
-        finally:
-            pd.DataFrame.sample = original_sample
-            original_sample = None
-
-        if sample_calls:
-            res.status = INVALID_FIXTURE
-            res.detail = "A5.3 LAZY/FULL setup unexpectedly sampled and then succeeded"
-            return res
-
-        res.status = FAIL
-        res.detail = (
-            f"{A5_3_BLOCKER_BUG_ID} unexpectedly disappeared: trusted lazy "
-            "build_adf succeeded; retire/update the error contract before "
-            "claiming A5.3 real-data coverage")
-        return res
-    finally:
-        if original_sample is not None:
-            try:
-                import pandas as pd
-                pd.DataFrame.sample = original_sample
-            except Exception:
-                pass
-        _close()
-        res.wall_time_s = round(time.time() - t0, 4)
+def lazy_full_deferral_reconciliation() -> list[dict]:
+    """Re-adjudicate A5.4/A5.5/A5.6 deferrals after the timeMS blocker closes."""
+    return [
+        {
+            "case_id": A5_4_CASE_ID,
+            "previous_reason": "LAZY/FULL deferred while the A5.3 timeMS blocker was open",
+            "disposition": "RE_ADJUDICATED",
+            "current_contract": (
+                "G7.33 LAZY/FULL execution is covered by the A6 full-lazy gallery gate; "
+                "its dedicated machine acceptance remains the deterministic EAGER/FRACTION "
+                "case, avoiding duplicate full-data oracle execution."),
+        },
+        {
+            "case_id": A5_5_CASE_ID,
+            "previous_reason": "LAZY/FULL deferred while the A5.3 timeMS blocker was open",
+            "disposition": "RE_ADJUDICATED",
+            "current_contract": (
+                "G7.34 LAZY/FULL execution is covered by the A6 full-lazy gallery gate; "
+                "the exact prepared-state reuse oracle remains EAGER/FRACTION and targeted "
+                "BOTH-mode tests cover loading-mode semantics without duplicating the full-data run."),
+        },
+        {
+            "case_id": A5_6_CASE_ID,
+            "previous_reason": "LAZY/FULL deferred while the A5.3 timeMS blocker was open",
+            "disposition": "RE_ADJUDICATED",
+            "current_contract": (
+                "G7.34 logical-state invariance remains an EAGER/FRACTION machine oracle; "
+                "the A6 full-lazy gallery proves real LAZY/FULL execution while targeted "
+                "EAGER/LAZY invariance tests cover loading-mode equivalence."),
+        },
+    ]
 
 
-def run_a5_3_realdata(case: CaseSpec, root_path: str, *, gallery_module=None) -> CaseResult:
-    """Execute the bounded A5.3 LAZY/FULL real-data G7.32 contract."""
+def run_a5_3_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
+                       prepared_adf: Any = None,
+                       prepared_provenance: dict | None = None) -> CaseResult:
+    """Execute the bounded A5.3 LAZY/FULL real-data G7.32 contract.
+
+    A6.4 may provide one already-built lazy ADF so the public full-data gate
+    reads the ROOT input only once.
+    """
     _skip = _inapplicable(case)
     if _skip is not None:
         return _skip
@@ -3098,27 +3013,39 @@ def run_a5_3_realdata(case: CaseSpec, root_path: str, *, gallery_module=None) ->
         import pandas as pd
 
         sample_calls = []
-        original_sample = pd.DataFrame.sample
+        if prepared_adf is None:
+            original_sample = pd.DataFrame.sample
 
-        def forbidden_sample(self, *args, **kwargs):
-            sample_calls.append({"args": list(args), "kwargs": dict(kwargs)})
-            return original_sample(self, *args, **kwargs)
+            def forbidden_sample(self, *args, **kwargs):
+                sample_calls.append({"args": list(args), "kwargs": dict(kwargs)})
+                return original_sample(self, *args, **kwargs)
 
-        pd.DataFrame.sample = forbidden_sample
-        try:
-            adf = gallery.build_adf(
-                root_path, sample=None, lazy=True,
-                tree_name=case.canonical_spec["tree_name"])
-        finally:
-            pd.DataFrame.sample = original_sample
-            original_sample = None
+            pd.DataFrame.sample = forbidden_sample
+            try:
+                adf = gallery.build_adf(
+                    root_path, sample=None, lazy=True,
+                    tree_name=case.canonical_spec["tree_name"])
+            finally:
+                pd.DataFrame.sample = original_sample
+                original_sample = None
 
-        if sample_calls:
-            res.status = INVALID_FIXTURE
-            res.detail = (
-                "A5.3 LAZY/FULL build unexpectedly called pandas.DataFrame.sample; "
-                f"observed {len(sample_calls)} call(s)")
-            return res
+            if sample_calls:
+                res.status = INVALID_FIXTURE
+                res.detail = (
+                    "A5.3 LAZY/FULL build unexpectedly called pandas.DataFrame.sample; "
+                    f"observed {len(sample_calls)} call(s)")
+                return res
+        else:
+            adf = prepared_adf
+            if not isinstance(prepared_provenance, dict):
+                res.status = INVALID_FIXTURE
+                res.detail = "A5.3 prepared LAZY/FULL ADF is missing provenance"
+                return res
+            if (prepared_provenance.get("loading_mode") != "LAZY"
+                    or prepared_provenance.get("sample_mode") != "FULL"):
+                res.status = INVALID_FIXTURE
+                res.detail = "A5.3 prepared ADF has wrong loading/sample mode"
+                return res
 
         loaded_before = _a5_3_loaded_branches(adf)
         if loaded_before is None:
@@ -3195,7 +3122,7 @@ def run_a5_3_realdata(case: CaseSpec, root_path: str, *, gallery_module=None) ->
 
         st = os.stat(root_path)
         res.payload_paths = {"G7.32/draw": list(payload.path)}
-        res.observed["realdata_provenance"] = {
+        provenance = {
             "input_path": os.path.abspath(root_path),
             "input_size_bytes": int(st.st_size),
             "input_mtime_ns": int(st.st_mtime_ns),
@@ -3209,6 +3136,12 @@ def run_a5_3_realdata(case: CaseSpec, root_path: str, *, gallery_module=None) ->
             "lazy_loaded_after": list(loaded_after),
             "lazy_newly_loaded": list(newly_loaded),
         }
+        if isinstance(prepared_provenance, dict):
+            provenance.update(dict(prepared_provenance))
+            provenance["lazy_loaded_before"] = list(loaded_before)
+            provenance["lazy_loaded_after"] = list(loaded_after)
+            provenance["lazy_newly_loaded"] = list(newly_loaded)
+        res.observed["realdata_provenance"] = provenance
         res.observed["g7_32_evidence"] = {
             "gallery_function": A5_2_GALLERY_FUNCTION,
             "calibvertex_subframe_registered": True,
@@ -3237,14 +3170,15 @@ def run_a5_3_realdata(case: CaseSpec, root_path: str, *, gallery_module=None) ->
 
 def run_a5_3_realdata_gate(root_path: str, *, manifest_path: str,
                            gallery_module=None) -> tuple[CaseResult, dict, int]:
-    """Run the current real-data A5.3 fail-closed lazy-setup boundary."""
-    case = a5_3_lazy_setup_error_case(
-        root_path, gallery_module=gallery_module)
-    result = run_a5_3_lazy_setup_error_contract(
+    """Run the positive real-data A5.3 LAZY/FULL regression gate."""
+    case = a5_3_realdata_case(root_path, gallery_module=gallery_module)
+    result = run_a5_3_realdata(
         case, root_path, gallery_module=gallery_module)
-    extra = {}
-    if isinstance(result.observed.get("known_bug_evidence"), dict):
-        extra.update(result.observed["known_bug_evidence"])
+    extra = {
+        "a5_3_blocker_transition": a5_3_blocker_resolution_record(),
+    }
+    if isinstance(result.observed.get("realdata_provenance"), dict):
+        extra.update(result.observed["realdata_provenance"])
     doc = write_manifest(manifest_path, [result], [case], extra=extra)
     return result, doc, strict_exit_code([result], [case])
 
@@ -5382,7 +5316,7 @@ def a5_4_realdata_case(root_path: str, gallery_module=None) -> CaseSpec:
         non_claims=(
             "A5.4 is execution/GB-composition coverage, not independent calibBiasResolution correctness",
             "G7.34 sector reuse is a later bounded increment",
-            "real LAZY/FULL G7.33 is not claimed while A5.3's lazy timeMS blocker remains open",
+            "real LAZY/FULL G7.33 execution is re-adjudicated at A6 through the full-lazy gallery gate; this A5.4 machine case remains the deterministic EAGER/FRACTION oracle",
             "the 10% internal calibBiasResolution fit subsample is trusted workflow behavior, not the A5.4 input-sampling contract",
         ),
         negative_control="FAMILY_MUTATION:A5.4-GB-PREDICTED-NONFINITE-MUST-FAIL",
@@ -5484,7 +5418,9 @@ def _a5_4_public_numeric_evidence(stats: Any) -> dict:
 
 def run_a5_4_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
                        sample_fraction: float = A5_2_SAMPLE_FRACTION,
-                       seed: int = A5_2_SAMPLE_SEED) -> CaseResult:
+                       seed: int = A5_2_SAMPLE_SEED,
+                       prepared_adf: Any = None,
+                       prepared_provenance: dict | None = None) -> CaseResult:
     """Execute the bounded EAGER/FRACTION real G7.33 GB acceptance case."""
     _skip = _inapplicable(case)
     if _skip is not None:
@@ -5522,28 +5458,33 @@ def run_a5_4_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
         gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
 
         sample_observed = []
-        original_sample = pd.DataFrame.sample
+        if prepared_adf is None:
+            original_sample = pd.DataFrame.sample
 
-        def observed_sample(self, *args, **kwargs):
-            frac = kwargs.get("frac")
-            random_state = kwargs.get("random_state")
-            out = original_sample(self, *args, **kwargs)
-            if frac == A5_2_SAMPLE_FRACTION and random_state == A5_2_SAMPLE_SEED:
-                sample_observed.append({
-                    "source_rows": int(len(self)),
-                    "selected_rows": int(len(out)),
-                    "index_digest_sha256": _a5_2_index_digest(out.index),
-                    "index_dtype": str(out.index.dtype),
-                })
-            return out
+            def observed_sample(self, *args, **kwargs):
+                frac = kwargs.get("frac")
+                random_state = kwargs.get("random_state")
+                out = original_sample(self, *args, **kwargs)
+                if frac == A5_2_SAMPLE_FRACTION and random_state == A5_2_SAMPLE_SEED:
+                    sample_observed.append({
+                        "source_rows": int(len(self)),
+                        "selected_rows": int(len(out)),
+                        "index_digest_sha256": _a5_2_index_digest(out.index),
+                        "index_dtype": str(out.index.dtype),
+                    })
+                return out
 
-        pd.DataFrame.sample = observed_sample
-        try:
-            adf = gallery.build_adf(
-                root_path, sample=A5_2_SAMPLE_FRACTION, lazy=False)
-        finally:
-            pd.DataFrame.sample = original_sample
-            original_sample = None
+            pd.DataFrame.sample = observed_sample
+            try:
+                adf = gallery.build_adf(
+                    root_path, sample=A5_2_SAMPLE_FRACTION, lazy=False)
+            finally:
+                pd.DataFrame.sample = original_sample
+                original_sample = None
+        else:
+            adf = prepared_adf
+            sample_observed.append(_a6_4_prepared_fraction_sample_evidence(
+                adf, prepared_provenance, root_path))
 
         if len(sample_observed) != 1:
             res.status = INVALID_FIXTURE
@@ -5780,7 +5721,7 @@ def a5_5_realdata_case(root_path: str, gallery_module=None) -> CaseSpec:
         non_claims=(
             "A5.5 is reuse/state-invariance coverage for CalibBias1 and dcar_tpc_vertex_predicted0, not independent GB-fit correctness or whole-ADF non-mutation",
             "the poison covers only the time_series_draw module-global calibBiasResolution binding; a refit routed through a function-local import or lower-level fitting primitive is outside this tripwire",
-            "real LAZY/FULL G7.34 is not claimed while the A5.3 timeMS blocker remains open",
+            "real LAZY/FULL G7.34 execution is re-adjudicated at A6 through the full-lazy gallery gate; this A5.5 machine state-reuse oracle remains EAGER/FRACTION",
             "the known eager root_to_adf/read_tree signature defect is recorded but not fixed here",
         ),
         negative_control="FAMILY_MUTATION:A5.5-REFIT-OR-STATE-MUTATION-MUST-FAIL",
@@ -5788,7 +5729,9 @@ def a5_5_realdata_case(root_path: str, gallery_module=None) -> CaseSpec:
     )
 
 
-def run_a5_5_realdata(case: CaseSpec, root_path: str, *, gallery_module=None) -> CaseResult:
+def run_a5_5_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
+                       prepared_adf: Any = None,
+                       prepared_provenance: dict | None = None) -> CaseResult:
     _skip = _inapplicable(case)
     if _skip is not None:
         return _skip
@@ -5829,28 +5772,33 @@ def run_a5_5_realdata(case: CaseSpec, root_path: str, *, gallery_module=None) ->
         gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
 
         sample_observed = []
-        original_sample = pd.DataFrame.sample
+        if prepared_adf is None:
+            original_sample = pd.DataFrame.sample
 
-        def observed_sample(self, *args, **kwargs):
-            frac = kwargs.get("frac")
-            random_state = kwargs.get("random_state")
-            out = original_sample(self, *args, **kwargs)
-            if frac == A5_2_SAMPLE_FRACTION and random_state == A5_2_SAMPLE_SEED:
-                sample_observed.append({
-                    "source_rows": int(len(self)),
-                    "selected_rows": int(len(out)),
-                    "index_digest_sha256": _a5_2_index_digest(out.index),
-                    "index_dtype": str(out.index.dtype),
-                })
-            return out
+            def observed_sample(self, *args, **kwargs):
+                frac = kwargs.get("frac")
+                random_state = kwargs.get("random_state")
+                out = original_sample(self, *args, **kwargs)
+                if frac == A5_2_SAMPLE_FRACTION and random_state == A5_2_SAMPLE_SEED:
+                    sample_observed.append({
+                        "source_rows": int(len(self)),
+                        "selected_rows": int(len(out)),
+                        "index_digest_sha256": _a5_2_index_digest(out.index),
+                        "index_dtype": str(out.index.dtype),
+                    })
+                return out
 
-        pd.DataFrame.sample = observed_sample
-        try:
-            adf = gallery.build_adf(
-                root_path, sample=A5_2_SAMPLE_FRACTION, lazy=False)
-        finally:
-            pd.DataFrame.sample = original_sample
-            original_sample = None
+            pd.DataFrame.sample = observed_sample
+            try:
+                adf = gallery.build_adf(
+                    root_path, sample=A5_2_SAMPLE_FRACTION, lazy=False)
+            finally:
+                pd.DataFrame.sample = original_sample
+                original_sample = None
+        else:
+            adf = prepared_adf
+            sample_observed.append(_a6_4_prepared_fraction_sample_evidence(
+                adf, prepared_provenance, root_path))
 
         if len(sample_observed) != 1:
             res.status = INVALID_FIXTURE
@@ -6190,14 +6138,16 @@ def a5_6_realdata_case(root_path: str, gallery_module=None) -> CaseSpec:
             "the public definition digest removes only __meta__.created_at because it is regenerated by each export call and is not logical state",
             "the definition digest is a same-process comparison and is not an A6 cross-version immutable reference",
             "the poison covers only the time_series_draw module-global calibBiasResolution binding",
-            "real LAZY/FULL G7.34 remains outside scope while the A5.3 timeMS blocker is open",
+            "real LAZY/FULL G7.34 execution is re-adjudicated at A6 through the full-lazy gallery gate; this A5.6 logical-state oracle remains EAGER/FRACTION",
         ),
         negative_control="FAMILY_MUTATION:A5.6-LOGICAL-DEFINITION-OR-STRUCTURE-MUTATION-MUST-FAIL",
         reference_policy="same-process",
     )
 
 
-def run_a5_6_realdata(case: CaseSpec, root_path: str, *, gallery_module=None) -> CaseResult:
+def run_a5_6_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
+                       prepared_adf: Any = None,
+                       prepared_provenance: dict | None = None) -> CaseResult:
     _skip = _inapplicable(case)
     if _skip is not None:
         return _skip
@@ -6238,28 +6188,33 @@ def run_a5_6_realdata(case: CaseSpec, root_path: str, *, gallery_module=None) ->
         gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
 
         sample_observed = []
-        original_sample = pd.DataFrame.sample
+        if prepared_adf is None:
+            original_sample = pd.DataFrame.sample
 
-        def observed_sample(self, *args, **kwargs):
-            frac = kwargs.get("frac")
-            random_state = kwargs.get("random_state")
-            out = original_sample(self, *args, **kwargs)
-            if frac == A5_2_SAMPLE_FRACTION and random_state == A5_2_SAMPLE_SEED:
-                sample_observed.append({
-                    "source_rows": int(len(self)),
-                    "selected_rows": int(len(out)),
-                    "index_digest_sha256": _a5_2_index_digest(out.index),
-                    "index_dtype": str(out.index.dtype),
-                })
-            return out
+            def observed_sample(self, *args, **kwargs):
+                frac = kwargs.get("frac")
+                random_state = kwargs.get("random_state")
+                out = original_sample(self, *args, **kwargs)
+                if frac == A5_2_SAMPLE_FRACTION and random_state == A5_2_SAMPLE_SEED:
+                    sample_observed.append({
+                        "source_rows": int(len(self)),
+                        "selected_rows": int(len(out)),
+                        "index_digest_sha256": _a5_2_index_digest(out.index),
+                        "index_dtype": str(out.index.dtype),
+                    })
+                return out
 
-        pd.DataFrame.sample = observed_sample
-        try:
-            adf = gallery.build_adf(
-                root_path, sample=A5_2_SAMPLE_FRACTION, lazy=False)
-        finally:
-            pd.DataFrame.sample = original_sample
-            original_sample = None
+            pd.DataFrame.sample = observed_sample
+            try:
+                adf = gallery.build_adf(
+                    root_path, sample=A5_2_SAMPLE_FRACTION, lazy=False)
+            finally:
+                pd.DataFrame.sample = original_sample
+                original_sample = None
+        else:
+            adf = prepared_adf
+            sample_observed.append(_a6_4_prepared_fraction_sample_evidence(
+                adf, prepared_provenance, root_path))
 
         if len(sample_observed) != 1:
             res.status = INVALID_FIXTURE
@@ -6581,6 +6536,8 @@ def stage_a_closure_metadata(gallery_module=None) -> dict:
     return {
         "gallery_dispositions": gallery_disposition_table(gallery_module),
         "numerical_oracle": numerical_oracle_closure_record(),
+        "a5_3_blocker_transition": a5_3_blocker_resolution_record(),
+        "lazy_full_deferral_reconciliation": lazy_full_deferral_reconciliation(),
     }
 
 
@@ -6627,18 +6584,32 @@ def write_stage_a_pdf(adf: Any, path: str, *, root_path: str,
     errors = []
     skipped = []
     n_pages = 0
+    perf_logger = getattr(gallery, "logger", None)
+    perf_log = getattr(perf_logger, "log", None)
+    required_names = {fn.__name__ for fn in gallery.FIGURES_MANDATORY}
+    required_names.update(
+        fn.__name__ for fn in gallery.FIGURES_OPTIONAL
+        if dispositions[fn.__name__]["disposition"] == "REUSED_CORE")
+    # fig26 contributes its normal figure plus the fit-summary table page.
+    expected_page_count = len(required_names) + (1 if "fig26_summary_fit" in required_names else 0)
+
     with gallery.PdfPages(path) as pdf:
         for mandatory, funcs in ((True, gallery.FIGURES_MANDATORY),
                                  (False, gallery.FIGURES_OPTIONAL)):
             for fn in funcs:
                 name = fn.__name__
                 title = (fn.__doc__ or name).splitlines()[0].strip()
+                disposition = dispositions[name]["disposition"]
+                required = bool(mandatory or disposition == "REUSED_CORE")
+                if callable(perf_log):
+                    perf_log(f"{name} : BEGIN")
                 try:
                     result = fn(adf)
                     if result is None:
-                        if mandatory:
+                        if required:
                             raise HarnessError(
-                                f"mandatory gallery function {name} returned None")
+                                f"required gallery function {name} returned None "
+                                f"(disposition={disposition})")
                         skipped.append({"gallery_function": name, "reason": "returned None"})
                         continue
                     fig = result[0] if isinstance(result, tuple) else result
@@ -6654,17 +6625,21 @@ def write_stage_a_pdf(adf: Any, path: str, *, root_path: str,
                     _annotate_stage_a_figure(fig, annotation)
                     gallery._add(pdf, fig, title)
                     n_pages += 1
-                    if name == "fig26_summary_fit" and isinstance(result, tuple) \
-                            and len(result) > 2 and isinstance(result[2], dict):
-                        tbl = result[2].get("summary_fit", {}).get("table")
-                        if tbl is not None:
-                            _annotate_stage_a_figure(
-                                tbl, "GALLERY DISPOSITION: REUSED_VISUAL\n"
-                                     "REASON: fit-summary table from trusted fig26")
-                            gallery._add(pdf, tbl, title + " — fit table")
-                            n_pages += 1
+                    if name == "fig26_summary_fit":
+                        tbl = None
+                        if isinstance(result, tuple) and len(result) > 2 \
+                                and isinstance(result[2], dict):
+                            tbl = result[2].get("summary_fit", {}).get("table")
+                        if tbl is None:
+                            raise HarnessError(
+                                "required fig26 fit-summary table page is missing")
+                        _annotate_stage_a_figure(
+                            tbl, "GALLERY DISPOSITION: REUSED_VISUAL\n"
+                                 "REASON: fit-summary table from trusted fig26")
+                        gallery._add(pdf, tbl, title + " — fit table")
+                        n_pages += 1
                 except Exception as exc:
-                    if mandatory:
+                    if required:
                         errors.append({"gallery_function": name,
                                        "error": f"{type(exc).__name__}: {exc}"})
                     else:
@@ -6675,17 +6650,29 @@ def write_stage_a_pdf(adf: Any, path: str, *, root_path: str,
                         plt.close("all")
                     except Exception:
                         pass
+                finally:
+                    if callable(perf_log):
+                        perf_log(f"{name} : END")
+
+    if n_pages != expected_page_count:
+        errors.append({
+            "gallery_function": "__page_count__",
+            "error": (f"Stage-A gallery produced {n_pages} pages; "
+                      f"expected exactly {expected_page_count}"),
+        })
     return {
         "ok": not errors,
         "pdf_path": os.path.abspath(path),
         "page_count": n_pages,
+        "expected_page_count": expected_page_count,
+        "required_gallery_functions": sorted(required_names),
         "errors": errors,
         "skipped": skipped,
         "gallery_dispositions": list(dispositions.values()),
     }
 
 
-def _a6_3_visual_case(*, sample_mode: str) -> CaseSpec:
+def _a6_3_visual_case(*, sample_mode: str, loading_mode: str = "EAGER") -> CaseSpec:
     label = "20PCT" if sample_mode == "FRACTION" else "FULL"
     return CaseSpec(
         case_id=f"A6-VISUAL-GALLERY-{label}-01",
@@ -6701,7 +6688,7 @@ def _a6_3_visual_case(*, sample_mode: str) -> CaseSpec:
         purpose="COVERAGE",
         gate="ENVIRONMENT_GATED",
         oracle_kind="CONSISTENCY",
-        loading_mode="EAGER",
+        loading_mode=loading_mode,
         sample_mode=sample_mode,
         canonical_spec={"gallery": "time_series_draw", "pdf": True},
         applicable=True,
@@ -6715,7 +6702,8 @@ def _a6_3_visual_case(*, sample_mode: str) -> CaseSpec:
 
 
 def _run_a6_3_visual_case(case: CaseSpec, root_path: str, *, pdf_path: str,
-                          gallery_module=None, sample_fraction: float | None = None) -> CaseResult:
+                          gallery_module=None, sample_fraction: float | None = None,
+                          lazy: bool = False, prepared_adf: Any = None) -> CaseResult:
     t0 = time.time()
     res = CaseResult(case_id=case.case_id, status=SKIP)
     try:
@@ -6723,9 +6711,21 @@ def _run_a6_3_visual_case(case: CaseSpec, root_path: str, *, pdf_path: str,
         build = getattr(gallery, "build_adf", None)
         if not callable(build):
             raise HarnessError("time_series_draw missing callable build_adf")
-        adf = build(root_path, sample=sample_fraction, lazy=False)
+        if prepared_adf is None:
+            build_kwargs = {"sample": sample_fraction, "lazy": bool(lazy)}
+            if lazy:
+                build_kwargs["tree_name"] = A5_3_TREE_NAME
+            adf = build(root_path, **build_kwargs)
+        else:
+            adf = prepared_adf
+        lazy_before = _a5_3_loaded_branches(adf) if lazy else None
         evidence = write_stage_a_pdf(
             adf, pdf_path, root_path=root_path, gallery_module=gallery)
+        if lazy:
+            lazy_after = _a5_3_loaded_branches(adf)
+            evidence["lazy_loaded_branches_before_gallery"] = list(lazy_before or ())
+            evidence["lazy_loaded_branches_after_gallery"] = list(lazy_after or ())
+            evidence["lazy_loaded_branch_count"] = len(lazy_after or ())
         res.observed["visual_evidence"] = evidence
         if not evidence["ok"]:
             res.status = FAIL
@@ -6740,6 +6740,95 @@ def _run_a6_3_visual_case(case: CaseSpec, root_path: str, *, pdf_path: str,
         return res
     finally:
         res.wall_time_s = round(time.time() - t0, 4)
+
+
+
+def _a6_4_prepared_fraction_sample_evidence(
+        adf: Any, provenance: dict | None, root_path: str) -> dict:
+    """Validate one shared EAGER/FRACTION build before an A5 runner reuses it."""
+    if not isinstance(provenance, dict):
+        raise HarnessError("shared Stage-A FRACTION build is missing provenance")
+    required = (
+        "input_path", "input_size_bytes", "input_mtime_ns", "loading_mode",
+        "sample_mode", "sample_fraction", "sample_seed", "sampling_algorithm",
+        "source_rows", "selected_rows", "index_digest_sha256", "index_dtype",
+    )
+    missing = [key for key in required if key not in provenance]
+    if missing:
+        raise HarnessError(
+            "shared Stage-A FRACTION provenance missing: " + ", ".join(missing))
+    if os.path.abspath(str(provenance["input_path"])) != os.path.abspath(root_path):
+        raise HarnessError("shared Stage-A FRACTION input_path mismatch")
+    if provenance["loading_mode"] != "EAGER" or provenance["sample_mode"] != "FRACTION":
+        raise HarnessError("shared Stage-A FRACTION build has wrong loading/sample mode")
+    if (float(provenance["sample_fraction"]) != A5_2_SAMPLE_FRACTION
+            or int(provenance["sample_seed"]) != A5_2_SAMPLE_SEED):
+        raise HarnessError("shared Stage-A FRACTION build has wrong fraction/seed")
+    if not hasattr(adf, "df") or int(len(adf.df)) != int(provenance["selected_rows"]):
+        raise HarnessError("shared Stage-A FRACTION row count disagrees with provenance")
+    if getattr(adf, "_lazy_reader", None) is not None:
+        raise HarnessError("shared Stage-A FRACTION build unexpectedly has a lazy reader")
+    if not str(provenance["index_digest_sha256"]):
+        raise HarnessError("shared Stage-A FRACTION provenance has empty index digest")
+    return {
+        "source_rows": int(provenance["source_rows"]),
+        "selected_rows": int(provenance["selected_rows"]),
+        "index_digest_sha256": str(provenance["index_digest_sha256"]),
+        "index_dtype": str(provenance["index_dtype"]),
+    }
+
+
+def _a6_4_build_fraction_adf_once(root_path: str, *, gallery_module=None) -> tuple[Any, dict]:
+    """Build the canonical EAGER 20% ADF exactly once for the whole A6 gate."""
+    import pandas as pd
+
+    gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+    build = getattr(gallery, "build_adf", None)
+    if not callable(build):
+        raise HarnessError("time_series_draw missing callable build_adf")
+
+    sample_calls = []
+    original_sample = pd.DataFrame.sample
+
+    def recording_sample(self, *args, **kwargs):
+        out = original_sample(self, *args, **kwargs)
+        if (kwargs.get("frac") == A5_2_SAMPLE_FRACTION
+                and kwargs.get("random_state") == A5_2_SAMPLE_SEED):
+            sample_calls.append({
+                "source_rows": int(len(self)),
+                "selected_rows": int(len(out)),
+                "index_digest_sha256": _a5_2_index_digest(out.index),
+                "index_dtype": str(out.index.dtype),
+            })
+        return out
+
+    pd.DataFrame.sample = recording_sample
+    try:
+        adf = build(root_path, sample=A5_2_SAMPLE_FRACTION, lazy=False)
+    finally:
+        pd.DataFrame.sample = original_sample
+
+    if len(sample_calls) != 1:
+        raise HarnessError(
+            "shared Stage-A FRACTION build expected exactly one canonical sample call; "
+            f"observed {len(sample_calls)}")
+    sample = sample_calls[0]
+    if not hasattr(adf, "df") or len(adf.df) != sample["selected_rows"]:
+        raise HarnessError("shared Stage-A FRACTION build row count mismatch")
+    st = os.stat(root_path)
+    provenance = {
+        "input_path": os.path.abspath(root_path),
+        "input_size_bytes": int(st.st_size),
+        "input_mtime_ns": int(st.st_mtime_ns),
+        "loading_mode": "EAGER",
+        "sample_mode": "FRACTION",
+        "sample_fraction": A5_2_SAMPLE_FRACTION,
+        "sample_seed": A5_2_SAMPLE_SEED,
+        "sampling_algorithm": (
+            "pandas.DataFrame.sample(frac=0.20, random_state=42) observed at runtime"),
+        **sample,
+    }
+    return adf, provenance
 
 
 def _a6_3_fraction_cases(root_path: str, gallery_module=None) -> tuple[CaseSpec, ...]:
@@ -6769,50 +6858,174 @@ def _shared_fraction_provenance(results: Sequence[CaseResult]) -> dict:
 
 def run_stage_a_fraction_gate(root_path: str, *, manifest_path: str, pdf_path: str,
                               gallery_module=None) -> tuple[list[CaseResult], dict, int]:
-    """Execute the existing deterministic 20% A5 real-data owners as one A6 gate."""
+    """Execute the deterministic 20% A6 gate from one shared ADF construction."""
     gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+    adf, provenance_doc = _a6_4_build_fraction_adf_once(
+        root_path, gallery_module=gallery)
     cases = list(_a6_3_fraction_cases(root_path, gallery_module=gallery))
     runners = (run_a5_2_realdata, run_a5_4_realdata,
                run_a5_5_realdata, run_a5_6_realdata)
-    results = [runner(case, root_path, gallery_module=gallery)
-               for runner, case in zip(runners, cases)]
-    provenance_doc = _shared_fraction_provenance(results)
-    visual_case = _a6_3_visual_case(sample_mode="FRACTION")
+    results = [
+        runner(
+            case, root_path, gallery_module=gallery,
+            prepared_adf=adf, prepared_provenance=provenance_doc)
+        for runner, case in zip(runners, cases)
+    ]
+    # Every case must report the same shared input/sample identity.
+    _shared_fraction_provenance(results)
+    visual_case = _a6_3_visual_case(sample_mode="FRACTION", loading_mode="EAGER")
     visual_result = _run_a6_3_visual_case(
         visual_case, root_path, pdf_path=pdf_path, gallery_module=gallery,
-        sample_fraction=A5_2_SAMPLE_FRACTION)
+        sample_fraction=A5_2_SAMPLE_FRACTION, prepared_adf=adf)
     cases.append(visual_case)
     results.append(visual_result)
     extra = {
         **provenance_doc,
         "stage_a_gate": "FRACTION_20PCT",
+        "stage_a_execution": {
+            "adf_build_count": 1,
+            "adf_reused_across_cases": True,
+        },
         "stage_a_closure": stage_a_closure_metadata(gallery),
     }
     doc = write_manifest(manifest_path, results, cases, extra=extra)
     return results, doc, strict_exit_code(results, cases)
 
 
-def run_stage_a_full_gallery_gate(root_path: str, *, manifest_path: str, pdf_path: str,
-                                  gallery_module=None) -> tuple[list[CaseResult], dict, int]:
-    """Run the trusted full-data gallery as strict human/coverage evidence.
 
-    Full-data machine-reference acceptance remains an A6-FINAL decision; this
-    gate deliberately uses ``same-process`` reference policy and cannot create
-    a persistent named reference.
+def _a6_4_build_lazy_adf_once(root_path: str, *, gallery_module=None) -> tuple[Any, dict]:
+    """Build the canonical real-data FULL+LAZY ADF once and prove it stayed lazy.
+
+    This is the public-path guard against an eager/full-column fallback.  It does
+    not require an exact minimal branch set, only a live lazy reader, no pandas
+    sampling, the required ``timeMS`` setup branch loaded through the lazy API,
+    and a strict subset of the available physical branches resident after setup.
+    """
+    import pandas as pd
+
+    gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+    build = getattr(gallery, "build_adf", None)
+    if not callable(build):
+        raise HarnessError("time_series_draw missing callable build_adf")
+
+    sample_calls = []
+    original_sample = pd.DataFrame.sample
+
+    def forbidden_sample(self, *args, **kwargs):
+        sample_calls.append({"args": list(args), "kwargs": dict(kwargs)})
+        return original_sample(self, *args, **kwargs)
+
+    pd.DataFrame.sample = forbidden_sample
+    try:
+        adf = build(root_path, sample=None, lazy=True, tree_name=A5_3_TREE_NAME)
+    finally:
+        pd.DataFrame.sample = original_sample
+
+    if sample_calls:
+        raise HarnessError(
+            "FULL+LAZY build unexpectedly called pandas.DataFrame.sample")
+
+    reader = getattr(adf, "_lazy_reader", None)
+    if reader is None:
+        raise HarnessError("FULL+LAZY build has no live _lazy_reader (eager fallback)")
+    loaded = set(getattr(reader, "loaded_branches", ()) or ())
+    available = set(getattr(reader, "available_branches", ()) or ())
+    if not available:
+        raise HarnessError("FULL+LAZY lazy reader exposes no available_branches evidence")
+    if "timeMS" not in loaded:
+        raise HarnessError(
+            "FULL+LAZY setup did not materialize required timeMS through the lazy reader")
+    if "ncl" in loaded:
+        raise HarnessError(
+            "FULL+LAZY setup preloaded figure-only branch ncl; lazy setup is too eager")
+    if len(loaded) >= len(available):
+        raise HarnessError(
+            "FULL+LAZY setup materialized every available branch (eager/full-column fallback)")
+
+    st = os.stat(root_path)
+    provenance = {
+        "input_path": os.path.abspath(root_path),
+        "input_size_bytes": int(st.st_size),
+        "input_mtime_ns": int(st.st_mtime_ns),
+        "loading_mode": "LAZY",
+        "sample_mode": "FULL",
+        "sample_fraction": None,
+        "sample_seed": None,
+        "tree_name": A5_3_TREE_NAME,
+        "source_rows": int(len(adf.df)),
+        "lazy_reader_present": True,
+        "eager_fallback": False,
+        "lazy_available_branch_count": len(available),
+        "lazy_loaded_branch_count_after_setup": len(loaded),
+        "lazy_loaded_branches_after_setup": sorted(str(x) for x in loaded),
+    }
+    return adf, provenance
+
+
+def run_stage_a_full_gallery_gate(root_path: str, *, manifest_path: str, pdf_path: str,
+                                  gallery_module=None, lazy: bool = False
+                                  ) -> tuple[list[CaseResult], dict, int]:
+    """Run the trusted full-data gallery from one ADF construction.
+
+    The closure-critical real-data full path is ``lazy=True``.  It proves a
+    live lazy reader and rejects eager/full-column fallback before rendering.
+    Real-data EAGER+FULL remains available as a diagnostic but is not part of
+    the required A6 acceptance matrix.
     """
     gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
-    case = _a6_3_visual_case(sample_mode="FULL")
+    loading_mode = "LAZY" if lazy else "EAGER"
+    provenance = {}
+    prepared_adf = None
+    case = _a6_3_visual_case(sample_mode="FULL", loading_mode=loading_mode)
+    if lazy:
+        try:
+            prepared_adf, provenance = _a6_4_build_lazy_adf_once(
+                root_path, gallery_module=gallery)
+        except Exception as exc:
+            result = CaseResult(case_id=case.case_id, status=FAIL)
+            result.detail = f"{type(exc).__name__}: {exc}"
+            result.exception = traceback.format_exc(limit=8)
+            doc = write_manifest(
+                manifest_path, [result], [case],
+                extra={
+                    "loading_mode": "LAZY",
+                    "sample_mode": "FULL",
+                    "stage_a_gate": "FULL_GALLERY_LAZY",
+                    "stage_a_execution": {
+                        "adf_build_count": 1,
+                        "adf_reused_across_cases": True,
+                        "public_entrypoint": (
+                            "examples/time_series/time_series_draw_invariance.py "
+                            "--full --lazy --manifest <path> --pdf <path> --strict"),
+                        "failure_manifest_persisted": True,
+                    },
+                    "a5_3_blocker_transition": a5_3_blocker_resolution_record(),
+                })
+            return [result], doc, strict_exit_code([result], [case])
+
     result = _run_a6_3_visual_case(
         case, root_path, pdf_path=pdf_path, gallery_module=gallery,
-        sample_fraction=None)
-    doc = write_manifest(
-        manifest_path, [result], [case],
-        extra={
-            "loading_mode": "EAGER",
-            "sample_mode": "FULL",
-            "stage_a_gate": "FULL_GALLERY",
-            "stage_a_closure": stage_a_closure_metadata(gallery),
-        })
+        sample_fraction=None, lazy=lazy, prepared_adf=prepared_adf)
+    if lazy and isinstance(result.observed.get("visual_evidence"), dict):
+        result.observed["visual_evidence"]["lazy_setup_provenance"] = dict(provenance)
+
+    extra = {
+        **provenance,
+        "loading_mode": loading_mode,
+        "sample_mode": "FULL",
+        "stage_a_gate": f"FULL_GALLERY_{loading_mode}",
+        "stage_a_execution": {
+            "adf_build_count": 1,
+            "adf_reused_across_cases": True,
+            "public_entrypoint": (
+                "examples/time_series/time_series_draw_invariance.py "
+                "--full --lazy --manifest <path> --pdf <path> --strict"
+                if lazy else
+                "examples/time_series/time_series_draw_invariance.py --full ..."),
+        },
+        "stage_a_closure": stage_a_closure_metadata(gallery),
+    }
+    doc = write_manifest(manifest_path, [result], [case], extra=extra)
     return [result], doc, strict_exit_code([result], [case])
 
 
@@ -6827,6 +7040,9 @@ def build_stage_a_cli_parser():
     mode.add_argument("--sample", type=float)
     mode.add_argument("--full", action="store_true")
     mode.add_argument("--validate-lazy-eager", action="store_true")
+    parser.add_argument(
+        "--lazy", action="store_true",
+        help="with --full, use the existing unsampled lazy loader (read branches on demand)")
     parser.add_argument("--seed", type=int, default=A5_2_SAMPLE_SEED)
     parser.add_argument("--manifest")
     parser.add_argument("--pdf")
@@ -6864,6 +7080,8 @@ def stage_a_cli_main(argv: Sequence[str] | None = None, *, gallery_module=None) 
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
         gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+        if args.lazy and not args.full:
+            raise HarnessError("--lazy is supported only together with --full")
         if args.validate_lazy_eager:
             if any((args.compare, args.accept_reference, args.update_reference,
                     args.previous_reference)):
@@ -6889,7 +7107,7 @@ def stage_a_cli_main(argv: Sequence[str] | None = None, *, gallery_module=None) 
                     "persistent named-reference operations require the canonical 20% FRACTION gate")
             results, manifest, gate_code = run_stage_a_full_gallery_gate(
                 args.root_path, manifest_path=args.manifest, pdf_path=args.pdf,
-                gallery_module=gallery)
+                gallery_module=gallery, lazy=args.lazy)
 
         if args.compare:
             compare_manifest_to_named_reference(manifest, args.compare)

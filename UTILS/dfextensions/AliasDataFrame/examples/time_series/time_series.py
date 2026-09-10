@@ -490,6 +490,13 @@ def addTimeQuantiles(adf, varname="timeMS", step=10000, step2=100):
     :return:        adf with bin columns and TimeQuantiles subframe registered
     """
     logger.log(f"addTimeQuantiles::BEGIN varname={varname} step={step} step2={step2} tracks={len(adf.df):,}")
+    # PHASE_13_77 A6.4: addTimeQuantiles is a consumer of ``varname``.  In a
+    # lazy ADF, direct ``adf.df[varname]`` bypasses AliasDataFrame's lazy-load
+    # boundary, so ensure the physical branch explicitly before pandas access.
+    # Eager ADFs simply validate that the branch is already present.
+    ensure = getattr(adf, "ensure_branches", None)
+    if callable(ensure):
+        ensure([varname])
     n        = len(adf.df)
     n_bins   = max(1, round(n / step))
     sorted_idx              = np.argsort(adf.df[varname].values, kind="stable")
@@ -627,6 +634,12 @@ def calibVertex(adf,qaPlots=False):
     :param adf: AliasDataFrame with vertex_* columns and quantile_bin assigned
     :return:    adf with CalibVertex subframe and <var>_predicted aliases registered
     """
+    # PHASE_13_77 A6.4-v03: calibVertex passes physical vertex columns directly
+    # to pandas/groupby-regression code.  On a lazy ADF those consumers must
+    # cross the canonical lazy-load boundary before touching adf.df.
+    ensure = getattr(adf, "ensure_branches", None)
+    if callable(ensure):
+        ensure(["vertex_x", "vertex_y", "vertex_z", "vertex_nContributors"])
     adf.materialize_aliases(names=["time_s","vertexOK0"])
     vars   = ['vertex_x', 'vertex_y', 'vertex_z', 'vertex_nContributors']
     gbVars = ["quantile_bin"]
@@ -704,6 +717,17 @@ def calibBiasResolution(adf):
     gbVars  = ["sector_bin180", "tgl_bin10"]
     linear  = ["qpt"]
     suffix  = ""
+    # PHASE_13_77 A6.4-v03: calibBiasResolution is another direct pandas/GB
+    # consumer.  Ensure the physical inputs needed by its fits and by the
+    # binning/selection aliases before materializing those aliases.  This keeps
+    # FULL+LAZY on-demand (a bounded branch set) instead of falling back to an
+    # eager/full-column read.
+    ensure = getattr(adf, "ensure_branches", None)
+    if callable(ensure):
+        ensure(sorted(set(varList + [
+            "phiITSTPCAtVertex", "tgl", "qpt", "ncl",
+            "dcaZFromDeltaTime", "hasITSTPC", "phi",
+        ])))
     logger.log("Step1.0 calibBiasResolution: materializing binning aliases if needed -BEGIN")
     for col in gbVars + linear+ ["baseITSTPCCut0"]:
         if col not in adf.df.columns:
