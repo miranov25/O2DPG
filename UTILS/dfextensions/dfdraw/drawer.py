@@ -1774,6 +1774,106 @@ class DFDraw:
     _HIST_COLUMN_REFERENCE_LISTS    = ()
     _SCATTER_COLUMN_REFERENCE_LISTS = ()
 
+    def _resolve_vector_channel_assignment(
+        self, n_vector, group_by=None, group_style='color', vector_style=None,
+        selection_vector=None, weights_vector=None,
+        selection_categorical=False, weights_categorical=False,
+        quantiles=None, quantile_mode='auto', quantile_style=None,
+    ):
+        """Resolve the visual-channel assignment for one logical vector plot.
+
+        BUG_dfdraw_20260910_vector_facet_channel_assignment_fit_aggregation
+        (BUG-A). Sole owner of the Algorithm A entry point for vector
+        dispatch: builds the DataChannel list and calls ``assign_channels()``
+        exactly once.
+
+        Extracted from ``_draw_vector`` so a faceted vector plot can resolve
+        channels ONCE for the whole figure and reuse the same assignment in
+        every facet panel. Resolving per panel would let the same vector
+        branch pick a different colour/linestyle/marker in different panels,
+        and would break the ``assign_channels <= 1 per logical plot``
+        invariant locked by
+        ``test_IAP_5_facet_dispatch_idempotent``.
+
+        Returns
+        -------
+        dict
+            ``{'assignment': {channel_name: visual_channel},
+               'has_quantile_channel': bool}``
+            ``assignment`` is the raw Algorithm A output; callers derive
+            ``vector_style`` / ``group_style`` / ``quantile_style`` from it.
+        """
+        from .channels import DataChannel, assign_channels
+
+        # Determine quantile channel cost (Step 0 — zero-cost modes consume
+        # no visual channel slot). The actual quantile_mode resolution lives
+        # in plots/profile.py:_detect_quantile_mode; we mirror its decision
+        # here only to know whether quantiles add a channel.
+        _has_quantile_channel = False
+        _q_card = 0
+        if quantiles is not None and len(quantiles) > 0:
+            _resolved_mode = quantile_mode
+            if _resolved_mode == 'auto':
+                from .plots.profile import _detect_quantile_mode
+                _resolved_mode = _detect_quantile_mode(list(quantiles))
+            if _resolved_mode == 'discrete':
+                _has_quantile_channel = True
+                _q_card = len(quantiles)
+
+        # Build DataChannel list (vector is always present; group_by and
+        # quantile are optional cost-bearing channels).
+        _channels = [
+            DataChannel(
+                'vector',
+                is_categorical=True,
+                cardinality=n_vector,
+                requested_style=vector_style,
+                cost=1,
+            ),
+        ]
+        if group_by is not None:
+            _g_card = get_style_value("channels.cycles.color_count", 10)
+            _channels.append(DataChannel(
+                'group_by',
+                is_categorical=True,
+                cardinality=_g_card,
+                requested_style=group_style,
+                cost=1,
+            ))
+        if _has_quantile_channel:
+            _channels.append(DataChannel(
+                'quantiles',
+                is_categorical=False,
+                cardinality=_q_card,
+                requested_style=quantile_style,
+                cost=1,
+            ))
+
+        # Phase 13.27.DF Commit 2 (v1.2 §3.1): selection_delta / weights_delta
+        # channels. AD-67: 1-element list silently degrades to scalar (cost 0,
+        # not added). AD-61: is_categorical controlled by the categorical kwarg.
+        if selection_vector is not None and len(selection_vector) >= 2:
+            _channels.append(DataChannel(
+                'selection_delta',
+                is_categorical=selection_categorical,
+                cardinality=len(selection_vector),
+                requested_style=None,
+                cost=1,
+            ))
+        if weights_vector is not None and len(weights_vector) >= 2:
+            _channels.append(DataChannel(
+                'weights_delta',
+                is_categorical=weights_categorical,
+                cardinality=len(weights_vector),
+                requested_style=None,
+                cost=1,
+            ))
+
+        return {
+            'assignment': assign_channels(_channels),
+            'has_quantile_channel': _has_quantile_channel,
+        }
+
     def _draw_vector(self, y_list, x_list, draw_method,
                      vector_style=None, group_style='color',
                      group_by=None, **kwargs):
@@ -1861,92 +1961,38 @@ class DFDraw:
                 f"Choose different channels from {self._VALID_STYLE_CHANNELS}."
             )
 
-        # Context-dependent default for vector_style.
-        # Phase 13.26.DF Phase B: Algorithm A determines the assignment via
-        # assign_channels() (channels.py). The function takes the active data
-        # channels (vector + optional group_by + optional quantile-discrete)
-        # and returns {channel_name: visual_channel}. Per-call kwargs
-        # (vector_style, group_style) act as DataChannel.requested_style
-        # overrides — Algorithm A's resolution chain handles them.
-        from .channels import DataChannel, assign_channels
-
-        # Determine quantile channel cost (Step 0 — zero-cost modes consume
-        # no visual channel slot). The actual quantile_mode resolution lives
-        # in plots/profile.py:_detect_quantile_mode; we mirror its decision
-        # here only to know whether quantiles add a channel.
-        _quantiles = kwargs.get('quantiles')
-        _quantile_mode = kwargs.get('quantile_mode', 'auto')
-        _quantile_style_kwarg = kwargs.get('quantile_style')
-        _has_quantile_channel = False
-        _q_card = 0
-        if _quantiles is not None and len(_quantiles) > 0:
-            _resolved_mode = _quantile_mode
-            if _resolved_mode == 'auto':
-                from .plots.profile import _detect_quantile_mode
-                _resolved_mode = _detect_quantile_mode(list(_quantiles))
-            if _resolved_mode == 'discrete':
-                _has_quantile_channel = True
-                _q_card = len(_quantiles)
-
-        # Build DataChannel list (vector is always present in _draw_vector;
-        # group_by and quantile are optional cost-bearing channels).
-        # group_style defaults to 'color' in this method's signature; pass
-        # it faithfully so Algorithm A can detect per-call collisions.
-        _channels = [
-            DataChannel(
-                'vector',
-                is_categorical=True,
-                cardinality=len(y_list),
-                requested_style=vector_style,
-                cost=1,
-            ),
-        ]
-        if group_by is not None:
-            _g_card = get_style_value("channels.cycles.color_count", 10)
-            _channels.append(DataChannel(
-                'group_by',
-                is_categorical=True,
-                cardinality=_g_card,
-                # group_style default 'color' aligns with EXPLICIT_RULES
-                # entry for {vector, group_by}; passing it as requested_style
-                # is consistent with the precedence chain.
-                requested_style=group_style,
-                cost=1,
-            ))
-        if _has_quantile_channel:
-            _channels.append(DataChannel(
-                'quantiles',
-                is_categorical=False,
-                cardinality=_q_card,
-                requested_style=_quantile_style_kwarg,
-                cost=1,
-            ))
-
-        # Phase 13.27.DF Commit 2 (v1.2 §3.1): selection_delta / weights_delta
-        # channels. AD-67: 1-element list silently degrades to scalar (cost 0,
-        # not added to _channels). AD-61: is_categorical controlled by
-        # _selection_categorical / _weights_categorical kwarg (default False
-        # = ordinal, linestyle-preferred greedy fallback).
+        # BUG-A: channel resolution is owned by
+        # _resolve_vector_channel_assignment. A faceted vector plot resolves
+        # ONCE at the coordinator and passes the result in via
+        # _resolved_channel_assignment, so assign_channels() is not re-entered
+        # per facet panel (IAP-5 invariant) and every panel uses the same
+        # branch -> visual channel mapping.
+        # Locally-needed activity flags (used further down this method).
         _sel_active = _selection_vector is not None and len(_selection_vector) >= 2
         _w_active   = _weights_vector   is not None and len(_weights_vector)   >= 2
-        if _sel_active:
-            _channels.append(DataChannel(
-                'selection_delta',
-                is_categorical=_selection_categorical,
-                cardinality=len(_selection_vector),
-                requested_style=None,  # resolved via Algorithm A (EXPLICIT_RULES)
-                cost=1,
-            ))
-        if _w_active:
-            _channels.append(DataChannel(
-                'weights_delta',
-                is_categorical=_weights_categorical,
-                cardinality=len(_weights_vector),
-                requested_style=None,
-                cost=1,
-            ))
 
-        _assignment = assign_channels(_channels)
+        # Consumed from a private instance attribute rather than a kwarg,
+        # so the public profile()/hist()/scatter() kwarg surface is
+        # unchanged and no unknown-keyword warning is emitted.
+        _resolved = getattr(self, '_pending_channel_assignment', None)
+        if _resolved is not None:
+            self._pending_channel_assignment = None
+        if _resolved is None:
+            _resolved = self._resolve_vector_channel_assignment(
+                n_vector=len(y_list),
+                group_by=group_by,
+                group_style=group_style,
+                vector_style=vector_style,
+                selection_vector=_selection_vector,
+                weights_vector=_weights_vector,
+                selection_categorical=_selection_categorical,
+                weights_categorical=_weights_categorical,
+                quantiles=kwargs.get('quantiles'),
+                quantile_mode=kwargs.get('quantile_mode', 'auto'),
+                quantile_style=kwargs.get('quantile_style'),
+            )
+        _assignment = _resolved['assignment']
+        _has_quantile_channel = _resolved['has_quantile_channel']
 
         # Resolve scalar styles from the assignment.
         vector_style = _assignment.get('vector', vector_style or 'color')
@@ -3418,10 +3464,27 @@ class DFDraw:
         share_y: str = 'all',                # same
         share_across_figures: bool = True,   # 3D only
         **plot_kwargs
-    ) -> Tuple[plt.Figure, np.ndarray, Dict[str, Any]]:
+    ) -> Tuple[plt.Figure, np.ndarray, Union[Dict[str, Any], List[Dict[str, Any]]]]:
         """
         Coordinate faceted rendering: validate facet_by, build subplot grid,
         per-subplot recursion into the appropriate plot module.
+
+        Return shape (two cases — BUG-B contract):
+
+        * ordinary (non-vector) facet -> ``dict``: the established faceted
+          stats dict (``groups`` / ``per_group`` / ``n_total`` / ``faceted`` /
+          ``facet_by`` / ``facet_mode``, plus ``fit`` when requested).
+        * vector x facet (``selection_vector`` or ``weights_vector`` with >= 2
+          branches, profile only) -> ``list[dict]``: one complete faceted
+          stats dict PER VECTOR BRANCH, in vector iteration order. Each branch
+          dict carries the same keys as the ordinary case, including its own
+          per-branch ``fit``. This matches the existing vector-dispatch
+          convention of one stats object per branch.
+
+        Note that for vector dispatch the rendered ``summary_fit`` lands on the
+        FIRST branch (``stats[0]['summary_fit']``) — see
+        ``_maybe_attach_summary_fit``; there is no top level when stats is a
+        list.
 
         Phase 13.27.DF (Phase D), §5.4 of v1.1 proposal.
 
@@ -3978,6 +4041,9 @@ class DFDraw:
             )
 
         all_stats: Dict[str, Any] = {}
+        # BUG-A: resolved ONCE for the whole figure on the first
+        # vector-active facet cell, then reused by every panel.
+        _facet_resolved_channels = None
         for ax_i, group_value in zip(axes_flat[:n_groups], groups):
             # Phase 13.50.DF step 7d — stash the facet key on the axes so the
             # post-dispatch per-panel inset renderer (placement='subfigure')
@@ -4025,6 +4091,36 @@ class DFDraw:
             if plot_kind != 'scatter':
                 forwarded['auto_title'] = False
 
+            # BUG-A/BUG-B: vector controls are coordinator-level inputs for a
+            # faceted profile. Pull them out of `forwarded` so they reach the
+            # public profile()/_draw_vector owner rather than the low-level
+            # plot_fn, and so channel resolution happens ONCE (see
+            # _facet_resolved_channels computed before this loop).
+            _cell_selection_vector = forwarded.pop('selection_vector', None)
+            _cell_weights_vector = forwarded.pop('weights_vector', None)
+            _cell_selection_labels = forwarded.pop('selection_labels', None)
+            _cell_weights_labels = forwarded.pop('weights_labels', None)
+            _cell_selection_categorical = forwarded.pop('selection_categorical', False)
+            _cell_weights_categorical = forwarded.pop('weights_categorical', False)
+            _cell_vector_compose = forwarded.pop('vector_compose', 'inner')
+            _cell_delta_facet = forwarded.pop('delta_facet', None)
+            # _dispatch_faceted_render uses the low-level name x_range; the
+            # public profile() owner names the same input `range`. Keep the
+            # low-level kwarg on ordinary facet calls; translate it only on the
+            # vector-aware delegation path.
+            _cell_profile_range = forwarded.get('x_range', None)
+            _cell_vector_active = (
+                plot_kind == 'profile'
+                and (
+                    (_cell_selection_vector is not None
+                     and len(_cell_selection_vector) >= 2)
+                    or (_cell_weights_vector is not None
+                        and len(_cell_weights_vector) >= 2)
+                )
+            )
+            if _cell_vector_active:
+                forwarded.pop('x_range', None)
+
             # Phase 13.42.DF FIX1 (B1/Sonet51): facet_mode sentinel — informs
             # per-cell draw call that it is rendering inside a facet grid, so
             # render_fit_textbox uses fit.text_fontsize_facet instead of
@@ -4046,6 +4142,29 @@ class DFDraw:
             else:
                 _inner_group_by = group_by
 
+            # BUG-A: resolve the visual-channel assignment ONCE for the whole
+            # figure (on the first vector-active cell), then reuse it in every
+            # panel. Keeps assign_channels() at <= 1 call per logical plot
+            # (IAP-5 invariant) and guarantees the same vector branch gets the
+            # same colour/linestyle/marker in every facet. Placed here because
+            # it needs _inner_group_by.
+            if _cell_vector_active and _facet_resolved_channels is None:
+                _facet_resolved_channels = (
+                    self._resolve_vector_channel_assignment(
+                        n_vector=len(y_expr) if isinstance(y_expr, list) else 1,
+                        group_by=_inner_group_by,
+                        group_style=forwarded.get('group_style', 'color'),
+                        vector_style=forwarded.get('vector_style'),
+                        selection_vector=_cell_selection_vector,
+                        weights_vector=_cell_weights_vector,
+                        selection_categorical=_cell_selection_categorical,
+                        weights_categorical=_cell_weights_categorical,
+                        quantiles=subplot_quantiles,
+                        quantile_mode=quantile_mode,
+                        quantile_style=forwarded.get('quantile_style'),
+                    )
+                )
+
             # Phase 13.32.DF Sub-fix 3 (AD-79, v1.2 §3.3): plot-kind-specific
             # call. Each plot's signature differs in positional shape and
             # accepted kwargs; passing profile-only kwargs (quantiles,
@@ -4054,15 +4173,55 @@ class DFDraw:
             # explicitly per plot_kind.
             try:
                 if plot_kind == 'profile':
-                    _, _, stats = plot_fn(
-                        subplot_df, x_expr, subplot_y,
-                        ax=ax_i,
-                        quantiles=subplot_quantiles,
-                        quantile_mode=quantile_mode,
-                        group_by=_inner_group_by,
-                        top_k=None,
-                        **forwarded
-                    )
+                    if _cell_vector_active:
+                        # Reuse the existing profile vector engine on the
+                        # already facet-filtered frame. same=True + ax=ax_i
+                        # overlays the vector branches in this panel; each
+                        # branch keeps its own selection/weights and therefore
+                        # its own binning/statistics. The pre-resolved channel
+                        # assignment is threaded in so no panel re-enters
+                        # assign_channels().
+                        _cell_draw = DFDraw(subplot_df)
+                        if hasattr(self, '_data_source'):
+                            _cell_draw._data_source = self._data_source
+                        # Hand the once-resolved channel assignment to the
+                        # vector engine without widening the public kwarg
+                        # surface (see _draw_vector).
+                        _cell_draw._pending_channel_assignment = (
+                            _facet_resolved_channels
+                        )
+                        _cell_expr = (
+                            f"{subplot_y}:{x_expr}"
+                            if x_expr is not None else str(subplot_y)
+                        )
+                        _, _, stats = _cell_draw.profile(
+                            _cell_expr,
+                            ax=ax_i, same=True,
+                            range=_cell_profile_range,
+                            quantiles=subplot_quantiles,
+                            quantile_mode=quantile_mode,
+                            group_by=_inner_group_by,
+                            top_k=None,
+                            selection_vector=_cell_selection_vector,
+                            weights_vector=_cell_weights_vector,
+                            selection_labels=_cell_selection_labels,
+                            weights_labels=_cell_weights_labels,
+                            selection_categorical=_cell_selection_categorical,
+                            weights_categorical=_cell_weights_categorical,
+                            vector_compose=_cell_vector_compose,
+                            delta_facet=_cell_delta_facet,
+                            **forwarded
+                        )
+                    else:
+                        _, _, stats = plot_fn(
+                            subplot_df, x_expr, subplot_y,
+                            ax=ax_i,
+                            quantiles=subplot_quantiles,
+                            quantile_mode=quantile_mode,
+                            group_by=_inner_group_by,
+                            top_k=None,
+                            **forwarded
+                        )
                 elif plot_kind == 'hist':
                     # hist is 1D: takes only x (the variable to histogram).
                     # Calling method passed col_expr as y_expr, so subplot_y
@@ -4155,19 +4314,56 @@ class DFDraw:
             plt.subplots_adjust(top=_suptitle_top_for_title(_get_suptitle(fig) or None))
 
         # ---- Combined stats ------------------------------------------------
-        combined_stats = {
-            "n_groups": n_groups,
-            "groups": groups,
-            "per_group": all_stats,
-            "faceted": True,
-            # Phase 13.32.DF FIX1 BUG-001: expose ORIGINAL facet_by name to
-            # consumers, not the possibly-rebinded internal temp column name.
-            "facet_by": _facet_display_name,
-            # Phase 13.31.DF (AD-78): expose mode for consumers to discriminate
-            # between channel-name and column-name semantics.
-            "facet_mode": _facet_mode,
-            "n_total": sum(s.get("n", 0) for s in all_stats.values()),
-        }
+        # BUG-B: a vector-aware faceted render produces list[stats] in each
+        # panel (one entry per vector branch). Transpose that facet-major
+        # representation into the established vector-major public shape: one
+        # complete faceted stats dict per branch, in vector iteration order.
+        # Ordinary faceted calls keep their existing dict contract unchanged.
+        _vector_faceted = (
+            bool(all_stats)
+            and all(isinstance(_s, list) for _s in all_stats.values())
+        )
+        if _vector_faceted:
+            _branch_counts = {len(_s) for _s in all_stats.values()}
+            if len(_branch_counts) != 1:
+                raise RuntimeError(
+                    "faceted vector render produced inconsistent branch counts "
+                    f"across facets: {sorted(_branch_counts)}"
+                )
+            _n_branches = next(iter(_branch_counts))
+            combined_stats = []
+            for _branch_i in range(_n_branches):
+                _branch_per_group = {
+                    str(_g): all_stats[str(_g)][_branch_i]
+                    for _g in groups
+                }
+                combined_stats.append({
+                    "n_groups": n_groups,
+                    "groups": groups,
+                    "per_group": _branch_per_group,
+                    "faceted": True,
+                    "facet_by": _facet_display_name,
+                    "facet_mode": _facet_mode,
+                    "n_total": sum(
+                        _s.get("n", 0)
+                        for _s in _branch_per_group.values()
+                        if isinstance(_s, dict)
+                    ),
+                })
+        else:
+            combined_stats = {
+                "n_groups": n_groups,
+                "groups": groups,
+                "per_group": all_stats,
+                "faceted": True,
+                # Phase 13.32.DF FIX1 BUG-001: expose ORIGINAL facet_by name to
+                # consumers, not the possibly-rebinded internal temp column name.
+                "facet_by": _facet_display_name,
+                # Phase 13.31.DF (AD-78): expose mode for consumers to discriminate
+                # between channel-name and column-name semantics.
+                "facet_mode": _facet_mode,
+                "n_total": sum(s.get("n", 0) for s in all_stats.values()),
+            }
 
         # ====================================================================
         # Phase 13.43.DF v1.2 §4.2.0 — Faceted fit aggregation (Option A).
@@ -4178,14 +4374,39 @@ class DFDraw:
         # PRESERVED — combined_stats['per_group'][k] still has 'fit' under it.
         # ====================================================================
         _aggregated_fits = {}
-        for _gval, _cell_stats in all_stats.items():
-            if not isinstance(_cell_stats, dict):
-                continue
-            _cell_fit = _cell_stats.get('fit')
-            if _cell_fit:
-                _aggregated_fits[(_gval,)] = _cell_fit
-        if _aggregated_fits:
-            combined_stats['fit'] = _aggregated_fits
+        if _vector_faceted:
+            # BUG-B: aggregate fits PER VECTOR BRANCH using the same
+            # (facet_value,) key convention as the ordinary faceted path, so
+            # branch_stats['fit'] exists and the list-aware
+            # _maybe_attach_summary_fit() can consume it via
+            # iter_stats.get('fit'). Silently dropping these — the previous
+            # behaviour when combined_stats became a list — loses fit results
+            # the user explicitly asked for.
+            for _branch_i, _branch_stats in enumerate(combined_stats):
+                _branch_fits = {}
+                for _gval in groups:
+                    _cell_list = all_stats.get(str(_gval))
+                    if not isinstance(_cell_list, list):
+                        continue
+                    if _branch_i >= len(_cell_list):
+                        continue
+                    _cell_stats = _cell_list[_branch_i]
+                    if not isinstance(_cell_stats, dict):
+                        continue
+                    _cell_fit = _cell_stats.get('fit')
+                    if _cell_fit:
+                        _branch_fits[(str(_gval),)] = _cell_fit
+                if _branch_fits:
+                    _branch_stats['fit'] = _branch_fits
+        else:
+            for _gval, _cell_stats in all_stats.items():
+                if not isinstance(_cell_stats, dict):
+                    continue
+                _cell_fit = _cell_stats.get('fit')
+                if _cell_fit:
+                    _aggregated_fits[(_gval,)] = _cell_fit
+            if _aggregated_fits:
+                combined_stats['fit'] = _aggregated_fits
 
         return fig, axes_flat[:n_groups], combined_stats
 
@@ -6568,6 +6789,20 @@ class DFDraw:
                 share_x=share_x,
                 share_y=share_y,
                 share_across_figures=share_across_figures,
+                # BUG-A/BUG-B: preserve selection/weights-vector semantics
+                # inside each facet panel. The faceted dispatcher stays the
+                # owner of facet partition/layout; its per-cell profile path
+                # delegates vector iteration to the existing
+                # profile()/_draw_vector owner, with channel assignment
+                # resolved once for the whole figure.
+                selection_vector=selection_vector,
+                weights_vector=weights_vector,
+                selection_labels=selection_labels,
+                weights_labels=weights_labels,
+                selection_categorical=selection_categorical,
+                weights_categorical=weights_categorical,
+                vector_compose=vector_compose,
+                delta_facet=delta_facet,
                 # Phase 13.42.DF: inline fits
                 fit=fit,
                 fit_textbox_kwargs=fit_textbox_kwargs,
