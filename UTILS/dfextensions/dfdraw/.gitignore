@@ -26,3 +26,15 @@ files/
 .DS_Store
 Thumbs.db
 test_logs/
+
+# Local environment (per-machine paths, not shared)
+scripts/env.local.sh
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Snapshot / audit output
+files_dfdraw/
+
+# install_by_md5 rollback copies
+*.bak.*
