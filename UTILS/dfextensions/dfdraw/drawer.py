@@ -640,17 +640,53 @@ class DFDraw:
             if not stats:
                 return
             aggregated_fits: Dict[Tuple[Any, ...], Any] = {}
+            # BUG_dfdraw_20260910 P0-1: when BOTH vector dispatch and facet_by
+            # are active, each branch's stats['fit'] is itself a Shape 3 dict
+            # keyed by (facet_value,). Storing it under (branch,) would nest
+            # two Shape 3 levels, and _flatten_to_rows would read the OUTER key
+            # as the facet (formatting the branch index as a facet value) and
+            # the INNER keys as groups — silently swapping the two dimensions
+            # and inventing groups where no group_by was requested.
+            #
+            # Instead build ONE composite Shape 3 key carrying both dimensions,
+            # (facet_value..., branch), and extend the facet column list with a
+            # 'branch' axis so _format_facet_key renders both truthfully. The
+            # cell value stays the per-cell fit list, which is Shape 3
+            # sub-case (b) — facet, no group_by — so `group` is correctly left
+            # unset unless the caller really passed group_by.
+            #
+            # For PLAIN vector dispatch (no facet_by) the pre-existing
+            # convention of keying by (branch,) is unchanged.
+            _facet_cols_in = (
+                list(facet_by) if isinstance(facet_by, (list, tuple))
+                else ([facet_by] if facet_by is not None else [])
+            )
+            _composite_facet_cols = None
             for i, iter_stats in enumerate(stats):
                 if not isinstance(iter_stats, dict):
                     continue
                 cell_fit = iter_stats.get('fit')
-                if cell_fit:
+                if not cell_fit:
+                    continue
+                _facet_keyed = (
+                    isinstance(cell_fit, dict)
+                    and cell_fit
+                    and isinstance(next(iter(cell_fit)), tuple)
+                )
+                if _facet_keyed and _facet_cols_in:
+                    for _fkey, _fcell in cell_fit.items():
+                        _fkey_t = _fkey if isinstance(_fkey, tuple) else (_fkey,)
+                        aggregated_fits[_fkey_t + (i,)] = _fcell
+                    _composite_facet_cols = _facet_cols_in + ['branch']
+                else:
                     aggregated_fits[(i,)] = cell_fit
             # Render into a wrapper, then deposit on stats[0].
             wrapper: Dict[str, Any] = {'fit': aggregated_fits}
             self._maybe_attach_summary_fit(
                 wrapper, summary_fit_spec,
-                group_by=group_by, facet_by=facet_by,
+                group_by=group_by,
+                facet_by=(_composite_facet_cols
+                          if _composite_facet_cols is not None else facet_by),
                 expr_for_auto_title=expr_for_auto_title,
                 consumed_by_normalize=consumed_by_normalize,
             )

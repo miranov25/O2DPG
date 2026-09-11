@@ -125,7 +125,7 @@ def test_T2_selection_vector_facet_returns_vector_major_list(df_vec):
     _assert_vector_major(stats, n_branches=len(SEL_VECTOR))
 
 
-def test_T2b_selection_branch_order_is_deterministic(df_vec):
+def test_T2b_selection_branch_order_matches_selection_order(df_vec):
     """Branch order must follow selection order, not dict iteration luck."""
     d = DFDraw(df_vec)
     _, _, first = _draw(d, facet_by="quartile_val",
@@ -133,9 +133,18 @@ def test_T2b_selection_branch_order_is_deterministic(df_vec):
     _, _, second = _draw(d, facet_by="quartile_val",
                          selection_vector=SEL_VECTOR, vector_compose="outer")
     assert [b["n_total"] for b in first] == [b["n_total"] for b in second]
-    # The two selections are disjoint sectors, so the branch totals differ;
-    # a stable-but-swapped order would still be caught by the repeat above.
-    assert first[0]["n_total"] != first[1]["n_total"], (
+    # B3 strengthening (CRR review P1-2): repeatability alone would accept a
+    # stable-but-SWAPPED order. Bind each returned branch index to an
+    # independently computed raw-input count instead.
+    expected = [
+        int((df_vec["sector"] == 0).sum()),
+        int((df_vec["sector"] == 1).sum()),
+    ]
+    assert [b["n_total"] for b in first] == expected, (
+        f"branch order does not match selection order: got "
+        f"{[b['n_total'] for b in first]}, expected {expected}"
+    )
+    assert expected[0] != expected[1], (
         "fixture no longer distinguishes the branches; test is vacuous"
     )
 
@@ -246,14 +255,18 @@ def test_T6_selection_vector_facet_fit_present_per_branch(df_vec):
     _, _, stats = _draw(d, facet_by="quartile_val",
                         selection_vector=SEL_VECTOR, vector_compose="outer",
                         fit="pol1")
-    assert isinstance(stats, list)
-    with_fit = [i for i, b in enumerate(stats) if b.get("fit")]
-    assert with_fit, (
-        "BUG-B: no branch carries a 'fit' payload — faceted vector fits were "
-        "computed and dropped"
-    )
-    for i in with_fit:
-        assert isinstance(stats[i]["fit"], dict) and stats[i]["fit"]
+    # B4 strengthening (CRR review P1-3): require fits on EVERY branch and
+    # EVERY facet, not merely on at least one.
+    assert isinstance(stats, list) and len(stats) == len(SEL_VECTOR)
+    expected_keys = {(str(g),) for g in range(4)}
+    for i, branch in enumerate(stats):
+        fit = branch.get("fit")
+        assert isinstance(fit, dict) and fit, (
+            f"BUG-B: branch {i} carries no 'fit' payload"
+        )
+        assert set(fit.keys()) == expected_keys, (
+            f"branch {i} fit keys {sorted(fit.keys())} != {sorted(expected_keys)}"
+        )
 
 
 def test_T7_weights_vector_facet_fit_present_per_branch(df_vec):
@@ -261,10 +274,16 @@ def test_T7_weights_vector_facet_fit_present_per_branch(df_vec):
     _, _, stats = _draw(d, facet_by="quartile_val",
                         weights_vector=W_VECTOR, vector_compose="outer",
                         fit="pol1")
-    assert isinstance(stats, list)
-    assert any(b.get("fit") for b in stats), (
-        "BUG-B: weights-vector faceted fits dropped"
-    )
+    assert isinstance(stats, list) and len(stats) == len(W_VECTOR)
+    expected_keys = {(str(g),) for g in range(4)}
+    for i, branch in enumerate(stats):
+        fit = branch.get("fit")
+        assert isinstance(fit, dict) and fit, (
+            f"BUG-B: weights branch {i} carries no 'fit' payload"
+        )
+        assert set(fit.keys()) == expected_keys, (
+            f"weights branch {i} fit keys {sorted(fit.keys())}"
+        )
 
 
 # --------------------------------------------------------------------------
@@ -280,7 +299,15 @@ def _summary_fit_payload(stats):
     searching, so the test cannot pass vacuously.
     """
     assert isinstance(stats, list), f"expected list, got {type(stats).__name__}"
-    return stats[0].get("summary_fit"), stats[0].get("summary_fit_note")
+    # B2 strengthening (CRR review P1-1): the original form accepted a
+    # diagnostic note INSTEAD of a payload, so a broken consumer passed.
+    # Require the note to be absent and the payload to be real.
+    note = stats[0].get("summary_fit_note")
+    assert note is None, f"summary_fit degraded to a note: {note}"
+    payload = stats[0].get("summary_fit")
+    assert isinstance(payload, dict) and payload, "no summary_fit payload"
+    assert "data" in payload and payload["data"], "summary_fit data empty"
+    return payload
 
 
 def test_T8_selection_vector_facet_fit_summary_fit_consumable(df_vec):
@@ -288,10 +315,13 @@ def test_T8_selection_vector_facet_fit_summary_fit_consumable(df_vec):
     _, _, stats = _draw(d, facet_by="quartile_val",
                         selection_vector=SEL_VECTOR, vector_compose="outer",
                         fit="pol1", summary_fit="table")
-    payload, note = _summary_fit_payload(stats)
-    assert payload is not None or note is not None, (
-        "summary_fit produced neither a payload nor a diagnostic note on "
-        "stats[0]; the branch-level fits are not reaching the summary path"
+    payload = _summary_fit_payload(stats)
+    # Full cross-product: 4 facets x 2 branches.
+    assert len(payload["data"]) == 4 * len(SEL_VECTOR), (
+        f"expected {4 * len(SEL_VECTOR)} summary rows, got {len(payload['data'])}"
+    )
+    assert all(r.get("group") is None for r in payload["data"]), (
+        "no group_by requested, but summary rows report groups"
     )
 
 
@@ -300,8 +330,14 @@ def test_T9_weights_vector_facet_fit_summary_fit_consumable(df_vec):
     _, _, stats = _draw(d, facet_by="quartile_val",
                         weights_vector=W_VECTOR, vector_compose="outer",
                         fit="pol1", summary_fit="table")
-    payload, note = _summary_fit_payload(stats)
-    assert payload is not None or note is not None
+    payload = _summary_fit_payload(stats)
+    # Full cross-product: 4 facets x 2 branches.
+    assert len(payload["data"]) == 4 * len(W_VECTOR), (
+        f"expected {4 * len(W_VECTOR)} summary rows, got {len(payload['data'])}"
+    )
+    assert all(r.get("group") is None for r in payload["data"]), (
+        "no group_by requested, but summary rows report groups"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -317,16 +353,25 @@ def test_T10_explicit_range_respected_in_vector_facet(df_vec):
                              vector_compose="outer",
                              range=(lo, hi))
     assert isinstance(stats, list)
+    # B5 strengthening (CRR review P1-4): the original loop skipped every cell
+    # whose range diagnostic was absent, so it could pass with no evidence at
+    # all. Require at least one checked cell.
+    checked = 0
     for branch in stats:
         for facet_key, cell in branch["per_group"].items():
             if not isinstance(cell, dict):
                 continue
             used = cell.get("autorange_used")
-            if used is not None:
-                assert used == pytest.approx((lo, hi)), (
-                    f"facet {facet_key}: explicit range not honoured, "
-                    f"got {used}"
-                )
+            if used is None:
+                continue
+            checked += 1
+            assert used == pytest.approx((lo, hi)), (
+                f"facet {facet_key}: explicit range not honoured, got {used}"
+            )
+    assert checked > 0, (
+        "no cell exposed a range diagnostic; the explicit-range assertion "
+        "never ran and this test proves nothing"
+    )
 
 
 def test_T10b_no_range_still_autoranges(df_vec):
@@ -340,7 +385,9 @@ def test_T10b_no_range_still_autoranges(df_vec):
         for cell in branch["per_group"].values()
         if isinstance(cell, dict) and cell.get("autorange_used") is not None
     ]
-    if ranges:
-        assert any(r != (-1.5, 1.5) for r in ranges), (
-            "autorange appears pinned to the T10 explicit range"
-        )
+    assert ranges, (
+        "no range diagnostics collected; this negative control proves nothing"
+    )
+    assert any(r != (-1.5, 1.5) for r in ranges), (
+        "autorange appears pinned to the T10 explicit range"
+    )
