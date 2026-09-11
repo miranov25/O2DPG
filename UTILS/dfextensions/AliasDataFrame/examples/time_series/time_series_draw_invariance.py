@@ -6406,6 +6406,477 @@ def run_a5_6_realdata_gate(root_path: str, *, manifest_path: str,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# A7 — post-Stage-A correctness hardening:
+#      vector × facet × fit × summary_fit semantic-coordinate oracle
+# ─────────────────────────────────────────────────────────────────────────────
+
+A7_1_CASE_ID = "I4-REAL-VECTOR-FACET-SUMMARYFIT-SEMANTICS-EAGER-20PCT-01"
+A7_1_GALLERY_FUNCTION = "fig43_vector_facet_summary_fit"
+A7_1_BRANCH_LABELS = ("early", "middle", "late")
+A7_1_FACET_VALUES = (0, 1)
+A7_1_BINS = 30
+A7_1_RANGE = (-1.5, 1.5)
+A7_1_MIN_ENTRIES = 50
+
+
+def _a7_1_environment_status(root_path: str, gallery_module=None) -> tuple[str, str]:
+    """A7 availability: real input + the existing gallery owners only."""
+    if not root_path:
+        return A5_2_ENV_UNAVAILABLE, "no ROOT input path was supplied"
+    if not os.path.isfile(root_path):
+        return (A5_2_ENV_UNAVAILABLE,
+                f"ROOT input is unavailable: {os.path.abspath(root_path)}")
+    try:
+        gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+    except ModuleNotFoundError as exc:
+        missing = getattr(exc, "name", None)
+        if missing in A5_2_EXTERNAL_MODULES:
+            return (A5_2_ENV_UNAVAILABLE,
+                    f"time_series_draw environment unavailable: "
+                    f"{type(exc).__name__}: {exc}")
+        return (A5_2_ENV_CONTRACT_ERROR,
+                f"time_series_draw import contract failure: "
+                f"{type(exc).__name__}: {exc}")
+    except Exception as exc:
+        return (A5_2_ENV_CONTRACT_ERROR,
+                f"time_series_draw import contract failure: "
+                f"{type(exc).__name__}: {exc}")
+
+    required = ("build_adf", A7_1_GALLERY_FUNCTION)
+    missing = [name for name in required if not callable(getattr(gallery, name, None))]
+    if missing:
+        return (A5_2_ENV_CONTRACT_ERROR,
+                f"time_series_draw missing required callable(s): {missing}")
+    return A5_2_ENV_AVAILABLE, ""
+
+
+def a7_1_realdata_case(root_path: str, gallery_module=None) -> CaseSpec:
+    """Dedicated real-data correctness CaseSpec for the composed seam."""
+    env_status, reason = _a7_1_environment_status(
+        root_path, gallery_module=gallery_module)
+    applicable = env_status != A5_2_ENV_UNAVAILABLE
+    applicability_reason = reason if not applicable else ""
+    case = CaseSpec(
+        case_id=A7_1_CASE_ID,
+        claim_id="I4.real_vector_facet_summaryfit_semantics.A7.1",
+        title="real vector×facet×fit×summary_fit preserves semantic coordinates",
+        claim=("the public ADF draw() result for three time-selection branches across "
+               "two side_type facets returns exactly the independently expected "
+               "branch×facet semantic product, no invented group dimension, and a "
+               "rendered summary table whose identity cells match the validated rows"),
+        failure_means=("dfdraw attached a fit/summary row to the wrong vector branch or "
+                       "facet, invented a group coordinate, omitted/duplicated a semantic "
+                       "cell, degraded summary_fit to a diagnostic note, or rendered a "
+                       "table whose identities disagree with the validated data"),
+        expected_visual=("two side_type facet panels, each carrying the same three "
+                         "time-branch profile families, plus a six-row summary-fit table"),
+        owner_on_failure="dfdraw",
+        purpose="CORRECTNESS",
+        gate="ENVIRONMENT_GATED",
+        oracle_kind="CORRECTNESS",
+        loading_mode="EAGER",
+        sample_mode="FRACTION",
+        canonical_spec={
+            "gallery_function": A7_1_GALLERY_FUNCTION,
+            "surface": "draw",
+            "expr": "dcar_tpc_vertex:tgl",
+            "selection": "BASE_SEL&(side_type<2)",
+            "selection_labels": list(A7_1_BRANCH_LABELS),
+            "facet_by": "side_type",
+            "fit": "pol1",
+            "summary_fit": "table",
+            "bins": A7_1_BINS,
+            "range": list(A7_1_RANGE),
+            "min_entries": A7_1_MIN_ENTRIES,
+            "sample_fraction": A5_2_SAMPLE_FRACTION,
+            "sample_seed": A5_2_SAMPLE_SEED,
+        },
+        applicable=applicable,
+        applicability_reason=applicability_reason,
+        setup_contract=("reuse the canonical EAGER 20% Stage-A ADF build; derive the "
+                        "three time quantile branches independently from adf.df; then "
+                        "execute the existing public fig43/adf.draw() call without "
+                        "consulting returned fit nesting to build expected coordinates"),
+        preconditions=(
+            "the ROOT input file is readable by the trusted time-series gallery environment",
+            "time_s, side_type, ncl, dcar_tpc_vertex and tgl are present in the prepared ADF",
+            "all six branch×facet cells contain enough data to exercise pol1 fitting",
+        ),
+        figure_contract=FigureContract(
+            expected_panels="two side_type facet panels plus one separate summary-fit table page",
+            panel_roles="side_type=0 and side_type=1; the table reports branch×facet identities",
+            expected_traces="three branch-resolved profile families with pol1 fits in each facet panel",
+            expected_group_count="zero group_by dimensions; summary rows must report group=None",
+            primary_comparison=("raw/spec Cartesian branch×facet product -> summary_fit data "
+                                "coordinates -> rendered table identity cells"),
+            residual_definition="not applicable; this case proves semantic coordinate identity",
+            accepted_envelope="exact identity/cardinality; six unique cells; no diagnostic fallback",
+            case_ids=(A7_1_CASE_ID,),
+            proof_kind="CORRECTNESS",
+        ),
+        surfaces_under_test=("draw",),
+        observables=(
+            Observable(
+                name="semantic_coordinates",
+                source="INDEPENDENT", access="ARRAY",
+                path="raw/spec branch×facet Cartesian product",
+                comparator="exact"),
+            Observable(
+                name="branch_selected_rows",
+                source="INDEPENDENT", access="ARRAY",
+                path="raw selected-row counts by declared branch order",
+                comparator="exact"),
+            Observable(
+                name="rendered_table_identities",
+                source="INDEPENDENT", access="ARRAY",
+                path="Matplotlib summary table identity column",
+                comparator="exact"),
+        ),
+        non_claims=(
+            "this ADF real-data oracle does not independently prove analytic pol1 coefficients",
+            "legend text is not used as branch truth while selection_labels legend handling is a separate dfdraw bug",
+        ),
+        negative_control="FAMILY_MUTATION:A7_VECTOR_FACET_SUMMARY_SEMANTICS",
+        reference_policy="named-immutable",
+    )
+    return case
+
+
+def _a7_1_expected_model(adf: Any) -> dict:
+    """Independent raw-frame truth for the fig43 call specification."""
+    if not hasattr(adf, "df"):
+        raise HarnessError("A7 prepared object has no .df raw-frame owner")
+    df = adf.df
+    required = ("time_s", "side_type", "ncl", "dcar_tpc_vertex", "tgl")
+    missing = [name for name in required if name not in df.columns]
+    if missing:
+        raise HarnessError(f"A7 raw frame missing required columns: {missing}")
+    if len(df) == 0:
+        raise HarnessError("A7 raw frame is empty")
+
+    q1, q2 = df["time_s"].quantile([1.0 / 3.0, 2.0 / 3.0]).to_numpy()
+    base = ((df["ncl"] > 60)
+            & (np.abs(np.asarray(df["dcar_tpc_vertex"], dtype=float)) < 10)
+            & (df["side_type"] < 2))
+    branch_masks = (
+        df["time_s"] < q1,
+        (df["time_s"] >= q1) & (df["time_s"] < q2),
+        df["time_s"] >= q2,
+    )
+
+    cell_counts: dict[str, int] = {}
+    eligible_bins: dict[str, int] = {}
+    branch_totals = []
+    coordinates = []
+    summary_identities = []
+    for branch_index, (label, branch_mask) in enumerate(
+            zip(A7_1_BRANCH_LABELS, branch_masks)):
+        branch_total = 0
+        for facet in A7_1_FACET_VALUES:
+            mask = base & branch_mask & (df["side_type"] == facet)
+            count = int(np.count_nonzero(np.asarray(mask, dtype=bool)))
+            key = f"{label}|side_type={facet}"
+            cell_counts[key] = count
+            branch_total += count
+            coordinates.append(key)
+            summary_identities.append(f"side_type={facet} branch={branch_index}")
+
+            values = np.asarray(df.loc[mask, "tgl"], dtype=float)
+            values = values[np.isfinite(values)]
+            hist, _ = np.histogram(values, bins=A7_1_BINS, range=A7_1_RANGE)
+            n_fit_bins = int(np.count_nonzero(hist >= A7_1_MIN_ENTRIES))
+            eligible_bins[key] = n_fit_bins
+            if count < A7_1_MIN_ENTRIES or n_fit_bins < 2:
+                raise HarnessError(
+                    f"A7 semantic cell {key} cannot exercise pol1 robustly: "
+                    f"selected_rows={count}, bins_with_>={A7_1_MIN_ENTRIES}={n_fit_bins}")
+        branch_totals.append(branch_total)
+
+    return {
+        "q1": float(q1),
+        "q2": float(q2),
+        "coordinates": sorted(coordinates),
+        "summary_identities": sorted(summary_identities),
+        "branch_totals": branch_totals,
+        "cell_counts": cell_counts,
+        "eligible_fit_bins": eligible_bins,
+    }
+
+
+def _a7_1_parse_summary_identity(row: dict) -> tuple[str, str]:
+    """Map public composite facet label to ADF-owned branch label + facet."""
+    text = str(row.get("facet"))
+    facet_match = re.search(r"(?:^|\s)side_type=([^\s]+)", text)
+    branch_match = re.search(r"(?:^|\s)branch=([^\s]+)", text)
+    if facet_match is None or branch_match is None:
+        raise HarnessError(
+            f"A7 summary row lacks side_type/branch identity: facet={text!r}")
+    try:
+        facet = int(float(facet_match.group(1)))
+        branch_index = int(float(branch_match.group(1)))
+    except ValueError as exc:
+        raise HarnessError(f"A7 summary identity is not numeric: {text!r}") from exc
+    if facet not in A7_1_FACET_VALUES:
+        raise HarnessError(f"A7 unexpected facet side_type={facet}: {text!r}")
+    if not 0 <= branch_index < len(A7_1_BRANCH_LABELS):
+        raise HarnessError(f"A7 unexpected branch index {branch_index}: {text!r}")
+    return A7_1_BRANCH_LABELS[branch_index], f"side_type={facet}"
+
+
+def _a7_1_validate_summary_rows(rows: Sequence[dict], expected: dict) -> dict:
+    """Fail-loud semantic-coordinate oracle; order is deliberately non-semantic."""
+    if len(rows) != 6:
+        raise HarnessError(f"A7 expected exactly 6 summary rows, got {len(rows)}")
+    observed_coordinates = []
+    observed_identities = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise HarnessError(f"A7 summary row is not a dict: {type(row).__name__}")
+        if row.get("group") is not None:
+            raise HarnessError(
+                f"A7 no group_by was requested but summary row reports group={row.get('group')!r}")
+        label, facet = _a7_1_parse_summary_identity(row)
+        observed_coordinates.append(f"{label}|{facet}")
+        observed_identities.append(str(row.get("facet")))
+        if row.get("fit_name") not in (None, "pol1"):
+            raise HarnessError(f"A7 unexpected fit_name={row.get('fit_name')!r}")
+        if "fit_status" in row and row.get("fit_status") != "ok":
+            raise HarnessError(
+                f"A7 fit failed for {label}|{facet}: status={row.get('fit_status')!r}")
+
+    if len(set(observed_coordinates)) != len(observed_coordinates):
+        raise HarnessError(f"A7 duplicate semantic coordinates: {sorted(observed_coordinates)}")
+    if sorted(observed_coordinates) != list(expected["coordinates"]):
+        raise HarnessError(
+            "A7 semantic-coordinate mismatch; "
+            f"expected={expected['coordinates']}, observed={sorted(observed_coordinates)}")
+    if sorted(observed_identities) != list(expected["summary_identities"]):
+        raise HarnessError(
+            "A7 public summary identity mismatch; "
+            f"expected={expected['summary_identities']}, "
+            f"observed={sorted(observed_identities)}")
+    return {
+        "coordinates": sorted(observed_coordinates),
+        "summary_identities": sorted(observed_identities),
+    }
+
+
+def _a7_1_rendered_identity_cells(table_fig: Any) -> list[str]:
+    """Read the rendered summary identity column; presentation order is ignored."""
+    if table_fig is None:
+        raise HarnessError("A7 summary_fit carries no rendered table figure")
+    cells = None
+    for ax in getattr(table_fig, "axes", ()):
+        for table in getattr(ax, "tables", ()):
+            cells = table.get_celld()
+            break
+        if cells:
+            break
+    if not cells:
+        raise HarnessError("A7 rendered summary figure contains no Matplotlib Table")
+    rows = sorted({r for r, _ in cells})
+    cols = sorted({c for _, c in cells})
+    if not rows or not cols or 0 not in rows:
+        raise HarnessError("A7 rendered summary table has no header row")
+    header_by_col = {
+        c: str(cells[(0, c)].get_text().get_text())
+        for c in cols if (0, c) in cells
+    }
+    identity_cols = [c for c, text in header_by_col.items() if text == "facet"]
+    if len(identity_cols) != 1:
+        raise HarnessError(
+            f"A7 rendered table expected one 'facet' identity column, got {header_by_col}")
+    col = identity_cols[0]
+    values = [
+        str(cells[(r, col)].get_text().get_text())
+        for r in rows if r != 0 and (r, col) in cells
+    ]
+    if len(values) != 6:
+        raise HarnessError(f"A7 rendered table expected 6 identity rows, got {len(values)}")
+    return sorted(values)
+
+
+def _a7_1_primary_figure_evidence(axes: Any) -> dict:
+    """Secondary structural proof for the two facet panels."""
+    try:
+        flat = list(np.asarray(axes, dtype=object).reshape(-1))
+    except Exception as exc:
+        raise HarnessError(f"A7 could not normalize returned axes: {exc}") from exc
+    visible = [ax for ax in flat if ax is not None and getattr(ax, "get_visible", lambda: True)()]
+    if len(visible) != 2:
+        raise HarnessError(f"A7 expected exactly 2 visible facet axes, got {len(visible)}")
+    titles = [str(getattr(ax, "get_title", lambda: "")()) for ax in visible]
+    facets = set()
+    line_counts = []
+    for ax, title in zip(visible, titles):
+        match = re.search(r"side_type=([^\s]+)", title)
+        if match is None:
+            raise HarnessError(f"A7 facet panel has no side_type title: {title!r}")
+        facets.add(int(float(match.group(1))))
+        line_counts.append(len(getattr(ax, "lines", ())))
+    if facets != set(A7_1_FACET_VALUES):
+        raise HarnessError(f"A7 primary figure facets {sorted(facets)} != {list(A7_1_FACET_VALUES)}")
+    if any(n < len(A7_1_BRANCH_LABELS) for n in line_counts):
+        raise HarnessError(
+            f"A7 primary figure does not visibly carry all three branches: line_counts={line_counts}")
+    return {"facet_titles": titles, "line_counts": line_counts}
+
+
+def run_a7_1_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
+                       prepared_adf: Any = None,
+                       prepared_provenance: dict | None = None) -> CaseResult:
+    """Execute the A7 real-data semantic alarm on the public fig43/draw path."""
+    _skip = _inapplicable(case)
+    if _skip is not None:
+        return _skip
+    t0 = time.time()
+    res = CaseResult(case_id=case.case_id, status=SKIP)
+    try:
+        if case.case_id != A7_1_CASE_ID:
+            res.status = INVALID_FIXTURE
+            res.detail = f"A7 runner received unexpected case {case.case_id!r}"
+            return res
+        if (case.purpose != "CORRECTNESS" or case.gate != "ENVIRONMENT_GATED"
+                or case.oracle_kind != "CORRECTNESS"
+                or case.loading_mode != "EAGER" or case.sample_mode != "FRACTION"):
+            res.status = INVALID_FIXTURE
+            res.detail = "A7 runner requires CORRECTNESS/ENVIRONMENT_GATED/EAGER/FRACTION"
+            return res
+
+        gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+        env_status, why = _a7_1_environment_status(root_path, gallery_module=gallery)
+        if env_status != A5_2_ENV_AVAILABLE:
+            res.status = INVALID_FIXTURE
+            res.detail = f"A7 environment/contract changed after CaseSpec creation ({env_status}): {why}"
+            return res
+
+        if prepared_adf is None:
+            adf, provenance_doc = _a6_4_build_fraction_adf_once(
+                root_path, gallery_module=gallery)
+        else:
+            adf = prepared_adf
+            _a6_4_prepared_fraction_sample_evidence(adf, prepared_provenance, root_path)
+            provenance_doc = dict(prepared_provenance or {})
+
+        expected = _a7_1_expected_model(adf)
+        raw = getattr(gallery, A7_1_GALLERY_FUNCTION)(adf)
+        if raw is None or not isinstance(raw, tuple) or len(raw) < 3:
+            res.status = FAIL
+            res.detail = "A7 fig43 did not return the public (fig, axes, stats) tuple"
+            return res
+        fig, axes, stats = raw[0], raw[1], raw[2]
+        if not isinstance(stats, list) or len(stats) != len(A7_1_BRANCH_LABELS):
+            res.status = FAIL
+            res.detail = (
+                f"A7 expected {len(A7_1_BRANCH_LABELS)} vector branch stats, "
+                f"got {type(stats).__name__} len={len(stats) if isinstance(stats, list) else 'n/a'}")
+            return res
+
+        actual_branch_totals = []
+        for i, branch_stats in enumerate(stats):
+            if not isinstance(branch_stats, dict):
+                raise HarnessError(f"A7 branch {i} stats is not a dict")
+            try:
+                actual_branch_totals.append(int(branch_stats["n_total"]))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise HarnessError(f"A7 branch {i} has no usable n_total") from exc
+
+        if stats[0].get("summary_fit_note") is not None:
+            raise HarnessError(
+                f"A7 summary_fit degraded to diagnostic note: {stats[0].get('summary_fit_note')}")
+        payload = stats[0].get("summary_fit")
+        if not isinstance(payload, dict) or not payload:
+            raise HarnessError("A7 summary_fit payload is absent or empty")
+        rows = payload.get("data")
+        if not isinstance(rows, list) or not rows:
+            raise HarnessError("A7 summary_fit['data'] is absent or empty")
+
+        semantic = _a7_1_validate_summary_rows(rows, expected)
+        rendered_identities = _a7_1_rendered_identity_cells(payload.get("table"))
+        if rendered_identities != semantic["summary_identities"]:
+            raise HarnessError(
+                "A7 rendered table identity cells disagree with validated summary rows; "
+                f"rendered={rendered_identities}, data={semantic['summary_identities']}")
+        primary = _a7_1_primary_figure_evidence(axes)
+
+        reference_values = {
+            "semantic_coordinates": list(expected["coordinates"]),
+            "branch_selected_rows": list(expected["branch_totals"]),
+            "rendered_table_identities": list(expected["summary_identities"]),
+        }
+        candidate_values = {
+            "semantic_coordinates": list(semantic["coordinates"]),
+            "branch_selected_rows": list(actual_branch_totals),
+            "rendered_table_identities": list(rendered_identities),
+        }
+        for observable in case.observables:
+            res.observable_contract.append(_contract(observable))
+            ref = reference_values[observable.name]
+            cand = candidate_values[observable.name]
+            res.observed[observable.name] = cand
+            comparison = compare_observable(observable, ref, cand)
+            res.comparisons.append(comparison_evidence(
+                observable, comparison,
+                reference_label="raw/spec independent oracle",
+                candidate_label="public draw/summary/table"))
+            res.executed_comparisons += 1
+            if not comparison.ok:
+                res.status = FAIL
+                res.detail = f"A7 {observable.name} mismatch: {comparison.detail}"
+                return res
+
+        if res.executed_comparisons != len(case.observables):
+            res.status = INVALID_FIXTURE
+            res.detail = "A7 did not execute every declared comparison"
+            return res
+
+        res.observed["realdata_provenance"] = provenance_doc
+        res.observed["semantic_oracle"] = {
+            "branch_labels": list(A7_1_BRANCH_LABELS),
+            "facet_values": list(A7_1_FACET_VALUES),
+            "q1": expected["q1"],
+            "q2": expected["q2"],
+            "cell_counts": dict(expected["cell_counts"]),
+            "eligible_fit_bins": dict(expected["eligible_fit_bins"]),
+            "coordinates": list(expected["coordinates"]),
+            "summary_identities": list(expected["summary_identities"]),
+            "group_expected": None,
+        }
+        res.observed["figure_structure"] = primary
+        res.payload_paths = {
+            "draw": ["tuple", 2],
+            "summary_fit": ["tuple", 2, 0, "summary_fit"],
+        }
+        res.status = PASS
+        res.detail = ""
+        return res
+    except HarnessError as exc:
+        res.status = FAIL
+        res.detail = f"VECTOR_FACET_SUMMARY_SEMANTICS FAIL: {exc}"
+        res.exception = traceback.format_exc(limit=6)
+        return res
+    except Exception as exc:
+        res.status = FAIL
+        res.detail = f"{type(exc).__name__}: {exc}"
+        res.exception = traceback.format_exc(limit=8)
+        return res
+    finally:
+        _close()
+        res.wall_time_s = round(time.time() - t0, 4)
+
+
+def run_a7_1_realdata_gate(root_path: str, *, manifest_path: str,
+                           gallery_module=None) -> tuple[CaseResult, dict, int]:
+    case = a7_1_realdata_case(root_path, gallery_module=gallery_module)
+    result = run_a7_1_realdata(case, root_path, gallery_module=gallery_module)
+    extra = {}
+    if isinstance(result.observed.get("realdata_provenance"), dict):
+        extra.update(result.observed["realdata_provenance"])
+    doc = write_manifest(manifest_path, [result], [case], extra=extra)
+    return result, doc, strict_exit_code([result], [case])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # A6.3 — final Stage-A orchestration, PDF evidence, and closure reconciliation
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -6459,6 +6930,9 @@ _GALLERY_DISPOSITION = {
     "fig40_weights_alias": ("REUSED_VISUAL", "trusted mandatory gallery page"),
     "fig41_on_error_skip_placeholder": ("REUSED_VISUAL", "trusted visual-only error-placeholder demonstration"),
     "fig42_entry_window": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig43_vector_facet_summary_fit": (
+        "REUSED_CORE",
+        "A7 real-data correctness oracle: vector×facet×fit×summary_fit semantic coordinates"),
 }
 
 _NUMERICAL_CORRECTNESS_ANCHORS = (
@@ -6471,6 +6945,11 @@ _NUMERICAL_CORRECTNESS_ANCHORS = (
         "family": "grouped_profile_keyed_subframe",
         "evidence": "test_phase_13_77_realdata_invariance_harness.py::test_a5_02_full_stack_matches_independent_oracle_in_eager_and_lazy_modes",
         "meaning": "independent grouped-bin NumPy/pandas anchor in EAGER and LAZY modes",
+    },
+    {
+        "family": "vector_facet_summary_fit_semantics",
+        "evidence": "test_phase_13_77_realdata_invariance_harness.py::test_a7_03_semantic_oracle_accepts_exact_product_and_row_order_is_nonsemantic",
+        "meaning": "independent real-data branch×facet coordinate and rendered-table identity anchor",
     },
 )
 
@@ -6549,6 +7028,8 @@ def _stage_a_case_for_gallery_function(name: str, root_path: str, gallery_module
         return a5_4_realdata_case(root_path, gallery_module=gallery_module)
     if name == A5_5_REUSE_FUNCTION:
         return a5_5_realdata_case(root_path, gallery_module=gallery_module)
+    if name == A7_1_GALLERY_FUNCTION:
+        return a7_1_realdata_case(root_path, gallery_module=gallery_module)
     return None
 
 
@@ -6590,8 +7071,13 @@ def write_stage_a_pdf(adf: Any, path: str, *, root_path: str,
     required_names.update(
         fn.__name__ for fn in gallery.FIGURES_OPTIONAL
         if dispositions[fn.__name__]["disposition"] == "REUSED_CORE")
-    # fig26 contributes its normal figure plus the fit-summary table page.
-    expected_page_count = len(required_names) + (1 if "fig26_summary_fit" in required_names else 0)
+    # fig26 and A7 fig43 each contribute their normal figure plus a required
+    # fit-summary table page.  Historical Stage-A evidence remains 43 pages;
+    # this is the current post-Stage-A contract.
+    summary_table_pages = {
+        "fig26_summary_fit", "fig43_vector_facet_summary_fit",
+    }
+    expected_page_count = len(required_names) + len(summary_table_pages & required_names)
 
     with gallery.PdfPages(path) as pdf:
         for mandatory, funcs in ((True, gallery.FIGURES_MANDATORY),
@@ -6625,17 +7111,26 @@ def write_stage_a_pdf(adf: Any, path: str, *, root_path: str,
                     _annotate_stage_a_figure(fig, annotation)
                     gallery._add(pdf, fig, title)
                     n_pages += 1
-                    if name == "fig26_summary_fit":
+                    if name in summary_table_pages:
                         tbl = None
                         if isinstance(result, tuple) and len(result) > 2 \
                                 and isinstance(result[2], dict):
                             tbl = result[2].get("summary_fit", {}).get("table")
+                        elif (name == "fig43_vector_facet_summary_fit"
+                              and isinstance(result, tuple) and len(result) > 2
+                              and isinstance(result[2], list) and result[2]
+                              and isinstance(result[2][0], dict)):
+                            tbl = result[2][0].get("summary_fit", {}).get("table")
                         if tbl is None:
                             raise HarnessError(
-                                "required fig26 fit-summary table page is missing")
-                        _annotate_stage_a_figure(
-                            tbl, "GALLERY DISPOSITION: REUSED_VISUAL\n"
-                                 "REASON: fit-summary table from trusted fig26")
+                                f"required {name} fit-summary table page is missing")
+                        if case is not None:
+                            table_annotation = footer_text(case)
+                        else:
+                            table_annotation = (
+                                "GALLERY DISPOSITION: REUSED_VISUAL\n"
+                                "REASON: fit-summary table from trusted fig26")
+                        _annotate_stage_a_figure(tbl, table_annotation)
                         gallery._add(pdf, tbl, title + " — fit table")
                         n_pages += 1
                 except Exception as exc:
@@ -6837,6 +7332,7 @@ def _a6_3_fraction_cases(root_path: str, gallery_module=None) -> tuple[CaseSpec,
         a5_4_realdata_case(root_path, gallery_module=gallery_module),
         a5_5_realdata_case(root_path, gallery_module=gallery_module),
         a5_6_realdata_case(root_path, gallery_module=gallery_module),
+        a7_1_realdata_case(root_path, gallery_module=gallery_module),
     )
 
 
@@ -6864,7 +7360,7 @@ def run_stage_a_fraction_gate(root_path: str, *, manifest_path: str, pdf_path: s
         root_path, gallery_module=gallery)
     cases = list(_a6_3_fraction_cases(root_path, gallery_module=gallery))
     runners = (run_a5_2_realdata, run_a5_4_realdata,
-               run_a5_5_realdata, run_a5_6_realdata)
+               run_a5_5_realdata, run_a5_6_realdata, run_a7_1_realdata)
     results = [
         runner(
             case, root_path, gallery_module=gallery,

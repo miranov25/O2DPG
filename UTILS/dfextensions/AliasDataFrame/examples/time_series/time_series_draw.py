@@ -16,6 +16,9 @@ Groups:
   G5 — Fitting                  (fig23–fig26)
   G6 — Advanced composition     (fig27–fig31)
   G7 — Full stack ADF+GB        (fig32–fig34, optional)
+  G8 — ADF dispatch closure     (fig35–fig39)
+  G9 — Error/window semantics   (fig40–fig42)
+  G10 — Semantic oracle gallery (fig43)
 
 Known limitations:
   central='median' + group_by=: silently returns mean (KNOWN.grouped_central_median).
@@ -373,6 +376,32 @@ def fig42_entry_window(adf):
                     auto_title=True)
 
 
+# ── G10 — Post-Stage-A semantic-oracle hardening (PHASE_13_77_ADF) ───────────
+
+def fig43_vector_facet_summary_fit(adf):
+    """G10.43 — vector×facet×fit×summary_fit — 3 time branches × 2 side facets"""
+    q1, q2 = adf.df["time_s"].quantile([1.0 / 3.0, 2.0 / 3.0]).to_numpy()
+    return adf.draw(
+        "dcar_tpc_vertex:tgl",
+        selection=f"{BASE_SEL}&(side_type<2)",
+        type="profile",
+        bins=30,
+        range=(-1.5, 1.5),
+        selection_vector=[
+            f"time_s<{q1}",
+            f"(time_s>={q1})&(time_s<{q2})",
+            f"time_s>={q2}",
+        ],
+        selection_labels=["early", "middle", "late"],
+        vector_compose="outer",
+        facet_by="side_type",
+        fit="pol1",
+        summary_fit="table",
+        min_entries=50,
+        auto_title=True,
+    )
+
+
 # ── G7 — Full stack ADF + GB (optional, mutate adf in place) ─────────────────
 
 def fig32_subframe_vertex(adf):
@@ -423,7 +452,11 @@ FIGURES_G8 = [fig35_batch_profile2d, fig36_batch_overlay, fig37_adf_draw_overlay
 
 FIGURES_G9 = [fig40_weights_alias, fig41_on_error_skip_placeholder, fig42_entry_window]
 
-FIGURES_MANDATORY = FIGURES_G1 + FIGURES_G2 + FIGURES_G3 + FIGURES_G4 + FIGURES_G5 + FIGURES_G6 + FIGURES_G8 + FIGURES_G9
+FIGURES_G10 = [fig43_vector_facet_summary_fit]
+
+FIGURES_MANDATORY = (FIGURES_G1 + FIGURES_G2 + FIGURES_G3 + FIGURES_G4
+                     + FIGURES_G5 + FIGURES_G6 + FIGURES_G8 + FIGURES_G9
+                     + FIGURES_G10)
 FIGURES_OPTIONAL  = [fig32_subframe_vertex, fig33_gb_correction_tgl, fig34_gb_correction_sector]
 
 
@@ -445,11 +478,16 @@ def run_all_pdf(adf, path="ts_draw_gallery.pdf"):
                     continue
                 _add(pdf, result[0], title)
                 n_pages += 1
-                if fn is fig26_summary_fit:
-                    tbl = result[2].get("summary_fit", {}).get("table")
+                if fn in (fig26_summary_fit, fig43_vector_facet_summary_fit):
+                    stats = result[2]
+                    if isinstance(stats, list):
+                        stats = stats[0] if stats and isinstance(stats[0], dict) else {}
+                    tbl = stats.get("summary_fit", {}).get("table") if isinstance(stats, dict) else None
                     if tbl is not None:
                         _add(pdf, tbl, title + " — fit table")
                         n_pages += 1
+                    elif fn is fig43_vector_facet_summary_fit:
+                        raise RuntimeError("fig43 required summary_fit table is missing")
             except Exception as e:
                 print(f"  ERROR {name}: {e}")
                 errors.append((name, str(e)))

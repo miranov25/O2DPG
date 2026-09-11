@@ -35,6 +35,12 @@ Phase 13.61.ADF Fix (2026-06-24, BUG_20260624_lazy_bridge): Added 1 new feature
 LAZY.expression_autoload (ensure_columns lazy bridge) covered by
 test_bug20260624_ensure_columns.py (4). Total: 54 → 55.
 Phase 13.77.ADF A5 closure (2026-09-02): Added 4 acceptance-catalogue features: TESTING.phase13_77_harness, INV.draw_surface_consistency, INV.eager_lazy_slot_symmetry, and INV.realdata_acceptance. Exact collected-node ownership covers all 248 current PHASE_13_77 harness nodes; A3/A4/A5 nodes are marked invariance. Total features: 64 → 68.
+Phase 13.77.ADF post-Stage-A A7 hardening (2026-09-11): Extended
+INV.realdata_acceptance with the 10-node vector×facet×fit×summary-fit semantic
+oracle/gallery regression family. The A1-A5/A7 catalogue ownership set grows
+248 → 258 exact nodes; with the separately registered A6 closure/reference
+tests the full harness now collects 297 nodes. No new product capability
+feature is introduced.
 Phase 13.79.ADF Part A registration (2026-09-03): Added DRAW.slot_grid for the architect-ratified B-SMOKE/B-INVARIANCE systematic surface and TESTING.capability_matrix_index for the shared Markdown/HTML/JSON diagnostic-index tooling.
 """
 
@@ -796,7 +802,7 @@ FEATURES = [
          "test_phase_13_77_realdata_invariance_harness.py::test_a6_17_compare_refuses_duplicate_current_case_records",
          "test_phase_13_77_realdata_invariance_harness.py::test_a6_18_malformed_observable_contract_raises_harness_error",
          "test_phase_13_77_realdata_invariance_harness.py::test_a6_19_reference_convenience_metadata_must_match_nested_identity",
-         "test_phase_13_77_realdata_invariance_harness.py::test_a6_20_gallery_disposition_is_exact_for_all_42_figures",
+         "test_phase_13_77_realdata_invariance_harness.py::test_a6_20_gallery_disposition_is_exact_for_all_43_figures",
          "test_phase_13_77_realdata_invariance_harness.py::test_a6_21_numerical_oracle_closure_is_explicit_and_ready",
          "test_phase_13_77_realdata_invariance_harness.py::test_a6_22_pdf_wrapper_reuses_gallery_pdf_owner_and_annotates_pages",
          "test_phase_13_77_realdata_invariance_harness.py::test_a6_23_cli_sample_mode_delegates_to_single_fraction_gate_and_compare",
@@ -810,7 +816,7 @@ FEATURES = [
          "test_phase_13_77_realdata_invariance_harness.py::test_a6_31_full_lazy_build_failure_persists_manifest",
          "test_phase_13_77_realdata_invariance_harness.py::test_a6_32_lazy_full_deferrals_are_re_adjudicated_without_duplicate_full_oracles",
          "test_phase_13_77_realdata_invariance_harness.py::test_a6_33_reused_core_optional_skip_is_strict_failure",
-         "test_phase_13_77_realdata_invariance_harness.py::test_a6_34_stage_a_pdf_contract_requires_all_43_pages",
+         "test_phase_13_77_realdata_invariance_harness.py::test_a6_34_current_pdf_contract_requires_all_45_pages",
          "test_phase_13_77_realdata_invariance_harness.py::test_a6_35_calibvertex_ensures_direct_physical_inputs_before_pandas_consumers",
          "test_phase_13_77_realdata_invariance_harness.py::test_a6_36_calibbias_ensures_direct_physical_inputs_before_alias_materialization",
      ]},
@@ -876,7 +882,7 @@ FEATURES = [
          "test_phase_13_77_realdata_invariance_harness.py::test_a4_25_duplicate_historical_ledger_ids_block_and_persist",
      ]},
     {"id": "INV.realdata_acceptance",
-     "name": "Deterministic real-data/gallery acceptance and state invariance — full-stack composition, provenance, environment contracts, G7.32/G7.33/G7.34 evidence, GB prepared-state reuse, and logical-state mutation falsifiers (A5)",
+     "name": "Deterministic real-data/gallery acceptance and state invariance — A5 full-stack/G7 evidence plus A7 vector×facet×fit×summary-fit semantic-coordinate hardening",
      "category": "INVARIANCE",
      "test_patterns": [
          "test_phase_13_77_realdata_invariance_harness.py::test_a5_01_full_stack_case_is_bounded_and_registry_valid",
@@ -921,6 +927,16 @@ FEATURES = [
          "test_phase_13_77_realdata_invariance_harness.py::test_a5_40_g7_34_parent_structure_mutation_fails_and_fingerprint_is_deterministic",
          "test_phase_13_77_realdata_invariance_harness.py::test_a5_41_definition_digest_ignores_only_export_created_at",
          "test_phase_13_77_realdata_invariance_harness.py::test_a5_42_phase_13_77_capability_taxonomy_registration_is_exact",
+         "test_phase_13_77_realdata_invariance_harness.py::test_a7_01_case_is_bounded_correctness_and_registry_valid",
+         "test_phase_13_77_realdata_invariance_harness.py::test_a7_02_fig43_public_call_is_exactly_the_approved_3x2_composition",
+         "test_phase_13_77_realdata_invariance_harness.py::test_a7_03_semantic_oracle_accepts_exact_product_and_row_order_is_nonsemantic",
+         "test_phase_13_77_realdata_invariance_harness.py::test_a7_04_semantic_mutations_fail_loudly[swap_axis]",
+         "test_phase_13_77_realdata_invariance_harness.py::test_a7_04_semantic_mutations_fail_loudly[invent_group]",
+         "test_phase_13_77_realdata_invariance_harness.py::test_a7_04_semantic_mutations_fail_loudly[drop_row]",
+         "test_phase_13_77_realdata_invariance_harness.py::test_a7_05_rendered_table_identity_is_keyed_not_positional",
+         "test_phase_13_77_realdata_invariance_harness.py::test_a7_06_runner_passes_exact_semantics_and_records_three_comparisons",
+         "test_phase_13_77_realdata_invariance_harness.py::test_a7_07_runner_turns_coordinate_corruption_into_strict_failure",
+         "test_phase_13_77_realdata_invariance_harness.py::test_a7_08_current_gallery_contract_adds_fig43_and_its_table_page",
      ]},
 
 ]

@@ -2641,6 +2641,10 @@ def _a4_make_subframe_vector_lazy():
         "files": [], "entry_offsets": [0], "total_entries": len(raw),
         "validation_mode": None,
     }
+    # PHASE_13_76 B3.3b now supports qualified vector slots.  As with the
+    # already-supported scalar subframe case, the structural join key is a
+    # setup baseline rather than a slot-discovered dependency.
+    base.ensure_branches(["kbin"])
     sub = ADF(pd.DataFrame({
         "kbin": np.arange(4, dtype=int),
         "count": np.array([1.0, 2.0, 3.0, 4.0]),
@@ -2650,7 +2654,7 @@ def _a4_make_subframe_vector_lazy():
 
 
 @pytest.mark.invariance
-def test_a4_11_vector_catalogue_and_refusal_contracts_are_machine_visible(tmp_path):
+def test_a4_11_vector_catalogue_and_historical_refusal_contracts_are_machine_visible(tmp_path):
     cases = {c.case_id: c for c in H.a4_cases()}
     expected = {
         "I3-SELECTION-VECTOR-01",
@@ -2675,16 +2679,18 @@ def test_a4_11_vector_catalogue_and_refusal_contracts_are_machine_visible(tmp_pa
         assert c.known_bug_id == "BUG_20260701_ADF_subframe_ref_slot_symmetry"
         assert H.A4_SLOT_CONTRACTS[cid]["runner"] == "run_error_contract"
 
-    # The current capability boundary must survive the same manifest path used
-    # by normal Stage-A evidence, not only exist as a source-code comment.
-    result = H.run_error_contract(
-        cases["I3-SUBFRAME-SELECTION-VECTOR-REFUSAL-01"],
-        _a4_make_subframe_vector_eager, "draw",
-        "BUG_20260701_ADF_subframe_ref_slot_symmetry")
-    assert result.status == H.PASS, result.detail
-    doc = H.write_manifest(str(tmp_path / "a4_3.json"), [result],
-                           [cases["I3-SUBFRAME-SELECTION-VECTOR-REFUSAL-01"]])
+    # Preserve the closed Stage-A refusal contract as historical manifest
+    # metadata, but do not re-execute it against current production: B3.3b
+    # intentionally removed that refusal.
+    historical = cases["I3-SUBFRAME-SELECTION-VECTOR-REFUSAL-01"]
+    result = H.CaseResult(
+        case_id=historical.case_id,
+        status=H.SKIP,
+        detail="historical Stage-A refusal superseded by PHASE_13_76 B3.3b",
+    )
+    doc = H.write_manifest(str(tmp_path / "a4_3_historical.json"), [result], [historical])
     rec = doc["cases"][0]
+    assert rec["status"] == H.SKIP
     assert rec["known_bug_id"] == "BUG_20260701_ADF_subframe_ref_slot_symmetry"
     assert rec["slots_under_test"] == ["selection_vector"]
 
@@ -2723,19 +2729,24 @@ def test_a4_12_13_vector_slots_prove_eager_materialization_and_exact_lazy_loads(
 
 
 @pytest.mark.invariance
-def test_a4_14_15_subframe_vector_refusals_hold_in_eager_and_lazy_modes():
+def test_a4_14_15_b33b_supersedes_historical_subframe_vector_refusals_in_eager_and_lazy_modes():
     cases = {c.case_id: c for c in H.a4_cases()}
     for cid in ("I3-SUBFRAME-SELECTION-VECTOR-REFUSAL-01",
                 "I3-SUBFRAME-WEIGHTS-VECTOR-REFUSAL-01"):
         case = cases[cid]
+        # The case identity remains historical Stage-A evidence.  Current
+        # PHASE_13_76 B3.3b production must now execute the same public request
+        # successfully in both loading modes.
+        assert case.known_bug_id == "BUG_20260701_ADF_subframe_ref_slot_symmetry"
         for maker in (_a4_make_subframe_vector_eager, _a4_make_subframe_vector_lazy):
-            result = H.run_error_contract(
-                case, maker, "draw", "BUG_20260701_ADF_subframe_ref_slot_symmetry")
-            # PASS here already means run_error_contract found the exact bug ID
-            # in the full exception text; result.detail is intentionally truncated.
-            assert result.status == H.PASS, (cid, result.detail)
-            assert case.known_bug_id == "BUG_20260701_ADF_subframe_ref_slot_symmetry"
-            assert H.strict_exit_code([result], [case]) == 0
+            adf = maker()
+            kwargs = dict(case.canonical_spec)
+            expr = kwargs.pop("expr")
+            _fig, _ax, stats = adf.draw(
+                expr, lazy=True, keep_materialized=True, **kwargs)
+            assert isinstance(stats, dict)
+            assert stats.get("normalize_mode") == "delta"
+            assert "normalize_data" in stats
 
 # ── A4.4 — cumulative slot-causality closure hardening ──────────────────────
 
@@ -4469,7 +4480,7 @@ def test_a5_42_phase_13_77_capability_taxonomy_registration_is_exact():
         "TESTING.phase13_77_harness": ("test_a1_", "test_a2_"),
         "INV.draw_surface_consistency": ("test_a3_",),
         "INV.eager_lazy_slot_symmetry": ("test_a4_",),
-        "INV.realdata_acceptance": ("test_a5_",),
+        "INV.realdata_acceptance": ("test_a5_", "test_a7_"),
     }
     for feature_id in expected:
         assert feature_id in by_id
@@ -4492,8 +4503,8 @@ def test_a5_42_phase_13_77_capability_taxonomy_registration_is_exact():
     assert len(by_id["TESTING.phase13_77_harness"]["test_patterns"]) == 155
     assert len(by_id["INV.draw_surface_consistency"]["test_patterns"]) == 27
     assert len(by_id["INV.eager_lazy_slot_symmetry"]["test_patterns"]) == 24
-    assert len(by_id["INV.realdata_acceptance"]["test_patterns"]) == 42
-    assert len(owned) == 248
+    assert len(by_id["INV.realdata_acceptance"]["test_patterns"]) == 52
+    assert len(owned) == 258
 
 
 
@@ -4891,6 +4902,8 @@ def _a6_3_fake_gallery():
                 stats = {}
                 if fn_name == "fig26_summary_fit":
                     stats = {"summary_fit": {"table": FakeFigure()}}
+                elif fn_name == "fig43_vector_facet_summary_fit":
+                    stats = [{"summary_fit": {"table": FakeFigure()}}]
                 return FakeFigure(), object(), stats
             fn.__name__ = fn_name
             fn.__doc__ = fn_name
@@ -4904,14 +4917,15 @@ def _a6_3_fake_gallery():
     return mod
 
 
-def test_a6_20_gallery_disposition_is_exact_for_all_42_figures():
+def test_a6_20_gallery_disposition_is_exact_for_all_43_figures():
     gallery = _a6_3_fake_gallery()
     rows = H.gallery_disposition_table(gallery)
-    assert len(rows) == 42
+    assert len(rows) == 43
     assert {r["gallery_function"] for r in rows} == set(H._GALLERY_DISPOSITION)
     assert {r["disposition"] for r in rows}.issubset(set(H.GALLERY_DISPOSITION_ALLOWED))
     assert next(r for r in rows if r["gallery_function"] == "fig17_profile_facet_time")["disposition"] == "KNOWN_BUG"
     assert next(r for r in rows if r["gallery_function"] == "fig32_subframe_vertex")["disposition"] == "REUSED_CORE"
+    assert next(r for r in rows if r["gallery_function"] == "fig43_vector_facet_summary_fit")["disposition"] == "REUSED_CORE"
 
 
 def test_a6_21_numerical_oracle_closure_is_explicit_and_ready():
@@ -4931,10 +4945,10 @@ def test_a6_22_pdf_wrapper_reuses_gallery_pdf_owner_and_annotates_pages(tmp_path
         object(), str(tmp_path / "stage_a.pdf"), root_path=str(root),
         gallery_module=gallery)
     assert evidence["ok"] is True
-    assert evidence["page_count"] == 43
-    assert evidence["expected_page_count"] == 43
-    assert len(gallery.saved) == 43
-    assert len(gallery.perf_messages) == 84
+    assert evidence["page_count"] == 45
+    assert evidence["expected_page_count"] == 45
+    assert len(gallery.saved) == 45
+    assert len(gallery.perf_messages) == 86
     assert gallery.perf_messages[0].endswith(": BEGIN")
     assert gallery.perf_messages[-1].endswith(": END")
     # At least one core page and one ordinary visual page received annotations.
@@ -5191,15 +5205,15 @@ def test_a6_33_reused_core_optional_skip_is_strict_failure(tmp_path):
     assert results[0].status == H.FAIL
     evidence = results[0].observed["visual_evidence"]
     assert evidence["ok"] is False
-    assert evidence["page_count"] == 42
-    assert evidence["expected_page_count"] == 43
+    assert evidence["page_count"] == 44
+    assert evidence["expected_page_count"] == 45
     assert any(e["gallery_function"] == "fig32_subframe_vertex"
                for e in evidence["errors"])
     assert any(e["gallery_function"] == "__page_count__"
                for e in evidence["errors"])
 
 
-def test_a6_34_stage_a_pdf_contract_requires_all_43_pages(tmp_path):
+def test_a6_34_current_pdf_contract_requires_all_45_pages(tmp_path):
     gallery = _a6_3_fake_gallery()
     root = tmp_path / "input.root"
     root.write_bytes(b"root")
@@ -5207,10 +5221,10 @@ def test_a6_34_stage_a_pdf_contract_requires_all_43_pages(tmp_path):
         object(), str(tmp_path / "stage_a.pdf"), root_path=str(root),
         gallery_module=gallery)
     assert evidence["ok"] is True
-    assert evidence["page_count"] == 43
-    assert evidence["expected_page_count"] == 43
+    assert evidence["page_count"] == 45
+    assert evidence["expected_page_count"] == 45
     assert set(("fig32_subframe_vertex", "fig33_gb_correction_tgl",
-                "fig34_gb_correction_sector")).issubset(
+                "fig34_gb_correction_sector", "fig43_vector_facet_summary_fit")).issubset(
                     set(evidence["required_gallery_functions"]))
     assert evidence["errors"] == []
     assert evidence["skipped"] == []
@@ -5262,3 +5276,244 @@ def test_a6_36_calibbias_ensures_direct_physical_inputs_before_alias_materializa
     }.issubset(required)
     assert len(required) < 40  # bounded lazy dependency set, not full-column fallback
 
+
+
+# ── A7 — post-Stage-A vector×facet×fit×summary-fit semantic alarm ───────────
+
+
+def _a7_frame(n=18000):
+    """Deterministic raw frame with >=2 fit-eligible bins in every 3×2 cell."""
+    i = np.arange(n)
+    tgl_centers = -1.45 + 0.10 * (i % 30)
+    return pd.DataFrame({
+        "time_s": i.astype(float),
+        "side_type": (i % 2).astype(int),
+        "ncl": np.full(n, 100, dtype=int),
+        "dcar_tpc_vertex": np.zeros(n, dtype=float),
+        "tgl": tgl_centers.astype(float),
+    })
+
+
+def _a7_rows():
+    return [
+        {
+            "facet": f"side_type={facet} branch={branch}",
+            "group": None,
+            "fit_name": "pol1",
+            "fit_status": "ok",
+        }
+        for branch in range(3)
+        for facet in (0, 1)
+    ]
+
+
+def _a7_table_figure(identities):
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots()
+    ax.axis("off")
+    ax.table(
+        cellText=[[x, "pol1", i] for i, x in enumerate(identities)],
+        colLabels=["facet", "fit_name", "row_id"], loc="center")
+    return fig
+
+
+def _a7_primary_axes():
+    import matplotlib.pyplot as plt
+    fig, axes = plt.subplots(1, 2, squeeze=False)
+    for facet, ax in enumerate(axes.reshape(-1)):
+        ax.set_title(f"side_type={facet}")
+        for branch in range(3):
+            ax.plot([0, 1], [branch, branch + 0.1])
+    return fig, axes.reshape(-1)
+
+
+def _a7_provenance(root_path, n_rows):
+    st = os.stat(root_path)
+    return {
+        "input_path": os.path.abspath(root_path),
+        "input_size_bytes": int(st.st_size),
+        "input_mtime_ns": int(st.st_mtime_ns),
+        "loading_mode": "EAGER",
+        "sample_mode": "FRACTION",
+        "sample_fraction": H.A5_2_SAMPLE_FRACTION,
+        "sample_seed": H.A5_2_SAMPLE_SEED,
+        "sampling_algorithm": "synthetic unit-test prepared sample",
+        "source_rows": n_rows * 5,
+        "selected_rows": n_rows,
+        "index_digest_sha256": "unit-test-index-digest",
+        "index_dtype": "int64",
+    }
+
+
+def test_a7_01_case_is_bounded_correctness_and_registry_valid(tmp_path):
+    import types
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+    gallery = types.SimpleNamespace(
+        build_adf=lambda *a, **k: None,
+        fig43_vector_facet_summary_fit=lambda adf: None,
+    )
+    case = H.a7_1_realdata_case(str(root), gallery_module=gallery)
+    assert case.case_id == H.A7_1_CASE_ID
+    assert case.purpose == "CORRECTNESS"
+    assert case.oracle_kind == "CORRECTNESS"
+    assert case.gate == "ENVIRONMENT_GATED"
+    assert case.loading_mode == "EAGER"
+    assert case.sample_mode == "FRACTION"
+    assert case.surfaces_under_test == ("draw",)
+    assert case.canonical_spec["gallery_function"] == "fig43_vector_facet_summary_fit"
+    assert case.canonical_spec["selection_labels"] == ["early", "middle", "late"]
+    assert H.validate_registry([case]) == []
+
+
+def test_a7_02_fig43_public_call_is_exactly_the_approved_3x2_composition():
+    import time_series_draw as G
+
+    class CaptureADF:
+        def __init__(self):
+            self.df = pd.DataFrame({"time_s": np.arange(12, dtype=float)})
+            self.call = None
+        def draw(self, expr, **kwargs):
+            self.call = (expr, kwargs)
+            return object(), object(), []
+
+    adf = CaptureADF()
+    G.fig43_vector_facet_summary_fit(adf)
+    expr, kw = adf.call
+    assert expr == "dcar_tpc_vertex:tgl"
+    assert kw["type"] == "profile"
+    assert kw["facet_by"] == "side_type"
+    assert kw["selection_labels"] == ["early", "middle", "late"]
+    assert len(kw["selection_vector"]) == 3
+    assert kw["vector_compose"] == "outer"
+    assert kw["fit"] == "pol1"
+    assert kw["summary_fit"] == "table"
+    assert kw["min_entries"] == 50
+
+
+def test_a7_03_semantic_oracle_accepts_exact_product_and_row_order_is_nonsemantic():
+    adf = type("ADFProbe", (), {"df": _a7_frame()})()
+    expected = H._a7_1_expected_model(adf)
+    rows = _a7_rows()
+    evidence = H._a7_1_validate_summary_rows(rows, expected)
+    reversed_evidence = H._a7_1_validate_summary_rows(list(reversed(rows)), expected)
+    assert evidence == reversed_evidence
+    assert evidence["coordinates"] == expected["coordinates"]
+    assert len(evidence["coordinates"]) == 6
+    assert set(expected["cell_counts"].values())
+    assert all(v >= 2 for v in expected["eligible_fit_bins"].values())
+
+
+@pytest.mark.parametrize("mutation", ["swap_axis", "invent_group", "drop_row"])
+def test_a7_04_semantic_mutations_fail_loudly(mutation):
+    adf = type("ADFProbe", (), {"df": _a7_frame()})()
+    expected = H._a7_1_expected_model(adf)
+    rows = [dict(r) for r in _a7_rows()]
+    if mutation == "swap_axis":
+        # Canonical P0 class: branch identity occupies the facet axis.
+        for row in rows:
+            branch = row["facet"].split("branch=", 1)[1]
+            row["facet"] = f"side_type={branch} branch=0"
+    elif mutation == "invent_group":
+        rows[0]["group"] = 0
+    elif mutation == "drop_row":
+        rows.pop()
+    with pytest.raises(H.HarnessError, match="A7"):
+        H._a7_1_validate_summary_rows(rows, expected)
+
+
+def test_a7_05_rendered_table_identity_is_keyed_not_positional():
+    identities = [r["facet"] for r in _a7_rows()]
+    fig = _a7_table_figure(list(reversed(identities)))
+    try:
+        assert H._a7_1_rendered_identity_cells(fig) == sorted(identities)
+    finally:
+        import matplotlib.pyplot as plt
+        plt.close(fig)
+
+
+def test_a7_06_runner_passes_exact_semantics_and_records_three_comparisons(tmp_path):
+    import types
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+    frame = _a7_frame()
+    adf = types.SimpleNamespace(df=frame, _lazy_reader=None)
+    expected = H._a7_1_expected_model(adf)
+    table = _a7_table_figure(expected["summary_identities"])
+    primary_fig, axes = _a7_primary_axes()
+    rows = _a7_rows()
+    stats = []
+    for branch, n_total in enumerate(expected["branch_totals"]):
+        branch_stats = {"n_total": n_total}
+        if branch == 0:
+            branch_stats["summary_fit"] = {"data": rows, "table": table}
+        stats.append(branch_stats)
+
+    gallery = types.SimpleNamespace(
+        build_adf=lambda *a, **k: adf,
+        fig43_vector_facet_summary_fit=lambda prepared: (primary_fig, axes, stats),
+    )
+    case = H.a7_1_realdata_case(str(root), gallery_module=gallery)
+    result = H.run_a7_1_realdata(
+        case, str(root), gallery_module=gallery,
+        prepared_adf=adf,
+        prepared_provenance=_a7_provenance(str(root), len(frame)))
+    try:
+        assert result.status == H.PASS, result.detail
+        assert result.executed_comparisons == 3
+        assert result.observed["semantic_coordinates"] == expected["coordinates"]
+        assert result.observed["rendered_table_identities"] == expected["summary_identities"]
+        assert result.observed["semantic_oracle"]["group_expected"] is None
+    finally:
+        import matplotlib.pyplot as plt
+        plt.close(primary_fig)
+        plt.close(table)
+
+
+def test_a7_07_runner_turns_coordinate_corruption_into_strict_failure(tmp_path):
+    import types
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+    frame = _a7_frame()
+    adf = types.SimpleNamespace(df=frame, _lazy_reader=None)
+    expected = H._a7_1_expected_model(adf)
+    bad_rows = [dict(r) for r in _a7_rows()]
+    bad_rows[0]["group"] = "side_type=0"
+    table = _a7_table_figure(expected["summary_identities"])
+    primary_fig, axes = _a7_primary_axes()
+    stats = [
+        {"n_total": n, **({"summary_fit": {"data": bad_rows, "table": table}} if i == 0 else {})}
+        for i, n in enumerate(expected["branch_totals"])
+    ]
+    gallery = types.SimpleNamespace(
+        build_adf=lambda *a, **k: adf,
+        fig43_vector_facet_summary_fit=lambda prepared: (primary_fig, axes, stats),
+    )
+    case = H.a7_1_realdata_case(str(root), gallery_module=gallery)
+    result = H.run_a7_1_realdata(
+        case, str(root), gallery_module=gallery,
+        prepared_adf=adf,
+        prepared_provenance=_a7_provenance(str(root), len(frame)))
+    try:
+        assert result.status == H.FAIL
+        assert H.strict_exit_code([result], [case]) == 1
+        assert "VECTOR_FACET_SUMMARY_SEMANTICS FAIL" in result.detail
+        assert "group" in result.detail
+    finally:
+        import matplotlib.pyplot as plt
+        plt.close(primary_fig)
+        plt.close(table)
+
+
+def test_a7_08_current_gallery_contract_adds_fig43_and_its_table_page(tmp_path):
+    gallery = _a6_3_fake_gallery()
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+    evidence = H.write_stage_a_pdf(
+        object(), str(tmp_path / "post_stage_a.pdf"), root_path=str(root),
+        gallery_module=gallery)
+    assert evidence["ok"] is True
+    assert evidence["page_count"] == 45
+    assert evidence["expected_page_count"] == 45
+    assert "fig43_vector_facet_summary_fit" in evidence["required_gallery_functions"]
+    assert len(gallery.saved) == 45
