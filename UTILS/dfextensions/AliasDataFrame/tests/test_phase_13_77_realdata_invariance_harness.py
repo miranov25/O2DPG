@@ -4965,10 +4965,10 @@ def test_a6_22_pdf_wrapper_reuses_gallery_pdf_owner_and_annotates_pages(tmp_path
         object(), str(tmp_path / "stage_a.pdf"), root_path=str(root),
         gallery_module=gallery)
     assert evidence["ok"] is True
-    assert evidence["page_count"] == 47
-    assert evidence["expected_page_count"] == 47
-    assert len(gallery.saved) == 47
-    assert len(gallery.perf_messages) == 90
+    assert evidence["page_count"] == 53
+    assert evidence["expected_page_count"] == 53
+    assert len(gallery.saved) == 53
+    assert len(gallery.perf_messages) == 102
     assert gallery.perf_messages[0].endswith(": BEGIN")
     assert gallery.perf_messages[-1].endswith(": END")
     # At least one core page and one ordinary visual page received annotations.
@@ -5222,8 +5222,8 @@ def test_a6_33_reused_core_optional_skip_is_strict_failure(tmp_path):
     assert results[0].status == H.FAIL
     evidence = results[0].observed["visual_evidence"]
     assert evidence["ok"] is False
-    assert evidence["page_count"] == 46
-    assert evidence["expected_page_count"] == 47
+    assert evidence["page_count"] == 52
+    assert evidence["expected_page_count"] == 53
     assert any(e["gallery_function"] == "fig32_subframe_vertex"
                for e in evidence["errors"])
     assert any(e["gallery_function"] == "__page_count__"
@@ -5238,12 +5238,14 @@ def test_a6_34_current_pdf_contract_requires_all_live_pages(tmp_path):
         object(), str(tmp_path / "stage_a.pdf"), root_path=str(root),
         gallery_module=gallery)
     assert evidence["ok"] is True
-    assert evidence["page_count"] == 47
-    assert evidence["expected_page_count"] == 47
+    assert evidence["page_count"] == 53
+    assert evidence["expected_page_count"] == 53
     assert set(("fig32_subframe_vertex", "fig33_gb_correction_tgl",
                 "fig34_gb_correction_sector", "fig43_vector_facet_summary_fit",
                 "fig44_weights_vector_facet_fit_oracle",
-                "fig45_public_surface_equivalence_oracle")).issubset(
+                "fig45_public_surface_equivalence_oracle",
+                "fig46_injected_truth_vector_overlay",
+                "fig51_injected_truth_facet_residual")).issubset(
                     set(evidence["required_gallery_functions"]))
     assert evidence["errors"] == []
     assert evidence["skipped"] == []
@@ -5547,16 +5549,22 @@ def test_a7_08_current_gallery_contract_extends_committed_a7_without_rewriting_h
         object(), str(tmp_path / "post_stage_a.pdf"), root_path=str(root),
         gallery_module=gallery)
     assert evidence["ok"] is True
-    # Committed A7 remains a historical 45-page checkpoint.  v0.2 FAST now includes O4 fig45 and O2 fig44; the current
-    # live contract therefore reaches the approved final 47 pages.
-    assert H.current_stage_a_contract_amendment()["historical_stage_a_gallery_pages"] == 43
-    assert H.current_stage_a_contract_amendment()["current_step_gallery_pages"] == 47
-    assert H.current_stage_a_contract_amendment()["approved_final_fast_gallery_pages"] == 47
-    assert evidence["page_count"] == 47
-    assert evidence["expected_page_count"] == 47
+    # Historical Stage-A (43 pages) and the committed v0.2 checkpoint (47 pages)
+    # remain immutable references.  The injected-truth increment adds six mandatory
+    # scientific-oracle pages and therefore makes the live contract 53 pages.
+    rec = H.current_stage_a_contract_amendment()
+    assert rec["historical_stage_a_gallery_pages"] == 43
+    assert rec["previous_checkpoint_gallery_pages"] == 47
+    assert rec["injected_truth_primary_pages"] == 6
+    assert rec["current_step_gallery_pages"] == 53
+    assert rec["approved_final_fast_gallery_pages"] == 53
+    assert evidence["page_count"] == 53
+    assert evidence["expected_page_count"] == 53
     assert "fig43_vector_facet_summary_fit" in evidence["required_gallery_functions"]
     assert "fig45_public_surface_equivalence_oracle" in evidence["required_gallery_functions"]
-    assert len(gallery.saved) == 47
+    assert "fig46_injected_truth_vector_overlay" in evidence["required_gallery_functions"]
+    assert "fig51_injected_truth_facet_residual" in evidence["required_gallery_functions"]
+    assert len(gallery.saved) == 53
 
 
 # ── PHASE_13_77 hardening v0.2 — STEP 1 / O1 ──
@@ -5577,8 +5585,8 @@ def _hardening_frame(n=2400):
     })
 
 
-def _hardening_adf():
-    return ADF(_hardening_frame())
+def _hardening_adf(n=2400):
+    return ADF(_hardening_frame(n))
 
 
 def test_a7_09_o1_red_green_custody_is_pinned_exactly():
@@ -5831,8 +5839,10 @@ def test_a7_19_o4_current_state_amendment_is_persistent_and_pinned():
     assert rec["historical_stage_a_closure_immutable"] is True
     assert rec["target_a7_commit"] == "f730b0cfd4d6874e5f93331c35b3cc188470f7fc"
     assert rec["target_aliasdataframe_md5"] == "698410cf846183d8f8f362be1516409c"
-    assert rec["current_step_gallery_pages"] == 47
-    assert rec["approved_final_fast_gallery_pages"] == 47
+    assert rec["previous_checkpoint_gallery_pages"] == 47
+    assert rec["injected_truth_primary_pages"] == 6
+    assert rec["current_step_gallery_pages"] == 53
+    assert rec["approved_final_fast_gallery_pages"] == 53
     assert len(rec["superseded_nodes"]) == 2
     assert all("current_contract" in row for row in rec["superseded_nodes"])
 
@@ -6133,18 +6143,21 @@ def test_a7_37_o2_fig44_is_reused_core_and_owned_by_o2_case(tmp_path):
 
 
 def test_a7_38_fast_gallery_reaches_approved_47_page_contract(tmp_path):
+    """Historical node retained: committed v0.2 was 47 pages; live extension is 53."""
     gallery = _a6_3_fake_gallery()
     root = tmp_path / "input.root"
     root.write_bytes(b"root")
     evidence = H.write_stage_a_pdf(
-        object(), str(tmp_path / "fast47.pdf"), root_path=str(root), gallery_module=gallery)
+        object(), str(tmp_path / "fast53.pdf"), root_path=str(root), gallery_module=gallery)
     assert evidence["ok"] is True, evidence
-    assert evidence["page_count"] == 47
-    assert evidence["expected_page_count"] == 47
+    assert evidence["page_count"] == 53
+    assert evidence["expected_page_count"] == 53
     assert H.HARDENING_O2_GALLERY_FUNCTION in evidence["required_gallery_functions"]
     assert H.HARDENING_O4_GALLERY_FUNCTION in evidence["required_gallery_functions"]
-    assert H.current_stage_a_contract_amendment()["current_step_gallery_pages"] == 47
-    assert H.current_stage_a_contract_amendment()["approved_final_fast_gallery_pages"] == 47
+    rec = H.current_stage_a_contract_amendment()
+    assert rec["previous_checkpoint_gallery_pages"] == 47
+    assert rec["current_step_gallery_pages"] == 53
+    assert rec["approved_final_fast_gallery_pages"] == 53
 
 
 def test_a7_39_fast_fraction_registry_includes_o2_without_second_build_owner():
@@ -6634,3 +6647,270 @@ def test_a7_57_o3_step5d_taxonomy_registration_is_exact():
         "test_phase_13_77_realdata_invariance_harness.py::test_a7_57_o3_step5d_taxonomy_registration_is_exact",
     }
     assert expected.issubset(patterns)
+
+# ── PHASE_13_77 injected-truth scientific-oracle increment — A8 ───────────
+
+def _injected_gallery():
+    import time_series_draw as G
+    return G
+
+
+def _it_attach_stable_ids(adf):
+    # The real gallery preserves the pre-sampling source index.  Synthetic tests
+    # provide the equivalent stable identity explicitly.
+    adf.df["oracle_row_id"] = np.arange(100000, 100000 + len(adf.df), dtype=np.int64)
+    return adf
+
+
+def test_a8_01_injected_truth_construction_is_stable_row_keyed_and_exact():
+    G = _injected_gallery()
+    adf = _it_attach_stable_ids(_hardening_adf(n=1800))
+    original = adf.df.copy()
+    G._ensure_injected_truth(adf)
+    first = adf.df[["oracle_row_id", "oracle_noise", "oracle_w_flat", "oracle_w_tgl"]].copy()
+
+    # Same stable row identities in another row order must get identical noise.
+    shuffled = original.sample(frac=1.0, random_state=91).copy()
+    reordered = ADF(shuffled)
+    G._ensure_injected_truth(reordered)
+    second = reordered.df[["oracle_row_id", "oracle_noise"]].set_index("oracle_row_id").sort_index()
+    first_by_id = first[["oracle_row_id", "oracle_noise"]].set_index("oracle_row_id").sort_index()
+    np.testing.assert_array_equal(second.index.to_numpy(), first_by_id.index.to_numpy())
+    np.testing.assert_allclose(second["oracle_noise"], first_by_id["oracle_noise"], rtol=0, atol=0)
+
+    subset_df = original.iloc[::3].copy()
+    subset = ADF(subset_df)
+    G._ensure_injected_truth(subset)
+    expected_subset = first_by_id.loc[subset.df["oracle_row_id"], "oracle_noise"].to_numpy()
+    np.testing.assert_allclose(subset.df["oracle_noise"], expected_subset, rtol=0, atol=0)
+
+    assert G.INJECTED_TRUTH_NOISE_SEED == 137
+    assert G.INJECTED_TRUTH_NOISE_SIGMA == pytest.approx(0.02)
+    np.testing.assert_allclose(adf.df["oracle_w_flat"], 1.0, rtol=0, atol=0)
+    np.testing.assert_allclose(
+        adf.df["oracle_w_tgl"], 1.0 + 0.30 * np.abs(adf.df["tgl"].to_numpy()),
+        rtol=0, atol=0)
+
+    # Independent raw algebra, not a second ADF evaluation, pins the injected truth.
+    tgl = adf.df["tgl"].to_numpy(dtype=float)
+    sector = adf.df["sector"].to_numpy(dtype=float)
+    delta = 0.08*np.sin(2*np.pi*sector/36.0) + 0.03*tgl + 0.015*tgl*tgl
+    assert np.ptp(delta) > 0.05  # deliberately non-null scientific signal
+
+
+def test_a8_01b_injected_truth_row_algebra_ignores_nonfinite_profile_rows():
+    """Non-finite detector rows must not invalidate the finite selected truth domain."""
+    G = _injected_gallery()
+    adf = _it_attach_stable_ids(_hardening_adf(n=3600))
+
+    # Keep the rows inside BASE_SEL, but make profile coordinates non-finite.
+    # Public profile/histogram reduction excludes these rows from the relevant
+    # x/y domain; the independent oracle must apply the same scientific domain.
+    adf.df.loc[adf.df.index[7], "tgl"] = np.nan
+    adf.df.loc[adf.df.index[11], "sector"] = np.nan
+
+    G._ensure_injected_truth(adf)
+    model = H._it_raw_model(adf)
+
+    assert model["truth_domain_rows"] > 0
+    assert model["truth_domain_rows"] < int(np.count_nonzero(model["base"]))
+    np.testing.assert_allclose(
+        model["residual"][model["truth_domain"]],
+        model["noise"][model["truth_domain"]],
+        rtol=0.0, atol=1e-14,
+    )
+
+
+def test_a8_02_primary_six_cases_are_correctness_fail_closed_and_gallery_owned():
+    G = _injected_gallery()
+    cases = H.injected_truth_cases(gallery_module=G)
+    assert len(cases) == 6
+    assert H.validate_registry(cases) == []
+    names = [c.canonical_spec["gallery_function"] for c in cases]
+    assert names == [
+        H.INJECTED_TRUTH_VECTOR_GALLERY,
+        H.INJECTED_TRUTH_DELTA_GALLERY,
+        H.INJECTED_TRUTH_SELECTION_GALLERY,
+        H.INJECTED_TRUTH_WEIGHTS_GALLERY,
+        H.INJECTED_TRUTH_GAUSS_GALLERY,
+        H.INJECTED_TRUTH_FACET_GALLERY,
+    ]
+    assert all(c.purpose == "CORRECTNESS" for c in cases)
+    assert all(c.gate == "ENVIRONMENT_GATED" for c in cases)
+    assert all(c.oracle_kind == "CORRECTNESS" for c in cases)
+    assert all(c.figure_contract is not None for c in cases)
+    assert all(c.canonical_spec.get("injected_truth") for c in cases)
+    mandatory = {fn.__name__ for fn in G.FIGURES_MANDATORY}
+    assert set(names).issubset(mandatory)
+    rows = {r["gallery_function"]: r for r in H.gallery_disposition_table(G)}
+    assert all(rows[name]["disposition"] == "REUSED_CORE" for name in names)
+
+
+def test_a8_03_injected_vector_overlay_matches_independent_raw_truth(tmp_path):
+    G = _injected_gallery()
+    adf = _it_attach_stable_ids(_hardening_adf(n=3600))
+    case = H.injected_truth_vector_case(gallery_module=G)
+    root = tmp_path / "synthetic.root"
+    root.write_bytes(b"root")
+    result = H.run_injected_truth_case(
+        case, str(root), gallery_module=G,
+        prepared_adf=adf, prepared_provenance=_a7_provenance(str(root), len(adf.df)))
+    assert result.status == H.PASS, result.detail
+    assert result.executed_comparisons == 2
+    assert all(cmp["ok"] for cmp in result.comparisons)
+
+
+def test_a8_04_swapped_vector_branch_falsifier_fails_for_intended_reason():
+    expected = {
+        "counts": [[3, 4], [3, 4]],
+        "profile_means": [[0.1, 0.2], [0.3, 0.4]],
+    }
+    observed = {
+        "counts": [[3, 4], [3, 4]],
+        "profile_means": [[0.3, 0.4], [0.1, 0.2]],
+    }
+    obs = H.injected_truth_vector_case().observables[1]
+    cmp = H.compare_observable(obs, expected["profile_means"], observed["profile_means"])
+    assert cmp.ok is False
+    assert cmp.mismatch_count > 0
+
+
+def test_a8_08b_primary_oracles_have_explicit_human_ai_review_contracts():
+    """A PRIMARY ORACLE page must say exactly what a reviewer validates."""
+    cases = [
+        H.o5_realdata_case("synthetic.root"),
+        H.a7_1_realdata_case("synthetic.root"),
+        H.o2_oracle_case(),
+        H.injected_truth_vector_case(),
+        H.injected_truth_delta_case(),
+        H.injected_truth_selection_case(),
+        H.injected_truth_weights_case(),
+        H.injected_truth_gauss_case(),
+        H.injected_truth_facet_case(),
+    ]
+    for case in cases:
+        assert H.proof_class_for_case(case) == H.PRIMARY_ORACLE, case.case_id
+        checks = H.reviewer_checks_for_case(case)
+        assert len(checks) >= 3, case.case_id
+        footer = H.footer_text(case)
+        assert "PROOF CLASS: PRIMARY ORACLE" in footer
+        assert "REVIEWER MUST CHECK (HUMAN / AI):" in footer
+        for i, check in enumerate(checks, 1):
+            assert f"{i}. {check}" in footer
+
+
+def test_a8_08c_proof_classes_separate_primary_consistency_and_smoke():
+    """Do not let smoke pages masquerade as scientific correctness evidence."""
+    primary = H.injected_truth_gauss_case()
+    consistency = H.o4_realdata_case("synthetic.root")
+    assert H.proof_class_for_case(primary) == H.PRIMARY_ORACLE
+    assert H.proof_class_for_case(consistency) == H.CONSISTENCY_ORACLE
+    assert H.proof_class_for_case(None) == H.SMOKE_COVERAGE
+    assert H.reviewer_checks_for_case(None) == ()
+
+
+def test_a8_10_direct_normalize_delta_recovers_known_truth(tmp_path):
+    """Rank-2 real user workflow: vector normalize=delta must expose known truth."""
+    G = _injected_gallery()
+    adf = _it_attach_stable_ids(_hardening_adf(n=7200))
+    case = H.injected_truth_delta_case(gallery_module=G)
+    root = tmp_path / "synthetic.root"
+    root.write_bytes(b"root")
+    result = H.run_injected_truth_case(
+        case, str(root), gallery_module=G,
+        prepared_adf=adf, prepared_provenance=_a7_provenance(str(root), len(adf.df)))
+    # This is intentionally a product acceptance assertion. If current dfdraw
+    # ignores normalize='delta' for native vector expressions, it stays RED.
+    assert result.status == H.PASS, result.detail
+    assert result.executed_comparisons == 1
+
+
+def test_a8_05_selection_delta_and_simple_facet_match_independent_truth(tmp_path):
+    G = _injected_gallery()
+    for factory in (H.injected_truth_selection_case, H.injected_truth_facet_case):
+        adf = _it_attach_stable_ids(_hardening_adf(n=7200))
+        case = factory(gallery_module=G)
+        root = tmp_path / f"{case.case_id}.root"
+        root.write_bytes(b"root")
+        result = H.run_injected_truth_case(
+            case, str(root), gallery_module=G,
+            prepared_adf=adf, prepared_provenance=_a7_provenance(str(root), len(adf.df)))
+        assert result.status == H.PASS, (case.case_id, result.detail)
+        assert result.executed_comparisons == len(case.observables)
+
+
+def test_a8_06_weights_truth_matches_raw_or_stays_red_for_real_semantic_difference(tmp_path):
+    G = _injected_gallery()
+    adf = _it_attach_stable_ids(_hardening_adf(n=7200))
+    case = H.injected_truth_weights_case(gallery_module=G)
+    root = tmp_path / "synthetic.root"
+    root.write_bytes(b"root")
+    result = H.run_injected_truth_case(
+        case, str(root), gallery_module=G,
+        prepared_adf=adf, prepared_provenance=_a7_provenance(str(root), len(adf.df)))
+    # Synthetic float64 data should be exact enough to pass the intentionally tight
+    # raw weighted oracle.  Real-data float32 differences remain a commissioning result,
+    # not a reason to weaken this test here.
+    assert result.status == H.PASS, result.detail
+    assert result.executed_comparisons == 3
+
+
+def test_a8_07_gaussian_fit_tracks_actual_selected_noise_and_wrong_sigma_fails(tmp_path):
+    G = _injected_gallery()
+    adf = _it_attach_stable_ids(_hardening_adf(n=12000))
+    case = H.injected_truth_gauss_case(gallery_module=G)
+    root = tmp_path / "synthetic.root"
+    root.write_bytes(b"root")
+    result = H.run_injected_truth_case(
+        case, str(root), gallery_module=G,
+        prepared_adf=adf, prepared_provenance=_a7_provenance(str(root), len(adf.df)))
+    assert result.status == H.PASS, result.detail
+    diag = result.observed["injected_truth"]["diagnostics"]
+    assert abs(diag["raw_selected_sigma"] - H.INJECTED_TRUTH_NOISE_SIGMA) < 0.002
+    # Explicit wrong expected sigma falsifier: a 50% wrong truth is far outside
+    # the statistical/binning envelope used by the real Gaussian oracle.
+    wrong_sigma = H.INJECTED_TRUTH_NOISE_SIGMA * 1.5
+    assert abs(wrong_sigma - diag["raw_selected_sigma"]) > diag["sigma_tolerance"]
+
+
+def test_a8_08_fast_gallery_reaches_approved_53_page_contract(tmp_path):
+    gallery = _a6_3_fake_gallery()
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+    evidence = H.write_stage_a_pdf(
+        object(), str(tmp_path / "fast53.pdf"), root_path=str(root), gallery_module=gallery)
+    assert evidence["ok"] is True, evidence
+    assert evidence["page_count"] == 53
+    assert evidence["expected_page_count"] == 53
+    rec = H.current_stage_a_contract_amendment()
+    assert rec["previous_checkpoint_gallery_pages"] == 47
+    assert rec["injected_truth_primary_pages"] == 6
+    assert rec["current_step_gallery_pages"] == 53
+    required = set(evidence["required_gallery_functions"])
+    assert set(H.INJECTED_TRUTH_GALLERY_CASES).issubset(required)
+
+
+def test_a8_09_injected_truth_taxonomy_registration_is_exact():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "adf_feature_taxonomy_injected_truth",
+        os.path.join(os.path.dirname(__file__), "feature_taxonomy.py"),
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    feature = next(row for row in mod.FEATURES if row["id"] == "INV.realdata_acceptance")
+    patterns = set(feature["test_patterns"])
+    expected = {
+        "test_phase_13_77_realdata_invariance_harness.py::test_a8_01_injected_truth_construction_is_stable_row_keyed_and_exact",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a8_02_primary_six_cases_are_correctness_fail_closed_and_gallery_owned",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a8_03_injected_vector_overlay_matches_independent_raw_truth",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a8_04_swapped_vector_branch_falsifier_fails_for_intended_reason",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a8_05_selection_delta_and_simple_facet_match_independent_truth",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a8_06_weights_truth_matches_raw_or_stays_red_for_real_semantic_difference",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a8_07_gaussian_fit_tracks_actual_selected_noise_and_wrong_sigma_fails",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a8_08_fast_gallery_reaches_approved_53_page_contract",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a8_09_injected_truth_taxonomy_registration_is_exact",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a8_10_direct_normalize_delta_recovers_known_truth",
+    }
+    assert expected.issubset(patterns)
+

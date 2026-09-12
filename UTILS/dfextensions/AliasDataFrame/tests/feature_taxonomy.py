@@ -986,6 +986,16 @@ FEATURES = [
         "test_phase_13_77_realdata_invariance_harness.py::test_a7_55_o3_final_source_identity_mismatch_fails_closed",
         "test_phase_13_77_realdata_invariance_harness.py::test_a7_56_o3_final_decoy_loaded_fails_for_dependency_reason",
         "test_phase_13_77_realdata_invariance_harness.py::test_a7_57_o3_step5d_taxonomy_registration_is_exact",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a8_01_injected_truth_construction_is_stable_row_keyed_and_exact",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a8_02_primary_six_cases_are_correctness_fail_closed_and_gallery_owned",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a8_03_injected_vector_overlay_matches_independent_raw_truth",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a8_04_swapped_vector_branch_falsifier_fails_for_intended_reason",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a8_05_selection_delta_and_simple_facet_match_independent_truth",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a8_06_weights_truth_matches_raw_or_stays_red_for_real_semantic_difference",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a8_07_gaussian_fit_tracks_actual_selected_noise_and_wrong_sigma_fails",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a8_08_fast_gallery_reaches_approved_53_page_contract",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a8_09_injected_truth_taxonomy_registration_is_exact",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a8_10_direct_normalize_delta_recovers_known_truth",
      ]},
 
 ]
@@ -1097,7 +1107,7 @@ FEATURE_PRESENTATION = {
     "TESTING.phase13_77_stage_a_closure": ("PHASE_13_77 Stage-A closure orchestration", "Validates the integrated Stage-A command-line/PDF evidence path, gallery disposition completeness, numerical-oracle closure reconciliation and fail-closed reference comparison hardening before final real-data acceptance."),
     "INV.draw_surface_consistency": ("Draw-surface consistency", "Checks the same declared draw specification across draw(), draw_batch() and draw_figures(), including explicit supported refusals. A failure means public draw surfaces disagree numerically or closure reconciliation misses a required case."),
     "INV.eager_lazy_slot_symmetry": ("Eager/lazy slot symmetry", "Checks exact dependency/materialization symmetry for expression-bearing draw slots across eager and lazy execution. A failure means lazy mode loads the wrong dependencies, eager/lazy results diverge, or a slot-specific refusal is misowned."),
-    "INV.realdata_acceptance": ("Real-data acceptance and state invariance", "Runs deterministic gallery/full-stack acceptance with provenance, prepared GB state and logical-state mutation falsifiers. A failure means real workflow results/state differ from independent expectations or the harness can hide environment/state corruption."),
+    "INV.realdata_acceptance": ("Real-data acceptance, injected truth and state invariance", "Runs deterministic gallery/full-stack acceptance with provenance, real-data injected-truth correctness oracles, prepared GB state and logical-state mutation falsifiers. A failure means a normal user workflow differs from independently known truth, real workflow state differs from expectations, or the harness can hide environment/state corruption."),
 }
 
 _live_feature_ids = {feature["id"] for feature in FEATURES}

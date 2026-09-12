@@ -20,6 +20,7 @@ Groups:
   G9 — Error/window semantics   (fig40–fig42)
   G10 — Semantic oracle gallery (fig43)
   G11 — Hardening oracles       (fig44 weights-vector, fig45 public-surface)
+  G12 — Injected-truth oracles  (fig46–fig51, PHASE_13_77 scientific correctness)
 
 Known limitations:
   central='median' + group_by=: silently returns mean (KNOWN.grouped_central_median).
@@ -76,6 +77,11 @@ def build_adf(root_path, sample=None, lazy=False, tree_name="tree"):
     apply_meta(adf, df_TimeSeriesAliases)
     apply_meta(adf, df_TimeSeriesMeta)
     addTimeQuantiles(adf, varname="timeMS", step=10000, step2=100)
+    # Scientific injected-truth oracle: preserve the pre-sampling row identity.
+    # The sampled frame resets its pandas index below, so the original row number
+    # must live in a column if injected noise is to remain stable under row reordering.
+    if "oracle_row_id" not in adf.df.columns:
+        adf.df["oracle_row_id"] = np.asarray(adf.df.index, dtype=np.int64)
     if sample is not None:
         adf.df = adf.df.sample(frac=sample, random_state=42).reset_index(drop=True)
     adf.materialize_aliases(names=["sector", "time_s"])
@@ -544,6 +550,198 @@ def fig45_public_surface_equivalence_oracle(adf):
     return fig, axes, {"surface_stats": stats}
 
 
+
+# ── G12 — Injected-truth scientific correctness oracles (PHASE_13_77) ──────
+
+INJECTED_TRUTH_NOISE_SEED = 137
+INJECTED_TRUTH_NOISE_SIGMA = 0.02
+INJECTED_TRUTH_SECTOR_BINS = 36
+INJECTED_TRUTH_SECTOR_RANGE = (-0.5, 35.5)
+INJECTED_TRUTH_DELTA_EXPR = (
+    "0.08*sin(2*np.pi*sector/36) + 0.03*tgl + 0.015*tgl*tgl"
+)
+INJECTED_TRUTH_SIDE_SEL = f"{BASE_SEL}&(side_type<2)"
+
+
+def _stable_row_gaussian(row_ids, *, seed=INJECTED_TRUTH_NOISE_SEED,
+                         sigma=INJECTED_TRUTH_NOISE_SIGMA):
+    """Deterministic Gaussian noise keyed by row identity, not row position/sample."""
+    row_ids = np.asarray(row_ids, dtype=np.int64)
+    if row_ids.ndim != 1:
+        raise ValueError("oracle row identity must be one-dimensional")
+    if len(np.unique(row_ids)) != len(row_ids):
+        raise ValueError("oracle_row_id must be unique")
+
+    # SplitMix64 -> two independent U(0,1) values -> Box-Muller N(0,1).
+    # Each output depends only on (stable row id, seed), so a row keeps exactly
+    # the same injected noise after reordering or when viewed in another subset.
+    def mix64(x):
+        x = np.asarray(x, dtype=np.uint64)
+        with np.errstate(over="ignore"):
+            x = x + np.uint64(0x9E3779B97F4A7C15)
+            x = (x ^ (x >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
+            x = (x ^ (x >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
+        return x ^ (x >> np.uint64(31))
+
+    keys = row_ids.astype(np.uint64, copy=False) ^ np.uint64(int(seed))
+    h1 = mix64(keys)
+    h2 = mix64(keys ^ np.uint64(0xD1B54A32D192ED03))
+    scale = float(2**53)
+    u1 = ((h1 >> np.uint64(11)).astype(np.float64) + 0.5) / scale
+    u2 = ((h2 >> np.uint64(11)).astype(np.float64) + 0.5) / scale
+    z = np.sqrt(-2.0 * np.log(u1)) * np.cos(2.0 * np.pi * u2)
+    return float(sigma) * z
+
+
+def _ensure_injected_truth(adf):
+    """Install the reviewed real-data injected-truth construction exactly once."""
+    adf.ensure_columns(["sector", "tgl", "dcar_tpc_vertex", "ncl", "side_type"])
+
+    if "oracle_row_id" not in adf.df.columns:
+        adf.df["oracle_row_id"] = np.asarray(adf.df.index, dtype=np.int64)
+
+    expected_noise = _stable_row_gaussian(adf.df["oracle_row_id"].to_numpy())
+    if "oracle_noise" in adf.df.columns:
+        observed_noise = np.asarray(adf.df["oracle_noise"], dtype=float)
+        if observed_noise.shape != expected_noise.shape or not np.array_equal(
+                observed_noise, expected_noise):
+            raise ValueError("existing oracle_noise does not match stable-row injected truth")
+    else:
+        adf.df["oracle_noise"] = expected_noise
+
+    expected_flat = np.ones(len(adf.df), dtype=float)
+    expected_tgl = 1.0 + 0.30 * np.abs(np.asarray(adf.df["tgl"], dtype=float))
+    for name, values in (
+        ("oracle_w_flat", expected_flat),
+        ("oracle_w_tgl", expected_tgl),
+    ):
+        if name in adf.df.columns:
+            got = np.asarray(adf.df[name], dtype=float)
+            if got.shape != values.shape or not np.allclose(
+                    got, values, rtol=0.0, atol=0.0, equal_nan=True):
+                raise ValueError(f"existing {name} does not match injected-truth definition")
+        else:
+            adf.df[name] = values
+
+    aliases = {
+        "known_delta": INJECTED_TRUTH_DELTA_EXPR,
+        "dcar_distorted_clean": "dcar_tpc_vertex + known_delta",
+        "dcar_oracle": "dcar_distorted_clean + oracle_noise",
+        "oracle_recovered": "dcar_oracle - dcar_tpc_vertex",
+        "oracle_residual": "dcar_oracle - dcar_tpc_vertex - known_delta",
+    }
+    for name, expression in aliases.items():
+        existing = getattr(adf, "aliases", {}).get(name)
+        if existing is None:
+            adf.add_alias(name, expression)
+        elif str(existing) != expression:
+            raise ValueError(
+                f"existing alias {name!r} has unexpected definition {existing!r}")
+
+    # Materialize through the canonical ADF alias engine once.  The scientific
+    # oracles then isolate vector/normalization/facet/weight semantics rather
+    # than depending on whether a particular dfdraw expression path expands
+    # nested aliases.  Alias materialization itself remains part of the tested
+    # user workflow and fails closed if any injected-truth definition is wrong.
+    adf.materialize_aliases(
+        names=list(aliases), with_dependencies=True,
+        only_unmaterialized=True, cleanTemporary=False)
+    return adf
+
+
+def fig46_injected_truth_vector_overlay(adf):
+    """G12.46 — injected truth — original / clean / noisy / known delta vector overlay"""
+    _ensure_injected_truth(adf)
+    return adf.draw(
+        "[dcar_tpc_vertex,dcar_distorted_clean,dcar_oracle,known_delta]:sector",
+        type="profile",
+        bins=INJECTED_TRUTH_SECTOR_BINS,
+        range=INJECTED_TRUTH_SECTOR_RANGE,
+        selection=BASE_SEL,
+        auto_title=True,
+        return_data=True,
+    )
+
+
+def fig47_injected_truth_direct_delta(adf):
+    """G12.47 — injected truth — clean-distorted minus original normalize=delta"""
+    _ensure_injected_truth(adf)
+    return adf.draw(
+        "[dcar_distorted_clean,dcar_tpc_vertex]:sector",
+        type="profile",
+        bins=INJECTED_TRUTH_SECTOR_BINS,
+        range=INJECTED_TRUTH_SECTOR_RANGE,
+        selection=BASE_SEL,
+        normalize="delta",
+        auto_title=True,
+        return_data=True,
+    )
+
+
+def fig48_injected_truth_selection_delta_facet(adf):
+    """G12.48 — injected truth — non-null selection_vector delta in side facets"""
+    _ensure_injected_truth(adf)
+    return adf.draw(
+        "known_delta:sector",
+        type="profile",
+        bins=INJECTED_TRUTH_SECTOR_BINS,
+        range=INJECTED_TRUTH_SECTOR_RANGE,
+        selection=INJECTED_TRUTH_SIDE_SEL,
+        selection_vector=["tgl<0", "tgl>=0"],
+        normalize="delta",
+        facet_by="side_type",
+        auto_title=True,
+        return_data=True,
+    )
+
+
+def fig49_injected_truth_weights_facet(adf):
+    """G12.49 — injected truth — weights_vector weighted known-delta profiles"""
+    _ensure_injected_truth(adf)
+    return adf.draw(
+        "known_delta:sector",
+        type="profile",
+        bins=INJECTED_TRUTH_SECTOR_BINS,
+        range=INJECTED_TRUTH_SECTOR_RANGE,
+        selection=INJECTED_TRUTH_SIDE_SEL,
+        weights_vector=["oracle_w_flat", "oracle_w_tgl"],
+        weights_labels=["flat", "tgl-weighted"],
+        vector_compose="outer",
+        facet_by="side_type",
+        auto_title=True,
+        return_data=True,
+    )
+
+
+def fig50_injected_truth_gaussian_fit(adf):
+    """G12.50 — injected truth — residual Gaussian fit with known sigma"""
+    _ensure_injected_truth(adf)
+    return adf.draw(
+        "oracle_residual",
+        type="hist",
+        bins=100,
+        range=(-0.1, 0.1),
+        fit="gauss",
+        selection=BASE_SEL,
+        auto_title=True,
+    )
+
+
+def fig51_injected_truth_facet_residual(adf):
+    """G12.51 — injected truth — residual profile partitioned by side_type"""
+    _ensure_injected_truth(adf)
+    return adf.draw(
+        "oracle_residual:sector",
+        type="profile",
+        bins=INJECTED_TRUTH_SECTOR_BINS,
+        range=INJECTED_TRUTH_SECTOR_RANGE,
+        selection=INJECTED_TRUTH_SIDE_SEL,
+        facet_by="side_type",
+        auto_title=True,
+        return_data=True,
+    )
+
+
 # ── G7 — Full stack ADF + GB (optional, mutate adf in place) ─────────────────
 
 def fig32_subframe_vertex(adf):
@@ -598,9 +796,18 @@ FIGURES_G10 = [fig43_vector_facet_summary_fit]
 
 FIGURES_G11 = [fig44_weights_vector_facet_fit_oracle, fig45_public_surface_equivalence_oracle]
 
+FIGURES_G12 = [
+    fig46_injected_truth_vector_overlay,
+    fig47_injected_truth_direct_delta,
+    fig48_injected_truth_selection_delta_facet,
+    fig49_injected_truth_weights_facet,
+    fig50_injected_truth_gaussian_fit,
+    fig51_injected_truth_facet_residual,
+]
+
 FIGURES_MANDATORY = (FIGURES_G1 + FIGURES_G2 + FIGURES_G3 + FIGURES_G4
                      + FIGURES_G5 + FIGURES_G6 + FIGURES_G8 + FIGURES_G9
-                     + FIGURES_G10 + FIGURES_G11)
+                     + FIGURES_G10 + FIGURES_G11 + FIGURES_G12)
 FIGURES_OPTIONAL  = [fig32_subframe_vertex, fig33_gb_correction_tgl, fig34_gb_correction_sector]
 
 

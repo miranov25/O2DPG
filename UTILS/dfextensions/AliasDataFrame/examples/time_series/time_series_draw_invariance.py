@@ -4135,19 +4135,35 @@ def machine_oracle_text(case: "CaseSpec") -> str:
 
 
 def footer_text(case: "CaseSpec") -> str:
-    """The three blocks every invariance page must display (v1.2 §6).
+    """Structured page-review contract shared by PDF and manifest.
 
-    Generated from the CaseSpec.  Nothing here is separately authored: if the
-    footer and the manifest ever disagree, one of them stopped reading the
-    CaseSpec, and ``test_a1_v03_footer_and_manifest_share_one_source`` fails.
+    PRIMARY ORACLE pages must be interpretable by a human or multimodal AI
+    reviewer without guessing what "validate" means.
     """
     fc = case.figure_contract
     expected = case.expected_visual
     if fc is not None and fc.primary_comparison:
         expected = (f"{expected}\n  primary comparison: {fc.primary_comparison}"
                     f"\n  accepted envelope:  {fc.accepted_envelope}")
-    return (f"CASE: {case.case_id}\n\n"
+    injected_truth = str(case.canonical_spec.get("injected_truth", "")).strip()
+    injected_block = (
+        f"INJECTED TRUTH:\n  {injected_truth}\n\n"
+        if injected_truth else ""
+    )
+    proof_class = proof_class_for_case(case)
+    checks = reviewer_checks_for_case(case)
+    checks_block = ""
+    if checks:
+        checks_block = (
+            "REVIEWER MUST CHECK (HUMAN / AI):\n"
+            + "\n".join(f"  {i}. {text}" for i, text in enumerate(checks, 1))
+            + "\n\n"
+        )
+    return (f"PROOF CLASS: {proof_class}\n"
+            f"CASE: {case.case_id}\n\n"
+            f"{injected_block}"
             f"EXPECTED:\n  {expected}\n\n"
+            f"{checks_block}"
             f"MACHINE ORACLE:\n  {machine_oracle_text(case)}\n\n"
             f"FAILURE MEANS:\n  {case.failure_means}\n")
 
@@ -4282,8 +4298,15 @@ def write_manifest(path: str, results: Sequence[CaseResult],
                 "future_staged": {
                     name: {"value": getattr(c, name), "owning_stage": stage}
                     for name, stage in FUTURE_STAGE_FIELDS.items()},
-                "figure_contract": (asdict(c.figure_contract)
-                                    if c.figure_contract is not None else None),
+                "proof_class": proof_class_for_case(c),
+                "reviewer_checks": list(reviewer_checks_for_case(c)),
+                "figure_contract": (
+                    {
+                        **asdict(c.figure_contract),
+                        **reviewer_contract_for_case(c),
+                    }
+                    if c.figure_contract is not None else None
+                ),
             })
         doc["cases"].append(rec)
     with open(path, "w") as fh:
@@ -7611,6 +7634,8 @@ def current_stage_a_contract_amendment() -> dict:
         "owner": "PHASE_13_77 hardening v0.2 implementation manifest",
         "historical_stage_a_gallery_pages": 43,
         "historical_stage_a_closure_immutable": True,
+        "previous_checkpoint_gallery_pages": 47,
+        "injected_truth_primary_pages": 6,
         "superseded_nodes": [
             {
                 "node": ("tests/test_phase_13_77_realdata_invariance_harness.py::"
@@ -7636,8 +7661,8 @@ def current_stage_a_contract_amendment() -> dict:
         "target_a7_commit": HARDENING_O4_A7_COMMIT,
         "target_aliasdataframe_md5": HARDENING_O4_ADF_SOURCE_MD5,
         "target_aliasdataframe_sha256": HARDENING_O4_ADF_SOURCE_SHA256,
-        "current_step_gallery_pages": 47,
-        "approved_final_fast_gallery_pages": 47,
+        "current_step_gallery_pages": 53,
+        "approved_final_fast_gallery_pages": 53,
     }
 
 
@@ -7886,6 +7911,24 @@ _GALLERY_DISPOSITION = {
     "fig45_public_surface_equivalence_oracle": (
         "REUSED_CORE",
         "O4 consistency oracle: draw/draw_batch/draw_figures on B3.3-qualified selection_vector"),
+    "fig46_injected_truth_vector_overlay": (
+        "REUSED_CORE",
+        "Injected-truth Rank 1: native vector overlay of original/clean/noisy/known delta"),
+    "fig47_injected_truth_direct_delta": (
+        "REUSED_CORE",
+        "Injected-truth Rank 2: vector normalize=delta must recover known injected bias"),
+    "fig48_injected_truth_selection_delta_facet": (
+        "REUSED_CORE",
+        "Injected-truth Rank 3: non-null selection_vector×normalize×facet correctness"),
+    "fig49_injected_truth_weights_facet": (
+        "REUSED_CORE",
+        "Injected-truth Rank 4: weights_vector×facet known weighted-profile truth"),
+    "fig50_injected_truth_gaussian_fit": (
+        "REUSED_CORE",
+        "Injected-truth Rank 5: residual Gaussian fit against known injected noise"),
+    "fig51_injected_truth_facet_residual": (
+        "REUSED_CORE",
+        "Injected-truth Rank 6: simple facet residual truth for failure localization"),
 }
 
 _NUMERICAL_CORRECTNESS_ANCHORS = (
@@ -7913,6 +7956,11 @@ _NUMERICAL_CORRECTNESS_ANCHORS = (
         "family": "weights_vector_facet_profile",
         "evidence": "test_phase_13_77_realdata_invariance_harness.py::test_a7_29_o2_public_weights_vector_facet_matches_raw_correctness_oracle",
         "meaning": "independent raw NumPy/pandas weighted-profile oracle for O2 weights_vector×facet",
+    },
+    {
+        "family": "realdata_injected_truth",
+        "evidence": "test_phase_13_77_realdata_invariance_harness.py::test_a8_03_injected_vector_overlay_matches_independent_raw_truth",
+        "meaning": "real data plus deterministic known bias and stable-row Gaussian noise; six normal ADF/dfdraw workflows checked against raw known truth",
     },
 )
 
@@ -8000,21 +8048,38 @@ def _stage_a_case_for_gallery_function(name: str, root_path: str, gallery_module
         return o4_realdata_case(root_path, gallery_module=gallery_module)
     if name == HARDENING_O2_GALLERY_FUNCTION:
         return o2_oracle_case(gallery_module=gallery_module)
+    injected = globals().get("INJECTED_TRUTH_GALLERY_CASES", {})
+    case_factory = injected.get(name) if isinstance(injected, dict) else None
+    if callable(case_factory):
+        return case_factory(gallery_module=gallery_module)
     return None
 
 
 def _annotate_stage_a_figure(fig: Any, text: str) -> None:
-    """Add Stage-A evidence text in a reserved footer band."""
+    """Add visible proof class and structured review instructions."""
     if fig is None:
         return
+    is_primary = "PROOF CLASS: PRIMARY ORACLE" in text
+    is_consistency = "PROOF CLASS: CONSISTENCY ORACLE" in text
     text_fn = getattr(fig, "text", None)
     if callable(text_fn):
-        text_fn(0.01, 0.012, text, ha="left", va="bottom", fontsize=4.1,
-                family="monospace", wrap=True)
+        # Badge is intentionally large enough to survive PDF thumbnail review.
+        badge = (PRIMARY_ORACLE if is_primary else
+                 CONSISTENCY_ORACLE if is_consistency else SMOKE_COVERAGE)
+        text_fn(
+            0.99, 0.992, badge, ha="right", va="top",
+            fontsize=8.0 if is_primary else 6.5,
+            fontweight="bold", family="sans-serif",
+        )
+        text_fn(
+            0.01, 0.012, text, ha="left", va="bottom",
+            fontsize=3.7 if is_primary else 4.1,
+            family="monospace", wrap=True,
+        )
     adjust = getattr(fig, "subplots_adjust", None)
     if callable(adjust):
         try:
-            adjust(bottom=0.30)
+            adjust(bottom=0.40 if is_primary else 0.30)
         except Exception:
             pass
 
@@ -8072,9 +8137,19 @@ def write_stage_a_pdf(adf: Any, path: str, *, root_path: str,
                         name, root_path, gallery_module=gallery)
                     if case is not None:
                         annotation = footer_text(case)
+                        status_map = getattr(adf, "_stage_a_machine_status", {})
+                        status_row = status_map.get(case.case_id) if isinstance(status_map, dict) else None
+                        if isinstance(status_row, dict):
+                            annotation += (
+                                "\nOBSERVED:\n  "
+                                + str(status_row.get("detail", "") or "public result matched declared truth")
+                                + "\n\nMACHINE ORACLE STATUS: "
+                                + str(status_row.get("status", "UNKNOWN")) + "\n"
+                            )
                     else:
                         row = dispositions[name]
                         annotation = (
+                            f"PROOF CLASS: {SMOKE_COVERAGE}\n"
                             f"GALLERY DISPOSITION: {row['disposition']}\n"
                             f"REASON: {row['reason']}")
                     _annotate_stage_a_figure(fig, annotation)
@@ -8089,9 +8164,19 @@ def write_stage_a_pdf(adf: Any, path: str, *, root_path: str,
                     for extra_fig, suffix in extra_pages:
                         if case is not None:
                             extra_annotation = footer_text(case)
+                            status_map = getattr(adf, "_stage_a_machine_status", {})
+                            status_row = status_map.get(case.case_id) if isinstance(status_map, dict) else None
+                            if isinstance(status_row, dict):
+                                extra_annotation += (
+                                    "\nOBSERVED:\n  "
+                                    + str(status_row.get("detail", "") or "public result matched declared truth")
+                                    + "\n\nMACHINE ORACLE STATUS: "
+                                    + str(status_row.get("status", "UNKNOWN")) + "\n"
+                                )
                         else:
                             row = dispositions[name]
                             extra_annotation = (
+                                f"PROOF CLASS: {SMOKE_COVERAGE}\n"
                                 f"GALLERY DISPOSITION: {row['disposition']}\n"
                                 f"REASON: declared extra page for {name}")
                         _annotate_stage_a_figure(extra_fig, extra_annotation)
@@ -8299,6 +8384,7 @@ def _a6_3_fraction_cases(root_path: str, gallery_module=None) -> tuple[CaseSpec,
         o5_realdata_case(root_path, gallery_module=gallery_module),
         o4_realdata_case(root_path, gallery_module=gallery_module),
         o2_oracle_case(gallery_module=gallery_module),
+        *injected_truth_cases(gallery_module=gallery_module),
         a5_2_realdata_case(root_path, gallery_module=gallery_module),
         a5_4_realdata_case(root_path, gallery_module=gallery_module),
         a5_5_realdata_case(root_path, gallery_module=gallery_module),
@@ -8309,7 +8395,10 @@ def _a6_3_fraction_cases(root_path: str, gallery_module=None) -> tuple[CaseSpec,
 def _a6_3_fraction_runners():
     return (
         run_a7_1_realdata, run_o1_neg_a, run_o1_neg_b, run_o5_realdata,
-        run_o4_surface_equivalence, run_o2_realdata, run_a5_2_realdata, run_a5_4_realdata, run_a5_5_realdata, run_a5_6_realdata,
+        run_o4_surface_equivalence, run_o2_realdata,
+        run_injected_truth_case, run_injected_truth_case, run_injected_truth_case,
+        run_injected_truth_case, run_injected_truth_case, run_injected_truth_case,
+        run_a5_2_realdata, run_a5_4_realdata, run_a5_5_realdata, run_a5_6_realdata,
     )
 
 
@@ -9188,6 +9277,971 @@ def run_o2_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
     finally:
         _close()
         res.wall_time_s = round(time.time() - t0, 4)
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE_13_77 injected-truth scientific oracle — primary six user workflows
+# ─────────────────────────────────────────────────────────────────────────────
+
+INJECTED_TRUTH_NOISE_SEED = 137
+INJECTED_TRUTH_NOISE_SIGMA = 0.02
+INJECTED_TRUTH_BINS = 36
+INJECTED_TRUTH_RANGE = (-0.5, 35.5)
+INJECTED_TRUTH_BASE_SEL = "(ncl>60)&(abs(dcar_tpc_vertex)<10)"
+INJECTED_TRUTH_SIDE_SEL = INJECTED_TRUTH_BASE_SEL + "&(side_type<2)"
+INJECTED_TRUTH_DELTA_EXPR = (
+    "0.08*sin(2*np.pi*sector/36) + 0.03*tgl + 0.015*tgl*tgl"
+)
+
+INJECTED_TRUTH_VECTOR_CASE_ID = "I4-REAL-INJECTED-TRUTH-VECTOR-OVERLAY-EAGER-20PCT-01"
+INJECTED_TRUTH_DELTA_CASE_ID = "I4-REAL-INJECTED-TRUTH-DIRECT-DELTA-EAGER-20PCT-01"
+INJECTED_TRUTH_SELECTION_CASE_ID = "I4-REAL-INJECTED-TRUTH-SELECTION-DELTA-FACET-EAGER-20PCT-01"
+INJECTED_TRUTH_WEIGHTS_CASE_ID = "I4-REAL-INJECTED-TRUTH-WEIGHTS-FACET-EAGER-20PCT-01"
+INJECTED_TRUTH_GAUSS_CASE_ID = "I4-REAL-INJECTED-TRUTH-GAUSS-FIT-EAGER-20PCT-01"
+INJECTED_TRUTH_FACET_CASE_ID = "I4-REAL-INJECTED-TRUTH-FACET-RESIDUAL-EAGER-20PCT-01"
+
+INJECTED_TRUTH_VECTOR_GALLERY = "fig46_injected_truth_vector_overlay"
+INJECTED_TRUTH_DELTA_GALLERY = "fig47_injected_truth_direct_delta"
+INJECTED_TRUTH_SELECTION_GALLERY = "fig48_injected_truth_selection_delta_facet"
+INJECTED_TRUTH_WEIGHTS_GALLERY = "fig49_injected_truth_weights_facet"
+INJECTED_TRUTH_GAUSS_GALLERY = "fig50_injected_truth_gaussian_fit"
+INJECTED_TRUTH_FACET_GALLERY = "fig51_injected_truth_facet_residual"
+
+
+# ── Human/AI review contract for scientific gallery pages ────────────────────
+#
+# The gallery has three proof classes:
+#
+#   PRIMARY ORACLE       independently known scientific truth; reviewer must
+#                        actively validate the plotted relation.
+#   CONSISTENCY ORACLE   agreement/invariance between public routes/states.
+#   SMOKE / COVERAGE     execution/rendering coverage only.
+#
+# The lists below are deliberately concrete.  A generic instruction such as
+# "validate the figure" is not sufficient evidence.
+
+PRIMARY_ORACLE = "PRIMARY ORACLE"
+CONSISTENCY_ORACLE = "CONSISTENCY ORACLE"
+SMOKE_COVERAGE = "SMOKE / COVERAGE"
+
+_PRIMARY_ORACLE_REVIEW_CHECKS = {
+    HARDENING_O5_CASE_ID: (
+        "In each side_type panel, compare the vertical early/late profile separation with the lower delta points; the sign and approximate magnitude must agree bin-by-bin.",
+        "Confirm both side facets are present and the delta is not produced by swapping signal/reference branch order.",
+        "Confirm the machine oracle uses raw NumPy/pandas early/late means and masks, not another ADF/dfdraw result.",
+    ),
+    A7_1_CASE_ID: (
+        "Confirm two side_type panels are present and each contains exactly three time branches with their own pol1 fit.",
+        "Confirm the six-row summary table has exactly one row for every branch×facet coordinate and that the fit row identity matches the visible branch/facet.",
+        "Confirm the machine oracle checks independently constructed semantic coordinates/cardinality rather than only table formatting.",
+    ),
+    HARDENING_O2_CASE_ID: (
+        "In each side_type panel, identify both weight branches and check that the weighted profile/fit shift is plausible rather than a duplicated unweighted curve.",
+        "Confirm both weight branches exist in both facets and no branch/facet coordinate is missing or duplicated.",
+        "Confirm the machine oracle compares count, sum(weights), weighted mean and fit decomposition against raw weighted NumPy/pandas arithmetic.",
+    ),
+    INJECTED_TRUTH_VECTOR_CASE_ID: (
+        "Identify all four traces: original real DCA_r, clean-distorted, noisy-distorted and known_delta; none may be missing or silently merged.",
+        "Check that clean-distorted minus original follows the stated known_delta trend, while noisy-distorted stays close to clean-distorted after sector averaging because the injected Gaussian has zero mean.",
+        "Check the known_delta trace itself has the expected sector/tgl-driven structure and that the machine oracle compares every branch to independently binned raw truth.",
+    ),
+    INJECTED_TRUTH_DELTA_CASE_ID: (
+        "The normalized lower/delta result must exist; absence of a normalized payload/panel is itself a FAIL.",
+        "Check clean-distorted minus original follows the independently known_delta sector profile with the correct sign and branch order.",
+        "Confirm the machine oracle compares the public normalized delta directly with raw mean(known_delta), not with another public profile.",
+    ),
+    INJECTED_TRUTH_SELECTION_CASE_ID: (
+        "Confirm two side_type facets and both tgl<0 / tgl>=0 source branches are present.",
+        "The normalized delta must be deliberately non-zero; its sign and sector dependence must match the visible separation of the two source profiles in each facet.",
+        "Confirm the machine oracle independently recomputes branch/facet sector means and valid-bin masks from raw rows.",
+    ),
+    INJECTED_TRUTH_WEIGHTS_CASE_ID: (
+        "Confirm each side_type facet contains both flat and tgl-dependent weight branches; a missing or duplicated branch is a FAIL.",
+        "Check that the tgl-weighted profile differs from the flat profile where the known_delta/tgl correlation predicts a shift; this is not intended as a null test.",
+        "Confirm count, sum(weights) and weighted means are checked against independent raw float arithmetic for every branch×facet×sector bin.",
+    ),
+    INJECTED_TRUTH_GAUSS_CASE_ID: (
+        "Check the residual histogram is centered at approximately zero and the fitted Gaussian sigma is approximately 0.02.",
+        "Read the fitted center and sigma from the page and compare them with the stated injected Gaussian truth; a visually good histogram without the expected fit parameters is insufficient.",
+        "Confirm the machine oracle compares fitted center/sigma with raw selected injected-noise moments using the declared acceptance band.",
+    ),
+    INJECTED_TRUTH_FACET_CASE_ID: (
+        "Confirm both side_type panels are present and residual means fluctuate around zero rather than showing a coherent sector-dependent bias.",
+        "Check there is no systematic A/C-side offset or repeated sector structure larger than the expected statistical fluctuations.",
+        "Confirm per-facet/per-sector counts and means are compared with the raw stable-row oracle_noise partition.",
+    ),
+}
+
+
+def proof_class_for_case(case: "CaseSpec | None") -> str:
+    """Return the review meaning of a gallery page, not merely its purpose."""
+    if case is None:
+        return SMOKE_COVERAGE
+    if case.case_id in _PRIMARY_ORACLE_REVIEW_CHECKS:
+        return PRIMARY_ORACLE
+    if case.oracle_kind == "CONSISTENCY" or case.purpose == "INVARIANCE":
+        return CONSISTENCY_ORACLE
+    return SMOKE_COVERAGE
+
+
+def reviewer_checks_for_case(case: "CaseSpec | None") -> tuple[str, ...]:
+    """Concrete checks a human or multimodal AI reviewer must perform."""
+    if case is None:
+        return ()
+    return tuple(_PRIMARY_ORACLE_REVIEW_CHECKS.get(case.case_id, ()))
+
+
+def reviewer_contract_for_case(case: "CaseSpec | None") -> dict:
+    return {
+        "proof_class": proof_class_for_case(case),
+        "reviewer_checks": list(reviewer_checks_for_case(case)),
+    }
+
+
+def _injected_truth_common_spec(gallery_function: str, injected_truth: str) -> dict:
+    return {
+        "gallery_function": gallery_function,
+        "sample_fraction": A5_2_SAMPLE_FRACTION,
+        "sample_seed": A5_2_SAMPLE_SEED,
+        "noise_seed": INJECTED_TRUTH_NOISE_SEED,
+        "noise_sigma": INJECTED_TRUTH_NOISE_SIGMA,
+        "bins": INJECTED_TRUTH_BINS,
+        "range": INJECTED_TRUTH_RANGE,
+        "injected_truth": injected_truth,
+    }
+
+
+def injected_truth_vector_case(*, gallery_module=None) -> CaseSpec:
+    cid = INJECTED_TRUTH_VECTOR_CASE_ID
+    return CaseSpec(
+        case_id=cid,
+        claim_id="I4.injected_truth.vector_overlay",
+        title="injected truth: native vector overlay matches independent raw known truth",
+        claim=("the normal bracket-vector ADF/dfdraw workflow renders original, clean-distorted, "
+               "noisy-distorted and known injected delta with the same per-sector means and "
+               "populations computed independently from raw rows"),
+        failure_means=("vector expression routing, alias evaluation, selection, binning or profile "
+                       "reduction changed one of the four known-truth branches"),
+        expected_visual=("four profile traces: original real DCA_r, noiseless distorted DCA_r, "
+                         "noisy distorted DCA_r, and the analytically known injected delta"),
+        owner_on_failure="ADF/dfdraw",
+        purpose="CORRECTNESS",
+        gate="ENVIRONMENT_GATED",
+        oracle_kind="CORRECTNESS",
+        loading_mode="EAGER",
+        sample_mode="FRACTION",
+        canonical_spec={
+            **_injected_truth_common_spec(
+                INJECTED_TRUTH_VECTOR_GALLERY,
+                "dcar_distorted_clean = dcar_tpc_vertex + known_delta; "
+                "dcar_oracle = dcar_distorted_clean + stable-row Gaussian(0,0.02)"),
+            "expr": "[dcar_tpc_vertex,dcar_distorted_clean,dcar_oracle,known_delta]:sector",
+            "selection": INJECTED_TRUTH_BASE_SEL,
+            "type": "profile",
+        },
+        applicable=True,
+        setup_contract=("reuse the shared EAGER 20% ADF; install stable-row Gaussian noise and "
+                        "reviewed aliases; execute the exact fig46 native vector expression"),
+        preconditions=("oracle_row_id is unique", "sector/tgl/dcar/ncl are available"),
+        figure_contract=FigureContract(
+            expected_panels="one vector-overlay profile panel",
+            panel_roles="four known-truth branches on the same sector axis",
+            expected_traces="original, clean-distorted, noisy-distorted, known delta",
+            expected_group_count="4 vector branches",
+            primary_comparison="independent raw per-sector means/counts -> public vector profile_data",
+            residual_definition="public branch profile mean - independently binned raw truth",
+            accepted_envelope="counts exact; profile means within declared floating tolerance",
+            case_ids=(cid,),
+            proof_kind="CORRECTNESS",
+        ),
+        surfaces_under_test=("draw",),
+        observables=(
+            Observable("counts", "INDEPENDENT", "ARRAY", "raw four-branch per-sector counts",
+                       comparator="exact"),
+            Observable("profile_means", "INDEPENDENT", "ARRAY", "raw four-branch per-sector means",
+                       comparator="close", rtol=1e-8, atol=1e-9,
+                       rationale="same selected rows and explicit sector bins; float reduction"),
+        ),
+        non_claims=("this case does not test normalization; Rank 2 owns that workflow",),
+        negative_control="INJECTED_TRUTH:SWAPPED_VECTOR_BRANCH_OR_WRONG_DELTA_AMPLITUDE",
+        reference_policy="same-process",
+    )
+
+
+def injected_truth_delta_case(*, gallery_module=None) -> CaseSpec:
+    cid = INJECTED_TRUTH_DELTA_CASE_ID
+    return CaseSpec(
+        case_id=cid,
+        claim_id="I4.injected_truth.direct_delta",
+        title="injected truth: vector normalize=delta recovers known_delta",
+        claim=("the normal two-variable vector normalization workflow produces the known "
+               "clean-distorted minus original per-sector delta"),
+        failure_means=("normalize='delta' was ignored, branch order changed, or public delta "
+                       "values differ from the independently known injected bias"),
+        expected_visual="clean-distorted minus original follows the known_delta sector profile",
+        owner_on_failure="dfdraw",
+        purpose="CORRECTNESS",
+        gate="ENVIRONMENT_GATED",
+        oracle_kind="CORRECTNESS",
+        loading_mode="EAGER",
+        sample_mode="FRACTION",
+        canonical_spec={
+            **_injected_truth_common_spec(
+                INJECTED_TRUTH_DELTA_GALLERY,
+                "dcar_distorted_clean - dcar_tpc_vertex = known_delta exactly row-by-row"),
+            "expr": "[dcar_distorted_clean,dcar_tpc_vertex]:sector",
+            "selection": INJECTED_TRUTH_BASE_SEL,
+            "type": "profile",
+            "normalize": "delta",
+        },
+        applicable=True,
+        setup_contract="reuse the shared injected-truth ADF and execute exact fig47",
+        preconditions=("the clean and original branches share identical selected rows",),
+        figure_contract=FigureContract(
+            expected_panels="public vector profile with a delta normalization result",
+            panel_roles="clean/original source profiles plus their known delta",
+            expected_traces="clean-distorted, original, and/or an explicit normalized delta",
+            expected_group_count="2 vector branches",
+            primary_comparison="raw mean(clean)-mean(original) -> public normalized delta",
+            residual_definition="observed public delta - raw mean(known_delta)",
+            accepted_envelope="sector-bin identity exact; floating delta within declared tolerance",
+            case_ids=(cid,),
+            proof_kind="CORRECTNESS",
+        ),
+        surfaces_under_test=("draw",),
+        observables=(
+            Observable("delta_values", "INDEPENDENT", "ARRAY", "raw mean(known_delta) per sector",
+                       comparator="close", rtol=1e-8, atol=1e-9,
+                       rationale="known row-level identity reduced over explicit sector bins"),
+        ),
+        non_claims=("source-profile correctness is independently covered by Rank 1",),
+        negative_control="INJECTED_TRUTH:NORMALIZE_IGNORED_OR_WRONG_DELTA_AMPLITUDE",
+        reference_policy="same-process",
+    )
+
+
+def injected_truth_selection_case(*, gallery_module=None) -> CaseSpec:
+    cid = INJECTED_TRUTH_SELECTION_CASE_ID
+    return CaseSpec(
+        case_id=cid,
+        claim_id="I4.injected_truth.selection_delta_facet",
+        title="injected truth: non-null selection_vector delta survives facet composition",
+        claim=("tgl<0 minus tgl>=0 known_delta is recovered independently in each side_type facet"),
+        failure_means=("selection_vector branches were dropped/swapped, facet identity changed, "
+                       "or normalize='delta' produced the wrong non-zero answer"),
+        expected_visual=("two side_type panels with a deliberately non-zero tgl<0 minus tgl>=0 "
+                         "known_delta sector profile"),
+        owner_on_failure="dfdraw",
+        purpose="CORRECTNESS",
+        gate="ENVIRONMENT_GATED",
+        oracle_kind="CORRECTNESS",
+        loading_mode="EAGER",
+        sample_mode="FRACTION",
+        canonical_spec={
+            **_injected_truth_common_spec(
+                INJECTED_TRUTH_SELECTION_GALLERY,
+                "known_delta depends on tgl, so mean(tgl<0)-mean(tgl>=0) is intentionally non-zero"),
+            "expr": "known_delta:sector",
+            "selection": INJECTED_TRUTH_SIDE_SEL,
+            "selection_vector": ["tgl<0", "tgl>=0"],
+            "normalize": "delta",
+            "facet_by": "side_type",
+            "type": "profile",
+        },
+        applicable=True,
+        setup_contract="reuse shared injected truth; execute exact fig48 selection_vector+delta+facet",
+        preconditions=("side_type 0/1 and both tgl-sign branches are populated",),
+        figure_contract=FigureContract(
+            expected_panels="two side_type facets with source branches and delta",
+            panel_roles="side_type=0 and side_type=1",
+            expected_traces="tgl<0, tgl>=0 and non-zero normalized delta",
+            expected_group_count="2 selection branches × 2 facets",
+            primary_comparison="raw branch/facet per-sector means -> normalize_data_faceted delta",
+            residual_definition="public delta - independently computed branch-mean difference",
+            accepted_envelope="facet/bin/mask identity exact; numerical delta within tolerance",
+            case_ids=(cid,),
+            proof_kind="CORRECTNESS",
+        ),
+        surfaces_under_test=("draw",),
+        observables=(
+            Observable("delta_values", "INDEPENDENT", "ARRAY",
+                       "raw tgl<0 minus tgl>=0 known_delta by facet/sector",
+                       comparator="close", rtol=1e-8, atol=1e-9,
+                       rationale="same explicitly selected rows and arithmetic means"),
+            Observable("valid_mask", "INDEPENDENT", "ARRAY",
+                       "raw bins populated by both vector branches", comparator="exact"),
+        ),
+        non_claims=("zero-valued differential tests are intentionally not used here",),
+        negative_control="INJECTED_TRUTH:SWAPPED_SELECTION_BRANCH",
+        reference_policy="same-process",
+    )
+
+
+def injected_truth_weights_case(*, gallery_module=None) -> CaseSpec:
+    cid = INJECTED_TRUTH_WEIGHTS_CASE_ID
+    return CaseSpec(
+        case_id=cid,
+        claim_id="I4.injected_truth.weights_facet",
+        title="injected truth: weights_vector known weighted profile in side facets",
+        claim=("flat and |tgl|-modulated weights recover independently calculated weighted "
+               "known_delta profiles in each side_type facet"),
+        failure_means=("weights_vector identity, facet routing, weighted numerator or weighted "
+                       "normalization differs from raw sum(w*y)/sum(w) truth"),
+        expected_visual="two facets with flat and tgl-weighted known_delta profile branches",
+        owner_on_failure="dfdraw",
+        purpose="CORRECTNESS",
+        gate="ENVIRONMENT_GATED",
+        oracle_kind="CORRECTNESS",
+        loading_mode="EAGER",
+        sample_mode="FRACTION",
+        canonical_spec={
+            **_injected_truth_common_spec(
+                INJECTED_TRUTH_WEIGHTS_GALLERY,
+                "oracle_w_flat=1; oracle_w_tgl=1+0.30*abs(tgl); truth=sum(w*known_delta)/sum(w)"),
+            "expr": "known_delta:sector",
+            "selection": INJECTED_TRUTH_SIDE_SEL,
+            "weights_vector": ["oracle_w_flat", "oracle_w_tgl"],
+            "facet_by": "side_type",
+            "type": "profile",
+        },
+        applicable=True,
+        setup_contract="reuse shared injected truth; execute exact fig49 weights_vector+facet",
+        preconditions=("weights are positive", "side_type 0/1 are populated"),
+        figure_contract=FigureContract(
+            expected_panels="two side_type facets",
+            panel_roles="side_type=0 and side_type=1",
+            expected_traces="flat-weight and tgl-weight known_delta profiles",
+            expected_group_count="2 weight branches × 2 facets",
+            primary_comparison="raw sum(w*y)/sum(w) and sum(w) -> public weighted profile_data",
+            residual_definition="public weighted mean - independently computed weighted mean",
+            accepted_envelope=("counts exact; sum_weights and weighted means compared with tight "
+                               "declared tolerance; do not widen merely to obtain green"),
+            case_ids=(cid,),
+            proof_kind="CORRECTNESS",
+        ),
+        surfaces_under_test=("draw",),
+        observables=(
+            Observable("count", "INDEPENDENT", "ARRAY", "raw weighted-cell row counts",
+                       comparator="exact"),
+            Observable("sum_weights", "INDEPENDENT", "ARRAY", "raw per-bin sum(weights)",
+                       comparator="close", rtol=1e-7, atol=1e-8,
+                       rationale="independent float64 weighted accumulation"),
+            Observable("y_mean", "INDEPENDENT", "ARRAY", "raw sum(w*known_delta)/sum(w)",
+                       comparator="close", rtol=1e-7, atol=1e-8,
+                       rationale="independent float64 weighted mean"),
+        ),
+        non_claims=("a red result is evidence to investigate, not a reason to widen tolerance",),
+        negative_control="INJECTED_TRUTH:WEIGHTED_NUMERATOR_MUTATION",
+        reference_policy="same-process",
+    )
+
+
+def injected_truth_gauss_case(*, gallery_module=None) -> CaseSpec:
+    cid = INJECTED_TRUTH_GAUSS_CASE_ID
+    return CaseSpec(
+        case_id=cid,
+        claim_id="I4.injected_truth.gaussian_fit",
+        title="injected truth: Gaussian residual fit recovers selected known noise sample",
+        claim=("oracle_residual is exactly the injected stable-row Gaussian noise and the public "
+               "histogram fit recovers its selected-sample center and width"),
+        failure_means=("alias arithmetic, histogram selection/range or Gaussian fit extraction "
+                       "is inconsistent with the known injected residual distribution"),
+        expected_visual="Gaussian residual centered near zero with sigma near 0.02",
+        owner_on_failure="ADF/dfdraw",
+        purpose="CORRECTNESS",
+        gate="ENVIRONMENT_GATED",
+        oracle_kind="CORRECTNESS",
+        loading_mode="EAGER",
+        sample_mode="FRACTION",
+        canonical_spec={
+            **_injected_truth_common_spec(
+                INJECTED_TRUTH_GAUSS_GALLERY,
+                "oracle_residual = oracle_noise; stable-row Gaussian seed=137 sigma=0.02"),
+            "expr": "oracle_residual",
+            "selection": INJECTED_TRUTH_BASE_SEL,
+            "type": "hist",
+            "fit": "gauss",
+            "bins": 100,
+            "range": (-0.1, 0.1),
+        },
+        applicable=True,
+        setup_contract="reuse shared injected truth; execute exact fig50 residual histogram+gauss",
+        preconditions=("selected residual sample is non-empty",),
+        figure_contract=FigureContract(
+            expected_panels="one residual histogram with Gaussian fit",
+            panel_roles="selected stable-row injected noise distribution",
+            expected_traces="histogram plus gauss fit",
+            expected_group_count="1",
+            primary_comparison="public fitted center/sigma -> raw selected injected-noise mean/std",
+            residual_definition="fit parameter - raw selected-noise moment",
+            accepted_envelope=("center and sigma must lie inside a binning/statistics-derived "
+                               "acceptance band recorded by the runner"),
+            case_ids=(cid,),
+            proof_kind="CORRECTNESS",
+        ),
+        surfaces_under_test=("draw",),
+        observables=(
+            Observable("fit_center_delta", "INDEPENDENT", "FLAT",
+                       "abs(public gauss center - raw selected noise mean) / allowed tolerance",
+                       comparator="close", rtol=0.0, atol=1.0,
+                       rationale="dimensionless deviation must be <=1 derived tolerance unit"),
+            Observable("fit_sigma_delta", "INDEPENDENT", "FLAT",
+                       "abs(public gauss sigma - raw selected noise std) / allowed tolerance",
+                       comparator="close", rtol=0.0, atol=1.0,
+                       rationale="dimensionless deviation must be <=1 derived tolerance unit"),
+        ),
+        non_claims=("the generator's nominal 0/0.02 values are human sanity; selected raw moments are strict reference",),
+        negative_control="INJECTED_TRUTH:WRONG_EXPECTED_SIGMA",
+        reference_policy="same-process",
+    )
+
+
+def injected_truth_facet_case(*, gallery_module=None) -> CaseSpec:
+    cid = INJECTED_TRUTH_FACET_CASE_ID
+    return CaseSpec(
+        case_id=cid,
+        claim_id="I4.injected_truth.facet_residual",
+        title="injected truth: simple side-facet residual profile matches raw injected noise",
+        claim=("basic facet partitioning preserves the independently known oracle_residual "
+               "profile in each side_type×sector cell"),
+        failure_means=("facet partitioning or profile reduction differs from raw injected-noise truth"),
+        expected_visual="two side_type panels with residual means fluctuating around zero",
+        owner_on_failure="dfdraw",
+        purpose="CORRECTNESS",
+        gate="ENVIRONMENT_GATED",
+        oracle_kind="CORRECTNESS",
+        loading_mode="EAGER",
+        sample_mode="FRACTION",
+        canonical_spec={
+            **_injected_truth_common_spec(
+                INJECTED_TRUTH_FACET_GALLERY,
+                "oracle_residual = stable-row injected Gaussian noise exactly"),
+            "expr": "oracle_residual:sector",
+            "selection": INJECTED_TRUTH_SIDE_SEL,
+            "facet_by": "side_type",
+            "type": "profile",
+        },
+        applicable=True,
+        setup_contract="reuse shared injected truth; execute exact fig51 simple facet profile",
+        preconditions=("side_type 0/1 are populated",),
+        figure_contract=FigureContract(
+            expected_panels="two side_type facets",
+            panel_roles="side_type=0 and side_type=1",
+            expected_traces="one residual profile per facet",
+            expected_group_count="2 facets",
+            primary_comparison="raw oracle_noise profile -> public facet profile_data",
+            residual_definition="public facet-bin residual mean - raw injected-noise mean",
+            accepted_envelope="counts exact; means within declared numerical tolerance",
+            case_ids=(cid,),
+            proof_kind="CORRECTNESS",
+        ),
+        surfaces_under_test=("draw",),
+        observables=(
+            Observable("count", "INDEPENDENT", "ARRAY", "raw facet/sector counts",
+                       comparator="exact"),
+            Observable("y_mean", "INDEPENDENT", "ARRAY", "raw facet/sector oracle_noise means",
+                       comparator="close", rtol=1e-8, atol=1e-9,
+                       rationale="same explicitly selected injected noise rows"),
+        ),
+        non_claims=("complex vector/facet composition is owned by Ranks 3 and 4",),
+        negative_control="INJECTED_TRUTH:FACET_IDENTITY_MUTATION",
+        reference_policy="same-process",
+    )
+
+
+INJECTED_TRUTH_GALLERY_CASES = {
+    INJECTED_TRUTH_VECTOR_GALLERY: injected_truth_vector_case,
+    INJECTED_TRUTH_DELTA_GALLERY: injected_truth_delta_case,
+    INJECTED_TRUTH_SELECTION_GALLERY: injected_truth_selection_case,
+    INJECTED_TRUTH_WEIGHTS_GALLERY: injected_truth_weights_case,
+    INJECTED_TRUTH_GAUSS_GALLERY: injected_truth_gauss_case,
+    INJECTED_TRUTH_FACET_GALLERY: injected_truth_facet_case,
+}
+
+
+def injected_truth_cases(*, gallery_module=None) -> tuple[CaseSpec, ...]:
+    return (
+        injected_truth_vector_case(gallery_module=gallery_module),
+        injected_truth_delta_case(gallery_module=gallery_module),
+        injected_truth_selection_case(gallery_module=gallery_module),
+        injected_truth_weights_case(gallery_module=gallery_module),
+        injected_truth_gauss_case(gallery_module=gallery_module),
+        injected_truth_facet_case(gallery_module=gallery_module),
+    )
+
+
+def _it_stable_noise(row_ids: Any) -> np.ndarray:
+    """Independent implementation of the declared stable-row Gaussian generator."""
+    row_ids = np.asarray(row_ids, dtype=np.int64)
+    if row_ids.ndim != 1 or len(np.unique(row_ids)) != len(row_ids):
+        raise HarnessError("injected-truth oracle_row_id must be unique and one-dimensional")
+
+    def mix64(x):
+        x = np.asarray(x, dtype=np.uint64)
+        with np.errstate(over="ignore"):
+            x = x + np.uint64(0x9E3779B97F4A7C15)
+            x = (x ^ (x >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
+            x = (x ^ (x >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
+        return x ^ (x >> np.uint64(31))
+
+    keys = row_ids.astype(np.uint64, copy=False) ^ np.uint64(INJECTED_TRUTH_NOISE_SEED)
+    h1 = mix64(keys)
+    h2 = mix64(keys ^ np.uint64(0xD1B54A32D192ED03))
+    u1 = ((h1 >> np.uint64(11)).astype(np.float64) + 0.5) / float(2**53)
+    u2 = ((h2 >> np.uint64(11)).astype(np.float64) + 0.5) / float(2**53)
+    return INJECTED_TRUTH_NOISE_SIGMA * (
+        np.sqrt(-2.0 * np.log(u1)) * np.cos(2.0 * np.pi * u2))
+
+
+def _it_raw_model(adf: Any) -> dict:
+    if not hasattr(adf, "df"):
+        raise HarnessError("injected-truth prepared object has no raw dataframe")
+    df = adf.df
+    required = ("oracle_row_id", "oracle_noise", "sector", "tgl",
+                "dcar_tpc_vertex", "ncl", "side_type")
+    missing = [name for name in required if name not in df.columns]
+    if missing:
+        raise HarnessError(f"injected-truth raw frame missing {missing}")
+    row_id = np.asarray(df["oracle_row_id"], dtype=np.int64)
+    expected_noise = _it_stable_noise(row_id)
+    noise = np.asarray(df["oracle_noise"], dtype=float)
+    if not np.array_equal(noise, expected_noise):
+        raise HarnessError("oracle_noise is not the declared stable-row Gaussian sequence")
+    sector = np.asarray(df["sector"], dtype=float)
+    tgl = np.asarray(df["tgl"], dtype=float)
+    dcar = np.asarray(df["dcar_tpc_vertex"], dtype=float)
+    ncl = np.asarray(df["ncl"], dtype=float)
+    side = np.asarray(df["side_type"])
+    delta = 0.08 * np.sin(2.0 * np.pi * sector / 36.0) + 0.03 * tgl + 0.015 * tgl * tgl
+    clean = dcar + delta
+    noisy = clean + noise
+
+    # Real detector frames legitimately contain non-finite/out-of-domain rows.
+    # The public profile/histogram paths drop non-finite x/y values after the
+    # user selection, so the independent row-level identity must be checked on
+    # the same finite scientific domain rather than across every source row.
+    base = (ncl > 60) & (np.abs(dcar) < 10)
+    truth_domain = (
+        base
+        & np.isfinite(sector)
+        & np.isfinite(tgl)
+        & np.isfinite(dcar)
+        & np.isfinite(delta)
+        & np.isfinite(clean)
+        & np.isfinite(noisy)
+        & np.isfinite(noise)
+    )
+    if not np.any(truth_domain):
+        raise HarnessError("injected-truth finite selected domain is empty")
+
+    residual = noisy - dcar - delta
+    if not np.allclose(
+            residual[truth_domain], noise[truth_domain],
+            rtol=0.0, atol=1e-14):
+        finite_delta = np.abs(residual[truth_domain] - noise[truth_domain])
+        raise HarnessError(
+            "independent injected-truth row algebra is inconsistent on finite "
+            f"selected rows; max_abs={float(np.max(finite_delta))}")
+
+    side_sel = base & (side < 2)
+    return {
+        "df": df, "sector": sector, "tgl": tgl, "dcar": dcar, "side": side,
+        "delta": delta, "clean": clean, "noisy": noisy, "noise": noise,
+        "residual": residual, "base": base, "side_sel": side_sel,
+        "truth_domain": truth_domain,
+        "truth_domain_rows": int(np.count_nonzero(truth_domain)),
+        "w_flat": np.ones(len(df), dtype=float),
+        "w_tgl": 1.0 + 0.30 * np.abs(tgl),
+    }
+
+
+def _it_profile(x: Any, y: Any, mask: Any, *, weights: Any = None) -> dict:
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    mask = np.asarray(mask, dtype=bool) & np.isfinite(x) & np.isfinite(y)
+    lo, hi = INJECTED_TRUTH_RANGE
+    edges = np.linspace(lo, hi, INJECTED_TRUTH_BINS + 1)
+    idx = np.searchsorted(edges, x, side="right") - 1
+    idx[x == hi] = INJECTED_TRUTH_BINS - 1
+    inside = mask & (idx >= 0) & (idx < INJECTED_TRUTH_BINS)
+    centers = (edges[:-1] + edges[1:]) / 2.0
+    count = np.zeros(INJECTED_TRUTH_BINS, dtype=int)
+    mean = np.full(INJECTED_TRUTH_BINS, np.nan, dtype=float)
+    # dfdraw marks weighted support undefined in empty bins.  Match that semantic
+    # convention explicitly rather than treating an unpopulated bin as measured 0.
+    sum_weights = np.full(INJECTED_TRUTH_BINS, np.nan, dtype=float)
+    w = None if weights is None else np.asarray(weights, dtype=float)
+    if w is not None:
+        inside &= np.isfinite(w)
+    for b in range(INJECTED_TRUTH_BINS):
+        take = inside & (idx == b)
+        yy = y[take]
+        count[b] = int(len(yy))
+        if w is None:
+            sum_weights[b] = float(len(yy))
+            if len(yy):
+                mean[b] = float(np.mean(yy, dtype=np.float64))
+        else:
+            ww = w[take]
+            if len(ww):
+                sw = float(np.sum(ww, dtype=np.float64))
+                sum_weights[b] = sw
+                if sw > 0.0:
+                    mean[b] = float(np.sum(ww * yy, dtype=np.float64) / sw)
+    return {"x_center": centers, "count": count, "sum_weights": sum_weights, "y_mean": mean}
+
+
+def _it_profile_frame(stats: Any):
+    if not isinstance(stats, dict):
+        raise HarnessError(f"injected-truth profile stats are {type(stats).__name__}, expected dict")
+    frame = stats.get("profile_data")
+    if frame is None:
+        raise HarnessError("injected-truth public profile_data is absent")
+    required = ("x_center", "count", "y_mean")
+    missing = [name for name in required if name not in frame.columns]
+    if missing:
+        raise HarnessError(f"injected-truth profile_data missing {missing}")
+    return frame
+
+
+def _it_faceted_profile_frame(stats: Any, facet: int):
+    if not isinstance(stats, dict):
+        raise HarnessError(f"injected-truth faceted stats are {type(stats).__name__}, expected dict")
+    groups = [int(float(x)) for x in stats.get("groups", ())]
+    if sorted(groups) != [0, 1]:
+        raise HarnessError(f"injected-truth facet identity mismatch: {groups}")
+    per_group = stats.get("per_group")
+    if not isinstance(per_group, dict):
+        raise HarnessError("injected-truth faceted stats missing per_group")
+    cell = per_group.get(str(facet))
+    if not isinstance(cell, dict):
+        raise HarnessError(f"injected-truth missing side_type={facet}")
+    return _it_profile_frame(cell)
+
+
+def _it_close(label: str, expected: Any, observed: Any, *, rtol=1e-8, atol=1e-9):
+    a = np.asarray(expected)
+    b = np.asarray(observed)
+    if a.shape != b.shape:
+        raise HarnessError(f"{label} shape mismatch {a.shape}!={b.shape}")
+    if np.issubdtype(a.dtype, np.integer) or np.issubdtype(a.dtype, np.bool_):
+        if not np.array_equal(a, b):
+            raise HarnessError(f"{label} exact mismatch")
+        return
+    if not np.allclose(a.astype(float), b.astype(float), rtol=rtol, atol=atol, equal_nan=True):
+        finite = np.isfinite(a.astype(float)) & np.isfinite(b.astype(float))
+        max_abs = float(np.max(np.abs(a.astype(float)[finite] - b.astype(float)[finite]))) if np.any(finite) else float("nan")
+        raise HarnessError(f"{label} numerical mismatch max_abs={max_abs}")
+
+
+def _it_prepare_public(adf: Any, gallery: Any):
+    helper = getattr(gallery, "_ensure_injected_truth", None)
+    if not callable(helper):
+        raise HarnessError("gallery has no _ensure_injected_truth owner")
+    helper(adf)
+    return _it_raw_model(adf)
+
+
+def _it_vector_overlay(adf: Any, gallery: Any) -> tuple[dict, dict]:
+    model = _it_prepare_public(adf, gallery)
+    raw = getattr(gallery, INJECTED_TRUTH_VECTOR_GALLERY)(adf)
+    try:
+        stats = raw[2] if isinstance(raw, tuple) and len(raw) >= 3 else None
+        if not isinstance(stats, list) or len(stats) != 4:
+            raise HarnessError("vector overlay must expose exactly four branch stats")
+        ys = (model["dcar"], model["clean"], model["noisy"], model["delta"])
+        exp_counts, got_counts, exp_means, got_means = [], [], [], []
+        for i, y in enumerate(ys):
+            ref = _it_profile(model["sector"], y, model["base"])
+            frame = _it_profile_frame(stats[i])
+            _it_close(f"vector branch {i} x_center", ref["x_center"], frame["x_center"].to_numpy())
+            exp_counts.extend(ref["count"].tolist())
+            got_counts.extend(np.asarray(frame["count"], dtype=int).tolist())
+            exp_means.extend(ref["y_mean"].tolist())
+            got_means.extend(np.asarray(frame["y_mean"], dtype=float).tolist())
+        return (
+            {"counts": exp_counts, "profile_means": exp_means},
+            {"counts": got_counts, "profile_means": got_means},
+        )
+    finally:
+        try:
+            plt.close(raw[0])
+        except Exception:
+            pass
+
+
+def _it_direct_delta(adf: Any, gallery: Any) -> tuple[dict, dict]:
+    model = _it_prepare_public(adf, gallery)
+    raw = getattr(gallery, INJECTED_TRUTH_DELTA_GALLERY)(adf)
+    try:
+        ref = _it_profile(model["sector"], model["delta"], model["base"])
+        stats = raw[2] if isinstance(raw, tuple) and len(raw) >= 3 else None
+
+        observed = None
+
+        def _normalized_value(payload: Any) -> np.ndarray | None:
+            """Extract public normalize_data.value from supported stats shapes.
+
+            dfdraw's established normalize payload is normally a pandas
+            DataFrame, while some compatibility paths expose a dict.  Traverse
+            vector/list wrappers but do not infer normalization from unrelated
+            profile payloads.
+            """
+            if isinstance(payload, (list, tuple)):
+                for child in payload:
+                    value = _normalized_value(child)
+                    if value is not None:
+                        return value
+                return None
+            if not isinstance(payload, dict):
+                return None
+
+            nd = payload.get("normalize_data")
+            if isinstance(nd, dict) and "value" in nd:
+                return np.asarray(nd["value"], dtype=float)
+            if nd is not None and hasattr(nd, "columns") and "value" in nd.columns:
+                return np.asarray(nd["value"], dtype=float)
+            return None
+
+        observed = _normalized_value(stats)
+
+        if observed is None:
+            fig = raw[0] if isinstance(raw, tuple) else None
+            candidate_lines = []
+            for ax in getattr(fig, "axes", ()):
+                ylabel = str(getattr(ax, "get_ylabel", lambda: "")()).strip().lower()
+                title = str(getattr(ax, "get_title", lambda: "")()).strip().lower()
+                if ("δ" in ylabel or "delta" in ylabel or "δ" in title or "delta" in title):
+                    for line in getattr(ax, "lines", ()):
+                        xs = np.asarray(line.get_xdata(), dtype=float)
+                        ys = np.asarray(line.get_ydata(), dtype=float)
+                        if len(xs) == INJECTED_TRUTH_BINS and len(ys) == INJECTED_TRUTH_BINS:
+                            candidate_lines.append(ys)
+            if len(candidate_lines) == 1:
+                observed = candidate_lines[0]
+
+        if observed is None:
+            raise HarnessError(
+                "normalize='delta' request exposed no normalized public payload/artist; "
+                "normalization may have been ignored for vector expressions")
+        return ({"delta_values": ref["y_mean"].tolist()},
+                {"delta_values": np.asarray(observed, float).tolist()})
+    finally:
+        try:
+            plt.close(raw[0])
+        except Exception:
+            pass
+
+
+def _it_selection_delta(adf: Any, gallery: Any) -> tuple[dict, dict]:
+    model = _it_prepare_public(adf, gallery)
+    raw = getattr(gallery, INJECTED_TRUTH_SELECTION_GALLERY)(adf)
+    try:
+        stats = raw[2]
+        if not isinstance(stats, dict) or not isinstance(stats.get("normalize_data_faceted"), dict):
+            raise HarnessError("selection injected-truth case missing normalize_data_faceted")
+        exp_delta, got_delta, exp_mask, got_mask = [], [], [], []
+        for facet in (0, 1):
+            fmask = model["side_sel"] & (model["side"] == facet)
+            left = _it_profile(model["sector"], model["delta"], fmask & (model["tgl"] < 0))
+            right = _it_profile(model["sector"], model["delta"], fmask & (model["tgl"] >= 0))
+            valid = (left["count"] > 0) & (right["count"] > 0)
+            delta = left["y_mean"] - right["y_mean"]
+            delta[~valid] = np.nan
+            cell = stats["normalize_data_faceted"].get(str(facet))
+            if not isinstance(cell, dict):
+                raise HarnessError(f"selection injected-truth missing facet={facet}")
+            observed = np.asarray(cell.get("values"), dtype=float)
+            observed_valid = ~np.asarray(cell.get("mask_undefined"), dtype=bool)
+            exp_delta.extend(delta.tolist()); got_delta.extend(observed.tolist())
+            exp_mask.extend(valid.tolist()); got_mask.extend(observed_valid.tolist())
+        return ({"delta_values": exp_delta, "valid_mask": exp_mask},
+                {"delta_values": got_delta, "valid_mask": got_mask})
+    finally:
+        try:
+            plt.close(raw[0])
+        except Exception:
+            pass
+
+
+def _it_weights(adf: Any, gallery: Any) -> tuple[dict, dict]:
+    model = _it_prepare_public(adf, gallery)
+    raw = getattr(gallery, INJECTED_TRUTH_WEIGHTS_GALLERY)(adf)
+    try:
+        stats = raw[2]
+        if not isinstance(stats, list) or len(stats) != 2:
+            raise HarnessError("weights injected-truth case expected two weight branches")
+        exp = {"count": [], "sum_weights": [], "y_mean": []}
+        got = {"count": [], "sum_weights": [], "y_mean": []}
+        for branch_index, weights in enumerate((model["w_flat"], model["w_tgl"])):
+            branch = stats[branch_index]
+            for facet in (0, 1):
+                mask = model["side_sel"] & (model["side"] == facet)
+                ref = _it_profile(model["sector"], model["delta"], mask, weights=weights)
+                frame = _it_faceted_profile_frame(branch, facet)
+                exp["count"].extend(ref["count"].tolist())
+                got["count"].extend(np.asarray(frame["count"], dtype=int).tolist())
+                exp["sum_weights"].extend(ref["sum_weights"].tolist())
+                got["sum_weights"].extend(np.asarray(frame["sum_weights"], dtype=float).tolist())
+                exp["y_mean"].extend(ref["y_mean"].tolist())
+                got["y_mean"].extend(np.asarray(frame["y_mean"], dtype=float).tolist())
+        return exp, got
+    finally:
+        try:
+            plt.close(raw[0])
+        except Exception:
+            pass
+
+
+def _it_gauss(adf: Any, gallery: Any) -> tuple[dict, dict, dict]:
+    model = _it_prepare_public(adf, gallery)
+    raw = getattr(gallery, INJECTED_TRUTH_GAUSS_GALLERY)(adf)
+    try:
+        selected = np.asarray(model["noise"][model["base"]], dtype=float)
+        selected = selected[np.isfinite(selected) & (selected >= -0.1) & (selected <= 0.1)]
+        if selected.size < 100:
+            raise HarnessError("Gaussian injected-truth selected sample is too small")
+        raw_mean = float(np.mean(selected, dtype=np.float64))
+        raw_sigma = float(np.std(selected, ddof=0, dtype=np.float64))
+        record = _first_fit_record(raw[2] if isinstance(raw, tuple) and len(raw) >= 3 else None)
+        if not record or record.get("fit_name") != "gauss" or record.get("fit_status") != "ok":
+            raise HarnessError(f"Gaussian injected-truth fit missing/invalid: {record}")
+        named = _fit_named_values(record)
+        center = named.get("center")
+        sigma = named.get("sigma")
+        if center is None or sigma is None:
+            raise HarnessError(f"Gaussian injected-truth fit lacks named center/sigma: {named}")
+
+        bin_width = 0.2 / 100.0
+        center_tol = max(0.25 * bin_width, 5.0 * raw_sigma / np.sqrt(selected.size))
+        sigma_tol = max(
+            0.25 * bin_width,
+            5.0 * raw_sigma / np.sqrt(max(2.0 * (selected.size - 1), 1.0)),
+        )
+        center_ratio = abs(float(center) - raw_mean) / center_tol
+        sigma_ratio = abs(abs(float(sigma)) - raw_sigma) / sigma_tol
+        expected = {"fit_center_delta": 0.0, "fit_sigma_delta": 0.0}
+        observed = {
+            "fit_center_delta": float(center_ratio),
+            "fit_sigma_delta": float(sigma_ratio),
+        }
+        diagnostics = {
+            "raw_selected_mean": raw_mean,
+            "raw_selected_sigma": raw_sigma,
+            "fit_center": float(center),
+            "fit_sigma": float(sigma),
+            "center_tolerance": float(center_tol),
+            "sigma_tolerance": float(sigma_tol),
+            "selected_rows": int(selected.size),
+        }
+        return expected, observed, diagnostics
+    finally:
+        try:
+            plt.close(raw[0])
+        except Exception:
+            pass
+
+
+def _it_facet(adf: Any, gallery: Any) -> tuple[dict, dict]:
+    model = _it_prepare_public(adf, gallery)
+    raw = getattr(gallery, INJECTED_TRUTH_FACET_GALLERY)(adf)
+    try:
+        stats = raw[2]
+        exp = {"count": [], "y_mean": []}
+        got = {"count": [], "y_mean": []}
+        for facet in (0, 1):
+            mask = model["side_sel"] & (model["side"] == facet)
+            ref = _it_profile(model["sector"], model["noise"], mask)
+            frame = _it_faceted_profile_frame(stats, facet)
+            exp["count"].extend(ref["count"].tolist())
+            got["count"].extend(np.asarray(frame["count"], dtype=int).tolist())
+            exp["y_mean"].extend(ref["y_mean"].tolist())
+            got["y_mean"].extend(np.asarray(frame["y_mean"], dtype=float).tolist())
+        return exp, got
+    finally:
+        try:
+            plt.close(raw[0])
+        except Exception:
+            pass
+
+
+def _record_stage_a_machine_status(adf: Any, result: CaseResult) -> None:
+    status_map = getattr(adf, "_stage_a_machine_status", None)
+    if not isinstance(status_map, dict):
+        status_map = {}
+        setattr(adf, "_stage_a_machine_status", status_map)
+    status_map[result.case_id] = {
+        "status": result.status,
+        "detail": result.detail,
+    }
+
+
+def run_injected_truth_case(case: CaseSpec, root_path: str, *, gallery_module=None,
+                            prepared_adf=None, prepared_provenance=None) -> CaseResult:
+    """Execute one approved injected-truth workflow on the shared EAGER 20% ADF."""
+    t0 = time.time()
+    res = CaseResult(case_id=case.case_id, status=SKIP)
+    adf = prepared_adf
+    try:
+        if adf is None:
+            raise HarnessError(
+                "injected-truth cases require the shared FAST prepared_adf; rebuilding is forbidden")
+        gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+        provenance = _a6_4_prepared_fraction_sample_evidence(
+            adf, prepared_provenance, root_path)
+
+        if case.case_id == INJECTED_TRUTH_VECTOR_CASE_ID:
+            expected, observed = _it_vector_overlay(adf, gallery)
+            diagnostics = {}
+        elif case.case_id == INJECTED_TRUTH_DELTA_CASE_ID:
+            expected, observed = _it_direct_delta(adf, gallery)
+            diagnostics = {}
+        elif case.case_id == INJECTED_TRUTH_SELECTION_CASE_ID:
+            expected, observed = _it_selection_delta(adf, gallery)
+            diagnostics = {}
+        elif case.case_id == INJECTED_TRUTH_WEIGHTS_CASE_ID:
+            expected, observed = _it_weights(adf, gallery)
+            diagnostics = {}
+        elif case.case_id == INJECTED_TRUTH_GAUSS_CASE_ID:
+            expected, observed, diagnostics = _it_gauss(adf, gallery)
+        elif case.case_id == INJECTED_TRUTH_FACET_CASE_ID:
+            expected, observed = _it_facet(adf, gallery)
+            diagnostics = {}
+        else:
+            raise HarnessError(f"unknown injected-truth case {case.case_id}")
+
+        for obs in case.observables:
+            res.observable_contract.append(_contract(obs))
+            cmp = compare_observable(obs, expected[obs.name], observed[obs.name])
+            res.comparisons.append(comparison_evidence(
+                obs, cmp, reference_label="raw NumPy/pandas known injected truth",
+                candidate_label=f"public {case.canonical_spec['gallery_function']}"))
+            if not cmp.ok:
+                raise HarnessError(f"{obs.name}: {cmp.detail}")
+        res.executed_comparisons = len(case.observables)
+        res.observed.update({
+            "realdata_provenance": dict(prepared_provenance or provenance),
+            "injected_truth": {
+                "noise_seed": INJECTED_TRUTH_NOISE_SEED,
+                "noise_sigma": INJECTED_TRUTH_NOISE_SIGMA,
+                "known_delta_expression": INJECTED_TRUTH_DELTA_EXPR,
+                "gallery_function": case.canonical_spec["gallery_function"],
+                "diagnostics": diagnostics,
+            },
+        })
+        res.status = PASS
+        res.detail = ""
+        return res
+    except Exception as exc:
+        res.status = FAIL
+        res.detail = f"INJECTED_TRUTH FAIL: {exc}"
+        res.exception = traceback.format_exc(limit=8)
+        return res
+    finally:
+        res.wall_time_s = round(time.time() - t0, 4)
+        if adf is not None:
+            _record_stage_a_machine_status(adf, res)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
