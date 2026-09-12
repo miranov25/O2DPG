@@ -6798,6 +6798,8 @@ def run_a7_1_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
                 "A7 rendered table identity cells disagree with validated summary rows; "
                 f"rendered={rendered_identities}, data={semantic['summary_identities']}")
         primary = _a7_1_primary_figure_evidence(axes)
+        scalar_fit = _a7_1_scalar_fit_decomposition(adf, rows, expected)
+        style_invariance = _a7_1_style_invariance(axes)
 
         reference_values = {
             "semantic_coordinates": list(expected["coordinates"]),
@@ -6843,6 +6845,12 @@ def run_a7_1_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
             "group_expected": None,
         }
         res.observed["figure_structure"] = primary
+        res.observed["scalar_fit_decomposition"] = scalar_fit
+        res.observed["style_invariance"] = style_invariance
+        res.observed["dfdraw_red_green_custody"] = {
+            "red": dict(O1_RED_DFDRAW),
+            "green": dict(O1_GREEN_DFDRAW),
+        }
         res.payload_paths = {
             "draw": ["tuple", 2],
             "summary_fit": ["tuple", 2, 0, "summary_fit"],
@@ -6874,6 +6882,943 @@ def run_a7_1_realdata_gate(root_path: str, *, manifest_path: str,
         extra.update(result.observed["realdata_provenance"])
     doc = write_manifest(manifest_path, [result], [case], extra=extra)
     return result, doc, strict_exit_code([result], [case])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE_13_77 post-Stage-A gallery-oracle hardening v0.2 — STEP 1 / O1
+# ─────────────────────────────────────────────────────────────────────────────
+
+HARDENING_O1_NEG_A_CASE_ID = "I4-REAL-VECTOR-FACET-ONE-ELEMENT-SELECTION-EAGER-20PCT-01"
+HARDENING_O1_NEG_B_CASE_ID = "I4-REAL-HIST-VECTOR-FACET-SELECTION-EAGER-20PCT-01"
+HARDENING_FACETS = (0, 1)
+HARDENING_BASE_SEL = "(ncl>60)&(abs(dcar_tpc_vertex)<10)"
+HARDENING_PROFILE_BINS = 30
+HARDENING_PROFILE_RANGE = (-1.5, 1.5)
+
+O1_RED_DFDRAW = {
+    "md5": "119fac5392b626f82d1bd9ac4d630683",
+    "sha256": "7d1a87e7af9564f5a0298426b736418eeef918a9a837993cb444cd999fd4a96a",
+}
+O1_GREEN_DFDRAW = {
+    "md5": "3b7a8b7537745620d1a4b24c61802414",
+    "sha256": "930e027acb42b1a0226c99d3cdd5a88b777679fcc007f24ceb2f4c067cbcb6d3",
+}
+
+def _first_fit_record(stats: Any) -> dict:
+    """Return the first concrete fit record from the public nested fit payload."""
+    if isinstance(stats, dict):
+        if "fit_name" in stats and ("params" in stats or "slope" in stats):
+            return stats
+        if "fit" in stats:
+            found = _first_fit_record(stats["fit"])
+            if found:
+                return found
+        for value in stats.values():
+            found = _first_fit_record(value)
+            if found:
+                return found
+    elif isinstance(stats, (list, tuple)):
+        for value in stats:
+            found = _first_fit_record(value)
+            if found:
+                return found
+    return {}
+
+
+def _fit_named_values(record: dict) -> dict:
+    if not isinstance(record, dict):
+        return {}
+    if "params" in record and "param_names" in record:
+        names = list(record.get("param_names") or ())
+        values = np.asarray(record.get("params"), dtype=float).reshape(-1)
+        return {str(name): float(value) for name, value in zip(names, values)}
+    out = {}
+    for name in ("slope", "intercept", "c0", "c1"):
+        if name in record:
+            try:
+                out[name] = float(record[name])
+            except (TypeError, ValueError):
+                pass
+    return out
+
+
+def _a7_1_scalar_fit_decomposition(adf: Any, summary_rows: Sequence[dict], expected: dict) -> dict:
+    """Compare composed O1 fits with six independent scalar public calls."""
+    by_coordinate = {}
+    for row in summary_rows:
+        label, facet_name = _a7_1_parse_summary_identity(row)
+        by_coordinate[f"{label}|{facet_name}"] = row
+    q1, q2 = expected["q1"], expected["q2"]
+    branch_selections = (
+        f"time_s<{q1}",
+        f"(time_s>={q1})&(time_s<{q2})",
+        f"time_s>={q2}",
+    )
+    records = []
+    max_abs_delta = 0.0
+    try:
+        for branch_index, (label, branch_selection) in enumerate(
+                zip(A7_1_BRANCH_LABELS, branch_selections)):
+            for facet in A7_1_FACET_VALUES:
+                coordinate = f"{label}|side_type={facet}"
+                raw = adf.draw(
+                    "dcar_tpc_vertex:tgl",
+                    selection=f"{HARDENING_BASE_SEL}&(side_type=={facet})&({branch_selection})",
+                    type="profile", bins=A7_1_BINS, range=A7_1_RANGE,
+                    fit="pol1", min_entries=A7_1_MIN_ENTRIES, auto_title=False)
+                fit_record = _first_fit_record(raw[2])
+                scalar = _fit_named_values(fit_record)
+                composed_row = by_coordinate.get(coordinate)
+                if composed_row is None:
+                    raise HarnessError(f"O1 scalar decomposition missing composed row {coordinate}")
+                composed = {
+                    "slope": float(composed_row["slope"]),
+                    "intercept": float(composed_row["intercept"]),
+                }
+                for name in ("slope", "intercept"):
+                    if name not in scalar:
+                        raise HarnessError(f"O1 scalar {coordinate} has no {name} fit parameter")
+                    delta = abs(float(scalar[name]) - float(composed[name]))
+                    max_abs_delta = max(max_abs_delta, delta)
+                    if not np.isclose(scalar[name], composed[name], rtol=1e-10, atol=1e-12):
+                        raise HarnessError(
+                            f"O1 scalar fit mismatch {coordinate}/{name}: "
+                            f"scalar={scalar[name]}, composed={composed[name]}")
+                records.append({
+                    "coordinate": coordinate,
+                    "branch_index": branch_index,
+                    "facet": facet,
+                    "scalar": {k: scalar[k] for k in ("slope", "intercept")},
+                    "composed": composed,
+                })
+                _close()
+    finally:
+        _close()
+    return {"records": records, "max_abs_parameter_delta": float(max_abs_delta)}
+
+
+def _profile_branch_styles_from_axes(axes: Any, *, n_branches: int) -> dict:
+    """Extract the primary profile-line channel tuple for each facet/branch."""
+    flat = list(np.asarray(axes, dtype=object).reshape(-1))
+    evidence = {}
+    for ax in flat:
+        if ax is None or not getattr(ax, "get_visible", lambda: True)():
+            continue
+        title = str(getattr(ax, "get_title", lambda: "")())
+        match = re.search(r"side_type=([^\s]+)", title)
+        if match is None:
+            continue
+        facet = int(float(match.group(1)))
+        data_lines = [
+            line for line in getattr(ax, "lines", ())
+            if str(line.get_marker()) == "o" and str(line.get_linestyle()).lower() not in ("none", "")
+        ]
+        if len(data_lines) < n_branches:
+            raise HarnessError(
+                f"style oracle facet {facet} found {len(data_lines)} profile lines; expected {n_branches}")
+        evidence[facet] = [
+            {
+                "color": str(line.get_color()),
+                "linestyle": str(line.get_linestyle()),
+                "marker": str(line.get_marker()),
+            }
+            for line in data_lines[:n_branches]
+        ]
+    return evidence
+
+
+def _a7_1_style_invariance(axes: Any) -> dict:
+    styles = _profile_branch_styles_from_axes(axes, n_branches=len(A7_1_BRANCH_LABELS))
+    if set(styles) != set(A7_1_FACET_VALUES):
+        raise HarnessError(f"O1 style oracle facet set mismatch: {sorted(styles)}")
+    reference = styles[A7_1_FACET_VALUES[0]]
+    mismatches = []
+    for facet in A7_1_FACET_VALUES[1:]:
+        for branch, (ref_style, got_style) in enumerate(zip(reference, styles[facet])):
+            if ref_style != got_style:
+                mismatches.append({
+                    "facet": facet, "branch": branch,
+                    "reference": ref_style, "observed": got_style,
+                })
+    if mismatches:
+        raise HarnessError(f"O1 branch channel/style mismatch across facets: {mismatches}")
+    return {"styles_by_facet": styles, "mismatches": []}
+
+
+def _hardening_fraction_environment(root_path: str, gallery_module=None,
+                                    required=()) -> tuple[str, str]:
+    status, reason = _a7_1_environment_status(root_path, gallery_module=gallery_module)
+    if status != A5_2_ENV_AVAILABLE:
+        return status, reason
+    gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+    missing = [name for name in required if not callable(getattr(gallery, name, None))]
+    if missing:
+        return A5_2_ENV_CONTRACT_ERROR, f"time_series_draw missing required callable(s): {missing}"
+    return A5_2_ENV_AVAILABLE, ""
+
+
+def _hardening_case(*, case_id: str, claim_id: str, title: str, claim: str,
+                    failure_means: str, expected_visual: str, purpose: str,
+                    oracle_kind: str, owner: str, canonical_spec: dict,
+                    observables: tuple[Observable, ...], root_path: str,
+                    gallery_module=None, gallery_function: str | None = None,
+                    loading_mode: str = "EAGER", sample_mode: str = "FRACTION",
+                    setup_contract: str = "", preconditions: tuple[str, ...] = (),
+                    negative_control: str = "") -> CaseSpec:
+    required = (gallery_function,) if gallery_function else ()
+    status, reason = _hardening_fraction_environment(
+        root_path, gallery_module=gallery_module, required=required)
+    return CaseSpec(
+        case_id=case_id, claim_id=claim_id, title=title, claim=claim,
+        failure_means=failure_means, expected_visual=expected_visual,
+        owner_on_failure=owner, purpose=purpose, gate="ENVIRONMENT_GATED",
+        oracle_kind=oracle_kind, loading_mode=loading_mode, sample_mode=sample_mode,
+        canonical_spec=dict(canonical_spec),
+        applicable=status != A5_2_ENV_UNAVAILABLE,
+        applicability_reason=reason if status == A5_2_ENV_UNAVAILABLE else "",
+        setup_contract=setup_contract, preconditions=preconditions,
+        observables=observables, negative_control=negative_control,
+        reference_policy="named-immutable" if sample_mode == "FRACTION" else "same-process",
+        surfaces_under_test=tuple(canonical_spec.get("surfaces", ("draw",))),
+    )
+
+
+def o1_neg_a_case(root_path: str, gallery_module=None) -> CaseSpec:
+    return _hardening_case(
+        case_id=HARDENING_O1_NEG_A_CASE_ID,
+        claim_id="I4.real_vector_facet_one_element_selection.HARDENING.O1A",
+        title="one-element faceted selection_vector is applied, never silently discarded",
+        claim="a one-element selection_vector filters every facet exactly as the raw selection requests",
+        failure_means="dfdraw silently discarded a one-element selection_vector or returned the wrong per-facet population",
+        expected_visual="no dedicated page; machine-only one-element vector control",
+        purpose="CORRECTNESS", oracle_kind="CORRECTNESS", owner="dfdraw",
+        canonical_spec={"expr": "dcar_tpc_vertex:tgl", "type": "profile",
+                        "facet_by": "side_type", "selection_vector": ["early"],
+                        "bins": HARDENING_PROFILE_BINS, "range": list(HARDENING_PROFILE_RANGE)},
+        observables=(Observable("facet_selected_rows", "INDEPENDENT", "ARRAY",
+                                "raw per-facet selected row counts", comparator="exact"),),
+        root_path=root_path, gallery_module=gallery_module,
+        setup_contract="reuse the shared EAGER 20% ADF and compare public per-facet n with raw boolean masks",
+        preconditions=("side_type facets 0 and 1 are populated", "the early time branch is non-empty"),
+        negative_control="selection omission must produce a count mismatch",
+    )
+
+
+def o1_neg_b_case(root_path: str, gallery_module=None) -> CaseSpec:
+    return _hardening_case(
+        case_id=HARDENING_O1_NEG_B_CASE_ID,
+        claim_id="I4.real_hist_vector_facet_selection.HARDENING.O1B",
+        title="supported faceted histogram selection_vector is applied",
+        claim="the canonically supported non-profile vector path applies both selection branches inside each facet",
+        failure_means="dfdraw silently rendered unselected histogram data, dropped branch identity, or refused a supported path",
+        expected_visual="no dedicated page; machine-only non-profile vector control",
+        purpose="CORRECTNESS", oracle_kind="CORRECTNESS", owner="dfdraw",
+        canonical_spec={"expr": "ncl", "type": "hist", "facet_by": "side_type",
+                        "selection_vector": ["early", "late"], "bins": 40},
+        observables=(Observable("branch_facet_rows", "INDEPENDENT", "ARRAY",
+                                "raw branch×facet selected row counts", comparator="exact"),),
+        root_path=root_path, gallery_module=gallery_module,
+        setup_contract="reuse the shared EAGER 20% ADF; supported hist×selection_vector×facet_by must preserve two branches",
+        preconditions=("both time branches and both side facets are populated",),
+        negative_control="silent vector discard must be detected as cardinality/count mismatch",
+    )
+
+
+def _vector_faceted_counts(stats: Any, *, n_branches: int) -> list[int]:
+    """Extract branch-major facet counts; supports the intended vector-facet shape only."""
+    if not isinstance(stats, list) or len(stats) != n_branches:
+        raise HarnessError(
+            f"expected {n_branches} vector branches, got {type(stats).__name__} "
+            f"len={len(stats) if isinstance(stats, list) else 'n/a'}")
+    out = []
+    for branch, branch_stats in enumerate(stats):
+        per_group = branch_stats.get("per_group") if isinstance(branch_stats, dict) else None
+        if not isinstance(per_group, dict):
+            raise HarnessError(f"vector branch {branch} has no faceted per_group payload")
+        for facet in HARDENING_FACETS:
+            cell = per_group.get(str(facet))
+            if not isinstance(cell, dict) or "n" not in cell:
+                raise HarnessError(f"vector branch {branch} facet {facet} has no n")
+            out.append(int(cell["n"]))
+    return out
+
+
+def run_o1_neg_a(case: CaseSpec, root_path: str, *, gallery_module=None,
+                   prepared_adf=None, prepared_provenance=None) -> CaseResult:
+    _skip = _inapplicable(case)
+    if _skip is not None:
+        return _skip
+    t0 = time.time(); res = CaseResult(case_id=case.case_id, status=SKIP)
+    try:
+        adf = prepared_adf
+        if adf is None:
+            adf, provenance = _a6_4_build_fraction_adf_once(root_path, gallery_module=gallery_module)
+        else:
+            _a6_4_prepared_fraction_sample_evidence(adf, prepared_provenance, root_path)
+            provenance = dict(prepared_provenance or {})
+        df = adf.df
+        q1 = float(df["time_s"].quantile(1.0 / 3.0))
+        base = ((df["ncl"] > 60) & (np.abs(np.asarray(df["dcar_tpc_vertex"], dtype=float)) < 10)
+                & (df["side_type"] < 2) & (df["time_s"] < q1))
+        expected = [int(np.count_nonzero(np.asarray(base & (df["side_type"] == facet), dtype=bool)))
+                    for facet in HARDENING_FACETS]
+        raw = adf.draw("dcar_tpc_vertex:tgl", selection=f"{HARDENING_BASE_SEL}&(side_type<2)",
+                       type="profile", bins=HARDENING_PROFILE_BINS,
+                       range=HARDENING_PROFILE_RANGE,
+                       selection_vector=[f"time_s<{q1}"], facet_by="side_type",
+                       min_entries=1, auto_title=False)
+        stats = raw[2]
+        # Correct one-element vector semantics remain vector-shaped. A dict is the
+        # historical silent-discard signature and must fail loudly here.
+        observed = _vector_faceted_counts(stats, n_branches=1)
+        if observed != expected:
+            raise HarnessError(f"O1-neg-A selected counts mismatch: expected={expected}, observed={observed}")
+        res.observable_contract.append(_contract(case.observables[0]))
+        res.observed["facet_selected_rows"] = observed
+        cmp = compare_observable(case.observables[0], expected, observed)
+        res.comparisons.append(comparison_evidence(case.observables[0], cmp,
+                                                   reference_label="raw masks", candidate_label="public draw"))
+        res.executed_comparisons = 1
+        res.observed["realdata_provenance"] = provenance
+        res.status = PASS; res.detail = ""
+        return res
+    except Exception as exc:
+        res.status = FAIL; res.detail = f"O1_NEG_A selection-vector discard control FAIL: {exc}"
+        res.exception = traceback.format_exc(limit=6); return res
+    finally:
+        _close(); res.wall_time_s = round(time.time() - t0, 4)
+
+
+def run_o1_neg_b(case: CaseSpec, root_path: str, *, gallery_module=None,
+                   prepared_adf=None, prepared_provenance=None) -> CaseResult:
+    _skip = _inapplicable(case)
+    if _skip is not None:
+        return _skip
+    t0 = time.time(); res = CaseResult(case_id=case.case_id, status=SKIP)
+    try:
+        adf = prepared_adf
+        if adf is None:
+            adf, provenance = _a6_4_build_fraction_adf_once(root_path, gallery_module=gallery_module)
+        else:
+            _a6_4_prepared_fraction_sample_evidence(adf, prepared_provenance, root_path)
+            provenance = dict(prepared_provenance or {})
+        df = adf.df; t_mid = float(df["time_s"].median())
+        base = ((df["ncl"] > 60) & (df["side_type"] < 2))
+        branch_masks = (df["time_s"] < t_mid, df["time_s"] >= t_mid)
+        expected = [
+            int(np.count_nonzero(np.asarray(base & branch_mask & (df["side_type"] == facet), dtype=bool)))
+            for branch_mask in branch_masks for facet in HARDENING_FACETS
+        ]
+        raw = adf.draw("ncl", selection="(ncl>60)&(side_type<2)", type="hist", bins=40,
+                       selection_vector=[f"time_s<{t_mid}", f"time_s>={t_mid}"],
+                       facet_by="side_type", auto_title=False)
+        observed = _vector_faceted_counts(raw[2], n_branches=2)
+        if observed != expected:
+            raise HarnessError(f"O1-neg-B branch×facet counts mismatch: expected={expected}, observed={observed}")
+        res.observable_contract.append(_contract(case.observables[0]))
+        res.observed["branch_facet_rows"] = observed
+        cmp = compare_observable(case.observables[0], expected, observed)
+        res.comparisons.append(comparison_evidence(case.observables[0], cmp,
+                                                   reference_label="raw masks", candidate_label="public draw"))
+        res.executed_comparisons = 1
+        res.observed["realdata_provenance"] = provenance
+        res.status = PASS; res.detail = ""
+        return res
+    except Exception as exc:
+        res.status = FAIL; res.detail = f"O1_NEG_B non-profile vector control FAIL: {exc}"
+        res.exception = traceback.format_exc(limit=6); return res
+    finally:
+        _close(); res.wall_time_s = round(time.time() - t0, 4)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE_13_77 post-Stage-A gallery-oracle hardening v0.2 — STEP 2 / O5
+# selection_vector × facet_by × normalize=delta correctness
+# ─────────────────────────────────────────────────────────────────────────────
+
+HARDENING_O5_CASE_ID = "I4-REAL-SELECTION-VECTOR-FACET-DELTA-CORRECTNESS-EAGER-20PCT-01"
+HARDENING_O5_GALLERY_FUNCTION = "fig22_delta_faceted"
+HARDENING_O5_FACETS = (0, 1)
+HARDENING_O5_BINS = 36
+HARDENING_O5_RANGE = (-0.5, 35.5)
+
+
+def o5_realdata_case(root_path: str, gallery_module=None) -> CaseSpec:
+    """Real-data correctness case upgrading the existing G4.22 gallery page."""
+    try:
+        gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+        callable_ok = callable(getattr(gallery, HARDENING_O5_GALLERY_FUNCTION, None))
+    except Exception:
+        callable_ok = False
+    applicable = bool(root_path and os.path.isfile(root_path) and callable_ok)
+    reason = "" if applicable else "ROOT input or fig22_delta_faceted is unavailable"
+    return CaseSpec(
+        case_id=HARDENING_O5_CASE_ID,
+        claim_id="I4.real_selection_vector_facet_delta.HARDENING.O5",
+        title="real selection_vector×facet_by normalize=delta matches raw profile arithmetic",
+        claim=("the existing G4.22 early/late selection-vector delta for side_type 0/1 "
+               "matches an independent raw NumPy/pandas profile calculation using explicit "
+               "sector-bin geometry"),
+        failure_means=("the composed selection_vector×facet_by normalization changed bin "
+                       "membership, branch/facet identity, profile central values, undefined-bin "
+                       "masking, or delta arithmetic"),
+        expected_visual=("the existing G4.22 early-minus-late DCA_r profile in two side_type "
+                         "facet panels"),
+        owner_on_failure="dfdraw",
+        purpose="CORRECTNESS",
+        gate="ENVIRONMENT_GATED",
+        oracle_kind="CORRECTNESS",
+        loading_mode="EAGER",
+        sample_mode="FRACTION",
+        canonical_spec={
+            "gallery_function": HARDENING_O5_GALLERY_FUNCTION,
+            "surface": "draw",
+            "expr": "dcar_tpc_vertex:sector",
+            "selection": f"{HARDENING_BASE_SEL}&(side_type<2)",
+            "selection_vector": ["time_s<median(time_s)", "time_s>=median(time_s)"],
+            "normalize": "delta",
+            "facet_by": "side_type",
+            "facets": list(HARDENING_O5_FACETS),
+            "bins": HARDENING_O5_BINS,
+            "range": list(HARDENING_O5_RANGE),
+            "sample_fraction": A5_2_SAMPLE_FRACTION,
+            "sample_seed": A5_2_SAMPLE_SEED,
+        },
+        applicable=applicable,
+        applicability_reason=reason,
+        setup_contract=("reuse the single prepared EAGER 20% ADF; derive t_mid and all sector "
+                        "bins directly from the raw frame and explicit CaseSpec range; execute "
+                        "the unchanged public fig22_delta_faceted() request"),
+        preconditions=(
+            "time_s, sector, side_type, ncl and dcar_tpc_vertex exist in the prepared ADF",
+            "the stable facet domain is explicitly side_type in {0,1}",
+            "sector bins are fixed by CaseSpec to [-0.5,35.5] with 36 bins",
+        ),
+        figure_contract=FigureContract(
+            expected_panels="two side_type facet panels",
+            panel_roles="side_type=0 and side_type=1",
+            expected_traces="signal/reference profiles plus their normalized delta in each facet",
+            expected_group_count="no group_by dimension",
+            primary_comparison=("raw NumPy/pandas per-bin signal/reference means and counts -> "
+                                "public normalize_data_faceted delta payload"),
+            residual_definition="expected delta = early profile mean - late profile mean",
+            accepted_envelope=("exact facet/bin/count/mask identity; floating profile means and "
+                               "delta within declared numerical tolerance"),
+            case_ids=(HARDENING_O5_CASE_ID,),
+            proof_kind="CORRECTNESS",
+        ),
+        surfaces_under_test=("draw",),
+        observables=(
+            Observable("facet_values", "INDEPENDENT", "ARRAY", "raw side_type domain", comparator="exact"),
+            Observable("signal_central", "INDEPENDENT", "ARRAY", "raw early per-bin means",
+                       comparator="close", rtol=1e-12, atol=1e-12,
+                       rationale="same arithmetic mean over identical explicitly defined bins"),
+            Observable("reference_central", "INDEPENDENT", "ARRAY", "raw late per-bin means",
+                       comparator="close", rtol=1e-12, atol=1e-12,
+                       rationale="same arithmetic mean over identical explicitly defined bins"),
+            Observable("delta_values", "INDEPENDENT", "ARRAY", "raw signal-reference delta",
+                       comparator="close", rtol=1e-12, atol=1e-12,
+                       rationale="delta is direct subtraction of the two independently calculated profile means"),
+            Observable("valid_bin_mask", "INDEPENDENT", "ARRAY", "raw bins populated in both branches",
+                       comparator="exact"),
+        ),
+        non_claims=(
+            "O5 does not close y-vector normalization gaps",
+            "O5 does not close non-profile normalization/refusal gaps",
+        ),
+        negative_control="FAMILY_MUTATION:O5_DELTA_NUMERICAL_MISMATCH",
+        reference_policy="same-process",
+    )
+
+
+def _o5_profile_reference(df: Any, mask: Any, *, bins: int, value_range: tuple[float, float]) -> dict:
+    """Independent raw-row profile reduction for one O5 branch/facet."""
+    x = np.asarray(df["sector"], dtype=float)
+    y = np.asarray(df["dcar_tpc_vertex"], dtype=float)
+    take = np.asarray(mask, dtype=bool) & np.isfinite(x) & np.isfinite(y)
+    lo, hi = map(float, value_range)
+    edges = np.linspace(lo, hi, int(bins) + 1)
+    idx = np.searchsorted(edges, x, side="right") - 1
+    idx[x == hi] = int(bins) - 1
+    inside = take & (idx >= 0) & (idx < int(bins))
+    counts = np.zeros(int(bins), dtype=int)
+    means = np.full(int(bins), np.nan, dtype=float)
+    for b in range(int(bins)):
+        yy = y[inside & (idx == b)]
+        counts[b] = int(len(yy))
+        if len(yy):
+            means[b] = float(np.mean(yy))
+    return {
+        "bin_centers": (edges[:-1] + edges[1:]) / 2.0,
+        "count": counts,
+        "central": means,
+    }
+
+
+def _o5_expected_model(adf: Any, case: CaseSpec) -> dict:
+    """Build O5 truth exclusively from raw rows + explicit CaseSpec geometry."""
+    if not hasattr(adf, "df"):
+        raise HarnessError("O5 prepared object has no .df raw-frame owner")
+    df = adf.df
+    required = ("time_s", "sector", "side_type", "ncl", "dcar_tpc_vertex")
+    missing = [name for name in required if name not in df.columns]
+    if missing:
+        raise HarnessError(f"O5 raw frame missing required columns: {missing}")
+    spec = dict(case.canonical_spec)
+    bins = int(spec["bins"])
+    value_range = tuple(float(x) for x in spec["range"])
+    facets = tuple(int(x) for x in spec["facets"])
+    t_mid = float(df["time_s"].median())
+    base = ((np.asarray(df["ncl"], dtype=float) > 60)
+            & (np.abs(np.asarray(df["dcar_tpc_vertex"], dtype=float)) < 10)
+            & (np.asarray(df["side_type"]) < 2))
+    early = np.asarray(df["time_s"], dtype=float) < t_mid
+    late = ~early
+    by_facet = {}
+    for facet in facets:
+        fmask = np.asarray(df["side_type"] == facet, dtype=bool)
+        signal = _o5_profile_reference(df, base & fmask & early, bins=bins, value_range=value_range)
+        reference = _o5_profile_reference(df, base & fmask & late, bins=bins, value_range=value_range)
+        valid = (signal["count"] > 0) & (reference["count"] > 0)
+        delta = np.asarray(signal["central"] - reference["central"], dtype=float)
+        delta[~valid] = np.nan
+        by_facet[facet] = {
+            "bin_centers": signal["bin_centers"],
+            "signal_count": signal["count"],
+            "reference_count": reference["count"],
+            "signal_central": signal["central"],
+            "reference_central": reference["central"],
+            "valid_bin_mask": valid,
+            "delta_values": delta,
+        }
+    return {
+        "t_mid": t_mid,
+        "facets": list(facets),
+        "bins": bins,
+        "range": list(value_range),
+        "by_facet": by_facet,
+    }
+
+
+def _o5_normalize_facets(stats: Any) -> dict[int, dict]:
+    if not isinstance(stats, dict):
+        raise HarnessError(f"O5 expected dict stats, got {type(stats).__name__}")
+    if stats.get("normalize_mode") != "delta":
+        raise HarnessError(f"O5 expected normalize_mode='delta', got {stats.get('normalize_mode')!r}")
+    if stats.get("facet_by") != "side_type":
+        raise HarnessError(f"O5 expected facet_by='side_type', got {stats.get('facet_by')!r}")
+    raw = stats.get("normalize_data_faceted")
+    if not isinstance(raw, dict):
+        raise HarnessError("O5 stats are missing normalize_data_faceted")
+    out = {}
+    for key, value in raw.items():
+        try:
+            facet = int(float(key))
+        except (TypeError, ValueError) as exc:
+            raise HarnessError(f"O5 facet key is not numeric: {key!r}") from exc
+        if not isinstance(value, dict):
+            raise HarnessError(f"O5 facet {facet} payload is not a dict")
+        out[facet] = value
+    return out
+
+
+def _o5_compare_float(name: str, expected: Any, observed: Any, *, facet: int) -> float:
+    e = np.asarray(expected, dtype=float)
+    o = np.asarray(observed, dtype=float)
+    if e.shape != o.shape:
+        raise HarnessError(f"O5 numerical mismatch {name} facet={facet}: shape {e.shape} != {o.shape}")
+    if not np.allclose(e, o, rtol=1e-12, atol=1e-12, equal_nan=True):
+        finite = np.isfinite(e) & np.isfinite(o)
+        max_delta = float(np.max(np.abs(e[finite] - o[finite]))) if np.any(finite) else float("nan")
+        raise HarnessError(
+            f"O5 numerical mismatch {name} facet={facet}: max_abs_delta={max_delta}")
+    finite = np.isfinite(e) & np.isfinite(o)
+    return float(np.max(np.abs(e[finite] - o[finite]))) if np.any(finite) else 0.0
+
+
+def _o5_overlay_profiles(fig: Any, expected: dict) -> dict[int, dict[str, np.ndarray]]:
+    """Extract signal/reference profile central values from the rendered facet axes."""
+    centers = np.asarray(expected["by_facet"][expected["facets"][0]]["bin_centers"], dtype=float)
+    out: dict[int, dict[str, np.ndarray]] = {}
+    for ax in getattr(fig, "axes", ()):
+        title = str(getattr(ax, "get_title", lambda: "")())
+        m = re.search(r"side_type=([^\s]+)", title)
+        if m is None:
+            continue
+        try:
+            facet = int(float(m.group(1)))
+        except ValueError:
+            continue
+        if facet not in expected["facets"]:
+            continue
+        primary = [
+            line for line in getattr(ax, "lines", ())
+            if str(line.get_marker()) == "o"
+            and str(line.get_linestyle()).lower() not in ("none", "")
+        ]
+        if len(primary) != 2:
+            raise HarnessError(
+                f"O5 facet={facet} expected exactly two primary profile lines, got {len(primary)}")
+        branch_arrays = []
+        for line in primary:
+            full = np.full(len(centers), np.nan, dtype=float)
+            xs = np.asarray(line.get_xdata(), dtype=float)
+            ys = np.asarray(line.get_ydata(), dtype=float)
+            if xs.shape != ys.shape:
+                raise HarnessError(f"O5 facet={facet} profile x/y shape mismatch")
+            for x, y in zip(xs, ys):
+                idx = int(np.argmin(np.abs(centers - x)))
+                if not np.isclose(centers[idx], x, rtol=0, atol=1e-12):
+                    raise HarnessError(
+                        f"O5 facet={facet} rendered profile x={x} does not match explicit bin centers")
+                full[idx] = float(y)
+            branch_arrays.append(full)
+        out[facet] = {"signal_central": branch_arrays[0], "reference_central": branch_arrays[1]}
+    if sorted(out) != sorted(expected["facets"]):
+        raise HarnessError(
+            f"O5 rendered facet identity mismatch: expected={expected['facets']}, observed={sorted(out)}")
+    return out
+
+
+def _o5_validate_stats(stats: Any, expected: dict, *, fig: Any = None) -> dict:
+    """Compare public normalized facet payload with independent raw truth."""
+    faceted = _o5_normalize_facets(stats)
+    expected_facets = list(expected["facets"])
+    if sorted(faceted) != sorted(expected_facets):
+        raise HarnessError(
+            f"O5 facet identity mismatch: expected={expected_facets}, observed={sorted(faceted)}")
+    profiles = _o5_overlay_profiles(fig, expected) if fig is not None else None
+    flattened = {
+        "facet_values": [], "signal_central": [], "reference_central": [],
+        "delta_values": [], "valid_bin_mask": [],
+    }
+    max_delta = 0.0
+    for facet in expected_facets:
+        exp = expected["by_facet"][facet]
+        got = faceted[facet]
+        max_delta = max(max_delta, _o5_compare_float(
+            "bin_centers", exp["bin_centers"], got.get("bin_centers"), facet=facet))
+        observed_mask_undefined = np.asarray(got.get("mask_undefined"), dtype=bool)
+        observed_valid = ~observed_mask_undefined
+        if not np.array_equal(np.asarray(exp["valid_bin_mask"], dtype=bool), observed_valid):
+            raise HarnessError(f"O5 valid-bin mask mismatch facet={facet}")
+        max_delta = max(max_delta, _o5_compare_float(
+            "delta_values", exp["delta_values"], got.get("values"), facet=facet))
+        if profiles is not None:
+            for name in ("signal_central", "reference_central"):
+                max_delta = max(max_delta, _o5_compare_float(
+                    name, exp[name], profiles[facet][name], facet=facet))
+        flattened["facet_values"].append(facet)
+        if profiles is not None:
+            flattened["signal_central"].extend(
+                np.asarray(profiles[facet]["signal_central"], dtype=float).tolist())
+            flattened["reference_central"].extend(
+                np.asarray(profiles[facet]["reference_central"], dtype=float).tolist())
+        else:
+            flattened["signal_central"].extend(
+                np.asarray(exp["signal_central"], dtype=float).tolist())
+            flattened["reference_central"].extend(
+                np.asarray(exp["reference_central"], dtype=float).tolist())
+        flattened["delta_values"].extend(
+            np.asarray(got.get("values"), dtype=float).tolist())
+        flattened["valid_bin_mask"].extend(observed_valid.tolist())
+    flattened["max_abs_numerical_delta"] = float(max_delta)
+    return flattened
+
+
+def run_o5_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
+                    prepared_adf=None, prepared_provenance=None) -> CaseResult:
+    _skip = _inapplicable(case)
+    if _skip is not None:
+        return _skip
+    t0 = time.time(); res = CaseResult(case_id=case.case_id, status=SKIP)
+    try:
+        gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+        adf = prepared_adf
+        if adf is None:
+            adf, provenance = _a6_4_build_fraction_adf_once(root_path, gallery_module=gallery)
+        else:
+            _a6_4_prepared_fraction_sample_evidence(adf, prepared_provenance, root_path)
+            provenance = dict(prepared_provenance or {})
+        expected = _o5_expected_model(adf, case)
+        result = getattr(gallery, HARDENING_O5_GALLERY_FUNCTION)(adf)
+        if not isinstance(result, tuple) or len(result) < 3:
+            raise HarnessError("O5 gallery result does not expose public stats")
+        actual = _o5_validate_stats(result[2], expected, fig=result[0])
+        expected_flat = {
+            "facet_values": list(expected["facets"]),
+            "signal_central": [], "reference_central": [],
+            "delta_values": [], "valid_bin_mask": [],
+        }
+        for facet in expected["facets"]:
+            row = expected["by_facet"][facet]
+            for name in ("signal_central", "reference_central", "delta_values"):
+                expected_flat[name].extend(np.asarray(row[name]).tolist())
+            expected_flat["valid_bin_mask"].extend(np.asarray(row["valid_bin_mask"], dtype=bool).tolist())
+        for obs in case.observables:
+            res.observable_contract.append(_contract(obs))
+            exp_value = expected_flat[obs.name]
+            got_value = actual[obs.name]
+            cmp = compare_observable(obs, exp_value, got_value)
+            res.comparisons.append(comparison_evidence(
+                obs, cmp, reference_label="raw NumPy/pandas", candidate_label="public G4.22"))
+        res.executed_comparisons = len(case.observables)
+        res.observed.update({
+            "realdata_provenance": provenance,
+            "o5_oracle": {
+                "t_mid": expected["t_mid"],
+                "facets": expected["facets"],
+                "bins": expected["bins"],
+                "range": expected["range"],
+                "max_abs_numerical_delta": actual["max_abs_numerical_delta"],
+                "valid_bins_by_facet": {
+                    str(f): int(np.count_nonzero(expected["by_facet"][f]["valid_bin_mask"]))
+                    for f in expected["facets"]
+                },
+            },
+        })
+        res.status = PASS; res.detail = ""
+        return res
+    except Exception as exc:
+        res.status = FAIL
+        res.detail = f"O5_DELTA_CORRECTNESS FAIL: {exc}"
+        res.exception = traceback.format_exc(limit=8)
+        return res
+    finally:
+        _close(); res.wall_time_s = round(time.time() - t0, 4)
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE_13_77 hardening v0.2 — STEP 3 / O4 public-surface equivalence
+# ─────────────────────────────────────────────────────────────────────────────
+
+HARDENING_O4_CASE_ID = "I4-REAL-PUBLIC-SURFACE-QUALIFIED-VECTOR-EQUIV-EAGER-20PCT-01"
+HARDENING_O4_GALLERY_FUNCTION = "fig45_public_surface_equivalence_oracle"
+HARDENING_O4_SUBFRAME = "O4Surface"
+HARDENING_O4_SELECTIONS = (
+    f"{HARDENING_O4_SUBFRAME}.selector==0",
+    f"{HARDENING_O4_SUBFRAME}.selector==1",
+)
+HARDENING_O4_A7_COMMIT = "f730b0cfd4d6874e5f93331c35b3cc188470f7fc"
+HARDENING_O4_ADF_SOURCE_MD5 = "698410cf846183d8f8f362be1516409c"
+HARDENING_O4_ADF_SOURCE_SHA256 = "368853cbdb6b7418eaaa1ef92004de58fe25840f459f4385e4a9113ba1044ce0"
+
+
+def current_stage_a_contract_amendment() -> dict:
+    """Persistent current-state reconciliation without rewriting Stage-A history."""
+    return {
+        "owner": "PHASE_13_77 hardening v0.2 implementation manifest",
+        "historical_stage_a_gallery_pages": 43,
+        "historical_stage_a_closure_immutable": True,
+        "superseded_nodes": [
+            {
+                "node": ("tests/test_phase_13_77_realdata_invariance_harness.py::"
+                         "test_a4_11_vector_catalogue_and_refusal_contracts_are_machine_visible"),
+                "old_contract": "subframe-qualified selection_vector refuses with BUG_20260701",
+                "current_contract": "PHASE_13_76 B3.3b supports qualified selection_vector",
+            },
+            {
+                "node": ("tests/test_phase_13_77_realdata_invariance_harness.py::"
+                         "test_a4_14_15_subframe_vector_refusals_hold_in_eager_and_lazy_modes"),
+                "old_contract": "subframe-qualified vector requests refuse in EAGER and LAZY",
+                "current_contract": "qualified vector requests execute in EAGER and LAZY",
+            },
+        ],
+        "replacement_evidence": [
+            ("tests/test_phase_13_77_realdata_invariance_harness.py::"
+             "test_a4_11_vector_catalogue_and_historical_refusal_contracts_are_machine_visible"),
+            ("tests/test_phase_13_77_realdata_invariance_harness.py::"
+             "test_a4_14_15_b33b_supersedes_historical_subframe_vector_refusals_in_eager_and_lazy_modes"),
+            ("tests/test_phase_13_77_realdata_invariance_harness.py::"
+             "test_a7_21_o4_three_public_surfaces_match_on_qualified_vector_request"),
+        ],
+        "target_a7_commit": HARDENING_O4_A7_COMMIT,
+        "target_aliasdataframe_md5": HARDENING_O4_ADF_SOURCE_MD5,
+        "target_aliasdataframe_sha256": HARDENING_O4_ADF_SOURCE_SHA256,
+        "current_step_gallery_pages": 47,
+        "approved_final_fast_gallery_pages": 47,
+    }
+
+
+def _ensure_o4_surface_subframe(adf: Any) -> None:
+    """Register one deterministic subframe over the complete parent key domain.
+
+    Subframe projection precedes the request selection.  Covering every observed
+    ``side_type`` key avoids unrelated AD-19 row-level-missingness refusal while
+    still testing only selector==0 and selector==1 in the qualified vector slot.
+    """
+    import pandas as pd
+    registry = getattr(getattr(adf, "_subframes", None), "subframes", {}) or {}
+    if HARDENING_O4_SUBFRAME in registry:
+        return
+    if not hasattr(adf, "df") or "side_type" not in adf.df.columns:
+        raise HarnessError("O4 fixture requires parent column side_type")
+    keys = np.asarray(pd.unique(adf.df["side_type"].dropna()))
+    if keys.size == 0:
+        raise HarnessError("O4 fixture found no side_type keys")
+    keys = np.sort(keys)
+    sub = type(adf)(pd.DataFrame({
+        "side_type": keys,
+        "selector": keys.astype(np.int64, copy=False),
+    }))
+    adf.register_subframe(HARDENING_O4_SUBFRAME, sub, index_columns="side_type")
+
+
+def _o4_canonical_spec() -> dict:
+    return {
+        "expr": "dcar_tpc_vertex:tgl",
+        "selection": f"{HARDENING_BASE_SEL}&(side_type<2)",
+        "type": "profile",
+        "bins": 30,
+        "range": (-1.5, 1.5),
+        "selection_vector": list(HARDENING_O4_SELECTIONS),
+        "normalize": "delta",
+        "return_data": True,
+        "auto_title": True,
+    }
+
+
+def o4_realdata_case(root_path: str, gallery_module=None) -> CaseSpec:
+    gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+    applicable = callable(getattr(gallery, HARDENING_O4_GALLERY_FUNCTION, None))
+    return CaseSpec(
+        case_id=HARDENING_O4_CASE_ID,
+        claim_id="I4.real_public_surface_qualified_vector.HARDENING.O4",
+        title="draw/draw_batch/draw_figures agree on one B3.3-qualified vector request",
+        claim=("the same subframe-qualified selection_vector request has identical branch "
+               "identity, binning, counts and profile values on draw, draw_batch and draw_figures"),
+        failure_means=("one public surface dropped/reinterpreted the B3.3-qualified vector slot, "
+                       "changed branch order/selection, or returned numerically different profile data"),
+        expected_visual=("top: draw/draw_batch/draw_figures overlaid; bottom: candidate minus draw residuals"),
+        owner_on_failure="ADF",
+        purpose="INVARIANCE",
+        gate="ENVIRONMENT_GATED",
+        oracle_kind="CONSISTENCY",
+        loading_mode="EAGER",
+        sample_mode="FRACTION",
+        canonical_spec=_o4_canonical_spec(),
+        applicable=applicable,
+        applicability_reason=("" if applicable else f"missing {HARDENING_O4_GALLERY_FUNCTION}"),
+        setup_contract=("reuse the one canonical EAGER 20% ADF; register deterministic O4Surface over the "
+                        "complete observed side_type key domain; execute the exact same qualified selection_vector request "
+                        "through all three public surfaces"),
+        preconditions=(
+            "the canonical Stage-A EAGER 20% ADF is already built",
+            "side_type, sector and dcar_tpc_vertex are present",
+            "O4Surface.selector is used only through selection_vector",
+        ),
+        surfaces_under_test=SURFACES,
+        slots_under_test=(),
+        observables=(
+            Observable("x_center", "STATS", "ARRAY", "normalize_data.x_center",
+                       comparator="close", atol=1e-14, rtol=1e-12,
+                       rationale="identical explicit tgl-bin coordinates across public surfaces"),
+            Observable("signal_central", "STATS", "ARRAY", "normalize_data.signal_central",
+                       comparator="close", atol=1e-12, rtol=1e-10,
+                       rationale="same qualified signal branch profile across public surfaces"),
+            Observable("signal_count", "STATS", "ARRAY", "normalize_data.signal_count"),
+            Observable("reference_central", "STATS", "ARRAY", "normalize_data.reference_central",
+                       comparator="close", atol=1e-12, rtol=1e-10,
+                       rationale="same qualified reference branch profile across public surfaces"),
+            Observable("reference_count", "STATS", "ARRAY", "normalize_data.reference_count"),
+            Observable("value", "STATS", "ARRAY", "normalize_data.value",
+                       comparator="close", atol=1e-12, rtol=1e-10,
+                       rationale="same derived delta after branch-level equality is proven"),
+        ),
+        non_claims=(
+            "O4 is public-surface consistency, not an independent correctness oracle",
+            "O4 does not claim unsupported nested faceting",
+        ),
+        negative_control="FAMILY_MUTATION:O4_SURFACE_NUMERICAL_MISMATCH",
+        reference_policy="same-process",
+        figure_contract=FigureContract(
+            expected_panels="two stacked panels",
+            panel_roles="top: three public-surface delta profiles; bottom: candidate-minus-draw residuals",
+            expected_traces="three top traces and two residual traces",
+            expected_group_count="two qualified selection_vector branches",
+            primary_comparison="draw versus draw_batch versus draw_figures returned numerical data",
+            residual_definition="draw_batch-draw and draw_figures-draw",
+            accepted_envelope="all declared observables equal within their explicit tolerances",
+            case_ids=(HARDENING_O4_CASE_ID,),
+            proof_kind="CONSISTENCY",
+        ),
+    )
+
+
+def _o4_compare_stats(case: CaseSpec, stats_by_surface: dict[str, Any]) -> tuple[list[dict], dict]:
+    if set(stats_by_surface) != set(SURFACES):
+        raise HarnessError(
+            f"O4 surface set mismatch: expected={list(SURFACES)}, observed={sorted(stats_by_surface)}")
+    comparisons = []
+    observed = {}
+    reference = stats_by_surface["draw"]
+    for obs in case.observables:
+        try:
+            values = {surface: resolve(stats, obs.path, obs.access)
+                      for surface, stats in stats_by_surface.items()}
+        except HarnessError as exc:
+            raise HarnessError(f"O4 missing observable {obs.name}: {exc}") from exc
+        observed[obs.name] = values
+        for surface in ("draw_batch", "draw_figures"):
+            cmp = compare_observable(obs, values["draw"], values[surface])
+            rec = comparison_evidence(
+                obs, cmp, reference_label="draw", candidate_label=surface)
+            comparisons.append(rec)
+            if not cmp.ok:
+                raise HarnessError(
+                    f"O4 numerical mismatch {obs.name}: draw vs {surface}: {cmp.detail}")
+    return comparisons, observed
+
+
+def run_o4_surface_equivalence(case: CaseSpec, root_path: str, *, gallery_module=None,
+                               prepared_adf: Any = None,
+                               prepared_provenance: dict | None = None) -> CaseResult:
+    t0 = time.time()
+    res = CaseResult(case_id=case.case_id, status=SKIP)
+    try:
+        if prepared_adf is None:
+            raise HarnessError("O4 requires the shared FAST prepared_adf; rebuilding is forbidden")
+        provenance = _a6_4_prepared_fraction_sample_evidence(
+            prepared_adf, prepared_provenance, root_path)
+        _ensure_o4_surface_subframe(prepared_adf)
+        stats_by_surface = {}
+        for surface in SURFACES:
+            raw, kw = _call(prepared_adf, surface, case.canonical_spec, case_key="o4")
+            errs = batch_errors(raw)
+            if errs:
+                raise HarnessError(f"O4 {surface} reported errors: {errs}")
+            payload = unwrap(surface, raw, **kw)
+            stats_by_surface[surface] = payload.stats
+            res.payload_paths[surface] = list(payload.path)
+            _close()
+        comparisons, observed = _o4_compare_stats(case, stats_by_surface)
+        res.observable_contract = [_contract(o) for o in case.observables]
+        res.comparisons = comparisons
+        res.executed_comparisons = len(comparisons)
+        res.observed.update(observed)
+        res.observed.update({
+            "realdata_provenance": dict(prepared_provenance or provenance),
+            "current_state_amendment": current_stage_a_contract_amendment(),
+            "qualified_vector_slot": {
+                "subframe": HARDENING_O4_SUBFRAME,
+                "selection_vector": list(HARDENING_O4_SELECTIONS),
+                "surface_order": list(SURFACES),
+            },
+        })
+        if res.executed_comparisons != len(case.observables) * 2:
+            raise HarnessError("O4 comparison cardinality drift")
+        res.status = PASS
+        res.detail = ""
+        return res
+    except Exception as exc:
+        res.status = FAIL
+        res.detail = f"O4_PUBLIC_SURFACE_EQUIVALENCE FAIL: {exc}"
+        res.exception = traceback.format_exc(limit=8)
+        return res
+    finally:
+        _close()
+        res.wall_time_s = round(time.time() - t0, 4)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -6909,7 +7854,9 @@ _GALLERY_DISPOSITION = {
     "fig19_ratio_time": ("REUSED_VISUAL", "trusted mandatory gallery page"),
     "fig20_pull_time": ("REUSED_VISUAL", "trusted mandatory gallery page"),
     "fig21_delta_side": ("REUSED_VISUAL", "trusted mandatory gallery page"),
-    "fig22_delta_faceted": ("REUSED_VISUAL", "trusted mandatory gallery page"),
+    "fig22_delta_faceted": (
+        "REUSED_CORE",
+        "O5 real-data correctness oracle: selection_vector×facet_by normalize=delta"),
     "fig23_hist_fit": ("REUSED_VISUAL", "trusted mandatory gallery page"),
     "fig24_profile_fit": ("REUSED_VISUAL", "trusted mandatory gallery page"),
     "fig25_profile_fit_median": ("REUSED_VISUAL", "trusted mandatory gallery page"),
@@ -6933,6 +7880,12 @@ _GALLERY_DISPOSITION = {
     "fig43_vector_facet_summary_fit": (
         "REUSED_CORE",
         "A7 real-data correctness oracle: vector×facet×fit×summary_fit semantic coordinates"),
+    "fig44_weights_vector_facet_fit_oracle": (
+        "REUSED_CORE",
+        "O2 correctness oracle: weights_vector×facet weighted profiles and pol1 fits"),
+    "fig45_public_surface_equivalence_oracle": (
+        "REUSED_CORE",
+        "O4 consistency oracle: draw/draw_batch/draw_figures on B3.3-qualified selection_vector"),
 }
 
 _NUMERICAL_CORRECTNESS_ANCHORS = (
@@ -6950,6 +7903,16 @@ _NUMERICAL_CORRECTNESS_ANCHORS = (
         "family": "vector_facet_summary_fit_semantics",
         "evidence": "test_phase_13_77_realdata_invariance_harness.py::test_a7_03_semantic_oracle_accepts_exact_product_and_row_order_is_nonsemantic",
         "meaning": "independent real-data branch×facet coordinate and rendered-table identity anchor",
+    },
+    {
+        "family": "selection_vector_facet_delta",
+        "evidence": "test_phase_13_77_realdata_invariance_harness.py::test_a7_16_o5_raw_oracle_matches_current_product_on_synthetic_data",
+        "meaning": "independent raw NumPy/pandas per-bin early-minus-late profile oracle for G4.22",
+    },
+    {
+        "family": "weights_vector_facet_profile",
+        "evidence": "test_phase_13_77_realdata_invariance_harness.py::test_a7_29_o2_public_weights_vector_facet_matches_raw_correctness_oracle",
+        "meaning": "independent raw NumPy/pandas weighted-profile oracle for O2 weights_vector×facet",
     },
 )
 
@@ -7017,6 +7980,7 @@ def stage_a_closure_metadata(gallery_module=None) -> dict:
         "numerical_oracle": numerical_oracle_closure_record(),
         "a5_3_blocker_transition": a5_3_blocker_resolution_record(),
         "lazy_full_deferral_reconciliation": lazy_full_deferral_reconciliation(),
+        "current_state_amendment": current_stage_a_contract_amendment(),
     }
 
 
@@ -7030,21 +7994,27 @@ def _stage_a_case_for_gallery_function(name: str, root_path: str, gallery_module
         return a5_5_realdata_case(root_path, gallery_module=gallery_module)
     if name == A7_1_GALLERY_FUNCTION:
         return a7_1_realdata_case(root_path, gallery_module=gallery_module)
+    if name == HARDENING_O5_GALLERY_FUNCTION:
+        return o5_realdata_case(root_path, gallery_module=gallery_module)
+    if name == HARDENING_O4_GALLERY_FUNCTION:
+        return o4_realdata_case(root_path, gallery_module=gallery_module)
+    if name == HARDENING_O2_GALLERY_FUNCTION:
+        return o2_oracle_case(gallery_module=gallery_module)
     return None
 
 
 def _annotate_stage_a_figure(fig: Any, text: str) -> None:
-    """Add small Stage-A evidence text without creating a second PDF renderer."""
+    """Add Stage-A evidence text in a reserved footer band."""
     if fig is None:
         return
     text_fn = getattr(fig, "text", None)
     if callable(text_fn):
-        text_fn(0.01, 0.01, text, ha="left", va="bottom", fontsize=5,
+        text_fn(0.01, 0.012, text, ha="left", va="bottom", fontsize=4.1,
                 family="monospace", wrap=True)
     adjust = getattr(fig, "subplots_adjust", None)
     if callable(adjust):
         try:
-            adjust(bottom=0.18)
+            adjust(bottom=0.30)
         except Exception:
             pass
 
@@ -7058,7 +8028,9 @@ def write_stage_a_pdf(adf: Any, path: str, *, root_path: str,
     Stage-A footer/disposition annotations.
     """
     gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
-    for attr in ("PdfPages", "_add", "FIGURES_MANDATORY", "FIGURES_OPTIONAL"):
+    for attr in ("PdfPages", "_add", "FIGURES_MANDATORY", "FIGURES_OPTIONAL",
+                 "FIGURE_EXTRA_PAGE_SPECS", "declared_extra_page_count",
+                 "extract_declared_extra_pages"):
         if not hasattr(gallery, attr):
             raise HarnessError(f"time_series_draw missing PDF reuse owner {attr!r}")
     dispositions = {r["gallery_function"]: r for r in gallery_disposition_table(gallery)}
@@ -7071,13 +8043,10 @@ def write_stage_a_pdf(adf: Any, path: str, *, root_path: str,
     required_names.update(
         fn.__name__ for fn in gallery.FIGURES_OPTIONAL
         if dispositions[fn.__name__]["disposition"] == "REUSED_CORE")
-    # fig26 and A7 fig43 each contribute their normal figure plus a required
-    # fit-summary table page.  Historical Stage-A evidence remains 43 pages;
-    # this is the current post-Stage-A contract.
-    summary_table_pages = {
-        "fig26_summary_fit", "fig43_vector_facet_summary_fit",
-    }
-    expected_page_count = len(required_names) + len(summary_table_pages & required_names)
+    # Extra generated pages are declared by the trusted gallery owner.  The
+    # same declaration drives rendering and strict expected-page accounting.
+    expected_page_count = len(required_names) + sum(
+        int(gallery.declared_extra_page_count(name)) for name in required_names)
 
     with gallery.PdfPages(path) as pdf:
         for mandatory, funcs in ((True, gallery.FIGURES_MANDATORY),
@@ -7111,27 +8080,22 @@ def write_stage_a_pdf(adf: Any, path: str, *, root_path: str,
                     _annotate_stage_a_figure(fig, annotation)
                     gallery._add(pdf, fig, title)
                     n_pages += 1
-                    if name in summary_table_pages:
-                        tbl = None
-                        if isinstance(result, tuple) and len(result) > 2 \
-                                and isinstance(result[2], dict):
-                            tbl = result[2].get("summary_fit", {}).get("table")
-                        elif (name == "fig43_vector_facet_summary_fit"
-                              and isinstance(result, tuple) and len(result) > 2
-                              and isinstance(result[2], list) and result[2]
-                              and isinstance(result[2][0], dict)):
-                            tbl = result[2][0].get("summary_fit", {}).get("table")
-                        if tbl is None:
-                            raise HarnessError(
-                                f"required {name} fit-summary table page is missing")
+                    extra_pages = gallery.extract_declared_extra_pages(name, result)
+                    declared_extra = int(gallery.declared_extra_page_count(name))
+                    if len(extra_pages) != declared_extra:
+                        raise HarnessError(
+                            f"{name}: declared/produced extra-page mismatch "
+                            f"{declared_extra}!={len(extra_pages)}")
+                    for extra_fig, suffix in extra_pages:
                         if case is not None:
-                            table_annotation = footer_text(case)
+                            extra_annotation = footer_text(case)
                         else:
-                            table_annotation = (
-                                "GALLERY DISPOSITION: REUSED_VISUAL\n"
-                                "REASON: fit-summary table from trusted fig26")
-                        _annotate_stage_a_figure(tbl, table_annotation)
-                        gallery._add(pdf, tbl, title + " — fit table")
+                            row = dispositions[name]
+                            extra_annotation = (
+                                f"GALLERY DISPOSITION: {row['disposition']}\n"
+                                f"REASON: declared extra page for {name}")
+                        _annotate_stage_a_figure(extra_fig, extra_annotation)
+                        gallery._add(pdf, extra_fig, title + suffix)
                         n_pages += 1
                 except Exception as exc:
                     if required:
@@ -7327,12 +8291,25 @@ def _a6_4_build_fraction_adf_once(root_path: str, *, gallery_module=None) -> tup
 
 
 def _a6_3_fraction_cases(root_path: str, gallery_module=None) -> tuple[CaseSpec, ...]:
+    # v0.2 STEP 1: O1 controls run first and reuse the same prepared EAGER 20% ADF.
     return (
+        a7_1_realdata_case(root_path, gallery_module=gallery_module),
+        o1_neg_a_case(root_path, gallery_module=gallery_module),
+        o1_neg_b_case(root_path, gallery_module=gallery_module),
+        o5_realdata_case(root_path, gallery_module=gallery_module),
+        o4_realdata_case(root_path, gallery_module=gallery_module),
+        o2_oracle_case(gallery_module=gallery_module),
         a5_2_realdata_case(root_path, gallery_module=gallery_module),
         a5_4_realdata_case(root_path, gallery_module=gallery_module),
         a5_5_realdata_case(root_path, gallery_module=gallery_module),
         a5_6_realdata_case(root_path, gallery_module=gallery_module),
-        a7_1_realdata_case(root_path, gallery_module=gallery_module),
+    )
+
+
+def _a6_3_fraction_runners():
+    return (
+        run_a7_1_realdata, run_o1_neg_a, run_o1_neg_b, run_o5_realdata,
+        run_o4_surface_equivalence, run_o2_realdata, run_a5_2_realdata, run_a5_4_realdata, run_a5_5_realdata, run_a5_6_realdata,
     )
 
 
@@ -7359,8 +8336,7 @@ def run_stage_a_fraction_gate(root_path: str, *, manifest_path: str, pdf_path: s
     adf, provenance_doc = _a6_4_build_fraction_adf_once(
         root_path, gallery_module=gallery)
     cases = list(_a6_3_fraction_cases(root_path, gallery_module=gallery))
-    runners = (run_a5_2_realdata, run_a5_4_realdata,
-               run_a5_5_realdata, run_a5_6_realdata, run_a7_1_realdata)
+    runners = _a6_3_fraction_runners()
     results = [
         runner(
             case, root_path, gallery_module=gallery,
@@ -7631,5 +8607,1397 @@ def stage_a_cli_main(argv: Sequence[str] | None = None, *, gallery_module=None) 
         return 2
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE_13_77 post-Stage-A gallery-oracle hardening v0.2 — STEP 4a / O2
+# weights_vector × facet correctness contract + independent raw oracle only.
+# Public-product composition and fig44 are intentionally deferred to STEP 4b/4c.
+# ─────────────────────────────────────────────────────────────────────────────
+
+HARDENING_O2_CASE_ID = "I4-REAL-WEIGHTS-VECTOR-FACET-PROFILE-CORRECTNESS-EAGER-20PCT-01"
+HARDENING_O2_GALLERY_FUNCTION = "fig44_weights_vector_facet_fit_oracle"
+HARDENING_O2_FACETS = (0, 1)
+HARDENING_O2_BINS = 30
+HARDENING_O2_RANGE = (-1.5, 1.5)
+HARDENING_O2_WEIGHT_BRANCHES = (
+    ("unity", "1.0 + 0.0*abs(dcar_tpc_vertex)"),
+    ("w_dca", "1.0 + abs(dcar_tpc_vertex)"),
+)
+
+# The real ROOT columns are float32. dfdraw reduces the evaluated weight arrays
+# in their source dtype, while the independent oracle intentionally promotes to
+# float64. These tolerances cover only that accumulation-rounding envelope.
+HARDENING_O2_SUMW_RTOL = 5e-6
+HARDENING_O2_SUMW_ATOL = 1e-6
+HARDENING_O2_VALUE_RTOL = 5e-6
+HARDENING_O2_VALUE_ATOL = 1e-7
+
+
+def o2_oracle_case(gallery_module=None) -> CaseSpec:
+    """Declare the O2 real-data correctness case owned by gallery fig44."""
+    return CaseSpec(
+        case_id=HARDENING_O2_CASE_ID,
+        claim_id="I4.real_weights_vector_facet_profile.HARDENING.O2",
+        title="real weights_vector×facet weighted profile matches raw weighted arithmetic",
+        claim=("two deterministic weight branches across side_type 0/1 use explicit tgl bins "
+               "and agree with an independent raw NumPy/pandas weighted-profile reference"),
+        failure_means=("weight-branch or facet identity changed, bin membership changed, weighted "
+                       "support changed, or weighted profile central/error values disagree with "
+                       "the independent raw-row calculation"),
+        expected_visual=("two side_type facet panels with two deterministic weighted DCA_r:tgl "
+                         "profile branches and pol1 fits"),
+        owner_on_failure="dfdraw",
+        purpose="CORRECTNESS",
+        gate="ENVIRONMENT_GATED",
+        oracle_kind="CORRECTNESS",
+        loading_mode="EAGER",
+        sample_mode="FRACTION",
+        canonical_spec={
+            "surface": "draw",
+            "gallery_function": HARDENING_O2_GALLERY_FUNCTION,
+            "expr": "dcar_tpc_vertex:tgl",
+            "selection": f"{HARDENING_BASE_SEL}&(side_type<2)",
+            "weights_vector": [expr for _, expr in HARDENING_O2_WEIGHT_BRANCHES],
+            "weights_labels": [label for label, _ in HARDENING_O2_WEIGHT_BRANCHES],
+            "vector_compose": "outer",
+            "facet_by": "side_type",
+            "facets": list(HARDENING_O2_FACETS),
+            "bins": HARDENING_O2_BINS,
+            "range": list(HARDENING_O2_RANGE),
+            "fit": "pol1",
+            "sample_fraction": A5_2_SAMPLE_FRACTION,
+            "sample_seed": A5_2_SAMPLE_SEED,
+        },
+        applicable=True,
+        applicability_reason="",
+        setup_contract=("reuse the single prepared EAGER 20% ADF; compute all O2 reference arrays "
+                        "directly from adf.df using the explicit CaseSpec bin edges and declared "
+                        "weight formulas; execute the exact gallery fig44 public composed call"),
+        preconditions=(
+            "tgl, side_type, ncl and dcar_tpc_vertex exist in the prepared ADF",
+            "side_type facet domain is explicitly {0,1}",
+            "all O2 weights are finite and strictly positive on selected rows",
+            "tgl bins are fixed to [-1.5,1.5] with 30 bins",
+        ),
+        figure_contract=FigureContract(
+            expected_panels="two side_type facet panels",
+            panel_roles="side_type=0 and side_type=1",
+            expected_traces="two weight-branch weighted profiles with pol1 fits per facet",
+            expected_group_count="no group_by dimension",
+            primary_comparison=("raw NumPy/pandas weighted counts, sum_weights, effective support, "
+                                "weighted means/std/sem -> public weights_vector×facet payload"),
+            residual_definition="public weighted observable minus raw weighted reference",
+            accepted_envelope=("exact facet/branch/bin/count identity; weighted numerical values "
+                               "within declared tolerance"),
+            case_ids=(HARDENING_O2_CASE_ID,),
+            proof_kind="CORRECTNESS",
+        ),
+        surfaces_under_test=("draw",),
+        observables=(
+            Observable("facet_values", "INDEPENDENT", "ARRAY", "raw side_type domain", comparator="exact"),
+            Observable("weight_branch_labels", "INDEPENDENT", "ARRAY", "CaseSpec declared weights", comparator="exact"),
+            Observable("count", "INDEPENDENT", "ARRAY", "raw per-bin selected-row count", comparator="exact"),
+            Observable("sum_weights", "INDEPENDENT", "ARRAY", "raw per-bin sum(weights)",
+                       comparator="close", rtol=HARDENING_O2_SUMW_RTOL,
+                       atol=HARDENING_O2_SUMW_ATOL,
+                       rationale=("independent float64 reference versus dfdraw source-dtype "
+                                  "(float32 ROOT) accumulation")),
+            Observable("y_mean", "INDEPENDENT", "ARRAY", "raw weighted profile mean",
+                       comparator="close", rtol=HARDENING_O2_VALUE_RTOL,
+                       atol=HARDENING_O2_VALUE_ATOL,
+                       rationale=("sum(w*y)/sum(w) on identical rows; tolerance covers only "
+                                  "source-dtype accumulation rounding")),
+            Observable("y_std", "INDEPENDENT", "ARRAY", "raw weighted population std",
+                       comparator="close", rtol=HARDENING_O2_VALUE_RTOL,
+                       atol=HARDENING_O2_VALUE_ATOL,
+                       rationale=("same weighted population formula; tolerance covers only "
+                                  "source-dtype accumulation rounding")),
+            Observable("y_sem", "INDEPENDENT", "ARRAY", "raw weighted SEM via effective sample size",
+                       comparator="close", rtol=HARDENING_O2_VALUE_RTOL,
+                       atol=HARDENING_O2_VALUE_ATOL,
+                       rationale=("same n_eff formula; tolerance covers only source-dtype "
+                                  "accumulation rounding")),
+        ),
+        non_claims=(
+            "O2 does not introduce an independent polynomial fitter; fit parameters are checked by scalar decomposition",
+            "O2 does not change dfdraw weighting semantics or production code",
+        ),
+        negative_control="FAMILY_MUTATION:O2_RAW_WEIGHTED_NUMERICAL_MISMATCH",
+        reference_policy="same-process",
+    )
+
+
+def _o2_weight_values(df: Any, branch_label: str) -> np.ndarray:
+    """Independent implementation of the two approved O2 weight definitions."""
+    if branch_label == "unity":
+        return np.ones(len(df), dtype=float)
+    if branch_label == "w_dca":
+        return 1.0 + np.abs(np.asarray(df["dcar_tpc_vertex"], dtype=float))
+    raise HarnessError(f"O2 unknown weight branch {branch_label!r}")
+
+
+def _o2_weighted_profile_reference_arrays(
+        x: Any, y: Any, weights: Any, *, bins: int,
+        value_range: tuple[float, float]) -> dict:
+    """Independent raw weighted-profile reduction using project semantics."""
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    w = np.asarray(weights, dtype=float)
+    if not (x.shape == y.shape == w.shape):
+        raise HarnessError(f"O2 raw arrays have incompatible shapes: {x.shape}, {y.shape}, {w.shape}")
+    finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(w)
+    x, y, w = x[finite], y[finite], w[finite]
+    lo, hi = map(float, value_range)
+    nbins = int(bins)
+    edges = np.linspace(lo, hi, nbins + 1)
+    idx = np.searchsorted(edges, x, side="right") - 1
+    idx[x == hi] = nbins - 1
+    inside = (idx >= 0) & (idx < nbins)
+    idx, y, w = idx[inside], y[inside], w[inside]
+
+    count = np.zeros(nbins, dtype=int)
+    sum_weights = np.full(nbins, np.nan, dtype=float)
+    n_eff = np.full(nbins, np.nan, dtype=float)
+    y_mean = np.full(nbins, np.nan, dtype=float)
+    y_std = np.full(nbins, np.nan, dtype=float)
+    y_sem = np.full(nbins, np.nan, dtype=float)
+    for b in range(nbins):
+        take = idx == b
+        yy = y[take]
+        ww = w[take]
+        n = int(len(yy))
+        count[b] = n
+        if not n:
+            continue
+        sw = float(np.sum(ww))
+        sw2 = float(np.sum(ww * ww))
+        sum_weights[b] = sw
+        if sw <= 0:
+            continue
+        mean = float(np.sum(ww * yy) / sw)
+        y_mean[b] = mean
+        if sw2 > 0:
+            n_eff[b] = (sw * sw) / sw2
+        if n > 1:
+            variance = float(np.sum(ww * (yy - mean) ** 2) / sw)
+            y_std[b] = float(np.sqrt(variance))
+            if np.isfinite(n_eff[b]) and n_eff[b] > 0:
+                y_sem[b] = float(y_std[b] / np.sqrt(n_eff[b]))
+    return {
+        "x_center": (edges[:-1] + edges[1:]) / 2.0,
+        "x_low": edges[:-1],
+        "x_high": edges[1:],
+        "count": count,
+        "sum_weights": sum_weights,
+        "n_eff": n_eff,
+        "y_mean": y_mean,
+        "y_std": y_std,
+        "y_sem": y_sem,
+    }
+
+
+def _o2_expected_model(adf: Any, case: CaseSpec | None = None) -> dict:
+    """Build the complete O2 branch×facet weighted reference from raw rows."""
+    case = case or o2_oracle_case()
+    if not hasattr(adf, "df"):
+        raise HarnessError("O2 prepared object has no .df raw-frame owner")
+    df = adf.df
+    required = ("tgl", "side_type", "ncl", "dcar_tpc_vertex")
+    missing = [name for name in required if name not in df.columns]
+    if missing:
+        raise HarnessError(f"O2 raw frame missing required columns: {missing}")
+    spec = dict(case.canonical_spec)
+    bins = int(spec["bins"])
+    value_range = tuple(float(v) for v in spec["range"])
+    facets = tuple(int(v) for v in spec["facets"])
+    x = np.asarray(df["tgl"], dtype=float)
+    y = np.asarray(df["dcar_tpc_vertex"], dtype=float)
+    base = ((np.asarray(df["ncl"], dtype=float) > 60)
+            & (np.abs(y) < 10)
+            & (np.asarray(df["side_type"]) < 2))
+    by_branch_facet = {}
+    for branch_label, branch_expr in HARDENING_O2_WEIGHT_BRANCHES:
+        weights = _o2_weight_values(df, branch_label)
+        selected_w = weights[base]
+        if selected_w.size == 0 or not np.all(np.isfinite(selected_w)) or np.any(selected_w <= 0):
+            raise HarnessError(f"O2 branch {branch_label} has invalid/non-positive selected weights")
+        for facet in facets:
+            mask = base & (np.asarray(df["side_type"]) == facet)
+            key = f"{branch_label}|side_type={facet}"
+            by_branch_facet[key] = {
+                "branch_label": branch_label,
+                "weight_expression": branch_expr,
+                "facet": facet,
+                **_o2_weighted_profile_reference_arrays(
+                    x[mask], y[mask], weights[mask], bins=bins, value_range=value_range),
+            }
+    return {
+        "facets": list(facets),
+        "weight_branches": [label for label, _ in HARDENING_O2_WEIGHT_BRANCHES],
+        "weight_expressions": [expr for _, expr in HARDENING_O2_WEIGHT_BRANCHES],
+        "bins": bins,
+        "range": list(value_range),
+        "by_branch_facet": by_branch_facet,
+    }
+
+
+def _o2_flatten_reference(expected: dict) -> dict:
+    """Flatten in declaration-major order for future product comparisons."""
+    out = {
+        "facet_values": [], "weight_branch_labels": [], "count": [],
+        "sum_weights": [], "y_mean": [], "y_std": [], "y_sem": [],
+    }
+    for branch in expected["weight_branches"]:
+        for facet in expected["facets"]:
+            row = expected["by_branch_facet"][f"{branch}|side_type={facet}"]
+            out["facet_values"].append(facet)
+            out["weight_branch_labels"].append(branch)
+            for name in ("count", "sum_weights", "y_mean", "y_std", "y_sem"):
+                out[name].extend(np.asarray(row[name]).tolist())
+    return out
+
+
+def _o2_assert_reference_consistent(case: CaseSpec, expected: dict) -> dict:
+    """Fail for the intended O2 reference dimension, not an unrelated assertion."""
+    flat = _o2_flatten_reference(expected)
+    n_cells = len(expected["facets"]) * len(expected["weight_branches"])
+    if n_cells != 4:
+        raise HarnessError(f"O2 identity mismatch expected four branch×facet cells, got {n_cells}")
+    if flat["facet_values"] != [0, 1, 0, 1]:
+        raise HarnessError(f"O2 facet identity mismatch: {flat['facet_values']}")
+    if flat["weight_branch_labels"] != ["unity", "unity", "w_dca", "w_dca"]:
+        raise HarnessError(f"O2 weight identity mismatch: {flat['weight_branch_labels']}")
+    counts = np.asarray(flat["count"], dtype=int)
+    sumw = np.asarray(flat["sum_weights"], dtype=float)
+    means = np.asarray(flat["y_mean"], dtype=float)
+    populated = counts > 0
+    if not np.any(populated):
+        raise HarnessError("O2 numerical mismatch count: no populated weighted bins")
+    if np.any(~np.isfinite(sumw[populated])) or np.any(sumw[populated] <= 0):
+        raise HarnessError("O2 numerical mismatch sum_weights: populated bin has invalid support")
+    if np.any(~np.isfinite(means[populated])):
+        raise HarnessError("O2 numerical mismatch y_mean: populated bin has non-finite weighted mean")
+    return flat
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE_13_77 hardening v0.2 — STEP 4b / O2 public-product integration
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _o2_product_draw(adf: Any, case: CaseSpec | None = None):
+    """Execute the approved public weights_vector×facet request."""
+    case = case or o2_oracle_case()
+    spec = case.canonical_spec
+    return adf.draw(
+        spec["expr"],
+        selection=spec["selection"],
+        type="profile",
+        bins=int(spec["bins"]),
+        range=tuple(spec["range"]),
+        weights_vector=list(spec["weights_vector"]),
+        facet_by="side_type",
+        vector_compose="outer",
+        fit="pol1",
+        min_entries=1,
+        auto_title=False,
+        return_data=True,
+    )
+
+
+def _o2_scalar_draw(adf: Any, weight_expr: str, case: CaseSpec | None = None):
+    """Independent scalar decomposition for one weight branch."""
+    case = case or o2_oracle_case()
+    spec = case.canonical_spec
+    return adf.draw(
+        spec["expr"],
+        selection=spec["selection"],
+        type="profile",
+        bins=int(spec["bins"]),
+        range=tuple(spec["range"]),
+        weights=weight_expr,
+        facet_by="side_type",
+        fit="pol1",
+        min_entries=1,
+        auto_title=False,
+        return_data=True,
+    )
+
+
+def _o2_profile_frame(branch_stats: Any, facet: int):
+    if not isinstance(branch_stats, dict):
+        raise HarnessError(f"O2 branch payload is {type(branch_stats).__name__}, expected dict")
+    groups = list(branch_stats.get("groups", ()))
+    if groups != list(HARDENING_O2_FACETS):
+        raise HarnessError(f"O2 facet identity mismatch: observed groups={groups!r}")
+    per_group = branch_stats.get("per_group")
+    if not isinstance(per_group, dict):
+        raise HarnessError("O2 branch has no faceted per_group payload")
+    cell = per_group.get(str(facet))
+    if not isinstance(cell, dict):
+        raise HarnessError(f"O2 missing facet payload side_type={facet}")
+    frame = cell.get("profile_data")
+    if frame is None:
+        raise HarnessError(f"O2 missing profile_data for side_type={facet}")
+    required = ("x_center", "count", "sum_weights", "y_mean", "y_std", "y_sem")
+    missing = [name for name in required if name not in frame.columns]
+    if missing:
+        raise HarnessError(f"O2 profile_data missing columns {missing}")
+    return frame
+
+
+def _o2_fit_record(branch_stats: Any, facet: int) -> dict:
+    fit_block = branch_stats.get("fit") if isinstance(branch_stats, dict) else None
+    if not isinstance(fit_block, dict):
+        raise HarnessError(f"O2 missing fit block for facet {facet}")
+    candidates = ((str(facet),), (facet,), str(facet), facet)
+    cell = None
+    for key in candidates:
+        if key in fit_block:
+            cell = fit_block[key]
+            break
+    if cell is None:
+        raise HarnessError(f"O2 fit block missing facet {facet}: keys={list(fit_block)}")
+    try:
+        record = cell[0][0]
+    except Exception as exc:
+        raise HarnessError(f"O2 malformed fit payload for facet {facet}: {cell!r}") from exc
+    if record.get("fit_name") != "pol1" or record.get("fit_status") != "ok":
+        raise HarnessError(f"O2 invalid pol1 fit for facet {facet}: {record}")
+    params = np.asarray(record.get("params"), dtype=float)
+    if params.shape != (2,) or not np.all(np.isfinite(params)):
+        raise HarnessError(f"O2 invalid pol1 parameters for facet {facet}: {params}")
+    return {"fit_name": "pol1", "params": params, "n_data": int(record.get("n_data", -1))}
+
+
+def _o2_public_model(raw: Any, case: CaseSpec | None = None) -> dict:
+    """Normalize public vector×facet stats into branch/facet keyed evidence."""
+    case = case or o2_oracle_case()
+    stats = raw[2] if isinstance(raw, tuple) and len(raw) >= 3 else None
+    expected_branches = list(case.canonical_spec["weights_labels"] or [])
+    if not isinstance(stats, list) or len(stats) != len(expected_branches):
+        raise HarnessError(
+            f"O2 product branch identity mismatch: expected {len(expected_branches)} branches, "
+            f"got {type(stats).__name__} len={len(stats) if isinstance(stats, list) else 'n/a'}")
+    cells = {}
+    for branch_index, (branch_label, branch_stats) in enumerate(zip(expected_branches, stats)):
+        for facet in HARDENING_O2_FACETS:
+            frame = _o2_profile_frame(branch_stats, facet)
+            cells[f"{branch_label}|side_type={facet}"] = {
+                "branch_label": branch_label,
+                "branch_index": branch_index,
+                "facet": facet,
+                "x_center": np.asarray(frame["x_center"], dtype=float),
+                "count": np.asarray(frame["count"], dtype=int),
+                "sum_weights": np.asarray(frame["sum_weights"], dtype=float),
+                "y_mean": np.asarray(frame["y_mean"], dtype=float),
+                "y_std": np.asarray(frame["y_std"], dtype=float),
+                "y_sem": np.asarray(frame["y_sem"], dtype=float),
+                "fit": _o2_fit_record(branch_stats, facet),
+            }
+    return {"cells": cells, "stats": stats, "axes": raw[1]}
+
+
+def _o2_raw_tolerance(name: str) -> tuple[float, float]:
+    """Tolerance for independent float64 reference versus source-dtype product."""
+    if name == "sum_weights":
+        return HARDENING_O2_SUMW_ATOL, HARDENING_O2_SUMW_RTOL
+    if name in ("y_mean", "y_std", "y_sem"):
+        return HARDENING_O2_VALUE_ATOL, HARDENING_O2_VALUE_RTOL
+    return 1e-12, 1e-12
+
+
+def _o2_close_array(label: str, expected: Any, observed: Any, *, atol=1e-12, rtol=1e-12):
+    a = np.asarray(expected)
+    b = np.asarray(observed)
+    if a.shape != b.shape:
+        raise HarnessError(f"O2 {label} shape mismatch: {a.shape} != {b.shape}")
+    if np.issubdtype(a.dtype, np.integer):
+        if not np.array_equal(a, b):
+            raise HarnessError(f"O2 {label} exact mismatch")
+        return
+    if not np.allclose(a.astype(float), b.astype(float), rtol=rtol, atol=atol, equal_nan=True):
+        delta = np.nanmax(np.abs(a.astype(float) - b.astype(float)))
+        raise HarnessError(f"O2 {label} numerical mismatch max_abs={delta}")
+
+
+def _o2_assert_product_matches_raw(case: CaseSpec, expected: dict, product: dict) -> dict:
+    """Primary O2 correctness check against independent raw arithmetic."""
+    expected_keys = [
+        f"{branch}|side_type={facet}"
+        for branch in expected["weight_branches"] for facet in expected["facets"]
+    ]
+    if list(product["cells"].keys()) != expected_keys:
+        raise HarnessError(
+            f"O2 branch/facet identity mismatch expected={expected_keys} "
+            f"observed={list(product['cells'])}")
+    maxima = {}
+    for key in expected_keys:
+        ref = expected["by_branch_facet"][key]
+        got = product["cells"][key]
+        for name in ("x_center", "count", "sum_weights", "y_mean", "y_std", "y_sem"):
+            atol, rtol = _o2_raw_tolerance(name)
+            _o2_close_array(
+                f"{key}.{name}", ref[name], got[name], atol=atol, rtol=rtol)
+        diff = np.abs(np.asarray(ref["y_mean"], float) - np.asarray(got["y_mean"], float))
+        maxima[key] = float(np.nanmax(diff)) if np.any(np.isfinite(diff)) else 0.0
+    return {"cells": expected_keys, "max_abs_y_mean": maxima}
+
+
+def _o2_assert_scalar_decomposition(adf: Any, case: CaseSpec, product: dict) -> dict:
+    """Secondary composition invariant: vector branch == scalar weighted facet request."""
+    records = []
+    for branch_label, weight_expr in HARDENING_O2_WEIGHT_BRANCHES:
+        scalar = _o2_scalar_draw(adf, weight_expr, case)
+        scalar_stats = scalar[2]
+        try:
+            for facet in HARDENING_O2_FACETS:
+                scalar_frame = _o2_profile_frame(scalar_stats, facet)
+                got = product["cells"][f"{branch_label}|side_type={facet}"]
+                for name in ("x_center", "count", "sum_weights", "y_mean", "y_std", "y_sem"):
+                    _o2_close_array(
+                        f"scalar {branch_label}|side_type={facet}.{name}",
+                        scalar_frame[name].to_numpy(), got[name])
+                scalar_fit = _o2_fit_record(scalar_stats, facet)
+                _o2_close_array(
+                    f"scalar fit {branch_label}|side_type={facet}",
+                    scalar_fit["params"], got["fit"]["params"], atol=1e-10, rtol=1e-10)
+                records.append({
+                    "branch": branch_label, "facet": facet,
+                    "fit_params": np.asarray(got["fit"]["params"], float).tolist(),
+                })
+        finally:
+            try:
+                plt.close(scalar[0])
+            except Exception:
+                pass
+    return {"records": records}
+
+
+def _o2_style_invariance(axes: Any) -> dict:
+    styles = _profile_branch_styles_from_axes(axes, n_branches=len(HARDENING_O2_WEIGHT_BRANCHES))
+    if set(styles) != set(HARDENING_O2_FACETS):
+        raise HarnessError(f"O2 style facet identity mismatch: {sorted(styles)}")
+    ref = styles[HARDENING_O2_FACETS[0]]
+    mismatches = []
+    for facet in HARDENING_O2_FACETS[1:]:
+        for branch_index, (a, b) in enumerate(zip(ref, styles[facet])):
+            if a != b:
+                mismatches.append({
+                    "branch": HARDENING_O2_WEIGHT_BRANCHES[branch_index][0],
+                    "facet": facet, "reference": a, "observed": b,
+                })
+    if mismatches:
+        raise HarnessError(f"O2 branch channel/style mismatch across facets: {mismatches}")
+    return {"styles_by_facet": styles, "mismatches": []}
+
+
+def _o2_execute_public_checks(adf: Any, case: CaseSpec | None = None) -> dict:
+    """Execute O2 primary correctness + scalar + style checks on one prepared ADF."""
+    case = case or o2_oracle_case()
+    expected = _o2_expected_model(adf, case)
+    raw = _o2_product_draw(adf, case)
+    try:
+        product = _o2_public_model(raw, case)
+        primary = _o2_assert_product_matches_raw(case, expected, product)
+        scalar = _o2_assert_scalar_decomposition(adf, case, product)
+        style = _o2_style_invariance(product["axes"])
+        return {"primary": primary, "scalar": scalar, "style": style, "product": product}
+    finally:
+        try:
+            plt.close(raw[0])
+        except Exception:
+            pass
+
+
+def _o2_flatten_for_observables(expected: dict, product: dict) -> tuple[dict, dict]:
+    expected_flat = {
+        "facet_values": list(expected["facets"]),
+        "weight_branch_labels": list(expected["weight_branches"]),
+        "count": [], "sum_weights": [], "y_mean": [], "y_std": [], "y_sem": [],
+    }
+    observed_flat = {
+        "facet_values": list(expected["facets"]),
+        "weight_branch_labels": list(expected["weight_branches"]),
+        "count": [], "sum_weights": [], "y_mean": [], "y_std": [], "y_sem": [],
+    }
+    for branch in expected["weight_branches"]:
+        for facet in expected["facets"]:
+            key = f"{branch}|side_type={facet}"
+            ref = expected["by_branch_facet"][key]
+            got = product["cells"][key]
+            for name in ("count", "sum_weights", "y_mean", "y_std", "y_sem"):
+                expected_flat[name].extend(np.asarray(ref[name]).tolist())
+                observed_flat[name].extend(np.asarray(got[name]).tolist())
+    return expected_flat, observed_flat
+
+def run_o2_realdata(case: CaseSpec, root_path: str, *, gallery_module=None,
+                    prepared_adf=None, prepared_provenance=None) -> CaseResult:
+    """Run O2 on the one shared FAST ADF; rebuilding the source is forbidden."""
+    t0 = time.time()
+    res = CaseResult(case_id=case.case_id, status=SKIP)
+    try:
+        if prepared_adf is None:
+            raise HarnessError("O2 requires the shared FAST prepared_adf; rebuilding is forbidden")
+        gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+        provenance = _a6_4_prepared_fraction_sample_evidence(
+            prepared_adf, prepared_provenance, root_path)
+        expected = _o2_expected_model(prepared_adf, case)
+        fig_fn = getattr(gallery, HARDENING_O2_GALLERY_FUNCTION, None)
+        if not callable(fig_fn):
+            raise HarnessError(f"O2 missing gallery owner {HARDENING_O2_GALLERY_FUNCTION}")
+        raw = fig_fn(prepared_adf)
+        try:
+            product = _o2_public_model(raw, case)
+            primary = _o2_assert_product_matches_raw(case, expected, product)
+            scalar = _o2_assert_scalar_decomposition(prepared_adf, case, product)
+            style = _o2_style_invariance(product["axes"])
+            expected_flat, observed_flat = _o2_flatten_for_observables(expected, product)
+            for obs in case.observables:
+                res.observable_contract.append(_contract(obs))
+                cmp = compare_observable(obs, expected_flat[obs.name], observed_flat[obs.name])
+                res.comparisons.append(comparison_evidence(
+                    obs, cmp, reference_label="raw NumPy/pandas", candidate_label="public fig44"))
+                if not cmp.ok:
+                    raise HarnessError(f"O2 observable mismatch {obs.name}: {cmp.detail}")
+            res.executed_comparisons = len(case.observables)
+            res.observed.update({
+                "realdata_provenance": dict(prepared_provenance or provenance),
+                "o2_oracle": {
+                    "weight_branches": list(expected["weight_branches"]),
+                    "facets": list(expected["facets"]),
+                    "bins": int(expected["bins"]),
+                    "range": list(expected["range"]),
+                    "primary": primary,
+                    "scalar_fit_records": scalar["records"],
+                    "style_mismatches": style["mismatches"],
+                },
+            })
+            res.status = PASS
+            res.detail = ""
+            return res
+        finally:
+            try:
+                plt.close(raw[0])
+            except Exception:
+                pass
+    except Exception as exc:
+        res.status = FAIL
+        res.detail = f"O2_WEIGHTS_VECTOR_FACET_CORRECTNESS FAIL: {exc}"
+        res.exception = traceback.format_exc(limit=8)
+        return res
+    finally:
+        _close()
+        res.wall_time_s = round(time.time() - t0, 4)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE_13_77 hardening v0.2 — STEP 5a / O3 contract + dependency instrumentation
+# ─────────────────────────────────────────────────────────────────────────────
+
+HARDENING_O3_CASE_ID = "I4-REAL-G7-SUBFRAME-EAGER-LAZY-BOTH-FULL-01"
+HARDENING_O3_REUSED_GALLERY_FUNCTION = A5_2_GALLERY_FUNCTION  # fig32_subframe_vertex
+HARDENING_O3_TREE_NAME = A5_3_TREE_NAME
+HARDENING_O3_SETUP_REQUIRED = ("timeMS",)
+HARDENING_O3_REQUIRED_ON_DEMAND = (
+    "vertex_x", "vertex_y", "vertex_z", "vertex_nContributors",
+)
+HARDENING_O3_DECOY_BRANCH = "ncl"
+
+
+def o3_fullstack_case(root_path: str, gallery_module=None) -> CaseSpec:
+    """Declare the SLOW BOTH+FULL G7.32 eager/lazy equivalence gate.
+
+    Step 5a defines the contract only.  The expensive FULL EAGER and FULL LAZY
+    legs are executed separately in later steps so one gate never performs a
+    redundant third source read merely to compute combined timing.
+    """
+    status, reason = _a5_2_environment_status(root_path, gallery_module=gallery_module)
+    applicable = status != A5_2_ENV_UNAVAILABLE
+    return CaseSpec(
+        case_id=HARDENING_O3_CASE_ID,
+        claim_id="I4.real_g7_subframe_eager_lazy.HARDENING.O3",
+        title="FULL G7.32 CalibVertex profile is numerically equivalent in eager and lazy modes",
+        claim=("the exact trusted G7.32 CalibVertex.vertex_x_intercept:time_s profile "
+               "produces the same selected/bin profile observables in one FULL EAGER and "
+               "one FULL LAZY execution, while the lazy leg loads required vertex branches "
+               "on demand and leaves the available ncl decoy unloaded"),
+        failure_means=("EAGER and LAZY full-data G7.32 differ numerically, the lazy leg falls "
+                       "back to eager/full-column loading, a required dependency is not loaded, "
+                       "or the unrelated ncl decoy is loaded"),
+        expected_visual=("optional separate G7.32 EAGER/LAZY overlay and residual artifact; "
+                         "not part of the 47-page FAST gallery"),
+        owner_on_failure="ADF",
+        purpose="INVARIANCE",
+        gate="ENVIRONMENT_GATED",
+        oracle_kind="CONSISTENCY",
+        loading_mode="BOTH",
+        sample_mode="FULL",
+        canonical_spec={
+            "gallery_function": HARDENING_O3_REUSED_GALLERY_FUNCTION,
+            "expr": "CalibVertex.vertex_x_intercept:time_s",
+            "type": "profile",
+            "bins": 100,
+            "time_format": "%H:%M",
+            "sample": None,
+            "tree_name": HARDENING_O3_TREE_NAME,
+            "reused_case_id": A5_3_CASE_ID,
+        },
+        applicable=applicable,
+        applicability_reason=reason if not applicable else "",
+        setup_contract=("reuse the existing G7.32 gallery owner and Stage-A lazy-reader "
+                        "loaded_branches instrumentation; execute exactly one FULL EAGER leg "
+                        "and one FULL LAZY leg in separate measured steps; compare saved machine "
+                        "observables without a third ROOT read"),
+        preconditions=(
+            "the ROOT input is readable by the trusted time-series environment",
+            "fig32_subframe_vertex and build_adf are available",
+            "sample is None in both FULL legs",
+            "the LAZY leg exposes available_branches and loaded_branches",
+            "ncl exists as an available but unrelated physical branch",
+        ),
+        surfaces_under_test=("draw",),
+        observables=(
+            Observable("count", "STATS", "ARRAY", "profile_data.count"),
+            Observable("x_center", "STATS", "ARRAY", "profile_data.x_center",
+                       comparator="close", atol=1e-12, rtol=1e-10,
+                       rationale="identical explicit profile-bin coordinates across loading modes"),
+            Observable("y_mean", "STATS", "ARRAY", "profile_data.y_mean",
+                       comparator="close", atol=1e-10, rtol=1e-8,
+                       rationale="same full-data CalibVertex profile central values across loading modes"),
+        ),
+        figure_contract=FigureContract(
+            expected_panels="optional two-panel slow-gate artifact, separate from FAST gallery",
+            panel_roles="top: EAGER and LAZY G7.32 profiles; bottom: LAZY minus EAGER residual",
+            expected_traces="two profile traces plus one residual trace when artifact rendering is enabled",
+            expected_group_count="one G7.32 profile in each loading mode",
+            primary_comparison="saved EAGER_FULL versus LAZY_FULL profile_data arrays",
+            residual_definition="LAZY y_mean - EAGER y_mean on matched populated bins",
+            accepted_envelope="declared observables agree within explicit tolerances and dependency evidence is valid",
+            case_ids=(HARDENING_O3_CASE_ID,),
+            proof_kind="CONSISTENCY",
+        ),
+        non_claims=(
+            "O3 is loading-mode consistency, not independent calibVertex physics correctness",
+            "O3 is not part of the routine 47-page FAST gallery",
+            "O3 does not permit sampled-lazy execution",
+        ),
+        negative_control="FAMILY_MUTATION:O3_REQUIRED_DEPENDENCY_OR_DECOY_OR_NUMERICAL_MISMATCH",
+        reference_policy="same-process",
+    )
+
+
+def o3_execution_contract() -> dict:
+    """Persistent SLOW-gate execution plan used by later FULL leg runners."""
+    return {
+        "case_id": HARDENING_O3_CASE_ID,
+        "reused_gallery_function": HARDENING_O3_REUSED_GALLERY_FUNCTION,
+        "reused_stage_a_case_id": A5_3_CASE_ID,
+        "loading_mode": "BOTH",
+        "sample_mode": "FULL",
+        "execution_legs": ("EAGER_FULL", "LAZY_FULL"),
+        "max_full_source_constructions": 2,
+        "redundant_combined_third_read_forbidden": True,
+        "combined_wall_time_definition": "EAGER_FULL elapsed + LAZY_FULL elapsed from the same two measured legs",
+        "dependency_instrumentation_owner": "_a5_3_loaded_branches / lazy_reader.loaded_branches",
+        "setup_required_physical_branches": HARDENING_O3_SETUP_REQUIRED,
+        "required_on_demand_physical_branches": HARDENING_O3_REQUIRED_ON_DEMAND,
+        "decoy_available_but_unrequired_branch": HARDENING_O3_DECOY_BRANCH,
+        "fast_gallery_page_count_effect": 0,
+    }
+
+
+def _o3_lazy_dependency_snapshot(adf: Any) -> dict:
+    """Reuse the Stage-A lazy-reader branch evidence without new instrumentation."""
+    reader = getattr(adf, "_lazy_reader", None)
+    if reader is None:
+        raise HarnessError("O3 lazy dependency evidence has no live _lazy_reader (eager fallback)")
+    loaded = set(getattr(reader, "loaded_branches", ()) or ())
+    available = set(getattr(reader, "available_branches", ()) or ())
+    if not available:
+        raise HarnessError("O3 lazy dependency evidence has no available_branches inventory")
+    decoy = HARDENING_O3_DECOY_BRANCH
+    if decoy not in available:
+        raise HarnessError(f"O3 declared decoy {decoy!r} is not available in the lazy source")
+    return {
+        "available": tuple(sorted(str(x) for x in available)),
+        "loaded": tuple(sorted(str(x) for x in loaded)),
+        "decoy": decoy,
+    }
+
+
+def _o3_validate_lazy_dependency_transition(before: dict, after: dict) -> dict:
+    """Validate required G7.32 expansion and the available-but-unrequired decoy."""
+    before_loaded = set(before.get("loaded", ()))
+    after_loaded = set(after.get("loaded", ()))
+    available = set(after.get("available", ()))
+    required = set(HARDENING_O3_REQUIRED_ON_DEMAND)
+    decoy = HARDENING_O3_DECOY_BRANCH
+    missing = sorted(required - after_loaded)
+    if missing:
+        raise HarnessError(f"O3 required dependency missing after G7.32: {missing}")
+    if required & before_loaded:
+        raise HarnessError(
+            f"O3 required on-demand dependency was preloaded before G7.32: "
+            f"{sorted(required & before_loaded)}")
+    if decoy not in available:
+        raise HarnessError(f"O3 decoy {decoy!r} disappeared from available branch inventory")
+    if decoy in after_loaded:
+        raise HarnessError(f"O3 unrelated decoy branch {decoy!r} was loaded")
+    newly_loaded = sorted(after_loaded - before_loaded)
+    return {
+        "required_on_demand": sorted(required),
+        "newly_loaded": newly_loaded,
+        "decoy": decoy,
+        "decoy_remained_unloaded": True,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE_13_77 hardening v0.2 — STEP 5b / O3 EAGER FULL leg
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _o3_timestamp() -> str:
+    """Local timestamp for long-running O3 debug/evidence messages."""
+    return time.strftime("%Y-%m-%d %H:%M:%S %z", time.localtime())
+
+
+def _o3_peak_rss_mb() -> float:
+    """Best-effort process peak RSS in MiB (portable Linux/macOS units)."""
+    try:
+        import resource
+        value = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        # Linux reports KiB; macOS reports bytes.
+        if sys.platform == "darwin":
+            return value / (1024.0 * 1024.0)
+        return value / 1024.0
+    except Exception:
+        return float("nan")
+
+
+def _o3_profile_arrays_from_stats(stats: Any) -> dict:
+    """Extract comparison-ready profile arrays from return_data=True stats.
+
+    JSON-facing y values use ``None`` for non-finite/missing bins.  ``missing_mask``
+    is authoritative for restoring NaNs before the final EAGER↔LAZY comparison.
+    """
+    if not isinstance(stats, dict):
+        raise HarnessError("O3 profile stats payload is not a dict")
+    profile_data = stats.get("profile_data")
+    if not (hasattr(profile_data, "columns") and hasattr(profile_data, "__getitem__")):
+        raise HarnessError("O3 profile stats has no DataFrame-like profile_data")
+    required = ("count", "x_center", "y_mean")
+    missing_cols = [name for name in required if name not in profile_data.columns]
+    if missing_cols:
+        raise HarnessError(f"O3 profile_data missing columns: {missing_cols}")
+
+    count = np.asarray(profile_data["count"])
+    x_center = np.asarray(profile_data["x_center"], dtype=float)
+    y_mean = np.asarray(profile_data["y_mean"], dtype=float)
+    if not (count.shape == x_center.shape == y_mean.shape):
+        raise HarnessError(
+            "O3 profile_data shape mismatch: "
+            f"count={count.shape}, x_center={x_center.shape}, y_mean={y_mean.shape}")
+    if count.ndim != 1:
+        raise HarnessError(f"O3 profile_data must be one-dimensional; got {count.shape}")
+    if count.size == 0:
+        raise HarnessError("O3 profile_data is empty")
+    if not np.all(np.isfinite(x_center)):
+        raise HarnessError("O3 x_center contains non-finite values")
+
+    missing = (np.asarray(count, dtype=float) <= 0.0) | ~np.isfinite(y_mean)
+    if int((~missing).sum()) <= 0:
+        raise HarnessError("O3 profile_data has no populated finite y_mean bins")
+
+    return {
+        "count": [int(x) for x in np.asarray(count, dtype=np.int64)],
+        "x_center": [float(x) for x in x_center],
+        "y_mean": [None if bad else float(y) for y, bad in zip(y_mean, missing)],
+        "missing_mask": [bool(x) for x in missing],
+        "populated_bins": int((~missing).sum()),
+    }
+
+
+def run_o3_eager_full_leg(root_path: str, *, manifest_path: str,
+                          gallery_module=None) -> tuple[CaseResult, dict]:
+    """Execute exactly one FULL EAGER O3 leg and persist comparison-ready evidence.
+
+    This is deliberately *not* the final O3 PASS gate.  It writes an ordinary
+    Stage-A manifest with a DIAGNOSTIC partial-leg result.  Step 5c writes the
+    corresponding LAZY_FULL leg; Step 5d compares the two saved legs without a
+    third ROOT construction.
+    """
+    case = o3_fullstack_case(root_path, gallery_module=gallery_module)
+    result = CaseResult(case_id=case.case_id, status=DIAGNOSTIC)
+    started = _o3_timestamp()
+    t_leg = time.time()
+    rss_before = _o3_peak_rss_mb()
+    raw_gallery = None
+    raw_machine = None
+    original_sample = None
+
+    print(f"[O3 EAGER_FULL] {started} START")
+    try:
+        if not case.applicable:
+            result.status = SKIP
+            result.detail = case.applicability_reason
+        else:
+            gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+            import pandas as pd
+
+            sample_calls = []
+            original_sample = pd.DataFrame.sample
+
+            def forbidden_sample(self, *args, **kwargs):
+                sample_calls.append({"args": list(args), "kwargs": dict(kwargs)})
+                return original_sample(self, *args, **kwargs)
+
+            print(f"[O3 EAGER_FULL] {_o3_timestamp()} BUILD BEGIN")
+            t_build = time.time()
+            pd.DataFrame.sample = forbidden_sample
+            try:
+                adf = gallery.build_adf(
+                    root_path, sample=None, lazy=False,
+                    tree_name=case.canonical_spec["tree_name"])
+            finally:
+                pd.DataFrame.sample = original_sample
+                original_sample = None
+            build_wall = time.time() - t_build
+            print(f"[O3 EAGER_FULL] {_o3_timestamp()} BUILD END wall={build_wall:.3f}s")
+
+            if sample_calls:
+                raise HarnessError(
+                    f"O3 EAGER_FULL unexpectedly called DataFrame.sample {len(sample_calls)} time(s)")
+            if getattr(adf, "_lazy_reader", None) is not None:
+                raise HarnessError("O3 EAGER_FULL unexpectedly exposes a lazy reader")
+
+            print(f"[O3 EAGER_FULL] {_o3_timestamp()} G7.32 BEGIN")
+            t_exec = time.time()
+            gallery_fn = getattr(gallery, HARDENING_O3_REUSED_GALLERY_FUNCTION)
+            raw_gallery = gallery_fn(adf)
+            if raw_gallery is None:
+                raise HarnessError("O3 EAGER_FULL trusted G7.32 returned None")
+            gallery_payload = unwrap("draw", raw_gallery)
+            if not isinstance(gallery_payload.stats, dict):
+                raise HarnessError("O3 EAGER_FULL G7.32 returned non-dict stats")
+
+            sf = adf.get_subframe("CalibVertex")
+            if sf is None or "vertex_x_intercept" not in sf.df.columns:
+                raise HarnessError("O3 EAGER_FULL did not create CalibVertex.vertex_x_intercept")
+            if "vertex_x_intercept" in adf.df.columns:
+                raise HarnessError("O3 EAGER_FULL contaminated parent with subframe-only column")
+
+            # Reuse the exact G7.32 logical request, adding only return_data=True
+            # to expose machine-comparison arrays.  The expensive source build is
+            # not repeated; CalibVertex is already materialized by fig32.
+            raw_machine = adf.draw(
+                case.canonical_spec["expr"], type="profile",
+                bins=int(case.canonical_spec["bins"]),
+                time_format=case.canonical_spec["time_format"],
+                auto_title=True, return_data=True)
+            machine_payload = unwrap("draw", raw_machine)
+            arrays = _o3_profile_arrays_from_stats(machine_payload.stats)
+            execute_wall = time.time() - t_exec
+            print(f"[O3 EAGER_FULL] {_o3_timestamp()} G7.32 END wall={execute_wall:.3f}s")
+
+            st = os.stat(root_path)
+            rss_after = _o3_peak_rss_mb()
+            result.observed = {
+                "o3_partial_leg": "EAGER_FULL",
+                "o3_final_gate": False,
+                "profile_data": arrays,
+                "realdata_provenance": {
+                    "input_path": os.path.abspath(root_path),
+                    "input_size_bytes": int(st.st_size),
+                    "input_mtime_ns": int(st.st_mtime_ns),
+                    "tree_name": case.canonical_spec["tree_name"],
+                    "loading_mode": "EAGER",
+                    "sample_mode": "FULL",
+                    "sample_fraction": None,
+                    "sample_seed": None,
+                    "source_rows": int(len(adf.df)),
+                    "full_source_constructions_this_leg": 1,
+                },
+                "performance": {
+                    "build_wall_time_s": round(build_wall, 6),
+                    "execute_wall_time_s": round(execute_wall, 6),
+                    "leg_wall_time_s": round(time.time() - t_leg, 6),
+                    "peak_rss_mb_before": None if not np.isfinite(rss_before) else round(rss_before, 3),
+                    "peak_rss_mb_after": None if not np.isfinite(rss_after) else round(rss_after, 3),
+                },
+            }
+            result.payload_paths = {
+                "G7.32/gallery": list(gallery_payload.path),
+                "G7.32/return_data": list(machine_payload.path),
+            }
+            result.detail = (
+                "O3 EAGER_FULL leg complete; final O3 PASS requires the separately "
+                "measured LAZY_FULL leg and Step-5d comparison")
+            result.status = DIAGNOSTIC
+    except Exception as exc:
+        result.status = FAIL
+        result.detail = f"O3_EAGER_FULL FAIL: {type(exc).__name__}: {exc}"
+        result.exception = traceback.format_exc(limit=8)
+    finally:
+        if original_sample is not None:
+            try:
+                import pandas as pd
+                pd.DataFrame.sample = original_sample
+            except Exception:
+                pass
+        _close()
+        result.wall_time_s = round(time.time() - t_leg, 4)
+
+    finished = _o3_timestamp()
+    extra = {
+        "stage_a_gate": "O3_EAGER_FULL_PARTIAL",
+        "o3_execution_contract": o3_execution_contract(),
+        "o3_leg": "EAGER_FULL",
+        "o3_partial_evidence": True,
+        "o3_started_local": started,
+        "o3_finished_local": finished,
+        "o3_full_source_constructions_this_manifest": 1 if result.status != SKIP else 0,
+    }
+    doc = write_manifest(manifest_path, [result], [case], extra=extra)
+    print(f"[O3 EAGER_FULL] {finished} END status={result.status} wall={result.wall_time_s:.3f}s")
+    return result, doc
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE_13_77 hardening v0.2 — STEP 5c / O3 LAZY FULL leg
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def run_o3_lazy_full_leg(root_path: str, *, manifest_path: str,
+                         gallery_module=None) -> tuple[CaseResult, dict]:
+    """Execute exactly one FULL LAZY O3 leg and persist comparison-ready evidence.
+
+    The leg reuses the canonical Stage-A FULL+LAZY builder and its lazy-reader
+    instrumentation.  Required CalibVertex physical branches must be absent
+    before G7.32 and loaded on demand afterwards; the available-but-unrequired
+    ``ncl`` decoy must remain unloaded.  This is partial evidence only: Step 5d
+    compares this saved leg with the separately measured EAGER_FULL manifest,
+    without constructing the ROOT source a third time.
+    """
+    case = o3_fullstack_case(root_path, gallery_module=gallery_module)
+    result = CaseResult(case_id=case.case_id, status=DIAGNOSTIC)
+    started = _o3_timestamp()
+    t_leg = time.time()
+    rss_before = _o3_peak_rss_mb()
+
+    print(f"[O3 LAZY_FULL] {started} START")
+    try:
+        if not case.applicable:
+            result.status = SKIP
+            result.detail = case.applicability_reason
+        else:
+            gallery = gallery_module if gallery_module is not None else _a5_2_import_gallery()
+
+            print(f"[O3 LAZY_FULL] {_o3_timestamp()} BUILD BEGIN")
+            t_build = time.time()
+            adf, setup_provenance = _a6_4_build_lazy_adf_once(
+                root_path, gallery_module=gallery)
+            build_wall = time.time() - t_build
+            print(f"[O3 LAZY_FULL] {_o3_timestamp()} BUILD END wall={build_wall:.3f}s")
+
+            before = _o3_lazy_dependency_snapshot(adf)
+            print(
+                f"[O3 LAZY_FULL] {_o3_timestamp()} DEPENDENCY BEFORE "
+                f"loaded={len(before['loaded'])} available={len(before['available'])}")
+
+            print(f"[O3 LAZY_FULL] {_o3_timestamp()} G7.32 BEGIN")
+            t_exec = time.time()
+            gallery_fn = getattr(gallery, HARDENING_O3_REUSED_GALLERY_FUNCTION)
+            raw_gallery = gallery_fn(adf)
+            if raw_gallery is None:
+                raise HarnessError("O3 LAZY_FULL trusted G7.32 returned None")
+            gallery_payload = unwrap("draw", raw_gallery)
+            if not isinstance(gallery_payload.stats, dict):
+                raise HarnessError("O3 LAZY_FULL G7.32 returned non-dict stats")
+
+            after_gallery = _o3_lazy_dependency_snapshot(adf)
+            dependency_evidence = _o3_validate_lazy_dependency_transition(
+                before, after_gallery)
+
+            sf = adf.get_subframe("CalibVertex")
+            if sf is None or "vertex_x_intercept" not in sf.df.columns:
+                raise HarnessError("O3 LAZY_FULL did not create CalibVertex.vertex_x_intercept")
+            if "vertex_x_intercept" in adf.df.columns:
+                raise HarnessError("O3 LAZY_FULL contaminated parent with subframe-only column")
+
+            # Reuse the exact G7.32 request and the already-built lazy ADF.  This
+            # exposes machine arrays without a second source construction.
+            raw_machine = adf.draw(
+                case.canonical_spec["expr"], type="profile",
+                bins=int(case.canonical_spec["bins"]),
+                time_format=case.canonical_spec["time_format"],
+                auto_title=True, return_data=True)
+            machine_payload = unwrap("draw", raw_machine)
+            arrays = _o3_profile_arrays_from_stats(machine_payload.stats)
+
+            # The machine-observable extraction itself must not pull the decoy.
+            after_machine = _o3_lazy_dependency_snapshot(adf)
+            final_dependency_evidence = _o3_validate_lazy_dependency_transition(
+                before, after_machine)
+            execute_wall = time.time() - t_exec
+            print(f"[O3 LAZY_FULL] {_o3_timestamp()} G7.32 END wall={execute_wall:.3f}s")
+
+            st = os.stat(root_path)
+            rss_after = _o3_peak_rss_mb()
+            result.observed = {
+                "o3_partial_leg": "LAZY_FULL",
+                "o3_final_gate": False,
+                "profile_data": arrays,
+                "lazy_dependency_evidence": {
+                    "before": before,
+                    "after_gallery": after_gallery,
+                    "after_machine": after_machine,
+                    "transition_after_gallery": dependency_evidence,
+                    "transition_after_machine": final_dependency_evidence,
+                },
+                "realdata_provenance": {
+                    **dict(setup_provenance),
+                    "input_path": os.path.abspath(root_path),
+                    "input_size_bytes": int(st.st_size),
+                    "input_mtime_ns": int(st.st_mtime_ns),
+                    "tree_name": case.canonical_spec["tree_name"],
+                    "loading_mode": "LAZY",
+                    "sample_mode": "FULL",
+                    "sample_fraction": None,
+                    "sample_seed": None,
+                    "source_rows": int(len(adf.df)),
+                    "full_source_constructions_this_leg": 1,
+                    "eager_fallback": False,
+                },
+                "performance": {
+                    "build_wall_time_s": round(build_wall, 6),
+                    "execute_wall_time_s": round(execute_wall, 6),
+                    "leg_wall_time_s": round(time.time() - t_leg, 6),
+                    "peak_rss_mb_before": None if not np.isfinite(rss_before) else round(rss_before, 3),
+                    "peak_rss_mb_after": None if not np.isfinite(rss_after) else round(rss_after, 3),
+                },
+            }
+            result.payload_paths = {
+                "G7.32/gallery": list(gallery_payload.path),
+                "G7.32/return_data": list(machine_payload.path),
+            }
+            result.detail = (
+                "O3 LAZY_FULL leg complete with required dependency expansion and "
+                "decoy-unloaded evidence; final O3 PASS requires Step-5d comparison "
+                "with the separately measured EAGER_FULL leg")
+            result.status = DIAGNOSTIC
+    except Exception as exc:
+        result.status = FAIL
+        result.detail = f"O3_LAZY_FULL FAIL: {type(exc).__name__}: {exc}"
+        result.exception = traceback.format_exc(limit=8)
+    finally:
+        _close()
+        result.wall_time_s = round(time.time() - t_leg, 4)
+
+    finished = _o3_timestamp()
+    extra = {
+        "stage_a_gate": "O3_LAZY_FULL_PARTIAL",
+        "o3_execution_contract": o3_execution_contract(),
+        "o3_leg": "LAZY_FULL",
+        "o3_partial_evidence": True,
+        "o3_started_local": started,
+        "o3_finished_local": finished,
+        "o3_full_source_constructions_this_manifest": 1 if result.status != SKIP else 0,
+    }
+    doc = write_manifest(manifest_path, [result], [case], extra=extra)
+    print(f"[O3 LAZY_FULL] {finished} END status={result.status} wall={result.wall_time_s:.3f}s")
+    return result, doc
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE_13_77 hardening v0.2 — STEP 5d / O3 saved-leg adjudication + PDF
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _o3_load_saved_leg_manifest(path: str, expected_leg: str) -> tuple[dict, dict]:
+    """Load one Step-5b/5c partial manifest without touching the ROOT source."""
+    with open(path) as fh:
+        doc = json.load(fh)
+    prov = doc.get("provenance", {})
+    if prov.get("o3_leg") != expected_leg:
+        raise HarnessError(
+            f"O3 saved manifest leg mismatch: expected {expected_leg}, got {prov.get('o3_leg')!r}")
+    if prov.get("o3_partial_evidence") is not True:
+        raise HarnessError(f"O3 {expected_leg} manifest is not marked partial evidence")
+    if int(prov.get("o3_full_source_constructions_this_manifest", -1)) != 1:
+        raise HarnessError(
+            f"O3 {expected_leg} must record exactly one FULL source construction")
+    records = [row for row in doc.get("cases", [])
+               if row.get("case_id") == HARDENING_O3_CASE_ID]
+    if len(records) != 1:
+        raise HarnessError(
+            f"O3 {expected_leg} manifest must contain exactly one {HARDENING_O3_CASE_ID} record")
+    rec = records[0]
+    if rec.get("status") != DIAGNOSTIC:
+        raise HarnessError(
+            f"O3 {expected_leg} partial record must be DIAGNOSTIC; got {rec.get('status')!r}")
+    observed = rec.get("observed", {})
+    if observed.get("o3_partial_leg") != expected_leg:
+        raise HarnessError(
+            f"O3 {expected_leg} observed partial-leg marker is missing/wrong")
+    return doc, rec
+
+
+def _o3_restore_saved_profile_arrays(record: dict, *, role: str) -> dict[str, np.ndarray]:
+    data = record.get("observed", {}).get("profile_data")
+    if not isinstance(data, dict):
+        raise HarnessError(f"O3 {role} saved record has no profile_data")
+    required = ("count", "x_center", "y_mean", "missing_mask")
+    missing = [name for name in required if name not in data]
+    if missing:
+        raise HarnessError(f"O3 {role} profile_data missing {missing}")
+    count = np.asarray(data["count"], dtype=np.int64)
+    x_center = np.asarray(data["x_center"], dtype=float)
+    missing_mask = np.asarray(data["missing_mask"], dtype=bool)
+    y_values = np.asarray([
+        np.nan if value is None else float(value) for value in data["y_mean"]
+    ], dtype=float)
+    if not (count.shape == x_center.shape == missing_mask.shape == y_values.shape):
+        raise HarnessError(
+            f"O3 {role} saved profile shape mismatch: count={count.shape}, "
+            f"x={x_center.shape}, missing={missing_mask.shape}, y={y_values.shape}")
+    if count.ndim != 1 or count.size == 0:
+        raise HarnessError(f"O3 {role} saved profile must be a non-empty 1-D array")
+    reconstructed_missing = (count <= 0) | ~np.isfinite(y_values)
+    if not np.array_equal(reconstructed_missing, missing_mask):
+        raise HarnessError(f"O3 {role} missing_mask disagrees with count/y_mean")
+    return {
+        "count": count,
+        "x_center": x_center,
+        "y_mean": y_values,
+        "missing_mask": missing_mask,
+    }
+
+
+def _o3_saved_source_identity(record: dict, *, role: str) -> dict:
+    prov = record.get("observed", {}).get("realdata_provenance", {})
+    required = (
+        "input_path", "input_size_bytes", "input_mtime_ns", "tree_name",
+        "sample_mode", "source_rows", "full_source_constructions_this_leg",
+    )
+    missing = [name for name in required if name not in prov]
+    if missing:
+        raise HarnessError(f"O3 {role} provenance missing {missing}")
+    if prov.get("sample_mode") != "FULL":
+        raise HarnessError(f"O3 {role} is not FULL data")
+    if int(prov.get("full_source_constructions_this_leg", -1)) != 1:
+        raise HarnessError(f"O3 {role} did not record exactly one source construction")
+    return {name: prov[name] for name in required}
+
+
+def _o3_final_dependency_check(lazy_record: dict) -> dict:
+    evidence = lazy_record.get("observed", {}).get("lazy_dependency_evidence")
+    if not isinstance(evidence, dict):
+        raise HarnessError("O3 LAZY_FULL final adjudication has no dependency evidence")
+    transition = evidence.get("transition_after_machine")
+    if not isinstance(transition, dict):
+        raise HarnessError("O3 LAZY_FULL has no final dependency transition")
+    newly = set(transition.get("newly_loaded", ()))
+    required = set(HARDENING_O3_REQUIRED_ON_DEMAND)
+    missing = sorted(required - newly)
+    if missing:
+        raise HarnessError(f"O3 LAZY_FULL missing required on-demand branches: {missing}")
+    if transition.get("decoy") != HARDENING_O3_DECOY_BRANCH:
+        raise HarnessError("O3 LAZY_FULL decoy identity drifted")
+    if transition.get("decoy_remained_unloaded") is not True:
+        raise HarnessError(
+            f"O3 unrelated decoy branch {HARDENING_O3_DECOY_BRANCH!r} was loaded")
+    return {
+        "required_on_demand": sorted(required),
+        "newly_loaded": sorted(newly),
+        "decoy": HARDENING_O3_DECOY_BRANCH,
+        "decoy_remained_unloaded": True,
+    }
+
+
+def _o3_render_saved_comparison_pdf(pdf_path: str, case: CaseSpec,
+                                    eager: dict[str, np.ndarray],
+                                    lazy: dict[str, np.ndarray],
+                                    result: CaseResult) -> None:
+    """Render the separate O3 overlay/residual artifact from saved arrays only."""
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    x = eager["x_center"]
+    ey = eager["y_mean"]
+    ly = lazy["y_mean"]
+    valid = ~(eager["missing_mask"] | lazy["missing_mask"])
+    residual = np.full_like(ey, np.nan, dtype=float)
+    residual[valid] = ly[valid] - ey[valid]
+
+    fig, axes = plt.subplots(2, 1, figsize=(11.0, 8.5), sharex=True,
+                             gridspec_kw={"height_ratios": [2.2, 1.0]})
+    axes[0].plot(x[valid], ey[valid], marker="o", ms=2.5, lw=1.0, label="EAGER FULL")
+    axes[0].plot(x[valid], ly[valid], marker=".", ms=2.5, lw=1.0, label="LAZY FULL")
+    axes[0].set_ylabel("vertex_x_intercept")
+    axes[0].set_title("O3 FULL G7.32 EAGER ↔ LAZY equivalence")
+    axes[0].legend(loc="best")
+    axes[0].grid(True, alpha=0.25)
+
+    axes[1].axhline(0.0, lw=0.8)
+    axes[1].plot(x[valid], residual[valid], marker=".", ms=2.5, lw=0.9)
+    axes[1].set_xlabel("time_s")
+    axes[1].set_ylabel("LAZY - EAGER")
+    axes[1].grid(True, alpha=0.25)
+
+    max_abs = float(np.nanmax(np.abs(residual[valid]))) if np.any(valid) else float("nan")
+    summary = (
+        f"STATUS: {result.status}    populated bins: {int(np.count_nonzero(valid))}    "
+        f"max |LAZY-EAGER|: {max_abs:.6g}\n"
+        f"EXPECTED: {case.expected_visual}\n"
+        f"MACHINE ORACLE: count exact; missing mask exact; x_center atol=1e-12 rtol=1e-10; "
+        f"y_mean atol=1e-10 rtol=1e-8\n"
+        f"FAILURE MEANS: {case.failure_means}"
+    )
+    fig.subplots_adjust(bottom=0.25, hspace=0.12)
+    fig.text(0.02, 0.02, summary, ha="left", va="bottom", fontsize=7,
+             family="monospace", wrap=True)
+    os.makedirs(os.path.dirname(os.path.abspath(pdf_path)), exist_ok=True)
+    with PdfPages(pdf_path) as pdf:
+        pdf.savefig(fig)
+    plt.close(fig)
+
+
+def run_o3_saved_leg_comparison(eager_manifest_path: str, lazy_manifest_path: str, *,
+                                manifest_path: str, pdf_path: str | None = None) -> tuple[CaseResult, dict]:
+    """Final O3 adjudication from saved Step-5b/5c manifests — zero ROOT reads."""
+    started = _o3_timestamp()
+    t0 = time.time()
+    print(f"[O3 FINAL] {started} START — saved-manifest comparison; no ROOT read")
+
+    eager_doc = lazy_doc = eager_rec = lazy_rec = None
+    # The path exists in real runs and synthetic tests; o3_fullstack_case uses it
+    # only for environment applicability metadata and never reads it here.
+    root_hint = ""
+    result = CaseResult(case_id=HARDENING_O3_CASE_ID, status=FAIL)
+    try:
+        eager_doc, eager_rec = _o3_load_saved_leg_manifest(eager_manifest_path, "EAGER_FULL")
+        lazy_doc, lazy_rec = _o3_load_saved_leg_manifest(lazy_manifest_path, "LAZY_FULL")
+        root_hint = eager_rec["observed"]["realdata_provenance"]["input_path"]
+        case = o3_fullstack_case(root_hint)
+
+        eager_id = _o3_saved_source_identity(eager_rec, role="EAGER_FULL")
+        lazy_id = _o3_saved_source_identity(lazy_rec, role="LAZY_FULL")
+        identity_fields = (
+            "input_path", "input_size_bytes", "input_mtime_ns", "tree_name",
+            "sample_mode", "source_rows",
+        )
+        identity_mismatch = {
+            key: {"eager": eager_id[key], "lazy": lazy_id[key]}
+            for key in identity_fields if eager_id[key] != lazy_id[key]
+        }
+        if identity_mismatch:
+            raise HarnessError(f"O3 source identity mismatch: {identity_mismatch}")
+
+        eager = _o3_restore_saved_profile_arrays(eager_rec, role="EAGER_FULL")
+        lazy = _o3_restore_saved_profile_arrays(lazy_rec, role="LAZY_FULL")
+
+        count_cmp = compare_array(eager["count"], lazy["count"], comparator="exact")
+        if not count_cmp.ok:
+            raise HarnessError(f"O3 count mismatch: {count_cmp.detail}")
+        missing_cmp = compare_array(
+            eager["missing_mask"], lazy["missing_mask"], comparator="exact")
+        if not missing_cmp.ok:
+            raise HarnessError(f"O3 missing-mask mismatch: {missing_cmp.detail}")
+        x_cmp = compare_array(eager["x_center"], lazy["x_center"], comparator="close",
+                              atol=1e-12, rtol=1e-10)
+        if not x_cmp.ok:
+            raise HarnessError(f"O3 x_center numerical mismatch: {x_cmp.detail}")
+        y_cmp = compare_array(eager["y_mean"], lazy["y_mean"], comparator="close",
+                              atol=1e-10, rtol=1e-8)
+        if not y_cmp.ok:
+            raise HarnessError(f"O3 y_mean numerical mismatch: {y_cmp.detail}")
+
+        dependency = _o3_final_dependency_check(lazy_rec)
+        eager_perf = eager_rec["observed"].get("performance", {})
+        lazy_perf = lazy_rec["observed"].get("performance", {})
+        eager_wall = float(eager_perf.get("leg_wall_time_s", eager_rec.get("wall_time_s", 0.0)))
+        lazy_wall = float(lazy_perf.get("leg_wall_time_s", lazy_rec.get("wall_time_s", 0.0)))
+        rss_values = [
+            x for x in (
+                eager_perf.get("peak_rss_mb_after"), lazy_perf.get("peak_rss_mb_after")
+            ) if x is not None
+        ]
+        max_rss = max(float(x) for x in rss_values) if rss_values else None
+
+        result.status = PASS
+        result.detail = (
+            "O3 PASS: saved FULL EAGER and FULL LAZY G7.32 profiles agree; lazy required "
+            "vertex dependencies loaded on demand, ncl decoy remained unloaded; final "
+            "comparison performed without a third ROOT read")
+        result.executed_comparisons = 4
+        result.comparisons = [
+            {"observable": "count", "ok": True, "comparator": "exact", "detail": ""},
+            {"observable": "missing_mask", "ok": True, "comparator": "exact", "detail": ""},
+            {"observable": "x_center", "ok": True, "comparator": "close",
+             "atol": 1e-12, "rtol": 1e-10, "detail": ""},
+            {"observable": "y_mean", "ok": True, "comparator": "close",
+             "atol": 1e-10, "rtol": 1e-8, "detail": ""},
+        ]
+        result.observed = {
+            "o3_final_gate": True,
+            "profile_data": {
+                "populated_bins": int(np.count_nonzero(~eager["missing_mask"])),
+                "max_abs_y_mean_delta": float(np.nanmax(np.abs(lazy["y_mean"] - eager["y_mean"]))),
+            },
+            "source_identity": {key: eager_id[key] for key in identity_fields},
+            "lazy_dependency_evidence": dependency,
+            "performance": {
+                "eager_full_wall_time_s": eager_wall,
+                "lazy_full_wall_time_s": lazy_wall,
+                "combined_two_leg_wall_time_s": eager_wall + lazy_wall,
+                "peak_rss_mb_max": max_rss,
+                "full_source_constructions_total": 2,
+                "comparison_root_reads": 0,
+                "redundant_third_full_read": False,
+            },
+            "saved_manifest_paths": {
+                "eager": os.path.abspath(eager_manifest_path),
+                "lazy": os.path.abspath(lazy_manifest_path),
+            },
+        }
+        if pdf_path:
+            _o3_render_saved_comparison_pdf(pdf_path, case, eager, lazy, result)
+            result.payload_paths["O3/comparison_pdf"] = os.path.abspath(pdf_path)
+    except Exception as exc:
+        case = o3_fullstack_case(root_hint) if root_hint else CaseSpec(
+            case_id=HARDENING_O3_CASE_ID,
+            claim_id="I4.real_g7_subframe_eager_lazy.HARDENING.O3",
+            title="FULL G7.32 CalibVertex profile is numerically equivalent in eager and lazy modes",
+            claim="saved FULL EAGER and FULL LAZY G7.32 evidence agrees",
+            failure_means="saved-leg comparison or dependency contract failed",
+            expected_visual="separate EAGER/LAZY comparison artifact",
+            owner_on_failure="ADF", purpose="INVARIANCE", gate="ENVIRONMENT_GATED",
+            oracle_kind="CONSISTENCY", loading_mode="BOTH", sample_mode="FULL")
+        result.status = FAIL
+        result.detail = f"O3_FINAL FAIL: {type(exc).__name__}: {exc}"
+        result.exception = traceback.format_exc(limit=8)
+    finally:
+        result.wall_time_s = round(time.time() - t0, 4)
+
+    finished = _o3_timestamp()
+    extra = {
+        "stage_a_gate": "O3_FINAL_SAVED_LEG_COMPARISON",
+        "o3_execution_contract": o3_execution_contract(),
+        "o3_final_gate": True,
+        "o3_comparison_uses_saved_manifests_only": True,
+        "o3_comparison_root_reads": 0,
+        "o3_full_source_constructions_total": 2,
+        "o3_redundant_third_full_read": False,
+        "o3_eager_manifest": os.path.abspath(eager_manifest_path),
+        "o3_lazy_manifest": os.path.abspath(lazy_manifest_path),
+        "o3_started_local": started,
+        "o3_finished_local": finished,
+    }
+    doc = write_manifest(manifest_path, [result], [case], extra=extra)
+    print(f"[O3 FINAL] {finished} END status={result.status} wall={result.wall_time_s:.3f}s")
+    return result, doc
+
 if __name__ == "__main__":
     raise SystemExit(stage_a_cli_main())
+

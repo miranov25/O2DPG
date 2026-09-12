@@ -19,6 +19,7 @@ Groups:
   G8 — ADF dispatch closure     (fig35–fig39)
   G9 — Error/window semantics   (fig40–fig42)
   G10 — Semantic oracle gallery (fig43)
+  G11 — Hardening oracles       (fig44 weights-vector, fig45 public-surface)
 
 Known limitations:
   central='median' + group_by=: silently returns mean (KNOWN.grouped_central_median).
@@ -29,6 +30,8 @@ Known limitations:
 import sys
 import matplotlib; matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 from matplotlib.backends.backend_pdf import PdfPages
 from perfmonitor import PerformanceLogger
 
@@ -251,10 +254,24 @@ def fig21_delta_side(adf):
     """G4.21 — normalize=delta — A minus C DCA_r asymmetry per sector"""
     return adf.draw("dcar_tpc_vertex:sector", selection=BASE_SEL, type="profile", bins=36, selection_vector=["side_type==0", "side_type==1"], normalize="delta", auto_title=True)
 
+G4_22_BINS = 36
+G4_22_RANGE = (-0.5, 35.5)
+G4_22_FACETS = (0, 1)
+
 def fig22_delta_faceted(adf):
     """G4.22 — normalize=delta+facet_by — Early/late DCA_r delta per side panel"""
     t_mid = adf.df["time_s"].median()
-    return adf.draw("dcar_tpc_vertex:sector", selection=BASE_SEL, type="profile", bins=36, selection_vector=[f"time_s<{t_mid}", f"time_s>={t_mid}"], normalize="delta", facet_by="side_type", auto_title=True)
+    return adf.draw(
+        "dcar_tpc_vertex:sector",
+        selection=f"{BASE_SEL}&(side_type<2)",
+        type="profile",
+        bins=G4_22_BINS,
+        range=G4_22_RANGE,
+        selection_vector=[f"time_s<{t_mid}", f"time_s>={t_mid}"],
+        normalize="delta",
+        facet_by="side_type",
+        auto_title=True,
+    )
 
 
 # ── G5 — Fitting ──────────────────────────────────────────────────────────────
@@ -402,6 +419,131 @@ def fig43_vector_facet_summary_fit(adf):
     )
 
 
+# ── G11 — PHASE_13_77 v0.2 hardening oracles (O2 + O4) ─────────────────────
+
+O2_WEIGHT_BRANCHES = [
+    "1.0 + 0.0*abs(dcar_tpc_vertex)",
+    "1.0 + abs(dcar_tpc_vertex)",
+]
+
+def fig44_weights_vector_facet_fit_oracle(adf):
+    """G11.44 — weights_vector×facet×fit — 2 weight branches × 2 side facets"""
+    return adf.draw(
+        "dcar_tpc_vertex:tgl",
+        selection=f"{BASE_SEL}&(side_type<2)",
+        type="profile",
+        bins=30,
+        range=(-1.5, 1.5),
+        weights_vector=list(O2_WEIGHT_BRANCHES),
+        vector_compose="outer",
+        facet_by="side_type",
+        fit="pol1",
+        min_entries=1,
+        auto_title=True,
+        return_data=True,
+    )
+
+
+# O4 public-surface equivalence oracle.
+O4_SUBFRAME_NAME = "O4Surface"
+O4_SELECTIONS = [
+    f"{O4_SUBFRAME_NAME}.selector==0",
+    f"{O4_SUBFRAME_NAME}.selector==1",
+]
+
+def _ensure_o4_surface_subframe(adf):
+    """Register the qualified-vector fixture over the complete side_type key domain.
+
+    Projection happens before the base selection is applied.  The fixture therefore
+    has to cover every side_type key present in the parent ADF, including keys that
+    the later ``side_type<2`` selection will discard; otherwise AD-19 correctly
+    refuses an integer projection with row-level gaps.
+    """
+    registry = getattr(getattr(adf, "_subframes", None), "subframes", {}) or {}
+    if O4_SUBFRAME_NAME in registry:
+        return
+    if not hasattr(adf, "df") or "side_type" not in adf.df.columns:
+        raise RuntimeError("O4 fixture requires parent column side_type")
+    keys = np.asarray(pd.unique(adf.df["side_type"].dropna()))
+    if keys.size == 0:
+        raise RuntimeError("O4 fixture found no side_type keys")
+    keys = np.sort(keys)
+    sub = AliasDataFrame(pd.DataFrame({
+        "side_type": keys,
+        "selector": keys.astype(np.int64, copy=False),
+    }))
+    adf.register_subframe(O4_SUBFRAME_NAME, sub, index_columns="side_type")
+
+def _o4_public_spec():
+    return dict(
+        expr="dcar_tpc_vertex:tgl",
+        selection=f"{BASE_SEL}&(side_type<2)",
+        type="profile",
+        bins=30,
+        range=(-1.5, 1.5),
+        selection_vector=list(O4_SELECTIONS),
+        normalize="delta",
+        return_data=True,
+        auto_title=True,
+    )
+
+def _o4_stats(surface, result):
+    if surface == "draw":
+        return result[2]
+    if surface == "draw_batch":
+        if result.get("_errors"):
+            raise RuntimeError(f"draw_batch errors: {result['_errors']}")
+        return result["o4"]["stats"]
+    entry = result["o4_surface_equivalence"]
+    return entry["stats"][0]
+
+def fig45_public_surface_equivalence_oracle(adf):
+    """G11.45 — draw/draw_batch/draw_figures on a B3.3 qualified vector slot"""
+    _ensure_o4_surface_subframe(adf)
+    spec = _o4_public_spec()
+    expr = spec.pop("expr")
+    raw = {}
+    raw["draw"] = adf.draw(expr, **spec)
+    raw["draw_batch"] = adf.draw_batch({"o4": dict(expr=expr, **spec)})
+    raw["draw_figures"] = adf.draw_figures([{
+        "name": "o4_surface_equivalence",
+        "plots": [dict(expr=expr, **spec)],
+    }])
+    stats = {name: _o4_stats(name, result) for name, result in raw.items()}
+
+    # Close the three product-owned figures before creating the compact evidence page.
+    plt.close("all")
+    fig, axes = plt.subplots(2, 1, figsize=(8.5, 7.0), sharex=True)
+    ref_x = None
+    ref_y = None
+    for name in ("draw", "draw_batch", "draw_figures"):
+        nd = stats[name]["normalize_data"]
+        x = np.asarray(nd["x_center"], dtype=float)
+        y = np.asarray(nd["value"], dtype=float)
+        axes[0].plot(x, y, marker="o", ms=2, label=name)
+        if ref_x is None:
+            ref_x, ref_y = x, y
+        else:
+            residual = y - ref_y
+            axes[1].plot(x, residual, marker="o", ms=2, label=f"{name} - draw")
+    axes[0].set_ylabel("delta profile")
+    axes[0].legend(fontsize=8)
+    axes[1].axhline(0.0, linewidth=1.0)
+    axes[1].set_ylabel("residual")
+    axes[1].set_xlabel("tan λ = pz/pT")
+    axes[1].legend(fontsize=8)
+    fig.suptitle("O4 public-surface equivalence: qualified selection_vector")
+    fig.text(
+        0.5, 0.93,
+        "query: dcar_tpc_vertex:tgl | selection: "
+        f"{BASE_SEL}&(side_type<2) | "
+        "selection_vector: O4Surface.selector==0 ; O4Surface.selector==1",
+        ha="center", va="top", fontsize=7, family="monospace",
+    )
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.90))
+    return fig, axes, {"surface_stats": stats}
+
+
 # ── G7 — Full stack ADF + GB (optional, mutate adf in place) ─────────────────
 
 def fig32_subframe_vertex(adf):
@@ -454,13 +596,70 @@ FIGURES_G9 = [fig40_weights_alias, fig41_on_error_skip_placeholder, fig42_entry_
 
 FIGURES_G10 = [fig43_vector_facet_summary_fit]
 
+FIGURES_G11 = [fig44_weights_vector_facet_fit_oracle, fig45_public_surface_equivalence_oracle]
+
 FIGURES_MANDATORY = (FIGURES_G1 + FIGURES_G2 + FIGURES_G3 + FIGURES_G4
                      + FIGURES_G5 + FIGURES_G6 + FIGURES_G8 + FIGURES_G9
-                     + FIGURES_G10)
+                     + FIGURES_G10 + FIGURES_G11)
 FIGURES_OPTIONAL  = [fig32_subframe_vertex, fig33_gb_correction_tgl, fig34_gb_correction_sector]
 
 
-# ── Batch PDF ─────────────────────────────────────────────────────────────────
+# ── Batch PDF / declarative extra-page accounting ─────────────────────────────
+
+# One owner for generated pages beyond each figure's primary page.  Each value
+# is an ordered tuple, so 0 / 1 / N extra pages are representable without
+# figure-name conditionals in the PDF loop.
+FIGURE_EXTRA_PAGE_SPECS = {
+    "fig26_summary_fit": (
+        {"kind": "summary_fit_table", "title_suffix": " — fit table"},
+    ),
+    "fig43_vector_facet_summary_fit": (
+        {"kind": "summary_fit_table", "title_suffix": " — fit table"},
+    ),
+}
+
+def declared_extra_page_count(figure_name):
+    return len(FIGURE_EXTRA_PAGE_SPECS.get(str(figure_name), ()))
+
+def _summary_fit_table_from_result(result):
+    if not isinstance(result, tuple) or len(result) < 3:
+        return None
+    stats = result[2]
+    if isinstance(stats, list):
+        for item in stats:
+            if isinstance(item, dict) and isinstance(item.get("summary_fit"), dict):
+                table = item["summary_fit"].get("table")
+                if table is not None:
+                    return table
+        return None
+    if isinstance(stats, dict):
+        block = stats.get("summary_fit")
+        return block.get("table") if isinstance(block, dict) else None
+    return None
+
+def extract_declared_extra_pages(figure_name, result):
+    """Return ``[(figure, title_suffix), ...]`` for all declared extra pages.
+
+    A declaration is fail-closed: every declared page must resolve.  Adding a
+    new page kind means adding one resolver here, while page cardinality stays
+    entirely data-driven by ``FIGURE_EXTRA_PAGE_SPECS``.
+    """
+    pages = []
+    for spec in FIGURE_EXTRA_PAGE_SPECS.get(str(figure_name), ()):
+        kind = spec.get("kind")
+        if kind == "summary_fit_table":
+            page = _summary_fit_table_from_result(result)
+        else:
+            raise RuntimeError(f"unknown extra-page kind {kind!r} for {figure_name}")
+        if page is None:
+            raise RuntimeError(
+                f"declared extra page {kind!r} missing for {figure_name}")
+        pages.append((page, str(spec.get("title_suffix", ""))))
+    if len(pages) != declared_extra_page_count(figure_name):
+        raise RuntimeError(
+            f"extra-page accounting mismatch for {figure_name}: "
+            f"declared={declared_extra_page_count(figure_name)} produced={len(pages)}")
+    return pages
 
 def run_all_pdf(adf, path="ts_draw_gallery.pdf"):
     """Run all mandatory figures + optional G7, save to one PDF with titled pages."""
@@ -478,16 +677,9 @@ def run_all_pdf(adf, path="ts_draw_gallery.pdf"):
                     continue
                 _add(pdf, result[0], title)
                 n_pages += 1
-                if fn in (fig26_summary_fit, fig43_vector_facet_summary_fit):
-                    stats = result[2]
-                    if isinstance(stats, list):
-                        stats = stats[0] if stats and isinstance(stats[0], dict) else {}
-                    tbl = stats.get("summary_fit", {}).get("table") if isinstance(stats, dict) else None
-                    if tbl is not None:
-                        _add(pdf, tbl, title + " — fit table")
-                        n_pages += 1
-                    elif fn is fig43_vector_facet_summary_fit:
-                        raise RuntimeError("fig43 required summary_fit table is missing")
+                for extra_fig, suffix in extract_declared_extra_pages(name, result):
+                    _add(pdf, extra_fig, title + suffix)
+                    n_pages += 1
             except Exception as e:
                 print(f"  ERROR {name}: {e}")
                 errors.append((name, str(e)))
@@ -503,6 +695,9 @@ def run_all_pdf(adf, path="ts_draw_gallery.pdf"):
                 if result is not None:
                     _add(pdf, result[0], title)
                     n_pages += 1
+                    for extra_fig, suffix in extract_declared_extra_pages(name, result):
+                        _add(pdf, extra_fig, title + suffix)
+                        n_pages += 1
             except Exception as e:
                 print(f"  {name} skipped: {e}")
                 plt.close("all")

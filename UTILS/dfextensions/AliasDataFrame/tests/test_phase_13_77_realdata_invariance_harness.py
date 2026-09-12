@@ -15,6 +15,7 @@ What it proves:
 import os
 import sys
 import json
+from pathlib import Path
 from dataclasses import replace
 
 import numpy as np
@@ -4478,7 +4479,7 @@ def test_a5_42_phase_13_77_capability_taxonomy_registration_is_exact():
     by_id = {feature["id"]: feature for feature in mod.FEATURES}
     expected = {
         "TESTING.phase13_77_harness": ("test_a1_", "test_a2_"),
-        "INV.draw_surface_consistency": ("test_a3_",),
+        "INV.draw_surface_consistency": ("test_a3_", "test_a7_"),
         "INV.eager_lazy_slot_symmetry": ("test_a4_",),
         "INV.realdata_acceptance": ("test_a5_", "test_a7_"),
     }
@@ -4501,10 +4502,10 @@ def test_a5_42_phase_13_77_capability_taxonomy_registration_is_exact():
     # parameterized cases, so the taxonomy deliberately stores exact node IDs
     # rather than relying on unsupported wildcard semantics.
     assert len(by_id["TESTING.phase13_77_harness"]["test_patterns"]) == 155
-    assert len(by_id["INV.draw_surface_consistency"]["test_patterns"]) == 27
+    assert len(by_id["INV.draw_surface_consistency"]["test_patterns"]) == 32
     assert len(by_id["INV.eager_lazy_slot_symmetry"]["test_patterns"]) == 24
-    assert len(by_id["INV.realdata_acceptance"]["test_patterns"]) == 52
-    assert len(owned) == 258
+    assert len(by_id["INV.realdata_acceptance"]["test_patterns"]) == 96
+    assert len(owned) == 307
 
 
 
@@ -4914,18 +4915,37 @@ def _a6_3_fake_gallery():
     optional_names = {"fig32_subframe_vertex", "fig33_gb_correction_tgl", "fig34_gb_correction_sector"}
     mod.FIGURES_OPTIONAL = [f for f in funcs if f.__name__ in optional_names]
     mod.FIGURES_MANDATORY = [f for f in funcs if f.__name__ not in optional_names]
+    mod.FIGURE_EXTRA_PAGE_SPECS = {
+        "fig26_summary_fit": ({"kind": "summary_fit_table", "title_suffix": " — fit table"},),
+        "fig43_vector_facet_summary_fit": ({"kind": "summary_fit_table", "title_suffix": " — fit table"},),
+    }
+    mod.declared_extra_page_count = lambda name: len(mod.FIGURE_EXTRA_PAGE_SPECS.get(name, ()))
+    def extract_declared_extra_pages(name, result):
+        pages = []
+        for spec in mod.FIGURE_EXTRA_PAGE_SPECS.get(name, ()):
+            stats = result[2] if isinstance(result, tuple) and len(result) > 2 else None
+            if isinstance(stats, list):
+                stats = next((x for x in stats if isinstance(x, dict) and "summary_fit" in x), None)
+            table = (stats.get("summary_fit", {}).get("table")
+                     if isinstance(stats, dict) else None)
+            if table is None:
+                raise RuntimeError(f"declared extra page missing for {name}")
+            pages.append((table, spec.get("title_suffix", "")))
+        return pages
+    mod.extract_declared_extra_pages = extract_declared_extra_pages
     return mod
 
 
 def test_a6_20_gallery_disposition_is_exact_for_all_43_figures():
     gallery = _a6_3_fake_gallery()
     rows = H.gallery_disposition_table(gallery)
-    assert len(rows) == 43
+    assert len(rows) == len(H._GALLERY_DISPOSITION)
     assert {r["gallery_function"] for r in rows} == set(H._GALLERY_DISPOSITION)
     assert {r["disposition"] for r in rows}.issubset(set(H.GALLERY_DISPOSITION_ALLOWED))
     assert next(r for r in rows if r["gallery_function"] == "fig17_profile_facet_time")["disposition"] == "KNOWN_BUG"
     assert next(r for r in rows if r["gallery_function"] == "fig32_subframe_vertex")["disposition"] == "REUSED_CORE"
     assert next(r for r in rows if r["gallery_function"] == "fig43_vector_facet_summary_fit")["disposition"] == "REUSED_CORE"
+    assert next(r for r in rows if r["gallery_function"] == "fig44_weights_vector_facet_fit_oracle")["disposition"] == "REUSED_CORE"
 
 
 def test_a6_21_numerical_oracle_closure_is_explicit_and_ready():
@@ -4945,10 +4965,10 @@ def test_a6_22_pdf_wrapper_reuses_gallery_pdf_owner_and_annotates_pages(tmp_path
         object(), str(tmp_path / "stage_a.pdf"), root_path=str(root),
         gallery_module=gallery)
     assert evidence["ok"] is True
-    assert evidence["page_count"] == 45
-    assert evidence["expected_page_count"] == 45
-    assert len(gallery.saved) == 45
-    assert len(gallery.perf_messages) == 86
+    assert evidence["page_count"] == 47
+    assert evidence["expected_page_count"] == 47
+    assert len(gallery.saved) == 47
+    assert len(gallery.perf_messages) == 90
     assert gallery.perf_messages[0].endswith(": BEGIN")
     assert gallery.perf_messages[-1].endswith(": END")
     # At least one core page and one ordinary visual page received annotations.
@@ -5082,7 +5102,7 @@ def test_a6_29_fraction_gate_builds_adf_once_and_reuses_same_object(tmp_path, mo
             canonical_spec={}, applicable=True, setup_contract="shared",
             preconditions=(), surfaces_under_test=(), observables=(),
             non_claims=(), reference_policy="named-immutable")
-        for i in range(4)
+        for i in range(len(H._a6_3_fraction_runners()))
     ]
     monkeypatch.setattr(H, "_a6_3_fraction_cases", lambda *a, **k: tuple(cases))
 
@@ -5094,10 +5114,7 @@ def test_a6_29_fraction_gate_builds_adf_once_and_reuses_same_object(tmp_path, mo
         r.observed["realdata_provenance"] = dict(prepared_provenance)
         return r
 
-    monkeypatch.setattr(H, "run_a5_2_realdata", fake_runner)
-    monkeypatch.setattr(H, "run_a5_4_realdata", fake_runner)
-    monkeypatch.setattr(H, "run_a5_5_realdata", fake_runner)
-    monkeypatch.setattr(H, "run_a5_6_realdata", fake_runner)
+    monkeypatch.setattr(H, "_a6_3_fraction_runners", lambda: tuple(fake_runner for _ in cases))
     monkeypatch.setattr(
         H, "_run_a6_3_visual_case",
         lambda case, root_path, *, prepared_adf=None, **kwargs:
@@ -5111,7 +5128,7 @@ def test_a6_29_fraction_gate_builds_adf_once_and_reuses_same_object(tmp_path, mo
 
     assert rc == 0
     assert gallery.build_calls == 1
-    assert len(seen) == 5
+    assert len(seen) == len(cases) + 1
     assert all(obj is shared for obj in seen)
     assert doc["provenance"]["stage_a_execution"] == {
         "adf_build_count": 1,
@@ -5205,15 +5222,15 @@ def test_a6_33_reused_core_optional_skip_is_strict_failure(tmp_path):
     assert results[0].status == H.FAIL
     evidence = results[0].observed["visual_evidence"]
     assert evidence["ok"] is False
-    assert evidence["page_count"] == 44
-    assert evidence["expected_page_count"] == 45
+    assert evidence["page_count"] == 46
+    assert evidence["expected_page_count"] == 47
     assert any(e["gallery_function"] == "fig32_subframe_vertex"
                for e in evidence["errors"])
     assert any(e["gallery_function"] == "__page_count__"
                for e in evidence["errors"])
 
 
-def test_a6_34_current_pdf_contract_requires_all_45_pages(tmp_path):
+def test_a6_34_current_pdf_contract_requires_all_live_pages(tmp_path):
     gallery = _a6_3_fake_gallery()
     root = tmp_path / "input.root"
     root.write_bytes(b"root")
@@ -5221,10 +5238,12 @@ def test_a6_34_current_pdf_contract_requires_all_45_pages(tmp_path):
         object(), str(tmp_path / "stage_a.pdf"), root_path=str(root),
         gallery_module=gallery)
     assert evidence["ok"] is True
-    assert evidence["page_count"] == 45
-    assert evidence["expected_page_count"] == 45
+    assert evidence["page_count"] == 47
+    assert evidence["expected_page_count"] == 47
     assert set(("fig32_subframe_vertex", "fig33_gb_correction_tgl",
-                "fig34_gb_correction_sector", "fig43_vector_facet_summary_fit")).issubset(
+                "fig34_gb_correction_sector", "fig43_vector_facet_summary_fit",
+                "fig44_weights_vector_facet_fit_oracle",
+                "fig45_public_surface_equivalence_oracle")).issubset(
                     set(evidence["required_gallery_functions"]))
     assert evidence["errors"] == []
     assert evidence["skipped"] == []
@@ -5287,7 +5306,7 @@ def _a7_frame(n=18000):
     tgl_centers = -1.45 + 0.10 * (i % 30)
     return pd.DataFrame({
         "time_s": i.astype(float),
-        "side_type": (i % 2).astype(int),
+        "side_type": (i % 3).astype(int),
         "ncl": np.full(n, 100, dtype=int),
         "dcar_tpc_vertex": np.zeros(n, dtype=float),
         "tgl": tgl_centers.astype(float),
@@ -5301,6 +5320,8 @@ def _a7_rows():
             "group": None,
             "fit_name": "pol1",
             "fit_status": "ok",
+            "slope": 0.1,
+            "intercept": 0.2,
         }
         for branch in range(3)
         for facet in (0, 1)
@@ -5323,7 +5344,7 @@ def _a7_primary_axes():
     for facet, ax in enumerate(axes.reshape(-1)):
         ax.set_title(f"side_type={facet}")
         for branch in range(3):
-            ax.plot([0, 1], [branch, branch + 0.1])
+            ax.plot([0, 1], [branch, branch + 0.1], marker="o", linestyle="-")
     return fig, axes.reshape(-1)
 
 
@@ -5432,12 +5453,25 @@ def test_a7_05_rendered_table_identity_is_keyed_not_positional():
         plt.close(fig)
 
 
+def _a7_attach_scalar_draw(adf):
+    def draw(expr, **kwargs):
+        return object(), object(), {
+            "fit": {
+                "fit_name": "pol1",
+                "slope": 0.1,
+                "intercept": 0.2,
+            }
+        }
+    adf.draw = draw
+    return adf
+
+
 def test_a7_06_runner_passes_exact_semantics_and_records_three_comparisons(tmp_path):
     import types
     root = tmp_path / "input.root"
     root.write_bytes(b"root")
     frame = _a7_frame()
-    adf = types.SimpleNamespace(df=frame, _lazy_reader=None)
+    adf = _a7_attach_scalar_draw(types.SimpleNamespace(df=frame, _lazy_reader=None))
     expected = H._a7_1_expected_model(adf)
     table = _a7_table_figure(expected["summary_identities"])
     primary_fig, axes = _a7_primary_axes()
@@ -5505,7 +5539,7 @@ def test_a7_07_runner_turns_coordinate_corruption_into_strict_failure(tmp_path):
         plt.close(table)
 
 
-def test_a7_08_current_gallery_contract_adds_fig43_and_its_table_page(tmp_path):
+def test_a7_08_current_gallery_contract_extends_committed_a7_without_rewriting_history(tmp_path):
     gallery = _a6_3_fake_gallery()
     root = tmp_path / "input.root"
     root.write_bytes(b"root")
@@ -5513,7 +5547,1090 @@ def test_a7_08_current_gallery_contract_adds_fig43_and_its_table_page(tmp_path):
         object(), str(tmp_path / "post_stage_a.pdf"), root_path=str(root),
         gallery_module=gallery)
     assert evidence["ok"] is True
-    assert evidence["page_count"] == 45
-    assert evidence["expected_page_count"] == 45
+    # Committed A7 remains a historical 45-page checkpoint.  v0.2 FAST now includes O4 fig45 and O2 fig44; the current
+    # live contract therefore reaches the approved final 47 pages.
+    assert H.current_stage_a_contract_amendment()["historical_stage_a_gallery_pages"] == 43
+    assert H.current_stage_a_contract_amendment()["current_step_gallery_pages"] == 47
+    assert H.current_stage_a_contract_amendment()["approved_final_fast_gallery_pages"] == 47
+    assert evidence["page_count"] == 47
+    assert evidence["expected_page_count"] == 47
     assert "fig43_vector_facet_summary_fit" in evidence["required_gallery_functions"]
-    assert len(gallery.saved) == 45
+    assert "fig45_public_surface_equivalence_oracle" in evidence["required_gallery_functions"]
+    assert len(gallery.saved) == 47
+
+
+# ── PHASE_13_77 hardening v0.2 — STEP 1 / O1 ──
+
+def _hardening_frame(n=2400):
+    i = np.arange(n)
+    return pd.DataFrame({
+        "tgl": np.linspace(-1.45, 1.45, n),
+        "sector": (i % 36).astype(float),
+        "dcar_tpc_vertex": 0.03 + 0.02 * np.sin(i / 17.0) + 0.01 * np.linspace(-1, 1, n),
+        "ncl": (90 + (i % 40)).astype(float),
+        # Include a third parent key that the O4 request later removes with
+        # side_type<2. Projection must still cover it because projection
+        # precedes request selection.
+        "side_type": (i % 3).astype(int),
+        "time_s": i.astype(float),
+        "kbin": (i % 8).astype(int),
+    })
+
+
+def _hardening_adf():
+    return ADF(_hardening_frame())
+
+
+def test_a7_09_o1_red_green_custody_is_pinned_exactly():
+    assert H.O1_RED_DFDRAW["md5"] == "119fac5392b626f82d1bd9ac4d630683"
+    assert H.O1_GREEN_DFDRAW["md5"] == "3b7a8b7537745620d1a4b24c61802414"
+    assert H.O1_RED_DFDRAW["sha256"] == "7d1a87e7af9564f5a0298426b736418eeef918a9a837993cb444cd999fd4a96a"
+    assert H.O1_GREEN_DFDRAW["sha256"] == "930e027acb42b1a0226c99d3cdd5a88b777679fcc007f24ceb2f4c067cbcb6d3"
+
+
+def test_a7_10_o1_scalar_fit_decomposition_detects_parameter_corruption():
+    adf = _a7_attach_scalar_draw(type("Probe", (), {"df": _a7_frame()})())
+    expected = H._a7_1_expected_model(adf)
+    rows = _a7_rows()
+    evidence = H._a7_1_scalar_fit_decomposition(adf, rows, expected)
+    assert len(evidence["records"]) == 6
+    bad = [dict(r) for r in rows]
+    bad[0]["slope"] += 1.0
+    with pytest.raises(H.HarnessError, match="scalar fit mismatch"):
+        H._a7_1_scalar_fit_decomposition(adf, bad, expected)
+
+
+def test_a7_11_o1_style_oracle_detects_branch_channel_mutation():
+    import matplotlib.pyplot as plt
+    fig, axes = _a7_primary_axes()
+    try:
+        evidence = H._a7_1_style_invariance(axes)
+        assert evidence["mismatches"] == []
+        axes[1].lines[1].set_color("black")
+        with pytest.raises(H.HarnessError, match="channel/style mismatch"):
+            H._a7_1_style_invariance(axes)
+    finally:
+        plt.close(fig)
+
+
+def test_a7_12_o1_neg_a_current_product_does_not_silently_discard_one_element_vector():
+    """Current dfdraw must go green only when one-element vectors are really applied."""
+    adf = _hardening_adf()
+    df = adf.df
+    q1 = float(df["time_s"].quantile(1.0 / 3.0))
+    base = ((df["ncl"] > 60) & (np.abs(df["dcar_tpc_vertex"]) < 10)
+            & (df["side_type"] < 2) & (df["time_s"] < q1))
+    expected = [int(np.count_nonzero(base & (df["side_type"] == facet))) for facet in (0, 1)]
+    raw = adf.draw(
+        "dcar_tpc_vertex:tgl", selection=f"{H.HARDENING_BASE_SEL}&(side_type<2)",
+        type="profile", bins=10, range=(-1.5, 1.5),
+        selection_vector=[f"time_s<{q1}"], facet_by="side_type",
+        min_entries=1, auto_title=False)
+    observed = H._vector_faceted_counts(raw[2], n_branches=1)
+    assert observed == expected
+
+
+def test_a7_13_o1_neg_b_current_product_applies_supported_nonprofile_vector():
+    """Supported hist×selection_vector×facet_by must never silently drop the vector."""
+    adf = _hardening_adf()
+    df = adf.df
+    t_mid = float(df["time_s"].median())
+    base = (df["ncl"] > 60) & (df["side_type"] < 2)
+    branch_masks = (df["time_s"] < t_mid, df["time_s"] >= t_mid)
+    expected = [
+        int(np.count_nonzero(base & branch & (df["side_type"] == facet)))
+        for branch in branch_masks for facet in (0, 1)
+    ]
+    raw = adf.draw(
+        "ncl", selection="(ncl>60)&(side_type<2)", type="hist", bins=20,
+        selection_vector=[f"time_s<{t_mid}", f"time_s>={t_mid}"],
+        facet_by="side_type", auto_title=False)
+    observed = H._vector_faceted_counts(raw[2], n_branches=2)
+    assert observed == expected
+
+
+# ── PHASE_13_77 hardening v0.2 — STEP 2 / O5 ──
+
+def test_a7_14_o5_case_is_realdata_correctness_with_explicit_bin_geometry(tmp_path):
+    import types
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+    gallery = types.SimpleNamespace(fig22_delta_faceted=lambda adf: None)
+    case = H.o5_realdata_case(str(root), gallery_module=gallery)
+    assert case.case_id == H.HARDENING_O5_CASE_ID
+    assert case.purpose == "CORRECTNESS"
+    assert case.oracle_kind == "CORRECTNESS"
+    assert case.canonical_spec["bins"] == 36
+    assert case.canonical_spec["range"] == [-0.5, 35.5]
+    assert case.canonical_spec["facets"] == [0, 1]
+    assert case.canonical_spec["normalize"] == "delta"
+    assert case.canonical_spec["facet_by"] == "side_type"
+    assert H.validate_registry([case]) == []
+
+
+def test_a7_15_fig22_call_pins_stable_facets_and_explicit_sector_bins():
+    import time_series_draw as G
+
+    class CaptureADF:
+        def __init__(self):
+            self.df = pd.DataFrame({"time_s": np.arange(12, dtype=float)})
+            self.call = None
+        def draw(self, expr, **kwargs):
+            self.call = (expr, kwargs)
+            return object(), object(), {}
+
+    adf = CaptureADF()
+    G.fig22_delta_faceted(adf)
+    expr, kw = adf.call
+    assert expr == "dcar_tpc_vertex:sector"
+    assert kw["selection"] == f"{G.BASE_SEL}&(side_type<2)"
+    assert kw["type"] == "profile"
+    assert kw["bins"] == G.G4_22_BINS == H.HARDENING_O5_BINS
+    assert tuple(kw["range"]) == tuple(G.G4_22_RANGE) == H.HARDENING_O5_RANGE
+    assert kw["facet_by"] == "side_type"
+    assert kw["normalize"] == "delta"
+    assert len(kw["selection_vector"]) == 2
+
+
+def _o5_current_product(adf):
+    df = adf.df
+    t_mid = float(df["time_s"].median())
+    return adf.draw(
+        "dcar_tpc_vertex:sector",
+        selection=f"{H.HARDENING_BASE_SEL}&(side_type<2)",
+        type="profile",
+        bins=H.HARDENING_O5_BINS,
+        range=H.HARDENING_O5_RANGE,
+        selection_vector=[f"time_s<{t_mid}", f"time_s>={t_mid}"],
+        normalize="delta",
+        facet_by="side_type",
+        auto_title=False,
+    )
+
+
+def _o5_unit_case():
+    return _base_case(
+        case_id=H.HARDENING_O5_CASE_ID,
+        claim_id="unit.o5",
+        purpose="CORRECTNESS",
+        oracle_kind="CORRECTNESS",
+        loading_mode="EAGER",
+        sample_mode="FRACTION",
+        canonical_spec={
+            "bins": H.HARDENING_O5_BINS,
+            "range": list(H.HARDENING_O5_RANGE),
+            "facets": list(H.HARDENING_O5_FACETS),
+        },
+        surfaces_under_test=("draw",),
+        reference_policy="same-process",
+    )
+
+
+def test_a7_16_o5_raw_oracle_matches_current_product_on_synthetic_data():
+    adf = _hardening_adf()
+    case = _o5_unit_case()
+    expected = H._o5_expected_model(adf, case)
+    raw = _o5_current_product(adf)
+    try:
+        evidence = H._o5_validate_stats(raw[2], expected, fig=raw[0])
+        assert evidence["facet_values"] == [0, 1]
+        assert evidence["max_abs_numerical_delta"] <= 1e-12
+        assert any(evidence["valid_bin_mask"])
+    finally:
+        import matplotlib.pyplot as plt
+        plt.close("all")
+
+
+def test_a7_17_o5_numerical_mutation_fails_for_intended_reason():
+    import copy
+    adf = _hardening_adf()
+    case = _o5_unit_case()
+    expected = H._o5_expected_model(adf, case)
+    raw = _o5_current_product(adf)
+    try:
+        bad = copy.deepcopy(raw[2])
+        first_key = sorted(bad["normalize_data_faceted"], key=lambda x: float(x))[0]
+        values = np.asarray(bad["normalize_data_faceted"][first_key]["values"], dtype=float).copy()
+        finite = np.flatnonzero(np.isfinite(values))
+        assert len(finite) > 0
+        values[finite[0]] += 0.5
+        bad["normalize_data_faceted"][first_key]["values"] = values
+        with pytest.raises(H.HarnessError, match="O5 numerical mismatch delta_values"):
+            H._o5_validate_stats(bad, expected, fig=raw[0])
+    finally:
+        import matplotlib.pyplot as plt
+        plt.close("all")
+
+
+def test_a7_18_o5_gallery_disposition_is_reused_core_and_has_case_owner(tmp_path):
+    import types
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+    gallery = types.SimpleNamespace(
+        fig22_delta_faceted=lambda adf: None,
+        fig43_vector_facet_summary_fit=lambda adf: None,
+        build_adf=lambda *a, **k: None,
+    )
+    # The direct mapping is the load-bearing property; complete disposition
+    # discovery is separately fail-closed against the real gallery module.
+    case = H._stage_a_case_for_gallery_function(
+        H.HARDENING_O5_GALLERY_FUNCTION, str(root), gallery_module=gallery)
+    assert case is not None
+    assert case.case_id == H.HARDENING_O5_CASE_ID
+    assert H._GALLERY_DISPOSITION[H.HARDENING_O5_GALLERY_FUNCTION][0] == "REUSED_CORE"
+
+
+# ── PHASE_13_77 hardening v0.2 — STEP 3 / O4 ──
+
+def _o4_unit_case(tmp_path):
+    import types
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+    gallery = types.SimpleNamespace(fig45_public_surface_equivalence_oracle=lambda adf: None)
+    return H.o4_realdata_case(str(root), gallery_module=gallery)
+
+
+def _o4_surface_payloads(adf):
+    H._ensure_o4_surface_subframe(adf)
+    case = H.CaseSpec(
+        case_id=H.HARDENING_O4_CASE_ID,
+        claim_id="unit.o4",
+        title="o4", claim="o4", failure_means="o4", expected_visual="o4",
+        owner_on_failure="ADF", purpose="INVARIANCE", gate="CORE_MANDATORY",
+        oracle_kind="CONSISTENCY", loading_mode="EAGER", sample_mode="FULL",
+        canonical_spec=H._o4_canonical_spec(), applicable=True,
+        setup_contract="synthetic qualified-vector surface fixture",
+        preconditions=("fixture available",),
+        surfaces_under_test=H.SURFACES,
+        slots_under_test=("selection_vector",),
+        observables=(
+            H.Observable("x_center", "STATS", "ARRAY", "normalize_data.x_center",
+                         comparator="close", atol=1e-14, rtol=1e-12, rationale="unit"),
+            H.Observable("signal_central", "STATS", "ARRAY", "normalize_data.signal_central",
+                         comparator="close", atol=1e-12, rtol=1e-10, rationale="unit"),
+            H.Observable("signal_count", "STATS", "ARRAY", "normalize_data.signal_count"),
+            H.Observable("reference_central", "STATS", "ARRAY", "normalize_data.reference_central",
+                         comparator="close", atol=1e-12, rtol=1e-10, rationale="unit"),
+            H.Observable("reference_count", "STATS", "ARRAY", "normalize_data.reference_count"),
+            H.Observable("value", "STATS", "ARRAY", "normalize_data.value",
+                         comparator="close", atol=1e-12, rtol=1e-10, rationale="unit"),
+        ),
+        reference_policy="same-process",
+    )
+    out = {}
+    for surface in H.SURFACES:
+        raw, kw = H._call(adf, surface, case.canonical_spec, case_key="o4")
+        assert H.batch_errors(raw) == []
+        out[surface] = H.unwrap(surface, raw, **kw).stats
+        H._close()
+    return case, out
+
+
+def test_a7_19_o4_current_state_amendment_is_persistent_and_pinned():
+    rec = H.current_stage_a_contract_amendment()
+    assert rec["historical_stage_a_closure_immutable"] is True
+    assert rec["target_a7_commit"] == "f730b0cfd4d6874e5f93331c35b3cc188470f7fc"
+    assert rec["target_aliasdataframe_md5"] == "698410cf846183d8f8f362be1516409c"
+    assert rec["current_step_gallery_pages"] == 47
+    assert rec["approved_final_fast_gallery_pages"] == 47
+    assert len(rec["superseded_nodes"]) == 2
+    assert all("current_contract" in row for row in rec["superseded_nodes"])
+
+
+def test_a7_20_o4_case_is_consistency_and_uses_qualified_vector_slot(tmp_path):
+    case = _o4_unit_case(tmp_path)
+    assert case.case_id == H.HARDENING_O4_CASE_ID
+    assert case.purpose == "INVARIANCE"
+    assert case.oracle_kind == "CONSISTENCY"
+    assert tuple(case.surfaces_under_test) == H.SURFACES
+    assert case.slots_under_test == ()
+    assert all("O4Surface.selector" in item for item in case.canonical_spec["selection_vector"])
+    assert case.canonical_spec["auto_title"] is True
+    assert len(case.observables) == 6
+    assert H.validate_registry([case]) == []
+
+
+def test_a7_21_o4_three_public_surfaces_match_on_qualified_vector_request():
+    adf = _hardening_adf()
+    # side_type=2 is intentionally present but later excluded by side_type<2.
+    # Projection still has to cover it because projection precedes selection.
+    assert set(np.asarray(adf.df["side_type"], dtype=int)) == {0, 1, 2}
+    case, stats = _o4_surface_payloads(adf)
+    comparisons, observed = H._o4_compare_stats(case, stats)
+    assert len(comparisons) == 12
+    assert all(row["ok"] for row in comparisons)
+    assert set(observed) == {o.name for o in case.observables}
+    # The two qualified branches are non-vacuous and distinct.
+    assert int(np.asarray(observed["signal_count"]["draw"]).sum()) > 0
+    assert int(np.asarray(observed["reference_count"]["draw"]).sum()) > 0
+
+
+def test_a7_22_o4_numerical_mutation_fails_for_intended_reason():
+    import copy
+    adf = _hardening_adf()
+    case, stats = _o4_surface_payloads(adf)
+    bad = copy.deepcopy(stats)
+    value = np.asarray(bad["draw_figures"]["normalize_data"]["signal_central"], dtype=float).copy()
+    finite = np.flatnonzero(np.isfinite(value))
+    assert len(finite) > 0
+    value[finite[0]] += 0.25
+    bad["draw_figures"]["normalize_data"]["signal_central"] = value
+    with pytest.raises(H.HarnessError, match="O4 numerical mismatch signal_central"):
+        H._o4_compare_stats(case, bad)
+
+
+def test_a7_23_o4_gallery_disposition_and_case_owner(tmp_path):
+    import types
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+    gallery = types.SimpleNamespace(fig45_public_surface_equivalence_oracle=lambda adf: None)
+    case = H._stage_a_case_for_gallery_function(
+        H.HARDENING_O4_GALLERY_FUNCTION, str(root), gallery_module=gallery)
+    assert case is not None
+    assert case.case_id == H.HARDENING_O4_CASE_ID
+    assert H._GALLERY_DISPOSITION[H.HARDENING_O4_GALLERY_FUNCTION][0] == "REUSED_CORE"
+
+
+# ── PHASE_13_77 hardening v0.2 — STEP 4a / O2 contract + raw oracle ──
+
+def test_a7_24_o2_contract_is_correctness_with_explicit_geometry():
+    case = H.o2_oracle_case()
+    assert case.case_id == H.HARDENING_O2_CASE_ID
+    assert case.purpose == "CORRECTNESS"
+    assert case.oracle_kind == "CORRECTNESS"
+    assert case.loading_mode == "EAGER"
+    assert case.sample_mode == "FRACTION"
+    assert case.canonical_spec["bins"] == 30
+    assert case.canonical_spec["range"] == [-1.5, 1.5]
+    assert case.canonical_spec["facets"] == [0, 1]
+    assert case.canonical_spec["weights_vector"] == ["1.0 + 0.0*abs(dcar_tpc_vertex)", "1.0 + abs(dcar_tpc_vertex)"]
+    assert case.canonical_spec["fit"] == "pol1"
+    by_name = {obs.name: obs for obs in case.observables}
+    assert by_name["sum_weights"].rtol == H.HARDENING_O2_SUMW_RTOL
+    assert by_name["y_mean"].rtol == H.HARDENING_O2_VALUE_RTOL
+    assert H.validate_registry([case]) == []
+
+
+def test_a7_25_o2_weight_definitions_are_positive_nonvacuous_and_reuse_existing_semantics():
+    adf = _hardening_adf()
+    expected = H._o2_expected_model(adf, H.o2_oracle_case())
+    assert expected["weight_branches"] == ["unity", "w_dca"]
+    assert expected["weight_expressions"] == ["1.0 + 0.0*abs(dcar_tpc_vertex)", "1.0 + abs(dcar_tpc_vertex)"]
+    for row in expected["by_branch_facet"].values():
+        assert int(np.asarray(row["count"]).sum()) > 0
+        sumw = np.asarray(row["sum_weights"], dtype=float)
+        assert np.all(sumw[np.isfinite(sumw)] > 0)
+
+
+def test_a7_26_o2_raw_weighted_profile_reference_matches_manual_formula():
+    x = np.array([-0.75, -0.25, 0.25, 0.75], dtype=float)
+    y = np.array([1.0, 3.0, 2.0, 6.0], dtype=float)
+    w = np.array([1.0, 3.0, 2.0, 2.0], dtype=float)
+    got = H._o2_weighted_profile_reference_arrays(x, y, w, bins=2, value_range=(-1.0, 1.0))
+    np.testing.assert_array_equal(got["count"], [2, 2])
+    np.testing.assert_allclose(got["sum_weights"], [4.0, 4.0], rtol=0, atol=0)
+    np.testing.assert_allclose(got["y_mean"], [2.5, 4.0], rtol=0, atol=1e-15)
+    expected_std0 = np.sqrt(0.75)
+    expected_sem0 = expected_std0 / np.sqrt(1.6)
+    np.testing.assert_allclose(got["y_std"][0], expected_std0, rtol=0, atol=1e-15)
+    np.testing.assert_allclose(got["y_sem"][0], expected_sem0, rtol=0, atol=1e-15)
+    np.testing.assert_allclose(got["n_eff"], [1.6, 2.0], rtol=0, atol=1e-15)
+
+
+def test_a7_27_o2_reference_numerical_mutation_fails_for_intended_reason():
+    import copy
+    adf = _hardening_adf()
+    case = H.o2_oracle_case()
+    expected = H._o2_expected_model(adf, case)
+    H._o2_assert_reference_consistent(case, expected)
+    bad = copy.deepcopy(expected)
+    row = bad["by_branch_facet"]["unity|side_type=0"]
+    row["y_mean"] = np.asarray(row["y_mean"], dtype=float).copy()
+    finite = np.flatnonzero(np.isfinite(row["y_mean"]))
+    assert len(finite) > 0
+    row["y_mean"][finite[0]] = np.nan
+    with pytest.raises(H.HarnessError, match="O2 numerical mismatch y_mean"):
+        H._o2_assert_reference_consistent(case, bad)
+
+
+def test_a7_28_o2_step4a_taxonomy_registration_is_exact():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "adf_feature_taxonomy_o2_step4a",
+        os.path.join(os.path.dirname(__file__), "feature_taxonomy.py"),
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    feature = next(row for row in mod.FEATURES if row["id"] == "INV.realdata_acceptance")
+    patterns = set(feature["test_patterns"])
+    expected = {
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_24_o2_contract_is_correctness_with_explicit_geometry",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_25_o2_weight_definitions_are_positive_nonvacuous_and_reuse_existing_semantics",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_26_o2_raw_weighted_profile_reference_matches_manual_formula",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_27_o2_reference_numerical_mutation_fails_for_intended_reason",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_28_o2_step4a_taxonomy_registration_is_exact",
+    }
+    assert expected.issubset(patterns)
+
+
+# ── PHASE_13_77 hardening v0.2 — STEP 4b / O2 public-product integration ──
+
+def test_a7_29_o2_public_weights_vector_facet_matches_raw_correctness_oracle():
+    adf = _hardening_adf()
+    case = H.o2_oracle_case()
+    expected = H._o2_expected_model(adf, case)
+    raw = H._o2_product_draw(adf, case)
+    try:
+        product = H._o2_public_model(raw, case)
+        evidence = H._o2_assert_product_matches_raw(case, expected, product)
+        assert evidence["cells"] == [
+            "unity|side_type=0", "unity|side_type=1",
+            "w_dca|side_type=0", "w_dca|side_type=1",
+        ]
+        assert max(evidence["max_abs_y_mean"].values()) < 1e-12
+    finally:
+        import matplotlib.pyplot as plt
+        plt.close("all")
+
+
+def test_a7_30_o2_public_product_matches_scalar_weighted_decomposition_and_fits():
+    adf = _hardening_adf()
+    case = H.o2_oracle_case()
+    raw = H._o2_product_draw(adf, case)
+    try:
+        product = H._o2_public_model(raw, case)
+        evidence = H._o2_assert_scalar_decomposition(adf, case, product)
+        assert len(evidence["records"]) == 4
+        assert {(r["branch"], r["facet"]) for r in evidence["records"]} == {
+            ("unity", 0), ("unity", 1), ("w_dca", 0), ("w_dca", 1),
+        }
+        assert all(len(r["fit_params"]) == 2 for r in evidence["records"])
+    finally:
+        import matplotlib.pyplot as plt
+        plt.close("all")
+
+
+def test_a7_31_o2_weight_branch_style_is_invariant_across_facets():
+    adf = _hardening_adf()
+    raw = H._o2_product_draw(adf, H.o2_oracle_case())
+    try:
+        evidence = H._o2_style_invariance(raw[1])
+        assert evidence["mismatches"] == []
+        assert set(evidence["styles_by_facet"]) == {0, 1}
+    finally:
+        import matplotlib.pyplot as plt
+        plt.close("all")
+
+
+def test_a7_32_o2_public_numerical_mutation_fails_for_intended_reason():
+    import copy
+    adf = _hardening_adf()
+    case = H.o2_oracle_case()
+    expected = H._o2_expected_model(adf, case)
+    raw = H._o2_product_draw(adf, case)
+    try:
+        product = H._o2_public_model(raw, case)
+        bad = copy.deepcopy(product)
+        row = bad["cells"]["unity|side_type=0"]
+        row["y_mean"] = np.asarray(row["y_mean"], dtype=float).copy()
+        finite = np.flatnonzero(np.isfinite(row["y_mean"]))
+        assert len(finite) > 0
+        row["y_mean"][finite[0]] += 1.0
+        with pytest.raises(H.HarnessError, match=r"O2 unity\|side_type=0.y_mean numerical mismatch"):
+            H._o2_assert_product_matches_raw(case, expected, bad)
+    finally:
+        import matplotlib.pyplot as plt
+        plt.close("all")
+
+
+def test_a7_33_o2_step4b_taxonomy_registration_is_exact():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "adf_feature_taxonomy_o2_step4b",
+        os.path.join(os.path.dirname(__file__), "feature_taxonomy.py"),
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    feature = next(row for row in mod.FEATURES if row["id"] == "INV.realdata_acceptance")
+    patterns = set(feature["test_patterns"])
+    expected = {
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_29_o2_public_weights_vector_facet_matches_raw_correctness_oracle",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_30_o2_public_product_matches_scalar_weighted_decomposition_and_fits",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_31_o2_weight_branch_style_is_invariant_across_facets",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_32_o2_public_numerical_mutation_fails_for_intended_reason",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_33_o2_step4b_taxonomy_registration_is_exact",
+    }
+    assert expected.issubset(patterns)
+
+
+# ── PHASE_13_77 hardening v0.2 — STEP 4c / fig44 + generalized page accounting ──
+
+def test_a7_34_o2_fig44_public_call_is_exact_approved_weights_vector_facet_request(monkeypatch):
+    import time_series_draw as G
+    calls = []
+    class DummyADF:
+        def draw(self, expr, **kwargs):
+            calls.append((expr, kwargs))
+            return object(), object(), []
+    G.fig44_weights_vector_facet_fit_oracle(DummyADF())
+    assert len(calls) == 1
+    expr, kw = calls[0]
+    assert expr == "dcar_tpc_vertex:tgl"
+    assert kw["selection"] == f"{G.BASE_SEL}&(side_type<2)"
+    assert kw["weights_vector"] == [
+        "1.0 + 0.0*abs(dcar_tpc_vertex)",
+        "1.0 + abs(dcar_tpc_vertex)",
+    ]
+    assert kw["vector_compose"] == "outer"
+    assert kw["facet_by"] == "side_type"
+    assert kw["fit"] == "pol1"
+    assert kw["bins"] == 30
+    assert kw["range"] == (-1.5, 1.5)
+    assert kw["return_data"] is True
+
+
+def test_a7_35_generalized_extra_page_owner_supports_zero_one_and_n(monkeypatch):
+    import time_series_draw as G
+    class Fig: pass
+    table = Fig()
+    result = (Fig(), object(), {"summary_fit": {"table": table}})
+    assert G.declared_extra_page_count("fig44_weights_vector_facet_fit_oracle") == 0
+    assert G.extract_declared_extra_pages("fig44_weights_vector_facet_fit_oracle", result) == []
+    assert G.declared_extra_page_count("fig26_summary_fit") == 1
+    one = G.extract_declared_extra_pages("fig26_summary_fit", result)
+    assert len(one) == 1 and one[0][0] is table
+    monkeypatch.setitem(G.FIGURE_EXTRA_PAGE_SPECS, "synthetic_n", (
+        {"kind": "summary_fit_table", "title_suffix": " — A"},
+        {"kind": "summary_fit_table", "title_suffix": " — B"},
+    ))
+    many = G.extract_declared_extra_pages("synthetic_n", result)
+    assert len(many) == 2
+    assert [suffix for _, suffix in many] == [" — A", " — B"]
+
+
+def test_a7_36_generalized_extra_page_declared_missing_fails_closed(monkeypatch):
+    import time_series_draw as G
+    monkeypatch.setitem(G.FIGURE_EXTRA_PAGE_SPECS, "synthetic_missing", (
+        {"kind": "summary_fit_table", "title_suffix": " — required"},
+    ))
+    with pytest.raises(RuntimeError, match="declared extra page.*missing"):
+        G.extract_declared_extra_pages("synthetic_missing", (object(), object(), {}))
+
+
+def test_a7_37_o2_fig44_is_reused_core_and_owned_by_o2_case(tmp_path):
+    gallery = _a6_3_fake_gallery()
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+    row = next(r for r in H.gallery_disposition_table(gallery)
+               if r["gallery_function"] == H.HARDENING_O2_GALLERY_FUNCTION)
+    assert row["disposition"] == "REUSED_CORE"
+    case = H._stage_a_case_for_gallery_function(
+        H.HARDENING_O2_GALLERY_FUNCTION, str(root), gallery_module=gallery)
+    assert case is not None
+    assert case.case_id == H.HARDENING_O2_CASE_ID
+    assert case.canonical_spec["gallery_function"] == H.HARDENING_O2_GALLERY_FUNCTION
+
+
+def test_a7_38_fast_gallery_reaches_approved_47_page_contract(tmp_path):
+    gallery = _a6_3_fake_gallery()
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+    evidence = H.write_stage_a_pdf(
+        object(), str(tmp_path / "fast47.pdf"), root_path=str(root), gallery_module=gallery)
+    assert evidence["ok"] is True, evidence
+    assert evidence["page_count"] == 47
+    assert evidence["expected_page_count"] == 47
+    assert H.HARDENING_O2_GALLERY_FUNCTION in evidence["required_gallery_functions"]
+    assert H.HARDENING_O4_GALLERY_FUNCTION in evidence["required_gallery_functions"]
+    assert H.current_stage_a_contract_amendment()["current_step_gallery_pages"] == 47
+    assert H.current_stage_a_contract_amendment()["approved_final_fast_gallery_pages"] == 47
+
+
+def test_a7_39_fast_fraction_registry_includes_o2_without_second_build_owner():
+    cases = H._a6_3_fraction_cases("/tmp/not-opened.root", gallery_module=_a6_3_fake_gallery())
+    runners = H._a6_3_fraction_runners()
+    ids = [case.case_id for case in cases]
+    assert H.HARDENING_O2_CASE_ID in ids
+    idx = ids.index(H.HARDENING_O2_CASE_ID)
+    assert runners[idx] is H.run_o2_realdata
+    # The orchestrator owns construction; O2 explicitly refuses an absent shared ADF.
+    case = cases[idx]
+    result = H.run_o2_realdata(case, "/tmp/not-opened.root",
+                               gallery_module=_a6_3_fake_gallery(),
+                               prepared_adf=None, prepared_provenance=None)
+    assert result.status == H.FAIL
+    assert "shared FAST prepared_adf" in result.detail
+
+
+# ── PHASE_13_77 hardening v0.2 — STEP 5a / O3 contract + instrumentation ──
+
+def test_a7_40_o3_case_reuses_exact_g7_32_and_is_both_full(tmp_path):
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+    case = H.o3_fullstack_case(str(root), gallery_module=_a6_3_fake_gallery())
+    assert case.case_id == H.HARDENING_O3_CASE_ID
+    assert case.purpose == "INVARIANCE"
+    assert case.oracle_kind == "CONSISTENCY"
+    assert case.loading_mode == "BOTH"
+    assert case.sample_mode == "FULL"
+    assert case.canonical_spec["gallery_function"] == "fig32_subframe_vertex"
+    assert case.canonical_spec["reused_case_id"] == H.A5_3_CASE_ID
+    assert case.canonical_spec["expr"] == "CalibVertex.vertex_x_intercept:time_s"
+    assert [o.name for o in case.observables] == ["count", "x_center", "y_mean"]
+    assert H.validate_registry((case,)) == []
+
+
+def test_a7_41_o3_execution_plan_has_two_full_legs_and_no_third_read():
+    contract = H.o3_execution_contract()
+    assert contract["execution_legs"] == ("EAGER_FULL", "LAZY_FULL")
+    assert contract["max_full_source_constructions"] == 2
+    assert contract["redundant_combined_third_read_forbidden"] is True
+    assert contract["fast_gallery_page_count_effect"] == 0
+    assert "_a5_3_loaded_branches" in contract["dependency_instrumentation_owner"]
+    assert contract["decoy_available_but_unrequired_branch"] == "ncl"
+
+
+def test_a7_42_o3_dependency_transition_requires_vertex_branches_and_keeps_decoy_unloaded():
+    required = set(H.HARDENING_O3_REQUIRED_ON_DEMAND)
+    before = {
+        "available": tuple(sorted(required | {"timeMS", "phi", "ncl"})),
+        "loaded": ("phi", "timeMS"),
+        "decoy": "ncl",
+    }
+    after = {
+        "available": before["available"],
+        "loaded": tuple(sorted({"phi", "timeMS"} | required)),
+        "decoy": "ncl",
+    }
+    evidence = H._o3_validate_lazy_dependency_transition(before, after)
+    assert set(evidence["required_on_demand"]) == required
+    assert required.issubset(set(evidence["newly_loaded"]))
+    assert evidence["decoy_remained_unloaded"] is True
+
+
+def test_a7_43_o3_dependency_falsifiers_fail_for_intended_reason():
+    required = set(H.HARDENING_O3_REQUIRED_ON_DEMAND)
+    available = tuple(sorted(required | {"timeMS", "phi", "ncl"}))
+    before = {"available": available, "loaded": ("phi", "timeMS"), "decoy": "ncl"}
+    missing = {"available": available,
+               "loaded": tuple(sorted({"phi", "timeMS"} | (required - {"vertex_y"}))),
+               "decoy": "ncl"}
+    with pytest.raises(H.HarnessError, match="O3 required dependency missing"):
+        H._o3_validate_lazy_dependency_transition(before, missing)
+    decoy = {"available": available,
+             "loaded": tuple(sorted({"phi", "timeMS", "ncl"} | required)),
+             "decoy": "ncl"}
+    with pytest.raises(H.HarnessError, match="O3 unrelated decoy branch"):
+        H._o3_validate_lazy_dependency_transition(before, decoy)
+    preloaded = {"available": available,
+                 "loaded": ("phi", "timeMS", "vertex_x"),
+                 "decoy": "ncl"}
+    healthy_after = {"available": available,
+                     "loaded": tuple(sorted({"phi", "timeMS"} | required)),
+                     "decoy": "ncl"}
+    with pytest.raises(H.HarnessError, match="O3 required on-demand dependency was preloaded"):
+        H._o3_validate_lazy_dependency_transition(preloaded, healthy_after)
+
+
+def test_a7_44_o3_step5a_taxonomy_registration_is_exact():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "adf_feature_taxonomy_o3_step5a",
+        os.path.join(os.path.dirname(__file__), "feature_taxonomy.py"),
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    feature = next(row for row in mod.FEATURES if row["id"] == "INV.realdata_acceptance")
+    patterns = set(feature["test_patterns"])
+    expected = {
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_40_o3_case_reuses_exact_g7_32_and_is_both_full",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_41_o3_execution_plan_has_two_full_legs_and_no_third_read",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_42_o3_dependency_transition_requires_vertex_branches_and_keeps_decoy_unloaded",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_43_o3_dependency_falsifiers_fail_for_intended_reason",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_44_o3_step5a_taxonomy_registration_is_exact",
+    }
+    assert expected.issubset(patterns)
+
+
+# ── PHASE_13_77 hardening v0.2 — STEP 5b / O3 EAGER FULL leg ──
+
+def test_a7_45_o3_profile_array_extractor_is_json_safe_and_fail_closed():
+    profile = pd.DataFrame({
+        "count": [5, 0, 7],
+        "x_center": [0.5, 1.5, 2.5],
+        "y_mean": [1.0, np.nan, 3.0],
+    })
+    got = H._o3_profile_arrays_from_stats({"profile_data": profile})
+    assert got["count"] == [5, 0, 7]
+    assert got["x_center"] == [0.5, 1.5, 2.5]
+    assert got["y_mean"] == [1.0, None, 3.0]
+    assert got["missing_mask"] == [False, True, False]
+    assert got["populated_bins"] == 2
+    with pytest.raises(H.HarnessError, match="missing columns"):
+        H._o3_profile_arrays_from_stats({"profile_data": profile.drop(columns=["y_mean"])})
+
+
+def _o3_step5b_fake_gallery():
+    import types
+
+    mod = types.SimpleNamespace()
+    mod.build_calls = []
+
+    class FakeSubframe:
+        def __init__(self):
+            self.df = pd.DataFrame({"vertex_x_intercept": np.linspace(0.1, 0.3, 8)})
+
+    class FakeADF:
+        def __init__(self):
+            self.df = pd.DataFrame({"time_s": np.arange(8, dtype=float)})
+            self._lazy_reader = None
+            self._sf = None
+            self.draw_calls = []
+        def get_subframe(self, name):
+            return self._sf if name == "CalibVertex" else None
+        def draw(self, expr, **kwargs):
+            self.draw_calls.append((expr, dict(kwargs)))
+            pd_frame = pd.DataFrame({
+                "count": [2, 2, 2, 2],
+                "x_center": [0.5, 2.5, 4.5, 6.5],
+                "y_mean": [0.11, 0.17, 0.23, 0.29],
+            })
+            stats = {"n": 8, "mean_y": 0.2}
+            if kwargs.get("return_data"):
+                stats["profile_data"] = pd_frame
+            return object(), object(), stats
+
+    def build_adf(root_path, sample=None, lazy=False, tree_name="tree"):
+        mod.build_calls.append({"root_path": root_path, "sample": sample,
+                                "lazy": lazy, "tree_name": tree_name})
+        return FakeADF()
+
+    def fig32(adf):
+        adf._sf = FakeSubframe()
+        return adf.draw("CalibVertex.vertex_x_intercept:time_s", type="profile",
+                        bins=100, time_format="%H:%M", auto_title=True)
+
+    mod.build_adf = build_adf
+    mod.fig32_subframe_vertex = fig32
+    return mod
+
+
+def test_a7_46_o3_eager_full_runner_builds_once_and_persists_partial_manifest(tmp_path):
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+    manifest = tmp_path / "o3_eager.json"
+    gallery = _o3_step5b_fake_gallery()
+    result, doc = H.run_o3_eager_full_leg(
+        str(root), manifest_path=str(manifest), gallery_module=gallery)
+    assert result.status == H.DIAGNOSTIC, result.detail
+    assert len(gallery.build_calls) == 1
+    assert gallery.build_calls[0]["sample"] is None
+    assert gallery.build_calls[0]["lazy"] is False
+    assert result.observed["o3_partial_leg"] == "EAGER_FULL"
+    assert result.observed["realdata_provenance"]["full_source_constructions_this_leg"] == 1
+    assert result.observed["profile_data"]["populated_bins"] == 4
+    assert doc["provenance"]["o3_leg"] == "EAGER_FULL"
+    assert doc["provenance"]["o3_partial_evidence"] is True
+    assert doc["provenance"]["o3_full_source_constructions_this_manifest"] == 1
+    assert json.loads(manifest.read_text())["provenance"]["o3_leg"] == "EAGER_FULL"
+
+
+def test_a7_47_o3_eager_full_runner_marks_product_failure_without_second_build(tmp_path):
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+    manifest = tmp_path / "o3_eager_fail.json"
+    gallery = _o3_step5b_fake_gallery()
+    original = gallery.fig32_subframe_vertex
+    gallery.fig32_subframe_vertex = lambda adf: None
+    result, doc = H.run_o3_eager_full_leg(
+        str(root), manifest_path=str(manifest), gallery_module=gallery)
+    assert result.status == H.FAIL
+    assert "trusted G7.32 returned None" in result.detail
+    assert len(gallery.build_calls) == 1
+    assert doc["provenance"]["o3_full_source_constructions_this_manifest"] == 1
+    gallery.fig32_subframe_vertex = original
+
+
+def test_a7_48_o3_step5b_taxonomy_registration_is_exact():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "adf_feature_taxonomy_o3_step5b",
+        os.path.join(os.path.dirname(__file__), "feature_taxonomy.py"),
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    feature = next(row for row in mod.FEATURES if row["id"] == "INV.realdata_acceptance")
+    patterns = set(feature["test_patterns"])
+    expected = {
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_45_o3_profile_array_extractor_is_json_safe_and_fail_closed",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_46_o3_eager_full_runner_builds_once_and_persists_partial_manifest",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_47_o3_eager_full_runner_marks_product_failure_without_second_build",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_48_o3_step5b_taxonomy_registration_is_exact",
+    }
+    assert expected.issubset(patterns)
+
+
+# ── PHASE_13_77 hardening v0.2 — STEP 5c / O3 LAZY FULL leg ──
+
+def _o3_step5c_fake_gallery(*, load_decoy=False):
+    import types
+
+    mod = types.SimpleNamespace()
+    mod.build_calls = []
+
+    class FakeReader:
+        def __init__(self):
+            self.available_branches = {
+                "timeMS", "time_s", "phi", "ncl",
+                *H.HARDENING_O3_REQUIRED_ON_DEMAND,
+            }
+            self.loaded_branches = {"timeMS", "time_s", "phi"}
+
+    class FakeSubframe:
+        def __init__(self):
+            self.df = pd.DataFrame({"vertex_x_intercept": np.linspace(0.1, 0.3, 8)})
+
+    class FakeADF:
+        def __init__(self):
+            self.df = pd.DataFrame({"time_s": np.arange(8, dtype=float)})
+            self._lazy_reader = FakeReader()
+            self._sf = None
+        def get_subframe(self, name):
+            return self._sf if name == "CalibVertex" else None
+        def draw(self, expr, **kwargs):
+            pd_frame = pd.DataFrame({
+                "count": [2, 2, 2, 2],
+                "x_center": [0.5, 2.5, 4.5, 6.5],
+                "y_mean": [0.11, 0.17, 0.23, 0.29],
+            })
+            stats = {"n": 8, "mean_y": 0.2}
+            if kwargs.get("return_data"):
+                stats["profile_data"] = pd_frame
+            return object(), object(), stats
+
+    def build_adf(root_path, sample=None, lazy=False, tree_name="tree"):
+        mod.build_calls.append({"root_path": root_path, "sample": sample,
+                                "lazy": lazy, "tree_name": tree_name})
+        assert lazy is True
+        assert sample is None
+        return FakeADF()
+
+    def fig32(adf):
+        adf._lazy_reader.loaded_branches.update(H.HARDENING_O3_REQUIRED_ON_DEMAND)
+        if load_decoy:
+            adf._lazy_reader.loaded_branches.add(H.HARDENING_O3_DECOY_BRANCH)
+        adf._sf = FakeSubframe()
+        return adf.draw("CalibVertex.vertex_x_intercept:time_s", type="profile",
+                        bins=100, time_format="%H:%M", auto_title=True)
+
+    mod.build_adf = build_adf
+    mod.fig32_subframe_vertex = fig32
+    return mod
+
+
+def test_a7_49_o3_lazy_full_runner_builds_once_and_records_dependency_transition(tmp_path):
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+    manifest = tmp_path / "o3_lazy.json"
+    gallery = _o3_step5c_fake_gallery()
+    result, doc = H.run_o3_lazy_full_leg(
+        str(root), manifest_path=str(manifest), gallery_module=gallery)
+    assert result.status == H.DIAGNOSTIC, result.detail
+    assert len(gallery.build_calls) == 1
+    assert gallery.build_calls[0]["sample"] is None
+    assert gallery.build_calls[0]["lazy"] is True
+    assert result.observed["o3_partial_leg"] == "LAZY_FULL"
+    assert result.observed["realdata_provenance"]["full_source_constructions_this_leg"] == 1
+    dep = result.observed["lazy_dependency_evidence"]
+    assert set(H.HARDENING_O3_REQUIRED_ON_DEMAND).issubset(
+        set(dep["transition_after_gallery"]["newly_loaded"]))
+    assert dep["transition_after_machine"]["decoy_remained_unloaded"] is True
+    assert result.observed["profile_data"]["populated_bins"] == 4
+    assert doc["provenance"]["o3_leg"] == "LAZY_FULL"
+    assert doc["provenance"]["o3_partial_evidence"] is True
+    assert doc["provenance"]["o3_full_source_constructions_this_manifest"] == 1
+    assert json.loads(manifest.read_text())["provenance"]["o3_leg"] == "LAZY_FULL"
+
+
+def test_a7_50_o3_lazy_full_runner_fails_if_decoy_is_loaded(tmp_path):
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+    manifest = tmp_path / "o3_lazy_decoy_fail.json"
+    gallery = _o3_step5c_fake_gallery(load_decoy=True)
+    result, doc = H.run_o3_lazy_full_leg(
+        str(root), manifest_path=str(manifest), gallery_module=gallery)
+    assert result.status == H.FAIL
+    assert "O3 unrelated decoy branch" in result.detail
+    assert len(gallery.build_calls) == 1
+    assert doc["provenance"]["o3_full_source_constructions_this_manifest"] == 1
+
+
+def test_a7_51_o3_lazy_full_runner_rejects_eager_fallback(tmp_path):
+    root = tmp_path / "input.root"
+    root.write_bytes(b"root")
+    manifest = tmp_path / "o3_lazy_eager_fallback.json"
+    gallery = _o3_step5c_fake_gallery()
+    original = gallery.build_adf
+
+    def eager_disguise(*args, **kwargs):
+        adf = original(*args, **kwargs)
+        adf._lazy_reader = None
+        return adf
+
+    gallery.build_adf = eager_disguise
+    result, doc = H.run_o3_lazy_full_leg(
+        str(root), manifest_path=str(manifest), gallery_module=gallery)
+    assert result.status == H.FAIL
+    assert "live _lazy_reader" in result.detail
+    assert len(gallery.build_calls) == 1
+    assert doc["provenance"]["o3_full_source_constructions_this_manifest"] == 1
+
+
+def test_a7_52_o3_step5c_taxonomy_registration_is_exact():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "adf_feature_taxonomy_o3_step5c",
+        os.path.join(os.path.dirname(__file__), "feature_taxonomy.py"),
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    feature = next(row for row in mod.FEATURES if row["id"] == "INV.realdata_acceptance")
+    patterns = set(feature["test_patterns"])
+    expected = {
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_49_o3_lazy_full_runner_builds_once_and_records_dependency_transition",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_50_o3_lazy_full_runner_fails_if_decoy_is_loaded",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_51_o3_lazy_full_runner_rejects_eager_fallback",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_52_o3_step5c_taxonomy_registration_is_exact",
+    }
+    assert expected.issubset(patterns)
+
+
+# ── PHASE_13_77 hardening v0.2 — STEP 5d / O3 final saved-leg adjudication ──
+
+def _o3_step5d_write_partial_manifest(path, *, leg, y_shift=0.0, source_rows=8,
+                                      source_mtime=123456, decoy_loaded=False):
+    input_path = str(path.parent / "input.root")
+    Path(input_path).write_bytes(b"root")
+    observed = {
+        "o3_partial_leg": leg,
+        "o3_final_gate": False,
+        "profile_data": {
+            "count": [2, 2, 2, 2],
+            "x_center": [0.5, 2.5, 4.5, 6.5],
+            "y_mean": [0.11 + y_shift, 0.17, 0.23, 0.29],
+            "missing_mask": [False, False, False, False],
+            "populated_bins": 4,
+        },
+        "realdata_provenance": {
+            "input_path": input_path,
+            "input_size_bytes": 4,
+            "input_mtime_ns": source_mtime,
+            "tree_name": H.HARDENING_O3_TREE_NAME,
+            "loading_mode": "EAGER" if leg == "EAGER_FULL" else "LAZY",
+            "sample_mode": "FULL",
+            "sample_fraction": None,
+            "sample_seed": None,
+            "source_rows": source_rows,
+            "full_source_constructions_this_leg": 1,
+        },
+        "performance": {
+            "build_wall_time_s": 1.0,
+            "execute_wall_time_s": 2.0,
+            "leg_wall_time_s": 3.0 if leg == "EAGER_FULL" else 2.0,
+            "peak_rss_mb_after": 100.0 if leg == "EAGER_FULL" else 50.0,
+        },
+    }
+    if leg == "LAZY_FULL":
+        observed["realdata_provenance"]["eager_fallback"] = False
+        observed["lazy_dependency_evidence"] = {
+            "transition_after_machine": {
+                "required_on_demand": list(H.HARDENING_O3_REQUIRED_ON_DEMAND),
+                "newly_loaded": list(H.HARDENING_O3_REQUIRED_ON_DEMAND),
+                "decoy": H.HARDENING_O3_DECOY_BRANCH,
+                "decoy_remained_unloaded": not decoy_loaded,
+            }
+        }
+    doc = {
+        "provenance": {
+            "o3_leg": leg,
+            "o3_partial_evidence": True,
+            "o3_full_source_constructions_this_manifest": 1,
+        },
+        "cases": [{
+            "case_id": H.HARDENING_O3_CASE_ID,
+            "status": H.DIAGNOSTIC,
+            "detail": "synthetic partial O3 leg",
+            "observed": observed,
+        }],
+    }
+    path.write_text(json.dumps(doc, indent=1))
+    return path
+
+
+def test_a7_53_o3_final_saved_leg_comparison_passes_and_writes_pdf_without_root_read(tmp_path):
+    eager = _o3_step5d_write_partial_manifest(tmp_path / "eager.json", leg="EAGER_FULL")
+    lazy = _o3_step5d_write_partial_manifest(tmp_path / "lazy.json", leg="LAZY_FULL")
+    final_manifest = tmp_path / "final.json"
+    pdf = tmp_path / "o3_compare.pdf"
+    result, doc = H.run_o3_saved_leg_comparison(
+        str(eager), str(lazy), manifest_path=str(final_manifest), pdf_path=str(pdf))
+    assert result.status == H.PASS, result.detail
+    assert result.observed["performance"]["full_source_constructions_total"] == 2
+    assert result.observed["performance"]["comparison_root_reads"] == 0
+    assert result.observed["performance"]["redundant_third_full_read"] is False
+    assert result.observed["performance"]["combined_two_leg_wall_time_s"] == 5.0
+    assert result.observed["profile_data"]["max_abs_y_mean_delta"] == 0.0
+    assert pdf.exists() and pdf.stat().st_size > 0
+    assert doc["provenance"]["o3_comparison_root_reads"] == 0
+    assert doc["provenance"]["o3_full_source_constructions_total"] == 2
+
+
+def test_a7_54_o3_final_y_mean_mutation_fails_for_intended_reason(tmp_path):
+    eager = _o3_step5d_write_partial_manifest(tmp_path / "eager.json", leg="EAGER_FULL")
+    lazy = _o3_step5d_write_partial_manifest(
+        tmp_path / "lazy.json", leg="LAZY_FULL", y_shift=1.0e-3)
+    result, _ = H.run_o3_saved_leg_comparison(
+        str(eager), str(lazy), manifest_path=str(tmp_path / "final.json"))
+    assert result.status == H.FAIL
+    assert "y_mean numerical mismatch" in result.detail
+
+
+def test_a7_55_o3_final_source_identity_mismatch_fails_closed(tmp_path):
+    eager = _o3_step5d_write_partial_manifest(tmp_path / "eager.json", leg="EAGER_FULL")
+    lazy = _o3_step5d_write_partial_manifest(
+        tmp_path / "lazy.json", leg="LAZY_FULL", source_rows=9)
+    result, _ = H.run_o3_saved_leg_comparison(
+        str(eager), str(lazy), manifest_path=str(tmp_path / "final.json"))
+    assert result.status == H.FAIL
+    assert "source identity mismatch" in result.detail
+
+
+def test_a7_56_o3_final_decoy_loaded_fails_for_dependency_reason(tmp_path):
+    eager = _o3_step5d_write_partial_manifest(tmp_path / "eager.json", leg="EAGER_FULL")
+    lazy = _o3_step5d_write_partial_manifest(
+        tmp_path / "lazy.json", leg="LAZY_FULL", decoy_loaded=True)
+    result, _ = H.run_o3_saved_leg_comparison(
+        str(eager), str(lazy), manifest_path=str(tmp_path / "final.json"))
+    assert result.status == H.FAIL
+    assert "unrelated decoy branch" in result.detail
+
+
+def test_a7_57_o3_step5d_taxonomy_registration_is_exact():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "adf_feature_taxonomy_o3_step5d",
+        os.path.join(os.path.dirname(__file__), "feature_taxonomy.py"),
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    feature = next(row for row in mod.FEATURES if row["id"] == "INV.realdata_acceptance")
+    patterns = set(feature["test_patterns"])
+    expected = {
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_53_o3_final_saved_leg_comparison_passes_and_writes_pdf_without_root_read",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_54_o3_final_y_mean_mutation_fails_for_intended_reason",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_55_o3_final_source_identity_mismatch_fails_closed",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_56_o3_final_decoy_loaded_fails_for_dependency_reason",
+        "test_phase_13_77_realdata_invariance_harness.py::test_a7_57_o3_step5d_taxonomy_registration_is_exact",
+    }
+    assert expected.issubset(patterns)
