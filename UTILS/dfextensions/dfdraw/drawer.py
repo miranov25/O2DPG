@@ -6103,8 +6103,11 @@ class DFDraw:
 
         PHASE_13_82_DF, private diagnostic surface (DT-1: private first).
 
-        Returns a `Description`: every effective value with where it came
-        from. Nothing is rendered, no global state is touched, and the
+        Returns a `Description` of the effective values currently covered by
+        Stage 1 - the four static profile fields `bins`, `marker`,
+        `markersize` and `capsize` - each with where it came from. This is not
+        yet the whole request: other fields and data-derived values are later
+        stages. Nothing is rendered, no global state is touched, and the
         description is produced by the SAME resolution helper the drawing path
         uses - so it cannot disagree with what a real draw would do. That
         agreement is asserted by T11.

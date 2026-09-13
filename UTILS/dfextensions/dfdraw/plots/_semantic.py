@@ -44,9 +44,9 @@ WHAT THIS MODULE DELIBERATELY DOES NOT DO
     It does not guess. The global registry stores effective values but not
     their history, so after a named style followed by a custom patch it is
     often impossible to say which one supplied an unchanged value. In that case
-    the origin is reported as UNKNOWN_GLOBAL rather than as a plausible
-    invention. An explanation that made something up would be worse than one
-    that admits the limit.
+    the source is reported as CURRENT_GLOBAL_CONFIGURATION with
+    origin_detail=UNKNOWN, rather than as a plausible invention. An explanation
+    that made something up would be worse than one that admits the limit.
 """
 
 from __future__ import annotations
