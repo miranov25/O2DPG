@@ -6098,6 +6098,88 @@ class DFDraw:
         _apply_legend_mode(fig, _normalize_legend_spec(legend, show_legend))
         return fig, axes, stats_dict
     
+    def explain(
+        self, expr, type="profile", *, view="effective", format="dict", **kwargs
+    ):
+        """Explain the current dfdraw request without drawing anything.
+
+        Experimental diagnostic API introduced by PHASE_13_82_DF Stage B.
+        The schema may grow while PHASE_13_82_DF remains open.
+
+        This first public slice exposes the verified Stage-1 EFFECTIVE
+        description for four static ``type='profile'`` fields only:
+        ``bins``, ``marker``, ``markersize`` and ``capsize``. Unsupported
+        views or plot families fail loudly rather than returning a partial
+        answer that looks complete.
+
+        Parameters
+        ----------
+        expr : str
+            dfdraw expression, for example ``"y:x"``.
+        type : str, default "profile"
+            Plot family. Stage B currently supports ``"profile"`` only.
+        view : {"effective", "supplied", "resolved", "all"}, default "effective"
+            Semantic view to inspect. Only ``"effective"`` is implemented
+            in this first public Stage-B slice; the other names are reserved
+            and currently raise ``NotImplementedError``.
+        format : {"dict", "pretty"}, default "dict"
+            ``"dict"`` returns the machine-readable nested representation.
+            ``"pretty"`` returns the human-readable rendering of the same
+            description object.
+        **kwargs
+            Plot options to explain. They are inspected without drawing or
+            mutating the DataFrame, global style, or pyplot state.
+
+        Returns
+        -------
+        dict or str
+            Machine-readable dictionary for ``format="dict"`` or formatted
+            text for ``format="pretty"``.
+
+        Raises
+        ------
+        ValueError
+            If ``view`` or ``format`` is not a recognized Stage-B spelling.
+        NotImplementedError
+            If a recognized but not-yet-implemented view or plot family is
+            requested.
+
+        Examples
+        --------
+        ``DFDraw(df).explain("y:x", type="profile", bins=80)`` returns a
+        nested dictionary whose ``statistic.bins`` entry records value 80 and
+        source ``CALL_ARGUMENT``. Use ``format="pretty"`` for a compact human
+        readable rendering.
+
+        Notes
+        -----
+        ``explain`` describes current execution; it is not an independent
+        correctness oracle. PHASE_13_81 owns independent semantic oracles.
+        """
+        allowed_views = ("supplied", "effective", "resolved", "all")
+        if view not in allowed_views:
+            raise ValueError(
+                f"unknown explain view {view!r}; expected one of "
+                f"{allowed_views}"
+            )
+        if view != "effective":
+            raise NotImplementedError(
+                f"explain view={view!r} is reserved but not implemented in "
+                "PHASE_13_82_DF Stage B yet; use view='effective'"
+            )
+
+        allowed_formats = ("dict", "pretty")
+        if format not in allowed_formats:
+            raise ValueError(
+                f"unknown explain format {format!r}; expected one of "
+                f"{allowed_formats}"
+            )
+
+        description = self._explain(expr, type=type, **kwargs)
+        if format == "dict":
+            return description.as_dict()
+        return description.pretty()
+
     def _explain(self, expr, type="profile", **kwargs):
         """Describe what this request means, without drawing anything.
 

@@ -346,3 +346,92 @@ def test_P1_1_both_callers_consume_the_same_declarations():
     assert by_arg["marker"].origin_sensitive is True
     assert by_arg["markersize"].origin_sensitive is True
     assert by_arg["bins"].origin_sensitive is False
+
+
+# --------------------------------------------------------------------------
+# Stage B — public/experimental explain surface
+# --------------------------------------------------------------------------
+
+def test_B1_public_explain_default_is_machine_readable_dict(df):
+    out = DFDraw(df).explain("y:x", type="profile", bins=25, marker="s")
+    assert isinstance(out, dict)
+    assert out["statistic"]["bins"]["value"] == 25
+    assert out["statistic"]["bins"]["source"] == CALL_ARGUMENT
+    assert out["aesthetics"]["marker"]["value"] == "s"
+
+
+def test_B2_public_explain_pretty_is_same_description(df):
+    d = DFDraw(df)
+    expected = d._explain(
+        "y:x", type="profile", bins=25, marker="s"
+    ).pretty()
+    actual = d.explain(
+        "y:x", type="profile", bins=25, marker="s", format="pretty"
+    )
+    assert actual == expected
+    assert "STATISTIC" in actual
+    assert "AESTHETICS" in actual
+
+
+def test_B3_public_explain_dict_matches_private_description(df, clean_style):
+    set_style({"hist.bins": 77, "profile.markersize": 9})
+    d = DFDraw(df)
+    private = d._explain("y:x", type="profile").as_dict()
+    public = d.explain("y:x", type="profile")
+    assert public == private
+
+
+@pytest.mark.parametrize("view", ["supplied", "resolved", "all"])
+def test_B4_public_explain_reserved_views_fail_loudly(df, view):
+    with pytest.raises(NotImplementedError, match="not implemented"):
+        DFDraw(df).explain("y:x", type="profile", view=view)
+
+
+def test_B5_public_explain_unknown_view_is_rejected(df):
+    with pytest.raises(ValueError, match="unknown explain view"):
+        DFDraw(df).explain("y:x", type="profile", view="future")
+
+
+def test_B6_public_explain_unknown_format_is_rejected(df):
+    with pytest.raises(ValueError, match="unknown explain format"):
+        DFDraw(df).explain("y:x", type="profile", format="yaml")
+
+
+def test_B7_public_explain_refuses_unsupported_type_loudly(df):
+    with pytest.raises(NotImplementedError, match="profile"):
+        DFDraw(df).explain("x", type="hist")
+
+
+def test_B8_public_explain_draws_nothing_and_leaves_frame_unchanged(df):
+    import matplotlib.pyplot as plt
+    plt.close("all")
+    before_frame = df.copy(deep=True)
+    before_figs = tuple(plt.get_fignums())
+    DFDraw(df).explain("y:x", type="profile", bins=17, marker="D")
+    assert tuple(plt.get_fignums()) == before_figs
+    pd.testing.assert_frame_equal(df, before_frame)
+
+
+def test_B9_public_explain_does_not_mutate_global_configuration(df, clean_style):
+    before = get_style()
+    DFDraw(df).explain("y:x", type="profile", bins=17, marker="D")
+    assert get_style() == before
+
+
+def test_B10_public_explain_does_not_change_later_draw(df):
+    import matplotlib.pyplot as plt
+
+    # This test exercises two real draws. Keep its pyplot state local so the
+    # xdist worker cannot leak an ambient Axes into unrelated same=True tests.
+    plt.close("all")
+    try:
+        _, ax_a, _ = _draw(df)
+        marker_a = ax_a.get_lines()[0].get_marker()
+
+        DFDraw(df).explain("y:x", type="profile", marker="D", bins=7)
+
+        _, ax_b, _ = _draw(df)
+        marker_b = ax_b.get_lines()[0].get_marker()
+        assert marker_a == marker_b
+    finally:
+        plt.close("all")

@@ -79,6 +79,30 @@ fig, ax, stats = drawer.draw("y:x", type="profile")
 fig, ax, stats = drawer.draw("x", selection="x > 0")
 ```
 
+### Experimental request explanation
+
+`DFDraw.explain()` is an experimental, read-only diagnostic interface from
+PHASE_13_82_DF. It reports what dfdraw currently thinks selected configuration
+means without rendering a figure or modifying the input or global style.
+
+The first Stage-B slice covers the **effective** values of four static profile
+fields: `bins`, `marker`, `markersize`, and `capsize`. Other plot families and
+`supplied`/`resolved` views fail loudly until their semantic owners are added.
+
+```python
+# Machine-readable configuration explanation
+info = drawer.explain("y:x", type="profile", bins=80, marker="s")
+print(info["statistic"]["bins"])
+# {'value': 80, 'source': 'CALL_ARGUMENT'}
+
+# Human-readable form of the same description
+print(drawer.explain("y:x", type="profile", format="pretty"))
+```
+
+This interface describes the **current implementation**; it is not an
+independent correctness oracle. Its schema remains experimental while
+PHASE_13_82_DF is open.
+
 ---
 
 ## Core Concepts
