@@ -6098,6 +6098,43 @@ class DFDraw:
         _apply_legend_mode(fig, _normalize_legend_spec(legend, show_legend))
         return fig, axes, stats_dict
     
+    def _explain(self, expr, type="profile", **kwargs):
+        """Describe what this request means, without drawing anything.
+
+        PHASE_13_82_DF, private diagnostic surface (DT-1: private first).
+
+        Returns a `Description`: every effective value with where it came
+        from. Nothing is rendered, no global state is touched, and the
+        description is produced by the SAME resolution helper the drawing path
+        uses - so it cannot disagree with what a real draw would do. That
+        agreement is asserted by T11.
+
+        Stage 1 covers the static (data-free) fields of type='profile'.
+        Data-derived values such as an automatic range are resolved later and
+        are not reported yet.
+
+        Returns
+        -------
+        Description
+            `.pretty()` for a readable listing, `.as_dict()` for a nested
+            dictionary, `.get(path)` for one field.
+        """
+        from .plots._semantic import (
+            PROFILE_STATIC_FIELDS, Description, resolve_fields,
+        )
+
+        if type != "profile":
+            raise NotImplementedError(
+                f"_explain currently covers type='profile' only; got "
+                f"{type!r}. PHASE_13_82_DF stage 1."
+            )
+
+        d = Description()
+        # The SAME declarations the draw path uses. Nothing about a field's
+        # contract is restated here (review finding P1-1).
+        resolve_fields(PROFILE_STATIC_FIELDS, kwargs, description=d)
+        return d
+
     def profile(
         self,
         expr: str,

@@ -31,6 +31,8 @@ from ._data_sanitize import sanitize_for_plot
 # Phase 13.42.DF: Inline fits (lazy import to avoid circular: _fit_render imports nothing from profile)
 from .fits import normalize_fit_spec, dispatch_fit
 from ._fit_render import render_fit_overlays, render_fit_textbox
+from ._semantic import PROFILE_STATIC_FIELDS as _SEM_PROFILE_FIELDS
+from ._semantic import resolve_fields as _sem_resolve_fields
 from ._autorange import compute_autorange, resolve_range_1d, VALID_STRATEGIES
 from ._time_coords import to_date_coords
 # Phase 13.30.DF: Class-2 column-reference parameter validation
@@ -222,6 +224,8 @@ def draw_profile(
     time_format: Optional[str] = None,
     # Phase 13.42.DF: Inline fit specification (architect 2026-05-22).
     fit: Optional[Union[str, Dict, Callable, List]] = None,
+    # PHASE_13_82_DF: optional recorder; None on every normal draw.
+    _semantic_description=None,
     **kwargs
 ) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
@@ -353,15 +357,24 @@ def draw_profile(
     # wins over cycle".
     _ud_user_linestyle = linestyle    # None or user's value
 
-    # Get style defaults
-    if bins is None:
-        bins = get_style_value("hist.bins", 50)
-    if marker is None:
-        marker = get_style_value("profile.marker", "o")
-    if markersize is None:
-        markersize = get_style_value("profile.markersize", 6)
-    if capsize is None:
-        capsize = get_style_value("profile.capsize", 3)
+    # Get style defaults.
+    # PHASE_13_82_DF: resolved through the single shared helper, using the
+    # single shared field declarations (PROFILE_STATIC_FIELDS). The explain
+    # surface consumes the SAME declarations, so neither side can hold a stale
+    # copy of a field's configuration key, default or origin-sensitivity
+    # (review finding P1-1).
+    # _semantic_description is None on every normal draw, in which case this
+    # does exactly what the previous inline code did and records nothing.
+    _sem = _sem_resolve_fields(
+        _SEM_PROFILE_FIELDS,
+        {"bins": bins, "marker": marker,
+         "markersize": markersize, "capsize": capsize},
+        description=_semantic_description,
+    )
+    bins = _sem["bins"]
+    marker = _sem["marker"]
+    markersize = _sem["markersize"]
+    capsize = _sem["capsize"]
     if linestyle is None:
         linestyle = "-"
     if linewidth is None:
